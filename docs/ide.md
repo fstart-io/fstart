@@ -60,7 +60,7 @@ Settings in `rust-analyzer.json` / the workspace file:
 | `cargo.cfgs` | `[]` |
 | `cfg.setTest` | `false` |
 | `cargo.extraEnv`, `check.extraEnv` | Selection environment: `CARGO_ENCODED_RUSTFLAGS` and an empty `RUSTFLAGS`. |
-| `check.overrideCommand` | `cargo check --message-format=json` with the selection arguments (prefixed by `env -u` for removed variables). |
+| `check.overrideCommand` | `fbuild editor-check --selection <recorded JSON>`; acquires checkout ownership, restores the selected environment/removals, then runs Cargo check with `--message-format=json` so compiler diagnostics reach the editor on stdout. |
 | `check.invocationStrategy` | `once` |
 | `procMacro.enable` | `true` |
 
@@ -68,12 +68,17 @@ Supporting files from the build, under
 `target/fstart-build/<board>/<debug|release>/<sha256>/`:
 
 - `resolved-build.json`, `compiler-selection.json`
-- `rustflags.json` (`rustflags` and `member_rustflags` token lists)
-- `member-rustflags.toml` (cfgs and linker script, for workspace members only)
+- `rustflags.json` (`rustflags`, `package_rustflags` and binary-only `linker_rustflags`)
+- `member-rustflags.toml` (cfgs for the board and opt-in library packages; no linker paths)
+- `editor-selection.json` (the compiler command/environment restored under the checkout lock)
 - `ide-unit-graph.json`, `ide-cargo-messages.jsonl`
 
 The selected manifest is `target/fstart-workspaces/<board>/Cargo.toml`. All
-builds share the Cargo target directory `target/fstart-build/cargo`.
+builds share the Cargo target directory `target/fstart-build/cargo`. Regenerate
+existing editor workspaces after changes to the recorded-selection format. The
+editor helper participates in fbuild locking; manually running plain Cargo on a
+generated manifest does not. The helper path is absolute; regenerate after
+cleaning or replacing the fbuild executable.
 
 ## Point an editor at it
 
@@ -98,13 +103,14 @@ builds share the Cargo target directory `target/fstart-build/cargo`.
 
 1. Cargo's unit graph (`cargo check <selection args> -Zunstable-options --unit-graph`,
    version 1 required) gives the units, features, targets and dependency edges.
-2. A real `cargo check --message-format=json` supplies build-script outputs
+2. A real `cargo check --message-format=json-render-diagnostics` supplies build-script outputs
    (cfgs, `OUT_DIR`, env) and proc-macro dylib paths.
 3. The projection in `tools/fbuild/src/ide_graph.rs`:
    - `std` units and build-script run units are skipped.
-   - Target units get the selection cfgs (`fstart_stage_env`, `fstart_entry`,
-     `fstart_payload`, check-cfg flags). Host units (proc macros, build scripts)
-     do not.
+   - Target libraries get only their opted-in selection cfgs and stable check-cfg
+     vocabulary; the board gets all three platform-validated selectors.
+     Cfg consumers used as host libraries/proc macros are rejected. Build scripts
+     must not read target selection cfgs (enforced by the source audit).
    - Each unit gets `feature=` cfgs, `debug_assertions` for debug profiles, and
      the build-script cfgs and env of its own package.
    - `OUT_DIR` is added to the package's source include directories.

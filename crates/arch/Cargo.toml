@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.fstart.compiler-cfg]
+fstart_entry = ["riscv64", "armv7", "aarch64", "aarch64-relocate", "x86_64", "amd-psp-reset"]
+fstart_stage_env = ["monolithic", "car", "postcar", "ram", "smm"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "postcar", "ram", "smm"))'] }
 

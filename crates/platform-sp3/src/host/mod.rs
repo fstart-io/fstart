@@ -831,7 +831,7 @@ mod tests {
                 mirrors: Vec::new(),
             }
         );
-        let config = plan.assembly.config("tyan-s8030").unwrap();
+        let config = plan.assembly.ffs().unwrap();
         assert_eq!(
             config.build.firmware_image,
             FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x7e_0000)

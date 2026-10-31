@@ -1,11 +1,10 @@
+use crate::build_plan::FfsAssembly;
 use crate::summary::{FlashArea, Placement};
 use fstart_core::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout};
-use fstart_core::{
-    BoardConfig, FdtSource, FirmwareImagePolicy, RunsFrom, SocImageFormat, StageLayout,
-};
+use fstart_core::{FdtSource, FirmwareImagePolicy, RunsFrom, SocImageFormat, StageLayout};
 use fstart_ffs::builder::{
     BootRootConfig, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
     build_image_with_root, finalize_initial_stage,
@@ -20,16 +19,43 @@ use crate::StageBinary;
 pub fn assemble(
     workspace_root: &Path,
     board_dir: &Path,
-    config: &BoardConfig,
+    name: &str,
+    config: &FfsAssembly,
     stage_binaries: &[StageBinary],
     output_dir: Option<&Path>,
-    kernel_path: Option<&str>,
-    firmware_path: Option<&str>,
-    fit_path: Option<&str>,
+    inputs: &std::collections::BTreeMap<String, PathBuf>,
     payload_files: &[(String, String)],
-    bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
     signing_key: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    config.validate_workspace_inputs()?;
+    let path = |name: &str| {
+        inputs
+            .get(name)
+            .map(|path| path.to_str().ok_or("non-UTF8 assembly input path"))
+            .transpose()
+    };
+    let kernel_path = path("kernel")?;
+    let firmware_path = path("firmware")?;
+    let fit_path = path("fit")?;
+    if stage_binaries.is_empty() {
+        return Err("missing initial stage".into());
+    }
+    let stages: std::collections::BTreeSet<_> = stage_binaries
+        .iter()
+        .skip(1)
+        .map(|stage| stage.name.as_str())
+        .collect();
+    let bindings: std::collections::BTreeSet<_> = config
+        .bootstrap
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if stages != bindings
+        || bindings.len() != config.bootstrap.len()
+        || stages.len() != stage_binaries.len() - 1
+    {
+        return Err("every successor stage needs an explicit unique bootstrap binding".into());
+    }
     let (signing_key, verification_key) = load_signing_key(signing_key, config)?;
 
     let mut ro_files = Vec::new();
@@ -116,7 +142,7 @@ pub fn assemble(
     }
 
     if let Some(ref microcode) = config.microcode {
-        assemble_microcode(microcode, workspace_root, board_dir, &mut ro_files)?;
+        assemble_microcode(microcode, workspace_root, &mut ro_files)?;
     }
 
     let mut data_file = |name: String, data: Vec<u8>| {
@@ -157,7 +183,13 @@ pub fn assemble(
     }
     if let Some(ref payload) = config.payload {
         if payload.kind == fstart_core::PayloadKind::FitImage {
-            assemble_fit_payload(payload, board_dir, fit_path.or(kernel_path), &mut ro_files)?;
+            assemble_fit_payload(
+                payload,
+                board_dir,
+                fit_path.or(kernel_path),
+                firmware_path,
+                &mut ro_files,
+            )?;
         } else if coreboot {
             crate::coreboot_payload::add(
                 payload,
@@ -177,7 +209,7 @@ pub fn assemble(
         }
 
         if let FdtSource::Override(ref dtb_name) = payload.fdt {
-            let dtb_path = board_dir.join(dtb_name.as_str());
+            let dtb_path = inputs.get("dtb").ok_or("DTB input was not resolved")?;
             if dtb_path.exists() {
                 let dtb_data =
                     fs::read(&dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
@@ -197,7 +229,7 @@ pub fn assemble(
                     }],
                 });
             } else {
-                eprintln!("[fstart] warning: DTB not found: {}", dtb_path.display());
+                return Err(format!("DTB not found: {}", dtb_path.display()));
             }
         }
     }
@@ -207,29 +239,15 @@ pub fn assemble(
         regions: ffs_input_regions(config, ro_files)?,
     };
 
-    let family_digest = fstart_crypto::digest::hash_sha256(config.name.as_bytes());
+    let family_digest = fstart_crypto::digest::hash_sha256(name.as_bytes());
     let root_config = BootRootConfig {
         image_family: family_digest[..16].try_into().unwrap(),
         security_version: 0,
-        bootstrap: match bootstrap {
-            Some(bindings) => bindings
-                .iter()
-                .map(|(name, role)| (name.clone(), role.wire()))
-                .collect(),
-            // Explicitly legacy callers have not migrated image-role policy.
-            None => stage_binaries
-                .iter()
-                .skip(1)
-                .map(|stage| {
-                    let role = if stage.name == "postcar" {
-                        fstart_ffs::root::BootstrapRole::Postcar
-                    } else {
-                        fstart_ffs::root::BootstrapRole::Mainstage
-                    };
-                    (stage.name.clone(), role)
-                })
-                .collect(),
-        },
+        bootstrap: config
+            .bootstrap
+            .iter()
+            .map(|(name, role)| (name.clone(), role.wire()))
+            .collect(),
     };
     eprintln!("[fstart] security version 0; no rollback protection");
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
@@ -298,18 +316,14 @@ pub fn assemble(
         "region={:?} file={:?} segment={} patched_input_sha256={} constant_trust_sha256={}\n",
         input.region, input.file, input.segment, hex(&input.sha256), hex(&input.trust_sha256),
     )).collect::<String>();
-    fs::write(
-        output_dir.join(format!("{}.inputs.txt", config.name)),
-        identities,
-    )
-    .map_err(|e| format!("write patched artifact identities: {e}"))?;
-    let image_path = output_dir.join(format!("{}.ffs", config.name));
+    fs::write(output_dir.join(format!("{name}.inputs.txt")), identities)
+        .map_err(|e| format!("write patched artifact identities: {e}"))?;
+    let image_path = output_dir.join(format!("{name}.ffs"));
     fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
 
     let (out_path, placement) = if config.full_flash_image {
         let full_flash = FullFlashInput {
             config,
-            board_dir,
             bootblock_elf: &stage_binaries[0].path,
             bootblock_bin: &stage_binaries[0].run_path,
             ffs_data: &image_bytes,
@@ -350,7 +364,7 @@ pub fn assemble(
 }
 
 fn ffs_input_regions(
-    config: &BoardConfig,
+    config: &FfsAssembly,
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
     let cache_size = config.build.mrc_cache_size;
@@ -359,7 +373,12 @@ fn ffs_input_regions(
     {
         return Err("MRC cache requires an Intel full-flash image and two 64-KiB banks".into());
     }
-    let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
+    let flash = config
+        .flash
+        .as_ref()
+        .map(crate::plan::FlashTransport::decode)
+        .transpose()?;
+    let Some(FlashLayout::IntelIfd(layout)) = &flash else {
         if config.full_flash_image {
             let flash_image = firmware_image_from_policy(config)?.ok_or_else(|| {
                 "full_flash_image requires a firmware image build policy".to_string()
@@ -435,7 +454,7 @@ fn ffs_input_regions(
 /// Cache bytes physically prefix the BIOS image; RO offsets must be relative
 /// to its shortened container, while linked external load addresses stay fixed.
 fn cached_ro_regions(
-    config: &BoardConfig,
+    config: &FfsAssembly,
     files: Vec<InputFile>,
     bios_size: u32,
 ) -> Result<Vec<InputRegion>, String> {
@@ -470,7 +489,7 @@ fn cached_ro_regions(
 }
 
 fn externalize_xip_bootblock(
-    config: &BoardConfig,
+    config: &FfsAssembly,
     mut files: Vec<InputFile>,
     container_size: u32,
 ) -> Result<(Vec<InputFile>, Vec<ExternalInputFile>), String> {
@@ -484,7 +503,12 @@ fn externalize_xip_bootblock(
         return Ok((files, Vec::new()));
     }
 
-    let image_base = if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
+    let flash = config
+        .flash
+        .as_ref()
+        .map(crate::plan::FlashTransport::decode)
+        .transpose()?;
+    let image_base = if let Some(FlashLayout::IntelIfd(layout)) = &flash {
         let bios = layout
             .bios_region()
             .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
@@ -529,17 +553,16 @@ fn externalize_xip_bootblock(
 }
 
 fn firmware_image_from_policy(
-    config: &BoardConfig,
+    config: &FfsAssembly,
 ) -> Result<Option<fstart_core::services::FirmwareImage>, String> {
     match config.build.firmware_image {
         FirmwareImagePolicy::None => Ok(None),
         FirmwareImagePolicy::MemoryMapped { cpu_base, size } => Ok(Some(
             fstart_core::services::FirmwareImage::single_window(cpu_base, size),
         )),
-        FirmwareImagePolicy::Auto => Ok(config
-            .memory
-            .firmware_window()
-            .map(|(base, size)| fstart_core::services::FirmwareImage::single_window(base, size))),
+        FirmwareImagePolicy::Auto => {
+            Err("assembly requires an explicit firmware image policy".into())
+        }
     }
 }
 
@@ -557,8 +580,7 @@ fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
 }
 
 struct FullFlashInput<'a> {
-    config: &'a BoardConfig,
-    board_dir: &'a Path,
+    config: &'a FfsAssembly,
     bootblock_elf: &'a Path,
     bootblock_bin: &'a Path,
     ffs_data: &'a [u8],
@@ -570,7 +592,7 @@ struct FullFlashInput<'a> {
 /// Compose a non-x86 XIP image from the linked stage and its separate FFS
 /// window. The two windows are board data: no board-name dispatch is needed.
 fn create_xip_flash_image(
-    config: &BoardConfig,
+    config: &FfsAssembly,
     bootblock_elf: &Path,
     bootblock_bin: &Path,
     ffs_data: &[u8],
@@ -672,7 +694,13 @@ fn create_xip_flash_image(
     }
 
     let mib = image.len() / (1024 * 1024);
-    let out_path = ffs_path.with_file_name(format!("{}-{mib}m.pflash", config.name));
+    let out_path = ffs_path.with_file_name(format!(
+        "{}-{mib}m.pflash",
+        ffs_path
+            .file_stem()
+            .ok_or("missing image name")?
+            .to_string_lossy()
+    ));
     fs::write(&out_path, &image).map_err(|e| {
         format!(
             "failed to write XIP flash image {}: {e}",
@@ -748,7 +776,6 @@ fn policy_window(
 fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placement), String> {
     let FullFlashInput {
         config,
-        board_dir,
         bootblock_elf,
         bootblock_bin,
         ffs_data,
@@ -757,10 +784,13 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
         ffs_path,
     } = input;
 
-    if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
+    let flash = config
+        .flash
+        .as_ref()
+        .map(crate::plan::FlashTransport::decode)
+        .transpose()?;
+    if let Some(FlashLayout::IntelIfd(layout)) = &flash {
         return create_intel_ifd_flash_image(
-            config,
-            board_dir,
             layout,
             bootblock_elf,
             bootblock_bin,
@@ -783,7 +813,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
         );
     }
 
-    let (flash_base, flash_size) = match &config.memory.flash_layout {
+    let (flash_base, flash_size) = match &flash {
         Some(FlashLayout::X86Legacy(layout)) => (layout.base(), layout.size() as usize),
         Some(FlashLayout::IntelIfd(_)) => unreachable!("IFD layout handled above"),
         None => {
@@ -869,7 +899,13 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, 0)?;
 
     let mib = flash_size / (1024 * 1024);
-    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
+    let out_path = ffs_path.with_file_name(format!(
+        "{}-{mib}m.pflash",
+        ffs_path
+            .file_stem()
+            .ok_or("missing image name")?
+            .to_string_lossy()
+    ));
     fs::write(&out_path, &image).map_err(|e| {
         format!(
             "failed to write full flash image {}: {e}",
@@ -890,8 +926,6 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
 
 #[allow(clippy::too_many_arguments)]
 fn create_intel_ifd_flash_image(
-    config: &BoardConfig,
-    _board_dir: &Path,
     layout: &IntelIfdFlashLayout,
     bootblock_elf: &Path,
     bootblock_bin: &Path,
@@ -988,7 +1022,13 @@ fn create_intel_ifd_flash_image(
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
 
     let mib = layout.size() as usize / (1024 * 1024);
-    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
+    let out_path = ffs_path.with_file_name(format!(
+        "{}-{mib}m.pflash",
+        ffs_path
+            .file_stem()
+            .ok_or("missing image name")?
+            .to_string_lossy()
+    ));
     fs::write(&out_path, &image).map_err(|e| {
         format!(
             "failed to write Intel IFD flash image {}: {e}",
@@ -1109,7 +1149,6 @@ pub(crate) fn amd_microcode(
 fn assemble_microcode(
     microcode: &fstart_core::board::MicrocodeConfig,
     workspace_root: &Path,
-    board_dir: &Path,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
     // The FFS builder records `cpu_microcode_blob.bin` in the anchor for
@@ -1121,7 +1160,7 @@ fn assemble_microcode(
             "cpu_microcode_blob.bin",
             concat_files(
                 config.files.iter().map(|f| f.as_str()),
-                board_dir,
+                workspace_root,
                 "Intel microcode",
             )?,
         ),
@@ -1163,6 +1202,7 @@ fn assemble_fit_payload(
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     kernel_override: Option<&str>,
+    firmware_override: Option<&str>,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
     let fit_parse = payload
@@ -1287,7 +1327,7 @@ fn assemble_fit_payload(
         }
     }
 
-    add_firmware_blob(payload, board_dir, None, ro_files)?;
+    add_firmware_blob(payload, board_dir, firmware_override, ro_files)?;
 
     Ok(())
 }
@@ -1479,7 +1519,7 @@ where
 /// or per-board keys.
 fn load_signing_key(
     path: Option<&Path>,
-    config: &BoardConfig,
+    config: &FfsAssembly,
 ) -> Result<(ed25519_dalek::SigningKey, VerificationKey), String> {
     use ed25519_dalek::SigningKey;
     use ed25519_dalek::pkcs8::DecodePrivateKey;

@@ -60,23 +60,6 @@ impl Assembly {
             Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
         }
     }
-    pub fn resolve_workspace_inputs(
-        &mut self,
-        root: &std::path::Path,
-        board: &std::path::Path,
-    ) -> Result<(), String> {
-        match self {
-            Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
-            Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
-                ffs.assembly.resolve_workspace_inputs(root, board)
-            }),
-            Self::Sp3Flash(image) => image.ffs.resolve_workspace_inputs(root, board),
-            Self::Unassembled { .. } => Ok(()),
-        }
-    }
-    pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.ffs()?.config(name)
-    }
 }
 impl From<FfsAssembly> for Assembly {
     fn from(image: FfsAssembly) -> Self {
@@ -108,6 +91,26 @@ pub struct FfsAssembly {
     pub boot_hart_id: u32,
     pub build: fstart_core::BoardBuildPolicy,
 }
+impl FfsAssembly {
+    /// Intel microcode names workspace files, never host-absolute or traversing
+    /// paths. Keep this invariant at both plan validation and assembly entry.
+    pub fn validate_workspace_inputs(&self) -> Result<(), String> {
+        if let Some(fstart_core::board::MicrocodeConfig::Intel(config)) = &self.microcode {
+            for path in &config.files {
+                let path = std::path::Path::new(path.as_str());
+                if path.as_os_str().is_empty()
+                    || !path
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err("microcode must name a workspace-relative file".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Existing authenticated-image wire roles, not firmware-family identities.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum BootstrapRole {
@@ -120,90 +123,6 @@ impl BootstrapRole {
             Self::Postcar => fstart_ffs::root::BootstrapRole::Postcar,
             Self::Mainstage => fstart_ffs::root::BootstrapRole::Mainstage,
         }
-    }
-}
-
-impl FfsAssembly {
-    /// Blob paths emitted by platform Rust are workspace-relative. Convert only
-    /// for the legacy assembler's board-relative file API, without inferring policy.
-    pub fn resolve_workspace_inputs(
-        &mut self,
-        root: &std::path::Path,
-        board: &std::path::Path,
-    ) -> Result<(), String> {
-        use std::path::{Component, Path};
-        let relative = board
-            .strip_prefix(root)
-            .map_err(|_| "board outside workspace")?;
-        let prefix = "../".repeat(relative.components().count());
-        if let Some(fstart_core::board::MicrocodeConfig::Intel(config)) = &mut self.microcode {
-            for path in &mut config.files {
-                if !Path::new(path.as_str())
-                    .components()
-                    .all(|c| matches!(c, Component::Normal(_)))
-                {
-                    return Err("microcode must name a workspace-relative file".into());
-                }
-                *path = format!("{prefix}{path}")
-                    .as_str()
-                    .try_into()
-                    .map_err(|_| "microcode assembler path too long")?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
-        use fstart_core::*;
-        let mut memory = hvec([]);
-        for region in &self.memory {
-            memory
-                .push(region.clone())
-                .map_err(|_| "too many assembly memory regions")?;
-        }
-        let mut data_assets = heapless::Vec::new();
-        for name in &self.data_assets {
-            data_assets
-                .push(
-                    name.as_str()
-                        .try_into()
-                        .map_err(|_| "data asset name too long")?,
-                )
-                .map_err(|_| "too many data assets")?;
-        }
-        let mut file_assets = heapless::Vec::new();
-        for asset in &self.file_assets {
-            file_assets
-                .push(asset.clone())
-                .map_err(|_| "too many file assets")?;
-        }
-        Ok(BoardConfig {
-            name: name.try_into().map_err(|_| "board name too long")?,
-            platform: self.platform,
-            memory: MemoryMap {
-                regions: memory,
-                flash_layout: self
-                    .flash
-                    .as_ref()
-                    .map(crate::plan::FlashTransport::decode)
-                    .transpose()?,
-                car: None,
-            },
-            stages: self.stages.clone(),
-            security: self.security.clone(),
-            payload: self.payload.clone(),
-            microcode: self.microcode.clone(),
-            data_assets,
-            file_assets,
-            soc_image_format: self.soc_image_format,
-            full_flash_image: self.full_flash_image,
-            // Tables, live CAR and SMM runtime settings are not assembler inputs.
-            build: self.build.clone(),
-            acpi: None,
-            smbios: None,
-            smm: None,
-            boot_hart_id: self.boot_hart_id,
-        })
     }
 }
 
@@ -578,6 +497,9 @@ impl BuildPlan {
         if let Assembly::Sp3Flash(image) = &self.assembly {
             image.validate(self)?;
         }
+        if self.assembly.ffs().is_ok() && self.assembly.bootstrap().len() != self.stages.len() - 1 {
+            return Err("every successor stage needs an explicit bootstrap binding".into());
+        }
         for (name, _) in self.assembly.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
@@ -587,11 +509,22 @@ impl BuildPlan {
         Ok(ordered)
     }
 
-    /// The current assembler/CLI only exposes these three payload slots.
+    /// Resolve and bound every assembly input from the platform inventory.
+    pub fn resolve_inputs(
+        &self,
+        board: &std::path::Path,
+        supplied: &BTreeMap<String, std::path::PathBuf>,
+    ) -> Result<BTreeMap<String, std::path::PathBuf>, String> {
+        resolve_inputs(&self.inputs, board, supplied)
+    }
+
     pub fn validate_input_bindings(&self) -> Result<(), String> {
+        if let Ok(image) = self.assembly.ffs() {
+            image.validate_workspace_inputs()?;
+        }
         let mut inputs = BTreeSet::new();
         for input in &self.inputs {
-            if !matches!(input.name.as_str(), "kernel" | "firmware" | "fit")
+            if !matches!(input.name.as_str(), "kernel" | "firmware" | "fit" | "dtb")
                 || !inputs.insert(input.name.as_str())
             {
                 return Err(format!(
@@ -604,6 +537,37 @@ impl BuildPlan {
                 size: input.capacity,
             }
             .end()?;
+            if input
+                .default
+                .as_ref()
+                .is_some_and(|path| path.is_empty() || path.contains('\0'))
+            {
+                return Err(format!("invalid default for {}", input.name));
+            }
+        }
+        if let Ok(image) = self.assembly.ffs()
+            && let Some(payload) = &image.payload
+        {
+            let kernel = matches!(
+                payload.kind,
+                fstart_core::PayloadKind::LinuxBoot | fstart_core::PayloadKind::Coreboot
+            );
+            let required = [
+                ("kernel", kernel),
+                ("firmware", payload.firmware.is_some()),
+                ("fit", payload.kind == fstart_core::PayloadKind::FitImage),
+                (
+                    "dtb",
+                    matches!(payload.fdt, fstart_core::FdtSource::Override(_)),
+                ),
+            ];
+            for (name, needed) in required {
+                if needed && !inputs.contains(name) {
+                    return Err(format!(
+                        "assembly input {name} is not declared by the platform"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -624,6 +588,54 @@ impl BuildPlan {
             .filter(|u| needed.contains(u.name.as_str()))
             .collect())
     }
+}
+
+/// Resolve the platform's declared defaults and enforce its input bounds.
+pub fn resolve_inputs(
+    inputs: &[InputFile],
+    board: &std::path::Path,
+    supplied: &BTreeMap<String, std::path::PathBuf>,
+) -> Result<BTreeMap<String, std::path::PathBuf>, String> {
+    let mut unique = BTreeSet::new();
+    for input in inputs {
+        if !unique.insert(&input.name)
+            || !matches!(input.name.as_str(), "kernel" | "firmware" | "fit" | "dtb")
+            || input.capacity == 0
+        {
+            return Err("invalid assembly input inventory".into());
+        }
+    }
+    for name in supplied.keys() {
+        if !inputs.iter().any(|input| input.name == *name) {
+            return Err(format!("unknown assembly input {name}"));
+        }
+    }
+    inputs
+        .iter()
+        .map(|input| {
+            let path = supplied
+                .get(&input.name)
+                .cloned()
+                .or_else(|| {
+                    input
+                        .default
+                        .as_ref()
+                        .map(|path| board.join(path))
+                        .filter(|path| path.is_file())
+                })
+                .ok_or_else(|| format!("missing input {}", input.name))?;
+            let size = std::fs::metadata(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .len();
+            if size == 0 || size > input.capacity {
+                return Err(format!(
+                    "{} input is empty or exceeds its reservation",
+                    input.name
+                ));
+            }
+            Ok((input.name.clone(), path))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -733,6 +745,92 @@ mod tests {
     }
 
     #[test]
+    fn microcode_paths_cannot_escape_the_workspace() {
+        for (path, valid) in [
+            ("intel-microcode/intel-ucode/06-1c-02", true),
+            ("/tmp/microcode", false),
+            ("../microcode", false),
+            ("intel-microcode/../secret", false),
+        ] {
+            let mut plan = fixture();
+            let super::Assembly::Ffs(image) = &mut plan.assembly else {
+                unreachable!()
+            };
+            image.microcode = Some(fstart_core::board::MicrocodeConfig::Intel(
+                fstart_core::board::IntelMicrocodeConfig {
+                    files: fstart_core::hvec([fstart_core::hstr(path)]),
+                    early: true,
+                    mp: true,
+                },
+            ));
+            assert_eq!(plan.validate_input_bindings().is_ok(), valid, "{path}");
+        }
+    }
+
+    #[test]
+    fn successor_roles_are_required_not_guessed_from_unit_names() {
+        let mut plan = fixture();
+        let mut successor = plan.units[0].clone();
+        successor.name = "arbitrary-successor".into();
+        successor.bindings.clear();
+        plan.stages.push(successor.name.clone());
+        plan.units.push(successor);
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("explicit bootstrap binding")
+        );
+        let super::Assembly::Ffs(image) = &mut plan.assembly else {
+            unreachable!()
+        };
+        image
+            .bootstrap
+            .push(("arbitrary-successor".into(), BootstrapRole::Mainstage));
+        plan.order().unwrap();
+    }
+
+    #[test]
+    fn assembly_inventory_is_complete_and_bounds_default_files() {
+        let mut plan = fixture();
+        let mut payload = fstart_core::x86_linux_payload(0x100000, 0x90000, "", false).unwrap();
+        payload.fdt = fstart_core::FdtSource::Override(fstart_core::hstr("board.dtb"));
+        let super::Assembly::Ffs(image) = &mut plan.assembly else {
+            unreachable!()
+        };
+        image.payload = Some(payload);
+        assert!(
+            plan.validate_input_bindings()
+                .unwrap_err()
+                .contains("kernel")
+        );
+        plan.inputs = vec![InputFile {
+            name: "kernel".into(),
+            default: None,
+            capacity: 4096,
+        }];
+        assert!(plan.validate_input_bindings().unwrap_err().contains("dtb"));
+        plan.inputs.push(InputFile {
+            name: "dtb".into(),
+            default: Some("board.dtb".into()),
+            capacity: 64,
+        });
+        plan.validate_input_bindings().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let board = directory.path();
+        std::fs::write(board.join("board.dtb"), [1; 64]).unwrap();
+        std::fs::write(board.join("kernel"), [2; 128]).unwrap();
+        let supplied = BTreeMap::from([("kernel".into(), board.join("kernel"))]);
+        let resolved = plan.resolve_inputs(board, &supplied).unwrap();
+        assert_eq!(resolved["dtb"], board.join("board.dtb"));
+        std::fs::write(board.join("board.dtb"), [1; 65]).unwrap();
+        assert!(
+            plan.resolve_inputs(board, &supplied)
+                .unwrap_err()
+                .contains("reservation")
+        );
+    }
+
+    #[test]
     fn compiler_only_contract_cannot_launder_a_missing_ffs_descriptor() {
         let mut plan = fixture();
         let UnitOutput::Executable { expectations, .. } = &mut plan.units[0].output else {
@@ -748,7 +846,7 @@ mod tests {
             platform: fstart_core::Platform::Aarch64,
         };
         plan.order().unwrap();
-        assert!(plan.assembly.config("test").is_err());
+        assert!(plan.assembly.ffs().is_err());
         assert!(plan.assembly.bootstrap().is_empty());
     }
 

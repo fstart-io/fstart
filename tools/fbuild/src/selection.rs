@@ -13,7 +13,11 @@ use crate::board_manifest::BoardManifest;
 #[path = "selection_tests.rs"]
 pub(crate) mod tests;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Selection {
+    root: PathBuf,
+    pub package_flags: BTreeMap<String, Vec<String>>,
+    linker_flags: Vec<String>,
     pub directory: PathBuf,
     pub manifest: PathBuf,
     pub cfgs: Vec<String>,
@@ -30,6 +34,7 @@ impl Selection {
         root: &Path,
         board: &BoardManifest,
         unit: &fstart_image_build::build_plan::CompilationUnit,
+        schemas: &crate::compiler_cfg::PackageSchemas,
         directory: PathBuf,
         resolved_json: &str,
         environment: BTreeMap<String, String>,
@@ -67,10 +72,10 @@ impl Selection {
             .cloned()
             .collect();
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        fs::write(directory.join("resolved-build.json"), resolved_json)
+        crate::workspace::write(&directory.join("resolved-build.json"), resolved_json)
             .map_err(|e| e.to_string())?;
-        fs::write(
-            directory.join("compiler-selection.json"),
+        crate::workspace::write(
+            &directory.join("compiler-selection.json"),
             serde_json::to_vec_pretty(
                 &serde_json::json!({"unit": unit, "environment": environment, "removed_environment": removed_environment}),
             )
@@ -83,47 +88,41 @@ impl Selection {
             format!("fstart_payload=\"{}\"", unit.payload),
         ];
         let flags = unit.rustflags.clone();
-        // The stage selection and linker script only concern this workspace's
-        // crates. Passing them as profile rustflags rather than RUSTFLAGS keeps
-        // core, alloc and registry dependencies identical between units, so
-        // every unit shares one Cargo target directory and builds those once.
-        let mut member_flags: Vec<String> = cfgs
+        // Only opt-in libraries receive the axes they consume, with a stable
+        // crate-owned vocabulary. Unrelated first-party libraries get no flags.
+        let mut package_flags = crate::compiler_cfg::flags(unit, schemas)?;
+        let mut board_flags: Vec<String> = cfgs
             .iter()
             .flat_map(|cfg| ["--cfg".into(), cfg.clone()])
             .collect();
-        member_flags.extend(unit.check_cfg_flags()?);
+        board_flags.extend(unit.check_cfg_flags()?);
+        package_flags.insert(board.package.clone(), board_flags);
+        // A linker script affects the final executable only, never its rlibs.
+        let mut linker_flags = Vec::new();
         if let Some(script) = &unit.linker_script {
             let path = directory.join("link.ld");
-            fs::write(&path, script).map_err(|e| e.to_string())?;
-            member_flags.push(format!("-Clink-arg=-T{}", path.display()));
+            crate::workspace::write(&path, script)?;
+            linker_flags.push(format!("-Clink-arg=-T{}", path.display()));
         }
-        fs::write(
-            directory.join("rustflags.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "rustflags": flags,
-                "member_rustflags": member_flags,
-            }))
-            .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::workspace::write(&directory.join("rustflags.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"rustflags": flags, "package_rustflags": package_flags, "linker_rustflags": linker_flags})).map_err(|e| e.to_string())?)?;
         let profile = if release || unit.release_only {
             "release"
         } else {
             "dev"
         };
-        // `"*"` matches every non-member package; build-override covers
-        // build scripts and proc macros, which run on the host.
         let member_rustflags = directory.join("member-rustflags.toml");
-        fs::write(
-            &member_rustflags,
-            format!(
-                "[profile.{profile}]\nrustflags = {}\n\
-                 [profile.{profile}.package.\"*\"]\nrustflags = []\n\
-                 [profile.{profile}.build-override]\nrustflags = []\n",
-                serde_json::to_string(&member_flags).map_err(|e| e.to_string())?
-            ),
-        )
-        .map_err(|e| e.to_string())?;
+        let mut config = format!(
+            "[profile.{profile}]\nrustflags = []\n[profile.{profile}.build-override]\nrustflags = []\n"
+        );
+        for (package, flags) in &package_flags {
+            config.push_str(&format!(
+                "[profile.{profile}.package.{}]\nrustflags = {}\n",
+                serde_json::to_string(package).unwrap(),
+                serde_json::to_string(flags).unwrap()
+            ));
+        }
+        crate::workspace::write(&member_rustflags, config)?;
         let manifest = root
             .join("target/fstart-workspaces")
             .join(&board.board)
@@ -173,7 +172,10 @@ impl Selection {
         if release || unit.release_only {
             args.push("--release".into());
         }
-        Ok(Self {
+        let selection = Self {
+            root: root.to_path_buf(),
+            package_flags,
+            linker_flags,
             directory,
             manifest,
             cfgs,
@@ -181,7 +183,12 @@ impl Selection {
             args,
             producer_environment: environment,
             removed_environment,
-        })
+        };
+        crate::workspace::write(
+            &selection.directory.join("editor-selection.json"),
+            serde_json::to_vec_pretty(&selection).map_err(|e| e.to_string())?,
+        )?;
+        Ok(selection)
     }
 
     /// Cargo target directory holding this unit's compiler outputs.
@@ -201,27 +208,116 @@ impl Selection {
             .collect()
     }
 
-    pub fn check_command(&self) -> Vec<String> {
-        [
-            if self.removed_environment.is_empty() {
-                vec![]
-            } else {
-                std::iter::once("env".into())
-                    .chain(
-                        self.removed_environment
-                            .iter()
-                            .flat_map(|key| ["-u".into(), key.clone()]),
-                    )
-                    .collect()
-            },
-            vec![
-                "cargo".into(),
-                "check".into(),
-                "--message-format=json".into(),
-            ],
-            self.args.clone(),
-        ]
-        .concat()
+    pub fn check_command(&self) -> Result<Vec<String>, String> {
+        Ok(vec![
+            std::env::current_exe()
+                .map_err(|e| format!("find fbuild executable: {e}"))?
+                .display()
+                .to_string(),
+            "editor-check".into(),
+            "--selection".into(),
+            self.directory
+                .join("editor-selection.json")
+                .display()
+                .to_string(),
+        ])
+    }
+
+    pub(crate) fn editor_check(path: &Path) -> Result<(), String> {
+        let selection: Self = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let _guard = crate::workspace::Guard::acquire(&selection.root)?;
+        selection.validate_host_units(&selection.root)?;
+        let status = selection
+            .compiler_command(false, "json")
+            .current_dir(&selection.root)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("editor check failed: {status}"));
+        }
+        Ok(())
+    }
+
+    /// Named package overrides can affect host libraries as well as target
+    /// libraries. Reject cfg consumers used as build dependencies/proc macros
+    /// instead of silently compiling them with target selection values.
+    pub(crate) fn validate_host_units(&self, root: &Path) -> Result<(), String> {
+        let graph = self
+            .command(false)
+            .current_dir(root)
+            .args(["-Zunstable-options", "--unit-graph"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !graph.status.success() {
+            return Err(format!(
+                "compiler unit graph: {}",
+                String::from_utf8_lossy(&graph.stderr)
+            ));
+        }
+        let graph: serde_json::Value =
+            serde_json::from_slice(&graph.stdout).map_err(|e| e.to_string())?;
+        let mut command = Command::new("cargo");
+        command
+            .current_dir(root)
+            .args([
+                "metadata",
+                "--locked",
+                "--format-version=1",
+                "--no-default-features",
+                "--manifest-path",
+            ])
+            .arg(&self.manifest);
+        if let Some(feature) = self.args.windows(2).find(|pair| pair[0] == "--features") {
+            command.arg("--features").arg(&feature[1]);
+        }
+        self.apply_environment(&mut command);
+        let metadata = command.output().map_err(|e| e.to_string())?;
+        if !metadata.status.success() {
+            return Err(format!(
+                "compiler package metadata: {}",
+                String::from_utf8_lossy(&metadata.stderr)
+            ));
+        }
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&metadata.stdout).map_err(|e| e.to_string())?;
+        self.validate_host_graph(&graph, &metadata)
+    }
+
+    pub(crate) fn validate_host_graph(
+        &self,
+        graph: &serde_json::Value,
+        metadata: &serde_json::Value,
+    ) -> Result<(), String> {
+        if graph["version"] != 1 {
+            return Err("unsupported compiler unit graph version".into());
+        }
+        let packages = metadata["packages"]
+            .as_array()
+            .ok_or("missing compiler packages")?;
+        for unit in graph["units"].as_array().ok_or("missing compiler units")? {
+            if unit["is_std"] == true
+                || !unit["platform"].is_null()
+                || unit["target"]["kind"]
+                    .as_array()
+                    .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"))
+            {
+                continue;
+            }
+            let package = packages
+                .iter()
+                .find(|package| package["id"] == unit["pkg_id"])
+                .ok_or("host unit missing package metadata")?;
+            let name = package["name"]
+                .as_str()
+                .ok_or("host unit missing package name")?;
+            if self.package_flags.contains_key(name) {
+                return Err(format!(
+                    "target cfg consumer {name} appears in a host compiler unit; target selectors must not reach host libraries"
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn apply_environment(&self, command: &mut Command) {
@@ -232,11 +328,24 @@ impl Selection {
     }
 
     pub fn command(&self, build: bool) -> Command {
+        self.compiler_command(build, "json-render-diagnostics")
+    }
+
+    fn compiler_command(&self, build: bool, message_format: &str) -> Command {
         let mut command = Command::new("cargo");
         command
-            .arg(if build { "build" } else { "check" })
-            .arg("--message-format=json-render-diagnostics")
+            .arg(if build && !self.linker_flags.is_empty() {
+                "rustc"
+            } else if build {
+                "build"
+            } else {
+                "check"
+            })
+            .arg(format!("--message-format={message_format}"))
             .args(&self.args);
+        if build && !self.linker_flags.is_empty() {
+            command.arg("--").args(&self.linker_flags);
+        }
         self.apply_environment(&mut command);
         command
     }

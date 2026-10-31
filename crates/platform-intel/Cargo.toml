@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[package.metadata.fstart.compiler-cfg]
+fstart_stage_env = ["car", "postcar", "ram", "smm"]
+
 [features]
 default = []
 memory-cache = ["fstart-driver-intel/spi"]

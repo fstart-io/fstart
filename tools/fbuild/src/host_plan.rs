@@ -8,10 +8,13 @@ use std::{fs, path::Path, process::Command};
 const RUNNER: &str = "fstart-plan-runner";
 const HOST_CFG_FLAGS: &str = "--check-cfg=cfg(fstart_stage_env,values(any())) --check-cfg=cfg(fstart_entry,values(any())) --check-cfg=cfg(fstart_payload,values(any()))";
 
-/// Preserve every prepared package entry/pin verbatim. No resolver fallback.
+/// Preserve every prepared package entry and pin. No resolver fallback.
 fn runner_lock(lock: &str, dependencies: &[String]) -> Result<String, String> {
-    let parsed: toml::Value = toml::from_str(lock).map_err(|e| e.to_string())?;
-    let packages = parsed["package"].as_array().ok_or("lock has no packages")?;
+    let mut parsed: toml::Value = toml::from_str(lock).map_err(|e| e.to_string())?;
+    let packages = parsed
+        .get_mut("package")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("lock has no packages")?;
     let mut dependencies = dependencies.to_vec();
     dependencies.sort();
     dependencies.dedup();
@@ -30,14 +33,15 @@ fn runner_lock(lock: &str, dependencies: &[String]) -> Result<String, String> {
     if packages.iter().any(|p| p["name"].as_str() == Some(RUNNER)) {
         return Err("prepared lock already contains the reserved plan runner package".into());
     }
-    let dependencies = dependencies
-        .iter()
-        .map(|s| serde_json::to_string(s).unwrap())
-        .collect::<Vec<_>>()
-        .join(",\n ");
-    Ok(format!(
-        "{lock}\n[[package]]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\ndependencies = [\n {dependencies},\n]\n"
-    ))
+    packages.push(toml::Value::Table(toml::Table::from_iter([
+        ("name".into(), toml::Value::String(RUNNER.into())),
+        ("version".into(), toml::Value::String("0.0.0".into())),
+        (
+            "dependencies".into(),
+            toml::Value::Array(dependencies.into_iter().map(toml::Value::String).collect()),
+        ),
+    ])));
+    toml::to_string(&parsed).map_err(|e| e.to_string())
 }
 
 pub(crate) fn load(
@@ -78,23 +82,29 @@ pub(crate) fn load(
         ),
     ] {
         if fs::read_to_string(&path).ok().as_deref() != Some(contents) {
-            fs::write(path, contents).map_err(|e| e.to_string())?;
+            crate::workspace::write(&path, contents)?;
         }
     }
     let manifest_path = workspace.join("Cargo.toml");
     let workspace_manifest = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-    if !workspace_manifest.contains("members = [") {
-        return Err("selected workspace has no member list".into());
-    }
-    fs::write(
-        &manifest_path,
-        workspace_manifest.replacen("members = [", "members = [\n  \"plan-runner\",", 1),
-    )
-    .map_err(|e| e.to_string())?;
+    let mut workspace_manifest: toml::Table =
+        toml::from_str(&workspace_manifest).map_err(|e| e.to_string())?;
+    workspace_manifest
+        .get_mut("workspace")
+        .and_then(|v| v.get_mut("members"))
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("selected workspace has no member list")?
+        .push(toml::Value::String("plan-runner".into()));
     let lock_path = workspace.join("Cargo.lock");
     let before = fs::read_to_string(&lock_path).map_err(|e| e.to_string())?;
     let locked = runner_lock(&before, &[board_name.clone(), platform_name])?;
-    fs::write(&lock_path, &locked).map_err(|e| e.to_string())?;
+    // Publish the augmented lock first; readers never see a new member with
+    // an old lock. Editor checks additionally take the orchestration guard.
+    crate::workspace::write(&lock_path, &locked)?;
+    crate::workspace::write(
+        &manifest_path,
+        toml::to_string(&workspace_manifest).map_err(|e| e.to_string())?,
+    )?;
     let rustc = Command::new("rustc")
         .current_dir(root)
         .arg("-vV")
@@ -108,7 +118,9 @@ pub(crate) fn load(
         .lines()
         .find_map(|s| s.strip_prefix("host: "))
         .ok_or("rustc did not report host target")?;
-    let target = root.join("target/fstart-host").join(&board_name);
+    // Like firmware, host adapters share one Cargo cache across boards.
+    // The orchestration guard protects the reported runner until it exits.
+    let target = root.join("target/fstart-host/cargo");
     let output = Command::new("cargo")
         .current_dir(root)
         .args(["build", "--locked", "--manifest-path"])
@@ -271,7 +283,12 @@ mod tests {
         let original = "version = 4\n[[package]]\nname = \"board-real\"\nversion = \"0.1.0\"\n[[package]]\nname = \"platform-real\"\nversion = \"0.2.0\"\n";
         let augmented =
             runner_lock(original, &["platform-real".into(), "board-real".into()]).unwrap();
-        assert!(augmented.starts_with(original));
+        let original: toml::Value = toml::from_str(original).unwrap();
+        let augmented_value: toml::Value = toml::from_str(&augmented).unwrap();
+        assert_eq!(
+            &augmented_value["package"].as_array().unwrap()[..2],
+            original["package"].as_array().unwrap()
+        );
         let packages = toml::from_str::<toml::Value>(&augmented).unwrap();
         assert_eq!(
             packages["package"][2]["dependencies"][0].as_str(),
@@ -282,6 +299,6 @@ mod tests {
             Some("platform-real")
         );
         assert!(runner_lock(&augmented, &["board-real".into()]).is_err());
-        assert!(runner_lock(original, &["missing".into()]).is_err());
+        assert!(runner_lock(&toml::to_string(&original).unwrap(), &["missing".into()]).is_err());
     }
 }

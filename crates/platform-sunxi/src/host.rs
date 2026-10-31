@@ -362,6 +362,11 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
                 capacity: 0x10_0000,
             });
         }
+        inputs.push(InputFile {
+            name: "dtb".into(),
+            default: Some(facts.dtb.into()),
+            capacity: 1 << 20,
+        });
     }
     let bootblock_output = UnitOutput::Executable {
         expectations: bootblock.expectations,
@@ -498,7 +503,8 @@ mod tests {
         assert_eq!(payload.kernel_load_addr, Some(0x4200_0000));
         assert_eq!(payload.dtb_addr, Some(0x4300_0000));
         assert!(payload.firmware.is_none());
-        assert_eq!(plan.inputs.len(), 1);
+        assert_eq!(plan.inputs.len(), 2);
+        assert_eq!(plan.inputs[1].name, "dtb");
         assert_eq!(plan.inputs[0].name, "kernel");
         assert_eq!(plan.inputs[0].capacity, 0x100_0000);
     }
@@ -547,8 +553,9 @@ mod tests {
         assert_eq!(firmware.file.as_str(), "bl31-sun50i-a64.bin");
         assert_eq!(payload.kernel_load_addr, Some(0x4a00_0000));
         assert_eq!(payload.dtb_addr, Some(0x4b00_0000));
-        assert_eq!(plan.inputs.len(), 2);
+        assert_eq!(plan.inputs.len(), 3);
         assert_eq!(plan.inputs[1].name, "firmware");
+        assert_eq!(plan.inputs[2].name, "dtb");
         let r1 = BoardFacts {
             soc: SunxiSoc::H3,
             dram_size: 0x1000_0000,

@@ -5,12 +5,16 @@ use crate::{board_manifest::BoardManifest, plan_executor::Resolved};
 use fstart_image_build::plan::BuildSelection;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(tag = "route", rename = "Common")]
 pub struct ResolvedImage {
     pub(crate) build: Resolved,
+    #[serde(skip)]
+    _guard: crate::workspace::Guard,
 }
 impl ResolvedImage {
+    /// Resolve while owning this checkout's orchestration lock. Nested loads
+    /// on this thread share ownership; concurrent threads/processes serialize.
     pub fn load(
         root: &Path,
         board: &BoardManifest,
@@ -37,32 +41,24 @@ impl ResolvedImage {
                 }
             }
         }
+        let build = Resolved::new(board, &source, plan)?;
         Ok(Self {
-            build: Resolved::new(root, board, &source, plan)?,
+            _guard: source.guard,
+            build,
         })
+    }
+    pub(crate) fn into_launch(
+        self,
+        root: &Path,
+        sources: &[(&str, &Path)],
+    ) -> Result<crate::launch::Session, String> {
+        crate::launch::snapshot(root, self._guard, sources)
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         self.build.artifact_dir(root, board, release)
-    }
-    pub fn bootstrap_bindings(
-        &self,
-    ) -> Option<&[(String, fstart_image_build::build_plan::BootstrapRole)]> {
-        Some(self.build.plan.assembly.bootstrap())
-    }
-    pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.build.assembler_config(board)
-    }
-    pub fn validate_inputs(
-        &self,
-        board: &Path,
-        kernel: Option<&str>,
-        firmware: Option<&str>,
-        fit: Option<&str>,
-    ) -> Result<(), String> {
-        self.build.validate_inputs(board, kernel, firmware, fit)
     }
     pub fn compile_selected(
         &self,

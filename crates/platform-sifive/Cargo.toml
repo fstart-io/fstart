@@ -1,0 +1,18 @@
+[package]
+name = "fstart-platform-sifive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+host = ["dep:fstart-core", "dep:fstart-image-build", "dep:serde_json"]
+bundle-fu740 = ["dep:fstart-stage", "fstart-stage/riscv64", "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/fdt"]
+linux = ["fstart-stage?/linux"]
+crabefi = ["fstart-stage?/crabefi"]
+
+[dependencies]
+fstart-core = { workspace = true, optional = true }
+fstart-image-build = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }

@@ -680,10 +680,13 @@ mod tests {
         assert!(matches!(
             plan.assembly()
                 .unwrap()
-                .config("test")
+                .ffs()
                 .unwrap()
-                .memory
-                .flash_layout,
+                .flash
+                .as_ref()
+                .unwrap()
+                .decode()
+                .ok(),
             Some(fstart_core::FlashLayout::X86Legacy(
                 fstart_core::X86LegacyFlashLayout { size: 0x80000 }
             ))

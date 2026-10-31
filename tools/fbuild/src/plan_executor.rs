@@ -18,10 +18,10 @@ mod tests;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Resolved {
     pub plan: BuildPlan,
+    pub(crate) compiler_schemas: crate::compiler_cfg::PackageSchemas,
 }
 impl Resolved {
     pub fn new(
-        root: &Path,
         board: &BoardManifest,
         source: &ProfileSource,
         mut plan: BuildPlan,
@@ -59,11 +59,10 @@ impl Resolved {
         {
             return Err("board identity target/platform conflicts with resolved image".into());
         }
-        plan.assembly.resolve_workspace_inputs(root, &board.dir)?;
-        Ok(Self { plan })
-    }
-    pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.plan.assembly.config(board)
+        Ok(Self {
+            plan,
+            compiler_schemas: crate::compiler_cfg::packages(&source.metadata)?,
+        })
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
@@ -128,8 +127,8 @@ impl Resolved {
             })
             .collect::<Result<Vec<_>, String>>()?;
         if !records.is_empty() {
-            fs::write(
-                directory.join("compiler-inputs.json"),
+            crate::workspace::write(
+                &directory.join("compiler-inputs.json"),
                 serde_json::to_vec_pretty(&records).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
@@ -138,6 +137,7 @@ impl Resolved {
             root,
             board,
             unit,
+            &self.compiler_schemas,
             directory,
             &self.json()?,
             environment,
@@ -259,36 +259,6 @@ impl Resolved {
             .collect::<Result<_, String>>()?;
         Ok(crate::build_board::BuildResult { stages })
     }
-    pub fn validate_inputs(
-        &self,
-        board: &Path,
-        kernel: Option<&str>,
-        firmware: Option<&str>,
-        fit: Option<&str>,
-    ) -> Result<(), String> {
-        self.plan.validate_input_bindings()?;
-        for (name, supplied) in [("kernel", kernel), ("firmware", firmware), ("fit", fit)] {
-            let input = self.plan.inputs.iter().find(|i| i.name == name);
-            let path = supplied.map(PathBuf::from).or_else(|| {
-                input
-                    .and_then(|i| i.default.as_ref())
-                    .map(|p| board.join(p))
-            });
-            match (input, path) {
-                (None, None) => {}
-                (Some(input), Some(path)) => {
-                    let size = fs::metadata(&path)
-                        .map_err(|e| format!("{name} {}: {e}", path.display()))?
-                        .len();
-                    if size == 0 || size > input.capacity {
-                        return Err(format!("{name} input is empty or exceeds its reservation"));
-                    }
-                }
-                _ => return Err(format!("{name} input does not match selected plan")),
-            }
-        }
-        Ok(())
-    }
 }
 
 fn execute(
@@ -298,6 +268,7 @@ fn execute(
     selection: &Selection,
     checking: bool,
 ) -> Result<Artifacts, String> {
+    selection.validate_host_units(root)?;
     eprintln!("[fstart] building {} ({})", unit.name, unit.target);
     let output = selection
         .command(!checking)
@@ -305,8 +276,8 @@ fn execute(
         .stderr(Stdio::inherit())
         .output()
         .map_err(|e| e.to_string())?;
-    fs::write(
-        selection.directory.join(if checking {
+    crate::workspace::write(
+        &selection.directory.join(if checking {
             "cargo-check.jsonl"
         } else {
             "cargo-build.jsonl"

@@ -5,10 +5,21 @@
 
 use fstart_core::mmio32;
 use fstart_driver_uart::sifive::SifiveUartConfig;
-use fstart_platform_qemu::facts::{VirtBoardFacts, VirtMachine};
+use fstart_platform_sifive::{Fu740BoardFacts, Fu740ImageFacts};
 
-impl VirtBoardFacts for crate::Board {
-    const MACHINE: VirtMachine = VirtMachine::Unmatched;
+impl Fu740BoardFacts for crate::Board {
+    const IMAGE: Fu740ImageFacts = Fu740ImageFacts {
+        flash_base: HIFIVE_UNMATCHED.firmware_base,
+        flash_size: HIFIVE_UNMATCHED.firmware_size,
+        dram_base: DRAM_BASE,
+        dram_size: HIFIVE_UNMATCHED.ddr.dram_size,
+        kernel_addr: HIFIVE_UNMATCHED.kernel_addr,
+        runtime_addr: HIFIVE_UNMATCHED.firmware_addr,
+        dtb_addr: HIFIVE_UNMATCHED.dtb_addr,
+        dtb_file: "unmatched.dtb",
+        bootargs: HIFIVE_UNMATCHED.bootargs,
+        boot_hart_id: HIFIVE_UNMATCHED.boot_hart_id as u32,
+    };
 }
 
 const SPI_XIP_BASE: u64 = 0x2000_0000;
