@@ -13,9 +13,12 @@ gm965-ich8 = ["dep:konst", "fstart-driver-intel/gm965", "fstart-driver-intel/ich
 i945-ich7 = ["dep:konst", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
 pineview-ich7 = ["dep:konst", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
 host = ["dep:fstart-image-build", "dep:serde_json"]
+# Per stage binary: the fstart-stage features change code inside shared
+# functions (signature checks, ...), so each stage enables only its own.
+# The union still builds, so one selection type-checks every binary.
 bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest"]
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/lz4"]
-bundle-ramstage = ["stage", "acpi", "mp", "smbios", "fstart-driver-intel/display", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi"]
+bundle-ramstage = ["stage", "fstart-driver-intel/display", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/lz4", "fstart-stage/acpi"]
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 payload-uefi = ["payload-uefi-basic", "fstart-stage/crabefi"]
 payload-uefi-ui = ["payload-uefi", "fstart-stage/crabefi-ui"]
@@ -23,7 +26,11 @@ payload-uefi-basic = ["fstart-stage/crabefi-basic"]
 payload-linux = ["fstart-stage/linux"]
 payload-coreboot = ["fstart-stage/coreboot", "dep:fstart-coreboot"]
 
+# Firmware stages; an Intel ramstage always builds ACPI, SMBIOS and MP.
 stage = [
+  "acpi",
+  "mp",
+  "smbios",
   "dep:fstart-driver-uart",
   "dep:fstart-log",
   "dep:fstart-stage",
@@ -42,8 +49,8 @@ acpi = [
   "dep:ufmt",
   "fstart-driver-intel/acpi",
 ]
-mp = ["stage", "dep:fstart-arch", "dep:fstart-ffs", "fstart-stage/ffs"]
-smbios = ["stage", "dep:fstart-acpi", "dep:fstart-arch"]
+mp = ["dep:fstart-arch", "dep:fstart-ffs", "dep:fstart-stage", "fstart-stage/ffs"]
+smbios = ["dep:fstart-acpi", "dep:fstart-arch"]
 
 [dev-dependencies]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it
