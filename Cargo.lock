@@ -798,6 +798,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-sifive"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-core",
+ "fstart-log",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-driver-spd"
 version = "0.1.0"
 dependencies = [
@@ -1044,6 +1055,22 @@ dependencies = [
  "serde_json",
  "ufmt",
  "zerocopy",
+]
+
+[[package]]
+name = "fstart-platform-sifive"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-sifive",
+ "fstart-driver-uart",
+ "fstart-image-build",
+ "fstart-log",
+ "fstart-payload",
+ "fstart-stage",
+ "serde_json",
+ "ufmt",
 ]
 
 [[package]]

@@ -13,7 +13,7 @@
 ///
 /// Written to the controller register block at 0x100B_0000.
 /// Index 0 = HIFIVE_UNMATCHED_DENALI_CTL_0 (contains START bit and DRAM_CLASS).
-pub const HIFIVE_UNMATCHED_DENALI_CTL: [u32; 265] = [
+pub(crate) const HIFIVE_UNMATCHED_DENALI_CTL: [u32; 265] = [
     0x00000a00, // CTL_000
     0x00000000, // CTL_001
     0x00000000, // CTL_002
@@ -287,7 +287,7 @@ pub const HIFIVE_UNMATCHED_DENALI_CTL: [u32; 265] = [
 /// CRITICAL: registers 1152..1214 must be written BEFORE 0..1151.
 /// The upper block contains global PHY reset/config that affects
 /// how the lower per-slice registers are interpreted.
-pub const HIFIVE_UNMATCHED_DENALI_PHY: [u32; 1215] = [
+pub(crate) const HIFIVE_UNMATCHED_DENALI_PHY: [u32; 1215] = [
     0x01375642, // PHY_0000
     0x0004c008, // PHY_0001
     0x000000da, // PHY_0002

@@ -1,0 +1,14 @@
+[package]
+name = "fstart-driver-sifive"
+description = "SiFive SoC drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+embedded-hal = { workspace = true }
+fstart-core = { workspace = true }
+fstart-log = { workspace = true }
+tock-registers = { workspace = true }
+ufmt = { workspace = true }

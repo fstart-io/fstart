@@ -1,15 +1,16 @@
 //! FU740 power-reset-clock-interrupt controller.
 //!
 //! The PLL programming sequence follows the proven HiFive Unmatched setup.
+//! The PRCI brings up the core, DDR and peripheral clocks; a board with
+//! Ethernet resets its PHY, then enables the GEMGXL clock.
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use fstart_core::services::DeviceError;
 
-use crate::config::Fu740PrciConfig;
+use crate::spin_delay_us;
 
 const FU740_PRCI_BASE: u64 = 0x1000_0000;
-const FU740_GPIO_BASE: u64 = 0x1006_0000;
 
 const CORE_PLLCFG: usize = 0x04;
 const DDR_PLLCFG: usize = 0x0c;
@@ -24,9 +25,6 @@ const HFPCLK_PLLCFG: usize = 0x50;
 const HFPCLK_PLLOUTDIV: usize = 0x54;
 const HFPCLKPLLSEL: usize = 0x58;
 const PRCI_PLLS: usize = 0xe0;
-const GPIO_OUTPUT_EN: usize = 0x08;
-const GPIO_OUTPUT_VAL: usize = 0x0c;
-const GEMGXL_RST_PIN: u32 = 12;
 
 const PLLCFG_DIVR_SHIFT: u32 = 0;
 const PLLCFG_DIVF_SHIFT: u32 = 6;
@@ -142,20 +140,6 @@ impl Fu740Prci {
     }
 
     #[inline(always)]
-    fn gpio_read(&self, offset: usize) -> u32 {
-        // SAFETY: FU740 GPIO registers have a fixed, aligned MMIO address.
-        unsafe { fstart_core::mmio::read32((FU740_GPIO_BASE as usize + offset) as *const u32) }
-    }
-
-    #[inline(always)]
-    fn gpio_write(&self, offset: usize, value: u32) {
-        // SAFETY: FU740 GPIO registers have a fixed, aligned MMIO address.
-        unsafe {
-            fstart_core::mmio::write32((FU740_GPIO_BASE as usize + offset) as *mut u32, value)
-        }
-    }
-
-    #[inline(always)]
     fn clear_bits(&self, offset: usize, bits: u32) {
         self.write(offset, self.read(offset) & !bits);
     }
@@ -229,34 +213,14 @@ impl Fu740Prci {
         Ok(())
     }
 
-    /// Step 5: Ethernet PHY reset via GPIO + GEMGXL PLL.
-    fn init_ethernet(&self) -> Result<(), DeviceError> {
-        // GPIO 12 = GEMGXL_RST: output, high -> low -> high (reset pulse).
-        let pin_mask = 1u32 << GEMGXL_RST_PIN;
-
-        // Enable GPIO 12 as output.
-        self.gpio_write(GPIO_OUTPUT_EN, self.gpio_read(GPIO_OUTPUT_EN) | pin_mask);
-
-        // Drive high.
-        self.gpio_write(GPIO_OUTPUT_VAL, self.gpio_read(GPIO_OUTPUT_VAL) | pin_mask);
-        spin_delay_us(1);
-
-        // Reset pulse: drive low, wait, drive high.
-        self.gpio_write(GPIO_OUTPUT_VAL, self.gpio_read(GPIO_OUTPUT_VAL) & !pin_mask);
-        spin_delay_us(1);
-        self.gpio_write(GPIO_OUTPUT_VAL, self.gpio_read(GPIO_OUTPUT_VAL) | pin_mask);
-
-        // Wait 15 ms for PHY to enter unmanaged mode.
-        spin_delay_us(15_000);
-
-        // Configure GEMGXL PLL (125 MHz).
+    /// Clock the Ethernet MAC (GEMGXL PLL, 125 MHz) and release its reset.
+    /// The board resets its PHY first.
+    pub fn enable_ethernet(&self) -> Result<(), DeviceError> {
         if self.read(PRCI_PLLS) & PLLS_GEMGXLPLL != 0 {
             self.clear_bits(GEMGXL_PLLOUTDIV, GEMGXL_PLLOUTDIV_EN);
             self.configure_pll(GEMGXL_PLLCFG, GEMGXLPLL)?;
             self.set_bits(GEMGXL_PLLOUTDIV, GEMGXL_PLLOUTDIV_EN);
         }
-
-        // Deassert Ethernet reset.
         self.reset_deassert(RST_GEMGXL);
         Ok(())
     }
@@ -278,14 +242,28 @@ impl Fu740Prci {
         } else if self.read(PRCI_PLLS) & PLLS_CLTXPLL != 0 {
             self.init_cltx()?;
         }
-        self.init_ethernet()?;
         compiler_fence(Ordering::SeqCst);
         Ok(())
     }
 }
 
-fn spin_delay_us(us: u32) {
-    for _ in 0..u64::from(us) * 500 {
-        core::hint::spin_loop();
+/// Static FU740 PRCI policy.
+#[derive(Debug, Clone, Copy)]
+pub struct Fu740PrciConfig {
+    pub reference_clock_hz: u32,
+}
+
+impl Fu740PrciConfig {
+    #[must_use]
+    pub const fn new(reference_clock_hz: u32) -> Self {
+        Self { reference_clock_hz }
+    }
+
+    #[must_use]
+    pub const fn build(self) -> Self {
+        if self.reference_clock_hz == 0 {
+            panic!("FU740 reference clock must not be zero");
+        }
+        self
     }
 }
