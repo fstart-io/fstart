@@ -9,6 +9,7 @@ use fstart_acpi::ivrs::IommuRegisters;
 use fstart_driver_amd::sp3::nbio::iommu::IommuInfo;
 
 use super::*;
+use fstart_driver_amd::ccx::power::{CstateInfo, Pstate};
 
 const TABLE_ADDR: u64 = 0x7F00_0000;
 
@@ -171,6 +172,11 @@ fn inputs<'a>(
                 cc6: true,
             }),
             threads_per_core: 2,
+            c2_latency_us: if generation == Generation::Naples {
+                400
+            } else {
+                18
+            },
         }),
         acpi_smi: Some(AcpiSmiConfig {
             smi_cmd: 0xB2,
@@ -179,7 +185,11 @@ fn inputs<'a>(
         }),
         einj: false,
         fch: fch(),
-        bmc_sx_notify: Some(0xC0),
+        bmc_sx_notify: Some(fstart_driver_ipmi::SleepNotify {
+            kcs_port: 0xca2,
+            kcs_spacing: 1,
+            sw_smi_base: 0xC0,
+        }),
         tpm: Some(fstart_acpi::devices::tpm::TpmTisAcpi {
             family: fstart_acpi::devices::tpm::TpmFamily::Tpm20,
             server: true,

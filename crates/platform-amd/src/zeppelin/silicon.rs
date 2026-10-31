@@ -40,6 +40,8 @@ pub struct State {
     pub ioapics: [u32; MAX_DIES],
     pub psp_bars: [u32; MAX_DIES],
     pub cac_weights: Option<CacWeights>,
+    pub name: ccx::brand::Name,
+    pub memory_encryption: bool,
 }
 impl State {
     /// What every CPU's CCX init needs.
@@ -48,6 +50,8 @@ impl State {
             revision: self.identity.revision,
             psp_bars: self.psp_bars,
             cac_weights: self.cac_weights,
+            name: Some(self.name),
+            memory_encryption: self.memory_encryption,
         }
     }
 }
@@ -155,7 +159,7 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         }
     }
     ccx::zeppelin::bsp_init(msr, revision, Thread::current());
-    smu::print_name(&dies[0], clock);
+    let name = smu::name(&dies[0], clock);
     for die in dies {
         iohc::dram_map(die, top_mem as u32, top_mem2);
     }
@@ -246,6 +250,8 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         ioapics,
         psp_bars,
         cac_weights,
+        name,
+        memory_encryption: config.ccx.memory_encryption,
     })
 }
 

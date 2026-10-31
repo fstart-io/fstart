@@ -9,6 +9,7 @@ mod bmc;
 mod dxio;
 mod gpio;
 mod i2c;
+mod riser;
 #[cfg(fstart_stage_env = "smm")]
 pub mod smm;
 mod variant;
@@ -29,7 +30,7 @@ use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
 use fstart_platform_amd::{
     noncar::BoardCtx,
-    zeppelin::{Config, DxioConfig, FchConfig},
+    zeppelin::{CcxConfig, Config, DxioConfig, FchConfig},
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -40,6 +41,12 @@ pub struct Board;
 
 /// The BMC's diagnostic interrupt button.
 const NMI_BUTTON_GEVENT: u8 = 11;
+/// SW SMIs 0xC0 + Sx report the sleep state to the BMC (AMI BmcAcpi).
+const BMC_SLEEP_NOTIFY: fstart_driver_ipmi::SleepNotify = fstart_driver_ipmi::SleepNotify {
+    kcs_port: fstart_driver_ipmi::kcs::DEFAULT_PORT,
+    kcs_spacing: fstart_driver_ipmi::kcs::DEFAULT_SPACING as u8,
+    sw_smi_base: 0xc0,
+};
 
 const COM1: u16 = 0x3f8;
 const COM1_IRQ: u8 = 4;
@@ -114,9 +121,32 @@ fn ast_vga_set_ssid(pci: &impl ConfigRegionAccess) {
     }
 }
 
+/// The PCIE_1 bifurcation the riser asks for (the vendor Setup default
+/// "Auto"). The modes are the F02 (EC0) decoding; the EC1's F09 template
+/// splits its slot on 3.1 and 3.3 instead and its mode table isn't decoded,
+/// so the EC1 only reports the riser.
+fn riser_slot(config: &mut Config, id: Option<u8>) {
+    let mode = id.and_then(riser::bifurcation);
+    fstart_log::info!(
+        "PCIE_1 riser {}: {}",
+        id.map_or(0xff, u32::from),
+        match mode {
+            Some(riser::Bifurcation::X4x4x4x4) => "x4x4x4x4",
+            Some(riser::Bifurcation::X4x4) => "x4x4",
+            Some(riser::Bifurcation::X8x4x4) => "x8x4x4",
+            Some(riser::Bifurcation::X8x8) => "x8x8",
+            None => "the default",
+        }
+    );
+    if let Some(mode) = mode.filter(|_| cfg!(feature = "ec0")) {
+        config.dxio.descriptors[0] = dxio::with_riser(mode);
+    }
+}
+
 const CONFIG: Config = Config {
     // Gigabyte
     subsystem_id: 0x1000_1458,
+    ccx: CcxConfig::DEFAULT,
     fch: FchConfig {
         irq_routes: IRQ_ROUTES,
         smi_gevents: 1 << NMI_BUTTON_GEVENT,
@@ -131,7 +161,7 @@ impl fstart_platform_amd::noncar::Board for Board {
     type Soc = Zeppelin;
     const CONFIG: &'static Config = &CONFIG;
 
-    fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>, _: &mut Config) {
+    fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>, config: &mut Config) {
         let gpio = ctx.gpio();
         if i2c::PADS
             .iter()
@@ -140,14 +170,25 @@ impl fstart_platform_amd::noncar::Board for Board {
             fstart_log::error!("I2C3 pads not routed");
         }
         // SAFETY: nothing else uses I2C3.
-        match unsafe { fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock) }
-        {
+        let eeprom_id = match unsafe {
+            fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock)
+        } {
             Ok(mut bus) => {
                 i2c::program_vrs(&mut bus, ctx.clock, variant::VR_IMAGES);
                 i2c::program_redrivers(&mut bus, variant::REDRIVERS);
+                riser::eeprom_id(&mut bus)
             }
-            Err(_) => fstart_log::error!("I2C3 setup failed, VRs not programmed"),
-        }
+            Err(_) => {
+                fstart_log::error!("I2C3 setup failed, VRs not programmed");
+                None
+            }
+        };
+        // The straps without the EEPROM, as without I2C.
+        let id = eeprom_id.or_else(|| {
+            let levels = riser::STRAPS.map(|pin| gpio.get(pin) == Ok(true));
+            riser::strap_id(levels)
+        });
+        riser_slot(config, id);
         clear_pm1(&ctx.fch());
     }
 
@@ -217,6 +258,18 @@ impl fstart_platform_amd::noncar::Board for Board {
 
     fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
         acpi::tables()
+    }
+
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity {
+            sys_version: variant::NAME,
+            bb_version: variant::NAME,
+            // A rack server (G431-MM0).
+            chassis_type: 0x17,
+            chassis_manufacturer: "Gigabyte",
+            processor_sockets: &["SP4r2"],
+            ..fstart_acpi::smbios::SmbiosIdentity::new("Gigabyte", "MJ11")
+        }
     }
 
     fn console() -> Ns16550Config {

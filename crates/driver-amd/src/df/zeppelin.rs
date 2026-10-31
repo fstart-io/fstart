@@ -166,6 +166,63 @@ fn scrub_dram_size(df: &Df<impl ConfigRegionAccess>, die: u8) -> u64 {
     size
 }
 
+/// DRAM `[base, end)` and the die it belongs to, for SRAT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DieMemory {
+    pub base: u64,
+    pub end: u64,
+    pub die: u8,
+}
+
+/// The DRAM of every die as the vendor AmdFabricZpDxe reports it for SRAT
+/// (DF_ZP §3.13, ACPI_ZP §3.4): the valid pairs of the system DRAM map
+/// (IOMS instance, 16 pairs) of socket 0 die 0, split into
+/// [0, 640 KiB), from 1 MiB up to the DRAM hole and the rest from 4 GiB.
+/// `None` if a pair interleaves dies (they share one domain then, and
+/// there is no NUMA to describe).
+pub fn die_memory(df0: &Df<impl ConfigRegionAccess>) -> Option<heapless::Vec<DieMemory, 48>> {
+    let hole = df0.instance(regs::DRAM_HOLE, v2::IOMS_INSTANCE).extract();
+    let hole = hole
+        .is_set(DRAM_HOLE::VALID)
+        .then(|| u64::from(hole.read(DRAM_HOLE::BASE)) << 24);
+    let mut ranges = heapless::Vec::new();
+    for i in 0..v2::DRAM_RULES {
+        let base = df0.instance(v2::dram_base(i), v2::IOMS_INSTANCE).extract();
+        let limit = df0.instance(v2::dram_limit(i), v2::IOMS_INSTANCE).extract();
+        if !base.is_set(DRAM_BASE::VALID) {
+            continue;
+        }
+        if limit.read(DRAM_LIMIT::ILV_DIE) != 0 || limit.read(DRAM_LIMIT::ILV_SOCK) != 0 {
+            return None;
+        }
+        let die = limit.read(DRAM_LIMIT::DST_DIE) as u8;
+        let start = u64::from(base.read(DRAM_BASE::BASE)) << 28;
+        let end = (u64::from(limit.read(DRAM_LIMIT::LIMIT)) + 1) << 28;
+        let mut push = |base: u64, end: u64| {
+            if end > base {
+                ranges.push(DieMemory { base, end, die }).ok()
+            } else {
+                Some(())
+            }
+        };
+        let mut from = start;
+        if from == 0 {
+            push(0, 0xa_0000)?;
+            from = 1 << 20;
+        }
+        match hole.filter(|&hole| base.is_set(DRAM_BASE::HOLE_EN) && from < hole && end > 4 * GIB) {
+            // The limit is a system address: the DRAM the hole covers is
+            // remapped above 4 GiB, within it.
+            Some(hole) => {
+                push(from, hole)?;
+                push(4 * GIB, end)?;
+            }
+            None => push(from, end)?,
+        }
+    }
+    Some(ranges)
+}
+
 /// The scrub rate for one pass over `size` bytes in `hours`: the largest table
 /// index whose threshold (inferred: ns per 64-byte line) doesn't exceed
 /// hours * 3.96e12 / (size / 64).
@@ -269,6 +326,46 @@ pub fn disable_ext_cfg(df: &Df<impl ConfigRegionAccess>) {
 mod tests {
     extern crate std;
     use super::*;
+
+    #[test]
+    fn die_memory_splits_like_the_vendor_srat() {
+        use crate::df::testing::DfSpace;
+        let space = DfSpace::default();
+        let set = |offset: u16, value: u32| {
+            space
+                .regs
+                .borrow_mut()
+                .insert((0, offset, Some(v2::IOMS_INSTANCE)), value);
+        };
+        // Die 0: 0-16 GiB with the hole at 3 GiB (system addresses to 17
+        // GiB); die 1: 17-33 GiB.
+        set(0x104, 0xc000_0001);
+        set(0x110, 0x0000_0003);
+        set(0x114, (17 * 4 - 1) << 12);
+        set(0x118, (17 * 4) << 12 | 1);
+        set(0x11c, (33 * 4 - 1) << 12 | 1 << 5);
+        let ranges = die_memory(&space.df()).unwrap();
+        let ranges: std::vec::Vec<_> = ranges.iter().map(|r| (r.base, r.end, r.die)).collect();
+        assert_eq!(
+            ranges,
+            [
+                (0, 0xa_0000, 0),
+                (1 << 20, 3 * GIB, 0),
+                (4 * GIB, 17 * GIB, 0),
+                (17 * GIB, 33 * GIB, 1),
+            ]
+        );
+        // The scrubber's map (instance 5) doesn't count.
+        space
+            .regs
+            .borrow_mut()
+            .insert((0, 0x120, Some(INST_CS_DRAM_MAP)), 1);
+        assert_eq!(die_memory(&space.df()).unwrap().len(), 4);
+        // A later pair interleaving dies: one domain.
+        set(0x170, (40 * 4) << 12 | 1);
+        set(0x174, (41 * 4 - 1) << 12 | 1 << 10);
+        assert_eq!(die_memory(&space.df()), None);
+    }
 
     #[test]
     fn scrub_rate_for_16g_in_a_day() {

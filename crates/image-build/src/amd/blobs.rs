@@ -3,8 +3,8 @@
 //!
 //! - the SoC's ([`SocBlobs`], `[package.metadata.fstart.amd.<soc>]` of the
 //!   platform crate): the PSP partition's geometry and settings, and which
-//!   file of a blob directory each PSP and BIOS directory entry, microcode
-//!   patch and video BIOS is;
+//!   file of a blob directory each PSP and BIOS directory entry (in which
+//!   levels of a two-level partition), microcode patch and video BIOS is;
 //! - the board's ([`BoardBlobs`], `[package.metadata.fstart.amd]` of the
 //!   board crate): its SoC, its APCB instances and whether its PSP needs
 //!   fstart's PSP application.
@@ -15,7 +15,8 @@
 //! what they are, wherever the image keeps them.
 use super::{
     Key,
-    assembly::{ApcbFiles, FileBlob, PicassoFiles},
+    assembly::{ApcbFiles, FileBlob, Fixed, FixedEntry, PspFiles},
+    levels::Level,
 };
 use fstart_amdfw_format::{Flash, Profile, directory::bios, efs::BiosDirectorySlot, microcode};
 use serde::{Deserialize, Serialize};
@@ -28,17 +29,28 @@ use std::path::Path;
 pub struct SocBlobs {
     /// The EFS field the SoC's PSP takes the BIOS directory from.
     pub bios_directory: BiosDirectorySlot,
+    /// `$PSP` + `$PL2` and `$BHD` + `$BL2` instead of a single level.
+    #[serde(default = "one")]
+    pub levels: u8,
     /// Flash offset of the EFS, the start of the PSP partition.
     pub efs_offset: u32,
     /// End of the PSP partition.
     pub partition_end: u32,
-    /// The PSP's SPI read mode and speed (EFS).
-    pub spi_read_mode: u8,
-    pub spi_speed: u8,
+    /// The PSP's SPI read mode and speed (EFS), erased if absent.
+    #[serde(default)]
+    pub spi_read_mode: Option<u8>,
+    #[serde(default)]
+    pub spi_speed: Option<u8>,
     #[serde(default)]
     pub micron: bool,
-    /// PSP directory entry 0x0b.
-    pub soft_fuse: u64,
+    /// PSP directory entry 0x0b of a single-level partition; a two-level
+    /// one lists it with its `value`.
+    #[serde(default)]
+    pub soft_fuse: Option<u64>,
+    /// The APOB's DRAM destination (BIOS entry 0x61), for platforms that
+    /// read it from the directory rather than fixing it.
+    #[serde(default)]
+    pub apob_destination: Option<u64>,
     pub psp: Vec<DirectoryFile>,
     pub bios: Vec<DirectoryFile>,
     /// Patches the FFS carries for MP init.
@@ -49,8 +61,13 @@ pub struct SocBlobs {
     pub vbios: Vec<VbiosFile>,
 }
 
-/// The file of a PSP or BIOS directory entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+const fn one() -> u8 {
+    1
+}
+
+/// A PSP or BIOS directory entry: its file, or the erased flash or value it
+/// describes instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct DirectoryFile {
     #[serde(rename = "type")]
@@ -59,7 +76,39 @@ pub struct DirectoryFile {
     pub subprogram: u8,
     #[serde(default)]
     pub instance: u8,
-    pub file: String,
+    /// The level of a two-level partition, 1 or 2; both if absent.
+    #[serde(default)]
+    pub level: Option<u8>,
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Bytes of erased flash the firmware writes (NV data).
+    #[serde(default)]
+    pub erased: Option<u32>,
+    /// The entry's value (the PSP soft fuse chain).
+    #[serde(default)]
+    pub value: Option<u64>,
+}
+impl DirectoryFile {
+    pub fn key(&self) -> Key {
+        Key::new(self.kind, self.subprogram, self.instance)
+    }
+    /// What the entry describes: exactly one of a file, erased flash or a
+    /// value.
+    fn content(&self) -> Result<Content<'_>, String> {
+        match (&self.file, self.erased, self.value) {
+            (Some(file), None, None) => Ok(Content::File(file)),
+            (None, Some(size), None) => Ok(Content::Fixed(Fixed::Erased(size))),
+            (None, None, Some(value)) => Ok(Content::Fixed(Fixed::Value(value))),
+            _ => Err(format!(
+                "AMD entry {:?} needs exactly one of file, erased or value",
+                self.key()
+            )),
+        }
+    }
+}
+enum Content<'a> {
+    File(&'a str),
+    Fixed(Fixed),
 }
 
 /// A microcode patch, by the CPU equivalence ID it is for.
@@ -93,12 +142,69 @@ impl VbiosFile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct BoardBlobs {
-    /// The SoC table of the platform crate.
+    /// The SoC table of the platform crate. A board of several SoCs (the
+    /// SP3 generations) has one table per SoC, named after it, instead.
+    #[serde(default)]
     pub soc: String,
     /// Pack fstart's PSP application ([`super::psp_app`]).
     #[serde(default)]
     pub psp_app: bool,
     pub apcb: BoardApcb,
+    /// The APOB's DRAM destination (BIOS entry 0x61), if the board's
+    /// firmware moves it from the platform's.
+    #[serde(default)]
+    pub apob_destination: Option<u64>,
+}
+
+/// The board tables of `table` (`[package.metadata.fstart.amd]`): itself
+/// with its `soc`, or one per SoC, named after it.
+pub fn board_tables(table: &serde_json::Value) -> Result<Vec<BoardBlobs>, String> {
+    if table.get("soc").is_some() {
+        let board: BoardBlobs = serde_json::from_value(table.clone())
+            .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
+        return Ok(vec![board]);
+    }
+    let tables = table
+        .as_object()
+        .filter(|tables| !tables.is_empty())
+        .ok_or("the board has no [package.metadata.fstart.amd] table")?;
+    tables
+        .iter()
+        .map(|(soc, table)| {
+            let mut board: BoardBlobs = serde_json::from_value(table.clone())
+                .map_err(|e| format!("board [package.metadata.fstart.amd.{soc}]: {e}"))?;
+            if !board.soc.is_empty() && board.soc != *soc {
+                return Err(format!("board table {soc} names SoC {}", board.soc));
+            }
+            board.soc = soc.clone();
+            Ok(board)
+        })
+        .collect()
+}
+
+/// The 16 MiB image in `rom` (a flash of several, or the 16 MiB of a
+/// smaller flash's mapping) whose EFS the SoC's boot ROM takes
+/// ([`Flash::efs_checked`]: the generation word's required-clear bits) with
+/// the SoC's BIOS directory. In a flash of several generations a later
+/// generation's EFS can satisfy an earlier one's boot ROM too: the half
+/// with exactly the SoC's generation word wins.
+pub fn donor_image<'a>(rom: &'a [u8], soc: &SocBlobs) -> Option<&'a [u8]> {
+    let profile = Profile::for_slot(soc.bios_directory);
+    let candidates = rom
+        .chunks(fstart_amdfw_format::HALF_SIZE)
+        .filter_map(|image| {
+            let (_, efs) = Flash::new(image).with_profile(profile).efs_checked().ok()?;
+            efs.bios_directory(soc.bios_directory)?;
+            Some((image, efs.generation.get() == !profile.generation_mask))
+        });
+    let mut first = None;
+    for (image, exact) in candidates {
+        if exact {
+            return Some(image);
+        }
+        first.get_or_insert(image);
+    }
+    first
 }
 
 /// Where a board's APCB instances come from.
@@ -107,8 +213,11 @@ pub struct BoardBlobs {
 pub enum BoardApcb {
     /// `instances` files, one per RAM ID, as the board's vendor ROM has
     /// them: `<board>/apcb/<n>.bin` in the blob directory ([`extract`]
-    /// writes them).
+    /// writes them), each the APCB (0x60) and its backup (0x68).
     Files { instances: u8 },
+    /// BIOS directory entries with the board's files, for the APCB sets
+    /// of the server SoCs (several types, subprograms and levels).
+    Entries { entries: Vec<DirectoryFile> },
     /// Generated from a template ([`ApcbFiles`]), paths in the blob
     /// directory.
     Template(ApcbFiles),
@@ -122,7 +231,7 @@ pub fn apcb_file(board: &str, instance: u8) -> String {
 /// What an image is packed from: the PSP partition's files (absolute
 /// paths), the microcode files and the data assets of the FFS.
 pub struct Resolved {
-    pub files: PicassoFiles,
+    pub files: PspFiles,
     pub microcode: Vec<String>,
 }
 
@@ -143,18 +252,38 @@ pub fn resolve(
         }
         Ok(blobs.join(file).to_string_lossy().into_owned())
     };
-    let directory = |files: &[DirectoryFile]| {
-        files
-            .iter()
-            .map(|f| {
-                Ok(FileBlob {
-                    key: Key::new(f.kind, f.subprogram, f.instance),
-                    path: path(&f.file)?,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()
+    if !(1..=2).contains(&soc.levels) {
+        return Err(format!("{} directory levels", soc.levels));
+    }
+    let mut fixed = Vec::new();
+    let mut directory = |files: &[DirectoryFile], psp: bool| -> Result<Vec<FileBlob>, String> {
+        let mut out = Vec::new();
+        for f in files {
+            let level = Level::from_table(f.level)?;
+            if soc.levels == 1 && f.level.is_some() {
+                return Err(format!(
+                    "AMD entry {:?} has a level in a single-level partition",
+                    f.key()
+                ));
+            }
+            match f.content()? {
+                Content::File(file) => out.push(FileBlob {
+                    key: f.key(),
+                    path: path(file)?,
+                    level,
+                }),
+                Content::Fixed(content) => fixed.push(FixedEntry {
+                    psp,
+                    key: f.key(),
+                    level,
+                    content,
+                }),
+            }
+        }
+        Ok(out)
     };
-    let mut bios = directory(&soc.bios)?;
+    let psp = directory(&soc.psp, true)?;
+    let mut bios = directory(&soc.bios, false)?;
     let apcb = match &board.apcb {
         BoardApcb::Files { instances } => {
             for instance in 0..*instances {
@@ -163,9 +292,14 @@ pub fn resolve(
                     bios.push(FileBlob {
                         key: Key::new(kind, 0, instance),
                         path: file.clone(),
+                        level: Level::Both,
                     });
                 }
             }
+            None
+        }
+        BoardApcb::Entries { entries } => {
+            bios.extend(directory(entries, false)?);
             None
         }
         BoardApcb::Template(apcb) => Some(ApcbFiles {
@@ -178,6 +312,9 @@ pub fn resolve(
             ..apcb.clone()
         }),
     };
+    if !fixed.is_empty() && soc.levels == 1 {
+        return Err("erased and value entries need a two-level partition".into());
+    }
     let assets = soc
         .vbios
         .iter()
@@ -196,7 +333,7 @@ pub fn resolve(
         })
         .collect::<Result<_, String>>()?;
     Ok(Resolved {
-        files: PicassoFiles {
+        files: PspFiles {
             flash_size,
             efs_offset: soc.efs_offset,
             partition_end: soc.partition_end,
@@ -204,8 +341,10 @@ pub fn resolve(
             spi_speed: soc.spi_speed,
             micron: soc.micron,
             soft_fuse: soc.soft_fuse,
-            psp: directory(&soc.psp)?,
+            two_level: soc.levels == 2,
+            psp,
             bios,
+            fixed,
             apob_nv: None,
             psp_nv: None,
             apcb,
@@ -248,41 +387,52 @@ pub fn extract(
         .map_err(|e| format!("vendor BIOS directory: {e:?}"))?;
     let mut found = Vec::new();
     let mut missing = Vec::new();
+    // Entries may share a file only if the vendor image has the same
+    // bytes for them.
+    let mut conflict = None;
     let mut take = |file: &str, origin: Option<(String, &[u8])>| match origin {
-        Some((origin, bytes)) => found.push(Extracted {
-            file: file.into(),
-            bytes: bytes.to_vec(),
-            origin,
-        }),
+        Some((origin, bytes)) => match found.iter().find(|f: &&Extracted| f.file == file) {
+            Some(prior) if prior.bytes == bytes => {}
+            Some(prior) => {
+                conflict.get_or_insert(format!(
+                    "{file}: the vendor's {} and {origin} differ",
+                    prior.origin
+                ));
+            }
+            None => found.push(Extracted {
+                file: file.into(),
+                bytes: bytes.to_vec(),
+                origin,
+            }),
+        },
         None => missing.push(file.into()),
     };
     for f in &soc.psp {
-        let entry = psp
-            .find(f.kind, Some(f.instance), Some(f.subprogram))
-            .and_then(|(dir, e)| Some((dir.offset, dir.data(e).ok()?)));
-        take(
-            &f.file,
-            entry.map(|(dir, bytes)| (format!("PSP directory {dir:#x}"), bytes)),
-        );
+        let Content::File(file) = f.content()? else {
+            continue;
+        };
+        take(file, level_file(&psp, f, "PSP")?);
     }
-    let directory_file = |kind, instance, subprogram| {
-        bios_dirs
-            .find(kind, Some(instance), Some(subprogram))
-            .and_then(|(dir, e)| {
-                Some((
-                    format!("BIOS directory {:#x}", dir.offset),
-                    dir.data(e).ok()?,
-                ))
-            })
+    let board_entries = match &board.apcb {
+        BoardApcb::Entries { entries } => entries.as_slice(),
+        _ => &[],
     };
-    for f in &soc.bios {
-        take(&f.file, directory_file(f.kind, f.instance, f.subprogram));
+    for f in soc.bios.iter().chain(board_entries) {
+        let Content::File(file) = f.content()? else {
+            continue;
+        };
+        take(file, level_file(&bios_dirs, f, "BIOS")?);
     }
     if let BoardApcb::Files { instances } = board.apcb {
         for instance in 0..instances {
+            let apcb = DirectoryFile {
+                kind: bios::APCB,
+                instance,
+                ..Default::default()
+            };
             take(
                 &apcb_file(board_name, instance),
-                directory_file(bios::APCB, instance, 0),
+                level_file(&bios_dirs, &apcb, "BIOS")?,
             );
         }
     }
@@ -293,7 +443,33 @@ pub fn extract(
     for v in &soc.vbios {
         take(&v.file, find_vbios(rom, v.vendor, v.device)?);
     }
+    if let Some(conflict) = conflict {
+        return Err(conflict);
+    }
     Ok((found, missing))
+}
+
+/// The file of entry `f` in the levels its table puts it in: level 2
+/// first for both, as the PSP looks it up.
+fn level_file<'a, E: fstart_amdfw_format::directory::Entry>(
+    levels: &fstart_amdfw_format::directory::Levels<'a, E>,
+    f: &DirectoryFile,
+    name: &str,
+) -> Result<Option<(String, &'a [u8])>, String> {
+    let directories: Vec<_> = match Level::from_table(f.level)? {
+        Level::One => vec![levels.level1],
+        Level::Two => levels.level2.into_iter().collect(),
+        Level::Both => levels.level2.into_iter().chain([levels.level1]).collect(),
+    };
+    Ok(directories.into_iter().find_map(|dir| {
+        let entry = dir.entries.iter().find(|e| {
+            e.kind() == f.kind && e.instance() == f.instance && e.subprogram() == f.subprogram
+        })?;
+        Some((
+            format!("{name} directory {:#x}", dir.offset),
+            dir.data(entry).ok()?,
+        ))
+    }))
 }
 
 /// The newest patch for `equivalence_id`: from the BIOS directory if it has

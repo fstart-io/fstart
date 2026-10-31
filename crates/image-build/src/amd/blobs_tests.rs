@@ -38,8 +38,76 @@ fn picasso_and_vilboz_tables_resolve_in_a_blob_directory() {
     assert_eq!(files.assets[1].name.as_str(), "pci1002,15dd.rom");
     assert!(files.psp_app);
     let mut escaping = soc.clone();
-    escaping.psp[0].file = "../outside.bin".into();
+    escaping.psp[0].file = Some("../outside.bin".into());
     assert!(resolve(&escaping, &board, name, Path::new("/blobs"), 0x100_0000).is_err());
+}
+
+#[test]
+fn zeppelin_and_mj11_tables_resolve_to_a_two_level_partition() {
+    let soc: SocBlobs = serde_json::from_value(
+        fstart_table("../platform-amd/Cargo.toml")["amd"]["zeppelin"].clone(),
+    )
+    .unwrap();
+    let board_table = fstart_table("../../boards/gigabyte/mj11/Cargo.toml");
+    let board: BoardBlobs = serde_json::from_value(board_table["amd"].clone()).unwrap();
+    assert_eq!(board.soc, "zeppelin");
+    let resolved = resolve(&soc, &board, "mj11", Path::new("/blobs"), 0x100_0000).unwrap();
+    let files = &resolved.files;
+    assert!(files.two_level);
+    assert_eq!(
+        (files.efs_offset, files.partition_end),
+        (0x2_0000, 0x29_4000)
+    );
+    // The soft fuse and the PSP and BIOS NV areas.
+    assert_eq!(files.fixed.len(), 5);
+    assert_eq!(files.psp.len(), 19);
+    // RTM key and 8 PMU files, then the board's four APCB entries.
+    assert_eq!(files.bios.len(), 9 + 4);
+    assert_eq!(files.bios[9].path, "/blobs/mj11/apcb-recovery.bin");
+    assert_eq!(resolved.microcode.len(), 4);
+    let mut levelled = soc.clone();
+    levelled.levels = 1;
+    assert!(resolve(&levelled, &board, "mj11", Path::new("/blobs"), 0x100_0000).is_err());
+    let mut ambiguous = soc;
+    ambiguous.psp[0].erased = Some(0x1000);
+    assert!(resolve(&ambiguous, &board, "mj11", Path::new("/blobs"), 0x100_0000).is_err());
+}
+
+#[test]
+fn sp3_generation_and_board_tables_resolve() {
+    let platform = fstart_table("../platform-sp3/Cargo.toml");
+    for (board, generations) in [
+        ("../../boards/tyan/s8030/Cargo.toml", &["milan", "rome"][..]),
+        ("../../boards/amd/ethanolx/Cargo.toml", &["milan"][..]),
+    ] {
+        let boards = board_tables(&fstart_table(board)["amd"]).unwrap();
+        assert_eq!(
+            boards.iter().map(|b| b.soc.as_str()).collect::<Vec<_>>(),
+            generations
+        );
+        for board in &boards {
+            let soc: SocBlobs =
+                serde_json::from_value(platform["amd"][&board.soc].clone()).unwrap();
+            let resolved = resolve(&soc, board, "b", Path::new("/blobs"), 0x100_0000).unwrap();
+            assert!(resolved.files.two_level);
+            assert_eq!(resolved.files.partition_end, 0x60_0000);
+            assert!(soc.apob_destination.is_some());
+            // The board's five APCB files.
+            let apcbs = resolved
+                .files
+                .bios
+                .iter()
+                .filter(|f| matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP))
+                .count();
+            assert_eq!(apcbs, 5);
+        }
+    }
+    let naples: SocBlobs = serde_json::from_value(platform["amd"]["naples"].clone()).unwrap();
+    assert_eq!(naples.microcode.len(), 2);
+    // A board table naming another SoC than its key.
+    let mut table = fstart_table("../../boards/tyan/s8030/Cargo.toml")["amd"].clone();
+    table["rome"]["soc"] = "milan".into();
+    assert!(board_tables(&table).is_err());
 }
 
 /// A vendor image with directories, a microcode patch and a video BIOS
@@ -113,16 +181,19 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         kind,
         subprogram,
         instance,
-        file: file.into(),
+        file: Some(file.into()),
+        ..Default::default()
     };
     let soc = SocBlobs {
         bios_directory: BiosDirectorySlot::Family17hModel10,
+        levels: 1,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,
-        spi_read_mode: 4,
-        spi_speed: 0,
+        spi_read_mode: Some(4),
+        spi_speed: Some(0),
         micron: false,
-        soft_fuse: 0x3000_0000,
+        soft_fuse: Some(0x3000_0000),
+        apob_destination: None,
         psp: vec![file(1, 0, 0, "psp/boot.bin"), file(2, 0, 0, "psp/os.bin")],
         bios: vec![file(0x64, 1, 4, "bios/pmu.bin")],
         microcode: vec![MicrocodeFile {
@@ -139,6 +210,7 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         soc: "picasso".into(),
         psp_app: true,
         apcb: BoardApcb::Files { instances: 2 },
+        apob_destination: None,
     };
     let (found, missing) = extract(&soc, &board, "board", &image).unwrap();
     assert_eq!(missing, ["psp/os.bin"]);
@@ -152,4 +224,91 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
     assert_eq!(patch.origin, "flash offset 0x100040");
     assert_eq!(get("vbios/rv2.bin").origin, "flash offset 0x400080");
     assert_eq!(get("vbios/rv2.bin").bytes.len(), 512);
+}
+
+#[test]
+fn entries_share_a_file_only_with_the_same_bytes() {
+    let image = vendor_image();
+    let file = |kind, subprogram, instance, file: &str| DirectoryFile {
+        kind,
+        subprogram,
+        instance,
+        file: Some(file.into()),
+        ..Default::default()
+    };
+    let soc = |psp: Vec<DirectoryFile>, bios: Vec<DirectoryFile>| SocBlobs {
+        bios_directory: BiosDirectorySlot::Family17hModel10,
+        levels: 1,
+        efs_offset: 0xe2_0000,
+        partition_end: 0x100_0000,
+        spi_read_mode: Some(4),
+        spi_speed: Some(0),
+        micron: false,
+        soft_fuse: Some(0x3000_0000),
+        apob_destination: None,
+        psp,
+        bios,
+        microcode: vec![],
+        vbios: vec![],
+    };
+    let board = BoardBlobs {
+        soc: "picasso".into(),
+        psp_app: false,
+        apcb: BoardApcb::Files { instances: 0 },
+        apob_destination: None,
+    };
+    // The same entry twice: one file.
+    let same = soc(vec![file(1, 0, 0, "a.bin"), file(1, 0, 0, "a.bin")], vec![]);
+    let (found, _) = extract(&same, &board, "board", &image).unwrap();
+    assert_eq!(found.len(), 1);
+    // Different bytes for one file.
+    let differ = soc(
+        vec![file(1, 0, 0, "a.bin")],
+        vec![file(0x64, 1, 4, "a.bin")],
+    );
+    let error = extract(&differ, &board, "board", &image).unwrap_err();
+    assert!(error.starts_with("a.bin: "), "{error}");
+}
+
+/// A 16 MiB half with an EFS at 0x20000: `generation`, BIOS directory
+/// pointer `bios` in `slot`.
+fn efs_half(generation: u32, slot: BiosDirectorySlot, bios: u32) -> Vec<u8> {
+    use fstart_amdfw_format::efs::Efs;
+    use zerocopy::IntoBytes;
+    let mut efs = Efs::erased();
+    efs.generation.set(generation);
+    efs.bios_directory_mut(slot).set(bios);
+    let mut half = vec![0xff; fstart_amdfw_format::HALF_SIZE];
+    half[0x20000..0x20060].copy_from_slice(efs.as_bytes());
+    half
+}
+
+#[test]
+fn donor_halves_by_generation() {
+    use BiosDirectorySlot::{Family17hModel30, Family19h};
+    let soc = |slot| SocBlobs {
+        bios_directory: slot,
+        ..serde_json::from_value(fstart_table("../platform-sp3/Cargo.toml")["amd"]["rome"].clone())
+            .unwrap()
+    };
+    let (rome, milan) = (soc(Family17hModel30), soc(Family19h));
+    // Milan's EFS also names a Rome BIOS directory and its generation
+    // word satisfies Rome's boot ROM: Rome takes its own half regardless
+    // of the order.
+    let rome_half = efs_half(0xffff_fffe, Family17hModel30, 0x40000);
+    let mut milan_half = efs_half(0xffff_fffc, Family19h, 0x50000);
+    milan_half[0x20000 + 0x20..0x20000 + 0x24].copy_from_slice(&0x60000u32.to_le_bytes());
+    for rom in [
+        [milan_half.clone(), rome_half.clone()].concat(),
+        [rome_half.clone(), milan_half.clone()].concat(),
+    ] {
+        assert_eq!(donor_image(&rom, &rome).unwrap()[0x20024], 0xfe);
+        assert_eq!(donor_image(&rom, &milan).unwrap()[0x20024], 0xfc);
+    }
+    // A single noncanonical half the boot ROM takes is the donor.
+    let rome_only = efs_half(0x7fff_fffe, Family17hModel30, 0x40000);
+    assert!(donor_image(&rome_only, &rome).is_some());
+    // No BIOS directory for the SoC, or a generation it can't boot.
+    assert!(donor_image(&rome_half, &milan).is_none());
+    assert!(donor_image(&efs_half(0xffff_ffff, Family17hModel30, 0x40000), &rome).is_none());
 }

@@ -41,10 +41,3 @@ pub fn request(
 ) -> Result<[u32; 6], Error> {
     MAILBOX.request(smn, message, arguments, delay)
 }
-
-pub fn cpu_name(
-    smn: &Smn<impl ConfigRegionAccess>,
-    delay: &mut impl DelayNs,
-) -> Result<[u8; 48], Error> {
-    MAILBOX.cpu_name(smn, GET_NAME, delay)
-}

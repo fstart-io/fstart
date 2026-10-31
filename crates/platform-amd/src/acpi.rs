@@ -24,8 +24,15 @@ use fstart_acpi::{
 };
 use fstart_acpi_macros::acpi_dsl;
 use fstart_driver_amd::{
+    ccx::{
+        Thread,
+        power::{self, PowerAml},
+    },
     fch::{AcpiPorts, SPI_BASE},
-    nbio::iommu::{self, Iommu},
+    nbio::{
+        ioapic::acpi as ioapic_acpi,
+        iommu::{self, Iommu},
+    },
 };
 
 pub const LAPIC_BASE: u64 = 0xfee0_0000;
@@ -69,7 +76,21 @@ pub struct SocAcpi {
     pub bridge_routes: &'static [Route],
     /// IOAPIC GSIs of FCH INTA-D, as programmed in the PCI_INTR table.
     pub fch_intx_gsi: [u8; 4],
+    /// The GPE the internal bridges signal PME on (wake), and those bridges.
+    pub wake: Option<Wake>,
 }
+
+/// PME wake of the internal bridges: `_PRW` on each and the GPE's handler
+/// notifying them.
+#[derive(Debug, Clone, Copy)]
+pub struct Wake {
+    pub gpe: u8,
+    /// The bridges' devfn on every die's root bus.
+    pub bridges: &'static [u8],
+}
+
+/// The deepest sleep state a bridge's PME wakes the system from: S4.
+const WAKE_STATE: u8 = 4;
 
 /// What the platform set up on one die.
 #[derive(Debug, Clone)]
@@ -108,7 +129,24 @@ pub struct Inputs<'a> {
     pub ecam_buses: u16,
     /// HPET general capabilities and ID register (0xfed00000).
     pub hpet_id: u32,
+    /// The P-states and C-states of every processor.
+    pub power: Option<power::Power<'a>>,
+    /// The memory of each die if the dies are NUMA nodes: SRAT, MSCT,
+    /// SLIT, and `_PXM` on the root bridges.
+    pub numa: Option<DieNuma<'a>>,
     pub board: &'a BoardAcpi,
+}
+
+/// The DRAM ranges of the dies, `(base, end, die)`.
+pub type DieMemory = heapless::Vec<fstart_acpi::numa::MemoryAffinity, 48>;
+
+/// The dies as NUMA nodes.
+#[derive(Debug, Clone, Copy)]
+pub struct DieNuma<'a> {
+    /// DRAM ranges; the domain is the die.
+    pub memory: &'a [fstart_acpi::numa::MemoryAffinity],
+    /// CPUID Fn8000_0008_EAX\[7:0\], for the MSCT.
+    pub phys_addr_bits: u8,
 }
 
 /// Feed to `fstart_acpi::platform::assemble_into(.., &platform, &dsdt_aml, &extra)`.
@@ -181,6 +219,9 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
         .enumerate()
         .map(|(index, die)| root_bridge(index as u8, die, inputs))
         .collect::<Result<Vec<_>, _>>()?;
+    let nbios: Vec<_> = (0..inputs.dies.len())
+        .map(|index| format!("\\_SB_.PCI{index}.NBIO"))
+        .collect();
     let dsdt_aml = [scope_vec("\\", &sleep_states())?, ecam_reservation(inputs)?]
         .into_iter()
         .chain(root_bridges)
@@ -195,10 +236,20 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
             .dsdt_aml()
         }))
         .chain(core::iter::once(inputs.board.sb_aml.clone()))
+        .chain(core::iter::once(processors(inputs)?))
+        // After the devices they name.
+        .chain([ioapic_acpi::pic_aml(&nbios)?, wake_gpe(inputs)])
         .flatten()
         .collect();
+    // The FCH SMM handler (see `acpi_smi`) takes no buffers from the OS.
+    let wsmt = fstart_acpi::wsmt::build_wsmt(
+        fstart_acpi::wsmt::FIXED_COMM_BUFFERS
+            | fstart_acpi::wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION,
+    );
     let extra = core::iter::once(mcfg(inputs)?)
+        .chain(numa_tables(inputs))
         .chain(ivrs(inputs))
+        .chain(core::iter::once(wsmt))
         .chain(inputs.board.tables.iter().cloned())
         .collect();
     Ok(Tables {
@@ -251,8 +302,7 @@ fn platform(inputs: &Inputs) -> X86Config {
         hpet: Some(HpetConfig {
             base: HPET_BASE,
             timer_block_id: inputs.hpet_id,
-            // No minimum tick.
-            min_tick: 0,
+            min_tick: fstart_driver_amd::fch::HPET_MIN_TICK,
         }),
         // ACPI_HAVE_PCAT_8259
         legacy_devices: true,
@@ -277,6 +327,49 @@ fn madt_order(apic_ids: &[u32]) -> Vec<u32> {
     let mut ids = apic_ids.to_vec();
     ids.sort_unstable_by_key(|&id| (id & 1, id));
     ids
+}
+
+/// A processor device per CPU, in the MADT's UID order, with the power
+/// objects of [`Inputs::power`].
+fn processors(inputs: &Inputs) -> Result<Vec<u8>, Error> {
+    use fstart_acpi::processor::{ProcessorName, processor_device};
+    let power = inputs.power.as_ref().map(PowerAml::new);
+    let mut aml = Vec::new();
+    for (uid, apic_id) in madt_order(inputs.apic_ids).into_iter().enumerate() {
+        let index = u16::try_from(uid).map_err(|_| Error::Aml(AmlError::InvalidOperand))?;
+        let body = power
+            .as_ref()
+            .map(|p| p.for_cpu(apic_id))
+            .unwrap_or_default();
+        aml.extend(processor_device(
+            ProcessorName::new(index),
+            uid as u32,
+            &body,
+        )?);
+    }
+    Ok(aml)
+}
+
+/// A die per proximity domain: SRAT with the CPUs by their APIC ID's die
+/// (\[5:4\]), MSCT and the vendor's SLIT (10 within a die, 16 between the
+/// dies of a socket).
+fn numa_tables(inputs: &Inputs) -> Vec<Vec<u8>> {
+    use fstart_acpi::numa::{CpuAffinity, tables};
+    let Some(numa) = inputs.numa else {
+        return Vec::new();
+    };
+    let cpus = inputs.apic_ids.iter().map(|&apic_id| CpuAffinity {
+        apic_id,
+        domain: Thread::die_of(apic_id).into(),
+    });
+    // One socket.
+    tables(
+        inputs.dies.len(),
+        numa.memory,
+        cpus,
+        numa.phys_addr_bits,
+        |_, _| 16,
+    )
 }
 
 /// The sleep states without ACPI resume (S3) support: S0, S1, S4, S5.
@@ -462,7 +555,11 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
         }
     }
     .emit(&mut body)?;
+    if inputs.numa.is_some() {
+        acpi_dsl! { Name("_PXM", #{byte uid}); }.emit(&mut body)?;
+    }
     body.extend(root_resources(die, index == 0));
+    body.extend(ioapic_acpi::nbio_default_aml()?);
     let routes = inputs.soc.bridge_routes;
     body.extend(root_prt(
         index,
@@ -471,7 +568,7 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
         inputs.soc.fch_intx_gsi,
     )?);
     for bridge_device in die.bridges {
-        body.extend(bridge(index, bridge_device.devfn, routes)?);
+        body.extend(bridge(index, bridge_device.devfn, routes, inputs.soc.wake)?);
     }
     if index == 0 {
         body.extend(lpc_bridge(&inputs.board.lpc_aml)?);
@@ -605,7 +702,7 @@ fn root_prt(
 
 /// A bridge `GPxx` (xx: devfn in hex) with the `_PRT`
 /// for the device behind it through the NBIO IOAPIC of the die.
-fn bridge(die: u8, devfn: u8, routes: &[Route]) -> Result<Vec<u8>, Error> {
+fn bridge(die: u8, devfn: u8, routes: &[Route], wake: Option<Wake>) -> Result<Vec<u8>, Error> {
     let route = routes
         .iter()
         .find(|route| route.devfn == devfn)
@@ -617,6 +714,9 @@ fn bridge(die: u8, devfn: u8, routes: &[Route]) -> Result<Vec<u8>, Error> {
     let gsi = |pin| nbio_gsi_base(die) + u32::from(route.irq(pin));
     // `build` checked that the GSIs fit.
     body.extend(prt_name_aml((0..4).map(|pin| (0, pin, gsi(pin) as u8))));
+    if let Some(wake) = wake.filter(|wake| wake.bridges.contains(&devfn)) {
+        body.extend(fstart_acpi::gpe::prw(wake.gpe, WAKE_STATE));
+    }
     Ok(device_vec(&format!("GP{devfn:02X}"), &body)?)
 }
 
@@ -645,6 +745,26 @@ pub fn video_rom_aml(
         body = device_vec(&format!("D{devfn:03X}"), &content)?;
     }
     scope_vec(&format!(r"\_SB.PCI{root}"), &body)
+}
+
+/// `\_GPE._Lxx` of the wake GPE: notify every wake bridge the dies have.
+fn wake_gpe(inputs: &Inputs) -> Vec<u8> {
+    let Some(wake) = inputs.soc.wake else {
+        return Vec::new();
+    };
+    let paths: Vec<_> = inputs
+        .dies
+        .iter()
+        .enumerate()
+        .flat_map(|(index, die)| {
+            die.bridges
+                .iter()
+                .filter(|bridge| wake.bridges.contains(&bridge.devfn))
+                .map(move |bridge| format!("\\_SB_.PCI{index}.GP{:02X}", bridge.devfn))
+        })
+        .collect();
+    let targets: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+    fstart_acpi::gpe::notify_wake(wake.gpe, false, &targets)
 }
 
 /// The FCH legacy devices behind 0:14.3, then the board's.
@@ -750,50 +870,7 @@ fn lpc_bridge(board_aml: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(device_vec("LPCB", &body)?)
 }
 
-/// Path of the FCH GPIO controller, [`fch_gpio`].
-pub const FCH_GPIO_PATH: &str = "\\_SB.GPIO";
-
-/// The FCH GPIO controller `\_SB.GPIO` at the GPIO bank of the ACPI MMIO,
-/// interrupting on the level-low, shared FCH IRQ `irq`.
-pub fn fch_gpio(irq: u8) -> Result<Vec<u8>, Error> {
-    let base = u64::from(fstart_driver_amd::fch::ACPI_MMIO + 0x1500);
-    let irq = u64::from(irq);
-    let mut body = Vec::new();
-    acpi_dsl! {
-        Name("_HID", "AMDI0030");
-        Name("_CID", "AMDI0030");
-        Name("_UID", 0u32);
-        Name("_CRS", ResourceTemplate {
-            Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
-            Memory32Fixed(ReadWrite, #{dword base}, 0x400u32);
-        });
-        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-    }
-    .emit(&mut body)?;
-    Ok(device_vec("GPIO", &body)?)
-}
-
-/// An FCH DesignWare I2C controller `\_SB.I2C<index>` at `base`,
-/// interrupting on the edge-high FCH IRQ `irq`, with `body`: its timing
-/// and the devices behind it.
-pub fn fch_i2c(index: u8, base: u32, irq: u8, body: &[u8]) -> Result<Vec<u8>, Error> {
-    let (uid, base, irq) = (u64::from(index), u64::from(base), u64::from(irq));
-    let mut device = Vec::new();
-    acpi_dsl! {
-        Name("_HID", "AMDI0010");
-        Name("_UID", #{byte uid});
-        Name("_CRS", ResourceTemplate {
-            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword irq});
-            Memory32Fixed(ReadWrite, #{dword base}, 0x1000u32);
-        });
-        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-    }
-    .emit(&mut device)?;
-    device.extend_from_slice(body);
-    Ok(device_vec(&fch_i2c_name(index), &device)?)
-}
-
-/// NameSeg of FCH I2C controller `index`, [`fch_i2c`].
+/// NameSeg of FCH I2C controller `index`.
 pub fn fch_i2c_name(index: u8) -> alloc::string::String {
     format!("I2C{index:X}")
 }
@@ -929,6 +1006,24 @@ mod tests {
         counter_config: 0,
     };
 
+    /// EPYC 3151 P-states: 2.7, 1.9 and 1.2 GHz.
+    fn power() -> power::Power<'static> {
+        static PSTATES: std::sync::LazyLock<[power::Pstate; 3]> = std::sync::LazyLock::new(|| {
+            [(0, 0x6c, 8), (1, 0x98, 0x10), (2, 0x60, 0x10)].map(|(i, fid, did)| {
+                power::decode_pstate(i, 1 << 63 | 0x50 << 22 | 0x40 << 14 | did << 8 | fid).unwrap()
+            })
+        });
+        power::Power {
+            pstates: &*PSTATES,
+            cstates: Some(power::CstateInfo {
+                io_base: 0x813,
+                cc6: true,
+            }),
+            threads_per_core: 2,
+            c2_latency_us: 400,
+        }
+    }
+
     fn tables(board: &BoardAcpi) -> Tables {
         let dies = dies();
         build(&Inputs {
@@ -938,6 +1033,8 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0x1022_8201,
+            power: Some(power()),
+            numa: None,
             board,
         })
         .unwrap()
@@ -1055,6 +1152,8 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0,
+            power: None,
+            numa: None,
             board: &BoardAcpi::default(),
         });
         assert_eq!(
@@ -1099,6 +1198,8 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0,
+            power: None,
+            numa: None,
             board: &board,
         };
         let special = |variety, handle, source, dte| DeviceEntry::Special {
@@ -1218,7 +1319,7 @@ mod tests {
             DesignWareSpeed, GpioInterrupt, I2cDevice, designware_timing_aml,
         };
         let interrupt = Some(GpioInterrupt {
-            controller: FCH_GPIO_PATH,
+            controller: fstart_driver_amd::fch::aml::GPIO_PATH,
             pin: 9,
             edge: false,
             active_low: true,
@@ -1240,8 +1341,9 @@ mod tests {
         let mut body = designware_timing_aml(DesignWareSpeed::Fast, 117, 245, 45).unwrap();
         body.extend(device("D150", &["ELAN0000"], 0x15, None));
         body.extend(device("D2C1", &["SYNA0000", "PNP0C50"], 0x2c, Some(0x20)));
-        let mut aml = fch_gpio(7).unwrap();
-        aml.extend(fch_i2c(2, 0xfedc_4000, 14, &body).unwrap());
+        use fstart_driver_amd::fch::aml;
+        let mut aml = aml::gpio(7, 0x400).unwrap();
+        aml.extend(aml::i2c(&fch_i2c_name(2), 2, 0xfedc_4000, 14, &body).unwrap());
         aml
     }
 
@@ -1258,7 +1360,11 @@ mod tests {
             .dsdt_aml(),
             tables: vec![],
             devices: vec![],
-            sb_aml: fch_devices(),
+            sb_aml: [
+                fch_devices(),
+                fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
+            ]
+            .concat(),
         };
         let mut board = board;
         board.sb_aml.extend(
@@ -1290,6 +1396,14 @@ mod tests {
         assert_eq!(&fadt[109..111], &1u16.to_le_bytes()); // IAPC_BOOT_ARCH
         assert_eq!(fadt[128], 6); // RESET_VALUE
         assert!(signature(&storage[..len], b"MCFG").len() == 60);
+        assert_eq!(
+            signature(&storage[..len], b"WSMT")[36..40],
+            3u32.to_le_bytes()
+        );
+        assert_eq!(
+            signature(&storage[..len], b"HPET")[53..55],
+            0x37eeu16.to_le_bytes()
+        );
 
         let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt_aml)) else {
             std::eprintln!("iasl not found, skipping the DSDT disassembly");
@@ -1317,6 +1431,23 @@ mod tests {
             "Name (FMCN, Package",
             "Method (_DSM, 4, Serialized)",
             "ToUUID (\"3cdff6f7-4267-4555-ad05-b30a3d8938de\")",
+            "Device (C005)",
+            "Name (_HID, \"ACPI0007\"",
+            "Name (_PSS, Package (0x03)",
+            "0x0A8C,",
+            "SystemIO,",
+            "0x0000000000000814",
+            "Name (_PSD, Package (0x01)",
+            "Method (_PIC, 1, NotSerialized)",
+            "\\_SB.PCI1.NBIO.NAPE ()",
+            "NAPX = 0x14300000",
+            "NAPD &= 0xFFFFFFEF",
+            "Name (_PRW, Package (0x02)",
+            "Method (_L0B, 0, NotSerialized)",
+            "Notify (\\_SB.PCI1.GP39, 0x02)",
+            "Method (_PTS, 1, NotSerialized)",
+            "BSMC = (Arg0 + 0xC0)",
+            "Method (_INI, 0, NotSerialized)",
         ] {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
@@ -1340,6 +1471,50 @@ mod tests {
                 && !log.contains("AE_")
                 && log.contains("55 AA 01 CB 00 00 00 00"),
             "{log}"
+        );
+    }
+
+    /// Two dies as NUMA nodes: SRAT, MSCT, SLIT and the root bridges'
+    /// proximity.
+    #[test]
+    fn two_dies_are_two_domains() {
+        use fstart_acpi::numa::MemoryAffinity;
+        let dies = dies();
+        let memory = [
+            MemoryAffinity {
+                base: 0,
+                end: 0x8000_0000,
+                domain: 0,
+            },
+            MemoryAffinity {
+                base: 0x1_0000_0000,
+                end: 0x2_0000_0000,
+                domain: 1,
+            },
+        ];
+        let board = BoardAcpi::default();
+        let tables = build(&Inputs {
+            soc: &ACPI,
+            apic_ids: &[0, 1, 0x10, 0x11],
+            dies: &dies,
+            ecam_base: 0xf000_0000,
+            ecam_buses: 128,
+            hpet_id: 0,
+            power: None,
+            numa: Some(DieNuma {
+                memory: &memory,
+                phys_addr_bits: 48,
+            }),
+            board: &board,
+        })
+        .unwrap();
+        let signatures: std::vec::Vec<_> = tables.extra.iter().map(|t| &t[..4]).collect();
+        assert_eq!(&signatures[1..4], [b"SRAT", b"MSCT", b"SLIT"]);
+        let slit = &tables.extra[3];
+        assert_eq!(&slit[44..48], &[10, 16, 16, 10]);
+        assert_eq!(
+            tables.dsdt_aml.windows(4).filter(|w| w == b"_PXM").count(),
+            2
         );
     }
 
@@ -1413,11 +1588,17 @@ mod tests {
             uid: 0,
             spec_revision: 0x0200,
         };
+        // The board's: SPMI, SPCR on COM1, the BMC sleep-state SMIs.
+        let mut spcr = vec![];
+        fstart_acpi::Aml::to_aml_bytes(
+            &fstart_acpi::spcr::build_spcr_16550_io(0x3f8, 4),
+            &mut spcr,
+        );
         let board = BoardAcpi {
             lpc_aml: kcs.dsdt_aml(),
-            tables: vec![kcs.spmi()],
+            tables: vec![kcs.spmi(), spcr],
             devices: vec![],
-            sb_aml: vec![],
+            sb_aml: fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
         };
         let tables = build(&Inputs {
             soc: &ACPI,
@@ -1426,6 +1607,8 @@ mod tests {
             ecam_base: 0xf000_0000,
             ecam_buses: 128,
             hpet_id: 0x1022_8201,
+            power: Some(power()),
+            numa: None,
             board: &board,
         })
         .unwrap();
@@ -1443,13 +1626,21 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
                 (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
             });
-        assert_eq!((len, hash), (2784, 0xba3b_5c8e_f8ab_a62d));
+        assert_eq!((len, hash), (4976, 0x4212_b546_60cc_8179));
     }
 
+    /// The table with `signature`: the first match whose length and
+    /// checksum hold (the DSDT names devices like tables).
     fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
-        let start = tables.windows(4).position(|w| w == signature).unwrap();
-        let len = u32::from_le_bytes(tables[start + 4..start + 8].try_into().unwrap());
-        &tables[start..start + len as usize]
+        (0..tables.len().saturating_sub(8))
+            .filter(|&at| &tables[at..at + 4] == signature)
+            .find_map(|at| {
+                let len = u32::from_le_bytes(tables[at + 4..at + 8].try_into().unwrap()) as usize;
+                let table = tables.get(at..at.checked_add(len)?)?;
+                (len >= 36 && table.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)) == 0)
+                    .then_some(table)
+            })
+            .unwrap()
     }
 
     fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {

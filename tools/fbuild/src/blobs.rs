@@ -2,7 +2,7 @@
 //! files the board's and its SoC's AMD firmware tables name, at the paths
 //! `--blobs` builds read them from.
 use crate::{board_manifest::BoardManifest, profile_source::ProfileSource};
-use fstart_image_build::amd::blobs::{self, BoardBlobs, SocBlobs};
+use fstart_image_build::amd::blobs::{self, SocBlobs};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -28,8 +28,9 @@ pub fn extract(
 }
 
 /// The blob directory of a build from the donor image `rom` (`--donor`):
-/// its files extracted once per board and image content, under
-/// `target/fstart-blobs/<board>/<image SHA-256>/`.
+/// its files extracted once per board, image content and blob tables
+/// (the board's and its platform's), under
+/// `target/fstart-blobs/<board>/<image SHA-256>-<tables SHA-256>/`.
 pub(crate) fn from_donor(
     root: &Path,
     source: &ProfileSource,
@@ -40,10 +41,18 @@ pub(crate) fn from_donor(
         .as_str()
         .ok_or("the board has no name")?;
     let digest = format!("{:x}", Sha256::digest(&image));
-    let dir = root
-        .join("target/fstart-blobs")
-        .join(board)
-        .join(&digest[..16]);
+    // A changed table names other files: extract again.
+    let tables = serde_json::to_vec(&[
+        &source.package["metadata"]["fstart"]["amd"],
+        &source.platform["metadata"]["fstart"]["amd"],
+    ])
+    .map_err(|e| e.to_string())?;
+    let tables = format!("{:x}", Sha256::digest(&tables));
+    let dir = root.join("target/fstart-blobs").join(board).join(format!(
+        "{}-{}",
+        &digest[..16],
+        &tables[..8]
+    ));
     if dir.join(RECEIPT).is_file() {
         eprintln!("[fstart] blobs of {} in {}", rom.display(), dir.display());
         return Ok(dir);
@@ -65,20 +74,37 @@ fn extract_from(
     allow_missing: bool,
 ) -> Result<(), String> {
     let table = &source.package["metadata"]["fstart"];
-    let board_blobs: BoardBlobs = serde_json::from_value(table["amd"].clone())
-        .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
-    let soc: SocBlobs = serde_json::from_value(
-        source.platform["metadata"]["fstart"]["amd"][&board_blobs.soc].clone(),
-    )
-    .map_err(|e| {
-        format!(
-            "platform [package.metadata.fstart.amd.{}]: {e}",
-            board_blobs.soc
-        )
-    })?;
     let name = table["board"].as_str().ok_or("the board has no name")?;
     let image = fs::read(rom).map_err(|e| format!("{}: {e}", rom.display()))?;
-    let (found, missing) = blobs::extract(&soc, &board_blobs, name, &image)?;
+    let (mut found, mut missing) = (Vec::new(), Vec::new());
+    // One table per SoC the board has (the SP3 generations), each from the
+    // donor's image of that SoC.
+    for board_blobs in blobs::board_tables(&table["amd"])? {
+        let soc: SocBlobs = serde_json::from_value(
+            source.platform["metadata"]["fstart"]["amd"][&board_blobs.soc].clone(),
+        )
+        .map_err(|e| {
+            format!(
+                "platform [package.metadata.fstart.amd.{}]: {e}",
+                board_blobs.soc
+            )
+        })?;
+        let Some(donor) = blobs::donor_image(&image, &soc) else {
+            // All of that SoC's files are missing.
+            if !allow_missing {
+                return Err(format!(
+                    "{} has no {} firmware",
+                    rom.display(),
+                    board_blobs.soc
+                ));
+            }
+            missing.push(format!("{} firmware", board_blobs.soc));
+            continue;
+        };
+        let (f, m) = blobs::extract(&soc, &board_blobs, name, donor)?;
+        found.extend(f);
+        missing.extend(m);
+    }
     if !missing.is_empty() && !allow_missing {
         return Err(format!(
             "{} does not have: {}",

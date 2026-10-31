@@ -172,6 +172,12 @@ impl noncar::Soc for Picasso {
     const TSEG_SIZE: u32 = 8 << 20;
     /// The topology decoder's envelope: 2 CCXs, 4 cores, 2 threads.
     const MAX_CPUS: u16 = 16;
+    /// FP5 is a BGA package with two channels.
+    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+        socket_upgrade: 0x06,
+        max_dimm_mib: 32 * 1024,
+        channels_per_die: 2,
+    };
     type Config = Config;
     type Identity = Identity;
     /// The reserved UMA when this part has a GPU.

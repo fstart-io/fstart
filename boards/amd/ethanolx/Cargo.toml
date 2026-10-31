@@ -14,6 +14,18 @@ target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
+# The board's APCBs of each generation, as its vendor image has them.
+[package.metadata.fstart.amd.milan]
+# The vendor firmware has the APOB at 64 MiB.
+apob-destination = 0x4000000
+apcb = { entries = [
+  { type = 0x68, subprogram = 1, file = "ethanolx/milan/apcb-68-0.bin" },
+  { type = 0x68, subprogram = 1, instance = 8, level = 2, file = "ethanolx/milan/apcb-68-8.bin" },
+  { type = 0x68, subprogram = 1, instance = 9, level = 2, file = "ethanolx/milan/apcb-68-9.bin" },
+  { type = 0x60, subprogram = 1, level = 2, file = "ethanolx/milan/apcb-60-0.bin" },
+  { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "ethanolx/milan/apcb-60-1.bin" },
+] }
+
 [dependencies]
 fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "milan"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["milan"] }

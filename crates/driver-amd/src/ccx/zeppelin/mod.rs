@@ -83,6 +83,10 @@ pub struct CpuPolicy {
     pub psp_bars: [u32; MAX_DIES],
     /// From [`crate::smu::v9::cac_weights`]; `None` if reading them failed.
     pub cac_weights: Option<CacWeights>,
+    /// From [`crate::smu::v9::name`], for the name MSRs.
+    pub name: Option<ccx::brand::Name>,
+    /// SYSCFG.SMEE, as the vendor code sets it: the OS may use SME and SEV.
+    pub memory_encryption: bool,
 }
 
 /// `zeppelin_native_cpu_init`: every CPU, BSP included, after its microcode
@@ -101,6 +105,8 @@ pub fn cpu_init(
             .filter(|&&bar| bar != 0)
             .map(|&bar| bar.into()),
         cac_weights: policy.cac_weights.as_ref(),
+        name: policy.name.as_ref(),
+        memory_encryption: policy.memory_encryption,
     };
     ccx::cpu_init(
         cpu,
@@ -176,12 +182,16 @@ mod tests {
             revision: Revision::ZpB2,
             psp_bars: [0xe010_0000, 0xd010_0000],
             cac_weights: Some(core::array::from_fn(|i| i as u64 * 3)),
+            name: Some(*b"AMD EPYC 3151 4-Core Processor\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"),
+            memory_encryption: true,
         };
         // Primary thread of core 0, die 1.
         cpu_init(&cpu, &policy, Thread::from_cpuid(0x10 << 24, 1 << 8)).unwrap();
         assert_eq!(get(&cpu, PSP_ADDRESS.index()), 0xd010_0000);
         assert_eq!(get(&cpu, MMIO_CFG_BASE.index()), 0xf000_001d);
-        assert_eq!(get(&cpu, SYSCFG.index()), 1 << 21 | 1 << 22);
+        // TOM2 write-back, then SMEE.
+        assert_eq!(get(&cpu, SYSCFG.index()), 1 << 21 | 1 << 22 | 1 << 23);
+        assert_eq!(get(&cpu, 0xc001_0030), u64::from_le_bytes(*b"AMD EPYC"));
         let cache: Vec<_> = cpu
             .borrow()
             .writes
@@ -287,6 +297,8 @@ mod tests {
                 revision,
                 psp_bars: [0xe010_0000, 0xd010_0000],
                 cac_weights: Some(core::array::from_fn(|i| i as u64 * 3 + 1)),
+                name: None,
+                memory_encryption: false,
             };
             cpu_init(&cpu, &policy, thread).unwrap();
             let writes = &cpu.borrow().writes;

@@ -300,8 +300,12 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         rustflags: [
             "-Cpanic=abort",
             "-Copt-level=s",
-            // Direct relative calls; absolute cross-section references are audited.
-            "-Crelocation-model=static",
+            // Position independent, as SP3's: lookup tables and the
+            // addresses of constants are RIP-relative, calls direct
+            // (`-Zplt=yes`); the image builder still rejects any
+            // load-base-dependent reference.
+            "-Crelocation-model=pie",
+            "-Zplt=yes",
             "-Cno-redzone=yes",
             "-Clinker-plugin-lto=no",
             "-Cembed-bitcode=no",
@@ -495,6 +499,9 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
     let tables = &selection.manifests;
     let board: blobs::BoardBlobs = serde_json::from_value(tables.board["amd"].clone())
         .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
+    if board.apob_destination.is_some() {
+        return Err(format!("{} places the APOB itself", S::NAME));
+    }
     if board.soc != S::NAME {
         return Err(format!(
             "the board's AMD firmware is for {}, not {}",

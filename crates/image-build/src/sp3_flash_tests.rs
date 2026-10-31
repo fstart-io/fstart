@@ -300,6 +300,90 @@ fn dual_keeps_each_vendor_efs_with_its_own_reset_copy() {
     );
 }
 
+/// A generation's packed half: a boot loader in both levels, the AMD key
+/// in level 1, an erased NV area and an APCB in level 2.
+fn packed_half(generation: Generation) -> PackedHalf {
+    use crate::amd::{
+        Key,
+        assembly::{FileBlob, Fixed, FixedEntry, PspFiles},
+        levels::Level,
+    };
+    let file = |kind, level, path: &str| FileBlob {
+        key: Key::new(kind, 0, 0),
+        path: format!("{}/{path}", name(generation)),
+        level,
+    };
+    PackedHalf {
+        generation,
+        files: PspFiles {
+            flash_size: HALF as u32,
+            efs_offset: EFS_OFFSET as u32,
+            partition_end: FFS_OFFSET,
+            spi_read_mode: None,
+            spi_speed: None,
+            micron: false,
+            soft_fuse: None,
+            two_level: true,
+            psp: vec![file(0, Level::One, "key"), file(1, Level::Both, "boot")],
+            bios: vec![
+                file(bios::APCB, Level::Two, "apcb"),
+                file(bios::MICROCODE, Level::Two, "ucode"),
+            ],
+            fixed: vec![FixedEntry {
+                psp: true,
+                key: Key::new(0x22, 0, 0),
+                level: Level::Two,
+                content: Fixed::Erased(0x1000),
+            }],
+            apob_nv: None,
+            psp_nv: None,
+            apcb: None,
+            assets: vec![],
+            psp_app: false,
+        },
+        apob_destination: 0x3000_0000,
+    }
+}
+
+fn read_blob(path: &str) -> Result<Vec<u8>, String> {
+    Ok(vec![path.len() as u8; 0x400 + path.len()])
+}
+
+#[test]
+fn packed_halves_compose_like_a_vendor_rom() {
+    let both = plan(&[ROME, MILAN]);
+    let halves = [packed_half(ROME), packed_half(MILAN)];
+    let rom = packed_rom(&halves, &both, &read_blob).unwrap();
+    assert_eq!(rom.len(), 2 * HALF);
+    let ffs = ffs(0x1_0000);
+    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
+    check_dual(&out.image).unwrap();
+    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
+    for (half, generation) in [(FlashHalf::Lower, ROME), (FlashHalf::Upper, MILAN)] {
+        let image = &out.image[half.range()];
+        let flash = flash(generation, image);
+        let psp = flash.psp_directories().unwrap();
+        let (dir, boot) = psp.find(1, None, None).unwrap();
+        assert_eq!(
+            dir.data(boot).unwrap(),
+            read_blob(&format!("{}/boot", name(generation))).unwrap()
+        );
+        let bios = flash.bios_directories_checked(generation).unwrap();
+        // The microcode goes into the FFS.
+        assert!(bios.find(bios::MICROCODE, None, None).is_none());
+        let (dir, reset) = bios.find(bios::RESET_IMAGE, None, None).unwrap();
+        assert_eq!(dir.range(reset).unwrap(), 0xde_0000..HALF);
+    }
+    check_payloads(&out.image, 0xde_0000, &ffs, 0x60_0000);
+    // Milan's boot ROM would take a Rome half below it.
+    let swapped = [packed_half(MILAN), packed_half(ROME)];
+    assert!(packed_rom(&swapped, &both, &read_blob).is_err());
+    assert!(packed_rom(&[packed_half(NAPLES)], &both, &read_blob).is_err());
+    let mut late = packed_half(ROME);
+    late.files.partition_end = 0x70_0000;
+    assert!(packed_rom(&[late], &both, &read_blob).is_err());
+}
+
 #[test]
 fn layouts_the_composer_refuses() {
     let (naples, rome, milan) = (synthetic(NAPLES), synthetic(ROME), synthetic(MILAN));

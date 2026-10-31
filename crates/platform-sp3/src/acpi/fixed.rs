@@ -22,8 +22,7 @@ pub const FCH_IOAPIC_BASE: u64 = 0xFEC0_0000;
 pub const LAPIC_BASE: u64 = 0xFEE0_0000;
 /// FCH HPET (SbDxe, ACPI_SMM §3.3).
 pub const HPET_BASE: u64 = 0xFED0_0000;
-/// Minimum tick the donors report (SbDxe immediate).
-pub const HPET_MIN_TICK: u16 = 0x37EE;
+pub use fstart_driver_amd::fch::HPET_MIN_TICK;
 
 /// FCH ACPI fixed hardware: PM1a_EVT 0x800, PM1a_CNT 0x804, PM_TMR 0x808,
 /// GPE0 0x820 (8 bytes), SCI on IRQ 9 (ACPI_SMM §3.1, FCH §3.2 SCI map).

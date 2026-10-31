@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD PSP flash images, in the format of `fstart_amdfw_format`: [`assembly`]
-//! composes a stage's image from a vendor image or packed blobs;
-//! [`PicassoImage`] packs Picasso's first-generation PSP partition.
+//! composes a stage's image from a vendor image or packed blobs.
+//! [`PicassoImage`] packs Picasso's single-level PSP partition,
+//! [`levels::TwoLevelImage`] the two-level partitions of Zeppelin, Naples,
+//! Rome and Milan.
 //!
 //! Format parsing and validation live in the generation-independent
-//! `fstart-amdfw-format` crate. This particular blob packer currently covers
-//! Picasso; multi-level/ISH assembly is a separate coverage increment, not a
-//! second parser. Signed AMD blobs are copied unchanged, never re-signed.
+//! `fstart-amdfw-format` crate. Signed AMD blobs are copied unchanged,
+//! never re-signed.
 pub mod apcb;
 pub mod assembly;
 pub mod blobs;
 pub mod config;
+pub mod levels;
 pub mod psp_app;
 
 use fstart_amdfw_format::{
@@ -123,6 +125,11 @@ impl Writer {
         self.bytes.resize(self.bytes.len() + size, 0xff);
         Ok(offset)
     }
+    /// `size` bytes at the next multiple of `alignment` (a power of two).
+    fn reserve_aligned(&mut self, size: u32, alignment: u32) -> Result<u32> {
+        self.align(alignment)?;
+        self.reserve(size as usize)
+    }
     fn align(&mut self, alignment: u32) -> Result<()> {
         let padding = self.offset().wrapping_neg() & (alignment - 1);
         self.reserve(padding as usize)?;
@@ -152,17 +159,68 @@ impl Writer {
         entries: &[T],
     ) -> Result<()> {
         self.align(0x1000)?;
-        let blocks = (self.offset() - start) / 0x1000;
-        if blocks > 0x3ff {
-            return Err("Picasso directory exceeds 10-bit extent".into());
-        }
-        // Header v0, physical addresses, SPI block size 1, base_addr=0.
-        let additional = blocks | (1 << 10);
+        let additional = levels::Addressing::Physical.header(start, self.offset())?;
         let at = (start - self.base) as usize;
         write_table(&mut self.bytes[at..], cookie, additional, entries)
             .ok_or("AMD directory outside the image")?;
         Ok(())
     }
+}
+
+/// The boot ROM searches the EFS at these offsets of its fixed 16 MiB
+/// window, which a smaller flash ends.
+fn efs_probed(flash_size: u32, efs_offset: u32) -> bool {
+    0x100_0000u32
+        .checked_sub(flash_size)
+        .and_then(|base| base.checked_add(efs_offset))
+        .is_some_and(|mapped| fstart_amdfw_format::efs::PROBES.contains(&mapped))
+}
+
+/// The partition of a `flash_size` flash (or 16 MiB half): `efs_offset`
+/// where the boot ROM searches the EFS, up to `partition_end`.
+fn check_partition(flash_size: u32, efs_offset: u32, partition_end: u32) -> Result<()> {
+    if !(0x40000..=0x100_0000).contains(&flash_size) || !flash_size.is_power_of_two() {
+        return Err("AMD flash must be a power of two, 256 KiB..16 MiB".into());
+    }
+    if efs_offset >= partition_end || partition_end > flash_size {
+        return Err("invalid AMD firmware partition".into());
+    }
+    if !efs_probed(flash_size, efs_offset) {
+        return Err("the EFS is not where the boot ROM searches".into());
+    }
+    Ok(())
+}
+
+/// The PSP copies the reset image to `destination`; it must end on a
+/// 64 KiB boundary below 4 GiB. The APOB needs a destination too.
+fn check_destinations(
+    reset_destination: u64,
+    reset_size: u64,
+    apob_destination: u64,
+) -> Result<()> {
+    if reset_size == 0
+        || reset_destination == 0
+        || reset_destination
+            .checked_add(reset_size)
+            .is_none_or(|end| end > 1 << 32 || end & 0xffff != 0)
+    {
+        return Err("the reset image must end on a 64-KiB DRAM boundary below 4 GiB".into());
+    }
+    if apob_destination == 0 {
+        return Err("missing APOB DRAM destination".into());
+    }
+    Ok(())
+}
+
+/// The order of a BIOS directory: by type, the PMU instruction and data
+/// files of one selector next to each other.
+fn bios_order(key: Key) -> (u8, u8, u8, u8) {
+    let kind = if key.kind == bios::PMU_DATA {
+        bios::PMU_INSTRUCTIONS
+    } else {
+        key.kind
+    };
+    (kind, key.subprogram, key.instance, key.kind)
 }
 
 fn validate_key(key: Key, bios: bool) -> Result<()> {
@@ -207,35 +265,18 @@ impl PicassoImage {
     pub const BIOS_DIRECTORY: BiosDirectorySlot = BiosDirectorySlot::Family17hModel10;
 
     pub fn pack(&self) -> Result<PackedImage> {
-        if !(0x40000..=0x1000000).contains(&self.flash_size) || !self.flash_size.is_power_of_two() {
-            return Err("Picasso flash must be a power of two, 256 KiB..16 MiB".into());
-        }
-        // Hardware probes these offsets in its fixed 16-MiB mapping window.
-        let mapped_efs = 0x1000000u32
-            .checked_sub(self.flash_size)
-            .and_then(|base| base.checked_add(self.efs_offset))
-            .ok_or("invalid EFS offset")?;
-        if ![0x20000, 0x820000, 0xc20000, 0xe20000, 0xf20000, 0xfa0000].contains(&mapped_efs) {
-            return Err("EFS is not at a Picasso hardware search address".into());
-        }
-        if self.efs_offset >= self.partition_end || self.partition_end > self.flash_size {
-            return Err("invalid AMD firmware partition".into());
-        }
+        check_partition(self.flash_size, self.efs_offset, self.partition_end)?;
         if self.spi_read_mode > 7 || self.spi_speed > 3 {
             return Err("invalid EFS SPI read mode/speed".into());
         }
-        if self.reset_image.is_empty()
-            || self.reset_destination == 0
-            || self
-                .reset_destination
-                .checked_add(self.reset_image.len() as u64)
-                .is_none_or(|end| end > 0x1_0000_0000 || end & 0xffff != 0)
-        {
-            return Err("reset image must end on a 64-KiB DRAM boundary below 4 GiB".into());
+        if self.reset_image.is_empty() {
+            return Err("empty reset image".into());
         }
-        if self.apob_destination == 0 {
-            return Err("missing APOB DRAM destination".into());
-        }
+        check_destinations(
+            self.reset_destination,
+            self.reset_image.len() as u64,
+            self.apob_destination,
+        )?;
         validate_blobs(&self.psp, false)?;
         validate_blobs(&self.bios, true)?;
         // These external allocations must not intersect the generated partition or one another.
@@ -274,8 +315,7 @@ impl PicassoImage {
         // The first directory is 64 KiB aligned, not just 4 KiB.
         writer.align(0x10000)?;
         let psp_start = writer.reserve(0x1000)?; // 16 + 255*16
-        let physical =
-            |offset: u32| 0x1_0000_0000u64 - u64::from(self.flash_size) + u64::from(offset);
+        let physical = |offset: u32| levels::Addressing::Physical.address(self.flash_size, offset);
         let mut psp: Vec<_> = self.psp.iter().collect();
         psp.sort_by_key(|b| b.key);
         let mut psp_entries = Vec::new();
@@ -314,19 +354,7 @@ impl PicassoImage {
         writer.align(0x1000)?;
         let mut bios_entries = Vec::new();
         let mut bios: Vec<_> = self.bios.iter().collect();
-        // PMU instruction/data entries are interleaved per selector.
-        bios.sort_by_key(|b| {
-            (
-                if b.key.kind == bios::PMU_DATA {
-                    bios::PMU_INSTRUCTIONS
-                } else {
-                    b.key.kind
-                },
-                b.key.subprogram,
-                b.key.instance,
-                b.key.kind,
-            )
-        });
+        bios.sort_by_key(|b| bios_order(b.key));
         for blob in bios.iter().filter(|b| b.key.kind == bios::RTM_PUBKEY) {
             let (src, size) = writer.blob(&blob.bytes, 0x100)?;
             bios_entries.push(blob.key.bios_entry(0, size, physical(src), u64::MAX));

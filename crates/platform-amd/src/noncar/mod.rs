@@ -34,6 +34,8 @@ pub mod memory;
 pub mod mp;
 pub mod pci;
 pub mod psp;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod smbios;
 pub mod smm;
 
 /// Devices on buses the platform set up, for CrabEFI's drivers.
@@ -101,6 +103,8 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     const TSEG_SIZE: u32;
     /// The most CPUs of the SoC's packages.
     const MAX_CPUS: u16;
+    /// What the SMBIOS tables say of the package and its memory.
+    const SMBIOS: SmbiosFacts;
 
     /// A board's configuration of the SoC, by IP block.
     type Config: 'static;
@@ -128,6 +132,11 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop>;
     /// TP2: after the PCI resource allocation.
     fn after_resources<B: Board<Soc = Self>>(silicon: &mut Silicon<Self>, ctx: &Ctx<'_, Self>);
+    /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
+    /// nodes: several and not interleaved.
+    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
+        None
+    }
     /// TP3: ready to boot, before ACPI publication and the PSP's DF lock.
     /// Device contributions such as the posted video ROM must be ready here.
     fn ready_to_boot<B: Board<Soc = Self>>(
@@ -255,6 +264,21 @@ pub trait Board: 'static {
     fn acpi() -> BoardAcpi {
         BoardAcpi::default()
     }
+    /// The board's SMBIOS identity (types 0-3).
+    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
+        fstart_acpi::smbios::SmbiosIdentity::new("", <Self::Soc as Soc>::NAME)
+    }
+}
+
+/// The SMBIOS facts of a SoC.
+#[derive(Debug, Clone, Copy)]
+pub struct SmbiosFacts {
+    /// Processor upgrade (socket) code, 0x06 (none) for a BGA package.
+    pub socket_upgrade: u8,
+    /// The largest DIMM a position takes, MiB.
+    pub max_dimm_mib: u32,
+    /// Memory channels per die: how the APOB numbers its DIMM seeds.
+    pub channels_per_die: u8,
 }
 
 /// Declare the board binary: `fstart_platform_amd::stage_bin!(Board);`

@@ -36,6 +36,7 @@ use fstart_core::{
     PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
 use fstart_driver_amd::sp3::soc::Generation;
+use fstart_image_build::amd::blobs;
 use fstart_image_build::build_plan::{
     ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
     FfsAssembly, InputFile, UnitOutput,
@@ -43,7 +44,7 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{FlashPlan, ResetSlot, Sp3FlashAssembly, Survey};
+use fstart_image_build::sp3_flash::{FlashPlan, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey};
 
 use crate::layout::{
     self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
@@ -495,23 +496,33 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         }],
         Payload::Halt | Payload::Uefi => vec![],
     };
-    // `--image-config` replaces the board's vendor ROM (same
-    // workspace-relative or absolute path rules).
-    let vendor_image = selection
-        .image_config
-        .clone()
-        .unwrap_or_else(|| B::VENDOR_IMAGE.into());
+    // The PSP firmware: packed from the blob directory (`--blobs`,
+    // `--donor`), or the board's vendor ROM, which `--image-config`
+    // replaces (same workspace-relative or absolute path rules).
+    let (vendor_image, packed, microcode) = match (&selection.blobs, &selection.image_config) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "SP3 images are packed from --blobs or composed into --image-config".into(),
+            );
+        }
+        (Some(dir), None) => {
+            let (halves, microcode) = packed::<B>(selection, dir)?;
+            (String::new(), halves, microcode)
+        }
+        (None, image) => {
+            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
+            let microcode = microcode::<B>(&vendor_image)?;
+            (vendor_image, vec![], microcode)
+        }
+    };
     let plan = BuildPlan {
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![RESET_UNIT.into()],
         assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
-            ffs: ffs_assembly(
-                payload,
-                payload.config(selection)?,
-                Some(microcode::<B>(&vendor_image)?),
-            ),
+            ffs: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
             vendor_image,
+            packed,
             reset_unit: RESET_UNIT.into(),
             compose: flash_plan::<B>(),
         })),
@@ -519,6 +530,72 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     };
     plan.order()?;
     Ok(plan)
+}
+
+/// The halves packed from the blob directory `dir`: one per generation the
+/// board lists, in boot ROM order (Naples below Rome below Milan), from the
+/// platform's `[package.metadata.fstart.amd.<generation>]` table and the
+/// board's; and the microcode files of all of them for the FFS.
+fn packed<B: Sp3BoardFacts>(
+    selection: &BuildSelection,
+    dir: &str,
+) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
+    let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
+    let tables = &selection.manifests;
+    let boards = blobs::board_tables(&tables.board["amd"])?;
+    let name = tables.board["board"]
+        .as_str()
+        .ok_or("the board table has no board name")?;
+    let mut generations = B::GENERATIONS.to_vec();
+    generations.sort();
+    let mut halves = vec![];
+    let mut files = heapless::Vec::new();
+    for generation in generations {
+        let soc_name = feature(generation);
+        let board = boards
+            .iter()
+            .find(|board| board.soc == soc_name)
+            .ok_or_else(|| format!("the board has no {soc_name} firmware table"))?;
+        let soc: blobs::SocBlobs = serde_json::from_value(tables.platform["amd"][soc_name].clone())
+            .map_err(|e| format!("platform [package.metadata.fstart.amd.{soc_name}]: {e}"))?;
+        if soc.bios_directory != generation.profile().bios {
+            return Err(format!("the {soc_name} table names another BIOS directory"));
+        }
+        let resolved = blobs::resolve(
+            &soc,
+            board,
+            name,
+            &dir,
+            fstart_amdfw_format::HALF_SIZE as u32,
+        )?;
+        for file in &resolved.microcode {
+            files
+                .push(
+                    file.as_str()
+                        .try_into()
+                        .map_err(|_| format!("microcode path {file} is too long"))?,
+                )
+                .map_err(|_| "too many microcode files")?;
+        }
+        halves.push(PackedHalf {
+            generation: generation.profile().bios,
+            files: resolved.files,
+            apob_destination: board
+                .apob_destination
+                .or(soc.apob_destination)
+                .ok_or_else(|| format!("the {soc_name} table has no APOB destination"))?,
+        });
+    }
+    if halves.len() > 2 {
+        return Err("an SP3 flash has two halves, not one per generation".into());
+    }
+    Ok((
+        halves,
+        MicrocodeConfig::Amd(AmdMicrocodeConfig {
+            files,
+            vendor_images: heapless::Vec::new(),
+        }),
+    ))
 }
 
 /// The microcode the FFS carries for MP init: the BIOS directory patches of
@@ -610,6 +687,69 @@ mod tests {
             const MAX_CPUS: u16 = 1;
         }
         assert!(resolve::<Nothing>(&BuildSelection::default()).is_err());
+    }
+
+    #[test]
+    fn packs_one_half_per_generation_from_the_blob_tables() {
+        let mut selection = BuildSelection {
+            blobs: Some(std::env::temp_dir().to_str().unwrap().into()),
+            ..Default::default()
+        };
+        let apcb = |soc: &str| {
+            serde_json::json!({ "apcb": { "entries": [
+                { "type": 0x68, "file": format!("b/{soc}/apcb.bin") },
+            ]}})
+        };
+        selection.manifests.board = serde_json::json!({
+            "board": "b",
+            "amd": { "milan": apcb("milan"), "rome": apcb("rome") },
+        });
+        let soc = |slot: &str, ucode: &str| {
+            serde_json::json!({
+                "bios-directory": slot, "levels": 2,
+                "efs-offset": 0x2_0000, "partition-end": 0x60_0000,
+                "apob-destination": 0x3000_0000,
+                "psp": [{ "type": 1, "file": "boot.bin" }],
+                "bios": [],
+                "microcode": [{ "equivalence-id": 0x8310, "file": ucode }],
+            })
+        };
+        selection.manifests.platform = serde_json::json!({ "amd": {
+            "rome": soc("Family17hModel30", "rome.bin"),
+            "milan": soc("Family19h", "milan.bin"),
+        }});
+        let plan = resolve::<S8030>(&selection).unwrap();
+        plan.validate_image_selection(&selection).unwrap();
+        let image = sp3(&plan);
+        assert!(image.vendor_image.is_empty());
+        assert_eq!(
+            image
+                .packed
+                .iter()
+                .map(|h| h.generation)
+                .collect::<std::vec::Vec<_>>(),
+            [sp3_flash::ROME, sp3_flash::MILAN]
+        );
+        assert_eq!(
+            image.packed[1].files.bios[0].path.rsplit('/').next(),
+            Some("apcb.bin")
+        );
+        let Some(MicrocodeConfig::Amd(microcode)) = &image.ffs.microcode else {
+            panic!("no microcode")
+        };
+        assert_eq!(microcode.files.len(), 2);
+        assert!(microcode.vendor_images.is_empty());
+        // Not both a vendor image and blobs; every listed generation needs
+        // a board table.
+        let mut both = selection.clone();
+        both.image_config = Some("vendor.rom".into());
+        assert!(resolve::<S8030>(&both).is_err());
+        let mut rome_only = selection;
+        rome_only.manifests.board["amd"]
+            .as_object_mut()
+            .unwrap()
+            .remove("milan");
+        assert!(resolve::<S8030>(&rome_only).is_err());
     }
 
     #[test]

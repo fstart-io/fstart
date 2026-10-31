@@ -274,66 +274,6 @@ fn runtime_processor_counts() -> (u16, u16, u16) {
     (cores.max(1), enabled.max(1), threads.max(enabled))
 }
 
-#[cfg(feature = "smbios")]
-fn add_runtime_cache_info(w: &mut fstart_acpi::smbios::SmbiosWriter) -> [u16; 3] {
-    let mut handles = [0xFFFFu16; 3];
-    for cache in cpuid_reader().get_cache_parameters().into_iter().flatten() {
-        let level = cache.level();
-        let cache_type = cache.cache_type();
-        let size_kb = cache
-            .associativity()
-            .saturating_mul(cache.physical_line_partitions())
-            .saturating_mul(cache.coherency_line_size())
-            .saturating_mul(cache.sets())
-            / 1024;
-        let handle = w.add_cache_info(
-            cache_designation(level, &cache_type),
-            level,
-            u32::try_from(size_kb).unwrap_or(u32::MAX),
-            smbios_associativity(cache.associativity(), cache.is_fully_associative()),
-            smbios_cache_type(&cache_type),
-        );
-        if let Some(slot) = level
-            .checked_sub(1)
-            .and_then(|level| handles.get_mut(level as usize))
-        {
-            *slot = handle;
-        }
-    }
-    handles
-}
-
-#[cfg(feature = "smbios")]
-fn cache_designation(level: u8, cache_type: &raw_cpuid::CacheType) -> &'static str {
-    match (level, cache_type) {
-        (1, raw_cpuid::CacheType::Data) => "L1 Data Cache",
-        (1, raw_cpuid::CacheType::Instruction) => "L1 Instruction Cache",
-        (1, _) => "L1 Cache",
-        (2, _) => "L2 Cache",
-        (3, _) => "L3 Cache",
-        _ => "CPU Cache",
-    }
-}
-
-#[cfg(any(feature = "smbios", feature = "host"))]
-fn smbios_cache_type(cache_type: &raw_cpuid::CacheType) -> u8 {
-    match cache_type {
-        raw_cpuid::CacheType::Instruction => 0x03,
-        raw_cpuid::CacheType::Data => 0x04,
-        raw_cpuid::CacheType::Unified => 0x05,
-        _ => 0x02,
-    }
-}
-
-#[cfg(any(feature = "smbios", feature = "host"))]
-fn smbios_associativity(ways: usize, fully_associative: bool) -> u8 {
-    fstart_core::smbios::CacheAssociativity::from_ways(
-        u16::try_from(ways).unwrap_or(0),
-        fully_associative,
-    )
-    .to_smbios_byte()
-}
-
 /// SMBIOS processor family from the CPUID brand string; 0x02 is "Unknown".
 #[cfg(any(feature = "smbios", feature = "host"))]
 fn processor_family(brand: &str) -> u16 {
@@ -359,53 +299,23 @@ fn processor_family(brand: &str) -> u16 {
 /// Type 4 for the executing CPU package, with its Type 7 caches.
 #[cfg(feature = "smbios")]
 fn add_processor(w: &mut fstart_acpi::smbios::SmbiosWriter, socket: &str) {
-    use fstart_arch::x86::boot::cpuid::{cpuid, max_extended_leaf};
-    const SIXTY_FOUR_BIT: u16 = 1 << 2;
-    const MULTI_CORE: u16 = 1 << 3;
-    const HARDWARE_THREAD: u16 = 1 << 4;
-    const EXECUTE_PROTECTION: u16 = 1 << 5;
-    const ENHANCED_VIRTUALIZATION: u16 = 1 << 6;
-    const POWER_PERFORMANCE_CONTROL: u16 = 1 << 7;
-
-    let cpu = cpuid_reader();
-    let vendor = cpu.get_vendor_info();
-    let brand = cpu.get_processor_brand_string();
-    let brand = brand.as_ref().map_or("", |brand| brand.as_str().trim());
-    let leaf1 = cpuid(1, 0);
-    let ext = (max_extended_leaf() >= 0x8000_0001).then(|| cpuid(0x8000_0001, 0).edx);
-    let (cores, enabled, threads) = runtime_processor_counts();
-    let characteristics = [
-        (ext.is_some_and(|edx| edx & (1 << 29) != 0), SIXTY_FOUR_BIT),
-        (cores > 1, MULTI_CORE),
-        (threads > cores, HARDWARE_THREAD),
-        (
-            ext.is_some_and(|edx| edx & (1 << 20) != 0),
-            EXECUTE_PROTECTION,
-        ),
-        (leaf1.ecx & (1 << 5) != 0, ENHANCED_VIRTUALIZATION),
-        (leaf1.ecx & (1 << 7) != 0, POWER_PERFORMANCE_CONTROL),
-    ]
-    .into_iter()
-    .filter(|(present, _)| *present)
-    .fold(0, |bits, (_, bit)| bits | bit);
+    let cpu = fstart_arch::x86::boot::cpuid::ProcessorSnapshot::read();
+    let (cores, enabled_cores, threads) = runtime_processor_counts();
     let clock = fstart_arch::x86::bus_clock();
     let max_speed_mhz = clock.map_or(0, |clock| clock.max_core_mhz() as u16);
-    let caches = add_runtime_cache_info(&mut *w);
-    w.add_processor(&fstart_acpi::smbios::ProcessorInfo {
+    w.add_package(&fstart_acpi::smbios::Package {
         socket,
-        manufacturer: vendor.as_ref().map_or("Unknown", |vendor| vendor.as_str()),
-        version: brand,
-        family: processor_family(brand),
-        id: u64::from(leaf1.eax) | u64::from(leaf1.edx) << 32,
+        cpu: &cpu,
+        // The cache sizes of one core.
+        apic_ids: &[],
+        cores,
+        enabled_cores,
+        threads,
+        family: processor_family(cpu.brand()),
+        upgrade: 0x02, // unknown
         external_clock_mhz: clock.map_or(0, |clock| clock.fsb_mhz as u16),
         max_speed_mhz,
         current_speed_mhz: max_speed_mhz,
-        upgrade: 0x02, // unknown
-        core_count: cores,
-        core_enabled: enabled,
-        thread_count: threads,
-        characteristics,
-        caches,
     });
 }
 
@@ -585,35 +495,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smbios_cache_types_follow_the_type7_enum() {
-        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Instruction), 0x03);
-        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Data), 0x04);
-        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Unified), 0x05);
-        assert_eq!(smbios_cache_type(&raw_cpuid::CacheType::Reserved), 0x02);
-    }
-
-    #[test]
-    fn smbios_cache_associativity_follows_the_type7_enum() {
-        for (ways, encoded) in [
-            (1, 0x03),
-            (2, 0x04),
-            (4, 0x05),
-            (8, 0x07),
-            (16, 0x08),
-            (12, 0x09),
-            (24, 0x0a),
-            (32, 0x0b),
-            (48, 0x0c),
-            (64, 0x0d),
-            (20, 0x0e),
-        ] {
-            assert_eq!(smbios_associativity(ways, false), encoded);
-        }
-        assert_eq!(smbios_associativity(1, true), 0x06);
-        assert_eq!(smbios_associativity(3, false), 0x02);
-    }
-
-    #[test]
     fn processor_family_follows_the_brand_string() {
         for (brand, family) in [
             ("Intel(R) Core(TM)2 Duo CPU     T7300  @ 2.00GHz", 0xBF),
@@ -640,14 +521,4 @@ mod tests {
         assert_eq!(onboard_device(0x0380), None);
         assert_eq!(onboard_device(0x0c03), None);
     }
-}
-
-/// `raw_cpuid` reader over the arch CPUID wrapper. `CpuId::new()` needs SSE,
-/// which the 32-bit softfloat target disables.
-#[cfg(feature = "smbios")]
-fn cpuid_reader() -> raw_cpuid::CpuId {
-    raw_cpuid::CpuId::with_cpuid_fn(|leaf, subleaf| {
-        let (eax, ebx, ecx, edx) = fstart_arch::x86::cpuid_count(leaf, subleaf);
-        raw_cpuid::CpuIdResult { eax, ebx, ecx, edx }
-    })
 }

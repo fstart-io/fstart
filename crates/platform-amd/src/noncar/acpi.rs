@@ -5,10 +5,10 @@ use super::{MAX_DIES, pci::Root};
 use crate::acpi::{self, BoardAcpi, Bridge, DieAcpi, Inputs, SocAcpi};
 use core::ops::RangeInclusive;
 use fstart_driver_amd::{
+    ccx::power,
     df::Die,
     fch,
     nbio::iommu::{self, Iommu},
-    soc::Soc,
 };
 use fstart_log::Hex;
 use fstart_pci::{MAX_PCI_ROOT_WINDOWS, PciEcam, ecam::GlobalEcam};
@@ -68,7 +68,7 @@ impl HostBridge {
 
 /// Build the tables for `dies` with their host bridges `hosts`, their NBIO
 /// IOAPICs at `ioapics` (by die) and the CPUs `apic_ids`; returns the RSDP.
-pub fn install<S: Soc>(
+pub fn install<S: super::Soc>(
     soc: &SocAcpi,
     dies: &[Die<S, GlobalEcam>],
     hosts: &[HostBridge],
@@ -83,6 +83,7 @@ pub fn install<S: Soc>(
     struct Tables([u8; TABLE_CAPACITY]);
     static mut TABLES: Tables = Tables([0; TABLE_CAPACITY]);
 
+    let all_dies = dies;
     let dies: Vec<DieAcpi<'_>, MAX_DIES> = dies
         .iter()
         .zip(hosts)
@@ -94,8 +95,13 @@ pub fn install<S: Soc>(
             })
         })
         .collect();
+    let numa = S::die_memory(all_dies);
     // SAFETY: HPET general capabilities, decoded by the FCH.
     let hpet_id = unsafe { fstart_core::mmio::read32(fch::HPET as usize as *const u32) };
+    // Every core runs the BSP's P-state table and C-state setup.
+    // SAFETY: the BSP, reading the architectural P-state and C-state MSRs.
+    let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
+    let pstates = power::pstates(&msr);
     let tables = acpi::build(&Inputs {
         soc,
         apic_ids,
@@ -103,6 +109,16 @@ pub fn install<S: Soc>(
         ecam_base: window.base,
         ecam_buses: window.buses,
         hpet_id,
+        power: Some(power::Power {
+            pstates: &pstates,
+            cstates: power::cstate_info(&msr),
+            threads_per_core: fstart_driver_amd::ccx::Thread::current().threads_per_core(),
+            c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
+        }),
+        numa: numa.as_ref().map(|memory| acpi::DieNuma {
+            memory,
+            phys_addr_bits: fstart_arch::x86::physical_address_bits() as u8,
+        }),
         board,
     })
     .ok()?;

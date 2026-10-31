@@ -70,6 +70,7 @@ pub struct Handoff {
     pub console: &'static dyn Console,
     pub e820: E820State,
     pub rsdp: Option<u64>,
+    pub smbios: Option<u64>,
     /// The FFS, the firmware region of the payload.
     pub ffs: Region,
     pub pci_root: PciRootInfo,
@@ -91,6 +92,9 @@ impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
     }
     fn acpi_rsdp(&self) -> Option<u64> {
         self.rsdp
+    }
+    fn smbios(&self) -> Option<u64> {
+        self.smbios
     }
     fn pci_root(&self) -> Option<PciRootInfo> {
         Some(self.pci_root)

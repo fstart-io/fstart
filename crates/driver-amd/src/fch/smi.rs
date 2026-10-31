@@ -234,11 +234,16 @@ mod handler {
         /// # Safety
         /// Called only by [`FchSmmHandler`] while it owns the SMM rendezvous.
         unsafe fn sleep_entry(_slp_typ: u8) {}
+        /// With SLP_TYP armed, right before SLP_EN: the SoC's last word
+        /// to its SMU. Returns to have the FCH enter the state.
+        /// # Safety
+        /// As for [`Self::sleep_entry`].
+        unsafe fn sleep_armed(_slp_typ: u8) {}
         /// GEVENT SMIs, bit n = GEVENTn.
         /// # Safety
         /// As for [`Self::sleep_entry`].
         unsafe fn gevent(_status: u32) {}
-        /// Any SMI command, after the FCH handled its own.
+        /// An SMI command the FCH doesn't handle itself.
         /// # Safety
         /// As for [`Self::sleep_entry`].
         unsafe fn apmc(_command: u8) {}
@@ -305,9 +310,8 @@ mod handler {
                 fch.set_sci(false);
                 fch.enable_power_button_smi();
             }
-            _ => {}
+            _ => unsafe { H::apmc(command) },
         }
-        unsafe { H::apmc(command) };
     }
 
     /// Power button: S5 unless the OS owns ACPI.
@@ -345,6 +349,7 @@ mod handler {
             .reg(PM_RESET_CONTROL1)
             .modify(ResetControl1::SLP_TYPE_EN::SET);
         control.modify(Pm1Control::SLP_TYP.val(slp_typ.into()) + Pm1Control::SLP_EN::CLEAR);
+        unsafe { H::sleep_armed(slp_typ) };
         control.modify(Pm1Control::SLP_EN::SET);
         loop {
             unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };

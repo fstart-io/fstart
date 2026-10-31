@@ -9,14 +9,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_acpi::msct::{DomainCapacity, build_msct};
-use fstart_acpi::slit::build_slit;
-use fstart_acpi::srat::{SratEntry, build_srat};
+pub use fstart_acpi::numa::{CpuAffinity, MemoryAffinity};
 #[cfg(any(feature = "bundle-reset", test))]
 use fstart_driver_amd::sp3::df::dram::{DramMap, NumaDomain, df3_channel, domain_of};
 use fstart_driver_amd::sp3::soc::Generation;
-
-use super::Cpu;
 
 /// A proximity domain; its proximity number is its index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,13 +20,16 @@ pub struct Domain {
     pub socket: u8,
 }
 
-/// DRAM `[base, end)` of a domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemoryAffinity {
-    pub base: u64,
-    pub end: u64,
-    pub domain: u32,
+/// NUMA description.
+#[derive(Debug, Clone, Copy)]
+pub struct Numa<'a> {
+    pub domains: &'a [Domain],
+    pub memory: &'a [MemoryAffinity],
+    /// CPUID Fn8000_0008_EAX\[7:0\], for the MSCT.
+    pub phys_addr_bits: u8,
 }
+
+use super::Cpu;
 
 /// Merge per-node DRAM views into sorted, unique proximity ranges.
 #[cfg(any(feature = "bundle-reset", test))]
@@ -51,15 +50,6 @@ pub(crate) fn memory_from_maps(
     memory
 }
 
-/// NUMA description.
-#[derive(Debug, Clone, Copy)]
-pub struct Numa<'a> {
-    pub domains: &'a [Domain],
-    pub memory: &'a [MemoryAffinity],
-    /// CPUID Fn8000_0008_EAX\[7:0\], for the MSCT.
-    pub phys_addr_bits: u8,
-}
-
 /// SLIT distance between two different domains at the donor defaults:
 /// Naples PCD 0x112 = 0xFF → other die 16, other socket 32; Rome/Milan
 /// "auto" (PCD 0x179 ≠ 0) with PCD 0x17A TRUE → same socket 12, other
@@ -75,46 +65,16 @@ pub const fn distance(generation: Generation, a: Domain, b: Domain) -> u8 {
 
 /// `[SRAT, MSCT, SLIT]` (AmdAcpiDxe order), or nothing with one domain.
 pub fn tables(generation: Generation, numa: &Numa, cpus: &[Cpu]) -> Vec<Vec<u8>> {
-    let n = numa.domains.len();
-    if n <= 1 {
-        return Vec::new();
-    }
-    let entries: Vec<SratEntry> = cpus
-        .iter()
-        .map(|c| SratEntry::Processor {
-            domain: c.domain,
+    fstart_acpi::numa::tables(
+        numa.domains.len(),
+        numa.memory,
+        cpus.iter().map(|c| CpuAffinity {
             apic_id: c.apic_id,
-        })
-        .chain(numa.memory.iter().map(|m| SratEntry::Memory {
-            domain: m.domain,
-            base: m.base,
-            length: m.end - m.base,
-            hot_pluggable: false,
-            non_volatile: false,
-        }))
-        .collect();
-    let capacity: Vec<DomainCapacity> = (0..n as u32)
-        .map(|d| DomainCapacity {
-            domain: d,
-            processors: cpus.iter().filter(|c| c.domain == d).count() as u32,
-            memory: numa
-                .memory
-                .iter()
-                .filter(|m| m.domain == d)
-                .map(|m| m.end - m.base)
-                .sum(),
-        })
-        .collect();
-    let max_address = (1u64 << numa.phys_addr_bits.min(63)) - 1;
-    alloc::vec![
-        build_srat(&entries),
-        build_msct(&capacity, 1, max_address),
-        build_slit(n, |i, j| distance(
-            generation,
-            numa.domains[i],
-            numa.domains[j]
-        )),
-    ]
+            domain: c.domain,
+        }),
+        numa.phys_addr_bits,
+        |a, b| distance(generation, numa.domains[a], numa.domains[b]),
+    )
 }
 
 #[cfg(test)]

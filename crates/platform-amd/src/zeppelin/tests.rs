@@ -199,6 +199,7 @@ fn model(dies: u8) -> Hw {
 fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
     let config = Config {
         subsystem_id: 0x1000_1458,
+        ccx: super::CcxConfig::DEFAULT,
         fch: FchConfig {
             irq_routes: ROUTES,
             smi_gevents: 1 << 11,
@@ -258,6 +259,7 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
     hw.set_config(PciAddress::new(0, 0x40, 8, 1), 0, 0x1452_1022);
     let config = Config {
         subsystem_id: 0x1000_1458,
+        ccx: super::CcxConfig::DEFAULT,
         fch: FchConfig {
             irq_routes: ROUTES,
             ..FchConfig::DEFAULT
@@ -383,6 +385,8 @@ fn sp4_pci_roots_and_host_bridges() {
         ecam_base: 0xf000_0000,
         ecam_buses: 128,
         hpet_id: 0,
+        power: None,
+        numa: None,
         board: &board,
     })
     .unwrap();

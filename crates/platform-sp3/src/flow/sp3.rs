@@ -721,7 +721,7 @@ pub(crate) fn numa(ctx: &Ctx, si: &Silicon) -> Option<super::NumaPlan> {
             .map(|node| dram::read::<Df3, _>(&ctx.df, node, Target::Instance(v3::PIE))),
         &domains,
     );
-    let smt = (fstart_arch::x86::cpuid(0x8000_001e).1 >> 8) & 0xff != 0;
+    let smt = crate::mp::this_thread(ctx.generation).smt();
     let layout = ApicLayout::new(ctx.generation, smt);
     let cpus = ctx
         .apic_ids

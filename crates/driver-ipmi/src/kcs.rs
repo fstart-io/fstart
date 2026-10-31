@@ -89,6 +89,16 @@ where
         self
     }
 
+    /// No transaction is in progress: idle state, both buffers empty. A
+    /// caller that interrupts the interface's owner (SMM) must not start
+    /// one otherwise.
+    pub fn idle(&self) -> bool {
+        let status = self.status.extract();
+        status.matches_all(Status::STATE::Idle)
+            && !status.is_set(Status::IBF)
+            && !status.is_set(Status::OBF)
+    }
+
     fn wait(
         &mut self,
         done: impl Fn(LocalRegisterCopy<u8, Status::Register>) -> bool,
@@ -395,5 +405,35 @@ mod tests {
         assert_eq!(bmc.into_inner().request, [0x06 << 2, 0x06, 0x85, 0x83]);
         assert_eq!(crate::sleep_power_states(0), Some((0, 0)));
         assert_eq!(crate::sleep_power_states(2), None);
+    }
+
+    #[test]
+    fn sleep_notify_only_on_an_idle_interface() {
+        let notify = crate::SleepNotify {
+            kcs_port: DEFAULT_PORT,
+            kcs_spacing: 1,
+            sw_smi_base: 0xc0,
+        };
+        let bmc = || {
+            RefCell::new(Bmc {
+                answer: vec![0x07 << 2, 0x06, 0],
+                ..Bmc::default()
+            })
+        };
+        // Not a notification.
+        let idle = bmc();
+        assert_eq!(notify.report_on(kcs(&idle), 0xe1), None);
+        assert_eq!(notify.report_on(kcs(&idle), 0xc2), None);
+        // S5.
+        assert_eq!(notify.report_on(kcs(&idle), 0xc5), Some(Ok(())));
+        assert_eq!(idle.into_inner().request, [0x06 << 2, 0x06, 0x85, 0x83]);
+        // The OS's transaction is in progress: nothing is written.
+        let busy = bmc();
+        busy.borrow_mut().state = READ;
+        assert_eq!(notify.report_on(kcs(&busy), 0xc5), None);
+        let busy = bmc();
+        busy.borrow_mut().busy = true;
+        assert_eq!(notify.report_on(kcs(&busy), 0xc5), None);
+        assert!(busy.into_inner().writes.is_empty());
     }
 }

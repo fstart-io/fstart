@@ -26,8 +26,30 @@ use silicon::{Dma, Identity, SmuPages, SmuPolicy};
 pub struct Config {
     /// Subsystem ID of the FCH, NBIO and PCIe functions.
     pub subsystem_id: u32,
+    pub ccx: CcxConfig,
     pub fch: FchConfig,
     pub dxio: DxioConfig,
+}
+
+/// The cores.
+#[derive(Debug, Clone, Copy)]
+pub struct CcxConfig {
+    /// SYSCFG.SMEE on every thread, as the vendor firmware sets it: the OS
+    /// may use SME (`mem_encrypt=on`) and SEV. Off by default: the PSP's SEV
+    /// firmware keeps its state in flash through the SMM handler's P2C SPI
+    /// services (PSP_ZP §3.5), which fstart doesn't implement, so Linux's
+    /// SEV setup times out (5 s) and disables the PSP driver.
+    pub memory_encryption: bool,
+}
+impl CcxConfig {
+    pub const DEFAULT: Self = Self {
+        memory_encryption: false,
+    };
+}
+impl Default for CcxConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// The Taishan FCH.
@@ -73,14 +95,16 @@ impl noncar::host::HostSoc for Zeppelin {
         payloads: true,
         smm: true,
         release_only: false,
-        // The PSP inflates the stage instead of copying the whole 2.3 MiB
-        // reset region, and reads the flash with Fast Read at 33 MHz
-        // instead of its default: about 1.4 s faster to x86 on the MJ11.
-        image_config: noncar::host::ImageConfig::Vendor {
-            prefix: layout::VENDOR_PREFIX,
+        // The PSP firmware packed from the SoC's and the board's blob
+        // tables, with the reset image at the top of the flash. The PSP
+        // inflates the stage instead of copying the whole 2.3 MiB reset
+        // region, and reads the flash with Fast Read at 33 MHz (the SoC
+        // table's EFS SPI settings): about 1.4 s faster to x86 on the MJ11.
+        image_config: noncar::host::ImageConfig::Packed {
+            reset_offset: Some(layout::RESET_FLASH_OFFSET),
             psp: fstart_image_build::amd::assembly::PspOptions {
                 compress_reset: true,
-                spi: Some((7, 1)),
+                spi: None,
             },
         },
     };
@@ -100,6 +124,13 @@ impl noncar::Soc for Zeppelin {
     const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
+    /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
+    /// LRDIMMs up to 64 GiB.
+    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+        socket_upgrade: 0x06,
+        max_dimm_mib: 64 * 1024,
+        channels_per_die: 2,
+    };
     type Config = Config;
     type Identity = Identity;
     type State = silicon::State;
@@ -213,7 +244,15 @@ impl noncar::Soc for Zeppelin {
             }),
             acpi: &acpi::ACPI,
             devices: heapless::Vec::new(),
-            aml: Default::default(),
+            // The FCH GPIO controller (AMDI0030) on the IRQ the board routes
+            // it to, as the vendor DSDT has it: three banks.
+            aml: config
+                .fch
+                .irq_routes
+                .iter()
+                .find(|route| route.source == taishan::irq::GPIO)
+                .and_then(|route| fstart_driver_amd::fch::aml::gpio(route.apic, 0x300).ok())
+                .unwrap_or_default(),
             tables: Default::default(),
             framebuffer: None,
             state,
@@ -222,6 +261,26 @@ impl noncar::Soc for Zeppelin {
 
     fn after_resources<B: Board<Soc = Self>>(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
         silicon::after_resources(ctx.fch);
+    }
+
+    /// The dies of an SP4 as AmdFabricZpDxe reports them for SRAT.
+    fn die_memory(
+        dies: &[fstart_driver_amd::df::Die<Self, fstart_pci::ecam::GlobalEcam>],
+    ) -> Option<crate::acpi::DieMemory> {
+        if dies.len() < 2 {
+            return None;
+        }
+        let memory = fstart_driver_amd::df::zeppelin::die_memory(&dies[0].df())?;
+        Some(
+            memory
+                .iter()
+                .map(|m| fstart_acpi::numa::MemoryAffinity {
+                    base: m.base,
+                    end: m.end,
+                    domain: m.die.into(),
+                })
+                .collect(),
+        )
     }
 
     /// The vendor firmware's ReadyToBoot.

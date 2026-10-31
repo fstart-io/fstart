@@ -280,8 +280,20 @@ fn compose_sp3_flash(
     };
     let plan = &image.compose;
     let vendor_path = workspace_root.join(&image.vendor_image);
-    let vendor = read(&vendor_path)?;
-    eprintln!("[fstart] SP3 vendor ROM {}", vendor_path.display());
+    let vendor = if image.packed.is_empty() {
+        eprintln!("[fstart] SP3 vendor ROM {}", vendor_path.display());
+        read(&vendor_path)?
+    } else {
+        let read = |path: &str| read(std::path::Path::new(path));
+        let rom = fstart_image_build::sp3_flash::packed_rom(&image.packed, plan, &read)?;
+        for half in &image.packed {
+            eprintln!(
+                "[fstart] SP3 {} PSP firmware packed from its files",
+                name(half.generation)
+            );
+        }
+        rom
+    };
     let ffs = read(&assembled.image)?;
     let reset = assembled
         .stages
@@ -299,7 +311,7 @@ fn compose_sp3_flash(
     for (half, action) in &survey.halves {
         match action {
             HalfAction::Compose(layout) => eprintln!(
-                "[fstart] SP3 {half:?} half ({}): vendor EFS and directories kept to {:#x}",
+                "[fstart] SP3 {half:?} half ({}): EFS and directories to {:#x}",
                 name(layout.generation),
                 layout.prefix_end,
             ),

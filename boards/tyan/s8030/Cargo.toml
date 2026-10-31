@@ -22,6 +22,25 @@ target = "x86_64-unknown-none"
 stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
 
+# The board's APCBs of each generation, as its vendor image has them.
+[package.metadata.fstart.amd.rome]
+apcb = { entries = [
+  { type = 0x68, file = "s8030/rome/apcb-68-0.bin" },
+  { type = 0x68, instance = 8, level = 2, file = "s8030/rome/apcb-68-8.bin" },
+  { type = 0x68, instance = 9, level = 2, file = "s8030/rome/apcb-68-9.bin" },
+  { type = 0x60, level = 2, file = "s8030/rome/apcb-60-0.bin" },
+  { type = 0x60, instance = 1, level = 2, file = "s8030/rome/apcb-60-1.bin" },
+] }
+
+[package.metadata.fstart.amd.milan]
+apcb = { entries = [
+  { type = 0x68, subprogram = 1, file = "s8030/milan/apcb-68-0.bin" },
+  { type = 0x68, subprogram = 1, instance = 8, level = 2, file = "s8030/milan/apcb-68-8.bin" },
+  { type = 0x68, subprogram = 1, instance = 9, level = 2, file = "s8030/milan/apcb-68-9.bin" },
+  { type = 0x60, subprogram = 1, level = 2, file = "s8030/milan/apcb-60-0.bin" },
+  { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "s8030/milan/apcb-60-1.bin" },
+] }
+
 [package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
 features = ["pcie3-x4x4x4x4"]
 

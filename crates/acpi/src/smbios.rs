@@ -41,6 +41,11 @@
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{Immutable, IntoBytes};
 
+#[cfg(feature = "x86")]
+mod package;
+#[cfg(feature = "x86")]
+pub use package::{LEGACY_ENTRY_POINT, Package, publish_legacy_entry_point};
+
 /// SMBIOS 3.0 64-bit entry point signature.
 const SM3_MAGIC: [u8; 5] = *b"_SM3_";
 

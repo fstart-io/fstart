@@ -167,6 +167,50 @@ pub fn cst_aml(states: &[PowerState]) -> Vec<u8> {
     crate::serialize(&Name::new("_CST".into(), &cst))
 }
 
+/// A `_PSD` dependency domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dependency {
+    pub domain: u32,
+    pub coordination: Coordination,
+    /// Processors in the domain.
+    pub processors: u32,
+}
+
+/// The power objects of one processor device: `_PCT`, `_PSS`, `_PPC` and
+/// `_PSD` with P-states, `_CST` with C-states. The vendor's code reads the
+/// states; this encodes them.
+#[derive(Debug, Clone, Copy)]
+pub struct PowerObjects<'a> {
+    /// `_PCT` control and status registers.
+    pub control: GAS,
+    pub status: GAS,
+    pub pstates: &'a [PerformanceState],
+    /// `Name(_PPC, n)`, the highest P-state the OS may use.
+    pub ppc: Option<u32>,
+    pub dependency: Option<Dependency>,
+    pub cstates: &'a [PowerState],
+}
+
+impl PowerObjects<'_> {
+    pub fn aml(&self) -> Vec<u8> {
+        let mut aml = Vec::new();
+        if !self.pstates.is_empty() {
+            aml.extend(pct_aml(self.control, self.status));
+            aml.extend(pss_aml(self.pstates));
+            if let Some(ppc) = self.ppc {
+                aml.extend(crate::serialize(&Name::new("_PPC".into(), &ppc)));
+            }
+            if let Some(d) = self.dependency {
+                aml.extend(psd_aml(d.domain, d.coordination, d.processors));
+            }
+        }
+        if !self.cstates.is_empty() {
+            aml.extend(cst_aml(self.cstates));
+        }
+        aml
+    }
+}
+
 /// One `_CPC` entry (ACPI 6.5 §8.4.6.1, Table 8.24).
 #[derive(Debug, Clone, Copy)]
 pub enum CpcEntry {

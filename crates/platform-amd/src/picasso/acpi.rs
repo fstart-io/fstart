@@ -38,6 +38,7 @@ pub const ACPI: SocAcpi = SocAcpi {
         Route::new(8, 2, 7, CDAB, 0x0c),
     ],
     fch_intx_gsi: [16, 17, 18, 19],
+    wake: None,
 };
 
 /// The FCH GPIO controller and the board's I2C controllers with the
@@ -45,11 +46,12 @@ pub const ACPI: SocAcpi = SocAcpi {
 pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, Error> {
     use fstart_acpi::devices::i2c::{self, DesignWareSpeed, GpioInterrupt, I2cDevice};
     use fstart_driver_amd::{
-        fch::{i2c::Speed, sandstone::legacy},
+        fch::{self, i2c::Speed, sandstone::legacy},
         soc::Soc,
     };
     let irq = |source| legacy::internal_irq(source).ok_or(Error::Aml(AmlError::InvalidPath));
-    let mut aml = crate::acpi::fch_gpio(irq(legacy::source::GPIO)?)?;
+    // Picasso's four GPIO banks (coreboot's mmio.asl).
+    let mut aml = fch::aml::gpio(irq(legacy::source::GPIO)?, 0x400)?;
     if emmc_enabled {
         aml.extend(emmc_card()?);
     }
@@ -76,13 +78,13 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, E
         for (n, device) in bus.devices.iter().enumerate() {
             let interrupt = device.interrupt.map(|interrupt| match interrupt {
                 super::GpioInterrupt::Level { pin, active_low } => GpioInterrupt {
-                    controller: crate::acpi::FCH_GPIO_PATH,
+                    controller: fch::aml::GPIO_PATH,
                     pin: pin.into(),
                     edge: false,
                     active_low,
                 },
                 super::GpioInterrupt::Edge { pin, falling } => GpioInterrupt {
-                    controller: crate::acpi::FCH_GPIO_PATH,
+                    controller: fch::aml::GPIO_PATH,
                     pin: pin.into(),
                     edge: true,
                     active_low: falling,
@@ -102,7 +104,8 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, E
                 .dsdt_aml()?,
             );
         }
-        aml.extend(crate::acpi::fch_i2c(
+        aml.extend(fch::aml::i2c(
+            &crate::acpi::fch_i2c_name(index),
             index,
             base as u32,
             irq(source)?,

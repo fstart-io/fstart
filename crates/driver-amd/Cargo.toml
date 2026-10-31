@@ -15,6 +15,8 @@ milan = ["sp3"]
 sp3 = ["dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch", "dep:fstart-driver-i2c"]
 # ACPI descriptions of the SP3 FCH devices.
 acpi = ["dep:fstart-acpi"]
+# The SMBIOS inventory from the APOB.
+smbios = ["acpi", "dep:fstart-driver-spd"]
 # FCH SMI control for the AMD SMM owner of fstart-arch.
 smi = ["dep:fstart-arch"]
 # The FCH SMM handler, for SMM image builds.
@@ -37,10 +39,11 @@ fstart-smm = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
 fstart-amdfw-format = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-driver-spd = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The unit tests cover every SoC, also in `cargo test --workspace`.
-fstart-driver-amd = { path = ".", features = ["picasso", "zeppelin", "smm", "naples", "rome", "milan", "acpi"] }
+fstart-driver-amd = { path = ".", features = ["picasso", "zeppelin", "smm", "naples", "rome", "milan", "acpi", "smbios"] }
 fstart-pci = { workspace = true }
 libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
