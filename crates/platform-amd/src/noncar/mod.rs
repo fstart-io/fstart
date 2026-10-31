@@ -229,7 +229,7 @@ impl<S: Soc> BoardCtx<'_, S> {
 pub trait Board: 'static {
     type Soc: Soc;
     const CONFIG: &'static <Self::Soc as Soc>::Config;
-    /// (Semantic board policy, internal ABI/default template), host use only.
+    /// (Semantic board policy, framework firmware-profile name), host use only.
     /// Absent boards retain their existing image path.
     const APCB_SOURCE: Option<(&'static str, &'static str)> = None;
 

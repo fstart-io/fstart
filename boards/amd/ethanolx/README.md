@@ -39,8 +39,8 @@ With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
 The bank layout: vendor EFS and directories to `0x893000`, FFS from
 `0x893000`, reset image at `0xde0000`.
 
-APCB configuration is built from `apcb/milan.toml` and shared typed DDR4 tables,
-not copied as an opaque blob. The initial settings reproduce RXM100CB exactly;
+APCB configuration is built from semantic policy in `apcb/milan.toml` and
+framework Rust firmware-family models, not copied as an opaque blob. The initial settings reproduce RXM100CB exactly;
 other APCB contents are rejected by donor hashes until reviewed. See
 `docs/amd-apcb.md`. This source-generation path has host reconstruction tests,
 not a repeated hardware qualification.

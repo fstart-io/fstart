@@ -8,8 +8,8 @@
 //! Picasso; multi-level/ISH assembly is a separate coverage increment, not a
 //! second parser. Signed AMD blobs are copied unchanged, never re-signed.
 pub mod apcb;
+mod apcb_layout;
 pub mod apcb_source;
-mod apcb_template;
 pub mod apcb_toml;
 pub mod assembly;
 pub mod blobs;

@@ -1,4 +1,4 @@
-# Board memory policy. Firmware ABI/defaults live in templates/.
+# Board memory policy; firmware layout/defaults are framework Rust code.
 schema = 1
 
 [memory]

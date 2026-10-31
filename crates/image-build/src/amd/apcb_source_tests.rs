@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 
-const TABLES: &str = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
-const ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/templates/rome.toml");
-const MILAN: &str = include_str!("../../../../boards/tyan/s8030/apcb/templates/milan.toml");
-const ETHANOLX: &str = include_str!("../../../../boards/amd/ethanolx/apcb/templates/milan.toml");
+use super::super::apcb_toml::Profile;
+const ROME: Profile = Profile::S8030RomeV404;
+const MILAN: Profile = Profile::S8030MilanV404;
+const ETHANOLX: Profile = Profile::EthanolxMilanRxm100cb;
 
 fn tables() -> Tables {
     Tables::new()
 }
-fn source_model(text: &str) -> Sources {
-    super::super::apcb_template::Configuration::parse(text)
-        .unwrap()
-        .lower(toml::from_str(TABLES).unwrap())
-        .unwrap()
+fn source_model(profile: Profile) -> Sources {
+    profile.definition().unwrap().lower().unwrap()
 }
 
 #[test]
@@ -151,18 +148,17 @@ fn replacing_all_slots_preserves_firmware_and_padding() {
 
 #[test]
 fn toml_payloads_use_the_existing_replacement_guards() {
-    let text = include_str!("../../../../boards/tyan/s8030/apcb/templates/rome.toml");
-    let shared = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
-    let replacements = super::super::apcb_template::compile(text, shared).unwrap();
+    let text = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
+    let replacements = super::super::apcb_toml::compile(text, ROME).unwrap();
     let old = compile_sources(source_model(ROME), &tables()).unwrap();
     let original = fixture(&old, 8192);
     let mut output = original.clone();
     apply(&original, &mut output, &replacements).unwrap();
     assert_eq!(output, original);
 
-    let edited = super::super::apcb_template::compile(
-        &text.replace("MemRestoreControl = false", "MemRestoreControl = true"),
-        shared,
+    let edited = super::super::apcb_toml::compile(
+        &text.replace("restore-context = false", "restore-context = true"),
+        ROME,
     )
     .unwrap();
     apply(&original, &mut output, &edited).unwrap();

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Board policy. The separately supplied, private ABI template owns token
-//! storage, record placement, defaults, selectors, ordering and donor guards.
-use super::{Result, apcb, apcb_source, apcb_template};
+//! Board policy. Framework firmware-family models own token storage,
+//! record placement, defaults, selectors, ordering and donor guards.
+pub use super::apcb_layout::Profile;
+use super::{Result, apcb, apcb_layout, apcb_source};
 use amd_apcb::memory;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,7 +56,7 @@ pub struct SpeedLimit {
     pub dual_rank_dimms: u16,
     #[serde(default)]
     pub quad_rank_dimms: u16,
-    #[schemars(with = "apcb_template::rows::Rate")]
+    #[schemars(with = "apcb_layout::rows::Rate")]
     pub maximum_mt_s: u16,
 }
 impl SpeedLimit {
@@ -73,8 +74,8 @@ impl SpeedLimit {
             (Sodimm, Stretch) => (0x5d, "MaxFreqElement"),
         })
     }
-    fn lower(&self, generation: apcb_template::Generation) -> Result<Value> {
-        apcb_template::rows::Rate::try_from(self.maximum_mt_s)?;
+    fn lower(&self, generation: apcb_layout::Generation) -> Result<Value> {
+        apcb_layout::rows::Rate::try_from(self.maximum_mt_s)?;
         let total = u32::from(self.single_rank_dimms)
             + u32::from(self.dual_rank_dimms)
             + u32::from(self.quad_rank_dimms);
@@ -87,7 +88,7 @@ impl SpeedLimit {
         {
             return Err("rank population must fit the channel's DIMM slots".into());
         }
-        let row = apcb_template::rows::MaxFrequencyRow {
+        let row = apcb_layout::rows::MaxFrequencyRow {
             slots: self.slots_per_channel.clone(),
             conditions: [
                 total as u16,
@@ -103,7 +104,7 @@ impl SpeedLimit {
 }
 
 /// Select a JEDEC SPD image for a physical RAM-ID configuration. Descriptor
-/// offsets, validity flags and training scratch allocations belong to templates.
+/// offsets, validity flags and training scratch allocations belong to the model.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ram {
@@ -135,7 +136,7 @@ impl Configuration {
     fn apply(
         self,
         sources: &mut apcb_source::Sources,
-        generation: apcb_template::Generation,
+        generation: apcb_layout::Generation,
     ) -> Result<()> {
         // These names are catalogued for SP3 and Zeppelin, not guessed from
         // Naples IDs on Picasso. Unknown family-specific settings stay defaults.
@@ -159,7 +160,7 @@ impl Configuration {
             ),
         ] {
             if let Some(value) = value {
-                if matches!(generation, apcb_template::Generation::Picasso) {
+                if matches!(generation, apcb_layout::Generation::Picasso) {
                     return Err(format!(
                         "{setting}: Picasso parameter semantics are not yet catalogued"
                     ));
@@ -168,7 +169,7 @@ impl Configuration {
                 for blob in &mut sources.blobs {
                     for entry in blob.apcb["entries"]
                         .as_array_mut()
-                        .ok_or("template entries missing")?
+                        .ok_or("model entries missing")?
                     {
                         if let Some(tokens) = entry.get_mut("tokens").and_then(Value::as_array_mut)
                         {
@@ -207,7 +208,7 @@ impl Configuration {
                 None => {
                     if matches!(
                         generation,
-                        apcb_template::Generation::Rome | apcb_template::Generation::Milan
+                        apcb_layout::Generation::Rome | apcb_layout::Generation::Milan
                     ) {
                         0xffff
                     } else {
@@ -226,7 +227,7 @@ impl Configuration {
             for blob in &mut sources.blobs {
                 for entry in blob.apcb["entries"]
                     .as_array_mut()
-                    .ok_or("template entries missing")?
+                    .ok_or("model entries missing")?
                 {
                     if entry["header"]["group_id"].as_u64() == Some(0x1704)
                         && entry["header"]["entry_id"].as_u64() == Some(u64::from(id))
@@ -263,7 +264,7 @@ impl Configuration {
                 }
                 for entry in blob.apcb["entries"]
                     .as_array_mut()
-                    .ok_or("template entries missing")?
+                    .ok_or("model entries missing")?
                 {
                     if let Some(body) = entry.get_mut("SpdInfo") {
                         let (header, mut dimms): (memory::SpdInfo, Vec<memory::SpdDimm>) =
@@ -297,28 +298,21 @@ impl Configuration {
     }
 }
 
-pub(crate) fn lower(policy: &str, template: &str, shared: &str) -> Result<apcb_source::Sources> {
+pub(crate) fn lower(policy: &str, profile: Profile) -> Result<apcb_source::Sources> {
     let policy = Configuration::parse(policy)?;
-    let template = apcb_template::Configuration::parse(template)?;
-    let generation = template.generation;
-    let mut sources = template.lower(toml::from_str(shared).map_err(|e| e.to_string())?)?;
+    let model = profile.definition()?;
+    let generation = model.generation;
+    let mut sources = model.lower()?;
     policy.apply(&mut sources, generation)?;
     Ok(sources)
 }
 
-pub fn compile(
-    policy: &str,
-    template: &str,
-    shared: &str,
-) -> Result<Vec<apcb_source::Replacement>> {
-    apcb_source::compile_sources(
-        lower(policy, template, shared)?,
-        &apcb_source::Tables::new(),
-    )
+pub fn compile(policy: &str, profile: Profile) -> Result<Vec<apcb_source::Replacement>> {
+    apcb_source::compile_sources(lower(policy, profile)?, &apcb_source::Tables::new())
 }
 
-pub fn build_blob(policy: &str, template: &str, shared: &str, name: &str) -> Result<Vec<u8>> {
-    let sources = lower(policy, template, shared)?;
+pub fn build_blob(policy: &str, profile: Profile, name: &str) -> Result<Vec<u8>> {
+    let sources = lower(policy, profile)?;
     let selector = *sources
         .blobs
         .iter()

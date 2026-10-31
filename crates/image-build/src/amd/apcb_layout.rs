@@ -1,36 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Private firmware ABI/default templates, not board-policy configuration.
-//!
-//! These reviewed assets own token storage, placement and exact vendor defaults.
-//! The public policy schema deliberately cannot express their layout fields.
-//! Binary bookkeeping still belongs to amd-apcb; JSON adapts its private Serde API.
+//! Firmware ABI lowering. Family models are Rust code, not parsed templates.
+//! Binary bookkeeping belongs to amd-apcb; JSON adapts its private Serde API.
+#[path = "apcb_profiles/mod.rs"]
+mod profiles;
 use super::{Result, apcb_source};
 use amd_apcb::{BoolToken, ByteToken, DwordToken, TOKEN_ENTRY, WordToken, df, memory, psp};
 use num_traits::ToPrimitive;
+pub use profiles::Profile;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-#[path = "apcb_toml_rows.rs"]
+#[path = "apcb_layout_rows.rs"]
 pub(super) mod rows;
 use rows::{CadRow, DataRow, MaxFrequencyRow, OdtRow};
-#[path = "apcb_toml_legacy.rs"]
+#[path = "apcb_layout_parameters.rs"]
 mod legacy;
 use legacy::{ParameterLayer, Setting};
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Configuration {
-    #[schemars(range(min = 1, max = 1))]
-    pub schema: u8,
+pub struct Definition {
     pub generation: Generation,
-    #[schemars(length(min = 1))]
     pub blobs: Vec<Blob>,
-    #[serde(default)]
     pub tables: BTreeMap<String, Table>,
-    #[serde(default, rename = "token-sets")]
     pub token_sets: BTreeMap<String, TokenSet>,
-    #[serde(default, rename = "spd-images")]
     pub spd_images: BTreeMap<String, String>,
 }
 
@@ -57,15 +49,7 @@ impl Generation {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SharedTables {
-    #[schemars(range(min = 1, max = 1))]
-    pub schema: u8,
-    pub tables: BTreeMap<String, Table>,
-}
-
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Blob {
     pub name: String,
@@ -89,7 +73,7 @@ pub enum Slot {
     Backup,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
     pub slot: Slot,
@@ -168,7 +152,7 @@ impl Priority {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Reference {
     #[serde(rename = "use")]
@@ -771,34 +755,15 @@ fn entry_header(
     )
 }
 
-impl Configuration {
-    fn validate_schema(&self) -> Result<()> {
-        if self.schema != 1 || self.blobs.is_empty() {
-            return Err("expected authoring schema 1 and at least one APCB".into());
-        }
-        Ok(())
-    }
-
-    pub fn parse(source: &str) -> Result<Self> {
-        let config: Self = toml::from_str(source).map_err(|e| e.to_string())?;
-        config.validate_schema()?;
-        Ok(config)
-    }
-
+impl Definition {
     #[cfg(test)]
-    pub fn compile(self, shared: SharedTables) -> Result<Vec<apcb_source::Replacement>> {
-        apcb_source::compile_sources(self.lower(shared)?, &apcb_source::Tables::new())
+    pub fn compile(self) -> Result<Vec<apcb_source::Replacement>> {
+        apcb_source::compile_sources(self.lower()?, &apcb_source::Tables::new())
     }
 
-    pub(crate) fn lower(mut self, shared: SharedTables) -> Result<apcb_source::Sources> {
-        self.validate_schema()?;
-        if shared.schema != 1 {
-            return Err("expected shared-table schema 1".into());
-        }
-        for (name, table) in shared.tables {
-            if self.tables.insert(name.clone(), table).is_some() {
-                return Err(format!("duplicate table {name}"));
-            }
+    pub(crate) fn lower(self) -> Result<apcb_source::Sources> {
+        if self.blobs.is_empty() {
+            return Err("firmware model must define at least one APCB".into());
         }
         let mut blobs = Vec::new();
         let mut names = BTreeSet::new();
@@ -898,19 +863,5 @@ fn group_header(group: u16) -> Result<Value> {
 }
 
 #[cfg(test)]
-pub fn compile(source: &str, shared: &str) -> Result<Vec<apcb_source::Replacement>> {
-    Configuration::parse(source)?.compile(toml::from_str(shared).map_err(|e| e.to_string())?)
-}
-
-#[cfg(test)]
-pub fn schema() -> schemars::schema::RootSchema {
-    schemars::schema_for!(Configuration)
-}
-#[cfg(test)]
-pub fn tables_schema() -> schemars::schema::RootSchema {
-    schemars::schema_for!(SharedTables)
-}
-
-#[cfg(test)]
-#[path = "apcb_template_tests.rs"]
+#[path = "apcb_profile_tests.rs"]
 mod tests;

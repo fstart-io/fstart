@@ -24,12 +24,9 @@ enum Command {
     Build {
         input: PathBuf,
         output: PathBuf,
-        /// Firmware defaults/ABI template, normally supplied by the board build.
+        /// Reviewed firmware profile, normally selected by the board build.
         #[arg(long)]
-        template: PathBuf,
-        /// Optional shared profile defaults (used by SP3 boards).
-        #[arg(long)]
-        tables: Option<PathBuf>,
+        profile: apcb_toml::Profile,
         #[arg(long, default_value = "board")]
         blob: String,
     },
@@ -61,22 +58,11 @@ fn run(args: Args) -> Result<()> {
         Command::Build {
             input,
             output,
-            tables,
-            template,
+            profile,
             blob,
         } => {
             let text = String::from_utf8(read(&input)?).map_err(|e| e.to_string())?;
-            let shared = tables
-                .map(|path| {
-                    read(&path).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()))
-                })
-                .transpose()?
-                .unwrap_or_else(|| "schema=1\n[tables]\n".into());
-            let template = String::from_utf8(read(&template)?).map_err(|e| e.to_string())?;
-            (
-                output,
-                apcb_toml::build_blob(&text, &template, &shared, &blob)?,
-            )
+            (output, apcb_toml::build_blob(&text, profile, &blob)?)
         }
         Command::BuildJson { input, output } => {
             let source = serde_json::from_slice(&read(&input)?).map_err(|e| e.to_string())?;

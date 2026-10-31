@@ -679,19 +679,18 @@ fn composes_the_pinned_images() {
 
 #[test]
 fn generated_apcbs_leave_the_reviewed_donor_images_byte_identical() {
-    let tables = include_str!("../../platform-sp3/src/host/apcb/ddr4.toml");
-    for (path, generation, source, template) in [
+    for (path, generation, source, profile) in [
         (
             "donors/rome-s8030-v404.bin",
             ROME,
             include_str!("../../../boards/tyan/s8030/apcb/rome.toml"),
-            include_str!("../../../boards/tyan/s8030/apcb/templates/rome.toml"),
+            crate::amd::apcb_toml::Profile::S8030RomeV404,
         ),
         (
             "donors/milan-s8030-v404.bin",
             MILAN,
             include_str!("../../../boards/tyan/s8030/apcb/milan.toml"),
-            include_str!("../../../boards/tyan/s8030/apcb/templates/milan.toml"),
+            crate::amd::apcb_toml::Profile::S8030MilanV404,
         ),
     ] {
         let Some(rom) = donor(path) else {
@@ -700,7 +699,7 @@ fn generated_apcbs_leave_the_reviewed_donor_images_byte_identical() {
         let mut generated = plan(&[generation]);
         generated.apcbs.push(GeneratedApcbs {
             generation,
-            replacements: crate::amd::apcb_toml::compile(source, template, tables).unwrap(),
+            replacements: crate::amd::apcb_toml::compile(source, profile).unwrap(),
         });
         let old = compose(&rom, &plan(&[generation]), &linked_reset(), &ffs(0x4000)).unwrap();
         let new = compose(&rom, &generated, &linked_reset(), &ffs(0x4000)).unwrap();
@@ -715,7 +714,6 @@ fn generated_ethanolx_apcbs_are_identical_in_the_full_mirrored_readout() {
         return;
     };
     let rom = std::fs::read(path).unwrap();
-    let tables = include_str!("../../platform-sp3/src/host/apcb/ddr4.toml");
     let mut old_plan = plan(&[MILAN]);
     old_plan.mirrors = vec![0x300_0000];
     let mut generated = old_plan.clone();
@@ -723,8 +721,7 @@ fn generated_ethanolx_apcbs_are_identical_in_the_full_mirrored_readout() {
         generation: MILAN,
         replacements: crate::amd::apcb_toml::compile(
             include_str!("../../../boards/amd/ethanolx/apcb/milan.toml"),
-            include_str!("../../../boards/amd/ethanolx/apcb/templates/milan.toml"),
-            tables,
+            crate::amd::apcb_toml::Profile::EthanolxMilanRxm100cb,
         )
         .unwrap(),
     });

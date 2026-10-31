@@ -1,6 +1,6 @@
 # AMD APCB board policy
 
-Board policy is separate from firmware ABI/default templates. Users configure
+Board policy is separate from framework firmware-family models. Users configure
 memory features, supported populations and transfer rates, and RAM-ID-to-SPD
 selection. They do not specify token widths, record IDs, parameter time points,
 group order, priorities, header sizes, termination, padding or checksums.
@@ -38,11 +38,13 @@ training scratch buffers and active/backup copies belong to the profile.
 | MJ11 EC0/F02 | `boards/gigabyte/mj11/apcb/ec0.toml` |
 | MJ11 EC1/F09 | `boards/gigabyte/mj11/apcb/ec1.toml` |
 
-The adjacent `templates/` directories are internal, reviewed firmware ABI/default
-profiles, not the authoring interface. The private template compiler and Rust
-policy mappings choose representation. Shared SP3 electrical defaults remain in
-`crates/platform-sp3/src/host/apcb/ddr4.toml`. Normal board builds supply the
-profile and shared defaults automatically.
+There are no board-local template files or template language. Firmware-family
+models and reviewed defaults are Rust code in
+`crates/image-build/src/amd/apcb_profiles/{sp3,picasso,zeppelin}.rs`;
+`apcb_layout.rs` lowers them through the existing encoder. SP3 shares one set of
+electrical defaults, both MJ11 variants share a Zeppelin model, and all Vilboz
+RAM IDs instantiate one Picasso layout. The board selects a named, compiled
+firmware profile; users edit only policy and board data.
 
 Only verified semantic mappings are public. In particular, Picasso parameter
 IDs must not be given Zeppelin meanings merely because their numbers coincide.
@@ -55,9 +57,10 @@ preservation tests; users never have to choose a storage width to use it.
 
 `fstart-apcb-source schema OUTPUT` generates the policy editor schema. The schema
 rejects firmware-layout fields as well as unknown or incorrectly typed policy.
-For low-level standalone builds, `build POLICY OUTPUT --template PROFILE` accepts
-an explicit internal profile, plus `--tables SHARED` for SP3 and `--blob NAME` to
-select a payload. Normal users build through the board's `fbuild` integration.
+For standalone builds, `build POLICY OUTPUT --profile mj11-ec1-f09` selects a
+compiled firmware profile; `--blob NAME` selects a payload. No template path or
+shared-table file is required. Normal users build through the board's `fbuild`
+integration, which selects the profile automatically.
 `decode` and `build-json` are lossless diagnostic interchange, not policy
 configuration. Output commands refuse overwrites.
 

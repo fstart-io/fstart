@@ -38,8 +38,7 @@ fn packed_vilboz_uses_sources_without_apcb_file_inputs() {
     let mut raw = image();
     let apcbs = apcb_toml::compile(
         include_str!("../../../../boards/google/zork/apcb/vilboz.toml"),
-        include_str!("../../../../boards/google/zork/apcb/templates/vilboz.toml"),
-        "schema=1\n[tables]\n",
+        apcb_toml::Profile::Vilboz,
     )
     .unwrap();
     raw.bios = apcbs
@@ -522,16 +521,16 @@ fn mj11() -> AmdAssembly {
 #[test]
 fn reviewed_mj11_donors_are_unchanged_by_source_replacement() {
     let (ffs, stage) = ffs_and_stage(0x25_0000);
-    for (env, source, template) in [
+    for (env, source, profile) in [
         (
             "FSTART_MJ11_EC0_DONOR",
             include_str!("../../../../boards/gigabyte/mj11/apcb/ec0.toml"),
-            include_str!("../../../../boards/gigabyte/mj11/apcb/templates/ec0.toml"),
+            apcb_toml::Profile::Mj11Ec0F02,
         ),
         (
             "FSTART_MJ11_EC1_DONOR",
             include_str!("../../../../boards/gigabyte/mj11/apcb/ec1.toml"),
-            include_str!("../../../../boards/gigabyte/mj11/apcb/templates/ec1.toml"),
+            apcb_toml::Profile::Mj11Ec1F09,
         ),
     ] {
         let Some(path) = std::env::var_os(env) else {
@@ -541,7 +540,7 @@ fn reviewed_mj11_donors_are_unchanged_by_source_replacement() {
         let vendor = std::fs::read(path).unwrap();
         let baseline = mj11().assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
         let mut plan = mj11();
-        plan.apcbs = apcb_toml::compile(source, template, "schema=1\n[tables]\n").unwrap();
+        plan.apcbs = apcb_toml::compile(source, profile).unwrap();
         let generated = plan.assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
         assert_eq!(generated.bytes, baseline.bytes, "{env}");
     }
@@ -549,9 +548,11 @@ fn reviewed_mj11_donors_are_unchanged_by_source_replacement() {
 
 #[test]
 fn mj11_sources_replace_both_directory_levels_and_keep_slot_padding() {
-    let source = include_str!("../../../../boards/gigabyte/mj11/apcb/templates/ec1.toml");
-    let empty = "schema=1\n[tables]\n";
-    let generated = apcb_template::compile(source, empty).unwrap();
+    let generated = apcb_toml::Profile::Mj11Ec1F09
+        .definition()
+        .unwrap()
+        .compile()
+        .unwrap();
     let (ffs, stage) = ffs_and_stage(0x25_0000);
     let mut vendor = two_level_vendor();
     // This test adds the backup slots present in both reviewed directory levels.
@@ -589,9 +590,9 @@ fn mj11_sources_replace_both_directory_levels_and_keep_slot_padding() {
         plan.assemble(&[&vendor], &stage, Some(&ffs)).unwrap().bytes,
         expected.bytes
     );
-    let mut config = apcb_template::Configuration::parse(source).unwrap();
+    let mut config = apcb_toml::Profile::Mj11Ec1F09.definition().unwrap();
     config.blobs[0].revision += 1;
-    plan.apcbs = config.compile(toml::from_str(empty).unwrap()).unwrap();
+    plan.apcbs = config.compile().unwrap();
     let mut edited = expected.bytes;
     for at in [0xf_8000, 0xfc000, 0x22_a000, 0x22_c000] {
         edited[at..at + plan.apcbs[0].bytes.len()].copy_from_slice(&plan.apcbs[0].bytes);
@@ -602,8 +603,12 @@ fn mj11_sources_replace_both_directory_levels_and_keep_slot_padding() {
     );
     plan.apcbs[0].donor_sha256 = "0".repeat(64);
     assert!(plan.assemble(&[&vendor], &stage, Some(&ffs)).is_err());
-    plan.apcbs =
-        apcb_template::compile(&source.replace("slots = 0", "slots = 512"), empty).unwrap();
+    let mut large = apcb_toml::Profile::Mj11Ec1F09.definition().unwrap();
+    large.tables.insert(
+        "empty-ppr".into(),
+        apcb_layout::Table::EmptyPpr { slots: 512 },
+    );
+    plan.apcbs = large.compile().unwrap();
     assert!(
         plan.assemble(&[&vendor], &stage, Some(&ffs))
             .unwrap_err()

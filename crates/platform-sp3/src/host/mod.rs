@@ -354,13 +354,12 @@ impl Payload {
 /// [`layout::FFS_OFFSET`] or above.
 pub fn flash_plan<B: Sp3BoardFacts>() -> Result<FlashPlan, String> {
     use fstart_image_build::{amd::apcb_toml, sp3_flash::GeneratedApcbs};
-    let tables = include_str!("apcb/ddr4.toml");
     let apcbs = B::APCB_SOURCES
         .iter()
-        .map(|(generation, source, template)| {
+        .map(|(generation, source, profile)| {
             Ok(GeneratedApcbs {
                 generation: generation.profile().bios,
-                replacements: apcb_toml::compile(source, template, tables)?,
+                replacements: apcb_toml::compile(source, profile.parse()?)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -783,12 +782,12 @@ mod tests {
                 (
                     Generation::Rome,
                     include_str!("../../../../boards/tyan/s8030/apcb/rome.toml"),
-                    include_str!("../../../../boards/tyan/s8030/apcb/templates/rome.toml"),
+                    "s8030-rome-v404",
                 ),
                 (
                     Generation::Milan,
                     include_str!("../../../../boards/tyan/s8030/apcb/milan.toml"),
-                    include_str!("../../../../boards/tyan/s8030/apcb/templates/milan.toml"),
+                    "s8030-milan-v404",
                 ),
             ];
         }

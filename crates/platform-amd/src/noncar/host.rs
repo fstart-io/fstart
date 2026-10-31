@@ -656,8 +656,8 @@ where
         ffs.file_assets = packed.files.assets.clone();
     }
     let apcbs = B::APCB_SOURCE
-        .map(|(policy, template)| {
-            fstart_image_build::amd::apcb_toml::compile(policy, template, "schema=1\n[tables]\n")
+        .map(|(policy, profile)| {
+            fstart_image_build::amd::apcb_toml::compile(policy, profile.parse()?)
         })
         .transpose()?
         .unwrap_or_default();

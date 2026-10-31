@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Compact, typed authoring views of existing DDR4 layouts. No wire encoding.
+//! Typed adapters for firmware-family DDR4 models. No wire encoding.
 use super::Result;
 use amd_apcb::memory;
 use num_traits::ToPrimitive;
@@ -115,7 +115,7 @@ fn slots(input: &[u8]) -> Result<memory::DimmsPerChannelSelector> {
     Ok(flags)
 }
 
-fn native<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
+pub(super) fn native<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 

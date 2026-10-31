@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Legacy parameter authoring; attributes and termination belong to amd-apcb.
+//! Legacy model parameter construction; amd-apcb owns attributes/termination.
 use super::{Group, Result};
 use amd_apcb::{EntryId, Parameter, ParameterAttributes, ParameterTimePoint, ParameterTokenConfig};
 use schemars::JsonSchema;
