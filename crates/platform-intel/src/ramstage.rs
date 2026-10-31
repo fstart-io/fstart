@@ -37,7 +37,7 @@ use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
 use fstart_core::services::{ConsoleDevice, ServiceError, UartPort};
 use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 use fstart_log::StaticConsole;
-use fstart_stage::payload::MainstagePayload;
+use fstart_payload::MainstagePayload;
 
 type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
 type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
@@ -621,7 +621,8 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
     fn reserve_coreboot_window(&mut self) -> Result<(), ServiceError> {
         #[cfg(feature = "payload-coreboot")]
         {
-            let size = fstart_stage::coreboot::window_size().ok_or(ServiceError::NotInitialized)?;
+            let size =
+                fstart_payload::coreboot::window_size().ok_or(ServiceError::NotInitialized)?;
             let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
             let entry = store
                 .add(fstart_store::tag::COREBOOT, size, 12)
@@ -717,7 +718,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
 
     /// Describe the machine to the build's payload launcher and boot it.
     fn hand_off(&self) -> ! {
-        use fstart_stage::payload::{
+        use fstart_payload::{
             AcpiTables, BuildSelectedPayload, Description, Handoff, Placement, Range,
         };
         let (firmware_base, firmware_size) = self.ctx.firmware_region();
@@ -746,7 +747,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
         {
             placement.coreboot_window = self
                 .coreboot_window
-                .map(|(base, size)| unsafe { fstart_stage::coreboot::Window::new(base, size) });
+                .map(|(base, size)| unsafe { fstart_payload::coreboot::Window::new(base, size) });
         }
         BuildSelectedPayload::boot(Handoff::new(description, placement), ())
     }

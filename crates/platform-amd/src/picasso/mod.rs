@@ -326,7 +326,7 @@ mod uefi {
     use alloc::{boxed::Box, rc::Rc};
     use core::cell::RefCell;
     use embedded_hal_bus::i2c::RcDevice;
-    use fstart_stage::crabefi::peripheral::{
+    use fstart_payload::crabefi::peripheral::{
         self, I2cPeripheral, InputLine, Interrupt, InterruptLatch, Peripheral,
     };
 

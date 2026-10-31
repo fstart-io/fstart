@@ -3,7 +3,7 @@
 use fstart_core::layout::{Layout, Region, RegionKind};
 use fstart_core::services::ServiceError;
 use fstart_driver_uart::pl011::{Pl011, Pl011Config};
-use fstart_stage::payload::MainstagePayload;
+use fstart_payload::MainstagePayload;
 
 #[cfg(not(fstart_entry = "aarch64-relocate"))]
 compile_error!("AArch64 virt requires the aarch64-relocate entry");
@@ -23,11 +23,11 @@ compile_error!("selected Linux backend is not enabled");
 #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
 compile_error!("selected CrabEFI backend is not enabled");
 #[cfg(fstart_payload = "halt")]
-type Selected = fstart_stage::payload::HaltPayload;
+type Selected = fstart_payload::HaltPayload;
 #[cfg(all(fstart_payload = "linux", feature = "linux"))]
-type Selected = fstart_stage::payload::LinuxPayload;
+type Selected = fstart_payload::LinuxPayload;
 #[cfg(all(fstart_payload = "crabefi", feature = "crabefi"))]
-type Selected = fstart_stage::payload::Aarch64UefiPayload;
+type Selected = fstart_payload::Aarch64UefiPayload;
 
 use crate::virt::{QemuAarch64VirtConfig, enumerate_pci, phase};
 
@@ -145,27 +145,27 @@ impl QemuAarch64VirtMainstage {
                 crate::boot::single_bank(&memory, &self.console, source_dtb_addr(self.config));
             // The UEFI payload keeps the whole flash out of its allocations.
             let flash = self.region(RegionKind::Flash);
-            let reserved = [fstart_stage::payload::Range::new(flash.base, flash.size)];
+            let reserved = [fstart_payload::Range::new(flash.base, flash.size)];
             description.reserved = &reserved;
             description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.config.pci));
             let firmware = self.region(RegionKind::PayloadFirmware);
-            let placement = fstart_stage::payload::Placement {
+            let placement = fstart_payload::Placement {
                 #[cfg(feature = "linux")]
                 kernel: self.region(RegionKind::Payload).base,
                 device_tree: self.region(RegionKind::DeviceTree).base,
-                firmware: fstart_stage::payload::Range::new(firmware.base, firmware.size),
+                firmware: fstart_payload::Range::new(firmware.base, firmware.size),
                 bootargs: self.config.bootargs,
                 ..Default::default()
             };
             <Selected as MainstagePayload>::boot(
-                fstart_stage::payload::Handoff::new(description, placement),
+                fstart_payload::Handoff::new(description, placement),
                 (),
             )
         }
         #[cfg(not(any(feature = "linux", feature = "crabefi")))]
         <Selected as MainstagePayload>::boot(
-            fstart_stage::payload::Handoff::new(
-                fstart_stage::payload::Description::new(&[], Default::default()),
+            fstart_payload::Handoff::new(
+                fstart_payload::Description::new(&[], Default::default()),
                 Default::default(),
             ),
             (),

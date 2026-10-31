@@ -90,7 +90,7 @@ and `gpio()`.
 | ACPI tables | flow (`crate::acpi`), the board's `BoardAcpi` |
 | `Soc::ready_to_boot` | SoC |
 | PSP LockDFReg (a failure halts), page tables, park APs, PSP BootDone | flow (`psp.rs`, `boot.rs`) |
-| Payload | `fstart_stage::payload` |
+| Payload | `fstart_payload` |
 
 `Stop::Failed` logs the step and halts the BSP.
 

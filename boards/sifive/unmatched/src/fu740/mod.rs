@@ -20,6 +20,7 @@ mod stage {
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
     // The board selects payload backends through platform features; all
     // stage runtime paths below resolve through that re-export.
+    use fstart_platform_qemu::payload_runtime as fstart_payload;
     use fstart_platform_qemu::stage_runtime as fstart_stage;
 
     #[cfg(not(fstart_entry = "riscv64"))]
@@ -97,7 +98,7 @@ mod stage {
         fstart_log::info!("fu740 ramstage: ready for payload");
         Fu740Mainstage { config, console }
             .hand_off(|handoff| {
-                <Fu740BuildSelectedPayload as fstart_stage::payload::MainstagePayload>::boot(
+                <Fu740BuildSelectedPayload as fstart_payload::MainstagePayload>::boot(
                     handoff,
                     (),
                 )
@@ -132,7 +133,7 @@ mod stage {
             );
         }
         Fu740Mainstage { config, console }.hand_off(|handoff| {
-            fstart_stage::payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
+            fstart_payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
         })
     }
 
@@ -280,9 +281,9 @@ mod stage {
     impl Fu740Mainstage {
         /// Describe the board to `boot` and run it. It has no boot device
         /// tree: the Linux launcher loads the board's from the FFS.
-        fn hand_off(&self, boot: impl FnOnce(fstart_stage::payload::Handoff<'_>) -> !) -> ! {
+        fn hand_off(&self, boot: impl FnOnce(fstart_payload::Handoff<'_>) -> !) -> ! {
             use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-            use fstart_stage::payload::{Description, Handoff, PciRootInfo, Placement, Range};
+            use fstart_payload::{Description, Handoff, PciRootInfo, Placement, Range};
             let config = self.config;
             let memory = [E820Entry::new(FU740_DRAM_BASE, config.ddr.dram_size, E820Kind::Ram)];
             let mut description = Description::new(
@@ -310,11 +311,11 @@ mod stage {
     }
 
     #[cfg(fstart_payload = "linux")]
-    pub type Fu740BuildSelectedPayload = fstart_stage::payload::LinuxPayload;
+    pub type Fu740BuildSelectedPayload = fstart_payload::LinuxPayload;
     #[cfg(all(not(fstart_payload = "linux"), fstart_payload = "crabefi"))]
-    pub type Fu740BuildSelectedPayload = fstart_stage::payload::Riscv64UefiPayload;
+    pub type Fu740BuildSelectedPayload = fstart_payload::Riscv64UefiPayload;
     #[cfg(all(not(fstart_payload = "linux"), not(fstart_payload = "crabefi")))]
-    pub type Fu740BuildSelectedPayload = fstart_stage::payload::HaltPayload;
+    pub type Fu740BuildSelectedPayload = fstart_payload::HaltPayload;
 }
 
 pub use stage::{Fu740BuildSelectedPayload, Fu740Mainstage, resume_sbi, run};

@@ -6,13 +6,13 @@
 //! CBFS arrive in RAM instead, listed in the table (see `fstart-coreboot`).
 //! Everything handed over comes from verified FFS files.
 
-use crate::boot::MemoryWindow;
-use crate::payload::{Description, Handoff, MainstagePayload};
+use crate::{Description, Handoff, MainstagePayload};
 use fstart_core::ffs::FileType;
 use fstart_core::services::ffs_context;
 use fstart_core::services::{FramebufferInfo, UartPort};
 use fstart_coreboot::manifest::{self, Manifest};
 use fstart_coreboot::{FORWARD_ADDR, Framebuffer, Serial, TableWriter};
+use fstart_stage::boot::MemoryWindow;
 
 /// Legacy BIOS shadow RAM, where SeaBIOS and other 16-bit payloads live.
 const LEGACY_SHADOW: MemoryWindow = MemoryWindow {
@@ -72,7 +72,7 @@ impl<D> MainstagePayload<D> for X86CorebootPayload {
             manifest.entry
         );
         fstart_arch::x86::boot::disable_boot_media_rom_cache_for_handoff();
-        crate::timestamps::handoff();
+        fstart_stage::timestamps::handoff();
         fstart_log::flush();
         // SAFETY: the verified image is loaded at its linked address and the
         // mainstage stack lies in the identity-mapped low 4 GiB. Nothing of
@@ -199,7 +199,7 @@ fn framebuffer(info: &FramebufferInfo) -> Framebuffer {
 /// Load the verified payload image; returns its load address.
 fn load_payload() -> Result<u64, &'static str> {
     // SAFETY: the context contract makes the legacy shadow loadable RAM.
-    unsafe { crate::directory::grant_load_window(LEGACY_SHADOW) }
+    unsafe { fstart_stage::directory::grant_load_window(LEGACY_SHADOW) }
         .map_err(|_| "cannot open the legacy BIOS shadow for loading")?;
     let context = ffs_context::memory_mapped().ok_or("no mounted boot media")?;
     let size = usize::try_from(context.image_size).map_err(|_| "boot media too large")?;
@@ -207,7 +207,7 @@ fn load_payload() -> Result<u64, &'static str> {
     let media = unsafe {
         fstart_core::services::boot_media::MemoryMapped::from_raw_addr(context.image_base, size)
     };
-    crate::load_ffs_file_entry_by_type(&media, FileType::Payload)
+    fstart_stage::load_ffs_file_entry_by_type(&media, FileType::Payload)
         .ok_or("payload load or verification failed")
 }
 
@@ -216,8 +216,13 @@ fn load_payload() -> Result<u64, &'static str> {
 /// open: like on coreboot, the payload extends the separators and locks it.
 #[cfg(feature = "tcg")]
 fn measure(manifest: &Manifest<'_>) {
-    use crate::tcg::event::{EV_POST_CODE2, post_code::POST_CODE};
-    if !crate::tcg::measure_file_by_type(FileType::Payload, 0, EV_POST_CODE2, Some(POST_CODE)) {
+    use fstart_stage::tcg::event::{EV_POST_CODE2, post_code::POST_CODE};
+    if !fstart_stage::tcg::measure_file_by_type(
+        FileType::Payload,
+        0,
+        EV_POST_CODE2,
+        Some(POST_CODE),
+    ) {
         fstart_log::error!("coreboot payload: payload not measured");
         fstart_tcg::measurement_error();
     }
@@ -225,7 +230,7 @@ fn measure(manifest: &Manifest<'_>) {
         // The copies handed over live in RAM: no stable blob base.
         fstart_tcg::measure_blob(0, EV_POST_CODE2, POST_CODE, 0, data);
     }
-    crate::tcg::handoff(crate::tcg::Handoff::Open);
+    fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Open);
 }
 
 fn halt(reason: &str) -> ! {

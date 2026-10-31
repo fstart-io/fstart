@@ -20,11 +20,11 @@ bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fst
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap"]
 bundle-ramstage = ["stage", "fstart-driver-intel/display", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/acpi"]
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
-payload-uefi = ["payload-uefi-basic", "fstart-stage/crabefi"]
-payload-uefi-ui = ["payload-uefi", "fstart-stage/crabefi-ui"]
-payload-uefi-basic = ["fstart-stage/crabefi-basic"]
-payload-linux = ["fstart-stage/linux"]
-payload-coreboot = ["fstart-stage/coreboot", "dep:fstart-coreboot"]
+payload-uefi = ["payload-uefi-basic", "fstart-payload/crabefi"]
+payload-uefi-ui = ["payload-uefi", "fstart-payload/crabefi-ui"]
+payload-uefi-basic = ["fstart-payload/crabefi-basic"]
+payload-linux = ["fstart-payload/linux"]
+payload-coreboot = ["fstart-payload/coreboot", "dep:fstart-coreboot"]
 
 # Firmware stages; an Intel ramstage always builds ACPI, SMBIOS and MP.
 stage = [
@@ -33,7 +33,7 @@ stage = [
   "smbios",
   "dep:fstart-driver-uart",
   "dep:fstart-log",
-  "dep:fstart-stage",
+  "dep:fstart-stage", "dep:fstart-payload",
   "dep:fstart-store",
   "dep:fstart-ffs",
   "fstart-stage/ffs",
@@ -78,6 +78,7 @@ fstart-arch = { workspace = true, optional = true, features = ["x86_64", "x86-id
 fstart-log = { workspace = true, optional = true }
 fstart-timestamp = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
+fstart-payload = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 heapless = { workspace = true }
