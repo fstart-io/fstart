@@ -22,7 +22,7 @@ fn main() -> ! {
         .train_memory()
         .post_dram();
     if bb.boot_path() != BootPath::S3Resume {
-        mainboard::setup_clock(bb.southbridge_mut());
+        mainboard::setup_clock(bb.smbus());
     }
     bb.load_postcar()
 }

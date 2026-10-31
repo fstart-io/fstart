@@ -28,7 +28,7 @@ fn main() -> ! {
         bb.fail("SMBus routing to the SPDs");
     }
     let mut bb = bb.train_memory().post_dram();
-    if bb.boot_path() != BootPath::S3Resume && mainboard::init_ck505(bb.southbridge_mut()).is_err()
+    if bb.boot_path() != BootPath::S3Resume && mainboard::init_ck505(bb.smbus()).is_err()
     {
         fstart_log::error!("lenovo-x61: CK505 programming failed");
     }

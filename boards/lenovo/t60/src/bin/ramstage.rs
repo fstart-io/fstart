@@ -40,7 +40,7 @@ fn main() -> ! {
         rs.southbridge_mut().set_ide_primary_enabled(v);
     }
     let mut rs = rs.init_chipset();
-    let identity = match mainboard::init_clock_and_identity(rs.southbridge_mut()) {
+    let identity = match mainboard::init_clock_and_identity(rs.smbus()) {
         Ok(identity) => identity,
         Err(_) => rs.fail("CK505 setup"),
     };

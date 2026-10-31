@@ -25,7 +25,7 @@ fn main() -> ! {
         .memory_map()
         .scan_bus(&[])
         .init_chipset();
-    mainboard::setup_clock(rs.southbridge_mut());
+    mainboard::setup_clock(rs.smbus());
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {
         Path::Cold(rs) => rs.emit_tables(&D41S_SMBIOS_IDENTITY, &mainboard::Acpi),

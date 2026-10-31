@@ -23,7 +23,7 @@ fn main() -> ! {
         .scan_bus(&[])
         .init_chipset();
     let resume = rs.is_resume();
-    if mainboard::init_clock(rs.southbridge_mut(), resume).is_err() {
+    if mainboard::init_clock(rs.smbus(), resume).is_err() {
         rs.fail("clock initialization");
     }
     let rs = rs.start_cpus().verify_boot_media().init_display();
