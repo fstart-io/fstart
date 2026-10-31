@@ -181,7 +181,9 @@ mod stage {
             config.mainstage_load_addr,
             config.handoff_addr,
         )?;
-        fstart_stage::next_stage::serialize_handoff(dram_size, config.handoff_addr)
+        // SAFETY: `load_mainstage` checked the handoff buffer lies in the
+        // trained DRAM and kept it out of the main stage's load window.
+        unsafe { fstart_stage::next_stage::write_handoff(dram_size, config.handoff_addr) }
             .map_err(|_| ServiceError::HardwareError)?;
         fstart_arch::riscv64::jump_to_with_handoff(entry, config.handoff_addr as usize)
     }
@@ -215,7 +217,7 @@ mod stage {
         }
         slot.install(console);
         fstart_log::info!("d1 mainstage: console ready");
-        fstart_log::info!("d1 mainstage: {} MiB DRAM", handoff.dram_size >> 20);
+        fstart_log::info!("d1 mainstage: {} MiB DRAM", handoff.dram_size.get() >> 20);
         fstart_log::info!("d1 mainstage: ready for payload");
         loop {
             core::hint::spin_loop();

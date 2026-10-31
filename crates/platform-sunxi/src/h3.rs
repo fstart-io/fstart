@@ -501,7 +501,9 @@ fstart_sunxi_fel_stash:
             config.mainstage_load_addr,
             config.handoff_addr,
         )?;
-        fstart_stage::next_stage::serialize_handoff(dram_size, config.handoff_addr)
+        // SAFETY: `load_mainstage` checked the handoff buffer lies in the
+        // trained DRAM and kept it out of the main stage's load window.
+        unsafe { fstart_stage::next_stage::write_handoff(dram_size, config.handoff_addr) }
             .map_err(|_| ServiceError::HardwareError)?;
         #[cfg(target_arch = "arm")]
         fstart_arch::armv7::jump_to_with_handoff(entry, config.handoff_addr as usize);
@@ -551,7 +553,7 @@ fstart_sunxi_fel_stash:
             boot_media,
             #[cfg(feature = "linux")]
             media_base,
-            dram_size: handoff.dram_size,
+            dram_size: handoff.dram_size.get(),
             #[cfg(feature = "linux")]
             config: config,
         };
