@@ -17,7 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        run: rustup toolchain install
       - name: Publish successful CI and prune expired nightlies
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 ci/publish-nightly.py
+        run: cargo run --locked --release -p fstart-release -- nightly

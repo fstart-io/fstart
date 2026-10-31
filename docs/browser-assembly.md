@@ -5,6 +5,9 @@ separately against the generated TypeScript bindings and `client.mjs`.
 
 ## Distribution
 
+Nightly promotion, retention and SDK ZIP packaging use the Rust `fstart-release`
+tool in `tools/release`; the publisher calls GitHub's authenticated `gh` CLI.
+
 1. Master CI must pass the normal checks and QEMU boot tests.
 2. The `distribution` job discovers every board **and named variant**, asks each
    platform for its supported public payload selections, and builds all of them
