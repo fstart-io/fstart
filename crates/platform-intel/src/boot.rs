@@ -163,7 +163,6 @@ pub(crate) fn load_stage_with_cache(
     Ok(verified)
 }
 
-#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn import_intel_directory(
     image_base: u64,
     image_size: usize,
@@ -222,7 +221,6 @@ pub(crate) fn running_reservations(
 ///
 /// Without this, Linux is free to allocate over the very bytes that postcar
 /// and the ramstage are reloaded into on wake.
-#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn reserve_firmware_memory(
     e820: &mut fstart_core::services::memory_detect::E820State,
     geometry: IntelBootLayout<'static>,
@@ -244,7 +242,6 @@ pub(crate) fn reserve_firmware_memory(
     Ok(())
 }
 
-#[cfg(all(feature = "acpi", feature = "smbios", feature = "mp"))]
 pub(crate) fn install_intel_load_policy(
     entries: &[fstart_core::services::memory_detect::E820Entry],
     geometry: IntelBootLayout<'static>,

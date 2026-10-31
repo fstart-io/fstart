@@ -61,12 +61,7 @@ pub mod bootblock;
 mod memory_info;
 #[cfg(feature = "stage")]
 pub mod postcar;
-#[cfg(all(
-    feature = "stage",
-    feature = "acpi",
-    feature = "smbios",
-    feature = "mp"
-))]
+#[cfg(feature = "stage")]
 pub mod ramstage;
 #[cfg(feature = "stage")]
 mod store;
