@@ -214,10 +214,10 @@ mod tests {
         };
         // SAFETY: permanently retained exclusive allocation; no physical loads
         // are performed by this test, only scalar policy and ledger operations.
-        unsafe { crate::directory::set_load_policy(&policy) }.unwrap();
+        unsafe { crate::directory::set_load_policy(&policy, &crate::boot::Stored) }.unwrap();
         let live = [window(buffer as u64, 32)];
         begin(&live, &live).unwrap().commit();
-        unsafe { crate::directory::set_load_policy(&policy) }.unwrap();
+        unsafe { crate::directory::set_load_policy(&policy, &crate::boot::Stored) }.unwrap();
         assert!(begin(&live, &live).is_err());
     }
 }

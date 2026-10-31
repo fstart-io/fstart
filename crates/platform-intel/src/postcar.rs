@@ -76,6 +76,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
             &reserved,
             store,
             resume,
+            &fstart_stage::boot::Lz4,
         )?;
         Ok(verified.entry())
     })();

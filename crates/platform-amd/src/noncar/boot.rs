@@ -51,7 +51,7 @@ pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
     // SAFETY: discovered RAM only, with the live stage, the firmware region
     // and the media excluded; no device has DMA buffers outside the reserved
     // early region.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
         .map_err(|_| ServiceError::InvalidParam)?;
     let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
     if locator.image_offset != 0 || !locator.validate(ffs.size) {

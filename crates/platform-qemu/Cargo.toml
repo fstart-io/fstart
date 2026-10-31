@@ -15,8 +15,7 @@ bundle-armv7 = ["stage", "armv7", "virt-image"]
 bundle-aarch64 = ["virt-aarch64", "aarch64", "virt-image"]
 virt-image = [
   "fstart-stage/ed25519", "fstart-stage/sha2-digest", "fstart-stage/sha3-digest",
-  "fstart-stage/fdt", "fstart-stage/lz4",
-]
+  "fstart-stage/fdt", ]
 stage = [
   "dep:fstart-stage",
   "dep:fstart-driver-uart",
@@ -32,8 +31,7 @@ armv7 = ["fstart-arch/armv7", "fstart-stage?/armv7"]
 aarch64-el2-relocate-entry = ["fstart-stage?/aarch64-el2-relocate-entry"]
 bundle-q35 = [
   "stage", "x86_64", "fstart-arch/x86-identity-paging",
-  "fstart-stage/ed25519", "fstart-stage/sha2-digest", "fstart-stage/lz4",
-  "smm", "tpm",
+  "fstart-stage/ed25519", "fstart-stage/sha2-digest", "smm", "tpm",
 ]
 # TIS TPM 1.2/2.0 (swtpm) and TCG measured boot into QEMU's TPM log area.
 tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg"]
@@ -49,7 +47,7 @@ bundle-sifive-u = ["stage", "riscv64", "virt-image"]
 bundle-unmatched = [
   "stage", "riscv64",
   "fstart-stage/ed25519", "fstart-stage/sha2-digest",
-  "fstart-stage/lz4", "fstart-stage/fdt",
+  "fstart-stage/fdt",
 ]
 linux = ["fstart-stage?/linux"]
 crabefi = ["fstart-stage?/crabefi"]

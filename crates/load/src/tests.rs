@@ -1,6 +1,7 @@
 use super::*;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use fstart_core::services::ServiceError;
+use fstart_crypto::digest::hash_sha256;
 use fstart_ffs::root::BootstrapRole;
 
 struct ChangingMedia {
@@ -60,11 +61,11 @@ fn short_reads_and_truncation_fail() {
     let mut media = medium(b"hello");
     media.short = true;
     assert_eq!(
-        load_bootstrap_into(&media, &descriptor, &mut workspace),
+        load_bootstrap_into(&media, &descriptor, &mut workspace, &Lz4),
         Err(LoadError::Io)
     );
     assert_eq!(
-        load_bootstrap_into(&medium(b"hell"), &descriptor, &mut workspace),
+        load_bootstrap_into(&medium(b"hell"), &descriptor, &mut workspace, &Lz4),
         Err(LoadError::Bounds)
     );
 }
@@ -87,7 +88,7 @@ fn bounds_and_reservations_fail_before_writes() {
     // SAFETY: a real owned mapped buffer is supplied, but the reservation must
     // reject it before the loader forms a destination borrow or reads media.
     assert!(matches!(
-        unsafe { load_bootstrap(&media, &descriptor, &policy) },
+        unsafe { load_bootstrap(&media, &descriptor, &policy, &Lz4) },
         Err(LoadError::MemoryPolicy)
     ));
     assert_eq!(output, [0x77; 5]);
@@ -102,17 +103,16 @@ fn uncompressed_bytes_are_checked_at_destination() {
     let descriptor = descriptor(b"hello", b"hello", Compression::None);
     let mut workspace = [0; 5];
     assert_eq!(
-        load_bootstrap_into(&medium(b"HELLO"), &descriptor, &mut workspace),
+        load_bootstrap_into(&medium(b"HELLO"), &descriptor, &mut workspace, &Lz4),
         Err(LoadError::StoredDigest)
     );
     assert_eq!(
-        load_bootstrap_into(&medium(b"hello"), &descriptor, &mut workspace),
+        load_bootstrap_into(&medium(b"hello"), &descriptor, &mut workspace, &Lz4),
         Ok(())
     );
     assert_eq!(&workspace, b"hello");
 }
 
-#[cfg(feature = "lz4")]
 #[test]
 fn decoder_consumes_the_single_verified_media_read() {
     let media = ChangingMedia {
@@ -124,14 +124,13 @@ fn decoder_consumes_the_single_verified_media_read() {
     let descriptor = descriptor(b"\x50hello", b"hello", Compression::Lz4);
     let mut workspace = [0; 11];
     assert_eq!(
-        load_bootstrap_into(&media, &descriptor, &mut workspace),
+        load_bootstrap_into(&media, &descriptor, &mut workspace, &Lz4),
         Ok(())
     );
     assert_eq!(&workspace[..5], b"hello");
     assert_eq!(media.reads.load(Ordering::Relaxed), 1);
 }
 
-#[cfg(feature = "lz4")]
 #[test]
 fn bad_stored_hash_prevents_decompression_and_bad_output_prevents_entry() {
     let media = medium(b"\x50hello");
@@ -139,7 +138,7 @@ fn bad_stored_hash_prevents_decompression_and_bad_output_prevents_entry() {
     descriptor.stored_digest[0] ^= 1;
     let mut workspace = [0x77; 11];
     assert_eq!(
-        load_bootstrap_into(&media, &descriptor, &mut workspace),
+        load_bootstrap_into(&media, &descriptor, &mut workspace, &Lz4),
         Err(LoadError::StoredDigest)
     );
     assert_eq!(&workspace[..5], &[0x77; 5]);
@@ -157,29 +156,63 @@ fn bad_stored_hash_prevents_decompression_and_bad_output_prevents_entry() {
     };
     // SAFETY: the entire workspace is exclusively writable for this call.
     assert!(matches!(
-        unsafe { load_bootstrap(&media, &descriptor, &policy) },
+        unsafe { load_bootstrap(&media, &descriptor, &policy, &Lz4) },
         Err(LoadError::LoadedDigest)
     ));
 }
 
-#[cfg(feature = "lz4")]
 #[test]
 fn scratch_and_exact_decoded_length_are_enforced() {
     let mut descriptor = descriptor(b"\x50hello", b"hello", Compression::Lz4);
     let media = medium(b"\x50hello");
     assert_eq!(
-        load_bootstrap_into(&media, &descriptor, &mut [0; 10]),
+        load_bootstrap_into(&media, &descriptor, &mut [0; 10], &Lz4),
         Err(LoadError::Bounds)
     );
     descriptor.scratch_size = 10;
     assert_eq!(
-        load_bootstrap_into(&media, &descriptor, &mut [0; 11]),
+        load_bootstrap_into(&media, &descriptor, &mut [0; 11], &Lz4),
         Err(LoadError::Bounds)
     );
     descriptor.loaded_size = 6;
     descriptor.scratch_size = 12;
     assert_eq!(
-        load_bootstrap_into(&media, &descriptor, &mut [0; 12]),
+        load_bootstrap_into(&media, &descriptor, &mut [0; 12], &Lz4),
         Err(LoadError::Decompression)
+    );
+}
+
+#[test]
+fn a_stage_without_a_decoder_rejects_compressed_images() {
+    let compressed = descriptor(b"\x50hello", b"hello", Compression::Lz4);
+    let mut workspace = [0x77; 11];
+    assert_eq!(
+        load_bootstrap_into(&medium(b"\x50hello"), &compressed, &mut workspace, &Stored),
+        Err(LoadError::Unsupported)
+    );
+    assert_eq!(&workspace[..5], &[0x77; 5]);
+    let stored = descriptor(b"hello", b"hello", Compression::None);
+    assert_eq!(
+        load_bootstrap_into(&medium(b"hello"), &stored, &mut [0; 5], &Stored),
+        Ok(())
+    );
+}
+
+#[test]
+fn unverified_bytes_never_reach_the_decoder() {
+    struct Panics;
+    impl Codec for Panics {
+        fn supports(&self, _: Compression) -> bool {
+            true
+        }
+        fn decompress(&self, _: Compression, _: &[u8], _: &mut [u8]) -> Result<(), LoadError> {
+            panic!("decoder saw unverified bytes")
+        }
+    }
+    let mut descriptor = descriptor(b"\x50hello", b"hello", Compression::Lz4);
+    descriptor.stored_digest[0] ^= 1;
+    assert_eq!(
+        load_bootstrap_into(&medium(b"\x50hello"), &descriptor, &mut [0; 11], &Panics),
+        Err(LoadError::StoredDigest)
     );
 }

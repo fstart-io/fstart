@@ -45,14 +45,14 @@ bundle-a20-main = [
   "stage", "a20", "armv7", "linux",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+  "fstart-stage?/fdt", "fstart-stage?/linux",
 ]
 bundle-h3-bootblock = ["stage", "h3", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
 bundle-h3-main = [
   "stage", "h3", "armv7", "linux",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+  "fstart-stage?/fdt", "fstart-stage?/linux",
 ]
 bundle-h5-bootblock = [
   "stage", "h3", "aarch64",
@@ -63,7 +63,7 @@ bundle-h5-main = [
   "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+  "fstart-stage?/fdt", "fstart-stage?/linux",
 ]
 bundle-d1-bootblock = [
   "stage", "d1", "riscv64",
@@ -74,7 +74,7 @@ bundle-d1-main = [
   "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/lz4", "fstart-stage?/fdt", "fstart-stage?/linux",
+  "fstart-stage?/fdt", "fstart-stage?/linux",
 ]
 
 [dependencies]

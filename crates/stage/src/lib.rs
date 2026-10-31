@@ -340,7 +340,7 @@ pub fn stage_load(
     let Ok(root) = root::authenticate_boot_root(anchor_data, media) else {
         return;
     };
-    let Some(policy) = directory::load_policy() else {
+    let (Some(policy), Some(codec)) = (directory::load_policy(), directory::codec()) else {
         return;
     };
     let mut descriptors = root
@@ -355,7 +355,7 @@ pub fn stage_load(
         return;
     }
     // SAFETY: the platform installed the trusted physical mapping policy.
-    if let Ok(executable) = unsafe { boot::load_bootstrap(media, descriptor, &policy) } {
+    if let Ok(executable) = unsafe { boot::load_bootstrap(media, descriptor, &policy, codec) } {
         jump_to(executable.entry());
     }
 }
