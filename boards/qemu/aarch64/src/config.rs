@@ -1,7 +1,7 @@
 //! QEMU AArch64 virt hardware facts. Platform Rust owns fixed image budgets.
 
 use fstart_platform_qemu::{
-    QemuAarch64VirtConfig,
+    QemuVirtConfig,
     facts::{VirtBoardFacts, VirtMachine},
 };
 
@@ -10,4 +10,4 @@ impl VirtBoardFacts for crate::Board {
 }
 
 /// Retain hardware facts in ROM, not on the early-stage stack.
-pub static QEMU_AARCH64_VIRT: QemuAarch64VirtConfig = QemuAarch64VirtConfig::new().build();
+pub static QEMU_AARCH64_VIRT: QemuVirtConfig = QemuVirtConfig::aarch64().build();

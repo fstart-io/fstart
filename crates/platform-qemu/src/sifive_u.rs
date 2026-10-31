@@ -75,7 +75,6 @@ mod stage {
     use super::*;
     #[cfg(feature = "crabefi")]
     use fstart_core::services::Console;
-    use fstart_core::services::ServiceError;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
     use fstart_payload::MainstagePayload;
 
@@ -126,8 +125,7 @@ mod stage {
         // SAFETY: the stage owns this console through payload handoff.
         unsafe { fstart_log::init(&console) };
         fstart_log::info!("sifive-u: SiFive UART console ready");
-        if !phase(
-            "boot_integrity",
+        fstart_stage::step("boot media", || {
             crate::boot::from_dtb(
                 fstart_arch::riscv64::boot_dtb_addr(),
                 cfg!(any(fstart_payload = "linux", fstart_payload = "crabefi"))
@@ -135,19 +133,19 @@ mod stage {
                 config.ram_base,
                 config.firmware_base,
                 config.firmware_size,
-            ),
-        ) {
-            fstart_arch::riscv64::halt();
-        }
+            )
+        });
         fstart_log::info!("sifive-u ramstage: ready for payload");
         let mainstage = QemuSifiveUMainstage {
             #[cfg(any(feature = "linux", feature = "crabefi"))]
             config,
             console,
         };
-        mainstage.hand_off(|handoff| {
-            <QemuSifiveUBuildSelectedPayload as MainstagePayload>::boot(handoff, ())
-        })
+        mainstage.hand_off(
+            fstart_arch::riscv64::boot_dtb_addr(),
+            fstart_arch::riscv64::boot_hart_id(),
+            |handoff| <QemuSifiveUBuildSelectedPayload as MainstagePayload>::boot(handoff, ()),
+        )
     }
 
     /// Without CrabEFI nothing returns from OpenSBI here.
@@ -182,24 +180,21 @@ mod stage {
                 core::mem::transmute::<&dyn Console, &'static dyn Console>(&console),
             );
         }
-        QemuSifiveUMainstage { config, console }.hand_off(|handoff| {
+        // S-mode cannot read the M-mode CSRs the boot values were kept in;
+        // OpenSBI passes both.
+        QemuSifiveUMainstage { config, console }.hand_off(dtb_addr, hart_id, |handoff| {
             fstart_payload::Riscv64UefiPayload::resume_sbi(handoff, hart_id, dtb_addr)
         })
     }
 
-    fn phase(name: &str, result: Result<(), ServiceError>) -> bool {
-        fstart_log::info!("sifive-u ramstage: {}", name);
-        if result.is_err() {
-            fstart_log::error!("sifive-u ramstage: {} failed", name);
-            false
-        } else {
-            true
-        }
-    }
-
     impl QemuSifiveUMainstage {
         /// Describe the machine to `boot` and run it.
-        fn hand_off(&self, boot: impl FnOnce(fstart_payload::Handoff<'_>) -> !) -> ! {
+        fn hand_off(
+            &self,
+            dtb: u64,
+            hart: u64,
+            boot: impl FnOnce(fstart_payload::Handoff<'_>) -> !,
+        ) -> ! {
             use fstart_payload::{Description, Handoff, Placement};
             #[cfg(any(feature = "linux", feature = "crabefi"))]
             {
@@ -216,7 +211,7 @@ mod stage {
                     Range::new(config.firmware_base, config.firmware_size),
                 );
                 description.console = Some(&self.console);
-                description.device_tree = Some(fstart_arch::riscv64::boot_dtb_addr());
+                description.device_tree = Some(dtb);
                 // No described PCI root: CrabEFI inspects the firmware FDT
                 // rather than invent bus bounds from a bare ECAM address.
                 description.mmio = &crate::virt::QEMU_RISCV64_MMIO;
@@ -224,12 +219,14 @@ mod stage {
                     kernel: config.kernel_addr,
                     device_tree: config.dtb_addr,
                     firmware: Range::new(config.firmware_addr, 0x20_0000),
-                    hart_id: fstart_arch::riscv64::boot_hart_id(),
+                    hart_id: hart,
                     bootargs: config.bootargs,
                     ..Default::default()
                 };
                 boot(Handoff::new(description, placement))
             }
+            #[cfg(not(any(feature = "linux", feature = "crabefi")))]
+            let _ = (dtb, hart);
             #[cfg(not(any(feature = "linux", feature = "crabefi")))]
             boot(Handoff::new(
                 Description::new(&[], Default::default()),
