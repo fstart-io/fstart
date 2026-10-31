@@ -35,4 +35,4 @@ pub use runtime::{
 };
 pub use save_state::{SaveStateError, X86SaveState, X86SaveStateFormat};
 #[cfg(feature = "stage-bin")]
-pub use stage::{SmmStageBoard, handle};
+pub use stage::handle;

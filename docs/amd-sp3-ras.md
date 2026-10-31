@@ -11,9 +11,9 @@ Related: [native EINJ](amd-sp3-einj.md), [SP3 overview](amd-sp3.md),
 
 ## Enablement
 
-- No separate board or Cargo feature. `boards/tyan/s8030/src/smm.rs` binds
-  `Sp3SmmHandler<Ras>` with `OBSERVE_MCE = true`.
-- Other boards use the default `OsFirst` policy (`crates/platform-sp3/src/smm/ras.rs`),
+- No separate board or Cargo feature. `boards/tyan/s8030/src/smm.rs` passes a
+  `Policy` with `observe_mce: true` to `smm::enter_cpu` and `smm::handle`.
+- Other boards pass `Policy::OS_FIRST` (`crates/platform-sp3/src/smm/ras.rs`),
   which arms nothing.
 
 ```sh
@@ -25,16 +25,16 @@ Policy (`crates/platform-sp3/src/smm/ras.rs`):
 
 | Item | Meaning |
 |---|---|
-| `OBSERVE_MCE` | Arm the per-CPU #MC observer |
-| `MEMORY_EINJ` | Enable the [restricted EINJ](amd-sp3-einj.md) (S8030 sets it too) |
-| `SEL: Option<SelTransport>` | Firmware-exclusive KCS endpoint for SEL delivery; S8030 uses port `0xca8`, spacing 4 |
+| `observe_mce` | Arm the per-CPU #MC observer |
+| `memory_einj` | Enable the [restricted EINJ](amd-sp3-einj.md) (S8030 sets it too) |
+| `sel: Option<SelTransport>` | Firmware-exclusive KCS endpoint for SEL delivery; S8030 uses port `0xca8`, spacing 4 |
 
 ## Runtime flow
 
 | Step | Code | Behavior |
 |---|---|---|
 | 1. Install | `crates/platform-sp3/src/flow/mod.rs` (`install_smm`) | Handler image locked in SMRAM on every thread, one self-SMI per CPU, then SmmInfo via SW SMI `0xD0` |
-| 2. Entry | `crates/smm/src/stage.rs` → `Sp3SmmHandler::enter_cpu` → `smm::ras::enter` | Runs on every SMI on every CPU, before the rendezvous. Nothing waits for other CPUs |
+| 2. Entry | `crates/smm/src/stage.rs` → the board's `enter_cpu` → `smm::enter_cpu` → `smm::ras::enter` | Runs on every SMI on every CPU, before the rendezvous. Nothing waits for other CPUs |
 | 3. Arm | `sp3/ccx/ras.rs::arm` | First SMI on each CPU only. Sets state to armed or refused; refused CPUs stay OS-first |
 | 4. Capture | `ras::observe` | Only when the local SMI status (save state `FEC4`, bit 8 `MCE_REDIRECT`) is set. Sets `PFEH_CONFIG.MCE_ON_EXIT`, then records each valid bank |
 | 5. Journal | `smm/ras.rs` (`Journal`) | Locked SMRAM, first 64 records kept until reset. Overflow and lock contention increment a drop counter and never block |

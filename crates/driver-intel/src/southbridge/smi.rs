@@ -12,7 +12,8 @@ tock_registers::register_bitfields![u16,
     GEN_PMCON_1_REG [ SMI_LOCK OFFSET(4) NUMBITS(1) [] ]
 ];
 
-/// Configuration the installer writes into SMRAM for [`IchSmmHandler`].
+/// Configuration the installer writes into SMRAM for the board's SMI
+/// handler ([`PendingSmi`]).
 ///
 /// Both sides are built from this crate, so the type itself is the contract;
 /// the generic SMM layer only checks its size and alignment.
@@ -213,29 +214,7 @@ impl SmiControl for IchSmi {
 // SMI handler (runs inside the SMM image)
 // ---------------------------------------------------------------------------
 
-use core::marker::PhantomData;
-use fstart_smm::{SmmContext, SmmHandler};
-
-pub trait IchBoardSmmHandler {
-    /// # Safety
-    /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
-    unsafe fn on_apmc(_ctx: &mut SmmContext<'_>, _command: u8) {}
-    /// # Safety
-    /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
-    unsafe fn on_gpe(_ctx: &mut SmmContext<'_>, _gpe_status: u64) {}
-    /// Enabled alternate GPI events, indexed by GPIO number (not GPE bit).
-    /// # Safety
-    /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
-    unsafe fn on_gpi(_ctx: &mut SmmContext<'_>, _gpi_status: u16) {}
-    /// # Safety
-    /// Called only by [`IchSmmHandler`] while it owns the SMM rendezvous.
-    unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, _command: u8) -> Option<u8> {
-        None
-    }
-}
-
-pub struct NoIchBoardSmmHandler;
-impl IchBoardSmmHandler for NoIchBoardSmmHandler {}
+use fstart_smm::SmmContext;
 
 pub const APM_CNT_ACPI_DISABLE: u8 = 0x1e;
 pub const APM_CNT_ACPI_ENABLE: u8 = 0xe1;
@@ -262,84 +241,118 @@ mod tests {
     }
 }
 
-/// SMI handler for every ICH PM I/O layout.
+/// The sources of one SMI on any ICH PM I/O layout, read once by
+/// [`PendingSmi::take`]; the board's SMI handler acts on the ones it owns
+/// and ends the SMI with [`PendingSmi::finish`].
 ///
 /// PMBASE and the GPE0 block come from the [`IchSmmConfig`] the installer
 /// wrote (see [`IntelSmm`](fstart_arch::x86::cpu::intel::smm::IntelSmm)), so
-/// the same handler serves ICH7 and ICH8+ boards.
-pub struct IchSmmHandler<B = NoIchBoardSmmHandler>(PhantomData<B>);
+/// it serves ICH7 and ICH8+ boards alike.
+pub struct PendingSmi {
+    pm: PmIo,
+    gpe0: Gpe0Block,
+    smi_sts: u32,
+    /// The APM command, when the APM port raised this SMI. ACPI enable and
+    /// disable are applied already; FINALIZE never shows up here.
+    pub apm: Option<u8>,
+    /// The software TCO command (`TCO_DAT_IN`); answer with
+    /// [`PendingSmi::tco_reply`].
+    pub tco: Option<u8>,
+    /// GPE0 status, when GPE0 raised this SMI.
+    pub gpe: u64,
+    /// Enabled alternate GPI events, indexed by GPIO number (not GPE bit).
+    pub gpi: u16,
+}
 
-impl<B: IchBoardSmmHandler> SmmHandler for IchSmmHandler<B> {
-    type Config = IchSmmConfig;
-
-    /// Inlined into the board SMM entry: the installed blob is a raw copy
-    /// with no dynamic loader, so no cross-crate PLT call may survive here.
+impl PendingSmi {
+    /// Read this SMI's sources and do the chipset's own APM work.
+    ///
+    /// # Safety
+    /// Called only by the SMI handler that owns the SMM rendezvous.
     #[inline(always)]
-    unsafe fn handle(ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
-        unsafe {
-            let gpe0 = config.gpe0;
-            let pm = PmIo::new(config.pm_base);
-            // Handle only the sources this SMI reports (coreboot's
-            // `southbridge_smi_handler` dispatches on `SMI_STS` bits the same
-            // way). With `SCI_EN` set, PM1/GPE0 events raise an SCI for the OS,
-            // so their status must survive an unrelated APMC or TCO SMI.
-            let smi_sts = pm.read32(pmio::SMI_STS);
+    pub unsafe fn take(config: &IchSmmConfig) -> Self {
+        let gpe0 = config.gpe0;
+        let pm = PmIo::new(config.pm_base);
+        // Handle only the sources this SMI reports (coreboot's
+        // `southbridge_smi_handler` dispatches on `SMI_STS` bits the same
+        // way). With `SCI_EN` set, PM1/GPE0 events raise an SCI for the OS,
+        // so their status must survive an unrelated APMC or TCO SMI.
+        let smi_sts = pm.read32(pmio::SMI_STS);
 
-            // The APM command port keeps its last written value, so a command
-            // may only be consumed when this SMI came from the APM port.
-            // Otherwise the install-time ACPI-disable would replay on every
-            // unrelated SMI (TCO, GPE, sleep) and drop the chipset out of
-            // ACPI mode in the middle of a suspend.
-            let apm_command =
-                (smi_sts & pmio::APM_STS != 0).then(|| fstart_core::pio::inb(APM_CNT));
-            match apm_command {
-                // 16-bit PM1a access: QEMU TCG mishandles 32-bit PIO to
-                // ACPI-core PM registers (writes vanish), while 16-bit works
-                // on every engine; SCI_EN is a PM1a bit either way.
-                Some(APM_CNT_ACPI_DISABLE) => pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
-                Some(APM_CNT_ACPI_ENABLE) => pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
-                _ => {}
-            }
-            // FINALIZE has no chipset work yet; never forward it to the board.
-            if let Some(command) = apm_command.filter(|command| *command != APM_CNT_FINALIZE) {
-                B::on_apmc(ctx, command);
-            }
-
-            if smi_sts & pmio::TCO_STS != 0 {
-                handle_tco::<B>(ctx, &pm);
-            }
-            if smi_sts & pmio::PM1_SMI_STS != 0 {
-                pm.write16(pmio::PM1_STS, 0xffff);
-            }
-            if smi_sts & pmio::GPE0_SMI_STS != 0 {
-                let mut gpe_status = u64::from(pm.read32(gpe0.sts_offset));
-                if gpe0.wide {
-                    gpe_status |= u64::from(pm.read32(gpe0.sts_offset + 4)) << 32;
-                }
-                B::on_gpe(ctx, gpe_status);
-                gpe0.clear_status(&pm);
-            }
-            if smi_sts & GPI_SMI != 0 {
-                let status = pm.read16(pmio::ALT_GP_SMI_STS);
-                pm.write16(pmio::ALT_GP_SMI_STS, status);
-                B::on_gpi(ctx, status & pm.read16(pmio::ALT_GP_SMI_EN));
-            }
-            pm.write32(pmio::SMI_STS, smi_sts);
-            pm.setbits32(pmio::SMI_EN, pmio::EOS);
+        // The APM command port keeps its last written value, so a command
+        // may only be consumed when this SMI came from the APM port.
+        // Otherwise the install-time ACPI-disable would replay on every
+        // unrelated SMI (TCO, GPE, sleep) and drop the chipset out of
+        // ACPI mode in the middle of a suspend.
+        // SAFETY: the SMM rendezvous owner reads the decoded APM port.
+        let apm = (smi_sts & pmio::APM_STS != 0).then(|| unsafe { fstart_core::pio::inb(APM_CNT) });
+        match apm {
+            // 16-bit PM1a access: QEMU TCG mishandles 32-bit PIO to
+            // ACPI-core PM registers (writes vanish), while 16-bit works
+            // on every engine; SCI_EN is a PM1a bit either way.
+            Some(APM_CNT_ACPI_DISABLE) => pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
+            Some(APM_CNT_ACPI_ENABLE) => pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
+            _ => {}
         }
+
+        let tco = (smi_sts & pmio::TCO_STS != 0)
+            .then(|| pm.tco())
+            .filter(|tco| tco.read32(pmio::TCO1_STS) & pmio::SW_TCO_SMI != 0)
+            .map(|tco| tco.read_dat_in());
+
+        let mut gpe = 0;
+        if smi_sts & pmio::GPE0_SMI_STS != 0 {
+            gpe = u64::from(pm.read32(gpe0.sts_offset));
+            if gpe0.wide {
+                gpe |= u64::from(pm.read32(gpe0.sts_offset + 4)) << 32;
+            }
+        }
+        let mut gpi = 0;
+        if smi_sts & GPI_SMI != 0 {
+            let status = pm.read16(pmio::ALT_GP_SMI_STS);
+            pm.write16(pmio::ALT_GP_SMI_STS, status);
+            gpi = status & pm.read16(pmio::ALT_GP_SMI_EN);
+        }
+        Self {
+            pm,
+            gpe0,
+            smi_sts,
+            // FINALIZE has no chipset work yet; never hand it to the board.
+            apm: apm.filter(|command| *command != APM_CNT_FINALIZE),
+            tco,
+            gpe,
+            gpi,
+        }
+    }
+
+    /// Answer the software TCO command (`TCO_DAT_OUT`).
+    #[inline(always)]
+    pub fn tco_reply(&self, response: u8) {
+        self.pm.tco().write_dat_out(response);
+    }
+
+    /// Clear the handled sources and end the SMI (EOS).
+    #[inline(always)]
+    pub fn finish(self) {
+        let pm = self.pm;
+        if self.smi_sts & pmio::TCO_STS != 0 {
+            pm.tco().reset_tco_status();
+        }
+        if self.smi_sts & pmio::PM1_SMI_STS != 0 {
+            pm.write16(pmio::PM1_STS, 0xffff);
+        }
+        if self.smi_sts & pmio::GPE0_SMI_STS != 0 {
+            self.gpe0.clear_status(&pm);
+        }
+        pm.write32(pmio::SMI_STS, self.smi_sts);
+        pm.setbits32(pmio::SMI_EN, pmio::EOS);
     }
 }
 
+/// The SMI handler of a board with no SMI sources of its own: the ICH's
+/// APM, TCO, PM1 and GPE handling only.
 #[inline(always)]
-unsafe fn handle_tco<B: IchBoardSmmHandler>(ctx: &mut SmmContext<'_>, pm: &PmIo) {
-    let tco = pm.tco();
-    let sts = tco.read32(pmio::TCO1_STS);
-    if sts & pmio::SW_TCO_SMI != 0 {
-        let command = tco.read_dat_in();
-        // SAFETY: SMM runtime supplied a valid SMI context to this handler.
-        if let Some(response) = unsafe { B::on_tco_command(ctx, command) } {
-            tco.write_dat_out(response);
-        }
-    }
-    tco.reset_tco_status();
+pub fn handle(_ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
+    // SAFETY: bound as the board's SMI handler, so it owns the rendezvous.
+    unsafe { PendingSmi::take(config) }.finish();
 }

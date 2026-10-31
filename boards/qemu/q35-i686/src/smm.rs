@@ -5,8 +5,4 @@
 //! GPE0 block come from the installer's runtime data. This module only binds
 //! the board to that handler.
 
-use fstart_driver_intel::southbridge::smi::IchSmmHandler;
-
-use crate::Board;
-
-fstart_platform_qemu::smm::smm_bin!(Board, IchSmmHandler);
+fstart_platform_qemu::smm::smm_bin!(handler: fstart_driver_intel::southbridge::smi::handle);

@@ -18,7 +18,7 @@
 //! offset and size) into the PSP-copied `0x62` image.
 //!
 //! A second unit, `smm`, builds the board crate's library with the FCH SMI
-//! handler (`smm::Sp3SmmHandler`, bound by the board's `smm_bin!`) into a
+//! handler (`smm::handle`, bound by the board's `smm_bin!`) into a
 //! position-independent SMM image with one entry stub per CPU the board
 //! allows; the reset unit embeds it through `FSTART_SMM_IMAGE` and its build
 //! script checks that it fits the TSEG ([`crate::smm::TSEG_SIZE`]), as the
