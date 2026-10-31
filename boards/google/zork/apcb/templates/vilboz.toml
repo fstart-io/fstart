@@ -1,0 +1,990 @@
+# Board APCB policy; reserved buffers, attributes and checksums are generated.
+# Internal ABI/default template; edit ../vilboz.toml for board policy.
+schema = 1
+generation = "picasso"
+
+[[blobs]]
+name = "ram-id-0"
+revision = 717223047
+donor-sha256 = "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5"
+bindings = [
+  { slot = "backup" },
+  { slot = "active" },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-1"
+revision = 717223047
+donor-sha256 = "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5"
+bindings = [
+  { slot = "backup", instance = 1 },
+  { slot = "active", instance = 1 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-2"
+revision = 717223047
+donor-sha256 = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+bindings = [
+  { slot = "backup", instance = 2 },
+  { slot = "active", instance = 2 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-2" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-3"
+revision = 717223047
+donor-sha256 = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+bindings = [
+  { slot = "backup", instance = 3 },
+  { slot = "active", instance = 3 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-2" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-4"
+revision = 717223047
+donor-sha256 = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+bindings = [
+  { slot = "backup", instance = 4 },
+  { slot = "active", instance = 4 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-2" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-5"
+revision = 717223047
+donor-sha256 = "90c47cd6f665e004988ece4dd620586ff66948719b9f896913080f59e1131663"
+bindings = [
+  { slot = "backup", instance = 5 },
+  { slot = "active", instance = 5 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-3" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-6"
+revision = 717223047
+donor-sha256 = "90c47cd6f665e004988ece4dd620586ff66948719b9f896913080f59e1131663"
+bindings = [
+  { slot = "backup", instance = 6 },
+  { slot = "active", instance = 6 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-3" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-7"
+revision = 717223047
+donor-sha256 = "5ccda7dcba6668369b6b8e0b99dab7990682a62380f3d606b03f5e150119c309"
+bindings = [
+  { slot = "backup", instance = 7 },
+  { slot = "active", instance = 7 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-4" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-8"
+revision = 717223047
+donor-sha256 = "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b"
+bindings = [
+  { slot = "backup", instance = 8 },
+  { slot = "active", instance = 8 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-5" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-9"
+revision = 717223047
+donor-sha256 = "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b"
+bindings = [
+  { slot = "backup", instance = 9 },
+  { slot = "active", instance = 9 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-5" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-10"
+revision = 717223047
+donor-sha256 = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+bindings = [
+  { slot = "backup", instance = 10 },
+  { slot = "active", instance = 10 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-2" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-11"
+revision = 717223047
+donor-sha256 = "98f61312c86f37c167e8e19eec96a791872d86daa986c326ec9ba75764992ae1"
+bindings = [
+  { slot = "backup", instance = 11 },
+  { slot = "active", instance = 11 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-2" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+[[blobs]]
+name = "ram-id-12"
+revision = 717223047
+donor-sha256 = "a70492cf9c71464e13ffc9332f4e08c078bdaaca6b6756a415c3765659947d3b"
+bindings = [
+  { slot = "backup", instance = 12 },
+  { slot = "active", instance = 12 },
+]
+groups = ["psp", "df", "memory", "fch", "cbs"]
+records = [
+  { use = "board-id-gpio" },
+  { use = "df-default" },
+  { use = "df-override" },
+  { use = "memory-default" },
+  { use = "memory-override" },
+  { use = "spd-info-5" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "sodimm-odt" },
+  { use = "sodimm-cad" },
+  { use = "sodimm-data" },
+  { use = "sodimm-max-frequency" },
+  { use = "sodimm-stretch-frequency" },
+  { use = "fch-default" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+]
+
+# Standard JEDEC SPD images, not APCB record bodies.
+[spd-images]
+ram-id-2 = """
+23 11 0c 03 45 21 00 08 00 00 00 00 02 03 00 00
+00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e f0 0a
+20 08 00 05 00 f0 2b 34 28 00 78 00 14 3c 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+"""
+ram-id-5 = """
+23 11 0c 03 46 29 00 08 00 00 00 00 02 03 00 00
+00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e f0 0a
+20 08 00 05 00 f0 2b 34 28 00 78 00 14 3c 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+"""
+ram-id-7 = """
+23 11 0c 03 85 21 91 08 00 00 00 00 01 03 00 00
+00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e f0 0a
+20 08 00 05 00 f0 2b 34 28 00 78 00 14 3c 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+"""
+ram-id-8 = """
+23 11 0c 03 46 29 00 08 00 00 00 00 02 03 00 00
+00 00 05 06 f8 ff 02 00 6e 6e 6e 11 00 6e 30 11
+f0 0a 20 08 00 f0 2b 34 28 00 78 00 14 3c 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 9c b5 00 00 00 00 bc 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+"""
+
+[tables.board-id-gpio]
+kind = "board-id-gpio"
+pins = [
+  { bank_control = 0, iomux_control = 1, pin = 132 },
+  { bank_control = 0, iomux_control = 1, pin = 90 },
+  { bank_control = 0, iomux_control = 3, pin = 86 },
+  { bank_control = 0, iomux_control = 1, pin = 69 },
+]
+mapping = [
+  { board_instance_index = 0, id_and_feature_mask = 15, id_and_feature_value = 0 },
+  { board_instance_index = 1, id_and_feature_mask = 15, id_and_feature_value = 1 },
+  { board_instance_index = 2, id_and_feature_mask = 15, id_and_feature_value = 2 },
+  { board_instance_index = 3, id_and_feature_mask = 15, id_and_feature_value = 3 },
+  { board_instance_index = 4, id_and_feature_mask = 15, id_and_feature_value = 4 },
+  { board_instance_index = 5, id_and_feature_mask = 15, id_and_feature_value = 5 },
+  { board_instance_index = 6, id_and_feature_mask = 15, id_and_feature_value = 6 },
+  { board_instance_index = 7, id_and_feature_mask = 15, id_and_feature_value = 7 },
+  { board_instance_index = 8, id_and_feature_mask = 15, id_and_feature_value = 8 },
+  { board_instance_index = 9, id_and_feature_mask = 15, id_and_feature_value = 9 },
+  { board_instance_index = 10, id_and_feature_mask = 15, id_and_feature_value = 10 },
+  { board_instance_index = 11, id_and_feature_mask = 15, id_and_feature_value = 11 },
+  { board_instance_index = 12, id_and_feature_mask = 15, id_and_feature_value = 12 },
+  { board_instance_index = 13, id_and_feature_mask = 15, id_and_feature_value = 13 },
+  { board_instance_index = 14, id_and_feature_mask = 15, id_and_feature_value = 14 },
+  { board_instance_index = 15, id_and_feature_mask = 15, id_and_feature_value = 15 },
+]
+
+[tables.df-default]
+kind = "parameters"
+group = "df"
+layer = "default"
+values = [
+  { token = "DfGmiEncrypt", width = "u8", value = 3 },
+  { token = "DfXgmiEncrypt", width = "u8", value = 3 },
+  { token = "DfSaveRestoreMemEncrypt", width = "u8", value = 3 },
+  { token = "DfSysStorageAtTopOfMem", width = "u8", value = 3 },
+  { token = "DfProbeFilter", width = "u8", value = 3 },
+  { token = "DfBottomIo", width = "u8", value = 208 },
+  { token = "DfMemInterleaving", width = "u8", value = 7 },
+  { token = "DfMemInterleavingSize", width = "u8", value = 7 },
+  { token = "DfMemInterleavingHash", width = "u8", value = 3 },
+  { token = "DfPciMmioSize", width = "u32", value = 134217728 },
+  { token = "DfCakeCrcThreshPerfBounds", width = "u32", value = 100 },
+  { token = "DfMemClear", width = "u8", value = 0 },
+]
+
+[tables.df-override]
+kind = "parameters"
+group = "df"
+layer = "override"
+values = [
+  { token = "DfGmiEncrypt", width = "u8", value = 3 },
+  { token = "DfXgmiEncrypt", width = "u8", value = 3 },
+  { token = "DfSaveRestoreMemEncrypt", width = "u8", value = 3 },
+  { token = "DfSysStorageAtTopOfMem", width = "u8", value = 3 },
+  { token = "DfProbeFilter", width = "u8", value = 3 },
+  { token = "DfBottomIo", width = "u8", value = 208 },
+  { token = "DfMemInterleaving", width = "u8", value = 7 },
+  { token = "DfMemInterleavingSize", width = "u8", value = 7 },
+  { token = "DfMemInterleavingHash", width = "u8", value = 3 },
+  { token = "DfPciMmioSize", width = "u32", value = 134217728 },
+  { token = "DfCakeCrcThreshPerfBounds", width = "u32", value = 100 },
+  { token = "DfMemClear", width = "u8", value = 0 },
+]
+
+[tables.memory-default]
+kind = "parameters"
+group = "memory"
+layer = "default"
+values = [
+  { token = "MemBottomIo", width = "u8", value = 1 },
+  { token = "MemHoleRemapping", width = "u32", value = 0 },
+  { token = "MemLimitToBelow1TiB", width = "u32", value = 1200 },
+  { token = "MemUserTimingMode", width = "u8", value = 1 },
+  { token = "MemClockValue", width = "u8", value = 0 },
+  { token = "MemEnableChipSelectInterleaving", width = "u8", value = 1 },
+  { token = "MemEnableChannelInterleaving", width = "u8", value = 0 },
+  { token = "MemEnableEccFeature", width = "u8", value = 1 },
+  { token = "MemEnablePowerDown", width = "u8", value = 0 },
+  { token = "MemEnableParity", width = "u8", value = 1 },
+  { token = "MemEnableBankSwizzle", width = "u32", value = 134217728 },
+  { token = "MemEnableClearing", width = "u8", value = 1 },
+  { token = "MemUmaMode", width = "u8", value = 2 },
+  { token = "MemUmaSize", width = "u8", value = 3 },
+  { token = "MemRestoreControl", width = "u8", value = 0 },
+  { token = "MemSaveMemContextControl", width = "u8", value = 3 },
+  { token = "MemIsCapsuleMode", width = "u8", value = 0 },
+  { token = "MemForceTraining", width = "u8", value = 0 },
+  { token = "MemDimmTypeMixedConfig", width = "u16", value = 0 },
+  { token = "MemDramDoubleRefreshRate", width = "u8", value = 0 },
+  { token = "MemPmuTrainingMode", width = "u32", value = 16777152 },
+  { token = "MemEccRedirection", width = "u8", value = 0 },
+  { token = "MemScrubDramRate", width = "u32", value = 1600 },
+  { token = "MemScrubL2Rate", width = "u32", value = 0 },
+  { token = "MemScrubL3Rate", width = "u8", value = 1 },
+  { token = "MemScrubInstructionCacheRate", width = "u8", value = 1 },
+  { token = "MemScrubDataCacheRate", width = "u8", value = 0 },
+  { token = "MemEccSyncFlood", width = "u8", value = 0 },
+  { token = "MemEccSymbolSize", width = "u8", value = 0 },
+  { token = "MemDqsTrainingControl", width = "u8", value = 1 },
+  { token = "MemUmaAbove4GiB", width = "u8", value = 0 },
+  { token = "MemUmaAlignment", width = "u8", value = 1 },
+  { token = "MemEnableAllClocks", width = "u8", value = 0 },
+  { token = "MemBusFrequencyLimit", width = "u8", value = 0 },
+  { token = "MemPowerDownMode", width = "u8", value = 2 },
+  { token = "MemIgnoreSpdChecksum", width = "u8", value = 0 },
+  { token = "MemModeUnganged", width = "u8", value = 0 },
+  { token = "MemQuadRankCapable", width = "u8", value = 0 },
+  { token = "MemRdimmCapable", width = "u8", value = 0 },
+  { token = "MemLrdimmCapable", width = "u8", value = 0 },
+  { token = "MemUdimmCapable", width = "u16", value = 0 },
+  { token = "MemSodimmCapable", width = "u16", value = 0 },
+  { token = "MemEnableDoubleRefreshRate", width = "u16", value = 0 },
+  { token = "MemDimmTypeDdr4Capable", width = "u16", value = 0 },
+  { token = "MemDimmTypeDdr3Capable", width = "u8", value = 0 },
+  { token = "MemDimmTypeLpddr3Capable", width = "u8", value = 0 },
+  { token = "MemEnableZqReset", width = "u8", value = 1 },
+  { token = "MemEnableBankGroupSwap", width = "u8", value = 1 },
+  { token = "MemEnableOdtsCmdThrottle", width = "u8", value = 0 },
+  { token = "MemDimmSensorUpper", width = "u8", value = 0 },
+  { token = "MemDimmSensorLower", width = "u8", value = 1 },
+  { token = "MemDimmSensorCritical", width = "u32", value = 30 },
+  { token = "MemDimmSensorResolution", width = "u8", value = 0 },
+  { token = "MemDimmSensorConf", width = "u8", value = 0 },
+  { token = "MemAutoRefreshFineGranMode", width = "u8", value = 0 },
+  { token = "MemEnableSwCmdThrottle", width = "u8", value = 0 },
+  { token = "MemEnableForcePowerDownThrotle", width = "u8", value = 0 },
+  { token = "MemSwCmdThrottleCycles", width = "u8", value = 0 },
+  { token = "MemOdtsCmdThrottleCycles", width = "u8", value = 0 },
+  { token = "MemDdrRouteBalancedTee", width = "u8", value = 0 },
+  { token = "MemEnablePState", width = "u8", value = 0 },
+  { token = "MemSolderedDown", width = "u8", value = 0 },
+  { token = "MemEnableMbistTest", width = "u8", value = 1 },
+]
+
+[tables.memory-override]
+kind = "parameters"
+group = "memory"
+layer = "override"
+values = [
+  { token = "MemBottomIo", width = "u8", value = 1 },
+  { token = "MemHoleRemapping", width = "u32", value = 0 },
+  { token = "MemLimitToBelow1TiB", width = "u32", value = 1200 },
+  { token = "MemUserTimingMode", width = "u8", value = 1 },
+  { token = "MemClockValue", width = "u8", value = 0 },
+  { token = "MemEnableChipSelectInterleaving", width = "u8", value = 1 },
+  { token = "MemEnableChannelInterleaving", width = "u8", value = 0 },
+  { token = "MemEnableEccFeature", width = "u8", value = 1 },
+  { token = "MemEnablePowerDown", width = "u8", value = 0 },
+  { token = "MemEnableParity", width = "u8", value = 1 },
+  { token = "MemEnableBankSwizzle", width = "u32", value = 134217728 },
+  { token = "MemEnableClearing", width = "u8", value = 1 },
+  { token = "MemUmaMode", width = "u8", value = 2 },
+  { token = "MemUmaSize", width = "u8", value = 3 },
+  { token = "MemRestoreControl", width = "u8", value = 0 },
+  { token = "MemSaveMemContextControl", width = "u8", value = 3 },
+  { token = "MemIsCapsuleMode", width = "u8", value = 0 },
+  { token = "MemForceTraining", width = "u8", value = 0 },
+  { token = "MemDimmTypeMixedConfig", width = "u16", value = 0 },
+  { token = "MemDramDoubleRefreshRate", width = "u8", value = 0 },
+  { token = "MemPmuTrainingMode", width = "u32", value = 16777152 },
+  { token = "MemEccRedirection", width = "u8", value = 0 },
+  { token = "MemScrubDramRate", width = "u32", value = 1600 },
+  { token = "MemScrubL2Rate", width = "u32", value = 0 },
+  { token = "MemScrubL3Rate", width = "u8", value = 1 },
+  { token = "MemScrubInstructionCacheRate", width = "u8", value = 1 },
+  { token = "MemScrubDataCacheRate", width = "u8", value = 0 },
+  { token = "MemEccSyncFlood", width = "u8", value = 0 },
+  { token = "MemEccSymbolSize", width = "u8", value = 0 },
+  { token = "MemDqsTrainingControl", width = "u8", value = 1 },
+  { token = "MemUmaAbove4GiB", width = "u8", value = 0 },
+  { token = "MemUmaAlignment", width = "u8", value = 1 },
+  { token = "MemEnableAllClocks", width = "u8", value = 0 },
+  { token = "MemBusFrequencyLimit", width = "u8", value = 0 },
+  { token = "MemPowerDownMode", width = "u8", value = 2 },
+  { token = "MemIgnoreSpdChecksum", width = "u8", value = 0 },
+  { token = "MemModeUnganged", width = "u8", value = 0 },
+  { token = "MemQuadRankCapable", width = "u8", value = 0 },
+  { token = "MemRdimmCapable", width = "u8", value = 0 },
+  { token = "MemLrdimmCapable", width = "u8", value = 0 },
+  { token = "MemUdimmCapable", width = "u16", value = 0 },
+  { token = "MemSodimmCapable", width = "u16", value = 0 },
+  { token = "MemEnableDoubleRefreshRate", width = "u16", value = 0 },
+  { token = "MemDimmTypeDdr4Capable", width = "u16", value = 0 },
+  { token = "MemDimmTypeDdr3Capable", width = "u8", value = 0 },
+  { token = "MemDimmTypeLpddr3Capable", width = "u8", value = 0 },
+  { token = "MemEnableZqReset", width = "u8", value = 1 },
+  { token = "MemEnableBankGroupSwap", width = "u8", value = 1 },
+  { token = "MemEnableOdtsCmdThrottle", width = "u8", value = 0 },
+  { token = "MemDimmSensorUpper", width = "u8", value = 0 },
+  { token = "MemDimmSensorLower", width = "u8", value = 1 },
+  { token = "MemDimmSensorCritical", width = "u32", value = 30 },
+  { token = "MemDimmSensorResolution", width = "u8", value = 0 },
+  { token = "MemDimmSensorConf", width = "u8", value = 0 },
+  { token = "MemAutoRefreshFineGranMode", width = "u8", value = 0 },
+  { token = "MemEnableSwCmdThrottle", width = "u8", value = 0 },
+  { token = "MemEnableForcePowerDownThrotle", width = "u8", value = 0 },
+  { token = "MemSwCmdThrottleCycles", width = "u8", value = 0 },
+  { token = "MemOdtsCmdThrottleCycles", width = "u8", value = 0 },
+  { token = "MemDdrRouteBalancedTee", width = "u8", value = 0 },
+  { token = "MemEnablePState", width = "u8", value = 0 },
+  { token = "MemSolderedDown", width = "u8", value = 0 },
+  { token = "MemEnableMbistTest", width = "u8", value = 1 },
+]
+
+[tables.spd-info]
+kind = "spd-info"
+slots = [
+  { descriptor = { address = 0xa0, channel = 0, dimm = 0, dimm_present = true, dram_down_spd_valid = true, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa4, channel = 0, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa2, channel = 1, dimm = 0, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa6, channel = 1, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+]
+
+[tables.spd-smbus]
+kind = "spd-smbus"
+slots = [
+  { socket = 0, channel = 0, dimm = 0, address = 0xa0, mux = 0xff, mux-channel = 255, mux-control = 255 },
+  { socket = 0, channel = 0, dimm = 1, address = 0xa4, mux = 0xff, mux-channel = 255, mux-control = 255 },
+  { socket = 0, channel = 1, dimm = 0, address = 0xa2, mux = 0xff, mux-channel = 255, mux-control = 255 },
+  { socket = 0, channel = 1, dimm = 1, address = 0xa6, mux = 0xff, mux-channel = 255, mux-control = 255 },
+]
+
+[tables.platform-override]
+kind = "platform-override"
+scope = "all"
+operations = [
+  { operation = "memclk-map", connections = [0, 1, 2, 3, 0, 0, 0, 0] },
+  { operation = "cke-tristate-map", connections = [0, 1, 2, 3] },
+  { operation = "odt-tristate-map", connections = [0, 1, 2, 3] },
+  { operation = "cs-tristate-map", connections = [0, 1, 2, 3, 0, 0, 0, 0] },
+  { operation = "max-dimms-per-channel", value = 1 },
+  { operation = "max-channels-per-socket", value = 2 },
+]
+
+[tables.legacy-console]
+kind = "legacy-console"
+
+[tables.legacy-console.settings]
+abl_breakpoint_control = { break_on_all_dies = false, enable_breakpoint = false }
+abl_console_out_control = { abl_console_port = 0x80, enable_console_logging = false, enable_mem_flow_logging = true, enable_mem_getreg_logging = false, enable_mem_pmu_logging = false, enable_mem_pmu_sram_read_logging = false, enable_mem_pmu_sram_write_logging = false, enable_mem_setreg_logging = true, enable_mem_status_logging = false, enable_mem_test_verbose_logging = false }
+
+[tables.legacy-error-output]
+kind = "error-output"
+
+[tables.legacy-error-output.settings]
+beep_code_table = [
+  { custom_error_type = "General", peak_attr = { peak_count = 3, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Memory", peak_attr = { peak_count = 5, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Df", peak_attr = { peak_count = 7, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Ccx", peak_attr = { peak_count = 9, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Gnb", peak_attr = { peak_count = 11, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Psp", peak_attr = { peak_count = 13, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Smu", peak_attr = { peak_count = 15, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+  { custom_error_type = "Unknown", peak_attr = { peak_count = 3, pulse_width = 3, repeat_count = 0 }, peak_map = 21845 },
+]
+clear_acknowledgement = false
+enable_error_reporting = false
+enable_error_reporting_beep_codes = false
+enable_error_reporting_gpio = false
+enable_heart_beat = false
+enable_power_good_gpio = false
+enable_using_handshake = false
+error_reporting_gpio = { bank_control = 192, iomux_control = 1, pin = 85 }
+input_port = 0x84
+input_port_size = "32 Bit"
+input_port_type = "FchHtIo"
+output_delay = 15000
+output_port = 0x80
+output_port_size = "32 Bit"
+output_port_type = "FchHtIo"
+power_good_gpio = { bank_control = 0, iomux_control = 0, pin = 0 }
+stop_on_first_fatal_error = true
+
+[tables.voltage-control]
+kind = "voltage-control"
+
+[tables.voltage-control.settings]
+clear_acknowledgement = false
+enabled = true
+input_port = 0x84
+input_port_size = "32 Bit"
+input_port_type = "FchHtIo"
+output_port = 0x80
+output_port_size = "32 Bit"
+output_port_type = "FchHtIo"
+
+[tables.sodimm-odt]
+kind = "sodimm-odt"
+rows = [
+  { ranks = [["empty"], ["single"], []], patterns = [[0, 0], [0, 0], [0, 2], [0, 0]] },
+  { ranks = [["empty"], ["dual"], []], patterns = [[0, 0], [0, 0], [0, 2], [0, 8]] },
+  { ranks = [["single"], ["empty"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["dual"], ["empty"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["single"], ["single"], []], patterns = [[2, 2], [0, 0], [1, 1], [0, 0]] },
+  { ranks = [["single"], ["dual"], []], patterns = [[2, 2], [0, 0], [1, 1], [1, 1]] },
+  { ranks = [["dual"], ["single"], []], patterns = [[2, 2], [2, 2], [1, 1], [0, 0]] },
+  { ranks = [["dual"], ["dual"], []], patterns = [[2, 2], [2, 2], [1, 1], [1, 1]] },
+]
+
+[tables.sodimm-cad]
+kind = "sodimm-cad"
+rows = [
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 3538944, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 0, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2667 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2933 = true, ddr3200 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+]
+
+[tables.sodimm-data]
+kind = "sodimm-data"
+rows = [
+  { slots = [1], rates = [1333], rank0 = ["single"], rank1 = ["empty"], rtt-nom = "Off", rtt-wr = "Off", rtt-park = "80 Ω", drive = [30, 30, 10], pmu-vref = 90, dram-vref = { Range1 = "75.60%" } },
+  { slots = [1], rates = [1333], rank0 = ["dual"], rank1 = ["empty"], rtt-nom = "Off", rtt-wr = "80 Ω", rtt-park = "240 Ω", drive = [30, 30, 10], pmu-vref = 90, dram-vref = { Range1 = "75.60%" } },
+  { slots = [1], rates = [1600, 1866, 2133, 2400, 2667], rank0 = ["single"], rank1 = ["empty"], rtt-nom = "Off", rtt-wr = "Off", rtt-park = "48 Ω", drive = [63, 63, 24], pmu-vref = 90, dram-vref = { Range1 = "75.60%" } },
+  { slots = [1], rates = [1600, 1866, 2133, 2400, 2667], rank0 = ["dual"], rank1 = ["empty"], rtt-nom = "Off", rtt-wr = "80 Ω", rtt-park = "240 Ω", drive = [63, 63, 24], pmu-vref = 90, dram-vref = { Range1 = "75.60%" } },
+  { slots = [1], rates = [2933, 3200], rank0 = ["single"], rank1 = ["empty"], rtt-nom = "Off", rtt-wr = "Off", rtt-park = "48 Ω", drive = [63, 63, 24], pmu-vref = 90, dram-vref = { Range1 = "75.60%" } },
+]
+
+[tables.sodimm-max-frequency]
+kind = "sodimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+]
+
+[tables.sodimm-stretch-frequency]
+kind = "sodimm-stretch-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr3200" },
+]
+
+[tables.fch-default]
+kind = "parameters"
+group = "fch"
+layer = "default"
+values = [
+  { token = "FchConsoleOutEnable", width = "u8", value = 0 },
+  { token = "FchConsoleOutSerialPort", width = "u8", value = 0 },
+  { token = "FchSmbusSpeed", width = "u8", value = 0 },
+  { token = "FchEnd", width = "u8", value = 0 },
+  { token = "Fch1c05", width = "u8", value = 0 },
+  { token = "Fch1c06", width = "u32", value = 115200 },
+  { token = "Fch1c07", width = "u8", value = 1 },
+]
+
+[tables.fch-override]
+kind = "parameters"
+group = "fch"
+layer = "override"
+values = [
+  { token = "FchConsoleOutEnable", width = "u8", value = 0 },
+  { token = "FchConsoleOutSerialPort", width = "u8", value = 0 },
+  { token = "FchSmbusSpeed", width = "u8", value = 0 },
+  { token = "FchEnd", width = "u8", value = 0 },
+  { token = "Fch1c05", width = "u8", value = 0 },
+  { token = "Fch1c06", width = "u32", value = 115200 },
+  { token = "Fch1c07", width = "u8", value = 1 },
+]
+
+[tables.cbs-default]
+kind = "parameters"
+group = "cbs"
+layer = "default"
+values = [
+  { token = "Cbs18", width = "u8", value = 1 },
+  { token = "Cbs19", width = "u8", value = 1 },
+  { token = "Cbs1a", width = "u8", value = 0 },
+  { token = "Cbs1b", width = "u32", value = 128 },
+  { token = "Cbs22", width = "u8", value = 57 },
+  { token = "Cbs26", width = "u8", value = 26 },
+  { token = "Cbs2a", width = "u8", value = 18 },
+  { token = "Cbs2c", width = "u16", value = 0 },
+  { token = "Cbs2e", width = "u8", value = 3 },
+  { token = "Cbs30", width = "u8", value = 3 },
+  { token = "Cbs32", width = "u16", value = 312 },
+  { token = "Cbs34", width = "u16", value = 192 },
+  { token = "Cbs36", width = "u16", value = 132 },
+  { token = "Cbs37", width = "u8", value = 5 },
+  { token = "Cbs51", width = "u8", value = 0 },
+  { token = "Cbs52", width = "u8", value = 0 },
+  { token = "Cbs53", width = "u8", value = 0 },
+]
+
+[tables.cbs-debug]
+kind = "parameters"
+group = "cbs"
+layer = "debug"
+values = [
+  { token = "Cbs28", width = "u8", value = 1 },
+  { token = "Cbs29", width = "u8", value = 255 },
+]
+
+[tables.spd-info-2]
+kind = "spd-info"
+slots = [
+  { descriptor = { address = 0xa0, channel = 0, dimm = 0, dimm_present = true, dram_down_spd_valid = true, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 }, image = "ram-id-2" },
+  { descriptor = { address = 0xa4, channel = 0, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa2, channel = 1, dimm = 0, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa6, channel = 1, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+]
+
+[tables.spd-info-3]
+kind = "spd-info"
+slots = [
+  { descriptor = { address = 0xa0, channel = 0, dimm = 0, dimm_present = true, dram_down_spd_valid = true, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 }, image = "ram-id-5" },
+  { descriptor = { address = 0xa4, channel = 0, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa2, channel = 1, dimm = 0, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa6, channel = 1, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+]
+
+[tables.spd-info-4]
+kind = "spd-info"
+slots = [
+  { descriptor = { address = 0xa0, channel = 0, dimm = 0, dimm_present = true, dram_down_spd_valid = true, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 }, image = "ram-id-7" },
+  { descriptor = { address = 0xa4, channel = 0, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa2, channel = 1, dimm = 0, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa6, channel = 1, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+]
+
+[tables.spd-info-5]
+kind = "spd-info"
+slots = [
+  { descriptor = { address = 0xa0, channel = 0, dimm = 0, dimm_present = true, dram_down_spd_valid = true, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 }, image = "ram-id-8" },
+  { descriptor = { address = 0xa4, channel = 0, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa2, channel = 1, dimm = 0, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+  { descriptor = { address = 0xa6, channel = 1, dimm = 1, dimm_present = false, dram_down_spd_valid = false, dram_manufacturer_id = 0, module_manufacturer_id = 0, mux_address = 0, mux_channel = 0, mux_present = false, nvdimm_present = false, package = 1, page_address = 0, shadow_spd_valid = false, socket = 0, technology = 3 } },
+]

@@ -357,10 +357,10 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> Result<FlashPlan, String> {
     let tables = include_str!("apcb/ddr4.toml");
     let apcbs = B::APCB_SOURCES
         .iter()
-        .map(|(generation, source)| {
+        .map(|(generation, source, template)| {
             Ok(GeneratedApcbs {
                 generation: generation.profile().bios,
-                replacements: apcb_toml::compile(source, tables)?,
+                replacements: apcb_toml::compile(source, template, tables)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -779,14 +779,16 @@ mod tests {
             const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
             const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
             const MAX_CPUS: u16 = 128;
-            const APCB_SOURCES: &'static [(Generation, &'static str)] = &[
+            const APCB_SOURCES: &'static [(Generation, &'static str, &'static str)] = &[
                 (
                     Generation::Rome,
                     include_str!("../../../../boards/tyan/s8030/apcb/rome.toml"),
+                    include_str!("../../../../boards/tyan/s8030/apcb/templates/rome.toml"),
                 ),
                 (
                     Generation::Milan,
                     include_str!("../../../../boards/tyan/s8030/apcb/milan.toml"),
+                    include_str!("../../../../boards/tyan/s8030/apcb/templates/milan.toml"),
                 ),
             ];
         }

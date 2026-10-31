@@ -54,9 +54,17 @@ impl Sp3BoardFacts for Board {
     /// The vendor 32 MiB dual image (Rome lower half, Milan upper half);
     /// the user supplies it (see `vendor/README.md`).
     const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
-    const APCB_SOURCES: &'static [(Generation, &'static str)] = &[
-        (Generation::Rome, include_str!("../apcb/rome.toml")),
-        (Generation::Milan, include_str!("../apcb/milan.toml")),
+    const APCB_SOURCES: &'static [(Generation, &'static str, &'static str)] = &[
+        (
+            Generation::Rome,
+            include_str!("../apcb/rome.toml"),
+            include_str!("../apcb/templates/rome.toml"),
+        ),
+        (
+            Generation::Milan,
+            include_str!("../apcb/milan.toml"),
+            include_str!("../apcb/templates/milan.toml"),
+        ),
     ];
     /// 1P, 64 cores with SMT (Rome and Milan alike).
     const MAX_CPUS: u16 = 128;

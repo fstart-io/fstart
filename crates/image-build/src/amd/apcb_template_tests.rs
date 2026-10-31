@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-const ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/rome.toml");
+const ROME: &str = include_str!("../../../../boards/tyan/s8030/apcb/templates/rome.toml");
 const TABLES: &str = include_str!("../../../platform-sp3/src/host/apcb/ddr4.toml");
 
 #[test]
@@ -26,8 +26,8 @@ fn all_v3_toml_sources_preserve_all_eleven_payloads() {
     let mut count = 0;
     for source in [
         ROME,
-        include_str!("../../../../boards/tyan/s8030/apcb/milan.toml"),
-        include_str!("../../../../boards/amd/ethanolx/apcb/milan.toml"),
+        include_str!("../../../../boards/tyan/s8030/apcb/templates/milan.toml"),
+        include_str!("../../../../boards/amd/ethanolx/apcb/templates/milan.toml"),
     ] {
         count += Configuration::parse(source).unwrap().blobs.len();
         let actual = compile(source, TABLES).unwrap();
@@ -62,7 +62,7 @@ fn legacy_layouts_parameters_and_spd_assets_are_checked() {
         );
     }
     let mj11 = Configuration::parse(include_str!(
-        "../../../../boards/gigabyte/mj11/apcb/ec1.toml"
+        "../../../../boards/gigabyte/mj11/apcb/templates/ec1.toml"
     ))
     .unwrap();
     let mut settings = mj11
@@ -102,7 +102,7 @@ fn legacy_layouts_parameters_and_spd_assets_are_checked() {
             .contains("termination")
     );
     let vilboz = Configuration::parse(include_str!(
-        "../../../../boards/google/zork/apcb/vilboz.toml"
+        "../../../../boards/google/zork/apcb/templates/vilboz.toml"
     ))
     .unwrap();
     let mut table = vilboz
@@ -132,7 +132,7 @@ fn legacy_layouts_parameters_and_spd_assets_are_checked() {
 
 #[test]
 fn legacy_sources_cover_every_ram_id_and_both_mj11_variants() {
-    let vilboz = include_str!("../../../../boards/google/zork/apcb/vilboz.toml");
+    let vilboz = include_str!("../../../../boards/google/zork/apcb/templates/vilboz.toml");
     let hashes = [
         "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5",
         "142412100b3d54382a3dbee2e4eed65eccb6aba55ff9780d357298e824d6fba5",
@@ -161,11 +161,11 @@ fn legacy_sources_cover_every_ram_id_and_both_mj11_variants() {
     }
     for (source, hash) in [
         (
-            include_str!("../../../../boards/gigabyte/mj11/apcb/ec0.toml"),
+            include_str!("../../../../boards/gigabyte/mj11/apcb/templates/ec0.toml"),
             "aeb727e324f1d51c586e742ceedaae8d41e4ad64c410207d9e8d04f3f12492d0",
         ),
         (
-            include_str!("../../../../boards/gigabyte/mj11/apcb/ec1.toml"),
+            include_str!("../../../../boards/gigabyte/mj11/apcb/templates/ec1.toml"),
             "fa1f884641edd40ba9bc8a6f327b03d71fd0d12edb80161cd284cffa28a22bc9",
         ),
     ] {

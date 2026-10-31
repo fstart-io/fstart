@@ -201,10 +201,10 @@ pub trait Sp3BoardFacts {
     /// half, or a full readout with [`Self::FLASH_MIRRORS`]. Its PSP/BIOS
     /// directories, blobs and APCB stay in place.
     const VENDOR_IMAGE: &'static str;
-    /// Reviewed APCB v3 source sets, one per migrated generation. The host
-    /// compiler builds these into configuration inputs for PSP/ABL; signed
-    /// executable firmware still comes from the vendor ROM. No runtime JSON.
-    const APCB_SOURCES: &'static [(Generation, &'static str)] = &[];
+    /// (Generation, semantic board policy, internal ABI/default template).
+    /// The host builds PSP/ABL inputs; signed executable firmware still comes
+    /// from the vendor ROM. No policy parsing runs in firmware.
+    const APCB_SOURCES: &'static [(Generation, &'static str, &'static str)] = &[];
     /// Logical CPU ceiling over every supported generation (all sockets);
     /// sizes the AP stacks and SMM.
     const MAX_CPUS: u16;

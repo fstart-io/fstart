@@ -9,6 +9,7 @@
 //! second parser. Signed AMD blobs are copied unchanged, never re-signed.
 pub mod apcb;
 pub mod apcb_source;
+mod apcb_template;
 pub mod apcb_toml;
 pub mod assembly;
 pub mod blobs;

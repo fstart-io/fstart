@@ -1,69 +1,78 @@
-# Source-built AMD APCBs
+# AMD APCB board policy
 
-APCBs configure AMD PSP/ABL firmware, including memory initialization before the
-x86 firmware runs. Source-built APCBs do not replace signed PSP/ABL, PMU, SMU or
-other executable vendor firmware.
+Board policy is separate from firmware ABI/default templates. Users configure
+memory features, supported populations and transfer rates, and RAM-ID-to-SPD
+selection. They do not specify token widths, record IDs, parameter time points,
+group order, priorities, header sizes, termination, padding or checksums.
 
-## Board sources
+For example:
 
-Board builds compile schema-validated TOML with the Rust `amd-apcb` encoder.
-Binary headers, record sizes, padding, parameter terminators and checksums are
-generated, not authored.
+```toml
+schema = 1
 
-| Board / generation | Source |
+[memory]
+ecc = true
+restore-context = false
+speed-limits = [
+  { module = "rdimm", slots-per-channel = [2], dual-rank-dimms = 2, maximum-mt-s = 2133 },
+]
+```
+
+Unspecified settings inherit the firmware profile's defaults. Each supplied
+module/training/board-ID speed-limit set replaces that population policy;
+DIMM counts and rate encodings are derived. `maximum-mt-s` uses physical DDR
+transfer rates, not firmware enum values or unsupported-rate sentinels.
+
+Vilboz policy additionally selects named JEDEC SPD images with `[[ram]]` entries
+containing `id` and `spd`. Descriptor fields, validity flags, channel placement,
+training scratch buffers and active/backup copies belong to the profile.
+
+## Sources
+
+| Board / generation | Editable policy |
 | --- | --- |
 | S8030 Rome | `boards/tyan/s8030/apcb/rome.toml` |
 | S8030 Milan | `boards/tyan/s8030/apcb/milan.toml` |
 | Ethanol-X Milan | `boards/amd/ethanolx/apcb/milan.toml` |
-| Vilboz, RAM IDs 0–12 | `boards/google/zork/apcb/vilboz.toml` |
+| Vilboz | `boards/google/zork/apcb/vilboz.toml` |
 | MJ11 EC0/F02 | `boards/gigabyte/mj11/apcb/ec0.toml` |
 | MJ11 EC1/F09 | `boards/gigabyte/mj11/apcb/ec1.toml` |
-| Shared SP3 electrical tables | `crates/platform-sp3/src/host/apcb/ddr4.toml` |
 
-Each named blob references semantic tables and, for APCB v3, named token sets.
-Bindings specify active/backup directory slots separately from table placement
-(instance, board mask and priority). V2 uses named parameters with explicit
-storage widths and time points. Repeated legacy CBS records and intentionally
-empty groups are retained, not merged away.
+The adjacent `templates/` directories are internal, reviewed firmware ABI/default
+profiles, not the authoring interface. The private template compiler and Rust
+policy mappings choose representation. Shared SP3 electrical defaults remain in
+`crates/platform-sp3/src/host/apcb/ddr4.toml`. Normal board builds supply the
+profile and shared defaults automatically.
 
-Vilboz JEDEC SPD images are named hex data assets under `[spd-images]`, distinct
-from APCB record bodies. SPD descriptors are typed; omitting an image reserves
-zeroed training scratch space. Packed Vilboz builds need neither an extracted
-APCB template nor separate SPD files. Signed firmware inputs remain necessary.
+Only verified semantic mappings are public. In particular, Picasso parameter
+IDs must not be given Zeppelin meanings merely because their numbers coincide.
+Unverified Picasso parameters, LRDIMM frequency-condition meanings and advanced
+electrical settings currently remain inherited profile defaults, not guessed
+public knobs. Adding a setting requires a verified firmware-family mapping and
+preservation tests; users never have to choose a storage width to use it.
 
-## Tools
+## Tools and safety
 
-Build a payload without a donor APCB:
+`fstart-apcb-source schema OUTPUT` generates the policy editor schema. The schema
+rejects firmware-layout fields as well as unknown or incorrectly typed policy.
+For low-level standalone builds, `build POLICY OUTPUT --template PROFILE` accepts
+an explicit internal profile, plus `--tables SHARED` for SP3 and `--blob NAME` to
+select a payload. Normal users build through the board's `fbuild` integration.
+`decode` and `build-json` are lossless diagnostic interchange, not policy
+configuration. Output commands refuse overwrites.
 
-```sh
-cargo run -p fstart-amdfw-tools --bin fstart-apcb-source -- build \
-  boards/tyan/s8030/apcb/rome.toml /tmp/rome-apcb.bin --blob board \
-  --tables crates/platform-sp3/src/host/apcb/ddr4.toml
-```
+The existing MPL-2.0 `amd-apcb` encoder handles binary layout and bookkeeping;
+there is no second encoder. Donor SHA-256, selector completeness, slot capacity
+and alias guards remain in vendor-image assembly. Both MJ11 directory levels
+and all active/backup mappings are preserved. Packed Vilboz builds need neither
+APCB templates extracted from a ROM nor separate SPD input files.
 
-V2 board files are self-contained; omit `--tables` and select the desired blob
-name from the file. Generate editor schemas with `schema OUTPUT` and
-`schema OUTPUT --tables`. Unknown fields, invalid enum values, missing references,
-incompatible layouts and overflowing parameter values are rejected.
+Golden tests pin all 11 SP3 payloads, all 13 Vilboz RAM IDs and both MJ11 variants.
+Policy tests require unchanged defaults to reproduce those same bytes, and
+semantic edits to retain storage and donor guards. Image tests cover placement
+and unrelated-byte preservation. These are not hardware qualification: no
+flashing, boot or memory-training testing has been performed. Signed executable
+AMD PSP/ABL and other vendor firmware remain necessary.
 
-`decode INPUT OUTPUT` exports lossless typed diagnostic JSON; `build-json`
-rebuilds that export. JSON is diagnostic interchange, not the board authoring
-format. Output commands refuse to overwrite existing files.
-
-## Image safety and verification
-
-SP3 and MJ11 vendor-image builds retain donor SHA-256 guards, complete selector
-coverage, slot-capacity checks and overlapping-slot checks. Every matching BIOS
-directory reference is replaced, including both MJ11 directory levels. Bytes
-outside declared APCB payloads, including slot padding, remain unchanged.
-Vilboz packing emits all 13 active/backup pairs from source.
-
-Golden tests independently pin all 11 SP3 payloads, all 13 Vilboz RAM IDs and
-both MJ11 variants. Typed export/rebuild tests check representation preservation;
-image tests check placement and unrelated-byte preservation. These checks are
-not hardware qualification: memory training and boot have not been tested.
-
-The existing MPL-2.0 `amd-apcb` implementation is vendored with localized legacy
-layout and serialization fixes. Its pinned upstream revision, license and public
-interoperability references are recorded in `vendor/amd-apcb/UPSTREAM`. No second
-APCB encoder or opaque APCB-record fallback is used by the TOML compiler.
+The encoder's pinned provenance and public interoperability references are in
+`vendor/amd-apcb/UPSTREAM`.

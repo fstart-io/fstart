@@ -1,0 +1,566 @@
+# Board APCB policy; reserved buffers, attributes and checksums are generated.
+# Internal ABI/default template; edit ../ec1.toml for board policy.
+schema = 1
+generation = "zeppelin"
+
+[[blobs]]
+name = "board"
+revision = 7853
+donor-sha256 = "fa1f884641edd40ba9bc8a6f327b03d71fd0d12edb80161cd284cffa28a22bc9"
+bindings = [
+  { slot = "active" },
+  { slot = "backup" },
+]
+groups = ["psp", "ccx", "df", "memory", "gnb", "fch", "cbs"]
+records = [
+  { use = "psp-override" },
+  { use = "ccx-override" },
+  { use = "df-override" },
+  { use = "memory-override" },
+  { use = "spd-smbus" },
+  { use = "platform-override" },
+  { use = "udimm-odt" },
+  { use = "udimm-cad" },
+  { use = "legacy-udimm-data" },
+  { use = "udimm-max-frequency" },
+  { use = "udimm-stretch-frequency" },
+  { use = "rdimm-odt" },
+  { use = "rdimm-cad" },
+  { use = "legacy-rdimm-data" },
+  { use = "rdimm-max-frequency" },
+  { use = "rdimm-stretch-frequency" },
+  { use = "legacy-console" },
+  { use = "legacy-error-output" },
+  { use = "voltage-control" },
+  { use = "lrdimm-odt" },
+  { use = "lrdimm-cad" },
+  { use = "legacy-lrdimm-data" },
+  { use = "lrdimm-max-frequency" },
+  { use = "empty-ppr" },
+  { use = "gnb-override" },
+  { use = "fch-override" },
+  { use = "cbs-default" },
+  { use = "cbs-default" },
+  { use = "cbs-debug" },
+  { use = "cbs-debug" },
+]
+
+[tables.psp-override]
+kind = "parameters"
+group = "psp"
+layer = "override"
+values = [
+  { token = "Cbs01", width = "u8", value = 0 },
+]
+
+[tables.ccx-override]
+kind = "parameters"
+group = "ccx"
+layer = "override"
+values = [
+  { token = "CcxMinSevAsid", width = "u32", value = 1 },
+]
+
+[tables.df-override]
+kind = "parameters"
+group = "df"
+layer = "override"
+values = [
+  { token = "DfGmiEncrypt", width = "u8", value = 3 },
+  { token = "DfXgmiEncrypt", width = "u8", value = 3 },
+  { token = "DfSaveRestoreMemEncrypt", width = "u8", value = 3 },
+  { token = "DfSysStorageAtTopOfMem", width = "u8", value = 3 },
+  { token = "DfProbeFilter", width = "u8", value = 3 },
+  { token = "DfBottomIo", width = "u8", value = 128 },
+  { token = "DfMemInterleaving", width = "u8", value = 7 },
+  { token = "DfMemInterleavingSize", width = "u8", value = 7 },
+  { token = "DfMemInterleavingHash", width = "u8", value = 3 },
+  { token = "DfPciMmioSize", width = "u32", value = 134217728 },
+  { token = "DfCakeCrcThreshPerfBounds", width = "u32", value = 100 },
+  { token = "DfMemClear", width = "u8", value = 3 },
+]
+
+[tables.memory-override]
+kind = "parameters"
+group = "memory"
+layer = "override"
+values = [
+  { token = "MemBottomIo", width = "u16", value = 224 },
+  { token = "MemHoleRemapping", width = "u8", value = 1 },
+  { token = "MemLimitToBelow1TiB", width = "u8", value = 1 },
+  { token = "MemUserTimingMode", width = "u32", value = 0 },
+  { token = "MemClockValue", width = "u32", value = 1200 },
+  { token = "MemEnableChipSelectInterleaving", width = "u8", value = 1 },
+  { token = "MemEnableChannelInterleaving", width = "u8", value = 0 },
+  { token = "MemEnableEccFeature", width = "u8", value = 1 },
+  { token = "MemEnablePowerDown", width = "u8", value = 1 },
+  { token = "MemEnableParity", width = "u8", value = 0 },
+  { token = "MemEnableBankSwizzle", width = "u8", value = 1 },
+  { token = "MemEnableClearing", width = "u8", value = 0 },
+  { token = "MemUmaMode", width = "u8", value = 2 },
+  { token = "MemUmaSize", width = "u32", value = 0 },
+  { token = "MemRestoreControl", width = "u8", value = 0 },
+  { token = "MemSaveMemContextControl", width = "u8", value = 1 },
+  { token = "MemIsCapsuleMode", width = "u8", value = 1 },
+  { token = "MemForceTraining", width = "u8", value = 2 },
+  { token = "MemDimmTypeMixedConfig", width = "u8", value = 3 },
+  { token = "MemEnableAmp", width = "u8", value = 1 },
+  { token = "MemDramDoubleRefreshRate", width = "u8", value = 0 },
+  { token = "MemPmuTrainingMode", width = "u8", value = 3 },
+  { token = "MemEccRedirection", width = "u8", value = 0 },
+  { token = "MemScrubDramRate", width = "u16", value = 0 },
+  { token = "MemScrubL2Rate", width = "u16", value = 0 },
+  { token = "MemScrubL3Rate", width = "u16", value = 0 },
+  { token = "MemScrubInstructionCacheRate", width = "u16", value = 0 },
+  { token = "MemScrubDataCacheRate", width = "u16", value = 0 },
+  { token = "MemEccSyncFlood", width = "u8", value = 0 },
+  { token = "MemEccSymbolSize", width = "u16", value = 1 },
+  { token = "MemDqsTrainingControl", width = "u8", value = 1 },
+  { token = "MemUmaAbove4GiB", width = "u8", value = 1 },
+  { token = "MemUmaAlignment", width = "u32", value = 16777152 },
+  { token = "MemEnableAllClocks", width = "u8", value = 1 },
+  { token = "MemBusFrequencyLimit", width = "u32", value = 1333 },
+  { token = "MemPowerDownMode", width = "u32", value = 0 },
+  { token = "MemIgnoreSpdChecksum", width = "u8", value = 1 },
+  { token = "MemModeUnganged", width = "u8", value = 1 },
+  { token = "MemQuadRankCapable", width = "u8", value = 1 },
+  { token = "MemRdimmCapable", width = "u8", value = 1 },
+  { token = "MemLrdimmCapable", width = "u8", value = 1 },
+  { token = "MemUdimmCapable", width = "u8", value = 1 },
+  { token = "MemSodimmCapable", width = "u8", value = 1 },
+  { token = "MemEnableDoubleRefreshRate", width = "u8", value = 0 },
+  { token = "MemDimmTypeDdr4Capable", width = "u8", value = 1 },
+  { token = "MemDimmTypeDdr3Capable", width = "u8", value = 0 },
+  { token = "MemDimmTypeLpddr3Capable", width = "u8", value = 0 },
+  { token = "MemEnableZqReset", width = "u8", value = 1 },
+  { token = "MemEnableBankGroupSwap", width = "u8", value = 1 },
+  { token = "MemEnableOdtsCmdThrottle", width = "u8", value = 1 },
+  { token = "MemEnableSwCmdThrottle", width = "u8", value = 0 },
+  { token = "MemEnableForcePowerDownThrotle", width = "u8", value = 0 },
+  { token = "MemOdtsCmdThrottleCycles", width = "u8", value = 87 },
+  { token = "MemSwCmdThrottleCycles", width = "u8", value = 0 },
+  { token = "MemDimmSensorConf", width = "u16", value = 1036 },
+  { token = "MemDimmSensorUpper", width = "u16", value = 80 },
+  { token = "MemDimmSensorLower", width = "u16", value = 10 },
+  { token = "MemDimmSensorCritical", width = "u16", value = 95 },
+  { token = "MemDimmSensorResolution", width = "u8", value = 1 },
+  { token = "MemAutoRefreshFineGranMode", width = "u8", value = 0 },
+  { token = "MemEnablePState", width = "u8", value = 1 },
+  { token = "MemDdrRouteBalancedTee", width = "u8", value = 0 },
+  { token = "MemEnableMbistTest", width = "u8", value = 1 },
+  { token = "MemMbistSubtestType", width = "u8", value = 0 },
+  { token = "MemMbistAggressorOn", width = "u8", value = 0 },
+  { token = "MemMbistHaltOnError", width = "u8", value = 1 },
+  { token = "MemCpuVrefRange", width = "u8", value = 0 },
+  { token = "MemDramVrefRange", width = "u8", value = 0 },
+  { token = "MemEnableTsme", width = "u8", value = 0 },
+  { token = "MemNvdimmPowerSource", width = "u8", value = 1 },
+  { token = "MemDataPoison", width = "u8", value = 1 },
+  { token = "MemDataScramble", width = "u8", value = 1 },
+  { token = "MemPlatformSpecificErrorHandling", width = "u8", value = 0 },
+  { token = "MemEnableTemperatureControlledRefresh", width = "u8", value = 0 },
+  { token = "MemMbistPerBitSecondaryDieReport", width = "u8", value = 0 },
+  { token = "MemEnableBankGroupSwapAlt", width = "u8", value = 0 },
+]
+
+[tables.spd-smbus]
+kind = "spd-smbus"
+slots = [
+  { socket = 0, channel = 0, dimm = 0, address = 0xa0, mux = 0xe2, mux-channel = 4, mux-control = 4 },
+  { socket = 0, channel = 0, dimm = 1, address = 0xa2, mux = 0xe2, mux-channel = 4, mux-control = 4 },
+  { socket = 0, channel = 1, dimm = 0, address = 0xa4, mux = 0xe2, mux-channel = 4, mux-control = 4 },
+  { socket = 0, channel = 1, dimm = 1, address = 0xa6, mux = 0xe2, mux-channel = 4, mux-control = 4 },
+  { socket = 0, channel = 2, dimm = 0, address = 0xa8, mux = 0xe2, mux-channel = 5, mux-control = 5 },
+  { socket = 0, channel = 2, dimm = 1, address = 0xaa, mux = 0xe2, mux-channel = 5, mux-control = 5 },
+  { socket = 0, channel = 3, dimm = 0, address = 0xac, mux = 0xe2, mux-channel = 5, mux-control = 5 },
+  { socket = 0, channel = 3, dimm = 1, address = 0xae, mux = 0xe2, mux-channel = 5, mux-control = 5 },
+]
+
+[tables.platform-override]
+kind = "platform-override"
+scope = "all"
+operations = [
+  { operation = "memclk-map", connections = [0, 1, 2, 3, 0, 0, 0, 0] },
+  { operation = "cke-tristate-map", connections = [0, 1, 2, 3] },
+  { operation = "odt-tristate-map", connections = [0, 1, 2, 3] },
+  { operation = "cs-tristate-map", connections = [0, 1, 2, 3, 0, 0, 0, 0] },
+  { operation = "max-dimms-per-channel", value = 2 },
+  { operation = "max-channels-per-socket", value = 4 },
+]
+
+[tables.udimm-odt]
+kind = "udimm-odt"
+rows = [
+  { ranks = [["empty"], ["single"], []], patterns = [[0, 0], [0, 0], [0, 2], [0, 0]] },
+  { ranks = [["empty"], ["dual"], []], patterns = [[0, 0], [0, 0], [0, 2], [0, 8]] },
+  { ranks = [["single"], ["empty"], []], patterns = [[0, 1], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["dual"], ["empty"], []], patterns = [[0, 1], [0, 4], [0, 0], [0, 0]] },
+  { ranks = [["single"], ["single"], []], patterns = [[2, 2], [0, 0], [1, 1], [0, 0]] },
+  { ranks = [["single"], ["dual"], []], patterns = [[2, 2], [0, 0], [1, 1], [1, 1]] },
+  { ranks = [["dual"], ["single"], []], patterns = [[2, 2], [2, 2], [1, 1], [0, 0]] },
+  { ranks = [["dual"], ["dual"], []], patterns = [[2, 2], [2, 2], [1, 1], [1, 1]] },
+]
+
+[tables.udimm-cad]
+kind = "udimm-cad"
+rows = [
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 3538944, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 0, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2667 = true, ddr2933 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr3200 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 3538944, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { dual_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "20 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { dual_rank = true, single_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 3538944, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1333 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 0, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { dual_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "20 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 0, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2667 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { dual_rank = true, single_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2667 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2933 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { address_command_control = 0, address_command_drive_strength = "24 Ω", cke_drive_strength = "24 Ω", clk_drive_strength = "24 Ω", cs_odt_drive_strength = "24 Ω", ddr_rates = { ddr2933 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, gear_down_mode = 1, slow_mode = 1, vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+]
+
+[tables.legacy-udimm-data]
+kind = "legacy-udimm-data"
+rows = [
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 30, dqs_drive_strength = 30, odt_drive_strength = 10, rtt_nom = "80 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 14, rtt_nom = "48 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr3200 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 14, rtt_nom = "48 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { dual_rank = true, single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 30, dqs_drive_strength = 30, odt_drive_strength = 10, rtt_nom = "80 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, dq_drive_strength = 30, dqs_drive_strength = 30, odt_drive_strength = 10, rtt_nom = "80 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { dual_rank = true, single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 59, dqs_drive_strength = 59, odt_drive_strength = 10, rtt_nom = "40 Ω", rtt_park = "Off", rtt_wr = "120 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { dual_rank = true, single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 14, rtt_nom = "48 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 14, rtt_nom = "48 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true }, dimm0_ranks = { dual_rank = true, single_rank = true }, dimm1_ranks = { dual_rank = true, single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 59, dqs_drive_strength = 59, odt_drive_strength = 14, rtt_nom = "34 Ω", rtt_park = "Off", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 59, dqs_drive_strength = 59, odt_drive_strength = 14, rtt_nom = "34 Ω", rtt_park = "Off", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr2933 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 14, rtt_nom = "48 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr2933 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 14, rtt_nom = "48 Ω", rtt_park = "Off", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+]
+
+[tables.udimm-max-frequency]
+kind = "udimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr2933" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2400" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr1866" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr1866" },
+]
+
+[tables.udimm-stretch-frequency]
+kind = "udimm-stretch-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2400" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2133" },
+]
+
+[tables.rdimm-odt]
+kind = "rdimm-odt"
+rows = [
+  { ranks = [["empty"], ["single"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["empty"], ["dual"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["single"], ["empty"], []], patterns = [[0, 1], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["dual"], ["empty"], []], patterns = [[0, 4], [0, 1], [0, 0], [0, 0]] },
+  { ranks = [["single"], ["single"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["single"], ["dual"], []], patterns = [[2, 2], [0, 0], [1, 1], [1, 1]] },
+  { ranks = [["dual"], ["single"], []], patterns = [[2, 2], [2, 2], [1, 1], [0, 0]] },
+  { ranks = [["dual"], ["dual"], []], patterns = [[10, 10], [10, 10], [5, 5], [5, 5]] },
+]
+
+[tables.rdimm-cad]
+kind = "rdimm-cad"
+rows = [
+  { slots = [1], rates = [1333], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x3a3a3a, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [1600], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x393939, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [1866], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x373737, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [2133], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x353535, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [2400], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x333333, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [2667], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x313131, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [2933], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x2f2f2f, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [1], rates = [3200], rank0 = ["single"], rank1 = ["empty"], addr-cmd = 0x2d2d2d, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1333], rank0 = ["empty"], rank1 = ["single", "dual"], addr-cmd = 0x3a3a3a, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1333], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x3a3a3a, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1333], rank0 = ["single", "dual"], rank1 = ["single", "dual"], addr-cmd = 0x383a3a, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1600], rank0 = ["empty"], rank1 = ["single", "dual"], addr-cmd = 0x393939, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1600], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x393939, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1600], rank0 = ["single", "dual"], rank1 = ["single", "dual"], addr-cmd = 0x353939, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1866], rank0 = ["empty"], rank1 = ["single", "dual"], addr-cmd = 0x373737, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1866], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x373737, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1866], rank0 = ["single"], rank1 = ["single"], addr-cmd = 0x333939, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1866], rank0 = ["single"], rank1 = ["dual"], addr-cmd = 0x333737, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [1866], rank0 = ["dual"], rank1 = ["single", "dual"], addr-cmd = 0x333737, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2133], rank0 = ["empty"], rank1 = ["single", "dual"], addr-cmd = 0x353535, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2133], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x353535, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2133], rank0 = ["single", "dual"], rank1 = ["single", "dual"], addr-cmd = 0x313535, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2400], rank0 = ["empty"], rank1 = ["single", "dual"], addr-cmd = 0x333333, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2400], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x333333, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2400], rank0 = ["single"], rank1 = ["single"], addr-cmd = 0x2f3333, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2400], rank0 = ["single", "dual"], rank1 = ["single", "dual"], addr-cmd = 0x2f3333, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2667], rank0 = ["empty"], rank1 = ["single", "dual"], addr-cmd = 0x313131, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2667], rank0 = ["single", "dual"], rank1 = ["empty"], addr-cmd = 0x313131, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2933], rank0 = ["empty"], rank1 = ["single"], addr-cmd = 0x2f2f2f, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+  { slots = [2], rates = [2933], rank0 = ["single"], rank1 = ["empty"], addr-cmd = 0x2f2f2f, drive = ["30 Ω", "30 Ω", "30 Ω", "30 Ω"] },
+]
+
+[tables.legacy-rdimm-data]
+kind = "legacy-rdimm-data"
+rows = [
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true, ddr3200 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 30, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "240 Ω", rtt_park = "Off", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { dual_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "240 Ω", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 30, dqs_drive_strength = 30, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "34 Ω", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 58, dqs_drive_strength = 30, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "34 Ω", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { single_rank = true }, dimm1_ranks = { dual_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "34 Ω", rtt_park = "Off", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "240 Ω", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { single_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "34 Ω", rtt_park = "Off", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true, ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { dual_rank = true }, dimm1_ranks = { dual_rank = true }, dimm_slots_per_channel = 2, dq_drive_strength = 58, dqs_drive_strength = 30, odt_drive_strength = 24, rtt_nom = "60 Ω", rtt_park = "240 Ω", rtt_wr = "120 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+]
+
+[tables.rdimm-max-frequency]
+kind = "rdimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr2933" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2400" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr1866" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2133" },
+]
+
+[tables.rdimm-stretch-frequency]
+kind = "rdimm-stretch-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr3200" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr2933" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2400" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2133" },
+]
+
+[tables.legacy-console]
+kind = "legacy-console"
+
+[tables.legacy-console.settings]
+abl_breakpoint_control = { break_on_all_dies = false, enable_breakpoint = false }
+abl_console_out_control = { abl_console_port = 0x80, enable_console_logging = false, enable_mem_flow_logging = true, enable_mem_getreg_logging = false, enable_mem_pmu_logging = false, enable_mem_pmu_sram_read_logging = false, enable_mem_pmu_sram_write_logging = false, enable_mem_setreg_logging = true, enable_mem_status_logging = false, enable_mem_test_verbose_logging = false }
+
+[tables.legacy-error-output]
+kind = "legacy-error-output"
+
+[tables.legacy-error-output.settings]
+beep_code_table = [
+  { custom_error_type = "General", peak_attr = { peak_count = 8, pulse_width = 0, repeat_count = 0 }, peak_map = 1 },
+  { custom_error_type = "Memory", peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 }, peak_map = 2 },
+  { custom_error_type = "Df", peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 }, peak_map = 3 },
+  { custom_error_type = "Ccx", peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 }, peak_map = 4 },
+  { custom_error_type = "Gnb", peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 }, peak_map = 5 },
+  { custom_error_type = "Psp", peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 }, peak_map = 6 },
+  { custom_error_type = "Smu", peak_attr = { peak_count = 20, pulse_width = 0, repeat_count = 0 }, peak_map = 7 },
+  { custom_error_type = "Unknown", peak_attr = { peak_count = 4, pulse_width = 0, repeat_count = 0 }, peak_map = 2 },
+]
+clear_acknowledgement = false
+enable_error_reporting = false
+enable_error_reporting_beep_codes = false
+enable_error_reporting_gpio = false
+enable_heart_beat = false
+enable_using_handshake = false
+error_reporting_gpio = { bank_control = 192, iomux_control = 1, pin = 85 }
+input_port = 0x84
+input_port_size = "32 Bit"
+input_port_type = "FchHtIo"
+output_delay = 15000
+output_port = 0x80
+output_port_size = "32 Bit"
+output_port_type = "FchHtIo"
+stop_on_first_fatal_error = false
+
+[tables.voltage-control]
+kind = "voltage-control"
+
+[tables.voltage-control.settings]
+clear_acknowledgement = false
+enabled = true
+input_port = 0x84
+input_port_size = "32 Bit"
+input_port_type = "FchHtIo"
+output_port = 0x80
+output_port_size = "32 Bit"
+output_port_type = "FchHtIo"
+
+[tables.lrdimm-odt]
+kind = "lrdimm-odt"
+rows = [
+  { ranks = [["empty"], ["lr"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["lr"], ["empty"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+  { ranks = [["lr"], ["lr"], []], patterns = [[0, 0], [0, 0], [0, 0], [0, 0]] },
+]
+
+[tables.lrdimm-cad]
+kind = "lrdimm-cad"
+rows = []
+
+[tables.legacy-lrdimm-data]
+kind = "legacy-lrdimm-data"
+rows = [
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { lr = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true, ddr3200 = true }, dimm0_ranks = { lr = true }, dimm1_ranks = { unpopulated = true }, dimm_slots_per_channel = 1, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { lr = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1333 = true }, dimm0_ranks = { lr = true }, dimm1_ranks = { lr = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "34 Ω", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true, ddr2667 = true, ddr2933 = true }, dimm0_ranks = { unpopulated = true }, dimm1_ranks = { lr = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "48 Ω", rtt_wr = "Off", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+  { ddr_rates = { ddr1600 = true, ddr1866 = true, ddr2133 = true, ddr2400 = true }, dimm0_ranks = { lr = true }, dimm1_ranks = { lr = true }, dimm_slots_per_channel = 2, dq_drive_strength = 63, dqs_drive_strength = 63, odt_drive_strength = 24, rtt_nom = "Off", rtt_park = "34 Ω", rtt_wr = "80 Ω", vdd_io = { "1.25 V" = false, "1.35 V" = false, "1.5 V" = true } },
+]
+
+[tables.lrdimm-max-frequency]
+kind = "lrdimm-max-frequency"
+rows = [
+  { slots = [1], conditions = [1, 1, 0, 0], speed = "Ddr2667" },
+  { slots = [1], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [1], conditions = [1, 0, 0, 1], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 1, 0, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 1, 0], speed = "Ddr2667" },
+  { slots = [2], conditions = [1, 0, 0, 1], speed = "Ddr2667" },
+  { slots = [2], conditions = [2, 2, 0, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 1, 1, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 2, 0], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 0, 2], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 1, 0, 1], speed = "Ddr2133" },
+  { slots = [2], conditions = [2, 0, 1, 1], speed = "Ddr2133" },
+]
+
+[tables.empty-ppr]
+kind = "empty-ppr"
+slots = 0
+
+[tables.gnb-override]
+kind = "parameters"
+group = "gnb"
+layer = "override"
+values = [
+  { token = "GnbBmcSocketNumber", width = "u8", value = 0 },
+  { token = "GnbBmcStartLane", width = "u8", value = 21 },
+  { token = "GnbBmcEndLane", width = "u8", value = 21 },
+  { token = "GnbBmcDevice", width = "u8", value = 0 },
+  { token = "GnbBmcFunction", width = "u8", value = 0 },
+  { token = "GnbPcieResetControl", width = "u8", value = 1 },
+]
+
+[tables.fch-override]
+kind = "parameters"
+group = "fch"
+layer = "override"
+values = [
+  { token = "FchConsoleOutEnable", width = "u8", value = 0 },
+  { token = "FchConsoleOutSerialPort", width = "u8", value = 1 },
+]
+
+[tables.cbs-default]
+kind = "parameters"
+group = "cbs"
+layer = "default"
+values = [
+  { token = "Cbs1c", width = "u32", value = 1 },
+  { token = "Cbs5b", width = "u8", value = 0 },
+  { token = "Cbs22", width = "u8", value = 57 },
+  { token = "Cbs26", width = "u8", value = 26 },
+  { token = "Cbs2a", width = "u8", value = 18 },
+  { token = "Cbs2c", width = "u16", value = 0 },
+  { token = "Cbs2e", width = "u8", value = 3 },
+  { token = "Cbs30", width = "u8", value = 3 },
+  { token = "Cbs32", width = "u16", value = 312 },
+  { token = "Cbs34", width = "u16", value = 192 },
+  { token = "Cbs36", width = "u16", value = 132 },
+  { token = "Cbs37", width = "u8", value = 5 },
+  { token = "Cbs51", width = "u8", value = 0 },
+  { token = "Cbs52", width = "u8", value = 0 },
+  { token = "Cbs53", width = "u8", value = 0 },
+  { token = "Cbs67", width = "u8", value = 0 },
+  { token = "Cbs1d", width = "u8", value = 1 },
+  { token = "Cbs1e", width = "u8", value = 0 },
+  { token = "Cbs1f", width = "u8", value = 0 },
+  { token = "Cbs4a", width = "u32", value = 700 },
+  { token = "Cbs62", width = "u8", value = 0 },
+  { token = "Cbs60", width = "u8", value = 0 },
+]
+
+[tables.cbs-debug]
+kind = "parameters"
+group = "cbs"
+layer = "debug"
+values = [
+  { token = "Cbs28", width = "u8", value = 1 },
+  { token = "Cbs29", width = "u8", value = 255 },
+  { token = "Cbsaf", width = "u8", value = 0 },
+  { token = "Cbsac", width = "u8", value = 11 },
+  { token = "Cbs17", width = "u8", value = 48 },
+  { token = "Cbs1e", width = "u8", value = 1 },
+  { token = "Cbs1f", width = "u8", value = 1 },
+  { token = "Cbs20", width = "u8", value = 6 },
+  { token = "Cbs21", width = "u8", value = 1 },
+  { token = "Cbs22", width = "u8", value = 1 },
+  { token = "Cbs37", width = "u8", value = 29 },
+  { token = "Cbs43", width = "u16", value = 0 },
+  { token = "Cbs46", width = "u16", value = 1 },
+  { token = "Cbs48", width = "u16", value = 1 },
+  { token = "Cbs4a", width = "u16", value = 0 },
+  { token = "Cbs4c", width = "u8", value = 0 },
+  { token = "Cbs4e", width = "u8", value = 1 },
+  { token = "Cbs2f", width = "u8", value = 0 },
+  { token = "Cbs31", width = "u8", value = 0 },
+  { token = "Cbs33", width = "u8", value = 0 },
+  { token = "Cbs3b", width = "u8", value = 0 },
+  { token = "Cbs3d", width = "u8", value = 0 },
+  { token = "Cbs3f", width = "u8", value = 0 },
+  { token = "Cbs41", width = "u8", value = 0 },
+  { token = "Cbs54", width = "u8", value = 8 },
+  { token = "Cbs55", width = "u8", value = 0 },
+  { token = "Cbs58", width = "u8", value = 1 },
+  { token = "Cbs59", width = "u8", value = 1 },
+  { token = "Cbs5c", width = "u16", value = 0 },
+  { token = "Cbsc3", width = "u8", value = 0 },
+  { token = "Cbsc5", width = "u8", value = 0 },
+  { token = "Cbs63", width = "u8", value = 1 },
+  { token = "Cbs66", width = "u8", value = 1 },
+  { token = "Cbs67", width = "u8", value = 1 },
+  { token = "Cbs6f", width = "u8", value = 0 },
+  { token = "Cbs70", width = "u8", value = 8 },
+  { token = "Cbs71", width = "u8", value = 0 },
+  { token = "Cbs72", width = "u8", value = 8 },
+  { token = "Cbs9f", width = "u8", value = 0 },
+  { token = "Cbsa0", width = "u8", value = 0 },
+  { token = "Cbsa1", width = "u8", value = 0 },
+  { token = "Cbs7c", width = "u8", value = 0 },
+  { token = "Cbs7e", width = "u8", value = 0 },
+  { token = "Cbs80", width = "u8", value = 0 },
+  { token = "Cbs84", width = "u8", value = 0 },
+  { token = "Cbsc0", width = "u16", value = 0 },
+  { token = "Cbsa7", width = "u8", value = 0 },
+  { token = "Cbsa9", width = "u8", value = 0 },
+  { token = "Cbsab", width = "u8", value = 0 },
+  { token = "Cbsb1", width = "u8", value = 0 },
+  { token = "Cbsb4", width = "u16", value = 0 },
+  { token = "Cbsb5", width = "u8", value = 0 },
+  { token = "Cbsb7", width = "u16", value = 0 },
+  { token = "Cbsb8", width = "u8", value = 0 },
+  { token = "Cbsba", width = "u16", value = 0 },
+  { token = "Cbsbb", width = "u8", value = 0 },
+  { token = "Cbsbd", width = "u16", value = 0 },
+  { token = "Cbsbe", width = "u8", value = 0 },
+  { token = "Cbs95", width = "u8", value = 0 },
+  { token = "Cbs96", width = "u8", value = 0 },
+  { token = "Cbs8f", width = "u32", value = 0 },
+]

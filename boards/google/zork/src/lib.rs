@@ -97,7 +97,10 @@ pub struct Board;
 impl fstart_platform_amd::noncar::Board for Board {
     type Soc = Picasso;
     const CONFIG: &'static Config = &CONFIG;
-    const APCB_SOURCE: Option<&'static str> = Some(include_str!("../apcb/vilboz.toml"));
+    const APCB_SOURCE: Option<(&'static str, &'static str)> = Some((
+        include_str!("../apcb/vilboz.toml"),
+        include_str!("../apcb/templates/vilboz.toml"),
+    ));
     fn console() -> Ns16550Config {
         picasso::console(CONFIG.fch.console_uart)
     }

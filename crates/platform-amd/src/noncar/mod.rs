@@ -229,9 +229,9 @@ impl<S: Soc> BoardCtx<'_, S> {
 pub trait Board: 'static {
     type Soc: Soc;
     const CONFIG: &'static <Self::Soc as Soc>::Config;
-    /// Declarative APCB policy read by host builds; unused by firmware.
+    /// (Semantic board policy, internal ABI/default template), host use only.
     /// Absent boards retain their existing image path.
-    const APCB_SOURCE: Option<&'static str> = None;
+    const APCB_SOURCE: Option<(&'static str, &'static str)> = None;
 
     /// LPC decodes and Super I/O routing for the console, before any
     /// output.

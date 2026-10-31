@@ -656,7 +656,9 @@ where
         ffs.file_assets = packed.files.assets.clone();
     }
     let apcbs = B::APCB_SOURCE
-        .map(|source| fstart_image_build::amd::apcb_toml::compile(source, "schema=1\n[tables]\n"))
+        .map(|(policy, template)| {
+            fstart_image_build::amd::apcb_toml::compile(policy, template, "schema=1\n[tables]\n")
+        })
         .transpose()?
         .unwrap_or_default();
     let assembly = assembly::<B::Soc>(&selection, packed, ffs, apcbs)?;

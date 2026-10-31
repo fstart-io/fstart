@@ -24,19 +24,18 @@ enum Command {
     Build {
         input: PathBuf,
         output: PathBuf,
-        /// Optional shared electrical-table TOML (used by SP3 boards).
+        /// Firmware defaults/ABI template, normally supplied by the board build.
+        #[arg(long)]
+        template: PathBuf,
+        /// Optional shared profile defaults (used by SP3 boards).
         #[arg(long)]
         tables: Option<PathBuf>,
         #[arg(long, default_value = "board")]
         blob: String,
     },
-    /// Generate an editor JSON Schema for TOML boards or shared tables.
+    /// Generate an editor JSON Schema for semantic board policy.
     #[command(alias = "toml-schema")]
-    Schema {
-        output: PathBuf,
-        #[arg(long)]
-        tables: bool,
-    },
+    Schema { output: PathBuf },
     /// Rebuild a diagnostic JSON export without interpreting it as board policy.
     BuildJson { input: PathBuf, output: PathBuf },
 }
@@ -53,12 +52,8 @@ fn run(args: Args) -> Result<()> {
             bytes.push(b'\n');
             (output, bytes)
         }
-        Command::Schema { output, tables } => {
-            let schema = if tables {
-                apcb_toml::tables_schema()
-            } else {
-                apcb_toml::schema()
-            };
+        Command::Schema { output } => {
+            let schema = apcb_toml::schema();
             let mut bytes = serde_json::to_vec_pretty(&schema).map_err(|e| e.to_string())?;
             bytes.push(b'\n');
             (output, bytes)
@@ -67,6 +62,7 @@ fn run(args: Args) -> Result<()> {
             input,
             output,
             tables,
+            template,
             blob,
         } => {
             let text = String::from_utf8(read(&input)?).map_err(|e| e.to_string())?;
@@ -76,21 +72,11 @@ fn run(args: Args) -> Result<()> {
                 })
                 .transpose()?
                 .unwrap_or_else(|| "schema=1\n[tables]\n".into());
-            let config = apcb_toml::Configuration::parse(&text)?;
-            let source = config
-                .blobs
-                .iter()
-                .find(|b| b.name == blob)
-                .ok_or_else(|| format!("no APCB named {blob}"))?;
-            let binding = source.bindings.first().ok_or("APCB has no bindings")?;
-            let selector = binding.selector(config.generation);
-            // Validate the complete source, including bindings not selected for export.
-            let built = apcb_toml::compile(&text, &shared)?;
-            let payload = built
-                .into_iter()
-                .find(|r| r.selector == selector)
-                .ok_or("APCB binding was not compiled")?;
-            (output, payload.bytes)
+            let template = String::from_utf8(read(&template)?).map_err(|e| e.to_string())?;
+            (
+                output,
+                apcb_toml::build_blob(&text, &template, &shared, &blob)?,
+            )
         }
         Command::BuildJson { input, output } => {
             let source = serde_json::from_slice(&read(&input)?).map_err(|e| e.to_string())?;
