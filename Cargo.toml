@@ -13,6 +13,7 @@ members = [
   "crates/platform-intel",
   "crates/platform-sunxi",
   "crates/platform-qemu",
+  "crates/platform-sifive",
   "crates/ffs",
   "crates/image-build",
   "crates/intel-gma",
@@ -164,6 +165,8 @@ opt-level = "s"
 [profile.dev.package.fstart-platform-sunxi]
 opt-level = "s"
 [profile.dev.package.fstart-platform-qemu]
+opt-level = "s"
+[profile.dev.package.fstart-platform-sifive]
 opt-level = "s"
 [profile.dev.package.fstart-intel-gma]
 opt-level = "s"

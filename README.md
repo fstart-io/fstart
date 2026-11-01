@@ -31,5 +31,7 @@ cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 
 ## Documentation
 
+- **[Build system](docs/build-system.md)** — board/platform/image boundaries, shared compiler outputs and workspace ownership.
+
 - **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.
 - **[Measured boot](docs/measured-boot.md)** — TPM measurements and the payload interface.

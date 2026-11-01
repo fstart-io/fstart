@@ -20,7 +20,6 @@ pub struct BoardManifest {
     pub variant_features: Vec<String>,
     /// Declared variants: variant id -> cargo features.
     pub variants: Vec<(String, Vec<String>)>,
-    pub acpi_only_devices: bool,
     pub stage_bin: Option<String>,
     pub build_profile: Option<ProfileRef>,
 }
@@ -61,8 +60,6 @@ struct BoardMetadata {
     target: Option<String>,
     #[serde(default)]
     variants: BTreeMap<String, VariantMetadata>,
-    #[serde(default)]
-    acpi_only_devices: bool,
     stage_bin: Option<String>,
     build_profile: Option<ProfileRef>,
     /// The board's AMD firmware table, read by the AMD platform
@@ -225,7 +222,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             .into_iter()
             .map(|(id, v)| (id, v.features))
             .collect(),
-        acpi_only_devices: metadata.acpi_only_devices,
         stage_bin: metadata.stage_bin,
         build_profile: metadata.build_profile,
     })
@@ -263,7 +259,6 @@ mod tests {
         platform = 'riscv64'
         target = 'riscv64gc-unknown-none-elf'
         stage-bin = 'fstart-stage'
-        acpi-only-devices = true
         [package.metadata.fstart.variants."test-variant"]
         features = [
             'variant-test', # comment
@@ -304,7 +299,6 @@ mod tests {
         assert_eq!(board.platform.as_deref(), Some("riscv64"));
         assert_eq!(board.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
         assert_eq!(board.stage_bin.as_deref(), Some("fstart-stage"));
-        assert!(board.acpi_only_devices);
         assert_eq!(
             board.variants,
             [("test-variant".into(), vec!["variant-test".into()])]
@@ -331,11 +325,11 @@ mod tests {
                 "missing field `board`",
             ),
             (
-                MANIFEST.replace("acpi-only-devices = true", "acpi-only-devices = 'true'"),
+                MANIFEST.replace("stage-bin = 'fstart-stage'", "stage-bin = true"),
                 "invalid type",
             ),
             (
-                MANIFEST.replace("acpi-only-devices = true", "acpi-only-device = true"),
+                MANIFEST.replace("stage-bin = 'fstart-stage'", "stage-bni = 'fstart-stage'"),
                 "unknown field",
             ),
             (

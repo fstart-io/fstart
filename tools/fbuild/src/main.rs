@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
 use fbuild::{
-    board_manifest, build_board,
+    board_manifest::{self, BoardManifest},
+    board_tool::{self, FlashArgs, ImageArgs, RunArgs},
+    build_board,
     payload::{BuildArgs, PayloadChoice},
+    resolved_image::ResolvedImage,
 };
 use fstart_image_build::plan::BuildSelection;
-use std::process;
 
 #[derive(Parser)]
 #[command(name = "fbuild", about = "fstart firmware build orchestrator")]
@@ -13,43 +15,38 @@ struct Cli {
     command: Command,
 }
 
+#[derive(clap::Args)]
+struct BuildOptions {
+    #[arg(short, long)]
+    board: String,
+    #[arg(short, long, default_value_t = false)]
+    release: bool,
+    #[arg(long, value_enum)]
+    payload: Option<PayloadChoice>,
+    #[command(flatten)]
+    options: BuildArgs,
+}
+
 #[derive(Subcommand)]
 enum Command {
+    /// Run an editor's recorded Cargo check under checkout ownership.
+    #[command(hide = true)]
+    EditorCheck {
+        #[arg(long)]
+        selection: std::path::PathBuf,
+    },
     Build {
         /// Build one named unit and its producers instead of the complete image.
         #[arg(long)]
         stage: Option<String>,
-        #[arg(short, long)]
-        board: String,
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        build: BuildOptions,
     },
     Run {
-        #[arg(short, long)]
-        board: String,
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
-        #[arg(short, long)]
-        kernel: Option<String>,
-        #[arg(short, long)]
-        firmware: Option<String>,
-        #[arg(long)]
-        fit: Option<String>,
-        #[arg(short, long)]
-        disk: Option<String>,
-        #[arg(short, long)]
-        memory: Option<String>,
-        /// Complete secure pflash image used only by QEMU SBSA-ref.
-        #[arg(long)]
-        secure_firmware: Option<String>,
+        build: BuildOptions,
+        #[command(flatten)]
+        run: RunArgs,
     },
     Test {
         #[arg(short, long)]
@@ -58,42 +55,27 @@ enum Command {
         options: BuildArgs,
     },
     Assemble {
-        #[arg(short, long)]
-        board: String,
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
-        #[arg(short, long)]
-        kernel: Option<String>,
-        #[arg(short, long)]
-        firmware: Option<String>,
-        #[arg(long)]
-        fit: Option<String>,
+        build: BuildOptions,
+        #[command(flatten)]
+        image: ImageArgs,
     },
     Inspect {
         #[arg(short, long)]
         image: String,
     },
-    /// Extract a board's vendor firmware blobs (AMD PSP firmware, APCBs,
-    /// microcode, video BIOS) from a vendor flash image into a blob
-    /// directory for `--blobs`.
+    /// Extract a board's vendor firmware blobs from a vendor flash image.
     Blobs {
         #[arg(short, long)]
         board: String,
-        /// The vendor flash image.
         #[arg(long)]
         from: String,
-        /// The blob directory to write.
         #[arg(long)]
         out: String,
-        /// Write what the image has even if some files are missing.
         #[arg(long)]
         allow_missing: bool,
     },
-    /// Explain a migrated board's resolved geometry and compiler selection.
+    /// Print the resolved geometry and compiler selection.
     Explain {
         board: String,
         #[arg(long, value_enum)]
@@ -101,10 +83,9 @@ enum Command {
         #[command(flatten)]
         options: BuildArgs,
     },
-    /// Type-check a migrated board using its resolved firmware selection.
+    /// Type-check using the resolved firmware selection.
     Check {
         board: String,
-        /// Check one named unit after building its producer closure.
         #[arg(long)]
         stage: Option<String>,
         #[arg(long, value_enum)]
@@ -114,7 +95,7 @@ enum Command {
         #[arg(long)]
         release: bool,
     },
-    /// Generate an opt-in editor workspace for a resolved firmware selection.
+    /// Generate an editor workspace for a resolved firmware selection.
     Ide {
         board: String,
         #[arg(long, value_enum)]
@@ -123,10 +104,8 @@ enum Command {
         options: BuildArgs,
         #[arg(long)]
         release: bool,
-        /// Select a named compilation unit from the resolved platform plan.
         #[arg(long)]
         stage: Option<String>,
-        /// Compare against a disposable all-board build-lock prototype.
         #[arg(long)]
         audit_lock: bool,
     },
@@ -137,304 +116,158 @@ enum Command {
         release: bool,
         #[command(flatten)]
         options: BuildArgs,
-        #[arg(long, default_value_t = false)]
-        probe_run: bool,
-        #[arg(long)]
-        chip: Option<String>,
-        #[arg(long)]
-        probe: Option<String>,
-        #[arg(long)]
-        base_address: Option<String>,
+        #[command(flatten)]
+        flash: FlashArgs,
     },
 }
 
-fn dispatch_board(board: &str, args: &[String]) -> Result<(), String> {
-    let workspace_root = build_board::workspace_root_pub()?;
-    let manifest = board_manifest::find(&workspace_root, board)?;
-    if manifest.build_profile.is_none() {
-        return Err(format!(
-            "board '{board}' has no build-profile; legacy host tools are retired"
-        ));
-    }
-    fbuild::board_tool::run_metadata(&manifest, args)
+fn board(board: &str) -> Result<BoardManifest, String> {
+    board_manifest::find(&build_board::workspace_root_pub()?, board)
 }
 
-fn board_tool_build_args(
-    subcommand: &str,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    options: &BuildArgs,
-) -> Vec<String> {
-    let mut args = vec![subcommand.to_string()];
-    if release {
-        args.push("--release".to_string());
-    }
-    if let Some(payload) = payload {
-        args.push("--payload".to_string());
-        args.push(payload.as_str().to_string());
-    }
-    options.append_cli_args(&mut args);
-    args
-}
-
-fn board_tool_assemble_args(
-    subcommand: &str,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    kernel: Option<String>,
-    firmware: Option<String>,
-    fit: Option<String>,
-    options: &BuildArgs,
-) -> Vec<String> {
-    let mut args = board_tool_build_args(subcommand, release, payload, options);
-    if let Some(kernel) = kernel {
-        args.push("--kernel".to_string());
-        args.push(kernel);
-    }
-    if let Some(firmware) = firmware {
-        args.push("--firmware".to_string());
-        args.push(firmware);
-    }
-    if let Some(fit) = fit {
-        args.push("--fit".to_string());
-        args.push(fit);
-    }
-    args
-}
-
-fn board_tool_run_args(
-    subcommand: &str,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    kernel: Option<String>,
-    firmware: Option<String>,
-    fit: Option<String>,
-    disk: Option<String>,
-    memory: Option<String>,
-    secure_firmware: Option<String>,
-    options: &BuildArgs,
-) -> Vec<String> {
-    let mut args =
-        board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit, options);
-    if let Some(disk) = disk {
-        args.push("--disk".to_string());
-        args.push(disk);
-    }
-    if let Some(memory) = memory {
-        args.push("--memory".to_string());
-        args.push(memory);
-    }
-    if let Some(secure_firmware) = secure_firmware {
-        args.push("--secure-firmware".to_string());
-        args.push(secure_firmware);
-    }
-    args
-}
-
-fn board_tool_flash_args(
-    release: bool,
-    options: &BuildArgs,
-    probe_run: bool,
-    chip: Option<String>,
-    probe: Option<String>,
-    base_address: Option<String>,
-) -> Vec<String> {
-    let mut args = board_tool_build_args("flash", release, None, options);
-    if probe_run {
-        args.push("--probe-run".to_string());
-    }
-    if let Some(chip) = chip {
-        args.push("--chip".to_string());
-        args.push(chip);
-    }
-    if let Some(probe) = probe {
-        args.push("--probe".to_string());
-        args.push(probe);
-    }
-    if let Some(base_address) = base_address {
-        args.push("--base-address".to_string());
-        args.push(base_address);
-    }
-    args
-}
-
-fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
-    let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    println!("{}", resolved.json()?);
-    Ok(())
-}
-
-fn compile_named(
+fn resolved(
     board: &str,
     selection: BuildSelection,
-    release: bool,
-    name: &str,
-    checking: bool,
-) -> Result<(), String> {
+) -> Result<(std::path::PathBuf, BoardManifest, ResolvedImage), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    resolved.compile_selected(&root, &manifest, name, release, checking)
+    let resolved = ResolvedImage::load(&root, &manifest, selection)?;
+    Ok((root, manifest, resolved))
 }
 
-fn check(
-    board: &str,
-    selection: BuildSelection,
-    release: bool,
-    stage: Option<String>,
-) -> Result<(), String> {
-    if let Some(stage) = stage {
-        return compile_named(board, selection, release, &stage, true);
-    }
-    let root = build_board::workspace_root_pub()?;
-    let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    resolved.check(&root, &manifest, release)
-}
-
-fn ide(
-    board: &str,
-    selection: BuildSelection,
-    release: bool,
-    audit_lock: bool,
-    stage: Option<String>,
-) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
-    let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    let workspace = fbuild::ide::generate_image(
-        &root,
-        &manifest,
-        &resolved,
-        stage.as_deref(),
-        release,
-        audit_lock,
-    )?;
-    println!("{}", workspace.display());
-    Ok(())
-}
-
-fn main() {
-    let cli = Cli::parse();
-
-    let result: Result<(), String> = match cli.command {
-        Command::Build {
-            board,
-            release,
-            payload,
-            options,
-            stage,
-        } => match stage {
-            Some(name) => compile_named(&board, options.selection(payload), release, &name, false),
-            None => dispatch_board(
-                &board,
-                &board_tool_build_args("build", release, payload, &options),
-            ),
-        },
-        Command::Run {
-            board,
-            release,
-            payload,
-            options,
-            kernel,
-            firmware,
-            fit,
-            disk,
-            memory,
-            secure_firmware,
-        } => dispatch_board(
-            &board,
-            &board_tool_run_args(
-                "run",
-                release,
-                payload,
-                kernel,
-                firmware,
-                fit,
-                disk,
-                memory,
-                secure_firmware,
-                &options,
-            ),
+fn dispatch(command: Command) -> Result<(), String> {
+    match command {
+        Command::EditorCheck { selection } => fbuild::ide::check(&selection),
+        Command::Build { stage, build } => {
+            let manifest = board(&build.board)?;
+            if let Some(stage) = stage {
+                let root = build_board::workspace_root_pub()?;
+                ResolvedImage::load(&root, &manifest, build.options.selection(build.payload))?
+                    .compile_selected(&root, &manifest, &stage, build.release, false)
+            } else {
+                board_tool::build(&manifest, build.release, build.payload, &build.options)
+                    .map(|_| ())
+            }
+        }
+        Command::Run { build, run } => board_tool::run(
+            &board(&build.board)?,
+            build.release,
+            build.payload,
+            &run,
+            &build.options,
         ),
-        Command::Test { board, options } => dispatch_board(
-            &board,
-            &board_tool_build_args("test", false, None, &options),
-        ),
-        Command::Assemble {
-            board,
-            release,
-            payload,
-            options,
-            kernel,
-            firmware,
-            fit,
-        } => dispatch_board(
-            &board,
-            &board_tool_assemble_args(
-                "assemble", release, payload, kernel, firmware, fit, &options,
-            ),
-        ),
+        Command::Test { board: id, options } => {
+            board_tool::run(&board(&id)?, true, None, &RunArgs::default(), &options)
+        }
+        Command::Assemble { build, image } => board_tool::assemble(
+            &board(&build.board)?,
+            build.release,
+            build.payload,
+            &image,
+            &build.options,
+        )
+        .map(|_| ()),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Blobs {
-            board,
+            board: id,
             from,
             out,
             allow_missing,
-        } => build_board::workspace_root_pub().and_then(|root| {
-            let manifest = board_manifest::find(&root, &board)?;
-            fbuild::blobs::extract(
-                &root,
-                &manifest,
-                std::path::Path::new(&from),
-                std::path::Path::new(&out),
-                allow_missing,
-            )
-        }),
+        } => fbuild::blobs::extract(
+            &build_board::workspace_root_pub()?,
+            &board(&id)?,
+            std::path::Path::new(&from),
+            std::path::Path::new(&out),
+            allow_missing,
+        ),
         Command::Explain {
             board,
             payload,
             options,
-        } => explain(&board, options.selection(payload)),
-        Command::Ide {
-            board,
-            payload,
-            options,
-            release,
-            audit_lock,
-            stage,
-        } => ide(
-            &board,
-            options.selection(payload),
-            release,
-            audit_lock,
-            stage,
-        ),
+        } => {
+            println!(
+                "{}",
+                resolved(&board, options.selection(payload))?.2.json()?
+            );
+            Ok(())
+        }
         Command::Check {
             board,
             payload,
             options,
             release,
             stage,
-        } => check(&board, options.selection(payload), release, stage),
-        Command::Flash {
+        } => {
+            let (root, manifest, resolved) = resolved(&board, options.selection(payload))?;
+            match stage {
+                Some(stage) => resolved.compile_selected(&root, &manifest, &stage, release, true),
+                None => resolved.check(&root, &manifest, release),
+            }
+        }
+        Command::Ide {
             board,
+            payload,
+            options,
+            release,
+            stage,
+            audit_lock,
+        } => {
+            let (root, manifest, resolved) = resolved(&board, options.selection(payload))?;
+            let workspace = fbuild::ide::generate_image(
+                &root,
+                &manifest,
+                &resolved,
+                stage.as_deref(),
+                release,
+                audit_lock,
+            )?;
+            println!("{}", workspace.display());
+            Ok(())
+        }
+        Command::Flash {
+            board: id,
             release,
             options,
-            probe_run,
-            chip,
-            probe,
-            base_address,
-        } => dispatch_board(
-            &board,
-            &board_tool_flash_args(release, &options, probe_run, chip, probe, base_address),
-        ),
-    };
+            flash,
+        } => board_tool::flash(&board(&id)?, release, &options, &flash),
+    }
+}
 
-    if let Err(e) = result {
-        eprintln!("error: {e}");
-        process::exit(1);
+fn main() {
+    if let Err(error) = dispatch(Cli::parse().command) {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn command_schema_is_consistent() {
+        Cli::command().debug_assert();
+    }
+    use clap::CommandFactory;
+    #[test]
+    fn image_arguments_remain_typed_and_preserve_paths() {
+        let cli = Cli::try_parse_from([
+            "fbuild",
+            "assemble",
+            "-b",
+            "qemu-riscv64",
+            "--kernel",
+            "a path/kernel",
+            "--input",
+            "dtb=a path/board.dtb",
+            "--payload",
+            "linux",
+        ])
+        .unwrap();
+        let Command::Assemble { build, image } = cli.command else {
+            panic!("wrong command")
+        };
+        assert_eq!(build.board, "qemu-riscv64");
+        assert_eq!(image.kernel.as_deref(), Some("a path/kernel"));
+        assert_eq!(image.inputs, [("dtb".into(), "a path/board.dtb".into())]);
     }
 }

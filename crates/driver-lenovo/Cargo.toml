@@ -5,6 +5,9 @@ edition.workspace = true
 license = "MIT OR Apache-2.0"
 publish = false
 
+[package.metadata.fstart.compiler-cfg]
+fstart_stage_env = ["monolithic", "car", "postcar", "ram", "smm"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "postcar", "ram", "smm"))'] }
 

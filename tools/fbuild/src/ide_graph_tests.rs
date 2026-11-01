@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 use std::path::PathBuf;
 
 struct Scratch(PathBuf);
@@ -15,7 +16,8 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
     fs::create_dir_all(&scratch.0).unwrap();
     let root = scratch.0.canonicalize().unwrap();
     let actual_root = crate::build_board::workspace_root_pub().unwrap();
-    let board = crate::board_manifest::find(&actual_root, "qemu-riscv64").unwrap();
+    let mut board = crate::board_manifest::find(&actual_root, "qemu-riscv64").unwrap();
+    board.package = "app".into();
     let plan = fstart_platform_qemu::host::resolve(
         fstart_platform_qemu::facts::VirtMachine::Riscv64,
         fstart_image_build::plan::BuildSelection {
@@ -28,6 +30,7 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
         &root,
         &board,
         &plan.units[0],
+        &Default::default(),
         root.join("selection"),
         &serde_json::to_string(&plan).unwrap(),
         Default::default(),
@@ -36,17 +39,14 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
     )
     .unwrap();
     let build = selection.command(true);
-    let check = selection.check_command();
+    let check = selection.command(false);
     let args: Vec<_> = build.get_args().map(|s| s.to_str().unwrap()).collect();
-    assert_eq!(&args[2..], &check[3..]);
+    let check_args: Vec<_> = check.get_args().map(|s| s.to_str().unwrap()).collect();
+    assert_eq!(&args[2..args.len() - 2], &check_args[2..]);
+    assert_eq!(selection.check_command().unwrap()[1], "editor-check");
     let encoded = &selection.environment()["CARGO_ENCODED_RUSTFLAGS"];
     assert_eq!(encoded.split('\u{1f}').collect::<Vec<_>>(), selection.flags);
-    assert!(
-        crate::selection::tests::member_flags(&selection)
-            .last()
-            .unwrap()
-            .contains("fstart ide projection ")
-    );
+    assert!(args.last().unwrap().contains("fstart ide projection "));
 
     for name in ["app", "macros"] {
         fs::create_dir_all(root.join(name).join("src")).unwrap();

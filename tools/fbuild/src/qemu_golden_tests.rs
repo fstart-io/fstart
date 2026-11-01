@@ -36,7 +36,17 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
             include_str!("fixtures/qemu-xip/armv7-xip-linux.json"),
         ),
     ] {
-        let expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        // The captured fixture used the retired BoardConfig envelope. Compare
+        // its actual image fields, not dummy runtime-table defaults.
+        let assembly = expected["assembly"].as_object_mut().unwrap();
+        let memory = assembly.remove("memory").unwrap();
+        assembly.insert("memory".into(), memory["regions"].clone());
+        assembly.insert("flash".into(), memory["flash_layout"].clone());
+        assembly.insert("bootstrap".into(), serde_json::json!([]));
+        for key in ["name", "acpi", "smbios", "smm"] {
+            assembly.remove(key);
+        }
         let plan = fstart_platform_qemu::host::resolve(
             machine,
             BuildSelection {
@@ -53,7 +63,7 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
             "descriptor_hex": expectations.descriptor.as_ref().unwrap().bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "linker_sha256": format!("{:x}", Sha256::digest(unit.linker_script.as_ref().unwrap().as_bytes())),
             "elf": expectations,
-            "assembly": plan.assembly.config("fixture").unwrap(),
+            "assembly": plan.assembly.ffs().unwrap(),
             "target": unit.target, "entry": unit.entry, "environment": unit.environment,
         });
         // The exact wire bytes are recorded once, in descriptor_hex.
