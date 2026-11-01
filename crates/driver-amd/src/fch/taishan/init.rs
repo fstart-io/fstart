@@ -6,10 +6,11 @@ use super::{ASF_IO, SMBUS_IO, irq};
 use crate::cpu::Revision;
 use crate::{
     fch::{
-        AL2AHB, AbRegBar, AcpiReg, Bus, Decode, Fch, LEGACY_UART_DECODE, MISC_CLK_CNTL1,
-        MiscClkCntl1, PM_0A, PM_AB_REG_BAR, PM_ACPI_CPU_CNT, PM_ACPI_GPE0, PM_ACPI_PM_TMR,
-        PM_ACPI_PM1_CNT, PM_ACPI_PM1_EVT, PM_ACPI_PM2_CNT, PM_ACPI_PMA_CNT, PM_ACPI_SMI_CMD, PM_C0,
-        PM_DECODE, Pm0a, PmC0, RTC_INDEX, Reg, SPI_BASE, alink, aoac, early, indexed_io,
+        AL2AHB, AbRegBar, AcpiReg, Bus, CgPllConfig1, CgPllConfig3, Decode, Fch,
+        LEGACY_UART_DECODE, MISC_CGPLL_CONFIG1, MISC_CGPLL_CONFIG3, MISC_CLK_CNTL1, MiscClkCntl1,
+        PM_0A, PM_AB_REG_BAR, PM_ACPI_CPU_CNT, PM_ACPI_GPE0, PM_ACPI_PM_TMR, PM_ACPI_PM1_CNT,
+        PM_ACPI_PM1_EVT, PM_ACPI_PM2_CNT, PM_ACPI_PMA_CNT, PM_ACPI_SMI_CMD, PM_C0, PM_DECODE, Pm0a,
+        PmC0, RTC_INDEX, Reg, SPI_BASE, alink, aoac, early, indexed_io,
         lpc::{self, Bits, PciControl, RomDmaControl, SpiBase},
         misc, pm, smbus, smi_bank as smi, spi,
     },
@@ -277,8 +278,11 @@ const ENV_HWACPI: &[Rmw] = &[
     misc(0x6e, 0xa0, 0xa0),
 ];
 
-/// Clock generator: the same values as Picasso, through the ACPI MMIO window.
-fn clock_init(fch: &Fch<impl Bus>) {
+/// Clock generator: the same values as Picasso, through the ACPI MMIO window,
+/// in the order of the vendor FchTaishanDxe (VA 0x7a98). The CG1 PLL spreads
+/// the PCIe reference clocks if `spread_spectrum` (vendor PCD 0x120, Setup
+/// "SB Clock Spread Spectrum"); the second update request applies it.
+fn clock_init(fch: &Fch<impl Bus>, spread_spectrum: bool) {
     fch.apply::<u32>([
         rmw(misc::at(0x10), 0x0000_1ff3, 0),
         rmw(misc::at(0x34), 0xff80_0000, 0),
@@ -289,10 +293,15 @@ fn clock_init(fch: &Fch<impl Bus>) {
             0x0c1f_fe00,
             (4 << 13) | (3 << 17) | (3 << 26) | (1 << 9),
         ),
-        rmw(misc::at(0x40), 0, (1 << 25) | (1 << 30)),
-        rmw(misc::at(0x10), 0, 1 << 29),
-        rmw(misc::at(0x08), 0, 1), // CG1PLL spread spectrum
     ]);
+    let cntl1 = fch.reg(MISC_CLK_CNTL1);
+    cntl1.modify(MiscClkCntl1::CG1_FBDIV_LOADEN::SET);
+    cntl1.modify(MiscClkCntl1::CG1_CFG_UPDATE_REQ::SET);
+    fch.reg(MISC_CGPLL_CONFIG3)
+        .modify(CgPllConfig3::CG1_FRACN_EN_OVERRIDE::SET);
+    fch.reg(MISC_CGPLL_CONFIG1)
+        .modify(CgPllConfig1::CG1_SPREAD_SPECTRUM.val(spread_spectrum.into()));
+    cntl1.modify(MiscClkCntl1::CG1_CFG_UPDATE_REQ::SET);
 }
 
 /// A-Link: the six table rows, then the policy settings of the vendor code.
@@ -343,14 +352,16 @@ register_bitfields![u8,
 
 /// The FchTaishanDxe env tasks of die 0's FCH. `smn` is die 0's;
 /// `subsystem_id` (subsystem vendor in the low, device in the high half) is the
-/// board's for the xHCI (vendor PCD 0x163).
+/// board's for the xHCI (vendor PCD 0x163); `spread_spectrum` the board's
+/// CG1 PLL spread-spectrum choice.
 pub fn env_init(
     fch: &Fch<impl Bus>,
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     subsystem_id: u32,
+    spread_spectrum: bool,
 ) {
     let bus = fch.bus();
-    clock_init(fch);
+    clock_init(fch, spread_spectrum);
     fch.apply(ENV_MISC.iter().copied());
 
     // HwAcpi

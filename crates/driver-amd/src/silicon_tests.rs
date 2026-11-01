@@ -165,7 +165,7 @@ mod zeppelin {
         for die in &dies {
             nbio::zeppelin::pre_enumeration_init(die);
         }
-        taishan::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID);
+        taishan::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID, true);
         taishan::sata::init(&fch0, 0, &dies[0].smn(), SUBSYSTEM_ID, &mut delay);
         taishan::multi::xgbe_init(&dies[0].smn());
         taishan::multi::env(
@@ -192,7 +192,8 @@ mod zeppelin {
         for die in &dies {
             df::zeppelin::disable_ext_cfg(&die.df());
         }
-        assert_eq!(hw.fingerprint(), (16906, 0x410f_04fe_37a3_28fa));
+        // The CG1 PLL takes the vendor's separate update requests.
+        assert_eq!(hw.fingerprint(), (16908, 0x27b8_f511_d841_c49e));
         assert_eq!(hw.state(), 0xbc50_f84e_0701_a314);
     }
 

@@ -150,6 +150,9 @@ const CONFIG: Config = Config {
     fch: FchConfig {
         irq_routes: IRQ_ROUTES,
         smi_gevents: 1 << NMI_BUTTON_GEVENT,
+        // SSC causes I210 BadDLLP/BadTLP errors; F09 Setup also disables
+        // "SB Clock Spread Spectrum" (0xfc) on this board.
+        spread_spectrum: false,
         ..FchConfig::DEFAULT
     },
     dxio: DxioConfig {
