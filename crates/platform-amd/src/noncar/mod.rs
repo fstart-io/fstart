@@ -92,6 +92,15 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     /// PCIe ECAM and its bus count.
     const ECAM: u64;
     const ECAM_BUSES: u16;
+    /// The PCI segment ECAM decodes: what MCFG, the DSDT and the payload see.
+    fn pci_root() -> fstart_core::description::PciRootInfo {
+        fstart_core::description::PciRootInfo {
+            segment: 0,
+            ecam_base: Self::ECAM,
+            bus_start: 0,
+            bus_end: (Self::ECAM_BUSES - 1) as u8,
+        }
+    }
     /// The PSP: its mailbox rules and APOB format.
     const PSP: fstart_driver_amd::psp::Variant;
     /// Where the PSP writes the APOB.

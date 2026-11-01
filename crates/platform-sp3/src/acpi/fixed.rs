@@ -1,4 +1,4 @@
-//! FADT, MADT, HPET and MCFG (ACPI_SMM §3.1–§3.3).
+//! FADT, MADT and HPET (ACPI_SMM §3.1–§3.3).
 //!
 //! FADT/MADT/HPET go through fstart-acpi's x86 platform builder; this file
 //! only supplies the SP3 values. The IOAPIC list built here is the single
@@ -9,7 +9,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_acpi::fadt::{Flags, PmProfile};
-use fstart_acpi::mcfg::MCFG;
 use fstart_acpi::platform::{HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt};
 use fstart_driver_amd::sp3::nbio::ioapic::{IoapicInfo, gsi_layout};
 use fstart_driver_amd::sp3::soc::Generation;
@@ -141,20 +140,6 @@ pub fn x86_config(inputs: &Inputs, windows: &[GsiWindow]) -> X86Config {
     }
 }
 
-/// MCFG over the generation's ECAM window, segment 0.
-pub fn mcfg(generation: Generation) -> Vec<u8> {
-    let (base, buses) = generation.ecam();
-    let mut mcfg = MCFG::new(
-        fstart_acpi::OEM_ID,
-        fstart_acpi::OEM_TABLE_ID,
-        fstart_acpi::OEM_REVISION,
-    );
-    mcfg.add_ecam(base, 0, 0, (buses - 1) as u8);
-    let mut bytes = Vec::new();
-    fstart_acpi::Aml::to_aml_bytes(&mcfg, &mut bytes);
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,22 +169,5 @@ mod tests {
             [(0xF0, 0), (0xF1, 24), (0xF2, 56), (0xF3, 88), (0xF4, 120)]
         );
         assert_eq!(w[4].nbio, Some((0, 3)));
-    }
-
-    #[test]
-    fn mcfg_per_generation() {
-        let m = mcfg(Generation::Naples);
-        assert_eq!(&m[..4], b"MCFG");
-        assert_eq!(
-            u64::from_le_bytes(m[44..52].try_into().unwrap()),
-            0xF000_0000
-        );
-        assert_eq!(m[55], 127);
-        let m = mcfg(Generation::Milan);
-        assert_eq!(
-            u64::from_le_bytes(m[44..52].try_into().unwrap()),
-            0xE000_0000
-        );
-        assert_eq!(m[55], 255);
     }
 }
