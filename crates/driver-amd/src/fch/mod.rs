@@ -441,8 +441,17 @@ register_bitfields![u32,
         FORCE_SLPSTATE_RETRY OFFSET(25) NUMBITS(1) []],
     /// PMxE0: the A-Link index/data I/O base.
     pub AbRegBar [PORT OFFSET(0) NUMBITS(16) []],
+    /// MISCx08: CGPLLConfig1.
+    pub CgPllConfig1 [CG1_SPREAD_SPECTRUM OFFSET(0) NUMBITS(1) []],
+    /// MISCx10: CGPLLConfig3.
+    pub CgPllConfig3 [CG1_FRACN_EN_OVERRIDE OFFSET(29) NUMBITS(1) []],
     /// MISCx40.
-    pub MiscClkCntl1 [ALINK_GATE OFFSET(1) NUMBITS(1) []]
+    pub MiscClkCntl1 [
+        ALINK_GATE OFFSET(1) NUMBITS(1) [],
+        CG1_FBDIV_LOADEN OFFSET(25) NUMBITS(1) [],
+        /// Applies the CG1 PLL settings; self-clearing.
+        CG1_CFG_UPDATE_REQ OFFSET(30) NUMBITS(1) []
+    ]
 ];
 register_bitfields![u32,
     /// SMIx98.
@@ -491,6 +500,8 @@ pub mod regs {
     pub const PM_AB_REG_BAR: AcpiReg<u32, AbRegBar::Register> = pm::at(0xe0);
     pub const PM_SD_ENABLE: AcpiReg<u8, SdEnable::Register> = pm::at(0xe8);
     pub const PM_LPC_GATING: AcpiReg<u8, LpcGating::Register> = pm::at(0xec);
+    pub const MISC_CGPLL_CONFIG1: AcpiReg<u32, CgPllConfig1::Register> = misc::at(0x08);
+    pub const MISC_CGPLL_CONFIG3: AcpiReg<u32, CgPllConfig3::Register> = misc::at(0x10);
     pub const MISC_CLK_CNTL1: AcpiReg<u32, MiscClkCntl1::Register> = misc::at(0x40);
     /// The PM1 block through the ACPI MMIO.
     pub const ACPI_PM1_STATUS: AcpiReg<u16, Pm1Status::Register> = acpi::at(0x00);

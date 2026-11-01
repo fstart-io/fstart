@@ -230,7 +230,12 @@ pub fn pre_mp<P: ConfigRegionAccess + Copy>(
         nbio::zeppelin::pre_enumeration_init(die);
     }
     fch.acpi_decode(taishan::ACPI_PORTS);
-    taishan::env_init(fch, &dies[0].smn(), config.subsystem_id);
+    taishan::env_init(
+        fch,
+        &dies[0].smn(),
+        config.subsystem_id,
+        config.fch.spread_spectrum,
+    );
     if devices[0].sata {
         taishan::sata::init(fch, 0, &dies[0].smn(), config.subsystem_id, clock);
     }

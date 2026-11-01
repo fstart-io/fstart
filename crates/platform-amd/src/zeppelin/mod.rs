@@ -64,6 +64,10 @@ pub struct FchConfig {
     /// GEVENT pins (bit n = GEVENTn) routed to the board's SMM handler,
     /// `fstart_driver_amd::fch::taishan::smm::SmmBoard::gevent`.
     pub smi_gevents: u32,
+    /// Spread spectrum on the CG1 PLL, which clocks the PCIe reference
+    /// clocks. On by default, as the vendor Setup default; a board whose
+    /// PCIe devices don't tolerate the spread turns it off.
+    pub spread_spectrum: bool,
 }
 impl FchConfig {
     pub const DEFAULT: Self = Self {
@@ -74,6 +78,7 @@ impl FchConfig {
         }; MAX_DIES],
         irq_routes: &[],
         smi_gevents: 0,
+        spread_spectrum: true,
     };
 }
 impl Default for FchConfig {
