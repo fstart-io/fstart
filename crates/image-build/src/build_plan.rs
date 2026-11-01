@@ -229,9 +229,7 @@ pub struct CompilationUnit {
     pub name: String,
     pub cargo_target: CargoTarget,
     pub target: String,
-    pub entry: String,
     pub cfg_schema: CompilerCfgSchema,
-    pub environment: String,
     pub payload: String,
     /// Features of the selected platform dependency, qualified from Cargo's
     /// actual direct dependency alias by the consumer.
@@ -243,49 +241,44 @@ pub struct CompilationUnit {
     pub environment_values: BTreeMap<String, String>,
     pub bindings: Vec<ArtifactBinding>,
     pub file_bindings: Vec<FileBinding>,
+    /// Features of the board crate itself, unqualified. A board owns one
+    /// binary per stage; these only select library code a unit links that
+    /// is not a stage `main`, such as the SMM handler.
+    #[serde(default)]
+    pub board_features: Vec<String>,
     pub output: UnitOutput,
 }
 
 /// Allowed runtime cfg vocabulary, supplied independently of the selected values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilerCfgSchema {
-    pub entries: Vec<String>,
-    pub environments: Vec<String>,
     pub payloads: Vec<String>,
 }
 impl CompilationUnit {
     pub fn check_cfg_flags(&self) -> Result<Vec<String>, String> {
-        [
-            (
-                "fstart_stage_env",
-                &self.environment,
-                &self.cfg_schema.environments,
-            ),
-            ("fstart_entry", &self.entry, &self.cfg_schema.entries),
-            ("fstart_payload", &self.payload, &self.cfg_schema.payloads),
-        ]
-        .into_iter()
-        .map(|(name, selected, allowed)| {
-            let unique: BTreeSet<_> = allowed.iter().collect();
-            if allowed.is_empty()
-                || unique.len() != allowed.len()
-                || !allowed.iter().all(|v| cfg_value(v))
-                || !allowed.contains(selected)
-            {
-                return Err(format!(
-                    "selected {name} is outside its platform cfg schema"
-                ));
-            }
-            Ok(format!(
-                "--check-cfg=cfg({name},values({}))",
-                allowed
-                    .iter()
-                    .map(|v| format!("\"{v}\""))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ))
-        })
-        .collect()
+        [("fstart_payload", &self.payload, &self.cfg_schema.payloads)]
+            .into_iter()
+            .map(|(name, selected, allowed)| {
+                let unique: BTreeSet<_> = allowed.iter().collect();
+                if allowed.is_empty()
+                    || unique.len() != allowed.len()
+                    || !allowed.iter().all(|v| cfg_value(v))
+                    || !allowed.contains(selected)
+                {
+                    return Err(format!(
+                        "selected {name} is outside its platform cfg schema"
+                    ));
+                }
+                Ok(format!(
+                    "--check-cfg=cfg({name},values({}))",
+                    allowed
+                        .iter()
+                        .map(|v| format!("\"{v}\""))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ))
+            })
+            .collect()
     }
 }
 
@@ -429,10 +422,7 @@ impl BuildPlan {
             if !identifier(&unit.name) || !names.insert(unit.name.as_str()) {
                 return Err(format!("invalid or duplicate unit {}", unit.name));
             }
-            if ![&unit.entry, &unit.environment, &unit.payload]
-                .into_iter()
-                .all(|v| cfg_value(v))
-            {
+            if !cfg_value(&unit.payload) {
                 return Err(format!("invalid compiler cfg value for {}", unit.name));
             }
             if unit
@@ -635,13 +625,9 @@ mod tests {
             name: name.into(),
             cargo_target: CargoTarget::BoardLibrary,
             target: "independent-target".into(),
-            entry: "entry".into(),
             cfg_schema: CompilerCfgSchema {
-                entries: vec!["entry".into(), "aarch64-relocate".into()],
-                environments: vec!["env".into(), "monolithic".into()],
                 payloads: vec!["halt".into()],
             },
-            environment: "env".into(),
             payload: "halt".into(),
             features: vec![],
             build_std: None,
@@ -650,6 +636,7 @@ mod tests {
             linker_script: None,
             environment_values: BTreeMap::new(),
             file_bindings: vec![],
+            board_features: vec![],
             bindings: dependencies
                 .iter()
                 .map(|name| ArtifactBinding {
@@ -675,8 +662,6 @@ mod tests {
         let mut launch = unit("launch", &["render-cache"]);
         launch.cargo_target = CargoTarget::BoardBinary;
         launch.target = "aarch64-unknown-none".into();
-        launch.entry = "aarch64-relocate".into();
-        launch.environment = "monolithic".into();
         launch.build_std = Some("core,alloc".into());
         launch.linker_script = Some("ENTRY(_start)".into());
         launch.output = UnitOutput::Executable {
@@ -814,7 +799,7 @@ mod tests {
         }];
         assert!(plan.order().is_err());
         let mut plan = fixture();
-        plan.units[0].entry = "bad\"cfg".into();
+        plan.units[0].payload = "bad\"cfg".into();
         assert!(plan.order().unwrap_err().contains("cfg value"));
     }
 

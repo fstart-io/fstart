@@ -7,9 +7,11 @@
 //! flow's silicon steps at runtime.
 //!
 //! A board crate implements [`board::Board`] (and
-//! [`layout::Sp3BoardFacts`]) and declares its binary with
-//! `fstart_platform_sp3::stage_bin!(Board);`. The flow is
-//! [`flow`](crate::flow) (feature `bundle-reset`).
+//! [`layout::Sp3BoardFacts`]), its facts, and owns the reset image's
+//! `main`: it matches the family [`start`] returns and does its own work
+//! between the phases ([`Identified`], [`Reset`], [`Stage`],
+//! [`Configured`]), passing its policy, console, GPIO and tables to them
+//! (feature `bundle-reset`).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 
 extern crate ufmt;
@@ -42,47 +44,22 @@ pub use fstart_smm as smm_runtime;
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
 
-/// The board's stage program: the reset image identifies the CPU and runs
-/// the fixed flow with that generation's silicon steps, from the PSP's
-/// release of the BSP to the payload.
+#[cfg(all(feature = "bundle-reset", feature = "naples"))]
+pub use flow::NaplesSilicon;
+#[cfg(all(feature = "bundle-reset", any(feature = "rome", feature = "milan")))]
+pub use flow::RomeMilanSilicon;
+#[cfg(all(feature = "bundle-reset", feature = "acpi"))]
+pub use flow::Tables;
 #[cfg(feature = "bundle-reset")]
-pub struct Program<B>(core::marker::PhantomData<B>);
+pub use flow::{Configured, Identified, Reset, Silicon, Stage, Start, start};
 
-#[cfg(feature = "bundle-reset")]
-impl<B: board::Board> fstart_stage::StageProgram for Program<B> {
-    fn run_stage(_handoff: usize) -> ! {
-        use fstart_driver_amd::sp3::soc::Generation;
-        let identity = flow::identify();
-        match identity.generation() {
-            #[cfg(feature = "naples")]
-            Generation::Naples => flow::run::<B, flow::naples::Silicon>(identity),
-            #[cfg(feature = "rome")]
-            Generation::Rome => flow::run::<B, flow::sp3::Silicon>(identity),
-            #[cfg(feature = "milan")]
-            Generation::Milan => flow::run::<B, flow::sp3::Silicon>(identity),
-            #[allow(unreachable_patterns)]
-            _ => flow::unsupported_cpu(),
-        }
-    }
-}
-
-/// Declare the board's reset-image binary; dependency names stay inside
-/// the platform.
+/// Declare the board's reset-image `main`:
+/// `fstart_platform_sp3::entry!(main);`, where `main` matches the family
+/// [`start`] returns and runs the board's flow.
 #[cfg(feature = "bundle-reset")]
 #[macro_export]
-macro_rules! stage_bin {
-    ($board:ty) => {
-        $crate::stage_runtime::stage_bin!(program: $crate::Program<$board>);
-    };
-}
-
-/// Without the reset unit's runtime there is no binary to declare.
-#[cfg(not(feature = "bundle-reset"))]
-#[macro_export]
-macro_rules! stage_bin {
-    ($board:ty) => {
-        ::core::compile_error!(
-            "the SP3 reset image needs fstart-platform-sp3/bundle-reset (fbuild enables it)"
-        );
+macro_rules! entry {
+    ($main:path) => {
+        $crate::stage_runtime::stage_bin!(main: $main);
     };
 }

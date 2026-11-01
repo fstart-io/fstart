@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The shared flow of the PSP-booted ("noncar") AMD SoCs from Family 17h on.
-//! The PSP trains DRAM
-//! and starts the BSP in DRAM; one stage runs from the reset vector to the
-//! payload:
+//! The phases of the PSP-booted ("noncar") AMD SoCs from Family 17h on.
+//! The PSP trains DRAM and starts the BSP in DRAM; one stage runs from the
+//! reset vector to the payload, and the board's `main` is that stage:
 //!
-//! 1. Entry: ECAM, FCH pre-init ([`Soc::fch_pre_init`]), console, CPU
-//!    identification ([`Soc::identify`]), the memory map from the APOB,
-//!    the cache plan.
-//! 2. TP1, [`Soc::silicon_init`]: nearly all silicon init. MP init
-//!    ([`mp::start`]) and SMM with the PSP's SMM info ([`smm::install`],
-//!    [`psp::notify_smm`]) are part of it where the SoC does them before
-//!    PCI enumeration.
-//! 3. PCI enumeration and resource allocation, then TP2,
-//!    [`Soc::after_resources`], and the board's [`Board::mainboard_final`].
-//! 4. The IOAPICs and the ACPI tables from what the silicon reports
-//!    ([`crate::acpi`]).
-//! 5. TP3, [`Soc::ready_to_boot`], then PSP LockDFReg (a failure halts),
-//!    the payload's memory map and page tables, PSP BootDone and the
-//!    payload.
+//! 1. [`Reset::enter`]: ECAM, FCH pre-init ([`Soc::fch_pre_init`]);
+//!    [`Reset::console`]: console, CPU identification ([`Soc::identify`]),
+//!    the memory map from the APOB, the cache plan, the FFS.
+//! 2. The SoC module's own silicon init phases, which take the [`Stage`].
+//!    MP init ([`mp::start`]) and SMM with the PSP's SMM info
+//!    ([`smm::install`], [`psp::notify_smm`]) are part of it where the SoC
+//!    does them before PCI enumeration.
+//! 3. [`Stage::enumerate`]: PCI enumeration and resource allocation, then
+//!    [`Soc::after_resources`].
+//! 4. [`Stage::ready_to_boot`]: the IOAPICs, then [`Soc::ready_to_boot`].
+//! 5. [`Stage::boot`]: [`Soc::end_of_post`], the ACPI tables from what the
+//!    silicon and the board report ([`crate::acpi`]), PSP LockDFReg (a failure halts), the
+//!    payload's memory map and page tables, PSP BootDone and the payload.
 //!
-//! The SoC's hooks are openSIL's timepoints; the flow keeps the host side:
-//! enumeration, resources, ACPI, memory map, SMM and MP.
+//! The SoC modules own the silicon; this module keeps the host side:
+//! enumeration, resources, ACPI, memory map, SMM and MP. The board's work
+//! goes between the phases, in its `main`.
 pub mod acpi;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod boot;
@@ -40,12 +39,12 @@ pub mod smm;
 
 /// Devices on buses the platform set up, for CrabEFI's drivers.
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
-pub type Peripherals = alloc::vec::Vec<fstart_stage::crabefi::peripheral::Peripheral>;
+pub type Peripherals = alloc::vec::Vec<fstart_payload::crabefi::peripheral::Peripheral>;
 
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use flow::Program;
+pub use flow::{Enumerated, Reset, Stage, stop};
 
-use crate::acpi::{BoardAcpi, SocAcpi};
+use crate::acpi::SocAcpi;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
@@ -53,9 +52,8 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::{microcode::Family, tsc::Tsc},
     df::Die,
-    fch::{Acpimmio, Bus, Fch, NativeBus, gpio::Gpio, lpc::Lpc},
+    fch::{Acpimmio, Bus, Fch, NativeBus, gpio::Gpio},
 };
-use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_pci::ecam::GlobalEcam;
 use layout::{Layout, Region};
 use tock_registers::interfaces::Writeable;
@@ -82,8 +80,9 @@ impl From<&'static str> for Stop {
     }
 }
 
-/// A noncar SoC: its constants and its phases of the silicon init. The flow
-/// calls the phases in order, each once, on the BSP.
+/// A noncar SoC: its constants and the steps the shared phases call, each
+/// once, on the BSP. The silicon init itself is the SoC module's own phases,
+/// which the board's `main` calls.
 pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     /// The log prefix.
     const NAME: &'static str;
@@ -93,6 +92,15 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     /// PCIe ECAM and its bus count.
     const ECAM: u64;
     const ECAM_BUSES: u16;
+    /// The PCI segment ECAM decodes: what MCFG, the DSDT and the payload see.
+    fn pci_root() -> fstart_core::description::PciRootInfo {
+        fstart_core::description::PciRootInfo {
+            segment: 0,
+            ecam_base: Self::ECAM,
+            bus_start: 0,
+            bus_end: (Self::ECAM_BUSES - 1) as u8,
+        }
+    }
     /// The PSP: its mailbox rules and APOB format.
     const PSP: fstart_driver_amd::psp::Variant;
     /// Where the PSP writes the APOB.
@@ -110,7 +118,7 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
     type Config: 'static;
     /// What [`Soc::identify`] found.
     type Identity: Copy;
-    /// What TP1 leaves for the later phases.
+    /// What the silicon init leaves for the later phases.
     type State;
 
     /// FCH setup before the console: the decodes the board's
@@ -128,38 +136,30 @@ pub trait Soc: fstart_driver_amd::soc::Soc + Family + Send + Sync + Sized {
         mhz: u32,
         dies: u8,
     ) -> Result<Self::Identity, &'static str>;
-    /// TP1: the silicon init before PCI enumeration.
-    fn silicon_init<B: Board<Soc = Self>>(tp1: Tp1<'_, Self>) -> Result<Silicon<Self>, Stop>;
-    /// TP2: after the PCI resource allocation.
-    fn after_resources<B: Board<Soc = Self>>(silicon: &mut Silicon<Self>, ctx: &Ctx<'_, Self>);
+    /// After the PCI resource allocation.
+    fn after_resources(silicon: &mut Silicon<Self>, ctx: &Ctx<'_, Self>);
     /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
     /// nodes: several and not interleaved.
     fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
         None
     }
-    /// TP3: ready to boot, before ACPI publication and the PSP's DF lock.
+    /// Ready to boot, before ACPI publication and the PSP's DF lock.
     /// Device contributions such as the posted video ROM must be ready here.
-    fn ready_to_boot<B: Board<Soc = Self>>(
+    fn ready_to_boot(
         silicon: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
     ) -> Result<(), Stop>;
 
+    /// The SoC's last step before the tables, after the board's own
+    /// ready-to-boot work.
+    fn end_of_post(_silicon: &mut Silicon<Self>, _ctx: &Ctx<'_, Self>) {}
+
     /// The board's devices for CrabEFI to drive, after the buses are set up.
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
-    fn peripherals<B: Board<Soc = Self>>(_ctx: &Ctx<'_, Self>) -> Peripherals {
+    fn peripherals(_ctx: &Ctx<'_, Self>, _config: &Self::Config) -> Peripherals {
         Peripherals::new()
     }
-}
-
-/// What the flow found before TP1.
-pub struct Tp1<'a, S: Soc> {
-    pub ctx: Ctx<'a, S>,
-    pub config: &'a S::Config,
-    pub identity: S::Identity,
-    pub memory: &'a Memory<'a>,
-    /// The verified microcode patches of the FFS, for MP init.
-    pub microcode: Option<&'static [u8]>,
 }
 
 /// The memory map from the APOB and the CPU's TOP_MEM/TOM2.
@@ -172,7 +172,7 @@ pub struct Memory<'a> {
     pub e820: &'a E820State,
 }
 
-/// What TP1 hands the flow.
+/// What the silicon init hands the later phases.
 pub struct Silicon<S: Soc> {
     pub cpus: mp::Cpus,
     /// Die 0's PSP mailbox, if it took the SMM info.
@@ -207,67 +207,24 @@ impl<S: Soc> Clone for Ctx<'_, S> {
 }
 impl<S: Soc> Copy for Ctx<'_, S> {}
 impl<S: Soc> Ctx<'_, S> {
-    /// What the board hooks get.
-    pub fn board(&self) -> BoardCtx<'_, S> {
-        BoardCtx {
-            dies: self.dies,
-            clock: self.clock,
-        }
-    }
-}
-
-/// What the board hooks get: the dies and the clock.
-pub struct BoardCtx<'a, S: Soc> {
-    pub dies: &'a [Die<S, GlobalEcam>],
-    pub clock: Tsc,
-}
-impl<S: Soc> BoardCtx<'_, S> {
     /// The FCH of die 0, for pad routing and the like.
-    pub fn fch(&mut self) -> Fch<NativeBus> {
-        // SAFETY: board hooks run on the BSP between the platform's own FCH
-        // accesses, with the ACPI MMIO and ECAM decoded; the borrow of the
-        // context keeps them sequential.
+    pub fn fch(&self) -> Fch<NativeBus> {
+        // SAFETY: board work runs on the BSP between the platform's own FCH
+        // accesses, with the ACPI MMIO and ECAM decoded.
         Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
     }
 
     /// The GPIO pads of die 0.
-    pub fn gpio(&mut self) -> Gpio<NativeBus> {
+    pub fn gpio(&self) -> Gpio<NativeBus> {
         Gpio::new(self.fch(), S::GPIO_BANK)
     }
 }
 
-/// A board: its SoC, configuration and hooks. The flow owns the order of
-/// the calls.
+/// A board's facts: its SoC and the SoC's configuration. Host planning and
+/// the board's `main` read the same values; the flow is the board's `main`.
 pub trait Board: 'static {
     type Soc: Soc;
     const CONFIG: &'static <Self::Soc as Soc>::Config;
-
-    /// LPC decodes and Super I/O routing for the console, before any
-    /// output.
-    fn early_init(_lpc: &Lpc<impl Bus>) {}
-    /// The board's console UART.
-    fn console() -> Ns16550Config;
-    /// After the FCH early and reset init: SMBus, I2C and GPIO work (the
-    /// vendor board PEIMs).
-    fn fch_reset_done(
-        _ctx: &mut BoardCtx<'_, Self::Soc>,
-        _config: &mut <Self::Soc as Soc>::Config,
-    ) {
-    }
-    /// After DXIO link training, before PCI enumeration.
-    fn dxio_training_done(_ctx: &mut BoardCtx<'_, Self::Soc>) {}
-    /// After PCI enumeration.
-    fn mainboard_final(_ctx: &mut BoardCtx<'_, Self::Soc>) {}
-    /// Right before the payload.
-    fn ready_to_boot(_ctx: &mut BoardCtx<'_, Self::Soc>) {}
-    /// What the board adds to the ACPI tables.
-    fn acpi() -> BoardAcpi {
-        BoardAcpi::default()
-    }
-    /// The board's SMBIOS identity (types 0-3).
-    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
-        fstart_acpi::smbios::SmbiosIdentity::new("", <Self::Soc as Soc>::NAME)
-    }
 }
 
 /// The SMBIOS facts of a SoC.
@@ -281,10 +238,10 @@ pub struct SmbiosFacts {
     pub channels_per_die: u8,
 }
 
-/// Declare the board binary: `fstart_platform_amd::stage_bin!(Board);`
+/// Declare the board's stage `main`: `fstart_platform_amd::entry!(main);`
 #[macro_export]
-macro_rules! stage_bin {
-    ($board:ty) => {
-        $crate::__stage::stage_bin!(program: $crate::noncar::Program<$board>);
+macro_rules! entry {
+    ($main:path) => {
+        $crate::__stage::stage_bin!(main: $main);
     };
 }

@@ -17,33 +17,6 @@ pub struct SmmContext<'a> {
     params: &'a mut SmmEntryParams,
 }
 
-/// A concrete permanent SMM handler, typically a southbridge SMI dispatcher.
-pub trait SmmHandler {
-    /// Immutable configuration written by the normal-mode installer.
-    ///
-    /// The installer and the handler must name the same type; the driver
-    /// that owns the handler also owns this type.
-    type Config: Copy;
-
-    /// CPU-local work on every entrant, before shared chipset dispatch.
-    ///
-    /// Use this for CPU-local SMI causes and MSRs. It must not wait for other
-    /// CPUs or touch unsynchronized shared state: no all-CPU rendezvous is
-    /// implied, and some SMI sources only bring one CPU into SMM.
-    ///
-    /// # Safety
-    /// Called by the permanent SMM entry with validated handler configuration.
-    unsafe fn enter_cpu(_ctx: &mut SmmContext<'_>, _config: &Self::Config) {}
-
-    /// Handle one SMI on the shared-dispatch owner.
-    ///
-    /// # Safety
-    ///
-    /// Called only by the framework-owned SMM entry after it has validated
-    /// the loader parameters and acquired the permanent rendezvous.
-    unsafe fn handle(ctx: &mut SmmContext<'_>, config: &Self::Config);
-}
-
 impl<'a> SmmContext<'a> {
     /// Build a context from the raw entry-parameter pointer.
     ///

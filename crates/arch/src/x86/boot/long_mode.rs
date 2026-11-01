@@ -2,219 +2,163 @@
 //! 32-to-64-bit switch, the 64-bit IDT, the DRAM-stage and postcar entries,
 //! and the 64-bit jumps.
 
-// Writable page-table setup for QEMU-style low-RAM page tables.
-// 1 GiB pages: PDPT[0..511] = 512 x 1 GiB identity-mapped pages.
-// Requires PDPE1GB. Covers 512 GiB. Compact: only 2 pages total.
-#[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .text, \"ax\"",
-    ".code32",
-    ".global _setup_page_tables",
-    "_setup_page_tables:",
-    // Clear page table area first.
-    "movl $_page_tables_start, %edi",
-    "movl $_page_tables_end, %ecx",
-    "subl %edi, %ecx",
-    "shrl $2, %ecx",
-    "xorl %eax, %eax",
-    "rep stosl",
-    // PML4[0] = address of PDPT | User | Accessed | Present | Writable.
-    "movl $_page_tables_start, %edi",
-    "leal 0x1027(%edi), %eax",
-    "movl %eax, (%edi)",
-    "leal 0x1000(%edi), %esi", // ESI = PDPT base
-    "xorl %edx, %edx",         // EDX = high 32 bits of PA (starts at 0)
-    "xorl %eax, %eax",         // EAX = low 32 bits of PA (starts at 0)
-    "orl $0xe7, %eax",         // PS=1, D=1, A=1, US=1, RW=1, P=1
-    "movl $512, %ecx",         // 512 entries x 1 GiB = 512 GiB
-    "1:",
-    "movl %eax, (%esi)",
-    "movl %edx, 4(%esi)",
-    "addl $0x40000000, %eax",
-    "adcl $0, %edx",
-    "addl $8, %esi",
-    "decl %ecx",
-    "jnz 1b",
-    "jmp _after_page_tables",
-    options(att_syntax),
-);
-
-// Writable page-table setup for QEMU-style low-RAM page tables.
-// 2 MiB pages (default): PDPT[0..3] -> PD0..PD3, each PD 512 x 2 MiB.
-#[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .text, \"ax\"",
-    ".code32",
-    ".global _setup_page_tables",
-    "_setup_page_tables:",
-    // Clear page table area first.
-    "movl $_page_tables_start, %edi",
-    "movl $_page_tables_end, %ecx",
-    "subl %edi, %ecx",
-    "shrl $2, %ecx",
-    "xorl %eax, %eax",
-    "rep stosl",
-    "movl $_page_tables_start, %edi",
-    // PML4[0] = address of PDPT | User | Accessed | Present | Writable.
-    "leal 0x1027(%edi), %eax",
-    "movl %eax, (%edi)",
-    // PDPT[0..3] = address of PD0..PD3 | User | Accessed | Present | Writable.
-    "leal 0x1000(%edi), %esi",
-    "leal 0x2027(%edi), %eax",
-    "movl %eax, 0(%esi)",
-    "addl $0x1000, %eax",
-    "movl %eax, 8(%esi)",
-    "addl $0x1000, %eax",
-    "movl %eax, 16(%esi)",
-    "addl $0x1000, %eax",
-    "movl %eax, 24(%esi)",
-    // Fill PD0..PD3 with 2048 x 2 MiB identity-mapped pages.
-    "leal 0x2000(%edi), %esi",
-    "xorl %edx, %edx",
-    "xorl %eax, %eax",
-    "orl $0xe7, %eax",
-    "movl $2048, %ecx",
-    "2:",
-    "movl %eax, (%esi)",
-    "movl %edx, 4(%esi)",
-    "addl $0x200000, %eax",
-    "adcl $0, %edx",
-    "addl $8, %esi",
-    "decl %ecx",
-    "jnz 2b",
-    "jmp _after_page_tables",
-    options(att_syntax),
-);
-
-// Page table storage is defined by this assembly, not by the linker script.
+// Entry page tables. The reset path jumps to `_setup_page_tables`, which
+// the stage's linker script points at one of two routines; both leave the
+// PML4 in %eax for `_after_page_tables`, and the linker drops the other:
 //
-// - Real XIP boards emit prebuilt page tables into ordinary `.rodata` and
-//   load CR3 from the assembly-defined `PML4E`, matching coreboot's
-//   `setup_longmode $PML4E` convention.
-// - QEMU/writable-PT boards reserve BSS storage here; `_setup_page_tables`
-//   fills it at runtime.
-#[cfg(not(feature = "x86-writable-page-tables"))]
+// - `_setup_rom_page_tables`: tables prebuilt in ROM (`.rodata`), for CAR
+//   bootblocks, which have no writable RAM before CAR and must not spend
+//   CAR on tables. Low 4 GiB, 2 MiB leaves (coreboot's `PML4E` tables).
+// - `_setup_ram_page_tables`: tables `_fstart_identity_tables` builds in
+//   BSS, for stages that start in RAM (QEMU).
+
+// Shared table generator, also called by the AMD PSP and SP3 reset entries.
+//
+// In:  %edi = 4 KiB-aligned storage: max(N + 1, 6) pages
+//      %ecx = N, the number of PDPTs (512 GiB each) with 1 GiB pages
+//      %ebp = return address (no stack needed)
+// Out: identity tables at %edi; PML4 first. Clobbers eax, ebx, ecx, edx,
+//      esi, edi. Does not load CR3.
+//
+// With 1 GiB pages (CPUID 8000_0001h EDX[26]): PML4 entries 0..N-1 point
+// at N back-to-back PDPTs of 1 GiB leaves, mapping N * 512 GiB. Without:
+// one PDPT and four directories of 2 MiB leaves, mapping the low 4 GiB.
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._fstart_identity_tables, \"ax\"",
     ".code32",
-    ".global _setup_page_tables",
-    "_setup_page_tables:",
+    ".global _fstart_identity_tables",
+    "_fstart_identity_tables:",
+    "movl %ecx, %esi",
+    "movl $0x80000000, %eax",
+    "cpuid",
+    "cmpl $0x80000001, %eax",
+    "jb 3f",
+    "movl $0x80000001, %eax",
+    "cpuid",
+    "btl $26, %edx",
+    "jnc 3f",
+    // 1 GiB leaves. Zero the PML4 and the N PDPTs.
+    "movl %edi, %edx",
+    "leal 1(%esi), %ecx",
+    "shll $10, %ecx",
+    "xorl %eax, %eax",
+    "rep stosl",
+    "movl %edx, %edi",
+    // PML4[k] = PDPT k | P | RW.
+    "leal 0x1003(%edi), %eax",
+    "movl %edi, %ebx",
+    "movl %esi, %ecx",
+    "1:",
+    "movl %eax, (%ebx)",
+    "addl $8, %ebx",
+    "addl $0x1000, %eax",
+    "loop 1b",
+    // PDPT entry k maps k GiB: low = k << 30 | P | RW | PS, high = k >> 2.
+    "leal 0x1000(%edi), %ebx",
+    "movl %esi, %ecx",
+    "shll $9, %ecx",
+    "xorl %edx, %edx",
+    "2:",
+    "movl %edx, %eax",
+    "shll $30, %eax",
+    "orl $0x83, %eax",
+    "movl %eax, (%ebx)",
+    "movl %edx, %eax",
+    "shrl $2, %eax",
+    "movl %eax, 4(%ebx)",
+    "addl $8, %ebx",
+    "incl %edx",
+    "loop 2b",
+    "jmp *%ebp",
+    // 2 MiB leaves over the low 4 GiB. Zero six pages.
+    "3:",
+    "movl %edi, %edx",
+    "movl $(6 * 1024), %ecx",
+    "xorl %eax, %eax",
+    "rep stosl",
+    "movl %edx, %edi",
+    // PML4[0] = PDPT | P | RW; PDPT[0..3] = directories | P | RW.
+    "leal 0x1003(%edi), %eax",
+    "movl %eax, (%edi)",
+    "leal 0x2003(%edi), %eax",
+    "leal 0x1000(%edi), %ebx",
+    "movl $4, %ecx",
+    "4:",
+    "movl %eax, (%ebx)",
+    "addl $8, %ebx",
+    "addl $0x1000, %eax",
+    "loop 4b",
+    // 2048 directory entries: i * 2 MiB | P | RW | PS.
+    "leal 0x2000(%edi), %ebx",
+    "movl $0x83, %eax",
+    "movl $2048, %ecx",
+    "5:",
+    "movl %eax, (%ebx)",
+    "addl $8, %ebx",
+    "addl $0x200000, %eax",
+    "loop 5b",
+    "jmp *%ebp",
+    options(att_syntax),
+);
+
+#[cfg(target_os = "none")]
+core::arch::global_asm!(
+    ".section .text.asm._setup_rom_page_tables, \"ax\"",
+    ".code32",
+    ".global _setup_rom_page_tables",
+    "_setup_rom_page_tables:",
+    "movl $_rom_page_tables, %eax",
     "jmp _after_page_tables",
-    options(att_syntax),
-);
-
-#[cfg(all(feature = "x86-static-page-tables", feature = "x86-1g-pages"))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .rodata, \"a\"",
+    ".section .rodata.fstart_rom_page_tables, \"a\"",
     ".balign 4096",
-    ".global PML4E",
-    ".global _page_tables_start",
-    ".global _page_tables_end",
-    "PML4E:",
-    "_page_tables_start:",
-    ".quad .Lpt_pdpt_1g + 0x027",
+    "_rom_page_tables:",
+    ".quad .Lrom_pdpt + 0x003",
     ".zero 4096 - 8",
-    ".Lpt_pdpt_1g:",
-    ".set .Lpt_addr_1g, 0",
-    ".rept 512",
-    ".quad .Lpt_addr_1g + 0x0e7",
-    ".set .Lpt_addr_1g, .Lpt_addr_1g + 0x40000000",
-    ".endr",
-    "_page_tables_end:",
-    options(att_syntax),
-);
-
-#[cfg(all(feature = "x86-writable-page-tables", feature = "x86-1g-pages"))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .bss, \"aw\", @nobits",
-    ".balign 4096",
-    ".global PML4E",
-    ".global _page_tables_start",
-    ".global _page_tables_end",
-    "PML4E:",
-    "_page_tables_start:",
-    ".skip 0x2000",
-    "_page_tables_end:",
-    options(att_syntax),
-);
-
-#[cfg(all(feature = "x86-writable-page-tables", not(feature = "x86-1g-pages")))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .bss, \"aw\", @nobits",
-    ".balign 4096",
-    ".global PML4E",
-    ".global _page_tables_start",
-    ".global _page_tables_end",
-    "PML4E:",
-    "_page_tables_start:",
-    ".skip 0x6000",
-    "_page_tables_end:",
-    options(att_syntax),
-);
-
-#[cfg(not(any(
-    feature = "x86-static-page-tables",
-    feature = "x86-writable-page-tables"
-)))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .bss, \"aw\", @nobits",
-    ".balign 4096",
-    ".global PML4E",
-    ".global _page_tables_start",
-    ".global _page_tables_end",
-    "PML4E:",
-    "_page_tables_start:",
-    "_page_tables_end:",
-    options(att_syntax),
-);
-
-#[cfg(all(feature = "x86-static-page-tables", not(feature = "x86-1g-pages")))]
-#[cfg(target_os = "none")]
-core::arch::global_asm!(
-    ".section .rodata, \"a\"",
-    ".balign 4096",
-    ".global PML4E",
-    ".global _page_tables_start",
-    ".global _page_tables_end",
-    "PML4E:",
-    "_page_tables_start:",
-    ".quad .Lpt_pdpt_2m + 0x027",
-    ".zero 4096 - 8",
-    // Match coreboot's ROM PT order: PML4E, PDT, then PDPT.
-    ".Lpt_pdt_2m:",
-    ".set .Lpt_addr_2m, 0",
+    // Match coreboot's ROM PT order: PML4, directories, then PDPT.
+    ".Lrom_pd:",
+    ".set .Lrom_addr, 0",
     ".rept 2048",
-    ".quad .Lpt_addr_2m + 0x0e7",
-    ".set .Lpt_addr_2m, .Lpt_addr_2m + 0x200000",
+    ".quad .Lrom_addr + 0x083",
+    ".set .Lrom_addr, .Lrom_addr + 0x200000",
     ".endr",
-    ".balign 4096",
-    ".Lpt_pdpt_2m:",
-    ".quad .Lpt_pdt_2m + 0x027",
-    ".quad .Lpt_pdt_2m + 0x1000 + 0x027",
-    ".quad .Lpt_pdt_2m + 0x2000 + 0x027",
-    ".quad .Lpt_pdt_2m + 0x3000 + 0x027",
+    ".Lrom_pdpt:",
+    ".quad .Lrom_pd + 0x003",
+    ".quad .Lrom_pd + 0x1000 + 0x003",
+    ".quad .Lrom_pd + 0x2000 + 0x003",
+    ".quad .Lrom_pd + 0x3000 + 0x003",
     ".zero 4096 - 32",
-    "_page_tables_end:",
+    options(att_syntax),
+);
+
+#[cfg(target_os = "none")]
+core::arch::global_asm!(
+    ".section .text.asm._setup_ram_page_tables, \"ax\"",
+    ".code32",
+    ".global _setup_ram_page_tables",
+    "_setup_ram_page_tables:",
+    "movl $_ram_page_tables, %edi",
+    "movl $1, %ecx",
+    "movl $1f, %ebp",
+    "jmp _fstart_identity_tables",
+    "1:",
+    "movl $_ram_page_tables, %eax",
+    "jmp _after_page_tables",
+    ".section .bss.fstart_ram_page_tables, \"aw\", @nobits",
+    ".balign 4096",
+    "_ram_page_tables:",
+    ".skip 6 * 4096",
     options(att_syntax),
 );
 
 // Continue the entry sequence after page table setup.
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._after_page_tables, \"ax\"",
     ".code32",
     ".global _after_page_tables",
     "_after_page_tables:",
-    // Match coreboot's `setup_longmode $PML4E`: load CR3 from the
-    // assembler-defined PML4E label.
-    "movl $PML4E, %eax",
+    // %eax = the PML4 `_setup_page_tables` chose.
     "movl %eax, %cr3",
     "movl %cr4, %eax",
     "btsl $5, %eax", // CR4.PAE
@@ -457,15 +401,12 @@ core::arch::global_asm!(
 // It must NOT tear down CAR: post-`INVD` execution belongs to fresh
 // programs only, and postcar already performed the noreturn transition.
 //
-// Placed in `.text.entry` so `KEEP(*(.text.entry))` in the linker script
-// ensures it's at the start of the binary (= the load address that
-// postcar's jump targets).
-//
-// Compiled out of the postcar stage (which carries `_start_postcar` in
-// `.text.entry` instead) so the flat image always starts at its own entry.
-#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
+// In its own `.text.entry.ram` section: the ramstage linker script keeps it
+// first in the binary (= the load address postcar jumps to); other stages
+// drop it unless they jump here (AMD PSP reset images).
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text.entry, \"ax\"",
+    ".section .text.entry.ram, \"ax\"",
     ".code64",
     ".global _start_ram",
     "_start_ram:",
@@ -531,16 +472,16 @@ core::arch::global_asm!(
 // naming only its own image/stack/ROM/hardware.
 //
 // The linker script selects this entry (`ENTRY(_start_postcar)`) for the
-// stage named "postcar"; it also lands first via `.text.entry`. The
-// `postcar` stage_env gate keeps `_start_ram` out of the postcar binary so
-// the flat image starts here, at the address the bootblock jumps to.
+// stage named "postcar" and keeps `.text.entry.postcar` first, so the flat
+// image starts here, at the address the bootblock jumps to; the other
+// entries' sections are unreferenced there and dropped.
 //
 // These are compile-time strings rather than a callable helper: the first
 // checkpoint runs on the inherited CAR stack, so a call would violate the
 // transition's no-CAR-stack rule.
-#[cfg(all(target_os = "none", fstart_stage_env = "postcar"))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text.entry, \"ax\"",
+    ".section .text.entry.postcar, \"ax\"",
     ".code64",
     ".global _start_postcar",
     "_start_postcar:",

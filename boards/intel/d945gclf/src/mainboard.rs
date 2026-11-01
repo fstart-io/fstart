@@ -1,79 +1,47 @@
-//! Intel D945GCLF mainboard hooks.
+//! Intel D945GCLF mainboard work the stage `main`s call.
 //!
 //! Ported from coreboot `mainboard/intel/d945gclf/early_init.c`: the only
 //! board-specific pre-console work is the SMSC LPC47M15x PME logical device
 //! (runtime registers at 0x680, the ICH7 generic decode target) plus the
 //! COM1/COM2/KBC setup handled by the generic SuperIO driver.
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-use crate::config::Hardware as I945Ich7;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::ServiceError;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::device::BusDevice;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_driver_superio::smsc_lpc47m15x::SmscLpc47m15x;
-#[cfg(fstart_stage_env = "car")]
-use fstart_platform_intel::{IntelEarlyBoardHooks, IntelEarlyCtx};
-#[cfg(fstart_stage_env = "ram")]
-use fstart_platform_intel::{IntelMainstageBoardCtx, IntelMainstageBoardHooks};
+use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
-/// Board-specific D945GCLF hooks for the i945/ICH7 flow.
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-#[derive(Default)]
-pub struct D945GclfMainboard {
-    superio: Option<SmscLpc47m15x>,
-}
-
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-impl<S> fstart_platform_intel::IntelSmbusRouting<S> for D945GclfMainboard {}
-
-#[cfg(fstart_stage_env = "ram")]
-mod mainboard_acpi_device {
-    extern crate alloc;
-
-    use super::{D945GclfMainboard, d945gclf_mainboard_dsdt_aml};
-
-    impl fstart_acpi::device::AcpiDevice for D945GclfMainboard {
-        type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
-
-        fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
-            d945gclf_mainboard_dsdt_aml(*config)
-        }
+/// COM1 on the SuperIO.
+pub const fn console() -> Ns16550Config {
+    Ns16550Config {
+        regs: AccessMode::Pio {
+            base: crate::UART0_PIO_BASE as u64,
+        },
+        clock_freq: crate::UART0_CLOCK_FREQ,
+        baud_rate: crate::UART0_BAUD_RATE,
     }
 }
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-impl D945GclfMainboard {
-    fn setup_console(&mut self) -> Result<(), ServiceError> {
-        // PME first so the 0x680 decode window has a live target, then COM/KBC.
-        unsafe { fstart_log::set_max_level(fstart_log::Level::Debug) };
-        let mut superio =
-            SmscLpc47m15x::new_at_base(crate::d945gclf_superio_config().0, crate::SUPERIO_PNP_BASE)
-                .map_err(ServiceError::from)?;
-        superio
-            .enable_pme(crate::SUPERIO_PME_BASE)
+/// The SuperIO's PME block, then COM1/COM2/KBC, before the console probes.
+/// PME first so the 0x680 decode window has a live target.
+pub fn setup_superio() -> Result<(), ServiceError> {
+    unsafe { fstart_log::set_max_level(fstart_log::Level::Debug) };
+    let mut superio =
+        SmscLpc47m15x::new_at_base(crate::d945gclf_superio_config().0, crate::SUPERIO_PNP_BASE)
             .map_err(ServiceError::from)?;
-        superio.init().map_err(ServiceError::from)?;
-        self.superio = Some(superio);
-        Ok(())
-    }
+    superio
+        .enable_pme(crate::SUPERIO_PME_BASE)
+        .map_err(ServiceError::from)?;
+    superio.init().map_err(ServiceError::from)
 }
 
-#[cfg(fstart_stage_env = "car")]
-impl IntelEarlyBoardHooks<I945Ich7> for D945GclfMainboard {
-    fn before_console(&mut self, _ctx: &mut IntelEarlyCtx<I945Ich7>) -> Result<(), ServiceError> {
-        self.setup_console()
-    }
-}
+/// The board's ACPI: sleep/power buttons and the SuperIO scope.
+pub struct Acpi;
 
-#[cfg(fstart_stage_env = "ram")]
-impl IntelMainstageBoardHooks<I945Ich7> for D945GclfMainboard {
-    fn before_console(
-        &mut self,
-        _ctx: &mut IntelMainstageBoardCtx<I945Ich7>,
-    ) -> Result<(), ServiceError> {
-        self.setup_console()
+impl fstart_acpi::device::AcpiDevice for Acpi {
+    type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
+
+    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
+        d945gclf_mainboard_dsdt_aml(*config)
     }
 }
 
@@ -96,13 +64,10 @@ pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static
         chassis_type: 0x03,
         chassis_manufacturer: "Intel",
         processor_sockets: &D945GCLF_SMBIOS_PROCESSOR_SOCKETS,
-oem_string: None,
+        oem_string: None,
     };
 
-#[cfg(fstart_stage_env = "ram")]
 mod acpi_impl {
-    extern crate alloc;
-
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
     use fstart_platform_intel::i945::I945Ich7AcpiContext;
@@ -135,5 +100,4 @@ mod acpi_impl {
     }
 }
 
-#[cfg(fstart_stage_env = "ram")]
 pub use acpi_impl::d945gclf_mainboard_dsdt_aml;

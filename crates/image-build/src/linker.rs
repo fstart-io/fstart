@@ -249,7 +249,7 @@ pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
         "ROM"
     };
     out.push_str("}\nSECTIONS {\n");
-    write_text_section(&mut out, code);
+    write_text_section(&mut out, code, ".text.entry");
     // LLD's BYTE-only sections inherit flags from the preceding section.
     // Emit immediately after executable text, before potentially writable
     // keep anchors; MEMORY attributes alone do not clear SHF_WRITE.
@@ -333,7 +333,7 @@ pub fn resolved_intel(
         );
         out.push_str(" .text _bootblock_base : { _bootblock = .; _text_start = .; KEEP(*(.text.entry)) *(.text .text.* .ltext .ltext.*) _text_end = .; } > IMAGE\n");
     } else {
-        write_text_section(&mut out, "IMAGE");
+        write_text_section(&mut out, "IMAGE", entry_section(entry));
     }
     out.push_str(&layout_section(&layout.descriptor(role)?, "IMAGE"));
     out.push_str(" .fstart.anchor : ALIGN(16) { _fstart_anchor_early = .; *(.fstart.anchor) _fstart_early_microcode_enabled = .;\n");
@@ -379,6 +379,9 @@ pub fn resolved_intel(
             stage.writable.base, stage.writable.size
         )
         .unwrap();
+        if platform == Platform::X86_64 {
+            out.push_str(x86_entry_page_tables(true));
+        }
         writeln!(
             out,
             " _rom_mtrr_base = {:#x}; _rom_mtrr_mask = {:#x};",
@@ -479,14 +482,13 @@ pub fn generate_linker_script_with_layout(
     let arch = config.platform.linker_arch();
 
     let (load_addr, stack_size, heap_size) = stage_memory_params(config, stage_name);
-    let (data_addr, _page_table_addr) = match (&config.stages, stage_name) {
-        (StageLayout::Monolithic(mono), _) => (mono.data_addr, mono.page_table_addr),
+    let data_addr = match (&config.stages, stage_name) {
+        (StageLayout::Monolithic(mono), _) => mono.data_addr,
         (StageLayout::MultiStage(stages), Some(name)) => stages
             .iter()
             .find(|s| s.name.as_str() == name)
-            .map(|stage| (stage.data_addr, stage.page_table_addr))
-            .unwrap_or((None, None)),
-        _ => (None, None),
+            .and_then(|stage| stage.data_addr),
+        _ => None,
     };
 
     let rom_region =
@@ -526,19 +528,20 @@ pub fn generate_linker_script_with_layout(
     .unwrap();
     writeln!(out, "OUTPUT_ARCH({arch})").unwrap();
 
-    if needs_egon_header {
-        writeln!(out, "ENTRY(_head_jump)\n").unwrap();
+    let entry = if needs_egon_header {
+        "_head_jump"
     } else if config.platform.is_x86() && !is_first_stage {
         // Intel Cut-B postcar runs its CAR-teardown entry; every other
         // non-first x86_64 stage enters with caching already on.
         if stage_name == Some(POSTCAR_STAGE_NAME) {
-            writeln!(out, "ENTRY(_start_postcar)\n").unwrap();
+            "_start_postcar"
         } else {
-            writeln!(out, "ENTRY(_start_ram)\n").unwrap();
+            "_start_ram"
         }
     } else {
-        writeln!(out, "ENTRY(_start)\n").unwrap();
-    }
+        "_start"
+    };
+    writeln!(out, "ENTRY({entry})\n").unwrap();
 
     writeln!(out, "_boot_hart_id = {};", config.boot_hart_id).unwrap();
 
@@ -600,6 +603,7 @@ pub fn generate_linker_script_with_layout(
             heap_size,
             bss_origin,
             needs_egon_header,
+            entry_section(entry),
             config.platform,
             has_x86_car,
             layout,
@@ -641,6 +645,18 @@ fn x86_early_microcode_enabled(config: &BoardConfig) -> bool {
     match &config.microcode {
         Some(MicrocodeConfig::Intel(intel)) => intel.early,
         Some(MicrocodeConfig::Amd(_)) | None => false,
+    }
+}
+
+/// The entry page tables of an x86_64 stage starting at the reset vector:
+/// prebuilt ROM tables for CAR bootblocks, tables built in BSS otherwise
+/// (`fstart_arch` `long_mode`). The reset path jumps to
+/// `_setup_page_tables`; the other routine and its tables are dropped.
+pub fn x86_entry_page_tables(car: bool) -> &'static str {
+    if car {
+        "    _setup_page_tables = _setup_rom_page_tables;\n"
+    } else {
+        "    _setup_page_tables = _setup_ram_page_tables;\n"
     }
 }
 
@@ -808,6 +824,9 @@ fn generate_xip_layout(
         let rom_mask = !(x86_rom_mtrr_size - 1) & 0xFFFF_FFFF;
         writeln!(out, "    _rom_mtrr_mask = {rom_mask:#x};").unwrap();
         writeln!(out, "    _has_car = 1;").unwrap();
+        if is_first_stage && platform == Platform::X86_64 {
+            out.push_str(x86_entry_page_tables(true));
+        }
     } else {
         writeln!(out).unwrap();
         writeln!(out, "    /* x86 CAR/postcar symbols (CAR disabled) */").unwrap();
@@ -817,6 +836,9 @@ fn generate_xip_layout(
         writeln!(out, "    _ecar_stack = _stack_top;").unwrap();
         writeln!(out, "    _rom_mtrr_base = 0;").unwrap();
         writeln!(out, "    _rom_mtrr_mask = 0;").unwrap();
+        if is_first_stage && platform == Platform::X86_64 {
+            out.push_str(x86_entry_page_tables(false));
+        }
     }
 
     if platform.is_x86() && is_first_stage {
@@ -863,6 +885,7 @@ fn generate_ram_layout(
     heap_size: u64,
     bss_origin: Option<u64>,
     needs_egon_header: bool,
+    entry_section: &str,
     platform: Platform,
     has_x86_car: bool,
     layout: Option<&crate::layout::EncodedLayout>,
@@ -887,8 +910,10 @@ fn generate_ram_layout(
         writeln!(out, "SECTIONS\n{{").unwrap();
         if needs_egon_header {
             write_allwinner_egon_section(out, "CODE");
+        } else {
+            write_discard_egon_header(out);
         }
-        write_text_section(out, "CODE");
+        write_text_section(out, "CODE", entry_section);
         if let Some(descriptor) = layout {
             out.push_str(&layout_section(descriptor, "CODE"));
         }
@@ -913,8 +938,10 @@ fn generate_ram_layout(
         writeln!(out, "SECTIONS\n{{").unwrap();
         if needs_egon_header {
             write_allwinner_egon_section(out, "RAM");
+        } else {
+            write_discard_egon_header(out);
         }
-        write_text_section(out, "RAM");
+        write_text_section(out, "RAM", entry_section);
         if let Some(descriptor) = layout {
             out.push_str(&layout_section(descriptor, "RAM"));
         }
@@ -930,10 +957,21 @@ fn generate_ram_layout(
     }
 }
 
-fn write_text_section(out: &mut String, region: &str) {
+/// The input section holding the code at `entry`, kept first in `.text`.
+/// The x86 arch crate puts each later-stage entry in its own section, so a
+/// stage keeps only its own and the linker drops the rest.
+fn entry_section(entry: &str) -> &'static str {
+    match entry {
+        "_start_postcar" => ".text.entry.postcar",
+        "_start_ram" => ".text.entry.ram",
+        _ => ".text.entry",
+    }
+}
+
+fn write_text_section(out: &mut String, region: &str, entry_section: &str) {
     writeln!(out, "    .text : {{").unwrap();
     writeln!(out, "        _text_start = .;").unwrap();
-    writeln!(out, "        KEEP(*(.text.entry))").unwrap();
+    writeln!(out, "        KEEP(*({entry_section}))").unwrap();
     writeln!(out, "        *(.text .text.* .ltext .ltext.*)").unwrap();
     writeln!(out, "        KEEP(*(.vectors .vectors.*))").unwrap();
     writeln!(out, "        _text_end = .;").unwrap();
@@ -974,7 +1012,8 @@ fn write_heap(out: &mut String, heap_size: u64, region: &str) {
 fn write_rodata_section(out: &mut String, region: &str) {
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
-    writeln!(out, "        KEEP(*(.fstart.bootstrap_pin))").unwrap();
+    // The bootstrap pin stays only where the initial stage reads it.
+    writeln!(out, "        *(.fstart.bootstrap_pin)").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
@@ -1006,6 +1045,13 @@ fn write_bss_section(out: &mut String, region: &str) {
     writeln!(out, "        *(COMMON)").unwrap();
     writeln!(out, "        _bss_end = .;").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
+}
+
+/// The eGON branch and header belong to the boot ROM's image only; a later
+/// stage linking the same platform crate drops them (the header is
+/// `#[used]`, so nothing else would).
+fn write_discard_egon_header(out: &mut String) {
+    writeln!(out, "    /DISCARD/ : {{ *(.head.text) *(.head.egon) }}\n").unwrap();
 }
 
 fn write_allwinner_egon_section(out: &mut String, region: &str) {
@@ -1079,8 +1125,6 @@ mod tests {
                     runs_from: fstart_core::RunsFrom::Ram,
                     compression: fstart_core::Compression::None,
                     data_addr: None,
-                    page_table_addr: None,
-                    page_size: Default::default(),
                 },
                 fstart_core::StageConfig {
                     name: hstr("main"),
@@ -1096,8 +1140,6 @@ mod tests {
                     runs_from: fstart_core::RunsFrom::Ram,
                     compression: fstart_core::Compression::None,
                     data_addr: None,
-                    page_table_addr: None,
-                    page_size: Default::default(),
                 },
             ])),
             security: SecurityConfig {
@@ -1237,8 +1279,6 @@ mod tests {
                 stack_size: 0x4000,
                 heap_size: None,
                 data_addr: None,
-                page_table_addr: None,
-                page_size: Default::default(),
             }),
             security: SecurityConfig {
                 signing_algorithm: SignatureAlgorithm::Ed25519,

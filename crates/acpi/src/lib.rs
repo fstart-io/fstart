@@ -82,6 +82,18 @@ pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 pub use fstart_acpi_macros::acpi_dsl;
 
+/// The MCFG of the PCI segments `roots` decode: the same roots a platform
+/// hands its payload in the machine description.
+pub fn build_mcfg(roots: &[fstart_core::description::PciRootInfo]) -> Vec<u8> {
+    let mut mcfg = mcfg::MCFG::new(OEM_ID, OEM_TABLE_ID, OEM_REVISION);
+    for root in roots {
+        mcfg.add_ecam(root.ecam_base, root.segment, root.bus_start, root.bus_end);
+    }
+    let mut bytes = Vec::new();
+    mcfg.to_aml_bytes(&mut bytes);
+    bytes
+}
+
 /// Failure while binding or emitting AML. Failed fragments append no bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AmlError {

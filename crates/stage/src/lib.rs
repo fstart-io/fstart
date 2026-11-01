@@ -9,14 +9,14 @@
 #[cfg(any(
     feature = "acpi",
     feature = "ffs",
-    feature = "crabefi-basic",
+    feature = "alloc",
     feature = "smbios"
 ))]
 mod alloc;
 
 mod runtime;
 
-#[cfg(any(feature = "ffs", feature = "crabefi-basic"))]
+#[cfg(any(feature = "ffs", feature = "alloc"))]
 extern crate alloc as heap;
 
 // Selected through features even when no payload calls into it: the arch
@@ -32,7 +32,7 @@ pub mod stage_cache;
 #[cfg(feature = "fdt")]
 pub use fdt_workspace::fdt_prepare_platform;
 #[cfg(feature = "bootstrap")]
-pub use fdt_workspace::{configure_fdt_workspace, copy_fdt_to_workspace};
+pub use fdt_workspace::{configure_fdt_workspace, copy_fdt_to_workspace, fdt_workspace_capacity};
 #[cfg(feature = "ffs")]
 pub mod directory;
 #[cfg(feature = "ffs")]
@@ -40,22 +40,11 @@ mod loaded;
 #[cfg(feature = "bootstrap")]
 pub mod root;
 
-#[cfg(feature = "crabefi-basic")]
-pub use fstart_boot::crabefi;
-
-#[cfg(all(feature = "coreboot", feature = "x86_64"))]
-pub mod coreboot;
 pub mod fixed_helpers;
 pub mod layout;
-pub mod payload;
 #[cfg(feature = "tcg")]
 pub mod tcg;
 pub mod timestamps;
-
-// Fixed-flow stage helpers moved here so stage build metadata is not a
-// separate capability model.
-#[cfg(feature = "fdt")]
-mod fdt_patch;
 
 #[cfg(feature = "fit")]
 pub mod fit;
@@ -65,48 +54,8 @@ pub mod handoff;
 
 pub mod next_stage;
 
-#[cfg(all(test, feature = "ffs", fstart_stage_env = "ram"))]
+#[cfg(all(test, feature = "ffs"))]
 mod ram_locator_tests;
-
-// ---------------------------------------------------------------------------
-// FDT blob utilities
-// ---------------------------------------------------------------------------
-
-/// FDT magic number (big-endian `0xD00DFEED`).
-const FDT_MAGIC: u32 = 0xD00D_FEED;
-
-/// Read an FDT (Flattened Device Tree) blob from a raw memory address.
-///
-/// Validates the FDT magic at offset +0 (`0xD00DFEED`), reads the
-/// `totalsize` field at offset +4, and returns a static slice covering
-/// the entire blob. Returns `None` if `addr` is zero or magic is wrong.
-///
-/// Used by the UEFI payload path to obtain the platform-provided FDT blob
-/// for passing to CrabEFI.
-///
-/// # Safety
-///
-/// Caller must ensure `addr` points to at least 8 readable bytes in
-/// memory. If the magic validates, the full `totalsize` bytes starting
-/// at `addr` must be readable. The returned slice borrows the memory at
-/// `addr` with `'static` lifetime -- the FDT must remain valid (e.g.,
-/// in DRAM) for the program's duration.
-pub unsafe fn fdt_blob_from_addr(addr: u64) -> Option<&'static [u8]> {
-    if addr == 0 {
-        return None;
-    }
-    let ptr = addr as *const u8;
-    // SAFETY: caller guarantees at least 8 readable bytes at `addr`.
-    let magic = u32::from_be(unsafe { core::ptr::read_unaligned(ptr as *const u32) });
-    if magic != FDT_MAGIC {
-        return None;
-    }
-    // SAFETY: magic validated; caller guarantees the full blob is readable
-    // and remains valid for 'static.
-    let size =
-        u32::from_be(unsafe { core::ptr::read_unaligned(ptr.add(4) as *const u32) }) as usize;
-    Some(unsafe { core::slice::from_raw_parts(ptr, size) })
-}
 
 #[cfg(any(feature = "ffs", feature = "fdt"))]
 use fstart_log::Hex;
@@ -340,7 +289,7 @@ pub fn stage_load(
     let Ok(root) = root::authenticate_boot_root(anchor_data, media) else {
         return;
     };
-    let Some(policy) = directory::load_policy() else {
+    let (Some(policy), Some(codec)) = (directory::load_policy(), directory::codec()) else {
         return;
     };
     let mut descriptors = root
@@ -355,7 +304,7 @@ pub fn stage_load(
         return;
     }
     // SAFETY: the platform installed the trusted physical mapping policy.
-    if let Ok(executable) = unsafe { boot::load_bootstrap(media, descriptor, &policy) } {
+    if let Ok(executable) = unsafe { boot::load_bootstrap(media, descriptor, &policy, codec) } {
         jump_to(executable.entry());
     }
 }
@@ -400,66 +349,60 @@ fn effective_image_size(media_size: usize, anchor: fstart_core::ffs::AnchorRef<'
 pub mod anchor;
 pub use anchor::{fstart_anchor_bytes, fstart_trust_bytes};
 
-/// Runtime environment selected by build glue for a firmware entry point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StageEnvironment {
-    /// Single-stage/monolithic firmware image.
-    Monolithic,
-    /// Cache-as-RAM/SRAM-only environment: no DRAM assumptions.
-    Car,
-    /// DRAM-backed environment: allocation, tables, and payload handoff allowed.
-    Ram,
+/// Stop the boot: log what failed and halt.
+#[inline(never)]
+pub fn fail(what: &str) -> ! {
+    fstart_log::error!("{} failed", what);
+    fstart_arch::halt()
 }
 
-impl StageEnvironment {
-    /// Convert the optional `FSTART_STAGE_ENV` value passed by build glue.
-    ///
-    /// The Cut-B postcar loader builds with `FSTART_STAGE_ENV=postcar` but
-    /// runs as a DRAM-backed stage, so it maps to [`Self::Ram`]; the
-    /// postcar-vs-ramstage split inside `Ram` is a compile-time
-    /// `cfg(fstart_stage_env)` dispatch in each Intel platform flow.
-    #[must_use]
-    pub fn from_option(env: Option<&'static str>) -> Self {
-        match env {
-            Some("car") => Self::Car,
-            Some("ram" | "postcar") => Self::Ram,
-            _ => Self::Monolithic,
-        }
+/// Run one named boot step: log it, run it, and [`fail`] if it did.
+pub fn step<T, E>(name: &str, f: impl FnOnce() -> Result<T, E>) -> T {
+    fstart_log::info!("{}", name);
+    match f() {
+        Ok(value) => value,
+        Err(_) => fail(name),
     }
 }
 
-/// Platform-owned entry adapter supplied by a migrated board binary.
-pub trait StageProgram {
-    fn run_stage(handoff: usize) -> !;
-    fn resume_sbi(_hart_id: u64, _dtb_addr: u64) -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-}
-
-/// Declare a platform-owned stage entry binary.
+/// Bind a board's stage `main` to the stage entry (`fstart_main`). Platform
+/// `entry!` macros expand to this.
 ///
 /// Platforms that offer the CrabEFI payload add `sbi_resume` so RISC-V
 /// stages export the SBI resume entry; the `fstart_payload` cfg it checks is
 /// only declared for such platforms.
 #[macro_export]
 macro_rules! stage_bin {
-    (program: $program:ty) => {
+    // A board-owned stage `main`: the binary is the flow.
+    (main: $main:path) => {
         #[unsafe(no_mangle)]
-        pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
-            <$program as $crate::StageProgram>::run_stage(handoff)
+        pub extern "Rust" fn fstart_main(_handoff: usize) -> ! {
+            $main()
         }
         #[used]
         #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
         static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
     };
-    (program: $program:ty, sbi_resume) => {
-        $crate::stage_bin!(program: $program);
+    // A board-owned `main` that takes the predecessor's handoff address.
+    (main_handoff: $main:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
+            $main(handoff)
+        }
+        #[used]
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".fstart.keep"))]
+        static FSTART_MAIN_KEEP: extern "Rust" fn(usize) -> ! = fstart_main;
+    };
+    // A board-owned `main` plus the function OpenSBI returns to before a
+    // RISC-V CrabEFI launch.
+    (main: $main:path, sbi_resume: $resume:path) => {
+        $crate::stage_bin!(main: $main);
         #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
         #[unsafe(no_mangle)]
         pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
-            <$program as $crate::StageProgram>::resume_sbi(hart_id, dtb_addr)
+            $resume(hart_id, dtb_addr)
         }
+        #[cfg(not(all(fstart_payload = "crabefi", target_arch = "riscv64")))]
+        const _: fn(u64, u64) -> ! = $resume;
     };
 }

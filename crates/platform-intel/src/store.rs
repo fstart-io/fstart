@@ -32,7 +32,6 @@ fn open_window(region: Region, create: bool) -> Result<Store, ServiceError> {
 }
 
 /// Create the store, or reopen it when resuming from S3.
-#[cfg(fstart_stage_env = "car")]
 pub(crate) fn bootblock(
     geometry: IntelBootLayout<'static>,
     ram_end: u64,
@@ -45,7 +44,6 @@ pub(crate) fn bootblock(
 }
 
 /// Reopen the store the bootblock published.
-#[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
 pub(crate) fn open(geometry: IntelBootLayout<'static>) -> Result<Store, ServiceError> {
     open_window(geometry.region(RegionKind::FirmwareStore)?, false)
 }
@@ -53,7 +51,6 @@ pub(crate) fn open(geometry: IntelBootLayout<'static>) -> Result<Store, ServiceE
 /// Move the boot timestamps from CAR into the store, reusing the entry a
 /// resumed store already has. Timestamps are diagnostics: without room
 /// they stay in CAR and are lost with it.
-#[cfg(fstart_stage_env = "car")]
 pub(crate) fn move_timestamps(store: &mut Store, capacity: usize) {
     let size = fstart_timestamp::table_size(capacity);
     let entry = store
@@ -67,7 +64,6 @@ pub(crate) fn move_timestamps(store: &mut Store, capacity: usize) {
 }
 
 /// Attach to the timestamp table the bootblock moved into the store.
-#[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
 pub(crate) fn attach_timestamps(store: &Store) {
     if let Some(entry) = store.find(fstart_store::tag::TIMESTAMPS) {
         // SAFETY: the store entry holds the bootblock's table.
@@ -77,7 +73,6 @@ pub(crate) fn attach_timestamps(store: &Store) {
 
 /// Write the used store back from the cache. The bootblock writes DRAM
 /// before CAR teardown, whose INVD would discard dirty lines.
-#[cfg(fstart_stage_env = "car")]
 pub(crate) fn write_back(store: &Store) {
     // SAFETY: the used store is mapped DRAM; CLFLUSH only writes it back.
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_os = "none"))]
@@ -92,7 +87,6 @@ pub(crate) fn write_back(store: &Store) {
 
 /// Stop the store's growth and return the window above it to the OS.
 /// Run once per normal boot, after the last entry is added.
-#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn seal(
     store: &mut Store,
     e820: &mut fstart_core::services::memory_detect::E820State,

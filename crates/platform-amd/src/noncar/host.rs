@@ -35,7 +35,6 @@ use std::{
     vec,
 };
 
-pub const ENTRY: &str = "amd-psp-reset";
 const UNIT: &str = "reset";
 const SMM_UNIT: &str = "smm";
 
@@ -264,11 +263,6 @@ ASSERT(_bss_end <= ORIGIN(heap), "data and BSS exceed their reservation")
 
 fn cfg_schema(policy: &Policy) -> CompilerCfgSchema {
     CompilerCfgSchema {
-        entries: vec![ENTRY.into()],
-        environments: core::iter::once("monolithic")
-            .chain(policy.smm.then_some("smm"))
-            .map(Into::into)
-            .collect(),
         payloads: core::iter::once("halt")
             .chain(
                 policy
@@ -289,9 +283,7 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        entry: ENTRY.into(),
         cfg_schema: cfg_schema(&S::POLICY),
-        environment: "smm".into(),
         payload: "halt".into(),
         features: vec!["smm".into(), "bundle-smm".into()],
         build_std: None,
@@ -320,6 +312,8 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         )]),
         bindings: vec![],
         file_bindings: vec![],
+        // The board's SMM handler module, outside the stage `main`.
+        board_features: vec!["smm".into()],
         output: UnitOutput::SmmImage {
             entry_count: S::MAX_CPUS,
             stack_size: 0x800,
@@ -419,8 +413,6 @@ fn ffs(
             data_addr: Some(layout.data.base),
             stack_size: layout.stack.size as u32,
             heap_size: Some(layout.heap.size as u32),
-            page_table_addr: None,
-            page_size: Default::default(),
             external: true,
         }),
         security: fstart_core::default_security_config(),
@@ -624,8 +616,6 @@ where
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
-        entry: ENTRY.into(),
-        environment: "monolithic".into(),
         payload: payload.into(),
         cfg_schema: cfg_schema(policy),
         features: core::iter::once(policy.feature)
@@ -656,6 +646,7 @@ where
             .into_iter()
             .collect(),
         file_bindings: vec![],
+        board_features: vec![],
         output: UnitOutput::Executable {
             expectations,
             load_address: image.base,

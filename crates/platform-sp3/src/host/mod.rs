@@ -5,7 +5,7 @@
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) with
-//! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
+//! `linker/reset.ld.in`, and an
 //! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
 //! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
@@ -18,7 +18,7 @@
 //! offset and size) into the PSP-copied `0x62` image.
 //!
 //! A second unit, `smm`, builds the board crate's library with the FCH SMI
-//! handler (`smm::Sp3SmmHandler`, bound by the board's `smm_bin!`) into a
+//! handler (`smm::handle`, bound by the board's `smm_bin!`) into a
 //! position-independent SMM image with one entry stub per CPU the board
 //! allows; the reset unit embeds it through `FSTART_SMM_IMAGE` and its build
 //! script checks that it fits the TSEG ([`crate::smm::TSEG_SIZE`]), as the
@@ -60,12 +60,6 @@ pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
 /// with the SMM panic handler.
 pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
-/// `fstart_stage_env` of the SMM unit (the arch crate's SMM delay path).
-pub const SMM_ENVIRONMENT: &str = "smm";
-/// `fstart_entry` of the SMM unit: the generic x86-64 one, so neither the
-/// platform's PSP reset entry nor anything else with a fixed address is
-/// compiled into the handler's crates (the Intel SMM unit's choice).
-pub const SMM_ENTRY: &str = "x86_64";
 /// Reset-unit environment carrying the SMM image path (`build.rs`).
 pub const SMM_IMAGE_ENV: &str = "FSTART_SMM_IMAGE";
 /// Reset-unit environment carrying the TSEG size the image must fit.
@@ -200,16 +194,9 @@ pub fn expectations() -> Result<Expectations, String> {
     Ok(expectations)
 }
 
-/// Stage environment of the reset unit: an initial image (no predecessor)
-/// that does everything, so `fstart-stage` links the FFS locator patch site
-/// (`FSTART_ANCHOR`) the composer fills.
-pub const RESET_ENVIRONMENT: &str = "monolithic";
-
 /// One cfg vocabulary for both units, so every crate checks the same names.
 fn cfg_schema() -> CompilerCfgSchema {
     CompilerCfgSchema {
-        entries: vec![crate::entry::ENTRY.into(), SMM_ENTRY.into()],
-        environments: vec![RESET_ENVIRONMENT.into(), SMM_ENVIRONMENT.into()],
         payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
     }
 }
@@ -229,9 +216,7 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        entry: SMM_ENTRY.into(),
         cfg_schema: cfg_schema(),
-        environment: SMM_ENVIRONMENT.into(),
         payload: "halt".into(),
         features: SMM_FEATURES
             .into_iter()
@@ -267,6 +252,7 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
             .collect(),
         bindings: vec![],
         file_bindings: vec![],
+        board_features: vec!["smm".into()],
         output: UnitOutput::SmmImage {
             entry_count: B::MAX_CPUS,
             stack_size: SMM_STACK_SIZE,
@@ -404,8 +390,6 @@ fn ffs_assembly(
             stack_size: STACK.size as u32,
             heap_size: Some(HEAP.size as u32),
             data_addr: Some(DATA.base),
-            page_table_addr: Some((PAGE_TABLES.base, PAGE_TABLES.size)),
-            page_size: fstart_core::stage::PageSize::Size1GiB,
             external: false,
         }),
         security: fstart_core::default_security_config(),
@@ -449,9 +433,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         name: RESET_UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
-        entry: crate::entry::ENTRY.into(),
         cfg_schema: cfg_schema(),
-        environment: RESET_ENVIRONMENT.into(),
         payload: payload.cfg().into(),
         features: core::iter::once(RESET_FEATURE)
             .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
@@ -480,6 +462,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             environment: SMM_IMAGE_ENV.into(),
         }],
         file_bindings: vec![],
+        board_features: vec![],
         output: UnitOutput::Executable {
             expectations: expectations()?,
             load_address: reset.destination,
@@ -655,8 +638,6 @@ mod tests {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         assert_eq!(plan.stages, [RESET_UNIT]);
         let unit = plan.unit(RESET_UNIT).unwrap();
-        assert_eq!(unit.entry, "amd-psp-reset");
-        assert_eq!(unit.environment, RESET_ENVIRONMENT);
         assert_eq!(unit.features, [RESET_FEATURE, "rome", "milan"]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
@@ -764,14 +745,7 @@ mod tests {
         assert_eq!(order, [SMM_UNIT, RESET_UNIT]);
         let smm = plan.unit(SMM_UNIT).unwrap();
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
-        assert_eq!(
-            (
-                smm.entry.as_str(),
-                smm.environment.as_str(),
-                smm.payload.as_str()
-            ),
-            ("x86_64", "smm", "halt")
-        );
+        assert_eq!(smm.payload, "halt");
         assert_eq!(smm.features, ["smm", "bundle-smm", "rome", "milan"]);
         assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));
         assert_eq!(smm.environment_values["FSTART_MP_MAX_CPUS"], "256");
@@ -804,7 +778,7 @@ mod tests {
         for unit in [smm, reset] {
             let flags = unit.check_cfg_flags().unwrap();
             assert!(flags.contains(
-                &"--check-cfg=cfg(fstart_entry,values(\"amd-psp-reset\",\"x86_64\"))".into()
+                &"--check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\"))".into()
             ));
         }
         // Only the reset unit is a stage.

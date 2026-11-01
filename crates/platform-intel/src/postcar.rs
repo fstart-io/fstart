@@ -1,21 +1,24 @@
-//! Fixed Intel postcar flow: fresh DRAM stack, caching on; authenticate and
-//! load the ramstage.
+//! Intel postcar: fresh DRAM stack, caching on; authenticate and load the
+//! ramstage. Postcar has no board work; a board's postcar `main` is one call.
 
-use crate::FfsLoadSpec;
+use crate::IntelBoard;
 use fstart_core::services::{ConsoleDevice, ServiceError};
+use fstart_log::StaticConsole;
 
 /// Post-CAR loader on a fresh DRAM stack. The bootblock-authenticated descriptor
 /// crosses the transition in reserved RAM. Postcar verifies stored compressed
 /// input and final initialized output before entering ramstage; it needs SHA-256
 /// but no directory parser or public-key verifier in the linked execution path.
-pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
+pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
+    slot: &'static StaticConsole<C>,
+    config: C::Config,
+) -> ! {
+    use crate::IntelPlatform;
     use fstart_core::layout::RegionKind;
-    let FfsLoadSpec {
-        platform,
-        geometry,
-        console_config,
-        console_node,
-    } = spec;
+    let platform = B::Platform::NAME;
+    let Ok(geometry) = crate::layout::IntelBootLayout::current(1) else {
+        fstart_arch::x86::boot::halt()
+    };
     let entry = fstart_timestamp::now();
     let mut store = crate::store::open(geometry).ok();
     if let Some(store) = &store {
@@ -23,43 +26,18 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
         fstart_timestamp::add_at(fstart_timestamp::id::POSTCAR_START, entry);
     }
     let ramstage_name = crate::RAMSTAGE_NAME;
-    let mut console = match C::new(console_config) {
+    let mut console = match C::new(config) {
         Ok(console) => console,
         Err(_) => fstart_arch::x86::boot::halt(),
     };
     if console.init().is_err() {
         fstart_arch::x86::boot::halt();
     }
-    // SAFETY: postcar owns this console until it jumps to the ramstage.
-    unsafe { fstart_log::init(&console) };
-    fstart_log::info!("{}: {} console ready", console_node, C::NAME);
-    fstart_log::info!("{} postcar console ready", platform);
+    slot.install(console);
+    fstart_log::info!("{} postcar: {} console ready", platform, C::NAME);
 
-    // The early page tables live in the cache-as-RAM window at the top of the
-    // 4 GiB space, where only the boot CPU can read them: an AP started later
-    // begins in real mode with no cache and reads garbage, triple-faults, and the
-    // chipset resets the platform. Postcar runs from DRAM, so build a replacement
-    // set there and switch to it, giving every later stage and CPU one
-    // DRAM-backed address space. The early tables cover too little for comfort as
-    // well, so the new ones map the whole low 4 GiB.
-    // SAFETY: PAGE_TABLES_ADDR is reserved low scratch, identity mapped by the
-    // current tables, and postcar executes from DRAM, which the new tables map
-    // identically. The region stays reserved until the payload replaces CR3.
-    // Protected-mode stages run unpaged and need none of this.
-    #[cfg(target_arch = "x86_64")]
-    {
-        let tables = unsafe {
-            fstart_arch::x86::boot::paging::install_identity_tables(
-                fstart_arch::x86::boot::PAGE_TABLES_ADDR,
-            )
-        };
-        fstart_log::info!(
-            "{} postcar: DRAM page tables at {:#x}, CR3 loaded",
-            platform,
-            tables
-        );
-    }
-
+    // Postcar keeps the bootblock's ROM page tables: it runs uncached from
+    // DRAM, so it stays small, and the ramstage builds the DRAM tables first.
     let (firmware_base, firmware_size) = match geometry.firmware() {
         Ok(window) => window,
         Err(_) => fstart_arch::x86::boot::halt(),
@@ -98,6 +76,7 @@ pub(crate) fn run_intel_postcar<C: ConsoleDevice>(spec: FfsLoadSpec<C>) -> ! {
             &reserved,
             store,
             resume,
+            &fstart_stage::boot::Lz4,
         )?;
         Ok(verified.entry())
     })();

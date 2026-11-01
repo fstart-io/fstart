@@ -1,11 +1,14 @@
 //! The fixed SP3 boot flow (NATIVE_PORT_PLAN §4, INTEGRATION_NOTES).
 //!
-//! One function, [`run`], from the PSP's release of the BSP to the
-//! payload. The shared steps live here; the silicon steps that differ are
-//! in [`sp3`] (Rome and Milan, with the Milan deltas inline) and
-//! [`naples`], bound to the flow by [`Steps`]. One reset image carries
-//! every generation the board supports: `Program::run_stage` identifies
-//! the CPU ([`identify`]) and runs the flow with the generation's steps; a
+//! Phases from the PSP's release of the BSP to the payload, which the
+//! board's reset `main` runs with its own work in between: [`start`]
+//! identifies the CPU ([`Identified`]), then the FCH reset tasks
+//! ([`Reset`]), the console and silicon up to DXIO ([`Stage`]), the board's
+//! GPIO table ([`Configured`]) and [`Configured::finish`]. The shared steps
+//! live here; the silicon steps that differ are in [`sp3`] (Rome and Milan,
+//! with the Milan deltas inline) and [`naples`], bound to the flow by
+//! [`Steps`]. One reset image carries every family the board supports:
+//! [`start`] returns the running one ([`Start`]); a
 //! generation this build does not carry halts at POST 13 before the
 //! console (its FCH bring-up is not compiled in), one the board does not
 //! list halts after logging at step 13.
@@ -43,6 +46,7 @@ use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
+use fstart_core::description::PciRootInfo;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
@@ -57,20 +61,26 @@ use fstart_driver_amd::sp3::nbio::Nbio;
 use fstart_driver_amd::sp3::soc::{self, Generation, Identity};
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_uart::ns16550::Ns16550;
+use fstart_log::StaticConsole;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
-use crate::board::{Board, Policy};
+use crate::board::{Board, Gpio, Policy};
 use crate::hw::{self, Pci, PrimaryFch, Tsc, msr, post};
 use crate::layout::{self, Span};
 use crate::memory::{self, TopOfMemory};
 use crate::pci::NonPci;
+use fstart_driver_amd::sp3::fch::gpio::Pad;
 
 mod handoff;
 #[cfg(feature = "naples")]
 pub(crate) mod naples;
+#[cfg(feature = "naples")]
+pub use naples::Silicon as NaplesSilicon;
 #[cfg(any(feature = "rome", feature = "milan"))]
 pub(crate) mod sp3;
+#[cfg(any(feature = "rome", feature = "milan"))]
+pub use sp3::Silicon as RomeMilanSilicon;
 mod tpm;
 
 #[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
@@ -250,7 +260,8 @@ pub(crate) struct Ctx {
     pub identity: Identity,
     pub timer: Tsc,
     pub pci: Pci,
-    pub ecam: (u64, u64),
+    /// The PCI segment, as the allocator, ACPI and the payload see it.
+    pub pci_root: PciRootInfo,
     pub fch: PrimaryFch,
     pub resume: bool,
     pub policy: Policy,
@@ -294,147 +305,378 @@ pub(crate) fn unsupported_cpu() -> ! {
     fstart_arch::x86::boot::halt()
 }
 
-/// The fixed flow for `identity`'s generation with its silicon steps `S`.
-pub(crate) fn run<B: Board, S: Steps>(identity: Identity) -> ! {
-    let generation = identity.generation();
+/// The silicon steps of one family, generic over in a board's flow:
+/// `fn flow<S: Silicon>(id: Identified<Board, S>) -> !`. Sealed; only this
+/// crate's families implement it.
+#[allow(private_bounds)]
+pub trait Silicon: Steps {}
+impl<S: Steps> Silicon for S {}
 
-    step(0x10, "ECAM");
-    let ecam = hw::enable_ecam(generation);
-    let timer = hw::tsc();
-    let fch = hw::primary_fch(timer);
+/// The running CPU's family, with its silicon steps: what [`start`]
+/// returns. A board matches the families it carries and calls its flow
+/// with each; a build carries only the families its features enable.
+pub enum Start<B> {
+    #[cfg(feature = "naples")]
+    Naples(Identified<B, naples::Silicon>),
+    /// Rome and Milan share the SP3 steps (Milan deltas inline).
+    #[cfg(any(feature = "rome", feature = "milan"))]
+    RomeMilan(Identified<B, sp3::Silicon>),
+}
 
-    step(0x11, "FCH reset tasks");
-    let policy = B::policy(generation);
-    let resume = fch_reset(&fch, generation, &policy);
-    B::early_init(&fch).or_halt("board early init");
+/// Identify the CPU and bring up ECAM. A CPU this build does not carry
+/// halts at POST 13 before the console (its FCH bring-up is not compiled
+/// in).
+pub fn start<B: Board>() -> Start<B> {
+    crate::stage_runtime::anchor::initial_stage();
+    let identity = identify();
+    match identity.generation() {
+        #[cfg(feature = "naples")]
+        Generation::Naples => Start::Naples(Identified::enter(identity)),
+        #[cfg(feature = "rome")]
+        Generation::Rome => Start::RomeMilan(Identified::enter(identity)),
+        #[cfg(feature = "milan")]
+        Generation::Milan => Start::RomeMilan(Identified::enter(identity)),
+        #[allow(unreachable_patterns)]
+        _ => unsupported_cpu(),
+    }
+}
 
-    step(0x12, "console");
-    let mut console = Ns16550::new(B::CONSOLE).or_halt("console");
-    console.init().or_halt("console");
-    // SAFETY: `console` lives on this never-returning frame.
-    unsafe { fstart_log::init(&console) };
-    fstart_log::info!("sp3: {} ({}) console ready", B::NAME, generation.name());
-    if resume {
-        // S3 needs the resume path (boot scripts, wake vector); not built.
-        fstart_log::error!("sp3: S3 resume is not supported, cold booting");
+/// The CPU is identified and ECAM is up; the board picks its silicon
+/// policy for the generation next.
+pub struct Identified<B, S> {
+    identity: Identity,
+    pci_root: PciRootInfo,
+    timer: Tsc,
+    fch: PrimaryFch,
+    _flow: core::marker::PhantomData<(B, S)>,
+}
+
+impl<B: Board, S: Silicon> Identified<B, S> {
+    fn enter(identity: Identity) -> Self {
+        step(0x10, "ECAM");
+        let pci_root = hw::enable_ecam(identity.generation());
+        let timer = hw::tsc();
+        let fch = hw::primary_fch(timer);
+        Self {
+            identity,
+            pci_root,
+            timer,
+            fch,
+            _flow: core::marker::PhantomData,
+        }
     }
 
-    step(0x13, "CPU identity");
-    check_identity::<B>(&identity, timer.mhz());
+    /// The running CPU's generation.
+    pub fn generation(&self) -> Generation {
+        self.identity.generation()
+    }
 
-    step(0x14, "APOB");
-    let (flash, ffs, rom_size) = flash(&fch, generation);
-    let (apob, apob_span) = read_apob(flash, generation);
+    /// Socket 0's FCH reset tasks with the board's silicon `policy`.
+    pub fn reset(self, policy: Policy) -> Reset<B, S> {
+        step(0x11, "FCH reset tasks");
+        let resume = fch_reset(&self.fch, self.generation(), &policy);
+        Reset {
+            identity: self.identity,
+            pci_root: self.pci_root,
+            timer: self.timer,
+            fch: self.fch,
+            policy,
+            resume,
+            _flow: core::marker::PhantomData,
+        }
+    }
+}
 
-    step(0x15, "memory map");
-    let tops = top_of_memory();
-    let regions = memory_regions(&apob, generation);
-    let tseg = crate::smm::place_tseg(
-        &regions,
-        tops.tom,
-        crate::smm::TSEG_SIZE,
-        &[layout::CACHE_WINDOW, apob_span],
-    )
-    .or_halt("TSEG placement");
-    let e820 = build_e820(generation, &regions, tops, apob_span, tseg);
-    cache_ram(&regions);
+/// After socket 0's FCH reset tasks. The board opens its LPC decodes and
+/// sets up its Super I/O or BMC next.
+pub struct Reset<B, S> {
+    identity: Identity,
+    pci_root: PciRootInfo,
+    timer: Tsc,
+    fch: PrimaryFch,
+    policy: Policy,
+    resume: bool,
+    _flow: core::marker::PhantomData<(B, S)>,
+}
 
-    let mut ctx = Ctx {
-        generation,
-        identity,
-        timer,
-        pci: Pci::default(),
-        ecam,
-        fch,
-        resume: false,
-        policy,
-        ffs,
-        apob,
-        tops,
-        tseg,
-        e820,
-        df: Df::new(Pci::default()),
-        topology: Topology {
+impl<B: Board, S: Silicon> Reset<B, S> {
+    /// The running CPU's generation.
+    pub fn generation(&self) -> Generation {
+        self.identity.generation()
+    }
+
+    /// Socket 0's FCH, for the board's LPC decodes.
+    pub fn fch(&self) -> &PrimaryFch {
+        &self.fch
+    }
+
+    /// Stop the boot after logging `what`.
+    pub fn fail(&self, what: &str) -> ! {
+        fail(what)
+    }
+
+    /// The console on `config`, then everything up to DXIO: CPU identity,
+    /// APOB, the memory map, the TPM, the DF, NBIO, the SMU and the
+    /// secondary FCHs.
+    pub fn console(
+        self,
+        slot: &'static StaticConsole<Ns16550>,
+        config: fstart_driver_uart::ns16550::Ns16550Config,
+    ) -> Stage<B, S> {
+        let Self {
+            identity,
+            pci_root,
+            timer,
+            fch,
+            policy,
+            resume,
+            ..
+        } = self;
+        let generation = identity.generation();
+
+        step(0x12, "console");
+        let mut console = Ns16550::new(config).or_halt("console");
+        console.init().or_halt("console");
+        let console = slot.install(console);
+        fstart_log::info!("sp3: {} ({}) console ready", B::NAME, generation.name());
+        if resume {
+            // S3 needs the resume path (boot scripts, wake vector); not built.
+            fstart_log::error!("sp3: S3 resume is not supported, cold booting");
+        }
+
+        step(0x13, "CPU identity");
+        check_identity::<B>(&identity, timer.mhz());
+
+        step(0x14, "APOB");
+        let (flash, ffs, rom_size) = flash(&fch, generation);
+        let (apob, apob_span) = read_apob(flash, generation);
+
+        step(0x15, "memory map");
+        let tops = top_of_memory();
+        let regions = memory_regions(&apob, generation);
+        let tseg = crate::smm::place_tseg(
+            &regions,
+            tops.tom,
+            crate::smm::TSEG_SIZE,
+            &[layout::CACHE_WINDOW, apob_span],
+        )
+        .or_halt("TSEG placement");
+        let e820 = build_e820(generation, &regions, tops, apob_span, tseg);
+        cache_ram(&regions);
+
+        let mut ctx = Ctx {
             generation,
-            sockets: 0,
-            nodes: heapless::Vec::new(),
-            root_bridges: heapless::Vec::new(),
-        },
-        plan: Plan {
-            mmio: heapless::Vec::new(),
-            io: heapless::Vec::new(),
-            root_bridges: heapless::Vec::new(),
-            above_ecam_too_small: false,
-            below_ecam_too_small: false,
-            above_ecam: 0,
-        },
-        non_pci: heapless::Vec::new(),
-        phys_addr_bits: 0,
-        psp_bar: 0,
-        apic_ids: Vec::new(),
-        cppc: Vec::new(),
-        smm: None,
-        rsdp: None,
-        smbios: None,
-    };
+            identity,
+            timer,
+            pci: Pci::default(),
+            pci_root,
+            fch,
+            resume: false,
+            policy,
+            ffs,
+            apob,
+            tops,
+            tseg,
+            e820,
+            df: Df::new(Pci::default()),
+            topology: Topology {
+                generation,
+                sockets: 0,
+                nodes: heapless::Vec::new(),
+                root_bridges: heapless::Vec::new(),
+            },
+            plan: Plan {
+                mmio: heapless::Vec::new(),
+                io: heapless::Vec::new(),
+                root_bridges: heapless::Vec::new(),
+                above_ecam_too_small: false,
+                below_ecam_too_small: false,
+                above_ecam: 0,
+            },
+            non_pci: heapless::Vec::new(),
+            phys_addr_bits: 0,
+            psp_bar: 0,
+            apic_ids: Vec::new(),
+            cppc: Vec::new(),
+            smm: None,
+            rsdp: None,
+            smbios: None,
+        };
 
-    if B::DISCRETE_TPM {
-        step(0x16, "TPM");
-        tpm::start(flash, generation);
+        if B::DISCRETE_TPM {
+            step(0x16, "TPM");
+            tpm::start(flash, generation);
+        }
+
+        step(0x20, "DF topology and maps");
+        data_fabric::<S>(&mut ctx);
+        step(0x21, "DF init");
+        S::df_init(&mut ctx);
+
+        step(0x30, "NBIO early");
+        let mut si = S::nbio_early(&mut ctx);
+        step(0x31, "SMU");
+        S::smu_init(&mut ctx, &mut si);
+        step(0x32, "FCH secondaries, USB");
+        S::fch_secondaries(&mut ctx, &si);
+
+        Stage {
+            ctx,
+            si,
+            console,
+            rom_size,
+            _board: core::marker::PhantomData,
+        }
+    }
+}
+
+/// The silicon up to DXIO. The board reads its detect pads, then programs
+/// its GPIO table.
+pub struct Stage<B, S> {
+    ctx: Ctx,
+    si: S,
+    console: &'static Ns16550,
+    #[cfg_attr(not(feature = "acpi"), allow(dead_code))]
+    rom_size: u32,
+    _board: core::marker::PhantomData<B>,
+}
+
+impl<B: Board, S: Silicon> Stage<B, S> {
+    /// The running CPU's generation.
+    pub fn generation(&self) -> Generation {
+        self.ctx.generation
     }
 
-    step(0x20, "DF topology and maps");
-    data_fabric::<S>(&mut ctx);
-    step(0x21, "DF init");
-    S::df_init(&mut ctx);
-
-    step(0x30, "NBIO early");
-    let mut si = S::nbio_early(&mut ctx);
-    step(0x31, "SMU");
-    S::smu_init(&mut ctx, &mut si);
-    step(0x32, "FCH secondaries, USB");
-    S::fch_secondaries(&mut ctx, &si);
-
-    step(0x38, "DXIO");
-    let levels = detect_levels::<B>(&ctx.fch, generation);
-    board_gpio::<B>(&ctx.fch, generation);
-    let engines =
-        B::dxio_engines(generation, &levels, &ctx.fch, &ctx.timer).or_halt("board DXIO devices");
-    S::dxio(&mut ctx, &si, &engines);
-
-    step(0x40, "FCH env");
-    fch_env::<B>(&ctx);
-    S::fch_env(&ctx, &si);
-
-    step(0x48, "boot media");
-    handoff::mount_boot_media(&ctx);
-
-    step(0x50, "MP and CCX");
-    let mp = S::mp::<B>(&mut ctx, &si);
-
-    step(0x58, "SMM");
-    install_smm(&mut ctx, &si, &mp, B::BMC_SX_NOTIFY);
-
-    step(0x60, "PCI enumeration");
-    S::pci_pre(&mut ctx, &mut si);
-    let roots = crate::flow::enumerate(&ctx);
-    S::pci_post(&ctx, &si);
-
-    step(0x70, "ACPI");
-    #[cfg(feature = "acpi")]
-    {
-        ctx.rsdp = Some(handoff::acpi::<B, S>(&ctx, &si));
-        ctx.smbios = Some(crate::smbios::runtime::prepare::<B>(&ctx, &mp, rom_size));
+    /// Socket 0's FCH.
+    pub fn fch(&self) -> &PrimaryFch {
+        &self.ctx.fch
     }
 
-    step(0x80, "ReadyToBoot");
-    ready_to_boot(&ctx, &si);
-
-    step(0x90, "payload");
-    if !fstart_arch::x86::mp::park_aps_for_payload() {
-        fail("AP park");
+    /// The calibrated clock, to pace board device transactions.
+    pub fn timer(&self) -> &dyn fstart_core::services::Timer {
+        &self.ctx.timer
     }
-    handoff::boot(ctx, roots, &console)
+
+    /// Stop the boot after logging `what`.
+    pub fn fail(&self, what: &str) -> ! {
+        fail(what)
+    }
+
+    /// Configure and read the board's detect pads (M.2 SATA/PCIe detect,
+    /// straps), in order, before its GPIO table.
+    pub fn read_pads(&self, pads: &[Pad]) -> heapless::Vec<bool, 8> {
+        step(0x38, "DXIO");
+        let acpi = self.ctx.fch.acpi();
+        pads.iter()
+            .map(|pad| {
+                fch::gpio::configure(acpi, pad);
+                fch::gpio::read(acpi, pad.pin)
+            })
+            .collect()
+    }
+
+    /// The board GPIO program: the OEM pads, then the CPM table. The vendor
+    /// applies both in PEI before the PCIe topology reaches DXIO
+    /// (BOARD_S8030 §2 steps 3–5), so board enables and resets are in place
+    /// when the links train.
+    pub fn program_gpio(self, gpio: &Gpio) -> Configured<B, S> {
+        let acpi = self.ctx.fch.acpi();
+        fch::gpio::configure_all(acpi, gpio.early);
+        fch::gpio::configure_all(acpi, gpio.table);
+        Configured(self)
+    }
+}
+
+/// The board's GPIOs are programmed. It picks its DXIO lane map (from the
+/// pad levels, its BMC or I2C devices) and finishes the boot.
+pub struct Configured<B, S>(Stage<B, S>);
+
+/// The board's contributions to the tables the payload gets.
+#[cfg(feature = "acpi")]
+pub struct Tables<'a> {
+    /// Board identity only. CPU packages, DIMMs and memory ranges are
+    /// discovered by shared drivers.
+    pub smbios: fstart_acpi::smbios::SmbiosIdentity<'a>,
+    pub acpi: crate::acpi::Board<'a>,
+}
+
+impl<B: Board, S: Silicon> Configured<B, S> {
+    /// The running CPU's generation.
+    pub fn generation(&self) -> Generation {
+        self.0.generation()
+    }
+
+    /// Socket 0's FCH.
+    pub fn fch(&self) -> &PrimaryFch {
+        self.0.fch()
+    }
+
+    /// The calibrated clock, to pace board device transactions.
+    pub fn timer(&self) -> &dyn fstart_core::services::Timer {
+        self.0.timer()
+    }
+
+    /// Stop the boot after logging `what`.
+    pub fn fail(&self, what: &str) -> ! {
+        fail(what)
+    }
+
+    /// DXIO with the board's `engines`, the FCH environment, boot media, MP,
+    /// SMM, PCI, ACPI and SMBIOS with the board's `tables`, ReadyToBoot,
+    /// then the payload.
+    pub fn finish(
+        self,
+        engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
+        #[cfg(feature = "acpi")] tables: Tables<'_>,
+    ) -> ! {
+        let Stage {
+            mut ctx,
+            mut si,
+            console,
+            rom_size,
+            ..
+        } = self.0;
+        S::dxio(&mut ctx, &si, engines);
+
+        step(0x40, "FCH env");
+        fch_env(&ctx);
+        S::fch_env(&ctx, &si);
+
+        step(0x48, "boot media");
+        handoff::mount_boot_media(&ctx);
+
+        step(0x50, "MP and CCX");
+        let mp = S::mp::<B>(&mut ctx, &si);
+
+        step(0x58, "SMM");
+        install_smm(&mut ctx, &si, &mp, B::BMC_SX_NOTIFY);
+
+        step(0x60, "PCI enumeration");
+        S::pci_pre(&mut ctx, &mut si);
+        let roots = crate::flow::enumerate(&ctx);
+        S::pci_post(&ctx, &si);
+
+        step(0x70, "ACPI");
+        #[cfg(feature = "acpi")]
+        {
+            ctx.rsdp = Some(handoff::acpi::<B, S>(&ctx, &si, &tables.acpi));
+            ctx.smbios = Some(crate::smbios::runtime::prepare(
+                &ctx,
+                &mp,
+                rom_size,
+                tables.smbios,
+            ));
+        }
+
+        step(0x80, "ReadyToBoot");
+        ready_to_boot(&ctx, &si);
+
+        step(0x90, "payload");
+        if !fstart_arch::x86::mp::park_aps_for_payload() {
+            fail("AP park");
+        }
+        handoff::boot(ctx, roots, console)
+    }
 }
 
 /// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns
@@ -465,7 +707,7 @@ fn fch_reset(fch: &PrimaryFch, generation: Generation, policy: &Policy) -> bool 
 /// CPU's generation (the build may carry more generations than a board
 /// lists).
 fn check_identity<B: Board>(identity: &Identity, tsc_mhz: u32) {
-    #[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+    #[cfg(all(target_os = "none", feature = "bundle-reset"))]
     if crate::entry::bsp_bist() != 0 {
         fstart_log::error!("sp3: BSP BIST {:#x}", crate::entry::bsp_bist());
         fail("BIST");
@@ -709,8 +951,8 @@ fn data_fabric<S: Steps>(ctx: &mut Ctx) {
         &plan::Input {
             tom: ctx.tops.tom,
             tom2: ctx.tops.tom2.unwrap_or(0),
-            ecam_base: ctx.ecam.0,
-            ecam_size: ctx.ecam.1,
+            ecam_base: ctx.pci_root.ecam_base,
+            ecam_size: ctx.pci_root.ecam_size(),
             phys_addr_bits: ctx.phys_addr_bits,
             root_bridges: &topology.root_bridges,
             mmio_pairs: S::MMIO_PAIRS,
@@ -749,20 +991,8 @@ fn phys_addr_bits(generation: Generation, smee: bool) -> u8 {
     (bits - if reduce { reduced } else { 0 }) as u8
 }
 
-/// Configure and read the board's detect pads (before its GPIO table).
-fn detect_levels<B: Board>(fch: &PrimaryFch, generation: Generation) -> heapless::Vec<bool, 8> {
-    let acpi = fch.acpi();
-    B::detect_pads(generation)
-        .iter()
-        .map(|pad| {
-            fch::gpio::configure(acpi, pad);
-            fch::gpio::read(acpi, pad.pin)
-        })
-        .collect()
-}
-
 /// FCH env (DXE) tasks on socket 0 (FCH_SP3 §2.2).
-fn fch_env<B: Board>(ctx: &Ctx) {
+fn fch_env(ctx: &Ctx) {
     use fch::common::env;
     let (fch, generation) = (&ctx.fch, ctx.generation);
     env::hw_acpi_pre(fch, generation);
@@ -774,16 +1004,6 @@ fn fch_env<B: Board>(ctx: &Ctx) {
         generation,
         &fch::alink::AbPolicy::default_for(generation),
     );
-}
-
-/// The board GPIO program: the OEM pads, then the CPM table. The vendor
-/// applies both in PEI before the PCIe topology reaches DXIO
-/// (BOARD_S8030 §2 steps 3–5), so board enables and resets are in place
-/// when the links train.
-fn board_gpio<B: Board>(fch: &PrimaryFch, generation: Generation) {
-    let gpio = B::gpio(generation);
-    fch::gpio::configure_all(fch.acpi(), gpio.early);
-    fch::gpio::configure_all(fch.acpi(), gpio.table);
 }
 
 pub(crate) use crate::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
@@ -881,7 +1101,7 @@ fn install_smm<S: Steps>(
 ) {
     let config = crate::smm::SmmConfig {
         generation: ctx.generation,
-        ecam_base: ctx.ecam.0,
+        ecam_base: ctx.pci_root.ecam_base,
         psp_bar: ctx.psp_bar as u32,
         einj: plan_einj(ctx).unwrap_or_default(),
         usb_buses: S::usb_buses(ctx, si),
@@ -924,8 +1144,9 @@ pub(crate) fn enumerate(ctx: &Ctx) -> Vec<fstart_pci::PciEcam> {
         .root_bridges
         .iter()
         .map(|rb| {
-            let mut pci = fstart_pci::PciEcam::from_config(&crate::pci::root_config(rb, ctx.ecam))
-                .or_halt("PCI root");
+            let mut pci =
+                fstart_pci::PciEcam::from_config(&crate::pci::root_config(rb, &ctx.pci_root))
+                    .or_halt("PCI root");
             pci.enumerate_and_allocate().or_halt("PCI enumeration");
             fstart_log::info!(
                 "pci: rb {}.{}: {} functions",

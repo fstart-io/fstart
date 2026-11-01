@@ -1,0 +1,10 @@
+[package]
+name = "fstart-load"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-crypto = { workspace = true, features = ["sha2-digest"] }
+fstart-ffs = { workspace = true }

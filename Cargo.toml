@@ -14,6 +14,9 @@ members = [
   "crates/platform-sunxi",
   "crates/platform-qemu",
   "crates/ffs",
+  "crates/load",
+  "crates/fdt",
+  "crates/payload",
   "crates/image-build",
   "crates/intel-gma",
   "crates/crypto",
@@ -31,6 +34,8 @@ members = [
   "crates/tcg",
   "crates/driver-intel",
   "crates/driver-sunxi",
+  "crates/driver-sifive",
+  "crates/platform-sifive",
   "crates/driver-superio",
   "crates/pci",
   "crates/stage",
@@ -51,7 +56,6 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # Serialization
 serde = { version = "1", default-features = false, features = ["derive"] }
-postcard = { version = "1", default-features = false }
 
 # Crypto (RustCrypto)
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
@@ -100,12 +104,16 @@ fstart-amdfw-format = { path = "crates/amdfw-format" }
 fstart-platform-qemu = { path = "crates/platform-qemu" }
 fstart-pci = { path = "crates/pci" }
 fstart-ffs = { path = "crates/ffs" }
+fstart-load = { path = "crates/load" }
+fstart-fdt = { path = "crates/fdt" }
+fstart-payload = { path = "crates/payload" }
 fstart-crypto = { path = "crates/crypto" }
 fstart-log = { path = "crates/log" }
 fstart-arch = { path = "crates/arch" }
 fstart-driver-intel = { path = "crates/driver-intel" }
 fstart-intel-gma = { path = "crates/intel-gma", default-features = false }
 fstart-driver-sunxi = { path = "crates/driver-sunxi" }
+fstart-driver-sifive = { path = "crates/driver-sifive" }
 fstart-driver-superio = { path = "crates/driver-superio" }
 fstart-driver-uart = { path = "crates/driver-uart" }
 fstart-driver-vbios = { path = "crates/driver-vbios" }
@@ -170,6 +178,10 @@ opt-level = "s"
 [profile.dev.package.fstart-driver-intel]
 opt-level = "s"
 [profile.dev.package.fstart-driver-sunxi]
+opt-level = "s"
+[profile.dev.package.fstart-driver-sifive]
+opt-level = "s"
+[profile.dev.package.fstart-platform-sifive]
 opt-level = "s"
 [profile.dev.package.fstart-driver-superio]
 opt-level = "s"

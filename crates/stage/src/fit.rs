@@ -141,7 +141,7 @@ pub fn load_fit_components_with_scratch(
     // Also reject any output alias with the original media window, even though
     // the container itself has already been copied into independent stable RAM.
     for component in core::iter::once(&kernel).chain(ramdisk.iter()) {
-        crate::boot::validate_destination(
+        crate::boot::place(
             media,
             &policy,
             component.destination.start,

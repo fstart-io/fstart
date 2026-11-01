@@ -4,9 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "postcar", "ram", "smm"))'] }
-
 [features]
 default = []
 armv7 = []
@@ -18,11 +15,11 @@ riscv64 = []
 riscv64-sunxi-entry = []
 riscv64-sbi-resume = []
 x86_64 = ["dep:fstart-smm"]
-# Heap-built identity page tables for payload handoff (needs `alloc`).
+# The SMM handler image: call-free POST-port delays instead of the TSC
+# calibration, which the handler cannot afford.
+smm-handler = []
+# Identity page tables built in Rust (`boot::paging`, needs `alloc`).
 x86-identity-paging = ["x86_64", "dep:x86_64_crate"]
-x86-1g-pages = []
-x86-writable-page-tables = []
-x86-static-page-tables = []
 # Raw COM1 transition checkpoints for physical postcar bring-up only.
 x86-postcar-uart-debug = []
 early-ffs-anchor = []

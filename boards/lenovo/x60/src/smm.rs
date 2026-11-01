@@ -1,14 +1,13 @@
 //! Lenovo ThinkPad X60 mainboard SMM policy.
 
 use fstart_driver_intel::southbridge::smi::{
-    APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchBoardSmmHandler, IchSmi, IchSmmHandler,
+    APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchSmi, IchSmmConfig, PendingSmi,
 };
 use fstart_driver_lenovo::ec::Ec;
 use fstart_driver_lenovo::h8::H8;
 use fstart_driver_lenovo::x6::dock as x6_dock;
 use fstart_platform_intel::smm::SmmContext;
 
-use crate::Board;
 
 const EC_GPIO: u8 = crate::config::EC_SCI_GPIO;
 
@@ -41,41 +40,39 @@ fn handle_ec_event() {
     }
 }
 
-pub struct LenovoX60SmmHandler;
-
-impl IchBoardSmmHandler for LenovoX60SmmHandler {
-    unsafe fn on_apmc(_ctx: &mut SmmContext<'_>, command: u8) {
-        let acpi = match command {
-            APM_CNT_ACPI_ENABLE => true,
-            APM_CNT_ACPI_DISABLE => false,
-            _ => return,
-        };
-        // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
-        unsafe { smi().route_gpi(EC_GPIO, acpi) };
-        // Discard pending events and enable attention on the SMM-owned channel.
-        let ports = if acpi {
-            crate::config::X60_H8.resources.smm()
-        } else {
-            crate::config::X60_H8.resources.os
-        };
-        let _ = H8::new(Ec::new(ports)).reset_event_attention();
-    }
-
-    unsafe fn on_gpi(_ctx: &mut SmmContext<'_>, status: u16) {
-        if status & (1 << EC_GPIO) != 0 {
-            handle_ec_event();
-        }
-    }
-
-    unsafe fn on_gpe(_ctx: &mut SmmContext<'_>, status: u64) {
-        if status & (1 << (EC_GPIO + 16)) != 0 {
-            handle_ec_event();
-        }
-    }
-
-    unsafe fn on_tco_command(_ctx: &mut SmmContext<'_>, command: u8) -> Option<u8> {
-        dock_command(command)
-    }
+/// Route the EC's SCI GPI to SMI or SCI as the OS takes or gives up ACPI,
+/// and reset the EC's event attention on the channel that now owns it.
+fn acpi_switch(command: u8) {
+    let acpi = match command {
+        APM_CNT_ACPI_ENABLE => true,
+        APM_CNT_ACPI_DISABLE => false,
+        _ => return,
+    };
+    // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
+    unsafe { smi().route_gpi(EC_GPIO, acpi) };
+    // Discard pending events and enable attention on the SMM-owned channel.
+    let ports = if acpi {
+        crate::config::X60_H8.resources.smm()
+    } else {
+        crate::config::X60_H8.resources.os
+    };
+    let _ = H8::new(Ec::new(ports)).reset_event_attention();
 }
 
-fstart_platform_intel::smm::smm_bin!(Board, IchSmmHandler<LenovoX60SmmHandler>);
+/// The ICH's SMI sources plus the EC's events and the dock's TCO mailbox.
+fn smi_handler(_ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
+    // SAFETY: bound as the SMI handler, so it owns the rendezvous.
+    let pending = unsafe { PendingSmi::take(config) };
+    if let Some(command) = pending.apm {
+        acpi_switch(command);
+    }
+    if let Some(response) = pending.tco.and_then(dock_command) {
+        pending.tco_reply(response);
+    }
+    if pending.gpi & (1 << EC_GPIO) != 0 || pending.gpe & (1 << (EC_GPIO + 16)) != 0 {
+        handle_ec_event();
+    }
+    pending.finish();
+}
+
+fstart_platform_intel::smm::smm_bin!(handler: smi_handler);

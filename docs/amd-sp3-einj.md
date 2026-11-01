@@ -18,7 +18,7 @@ The ACPI EINJ table is published only when every condition holds:
 
 | # | Condition | Checked in |
 |---|---|---|
-| 1 | Policy `MEMORY_EINJ = true` (S8030 only) | `boards/tyan/s8030/src/smm.rs`, `crates/platform-sp3/src/smm.rs` |
+| 1 | Policy `memory_einj: true` (S8030 only) | `boards/tyan/s8030/src/smm.rs`, `crates/platform-sp3/src/smm.rs` |
 | 2 | Generation Rome (Milan and Naples are not enabled) | `smm.rs` (`smm_info`), `flow/mod.rs` (`plan_einj`) |
 | 3 | 1 or 2 sockets (`MAX_SOCKETS = 2`) | same |
 | 4 | SmmInfo registration succeeds | `smm.rs` (`smm_info`) |

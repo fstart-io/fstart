@@ -1,14 +1,30 @@
-//! Fixed Intel CAR flow: console, memory training/recovery, DMI/PM,
+//! Intel CAR bootblock phases: console, memory training/recovery, DMI/PM,
 //! authenticated bootstrap and retained stage publication.
+//!
+//! The board's bootblock `main` calls the phases in order and does its own
+//! work between them. Each phase is a state transition, so a phase cannot
+//! run before the one it depends on:
+//!
+//! ```ignore
+//! let bb = Bootblock::<Board>::enter();
+//! // board: decode/route the console
+//! let bb = bb.console(&CONSOLE, console_config());
+//! // board: make the SPDs reachable
+//! let mut bb = bb.train_memory().post_dram();
+//! // board: devices that need trained DRAM or the SPD branch
+//! bb.load_postcar()
+//! ```
+//!
+//! A phase that fails halts, or on an S3 resume resets cleanly instead of
+//! booting over retained state.
 
-use crate::{
-    FfsLoadSpec, IntelBoard, IntelChipsetConfig, IntelEarlyBoardHooks, IntelEarlyCtx,
-    IntelEarlyPlatform, IntelSmbusRouting, SmbusRoute,
-};
+use crate::{IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelPlatform};
+use core::marker::PhantomData;
 use fstart_core::layout::RegionKind;
 use fstart_core::services::memory_detect::MemoryDetector;
 use fstart_core::services::{ConsoleDevice, ServiceError};
 use fstart_driver_intel::{BootPath, IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+use fstart_log::StaticConsole;
 
 /// Boot timestamps until the firmware store exists, in CAR.
 #[repr(C, align(8))]
@@ -18,144 +34,287 @@ static mut CAR_TIMESTAMPS: CarTimestamps = CarTimestamps([0; fstart_timestamp::t
 /// Capacity of the store's timestamp table for the whole boot.
 const TIMESTAMP_CAPACITY: usize = 96;
 
-pub(crate) fn run_intel_bootblock<B: IntelBoard>(
-    spec: FfsLoadSpec<B::Console>,
-    hooks: &mut B::EarlyHooks,
-) -> Result<(), ServiceError> {
-    let entry = fstart_timestamp::now();
-    // SAFETY: CAR-resident bootblock data, used only through the table.
-    unsafe {
-        let car = &raw mut CAR_TIMESTAMPS;
-        fstart_timestamp::init(
-            car.cast(),
-            size_of::<CarTimestamps>(),
-            fstart_arch::x86::boot::reset_tsc(),
-        );
+type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
+type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
+
+/// Chipset decode only: no console, no DRAM.
+pub struct Early;
+/// The console is up and the boot path is known.
+pub struct Console;
+/// DRAM is trained or recovered; DMI and the post-DRAM chipset setup have
+/// not run.
+pub struct Trained;
+/// DRAM and the chipset are ready for the next stage.
+pub struct Dram;
+
+/// Memory-cache state carried from training to the store. The captured
+/// record itself stays in CAR, out of the moving phase state.
+#[cfg(feature = "memory-cache")]
+struct Training {
+    key: Option<[u8; 32]>,
+    captured: Option<usize>,
+}
+
+#[cfg(feature = "memory-cache")]
+static mut CAPTURE: [u8; crate::memory_cache::MAX_PAYLOAD] = [0; crate::memory_cache::MAX_PAYLOAD];
+
+/// The bootblock of an Intel CAR board, in phase `S`.
+pub struct Bootblock<B: IntelBoard, S = Early> {
+    northbridge: Nb<B>,
+    southbridge: Sb<B>,
+    geometry: crate::layout::IntelBootLayout<'static>,
+    boot_path: BootPath,
+    #[cfg(feature = "memory-cache")]
+    training: Training,
+    _state: PhantomData<(B, S)>,
+}
+
+impl<B: IntelBoard, S> Bootblock<B, S> {
+    fn into<T>(self) -> Bootblock<B, T> {
+        Bootblock {
+            northbridge: self.northbridge,
+            southbridge: self.southbridge,
+            geometry: self.geometry,
+            boot_path: self.boot_path,
+            #[cfg(feature = "memory-cache")]
+            training: self.training,
+            _state: PhantomData,
+        }
     }
-    fstart_timestamp::add_at(fstart_timestamp::id::BOOTBLOCK_START, entry);
-    type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
-    type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
-    let mut northbridge = Nb::<B>::new_from_config(B::CONFIG.northbridge())?;
-    let mut southbridge = Sb::<B>::new_from_config(B::CONFIG.southbridge())?;
-    let FfsLoadSpec {
-        platform,
-        geometry,
-        console_config,
-        console_node,
-    } = spec;
-    let (firmware_base, firmware_size) = geometry.firmware()?;
-    let postcar_load_addr = geometry.region(RegionKind::BootstrapPostcar)?.base;
-    let ramstage_load_addr = geometry.region(RegionKind::BootstrapMainstage)?.base;
-    let dram_end = geometry
-        .region(RegionKind::BootstrapRam)?
-        .end()
-        .ok_or(ServiceError::InvalidParam)?;
-    northbridge.pre_console_init()?;
-    southbridge.pre_console_init()?;
-    hooks.before_console(&mut IntelEarlyCtx::new(&mut southbridge))?;
-    let mut console = B::Console::new(console_config)?;
-    console.init()?;
-    fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
-    // SAFETY: successful stage handoff never returns past this console's lifetime.
-    unsafe { fstart_log::init(&console) };
-    fstart_log::info!("{}: {} console ready", console_node, B::Console::NAME);
-    fstart_log::info!("{} bootblock console ready", platform);
-    fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);
-    northbridge.early_init()?;
-    southbridge.early_init()?;
-    // Consume the southbridge indication exactly once, before board clock
-    // programming. Resume hooks must not perturb retained DRAM frequency.
-    let boot_path = if southbridge.detect_s3_resume() {
-        BootPath::S3Resume
-    } else if northbridge.detect_warm_reset() {
-        BootPath::WarmReset
-    } else {
-        BootPath::Normal
-    };
-    northbridge.set_boot_path(boot_path);
-    let result = (|| {
-        if boot_path == BootPath::S3Resume
-            && (!B::FACTS.memory_cache || !northbridge.supports_s3_replay())
+
+    pub fn northbridge(&self) -> &Nb<B> {
+        &self.northbridge
+    }
+
+    pub fn southbridge(&self) -> &Sb<B> {
+        &self.southbridge
+    }
+
+    pub fn southbridge_mut(&mut self) -> &mut Sb<B> {
+        &mut self.southbridge
+    }
+
+    /// The southbridge's SMBus, for board devices on it (clock generator,
+    /// EEPROM).
+    pub fn smbus(&mut self) -> &mut impl fstart_core::services::SmBus {
+        &mut self.southbridge
+    }
+
+    /// Cold, warm or S3 resume. `Normal` until [`Bootblock::console`].
+    pub fn boot_path(&self) -> BootPath {
+        self.boot_path
+    }
+
+    /// Stop the boot: an S3 resume resets instead of booting over retained
+    /// state, anything else halts.
+    pub fn fail(&self, what: &str) -> ! {
+        fail::<B>(&self.northbridge, &self.southbridge, self.boot_path, what)
+    }
+
+    fn check<T>(&self, what: &str, result: Result<T, ServiceError>) -> T {
+        result.unwrap_or_else(|_| self.fail(what))
+    }
+}
+
+/// [`Bootblock::fail`], once per board rather than once per phase.
+#[inline(never)]
+fn fail<B: IntelBoard>(northbridge: &Nb<B>, southbridge: &Sb<B>, path: BootPath, what: &str) -> ! {
+    fstart_log::error!("{} bootblock: {} failed", B::Platform::NAME, what);
+    if path == BootPath::S3Resume {
+        fstart_log::error!(
+            "{}: invalid retained boot state; resetting cleanly",
+            B::Platform::NAME
+        );
+        northbridge.prepare_resume_reset();
+        southbridge.system_reset(true);
+    }
+    fstart_arch::x86::boot::halt()
+}
+
+impl<B: IntelBoard> Bootblock<B, Early> {
+    /// Start the boot timestamps in CAR, bind the chipset from the board's
+    /// configuration and open the decode windows the console needs.
+    pub fn enter() -> Self {
+        fstart_stage::anchor::initial_stage();
+        let entry = fstart_timestamp::now();
+        // SAFETY: CAR-resident bootblock data, used only through the table.
+        unsafe {
+            let car = &raw mut CAR_TIMESTAMPS;
+            fstart_timestamp::init(
+                car.cast(),
+                size_of::<CarTimestamps>(),
+                fstart_arch::x86::boot::reset_tsc(),
+            );
+        }
+        fstart_timestamp::add_at(fstart_timestamp::id::BOOTBLOCK_START, entry);
+        let (Ok(mut northbridge), Ok(mut southbridge), Ok(geometry)) = (
+            Nb::<B>::new_from_config(B::CONFIG.northbridge()),
+            Sb::<B>::new_from_config(B::CONFIG.southbridge()),
+            crate::layout::IntelBootLayout::current(0),
+        ) else {
+            fstart_arch::x86::boot::halt()
+        };
+        if northbridge.pre_console_init().is_err() || southbridge.pre_console_init().is_err() {
+            fstart_arch::x86::boot::halt()
+        }
+        Self {
+            northbridge,
+            southbridge,
+            geometry,
+            boot_path: BootPath::Normal,
+            #[cfg(feature = "memory-cache")]
+            training: Training {
+                key: None,
+                captured: None,
+            },
+            _state: PhantomData,
+        }
+    }
+
+    /// Bring up the console, finish the chipset's early init and consume the
+    /// boot path indication.
+    pub fn console<C: ConsoleDevice + 'static>(
+        mut self,
+        slot: &'static StaticConsole<C>,
+        config: C::Config,
+    ) -> Bootblock<B, Console> {
+        let Ok(mut console) = C::new(config) else {
+            fstart_arch::x86::boot::halt()
+        };
+        if console.init().is_err() {
+            fstart_arch::x86::boot::halt()
+        }
+        slot.install(console);
+        fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
+        fstart_log::info!("{} bootblock: {} console ready", B::Platform::NAME, C::NAME);
+        fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);
+        let early = self
+            .northbridge
+            .early_init()
+            .and_then(|()| self.southbridge.early_init());
+        self.check("early init", early);
+        // Consume the southbridge indication exactly once, before board clock
+        // programming. Resume work must not perturb retained DRAM frequency.
+        self.boot_path = if self.southbridge.detect_s3_resume() {
+            BootPath::S3Resume
+        } else if self.northbridge.detect_warm_reset() {
+            BootPath::WarmReset
+        } else {
+            BootPath::Normal
+        };
+        self.northbridge.set_boot_path(self.boot_path);
+        if self.boot_path == BootPath::S3Resume
+            && (!B::FACTS.memory_cache || !self.northbridge.supports_s3_replay())
         {
+            self.fail("S3 resume without a memory cache");
+        }
+        self.into()
+    }
+}
+
+impl<B: IntelBoard> Bootblock<B, Console> {
+    /// Train DRAM, or replay the cached training. The SPDs must be
+    /// reachable on the southbridge's SMBus.
+    pub fn train_memory(mut self) -> Bootblock<B, Trained> {
+        fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
+        fstart_log::info!("{}: initializing DRAM", B::Platform::NAME);
+        let trained = self.dram_init();
+        self.check("DRAM init", trained);
+        self.into()
+    }
+
+    #[cfg(feature = "memory-cache")]
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
+        if !B::FACTS.memory_cache {
+            if self.boot_path == BootPath::S3Resume {
+                return Err(ServiceError::NotSupported);
+            }
+            return self
+                .northbridge
+                .dram_init_with_smbus(self.southbridge.smbus_mut());
+        }
+        let key = crate::memory_cache::runtime_key::<B>(
+            &self.northbridge,
+            &self.southbridge,
+            self.geometry,
+        )?;
+        let (firmware_base, firmware_size) = self.geometry.firmware()?;
+        if firmware_size < EXTENT_SIZE as usize + 4096 {
+            return Err(ServiceError::InvalidParam);
+        }
+        // The extent comes from linked board policy, not an unverified directory.
+        let mut flash = unsafe { MappedRead::new(firmware_base as usize, EXTENT_SIZE as usize) };
+        let cached = Journal::new(BANK_SIZE, EXTENT_SIZE)?
+            .load(&mut flash)?
+            .map(|(_, record)| record)
+            .filter(|record| record.key == key);
+        self.training.key = Some(key);
+        // SAFETY: the bootblock is single-threaded; only training writes it.
+        let capture = unsafe { &mut *core::ptr::addr_of_mut!(CAPTURE) };
+        self.training.captured = self.northbridge.dram_init_cached(
+            self.southbridge.smbus_mut(),
+            cached.as_ref().map(|record| record.payload()),
+            capture,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "memory-cache"))]
+    fn dram_init(&mut self) -> Result<(), ServiceError> {
+        if self.boot_path == BootPath::S3Resume {
             return Err(ServiceError::NotSupported);
         }
-        B::EarlyHooks::select_smbus(&southbridge, SmbusRoute::Spd)?;
-        hooks.before_memory(&mut IntelEarlyCtx::with_boot_path(
-            &mut southbridge,
-            boot_path,
-        ))?;
-        fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
-        fstart_log::info!("{}: initializing DRAM", platform);
+        self.northbridge
+            .dram_init_with_smbus(self.southbridge.smbus_mut())
+    }
+}
 
-        #[cfg(feature = "memory-cache")]
-        let key = if B::FACTS.memory_cache {
-            Some(crate::memory_cache::runtime_key::<B>(
-                &northbridge,
-                &southbridge,
-                geometry,
-            )?)
-        } else {
-            None
-        };
-        #[cfg(feature = "memory-cache")]
-        let mut capture = [0; crate::memory_cache::MAX_PAYLOAD];
-        #[cfg(feature = "memory-cache")]
-        let captured = if let Some(key) = key {
-            use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
-            if firmware_size < EXTENT_SIZE as usize + 4096 {
-                return Err(ServiceError::InvalidParam);
-            }
-            // The extent comes from linked board policy, not an unverified directory.
-            let mut flash =
-                unsafe { MappedRead::new(firmware_base as usize, EXTENT_SIZE as usize) };
-            let cached = Journal::new(BANK_SIZE, EXTENT_SIZE)?
-                .load(&mut flash)?
-                .map(|(_, record)| record)
-                .filter(|record| record.key == key);
-            northbridge.dram_init_cached(
-                southbridge.smbus_mut(),
-                cached.as_ref().map(|record| record.payload()),
-                &mut capture,
-            )?
-        } else {
-            if boot_path == BootPath::S3Resume {
-                return Err(ServiceError::NotSupported);
-            }
-            northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
-            None
-        };
-        #[cfg(not(feature = "memory-cache"))]
-        {
-            if boot_path == BootPath::S3Resume {
-                return Err(ServiceError::NotSupported);
-            }
-            northbridge.dram_init_with_smbus(southbridge.smbus_mut())?;
-        }
-
-        hooks.after_memory_training(&mut IntelEarlyCtx::with_boot_path(
-            &mut southbridge,
-            boot_path,
-        ))?;
-        // SB DMI enable -> NB negotiation -> SB polling -> NB PM/IGD.
+impl<B: IntelBoard> Bootblock<B, Trained> {
+    /// SB DMI enable -> NB negotiation -> SB polling -> NB PM/IGD.
+    pub fn post_dram(mut self) -> Bootblock<B, Dram> {
         fstart_timestamp::add(fstart_timestamp::id::POST_DRAM_INIT);
-        southbridge.prepare_early_post_dram_init()?;
-        northbridge.early_post_dram_init()?;
-        southbridge.early_post_dram_init()?;
-        northbridge.finish_early_post_dram_init()?;
-        B::EarlyHooks::select_smbus(&southbridge, SmbusRoute::Eeprom)?;
-        hooks.after_memory(&mut IntelEarlyCtx::with_boot_path(
-            &mut southbridge,
-            boot_path,
-        ))?;
+        let done = (|| {
+            self.southbridge.prepare_early_post_dram_init()?;
+            self.northbridge.early_post_dram_init()?;
+            self.southbridge.early_post_dram_init()?;
+            self.northbridge.finish_early_post_dram_init()
+        })();
+        self.check("post-DRAM init", done);
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_END);
-        fstart_log::info!("{}: DRAM ready", platform);
-        let ram_end = dram_end.min(northbridge.total_ram_bytes()?);
+        fstart_log::info!("{}: DRAM ready", B::Platform::NAME);
+        self.into()
+    }
+}
+
+impl<B: IntelBoard> Bootblock<B, Dram> {
+    /// Open the store in DRAM, authenticate the boot root, load postcar and
+    /// jump to it.
+    pub fn load_postcar(mut self) -> ! {
+        let result = self.load_postcar_inner();
+        match result {
+            Ok(never) => match never {},
+            Err(_) => self.fail("postcar load"),
+        }
+    }
+
+    fn load_postcar_inner(&mut self) -> Result<core::convert::Infallible, ServiceError> {
+        let geometry = self.geometry;
+        let boot_path = self.boot_path;
+        let (firmware_base, firmware_size) = geometry.firmware()?;
+        let postcar_load_addr = geometry.region(RegionKind::BootstrapPostcar)?.base;
+        let ramstage_load_addr = geometry.region(RegionKind::BootstrapMainstage)?.base;
+        let dram_end = geometry
+            .region(RegionKind::BootstrapRam)?
+            .end()
+            .ok_or(ServiceError::InvalidParam)?;
+        let ram_end = dram_end.min(self.northbridge.total_ram_bytes()?);
         let mut store =
             crate::store::bootblock(geometry, ram_end, boot_path == BootPath::S3Resume)?;
         crate::store::move_timestamps(&mut store, TIMESTAMP_CAPACITY);
-        crate::memory_info::publish(&mut store, northbridge.memory_info().as_ref())?;
+        crate::memory_info::publish(&mut store, self.northbridge.memory_info().as_ref())?;
         #[cfg(feature = "memory-cache")]
-        if let (Some(key), Some(length)) = (key, captured) {
+        if let (Some(key), Some(length)) = (self.training.key, self.training.captured) {
             let entry = store
                 .add(fstart_store::tag::TRAINING, 0x1000, 3)
                 .map_err(|_| ServiceError::InvalidParam)?;
@@ -165,9 +324,9 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
                 size: entry.len() as u64,
             };
             // Only cold/warm initialization captures, after the driver's RAM test.
-            unsafe {
-                crate::memory_cache::publish_pending(pending, key, &capture[..length])?;
-            }
+            // SAFETY: training is done; nothing writes the capture any more.
+            let capture = unsafe { &*core::ptr::addr_of!(CAPTURE) };
+            unsafe { crate::memory_cache::publish_pending(pending, key, &capture[..length])? };
         }
 
         fstart_log::info!(
@@ -197,10 +356,14 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         let root = fstart_stage::root::authenticate_boot_root(&locator_bytes, &media)
             .map_err(|_| ServiceError::HardwareError)?;
         #[cfg(feature = "memory-cache")]
-        if let Some(key) = key {
-            if crate::memory_cache::runtime_key::<B>(&northbridge, &southbridge, geometry)? != key {
-                return Err(ServiceError::HardwareError);
-            }
+        if let Some(key) = self.training.key
+            && crate::memory_cache::runtime_key::<B>(
+                &self.northbridge,
+                &self.southbridge,
+                geometry,
+            )? != key
+        {
+            return Err(ServiceError::HardwareError);
         }
         let [Some(postcar), Some(ramstage)] = root.descriptors() else {
             return Err(ServiceError::InvalidParam);
@@ -229,6 +392,8 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
             &reserved,
             &mut store,
             boot_path == BootPath::S3Resume,
+            // Postcar is stored uncompressed: the bootblock links no decoder.
+            &fstart_stage::boot::Stored,
         )?;
         let boot_flags = if boot_path == BootPath::S3Resume {
             fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME
@@ -253,10 +418,6 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         if !published {
             return Err(ServiceError::HardwareError);
         }
-        hooks.before_handoff(&mut IntelEarlyCtx::with_boot_path(
-            &mut southbridge,
-            boot_path,
-        ))?;
         fstart_log::info!(
             "jumping to {} at {:#x}",
             crate::POSTCAR_STAGE_NAME,
@@ -264,14 +425,5 @@ pub(crate) fn run_intel_bootblock<B: IntelBoard>(
         );
         crate::store::write_back(&store);
         fstart_arch::x86::boot::jump_to(verified.entry())
-    })();
-    if result.is_err() && boot_path == BootPath::S3Resume {
-        fstart_log::error!(
-            "{}: invalid retained boot state; resetting cleanly",
-            platform
-        );
-        northbridge.prepare_resume_reset();
-        southbridge.system_reset(true);
     }
-    result
 }

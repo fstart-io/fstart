@@ -208,8 +208,8 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
     }
 }
 
-/// Configuration the installer writes into SMRAM for [`FchSmmHandler`]: the
-/// ACPI blocks of the FADT.
+/// Configuration the installer writes into SMRAM for the board's SMI handler
+/// (`PendingSmi`): the ACPI blocks of the FADT.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FchSmmConfig {
@@ -219,46 +219,39 @@ pub struct FchSmmConfig {
 }
 
 #[cfg(feature = "smm")]
-pub use handler::{FchSmmHandler, FchSmmHooks};
+pub use handler::{PendingSmi, Sleep, handle};
 
 #[cfg(feature = "smm")]
 mod handler {
     use super::*;
     use crate::fch::SmmBus;
-    use core::marker::PhantomData;
-    use fstart_smm::{SmmContext, SmmHandler};
+    use fstart_smm::SmmContext;
 
-    /// SoC and board parts of the FCH SMM handler.
-    pub trait FchSmmHooks {
-        /// Before the system enters S3, S4 or S5.
-        /// # Safety
-        /// Called only by [`FchSmmHandler`] while it owns the SMM rendezvous.
-        unsafe fn sleep_entry(_slp_typ: u8) {}
-        /// With SLP_TYP armed, right before SLP_EN: the SoC's last word
-        /// to its SMU. Returns to have the FCH enter the state.
-        /// # Safety
-        /// As for [`Self::sleep_entry`].
-        unsafe fn sleep_armed(_slp_typ: u8) {}
+    /// The sources of one SMI on the FCH, read once by [`PendingSmi::take`];
+    /// the board's SMI handler acts on the ones it owns and ends the SMI
+    /// with [`PendingSmi::finish`], or puts the system to sleep.
+    pub struct PendingSmi {
+        fch: Smi<SmmBus>,
+        /// Status registers that reported a source, as read.
+        status: [u32; STATUS_COUNT],
         /// GEVENT SMIs, bit n = GEVENTn.
-        /// # Safety
-        /// As for [`Self::sleep_entry`].
-        unsafe fn gevent(_status: u32) {}
-        /// An SMI command the FCH doesn't handle itself.
-        /// # Safety
-        /// As for [`Self::sleep_entry`].
-        unsafe fn apmc(_command: u8) {}
+        pub gevents: u32,
+        /// The SMI command port value, when it raised this SMI. ACPI enable
+        /// and disable are applied already.
+        pub apm: Option<u8>,
+        /// The sleep state (3..=5) requested: the OS's SLP_TYP, or S5 for the
+        /// power button while the OS does not own ACPI. S0 and S1 requests
+        /// are dropped.
+        pub sleep: Option<u8>,
     }
 
-    /// The FCH SMI dispatcher.
-    pub struct FchSmmHandler<H>(PhantomData<H>);
-
-    impl<H: FchSmmHooks> SmmHandler for FchSmmHandler<H> {
-        type Config = FchSmmConfig;
-
-        /// Inlined into the board SMM entry: the installed blob is a raw
-        /// copy with no dynamic loader.
+    impl PendingSmi {
+        /// Read this SMI's sources and do the FCH's own SMI command work.
+        ///
+        /// # Safety
+        /// Called only by the SMI handler that owns the SMM rendezvous.
         #[inline(always)]
-        unsafe fn handle(_ctx: &mut SmmContext<'_>, config: &FchSmmConfig) {
+        pub unsafe fn take(config: &FchSmmConfig) -> Self {
             // SAFETY: SMM owns the FCH; it decodes no config spaces.
             let fch = Smi::new(unsafe { SmmBus::without_config() }, config);
             let pointer = fch.fch.reg(POINTER).extract();
@@ -267,93 +260,139 @@ mod handler {
                 sci.set(sci.get());
             }
             let pending = pointer.read(SmiPointer::STATUS);
-            for index in 0..STATUS_COUNT {
-                if pending & 1 << index == 0 {
-                    continue;
+            let mut status = [0; STATUS_COUNT];
+            for (index, status) in status.iter_mut().enumerate() {
+                if pending & 1 << index != 0 {
+                    *status = fch.fch.reg(super::status(index)).get();
                 }
-                let register = fch.fch.reg(status(index));
-                let status = register.get();
-                let base = index as u8 * 32;
-                let pending = |source: u8| {
-                    (base..base + 32).contains(&source) && status & 1 << (source - base) != 0
-                };
-                if index == 0 && status & ((1 << source::GEVENTS) - 1) != 0 {
-                    unsafe { H::gevent(status & ((1 << source::GEVENTS) - 1)) };
-                }
-                if pending(source::POWER_BUTTON_UP) {
-                    unsafe { power_button::<H>(&fch) };
-                }
-                if pending(source::SLP_TYP) {
-                    unsafe { sleep::<H>(&fch) };
-                }
-                if pending(source::SMI_COMMAND) {
-                    unsafe { apmc::<H>(&fch) };
-                }
-                register.set(status);
             }
-            fch.fch.reg(TRIGGER0).modify(SmiTrigger0::EOS::SET);
-        }
-    }
-
-    /// An SMI from the SMI command port.
-    #[inline(always)]
-    unsafe fn apmc<H: FchSmmHooks>(fch: &Smi<SmmBus>) {
-        // SAFETY: the FCH decodes the SMI command port.
-        let command = unsafe { fstart_core::pio::inb(APM_CNT) };
-        match command {
-            ACPI_ENABLE => {
-                fch.disable_power_button_smi();
+            let is_pending = |source: u8| {
+                let index = usize::from(source / 32);
+                status[index] & 1 << (source % 32) != 0
+            };
+            let gevents = status[0] & ((1 << source::GEVENTS) - 1);
+            let apm = is_pending(source::SMI_COMMAND).then(|| {
+                // SAFETY: the FCH decodes the SMI command port.
+                let command = unsafe { fstart_core::pio::inb(APM_CNT) };
+                match command {
+                    ACPI_ENABLE => {
+                        fch.disable_power_button_smi();
+                        fch.clear_pm_gpe_status();
+                        fch.set_sci(true);
+                    }
+                    ACPI_DISABLE => {
+                        fch.set_sci(false);
+                        fch.enable_power_button_smi();
+                    }
+                    _ => {}
+                }
+                command
+            });
+            let sleep = if is_pending(source::POWER_BUTTON_UP) && !fch.sci_enabled() {
+                // Power button: S5 unless the OS owns ACPI.
                 fch.clear_pm_gpe_status();
-                fch.set_sci(true);
+                fch.pm1_control().modify(Pm1Control::SLP_TYP::S5);
+                Some(5)
+            } else if is_pending(source::SLP_TYP) {
+                Some(fch.pm1_control().read(Pm1Control::SLP_TYP) as u8).filter(|t| *t >= 3)
+            } else {
+                None
+            };
+            Self {
+                fch,
+                status,
+                gevents,
+                apm,
+                sleep,
             }
-            ACPI_DISABLE => {
-                fch.set_sci(false);
-                fch.enable_power_button_smi();
+        }
+
+        /// Start entering sleep state `slp_typ` (3..=5): write back the
+        /// caches and clear every SMI status. The SoC does its own sleep
+        /// entry work next, then [`Sleep::enter`].
+        #[inline(always)]
+        pub fn prepare_sleep(self, slp_typ: u8) -> Sleep {
+            // SAFETY: SMM owns the CPU; nothing else runs.
+            unsafe { fstart_arch::x86::writeback_invalidate_caches() };
+            self.fch.clear_all_status();
+            Sleep {
+                fch: self.fch,
+                slp_typ,
             }
-            _ => unsafe { H::apmc(command) },
+        }
+
+        /// Clear the handled sources and end the SMI (EOS).
+        #[inline(always)]
+        pub fn finish(self) {
+            for (index, status) in self.status.iter().enumerate() {
+                if *status != 0 {
+                    self.fch.fch.reg(super::status(index)).set(*status);
+                }
+            }
+            self.fch.fch.reg(TRIGGER0).modify(SmiTrigger0::EOS::SET);
         }
     }
 
-    /// Power button: S5 unless the OS owns ACPI.
-    #[inline(always)]
-    unsafe fn power_button<H: FchSmmHooks>(fch: &Smi<SmmBus>) {
-        if fch.sci_enabled() {
-            return;
-        }
-        fch.clear_pm_gpe_status();
-        fch.pm1_control().modify(Pm1Control::SLP_TYP::S5);
-        unsafe { sleep::<H>(fch) };
+    /// A sleep transition after [`PendingSmi::prepare_sleep`].
+    pub struct Sleep {
+        fch: Smi<SmmBus>,
+        slp_typ: u8,
     }
 
-    /// SLP_TYP for S3..S5, entered the way the vendor
-    /// FchTaishanSmmInit powers off: the FCH sleeps on the OS's SLP_TYP once
-    /// SlpTypeEn is set and the SLP_TYP SMI is off. S0 and S1 requests are
-    /// dropped.
+    impl Sleep {
+        /// Arm the sleep state the way the vendor FchTaishanSmmInit powers
+        /// off: the FCH sleeps on the OS's SLP_TYP once SlpTypeEn is set and
+        /// the SLP_TYP SMI is off. The SoC's last word to its SMU goes
+        /// between this and [`Armed::enter`].
+        #[inline(always)]
+        pub fn arm(self) -> Armed {
+            let fch = &self.fch;
+            fch.fch.reg(PM_PCI_CONTROL).modify(
+                PciControl::FORCE_STPCLK_RETRY::SET + PciControl::FORCE_SLPSTATE_RETRY::CLEAR,
+            );
+            fch.configure(source::SLP_TYP, Mode::Disable);
+            fch.fch
+                .reg(PM_RESET_CONTROL1)
+                .modify(ResetControl1::SLP_TYPE_EN::SET);
+            fch.pm1_control()
+                .modify(Pm1Control::SLP_TYP.val(self.slp_typ.into()) + Pm1Control::SLP_EN::CLEAR);
+            Armed { fch: self.fch }
+        }
+
+        /// Arm the sleep state and enter it.
+        #[inline(always)]
+        pub fn enter(self) -> ! {
+            self.arm().enter()
+        }
+    }
+
+    /// A sleep state armed by [`Sleep::arm`].
+    pub struct Armed {
+        fch: Smi<SmmBus>,
+    }
+
+    impl Armed {
+        /// Set SLP_EN: the FCH enters the armed state.
+        #[inline(always)]
+        pub fn enter(self) -> ! {
+            self.fch.pm1_control().modify(Pm1Control::SLP_EN::SET);
+            loop {
+                // SAFETY: halting is all that is left before the sleep.
+                unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
+            }
+        }
+    }
+
+    /// The SMI handler of a board with no SMI sources and a SoC without sleep
+    /// entry work: the FCH's SMI command, power button and sleep handling.
     #[inline(always)]
-    unsafe fn sleep<H: FchSmmHooks>(fch: &Smi<SmmBus>) {
-        let control = fch.pm1_control();
-        let slp_typ = control.read(Pm1Control::SLP_TYP) as u8;
-        if slp_typ < 3 {
-            return;
+    pub fn handle(_ctx: &mut SmmContext<'_>, config: &FchSmmConfig) {
+        // SAFETY: bound as the board's SMI handler, so it owns the rendezvous.
+        let pending = unsafe { PendingSmi::take(config) };
+        if let Some(slp_typ) = pending.sleep {
+            pending.prepare_sleep(slp_typ).enter();
         }
-        unsafe {
-            fstart_arch::x86::writeback_invalidate_caches();
-            fch.clear_all_status();
-            H::sleep_entry(slp_typ);
-        }
-        fch.fch
-            .reg(PM_PCI_CONTROL)
-            .modify(PciControl::FORCE_STPCLK_RETRY::SET + PciControl::FORCE_SLPSTATE_RETRY::CLEAR);
-        fch.configure(source::SLP_TYP, Mode::Disable);
-        fch.fch
-            .reg(PM_RESET_CONTROL1)
-            .modify(ResetControl1::SLP_TYPE_EN::SET);
-        control.modify(Pm1Control::SLP_TYP.val(slp_typ.into()) + Pm1Control::SLP_EN::CLEAR);
-        unsafe { H::sleep_armed(slp_typ) };
-        control.modify(Pm1Control::SLP_EN::SET);
-        loop {
-            unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
-        }
+        pending.finish();
     }
 }
 

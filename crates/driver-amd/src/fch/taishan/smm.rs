@@ -2,11 +2,10 @@
 //! The Zeppelin parts of the FCH SMM handler, and SMN access
 //! from SMM.
 use super::init::{AOAC_94, Aoac94};
-use crate::fch::smi::{FchSmmHandler, FchSmmHooks};
+use crate::fch::smi::{FchSmmConfig, PendingSmi};
 use crate::fch::{AcpiReg, Acpimmio, Bus, Fch, IOAPIC, Reg, SmmBus, pm};
 use crate::smn::{SmnAccess, SmnReg};
 use crate::smu::v9;
-use core::marker::PhantomData;
 use fstart_core::{
     indexed::Indexed,
     pio::{self, PioRegister},
@@ -17,48 +16,34 @@ use tock_registers::{
     register_bitfields,
 };
 
-/// Board parts of the Zeppelin SMM handler.
-pub trait SmmBoard {
-    /// The board's GEVENT SMIs, bit n =
-    /// GEVENTn.
-    /// # Safety
-    /// Called only by the SMM handler while it owns the SMM rendezvous.
-    unsafe fn gevent(_status: u32) {}
-    /// Any SMI command, after the FCH handled its own.
-    /// # Safety
-    /// As for [`Self::gevent`].
-    unsafe fn apmc(_command: u8) {}
+/// Enter sleep state `slp_typ` with Zeppelin's entry work between the
+/// FCH's preparation and the transition.
+#[inline(always)]
+pub fn sleep(pending: PendingSmi, slp_typ: u8) -> ! {
+    let sleep = pending.prepare_sleep(slp_typ);
+    // SAFETY: SMM owns the FCH while it puts the system to sleep.
+    unsafe { sleep_entry(&Fch::new(SmmBus::without_config(), Acpimmio::DIE0), slp_typ) };
+    let armed = sleep.arm();
+    // The vendor FchTaishanSmmInit's last step: SMU message SleepEntry,
+    // which the SMU answers by completing the transition. The vendor halts
+    // there; this waits 100 ms for the SMU, then lets the FCH enter the
+    // state with SLP_EN.
+    // SAFETY: SMM owns the SMN pair while it puts the system to sleep.
+    let smn = unsafe { SmmSmn::new() };
+    v9::MAILBOX.post(&smn, v9::msg::SLEEP_ENTRY, [0; crate::smu::ARGUMENT_COUNT]);
+    fstart_arch::x86::wait_us(100_000, || false);
+    armed.enter()
 }
 
-/// The SMM handler of a Zeppelin board `B`.
-pub type Handler<B> = FchSmmHandler<Hooks<B>>;
-
-pub struct Hooks<B>(PhantomData<B>);
-impl<B: SmmBoard> FchSmmHooks for Hooks<B> {
-    #[inline(always)]
-    unsafe fn sleep_entry(slp_typ: u8) {
-        // SAFETY: SMM owns the FCH while it puts the system to sleep.
-        unsafe { sleep_entry(&Fch::new(SmmBus::without_config(), Acpimmio::DIE0), slp_typ) }
+/// The SMI handler of a Zeppelin board with no SMI sources of its own.
+#[inline(always)]
+pub fn handle(_ctx: &mut fstart_smm::SmmContext<'_>, config: &FchSmmConfig) {
+    // SAFETY: bound as the board's SMI handler, so it owns the rendezvous.
+    let pending = unsafe { PendingSmi::take(config) };
+    if let Some(slp_typ) = pending.sleep {
+        sleep(pending, slp_typ);
     }
-    /// The vendor FchTaishanSmmInit's last step: SMU message SleepEntry,
-    /// which the SMU answers by completing the transition. The vendor halts
-    /// there; this waits 100 ms for the SMU, then lets the FCH enter the
-    /// state with SLP_EN.
-    #[inline(always)]
-    unsafe fn sleep_armed(_slp_typ: u8) {
-        // SAFETY: SMM owns the SMN pair while it puts the system to sleep.
-        let smn = unsafe { SmmSmn::new() };
-        v9::MAILBOX.post(&smn, v9::msg::SLEEP_ENTRY, [0; crate::smu::ARGUMENT_COUNT]);
-        fstart_arch::x86::wait_us(100_000, || false);
-    }
-    #[inline(always)]
-    unsafe fn gevent(status: u32) {
-        unsafe { B::gevent(status) }
-    }
-    #[inline(always)]
-    unsafe fn apmc(command: u8) {
-        unsafe { B::apmc(command) }
-    }
+    pending.finish();
 }
 
 register_bitfields![u8,

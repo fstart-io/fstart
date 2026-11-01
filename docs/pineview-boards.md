@@ -36,9 +36,6 @@ cargo fbuild assemble -b intel-d510mo --release --payload halt
 - SeaBIOS (`--payload coreboot`): see
   [`ci/payloads/seabios/README.md`](../ci/payloads/seabios/README.md).
 
-Stage environments (`fstart_stage_env`) used by these boards: `car`,
-`postcar`, `ram`, `smm`.
-
 ## Board hooks
 
 | Board | `car` / `ram` Super I/O setup | CK505 clock gen (SMBus `0x69`) |

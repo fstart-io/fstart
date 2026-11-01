@@ -49,9 +49,9 @@ pub(crate) type Smu = SmuMailbox<Pci, Tsc>;
 
 /// Per-die handles, physical order (= `Topology::root_bridges`: one root
 /// bridge per die).
-pub(crate) struct Silicon {
-    pub nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
-    pub smus: heapless::Vec<Smu, MAX_ROOT_BRIDGES>,
+pub struct Silicon {
+    pub(crate) nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
+    pub(crate) smus: heapless::Vec<Smu, MAX_ROOT_BRIDGES>,
 }
 
 const IOMMU_BAR: u64 = 512 << 10;
@@ -211,9 +211,9 @@ pub(crate) fn fch_env(ctx: &Ctx, si: &Silicon) {
 }
 
 fn route_aps(route: ApRoute) {
-    #[cfg(all(target_os = "none", fstart_entry = "amd-psp-reset"))]
+    #[cfg(all(target_os = "none", feature = "bundle-reset"))]
     crate::entry::set_ap_route(route);
-    #[cfg(not(all(target_os = "none", fstart_entry = "amd-psp-reset")))]
+    #[cfg(not(all(target_os = "none", feature = "bundle-reset")))]
     let _ = route;
 }
 

@@ -33,11 +33,6 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     let mut producer = plan.units[0].clone();
     producer.name = "digest-maker".into();
     producer.target = "x86_64-unknown-none".into();
-    producer.entry = "x86_64".into();
-    producer.environment = "car".into();
-    // This synthetic producer owns its vocabulary; it is not a QEMU unit.
-    producer.cfg_schema.entries = vec!["x86_64".into()];
-    producer.cfg_schema.environments = vec!["car".into()];
     producer.features = vec!["different-feature".into()];
     producer.rustflags = vec!["-Crelocation-model=static".into()];
     if let UnitOutput::Executable { expectations, .. } = &mut producer.output {
@@ -78,11 +73,7 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     let first = resolved
         .prepare(&scratch.0, &board, launch, &artifacts, true)
         .unwrap();
-    assert!(
-        first
-            .cfgs
-            .contains(&"fstart_entry=\"aarch64-relocate\"".into())
-    );
+    assert!(first.cfgs.contains(&"fstart_payload=\"halt\"".into()));
     assert_eq!(
         first.environment()["LINKED_PAYLOAD"],
         artifact.display().to_string()
@@ -94,7 +85,7 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     assert!(
         producer_selection
             .cfgs
-            .contains(&"fstart_entry=\"x86_64\"".into())
+            .contains(&"fstart_payload=\"halt\"".into())
     );
     assert!(
         !producer_selection

@@ -14,7 +14,7 @@ is the `ec0` variant with the x16 slot).
 | --- | --- |
 | SoC constants, identity, ECAM, APOB | `crates/driver-amd/src/soc/zeppelin/mod.rs` |
 | Platform: `Soc` impl, `Config`, host policy | `crates/platform-amd/src/zeppelin/mod.rs` |
-| TP1 sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
+| Silicon init sequence | `crates/platform-amd/src/zeppelin/silicon.rs` |
 | DRAM layout | `crates/platform-amd/src/zeppelin/layout.rs` |
 | ACPI data | `crates/platform-amd/src/zeppelin/acpi.rs` |
 | Host model of the dies, tests | `crates/platform-amd/src/zeppelin/tests.rs`, `crates/driver-amd/src/soc/zeppelin/test_pci.rs` |
@@ -50,21 +50,25 @@ Other: SMM TSEG/SMBASE in `crates/arch/src/x86/cpu/amd/smm.rs`; I2C master in
 | PSP variant | `psp::Variant::Zp` |
 | BIOS directory | `Family17hModel00` |
 
-## Silicon init (TP1)
+## Silicon init
 
-`Soc::silicon_init` runs `silicon::pre_mp`, then MP, then SMM. The board
-hooks are called where the vendor sequence has them.
+The silicon init is `zeppelin::Init::start` (`silicon::pre_mp_reset`),
+`Init::train_dxio` (`silicon::pre_mp_dxio`) and `Dxio::finish`
+(`silicon::pre_mp_finish`, then MP, then SMM). The board's `main` does its
+work between them, where the vendor sequence runs the board PEIMs.
 
 1. Taishan FCH pre-init (ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O). The AC
    power-loss policy is set in `identify`, after the console.
 2. DF MMIO/IO plan and programming (`df::map::plan`, `program`), per-die DF
    early init, scrub init from the APOB.
-3. FCH reset tasks, SATA and multi-FCH reset. Board `fch_reset_done`: MJ11
-   programs the VRs and redrivers over I2C3 and clears PM1.
+3. FCH reset tasks, SATA and multi-FCH reset. Then the board's `main`: MJ11
+   (`program_i2c_devices`, `clear_pm1`) programs the VRs and redrivers over
+   I2C3, reads the riser and clears PM1.
 4. Per die: NBIO early init, PSP BAR, IOHC DRAM map. BSP CCX init.
 5. IOAPIC and IOMMU BARs per die.
-6. DXIO training on every die, then board `dxio_training_done`. MJ11 applies
-   the post-training SMN values and waits for the BMC.
+6. DXIO training on every die, with the engines the board passes to
+   `train_dxio`. Then the board: MJ11 (`apply_phy_tuning`, `wait_for_bmc`)
+   applies the post-training SMN values and waits for the BMC.
 7. Taishan USB, SMU v9 init with its DMA pages and policy, CAC weights, DF late
    init, VGA routing, NBIO pre-enumeration, FCH ACPI decode, env, SATA, xGbE.
 8. MP (`noncar::mp::start`): the SMU releases the threads, each runs
@@ -72,9 +76,11 @@ hooks are called where the vendor sequence has them.
 9. SMM (`noncar::smm::install`) in TSEG, then `psp::notify_smm`.
 10. PCI interrupt router from `Config::fch.irq_routes`.
 
-TP2 (`after_resources`) sets the FCH ACPI ports. TP3 (`ready_to_boot`) does
-SATA late, multi-FCH late, FCH late init, board `ready_to_boot`, and disables
-DF extended config. Then LockDFReg, BootDone and the payload (see the flow).
+`after_resources` sets the FCH ACPI ports; MJ11's `program_vendor_gpios`,
+`set_vga_ssid` and `bmc::post_done` run after `Stage::enumerate`.
+`ready_to_boot` does SATA late, multi-FCH late and FCH late init; then the
+board's own work (MJ11 `hand_smbus_to_os`, the SMBus switch); then `end_of_post`, at the start of `Stage::boot`, disables DF
+extended config. Then LockDFReg, BootDone and the payload (see the flow).
 
 ## Config
 
@@ -179,21 +185,22 @@ From `zeppelin/acpi.rs` and the shared `crate::acpi`:
 
 ## SMM and sleep
 
-- Handler: `boards/gigabyte/mj11/src/smm.rs`: `Mj11Smm` implements the board
-  part (`SmmBoard::gevent`) of `fch::taishan::smm::Handler`, which is built on
-  `fch::smi`. Its GEVENT11 handler raises the vendor CPU diagnostic interrupt
-  through SMN.
+- Handler: `boards/gigabyte/mj11/src/smm.rs` owns the SMI handler. It reads
+  the sources with `fch::smi::PendingSmi`, raises the vendor CPU diagnostic
+  interrupt through SMN on GEVENT11, and sleeps through
+  `fch::taishan::smm::sleep`, which adds Zeppelin's entry work.
 - FCH sources routed to SMI: APM port `0xb2`, `SLP_TYP`, the power button, and
   `Config::fch.smi_gevents`.
 - Power button: S5 unless the OS owns ACPI.
 - `SLP_TYP` 3 (S3), 4 (S4) and 5 (S5) enter sleep (`fch/taishan/smm.rs`):
   `PMxEE` is set for S3/S4, then `SLP_TYP` is written with `SLP_EN`. S0 and S1
   requests are ignored.
-- At `SLP_TYP` with `SLP_EN` still clear, Zeppelin posts SMU message 0x13
-  (SleepEntry), as the vendor does; if the system still runs after 100 ms,
-  `SLP_EN` enters the state.
-- MJ11: SW SMI `0xc0` + Sx sends IPMI Set ACPI Power State over KCS
-  (`SmmBoard::apmc`), only if the OS's KCS interface is idle, within 20 ms.
+- With `SLP_TYP` armed and `SLP_EN` still clear (`Sleep::arm`), Zeppelin
+  posts SMU message 0x13 (SleepEntry), as the vendor does; if the system
+  still runs after 100 ms, `Armed::enter` sets `SLP_EN`.
+- MJ11: SW SMI `0xc0` + Sx sends IPMI Set ACPI Power State over KCS (the
+  board's SMI handler, from `PendingSmi::apm`), only if the OS's KCS
+  interface is idle, within 20 ms.
 - The DSDT declares `_S0_`, `_S1_`, `_S4_`, `_S5_`. There is no `_S3_` and no
   S3 resume path.
 
@@ -217,11 +224,11 @@ MJ11: Gigabyte MJ11, version the variant, rack mount chassis.
 
 ## MJ11 riser
 
-`fch_reset_done` reads the PCIE_1 riser ID from the EEPROM at `0x57` behind the
-PCA9545 at `0x74` (channel 2) on I2C3, else from GPIO 152/151/4/3, and maps it
-to a bifurcation with the vendor's table. The EC0 applies it; the EC1's F09
-template splits the slot on 3.1/3.3 and its mode table isn't decoded, so the
-EC1 logs the riser and keeps its default.
+`program_i2c_devices` reads the PCIE_1 riser ID from the EEPROM at `0x57`
+behind the PCA9545 at `0x74` (channel 2) on I2C3, else from GPIO
+152/151/4/3; `mj11::dxio` maps it to a bifurcation with the vendor's table.
+The EC0 applies it; the EC1's F09 template splits the slot on 3.1/3.3 and its
+mode table isn't decoded, so the EC1 logs the riser and keeps its default.
 
 ## Build
 

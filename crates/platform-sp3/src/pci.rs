@@ -7,7 +7,9 @@
 //! below), the non-PCI pool feeds the fixed NBIO BARs (SMU, PSP, IOAPIC,
 //! IOMMU) through [`NonPci`].
 
+use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::sp3::df::plan::{Pools, RootBridgePlan, Window};
+use fstart_driver_amd::sp3::soc::Generation;
 use fstart_pci::PciEcamConfig;
 
 /// The span of the PCI pools (prefetch then non-prefetch, contiguous by
@@ -18,15 +20,27 @@ fn pci_span(pools: &Pools) -> Window {
     Window::new(base, end - base)
 }
 
-/// The allocator configuration of one root bridge. `ecam` is the whole
-/// segment's ECAM `(base, size)`: config addresses are absolute.
-pub fn root_config(rb: &RootBridgePlan, ecam: (u64, u64)) -> PciEcamConfig {
+/// The PCI segment `generation`'s ECAM window decodes: what the allocator,
+/// the MCFG, the DSDT and the payload all use.
+pub fn segment(generation: Generation) -> PciRootInfo {
+    let (ecam_base, buses) = generation.ecam();
+    PciRootInfo {
+        segment: 0,
+        ecam_base,
+        bus_start: 0,
+        bus_end: (buses - 1) as u8,
+    }
+}
+
+/// The allocator configuration of one root bridge in the segment `pci`:
+/// config addresses are absolute.
+pub fn root_config(rb: &RootBridgePlan, pci: &PciRootInfo) -> PciEcamConfig {
     let below = pci_span(&rb.below_pools);
     let above = rb.above_pools.map(|p| pci_span(&p));
     let io = rb.io_pool.unwrap_or(Window::new(0, 0));
     PciEcamConfig {
-        ecam_base: ecam.0,
-        ecam_size: ecam.1,
+        ecam_base: pci.ecam_base,
+        ecam_size: pci.ecam_size(),
         mmio32_base: below.base,
         mmio32_size: below.size,
         mmio64_base: above.map_or(0, |w| w.base),
@@ -108,12 +122,29 @@ mod tests {
 
     #[test]
     fn root_config_uses_the_pci_pools_and_absolute_ecam() {
-        let c = root_config(&plan(), (0xe000_0000, 0x1000_0000));
+        let c = root_config(&plan(), &segment(Generation::Milan));
         assert_eq!((c.ecam_base, c.ecam_size), (0xe000_0000, 0x1000_0000));
         assert_eq!((c.mmio32_base, c.mmio32_size), (0xa000_0000, 0x0f00_0000));
         assert_eq!(c.mmio64_base, 0x100_2020_0000);
         assert_eq!((c.pio_base, c.pio_size), (0x1000, 0x3000));
         assert_eq!((c.bus_start, c.bus_end), (0, 0x3f));
+    }
+
+    #[test]
+    fn mcfg_per_generation() {
+        let m = fstart_acpi::build_mcfg(&[segment(Generation::Naples)]);
+        assert_eq!(&m[..4], b"MCFG");
+        assert_eq!(
+            u64::from_le_bytes(m[44..52].try_into().unwrap()),
+            0xF000_0000
+        );
+        assert_eq!(m[55], 127);
+        let m = fstart_acpi::build_mcfg(&[segment(Generation::Milan)]);
+        assert_eq!(
+            u64::from_le_bytes(m[44..52].try_into().unwrap()),
+            0xE000_0000
+        );
+        assert_eq!(m[55], 255);
     }
 
     #[test]

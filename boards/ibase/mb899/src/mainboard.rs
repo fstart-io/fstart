@@ -1,90 +1,73 @@
 //! MB899 attached-device sequencing; drivers own all register encodings.
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_core::services::{ServiceError, device::BusDevice};
-#[cfg(fstart_stage_env = "car")]
 use fstart_driver_superio::w83627ehg::{ClockInput, FanOutput, OutputDriver};
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
 use fstart_driver_superio::{
     w83627ehg::W83627ehg,
     winbond_hwm::{WinbondMonitor, WinbondMonitorProfile},
 };
+use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-#[derive(Default)]
-pub struct Mb899Mainboard;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-impl<S> fstart_platform_intel::IntelSmbusRouting<S> for Mb899Mainboard {}
-
-#[cfg(fstart_stage_env = "car")]
-impl fstart_platform_intel::IntelEarlyBoardHooks<crate::Hardware> for Mb899Mainboard {
-    fn before_console(
-        &mut self,
-        _: &mut fstart_platform_intel::IntelEarlyCtx<crate::Hardware>,
-    ) -> Result<(), ServiceError> {
-        let mut sio =
-            W83627ehg::new_at_base(crate::early_superio_config(), crate::SUPERIO_PNP_BASE)?;
-        sio.init()?;
-        sio.set_clock_input(ClockInput::Mhz48);
-        sio.select_uart_a_pins();
-        Ok(())
-    }
-    fn before_memory(
-        &mut self,
-        ctx: &mut fstart_platform_intel::IntelEarlyCtx<crate::Hardware>,
-    ) -> Result<(), ServiceError> {
-        if ctx.boot_path == fstart_platform_intel::BootPath::S3Resume {
-            return Ok(());
-        }
-        let mut sio =
-            W83627ehg::new_at_base(crate::early_superio_config(), crate::SUPERIO_PNP_BASE)?;
-        sio.init()?;
-        sio.set_fan_output_driver(FanOutput::System, OutputDriver::OpenDrain);
-        sio.set_fan_output_driver(FanOutput::CpuPrimary, OutputDriver::OpenDrain);
-        sio.enable_hwmon(crate::HWM_BASE);
-        WinbondMonitor::new(crate::HWM_BASE, WinbondMonitorProfile::Ehg)?
-            .force_full_speed(&crate::COOLING)?;
-        sio.disable_watchdog();
-        sio.disable_floppy();
-        sio.disable_parallel();
-        sio.disable_serial_flash();
-        sio.set_vid_input_vrm10(false);
-        sio.select_uart_b_pins();
-        sio.select_secondary_cpu_fan_pins();
-        sio.configure_gpio(&crate::superio_gpio_pins(false));
-        Ok(())
+pub const fn console() -> Ns16550Config {
+    Ns16550Config {
+        regs: AccessMode::Pio {
+            base: crate::UART0_PIO_BASE as u64,
+        },
+        clock_freq: crate::UART0_CLOCK_FREQ,
+        baud_rate: crate::UART0_BAUD_RATE,
     }
 }
 
-#[cfg(fstart_stage_env = "ram")]
-impl fstart_platform_intel::IntelMainstageBoardHooks<crate::Hardware> for Mb899Mainboard {
-    fn before_console(
-        &mut self,
-        _: &mut fstart_platform_intel::IntelMainstageBoardCtx<crate::Hardware>,
-    ) -> Result<(), ServiceError> {
-        let mut sio =
-            W83627ehg::new_at_base(crate::mb899_superio_config(), crate::SUPERIO_PNP_BASE)?;
-        sio.init()?;
-        sio.configure_uart_b_normal();
-        sio.configure_gpio(&crate::superio_gpio_pins(true));
-        sio.enable_hwmon(crate::HWM_BASE);
-        Ok(())
-    }
-    fn before_devices(
-        &mut self,
-        _: &mut fstart_platform_intel::IntelMainstageBoardCtx<crate::Hardware>,
-    ) -> Result<(), ServiceError> {
-        WinbondMonitor::new(crate::HWM_BASE, WinbondMonitorProfile::Ehg)?.init(&crate::MONITOR)?;
-        fstart_log::warn!(
-            "mb899: experimental VGA-only firmware; LVDS/VBT, EC and riser support incomplete"
-        );
-        Ok(())
-    }
+/// The SuperIO's 48 MHz clock and UART A pins, before the bootblock console.
+pub fn setup_early_superio() -> Result<(), ServiceError> {
+    let mut sio = W83627ehg::new_at_base(crate::early_superio_config(), crate::SUPERIO_PNP_BASE)?;
+    sio.init()?;
+    sio.set_clock_input(ClockInput::Mhz48);
+    sio.select_uart_a_pins();
+    Ok(())
+}
+/// Fans at full speed, hardware monitor, and the rest of the SuperIO, before
+/// DRAM training (cold and warm boots).
+pub fn setup_cooling() -> Result<(), ServiceError> {
+    let mut sio = W83627ehg::new_at_base(crate::early_superio_config(), crate::SUPERIO_PNP_BASE)?;
+    sio.init()?;
+    sio.set_fan_output_driver(FanOutput::System, OutputDriver::OpenDrain);
+    sio.set_fan_output_driver(FanOutput::CpuPrimary, OutputDriver::OpenDrain);
+    sio.enable_hwmon(crate::HWM_BASE);
+    WinbondMonitor::new(crate::HWM_BASE, WinbondMonitorProfile::Ehg)?
+        .force_full_speed(&crate::COOLING)?;
+    sio.disable_watchdog();
+    sio.disable_floppy();
+    sio.disable_parallel();
+    sio.disable_serial_flash();
+    sio.set_vid_input_vrm10(false);
+    sio.select_uart_b_pins();
+    sio.select_secondary_cpu_fan_pins();
+    sio.configure_gpio(&crate::superio_gpio_pins(false));
+    Ok(())
 }
 
-#[cfg(fstart_stage_env = "ram")]
-extern crate alloc;
-#[cfg(fstart_stage_env = "ram")]
-impl fstart_acpi::device::AcpiDevice for Mb899Mainboard {
+/// The SuperIO's UART B, GPIOs and hardware monitor, before the ramstage
+/// console.
+pub fn setup_superio() -> Result<(), ServiceError> {
+    let mut sio = W83627ehg::new_at_base(crate::mb899_superio_config(), crate::SUPERIO_PNP_BASE)?;
+    sio.init()?;
+    sio.configure_uart_b_normal();
+    sio.configure_gpio(&crate::superio_gpio_pins(true));
+    sio.enable_hwmon(crate::HWM_BASE);
+    Ok(())
+}
+/// The hardware monitor limits, before the chipset devices.
+pub fn init_hwmon() -> Result<(), ServiceError> {
+    WinbondMonitor::new(crate::HWM_BASE, WinbondMonitorProfile::Ehg)?.init(&crate::MONITOR)?;
+    fstart_log::warn!(
+        "mb899: experimental VGA-only firmware; LVDS/VBT, EC and riser support incomplete"
+    );
+    Ok(())
+}
+
+/// The board's ACPI: its DSDT fragment.
+pub struct Acpi;
+impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
     fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
         let sio = fstart_driver_superio::superio_dsdt_aml(&crate::mb899_superio_config());

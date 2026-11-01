@@ -9,13 +9,11 @@ publish = false
 schema = 1
 board = "qemu-armv7"
 platform = "armv7"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
 
 [dependencies]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/stage.rs.

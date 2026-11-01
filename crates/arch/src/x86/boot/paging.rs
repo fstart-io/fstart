@@ -1,17 +1,19 @@
-//! Identity page tables in DRAM.
+//! Identity page tables built in Rust: the map every platform installs in
+//! its memory phase, before APs start and before the payload.
 //!
-//! The early assembly builds its page tables into link-time statics that live in
-//! the cache-as-RAM window at the top of the 4 GiB space. Those tables are backed
-//! by the boot CPU's cache, so only that CPU can read them. An application
-//! processor started with INIT+SIPI begins in real mode with no cache
-//! configured, reads garbage where the tables should be, triple-faults, and the
-//! chipset turns that into a platform reset.
+//! The entry tables (ROM tables or ones the reset path generates) cover too
+//! little, and ROM tables cost a flash read per page walk. An application
+//! processor started with INIT+SIPI begins with no cache configured,
+//! inherits the BSP's CR3, and needs DRAM-backed tables.
 //!
-//! Postcar already runs from DRAM, so it builds a replacement set there and loads
-//! it. Every stage and CPU afterwards then shares one DRAM-backed address space,
-//! which is what the AP trampoline needs when it inherits the BSP's CR3.
+//! [`IdentityTables`] always maps the low 4 GiB plus the spans it is given
+//! (RAM, PCI memory BARs), with 1 GiB leaves when the CPU has them (PDPE1GB)
+//! and 2 MiB leaves otherwise. PTEs request write-back uniformly; MTRRs stay
+//! the source of truth for RAM versus MMIO cacheability.
 
-/// Space the tables need: one PML4, one PDPT and four page directories.
+/// The worst case for the low 4 GiB alone: PML4, PDPT and four page
+/// directories of 2 MiB leaves. A fixed buffer of this size suffices for
+/// [`IdentityTables::build_in`] without extra spans.
 pub const TABLE_BYTES: usize = 6 * 4096;
 
 extern crate alloc;
@@ -19,167 +21,198 @@ extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 use fstart_core::services::ServiceError;
 use x86_64_crate::structures::paging::{
-    FrameAllocator, Mapper, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size2MiB,
-    Size4KiB, mapper::MapToError,
+    FrameAllocator, Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame,
+    Size1GiB, Size2MiB, Size4KiB, mapper::MapToError,
 };
 use x86_64_crate::{PhysAddr, VirtAddr};
 
-/// Pages are present and writable; leaf entries map 2 MiB directly.
+/// Pages are present and writable; leaf entries map 1 GiB or 2 MiB directly.
 const TABLE_FLAGS: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
-const LEAF_FLAGS: PageTableFlags = TABLE_FLAGS.union(PageTableFlags::HUGE_PAGE);
 
-/// Build identity tables for the low 4 GiB at `tables_phys`.
-///
-/// Returns `tables_phys` so callers can hand it to [`load_cr3`]. Mapping the
-/// whole low 4 GiB covers RAM and every MMIO window the firmware touches, so a
-/// driver that relied on the old map cannot regress; MTRRs still decide the
-/// caching attributes of the MMIO ranges.
-///
-/// # Safety
-///
-/// `tables_phys` must be 4 KiB aligned, writable, identity mapped in the current
-/// address space, and must have [`TABLE_BYTES`] free. The result stays live until
-/// the payload replaces CR3, so the region must remain reserved.
-pub unsafe fn build_identity_tables(tables_phys: u64) -> u64 {
-    let pml4 = unsafe { &mut *(tables_phys as *mut PageTable) };
-    let pdpt = unsafe { &mut *((tables_phys + 4096) as *mut PageTable) };
-    let pdpt_phys = tables_phys + 4096;
-    let pds_phys = tables_phys + 8192;
-
-    pml4.zero();
-    pdpt.zero();
-    pml4[0].set_addr(PhysAddr::new(pdpt_phys), TABLE_FLAGS);
-    for i in 0..4u64 {
-        let pd_phys = pds_phys + i * 4096;
-        let pd = unsafe { &mut *(pd_phys as *mut PageTable) };
-        pd.zero();
-        pdpt[i as usize].set_addr(PhysAddr::new(pd_phys), TABLE_FLAGS);
-        for j in 0..512u64 {
-            let addr = i * (1 << 30) + j * (1 << 21);
-            // PTEs request write-back uniformly. Platform MTRRs remain the
-            // source of truth for RAM versus MMIO cacheability, so valid RAM
-            // above 2 GiB is not accidentally forced uncached here.
-            pd[j as usize].set_addr(PhysAddr::new(addr), LEAF_FLAGS);
-        }
-    }
-    tables_phys
+/// Whether the CPU maps 1 GiB pages (CPUID 8000_0001h EDX bit 26).
+pub fn gib_pages() -> bool {
+    crate::x86::cpuid(0x8000_0000).0 >= 0x8000_0001
+        && crate::x86::cpuid(0x8000_0001).3 & (1 << 26) != 0
 }
 
-/// Build the tables and load them into CR3, flushing the TLB as a side effect.
-///
-/// # Safety
-///
-/// As [`build_identity_tables`], and the new tables must map every address this
-/// CPU will execute or touch after the switch — including its own stack.
-pub unsafe fn install_identity_tables(tables_phys: u64) -> u64 {
-    let base = unsafe { build_identity_tables(tables_phys) };
-    // APs begin after INIT with caching disabled. Make the page tables visible
-    // in DRAM rather than leaving any entries dirty in the BSP's cache.
-    unsafe { crate::x86::writeback_cache_range(base as *const u8, TABLE_BYTES) };
-    load_cr3(base);
-    base
+/// Where the table frames come from.
+enum Frames {
+    /// Heap pages; the platform keeps the heap reserved through handoff.
+    Heap(Vec<Box<PageTable>>),
+    /// A fixed, identity-mapped, reserved buffer.
+    Fixed {
+        base: u64,
+        used: usize,
+        capacity: usize,
+    },
 }
 
-/// Final identity map, owned until installation. All backing pages are heap
-/// allocations, so the platform must reserve that heap through payload handoff.
-/// Dropping an uninstalled map frees it without changing the CPU's page tables.
+/// An identity map, owned until installation. Dropping an uninstalled map
+/// leaves the CPU's page tables alone (and frees heap frames).
 pub struct IdentityTables {
-    pages: Vec<Box<PageTable>>,
+    frames: Frames,
+    root: u64,
 }
 
-// SAFETY: each allocation is a distinct, aligned PageTable retained in `pages`.
-// Firmware's heap is identity mapped, so its pointer is its physical address.
+// SAFETY: each frame is a distinct, aligned, zeroed PageTable retained by
+// `frames`. Firmware memory is identity mapped, so its pointer is its
+// physical address.
 unsafe impl FrameAllocator<Size4KiB> for IdentityTables {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        let mut page = Box::new(PageTable::new());
-        let address = PhysAddr::try_new((&mut *page as *mut PageTable) as u64).ok()?;
-        let frame = PhysFrame::from_start_address(address).ok()?;
-        self.pages.push(page);
-        Some(frame)
+        let address = match &mut self.frames {
+            Frames::Heap(pages) => {
+                let mut page = Box::new(PageTable::new());
+                let address = (&mut *page as *mut PageTable) as u64;
+                pages.push(page);
+                address
+            }
+            Frames::Fixed {
+                base,
+                used,
+                capacity,
+            } => {
+                if *used == *capacity {
+                    return None;
+                }
+                let address = *base + (*used * 4096) as u64;
+                *used += 1;
+                // SAFETY: an unused, aligned page of the caller's buffer.
+                unsafe { (address as *mut PageTable).write(PageTable::new()) };
+                address
+            }
+        };
+        PhysFrame::from_start_address(PhysAddr::try_new(address).ok()?).ok()
     }
 }
 
 impl IdentityTables {
-    /// Build a final map, retaining the bootstrap low-4-GiB coverage and adding
-    /// the supplied physical spans (RAM and allocated PCI memory BARs).
-    ///
-    /// Spans are covered by 2-MiB leaves; no 1-GiB-page CPU support is needed.
-    /// PTEs leave cacheability to platform MTRRs, like the bootstrap map.
+    /// Map the low 4 GiB plus `spans` (base, size) with heap frames.
     ///
     /// # Safety
     ///
-    /// The allocator must supply identity-mapped DRAM that remains reserved
-    /// from the payload. The spans must be valid platform physical addresses.
+    /// The heap must be identity-mapped DRAM that stays reserved from the
+    /// payload until it replaces CR3 (including S3). The spans must be valid
+    /// platform physical addresses.
     pub unsafe fn build(spans: impl IntoIterator<Item = (u64, u64)>) -> Result<Self, ServiceError> {
-        let mut tables = Self { pages: Vec::new() };
+        Self::map(Frames::Heap(Vec::new()), gib_pages(), spans)
+    }
+
+    /// Map the low 4 GiB plus `spans` with frames from the buffer at `base`
+    /// of `size` bytes; fails if they run out ([`TABLE_BYTES`] always
+    /// suffices without spans).
+    ///
+    /// # Safety
+    ///
+    /// The buffer must be 4 KiB aligned, identity mapped, writable, unused,
+    /// and stay reserved until the payload replaces CR3.
+    pub unsafe fn build_in(
+        base: u64,
+        size: usize,
+        spans: impl IntoIterator<Item = (u64, u64)>,
+    ) -> Result<Self, ServiceError> {
+        if base % 4096 != 0 {
+            return Err(ServiceError::InvalidParam);
+        }
+        let frames = Frames::Fixed {
+            base,
+            used: 0,
+            capacity: size / 4096,
+        };
+        Self::map(frames, gib_pages(), spans)
+    }
+
+    fn map(
+        frames: Frames,
+        gib: bool,
+        spans: impl IntoIterator<Item = (u64, u64)>,
+    ) -> Result<Self, ServiceError> {
+        let mut tables = Self { frames, root: 0 };
         let root = tables.allocate_frame().ok_or(ServiceError::HardwareError)?;
-        // SAFETY: the root is a new zeroed page owned by `tables`; subsequent
-        // frame allocation cannot move its boxed storage or alias its entries.
+        tables.root = root.start_address().as_u64();
+        // SAFETY: the root is a new zeroed page owned by `tables`; frame
+        // allocation never moves it or aliases its entries.
         let mut mapper = unsafe {
-            OffsetPageTable::new(
-                &mut *(root.start_address().as_u64() as *mut PageTable),
-                VirtAddr::zero(),
-            )
+            OffsetPageTable::new(&mut *(tables.root as *mut PageTable), VirtAddr::zero())
         };
         for (base, size) in core::iter::once((0, 1u64 << 32)).chain(spans) {
-            if size == 0 {
-                continue;
-            }
-            let last = base
-                .checked_add(size - 1)
-                .ok_or(ServiceError::InvalidParam)?;
-            let start = PhysFrame::<Size2MiB>::containing_address(
-                PhysAddr::try_new(base).map_err(|_| ServiceError::InvalidParam)?,
-            );
-            let end = PhysFrame::<Size2MiB>::containing_address(
-                PhysAddr::try_new(last).map_err(|_| ServiceError::InvalidParam)?,
-            );
-            for frame in PhysFrame::range_inclusive(start, end) {
-                let address = VirtAddr::try_new(frame.start_address().as_u64())
-                    .map_err(|_| ServiceError::InvalidParam)?;
-                // SAFETY: this disconnected table maps each frame to itself;
-                // no active address space or live Rust references are changed.
-                match unsafe {
-                    mapper.map_to(
-                        x86_64_crate::structures::paging::Page::from_start_address(address)
-                            .map_err(|_| ServiceError::InvalidParam)?,
-                        frame,
-                        TABLE_FLAGS,
-                        &mut tables,
-                    )
-                } {
-                    Ok(flush) => flush.ignore(), // This CR3 is not active yet.
-                    Err(MapToError::PageAlreadyMapped(existing)) if existing == frame => {}
-                    Err(_) => return Err(ServiceError::HardwareError),
-                }
+            if gib {
+                map_span::<Size1GiB>(&mut mapper, &mut tables, base, size)?;
+            } else {
+                map_span::<Size2MiB>(&mut mapper, &mut tables, base, size)?;
             }
         }
         Ok(tables)
     }
 
-    /// Publish the completed map and retain its storage for the boot lifetime.
+    /// Load the map into CR3, after writing its frames back to DRAM.
     ///
     /// # Safety
     ///
-    /// Called on the BSP before AP startup, with every live instruction, stack,
-    /// table and data address identity mapped. The heap holding these tables
-    /// must remain reserved until the payload replaces CR3 (including S3).
+    /// Called on the BSP before AP startup, with every live instruction,
+    /// stack, table and data address identity mapped. The frames must stay
+    /// reserved until the payload replaces CR3 (including S3).
     pub unsafe fn install(self) -> u64 {
-        let root = (&*self.pages[0] as *const PageTable) as u64;
-        for page in &self.pages {
-            // SAFETY: each page is a live, aligned allocation. APs initially
-            // walk the tables with caching disabled, so publish all entries.
-            unsafe {
-                crate::x86::writeback_cache_range(
-                    (&**page as *const PageTable).cast(),
-                    core::mem::size_of::<PageTable>(),
-                );
+        // APs walk the tables with caching disabled at first: publish them.
+        match &self.frames {
+            Frames::Heap(pages) => {
+                for page in pages {
+                    // SAFETY: each page is a live, aligned allocation.
+                    unsafe {
+                        crate::x86::writeback_cache_range(
+                            (&**page as *const PageTable).cast(),
+                            core::mem::size_of::<PageTable>(),
+                        );
+                    }
+                }
+            }
+            Frames::Fixed { base, used, .. } => {
+                // SAFETY: the used part of the caller's buffer.
+                unsafe { crate::x86::writeback_cache_range(*base as *const u8, *used * 4096) };
             }
         }
-        load_cr3(root);
+        load_cr3(self.root);
+        let root = self.root;
         core::mem::forget(self);
         root
     }
+}
+
+/// Identity map `[base, base + size)` with `S` leaves.
+fn map_span<S: PageSize>(
+    mapper: &mut OffsetPageTable<'_>,
+    frames: &mut IdentityTables,
+    base: u64,
+    size: u64,
+) -> Result<(), ServiceError>
+where
+    for<'a> OffsetPageTable<'a>: Mapper<S>,
+{
+    if size == 0 {
+        return Ok(());
+    }
+    let last = base
+        .checked_add(size - 1)
+        .ok_or(ServiceError::InvalidParam)?;
+    let start = PhysFrame::<S>::containing_address(
+        PhysAddr::try_new(base).map_err(|_| ServiceError::InvalidParam)?,
+    );
+    let end = PhysFrame::<S>::containing_address(
+        PhysAddr::try_new(last).map_err(|_| ServiceError::InvalidParam)?,
+    );
+    for frame in PhysFrame::range_inclusive(start, end) {
+        let address = VirtAddr::try_new(frame.start_address().as_u64())
+            .map_err(|_| ServiceError::InvalidParam)?;
+        let page =
+            Page::<S>::from_start_address(address).map_err(|_| ServiceError::InvalidParam)?;
+        // SAFETY: this disconnected table maps each frame to itself; no
+        // active address space or live Rust reference changes.
+        match unsafe { mapper.map_to(page, frame, TABLE_FLAGS, frames) } {
+            Ok(flush) => flush.ignore(), // This CR3 is not active yet.
+            Err(MapToError::PageAlreadyMapped(existing)) if existing == frame => {}
+            Err(_) => return Err(ServiceError::HardwareError),
+        }
+    }
+    Ok(())
 }
 
 /// Load CR3.
@@ -196,81 +229,110 @@ pub fn load_cr3(value: u64) {
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
+    use x86_64_crate::structures::paging::Translate;
 
-    #[repr(align(4096))]
-    struct Storage([u8; TABLE_BYTES]);
+    fn heap(gib: bool, spans: &[(u64, u64)]) -> Result<IdentityTables, ServiceError> {
+        IdentityTables::map(Frames::Heap(Vec::new()), gib, spans.iter().copied())
+    }
+
+    fn translate(tables: &mut IdentityTables, address: u64) -> Option<u64> {
+        // SAFETY: host allocations have pointer-as-physical addressing for
+        // the software walk; these tables are never installed.
+        let mapper = unsafe {
+            OffsetPageTable::new(&mut *(tables.root as *mut PageTable), VirtAddr::zero())
+        };
+        mapper
+            .translate_addr(VirtAddr::new(address))
+            .map(|a| a.as_u64())
+    }
 
     #[test]
     fn final_map_covers_remapped_ram_and_high_pci_bars() {
-        use x86_64_crate::structures::paging::Translate;
-        // SAFETY: host allocations have pointer-as-physical addressing for the
-        // software walk; these tables are never installed into the host CR3.
-        let mut tables = unsafe {
-            IdentityTables::build([
-                (0x100_000000, 0x3c00_0000),
-                (0x200_000000, 0x1000_0000),
-                (0x100_000001, 0x1000), // Overlapping spans are harmless.
-            ])
+        for gib in [false, true] {
+            let mut tables = heap(
+                gib,
+                &[
+                    (0x100_000000, 0x3c00_0000),
+                    (0x200_000000, 0x1000_0000),
+                    (0x100_000001, 0x1000), // Overlapping spans are harmless.
+                ],
+            )
+            .unwrap();
+            for address in [0, 0xfff_fffff, 0x13bc_00000, 0x13bff_ffff, 0x200_000000] {
+                assert_eq!(translate(&mut tables, address), Some(address), "{gib}");
+            }
+            assert_eq!(translate(&mut tables, 0x240_000000), None);
         }
-        .unwrap();
-        let mapper = unsafe { OffsetPageTable::new(&mut tables.pages[0], VirtAddr::zero()) };
-        for address in [0, 0xfff_fffff, 0x13bc_00000, 0x13bff_ffff, 0x200_000000] {
-            assert_eq!(
-                mapper.translate_addr(VirtAddr::new(address)),
-                Some(PhysAddr::new(address))
-            );
+        // 2 MiB leaves stop at the span; a 1 GiB leaf covers its gigabyte.
+        assert_eq!(
+            translate(
+                &mut heap(false, &[(0x100_000000, 0x3c00_0000)]).unwrap(),
+                0x13c00_0000
+            ),
+            None
+        );
+        assert_eq!(
+            translate(
+                &mut heap(true, &[(0x100_000000, 0x3c00_0000)]).unwrap(),
+                0x13c00_0000
+            ),
+            Some(0x13c00_0000)
+        );
+    }
+
+    #[test]
+    fn low_4gib_uses_the_requested_leaf_size() {
+        let tables = heap(true, &[]).unwrap();
+        let Frames::Heap(pages) = &tables.frames else {
+            unreachable!()
+        };
+        assert_eq!(pages.len(), 2, "PML4 and one PDPT of 1 GiB leaves");
+        let tables = heap(false, &[]).unwrap();
+        let Frames::Heap(pages) = &tables.frames else {
+            unreachable!()
+        };
+        assert_eq!(pages.len(), 6, "PML4, PDPT and four 2 MiB directories");
+        // Leaves map their own address, write-back (no PWT/PCD).
+        let pdpt = &*pages[1];
+        let pd = unsafe { &*(pdpt[3].addr().as_u64() as *const PageTable) };
+        assert_eq!(pd[511].addr().as_u64(), 0xffe0_0000);
+        assert!(pd[511].flags().contains(PageTableFlags::HUGE_PAGE));
+        assert!(
+            !pd[511]
+                .flags()
+                .intersects(PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE)
+        );
+    }
+
+    #[test]
+    fn fixed_buffer_fits_the_low_4gib_and_fails_cleanly_when_full() {
+        #[repr(align(4096))]
+        struct Storage([u8; TABLE_BYTES]);
+        let mut storage = Storage([0xa5; TABLE_BYTES]);
+        let base = storage.0.as_mut_ptr() as u64;
+        for gib in [false, true] {
+            let frames = Frames::Fixed {
+                base,
+                used: 0,
+                capacity: TABLE_BYTES / 4096,
+            };
+            let mut tables = IdentityTables::map(frames, gib, []).unwrap();
+            assert_eq!(tables.root, base);
+            assert_eq!(translate(&mut tables, 0xffff_ffff), Some(0xffff_ffff));
         }
-        assert_eq!(mapper.translate_addr(VirtAddr::new(0x13c00_0000)), None);
-        assert_eq!(mapper.translate_addr(VirtAddr::new(0x210_000000)), None);
+        let frames = Frames::Fixed {
+            base,
+            used: 0,
+            capacity: TABLE_BYTES / 4096,
+        };
+        // A span above 512 GiB needs another PDPT (and directory).
+        assert!(IdentityTables::map(frames, false, [(1 << 40, 0x1000)]).is_err());
     }
 
     #[test]
     fn final_map_rejects_overflowing_or_noncanonical_spans() {
         for span in [(u64::MAX, 2), (1 << 47, 1)] {
-            assert!(unsafe { IdentityTables::build([span]) }.is_err());
-        }
-    }
-
-    #[test]
-    fn builds_identity_entries_for_the_low_4gib() {
-        let mut storage = Storage([0; TABLE_BYTES]);
-        let phys = storage.0.as_mut_ptr() as u64;
-        // SAFETY: the buffer is aligned, writable and large enough; the tables are
-        // never installed into CR3 here, so address space is untouched.
-        let built = unsafe { build_identity_tables(phys) };
-        assert_eq!(built, phys);
-
-        let base = storage.0.as_ptr() as *const u64;
-        let pml4 = unsafe { base.read_volatile() };
-        assert_eq!(pml4, phys + 4096 + TABLE_FLAGS.bits());
-        assert_eq!(
-            pml4 & PageTableFlags::PRESENT.bits(),
-            PageTableFlags::PRESENT.bits(),
-            "low 4 GiB must be mapped"
-        );
-
-        let pdpt = unsafe { base.add(512).read_volatile() };
-        assert_eq!(pdpt, phys + 8192 + TABLE_FLAGS.bits());
-
-        // First and last leaf entries: 0 and 4 GiB - 2 MiB, both 2 MiB pages.
-        let first = unsafe { base.add(1024).read_volatile() };
-        assert_eq!(first, LEAF_FLAGS.bits());
-        let last = unsafe { base.add(1024 + 2047).read_volatile() };
-        assert_eq!(last, 0xffe0_0000 | LEAF_FLAGS.bits());
-        // Page tables do not duplicate platform cacheability policy.
-        for index in [0usize, 1024, 2047] {
-            assert_eq!(
-                unsafe { base.add(1024 + index).read_volatile() }
-                    & (PageTableFlags::WRITE_THROUGH | PageTableFlags::NO_CACHE).bits(),
-                0
-            );
-        }
-
-        // Every leaf must be a present 2 MiB page at its own address.
-        for index in 0..2048u64 {
-            let entry = unsafe { base.add(1024 + index as usize).read_volatile() };
-            assert_eq!(entry & LEAF_FLAGS.bits(), LEAF_FLAGS.bits());
-            assert_eq!(entry & !0xfff & !((1 << 21) - 1), index * (1 << 21));
+            assert!(heap(false, &[span]).is_err());
         }
     }
 }

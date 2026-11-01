@@ -57,7 +57,14 @@ fn load(
         reserved: &[],
         entry_alignment: 1,
     };
-    load_from_slot(&SliceMedia(slot), stage, &descriptor, &policy).map(|v| v.entry())
+    load_from_slot(
+        &SliceMedia(slot),
+        stage,
+        &descriptor,
+        &policy,
+        &crate::boot::Lz4,
+    )
+    .map(|v| v.entry())
 }
 
 #[test]

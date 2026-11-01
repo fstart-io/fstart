@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Gigabyte MJ11-EC1 (G431-MM0) and MJ11-EC0: EPYC Embedded 3000 (SP4r2) with
 //! an AST2500 BMC.
+//!
+//! The flow is the board's: `src/bin/reset.rs`, from the PSP's reset vector
+//! to the payload. This library holds the board's facts and the mainboard
+//! work that `main` calls.
 #![no_std]
 extern crate alloc;
 
 mod acpi;
-mod bmc;
+pub mod bmc;
 mod dxio;
 mod gpio;
 mod i2c;
 mod riser;
-#[cfg(fstart_stage_env = "smm")]
+/// The SMM handler, built into the separate SMM image.
+#[cfg(feature = "smm")]
 pub mod smm;
 mod variant;
 
+use fstart_driver_amd::{ccx::tsc::Tsc, fch::gpio::Gpio, soc::zeppelin::Die};
 use fstart_driver_amd::{
     fch::{
         self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status,
@@ -28,10 +34,8 @@ use fstart_driver_amd::{
 use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
-use fstart_platform_amd::{
-    noncar::BoardCtx,
-    zeppelin::{CcxConfig, Config, DxioConfig, FchConfig},
-};
+use fstart_pci::ecam::GlobalEcam;
+use fstart_platform_amd::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
@@ -90,7 +94,7 @@ const IRQ_ROUTES: &[Route] = &[
 /// The PM1 write of the vendor AmdCpmOemInitPeim and SMBusSwitch: write back
 /// the pending PM1 status plus bits 15:14 (all W1C) and clear
 /// PCIEXP_WAKE_DIS.
-fn clear_pm1(fch: &Fch<impl Bus>) {
+pub fn clear_pm1(fch: &Fch<impl Bus>) {
     fch.reg(ACPI_PM1_STATUS)
         .modify(Pm1Status::WAK::SET + Pm1Status::PCIEXP_WAKE::SET);
     fch.reg(ACPI_PM1_ENABLE)
@@ -121,29 +125,8 @@ fn ast_vga_set_ssid(pci: &impl ConfigRegionAccess) {
     }
 }
 
-/// The PCIE_1 bifurcation the riser asks for (the vendor Setup default
-/// "Auto"). The modes are the F02 (EC0) decoding; the EC1's F09 template
-/// splits its slot on 3.1 and 3.3 instead and its mode table isn't decoded,
-/// so the EC1 only reports the riser.
-fn riser_slot(config: &mut Config, id: Option<u8>) {
-    let mode = id.and_then(riser::bifurcation);
-    fstart_log::info!(
-        "PCIE_1 riser {}: {}",
-        id.map_or(0xff, u32::from),
-        match mode {
-            Some(riser::Bifurcation::X4x4x4x4) => "x4x4x4x4",
-            Some(riser::Bifurcation::X4x4) => "x4x4",
-            Some(riser::Bifurcation::X8x4x4) => "x8x4x4",
-            Some(riser::Bifurcation::X8x8) => "x8x8",
-            None => "the default",
-        }
-    );
-    if let Some(mode) = mode.filter(|_| cfg!(feature = "ec0")) {
-        config.dxio.descriptors[0] = dxio::with_riser(mode);
-    }
-}
-
-const CONFIG: Config = Config {
+/// How the MJ11 wires the Zeppelin blocks.
+pub static CONFIG: Config = Config {
     // Gigabyte
     subsystem_id: 0x1000_1458,
     ccx: CcxConfig::DEFAULT,
@@ -163,21 +146,56 @@ const CONFIG: Config = Config {
 impl fstart_platform_amd::noncar::Board for Board {
     type Soc = Zeppelin;
     const CONFIG: &'static Config = &CONFIG;
+}
 
-    fn fch_reset_done(ctx: &mut BoardCtx<'_, Zeppelin>, config: &mut Config) {
-        let gpio = ctx.gpio();
-        if i2c::PADS
-            .iter()
-            .any(|&pad| gpio.set_function(pad, i2c::FUNCTION).is_err())
-        {
-            fstart_log::error!("I2C3 pads not routed");
-        }
-        // SAFETY: nothing else uses I2C3.
-        let eeprom_id = match unsafe {
-            fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, ctx.clock)
-        } {
+/// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.
+pub fn early_init(lpc: &Lpc<impl Bus>) {
+    lpc.enable_sio_2e();
+    lpc.enable_io_decode(IoPortDecode::SERIAL0::SET);
+    // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.
+    let _ = lpc.set_wideio_range(0xa00, 512);
+    let _ = lpc.set_wideio_range(0xca0, 16);
+    let Ok(sio) = Ast2400::new_at_base(SuperIoConfig::default(), ast::CONFIG_PORT) else {
+        return;
+    };
+    sio.route_uart1_pins();
+    // SUART4 carries the BMC's IPMI SOL; the host must leave it alone.
+    sio.disable(&[
+        ast::SUART2,
+        ast::SWC,
+        ast::KBC,
+        ast::GPIO,
+        ast::SUART3,
+        ast::SUART4,
+        ast::MAILBOX,
+    ]);
+    sio.enable_uart(ast::SUART1, COM1, COM1_IRQ, 0);
+}
+
+/// COM1, routed to the AST2500's SUART1.
+pub const fn console() -> Ns16550Config {
+    Ns16550Config {
+        regs: AccessMode::Pio { base: COM1 as u64 },
+        clock_freq: 1_843_200,
+        baud_rate: 115_200,
+    }
+}
+
+/// The VRs and PCIe redrivers on I2C3 (the vendor board PEIMs, once the
+/// FCH's SMBus is up): route the I2C3 pads, then program both. Returns the
+/// PCIE_1 riser's ID: from its EEPROM on the same bus, else from the straps.
+pub fn program_i2c_devices(gpio: &Gpio<impl Bus>, clock: Tsc) -> Option<u8> {
+    if i2c::PADS
+        .iter()
+        .any(|&pad| gpio.set_function(pad, i2c::FUNCTION).is_err())
+    {
+        fstart_log::error!("I2C3 pads not routed");
+    }
+    // SAFETY: nothing else uses I2C3.
+    let eeprom_id =
+        match unsafe { fch::i2c::controller::<Zeppelin, _>(i2c::BUS, &soc::I2C_TIMING, clock) } {
             Ok(mut bus) => {
-                i2c::program_vrs(&mut bus, ctx.clock, variant::VR_IMAGES);
+                i2c::program_vrs(&mut bus, clock, variant::VR_IMAGES);
                 i2c::program_redrivers(&mut bus, variant::REDRIVERS);
                 riser::eeprom_id(&mut bus)
             }
@@ -186,100 +204,98 @@ impl fstart_platform_amd::noncar::Board for Board {
                 None
             }
         };
-        // The straps without the EEPROM, as without I2C.
-        let id = eeprom_id.or_else(|| {
-            let levels = riser::STRAPS.map(|pin| gpio.get(pin) == Ok(true));
-            riser::strap_id(levels)
-        });
-        riser_slot(config, id);
-        clear_pm1(&ctx.fch());
-    }
+    // The straps without the EEPROM, as without I2C.
+    eeprom_id.or_else(|| {
+        let levels = riser::STRAPS.map(|pin| gpio.get(pin) == Ok(true));
+        riser::strap_id(levels)
+    })
+}
 
-    /// The vendor's PCIe TX presets and USB2 PHY values after training.
-    fn dxio_training_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
-        let records = variant::POST_TRAINING_SMN
-            .iter()
-            .map(|&(register, value)| write(register, value));
-        apply(&ctx.dies[0].smn(), records);
-        gpio::wait_for_bmc(ctx);
-    }
-
-    fn mainboard_final(ctx: &mut BoardCtx<'_, Zeppelin>) {
-        if ctx.gpio().configure(gpio::VENDOR, &[]).is_err() {
-            fstart_log::error!("Vendor GPIO table rejected");
+/// The DXIO engines for the PCIE_1 riser `id` (the vendor Setup default
+/// "Auto"). The modes are the F02 (EC0) decoding; the EC1's F09 template
+/// splits its slot on 3.1 and 3.3 instead and its mode table isn't decoded,
+/// so the EC1 only reports the riser.
+pub fn dxio(id: Option<u8>) -> DxioConfig {
+    let mode = id.and_then(riser::bifurcation);
+    fstart_log::info!(
+        "PCIE_1 riser {}: {}",
+        id.map_or(0xff, u32::from),
+        match mode {
+            Some(riser::Bifurcation::X4x4x4x4) => "x4x4x4x4",
+            Some(riser::Bifurcation::X4x4) => "x4x4",
+            Some(riser::Bifurcation::X8x4x4) => "x8x4x4",
+            Some(riser::Bifurcation::X8x8) => "x8x8",
+            None => "the default",
         }
-        ast_vga_set_ssid(&ctx.dies[0].pci());
-        bmc::post_done(ctx);
+    );
+    let mut dxio = CONFIG.dxio;
+    if let Some(mode) = mode.filter(|_| cfg!(feature = "ec0")) {
+        dxio.descriptors[0] = dxio::with_riser(mode);
     }
+    dxio
+}
 
-    /// SMBusSwitch at ReadyToBoot. Inferred purpose: hand the SMBus to the
-    /// OS. The vendor writes the IOMUX of pins 136-139 through SMN; it is
-    /// the same register as the ACPI MMIO one.
-    fn ready_to_boot(ctx: &mut BoardCtx<'_, Zeppelin>) {
-        let fch = ctx.fch();
-        // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
-        fch.reg(iomux::at::<u32, Iomux136::Register>(136))
-            .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));
-        // GPIO137 driven low, keeping the drive strength and STS_EN bits.
-        if let Ok(control) = ctx.gpio().control(GPIO137) {
-            let old = control.extract();
-            control.write(
-                Control::DRIVE_STRENGTH.val(old.read(Control::DRIVE_STRENGTH))
-                    + Control::STATUS_ENABLE.val(old.read(Control::STATUS_ENABLE))
-                    + Control::OUTPUT_ENABLE::SET,
-            );
-        }
-        clear_pm1(&fch);
-        // Pins 113-117 back to function 0 (SMBus0): two unaligned dword
-        // writes, as in the vendor code.
-        fch.reg(iomux::at::<u32, ()>(113)).set(0);
-        fch.reg(iomux::at::<u32, ()>(114)).set(0);
-    }
+/// The vendor's PCIe TX presets and USB2 PHY values, after link training.
+pub fn apply_phy_tuning(die0: &Die<GlobalEcam>) {
+    let records = variant::POST_TRAINING_SMN
+        .iter()
+        .map(|&(register, value)| write(register, value));
+    apply(&die0.smn(), records);
+}
 
-    fn early_init(lpc: &Lpc<impl Bus>) {
-        lpc.enable_sio_2e();
-        lpc.enable_io_decode(IoPortDecode::SERIAL0::SET);
-        // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.
-        let _ = lpc.set_wideio_range(0xa00, 512);
-        let _ = lpc.set_wideio_range(0xca0, 16);
-        let Ok(sio) = Ast2400::new_at_base(SuperIoConfig::default(), ast::CONFIG_PORT) else {
-            return;
-        };
-        sio.route_uart1_pins();
-        // SUART4 carries the BMC's IPMI SOL; the host must leave it alone.
-        sio.disable(&[
-            ast::SUART2,
-            ast::SWC,
-            ast::KBC,
-            ast::GPIO,
-            ast::SUART3,
-            ast::SUART4,
-            ast::MAILBOX,
-        ]);
-        sio.enable_uart(ast::SUART1, COM1, COM1_IRQ, 0);
-    }
+/// Wait for the BMC before its VGA is used.
+pub fn wait_for_bmc(gpio: &Gpio<impl Bus>, clock: Tsc) {
+    gpio::wait_for_bmc(gpio, &mut { clock });
+}
 
-    fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
-        acpi::tables()
-    }
-
-    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
-        fstart_acpi::smbios::SmbiosIdentity {
-            sys_version: variant::NAME,
-            bb_version: variant::NAME,
-            // A rack server (G431-MM0).
-            chassis_type: 0x17,
-            chassis_manufacturer: "Gigabyte",
-            processor_sockets: &["SP4r2"],
-            ..fstart_acpi::smbios::SmbiosIdentity::new("Gigabyte", "MJ11")
-        }
-    }
-
-    fn console() -> Ns16550Config {
-        Ns16550Config {
-            regs: AccessMode::Pio { base: COM1 as u64 },
-            clock_freq: 1_843_200,
-            baud_rate: 115_200,
-        }
+/// The vendor GPIO table, after PCI enumeration.
+pub fn program_vendor_gpios(gpio: &Gpio<impl Bus>) {
+    if gpio.configure(gpio::VENDOR, &[]).is_err() {
+        fstart_log::error!("Vendor GPIO table rejected");
     }
 }
+
+/// The AST2500 VGA's subsystem ID.
+pub fn set_vga_ssid(die0: &Die<GlobalEcam>) {
+    ast_vga_set_ssid(&die0.pci());
+}
+
+/// The vendor's SMBusSwitch at ReadyToBoot. Inferred purpose: hand the
+/// SMBus to the OS. The vendor writes the IOMUX of pins 136-139 through SMN;
+/// it is the same register as the ACPI MMIO one.
+pub fn hand_smbus_to_os(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
+    // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
+    fch.reg(iomux::at::<u32, Iomux136::Register>(136))
+        .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));
+    // GPIO137 driven low, keeping the drive strength and STS_EN bits.
+    if let Ok(control) = gpio.control(GPIO137) {
+        let old = control.extract();
+        control.write(
+            Control::DRIVE_STRENGTH.val(old.read(Control::DRIVE_STRENGTH))
+                + Control::STATUS_ENABLE.val(old.read(Control::STATUS_ENABLE))
+                + Control::OUTPUT_ENABLE::SET,
+        );
+    }
+    clear_pm1(fch);
+    // Pins 113-117 back to function 0 (SMBus0): two unaligned dword
+    // writes, as in the vendor code.
+    fch.reg(iomux::at::<u32, ()>(113)).set(0);
+    fch.reg(iomux::at::<u32, ()>(114)).set(0);
+}
+
+/// What the board adds to the ACPI tables.
+pub fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
+    acpi::tables()
+}
+
+/// The board's SMBIOS identity.
+pub const SMBIOS: fstart_platform_amd::acpi::SmbiosIdentity<'static> =
+    fstart_platform_amd::acpi::SmbiosIdentity {
+        sys_version: variant::NAME,
+        bb_version: variant::NAME,
+        // A rack server (G431-MM0).
+        chassis_type: 0x17,
+        chassis_manufacturer: "Gigabyte",
+        processor_sockets: &["SP4r2"],
+        ..fstart_platform_amd::acpi::SmbiosIdentity::new("Gigabyte", "MJ11")
+    };

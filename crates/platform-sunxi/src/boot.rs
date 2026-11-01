@@ -1,6 +1,7 @@
 //! Sunxi's ROM loading path has no established protected trust anchor.
 //! The initial-image pin detects nextstage corruption, not whole-image replacement.
 
+use fstart_core::description::Range;
 use fstart_core::services::boot_media::BlockDeviceMedia;
 use fstart_core::services::{BlockDevice, ServiceError};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
@@ -10,18 +11,17 @@ use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 pub(crate) fn load_mainstage(
     block: &impl BlockDevice,
     media_base: u64,
-    dram_base: u64,
-    dram_size: u64,
+    dram: Range,
     load_addr: u64,
     handoff_addr: u64,
 ) -> Result<u64, ServiceError> {
     fstart_log::info!(
         "sunxi: development integrity; no hardware secure boot or rollback enforcement"
     );
-    validate_dram(dram_base, dram_size, handoff_addr)?;
+    validate_dram(dram.base, dram.size, handoff_addr)?;
     let descriptor = fstart_stage::next_stage::pinned_bootstrap_descriptor()
         .map_err(|_| ServiceError::InvalidParam)?;
-    if descriptor.load_addr != load_addr || dram_size == 0 {
+    if descriptor.load_addr != load_addr || dram.size == 0 {
         return Err(ServiceError::InvalidParam);
     }
     let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
@@ -35,8 +35,8 @@ pub(crate) fn load_mainstage(
     let image_size = usize::try_from(locator.image_size).map_err(|_| ServiceError::InvalidParam)?;
     let media = BlockDeviceMedia::new(block, media_base, image_size);
     let writable = [MemoryWindow {
-        start: dram_base,
-        size: dram_size,
+        start: dram.base,
+        size: dram.size,
     }];
     let reserved = [MemoryWindow {
         start: handoff_addr,
@@ -49,8 +49,15 @@ pub(crate) fn load_mainstage(
     };
     // SAFETY: SPL code, stack and descriptor live in SRAM, disjoint from detected
     // DRAM. Reserve the surviving handoff; the synchronous MMC driver has no DMA.
-    let executable = unsafe { fstart_stage::boot::load_bootstrap(&media, &descriptor, &policy) }
-        .map_err(|_| ServiceError::InvalidParam)?;
+    let executable = unsafe {
+        fstart_stage::boot::load_bootstrap(
+            &media,
+            &descriptor,
+            &policy,
+            &fstart_stage::boot::Stored,
+        )
+    }
+    .map_err(|_| ServiceError::InvalidParam)?;
     Ok(executable.entry())
 }
 
@@ -62,16 +69,14 @@ pub(crate) fn install_mainstage_locator(
     media_base: u64,
     handoff: &fstart_core::handoff::StageHandoff,
 ) -> Result<(), ServiceError> {
-    let media = handoff.media.ok_or(ServiceError::InvalidParam)?;
+    let locator = handoff.locator;
     let capacity = block
         .size()
         .checked_sub(media_base)
         .ok_or(ServiceError::InvalidParam)?;
-    if media.image_offset != 0 || !media.validate(capacity) {
+    if locator.image_offset.get() != 0 || !locator.media().validate(capacity) {
         return Err(ServiceError::InvalidParam);
     }
-    let locator = fstart_core::ffs::locator::LocatorBlock::from_media(media)
-        .ok_or(ServiceError::InvalidParam)?;
     // SAFETY: fixed predecessor handoff, reserved RAM and single-threaded
     // mainstage entry; actual device bounds checked before any FFS read.
     unsafe { fstart_stage::anchor::install_locator(locator, capacity) }
@@ -91,7 +96,7 @@ fn validate_dram(base: u64, size: u64, handoff: u64) -> Result<(), ServiceError>
 }
 
 /// Retain a DRAM policy before any block-backed FFS consumer can write memory.
-#[cfg(all(feature = "linux", any(feature = "a20", fstart_payload = "linux")))]
+#[cfg(all(feature = "linux", fstart_payload = "linux"))]
 pub(crate) fn install_mainstage_policy(
     dram_base: u64,
     dram_size: u64,
@@ -116,7 +121,7 @@ pub(crate) fn install_mainstage_policy(
         entry_alignment: 4,
     };
     // SAFETY: running image/heap/stack and handoff are excluded. MMC is PIO.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
         .map_err(|_| ServiceError::InvalidParam)?;
     let workspace = MemoryWindow {
         start: fdt_destination,

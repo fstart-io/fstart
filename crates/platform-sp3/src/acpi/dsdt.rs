@@ -233,13 +233,12 @@ fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
 /// Motherboard resources the root-bridge windows would otherwise offer:
 /// ECAM, FCH/LAPIC/IOAPIC MMIO, NBIO IOAPIC and IOMMU BARs, FCH IO.
 fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError> {
-    let (ecam, buses) = inputs.generation.ecam();
     let mut d = Vec::new();
     let mem = |base: u64, len: u64, d: &mut Vec<u8>| match u32::try_from(base + len) {
         Ok(_) => Memory32Fixed::new(true, base as u32, len as u32).to_aml_bytes(d),
         Err(_) => mmio_descriptor(base, base + len - 1, d),
     };
-    mem(ecam, u64::from(buses) << 20, &mut d);
+    mem(inputs.pci.ecam_base, inputs.pci.ecam_size(), &mut d);
     [(FCH_IOAPIC_BASE, 0x1000), (LAPIC_BASE, 0x1000)]
         .iter()
         .copied()
