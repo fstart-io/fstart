@@ -7,7 +7,7 @@
 //! | Table | Source | Module |
 //! |---|---|---|
 //! | FADT, MADT, HPET | donor values per generation | [`fixed`] |
-//! | MCFG | `Generation::ecam` | [`fixed`] |
+//! | MCFG | `crate::pci::segment` | `fstart_acpi::build_mcfg` |
 //! | SRAT, MSCT, SLIT | only with more than one domain | [`numa`] |
 //! | IVRS | per IOMMU, types 10h/11h | [`ivrs`] |
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
@@ -27,6 +27,7 @@ use fstart_acpi::AmlError;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_acpi::platform::PlatformConfig;
 use fstart_core::acpi::AcpiSmiConfig;
+use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::smu::v11::CppcInfo;
 use fstart_driver_amd::smu::v11::cppc;
 pub use fstart_driver_amd::sp3::fch::acpi::FchAcpi;
@@ -97,6 +98,8 @@ pub struct Board<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct Inputs<'a> {
     pub generation: Generation,
+    /// The PCI segment (`crate::pci::segment`), as the payload gets it.
+    pub pci: PciRootInfo,
     pub cpus: &'a [Cpu],
     /// FCH IOAPIC ID (`nbio::ioapic::fch_ioapic_id` unless reprogrammed).
     pub fch_ioapic_id: u8,
@@ -198,7 +201,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
         },
         &windows,
     )?;
-    let extra = core::iter::once(fixed::mcfg(inputs.generation))
+    let extra = core::iter::once(fstart_acpi::build_mcfg(&[inputs.pci]))
         .chain(
             inputs
                 .numa

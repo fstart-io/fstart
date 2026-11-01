@@ -158,6 +158,7 @@ fn inputs<'a>(
 ) -> Inputs<'a> {
     Inputs {
         generation,
+        pci: crate::pci::segment(generation),
         cpus: &s.cpus,
         fch_ioapic_id: fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(generation),
         ioapics: &s.ioapics,

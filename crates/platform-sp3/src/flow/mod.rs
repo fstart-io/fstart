@@ -46,6 +46,7 @@ use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
+use fstart_core::description::PciRootInfo;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
@@ -259,7 +260,8 @@ pub(crate) struct Ctx {
     pub identity: Identity,
     pub timer: Tsc,
     pub pci: Pci,
-    pub ecam: (u64, u64),
+    /// The PCI segment, as the allocator, ACPI and the payload see it.
+    pub pci_root: PciRootInfo,
     pub fch: PrimaryFch,
     pub resume: bool,
     pub policy: Policy,
@@ -343,7 +345,7 @@ pub fn start<B: Board>() -> Start<B> {
 /// policy for the generation next.
 pub struct Identified<B, S> {
     identity: Identity,
-    ecam: (u64, u64),
+    pci_root: PciRootInfo,
     timer: Tsc,
     fch: PrimaryFch,
     _flow: core::marker::PhantomData<(B, S)>,
@@ -352,12 +354,12 @@ pub struct Identified<B, S> {
 impl<B: Board, S: Silicon> Identified<B, S> {
     fn enter(identity: Identity) -> Self {
         step(0x10, "ECAM");
-        let ecam = hw::enable_ecam(identity.generation());
+        let pci_root = hw::enable_ecam(identity.generation());
         let timer = hw::tsc();
         let fch = hw::primary_fch(timer);
         Self {
             identity,
-            ecam,
+            pci_root,
             timer,
             fch,
             _flow: core::marker::PhantomData,
@@ -375,7 +377,7 @@ impl<B: Board, S: Silicon> Identified<B, S> {
         let resume = fch_reset(&self.fch, self.generation(), &policy);
         Reset {
             identity: self.identity,
-            ecam: self.ecam,
+            pci_root: self.pci_root,
             timer: self.timer,
             fch: self.fch,
             policy,
@@ -389,7 +391,7 @@ impl<B: Board, S: Silicon> Identified<B, S> {
 /// sets up its Super I/O or BMC next.
 pub struct Reset<B, S> {
     identity: Identity,
-    ecam: (u64, u64),
+    pci_root: PciRootInfo,
     timer: Tsc,
     fch: PrimaryFch,
     policy: Policy,
@@ -423,7 +425,7 @@ impl<B: Board, S: Silicon> Reset<B, S> {
     ) -> Stage<B, S> {
         let Self {
             identity,
-            ecam,
+            pci_root,
             timer,
             fch,
             policy,
@@ -467,7 +469,7 @@ impl<B: Board, S: Silicon> Reset<B, S> {
             identity,
             timer,
             pci: Pci::default(),
-            ecam,
+            pci_root,
             fch,
             resume: false,
             policy,
@@ -949,8 +951,8 @@ fn data_fabric<S: Steps>(ctx: &mut Ctx) {
         &plan::Input {
             tom: ctx.tops.tom,
             tom2: ctx.tops.tom2.unwrap_or(0),
-            ecam_base: ctx.ecam.0,
-            ecam_size: ctx.ecam.1,
+            ecam_base: ctx.pci_root.ecam_base,
+            ecam_size: ctx.pci_root.ecam_size(),
             phys_addr_bits: ctx.phys_addr_bits,
             root_bridges: &topology.root_bridges,
             mmio_pairs: S::MMIO_PAIRS,
@@ -1099,7 +1101,7 @@ fn install_smm<S: Steps>(
 ) {
     let config = crate::smm::SmmConfig {
         generation: ctx.generation,
-        ecam_base: ctx.ecam.0,
+        ecam_base: ctx.pci_root.ecam_base,
         psp_bar: ctx.psp_bar as u32,
         einj: plan_einj(ctx).unwrap_or_default(),
         usb_buses: S::usb_buses(ctx, si),
@@ -1142,8 +1144,9 @@ pub(crate) fn enumerate(ctx: &Ctx) -> Vec<fstart_pci::PciEcam> {
         .root_bridges
         .iter()
         .map(|rb| {
-            let mut pci = fstart_pci::PciEcam::from_config(&crate::pci::root_config(rb, ctx.ecam))
-                .or_halt("PCI root");
+            let mut pci =
+                fstart_pci::PciEcam::from_config(&crate::pci::root_config(rb, &ctx.pci_root))
+                    .or_halt("PCI root");
             pci.enumerate_and_allocate().or_halt("PCI enumeration");
             fstart_log::info!(
                 "pci: rb {}.{}: {} functions",

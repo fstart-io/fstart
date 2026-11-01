@@ -8,9 +8,7 @@ use alloc::vec::Vec;
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
-use fstart_payload::{
-    AcpiTables, Description, Handoff, MainstagePayload, PciRootInfo, Placement, Range,
-};
+use fstart_payload::{AcpiTables, Description, Handoff, MainstagePayload, Placement, Range};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 
 use super::{Ctx, OrHalt};
@@ -108,12 +106,7 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
     description.console = Some(console);
     description.acpi = ctx.rsdp.map(AcpiTables::at);
     description.smbios = ctx.smbios;
-    description.pci_root = Some(PciRootInfo {
-        segment: 0,
-        ecam_base: ctx.ecam.0,
-        bus_start: 0,
-        bus_end: ((ctx.ecam.1 >> 20) - 1) as u8,
-    });
+    description.pci_root = Some(ctx.pci_root);
     Payload::boot(Handoff::new(description, Placement::default()), ())
 }
 
@@ -247,6 +240,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
         .collect();
     let inputs = Inputs {
         generation: ctx.generation,
+        pci: ctx.pci_root,
         cpus: &cpus,
         fch_ioapic_id: fch_ioapic_id(ctx.generation),
         ioapics: &ioapics,

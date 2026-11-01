@@ -352,10 +352,7 @@ impl<S: Soc> Stage<S> {
             &self.dies,
             &hosts,
             &silicon.ioapics,
-            acpi::Ecam {
-                base: S::ECAM,
-                buses: S::ECAM_BUSES,
-            },
+            S::pci_root(),
             &silicon.cpus.apic_ids,
             &board,
         );
@@ -383,8 +380,8 @@ impl<S: Soc> Stage<S> {
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(ctx.fch, 0x44);
         use fstart_payload::{
-            AcpiTables, BuildSelectedPayload, Description, Handoff, MainstagePayload, PciRootInfo,
-            Placement, Range,
+            AcpiTables, BuildSelectedPayload, Description, Handoff, MainstagePayload, Placement,
+            Range,
         };
         let mut description = Description::new(self.e820.entries(), Range::new(ffs.base, ffs.size));
         description.console = Some(self.console);
@@ -392,12 +389,7 @@ impl<S: Soc> Stage<S> {
         description.smbios = smbios;
         description.acpi_devices = &silicon.devices;
         description.framebuffer = silicon.framebuffer;
-        description.pci_root = Some(PciRootInfo {
-            segment: 0,
-            ecam_base: S::ECAM,
-            bus_start: 0,
-            bus_end: (S::ECAM_BUSES - 1) as u8,
-        });
+        description.pci_root = Some(S::pci_root());
         #[allow(unused_mut)]
         let mut handoff = Handoff::new(description, Placement::default());
         #[cfg(feature = "payload-uefi-basic")]
