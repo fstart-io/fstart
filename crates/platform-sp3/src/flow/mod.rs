@@ -488,7 +488,7 @@ fn check_identity<B: Board>(identity: &Identity, tsc_mhz: u32) {
 }
 
 /// The SP3 flash anchor patch site: FFS flash offset and size and the
-/// part size, filled by the image builder (`sp3_flash::patch_reset_image`).
+/// part size, filled by the image builder (`amd::stage::patch_reset_image`).
 #[repr(transparent)]
 struct AnchorSite(core::cell::UnsafeCell<FlashAnchor>);
 

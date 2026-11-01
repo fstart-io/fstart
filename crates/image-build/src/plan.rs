@@ -144,6 +144,10 @@ impl CompilerFileSelection {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildSelection {
     pub payload: Option<String>,
+    /// Export an assembly recipe without reading nonredistributable firmware.
+    /// Does not defer or permit missing compiler inputs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_firmware: bool,
     /// A selected platform must bind every request, unchanged, to compiler units.
     #[serde(default)]
     pub compiler_files: Vec<CompilerFileSelection>,

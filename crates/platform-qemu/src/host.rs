@@ -318,6 +318,11 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     })
     .collect::<Vec<_>>();
     let plan = BuildPlan {
+        publication_payloads: if matches!(machine, VirtMachine::Armv7) {
+            vec!["halt".into(), "linux".into()]
+        } else {
+            vec!["halt".into(), "linux".into(), "uefi".into()]
+        },
         payload: payload.clone(),
         units: vec![CompilationUnit {
             name: "stage".into(),
@@ -1224,6 +1229,16 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         },
     });
     let plan = BuildPlan {
+        publication_payloads: [
+            Some("halt"),
+            policy.linux.as_ref().map(|_| "linux"),
+            policy.uefi.then_some("uefi"),
+            (policy.platform == Platform::X86_64).then_some("coreboot"),
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::from)
+        .collect(),
         payload: payload.clone(),
         units,
         stages: vec!["stage".into()],

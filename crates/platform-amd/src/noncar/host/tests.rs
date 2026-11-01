@@ -155,17 +155,20 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     let Firmware::Packed {
         files,
         reset_offset,
+        ..
     } = &image.firmware
     else {
         unreachable!()
     };
     assert_eq!(*reset_offset, Some(0x78_0000));
-    assert_eq!(image.reset_size, 0x40_0000);
-    assert_eq!(image.reset_destination, 0x0300_0000);
+    assert_eq!(image.reset_geometry(), (0x40_0000, 0x0300_0000));
     assert!(files.psp_app && image.psp.compress_reset);
     let window = image.ffs.as_ref().unwrap();
     assert_eq!(window.offset, 0xb8_0000);
-    assert_eq!(reset_offset.unwrap() + image.reset_size, window.offset);
+    assert_eq!(
+        reset_offset.unwrap() + image.reset_geometry().0,
+        window.offset
+    );
     assert_eq!(window.size, 0x29_f000);
     assert_eq!(
         files.bios[0].path,
@@ -235,6 +238,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     let Firmware::Packed {
         files,
         reset_offset,
+        ..
     } = &image.firmware
     else {
         unreachable!()
@@ -249,7 +253,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     );
     let ffs = image.ffs.as_ref().unwrap();
     assert_eq!(
-        (ffs.offset, ffs.size, image.reset_size),
+        (ffs.offset, ffs.size, image.reset_geometry().0),
         (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
     );
     assert!(matches!(&ffs.assembly.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));

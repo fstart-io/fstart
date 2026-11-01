@@ -6,8 +6,8 @@
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) with
 //! `linker/reset.ld.in` and `fstart_entry = "amd-psp-reset"`, and an
-//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
-//! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
+//! [`Assembly::Amd`] using the shared AMD compositor with a banked vendor
+//! layout: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
 //! (`--image-config` composes into another vendor ROM, e.g. the target
 //! board's flash backup).
@@ -36,7 +36,12 @@ use fstart_core::{
     PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_image_build::amd::blobs;
+use fstart_image_build::amd::{
+    assembly::{AmdAssembly, FfsWindow, Firmware, VendorLayout},
+    banks::{BankLayout, PackedHalf, ResetSlot, Survey},
+    blobs,
+    stage::StageLocator,
+};
 use fstart_image_build::build_plan::{
     ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
     FfsAssembly, InputFile, UnitOutput,
@@ -44,7 +49,6 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{FlashPlan, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey};
 
 use crate::layout::{
     self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
@@ -353,8 +357,8 @@ impl Payload {
 /// entry of a supported generation names the reset image at the top of
 /// the lower half (above the early region), the FFS starts at
 /// [`layout::FFS_OFFSET`] or above.
-pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
-    FlashPlan {
+pub fn bank_layout<B: Sp3BoardFacts>() -> BankLayout {
+    BankLayout {
         generations: B::GENERATIONS.iter().map(|g| g.profile().bios).collect(),
         reset: ResetSlot {
             flash_offset: RESET.flash_offset,
@@ -510,21 +514,47 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             (String::new(), halves, microcode)
         }
         (None, image) => {
-            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
+            let vendor_image = image.clone().unwrap_or_else(|| {
+                if selection.defer_firmware {
+                    fstart_image_build::bundle::DONOR_PATH.into()
+                } else {
+                    B::VENDOR_IMAGE.into()
+                }
+            });
             let microcode = microcode::<B>(&vendor_image)?;
             (vendor_image, vec![], microcode)
         }
     };
+    let firmware = if packed.is_empty() {
+        Firmware::Vendor {
+            image: fstart_image_build::build_plan::FileBinding {
+                environment: "VENDOR_FLASH".into(),
+                path: vendor_image,
+                capacity: 0x1000_0000,
+            },
+            layout: VendorLayout::Banks(bank_layout::<B>()),
+        }
+    } else {
+        Firmware::PackedBanks {
+            halves: packed,
+            layout: bank_layout::<B>(),
+        }
+    };
     let plan = BuildPlan {
+        publication_payloads: ["halt", "linux", "uefi"].map(String::from).to_vec(),
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![RESET_UNIT.into()],
-        assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
-            ffs: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
-            vendor_image,
-            packed,
+        assembly: Assembly::Amd(Box::new(AmdAssembly {
+            firmware,
+            ffs: Some(FfsWindow {
+                assembly: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
+                offset: layout::FFS_OFFSET,
+                size: RESET.flash_offset - layout::FFS_OFFSET,
+            }),
             reset_unit: RESET_UNIT.into(),
-            compose: flash_plan::<B>(),
+            psp: Default::default(),
+            locator: StageLocator::FlashAnchor,
         })),
         inputs,
     };
@@ -627,13 +657,13 @@ fn microcode<B: Sp3BoardFacts>(vendor_image: &str) -> Result<MicrocodeConfig, St
 pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
     let path = root.join(B::VENDOR_IMAGE);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(flash_plan::<B>().survey(&bytes)?)
+    Ok(bank_layout::<B>().survey(&bytes)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_image_build::sp3_flash::{self, FlashHalf, HalfAction};
+    use fstart_image_build::amd::banks::{self, FlashHalf, HalfAction};
 
     struct S8030;
     impl Sp3BoardFacts for S8030 {
@@ -643,11 +673,21 @@ mod tests {
         const MAX_CPUS: u16 = 256;
     }
 
-    fn sp3(plan: &BuildPlan) -> &Sp3FlashAssembly {
-        let Assembly::Sp3Flash(image) = &plan.assembly else {
-            panic!("not an SP3 flash assembly")
+    fn sp3(plan: &BuildPlan) -> &AmdAssembly {
+        let Assembly::Amd(image) = &plan.assembly else {
+            panic!("not a shared AMD assembly")
         };
         image
+    }
+    fn banked(plan: &BuildPlan) -> &BankLayout {
+        let Firmware::Vendor {
+            layout: VendorLayout::Banks(layout),
+            ..
+        } = &sp3(plan).firmware
+        else {
+            panic!("not a banked donor")
+        };
+        layout
     }
 
     #[test]
@@ -721,20 +761,22 @@ mod tests {
         let plan = resolve::<S8030>(&selection).unwrap();
         plan.validate_image_selection(&selection).unwrap();
         let image = sp3(&plan);
-        assert!(image.vendor_image.is_empty());
+        let Firmware::PackedBanks { halves, .. } = &image.firmware else {
+            panic!("not packed banks")
+        };
         assert_eq!(
-            image
-                .packed
+            halves
                 .iter()
                 .map(|h| h.generation)
                 .collect::<std::vec::Vec<_>>(),
-            [sp3_flash::ROME, sp3_flash::MILAN]
+            [banks::ROME, banks::MILAN]
         );
         assert_eq!(
-            image.packed[1].files.bios[0].path.rsplit('/').next(),
+            halves[1].files.bios[0].path.rsplit('/').next(),
             Some("apcb.bin")
         );
-        let Some(MicrocodeConfig::Amd(microcode)) = &image.ffs.microcode else {
+        let Some(MicrocodeConfig::Amd(microcode)) = &image.ffs.as_ref().unwrap().assembly.microcode
+        else {
             panic!("no microcode")
         };
         assert_eq!(microcode.files.len(), 2);
@@ -815,12 +857,12 @@ mod tests {
     fn plan_composes_every_supported_half_with_the_ffs_in_the_common_window() {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         let image = sp3(&plan);
-        assert_eq!(image.vendor_image, S8030::VENDOR_IMAGE);
+        assert_eq!(image.bindings().unwrap()[0].path, S8030::VENDOR_IMAGE);
         assert_eq!(image.reset_unit, RESET_UNIT);
         assert_eq!(
-            image.compose,
-            FlashPlan {
-                generations: vec![sp3_flash::ROME, sp3_flash::MILAN],
+            banked(&plan),
+            &BankLayout {
+                generations: vec![banks::ROME, banks::MILAN],
                 reset: ResetSlot {
                     flash_offset: 0xde_0000,
                     size: 0x22_0000,
@@ -861,7 +903,14 @@ mod tests {
             ("linux", "payload-linux")
         );
         assert_eq!(linux.inputs[0].name, "kernel");
-        let payload = sp3(&linux).ffs.payload.as_ref().unwrap();
+        let payload = sp3(&linux)
+            .ffs
+            .as_ref()
+            .unwrap()
+            .assembly
+            .payload
+            .as_ref()
+            .unwrap();
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0,115200"));
         let uefi = resolve::<S8030>(&select("uefi")).unwrap();
         assert_eq!(uefi.unit(RESET_UNIT).unwrap().payload, "crabefi");
@@ -878,13 +927,13 @@ mod tests {
             ..Default::default()
         };
         let plan = resolve::<S8030>(&custom).unwrap();
-        assert_eq!(sp3(&plan).vendor_image, "/tmp/dump.rom");
+        assert_eq!(sp3(&plan).bindings().unwrap()[0].path, "/tmp/dump.rom");
         plan.validate_image_selection(&custom).unwrap();
         // The plan round-trips through fbuild's JSON transport.
         let json = serde_json::to_string(&plan).unwrap();
         let back: BuildPlan = serde_json::from_str(&json).unwrap();
         back.order().unwrap();
-        assert_eq!(sp3(&back).compose, sp3(&plan).compose);
+        assert_eq!(banked(&back), banked(&plan));
     }
 
     #[test]
@@ -919,8 +968,8 @@ mod tests {
         assert_eq!(
             composed,
             [
-                (FlashHalf::Lower, sp3_flash::ROME),
-                (FlashHalf::Upper, sp3_flash::MILAN)
+                (FlashHalf::Lower, banks::ROME),
+                (FlashHalf::Upper, banks::MILAN)
             ]
         );
         struct Naples;

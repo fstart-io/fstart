@@ -1,5 +1,51 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+use super::BankLayout as FlashPlan;
 use super::*;
+use crate::amd::{
+    assembly::{AmdAssembly, Firmware, VendorLayout as ImageLayout},
+    stage::{Patched, StageLocator},
+};
+use fstart_amdfw_format::anchor::{ANCHOR_SIZE, FlashAnchor};
+use fstart_core::ffs::{
+    locator::{LOCATOR_SIZE, LocatorBlock},
+    trust::{TRUST_SIZE, TrustBlock},
+};
+use zerocopy::IntoBytes;
+
+#[derive(Debug, PartialEq, Eq)]
+struct Composed {
+    image: Vec<u8>,
+    survey: Survey,
+    bank: Option<Vec<u8>>,
+}
+fn compose(vendor: &[u8], plan: &FlashPlan, reset: &[u8], ffs: &[u8]) -> Result<Composed, String> {
+    let operation = AmdAssembly {
+        firmware: Firmware::Vendor {
+            image: crate::build_plan::FileBinding {
+                environment: "VENDOR_FLASH".into(),
+                path: "donor.rom".into(),
+                capacity: vendor.len() as u64,
+            },
+            layout: ImageLayout::Banks(plan.clone()),
+        },
+        ffs: Some(crate::amd::tests::ffs_window(
+            plan.ffs_offset,
+            plan.reset.flash_offset - plan.ffs_offset,
+        )),
+        reset_unit: "reset".into(),
+        psp: Default::default(),
+        locator: StageLocator::FlashAnchor,
+    };
+    let image = operation.assemble(&[vendor], reset, Some(ffs))?;
+    Ok(Composed {
+        bank: image.boot_bank().map(<[u8]>::to_vec),
+        image: image.bytes,
+        survey: plan.survey(vendor)?,
+    })
+}
+fn patch_reset_image(reset: &mut [u8], ffs: &[u8], flash: FlashAnchor) -> Result<Patched, String> {
+    crate::amd::stage::patch_reset_image(reset, ffs, flash, StageLocator::FlashAnchor)
+}
 use fstart_amdfw_format::directory::{
     self, BiosEntry, Directory, Entry, Levels, PspEntry, modify_entries, write_table,
 };
@@ -300,8 +346,7 @@ fn dual_keeps_each_vendor_efs_with_its_own_reset_copy() {
     );
 }
 
-/// A generation's packed half: a boot loader in both levels, the AMD key
-/// in level 1, an erased NV area and an APCB in level 2.
+// Keep master's two-level packed-bank coverage on the common AMD engine.
 fn packed_half(generation: Generation) -> PackedHalf {
     use crate::amd::{
         Key,
@@ -344,21 +389,41 @@ fn packed_half(generation: Generation) -> PackedHalf {
         apob_destination: 0x3000_0000,
     }
 }
-
 fn read_blob(path: &str) -> Result<Vec<u8>, String> {
     Ok(vec![path.len() as u8; 0x400 + path.len()])
 }
-
 #[test]
 fn packed_halves_compose_like_a_vendor_rom() {
     let both = plan(&[ROME, MILAN]);
     let halves = [packed_half(ROME), packed_half(MILAN)];
     let rom = packed_rom(&halves, &both, &read_blob).unwrap();
     assert_eq!(rom.len(), 2 * HALF);
-    let ffs = ffs(0x1_0000);
-    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
+    let ffs = ffs(0x10000);
+    let reset = linked_reset();
+    let out = compose(&rom, &both, &reset, &ffs).unwrap();
+    let operation = AmdAssembly {
+        firmware: Firmware::PackedBanks {
+            halves: halves.to_vec(),
+            layout: both.clone(),
+        },
+        ffs: Some(crate::amd::tests::ffs_window(
+            FFS_OFFSET,
+            IMAGE.flash_offset - FFS_OFFSET,
+        )),
+        reset_unit: "reset".into(),
+        psp: Default::default(),
+        locator: StageLocator::FlashAnchor,
+    };
+    let bindings = operation.bindings().unwrap();
+    let sources: Vec<_> = bindings
+        .iter()
+        .map(|b| read_blob(&b.path).unwrap())
+        .collect();
+    let refs: Vec<_> = sources.iter().map(Vec::as_slice).collect();
+    let packed = operation.assemble(&refs, &reset, Some(&ffs)).unwrap();
+    assert_eq!(packed.bytes, out.image);
     check_dual(&out.image).unwrap();
-    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
+    assert_eq!(out.survey.ffs, 0x600000..0xde0000);
     for (half, generation) in [(FlashHalf::Lower, ROME), (FlashHalf::Upper, MILAN)] {
         let image = &out.image[half.range()];
         let flash = flash(generation, image);
@@ -369,18 +434,15 @@ fn packed_halves_compose_like_a_vendor_rom() {
             read_blob(&format!("{}/boot", name(generation))).unwrap()
         );
         let bios = flash.bios_directories_checked(generation).unwrap();
-        // The microcode goes into the FFS.
         assert!(bios.find(bios::MICROCODE, None, None).is_none());
         let (dir, reset) = bios.find(bios::RESET_IMAGE, None, None).unwrap();
-        assert_eq!(dir.range(reset).unwrap(), 0xde_0000..HALF);
+        assert_eq!(dir.range(reset).unwrap(), 0xde0000..HALF);
     }
-    check_payloads(&out.image, 0xde_0000, &ffs, 0x60_0000);
-    // Milan's boot ROM would take a Rome half below it.
-    let swapped = [packed_half(MILAN), packed_half(ROME)];
-    assert!(packed_rom(&swapped, &both, &read_blob).is_err());
+    check_payloads(&out.image, 0xde0000, &ffs, FFS_OFFSET as usize);
+    assert!(packed_rom(&[packed_half(MILAN), packed_half(ROME)], &both, &read_blob).is_err());
     assert!(packed_rom(&[packed_half(NAPLES)], &both, &read_blob).is_err());
     let mut late = packed_half(ROME);
-    late.files.partition_end = 0x70_0000;
+    late.files.partition_end = 0x700000;
     assert!(packed_rom(&[late], &both, &read_blob).is_err());
 }
 
@@ -395,47 +457,43 @@ fn layouts_the_composer_refuses() {
     let rom = [&rome[..], &milan[..]].concat();
     let all = plan(&all);
     // The FFS may not reach the reset image.
-    assert_eq!(
-        compose_with(&rom, &all, &vec![0; 0x7e_0001]),
-        Err(ImageError::FfsTooLarge {
-            size: 0x7e_0001,
-            capacity: 0x7e_0000
-        })
+    assert!(
+        compose_with(&rom, &all, &vec![0; 0x7e_0001])
+            .unwrap_err()
+            .contains("FFS")
     );
     // Nor may a vendor prefix (a blob moved up to 0xde8000).
     let mut late = rome.clone();
     modify_entries::<PspEntry>(&mut late, PL2, |e| e.address.set(0xde_8000)).unwrap();
-    assert!(matches!(
-        compose_with(&[&late[..], &milan[..]].concat(), &all, &ffs),
-        Err(ImageError::PrefixOverlap {
-            limit: 0xde_0000,
-            ..
-        })
-    ));
+    assert!(
+        compose_with(&[&late[..], &milan[..]].concat(), &all, &ffs)
+            .unwrap_err()
+            .contains("PrefixOverlap")
+    );
     // The FFS lives in the lower half: its generation must be supported.
-    assert!(matches!(
-        compose_with(&rom, &plan(&[MILAN]), &ffs),
-        Err(ImageError::Layout(_))
-    ));
-    assert!(matches!(
-        compose_with(&[&rome[..], &rome[..]].concat(), &all, &ffs),
-        Err(ImageError::Layout(_))
-    ));
+    assert!(
+        compose_with(&rom, &plan(&[MILAN]), &ffs)
+            .unwrap_err()
+            .contains("lower half")
+    );
+    assert!(
+        compose_with(&[&rome[..], &rome[..]].concat(), &all, &ffs)
+            .unwrap_err()
+            .contains("same generation")
+    );
     // An EFS signature where a boot ROM searches before 0x20000.
     let mut stray = self::ffs(0x22_0004);
     stray[0x82_0000 - 0x60_0000..][..4].copy_from_slice(&efs::SIGNATURE.to_le_bytes());
-    assert_eq!(
-        compose_with(&rom, &all, &stray),
-        Err(ImageError::StrayEfs { offset: 0x82_0000 })
+    assert!(
+        compose_with(&rom, &all, &stray)
+            .unwrap_err()
+            .contains("StrayEfs")
     );
     let checksum = |mut half: Vec<u8>| {
         half[BL2 + 16] ^= 1;
         compose_with(&[&rome[..], &half[..]].concat(), &all, &ffs)
     };
-    assert!(matches!(
-        checksum(milan.clone()),
-        Err(ImageError::Directory(DirError::Checksum(BL2)))
-    ));
+    assert!(checksum(milan.clone()).unwrap_err().contains("Checksum"));
 }
 
 #[test]
@@ -460,9 +518,10 @@ fn single_generation_and_kept_halves() {
     // Only the flash anchor's part size differs.
     assert_eq!(half.image[..0xde_0000], out.image[..0xde_0000]);
     check_trees(&half.image, &rome, ROME, 0xde_0000);
-    assert_eq!(
-        compose(&rom, &plan(&[NAPLES]), &linked_reset(), &ffs),
-        Err(ImageError::NoSupportedHalf)
+    assert!(
+        compose(&rom, &plan(&[NAPLES]), &linked_reset(), &ffs)
+            .unwrap_err()
+            .contains("NoSupportedHalf")
     );
 }
 
@@ -490,15 +549,62 @@ fn full_readout_mirrors_the_composed_bank() {
     assert_eq!(full.image[HALF..3 * HALF], readout[HALF..3 * HALF]);
     assert_eq!(full.survey, bank.survey);
     // A readout too small for the mirror is not silently truncated.
-    assert!(matches!(
-        compose(&readout[..2 * HALF], &plan, &linked_reset(), &ffs),
-        Err(ImageError::Layout(_))
-    ));
+    assert!(
+        compose(&readout[..2 * HALF], &plan, &linked_reset(), &ffs)
+            .unwrap_err()
+            .contains("mirrors")
+    );
+    assert_eq!(full.bank.as_deref(), Some(bank.image.as_slice()));
     let overlapping = FlashPlan {
         mirrors: vec![0x80_0000],
         ..plan.clone()
     };
     assert!(matches!(overlapping.check(), Err(ImageError::Plan(_))));
+}
+
+// Captured by running the pre-unification sp3_flash compositor at 93c95a2b76e0
+// against these deterministic fixtures, not generated by the shared engine.
+#[test]
+fn shared_compositor_matches_original_sp3_bytes() {
+    let ffs = ffs(0x10000);
+    let reset = linked_reset();
+    let hash = |bytes: &[u8]| crate::bundle::sha256(bytes);
+    for (generation, expected) in [
+        (
+            NAPLES,
+            "445315d7afb8a496c8f8cb7a001671b390de66e4f4f97056ad5842ceb8b48506",
+        ),
+        (
+            ROME,
+            "065da67afdc411429401bce0b10bbe6f93448c0109bcbac33a7e54d4d6304416",
+        ),
+        (
+            MILAN,
+            "ac91b2097cfab2dcc25c17871d6451d81a1d1f7dc20c28b481f67cfb89bbecb1",
+        ),
+    ] {
+        let out = compose(&synthetic(generation), &plan(&[generation]), &reset, &ffs).unwrap();
+        assert_eq!(hash(&out.image), expected, "{}", name(generation));
+    }
+    let dual = [synthetic(ROME), synthetic(MILAN)].concat();
+    let out = compose(&dual, &plan(&[ROME, MILAN]), &reset, &ffs).unwrap();
+    assert_eq!(
+        hash(&out.image),
+        "9a1ffa5e18d2803a3e77bca11c6ab89424aaedb1eaed8abb8efd648fbeda9427"
+    );
+    let mut readout = vec![0xff; 4 * HALF];
+    readout[..HALF].copy_from_slice(&synthetic(MILAN));
+    readout[2 * HALF..2 * HALF + 0x100].fill(0x5a);
+    readout[3 * HALF..].copy_from_slice(&synthetic(MILAN));
+    let mirrored = FlashPlan {
+        mirrors: vec![3 * HALF as u32],
+        ..plan(&[MILAN])
+    };
+    let out = compose(&readout, &mirrored, &reset, &ffs).unwrap();
+    assert_eq!(
+        hash(&out.image),
+        "eee7facfa744b83e1adf18ea9b0909acaa83e5c54a726b160b596b26204a52c4"
+    );
 }
 
 #[test]
@@ -525,16 +631,41 @@ fn reset_image_gets_trust_locator_and_flash_anchor() {
             flash: false
         }
     );
-    assert!(matches!(
-        patch_reset_image(&mut linked_reset(), &[0; 0x1000], anchor),
-        Err(ImageError::Patch(_))
-    ));
+    assert!(
+        patch_reset_image(&mut linked_reset(), &[0; 0x1000], anchor)
+            .unwrap_err()
+            .contains("trust")
+    );
     // A locator for a different image size is not this FFS's anchor.
     assert!(patch_reset_image(&mut linked_reset(), &ffs[..0xff8], anchor).is_err());
-    assert!(matches!(
-        patch_reset_image(&mut linked_reset(), &ffs, FlashAnchor::placeholder()),
-        Err(ImageError::Patch(_))
-    ));
+    assert!(
+        patch_reset_image(&mut linked_reset(), &ffs, FlashAnchor::placeholder())
+            .unwrap_err()
+            .contains("flash anchor")
+    );
+}
+
+#[test]
+fn duplicate_stage_patch_sites_are_rejected() {
+    let ffs = ffs(0x10000);
+    let anchor = FlashAnchor::new(HALF as u32, FFS_OFFSET, ffs.len() as u32);
+    let mut trust = vec![0; TRUST_SIZE];
+    TrustBlock::placeholder().write_to(&mut trust);
+    let mut locator = vec![0; LOCATOR_SIZE];
+    LocatorBlock::placeholder().write_to(&mut locator);
+    for marker in [
+        trust,
+        locator,
+        FlashAnchor::placeholder().as_bytes().to_vec(),
+    ] {
+        let mut reset = linked_reset();
+        reset[0x5000..0x5000 + marker.len()].copy_from_slice(&marker);
+        assert!(
+            patch_reset_image(&mut reset, &ffs, anchor)
+                .unwrap_err()
+                .contains("unique")
+        );
+    }
 }
 
 #[test]

@@ -26,6 +26,63 @@ env:
 # requests restore the most recent master cache for the same toolchain.
 
 jobs:
+  distribution:
+    needs: [check, qemu-boot-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Install toolchain and WASM target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      # actions/cache v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: &distribution-cache-paths |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: dist-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            dist-${{ hashFiles('rust-toolchain.toml') }}-
+            rust-check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y acpica-tools
+          cargo install wasm-bindgen-cli --version 0.2.130 --locked
+      - name: Export every board, variant, payload and unit binary
+        run: |
+          touch "$RUNNER_TEMP/distribution-start"
+          bash ci/build-distribution.sh
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution
+          path: target/distribution/
+          compression-level: 0 # Each bundle is already ZIP/DEFLATE compressed.
+          retention-days: 2 # Daily promotion moves these onto Releases.
+          if-no-files-found: error
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: image-web
+          path: target/image-web/
+          include-hidden-files: true
+          retention-days: 2
+          if-no-files-found: error
+      - name: Prune stale firmware plans
+        run: bash ci/prune-build-cache.sh "$RUNNER_TEMP/distribution-start"
+      # actions/cache v6.1.0
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: *distribution-cache-paths
+          key: dist-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+
   check:
     runs-on: ubuntu-latest
     steps:
@@ -68,6 +125,8 @@ jobs:
           cargo test --workspace
           cargo test -p fstart-driver-intel \
             --features acpi,i945,gm965,ich8,pineview --lib
+          cargo test -p fstart-platform-intel \
+            --features host,i945-ich7,gm965-ich8 --lib
           # Each AMD SoC on its own: the boards select one, the tests all.
           for soc in picasso zeppelin naples rome milan; do
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"

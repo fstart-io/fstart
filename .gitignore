@@ -24,6 +24,9 @@ bl31.bin
 # Tool/IDE artifacts
 __pycache__/
 .opencode/
+node_modules/
+.wrangler/
+__pycache__/
 
 # Accidental media
 *.jpeg
