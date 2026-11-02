@@ -23,7 +23,5 @@ fn main() -> ! {
     if bb.boot_path() != BootPath::S3Resume && mainboard::configure_cpu_straps().is_err() {
         bb.fail("CPU strap setup");
     }
-    let mut bb = bb.train_memory();
-    bb.southbridge_mut().use_pcie_root_port_clock_gating_only();
-    bb.post_dram().load_postcar()
+    bb.train_memory().post_dram().load_postcar()
 }
