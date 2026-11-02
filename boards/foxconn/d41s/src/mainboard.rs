@@ -17,7 +17,8 @@ pub const fn console() -> Ns16550Config {
     }
 }
 
-pub fn setup_console() -> Result<(), ServiceError> {
+/// Bring up the IT8721F: COM1, keyboard, and the unused functions off.
+pub fn setup_superio() -> Result<(), ServiceError> {
     let mut superio = Ite8721f::new_at_base(crate::d41s_superio_config(), crate::SUPERIO_PNP_BASE)
         .map_err(ServiceError::from)?;
     superio.init().map_err(ServiceError::from)?;

@@ -17,8 +17,8 @@ fstart_platform_intel::entry!(main);
 
 fn main() -> ! {
     let rs = Ramstage::<Board>::enter();
-    if mainboard::setup_console().is_err() {
-        rs.fail("setup_console");
+    if mainboard::setup_superio().is_err() {
+        rs.fail("SuperIO setup");
     }
     let mut rs = rs
         .console(&CONSOLE, mainboard::console())
