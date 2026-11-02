@@ -1,16 +1,17 @@
-//! Measured boot of FFS contents (see `fstart-tcg`).
+//! Measured boot (see `fstart-tcg`): the TPM handoff and the static root
+//! of trust's self-measurement.
 //!
-//! Files are measured as stored in the mounted, memory-mapped boot media,
-//! like coreboot measures CBFS files: the SHA-256 bank digest then equals
-//! the file's stored digest in the authenticated FFS directory, and the
-//! event's blob base is the file's flash address, which stays valid for the
-//! OS (PFP §10.2.5).
+//! What the boot loads is measured on the loading chain
+//! ([`crate::boot::Measurement`]), as the bytes it verified and then uses.
+//! Only the root of trust's own image is measured where the boot media maps
+//! it ([`crate::boot::InPlace`]), like coreboot measures CBFS files: the
+//! SHA-256 bank digest equals the file's stored digest in the authenticated
+//! FFS directory, and the event's blob base is its flash address, which
+//! stays valid for the OS (PFP §10.2.5).
 
-use fstart_core::ffs::FileType;
+use crate::boot::{Event, InPlace, Measurement};
 use fstart_core::services::boot_media::MemoryMapped;
 use fstart_core::services::ffs_context;
-use fstart_crypto::digest::hash_sha256;
-use fstart_ffs::FileView;
 pub use fstart_tcg::Handoff;
 pub use fstart_tcg::event;
 
@@ -34,81 +35,6 @@ fn refuse() -> ! {
     fstart_arch::halt()
 }
 
-fn with_file<R>(
-    find: impl FnOnce(&fstart_ffs::ManifestView<'static>) -> Option<FileView<'static>>,
-    f: impl FnOnce(&str, u64, &'static [u8]) -> R,
-) -> Option<R> {
-    let context = ffs_context::memory_mapped()?;
-    let size = usize::try_from(context.image_size).ok()?;
-    // SAFETY: the mainstage published this mapped, verified firmware window.
-    let media = unsafe { MemoryMapped::from_raw_addr(context.image_base, size) };
-    let directory = crate::directory::view(&media).ok()?;
-    let file = find(&directory)?;
-    let [segment] = file.segments() else {
-        return None;
-    };
-    let offset = u64::from(file.region_offset())
-        .checked_add(u64::from(file.entry_offset()))?
-        .checked_add(u64::from(segment.offset()))?;
-    let stored = usize::try_from(segment.stored_size()).ok()?;
-    let start = usize::try_from(offset).ok()?;
-    let end = start.checked_add(stored)?;
-    if end > size {
-        return None;
-    }
-    // SAFETY: inside the published window, which lives for the stage.
-    let bytes =
-        unsafe { core::slice::from_raw_parts((context.image_base + offset) as *const u8, stored) };
-    // The bytes measured are the bytes the loader authenticates.
-    if hash_sha256(bytes) != segment.stored_digest() {
-        return None;
-    }
-    Some(f(file.name().ok()?, context.image_base + offset, bytes))
-}
-
-fn measure_file(
-    find: impl FnOnce(&fstart_ffs::ManifestView<'static>) -> Option<FileView<'static>>,
-    pcr: u32,
-    event_type: u32,
-    description: Option<&str>,
-) -> bool {
-    with_file(find, |name, base, bytes| {
-        fstart_tcg::measure_blob(pcr, event_type, description.unwrap_or(name), base, bytes);
-    })
-    .is_some()
-}
-
-/// Measure the first FFS file of `file_type` into `pcr`; the blob
-/// description is `description`, or the file name.
-pub fn measure_file_by_type(
-    file_type: FileType,
-    pcr: u32,
-    event_type: u32,
-    description: Option<&str>,
-) -> bool {
-    measure_file(
-        |directory| directory.find_file_by_type(file_type).ok(),
-        pcr,
-        event_type,
-        description,
-    )
-}
-
-/// Measure the FFS file `name` into `pcr`.
-pub fn measure_file_by_name(
-    name: &str,
-    pcr: u32,
-    event_type: u32,
-    description: Option<&str>,
-) -> bool {
-    measure_file(
-        |directory| directory.find_file_by_name(name).ok(),
-        pcr,
-        event_type,
-        description,
-    )
-}
-
 /// The static root of trust measures itself (PFP §3.3.4.1, no H-CRTM): its
 /// version, then the stage file `stage` it runs from as
 /// `EV_S_CRTM_CONTENTS`. Measures nothing unless `fstart_tcg::start`
@@ -118,10 +44,42 @@ pub fn measure_srtm(version: &str, stage: &str) {
         return;
     }
     fstart_tcg::measure_crtm_version(version);
-    if !measure_file_by_name(stage, 0, event::EV_S_CRTM_CONTENTS, None) {
+    if measure_stage_file(stage).is_none() {
         fstart_log::error!("tcg: cannot measure the stage file '{}'", stage);
         fstart_tcg::measurement_error();
     }
+}
+
+/// The stored bytes of the FFS file `name`, where the mounted boot media
+/// maps them, as `EV_S_CRTM_CONTENTS` in PCR 0.
+fn measure_stage_file(name: &str) -> Option<()> {
+    let context = ffs_context::memory_mapped()?;
+    let size = usize::try_from(context.image_size).ok()?;
+    // SAFETY: the mainstage published this mapped, verified firmware window.
+    let media = unsafe { MemoryMapped::from_raw_addr(context.image_base, size) };
+    let directory = crate::directory::view(&media).ok()?;
+    let file = directory.find_file_by_name(name).ok()?;
+    let [segment] = file.segments() else {
+        return None;
+    };
+    let offset = u64::from(file.region_offset())
+        .checked_add(u64::from(file.entry_offset()))?
+        .checked_add(u64::from(segment.offset()))?;
+    let bytes = InPlace::new(&media, offset, u64::from(segment.stored_size())).ok()?;
+    let measurement = Measurement {
+        log: &fstart_tcg::Tcg,
+        event: Event {
+            pcr: 0,
+            kind: event::EV_S_CRTM_CONTENTS,
+            description: file.name().ok()?,
+            base: bytes.address(),
+        },
+    };
+    bytes
+        .check::<fstart_load::Sha256>(&segment.stored_digest())
+        .ok()?
+        .measure(&measurement);
+    Some(())
 }
 
 /// The S-CRTM version string: `fstart <crate version>`.

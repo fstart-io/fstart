@@ -30,7 +30,7 @@ DMA isolation, RAM authentication, or an authenticated update flow. Intel logs
 | `crates/ffs/src/builder.rs`, `builder/trust.rs` | Host-only image builder (`std` feature). |
 | `crates/crypto/src/` | SHA-256/SHA3-256 (`digest.rs`), Ed25519 and ECDSA P-256 (`verify.rs`). |
 | `crates/stage/src/root.rs` | `read_boot_root`, `authenticate_boot_root`. |
-| `crates/load` (`fstart-load`) | The loading chain: `read` → `Unverified::verify` → `Verified::decompress` → `place`; `Codec` (`Stored`, `Lz4`), `MemoryPolicy`, `load_bootstrap`, `VerifiedExecutable`. |
+| `crates/load` (`fstart-load`) | The loading chain: `read` → `Unverified::verify` → `Verified::measure` → `Measured::decompress` → `place`; `Codec` (`Stored`, `Lz4`), `MemoryPolicy`, `load_bootstrap`, `VerifiedExecutable`. |
 | `crates/stage/src/boot.rs` | Re-exports `fstart-load`; `running_stage_windows`. |
 | `crates/stage/src/directory.rs` | Mainstage directory cache and load policy. |
 | `crates/stage/src/loaded.rs` | Load ledger and FDT workspace guard. |

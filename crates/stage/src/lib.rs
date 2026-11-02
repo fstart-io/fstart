@@ -236,10 +236,11 @@ pub fn payload_load(anchor_data: &[u8], media: &(impl BootMedia + ?Sized), jump_
 
     // Load segments
     let image_size = effective_image_size(media.size(), anchor);
-    let entry_addr = match load_file_segments_from_media(media, &file, image_size) {
-        Some(addr) => addr,
-        None => return,
-    };
+    let entry_addr =
+        match load_file_segments_from_media(media, &file, image_size, &boot::Measurement::NONE) {
+            Some(addr) => addr,
+            None => return,
+        };
 
     fstart_log::info!("payload load: jumping to {}", Hex(entry_addr));
 
@@ -302,7 +303,9 @@ pub fn stage_load(
         return;
     }
     // SAFETY: the platform installed the trusted physical mapping policy.
-    if let Ok(executable) = unsafe { boot::load_bootstrap(media, descriptor, &policy, codec) } {
+    if let Ok(executable) =
+        unsafe { boot::load_bootstrap(media, descriptor, &policy, codec, &boot::Measurement::NONE) }
+    {
         jump_to(executable.entry());
     }
 }

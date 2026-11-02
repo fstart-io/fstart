@@ -2,30 +2,8 @@
 //! Event types (PFP 1.06 §10.4.1; the values below `0x8000_0000` are shared
 //! with the TPM 1.2 specifications) and their event data.
 
-pub const EV_POST_CODE: u32 = 0x01;
-pub const EV_NO_ACTION: u32 = 0x03;
-pub const EV_SEPARATOR: u32 = 0x04;
-pub const EV_ACTION: u32 = 0x05;
-pub const EV_EVENT_TAG: u32 = 0x06;
-pub const EV_S_CRTM_CONTENTS: u32 = 0x07;
-pub const EV_S_CRTM_VERSION: u32 = 0x08;
-pub const EV_PLATFORM_CONFIG_FLAGS: u32 = 0x0A;
-pub const EV_NONHOST_CODE: u32 = 0x0F;
-pub const EV_NONHOST_CONFIG: u32 = 0x10;
-pub const EV_NONHOST_INFO: u32 = 0x11;
-pub const EV_POST_CODE2: u32 = 0x13;
-pub const EV_EFI_ACTION: u32 = 0x8000_0007;
-pub const EV_EFI_PLATFORM_FIRMWARE_BLOB: u32 = 0x8000_0008;
-pub const EV_EFI_PLATFORM_FIRMWARE_BLOB2: u32 = 0x8000_000A;
-pub const EV_EFI_HANDOFF_TABLES2: u32 = 0x8000_000B;
-
-/// `BlobDescription` strings of `EV_POST_CODE2` (PFP table 13).
-pub mod post_code {
-    pub const POST_CODE: &str = "POST CODE";
-    pub const SMM_CODE: &str = "SMM CODE";
-    pub const ACPI_DATA: &str = "ACPI DATA";
-    pub const EMBEDDED_DRIVER: &str = "Embedded UEFI Driver";
-}
+pub use fstart_core::services::measure::kind::*;
+pub use fstart_core::services::measure::post_code;
 
 /// Largest event data this crate builds on the stack.
 pub const MAX_EVENT_DATA: usize = 256;

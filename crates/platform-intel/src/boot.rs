@@ -91,7 +91,16 @@ pub(crate) fn load_stage_with_cache(
     // code/data/stack plus the store excluded by `reserved`. The loader
     // verifies final bytes.
     match unsafe {
-        fstart_resume::load_stage(media, stage, descriptor, &policy, store, resume, codec)
+        fstart_resume::load_stage(
+            media,
+            stage,
+            descriptor,
+            &policy,
+            store,
+            resume,
+            codec,
+            &fstart_stage::boot::Measurement::NONE,
+        )
     } {
         Ok(verified) => Ok(verified),
         Err(fstart_resume::Error::NotCached) => {

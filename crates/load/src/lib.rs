@@ -1,4 +1,4 @@
-//! The loading chain: read → verify → decompress → place.
+//! The loading chain: read → verify → measure → decompress → place.
 //!
 //! Every load of firmware or payload bytes goes through these steps, each a
 //! type the next one needs:
@@ -7,11 +7,19 @@
 //!   giving [`Unverified`] bytes;
 //! - [`Unverified::verify`] checks them against a digest, giving
 //!   [`Verified`] bytes: nothing parses or decodes bytes before this;
-//! - [`Verified::decompress`] runs a [`Codec`] the caller chose into an
+//! - [`Verified::measure`] records them ([`Measure`]), giving [`Measured`]
+//!   bytes. Every load measures, or passes [`Measurement::NONE`];
+//! - [`Measured::decompress`] runs a [`Codec`] the caller chose into an
 //!   output buffer, giving new [`Unverified`] bytes to check against the
 //!   loaded digest;
 //! - [`place`] checks a destination against a [`MemoryPolicy`] before the
 //!   first write.
+//!
+//! The bytes verified, measured and used are the same: the chain reads into
+//! memory it then borrows until it hands the bytes on, so nothing in safe
+//! code can change them between the check and the use. Bytes that stay in
+//! the boot media, such as the static root of trust's own image, are
+//! [`InPlace`]: measuring them records what the media held at that moment.
 //!
 //! The codec is an argument, not a build feature: a stage that only loads
 //! stored data passes [`Stored`] and never links a decoder; one that loads
@@ -26,6 +34,7 @@
 
 use fstart_core::ffs::Compression;
 use fstart_core::services::BootMedia;
+pub use fstart_core::services::measure::{Event, Measure, Measurement, Unmeasured};
 use fstart_ffs::root::BootstrapDescriptor;
 
 #[cfg(test)]
@@ -126,9 +135,13 @@ impl Codec for Lz4 {
 #[must_use]
 pub struct Unverified<'a>(&'a mut [u8]);
 
-/// Bytes that matched their digest. Only these are decoded or handed on.
+/// Bytes that matched their digest. Only these are measured.
 #[must_use]
 pub struct Verified<'a>(&'a [u8]);
+
+/// Verified bytes that were measured. Only these are decoded or handed on.
+#[must_use]
+pub struct Measured<'a>(&'a [u8]);
 
 /// Read exactly `into.len()` bytes at `offset`; short successful device
 /// reads are still failures.
@@ -172,6 +185,14 @@ impl<'a> Unverified<'a> {
 }
 
 impl<'a> Verified<'a> {
+    /// Record these bytes as `measurement`.
+    pub fn measure(self, measurement: &Measurement<'_>) -> Measured<'a> {
+        measurement.record(self.0);
+        Measured(self.0)
+    }
+}
+
+impl<'a> Measured<'a> {
     pub fn bytes(&self) -> &'a [u8] {
         self.0
     }
@@ -185,6 +206,51 @@ impl<'a> Verified<'a> {
     ) -> Result<Unverified<'o>, LoadError> {
         codec.decompress(compression, self.0, output)?;
         Ok(Unverified(output))
+    }
+}
+
+/// Bytes measured where the boot media maps them, not copied. Nothing
+/// keeps the media from changing after the measurement: use it only for
+/// what has no stable copy to measure, such as the static root of trust's
+/// own image, and never hand the bytes on.
+pub struct InPlace<'a>(&'a [u8]);
+
+impl<'a> InPlace<'a> {
+    /// `len` bytes at `offset` of memory-mapped `media`.
+    pub fn new(
+        media: &'a (impl BootMedia + ?Sized),
+        offset: u64,
+        len: u64,
+    ) -> Result<Self, LoadError> {
+        let mapped = media.as_slice().ok_or(LoadError::Io)?;
+        let start = usize::try_from(offset).map_err(|_| LoadError::Bounds)?;
+        let len = usize::try_from(len).map_err(|_| LoadError::Bounds)?;
+        let end = start.checked_add(len).ok_or(LoadError::Bounds)?;
+        mapped.get(start..end).map(Self).ok_or(LoadError::Bounds)
+    }
+
+    /// Bytes the boot media maps, already found.
+    pub fn mapped(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    /// The flash address of the bytes, for the event's base.
+    pub fn address(&self) -> u64 {
+        self.0.as_ptr() as u64
+    }
+
+    /// Check the bytes against `expected`.
+    pub fn check<D: Digest>(self, expected: &D::Output) -> Result<Self, LoadError> {
+        if D::digest(self.0) == *expected {
+            Ok(self)
+        } else {
+            Err(LoadError::StoredDigest)
+        }
+    }
+
+    /// Record the bytes the media holds now as `measurement`.
+    pub fn measure(self, measurement: &Measurement<'_>) {
+        measurement.record(self.0);
     }
 }
 
@@ -322,14 +388,15 @@ pub fn stored_input(descriptor: &BootstrapDescriptor) -> Result<MemoryWindow, Lo
 }
 
 /// Load a trusted descriptor into a caller-owned, exclusive workspace that
-/// represents its load address: read, verify the stored digest, decompress
-/// with `codec`, verify the loaded digest. Useful also for block media and
-/// host tests.
+/// represents its load address: read, verify the stored digest, measure the
+/// stored bytes as `measurement`, decompress with `codec`, verify the loaded
+/// digest. Useful also for block media and host tests.
 pub fn load_bootstrap_into(
     media: &(impl BootMedia + ?Sized),
     descriptor: &BootstrapDescriptor,
     workspace: &mut [u8],
     codec: &dyn Codec,
+    measurement: &Measurement<'_>,
 ) -> Result<(), LoadError> {
     let required =
         usize::try_from(bootstrap_footprint(descriptor)?).map_err(|_| LoadError::Bounds)?;
@@ -347,23 +414,24 @@ pub fn load_bootstrap_into(
     }
     let loaded = usize::try_from(descriptor.loaded_size).map_err(|_| LoadError::Bounds)?;
     let (output, scratch) = workspace[..required].split_at_mut(loaded);
-    let output = match descriptor.compression {
-        Compression::None => read(media, descriptor.offset, output)?,
-        compression => {
-            // Authenticate precisely the stable bytes passed to the decoder.
+    match descriptor.compression {
+        // The footprint check made the stored and loaded digests one.
+        Compression::None => drop(
+            read(media, descriptor.offset, output)?
+                .verify::<Sha256>(&descriptor.stored_digest, LoadError::StoredDigest)?
+                .measure(measurement),
+        ),
+        // Authenticate and measure precisely the stable bytes passed to the
+        // decoder.
+        compression => drop(
             read(media, descriptor.offset, scratch)?
                 .verify::<Sha256>(&descriptor.stored_digest, LoadError::StoredDigest)?
+                .measure(measurement)
                 .decompress(codec, compression, output)?
-        }
-    };
-    let error = if descriptor.compression == Compression::None {
-        LoadError::StoredDigest
-    } else {
-        LoadError::LoadedDigest
-    };
-    output
-        .verify::<Sha256>(&descriptor.loaded_digest, error)
-        .map(drop)
+                .verify::<Sha256>(&descriptor.loaded_digest, LoadError::LoadedDigest)?,
+        ),
+    }
+    Ok(())
 }
 
 /// Validate, place and load before granting the executable entry address.
@@ -380,6 +448,7 @@ pub unsafe fn load_bootstrap(
     descriptor: &BootstrapDescriptor,
     policy: &MemoryPolicy<'_>,
     codec: &dyn Codec,
+    measurement: &Measurement<'_>,
 ) -> Result<VerifiedExecutable, LoadError> {
     let footprint = bootstrap_footprint(descriptor)?;
     let entry = descriptor
@@ -400,6 +469,6 @@ pub unsafe fn load_bootstrap(
     let workspace = unsafe {
         core::slice::from_raw_parts_mut(descriptor.load_addr as *mut u8, footprint as usize)
     };
-    load_bootstrap_into(media, descriptor, workspace, codec)?;
+    load_bootstrap_into(media, descriptor, workspace, codec, measurement)?;
     Ok(VerifiedExecutable { entry })
 }

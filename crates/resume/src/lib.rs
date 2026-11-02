@@ -14,7 +14,7 @@ pub mod stage_cache;
 use fstart_core::services::BootMedia;
 use fstart_core::services::boot_media::{LinearMap, MemoryMapped};
 use fstart_ffs::root::BootstrapDescriptor;
-use fstart_load::{Codec, MemoryPolicy, VerifiedExecutable};
+use fstart_load::{Codec, Measurement, MemoryPolicy, VerifiedExecutable};
 use fstart_store::Store;
 use stage_cache::{CachedStage, STAGE_CACHE_HEADER_LEN};
 
@@ -39,11 +39,13 @@ fn entry_media(store: &Store, entry: &fstart_store::Entry) -> MemoryMapped<Linea
 /// Load the bootstrap `stage` named by the authenticated `descriptor` and
 /// keep its S3 cache entry coherent.
 ///
-/// Cold boot: verify the stage from `media` into `policy`'s window, then
+/// Cold boot: verify the stage from `media` into `policy`'s window,
+/// measured as `measurement`, then
 /// copy the stored bytes it just verified in RAM into a store entry. A
 /// failed copy is logged; the platform then withholds S3 ([`cached`]).
 /// Resume: load the stage from that entry, which re-checks the stored
-/// digest against the freshly authenticated descriptor.
+/// digest against the freshly authenticated descriptor, and is not
+/// measured: the TPM keeps the PCRs the cold boot extended.
 ///
 /// # Safety
 /// As [`fstart_load::load_bootstrap`]: `policy` describes exclusive writable
@@ -56,6 +58,7 @@ pub unsafe fn load_stage(
     store: &mut Store,
     resume: bool,
     codec: &dyn Codec,
+    measurement: &Measurement<'_>,
 ) -> Result<VerifiedExecutable, Error> {
     if resume {
         let verified = store.find(stage.tag()).and_then(|entry| {
@@ -80,8 +83,9 @@ pub unsafe fn load_stage(
     }
 
     // SAFETY: the caller's mapping contract.
-    let verified = unsafe { fstart_load::load_bootstrap(media, descriptor, policy, codec) }
-        .map_err(Error::Load)?;
+    let verified =
+        unsafe { fstart_load::load_bootstrap(media, descriptor, policy, codec, measurement) }
+            .map_err(Error::Load)?;
     fstart_timestamp::add(fstart_timestamp::id::STORE_STAGE_CACHE);
     // Copy the stored bytes the loader just verified in RAM rather than
     // reading the flash a second time.
