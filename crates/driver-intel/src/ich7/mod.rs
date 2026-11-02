@@ -1405,16 +1405,6 @@ impl IntelIch7 {
             .get_or_insert_with(|| I801SmBus::new(self.config.smbus_base))
     }
 
-    /// Select only PCIe-root-port static clock gating, clearing other gates.
-    ///
-    /// Legacy desktop boards such as P5GC-MX require this in post-training
-    /// board hooks. The mainstage driver applies its normal gating policy
-    /// later. RCBA must already be established.
-    pub fn use_pcie_root_port_clock_gating_only(&self) {
-        let rcba = Rcba::new((self.config.rcba & 0xffff_c000) as usize);
-        rcba.regs().cg.write(CG_REG::PCIE_ROOT_PORT_STATIC::SET);
-    }
-
     /// Detect boot path: Normal, Reset (warm), or S3 Resume.
     ///
     /// Call this after `early_init()` but before raminit to determine
