@@ -35,7 +35,7 @@ use std::{
     vec,
 };
 
-const UNIT: &str = "reset";
+const UNIT: &str = "stage";
 const SMM_UNIT: &str = "smm";
 
 /// What a SoC's host build differs in.
@@ -555,7 +555,7 @@ fn assembly<S: HostSoc>(
             offset: (window.base - layout.flash.base) as u32,
             size: window.size as u32,
         }),
-        reset_unit: UNIT.into(),
+        stage_unit: UNIT.into(),
         flash_size,
         bios_directory: S::BIOS_DIRECTORY,
         reset_size: layout.image.size as u32,

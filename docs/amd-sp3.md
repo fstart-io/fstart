@@ -32,7 +32,7 @@ Source: `crates/driver-amd/src/cpu.rs` (`Revision::from_signature`),
 | `crates/driver-amd/src/sp3/` | `soc` (identify, per-generation constants), `topology`, `df`, `nbio`, `dxio`, `ccx`, `fch` |
 | `crates/driver-amd/src/` | `apob`, `psp`, `smn`, `smu` (used by the SP3 flow) |
 | `crates/platform-sp3/src/` | `board` (Board facts, `Policy`, `Gpio`), `layout` (memory map, `Sp3BoardFacts`), `flow` (boot steps), `mp`, `memory`, `smm`, `smbios`, `acpi`, `pci`, `einj`, `host` (build plan) |
-| `crates/platform-sp3/asm/reset.S`, `linker/reset.ld.in` | reset entry and the reset image linker script |
+| `crates/platform-sp3/asm/reset.S`, `linker/stage.ld.in` | reset entry and the reset image linker script |
 | `crates/platform-sp3/build.rs` | checks the SMM image fits TSEG |
 | `crates/image-build/src/sp3_flash.rs` | vendor ROM composition and verification |
 | `crates/amdfw-format` | flash anchor, EFS, BIOS/PSP directory readers |
@@ -47,7 +47,7 @@ Platform features (`crates/platform-sp3/Cargo.toml`):
 |---|---|
 | `naples`, `rome`, `milan` | additive: compile that generation's flow steps (`fstart-driver-amd/<gen>`) |
 | `acpi` | build ACPI and SMBIOS |
-| `bundle-reset` | reset-image runtime (used by fbuild's reset unit) |
+| `bundle-stage` | stage runtime (used by fbuild's stage unit) |
 | `payload-linux`, `payload-uefi` | payload backend (`fstart_payload` cfg) |
 | `smm`, `bundle-smm` | FCH SMI handler, for the SMM image unit |
 | `host` | build-plan code, never in firmware |
@@ -55,7 +55,7 @@ Platform features (`crates/platform-sp3/Cargo.toml`):
 ## Board contract
 
 A board implements two traits of data, `layout::Sp3BoardFacts` (plan data)
-and `board::Board`, and owns its reset `main` (`src/bin/reset.rs`). Examples
+and `board::Board`, and owns its stage `main` (`src/bin/stage.rs`). Examples
 are in `boards/tyan/s8030` and `boards/amd/ethanolx`.
 
 `Sp3BoardFacts`:
@@ -142,7 +142,7 @@ Defined in `crates/platform-sp3/src/layout.rs`.
 
 The reset image is linked once at the smallest vendor geometry and every
 `0x62` entry of every composed generation points at it. The linker script
-asserts it fits (`reset.ld.in`). The 16-bit entry sits in the last 64 KiB
+asserts it fits (`stage.ld.in`). The 16-bit entry sits in the last 64 KiB
 and the reset vector in the last 16 bytes of the image.
 
 ## Flash image
@@ -234,7 +234,7 @@ Not implemented: a single multi-generation EFS with a combo directory
 ## SMM
 
 The SMM handler is a separate unit (`smm`) of the board's build, embedded
-into the reset unit through `FSTART_SMM_IMAGE`.
+into the stage unit through `FSTART_SMM_IMAGE`.
 
 - Unit: board library with features `smm`, `bundle-smm` and the board's
   generations; entry `x86_64`, log level off,

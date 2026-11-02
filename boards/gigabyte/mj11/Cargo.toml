@@ -48,4 +48,4 @@ fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 zerocopy = { workspace = true }
 tock-registers = { workspace = true }
 
-# One binary per stage, named after the stage: src/bin/reset.rs.
+# The only stage, which the PSP copies to DRAM: src/bin/stage.rs.

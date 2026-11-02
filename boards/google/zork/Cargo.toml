@@ -37,4 +37,4 @@ fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
 
-# One binary per stage, named after the stage: src/bin/reset.rs.
+# The only stage, which the PSP copies to DRAM: src/bin/stage.rs.

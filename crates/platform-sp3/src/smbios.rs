@@ -3,13 +3,13 @@
 
 extern crate alloc;
 
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 use fstart_acpi::smbios;
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
 pub use fstart_driver_amd::apob::smbios::{Dimm, DramRange, Inputs, Processor, build_into};
 
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 pub(crate) mod runtime {
     use super::*;
     use crate::flow::{Ctx, OrHalt};

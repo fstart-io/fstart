@@ -1,4 +1,4 @@
-//! The S8030 reset image: from the PSP's release of the BSP to the payload.
+//! The S8030 stage: from the PSP's release of the BSP to the payload.
 //! Rome and Milan run the same flow with the SP3 silicon steps.
 
 #![no_std]

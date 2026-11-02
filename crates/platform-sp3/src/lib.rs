@@ -11,7 +11,7 @@
 //! `main`: it matches the family [`start`] returns and does its own work
 //! between the phases ([`Identified`], [`Reset`], [`Stage`],
 //! [`Configured`]), passing its policy, console, GPIO and tables to them
-//! (feature `bundle-reset`).
+//! (feature `bundle-stage`).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 
 extern crate ufmt;
@@ -20,7 +20,7 @@ extern crate ufmt;
 pub mod acpi;
 pub mod board;
 pub mod entry;
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 mod flow;
 #[cfg(feature = "host")]
 pub mod host;
@@ -40,23 +40,23 @@ pub mod smm;
 
 #[cfg(feature = "smm")]
 pub use fstart_smm as smm_runtime;
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 #[doc(hidden)]
 pub use fstart_stage as stage_runtime;
 
-#[cfg(all(feature = "bundle-reset", feature = "naples"))]
+#[cfg(all(feature = "bundle-stage", feature = "naples"))]
 pub use flow::NaplesSilicon;
-#[cfg(all(feature = "bundle-reset", any(feature = "rome", feature = "milan")))]
+#[cfg(all(feature = "bundle-stage", any(feature = "rome", feature = "milan")))]
 pub use flow::RomeMilanSilicon;
-#[cfg(all(feature = "bundle-reset", feature = "acpi"))]
+#[cfg(all(feature = "bundle-stage", feature = "acpi"))]
 pub use flow::Tables;
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 pub use flow::{Configured, Identified, Reset, Silicon, Stage, Start, start};
 
-/// Declare the board's reset-image `main`:
+/// Declare the board's stage `main`:
 /// `fstart_platform_sp3::entry!(main);`, where `main` matches the family
 /// [`start`] returns and runs the board's flow.
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 #[macro_export]
 macro_rules! entry {
     ($main:path) => {

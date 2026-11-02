@@ -71,7 +71,7 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
     assert_eq!(plan.units.len(), 2);
     assert_eq!(plan.units[0].name, "smm");
     let unit = &plan.units[1];
-    assert_eq!(unit.name, "reset");
+    assert_eq!(unit.name, "stage");
     assert!(unit.release_only);
     assert_eq!(unit.features, ["bundle-picasso", "payload-uefi"]);
     assert_eq!(unit.bindings[0].producer, "smm");
@@ -95,7 +95,7 @@ fn picasso_ui_reserves_the_larger_reset_image_and_entry() {
         ..Default::default()
     })
     .unwrap();
-    let unit = plan.units.iter().find(|unit| unit.name == "reset").unwrap();
+    let unit = plan.units.iter().find(|unit| unit.name == "stage").unwrap();
     assert_eq!(unit.features, ["bundle-picasso", "payload-uefi-ui"]);
     let UnitOutput::Executable {
         expectations,
@@ -187,9 +187,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "eb843333dcaa8dbe8ce4ae687a49f478cb1be3548303be38d7c6369b42af3287",
-            "05aeea13dfcaaeecd486f07528af5f8d97bec21e113ea7c3bab8f6fbc617b062",
-            "db3f9c3cbe5363afc7493bf2382cb717c7dfd468419e3b3775bf860cc54fa0d7",
+            "555d6d116dd8d40a9731e442636bf4979b7c2689d87feadb5b873ee88b0c5530",
+            "ad1fcefcb84ee5245b2030a77c3800ce4d59424272685e66464ccbca1542c245",
+            "59f38501fa090adc2bc4a6662f8b0af839eb8a4e3690c1b0fef6f112b0f450d9",
         ]
     );
 }

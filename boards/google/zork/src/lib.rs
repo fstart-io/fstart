@@ -2,7 +2,7 @@
 //! Vilboz, Vilboz14 and Vilboz360 share Dalboz wiring and a single native flow.
 //! SKU differences come from EC CBI FW_CONFIG, not independent Rust board copies.
 //!
-//! The flow is the board's: `src/bin/reset.rs`, from the PSP's reset vector to
+//! The flow is the board's: `src/bin/stage.rs`, from the PSP's reset vector to
 //! the payload. This library holds the board's facts and the mainboard work
 //! that `main` calls.
 #![no_std]

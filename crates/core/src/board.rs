@@ -213,7 +213,7 @@ pub struct BoardBuildPolicy {
     pub firmware_image: FirmwareImagePolicy,
     /// Complete flash aperture for composite XIP firmware images.
     ///
-    /// This is distinct from `firmware_image` when the reset stage and FFS
+    /// This is distinct from `firmware_image` when the stage and FFS
     /// occupy separate windows, as on QEMU virt.
     #[serde(default)]
     pub flash_image: Option<FirmwareImagePolicy>,

@@ -25,8 +25,8 @@ pub fn compose(
     let inputs = compiler_inputs::collect(root, &bindings)?;
     let reset = stages
         .iter()
-        .find(|stage| stage.name == operation.reset_unit)
-        .ok_or("the reset stage was not built")?;
+        .find(|stage| stage.name == operation.stage_unit)
+        .ok_or("the stage was not built")?;
     let reset_bytes = read(&reset.run_path)?;
     let ffs_bytes = ffs.map(read).transpose()?;
     let sources: Vec<_> = inputs.iter().map(|input| input.bytes()).collect();

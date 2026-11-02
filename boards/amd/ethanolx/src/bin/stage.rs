@@ -1,4 +1,4 @@
-//! The Ethanol-X reset image: from the PSP's release of the BSP to the
+//! The Ethanol-X stage: from the PSP's release of the BSP to the
 //! payload, on Milan with the SP3 silicon steps.
 
 #![no_std]

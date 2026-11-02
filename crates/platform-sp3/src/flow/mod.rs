@@ -1,7 +1,7 @@
 //! The fixed SP3 boot flow (NATIVE_PORT_PLAN §4, INTEGRATION_NOTES).
 //!
 //! Phases from the PSP's release of the BSP to the payload, which the
-//! board's reset `main` runs with its own work in between: [`start`]
+//! board's stage `main` runs with its own work in between: [`start`]
 //! identifies the CPU ([`Identified`]), then the FCH reset tasks
 //! ([`Reset`]), the console and silicon up to DXIO ([`Stage`]), the board's
 //! GPIO table ([`Configured`]) and [`Configured::finish`]. The shared steps
@@ -84,7 +84,7 @@ pub use sp3::Silicon as RomeMilanSilicon;
 mod tpm;
 
 #[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
-compile_error!("a reset-image build enables at least one of naples, rome, milan");
+compile_error!("a stage build enables at least one of naples, rome, milan");
 
 /// The silicon steps of one family, in flow order: [`naples`] (DF2, an
 /// NBIO and SMU V9 per die) and [`sp3`] (DF3, SMU V11 per IOD; Rome and
@@ -707,7 +707,7 @@ fn fch_reset(fch: &PrimaryFch, generation: Generation, policy: &Policy) -> bool 
 /// CPU's generation (the build may carry more generations than a board
 /// lists).
 fn check_identity<B: Board>(identity: &Identity, tsc_mhz: u32) {
-    #[cfg(all(target_os = "none", feature = "bundle-reset"))]
+    #[cfg(all(target_os = "none", feature = "bundle-stage"))]
     if crate::entry::bsp_bist() != 0 {
         fstart_log::error!("sp3: BSP BIST {:#x}", crate::entry::bsp_bist());
         fail("BIST");

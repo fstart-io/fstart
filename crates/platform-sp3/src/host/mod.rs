@@ -5,14 +5,14 @@
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) with
-//! `linker/reset.ld.in`, and an
+//! `linker/stage.ld.in`, and an
 //! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
 //! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
 //! (`--image-config` composes into another vendor ROM, e.g. the target
 //! board's flash backup).
 //!
-//! The FFS holds the payload and a copy of the reset unit: the FFS builder
+//! The FFS holds the payload and a copy of the stage unit: the FFS builder
 //! finalizes the unit's trust policy only in FFS-resident files, and the
 //! composer copies it, the FFS locator and the flash anchor (FFS flash
 //! offset and size) into the PSP-copied `0x62` image.
@@ -20,7 +20,7 @@
 //! A second unit, `smm`, builds the board crate's library with the FCH SMI
 //! handler (`smm::handle`, bound by the board's `smm_bin!`) into a
 //! position-independent SMM image with one entry stub per CPU the board
-//! allows; the reset unit embeds it through `FSTART_SMM_IMAGE` and its build
+//! allows; the stage unit embeds it through `FSTART_SMM_IMAGE` and its build
 //! script checks that it fits the TSEG ([`crate::smm::TSEG_SIZE`]), as the
 //! MIT Intel and QEMU q35 plans do.
 
@@ -51,24 +51,25 @@ use crate::layout::{
     Sp3BoardFacts, Span,
 };
 
-/// The firmware unit (and FFS stage) name of the reset image.
-pub const RESET_UNIT: &str = "reset";
-/// Platform feature that bundles the reset-image stage runtime.
-pub const RESET_FEATURE: &str = "bundle-reset";
-/// The SMM image unit; the reset unit is its only consumer.
+/// The firmware unit (and FFS file) name of the stage, which the PSP
+/// copies to DRAM as the BIOS reset image.
+pub const STAGE_UNIT: &str = "stage";
+/// Platform feature that bundles the stage runtime.
+pub const STAGE_FEATURE: &str = "bundle-stage";
+/// The SMM image unit; the stage unit is its only consumer.
 pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
 /// with the SMM panic handler.
 pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
-/// Reset-unit environment carrying the SMM image path (`build.rs`).
+/// Stage-unit environment carrying the SMM image path (`build.rs`).
 pub const SMM_IMAGE_ENV: &str = "FSTART_SMM_IMAGE";
-/// Reset-unit environment carrying the TSEG size the image must fit.
+/// Stage-unit environment carrying the TSEG size the image must fit.
 pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
 /// Per-thread SMM stack: the linked handler's deepest static call path
 /// (it has no indirect calls) needs about 1 KiB; 128 threads take 1 MiB of
 /// the 8 MiB TSEG.
 pub const SMM_STACK_SIZE: u32 = 0x2000;
-const LINKER_TEMPLATE: &str = include_str!("../../linker/reset.ld.in");
+const LINKER_TEMPLATE: &str = include_str!("../../linker/stage.ld.in");
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
@@ -268,7 +269,7 @@ pub enum Payload {
     Halt,
     /// Direct x86 Linux (bzImage from `--kernel`, stored in the FFS).
     Linux,
-    /// CrabEFI linked into the reset unit.
+    /// CrabEFI linked into the stage unit.
     Uefi,
 }
 
@@ -298,7 +299,7 @@ impl Payload {
         }
     }
 
-    /// `fstart_payload` cfg value of the reset unit.
+    /// `fstart_payload` cfg value of the stage unit.
     pub const fn cfg(self) -> &'static str {
         match self {
             Self::Halt => "halt",
@@ -307,7 +308,7 @@ impl Payload {
         }
     }
 
-    /// Platform features the reset unit needs for this payload.
+    /// Platform features the stage unit needs for this payload.
     pub const fn features(self) -> &'static [&'static str] {
         match self {
             Self::Halt => &[],
@@ -353,7 +354,7 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
     }
 }
 
-/// The assembler's view of the reset unit and its FFS: the FFS lives in
+/// The assembler's view of the stage unit and its FFS: the FFS lives in
 /// the ROM3 firmware window ([`FFS_WINDOW`], an upper bound; the composer
 /// enforces the vendor ROM's real one), the unit is monolithic and stored
 /// in the FFS (see the module docs) besides its `0x62` copy.
@@ -430,12 +431,12 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     }
     let reset = RESET;
     let unit = CompilationUnit {
-        name: RESET_UNIT.into(),
+        name: STAGE_UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
         cfg_schema: cfg_schema(),
         payload: payload.cfg().into(),
-        features: core::iter::once(RESET_FEATURE)
+        features: core::iter::once(STAGE_FEATURE)
             .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
             .chain(payload.features().iter().copied())
             .map(String::from)
@@ -470,7 +471,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         },
     };
     // The kernel is the one file a caller supplies (`--kernel`); the
-    // assembler enforces what actually fits next to the reset unit copy.
+    // assembler enforces what actually fits next to the stage unit copy.
     let inputs = match payload {
         Payload::Linux => vec![InputFile {
             name: "kernel".into(),
@@ -501,12 +502,12 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     let plan = BuildPlan {
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
-        stages: vec![RESET_UNIT.into()],
+        stages: vec![STAGE_UNIT.into()],
         assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
             ffs: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
             vendor_image,
             packed,
-            reset_unit: RESET_UNIT.into(),
+            stage_unit: STAGE_UNIT.into(),
             compose: flash_plan::<B>(),
         })),
         inputs,
@@ -636,9 +637,9 @@ mod tests {
     #[test]
     fn plan_has_one_reset_unit_for_every_board_generation() {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
-        assert_eq!(plan.stages, [RESET_UNIT]);
-        let unit = plan.unit(RESET_UNIT).unwrap();
-        assert_eq!(unit.features, [RESET_FEATURE, "rome", "milan"]);
+        assert_eq!(plan.stages, [STAGE_UNIT]);
+        let unit = plan.unit(STAGE_UNIT).unwrap();
+        assert_eq!(unit.features, [STAGE_FEATURE, "rome", "milan"]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
             expectations,
@@ -742,7 +743,7 @@ mod tests {
             .iter()
             .map(|u| u.name.as_str())
             .collect();
-        assert_eq!(order, [SMM_UNIT, RESET_UNIT]);
+        assert_eq!(order, [SMM_UNIT, STAGE_UNIT]);
         let smm = plan.unit(SMM_UNIT).unwrap();
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
         assert_eq!(smm.payload, "halt");
@@ -761,9 +762,9 @@ mod tests {
         // One entry stub per thread the MP code may bring up.
         assert_eq!((entry_count, stack_size), (256, SMM_STACK_SIZE));
 
-        let reset = plan.unit(RESET_UNIT).unwrap();
+        let reset = plan.unit(STAGE_UNIT).unwrap();
         let [binding] = reset.bindings.as_slice() else {
-            panic!("reset unit takes exactly the SMM image")
+            panic!("stage unit takes exactly the SMM image")
         };
         assert_eq!(
             (
@@ -781,8 +782,8 @@ mod tests {
                 &"--check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\"))".into()
             ));
         }
-        // Only the reset unit is a stage.
-        assert_eq!(plan.stages, [RESET_UNIT]);
+        // Only the stage unit is a stage.
+        assert_eq!(plan.stages, [STAGE_UNIT]);
     }
 
     #[test]
@@ -790,7 +791,7 @@ mod tests {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         let image = sp3(&plan);
         assert_eq!(image.vendor_image, S8030::VENDOR_IMAGE);
-        assert_eq!(image.reset_unit, RESET_UNIT);
+        assert_eq!(image.stage_unit, STAGE_UNIT);
         assert_eq!(
             image.compose,
             FlashPlan {
@@ -826,7 +827,7 @@ mod tests {
             ..select("linux")
         })
         .unwrap();
-        let unit = linux.unit(RESET_UNIT).unwrap();
+        let unit = linux.unit(STAGE_UNIT).unwrap();
         assert_eq!(
             (
                 unit.payload.as_str(),
@@ -838,7 +839,7 @@ mod tests {
         let payload = sp3(&linux).ffs.payload.as_ref().unwrap();
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0,115200"));
         let uefi = resolve::<S8030>(&select("uefi")).unwrap();
-        assert_eq!(uefi.unit(RESET_UNIT).unwrap().payload, "crabefi");
+        assert_eq!(uefi.unit(STAGE_UNIT).unwrap().payload, "crabefi");
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
             resolve::<S8030>(&BuildSelection {
