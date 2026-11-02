@@ -55,6 +55,5 @@ fn main() -> ! {
         Path::Resume(rs) => rs.keep_tables(),
     };
     mainboard::handoff_ec_events();
-    fstart_driver_superio::quiesce_i8042_for_os();
     rs.boot()
 }

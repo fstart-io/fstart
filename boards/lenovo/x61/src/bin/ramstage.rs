@@ -35,6 +35,5 @@ fn main() -> ! {
     // SMM is installed: hand the EC's events to SMM or the OS.
     mainboard::handoff_ec_events(resume);
     // Leave the EC's keyboard controller quiet before the OS probes it.
-    fstart_driver_superio::quiesce_i8042_for_os();
     rs.boot()
 }

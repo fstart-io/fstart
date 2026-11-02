@@ -252,9 +252,12 @@ impl H8 {
     /// Shared X6/T6 startup policy. Families supply their event masks and
     /// Bluetooth presence; dock latches/LEDs remain family-specific. Execute
     /// every operation even if an earlier EC transaction was not acknowledged.
+    ///
+    /// The H8 is also the PC/AT keyboard controller; it is left quiet for
+    /// the OS.
     pub fn init_legacy_thinkpad(&self, events: &[u8; 16], bluetooth: bool, resume: bool) -> bool {
         self.clear_out_queue();
-        [
+        let acknowledged = [
             self.init_config0(H8_CONFIG0_EVENTS_ENABLE),
             self.init_controls(
                 [0x05, 0xa0, 0x01],
@@ -275,7 +278,9 @@ impl H8 {
             self.audio_mute(false),
         ]
         .into_iter()
-        .all(core::convert::identity)
+        .all(core::convert::identity);
+        fstart_driver_superio::quiesce_i8042_for_os();
+        acknowledged
     }
 
     pub fn enable_hotkey(&self, on: bool) -> bool {
