@@ -36,15 +36,15 @@ cargo fbuild assemble -b intel-d510mo --release --payload halt
 - SeaBIOS (`--payload coreboot`): see
   [`ci/payloads/seabios/README.md`](../ci/payloads/seabios/README.md).
 
-## Board hooks
+## Board work in the stage mains
 
-| Board | `car` / `ram` Super I/O setup | CK505 clock gen (SMBus `0x69`) |
+| Board | Super I/O setup (bootblock and ramstage, before the console) | CK505 clock gen (SMBus `0x69`) |
 | --- | --- | --- |
-| D41S | `before_console`: IT8721F init, disconnect HW-monitor IRQ, disable parallel ECP decode, disable floppy LDN | `after_memory` (car, skipped on S3 resume) and `after_devices` (ram). Failure is logged; boot continues. |
-| D510MO | `before_console`: W83627THG init, `enable_hwmon(0x290)` | `after_devices` (ram, skipped on resume) |
-| GA-D510UD | `before_console`: IT8720F init, GPIO table at `0x800`, internal power-good, watchdog off, BSEL preset, main flash bank, HW-monitor IRQ disconnected, parallel ECP decode disabled | none |
+| D41S | `setup_superio`: IT8721F init, disconnect HW-monitor IRQ, disable parallel ECP decode, disable floppy LDN | ramstage, after `init_chipset` (also on S3 resume). Failure is logged; boot continues. |
+| D510MO | `setup_superio`: W83627THG init, `enable_hwmon(0x290)` | ramstage, after `init_chipset` (skipped on resume) |
+| GA-D510UD | `setup_superio`: IT8720F init, GPIO table at `0x800`, internal power-good, watchdog off, BSEL preset, main flash bank, HW-monitor IRQ disconnected, parallel ECP decode disabled | none |
 
-Source: `boards/*/*/src/mainboard.rs`.
+Source: `boards/*/*/src/{mainboard.rs,bin/*.rs}`.
 
 ## Board configuration
 

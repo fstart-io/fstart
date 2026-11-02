@@ -6,7 +6,7 @@
 use fstart_board_foxconn_d41s::{Board, mainboard};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_intel::{BootPath, bootblock::Bootblock};
+use fstart_platform_intel::bootblock::Bootblock;
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
@@ -14,15 +14,11 @@ fstart_platform_intel::entry!(main, reset_vector);
 
 fn main() -> ! {
     let bb = Bootblock::<Board>::enter();
-    if mainboard::setup_console().is_err() {
-        bb.fail("setup_console");
+    if mainboard::setup_superio().is_err() {
+        bb.fail("SuperIO setup");
     }
-    let mut bb = bb
-        .console(&CONSOLE, mainboard::console())
+    bb.console(&CONSOLE, mainboard::console())
         .train_memory()
-        .post_dram();
-    if bb.boot_path() != BootPath::S3Resume {
-        mainboard::setup_clock(bb.smbus());
-    }
-    bb.load_postcar()
+        .post_dram()
+        .load_postcar()
 }
