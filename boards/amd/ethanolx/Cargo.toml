@@ -50,9 +50,9 @@ heapless = { version = "0.8", default-features = false }
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", default-features = false, features = ["eh1"] }
 
-# One binary per stage, named after the stage: the reset image.
+# The only stage, which the PSP copies to DRAM.
 [[bin]]
-name = "reset"
-path = "src/bin/reset.rs"
+name = "stage"
+path = "src/bin/stage.rs"
 test = false
 bench = false

@@ -14,13 +14,13 @@ naples = ["fstart-driver-amd/naples"]
 rome = ["fstart-driver-amd/rome"]
 milan = ["fstart-driver-amd/milan"]
 acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios", "fstart-driver-ipmi/acpi"]
-# The reset-image firmware unit (host::RESET_FEATURE): its entry
+# The stage firmware unit (host::STAGE_FEATURE): its entry
 # (asm/reset.S, which enters the arch crate's `_start_ram`), the stage
 # runtime; `ffs` brings the stage allocator the arch identity paging
 # needs and mounts the FFS the payload comes from, whose root the signature
 # features authenticate; the flow builds ACPI. Payloads may be compressed
 # by the image builder, so the resident loader needs LZ4 as well.
-bundle-reset = [
+bundle-stage = [
   "dep:fstart-stage", "dep:fstart-payload", "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
   "acpi", "fstart-stage/tcg", "fstart-payload/tcg",

@@ -45,19 +45,19 @@ the native boot/image contract is incomplete."
 | Console | FCH UART 0, 115200 baud, 48 MHz clock |
 | SPI, eSPI | `policy::SPI`; eSPI to the EC with `dalboz::ESPI_GPIO_TABLE` |
 | Early GPIO tables | `EARLY`, `TPM`, `PCIE`, `ROMSTAGE` (in that order), programmed by `early_gpios` |
-| ROM sharing | Disabled from `reset.rs` (`Init::disable_rom_sharing`) |
+| ROM sharing | Disabled from `stage.rs` (`Init::disable_rom_sharing`) |
 | I2C2 (400 kHz) | ELAN0000 at `0x15`; SYNA0000 or PNP0C50 at `0x2c` (HID descriptor `0x20`). Both level-triggered, active-low, on GPIO 9. One is fitted. |
 | I2C3 (400 kHz) | GOOG0005 (Cr50 TPM) at `0x50`; ready interrupt on GPIO 3, falling edge |
 | Graphics | `policy::DISPLAYS`, `hdmi2_disable: 2` |
 | eMMC | Wired (`Config::emmc`); fitted only if the CBI says so |
 | Power | From the CBI, passed to `Dxio::finish` |
 
-The board's flow is `src/bin/reset.rs`. The board work it calls:
+The board's flow is `src/bin/stage.rs`. The board work it calls:
 
 - `early_gpios`, right after `picasso::Init::start`, then ROM sharing off.
 - `after_fch`, before `train_dxio`: reads the CBI from the EC
   (`ec::read_cbi`), powers and releases WLAN and configures the RAM-stage
-  GPIOs (`vilboz::configure_ram`). `reset.rs` passes the CBI's power policy
+  GPIOs (`vilboz::configure_ram`). `stage.rs` passes the CBI's power policy
   (`Cbi::native_power()`) and eMMC presence to `Dxio::finish`.
 - `acpi()`: the keyboard behind the EC, from `driver-chromeec`.
 - `smm.rs`: `VilbozSmm`, the board part of the FCH SMI handler, built only

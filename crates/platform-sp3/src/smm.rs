@@ -111,13 +111,13 @@ impl SmmConfig {
 }
 
 /// The FCH side of SMM installation on socket 0's FCH.
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 pub struct Sp3Smi<'a> {
     pub fch: &'a crate::hw::PrimaryFch,
     pub config: SmmConfig,
 }
 
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
     type HandlerConfig = SmmConfig;
 
@@ -149,7 +149,7 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 
 /// The FCH bits AGESA sets before SmmInfo (PSP_APOB §3.3): SmiStatus1
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
-#[cfg(feature = "bundle-reset")]
+#[cfg(feature = "bundle-stage")]
 pub fn prepare_psp_smi(fch: &crate::hw::PrimaryFch) {
     use fstart_driver_amd::sp3::fch::{FchHw, Window, acpimmio, update};
     let acpi = fch.acpi();

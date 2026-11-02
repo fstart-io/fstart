@@ -4,7 +4,7 @@
  *
  * This file is a `core::arch::global_asm!` template (AT&T syntax), included
  * by src/entry.rs. Brace-delimited names are const operands holding
- * layout constants from src/layout.rs (so comments here use no braces); `_sp3_*` section placement comes from linker/reset.ld.in.
+ * layout constants from src/layout.rs (so comments here use no braces); `_sp3_*` section placement comes from linker/stage.ld.in.
  *
  * Start state (FIRMWARE_IMAGE §5, CCX §3.7):
  *   - The PSP has trained DRAM, copied the image to [dest, 0x76000000) and
@@ -38,7 +38,7 @@
  * MTRR window and SYSCFG bits, then page tables and long mode, and the arch
  * crate's 64-bit RAM entry `_start_ram` (BSS, IDT, fstart_main(0)).
  *
- * Section placement (linker/reset.ld.in):
+ * Section placement (linker/stage.ld.in):
  *   .sp3.entry16       at END - 0x1000 = segment offset 0xf000
  *   .sp3.reset_vector  at END - 0x10   = segment offset 0xfff0
  */

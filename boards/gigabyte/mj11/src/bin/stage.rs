@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! MJ11 reset image: the PSP trained DRAM and released the BSP here; one
-//! stage runs to the payload.
+//! MJ11 stage: the PSP trained DRAM, copied this image and released the
+//! BSP here; it runs to the payload.
 
 #![no_std]
 #![no_main]

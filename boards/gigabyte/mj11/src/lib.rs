@@ -2,7 +2,7 @@
 //! Gigabyte MJ11-EC1 (G431-MM0) and MJ11-EC0: EPYC Embedded 3000 (SP4r2) with
 //! an AST2500 BMC.
 //!
-//! The flow is the board's: `src/bin/reset.rs`, from the PSP's reset vector
+//! The flow is the board's: `src/bin/stage.rs`, from the PSP's reset vector
 //! to the payload. This library holds the board's facts and the mainboard
 //! work that `main` calls.
 #![no_std]

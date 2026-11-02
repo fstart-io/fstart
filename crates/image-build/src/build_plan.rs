@@ -19,11 +19,11 @@ pub struct BuildPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Assembly {
     Ffs(Box<FfsAssembly>),
-    /// An AMD image: PSP firmware, the reset stage the PSP loads and an
+    /// An AMD image: PSP firmware, the stage the PSP loads and an
     /// optional FFS.
     Amd(Box<crate::amd::assembly::AmdAssembly>),
     /// An AMD SP3 flash half (and 32 MiB dual image): vendor PSP prefix,
-    /// FFS and the PSP-copied reset unit.
+    /// FFS and the PSP-copied stage unit.
     Sp3Flash(Box<crate::sp3_flash::Sp3FlashAssembly>),
     /// Compiler/check/editor support only. No image/flash/run contract supplied.
     Unassembled {
@@ -533,11 +533,11 @@ impl BuildPlan {
             }
         }
         let mut bootstrap = BTreeSet::new();
-        // The reset unit's stored bytes are the image the PSP copies; its
+        // The stage unit's stored bytes are the image the PSP copies; its
         // `.data` may run from a copy elsewhere, as in every noncar image.
         if let Assembly::Amd(image) = &self.assembly {
             image.validate()?;
-            let unit = self.unit(&image.reset_unit)?;
+            let unit = self.unit(&image.stage_unit)?;
             let UnitOutput::Executable {
                 expectations,
                 load_address,
@@ -546,7 +546,7 @@ impl BuildPlan {
             else {
                 return Err("PSP reset producer is not executable".into());
             };
-            if !self.stages.contains(&image.reset_unit)
+            if !self.stages.contains(&image.stage_unit)
                 || *load_address != image.reset_destination
                 || *flat_capacity != u64::from(image.reset_size)
                 || !matches!(expectations.architecture, crate::elf::Architecture::X86_64)

@@ -42,7 +42,7 @@ Zeppelin and Picasso; see the SoC pages for their details:
 - `noncar::Board` (a board's `lib.rs`): `type Soc` and `CONFIG`, the facts
   host planning reads.
 
-The flow is the board's: `src/bin/reset.rs` calls the phases and does its
+The flow is the board's: `src/bin/stage.rs` calls the phases and does its
 own work between them. Vilboz:
 
 ```rust
@@ -221,7 +221,7 @@ The `--linux-*` options require `--payload linux`.
 | --- | --- |
 | `zeppelin`, `picasso` | The SoC module, with `fstart-driver-amd/<soc>` |
 | `noncar` | The flow (without the bundle) |
-| `bundle-zeppelin`, `bundle-picasso` | The reset stage |
+| `bundle-zeppelin`, `bundle-picasso` | The stage |
 | `smm` | `smm_bin!` and the FCH SMM support for the board's SMM unit |
 | `host` | The build plan (`Plan::emit`), host side only |
 | `payload-linux`, `payload-uefi`, `payload-uefi-ui`, `payload-uefi-basic` | Payloads |

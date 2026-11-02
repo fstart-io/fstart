@@ -1,5 +1,5 @@
 //! The S8030's facts ([`fstart_platform_sp3::board::Board`]) and what its
-//! reset `main` passes to the phases and does between them:
+//! stage `main` passes to the phases and does between them:
 //! the AST2500 console path, the GPIO program, the DXIO lane map with the
 //! detected M.2 modes and the BMC's Gen3 cap, and the silicon policy.
 

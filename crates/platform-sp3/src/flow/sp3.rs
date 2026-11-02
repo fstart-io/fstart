@@ -426,9 +426,9 @@ pub(crate) fn fch_env(ctx: &Ctx, _si: &Silicon) {
 }
 
 fn route_aps(route: ApRoute) {
-    #[cfg(all(target_os = "none", feature = "bundle-reset"))]
+    #[cfg(all(target_os = "none", feature = "bundle-stage"))]
     crate::entry::set_ap_route(route);
-    #[cfg(not(all(target_os = "none", feature = "bundle-reset")))]
+    #[cfg(not(all(target_os = "none", feature = "bundle-stage")))]
     let _ = route;
 }
 

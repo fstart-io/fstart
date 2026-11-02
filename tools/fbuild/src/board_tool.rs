@@ -263,7 +263,7 @@ fn assemble(
     }
 }
 
-/// Compose the assembled FFS and the reset unit into the SP3 vendor ROM
+/// Compose the assembled FFS and the stage unit into the SP3 vendor ROM
 /// (`fstart_image_build::sp3_flash`); relative vendor paths are
 /// workspace-relative (`--image-config` replaces the board's vendor ROM).
 /// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
@@ -298,13 +298,13 @@ fn compose_sp3_flash(
     let reset = assembled
         .stages
         .iter()
-        .find(|stage| stage.name == image.reset_unit)
-        .ok_or("SP3 reset unit was not built")?;
+        .find(|stage| stage.name == image.stage_unit)
+        .ok_or("SP3 stage unit was not built")?;
     let flash =
         fstart_image_build::sp3_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
     if !flash.patched.locator || !flash.patched.flash {
         eprintln!(
-            "[fstart] warning: the SP3 reset unit links no FFS locator or flash anchor; it cannot read its FFS"
+            "[fstart] warning: the SP3 stage unit links no FFS locator or flash anchor; it cannot read its FFS"
         );
     }
     let survey = &flash.survey;
