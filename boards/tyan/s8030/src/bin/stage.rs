@@ -20,21 +20,24 @@ fn main() -> ! {
 
 fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
     let generation = id.generation();
-    let reset = id.reset(platform::policy(generation));
-    if platform::early_init(reset.fch()).is_err() {
-        reset.fail("board early init");
+    let stage = id.init_fch(platform::policy(generation));
+    if platform::early_init(stage.fch()).is_err() {
+        stage.fail("board early init");
     }
-    let stage = reset.console(&CONSOLE, platform::CONSOLE);
+    let stage = stage.console(&CONSOLE, platform::CONSOLE);
     let levels = stage.read_pads(platform::detect_pads(generation));
     let stage = stage.program_gpio(&platform::gpio(generation));
     let engines = platform::dxio_engines(generation, &levels, stage.fch(), stage.timer())
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
     let lpc_aml = bmc::lpc_aml();
-    stage.finish(
-        &engines,
-        Tables {
+    stage
+        .train_dxio(&engines)
+        .init_chipset()
+        .start_cpus()
+        .scan_bus()
+        .emit_tables(Tables {
             smbios: platform::smbios_identity(),
             acpi: bmc::acpi_board(&lpc_aml),
-        },
-    )
+        })
+        .boot()
 }

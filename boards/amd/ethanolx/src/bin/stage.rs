@@ -20,18 +20,23 @@ fn main() -> ! {
 
 fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
     let generation = id.generation();
-    let reset = id.reset(ethanolx::policy(generation));
-    if ethanolx::early_init(reset.fch()).is_err() {
-        reset.fail("board early init");
+    let stage = id.init_fch(ethanolx::policy(generation));
+    if ethanolx::early_init(stage.fch()).is_err() {
+        stage.fail("board early init");
     }
-    let stage = reset.console(&CONSOLE, ethanolx::CONSOLE).program_gpio(&ethanolx::GPIO_PROGRAM);
+    let stage = stage
+        .console(&CONSOLE, ethanolx::CONSOLE)
+        .program_gpio(&ethanolx::GPIO_PROGRAM);
     let engines = ethanolx::dxio_engines(generation, &[], stage.fch(), stage.timer())
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
-    stage.finish(
-        &engines,
-        Tables {
+    stage
+        .train_dxio(&engines)
+        .init_chipset()
+        .start_cpus()
+        .scan_bus()
+        .emit_tables(Tables {
             smbios: ethanolx::smbios_identity(),
             acpi: ethanolx::acpi_board(),
-        },
-    )
+        })
+        .boot()
 }

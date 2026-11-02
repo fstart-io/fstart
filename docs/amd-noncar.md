@@ -37,40 +37,57 @@ Zeppelin and Picasso; see the SoC pages for their details:
   (`NAME`, `LAYOUT`, `ECAM`, `ECAM_BUSES`, `PSP`, `APOB`, `BIOS_DIRECTORY`,
   `TSEG_SIZE`, `MAX_CPUS`), the `Config` and `State` types, and the methods
   `fch_pre_init`, `identify`, `after_resources`, `ready_to_boot`. The silicon
-  init is the SoC module's own phases (`picasso::Init`,
-  `zeppelin::silicon_init`), which take the `Stage`.
+  init is the SoC module's own phases on the shared `Stage` (`init_fch`,
+  `train_dxio`, `init_chipset`, `start_cpus`).
 - `noncar::Board` (a board's `lib.rs`): `type Soc` and `CONFIG`, the facts
   host planning reads.
 
 The flow is the board's: `src/bin/stage.rs` calls the phases and does its
-own work between them. Vilboz:
+own work between them. Each phase consumes the one before (`Stage<S, P>`),
+so the phases run once and in order. A failed phase stops the boot itself;
+board failures go to `fail`. Vilboz:
 
 ```rust
 fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
-    let stage = Reset::<Picasso>::enter(&CONFIG).console(&CONSOLE, vilboz::console());
-    let silicon = (|| {
-        let init = Init::start(&stage)?;
-        let gpio = init.gpio();
-        vilboz::early_gpios(&gpio).map_err(|_| "board GPIOs")?;
-        init.disable_rom_sharing();
-        let cbi = vilboz::after_fch(&gpio, &mut init.clock()); // EC CBI, WLAN, RAM pads
-        init.train_dxio()?.finish(cbi.native_power(), cbi.has_emmc())
-    })();
-    let mut silicon = silicon.unwrap_or_else(|why| stage.stop(why));
-    let pci = stage.enumerate(&mut silicon);
-    stage.ready_to_boot(&mut silicon, &pci);
-    stage.boot(silicon, pci, vilboz::acpi())
+    let stage = fstart_platform_amd::noncar::start::<Board>()
+        .console(&CONSOLE, vilboz::console())
+        .init_fch();
+    let gpio = stage.gpio();
+    if vilboz::early_gpios(&gpio).is_err() {
+        stage.fail("board GPIOs");
+    }
+    stage.disable_rom_sharing();
+    let cbi = vilboz::after_fch(&gpio, &mut stage.clock()); // EC CBI, WLAN, RAM pads
+    stage
+        .train_dxio()
+        .init_chipset(cbi.native_power(), cbi.has_emmc())
+        .start_cpus()
+        .scan_bus()
+        .ready_to_boot()
+        .emit_tables(&vilboz::SMBIOS, vilboz::acpi())
+        .boot()
 }
 ```
 
-Board work goes where the old hooks were: LPC decodes before
-`Reset::console` (`Reset::lpc`), FCH-reset work between `Init::start` and
-`train_dxio`, link-trained work between `train_dxio` and `finish`, and
-post-enumeration or ready-to-boot work between `enumerate`,
-`ready_to_boot` and `boot`. `Ctx` gives the dies, the clock, `fch()` (die 0)
-and `gpio()`.
+The phases are the same on both SoCs and match the Intel ramstage's names:
+
+| Phase | Owner | Board work after it |
+| --- | --- | --- |
+| `start::<Board>()` | flow | LPC decodes for the console (`lpc()`) |
+| `console(slot, config)` | flow | |
+| `init_fch()` | SoC | devices on the FCH's buses, early pads |
+| `train_dxio(..)` | SoC | work that needs trained links |
+| `init_chipset(..)` | SoC | |
+| `start_cpus()` | SoC | |
+| `scan_bus()` | flow | post-enumeration work |
+| `ready_to_boot()` | flow | work right before the tables |
+| `emit_tables(identity, acpi)` | flow | |
+| `boot()` | flow | |
+
+Every phase after the console gives the board `dies()`, `fch()` (die 0),
+`gpio()`, `clock()` and `fail()`.
 
 ## Boot order
 
@@ -78,7 +95,7 @@ and `gpio()`.
 | --- | --- |
 | ECAM (`msr::enable_ecam`), ACPI MMIO, TSC frequency | flow |
 | `Soc::fch_pre_init` | SoC |
-| Board LPC work (`Reset::lpc`), then the console | board, flow |
+| Board LPC work (`Early::lpc`), then the console | board, flow |
 | `Soc::identify` | SoC |
 | TOP_MEM/TOM2, APOB memory map, TSEG, e820, early MTRR plan | flow (`memory.rs`) |
 | FFS mount and verify, microcode blob | flow (`boot.rs`) |
@@ -177,7 +194,7 @@ and C-state MSRs with the core's C2 latency (`ccx::power::c2_latency_us`:
 400 µs on Zen, 18 µs on Zen 2/3), and `BoardAcpi`.
 
 SMBIOS (`noncar/smbios.rs` over `fstart_driver_amd::apob::smbios`, shared
-with SP3): the identity the board's `main` passes to `Stage::boot`, one processor
+with SP3): the identity the board's `main` passes to `emit_tables`, one processor
 package with its caches (`fstart_acpi::smbios::Package`, as Intel's), the DIMM
 positions of the APOB's SMBIOS seeds with their SPD copies, the APOB's DRAM
 ranges. Picasso's seeds aren't decoded yet (no Picasso APOB has shown their

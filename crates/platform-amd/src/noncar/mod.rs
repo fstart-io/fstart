@@ -3,19 +3,20 @@
 //! The PSP trains DRAM and starts the BSP in DRAM; one stage runs from the
 //! reset vector to the payload, and the board's `main` is that stage:
 //!
-//! 1. [`Reset::enter`]: ECAM, FCH pre-init ([`Soc::fch_pre_init`]);
-//!    [`Reset::console`]: console, CPU identification ([`Soc::identify`]),
+//! 1. [`start`]: ECAM, FCH pre-init ([`Soc::fch_pre_init`]);
+//!    [`Early::console`]: console, CPU identification ([`Soc::identify`]),
 //!    the memory map from the APOB, the cache plan, the FFS.
-//! 2. The SoC module's own silicon init phases, which take the [`Stage`].
-//!    MP init ([`mp::start`]) and SMM with the PSP's SMM info
-//!    ([`smm::install`], [`psp::notify_smm`]) are part of it where the SoC
-//!    does them before PCI enumeration.
-//! 3. [`Stage::enumerate`]: PCI enumeration and resource allocation, then
+//! 2. The SoC module's silicon phases on [`Stage`]: `init_fch`,
+//!    `train_dxio`, `init_chipset` and `start_cpus`, which ends with MP init
+//!    ([`mp::start`]) and SMM with the PSP's SMM info ([`smm::install`],
+//!    [`psp::notify_smm`]).
+//! 3. [`Stage::scan_bus`]: PCI enumeration and resource allocation, then
 //!    [`Soc::after_resources`].
 //! 4. [`Stage::ready_to_boot`]: the IOAPICs, then [`Soc::ready_to_boot`].
-//! 5. [`Stage::boot`]: [`Soc::end_of_post`], the ACPI tables from what the
-//!    silicon and the board report ([`crate::acpi`]), PSP LockDFReg (a failure halts), the
-//!    payload's memory map and page tables, PSP BootDone and the payload.
+//! 5. [`Stage::emit_tables`]: [`Soc::end_of_post`], the ACPI tables from
+//!    what the silicon and the board report ([`crate::acpi`]) and SMBIOS.
+//! 6. [`Stage::boot`]: PSP LockDFReg (a failure halts), the payload's
+//!    memory map and page tables, PSP BootDone and the payload.
 //!
 //! The SoC modules own the silicon; this module keeps the host side:
 //! enumeration, resources, ACPI, memory map, SMM and MP. The board's work
@@ -42,7 +43,7 @@ pub mod smm;
 pub type Peripherals = alloc::vec::Vec<fstart_payload::crabefi::peripheral::Peripheral>;
 
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use flow::{Enumerated, Reset, Stage, stop};
+pub use flow::{Cpus, Early, Enumerated, Mapped, Published, Ready, Stage, start, stop};
 
 use crate::acpi::SocAcpi;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
