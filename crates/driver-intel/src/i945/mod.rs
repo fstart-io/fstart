@@ -312,8 +312,6 @@ pub struct IntelI945Config {
     /// PCI MMIO window in MiB reserved below 4 GiB when programming TOLUD.
     /// coreboot refuses sizes below 768 MiB; default matches D945GCLF (768).
     pub pci_mmio_size: u32,
-    /// SMBus I/O base used for DIMM SPD probing during raminit.
-    pub smbus_base: u16,
     /// SPD EEPROM addresses in i945 slot order: ch0 (2 slots), ch1 (2 slots).
     pub spd_addresses: [u8; 4],
     /// Integrated graphics configuration.
@@ -333,7 +331,6 @@ impl IntelI945Config {
             variant: I945Variant::DesktopGc,
             gfx_gms: default_gfx_gms(),
             pci_mmio_size: default_pci_mmio_size(),
-            smbus_base: default_smbus_base(),
             spd_addresses: default_spd_addresses(),
             igd: I945IgdConfig::new(),
         }
@@ -354,10 +351,6 @@ const fn default_gfx_gms() -> u8 {
 
 const fn default_pci_mmio_size() -> u32 {
     768
-}
-
-const fn default_smbus_base() -> u16 {
-    0x0400
 }
 
 const fn default_spd_addresses() -> [u8; 4] {
@@ -1343,14 +1336,6 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
         self.memory_info
     }
 
-    // Training reads the SPDs through the chipset's own SMBus controller.
-    fn dram_init_with_smbus(
-        &mut self,
-        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
-    ) -> Result<(), ServiceError> {
-        self.train()
-    }
-
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.late_initialization();
         Ok(())
@@ -1755,16 +1740,17 @@ impl MemoryDetector for IntelI945 {
     }
 }
 
-impl IntelI945 {
-    /// Cold-boot DRAM training, reading the SPDs on the chipset's SMBus.
-    fn train(&mut self) -> Result<(), ServiceError> {
-        let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
-        smbus.host_reset();
-        let result = raminit::sdram_initialize(self, &mut smbus);
+impl fstart_core::services::MemoryInit for IntelI945 {
+    type Input<'a> = crate::SpdTraining<'a>;
+    type Output = Option<usize>;
+
+    /// Train DRAM from the SPDs. The i945 keeps no training cache.
+    fn bring_up(&mut self, input: crate::SpdTraining<'_>) -> Result<Option<usize>, ServiceError> {
+        let result = raminit::sdram_initialize(self, input.smbus);
         if let Ok(size) = self.total_ram_bytes() {
             self.detected_size = size;
         }
         self.memory_info = Some(result?);
-        Ok(())
+        Ok(None)
     }
 }

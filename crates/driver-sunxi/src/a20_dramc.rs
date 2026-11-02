@@ -366,7 +366,10 @@ impl A20Dramc {
 }
 
 impl MemoryInit for A20Dramc {
-    fn bring_up(&mut self) -> Result<Range, ServiceError> {
+    type Input<'a> = ();
+    type Output = Range;
+
+    fn bring_up(&mut self, (): ()) -> Result<Range, ServiceError> {
         Ok(Range::new(DRAM_BASE as u64, self.train()?))
     }
 }

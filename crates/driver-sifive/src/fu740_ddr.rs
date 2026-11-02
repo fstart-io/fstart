@@ -215,7 +215,10 @@ impl Fu740Ddr {
 }
 
 impl MemoryInit for Fu740Ddr {
-    fn bring_up(&mut self) -> Result<Range, ServiceError> {
+    type Input<'a> = ();
+    type Output = Range;
+
+    fn bring_up(&mut self, (): ()) -> Result<Range, ServiceError> {
         self.train()?;
         Ok(Range::new(FU740_DRAM_BASE, self.detected_size_bytes()))
     }

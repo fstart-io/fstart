@@ -89,7 +89,6 @@ impl Gm965Ich8Config {
         config.ecam_buses = GM965_ECAM_BUSES;
         config.enable_peg = self.enable_peg;
         config.igd = self.igd;
-        config.smbus_base = ICH8_SMBUS_BASE;
         config
     }
 

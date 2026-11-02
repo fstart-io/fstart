@@ -227,12 +227,7 @@ impl<B: IntelBoard> Bootblock<B, Console> {
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
         if !B::FACTS.memory_cache {
-            if self.boot_path == BootPath::S3Resume {
-                return Err(ServiceError::NotSupported);
-            }
-            return self
-                .northbridge
-                .dram_init_with_smbus(self.southbridge.smbus_mut());
+            return self.train_uncached();
         }
         let key = crate::memory_cache::runtime_key::<B>(
             &self.northbridge,
@@ -252,21 +247,41 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         self.training.key = Some(key);
         // SAFETY: the bootblock is single-threaded; only training writes it.
         let capture = unsafe { &mut *core::ptr::addr_of_mut!(CAPTURE) };
-        self.training.captured = self.northbridge.dram_init_cached(
-            self.southbridge.smbus_mut(),
-            cached.as_ref().map(|record| record.payload()),
-            capture,
-        )?;
+        self.training.captured =
+            self.bring_up(cached.as_ref().map(|record| record.payload()), capture)?;
         Ok(())
     }
 
     #[cfg(not(feature = "memory-cache"))]
     fn dram_init(&mut self) -> Result<(), ServiceError> {
+        self.train_uncached()
+    }
+
+    /// Train without a cache; a resume needs one.
+    fn train_uncached(&mut self) -> Result<(), ServiceError> {
         if self.boot_path == BootPath::S3Resume {
             return Err(ServiceError::NotSupported);
         }
-        self.northbridge
-            .dram_init_with_smbus(self.southbridge.smbus_mut())
+        self.bring_up(None, &mut []).map(drop)
+    }
+
+    /// The northbridge's [`MemoryInit`](fstart_core::services::MemoryInit)
+    /// from the SPDs on the southbridge's SMBus.
+    fn bring_up(
+        &mut self,
+        cached: Option<&[u8]>,
+        capture: &mut [u8],
+    ) -> Result<Option<usize>, ServiceError> {
+        use fstart_core::services::MemoryInit;
+        let smbus = self
+            .southbridge
+            .smbus_mut()
+            .ok_or(ServiceError::NotInitialized)?;
+        self.northbridge.bring_up(fstart_driver_intel::SpdTraining {
+            smbus,
+            cached,
+            capture,
+        })
     }
 }
 
