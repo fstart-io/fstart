@@ -101,7 +101,7 @@ impl Fu740<Console> {
     /// Train the board's DDR.
     pub fn train_memory(mut self) -> Fu740<Dram> {
         let mut ddr = step("DDR", || Fu740Ddr::new(&self.config.ddr));
-        self.dram = step("DDR training", || ddr.bring_up());
+        self.dram = step("DDR training", || ddr.bring_up(()));
         fstart_log::info!("fu740: {} MiB DRAM", self.dram.size >> 20);
         self.into()
     }

@@ -202,7 +202,7 @@ mod stage {
         A20Ccu::new_from_config(&config.ccu).init_early()?;
         crate::stage::console(slot, console)?;
         fstart_log::info!("a20: UART0 console ready");
-        let dram = A20Dramc::new_from_config(&config.dram).bring_up()?;
+        let dram = A20Dramc::new_from_config(&config.dram).bring_up(())?;
         let (media, media_base) = boot_media(config)?;
         crate::stage::enter_dram_stage(
             &media,

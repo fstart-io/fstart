@@ -722,7 +722,10 @@ impl H3Dramc {
 }
 
 impl MemoryInit for H3Dramc {
-    fn bring_up(&mut self) -> Result<Range, ServiceError> {
+    type Input<'a> = ();
+    type Output = Range;
+
+    fn bring_up(&mut self, (): ()) -> Result<Range, ServiceError> {
         let size = self.sunxi_dram_init();
         if size == 0 {
             return Err(ServiceError::HardwareError);

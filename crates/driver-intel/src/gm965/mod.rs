@@ -495,8 +495,6 @@ pub struct IntelGm965Config {
     pub enable_peg: bool,
     /// Optional integrated graphics function enables.
     pub igd: Gm965IgdConfig,
-    /// SMBus I/O base used for DIMM SPD probing during raminit.
-    pub smbus_base: u16,
     /// SPD EEPROM addresses in GM965 slot order: ch0 slot0/1, ch1 slot0/1.
     pub spd_addresses: [u8; 4],
     /// ACPI device name (reserved for future ACPI device generation).
@@ -514,7 +512,6 @@ impl IntelGm965Config {
             ecam_buses: 64,
             enable_peg: false,
             igd: Gm965IgdConfig::new(),
-            smbus_base: 0x0400,
             spd_addresses: [0x50, 0, 0x51, 0],
             acpi_name: Some("PCI0"),
         }
@@ -1002,7 +999,7 @@ impl IntelGm965 {
     fn thermal_sensor_init(
         &self,
         info: &raminit::RaminitInfo,
-        smbus: &mut crate::southbridge::smbus::I801SmBus,
+        smbus: &mut dyn fstart_core::services::SmBus,
     ) {
         const TSE2004_CAPABILITY: u8 = 0x00;
         const TSE2004_CONFIG: u8 = 0x01;
@@ -1017,13 +1014,13 @@ impl IntelGm965 {
                 continue;
             }
             let slave = TSE2004_SLAVE_BASE + slot as u8;
-            if smbus.read_word_data(slave, TSE2004_CAPABILITY).is_err() {
+            if smbus.read_word(slave, TSE2004_CAPABILITY).is_err() {
                 continue;
             }
-            let _ = smbus.write_word_data(slave, TSE2004_ALARM_HIGH, 0x0a80);
-            let _ = smbus.write_word_data(slave, TSE2004_CRITICAL, 0x0c80);
-            let _ = smbus.write_word_data(slave, TSE2004_ALARM_LOW, 0x0000);
-            let _ = smbus.write_word_data(slave, TSE2004_CONFIG, 0x0060);
+            let _ = smbus.write_word(slave, TSE2004_ALARM_HIGH, 0x0a80);
+            let _ = smbus.write_word(slave, TSE2004_CRITICAL, 0x0c80);
+            let _ = smbus.write_word(slave, TSE2004_ALARM_LOW, 0x0000);
+            let _ = smbus.write_word(slave, TSE2004_CONFIG, 0x0060);
             found = true;
         }
 
@@ -1394,42 +1391,6 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         }
     }
 
-    fn dram_init_cached(
-        &mut self,
-        smbus: Option<&mut dyn fstart_core::services::SmBus>,
-        cached: Option<&[u8]>,
-        output: &mut [u8],
-    ) -> Result<Option<usize>, ServiceError> {
-        let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
-        let mut info = raminit::probe_dimms(smbus, &self.config.spd_addresses, cached)?;
-        self.detected_size = info.total_bytes();
-        raminit::initialize(
-            &mut info,
-            &self.mchbar(),
-            self.igd_ggc(),
-            self.boot_path,
-            cached,
-        )?;
-        self.memory_info = Some(info.memory_info(&self.config.spd_addresses));
-        if self.boot_path == crate::BootPath::S3Resume {
-            return Ok(None);
-        }
-        self.memory_test()?;
-        self.thermal_sensor_init(
-            &info,
-            &mut crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base),
-        );
-        Ok(Some(info.capture_training(output)?))
-    }
-
-    // Training reads the SPDs through the chipset's own SMBus controller.
-    fn dram_init_with_smbus(
-        &mut self,
-        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
-    ) -> Result<(), ServiceError> {
-        self.train()
-    }
-
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.gm965_dmi_init()
     }
@@ -1678,20 +1639,44 @@ impl MemoryDetector for IntelGm965 {
     }
 }
 
-impl IntelGm965 {
-    /// Cold-boot DRAM training, reading the SPDs on the chipset's SMBus.
-    fn train(&mut self) -> Result<(), ServiceError> {
-        let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
-        smbus.host_reset();
-        let mut info = raminit::probe_dimms(&mut smbus, &self.config.spd_addresses, None)?;
-        self.detected_size = info.total_bytes();
-        raminit::cold_boot_train(&mut info, &self.mchbar(), self.igd_ggc())?;
-        self.memory_info = Some(info.memory_info(&self.config.spd_addresses));
-        self.memory_test()?;
-        self.thermal_sensor_init(&info, &mut smbus);
-        Ok(())
-    }
+impl fstart_core::services::MemoryInit for IntelGm965 {
+    type Input<'a> = crate::SpdTraining<'a>;
+    type Output = Option<usize>;
 
+    /// Read the SPDs, then train or replay a cached training the SPDs still
+    /// match. After the memory test, program the DIMM thermal sensors and
+    /// capture the training.
+    fn bring_up(
+        &mut self,
+        crate::SpdTraining {
+            smbus,
+            cached,
+            capture,
+        }: crate::SpdTraining<'_>,
+    ) -> Result<Option<usize>, ServiceError> {
+        let mut info = raminit::probe_dimms(&mut *smbus, &self.config.spd_addresses, cached)?;
+        self.detected_size = info.total_bytes();
+        raminit::initialize(
+            &mut info,
+            &self.mchbar(),
+            self.igd_ggc(),
+            self.boot_path,
+            cached,
+        )?;
+        self.memory_info = Some(info.memory_info(&self.config.spd_addresses));
+        if self.boot_path == crate::BootPath::S3Resume {
+            return Ok(None);
+        }
+        self.memory_test()?;
+        self.thermal_sensor_init(&info, smbus);
+        if capture.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(info.capture_training(capture)?))
+    }
+}
+
+impl IntelGm965 {
     fn memory_test(&self) -> Result<(), ServiceError> {
         let tom = self.tom();
         let tolud = self.tolud();

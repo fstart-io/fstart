@@ -130,7 +130,7 @@ mod stage {
         D1Ccu::new_from_config(&config.ccu).init();
         crate::stage::console(slot, console)?;
         fstart_log::info!("d1: UART0 console ready");
-        let dram = D1Dramc::new_from_config(&config.dram).bring_up()?;
+        let dram = D1Dramc::new_from_config(&config.dram).bring_up(())?;
 
         let mut mmc0 = D1Mmc::new_from_config(&config.mmc0);
         mmc0.init()?;

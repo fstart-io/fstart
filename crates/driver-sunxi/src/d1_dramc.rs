@@ -1211,8 +1211,11 @@ impl D1Dramc {
 }
 
 impl MemoryInit for D1Dramc {
+    type Input<'a> = ();
+    type Output = Range;
+
     /// Run full DDR3 init; fails when training fails or finds no memory.
-    fn bring_up(&mut self) -> Result<Range, ServiceError> {
+    fn bring_up(&mut self, (): ()) -> Result<Range, ServiceError> {
         let mem_mb = self.init_dram();
         if mem_mb == 0 {
             return Err(ServiceError::HardwareError);

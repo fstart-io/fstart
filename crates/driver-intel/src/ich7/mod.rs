@@ -1400,9 +1400,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 }
 
 impl IntelIch7 {
+    /// The SMBus host, reset on first use.
     fn smbus_mut(&mut self) -> &mut I801SmBus {
-        self.smbus
-            .get_or_insert_with(|| I801SmBus::new(self.config.smbus_base))
+        self.smbus.get_or_insert_with(|| {
+            let smbus = I801SmBus::new(self.config.smbus_base);
+            smbus.host_reset();
+            smbus
+        })
     }
 
     /// Detect boot path: Normal, Reset (warm), or S3 Resume.

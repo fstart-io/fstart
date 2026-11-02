@@ -176,9 +176,27 @@ pub trait MmioBar: Copy {
     }
 }
 
-/// Intel northbridge contract consumed by Intel platform flows.
+/// What a DIMM chipset's memory bring-up takes
+/// ([`fstart_core::services::MemoryInit::Input`]): the SMBus its SPDs are
+/// on and its training cache.
+pub struct SpdTraining<'a> {
+    pub smbus: &'a mut dyn fstart_core::services::SmBus,
+    /// A training record to replay. The chipset validates it against the
+    /// SPDs it reads first.
+    pub cached: Option<&'a [u8]>,
+    /// Where to capture this boot's training after the memory tests pass;
+    /// empty when the board keeps no cache.
+    pub capture: &'a mut [u8],
+}
+
+/// Intel northbridge contract consumed by Intel platform flows. Memory
+/// bring-up is its [`MemoryInit`](fstart_core::services::MemoryInit): from
+/// the SPDs and training cache, reporting the bytes captured, if any.
 pub trait IntelNorthbridgeDriver:
-    fstart_core::services::memory_detect::MemoryDetector + fstart_pci::PciRootProvider + Sized
+    fstart_core::services::memory_detect::MemoryDetector
+    + fstart_pci::PciRootProvider
+    + for<'a> fstart_core::services::MemoryInit<Input<'a> = SpdTraining<'a>, Output = Option<usize>>
+    + Sized
 {
     type Config: 'static;
 
@@ -196,17 +214,6 @@ pub trait IntelNorthbridgeDriver:
     fn training_identity(&self) -> Option<[u8; 32]> {
         None
     }
-    /// Chipsets validate the payload against freshly probed SPD/timings before
-    /// replaying bounded calibration values. Capture follows successful tests.
-    fn dram_init_cached(
-        &mut self,
-        smbus: Option<&mut dyn fstart_core::services::SmBus>,
-        _cached: Option<&[u8]>,
-        _capture: &mut [u8],
-    ) -> Result<Option<usize>, fstart_core::services::ServiceError> {
-        self.dram_init_with_smbus(smbus)?;
-        Ok(None)
-    }
     /// Installed-DRAM inventory from the last successful DRAM init, for SMBIOS.
     fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
         None
@@ -223,11 +230,6 @@ pub trait IntelNorthbridgeDriver:
     /// Prepare retained DRAM for a clean reset; the southbridge then owns the
     /// actual reset-controller sequence, including any sticky CF9 state.
     fn prepare_resume_reset(&self) {}
-    /// Train DRAM from the SPDs behind `smbus`.
-    fn dram_init_with_smbus(
-        &mut self,
-        smbus: Option<&mut dyn fstart_core::services::SmBus>,
-    ) -> Result<(), fstart_core::services::ServiceError>;
     fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }

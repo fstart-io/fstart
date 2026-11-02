@@ -98,7 +98,6 @@ impl I945Ich7Config {
         config.variant = self.variant;
         config.gfx_gms = self.gfx_gms;
         config.pci_mmio_size = self.pci_mmio_size;
-        config.smbus_base = ICH7_SMBUS_BASE;
         config.spd_addresses = self.spd_addresses;
         config.igd = self.igd;
         config
