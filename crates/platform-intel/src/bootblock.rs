@@ -386,7 +386,7 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
         fstart_timestamp::add(fstart_timestamp::id::LOAD_POSTCAR);
         let verified = crate::boot::load_stage_with_cache(
             &media,
-            fstart_stage::stage_cache::CachedStage::Postcar,
+            fstart_resume::stage_cache::CachedStage::Postcar,
             postcar,
             postcar_window,
             &reserved,

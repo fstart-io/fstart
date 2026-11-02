@@ -27,8 +27,6 @@ use fstart_arch as _;
 pub mod boot;
 #[cfg(feature = "bootstrap")]
 mod fdt_workspace;
-#[cfg(feature = "bootstrap")]
-pub mod stage_cache;
 #[cfg(feature = "fdt")]
 pub use fdt_workspace::fdt_prepare_platform;
 #[cfg(feature = "bootstrap")]

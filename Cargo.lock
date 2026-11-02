@@ -1020,6 +1020,7 @@ dependencies = [
  "fstart-log",
  "fstart-payload",
  "fstart-pci",
+ "fstart-resume",
  "fstart-smm",
  "fstart-stage",
  "fstart-store",
@@ -1115,6 +1116,21 @@ dependencies = [
  "serde",
  "serde_json",
  "ufmt",
+]
+
+[[package]]
+name = "fstart-resume"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-crypto",
+ "fstart-ffs",
+ "fstart-load",
+ "fstart-log",
+ "fstart-store",
+ "fstart-timestamp",
+ "ufmt",
+ "zerocopy",
 ]
 
 [[package]]

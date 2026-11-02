@@ -70,7 +70,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
         fstart_timestamp::add(fstart_timestamp::id::LOAD_RAMSTAGE);
         let verified = crate::boot::load_stage_with_cache(
             &media,
-            fstart_stage::stage_cache::CachedStage::Mainstage,
+            fstart_resume::stage_cache::CachedStage::Mainstage,
             &descriptor,
             window,
             &reserved,

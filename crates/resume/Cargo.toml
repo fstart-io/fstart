@@ -1,0 +1,18 @@
+[package]
+name = "fstart-resume"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-ffs = { workspace = true }
+fstart-load = { workspace = true }
+fstart-log = { workspace = true }
+fstart-store = { workspace = true }
+fstart-timestamp = { workspace = true }
+ufmt = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+fstart-crypto = { workspace = true, features = ["sha2-digest"] }

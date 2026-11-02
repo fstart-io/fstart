@@ -1,9 +1,9 @@
-//! S3-resident compressed stage cache.
+//! The slot format of the S3 stage cache.
 //!
-//! On cold boot the bootblock and postcar verify a stage from flash and then
-//! copy its compressed FFS body into a reserved DRAM slot. On S3 resume the
-//! stages are re-loaded from those slots instead of flash, through the same
-//! verified [`crate::boot::load_bootstrap`] path with the descriptor's
+//! On cold boot a stage is verified from flash and its compressed FFS body
+//! copied into a reserved DRAM slot. On S3 resume the stage is re-loaded
+//! from that slot instead of flash, through the same verified
+//! [`fstart_load::load_bootstrap`] path with the descriptor's
 //! `offset` re-pointed at the slot. Resume therefore re-authenticates the
 //! stage bytes (stored digest, LZ4, loaded digest) against the freshly
 //! authenticated descriptor, and a flash update while suspended fails the
@@ -21,7 +21,7 @@ use fstart_ffs::root::BootstrapDescriptor;
 use zerocopy::byteorder::{LE, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::boot::{Codec, MemoryPolicy, VerifiedExecutable, load_bootstrap};
+use fstart_load::{Codec, MemoryPolicy, VerifiedExecutable, load_bootstrap};
 
 /// Slot header magic, the bytes `FSCC` read little-endian.
 pub const STAGE_CACHE_MAGIC: u32 = u32::from_le_bytes(*b"FSCC");
@@ -52,6 +52,14 @@ pub enum CachedStage {
 }
 
 impl CachedStage {
+    /// The firmware store entry holding this stage's slot.
+    pub const fn tag(self) -> fstart_store::Tag {
+        match self {
+            Self::Postcar => fstart_store::tag::STAGE_CACHE_POSTCAR,
+            Self::Mainstage => fstart_store::tag::STAGE_CACHE_RAMSTAGE,
+        }
+    }
+
     /// Role byte stored in the slot header.
     pub const fn role_byte(self) -> u8 {
         match self {
