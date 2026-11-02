@@ -3,10 +3,13 @@
 //! Phases from the PSP's release of the BSP to the payload, which the
 //! board's stage `main` runs with its own work in between: [`start`]
 //! identifies the CPU ([`Identified`]), then the FCH reset tasks
-//! ([`Reset`]), the console and silicon up to DXIO ([`Stage`]), the board's
-//! GPIO table ([`Configured`]) and [`Configured::finish`]. The shared steps
-//! live here; the silicon steps that differ are in [`sp3`] (Rome and Milan,
-//! with the Milan deltas inline) and [`naples`], bound to the flow by
+//! ([`Identified::init_fch`]), the console and silicon up to DXIO
+//! ([`Early::console`]), the board's GPIO table ([`Stage::program_gpio`]),
+//! DXIO with the board's lanes, the chipset, the CPUs, PCI, the tables and
+//! the payload. Each phase consumes the one before ([`Stage`]'s phase
+//! parameter). The shared steps live here; the silicon steps that differ
+//! are in [`sp3`] (Rome and Milan, with the Milan deltas inline) and
+//! [`naples`], bound to the flow by
 //! [`Steps`]. One reset image carries every family the board supports:
 //! [`start`] returns the running one ([`Start`]); a
 //! generation this build does not carry halts at POST 13 before the
@@ -372,10 +375,10 @@ impl<B: Board, S: Silicon> Identified<B, S> {
     }
 
     /// Socket 0's FCH reset tasks with the board's silicon `policy`.
-    pub fn reset(self, policy: Policy) -> Reset<B, S> {
+    pub fn init_fch(self, policy: Policy) -> Early<B, S> {
         step(0x11, "FCH reset tasks");
         let resume = fch_reset(&self.fch, self.generation(), &policy);
-        Reset {
+        Early {
             identity: self.identity,
             pci_root: self.pci_root,
             timer: self.timer,
@@ -389,7 +392,7 @@ impl<B: Board, S: Silicon> Identified<B, S> {
 
 /// After socket 0's FCH reset tasks. The board opens its LPC decodes and
 /// sets up its Super I/O or BMC next.
-pub struct Reset<B, S> {
+pub struct Early<B, S> {
     identity: Identity,
     pci_root: PciRootInfo,
     timer: Tsc,
@@ -399,7 +402,7 @@ pub struct Reset<B, S> {
     _flow: core::marker::PhantomData<(B, S)>,
 }
 
-impl<B: Board, S: Silicon> Reset<B, S> {
+impl<B: Board, S: Silicon> Early<B, S> {
     /// The running CPU's generation.
     pub fn generation(&self) -> Generation {
         self.identity.generation()
@@ -422,7 +425,7 @@ impl<B: Board, S: Silicon> Reset<B, S> {
         self,
         slot: &'static StaticConsole<Ns16550>,
         config: fstart_driver_uart::ns16550::Ns16550Config,
-    ) -> Stage<B, S> {
+    ) -> Stage<B, S, Mapped> {
         let Self {
             identity,
             pci_root,
@@ -521,40 +524,88 @@ impl<B: Board, S: Silicon> Reset<B, S> {
         S::fch_secondaries(&mut ctx, &si);
 
         Stage {
-            ctx,
-            si,
-            console,
-            rom_size,
+            machine: Machine {
+                ctx,
+                si,
+                console,
+                rom_size,
+            },
+            phase: Mapped,
             _board: core::marker::PhantomData,
         }
     }
 }
 
-/// The silicon up to DXIO. The board reads its detect pads, then programs
-/// its GPIO table.
-pub struct Stage<B, S> {
+/// What every phase after the console works on.
+struct Machine<S> {
     ctx: Ctx,
     si: S,
     console: &'static Ns16550,
     #[cfg_attr(not(feature = "acpi"), allow(dead_code))]
     rom_size: u32,
+}
+
+/// The stage after the console, in phase `P`.
+pub struct Stage<B, S, P> {
+    machine: Machine<S>,
+    phase: P,
     _board: core::marker::PhantomData<B>,
 }
 
-impl<B: Board, S: Silicon> Stage<B, S> {
+/// The silicon up to DXIO. The board reads its detect pads, then programs
+/// its GPIO table.
+pub struct Mapped;
+
+/// The board's GPIOs are programmed. It picks its DXIO lane map (from the
+/// pad levels, its BMC or I2C devices) next.
+pub struct Configured;
+
+/// The links are trained.
+pub struct Trained;
+
+/// The FCH environment is set and the FFS is mounted.
+pub struct Chipset;
+
+/// The CPUs are up and SMM is installed.
+pub struct Cpus {
+    mp: MpHandle,
+}
+
+/// PCI is enumerated and its resources are allocated.
+pub struct Enumerated {
+    #[cfg_attr(not(feature = "acpi"), allow(dead_code))]
+    mp: MpHandle,
+    roots: Vec<fstart_pci::PciEcam>,
+}
+
+/// The ACPI and SMBIOS tables are installed.
+pub struct Published {
+    roots: Vec<fstart_pci::PciEcam>,
+}
+
+/// The board's contributions to the tables the payload gets.
+#[cfg(feature = "acpi")]
+pub struct Tables<'a> {
+    /// Board identity only. CPU packages, DIMMs and memory ranges are
+    /// discovered by shared drivers.
+    pub smbios: fstart_acpi::smbios::SmbiosIdentity<'a>,
+    pub acpi: crate::acpi::Board<'a>,
+}
+
+impl<B: Board, S: Silicon, P> Stage<B, S, P> {
     /// The running CPU's generation.
     pub fn generation(&self) -> Generation {
-        self.ctx.generation
+        self.machine.ctx.generation
     }
 
     /// Socket 0's FCH.
     pub fn fch(&self) -> &PrimaryFch {
-        &self.ctx.fch
+        &self.machine.ctx.fch
     }
 
     /// The calibrated clock, to pace board device transactions.
     pub fn timer(&self) -> &dyn fstart_core::services::Timer {
-        &self.ctx.timer
+        &self.machine.ctx.timer
     }
 
     /// Stop the boot after logging `what`.
@@ -562,11 +613,21 @@ impl<B: Board, S: Silicon> Stage<B, S> {
         fail(what)
     }
 
+    fn into_phase<Q>(self, next: Q) -> Stage<B, S, Q> {
+        Stage {
+            machine: self.machine,
+            phase: next,
+            _board: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Board, S: Silicon> Stage<B, S, Mapped> {
     /// Configure and read the board's detect pads (M.2 SATA/PCIe detect,
     /// straps), in order, before its GPIO table.
     pub fn read_pads(&self, pads: &[Pad]) -> heapless::Vec<bool, 8> {
         step(0x38, "DXIO");
-        let acpi = self.ctx.fch.acpi();
+        let acpi = self.machine.ctx.fch.acpi();
         pads.iter()
             .map(|pad| {
                 fch::gpio::configure(acpi, pad);
@@ -579,95 +640,118 @@ impl<B: Board, S: Silicon> Stage<B, S> {
     /// applies both in PEI before the PCIe topology reaches DXIO
     /// (BOARD_S8030 §2 steps 3–5), so board enables and resets are in place
     /// when the links train.
-    pub fn program_gpio(self, gpio: &Gpio) -> Configured<B, S> {
-        let acpi = self.ctx.fch.acpi();
+    pub fn program_gpio(self, gpio: &Gpio) -> Stage<B, S, Configured> {
+        let acpi = self.machine.ctx.fch.acpi();
         fch::gpio::configure_all(acpi, gpio.early);
         fch::gpio::configure_all(acpi, gpio.table);
-        Configured(self)
+        self.into_phase(Configured)
     }
 }
 
-/// The board's GPIOs are programmed. It picks its DXIO lane map (from the
-/// pad levels, its BMC or I2C devices) and finishes the boot.
-pub struct Configured<B, S>(Stage<B, S>);
-
-/// The board's contributions to the tables the payload gets.
-#[cfg(feature = "acpi")]
-pub struct Tables<'a> {
-    /// Board identity only. CPU packages, DIMMs and memory ranges are
-    /// discovered by shared drivers.
-    pub smbios: fstart_acpi::smbios::SmbiosIdentity<'a>,
-    pub acpi: crate::acpi::Board<'a>,
-}
-
-impl<B: Board, S: Silicon> Configured<B, S> {
-    /// The running CPU's generation.
-    pub fn generation(&self) -> Generation {
-        self.0.generation()
-    }
-
-    /// Socket 0's FCH.
-    pub fn fch(&self) -> &PrimaryFch {
-        self.0.fch()
-    }
-
-    /// The calibrated clock, to pace board device transactions.
-    pub fn timer(&self) -> &dyn fstart_core::services::Timer {
-        self.0.timer()
-    }
-
-    /// Stop the boot after logging `what`.
-    pub fn fail(&self, what: &str) -> ! {
-        fail(what)
-    }
-
-    /// DXIO with the board's `engines`, the FCH environment, boot media, MP,
-    /// SMM, PCI, ACPI and SMBIOS with the board's `tables`, ReadyToBoot,
-    /// then the payload.
-    pub fn finish(
-        self,
+impl<B: Board, S: Silicon> Stage<B, S, Configured> {
+    /// DXIO with the board's `engines`.
+    pub fn train_dxio(
+        mut self,
         engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
-        #[cfg(feature = "acpi")] tables: Tables<'_>,
-    ) -> ! {
-        let Stage {
-            mut ctx,
-            mut si,
-            console,
-            rom_size,
-            ..
-        } = self.0;
-        S::dxio(&mut ctx, &si, engines);
+    ) -> Stage<B, S, Trained> {
+        let Machine { ctx, si, .. } = &mut self.machine;
+        S::dxio(ctx, si, engines);
+        self.into_phase(Trained)
+    }
+}
 
+impl<B: Board, S: Silicon> Stage<B, S, Trained> {
+    /// The FCH environment, then the boot media: the FFS with the microcode
+    /// MP loads.
+    pub fn init_chipset(self) -> Stage<B, S, Chipset> {
+        let Machine { ctx, si, .. } = &self.machine;
         step(0x40, "FCH env");
-        fch_env(&ctx);
-        S::fch_env(&ctx, &si);
+        fch_env(ctx);
+        S::fch_env(ctx, si);
 
         step(0x48, "boot media");
-        handoff::mount_boot_media(&ctx);
+        handoff::mount_boot_media(ctx);
+        self.into_phase(Chipset)
+    }
+}
 
+impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
+    /// MP and the CCX, then SMM.
+    pub fn start_cpus(mut self) -> Stage<B, S, Cpus> {
+        let Machine { ctx, si, .. } = &mut self.machine;
         step(0x50, "MP and CCX");
-        let mp = S::mp::<B>(&mut ctx, &si);
+        let mp = S::mp::<B>(ctx, si);
 
         step(0x58, "SMM");
-        install_smm(&mut ctx, &si, &mp, B::BMC_SX_NOTIFY);
+        install_smm(ctx, si, &mp, B::BMC_SX_NOTIFY);
+        self.into_phase(Cpus { mp })
+    }
+}
 
+impl<B: Board, S: Silicon> Stage<B, S, Cpus> {
+    /// PCI enumeration and resource allocation.
+    pub fn scan_bus(mut self) -> Stage<B, S, Enumerated> {
+        let Machine { ctx, si, .. } = &mut self.machine;
         step(0x60, "PCI enumeration");
-        S::pci_pre(&mut ctx, &mut si);
-        let roots = crate::flow::enumerate(&ctx);
-        S::pci_post(&ctx, &si);
+        S::pci_pre(ctx, si);
+        let roots = crate::flow::enumerate(ctx);
+        S::pci_post(ctx, si);
+        let Stage {
+            machine,
+            phase: Cpus { mp },
+            _board,
+        } = self;
+        Stage {
+            machine,
+            phase: Enumerated { mp, roots },
+            _board,
+        }
+    }
+}
 
+impl<B: Board, S: Silicon> Stage<B, S, Enumerated> {
+    /// ACPI and SMBIOS with the board's `tables`.
+    pub fn emit_tables(
+        mut self,
+        #[cfg(feature = "acpi")] tables: Tables<'_>,
+    ) -> Stage<B, S, Published> {
         step(0x70, "ACPI");
         #[cfg(feature = "acpi")]
         {
-            ctx.rsdp = Some(handoff::acpi::<B, S>(&ctx, &si, &tables.acpi));
+            let Machine {
+                ctx, si, rom_size, ..
+            } = &mut self.machine;
+            ctx.rsdp = Some(handoff::acpi::<B, S>(ctx, si, &tables.acpi));
             ctx.smbios = Some(crate::smbios::runtime::prepare(
-                &ctx,
-                &mp,
-                rom_size,
+                ctx,
+                &self.phase.mp,
+                *rom_size,
                 tables.smbios,
             ));
         }
+        let Stage {
+            machine,
+            phase: Enumerated { roots, .. },
+            _board,
+        } = self;
+        Stage {
+            machine,
+            phase: Published { roots },
+            _board,
+        }
+    }
+}
 
+impl<B: Board, S: Silicon> Stage<B, S, Published> {
+    /// ReadyToBoot, park the APs, then the payload.
+    pub fn boot(self) -> ! {
+        let Stage {
+            machine: Machine {
+                ctx, si, console, ..
+            },
+            phase: Published { roots },
+            ..
+        } = self;
         step(0x80, "ReadyToBoot");
         ready_to_boot(&ctx, &si);
 

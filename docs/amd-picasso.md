@@ -45,20 +45,20 @@ the native boot/image contract is incomplete."
 | Console | FCH UART 0, 115200 baud, 48 MHz clock |
 | SPI, eSPI | `policy::SPI`; eSPI to the EC with `dalboz::ESPI_GPIO_TABLE` |
 | Early GPIO tables | `EARLY`, `TPM`, `PCIE`, `ROMSTAGE` (in that order), programmed by `early_gpios` |
-| ROM sharing | Disabled from `stage.rs` (`Init::disable_rom_sharing`) |
+| ROM sharing | Disabled from `stage.rs` (`disable_rom_sharing`) |
 | I2C2 (400 kHz) | ELAN0000 at `0x15`; SYNA0000 or PNP0C50 at `0x2c` (HID descriptor `0x20`). Both level-triggered, active-low, on GPIO 9. One is fitted. |
 | I2C3 (400 kHz) | GOOG0005 (Cr50 TPM) at `0x50`; ready interrupt on GPIO 3, falling edge |
 | Graphics | `policy::DISPLAYS`, `hdmi2_disable: 2` |
 | eMMC | Wired (`Config::emmc`); fitted only if the CBI says so |
-| Power | From the CBI, passed to `Dxio::finish` |
+| Power | From the CBI, passed to `init_chipset` |
 
 The board's flow is `src/bin/stage.rs`. The board work it calls:
 
-- `early_gpios`, right after `picasso::Init::start`, then ROM sharing off.
+- `early_gpios`, right after `init_fch`, then ROM sharing off.
 - `after_fch`, before `train_dxio`: reads the CBI from the EC
   (`ec::read_cbi`), powers and releases WLAN and configures the RAM-stage
   GPIOs (`vilboz::configure_ram`). `stage.rs` passes the CBI's power policy
-  (`Cbi::native_power()`) and eMMC presence to `Dxio::finish`.
+  (`Cbi::native_power()`) and eMMC presence to `init_chipset`.
 - `acpi()`: the keyboard behind the EC, from `driver-chromeec`.
 - `smm.rs`: `VilbozSmm`, the board part of the FCH SMI handler, built only
   with the board's `smm` feature, for the SMM image.
@@ -69,8 +69,9 @@ fields select WWAN, NVMe, eMMC, SAR and audio options (`policy.rs`).
 
 ## Silicon init
 
-The silicon init is `picasso::Init::start`, `Init::train_dxio` and
-`Dxio::finish`, in order:
+The silicon init is the Picasso phases `init_fch` (steps 3–4),
+`train_dxio` (6–7), `init_chipset` (8–9) and `start_cpus` (10–13), in
+order:
 
 1. `fch_pre_init`: legacy decode, AOAC power of the early devices and of the
    console UART, console pads. Runs before the console.
@@ -79,13 +80,13 @@ The silicon init is `picasso::Init::start`, `Init::train_dxio` and
 3. DF legacy routes and early init, NBIO early init, PSP BAR, BSP CCX init
    (MCA), IOHC DRAM routes.
 4. `fch_init`: LPC prepare, eSPI link (if configured), SPI, SMBus.
-5. The board's work (`Init::start` returns): its early GPIO tables, ROM
-   sharing (`Init::disable_rom_sharing`), CBI, WLAN.
+5. The board's work (`init_fch` returns): its early GPIO tables, ROM
+   sharing (`disable_rom_sharing`), CBI, WLAN.
 6. IOAPIC decode, IOMMU BAR.
 7. DXIO training (`dxio::picasso::train`, balanced power policy). Board work
    that needs trained links goes after `train_dxio`.
 8. NBIO late pre-enumeration, with the SMU power policy the board passes to
-   `Dxio::finish`.
+   `init_chipset`.
 9. Sandstone ALink, ACPI decode, legacy LPC, clocks, USB PHY and controllers,
    DF late init, eMMC (if wired in `Config` and fitted).
 10. MP (`noncar::mp::start`) with the per-thread cache policy captured from the

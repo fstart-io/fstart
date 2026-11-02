@@ -7,10 +7,10 @@
 //! flow's silicon steps at runtime.
 //!
 //! A board crate implements [`board::Board`] (and
-//! [`layout::Sp3BoardFacts`]), its facts, and owns the reset image's
-//! `main`: it matches the family [`start`] returns and does its own work
-//! between the phases ([`Identified`], [`Reset`], [`Stage`],
-//! [`Configured`]), passing its policy, console, GPIO and tables to them
+//! [`layout::Sp3BoardFacts`]), its facts, and owns the stage `main`: it
+//! matches the family [`start`] returns and does its own work between the
+//! phases ([`Identified`], [`Early`], then [`Stage`] in each phase),
+//! passing its policy, console, GPIO, DXIO lanes and tables to them
 //! (feature `bundle-stage`).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 
@@ -51,7 +51,10 @@ pub use flow::RomeMilanSilicon;
 #[cfg(all(feature = "bundle-stage", feature = "acpi"))]
 pub use flow::Tables;
 #[cfg(feature = "bundle-stage")]
-pub use flow::{Configured, Identified, Reset, Silicon, Stage, Start, start};
+pub use flow::{
+    Chipset, Configured, Cpus, Early, Enumerated, Identified, Mapped, Published, Silicon, Stage,
+    Start, Trained, start,
+};
 
 /// Declare the board's stage `main`:
 /// `fstart_platform_sp3::entry!(main);`, where `main` matches the family

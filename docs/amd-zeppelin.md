@@ -52,10 +52,11 @@ Other: SMM TSEG/SMBASE in `crates/arch/src/x86/cpu/amd/smm.rs`; I2C master in
 
 ## Silicon init
 
-The silicon init is `zeppelin::Init::start` (`silicon::pre_mp_reset`),
-`Init::train_dxio` (`silicon::pre_mp_dxio`) and `Dxio::finish`
-(`silicon::pre_mp_finish`, then MP, then SMM). The board's `main` does its
-work between them, where the vendor sequence runs the board PEIMs.
+The silicon init is the Zeppelin phases `init_fch` (`silicon::pre_mp_reset`),
+`train_dxio` (`silicon::pre_mp_dxio`), `init_chipset`
+(`silicon::pre_mp_finish`) and `start_cpus` (MP, SMM, the interrupt
+router). The board's `main` does its work between them, where the vendor
+sequence runs the board PEIMs.
 
 1. Taishan FCH pre-init (ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O). The AC
    power-loss policy is set in `identify`, after the console.
@@ -77,9 +78,9 @@ work between them, where the vendor sequence runs the board PEIMs.
 10. PCI interrupt router from `Config::fch.irq_routes`.
 
 `after_resources` sets the FCH ACPI ports; MJ11's `program_vendor_gpios`,
-`set_vga_ssid` and `bmc::post_done` run after `Stage::enumerate`.
+`set_vga_ssid` and `bmc::post_done` run after `scan_bus`.
 `ready_to_boot` does SATA late, multi-FCH late and FCH late init; then the
-board's own work (MJ11 `hand_smbus_to_os`, the SMBus switch); then `end_of_post`, at the start of `Stage::boot`, disables DF
+board's own work (MJ11 `hand_smbus_to_os`, the SMBus switch); then `end_of_post`, at the start of `emit_tables`, disables DF
 extended config. Then LockDFReg, BootDone and the payload (see the flow).
 
 ## Config

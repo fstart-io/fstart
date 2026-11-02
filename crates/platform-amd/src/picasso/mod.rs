@@ -35,7 +35,7 @@ use fstart_driver_amd::{
 };
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use init::{Dxio, Init};
+pub use init::{Chipset, FchUp, Trained};
 
 /// A board's Picasso configuration: how the board wires the SoC's blocks.
 #[derive(Debug, Clone, Copy)]

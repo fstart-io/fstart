@@ -75,13 +75,19 @@ flow, generic over the family's silicon steps:
 
 | Phase | Board passes or does |
 |---|---|
-| `Identified::reset(policy)` | silicon `Policy` for `generation()` |
-| on `Reset` | LPC decodes, Super I/O or BMC (`fch()`) |
-| `Reset::console(slot, config)` | its 16550 |
-| `Stage::read_pads(pads)` | M.2 / strap detect pads; returns their levels |
-| `Stage::program_gpio(gpio)` | OEM pads and CPM table, before DXIO |
+| `Identified::init_fch(policy)` | silicon `Policy` for `generation()` |
+| on `Early` | LPC decodes, Super I/O or BMC (`fch()`) |
+| `Early::console(slot, config)` | its 16550 |
+| `read_pads(pads)` | M.2 / strap detect pads; returns their levels |
+| `program_gpio(gpio)` | OEM pads and CPM table, before DXIO |
 | on `Configured` | DXIO lane map from the levels, BMC or I2C (`fch()`, `timer()`) |
-| `Configured::finish(engines, Tables { smbios, acpi })` | lane map, SMBIOS identity, ACPI contributions |
+| `train_dxio(engines)` | lane map |
+| `init_chipset()`, `start_cpus()`, `scan_bus()` | |
+| `emit_tables(Tables { smbios, acpi })` | SMBIOS identity, ACPI contributions |
+| `boot()` | |
+
+Each phase consumes the one before (`Stage<B, S, P>`), with the same names
+as the non-CAR AMD and Intel phases.
 
 A CPU the build does not carry halts at POST 13; one the board does not
 list in `GENERATIONS` halts after the console.

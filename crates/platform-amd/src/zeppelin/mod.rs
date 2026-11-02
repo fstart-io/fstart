@@ -6,7 +6,7 @@ mod init;
 pub mod layout;
 pub mod silicon;
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use init::{Dxio, Init};
+pub use init::{Chipset, FchUp, Trained};
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 

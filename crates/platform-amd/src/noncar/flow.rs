@@ -4,18 +4,29 @@
 //! the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
 //! board's `main` (`fstart_platform_amd::entry!`).
 //!
-//! The board's `main` drives the phases and does its own work between them:
+//! The board's `main` drives the phases and does its own work between them.
+//! Each phase consumes the previous one ([`Stage`]'s second parameter), so
+//! they run once and in order:
 //!
 //! ```ignore
-//! let stage = Reset::<Picasso>::enter(&CONFIG).console(&CONSOLE, console);
-//! let mut silicon = /* the SoC's silicon init phases, from &stage */;
-//! let pci = stage.enumerate(&mut silicon);
+//! let stage = noncar::start::<Board>();           // ECAM, FCH pre-init
+//! // board: LPC decodes for its console
+//! let stage = stage.console(&CONSOLE, console)    // memory map, FFS
+//!     .init_fch();                                // the SoC's: DF, FCH
+//! // board: devices on the FCH's buses, early pads
+//! let stage = stage.train_dxio(/* SoC input */);  // the SoC's
+//! // board: links are trained
+//! let stage = stage.init_chipset(/* SoC input */) // the SoC's
+//!     .start_cpus()                               // the SoC's: MP, SMM
+//!     .scan_bus();
 //! // board: after PCI enumeration
-//! stage.ready_to_boot(&mut silicon, &pci);
-//! // board: right before the payload
-//! stage.boot(silicon, pci, board_acpi)
+//! let stage = stage.ready_to_boot();
+//! // board: right before the tables
+//! stage.emit_tables(&SMBIOS, board_acpi).boot()
 //! ```
-use super::{Ctx, Memory, Silicon, Soc, Stop, acpi, boot, layout::Region, memory, pci, post, psp};
+use super::{
+    Board, Ctx, Memory, Silicon, Soc, Stop, acpi, boot, layout::Region, memory, pci, post, psp,
+};
 use crate::acpi::BoardAcpi;
 use fstart_arch::x86::{cpu::msr::NativeMsr, ioapic::IoApic};
 use fstart_core::services::memory_detect::E820State;
@@ -23,7 +34,7 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::{cache, msr, tsc::Tsc},
     df::{self, Die, map},
-    fch::{self, Acpimmio, Fch, NativeBus, lpc::Lpc},
+    fch::{self, Acpimmio, Fch, NativeBus, gpio::Gpio, lpc::Lpc},
 };
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::{Hex, StaticConsole};
@@ -70,8 +81,14 @@ fn apob_bytes<S: Soc>() -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(S::APOB.base as *const u8, S::APOB.size as usize) }
 }
 
+/// The board's first phase: ECAM and the SoC's FCH setup before the
+/// console, from the board's configuration of the SoC.
+pub fn start<B: Board>() -> Early<B::Soc> {
+    Early::enter(B::CONFIG)
+}
+
 /// Right after the reset vector: ECAM and the FCH decode the console needs.
-pub struct Reset<S: Soc> {
+pub struct Early<S: Soc> {
     config: &'static S::Config,
     fch: Fch<NativeBus>,
     msr: NativeMsr,
@@ -80,10 +97,10 @@ pub struct Reset<S: Soc> {
     pre_init: Result<(), &'static str>,
 }
 
-impl<S: Soc> Reset<S> {
+impl<S: Soc> Early<S> {
     /// ECAM first, everything else uses it; then the ACPI MMIO and the
     /// SoC's FCH setup for the console.
-    pub fn enter(config: &'static S::Config) -> Self {
+    fn enter(config: &'static S::Config) -> Self {
         fstart_stage::anchor::initial_stage();
         // SAFETY: BSP only, single-threaded cold boot; the ECAM comes up
         // before the first config space access.
@@ -122,7 +139,7 @@ impl<S: Soc> Reset<S> {
         self,
         slot: &'static StaticConsole<Ns16550>,
         config: fstart_driver_uart::ns16550::Ns16550Config,
-    ) -> Stage<S> {
+    ) -> Stage<S, Mapped> {
         let Self {
             config: soc_config,
             fch,
@@ -198,24 +215,27 @@ impl<S: Soc> Reset<S> {
         // SAFETY: BSP-only silicon init serializes all die register accesses.
         let dies = unsafe { df::dies(pci) }.collect();
         Stage {
-            config: soc_config,
-            console,
-            fch,
-            msr,
-            clock,
-            dies,
-            identity,
-            top_mem,
-            top_mem2,
-            apob,
-            tseg,
-            e820,
+            machine: Machine {
+                config: soc_config,
+                console,
+                fch,
+                msr,
+                clock,
+                dies,
+                identity,
+                top_mem,
+                top_mem2,
+                apob,
+                tseg,
+                e820,
+            },
+            phase: Mapped,
         }
     }
 }
 
-/// The console is up, DRAM is mapped and cached, the FFS is mounted.
-pub struct Stage<S: Soc> {
+/// What every phase after the console works on.
+pub(crate) struct Machine<S: Soc> {
     config: &'static S::Config,
     console: &'static Ns16550,
     fch: Fch<NativeBus>,
@@ -230,21 +250,51 @@ pub struct Stage<S: Soc> {
     e820: E820State,
 }
 
+/// The stage after the console, in phase `P`. The SoC modules add their
+/// silicon phases (`init_fch` .. `start_cpus`); the phases from
+/// [`Cpus`] on are shared.
+pub struct Stage<S: Soc, P> {
+    pub(crate) machine: Machine<S>,
+    pub(crate) phase: P,
+}
+
+/// The console is up, DRAM is mapped and cached, the FFS is mounted.
+pub struct Mapped;
+
+/// The silicon init is done: MP, SMM and what the SoC reports for the
+/// tables.
+pub struct Cpus<S: Soc>(pub(crate) Silicon<S>);
+
+/// PCI is enumerated and its resources are allocated.
+pub struct Enumerated<S: Soc> {
+    silicon: Silicon<S>,
+    pci: Pci,
+}
+
+/// Everything the tables describe is ready.
+pub struct Ready<S: Soc> {
+    silicon: Silicon<S>,
+    pci: Pci,
+}
+
+/// The ACPI and SMBIOS tables are installed.
+pub struct Published<S: Soc> {
+    silicon: Silicon<S>,
+    pci: Pci,
+    rsdp: Option<u64>,
+    smbios: Option<u64>,
+    #[cfg(feature = "payload-uefi-basic")]
+    peripherals: super::Peripherals,
+}
+
 /// PCI after enumeration and resource allocation.
-pub struct Enumerated {
+struct Pci {
     roots: Vec<pci::Root, { super::MAX_DIES }>,
     ecam: PciEcam,
 }
 
-impl Enumerated {
-    pub fn ecam(&self) -> &PciEcam {
-        &self.ecam
-    }
-}
-
-impl<S: Soc> Stage<S> {
-    /// What the silicon phases work on.
-    pub fn ctx(&self) -> Ctx<'_, S> {
+impl<S: Soc> Machine<S> {
+    fn ctx(&self) -> Ctx<'_, S> {
         Ctx {
             dies: &self.dies,
             fch: &self.fch,
@@ -252,26 +302,61 @@ impl<S: Soc> Stage<S> {
             clock: self.clock,
         }
     }
+}
+
+impl<S: Soc, P> Stage<S, P> {
+    /// What the silicon phases work on.
+    pub(crate) fn ctx(&self) -> Ctx<'_, S> {
+        self.machine.ctx()
+    }
+
+    /// The same machine in phase `next`.
+    pub(crate) fn into_phase<Q>(self, next: Q) -> Stage<S, Q> {
+        Stage {
+            machine: self.machine,
+            phase: next,
+        }
+    }
 
     /// The board's configuration of the SoC.
     pub fn config(&self) -> &'static S::Config {
-        self.config
+        self.machine.config
     }
 
     /// What [`Soc::identify`] found.
     pub fn identity(&self) -> S::Identity {
-        self.identity
+        self.machine.identity
     }
 
     /// The memory map from the APOB and the CPU's TOP_MEM/TOM2.
     pub fn memory(&self) -> Memory<'_> {
         Memory {
-            top_mem: self.top_mem,
-            top_mem2: self.top_mem2,
-            apob: self.apob.as_ref(),
-            tseg: self.tseg,
-            e820: &self.e820,
+            top_mem: self.machine.top_mem,
+            top_mem2: self.machine.top_mem2,
+            apob: self.machine.apob.as_ref(),
+            tseg: self.machine.tseg,
+            e820: &self.machine.e820,
         }
+    }
+
+    /// The dies, die 0 first.
+    pub fn dies(&self) -> &[Die<S, GlobalEcam>] {
+        &self.machine.dies
+    }
+
+    /// Die 0's FCH.
+    pub fn fch(&self) -> &Fch<NativeBus> {
+        &self.machine.fch
+    }
+
+    /// The GPIO pads of die 0.
+    pub fn gpio(&self) -> Gpio<NativeBus> {
+        self.ctx().gpio()
+    }
+
+    /// The calibrated clock, to pace board device transactions.
+    pub fn clock(&self) -> Tsc {
+        self.machine.clock
     }
 
     /// The verified microcode patches of the FFS, for MP init.
@@ -288,12 +373,18 @@ impl<S: Soc> Stage<S> {
     pub fn fail(&self, what: &'static str) -> ! {
         fail::<S>(what)
     }
+}
 
+impl<S: Soc> Stage<S, Cpus<S>> {
     /// PCI enumeration and resource allocation, write-combining for the
     /// framebuffer apertures, then [`Soc::after_resources`].
-    pub fn enumerate(&self, silicon: &mut Silicon<S>) -> Enumerated {
-        let ctx = self.ctx();
-        let (roots, ecam) = enumerate::<S>(&ctx, silicon);
+    pub fn scan_bus(self) -> Stage<S, Enumerated<S>> {
+        let Stage {
+            machine,
+            phase: Cpus(mut silicon),
+        } = self;
+        let ctx = machine.ctx();
+        let (roots, ecam) = enumerate::<S>(&ctx, &silicon);
         // PCI resources become known after AMD's required MP and SMU steps.
         // Extend cacheability coherently on all CPUs without replacing AMD's
         // fixed DRAM routing, high-memory TOM2WB or the existing RAM/ROM MTRRs.
@@ -313,31 +404,50 @@ impl<S: Soc> Stage<S> {
                 fail::<S>("framebuffer cache policy");
             }
         }
-        S::after_resources(silicon, &ctx);
-        Enumerated { roots, ecam }
-    }
-
-    /// The IOAPICs, then [`Soc::ready_to_boot`]. Graphics POST may patch the ROM and contribute
-    /// its ACPI; everything the tables describe is ready afterwards.
-    pub fn ready_to_boot(&self, silicon: &mut Silicon<S>, pci: &Enumerated) {
-        let ctx = self.ctx();
-        ioapics(&ctx, silicon);
-        if let Err(why) = S::ready_to_boot(silicon, &ctx, &pci.ecam) {
-            stop::<S>(why);
+        S::after_resources(&mut silicon, &ctx);
+        let pci = Pci { roots, ecam };
+        Stage {
+            machine,
+            phase: Enumerated { silicon, pci },
         }
     }
+}
 
-    /// Finish the SoC's ready-to-boot ([`Soc::end_of_post`]), publish ACPI
-    /// with the board's contribution, lock the DF, map RAM for
-    /// the payload, park the APs, tell the PSP and boot the payload.
-    pub fn boot(
+impl<S: Soc> Stage<S, Enumerated<S>> {
+    /// The IOAPICs, then [`Soc::ready_to_boot`]. Graphics POST may patch the
+    /// ROM and contribute its ACPI; everything the tables describe is ready
+    /// afterwards.
+    pub fn ready_to_boot(self) -> Stage<S, Ready<S>> {
+        let Stage {
+            machine,
+            phase: Enumerated { mut silicon, pci },
+        } = self;
+        let ctx = machine.ctx();
+        ioapics(&ctx, &silicon);
+        if let Err(why) = S::ready_to_boot(&mut silicon, &ctx, &pci.ecam) {
+            stop::<S>(why);
+        }
+        Stage {
+            machine,
+            phase: Ready { silicon, pci },
+        }
+    }
+}
+
+impl<S: Soc> Stage<S, Ready<S>> {
+    /// Finish the SoC's ready-to-boot ([`Soc::end_of_post`]), then install
+    /// ACPI with the board's contribution `board` and SMBIOS with its
+    /// `identity`.
+    pub fn emit_tables(
         self,
-        mut silicon: Silicon<S>,
-        pci: Enumerated,
-        mut board: BoardAcpi,
         identity: &crate::acpi::SmbiosIdentity<'_>,
-    ) -> ! {
-        let ctx = self.ctx();
+        mut board: BoardAcpi,
+    ) -> Stage<S, Published<S>> {
+        let Stage {
+            machine,
+            phase: Ready { mut silicon, pci },
+        } = self;
+        let ctx = machine.ctx();
         S::end_of_post(&mut silicon, &ctx);
         let hosts: Vec<acpi::HostBridge, { super::MAX_DIES }> = pci
             .roots
@@ -349,7 +459,7 @@ impl<S: Soc> Stage<S> {
         board.sb_aml.extend_from_slice(&silicon.aml);
         let rsdp = acpi::install(
             silicon.acpi,
-            &self.dies,
+            ctx.dies,
             &hosts,
             &silicon.ioapics,
             S::pci_root(),
@@ -357,19 +467,49 @@ impl<S: Soc> Stage<S> {
             &board,
         );
         let smbios =
-            super::smbios::install::<S>(identity, self.apob.as_ref(), &silicon.cpus.apic_ids);
+            super::smbios::install::<S>(identity, machine.apob.as_ref(), &silicon.cpus.apic_ids);
         #[cfg(feature = "payload-uefi-basic")]
-        let peripherals = S::peripherals(&ctx, self.config);
-        let delay = self.clock;
+        let peripherals = S::peripherals(&ctx, machine.config);
+        Stage {
+            machine,
+            phase: Published {
+                silicon,
+                pci,
+                rsdp,
+                smbios,
+                #[cfg(feature = "payload-uefi-basic")]
+                peripherals,
+            },
+        }
+    }
+}
+
+impl<S: Soc> Stage<S, Published<S>> {
+    /// PSP LockDFReg, map RAM for the payload, park the APs, PSP BootDone,
+    /// then the payload.
+    pub fn boot(self) -> ! {
+        let Stage {
+            machine,
+            phase:
+                Published {
+                    mut silicon,
+                    pci,
+                    rsdp,
+                    smbios,
+                    #[cfg(feature = "payload-uefi-basic")]
+                    peripherals,
+                },
+        } = self;
+        let delay = machine.clock;
         if let Err(what) = psp::lock_df_registers(silicon.psp.as_mut(), &delay) {
             fail::<S>(what);
         }
-        post(ctx.fch, 0x43);
+        post(&machine.fch, 0x43);
 
         let Some(ffs) = S::LAYOUT.ffs else {
             fail::<S>("boot media")
         };
-        if boot::map_ram(&self.e820, &pci.ecam).is_err() {
+        if boot::map_ram(&machine.e820, &pci.ecam).is_err() {
             fail::<S>("page tables");
         }
         if !fstart_arch::x86::mp::park_aps_for_payload() {
@@ -378,13 +518,14 @@ impl<S: Soc> Stage<S> {
         // SAFETY: the firmware is done with the CPUs and SMM is locked.
         unsafe { psp::boot_done(silicon.psp.as_mut(), &delay) };
         fstart_log::info!("{}: starting the payload", S::NAME);
-        post(ctx.fch, 0x44);
+        post(&machine.fch, 0x44);
         use fstart_payload::{
             AcpiTables, BuildSelectedPayload, Description, Handoff, MainstagePayload, Placement,
             Range,
         };
-        let mut description = Description::new(self.e820.entries(), Range::new(ffs.base, ffs.size));
-        description.console = Some(self.console);
+        let mut description =
+            Description::new(machine.e820.entries(), Range::new(ffs.base, ffs.size));
+        description.console = Some(machine.console);
         description.acpi = rsdp.map(AcpiTables::at);
         description.smbios = smbios;
         description.acpi_devices = &silicon.devices;
