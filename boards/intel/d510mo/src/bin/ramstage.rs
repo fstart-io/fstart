@@ -31,6 +31,5 @@ fn main() -> ! {
         Path::Cold(rs) => rs.emit_tables(&mainboard::D510MO_SMBIOS_IDENTITY, &mainboard::Acpi),
         Path::Resume(rs) => rs.keep_tables(),
     };
-    fstart_driver_superio::quiesce_i8042_for_os();
     rs.boot()
 }

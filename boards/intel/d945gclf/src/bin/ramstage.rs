@@ -32,6 +32,5 @@ fn main() -> ! {
         Path::Resume(rs) => rs.keep_tables(),
     };
     // Leave the SuperIO's keyboard controller quiet before the OS probes it.
-    fstart_driver_superio::quiesce_i8042_for_os();
     rs.boot()
 }
