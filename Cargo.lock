@@ -1172,6 +1172,7 @@ dependencies = [
 name = "fstart-tcg"
 version = "0.1.0"
 dependencies = [
+ "fstart-core",
  "fstart-crypto",
  "fstart-driver-tpm",
  "fstart-log",

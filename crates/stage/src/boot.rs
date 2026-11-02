@@ -1,12 +1,26 @@
 //! Loading for stages: the chain lives in `fstart-load` (read → verify →
-//! decompress → place); this module re-exports it and adds the running
-//! stage's own reservations.
+//! measure → decompress → place); this module re-exports it and adds the
+//! running stage's own reservations.
 
 use fstart_core::services::BootMedia;
 pub use fstart_load::{
-    Codec, LoadError, Lz4, MemoryPolicy, MemoryWindow, Stored, VerifiedExecutable,
-    bootstrap_footprint, load_bootstrap, load_bootstrap_into, place, stored_input,
+    Codec, Event, InPlace, LoadError, Lz4, Measure, Measurement, MemoryPolicy, MemoryWindow,
+    Stored, Unmeasured, VerifiedExecutable, bootstrap_footprint, load_bootstrap,
+    load_bootstrap_into, place, stored_input,
 };
+
+/// What this build measures into: measured boot (`tcg`), which records
+/// nothing until a TPM started, or nothing.
+pub fn measurement_log() -> &'static dyn Measure {
+    #[cfg(feature = "tcg")]
+    {
+        &fstart_tcg::Tcg
+    }
+    #[cfg(not(feature = "tcg"))]
+    {
+        &Unmeasured
+    }
+}
 
 /// Linker-owned running image and writable state reservations. Includes XIP
 /// text/rodata/data source separately from live data/BSS/heap/stack/page tables.

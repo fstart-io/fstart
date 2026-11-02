@@ -130,8 +130,13 @@ impl BlockDeviceFfs {
             let file = manifest
                 .find_file_by_type(file_type)
                 .map_err(|_| ServiceError::NotInitialized)?;
-            let entry = crate::load_file_segments_from_media(&media, &file, image_size)
-                .ok_or(ServiceError::NotInitialized)?;
+            let entry = crate::load_file_segments_from_media(
+                &media,
+                &file,
+                image_size,
+                &fstart_core::services::Measurement::NONE,
+            )
+            .ok_or(ServiceError::NotInitialized)?;
             Ok(entry)
         }
 
@@ -344,16 +349,25 @@ impl MemoryMappedFfs {
 
     /// Load one file by FFS type into its packaged load address.
     pub fn load_file(self, file_type: FileType) -> Result<u64, ServiceError> {
+        self.load_file_measured(file_type, &fstart_core::services::Measurement::NONE)
+    }
+
+    /// [`Self::load_file`], measuring the file as `measurement`.
+    pub fn load_file_measured(
+        self,
+        file_type: FileType,
+        measurement: &fstart_core::services::Measurement<'_>,
+    ) -> Result<u64, ServiceError> {
         #[cfg(feature = "ffs")]
         {
             let media = self.media();
-            crate::load_ffs_file_entry_by_type(&media, file_type)
+            crate::load_ffs_file_measured(&media, file_type, measurement)
                 .ok_or(ServiceError::NotInitialized)
         }
 
         #[cfg(not(feature = "ffs"))]
         {
-            let _ = file_type;
+            let _ = (file_type, measurement);
             Err(ServiceError::NotSupported)
         }
     }
@@ -496,7 +510,17 @@ impl MemoryMappedLinuxBoot {
 
     /// Load a Linux kernel payload from FFS.
     pub fn load_kernel(&mut self) -> Result<(), ServiceError> {
-        self.kernel_addr = self.ffs.load_file(FileType::Payload)?;
+        self.load_kernel_measured(&fstart_core::services::Measurement::NONE)
+    }
+
+    /// [`Self::load_kernel`], measuring the kernel as `measurement`.
+    pub fn load_kernel_measured(
+        &mut self,
+        measurement: &fstart_core::services::Measurement<'_>,
+    ) -> Result<(), ServiceError> {
+        self.kernel_addr = self
+            .ffs
+            .load_file_measured(FileType::Payload, measurement)?;
         Ok(())
     }
 

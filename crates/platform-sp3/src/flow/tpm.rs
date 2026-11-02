@@ -58,14 +58,21 @@ pub(super) fn start(flash: &'static [u8], generation: Generation) {
     let image = super::bios_directories(flash, generation)
         .and_then(|dirs| dirs.find(bios::RESET_IMAGE, None, None))
         .and_then(|(dir, entry)| dir.data(entry).ok());
-    match image {
-        Some(image) => fstart_tcg::measure_blob(
-            0,
-            EV_S_CRTM_CONTENTS,
-            "fstart reset image",
-            image.as_ptr() as u64,
-            image,
-        ),
+    // The PSP copied the stage to DRAM, where it already ran and changed its
+    // data: the root of trust measures the image where the flash maps it.
+    match image.map(fstart_stage::boot::InPlace::mapped) {
+        Some(image) => {
+            let event = fstart_stage::boot::Event {
+                pcr: 0,
+                kind: EV_S_CRTM_CONTENTS,
+                description: "fstart reset image",
+                base: image.address(),
+            };
+            image.measure(&fstart_stage::boot::Measurement {
+                log: &fstart_tcg::Tcg,
+                event,
+            });
+        }
         None => {
             fstart_log::error!("tpm: no reset image entry to measure");
             fstart_tcg::measurement_error();

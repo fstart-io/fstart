@@ -55,6 +55,7 @@ pub(crate) fn load_mainstage(
             &descriptor,
             &policy,
             &fstart_stage::boot::Stored,
+            &fstart_stage::boot::Measurement::NONE,
         )
     }
     .map_err(|_| ServiceError::InvalidParam)?;

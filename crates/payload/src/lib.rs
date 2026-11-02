@@ -397,7 +397,21 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
         if boot.verify().is_err() {
             halt_x86_linux("boot media verification failed");
         }
-        if boot.load_kernel().is_err() {
+        // fstart boots Linux itself: it ends the pre-OS phase (separators,
+        // TPM locked) and then measures the kernel into PCR 4 as it loads
+        // it, like a boot manager.
+        #[cfg(feature = "tcg")]
+        fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Final);
+        let kernel = fstart_stage::boot::Measurement {
+            log: fstart_stage::boot::measurement_log(),
+            event: fstart_stage::boot::Event {
+                pcr: 4,
+                kind: fstart_core::services::measure::kind::EV_EFI_PLATFORM_FIRMWARE_BLOB2,
+                description: "",
+                base: 0,
+            },
+        };
+        if boot.load_kernel_measured(&kernel).is_err() {
             halt_x86_linux("kernel payload load failed");
         }
         fstart_log::info!(
@@ -418,36 +432,24 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
             halt_x86_linux("configured entry was not verified");
         };
         #[cfg(feature = "tcg")]
-        measure_x86_linux(config.bootargs);
+        measure_x86_linux_cmdline(config.bootargs);
         fstart_stage::timestamps::handoff();
         fstart_arch::x86::boot::boot_linux(&params)
     }
 }
 
-/// fstart boots Linux itself, so it ends the pre-OS phase (separators,
-/// TPM locked) and then measures the boot target like a boot manager: the
-/// kernel into PCR 4, and the command line as Linux's EFI stub measures its
-/// load options, a tagged event in PCR 9 over the UCS-2 string with its
+/// After the kernel, the command line, as Linux's EFI stub measures its
+/// load options: a tagged event in PCR 9 over the UCS-2 string with its
 /// terminating NUL, so a verifier recomputes it the same way for both.
 #[cfg(all(
     feature = "tcg",
     feature = "linux",
     any(target_arch = "x86", target_arch = "x86_64")
 ))]
-fn measure_x86_linux(bootargs: &str) {
-    use fstart_stage::tcg::event::{EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_EVENT_TAG, EventData};
+fn measure_x86_linux_cmdline(bootargs: &str) {
+    use fstart_stage::tcg::event::{EV_EVENT_TAG, EventData};
     /// `LOAD_OPTIONS_EVENT_TAG_ID` of the Linux EFI stub.
     const LOAD_OPTIONS_TAG: u32 = 0x8F3B_22ED;
-    fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Final);
-    if !fstart_stage::tcg::measure_file_by_type(
-        fstart_core::ffs::FileType::Payload,
-        4,
-        EV_EFI_PLATFORM_FIRMWARE_BLOB2,
-        None,
-    ) {
-        fstart_log::error!("x86 Linux payload: kernel not measured");
-        fstart_tcg::measurement_error();
-    }
     let load_options: heap::vec::Vec<u8> = bootargs
         .encode_utf16()
         .chain([0])

@@ -16,8 +16,18 @@ The first fstart stage is the static root of trust and measures itself.
 | 4 | Kernel when booting Linux directly |
 | 9 | Command line when booting Linux directly |
 
-FFS files are measured as stored in flash, before decompression. fstart
-does not measure configuration into PCR 1–3. Separators in PCR 0–7 mark
+FFS files are measured as stored, before decompression, by the loading
+chain (`fstart-load`): it reads a file into RAM, checks its stored digest,
+measures those bytes and decompresses them, so the bytes measured are the
+bytes that run. The event's blob base is the file's flash address. Only the
+static root of trust's own image is measured where the flash maps it
+(`InPlace`): nothing keeps the flash from changing afterwards. A resume from
+S3 loads the cached stages unmeasured; the TPM keeps the PCRs. fstart does
+not measure configuration into PCR 1–3.
+
+Platforms and launchers pass a `Measurement` (the `Measure` block, PCR,
+event type) to every load, or `Measurement::NONE`. With the `tcg` feature
+the block is `fstart_tcg::Tcg`, which records nothing until a TPM started. Separators in PCR 0–7 mark
 the end of firmware measurements; who writes them depends on the payload.
 
 ## Payload interface
