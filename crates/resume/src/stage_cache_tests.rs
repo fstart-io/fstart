@@ -4,7 +4,7 @@ use fstart_core::services::ServiceError;
 use fstart_crypto::digest::hash_sha256;
 use fstart_ffs::root::BootstrapRole;
 
-use crate::boot::MemoryWindow;
+use fstart_load::MemoryWindow;
 
 struct SliceMedia<'a>(&'a [u8]);
 
@@ -62,7 +62,7 @@ fn load(
         stage,
         &descriptor,
         &policy,
-        &crate::boot::Lz4,
+        &fstart_load::Lz4,
     )
     .map(|v| v.entry())
 }

@@ -358,27 +358,10 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             self.geometry,
             store,
         );
-        let complete = |tag, role| {
-            store.find(tag).is_some_and(|entry| {
-                let media = unsafe {
-                    fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
-                        store.address(&entry) as u64,
-                        entry.len(),
-                    )
-                };
-                fstart_stage::stage_cache::has_complete_slot(&media, role)
-            })
-        };
+        use fstart_resume::stage_cache::CachedStage;
         let enabled = self.northbridge.supports_s3_replay()
             && persisted.is_ok()
-            && complete(
-                fstart_store::tag::STAGE_CACHE_POSTCAR,
-                fstart_stage::stage_cache::CachedStage::Postcar,
-            )
-            && complete(
-                fstart_store::tag::STAGE_CACHE_RAMSTAGE,
-                fstart_stage::stage_cache::CachedStage::Mainstage,
-            );
+            && fstart_resume::cached(store, &[CachedStage::Postcar, CachedStage::Mainstage]);
         if let Err(error) = persisted {
             fstart_log::error!(
                 "memory cache: commit failed code {}; S3 withheld",
