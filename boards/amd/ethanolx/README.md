@@ -80,6 +80,13 @@ descriptors of the mixed layouts are dropped with a warning.
 The board selects the vendor's pre-training PCIe capabilities (10-bit
 tags, Data Link Feature Exchange: PCDs `0x1c2`/`0x16d`/`0x16e`).
 
+With the UEFI payload, CrabEFI's firmware settings menu overrides the
+bifurcation of each socket-0 group (Auto keeps the card's straps; x16,
+x8x8 or x4x4x4x4 split the card's x16 link and keep its redriver setting)
+and Restore on AC power loss. A group with the SATA/Ethernet card or fused
+off is shown but not editable; a set that does not give a valid DXIO lane
+map is ignored with a warning. Not tested on hardware.
+
 ## Sources
 
 All board data comes from the bench's own RXM100CB image, not a donor:
