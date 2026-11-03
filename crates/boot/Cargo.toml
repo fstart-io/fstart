@@ -15,7 +15,7 @@ crabefi-elan-i2c = ["crabefi-basic", "crabefi/elan-i2c"]
 crabefi-hid-i2c = ["crabefi-basic", "crabefi/hid-i2c"]
 # Continue fstart's measured boot (fstart-tcg) in CrabEFI's full profile.
 tcg = ["dep:fstart-tcg", "dep:fstart-driver-tpm"]
-crabefi-basic = ["dep:crabefi", "dep:fstart-arch", "dep:fstart-core", "dep:fstart-log"]
+crabefi-basic = ["dep:crabefi", "crabefi/cfr", "dep:fstart-arch", "dep:fstart-core", "dep:fstart-log", "dep:fstart-options"]
 std = ["fit", "fstart-crypto?/all"]
 sha2-digest = ["fit", "fstart-crypto/sha2-digest"]
 sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
@@ -24,6 +24,7 @@ sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
 fstart-core = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
+fstart-options = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }

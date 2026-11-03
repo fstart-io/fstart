@@ -1089,6 +1089,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-driver-tpm",
  "fstart-log",
+ "fstart-options",
  "fstart-tcg",
  "heapless 0.8.0",
 ]
@@ -1408,6 +1409,7 @@ name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "fstart-options",
  "fstart-timestamp",
  "ufmt",
 ]
@@ -1558,6 +1560,7 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
+ "fstart-options",
  "fstart-payload",
  "fstart-pci",
  "fstart-platform-sp3",

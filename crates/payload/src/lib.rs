@@ -52,6 +52,13 @@ pub struct Handoff<'a> {
     /// Devices on platform-owned buses for CrabEFI's drivers.
     #[cfg(feature = "crabefi-basic")]
     pub peripherals: heap::vec::Vec<crate::crabefi::peripheral::Peripheral>,
+    /// The flash region CrabEFI keeps its variables in; None keeps them
+    /// volatile.
+    #[cfg(feature = "crabefi-basic")]
+    pub variable_storage: Option<&'a mut dyn crate::crabefi::StorageBackend>,
+    /// The board's options, for CrabEFI's firmware settings menu.
+    #[cfg(feature = "crabefi-basic")]
+    pub settings: Option<crate::crabefi::settings::FirmwareSettings>,
 }
 
 impl<'a> Handoff<'a> {
@@ -62,6 +69,10 @@ impl<'a> Handoff<'a> {
             placement,
             #[cfg(feature = "crabefi-basic")]
             peripherals: heap::vec::Vec::new(),
+            #[cfg(feature = "crabefi-basic")]
+            variable_storage: None,
+            #[cfg(feature = "crabefi-basic")]
+            settings: None,
         }
     }
 }
@@ -205,6 +216,10 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
                 smbios: None,
                 fdt,
                 ecam_regions: ecam.as_slice(),
+                variable_storage: handoff
+                    .variable_storage
+                    .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
+                settings: handoff.settings,
             },
             &static_entries,
             ram.base,
@@ -338,6 +353,10 @@ impl Riscv64UefiPayload {
                 smbios: None,
                 fdt,
                 ecam_regions: ecam.as_slice(),
+                variable_storage: handoff
+                    .variable_storage
+                    .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
+                settings: handoff.settings,
             },
             &static_entries,
             ram.base,
@@ -588,6 +607,10 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
                 smbios: description.smbios,
                 fdt: None,
                 ecam_regions: ecam.as_slice(),
+                variable_storage: handoff
+                    .variable_storage
+                    .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
+                settings: handoff.settings,
             },
             description.memory,
             &platform_entries,
