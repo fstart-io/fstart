@@ -797,8 +797,16 @@ pub fn read_base_edid<'a, B: DdcBus>(
     bus: &mut B,
     storage: &'a mut [u8; EDID_BLOCK_LEN],
 ) -> Result<Edid<'a>, GmaError> {
+    // libgfxinit `Read_EDID`: a block that cannot be sanitized is read once
+    // more; a failing transfer is not retried.
     bus.read_edid_block(DDC_EDID_ADDRESS, 0, storage)?;
-    *storage = edid::sanitize(*storage)?;
+    *storage = match edid::sanitize(*storage) {
+        Ok(sanitized) => sanitized,
+        Err(_) => {
+            bus.read_edid_block(DDC_EDID_ADDRESS, 0, storage)?;
+            edid::sanitize(*storage)?
+        }
+    };
     Edid::parse(storage)
 }
 

@@ -27,8 +27,8 @@ use crate::port::{
 };
 use crate::power;
 use crate::regs::{
-    DSPCNTR, GMCH_VGACNTRL_OFFSET, GmchPanelRegs, GmchPipeTimingRegs, GmchPlaneRegs, PFIT_CONTROL,
-    PIPECONF, PP_CONTROL, PP_STATUS, VGACNTRL,
+    DSPCNTR, GMCH_DATA_M, GMCH_M_N, GMCH_VGACNTRL_OFFSET, GmchDpMnRegs, GmchPanelRegs,
+    GmchPipeTimingRegs, GmchPlaneRegs, PFIT_CONTROL, PIPECONF, PP_CONTROL, PP_STATUS, VGACNTRL,
 };
 use crate::scaler;
 use crate::types::{Cpu, Generation, Pipe, Plane, Port};
@@ -43,10 +43,8 @@ impl GenerationOps for G45 {
 
     fn init_display(ctx: &mut GmaContext<'_>, mode: Mode) -> Result<(), GmaError> {
         let port = selected_port(ctx)?;
-        let pipeline = OutputPipeline::legacy_gmch(ctx.config.cpu, port, mode, ctx.surface)?;
-        if pipeline.pipe.pipe != ctx.pipe {
-            return Err(GmaError::UnsupportedPort);
-        }
+        let pipeline =
+            OutputPipeline::legacy_gmch_on(ctx.config.cpu, port, ctx.pipe, mode, ctx.surface)?;
         let mmio = ctx.mmio();
         let clocks = power::initialize_legacy_gmch(&mmio, ctx.config.cpu, ctx.resources.gcfgc);
         if !clocks.allows_dotclock(mode.pixel_clock_khz) {
@@ -69,6 +67,7 @@ impl GenerationOps for G45 {
                     // libgfxinit allocates the PLL per link setting, so the
                     // fixed DP tuple must match the candidate being tried.
                     program_pll_for_dp_rate(ctx, pipeline.pll, pipeline.port, config.link_rate)?;
+                    program_gmch_dp_m_n(&mmio, pipeline.pipe.pipe, pipeline.pipe.mode, config)?;
                     program_gmch_panel_fitter(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
                     Self::program_pipe(ctx, pipeline.pipe.pipe, pipeline.pipe.mode)?;
                     Self::program_primary_plane(ctx, pipeline.plane.plane)?;
@@ -105,10 +104,8 @@ impl GenerationOps for G45 {
 
     fn program_pll(ctx: &mut GmaContext<'_>, pipe: Pipe, mode: Mode) -> Result<(), GmaError> {
         let port = selected_port(ctx)?;
-        let pipeline = OutputPipeline::legacy_gmch(ctx.config.cpu, port, mode, ctx.surface)?;
-        if pipeline.pipe.pipe != pipe {
-            return Err(GmaError::UnsupportedPort);
-        }
+        let pipeline =
+            OutputPipeline::legacy_gmch_on(ctx.config.cpu, port, pipe, mode, ctx.surface)?;
         program_pll_for_port(ctx, &pipeline)
     }
 
@@ -278,6 +275,30 @@ pub(crate) fn apply_port_op(mmio: &Mmio, op: PortRegisterOp) {
             mask_set,
         } => mmio.update32(register, mask_unset, mask_set),
     }
+}
+
+/// libgfxinit `Transcoder.Setup_Link` for a GMCH DP pipe: data M/N with a
+/// 64-symbol transfer unit and link M/N, for 8 bits per colour.
+fn program_gmch_dp_m_n(
+    mmio: &Mmio,
+    pipe: Pipe,
+    mode: Mode,
+    config: crate::dp_training::DpLinkConfig,
+) -> Result<(), GmaError> {
+    let base = match pipe {
+        Pipe::A => 0x70050,
+        Pipe::B => 0x71050,
+        Pipe::C => return Err(GmaError::InvalidConfig),
+    };
+    // SAFETY: the G4x DP M/N block of a GMCH pipe inside the display MMIO BAR.
+    let regs = unsafe { mmio.reg_block::<GmchDpMnRegs>(base) };
+    let m_n = config.m_n(mode, 8);
+    regs.data_m
+        .write(GMCH_DATA_M::TU_SIZE.val(64 - 1) + GMCH_DATA_M::VALUE.val(m_n.data_m));
+    regs.data_n.write(GMCH_M_N::VALUE.val(m_n.data_n));
+    regs.link_m.write(GMCH_M_N::VALUE.val(m_n.link_m));
+    regs.link_n.write(GMCH_M_N::VALUE.val(m_n.link_n));
+    Ok(())
 }
 
 pub(crate) fn program_gmch_panel_fitter(
@@ -884,6 +905,37 @@ const PP_CONTROL_TARGET_ON: u32 = PP_CONTROL::TARGET_ON::SET.value;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dp_m_n_matches_libgfxinit_calculate_m_n() {
+        use crate::dp_aux::DpLinkRate;
+        let config = crate::dp_training::DpLinkConfig {
+            link_rate: DpLinkRate::Hbr,
+            lane_count: 2,
+            enhanced_framing: true,
+            tps3_supported: false,
+            aux_rd_interval: 0,
+        };
+        // 1920x1080@60 (148.5 MHz) at 24 bpp on two HBR lanes.
+        let mode = Mode {
+            pixel_clock_khz: 148_500,
+            ..Mode::XGA_1024X768_60
+        };
+        let m_n = config.m_n(mode, 8);
+        // Data: 3 * 8 * 148.5 MHz over 8 * 270 MHz * 2; N above the
+        // maximum takes the maximum and M scales with it.
+        assert_eq!(m_n.data_n, 0x80_0000);
+        assert_eq!(
+            u64::from(m_n.data_m),
+            3 * 8 * 148_500_000u64 * 0x80_0000 / (8 * 270_000_000 * 2)
+        );
+        // Link: 148.5 MHz over 270 MHz.
+        assert_eq!(m_n.link_n, 0x10_0000);
+        assert_eq!(
+            u64::from(m_n.link_m),
+            148_500_000u64 * 0x10_0000 / 270_000_000
+        );
+    }
 
     #[test]
     fn g45_selects_lvds_on_pipe_b() {
