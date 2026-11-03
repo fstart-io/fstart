@@ -1,8 +1,26 @@
 //! ThinkPad DMI fields in the AT24RF08C EEPROM, matching coreboot's
 //! `drivers/i2c/at24rf08c/lenovo_serials.c`. The board owns SMBus routing.
-//! Reading identity never changes EEPROM contents or its protection registers.
+//! Reading identity never changes EEPROM contents or its protection registers;
+//! only [`lock_rfid`] does.
 
 use fstart_core::services::{ServiceError, SmBus};
+
+/// coreboot `lenovo_mainboard_eeprom_lock` (`DRIVER_LENOVO_SERIALS_EARLY_LOCK`):
+/// write-protect all eight blocks against the RFID interface through the
+/// AT24RF08C's protection registers at 0x5c. The chip sometimes stops
+/// answering after a register write, so each write is retried.
+pub fn lock_rfid(bus: &mut (impl SmBus + ?Sized)) -> Result<(), ServiceError> {
+    const PROTECTION: u8 = 0x5c;
+    const LOCKED: u8 = 0x0f;
+    let mut result = Ok(());
+    for block in 0..8 {
+        let written = (0..100).any(|_| bus.write_byte(PROTECTION, block, LOCKED).is_ok());
+        if !written {
+            result = Err(ServiceError::IoError);
+        }
+    }
+    result
+}
 
 /// Validated, boot-lifetime baseboard identity. UUID bytes are already in
 /// SMBIOS wire order (little-endian first three components).

@@ -1,4 +1,5 @@
-//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9 SPI access.
+//! Allocation-free rflasher adapter for firmware ICH7 to 7 Series PCH SPI
+//! access.
 //!
 //! The controller is not a general firmware flasher: all accesses are bounded
 //! to a caller-supplied, linked mutable extent. Construct/use it only from RAM;
@@ -188,8 +189,11 @@ impl CacheSpi {
         let host = FirmwareHost {
             spi_offset: match entry.chipset {
                 IchChipset::Ich7 | IchChipset::Ich8 => 0x3020,
-                // The 5 Series PCH keeps ICH9's SPI block and offset.
-                IchChipset::Ich9 | IchChipset::Series5IbexPeak => 0x3800,
+                // The 5, 6 and 7 Series PCHs keep ICH9's SPI block and offset.
+                IchChipset::Ich9
+                | IchChipset::Series5IbexPeak
+                | IchChipset::Series6CougarPoint
+                | IchChipset::Series7PantherPoint => 0x3800,
                 _ => return Err(ServiceError::NotSupported),
             },
         };

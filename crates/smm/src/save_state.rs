@@ -155,6 +155,21 @@ impl X86SaveState {
         Ok(())
     }
 
+    /// Write the Intel Enhanced Debug (IED) base on CPUs with the EM64T101
+    /// layout (revision `0x30101`, Sandy Bridge and later); coreboot
+    /// `smm_relocation_handler`. Returns `false`, writing nothing, for other
+    /// revisions, which have no IEDBASE field.
+    #[inline(always)]
+    pub fn write_iedbase(self, iedbase: u32) -> Result<bool, SaveStateError> {
+        let revision = self.revision()?;
+        if !matches!(self.format, X86SaveStateFormat::IntelEm64t) || revision != 0x0003_0101 {
+            return Ok(false);
+        }
+        // SAFETY: validated EM64T101 layout; IEDBASE is 12 bytes below SMBASE.
+        unsafe { write_u32(self.top.sub(IEDBASE_OFFSET), iedbase) };
+        Ok(true)
+    }
+
     /// Write the relocated SMBASE after validating the hardware revision.
     /// Exactly one field is modified.
     #[inline(always)]
@@ -165,6 +180,10 @@ impl X86SaveState {
         Ok(())
     }
 }
+
+/// EM64T101 IEDBASE (`em64t101_smm_state_save_area_t.iedbase`) below the
+/// top of the SMBASE window: 0xfeec.
+const IEDBASE_OFFSET: usize = 0x114;
 
 #[inline(always)]
 unsafe fn read_u32(ptr: *const u8) -> u32 {

@@ -70,7 +70,7 @@ fn acpi_switch(command: u8) {
 /// coreboot `mainboard_smi_sleep()`: S3 wakes on the EC when the OS armed
 /// an EC wake source.
 fn sleep(state: u8) {
-    if state == 3 && x201::smm_wake_from_ec(ec_channel()) {
+    if state == 3 && H8::new(ec_channel()).wake_armed() {
         // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
         unsafe { smi().route_gpi(x201::EC_WAKE_GPI, true) };
     }

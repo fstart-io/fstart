@@ -256,6 +256,7 @@ impl IntelIbexPeakConfig {
         crate::southbridge::ehci_debug::config(
             PchFunction::from(function).devfn(),
             ecam_base,
+            256,
             &[(self.rcba, 0x4000), (self.dmibar, 0x1000)],
         )
     }

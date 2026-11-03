@@ -96,6 +96,11 @@ register_bitfields![u8,
     pub SOUND_COMMAND [TONE OFFSET(0) NUMBITS(8) [Silence = 0]],
     pub SOUND_REPEAT [COUNT OFFSET(0) NUMBITS(8) []],
     pub EVENT_ATTENTION [COMMAND OFFSET(0) NUMBITS(8) [DiscardAndEnable = 1]],
+    /// The wake sources the OS armed.
+    pub WAKE_CONTROL [
+        EVENTS OFFSET(2) NUMBITS(1) [],
+        LID OFFSET(4) NUMBITS(1) []
+    ],
     pub RADIO_CONTROL [
         AUDIO_MUTE OFFSET(0) NUMBITS(1) [],
         BLUETOOTH_ENABLE OFFSET(4) NUMBITS(1) [],
@@ -157,6 +162,7 @@ ec_registers! {
     ALWAYS_ON_CONTROL => 0x0d,
     FAN_CONTROL => 0x2f,
     VOLUME_CONTROL => 0x30,
+    WAKE_CONTROL => 0x32,
     UWB_CONTROL => 0x31,
     RADIO_CONTROL => 0x3a,
     USB_CONTROL => 0x3b,
@@ -456,6 +462,14 @@ impl H8 {
     }
 
     /// H8's exact command discards queued events and enables channel attention.
+    /// coreboot `mainboard_smi_sleep()`'s test: whether the OS armed an EC
+    /// wake source (EC RAM 0x32), so S3 must keep the EC wake GPE on SCI.
+    pub fn wake_armed(&self) -> bool {
+        self.channel
+            .read_register::<WAKE_CONTROL::Register>()
+            .is_some_and(|wake| wake.is_set(WAKE_CONTROL::EVENTS) || wake.is_set(WAKE_CONTROL::LID))
+    }
+
     pub fn reset_event_attention(&self) -> bool {
         self.channel.write_register::<EVENT_ATTENTION::Register>(
             EVENT_ATTENTION::COMMAND::DiscardAndEnable.value,

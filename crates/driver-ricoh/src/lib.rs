@@ -6,3 +6,4 @@
 extern crate std;
 
 pub mod r5c822;
+pub mod rce822;
