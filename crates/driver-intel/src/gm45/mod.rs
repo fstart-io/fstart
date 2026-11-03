@@ -14,7 +14,7 @@ use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_core::services::{MemoryController, ServiceError};
+use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
 use fstart_pci::{
@@ -104,8 +104,6 @@ pub struct IntelGm45Config {
     pub graphics: Gm45GraphicsPolicy,
     /// SPD slot order: channel 0 slot 0/1, channel 1 slot 0/1.
     pub spd_addresses: [u8; 4],
-    /// ICH9 I801 SMBus I/O base used to read DIMM SPD before RAM is online.
-    pub smbus_base: u16,
     /// ICH RCBA, reserved with the host bridge's MMIO (coreboot gm45.asl).
     pub rcba: u64,
     /// Board-requested Super-LFM; enabled only on capable CPUs.
@@ -131,7 +129,6 @@ impl IntelGm45Config {
             pmbase: 0x500,
             graphics: Gm45GraphicsPolicy::Integrated,
             spd_addresses: [0x50, 0, 0x51, 0],
-            smbus_base: crate::ich9::ich9::DEFAULT_SMBUS_BASE,
             rcba: 0xfed1_c000,
             slfm: false,
             igd: Gm45IgdConfig::new(),
@@ -185,6 +182,8 @@ pub struct IntelGm45 {
     /// Backlight PWM frequency of the panel table entry; 0 if unknown.
     panel_pwm_hz: u16,
     display: crate::igd::IgdDisplay,
+    /// Installed DIMMs from the last successful raminit, for SMBIOS.
+    memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
 impl IntelGm45 {
@@ -386,8 +385,6 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
                 .any(|base| *base == 0 || *base > u32::MAX as u64 || (*base & 0xfff) != 0)
             || config.pmbase == 0
             || config.pmbase & 0xff != 0
-            || config.smbus_base == 0
-            || config.smbus_base & 0x1f != 0
         {
             return Err(ServiceError::HardwareError);
         }
@@ -402,6 +399,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
             igd_bars: None,
             panel_pwm_hz: 0,
             display: crate::igd::IgdDisplay::new(),
+            memory_info: None,
         })
     }
     fn config(&self) -> &'static Self::Config {
@@ -466,6 +464,9 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         // Implemented after coreboot's resume raminit; not hardware-validated.
         true
     }
+    fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
+        self.memory_info
+    }
     fn training_identity(&self) -> Option<[u8; 32]> {
         // Straps, fuses and board policy only: the bootblock computes this
         // before raminit and the mainstage again after it.
@@ -483,25 +484,6 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
                 cpu_signature: fstart_arch::x86::cpuid(1).0,
             },
         ))
-    }
-    fn dram_init_cached(
-        &mut self,
-        _smbus: Option<&mut dyn fstart_core::services::SmBus>,
-        cached: Option<&[u8]>,
-        output: &mut [u8],
-    ) -> Result<Option<usize>, ServiceError> {
-        use zerocopy::IntoBytes;
-        let record = self.raminit(cached)?;
-        if self.boot_path == crate::BootPath::S3Resume {
-            return Ok(None);
-        }
-        // Published only after the cold-boot probe passed inside raminit.
-        let bytes = record.as_bytes();
-        output
-            .get_mut(..bytes.len())
-            .ok_or(ServiceError::InvalidParam)?
-            .copy_from_slice(bytes);
-        Ok(Some(bytes.len()))
     }
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
@@ -570,7 +552,11 @@ impl IntelGm45 {
     /// while detecting S3, so the boot path comes from the shared flow.
     /// `cached` is the journaled [`raminit::TrainingRecord`]; only a resume
     /// replays it, cold boots always train like coreboot.
-    fn raminit(&mut self, cached: Option<&[u8]>) -> Result<raminit::TrainingRecord, ServiceError> {
+    fn raminit(
+        &mut self,
+        smbus: &mut dyn SmBus,
+        cached: Option<&[u8]>,
+    ) -> Result<raminit::TrainingRecord, ServiceError> {
         self.dram_ready = false;
         self.trained_mode = None;
         let resume = self.boot_path == crate::BootPath::S3Resume;
@@ -608,13 +594,7 @@ impl IntelGm45 {
         if fsb_mhz > max_fsb_mhz {
             return Err(ServiceError::HardwareError);
         }
-        let mut smbus = crate::southbridge::smbus::I801SmBus::enable_on_i801(
-            0,
-            0x1f,
-            3,
-            self.config.smbus_base,
-        );
-        let channels = raminit::probe_ddr3(&mut smbus, &self.config.spd_addresses)?;
+        let channels = raminit::probe_ddr3(smbus, &self.config.spd_addresses)?;
         let timing = raminit::select_ddr3_timing(&channels, fsb_mhz, max_ddr3_mt)?;
         let capid_high = self.hostbridge().capid_high.get();
         fstart_log::info!(
@@ -659,32 +639,43 @@ impl IntelGm45 {
         hb.deven.set(hb.deven.get() & !0x4000);
         self.post_dram_pm(revision, fsb_mhz, timing.clock.mhz())?;
         self.trained_mode = Some((revision, fsb_mhz, timing.clock.mhz()));
+        self.memory_info = Some(raminit::memory_info(
+            &channels,
+            &self.config.spd_addresses,
+            timing.clock,
+        ));
         self.dram_ready = true;
         self.finish_raminit();
         Ok(record)
     }
 }
 
-impl MemoryController for IntelGm45 {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
-        // Without a training record retained RAM cannot be resumed.
-        if self.boot_path == crate::BootPath::S3Resume {
-            self.dram_ready = false;
-            return Err(ServiceError::NotInitialized);
+impl fstart_core::services::MemoryInit for IntelGm45 {
+    type Input<'a> = crate::SpdTraining<'a>;
+    type Output = Option<usize>;
+
+    /// Read the SPDs and train, or on S3 resume replay the cached training
+    /// the SPDs still match. Cold boots always train, like coreboot, and
+    /// capture the training only after the post-map memory probe passed.
+    fn bring_up(
+        &mut self,
+        crate::SpdTraining {
+            smbus,
+            cached,
+            capture,
+        }: crate::SpdTraining<'_>,
+    ) -> Result<Option<usize>, ServiceError> {
+        use zerocopy::IntoBytes;
+        let record = self.raminit(smbus, cached)?;
+        if self.boot_path == crate::BootPath::S3Resume || capture.is_empty() {
+            return Ok(None);
         }
-        self.raminit(None).map(|_| ())
-    }
-    fn detected_size_bytes(&self) -> u64 {
-        if self.dram_ready { self.tom() } else { 0 }
-    }
-    fn memory_test(&self) -> Result<(), ServiceError> {
-        // Cold-boot probes already ran before setting dram_ready. Repeating
-        // them after postcar/mainstage loads would overwrite live stage code.
-        if self.dram_ready {
-            Ok(())
-        } else {
-            Err(ServiceError::NotInitialized)
-        }
+        let bytes = record.as_bytes();
+        capture
+            .get_mut(..bytes.len())
+            .ok_or(ServiceError::InvalidParam)?
+            .copy_from_slice(bytes);
+        Ok(Some(bytes.len()))
     }
 }
 
@@ -984,9 +975,8 @@ mod tests {
         use crate::IntelNorthbridgeDriver;
         static CONFIG: IntelGm45Config = IntelGm45Config::new();
         let mut driver = IntelGm45::new_from_config(&CONFIG).unwrap();
-        // dram_init touches live chipset registers; this host-side test may
+        // Training touches live chipset registers; this host-side test may
         // only exercise pre-training APIs which must not touch stale RAM.
-        assert_eq!(driver.detected_size_bytes(), 0);
         assert!(matches!(
             driver.total_ram_bytes(),
             Err(ServiceError::NotInitialized)
@@ -996,13 +986,26 @@ mod tests {
             driver.detect_memory(&mut entries),
             Err(ServiceError::NotInitialized)
         ));
-        assert!(matches!(
-            driver.memory_test(),
-            Err(ServiceError::NotInitialized)
-        ));
         assert_eq!(driver.boot_path, crate::BootPath::Normal);
+        // Without the linked bootstrap windows, training refuses to start.
+        struct NoBus;
+        impl SmBus for NoBus {
+            fn read_byte(&mut self, _: u8, _: u8) -> Result<u8, ServiceError> {
+                panic!("SPD read before the bootstrap windows are known")
+            }
+            fn write_byte(&mut self, _: u8, _: u8, _: u8) -> Result<(), ServiceError> {
+                panic!("SMBus write before the bootstrap windows are known")
+            }
+        }
         assert!(matches!(
-            driver.dram_init(),
+            fstart_core::services::MemoryInit::bring_up(
+                &mut driver,
+                crate::SpdTraining {
+                    smbus: &mut NoBus,
+                    cached: None,
+                    capture: &mut [],
+                },
+            ),
             Err(ServiceError::NotInitialized)
         ));
         assert!(driver.bootstrap_windows.is_none());
@@ -1025,10 +1028,6 @@ mod tests {
         );
         driver.set_boot_path(crate::BootPath::S3Resume);
         assert_eq!(driver.boot_path, crate::BootPath::S3Resume);
-        assert!(matches!(
-            driver.dram_init(),
-            Err(ServiceError::NotInitialized)
-        ));
         assert!(!driver.dram_ready);
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Integrated);
         driver.set_graphics_policy(Gm45GraphicsPolicy::Discrete);

@@ -150,8 +150,8 @@ pub struct PowerState {
     pub milliwatts: u32,
 }
 
-/// `Name(_CST, Package { count, Package { Register, type, latency, power } ... })`.
-pub fn cst_aml(states: &[PowerState]) -> Vec<u8> {
+/// `Package { count, Package { Register, type, latency, power } ... }`.
+fn cst_package(states: &[PowerState]) -> PackageBuilder {
     let mut cst = PackageBuilder::new();
     cst.add_element(&(states.len() as u32));
     states.iter().for_each(|s| {
@@ -164,7 +164,29 @@ pub fn cst_aml(states: &[PowerState]) -> Vec<u8> {
         p.add_element(&s.milliwatts);
         cst.add_element(&p);
     });
-    crate::serialize(&Name::new("_CST".into(), &cst))
+    cst
+}
+
+/// `Name(_CST, Package { count, Package { Register, type, latency, power } ... })`.
+pub fn cst_aml(states: &[PowerState]) -> Vec<u8> {
+    crate::serialize(&Name::new("_CST".into(), &cst_package(states)))
+}
+
+/// `_CST` that depends on the power source (coreboot speedstep
+/// `write_cst_entries()`): `Method(_CST) { If (ac_power) { Return (ac) }
+/// Return (battery) }`, where `ac_power` names the AC-present integer.
+pub fn cst_method_aml(ac_power: &str, ac: &[PowerState], battery: &[PowerState]) -> Vec<u8> {
+    use acpi_tables::aml::{If, Method, Path, Return};
+    let (ac, battery) = (cst_package(ac), cst_package(battery));
+    let power = Path::new(ac_power);
+    let (ac, battery) = (Return::new(&ac), Return::new(&battery));
+    let on_ac = If::new(&power, alloc::vec![&ac]);
+    crate::serialize(&Method::new(
+        "_CST".into(),
+        0,
+        false,
+        alloc::vec![&on_ac, &battery],
+    ))
 }
 
 /// A `_PSD` dependency domain.

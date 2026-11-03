@@ -1,5 +1,4 @@
-//! Standard ICH SMI handling; dock control uses EC/GPIO directly, not SMM.
-use crate::Board;
-use fstart_driver_intel::southbridge::smi::IchSmmHandler;
+//! Lenovo ThinkPad X200 SMM: the ICH's own SMI sources only. The EC's events
+//! reach the OS as SCIs and the dock is controlled through EC/GPIO, not SMM.
 
-fstart_platform_intel::smm::smm_bin!(Board, IchSmmHandler);
+fstart_platform_intel::smm::smm_bin!(handler: fstart_driver_intel::southbridge::smi::handle);

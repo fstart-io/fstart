@@ -234,24 +234,83 @@ pub struct Ddr3DimmInfo {
 
 /// Read the DDR3 SPD payload from `addr` into a 256-byte scratch buffer.
 ///
-/// A failure on byte 0 is treated as an unpopulated slot, matching the DDR2
-/// reader and the way firmware probes optional SPD EEPROMs.
-pub fn read_spd(smbus: &mut dyn SmBus, addr: u8) -> Result<Option<[u8; 256]>, ServiceError> {
+/// Only a device NAK denotes an unpopulated slot, as for DDR2; bus or
+/// controller failures are errors.
+pub fn read_spd<B: SmBus + ?Sized>(
+    smbus: &mut B,
+    addr: u8,
+) -> Result<Option<[u8; 256]>, ServiceError> {
     let mut spd = [0u8; 256];
-    for byte in 0..SPD_SIZE_MAX_DDR3 as u16 {
-        let cmd = byte as u8;
-        match smbus.read_byte(addr, cmd) {
-            Ok(v) => spd[byte as usize] = v,
-            Err(_) if byte == 0 => return Ok(None),
-            Err(e) => return Err(e),
-        }
+    if !super::read_eeprom(smbus, addr, 0, &mut spd[..SPD_SIZE_MAX_DDR3])? {
+        return Ok(None);
     }
-
     if spd.iter().all(|b| *b == 0) {
         return Ok(None);
     }
-
     Ok(Some(spd))
+}
+
+/// The SMBIOS Type 17 record of a decoded DIMM (coreboot
+/// `gm45/raminit_meminfo.c`). `spd` holds at least SPD bytes 0..13;
+/// `configured_mts` is the data rate raminit programmed.
+pub fn memory_device(
+    dimm: &Ddr3DimmInfo,
+    spd: &[u8],
+    channel: u8,
+    slot: u8,
+    configured_mts: u16,
+) -> fstart_core::memory_info::MemoryDevice {
+    use fstart_core::memory_info as mi;
+    let (form_factor, buffering) = match dimm.module_type {
+        Ddr3ModuleType::Rdimm | Ddr3ModuleType::MiniRdimm => {
+            (mi::FORM_FACTOR_DIMM, mi::TYPE_DETAIL_REGISTERED)
+        }
+        Ddr3ModuleType::Udimm | Ddr3ModuleType::MiniUdimm | Ddr3ModuleType::MicroDimm => {
+            (mi::FORM_FACTOR_DIMM, mi::TYPE_DETAIL_UNBUFFERED)
+        }
+        Ddr3ModuleType::Sodimm
+        | Ddr3ModuleType::SoUdimm72b
+        | Ddr3ModuleType::SoDimm16b
+        | Ddr3ModuleType::SoDimm32b => (mi::FORM_FACTOR_SODIMM, mi::TYPE_DETAIL_UNBUFFERED),
+        Ddr3ModuleType::SoRdimm72b => (mi::FORM_FACTOR_SODIMM, mi::TYPE_DETAIL_REGISTERED),
+        _ => (mi::FORM_FACTOR_UNKNOWN, 0),
+    };
+    let byte = |index: u8| spd.get(usize::from(index)).copied().unwrap_or(0);
+    // Byte 8: primary bus width 8 << [2:0], ECC extension 8 * [4:3].
+    let bus_width = byte(SPD_MODULE_BUS_WIDTH);
+    let data_width = 8u16 << (bus_width & 7).min(3);
+    let total_width = data_width + 8 * u16::from((bus_width >> 3) & 3);
+    // tCKmin in 1/8 ns medium timebase units: MT/s = 2000 / tCK[ns].
+    let max_mts = match byte(SPD_TCK_MIN) {
+        0 => 0,
+        tck => (16_000 / u32::from(tck)) as u16,
+    };
+    let [jedec_bank, jedec_id] = dimm.module_manufacturer_id.to_le_bytes();
+    let mut part_number = [b' '; 20];
+    part_number[..SPD_DDR3_PART_LEN].copy_from_slice(&dimm.part_number);
+    mi::MemoryDevice {
+        size_mib: dimm
+            .rank_capacity_mb
+            .saturating_mul(u32::from(dimm.ranks))
+            .into(),
+        configured_mts: configured_mts.into(),
+        max_mts: max_mts.into(),
+        // Byte 6 bit 0 clear: 1.5 V operable, which the GM45 drives.
+        voltage_mv: 1500.into(),
+        data_width: data_width.into(),
+        total_width: total_width.into(),
+        type_detail: (mi::TYPE_DETAIL_SYNCHRONOUS | buffering).into(),
+        // Byte 117: continuation codes (bit 7 is parity); byte 118: the id.
+        jedec_bank: jedec_bank & 0x7f,
+        jedec_id,
+        memory_type: mi::MEMORY_TYPE_DDR3,
+        form_factor,
+        ranks: dimm.ranks,
+        channel,
+        slot,
+        serial: dimm.serial,
+        part_number,
+    }
 }
 
 /// Decode the raw JEDEC CAS bitmap into the project convention.
@@ -563,7 +622,7 @@ mod tests {
     impl SmBus for FakeSmBus {
         fn read_byte(&mut self, _addr: u8, cmd: u8) -> Result<u8, ServiceError> {
             if self.fail_byte0 && cmd == 0 {
-                Err(ServiceError::HardwareError)
+                Err(ServiceError::NoDevice)
             } else {
                 Ok(self.data[cmd as usize])
             }
@@ -680,6 +739,35 @@ mod tests {
         assert_eq!(info.rank_capacity_mb, 2048);
         assert_eq!(validate_gm45(&info), Err(Ddr3SpdError::InvalidGeometry));
         assert_eq!(decode_dimm_gm45(&spd), Err(Ddr3SpdError::InvalidGeometry));
+    }
+
+    #[test]
+    fn memory_device_reports_the_smbios_type17_fields() {
+        let mut spd = synthetic_ddr3_spd();
+        spd[SPD_MODULE_BUS_WIDTH as usize] = 0x03; // 64 bits, no ECC
+        spd[SPD_TCK_MIN as usize] = 15; // 1.875 ns: DDR3-1066
+        spd[SPD_MODULE_MANUFACTURER_ID_LSB as usize] = 0x80; // 0 continuations, parity
+        spd[SPD_MODULE_MANUFACTURER_ID_MSB as usize] = 0xce;
+        let dimm = decode_dimm(&spd).unwrap();
+        let device = memory_device(&dimm, &spd, 1, 0, 1067);
+        assert_eq!(
+            device.memory_type,
+            fstart_core::memory_info::MEMORY_TYPE_DDR3
+        );
+        assert_eq!(
+            device.form_factor,
+            fstart_core::memory_info::FORM_FACTOR_SODIMM
+        );
+        assert_eq!(device.data_width.get(), 64);
+        assert_eq!(device.total_width.get(), 64);
+        assert_eq!(device.max_mts.get(), 1066);
+        assert_eq!(device.configured_mts.get(), 1067);
+        assert_eq!((device.jedec_bank, device.jedec_id), (0, 0xce));
+        assert_eq!(device.channel, 1);
+        assert_eq!(
+            device.size_mib.get(),
+            dimm.rank_capacity_mb * u32::from(dimm.ranks)
+        );
     }
 
     #[test]

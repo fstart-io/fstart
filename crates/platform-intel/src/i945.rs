@@ -34,7 +34,7 @@ pub struct I945Ich7Config {
     pub pcie_ports: [bool; 4],
     pub pirq_routing: [u8; 8],
     /// Board interrupt wiring through the RCBA router and behind 0:1e.0.
-    pub pirq: PirqRouting<'static>,
+    pub pirq: PirqRouting,
     pub gpi_routing: [GpiRoute; 16],
     /// Internal LAN function present (`FD_INTLAN` when false).
     pub lan: bool,
@@ -167,7 +167,7 @@ impl I945Ich7Config {
         self
     }
     #[must_use]
-    pub const fn pirq(mut self, routing: PirqRouting<'static>) -> Self {
+    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
         self.pirq = routing;
         self
     }

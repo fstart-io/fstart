@@ -157,6 +157,35 @@ pub fn read_spd<B: SmBus>(
     Ok(())
 }
 
+/// Fill `buf` from the EEPROM at `addr`; `false` when nothing answers.
+///
+/// Prefers the controller's I2C sequential read and, like coreboot, falls
+/// back to byte reads when that fails.
+pub(crate) fn read_eeprom<B: SmBus + ?Sized>(
+    smbus: &mut B,
+    addr: u8,
+    offset: u8,
+    buf: &mut [u8],
+) -> Result<bool, ServiceError> {
+    match smbus.i2c_eeprom_read(addr, offset, buf) {
+        Ok(()) => return Ok(true),
+        Err(ServiceError::NoDevice) => return Ok(false),
+        Err(error) => fstart_log::warn!(
+            "spd: I2C read at {:#x} failed (code {}), reading byte by byte",
+            addr,
+            error as u8
+        ),
+    }
+    for (byte, cmd) in buf.iter_mut().zip(offset..=u8::MAX) {
+        match smbus.read_byte(addr, cmd) {
+            Ok(value) => *byte = value,
+            Err(ServiceError::NoDevice) if cmd == offset => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(true)
+}
+
 /// Check if a DIMM slot is populated.
 pub fn dimm_is_populated(info: &DimmInfo) -> bool {
     info.card_type != 0
