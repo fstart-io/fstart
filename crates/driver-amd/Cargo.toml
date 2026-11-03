@@ -12,7 +12,7 @@ zeppelin = ["smi", "dep:fstart-amdfw-format", "dep:fstart-arch", "dep:zerocopy",
 naples = ["sp3"]
 rome = ["sp3"]
 milan = ["sp3"]
-sp3 = ["dep:fstart-options", "dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch", "dep:fstart-driver-i2c"]
+sp3 = ["dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch", "dep:fstart-driver-i2c"]
 # ACPI descriptions of the SP3 FCH devices.
 acpi = ["dep:fstart-acpi"]
 # The SMBIOS inventory from the APOB.
@@ -42,7 +42,7 @@ libc = { version = "0.2", optional = true }
 fstart-amdfw-format = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-driver-spd = { workspace = true, optional = true }
-fstart-options = { workspace = true, optional = true }
+fstart-options = { workspace = true }
 rflasher-core = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
 

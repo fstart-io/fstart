@@ -9,6 +9,7 @@ use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::FchHw;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_uart::ns16550::Ns16550Config;
+use fstart_options::cmos::{Entry, Layout};
 use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_sp3::smm::SleepNotify;
 
@@ -35,7 +36,29 @@ impl board::Board for Board {
     });
     /// "Restore AC Power Loss", as the vendor Setup offers it.
     const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+    const CMOS: Option<&'static Layout> = Some(&CMOS);
 }
+
+/// The options kept in CMOS, as coreboot boards keep them: the console
+/// level and the AC power-loss state survive a firmware update.
+pub const CMOS: Layout = Layout {
+    entries: &[
+        Entry {
+            key: "debug_level",
+            bit: 0x40 * 8,
+            width: 4,
+        },
+        Entry {
+            key: "power_on_after_fail",
+            bit: 0x40 * 8 + 4,
+            width: 2,
+        },
+    ],
+    first: 0x40,
+    last: 0x4d,
+    checksum: 0x4e,
+};
+const _: () = assert!(CMOS.check().is_ok());
 
 /// The board's console: the AST2500's Super I/O UART.
 pub const CONSOLE: Ns16550Config = bmc::CONSOLE;

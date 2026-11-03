@@ -102,4 +102,9 @@ pub trait Board: Sp3BoardFacts + 'static {
     /// reset tasks already used. Board knobs outside the policy go through
     /// `Stage::resolve_options`.
     const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[];
+
+    /// The options the board keeps in CMOS RAM bank 0 instead of the
+    /// settings store (`fstart_options::cmos`). They survive a firmware
+    /// update; clearing CMOS returns them to the board's values.
+    const CMOS: Option<&'static fstart_options::cmos::Layout> = None;
 }

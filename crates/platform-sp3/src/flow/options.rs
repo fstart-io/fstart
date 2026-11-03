@@ -5,34 +5,56 @@
 //! read in a build with the UEFI payload, which also brings the menu that
 //! writes them. Other payloads boot the board's configuration.
 
-use fstart_options::{Knob, Provenance, Report, Source};
+use fstart_driver_amd::fch::Rtc;
+use fstart_options::cmos::{Cmos, Layout, Ram};
+use fstart_options::{Knob, Layered, Provenance, Report, Source};
 
 #[cfg(feature = "payload-uefi")]
 use super::Ctx;
 
-/// The overrides stored in `nvram`, the ROM view of the settings store.
-pub(crate) fn source(nvram: Option<&'static [u8]>) -> impl Source {
-    #[cfg(feature = "payload-uefi")]
-    {
-        use fstart_payload::crabefi::settings::VarstoreOptions;
-        nvram.map(VarstoreOptions::new)
-    }
-    #[cfg(not(feature = "payload-uefi"))]
-    {
-        let _ = nvram;
-        fstart_options::NoSource
-    }
+/// Where the overrides are stored: the ROM view of the settings store and
+/// the board's CMOS layout.
+#[derive(Clone, Copy)]
+pub(crate) struct Stores {
+    pub nvram: Option<&'static [u8]>,
+    pub cmos: Option<&'static Layout>,
+}
+
+/// CMOS RAM bank 0.
+static RTC: Rtc = Rtc;
+
+/// The board's CMOS options.
+pub(crate) fn cmos(
+    layout: Option<&'static Layout>,
+) -> Option<Cmos<'static, &'static (dyn Ram + Sync)>> {
+    layout.map(|layout| Cmos::new(layout, &RTC as &(dyn Ram + Sync)))
+}
+
+/// The overrides: the board's CMOS options, then the settings store.
+pub(crate) fn source(stores: Stores) -> Layered<impl Source, impl Source> {
+    let store = {
+        #[cfg(feature = "payload-uefi")]
+        {
+            use fstart_payload::crabefi::settings::VarstoreOptions;
+            stores.nvram.map(VarstoreOptions::new)
+        }
+        #[cfg(not(feature = "payload-uefi"))]
+        {
+            None::<fstart_options::NoSource>
+        }
+    };
+    Layered(cmos(stores.cmos), store)
 }
 
 /// [`fstart_options::resolve_checked`] from the settings store, logged.
 pub(crate) fn resolve<C: Clone>(
-    nvram: Option<&'static [u8]>,
+    stores: Stores,
     knobs: &'static [Knob<C>],
     config: &mut C,
     report: &mut Report,
     check: impl FnOnce(&C) -> Result<(), &'static str>,
 ) {
-    let source = source(nvram);
+    let source = source(stores);
     let first = report.settings.len();
     fstart_options::resolve_checked(knobs, &source, config, report, check);
     for setting in &report.settings[first..] {
@@ -60,9 +82,10 @@ pub(crate) fn resolve<C: Clone>(
         }
     }
     fstart_log::info!(
-        "options: {} knobs from {}",
+        "options: {} knobs from {}, then {}",
         report.settings.len() - first,
-        source.name()
+        source.0.name(),
+        source.1.name()
     );
 }
 
@@ -102,5 +125,6 @@ pub(crate) fn storage(
 pub(crate) fn settings(ctx: &Ctx) -> fstart_payload::crabefi::settings::FirmwareSettings {
     fstart_payload::crabefi::settings::FirmwareSettings {
         cfr: fstart_options::cfr::encode(&ctx.options),
+        cmos: cmos(ctx.stores.cmos),
     }
 }

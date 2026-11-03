@@ -273,9 +273,10 @@ pub(crate) struct Ctx {
     pub ffs: Span,
     /// The FFS's flash offset.
     pub ffs_offset: u32,
-    /// The settings store ([`layout::NVRAM`]) in the CPU view, if a ROM
-    /// window shows it.
-    pub nvram: Option<&'static [u8]>,
+    /// Where option overrides are stored: the settings store
+    /// ([`layout::NVRAM`]) in the CPU view, if a ROM window shows it, and
+    /// the board's CMOS layout.
+    pub stores: options::Stores,
     /// The outcome of every option knob resolved so far.
     pub options: fstart_options::Report,
     pub apob: Apob<'static>,
@@ -470,10 +471,14 @@ impl<B: Board, S: Silicon> Early<B, S> {
         // The console level first, then the policy overrides, before the
         // first step that reads the policy after the FCH reset tasks (the
         // DF plan).
+        let stores = options::Stores {
+            nvram,
+            cmos: B::CMOS,
+        };
         let mut options = fstart_options::Report::new();
         let mut level = fstart_log::max_level();
         options::resolve(
-            nvram,
+            stores,
             &fstart_log::option::KNOBS,
             &mut level,
             &mut options,
@@ -481,7 +486,7 @@ impl<B: Board, S: Silicon> Early<B, S> {
         );
         // SAFETY: BSP only, before MP.
         unsafe { fstart_log::set_max_level(level) };
-        options::resolve(nvram, B::OPTIONS, &mut policy, &mut options, |_| Ok(()));
+        options::resolve(stores, B::OPTIONS, &mut policy, &mut options, |_| Ok(()));
 
         step(0x15, "memory map");
         let tops = top_of_memory();
@@ -507,7 +512,7 @@ impl<B: Board, S: Silicon> Early<B, S> {
             policy,
             ffs,
             ffs_offset,
-            nvram,
+            stores,
             options,
             apob,
             tops,
@@ -657,7 +662,7 @@ impl<B: Board, S: Silicon, P> Stage<B, S, P> {
         check: impl FnOnce(&C) -> Result<(), &'static str>,
     ) {
         let ctx = &mut self.machine.ctx;
-        options::resolve(ctx.nvram, knobs, config, &mut ctx.options, check);
+        options::resolve(ctx.stores, knobs, config, &mut ctx.options, check);
     }
 
     fn into_phase<Q>(self, next: Q) -> Stage<B, S, Q> {

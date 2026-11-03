@@ -220,6 +220,26 @@ pub const PM_INDEX: u16 = 0xcd6;
 /// CMOS bank 0 index/data.
 pub const RTC_INDEX: u16 = 0x70;
 
+/// CMOS RAM bank 0 through [`RTC_INDEX`], for options kept in CMOS
+/// (`fstart_options::cmos`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Rtc;
+
+#[cfg(target_arch = "x86_64")]
+impl fstart_options::cmos::Ram for Rtc {
+    fn read(&self, index: u8) -> u8 {
+        // SAFETY: the RTC ports are fixed legacy I/O; firmware is the only
+        // user of the index/data pair while it runs.
+        let bus = unsafe { NativeBus::without_config() };
+        indexed_io::<_, ()>(&bus, RTC_INDEX, index).get()
+    }
+    fn write(&self, index: u8, value: u8) {
+        // SAFETY: as for `read`.
+        let bus = unsafe { NativeBus::without_config() };
+        indexed_io::<_, ()>(&bus, RTC_INDEX, index).set(value)
+    }
+}
+
 /// Native transport: MMIO, port I/O and, with `CONFIG`, ECAM byte-granular
 /// config access. SMM uses [`SmmBus`]: the config spaces aren't decoded
 /// there, reads return all ones and writes are dropped.

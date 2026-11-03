@@ -8,17 +8,23 @@
 //! CrabEFI's CFR menu store them. The boot reads them through
 //! [`VarstoreOptions`] from the memory-mapped region; CrabEFI's menu writes
 //! them through [`FlashStorage`] and the runtime image.
+//!
+//! A board may keep some options in CMOS instead
+//! ([`fstart_options::cmos`]): the menu then reads and writes those there.
 
 use alloc::vec::Vec;
 
 use crabefi::efi::varstore::edk2;
 use fstart_core::services::{FlashRegion, ServiceError};
+use fstart_options::cmos::{Cmos, Ram};
 use fstart_options::{Source, SourceError};
 
 /// What CrabEFI gets to persist variables and show the settings.
 pub struct FirmwareSettings {
     /// The CFR record of the options ([`fstart_options::cfr::encode`]).
     pub cfr: Vec<u8>,
+    /// The options the board keeps in CMOS.
+    pub cmos: Option<Cmos<'static, &'static (dyn Ram + Sync)>>,
 }
 
 /// The longest option key, in characters.
@@ -165,13 +171,69 @@ impl crabefi::PlatformHooks for SettingsHooks {
     }
 }
 
-/// Parse and keep `cfr` for the menu. Called once, before CrabEFI starts.
-pub(crate) fn install(settings: &FirmwareSettings) -> bool {
-    match crabefi::cfr::parse_cfr(&settings.cfr) {
-        Some(cfr) => {
-            crabefi::cfr::store_cfr(cfr);
-            true
-        }
-        None => false,
+/// The menu's view of the options a board keeps in CMOS.
+struct CmosStore(Cmos<'static, &'static (dyn Ram + Sync)>);
+
+/// The CFR default of the option named `key`: what a first CMOS write
+/// fills the other options with.
+fn cfr_default(key: &str) -> u32 {
+    use crabefi::cfr::CfrOptionType;
+    crabefi::cfr::get_cfr()
+        .into_iter()
+        .flat_map(|cfr| cfr.forms.iter())
+        .flat_map(|form| form.options.iter())
+        .find(|option| option.opt_name == key)
+        .map_or(0, |option| match option.option_type {
+            CfrOptionType::Bool { default } => default.into(),
+            CfrOptionType::Number { default, .. } | CfrOptionType::Enum { default, .. } => default,
+            CfrOptionType::Varchar { .. } | CfrOptionType::Comment => 0,
+        })
+}
+
+impl crabefi::cfr::OptionStore for CmosStore {
+    fn keeps(&self, option: &crabefi::cfr::CfrOption) -> bool {
+        self.0.has(&option.opt_name)
     }
+
+    fn read(&self, option: &crabefi::cfr::CfrOption) -> Option<crabefi::cfr::CfrValue> {
+        use crabefi::cfr::{CfrOptionType, CfrValue};
+        let value = self.0.read(&option.opt_name).ok()??;
+        Some(match option.option_type {
+            CfrOptionType::Bool { .. } => CfrValue::Bool(value != 0),
+            _ => CfrValue::Number(value),
+        })
+    }
+
+    fn write(
+        &self,
+        option: &crabefi::cfr::CfrOption,
+        value: &crabefi::cfr::CfrValue,
+    ) -> Result<(), &'static str> {
+        use crabefi::cfr::CfrValue;
+        let value = match *value {
+            CfrValue::Bool(b) => u32::from(b),
+            CfrValue::Number(n) => n,
+            CfrValue::Varchar(_) => return Err("CMOS keeps numbers only"),
+        };
+        match self.0.write(&option.opt_name, value, cfr_default) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("not a CMOS option"),
+            Err(_) => Err("CMOS write failed"),
+        }
+    }
+}
+
+/// Parse and keep `cfr` for the menu, and its CMOS store. Called once,
+/// before CrabEFI starts.
+pub(crate) fn install(settings: &mut FirmwareSettings) -> bool {
+    let Some(cfr) = crabefi::cfr::parse_cfr(&settings.cfr) else {
+        return false;
+    };
+    crabefi::cfr::store_cfr(cfr);
+    if let Some(cmos) = settings.cmos.take() {
+        crabefi::cfr::set_option_store(alloc::boxed::Box::leak(alloc::boxed::Box::new(CmosStore(
+            cmos,
+        ))));
+    }
+    true
 }

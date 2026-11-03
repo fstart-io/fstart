@@ -272,9 +272,18 @@ UEFI payload, the flow hands CrabEFI:
 - the options as a CFR form (`fstart_options::cfr`), which CrabEFI's
   firmware settings menu (`F` in the boot menu) shows and saves.
 
+A board may keep some options in CMOS RAM instead (`Board::CMOS`, a
+`fstart_options::cmos::Layout` of bit ranges in bank 0 with coreboot's
+checksum, through the FCH's RTC ports). The boot reads CMOS first and the
+settings store for the other keys; CrabEFI's menu writes CMOS options
+there. CMOS options survive a firmware update and fall back to the
+board's values while the checksum is unset (cleared CMOS, dead battery);
+the first write fills every CMOS option with its default. The S8030 keeps
+`debug_level` and `power_on_after_fail` in bytes `0x40`–`0x4f`.
+
 A changed option applies at the next boot. A new image has an empty store:
-reflashing resets the settings. Linux and halt payloads boot the board's
-configuration.
+reflashing resets the settings kept there. Linux and halt payloads boot
+the board's configuration and its CMOS options.
 
 ## SMM
 

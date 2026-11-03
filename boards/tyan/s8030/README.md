@@ -22,9 +22,11 @@ cargo fbuild assemble --board tyan-s8030 --release \
 With the UEFI payload, CrabEFI's firmware settings menu (`F` in the boot
 menu) offers the vendor Setup knobs fstart implements: Restore on AC power
 loss, the bifurcation of each x16 slot (the vendor's `Setup[0x194..0x198]`),
-PCIe compliance mode, the two i210 links and the onboard VGA link. They are
-stored in the settings store in flash and apply at the next boot; a new
-image starts with an empty store. A bifurcation set that does not give a
+PCIe compliance mode, the two i210 links and the onboard VGA link, plus
+the console log level. They apply at the next boot. The console level and
+AC power loss live in CMOS (bytes `0x40`–`0x4f`) and survive a firmware
+update; the rest live in the settings store in flash, which a new image
+starts empty. A bifurcation set that does not give a
 valid DXIO lane map is ignored with a warning in the boot log.
 
 The board default is the vendor's (every slot x16); the

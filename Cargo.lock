@@ -233,7 +233,7 @@ dependencies = [
 [[package]]
 name = "crabefi-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=ea0d0c388049049cbfb36e4a5baebed4ed0113bd#ea0d0c388049049cbfb36e4a5baebed4ed0113bd"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
@@ -267,7 +267,7 @@ dependencies = [
 [[package]]
 name = "crabefi-efi-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=ea0d0c388049049cbfb36e4a5baebed4ed0113bd#ea0d0c388049049cbfb36e4a5baebed4ed0113bd"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
 dependencies = [
  "zerocopy",
 ]
@@ -284,7 +284,7 @@ dependencies = [
 [[package]]
 name = "crabefi-pkcs7"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=ea0d0c388049049cbfb36e4a5baebed4ed0113bd#ea0d0c388049049cbfb36e4a5baebed4ed0113bd"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -292,12 +292,12 @@ dependencies = [
 [[package]]
 name = "crabefi-runtime-abi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=ea0d0c388049049cbfb36e4a5baebed4ed0113bd#ea0d0c388049049cbfb36e4a5baebed4ed0113bd"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
 
 [[package]]
 name = "crabefi-runtime-bundle"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=ea0d0c388049049cbfb36e4a5baebed4ed0113bd#ea0d0c388049049cbfb36e4a5baebed4ed0113bd"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
 
 [[package]]
 name = "crc32fast"

@@ -366,3 +366,132 @@ fn crc_matches_coreboot() {
     // zero initial value and no final XOR (CRC-32/MPEG-2 without the init).
     assert_eq!(cfr::crc32(b"123456789"), 0x89a1_897f);
 }
+
+mod cmos {
+    use crate::cmos::{Cmos, Entry, Layout, LayoutError, Ram, WriteError};
+    use crate::{Layered, Source};
+    use core::cell::RefCell;
+
+    struct Bank(RefCell<[u8; 128]>);
+    impl Ram for Bank {
+        fn read(&self, index: u8) -> u8 {
+            self.0.borrow()[usize::from(index)]
+        }
+        fn write(&self, index: u8, value: u8) {
+            self.0.borrow_mut()[usize::from(index)] = value;
+        }
+    }
+
+    const LAYOUT: Layout = Layout {
+        entries: &[
+            Entry {
+                key: "debug_level",
+                bit: 0x40 * 8,
+                width: 4,
+            },
+            Entry {
+                key: "power_on_after_fail",
+                bit: 0x40 * 8 + 4,
+                width: 2,
+            },
+            Entry {
+                key: "wide",
+                bit: 0x41 * 8,
+                width: 12,
+            },
+        ],
+        first: 0x40,
+        last: 0x4d,
+        checksum: 0x4e,
+    };
+    const _: () = assert!(LAYOUT.check().is_ok());
+
+    fn defaults(key: &str) -> u32 {
+        match key {
+            "debug_level" => 6,
+            "power_on_after_fail" => 2,
+            _ => 0x5a5,
+        }
+    }
+
+    #[test]
+    fn an_unset_checksum_stores_nothing_until_the_first_write_fills_defaults() {
+        let bank = Bank(RefCell::new([0x77; 128]));
+        let cmos = Cmos::new(&LAYOUT, &bank);
+        assert!(!cmos.valid());
+        assert_eq!(cmos.read("debug_level"), Ok(None));
+        assert_eq!(cmos.write("debug_level", 4, defaults), Ok(true));
+        assert!(cmos.valid());
+        assert_eq!(cmos.read("debug_level"), Ok(Some(4)));
+        assert_eq!(cmos.read("power_on_after_fail"), Ok(Some(2)));
+        assert_eq!(cmos.read("wide"), Ok(Some(0x5a5)));
+        // coreboot's checksum: the byte sum, big-endian after the range.
+        let sum: u16 = (0x40..=0x4d).map(|i| u16::from(bank.read(i))).sum();
+        assert_eq!([bank.read(0x4e), bank.read(0x4f)], sum.to_be_bytes());
+        // Bytes outside the entries keep their contents.
+        assert_eq!(bank.read(0x42) & 0xf0, 0x70);
+        assert_eq!(bank.read(0x10), 0x77);
+        // Later writes keep the other options.
+        assert_eq!(cmos.write("power_on_after_fail", 0, defaults), Ok(true));
+        assert_eq!(cmos.read("debug_level"), Ok(Some(4)));
+        assert_eq!(
+            cmos.write("debug_level", 16, defaults),
+            Err(WriteError::TooWide)
+        );
+        assert_eq!(cmos.write("smee", 1, defaults), Ok(false));
+        // A cleared CMOS is unset again.
+        bank.write(0x45, 1);
+        assert_eq!(cmos.read("debug_level"), Ok(None));
+    }
+
+    #[test]
+    fn cmos_shadows_the_store_behind_it_for_its_keys() {
+        let bank = Bank(RefCell::new([0; 128]));
+        let cmos = Cmos::new(&LAYOUT, &bank);
+        cmos.write("debug_level", 7, defaults).unwrap();
+        struct Flash;
+        impl Source for Flash {
+            fn name(&self) -> &'static str {
+                "flash"
+            }
+            fn read(&self, _: &str) -> Result<Option<u32>, crate::SourceError> {
+                Ok(Some(3))
+            }
+        }
+        let both = Layered(&cmos, Flash);
+        assert_eq!(both.read("debug_level"), Ok(Some(7)));
+        assert_eq!(both.read("smee"), Ok(Some(3)));
+    }
+
+    #[test]
+    fn layouts_stay_in_bank_0_without_overlaps() {
+        let bad = |entries: &'static [Entry], first, checksum| Layout {
+            entries,
+            first,
+            last: 0x4d,
+            checksum,
+        };
+        const E: &[Entry] = &[Entry {
+            key: "a",
+            bit: 0x40 * 8,
+            width: 8,
+        }];
+        const TWO: &[Entry] = &[
+            Entry {
+                key: "a",
+                bit: 0x40 * 8,
+                width: 8,
+            },
+            Entry {
+                key: "b",
+                bit: 0x40 * 8 + 7,
+                width: 2,
+            },
+        ];
+        assert_eq!(bad(E, 0x0d, 0x4e).check(), Err(LayoutError::OutOfBank));
+        assert_eq!(bad(E, 0x40, 0x4d).check(), Err(LayoutError::Overlap));
+        assert_eq!(bad(E, 0x41, 0x4e).check(), Err(LayoutError::Entry));
+        assert_eq!(bad(TWO, 0x40, 0x4e).check(), Err(LayoutError::Overlap));
+        assert_eq!(bad(E, 0x40, 0x4e).check(), Ok(()));
+    }
+}
