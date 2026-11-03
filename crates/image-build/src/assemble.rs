@@ -1240,7 +1240,7 @@ fn assemble_fit_payload(
                     data: kernel_data.to_vec(),
                     mem_size: None,
                     load_addr: kernel_load,
-                    compression: Compression::Lz4,
+                    compression: payload.compression,
                     flags: SegmentFlags::CODE,
                 }],
             });
@@ -1259,7 +1259,7 @@ fn assemble_fit_payload(
                         data: rd_data.to_vec(),
                         mem_size: None,
                         load_addr: rd_load,
-                        compression: Compression::Lz4,
+                        compression: payload.compression,
                         flags: SegmentFlags::RODATA,
                     }],
                 });

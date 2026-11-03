@@ -45,11 +45,7 @@ impl IntelPlan {
                         .transpose()
                         .map_err(|_| "heap too large")?,
                     runs_from: if boot { RunsFrom::Rom } else { RunsFrom::Ram },
-                    compression: if ram {
-                        Compression::Lz4
-                    } else {
-                        Compression::None
-                    },
+                    compression: row.compression,
                 })
                 .map_err(|_| "too many stages")?;
         }

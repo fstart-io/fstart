@@ -244,7 +244,11 @@ fn resolve_for<P: IntelPlatform>(
         IntelStagePlan {
             role,
             features,
-            payload: selected_payload.into(),
+            compression: match role {
+                IntelStage::Bootblock => fstart_core::Compression::None,
+                IntelStage::Postcar => crate::compression::POSTCAR,
+                IntelStage::Ramstage => crate::compression::RAMSTAGE,
+            },
         }
     });
     if max_cpus == 0 {
@@ -252,8 +256,10 @@ fn resolve_for<P: IntelPlatform>(
     }
     let reservations = reservations::<P>(facts)?;
     let payload_config = match payload.as_str() {
-        "uefi" => Some(fstart_core::x86_uefi_payload()),
-        "coreboot" => Some(fstart_core::x86_coreboot_payload()),
+        "uefi" => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
+        "coreboot" => Some(fstart_core::x86_coreboot_payload(
+            crate::compression::PAYLOAD,
+        )),
         // Empty bootargs default to no command line: there is deliberately no
         // implicit serial-console policy, so direct Linux stays silent unless
         // the caller passes `--linux-bootargs` explicitly.
@@ -265,6 +271,7 @@ fn resolve_for<P: IntelPlatform>(
                 fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 &x86_linux_bootargs,
                 selection.x86_linux_print_mtrrs,
+                crate::compression::PAYLOAD,
             )
             .map_err(ToString::to_string)?,
         ),
@@ -366,7 +373,14 @@ mod tests {
         let default = resolve(FACTS, BuildSelection::default()).unwrap();
         assert_eq!(default.target(), "x86_64-unknown-none");
         assert_eq!(default.payload, "halt");
-        assert!(default.stages.iter().all(|stage| stage.payload == "halt"));
+        assert_eq!(
+            default.stages.map(|stage| stage.compression),
+            [
+                fstart_core::Compression::None,
+                crate::compression::POSTCAR,
+                crate::compression::RAMSTAGE
+            ]
+        );
         let uefi = resolve(
             FACTS,
             BuildSelection {
@@ -375,13 +389,6 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            uefi.stages
-                .iter()
-                .map(|stage| stage.payload.as_str())
-                .collect::<Vec<_>>(),
-            ["halt", "halt", "uefi"]
-        );
         assert_eq!(uefi.stages[0].features, ["bundle-bootblock"]);
         assert_eq!(uefi.stages[1].features, ["bundle-postcar"]);
         assert_eq!(uefi.stages[2].features, ["bundle-ramstage", "payload-uefi"]);

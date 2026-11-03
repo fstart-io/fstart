@@ -305,7 +305,7 @@ impl Payload {
         };
         Ok(match self {
             Self::Halt => None,
-            Self::Uefi => Some(fstart_core::x86_uefi_payload()),
+            Self::Uefi => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
             Self::Linux => Some(fstart_core::x86_linux_payload(
                 selection
                     .x86_linux_kernel_load_addr
@@ -313,6 +313,7 @@ impl Payload {
                 X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 selection.x86_linux_bootargs.as_deref().unwrap_or_default(),
                 selection.x86_linux_print_mtrrs,
+                crate::compression::PAYLOAD,
             )?),
         })
     }

@@ -24,6 +24,15 @@ mod dtb_memory;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod display;
 
+/// How the FFS stores what this platform's stages load. The host plan
+/// compresses each image with its constant and the stage loading it passes
+/// `codec` of the same constant, so a stage links only the decoders it uses.
+pub mod compression {
+    use fstart_core::Compression;
+    /// The payload's files, loaded by the stage.
+    pub const PAYLOAD: Compression = Compression::Lz4;
+}
+
 pub mod facts;
 #[cfg(feature = "host")]
 pub mod host;

@@ -147,7 +147,7 @@ fn board_config(
                 stack_size: MAINSTAGE_STACK_SIZE,
                 heap_size: Some(MAINSTAGE_HEAP_SIZE),
                 runs_from: RunsFrom::Ram,
-                compression: Compression::None,
+                compression: crate::compression::MAIN_STAGE,
                 data_addr: None,
             },
         ])),
@@ -180,10 +180,7 @@ fn payload_config(facts: BoardFacts) -> PayloadConfig {
         src_dtb_addr: None,
         bootargs: Some(hstr(facts.bootargs)),
         print_x86_mtrrs: false,
-        // ponytail: lz4 kernel decompression through block-backed media is
-        // pathologically slow (byte-granular reads); store flat until the
-        // block reader grows a buffered window.
-        compression: Compression::None,
+        compression: crate::compression::PAYLOAD,
         firmware: facts.firmware.map(|firmware| FirmwareConfig {
             kind: firmware.kind,
             file: hstr(firmware.file),

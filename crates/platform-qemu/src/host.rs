@@ -262,7 +262,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             src_dtb_addr: None,
             bootargs: None,
             print_x86_mtrrs: false,
-            compression: Compression::Lz4,
+            compression: crate::compression::PAYLOAD,
             firmware: runtime.map(|(range, kind, file)| FirmwareConfig {
                 kind,
                 file: hstr(file),
@@ -808,7 +808,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let assembly_payload = if payload == "halt" {
         None
     } else if coreboot {
-        Some(fstart_core::x86_coreboot_payload())
+        Some(fstart_core::x86_coreboot_payload(
+            crate::compression::PAYLOAD,
+        ))
     } else if let Some(p) = linux {
         Some(PayloadConfig {
             kind: PayloadKind::LinuxBoot,
@@ -823,7 +825,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             src_dtb_addr: None,
             bootargs: Some(hstr(p.bootargs)),
             print_x86_mtrrs: false,
-            compression: Compression::Lz4,
+            compression: crate::compression::PAYLOAD,
             firmware: Some(FirmwareConfig {
                 kind: FirmwareKind::OpenSbi,
                 file: hstr(p.firmware_file),
@@ -844,7 +846,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             src_dtb_addr: None,
             bootargs: None,
             print_x86_mtrrs: false,
-            compression: Compression::Lz4,
+            compression: crate::compression::PAYLOAD,
             firmware: policy.linux.as_ref().map(|p| FirmwareConfig {
                 kind: FirmwareKind::OpenSbi,
                 file: hstr(p.firmware_file),

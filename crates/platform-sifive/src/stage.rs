@@ -286,8 +286,13 @@ fn install_boot_context(
     // live image, heap and stack in LIM; SPI and handoff are excluded. This
     // fixed flow starts no DMA devices or secondary harts and configures no
     // external temporary allocation arena.
-    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
-        .map_err(|_| ServiceError::InvalidParam)?;
+    unsafe {
+        fstart_stage::directory::set_load_policy(
+            &policy,
+            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
+        )
+    }
+    .map_err(|_| ServiceError::InvalidParam)?;
     #[cfg(any(feature = "linux", feature = "crabefi"))]
     // SAFETY: source is either a bounded boot DTB in trusted readable memory,
     // or the dedicated destination for an authenticated FFS DTB.

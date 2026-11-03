@@ -6,6 +6,16 @@
 extern crate alloc;
 #[cfg(feature = "noncar")]
 pub mod acpi;
+
+/// How the FFS stores what this platform's stages load. The host plan
+/// compresses each image with its constant and the stage loading it passes
+/// `codec` of the same constant, so a stage links only the decoders it uses.
+pub mod compression {
+    use fstart_core::Compression;
+    /// The payload's files, loaded by the stage.
+    pub const PAYLOAD: Compression = Compression::Lz4;
+}
+
 #[cfg(feature = "noncar")]
 pub mod noncar;
 #[cfg(feature = "picasso")]

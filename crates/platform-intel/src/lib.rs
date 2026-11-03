@@ -23,6 +23,21 @@ pub mod tables;
 
 pub mod facts;
 pub mod memory_cache;
+
+/// How the FFS stores what this platform's stages load. The host plan
+/// compresses each image with its constant and the stage loading it passes
+/// `codec` of the same constant, so a stage links only the decoders it uses.
+pub mod compression {
+    use fstart_core::Compression;
+    /// Postcar, loaded by the bootblock: stored, so the bootblock links no
+    /// decoder.
+    pub const POSTCAR: Compression = Compression::None;
+    /// The ramstage, loaded by postcar.
+    pub const RAMSTAGE: Compression = Compression::Lz4;
+    /// The payload's files, loaded by the ramstage.
+    pub const PAYLOAD: Compression = Compression::Lz4;
+}
+
 pub use facts::{IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 #[cfg(feature = "host")]
 pub mod host;

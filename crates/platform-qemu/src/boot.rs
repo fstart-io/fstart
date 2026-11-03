@@ -55,8 +55,13 @@ fn install_image(
     // SAFETY: platform-discovered RAM only, with the complete live stage and
     // allocator arena, source image and hardware reservations excluded. Devices
     // have not been given DMA buffers at this point in the fixed flow.
-    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
-        .map_err(|_| ServiceError::InvalidParam)?;
+    unsafe {
+        fstart_stage::directory::set_load_policy(
+            &policy,
+            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
+        )
+    }
+    .map_err(|_| ServiceError::InvalidParam)?;
     fstart_log::info!(
         "qemu: development integrity; no hardware secure boot or rollback enforcement"
     );

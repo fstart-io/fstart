@@ -286,7 +286,9 @@ with BSS is zero-filled after its verified load.
   (uncompressed) or `loaded_size + stored_size` (LZ4).
 - Short workspace → `Bounds`. A compression the caller's `Codec` does not
   handle → `Unsupported` (`Stored` handles none and links no decoder). No
-  streaming fallback exists.
+  streaming fallback exists. Each platform's `compression` module holds the
+  one constant per kind of image that its host plan compresses with and its
+  stage passes to `codec`, so the two cannot disagree.
 - Uncompressed: read into the destination; check the digest (stored and
   loaded digests are equal).
 - LZ4: read the stored bytes into the disjoint scratch, check the stored digest

@@ -330,6 +330,7 @@ fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, Strin
                     fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                     selection.x86_linux_bootargs.as_deref().unwrap_or(""),
                     selection.x86_linux_print_mtrrs,
+                    crate::compression::PAYLOAD,
                 )
                 .map_err(ToString::to_string)?,
             ),
@@ -337,17 +338,17 @@ fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, Strin
         "uefi" => (
             "crabefi",
             Some("payload-uefi"),
-            Some(fstart_core::x86_uefi_payload()),
+            Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         ),
         "uefi-ui" => (
             "crabefi",
             Some("payload-uefi-ui"),
-            Some(fstart_core::x86_uefi_payload()),
+            Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         ),
         "uefi-basic" => (
             "crabefi",
             Some("payload-uefi-basic"),
-            Some(fstart_core::x86_uefi_payload()),
+            Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         ),
         other => {
             return Err(format!(
