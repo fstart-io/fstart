@@ -6,6 +6,16 @@
 extern crate ufmt;
 
 mod config;
+
+/// How the FFS stores what this platform's stages load. The host plan
+/// compresses each image with its constant and the stage loading it passes
+/// `codec` of the same constant, so a stage links only the decoders it uses.
+pub mod compression {
+    use fstart_core::Compression;
+    /// The payload's files (kernel, OpenSBI), loaded by the stage.
+    pub const PAYLOAD: Compression = Compression::Lz4;
+}
+
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(all(feature = "stage", target_arch = "riscv64"))]

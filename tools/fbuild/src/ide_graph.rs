@@ -138,9 +138,6 @@ fn project(
         let canonical = directory.canonicalize().map_err(|e| e.to_string())?;
         let platform = unit["platform"].as_str();
         let mut cfg = Vec::new();
-        if platform.is_some() {
-            cfg.extend(selection.cfgs.iter().cloned());
-        }
         for feature in unit["features"].as_array().ok_or("missing unit features")? {
             cfg.push(format!("feature={}", feature));
         }

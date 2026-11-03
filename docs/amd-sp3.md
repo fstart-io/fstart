@@ -48,7 +48,7 @@ Platform features (`crates/platform-sp3/Cargo.toml`):
 | `naples`, `rome`, `milan` | additive: compile that generation's flow steps (`fstart-driver-amd/<gen>`) |
 | `acpi` | build ACPI and SMBIOS |
 | `bundle-stage` | stage runtime (used by fbuild's stage unit) |
-| `payload-linux`, `payload-uefi` | payload backend (`fstart_payload` cfg) |
+| `payload-linux`, `payload-uefi` | payload launcher; fbuild enables the one `--payload` selects |
 | `smm`, `bundle-smm` | FCH SMI handler, for the SMM image unit |
 | `host` | build-plan code, never in firmware |
 

@@ -10,6 +10,21 @@ extern crate ufmt;
 
 #[cfg(feature = "stage")]
 mod boot;
+
+/// How the FFS stores what this platform's stages load. The host plan
+/// compresses each image with its constant and the stage loading it passes
+/// `codec` of the same constant, so a stage links only the decoders it uses.
+pub mod compression {
+    use fstart_core::Compression;
+    /// The DRAM stage, loaded by the SRAM bootblock: stored, so the
+    /// bootblock links no decoder.
+    pub const MAIN_STAGE: Compression = Compression::None;
+    /// The payload's files, loaded by the DRAM stage. Stored: LZ4 through
+    /// the block-backed boot media reads byte by byte and is far slower
+    /// than the larger flat read.
+    pub const PAYLOAD: Compression = Compression::None;
+}
+
 #[cfg(all(
     feature = "stage",
     target_arch = "arm",

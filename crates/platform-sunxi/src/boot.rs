@@ -54,7 +54,7 @@ pub(crate) fn load_mainstage(
             &media,
             &descriptor,
             &policy,
-            &fstart_stage::boot::Stored,
+            const { fstart_stage::boot::codec(crate::compression::MAIN_STAGE) },
             &fstart_stage::boot::Measurement::NONE,
         )
     }
@@ -97,7 +97,7 @@ fn validate_dram(base: u64, size: u64, handoff: u64) -> Result<(), ServiceError>
 }
 
 /// Retain a DRAM policy before any block-backed FFS consumer can write memory.
-#[cfg(all(feature = "linux", fstart_payload = "linux"))]
+#[cfg(feature = "linux")]
 pub(crate) fn install_mainstage_policy(
     dram_base: u64,
     dram_size: u64,
@@ -122,8 +122,13 @@ pub(crate) fn install_mainstage_policy(
         entry_alignment: 4,
     };
     // SAFETY: running image/heap/stack and handoff are excluded. MMC is PIO.
-    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
-        .map_err(|_| ServiceError::InvalidParam)?;
+    unsafe {
+        fstart_stage::directory::set_load_policy(
+            &policy,
+            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
+        )
+    }
+    .map_err(|_| ServiceError::InvalidParam)?;
     let workspace = MemoryWindow {
         start: fdt_destination,
         size: 64 * 1024,

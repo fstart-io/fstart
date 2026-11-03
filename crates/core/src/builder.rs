@@ -37,12 +37,15 @@ pub fn hvec<T, const N: usize, const C: usize>(items: [T; N]) -> HVec<T, C> {
 /// own length error. An empty `bootargs` means no command line: there is
 /// deliberately no implicit serial-console default, so boards cannot inherit
 /// silent policy — callers pass `--linux-bootargs` explicitly.
+/// `compression` is how the FFS stores the kernel: the platform's constant,
+/// which its stage decodes.
 // Note: `Result` is `#[must_use]` already; no extra attribute needed.
 pub fn x86_linux_payload(
     kernel_load_addr: u64,
     zero_page_addr: u64,
     bootargs: &str,
     print_x86_mtrrs: bool,
+    compression: Compression,
 ) -> Result<PayloadConfig, &'static str> {
     if bootargs.len() > X86_LINUX_MAX_BOOTARGS {
         return Err(X86_LINUX_BOOTARGS_TOO_LONG);
@@ -61,7 +64,7 @@ pub fn x86_linux_payload(
                 .map_err(|_| X86_LINUX_BOOTARGS_TOO_LONG)?,
         ),
         print_x86_mtrrs,
-        compression: Compression::Lz4,
+        compression,
         firmware: None,
         fit_file: None,
         fit_config: None,
@@ -71,7 +74,7 @@ pub fn x86_linux_payload(
 
 /// Default x86 UEFI payload policy used by PC-compatible boards.
 #[must_use]
-pub fn x86_uefi_payload() -> PayloadConfig {
+pub fn x86_uefi_payload(compression: Compression) -> PayloadConfig {
     PayloadConfig {
         kind: PayloadKind::UefiPayload,
         kernel_file: None,
@@ -82,7 +85,7 @@ pub fn x86_uefi_payload() -> PayloadConfig {
         src_dtb_addr: None,
         bootargs: None,
         print_x86_mtrrs: true,
-        compression: Compression::Lz4,
+        compression,
         firmware: None,
         fit_file: None,
         fit_config: None,
@@ -92,10 +95,10 @@ pub fn x86_uefi_payload() -> PayloadConfig {
 
 /// Default x86 coreboot payload policy used by PC-compatible boards.
 #[must_use]
-pub fn x86_coreboot_payload() -> PayloadConfig {
+pub fn x86_coreboot_payload(compression: Compression) -> PayloadConfig {
     PayloadConfig {
         kind: PayloadKind::Coreboot,
-        ..x86_uefi_payload()
+        ..x86_uefi_payload(compression)
     }
 }
 

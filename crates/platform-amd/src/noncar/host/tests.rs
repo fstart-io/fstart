@@ -75,7 +75,6 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
     assert!(unit.release_only);
     assert_eq!(unit.features, ["bundle-picasso", "payload-uefi"]);
     assert_eq!(unit.bindings[0].producer, "smm");
-    assert_eq!(unit.payload, "crabefi");
     let UnitOutput::Executable { expectations, .. } = &unit.output else {
         unreachable!()
     };
@@ -171,8 +170,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 }
 
 /// The compilation units, hence the stage binaries, stay as they are.
-/// (Re-pinned for the SMM unit's `smm` board feature, and again without
-/// the entry cfg.)
+/// (Re-pinned for the SMM unit's `smm` board feature, again without the
+/// entry cfg, and again without the payload cfg.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -187,9 +186,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "555d6d116dd8d40a9731e442636bf4979b7c2689d87feadb5b873ee88b0c5530",
-            "ad1fcefcb84ee5245b2030a77c3800ce4d59424272685e66464ccbca1542c245",
-            "59f38501fa090adc2bc4a6662f8b0af839eb8a4e3690c1b0fef6f112b0f450d9",
+            "ea96dec909b52a5bc8fd8125da763aadef9021eac9d5afd69ce8490e71af9910",
+            "506e7e2fb1a2539325693376dcaa582ddce659d6fef7fd2b33ede82ff5b038af",
+            "3f6c964b5bdd36e9ad68b18e38a03f42efa70fd4e2289428fce86d22e8b6219f",
         ]
     );
 }

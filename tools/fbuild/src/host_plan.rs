@@ -6,7 +6,6 @@ use fstart_image_build::plan::{BuildSelection, ResolvedPlan};
 use std::{fs, path::Path, process::Command};
 
 const RUNNER: &str = "fstart-plan-runner";
-const HOST_CFG_FLAGS: &str = "--check-cfg=cfg(fstart_payload,values(any()))";
 
 /// Preserve every prepared package entry/pin verbatim. No resolver fallback.
 fn runner_lock(lock: &str, dependencies: &[String]) -> Result<String, String> {
@@ -117,10 +116,8 @@ pub(crate) fn load(
         .arg(target)
         .args(["--message-format=json-render-diagnostics"])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        // No firmware selection exists before the platform emits its plan.
-        // Register names without a tool-owned vocabulary for inactive board guards;
-        // the resulting target units validate against explicit platform schemas.
-        .env("RUSTFLAGS", HOST_CFG_FLAGS)
+        // The host adapter builds without ambient compiler flags.
+        .env("RUSTFLAGS", "")
         .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|e| e.to_string())?;
@@ -201,13 +198,13 @@ mod tests {
                 ),
             )
             .unwrap();
-            fs::write(package.join("src/lib.rs"), "#![deny(unexpected_cfgs)]\n#[cfg(fstart_payload=\"novel-launcher\")]\ncompile_error!(\"host adapter must not select firmware code\");\npub struct Marker;\n").unwrap();
+            fs::write(package.join("src/lib.rs"), "pub struct Marker;\n").unwrap();
         }
         let cargo = |args: &[&str]| {
             Command::new("cargo")
                 .current_dir(&directory)
                 .args(args)
-                .env("RUSTFLAGS", HOST_CFG_FLAGS)
+                .env("RUSTFLAGS", "")
                 .env_remove("CARGO_ENCODED_RUSTFLAGS")
                 .output()
                 .unwrap()

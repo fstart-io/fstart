@@ -73,7 +73,6 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     let first = resolved
         .prepare(&scratch.0, &board, launch, &artifacts, true)
         .unwrap();
-    assert!(first.cfgs.contains(&"fstart_payload=\"halt\"".into()));
     assert_eq!(
         first.environment()["LINKED_PAYLOAD"],
         artifact.display().to_string()
@@ -82,11 +81,6 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     let producer_selection = resolved
         .prepare(&scratch.0, &board, producer, &BTreeMap::new(), true)
         .unwrap();
-    assert!(
-        producer_selection
-            .cfgs
-            .contains(&"fstart_payload=\"halt\"".into())
-    );
     assert!(
         !producer_selection
             .environment()

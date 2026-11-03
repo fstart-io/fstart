@@ -231,7 +231,7 @@ pub(crate) fn install_intel_load_policy(
                 reserved: &reserved,
                 entry_alignment: 1,
             },
-            &fstart_stage::boot::Lz4,
+            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
         )
     }
     .map_err(|_| ServiceError::InvalidParam)

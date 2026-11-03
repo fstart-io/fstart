@@ -216,7 +216,8 @@ pub struct IntelStagePlan {
     pub role: crate::intel_plan::IntelStage,
     /// Selected features relative to the platform dependency (qualified by Cargo's actual alias in fbuild).
     pub features: Vec<String>,
-    pub payload: String,
+    /// How the FFS stores the stage for the stage that loads it.
+    pub compression: fstart_core::Compression,
 }
 
 /// A compiled platform export, not a board-authoring schema.

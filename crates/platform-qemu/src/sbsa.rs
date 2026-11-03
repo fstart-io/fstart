@@ -62,10 +62,6 @@ mod stage {
     use crate::virt::enumerate_pci;
     use fstart_core::services::ServiceError;
     use fstart_driver_uart::pl011::{Pl011, Pl011Config};
-    use fstart_payload::MainstagePayload;
-
-    #[cfg(not(fstart_payload = "halt"))]
-    compile_error!("SBSA selects the halt payload only");
 
     pub struct QemuSbsaMainstage {
         config: &'static QemuSbsaConfig,
@@ -138,7 +134,7 @@ mod stage {
         fstart_log::info!("qemu-sbsa ramstage: ready for payload");
         // The SBSA reference machine boots no payload yet.
         let _ = mainstage;
-        fstart_payload::BuildSelectedPayload::boot(
+        fstart_payload::boot(
             fstart_payload::Handoff::new(
                 fstart_payload::Description::new(&[], Default::default()),
                 Default::default(),

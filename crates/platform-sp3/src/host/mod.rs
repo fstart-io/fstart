@@ -38,8 +38,8 @@ use fstart_core::{
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_image_build::amd::blobs;
 use fstart_image_build::build_plan::{
-    ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
-    FfsAssembly, InputFile, UnitOutput,
+    ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, InputFile,
+    UnitOutput,
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
@@ -195,13 +195,6 @@ pub fn expectations() -> Result<Expectations, String> {
     Ok(expectations)
 }
 
-/// One cfg vocabulary for both units, so every crate checks the same names.
-fn cfg_schema() -> CompilerCfgSchema {
-    CompilerCfgSchema {
-        payloads: vec!["halt".into(), "linux".into(), "crabefi".into()],
-    }
-}
-
 /// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
 /// image's entry count agree.
 fn mp_capacity<B: Sp3BoardFacts>() -> BTreeMap<String, String> {
@@ -217,8 +210,6 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        cfg_schema: cfg_schema(),
-        payload: "halt".into(),
         features: SMM_FEATURES
             .into_iter()
             .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
@@ -299,15 +290,6 @@ impl Payload {
         }
     }
 
-    /// `fstart_payload` cfg value of the stage unit.
-    pub const fn cfg(self) -> &'static str {
-        match self {
-            Self::Halt => "halt",
-            Self::Linux => "linux",
-            Self::Uefi => "crabefi",
-        }
-    }
-
     /// Platform features the stage unit needs for this payload.
     pub const fn features(self) -> &'static [&'static str] {
         match self {
@@ -323,7 +305,7 @@ impl Payload {
         };
         Ok(match self {
             Self::Halt => None,
-            Self::Uefi => Some(fstart_core::x86_uefi_payload()),
+            Self::Uefi => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
             Self::Linux => Some(fstart_core::x86_linux_payload(
                 selection
                     .x86_linux_kernel_load_addr
@@ -331,6 +313,7 @@ impl Payload {
                 X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 selection.x86_linux_bootargs.as_deref().unwrap_or_default(),
                 selection.x86_linux_print_mtrrs,
+                crate::compression::PAYLOAD,
             )?),
         })
     }
@@ -434,8 +417,6 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         name: STAGE_UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
-        cfg_schema: cfg_schema(),
-        payload: payload.cfg().into(),
         features: core::iter::once(STAGE_FEATURE)
             .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
             .chain(payload.features().iter().copied())
@@ -746,7 +727,6 @@ mod tests {
         assert_eq!(order, [SMM_UNIT, STAGE_UNIT]);
         let smm = plan.unit(SMM_UNIT).unwrap();
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
-        assert_eq!(smm.payload, "halt");
         assert_eq!(smm.features, ["smm", "bundle-smm", "rome", "milan"]);
         assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));
         assert_eq!(smm.environment_values["FSTART_MP_MAX_CPUS"], "256");
@@ -775,13 +755,6 @@ mod tests {
             (SMM_UNIT, "image", "FSTART_SMM_IMAGE")
         );
         assert_eq!(reset.environment_values[TSEG_SIZE_ENV], "8388608");
-        // Both units check the same cfg vocabulary.
-        for unit in [smm, reset] {
-            let flags = unit.check_cfg_flags().unwrap();
-            assert!(flags.contains(
-                &"--check-cfg=cfg(fstart_payload,values(\"halt\",\"linux\",\"crabefi\"))".into()
-            ));
-        }
         // Only the stage unit is a stage.
         assert_eq!(plan.stages, [STAGE_UNIT]);
     }
@@ -828,18 +801,15 @@ mod tests {
         })
         .unwrap();
         let unit = linux.unit(STAGE_UNIT).unwrap();
-        assert_eq!(
-            (
-                unit.payload.as_str(),
-                unit.features.last().unwrap().as_str()
-            ),
-            ("linux", "payload-linux")
-        );
+        assert_eq!(unit.features.last().unwrap(), "payload-linux");
         assert_eq!(linux.inputs[0].name, "kernel");
         let payload = sp3(&linux).ffs.payload.as_ref().unwrap();
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0,115200"));
         let uefi = resolve::<S8030>(&select("uefi")).unwrap();
-        assert_eq!(uefi.unit(STAGE_UNIT).unwrap().payload, "crabefi");
+        assert_eq!(
+            uefi.unit(STAGE_UNIT).unwrap().features.last().unwrap(),
+            "payload-uefi"
+        );
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
             resolve::<S8030>(&BuildSelection {

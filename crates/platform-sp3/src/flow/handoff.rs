@@ -1,5 +1,5 @@
 //! The end of the flow: ACPI tables, the boot media (FFS) and the payload
-//! (Linux or CrabEFI, as `fstart_payload` selects), with the firmware's
+//! (Linux or CrabEFI, as `--payload` selects), with the firmware's
 //! e820 and RSDP (INTEGRATION_NOTES §10).
 
 extern crate alloc;
@@ -8,24 +8,11 @@ use alloc::vec::Vec;
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
-use fstart_payload::{AcpiTables, Description, Handoff, MainstagePayload, Placement, Range};
+use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 
 use super::{Ctx, OrHalt};
 use crate::layout::{self, Span};
-
-#[cfg(any(
-    fstart_payload = "halt",
-    fstart_payload = "linux",
-    fstart_payload = "crabefi"
-))]
-type Payload = fstart_payload::BuildSelectedPayload;
-#[cfg(not(any(
-    fstart_payload = "halt",
-    fstart_payload = "linux",
-    fstart_payload = "crabefi"
-)))]
-type Payload = fstart_payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
 /// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor
@@ -74,8 +61,13 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
     };
     // SAFETY: platform RAM only, with the stage, early region and flash
     // excluded; no device has a DMA buffer outside the early region.
-    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
-        .or_halt("load policy");
+    unsafe {
+        fstart_stage::directory::set_load_policy(
+            &policy,
+            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
+        )
+    }
+    .or_halt("load policy");
     let locator = fstart_stage::anchor::media_locator().or_halt("FFS locator");
     if !locator.validate(window.size) {
         super::fail("FFS locator");
@@ -107,7 +99,7 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
     description.acpi = ctx.rsdp.map(AcpiTables::at);
     description.smbios = ctx.smbios;
     description.pci_root = Some(ctx.pci_root);
-    Payload::boot(Handoff::new(description, Placement::default()), ())
+    fstart_payload::boot(Handoff::new(description, Placement::default()), ())
 }
 
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi`); returns the

@@ -26,7 +26,7 @@ bundle-stage = [
   "acpi", "fstart-stage/tcg", "fstart-payload/tcg",
   "dep:fstart-driver-tpm", "dep:fstart-tcg", "dep:fstart-driver-uart",
 ]
-# Payload backends; fbuild's `fstart_payload` cfg selects the launcher.
+# Payload launchers; fbuild enables the one `--payload` selects.
 payload-linux = ["fstart-payload/linux"]
 payload-uefi = ["fstart-payload/crabefi"]
 # The FCH SMI handler (`smm::handle`) for an SMM image unit; the

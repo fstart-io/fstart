@@ -13,7 +13,6 @@ cargo fbuild ide lenovo-x61 --release --payload uefi --stage ramstage
 ```
 
 `cargo fbuild` is the alias `run --package fbuild --` from `.cargo/config.toml`.
-`ci/ide-tests.py` uses the equivalent `cargo run --locked -p fbuild -- ide ...`.
 The command prints the path of the generated `fstart.code-workspace`.
 
 | Argument / flag | Meaning |
@@ -24,10 +23,6 @@ The command prints the path of the generated `fstart.code-workspace`.
 | `--stage <unit>` | Compilation unit from the platform plan. Required when the plan has several units; the error lists the names. Single-unit boards (QEMU) select their only unit. |
 | `--audit-lock` | Also run the all-board lock audit (see below). |
 | build options | The same board options as `cargo fbuild build` (e.g. `--image-config`, `--blobs`, `--donor`, `--compiler-input`, `--payload-file`) are accepted. |
-
-Multi-unit boards in `ci/ide-tests.py`: `lenovo-x61` (`bootblock`, `postcar`,
-`ramstage`, `smm`), `intel-d945gclf` (`bootblock`, `ramstage`), `foxconn-d41s`
-(`bootblock`, `ramstage`).
 
 Generation runs `cargo metadata`, a unit-graph query and a real `cargo check`
 for the selected build (see [How the graph is built](#how-the-graph-is-built)).
@@ -79,15 +74,13 @@ builds share the Cargo target directory `target/fstart-build/cargo`.
 
 - **VS Code:** open the printed `fstart.code-workspace`.
 - **Other clients:** load `rust-analyzer.json` and convert the flat keys to the
-  nested form your client expects. `configuration()` in `ci/ide-tests.py` does
-  this conversion. The workspace root must be the repository root, not the
-  generated directory.
+  nested form your client expects. The workspace root must be the repository
+  root, not the generated directory.
 - **Toolchain:** `rust-toolchain.toml` pins `nightly-2026-10-08` with `rust-src`.
   `rust-analyzer` must be a real binary on `PATH`. A rustup proxy works only if
   the toolchain's `rust-analyzer` component is installed.
-- **Switching views:** `ci/ide-tests.py` keeps one server session and, for each
-  next view, loads its `rust-analyzer.json` and sends
-  `workspace/didChangeConfiguration`.
+- **Switching views:** load the next view's `rust-analyzer.json` and send
+  `workspace/didChangeConfiguration`; the server session can stay up.
 - **Regenerate** after changing manifests, features, build scripts, the toolchain
   or the platform plan. After changing a proc-macro implementation, regenerate
   and restart rust-analyzer.
@@ -102,8 +95,6 @@ builds share the Cargo target directory `target/fstart-build/cargo`.
    (cfgs, `OUT_DIR`, env) and proc-macro dylib paths.
 3. The projection in `tools/fbuild/src/ide_graph.rs`:
    - `std` units and build-script run units are skipped.
-   - Target units get the payload selection cfg (`fstart_payload` and its
-     check-cfg flag). Host units (proc macros, build scripts) do not.
    - Each unit gets `feature=` cfgs, `debug_assertions` for debug profiles, and
      the build-script cfgs and env of its own package.
    - `OUT_DIR` is added to the package's source include directories.
@@ -132,17 +123,3 @@ builds share the Cargo target directory `target/fstart-build/cargo`.
 | Command | Requires | Covers |
 | --- | --- | --- |
 | `cargo test --locked -p fbuild --lib` | toolchain | Unit tests for `ide.rs` (pin comparison), `ide_graph_tests.rs`, `ide_lock.rs` (graph normalization). |
-| `python3 ci/ide-tests.py` | `rust-analyzer` on `PATH` | Real LSP session over 10 QEMU views: riscv64 halt/linux/uefi, riscv64 debug halt, armv7 halt/linux, aarch64 halt/linux/uefi, riscv64 halt again. |
-| `python3 ci/ide-tests.py --audit-lock` | as above | Also runs the lock audit for each view. |
-| `python3 ci/ide-tests.py --edit-check` | as above | Appends a type error to `boards/qemu/riscv64/src/stage.rs`, expects E0308 on the original URI, restores the file in a `finally`. Do not edit that file concurrently. |
-| `python3 ci/ide-tests.py --inventory-noise N` | as above | Creates N temporary boards under `boards/` (`ide-noise-*`), checks `rust-project.json` is unchanged, removes them. |
-| `python3 ci/ide-tests.py --intel` | as above | Nine views: `lenovo-x61` bootblock/postcar/ramstage(uefi)/smm, `intel-d945gclf` bootblock/ramstage(linux), `foxconn-d41s` bootblock/ramstage(uefi), `lenovo-x61` ramstage(halt). Checks the driver-intel feature set and stage cfgs. Cannot be combined with `--edit-check` or `--inventory-noise`. |
-
-Per-view checks in the QEMU and Intel probes: go-to-definition lands in the
-original board and platform files; a cfg-dependent constant hovers with the
-expected value; serde derives expand through the proc-macro; `workspace/symbol`
-does not return symbols from unselected platforms.
-
-Probe output goes to `target/fstart-ide/proof/` (QEMU, including
-`rust-analyzer.log` and `messages.json`), `target/fstart-ide/proof/intel-composition/`
-and `target/fstart-ide/proof/inventory-noise/`.

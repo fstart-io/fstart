@@ -370,8 +370,8 @@ pub fn step<T, E>(name: &str, f: impl FnOnce() -> Result<T, E>) -> T {
 /// `entry!` macros expand to this.
 ///
 /// Platforms that offer the CrabEFI payload add `sbi_resume` so RISC-V
-/// stages export the SBI resume entry; the `fstart_payload` cfg it checks is
-/// only declared for such platforms.
+/// stages export the SBI resume entry. Only a CrabEFI launch has OpenSBI
+/// return there; the platforms' resume halts in other builds.
 #[macro_export]
 macro_rules! stage_bin {
     // A board-owned stage `main`: the binary is the flow.
@@ -398,12 +398,12 @@ macro_rules! stage_bin {
     // RISC-V CrabEFI launch.
     (main: $main:path, sbi_resume: $resume:path) => {
         $crate::stage_bin!(main: $main);
-        #[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
+        #[cfg(target_arch = "riscv64")]
         #[unsafe(no_mangle)]
         pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
             $resume(hart_id, dtb_addr)
         }
-        #[cfg(not(all(fstart_payload = "crabefi", target_arch = "riscv64")))]
+        #[cfg(not(target_arch = "riscv64"))]
         const _: fn(u64, u64) -> ! = $resume;
     };
 }

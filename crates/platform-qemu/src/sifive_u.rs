@@ -76,23 +76,6 @@ mod stage {
     #[cfg(feature = "crabefi")]
     use fstart_core::services::Console;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
-    use fstart_payload::MainstagePayload;
-
-    #[cfg(any(
-        not(any(
-            fstart_payload = "halt",
-            fstart_payload = "linux",
-            fstart_payload = "crabefi"
-        )),
-        all(fstart_payload = "halt", fstart_payload = "linux"),
-        all(fstart_payload = "halt", fstart_payload = "crabefi"),
-        all(fstart_payload = "linux", fstart_payload = "crabefi")
-    ))]
-    compile_error!("select exactly one sifive-u payload");
-    #[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
-    compile_error!("selected Linux backend is not enabled");
-    #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
-    compile_error!("selected CrabEFI backend is not enabled");
 
     /// DRAM-resident state retained through selected payload launch.
     pub struct QemuSifiveUMainstage {
@@ -126,8 +109,7 @@ mod stage {
         fstart_stage::step("boot media", || {
             crate::boot::from_dtb(
                 fstart_arch::riscv64::boot_dtb_addr(),
-                cfg!(any(fstart_payload = "linux", fstart_payload = "crabefi"))
-                    .then_some(config.dtb_addr),
+                cfg!(any(feature = "linux", feature = "crabefi")).then_some(config.dtb_addr),
                 config.ram_base,
                 config.firmware_base,
                 config.firmware_size,
@@ -142,7 +124,7 @@ mod stage {
         mainstage.hand_off(
             fstart_arch::riscv64::boot_dtb_addr(),
             fstart_arch::riscv64::boot_hart_id(),
-            |handoff| <QemuSifiveUBuildSelectedPayload as MainstagePayload>::boot(handoff, ()),
+            |handoff| fstart_payload::boot(handoff, ()),
         )
     }
 
@@ -232,9 +214,7 @@ mod stage {
             ))
         }
     }
-
-    pub type QemuSifiveUBuildSelectedPayload = fstart_payload::BuildSelectedPayload;
 }
 
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
-pub use stage::{QemuSifiveUBuildSelectedPayload, QemuSifiveUMainstage, resume_sbi, run};
+pub use stage::{QemuSifiveUMainstage, resume_sbi, run};

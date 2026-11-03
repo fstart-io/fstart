@@ -20,8 +20,8 @@ use fstart_image_build::{
         blobs,
     },
     build_plan::{
-        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema,
-        FfsAssembly, FileBinding, InputFile, UnitOutput,
+        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
+        FileBinding, InputFile, UnitOutput,
     },
     elf::{Architecture, Descriptor, Expectations},
     layout::EncodedLayout,
@@ -261,21 +261,6 @@ ASSERT(_bss_end <= ORIGIN(heap), "data and BSS exceed their reservation")
     )
 }
 
-fn cfg_schema(policy: &Policy) -> CompilerCfgSchema {
-    CompilerCfgSchema {
-        payloads: core::iter::once("halt")
-            .chain(
-                policy
-                    .payloads
-                    .then_some(["linux", "crabefi"])
-                    .into_iter()
-                    .flatten(),
-            )
-            .map(Into::into)
-            .collect(),
-    }
-}
-
 /// The board's SMM handler as a standalone image, one entry per CPU, which
 /// the stage embeds (`FSTART_SMM_IMAGE`).
 fn smm_unit<S: HostSoc>() -> CompilationUnit {
@@ -283,8 +268,6 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        cfg_schema: cfg_schema(&S::POLICY),
-        payload: "halt".into(),
         features: vec!["smm".into(), "bundle-smm".into()],
         build_std: None,
         release_only: true,
@@ -347,6 +330,7 @@ fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, Strin
                     fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                     selection.x86_linux_bootargs.as_deref().unwrap_or(""),
                     selection.x86_linux_print_mtrrs,
+                    crate::compression::PAYLOAD,
                 )
                 .map_err(ToString::to_string)?,
             ),
@@ -354,17 +338,17 @@ fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, Strin
         "uefi" => (
             "crabefi",
             Some("payload-uefi"),
-            Some(fstart_core::x86_uefi_payload()),
+            Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         ),
         "uefi-ui" => (
             "crabefi",
             Some("payload-uefi-ui"),
-            Some(fstart_core::x86_uefi_payload()),
+            Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         ),
         "uefi-basic" => (
             "crabefi",
             Some("payload-uefi-basic"),
-            Some(fstart_core::x86_uefi_payload()),
+            Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         ),
         other => {
             return Err(format!(
@@ -616,8 +600,6 @@ where
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
-        payload: payload.into(),
-        cfg_schema: cfg_schema(policy),
         features: core::iter::once(policy.feature)
             .chain(feature)
             .map(String::from)

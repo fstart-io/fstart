@@ -42,13 +42,6 @@ pub const MAINSTAGE_STACK_SIZE: u32 = 0x10000;
 /// precedent; the manifest buffer dominates and stays well below this.
 pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 
-fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
-    let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
-    fstart_image_build::build_plan::CompilerCfgSchema {
-        payloads: strings(&["halt", "linux"]),
-    }
-}
-
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: SunxiBoardFacts> Plan<B> {
@@ -154,7 +147,7 @@ fn board_config(
                 stack_size: MAINSTAGE_STACK_SIZE,
                 heap_size: Some(MAINSTAGE_HEAP_SIZE),
                 runs_from: RunsFrom::Ram,
-                compression: Compression::None,
+                compression: crate::compression::MAIN_STAGE,
                 data_addr: None,
             },
         ])),
@@ -187,10 +180,7 @@ fn payload_config(facts: BoardFacts) -> PayloadConfig {
         src_dtb_addr: None,
         bootargs: Some(hstr(facts.bootargs)),
         print_x86_mtrrs: false,
-        // ponytail: lz4 kernel decompression through block-backed media is
-        // pathologically slow (byte-granular reads); store flat until the
-        // block reader grows a buffered window.
-        compression: Compression::None,
+        compression: crate::compression::PAYLOAD,
         firmware: facts.firmware.map(|firmware| FirmwareConfig {
             kind: firmware.kind,
             file: hstr(firmware.file),
@@ -204,8 +194,7 @@ fn payload_config(facts: BoardFacts) -> PayloadConfig {
 
 fn unit(
     name: &str,
-    payload: &str,
-    bundle: &str,
+    features: &[&str],
     policy: &SocPolicy,
     linker_script: String,
     output: UnitOutput,
@@ -214,9 +203,7 @@ fn unit(
         name: name.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: policy.target.into(),
-        cfg_schema: compiler_cfg_schema(),
-        payload: payload.into(),
-        features: vec![bundle.into()],
+        features: features.iter().map(|&f| f.into()).collect(),
         build_std: Some("core,alloc".into()),
         rustflags: vec!["-Zub-checks=no".into()],
         release_only: false,
@@ -365,16 +352,14 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         units: vec![
             unit(
                 "bootblock",
-                "halt",
-                policy.bundle_bootblock,
+                &[policy.bundle_bootblock],
                 &policy,
                 bootblock.linker_script,
                 bootblock_output,
             ),
             unit(
                 "main",
-                &payload,
-                policy.bundle_main,
+                &[policy.bundle_main, "linux"][..1 + usize::from(linux)],
                 &policy,
                 main.linker_script,
                 main_output,
@@ -440,11 +425,9 @@ mod tests {
         );
         let bootblock = plan.unit("bootblock").unwrap();
         assert_eq!(bootblock.target, "armv7a-none-eabi");
-        assert_eq!(bootblock.payload, "halt");
         assert_eq!(bootblock.features, ["bundle-a20-bootblock"]);
         let main = plan.unit("main").unwrap();
-        assert_eq!(main.payload, "linux");
-        assert_eq!(main.features, ["bundle-a20-main"]);
+        assert_eq!(main.features, ["bundle-a20-main", "linux"]);
         for unit in &plan.units {
             assert_eq!(unit.build_std.as_deref(), Some("core,alloc"));
         }
@@ -490,7 +473,7 @@ mod tests {
         let plan = resolve(BANANAPI, select("halt")).unwrap();
         assert!(plan.assembly.ffs().unwrap().payload.is_none());
         assert!(plan.inputs.is_empty());
-        assert_eq!(plan.unit("main").unwrap().payload, "halt");
+        assert_eq!(plan.unit("main").unwrap().features, ["bundle-a20-main"]);
         let dock = BoardFacts {
             soc: SunxiSoc::D1,
             sram_base: 0x0002_0000,
@@ -522,7 +505,10 @@ mod tests {
             plan.unit("bootblock").unwrap().target,
             "aarch64-unknown-none"
         );
-        assert_eq!(plan.unit("main").unwrap().features, ["bundle-h5-main"]);
+        assert_eq!(
+            plan.unit("main").unwrap().features,
+            ["bundle-h5-main", "linux"]
+        );
         let payload = plan.assembly.ffs().unwrap().payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();
         assert_eq!(firmware.load_addr, 0x0004_4000);

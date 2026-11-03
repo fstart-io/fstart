@@ -229,10 +229,9 @@ pub struct CompilationUnit {
     pub name: String,
     pub cargo_target: CargoTarget,
     pub target: String,
-    pub cfg_schema: CompilerCfgSchema,
-    pub payload: String,
     /// Features of the selected platform dependency, qualified from Cargo's
-    /// actual direct dependency alias by the consumer.
+    /// actual direct dependency alias by the consumer. They include the
+    /// payload launcher `--payload` selected, if the unit boots one.
     pub features: Vec<String>,
     pub build_std: Option<String>,
     pub rustflags: Vec<String>,
@@ -247,39 +246,6 @@ pub struct CompilationUnit {
     #[serde(default)]
     pub board_features: Vec<String>,
     pub output: UnitOutput,
-}
-
-/// Allowed runtime cfg vocabulary, supplied independently of the selected values.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompilerCfgSchema {
-    pub payloads: Vec<String>,
-}
-impl CompilationUnit {
-    pub fn check_cfg_flags(&self) -> Result<Vec<String>, String> {
-        [("fstart_payload", &self.payload, &self.cfg_schema.payloads)]
-            .into_iter()
-            .map(|(name, selected, allowed)| {
-                let unique: BTreeSet<_> = allowed.iter().collect();
-                if allowed.is_empty()
-                    || unique.len() != allowed.len()
-                    || !allowed.iter().all(|v| cfg_value(v))
-                    || !allowed.contains(selected)
-                {
-                    return Err(format!(
-                        "selected {name} is outside its platform cfg schema"
-                    ));
-                }
-                Ok(format!(
-                    "--check-cfg=cfg({name},values({}))",
-                    allowed
-                        .iter()
-                        .map(|v| format!("\"{v}\""))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ))
-            })
-            .collect()
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,13 +308,6 @@ pub(crate) fn environment_name(value: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'_')
         && !matches!(value, "RUSTFLAGS" | "CARGO_ENCODED_RUSTFLAGS" | "PATH")
-}
-
-fn cfg_value(value: &str) -> bool {
-    !value.is_empty()
-        && !value
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '\"' | '\\'))
 }
 
 impl BuildPlan {
@@ -422,9 +381,6 @@ impl BuildPlan {
             if !identifier(&unit.name) || !names.insert(unit.name.as_str()) {
                 return Err(format!("invalid or duplicate unit {}", unit.name));
             }
-            if !cfg_value(&unit.payload) {
-                return Err(format!("invalid compiler cfg value for {}", unit.name));
-            }
             if unit
                 .environment_values
                 .iter()
@@ -450,7 +406,6 @@ impl BuildPlan {
                     ));
                 }
             }
-            unit.check_cfg_flags()?;
             if matches!(&self.assembly, Assembly::Ffs(_))
                 && matches!(&unit.output,
                 UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
@@ -625,10 +580,6 @@ mod tests {
             name: name.into(),
             cargo_target: CargoTarget::BoardLibrary,
             target: "independent-target".into(),
-            cfg_schema: CompilerCfgSchema {
-                payloads: vec!["halt".into()],
-            },
-            payload: "halt".into(),
             features: vec![],
             build_std: None,
             rustflags: vec![],
@@ -798,9 +749,6 @@ mod tests {
             ..input()
         }];
         assert!(plan.order().is_err());
-        let mut plan = fixture();
-        plan.units[0].payload = "bad\"cfg".into();
-        assert!(plan.order().unwrap_err().contains("cfg value"));
     }
 
     #[test]

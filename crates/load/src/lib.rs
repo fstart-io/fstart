@@ -23,7 +23,9 @@
 //!
 //! The codec is an argument, not a build feature: a stage that only loads
 //! stored data passes [`Stored`] and never links a decoder; one that loads
-//! compressed images passes [`Lz4`]. [`load_bootstrap`] composes the chain
+//! compressed images passes [`Lz4`]. Platforms keep one [`Compression`]
+//! constant per kind of image that both the host plan, which compresses the
+//! image, and the stage, which passes [`codec`] of it, read. [`load_bootstrap`] composes the chain
 //! for a [`BootstrapDescriptor`].
 //!
 //! Descriptors imported from a handoff are trusted only because their producer
@@ -124,6 +126,17 @@ impl Codec for Lz4 {
             return Err(LoadError::Decompression);
         }
         Ok(())
+    }
+}
+
+/// The codec for images stored as `compression`. Evaluate it in a const
+/// (`const { codec(..) }`): the stage then names, and links, only that
+/// decoder.
+#[must_use]
+pub const fn codec(compression: Compression) -> &'static dyn Codec {
+    match compression {
+        Compression::None => &Stored,
+        Compression::Lz4 => &Lz4,
     }
 }
 

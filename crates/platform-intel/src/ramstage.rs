@@ -37,7 +37,6 @@ use fstart_core::services::memory_detect::{E820Entry, MemoryDetector};
 use fstart_core::services::{ConsoleDevice, ServiceError, UartPort};
 use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 use fstart_log::StaticConsole;
-use fstart_payload::MainstagePayload;
 
 type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
 type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
@@ -701,9 +700,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
 
     /// Describe the machine to the build's payload launcher and boot it.
     fn hand_off(&self) -> ! {
-        use fstart_payload::{
-            AcpiTables, BuildSelectedPayload, Description, Handoff, Placement, Range,
-        };
+        use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
         let (firmware_base, firmware_size) = self.ctx.firmware_region();
         // ACPI, SMBIOS and the coreboot window all live in the store.
         let tables: heapless::Vec<Range, 1> = self
@@ -732,7 +729,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
                 .coreboot_window
                 .map(|(base, size)| unsafe { fstart_payload::coreboot::Window::new(base, size) });
         }
-        BuildSelectedPayload::boot(Handoff::new(description, placement), ())
+        fstart_payload::boot(Handoff::new(description, placement), ())
     }
 }
 

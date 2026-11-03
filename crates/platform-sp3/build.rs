@@ -1,5 +1,4 @@
-//! Build-script shim for fstart-platform-sp3: declares the payload cfg fbuild
-//! sets and forwards the SMM handler image when one
+//! Build-script shim for fstart-platform-sp3: forwards the SMM handler image when one
 //! is built, after checking that it fits the TSEG (`host::smm_unit`).
 
 use fstart_smm::{CpuSmmLayout, SMM_IDENTITY_TABLE_SIZE, SmmImageHeader, SmramLayout};
@@ -9,9 +8,6 @@ use fstart_smm::{CpuSmmLayout, SMM_IDENTITY_TABLE_SIZE, SmmImageHeader, SmramLay
 const AMD_SAVE_STATE_SIZE: u32 = 0x400;
 
 fn main() {
-    println!(
-        "cargo:rustc-check-cfg=cfg(fstart_payload, values(\"halt\", \"linux\", \"crabefi\", \"coreboot\"))"
-    );
     println!("cargo:rustc-check-cfg=cfg(fstart_sp3_has_smm_image)");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_TSEG_SIZE");

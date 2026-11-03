@@ -8,13 +8,6 @@ use fstart_image_build::{
 
 use std::{format, string::ToString, vec, vec::Vec};
 
-fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
-    let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
-    fstart_image_build::build_plan::CompilerCfgSchema {
-        payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
-    }
-}
-
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: IntelBoardFacts> Plan<B> {
@@ -50,8 +43,6 @@ pub fn compilation_plan(
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: plan.target(),
-        cfg_schema: compiler_cfg_schema(),
-        payload: "halt".into(),
         features: plan.smm_features.clone(),
         // rustc ships no library for the 32-bit JSON target.
         build_std: (plan.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
@@ -101,8 +92,6 @@ pub fn compilation_plan(
         }
         units.push(CompilationUnit {
             name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(),
-            cfg_schema: compiler_cfg_schema(),
-            payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie --cfg curve25519_dalek_backend=\"serial\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true, plan.platform)?),
@@ -255,7 +244,11 @@ fn resolve_for<P: IntelPlatform>(
         IntelStagePlan {
             role,
             features,
-            payload: selected_payload.into(),
+            compression: match role {
+                IntelStage::Bootblock => fstart_core::Compression::None,
+                IntelStage::Postcar => crate::compression::POSTCAR,
+                IntelStage::Ramstage => crate::compression::RAMSTAGE,
+            },
         }
     });
     if max_cpus == 0 {
@@ -263,8 +256,10 @@ fn resolve_for<P: IntelPlatform>(
     }
     let reservations = reservations::<P>(facts)?;
     let payload_config = match payload.as_str() {
-        "uefi" => Some(fstart_core::x86_uefi_payload()),
-        "coreboot" => Some(fstart_core::x86_coreboot_payload()),
+        "uefi" => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
+        "coreboot" => Some(fstart_core::x86_coreboot_payload(
+            crate::compression::PAYLOAD,
+        )),
         // Empty bootargs default to no command line: there is deliberately no
         // implicit serial-console policy, so direct Linux stays silent unless
         // the caller passes `--linux-bootargs` explicitly.
@@ -276,6 +271,7 @@ fn resolve_for<P: IntelPlatform>(
                 fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 &x86_linux_bootargs,
                 selection.x86_linux_print_mtrrs,
+                crate::compression::PAYLOAD,
             )
             .map_err(ToString::to_string)?,
         ),
@@ -377,7 +373,14 @@ mod tests {
         let default = resolve(FACTS, BuildSelection::default()).unwrap();
         assert_eq!(default.target(), "x86_64-unknown-none");
         assert_eq!(default.payload, "halt");
-        assert!(default.stages.iter().all(|stage| stage.payload == "halt"));
+        assert_eq!(
+            default.stages.map(|stage| stage.compression),
+            [
+                fstart_core::Compression::None,
+                crate::compression::POSTCAR,
+                crate::compression::RAMSTAGE
+            ]
+        );
         let uefi = resolve(
             FACTS,
             BuildSelection {
@@ -386,13 +389,6 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            uefi.stages
-                .iter()
-                .map(|stage| stage.payload.as_str())
-                .collect::<Vec<_>>(),
-            ["halt", "halt", "uefi"]
-        );
         assert_eq!(uefi.stages[0].features, ["bundle-bootblock"]);
         assert_eq!(uefi.stages[1].features, ["bundle-postcar"]);
         assert_eq!(uefi.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
