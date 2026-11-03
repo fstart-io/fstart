@@ -20,6 +20,8 @@
 //!   the set if it fails, so a bad combination never stops the boot.
 //! - [`cfr`] describes a report as a coreboot CFR form, which setup menus
 //!   (CrabEFI, edk2) render and store under [`Meta::key`].
+//! - [`cmos`] keeps overrides in a window of CMOS RAM, by key, without a
+//!   layout; [`Layered`] reads one backend before another.
 //!
 //! Values are `u32`, as coreboot's `get_uint_option()` and CFR store them:
 //! a bool is 0 or 1, an enum value is its [`Choice::value`].
@@ -29,6 +31,7 @@
 extern crate alloc;
 
 pub mod cfr;
+pub mod cmos;
 #[cfg(test)]
 mod tests;
 
@@ -149,6 +152,15 @@ impl Source for NoSource {
     }
 }
 
+impl<S: Source + ?Sized> Source for &S {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+    fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
+        (**self).read(key)
+    }
+}
+
 /// An absent backend stores nothing.
 impl<S: Source> Source for Option<S> {
     fn name(&self) -> &'static str {
@@ -156,6 +168,21 @@ impl<S: Source> Source for Option<S> {
     }
     fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
         self.as_ref().map_or(Ok(None), |source| source.read(key))
+    }
+}
+
+/// `0`'s values, and `1`'s for the keys `0` does not store.
+pub struct Layered<A, B>(pub A, pub B);
+
+impl<A: Source, B: Source> Source for Layered<A, B> {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
+        match self.0.read(key)? {
+            Some(value) => Ok(Some(value)),
+            None => self.1.read(key),
+        }
     }
 }
 

@@ -366,3 +366,141 @@ fn crc_matches_coreboot() {
     // zero initial value and no final XOR (CRC-32/MPEG-2 without the init).
     assert_eq!(cfr::crc32(b"123456789"), 0x89a1_897f);
 }
+
+mod cmos {
+    use crate::cmos::{Cmos, Ram, Window, WriteError, collision, hash};
+    use crate::{Kind, Layered, Meta, Source, SourceError};
+    use core::cell::RefCell;
+
+    struct Bank(RefCell<[u8; 128]>);
+    impl Ram for Bank {
+        fn read(&self, index: u8) -> u8 {
+            self.0.borrow()[usize::from(index)]
+        }
+        fn write(&self, index: u8, value: u8) {
+            self.0.borrow_mut()[usize::from(index)] = value;
+        }
+    }
+
+    const WINDOW: Window = Window {
+        first: 0x40,
+        last: 0x4f,
+    };
+    const _: () = assert!(WINDOW.check());
+
+    #[test]
+    fn an_unset_checksum_holds_nothing_until_the_first_write() {
+        let bank = Bank(RefCell::new([0x77; 128]));
+        let cmos = Cmos::new(WINDOW, &bank);
+        assert!(!cmos.valid());
+        assert_eq!(cmos.read("debug_level"), Ok(None));
+        assert_eq!(cmos.write("debug_level", 4), Ok(()));
+        assert!(cmos.valid());
+        assert_eq!(cmos.read("debug_level"), Ok(Some(4)));
+        assert_eq!(cmos.read("power_on_after_fail"), Ok(None));
+        // The checksum: the byte sum, big-endian in the last two bytes.
+        let sum: u16 = (0x40..0x4e).map(|i| u16::from(bank.read(i))).sum();
+        assert_eq!([bank.read(0x4e), bank.read(0x4f)], sum.to_be_bytes());
+        // Bytes outside the window keep their contents.
+        assert_eq!(bank.read(0x3f), 0x77);
+        assert_eq!(bank.read(0x50), 0x77);
+        // Later writes keep and replace records.
+        assert_eq!(cmos.write("power_on_after_fail", 0x1_0002), Ok(()));
+        assert_eq!(cmos.write("debug_level", 7), Ok(()));
+        assert_eq!(cmos.read("debug_level"), Ok(Some(7)));
+        assert_eq!(cmos.read("power_on_after_fail"), Ok(Some(0x1_0002)));
+        // A cleared CMOS is unset again.
+        bank.write(0x45, 0xaa);
+        assert_eq!(cmos.read("debug_level"), Ok(None));
+        // All-zero CMOS sums to its zero checksum: valid and empty.
+        let zero = Bank(RefCell::new([0; 128]));
+        assert_eq!(Cmos::new(WINDOW, &zero).read("debug_level"), Ok(None));
+    }
+
+    #[test]
+    fn records_fill_the_window_and_no_further() {
+        let bank = Bank(RefCell::new([0; 128]));
+        let cmos = Cmos::new(WINDOW, &bank);
+        // 14 record bytes: three 1-byte records (4 bytes each) fit.
+        for key in ["a", "b", "c"] {
+            assert_eq!(cmos.write(key, 1), Ok(()));
+        }
+        assert_eq!(cmos.write("d", 1), Err(WriteError::Full));
+        assert_eq!(cmos.read("c"), Ok(Some(1)));
+        assert_eq!(cmos.read("d"), Ok(None));
+    }
+
+    #[test]
+    fn a_malformed_record_is_corrupt() {
+        let bank = Bank(RefCell::new([0; 128]));
+        let cmos = Cmos::new(WINDOW, &bank);
+        cmos.write("a", 1).unwrap();
+        bank.write(0x40, 9);
+        let sum: u16 = (0x40..0x4e).map(|i| u16::from(bank.read(i))).sum();
+        let [high, low] = sum.to_be_bytes();
+        bank.write(0x4e, high);
+        bank.write(0x4f, low);
+        assert_eq!(cmos.read("a"), Err(SourceError::Corrupt));
+    }
+
+    #[test]
+    fn cmos_shadows_the_store_behind_it_for_its_keys() {
+        let bank = Bank(RefCell::new([0; 128]));
+        let cmos = Cmos::new(WINDOW, &bank);
+        cmos.write("debug_level", 7).unwrap();
+        struct Flash;
+        impl Source for Flash {
+            fn name(&self) -> &'static str {
+                "flash"
+            }
+            fn read(&self, _: &str) -> Result<Option<u32>, SourceError> {
+                Ok(Some(3))
+            }
+        }
+        let both = Layered(&cmos, Flash);
+        assert_eq!(both.read("debug_level"), Ok(Some(7)));
+        assert_eq!(both.read("smee"), Ok(Some(3)));
+    }
+
+    #[test]
+    fn windows_stay_in_bank_0_and_keys_need_distinct_hashes() {
+        assert!(
+            !Window {
+                first: 0x0d,
+                last: 0x4f
+            }
+            .check()
+        );
+        assert!(
+            !Window {
+                first: 0x40,
+                last: 0x80
+            }
+            .check()
+        );
+        assert!(
+            !Window {
+                first: 0x40,
+                last: 0x47
+            }
+            .check()
+        );
+        assert_ne!(hash("debug_level"), hash("power_on_after_fail"));
+        const fn meta(key: &'static str) -> Meta {
+            Meta {
+                key,
+                form: "",
+                label: "",
+                help: "",
+                kind: Kind::Bool,
+            }
+        }
+        let a = meta("a");
+        let b = meta("b");
+        assert_eq!(
+            collision([&a, &b, &a]),
+            None,
+            "the same key is not a collision"
+        );
+    }
+}

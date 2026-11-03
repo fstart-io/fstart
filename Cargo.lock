@@ -1292,6 +1292,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-core",
  "fstart-log",
+ "fstart-options",
  "tock-registers",
  "ufmt",
 ]
