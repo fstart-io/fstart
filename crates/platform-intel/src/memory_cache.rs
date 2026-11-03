@@ -4,7 +4,7 @@
 //! Payload validity and topology/policy identity belong to the memory driver.
 //! Write only from a RAM-resident stage, after successful cold memory testing.
 
-use fstart_core::services::ServiceError;
+use fstart_core::services::{FlashRegion, ServiceError};
 use fstart_driver_intel::BootPath;
 use sha2::{Digest, Sha256};
 use zerocopy::byteorder::{LittleEndian, U32};
@@ -86,14 +86,6 @@ impl Header {
     }
 }
 
-/// Narrow storage contract; every offset is relative to the trusted cache
-/// extent. The backend enforces physical bounds, chip geometry and protection.
-pub trait Storage {
-    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError>;
-    fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError>;
-    fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError>;
-}
-
 /// A validated payload view; moving a record never copies the training bytes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Record<'a> {
@@ -163,7 +155,7 @@ impl Journal {
     // Verification uses a fixed chunk, never a payload-sized stack object.
     fn read_bank(
         &self,
-        flash: &mut impl Storage,
+        flash: &mut impl FlashRegion,
         bank: usize,
         committed: bool,
         capacity: usize,
@@ -192,7 +184,7 @@ impl Journal {
 
     fn valid_banks(
         &self,
-        flash: &mut impl Storage,
+        flash: &mut impl FlashRegion,
         capacity: usize,
     ) -> Result<[Option<(usize, Header)>; 2], ServiceError> {
         let mut banks = [
@@ -214,7 +206,7 @@ impl Journal {
     /// must match `key` and decode the payload. An S3 miss must reset, not train.
     pub fn load<'a>(
         &self,
-        flash: &mut impl Storage,
+        flash: &mut impl FlashRegion,
         buffer: &'a mut [u8],
     ) -> Result<Option<(usize, Record<'a>)>, ServiceError> {
         let mut selected = None;
@@ -246,7 +238,7 @@ impl Journal {
     /// Returns false when the complete payload/key are already current.
     pub fn save(
         &self,
-        flash: &mut impl Storage,
+        flash: &mut impl FlashRegion,
         record: &Record<'_>,
         boot: BootPath,
     ) -> Result<bool, ServiceError> {
@@ -321,7 +313,7 @@ impl MappedRead {
     }
 }
 #[cfg(all(feature = "stage", feature = "memory-cache"))]
-impl Storage for MappedRead {
+impl FlashRegion for MappedRead {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
         let offset = offset as usize;
         if offset
@@ -510,22 +502,6 @@ fn newer(candidate: u32, reference: u32) -> bool {
     (candidate.wrapping_sub(reference) as i32) > 0
 }
 
-#[cfg(all(
-    feature = "memory-cache",
-    any(target_arch = "x86", target_arch = "x86_64")
-))]
-impl Storage for fstart_driver_intel::southbridge::spi::CacheSpi {
-    fn read(&mut self, o: u32, b: &mut [u8]) -> Result<(), ServiceError> {
-        self.read(o, b)
-    }
-    fn program(&mut self, o: u32, b: &[u8]) -> Result<(), ServiceError> {
-        self.program(o, b)
-    }
-    fn erase(&mut self, o: u32, n: u32) -> Result<(), ServiceError> {
-        self.erase(o, n)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -555,7 +531,7 @@ mod tests {
             fail
         }
     }
-    impl Storage for Flash {
+    impl FlashRegion for Flash {
         fn read(&mut self, o: u32, b: &mut [u8]) -> Result<(), ServiceError> {
             if self
                 .read_failure
