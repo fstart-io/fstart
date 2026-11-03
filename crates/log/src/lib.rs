@@ -317,6 +317,73 @@ pub fn max_level() -> Level {
     unsafe { *MAX_LEVEL.0.get() }
 }
 
+/// The console log level as a user option (`fstart_options`), under
+/// coreboot's name and values (`debug_level`: 3 error, 4 warning, 6 info,
+/// 7 debug, 8 spew), so a store coreboot shares reads the same. A level
+/// above the build's `FSTART_LOG_LEVEL` prints nothing more: those
+/// messages are not compiled in.
+pub mod option {
+    use super::Level;
+    use fstart_options::{Choice, Kind, Knob, Meta};
+
+    const CHOICES: &[Choice] = &[
+        Choice::new(3, "Error"),
+        Choice::new(4, "Warning"),
+        Choice::new(6, "Info"),
+        Choice::new(7, "Debug"),
+        Choice::new(8, "Trace"),
+    ];
+
+    /// The coreboot `debug_level` value of `level`.
+    pub const fn value(level: Level) -> u32 {
+        match level {
+            Level::Error => 3,
+            Level::Warn => 4,
+            Level::Info => 6,
+            Level::Debug => 7,
+            Level::Trace => 8,
+        }
+    }
+
+    /// The level of a `debug_level` value of [`KNOBS`].
+    pub const fn level(value: u32) -> Level {
+        match value {
+            0..=3 => Level::Error,
+            4 | 5 => Level::Warn,
+            6 => Level::Info,
+            7 => Level::Debug,
+            _ => Level::Trace,
+        }
+    }
+
+    /// The console log level knob, over the level a flow then sets with
+    /// [`super::set_max_level`].
+    pub static KNOBS: [Knob<Level>; 1] = [Knob::new(
+        Meta {
+            key: "debug_level",
+            form: "Console",
+            label: "Console log level",
+            help: "The most verbose firmware messages the console shows.",
+            kind: Kind::Enum(CHOICES),
+        },
+        |l| value(*l),
+        |l, v| *l = level(v),
+    )];
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_choice_is_its_levels_value() {
+            for choice in CHOICES {
+                assert_eq!(value(level(choice.value)), choice.value);
+            }
+            assert_eq!(value(Level::Info), 6);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Writer adapter
 // ---------------------------------------------------------------------------
