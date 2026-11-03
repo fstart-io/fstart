@@ -1,8 +1,9 @@
 //! The per-die ZP USB 3 controller, programmed directly over SMN (FCH_SP3
 //! §3.1 af48, §3.4, §4.1, §5).
 
-use super::super::{FchHw, Window, hide_nbif_function, poll, update};
+use super::super::{FchHw, hide_nbif_function};
 use crate::sp3::nbio::nbif::func_strap0;
+use crate::window::{Window, poll, update};
 
 /// Controller control/status block.
 const CTL_0014: u32 = 0x16D8_0014;

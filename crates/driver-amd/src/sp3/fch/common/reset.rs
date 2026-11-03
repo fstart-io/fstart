@@ -3,6 +3,7 @@
 use fstart_core::indexed::Indexed;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
+use super::super::FchHw;
 use super::super::acpimmio::{
     self, AOAC_94, AOAC_94_SX, ASF, AoacDevice, IOMUX, ISA_CONTROL, MISC, PM, PM1_STS, PmIo,
     SERIAL_IRQ, pm,
@@ -10,9 +11,9 @@ use super::super::acpimmio::{
 use super::super::irq;
 use super::super::lpc::{IO_MEM_DECODE, WIDE_IO_0_1};
 use super::super::smbus::{ASF_IO, SMBUS_IO};
-use super::super::{FchHw, Reg, Window, apply, update};
 use super::acpi_mmio_table;
 use crate::sp3::soc::Generation;
+use crate::window::{Reg, Window, apply, indexed, update};
 
 /// Milan IOMUX pins set to function 0 in the prelim task (FCH_SP3 §3.1
 /// af4f), in donor order.
@@ -71,8 +72,8 @@ pub const PM_IO_MAP: [(u32, u16); 8] = [
     (0x6C, 0xFFFF),
 ];
 
-fn rtc<I: Window>(io: &I, index: u8) -> Indexed<Reg<'_, I, u8>, Reg<'_, I, u8>> {
-    Indexed::new(io.reg(0x70), io.reg(0x71), index)
+fn rtc<I: Window>(io: &I, index: u8) -> Indexed<Reg<&I, u8>, Reg<&I, u8>> {
+    indexed(io, 0x70, 0x71, index)
 }
 
 /// af40: SMBus/ASF and ACPI I/O decode, the ACPI-MMIO table, RTC, PCI_INTR

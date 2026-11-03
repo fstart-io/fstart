@@ -10,8 +10,8 @@
 use fstart_core::indexed::Indexed;
 use tock_registers::interfaces::{Readable, Writeable};
 
-use super::{Reg, Window};
 use crate::sp3::soc::Generation;
+use crate::window::{Reg, Window, indexed};
 
 pub const INDEX: u32 = 0xC00;
 pub const DATA: u32 = 0xC01;
@@ -25,8 +25,8 @@ pub const INTR_09: u8 = 0x09;
 pub const SCI_PIC: u8 = 0x10;
 pub const SCI_IOAPIC: u8 = 0x90;
 
-fn entry<I: Window>(io: &I, index: u8) -> Indexed<Reg<'_, I, u8>, Reg<'_, I, u8>> {
-    Indexed::new(io.reg(INDEX), io.reg(DATA), index)
+fn entry<I: Window>(io: &I, index: u8) -> Indexed<Reg<&I, u8>, Reg<&I, u8>> {
+    indexed(io, INDEX, DATA, index)
 }
 
 pub fn read<I: Window>(io: &I, index: u8) -> u8 {

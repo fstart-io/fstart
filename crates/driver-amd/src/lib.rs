@@ -36,3 +36,5 @@ pub mod soc;
 pub mod sp3;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod table;
+#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
+pub mod window;

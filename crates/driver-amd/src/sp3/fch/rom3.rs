@@ -44,7 +44,8 @@ use fstart_amdfw_format::ROM2_BASE;
 use tock_registers::interfaces::Readable;
 use tock_registers::register_bitfields;
 
-use super::{FchHw, Window, spi};
+use super::{FchHw, spi};
+use crate::window::Window;
 
 /// ROM3 window base and size (PPR 55570 §9.1.13).
 pub const BASE: u64 = 0xFD_0000_0000;

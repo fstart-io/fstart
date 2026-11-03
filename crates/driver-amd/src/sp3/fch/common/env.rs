@@ -4,9 +4,10 @@ use tock_registers::interfaces::{ReadWriteable, Writeable};
 
 use super::super::acpimmio::{self, AoacDevice, GPIO, IOMUX, MISC, PM, RTC_SHADOW, pm};
 use super::super::alink;
-use super::super::{ConfigWindow, FchHw, Window, apply, uart, update};
+use super::super::{FchHw, uart};
 use super::sci_map;
 use crate::sp3::soc::Generation;
+use crate::window::{ConfigWindow, Window, apply, update};
 
 /// What the platform does when AC power returns (PMx5B, FCH_SP3 §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

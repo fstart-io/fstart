@@ -8,9 +8,10 @@
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;
 
+use super::FchHw;
 use super::lpc::{self, SPI_BASE};
-use super::{FchHw, Window, update};
 use crate::sp3::soc::Generation;
+use crate::window::{Window, update};
 
 /// Physical base of the SPI controller (D14F3xA0 reset value).
 pub const BASE: u32 = 0xFEC1_0000;

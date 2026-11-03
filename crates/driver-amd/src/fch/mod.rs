@@ -23,10 +23,11 @@
 #![allow(clippy::modulo_one)]
 use crate::ccx::tsc::DelayNs;
 use crate::table::{self, Record};
+use crate::window::{self, Width, Window};
 use core::marker::PhantomData;
 use fstart_core::indexed::Indexed;
 use tock_registers::{
-    LocalRegisterCopy, RegisterLongName, UIntLike,
+    LocalRegisterCopy, RegisterLongName,
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
@@ -85,40 +86,6 @@ pub enum Space {
     Smbus,
 }
 
-/// A register value width.
-pub trait Value: UIntLike {
-    const BYTES: u8;
-    fn from_bus(value: u32) -> Self;
-    fn to_bus(self) -> u32;
-}
-impl Value for u8 {
-    const BYTES: u8 = 1;
-    fn from_bus(value: u32) -> Self {
-        value as u8
-    }
-    fn to_bus(self) -> u32 {
-        self.into()
-    }
-}
-impl Value for u16 {
-    const BYTES: u8 = 2;
-    fn from_bus(value: u32) -> Self {
-        value as u16
-    }
-    fn to_bus(self) -> u32 {
-        self.into()
-    }
-}
-impl Value for u32 {
-    const BYTES: u8 = 4;
-    fn from_bus(value: u32) -> Self {
-        value
-    }
-    fn to_bus(self) -> u32 {
-        self
-    }
-}
-
 /// A register of width `T` with tock bitfields `R` in one of the [`Space`]s.
 pub struct Reg<T, R = ()> {
     pub space: Space,
@@ -131,7 +98,7 @@ impl<T, R> Clone for Reg<T, R> {
     }
 }
 impl<T, R> Copy for Reg<T, R> {}
-impl<T: Value, R: RegisterLongName> Reg<T, R> {
+impl<T: Width, R: RegisterLongName> Reg<T, R> {
     pub const fn new(space: Space, address: u32) -> Self {
         Self {
             space,
@@ -162,12 +129,20 @@ pub trait Bus {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32;
     fn write(&self, space: Space, address: u32, bytes: u8, value: u32);
 
-    /// `reg` as a tock register.
-    fn reg<T: Value, R: RegisterLongName>(&self, reg: Reg<T, R>) -> BusRegister<'_, Self, T, R>
+    /// `space` as a register window.
+    fn space(&self, space: Space) -> BusSpace<&Self>
     where
         Self: Sized,
     {
-        BusRegister { bus: self, reg }
+        BusSpace { bus: self, space }
+    }
+
+    /// `reg` as a tock register.
+    fn reg<T: Width, R: RegisterLongName>(&self, reg: Reg<T, R>) -> BusRegister<'_, Self, T, R>
+    where
+        Self: Sized,
+    {
+        window::Reg::new(self.space(reg.space), reg.address)
     }
 }
 impl<B: Bus> Bus for &B {
@@ -179,40 +154,48 @@ impl<B: Bus> Bus for &B {
     }
 }
 
+/// One [`Space`] of a [`Bus`] as a register window, with the access widths
+/// of the bus.
+#[derive(Clone, Copy)]
+pub struct BusSpace<B> {
+    bus: B,
+    space: Space,
+}
+impl<B: Bus> Window for BusSpace<B> {
+    #[inline(always)]
+    fn read32(&self, off: u32) -> u32 {
+        self.bus.read(self.space, off, 4)
+    }
+    #[inline(always)]
+    fn write32(&self, off: u32, value: u32) {
+        self.bus.write(self.space, off, 4, value)
+    }
+    #[inline(always)]
+    fn read16(&self, off: u32) -> u16 {
+        self.bus.read(self.space, off, 2) as u16
+    }
+    #[inline(always)]
+    fn write16(&self, off: u32, value: u16) {
+        self.bus.write(self.space, off, 2, value.into())
+    }
+    #[inline(always)]
+    fn read8(&self, off: u32) -> u8 {
+        self.bus.read(self.space, off, 1) as u8
+    }
+    #[inline(always)]
+    fn write8(&self, off: u32, value: u8) {
+        self.bus.write(self.space, off, 1, value.into())
+    }
+}
+
 /// A [`Reg`] on a [`Bus`].
-pub struct BusRegister<'a, B, T, R> {
-    bus: &'a B,
-    reg: Reg<T, R>,
-}
-impl<B, T, R> Clone for BusRegister<'_, B, T, R> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<B, T, R> Copy for BusRegister<'_, B, T, R> {}
-impl<B: Bus, T: Value, R: RegisterLongName> Readable for BusRegister<'_, B, T, R> {
-    type T = T;
-    type R = R;
-    #[inline(always)]
-    fn get(&self) -> T {
-        T::from_bus(self.bus.read(self.reg.space, self.reg.address, T::BYTES))
-    }
-}
-impl<B: Bus, T: Value, R: RegisterLongName> Writeable for BusRegister<'_, B, T, R> {
-    type T = T;
-    type R = R;
-    #[inline(always)]
-    fn set(&self, value: T) {
-        self.bus
-            .write(self.reg.space, self.reg.address, T::BYTES, value.to_bus());
-    }
-}
+pub type BusRegister<'a, B, T, R = ()> = window::Reg<BusSpace<&'a B>, T, R>;
 
 /// An 8-bit register behind an I/O index/data pair (`data = index + 1`).
 pub type IndexedIo<'a, B, R = ()> =
     Indexed<BusRegister<'a, B, u8, ()>, BusRegister<'a, B, u8, ()>, R>;
 pub fn indexed_io<B: Bus, R: RegisterLongName>(bus: &B, index: u16, at: u8) -> IndexedIo<'_, B, R> {
-    Indexed::new(bus.reg(Reg::io(index)), bus.reg(Reg::io(index + 1)), at)
+    window::indexed(bus.space(Space::Io), index.into(), u32::from(index) + 1, at)
 }
 
 /// Legacy PM index/data I/O; reaches whichever FCH the DF routes I/O to.
@@ -317,7 +300,7 @@ impl<T, R> Clone for AcpiReg<T, R> {
     }
 }
 impl<T, R> Copy for AcpiReg<T, R> {}
-impl<T: Value, R: RegisterLongName> AcpiReg<T, R> {
+impl<T: Width, R: RegisterLongName> AcpiReg<T, R> {
     pub const fn new(offset: u32) -> Self {
         Self {
             offset,
@@ -334,7 +317,7 @@ impl<T: Value, R: RegisterLongName> AcpiReg<T, R> {
 pub struct Acpimmio(pub u32);
 impl Acpimmio {
     pub const DIE0: Self = Self(ACPI_MMIO);
-    pub const fn reg<T: Value, R: RegisterLongName>(self, reg: AcpiReg<T, R>) -> Reg<T, R> {
+    pub const fn reg<T: Width, R: RegisterLongName>(self, reg: AcpiReg<T, R>) -> Reg<T, R> {
         Reg::mmio(self.0 + reg.offset)
     }
 }
@@ -345,10 +328,11 @@ macro_rules! bank {
     ($(#[$meta:meta])* $name:ident, $base:expr) => {
         $(#[$meta])*
         pub mod $name {
-            use super::{AcpiReg, Value};
+            use super::AcpiReg;
+            use crate::window::Width;
             use tock_registers::RegisterLongName;
             pub const BASE: u32 = $base;
-            pub const fn at<T: Value, R: RegisterLongName>(offset: u32) -> AcpiReg<T, R> {
+            pub const fn at<T: Width, R: RegisterLongName>(offset: u32) -> AcpiReg<T, R> {
                 AcpiReg::new(BASE + offset)
             }
         }
@@ -581,14 +565,14 @@ impl<B: Bus> Fch<B> {
         self.acpimmio
     }
     /// A register of the ACPI MMIO block.
-    pub fn reg<T: Value, R: RegisterLongName>(
+    pub fn reg<T: Width, R: RegisterLongName>(
         &self,
         reg: AcpiReg<T, R>,
     ) -> BusRegister<'_, B, T, R> {
         self.bus.reg(self.acpimmio.reg(reg))
     }
     /// Apply a vendor ACPI MMIO table ([`crate::table`]) in order.
-    pub fn apply<T: Value>(&self, records: impl IntoIterator<Item = Record<AcpiReg<T>, T>>) {
+    pub fn apply<T: Width>(&self, records: impl IntoIterator<Item = Record<AcpiReg<T>, T>>) {
         table::apply(records, |reg| self.reg(reg));
     }
 

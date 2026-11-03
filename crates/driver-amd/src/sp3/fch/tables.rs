@@ -8,7 +8,7 @@
 // Each generation uses its own tables.
 #![allow(dead_code, unused_imports)]
 
-use super::Op;
+use crate::window::Op;
 
 /// ZP ResetHwAcpi ACPI-MMIO table (FCH_SP3 §3.1 af40; naples-s8026-v202 FchTaishanPei 27b1960a VA 0xffdcfe68).
 #[cfg(feature = "naples")]

@@ -5,8 +5,9 @@ use fstart_pci::PciAddress;
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;
 
-use super::{FchHw, Window, update};
+use super::FchHw;
 use crate::sp3::soc::Generation;
+use crate::window::{Window, update};
 
 /// The LPC bridge function.
 pub fn lpc() -> PciAddress {

@@ -8,9 +8,10 @@
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;
 
+use super::FchHw;
 use super::acpimmio::{self, AoacDevice};
 use super::gpio::{self, Direction, Pad, Pin};
-use super::{FchHw, Window, update};
+use crate::window::{Window, update};
 
 /// MMIO base of UART `n` (sp4r2 ACPI `FUR0`/`FUR1`).
 pub const fn base(n: u8) -> u64 {

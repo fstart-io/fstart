@@ -64,6 +64,7 @@ jobs:
         env:
           RUST_MIN_STACK: 8388608
         run: |
+          python3 -m unittest discover -s ci -p 'test_*.py'
           python3 -m unittest discover -s ci/tpm -p 'test_*.py'
           cargo test --workspace
           cargo test -p fstart-driver-intel \

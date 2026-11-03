@@ -4,8 +4,9 @@
 #
 # Usage: ci/qemu-boot-tests.sh [asset-dir] [--board BOARD] [--payload PAYLOAD]
 #
-# QEMU_BOOT_TIMEOUT sets the timeout for each boot (default: 120s). Filters may
-# be repeated and are useful when diagnosing one matrix entry.
+# QEMU_BUILD_TIMEOUT bounds each firmware build (default: 15m), separately from
+# QEMU_BOOT_TIMEOUT for each boot (default: 120s). Filters may be repeated and
+# are useful when diagnosing one matrix entry.
 
 set -euo pipefail
 
@@ -19,6 +20,7 @@ fi
 # The uefi-disk entry is skipped when the disk image is absent.
 X86_ASSET_DIR="${QEMU_BOOT_X86_ASSETS:-boot-assets/x86_64}"
 
+BUILD_TIMEOUT="${QEMU_BUILD_TIMEOUT:-15m}"
 BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120s}"
 LOG_DIR="${QEMU_BOOT_LOG_DIR:-target/qemu-boot-tests}"
 board_filters=()
@@ -118,16 +120,38 @@ run_boot() {
 		smp="${smp},maxcpus=8"
 	fi
 	local log="$LOG_DIR/${board}-${payload}.log"
+	local build_log="$LOG_DIR/${board}-${payload}.build.log"
+	local -a fbuild=(cargo run -q -p fbuild --)
+	local status
+
+	# Compile the payload-selected firmware before starting the boot deadline.
+	# Kernel, firmware and disk arguments below are image/run inputs, not a
+	# different compiler selection. fbuild run still checks the cached build.
+	: >"$log"
+	set +e
+	timeout --kill-after=10s "$BUILD_TIMEOUT" \
+		"${fbuild[@]}" build --board "$board" --release --payload "$payload_arg" \
+		>"$build_log" 2>&1
+	status=$?
+	set -e
+	if [[ $status -ne 0 ]]; then
+		printf 'FAIL %-14s %-6s build (exit %d; %s)\n' \
+			"$board" "$payload" "$status" "$build_log"
+		tail -n 40 "$build_log" >&2
+		failures=$((failures + 1))
+		return 0
+	fi
+
 	local -a command=(
 		env "FSTART_QEMU_SMP=$smp"
 		timeout --kill-after=10s "$BOOT_TIMEOUT"
-		cargo run -q -p fbuild -- run --board "$board" --release --payload "$payload_arg"
+		"${fbuild[@]}" run --board "$board" --release --payload "$payload_arg"
 	)
 	command+=("$@")
 
 	set +e
 	"${command[@]}" >"$log" 2>&1
-	local status=$?
+	status=$?
 	set -e
 
 	if grep -Fq "$marker" "$log" && { [[ $status -eq 0 || $status -eq 124 ]]; }; then

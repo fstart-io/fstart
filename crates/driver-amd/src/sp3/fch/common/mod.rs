@@ -16,8 +16,8 @@ pub mod late;
 pub mod reset;
 pub mod sx;
 
-use super::Op;
 use crate::sp3::soc::Generation;
+use crate::window::Op;
 
 /// A generation whose support is not built in: fail closed.
 #[cold]

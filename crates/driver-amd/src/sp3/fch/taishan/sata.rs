@@ -1,7 +1,8 @@
 //! The per-die ZP SATA controller (SMN `0310_0000h` on the die's bus).
 
-use super::super::{FchHw, Window, hide_nbif_function, update};
+use super::super::{FchHw, hide_nbif_function};
 use crate::sp3::nbio::nbif::func_strap0;
+use crate::window::{Window, update};
 
 const CONTROL: u32 = 0x0310_0000;
 const PORT_CONTROL: u32 = 0x0310_0004;
