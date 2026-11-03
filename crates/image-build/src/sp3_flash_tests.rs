@@ -139,6 +139,7 @@ fn plan(generations: &[Generation]) -> FlashPlan {
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
         mirrors: Vec::new(),
+        nvram: None,
     }
 }
 
@@ -757,5 +758,48 @@ fn composes_the_pinned_images() {
         if let Some(rom) = donor(path) {
             assert_eq!(pinned(&rom, generations), expected, "{path}");
         }
+    }
+}
+
+#[test]
+fn the_settings_store_ends_the_ffs_window_and_starts_erased() {
+    let mut milan = synthetic(MILAN);
+    // Vendor bytes where the store goes are not kept.
+    milan[0xda_0000..0xde_0000].fill(0x5a);
+    let plan = FlashPlan {
+        nvram: Some(NvramSlot {
+            flash_offset: 0xda_0000,
+            size: 0x4_0000,
+        }),
+        ..plan(&[MILAN])
+    };
+    let out = compose(&milan, &plan, &linked_reset(), &ffs(0x1_0000)).unwrap();
+    assert_eq!(out.survey.ffs, 0x60_0000..0xda_0000);
+    assert!(out.image[0xda_0000..0xde_0000].iter().all(|&b| b == 0xff));
+    // An FFS reaching into the store does not fit.
+    let large = ffs(0xda_0000 - 0x60_0000 + 0x1000);
+    assert!(matches!(
+        compose(&milan, &plan, &linked_reset(), &large),
+        Err(ImageError::FfsTooLarge { .. })
+    ));
+    for bad in [
+        NvramSlot {
+            flash_offset: 0xda_0800,
+            size: 0x4_0000,
+        },
+        NvramSlot {
+            flash_offset: 0xdc_0000,
+            size: 0x4_0000,
+        },
+        NvramSlot {
+            flash_offset: 0xda_0000,
+            size: 0,
+        },
+    ] {
+        let plan = FlashPlan {
+            nvram: Some(bad),
+            ..plan.clone()
+        };
+        assert!(matches!(plan.check(), Err(ImageError::Plan(_))), "{bad:?}");
     }
 }
