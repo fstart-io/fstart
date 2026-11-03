@@ -29,7 +29,9 @@ bundle-stage = [
 ]
 # Payload launchers; fbuild enables the one `--payload` selects.
 payload-linux = ["fstart-payload/linux"]
-payload-uefi = ["fstart-payload/crabefi"]
+# The UEFI payload also keeps the settings store: CrabEFI's variable store
+# in flash, written through the FCH SPI100 command engine.
+payload-uefi = ["fstart-payload/crabefi", "fstart-driver-amd/spi-flash"]
 # The FCH SMI handler (`smm::handle`) for an SMM image unit; the
 # image unit adds `bundle-smm` (handler binding macro, SMM panic handler).
 smm = ["dep:fstart-smm"]
@@ -614,6 +616,7 @@ fstart-driver-ipmi = { path = "../driver-ipmi" }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
+fstart-options = { workspace = true }
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-stage = { workspace = true, optional = true }

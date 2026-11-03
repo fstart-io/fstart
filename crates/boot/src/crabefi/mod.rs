@@ -9,6 +9,7 @@
 use core::{cell::Cell, fmt};
 
 mod runtime;
+pub mod settings;
 #[cfg(all(feature = "tcg", feature = "crabefi"))]
 mod tpm;
 use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
@@ -61,6 +62,8 @@ pub struct PlatformConfig<'a> {
     pub heap_pre_initialized: bool,
     /// Enabled fixed-address devices from the same facts used for ACPI.
     pub acpi_devices: &'a [fstart_core::acpi::AcpiGenericDevice],
+    /// The firmware settings entry of CrabEFI's boot menu.
+    pub hooks: Option<&'a dyn crabefi::PlatformHooks>,
 }
 
 /// Common fstart-owned UEFI launch inputs.
@@ -84,6 +87,11 @@ pub struct UefiLaunchConfig<'a> {
     pub fdt: Option<&'a [u8]>,
     /// Actual PCI ECAM segment/bus bounds (empty enables ACPI/FDT discovery).
     pub ecam_regions: &'a [PciEcamRegion],
+    /// Bounded flash region for CrabEFI's variable store. None keeps the
+    /// variables volatile.
+    pub variable_storage: Option<&'a mut dyn StorageBackend>,
+    /// The options the firmware settings menu shows.
+    pub settings: Option<settings::FirmwareSettings>,
 }
 
 fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
@@ -99,6 +107,10 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
         config.runtime,
     )
     .heap_pre_initialized(config.heap_pre_initialized);
+    let defaults = match config.hooks {
+        Some(hooks) => defaults.hooks(hooks),
+        None => defaults,
+    };
     #[cfg(all(feature = "tcg", feature = "crabefi"))]
     let defaults = match tpm::event_log_config() {
         Some(tpm) => defaults.tpm_event_log(tpm),
@@ -229,11 +241,15 @@ fn launch_with_adapters(
 ) -> ! {
     let mut block_devices: [&mut dyn crabefi::BlockDevice; 0] = [];
     let mut debug_output = launch.console.map(ConsoleAdapter::new);
-    if let Some(output) = debug_output.as_mut() {
+    if let Some(output) = debug_output.as_mut()
+        && launch.variable_storage.is_none()
+    {
         b"fstart: CrabEFI variables have no persistent backend or retained journal\r\n"
             .iter()
             .for_each(|byte| crabefi::DebugOutput::write_byte(output, *byte));
-        #[cfg(not(target_arch = "x86_64"))]
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    if let Some(output) = debug_output.as_mut() {
         b"fstart: runtime wall-clock unsupported; no RTC runtime MMIO mapping\r\n"
             .iter()
             .for_each(|byte| crabefi::DebugOutput::write_byte(output, *byte));
@@ -248,12 +264,21 @@ fn launch_with_adapters(
         };
         crabefi::logger::set_level(crabefi::logger::LEVEL_CHOICES[index]);
     }
+    let mut variable_storage = launch.variable_storage;
+    let hooks = launch
+        .settings
+        .as_ref()
+        .is_some_and(settings::install)
+        .then_some(&settings::SettingsHooks as &dyn crabefi::PlatformHooks);
     init_platform_raw(PlatformConfig {
         memory_map,
         timer,
         reset,
         block_devices: &mut block_devices,
-        variable_storage: None,
+        variable_storage: variable_storage
+            .as_mut()
+            .map(|storage| &mut **storage as &mut dyn StorageBackend),
+        hooks,
         debug_output: debug_output
             .as_mut()
             .map(|d| d as &mut dyn crabefi::DebugOutput),

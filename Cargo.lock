@@ -1123,6 +1123,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-driver-tpm",
  "fstart-log",
+ "fstart-options",
  "fstart-tcg",
  "heapless 0.8.0",
 ]
@@ -1180,8 +1181,8 @@ dependencies = [
  "fstart-smm",
  "heapless 0.8.0",
  "libc",
- "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
- "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
+ "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
+ "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
  "tock-registers",
  "ufmt",
  "zerocopy",
@@ -1443,6 +1444,7 @@ name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "fstart-options",
  "fstart-timestamp",
  "portable-atomic",
  "ufmt",
@@ -1618,6 +1620,7 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
+ "fstart-options",
  "fstart-payload",
  "fstart-pci",
  "fstart-platform-sp3",
