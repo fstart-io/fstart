@@ -733,3 +733,45 @@ macro_rules! trace {
         }
     }};
 }
+
+/// Logging of user option overrides (`fstart_options`).
+pub mod option {
+    use fstart_options::{Knob, Provenance, Rejection, Report, Source};
+
+    /// [`fstart_options::resolve_checked`], logging every override applied
+    /// and every stored value it rejects.
+    pub fn resolve<C: Clone>(
+        knobs: &'static [Knob<C>],
+        source: &dyn Source,
+        config: &mut C,
+        report: &mut Report,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let first = report.settings.len();
+        fstart_options::resolve_checked(knobs, source, config, report, check);
+        for setting in &report.settings[first..] {
+            let key = setting.meta.key;
+            match setting.provenance {
+                Provenance::Board => {}
+                Provenance::Override => crate::info!(
+                    "options: {} = {} (board {})",
+                    key,
+                    setting.value,
+                    setting.default
+                ),
+                Provenance::Rejected { stored, why } => crate::warn!(
+                    "options: {} = {} not applied ({}), keeping {}",
+                    key,
+                    stored,
+                    match why {
+                        Rejection::OutOfRange => "invalid value",
+                        Rejection::Inactive => "unavailable",
+                        Rejection::Source(_) => "store unreadable",
+                        Rejection::Conflict(why) => why,
+                    },
+                    setting.value
+                ),
+            }
+        }
+    }
+}

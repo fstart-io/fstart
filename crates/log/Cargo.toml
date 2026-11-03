@@ -13,3 +13,4 @@ debug-consoles = []
 ufmt = { workspace = true }
 fstart-core = { workspace = true }
 fstart-timestamp = { workspace = true }
+fstart-options = { workspace = true }
