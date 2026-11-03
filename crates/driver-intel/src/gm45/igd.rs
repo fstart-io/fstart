@@ -13,7 +13,6 @@ const IGD_DEV: u8 = 2;
 const IGD_BSM: u16 = 0x5c;
 const IGD_MSAC: u16 = 0x62;
 const IGD_GCFGC: u16 = 0xf0;
-const GCFGC_CD_SELECT: u16 = 1 << 12;
 /// GTTMMADR: 512 KiB of display MMIO, the 2 MiB GTT window at +2 MiB.
 const GTTMMADR_SIZE: u32 = 4 << 20;
 const GTT_OFFSET: u64 = 2 << 20;
@@ -89,17 +88,6 @@ impl Default for Gm45IgdConfig {
     }
 }
 
-/// Coreboot `gm45/gma.c get_cdclk()`: VCO and GCFGC display-clock select.
-fn cdclk_hz(vco: u8, gcfgc: u16) -> u32 {
-    let high = gcfgc & GCFGC_CD_SELECT != 0;
-    match (vco & 7, high) {
-        (1, true) => 320_000_000,
-        (1, false) => 228_571_429,
-        (_, true) => 333_333_333,
-        (_, false) => 222_222_222,
-    }
-}
-
 fn blc_pwm_ctl(cdclk: u32, pwm_hz: u16, duty: u8) -> u32 {
     let modulation = cdclk / (128 * u32::from(pwm_hz));
     (modulation << 16) | (modulation * u32::from(duty.min(100)) / 100)
@@ -118,17 +106,22 @@ impl IntelGm45 {
         EcamDevice::new(0, IGD_DEV, 0)
     }
 
-    /// Coreboot only runs `gma_func0_init` for a decoded IGD; native
-    /// graphics further requires GGC to keep legacy VGA decode.
+    /// Coreboot runs `gma_func0_init` for a decoded IGD.
     pub(super) fn igd_enabled(&self) -> bool {
         self.graphics != Gm45GraphicsPolicy::Discrete
             && self.hostbridge().deven.get() & super::DEVEN_IGD != 0
-            && self.hostbridge().ggc.get() & 2 == 0
             && self.igd().is_present()
     }
 
+    /// Coreboot skips the native modeset, not the rest of IGD init, when
+    /// GGC disables legacy VGA decode (IVD).
+    fn igd_vga_decode(&self) -> bool {
+        self.hostbridge().ggc.get() & 2 == 0
+    }
+
+    /// Coreboot `gm45/gma.c get_cdclk()`.
     fn cdclk(&self) -> u32 {
-        cdclk_hz(self.mch_vco(), self.igd().read16(IGD_GCFGC))
+        fstart_intel_gma::gm45_display_clock_hz(self.mch_vco(), self.igd().read16(IGD_GCFGC))
     }
 
     /// LVDS EDID ASCII string through GMBUS, as coreboot reads it before
@@ -248,6 +241,12 @@ impl IntelGm45 {
         if self.config.igd.display.is_none() {
             return;
         }
+        if !self.igd_vga_decode() {
+            fstart_log::info!(
+                "gm45: IGD does not decode legacy VGA, skipping native graphics init"
+            );
+            return;
+        }
         let Ok((_, tolud, _)) = self.memory_map() else {
             return;
         };
@@ -278,11 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gm45_cdclk_and_backlight_match_coreboot() {
-        assert_eq!(cdclk_hz(4, GCFGC_CD_SELECT), 333_333_333);
-        assert_eq!(cdclk_hz(0, 0), 222_222_222);
-        assert_eq!(cdclk_hz(1, GCFGC_CD_SELECT), 320_000_000);
-        assert_eq!(cdclk_hz(1, 0), 228_571_429);
+    fn gm45_backlight_matches_coreboot() {
         // X200 LTD121EWVB at 165 Hz on a 320 MHz CDCLK, 100 % duty.
         assert_eq!(blc_pwm_ctl(320_000_000, 165, 100), (15151 << 16) | 15151);
         const TABLE: &[BacklightPwm] = &[BacklightPwm {

@@ -880,6 +880,34 @@ register_structs! {
     }
 }
 
+register_bitfields! [u32,
+    /// G4x DisplayPort data M value (`PIPEx_GMCH_DATA_M`).
+    pub GMCH_DATA_M [
+        /// Transfer unit size minus one.
+        TU_SIZE OFFSET(25) NUMBITS(6) [],
+        /// Data M value.
+        VALUE OFFSET(0) NUMBITS(24) []
+    ],
+    /// G4x DisplayPort M or N value without extra fields.
+    pub GMCH_M_N [
+        VALUE OFFSET(0) NUMBITS(24) []
+    ]
+];
+
+register_structs! {
+    /// G4x per-pipe DisplayPort M/N registers, relative to `PIPEx_GMCH_DATA_M`
+    /// (0x70050 for pipe A, 0x71050 for pipe B; libgfxinit
+    /// `Has_GMCH_DP_Transcoder`).
+    pub GmchDpMnRegs {
+        (0x00 => pub data_m: MmioReadWrite<u32, GMCH_DATA_M::Register>),
+        (0x04 => pub data_n: MmioReadWrite<u32, GMCH_M_N::Register>),
+        (0x08 => _reserved0),
+        (0x10 => pub link_m: MmioReadWrite<u32, GMCH_M_N::Register>),
+        (0x14 => pub link_n: MmioReadWrite<u32, GMCH_M_N::Register>),
+        (0x18 => @END),
+    }
+}
+
 register_structs! {
     /// Legacy GTT fence register pair.
     pub LegacyFenceRegs {

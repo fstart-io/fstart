@@ -334,14 +334,11 @@ pub const fn pipe_can_scale(cpu: Cpu, pipe: Pipe) -> bool {
 /// Return scaler capabilities for a CPU/platform.
 pub const fn caps_for(cpu: Cpu) -> ScalerCaps {
     match cpu {
-        Cpu::Gm965 => ScalerCaps {
+        // libgfxinit `Has_GMCH_PFIT_CONTROL` (up to G45): one fitter any
+        // pipe can select.
+        Cpu::Gm965 | Cpu::G45 | Cpu::Gm45 => ScalerCaps {
             kind: Some(ScalerKind::GmchPanelFitterI965),
             implemented: true,
-            single_global_scaler: true,
-        },
-        Cpu::G45 | Cpu::Gm45 => ScalerCaps {
-            kind: Some(ScalerKind::GmchPanelFitterI965),
-            implemented: false,
             single_global_scaler: true,
         },
         Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => ScalerCaps {

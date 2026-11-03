@@ -165,25 +165,31 @@ impl GmaDisplayState {
         if wants_lvds && let Some(mmio) = &mmio {
             crate::generation::g45::prepare_panel_probe(mmio, config.vbt);
         }
-        let resolved = self.resolve_requested_configs(resources, config, detect.as_ref(), |port| {
-            let outputs = [OutputConfig {
-                port,
-                enabled: true,
-            }];
-            let candidate = GmaInitConfig {
-                outputs: &outputs,
-                ..*config
-            };
-            let mode = crate::choose_mode(resources, &candidate)?;
-            fstart_log::info!(
-                "intel-gma: connector {:?} mode {}x{}@{}kHz",
-                port,
-                mode.hdisplay,
-                mode.vdisplay,
-                mode.pixel_clock_khz
-            );
-            Ok(crate::clamp_hdmi_dotclock(config.cpu, port, mode))
-        });
+        let resolved = self.resolve_requested_configs(
+            resources,
+            config,
+            detect.as_ref(),
+            |port| {
+                let outputs = [OutputConfig {
+                    port,
+                    enabled: true,
+                }];
+                let candidate = GmaInitConfig {
+                    outputs: &outputs,
+                    ..*config
+                };
+                let mode = crate::choose_mode(resources, &candidate)?;
+                fstart_log::info!(
+                    "intel-gma: connector {:?} mode {}x{}@{}kHz",
+                    port,
+                    mode.hdisplay,
+                    mode.vdisplay,
+                    mode.pixel_clock_khz
+                );
+                Ok(crate::clamp_hdmi_dotclock(config.cpu, port, mode))
+            },
+            |port| sibling_has_edid(resources, config, port),
+        );
         if wants_lvds
             && !resolved.as_ref().is_ok_and(|outputs| {
                 outputs
@@ -305,6 +311,7 @@ impl GmaDisplayState {
         config: &GmaInitConfig<'_>,
         detect: Option<&crate::port_detect::LegacyPortDetectState>,
         mut probe: impl FnMut(Port) -> Result<Mode, GmaError>,
+        mut has_edid: impl FnMut(Port) -> bool,
     ) -> Result<[Option<PipeOutputConfig>; PIPE_COUNT], GmaError> {
         let mut modes = [None; PIPE_COUNT];
         // Pipe of the first output that got a mode: coreboot's default
@@ -322,10 +329,29 @@ impl GmaDisplayState {
                 last_error = GmaError::ModeUnavailable;
                 continue;
             }
-            if modes.iter().flatten().any(|(port, _)| *port == output.port) {
+            let sibling = crate::port::sibling_port(output.port);
+            if modes
+                .iter()
+                .flatten()
+                .any(|(port, _)| *port == output.port || Some(*port) == sibling)
+            {
                 continue;
             }
             match probe(output.port).and_then(|mode| {
+                // libgfxinit `Probe_Port`: DP and HDMI share the pins of one
+                // digital port. If both answer with an EDID (both cables on a
+                // ThinkPad dock, say), drive neither: a display could get the
+                // wrong signal.
+                if let Some(sibling) = sibling
+                    && has_edid(sibling)
+                {
+                    fstart_log::warn!(
+                        "intel-gma: {:?} and {:?} share pins and both have a display",
+                        output.port,
+                        sibling
+                    );
+                    return Err(GmaError::InvalidConfig);
+                }
                 let available: heapless::Vec<_, PIPE_COUNT> = caps_for(config.cpu)
                     .pipes
                     .iter()
@@ -574,6 +600,33 @@ impl GmaDisplayState {
     }
 }
 
+/// Whether the port sharing `sibling`'s pins has a readable EDID.
+fn sibling_has_edid(resources: &GmaResources, config: &GmaInitConfig<'_>, sibling: Port) -> bool {
+    if crate::validate_outputs(
+        config.cpu,
+        &[OutputConfig {
+            port: sibling,
+            enabled: true,
+        }],
+    )
+    .is_err()
+    {
+        return false;
+    }
+    let outputs = [OutputConfig {
+        port: sibling,
+        enabled: true,
+    }];
+    crate::edid_mode(
+        resources,
+        &GmaInitConfig {
+            outputs: &outputs,
+            ..*config
+        },
+    )
+    .is_ok()
+}
+
 fn full_update(current: PipeOutputConfig, new_config: PipeOutputConfig) -> bool {
     current.port != new_config.port
         || current.mode != new_config.mode
@@ -648,30 +701,67 @@ mod tests {
 
     #[test]
     fn resolves_two_legacy_outputs_on_distinct_pipes() {
-        let outputs = [
-            OutputConfig {
-                port: Port::Lvds,
-                enabled: true,
-            },
-            OutputConfig {
-                port: Port::Vga,
-                enabled: true,
-            },
-        ];
+        // libgfxinit `Scan_Ports`: probed outputs take the pipes in order;
+        // gen4 LVDS may use either pipe.
+        for (first, second) in [(Port::Lvds, Port::Vga), (Port::Vga, Port::Lvds)] {
+            let outputs = [
+                OutputConfig {
+                    port: first,
+                    enabled: true,
+                },
+                OutputConfig {
+                    port: second,
+                    enabled: true,
+                },
+            ];
+            let config = GmaInitConfig {
+                cpu: Cpu::Gm965,
+                outputs: &outputs,
+                framebuffer: framebuffer(),
+                vbt: None,
+            };
+            let configs = GmaDisplayState::new()
+                .resolve_requested_configs(
+                    &resources(),
+                    &config,
+                    None,
+                    |_| Ok(Mode::XGA_1024X768_60),
+                    |_| false,
+                )
+                .unwrap();
+            assert_eq!(
+                configs[PipeOutputConfig::pipe_index(Pipe::A)].unwrap().port,
+                first
+            );
+            assert_eq!(
+                configs[PipeOutputConfig::pipe_index(Pipe::B)].unwrap().port,
+                second
+            );
+        }
+    }
+
+    #[test]
+    fn i945_lvds_keeps_pipe_b() {
+        let outputs = [OutputConfig {
+            port: Port::Lvds,
+            enabled: true,
+        }];
         let config = GmaInitConfig {
-            cpu: Cpu::Gm965,
+            cpu: Cpu::I945GM,
             outputs: &outputs,
             framebuffer: framebuffer(),
             vbt: None,
         };
-        let state = GmaDisplayState::new();
-        let configs = state
-            .resolve_requested_configs(&resources(), &config, None, |_| Ok(Mode::XGA_1024X768_60))
+        let configs = GmaDisplayState::new()
+            .resolve_requested_configs(
+                &resources(),
+                &config,
+                None,
+                |_| Ok(Mode::XGA_1024X768_60),
+                |_| false,
+            )
             .unwrap();
-        assert_eq!(
-            configs[PipeOutputConfig::pipe_index(Pipe::A)].unwrap().port,
-            Port::Vga
-        );
+        assert!(configs[PipeOutputConfig::pipe_index(Pipe::A)].is_none());
         assert_eq!(
             configs[PipeOutputConfig::pipe_index(Pipe::B)].unwrap().port,
             Port::Lvds
@@ -679,31 +769,49 @@ mod tests {
     }
 
     #[test]
-    fn keeps_first_candidate_when_ports_share_pipe() {
+    fn sibling_ports_with_two_displays_drive_neither() {
         let outputs = [
+            OutputConfig {
+                port: Port::DpB,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::HdmiB,
+                enabled: true,
+            },
             OutputConfig {
                 port: Port::Vga,
                 enabled: true,
             },
-            OutputConfig {
-                port: Port::HdmiA,
-                enabled: true,
-            },
         ];
         let config = GmaInitConfig {
-            cpu: Cpu::G45,
+            cpu: Cpu::Gm45,
             outputs: &outputs,
             framebuffer: framebuffer(),
             vbt: None,
         };
-        let state = GmaDisplayState::new();
-        let configs = state
-            .resolve_requested_configs(&resources(), &config, None, |_| Ok(Mode::XGA_1024X768_60))
-            .unwrap();
-        assert_eq!(
-            configs[PipeOutputConfig::pipe_index(Pipe::A)].unwrap().port,
-            Port::Vga
-        );
+        let resolve = |sibling_edid: bool| {
+            GmaDisplayState::new()
+                .resolve_requested_configs(
+                    &resources(),
+                    &config,
+                    None,
+                    |_| Ok(Mode::XGA_1024X768_60),
+                    |_| sibling_edid,
+                )
+                .unwrap()
+        };
+        let ports = |configs: [Option<PipeOutputConfig>; PIPE_COUNT]| {
+            configs
+                .iter()
+                .flatten()
+                .map(|config| config.port)
+                .collect::<heapless::Vec<_, PIPE_COUNT>>()
+        };
+        // Only one of DP2/HDMI2 has a display: DP2 and VGA light up.
+        assert_eq!(ports(resolve(false)), [Port::DpB, Port::Vga]);
+        // Both have one: neither is driven.
+        assert_eq!(ports(resolve(true)), [Port::Vga]);
     }
 
     fn native_mode(width: u16, height: u16) -> Mode {
@@ -771,13 +879,19 @@ mod tests {
             let outputs = if legacy_cpu { &legacy[..] } else { &ddi[..] };
             let config = edid_config(cpu, outputs);
             let planned = GmaDisplayState::new()
-                .resolve_requested_configs(&resources(), &config, None, |port| {
-                    Ok(match port {
-                        Port::Vga | Port::HdmiA => native_mode(800, 600),
-                        Port::Lvds | Port::HdmiB => native_mode(1024, 768),
-                        _ => native_mode(1280, 720),
-                    })
-                })
+                .resolve_requested_configs(
+                    &resources(),
+                    &config,
+                    None,
+                    |port| {
+                        Ok(match port {
+                            Port::Vga | Port::HdmiA => native_mode(800, 600),
+                            Port::Lvds | Port::HdmiB => native_mode(1024, 768),
+                            _ => native_mode(1280, 720),
+                        })
+                    },
+                    |_| false,
+                )
                 .unwrap();
             assert_eq!(planned.iter().flatten().count(), outputs.len(), "{cpu:?}");
             let first = planned[0].unwrap();
@@ -819,13 +933,19 @@ mod tests {
         let config = edid_config(Cpu::Gm965, &outputs);
         for absent in [Port::Lvds, Port::Vga] {
             let planned = GmaDisplayState::new()
-                .resolve_requested_configs(&resources(), &config, None, |port| {
-                    if port == absent {
-                        Err(GmaError::ModeUnavailable)
-                    } else {
-                        Ok(native_mode(1280, 720))
-                    }
-                })
+                .resolve_requested_configs(
+                    &resources(),
+                    &config,
+                    None,
+                    |port| {
+                        if port == absent {
+                            Err(GmaError::ModeUnavailable)
+                        } else {
+                            Ok(native_mode(1280, 720))
+                        }
+                    },
+                    |_| false,
+                )
                 .unwrap();
             assert_eq!(planned.iter().flatten().count(), 1);
             let output = planned.iter().flatten().next().unwrap();
@@ -833,9 +953,13 @@ mod tests {
             assert_eq!((output.surface.width, output.surface.height), (1280, 720));
         }
         assert_eq!(
-            GmaDisplayState::new().resolve_requested_configs(&resources(), &config, None, |_| Err(
-                GmaError::ModeUnavailable
-            )),
+            GmaDisplayState::new().resolve_requested_configs(
+                &resources(),
+                &config,
+                None,
+                |_| Err(GmaError::ModeUnavailable),
+                |_| false
+            ),
             Err(GmaError::ModeUnavailable)
         );
     }
@@ -863,7 +987,13 @@ mod tests {
             vbt: None,
         };
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(&resources(), &config, None, |_| Ok(Mode::XGA_1024X768_60))
+            .resolve_requested_configs(
+                &resources(),
+                &config,
+                None,
+                |_| Ok(Mode::XGA_1024X768_60),
+                |_| false,
+            )
             .unwrap();
         let surface = planned[0].unwrap().surface;
         assert_eq!((surface.width, surface.height), (320, 200));
@@ -888,13 +1018,19 @@ mod tests {
         ];
         let config = edid_config(Cpu::Gm965, &outputs);
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(&resources(), &config, None, |port| {
-                Ok(if port == Port::Vga {
-                    native_mode(1280, 720)
-                } else {
-                    native_mode(1024, 768)
-                })
-            })
+            .resolve_requested_configs(
+                &resources(),
+                &config,
+                None,
+                |port| {
+                    Ok(if port == Port::Vga {
+                        native_mode(1280, 720)
+                    } else {
+                        native_mode(1024, 768)
+                    })
+                },
+                |_| false,
+            )
             .unwrap();
         assert!(planned[0].is_some());
         assert!(planned[1].is_none());
@@ -916,13 +1052,19 @@ mod tests {
         ];
         let config = edid_config(Cpu::I945GM, &outputs);
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(&resources(), &config, None, |port| {
-                Ok(if port == Port::Vga {
-                    native_mode(1280, 1024)
-                } else {
-                    native_mode(1024, 768)
-                })
-            })
+            .resolve_requested_configs(
+                &resources(),
+                &config,
+                None,
+                |port| {
+                    Ok(if port == Port::Vga {
+                        native_mode(1280, 1024)
+                    } else {
+                        native_mode(1024, 768)
+                    })
+                },
+                |_| false,
+            )
             .unwrap();
         let vga = planned[PipeOutputConfig::pipe_index(Pipe::A)].unwrap();
         let lvds = planned[PipeOutputConfig::pipe_index(Pipe::B)].unwrap();
@@ -949,13 +1091,19 @@ mod tests {
         ];
         let config = edid_config(Cpu::I945GM, &outputs);
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(&resources(), &config, None, |port| {
-                Ok(if port == Port::Vga {
-                    native_mode(1280, 720)
-                } else {
-                    native_mode(1000, 700)
-                })
-            })
+            .resolve_requested_configs(
+                &resources(),
+                &config,
+                None,
+                |port| {
+                    Ok(if port == Port::Vga {
+                        native_mode(1280, 720)
+                    } else {
+                        native_mode(1000, 700)
+                    })
+                },
+                |_| false,
+            )
             .unwrap();
         let vga = planned[PipeOutputConfig::pipe_index(Pipe::A)].unwrap();
         assert_eq!((vga.surface.width, vga.surface.height), (1280, 720));
