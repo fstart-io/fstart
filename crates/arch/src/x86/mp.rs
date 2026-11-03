@@ -200,6 +200,14 @@ pub trait CpuDriver: Send + Sync {
     /// BSP-only: called after all CPUs are initialized and APs are parked.
     fn post_mp_init(&self) {}
 
+    /// BSP-only: the logical CPUs the package has enabled, when the model
+    /// reports them better than `CPUID.1:EBX[23:16]` (coreboot
+    /// `mp_ops.get_cpu_count`). On Nehalem and later that field is the
+    /// addressable APIC-ID span, not the number of threads.
+    fn logical_cpu_count(&self) -> Option<u16> {
+        None
+    }
+
     /// Return true if this driver supports `identity`.
     fn matches(&self, identity: CpuIdentity) -> bool {
         self.id_table().iter().any(|id| id.matches(identity))

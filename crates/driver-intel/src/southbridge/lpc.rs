@@ -70,6 +70,32 @@ pub fn training_identity(header: &fstart_pci::overlay::PciType0Config) -> [u8; 5
     ]
 }
 
+/// One LPC generic I/O decode window (GENx_DEC), shared by ICH9 and the
+/// 5 Series PCH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LpcGenericIoDecode {
+    /// I/O base address. Must be 4-byte aligned.
+    pub base: u16,
+    /// Window size in bytes. Must be a power of two from 4 through 256.
+    pub size: u16,
+}
+
+impl LpcGenericIoDecode {
+    /// The GENx_DEC value, or `None` for a window the decoder cannot express.
+    #[must_use]
+    pub const fn encode(self) -> Option<u32> {
+        encode_generic_io_window(self.base, self.size)
+    }
+
+    /// Whether two windows share an I/O port.
+    #[must_use]
+    pub const fn overlaps(self, other: Self) -> bool {
+        let end = self.base as u32 + self.size as u32;
+        let other_end = other.base as u32 + other.size as u32;
+        (self.base as u32) < other_end && (other.base as u32) < end
+    }
+}
+
 /// Check an ICH7/8/9 GENx_DEC window before programming it.
 #[must_use]
 pub const fn valid_generic_io_window(base: u16, size: u16) -> bool {

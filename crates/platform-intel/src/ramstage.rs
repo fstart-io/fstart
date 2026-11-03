@@ -324,6 +324,7 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             // coreboot chip_operations.init: before PCI enumeration, e.g.
             // hiding functions the board disables.
             self.northbridge.chip_init()?;
+            self.southbridge.chip_init()?;
             // Cache is still off: the RAM-stage entry tore down CAR. The ranges
             // the northbridge just published are enough to restore caching now.
             // The complete solution is selected after PCI allocation.
@@ -469,7 +470,7 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
             // init; the registers are commonly write-once.
             for entry in B::CONFIG.pci_subsystem_ids() {
                 let dev = fstart_pci::ecam::EcamDevice::new(0, entry.device, entry.function);
-                if dev.is_present() && !dev.set_subsystem(entry.id) {
+                if dev.is_present() && !rs.southbridge.program_subsystem_id(dev, entry.id) {
                     fstart_log::error!(
                         "pci: 00:{:02x}.{} has no subsystem ID register",
                         entry.device,
@@ -780,11 +781,14 @@ fn init_mp<P: IntelEarlyPlatform>(
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(fstart_stage::microcode_blob(), northbridge, southbridge);
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-    // The supported Core 2 / Pineview platforms are single-socket, as in
-    // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future
-    // multi-socket platforms must provide system-wide discovery instead.
-    let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
-    let num_cpus = (((ebx >> 16) & 0xff) as u16).max(1);
+    // The supported Intel platforms are single-socket. The CPU model reports
+    // its enabled threads when CPUID cannot (coreboot model_2065x
+    // get_cpu_count()); otherwise CPUID's package-local count is used, as
+    // in model_1067x. Multi-socket platforms need system-wide discovery.
+    let num_cpus = fstart_arch::x86::mp::CpuDriver::logical_cpu_count(&cpu).unwrap_or_else(|| {
+        let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
+        (((ebx >> 16) & 0xff) as u16).max(1)
+    });
     let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
         num_cpus,

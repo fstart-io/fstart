@@ -9,6 +9,9 @@ pub trait IntelPlatform: 'static {
     const NAME: &'static str;
     const CAR_BASE: u64;
     const CAR_SIZE: u64;
+    /// Bootblock stack in CAR. Chipsets whose raminit keeps more on the
+    /// stack (the training cache record, deep call chains) raise it.
+    const BOOTBLOCK_STACK: u64 = 0x2000;
     const MICROCODE_SIGNATURES: &'static [&'static str];
 }
 

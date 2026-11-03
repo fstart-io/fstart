@@ -719,20 +719,7 @@ impl LpcFixedIoDecode {
     }
 }
 
-/// One LPC generic I/O decode window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcGenericIoDecode {
-    /// I/O base address. Must be 4-byte aligned.
-    pub base: u16,
-    /// Window size in bytes. Must be a power of two from 4 through 256.
-    pub size: u16,
-}
-
-impl LpcGenericIoDecode {
-    fn encode(self) -> Option<u32> {
-        crate::southbridge::lpc::encode_generic_io_window(self.base, self.size)
-    }
-}
+pub use crate::southbridge::lpc::LpcGenericIoDecode;
 
 /// Board-level LPC decode policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -893,9 +880,7 @@ pub const fn valid_io_trap(trap: IoTrapConfig) -> bool {
 
 #[must_use]
 pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecode) -> bool {
-    let a_end = a.base as u32 + a.size as u32;
-    let b_end = b.base as u32 + b.size as u32;
-    (a.base as u32) < b_end && (b.base as u32) < a_end
+    a.overlaps(b)
 }
 
 const fn empty_lpc_generic_io() -> LpcGenericIoDecode {

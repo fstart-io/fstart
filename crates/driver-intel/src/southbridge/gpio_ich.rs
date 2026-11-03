@@ -57,7 +57,7 @@ impl GpiRoute {
     }
 }
 
-#[cfg(any(feature = "ich7", feature = "ich9"))]
+#[cfg(any(feature = "ich7", feature = "ich9", feature = "ibexpeak"))]
 pub(crate) fn encode_gpi_routes(routes: &[GpiRoute; 16]) -> u32 {
     routes
         .iter()
@@ -92,10 +92,30 @@ const GP_RST_SEL3: u16 = 0x68;
 /// Maximum GPIO pin number (zero-based, inclusive).
 const MAX_GPIO: u8 = 75;
 
-// Register offset tables indexed by set (0, 1, 2).
-const USE_SEL_REGS: [u16; 3] = [GPIO_USE_SEL, GPIO_USE_SEL2, GPIO_USE_SEL3];
-const IO_SEL_REGS: [u16; 3] = [GP_IO_SEL, GP_IO_SEL2, GP_IO_SEL3];
-const LVL_REGS: [u16; 3] = [GP_LVL, GP_LVL2, GP_LVL3];
+/// USE_SEL of set 0, 1 or 2. Computed rather than looked up: the runtime
+/// pin accessors also run from the raw-copied SMM image, which must not
+/// carry a load-address-dependent table reference.
+const fn use_sel_reg(set: u8) -> u16 {
+    if set == 0 {
+        GPIO_USE_SEL
+    } else {
+        GPIO_USE_SEL2 + (set as u16 - 1) * (GPIO_USE_SEL3 - GPIO_USE_SEL2)
+    }
+}
+
+/// IO_SEL of set 0, 1 or 2 (always USE_SEL + 4).
+const fn io_sel_reg(set: u8) -> u16 {
+    use_sel_reg(set) + (GP_IO_SEL - GPIO_USE_SEL)
+}
+
+/// LVL of set 0, 1 or 2.
+const fn lvl_reg(set: u8) -> u16 {
+    if set == 0 {
+        GP_LVL
+    } else {
+        use_sel_reg(set) + (GP_LVL2 - GPIO_USE_SEL2)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Per-pin configuration types used by Rust board metadata
@@ -454,7 +474,7 @@ impl IchGpio {
             return false;
         }
         let (set, bit) = (pin / 32, pin % 32);
-        let reg = LVL_REGS[set as usize];
+        let reg = lvl_reg(set);
         let val = unsafe { fstart_core::pio::inl(self.base + reg) };
         val & (1 << bit) != 0
     }
@@ -474,7 +494,7 @@ impl IchGpio {
             return;
         }
         let (set, bit) = (pin / 32, pin % 32);
-        let reg = LVL_REGS[set as usize];
+        let reg = lvl_reg(set);
         unsafe {
             let mut val = fstart_core::pio::inl(self.base + reg);
             if high {
@@ -498,7 +518,7 @@ impl IchGpio {
             return false;
         }
         let (set, bit) = (pin / 32, pin % 32);
-        let reg = USE_SEL_REGS[set as usize];
+        let reg = use_sel_reg(set);
         let val = unsafe { fstart_core::pio::inl(self.base + reg) };
         val & (1 << bit) == 0
     }
@@ -517,7 +537,7 @@ impl IchGpio {
             return;
         }
         let (set, bit) = (pin / 32, pin % 32);
-        let reg = USE_SEL_REGS[set as usize];
+        let reg = use_sel_reg(set);
         unsafe {
             let val = fstart_core::pio::inl(self.base + reg);
             if val & (1 << bit) == 0 {
@@ -540,7 +560,7 @@ impl IchGpio {
         }
         self.set_gpio_mode(pin);
         let (set, bit) = (pin / 32, pin % 32);
-        let reg = IO_SEL_REGS[set as usize];
+        let reg = io_sel_reg(set);
         unsafe {
             let val = fstart_core::pio::inl(self.base + reg);
             if val & (1 << bit) == 0 {
@@ -566,7 +586,7 @@ impl IchGpio {
         self.set_gpio_mode(pin);
         self.set(pin, high);
         let (set, bit) = (pin / 32, pin % 32);
-        let reg = IO_SEL_REGS[set as usize];
+        let reg = io_sel_reg(set);
         unsafe {
             let val = fstart_core::pio::inl(self.base + reg);
             if val & (1 << bit) != 0 {
@@ -611,6 +631,22 @@ impl IchGpio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn computed_set_registers_match_the_datasheet() {
+        assert_eq!(
+            [use_sel_reg(0), use_sel_reg(1), use_sel_reg(2)],
+            [GPIO_USE_SEL, GPIO_USE_SEL2, GPIO_USE_SEL3]
+        );
+        assert_eq!(
+            [io_sel_reg(0), io_sel_reg(1), io_sel_reg(2)],
+            [GP_IO_SEL, GP_IO_SEL2, GP_IO_SEL3]
+        );
+        assert_eq!(
+            [lvl_reg(0), lvl_reg(1), lvl_reg(2)],
+            [GP_LVL, GP_LVL2, GP_LVL3]
+        );
+    }
 
     #[test]
     fn empty_config_produces_zero_registers() {

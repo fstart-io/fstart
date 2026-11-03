@@ -73,6 +73,8 @@ pub mod gm45;
 pub mod gm965;
 #[cfg(feature = "i945-ich7")]
 pub mod i945;
+#[cfg(feature = "ironlake-ibexpeak")]
+pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
 #[cfg(feature = "pineview-ich7")]

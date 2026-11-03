@@ -19,14 +19,19 @@
 //!
 //! ## Decision tree (all determined by CPUID at runtime)
 //!
-//! | Feature | P3 (Fam6 <0E) | Core2 (Fam6 0E+) | Atom/NEM | Netburst (FamF) |
-//! |---|---|---|---|---|
-//! | PHYSMASK high | PAE check | leaf 0x80000008 | leaf 0x80000008 | PAE fallback |
-//! | INIT IPI | no | yes | yes | yes + SIPI |
-//! | NEM MSR 0x2E0 | no | no | yes | no |
-//! | L2 MSR 0x11E | no | yes | conditional | CPUID-gated |
-//! | Fill method | rep stosl | rep stosl | per-cacheline + NEM | rep stosl |
-//! | check_mtrr | no | no | yes | no |
+//! | Feature | P3 (Fam6 <0E) | Core2 (Fam6 0E+) | Atom/NEM | IMC cores/NEM | Netburst (FamF) |
+//! |---|---|---|---|---|---|
+//! | PHYSMASK high | PAE check | leaf 0x80000008 | leaf 0x80000008 | leaf 0x80000008 | PAE fallback |
+//! | INIT IPI | no | yes | yes | yes | yes + SIPI |
+//! | NEM MSR 0x2E0 | no | no | yes | yes | no |
+//! | L2 MSR 0x11E | no | yes | yes | no | CPUID-gated |
+//! | Fill method | rep stosl | rep stosl | per-cacheline + NEM | per-cacheline + NEM | rep stosl |
+//! | check_mtrr | no | no | yes | yes | no |
+//!
+//! "IMC cores" are the Nehalem, Westmere, Sandy Bridge and Ivy Bridge
+//! models with an integrated memory controller. coreboot runs
+//! `car/non-evict` for them (model_2065x, model_206ax) without
+//! `CPU_HAS_L2_ENABLE_MSR`: they have no `BBL_CR_CTL3`.
 //!
 //! ## How this integrates
 //!
@@ -95,6 +100,31 @@ core::arch::global_asm!(
     "je _car_nem",
     "cmpl $0x36, %eax",
     "je _car_nem",
+    // Integrated-memory-controller cores (coreboot car/non-evict without
+    // the L2 enable MSR): Nehalem 0x1A/0x1E/0x1F/0x2E, Westmere
+    // 0x25/0x2C/0x2F, Sandy Bridge 0x2A/0x2D, Ivy Bridge 0x3A/0x3E.
+    "cmpl $0x1A, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x1E, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x1F, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x25, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x2A, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x2C, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x2D, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x2E, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x2F, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x3A, %eax",
+    "je _car_nem_imc",
+    "cmpl $0x3E, %eax",
+    "je _car_nem_imc",
     // Core/Core2 (coreboot's socket_m car/core2): model >= 0x0E
     "cmpl $0x0E, %eax",
     "jge _car_core2",
@@ -289,8 +319,15 @@ core::arch::global_asm!(
     // ==================================================================
     // Path: NEM (Non-Evict Mode) — Atom Pineview/Cedarview
     // ==================================================================
+    // %edi selects the L2 enable MSR until the cache fill reuses it:
+    // 1 on Atom, 0 on the IMC cores that lack BBL_CR_CTL3.
+    "_car_nem_imc:",
+    "xorl %edi, %edi",
+    "jmp _car_nem_common",
     "_car_nem:",
-    // POST 0x60: Atom/Pineview NEM CAR path selected.
+    "movl $1, %edi",
+    "_car_nem_common:",
+    // POST 0x60: NEM CAR path selected.
     "movb $0x60, %al",
     "outb %al, $0x80",
     // Coreboot NEM first validates that MTRRs are clean, then sends
@@ -338,6 +375,8 @@ core::arch::global_asm!(
     "movl $15f, %esp",
     "jmp _car_enable_mtrrs",
     "15:",
+    "testl %edi, %edi",
+    "jz 16f",
     "movl $16f, %esp",
     "jmp _car_try_enable_l2",
     "16:",

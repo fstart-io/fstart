@@ -233,6 +233,8 @@ impl<B: IntelBoard> Bootblock<B, Console> {
     /// reachable on the southbridge's SMBus.
     pub fn train_memory(mut self) -> Bootblock<B, Trained> {
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
+        let prepared = self.southbridge.pre_raminit_init();
+        self.check("pre-raminit init", prepared);
         fstart_log::info!("{}: initializing DRAM", B::Platform::NAME);
         let trained = self.dram_init();
         self.check("DRAM init", trained);

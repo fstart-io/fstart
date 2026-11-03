@@ -344,22 +344,50 @@ fn root_hub_node(ports: u8) -> Vec<u8> {
 /// Integrated keyboard controller (coreboot `i82801{hx,ix}/acpi/lpc.asl`).
 #[must_use]
 pub fn ps2_controller_nodes() -> Vec<u8> {
+    let mut aml = ps2_keyboard_node(fstart_acpi::eisa_id("PNP0303"));
+    aml.extend_from_slice(&acpi_dsl! {
+        Device("PS2M") {
+            Name("_HID", EisaId("PNP0F13"));
+            Name("_CRS", ResourceTemplate {
+                IRQ(Edge, ActiveHigh, Exclusive, 12u32);
+            });
+            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+        }
+    });
+    aml
+}
+
+/// The keyboard controller with board EISA IDs (coreboot
+/// `drivers/pc80/pc/ps2_controller.asl` and `CONFIG_PS2K/PS2M_EISAID`),
+/// e.g. a ThinkPad's `LEN0018` TrackPoint.
+#[must_use]
+pub fn ps2_controller_nodes_with(keyboard: &str, mouse: &str) -> Vec<u8> {
+    let mouse = fstart_acpi::eisa_id(mouse);
+    let mut aml = ps2_keyboard_node(fstart_acpi::eisa_id(keyboard));
+    let mouse_node: Vec<u8> = acpi_dsl! {
+        Device("PS2M") {
+            Name("_HID", #{dword mouse});
+            Name("_CID", EisaId("PNP0F13"));
+            Name("_CRS", ResourceTemplate {
+                IRQ(Edge, ActiveHigh, Exclusive, 12u32);
+            });
+            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
+        }
+    }
+    .into();
+    aml.extend(mouse_node);
+    aml
+}
+
+fn ps2_keyboard_node(hid: u32) -> Vec<u8> {
     acpi_dsl! {
         Device("PS2K") {
-            Name("_HID", EisaId("PNP0303"));
+            Name("_HID", #{dword hid});
             Name("_CID", EisaId("PNP030B"));
             Name("_CRS", ResourceTemplate {
                 IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
                 IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
                 IRQ(Edge, ActiveHigh, Exclusive, 1u32);
-            });
-            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-        }
-
-        Device("PS2M") {
-            Name("_HID", EisaId("PNP0F13"));
-            Name("_CRS", ResourceTemplate {
-                IRQ(Edge, ActiveHigh, Exclusive, 12u32);
             });
             Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
         }

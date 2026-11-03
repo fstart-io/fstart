@@ -17,6 +17,10 @@ acpi = [
 ]
 gm45 = ["fstart-intel-gma/g45"]
 ich9 = ["dep:fstart-driver-usbdebug"]
+# Intel 5 Series / 3400 Series PCH.
+ibexpeak = ["dep:fstart-driver-usbdebug"]
+# Arrandale/Clarkdale uncore with its 5 Series PCH.
+ironlake = ["ibexpeak", "fstart-intel-gma/ironlake"]
 gm965 = ["fstart-intel-gma/g45"]
 i945 = ["ich7", "fstart-intel-gma/i945"]
 ich8 = []

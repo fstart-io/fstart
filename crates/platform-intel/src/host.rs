@@ -197,7 +197,7 @@ pub fn reservations<P: IntelPlatform>(
             // The linker places the actual initialized image at its upper end.
             image: span(firmware.base + cache_prefix, firmware.size - cache_prefix),
             writable: car,
-            stack: 0x2000,
+            stack: P::BOOTBLOCK_STACK,
             heap: 0,
         },
         postcar: StageReservation {

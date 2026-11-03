@@ -17,7 +17,8 @@ use rflasher_internal::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
-/// SPIBAR is RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9.
+/// SPIBAR is RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9 and the 5
+/// Series PCH.
 #[derive(Clone, Copy)]
 struct FirmwareHost {
     spi_offset: u64,
@@ -184,7 +185,8 @@ impl CacheSpi {
         let host = FirmwareHost {
             spi_offset: match entry.chipset {
                 IchChipset::Ich7 | IchChipset::Ich8 => 0x3020,
-                IchChipset::Ich9 => 0x3800,
+                // The 5 Series PCH keeps ICH9's SPI block and offset.
+                IchChipset::Ich9 | IchChipset::Series5IbexPeak => 0x3800,
                 _ => return Err(ServiceError::NotSupported),
             },
         };

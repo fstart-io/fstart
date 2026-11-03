@@ -50,6 +50,7 @@ pio_register_structs! {
         (0x05 => data0: PioRegister<u8>),
         (0x06 => data1: PioRegister<u8>),
         (0x07 => block_data: PioRegister<u8>),
+        (0x09 => receive_slave_address: PioRegister<u8>),
     }
 }
 
@@ -150,6 +151,12 @@ impl I801SmBus {
         s.host_reset();
         fstart_log::info!("i801-smbus: enabled at I/O base {:#x}", smbus_base);
         s
+    }
+
+    /// Program the address the controller answers as a slave (coreboot
+    /// `smbus_set_slave_addr()`).
+    pub fn set_slave_address(&self, address: u8) {
+        self.regs().receive_slave_address().set(address);
     }
 
     /// Reset the SMBus host controller to its normal idle programming.
