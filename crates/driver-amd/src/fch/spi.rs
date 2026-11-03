@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The SPI controller registers of the FCH at [`super::SPI_BASE`].
+//! The SPI controller registers of the FCH at [`super::SPI_BASE`], and a
+//! reserved flash region through its command engine ([`flash`]).
 use super::{Reg, SPI_BASE};
+#[cfg(feature = "spi-flash")]
+pub mod flash;
+
 use tock_registers::register_bitfields;
 
 register_bitfields![u32,
