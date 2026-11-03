@@ -260,9 +260,9 @@ fn launch_with_adapters(
         crabefi::logger::set_level(crabefi::logger::LEVEL_CHOICES[index]);
     }
     let mut variable_storage = launch.variable_storage;
-    let hooks = launch
-        .settings
-        .as_ref()
+    let mut launch_settings = launch.settings;
+    let hooks = launch_settings
+        .as_mut()
         .is_some_and(settings::install)
         .then_some(&settings::SettingsHooks as &dyn crabefi::PlatformHooks);
     init_platform_raw(PlatformConfig {

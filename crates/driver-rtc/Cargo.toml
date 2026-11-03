@@ -9,5 +9,6 @@ publish = false
 [dependencies]
 fstart-core = { workspace = true }
 fstart-log = { workspace = true }
+fstart-options = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }
