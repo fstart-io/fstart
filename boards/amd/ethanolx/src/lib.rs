@@ -10,7 +10,7 @@
 
 extern crate alloc;
 
-mod dxio;
+pub mod dxio;
 mod i2c;
 /// The SMM handler, built into the separate SMM image.
 #[cfg(feature = "smm")]
@@ -51,6 +51,7 @@ const BAUD: u32 = 115_200;
 
 impl board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
+    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
 }
 
 /// The board's console: the FCH's MMIO UART 1.
@@ -137,14 +138,9 @@ pub fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError> {
     Ok(())
 }
 
-/// The DXIO lane map from the board ID and PCIe straps on I2C, with the
-/// redrivers configured to match.
-pub fn dxio_engines<H: FchHw>(
-    _generation: Generation,
-    _levels: &[bool],
-    fch: &H,
-    timer: &dyn Timer,
-) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
+/// The socket-0 PCIe layout from the board ID and PCIe straps on I2C and
+/// the I/O fuses, with the strap routing set up.
+pub fn dxio_layout<H: FchHw>(fch: &H, timer: &dyn Timer) -> Result<dxio::Layout, BoardError> {
     let detected = i2c::detect(timer)?;
     fstart_log::info!(
         "ethanolx: board id {:#x}, PCIe straps {:#x}",
@@ -162,16 +158,21 @@ pub fn dxio_engines<H: FchHw>(
     fstart_log::info!("ethanolx: PCIe straps after routing {:#x}", detected.straps);
     // BSP-only before MP, using the platform's socket-0 SMN pair.
     let fuses = fstart_driver_amd::sp3::nbio::Fuses::read(&fch.smn());
-    let plan = dxio::plan(detected, fuses.limited_io()).map_err(|error| {
+    fstart_log::info!("ethanolx: fuse1 {:#x}", fuses.word[1]);
+    dxio::Layout::new(detected, fuses.limited_io()).map_err(|_| BoardError::Configuration)
+}
+
+/// The DXIO lane map of `layout`, with the redrivers configured to match.
+pub fn dxio_engines(
+    layout: &dxio::Layout,
+    timer: &dyn Timer,
+) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
+    let plan = dxio::plan(layout).map_err(|error| {
         let detail = alloc::format!("{error:?}");
         fstart_log::error!("ethanolx: PCIe policy: {}", detail.as_str());
         BoardError::Configuration
     })?;
-    fstart_log::info!(
-        "ethanolx: fuse1 {:#x}, {} DXIO engines",
-        fuses.word[1],
-        plan.engines.len()
-    );
+    fstart_log::info!("ethanolx: {} DXIO engines", plan.engines.len());
     if plan.disabled_xgbe != 0 {
         fstart_log::warn!(
             "ethanolx: {} xGbE descriptors disabled (legacy layout; no Milan xGbE controller)",
