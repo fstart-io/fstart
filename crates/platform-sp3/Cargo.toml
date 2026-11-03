@@ -34,7 +34,7 @@ payload-uefi = ["fstart-stage/crabefi"]
 smm = ["dep:fstart-smm"]
 bundle-smm = ["smm", "fstart-smm/stage-bin"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:serde", "dep:amd-apcb", "dep:num-traits"]
 
 # The AMD firmware files of each generation's PSP partition: the two-level
 # directories of the vendor images (level 1 the recovery set; the PSP and
@@ -623,6 +623,9 @@ fstart-driver-uart = { workspace = true, features = ["pio"] }
 tock-registers = { workspace = true }
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+serde = { workspace = true, optional = true }
+amd-apcb = { workspace = true, optional = true }
+num-traits = { version = "0.2", default-features = false, optional = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 ufmt = { workspace = true }

@@ -132,6 +132,58 @@ fn synthetic(generation: Generation) -> Vec<u8> {
     h
 }
 
+const SYNTHETIC_APCB_AT: usize = 0x30_0000;
+
+/// A synthetic vendor half with one level-2 APCB backup slot of
+/// `slot_size` bytes in an allocation of `allocation` bytes (the next
+/// occupied entry starts there), filled with `0xa5`.
+fn synthetic_with_apcb(generation: Generation, slot_size: u32, allocation: usize) -> Vec<u8> {
+    let mut h = synthetic(generation);
+    let gen1 = generation == NAPLES;
+    let ptr = |off: usize| off as u64 + if gen1 { MMIO_BASE } else { 0 };
+    let info = match generation {
+        MILAN => 0x10 | 1 << 29,
+        ROME => 0x10,
+        _ => 0,
+    };
+    let slot = vendor_slot(generation);
+    put_dir(
+        &mut h,
+        BL2,
+        b"$BL2",
+        info,
+        &[
+            bios_entry(bios::MICROCODE, 0, 0xc80, ptr(0x20_2000), u64::MAX),
+            bios_entry(
+                bios::RESET_IMAGE,
+                3,
+                slot.size,
+                ptr(slot.flash_offset as usize),
+                slot.destination,
+            ),
+            BiosEntry::new(
+                bios::APCB_BACKUP,
+                0,
+                8,
+                0,
+                slot_size,
+                ptr(SYNTHETIC_APCB_AT),
+                u64::MAX,
+            ),
+            bios_entry(
+                bios::MICROCODE,
+                0,
+                16,
+                ptr(SYNTHETIC_APCB_AT + allocation),
+                u64::MAX,
+            ),
+        ],
+    );
+    h[SYNTHETIC_APCB_AT..SYNTHETIC_APCB_AT + slot_size as usize].fill(0xa5);
+    h[SYNTHETIC_APCB_AT + allocation..SYNTHETIC_APCB_AT + allocation + 16].fill(0x5a);
+    h
+}
+
 fn plan(generations: &[Generation]) -> FlashPlan {
     FlashPlan {
         generations: generations.to_vec(),
@@ -139,6 +191,7 @@ fn plan(generations: &[Generation]) -> FlashPlan {
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
         mirrors: Vec::new(),
+        apcbs: Vec::new(),
     }
 }
 
@@ -297,6 +350,77 @@ fn dual_keeps_each_vendor_efs_with_its_own_reset_copy() {
         image[HALF + 0x21_1000..HALF + 0xde_0000]
             .iter()
             .all(|&b| b == 0xff)
+    );
+}
+
+#[test]
+fn generated_apcbs_replace_vendor_slots() {
+    let vendor = synthetic_with_apcb(ROME, 0x1000, 0x1000);
+    let payload = b"generated APCB".to_vec();
+    let mut plan = plan(&[ROME]);
+    plan.apcbs = vec![GeneratedApcb {
+        generation: ROME,
+        kind: bios::APCB_BACKUP,
+        instance: 8,
+        subprogram: 0,
+        bytes: payload.clone(),
+    }];
+    let out = compose(&vendor, &plan, &linked_reset(), &ffs(0x1_0000)).unwrap();
+    let slot = &out.image[SYNTHETIC_APCB_AT..SYNTHETIC_APCB_AT + 0x1000];
+    assert_eq!(&slot[..payload.len()], payload.as_slice());
+    assert!(slot[payload.len()..].iter().all(|&b| b == 0xff));
+}
+
+#[test]
+fn generated_apcb_expands_into_erased_allocation() {
+    let vendor = synthetic_with_apcb(ROME, 8, 0x1000);
+    let payload = b"generated APCB".to_vec();
+    let mut plan = plan(&[ROME]);
+    plan.apcbs = vec![GeneratedApcb {
+        generation: ROME,
+        kind: bios::APCB_BACKUP,
+        instance: 8,
+        subprogram: 0,
+        bytes: payload.clone(),
+    }];
+    let out = compose(&vendor, &plan, &linked_reset(), &ffs(0x1_0000)).unwrap();
+    let slot = &out.image[SYNTHETIC_APCB_AT..SYNTHETIC_APCB_AT + 0x1000];
+    assert_eq!(&slot[..payload.len()], payload.as_slice());
+    assert!(slot[payload.len()..].iter().all(|&b| b == 0xff));
+    let dirs = flash(ROME, &out.image)
+        .bios_directories_checked(ROME)
+        .unwrap();
+    let sizes: Vec<_> = dirs
+        .iter()
+        .flat_map(|d| d.entries.iter())
+        .filter(|e| e.kind == bios::APCB_BACKUP)
+        .map(|e| e.size())
+        .collect();
+    assert_eq!(sizes, [payload.len() as u32]);
+}
+
+#[test]
+fn generated_apcb_larger_than_vendor_slot_is_rejected() {
+    let vendor = synthetic_with_apcb(ROME, 8, 8);
+    let mut plan = plan(&[ROME]);
+    plan.apcbs = vec![GeneratedApcb {
+        generation: ROME,
+        kind: bios::APCB_BACKUP,
+        instance: 8,
+        subprogram: 0,
+        bytes: vec![0; 9],
+    }];
+    let error = compose(&vendor, &plan, &linked_reset(), &ffs(0x1_0000)).unwrap_err();
+    assert_eq!(
+        error,
+        ImageError::ApcbTooLarge {
+            generation: ROME,
+            kind: bios::APCB_BACKUP,
+            instance: 8,
+            subprogram: 0,
+            payload: 9,
+            slot: 8,
+        }
     );
 }
 

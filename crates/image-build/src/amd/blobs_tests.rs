@@ -92,14 +92,21 @@ fn sp3_generation_and_board_tables_resolve() {
             assert!(resolved.files.two_level);
             assert_eq!(resolved.files.partition_end, 0x60_0000);
             assert!(soc.apob_destination.is_some());
-            // The board's five APCB files.
-            let apcbs = resolved
-                .files
-                .bios
-                .iter()
-                .filter(|f| matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP))
-                .count();
-            assert_eq!(apcbs, 5);
+            // The board's five generated-APCB slots, no APCB files.
+            assert_eq!(resolved.apcb_slots.len(), 5);
+            assert!(
+                resolved
+                    .apcb_slots
+                    .iter()
+                    .all(|(k, _)| matches!(k.kind, bios::APCB | bios::APCB_BACKUP))
+            );
+            assert!(
+                resolved
+                    .files
+                    .bios
+                    .iter()
+                    .all(|f| !matches!(f.key.kind, bios::APCB | bios::APCB_BACKUP))
+            );
         }
     }
     let naples: SocBlobs = serde_json::from_value(platform["amd"]["naples"].clone()).unwrap();

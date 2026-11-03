@@ -10,6 +10,7 @@
 
 extern crate alloc;
 
+mod apcb;
 mod dxio;
 mod i2c;
 #[cfg(fstart_stage_env = "smm")]
@@ -42,6 +43,10 @@ impl Sp3BoardFacts for Board {
     /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
     /// 64 MiB export and leaves [16, 48) MiB alone.
     const FLASH_MIRRORS: &'static [u32] = &[0x300_0000];
+
+    fn apcb(generation: Generation) -> Option<fstart_driver_amd::apcb::ApcbFacts> {
+        Some(crate::apcb::facts(generation))
+    }
 }
 
 // RXM100CB AmdCpmOemInitPeim, $A10 at 0xffd6e3e4: one pad then 0x00ff.

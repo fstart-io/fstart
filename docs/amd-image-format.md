@@ -201,6 +201,10 @@ apcb = { instances = 13 }
   an APCB generated from a template (`ApcbFiles`). `gpio` has exactly four entries.
 - `apcb = { entries = [...] }`: BIOS entries with the board's files, fields as
   in the SoC table (the server APCB sets: several types, subprograms and levels).
+- `apcb = { generated = [...] }`: BIOS slots (same fields minus `file`) whose
+  payloads the board's platform generates from board facts at plan time
+  (SP3: `fstart_driver_amd::apcb` + `fstart_platform_sp3::host::apcb`). In a
+  vendor composition the generated payloads replace the vendor slots' contents.
 - `apob-destination`: overrides the SoC table's.
 
 A board of several SoCs (the SP3 generations) has one table per SoC instead,

@@ -209,6 +209,13 @@ pub trait Sp3BoardFacts {
     /// readout, and the build is a full flash image with the bank at 0 and
     /// at every mirror.
     const FLASH_MIRRORS: &'static [u32] = &[];
+    /// The board's APCB facts for `generation` (memory policy, SPD
+    /// wiring, board ID), from which the host generates the payloads
+    /// ABL trains DRAM with. `None` (the default) keeps the vendor
+    /// image's APCBs / the blob directory's APCB files.
+    fn apcb(_generation: Generation) -> Option<fstart_driver_amd::apcb::ApcbFacts> {
+        None
+    }
 }
 
 /// Whether this build carries `generation`'s silicon code (its platform

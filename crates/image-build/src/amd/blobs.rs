@@ -218,9 +218,34 @@ pub enum BoardApcb {
     /// BIOS directory entries with the board's files, for the APCB sets
     /// of the server SoCs (several types, subprograms and levels).
     Entries { entries: Vec<DirectoryFile> },
+    /// BIOS directory slots whose payloads the board's platform
+    /// generates at plan time from board facts (the SP3 APCBs); the
+    /// platform fills them, this only declares where they go.
+    Generated { generated: Vec<GeneratedSlot> },
     /// Generated from a template ([`ApcbFiles`]), paths in the blob
     /// directory.
     Template(ApcbFiles),
+}
+
+/// A generated-APCB directory slot: a [`DirectoryFile`] without a
+/// file, because the platform generates the content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct GeneratedSlot {
+    #[serde(rename = "type")]
+    pub kind: u8,
+    #[serde(default)]
+    pub subprogram: u8,
+    #[serde(default)]
+    pub instance: u8,
+    /// The level of a two-level partition, 1 or 2; both if absent.
+    #[serde(default)]
+    pub level: Option<u8>,
+}
+impl GeneratedSlot {
+    pub fn key(&self) -> Key {
+        Key::new(self.kind, self.subprogram, self.instance)
+    }
 }
 
 /// The path of a board's APCB instance in a blob directory.
@@ -233,6 +258,9 @@ pub fn apcb_file(board: &str, instance: u8) -> String {
 pub struct Resolved {
     pub files: PspFiles,
     pub microcode: Vec<String>,
+    /// Generated-APCB slots the platform must fill with payloads
+    /// (empty unless the metadata says `generated`).
+    pub apcb_slots: Vec<(Key, Level)>,
 }
 
 /// The files of `soc` and `board` in the blob directory `blobs`, for a
@@ -284,6 +312,7 @@ pub fn resolve(
     };
     let psp = directory(&soc.psp, true)?;
     let mut bios = directory(&soc.bios, false)?;
+    let mut apcb_slots = Vec::new();
     let apcb = match &board.apcb {
         BoardApcb::Files { instances } => {
             for instance in 0..*instances {
@@ -300,6 +329,25 @@ pub fn resolve(
         }
         BoardApcb::Entries { entries } => {
             bios.extend(directory(entries, false)?);
+            None
+        }
+        BoardApcb::Generated { generated } => {
+            for slot in generated {
+                if !matches!(slot.kind, bios::APCB | bios::APCB_BACKUP) {
+                    return Err(format!(
+                        "generated entry {:?} is not an APCB slot",
+                        slot.key()
+                    ));
+                }
+                let level = Level::from_table(slot.level)?;
+                if soc.levels == 1 && slot.level.is_some() {
+                    return Err(format!(
+                        "generated entry {:?} has a level in a single-level partition",
+                        slot.key()
+                    ));
+                }
+                apcb_slots.push((slot.key(), level));
+            }
             None
         }
         BoardApcb::Template(apcb) => Some(ApcbFiles {
@@ -333,6 +381,7 @@ pub fn resolve(
         })
         .collect::<Result<_, String>>()?;
     Ok(Resolved {
+        apcb_slots,
         files: PspFiles {
             flash_size,
             efs_offset: soc.efs_offset,

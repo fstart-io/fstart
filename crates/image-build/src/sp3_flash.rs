@@ -8,7 +8,9 @@
 //! Every supported vendor half keeps its vendor EFS and its PSP/BIOS
 //! directories and blobs in place (`[0, prefix)` of the half, the vendor's
 //! "Two 16M in 32MB" layout, AMD #55758 rev 1.13 §4.1.7); only its `0x62`
-//! entries change, to a copy of the reset image at the half's own
+//! entries change, to a copy of the reset image at the half's own,
+//! and (for boards that generate their APCBs) the contents of its APCB
+//! directory slots, replaced with the generated payloads
 //! `0xde0000`.
 //!
 //! ```text
@@ -197,6 +199,17 @@ pub enum ImageError {
     Plan(&'static str),
     /// The vendor ROM does not fit the layout.
     Layout(&'static str),
+    /// A generated APCB is larger than the vendor half's directory slot.
+    /// Generated payloads cannot relocate vendor entries, so composition
+    /// must fail rather than truncate the configuration ABL consumes.
+    ApcbTooLarge {
+        generation: Generation,
+        kind: u8,
+        instance: u8,
+        subprogram: u8,
+        payload: usize,
+        slot: usize,
+    },
     /// An EFS signature at a boot ROM search offset other than the EFS.
     StrayEfs {
         offset: usize,
@@ -388,6 +401,26 @@ pub struct FlashPlan {
     /// window (one 16 MiB half or the 32 MiB dual image).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mirrors: Vec<u32>,
+    /// APCB payloads the platform generated from board facts. In a
+    /// vendor composition they replace the vendor half's APCB slots
+    /// (`compose`); in packed halves they are redundant (the packed
+    /// files already carry them as entries) and only checked against.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apcbs: Vec<GeneratedApcb>,
+}
+
+/// One generated APCB payload and the BIOS directory slot it belongs
+/// in, for one generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedApcb {
+    #[serde(with = "generation_name")]
+    pub generation: Generation,
+    /// `bios::APCB` (0x60) or `bios::APCB_BACKUP` (0x68).
+    pub kind: u8,
+    pub instance: u8,
+    pub subprogram: u8,
+    pub bytes: Vec<u8>,
 }
 
 /// What happens to one half of the vendor ROM.
@@ -596,12 +629,142 @@ fn build(
         let bytes = &mut out[half.range()];
         bytes[layout.prefix_end..].fill(0xff);
         rewrite_half(bytes, &tables, plan)?;
+        let mut apcb_limit = plan.reset.flash_offset as usize;
+        if half.offset() == 0 {
+            apcb_limit = apcb_limit.min(survey.ffs.start as usize);
+        }
+        replace_apcbs(bytes, &vendor, plan, &tables, apcb_limit)?;
         let reset_at = half.offset() + plan.reset.flash_offset as usize;
         out[reset_at..reset_at + reset.len()].copy_from_slice(reset);
     }
     let start = survey.ffs.start as usize;
     out[start..start + ffs.len()].copy_from_slice(ffs);
     Ok(out)
+}
+
+/// Replace the APCB slots of one composed vendor half with the plan's
+/// generated payloads of its generation. Every APCB entry in the half
+/// must have a generated payload and vice versa: silently keeping a
+/// vendor APCB would train DRAM with the donor's board data. A payload
+/// may grow beyond the vendor entry's declared size only into erased
+/// padding before the next occupied directory extent or entry (and
+/// before `limit`, the FFS/reset boundary); its directory entries are
+/// then resized. Slot padding beyond a payload is erased flash, as the
+/// donors have it. Halves without generated APCBs are untouched.
+fn replace_apcbs(
+    half: &mut [u8],
+    vendor: &Vendor<'_>,
+    plan: &FlashPlan,
+    tables: &[usize],
+    limit: usize,
+) -> Result<(), ImageError> {
+    let generation = vendor.generation;
+    let generated: Vec<&GeneratedApcb> = plan
+        .apcbs
+        .iter()
+        .filter(|a| a.generation == generation)
+        .collect();
+    if generated.is_empty() {
+        return Ok(());
+    }
+    let mut occupied: Vec<Range<usize>> = Vec::new();
+    fn collect<E: Entry>(
+        levels: &Levels<'_, E>,
+        occupied: &mut Vec<Range<usize>>,
+    ) -> Result<(), ImageError> {
+        for dir in levels.iter() {
+            // The header's reserved directory extent can span the data
+            // entries that follow it; only its actual table is occupied.
+            occupied.push(dir.offset..dir.offset + dir.table().len());
+            for entry in dir.entries.iter().filter(|e| e.has_data()) {
+                occupied.push(dir.range(entry)?);
+            }
+        }
+        Ok(())
+    }
+    collect(&vendor.psp, &mut occupied)?;
+    collect(&vendor.bios, &mut occupied)?;
+    occupied.sort_by_key(|r| (r.start, r.end));
+    occupied.dedup();
+
+    let mut used = vec![false; generated.len()];
+    let mut writes: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut expanded: Vec<&GeneratedApcb> = Vec::new();
+    for dir in vendor.bios.iter() {
+        for entry in dir
+            .entries
+            .iter()
+            .filter(|e| matches!(e.kind, bios::APCB | bios::APCB_BACKUP) && e.has_data())
+        {
+            let (index, apcb) = generated
+                .iter()
+                .enumerate()
+                .find(|(_, a)| {
+                    a.kind == entry.kind
+                        && a.instance == entry.instance()
+                        && a.subprogram == entry.subprogram()
+                })
+                .ok_or(ImageError::Layout(
+                    "vendor half has an APCB slot the board does not generate",
+                ))?;
+            let range = dir.range(entry)?;
+            let candidate_end = range.start + apcb.bytes.len();
+            let allocation_end = occupied
+                .iter()
+                .map(|r| r.start)
+                .filter(|&start| start > range.start)
+                .min()
+                .unwrap_or(half.len())
+                .min(limit);
+            let overlaps = occupied
+                .iter()
+                .any(|r| r.start < candidate_end && range.end < r.end && *r != range);
+            if candidate_end > allocation_end
+                || overlaps
+                || (candidate_end > range.end
+                    && half[range.end..candidate_end.min(allocation_end.max(range.end))]
+                        .iter()
+                        .any(|&b| b != 0xff))
+            {
+                return Err(ImageError::ApcbTooLarge {
+                    generation,
+                    kind: apcb.kind,
+                    instance: apcb.instance,
+                    subprogram: apcb.subprogram,
+                    payload: apcb.bytes.len(),
+                    slot: allocation_end - range.start,
+                });
+            }
+            if apcb.bytes.len() > range.len() && !expanded.contains(apcb) {
+                expanded.push(apcb);
+            }
+            writes.push((range, index));
+            used[index] = true;
+        }
+    }
+    if used.iter().any(|u| !u) {
+        return Err(ImageError::Layout(
+            "generated APCB has no slot in the vendor half",
+        ));
+    }
+    for &offset in tables {
+        let changed = modify_entries(half, offset, |e: &mut BiosEntry| {
+            if let Some(apcb) = expanded.iter().find(|a| {
+                a.kind == e.kind && a.instance == e.instance() && a.subprogram == e.subprogram()
+            }) {
+                e.size.set(apcb.bytes.len() as u32);
+            }
+        });
+        if changed.is_none() {
+            return Err(ImageError::Verify("a BIOS directory moved"));
+        }
+    }
+    for (range, index) in writes {
+        let apcb = generated[index];
+        half[range.clone()].fill(0xff);
+        half[range.start..range.start + apcb.bytes.len()].copy_from_slice(&apcb.bytes);
+    }
+    Ok(())
 }
 
 /// Re-read the composed image as the boot ROMs and the reset image will:
