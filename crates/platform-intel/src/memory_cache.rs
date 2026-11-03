@@ -4,7 +4,7 @@
 //! Payload validity and topology/policy identity belong to the memory driver.
 //! Write only from a RAM-resident stage, after successful cold memory testing.
 
-use fstart_core::services::ServiceError;
+use fstart_core::services::{FlashRegion, ServiceError};
 use fstart_driver_intel::BootPath;
 use sha2::{Digest, Sha256};
 use zerocopy::byteorder::{LittleEndian, U32};
@@ -28,14 +28,6 @@ struct Header {
 const HEADER_SIZE: usize = core::mem::size_of::<Header>();
 const COMMIT_OFFSET: usize = HEADER_SIZE - 4;
 const DIGEST_OFFSET: usize = COMMIT_OFFSET - 32;
-
-/// Narrow storage contract; every offset is relative to the trusted cache
-/// extent. The backend enforces physical bounds, chip geometry and protection.
-pub trait Storage {
-    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError>;
-    fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError>;
-    fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError>;
-}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Record {
@@ -86,7 +78,7 @@ impl Journal {
 
     fn read_bank(
         &self,
-        flash: &mut impl Storage,
+        flash: &mut impl FlashRegion,
         bank: usize,
         committed: bool,
     ) -> Result<Option<Record>, ServiceError> {
@@ -120,7 +112,10 @@ impl Journal {
     /// Load the newest complete record. Storage failures are not cache misses.
     /// Callers must independently match `key` and decode/validate the payload;
     /// on S3, any mismatch or miss must reset rather than cold-train retained RAM.
-    pub fn load(&self, flash: &mut impl Storage) -> Result<Option<(usize, Record)>, ServiceError> {
+    pub fn load(
+        &self,
+        flash: &mut impl FlashRegion,
+    ) -> Result<Option<(usize, Record)>, ServiceError> {
         let first = self.read_bank(flash, 0, true)?;
         let second = self.read_bank(flash, 1, true)?;
         Ok(match (first, second) {
@@ -141,7 +136,7 @@ impl Journal {
     /// Returns false when the complete payload/key are already current.
     pub fn save(
         &self,
-        flash: &mut impl Storage,
+        flash: &mut impl FlashRegion,
         record: &Record,
         boot: BootPath,
     ) -> Result<bool, ServiceError> {
@@ -210,7 +205,7 @@ impl MappedRead {
     }
 }
 #[cfg(all(feature = "stage", feature = "memory-cache"))]
-impl Storage for MappedRead {
+impl FlashRegion for MappedRead {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
         let offset = offset as usize;
         if offset
@@ -402,22 +397,6 @@ fn newer(candidate: u32, reference: u32) -> bool {
     (candidate.wrapping_sub(reference) as i32) > 0
 }
 
-#[cfg(all(
-    feature = "memory-cache",
-    any(target_arch = "x86", target_arch = "x86_64")
-))]
-impl Storage for fstart_driver_intel::southbridge::spi::CacheSpi {
-    fn read(&mut self, o: u32, b: &mut [u8]) -> Result<(), ServiceError> {
-        self.read(o, b)
-    }
-    fn program(&mut self, o: u32, b: &[u8]) -> Result<(), ServiceError> {
-        self.program(o, b)
-    }
-    fn erase(&mut self, o: u32, n: u32) -> Result<(), ServiceError> {
-        self.erase(o, n)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -445,7 +424,7 @@ mod tests {
             fail
         }
     }
-    impl Storage for Flash {
+    impl FlashRegion for Flash {
         fn read(&mut self, o: u32, b: &mut [u8]) -> Result<(), ServiceError> {
             b.copy_from_slice(&self.bytes[o as usize..o as usize + b.len()]);
             Ok(())
