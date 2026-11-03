@@ -78,5 +78,6 @@ pub(crate) fn storage(
 pub(crate) fn settings(ctx: &Ctx) -> fstart_payload::crabefi::settings::FirmwareSettings {
     fstart_payload::crabefi::settings::FirmwareSettings {
         cfr: fstart_options::cfr::encode(&ctx.options),
+        cmos: None,
     }
 }
