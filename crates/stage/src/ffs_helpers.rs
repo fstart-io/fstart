@@ -1,6 +1,6 @@
 //! Directory-backed loading. Unsupported multi-segment files fail before writes.
 use crate::boot::MemoryPolicy;
-use crate::boot::{load_bootstrap, read_exact};
+use crate::boot::{Event, Measurement, load_bootstrap, read_exact};
 use crate::heap::vec::Vec;
 use fstart_core::ffs::{Compression, FileType, SegmentKind};
 use fstart_core::services::{BootMedia, TempRamArena};
@@ -46,12 +46,32 @@ fn descriptor(file: &FileView<'_>) -> Option<BootstrapDescriptor> {
     })
 }
 
+/// Load `file` through the loading chain, measured as `measurement` with
+/// the file's flash address as the event base and, unless the measurement
+/// names it, the file's name as its description.
 pub(crate) fn load_file_segments_from_media(
     media: &(impl BootMedia + ?Sized),
     file: &FileView<'_>,
     image_size: usize,
+    measurement: &Measurement<'_>,
 ) -> Option<u64> {
     let mut descriptor = descriptor(file)?;
+    let name = file.name().ok()?;
+    let measurement = Measurement {
+        event: Event {
+            base: media
+                .as_slice()
+                .map_or(0, |mapped| mapped.as_ptr() as u64)
+                .checked_add(descriptor.offset)?,
+            description: if measurement.event.description.is_empty() {
+                name
+            } else {
+                measurement.event.description
+            },
+            ..measurement.event
+        },
+        ..*measurement
+    };
     let [segment] = file.segments() else {
         return None;
     };
@@ -82,7 +102,7 @@ pub(crate) fn load_file_segments_from_media(
     let footprint = crate::boot::bootstrap_footprint(&descriptor)
         .ok()?
         .max(u64::from(segment.loaded_size()));
-    crate::boot::validate_destination(media, &policy, descriptor.load_addr, footprint).ok()?;
+    crate::boot::place(media, &policy, descriptor.load_addr, footprint).ok()?;
     if descriptor.offset.checked_add(descriptor.stored_size)? > image_size as u64 {
         return None;
     }
@@ -102,7 +122,9 @@ pub(crate) fn load_file_segments_from_media(
     }
     .ok()?;
     // SAFETY: set_load_policy's platform contract supplies exclusive mappings.
-    let verified = unsafe { load_bootstrap(media, &descriptor, &policy) }.ok()?;
+    let codec = crate::directory::codec()?;
+    let verified =
+        unsafe { load_bootstrap(media, &descriptor, &policy, codec, &measurement) }.ok()?;
     let tail = u64::from(segment.loaded_size()).checked_sub(descriptor.loaded_size)?;
     if tail != 0 {
         // SAFETY: full initialized+BSS footprint was checked above; scratch is
@@ -134,9 +156,19 @@ pub fn load_ffs_file_entry_by_type(
     media: &(impl BootMedia + ?Sized),
     file_type: FileType,
 ) -> Option<u64> {
+    load_ffs_file_measured(media, file_type, &Measurement::NONE)
+}
+
+/// [`load_ffs_file_entry_by_type`], measuring the file's stored bytes as
+/// `measurement` on the way.
+pub fn load_ffs_file_measured(
+    media: &(impl BootMedia + ?Sized),
+    file_type: FileType,
+    measurement: &Measurement<'_>,
+) -> Option<u64> {
     let directory = crate::directory::view(media).ok()?;
     let file = directory.find_file_by_type(file_type).ok()?;
-    load_file_segments_from_media(media, &file, media.size())
+    load_file_segments_from_media(media, &file, media.size(), measurement)
 }
 
 pub fn load_ffs_file_by_name(
@@ -150,7 +182,7 @@ pub fn load_ffs_file_by_name(
     let Ok(file) = directory.find_file_by_name(name) else {
         return false;
     };
-    load_file_segments_from_media(media, &file, media.size()).is_some()
+    load_file_segments_from_media(media, &file, media.size(), &Measurement::NONE).is_some()
 }
 
 fn stored_file(directory: ManifestView<'_>, file_type: FileType) -> Option<BootstrapDescriptor> {
@@ -261,7 +293,14 @@ pub(crate) fn read_asset(media: &(impl BootMedia + ?Sized), name: &str) -> Optio
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(footprint).ok()?;
     bytes.resize(footprint, 0);
-    crate::boot::load_bootstrap_into(media, &descriptor, &mut bytes).ok()?;
+    crate::boot::load_bootstrap_into(
+        media,
+        &descriptor,
+        &mut bytes,
+        crate::directory::codec()?,
+        &Measurement::NONE,
+    )
+    .ok()?;
     bytes.truncate(usize::try_from(descriptor.loaded_size).ok()?);
     // Avoid shrinking/reallocating with the stage's non-reclaiming allocator.
     Some(bytes.leak())
@@ -308,6 +347,7 @@ pub unsafe fn stage_load_with_policy(
     media: &(impl BootMedia + ?Sized),
     role: BootstrapRole,
     policy: &MemoryPolicy<'_>,
+    codec: &dyn crate::boot::Codec,
 ) -> Option<crate::boot::VerifiedExecutable> {
     let root = crate::root::authenticate_boot_root(anchor_data, media).ok()?;
     let mut descriptors = root
@@ -320,5 +360,5 @@ pub unsafe fn stage_load_with_policy(
         return None;
     }
     // SAFETY: caller supplies the same physical mapping contract as load_bootstrap.
-    unsafe { load_bootstrap(media, descriptor, policy) }.ok()
+    unsafe { load_bootstrap(media, descriptor, policy, codec, &Measurement::NONE) }.ok()
 }

@@ -1,0 +1,23 @@
+//! X60 bootblock: from cache-as-RAM to postcar in DRAM.
+
+#![no_std]
+#![no_main]
+
+use fstart_board_lenovo_x60::{Board, mainboard};
+use fstart_driver_uart::ns16550::Ns16550;
+use fstart_log::StaticConsole;
+use fstart_platform_intel::bootblock::Bootblock;
+
+static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
+
+fstart_platform_intel::entry!(main, reset_vector);
+
+fn main() -> ! {
+    let bb = Bootblock::<Board>::enter();
+    let mut pins = mainboard::Pins::of(bb.southbridge().gpio());
+    mainboard::setup_dock_console(&mut pins.dock_present);
+    bb.console(&CONSOLE, mainboard::console())
+        .train_memory()
+        .post_dram()
+        .load_postcar()
+}

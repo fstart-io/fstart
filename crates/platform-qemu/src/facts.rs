@@ -13,7 +13,6 @@ pub enum VirtMachine {
     Q35ProtectedMode,
     Sbsa,
     SifiveU,
-    Unmatched,
 }
 
 impl VirtMachine {

@@ -72,8 +72,6 @@
         "data_addr": 2164260864,
         "heap_size": 262144,
         "load_addr": 536870912,
-        "page_size": "Size2MiB",
-        "page_table_addr": null,
         "stack_size": 1048576
       }
     }
@@ -117,8 +115,6 @@
       "_stack_top": 2168455168
     }
   },
-  "entry": "riscv64",
-  "environment": "monolithic",
-  "linker_sha256": "90857b0c92928141880856e570ca4044d7399f7408bb8cdb89a94db3520ecb4a",
+  "linker_sha256": "fe025ae6b29aa895dbf0bfa27dde072bd2cae0be558efc8366cb38b3c4666173",
   "target": "riscv64gc-unknown-none-elf"
 }

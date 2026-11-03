@@ -411,14 +411,8 @@ pub const ICH7_PINEVIEW_ROUTING: PirqRouting = PirqRouting {
             line: Pirq::A,
         },
     ],
-    // D41S slot wiring behind the PCI bridge (coreboot `ich7_pci_irqs.asl`).
-    bridge_routes: &[
-        PinRoute::new(0x00, PciPin::A, Pirq::F),
-        PinRoute::new(0x00, PciPin::B, Pirq::G),
-        PinRoute::new(0x00, PciPin::C, Pirq::H),
-        PinRoute::new(0x00, PciPin::D, Pirq::E),
-        PinRoute::new(0x01, PciPin::A, Pirq::D),
-    ],
+    // What sits behind the PCI bridge is board wiring; boards add it.
+    bridge_routes: &[],
 };
 
 /// ICH8/ICH8-M routing as programmed by coreboot's ICH8 early init.
@@ -655,18 +649,8 @@ pub const ICH8_ROUTING: PirqRouting = PirqRouting {
             line: Pirq::B,
         },
     ],
-    // X61 devices behind the PCI bridge: the Ricoh multifunction device and
-    // the UltraBase dock slots (coreboot `ich8_pci_irqs.asl`).
-    bridge_routes: &[
-        PinRoute::new(0x00, PciPin::A, Pirq::A),
-        PinRoute::new(0x00, PciPin::B, Pirq::B),
-        PinRoute::new(0x00, PciPin::C, Pirq::C),
-        PinRoute::new(0x00, PciPin::D, Pirq::D),
-        PinRoute::new(0x01, PciPin::A, Pirq::A),
-        PinRoute::new(0x02, PciPin::A, Pirq::F),
-        PinRoute::new(0x02, PciPin::B, Pirq::G),
-        PinRoute::new(0x08, PciPin::A, Pirq::E),
-    ],
+    // What sits behind the PCI bridge is board wiring; boards add it.
+    bridge_routes: &[],
 };
 
 #[cfg(test)]

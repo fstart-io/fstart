@@ -496,6 +496,16 @@ pub fn measure_blob(pcr: u32, event_type: u32, description: &str, base: u64, dat
     measure(pcr, event_type, data, event.as_bytes());
 }
 
+/// Measured boot as a measurement block: every measurement is a
+/// [`measure_blob`]. Measures nothing until [`start`] succeeded.
+pub struct Tcg;
+
+impl fstart_core::services::Measure for Tcg {
+    fn measure(&self, event: &fstart_core::services::measure::Event<'_>, bytes: &[u8]) {
+        measure_blob(event.pcr, event.kind, event.description, event.base, bytes);
+    }
+}
+
 /// Measure the version of the static root of trust (`EV_S_CRTM_VERSION`).
 pub fn measure_crtm_version(version: &str) {
     measure_event(

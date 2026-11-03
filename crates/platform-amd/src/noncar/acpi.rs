@@ -14,12 +14,6 @@ use fstart_log::Hex;
 use fstart_pci::{MAX_PCI_ROOT_WINDOWS, PciEcam, ecam::GlobalEcam};
 use heapless::Vec;
 
-/// The ECAM window: its base and bus count.
-pub struct Ecam {
-    pub base: u64,
-    pub buses: u16,
-}
-
 /// The ACPI host bridge of a root complex: its buses and windows and the
 /// bridges the enumeration found on its root bus.
 pub struct HostBridge {
@@ -73,7 +67,7 @@ pub fn install<S: super::Soc>(
     dies: &[Die<S, GlobalEcam>],
     hosts: &[HostBridge],
     ioapics: &[u32],
-    window: Ecam,
+    pci: fstart_core::description::PciRootInfo,
     apic_ids: &[u32],
     board: &BoardAcpi,
 ) -> Option<u64> {
@@ -106,8 +100,7 @@ pub fn install<S: super::Soc>(
         soc,
         apic_ids,
         dies: &dies,
-        ecam_base: window.base,
-        ecam_buses: window.buses,
+        pci,
         hpet_id,
         power: Some(power::Power {
             pstates: &pstates,

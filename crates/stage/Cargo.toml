@@ -14,15 +14,8 @@ riscv64-sunxi-entry = ["fstart-arch/riscv64-sunxi-entry"]
 riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 
-# x86_64: use 1 GiB pages (requires PDPE1GB). Default is 2 MiB pages.
-x86-1g-pages = ["fstart-arch/x86-1g-pages"]
-# x86_64: build page tables at runtime in writable RAM. Enabled only for
-# boards with page_table_addr (QEMU); real XIP boards use ROM tables.
-x86-writable-page-tables = ["fstart-arch/x86-writable-page-tables"]
-# x86_64: emit static ROM page tables for first-stage real XIP boards.
-x86-static-page-tables = ["fstart-arch/x86-static-page-tables"]
 # FFS / crypto features
-bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
+bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-load", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
 ffs = ["bootstrap", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor"]
 ffs-signature = ["bootstrap", "fstart-ffs/ed25519", "fstart-arch/early-ffs-anchor"]
 ed25519 = ["ffs-signature"]
@@ -36,39 +29,26 @@ sha3-digest = [
   "fstart-crypto/sha3-digest",
   "fstart-ffs/sha3-digest",
 ]
-# LZ4 decompression for compressed stage/payload segments
-lz4 = ["bootstrap"]
 # FDT preparation for Linux boot (raw blob patcher, no alloc)
-fdt = ["bootstrap"]
-# Additive Linux backend availability; fstart_payload selects the launcher.
-linux = []
-# x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
-coreboot = ["ffs", "dep:fstart-coreboot"]
+fdt = ["bootstrap", "dep:fstart-fdt"]
 # TCG measured boot (TPM 1.2 and 2.0) of the FFS contents and payloads.
-tcg = ["ffs", "dep:fstart-tcg", "fstart-boot?/tcg"]
+tcg = ["ffs", "dep:fstart-tcg"]
 # FIT image parsing at runtime
 fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
-# Inter-stage handoff serialization (postcard, for multi-stage boards)
-handoff = ["dep:postcard"]
+# Inter-stage handoff (fixed little-endian record, for multi-stage boards)
+handoff = []
 # ACPI table generation lives in the selected board/platform crate; fstart-stage
 # only provides the allocator needed by ACPI-capable flows.
 acpi = []
 # SMBIOS-capable fixed flows use the same stage-local allocator.
 smbios = []
-# CrabEFI UEFI payload — links CrabEFI as a library and boots via init_platform().
-# The UI profile adds CrabEFI's graphical boot manager; all profiles require the
-# local stage allocator.
-crabefi = ["crabefi-basic", "fstart-boot/crabefi"]
-crabefi-ui = ["crabefi", "fstart-boot/crabefi-ui"]
-crabefi-elan-i2c = ["crabefi-basic", "fstart-boot/crabefi-elan-i2c"]
-crabefi-hid-i2c = ["crabefi-basic", "fstart-boot/crabefi-hid-i2c"]
-crabefi-basic = ["bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
+# The stage-local allocator, for code that allocates (payload launchers).
+alloc = []
 
 [dependencies]
 # Core firmware infrastructure
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
-fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
 fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }
@@ -78,10 +58,11 @@ zerocopy = { workspace = true }
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
+fstart-load = { workspace = true, optional = true }
+fstart-fdt = { workspace = true, optional = true }
 fstart-boot = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
-postcard = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.
 

@@ -24,10 +24,9 @@ use crate::MmioBar;
 use crate::ich7::ich7;
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;
-use fstart_core::services::MemoryController;
+use fstart_core::services::ServiceError;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
-use fstart_core::services::{ServiceError, SmBus};
 use fstart_intel_gma::types::{Cpu, PciAddress, Port};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
@@ -590,36 +589,6 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
         }
     }
 
-    fn dram_init_cached(
-        &mut self,
-        smbus: Option<&mut dyn SmBus>,
-        cached: Option<&[u8]>,
-        output: &mut [u8],
-    ) -> Result<Option<usize>, ServiceError> {
-        let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
-        let initialized = raminit::sdram_initialize_cached(
-            &self.mchbar(),
-            smbus,
-            self.boot_path,
-            self.platform_type(),
-            &self.config.spd_addresses,
-            cached,
-            output,
-        )?;
-        self.detected_size = initialized.total_bytes;
-        self.memory_info = Some(initialized.memory_info);
-        if self.boot_path != crate::BootPath::S3Resume {
-            fstart_timestamp::add(fstart_timestamp::id::RAMINIT_MEMORY_TEST);
-            self.memory_test()?;
-        }
-        Ok(initialized.captured)
-    }
-
-    fn dram_init_with_smbus(&mut self, smbus: Option<&mut dyn SmBus>) -> Result<(), ServiceError> {
-        let smbus = smbus.ok_or(ServiceError::NotInitialized)?;
-        self.dram_init_with_smbus(smbus)
-    }
-
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
         let rcba = Rcba::new((lpc.read32(ich7::RCBA_REG) & 0xFFFF_C000) as usize);
@@ -745,13 +714,7 @@ impl MemoryDetector for IntelPineview {
     }
 }
 
-impl MemoryController for IntelPineview {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
-        // Pineview SPD access belongs to the initialized ICH7 SMBus. The Intel
-        // early flow must call IntelNorthbridgeDriver::dram_init_with_smbus().
-        Err(ServiceError::NotInitialized)
-    }
-
+impl IntelPineview {
     fn detected_size_bytes(&self) -> u64 {
         self.detected_size
     }
@@ -772,28 +735,37 @@ impl MemoryController for IntelPineview {
     }
 }
 
-impl IntelPineview {
-    fn dram_init_with_smbus(
+impl fstart_core::services::MemoryInit for IntelPineview {
+    type Input<'a> = crate::SpdTraining<'a>;
+    type Output = Option<usize>;
+
+    /// Read the SPDs, then train or replay a cached training the SPDs still
+    /// match; capture the training after the memory test. The board
+    /// programs its clock generator before.
+    fn bring_up(
         &mut self,
-        smbus: &mut (impl SmBus + ?Sized),
-    ) -> Result<(), ServiceError> {
-        // The board programs its clock generator through the shared CK505
-        // driver before DRAM init (see the board's `before_memory` hook); the
-        // northbridge does not carry a copy of a board's clock table.
-        let platform_type = self.platform_type();
+        crate::SpdTraining {
+            smbus,
+            cached,
+            capture,
+        }: crate::SpdTraining<'_>,
+    ) -> Result<Option<usize>, ServiceError> {
         let initialized = raminit::sdram_initialize(
             &self.mchbar(),
             smbus,
             self.boot_path,
-            platform_type,
+            self.platform_type(),
             &self.config.spd_addresses,
+            cached,
+            capture,
         )?;
         self.detected_size = initialized.total_bytes;
         self.memory_info = Some(initialized.memory_info);
         if self.boot_path != crate::BootPath::S3Resume {
+            fstart_timestamp::add(fstart_timestamp::id::RAMINIT_MEMORY_TEST);
             self.memory_test()?;
         }
-        Ok(())
+        Ok(initialized.captured)
     }
 }
 

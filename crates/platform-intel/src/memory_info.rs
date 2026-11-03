@@ -6,7 +6,6 @@ use fstart_store::{Store, tag};
 
 /// Publish the inventory raminit reports, if any. A resume reuses the entry
 /// of the cold boot.
-#[cfg(fstart_stage_env = "car")]
 pub(crate) fn publish(
     store: &mut Store,
     info: Option<&MemoryInfo>,
@@ -27,7 +26,6 @@ pub(crate) fn publish(
 }
 
 /// The inventory raminit published, if any.
-#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn read(store: &Store) -> Option<MemoryInfo> {
     let entry = store.find(tag::MEMORY_INFO)?;
     // SAFETY: the entry holds the record the CAR stage wrote.

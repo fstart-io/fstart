@@ -1840,16 +1840,12 @@ pub fn probe_dimms<B: SmBus + ?Sized>(
     Ok(info)
 }
 
-/// Run GM965 cold-boot DDR2 initialization.
+/// Run GM965 DDR2 initialization, or replay `cached` training on resume.
 ///
 /// The sequence follows coreboot's GM965 `raminit.c`: SPD/timing selection,
 /// CLKCFG PLL latch, temporary pre-JEDEC address map, RCOMP, timing/control
 /// programming, DDR2 JEDEC commands, final memory map, receive-enable
 /// calibration, guarded EPD channel population, and DRAM power-management setup.
-pub fn cold_boot_train(info: &mut RaminitInfo, mch: &MchBar, ggc: u16) -> Result<(), ServiceError> {
-    initialize(info, mch, ggc, crate::BootPath::Normal, None)
-}
-
 pub(super) fn initialize(
     info: &mut RaminitInfo,
     mch: &MchBar,

@@ -11,8 +11,6 @@ use std::{format, string::ToString, vec, vec::Vec};
 fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
     let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
     fstart_image_build::build_plan::CompilerCfgSchema {
-        entries: strings(&["riscv64", "armv7", "aarch64-relocate", "x86_64"]),
-        environments: strings(&["monolithic", "car", "postcar", "ram", "smm"]),
         payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
     }
 }
@@ -52,9 +50,7 @@ pub fn compilation_plan(
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: plan.target(),
-        entry: "x86_64".into(),
         cfg_schema: compiler_cfg_schema(),
-        environment: "smm".into(),
         payload: "halt".into(),
         features: plan.smm_features.clone(),
         // rustc ships no library for the 32-bit JSON target.
@@ -69,6 +65,8 @@ pub fn compilation_plan(
         environment_values: mp_capacity(),
         bindings: vec![],
         file_bindings: vec![],
+        // The board's SMM handler module, outside every stage `main`.
+        board_features: vec!["smm".into()],
         output: UnitOutput::SmmImage {
             entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
             stack_size: plan.smm.stack_size,
@@ -102,15 +100,16 @@ pub fn compilation_plan(
             }
         }
         units.push(CompilationUnit {
-            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(), entry: "x86_64".into(),
+            name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(),
             cfg_schema: compiler_cfg_schema(),
-            environment: row.role.environment().into(), payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
+            payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie --cfg curve25519_dalek_backend=\"serial\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true, plan.platform)?),
             environment_values: mp_capacity(),
             bindings,
             file_bindings: vec![],
+            board_features: vec![],
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role, plan.platform)?, load_address: reservation.image.base,
                 flat_capacity: if boot { reservation.image.size } else { reservation.load_window()?.size },

@@ -5,6 +5,7 @@ use core::num::NonZeroU32;
 use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
+use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::fch::{Bus, NativeBus};
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::sp3::fch::{Fch, Mmio, Ports, SmnWindow, acpimmio};
@@ -61,15 +62,16 @@ pub fn post(code: u8) {
 /// Program `MMIO_CFG_BASE` (C001_0058) for the generation's ECAM (SOC_DF
 /// §3.2) and publish it to the PCI layer. The PSP/ABL leave the window
 /// unset; every thread must get the same value (the MP code mirrors it).
-pub fn enable_ecam(generation: Generation) -> (u64, u64) {
-    let (base, buses) = generation.ecam();
+pub fn enable_ecam(generation: Generation) -> PciRootInfo {
+    let pci = crate::pci::segment(generation);
+    let buses = u64::from(pci.bus_end) + 1;
     msr().reg(MMIO_CFG_BASE).write(
         MmioCfgBase::ENABLE::SET
             + MmioCfgBase::BUS_RANGE.val(u64::from(buses.trailing_zeros()))
-            + MmioCfgBase::ADDRESS.val(base >> 20),
+            + MmioCfgBase::ADDRESS.val(pci.ecam_base >> 20),
     );
-    fstart_pci::ecam::init(base as usize);
-    (base, u64::from(buses) << 20)
+    fstart_pci::ecam::init(pci.ecam_base as usize);
+    pci
 }
 
 /// Socket 0's FCH as the host sees it.

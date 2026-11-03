@@ -1,9 +1,8 @@
 //! Intel ICH8 / ICH8-M southbridge driver.
 //!
-//! The initial target is the Lenovo ThinkPad X61 (GM965 + ICH8-M/HX). The
-//! reusable pre-console path opens the southbridge LPC/GPIO decode needed by
-//! board hooks. X61-specific DLPC/dock SuperIO setup lives in the
-//! Board-specific dock/DLPC sequencing lives in `boards/lenovo/x61`.
+//! The pre-console path opens the southbridge LPC/GPIO decode a board needs
+//! for its console. Board devices behind LPC (SuperIOs, docks, ECs) are the
+//! board's, configured from its `main`.
 
 use crate::southbridge::gpio_ich::IchGpio;
 use crate::southbridge::pmio_ich::{self as pmio, PmIo};
@@ -11,9 +10,7 @@ use crate::southbridge::smbus::I801SmBus;
 use fstart_core::ConstVec;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::MmioReadWrite;
-use fstart_core::services::{
-    FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus, Southbridge,
-};
+use fstart_core::services::{FirmwareImage, FirmwareImageProvider, ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::{
     PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciAddress, PciFixedBar, PciFixedBarType,
@@ -978,6 +975,13 @@ unsafe impl Send for IntelIch8 {}
 unsafe impl Sync for IntelIch8 {}
 
 impl IntelIch8 {
+    /// The GPIO controller, for board code to take the pins it wires.
+    /// Pad configuration is chipset config, applied before the console.
+    #[must_use]
+    pub const fn gpio(&self) -> IchGpio {
+        IchGpio::new(ich8::DEFAULT_GPIOBASE)
+    }
+
     /// Board population policy, sampled before mainstage IDE programming.
     /// The primary channel can serve a detachable dock rather than a fixed disk.
     pub fn set_ide_primary_enabled(&mut self, enabled: bool) {
@@ -2238,33 +2242,14 @@ impl FirmwareImageProvider for IntelIch8 {
     }
 }
 
-impl FlashLayoutVerifier for IntelIch8 {
-    fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
+impl IntelIch8 {
+    /// Compare the flash descriptor the controller reads with the board's
+    /// build-time layout, before trusting the boot medium's regions.
+    pub fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
         match expected {
             FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
             FlashLayout::X86Legacy(_) => Err(ServiceError::NotSupported),
         }
-    }
-}
-
-impl Southbridge for IntelIch8 {
-    fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
-        Ok(IchGpio::new(ich8::DEFAULT_GPIOBASE).get(pin as u8))
-    }
-
-    fn gpio_set(&self, pin: u32, value: bool) -> Result<(), ServiceError> {
-        IchGpio::new(ich8::DEFAULT_GPIOBASE).set(pin as u8, value);
-        Ok(())
-    }
-}
-
-impl fstart_driver_superio::LpcBaseProvider for IntelIch8 {
-    fn lpc_base(&self) -> u16 {
-        // The X61 laptop-side NSC PC87382/DLPC uses extended PnP config port
-        // 0x164e.  The dock-side PC87392 at 0x2e is board-switched and handled
-        // directly by the X61 mainboard hook while disconnected from generic
-        // driver init.
-        0x164e
     }
 }
 

@@ -1,0 +1,36 @@
+[package]
+name = "fstart-platform-sifive"
+description = "SiFive FU740 platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+host = ["dep:fstart-image-build", "dep:serde_json"]
+stage = [
+  "dep:fstart-arch", "dep:fstart-driver-uart", "dep:fstart-log", "dep:fstart-stage", "dep:fstart-payload",
+  "fstart-arch/riscv64", "fstart-stage/riscv64",
+  "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519",
+  "fstart-stage/sha2-digest", "fstart-stage/fdt",
+]
+# The FU740 stage, the one firmware unit.
+bundle-fu740 = ["stage"]
+linux = ["fstart-payload?/linux"]
+crabefi = ["fstart-payload?/crabefi"]
+
+[dependencies]
+fstart-core = { workspace = true }
+fstart-driver-sifive = { workspace = true }
+fstart-driver-uart = { workspace = true, optional = true }
+fstart-arch = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-payload = { workspace = true, optional = true }
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+ufmt = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi"))'] }

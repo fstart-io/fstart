@@ -3,10 +3,24 @@
 #![no_std]
 
 pub mod config;
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "ram"))]
-mod stage;
 
-/// Orange Pi R1 marker selected by the board-owned stage entry.
+/// Orange Pi R1 marker.
 pub struct Board;
 
 pub use config::*;
+
+use fstart_driver_sunxi::h3_ccu::H3_UART0_BASE;
+use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
+
+/// UART0 at 115200 baud. The SoC's CCU init routes its pins.
+pub const fn console() -> Ns16550Config {
+    Ns16550Config {
+        regs: AccessMode::Mmio {
+            base: H3_UART0_BASE,
+            reg_shift: 2,
+            reg_width: 4,
+        },
+        clock_freq: 24_000_000,
+        baud_rate: 115_200,
+    }
+}

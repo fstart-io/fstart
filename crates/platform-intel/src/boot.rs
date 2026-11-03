@@ -14,7 +14,6 @@ use fstart_stage::boot::MemoryWindow;
 /// board bounds. Each contains code plus loader scratch and leaves the
 /// next stage disjoint.
 
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
 pub(crate) fn bootstrap_window(
     descriptor: &BootstrapDescriptor,
     role: BootstrapRole,
@@ -48,7 +47,6 @@ pub(crate) fn bootstrap_window(
 
 /// The stash remains reserved through mainstage import. Its provenance comes
 /// from the predecessor, not from validation of its magic/version fields.
-#[cfg(any(fstart_stage_env = "postcar", fstart_stage_env = "ram"))]
 pub(crate) fn handoff(
     image_base: u64,
     image_size: usize,
@@ -70,103 +68,50 @@ pub(crate) fn handoff(
     Ok(stash)
 }
 
-/// Load a bootstrap stage and keep its S3 cache entry coherent.
-///
-/// Cold boot: verify the stage from flash, then copy its compressed body into
-/// a firmware-store entry. S3 resume: load it from that entry through the
-/// same verified path, which re-checks the stored digest against the freshly
-/// authenticated descriptor. A resume without a usable entry is fatal
-/// (reset): resuming a mixed-revision or corrupted image is never
-/// acceptable, and the flash copy may belong to a flash update that happened
-/// while suspended.
-#[cfg(any(fstart_stage_env = "car", fstart_stage_env = "postcar"))]
+/// Load a bootstrap stage into `window` through the S3 stage cache
+/// ([`fstart_resume::load_stage`]). A resume without a usable cached copy
+/// resets to a cold boot: the flash copy may belong to a flash update that
+/// happened while suspended.
 pub(crate) fn load_stage_with_cache(
     media: &(impl fstart_core::services::BootMedia + ?Sized),
-    stage: fstart_stage::stage_cache::CachedStage,
+    stage: fstart_resume::stage_cache::CachedStage,
     descriptor: &BootstrapDescriptor,
     window: MemoryWindow,
     reserved: &[MemoryWindow],
     store: &mut fstart_store::Store,
     resume: bool,
+    codec: &dyn fstart_stage::boot::Codec,
 ) -> Result<fstart_stage::boot::VerifiedExecutable, ServiceError> {
-    use fstart_stage::stage_cache::{CachedStage, STAGE_CACHE_HEADER_LEN};
-    let tag = match stage {
-        CachedStage::Postcar => fstart_store::tag::STAGE_CACHE_POSTCAR,
-        CachedStage::Mainstage => fstart_store::tag::STAGE_CACHE_RAMSTAGE,
-    };
     let policy = fstart_stage::boot::MemoryPolicy {
         writable: core::slice::from_ref(&window),
         reserved,
         entry_alignment: 1,
     };
-    if resume {
-        let verified = store.find(tag).and_then(|entry| {
-            // SAFETY: the entry lies in the reopened store; only shared
-            // reads of it exist on the resume path.
-            let slot = unsafe {
-                fstart_core::services::boot_media::MemoryMapped::from_raw_addr(
-                    store.address(&entry) as u64,
-                    entry.len(),
-                )
-            };
-            fstart_stage::stage_cache::load_from_slot(&slot, stage, descriptor, &policy)
-        });
-        return match verified {
-            Some(verified) => {
-                fstart_log::info!("stage cache: {} loaded from store", stage.name());
-                Ok(verified)
-            }
-            None => {
-                fstart_log::error!(
-                    "stage cache: no valid {} entry on resume; resetting",
-                    stage.name()
-                );
-                fstart_log::flush();
-                fstart_arch::x86::boot::system_reset(true)
-            }
-        };
-    }
-
     // SAFETY: trained DRAM, bounded family-owned window, and all live stage
     // code/data/stack plus the store excluded by `reserved`. The loader
     // verifies final bytes.
-    let verified = unsafe { fstart_stage::boot::load_bootstrap(media, descriptor, &policy) }
-        .map_err(|_| ServiceError::HardwareError)?;
-    let stored = usize::try_from(descriptor.stored_size).map_err(|_| ServiceError::InvalidParam)?;
-    fstart_timestamp::add(fstart_timestamp::id::STORE_STAGE_CACHE);
-    // Copy the stored bytes the loader just verified in RAM rather than
-    // reading the flash a second time.
-    let input =
-        fstart_stage::boot::stored_input(descriptor).map_err(|_| ServiceError::InvalidParam)?;
-    // SAFETY: the loader filled this part of the exclusive destination window
-    // and nothing runs from it before entry.
-    let input = unsafe {
-        fstart_core::services::boot_media::MemoryMapped::from_raw_addr(input.start, stored)
-    };
-    let in_ram = BootstrapDescriptor {
-        offset: 0,
-        ..*descriptor
-    };
-    let cached = store
-        .add(tag, STAGE_CACHE_HEADER_LEN + stored, 3)
-        .ok()
-        .and_then(|entry| {
-            // SAFETY: a fresh entry nothing else references.
-            let slot = unsafe { store.bytes_mut(&entry) };
-            fstart_stage::stage_cache::store(slot, stage, &input, &in_ram).ok()
-        });
-    match cached {
-        Some(()) => fstart_log::info!("stage cache: {} stored", stage.name()),
-        None => fstart_log::error!(
-            "stage cache: cannot store {} bytes of {}; resume will reset",
-            stored as u32,
-            stage.name()
-        ),
+    match unsafe {
+        fstart_resume::load_stage(
+            media,
+            stage,
+            descriptor,
+            &policy,
+            store,
+            resume,
+            codec,
+            &fstart_stage::boot::Measurement::NONE,
+        )
+    } {
+        Ok(verified) => Ok(verified),
+        Err(fstart_resume::Error::NotCached) => {
+            fstart_log::error!("stage cache: resetting to a cold boot");
+            fstart_log::flush();
+            fstart_arch::x86::boot::system_reset(true)
+        }
+        Err(fstart_resume::Error::Load(_)) => Err(ServiceError::HardwareError),
     }
-    Ok(verified)
 }
 
-#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn import_intel_directory(
     image_base: u64,
     image_size: usize,
@@ -225,7 +170,6 @@ pub(crate) fn running_reservations(
 ///
 /// Without this, Linux is free to allocate over the very bytes that postcar
 /// and the ramstage are reloaded into on wake.
-#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn reserve_firmware_memory(
     e820: &mut fstart_core::services::memory_detect::E820State,
     geometry: IntelBootLayout<'static>,
@@ -247,7 +191,6 @@ pub(crate) fn reserve_firmware_memory(
     Ok(())
 }
 
-#[cfg(fstart_stage_env = "ram")]
 pub(crate) fn install_intel_load_policy(
     entries: &[fstart_core::services::memory_detect::E820Entry],
     geometry: IntelBootLayout<'static>,
@@ -282,11 +225,14 @@ pub(crate) fn install_intel_load_policy(
     // this stage's complete image, heap, stack, scratch and firmware tables.
     // The stage context copies the policy; it never borrows these stack arrays.
     unsafe {
-        fstart_stage::directory::set_load_policy(&MemoryPolicy {
-            writable: &writable,
-            reserved: &reserved,
-            entry_alignment: 1,
-        })
+        fstart_stage::directory::set_load_policy(
+            &MemoryPolicy {
+                writable: &writable,
+                reserved: &reserved,
+                entry_alignment: 1,
+            },
+            &fstart_stage::boot::Lz4,
+        )
     }
     .map_err(|_| ServiceError::InvalidParam)
 }

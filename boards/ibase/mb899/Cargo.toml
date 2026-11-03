@@ -10,11 +10,12 @@ schema = 1
 board = "ibase-mb899"
 platform = "x86"
 target = "i686-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_stage_env, values("car", "postcar", "ram", "smm"))'] }
+[features]
+default = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
@@ -28,6 +29,4 @@ fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = fals
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+# One binary per stage, named after the stage: src/bin/<stage>.rs.

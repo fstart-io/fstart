@@ -6,7 +6,7 @@
 extern crate std;
 use super::{
     Config, DxioConfig, FchConfig,
-    silicon::{self, Dma, Identity, SmuPages, SmuPolicy, State},
+    silicon::{self, Identity, SmuPages, SmuPolicy, State},
 };
 use crate::{
     acpi::{self, BoardAcpi, DieAcpi, Inputs},
@@ -128,26 +128,35 @@ fn flow(
     silicon::fch_early_init(&fch, config);
     silicon::post(&fch, 0x32);
 
-    // TP1
-    let dma = Dma {
-        smu_pages: low(dma, SmuPages([[0; 4096]; 4])),
-        smu_policy: low(dma + 0x1_0000, SmuPolicy([0; 0x80])),
-        dxio: low(dma + 0x2_0000, dxio::zeppelin::Buffers::new()),
-    };
-    let state = silicon::pre_mp(
+    // Silicon init
+    let config = &{ *config };
+    let nonpci =
+        silicon::pre_mp_reset(&dies, &fch, identity, top, Some(&apob), &mut clock).unwrap();
+    marker(hw, 2); // the board's FCH-reset work
+    let trained = silicon::pre_mp_dxio(
         &dies,
         &fch,
         &msr,
-        &mut { *config },
+        config,
         identity,
         top,
-        Some(&apob),
-        dma,
+        nonpci,
+        low(dma + 0x2_0000, dxio::zeppelin::Buffers::new()),
         &mut clock,
-        |_| marker(hw, 2),
-        || marker(hw, 3),
     )
     .unwrap();
+    marker(hw, 3); // the board's link-trained work
+    let state = silicon::pre_mp_finish(
+        &dies,
+        &fch,
+        config,
+        identity,
+        Some(&apob),
+        trained,
+        low(dma, SmuPages([[0; 4096]; 4])),
+        low(dma + 0x1_0000, SmuPolicy([0; 0x80])),
+        &mut clock,
+    );
     assert_eq!(state.ioapics[0], state.nonpci[0] + (7 << 20));
     let threads = threads::thread_count(&dies, Policy::DEFAULT).unwrap();
     unsafe { threads::launch(&dies, Policy::DEFAULT, threads - 1, &mut clock) }.unwrap();
@@ -155,14 +164,16 @@ fn flow(
     silicon::post(&fch, 0x42);
     silicon::route_interrupts(&fch, config).unwrap();
 
-    // TP2
+    // After resource allocation
     silicon::after_resources(&fch);
     marker(hw, 4); // mainboard_final
     fch.enable_hpet_ioapic();
 
-    // TP3
+    // Ready to boot
     let sata = PciAddress::new(0, 1, 0, 0);
-    silicon::ready_to_boot(&dies, &fch, Some(sata), || marker(hw, 5));
+    silicon::ready_to_boot(&dies, &fch, Some(sata));
+    marker(hw, 5); // the board's ready-to-boot work
+    silicon::end_of_post(&dies);
     silicon::post(&fch, 0x43);
     silicon::post(&fch, 0x44);
     state
@@ -382,8 +393,12 @@ fn sp4_pci_roots_and_host_bridges() {
         soc: &super::acpi::ACPI,
         apic_ids: &[0, 1, 8, 9],
         dies: &dies,
-        ecam_base: 0xf000_0000,
-        ecam_buses: 128,
+        pci: fstart_core::description::PciRootInfo {
+            segment: 0,
+            ecam_base: 0xf000_0000,
+            bus_start: 0,
+            bus_end: 127,
+        },
         hpet_id: 0,
         power: None,
         numa: None,

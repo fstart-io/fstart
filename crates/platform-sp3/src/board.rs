@@ -11,18 +11,11 @@
 
 extern crate alloc;
 
-use fstart_core::services::Timer;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
-use fstart_driver_amd::sp3::fch::FchHw;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::nbio::NbioPolicy;
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::{ccx, df};
-use fstart_driver_uart::ns16550::Ns16550Config;
-use heapless::Vec;
 
 use crate::layout::Sp3BoardFacts;
 
@@ -46,8 +39,8 @@ pub struct Policy {
     pub dxio: DxioPolicy,
 }
 
-/// The board's FCH GPIO program, applied in this order after the M.2 /
-/// strap detect pads were read.
+/// The board's FCH GPIO program (`Stage::program_gpio`), applied in this
+/// order after the M.2 / strap detect pads were read.
 #[derive(Debug, Clone, Copy)]
 pub struct Gpio {
     /// OEM pads the vendor programs before its table (e.g. S8030 Rome
@@ -66,51 +59,12 @@ pub enum BoardError {
     Configuration,
 }
 
-/// The board contract of the SP3 flow. Implemented once per board crate;
-/// the flow calls the generation-dependent hooks only with a generation in
-/// [`Sp3BoardFacts::GENERATIONS`] (the running CPU's).
+/// The board facts the SP3 phases read. The board's silicon policy,
+/// console, pads, GPIO table and table contributions are arguments to the
+/// phases its `main` calls.
 pub trait Board: Sp3BoardFacts + 'static {
     /// Shown in the log.
     const NAME: &'static str;
-
-    /// Board identity only. CPU packages, DIMMs and memory ranges are
-    /// discovered by shared drivers; do not describe the current bench here.
-    #[cfg(feature = "acpi")]
-    fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
-        fstart_acpi::smbios::SmbiosIdentity::new("", Self::NAME)
-    }
-    /// The firmware console: an MMIO or LPC-connected 16550.
-    const CONSOLE: Ns16550Config;
-
-    /// Silicon policy for `generation`.
-    fn policy(generation: Generation) -> Policy;
-
-    /// After socket 0's FCH reset tasks, before the console: prepare its
-    /// UART power/pins or LPC/eSPI decodes and Super I/O. Also runs for a
-    /// CPU the board does not list (when its generation is compiled in),
-    /// so the flow can log why it halts.
-    fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError>;
-
-    /// Pads configured and read before [`Board::gpio`] (M.2 SATA/PCIe
-    /// detect); their levels go to [`Board::dxio_engines`] in this order.
-    fn detect_pads(generation: Generation) -> &'static [Pad] {
-        let _ = generation;
-        &[]
-    }
-
-    /// GPIO program after the detect pads.
-    fn gpio(generation: Generation) -> Gpio;
-
-    /// The DXIO engines of every socket given the detect-pad levels. The
-    /// board may query its BMC or I2C devices here (the console and LPC
-    /// decodes are up); a failed query can halt bring-up rather than silently
-    /// selecting a different lane map. `timer` paces device transactions.
-    fn dxio_engines<H: FchHw>(
-        generation: Generation,
-        levels: &[bool],
-        fch: &H,
-        timer: &dyn Timer,
-    ) -> Result<Vec<Engine<'static>, MAX_ENGINES>, BoardError>;
 
     /// A discrete TPM may be fitted (FIFO interface at `0xFED4_0000`, on
     /// LPC or eSPI): probe it, measure the boot (`fstart-tcg`) and describe
@@ -119,12 +73,4 @@ pub trait Board: Sp3BoardFacts + 'static {
 
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
-
-    /// AML inside `\_SB.PCI0.LPCB` (Super I/O devices).
-    #[cfg(feature = "acpi")]
-    fn acpi_lpc_aml() -> alloc::vec::Vec<u8>;
-
-    /// The board's ACPI inputs over [`Board::acpi_lpc_aml`]'s output.
-    #[cfg(feature = "acpi")]
-    fn acpi_board(lpc_aml: &[u8]) -> crate::acpi::Board<'_>;
 }

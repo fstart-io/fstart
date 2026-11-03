@@ -1,0 +1,35 @@
+[package]
+name = "fstart-payload"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Linux on Arm and RISC-V (device tree) and on x86 (zero page).
+linux = ["fstart-stage/fdt"]
+# x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
+coreboot = ["fstart-stage/ffs", "dep:fstart-coreboot", "dep:heapless"]
+# Measured boot of the payload (TPM 1.2 and 2.0).
+tcg = ["fstart-stage/tcg", "dep:fstart-tcg", "fstart-boot?/tcg"]
+# CrabEFI UEFI payload, linked as a library. The UI profile adds CrabEFI's
+# graphical boot manager.
+crabefi = ["crabefi-basic", "fstart-boot/crabefi"]
+crabefi-ui = ["crabefi", "fstart-boot/crabefi-ui"]
+crabefi-elan-i2c = ["crabefi-basic", "fstart-boot/crabefi-elan-i2c"]
+crabefi-hid-i2c = ["crabefi-basic", "fstart-boot/crabefi-hid-i2c"]
+crabefi-basic = ["fstart-stage/alloc", "fstart-stage/bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
+
+[dependencies]
+fstart-arch = { workspace = true }
+fstart-core = { workspace = true }
+fstart-log = { workspace = true }
+fstart-stage = { workspace = true }
+fstart-boot = { workspace = true, optional = true }
+fstart-coreboot = { workspace = true, optional = true }
+fstart-tcg = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+ufmt = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi", "coreboot"))'] }

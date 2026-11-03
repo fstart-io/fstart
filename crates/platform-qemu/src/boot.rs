@@ -55,7 +55,7 @@ fn install_image(
     // SAFETY: platform-discovered RAM only, with the complete live stage and
     // allocator arena, source image and hardware reservations excluded. Devices
     // have not been given DMA buffers at this point in the fixed flow.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
         .map_err(|_| ServiceError::InvalidParam)?;
     fstart_log::info!(
         "qemu: development integrity; no hardware secure boot or rollback enforcement"
@@ -80,26 +80,6 @@ fn install_image(
     firmware.mount()?;
     // Authenticate ROOT512 and retain its exact directory bytes in RAM.
     firmware.verify()
-}
-
-/// Payload consumers reuse the exact bounded image mounted and authenticated
-/// during boot setup, rather than reconstructing a bank-capacity-sized view.
-#[cfg(all(
-    any(feature = "linux", feature = "crabefi"),
-    any(
-        target_arch = "aarch64",
-        target_arch = "arm",
-        all(feature = "virt-riscv64", target_arch = "riscv64")
-    )
-))]
-pub(crate) fn mounted_image() -> fstart_core::layout::Region {
-    let mounted =
-        fstart_core::services::ffs_context::memory_mapped().expect("QEMU boot image not mounted");
-    fstart_core::layout::Region {
-        kind: fstart_core::layout::RegionKind::Firmware,
-        base: mounted.image_base,
-        size: mounted.image_size,
-    }
 }
 
 /// Static-RAM boot setup for machines whose boot ABI supplies no DTB.

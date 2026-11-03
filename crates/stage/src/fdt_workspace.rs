@@ -251,17 +251,13 @@ fn prepare_in(
         let capacity = config.destination.size as usize;
         if !bootargs.is_empty() {
             // SAFETY: this dedicated workspace has precisely the supplied bound.
-            unsafe {
-                crate::fdt_patch::fdt_set_bootargs(destination as *mut u8, capacity, bootargs)
-            }
-            .map_err(|_| ServiceError::InvalidParam)?;
+            unsafe { fstart_fdt::fdt_set_bootargs(destination as *mut u8, capacity, bootargs) }
+                .map_err(|_| ServiceError::InvalidParam)?;
         }
         if base != 0 && size != 0 {
             base.checked_add(size).ok_or(ServiceError::InvalidParam)?;
-            unsafe {
-                crate::fdt_patch::fdt_set_memory(destination as *mut u8, capacity, base, size)
-            }
-            .map_err(|_| ServiceError::InvalidParam)?;
+            unsafe { fstart_fdt::fdt_set_memory(destination as *mut u8, capacity, base, size) }
+                .map_err(|_| ServiceError::InvalidParam)?;
         }
     }
     #[cfg(not(feature = "fdt"))]
@@ -289,4 +285,9 @@ pub fn fdt_prepare_platform(
     size: u64,
 ) -> Result<(), ServiceError> {
     prepare(source, destination, Some((bootargs, base, size))).map(|_| ())
+}
+
+/// Bytes the registered device-tree workspace holds (0 without one).
+pub fn fdt_workspace_capacity() -> u64 {
+    destination().map_or(0, |range| range.size)
 }

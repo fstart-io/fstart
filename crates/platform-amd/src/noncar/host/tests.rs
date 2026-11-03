@@ -23,11 +23,8 @@ impl Board for Vilboz {
                 burst_4dw: false,
             },
             espi: None,
-            early_gpios: &[],
-            disable_rom_sharing: false,
         },
         pcie: &[],
-        power: None,
         usb: fstart_driver_amd::fch::sandstone::usb::Config {
             phy2: None,
             phy3_override: None,
@@ -41,9 +38,6 @@ impl Board for Vilboz {
             hdmi2_disable: 0,
         },
     };
-    fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
-        picasso::console(0)
-    }
 }
 
 struct Mj11;
@@ -57,9 +51,6 @@ impl Board for Mj11 {
             descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],
         },
     };
-    fn console() -> fstart_driver_uart::ns16550::Ns16550Config {
-        picasso::console(0)
-    }
 }
 
 fn units_hash(plan: &BuildPlan) -> String {
@@ -80,7 +71,7 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
     assert_eq!(plan.units.len(), 2);
     assert_eq!(plan.units[0].name, "smm");
     let unit = &plan.units[1];
-    assert_eq!(unit.name, "reset");
+    assert_eq!(unit.name, "stage");
     assert!(unit.release_only);
     assert_eq!(unit.features, ["bundle-picasso", "payload-uefi"]);
     assert_eq!(unit.bindings[0].producer, "smm");
@@ -104,7 +95,7 @@ fn picasso_ui_reserves_the_larger_reset_image_and_entry() {
         ..Default::default()
     })
     .unwrap();
-    let unit = plan.units.iter().find(|unit| unit.name == "reset").unwrap();
+    let unit = plan.units.iter().find(|unit| unit.name == "stage").unwrap();
     assert_eq!(unit.features, ["bundle-picasso", "payload-uefi-ui"]);
     let UnitOutput::Executable {
         expectations,
@@ -180,6 +171,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 }
 
 /// The compilation units, hence the stage binaries, stay as they are.
+/// (Re-pinned for the SMM unit's `smm` board feature, and again without
+/// the entry cfg.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -194,9 +187,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "32644ab7d328030fe61ef8f493e8c62dc93a2243aafdad590de8d9e3f40d7617",
-            "94e3b95781d2b05163253b7c19880c33207bb37a1f4bf7c1b14a4d511f6105ae",
-            "b748553b2cdbb3dd7a19720a0c9814e21f4e6de703145cc6c00670640dea081a",
+            "555d6d116dd8d40a9731e442636bf4979b7c2689d87feadb5b873ee88b0c5530",
+            "ad1fcefcb84ee5245b2030a77c3800ce4d59424272685e66464ccbca1542c245",
+            "59f38501fa090adc2bc4a6662f8b0af839eb8a4e3690c1b0fef6f112b0f450d9",
         ]
     );
 }

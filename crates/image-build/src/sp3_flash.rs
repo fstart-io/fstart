@@ -734,7 +734,7 @@ fn ffs_locator(ffs: &[u8]) -> Option<&[u8]> {
 }
 
 /// The trust policy the FFS builder finalized into an FFS-resident copy of
-/// a stage (the reset unit's FFS file).
+/// a stage (the stage unit's FFS file).
 fn ffs_trust(ffs: &[u8], placeholder: &[u8]) -> Option<[u8; TRUST_SIZE]> {
     (0..ffs.len().saturating_sub(TRUST_SIZE - 1))
         .step_by(8)
@@ -909,8 +909,8 @@ pub fn packed_rom(
     Ok(rom)
 }
 
-/// The SP3 image operation: an FFS (the payload and the reset unit's
-/// trust-finalized copy) plus the reset unit, composed into the vendor ROM.
+/// The SP3 image operation: an FFS (the payload and the stage unit's
+/// trust-finalized copy) plus the stage unit, composed into the vendor ROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sp3FlashAssembly {
     pub ffs: FfsAssembly,
@@ -922,12 +922,12 @@ pub struct Sp3FlashAssembly {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packed: Vec<PackedHalf>,
     /// Unit whose flat output is the reset image.
-    pub reset_unit: String,
+    pub stage_unit: String,
     pub compose: FlashPlan,
 }
 
 impl Sp3FlashAssembly {
-    /// The reset unit is the plan's first stage and is linked for exactly
+    /// The stage unit is the plan's first stage and is linked for exactly
     /// the plan's image: stored and run at its destination, entered at its
     /// last 16 bytes.
     pub fn validate(&self, plan: &BuildPlan) -> Result<(), String> {
@@ -938,14 +938,14 @@ impl Sp3FlashAssembly {
         {
             return Err("an SP3 image takes a vendor ROM or packed halves".into());
         }
-        if plan.stages.first() != Some(&self.reset_unit) {
-            return Err("SP3 reset unit must be the first image stage".into());
+        if plan.stages.first() != Some(&self.stage_unit) {
+            return Err("SP3 stage unit must be the first image stage".into());
         }
         let UnitOutput::Executable {
             expectations,
             load_address,
             flat_capacity,
-        } = &plan.unit(&self.reset_unit)?.output
+        } = &plan.unit(&self.stage_unit)?.output
         else {
             return Err("SP3 reset producer is not executable".into());
         };

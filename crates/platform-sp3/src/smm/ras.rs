@@ -23,19 +23,25 @@ pub struct SelTransport {
     pub spacing: u16,
 }
 
-/// Compile-time board policy, independent of the small installer config ABI.
-/// Enabling this is experimental until native #MC handoff is hardware-tested.
-pub trait Policy {
-    const OBSERVE_MCE: bool;
+/// The board's RAS policy, a value its SMI handler passes to
+/// [`super::enter_cpu`] and [`super::handle`]; independent of the small
+/// installer config ABI. Observing MCEs is experimental until native #MC
+/// handoff is hardware-tested.
+#[derive(Debug, Clone, Copy)]
+pub struct Policy {
+    pub observe_mce: bool,
     /// Restricted, correctable-memory EINJ in platform-owned scratch RAM.
-    const MEMORY_EINJ: bool = false;
-    const SEL: Option<SelTransport> = None;
+    pub memory_einj: bool,
+    pub sel: Option<SelTransport>,
 }
 
-/// Default for boards that have not opted into MCA observation.
-pub struct OsFirst;
-impl Policy for OsFirst {
-    const OBSERVE_MCE: bool = false;
+impl Policy {
+    /// OS-first: no MCA observation, EINJ or SEL reporting.
+    pub const OS_FIRST: Self = Self {
+        observe_mce: false,
+        memory_einj: false,
+        sel: None,
+    };
 }
 
 // SP3 supports at most 2 sockets * 64 cores * 2 threads. Indices outside
@@ -144,8 +150,8 @@ impl Journal {
 /// Every entrant executes this, including CPUs that do not own FCH dispatch.
 /// Arming happens on the installer's per-CPU self-SMI, after SMRAM is locked.
 /// No CPU waits for a sibling and a journal collision never delays native #MC.
-pub(super) fn enter<P: Policy>(logical_cpu: u32, generation: Generation) {
-    if P::OBSERVE_MCE {
+pub(super) fn enter(policy: &Policy, logical_cpu: u32, generation: Generation) {
+    if policy.observe_mce {
         enter_enabled(logical_cpu, generation);
     }
 }
@@ -284,8 +290,8 @@ fn sel(record: &Record) -> SelRecord {
 /// first failure trips a circuit breaker. There is no retry, abort recovery,
 /// SEL-info query or wait for BMC readiness. A late entrant's queued record
 /// may wait until a later SMI; OS handoff never depends on this delivery.
-pub(super) fn flush<P: Policy>(timer: crate::hw::Tsc) {
-    let Some(transport) = P::SEL.filter(|_| P::OBSERVE_MCE) else {
+pub(super) fn flush(policy: &Policy, timer: crate::hw::Tsc) {
+    let Some(transport) = policy.sel.filter(|_| policy.observe_mce) else {
         return;
     };
     flush_enabled(transport, timer);

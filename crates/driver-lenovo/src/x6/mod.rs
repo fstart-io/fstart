@@ -11,7 +11,7 @@ pub mod dock;
 pub mod acpi;
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use fstart_core::services::Southbridge;
+use embedded_hal::digital::InputPin;
 
 use crate::ec::{Ec, EcPorts};
 use crate::h8::{H8, H8Config, H8Led, H8LedMode, H8Resources};
@@ -23,7 +23,8 @@ const EVENT_MASKS: [u8; 16] = [
 ];
 
 /// ICH GPIO reading low when the Bluetooth daughter card is fitted (BDC).
-const BDC_PRESENCE_GPIO: u32 = 7;
+/// Boards hand [`ec_init`] that pin.
+pub const BDC_PRESENCE_GPIO: u8 = 7;
 
 /// H8 EC configuration of the X6 family for a chipset-specific EC SCI GPE.
 #[must_use]
@@ -53,18 +54,17 @@ pub fn bluetooth_present() -> bool {
     BLUETOOTH_PRESENT.load(Ordering::Relaxed)
 }
 
-fn detect_bluetooth(southbridge: &impl Southbridge) -> bool {
-    southbridge
-        .gpio_get(BDC_PRESENCE_GPIO)
-        .is_ok_and(|high| !high)
+fn detect_bluetooth(bdc_presence: &mut impl InputPin) -> bool {
+    bdc_presence.is_low().unwrap_or(false)
 }
 
 /// Runtime EC/PMH7 bring-up, mirroring coreboot's `h8_enable()` and the
 /// PMH7 `enable_dev()`: thermal management and event/hotkey reporting on,
 /// trackpoint and USB power on, radios per presence, PMH7 backlight and
-/// dock events. Returns whether every EC write was acknowledged.
-pub fn ec_init(southbridge: &impl Southbridge, h8: &H8Config, resume: bool) -> bool {
-    let bluetooth = detect_bluetooth(southbridge);
+/// dock events. `bdc_presence` is the [`BDC_PRESENCE_GPIO`] pin. Returns
+/// whether every EC write was acknowledged.
+pub fn ec_init(bdc_presence: &mut impl InputPin, h8: &H8Config, resume: bool) -> bool {
+    let bluetooth = detect_bluetooth(bdc_presence);
     BLUETOOTH_PRESENT.store(bluetooth, Ordering::Relaxed);
     let pmh7 = Pmh7::new(h8.resources.pmh7_base.raw());
     pmh7.log_identity();
@@ -88,20 +88,12 @@ pub fn ec_oem_string(h8: &H8Config) -> Option<crate::h8::EcOemString> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_core::services::ServiceError;
-
-    struct Gpio(Result<bool, ServiceError>);
-    impl Southbridge for Gpio {
-        fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
-            assert_eq!(pin, 7);
-            self.0
-        }
-    }
+    use crate::test_pin::Pin;
 
     #[test]
-    fn bluetooth_daughter_card_detection_is_active_low_gpio7() {
-        assert!(detect_bluetooth(&Gpio(Ok(false))));
-        assert!(!detect_bluetooth(&Gpio(Ok(true))));
-        assert!(!detect_bluetooth(&Gpio(Err(ServiceError::IoError))));
+    fn bluetooth_daughter_card_detection_is_active_low() {
+        assert!(detect_bluetooth(&mut Pin(Ok(false))));
+        assert!(!detect_bluetooth(&mut Pin(Ok(true))));
+        assert!(!detect_bluetooth(&mut Pin(Err(()))));
     }
 }

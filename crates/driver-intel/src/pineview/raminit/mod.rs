@@ -291,35 +291,16 @@ pub struct Initialized {
 // Top-level entry point
 // ===================================================================
 
-/// Initialize DDR2 SDRAM.
-///
-/// This is the main raminit entry point, equivalent to coreboot's
-/// `sdram_initialize()`. Called from `IntelPineview::init()`.
+/// Initialize DDR2 SDRAM, coreboot's `sdram_initialize()`: read the SPDs,
+/// then train, or replay `cached` training the SPDs still match, and capture
+/// the training into `capture` (unless it is empty).
 ///
 /// # Arguments
 /// * `mch` — MCHBAR MMIO accessor
 /// * `smbus` — SMBus controller for SPD reads
 /// * `boot_path` — selected cold, warm-reset, or S3-resume path
 /// * `spd_addresses` — SMBus addresses of DIMM SPD EEPROMs (e.g., [0x50, 0x51, 0, 0])
-pub fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
-    mch: &MchBar,
-    smbus: &mut B,
-    boot_path: crate::BootPath,
-    platform_type: u8,
-    spd_addresses: &[u8; 4],
-) -> Result<Initialized, ServiceError> {
-    sdram_initialize_cached(
-        mch,
-        smbus,
-        boot_path,
-        platform_type,
-        spd_addresses,
-        None,
-        &mut [],
-    )
-}
-
-pub(super) fn sdram_initialize_cached<B: fstart_core::services::SmBus + ?Sized>(
+pub(super) fn sdram_initialize<B: fstart_core::services::SmBus + ?Sized>(
     mch: &MchBar,
     smbus: &mut B,
     boot_path: crate::BootPath,

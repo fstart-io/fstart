@@ -61,7 +61,8 @@ pub const LOW_SCRATCH_START: u64 = 0x1000;
 /// End of [`LOW_SCRATCH_START`], exclusive.
 pub const LOW_SCRATCH_END: u64 = 0xf000;
 
-/// Physical address of the DRAM-backed identity page tables postcar builds.
+/// Physical address of the DRAM-backed identity page tables the Intel ramstage
+/// builds on entry.
 ///
 /// Inside the reserved low-scratch window, above the postcar stash (0x2000) and
 /// the SIPI trampoline page (0x8000), and below the EBDA. It must stay reserved:
@@ -107,17 +108,35 @@ pub fn disable_boot_media_rom_cache_for_handoff() {
 // or select the identity page tables and enter long mode, or stay in 32-bit
 // protected mode and call Rust directly.
 #[cfg(target_arch = "x86_64")]
-#[allow(unused_macros)]
-macro_rules! enter_runtime {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_enter_runtime {
     () => {
         "jmp _setup_page_tables"
     };
 }
 #[cfg(target_arch = "x86")]
-#[allow(unused_macros)]
-macro_rules! enter_runtime {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_enter_runtime {
     () => {
         "jmp _start32_runtime"
+    };
+}
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_target_mode {
+    () => {
+        ".code64"
+    };
+}
+#[cfg(target_arch = "x86")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_target_mode {
+    () => {
+        ".code32"
     };
 }
 
@@ -135,214 +154,218 @@ macro_rules! enter_runtime {
 // PML4 → 1 PDPT → 4 PDTs → 512 × 2 MiB pages each.
 //
 // Reset-vector entry only: postcar and ramstage enter via direct 64-bit
-// jumps (`_start_postcar` / `_start_ram`), so this block is compiled out of
-// those stages to keep postcar small. AMD PSP platforms own their reset entry
-// (the PSP copies the image to DRAM); `amd-psp-reset` stages then continue
-// at `_start_ram` once in long mode.
-#[cfg(all(
-    not(test),
-    target_os = "none",
-    not(fstart_stage_env = "postcar"),
-    not(fstart_entry = "amd-psp-reset")
-))]
-core::arch::global_asm!(
-    // Use AT&T syntax throughout — matches coreboot convention and is
-    // the natural syntax for 16-bit / mixed-mode x86 assembly.
-    // =====================================================================
-    // Entire entry sequence in .text.entry section.
-    //
-    // The .reset section contains ONLY the reset vector jump (16 bytes at
-    // 0xFFFFFFF0). The rest of the 16-bit/32-bit/64-bit entry code lives
-    // in .text.entry which is placed by the linker script at the start
-    // of the ROM image. The reset vector uses an absolute far jump (via
-    // raw bytes) to reach _start16bit regardless of distance.
-    // =====================================================================
+// jumps (`_start_postcar` / `_start_ram`), so only the bootblock's linker
+// script keeps the reset sections; the others drop them. AMD PSP platforms
+// own their reset entry (the PSP copies the image to DRAM) and continue at
+// `_start_ram` once in long mode; their linker scripts drop these too.
+/// The reset vector and the 16- and 32-bit entry up to the runtime: the
+/// bootblock's entry on boards the CPU starts from the reset vector. Platform
+/// `entry!` macros expand this into their stage binaries; PSP platforms, whose
+/// reset image has its own entry, do not.
+#[macro_export]
+macro_rules! x86_reset_entry {
+    () => {
+        ::core::arch::global_asm!(
+            // Use AT&T syntax throughout — matches coreboot convention and is
+            // the natural syntax for 16-bit / mixed-mode x86 assembly.
+            // =====================================================================
+            // Entire entry sequence in .text.entry section.
+            //
+            // The .reset section contains ONLY the reset vector jump (16 bytes at
+            // 0xFFFFFFF0). The rest of the 16-bit/32-bit/64-bit entry code lives
+            // in .text.entry which is placed by the linker script at the start
+            // of the ROM image. The reset vector uses an absolute far jump (via
+            // raw bytes) to reach _start16bit regardless of distance.
+            // =====================================================================
 
-    // --- Reset vector (pinned to 0xFFFFFFF0 by linker) ---
-    ".section .reset, \"ax\"",
-    ".code16",
-    ".global _start",
-    "_start:",
-    // Long jump to the 16-bit entry. We encode this as raw bytes because
-    // the target may be >32KB away (outside 16-bit relative range).
-    // EA xx xx xx xx 08 00 = ljmpw $0x08, $abs32
-    // But we are still in real mode before GDT is loaded, so we use a
-    // simple near relative jump. The linker will compute the 16-bit
-    // offset. If it's out of range, we fall back to a long form.
-    // Actually: at reset, CS=0xF000 and IP=0xFFF0 (flat = 0xFFFF_FFF0).
-    // CS base is 0xFFFF_0000 in the hidden portion. A near jmp to
-    // _start16bit works if it's within 64K below 0xFFFF_FFF0, i.e.
-    // anywhere in 0xFFFF_0000..0xFFFF_FFFF. So we place .text.entry
-    // near the end of ROM (within the last 64K).
-    "jmp _start16bit",
-    ".align 16",
-    // --- 16-bit entry code (must be within 4K of reset vector) ---
-    //
-    // Follows coreboot entry16.S conventions:
-    //   - GAS mnemonics only (no manual .byte encoding)
-    //   - CS-relative addressing for lgdtl/lidt via runtime offset
-    //     computation, avoiding the 0x67 address-size prefix that
-    //     breaks KVM real-mode instruction emulation
-    //   - linker resolves label offsets within the boot block
-    ".section .x86boot, \"ax\"",
-    ".code16",
-    ".global _start16bit",
-    "_start16bit:",
-    "cli",
-    "movl %eax, %ebp",
-    // Keep the reset-vector TSC in MM0/MM1 for the first boot timestamp,
-    // like coreboot. Nothing before Rust uses MMX, and firmware Rust is
-    // built without it.
-    "rdtsc",
-    "movd %eax, %mm0",
-    "movd %edx, %mm1",
-    // POST 0x01: reset vector reached the 16-bit entry.
-    "movb $0x01, %al",
-    "outb %al, $0x80",
-    // Invalidate TLB
-    "xorl %eax, %eax",
-    "movl %eax, %cr3",
-    // Compute CS-relative base for descriptor lookups.
-    // At reset CS = 0xF000, hidden base = 0xFFFF0000.
-    // shlw $4 on 0xF000 overflows to 0 (16-bit), so the subtraction
-    // below is effectively a no-op — but keeps the code relocatable
-    // for AP startup where CS may differ (same pattern as coreboot).
-    "movw %cs, %ax",
-    "shlw $4, %ax",
-    // Load null IDT — CPU will shutdown on any exception before the
-    // 64-bit IDT is set up in _setup_idt. No 'l' suffix: 16-bit
-    // operand size loads a 5-byte descriptor (24-bit base = 0).
-    "movw $(_null_idt - _start16bit + 0xf000), %bx",
-    "subw %ax, %bx",
-    "lidt %cs:(%bx)",
-    // Load GDT — 'l' suffix forces 32-bit operand size so the full
-    // 32-bit GDT base address is loaded from the 6-byte descriptor.
-    "movw $(_gdt_desc - _start16bit + 0xf000), %bx",
-    "subw %ax, %bx",
-    "lgdtl %cs:(%bx)",
-    // POST 0x10: about to enter 32-bit protected mode.
-    "movb $0x10, %al",
-    "outb %al, $0x80",
-    // Enable protected mode: set PE, disable caching (CD+NW)
-    "movl %cr0, %eax",
-    "andl $0x7FFAFFD1, %eax", // PG,AM,WP,NE,TS,EM,MP = 0
-    "orl $0x60000001, %eax",  // CD, NW, PE = 1
-    "movl %eax, %cr0",
-    // Far jump to 32-bit protected mode (GDT selector 0x08)
-    "ljmpl $0x08, $_start32bit",
-    // =====================================================================
-    // Null IDT descriptor (limit=0, base=0)
-    // =====================================================================
-    ".align 4",
-    "_null_idt:",
-    ".word 0", // limit
-    ".long 0", // base
-    ".word 0", // padding
-    // =====================================================================
-    // GDT and descriptor
-    // =====================================================================
-    ".align 4",
-    "_gdt:",
-    // Entry 0x00: null descriptor
-    ".word 0x0000, 0x0000",
-    ".byte 0x00, 0x00, 0x00, 0x00",
-    // Entry 0x08: 32-bit flat code (base=0, limit=4G, G=1, D=1)
-    // Used only for the 16-bit → 32-bit ljmpl transition.
-    ".word 0xffff, 0x0000",
-    ".byte 0x00, 0x9b, 0xcf, 0x00",
-    // Entry 0x10: flat data (base=0, limit=4G, G=1, B=1)
-    // Used as the data segment in both 32-bit protected mode and long mode.
-    ".word 0xffff, 0x0000",
-    ".byte 0x00, 0x93, 0xcf, 0x00",
-    // Entry 0x18: 64-bit code (L=1, D=0, base=0, limit=4G)
-    ".word 0xffff, 0x0000",
-    ".byte 0x00, 0x9b, 0xaf, 0x00",
-    "_gdt_end:",
-    "_gdt_desc:",
-    ".word _gdt_end - _gdt - 1", // limit
-    ".long _gdt",                // base
-    // =====================================================================
-    // 32-bit protected mode entry — in .text (linked at ROM base)
-    //
-    // The far jump from 16-bit code uses an absolute 32-bit address so
-    // this can be anywhere in the 4 GiB address space.
-    // =====================================================================
-    ".section .text, \"ax\"",
-    ".code32",
-    ".global _start32bit",
-    "_start32bit:",
-    // POST 0x20: protected-mode entry reached.
-    "movb $0x20, %al",
-    "outb %al, $0x80",
-    // Load data segment selectors (0x10 = flat data, coreboot GDT_DATA_SEG)
-    "movw $0x10, %ax",
-    "movw %ax, %ds",
-    "movw %ax, %es",
-    "movw %ax, %ss",
-    "movw %ax, %fs",
-    "movw %ax, %gs",
-    // ---- Very early BSP microcode update ----
-    // Uses only registers and the anchor-patched microcode offset.  It runs
-    // before CAR/Rust so CPU errata fixes are present for the rest of init.
-    "movl $_after_early_microcode, %esp",
-    "jmp _early_intel_microcode",
-    "_after_early_microcode:",
-    // ---- CAR setup (real hardware only) ----
-    // On boards with Cache-as-RAM, we must enable it BEFORE any memory
-    // writes (BSS clear, page tables, stack pushes) because all writable
-    // memory lives in cache.  On QEMU / non-CAR boards, _has_car == 0
-    // and we skip straight to BSS clear.
-    //
-    // _car_setup returns via jmp *%ebp.
-    "movl $_has_car, %eax",
-    "testl %eax, %eax",
-    "je _post_car",
-    // POST 0x21: entering Cache-as-RAM setup.
-    "movb $0x21, %al",
-    "outb %al, $0x80",
-    "movl $_post_car, %ebp",
-    "jmp _car_setup",
-    "_post_car:",
-    // POST 0x22: CAR is available (or not required).
-    "movb $0x22, %al",
-    "outb %al, $0x80",
-    // Clear BSS.  On CAR boards this zeroes the CAR-backed BSS region
-    // (now live after _car_setup).  On QEMU it zeroes regular RAM.
-    "movl $_bss_start, %edi",
-    "movl $_bss_end, %ecx",
-    "subl %edi, %ecx",
-    "shrl $2, %ecx", // count in dwords
-    "xorl %eax, %eax",
-    "rep",
-    "stosl",
-    // Set up identity-mapped page tables for long mode.
-    //
-    // Real XIP boards keep prebuilt page tables in ROM: CR3 only needs
-    // the physical address and the CPU reads the descriptors during page
-    // walks. QEMU is the exception: its board metadata supplies a writable
-    // `page_table_addr`, enabling `x86-writable-page-tables`, so the
-    // setup routine below builds the tables in low RAM.
-    //
-    // Do not rely on multiple `global_asm!` blocks being laid out in Rust
-    // source order. Branch to a named setup routine; it branches back to
-    // `_after_page_tables` when complete.
-    // POST 0x23: page-table setup/selection begins.
-    "movb $0x23, %al",
-    "outb %al, $0x80",
-    enter_runtime!(),
-    options(att_syntax),
-);
+            // --- Reset vector (pinned to 0xFFFFFFF0 by linker) ---
+            ".section .reset, \"ax\"",
+            ".code16",
+            ".global _start",
+            "_start:",
+            // Long jump to the 16-bit entry. We encode this as raw bytes because
+            // the target may be >32KB away (outside 16-bit relative range).
+            // EA xx xx xx xx 08 00 = ljmpw $0x08, $abs32
+            // But we are still in real mode before GDT is loaded, so we use a
+            // simple near relative jump. The linker will compute the 16-bit
+            // offset. If it's out of range, we fall back to a long form.
+            // Actually: at reset, CS=0xF000 and IP=0xFFF0 (flat = 0xFFFF_FFF0).
+            // CS base is 0xFFFF_0000 in the hidden portion. A near jmp to
+            // _start16bit works if it's within 64K below 0xFFFF_FFF0, i.e.
+            // anywhere in 0xFFFF_0000..0xFFFF_FFFF. So we place .text.entry
+            // near the end of ROM (within the last 64K).
+            "jmp _start16bit",
+            ".align 16",
+            // --- 16-bit entry code (must be within 4K of reset vector) ---
+            //
+            // Follows coreboot entry16.S conventions:
+            //   - GAS mnemonics only (no manual .byte encoding)
+            //   - CS-relative addressing for lgdtl/lidt via runtime offset
+            //     computation, avoiding the 0x67 address-size prefix that
+            //     breaks KVM real-mode instruction emulation
+            //   - linker resolves label offsets within the boot block
+            ".section .x86boot, \"ax\"",
+            ".code16",
+            ".global _start16bit",
+            "_start16bit:",
+            "cli",
+            "movl %eax, %ebp",
+            // Keep the reset-vector TSC in MM0/MM1 for the first boot timestamp,
+            // like coreboot. Nothing before Rust uses MMX, and firmware Rust is
+            // built without it.
+            "rdtsc",
+            "movd %eax, %mm0",
+            "movd %edx, %mm1",
+            // POST 0x01: reset vector reached the 16-bit entry.
+            "movb $0x01, %al",
+            "outb %al, $0x80",
+            // Invalidate TLB
+            "xorl %eax, %eax",
+            "movl %eax, %cr3",
+            // Compute CS-relative base for descriptor lookups.
+            // At reset CS = 0xF000, hidden base = 0xFFFF0000.
+            // shlw $4 on 0xF000 overflows to 0 (16-bit), so the subtraction
+            // below is effectively a no-op — but keeps the code relocatable
+            // for AP startup where CS may differ (same pattern as coreboot).
+            "movw %cs, %ax",
+            "shlw $4, %ax",
+            // Load null IDT — CPU will shutdown on any exception before the
+            // 64-bit IDT is set up in _setup_idt. No 'l' suffix: 16-bit
+            // operand size loads a 5-byte descriptor (24-bit base = 0).
+            "movw $(_null_idt - _start16bit + 0xf000), %bx",
+            "subw %ax, %bx",
+            "lidt %cs:(%bx)",
+            // Load GDT — 'l' suffix forces 32-bit operand size so the full
+            // 32-bit GDT base address is loaded from the 6-byte descriptor.
+            "movw $(_gdt_desc - _start16bit + 0xf000), %bx",
+            "subw %ax, %bx",
+            "lgdtl %cs:(%bx)",
+            // POST 0x10: about to enter 32-bit protected mode.
+            "movb $0x10, %al",
+            "outb %al, $0x80",
+            // Enable protected mode: set PE, disable caching (CD+NW)
+            "movl %cr0, %eax",
+            "andl $0x7FFAFFD1, %eax", // PG,AM,WP,NE,TS,EM,MP = 0
+            "orl $0x60000001, %eax",  // CD, NW, PE = 1
+            "movl %eax, %cr0",
+            // Far jump to 32-bit protected mode (GDT selector 0x08)
+            "ljmpl $0x08, $_start32bit",
+            // =====================================================================
+            // Null IDT descriptor (limit=0, base=0)
+            // =====================================================================
+            ".align 4",
+            "_null_idt:",
+            ".word 0", // limit
+            ".long 0", // base
+            ".word 0", // padding
+            // =====================================================================
+            // GDT and descriptor
+            // =====================================================================
+            ".align 4",
+            "_gdt:",
+            // Entry 0x00: null descriptor
+            ".word 0x0000, 0x0000",
+            ".byte 0x00, 0x00, 0x00, 0x00",
+            // Entry 0x08: 32-bit flat code (base=0, limit=4G, G=1, D=1)
+            // Used only for the 16-bit → 32-bit ljmpl transition.
+            ".word 0xffff, 0x0000",
+            ".byte 0x00, 0x9b, 0xcf, 0x00",
+            // Entry 0x10: flat data (base=0, limit=4G, G=1, B=1)
+            // Used as the data segment in both 32-bit protected mode and long mode.
+            ".word 0xffff, 0x0000",
+            ".byte 0x00, 0x93, 0xcf, 0x00",
+            // Entry 0x18: 64-bit code (L=1, D=0, base=0, limit=4G)
+            ".word 0xffff, 0x0000",
+            ".byte 0x00, 0x9b, 0xaf, 0x00",
+            "_gdt_end:",
+            "_gdt_desc:",
+            ".word _gdt_end - _gdt - 1", // limit
+            ".long _gdt",                // base
+            // =====================================================================
+            // 32-bit protected mode entry — in .text (linked at ROM base)
+            //
+            // The far jump from 16-bit code uses an absolute 32-bit address so
+            // this can be anywhere in the 4 GiB address space.
+            // =====================================================================
+            ".section .text.asm._start32bit, \"ax\"",
+            ".code32",
+            ".global _start32bit",
+            "_start32bit:",
+            // POST 0x20: protected-mode entry reached.
+            "movb $0x20, %al",
+            "outb %al, $0x80",
+            // Load data segment selectors (0x10 = flat data, coreboot GDT_DATA_SEG)
+            "movw $0x10, %ax",
+            "movw %ax, %ds",
+            "movw %ax, %es",
+            "movw %ax, %ss",
+            "movw %ax, %fs",
+            "movw %ax, %gs",
+            // ---- Very early BSP microcode update ----
+            // Uses only registers and the anchor-patched microcode offset.  It runs
+            // before CAR/Rust so CPU errata fixes are present for the rest of init.
+            "movl $_after_early_microcode, %esp",
+            "jmp _early_intel_microcode",
+            "_after_early_microcode:",
+            // ---- CAR setup (real hardware only) ----
+            // On boards with Cache-as-RAM, we must enable it BEFORE any memory
+            // writes (BSS clear, page tables, stack pushes) because all writable
+            // memory lives in cache.  On QEMU / non-CAR boards, _has_car == 0
+            // and we skip straight to BSS clear.
+            //
+            // _car_setup returns via jmp *%ebp.
+            "movl $_has_car, %eax",
+            "testl %eax, %eax",
+            "je _post_car",
+            // POST 0x21: entering Cache-as-RAM setup.
+            "movb $0x21, %al",
+            "outb %al, $0x80",
+            "movl $_post_car, %ebp",
+            "jmp _car_setup",
+            "_post_car:",
+            // POST 0x22: CAR is available (or not required).
+            "movb $0x22, %al",
+            "outb %al, $0x80",
+            // Clear BSS.  On CAR boards this zeroes the CAR-backed BSS region
+            // (now live after _car_setup).  On QEMU it zeroes regular RAM.
+            "movl $_bss_start, %edi",
+            "movl $_bss_end, %ecx",
+            "subl %edi, %ecx",
+            "shrl $2, %ecx", // count in dwords
+            "xorl %eax, %eax",
+            "rep",
+            "stosl",
+            // Set up identity-mapped page tables for long mode.
+            //
+            // CAR boards use page tables prebuilt in ROM: CR3 only needs the
+            // physical address and the CPU reads the descriptors during page
+            // walks. Stages that start in RAM (QEMU) build them in BSS. The
+            // stage's linker script picks the routine (`long_mode`).
+            //
+            // Do not rely on multiple `global_asm!` blocks being laid out in Rust
+            // source order. Branch to a named setup routine; it branches back to
+            // `_after_page_tables` when complete.
+            // POST 0x23: page-table setup/selection begins.
+            "movb $0x23, %al",
+            "outb %al, $0x80",
+            $crate::__x86_enter_runtime!(),
+            // The binary's other assembly runs in the target's mode.
+            $crate::__x86_target_mode!(),
+            options(att_syntax),
+        );
+    };
+}
 
 // Very-early Intel microcode update for BSP.
 //
 // Pre-CAR bootblock only: postcar/ramstage get microcode through the FFS
-// blob (MP init), so this is compiled out of postcar to keep it small.
+// blob (MP init); only the reset path references it, so they drop it.
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
-#[cfg(all(target_os = "none", not(fstart_stage_env = "postcar")))]
+#[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._early_intel_microcode, \"ax\"",
     ".code32",
     ".global _early_intel_microcode",
     "_early_intel_microcode:",
@@ -420,7 +443,7 @@ core::arch::global_asm!(
 #[cfg(not(feature = "early-ffs-anchor"))]
 #[cfg(target_os = "none")]
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._early_intel_microcode, \"ax\"",
     ".code32",
     ".global _early_intel_microcode",
     "_early_intel_microcode:",

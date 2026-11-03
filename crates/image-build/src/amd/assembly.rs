@@ -158,7 +158,7 @@ pub struct AmdAssembly {
     pub firmware: Firmware,
     pub ffs: Option<FfsWindow>,
     /// Unit whose flat binary is the reset image.
-    pub reset_unit: String,
+    pub stage_unit: String,
     pub flash_size: u32,
     /// Where the SoC's PSP finds the BIOS directory.
     pub bios_directory: BiosDirectorySlot,
@@ -304,7 +304,7 @@ impl AmdAssembly {
 
     pub fn validate(&self) -> Result<(), String> {
         let end = |offset: u32, size: u32| offset.checked_add(size).ok_or("layout overflows");
-        if self.reset_unit.is_empty()
+        if self.stage_unit.is_empty()
             || self.reset_size == 0
             || self.reset_size > self.flash_size
             || self.reset_destination == 0

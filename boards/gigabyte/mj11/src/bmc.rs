@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What the vendor firmware tells the AST2500 BMC over IPMI KCS at the end
 //! of POST.
-use fstart_driver_amd::fch::early::{self, PowerFailure};
-use fstart_driver_amd::soc::zeppelin::Zeppelin;
+use fstart_driver_amd::ccx::tsc::Tsc;
+use fstart_driver_amd::fch::{
+    Bus, Fch,
+    early::{self, PowerFailure},
+};
 use fstart_driver_ipmi::kcs::{self, Kcs};
 use fstart_driver_ipmi::{RestorePolicy, SelRecord};
-use fstart_platform_amd::noncar::BoardCtx;
 use zerocopy::little_endian::{U16, U32};
 
 /// Gigabyte OEM NetFn; the request starts with their IANA 0x003c0a.
@@ -14,9 +16,9 @@ const SET_ERP: u8 = 0x20;
 /// ErP off, the Setup default.
 const ERP_OFF: [u8; 5] = [0x0a, 0x3c, 0x00, 0x0d, 0x1c];
 
-pub fn post_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
+pub fn post_done(fch: &Fch<impl Bus>, clock: Tsc) {
     // SAFETY: the KCS ports the board decodes in early_init; only used here.
-    let mut kcs = unsafe { Kcs::new(kcs::DEFAULT_PORT, kcs::DEFAULT_SPACING, ctx.clock) };
+    let mut kcs = unsafe { Kcs::new(kcs::DEFAULT_PORT, kcs::DEFAULT_SPACING, clock) };
 
     // GbtSystemBootEvent: SEL "System Boot Initiated" (system event sensor).
     let boot = SelRecord {
@@ -46,7 +48,7 @@ pub fn post_done(ctx: &mut BoardCtx<'_, Zeppelin>) {
                 RestorePolicy::Unknown => None,
             };
             if let Some(state) = state {
-                early::set_power_failure_state(&ctx.fch(), state);
+                early::set_power_failure_state(fch, state);
                 fstart_log::info!("BMC power restore policy {}", policy as u8);
             }
         }

@@ -456,9 +456,11 @@ impl<C: SuperIoChip> SuperIo<C> {
         device.set_irq(IrqResource::Primary(cfg.irq));
         device.set_enabled(true);
         self.init_kbc_coreboot(cfg.io_base, cfg.io_ext, self.config.mouse.is_some());
+        // Whatever the probe found, hand the OS a quiet controller.
+        quiesce_i8042_for_os_at(cfg.io_base, cfg.io_ext);
     }
 
-    fn init_kbc_coreboot(&self, data_port: u16, command_port: u16, mut enable_aux: bool) {
+    fn init_kbc_coreboot(&self, data_port: u16, command_port: u16, enable_aux: bool) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             // Port the essential parts of coreboot pc_keyboard_init(): drain
@@ -508,7 +510,6 @@ impl<C: SuperIoChip> SuperIo<C> {
                 if !Self::kbc_wait_output_full(command_port)
                     || fstart_core::pio::inb(data_port) != 0x00
                 {
-                    enable_aux = false;
                     let _ = Self::kbc_write_command_byte(data_port, command_port, 0x20);
                 } else {
                     let _ = Self::kbc_flush(data_port, command_port);
@@ -534,21 +535,15 @@ impl<C: SuperIoChip> SuperIo<C> {
             if Self::kbc_send_keyboard(data_port, command_port, 0xF0) != Some(0xFA) {
                 return;
             }
-            if Self::kbc_send_keyboard(data_port, command_port, 0x02) != Some(0xFA) {
-                return;
-            }
+            // The caller quiesces the controller whether this is acknowledged
+            // or not.
+            let _ = Self::kbc_send_keyboard(data_port, command_port, 0x02);
 
-            // Leave the devices quiescent for the OS. Coreboot enables IRQ1
-            // here for many boards, but D41S currently reaches Linux with a
-            // pending/stuck i8042 SERIRQ when firmware has enabled KBC IRQs.
-            // Advertise the PNP devices through ACPI and leave IRQ generation
-            // disabled; Linux's i8042 driver will run its own controller
-            // setup, enable scanning, and unmask IRQ1/IRQ12 after its handlers
-            // are installed.
-            let _ = Self::kbc_flush(data_port, command_port);
-            let command_byte = if enable_aux { 0x44 } else { 0x64 };
-            let _ = Self::kbc_write_command_byte(data_port, command_port, command_byte);
-            let _ = Self::kbc_flush(data_port, command_port);
+            // Coreboot enables IRQ1 here for many boards, but D41S reaches
+            // Linux with a pending/stuck i8042 SERIRQ when firmware has
+            // enabled KBC IRQs. The caller quiesces the controller instead;
+            // Linux's i8042 driver unmasks IRQ1/IRQ12 after installing its
+            // handlers.
         }
     }
 
@@ -673,14 +668,8 @@ impl<C: SuperIoChip> SuperIo<C> {
 // BusDevice impl — constructed by the parent LPC bus
 // ---------------------------------------------------------------------------
 
-/// The parent bus type for SuperIO. Any driver providing an LPC bus
-/// service with a `base_port(...)` getter can serve as the parent.
-///
-/// For the initial implementation we use `()` as the bus type and
-/// require the caller to pass the base port in a different way; a
-/// future revision will tie this to the `LpcBus` trait once its
-/// concrete shape is settled. For now, `new_on_bus` takes the base
-/// port directly encoded in the parent reference.
+/// The parent bus of a SuperIO: whatever knows the chip's LPC config
+/// index port.
 pub trait LpcBaseProvider {
     /// Return the LPC config index port for this child.
     fn lpc_base(&self) -> u16;

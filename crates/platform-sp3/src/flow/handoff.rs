@@ -6,10 +6,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_core::services::memory_detect::{E820Entry, E820Kind, E820State};
+use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
+use fstart_payload::{AcpiTables, Description, Handoff, MainstagePayload, Placement, Range};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
-use fstart_stage::payload::MainstagePayload;
 
 use super::{Ctx, OrHalt};
 use crate::layout::{self, Span};
@@ -19,13 +19,13 @@ use crate::layout::{self, Span};
     fstart_payload = "linux",
     fstart_payload = "crabefi"
 ))]
-type Payload = fstart_stage::payload::BuildSelectedPayload;
+type Payload = fstart_payload::BuildSelectedPayload;
 #[cfg(not(any(
     fstart_payload = "halt",
     fstart_payload = "linux",
     fstart_payload = "crabefi"
 )))]
-type Payload = fstart_stage::payload::HaltPayload;
+type Payload = fstart_payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
 /// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor
@@ -74,7 +74,8 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
     };
     // SAFETY: platform RAM only, with the stage, early region and flash
     // excluded; no device has a DMA buffer outside the early region.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }.or_halt("load policy");
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
+        .or_halt("load policy");
     let locator = fstart_stage::anchor::media_locator().or_halt("FFS locator");
     if !locator.validate(window.size) {
         super::fail("FFS locator");
@@ -94,79 +95,30 @@ fn span_window(span: Span) -> MemoryWindow {
     }
 }
 
-/// What the payload launcher reads.
-pub(crate) struct Handoff<'a> {
-    e820: E820State,
-    rsdp: Option<u64>,
-    smbios: Option<u64>,
-    console: &'a Ns16550,
-    ecam: (u64, u64),
-    ffs: Span,
-}
-
-impl fstart_stage::payload::X86UefiPayloadContext for Handoff<'_> {
-    fn console(&self) -> Option<&dyn fstart_core::services::Console> {
-        Some(self.console)
-    }
-
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-
-    fn firmware_region(&self) -> (u64, u64) {
-        (self.ffs.base, self.ffs.size)
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-
-    fn smbios(&self) -> Option<u64> {
-        self.smbios
-    }
-
-    fn pci_root(&self) -> Option<fstart_pci::PciRootInfo> {
-        Some(fstart_pci::PciRootInfo {
-            segment: 0,
-            ecam_base: self.ecam.0,
-            bus_start: 0,
-            bus_end: ((self.ecam.1 >> 20) - 1) as u8,
-        })
-    }
-}
-
-#[cfg(feature = "payload-linux")]
-impl fstart_stage::payload::X86LinuxPayloadContext for Handoff<'_> {
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-}
-
 /// Hand the e820, RSDP and console to the build's payload launcher.
 pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550) -> ! {
     // The allocators' assignments are in the hardware now.
     drop(roots);
     fstart_log::info!("sp3: handing off to the payload");
     fstart_log::flush();
-    Payload::boot(Handoff {
-        e820: ctx.e820,
-        rsdp: ctx.rsdp,
-        smbios: ctx.smbios,
-        console,
-        ecam: ctx.ecam,
-        ffs: ctx.ffs,
-    })
+    let mut description =
+        Description::new(ctx.e820.entries(), Range::new(ctx.ffs.base, ctx.ffs.size));
+    description.console = Some(console);
+    description.acpi = ctx.rsdp.map(AcpiTables::at);
+    description.smbios = ctx.smbios;
+    description.pci_root = Some(ctx.pci_root);
+    Payload::boot(Handoff::new(description, Placement::default()), ())
 }
 
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi`); returns the
 /// RSDP address. The tables live in the stage heap, inside the reserved
 /// early region.
 #[cfg(feature = "acpi")]
-pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -> u64 {
+pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
+    ctx: &Ctx,
+    si: &S,
+    board_acpi: &crate::acpi::Board<'_>,
+) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
@@ -268,8 +220,6 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
             p.memory.len() as u32
         );
     }
-    let lpc_aml = B::acpi_lpc_aml();
-    let board_acpi = B::acpi_board(&lpc_aml);
     let fch = {
         use fstart_driver_amd::sp3::fch::FchHw;
         acpi::FchAcpi::read(ctx.fch.mmio(), ctx.fch.io())
@@ -290,6 +240,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         .collect();
     let inputs = Inputs {
         generation: ctx.generation,
+        pci: ctx.pci_root,
         cpus: &cpus,
         fch_ioapic_id: fch_ioapic_id(ctx.generation),
         ioapics: &ioapics,
@@ -324,7 +275,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(ctx: &Ctx, si: &S) -
         tpm: super::tpm::acpi(),
         bmc_sx_notify: B::BMC_SX_NOTIFY,
         cppc: &cppc,
-        board: board_acpi,
+        board: *board_acpi,
     };
     if inputs.einj {
         let targets = ctx.smm.map(|s| s.einj.targets).unwrap_or([0; 2]);

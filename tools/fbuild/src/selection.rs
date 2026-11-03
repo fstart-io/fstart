@@ -77,11 +77,7 @@ impl Selection {
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let cfgs = vec![
-            format!("fstart_stage_env=\"{}\"", unit.environment),
-            format!("fstart_entry=\"{}\"", unit.entry),
-            format!("fstart_payload=\"{}\"", unit.payload),
-        ];
+        let cfgs = vec![format!("fstart_payload=\"{}\"", unit.payload)];
         let flags = unit.rustflags.clone();
         // The stage selection and linker script only concern this workspace's
         // crates. Passing them as profile rustflags rather than RUSTFLAGS keeps
@@ -137,10 +133,8 @@ impl Selection {
             board.package.clone(),
         ];
         match &unit.cargo_target {
-            CargoTarget::BoardBinary => args.extend([
-                "--bin".into(),
-                board.stage_bin.clone().ok_or("missing stage-bin")?,
-            ]),
+            // A board owns one binary per stage, named after the unit.
+            CargoTarget::BoardBinary => args.extend(["--bin".into(), unit.name.clone()]),
             CargoTarget::BoardLibrary => args.push("--lib".into()),
         }
         // Targets rustc does not ship (32-bit bare-metal x86) are JSON specs

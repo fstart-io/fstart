@@ -13,16 +13,19 @@ extern crate alloc;
 
 use alloc::{format, vec, vec::Vec};
 use core::ops::RangeInclusive;
+/// The board's SMBIOS identity, which the board's `main` passes to the
+/// flow's last phase.
+pub use fstart_acpi::smbios::SmbiosIdentity;
 use fstart_acpi::{
     Aml, AmlError, AmlSink,
     aml::{AddressSpace, AddressSpaceCacheable, IO, Name, ResourceTemplate},
     aml_linker::{device_vec, scope_vec},
     ivrs::{self, DeviceEntry, Dte, Variety},
-    mcfg::MCFG,
     pirq::prt_name_aml,
     platform::{HpetConfig, IoApicConfig, IsoConfig, PlatformConfig, X86Config, X86Fadt},
 };
 use fstart_acpi_macros::acpi_dsl;
+use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::{
     ccx::{
         Thread,
@@ -125,8 +128,8 @@ pub struct Inputs<'a> {
     pub apic_ids: &'a [u32],
     /// The dies in order.
     pub dies: &'a [DieAcpi<'a>],
-    pub ecam_base: u64,
-    pub ecam_buses: u16,
+    /// The PCI segment (`noncar::Soc::pci_root`), as the payload gets it.
+    pub pci: PciRootInfo,
     /// HPET general capabilities and ID register (0xfed00000).
     pub hpet_id: u32,
     /// The P-states and C-states of every processor.
@@ -165,7 +168,7 @@ pub enum Error {
         die: u8,
         devfn: u8,
     },
-    /// No bus or more than 256 buses in the ECAM window.
+    /// An ECAM window with no buses.
     EcamBuses,
     /// More dies than the GSIs of their IOAPICs fit in a byte.
     Dies,
@@ -246,7 +249,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
         fstart_acpi::wsmt::FIXED_COMM_BUFFERS
             | fstart_acpi::wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION,
     );
-    let extra = core::iter::once(mcfg(inputs)?)
+    let extra = core::iter::once(fstart_acpi::build_mcfg(&[inputs.pci]))
         .chain(numa_tables(inputs))
         .chain(ivrs(inputs))
         .chain(core::iter::once(wsmt))
@@ -385,11 +388,11 @@ fn sleep_states() -> Vec<u8> {
 
 /// The ECAM window is a motherboard resource.
 fn ecam_reservation(inputs: &Inputs) -> Result<Vec<u8>, Error> {
-    if inputs.ecam_buses == 0 || inputs.ecam_buses > 256 {
+    let base = inputs.pci.ecam_base;
+    let size = inputs.pci.ecam_size();
+    if size == 0 {
         return Err(Error::EcamBuses);
     }
-    let base = inputs.ecam_base;
-    let size = u64::from(inputs.ecam_buses) << 20;
     let mut aml = Vec::new();
     acpi_dsl! {
         Device("PERC") {
@@ -401,23 +404,6 @@ fn ecam_reservation(inputs: &Inputs) -> Result<Vec<u8>, Error> {
     }
     .emit(&mut aml)?;
     Ok(aml)
-}
-
-fn mcfg(inputs: &Inputs) -> Result<Vec<u8>, Error> {
-    let last_bus = inputs
-        .ecam_buses
-        .checked_sub(1)
-        .and_then(|bus| u8::try_from(bus).ok())
-        .ok_or(Error::EcamBuses)?;
-    let mut mcfg = MCFG::new(
-        fstart_acpi::OEM_ID,
-        fstart_acpi::OEM_TABLE_ID,
-        fstart_acpi::OEM_REVISION,
-    );
-    mcfg.add_ecam(inputs.ecam_base, 0, 0, last_bus);
-    let mut bytes = Vec::new();
-    mcfg.to_aml_bytes(&mut bytes);
-    Ok(bytes)
 }
 
 /// The FCH IOAPIC and the HPET interrupt as the FCH SMBus device 0:14.0.
@@ -1030,8 +1016,12 @@ mod tests {
             soc: &ACPI,
             apic_ids: &[0, 1, 8, 9, 2, 3],
             dies: &dies,
-            ecam_base: 0xf000_0000,
-            ecam_buses: 128,
+            pci: fstart_core::description::PciRootInfo {
+                segment: 0,
+                ecam_base: 0xf000_0000,
+                bus_start: 0,
+                bus_end: 127,
+            },
             hpet_id: 0x1022_8201,
             power: Some(power()),
             numa: None,
@@ -1149,8 +1139,12 @@ mod tests {
             soc: &ACPI,
             apic_ids: &[0],
             dies: &dies,
-            ecam_base: 0xf000_0000,
-            ecam_buses: 128,
+            pci: fstart_core::description::PciRootInfo {
+                segment: 0,
+                ecam_base: 0xf000_0000,
+                bus_start: 0,
+                bus_end: 127,
+            },
             hpet_id: 0,
             power: None,
             numa: None,
@@ -1195,8 +1189,12 @@ mod tests {
             soc: &ACPI,
             apic_ids: &[0],
             dies: &dies,
-            ecam_base: 0xf000_0000,
-            ecam_buses: 128,
+            pci: fstart_core::description::PciRootInfo {
+                segment: 0,
+                ecam_base: 0xf000_0000,
+                bus_start: 0,
+                bus_end: 127,
+            },
             hpet_id: 0,
             power: None,
             numa: None,
@@ -1497,8 +1495,12 @@ mod tests {
             soc: &ACPI,
             apic_ids: &[0, 1, 0x10, 0x11],
             dies: &dies,
-            ecam_base: 0xf000_0000,
-            ecam_buses: 128,
+            pci: fstart_core::description::PciRootInfo {
+                segment: 0,
+                ecam_base: 0xf000_0000,
+                bus_start: 0,
+                bus_end: 127,
+            },
             hpet_id: 0,
             power: None,
             numa: Some(DieNuma {
@@ -1604,8 +1606,12 @@ mod tests {
             soc: &ACPI,
             apic_ids: &[0, 1, 2, 3, 8, 9, 10, 11],
             dies: &dies,
-            ecam_base: 0xf000_0000,
-            ecam_buses: 128,
+            pci: fstart_core::description::PciRootInfo {
+                segment: 0,
+                ecam_base: 0xf000_0000,
+                bus_start: 0,
+                bus_end: 127,
+            },
             hpet_id: 0x1022_8201,
             power: Some(power()),
             numa: None,

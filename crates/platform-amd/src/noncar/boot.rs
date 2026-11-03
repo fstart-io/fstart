@@ -3,10 +3,9 @@
 //! the policy the image builder patched into this stage.
 use super::layout::Region;
 use fstart_core::services::{
-    Console, ServiceError,
-    memory_detect::{E820Entry, E820Kind, E820State},
+    ServiceError,
+    memory_detect::{E820Kind, E820State},
 };
-use fstart_pci::PciRootInfo;
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 use heapless::Vec;
 
@@ -51,7 +50,7 @@ pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
     // SAFETY: discovered RAM only, with the live stage, the firmware region
     // and the media excluded; no device has DMA buffers outside the reserved
     // early region.
-    unsafe { fstart_stage::directory::set_load_policy(&policy) }
+    unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
         .map_err(|_| ServiceError::InvalidParam)?;
     let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
     if locator.image_offset != 0 || !locator.validate(ffs.size) {
@@ -65,71 +64,16 @@ pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
     media.verify()
 }
 
-/// What the payload launchers need.
-pub struct Handoff {
-    pub console: &'static dyn Console,
-    pub e820: E820State,
-    pub rsdp: Option<u64>,
-    pub smbios: Option<u64>,
-    /// The FFS, the firmware region of the payload.
-    pub ffs: Region,
-    pub pci_root: PciRootInfo,
-    pub devices: heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>,
-    pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
-    #[cfg(feature = "payload-uefi-basic")]
-    pub peripherals: super::Peripherals,
-}
-
-impl fstart_stage::payload::X86UefiPayloadContext for Handoff {
-    fn console(&self) -> Option<&dyn Console> {
-        Some(self.console)
-    }
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-    fn firmware_region(&self) -> (u64, u64) {
-        (self.ffs.base, self.ffs.size)
-    }
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-    fn smbios(&self) -> Option<u64> {
-        self.smbios
-    }
-    fn pci_root(&self) -> Option<PciRootInfo> {
-        Some(self.pci_root)
-    }
-    fn acpi_devices(&self) -> &[fstart_core::acpi::AcpiGenericDevice] {
-        &self.devices
-    }
-    #[cfg(feature = "payload-uefi-basic")]
-    fn framebuffer(&self) -> Option<fstart_core::services::FramebufferInfo> {
-        self.framebuffer
-    }
-    #[cfg(feature = "payload-uefi-basic")]
-    fn take_peripherals(&mut self) -> super::Peripherals {
-        core::mem::take(&mut self.peripherals)
-    }
-}
-
-#[cfg(feature = "payload-linux")]
-impl fstart_stage::payload::X86LinuxPayloadContext for Handoff {
-    fn e820(&self) -> &[E820Entry] {
-        self.e820.entries()
-    }
-    fn acpi_rsdp(&self) -> Option<u64> {
-        self.rsdp
-    }
-}
-
-/// Identity map all RAM and the 4-GiB MMIO space before the payload: the
-/// reset entry only maps the low 4 GiB.
-pub fn map_ram(e820: &E820State) -> Result<(), ServiceError> {
+/// Identity map the memory map and assigned PCI BARs before the payload.
+pub fn map_ram(e820: &E820State, pci: &fstart_pci::PciEcam) -> Result<(), ServiceError> {
     let spans = e820
         .entries()
         .iter()
         .map(|entry| (entry.addr, entry.size))
-        .chain([(0, 1 << 32)]);
+        .chain(
+            pci.assigned_memory_windows()
+                .map(|window| (window.base, window.size)),
+        );
     // SAFETY: BSP only, before the payload; the tables come from the heap in
     // the reserved early region.
     let tables = unsafe { fstart_arch::x86::boot::paging::IdentityTables::build(spans)? };

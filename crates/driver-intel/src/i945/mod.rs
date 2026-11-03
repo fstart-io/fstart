@@ -23,15 +23,13 @@ pub mod raminit;
 
 use self::fields::*;
 
-use core::ptr;
-
 use crate::MmioBar;
 use crate::ich7::Rcba;
 use fstart_core::mmio::MmioReadWrite;
+use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_core::services::{MemoryController, ServiceError};
 use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::{
@@ -314,8 +312,6 @@ pub struct IntelI945Config {
     /// PCI MMIO window in MiB reserved below 4 GiB when programming TOLUD.
     /// coreboot refuses sizes below 768 MiB; default matches D945GCLF (768).
     pub pci_mmio_size: u32,
-    /// SMBus I/O base used for DIMM SPD probing during raminit.
-    pub smbus_base: u16,
     /// SPD EEPROM addresses in i945 slot order: ch0 (2 slots), ch1 (2 slots).
     pub spd_addresses: [u8; 4],
     /// Integrated graphics configuration.
@@ -335,7 +331,6 @@ impl IntelI945Config {
             variant: I945Variant::DesktopGc,
             gfx_gms: default_gfx_gms(),
             pci_mmio_size: default_pci_mmio_size(),
-            smbus_base: default_smbus_base(),
             spd_addresses: default_spd_addresses(),
             igd: I945IgdConfig::new(),
         }
@@ -356,10 +351,6 @@ const fn default_gfx_gms() -> u8 {
 
 const fn default_pci_mmio_size() -> u32 {
     768
-}
-
-const fn default_smbus_base() -> u16 {
-    0x0400
 }
 
 const fn default_spd_addresses() -> [u8; 4] {
@@ -1749,67 +1740,17 @@ impl MemoryDetector for IntelI945 {
     }
 }
 
-impl MemoryController for IntelI945 {
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
-        let mut smbus = crate::southbridge::smbus::I801SmBus::new(self.config.smbus_base);
-        smbus.host_reset();
-        let result = raminit::sdram_initialize(self, &mut smbus);
+impl fstart_core::services::MemoryInit for IntelI945 {
+    type Input<'a> = crate::SpdTraining<'a>;
+    type Output = Option<usize>;
+
+    /// Train DRAM from the SPDs. The i945 keeps no training cache.
+    fn bring_up(&mut self, input: crate::SpdTraining<'_>) -> Result<Option<usize>, ServiceError> {
+        let result = raminit::sdram_initialize(self, input.smbus);
         if let Ok(size) = self.total_ram_bytes() {
             self.detected_size = size;
         }
         self.memory_info = Some(result?);
-        Ok(())
+        Ok(None)
     }
-
-    fn detected_size_bytes(&self) -> u64 {
-        self.detected_size
-    }
-
-    fn memory_test(&self) -> Result<(), ServiceError> {
-        let top = self.usable_low_memory_top() as usize;
-        ramtest_probe(0x0010_0000, top)?;
-        ramtest_probe(top.saturating_sub(0x1000), top)?;
-        Ok(())
-    }
-}
-
-/// Test-only probe helper shared with `raminit`.
-pub(crate) fn ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError> {
-    let addr = addr & !0x3;
-    let Some(end) = addr.checked_add(core::mem::size_of::<u32>()) else {
-        return Err(ServiceError::HardwareError);
-    };
-    if addr < 0x0010_0000 || end > top {
-        return Ok(());
-    }
-
-    let p = addr as *mut u32;
-    let addr_pattern = (addr as u32).rotate_left(13) ^ 0xa5a5_5a5a;
-    const FIXED_PATTERNS: [u32; 4] = [0x0000_0000, 0xffff_ffff, 0x5555_5555, 0xaaaa_aaaa];
-
-    // SAFETY: Called only after successful i945 DRAM training within the
-    // caller-provided usable top. The original word is restored.
-    unsafe {
-        let old = ptr::read_volatile(p);
-        for pattern in FIXED_PATTERNS
-            .iter()
-            .copied()
-            .chain(core::iter::once(addr_pattern))
-        {
-            ptr::write_volatile(p, pattern);
-            let got = ptr::read_volatile(p);
-            if got != pattern {
-                ptr::write_volatile(p, old);
-                fstart_log::error!(
-                    "i945 ramtest: failed at {:#x}: wrote {:#x}, read {:#x}",
-                    addr,
-                    pattern,
-                    got
-                );
-                return Err(ServiceError::HardwareError);
-            }
-        }
-        ptr::write_volatile(p, old);
-    }
-    Ok(())
 }

@@ -37,11 +37,10 @@
 //! 1:                       // returns here, CAR + stack live
 //! ```
 //!
-//! Postcar never sets up CAR (it only tears it down), so this whole block
-//! is compiled out of the postcar stage to keep it small.
-#[cfg(not(fstart_stage_env = "postcar"))]
+//! Postcar never sets up CAR (it only tears it down); only the reset path
+//! references this block, so later stages drop it.
 core::arch::global_asm!(
-    ".section .text, \"ax\"",
+    ".section .text.asm._car_setup, \"ax\"",
     ".code32",
     ".global _car_setup",
     // =====================================================================

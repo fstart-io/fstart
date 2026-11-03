@@ -10,7 +10,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 pub use fstart_acpi::numa::{CpuAffinity, MemoryAffinity};
-#[cfg(any(feature = "bundle-reset", test))]
+#[cfg(any(feature = "bundle-stage", test))]
 use fstart_driver_amd::sp3::df::dram::{DramMap, NumaDomain, df3_channel, domain_of};
 use fstart_driver_amd::sp3::soc::Generation;
 
@@ -32,7 +32,7 @@ pub struct Numa<'a> {
 use super::Cpu;
 
 /// Merge per-node DRAM views into sorted, unique proximity ranges.
-#[cfg(any(feature = "bundle-reset", test))]
+#[cfg(any(feature = "bundle-stage", test))]
 pub(crate) fn memory_from_maps(
     maps: impl IntoIterator<Item = DramMap>,
     domains: &[NumaDomain],

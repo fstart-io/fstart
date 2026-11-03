@@ -86,8 +86,6 @@
         "data_addr": 1075838976,
         "heap_size": 262144,
         "load_addr": 0,
-        "page_size": "Size2MiB",
-        "page_table_addr": null,
         "stack_size": 262144
       }
     }
@@ -131,8 +129,6 @@
       "_stack_top": 1076887552
     }
   },
-  "entry": "armv7",
-  "environment": "monolithic",
-  "linker_sha256": "d4f651adfd4257fd91e1cbed0dbcbeabbbacf4ab95caea312de12f88fb66e049",
+  "linker_sha256": "14a365c6fbc4139d0c8aefa2803ac0d4869f6e50f937dfb19beb7ba2efd568ba",
   "target": "armv7a-none-eabi"
 }

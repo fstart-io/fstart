@@ -1,7 +1,7 @@
 //! Mainstage-owned, immutable directory cache. Never initialized in CAR/SPL.
 //! Only its small pointer resides in static storage; the bytes are allocated
 //! once in DRAM, authenticated before parsing, and never reread from media.
-use crate::boot::{LoadError, MemoryPolicy, MemoryWindow, read_exact};
+use crate::boot::{Codec, LoadError, MemoryPolicy, MemoryWindow, read_exact};
 use crate::heap::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use fstart_core::services::BootMedia;
@@ -177,11 +177,14 @@ struct OwnedPolicy {
     writable: Vec<MemoryWindow>,
     reserved: Vec<MemoryWindow>,
     entry_alignment: u64,
+    codec: &'static dyn Codec,
 }
 static POLICY: AtomicPtr<OwnedPolicy> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Copy a platform memory policy into retained mainstage ownership. Can be
-/// installed after memory discovery independently of directory initialization.
+/// Copy a platform memory policy into retained mainstage ownership, with the
+/// codec directory-backed loads decompress with ([`crate::boot::Stored`]
+/// links no decoder). Can be installed after memory discovery independently
+/// of directory initialization.
 /// Replacement retains prior allocations so readers cannot hold freed policy.
 ///
 /// # Safety
@@ -190,7 +193,10 @@ static POLICY: AtomicPtr<OwnedPolicy> = AtomicPtr::new(core::ptr::null_mut());
 /// handoff, temporary RAM arenas and tables, not only currently used bytes.
 /// This is a platform assertion; authenticated directory destinations provide
 /// no authority to write RAM. Invoke only after allocator initialization.
-pub unsafe fn set_load_policy(policy: &MemoryPolicy<'_>) -> Result<(), LoadError> {
+pub unsafe fn set_load_policy(
+    policy: &MemoryPolicy<'_>,
+    codec: &'static dyn Codec,
+) -> Result<(), LoadError> {
     if policy.writable.len() > MAX_WINDOWS
         || policy.reserved.len() > MAX_WINDOWS
         || !policy.entry_alignment.is_power_of_two()
@@ -216,6 +222,7 @@ pub unsafe fn set_load_policy(policy: &MemoryPolicy<'_>) -> Result<(), LoadError
         writable,
         reserved,
         entry_alignment: policy.entry_alignment,
+        codec,
     });
     crate::loaded::initialize();
     POLICY.store(Box::into_raw(owned), Ordering::Release);
@@ -231,6 +238,7 @@ pub unsafe fn set_load_policy(policy: &MemoryPolicy<'_>) -> Result<(), LoadError
 /// overlapping nothing that is still live.
 pub unsafe fn grant_load_window(window: MemoryWindow) -> Result<(), LoadError> {
     let policy = load_policy().ok_or(LoadError::MemoryPolicy)?;
+    let codec = codec().ok_or(LoadError::MemoryPolicy)?;
     let end = window
         .start
         .checked_add(window.size)
@@ -270,11 +278,14 @@ pub unsafe fn grant_load_window(window: MemoryWindow) -> Result<(), LoadError> {
         .collect();
     // SAFETY: the existing policy plus the caller's window contract.
     unsafe {
-        set_load_policy(&MemoryPolicy {
-            writable: &writable,
-            reserved: &reserved,
-            entry_alignment: policy.entry_alignment,
-        })
+        set_load_policy(
+            &MemoryPolicy {
+                writable: &writable,
+                reserved: &reserved,
+                entry_alignment: policy.entry_alignment,
+            },
+            codec,
+        )
     }
 }
 
@@ -283,6 +294,12 @@ pub unsafe fn grant_load_window(window: MemoryWindow) -> Result<(), LoadError> {
 /// the reserved ranges through the normal load policy.
 pub fn writable_memory() -> Option<&'static [MemoryWindow]> {
     load_policy().map(|policy| policy.writable)
+}
+
+/// The codec the platform installed with the load policy.
+pub(crate) fn codec() -> Option<&'static dyn Codec> {
+    // SAFETY: immutable allocations remain owned for the entire stage lifetime.
+    unsafe { POLICY.load(Ordering::Acquire).as_ref() }.map(|owned| owned.codec)
 }
 
 pub(crate) fn load_policy() -> Option<MemoryPolicy<'static>> {
