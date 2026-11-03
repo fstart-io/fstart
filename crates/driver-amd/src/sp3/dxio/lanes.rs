@@ -200,6 +200,42 @@ impl Lanes {
     }
 }
 
+/// How a x16 slot splits into links, as Setup menus offer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bifurcation {
+    X16,
+    X8x8,
+    X4x4x4x4,
+}
+
+impl Bifurcation {
+    /// The width of every link.
+    pub const fn width(self) -> u8 {
+        match self {
+            Self::X16 => 16,
+            Self::X8x8 => 8,
+            Self::X4x4x4x4 => 4,
+        }
+    }
+
+    /// The bifurcation of `width`-lane links.
+    pub const fn from_width(width: u32) -> Option<Self> {
+        match width {
+            16 => Some(Self::X16),
+            8 => Some(Self::X8x8),
+            4 => Some(Self::X4x4x4x4),
+            _ => None,
+        }
+    }
+
+    /// The option values of a slot bifurcation knob: the link width.
+    pub const CHOICES: &'static [fstart_options::Choice] = &[
+        fstart_options::Choice::new(16, "x16"),
+        fstart_options::Choice::new(8, "x8x8"),
+        fstart_options::Choice::new(4, "x4x4x4x4"),
+    ];
+}
+
 /// Naples board lane number: die `n` owns lanes `32n..32n+31` of its
 /// socket. Lanes are numbered per socket (0–127), with one DXIO complex per
 /// socket on 2P (ROOTBRIDGE_2P §2, decoded from the live `$A27` tables), so

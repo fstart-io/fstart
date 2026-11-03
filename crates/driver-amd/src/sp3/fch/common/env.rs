@@ -18,6 +18,33 @@ pub enum PowerFailState {
     Previous,
 }
 
+impl PowerFailState {
+    /// The option values, as coreboot's `power_on_after_fail` stores them.
+    pub const CHOICES: &'static [fstart_options::Choice] = &[
+        fstart_options::Choice::new(0, "Power off"),
+        fstart_options::Choice::new(1, "Power on"),
+        fstart_options::Choice::new(2, "Last state"),
+    ];
+
+    /// The option value ([`Self::CHOICES`]).
+    pub const fn option(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::On => 1,
+            Self::Previous => 2,
+        }
+    }
+
+    /// The state of an option value; anything unknown stays off.
+    pub const fn from_option(value: u32) -> Self {
+        match value {
+            1 => Self::On,
+            2 => Self::Previous,
+            _ => Self::Off,
+        }
+    }
+}
+
 /// Policy of [`hw_acpi`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EnvPolicy {
