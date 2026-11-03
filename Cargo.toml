@@ -53,6 +53,7 @@ members = [
   "crates/boot",
   "crates/resume",
   "crates/store",
+  "crates/options",
   "crates/timestamp",
   "crates/memtest",
 ]

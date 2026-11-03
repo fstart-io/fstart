@@ -1,0 +1,8 @@
+[package]
+name = "fstart-options"
+description = "User overrides of a board's configuration: knobs, option sources and the CFR form"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

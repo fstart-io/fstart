@@ -1450,6 +1450,10 @@ name = "fstart-memtest"
 version = "0.1.0"
 
 [[package]]
+name = "fstart-options"
+version = "0.1.0"
+
+[[package]]
 name = "fstart-payload"
 version = "0.1.0"
 dependencies = [
