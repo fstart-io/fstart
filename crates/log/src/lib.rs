@@ -363,6 +363,110 @@ pub fn max_level() -> Level {
     unsafe { *MAX_LEVEL.0.get() }
 }
 
+/// User options (`fstart_options`): their logged resolution, and the
+/// console log level as an option under coreboot's name and values (`debug_level`: 3 error, 4 warning, 6 info,
+/// 7 debug, 8 spew), so a store coreboot shares reads the same. A level
+/// above the build's `FSTART_LOG_LEVEL` prints nothing more: those
+/// messages are not compiled in.
+pub mod option {
+    use super::Level;
+    use fstart_options::{Choice, Kind, Knob, Meta, Provenance, Rejection, Report, Source};
+
+    const CHOICES: &[Choice] = &[
+        Choice::new(3, "Error"),
+        Choice::new(4, "Warning"),
+        Choice::new(6, "Info"),
+        Choice::new(7, "Debug"),
+        Choice::new(8, "Trace"),
+    ];
+
+    /// The coreboot `debug_level` value of `level`.
+    pub const fn value(level: Level) -> u32 {
+        match level {
+            Level::Error => 3,
+            Level::Warn => 4,
+            Level::Info => 6,
+            Level::Debug => 7,
+            Level::Trace => 8,
+        }
+    }
+
+    /// The level of a `debug_level` value of [`KNOBS`].
+    pub const fn level(value: u32) -> Level {
+        match value {
+            0..=3 => Level::Error,
+            4 | 5 => Level::Warn,
+            6 => Level::Info,
+            7 => Level::Debug,
+            _ => Level::Trace,
+        }
+    }
+
+    /// The console log level knob, over the level a flow then sets with
+    /// [`super::set_max_level`].
+    pub static KNOBS: [Knob<Level>; 1] = [Knob::new(
+        Meta {
+            key: "debug_level",
+            form: "Console",
+            label: "Console log level",
+            help: "The most verbose firmware messages the console shows.",
+            kind: Kind::Enum(CHOICES),
+        },
+        |l| value(*l),
+        |l, v| *l = level(v),
+    )];
+
+    /// [`fstart_options::resolve_checked`], logging every override applied
+    /// and every stored value it rejects.
+    pub fn resolve<C: Clone>(
+        knobs: &'static [Knob<C>],
+        source: &dyn Source,
+        config: &mut C,
+        report: &mut Report,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let first = report.settings.len();
+        fstart_options::resolve_checked(knobs, source, config, report, check);
+        for setting in &report.settings[first..] {
+            let key = setting.meta.key;
+            match setting.provenance {
+                Provenance::Board => {}
+                Provenance::Override => crate::info!(
+                    "options: {} = {} (board {})",
+                    key,
+                    setting.value,
+                    setting.default
+                ),
+                Provenance::Rejected { stored, why } => crate::warn!(
+                    "options: {} = {} not applied ({}), keeping {}",
+                    key,
+                    stored,
+                    match why {
+                        Rejection::OutOfRange => "invalid value",
+                        Rejection::Inactive => "unavailable",
+                        Rejection::Source(_) => "store unreadable",
+                        Rejection::Conflict(why) => why,
+                    },
+                    setting.value
+                ),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_choice_is_its_levels_value() {
+            for choice in CHOICES {
+                assert_eq!(value(level(choice.value)), choice.value);
+            }
+            assert_eq!(value(Level::Info), 6);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Writer adapter
 // ---------------------------------------------------------------------------
@@ -732,46 +836,4 @@ macro_rules! trace {
             $crate::flush();
         }
     }};
-}
-
-/// Logging of user option overrides (`fstart_options`).
-pub mod option {
-    use fstart_options::{Knob, Provenance, Rejection, Report, Source};
-
-    /// [`fstart_options::resolve_checked`], logging every override applied
-    /// and every stored value it rejects.
-    pub fn resolve<C: Clone>(
-        knobs: &'static [Knob<C>],
-        source: &dyn Source,
-        config: &mut C,
-        report: &mut Report,
-        check: impl FnOnce(&C) -> Result<(), &'static str>,
-    ) {
-        let first = report.settings.len();
-        fstart_options::resolve_checked(knobs, source, config, report, check);
-        for setting in &report.settings[first..] {
-            let key = setting.meta.key;
-            match setting.provenance {
-                Provenance::Board => {}
-                Provenance::Override => crate::info!(
-                    "options: {} = {} (board {})",
-                    key,
-                    setting.value,
-                    setting.default
-                ),
-                Provenance::Rejected { stored, why } => crate::warn!(
-                    "options: {} = {} not applied ({}), keeping {}",
-                    key,
-                    stored,
-                    match why {
-                        Rejection::OutOfRange => "invalid value",
-                        Rejection::Inactive => "unavailable",
-                        Rejection::Source(_) => "store unreadable",
-                        Rejection::Conflict(why) => why,
-                    },
-                    setting.value
-                ),
-            }
-        }
-    }
 }

@@ -249,6 +249,7 @@ values; the SoC code defines it, the board offers it:
 
 | Knobs | Configuration | Applied |
 |---|---|---|
+| `fstart_log::option::KNOBS` (`debug_level`) | console log level | in `console()`, first |
 | `Board::OPTIONS`, e.g. `board::knob::POWER_FAIL` | silicon `Policy` | in `console()`, after the FCH reset tasks |
 | board knobs, e.g. S8030 `dxio::KNOBS`, Ethanol-X `dxio::KNOBS` | the board's own lane map input | `Stage::resolve_options`, before the board builds its engines |
 

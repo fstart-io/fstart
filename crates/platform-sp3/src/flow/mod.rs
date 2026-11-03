@@ -467,9 +467,20 @@ impl<B: Board, S: Silicon> Early<B, S> {
             nvram,
         } = flash(&fch, generation);
         let (apob, apob_span) = read_apob(flash, generation);
-        // The policy overrides, before the first step that reads the policy
-        // after the FCH reset tasks (the DF plan).
+        // The console level first, then the policy overrides, before the
+        // first step that reads the policy after the FCH reset tasks (the
+        // DF plan).
         let mut options = fstart_options::Report::new();
+        let mut level = fstart_log::max_level();
+        options::resolve(
+            nvram,
+            &fstart_log::option::KNOBS,
+            &mut level,
+            &mut options,
+            |_| Ok(()),
+        );
+        // SAFETY: BSP only, before MP.
+        unsafe { fstart_log::set_max_level(level) };
         options::resolve(nvram, B::OPTIONS, &mut policy, &mut options, |_| Ok(()));
 
         step(0x15, "memory map");
