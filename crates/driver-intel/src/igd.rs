@@ -11,6 +11,8 @@
 //! runs; `PGETBL_CTL` points the display engine at the page table, while the
 //! page-table entries themselves are written by the modeset.
 
+pub mod pch;
+
 use crate::gma::GenerationOps;
 use crate::gma::config::OutputConfig;
 use crate::gma::framebuffer::FramebufferConfig;

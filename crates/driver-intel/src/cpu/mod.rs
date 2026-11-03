@@ -3,6 +3,7 @@
 pub(crate) mod core2_aml;
 mod cstates;
 pub mod model_2065x_aml;
+pub mod model_206ax_aml;
 pub mod options;
 pub(crate) mod ratio_aml;
 pub(crate) mod silvermont_aml;

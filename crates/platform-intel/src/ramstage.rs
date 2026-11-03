@@ -962,11 +962,18 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
     ) -> Result<(), ServiceError> {
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let memory = crate::memory_info::read(store);
+        // The board attaches its devices to physical root ports.
+        let mut ports = [None; 8];
+        for (port, attached) in (0u8..).zip(B::CONFIG.pcie_attached()) {
+            if let Some(function) = self.southbridge.root_port_function(port) {
+                ports[usize::from(function)] = *attached;
+            }
+        }
         let runtime = crate::tables::SmbiosRuntime {
             rom_size: B::FACTS.flash_size,
             memory: memory.as_ref(),
             pci: self.pci.as_ref(),
-            ports: B::CONFIG.pcie_attached(),
+            ports: &ports,
             extra_onboard,
         };
         let smbios =

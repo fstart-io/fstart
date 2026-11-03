@@ -180,6 +180,29 @@ mod host_baseline {
         }
     }
 
+    impl HostAcpiChipset for crate::sandybridge::SandybridgeBd82x6x {
+        fn assemble_baseline(
+            config: &'static Self::Config,
+            facts: BoardFacts,
+            board: &impl AcpiDevice<Config = ()>,
+            base: u64,
+        ) -> Result<Vec<u8>, String> {
+            use fstart_driver_intel::{bd82x6x::IntelBd82x6x, sandybridge::IntelSandybridge};
+            let north = IntelSandybridge::new_from_config(&config.northbridge)
+                .map_err(|e| format!("Sandy Bridge config: {e:?}"))?;
+            let mut south = IntelBd82x6x::new_from_config(&config.southbridge)
+                .map_err(|e| format!("BD82x6x config: {e:?}"))?;
+            south.set_s3_enabled(facts.memory_cache);
+            assemble_chipset(
+                &north,
+                &south,
+                IntelSandybridge::HOST_CPUS as u32,
+                board,
+                base,
+            )
+        }
+    }
+
     impl<C: crate::legacy_cpu::LegacyCpu> HostAcpiChipset for crate::pineview::PineviewIch7<C> {
         fn assemble_baseline(
             config: &'static Self::Config,

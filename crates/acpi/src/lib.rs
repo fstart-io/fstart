@@ -74,6 +74,7 @@ pub mod smbios;
 pub mod spcr;
 pub mod srat;
 pub mod tock_bridge;
+pub mod usb;
 pub mod vfct;
 pub mod video;
 pub mod wake;

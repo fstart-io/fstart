@@ -53,6 +53,7 @@ pub mod smi;
 pub mod spi;
 mod spi_menu;
 pub use spi_menu::spi_menu;
+pub mod spibar;
 pub mod xhci;
 
 /// PCIe root-port slot power-limit fields shared by ICH8/ICH9.

@@ -315,7 +315,8 @@ pub struct SmbiosRuntime<'a> {
     pub memory: Option<&'a fstart_core::memory_info::MemoryInfo>,
     /// Enumerated PCI hierarchy; root-bus functions are onboard devices.
     pub pci: Option<&'a fstart_pci::PciEcam>,
-    /// What the board attaches to the root ports, port `n` being 00:1c.n.
+    /// What the board attaches to the root ports, by function: entry `n`
+    /// is 00:1c.n.
     pub ports: &'a [Option<&'static fstart_core::smbios::Attached<'static>>],
     /// Additional non-PCI / board-defined Type 41 onboard device entries.
     pub extra_onboard: &'a [ExtraOnboardDevice<'a>],

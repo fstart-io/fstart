@@ -127,6 +127,7 @@ pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
 pub mod pineview;
+pub mod sandybridge;
 pub mod skylake;
 
 /// Shared IGD display bring-up types used by board display policy.
