@@ -40,6 +40,7 @@ fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] 
 fstart-driver-i2c = { path = "../../../crates/driver-i2c" }
 fstart-driver-redriver = { path = "../../../crates/driver-redriver" }
 fstart-log = { path = "../../../crates/log" }
+fstart-options = { path = "../../../crates/options" }
 embedded-hal = { version = "1", default-features = false }
 ufmt = "0.2"
 pca9535 = { version = "2", default-features = false }

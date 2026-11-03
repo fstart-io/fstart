@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use fstart_board_tyan_s8030::{Board, bmc, platform};
+use fstart_board_tyan_s8030::{Board, bmc, dxio, platform};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
 use fstart_platform_sp3::{Identified, Silicon, Start, Tables};
@@ -26,9 +26,13 @@ fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
     }
     let stage = stage.console(&CONSOLE, platform::CONSOLE);
     let levels = stage.read_pads(platform::detect_pads(generation));
-    let stage = stage.program_gpio(&platform::gpio(generation));
-    let engines = platform::dxio_engines(generation, &levels, stage.fch(), stage.timer())
-        .unwrap_or_else(|_| stage.fail("board DXIO devices"));
+    let mut stage = stage.program_gpio(&platform::gpio(generation));
+    let detected = platform::detect(&levels, stage.timer());
+    let mut options = dxio::Options::BUILD;
+    stage.resolve_options(&dxio::KNOBS, &mut options, |o| {
+        dxio::check(generation, o, &detected)
+    });
+    let engines = platform::dxio_engines(generation, &options, &detected);
     let lpc_aml = bmc::lpc_aml();
     stage
         .train_dxio(&engines)
