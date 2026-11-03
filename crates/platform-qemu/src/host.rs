@@ -19,13 +19,6 @@ use std::{
     vec::Vec,
 };
 
-fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
-    let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
-    fstart_image_build::build_plan::CompilerCfgSchema {
-        payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
-    }
-}
-
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: VirtBoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {
@@ -314,12 +307,6 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             name: "stage".into(),
             cargo_target: CargoTarget::BoardBinary,
             target: policy.target.into(),
-            cfg_schema: compiler_cfg_schema(),
-            payload: if payload == "uefi" {
-                "crabefi".into()
-            } else {
-                payload
-            },
             features,
             build_std: Some("core,alloc".into()),
             rustflags: vec!["-Zub-checks=no".into()],
@@ -965,8 +952,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             name: "smm".into(),
             cargo_target: CargoTarget::BoardLibrary,
             target: policy.target.into(),
-            cfg_schema: compiler_cfg_schema(),
-            payload: "halt".into(),
             features: vec!["smm".into(), "bundle-smm".into()],
             // Custom targets have no prebuilt core.
             build_std: (policy.platform == Platform::X86).then(|| "core,alloc".into()),
@@ -1010,12 +995,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         name: "stage".into(),
         cargo_target: CargoTarget::BoardBinary,
         target: policy.target.into(),
-        cfg_schema: compiler_cfg_schema(),
-        payload: if payload == "uefi" {
-            "crabefi".into()
-        } else {
-            payload.clone()
-        },
         features,
         build_std: Some("core,alloc".into()),
         rustflags,
@@ -1284,7 +1263,6 @@ mod tests {
         )
         .unwrap();
         let uefi_stage = uefi.units.iter().find(|u| u.name == "stage").unwrap();
-        assert_eq!(uefi_stage.payload, "crabefi");
         assert!(uefi_stage.features.contains(&"crabefi".to_string()));
         let payload = uefi.assembly.ffs().unwrap().payload.as_ref().unwrap();
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));

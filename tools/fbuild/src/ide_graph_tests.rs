@@ -105,12 +105,6 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
         app["cfg"]
             .as_array()
             .unwrap()
-            .contains(&json!("fstart_payload=\"halt\""))
-    );
-    assert!(
-        app["cfg"]
-            .as_array()
-            .unwrap()
             .contains(&json!("feature=\"chosen\""))
     );
     assert!(

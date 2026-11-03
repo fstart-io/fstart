@@ -1,9 +1,9 @@
 //! Payload launchers: Linux, UEFI (CrabEFI) and coreboot payloads.
 //!
 //! The platform describes the machine once ([`Description`]) and adds where
-//! the launcher places the payload's pieces ([`Placement`]); the
-//! build-selected launcher reads the [`Handoff`] and exports what its
-//! payload needs (e820 and zero page, coreboot tables, device tree, UEFI).
+//! the launcher places the payload's pieces ([`Placement`]); [`boot`] hands
+//! the [`Handoff`] to the launcher `--payload` selected, which exports what
+//! its payload needs (e820 and zero page, coreboot tables, device tree, UEFI).
 
 #![no_std]
 
@@ -20,7 +20,7 @@ pub use fstart_boot::crabefi;
 #[cfg(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))]
 pub mod coreboot;
 
-/// Build-selected payload launcher. `devices` carries what a platform's own
+/// A payload launcher. `devices` carries what a platform's own
 /// launcher needs beyond the handoff (its boot media); the common
 /// launchers take any.
 pub trait MainstagePayload<D = ()> {
@@ -470,78 +470,54 @@ fn halt_x86_linux(reason: &str) -> ! {
     fstart_arch::x86::boot::halt()
 }
 
-#[cfg(any(
-    all(fstart_payload = "halt", fstart_payload = "linux"),
-    all(fstart_payload = "halt", fstart_payload = "crabefi"),
-    all(fstart_payload = "halt", fstart_payload = "coreboot"),
-    all(fstart_payload = "linux", fstart_payload = "crabefi"),
-    all(fstart_payload = "linux", fstart_payload = "coreboot"),
-    all(fstart_payload = "crabefi", fstart_payload = "coreboot")
-))]
-compile_error!("select exactly one payload launcher");
-#[cfg(all(
-    fstart_payload = "coreboot",
-    not(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))
-))]
-compile_error!("selected coreboot backend is not enabled");
-#[cfg(all(fstart_payload = "linux", not(feature = "linux")))]
-compile_error!("selected Linux backend is not enabled");
-#[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi-basic")))]
-compile_error!("selected CrabEFI backend is not enabled");
+/// The payload `--payload` selected. fbuild enables at most one launcher
+/// feature per stage; with none, the stage halts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selected {
+    Halt,
+    Linux,
+    Uefi,
+    Coreboot,
+}
 
-/// Build selection, independent of the set of available payload backends.
-#[cfg(all(fstart_payload = "crabefi", target_arch = "aarch64"))]
-pub type BuildSelectedPayload = Aarch64UefiPayload;
-#[cfg(all(fstart_payload = "crabefi", target_arch = "riscv64"))]
-pub type BuildSelectedPayload = Riscv64UefiPayload;
-#[cfg(all(
-    fstart_payload = "crabefi",
-    any(target_arch = "x86", target_arch = "x86_64")
-))]
-pub type BuildSelectedPayload = X86UefiPayload;
-#[cfg(all(
-    fstart_payload = "linux",
-    any(target_arch = "x86", target_arch = "x86_64")
-))]
-pub type BuildSelectedPayload = X86LinuxPayload;
-#[cfg(all(
-    fstart_payload = "linux",
-    not(any(target_arch = "x86", target_arch = "x86_64"))
-))]
-pub type BuildSelectedPayload = LinuxPayload;
-#[cfg(fstart_payload = "coreboot")]
-pub type BuildSelectedPayload = crate::coreboot::X86CorebootPayload;
-#[cfg(fstart_payload = "halt")]
-pub type BuildSelectedPayload = HaltPayload;
+const LAUNCHERS: u8 = cfg!(feature = "linux") as u8
+    + cfg!(feature = "crabefi-basic") as u8
+    + cfg!(feature = "coreboot") as u8;
+const _: () = assert!(LAUNCHERS <= 1, "enable one payload launcher per stage");
 
-#[cfg(all(
-    test,
-    any(target_arch = "x86", target_arch = "x86_64"),
-    feature = "linux",
-    feature = "crabefi-basic",
-    any(
-        fstart_payload = "halt",
-        fstart_payload = "linux",
-        fstart_payload = "crabefi"
-    )
-))]
-mod selection_tests {
-    use super::*;
+/// The launcher this stage was built with.
+pub const SELECTED: Selected = if cfg!(feature = "crabefi-basic") {
+    Selected::Uefi
+} else if cfg!(feature = "linux") {
+    Selected::Linux
+} else if cfg!(feature = "coreboot") {
+    Selected::Coreboot
+} else {
+    Selected::Halt
+};
 
-    // Run once for each selection with BOTH backends enabled.
-    #[test]
-    fn selection_is_independent_of_available_backends() {
-        #[cfg(fstart_payload = "halt")]
-        type Expected = HaltPayload;
-        #[cfg(fstart_payload = "linux")]
-        type Expected = X86LinuxPayload;
-        #[cfg(fstart_payload = "crabefi")]
-        type Expected = X86UefiPayload;
-        assert_eq!(
-            core::any::TypeId::of::<BuildSelectedPayload>(),
-            core::any::TypeId::of::<Expected>()
-        );
-    }
+/// Boot the [`SELECTED`] payload.
+#[allow(unreachable_code)]
+pub fn boot<D>(handoff: Handoff<'_>, devices: D) -> ! {
+    #[cfg(all(feature = "crabefi-basic", target_arch = "aarch64"))]
+    return <Aarch64UefiPayload as MainstagePayload<D>>::boot(handoff, devices);
+    #[cfg(all(feature = "crabefi-basic", target_arch = "riscv64"))]
+    return <Riscv64UefiPayload as MainstagePayload<D>>::boot(handoff, devices);
+    #[cfg(all(
+        feature = "crabefi-basic",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ))]
+    return <X86UefiPayload as MainstagePayload<D>>::boot(handoff, devices);
+    #[cfg(all(feature = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
+    return <X86LinuxPayload as MainstagePayload<D>>::boot(handoff, devices);
+    #[cfg(all(
+        feature = "linux",
+        not(any(target_arch = "x86", target_arch = "x86_64"))
+    ))]
+    return <LinuxPayload as MainstagePayload<D>>::boot(handoff, devices);
+    #[cfg(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))]
+    return <crate::coreboot::X86CorebootPayload as MainstagePayload<D>>::boot(handoff, devices);
+    <HaltPayload as MainstagePayload<D>>::boot(handoff, devices)
 }
 
 /// Common x86 CrabEFI payload launcher.

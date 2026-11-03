@@ -16,7 +16,7 @@ use fstart_driver_sifive::fu740_ddr::{FU740_DRAM_BASE, Fu740Ddr};
 use fstart_driver_sifive::fu740_prci::Fu740Prci;
 use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
 use fstart_log::StaticConsole;
-use fstart_payload::{Description, Handoff, MainstagePayload, PciRootInfo, Placement};
+use fstart_payload::{Description, Handoff, PciRootInfo, Placement};
 use fstart_stage::{fail, step};
 
 use crate::config::{FU740_ECAM_BASE, FU740_MMIO, Fu740Config};
@@ -125,7 +125,7 @@ impl Fu740<Ready> {
         fstart_log::info!("fu740 ramstage: ready for payload");
         let console = self.console.unwrap_or_else(|| fail("console"));
         hand_off(self.config, console, |handoff| {
-            <fstart_payload::BuildSelectedPayload as MainstagePayload>::boot(handoff, ())
+            fstart_payload::boot(handoff, ())
         })
     }
 }
@@ -233,12 +233,12 @@ fn install_boot_context(
         size: 64 * 1024,
     };
     let source = {
-        #[cfg(all(fstart_payload = "crabefi", not(fstart_payload = "linux")))]
+        #[cfg(feature = "crabefi")]
         {
             let readable = [writable[0]];
             boot_dtb_window(workspace, &readable)?
         }
-        #[cfg(not(all(fstart_payload = "crabefi", not(fstart_payload = "linux"))))]
+        #[cfg(not(feature = "crabefi"))]
         {
             workspace
         }
@@ -288,7 +288,7 @@ fn install_boot_context(
     // external temporary allocation arena.
     unsafe { fstart_stage::directory::set_load_policy(&policy, &fstart_stage::boot::Lz4) }
         .map_err(|_| ServiceError::InvalidParam)?;
-    #[cfg(any(fstart_payload = "linux", fstart_payload = "crabefi"))]
+    #[cfg(any(feature = "linux", feature = "crabefi"))]
     // SAFETY: source is either a bounded boot DTB in trusted readable memory,
     // or the dedicated destination for an authenticated FFS DTB.
     // Registration checks destination RAM and all live reservations.
@@ -304,7 +304,7 @@ fn install_boot_context(
     firmware.verify()
 }
 
-#[cfg(all(fstart_payload = "crabefi", not(fstart_payload = "linux")))]
+#[cfg(feature = "crabefi")]
 fn boot_dtb_window(
     destination: fstart_stage::boot::MemoryWindow,
     readable: &[fstart_stage::boot::MemoryWindow],

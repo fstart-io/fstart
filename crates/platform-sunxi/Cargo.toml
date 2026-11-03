@@ -42,39 +42,39 @@ linux = ["fstart-payload?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signat
 # bootstrap path requires at link time.
 bundle-a20-bootblock = ["stage", "a20", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
 bundle-a20-main = [
-  "stage", "a20", "armv7", "linux",
+  "stage", "a20", "armv7",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/fdt", "fstart-payload?/linux",
+  "fstart-stage?/fdt",
 ]
 bundle-h3-bootblock = ["stage", "h3", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
 bundle-h3-main = [
-  "stage", "h3", "armv7", "linux",
+  "stage", "h3", "armv7",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/fdt", "fstart-payload?/linux",
+  "fstart-stage?/fdt",
 ]
 bundle-h5-bootblock = [
   "stage", "h3", "aarch64",
   "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry", "fstart-stage?/ffs",
 ]
 bundle-h5-main = [
-  "stage", "h3", "aarch64", "linux",
+  "stage", "h3", "aarch64",
   "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/fdt", "fstart-payload?/linux",
+  "fstart-stage?/fdt",
 ]
 bundle-d1-bootblock = [
   "stage", "d1", "riscv64",
   "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry", "fstart-stage?/ffs",
 ]
 bundle-d1-main = [
-  "stage", "d1", "riscv64", "linux",
+  "stage", "d1", "riscv64",
   "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/fdt", "fstart-payload?/linux",
+  "fstart-stage?/fdt",
 ]
 
 [dependencies]

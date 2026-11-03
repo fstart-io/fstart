@@ -8,13 +8,6 @@ use fstart_image_build::{
 
 use std::{format, string::ToString, vec, vec::Vec};
 
-fn compiler_cfg_schema() -> fstart_image_build::build_plan::CompilerCfgSchema {
-    let strings = |values: &[&str]| values.iter().map(|v| (*v).into()).collect();
-    fstart_image_build::build_plan::CompilerCfgSchema {
-        payloads: strings(&["halt", "linux", "crabefi", "coreboot"]),
-    }
-}
-
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: IntelBoardFacts> Plan<B> {
@@ -50,8 +43,6 @@ pub fn compilation_plan(
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: plan.target(),
-        cfg_schema: compiler_cfg_schema(),
-        payload: "halt".into(),
         features: plan.smm_features.clone(),
         // rustc ships no library for the 32-bit JSON target.
         build_std: (plan.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
@@ -101,8 +92,6 @@ pub fn compilation_plan(
         }
         units.push(CompilationUnit {
             name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(),
-            cfg_schema: compiler_cfg_schema(),
-            payload: if row.payload == "uefi" { "crabefi".into() } else { row.payload.clone() },
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie --cfg curve25519_dalek_backend=\"serial\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, true, plan.platform)?),

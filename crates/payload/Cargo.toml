@@ -30,6 +30,3 @@ fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 ufmt = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi", "coreboot"))'] }

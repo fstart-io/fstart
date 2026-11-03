@@ -9,7 +9,7 @@ use fstart_core::layout::{Layout, RegionKind};
 use fstart_core::services::ConsoleDevice;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_log::StaticConsole;
-use fstart_payload::{Description, Handoff, MainstagePayload, Placement, Range};
+use fstart_payload::{Description, Handoff, Placement, Range};
 use fstart_stage::{fail, step};
 
 use crate::virt::{QemuVirtConfig, enumerate_pci};
@@ -97,14 +97,12 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
     /// Describe the machine to the build's payload launcher and boot it.
     pub fn boot(self) -> ! {
         // AArch64 CrabEFI patches its device tree in the workspace.
-        #[cfg(all(fstart_payload = "crabefi", target_arch = "aarch64"))]
+        #[cfg(all(feature = "crabefi", target_arch = "aarch64"))]
         step("device tree", || {
             fstart_stage::copy_fdt_to_workspace(self.dtb, self.region(RegionKind::DeviceTree).base)
         });
         fstart_log::info!("{} ramstage: ready for payload", self.config.name);
-        self.hand_off(|handoff| {
-            <fstart_payload::BuildSelectedPayload as MainstagePayload>::boot(handoff, ())
-        })
+        self.hand_off(|handoff| fstart_payload::boot(handoff, ()))
     }
 
     fn region(&self, kind: RegionKind) -> fstart_core::layout::Region {

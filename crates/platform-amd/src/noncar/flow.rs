@@ -519,10 +519,7 @@ impl<S: Soc> Stage<S, Published<S>> {
         unsafe { psp::boot_done(silicon.psp.as_mut(), &delay) };
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(&machine.fch, 0x44);
-        use fstart_payload::{
-            AcpiTables, BuildSelectedPayload, Description, Handoff, MainstagePayload, Placement,
-            Range,
-        };
+        use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
         let mut description =
             Description::new(machine.e820.entries(), Range::new(ffs.base, ffs.size));
         description.console = Some(machine.console);
@@ -537,7 +534,7 @@ impl<S: Soc> Stage<S, Published<S>> {
         {
             handoff.peripherals = peripherals;
         }
-        BuildSelectedPayload::boot(handoff, ())
+        fstart_payload::boot(handoff, ())
     }
 }
 

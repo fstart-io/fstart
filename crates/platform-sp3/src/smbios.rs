@@ -125,7 +125,7 @@ pub(crate) mod runtime {
                 },
                 ecc: seeds.as_ref().is_some_and(|seeds| seeds.ecc()),
                 rom_size,
-                uefi: cfg!(fstart_payload = "crabefi"),
+                uefi: fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
             },
         )
         .or_halt("SMBIOS tables");

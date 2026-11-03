@@ -8,8 +8,7 @@ extern crate std;
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::build_plan::{
-    BuildPlan, CargoTarget, CompilationUnit, CompilerCfgSchema, FfsAssembly as Assembly, InputFile,
-    UnitOutput,
+    BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile, UnitOutput,
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
@@ -236,14 +235,6 @@ pub fn resolve(
         name: "stage".into(),
         cargo_target: CargoTarget::BoardBinary,
         target: "riscv64gc-unknown-none-elf".into(),
-        cfg_schema: CompilerCfgSchema {
-            payloads: ["halt", "linux", "crabefi"].map(Into::into).to_vec(),
-        },
-        payload: if payload == "uefi" {
-            "crabefi".into()
-        } else {
-            payload.clone()
-        },
         features,
         build_std: Some("core,alloc".into()),
         rustflags: vec!["-Zub-checks=no".into()],

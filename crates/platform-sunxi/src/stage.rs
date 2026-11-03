@@ -135,7 +135,7 @@ impl<M: BlockDevice> DramStage<M> {
     /// Boot the build's payload: Linux gets `bootargs` in a device tree
     /// prepared at `fdt_addr`.
     pub(crate) fn boot(self, handoff_addr: u64, bootargs: &'static str, fdt_addr: u64) -> ! {
-        #[cfg(fstart_payload = "linux")]
+        #[cfg(feature = "linux")]
         if crate::boot::install_mainstage_policy(
             self.dram.base,
             self.dram.size,
@@ -147,7 +147,7 @@ impl<M: BlockDevice> DramStage<M> {
             fstart_log::error!("sunxi: invalid mainstage memory policy");
             fstart_arch::halt();
         }
-        #[cfg(not(fstart_payload = "linux"))]
+        #[cfg(not(feature = "linux"))]
         let _ = (handoff_addr, bootargs, fdt_addr);
         let memory = [fstart_core::services::memory_detect::E820Entry::new(
             self.dram.base,
@@ -158,7 +158,7 @@ impl<M: BlockDevice> DramStage<M> {
         description.console = Some(self.console);
         #[allow(unused_mut)]
         let mut placement = fstart_payload::Placement::default();
-        #[cfg(fstart_payload = "linux")]
+        #[cfg(feature = "linux")]
         {
             placement.device_tree = fdt_addr;
             placement.bootargs = bootargs;
@@ -170,9 +170,9 @@ impl<M: BlockDevice> DramStage<M> {
     }
 }
 
-#[cfg(all(fstart_payload = "linux", any(feature = "a20", feature = "h3")))]
+#[cfg(all(feature = "linux", any(feature = "a20", feature = "h3")))]
 type Selected = LinuxPayload;
-#[cfg(all(not(fstart_payload = "linux"), any(feature = "a20", feature = "h3")))]
+#[cfg(all(not(feature = "linux"), any(feature = "a20", feature = "h3")))]
 type Selected = fstart_payload::HaltPayload;
 
 /// Linux from the boot medium: verify the FFS, load the kernel (and BL31 on

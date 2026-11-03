@@ -1,5 +1,5 @@
 //! The end of the flow: ACPI tables, the boot media (FFS) and the payload
-//! (Linux or CrabEFI, as `fstart_payload` selects), with the firmware's
+//! (Linux or CrabEFI, as `--payload` selects), with the firmware's
 //! e820 and RSDP (INTEGRATION_NOTES §10).
 
 extern crate alloc;
@@ -8,24 +8,11 @@ use alloc::vec::Vec;
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
-use fstart_payload::{AcpiTables, Description, Handoff, MainstagePayload, Placement, Range};
+use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
 use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 
 use super::{Ctx, OrHalt};
 use crate::layout::{self, Span};
-
-#[cfg(any(
-    fstart_payload = "halt",
-    fstart_payload = "linux",
-    fstart_payload = "crabefi"
-))]
-type Payload = fstart_payload::BuildSelectedPayload;
-#[cfg(not(any(
-    fstart_payload = "halt",
-    fstart_payload = "linux",
-    fstart_payload = "crabefi"
-)))]
-type Payload = fstart_payload::HaltPayload;
 
 /// Publish the load policy (RAM from e820 minus the running image) and
 /// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor
@@ -107,7 +94,7 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
     description.acpi = ctx.rsdp.map(AcpiTables::at);
     description.smbios = ctx.smbios;
     description.pci_root = Some(ctx.pci_root);
-    Payload::boot(Handoff::new(description, Placement::default()), ())
+    fstart_payload::boot(Handoff::new(description, Placement::default()), ())
 }
 
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi`); returns the

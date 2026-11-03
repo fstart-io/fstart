@@ -63,7 +63,7 @@ pub fn install<S: Soc>(
             socket_upgrade: S::SMBIOS.socket_upgrade,
             ecc,
             rom_size: S::LAYOUT.flash.size as u32,
-            uefi: cfg!(fstart_payload = "crabefi"),
+            uefi: fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
         },
     )
     .ok()?;

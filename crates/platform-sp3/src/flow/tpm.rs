@@ -43,7 +43,7 @@ pub(super) fn start(flash: &'static [u8], generation: Generation) {
     // SAFETY: the boot CPU runs this once; the slot is written once.
     let tis = unsafe { (*core::ptr::addr_of_mut!(TIS)).insert(tis) };
     let log = super::dma_alloc(LOG_SIZE, 0x1000);
-    let uefi = cfg!(fstart_payload = "crabefi");
+    let uefi = fstart_payload::SELECTED == fstart_payload::Selected::Uefi;
     if let Err(error) = fstart_tcg::start(tis, log, fstart_tcg::PlatformClass::Server, uefi) {
         error.report();
         match error.remedy() {

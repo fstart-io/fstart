@@ -16,7 +16,6 @@ pub(crate) mod tests;
 pub(crate) struct Selection {
     pub directory: PathBuf,
     pub manifest: PathBuf,
-    pub cfgs: Vec<String>,
     /// RUSTFLAGS for every crate in the unit, core and dependencies included.
     pub flags: Vec<String>,
     pub args: Vec<String>,
@@ -77,17 +76,12 @@ impl Selection {
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let cfgs = vec![format!("fstart_payload=\"{}\"", unit.payload)];
         let flags = unit.rustflags.clone();
-        // The stage selection and linker script only concern this workspace's
-        // crates. Passing them as profile rustflags rather than RUSTFLAGS keeps
-        // core, alloc and registry dependencies identical between units, so
-        // every unit shares one Cargo target directory and builds those once.
-        let mut member_flags: Vec<String> = cfgs
-            .iter()
-            .flat_map(|cfg| ["--cfg".into(), cfg.clone()])
-            .collect();
-        member_flags.extend(unit.check_cfg_flags()?);
+        // The linker script only concerns this workspace's crates. Passing it
+        // as a profile rustflag rather than RUSTFLAGS keeps core, alloc and
+        // registry dependencies identical between units, so every unit shares
+        // one Cargo target directory and builds those once.
+        let mut member_flags: Vec<String> = Vec::new();
         if let Some(script) = &unit.linker_script {
             let path = directory.join("link.ld");
             fs::write(&path, script).map_err(|e| e.to_string())?;
@@ -170,7 +164,6 @@ impl Selection {
         Ok(Self {
             directory,
             manifest,
-            cfgs,
             flags,
             args,
             producer_environment: environment,

@@ -82,7 +82,7 @@ pub use virt_stage::Virt;
 #[cfg(all(feature = "bundle-sbsa", target_arch = "aarch64"))]
 pub use sbsa::QemuSbsaMainstage;
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
-pub use sifive_u::{QemuSifiveUBuildSelectedPayload, QemuSifiveUMainstage};
+pub use sifive_u::QemuSifiveUMainstage;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
 #[cfg(all(
@@ -194,20 +194,10 @@ mod stage {
     use fstart_core::services::ServiceError;
     use fstart_core::services::memory_detect::E820State;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
-    use fstart_payload::MainstagePayload;
 
     use crate::fw_cfg::QemuFwCfg;
     use crate::q35::Q35HostBridge;
     use crate::{QEMU_Q35_ACPI_BUFFER_SIZE, QEMU_Q35_PLATFORM_NODE, QemuQ35Config};
-
-    #[cfg(not(any(
-        fstart_payload = "halt",
-        fstart_payload = "crabefi",
-        fstart_payload = "coreboot"
-    )))]
-    compile_error!("select exactly one q35 payload");
-    #[cfg(all(fstart_payload = "crabefi", not(feature = "crabefi")))]
-    compile_error!("selected CrabEFI backend is not enabled");
 
     /// Native SMM handler image built by fbuild, embedded when the stage was
     /// built with `FSTART_SMM_IMAGE` set. `None` without an SMM image; MP
@@ -486,7 +476,7 @@ mod stage {
                     size,
                 )
             };
-            let uefi = cfg!(fstart_payload = "crabefi");
+            let uefi = cfg!(feature = "crabefi");
             match fstart_tcg::start(tis, log, fstart_tcg::PlatformClass::Client, uefi) {
                 Ok(_) => fstart_stage::tcg::measure_srtm(fstart_stage::tcg::CRTM_VERSION, "stage"),
                 Err(error) => {
@@ -535,22 +525,19 @@ mod stage {
     }
 
     /// RAM for the coreboot table and the files handed to the payload.
-    #[cfg(fstart_payload = "coreboot")]
+    #[cfg(feature = "coreboot")]
     const COREBOOT_WINDOW_SIZE: usize = 0x4_0000;
-    #[cfg(fstart_payload = "coreboot")]
+    #[cfg(feature = "coreboot")]
     #[repr(C, align(4096))]
     struct CorebootWindow([u8; COREBOOT_WINDOW_SIZE]);
-    #[cfg(fstart_payload = "coreboot")]
+    #[cfg(feature = "coreboot")]
     static mut COREBOOT_WINDOW: CorebootWindow = CorebootWindow([0; COREBOOT_WINDOW_SIZE]);
 
     impl QemuQ35Mainstage {
         /// Describe the machine to the build's payload launcher and boot it.
         fn hand_off(&self) -> ! {
             use fstart_core::services::ConsoleDevice;
-            use fstart_payload::{
-                AcpiTables, BuildSelectedPayload, Description, Handoff, PciRootInfo, Placement,
-                Range,
-            };
+            use fstart_payload::{AcpiTables, Description, Handoff, PciRootInfo, Placement, Range};
             let acpi_buffer = Range::new(
                 core::ptr::addr_of!(ACPI_BUFFER) as u64,
                 QEMU_Q35_ACPI_BUFFER_SIZE as u64,
@@ -581,7 +568,7 @@ mod stage {
             // SAFETY: fstart programs PAM0-6 to DRAM during PCI init and keeps
             // nothing in the legacy shadow; the window is a firmware static
             // that only the launcher touches.
-            #[cfg(fstart_payload = "coreboot")]
+            #[cfg(feature = "coreboot")]
             {
                 placement.coreboot_window = Some(unsafe {
                     fstart_payload::coreboot::Window::new(
@@ -590,7 +577,7 @@ mod stage {
                     )
                 });
             }
-            BuildSelectedPayload::boot(Handoff::new(description, placement), ())
+            fstart_payload::boot(Handoff::new(description, placement), ())
         }
     }
 

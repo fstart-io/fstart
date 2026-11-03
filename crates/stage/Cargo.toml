@@ -65,6 +65,3 @@ fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fstart_payload, values("halt", "linux", "crabefi", "coreboot"))'] }
