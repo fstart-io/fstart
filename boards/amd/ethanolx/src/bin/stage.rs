@@ -24,10 +24,13 @@ fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
     if ethanolx::early_init(stage.fch()).is_err() {
         stage.fail("board early init");
     }
-    let stage = stage
+    let mut stage = stage
         .console(&CONSOLE, ethanolx::CONSOLE)
         .program_gpio(&ethanolx::GPIO_PROGRAM);
-    let engines = ethanolx::dxio_engines(generation, &[], stage.fch(), stage.timer())
+    let mut layout = ethanolx::dxio_layout(stage.fch(), stage.timer())
+        .unwrap_or_else(|_| stage.fail("board DXIO devices"));
+    stage.resolve_options(&ethanolx::dxio::KNOBS, &mut layout, ethanolx::dxio::check);
+    let engines = ethanolx::dxio_engines(&layout, stage.timer())
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
     stage
         .train_dxio(&engines)

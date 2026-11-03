@@ -67,7 +67,9 @@ are in `boards/tyan/s8030` and `boards/amd/ethanolx`.
 | `MAX_CPUS` | logical CPU ceiling; sizes AP stacks and SMM entry stubs |
 | `FLASH_MIRRORS` | offsets past the 16 MiB boot bank where the flash export mirrors it (default none) |
 
-`Board`: `NAME`, optional `DISCRETE_TPM` and `BMC_SX_NOTIFY`.
+`Board`: `NAME`, optional `DISCRETE_TPM`, `BMC_SX_NOTIFY` and `OPTIONS`
+(the silicon policy knobs the user may override, see
+[Settings](#settings)).
 
 The board's `main` matches the family `start::<Board>()` returns
 (`Start::RomeMilan`, `Start::Naples`, as its features carry) and runs its
@@ -80,7 +82,7 @@ flow, generic over the family's silicon steps:
 | `Early::console(slot, config)` | its 16550 |
 | `read_pads(pads)` | M.2 / strap detect pads; returns their levels |
 | `program_gpio(gpio)` | OEM pads and CPM table, before DXIO |
-| on `Configured` | DXIO lane map from the levels, BMC or I2C (`fch()`, `timer()`) |
+| on `Configured` | DXIO lane map from the levels, BMC or I2C (`fch()`, `timer()`); its knobs through `resolve_options` |
 | `train_dxio(engines)` | lane map |
 | `init_chipset()`, `start_cpus()`, `scan_bus()` | |
 | `emit_tables(Tables { smbios, acpi })` | SMBIOS identity, ACPI contributions |
@@ -144,7 +146,8 @@ Defined in `crates/platform-sp3/src/layout.rs`.
 | `PAGE_TABLES` | 256 PDPTs of 1 GiB pages, from `0x7500_0000` | identity map (`reset.S`) |
 | `DATA` / `HEAP` / `STACK` / `STORE` | `0x7520_0000` / `0x7560_0000` / `0x75a0_0000` / `0x75b0_0000` | BSS and AP stacks / heap / BSP stack / store |
 | `ROM3` | `[0xfd_0000_0000, +64 MiB)` | whole flash, above 4 GiB |
-| `FFS_WINDOW` | `[0xfd_0060_0000, 0xfd_00de_0000)` | FFS upper bound: lower-half flash `[0x60_0000, 0xde_0000)` |
+| `NVRAM` | flash `[0xda_0000, 0xde_0000)` | settings store (lower half) |
+| `FFS_WINDOW` | `[0xfd_0060_0000, 0xfd_00da_0000)` | FFS upper bound: lower-half flash `[0x60_0000, 0xda_0000)` |
 
 The reset image is linked once at the smallest vendor geometry and every
 `0x62` entry of every composed generation points at it. The linker script
@@ -181,7 +184,8 @@ ROM. Each composed half keeps its vendor EFS, directories and blobs in place
 
 ```text
 [0, prefix_lo)            lower vendor prefix (EFS, directories, blobs)
-[ffs, 0xde0000)           FFS, ffs = max(0x60_0000, prefix end)
+[ffs, 0xda0000)           FFS, ffs = max(0x60_0000, prefix end)
+[0xda0000, 0xde0000)      settings store, erased in a new image
 [0xde0000, 16M)           reset image (lower half's 0x62)
 [16M, 16M + prefix_hi)    upper vendor prefix (kept if unsupported)
 [16M + 0xde0000, 32M)     reset image copy (upper half's 0x62)
@@ -236,6 +240,40 @@ The composer fails the build on:
 
 Not implemented: a single multi-generation EFS with a combo directory
 (AMD #55758 §4.1.7 "Single 32M in 32MB"). `sp3_flash.rs` states this.
+
+## Settings
+
+The user overrides board configuration through `fstart-options`
+(`crates/options`). A knob is one field of a configuration with its legal
+values; the SoC code defines it, the board offers it:
+
+| Knobs | Configuration | Applied |
+|---|---|---|
+| `Board::OPTIONS`, e.g. `board::knob::POWER_FAIL` | silicon `Policy` | in `console()`, after the FCH reset tasks |
+| board knobs, e.g. S8030 `dxio::KNOBS`, Ethanol-X `dxio::KNOBS` | the board's own lane map input | `Stage::resolve_options`, before the board builds its engines |
+
+`resolve_options` also takes the consumer's whole-set check (the DXIO
+`validate` of the resulting engines). An override set that fails it is
+dropped as a whole and the board's configuration boots, with a warning.
+
+The values live in the settings store (`layout::NVRAM`, 256 KiB at the top
+of the FFS window): CrabEFI's EDK2 variable store, with each option an EFI
+variable under coreboot's CFR GUID named by the knob's key, holding a
+little-endian `u32` (coreboot's `get_uint_option()` convention). The boot
+reads the store through the ROM window before the first consumer. With the
+UEFI payload, the flow hands CrabEFI:
+
+- the store as its variable storage, through the FCH SPI100 command engine
+  (`fch::spi::flash`). The engine reads back part of the FFS with 3- and
+  4-byte addresses and writes in the mode that matches the ROM window (the
+  S8030's 32 MiB part is in 4-byte mode); if neither matches, the store is
+  read-only and CrabEFI keeps its variables volatile.
+- the options as a CFR form (`fstart_options::cfr`), which CrabEFI's
+  firmware settings menu (`F` in the boot menu) shows and saves.
+
+A changed option applies at the next boot. A new image has an empty store:
+reflashing resets the settings. Linux and halt payloads boot the board's
+configuration.
 
 ## SMM
 

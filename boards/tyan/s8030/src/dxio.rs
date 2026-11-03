@@ -41,8 +41,11 @@
 mod tuning;
 
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::lanes::{Engine, Group, Lanes, PcieEngine, SataEngine, Speed};
+use fstart_driver_amd::sp3::dxio::lanes::{
+    Bifurcation, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
+};
 use fstart_driver_amd::sp3::soc::Generation;
+use fstart_options::{Kind, Knob, Meta};
 use heapless::Vec;
 
 /// The five x16 slots, in Setup order (`PCIE#1..5`).
@@ -99,33 +102,16 @@ impl Slot {
 }
 
 /// Slot bifurcation (Rome `Setup[0x194 + slot]`, Milan
-/// `OemPciSlotConfigSetup[slot]`; default x16).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Bifurcation {
-    X16,
-    X8x8,
-    X4x4x4x4,
-}
-
-impl Bifurcation {
-    pub const fn width(self) -> u8 {
-        match self {
-            Self::X16 => 16,
-            Self::X8x8 => 8,
-            Self::X4x4x4x4 => 4,
-        }
-    }
-
-    /// The Setup value: 1, 2 or 4 (the IFR offers only these). Values 0
-    /// (GPIO detect) and 3 (GPIO low, then x8x8) need a slot GPIO flag no
-    /// S8030 row has; Milan's cases 5–11 are not reachable from Setup.
-    pub const fn from_setup(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::X16),
-            2 => Some(Self::X8x8),
-            4 => Some(Self::X4x4x4x4),
-            _ => None,
-        }
+/// `OemPciSlotConfigSetup[slot]`; default x16) from its Setup value: 1, 2
+/// or 4 (the IFR offers only these). Values 0 (GPIO detect) and 3 (GPIO
+/// low, then x8x8) need a slot GPIO flag no S8030 row has; Milan's cases
+/// 5–11 are not reachable from Setup.
+pub const fn bifurcation_from_setup(value: u8) -> Option<Bifurcation> {
+    match value {
+        1 => Some(Bifurcation::X16),
+        2 => Some(Bifurcation::X8x8),
+        4 => Some(Bifurcation::X4x4x4x4),
+        _ => None,
     }
 }
 
@@ -177,8 +163,8 @@ impl Options {
 
     /// The options of this build: the Setup defaults, or the
     /// `pcie3-x4x4x4x4` variant's PCIE#3 x4x4x4x4 (the bench's NVMe carrier; its vendor
-    /// NVRAM has `Setup[0x194..]` = `01 01 04 01 01`). Temporary:
-    /// per-machine settings move to an fstart settings record in flash.
+    /// NVRAM has `Setup[0x194..]` = `01 01 04 01 01`). The settings menu
+    /// overrides them per machine ([`KNOBS`]).
     pub const BUILD: Self = if cfg!(feature = "pcie3-x4x4x4x4") {
         Self::DEFAULT.with_bifurcation("11411")
     } else {
@@ -193,7 +179,7 @@ impl Options {
         let mut s = self;
         let mut i = 0;
         while i < 5 {
-            s.slots[i].bifurcation = match Bifurcation::from_setup(b[i].wrapping_sub(b'0')) {
+            s.slots[i].bifurcation = match bifurcation_from_setup(b[i].wrapping_sub(b'0')) {
                 Some(x) => x,
                 None => panic!("slot bifurcation is 1, 2 or 4"),
             };
@@ -201,6 +187,114 @@ impl Options {
         }
         s
     }
+}
+
+/// The slot knobs: a slot's bifurcation is its link width.
+macro_rules! slot_knob {
+    ($slot:expr, $key:literal, $label:literal) => {
+        Knob::new(
+            Meta {
+                key: $key,
+                form: "PCIe",
+                label: $label,
+                help: "How the slot's 16 lanes split into links. Applies at the next boot.",
+                kind: Kind::Enum(Bifurcation::CHOICES),
+            },
+            |o: &Options| u32::from(o.slots[$slot.index()].bifurcation.width()),
+            |o: &mut Options, v| {
+                if let Some(b) = Bifurcation::from_width(v) {
+                    o.slots[$slot.index()].bifurcation = b;
+                }
+            },
+        )
+    };
+}
+
+const fn bool_knob(
+    key: &'static str,
+    label: &'static str,
+    help: &'static str,
+    get: fn(&Options) -> u32,
+    set: fn(&mut Options, u32),
+) -> Knob<Options> {
+    Knob::new(
+        Meta {
+            key,
+            form: "PCIe",
+            label,
+            help,
+            kind: Kind::Bool,
+        },
+        get,
+        set,
+    )
+}
+
+/// The Setup knobs behind the OEM patches, as user options.
+pub static KNOBS: [Knob<Options>; 9] = [
+    slot_knob!(
+        Slot::Pcie1,
+        "s8030_pcie1_bifurcation",
+        "PCIE#1 (J12) bifurcation"
+    ),
+    slot_knob!(
+        Slot::Pcie2,
+        "s8030_pcie2_bifurcation",
+        "PCIE#2 (J9) bifurcation"
+    ),
+    slot_knob!(
+        Slot::Pcie3,
+        "s8030_pcie3_bifurcation",
+        "PCIE#3 (J11) bifurcation"
+    ),
+    slot_knob!(
+        Slot::Pcie4,
+        "s8030_pcie4_bifurcation",
+        "PCIE#4 (J10) bifurcation"
+    ),
+    slot_knob!(
+        Slot::Pcie5,
+        "s8030_pcie5_bifurcation",
+        "PCIE#5 (J13) bifurcation"
+    ),
+    bool_knob(
+        "s8030_pcie_compliance",
+        "PCIe compliance mode",
+        "Sets the compliance bit of the PCIe engines, for link testing.",
+        |o| o.compliance.into(),
+        |o, v| o.compliance = v != 0,
+    ),
+    bool_knob(
+        "s8030_lan1",
+        "Onboard LAN1 (i210)",
+        "Trains the link of the first i210.",
+        |o| o.lan[0].into(),
+        |o, v| o.lan[0] = v != 0,
+    ),
+    bool_knob(
+        "s8030_lan2",
+        "Onboard LAN2 (i210)",
+        "Trains the link of the second i210.",
+        |o| o.lan[1].into(),
+        |o, v| o.lan[1] = v != 0,
+    ),
+    bool_knob(
+        "s8030_onboard_vga",
+        "Onboard VGA (AST2500)",
+        "Trains the link of the BMC's VGA.",
+        |o| o.onboard_vga.into(),
+        |o, v| o.onboard_vga = v != 0,
+    ),
+];
+
+/// Whether `options` give the SoC a valid engine list with `detected`.
+pub fn check(
+    generation: Generation,
+    options: &Options,
+    detected: &Detected,
+) -> Result<(), &'static str> {
+    validate(generation, &engines(generation, options, detected))
+        .map_err(|_| "the lane map does not validate")
 }
 
 /// The M.2 sockets.
@@ -382,7 +476,7 @@ pub fn engines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::dxio::lanes::{EngineKind, place, validate};
+    use fstart_driver_amd::sp3::dxio::lanes::{EngineKind, place};
 
     const PCIE: Detected = Detected {
         m2: [M2Mode::Pcie; 2],
