@@ -10,24 +10,29 @@ schema = 1
 board = "lenovo-x200"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-stage-bin = "fstart-stage"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["gm45-ich9"] }
-fstart-driver-intel = { path = "../../../crates/driver-intel" }
-fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
-fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
-fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
-fstart-driver-superio = { path = "../../../crates/driver-superio" }
-fstart-pci = { path = "../../../crates/pci" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-acpi-macros = { path = "../../../crates/acpi-macros" }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
+fstart-pci = { path = "../../../crates/pci" }
+embedded-hal = { workspace = true }
+fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-log = { path = "../../../crates/log" }
+# Required at the crate root wherever fstart_log macros expand
+# (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
 ufmt = { workspace = true }
 
-[[bin]]
-name = "fstart-stage"
-path = "src/main.rs"
+[features]
+default = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
+
+# One binary per stage, named after the stage: src/bin/<stage>.rs.

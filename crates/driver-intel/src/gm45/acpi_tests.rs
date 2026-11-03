@@ -88,8 +88,8 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
             concat!(
                 "execute \\_S5;execute \\_TZ.THM0._PSL;execute \\_TZ.THM1._PSL;",
                 "execute \\_TZ.THM0._CRT;execute \\_TZ.THM0._PSV;execute \\_TZ.THM0._AC0;",
-                "execute \\CP00._UID;execute \\CP01._UID;",
-                "execute \\CP00._PSS;execute \\CP00._PCT;execute \\CP00._CST;",
+                "execute \\C000._UID;execute \\C001._UID;",
+                "execute \\C000._PSS;execute \\C000._PCT;execute \\C000._CST;",
                 "execute \\PNOT;execute \\_SB.PCI0._CRS;execute \\_SB.PCI0.PDRC._CRS;",
                 // PCIe _OSC UUID, revision 1, three dwords of control requests.
                 "execute \\_SB.PCI0._OSC (5B 4D DB 33 F7 1F 1C 40 96 57 74 41 C0 3D D7 66) ",
@@ -123,7 +123,7 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
         3,
         "{text}"
     );
-    assert!(text.contains("CP00") && text.contains("CP01"), "{text}");
+    assert!(text.contains("C000") && text.contains("C001"), "{text}");
     // PWRS is 0 (battery) before the AC device runs: the C6 MWAIT hint.
     assert!(text.contains("01 02 01 50 00"), "battery _CST: {text}");
     assert!(

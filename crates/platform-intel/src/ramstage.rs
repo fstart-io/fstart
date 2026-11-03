@@ -321,6 +321,9 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             );
             self.ctx.e820_state_mut().set_detected(count, total)?;
             self.northbridge.memory_detected(self.ctx.e820_state());
+            // coreboot chip_operations.init: before PCI enumeration, e.g.
+            // hiding functions the board disables.
+            self.northbridge.chip_init()?;
             // Cache is still off: the RAM-stage entry tore down CAR. The ranges
             // the northbridge just published are enough to restore caching now.
             // The complete solution is selected after PCI allocation.
@@ -462,6 +465,18 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
     /// Program the chipset's devices.
     pub fn init_chipset(mut self) -> Ramstage<B, Chipset> {
         self.phase(fstart_timestamp::id::INIT_DEVICES, |rs| {
+            // coreboot sets subsystem IDs while enabling resources, before
+            // init; the registers are commonly write-once.
+            for entry in B::CONFIG.pci_subsystem_ids() {
+                let dev = fstart_pci::ecam::EcamDevice::new(0, entry.device, entry.function);
+                if dev.is_present() && !dev.set_subsystem(entry.id) {
+                    fstart_log::error!(
+                        "pci: 00:{:02x}.{} has no subsystem ID register",
+                        entry.device,
+                        entry.function
+                    );
+                }
+            }
             rs.northbridge.post_dram_init()?;
             rs.southbridge.post_dram_init()
         });
@@ -494,7 +509,13 @@ impl<B: IntelBoard> Ramstage<B, Cpus> {
         self.phase(fstart_timestamp::id::MOUNT_BOOT_MEDIA, |rs| {
             fstart_arch::x86::boot::enable_boot_media_rom_cache();
             if rs.resume {
-                return Ok(());
+                // Point the chipset back at what the cold boot published,
+                // e.g. the graphics OpRegion kept in the store.
+                let opregion = rs.store.as_ref().and_then(|store| {
+                    let entry = store.find(fstart_store::tag::IGD_OPREGION)?;
+                    u32::try_from(store.address(&entry)).ok()
+                });
+                return rs.northbridge.resume_init(opregion);
             }
             rs.northbridge.stage_local_init()
         });
@@ -515,7 +536,19 @@ impl<B: IntelBoard> Ramstage<B, Verified> {
                 fstart_log::info!("display init skipped on S3 resume");
                 return Ok(());
             }
-            rs.northbridge.post_verify_init()
+            // The OpRegion lives in the store, which survives S3 (coreboot
+            // keeps it in CBMEM).
+            let store = &mut rs.store;
+            rs.northbridge.post_verify_init(&mut |size| {
+                let store = store.as_mut()?;
+                let entry = store.add(fstart_store::tag::IGD_OPREGION, size, 12).ok()?;
+                // SAFETY: a fresh store entry of `size` bytes, identity
+                // mapped and owned by the OS once published; never handed
+                // out twice.
+                Some(unsafe {
+                    core::slice::from_raw_parts_mut(store.address(&entry) as *mut u8, size)
+                })
+            })
         });
         self.into()
     }
@@ -741,7 +774,7 @@ fn init_mp<P: IntelEarlyPlatform>(
 ) -> Result<(), ServiceError> {
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
-    let cpu = P::cpu_driver(fstart_stage::microcode_blob());
+    let cpu = P::cpu_driver(fstart_stage::microcode_blob(), northbridge, southbridge);
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
     // The supported Core 2 / Pineview platforms are single-socket, as in
     // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future

@@ -70,14 +70,25 @@ on this hardware. Before flashing, use a known-good OS's USB topology, e.g.
 `lsusb -t` and `/sys/bus/usb/devices`, to map root-port 1 under PCI 00:1a.7
 to a connector. Do not assume every side or dock USB socket is usable.
 
-Each stage resets the controller and re-enumerates the gadget. Capture must
-survive these disconnects; a short `USB` greeting marks an enumeration.
+The bootblock resets the controller and the debug port and enumerates the
+gadget at address 127; a short `USB` greeting marks that enumeration.
 Descriptor discovery also tries reserved address 127 if address 0 fails,
-without reassigning an already-addressed gadget.
-Debug packets carry up to eight bytes. Polls/retries are bounded, and missing
-or incompatible gadgets leave the console offline without stopping boot.
-`EhciDebug::online()` can distinguish that condition. There is no alternate
-UART fallback, so a silent capture is not by itself evidence of a boot hang.
+without reassigning an already-addressed gadget. Postcar and the ramstage
+find the debug port still claimed and running and only re-attach: they read
+the endpoints back from the gadget and reset both bulk data toggles with
+`CLEAR_FEATURE(ENDPOINT_HALT)`, as coreboot carries the pipe state through
+CAR and CBMEM instead of resetting the port. If re-attaching fails, the stage
+falls back to a full reset and enumeration.
+
+Output is packed into 8-byte packets and flushed at the end of every log
+line, like coreboot's `usb_tx_byte`/`usb_tx_flush`. A packet the host does
+not take within coreboot's 1000 NAK retries is dropped; until the host drains
+again, later packets only get a short retry budget so an absent capture does
+not slow the boot down. Bus errors are retried, a hardware error or STALL
+takes the console offline. Missing or incompatible gadgets leave the console
+offline without stopping boot; `EhciDebug::online()` can distinguish that
+condition. There is no alternate UART fallback, so a silent capture is not by
+itself evidence of a boot hang.
 
 ## Flash safety
 
@@ -136,7 +147,7 @@ Host validation commands:
 
 ```sh
 cargo test -p fstart-arch --features x86_64
-cargo test -p fstart-driver-intel --features gm45,ich9,acpi,display
+cargo test -p fstart-driver-intel --features gm45,ich9,acpi,display,spi
 cargo test -p fstart-driver-usbdebug
 cargo test -p fstart-platform-intel --features gm45-ich9,host
 cargo test -p fstart-driver-lenovo --features fstart-arch/x86_64,acpi

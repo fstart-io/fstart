@@ -258,11 +258,26 @@ impl H8 {
     /// The H8 is also the PC/AT keyboard controller; it is left quiet for
     /// the OS.
     pub fn init_legacy_thinkpad(&self, events: &[u8; 16], bluetooth: bool, resume: bool) -> bool {
+        self.init_thinkpad(0x05, events, bluetooth, None, resume)
+    }
+
+    /// coreboot `h8_enable()` for a ThinkPad: CONFIG0-3 with the ThinkLight,
+    /// event masks, radios (UWB only where the board has the switch), USB
+    /// power and the default Fn/charge/audio policy. `config1` is the
+    /// devicetree `config1`. The OS restores its own volume on resume.
+    pub fn init_thinkpad(
+        &self,
+        config1: u8,
+        events: &[u8; 16],
+        bluetooth: bool,
+        uwb: Option<bool>,
+        resume: bool,
+    ) -> bool {
         self.clear_out_queue();
         let acknowledged = [
             self.init_config0(H8_CONFIG0_EVENTS_ENABLE),
             self.init_controls(
-                [0x05, 0xa0, 0x01],
+                [config1, 0xa0, 0x01],
                 Some(H8Illumination::Thinklight),
                 [0xfe, 0x96],
             ),
@@ -272,6 +287,7 @@ impl H8 {
             self.wlan_enable(true),
             self.bluetooth_enable(bluetooth),
             self.wwan_enable(true),
+            uwb.is_none_or(|on| self.uwb_enable(on)),
             self.usb_always_on_disable(),
             self.fn_ctrl_swap(false),
             self.sticky_fn(false),

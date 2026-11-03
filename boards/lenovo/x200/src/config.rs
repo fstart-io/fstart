@@ -49,6 +49,9 @@ pub const FLASH: IntelIfdFlashLayout = {
     )
 };
 
+pub const BOARD_NAME: &str = "lenovo-x200";
+pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x200";
+
 const LED_VBT: &str = "data_led.vbt";
 const CCFL_VBT: &str = "data_ccfl.vbt";
 pub const EHCI_CONSOLE: fstart_driver_usbdebug::Config = fstart_driver_usbdebug::Config {
@@ -68,6 +71,38 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             .with_data_assets(&[LED_VBT, CCFL_VBT])
             .with_memory_cache();
 }
+
+/// SMBus mux (GPIO42): high reaches the SPDs, low the identity EEPROM. The
+/// GPIO table starts on the SPDs; coreboot's `mb_post_raminit_setup()`
+/// switches to the EEPROM after raminit.
+pub const X200_SMBUS_MUX: u8 = 42;
+
+/// H8 EC: transport, LPC windows and the AML surface. The EC SCI is ICH9
+/// GPIO1, i.e. GPE 0x11.
+pub const X200_H8: fstart_driver_lenovo::h8::H8Config = {
+    use fstart_driver_lenovo::{
+        ec::EcPorts,
+        h8::{H8BatteryThresholdBackend, H8Config, H8Resources},
+    };
+    H8Config {
+        has_bluetooth: true,
+        has_wwan: true,
+        has_uwb: true,
+        has_thinklight: true,
+        second_thermal_zone: true,
+        // coreboot x200 `mainboard_fill_gnvs()`.
+        critical_temp_celsius: 100,
+        passive_temp_celsius: 90,
+        bat_info_extended: true,
+        bat_thresholds: true,
+        bat_threshold_backend: H8BatteryThresholdBackend::Registers24 { bit7: false },
+        ..H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            0x11,
+            "IBM0068",
+        )
+    }
+};
 
 /// The X200 SPD mux is initially on the DIMM sockets; GPIO42 selects the
 /// board EEPROM only after memory initialization (coreboot romstage.c).
@@ -124,12 +159,12 @@ pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
     })
     .lpc_generic_io([
         LpcGenericIoDecode {
-            base: 0x1600,
-            size: 0x80,
+            base: X200_H8.resources.auxiliary_base.raw(),
+            size: fstart_driver_lenovo::h8::H8Resources::AUXILIARY_SIZE,
         },
         LpcGenericIoDecode {
-            base: 0x15e0,
-            size: 0x10,
+            base: X200_H8.resources.pmh7_base.raw(),
+            size: fstart_driver_lenovo::h8::H8Resources::PMH7_SIZE as u16,
         },
         LpcGenericIoDecode {
             base: 0x1680,

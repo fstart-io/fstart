@@ -2,8 +2,10 @@
 //! Board-requested C5/C6 and Super-LFM remain gated by CPU capabilities.
 
 use super::smm::{SmmCpu, SmrrPair, X86SaveStateFormat};
-use super::{feature_control, msr_register::Msr, speedstep};
+use super::{feature_control, speedstep};
+use crate::x86::cpu::msr::{Msr, MsrAccess, NativeMsr};
 use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u64,
@@ -154,90 +156,88 @@ impl CpuDriver for PenrynCpuDriver {
         let cores = (count >> 16) & 0xff;
         let quad = cores > 2;
         let sub = crate::x86::cpuid(5).3;
-        let cst = Msr::<Cst::Register>::new(0xe2);
-        let bbl = Msr::<Bbl::Register>::new(0x11e);
-        let fsb = Msr::<Fsb::Register>::new(0xcd);
-        let extended = Msr::<Extended::Register>::new(0xee);
-        let vcc = Msr::<Vcc::Register>::new(0xce);
-        let perf = Msr::<Perf::Register>::new(0x199);
-        let misc = Msr::<Misc::Register>::new(0x1a0);
         // SAFETY: MP matching admits only model 1067x, whose documented MSRs
-        // are used here. Microcode is updated before the erratum-sensitive PECI write.
+        // are used here. Microcode is updated before the erratum-sensitive
+        // PECI write.
+        let cpu = unsafe { NativeMsr::new() };
+        let cst = cpu.reg(Msr::<Cst::Register>::new(0xe2));
+        let bbl = cpu.reg(Msr::<Bbl::Register>::new(0x11e));
+        let fsb = cpu.reg(Msr::<Fsb::Register>::new(0xcd));
+        let extended = cpu.reg(Msr::<Extended::Register>::new(0xee));
+        let vcc = cpu.reg(Msr::<Vcc::Register>::new(0xce));
+        let misc = cpu.reg(Msr::<Misc::Register>::new(0x1a0));
+
+        let (c5, c6) = cstate_support(self.power, bbl.get(), fsb.get(), sub);
+        let emttm = cores <= 1 || !extended.is_set(Extended::EMTTM_DISABLE);
+        let eist = features & (1 << 7) != 0
+            && !cpu
+                .reg(Msr::<Platform::Register>::new(0x17))
+                .is_set(Platform::EIST_DISABLE);
+        let tm2 = eist && features & (1 << 8) != 0;
+        let turbo = vcc.is_set(Vcc::TURBO_SUPPORTED);
+
+        // coreboot configure_c_states()
+        cst.set(cstate_bits(cst.get(), quad, c5, c6));
+        // PMB0 is PMBASE+0x10. Model 1067x uses MSRs e3/e4 (not e4/e7).
+        cpu.reg(Msr::<IoBase::Register>::new(0xe3))
+            .write(IoBase::BASE.val(u64::from(self.pmbase + 0x14)) + IoBase::COORD_PORT.val(0x809));
+        let cst_range = if c6 {
+            4
+        } else if c5 {
+            3
+        } else {
+            2
+        };
+        cpu.reg(Msr::<IoCapture::Register>::new(0xe4)).write(
+            IoCapture::BASE.val(u64::from(self.pmbase + 0x14)) + IoCapture::RANGE.val(cst_range),
+        );
+        if c5 {
+            bbl.modify(Bbl::L2_POLICY.val(2) + Bbl::C5.val(1));
+        }
+
+        // coreboot configure_p_states()
+        if self.power.slfm && extended.is_set(Extended::SLFM_SUPPORTED) {
+            extended.modify(Extended::SLFM_ENABLE::SET);
+        }
+        if turbo {
+            if signature & 0xf == 0xa && cores < 4 {
+                fsb.modify(Fsb::TURBO_HYSTERESIS::SET);
+            }
+            cpu.reg(Msr::<Perf::Register>::new(0x199))
+                .modify(Perf::TURBO_DISABLE::CLEAR);
+        }
+        cst.modify(Cst::COORD_DISABLE::CLEAR + Cst::LOCK::SET);
+
+        // coreboot configure_emttm_tables()
+        if emttm {
+            // SAFETY: model 1067x implements the SpeedStep MSRs.
+            let states = unsafe { speedstep::current_pstates() };
+            for (index, control) in speedstep::emttm_entries(&states).into_iter().enumerate() {
+                cpu.reg(Msr::<Emttm::Register>::new(0xa8 + index as u32))
+                    .set(u64::from(control));
+            }
+            cpu.reg(Msr::<Emttm::Register>::new(0xad))
+                .modify(Emttm::LOCK::SET);
+        }
+
+        // coreboot configure_misc()
+        let enabled = misc_bits(misc.get(), sub, eist, tm2, emttm, turbo);
+        misc.set(enabled);
+        if eist {
+            misc.set(enabled | Misc::EIST_LOCK::SET.value);
+        }
+        cpu.reg(Msr::<Peci::Register>::new(0x5a0))
+            .modify(Peci::ENABLE::SET);
+
+        // coreboot configure_pic_thermal_sensors()
+        let pic = cpu.reg(Msr::<Pic::Register>::new(0x1aa));
+        pic.modify(Pic::QUAD.val(u64::from(quad)) + Pic::TM1_LOCK::SET + Pic::BYPASS::SET);
+        if tm2 {
+            pic.modify(Pic::TM2_FALLBACK::SET);
+        }
+        // SAFETY: model 1067x implements IA32_FEATURE_CONTROL and the
+        // alternative SMRR pair.
         unsafe {
-            let (c5, c6) = cstate_support(self.power, bbl.read().get(), fsb.read().get(), sub);
-            let emttm = cores <= 1 || !extended.read().is_set(Extended::EMTTM_DISABLE);
-            let eist = features & (1 << 7) != 0
-                && !Msr::<Platform::Register>::new(0x17)
-                    .read()
-                    .is_set(Platform::EIST_DISABLE);
-            let tm2 = eist && features & (1 << 8) != 0;
-            let turbo = vcc.read().is_set(Vcc::TURBO_SUPPORTED);
-            cst.write(cstate_bits(cst.read().get(), quad, c5, c6));
-            // PMB0 is PMBASE+0x10. Model 1067x uses MSRs e3/e4 (not e4/e7).
-            Msr::<IoBase::Register>::new(0xe3).write(
-                (IoBase::BASE.val(u64::from(self.pmbase + 0x14)) + IoBase::COORD_PORT.val(0x809))
-                    .value,
-            );
-            Msr::<IoCapture::Register>::new(0xe4).write(
-                (IoCapture::BASE.val(u64::from(self.pmbase + 0x14))
-                    + IoCapture::RANGE.val(if c6 {
-                        4
-                    } else if c5 {
-                        3
-                    } else {
-                        2
-                    }))
-                .value,
-            );
-            if c5 {
-                let mut value = bbl.read();
-                value.modify(Bbl::L2_POLICY.val(2) + Bbl::C5.val(1));
-                bbl.write(value.get());
-            }
-            let mut value = extended.read();
-            if self.power.slfm && value.is_set(Extended::SLFM_SUPPORTED) {
-                value.modify(Extended::SLFM_ENABLE::SET);
-            }
-            extended.write(value.get());
-            if turbo {
-                if signature & 0xf == 0xa && cores < 4 {
-                    let mut value = fsb.read();
-                    value.modify(Fsb::TURBO_HYSTERESIS::SET);
-                    fsb.write(value.get());
-                }
-                let mut value = perf.read();
-                value.modify(Perf::TURBO_DISABLE::CLEAR);
-                perf.write(value.get());
-            }
-            let mut value = cst.read();
-            value.modify(Cst::COORD_DISABLE::CLEAR + Cst::LOCK::SET);
-            cst.write(value.get());
-            if emttm {
-                let states = speedstep::current_pstates();
-                for (index, control) in speedstep::emttm_entries(&states).into_iter().enumerate() {
-                    Msr::<Emttm::Register>::new(0xa8 + index as u32).write(u64::from(control));
-                }
-                let table = Msr::<Emttm::Register>::new(0xad);
-                let mut value = table.read();
-                value.modify(Emttm::LOCK::SET);
-                table.write(value.get());
-            }
-            let enabled = misc_bits(misc.read().get(), sub, eist, tm2, emttm, turbo);
-            misc.write(enabled);
-            if eist {
-                misc.write(enabled | Misc::EIST_LOCK::SET.value);
-            }
-            let peci = Msr::<Peci::Register>::new(0x5a0);
-            let mut value = peci.read();
-            value.modify(Peci::ENABLE::SET);
-            peci.write(value.get());
-            let pic = Msr::<Pic::Register>::new(0x1aa);
-            let mut value = pic.read();
-            value.modify(Pic::QUAD.val(u64::from(quad)) + Pic::TM1_LOCK::SET + Pic::BYPASS::SET);
-            if tm2 {
-                value.modify(Pic::TM2_FALLBACK::SET);
-            }
-            pic.write(value.get());
             feature_control::enable_and_lock(SmrrPair::Core2Alternative.feature_control_bits());
         }
     }

@@ -2,10 +2,12 @@
 //! Coreboot's speedstep generator, without allocation during per-CPU init.
 
 #[cfg(target_os = "none")]
-use super::msr_register::Msr;
+use crate::x86::cpu::msr::{Msr, MsrAccess, NativeMsr};
 use heapless::Vec;
 #[cfg(any(target_os = "none", test))]
 use tock_registers::LocalRegisterCopy;
+#[cfg(target_os = "none")]
+use tock_registers::interfaces::Readable;
 use tock_registers::register_bitfields;
 
 register_bitfields![u64,
@@ -140,13 +142,15 @@ pub fn model_id() -> u32 {
 /// Firmware callers must run on a legacy Intel CPU implementing SpeedStep MSRs.
 pub unsafe fn current_pstates() -> PStates {
     #[cfg(target_os = "none")]
-    let limits = unsafe {
+    let limits = {
+        // SAFETY: the caller runs on a legacy Intel CPU with these MSRs.
+        let cpu = unsafe { NativeMsr::new() };
         let id = model_id();
         let penryn = id == 0x1067;
         let mut limits = Limits::default();
-        let vcc = Msr::<Vcc::Register>::new(0xce).read();
-        if Msr::<Extended::Register>::new(0xee)
-            .read()
+        let vcc = cpu.reg(Msr::<Vcc::Register>::new(0xce)).extract();
+        if cpu
+            .reg(Msr::<Extended::Register>::new(0xee))
             .read(Extended::SLFM)
             == 3
         {
@@ -155,21 +159,21 @@ pub unsafe fn current_pstates() -> PStates {
             limits.slfm.is_slfm = true;
         }
         limits.min = state_from_msr(
-            Msr::<Control::Register>::new(0x19d).read().get() as u32,
+            cpu.reg(Msr::<Control::Register>::new(0x19d)).get() as u32,
             penryn,
         );
         limits.max = state_from_msr(
-            Msr::<Control::Register>::new(0x17).read().get() as u32,
+            cpu.reg(Msr::<Control::Register>::new(0x17)).get() as u32,
             penryn,
         );
         if id == 0x006e {
-            limits.max.ratio = Msr::<Status::Register>::new(0x198)
-                .read()
+            limits.max.ratio = cpu
+                .reg(Msr::<Status::Register>::new(0x198))
                 .read(Status::MAX_RATIO) as u8;
         }
         if vcc.is_set(Vcc::TURBO_SUPPORTED)
-            && !Msr::<Misc::Register>::new(0x1a0)
-                .read()
+            && !cpu
+                .reg(Msr::<Misc::Register>::new(0x1a0))
                 .is_set(Misc::TURBO_DISABLE)
         {
             limits.turbo = state_from_msr(vcc.read(Vcc::TURBO_CONTROL) as u32, penryn);
@@ -205,7 +209,9 @@ pub unsafe fn current_pstates() -> PStates {
 pub unsafe fn fsb_x3() -> Option<u32> {
     #[cfg(target_os = "none")]
     {
-        let index = unsafe { Msr::<Fsb::Register>::new(0xcd).read() }.read(Fsb::RATE) as usize;
+        // SAFETY: the caller runs on a legacy Intel CPU with MSR_FSB_FREQ.
+        let cpu = unsafe { NativeMsr::new() };
+        let index = cpu.reg(Msr::<Fsb::Register>::new(0xcd)).read(Fsb::RATE) as usize;
         let fsb = match model_id() {
             0x006e | 0x106c => [
                 None,

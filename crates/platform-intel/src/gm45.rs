@@ -42,7 +42,7 @@ pub struct Gm45Ich9Config {
     pub pcie_power_limits: [PciePowerLimit; 6],
     pub pcie_hotplug: [bool; 6],
     /// Board-verified RCBA interrupt routing; required by the ICH9 driver.
-    pub pirq: Option<PirqRouting<'static>>,
+    pub pirq: Option<PirqRouting>,
     pub preserve_hardware_pirq: bool,
     pub pirq_routing: [u8; 8],
     pub lpc_decode: LpcDecodeConfig,
@@ -123,7 +123,6 @@ impl Gm45Ich9Config {
         config.ecam_base = GM45_ECAM_BASE;
         config.ecam_buses = GM45_ECAM_BUSES;
         config.pmbase = ICH9_PMBASE;
-        config.smbus_base = ICH9_SMBUS_BASE;
         config.graphics = self.graphics;
         config.igd = self.igd;
         config.cstates = self.cstates;
@@ -219,7 +218,7 @@ impl Gm45Ich9Config {
     }
 
     #[must_use]
-    pub const fn pirq(mut self, routing: PirqRouting<'static>) -> Self {
+    pub const fn pirq(mut self, routing: PirqRouting) -> Self {
         self.pirq = Some(routing);
         self.preserve_hardware_pirq = false;
         self

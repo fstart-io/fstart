@@ -64,9 +64,40 @@ pub struct Ddr3Channels {
     pub spd: [[u8; 128]; 2],
 }
 
+/// The SMBIOS inventory of the wired slots (coreboot
+/// `setup_sdram_meminfo()`): one DIMM per channel in slot 0.
+pub fn memory_info(
+    channels: &Ddr3Channels,
+    spd_addresses: &[u8; 4],
+    clock: MemClock,
+) -> fstart_core::memory_info::MemoryInfo {
+    use fstart_core::memory_info::{MemoryDevice, MemoryInfo};
+    let mts = match clock {
+        MemClock::Mhz333 => 667,
+        MemClock::Mhz400 => 800,
+        MemClock::Mhz533 => 1067,
+    };
+    // coreboot setup_sdram_meminfo(): 4 GiB per channel.
+    let mut info = MemoryInfo::new(8192);
+    for (slot, &address) in spd_addresses.iter().enumerate() {
+        if address == 0 {
+            continue;
+        }
+        let (channel, index) = ((slot / 2) as u8, (slot % 2) as u8);
+        let device = match (index, &channels.dimms[slot / 2]) {
+            (0, Some(dimm)) => {
+                ddr3::memory_device(dimm, &channels.spd[slot / 2], channel, index, mts)
+            }
+            _ => MemoryDevice::empty(channel, index),
+        };
+        info.push(device);
+    }
+    info
+}
+
 /// Read full SPD only for installed slots; reject unknown types and extra
 /// slots rather than accepting the wrong topology and silently omitting RAM.
-pub fn probe_ddr3<B: SmBus>(
+pub fn probe_ddr3<B: SmBus + ?Sized>(
     bus: &mut B,
     addresses: &[u8; 4],
 ) -> Result<Ddr3Channels, ServiceError> {

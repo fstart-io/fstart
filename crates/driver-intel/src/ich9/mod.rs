@@ -12,8 +12,7 @@ use fstart_core::ConstVec;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::{
-    ConsoleDevice, FirmwareImage, FirmwareImageProvider, FlashLayoutVerifier, ServiceError, SmBus,
-    Southbridge,
+    ConsoleDevice, FirmwareImage, FirmwareImageProvider, ServiceError, SmBus,
 };
 pub use fstart_driver_usbdebug::Config as EhciDebugConfig;
 use fstart_pci::ecam;
@@ -493,6 +492,7 @@ const SPI_FREG_BASE_MASK: u32 = 0x1fff;
 const SPI_FREG_LIMIT_MASK: u32 = 0x1fff;
 const SPI_FREG_LIMIT_SHIFT: u32 = 16;
 const SPI_FREG_SHIFT: u32 = 12;
+#[cfg(feature = "acpi")]
 const GPE0_STS_ICH9: u16 = 0x20;
 const GPE0_EN_ICH9: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
@@ -774,7 +774,7 @@ pub struct IntelIch9Config {
     /// The driver programs `DxxIP`/`DxxIR` from this and generates the ACPI
     /// tables from it, so the GSIs an OS derives are the ones the router
     /// delivers on.
-    pub pirq: Option<crate::southbridge::pirq::PirqRouting<'static>>,
+    pub pirq: Option<crate::southbridge::pirq::PirqRouting>,
     /// Keep reset/strap DxxIP/DxxIR values and derive ACPI routes by readback,
     /// as coreboot i82801ix does. Mutually exclusive with an explicit map.
     pub preserve_hardware_pirq: bool,
@@ -963,6 +963,13 @@ unsafe impl Send for IntelIch9 {}
 unsafe impl Sync for IntelIch9 {}
 
 impl IntelIch9 {
+    /// The GPIO controller, for board code to take the pins it wires.
+    /// Pad configuration is chipset config, applied before the console.
+    #[must_use]
+    pub const fn gpio(&self) -> IchGpio {
+        IchGpio::new(ich9::DEFAULT_GPIOBASE)
+    }
+
     fn lpc(&self) -> ecam::EcamDevice {
         ecam::EcamDevice::new(0, ich9::LPC_DEV, ich9::LPC_FUNC)
     }
@@ -2427,29 +2434,14 @@ impl FirmwareImageProvider for IntelIch9 {
     }
 }
 
-impl FlashLayoutVerifier for IntelIch9 {
-    fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
+impl IntelIch9 {
+    /// Compare the flash descriptor the controller reads with the board's
+    /// build-time layout, before trusting the boot medium's regions.
+    pub fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
         match expected {
             FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
             FlashLayout::X86Legacy(_) => Err(ServiceError::NotSupported),
         }
-    }
-}
-
-impl Southbridge for IntelIch9 {
-    fn gpio_get(&self, pin: u32) -> Result<bool, ServiceError> {
-        if pin > 75 {
-            return Err(ServiceError::InvalidParam);
-        }
-        Ok(IchGpio::new(ich9::DEFAULT_GPIOBASE).get(pin as u8))
-    }
-
-    fn gpio_set(&self, pin: u32, value: bool) -> Result<(), ServiceError> {
-        if pin > 75 {
-            return Err(ServiceError::InvalidParam);
-        }
-        IchGpio::new(ich9::DEFAULT_GPIOBASE).set(pin as u8, value);
-        Ok(())
     }
 }
 
@@ -2497,6 +2489,18 @@ impl SmBus for IntelIch9 {
             None => Err(ServiceError::HardwareError),
         }
     }
+
+    fn i2c_eeprom_read(
+        &mut self,
+        addr: u8,
+        offset: u8,
+        buf: &mut [u8],
+    ) -> Result<(), ServiceError> {
+        match self.smbus.as_mut() {
+            Some(bus) => bus.i2c_eeprom_read(addr, offset, buf),
+            None => Err(ServiceError::HardwareError),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2505,7 +2509,7 @@ mod tests {
     use crate::IntelSouthbridgeDriver;
     use crate::southbridge::pirq::{PciPin, PinRoute, Pirq, PirqRouting, SlotPins};
 
-    pub(super) const ROUTING: PirqRouting<'static> = PirqRouting {
+    pub(super) const ROUTING: PirqRouting = PirqRouting {
         slot_pins: &[SlotPins {
             slot: 0x1a,
             functions: [Some(PciPin::A), None, None, None, None, None, None, None],
@@ -2662,23 +2666,6 @@ mod tests {
     }
 
     #[test]
-    fn ich9_gpio_rejects_out_of_range_pins_before_io() {
-        static CONFIG: IntelIch9Config = IntelIch9Config {
-            pirq: Some(ROUTING),
-            ..IntelIch9Config::new()
-        };
-        let driver = IntelIch9::new_from_config(&CONFIG).unwrap();
-        assert!(matches!(
-            driver.gpio_get(256),
-            Err(ServiceError::InvalidParam)
-        ));
-        assert!(matches!(
-            driver.gpio_set(76, false),
-            Err(ServiceError::InvalidParam)
-        ));
-    }
-
-    #[test]
     fn ich9_function_disable_includes_sixth_uhci() {
         static CONFIG: IntelIch9Config = IntelIch9Config {
             pirq: Some(ROUTING),
@@ -2701,7 +2688,10 @@ mod acpi_impl {
 
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
-    use fstart_acpi::platform::{IoApicConfig, IsoConfig, X86Config, X86PlatformProvider};
+    use fstart_acpi::fadt::{Flags, PmProfile};
+    use fstart_acpi::platform::{
+        HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
+    };
 
     use fstart_acpi_macros::acpi_dsl;
 
@@ -2711,6 +2701,7 @@ mod acpi_impl {
     const LAPIC_BASE: u64 = 0xFEE0_0000;
     const IOAPIC_BASE: u64 = 0xFEC0_0000;
     const HPET_BASE: u64 = 0xFED0_0000;
+    const HPET_ID: u32 = 0x8086_A201;
     const SCI_IRQ: u8 = 9;
     const PMBASE: u16 = 0x0500;
     /// APM command port firmware and OSPM use to switch ACPI mode.
@@ -2734,7 +2725,7 @@ mod acpi_impl {
         adr: u32,
         port: u8,
         hotplug: bool,
-        routing: &crate::southbridge::pirq::PirqRouting<'_>,
+        routing: &crate::southbridge::pirq::PirqRouting,
     ) -> Vec<u8> {
         use crate::southbridge::pirq::PciPin;
         let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", #{dword adr}); }.into();
@@ -2796,11 +2787,16 @@ mod acpi_impl {
     impl X86PlatformProvider for IntelIch9 {
         fn x86_platform_config(&self, online_cpus: u32) -> X86Config {
             X86Config {
-                num_cpus: online_cpus,
+                apic_ids: (0..online_cpus).collect(),
                 lapic_base: LAPIC_BASE,
-                ioapics: &IOAPICS,
-                isos: &ISOS,
-                hpet_base: Some(HPET_BASE),
+                lapic_nmi_lint: None,
+                ioapics: IOAPICS.to_vec(),
+                isos: ISOS.to_vec(),
+                hpet: Some(HpetConfig {
+                    base: HPET_BASE,
+                    timer_block_id: HPET_ID,
+                    min_tick: 0,
+                }),
                 legacy_devices: true,
                 sci_irq: SCI_IRQ,
                 pmbase: PMBASE,
@@ -2813,13 +2809,24 @@ mod acpi_impl {
                     acpi_enable: APM_CNT_ACPI_ENABLE,
                     acpi_disable: APM_CNT_ACPI_DISABLE,
                 }),
-                // Coreboot i82801ix/fadt.c.
-                fadt: fstart_acpi::platform::X86FadtPolicy {
-                    mobile: self.config.laptop,
-                    pm2_cnt_offset: Some(0x50),
+                // coreboot i82801ix/fadt.c: PM2_CNT, C3 latency 0x39, a
+                // 3-bit throttling duty field, docking, no C2 on MP.
+                fadt: X86Fadt {
+                    pm_profile: if self.config.laptop {
+                        PmProfile::Mobile
+                    } else {
+                        PmProfile::Desktop
+                    },
+                    flags: Flags::Wbinvd as u32
+                        | Flags::ProcC1 as u32
+                        | Flags::SlpButton as u32
+                        | Flags::RtcS4 as u32
+                        | Flags::DckCap as u32
+                        | Flags::UsePlatformClock as u32,
                     p_lvl3_lat: 0x39,
                     duty_width: 3,
-                    docking: true,
+                    pm2_cnt_offset: Some(0x50),
+                    ..X86Fadt::default()
                 },
             }
         }
@@ -2872,21 +2879,27 @@ mod acpi_impl {
                     r.d30ir.get(),
                     r.d31ir.get(),
                 ];
-                Some(core::array::from_fn::<_, 40, _>(|index| {
-                    let pin = PciPin::ALL[index % 4];
-                    PinRoute {
-                        slot: slots[index / 4],
-                        pin,
-                        line: Pirq::from_index(((ir[index / 4] >> (4 * pin.index())) & 7) as u8)
+                // The tables are built once per cold boot; the routes stay
+                // with them like the board's static routing would.
+                Some(&*alloc::boxed::Box::leak(alloc::boxed::Box::new(
+                    core::array::from_fn::<_, 40, _>(|index| {
+                        let pin = PciPin::ALL[index % 4];
+                        PinRoute {
+                            slot: slots[index / 4],
+                            pin,
+                            line: Pirq::from_index(
+                                ((ir[index / 4] >> (4 * pin.index())) & 7) as u8,
+                            )
                             .expect("three-bit PIRQ selector"),
-                    }
-                }))
+                        }
+                    }),
+                )))
             } else {
                 None
             };
             let hardware_routing = crate::southbridge::pirq::PirqRouting {
                 slot_pins: &[],
-                pin_routes: hardware_routes.as_ref().map_or(&[], |r| &r[..]),
+                pin_routes: hardware_routes.map_or(&[], |r| &r[..]),
                 bridge_routes: &[],
             };
             let routing = config.pirq.as_ref().unwrap_or(&hardware_routing);

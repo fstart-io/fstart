@@ -207,8 +207,14 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             let postcar = self.geometry.region(RegionKind::BootstrapPostcar)?;
             let mainstage = self.geometry.region(RegionKind::BootstrapMainstage)?;
             self.northbridge.set_bootstrap_windows(
-                (postcar.base, postcar.end().ok_or(ServiceError::InvalidParam)?),
-                (mainstage.base, mainstage.end().ok_or(ServiceError::InvalidParam)?),
+                (
+                    postcar.base,
+                    postcar.end().ok_or(ServiceError::InvalidParam)?,
+                ),
+                (
+                    mainstage.base,
+                    mainstage.end().ok_or(ServiceError::InvalidParam)?,
+                ),
             )
         })();
         self.check("bootstrap windows", windows);
