@@ -6,7 +6,7 @@
 
 use crate::MmioBar;
 use crate::southbridge::lpc::{self, BIOS_CONTROL, ROOT_COMPLEX_BASE};
-use fstart_core::services::ServiceError;
+use fstart_core::services::{FlashRegion, ServiceError};
 use fstart_pci::ecam::EcamDevice;
 use rflasher_core::spi::SpiCommand;
 use rflasher_internal::chipset::IchChipset;
@@ -219,13 +219,6 @@ impl CacheSpi {
         })
     }
 
-    pub fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
-        let address = self.extent.address(offset, bytes.len())?;
-        self.controller
-            .controller_read(address, bytes, self.extent.chip_size as usize)
-            .map_err(|_| ServiceError::HardwareError)
-    }
-
     fn with_write(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
@@ -253,8 +246,17 @@ impl CacheSpi {
         }
         result
     }
+}
 
-    pub fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
+impl FlashRegion for CacheSpi {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
+        let address = self.extent.address(offset, bytes.len())?;
+        self.controller
+            .controller_read(address, bytes, self.extent.chip_size as usize)
+            .map_err(|_| ServiceError::HardwareError)
+    }
+
+    fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
         let address = self.extent.address(offset, bytes.len())?;
         self.with_write(|this| {
             let mut done = 0;
@@ -274,7 +276,7 @@ impl CacheSpi {
 
     /// Erase complete 64-KiB units only. The controller may split them into
     /// the verified chip's supported 4-KiB sectors; neither can cross the extent.
-    pub fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
+    fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
         let address = self.extent.address(offset, length as usize)?;
         if address % 0x10000 != 0 || length % 0x10000 != 0 {
             return Err(ServiceError::InvalidParam);

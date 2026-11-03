@@ -13,6 +13,7 @@ pub mod console;
 pub mod device;
 pub mod ffs_context;
 pub mod firmware;
+pub mod flash;
 pub mod framebuffer;
 pub mod i2c;
 pub mod measure;
@@ -31,6 +32,7 @@ pub use boot_media::{
 pub use console::{Console, ConsoleDevice, UartPort};
 pub use device::{BusDevice, DeviceError};
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
+pub use flash::FlashRegion;
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use i2c::I2c;
 pub use measure::{Measure, Measurement, Unmeasured};
