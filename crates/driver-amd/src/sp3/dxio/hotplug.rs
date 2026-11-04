@@ -60,13 +60,17 @@ pub enum Expander {
     Pca9506 = 2,
 }
 
+/// The expander address bits the SMU's tables hold.
+const ADDRESS_BITS: u8 = 0x1f;
+
 /// The slot's presence/attention pins on an I²C GPIO expander.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HotplugFunction {
     /// Bit within the byte (I/O block of 8 pins).
     pub bit: u8,
     pub byte: u8,
-    /// 7-bit address low bits (5 bits; the expander base is fixed).
+    /// 7-bit address. The SMU keeps its low 5 bits and fixes the rest
+    /// for the expander type.
     pub address: u8,
     pub expander: Expander,
     /// Downstream port of the I²C switch.
@@ -79,6 +83,7 @@ pub struct HotplugFunction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HotplugReset {
     pub byte: u8,
+    /// 7-bit address, as [`HotplugFunction::address`].
     pub address: u8,
     pub expander: Expander,
     pub bus: u8,
@@ -98,10 +103,80 @@ pub struct Hotplug {
 pub struct HotplugI2c {
     /// SMU slot number; the table index is `slot − HotplugPolicy::slot_base`.
     pub slot: u8,
-    /// Map dword format bits 2:0 (SMU slot-signal format, board data).
+    /// Map dword format bits 2:0 (SMU slot-signal format, [`format`]).
     pub format: u8,
     pub function: HotplugFunction,
     pub reset: Option<HotplugReset>,
+}
+
+/// SMU slot-signal formats (map dword bits 2:0; Oxide `zen_hotplug_fw_type`,
+/// the same on Milan, Genoa and Turin).
+pub mod format {
+    pub const PRESENCE_DETECT: u8 = 0;
+    pub const EXPRESS_MODULE_A: u8 = 1;
+    pub const ENTERPRISE_SSD: u8 = 2;
+    pub const EXPRESS_MODULE_B: u8 = 3;
+}
+
+/// The expander pins of an ExpressModule A slot, as bits of a byte
+/// ([`HotplugFunction::mask`] masks the ones the slot does not wire).
+pub mod express_module_a {
+    pub const PRSNT: u8 = 1 << 0;
+    pub const PWRFLT: u8 = 1 << 1;
+    pub const ATTNSW: u8 = 1 << 2;
+    pub const EMILS: u8 = 1 << 3;
+    pub const PWREN: u8 = 1 << 4;
+    pub const ATTNLED: u8 = 1 << 5;
+    pub const PWRLED: u8 = 1 << 6;
+    pub const EMIL: u8 = 1 << 7;
+}
+
+/// What a slot's root port advertises in its Slot Capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SlotFeatures {
+    pub attention_button: bool,
+    pub power_controller: bool,
+    pub attention_indicator: bool,
+    pub power_indicator: bool,
+    pub electromechanical_lock: bool,
+    /// No command completed support (Enterprise SSD slots).
+    pub no_command_completed: bool,
+}
+
+impl HotplugI2c {
+    /// The slot features the expander wiring provides: an ExpressModule A
+    /// pin that is not masked is wired (Oxide `oxio_pcie_cap_to_mask`).
+    /// Enterprise SSD slots advertise none but have no command completion.
+    pub fn features(&self) -> SlotFeatures {
+        use express_module_a::*;
+        let wired = |pin: u8| self.function.mask & pin == 0;
+        match self.format {
+            format::EXPRESS_MODULE_A => SlotFeatures {
+                attention_button: wired(ATTNSW),
+                power_controller: wired(PWREN),
+                attention_indicator: wired(ATTNLED),
+                power_indicator: wired(PWRLED),
+                electromechanical_lock: wired(EMIL) || wired(EMILS),
+                no_command_completed: false,
+            },
+            format::ENTERPRISE_SSD => SlotFeatures {
+                no_command_completed: true,
+                ..SlotFeatures::NONE
+            },
+            _ => SlotFeatures::NONE,
+        }
+    }
+}
+
+impl SlotFeatures {
+    pub const NONE: Self = Self {
+        attention_button: false,
+        power_controller: false,
+        attention_indicator: false,
+        power_indicator: false,
+        electromechanical_lock: false,
+        no_command_completed: false,
+    };
 }
 
 impl Hotplug {
@@ -241,7 +316,7 @@ fn function_dword(f: &HotplugFunction) -> LocalRegisterCopy<u32, FUNCTION::Regis
     r.modify(
         FUNCTION::I2C_BIT.val(f.bit as u32)
             + FUNCTION::I2C_BYTE.val(f.byte as u32)
-            + FUNCTION::I2C_ADDR.val(f.address as u32)
+            + FUNCTION::I2C_ADDR.val(u32::from(f.address & ADDRESS_BITS))
             + FUNCTION::I2C_TYPE.val(f.expander as u32)
             + FUNCTION::I2C_BUS.val(f.bus as u32)
             + FUNCTION::MASK.val(f.mask as u32),
@@ -254,7 +329,7 @@ fn reset_dword(r: &Option<HotplugReset>) -> u32 {
         let mut d = LocalRegisterCopy::<u32, RESET::Register>::new(0);
         d.modify(
             RESET::I2C_BYTE.val(r.byte as u32)
-                + RESET::I2C_ADDR.val(r.address as u32)
+                + RESET::I2C_ADDR.val(u32::from(r.address & ADDRESS_BITS))
                 + RESET::I2C_TYPE.val(r.expander as u32)
                 + RESET::I2C_BUS.val(r.bus as u32)
                 + RESET::MASK.val(r.mask as u32),
@@ -478,14 +553,14 @@ mod tests {
                 function: HotplugFunction {
                     bit: 2,
                     byte: 1,
-                    address: 3,
+                    address: 0x23,
                     expander: Expander::Pca9535,
                     bus: 4,
                     mask: 0xF0,
                 },
                 reset: Some(HotplugReset {
                     byte: 1,
-                    address: 3,
+                    address: 0x23,
                     expander: Expander::Pca9535,
                     bus: 4,
                     mask: 0x0F,
@@ -623,5 +698,52 @@ mod tests {
             ]
         );
         assert_eq!(d1.sent(), [(0x45, 4)]);
+    }
+
+    #[test]
+    fn express_module_slot_matches_the_vendor_function_dword() {
+        // RXM100CB ServerHotplugDxe, slot 4: PCA9535 at 0x23, byte 0, bit
+        // 0, switch port 0, nothing masked: function 0x08C0.
+        let slot = HotplugI2c {
+            slot: 4,
+            format: format::EXPRESS_MODULE_A,
+            function: HotplugFunction {
+                bit: 0,
+                byte: 0,
+                address: 0x23,
+                expander: Expander::Pca9535,
+                bus: 0,
+                mask: 0,
+            },
+            reset: None,
+        };
+        let engines = [Engine::pcie(
+            0,
+            Lanes::sp3(Group::P2, 0, 16).reversed(),
+            PcieEngine::new().with_hotplug(Hotplug {
+                kind: HotplugKind::ExpressModule,
+                i2c: Some(slot),
+            }),
+        )];
+        let t = HotplugTableV11::build(&engines, &[port(0)], 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.function[4].get(), 0x08C0);
+        assert_eq!(t.reset[4].get(), 0);
+        let map = LocalRegisterCopy::<u32, MAP::Register>::new(t.map[4].get());
+        assert_eq!(map.read(MAP::FORMAT), 1);
+        assert!(map.is_set(MAP::ACTIVE) && !map.is_set(MAP::RST_VALID));
+        let f = slot.features();
+        assert!(f.power_controller && f.attention_button && f.electromechanical_lock);
+        assert!(!f.no_command_completed);
+        let masked = HotplugI2c {
+            function: HotplugFunction {
+                mask: express_module_a::PWREN | express_module_a::ATTNSW,
+                ..slot.function
+            },
+            ..slot
+        };
+        assert!(!masked.features().power_controller && !masked.features().attention_button);
+        assert!(masked.features().power_indicator);
     }
 }

@@ -130,10 +130,51 @@ register_bitfields![u32,
     ],
     /// Root port config `0x6C`: slot capabilities.
     pub CFG_SLOT_CAP [
+        ATTENTION_BUTTON OFFSET(0) NUMBITS(1) [],
+        POWER_CONTROLLER OFFSET(1) NUMBITS(1) [],
+        MRL_SENSOR OFFSET(2) NUMBITS(1) [],
+        ATTENTION_INDICATOR OFFSET(3) NUMBITS(1) [],
+        POWER_INDICATOR OFFSET(4) NUMBITS(1) [],
         HOTPLUG_SURPRISE OFFSET(5) NUMBITS(1) [],
         HOTPLUG_CAPABLE OFFSET(6) NUMBITS(1) [],
+        ELECTROMECHANICAL_LOCK OFFSET(17) NUMBITS(1) [],
         NO_COMMAND_COMPLETED OFFSET(18) NUMBITS(1) [],
         PHYSICAL_SLOT OFFSET(19) NUMBITS(13) []
+    ],
+    /// Root port config `0x70`: slot control (15:0) and slot status
+    /// (31:16, write 1 to clear).
+    pub CFG_SLOT_CTL [
+        ATTENTION_BUTTON_EN OFFSET(0) NUMBITS(1) [],
+        POWER_FAULT_EN OFFSET(1) NUMBITS(1) [],
+        PRESENCE_CHANGE_EN OFFSET(3) NUMBITS(1) [],
+        HOTPLUG_INTERRUPT_EN OFFSET(5) NUMBITS(1) [],
+        /// Slot power off when set.
+        POWER_OFF OFFSET(10) NUMBITS(1) [],
+        /// Status: the W1C change bits.
+        STATUS_CHANGES OFFSET(16) NUMBITS(5) [],
+        PRESENCE_DETECTED OFFSET(22) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_PCTL`.
+    pub PCTL [
+        POWER_FAULT_EN OFFSET(4) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL5`.
+    pub LC_CTL5 [
+        /// Hold the LTSSM in Detect (cleared for hotplug slots).
+        WAIT_DETECT OFFSET(28) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_HP_CTL`: the slot the SMU hotplug firmware drives.
+    pub HP_CTL [
+        SLOT OFFSET(0) NUMBITS(13) [],
+        ACTIVE OFFSET(31) NUMBITS(1) []
+    ],
+    /// `PCIECORE::PCIE_PRESENCE_DETECT_SELECT`.
+    pub CORE_PRES [
+        /// 0: in-band OR out-of-band presence.
+        MODE OFFSET(24) NUMBITS(1) [
+            Or = 0,
+            And = 1
+        ]
     ],
     /// Root port config `0x80`: device control 2.
     pub CFG_DEV_CTL2 [
@@ -160,6 +201,7 @@ register_bitfields![u32,
 /// Port register offsets (`PCIE_PORT_*`).
 pub mod port {
     pub const HW_DBG: u32 = 0x008;
+    pub const PCTL: u32 = 0x040;
     pub const TX_CTL: u32 = 0x080;
     pub const TX_ID: u32 = 0x084;
     pub const LC_CTL: u32 = 0x280;
@@ -169,7 +211,9 @@ pub mod port {
     pub const LC_CTL2: u32 = 0x2C4;
     pub const LC_CTL6: u32 = 0x2EC;
     pub const LC_CTL4: u32 = 0x2D8;
+    pub const LC_CTL5: u32 = 0x2DC;
     pub const STRAP_MISC: u32 = 0x304;
+    pub const HP_CTL: u32 = 0x36C;
     pub const LC_CTL8: u32 = 0x374;
     pub const LC_CTL11: u32 = 0x390;
 }
@@ -182,10 +226,13 @@ pub mod core_reg {
     pub const P_CTL: u32 = 0x100;
     pub const SDP_CTL: u32 = 0x18C;
     pub const STRAP_F0: u32 = 0x2C0;
+    /// `SWRST_CONTROL_6`: per-port HOLD_TRAINING (bit = port).
+    pub const SWRST_CTL6: u32 = 0x428;
     pub const RSMU_TIMER: u32 = 0x488;
     pub const RX_MARGIN_CTL_CAP: u32 = 0x4D4;
     pub const RX_MARGIN1: u32 = 0x4D8;
     pub const RX_MARGIN2: u32 = 0x4DC;
+    pub const PRES: u32 = 0x4E0;
 }
 
 /// Root-port config offsets reached through the SMN config aperture.
@@ -193,6 +240,7 @@ pub mod cfg {
     pub const BUSES: u32 = 0x18;
     pub const PCIE_CAP: u32 = 0x58;
     pub const SLOT_CAP: u32 = 0x6C;
+    pub const SLOT_CTL: u32 = 0x70;
     pub const DEV_CTL2: u32 = 0x80;
     pub const DPC_STATUS: u32 = 0x388;
 }
@@ -673,6 +721,80 @@ pub fn hotplug_port<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8
         .modify(LC_TRAIN_CTL::BIT13::SET);
 }
 
+/// A slot the SMU hotplug firmware drives over I2C, before hotplug starts
+/// (Oxide `milan_fabric_hotplug_port_init`, `..._init_pcie_hotplug_slot_caps`):
+/// the slot number for the SMU, no LTSSM hold in Detect, power faults,
+/// and the slot capabilities its expander wiring provides.
+pub fn hotplug_slot<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    port: u8,
+    slot: u16,
+    features: &super::hotplug::SlotFeatures,
+) {
+    c.port_reg::<HP_CTL::Register>(port, port::HP_CTL)
+        .modify(HP_CTL::SLOT.val(slot as u32) + HP_CTL::ACTIVE::SET);
+    c.port_reg::<LC_CTL5::Register>(port, port::LC_CTL5)
+        .modify(LC_CTL5::WAIT_DETECT::CLEAR);
+    c.port_reg::<PCTL::Register>(port, port::PCTL)
+        .modify(PCTL::POWER_FAULT_EN::SET);
+    let flag = |on: bool| on as u32;
+    c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+        .modify(
+            CFG_SLOT_CAP::HOTPLUG_SURPRISE::SET
+                + CFG_SLOT_CAP::HOTPLUG_CAPABLE::SET
+                + CFG_SLOT_CAP::MRL_SENSOR::CLEAR
+                + CFG_SLOT_CAP::ATTENTION_BUTTON.val(flag(features.attention_button))
+                + CFG_SLOT_CAP::POWER_CONTROLLER.val(flag(features.power_controller))
+                + CFG_SLOT_CAP::ATTENTION_INDICATOR.val(flag(features.attention_indicator))
+                + CFG_SLOT_CAP::POWER_INDICATOR.val(flag(features.power_indicator))
+                + CFG_SLOT_CAP::ELECTROMECHANICAL_LOCK.val(flag(features.electromechanical_lock))
+                + CFG_SLOT_CAP::NO_COMMAND_COMPLETED.val(flag(features.no_command_completed)),
+        );
+}
+
+/// Presence of a core's hotplug slots: in-band OR out-of-band (Oxide
+/// `milan_fabric_hotplug_core_init`).
+pub fn hotplug_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
+    c.core_reg::<CORE_PRES::Register>(core_reg::PRES)
+        .modify(CORE_PRES::MODE::Or);
+}
+
+/// Let a hotplug port train: DXIO holds hotplug ports in
+/// `SWRST_CONTROL_6` (Oxide `milan_fabric_hotplug_port_unblock_training`).
+pub fn release_training<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) {
+    let hold = c.core_reg::<()>(core_reg::SWRST_CTL6);
+    hold.set(hold.get() & !(1 << port));
+}
+
+/// After the SMU started hotplug: enable the slot's events and set its
+/// power from presence. Without a slot control write the SMU leaves the
+/// expander outputs at their reset state (Oxide
+/// `zen_hotplug_bridge_post_start`). Returns the slot control/status.
+pub fn hotplug_started<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) -> u32 {
+    let cap = c
+        .cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+        .extract();
+    let ctl = c.cfg_reg::<CFG_SLOT_CTL::Register>(port, cfg::SLOT_CTL);
+    let now = ctl.extract();
+    let mut next = now;
+    // Leave the status change bits alone (write 1 clears).
+    next.modify(CFG_SLOT_CTL::STATUS_CHANGES.val(0));
+    next.modify(
+        CFG_SLOT_CTL::POWER_FAULT_EN::SET
+            + CFG_SLOT_CTL::PRESENCE_CHANGE_EN::SET
+            + CFG_SLOT_CTL::HOTPLUG_INTERRUPT_EN::SET,
+    );
+    if cap.is_set(CFG_SLOT_CAP::ATTENTION_BUTTON) {
+        next.modify(CFG_SLOT_CTL::ATTENTION_BUTTON_EN::SET);
+    }
+    if cap.is_set(CFG_SLOT_CAP::POWER_CONTROLLER) {
+        let present = now.is_set(CFG_SLOT_CTL::PRESENCE_DETECTED);
+        next.modify(CFG_SLOT_CTL::POWER_OFF.val(!present as u32));
+    }
+    ctl.set(next.get());
+    ctl.get()
+}
+
 /// Wait for the SMU hotplug firmware to settle: 100 000 ticks of the core
 /// RSMU timer, at most 1000 reads (SmuV11Dxe `0x3FE8` bounds it the same
 /// way; Naples does not).
@@ -980,6 +1102,65 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
                 enable_sata(nbio);
             }
         });
+    }
+
+    /// The SMU hotplug table of the I2C-signaled hotplug slots, `None`
+    /// without any (slot numbers are the table indices).
+    pub fn hotplug_table(
+        &self,
+    ) -> Result<Option<super::hotplug::HotplugTableV11>, super::hotplug::HotplugError> {
+        super::hotplug::HotplugTableV11::build(self.board, &self.ports, 0)
+    }
+
+    /// Hotplug port setup before the SMU starts hotplug: the I2C slots'
+    /// slot setup and their cores' presence mode, then every hotplug port
+    /// released to train. Returns the number of hotplug ports.
+    pub fn hotplug_prepare(&self) -> usize {
+        let mut cores: Vec<(u8, u8, u8), 32> = Vec::new();
+        let mut count = 0;
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let Some(hotplug) = pcie.hotplug else {
+                continue;
+            };
+            let c = PcieCore::new(n, p.core);
+            if let Some(i2c) = hotplug.i2c {
+                hotplug_slot(&c, p.port, i2c.slot.into(), &i2c.features());
+                let key = (p.socket, p.nbio, p.core);
+                if !cores.contains(&key) {
+                    let _ = cores.push(key);
+                    hotplug_core(&c);
+                }
+            }
+            release_training(&c, p.port);
+            count += 1;
+        }
+        count
+    }
+
+    /// After the SMU started hotplug: show the I2C slots' bridges again
+    /// (the SMU may hide them) and put their power into a defined state.
+    pub fn hotplug_started(&self) {
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let Some(i2c) = pcie.hotplug.and_then(|h| h.i2c) else {
+                continue;
+            };
+            show_bridge(n, p.bridge as usize);
+            let slot = hotplug_started(&PcieCore::new(n, p.core), p.port);
+            fstart_log::info!(
+                "dxio: hotplug slot {} at {}.{} port {}: slot control/status {:#x}",
+                i2c.slot as u32,
+                p.socket,
+                p.nbio,
+                p.port,
+                slot
+            );
+        }
     }
 
     /// Clear the bus numbers early training left on the bridges of early
