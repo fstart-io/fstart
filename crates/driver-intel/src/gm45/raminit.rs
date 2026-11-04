@@ -7,15 +7,17 @@
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
 use crate::MmioBar;
-use crate::generic::spd::{DDR3, SPD_MEMORY_TYPE, ddr3};
+use crate::generic::spd::ddr3::read_spd;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::{ServiceError, SmBus};
+use fstart_driver_spd::ddr3::{self, DDR3, SPD_MEMORY_TYPE};
 use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
 mod map;
 mod post_map;
+mod spd;
 mod training;
 
 pub(crate) use training::TrainingRecord;
@@ -119,10 +121,9 @@ pub fn probe_ddr3<B: SmBus + ?Sized>(
         if slot & 1 != 0 {
             return Err(ServiceError::HardwareError);
         }
-        let spd = ddr3::read_spd(bus, addr)?.ok_or(ServiceError::HardwareError)?;
+        let spd = read_spd(bus, addr)?.ok_or(ServiceError::HardwareError)?;
         raw[slot / 2].copy_from_slice(&spd[..128]);
-        dimms[slot / 2] =
-            Some(ddr3::decode_dimm_gm45(&spd).map_err(|_| ServiceError::HardwareError)?);
+        dimms[slot / 2] = Some(spd::decode(&spd).map_err(|_| ServiceError::HardwareError)?);
     }
     if dimms.iter().all(Option::is_none) {
         return Err(ServiceError::HardwareError);
@@ -156,7 +157,7 @@ pub fn select_ddr3_timing(
     let mut page_size = 0;
     let mut populated = false;
     for dimm in channels.dimms.iter().flatten() {
-        ddr3::validate_gm45(dimm).map_err(|_| ServiceError::HardwareError)?;
+        spd::validate(dimm).map_err(|_| ServiceError::HardwareError)?;
         // Reject unsupported page-size combinations before indexing the GM45
         // tFAW table; only 1K/2K chip pages are defined in coreboot.
         if !matches!(dimm.page_size, 1024 | 2048) || dimm.tck_min_256ns == 0 {

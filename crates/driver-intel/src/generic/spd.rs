@@ -16,33 +16,11 @@ pub mod ddr3;
 /// SPD byte 2: memory type (shared across all DDR generations).
 pub const SPD_MEMORY_TYPE: u8 = 2;
 
-/// DDR3 memory type identifier.
-pub const DDR3: u8 = 0x0B;
-
 // ===================================================================
 // Shared types
 // ===================================================================
 
-/// DDR chip width classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChipWidth {
-    X4 = 0,
-    X8 = 1,
-    X16 = 2,
-    X32 = 3,
-}
-
-/// DDR chip capacity classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChipCapacity {
-    Cap256M = 0,
-    Cap512M = 1,
-    Cap1G = 2,
-    Cap2G = 3,
-    Cap4G = 4,
-    Cap8G = 5,
-    Cap16G = 6,
-}
+pub use fstart_driver_spd::{ChipCapacity, ChipWidth};
 
 /// FSB clock frequency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

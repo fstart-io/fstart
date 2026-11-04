@@ -47,7 +47,7 @@ pub(super) fn compute(
             base_mb = 0;
         }
         let ranks = if let Some(d) = dimm {
-            ddr3::validate_gm45(d).map_err(|_| bad)?;
+            super::spd::validate(d).map_err(|_| bad)?;
             // SPD page_size is the *chip* page; CxDRA needs the rank page.
             let chips_per_rank = match d.width {
                 crate::generic::spd::ChipWidth::X8 => 8,
