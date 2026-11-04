@@ -1,4 +1,4 @@
-//! mc146818 RTC/CMOS configuration shared by Intel southbridges.
+//! The PC/AT mc146818 RTC behind ports 0x70/0x71, on every x86 chipset.
 //!
 //! Ported from coreboot `drivers/pc80/rtc/mc146818rtc.c` (`cmos_init`).
 //!
@@ -7,6 +7,8 @@
 //! the OS hangs on the update-in-progress bit and reports that it cannot read
 //! the hardware clock. coreboot's answer, kept here, is to program the divider,
 //! the control register and the validity bit, and to put a known date back.
+
+#![cfg_attr(not(test), no_std)]
 
 use tock_registers::register_bitfields;
 

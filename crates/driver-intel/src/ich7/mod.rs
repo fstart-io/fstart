@@ -2053,7 +2053,7 @@ impl IntelIch7 {
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
         }
 
-        crate::southbridge::rtc::init_clock("intel-ich7", battery_dead);
+        fstart_driver_rtc::init_clock("intel-ich7", battery_dead);
     }
 
     // -----------------------------------------------------------------------

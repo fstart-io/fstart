@@ -29,6 +29,7 @@ members = [
   "crates/driver-lenovo",
   "crates/driver-ricoh",
   "crates/driver-uart",
+  "crates/driver-rtc",
   "crates/driver-vbios",
   "crates/driver-i2c",
   "crates/driver-redriver",
@@ -138,6 +139,7 @@ fstart-boot = { path = "crates/boot" }
 fstart-resume = { path = "crates/resume" }
 fstart-store = { path = "crates/store" }
 fstart-options = { path = "crates/options" }
+fstart-driver-rtc = { path = "crates/driver-rtc" }
 fstart-timestamp = { path = "crates/timestamp" }
 
 [profile.dev]
