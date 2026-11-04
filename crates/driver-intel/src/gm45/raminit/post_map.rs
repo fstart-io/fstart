@@ -2,6 +2,7 @@
 //! This does not attest DRAM integrity or initialize a display pipeline/VBT.
 
 use super::*;
+use crate::MmioBar;
 use crate::generic::spd::ChipWidth;
 use crate::gm45::Gm45GraphicsPolicy;
 
@@ -163,7 +164,7 @@ fn thermal(
     }
     for (offset, mask) in [(0x1290, 0xa4810007), (0x12b4, 0xa2810007)] {
         for ch in 0..2 {
-            mch.update32(channel_offset(ch, offset), !0xfff8, mask);
+            mch.clrsetbits32(channel_offset(ch, offset), !0xfff8, mask);
         }
     }
     // SAFETY: MCHBAR decode is enabled, and the fixed registers lie within 16 KiB.
@@ -187,7 +188,7 @@ fn thermal(
     regs.thermal2.set(regs.thermal2.get() | (1 << 31));
     regs.thermal7.set(regs.thermal7.get() | (1 << 31));
     for ch in 0..2 {
-        mch.update32(channel_offset(ch, 0x1274), 0, 1 << 31);
+        mch.clrsetbits32(channel_offset(ch, 0x1274), 0, 1 << 31);
     }
     if kind == 2 {
         // GM49
@@ -333,7 +334,7 @@ pub(super) fn program(
 ) -> Result<(), ServiceError> {
     for (ch, dimm) in dimms.dimms.iter().enumerate() {
         if let Some(dimm) = dimm {
-            mch.update32(
+            mch.clrsetbits32(
                 channel_offset(ch, 0x1234),
                 0xff << 24,
                 (if dimm.ranks == 1 { 0xb1 } else { 0x91 }) << 24,
