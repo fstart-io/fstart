@@ -492,7 +492,14 @@ pub mod option {
         check: impl FnOnce(&C) -> Result<(), &'static str>,
     ) {
         let first = report.settings.len();
+        let duplicates = report.duplicates.len();
         fstart_options::resolve_checked(knobs, source, config, report, check);
+        for meta in &report.duplicates[duplicates..] {
+            crate::error!(
+                "options: {} is a key of another knob, not resolved",
+                meta.key
+            );
+        }
         for setting in &report.settings[first..] {
             let key = setting.meta.key;
             match setting.provenance {
@@ -516,6 +523,31 @@ pub mod option {
                     setting.value
                 ),
             }
+        }
+        let mut names = [""; 3];
+        let mut n = 0;
+        source.names(&mut |name| {
+            if let Some(slot) = names.get_mut(n) {
+                *slot = name;
+            }
+            n += 1;
+        });
+        let count = report.settings.len() - first;
+        match n {
+            0 | 1 => crate::info!("options: {} knobs from {}", count, names[0]),
+            2 => crate::info!(
+                "options: {} knobs from {}, then {}",
+                count,
+                names[0],
+                names[1]
+            ),
+            _ => crate::info!(
+                "options: {} knobs from {}, then {}, then {}",
+                count,
+                names[0],
+                names[1],
+                names[2]
+            ),
         }
     }
 

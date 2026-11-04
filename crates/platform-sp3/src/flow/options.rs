@@ -32,14 +32,7 @@ pub(crate) fn resolve<C: Clone>(
     report: &mut Report,
     check: impl FnOnce(&C) -> Result<(), &'static str>,
 ) {
-    let source = source(nvram);
-    let first = report.settings.len();
-    fstart_log::option::resolve(knobs, &source, config, report, check);
-    fstart_log::info!(
-        "options: {} knobs from {}",
-        report.settings.len() - first,
-        source.name()
-    );
+    fstart_log::option::resolve(knobs, &source(nvram), config, report, check);
 }
 
 /// The settings store as the payload's variable storage, and the options'

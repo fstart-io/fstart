@@ -45,7 +45,7 @@ use fstart_driver_amd::sp3::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_options::{Kind, Knob, Meta};
+use fstart_options::{Knob, Meta};
 use heapless::Vec;
 
 /// The five x16 slots, in Setup order (`PCIE#1..5`).
@@ -201,26 +201,6 @@ impl Bifurcations for Options {
     }
 }
 
-const fn bool_knob(
-    key: &'static str,
-    label: &'static str,
-    help: &'static str,
-    get: fn(&Options) -> u32,
-    set: fn(&mut Options, u32),
-) -> Knob<Options> {
-    Knob::new(
-        Meta {
-            key,
-            form: "PCIe",
-            label,
-            help,
-            kind: Kind::Bool,
-        },
-        get,
-        set,
-    )
-}
-
 /// The Setup knobs behind the OEM patches, as user options.
 pub static KNOBS: [Knob<Options>; 9] = [
     Bifurcation::knob::<Options, { Slot::Pcie1.index() }>(
@@ -248,31 +228,43 @@ pub static KNOBS: [Knob<Options>; 9] = [
         "PCIE#5 (J13) bifurcation",
         false,
     ),
-    bool_knob(
-        "s8030_pcie_compliance",
-        "PCIe compliance mode",
-        "Sets the compliance bit of the PCIe engines, for link testing.",
+    Knob::new(
+        Meta::bool(
+            "s8030_pcie_compliance",
+            "PCIe",
+            "PCIe compliance mode",
+            "Sets the compliance bit of the PCIe engines, for link testing.",
+        ),
         |o| o.compliance.into(),
         |o, v| o.compliance = v != 0,
     ),
-    bool_knob(
-        "s8030_lan1",
-        "Onboard LAN1 (i210)",
-        "Trains the link of the first i210.",
+    Knob::new(
+        Meta::bool(
+            "s8030_lan1",
+            "PCIe",
+            "Onboard LAN1 (i210)",
+            "Trains the link of the first i210.",
+        ),
         |o| o.lan[0].into(),
         |o, v| o.lan[0] = v != 0,
     ),
-    bool_knob(
-        "s8030_lan2",
-        "Onboard LAN2 (i210)",
-        "Trains the link of the second i210.",
+    Knob::new(
+        Meta::bool(
+            "s8030_lan2",
+            "PCIe",
+            "Onboard LAN2 (i210)",
+            "Trains the link of the second i210.",
+        ),
         |o| o.lan[1].into(),
         |o, v| o.lan[1] = v != 0,
     ),
-    bool_knob(
-        "s8030_onboard_vga",
-        "Onboard VGA (AST2500)",
-        "Trains the link of the BMC's VGA.",
+    Knob::new(
+        Meta::bool(
+            "s8030_onboard_vga",
+            "PCIe",
+            "Onboard VGA (AST2500)",
+            "Trains the link of the BMC's VGA.",
+        ),
         |o| o.onboard_vga.into(),
         |o, v| o.onboard_vga = v != 0,
     ),
