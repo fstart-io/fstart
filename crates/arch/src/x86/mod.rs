@@ -187,6 +187,7 @@ pub fn tsc_frequency_hz() -> u64 {
     if let Some(freq) = cpuid_tsc_frequency_hz()
         .or_else(amd_tsc_frequency_hz)
         .or_else(platform_info_tsc_frequency_hz)
+        .or_else(silvermont_tsc_frequency_hz)
     {
         return freq;
     }
@@ -234,6 +235,21 @@ fn platform_info_tsc_frequency_hz() -> Option<u64> {
     // SAFETY: every model selected above implements MSR_PLATFORM_INFO.
     let ratio = (unsafe { x86::msr::rdmsr(MSR_PLATFORM_INFO) } >> 8) & 0xff;
     (ratio != 0).then(|| ratio * bclk_khz * 1000)
+}
+
+/// Silvermont (Bay Trail) has no CPUID leaf 0x15: the TSC runs at the bus
+/// clock times the maximum non-turbo ratio. Firmware only.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn silvermont_tsc_frequency_hz() -> Option<u64> {
+    if cfg!(not(target_os = "none")) || family_model() != (6, 0x37) {
+        return None;
+    }
+    let (_, ebx, ecx, edx) = cpuid(0);
+    if (ebx, edx, ecx) != (0x756e_6547, 0x4965_6e69, 0x6c65_746e) {
+        return None;
+    }
+    let mhz = cpu::intel::silvermont::tsc_freq_mhz();
+    (mhz != 0).then(|| u64::from(mhz) * 1_000_000)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
