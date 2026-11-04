@@ -205,17 +205,18 @@ impl IntelGm45 {
         Ok(())
     }
 
+    /// Coreboot gm45 `init_iommu()`'s ME test: HECI (0:3.0) answers. DEVEN
+    /// can enable 0:3.0 while no ME firmware runs, so DEVEN is not enough.
+    pub(super) fn me_active(&self) -> bool {
+        EcamDevice::new(0, 3, 0).read8(0x08) != 0xff
+    }
+
     pub(super) fn post_dram_iommu(&self, revision: u8) {
         // SAFETY: MCHBAR is enabled and checked at construction.
         let bars = unsafe { &*(self.config.mchbar as *const IommuBars) };
         bars.vc1.set(0xfed9_0001);
         bars.gfx.set(if revision == 6 { 0 } else { 0xfed9_1001 });
-        let me = EcamDevice::new(0, 3, 0);
-        bars.me.set(if me.read8(0x08) != 0xff {
-            0xfed9_2001
-        } else {
-            0
-        });
+        bars.me.set(if self.me_active() { 0xfed9_2001 } else { 0 });
         bars.vc0.set(0xfed9_3001);
         if revision == 7 {
             self.enable_b3_iommu_workaround();
