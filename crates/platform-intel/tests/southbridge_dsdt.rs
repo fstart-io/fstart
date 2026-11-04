@@ -80,3 +80,56 @@ fn ich8_dsdt_disassembles() {
     let aml = south.dsdt_aml(&CONFIG, &PCI_ROOT);
     assert_legacy_resources(&aml, &iasl_round_trip("ich8", &aml));
 }
+
+#[cfg(feature = "baytrail")]
+#[test]
+fn baytrail_dsdt_disassembles() {
+    use fstart_acpi::device::AcpiDevice;
+    use fstart_driver_intel::IntelNorthbridgeDriver;
+    use fstart_driver_intel::baytrail::{BaytrailNorth, BaytrailSouth, NorthConfig, SouthConfig};
+    use fstart_driver_intel::namespace::{SouthbridgeAcpi, pci_root, pci_root_resources};
+    static NORTH: NorthConfig = NorthConfig::new();
+    static SOUTH: SouthConfig = SouthConfig::new();
+    let north = BaytrailNorth::new_from_config(&NORTH).expect("north cluster config");
+    let south = BaytrailSouth::new_from_config(&SOUTH).expect("south cluster config");
+    // What the platform assembles: the north's devices, the root bridge's
+    // resources from the allocator's description, then the south cluster.
+    let mut aml = north.dsdt_aml(&NORTH);
+    let root = north.pci_root().expect("Bay Trail root bridge");
+    aml.extend(pci_root_resources::<BaytrailNorth>(&root).expect("root bridge resources"));
+    aml.extend(south.dsdt_aml(&SOUTH, &pci_root::<BaytrailNorth>()));
+    let dsl = iasl_round_trip("baytrail", &aml);
+    assert_legacy_resources(&aml, &dsl);
+    // PCI memory runs from TOLM (2 GiB) to where the B-unit stops forwarding.
+    let mmio: std::vec::Vec<_> = root
+        .forwarded()
+        .iter()
+        .filter(|window| window.kind == fstart_pci::PciWindowKind::Mmio)
+        .map(|window| (window.base, window.end()))
+        .collect();
+    assert!(
+        mmio.iter()
+            .any(|(base, end)| *base <= 0x8000_0000 && *end > 0x8000_0000 && *end <= 0xfe00_0000),
+        "forwarded MMIO {mmio:x?} must start at TOLM and stop at 0xfe000000"
+    );
+    // Neither the OS description nor the allocator may reach into the
+    // aperture the B-unit does not decode.
+    for window in root
+        .forwarded()
+        .iter()
+        .chain(root.allocatable())
+        .filter(|window| window.kind == fstart_pci::PciWindowKind::Mmio)
+    {
+        assert!(
+            window.end() <= 0xfe00_0000 || window.base >= 0xfec0_0000,
+            "window {:#x}..{:#x} reaches into the aperture the B-unit drops",
+            window.base,
+            window.end()
+        );
+    }
+    // Bay Trail SATA is 00:13.0, SMBus 00:1f.3, and the three GPIO
+    // communities enumerate.
+    assert!(dsl.contains("Name (_ADR, 0x00130000)"), "{dsl}");
+    assert!(dsl.contains("Name (_ADR, 0x001F0003)"), "{dsl}");
+    assert_eq!(dsl.matches("\"INT33FC\"").count(), 6, "{dsl}");
+}
