@@ -88,6 +88,8 @@ pub fn policy(generation: Generation) -> Policy {
         sgpio: None,
     };
     let mut dxio = DxioPolicy::new(generation);
+    // The hotplug expanders sit behind the PCA9545A at 0x70 on I2C0.
+    dxio.hotplug.i2c_switch_base = 0x70;
     // Own RXM100CB PCDs 0x1C2 / 0x16D / 0x16E default true. These
     // are PCIe capability controls, not board reset/power signals.
     dxio.pcie_features = Some(PcieFeatures {

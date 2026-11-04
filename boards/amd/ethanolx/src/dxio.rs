@@ -8,7 +8,9 @@
 //! the card's redriver setting and splits its x16 link.
 
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::hotplug::{Hotplug, HotplugKind};
+use fstart_driver_amd::sp3::dxio::hotplug::{
+    Expander, Hotplug, HotplugFunction, HotplugI2c, HotplugKind, format,
+};
 use fstart_driver_amd::sp3::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
     validate,
@@ -60,6 +62,30 @@ const GROUPS: [(Group, u16, u8, u16); 4] = [
     (Group::P2, 12, 1, 4),
     (Group::P3, 4, 3, 2),
 ];
+
+/// Slot 4 (socket 0 P2) is an ExpressModule hotplug slot: presence, power
+/// enable and fault, LEDs, attention button and interlock on the PCA9535
+/// at 0x23, byte 0, which the SMU drives through I2C0 (RXM100CB
+/// `ServerHotplugDxe` entry lanes 95–80, slot 4, function `0x08c0`; Oxide
+/// `oxio_ethanolx.c`). Without it the slot is never powered.
+pub const SLOT4: Hotplug = Hotplug {
+    kind: HotplugKind::ExpressModule,
+    i2c: Some(HotplugI2c {
+        slot: 4,
+        format: format::EXPRESS_MODULE_A,
+        function: HotplugFunction {
+            bit: 0,
+            byte: 0,
+            address: 0x23,
+            expander: Expander::Pca9535,
+            // Switch 0x70 port 0, as the vendor table has it.
+            bus: 0,
+            // Every ExpressModule pin is wired.
+            mask: 0,
+        },
+        reset: None,
+    }),
+};
 
 /// Whether `selector` is the mixed SATA/Ethernet card on `group`.
 const fn mixed(group: Group, selector: u8) -> bool {
@@ -169,18 +195,23 @@ fn group_ports(
             _ => (16, false, false),
         }
     };
+    // The plain slot 4 is powered by the SMU hotplug firmware.
+    let slot_hotplug = (ordinary && group == Group::P2).then_some(SLOT4);
     if let Some(bifurcation) = bifurcation {
         // The card's x16 link, in its lane order, split as the user chose.
         let lanes = Lanes::sp3(group, 0, 16);
         let lanes = if reverse { lanes.reversed() } else { lanes };
         let p = PcieEngine::new().turn_off_unused().devfn(device, 1);
         let p = if ordinary { p.slot(slot) } else { p };
-        let x16 = Engine::pcie(0, lanes, p);
-        return if bifurcation == Bifurcation::X16 {
-            core::iter::once(x16).collect()
-        } else {
-            x16.split(bifurcation.width()).collect()
+        let p = match slot_hotplug {
+            Some(h) => p.with_hotplug(h),
+            None => p,
         };
+        let x16 = Engine::pcie(0, lanes, p);
+        if bifurcation == Bifurcation::X16 {
+            return core::iter::once(x16).collect();
+        }
+        return x16.split(bifurcation.width()).collect();
     }
     (0u8..16)
         .step_by(usize::from(width))
@@ -192,6 +223,8 @@ fn group_ports(
             let p = if ordinary { p.slot(slot) } else { p };
             let p = if hotplug {
                 p.with_hotplug(Hotplug::new(HotplugKind::EnterpriseSsd))
+            } else if let Some(h) = slot_hotplug {
+                p.with_hotplug(h)
             } else {
                 p
             };
@@ -295,14 +328,23 @@ mod tests {
         );
         let bmc = place(Generation::Milan, &p.engines[4]).unwrap();
         assert_eq!((bmc.nbio, bmc.phy), (0, (129, 129)));
+        // Socket 1's four NVMe ports and slot 4.
         assert_eq!(
             p.engines
                 .iter()
                 .filter_map(Engine::pcie_config)
                 .filter(|p| p.hotplug.is_some())
                 .count(),
-            4
+            5
         );
+        let slot4: std::vec::Vec<_> = p
+            .engines
+            .iter()
+            .filter_map(Engine::pcie_config)
+            .filter(|p| p.hotplug == Some(SLOT4))
+            .collect();
+        assert_eq!(slot4.len(), 1);
+        assert_eq!(slot4[0].slot, Some(4));
         assert_eq!(p.redrivers, [RedriverMode::Off; 4]);
         assert_eq!(p.disabled_xgbe, 0);
     }
@@ -445,11 +487,11 @@ mod tests {
         .unwrap();
         validate(Generation::Milan, &p.engines).unwrap();
         assert_eq!(p.engines.len(), 6);
-        assert!(
-            p.engines
-                .iter()
-                .all(|e| e.pcie_config().is_none_or(|p| p.hotplug.is_none()))
-        );
+        // Only slot 4 keeps hotplug: socket 1's NVMe ports are fused off.
+        assert!(p.engines.iter().all(|e| {
+            e.pcie_config()
+                .is_none_or(|p| p.hotplug.is_none_or(|h| h == SLOT4))
+        }));
     }
 
     #[test]
@@ -531,5 +573,53 @@ mod tests {
         fstart_options::resolve_checked(&KNOBS, &All(4), &mut source_layout, &mut report, check);
         let four = Some(Bifurcation::X4x4x4x4);
         assert_eq!(source_layout.bifurcation, [None, None, four, four]);
+    }
+
+    #[test]
+    fn a_split_slot_4_keeps_one_smu_slot_and_follows_with_native_ports() {
+        let mut layout = Layout::new(
+            Detected {
+                board_id: 0x30,
+                straps: 0,
+            },
+            false,
+        )
+        .unwrap();
+        layout.bifurcation[2] = Some(Bifurcation::X4x4x4x4);
+        let p = plan(&layout).unwrap();
+        validate(Generation::Milan, &p.engines).unwrap();
+        let p2: std::vec::Vec<_> = p
+            .engines
+            .iter()
+            .filter(|e| {
+                e.socket == 0
+                    && matches!(
+                        e.lanes,
+                        Lanes::Sp3 {
+                            group: Group::P2,
+                            ..
+                        }
+                    )
+            })
+            .filter_map(Engine::pcie_config)
+            .map(|p| p.hotplug)
+            .collect();
+        let native = Some(Hotplug::new(HotplugKind::ExpressModule));
+        assert_eq!(p2, [Some(SLOT4), native, native, native]);
+        // P0 stays a plain slot.
+        assert!(
+            p.engines
+                .iter()
+                .filter(|e| e.socket == 0
+                    && matches!(
+                        e.lanes,
+                        Lanes::Sp3 {
+                            group: Group::P0,
+                            ..
+                        }
+                    ))
+                .filter_map(Engine::pcie_config)
+                .all(|p| p.hotplug.is_none())
+        );
     }
 }
