@@ -166,6 +166,29 @@ impl EcamDevice {
         unsafe { &*(self.addr(0, 1) as *const T) }
     }
 
+    /// One config register of this function as a `Copy` tock register, for
+    /// composite registers such as `fstart_core::indexed::Indexed` (an
+    /// index/data pair in config space).
+    ///
+    /// # Safety
+    ///
+    /// The caller owns the register as with the typed accessors; `reg` is
+    /// naturally aligned for `T`. Accesses are plain volatile MMIO, so not
+    /// for AMD config space, which requires the access paths of `access`.
+    #[inline]
+    pub unsafe fn register<T, R>(&self, reg: u16) -> fstart_core::mmio::MmioRegister<T, R>
+    where
+        T: tock_registers::UIntLike,
+        R: tock_registers::RegisterLongName,
+    {
+        let address = self
+            .register_address(reg, core::mem::size_of::<T>())
+            .expect("invalid or unmapped ECAM register");
+        // SAFETY: a mapped, aligned register of this function; the caller's
+        // contract covers ownership.
+        unsafe { fstart_core::mmio::MmioRegister::new(address) }
+    }
+
     /// Read a 32-bit PCI config register.
     #[inline]
     pub fn read32(&self, reg: u16) -> u32 {
