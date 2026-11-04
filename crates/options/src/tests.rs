@@ -225,6 +225,30 @@ fn a_failed_whole_set_check_restores_the_board_configuration() {
 }
 
 #[test]
+fn a_second_knob_with_a_known_key_is_not_resolved() {
+    let mut config = BOARD;
+    let mut report = Report::new();
+    let stored = source(&[("power_on_after_fail", Ok(0))]);
+    resolve(&KNOBS, &stored, &mut config, &mut report);
+    assert_eq!(config.power, 0);
+    // The same knobs again: every key is taken, nothing changes.
+    let mut again = BOARD;
+    resolve(&KNOBS, &stored, &mut again, &mut report);
+    assert_eq!(again, BOARD);
+    assert_eq!(report.settings.len(), 4);
+    assert_eq!(report.duplicates.len(), 4);
+    assert_eq!(report.duplicates[0].key, "power_on_after_fail");
+    let metas = KNOBS.iter().chain(&KNOBS).map(|k| &k.meta);
+    assert_eq!(duplicate_key(metas), Some("power_on_after_fail"));
+    assert_eq!(duplicate_key(KNOBS.iter().map(|k| &k.meta)), None);
+}
+
+#[test]
+fn bool_metas_are_bool_knobs() {
+    assert_eq!(Meta::bool("k", "f", "l", "h").kind, Kind::Bool);
+}
+
+#[test]
 fn kinds_check_their_values() {
     assert!(Kind::Bool.contains(1) && !Kind::Bool.contains(2));
     let number = Kind::Number {
@@ -369,7 +393,7 @@ fn crc_matches_coreboot() {
 
 mod cmos {
     use crate::cmos::{Cmos, Ram, Window, WriteError, collision, hash};
-    use crate::{Kind, Layered, Meta, Source, SourceError};
+    use crate::{Layered, Meta, Source, SourceError};
     use core::cell::RefCell;
 
     struct Bank(RefCell<[u8; 128]>);
@@ -460,6 +484,9 @@ mod cmos {
         let both = Layered(&cmos, Flash);
         assert_eq!(both.read("debug_level"), Ok(Some(7)));
         assert_eq!(both.read("smee"), Ok(Some(3)));
+        let mut names = super::Vec::new();
+        both.names(&mut |name| names.push(name));
+        assert_eq!(names, ["CMOS", "flash"]);
     }
 
     #[test]
@@ -487,13 +514,7 @@ mod cmos {
         );
         assert_ne!(hash("debug_level"), hash("power_on_after_fail"));
         const fn meta(key: &'static str) -> Meta {
-            Meta {
-                key,
-                form: "",
-                label: "",
-                help: "",
-                kind: Kind::Bool,
-            }
+            Meta::bool(key, "", "", "")
         }
         let a = meta("a");
         let b = meta("b");

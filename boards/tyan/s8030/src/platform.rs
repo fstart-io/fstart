@@ -105,3 +105,19 @@ pub fn dxio_engines(
 ) -> heapless::Vec<Engine<'static>, MAX_ENGINES> {
     dxio::engines(generation, options, detected)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_offered_knob_has_its_own_key() {
+        use board::Board as _;
+        let metas = fstart_log::option::KNOBS
+            .iter()
+            .map(|k| &k.meta)
+            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
+            .chain(dxio::KNOBS.iter().map(|k| &k.meta));
+        assert_eq!(fstart_options::duplicate_key(metas), None);
+    }
+}

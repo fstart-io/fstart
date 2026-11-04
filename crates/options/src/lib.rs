@@ -50,6 +50,24 @@ pub struct Meta {
     pub kind: Kind,
 }
 
+impl Meta {
+    /// An on/off knob.
+    pub const fn bool(
+        key: &'static str,
+        form: &'static str,
+        label: &'static str,
+        help: &'static str,
+    ) -> Self {
+        Self {
+            key,
+            form,
+            label,
+            help,
+            kind: Kind::Bool,
+        }
+    }
+}
+
 /// The values a knob takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -123,6 +141,19 @@ impl<C> Knob<C> {
     }
 }
 
+/// The first key two of `metas` share, for a board test over every knob
+/// set it offers ([`resolve`] skips the later knob at boot).
+pub fn duplicate_key<'a>(metas: impl IntoIterator<Item = &'a Meta>) -> Option<&'static str> {
+    let mut seen: Vec<&'static str> = Vec::new();
+    for meta in metas {
+        if seen.contains(&meta.key) {
+            return Some(meta.key);
+        }
+        seen.push(meta.key);
+    }
+    None
+}
+
 /// Why a source could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceError {
@@ -136,6 +167,11 @@ pub enum SourceError {
 pub trait Source {
     /// For the log.
     fn name(&self) -> &'static str;
+    /// The names of the backends read, in order: [`Self::name`], or each
+    /// layer's.
+    fn names(&self, each: &mut dyn FnMut(&'static str)) {
+        each(self.name())
+    }
     /// The stored value of `key`; `Ok(None)` when none is stored.
     fn read(&self, key: &str) -> Result<Option<u32>, SourceError>;
 }
@@ -155,6 +191,9 @@ impl Source for NoSource {
 impl<S: Source + ?Sized> Source for &S {
     fn name(&self) -> &'static str {
         (**self).name()
+    }
+    fn names(&self, each: &mut dyn FnMut(&'static str)) {
+        (**self).names(each)
     }
     fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
         (**self).read(key)
@@ -177,6 +216,10 @@ pub struct Layered<A, B>(pub A, pub B);
 impl<A: Source, B: Source> Source for Layered<A, B> {
     fn name(&self) -> &'static str {
         self.0.name()
+    }
+    fn names(&self, each: &mut dyn FnMut(&'static str)) {
+        self.0.names(each);
+        self.1.names(each);
     }
     fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
         match self.0.read(key)? {
@@ -226,12 +269,16 @@ pub struct Setting {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub settings: Vec<Setting>,
+    /// Knobs not resolved because an earlier knob has their key: two
+    /// fields would share one stored value.
+    pub duplicates: Vec<&'static Meta>,
 }
 
 impl Report {
     pub const fn new() -> Self {
         Self {
             settings: Vec::new(),
+            duplicates: Vec::new(),
         }
     }
 
@@ -245,7 +292,8 @@ impl Report {
 
 /// Apply the stored overrides of `knobs` to `config`, appending one
 /// [`Setting`] per knob to `report`. A failing source rejects only the
-/// knob it was read for.
+/// knob it was read for. A knob whose key `report` already has is left
+/// at the board's value and listed in [`Report::duplicates`].
 pub fn resolve<C>(
     knobs: &'static [Knob<C>],
     source: &dyn Source,
@@ -253,6 +301,10 @@ pub fn resolve<C>(
     report: &mut Report,
 ) {
     for knob in knobs {
+        if report.settings.iter().any(|s| s.meta.key == knob.meta.key) {
+            report.duplicates.push(&knob.meta);
+            continue;
+        }
         let default = (knob.get)(config);
         let availability = (knob.available)(config);
         let provenance = match source.read(knob.meta.key) {

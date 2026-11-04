@@ -272,6 +272,10 @@ UEFI payload, the flow hands CrabEFI:
 - the options as a CFR form (`fstart_options::cfr`), which CrabEFI's
   firmware settings menu (`F` in the boot menu) shows and saves.
 
+Keys are unique across a board's knob sets: the boot skips and logs a
+knob whose key an earlier one has, and each SP3 board's tests check its
+sets with `fstart_options::duplicate_key`.
+
 A changed option applies at the next boot. A new image has an empty store:
 reflashing resets the settings. Linux and halt payloads boot the board's
 configuration.
