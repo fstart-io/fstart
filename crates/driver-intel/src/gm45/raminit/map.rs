@@ -1,6 +1,7 @@
 //! Cold DDR3 final decode, following coreboot gm45/raminit.c program_memory_map().
 //! This is a fail-closed slice: mapping does not make DRAM usable by the boot flow.
 use super::*;
+use crate::MmioBar;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct FinalMap {
@@ -152,7 +153,7 @@ pub(super) fn program(mch: &Mchbar, hb: &super::super::Gm45HostBridgePciConfig, 
         for (pair, &bound) in map.bounds[ch].iter().enumerate() {
             mch.write32(channel_offset(ch, 0x1200 + pair * 4), bound);
         }
-        mch.update32(channel_offset(ch, 0x1208), 0xffff, map.pages[ch]);
+        mch.clrsetbits32(channel_offset(ch, 0x1208), 0xffff, map.pages[ch]);
     }
     hb.esmramc.set((hb.esmramc.get() & !7) | 3); // 2 MiB TSEG
     hb.tom.set(map.tom);

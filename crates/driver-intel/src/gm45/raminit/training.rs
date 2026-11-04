@@ -2,6 +2,7 @@
 //! The temporary sequential 128 MiB/rank map remains active throughout.
 
 use super::*;
+use crate::MmioBar;
 use zerocopy::byteorder::{LE, U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -94,11 +95,11 @@ pub(super) fn rank_addresses(
     Ok(bunches)
 }
 
-fn read_offset(ch: usize, lane: usize) -> usize {
+fn read_offset(ch: usize, lane: usize) -> u32 {
     assert!(lane < 8);
     io_channel_offset(ch, 0x14b0 + (7 - lane) * 4)
 }
-fn write_offset(ch: usize, group: usize) -> usize {
+fn write_offset(ch: usize, group: usize) -> u32 {
     assert!(group < 4);
     io_channel_offset(ch, 0x1470 + (3 - group) * 4)
 }
@@ -123,7 +124,7 @@ fn write_parts(steps: i32) -> Result<(u32, u32, u32), ServiceError> {
 }
 fn set_read(mch: &Mchbar, ch: usize, lane: usize, steps: i32) -> Result<(), ServiceError> {
     let (t, p) = read_parts(steps)?;
-    mch.update32(
+    mch.clrsetbits32(
         read_offset(ch, lane),
         (0xf << 20) | (7 << 16),
         (t << 20) | (p << 16),
@@ -145,7 +146,7 @@ fn set_write(mch: &Mchbar, ch: usize, group: usize, steps: i32) -> Result<(), Se
     } else {
         0
     };
-    mch.update32(
+    mch.clrsetbits32(
         write_offset(ch, group),
         (0xf << 28) | (7 << 24) | (3 << 18) | (3 << 16),
         (t << 28) | (p << 24) | (f << 18) | (d << 16),
@@ -272,7 +273,7 @@ fn train_read(mch: &Mchbar, ch: usize, addresses: &AddressBunch) -> Result<(), S
         }
     }
     for lane in 0..8 {
-        mch.update32(read_offset(ch, lane), 0, 3 << 25);
+        mch.clrsetbits32(read_offset(ch, lane), 0, 3 << 25);
         let mean = find_eye(
             0,
             8,
@@ -463,7 +464,7 @@ impl TrainingRecord {
     fn restore(&self, mch: &Mchbar) {
         for ch in 0..2 {
             for lane in 0..8 {
-                mch.update32(
+                mch.clrsetbits32(
                     read_offset(ch, lane),
                     READ_FIELDS,
                     self.read[ch * 8 + lane].get(),
@@ -473,7 +474,7 @@ impl TrainingRecord {
         reset_pointers(mch);
         for ch in 0..2 {
             for group in 0..4 {
-                mch.update32(
+                mch.clrsetbits32(
                     write_offset(ch, group),
                     WRITE_FIELDS,
                     self.write[ch * 4 + group].get(),

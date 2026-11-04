@@ -6,8 +6,9 @@
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
+use crate::MmioBar;
 use crate::generic::spd::{DDR3, SPD_MEMORY_TYPE, ddr3};
-use fstart_core::mmio::{self, MmioReadWrite};
+use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -343,8 +344,20 @@ register_structs! {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Mchbar {
     base: usize,
+}
+
+/// Variable channel/rank/lane and RCOMP-table offsets go through the shared
+/// accessors, bounded to the 16 KiB MCHBAR window.
+impl crate::MmioBar for Mchbar {
+    fn base(self) -> usize {
+        self.base
+    }
+    fn mapped_size(self) -> Option<u32> {
+        Some(0x4000)
+    }
 }
 
 impl Mchbar {
@@ -373,27 +386,6 @@ impl Mchbar {
         // MCHBAR aperture; the overlay names the control and value bytes.
         unsafe { &*((self.base + offset) as *const RcompSeedRegs) }
     }
-    // Only variable channel/rank/lane or RCOMP table offsets pass through
-    // these helpers. All callers bound their indices before accessing MMIO.
-    fn read32(&self, offset: usize) -> u32 {
-        assert!(offset < 0x4000 && offset.is_multiple_of(4));
-        // SAFETY: bounded, aligned offset in the enabled MCHBAR aperture.
-        unsafe { mmio::read32((self.base + offset) as *const u32) }
-    }
-    fn write32(&self, offset: usize, value: u32) {
-        assert!(offset < 0x4000 && offset.is_multiple_of(4));
-        // SAFETY: bounded, aligned offset in the enabled MCHBAR aperture.
-        unsafe { mmio::write32((self.base + offset) as *mut u32, value) }
-    }
-    fn update32(&self, offset: usize, clear: u32, set: u32) {
-        self.write32(offset, (self.read32(offset) & !clear) | set);
-    }
-    fn update8(&self, offset: usize, clear: u8, set: u8) {
-        assert!(offset < 0x4000);
-        // SAFETY: bounded offset in the enabled MCHBAR aperture.
-        let addr = (self.base + offset) as *mut u8;
-        unsafe { mmio::write8(addr, (mmio::read8(addr) & !clear) | set) }
-    }
 }
 
 register_structs! {
@@ -419,10 +411,10 @@ register_structs! {
     }
 }
 
-fn channel_offset(channel: usize, reg: usize) -> usize {
+fn channel_offset(channel: usize, reg: usize) -> u32 {
     assert!(channel < 2);
     assert!((0x1200..0x1300).contains(&reg) && reg.is_multiple_of(4));
-    reg + channel * 0x100
+    (reg + channel * 0x100) as u32
 }
 
 fn clock_setting(clock: MemClock) -> u32 {
@@ -545,17 +537,17 @@ fn configure_dram_control(mch: &Mchbar, dimms: &Ddr3Channels, clock: MemClock) {
     for ch in 0..2 {
         let ranks = dimms.dimms[ch].map_or(0, |d| d.ranks);
         let mask = (1u32 << ranks) - 1;
-        mch.update32(
+        mch.clrsetbits32(
             channel_offset(ch, 0x1230),
             (0xf << 24) | (7 << 8),
             (mask << 24) | (2 << 8),
         );
-        mch.update32(
+        mch.clrsetbits32(
             channel_offset(ch, 0x1234),
             0xf << 16,
             ((0xf ^ mask) << 16) | (3 << 11),
         );
-        mch.update32(
+        mch.clrsetbits32(
             channel_offset(ch, 0x1238),
             (0xf << 24) | 1,
             ((0xf ^ mask) << 24) | (1 << 12) | u32::from(clock == MemClock::Mhz533),
@@ -677,8 +669,8 @@ fn rcomp_run(mch: &Mchbar) -> Result<(), ServiceError> {
 
 // Coreboot writes pull-down first at the group's lower address, then
 // pull-up at +0x18. `indices` stores pull-up at 0 and pull-down at 1.
-const fn rcomp_table_offset(channel: usize, group: usize, pull: usize) -> usize {
-    0x680 + channel * 0x1c0 + group * 0x40 + (1 - pull) * 0x18
+const fn rcomp_table_offset(channel: usize, group: usize, pull: usize) -> u32 {
+    (0x680 + channel * 0x1c0 + group * 0x40 + (1 - pull) * 0x18) as u32
 }
 
 fn initialize_rcomp(mch: &Mchbar, revision: u8) -> Result<(), ServiceError> {
@@ -743,7 +735,7 @@ fn initialize_rcomp(mch: &Mchbar, revision: u8) -> Result<(), ServiceError> {
                 // Group stride 0x40; channel B starts at 0x840.
                 let base = rcomp_table_offset(channel, group, pull);
                 for (i, word) in words.iter().enumerate() {
-                    mch.write32(base + i * 4, *word);
+                    mch.write32(base + i as u32 * 4, *word);
                 }
             }
         }
@@ -801,7 +793,7 @@ fn program_timings(mch: &Mchbar, t: &Ddr3Timing) {
     ];
     for ch in 0..2 {
         let offset = |reg| channel_offset(ch, reg);
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x1210),
             (0x1f << 26) | (0x1f << 20) | (7 << 15) | (0xf << 10) | (7 << 5) | 7,
             ((t.twl + 4 + t.twr) << 26)
@@ -811,12 +803,12 @@ fn program_timings(mch: &Mchbar, t: &Ddr3Timing) {
                 | (3 << 5)
                 | 1,
         );
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x1214),
             (3 << 28) | (0x1f << 21) | (7 << 10) | (7 << 5) | 7,
             (1 << 28) | (t.tras << 21) | ((t.trrd - 2) << 10) | ((t.trcd - 2) << 5) | (t.trp - 2),
         );
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x1218),
             (0x1f << 17) | (7 << 12) | (0xf << 6) | 0x1f,
             (t.tfaw << 17)
@@ -824,7 +816,7 @@ fn program_timings(mch: &Mchbar, t: &Ddr3Timing) {
                 | ((if is_1067 { 0xc } else { 9 }) << 6)
                 | 0x13,
         );
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x121c),
             (3 << 28) | (3 << 26) | (7 << 23) | (0xff << 13) | 7,
             (3 << 28) | ((cas - 3) << 23) | (t.trfc << 13) | (t.twl - 2),
@@ -833,7 +825,7 @@ fn program_timings(mch: &Mchbar, t: &Ddr3Timing) {
             | (DRT4[1][clock_index] << 17)
             | (DRT4[2][clock_index] << 10)
             | DRT4[3][clock_index];
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x1220),
             (0x1f << 27) | (0x3ff << 17) | (0x3f << 10) | 0x1ff,
             timing4,
@@ -847,12 +839,12 @@ fn program_timings(mch: &Mchbar, t: &Ddr3Timing) {
             | (0x190 << 12)
             | ((cas - 2) << 4)
             | (1 << 2);
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x1224),
             (0xf << 28) | (0xf << 22) | (0x1ff << 12) | (0xf << 4) | 0xf,
             timing5,
         );
-        mch.update32(
+        mch.clrsetbits32(
             offset(0x1228),
             (0xffff << 16) | (1 << 2),
             (0x066a << 16) | (1 << 2),
@@ -863,13 +855,13 @@ fn program_timings(mch: &Mchbar, t: &Ddr3Timing) {
 fn program_banks(mch: &Mchbar, dimms: &Ddr3Channels) {
     for ch in 0..2 {
         let ranks = dimms.dimms[ch].map_or(0, |d| d.ranks);
-        mch.update32(
+        mch.clrsetbits32(
             channel_offset(ch, 0x1214),
             1 << 15,
             u32::from(ranks > 0) << 15,
         );
         let banks = (0..usize::from(ranks)).fold(0u32, |bits, rank| bits | (1 << (16 + 3 * rank)));
-        mch.update32(channel_offset(ch, 0x1208), 0x07ff_0000, banks);
+        mch.clrsetbits32(channel_offset(ch, 0x1208), 0x07ff_0000, banks);
     }
 }
 
@@ -893,12 +885,12 @@ fn program_odt(mch: &Mchbar, t: &Ddr3Timing) {
             MemClock::Mhz533 => 5,
         };
     for ch in 0..2 {
-        mch.update32(
+        mch.clrsetbits32(
             channel_offset(ch, 0x124c),
             (3 << 29) | (3 << 20) | (7 << 16) | (0xf << 12) | (0xf << 8) | (0xf << 4) | 0xf,
             high,
         );
-        mch.update32(
+        mch.clrsetbits32(
             channel_offset(ch, 0x1248),
             (7 << 28) | (3 << 22) | (7 << 12) | (7 << 4) | 7,
             low,
@@ -909,9 +901,9 @@ fn program_odt(mch: &Mchbar, t: &Ddr3Timing) {
 fn misc_settings(mch: &Mchbar, timing: &Ddr3Timing) {
     let regs = mch.regs();
     for ch in 0..2 {
-        mch.update32(channel_offset(ch, 0x1260), (1 << 24) | 0x1f, timing.trd);
-        mch.update8(0x1268 + ch * 0x100, 0xf, timing.twl as u8);
-        mch.update8(0x12a0 + ch * 0x100, 0xf, 0xa);
+        mch.clrsetbits32(channel_offset(ch, 0x1260), (1 << 24) | 0x1f, timing.trd);
+        mch.clrsetbits8(0x1268 + ch as u32 * 0x100, 0xf, timing.twl as u8);
+        mch.clrsetbits8(0x12a0 + ch as u32 * 0x100, 0xf, 0xa);
     }
     regs.misc0.set(
         (regs.misc0.get() & !((7 << 29) | (7 << 25) | (3 << 22) | (3 << 10)))
@@ -1002,9 +994,9 @@ fn powerup_ddr3(mch: &Mchbar, resume: bool) {
 
 // Coreboot gm45/raminit.c DDR3 memory-IO setup. The read/write lane and
 // channel offsets are computed; all singleton registers use the overlay.
-fn io_channel_offset(channel: usize, reg: usize) -> usize {
+fn io_channel_offset(channel: usize, reg: usize) -> u32 {
     assert!(channel < 2 && (0x1470..=0x14cc).contains(&reg) && reg.is_multiple_of(4));
-    reg + channel * 0x100
+    (reg + channel * 0x100) as u32
 }
 
 fn clock_mux_codes(clock: MemClock, card_f: bool, mixed: bool) -> [u32; 8] {
@@ -1115,7 +1107,7 @@ fn initialize_ddr3_io(mch: &Mchbar, dimms: &Ddr3Channels, clock: MemClock, revis
         let mux = clock_mux_codes(clock, card_f[ch], mixed);
         for (lane, code) in mux.iter().enumerate() {
             let offset = io_channel_offset(ch, 0x14b0 + lane * 4);
-            mch.update32(offset, 7 << 11, *code);
+            mch.clrsetbits32(offset, 7 << 11, *code);
         }
     }
     for ch in 0..2 {
@@ -1142,7 +1134,7 @@ fn initialize_ddr3_io(mch: &Mchbar, dimms: &Ddr3Channels, clock: MemClock, revis
         }
         for lane in (0..8).rev() {
             let offset = io_channel_offset(ch, 0x14b0 + lane * 4);
-            mch.update32(
+            mch.clrsetbits32(
                 offset,
                 (3 << 25) | (1 << 8) | (7 << 16) | (0xf << 20) | (1 << 27),
                 (1 << 27) | (rate.5 << 16) | (rate.6 << 20),
@@ -1177,7 +1169,7 @@ fn prejedec_memory_map(mch: &Mchbar, dimms: &Ddr3Channels) {
         for (pair, value) in bounds[ch].iter().enumerate() {
             mch.write32(channel_offset(ch, 0x1200 + pair * 4), *value);
         }
-        mch.update32(channel_offset(ch, 0x1208), 0xffff, pages[ch]);
+        mch.clrsetbits32(channel_offset(ch, 0x1208), 0xffff, pages[ch]);
     }
     // 2048 MiB PCI MMIO default, no ME allocation and at most four 128 MiB
     // dummy ranks: no low-memory clipping or remap is possible here.
@@ -1430,12 +1422,12 @@ const REC_PROBE_LANES: [[[usize; 2]; 4]; 2] = [
     [[0, 0], [3, 3], [6, 6], [5, 5]],
 ];
 
-fn rec_group_offset(ch: usize, group: usize) -> usize {
+fn rec_group_offset(ch: usize, group: usize) -> u32 {
     assert!(ch < 2 && group < 4);
     io_channel_offset(ch, 0x14a0 + (3 - group) * 4)
 }
 
-fn rec_lane_offset(ch: usize, lane: usize) -> usize {
+fn rec_lane_offset(ch: usize, lane: usize) -> u32 {
     assert!(ch < 2 && lane < 8);
     io_channel_offset(ch, 0x14b0 + (7 - lane) * 4)
 }
@@ -1447,8 +1439,8 @@ fn program_rec_timing(
     timing: &mut RecTiming,
 ) -> Result<(), ServiceError> {
     timing.normalize()?;
-    mch.update32(channel_offset(ch, 0x121c), 0xf << 7, (timing.c as u32) << 7);
-    mch.update32(rec_group_offset(ch, group), REC_FIELDS, timing.fields());
+    mch.clrsetbits32(channel_offset(ch, 0x121c), 0xf << 7, (timing.c as u32) << 7);
+    mch.clrsetbits32(rec_group_offset(ch, group), REC_FIELDS, timing.fields());
     Ok(())
 }
 
@@ -1550,8 +1542,8 @@ fn rec_edge(
 fn reset_readwrite_pointers(mch: &Mchbar) {
     for ch in 0..2 {
         let drc1 = channel_offset(ch, 0x1234);
-        mch.update32(drc1, 0, 1 << 6);
-        mch.update32(drc1, 1 << 6, 0);
+        mch.clrsetbits32(drc1, 0, 1 << 6);
+        mch.clrsetbits32(drc1, 1 << 6, 0);
     }
     for pointer in [&mch.regs().write_pointer0, &mch.regs().write_pointer1] {
         pointer.set(pointer.get() & !(1 << 9));
@@ -1572,7 +1564,7 @@ fn receive_enable_calibration(
             for (group, lanes) in map.iter().enumerate() {
                 let lo = (lanes[0] as i32 - group as i32) as u32 & 3;
                 let hi = (lanes[1] as i32 - group as i32 - 1) as u32 & 3;
-                mch.update32(
+                mch.clrsetbits32(
                     rec_group_offset(ch, group),
                     (3 << 16) | (1 << 8) | 3,
                     lo | (hi << 16),
@@ -1641,7 +1633,7 @@ fn receive_enable_calibration(
         }
         let coarse = (mch.read32(channel_offset(ch, 0x121c)) >> 7) & 0xf;
         let lent = coarse.checked_sub(1).ok_or(ServiceError::HardwareError)?;
-        mch.update32(channel_offset(ch, 0x1224), 0xf << 4, lent << 4);
+        mch.clrsetbits32(channel_offset(ch, 0x1224), 0xf << 4, lent << 4);
     }
     Ok(())
 }
@@ -1707,7 +1699,7 @@ pub(super) fn prepare_ddr3(
     program_banks(&mch, dimms);
     for (ch, dimm) in dimms.dimms.iter().enumerate() {
         if dimm.is_some() {
-            mch.update32(channel_offset(ch, 0x120c), 0, 3);
+            mch.clrsetbits32(channel_offset(ch, 0x120c), 0, 3);
         }
     }
     program_odt(&mch, timing);
