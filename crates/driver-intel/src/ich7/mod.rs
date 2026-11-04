@@ -2459,7 +2459,7 @@ mod acpi_impl {
             // _GTM/_STM timing methods omitted (need CreateDwordField;
             // Linux libata doesn’t use them in AHCI mode).
             // Coreboot: sata.asl
-            pci0_aml.extend_from_slice(&acpi_fragments::sata_node());
+            pci0_aml.extend_from_slice(&acpi_fragments::sata_node(0x001f_0002));
 
             // PATA — IDE / PATA controller  0:1F.1
             // Coreboot: pata.asl

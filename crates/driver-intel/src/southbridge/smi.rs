@@ -55,13 +55,14 @@ impl SleepSmi {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gpe0Block {
     pub sts_offset: u16,
+    pub en_offset: u16,
     pub wide: bool,
 }
 
 impl Gpe0Block {
     #[inline(always)]
     const fn enable_offset(self) -> u16 {
-        self.sts_offset + if self.wide { 8 } else { 4 }
+        self.en_offset
     }
 
     /// coreboot S5 entry: `GPE0_EN = 0`.
@@ -95,12 +96,21 @@ pub struct SmiEnableState {
 /// ICH7/NM10: one 32-bit GPE0 status word at PMBASE+0x28.
 pub const ICH7_GPE0: Gpe0Block = Gpe0Block {
     sts_offset: 0x28,
+    en_offset: 0x2c,
     wide: false,
 };
 /// ICH8 through ICH10: 64-bit GPE0 status at PMBASE+0x20.
 pub const ICH8_GPE0: Gpe0Block = Gpe0Block {
     sts_offset: 0x20,
+    en_offset: 0x28,
     wide: true,
+};
+/// Bay Trail PCU: one 32-bit GPE0 status word at ABASE+0x20, the enables
+/// at +0x28.
+pub const BAYTRAIL_GPE0: Gpe0Block = Gpe0Block {
+    sts_offset: 0x20,
+    en_offset: 0x28,
+    wide: false,
 };
 
 /// SMI controller view of one ICH PM I/O block.
@@ -176,7 +186,7 @@ impl IchSmi {
 
     /// coreboot `smm_southbridge_clear_state()`: clear every W1C status
     /// register so no stale event fires once SMIs are enabled.
-    fn clear_status(&self) {
+    pub fn clear_status(&self) {
         self.pm.reset_smi_status();
         self.pm.reset_pm1_status();
         self.pm.tco().reset_tco_status();

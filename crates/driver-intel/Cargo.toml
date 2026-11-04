@@ -26,6 +26,8 @@ gm965 = ["fstart-intel-gma/g45"]
 i945 = ["ich7", "fstart-intel-gma/i945"]
 ich8 = []
 pineview = ["ich7", "fstart-intel-gma/i945"]
+# Bay Trail SoC: north and south cluster, native DDR3 RAM init.
+baytrail = []
 ich7 = []
 spi = ["dep:rflasher-core", "dep:rflasher-internal", "dep:fstart-driver-flash-console"]
 
