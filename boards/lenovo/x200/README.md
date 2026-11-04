@@ -1,6 +1,14 @@
 # Lenovo ThinkPad X200 bring-up
 
-Experimental GM45/ICH9-M cold-boot binding. **Not hardware-validated.**
+Experimental GM45/ICH9-M binding, following coreboot's `lenovo/x200`.
+
+## Hardware status
+
+One X200 (7459WST: P8400, 2 x 4 GiB DDR3, W25X64 with an ME-less descriptor)
+cold-boots Linux through CrabEFI. SATA, e1000e, the AR9280 WLAN, i915 on the
+panel, ACPI backlight, EC/thinkpad_acpi, thermal zones, HDA, acpi-cpufreq,
+C1-C3 and DMA remapping work. Warm resets, S3 resume, the dock, the X200t
+digitizer and other DIMM/CPU combinations are untested.
 
 ## Build
 
@@ -51,13 +59,13 @@ These interfaces have not been qualified on physical hardware.
 
 ## EHCI console
 
-X200 has no onboard serial console. This binding uses the shared
-`fstart-driver-usbdebug` driver:
+X200 has no onboard serial console: it logs to the EHCI debug port, through
+the shared `fstart-driver-usbdebug` driver:
 
 * EHCI2, PCI **00:1a.7**, following coreboot's `USBDEBUG_HCD_INDEX=2`.
 * The hardware debug port advertised by HCSPARAMS (ICH9 port 1).
-* Fixed BAR0 **0xfed04000**, with a 4 KiB reservation retained by the PCI
-  allocator. No schedule/DMA allocation is needed.
+* Fixed BAR0 **0xfef00000** (coreboot i82801ix `CONFIG_EHCI_BAR`), with a
+  4 KiB reservation retained by the PCI allocator. No schedule/DMA allocation is needed.
 * Connect a **high-speed USB debug gadget** with a USB debug descriptor.
   Examples are an appropriately programmed FX2 gadget or a compatible USB
   debug cable. An ordinary FTDI/CP210x/CH340 USB-to-UART cable does not work.
@@ -65,10 +73,8 @@ X200 has no onboard serial console. This binding uses the shared
 * Run the gadget's matching capture software on a second host before powering
   on the X200. The console does not impose a UART baud rate.
 
-The external connector wired to EHCI2's debug port has **not** been identified
-on this hardware. Before flashing, use a known-good OS's USB topology, e.g.
-`lsusb -t` and `/sys/bus/usb/devices`, to map root-port 1 under PCI 00:1a.7
-to a connector. Do not assume every side or dock USB socket is usable.
+Connect the gadget to the socket wired to root port 1 under PCI 00:1a.7;
+`lsusb -t` and `/sys/bus/usb/devices` in a running OS map ports to sockets.
 
 The bootblock resets the controller and the debug port and enumerates the
 gadget at address 127; a short `USB` greeting marks that enumeration.
@@ -106,7 +112,11 @@ Vendor descriptor/ME/GbE/PDR data are **not bundled**. Read and verify a complet
 backup from the actual machine, inspect its descriptor, and retain an external
 programmer/recovery path. A successful fbuild assembly does not make a generic
 full-flash image safe to write: preserve this machine's non-BIOS regions.
-Runtime descriptor verification rejects a layout mismatch.
+The firmware does not check the descriptor at run time: it only needs the top
+2 MiB of the BIOS region, so an ME-less descriptor whose BIOS region starts
+lower also boots. Write just the BIOS region (`--ifd`, region `bios`).
+From Linux, use rflasher's internal programmer: flashrom 1.8 erases this
+board's W25X64 with 32 KiB block erases the part does not support.
 
 ## First hardware checks
 
