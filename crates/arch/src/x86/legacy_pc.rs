@@ -29,6 +29,17 @@ pub fn initialize_pic(master_vector: u8, slave_vector: u8) {
     }
 }
 
+/// coreboot `setup_i8259()`: the PC/AT vectors 0x20/0x28 with every IRQ
+/// masked except the cascade.
+pub fn setup_i8259() {
+    initialize_pic(0x20, 0x28);
+    // SAFETY: caller is in the serialized legacy-controller init phase.
+    unsafe {
+        outb(PIC_MASTER_MASK, !(1 << CASCADE_IRQ));
+        outb(PIC_SLAVE_MASK, 0xff);
+    }
+}
+
 /// Reset both 8237 controllers, retaining channel 4 as their cascade.
 pub fn initialize_isa_dma() {
     const DMA1_MASTER_CLEAR: u16 = 0x0d;

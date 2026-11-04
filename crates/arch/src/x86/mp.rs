@@ -363,6 +363,9 @@ static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 /// Total logical CPUs brought online by the most recent MP init.
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
 
+/// The BSP's LAPIC ID, recorded by the most recent MP init.
+static BSP_APIC_ID: AtomicUsize = AtomicUsize::new(0);
+
 // ---------------------------------------------------------------------------
 // Flight plan (internal)
 // ---------------------------------------------------------------------------
@@ -623,6 +626,18 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 // mp_init — the main entry point
 // ---------------------------------------------------------------------------
 
+/// Local APIC ID of logical CPU `index` (0 = BSP) as it checked in during
+/// the most recent MP init, for tables that list processors by APIC ID.
+/// Any CPU may ask: the BSP's ID is the one MP init recorded.
+pub fn apic_id(index: u16) -> Option<u32> {
+    if index == 0 {
+        return Some(BSP_APIC_ID.load(Ordering::Acquire) as u32);
+    }
+    let slot = usize::from(index - 1);
+    (index < online_cpus() && slot < MAX_APS)
+        .then(|| MAILBOXES[slot].cpu_index.load(Ordering::Acquire) as u32)
+}
+
 /// Return the number of logical CPUs brought online by the most recent MP init.
 pub fn online_cpus() -> u16 {
     ONLINE_CPUS.load(Ordering::Acquire) as u16
@@ -769,6 +784,7 @@ fn mp_init_inner(
     lapic.setup_virtual_wire(true);
 
     fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
+    BSP_APIC_ID.store(lapic.id() as usize, Ordering::Release);
 
     // The BSP solution is complete before any AP starts. Model drivers must
     // not recalculate MTRRs; SIPI replays the exact BSP MSRs before caching.
