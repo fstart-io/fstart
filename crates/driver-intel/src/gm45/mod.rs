@@ -873,7 +873,10 @@ mod acpi_impl {
             }
             use fstart_acpi::dmar::{Drhd, dmar};
             let revision = ecam::EcamDevice::new(0, 0, 0).read8(0x08);
-            let me_active = self.hostbridge().deven.get() & (1 << 6) != 0;
+            // The units post_dram_iommu() enabled; coreboot's acpi_fill_dmar()
+            // tests the devicetree device, which its PCI scan disables when
+            // HECI does not answer.
+            let me_active = self.me_active();
             let units = [
                 Some(Drhd {
                     include_pci_all: false,
