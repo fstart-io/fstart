@@ -685,7 +685,16 @@ impl MemoryDetector for IntelGm45 {
             return Err(ServiceError::NotInitialized);
         }
         let (usable, tolud, touud) = self.memory_map()?;
-        build_pc_compatible_e820(entries, usable, touud, tolud)
+        let count = build_pc_compatible_e820(entries, usable, touud, tolud)?;
+        // The RAM the ramstage caches write-back (`mtrr::setup_ram_wb`) and
+        // the final MTRR solution covers, as the other northbridges publish.
+        fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
+            entries[..count]
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size)),
+        )?;
+        Ok(count)
     }
     fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
         if !self.dram_ready {
@@ -917,6 +926,55 @@ mod acpi_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gm45_ram_fits_penryn_mtrrs() {
+        use fstart_arch::x86::mtrr::{Capabilities, Plan};
+        // Penryn: 7 variable MTRRs, 36 physical address bits.
+        let caps = Capabilities {
+            variable_count: 7,
+            physical_bits: 36,
+            fixed: true,
+            write_combining: true,
+        };
+        // Every map raminit::map can program: coreboot's 2048 MiB MMIO
+        // window above the UMA/GTT/TSEG reservation, remapped when larger.
+        // The 8 GiB X200 fits completely (6 MTRRs, 7 with a 64 MiB ME);
+        // a 32 MiB ME with unequal DIMMs can need coreboot's retry
+        // without the RAM above 4 GiB.
+        for tom_mb in (512u64..=8192).step_by(512) {
+            for used_me in [0u64, 32, 64] {
+                for reserved_mb in [3u64, 35, 42, 66, 74] {
+                    let tom_minus_me = tom_mb - used_me;
+                    let mmio_start = 2048 + reserved_mb;
+                    let mut tolud = tom_minus_me.min(mmio_start);
+                    let mut touud = tom_minus_me;
+                    if tom_minus_me >= mmio_start + 64 {
+                        tolud &= !63;
+                        let remap_base = (tom_minus_me & !63).max(4096);
+                        touud = remap_base + (4096.min(tom_minus_me & !63) - tolud);
+                    }
+                    let usable = ((tolud - reserved_mb) << 20) as u32;
+                    let mut entries = [E820Entry::zeroed(); 8];
+                    let count = build_pc_compatible_e820(
+                        &mut entries,
+                        usable,
+                        touud << 20,
+                        (tolud << 20) as u32,
+                    )
+                    .unwrap();
+                    let ram = entries[..count]
+                        .iter()
+                        .filter(|e| e.kind == E820Kind::Ram as u32)
+                        .map(|e| (e.addr, e.size));
+                    assert!(
+                        Plan::build_ram(caps, ram, []).is_ok(),
+                        "TOM {tom_mb} MiB, ME {used_me}, reserved {reserved_mb}: \
+                         TOLUD {tolud} TOUUD {touud} usable {usable:#x}"
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn gm45_reserved_top_tracks_gms_ggms_and_tseg() {
         // 32 MiB UMA + 2 MiB GTT + 8 MiB TSEG.
