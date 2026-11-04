@@ -11,7 +11,9 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod acpi;
 pub mod config;
+pub mod ec;
 pub mod mainboard;
 /// The SMM handler, built into the separate SMM image.
 #[cfg(feature = "smm")]

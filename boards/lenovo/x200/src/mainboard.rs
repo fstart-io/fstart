@@ -7,7 +7,7 @@ extern crate alloc;
 use embedded_hal::digital::{OutputPin, PinState};
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
-use fstart_driver_lenovo::x200;
+use crate::ec;
 use fstart_platform_intel::gm45::Gm45Ich9AcpiContext;
 
 /// The ICH9 GPIOs the board's own devices hang off.
@@ -24,12 +24,12 @@ pub struct Pins {
 
 impl Pins {
     pub const fn of(gpio: IchGpio) -> Self {
-        let [a, b, c] = x200::DOCK_ID_GPIOS;
+        let [a, b, c] = ec::DOCK_ID_GPIOS;
         Self {
             smbus_mux: gpio.pin(crate::config::X200_SMBUS_MUX),
-            bluetooth_card: gpio.pin(x200::BDC_PRESENCE_GPIO),
+            bluetooth_card: gpio.pin(ec::BDC_PRESENCE_GPIO),
             dock_id: [gpio.pin(a), gpio.pin(b), gpio.pin(c)],
-            dock_connect: gpio.pin(x200::DOCK_CONNECT_GPIO),
+            dock_connect: gpio.pin(ec::DOCK_CONNECT_GPIO),
         }
     }
 }
@@ -79,7 +79,7 @@ impl Identity {
 /// chipset devices are up. Returns the identity and the board ACPI device.
 pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (Identity, Acpi) {
     let mut identity = Identity::default();
-    let (bluetooth, acknowledged) = x200::ec_init(
+    let (bluetooth, acknowledged) = ec::init(
         &mut pins.bluetooth_card,
         &mut pins.dock_id,
         &mut pins.dock_connect,
@@ -113,7 +113,7 @@ pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (I
     }
     // The digitizer's SuperIO is programmed on every boot; whether it is a
     // tablet only matters for the tables a cold boot builds.
-    let digitizer = x200::digitizer_init(identity.eeprom.as_ref().map(|e| e.part_number()));
+    let digitizer = ec::digitizer_init(identity.eeprom.as_ref().map(|e| e.part_number()));
     (
         identity,
         Acpi {
@@ -148,7 +148,7 @@ pub fn x200_mainboard_dsdt_aml(
         has_bluetooth: bluetooth,
         ..crate::config::X200_H8
     };
-    x200::acpi::dsdt_aml(
+    crate::acpi::dsdt_aml(
         &h8,
         context.lpc_scope(),
         fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,

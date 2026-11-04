@@ -1,4 +1,4 @@
-//! ThinkPad X200 board DSDT glue around the H8 EC: sleep/wake hooks, GFX0
+//! X200 DSDT glue around the H8 EC: sleep/wake hooks, GFX0
 //! brightness hotkeys, the ThinkLight `\UCMS` method, the EC wake GPE, the
 //! dock (coreboot x200 `dsdt.asl`, `acpi/*.asl`) and the X200t digitizer.
 
@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use fstart_acpi_macros::acpi_dsl;
 
-use crate::h8::H8Config;
+use fstart_driver_lenovo::h8::H8Config;
 
 /// Board DSDT. `\_SB.PCI0.GFX0` provides `INCB`/`DECB`, the Core 2 CPU
 /// AML provides `\CNOT`; `gpio_base` is the ICH GPIOBASE.
@@ -20,7 +20,7 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, gpio_base: u16, digitizer: bool)
             Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
         }
     };
-    let mut aml = crate::h8_acpi::dsdt_aml_with_brightness(h8, lpc_scope, &brightness);
+    let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness(h8, lpc_scope, &brightness);
     aml.extend_from_slice(&acpi_dsl! {
         Scope("\\") {
             // ec/lenovo/h8/acpi/thinklight.asl, for thinkpad_acpi.
@@ -51,7 +51,7 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, gpio_base: u16, digitizer: bool)
     aml.extend(dock_aml(gpio_base));
     if digitizer {
         aml.extend(
-            fstart_acpi::aml_linker::scope_vec(lpc_scope, &crate::wacom::digitizer_aml())
+            fstart_acpi::aml_linker::scope_vec(lpc_scope, &fstart_driver_lenovo::wacom::digitizer_aml())
                 .expect("X200 digitizer emission"),
         );
     }
@@ -150,7 +150,7 @@ fn dock_aml(gpio_base: u16) -> Vec<u8> {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::{ec::EcPorts, h8::H8Resources};
+    use fstart_driver_lenovo::{ec::EcPorts, h8::H8Resources};
     use std::{fs, process::Command};
 
     #[test]

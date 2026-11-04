@@ -1,15 +1,12 @@
-//! ThinkPad X200 board policy around the H8 EC and PMH7: EC bring-up, the
-//! dock connection (coreboot `variants/x200/dock.c`) and the X200t tablet
-//! digitizer behind the PC87382.
-
-#[cfg(feature = "acpi")]
-pub mod acpi;
+//! X200 policy around the H8 EC and PMH7: EC bring-up, the dock connection
+//! (coreboot `variants/x200/dock.c`) and the X200t tablet digitizer behind
+//! the PC87382.
 
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
 
-use crate::ec::Ec;
-use crate::h8::{H8, H8Config};
-use crate::pmh7::Pmh7;
+use fstart_driver_lenovo::ec::Ec;
+use fstart_driver_lenovo::h8::{self, H8, H8Config};
+use fstart_driver_lenovo::pmh7::Pmh7;
 
 /// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
 const EVENT_MASKS: [u8; 16] = [
@@ -60,7 +57,7 @@ pub const PC87382_DEVICES: &[fstart_driver_superio::pc87382::PnpDevice] = {
 /// `enable_dev()`), then `h8_mb_init()`: connect a present dock. Returns
 /// whether the Bluetooth card is fitted and every EC write was
 /// acknowledged.
-pub fn ec_init(
+pub fn init(
     bdc_presence: &mut impl InputPin,
     dock_id: &mut [impl InputPin; 3],
     dock_connect: &mut impl OutputPin,
@@ -80,7 +77,7 @@ pub fn ec_init(
     let docked = dock_present(dock_id);
     // `dock_connect()`: dock USB power in the EC, then the connect GPIO.
     let dock = !docked
-        || (ec.modify_register(crate::h8::CONFIG2::DOCK_USB_POWER::SET)
+        || (ec.modify_register(h8::CONFIG2::DOCK_USB_POWER::SET)
             && dock_connect.set_state(PinState::High).is_ok());
     (bluetooth, initialized && dock)
 }
@@ -103,13 +100,28 @@ pub fn dock_present(id: &mut [impl InputPin; 3]) -> bool {
 pub fn digitizer_init(part_number: Option<&str>) -> bool {
     fstart_driver_superio::pc87382::configure(PC87382_BASE, PC87382_DEVICES);
     fstart_driver_superio::pc87382::sid(PC87382_BASE) != 0xff
-        && part_number.is_some_and(crate::wacom::is_tablet)
+        && part_number.is_some_and(fstart_driver_lenovo::wacom::is_tablet)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_pin::Pin;
+
+    /// An input pin with a fixed level.
+    struct Pin(Result<bool, ()>);
+
+    impl embedded_hal::digital::ErrorType for Pin {
+        type Error = embedded_hal::digital::ErrorKind;
+    }
+
+    impl InputPin for Pin {
+        fn is_high(&mut self) -> Result<bool, Self::Error> {
+            self.0.map_err(|()| embedded_hal::digital::ErrorKind::Other)
+        }
+        fn is_low(&mut self) -> Result<bool, Self::Error> {
+            self.is_high().map(|high| !high)
+        }
+    }
 
     #[test]
     fn dock_presence_follows_the_id_straps() {
