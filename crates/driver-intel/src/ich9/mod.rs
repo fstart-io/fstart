@@ -17,11 +17,11 @@ use fstart_core::services::{
 pub use fstart_driver_usbdebug::Config as EhciDebugConfig;
 use fstart_pci::ecam;
 use fstart_pci::{
-    PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciFixedBars, PciType0Config,
-    PciType1Config, pci_type0_config,
+    PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciAddress, PciFixedBar, PciFixedBarType,
+    PciFixedBars, PciType0Config, PciType1Config, pci_type0_config,
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::{register_bitfields, register_structs};
+use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 
 pub use crate::southbridge::gpio_ich::{
     GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset,
@@ -147,7 +147,6 @@ pub mod ich9 {
     pub const D30F0_SMLT: u16 = 0x1b;
 
     pub const D28FX_XCAP: u16 = 0x42;
-    pub const D28FX_XCAP_SLOT: u32 = 1 << 8;
     pub const D28FX_LCAP: u16 = 0x4c;
     pub const D28FX_LCTL: u16 = 0x50;
     pub const D28FX_SLCAP: u16 = 0x54;
@@ -1817,8 +1816,16 @@ impl IntelIch9 {
             if port.read16(0) == 0xffff {
                 continue;
             }
-            if self.config.pcie_slots[func] || self.config.pcie_hotplug[func] {
-                port.or32(ich9::D28FX_XCAP, ich9::D28FX_XCAP_SLOT);
+            let slot = self.config.pcie_slots[func] || self.config.pcie_hotplug[func];
+            // XCAP is a word at 0x42. Coreboot's config32(0x42) rounds down
+            // to 0x40; copying it would modify the capability header (ICH8).
+            let mut capabilities =
+                LocalRegisterCopy::<u16, PCI_EXPRESS_CAPABILITIES::Register>::new(
+                    port.read16(ich9::D28FX_XCAP),
+                );
+            capabilities.modify(PCI_EXPRESS_CAPABILITIES::SLOT_IMPLEMENTED.val(slot.into()));
+            port.write16(ich9::D28FX_XCAP, capabilities.get());
+            if slot {
                 let limit = self.config.pcie_power_limits[func];
                 let mut slcap = port.read32(ich9::D28FX_SLCAP);
                 slcap &= !(0x1fff << ich9::D28_SLCAP_SLOTNUM_SHIFT);
@@ -1829,8 +1836,6 @@ impl IntelIch9 {
                 slcap |= u32::from(limit.value) << ich9::D28_SLCAP_POWER_SHIFT;
                 port.write32(ich9::D28FX_SLCAP, slcap);
                 slot_number += 1;
-            } else {
-                port.and32(ich9::D28FX_XCAP, !ich9::D28FX_XCAP_SLOT);
             }
         }
     }
