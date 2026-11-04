@@ -34,8 +34,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
-      - name: Install Rust toolchain
-        run: rustup toolchain install
+      - name: Install toolchain and WASM target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
       # actions/cache v6.1.0
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -52,6 +54,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y acpica-tools
+          cargo install wasm-bindgen-cli --version 0.2.130 --locked
       # The coreboot payload bundles ship SeaBIOS; same revision as the boot tests.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +74,14 @@ jobs:
           compression-level: 0 # Each bundle is already ZIP/DEFLATE compressed.
           retention-days: 2 # Daily promotion moves these onto Releases.
           if-no-files-found: error
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: image-web
+          path: target/image-web/
+          include-hidden-files: true
+          retention-days: 2
+          if-no-files-found: error
       - name: Prune stale firmware plans
         run: bash ci/prune-build-cache.sh "$RUNNER_TEMP/distribution-start"
       # actions/cache v6.1.0
@@ -78,6 +89,19 @@ jobs:
         with:
           path: *distribution-cache-paths
           key: dist-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain and WASM target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - name: Browser assembler builds for WASM
+        run: cargo check --locked --target wasm32-unknown-unknown -p fstart-image-web
+      - name: Client and release proxy tests
+        run: node --test tools/image-web/client.test.mjs tools/image-web/proxy/worker.test.mjs
 
   check:
     runs-on: ubuntu-latest
