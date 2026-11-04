@@ -68,7 +68,7 @@ jobs:
           python3 -m unittest discover -s ci/tpm -p 'test_*.py'
           cargo test --workspace
           cargo test -p fstart-driver-intel \
-            --features acpi,i945,gm965,ich8,pineview --lib
+            --features acpi,i945,gm965,ich8,pineview,baytrail --lib
           # Each AMD SoC on its own: the boards select one, the tests all.
           for soc in picasso zeppelin naples rome milan; do
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"
