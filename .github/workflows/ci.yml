@@ -26,6 +26,59 @@ env:
 # requests restore the most recent master cache for the same toolchain.
 
 jobs:
+  distribution:
+    needs: [check, qemu-boot-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      # actions/cache v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: &distribution-cache-paths |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: dist-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            dist-${{ hashFiles('rust-toolchain.toml') }}-
+            rust-check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y acpica-tools
+      # The coreboot payload bundles ship SeaBIOS; same revision as the boot tests.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fstart-io/seabios
+          ref: 44ed85f85fac03107009242c067fdcc01ce55546
+          path: target/seabios-src
+          persist-credentials: false
+      - name: Export every board, variant, payload and unit binary
+        run: |
+          touch "$RUNNER_TEMP/distribution-start"
+          bash ci/build-distribution.sh
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution
+          path: target/distribution/
+          compression-level: 0 # Each bundle is already ZIP/DEFLATE compressed.
+          retention-days: 2 # Daily promotion moves these onto Releases.
+          if-no-files-found: error
+      - name: Prune stale firmware plans
+        run: bash ci/prune-build-cache.sh "$RUNNER_TEMP/distribution-start"
+      # actions/cache v6.1.0
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: *distribution-cache-paths
+          key: dist-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+
   check:
     runs-on: ubuntu-latest
     steps:

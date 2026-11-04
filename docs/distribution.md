@@ -6,6 +6,13 @@ carries everything CI compiled for one board and payload, so users can
 assemble the final image with the files only they may have: a vendor BIOS
 (AMD PSP firmware cannot be redistributed), a kernel, or their own signing key.
 
+```text
+master CI ── fbuild bundle ──> Actions artifact (2 days)
+                                   │ daily
+                                   ▼
+                       GitHub Release nightly-YYYY-MM-DD-<commit>
+```
+
 ## Bundles
 
 A bundle is one board/payload build as a ZIP (DEFLATE level 9):
@@ -89,3 +96,29 @@ local inputs are rejected. The output includes `assembly-report.json` with the
 revision and the hash of every input and output.
 
 The bundle format is version 2. Older bundles must be re-exported.
+
+## Nightly releases
+
+On every master push that passes the checks and QEMU boot tests, the
+`distribution` CI job runs `ci/build-distribution.sh`: it builds all bundles,
+`catalog.json` and `host-tools-linux-x86_64.tar.gz` (prebuilt `fbuild`,
+`fstart-amdfw`, `fstart-apcb`) and keeps them as a two-day Actions artifact.
+It builds SeaBIOS at the revision the boot tests pin and passes it to
+`fbuild bundle --seabios`.
+
+The daily **Nightly releases** workflow runs `fstart-release nightly`
+(`tools/release`). It takes the newest successful master push run and, unless
+that commit already has a nightly:
+
+1. downloads its artifact as data (nothing downloaded is executed),
+2. checks the catalog against the run's commit and every bundle's size and
+   SHA-256, and rejects unexpected files,
+3. adds `release.json` and `SHA256SUMS` and stamps `created_at`, `expires_at`
+   and the source run into the catalog,
+4. creates the prerelease `nightly-YYYY-MM-DD-<12-char commit>` as a draft and
+   publishes it only after every upload finished.
+
+GitHub Releases do not expire, so the same job deletes nightlies it created
+(marked in the release notes) 30 days after publication, with their tags. The
+newest nightly is kept even when expired; other releases are never touched.
+A release may hold 1000 assets; publication checks that bound.
