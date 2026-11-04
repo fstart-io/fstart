@@ -487,6 +487,15 @@ pub fn prepare_smbios(
     })
     .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
 
+    // For Linux without UEFI, which only scans the F segment.
+    // SAFETY: every Intel northbridge routes C0000-FFFFF to DRAM (PAM or
+    // B-unit BMISC) before ramstage, and the e820 reserves it for the
+    // firmware.
+    #[cfg(target_os = "none")]
+    unsafe {
+        fstart_acpi::smbios::publish_legacy_entry_point(bytes)
+    };
+
     store
         .resize_last(entry, smbios_len)
         .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
