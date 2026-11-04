@@ -39,6 +39,7 @@ use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::window::Window;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -362,10 +363,16 @@ pub(crate) fn dxio(
             let _ = units.push(unit);
         }
     }
-    let fchs = (0..ctx.topology.sockets)
-        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
-        .map(|s| ((s, 0), unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) }))
-        .collect();
+    // Socket 0's reset pins through host MMIO, as the donors do: on Milan
+    // SMN writes to them are lost. Socket 1 through its SMN (the SSP donor;
+    // GN relocates socket 1's ACPI-MMIO instead, which fstart does not).
+    let fch0 = crate::hw::primary_fch(ctx.timer);
+    let fch1 = (ctx.topology.sockets > 1).then(|| secondary_fch(socket_bus(ctx, 1), ctx.timer));
+    let mut fchs: heapless::Vec<((u8, u8), &dyn Window), 8> = heapless::Vec::new();
+    let _ = fchs.push(((0, 0), &fch0.acpi));
+    if let Some(fch1) = &fch1 {
+        let _ = fchs.push(((1, 0), &fch1.acpi));
+    }
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
     let mut setup =
@@ -419,7 +426,7 @@ pub(crate) fn dxio(
 /// start on socket 0, then each slot's power from its presence.
 fn hotplug(
     ctx: &Ctx,
-    setup: &PortSetup<'_, '_, Pci, FchPerst<Pci>>,
+    setup: &PortSetup<'_, '_, Pci, FchPerst<'_>>,
     smus: &[Smu],
     policy: &dxio::hotplug::HotplugPolicy,
 ) {
