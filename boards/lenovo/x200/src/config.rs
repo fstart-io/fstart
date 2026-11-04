@@ -60,7 +60,8 @@ pub const EHCI_CONSOLE: fstart_driver_usbdebug::Config = fstart_driver_usbdebug:
     bus: 0,
     device: 0x1a,
     function: 7,
-    bar: 0xfed0_4000,
+    // coreboot i82801ix `CONFIG_EHCI_BAR`.
+    bar: 0xfef0_0000,
 };
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
