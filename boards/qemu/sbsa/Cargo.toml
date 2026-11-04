@@ -8,6 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "qemu-sbsa"
+name = "SBSA reference"
 platform = "aarch64"
 target = "aarch64-unknown-none"
 build-profile = { dependency = "fstart-platform-qemu", name = "rust" }

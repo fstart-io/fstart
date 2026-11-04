@@ -9,6 +9,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "gigabyte-mj11-ec1"
+name = "MJ11-EC1"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 build-profile = { dependency = "fstart-platform-amd", name = "rust" }
@@ -24,7 +25,20 @@ apcb = { entries = [
   { type = 0x68, level = 2, file = "mj11/apcb-backup.bin" },
 ] }
 
+# The official BIOS update whose PSP firmware and microcode the image takes.
+# Gigabyte publishes only the EC0's F02; both variants assemble from it.
+[package.metadata.fstart.donor]
+vendor = "GIGABYTE"
+name = "MJ11-EC0 BIOS F02"
+url = "https://download.gigabyte.com/FileList/BIOS/server_bios_MJ11-EC0_F02.zip"
+sha256 = "f02f3f423c6482aa2ec43356be7a64b6e4c3a2429c23893fc4939e300fc75d60"
+size = 13426298
+terms = "https://www.gigabyte.com/WebPage/469/EULA.html"
+page = "https://www.gigabyte.com/Enterprise/Server-Motherboard/MJ11-EC0-rev-12/support#support-dl-bios"
+note = "Gigabyte publishes this BIOS (F02) for the MJ11-EC0. fstart takes only its PSP firmware and microcode; images built from it have not been tested on hardware yet."
+
 [package.metadata.fstart.variants.gigabyte-mj11-ec0]
+name = "MJ11-EC0"
 features = ["ec0"]
 
 [features]

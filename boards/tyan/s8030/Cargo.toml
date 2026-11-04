@@ -17,6 +17,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "tyan-s8030"
+name = "S8030"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
@@ -40,7 +41,22 @@ apcb = { entries = [
   { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "s8030/milan/apcb-60-1.bin" },
 ] }
 
+# The vendor BIOS update whose PSP firmware and microcode the image takes
+# (the same 32 MiB ROM as vendor/8030V404.ROM).
+[package.metadata.fstart.donor]
+vendor = "MiTAC (Tyan)"
+name = "S8030GM2NE BIOS V4.04"
+url = "https://www.mitaccomputing.com/api-frontend/Document/DownloadVersionFile/versions/1710/download"
+sha256 = "28ef7d2d35d82675e18a86e870fa862793dcb585be4bb53798f4a5af9c014faf"
+size = 24359479
+terms = "https://www.mitaccomputing.com/terms"
+page = "https://www.mitaccomputing.com/products/detail/S8030GM2NE?tab=downloads"
+note = "MiTAC's download page also asks you to accept AMI's end-user licence for this BIOS. fstart keeps the PSP firmware, APCB and microcode from it and replaces the rest."
+
 [package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
+name = "S8030 (PCIe slot 3 as x4x4x4x4)"
+# A setting of the same board, not another board: UIs offer it as an option.
+option = "PCIe slot 3 split x4x4x4x4"
 features = ["pcie3-x4x4x4x4"]
 
 [features]

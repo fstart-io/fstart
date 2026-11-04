@@ -262,9 +262,10 @@ vendor ROM for vendor-image boards). Picasso's policy is release-only
 All AMD plans emit `Assembly::Amd`. Its firmware source is either packed blobs
 or a vendor image with an explicit layout: fixed prefix/reset placement
 or selected boot banks and mirrors (SP3). Packed bank partitions and both
-vendor layouts normalize into one write/readback loop; bank discovery is not
-a separate compositor.
+vendor layouts normalize into
+one write/readback loop; bank discovery is not a separate compositor.
 `StageLocator` independently selects the compiled reset stage's anchor ABI.
+Native assembly and native/WASM bundle consumers use this same engine.
 
 Output goes to `target/fstart-build/<board>/<release|debug>/<digest>/image/`:
 

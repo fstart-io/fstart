@@ -15,6 +15,37 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Export compressed, donor-free browser assembly bundles and all unit
+    /// binaries. Without --board/--payload, exports every board/variant and
+    /// every payload selection its platform declares.
+    Bundle {
+        #[arg(long)]
+        board: Option<String>,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        #[arg(long)]
+        revision: String,
+        /// A SeaBIOS build (ci/payloads/seabios/build.sh output) to ship in
+        /// every coreboot-payload bundle.
+        #[arg(long)]
+        seabios: Option<std::path::PathBuf>,
+    },
+    /// Assemble a downloaded bundle without invoking Cargo or a linker.
+    ComposeBundle {
+        #[arg(long)]
+        bundle: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        #[arg(long)]
+        donor: Option<std::path::PathBuf>,
+        /// Named external input, e.g. kernel=bzImage.
+        #[arg(long = "input")]
+        inputs: Vec<String>,
+        #[arg(long)]
+        signing_key: Option<std::path::PathBuf>,
+    },
     Build {
         /// Build one named unit and its producers instead of the complete image.
         #[arg(long)]
@@ -320,6 +351,32 @@ fn main() {
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
+        Command::Bundle {
+            board,
+            payload,
+            out,
+            revision,
+            seabios,
+        } => fbuild::bundle::export(
+            &out,
+            &revision,
+            board.as_deref(),
+            payload,
+            seabios.as_deref(),
+        ),
+        Command::ComposeBundle {
+            bundle,
+            out,
+            donor,
+            inputs,
+            signing_key,
+        } => fbuild::bundle::compose(
+            &bundle,
+            &out,
+            donor.as_deref(),
+            &inputs,
+            signing_key.as_deref(),
+        ),
         Command::Build {
             board,
             release,

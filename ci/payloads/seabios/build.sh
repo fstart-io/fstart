@@ -13,6 +13,8 @@ out=$(mkdir -p "${2:-$here/../../../target/seabios}" && cd "${2:-$here/../../../
 cp "$here/defconfig" "$out/.config"
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" olddefconfig >/dev/null
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" -j"$(nproc)" >/dev/null
+# The version fbuild bundle shows with the payload.
+git -C "$src" describe --tags --always --dirty >"$out/version" 2>/dev/null || echo unknown >"$out/version"
 # SeaBIOS mirrors its text screen (menus, boot messages) to this port.
 python3 -c 'import struct,sys; sys.stdout.buffer.write(struct.pack("<Q", 0x3f8))' >"$out/sercon-port"
 

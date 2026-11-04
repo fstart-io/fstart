@@ -8,6 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "orangepi-r1"
+name = "Orange Pi R1"
 platform = "armv7"
 target = "armv7a-none-eabi"
 build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }

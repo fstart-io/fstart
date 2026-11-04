@@ -429,10 +429,17 @@ fn microcode<S: HostSoc>(
     selection: &BuildSelection,
     packed: Option<&blobs::Resolved>,
 ) -> Result<Option<MicrocodeConfig>, String> {
-    let config = match (&S::POLICY.image_config, &selection.image_config, packed) {
+    let deferred = selection
+        .defer_firmware
+        .then_some(fstart_image_build::bundle::DONOR_PATH.to_string());
+    let vendor_path = selection.image_config.as_ref().or(deferred.as_ref());
+    let config = match (&S::POLICY.image_config, vendor_path, packed) {
         (ImageConfig::Vendor { .. }, Some(path), _) => {
-            let image =
-                std::fs::canonicalize(path).map_err(|e| format!("vendor image {path}: {e}"))?;
+            let image = if selection.defer_firmware {
+                std::path::PathBuf::from(path)
+            } else {
+                std::fs::canonicalize(path).map_err(|e| format!("vendor image {path}: {e}"))?
+            };
             AmdMicrocodeConfig {
                 files: heapless::Vec::new(),
                 vendor_images: heapless::Vec::from_slice(&[AmdVendorMicrocode {
@@ -465,8 +472,11 @@ fn microcode<S: HostSoc>(
 /// (`[package.metadata.fstart.amd]`) in the selected blob directory. None
 /// without a blob directory.
 fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolved>, String> {
-    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, &selection.blobs)
-    else {
+    let deferred = selection
+        .defer_firmware
+        .then_some("/inputs/blobs".to_string());
+    let dir = selection.blobs.as_ref().or(deferred.as_ref());
+    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, dir) else {
         return Ok(None);
     };
     if selection.image_config.is_some() {
@@ -496,7 +506,11 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
     let name = tables.board["board"]
         .as_str()
         .ok_or("the board table has no board name")?;
-    let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
+    let dir = if selection.defer_firmware {
+        std::path::PathBuf::from(dir)
+    } else {
+        std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?
+    };
     blobs::resolve(&soc, &board, name, &dir, S::LAYOUT.flash.size as u32).map(Some)
 }
 
@@ -507,7 +521,11 @@ fn assembly<S: HostSoc>(
 ) -> Result<Assembly, String> {
     let layout = &S::LAYOUT;
     let flash_size = layout.flash.size as u32;
-    let (firmware, psp) = match (S::POLICY.image_config, &selection.image_config, packed) {
+    let deferred = selection
+        .defer_firmware
+        .then_some(fstart_image_build::bundle::DONOR_PATH.to_string());
+    let vendor_path = selection.image_config.as_ref().or(deferred.as_ref());
+    let (firmware, psp) = match (S::POLICY.image_config, vendor_path, packed) {
         (ImageConfig::Vendor { prefix, psp }, Some(path), _) => (
             Firmware::Vendor {
                 image: FileBinding {
@@ -566,7 +584,9 @@ fn assembly<S: HostSoc>(
     assembly.validate()?;
     // Check the vendor image against the layout the stage is linked for
     // before building.
-    if let Firmware::Vendor { image, .. } = &assembly.firmware {
+    if let Firmware::Vendor { image, .. } = &assembly.firmware
+        && !selection.defer_firmware
+    {
         let path = &image.path;
         let vendor = std::fs::read(path).map_err(|e| format!("vendor image {path}: {e}"))?;
         assembly
@@ -650,6 +670,13 @@ where
         },
     };
     let plan = BuildPlan {
+        publication_payloads: if policy.payloads {
+            ["halt", "linux", "uefi", "uefi-ui", "uefi-basic"]
+                .map(String::from)
+                .to_vec()
+        } else {
+            vec!["halt".into()]
+        },
         payload: payload.into(),
         stages: vec![UNIT.into()],
         inputs,

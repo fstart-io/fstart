@@ -568,10 +568,7 @@ fn full_readout_mirrors_the_composed_bank() {
 fn shared_compositor_matches_original_sp3_bytes() {
     let ffs = ffs(0x10000);
     let reset = linked_reset();
-    let hash = |bytes: &[u8]| {
-        use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(bytes))
-    };
+    let hash = |bytes: &[u8]| crate::bundle::sha256(bytes);
     for (generation, expected) in [
         (
             NAPLES,
