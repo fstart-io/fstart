@@ -1,10 +1,10 @@
 //! The settings store ([`crate::layout::NVRAM`]): option overrides read at
 //! boot, and the store and the options' form handed to the UEFI payload.
 //!
-//! The store is CrabEFI's EFI variable store, so the overrides are only
-//! read in a build with the UEFI payload, which also brings the menu that
-//! writes them. Other payloads boot the board's configuration.
+//! The store is CrabEFI's EFI variable store, which its menu writes. Every
+//! payload's boot reads it; only the UEFI payload can change it.
 
+use fstart_options::varstore::VarstoreOptions;
 use fstart_options::{Knob, Report, Source};
 
 #[cfg(feature = "payload-uefi")]
@@ -12,16 +12,7 @@ use super::Ctx;
 
 /// The overrides stored in `nvram`, the ROM view of the settings store.
 pub(crate) fn source(nvram: Option<&'static [u8]>) -> impl Source {
-    #[cfg(feature = "payload-uefi")]
-    {
-        use fstart_payload::crabefi::settings::VarstoreOptions;
-        nvram.map(VarstoreOptions::new)
-    }
-    #[cfg(not(feature = "payload-uefi"))]
-    {
-        let _ = nvram;
-        fstart_options::NoSource
-    }
+    nvram.map(VarstoreOptions::new)
 }
 
 /// [`fstart_options::resolve_checked`] from the settings store, logged.

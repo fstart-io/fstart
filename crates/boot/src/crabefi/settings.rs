@@ -1,23 +1,22 @@
 //! Firmware settings through CrabEFI: the variable store as the option
-//! source, a flash region as its storage, and CrabEFI's CFR menu.
+//! storage, and CrabEFI's CFR menu.
 //!
 //! The settings live where CrabEFI keeps its EFI variables: an EDK2
 //! variable store in a reserved flash region. Each option is a variable
 //! under coreboot's CFR GUID named by its [`fstart_options::Meta::key`],
 //! holding a little-endian `u32`, as coreboot's `get_uint_option()` and
 //! CrabEFI's CFR menu store them. The boot reads them through
-//! [`VarstoreOptions`] from the memory-mapped region; CrabEFI's menu writes
-//! them through [`FlashStorage`] and the runtime image.
+//! `fstart_options::varstore` from the memory-mapped region; CrabEFI's menu
+//! writes them through [`FlashStorage`] and the runtime image.
 //!
 //! A platform without a flash store may keep the options in CMOS instead
 //! ([`fstart_options::cmos`]): the menu then reads and writes them there.
 
 use alloc::vec::Vec;
 
-use crabefi::efi::varstore::edk2;
 use fstart_core::services::{FlashRegion, ServiceError};
+use fstart_options::Source;
 use fstart_options::cmos::{Cmos, Ram};
-use fstart_options::{Source, SourceError};
 
 /// What CrabEFI gets to persist variables and show the settings.
 pub struct FirmwareSettings {
@@ -25,75 +24,6 @@ pub struct FirmwareSettings {
     pub cfr: Vec<u8>,
     /// The options the board keeps in CMOS.
     pub cmos: Option<Cmos<&'static (dyn Ram + Sync)>>,
-}
-
-/// The longest option key, in characters.
-const MAX_KEY: usize = 63;
-
-/// The option overrides stored in a memory-mapped EDK2 variable store.
-pub struct VarstoreOptions<'a> {
-    region: &'a [u8],
-    state: Store,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Store {
-    /// Never written: no overrides.
-    Erased,
-    Valid,
-    Corrupt,
-}
-
-impl<'a> VarstoreOptions<'a> {
-    /// The store in `region` (the whole reserved region, as mapped).
-    pub fn new(region: &'a [u8]) -> Self {
-        let header = edk2::FV_HEADER_LENGTH + edk2::VS_HEADER_LENGTH;
-        let state = match region.get(..header) {
-            Some(bytes) if bytes.iter().all(|&b| b == 0xff) => Store::Erased,
-            Some(bytes) if edk2::validate_fv(bytes, region.len() as u32).valid => Store::Valid,
-            _ => Store::Corrupt,
-        };
-        Self { region, state }
-    }
-}
-
-impl Source for VarstoreOptions<'_> {
-    fn name(&self) -> &'static str {
-        match self.state {
-            Store::Erased => "flash variable store (empty)",
-            Store::Valid => "flash variable store",
-            Store::Corrupt => "flash variable store (corrupt)",
-        }
-    }
-
-    fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
-        match self.state {
-            Store::Erased => return Ok(None),
-            Store::Corrupt => return Err(SourceError::Corrupt),
-            Store::Valid => {}
-        }
-        let mut name = [0u16; MAX_KEY + 1];
-        if key.len() > MAX_KEY || !key.is_ascii() {
-            return Err(SourceError::Corrupt);
-        }
-        for (unit, byte) in name.iter_mut().zip(key.bytes()) {
-            *unit = u16::from(byte);
-        }
-        let mut data = [0u8; 4];
-        let guid = crabefi::cfr::COREBOOT_CFR_GUID;
-        Ok(edk2::read_variable_data_from_region(
-            self.region,
-            guid.as_bytes(),
-            &name[..key.len()],
-            &mut data,
-        )
-        .and_then(|len| match len {
-            // The menu writes 4 bytes; coreboot also reads a 1-byte value.
-            4 => Some(u32::from_le_bytes(data)),
-            1 => Some(u32::from(data[0])),
-            _ => None,
-        }))
-    }
 }
 
 /// A [`FlashRegion`] as CrabEFI's variable storage. The region's erase
