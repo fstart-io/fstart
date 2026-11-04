@@ -173,6 +173,10 @@ impl CacheSpi {
         {
             return Err(ServiceError::InvalidParam);
         }
+        // The typed LPC overlay panics without a bound ECAM accessor.
+        if fstart_pci::ecam::base() == 0 {
+            return Err(ServiceError::NotInitialized);
+        }
         // SAFETY: new's caller guarantees live ECAM and ICH register mappings.
         let lpc = unsafe { lpc::flash_config() };
         let entry = rflasher_internal::find_chipset(

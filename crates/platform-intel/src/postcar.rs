@@ -1,9 +1,12 @@
 //! Intel postcar: fresh DRAM stack, caching on; authenticate and load the
 //! ramstage. Postcar has no board work; a board's postcar `main` is one call.
 
-use crate::IntelBoard;
+use crate::{IntelBoard, IntelChipsetConfig, IntelEarlyPlatform};
 use fstart_core::services::{ConsoleDevice, ServiceError};
+use fstart_driver_intel::IntelNorthbridgeDriver;
 use fstart_log::StaticConsole;
+
+type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
 
 /// Post-CAR loader on a fresh DRAM stack. The bootblock-authenticated descriptor
 /// crosses the transition in reserved RAM. Postcar verifies stored compressed
@@ -24,6 +27,14 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     if let Some(store) = &store {
         crate::store::attach_timestamps(store);
         fstart_timestamp::add_at(fstart_timestamp::id::POSTCAR_START, entry);
+    }
+    // Each stage has its own BSS: rebind the ECAM accessor the consoles and
+    // chipset drivers use, as the bootblock and ramstage do before theirs.
+    // PCIEXBAR itself stays programmed from the bootblock.
+    let ecam = Nb::<B>::new_from_config(B::CONFIG.northbridge())
+        .and_then(|mut northbridge| northbridge.pre_console_init());
+    if ecam.is_err() {
+        fstart_arch::x86::boot::halt();
     }
     let ramstage_name = crate::RAMSTAGE_NAME;
     let mut console = match C::new(config) {
