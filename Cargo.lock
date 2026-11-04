@@ -764,6 +764,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-flash-console",
  "fstart-driver-lenovo",
+ "fstart-driver-spd",
  "fstart-driver-usbdebug",
  "fstart-intel-gma",
  "fstart-log",

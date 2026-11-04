@@ -74,7 +74,7 @@ pub(super) fn rank_addresses(
     let mut next = 0;
     for ch in 0..2 {
         let ranks = dimms.dimms[ch].map_or(0, |d| d.ranks);
-        if ranks > 2 || dimms.dimms[ch].is_some_and(|d| ddr3::validate_gm45(&d).is_err()) {
+        if ranks > 2 || dimms.dimms[ch].is_some_and(|d| super::spd::validate(&d).is_err()) {
             return Err(ServiceError::HardwareError);
         }
         for rank in 0..usize::from(ranks) {

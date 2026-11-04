@@ -5,7 +5,29 @@
 //! confuse the SPD's rated maximum with the rate actually programmed.
 #![no_std]
 
+pub mod ddr3;
 pub mod ddr4;
+
+/// DDR chip width classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipWidth {
+    X4 = 0,
+    X8 = 1,
+    X16 = 2,
+    X32 = 3,
+}
+
+/// DDR chip capacity classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipCapacity {
+    Cap256M = 0,
+    Cap512M = 1,
+    Cap1G = 2,
+    Cap2G = 3,
+    Cap4G = 4,
+    Cap8G = 5,
+    Cap16G = 6,
+}
 
 /// The SPD CRC: CRC-16/XMODEM (polynomial 0x1021, initial value 0), as
 /// JEDEC defines it for the base and module-specific blocks of DDR3, DDR4

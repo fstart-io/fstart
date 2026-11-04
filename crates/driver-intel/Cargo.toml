@@ -29,6 +29,7 @@ sha2 = { workspace = true }
 fstart-driver-usbdebug = { workspace = true, optional = true }
 rflasher-core = { workspace = true, optional = true }
 fstart-driver-flash-console = { workspace = true, optional = true }
+fstart-driver-spd = { workspace = true }
 rflasher-internal = { workspace = true, optional = true }
 bitflags = { workspace = true }
 embedded-hal = { workspace = true }
@@ -52,5 +53,6 @@ ufmt = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+fstart-driver-spd = { workspace = true, features = ["testing"] }
 fstart-driver-lenovo = { path = "../driver-lenovo", features = ["acpi"] }
 tempfile = "3"
