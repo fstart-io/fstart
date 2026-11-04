@@ -16,7 +16,10 @@ use fstart_core::{
 };
 use fstart_image_build::{
     amd::{
-        assembly::{AmdAssembly, FfsWindow, Firmware, PspOptions},
+        assembly::{
+            AmdAssembly, FfsWindow, Firmware, FixedLayout, PackedReset, PspOptions, VendorLayout,
+        },
+        banks::ResetSlot,
         blobs,
     },
     build_plan::{
@@ -512,7 +515,17 @@ fn assembly<S: HostSoc>(
                     path: path.clone(),
                     capacity: u64::from(flash_size),
                 },
-                prefix_size: prefix,
+                layout: VendorLayout::Fixed(FixedLayout {
+                    flash_size,
+                    bios_directory: S::BIOS_DIRECTORY,
+                    prefix_size: prefix,
+                    reset: ResetSlot {
+                        flash_offset: flash_size - layout.image.size as u32,
+                        size: layout.image.size as u32,
+                        destination: layout.image.base,
+                    },
+                    apob_destination: S::APOB.base,
+                }),
             },
             psp,
         ),
@@ -520,6 +533,13 @@ fn assembly<S: HostSoc>(
             Firmware::Packed {
                 files: packed.files,
                 reset_offset,
+                reset: PackedReset {
+                    size: layout.image.size as u32,
+                    destination: layout.image.base,
+                    apob_destination: S::APOB.base,
+                    shared_memory: None,
+                    bios_directory: S::BIOS_DIRECTORY,
+                },
             },
             psp,
         ),
@@ -540,14 +560,8 @@ fn assembly<S: HostSoc>(
             size: window.size as u32,
         }),
         stage_unit: UNIT.into(),
-        flash_size,
-        bios_directory: S::BIOS_DIRECTORY,
-        reset_size: layout.image.size as u32,
-        reset_destination: layout.image.base,
-        apob_destination: S::APOB.base,
-        // Entry 0x6B is only for a PSP verstage.
-        shared_memory: None,
         psp,
+        locator: Default::default(),
     };
     assembly.validate()?;
     // Check the vendor image against the layout the stage is linked for
