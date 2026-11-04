@@ -19,10 +19,12 @@ use super::engine::FwEngine;
 use super::hotplug::HotplugKind;
 use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
 use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
-use crate::smn::{Smn, SmnAddr};
+use crate::smn::SmnAddr;
 use crate::smu::SmuMessages;
+use crate::sp3::fch::gpio::{self, Pin};
 use crate::sp3::nbio::{Nbio, NbioReg, nbif};
 use crate::sp3::soc::Generation;
+use crate::window::Window;
 
 register_bitfields![u32,
     /// IOHC `IOHC_BRIDGE_CNTL` (`0x13B31004 + bridge * 0x400`).
@@ -185,17 +187,6 @@ register_bitfields![u32,
         SECONDARY OFFSET(8) NUMBITS(8) [],
         SUBORDINATE OFFSET(16) NUMBITS(8) []
     ],
-    /// FCH GPIO control (Linux `pinctrl-amd` bit names).
-    pub FCH_GPIO [
-        DRV_STRENGTH OFFSET(17) NUMBITS(2) [],
-        PULL_UP_ENABLE OFFSET(20) NUMBITS(1) [],
-        OUTPUT_VALUE OFFSET(22) NUMBITS(1) [],
-        OUTPUT_ENABLE OFFSET(23) NUMBITS(1) []
-    ],
-    /// The IOMUX dword holding pins 24..27; pin 26 is byte 2.
-    pub FCH_IOMUX_24 [
-        PIN26 OFFSET(16) NUMBITS(8) []
-    ]
 ];
 
 /// Port register offsets (`PCIE_PORT_*`).
@@ -849,37 +840,37 @@ pub fn xgmi_init<M: SmuMessages + ?Sized>(
         .map(|_| ())
 }
 
-/// FCH ACPI MMIO block (0xFED80000) on SMN.
-pub const FCH_SMN: SmnAddr = 0x02D0_1000;
 /// GPIO26 PCIE_RST0_L, GPIO27 PCIE_RST3_L, RMT GPIO10/11 PCIE_RST1/2_L
-/// (Oxide `milan/iomux.h` names), as FCH offsets.
-pub const PERST_PINS: [u32; 4] = [0x1568, 0x156C, 0x1228, 0x122C];
-/// IOMUX dword holding pin 26.
-pub const IOMUX_24: u32 = 0x0D18;
+/// (Oxide `milan/iomux.h` names).
+pub const PERST_PINS: [Pin; 4] = [Pin(26), Pin(27), Pin(266), Pin(267)];
 
-/// PERST release through the FCH GPIOs over SMN (§3.4): Rome/Milan drive
-/// all four PCIE_RST pins high (`0xC40000`: output enable, high, drive
+/// PERST release through the FCH reset pins (§3.4). Rome/Milan drive all
+/// four PCIE_RST pins high (`0xC40000`: output enable, high, drive
 /// strength 2); Naples sets GPIO26 to `0xD20000` (adds the pull-up) and
 /// IOMUX 26 to the native PCIE_RST0_L function, on the die's FCH and on
-/// `naples_also` (the donor hard-codes bus 0x40). Rome writes socket 0
-/// through MMIO; SMN reaches the same block (as the donor does for
-/// socket 1). Each unit is released once.
-pub struct FchPerst<P> {
+/// `naples_also` (the donor hard-codes bus 0x40). Each unit is released
+/// once.
+///
+/// `fchs` are the ACPI-MMIO windows of the FCHs. The SSP and GN donors
+/// write socket 0 through host MMIO (`0xFED80000`); SMN writes to socket
+/// 0's FCH GPIOs do not reach the pins on Milan (Ethanol-X: the reset pins
+/// kept their power-on value and no slot trained).
+pub struct FchPerst<'w> {
     pub generation: Generation,
-    /// `((socket, die), SMN of that FCH's root bus)`.
-    pub fchs: Vec<((u8, u8), Smn<P>), 8>,
-    pub naples_also: Option<Smn<P>>,
+    /// `((socket, die), that FCH's ACPI-MMIO window)`.
+    pub fchs: Vec<((u8, u8), &'w dyn Window), 8>,
+    pub naples_also: Option<&'w dyn Window>,
     released: u16,
 }
 
-impl<P: ConfigRegionAccess + Clone> FchPerst<P> {
+impl<'w> FchPerst<'w> {
     /// # Safety
-    /// Every SMN handle reaches a live FCH and the caller owns its GPIO
+    /// Every window reaches a live FCH and the caller owns its GPIO
     /// registers for PERST.
     pub unsafe fn new(
         generation: Generation,
-        fchs: Vec<((u8, u8), Smn<P>), 8>,
-        naples_also: Option<Smn<P>>,
+        fchs: Vec<((u8, u8), &'w dyn Window), 8>,
+        naples_also: Option<&'w dyn Window>,
     ) -> Self {
         Self {
             generation,
@@ -889,33 +880,31 @@ impl<P: ConfigRegionAccess + Clone> FchPerst<P> {
         }
     }
 
-    fn drive(&self, smn: &Smn<P>) {
-        let gpio = |pin: u32| smn.reg(crate::smn::SmnReg::<FCH_GPIO::Register>::new(FCH_SMN + pin));
+    fn drive(&self, acpi: &dyn Window) {
+        // `&dyn Window` is itself a (sized) window.
+        let control = |pin: Pin| Window::reg::<u32, gpio::CONTROL::Register>(&acpi, pin.control());
         match self.generation {
             Generation::Naples => {
-                gpio(PERST_PINS[0]).write(
-                    FCH_GPIO::OUTPUT_ENABLE::SET
-                        + FCH_GPIO::OUTPUT_VALUE::SET
-                        + FCH_GPIO::PULL_UP_ENABLE::SET
-                        + FCH_GPIO::DRV_STRENGTH.val(1),
+                control(PERST_PINS[0]).write(
+                    gpio::CONTROL::OUTPUT_ENABLE::SET
+                        + gpio::CONTROL::OUTPUT_VALUE::SET
+                        + gpio::CONTROL::PULL_UP::SET
+                        + gpio::CONTROL::DRIVE_STRENGTH.val(1),
                 );
-                smn.reg(crate::smn::SmnReg::<FCH_IOMUX_24::Register>::new(
-                    FCH_SMN + IOMUX_24,
-                ))
-                .modify(FCH_IOMUX_24::PIN26.val(0));
+                Window::reg::<u8, ()>(&acpi, PERST_PINS[0].iomux()).set(0);
             }
             Generation::Rome | Generation::Milan => PERST_PINS.iter().for_each(|&pin| {
-                gpio(pin).write(
-                    FCH_GPIO::OUTPUT_ENABLE::SET
-                        + FCH_GPIO::OUTPUT_VALUE::SET
-                        + FCH_GPIO::DRV_STRENGTH.val(2),
+                control(pin).write(
+                    gpio::CONTROL::OUTPUT_ENABLE::SET
+                        + gpio::CONTROL::OUTPUT_VALUE::SET
+                        + gpio::CONTROL::DRIVE_STRENGTH.val(2),
                 )
             }),
         }
     }
 }
 
-impl<P: ConfigRegionAccess + Clone> PcieReset for FchPerst<P> {
+impl PcieReset for FchPerst<'_> {
     fn release(&mut self, socket: u8, die: u8) {
         let bit = 1u16 << (socket * 4 + die);
         if self.released & bit != 0 {
@@ -926,13 +915,19 @@ impl<P: ConfigRegionAccess + Clone> PcieReset for FchPerst<P> {
             Generation::Naples => (socket, die),
             Generation::Rome | Generation::Milan => (socket, 0),
         };
-        if let Some((_, smn)) = self.fchs.iter().find(|(k, _)| *k == key) {
-            self.drive(smn);
+        if let Some(&(_, acpi)) = self.fchs.iter().find(|(k, _)| *k == key) {
+            self.drive(acpi);
+            fstart_log::info!(
+                "dxio: PERST released on socket {} die {}: {:#x}",
+                socket,
+                die,
+                acpi.read32(PERST_PINS[0].control())
+            );
         }
         if self.generation == Generation::Naples
-            && let Some(smn) = &self.naples_also
+            && let Some(acpi) = self.naples_also
         {
-            self.drive(smn);
+            self.drive(acpi);
         }
     }
 }
@@ -1632,9 +1627,17 @@ mod tests {
             ]
         );
 
+        use crate::smn::Smn;
+        use crate::sp3::fch::acpimmio;
+        use crate::window::SmnWindow;
+        let window = |m: &Model, bus| unsafe {
+            SmnWindow::new(Smn::on_bus(m.clone(), bus), acpimmio::SMN_BASE)
+        };
+
         let model = Model::default();
-        let mut fchs = Vec::new();
-        let _ = fchs.push(((1, 0), unsafe { Smn::on_bus(model.clone(), 0x80) }));
+        let socket1 = window(&model, 0x80);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((1, 0), &socket1));
         // SAFETY: model.
         let mut p = unsafe { FchPerst::new(Generation::Rome, fchs, None) };
         p.release(1, 0);
@@ -1651,16 +1654,12 @@ mod tests {
             .borrow_mut()
             .smn
             .insert((0, 0x02D0_1D18), 0x0102_0304);
-        let mut fchs = Vec::new();
-        let _ = fchs.push(((0, 1), unsafe { Smn::on_bus(model.clone(), 0) }));
+        let die1 = window(&model, 0);
+        let also = window(&model, 0x40);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((0, 1), &die1));
         // SAFETY: model.
-        let mut z = unsafe {
-            FchPerst::new(
-                Generation::Naples,
-                fchs,
-                Some(Smn::on_bus(model.clone(), 0x40)),
-            )
-        };
+        let mut z = unsafe { FchPerst::new(Generation::Naples, fchs, Some(&also)) };
         z.release(0, 1);
         let st = model.0.borrow();
         assert_eq!(st.smn[&(0, 0x02D0_2568)], 0xD2_0000);
@@ -1674,5 +1673,25 @@ mod tests {
             0xD2_0000,
             "and the hard-coded socket-1 bus"
         );
+
+        // Milan: socket 0 through its own window (host MMIO on hardware),
+        // socket 1 through SMN; each socket once.
+        let mmio = crate::sp3::fch::model::Mem::default();
+        let model = Model::default();
+        let socket1 = window(&model, 0x80);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((0, 0), &mmio));
+        let _ = fchs.push(((1, 0), &socket1));
+        // SAFETY: models.
+        let mut m = unsafe { FchPerst::new(Generation::Milan, fchs, None) };
+        m.release(0, 0);
+        m.release(0, 0);
+        for pin in [0x1568, 0x156C, 0x1228, 0x122C] {
+            assert_eq!(mmio.get(pin, 4), 0xC4_0000);
+        }
+        assert_eq!(mmio.0.borrow().log.len(), 4, "socket 0 once");
+        assert!(model.0.borrow().log.is_empty(), "not socket 1's");
+        m.release(1, 0);
+        assert_eq!(model.0.borrow().smn[&(0x80, 0x02D0_2228)], 0xC4_0000);
     }
 }
