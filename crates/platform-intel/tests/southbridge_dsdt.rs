@@ -76,3 +76,26 @@ fn ich8_dsdt_disassembles() {
     let aml = south.dsdt_aml(&CONFIG);
     assert_legacy_resources(&aml, &iasl_round_trip("ich8", &aml));
 }
+
+#[cfg(feature = "baytrail")]
+#[test]
+fn baytrail_dsdt_disassembles() {
+    use fstart_driver_intel::IntelNorthbridgeDriver;
+    use fstart_driver_intel::baytrail::{BaytrailNorth, BaytrailSouth, NorthConfig, SouthConfig};
+    static NORTH: NorthConfig = NorthConfig::new();
+    static SOUTH: SouthConfig = SouthConfig::new();
+    let north = BaytrailNorth::new_from_config(&NORTH).expect("north cluster config");
+    let south = BaytrailSouth::new_from_config(&SOUTH).expect("south cluster config");
+    let mut aml = north.dsdt_aml(&NORTH);
+    aml.extend(south.dsdt_aml(&SOUTH));
+    let dsl = iasl_round_trip("baytrail", &aml);
+    assert_legacy_resources(&aml, &dsl);
+    // PCI memory from TOLM (2 GiB) up to ECAM, then above it.
+    assert!(
+        dsl.contains("0x80000000") && dsl.contains("0xDFFFFFFF"),
+        "{dsl}"
+    );
+    // Bay Trail SATA is 00:13.0, and the three GPIO communities enumerate.
+    assert!(dsl.contains("Name (_ADR, 0x00130000)"), "{dsl}");
+    assert_eq!(dsl.matches("\"INT33FC\"").count(), 6, "{dsl}");
+}

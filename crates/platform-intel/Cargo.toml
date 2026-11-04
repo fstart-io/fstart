@@ -12,6 +12,7 @@ memory-cache = ["fstart-driver-intel/spi"]
 gm965-ich8 = ["dep:konst", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
 i945-ich7 = ["dep:konst", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
 pineview-ich7 = ["dep:konst", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
+baytrail = ["fstart-driver-intel/baytrail"]
 host = ["dep:fstart-image-build", "dep:serde_json"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
