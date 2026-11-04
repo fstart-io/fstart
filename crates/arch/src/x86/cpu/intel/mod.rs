@@ -10,6 +10,7 @@ pub mod microcode;
 pub mod model_2065x;
 pub mod penryn;
 pub mod pineview;
+pub mod silvermont;
 pub mod smm;
 pub mod smrr;
 pub mod speedstep;
