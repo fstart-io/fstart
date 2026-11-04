@@ -22,6 +22,18 @@ pub struct BoardManifest {
     pub variants: Vec<(String, Vec<String>)>,
     pub acpi_only_devices: bool,
     pub build_profile: Option<ProfileRef>,
+    /// The vendor download that works as this board's donor image.
+    pub donor: Option<crate::bundle::DonorSource>,
+    /// Human-readable name, e.g. "ThinkPad X60"; the selected variant's when
+    /// it has one.
+    pub name: Option<String>,
+    /// Declared variant names: variant id -> name.
+    pub variant_names: BTreeMap<String, String>,
+    /// For a variant that is a setting of its base board rather than another
+    /// board (`option = "..."`), the base board's id and the setting.
+    pub option_of: Option<(String, String)>,
+    /// Declared variant options: variant id -> setting.
+    pub variant_options: BTreeMap<String, String>,
 }
 
 /// Direct Cargo dependency exposing the Rust Plan<board::Board> host contract.
@@ -68,6 +80,10 @@ struct BoardMetadata {
     #[serde(default)]
     #[allow(dead_code)]
     amd: Option<toml::Value>,
+    /// See [`BoardManifest::donor`].
+    donor: Option<crate::bundle::DonorSource>,
+    /// See [`BoardManifest::name`].
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +91,9 @@ struct BoardMetadata {
 struct VariantMetadata {
     #[serde(default)]
     features: Vec<String>,
+    name: Option<String>,
+    /// The setting this variant stands for, when it isn't another board.
+    option: Option<String>,
 }
 
 /// Boards live at `boards/<vendor>/<board>/Cargo.toml`.
@@ -153,6 +172,12 @@ pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, St
             let mut resolved = board.clone();
             resolved.board = variant.clone();
             resolved.variant_features = variant_features.clone();
+            if let Some(name) = board.variant_names.get(variant) {
+                resolved.name = Some(name.clone());
+            }
+            if let Some(option) = board.variant_options.get(variant) {
+                resolved.option_of = Some((board.board.clone(), option.clone()));
+            }
             return Ok(resolved);
         }
     }
@@ -209,6 +234,11 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         .ok_or_else(|| format!("manifest has no parent: {}", manifest.display()))?
         .to_path_buf();
     let rel_dir = rel_dir_under_boards(&dir);
+    if let Some(donor) = &metadata.donor {
+        donor
+            .validate()
+            .map_err(|e| format!("{}: donor: {e}", manifest.display()))?;
+    }
 
     Ok(BoardManifest {
         board: metadata.board,
@@ -218,6 +248,17 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         platform: metadata.platform,
         target: metadata.target,
         variant_features: Vec::new(),
+        variant_names: metadata
+            .variants
+            .iter()
+            .filter_map(|(id, v)| Some((id.clone(), v.name.clone()?)))
+            .collect(),
+        variant_options: metadata
+            .variants
+            .iter()
+            .filter_map(|(id, v)| Some((id.clone(), v.option.clone()?)))
+            .collect(),
+        option_of: None,
         variants: metadata
             .variants
             .into_iter()
@@ -225,6 +266,8 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             .collect(),
         acpi_only_devices: metadata.acpi_only_devices,
         build_profile: metadata.build_profile,
+        donor: metadata.donor,
+        name: metadata.name,
     })
 }
 
@@ -426,5 +469,25 @@ mod tests {
                 assert_eq!(find(&root, variant).unwrap().package, board.package);
             }
         }
+    }
+
+    #[test]
+    fn variants_carry_their_own_names() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(
+            find(&root, "lenovo-t60").unwrap().name.as_deref(),
+            Some("ThinkPad T60")
+        );
+        assert_eq!(
+            find(&root, "lenovo-r60").unwrap().name.as_deref(),
+            Some("ThinkPad R60")
+        );
+        // R60 is another laptop; the S8030 bifurcation is a setting.
+        assert_eq!(find(&root, "lenovo-r60").unwrap().option_of, None);
+        let split = find(&root, "tyan-s8030-pcie3-x4x4x4x4")
+            .unwrap()
+            .option_of
+            .unwrap();
+        assert_eq!(split.0, "tyan-s8030");
     }
 }

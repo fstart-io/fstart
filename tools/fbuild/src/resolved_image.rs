@@ -23,8 +23,11 @@ impl ResolvedImage {
         }
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
-        // The halves of the generations the blobs have.
-        if let fstart_image_build::build_plan::Assembly::Sp3Flash(image) = &mut plan.assembly {
+        // The halves of the generations the blobs have; a bundle's assembly
+        // decides that once it has the donor.
+        if !selection.defer_firmware
+            && let fstart_image_build::build_plan::Assembly::Sp3Flash(image) = &mut plan.assembly
+        {
             image.keep_present(&|path| root.join(path).exists())?;
         }
         let environment = [

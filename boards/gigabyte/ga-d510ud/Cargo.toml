@@ -8,6 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "gigabyte-ga-d510ud"
+name = "GA-D510UD"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }

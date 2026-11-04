@@ -8,6 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "intel-d510mo"
+name = "D510MO"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }

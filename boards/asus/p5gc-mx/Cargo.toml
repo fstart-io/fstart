@@ -8,6 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "asus-p5gc-mx"
+name = "P5GC-MX"
 platform = "x86_64"
 target = "x86_64-unknown-none"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }

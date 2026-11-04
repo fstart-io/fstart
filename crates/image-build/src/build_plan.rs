@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
+    /// Public CLI payload selections supported by this board's platform.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publication_payloads: Vec<String>,
     pub payload: String,
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
@@ -615,6 +618,7 @@ mod tests {
             flat_capacity: span.size,
         };
         BuildPlan {
+            publication_payloads: vec![],
             payload: "halt".into(),
             units: vec![
                 launch,
@@ -817,6 +821,7 @@ mod tests {
             build: BoardBuildPolicy::default(),
         };
         let plan = |units| BuildPlan {
+            publication_payloads: vec![],
             payload: "halt".into(),
             units,
             stages: vec![],

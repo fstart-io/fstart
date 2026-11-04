@@ -8,6 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "ibase-mb899"
+name = "MB899"
 platform = "x86"
 target = "i686-unknown-none"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }

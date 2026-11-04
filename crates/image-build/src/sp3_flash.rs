@@ -935,6 +935,18 @@ impl Sp3FlashAssembly {
         Ok(())
     }
 
+    /// Pack the halves from their files (`read`) and compose them with the
+    /// stage unit's flat `reset` image and the assembled `ffs`.
+    pub fn assemble(
+        &self,
+        read: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+        reset: &[u8],
+        ffs: &[u8],
+    ) -> Result<Sp3Flash, String> {
+        let rom = packed_rom(&self.packed, &self.compose, read)?;
+        Ok(compose(&rom, &self.compose, reset, ffs)?)
+    }
+
     /// The stage unit is the plan's first stage and is linked for exactly
     /// the plan's image: stored and run at its destination, entered at its
     /// last 16 bytes.

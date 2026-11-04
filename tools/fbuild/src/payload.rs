@@ -146,6 +146,7 @@ impl Default for BuildArgs {
 impl BuildArgs {
     pub fn selection(&self, payload: Option<PayloadChoice>) -> BuildSelection {
         BuildSelection {
+            defer_firmware: false,
             payload: payload.map(|choice| choice.as_str().to_owned()),
             compiler_files: self.compiler_inputs.clone(),
             blobs: self.blobs.clone(),
