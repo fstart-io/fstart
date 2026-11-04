@@ -391,6 +391,8 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
         &mut self,
         resources: &[fstart_core::acpi::AcpiResource],
     ) -> Result<(), ServiceError> {
+        self.northbridge.pre_bus_scan()?;
+        self.southbridge.pre_bus_scan()?;
         let mut pci = fstart_pci::PciEcam::from_provider(&self.northbridge)
             .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
             .map_err(|_| ServiceError::HardwareError)?;
@@ -743,11 +745,7 @@ fn init_mp<P: IntelEarlyPlatform>(
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(fstart_stage::microcode_blob());
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-    // The supported Core 2 / Pineview platforms are single-socket, as in
-    // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future
-    // multi-socket platforms must provide system-wide discovery instead.
-    let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
-    let num_cpus = (((ebx >> 16) & 0xff) as u16).max(1);
+    let num_cpus = P::logical_cpus();
     let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
         num_cpus,

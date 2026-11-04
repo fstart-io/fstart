@@ -66,6 +66,8 @@ macro_rules! entry {
     };
 }
 
+#[cfg(feature = "baytrail")]
+pub mod baytrail;
 #[cfg(feature = "gm965-ich8")]
 pub mod gm965;
 #[cfg(feature = "i945-ich7")]
@@ -141,6 +143,14 @@ pub trait IntelEarlyPlatform:
     type Cpu: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
     #[cfg(feature = "mp")]
     fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
+    /// Logical CPUs in the package. CPUID leaf 1 is right for the legacy
+    /// packages; newer platforms count through their topology leaf.
+    #[cfg(feature = "mp")]
+    fn logical_cpus() -> u16 {
+        // CPUID is package-local; these platforms are single-socket.
+        let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
+        (((ebx >> 16) & 0xff) as u16).max(1)
+    }
     /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.
     #[cfg(feature = "acpi")]
     type AcpiContext: Default;
