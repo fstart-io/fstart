@@ -891,6 +891,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-intel-minnowmax"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-lenovo-t60"
 version = "0.1.0"
 dependencies = [

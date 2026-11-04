@@ -118,11 +118,15 @@ jobs:
               --features "$features,fstart-stage/x86_64" --lib
           done
           cargo test -p fstart-driver-intel \
-            --features acpi,i945,gm965,ich8,pineview \
+            --features acpi,i945,gm965,ich8,pineview,baytrail \
             --features gm45,ich9,ironlake,spi,display --lib
           cargo test -p fstart-platform-intel \
-            --features i945-ich7,gm965-ich8,pineview-ich7 \
+            --features i945-ich7,gm965-ich8,pineview-ich7,baytrail \
             --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi,host --lib
+          # The southbridge DSDTs are integration tests: iasl proves they
+          # decode, so they render outside `--lib`.
+          cargo test -p fstart-platform-intel \
+            --features acpi,baytrail,ich7-ich7 --test southbridge_dsdt
           cargo test -p fstart-boot --features crabefi-ui --lib
           cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
           cargo test -p fstart-log --no-default-features
