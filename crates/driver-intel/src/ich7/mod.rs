@@ -1833,14 +1833,7 @@ impl IntelIch7 {
     fn i8259_init(&self) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
-            use fstart_core::pio::outb;
-
-            // coreboot `setup_i8259()` vectors, as on ICH8.
-            fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
-            // Mask all slave IRQs and all master IRQs except IRQ2, so the
-            // cascade stays alive, matching coreboot setup_i8259().
-            outb(0x21, 0xFB);
-            outb(0xA1, 0xFF);
+            fstart_arch::x86::legacy_pc::setup_i8259();
 
             // Set IRQ 9 as level-triggered (ACPI SCI).
             // ELCR1 (port 0x4D0) and ELCR2 (port 0x4D1).

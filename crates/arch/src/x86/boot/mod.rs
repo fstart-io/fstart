@@ -40,6 +40,18 @@ pub fn system_reset(hard: bool) -> ! {
     }
 }
 
+/// Full reset through CF9: system reset with a power cycle (`FULL_RST`,
+/// coreboot `full_reset()`).
+pub fn full_reset() -> ! {
+    unsafe {
+        fstart_core::pio::outb(0xCF9, 0x00);
+        fstart_core::pio::outb(0xCF9, 0x0e);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 pub mod car;
 pub mod car_teardown;
 pub mod cpuid;

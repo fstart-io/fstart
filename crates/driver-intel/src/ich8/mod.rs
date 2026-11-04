@@ -1858,9 +1858,7 @@ impl IntelIch8 {
     fn i8259_init(&self) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
-            fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
-            fstart_core::pio::outb(0x21, 0xfb);
-            fstart_core::pio::outb(0xa1, 0xff);
+            fstart_arch::x86::legacy_pc::setup_i8259();
             let elcr2 = fstart_core::pio::inb(0x4d1);
             fstart_core::pio::outb(0x4d1, elcr2 | (1 << 1));
         }
