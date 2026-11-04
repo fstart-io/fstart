@@ -1,13 +1,14 @@
 //! Trusted CI-side tooling. Downloaded artifacts are data, never executables.
 mod nightly;
+mod sdk;
 
 use clap::{Parser, Subcommand};
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[command(about = "Publish verified CI artifacts as nightly releases")]
+#[command(about = "Publish verified CI artifacts and package the browser SDK")]
 struct Cli {
     #[command(subcommand)]
     command: Action,
@@ -19,6 +20,13 @@ enum Action {
     Nightly {
         #[arg(long, env = "GITHUB_REPOSITORY", default_value = "fstart-io/fstart")]
         repo: String,
+    },
+    /// ZIP/DEFLATE the Pages SDK, excluding test-only Node bindings.
+    PackSdk {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -40,5 +48,6 @@ fn main() -> Result<()> {
         Action::Nightly { repo } => {
             nightly::publish(&repo, time::OffsetDateTime::now_utc(), &mut gh)
         }
+        Action::PackSdk { root, out } => sdk::archive(&root, &out),
     }
 }
