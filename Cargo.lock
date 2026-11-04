@@ -1224,6 +1224,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-flash-console",
  "fstart-driver-lenovo",
+ "fstart-driver-rtc",
  "fstart-driver-spd",
  "fstart-driver-usbdebug",
  "fstart-intel-gma",
@@ -1283,6 +1284,16 @@ dependencies = [
  "fstart-core",
  "fstart-pci",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-rtc"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-log",
+ "tock-registers",
+ "ufmt",
 ]
 
 [[package]]
