@@ -9,8 +9,9 @@ pub use crate::southbridge::pirq::valid_pirq_route;
 use crate::southbridge::pmio_ich::{self as pmio, PmIo};
 use crate::southbridge::smbus::I801SmBus;
 use fstart_core::ConstVec;
+use fstart_core::indexed::Indexed;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
-use fstart_core::mmio::MmioReadWrite;
+use fstart_core::mmio::{MmioReadWrite, MmioRegister};
 use fstart_core::services::{
     ConsoleDevice, FirmwareImage, FirmwareImageProvider, ServiceError, SmBus,
 };
@@ -1483,58 +1484,72 @@ impl IntelIch9 {
             .set(encode_gpi_routes(&self.config.gpi_routing));
     }
 
-    fn sata_indexed_write32(&self, idx: u8, val: u32) {
+    /// SATA indexed register `index` behind SIRI/STRD (D31:F2 0xa0/0xa4).
+    fn sata_indexed<D: tock_registers::UIntLike>(
+        &self,
+        index: u8,
+        data: u16,
+    ) -> Indexed<MmioRegister<u8>, MmioRegister<D>> {
         let sata = ecam::EcamDevice::new(0, ich9::SATA_DEV, ich9::SATA_FUNC);
-        sata.write8(ich9::SATA_SIDX, idx);
-        sata.write32(ich9::SATA_SDAT, val);
+        // SAFETY: the SATA function's index/data pair; southbridge init owns
+        // it and every access selects its register first.
+        unsafe { Indexed::new(sata.register(ich9::SATA_SIDX), sata.register(data), index) }
+    }
+
+    fn sata_indexed_write32(&self, idx: u8, val: u32) {
+        self.sata_indexed::<u32>(idx, ich9::SATA_SDAT).set(val);
     }
 
     fn sata_indexed_rmw32(&self, idx: u8, clear: u32, set: u32) {
-        let sata = ecam::EcamDevice::new(0, ich9::SATA_DEV, ich9::SATA_FUNC);
-        sata.write8(ich9::SATA_SIDX, idx);
-        let val = sata.read32(ich9::SATA_SDAT);
-        sata.write32(ich9::SATA_SDAT, (val & !clear) | set);
+        let register = self.sata_indexed::<u32>(idx, ich9::SATA_SDAT);
+        register.set((register.get() & !clear) | set);
     }
 
+    /// Coreboot i82801ix `sata_enable_ahci_mmap()`.
     fn sata_enable_ahci_mmap(&self, sata: &SataConfig, is_mobile: bool, abar: usize) {
+        use crate::southbridge::ahci::{AhciRegs, CAP, GHC, PXCMD, VSP};
         let port_mask = if is_mobile { 0x33 } else { 0x3f };
-        let port_map = sata.ports & port_mask;
         // SAFETY: `abar` is the BAR5 window PCI enumeration assigned and
         // memory decoding was enabled by the caller.
-        unsafe {
-            let ghc = fstart_core::mmio::read32((abar + 0x04) as *const u32) | (1 << 31);
-            fstart_core::mmio::write32((abar + 0x04) as *mut u32, ghc);
-            let mut cap = fstart_core::mmio::read32(abar as *const u32);
-            cap |= 0x0c00_6080;
-            cap &= !0x0002_0060;
-            fstart_core::mmio::write32(abar as *mut u32, cap);
-            fstart_core::mmio::write32((abar + 0x0c) as *mut u32, port_map as u32);
-            let _ = fstart_core::mmio::read32((abar + 0x0c) as *const u32);
-            let _ = fstart_core::mmio::read32((abar + 0x0c) as *const u32);
-            let vsp = fstart_core::mmio::read32((abar + 0xa0) as *const u32) & !1;
-            fstart_core::mmio::write32((abar + 0xa0) as *mut u32, vsp);
-            for port in 0..6 {
-                if is_mobile && (port == 2 || port == 3) {
-                    continue;
-                }
-                let cmd = abar + 0x118 + port * 0x80;
-                let mut value = fstart_core::mmio::read32(cmd as *const u32);
-                if (sata.hotplug_map & (1 << port)) != 0 {
-                    value |= 1 << 18;
-                }
-                fstart_core::mmio::write32(cmd as *mut u32, value);
+        let hba = unsafe { &*(abar as *const AhciRegs) };
+        // AHCI mode first: no other ABAR register before it.
+        hba.ghc.modify(GHC::AE::SET);
+        // CCCS must be set; enable power management.
+        hba.cap.modify(
+            CAP::CCCS::SET
+                + CAP::PSC::SET
+                + CAP::SSC::SET
+                + CAP::SALP::SET
+                + CAP::SSS::SET
+                + CAP::SXS::CLEAR
+                + CAP::EMS::CLEAR
+                + CAP::PMS::CLEAR,
+        );
+        hba.pi.set(u32::from(sata.ports & port_mask));
+        // Coreboot reads PI back twice, like the PCH code.
+        let _ = hba.pi.get();
+        let _ = hba.pi.get();
+        hba.vsp.modify(VSP::SLPD::CLEAR);
+        // Lock the R/WO bits of the port command registers.
+        for (port, regs) in hba.ports.iter().enumerate() {
+            if is_mobile && (port == 2 || port == 3) {
+                continue;
             }
+            let hotplug = sata.hotplug_map & (1 << port) != 0;
+            let mut cmd = regs.cmd.extract();
+            if hotplug {
+                cmd.modify(PXCMD::HPCP::SET);
+            }
+            regs.cmd.set(cmd.get());
         }
     }
 
     fn sata_program_indexed(&self, is_mobile: bool) {
         self.sata_indexed_rmw32(0x18, (7 << 6) | (7 << 3) | 7, (3 << 3) | 3);
         self.sata_indexed_write32(0x28, 0x00cc_2080);
-        let sata = ecam::EcamDevice::new(0, ich9::SATA_DEV, ich9::SATA_FUNC);
-        sata.write8(ich9::SATA_SIDX, 0x40);
-        sata.write8(ich9::SATA_SDAT + 2, 0x22);
-        sata.write8(ich9::SATA_SIDX, 0x78);
-        sata.write8(ich9::SATA_SDAT + 2, 0x22);
+        // Byte 2 of indexed registers 0x40 and 0x78.
+        self.sata_indexed::<u8>(0x40, ich9::SATA_SDAT + 2).set(0x22);
+        self.sata_indexed::<u8>(0x78, ich9::SATA_SDAT + 2).set(0x22);
         if !is_mobile {
             self.sata_indexed_rmw32(0x84, (7 << 3) | 7, (3 << 3) | 3);
         }
