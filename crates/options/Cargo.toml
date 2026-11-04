@@ -6,3 +6,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+
+[features]
+# Options stored in an EDK2 variable store (`varstore`), as CrabEFI writes
+# them.
+varstore = ["dep:crabefi-efi-types"]
+
+[dependencies.crabefi-efi-types]
+git = "https://github.com/ArthurHeymans/CrabEFI.git"
+rev = "1eccb286ffd0677c5f3c0f0bf50939db47caf224"
+optional = true
