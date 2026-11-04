@@ -2473,7 +2473,7 @@ mod acpi_impl {
                 let name = alloc::format!("RP0{port}");
                 body.extend_from_slice(&acpi_fragments::pcie_root_port(&name, adr, port, false));
             }
-            body.extend_from_slice(&acpi_fragments::sata_node());
+            body.extend_from_slice(&acpi_fragments::sata_node(0x001f_0002));
             body.extend_from_slice(&acpi_fragments::smbus_node());
 
             // The downstream PCI bridge carries the board's own slot layout.

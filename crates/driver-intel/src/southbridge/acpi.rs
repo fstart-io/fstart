@@ -341,12 +341,12 @@ fn root_hub_node(ports: u8) -> Vec<u8> {
     fstart_acpi::aml_linker::device_vec("HUB7", &body).expect("root hub emission")
 }
 
-/// SATA controller node (`0:1f.2`) with its port children.
+/// SATA controller node at PCI `adr` (ICH `0:1f.2`) with its port children.
 #[must_use]
-pub fn sata_node() -> Vec<u8> {
+pub fn sata_node(adr: u32) -> Vec<u8> {
     acpi_dsl! {
         Device("SATA") {
-            Name("_ADR", 0x001F0002u32);
+            Name("_ADR", #{dword adr});
             Device("PRID") {
                 Name("_ADR", 0u32);
                 Device("DSK0") { Name("_ADR", 0u32); }
