@@ -402,25 +402,74 @@ pub fn set_ram_wb_ranges_from(
     FINAL_READY.store(false, Ordering::Release);
     Ok(())
 }
-fn ram_ranges() -> impl Iterator<Item = (u64, u64)> {
+fn ram_ranges() -> impl Iterator<Item = (u64, u64)> + Clone {
     (0..WB_RANGE_COUNT.load(Ordering::Acquire)).map(|index| {
         let (base, size) = &WB_RANGES[index];
         (base.load(Ordering::Relaxed), size.load(Ordering::Relaxed))
     })
 }
 
-/// Final BSP plan. WC is optional; RAM coverage is not.
+impl Plan {
+    /// [`Plan::build`] for RAM above 4 GiB that need not be cached: when
+    /// the variable MTRRs run out, retry with the RAM below 4 GiB only, like
+    /// coreboot's MTRR solver ("retrying excluding ranges above 4GiB"). The
+    /// RAM above 4 GiB is then uncacheable until the OS reprograms the
+    /// MTRRs; PAT cannot make MTRR-UC memory cacheable.
+    pub fn build_ram<R>(
+        caps: Capabilities,
+        ram: R,
+        wc: impl IntoIterator<Item = (u64, u64)> + Clone,
+    ) -> Result<Self, ServiceError>
+    where
+        R: IntoIterator<Item = (u64, u64)> + Clone,
+    {
+        Self::build(caps, ram.clone(), wc.clone()).or_else(|error| {
+            if error != ServiceError::NotSupported {
+                return Err(error);
+            }
+            let low = ram.into_iter().filter_map(|(base, size)| {
+                let end = base.saturating_add(size).min(FOUR_GIB);
+                (base < end).then(|| (base, end - base))
+            });
+            let plan = Self::build(caps, low, wc)?;
+            fstart_log::warn!("mtrr: ran out of variable MTRRs; RAM above 4 GiB is left uncached");
+            Ok(plan)
+        })
+    }
+
+    /// The final BSP solution. Coverage is given up in order of cost to the
+    /// OS: first the optional WC apertures, then RAM above 4 GiB. RAM below
+    /// 4 GiB is required.
+    pub fn final_solution<R>(
+        caps: Capabilities,
+        ram: R,
+        wc: &[(u64, u64)],
+    ) -> Result<Self, ServiceError>
+    where
+        R: IntoIterator<Item = (u64, u64)> + Clone,
+    {
+        Self::build(caps, ram.clone(), wc.iter().copied()).or_else(|error| {
+            if error != ServiceError::NotSupported {
+                return Err(error);
+            }
+            if !wc.is_empty() {
+                fstart_log::warn!(
+                    "mtrr: WC apertures do not fit; preserving complete RAM coverage"
+                );
+            }
+            Self::build_ram(caps, ram, [])
+        })
+    }
+}
+
+const FOUR_GIB: u64 = 1 << 32;
+
+/// Final BSP plan (see [`Plan::final_solution`]).
 /// # Safety
 /// Same requirements as [`Plan::apply`].
 pub unsafe fn install_final_solution(wc: &[(u64, u64)]) -> Result<(), ServiceError> {
     let caps = unsafe { Capabilities::current() };
-    let plan = Plan::build(caps, ram_ranges(), wc.iter().copied()).or_else(|error| {
-        if wc.is_empty() || error != ServiceError::NotSupported {
-            return Err(error);
-        }
-        fstart_log::warn!("mtrr: WC apertures do not fit; preserving complete RAM coverage");
-        Plan::build(caps, ram_ranges(), [])
-    })?;
+    let plan = Plan::final_solution(caps, ram_ranges(), wc)?;
     plan.print();
     unsafe {
         plan.apply()?;
@@ -433,7 +482,7 @@ pub unsafe fn install_final_solution(wc: &[(u64, u64)]) -> Result<(), ServiceErr
 /// # Safety
 /// Same requirements as [`Plan::apply`].
 pub unsafe fn setup_ram_wb() -> Result<(), ServiceError> {
-    let plan = Plan::build(unsafe { Capabilities::current() }, ram_ranges(), [])?;
+    let plan = Plan::build_ram(unsafe { Capabilities::current() }, ram_ranges(), [])?;
     unsafe { plan.apply() }
 }
 
