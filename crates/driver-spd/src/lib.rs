@@ -5,6 +5,7 @@
 //! confuse the SPD's rated maximum with the rate actually programmed.
 #![no_std]
 
+pub mod ddr3;
 pub mod ddr4;
 
 /// The SPD CRC: CRC-16/XMODEM (polynomial 0x1021, initial value 0), as
