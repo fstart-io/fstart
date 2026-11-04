@@ -20,6 +20,7 @@
 //!   the set if it fails, so a bad combination never stops the boot.
 //! - [`cfr`] describes a report as a coreboot CFR form, which setup menus
 //!   (CrabEFI, edk2) render and store under [`Meta::key`].
+//! - `varstore` (feature) reads options from an EDK2 variable store.
 //! - [`cmos`] keeps overrides in a window of CMOS RAM, by key, without a
 //!   layout; [`Layered`] reads one backend before another.
 //!
@@ -34,6 +35,8 @@ pub mod cfr;
 pub mod cmos;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "varstore")]
+pub mod varstore;
 
 use alloc::vec::Vec;
 

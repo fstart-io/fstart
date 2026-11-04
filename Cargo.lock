@@ -233,7 +233,7 @@ dependencies = [
 [[package]]
 name = "crabefi-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=551c6b836b99f7fe9ed30c6027de5794c5eb61dc#551c6b836b99f7fe9ed30c6027de5794c5eb61dc"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
@@ -267,7 +267,7 @@ dependencies = [
 [[package]]
 name = "crabefi-efi-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=551c6b836b99f7fe9ed30c6027de5794c5eb61dc#551c6b836b99f7fe9ed30c6027de5794c5eb61dc"
 dependencies = [
  "zerocopy",
 ]
@@ -284,7 +284,7 @@ dependencies = [
 [[package]]
 name = "crabefi-pkcs7"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=551c6b836b99f7fe9ed30c6027de5794c5eb61dc#551c6b836b99f7fe9ed30c6027de5794c5eb61dc"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -292,12 +292,12 @@ dependencies = [
 [[package]]
 name = "crabefi-runtime-abi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=551c6b836b99f7fe9ed30c6027de5794c5eb61dc#551c6b836b99f7fe9ed30c6027de5794c5eb61dc"
 
 [[package]]
 name = "crabefi-runtime-bundle"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4f6b7872ce26469e4514035699fd9d22524f75a7#4f6b7872ce26469e4514035699fd9d22524f75a7"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=551c6b836b99f7fe9ed30c6027de5794c5eb61dc#551c6b836b99f7fe9ed30c6027de5794c5eb61dc"
 
 [[package]]
 name = "crc32fast"
@@ -1007,6 +1007,9 @@ dependencies = [
 [[package]]
 name = "fstart-options"
 version = "0.1.0"
+dependencies = [
+ "crabefi-efi-types",
+]
 
 [[package]]
 name = "fstart-payload"

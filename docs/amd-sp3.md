@@ -277,8 +277,9 @@ knob whose key an earlier one has, and each SP3 board's tests check its
 sets with `fstart_options::duplicate_key`.
 
 A changed option applies at the next boot. A new image has an empty store:
-reflashing resets the settings. Linux and halt payloads boot the board's
-configuration.
+reflashing resets the settings. Every payload's boot reads the store
+(`fstart_options::varstore`, CrabEFI's EDK2 format); only the UEFI
+payload's menu changes it.
 
 ## SMM
 
