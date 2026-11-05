@@ -362,6 +362,26 @@ impl EcamDevice {
         self.write8(reg, (v & mask) | bits);
     }
 
+    /// Offset of the first standard capability `id`. The walk is bounded by
+    /// the 48 dwords a capability list can occupy, so a cycle terminates.
+    pub fn find_capability(&self, id: u8) -> Option<u16> {
+        const STATUS_CAP_LIST: u16 = 1 << 4;
+        if self.read16(0x06) & STATUS_CAP_LIST == 0 {
+            return None;
+        }
+        let mut next = self.read8(0x34) & !3;
+        for _ in 0..48 {
+            if next < 0x40 {
+                return None;
+            }
+            if self.read8(next.into()) == id {
+                return Some(next.into());
+            }
+            next = self.read8(u16::from(next) + 1) & !3;
+        }
+        None
+    }
+
     /// Physical base of the memory BAR at `reg` as PCI enumeration assigned
     /// it, or `None` when the window is unassigned or an I/O BAR.
     ///
@@ -499,5 +519,33 @@ impl ConfigRegionAccess for EcamDevice {
             "device accessor used for another PCI function"
         );
         self.write32(offset, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+
+    #[test]
+    fn capability_walk_is_bounded() {
+        use std::alloc::{Layout, alloc_zeroed, dealloc};
+        // Bus 0 needs 1 MiB of ECAM, 1 MiB aligned (init masks the base).
+        let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
+        let memory = unsafe { alloc_zeroed(layout) };
+        assert!(!memory.is_null());
+        init(memory as usize);
+        let device = EcamDevice::new(0, 3, 0);
+        assert_eq!(device.find_capability(0x0a), None); // no capability list
+        device.write16(0x06, 1 << 4);
+        device.write8(0x34, 0x50);
+        device.write16(0x50, 0x5801); // PM -> debug port
+        device.write16(0x58, 0x000a);
+        assert_eq!(device.find_capability(0x0a), Some(0x58));
+        device.write8(0x59, 0x50); // cycle without the capability
+        device.write8(0x58, 0x05);
+        assert_eq!(device.find_capability(0x0a), None);
+        init(0);
+        unsafe { dealloc(memory, layout) };
     }
 }
