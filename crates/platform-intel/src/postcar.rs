@@ -79,6 +79,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     let flash_log = dram_page_tables();
     crate::debug_console::install::<B>(flash_log);
     fstart_log::info!("{} postcar: {} console ready", platform, C::NAME);
+    crate::options::level(&crate::options::store());
 
     // Postcar keeps the bootblock's ROM page tables: it runs uncached from
     // DRAM, so it stays small, and the ramstage builds the DRAM tables first.
