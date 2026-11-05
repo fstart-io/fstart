@@ -4,6 +4,7 @@ pub mod gpio_ich;
 pub mod hda;
 pub mod ide;
 pub mod lpc;
+pub mod options;
 pub mod pirq;
 pub mod pmio_ich;
 pub mod smbus;
