@@ -1304,6 +1304,23 @@ mod tests {
     use super::*;
     use std::{env, fs};
 
+    /// Run the ACPICA `batch` on `dir/dsdt.aml`; `None` when ACPICA is not
+    /// installed, which skips the test like the other `acpiexec` tests.
+    fn acpiexec(dir: &std::path::Path, batch: &str) -> Option<std::process::Output> {
+        match std::process::Command::new("acpiexec")
+            .current_dir(dir)
+            .args(["-dt", "-fv", "0", "-b", batch, "dsdt.aml"])
+            .output()
+        {
+            Ok(result) => Some(result),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::eprintln!("skipping: acpiexec not installed");
+                None
+            }
+            Err(error) => panic!("acpiexec: {error}"),
+        }
+    }
+
     #[test]
     fn both_threshold_backends_expose_the_public_interface() {
         use crate::{
@@ -1342,7 +1359,6 @@ mod tests {
     #[test]
     fn threshold_methods_execute_for_both_register_layouts() {
         use super::super::h8::H8BatteryThresholdBackend;
-        use std::process::Command;
         for (index, backend) in [
             H8BatteryThresholdBackend::RegistersB0,
             H8BatteryThresholdBackend::Registers24 { bit7: false },
@@ -1409,11 +1425,10 @@ mod tests {
                 ";execute \\_SB.PCI0.LPCB.EC.BSTP;execute \\_SB.PCI0.LPCB.EC.TSH0;execute \\_SB.PCI0.LPCB.EC.TSH1"
             };
             let batch = std::format!("execute \\_SB.PCI0.LPCB.EC.HKEY.TST0{extra}");
-            let result = Command::new("acpiexec")
-                .current_dir(&dir)
-                .args(["-dt", "-fv", "0", "-b", &batch, "dsdt.aml"])
-                .output()
-                .unwrap();
+            let Some(result) = acpiexec(&dir, &batch) else {
+                fs::remove_dir_all(dir).unwrap();
+                return;
+            };
             let text = std::format!(
                 "{}{}",
                 std::string::String::from_utf8_lossy(&result.stdout),
@@ -1447,7 +1462,6 @@ mod tests {
     #[test]
     fn hotkeys_and_extended_battery_information_execute() {
         use crate::{ec::EcPorts, h8::H8Resources};
-        use std::process::Command;
 
         for (index, (extended, alternative)) in
             [(false, false), (false, true), (true, false), (true, true)]
@@ -1522,18 +1536,10 @@ mod tests {
                 fstart_acpi::platform::build_dsdt(&aml),
             )
             .unwrap();
-            let result = Command::new("acpiexec")
-                .current_dir(&dir)
-                .args([
-                    "-dt",
-                    "-fv",
-                    "0",
-                    "-b",
-                    "execute \\_SB.PCI0.LPCB.EC.TEST",
-                    "dsdt.aml",
-                ])
-                .output()
-                .unwrap();
+            let Some(result) = acpiexec(&dir, "execute \\_SB.PCI0.LPCB.EC.TEST") else {
+                fs::remove_dir_all(dir).unwrap();
+                return;
+            };
             let text = std::format!(
                 "{}{}",
                 std::string::String::from_utf8_lossy(&result.stdout),
