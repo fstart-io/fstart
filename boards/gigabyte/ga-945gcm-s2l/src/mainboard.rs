@@ -73,11 +73,14 @@ pub fn setup_environment() -> Result<(), ServiceError> {
 pub struct Acpi;
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
-    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
+    type Config = ();
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
         let sio = fstart_driver_superio::superio_dsdt_aml(&crate::ga945gcm_superio_config());
-        fstart_acpi::aml_linker::scope_vec(config.lpc_scope(), &sio)
-            .expect("GA-945GCM Super I/O AML")
+        fstart_acpi::aml_linker::scope_vec(
+            <crate::config::Hardware as fstart_acpi::PcNamespace>::LPC.as_str(),
+            &sio,
+        )
+        .expect("GA-945GCM Super I/O AML")
     }
 }
 

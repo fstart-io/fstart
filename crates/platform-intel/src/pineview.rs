@@ -266,29 +266,20 @@ impl Default for PineviewIch7Config {
         Self::new()
     }
 }
-/// Platform-owned ACPI namespace context for Pineview/ICH7 flows.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PineviewIch7AcpiContext;
-
-impl PineviewIch7AcpiContext {
-    #[must_use]
-    pub const fn sb_scope(self) -> &'static str {
-        "\\_SB_"
-    }
-
-    #[must_use]
-    pub const fn lpc_scope(self) -> &'static str {
-        "\\_SB_.PCI0.LPCB"
-    }
-
-    #[must_use]
-    pub const fn gpe_scope(self) -> &'static str {
-        "\\_GPE"
-    }
-}
 
 /// Pineview/ICH7 identity shared by host planning and the runtime flow.
 pub struct PineviewIch7<C>(core::marker::PhantomData<C>);
+
+/// The Pineview/ICH7 devices boards attach to, from the names the drivers give them.
+#[cfg(feature = "namespace")]
+impl<C> fstart_acpi::PcNamespace for PineviewIch7<C> {
+    const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
+        fstart_driver_intel::pineview::IntelPineview,
+        fstart_driver_intel::ich7::IntelIch7,
+    >();
+    const IGD: fstart_acpi::AcpiPath =
+        fstart_driver_intel::namespace::igd::<fstart_driver_intel::pineview::IntelPineview>();
+}
 
 impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for PineviewIch7<C> {
     type Config = PineviewIch7Platform;
@@ -322,8 +313,6 @@ mod stage {
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
             C::cpu_driver(ICH7_PMBASE, microcode)
         }
-        #[cfg(feature = "acpi")]
-        type AcpiContext = PineviewIch7AcpiContext;
     }
 
     impl IntelChipsetConfig for PineviewIch7Platform {

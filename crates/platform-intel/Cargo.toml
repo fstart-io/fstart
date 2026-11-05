@@ -9,9 +9,9 @@ publish = false
 default = []
 memory-cache = ["fstart-driver-intel/spi"]
 # Additive hardware availability; each board enables its chipset pair once.
-gm965-ich8 = ["dep:konst", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
-i945-ich7 = ["dep:konst", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
-pineview-ich7 = ["dep:konst", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
+gm965-ich8 = ["dep:konst", "namespace", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
+i945-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
+pineview-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
 host = ["dep:fstart-image-build", "dep:serde_json"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
@@ -42,7 +42,10 @@ stage = [
   "dep:ufmt",
   "fstart-core/pci",
 ]
+# The chipset's ACPI namespace (fstart_acpi::PcNamespace) for board ACPI.
+namespace = ["dep:fstart-acpi", "fstart-driver-intel/acpi"]
 acpi = [
+  "namespace",
   "dep:fstart-acpi",
   "dep:fstart-store",
   "dep:fstart-arch",

@@ -1297,6 +1297,8 @@ impl crate::IntelEcamConfig for IntelI945Config {
 
 impl crate::IntelNorthbridgeDriver for IntelI945 {
     type Config = IntelI945Config;
+    const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
+    const ACPI_IGD_NAME: &'static str = "GFX0";
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
@@ -1472,11 +1474,15 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelI945 {
 mod acpi_impl {
     extern crate alloc;
 
+    use crate::IntelNorthbridgeDriver;
+    use crate::namespace::pci_root;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
+
+    const IGD: &str = IntelI945::ACPI_IGD_NAME;
 
     /// Integrated graphics `GFX0`. With a panel, `LCD0` and the H8 hotkey
     /// helpers `INCB`/`DECB` drive the legacy backlight brightness byte (LBB,
@@ -1485,8 +1491,7 @@ mod acpi_impl {
         let mut gfx: Vec<u8> = acpi_dsl! { Name("_ADR", 0x00020000u32); }.into();
         gfx.extend(crate::gmch::acpi::gfx_power_methods());
         if !panel {
-            return fstart_acpi::aml_linker::device_vec("GFX0", &gfx)
-                .expect("GFX0 device emission");
+            return fstart_acpi::aml_linker::device_vec(IGD, &gfx).expect("GFX0 device emission");
         }
         gfx.extend_from_slice(&acpi_dsl! {
             // _BCL has been read: the OS owns brightness and hotkeys only notify.
@@ -1497,10 +1502,13 @@ mod acpi_impl {
                 10u32, 11u32, 12u32, 13u32, 14u32, 15u32
             ));
             Method("XBCM", 1, NotSerialized) {
-                Store((Arg0 << 4u32) | 0x0fu32, #{const "\\_SB_.PCI0.DSPC.BRTC"});
+                Store(
+                    (Arg0 << 4u32) | 0x0fu32,
+                    #{const path 4 pci_root::<IntelI945>().child("DSPC").child("BRTC")}
+                );
             }
             Method("XBQC", 0, NotSerialized) {
-                Return(#{const "\\_SB_.PCI0.DSPC.BRTC"} >> 4u32);
+                Return(#{const path 4 pci_root::<IntelI945>().child("DSPC").child("BRTC")} >> 4u32);
             }
             Method("_DOS", 1, NotSerialized) { }
             Device("LCD0") {
@@ -1531,8 +1539,7 @@ mod acpi_impl {
                 }
             }
         });
-        let mut aml =
-            fstart_acpi::aml_linker::device_vec("GFX0", &gfx).expect("GFX0 device emission");
+        let mut aml = fstart_acpi::aml_linker::device_vec(IGD, &gfx).expect("GFX0 device emission");
         aml.extend_from_slice(&acpi_dsl! {
             Device("DSPC") {
                 Name("_ADR", 0x00020001u32);
@@ -1555,9 +1562,8 @@ mod acpi_impl {
         /// host-bridge identity, MCHC PCI config field access with the i945
         /// BAR layout (EPBAR/MCHBAR/PCIEXBAR/DMIBAR at 0x40-0x4c), root PCI
         /// resources, `_OSC`, and the PDRC chipset-reserved ranges.
-        /// Southbridge devices attach through the `\\_SB.PCI0` scope emitted
-        /// by the ICH7 driver. GFX0/opregion arrives with display support;
-        /// PEGP only exists on the mobile variant.
+        /// The platform places the ICH7's devices in this root. GFX0/opregion
+        /// arrives with display support; PEGP only exists on the mobile variant.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
             let mchbar = config.mchbar as u32;
             let dmibar = config.dmibar as u32;
@@ -1575,7 +1581,7 @@ mod acpi_impl {
             let rcba = config.rcba as u32;
 
             let mut aml: Vec<u8> = acpi_dsl! {
-                Device("PCI0") {
+                Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_SEG", 0u32);
@@ -1672,7 +1678,7 @@ mod acpi_impl {
             let mut pci0 = crate::gmch::acpi::peg_node();
             pci0.extend(gfx_aml(config.igd.panel.is_some()));
             aml.extend(
-                fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &pci0)
+                fstart_acpi::aml_linker::scope_vec(const { pci_root::<Self>() }.as_str(), &pci0)
                     .expect("i945 PCI0 scope emission"),
             );
             // 945GM pairs with Socket M Core 2 CPUs: SpeedStep `_PSS` and

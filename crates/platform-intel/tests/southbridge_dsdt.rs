@@ -1,16 +1,20 @@
 //! The Intel southbridges' DSDT fragments have to be well-formed AML.
 //!
-//! Every chipset driver composes its `\_SB.PCI0` namespace from the fragments
+//! Every chipset driver composes its PCI root namespace from the fragments
 //! in `fstart_driver_intel::southbridge::acpi`, and a board build only checks
 //! that the bytes fit. `iasl` is what proves they decode, so render both ICH
 //! generations here and let it disassemble them.
 
-use fstart_acpi::device::AcpiDevice;
+use fstart_acpi::AcpiPath;
 use fstart_driver_intel::IntelSouthbridgeDriver;
 use fstart_driver_intel::ich7::{IntelIch7, IntelIch7Config};
 use fstart_driver_intel::ich8::{IntelIch8, IntelIch8Config};
+use fstart_driver_intel::namespace::SouthbridgeAcpi;
 use std::path::Path;
 use std::process::Command;
+
+/// The PCI root every Intel northbridge names.
+const PCI_ROOT: AcpiPath = AcpiPath::SB.child("PCI0");
 
 /// Disassemble `aml` as the DSDT `iasl` would see it on a booted machine.
 fn iasl_round_trip(chipset: &str, aml: &[u8]) -> String {
@@ -65,7 +69,7 @@ fn run_iasl(dir: &Path, args: &[&str]) -> std::process::Output {
 fn ich7_dsdt_disassembles() {
     static CONFIG: IntelIch7Config = IntelIch7Config::new();
     let south = IntelIch7::new_from_config(&CONFIG).expect("ICH7 config is valid");
-    let aml = south.dsdt_aml(&CONFIG);
+    let aml = south.dsdt_aml(&CONFIG, &PCI_ROOT);
     assert_legacy_resources(&aml, &iasl_round_trip("ich7", &aml));
 }
 
@@ -73,6 +77,6 @@ fn ich7_dsdt_disassembles() {
 fn ich8_dsdt_disassembles() {
     static CONFIG: IntelIch8Config = IntelIch8Config::new();
     let south = IntelIch8::new_from_config(&CONFIG).expect("ICH8 config is valid");
-    let aml = south.dsdt_aml(&CONFIG);
+    let aml = south.dsdt_aml(&CONFIG, &PCI_ROOT);
     assert_legacy_resources(&aml, &iasl_round_trip("ich8", &aml));
 }

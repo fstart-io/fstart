@@ -38,10 +38,10 @@ pub fn setup_superio() -> Result<(), ServiceError> {
 pub struct Acpi;
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
+    type Config = ();
 
-    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
-        d945gclf_mainboard_dsdt_aml(*config)
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
+        d945gclf_mainboard_dsdt_aml()
     }
 }
 
@@ -70,11 +70,10 @@ pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static
 mod acpi_impl {
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
-    use fstart_platform_intel::i945::I945Ich7AcpiContext;
 
     /// Board DSDT fragment: sleep/power buttons (coreboot `mainboard.asl`)
     /// plus the SuperIO scope (coreboot `superio.asl`) under LPCB.
-    pub fn d945gclf_mainboard_dsdt_aml(context: I945Ich7AcpiContext) -> Vec<u8> {
+    pub fn d945gclf_mainboard_dsdt_aml() -> Vec<u8> {
         let mut out = Vec::new();
 
         out.extend_from_slice(&acpi_dsl! {
@@ -93,8 +92,11 @@ mod acpi_impl {
         let config = crate::d945gclf_superio_config();
         let sio = fstart_driver_superio::superio_dsdt_aml(&config);
         out.extend(
-            fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio)
-                .expect("D945GCLF required Super I/O scope emission failed"),
+            fstart_acpi::aml_linker::scope_vec(
+                <crate::config::Hardware as fstart_acpi::PcNamespace>::LPC.as_str(),
+                &sio,
+            )
+            .expect("D945GCLF required Super I/O scope emission failed"),
         );
         out
     }

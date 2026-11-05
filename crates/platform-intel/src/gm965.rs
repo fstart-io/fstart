@@ -312,29 +312,20 @@ impl Default for Gm965Ich8Config {
         Self::new()
     }
 }
-/// Platform-owned ACPI namespace context for GM965/ICH8 flows.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Gm965Ich8AcpiContext;
-
-impl Gm965Ich8AcpiContext {
-    #[must_use]
-    pub const fn sb_scope(self) -> &'static str {
-        "\\_SB_"
-    }
-
-    #[must_use]
-    pub const fn lpc_scope(self) -> &'static str {
-        "\\_SB_.PCI0.LPCB"
-    }
-
-    #[must_use]
-    pub const fn gpe_scope(self) -> &'static str {
-        "\\_GPE"
-    }
-}
 
 /// GM965/ICH8 identity shared by host planning and the runtime flow.
 pub struct Gm965Ich8<C>(core::marker::PhantomData<C>);
+
+/// The GM965/ICH8 devices boards attach to, from the names the drivers give them.
+#[cfg(feature = "namespace")]
+impl<C> fstart_acpi::PcNamespace for Gm965Ich8<C> {
+    const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
+        fstart_driver_intel::gm965::IntelGm965,
+        fstart_driver_intel::ich8::IntelIch8,
+    >();
+    const IGD: fstart_acpi::AcpiPath =
+        fstart_driver_intel::namespace::igd::<fstart_driver_intel::gm965::IntelGm965>();
+}
 
 impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm965Ich8<C> {
     type Config = Gm965Ich8Platform;
@@ -368,8 +359,6 @@ mod stage {
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
             C::cpu_driver(ICH8_PMBASE, microcode)
         }
-        #[cfg(feature = "acpi")]
-        type AcpiContext = Gm965Ich8AcpiContext;
     }
 
     impl IntelChipsetConfig for Gm965Ich8Platform {

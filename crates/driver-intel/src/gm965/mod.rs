@@ -497,8 +497,6 @@ pub struct IntelGm965Config {
     pub igd: Gm965IgdConfig,
     /// SPD EEPROM addresses in GM965 slot order: ch0 slot0/1, ch1 slot0/1.
     pub spd_addresses: [u8; 4],
-    /// ACPI device name (reserved for future ACPI device generation).
-    pub acpi_name: Option<&'static str>,
 }
 
 impl IntelGm965Config {
@@ -513,7 +511,6 @@ impl IntelGm965Config {
             enable_peg: false,
             igd: Gm965IgdConfig::new(),
             spd_addresses: [0x50, 0, 0x51, 0],
-            acpi_name: Some("PCI0"),
         }
     }
 }
@@ -1316,6 +1313,8 @@ impl crate::IntelEcamConfig for IntelGm965Config {
 
 impl crate::IntelNorthbridgeDriver for IntelGm965 {
     type Config = IntelGm965Config;
+    const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
+    const ACPI_IGD_NAME: &'static str = "GFX0";
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
@@ -1735,6 +1734,7 @@ mod acpi_tests;
 mod acpi_impl {
     extern crate alloc;
 
+    use crate::IntelNorthbridgeDriver;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi_macros::acpi_dsl;
@@ -1750,8 +1750,7 @@ mod acpi_impl {
         /// a boot-critical level: host-bridge identity, MCHC PCI config field
         /// access, PDRC reserved chipset MMIO ranges, PEG/GFX device stubs,
         /// root PCI resources, `_OSC`, `_PIC`, sleep states, and CPU device
-        /// objects. Southbridge devices attach later through an absolute
-        /// `\\_SB.PCI0` scope emitted by the ICH8 driver.
+        /// objects. The platform places the ICH8's devices in this root.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
             let mchbar = config.mchbar;
             let dmibar = config.dmibar;
@@ -1777,7 +1776,7 @@ mod acpi_impl {
             let rcba: u32 = 0xfed1_c000;
 
             let mut aml: Vec<u8> = acpi_dsl! {
-                Device("PCI0") {
+                Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_SEG", 0u32);
@@ -1888,7 +1887,7 @@ mod acpi_impl {
                             Package(0x0000FFFFu32, 3u32, 0u32, 19u32)
                         ));
                     }
-                    Device("GFX0") {
+                    Device(#{const name Self::ACPI_IGD_NAME}) {
                         Name("_ADR", 0x00020000u32);
                         OperationRegion("GFXC", PciConfig, 0x00u32, 0x100u32);
                         Field("GFXC", DWordAcc, NoLock, Preserve) {

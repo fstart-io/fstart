@@ -833,8 +833,6 @@ pub struct IntelIch8Config {
     pub smbus_base: u16,
     /// GPIO pad configuration.
     pub gpio: GpioConfig,
-    /// ACPI device name (reserved for future ACPI device generation).
-    pub acpi_name: Option<&'static str>,
     /// C3 latency in microseconds.
     pub c3_latency: u16,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
@@ -874,7 +872,6 @@ impl IntelIch8Config {
             io_traps: ConstVec::new(empty_io_trap()),
             smbus_base: ich8::DEFAULT_SMBUS_BASE,
             gpio: GpioConfig::new(),
-            acpi_name: Some("LPCB"),
             c3_latency: 85,
             power_on_after_fail: 1,
             throttle_duty: 0,
@@ -2062,6 +2059,7 @@ impl crate::southbridge::smi::SmiControl for IntelIch8 {
 
 impl crate::IntelSouthbridgeDriver for IntelIch8 {
     type Config = IntelIch8Config;
+    const ACPI_LPC_NAME: &'static str = "LPCB";
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         if config
@@ -2319,8 +2317,10 @@ impl SmBus for IntelIch8 {
 mod acpi_impl {
     extern crate alloc;
 
+    use crate::IntelSouthbridgeDriver;
+    use crate::namespace::SouthbridgeAcpi;
     use alloc::vec::Vec;
-    use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi::AcpiPath;
     use fstart_acpi::platform::{
         HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
     };
@@ -2397,16 +2397,14 @@ mod acpi_impl {
         }
     }
 
-    impl AcpiDevice for IntelIch8 {
-        type Config = IntelIch8Config;
-
+    impl SouthbridgeAcpi for IntelIch8 {
         /// Produce ICH8-M DSDT content under `\\_SB.PCI0`.
         ///
         /// This is the reusable southbridge ACPI namespace: LPC legacy
         /// devices, PIRQ links, USB/HDA/SATA/SMBus/PCIe/PCI bridge device
         /// nodes, and APIC-mode `_PRT` routing. Mainboard-specific EC,
         /// dock/GPE/SMI trap glue is emitted by mainboard drivers.
-        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+        fn dsdt_aml(&self, config: &Self::Config, pci_root: &AcpiPath) -> Vec<u8> {
             // PM/GPIO SystemIO OpRegions are intentionally omitted until an
             // emitted AML method actually consumes them. Declaring unused
             // regions makes ACPI claim the native lpc_ich driver resources.
@@ -2526,26 +2524,21 @@ mod acpi_impl {
             .into();
             lpcb.extend_from_slice(&ps2);
             body.extend_from_slice(
-                &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb)
+                &fstart_acpi::aml_linker::device_vec(Self::ACPI_LPC_NAME, &lpcb)
                     .expect("ICH8 LPCB device emission"),
             );
 
             aml.extend_from_slice(
-                &fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &body)
+                &fstart_acpi::aml_linker::scope_vec(pci_root.as_str(), &body)
                     .expect("ICH8 PCI scope emission"),
             );
             aml
-        }
-
-        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            Vec::new()
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::IntelSouthbridgeDriver;
 
         /// `Name("_ADR", <dword>)` as the DSL encodes it.
         fn adr_name_aml(adr: u32) -> [u8; 10] {
@@ -2561,7 +2554,7 @@ mod acpi_impl {
         fn uhci_nodes_match_the_ich8_function_layout() {
             static CONFIG: IntelIch8Config = IntelIch8Config::new();
             let south = IntelIch8::new_from_config(&CONFIG).expect("ICH8 config is valid");
-            let aml = south.dsdt_aml(&CONFIG);
+            let aml = south.dsdt_aml(&CONFIG, &AcpiPath::SB.child("PCI0"));
 
             let has_adr = |adr: u32| aml.windows(10).any(|window| window == adr_name_aml(adr));
             // Coreboot i82801ix: USB1-3 on device 0x1D, USB4-6 on 0x1A.
