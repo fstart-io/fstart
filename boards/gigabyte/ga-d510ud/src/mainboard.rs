@@ -30,11 +30,14 @@ pub fn setup_superio() -> Result<(), ServiceError> {
 pub struct Acpi;
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = fstart_platform_intel::pineview::PineviewIch7AcpiContext;
-    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
+    type Config = ();
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
         let sio = fstart_driver_superio::superio_dsdt_aml(&crate::ga_d510ud_superio_config());
-        fstart_acpi::aml_linker::scope_vec(config.lpc_scope(), &sio)
-            .expect("GA-D510UD Super I/O AML")
+        fstart_acpi::aml_linker::scope_vec(
+            <crate::config::Hardware as fstart_acpi::PcNamespace>::LPC.as_str(),
+            &sio,
+        )
+        .expect("GA-D510UD Super I/O AML")
     }
 }
 pub static GA_D510UD_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =

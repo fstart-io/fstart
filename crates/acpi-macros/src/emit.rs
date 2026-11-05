@@ -38,9 +38,18 @@ struct RangeAction {
 #[derive(Clone)]
 struct ConstPatch {
     offset: usize,
-    kind: OperandKind,
-    integer: bool,
+    kind: ConstPatchKind,
     expr: TokenStream,
+}
+
+#[derive(Clone, Copy)]
+enum ConstPatchKind {
+    /// A fixed-width integer; `integer` slots carry an AML integer prefix.
+    Integer { kind: OperandKind, integer: bool },
+    /// An absolute path NameString of `depth` segments.
+    Path { depth: usize },
+    /// A four-byte NameSeg.
+    Name,
 }
 
 #[derive(Default, Clone)]
@@ -132,20 +141,28 @@ fn fragment_tokens(encoded: Encoded) -> TokenStream {
     });
     let patches = encoded.const_patches.iter().map(|patch| {
         let offset = patch.offset;
-        let kind = kind_tokens(patch.kind);
         let expr = &patch.expr;
-        let method = if patch.integer {
-            quote!(with_const_integer)
-        } else {
-            quote!(with_const)
-        };
-        quote!(.#method(#offset, #kind, {
-            // Widen first: signed negatives become > u64::MAX rather than
-            // silently wrapping to a valid QWord. u128 inputs retain high bits.
-            let value = ((#expr) | 0) as u128;
-            assert!(value <= u64::MAX as u128, "const AML operand is not a u64");
-            value as u64
-        }))
+        match patch.kind {
+            ConstPatchKind::Integer { kind, integer } => {
+                let kind = kind_tokens(kind);
+                let method = if integer {
+                    quote!(with_const_integer)
+                } else {
+                    quote!(with_const)
+                };
+                quote!(.#method(#offset, #kind, {
+                    // Widen first: signed negatives become > u64::MAX rather than
+                    // silently wrapping to a valid QWord. u128 inputs retain high bits.
+                    let value = ((#expr) | 0) as u128;
+                    assert!(value <= u64::MAX as u128, "const AML operand is not a u64");
+                    value as u64
+                }))
+            }
+            ConstPatchKind::Path { depth } => {
+                quote!(.with_const_path(#offset, #depth, &(#expr)))
+            }
+            ConstPatchKind::Name => quote!(.with_const_name(#offset, #expr)),
+        }
     });
     let fragment = quote! {
         fstart_acpi::AmlFragment::new([#(#bytes),*], [#(#fixups),*])#(#patches)*
@@ -155,8 +172,9 @@ fn fragment_tokens(encoded: Encoded) -> TokenStream {
     } else {
         let operands = encoded.fixups.iter().map(|fixup| &fixup.expr);
         quote! {{
-            static FRAGMENT: fstart_acpi::AmlFragment<#byte_len, #fixup_len> = #fragment;
-            fstart_acpi::BoundAmlFragment::new(&FRAGMENT, [#(fstart_acpi::checked_operand(#operands)),*])
+            let fragment: &'static fstart_acpi::AmlFragment<#byte_len, #fixup_len> =
+                const { &#fragment };
+            fstart_acpi::BoundAmlFragment::new(fragment, [#(fstart_acpi::checked_operand(#operands)),*])
         }}
     }
 }
@@ -409,10 +427,12 @@ fn op_args<const N: usize>(op: &[u8], args: [Encoded; N]) -> Result<Encoded> {
 fn encode_name_operand(name: &NameOrInterp) -> Result<Encoded> {
     match name {
         NameOrInterp::Literal(name) => encode_name_string(name),
-        NameOrInterp::Const(tokens) => {
-            let operand = parse_const_string(tokens)?;
-            encode_name_string(&operand)
-        }
+        NameOrInterp::Const(tokens) => match crate::parse::parse_operand_tokens(tokens.clone())? {
+            operand @ (Operand::ConstPath { .. } | Operand::ConstName { .. }) => {
+                encode_const_name(&operand)
+            }
+            _ => encode_name_string(&parse_const_string(tokens)?),
+        },
     }
 }
 
@@ -525,8 +545,10 @@ fn encode_operand(operand: &Operand) -> Result<Encoded> {
                 fixups: vec![],
                 const_patches: vec![ConstPatch {
                     offset: 1,
-                    kind: *kind,
-                    integer: true,
+                    kind: ConstPatchKind::Integer {
+                        kind: *kind,
+                        integer: true,
+                    },
                     expr: expr.clone(),
                 }],
             })
@@ -538,7 +560,35 @@ fn encode_operand(operand: &Operand) -> Result<Encoded> {
                 Ok(encode_integer(literal_u64(expr)?))
             }
         }
+        Operand::ConstPath { .. } | Operand::ConstName { .. } => encode_const_name(operand),
     }
+}
+
+/// A const path or NameSeg: a zero slot of its fixed size, filled during
+/// compilation by `AmlFragment::with_const_path`/`with_const_name`.
+fn encode_const_name(operand: &Operand) -> Result<Encoded> {
+    let (len, kind, expr) = match operand {
+        Operand::ConstPath { depth, expr } => {
+            let len = match depth {
+                0 => 2,
+                1 => 5,
+                2 => 10,
+                n => 3 + 4 * n,
+            };
+            (len, ConstPatchKind::Path { depth: *depth }, expr)
+        }
+        Operand::ConstName { expr } => (4, ConstPatchKind::Name, expr),
+        _ => unreachable!("only const names reach encode_const_name"),
+    };
+    Ok(Encoded {
+        bytes: vec![0; len],
+        fixups: vec![],
+        const_patches: vec![ConstPatch {
+            offset: 0,
+            kind,
+            expr: expr.clone(),
+        }],
+    })
 }
 
 fn kind_info(kind: OperandKind) -> (u8, usize) {
@@ -624,8 +674,10 @@ fn encode_buffer(values: &[DslValue]) -> Result<Encoded> {
                 data.raw(core::iter::repeat_n(0, width));
                 data.const_patches.push(ConstPatch {
                     offset,
-                    kind: *kind,
-                    integer: false,
+                    kind: ConstPatchKind::Integer {
+                        kind: *kind,
+                        integer: false,
+                    },
                     expr: expr.clone(),
                 });
             }
@@ -1028,8 +1080,10 @@ fn raw_value(value: &DslValue, expected: OperandKind) -> Result<Encoded> {
             fixups: vec![],
             const_patches: vec![ConstPatch {
                 offset: 0,
-                kind: *kind,
-                integer: false,
+                kind: ConstPatchKind::Integer {
+                    kind: *kind,
+                    integer: false,
+                },
                 expr: expr.clone(),
             }],
         }),

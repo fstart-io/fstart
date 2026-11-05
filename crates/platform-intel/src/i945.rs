@@ -366,29 +366,19 @@ impl Default for I945Ich7Config {
     }
 }
 
-/// Platform-owned ACPI namespace context for i945/ICH7 flows.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct I945Ich7AcpiContext;
-
-impl I945Ich7AcpiContext {
-    #[must_use]
-    pub const fn sb_scope(self) -> &'static str {
-        "\\_SB_"
-    }
-
-    #[must_use]
-    pub const fn lpc_scope(self) -> &'static str {
-        "\\_SB_.PCI0.LPCB"
-    }
-
-    #[must_use]
-    pub const fn gpe_scope(self) -> &'static str {
-        "\\_GPE"
-    }
-}
-
 /// i945/ICH7 identity shared by host planning and the runtime flow.
 pub struct I945Ich7<C>(core::marker::PhantomData<C>);
+
+/// The i945/ICH7 devices boards attach to, from the names the drivers give them.
+#[cfg(feature = "namespace")]
+impl<C> fstart_acpi::PcNamespace for I945Ich7<C> {
+    const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
+        fstart_driver_intel::i945::IntelI945,
+        fstart_driver_intel::ich7::IntelIch7,
+    >();
+    const IGD: fstart_acpi::AcpiPath =
+        fstart_driver_intel::namespace::igd::<fstart_driver_intel::i945::IntelI945>();
+}
 
 impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for I945Ich7<C> {
     type Config = I945Ich7Platform;
@@ -422,8 +412,6 @@ mod stage {
         fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu {
             C::cpu_driver(ICH7_PMBASE, microcode)
         }
-        #[cfg(feature = "acpi")]
-        type AcpiContext = I945Ich7AcpiContext;
     }
 
     impl IntelChipsetConfig for I945Ich7Platform {

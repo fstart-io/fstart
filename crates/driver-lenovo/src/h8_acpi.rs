@@ -18,20 +18,25 @@ extern crate alloc;
 extern crate std;
 
 use alloc::vec::Vec;
+use fstart_acpi::{AcpiPath, PcNamespace};
 use fstart_acpi_macros::acpi_dsl;
 
 use super::h8::H8Config;
 
-/// Produce all H8-related DSDT fragments.
-///
-/// `lpc_scope` is the board's LPC device path (e.g. `\_SB.PCI0.LPCB`); the
-/// EC device is emitted underneath it so `_PTS`/`_WAK` glue and the OS see
-/// the canonical ThinkPad paths (`...\LPCB.EC__`, `...\LPCB.EC__.HKEY`).
+/// The EC device, `EC__` on the platform's LPC bridge (coreboot's
+/// `h8_acpi_name()`), where the OS and board glue find the ThinkPad
+/// methods (`...EC__.HKEY`).
 #[must_use]
-pub fn dsdt_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
-    dsdt_aml_with_brightness(
+pub const fn ec<N: PcNamespace>() -> AcpiPath {
+    N::LPC.child("EC")
+}
+
+/// Produce all H8-related DSDT fragments: the EC device on the platform's
+/// LPC bridge and the root-scope objects that reach it.
+#[must_use]
+pub fn dsdt_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
+    dsdt_aml_with_brightness::<N>(
         cfg,
-        lpc_scope,
         &acpi_dsl! {
             Scope("\\") {
                 Method("BRTU", 0, NotSerialized) { }
@@ -44,12 +49,11 @@ pub fn dsdt_aml(cfg: &H8Config, lpc_scope: &str) -> Vec<u8> {
 /// Emit H8 with board-supplied root BRTU/BRTD methods. Boards without a
 /// graphics brightness interface retain the no-op hooks in [`dsdt_aml`].
 #[must_use]
-pub fn dsdt_aml_with_brightness(
+pub fn dsdt_aml_with_brightness<N: PcNamespace>(
     cfg: &H8Config,
-    lpc_scope: &str,
     brightness_hooks: &[u8],
 ) -> Vec<u8> {
-    let mut lpc = ec_device_aml(cfg);
+    let mut lpc = ec_device_aml::<N>(cfg);
     if cfg.bat_charge_behaviour {
         lpc.extend(hkey_charge_behaviour_aml());
     }
@@ -60,11 +64,11 @@ pub fn dsdt_aml_with_brightness(
     let mut out = root_helpers_aml(cfg);
     out.extend_from_slice(brightness_hooks);
     out.extend(
-        fstart_acpi::aml_linker::scope_vec(lpc_scope, &lpc)
+        fstart_acpi::aml_linker::scope_vec(N::LPC.as_str(), &lpc)
             .expect("H8 required LPC scope emission failed"),
     );
-    out.extend(thermal_zone_aml(cfg));
-    out.extend(si_status_aml(cfg));
+    out.extend(thermal_zone_aml::<N>(cfg));
+    out.extend(si_status_aml::<N>(cfg));
     out
 }
 
@@ -95,7 +99,7 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
 }
 
 /// The relative `EC__` device plus its sibling raw-resource devices.
-fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
+fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
     let ec_gpe = cfg.ec_gpe as u64;
     let os_data = cfg.resources.os.data.raw();
     let os_command = cfg.resources.os.command.raw();
@@ -289,7 +293,7 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
                 Method("_Q13", 0, NotSerialized) { Notify(SLPB, 0x80u32); }
                 Method("_Q14", 0, NotSerialized) { BRTU(); }
                 Method("_Q15", 0, NotSerialized) { BRTD(); }
-                Method("_Q16", 0, NotSerialized) { Notify(#{const "\\_SB_.PCI0.GFX0"}, 0x82u32); }
+                Method("_Q16", 0, NotSerialized) { Notify(#{const path 3 N::IGD}, 0x82u32); }
 
                 Method("_Q26", 0, NotSerialized) {
                     Notify(AC__, 0x80u32);
@@ -824,7 +828,7 @@ fn ec_device_aml(cfg: &H8Config) -> Vec<u8> {
 
 /// The `\_TZ` thermal zones (coreboot `thermal.asl`). `X61` selects both
 /// zones via `H8_HAS_2ND_THERMAL_ZONE`.
-fn thermal_zone_aml(_cfg: &H8Config) -> Vec<u8> {
+fn thermal_zone_aml<N: PcNamespace>(_cfg: &H8Config) -> Vec<u8> {
     acpi_dsl! {
         Scope("\\_TZ_") {
             Method("CTOK", 1, NotSerialized) {
@@ -853,7 +857,7 @@ fn thermal_zone_aml(_cfg: &H8Config) -> Vec<u8> {
                 Method("_CRT", 0, NotSerialized) { Return(CTOK(GCRT())); }
                 Method("_PSV", 0, NotSerialized) { Return(CTOK(GPSV())); }
                 Method("_TMP", 0, NotSerialized) {
-                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.TMP0"};
+                    Local0 = #{const path 5 ec::<N>().child("TMP0")};
                     If (Local0 == 128u32) { Return(CTOK(40u32)); }
                     Return(CTOK(Local0));
                 }
@@ -867,12 +871,12 @@ fn thermal_zone_aml(_cfg: &H8Config) -> Vec<u8> {
                 PowerResource("FPWR", 0u8, 0u16) {
                     Method("_STA", 0, NotSerialized) { Return(FLVL); }
                     Method("_ON", 0, NotSerialized) {
-                        #{const "\\_SB_.PCI0.LPCB.EC__.FANE"}(1u32);
+                        #{const path 5 ec::<N>().child("FANE")}(1u32);
                         FLVL = 1u32;
                         Notify(#{const "\\_TZ_.THM0"}, 0x82u32);
                     }
                     Method("_OFF", 0, NotSerialized) {
-                        #{const "\\_SB_.PCI0.LPCB.EC__.FANE"}(0u32);
+                        #{const path 5 ec::<N>().child("FANE")}(0u32);
                         FLVL = 0u32;
                         Notify(#{const "\\_TZ_.THM0"}, 0x82u32);
                     }
@@ -892,7 +896,7 @@ fn thermal_zone_aml(_cfg: &H8Config) -> Vec<u8> {
                 Method("_CRT", 0, NotSerialized) { Return(CTOK(99u32)); }
                 Method("_PSV", 0, NotSerialized) { Return(CTOK(94u32)); }
                 Method("_TMP", 0, NotSerialized) {
-                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.TMP1"};
+                    Local0 = #{const path 5 ec::<N>().child("TMP1")};
                     If (Local0 == 128u32) { Return(CTOK(40u32)); }
                     Return(CTOK(Local0));
                 }
@@ -903,25 +907,25 @@ fn thermal_zone_aml(_cfg: &H8Config) -> Vec<u8> {
 }
 
 /// `\_SI._SST` system status indicator (coreboot `systemstatus.asl`).
-fn si_status_aml(_cfg: &H8Config) -> Vec<u8> {
+fn si_status_aml<N: PcNamespace>(_cfg: &H8Config) -> Vec<u8> {
     acpi_dsl! {
         Scope("\\_SI") {
             Method("_SST", 1, NotSerialized) {
                 If (Arg0 == 0u32) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x00u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x07u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0x00u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0x07u32);
                 }
                 If (Arg0 == 1u32) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x80u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x07u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0x80u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0x07u32);
                 }
                 If (Arg0 == 2u32) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x80u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0xC7u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0x80u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0xC7u32);
                 }
                 If (Arg0 == 3u32) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0xA0u32);
-                    #{const "\\_SB_.PCI0.LPCB.EC__.TLED"}(0x87u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0xA0u32);
+                    #{const path 5 ec::<N>().child("TLED")}(0x87u32);
                 }
             }
         }
@@ -1115,6 +1119,16 @@ fn hkey_thresholds_aml() -> Vec<u8> {
     .into()
 }
 
+/// The Intel chipset namespace of the supported ThinkPads, for tests.
+#[cfg(test)]
+pub(crate) struct TestNamespace;
+
+#[cfg(test)]
+impl PcNamespace for TestNamespace {
+    const LPC: AcpiPath = AcpiPath::SB.child("PCI0").child("LPCB");
+    const IGD: AcpiPath = AcpiPath::SB.child("PCI0").child("GFX0");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,8 +1145,7 @@ mod tests {
                 "IBM0068",
             )
         };
-        let lpc = "\\_SB_.PCI0.LPCB";
-        let aml = dsdt_aml(&cfg, lpc);
+        let aml = dsdt_aml::<TestNamespace>(&cfg);
         // Relocating the supplied resources must relocate every emitted window.
         for (base, alignment, length) in [
             (cfg.resources.os.data.raw(), 1, 1),
@@ -1171,7 +1184,7 @@ mod tests {
         if env::var_os("H8_DUMP_AML").is_some() {
             // Write the full surface wrapped in a minimal DSDT table so
             // `iasl -d` can validate the encoding end-to-end.
-            let aml = dsdt_aml(&cfg, "\\_SB_.PCI0.LPCB");
+            let aml = dsdt_aml::<TestNamespace>(&cfg);
             let mut table = alloc::vec::Vec::new();
             table.extend_from_slice(b"DSDT");
             let len = 36 + aml.len();

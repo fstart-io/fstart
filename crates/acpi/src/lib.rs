@@ -55,6 +55,7 @@ pub mod ivrs;
 pub mod msct;
 pub mod numa;
 pub mod osc;
+pub mod path;
 pub mod pcct;
 pub mod pirq;
 pub mod platform;
@@ -81,6 +82,7 @@ pub use acpi_tables::sdt;
 pub use acpi_tables::xsdt;
 pub use acpi_tables::{Aml, AmlSink};
 pub use fstart_acpi_macros::acpi_dsl;
+pub use path::{AcpiPath, PcNamespace};
 
 /// The MCFG of the PCI segments `roots` decode: the same roots a platform
 /// hands its payload in the machine description.
@@ -360,6 +362,72 @@ impl<const N: usize, const K: usize> AmlFragment<N, K> {
         let mut index = 0;
         while index < width {
             self.bytes[offset + index] = bytes[index];
+            index += 1;
+        }
+        self
+    }
+
+    /// Write the NameString of the absolute `path` into its reserved slot
+    /// (`acpi_dsl!` `#{const path N EXPR}`). The slot was sized for `depth`
+    /// segments; a path of another depth is a compile error.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_const_path(mut self, offset: usize, depth: usize, path: &AcpiPath) -> Self {
+        assert!(
+            path.depth() == depth,
+            "ACPI path depth differs from its #{{const path N}} slot"
+        );
+        let len = AcpiPath::name_string_len(depth);
+        assert!(
+            offset <= N && len <= N - offset,
+            "invalid const AML path patch"
+        );
+        let mut at = offset;
+        self.bytes[at] = b'\\';
+        at += 1;
+        match depth {
+            0 => {
+                self.bytes[at] = 0;
+                return self;
+            }
+            1 => {}
+            2 => {
+                self.bytes[at] = 0x2e;
+                at += 1;
+            }
+            _ => {
+                self.bytes[at] = 0x2f;
+                self.bytes[at + 1] = depth as u8;
+                at += 2;
+            }
+        }
+        let mut index = 0;
+        while index < depth {
+            let segment = path.segment(index);
+            let mut byte = 0;
+            while byte < 4 {
+                self.bytes[at] = segment[byte];
+                at += 1;
+                byte += 1;
+            }
+            index += 1;
+        }
+        self
+    }
+
+    /// Write the NameSeg `name` into its reserved four bytes (`acpi_dsl!`
+    /// `#{const name EXPR}`).
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_const_name(mut self, offset: usize, name: &str) -> Self {
+        let segment = path::name_seg(name);
+        assert!(
+            offset <= N && 4 <= N - offset,
+            "invalid const AML name patch"
+        );
+        let mut index = 0;
+        while index < 4 {
+            self.bytes[offset + index] = segment[index];
             index += 1;
         }
         self

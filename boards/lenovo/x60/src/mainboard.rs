@@ -5,7 +5,6 @@ use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
 use fstart_driver_lenovo::x6::dock;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_intel::i945::I945Ich7AcpiContext;
 
 /// The dock's COM1.
 pub const fn console() -> Ns16550Config {
@@ -150,14 +149,14 @@ fn ricoh_sd_write_protect() -> Result<(), ServiceError> {
 
 pub struct Acpi;
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = I945Ich7AcpiContext;
-    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
-        x60_mainboard_dsdt_aml(*config)
+    type Config = ();
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
+        x60_mainboard_dsdt_aml()
     }
 }
 
-pub fn x60_mainboard_dsdt_aml(context: I945Ich7AcpiContext) -> alloc::vec::Vec<u8> {
-    fstart_driver_lenovo::x6::acpi::dsdt_aml(&crate::config::X60_H8, context.lpc_scope())
+pub fn x60_mainboard_dsdt_aml() -> alloc::vec::Vec<u8> {
+    fstart_driver_lenovo::x6::acpi::dsdt_aml::<crate::config::Hardware>(&crate::config::X60_H8)
 }
 
 static X60_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
@@ -213,8 +212,12 @@ mod tests {
         let north = IntelI945::new_from_config(north_config).unwrap();
         let south = IntelIch7::new_from_config(south_config).unwrap();
         let mut aml = north.dsdt_aml(north_config);
-        aml.extend(south.dsdt_aml(south_config));
-        aml.extend(x60_mainboard_dsdt_aml(I945Ich7AcpiContext));
+        aml.extend(fstart_driver_intel::namespace::SouthbridgeAcpi::dsdt_aml(
+            &south,
+            south_config,
+            &fstart_driver_intel::namespace::pci_root::<IntelI945>(),
+        ));
+        aml.extend(x60_mainboard_dsdt_aml());
         let dsdt = fstart_acpi::platform::build_dsdt(&aml);
         let dir = std::env::temp_dir().join(std::format!("fstart-x60-dsdt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

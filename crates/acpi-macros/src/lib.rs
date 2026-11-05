@@ -17,6 +17,10 @@
 //! expected. Named const integer expressions use an explicit fixed width, for
 //! example `#{const dword MMIO_BASE + 4}`. Const string variables are not
 //! supported because their length would change the surrounding AML layout.
+//! Derived names have a fixed size instead: `#{const path N EXPR}` is an
+//! absolute `fstart_acpi::AcpiPath` of `N` segments and `#{const name EXPR}`
+//! a NameSeg `&str`; both are encoded during compilation, also from the
+//! enclosing function's generic parameters.
 
 extern crate proc_macro;
 

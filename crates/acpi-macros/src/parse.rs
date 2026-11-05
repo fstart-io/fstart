@@ -54,6 +54,11 @@ pub enum Operand {
         kind: Option<OperandKind>,
         expr: TokenStream,
     },
+    /// `#{const path N EXPR}`: an absolute `fstart_acpi::AcpiPath` of `N`
+    /// segments, encoded during compilation into a slot of fixed size.
+    ConstPath { depth: usize, expr: TokenStream },
+    /// `#{const name EXPR}`: a `&str` NameSeg, padded to four bytes.
+    ConstName { expr: TokenStream },
 }
 
 /// Binary operator in an expression.
@@ -2298,6 +2303,44 @@ pub(crate) fn parse_operand_tokens(tokens: TokenStream) -> Result<Operand> {
     };
     if const_kind.is_some() {
         rest.remove(0);
+    }
+    // `path`/`name` take the width slot; with a width, or followed by `::`,
+    // they are the start of an ordinary const expression.
+    let keyword = match (const_kind, rest.first(), rest.get(1)) {
+        (None, Some(TokenTree::Ident(ident)), next) if !matches!(next, Some(TokenTree::Punct(p)) if p.as_char() == ':') => {
+            Some(ident.clone())
+        }
+        _ => None,
+    };
+    if let Some(ident) = keyword {
+        match ident.to_string().as_str() {
+            "path" => {
+                let span = ident.span();
+                let Some(TokenTree::Literal(depth)) = rest.get(1) else {
+                    return Err(Error::new(span, "expected #{const path N EXPR}"));
+                };
+                let depth = parse_usize_literal(&depth.to_string())
+                    .ok()
+                    .filter(|depth| *depth <= 255)
+                    .ok_or_else(|| Error::new(depth.span(), "invalid path depth"))?;
+                let expr: TokenStream = rest.into_iter().skip(2).collect();
+                if expr.is_empty() {
+                    return Err(Error::new(span, "missing const path expression"));
+                }
+                syn::parse2::<syn::Expr>(expr.clone())?;
+                return Ok(Operand::ConstPath { depth, expr });
+            }
+            "name" => {
+                let span = ident.span();
+                let expr: TokenStream = rest.into_iter().skip(1).collect();
+                if expr.is_empty() {
+                    return Err(Error::new(span, "missing const name expression"));
+                }
+                syn::parse2::<syn::Expr>(expr.clone())?;
+                return Ok(Operand::ConstName { expr });
+            }
+            _ => {}
+        }
     }
     if rest.is_empty() {
         return Err(Error::new(

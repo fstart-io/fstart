@@ -141,9 +141,6 @@ pub trait IntelEarlyPlatform:
     type Cpu: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
     #[cfg(feature = "mp")]
     fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
-    /// Platform-owned ACPI namespace context handed to `AcpiDevice` emitters.
-    #[cfg(feature = "acpi")]
-    type AcpiContext: Default;
 }
 
 /// ACPI contribution required of a northbridge driver; vacuous without ACPI.
@@ -167,15 +164,14 @@ impl<NB, T> NorthbridgeAcpi<NB> for T {}
 /// ACPI contribution required of a southbridge driver; vacuous without ACPI.
 #[cfg(all(feature = "stage", feature = "acpi"))]
 pub trait SouthbridgeAcpi<SB: IntelSouthbridgeDriver>:
-    fstart_acpi::device::AcpiDevice<Config = SB::Config> + fstart_acpi::platform::X86PlatformProvider
+    fstart_driver_intel::namespace::SouthbridgeAcpi + fstart_acpi::platform::X86PlatformProvider
 {
 }
 #[cfg(all(feature = "stage", feature = "acpi"))]
 impl<SB, T> SouthbridgeAcpi<SB> for T
 where
     SB: IntelSouthbridgeDriver,
-    T: fstart_acpi::device::AcpiDevice<Config = SB::Config>
-        + fstart_acpi::platform::X86PlatformProvider,
+    T: fstart_driver_intel::namespace::SouthbridgeAcpi + fstart_acpi::platform::X86PlatformProvider,
 {
 }
 #[cfg(all(feature = "stage", not(feature = "acpi")))]

@@ -124,8 +124,6 @@ pub struct IntelPineviewConfig {
     pub igd: PineviewIgdConfig,
     /// SPD EEPROM SMBus addresses for DIMM slots A/B. Zero means absent.
     pub spd_addresses: [u8; 4],
-    /// ACPI device name (e.g., "MCHC"). If `None`, no ACPI node.
-    pub acpi_name: Option<&'static str>,
 }
 
 const fn default_spd_addresses() -> [u8; 4] {
@@ -165,7 +163,6 @@ impl IntelPineviewConfig {
             ecam_base: hostbridge::DEFAULT_ECAM_BASE as u64,
             igd: PineviewIgdConfig::new(),
             spd_addresses: [0x50, 0x51, 0, 0],
-            acpi_name: Some("MCHC"),
         }
     }
 }
@@ -521,6 +518,8 @@ impl crate::IntelEcamConfig for IntelPineviewConfig {
 
 impl crate::IntelNorthbridgeDriver for IntelPineview {
     type Config = IntelPineviewConfig;
+    const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
+    const ACPI_IGD_NAME: &'static str = "GFX0";
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
@@ -1206,6 +1205,7 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelPineview {
 #[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
+    use crate::IntelNorthbridgeDriver;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
 
@@ -1362,7 +1362,7 @@ mod acpi_impl {
             let pci_mmio64_limit = fstart_arch::x86::physical_address_limit() - 1;
 
             aml.extend(Vec::from(fstart_acpi_macros::acpi_dsl! {
-                Device("PCI0") {
+                Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_BBN", 0u32);
@@ -1405,11 +1405,15 @@ mod acpi_impl {
             .into();
             gfx.extend(crate::gmch::acpi::gfx_power_methods());
             pci0.extend(
-                fstart_acpi::aml_linker::device_vec("GFX0", &gfx).expect("GFX0 device emission"),
+                fstart_acpi::aml_linker::device_vec(Self::ACPI_IGD_NAME, &gfx)
+                    .expect("GFX0 device emission"),
             );
             aml.extend(
-                fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &pci0)
-                    .expect("Pineview PCI0 scope emission"),
+                fstart_acpi::aml_linker::scope_vec(
+                    const { crate::namespace::pci_root::<Self>() }.as_str(),
+                    &pci0,
+                )
+                .expect("Pineview PCI0 scope emission"),
             );
 
             // ---------------------------------------------------------------

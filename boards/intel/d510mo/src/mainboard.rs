@@ -31,8 +31,8 @@ pub fn init_clock(smbus: &mut impl SmBus, resume: bool) -> Result<(), ServiceErr
 pub struct Acpi;
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = fstart_platform_intel::pineview::PineviewIch7AcpiContext;
-    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
+    type Config = ();
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
         use fstart_acpi_macros::acpi_dsl;
         let mut aml = acpi_dsl! {
             Scope("\\_SB_") {
@@ -43,8 +43,11 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
         .to_vec();
         let sio = fstart_driver_superio::superio_dsdt_aml(&crate::d510mo_superio_config());
         aml.extend(
-            fstart_acpi::aml_linker::scope_vec(config.lpc_scope(), &sio)
-                .expect("D510MO Super I/O AML"),
+            fstart_acpi::aml_linker::scope_vec(
+                <crate::config::Hardware as fstart_acpi::PcNamespace>::LPC.as_str(),
+                &sio,
+            )
+            .expect("D510MO Super I/O AML"),
         );
         aml
     }

@@ -44,22 +44,24 @@ pub fn setup_clock(bus: &mut impl SmBus) {
 pub struct Acpi;
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = fstart_platform_intel::pineview::PineviewIch7AcpiContext;
+    type Config = ();
 
-    fn dsdt_aml(&self, config: &Self::Config) -> alloc::vec::Vec<u8> {
-        d41s_mainboard_dsdt_aml(*config)
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
+        d41s_mainboard_dsdt_aml()
     }
 }
 
 mod acpi_impl {
     use alloc::vec::Vec;
-    use fstart_platform_intel::pineview::PineviewIch7AcpiContext;
 
-    pub fn d41s_mainboard_dsdt_aml(context: PineviewIch7AcpiContext) -> Vec<u8> {
+    pub fn d41s_mainboard_dsdt_aml() -> Vec<u8> {
         let config = crate::d41s_superio_config();
         let sio = fstart_driver_superio::superio_dsdt_aml(&config);
-        fstart_acpi::aml_linker::scope_vec(context.lpc_scope(), &sio)
-            .expect("D41S required Super I/O scope emission failed")
+        fstart_acpi::aml_linker::scope_vec(
+            <crate::config::Hardware as fstart_acpi::PcNamespace>::LPC.as_str(),
+            &sio,
+        )
+        .expect("D41S required Super I/O scope emission failed")
     }
 }
 

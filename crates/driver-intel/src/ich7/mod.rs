@@ -718,8 +718,6 @@ pub struct IntelIch7Config {
     pub smbus_base: u16,
     /// GPIO pad configuration (sets 1/2/3, all 76 pins).
     pub gpio: GpioConfig,
-    /// ACPI device name (e.g., "LPCB"). If `None`, no ACPI node.
-    pub acpi_name: Option<&'static str>,
     /// C3 latency in microseconds (for FADT p_lvl3_lat).
     pub c3_latency: u16,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
@@ -760,7 +758,6 @@ impl IntelIch7Config {
             c4_on_c3: false,
             smbus_base: ich7::DEFAULT_SMBUS_BASE,
             gpio: GpioConfig::new(),
-            acpi_name: Some("LPCB"),
             c3_latency: default_c3_latency(),
             power_on_after_fail: 1,
         }
@@ -1177,6 +1174,7 @@ impl crate::southbridge::smi::SmiControl for IntelIch7 {
 
 impl crate::IntelSouthbridgeDriver for IntelIch7 {
     type Config = IntelIch7Config;
+    const ACPI_LPC_NAME: &'static str = "LPCB";
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         if config
@@ -2233,9 +2231,11 @@ impl IntelIch7 {
 #[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
+    use crate::IntelSouthbridgeDriver;
+    use crate::namespace::SouthbridgeAcpi;
     use crate::southbridge::acpi as acpi_fragments;
     use alloc::vec::Vec;
-    use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi::AcpiPath;
     use fstart_acpi::platform::{
         HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
     };
@@ -2243,8 +2243,8 @@ mod acpi_impl {
 
     use super::*;
 
-    fn pci0_scope_aml(children: &[u8]) -> Vec<u8> {
-        fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", children)
+    fn pci0_scope_aml(pci_root: &AcpiPath, children: &[u8]) -> Vec<u8> {
+        fstart_acpi::aml_linker::scope_vec(pci_root.as_str(), children)
             .expect("ICH7 required PCI scope emission failed")
     }
 
@@ -2319,9 +2319,7 @@ mod acpi_impl {
         }
     }
 
-    impl AcpiDevice for IntelIch7 {
-        type Config = IntelIch7Config;
-
+    impl SouthbridgeAcpi for IntelIch7 {
         /// Produce ICH7 DSDT content for the LPC bridge and all its PCI
         /// function siblings.
         ///
@@ -2348,7 +2346,7 @@ mod acpi_impl {
         /// `SATA` 0:1F.2, `PATA` 0:1F.1, `SBUS` 0:1F.3.
         ///
         /// Ported from coreboot `src/southbridge/intel/i82801gx/acpi/`.
-        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+        fn dsdt_aml(&self, config: &Self::Config, pci_root: &AcpiPath) -> Vec<u8> {
             // ---------------------------------------------------------------
             // 1. LPCB device with all ISA legacy children.
             //
@@ -2364,39 +2362,40 @@ mod acpi_impl {
             // regions makes ACPI claim the native lpc_ich driver resources.
             let mut aml = Vec::new();
 
-            aml.extend_from_slice(&acpi_dsl! {
-                Scope("\\_SB_.PCI0") {
-                    OperationRegion("RCRB", SystemMemory, 0xFED1C000u32, 0x4000u32);
-                    Field("RCRB", DWordAcc, Lock, Preserve) {
-                        Offset(0x3404),
-                        HPAS, 2,
-                        , 5,
-                        HPTE, 1,
-                        Offset(0x3418),
-                        , 1,
-                        PATD, 1,
-                        SATD, 1,
-                        SMBD, 1,
-                        HDAD, 1,
-                        A97D, 1,
-                        M97D, 1,
-                        ILND, 1,
-                        US1D, 1,
-                        US2D, 1,
-                        US3D, 1,
-                        US4D, 1,
-                        , 2,
-                        LPBD, 1,
-                        EHCD, 1,
-                        RP1D, 1,
-                        RP2D, 1,
-                        RP3D, 1,
-                        RP4D, 1,
-                        RP5D, 1,
-                        RP6D, 1,
-                    }
-                }
-            });
+            aml.extend_from_slice(&pci0_scope_aml(
+                pci_root,
+                &acpi_dsl! {
+                        OperationRegion("RCRB", SystemMemory, 0xFED1C000u32, 0x4000u32);
+                        Field("RCRB", DWordAcc, Lock, Preserve) {
+                            Offset(0x3404),
+                            HPAS, 2,
+                            , 5,
+                            HPTE, 1,
+                            Offset(0x3418),
+                            , 1,
+                            PATD, 1,
+                            SATD, 1,
+                            SMBD, 1,
+                            HDAD, 1,
+                            A97D, 1,
+                            M97D, 1,
+                            ILND, 1,
+                            US1D, 1,
+                            US2D, 1,
+                            US3D, 1,
+                            US4D, 1,
+                            , 2,
+                            LPBD, 1,
+                            EHCD, 1,
+                            RP1D, 1,
+                            RP2D, 1,
+                            RP3D, 1,
+                            RP4D, 1,
+                            RP5D, 1,
+                            RP6D, 1,
+                        }
+                },
+            ));
 
             let mut pci0_aml = Vec::new();
             // The LPC bridge's own registers, then the ISA children and PIRQ
@@ -2432,7 +2431,8 @@ mod acpi_impl {
             ));
             lpcb.extend_from_slice(&acpi_fragments::pci_irq_links(&config.pirq_routing));
             pci0_aml.extend_from_slice(
-                &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb).expect("LPCB device emission"),
+                &fstart_acpi::aml_linker::device_vec(Self::ACPI_LPC_NAME, &lpcb)
+                    .expect("LPCB device emission"),
             );
 
             // PS/2 keyboard and mouse nodes come from the concrete SuperIO
@@ -2556,7 +2556,7 @@ mod acpi_impl {
             // SBUS — SMBus controller  0:1F.3
             pci0_aml.extend_from_slice(&acpi_fragments::smbus_node());
 
-            aml.extend_from_slice(&pci0_scope_aml(&pci0_aml));
+            aml.extend_from_slice(&pci0_scope_aml(pci_root, &pci0_aml));
 
             // ---------------------------------------------------------------
             // 3. Root-scope objects.

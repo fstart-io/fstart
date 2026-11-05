@@ -109,11 +109,10 @@ pub struct Acpi {
 }
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = fstart_platform_intel::i945::I945Ich7AcpiContext;
-    fn dsdt_aml(&self, ctx: &Self::Config) -> alloc::vec::Vec<u8> {
-        fstart_driver_lenovo::t6::acpi::dsdt_aml(
+    type Config = ();
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
+        fstart_driver_lenovo::t6::acpi::dsdt_aml::<crate::config::Hardware>(
             &crate::T6_H8,
-            ctx.lpc_scope(),
             self.native_brightness,
         )
     }

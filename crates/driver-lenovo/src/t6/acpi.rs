@@ -2,10 +2,12 @@
 //! than copying coreboot's GNVS/I/O-trap transport. ATI brightness is omitted.
 extern crate alloc;
 use crate::h8::H8Config;
+use crate::h8_acpi::ec;
 use alloc::vec::Vec;
+use fstart_acpi::PcNamespace;
 use fstart_acpi_macros::acpi_dsl;
 
-pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, native_brightness: bool) -> Vec<u8> {
+pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, native_brightness: bool) -> Vec<u8> {
     let mut out = Vec::new();
     let status_command = super::dock::SMI_DOCK_STATUS;
     // Keep PnP index/data transactions firmware-owned. Both AML operations
@@ -13,12 +15,12 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, native_brightness: bool) -> Vec<
     out.extend(Vec::<u8>::from(acpi_dsl! {
         Scope("\\") {
             Method("_PTS", 1, NotSerialized) {
-                #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.RADI"}(0u32);
+                #{const path 5 ec::<N>().child("MUTE")}(1u32);
+                #{const path 5 ec::<N>().child("USBP")}(0u32);
+                #{const path 5 ec::<N>().child("RADI")}(0u32);
             }
             Method("_WAK", 1, NotSerialized) {
-                #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE"}(Arg0);
+                #{const path 6 ec::<N>().child("HKEY").child("WAKE")}(Arg0);
                 Return(Package(0u32, 0u32));
             }
         }
@@ -46,15 +48,15 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, native_brightness: bool) -> Vec<
         }
         Scope(#{const "\\_GPE"}) {
             Method("_L18", 0, NotSerialized) {
-                Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.WAKE"};
+                Local0 = #{const path 5 ec::<N>().child("WAKE")};
                 Increment(Local0);
             }
         }
     }));
     let brightness = if native_brightness {
         acpi_dsl! { Scope("\\") {
-            Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
-            Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
+            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
+            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
         }}
         .to_vec()
     } else {
@@ -67,9 +69,8 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, native_brightness: bool) -> Vec<
     let pmh7_base = h8.resources.pmh7_base.raw();
     let mut h8 = *h8;
     h8.has_bluetooth = super::bluetooth_present();
-    out.extend(crate::h8_acpi::dsdt_aml_with_brightness(
+    out.extend(crate::h8_acpi::dsdt_aml_with_brightness::<N>(
         &h8,
-        lpc_scope,
         &brightness,
     ));
     // These are EC-hosted PS/2 devices, not nonexistent NSC KBC LDNs.
@@ -84,9 +85,11 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, native_brightness: bool) -> Vec<
         }
         .dsdt_aml(),
     );
-    out.extend(fstart_acpi::aml_linker::scope_vec(lpc_scope, &lpc).expect("T6 LPC resources"));
+    out.extend(
+        fstart_acpi::aml_linker::scope_vec(N::LPC.as_str(), &lpc).expect("T6 LPC resources"),
+    );
     out.extend(Vec::<u8>::from(acpi_dsl! {
-        Scope(#{const "\\_SB_.PCI0.LPCB.EC__"}) {
+        Scope(#{const path 4 ec::<N>()}) {
             OperationRegion("PMIO", SystemIO, #{word pmh7_base}, 0x10u32);
             Field("PMIO", ByteAcc, NoLock, Preserve) {
                 Offset(0x0C), PIDX, 8, PIDH, 8, DPWR, 1,
@@ -127,9 +130,8 @@ mod tests {
                 }
             }
             .to_vec();
-            aml.extend(dsdt_aml(
+            aml.extend(dsdt_aml::<crate::h8_acpi::TestNamespace>(
                 &super::super::h8_config(0x1c),
-                "\\_SB_.PCI0.LPCB",
                 native,
             ));
             // Every declared firmware range is both consumed in AML and

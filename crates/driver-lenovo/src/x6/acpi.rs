@@ -8,12 +8,14 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use fstart_acpi::PcNamespace;
 use fstart_acpi_macros::acpi_dsl;
 
 use crate::h8::H8Config;
+use crate::h8_acpi::ec;
 
-/// Board DSDT fragments. `\_SB.PCI0.GFX0` must provide `INCB`/`DECB`.
-pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str) -> Vec<u8> {
+/// Board DSDT fragments. The platform's IGD must provide `INCB`/`DECB`.
+pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config) -> Vec<u8> {
     let mut out = Vec::new();
 
     // Root sleep/wake glue. Dock commands use the existing TCO mailbox,
@@ -21,14 +23,14 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str) -> Vec<u8> {
     out.extend_from_slice(&acpi_dsl! {
         Scope("\\") {
             Method("_PTS", 1, NotSerialized) {
-                #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.RADI"}(0u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC"}(0u32);
+                #{const path 5 ec::<N>().child("MUTE")}(1u32);
+                #{const path 5 ec::<N>().child("USBP")}(0u32);
+                #{const path 5 ec::<N>().child("RADI")}(0u32);
+                #{const path 6 ec::<N>().child("HKEY").child("MHKC")}(0u32);
             }
             Method("_WAK", 1, NotSerialized) {
-                #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.MHKC"}(1u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE"}(Arg0);
+                #{const path 6 ec::<N>().child("HKEY").child("MHKC")}(1u32);
+                #{const path 6 ec::<N>().child("HKEY").child("WAKE")}(Arg0);
                 Return(Package(0u32, 0u32));
             }
         }
@@ -74,19 +76,19 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str) -> Vec<u8> {
     out.extend_from_slice(&acpi_dsl! {
         Scope(#{const "\\_GPE"}) {
             Method("_L18", 0, NotSerialized) {
-                Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.WAKE"};
+                Local0 = #{const path 5 ec::<N>().child("WAKE")};
                 If (Local0 & 0x04u32) {
-                    Notify(#{const "\\_SB_.PCI0.LPCB.EC__.LID_"}, 0x02u32);
+                    Notify(#{const path 5 ec::<N>().child("LID_")}, 0x02u32);
                 }
                 If (Local0 & 0x08u32) {
                     Notify(#{const "\\_SB_.DOCK"}, 0x03u32);
-                    Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
+                    Notify(#{const path 5 ec::<N>().child("SLPB")}, 0x02u32);
                 }
                 If (Local0 & 0x10u32) {
-                    Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
+                    Notify(#{const path 5 ec::<N>().child("SLPB")}, 0x02u32);
                 }
                 If (Local0 & 0x80u32) {
-                    Notify(#{const "\\_SB_.PCI0.LPCB.EC__.SLPB"}, 0x02u32);
+                    Notify(#{const path 5 ec::<N>().child("SLPB")}, 0x02u32);
                 }
             }
         }
@@ -99,20 +101,19 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str) -> Vec<u8> {
     h8.has_bluetooth = super::bluetooth_present();
     let brightness = acpi_dsl! {
         Scope("\\") {
-            Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
-            Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
+            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
+            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
         }
     };
-    out.extend(crate::h8_acpi::dsdt_aml_with_brightness(
+    out.extend(crate::h8_acpi::dsdt_aml_with_brightness::<N>(
         &h8,
-        lpc_scope,
         &brightness,
     ));
 
     // Open the EC scope only after its Device declaration. This also
     // allows standalone ACPICA disassembly/recompilation without externals.
     out.extend_from_slice(&acpi_dsl! {
-        Scope(#{const "\\_SB_.PCI0.LPCB.EC__"}) {
+        Scope(#{const path 4 ec::<N>()}) {
             Method("_Q18", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x09u32); }
             Method("_Q37", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
             Method("_Q50", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }

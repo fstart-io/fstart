@@ -6,6 +6,8 @@ extern crate alloc;
 
 #[cfg(feature = "acpi")]
 mod cpu;
+#[cfg(feature = "acpi")]
+pub mod namespace;
 
 pub mod generic;
 #[cfg(feature = "gm965")]
@@ -199,6 +201,11 @@ pub trait IntelNorthbridgeDriver:
     + Sized
 {
     type Config: 'static;
+    /// ACPI name of the PCI root below `\_SB`, coreboot's northbridge
+    /// `acpi_name()` for its domain.
+    const ACPI_PCI_ROOT_NAME: &'static str;
+    /// ACPI name of the integrated graphics device on that root.
+    const ACPI_IGD_NAME: &'static str;
 
     fn new_from_config(
         config: &'static Self::Config,
@@ -269,6 +276,8 @@ pub trait IntelEcamConfig {
 /// Intel southbridge contract consumed by Intel platform flows.
 pub trait IntelSouthbridgeDriver: Sized {
     type Config: 'static;
+    /// ACPI name of the LPC bridge, coreboot's `lpc_acpi_name()`.
+    const ACPI_LPC_NAME: &'static str;
 
     fn new_from_config(
         config: &'static Self::Config,

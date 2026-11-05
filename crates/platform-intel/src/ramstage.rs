@@ -40,7 +40,6 @@ use fstart_log::StaticConsole;
 
 type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
 type Sb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Southbridge;
-type AcpiContext<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::AcpiContext;
 
 /// Entered: the store and boot media are published; the chipset decode
 /// windows are open, nothing else.
@@ -534,11 +533,13 @@ impl<B: IntelBoard> Ramstage<B, Displayed> {
 
 impl<B: IntelBoard> Ramstage<B, Cold> {
     /// Build ACPI and SMBIOS from the chipset, the board's `identity` and the
-    /// board's ACPI device, then seal the store.
+    /// board's ACPI device, then seal the store. The board finds the chipset
+    /// devices it attaches to through its platform's
+    /// [`PcNamespace`](fstart_acpi::PcNamespace).
     pub fn emit_tables(
         mut self,
         identity: &crate::tables::SmbiosIdentity<'_>,
-        board: &impl fstart_acpi::device::AcpiDevice<Config = AcpiContext<B>>,
+        board: &impl fstart_acpi::device::AcpiDevice<Config = ()>,
     ) -> Ramstage<B, Ready> {
         self.mainboard = (identity.bb_manufacturer.into(), identity.bb_product.into());
         self.phase(fstart_timestamp::id::EMIT_TABLES, |rs| {
@@ -558,11 +559,13 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
 
     fn emit_acpi(
         &mut self,
-        board: &impl fstart_acpi::device::AcpiDevice<Config = AcpiContext<B>>,
+        board: &impl fstart_acpi::device::AcpiDevice<Config = ()>,
     ) -> Result<(), ServiceError> {
         use fstart_acpi::device::AcpiDevice;
         use fstart_acpi::platform::X86PlatformProvider;
-        let acpi_ctx = AcpiContext::<B>::default();
+        use fstart_driver_intel::namespace::{SouthbridgeAcpi, pci_root};
+        // coreboot's dsdt.asl: the southbridge's devices in the northbridge's root.
+        let pci_root = const { pci_root::<Nb<B>>() };
         let platform = fstart_acpi::platform::PlatformConfig::X86(
             self.southbridge
                 .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus())),
@@ -571,11 +574,11 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let rsdp = crate::tables::prepare_acpi(store, &platform, |dsdt, extra| {
             dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
-            dsdt.extend(southbridge.dsdt_aml(southbridge.config()));
-            dsdt.extend(board.dsdt_aml(&acpi_ctx));
+            dsdt.extend(southbridge.dsdt_aml(southbridge.config(), &pci_root));
+            dsdt.extend(board.dsdt_aml(&()));
             extra.extend(northbridge.extra_tables(northbridge.config()));
             extra.extend(southbridge.extra_tables(southbridge.config()));
-            extra.extend(board.extra_tables(&acpi_ctx));
+            extra.extend(board.extra_tables(&()));
         })
         .map_err(|_| ServiceError::HardwareError)?;
         self.ctx.set_acpi_rsdp(Some(rsdp));
