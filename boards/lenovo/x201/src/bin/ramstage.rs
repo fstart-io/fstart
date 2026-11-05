@@ -20,8 +20,10 @@ fn main() -> ! {
     let rs = rs.console(&CONSOLE, ()).memory_map().scan_bus(&[]);
     let mut rs = rs.init_chipset();
     let resume = rs.is_resume();
-    let (identity, acpi) =
-        mainboard::init_devices(&mut pins, rs.smbus(), resume).unwrap_or_else(|error| {
+    let mut ec = fstart_driver_lenovo::options::Options::DEFAULT;
+    rs.resolve_options(&mainboard::EC_KNOBS, &mut ec, |_| Ok(()));
+    let (identity, acpi) = mainboard::init_devices(&mut pins, rs.smbus(), &ec, resume)
+        .unwrap_or_else(|error| {
             match error {
                 fstart_driver_tpm::Error::Code(code) => {
                     fstart_log::error!("lenovo-x201: TPM resume failed, code {:#x}", code);

@@ -73,16 +73,40 @@ impl Identity {
         identity
     }
 }
+/// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
+/// them.
+pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 11] = {
+    use fstart_driver_lenovo::options::*;
+    [
+        BLUETOOTH,
+        WWAN,
+        WLAN,
+        UWB,
+        TRACKPOINT,
+        FN_CTRL_SWAP,
+        STICKY_FN,
+        POWER_MANAGEMENT_BEEPS,
+        LOW_BATTERY_BEEP,
+        VOLUME,
+        FIRST_BATTERY,
+    ]
+};
 
 /// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
 /// chipset devices are up. Returns the identity and the board ACPI device.
-pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (Identity, Acpi) {
+pub fn init_devices(
+    pins: &mut Pins,
+    smbus: &mut impl SmBus,
+    ec: &fstart_driver_lenovo::options::Options,
+    resume: bool,
+) -> (Identity, Acpi) {
     let mut identity = Identity::default();
     let (bluetooth, acknowledged) = ec::init(
         &mut pins.bluetooth_card,
         &mut pins.dock_id,
         &mut pins.dock_connect,
         &crate::config::X200_H8,
+        ec,
         resume,
     );
     if !acknowledged {

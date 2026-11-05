@@ -32,7 +32,9 @@ fn main() -> ! {
     if rs.is_resume() {
         rs.fail("S3 resume");
     }
-    let devices = match mainboard::init_ec_and_bay(&mut bdc, &mut legacy_pin, console_failed) {
+    let mut ec = fstart_driver_lenovo::options::Options::DEFAULT;
+    rs.resolve_options(&mainboard::EC_KNOBS, &mut ec, |_| Ok(()));
+    let devices = match mainboard::init_ec_and_bay(&mut bdc, &mut legacy_pin, console_failed, &ec) {
         Ok(devices) => devices,
         Err(_) => rs.fail("legacy module GPIO"),
     };
