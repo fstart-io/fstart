@@ -23,7 +23,7 @@ pub(crate) fn resolve<C: Clone>(
     report: &mut Report,
     check: impl FnOnce(&C) -> Result<(), &'static str>,
 ) {
-    fstart_log::option::resolve(knobs, &source(nvram), config, report, check);
+    fstart_log::option::resolve_into(knobs, &source(nvram), config, report, check);
 }
 
 /// The settings store as the payload's variable storage, and the options'
