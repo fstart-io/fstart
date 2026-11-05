@@ -564,8 +564,13 @@ mod tests {
     extern crate std;
     use super::*;
 
+    /// `init` sets the process-wide ECAM base, and the tests free the memory
+    /// behind it: tests that call it must not overlap.
+    static ECAM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn subsystem_ids_use_header_type_and_bounded_ssvid_walk() {
+        let _ecam = ECAM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         use std::alloc::{Layout, alloc_zeroed, dealloc};
         // Bus 0 needs 1 MiB of ECAM, 1 MiB aligned (init masks the base).
         let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
@@ -595,6 +600,7 @@ mod tests {
 
     #[test]
     fn capability_walk_is_bounded() {
+        let _ecam = ECAM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         use std::alloc::{Layout, alloc_zeroed, dealloc};
         // Bus 0 needs 1 MiB of ECAM, 1 MiB aligned (init masks the base).
         let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
