@@ -1410,7 +1410,7 @@ impl IntelIch9 {
                 .modify(GEN_PMCON_3_REG::RTC_BATTERY_DEAD::CLEAR);
         }
 
-        crate::southbridge::rtc::init_clock("intel-ich9", battery_dead);
+        fstart_driver_rtc::init_clock("intel-ich9", battery_dead);
     }
 
     fn ramstage_lpc_init(&self) {

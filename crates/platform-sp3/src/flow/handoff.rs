@@ -99,7 +99,20 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
     description.acpi = ctx.rsdp.map(AcpiTables::at);
     description.smbios = ctx.smbios;
     description.pci_root = Some(ctx.pci_root);
-    fstart_payload::boot(Handoff::new(description, Placement::default()), ())
+    #[allow(unused_mut)]
+    let mut handoff = Handoff::new(description, Placement::default());
+    // CrabEFI keeps its variables, the option overrides among them, in the
+    // settings store, and shows the options in its menu.
+    #[cfg(feature = "payload-uefi")]
+    let mut storage = super::options::storage(&ctx);
+    #[cfg(feature = "payload-uefi")]
+    {
+        handoff.settings = Some(super::options::settings(&ctx));
+        handoff.variable_storage = storage
+            .as_mut()
+            .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+    }
+    fstart_payload::boot(handoff, ())
 }
 
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi`); returns the

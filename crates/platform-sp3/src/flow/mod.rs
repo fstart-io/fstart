@@ -78,6 +78,7 @@ use fstart_driver_amd::sp3::fch::gpio::Pad;
 mod handoff;
 #[cfg(feature = "naples")]
 pub(crate) mod naples;
+mod options;
 #[cfg(feature = "naples")]
 pub use naples::Silicon as NaplesSilicon;
 #[cfg(any(feature = "rome", feature = "milan"))]
@@ -270,6 +271,13 @@ pub(crate) struct Ctx {
     pub policy: Policy,
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     pub ffs: Span,
+    /// The FFS's flash offset.
+    pub ffs_offset: u32,
+    /// The settings store ([`layout::NVRAM`]) in the CPU view, if a ROM
+    /// window shows it.
+    pub nvram: Option<&'static [u8]>,
+    /// The outcome of every option knob resolved so far.
+    pub options: fstart_options::Report,
     pub apob: Apob<'static>,
     pub tops: TopOfMemory,
     pub tseg: Span,
@@ -431,7 +439,7 @@ impl<B: Board, S: Silicon> Early<B, S> {
             pci_root,
             timer,
             fch,
-            policy,
+            mut policy,
             resume,
             ..
         } = self;
@@ -451,8 +459,29 @@ impl<B: Board, S: Silicon> Early<B, S> {
         check_identity::<B>(&identity, timer.mhz());
 
         step(0x14, "APOB");
-        let (flash, ffs, rom_size) = flash(&fch, generation);
+        let Flash {
+            efs: flash,
+            ffs,
+            ffs_offset,
+            size: rom_size,
+            nvram,
+        } = flash(&fch, generation);
         let (apob, apob_span) = read_apob(flash, generation);
+        // The console level first, then the policy overrides, before the
+        // first step that reads the policy after the FCH reset tasks (the
+        // DF plan).
+        let mut options = fstart_options::Report::new();
+        let mut level = fstart_log::max_level();
+        options::resolve(
+            nvram,
+            &fstart_log::option::KNOBS,
+            &mut level,
+            &mut options,
+            |_| Ok(()),
+        );
+        // SAFETY: BSP only, before MP.
+        unsafe { fstart_log::set_max_level(level) };
+        options::resolve(nvram, B::OPTIONS, &mut policy, &mut options, |_| Ok(()));
 
         step(0x15, "memory map");
         let tops = top_of_memory();
@@ -477,6 +506,9 @@ impl<B: Board, S: Silicon> Early<B, S> {
             resume: false,
             policy,
             ffs,
+            ffs_offset,
+            nvram,
+            options,
             apob,
             tops,
             tseg,
@@ -611,6 +643,21 @@ impl<B: Board, S: Silicon, P> Stage<B, S, P> {
     /// Stop the boot after logging `what`.
     pub fn fail(&self, what: &str) -> ! {
         fail(what)
+    }
+
+    /// Apply the stored overrides of `knobs` to the board's `config`
+    /// (`fstart_options`), before the board uses it. `check` is the whole-set
+    /// validation of the consumer: if the overridden configuration fails
+    /// it, `config` keeps the board's values and the overrides are reported
+    /// as rejected. The knobs are shown in the payload's settings menu.
+    pub fn resolve_options<C: Clone>(
+        &mut self,
+        knobs: &'static [fstart_options::Knob<C>],
+        config: &mut C,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let ctx = &mut self.machine.ctx;
+        options::resolve(ctx.nvram, knobs, config, &mut ctx.options, check);
     }
 
     fn into_phase<Q>(self, next: Q) -> Stage<B, S, Q> {
@@ -841,11 +888,25 @@ fn flash_slice(address: u64, len: u32) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(address as *const u8, len as usize) }
 }
 
+/// What [`flash`] found.
+struct Flash {
+    /// The booted half (from its EFS).
+    efs: &'static [u8],
+    /// The FFS in the CPU view, and its flash offset.
+    ffs: Span,
+    ffs_offset: u32,
+    /// The size of the part.
+    size: u32,
+    /// The settings store, if a window shows it.
+    nvram: Option<&'static [u8]>,
+}
+
 /// The SPI flash as this boot sees it (`fch::rom3`): the EFS view (the
-/// half whose EFS the generation's boot ROM takes) and the FFS window.
-/// Both are read through ROM2 when they lie in the page it shows; ROM3 is
-/// probed only for an FFS outside it, and whatever neither shows halts.
-fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span, u32) {
+/// half whose EFS the generation's boot ROM takes), the FFS window and the
+/// settings store. They are read through ROM2 when they lie in the page it
+/// shows; ROM3 is probed only for an FFS outside it, and an EFS or FFS that
+/// neither shows halts.
+fn flash(fch: &PrimaryFch, generation: Generation) -> Flash {
     // SAFETY: the static is always readable; volatile so the linked
     // placeholder is not folded into the code.
     let anchor = unsafe { core::ptr::read_volatile(FLASH_ANCHOR.0.get()) };
@@ -893,11 +954,16 @@ fn flash(fch: &PrimaryFch, generation: Generation) -> (&'static [u8], Span, u32)
         .or_halt("EFS");
     let ffs = map.address(offset, size).or_halt("FFS window");
     fstart_log::info!("sp3: FFS at flash {:#x}+{:#x}", offset, size);
-    (
+    let nvram = map
+        .address(layout::NVRAM.offset, layout::NVRAM.size)
+        .map(|address| flash_slice(address, layout::NVRAM.size));
+    Flash {
         efs,
-        Span::new(ffs, u64::from(size)),
-        anchor.flash_size.get(),
-    )
+        ffs: Span::new(ffs, u64::from(size)),
+        ffs_offset: offset,
+        size: anchor.flash_size.get(),
+        nvram,
+    }
 }
 
 /// `generation`'s BIOS directories in the booted half `flash`.

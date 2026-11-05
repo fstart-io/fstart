@@ -388,6 +388,27 @@ pub struct FlashPlan {
     /// window (one 16 MiB half or the 32 MiB dual image).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mirrors: Vec<u32>,
+    /// The settings store at the top of the FFS window of the lower half:
+    /// flash the firmware writes at runtime (its EFI variable store). The
+    /// image has it erased; the FFS ends below it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvram: Option<NvramSlot>,
+}
+
+/// A flash range the firmware writes at runtime, in the lower half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NvramSlot {
+    pub flash_offset: u32,
+    pub size: u32,
+}
+
+impl NvramSlot {
+    /// Erase granularity it must be aligned to (4 KiB sectors).
+    pub const ALIGN: u32 = 0x1000;
+
+    pub const fn end(&self) -> u32 {
+        self.flash_offset + self.size
+    }
 }
 
 /// What happens to one half of the vendor ROM.
@@ -434,8 +455,19 @@ impl FlashPlan {
         if self.reset.destination < self.dram_floor {
             return Err(ImageError::Plan("reset image below the DRAM floor"));
         }
-        if self.ffs_offset == 0 || self.ffs_offset >= self.reset.flash_offset {
+        if self.ffs_offset == 0 || self.ffs_offset >= self.ffs_limit() {
             return Err(ImageError::Plan("FFS offset outside the lower half"));
+        }
+        if let Some(nvram) = self.nvram
+            && (nvram.size == 0
+                || !nvram.flash_offset.is_multiple_of(NvramSlot::ALIGN)
+                || !nvram.size.is_multiple_of(NvramSlot::ALIGN)
+                || nvram.flash_offset.checked_add(nvram.size).is_none()
+                || nvram.end() > self.reset.flash_offset)
+        {
+            return Err(ImageError::Plan(
+                "settings store not 4 KiB aligned below the reset image",
+            ));
         }
         let mut mirrors = self.mirrors.clone();
         mirrors.sort_unstable();
@@ -450,6 +482,12 @@ impl FlashPlan {
             ));
         }
         Ok(())
+    }
+
+    /// End of the FFS window: the settings store, or the reset image.
+    pub fn ffs_limit(&self) -> u32 {
+        self.nvram
+            .map_or(self.reset.flash_offset, |nvram| nvram.flash_offset)
     }
 
     /// The part of `vendor_rom` the boot ROMs search: all of it without
@@ -529,15 +567,16 @@ impl FlashPlan {
             return Err(ImageError::Layout("both halves carry the same generation"));
         }
         let start = (self.ffs_offset as usize).max(align_up(lower.prefix_end, 0x1000));
-        if start >= reset_at {
+        let limit = self.ffs_limit() as usize;
+        if start >= limit {
             return Err(ImageError::PrefixOverlap {
                 prefix_end: lower.prefix_end,
-                limit: reset_at,
+                limit,
             });
         }
         Ok(Survey {
             halves,
-            ffs: start as u32..self.reset.flash_offset,
+            ffs: start as u32..limit as u32,
         })
     }
 }
@@ -601,6 +640,10 @@ fn build(
     }
     let start = survey.ffs.start as usize;
     out[start..start + ffs.len()].copy_from_slice(ffs);
+    // A new image starts with an empty settings store.
+    if let Some(nvram) = plan.nvram {
+        out[nvram.flash_offset as usize..nvram.end() as usize].fill(0xff);
+    }
     Ok(out)
 }
 
