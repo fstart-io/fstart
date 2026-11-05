@@ -1009,6 +1009,7 @@ name = "fstart-options"
 version = "0.1.0"
 dependencies = [
  "crabefi-efi-types",
+ "fstart-options",
 ]
 
 [[package]]

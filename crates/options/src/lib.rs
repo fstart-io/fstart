@@ -14,12 +14,15 @@
 //!   anything that stores small numbers by name: a flash variable store,
 //!   CMOS, a BMC, a secure-world service. Reading is all a boot needs; the
 //!   writer is whatever owns the backend (the setup menu, the OS).
-//! - [`resolve`] applies the stored values to a configuration and records
-//!   the outcome of every knob in a [`Report`]. [`resolve_checked`] also
-//!   runs the consumer's whole-set validation and drops every override of
-//!   the set if it fails, so a bad combination never stops the boot.
-//! - [`cfr`] describes a report as a coreboot CFR form, which setup menus
-//!   (CrabEFI, edk2) render and store under [`Meta::key`].
+//! - [`resolve_each`] applies the stored values to a configuration, runs
+//!   the consumer's whole-set validation and drops every override of the
+//!   set if it fails, so a bad combination never stops the boot. It hands
+//!   each knob's outcome ([`Setting`]) to the caller and allocates nothing:
+//!   pre-DRAM stages resolve their knobs with it.
+//! - With the `alloc` feature, [`resolve_checked`] keeps the outcomes in a
+//!   [`Report`], and [`cfr`] describes a report as a coreboot CFR form,
+//!   which setup menus (CrabEFI, edk2) render and store under
+//!   [`Meta::key`].
 //! - `varstore` (feature) reads options from an EDK2 variable store.
 //! - [`cmos`] keeps overrides in a window of CMOS RAM, by key, without a
 //!   layout; [`Layered`] reads one backend before another.
@@ -29,15 +32,18 @@
 
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(feature = "alloc")]
 pub mod cfr;
 pub mod cmos;
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests;
 #[cfg(feature = "varstore")]
 pub mod varstore;
 
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 /// What a knob is, independent of the configuration it changes.
@@ -145,14 +151,15 @@ impl<C> Knob<C> {
 }
 
 /// The first key two of `metas` share, for a board test over every knob
-/// set it offers ([`resolve`] skips the later knob at boot).
-pub fn duplicate_key<'a>(metas: impl IntoIterator<Item = &'a Meta>) -> Option<&'static str> {
-    let mut seen: Vec<&'static str> = Vec::new();
-    for meta in metas {
-        if seen.contains(&meta.key) {
+/// set it offers.
+pub fn duplicate_key<'a, I>(metas: I) -> Option<&'static str>
+where
+    I: IntoIterator<Item = &'a Meta> + Clone,
+{
+    for (i, meta) in metas.clone().into_iter().enumerate() {
+        if metas.clone().into_iter().take(i).any(|m| m.key == meta.key) {
             return Some(meta.key);
         }
-        seen.push(meta.key);
     }
     None
 }
@@ -268,7 +275,87 @@ pub struct Setting {
     pub availability: Availability,
 }
 
+/// Apply the stored value of one knob to `config`.
+pub fn resolve_knob<C: 'static>(
+    knob: &'static Knob<C>,
+    source: &dyn Source,
+    config: &mut C,
+) -> Setting {
+    let default = (knob.get)(config);
+    let availability = (knob.available)(config);
+    let provenance = match source.read(knob.meta.key) {
+        Ok(None) => Provenance::Board,
+        Ok(Some(stored)) if stored == default => Provenance::Board,
+        Ok(Some(stored)) if !knob.meta.kind.contains(stored) => Provenance::Rejected {
+            stored,
+            why: Rejection::OutOfRange,
+        },
+        Ok(Some(stored)) if availability != Availability::Editable => Provenance::Rejected {
+            stored,
+            why: Rejection::Inactive,
+        },
+        Ok(Some(stored)) => {
+            (knob.set)(config, stored);
+            Provenance::Override
+        }
+        Err(error) => Provenance::Rejected {
+            stored: default,
+            why: Rejection::Source(error),
+        },
+    };
+    Setting {
+        meta: &knob.meta,
+        default,
+        value: (knob.get)(config),
+        provenance,
+        availability,
+    }
+}
+
+/// Apply the stored overrides of `knobs` to `config`, then `check` the
+/// whole configuration: if it fails, the configuration is the board's
+/// again and every override is rejected with the check's reason. Each
+/// knob's outcome goes to `emit`, in order, once the set is decided. A
+/// failing source rejects only the knob it was read for. Allocates
+/// nothing; the source is read twice.
+pub fn resolve_each<C, K>(
+    knobs: K,
+    source: &dyn Source,
+    config: &mut C,
+    check: impl FnOnce(&C) -> Result<(), &'static str>,
+    mut emit: impl FnMut(Setting),
+) where
+    C: Clone + 'static,
+    K: IntoIterator<Item = &'static Knob<C>> + Clone,
+{
+    let board = config.clone();
+    // Every knob, not until the first override.
+    let mut applied = false;
+    for knob in knobs.clone() {
+        applied |= resolve_knob(knob, source, config).provenance == Provenance::Override;
+    }
+    let conflict = if applied { check(config).err() } else { None };
+    // The outcomes, replayed on the board's values: a knob's default and
+    // availability can depend on the knobs before it.
+    let mut replay = board.clone();
+    for knob in knobs {
+        let mut setting = resolve_knob(knob, source, &mut replay);
+        if let (Some(why), Provenance::Override) = (conflict, setting.provenance) {
+            setting.provenance = Provenance::Rejected {
+                stored: setting.value,
+                why: Rejection::Conflict(why),
+            };
+            setting.value = setting.default;
+        }
+        emit(setting);
+    }
+    if conflict.is_some() {
+        *config = board;
+    }
+}
+
 /// The outcome of every resolved knob, in resolution order.
+#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub settings: Vec<Setting>,
@@ -277,6 +364,7 @@ pub struct Report {
     pub duplicates: Vec<&'static Meta>,
 }
 
+#[cfg(feature = "alloc")]
 impl Report {
     pub const fn new() -> Self {
         Self {
@@ -293,82 +381,40 @@ impl Report {
     }
 }
 
-/// Apply the stored overrides of `knobs` to `config`, appending one
-/// [`Setting`] per knob to `report`. A failing source rejects only the
-/// knob it was read for. A knob whose key `report` already has is left
-/// at the board's value and listed in [`Report::duplicates`].
-pub fn resolve<C>(
+/// [`resolve_checked`] without a whole-set check.
+#[cfg(feature = "alloc")]
+pub fn resolve<C: Clone + 'static>(
     knobs: &'static [Knob<C>],
     source: &dyn Source,
     config: &mut C,
     report: &mut Report,
 ) {
-    for knob in knobs {
-        if report.settings.iter().any(|s| s.meta.key == knob.meta.key) {
-            report.duplicates.push(&knob.meta);
-            continue;
-        }
-        let default = (knob.get)(config);
-        let availability = (knob.available)(config);
-        let provenance = match source.read(knob.meta.key) {
-            Ok(None) => Provenance::Board,
-            Ok(Some(stored)) if stored == default => Provenance::Board,
-            Ok(Some(stored)) if !knob.meta.kind.contains(stored) => Provenance::Rejected {
-                stored,
-                why: Rejection::OutOfRange,
-            },
-            Ok(Some(stored)) if availability != Availability::Editable => Provenance::Rejected {
-                stored,
-                why: Rejection::Inactive,
-            },
-            Ok(Some(stored)) => {
-                (knob.set)(config, stored);
-                Provenance::Override
-            }
-            Err(error) => Provenance::Rejected {
-                stored: default,
-                why: Rejection::Source(error),
-            },
-        };
-        report.settings.push(Setting {
-            meta: &knob.meta,
-            default,
-            value: (knob.get)(config),
-            provenance,
-            availability,
-        });
-    }
+    resolve_checked(knobs, source, config, report, |_| Ok(()));
 }
 
-/// [`resolve`], then `check` the whole configuration. If it fails, the
-/// configuration is the board's again and every override of `knobs` is
-/// rejected with the check's reason.
-pub fn resolve_checked<C: Clone>(
+/// [`resolve_each`] into `report`. A knob whose key `report` already has,
+/// or an earlier knob of `knobs` has, is left at the board's value and
+/// listed in [`Report::duplicates`].
+#[cfg(feature = "alloc")]
+pub fn resolve_checked<C: Clone + 'static>(
     knobs: &'static [Knob<C>],
     source: &dyn Source,
     config: &mut C,
     report: &mut Report,
     check: impl FnOnce(&C) -> Result<(), &'static str>,
 ) {
-    let board = config.clone();
-    let first = report.settings.len();
-    resolve(knobs, source, config, report);
-    let applied = report.settings[first..]
-        .iter()
-        .any(|s| s.provenance == Provenance::Override);
-    if !applied {
-        return;
-    }
-    if let Err(why) = check(config) {
-        *config = board;
-        for setting in &mut report.settings[first..] {
-            if setting.provenance == Provenance::Override {
-                setting.provenance = Provenance::Rejected {
-                    stored: setting.value,
-                    why: Rejection::Conflict(why),
-                };
-                setting.value = setting.default;
-            }
+    let mut fresh: Vec<&'static Knob<C>> = Vec::new();
+    for knob in knobs {
+        let key = knob.meta.key;
+        if report.settings.iter().any(|s| s.meta.key == key)
+            || fresh.iter().any(|k| k.meta.key == key)
+        {
+            report.duplicates.push(&knob.meta);
+        } else {
+            fresh.push(knob);
         }
     }
+    resolve_each(fresh.iter().copied(), source, config, check, |setting| {
+        report.settings.push(setting)
+    });
 }
