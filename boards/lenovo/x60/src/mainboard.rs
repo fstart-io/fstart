@@ -156,10 +156,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
 }
 
 pub fn x60_mainboard_dsdt_aml() -> alloc::vec::Vec<u8> {
-    fstart_driver_lenovo::x6::acpi::dsdt_aml(
-        &crate::config::X60_H8,
-        <crate::config::Hardware as fstart_acpi::PcNamespace>::LPC.as_str(),
-    )
+    fstart_driver_lenovo::x6::acpi::dsdt_aml::<crate::config::Hardware>(&crate::config::X60_H8)
 }
 
 static X60_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
