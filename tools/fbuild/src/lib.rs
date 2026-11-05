@@ -23,4 +23,5 @@ pub mod qemu;
 mod qemu_golden_tests;
 pub mod resolved_image;
 mod selection;
+mod sizes;
 pub mod toolchain;

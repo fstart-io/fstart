@@ -106,8 +106,25 @@ jobs:
           )
           ((${#boards[@]} > 0))
           for board in "${boards[@]}"; do
-            cargo fbuild build --board "$board" --release
+            cargo fbuild build --board "$board" --release \
+              --size-report "$RUNNER_TEMP/stage-sizes.jsonl"
           done
+
+      # Stage sizes of every board, kept as an artifact of each run. The
+      # size-report workflow compares a pull request's with its base's. Builds
+      # are only comparable from the same checkout path, which CI always uses.
+      - name: Record stage sizes
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 ci/stage_sizes.py merge "$RUNNER_TEMP/stage-sizes.jsonl" stage-sizes.json \
+            --commit "$GITHUB_SHA" ${PR:+--pr "$PR"}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stage-sizes
+          path: stage-sizes.json
+          retention-days: 90
 
       - name: Prune stale firmware builds
         if: github.event_name == 'push'
