@@ -2,8 +2,39 @@
 //! ramstage. Postcar has no board work; a board's postcar `main` is one call.
 
 use crate::IntelBoard;
+#[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+use crate::{IntelChipsetConfig, IntelEarlyPlatform};
 use fstart_core::services::{ConsoleDevice, ServiceError};
+#[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+use fstart_driver_intel::IntelNorthbridgeDriver;
 use fstart_log::StaticConsole;
+
+#[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
+
+/// Postcar keeps the bootblock's identity page tables, which live in the
+/// flash the SPI flash log programs: a page walk while the chip is busy
+/// would read garbage. Copy them to postcar's BSS first (the ramstage builds
+/// its own before it loads anything). Returns whether postcar now runs on
+/// DRAM tables, so the flash log is safe.
+#[cfg(all(feature = "flash-console", target_arch = "x86_64"))]
+fn dram_page_tables() -> bool {
+    use fstart_arch::x86::boot::paging::{EntryTables, copy_entry_tables, load_cr3};
+    static mut TABLES: EntryTables = EntryTables::new();
+    // SAFETY: postcar's identity-mapped BSS, used for nothing else and
+    // reserved through ramstage entry.
+    match unsafe { copy_entry_tables(&mut *core::ptr::addr_of_mut!(TABLES)) } {
+        Some(root) => {
+            load_cr3(root);
+            true
+        }
+        None => false,
+    }
+}
+#[cfg(not(all(feature = "flash-console", target_arch = "x86_64")))]
+fn dram_page_tables() -> bool {
+    true
+}
 
 /// Post-CAR loader on a fresh DRAM stack. The bootblock-authenticated descriptor
 /// crosses the transition in reserved RAM. Postcar verifies stored compressed
@@ -25,6 +56,17 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
         crate::store::attach_timestamps(store);
         fstart_timestamp::add_at(fstart_timestamp::id::POSTCAR_START, entry);
     }
+    // The debug consoles reach PCI (the EHCI controller, the LPC bridge's
+    // SPI registers) through the ECAM accessor, which each stage binds in
+    // its own BSS, as the bootblock and ramstage do before their consoles.
+    // PCIEXBAR itself stays programmed from the bootblock.
+    #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+    if Nb::<B>::new_from_config(B::CONFIG.northbridge())
+        .and_then(|mut northbridge| northbridge.pre_console_init())
+        .is_err()
+    {
+        fstart_arch::x86::boot::halt();
+    }
     let ramstage_name = crate::RAMSTAGE_NAME;
     let mut console = match C::new(config) {
         Ok(console) => console,
@@ -34,6 +76,8 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
         fstart_arch::x86::boot::halt();
     }
     slot.install(console);
+    let flash_log = dram_page_tables();
+    crate::debug_console::install::<B>(flash_log);
     fstart_log::info!("{} postcar: {} console ready", platform, C::NAME);
 
     // Postcar keeps the bootblock's ROM page tables: it runs uncached from

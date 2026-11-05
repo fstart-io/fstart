@@ -723,6 +723,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-driver-flash-console"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+]
+
+[[package]]
 name = "fstart-driver-i2c"
 version = "0.1.0"
 dependencies = [
@@ -739,6 +746,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
+ "fstart-driver-flash-console",
  "fstart-intel-gma",
  "fstart-log",
  "fstart-pci",
@@ -1024,8 +1032,10 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-coreboot",
+ "fstart-driver-flash-console",
  "fstart-driver-intel",
  "fstart-driver-uart",
+ "fstart-driver-usbdebug",
  "fstart-ffs",
  "fstart-image-build",
  "fstart-log",

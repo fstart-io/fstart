@@ -28,7 +28,7 @@ pub use boot_media::{
     BlockDeviceMedia, BootMedia, FirmwareImageMap, FlashMap, LinearMap, MemoryMapped, SubRegion,
     TempRamArena,
 };
-pub use console::{Console, ConsoleDevice, UartPort};
+pub use console::{Console, ConsoleDevice, NoConsole, UartPort};
 pub use device::{BusDevice, DeviceError};
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
 pub use framebuffer::{Framebuffer, FramebufferInfo};

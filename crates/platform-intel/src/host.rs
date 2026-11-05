@@ -135,8 +135,47 @@ pub fn compilation_plan(
     Ok(resolved)
 }
 
+/// The `fbuild --debug` facilities an Intel image compiles in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Debug {
+    /// The chipset's EHCI debug port console ([`crate::debug_console`]).
+    ehci: bool,
+    /// The SPI flash log next to the board's console
+    /// ([`crate::debug_console`]).
+    flash_console: bool,
+}
+
+impl Debug {
+    fn select(
+        ehci_debug: bool,
+        options: &[std::string::String],
+    ) -> Result<Self, std::string::String> {
+        let mut debug = Self::default();
+        for option in options {
+            match option.as_str() {
+                "ehci" if ehci_debug => debug.ehci = true,
+                "ehci" => return Err("the board reserves no EHCI debug port".into()),
+                "flash-console" => debug.flash_console = true,
+                other => return Err(format!("Intel platforms have no debug option '{other}'")),
+            }
+        }
+        Ok(debug)
+    }
+
+    /// Platform features every stage needs for the selection.
+    fn features(self) -> impl Iterator<Item = std::string::String> {
+        [
+            (self.ehci, "ehci-console"),
+            (self.flash_console, "flash-console"),
+        ]
+        .into_iter()
+        .filter_map(|(selected, feature)| selected.then(|| feature.into()))
+    }
+}
+
 pub fn reservations<P: IntelPlatform>(
     facts: BoardFacts,
+    flash_console: bool,
 ) -> Result<IntelReservations, std::string::String> {
     let (flash, firmware) =
         fstart_image_build::plan::FlashTransport::from(facts.flash).windows()?;
@@ -145,9 +184,9 @@ pub fn reservations<P: IntelPlatform>(
     }
     let span = |base, size| Span { base, size };
     let car = span(P::CAR_BASE, P::CAR_SIZE);
-    let cache_prefix = if facts.memory_cache { 0x20000 } else { 0 };
+    let cache_prefix = u64::from(facts.mutable_prefix(flash_console));
     if firmware.size <= cache_prefix + 4096 {
-        return Err("mutable cache leaves no reset image capacity".into());
+        return Err("mutable flash regions leave no reset image capacity".into());
     }
     let reservations = IntelReservations {
         flash,
@@ -186,14 +225,21 @@ pub fn reservations<P: IntelPlatform>(
 pub fn resolve<B: IntelBoardFacts>(
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
-    resolve_for::<B::Platform>(B::FACTS, B::CONFIG.max_cpus(), selection)
+    resolve_for::<B::Platform>(
+        B::FACTS,
+        B::CONFIG.max_cpus(),
+        B::CONFIG.ehci_debug().is_some(),
+        selection,
+    )
 }
 
 fn resolve_for<P: IntelPlatform>(
     facts: BoardFacts,
     max_cpus: u16,
+    ehci_debug: bool,
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
+    let debug = Debug::select(ehci_debug, &selection.debug)?;
     let has_x86_linux_overrides = selection.has_x86_linux_overrides();
     let requested_payload = selection.payload.clone().unwrap_or_else(|| "halt".into());
     if has_x86_linux_overrides && requested_payload != "linux" {
@@ -226,6 +272,7 @@ fn resolve_for<P: IntelPlatform>(
         if facts.memory_cache && role != IntelStage::Postcar {
             features.push("memory-cache".into());
         }
+        features.extend(debug.features());
         if selected_payload == "uefi" {
             features.push(
                 match requested_payload.as_str() {
@@ -254,7 +301,7 @@ fn resolve_for<P: IntelPlatform>(
     if max_cpus == 0 {
         return Err("CPU population must be nonzero".into());
     }
-    let reservations = reservations::<P>(facts)?;
+    let reservations = reservations::<P>(facts, debug.flash_console)?;
     let payload_config = match payload.as_str() {
         "uefi" => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         "coreboot" => Some(fstart_core::x86_coreboot_payload(
@@ -279,6 +326,11 @@ fn resolve_for<P: IntelPlatform>(
     };
     let plan = IntelPlan {
         memory_cache: facts.memory_cache,
+        flash_console: if debug.flash_console {
+            crate::facts::FLASH_CONSOLE_SIZE
+        } else {
+            0
+        },
         reservations,
         platform: if facts.protected_mode {
             fstart_core::Platform::X86
@@ -345,7 +397,7 @@ mod tests {
         facts: BoardFacts,
         selection: BuildSelection,
     ) -> Result<IntelPlan, std::string::String> {
-        resolve_for::<Gm965>(facts, 2, selection)
+        resolve_for::<Gm965>(facts, 2, false, selection)
     }
 
     #[test]
@@ -366,7 +418,7 @@ mod tests {
             <Socket441 as LegacyCpu>::CAR_BASE
         );
         assert_eq!(plan.microcode.len(), 2);
-        assert!(resolve_for::<I945>(FACTS, 0, BuildSelection::default()).is_err());
+        assert!(resolve_for::<I945>(FACTS, 0, false, BuildSelection::default()).is_err());
     }
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
@@ -522,9 +574,9 @@ mod tests {
     fn legacy_cpu_packages_are_independent_of_the_chipset() {
         type MobileI945 = crate::i945::I945Ich7<SocketM>;
         type MobileGm965 = crate::gm965::Gm965Ich8<SocketM>;
-        let atom = resolve_for::<I945>(FACTS, 2, BuildSelection::default()).unwrap();
-        let mobile = resolve_for::<MobileI945>(FACTS, 2, BuildSelection::default()).unwrap();
-        let gm = resolve_for::<MobileGm965>(FACTS, 2, BuildSelection::default()).unwrap();
+        let atom = resolve_for::<I945>(FACTS, 2, false, BuildSelection::default()).unwrap();
+        let mobile = resolve_for::<MobileI945>(FACTS, 2, false, BuildSelection::default()).unwrap();
+        let gm = resolve_for::<MobileGm965>(FACTS, 2, false, BuildSelection::default()).unwrap();
         assert!(atom.microcode.iter().all(|file| file.contains("06-1c-")));
         assert!(mobile.microcode.iter().any(|file| file.contains("06-0e-")));
         assert!(mobile.microcode.iter().any(|file| file.contains("06-0f-")));
@@ -596,14 +648,14 @@ mod tests {
 
     #[test]
     fn pineview_pairing_reuses_family_reservations_with_real_car_delta() {
-        let gm = reservations::<Gm965>(FACTS).unwrap();
+        let gm = reservations::<Gm965>(FACTS, false).unwrap();
         let facts = BoardFacts::new(
             fstart_core::FlashLayout::X86Legacy(fstart_core::X86LegacyFlashLayout {
                 size: 0x1000000,
             }),
             0x1000000,
         );
-        let plan = resolve_for::<Pineview>(facts, 4, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<Pineview>(facts, 4, false, BuildSelection::default()).unwrap();
         let pineview = &plan.reservations;
         assert_eq!(
             pineview.flash,
@@ -648,14 +700,14 @@ mod tests {
 
     #[test]
     fn i945_pairing_reuses_family_reservations_with_real_car_delta() {
-        let gm = reservations::<Gm965>(FACTS).unwrap();
+        let gm = reservations::<Gm965>(FACTS, false).unwrap();
         let facts = BoardFacts::new(
             fstart_core::FlashLayout::X86Legacy(fstart_core::X86LegacyFlashLayout {
                 size: 0x80000,
             }),
             0x80000,
         );
-        let plan = resolve_for::<I945>(facts, 2, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<I945>(facts, 2, false, BuildSelection::default()).unwrap();
         let i945 = &plan.reservations;
         assert_eq!(
             i945.flash,

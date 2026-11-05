@@ -20,11 +20,12 @@ i945 = ["ich7", "fstart-intel-gma/i945"]
 ich8 = []
 pineview = ["ich7", "fstart-intel-gma/i945"]
 ich7 = []
-spi = ["dep:rflasher-core", "dep:rflasher-internal"]
+spi = ["dep:rflasher-core", "dep:rflasher-internal", "dep:fstart-driver-flash-console"]
 
 [dependencies]
 sha2 = { workspace = true }
 rflasher-core = { workspace = true, optional = true }
+fstart-driver-flash-console = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
 bitflags = { workspace = true }
 embedded-hal = { workspace = true }

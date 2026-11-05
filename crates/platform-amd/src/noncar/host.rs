@@ -569,6 +569,7 @@ where
 {
     let policy = &<B::Soc as HostSoc>::POLICY;
     let layout = &<B::Soc as Soc>::LAYOUT;
+    selection.reject_debug()?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
         return Err("noncar SoCs take no compiler inputs".into());

@@ -201,6 +201,28 @@ impl<T> SyncCell<T> {
 /// execution. Firmware boot is single-core, so there are no data races.
 static CONSOLE: SyncCell<Option<&'static dyn Console>> = SyncCell::new(None);
 
+/// Debug consoles every message also goes to, like coreboot running every
+/// enabled console driver: the platform adds them next to the board's
+/// console when the build selects them (see [`StaticConsole::install_debug`]).
+///
+/// SAFETY invariant: as for [`CONSOLE`].
+#[cfg(feature = "debug-consoles")]
+static DEBUG: SyncCell<[Option<&'static dyn Console>; MAX_DEBUG_CONSOLES]> =
+    SyncCell::new([None; MAX_DEBUG_CONSOLES]);
+
+/// Debug consoles a stage can add next to the board's console.
+#[cfg(feature = "debug-consoles")]
+pub const MAX_DEBUG_CONSOLES: usize = 2;
+
+/// The registered backends, the board's console first.
+#[cfg(feature = "debug-consoles")]
+#[inline]
+fn consoles() -> impl Iterator<Item = &'static dyn Console> {
+    // SAFETY: written once each during init, then only read.
+    let (console, debug) = unsafe { (*CONSOLE.0.get(), *DEBUG.0.get()) };
+    core::iter::once(console).chain(debug).flatten()
+}
+
 /// Current maximum log level; the build-time level when one was set.
 static MAX_LEVEL: SyncCell<Level> = SyncCell::new(match BUILD_VERBOSITY {
     Some(Verbosity::Max(level)) => level,
@@ -268,6 +290,30 @@ impl<C: Console + 'static> StaticConsole<C> {
         let console = unsafe { (*self.slot.0.get()).as_ref().unwrap_unchecked() };
         // SAFETY: the console is 'static and never moves.
         unsafe { init(console) };
+        console
+    }
+
+    /// Store `console` and add it as a debug console next to the board's
+    /// console (see [`DEBUG`]). A second call keeps the first console; past
+    /// [`MAX_DEBUG_CONSOLES`] it is stored but not added.
+    #[cfg(feature = "debug-consoles")]
+    pub fn install_debug(&'static self, console: C) -> &'static C {
+        let first = !self.taken.swap(true, Ordering::AcqRel);
+        if first {
+            // SAFETY: the flag admits exactly one writer, before any reader.
+            unsafe { *self.slot.0.get() = Some(console) };
+        }
+        // SAFETY: as in install().
+        let console = unsafe { (*self.slot.0.get()).as_ref().unwrap_unchecked() };
+        if first {
+            // SAFETY: single-threaded boot; the console is 'static and never
+            // moves.
+            unsafe {
+                if let Some(free) = (*DEBUG.0.get()).iter_mut().find(|slot| slot.is_none()) {
+                    *free = Some(console);
+                }
+            }
+        }
         console
     }
 
@@ -345,6 +391,9 @@ pub struct ConsoleWriter {
 impl ufmt::uWrite for ConsoleWriter {
     type Error = ();
 
+    // One console: the code and its inlining are exactly those of a build
+    // without debug consoles support.
+    #[cfg(not(feature = "debug-consoles"))]
     #[inline]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
         // SAFETY: CONSOLE is written once during init, then only read.
@@ -375,6 +424,60 @@ impl ufmt::uWrite for ConsoleWriter {
             Ok(())
         }
     }
+
+    #[cfg(feature = "debug-consoles")]
+    #[inline]
+    fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
+        write_all(s)
+    }
+}
+
+/// Write `s` to every console. Out of line: ufmt writes each fragment of a
+/// message separately, and every log call site would otherwise carry its own
+/// copy of the backend loop.
+///
+/// An error ends the message for every backend, so report one only when no
+/// backend took the text: an offline console (an absent debug gadget) must
+/// not cut another's messages short.
+#[cfg(feature = "debug-consoles")]
+#[inline(never)]
+fn write_all(s: &str) -> Result<(), ()> {
+    let mut result = Ok(());
+    let mut taken = false;
+    for c in consoles() {
+        match write_translated(c, s) {
+            Ok(()) => taken = true,
+            Err(error) => result = Err(error),
+        }
+    }
+    if taken { Ok(()) } else { result }
+}
+
+/// Write `s` to `c`. Serial terminals require \r\n, but ufmt's uwriteln!
+/// only emits \n: translate on the fly so every newline is \r\n.
+#[cfg(feature = "debug-consoles")]
+#[inline(always)]
+fn write_translated(c: &dyn Console, s: &str) -> Result<(), ()> {
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            if i > start {
+                // SAFETY: slicing a valid UTF-8 string at ASCII
+                // byte boundaries always yields valid UTF-8.
+                let chunk = unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) };
+                timed(|| c.write_str(chunk)).map_err(|_| ())?;
+            }
+            timed(|| c.write_str("\r\n")).map_err(|_| ())?;
+            start = i + 1;
+        }
+    }
+    if start < bytes.len() {
+        // SAFETY: as above.
+        let tail = unsafe { core::str::from_utf8_unchecked(&bytes[start..]) };
+        timed(|| c.write_str(tail)).map_err(|_| ())?;
+    }
+    Ok(())
 }
 
 /// Return a [`ConsoleWriter`] for use with [`ufmt::uwrite!`] and log macros.
@@ -455,6 +558,7 @@ impl ufmt::uDisplay for Hex {
 ///
 /// Used by [`hex_dump`] for efficient binary data output.
 /// Silently discarded if no console has been registered via [`init`].
+#[cfg(not(feature = "debug-consoles"))]
 #[inline]
 pub fn raw_write_byte(b: u8) {
     // SAFETY: CONSOLE is written once during init, then only read.
@@ -465,11 +569,30 @@ pub fn raw_write_byte(b: u8) {
 }
 
 /// Flush the registered console, if any.
+#[cfg(not(feature = "debug-consoles"))]
 #[inline]
 pub fn flush() {
     // SAFETY: CONSOLE is written once during init, then only read.
     let console = unsafe { *CONSOLE.0.get() };
     if let Some(c) = console {
+        let _ = timed(|| c.flush());
+    }
+}
+
+/// Write a single raw byte to every console (see [`write_all`]).
+#[cfg(feature = "debug-consoles")]
+#[inline(never)]
+pub fn raw_write_byte(b: u8) {
+    for c in consoles() {
+        let _ = timed(|| c.write_byte(b));
+    }
+}
+
+/// Flush every console.
+#[cfg(feature = "debug-consoles")]
+#[inline(never)]
+pub fn flush() {
+    for c in consoles() {
         let _ = timed(|| c.flush());
     }
 }

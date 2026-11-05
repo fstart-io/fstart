@@ -57,6 +57,7 @@ pub fn resolve(
     device_tree: &'static str,
     selection: BuildSelection,
 ) -> Result<BuildPlan, String> {
+    selection.reject_debug()?;
     let payload = selection.payload.unwrap_or_else(|| "linux".into());
     if !matches!(payload.as_str(), "halt" | "linux" | "uefi") {
         return Err("FU740 supports halt, Linux and UEFI".into());

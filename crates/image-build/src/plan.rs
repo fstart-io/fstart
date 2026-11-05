@@ -174,6 +174,10 @@ pub struct BuildSelection {
     /// Build-time log verbosity (`FSTART_LOG_LEVEL`) for every unit.
     #[serde(default)]
     pub log_level: Option<String>,
+    /// Opt-in debug facilities (`fbuild --debug`), which the selected
+    /// platform interprets; platforms without any reject them.
+    #[serde(default)]
+    pub debug: Vec<String>,
 }
 
 /// The `package.metadata.fstart` tables of the selected board and platform.
@@ -203,6 +207,14 @@ impl BuildSelection {
         Ok(())
     }
 
+    /// For platforms that offer no `--debug` facilities.
+    pub fn reject_debug(&self) -> Result<(), String> {
+        match self.debug.first() {
+            Some(option) => Err(format!("this platform has no debug option '{option}'")),
+            None => Ok(()),
+        }
+    }
+
     #[must_use]
     pub fn has_x86_linux_overrides(&self) -> bool {
         self.x86_linux_kernel_load_addr.is_some()
@@ -227,6 +239,9 @@ pub type ResolvedPlan = crate::build_plan::BuildPlan;
 pub struct IntelPlan {
     #[serde(default)]
     pub memory_cache: bool,
+    /// Size of the SPI flash console region after the MRC cache; 0 if none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flash_console: u32,
     pub reservations: crate::intel_plan::IntelReservations,
     /// Long mode or 32-bit protected mode; selects the target triple.
     pub platform: fstart_core::Platform,
@@ -352,7 +367,7 @@ impl IntelPlan {
         if flash != self.reservations.flash || firmware != self.reservations.firmware {
             return Err("physical layout differs from resolved flash/firmware windows".into());
         }
-        let prefix = if self.memory_cache { 0x20000 } else { 0 };
+        let prefix = u64::from(self.flash_console) + if self.memory_cache { 0x20000 } else { 0 };
         let bios_offset = match &self.flash {
             FlashTransport::IntelIfd(layout) => {
                 layout
@@ -365,7 +380,8 @@ impl IntelPlan {
         };
         if self.reservations.bootblock.image.base != firmware.base + prefix
             || firmware.size.checked_sub(prefix) != Some(self.reservations.bootblock.image.size)
-            || (self.memory_cache && bios_offset % 0x10000 != 0)
+            || (prefix != 0 && bios_offset % 0x10000 != 0)
+            || self.flash_console % 0x10000 != 0
         {
             return Err("mutable cache and reset image geometry differ".into());
         }
@@ -377,4 +393,8 @@ impl IntelPlan {
         }
         self.flash.decode()
     }
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }

@@ -215,6 +215,64 @@ where
     Ok(())
 }
 
+/// A PML4, one PDPT and four page directories: the entry tables' shape (the
+/// low 4 GiB in 2 MiB or 1 GiB leaves).
+#[repr(C, align(4096))]
+pub struct EntryTables(pub [[u64; 512]; 6]);
+
+impl EntryTables {
+    pub const fn new() -> Self {
+        Self([[0; 512]; 6])
+    }
+}
+
+impl Default for EntryTables {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Copy the live entry tables (ROM tables or ones the reset path built) into
+/// `tables` and return the new CR3, for a stage that must stop page walks
+/// into the flash it is about to program. `None`, with CR3 untouched, when
+/// the live tables have another shape.
+///
+/// # Safety
+/// `tables` is identity mapped and stays reserved while CR3 points at it.
+pub unsafe fn copy_entry_tables(tables: &mut EntryTables) -> Option<u64> {
+    const PRESENT: u64 = 1;
+    const LEAF: u64 = 1 << 7;
+    const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+    let cr3: u64;
+    // SAFETY: reading CR3 has no side effects.
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+    }
+    let copy = |table: &mut [u64; 512], entry: u64| {
+        // SAFETY: a present entry of the live, identity-mapped tables.
+        unsafe {
+            core::ptr::copy_nonoverlapping((entry & ADDRESS) as *const [u64; 512], table, 1);
+        }
+        (table.as_ptr() as u64) | (entry & !ADDRESS)
+    };
+    let [pml4, pdpt, directories @ ..] = &mut tables.0;
+    let root = copy(pml4, cr3);
+    // Only PML4[0] maps, and only the low 4 GiB below it.
+    if pml4[0] & PRESENT == 0 || pml4[1..].iter().any(|entry| entry & PRESENT != 0) {
+        return None;
+    }
+    pml4[0] = copy(pdpt, pml4[0]);
+    if pdpt[4..].iter().any(|entry| entry & PRESENT != 0) {
+        return None;
+    }
+    for (entry, directory) in pdpt[..4].iter_mut().zip(directories) {
+        if *entry & PRESENT != 0 && *entry & LEAF == 0 {
+            *entry = copy(directory, *entry);
+        }
+    }
+    Some(root)
+}
+
 /// Load CR3.
 #[inline]
 pub fn load_cr3(value: u64) {

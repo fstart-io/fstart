@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Debug consoles next to the board's console (`fbuild --debug`). Without it
+# the log writes to the one console, at no cost to builds without them.
+debug-consoles = []
+
 [dependencies]
 ufmt = { workspace = true }
 fstart-core = { workspace = true }

@@ -219,6 +219,11 @@ impl CacheSpi {
         })
     }
 
+    /// Whether the chip was identified as a part this controller programs.
+    pub fn writable(&self) -> bool {
+        self.write_geometry_verified
+    }
+
     pub fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
         let address = self.extent.address(offset, bytes.len())?;
         self.controller
@@ -296,6 +301,18 @@ fn supported_geometry(id: [u8; 3], chip_size: u32) -> bool {
         }
         [0x1f, 0x47, 0x00 | 0x01] => chip_size == 0x400000,
         _ => false,
+    }
+}
+
+/// The SPI flash console's region (`fstart-driver-flash-console`). The
+/// console warms an XIP caller's image before every program cycle; see
+/// [`CacheSpi::new`] for the rest of the contract.
+impl fstart_driver_flash_console::Medium for CacheSpi {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
+        CacheSpi::read(self, offset, bytes)
+    }
+    fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
+        CacheSpi::program(self, offset, bytes)
     }
 }
 

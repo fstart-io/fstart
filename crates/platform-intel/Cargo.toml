@@ -8,6 +8,11 @@ publish = false
 [features]
 default = []
 memory-cache = ["fstart-driver-intel/spi"]
+# `fbuild --debug` facilities (see debug_console); the plan selects them.
+# The board's EHCI debug port console.
+ehci-console = ["fstart-log?/debug-consoles"]
+# The SPI flash log in every stage.
+flash-console = ["fstart-driver-intel/spi", "dep:fstart-driver-flash-console", "fstart-log?/debug-consoles"]
 # Additive hardware availability; each board enables its chipset pair once.
 gm965-ich8 = ["dep:konst", "namespace", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
 i945-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
@@ -73,6 +78,8 @@ fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
+fstart-driver-usbdebug = { workspace = true }
+fstart-driver-flash-console = { workspace = true, optional = true }
 fstart-pci = { workspace = true }
 fstart-resume = { workspace = true, optional = true }
 fstart-store = { workspace = true, optional = true }

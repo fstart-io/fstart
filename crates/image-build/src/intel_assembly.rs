@@ -90,6 +90,7 @@ impl IntelPlan {
             boot_hart_id: 0,
             build: BoardBuildPolicy {
                 mrc_cache_size: if self.memory_cache { 0x20000 } else { 0 },
+                flash_console_size: self.flash_console,
                 firmware_image: FirmwareImagePolicy::memory_mapped(
                     self.reservations.firmware.base,
                     self.reservations.firmware.size,

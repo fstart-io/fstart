@@ -185,6 +185,7 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             fstart_arch::x86::boot::halt()
         }
         slot.install(console);
+        crate::debug_console::install::<B>(true);
         fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
         fstart_log::info!("{} bootblock: {} console ready", B::Platform::NAME, C::NAME);
         fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);

@@ -15,7 +15,16 @@ pub trait IntelPlatform: 'static {
 /// Hardware population needed by both host planning and runtime bring-up.
 pub trait IntelPlatformConfig {
     fn max_cpus(&self) -> u16;
+    /// The EHCI debug port the chipset config reserves, which `fbuild
+    /// --debug ehci` turns into a console (see [`crate::debug_console`]).
+    fn ehci_debug(&self) -> Option<fstart_driver_usbdebug::Config> {
+        None
+    }
 }
+
+/// The SPI flash console region (`fbuild --debug flash-console`, coreboot
+/// `CONSOLE_SPI_FLASH`), after the memory cache: whole 64-KiB erase blocks.
+pub const FLASH_CONSOLE_SIZE: u32 = 0x40000;
 
 /// Board-owned physical flash and attached-device assets, not build policy.
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +70,14 @@ impl BoardFacts {
     pub const fn with_memory_cache(mut self) -> Self {
         self.memory_cache = true;
         self
+    }
+
+    /// Bytes of mutable flash (memory cache, then the flash console when the
+    /// build selects it) before the read-only image at the beginning of the
+    /// BIOS mapping.
+    pub const fn mutable_prefix(&self, flash_console: bool) -> u32 {
+        (if self.memory_cache { 0x20000 } else { 0 })
+            + if flash_console { FLASH_CONSOLE_SIZE } else { 0 }
     }
 
     /// Opt in to 32-bit protected-mode stages (see [`Self::protected_mode`]).

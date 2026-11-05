@@ -217,6 +217,7 @@ fn unit(
 }
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
+    selection.reject_debug()?;
     if selection.has_x86_linux_overrides() {
         return Err("x86 Linux options are supported only by Intel platforms".into());
     }

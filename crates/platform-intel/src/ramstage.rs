@@ -288,6 +288,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             fstart_arch::x86::boot::halt()
         }
         let console = slot.install(console);
+        crate::debug_console::install::<B>(true);
         self.uart = console.uart_port();
         self.console = Some(console);
         fstart_log::info!("{} ramstage: {} console ready", B::Platform::NAME, C::NAME);

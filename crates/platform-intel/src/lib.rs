@@ -21,6 +21,7 @@ extern crate ufmt;
 )]
 pub mod tables;
 
+pub mod debug_console;
 pub mod facts;
 pub mod memory_cache;
 
