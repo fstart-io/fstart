@@ -133,7 +133,7 @@ impl<'a> Edid<'a> {
                 let end = text.iter().position(|byte| *byte == b'\n');
                 &text[..end.unwrap_or(text.len())]
             })
-            .last()
+            .next_back()
     }
 
     /// Return true when descriptor 1 contains a usable detailed timing.
