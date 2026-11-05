@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>fstart firmware assembler</title>
+  <meta name="description" content="Build a flashable fstart firmware image for your board from a CI release, in your browser. Your files are never uploaded.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2' width='12' height='12' rx='2' fill='%23c2410c'/%3E%3Cpath d='M5 5h6M5 8h4M5 11h6' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.mjs"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="#/">
+        <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 5h6M5 8h4M5 11h6"/></svg>
+        <span class="name">fstart</span>
+        <span class="what">firmware assembler</span>
+      </a>
+      <div class="source" role="group" aria-label="Build source">
+        <label class="sr-only" for="release">Release</label>
+        <select id="release" title="Release" disabled><option>Loading releases…</option></select>
+        <button type="button" id="open-bundle" class="quiet">Open bundle file…</button>
+        <input type="file" id="bundle-file" accept=".zip,application/zip" hidden>
+      </div>
+    </div>
+  </header>
+
+  <noscript><p class="banner">This page assembles firmware in your browser and needs JavaScript and WebAssembly. Without them, use <code>fbuild compose-bundle</code> from the release's host tools.</p></noscript>
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <main>
+    <section id="home" class="home" aria-labelledby="home-title">
+      <div class="hero">
+        <h1 id="home-title">Firmware for your board, built in this tab.</h1>
+        <p class="lede">Pick a board from a CI release, add the files only you can supply, and download a flashable image.
+          Assembly runs here in WebAssembly; nothing you add leaves your machine.</p>
+        <div class="finder">
+          <div class="search">
+            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+            <label class="sr-only" for="filter">Search boards</label>
+            <input type="search" id="filter" placeholder="Search boards" autocomplete="off" spellcheck="false" aria-describedby="filter-help" aria-keyshortcuts="/">
+            <kbd aria-hidden="true">/</kbd>
+          </div>
+          <div class="arch" id="arch" role="radiogroup" aria-label="Architecture"></div>
+        </div>
+        <span id="filter-help" class="sr-only">Filters by board name, vendor, family or payload; results are announced. Enter opens the first board, with the payload if you typed one.</span>
+        <p id="release-meta" class="release-meta"></p>
+        <button type="button" id="intro-open" class="primary big" hidden>Open a .bundle.zip</button>
+      </div>
+      <div id="gallery" class="gallery"></div>
+    </section>
+
+    <section id="detail" class="detail" tabindex="-1" aria-label="Selected build" hidden>
+      <a class="back" href="#/"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>All boards</a>
+      <div id="build" class="build"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <a href="https://github.com/fstart-io/fstart" target="_blank" rel="noopener">Source</a>
+    <a href="https://github.com/fstart-io/fstart/blob/master/docs/distribution.md" target="_blank" rel="noopener">How this works</a>
+    <span id="foot-note">Images are assembled locally. Release files arrive through a proxy that only serves fstart releases and the vendor downloads they name.</span>
+  </footer>
+
+  <div id="live" class="sr-only" aria-live="polite"></div>
+</body>
+</html>

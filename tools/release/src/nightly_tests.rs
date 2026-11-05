@@ -32,6 +32,7 @@ fn fixture(root: &Path, revision: &str) {
         "builds": [{"asset": "board.bundle.zip", "size": data.len(), "sha256": format!("{:x}", Sha256::digest(data)), "image_error": null}],
         "extra_catalog_metadata": "preserved",
     })).unwrap();
+    fs::write(root.join("image-web.zip"), b"sdk").unwrap();
     fs::write(
         root.join("host-tools-linux-x86_64.tar.gz"),
         b"never execute downloaded tools",
@@ -130,7 +131,7 @@ fn verifies_revision_version_and_exact_asset_identities() {
     fs::write(root.join("board.bundle.zip"), b"tampered").unwrap();
     assert!(verify(root, "abc").is_err());
     fixture(root, "abc");
-    fs::remove_file(root.join("host-tools-linux-x86_64.tar.gz")).unwrap();
+    fs::remove_file(root.join("image-web.zip")).unwrap();
     assert!(verify(root, "abc").is_err());
 }
 #[test]
@@ -157,7 +158,7 @@ fn rejects_unsafe_duplicate_and_excessive_assets() {
     write_json(&temp.path().join("catalog.json"), &duplicate).unwrap();
     assert!(verify(temp.path(), "abc").is_err());
     let mut excessive = catalog.clone();
-    excessive["builds"] = (0..997)
+    excessive["builds"] = (0..996)
         .map(|i| {
             let mut build = catalog["builds"][0].clone();
             build["asset"] = format!("board-{i}.bundle.zip").into();
@@ -178,9 +179,8 @@ fn rejects_unsafe_duplicate_and_excessive_assets() {
 fn rejects_symlink_assets() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path(), "abc");
-    let tools = temp.path().join("host-tools-linux-x86_64.tar.gz");
-    fs::remove_file(&tools).unwrap();
-    std::os::unix::fs::symlink("catalog.json", tools).unwrap();
+    fs::remove_file(temp.path().join("image-web.zip")).unwrap();
+    std::os::unix::fs::symlink("catalog.json", temp.path().join("image-web.zip")).unwrap();
     assert!(verify(temp.path(), "abc").is_err());
 }
 
@@ -217,7 +217,7 @@ fn publishes_verified_assets_as_a_draft_before_exposing_them() {
                 let path = Path::new(args.iter().find(|s| s.ends_with("/catalog.json")).unwrap());
                 published = serde_json::from_slice(&fs::read(path)?)?;
                 let sums = fs::read_to_string(path.parent().unwrap().join("SHA256SUMS"))?;
-                assert_eq!(sums.lines().count(), 4);
+                assert_eq!(sums.lines().count(), 5);
                 assert!(sums.contains("  release.json\n"));
             }
             Ok(String::new())
