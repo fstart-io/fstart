@@ -116,18 +116,25 @@ prot32:
 	 * in the cache, and it reads stale data. So the APs replay one at a time,
 	 * write only the records that differ, and disable the MTRRs only when an
 	 * MTRR differs, which a core whose other thread runs never needs.
+	 *
+	 * The APs take turns in ordinal order, waiting with plain loads: no
+	 * locked operation once caching is disabled. On Atom Pineview (D410/D510)
+	 * a locked RMW from the AP thread in this state could wedge the BSP thread
+	 * of the same core, depending on what the BSP had cached (Intel D400
+	 * specification update AAR51: hang during a locked operation). Ordinals
+	 * are handed out in arrival order, so every lower ordinal is already here.
 	 * ESI retains the AP ordinal; EBX/EDI/EBP are scratch until long64.
 	 */
 	movl %cr0, %eax
 	orl $CR0_CD, %eax
 	andl $~CR0_NW, %eax
 	movl %eax, %cr0
-replay_lock:
-	lock btsl $0, SIPI_BASE + fstart_sipi_replay_lock - fstart_sipi_start
-	jnc replay_locked
+replay_wait:
+	cmpl SIPI_BASE + fstart_sipi_replay_turn - fstart_sipi_start, %esi
+	je replay_turn
 	pause
-	jmp replay_lock
-replay_locked:
+	jmp replay_wait
+replay_turn:
 	/* Some MSRs of the table are only readable and writable with an unlock
 	 * bit set in another MSR (AMD: SYSCFG.MtrrFixDramModEn for the fixed
 	 * MTRRs' RdDram/WrDram, a per-thread bit). Set it on the AP's own
@@ -192,7 +199,9 @@ msr_replay_done:
 	andl %ebx, %eax
 	wrmsr
 1:
-	movl $0, SIPI_BASE + fstart_sipi_replay_lock - fstart_sipi_start
+	/* Hand the replay to the next ordinal. */
+	leal 1(%esi), %eax
+	movl %eax, SIPI_BASE + fstart_sipi_replay_turn - fstart_sipi_start
 
 #ifdef FSTART_PROTECTED_MODE
 	/* No paging: join cache coherency now that the BSP's MTRRs/PAT are in
@@ -281,7 +290,7 @@ fstart_sipi_ap_limit:
 	.long 0
 fstart_sipi_ap_counter:
 	.long 0
-fstart_sipi_replay_lock:
+fstart_sipi_replay_turn:
 	.long 0
 fstart_sipi_unlock_msr:
 	.long 0
