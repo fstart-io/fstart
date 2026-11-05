@@ -19,6 +19,9 @@ enum Command {
         /// Build one named unit and its producers instead of the complete image.
         #[arg(long)]
         stage: Option<String>,
+        /// Append the stage sizes as one JSON line to this file (CI size report).
+        #[arg(long)]
+        size_report: Option<std::path::PathBuf>,
         #[arg(short, long)]
         board: String,
         #[arg(short, long, default_value_t = false)]
@@ -157,6 +160,17 @@ fn dispatch_board(board: &str, args: &[String]) -> Result<(), String> {
         ));
     }
     fbuild::board_tool::run_metadata(&manifest, args)
+}
+
+/// `--size-report` for the board tool, made absolute: the tool runs in its
+/// own workspace directory.
+fn size_report_args(path: Option<std::path::PathBuf>) -> Result<Vec<String>, String> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let path =
+        std::path::absolute(&path).map_err(|e| format!("--size-report {}: {e}", path.display()))?;
+    Ok(vec!["--size-report".into(), path.display().to_string()])
 }
 
 fn board_tool_build_args(
@@ -326,12 +340,17 @@ fn main() {
             payload,
             options,
             stage,
-        } => match stage {
-            Some(name) => compile_named(&board, options.selection(payload), release, &name, false),
-            None => dispatch_board(
-                &board,
-                &board_tool_build_args("build", release, payload, &options),
-            ),
+            size_report,
+        } => match (stage, size_report) {
+            (Some(_), Some(_)) => Err("--size-report needs a complete build, not --stage".into()),
+            (Some(name), None) => {
+                compile_named(&board, options.selection(payload), release, &name, false)
+            }
+            (None, size_report) => size_report_args(size_report).and_then(|extra| {
+                let mut args = board_tool_build_args("build", release, payload, &options);
+                args.extend(extra);
+                dispatch_board(&board, &args)
+            }),
         },
         Command::Run {
             board,

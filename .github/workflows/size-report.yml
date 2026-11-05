@@ -1,0 +1,75 @@
+name: Size report
+
+# Compare a pull request's stage sizes with its base commit's and keep one
+# comment on the pull request up to date. CI uploads the `stage-sizes`
+# artifact from every run; this runs from the default branch after CI
+# finishes, so it can comment on pull requests from forks too and only runs
+# trusted code on the artifact.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Report stage sizes
+        run: |
+          if ! gh run download "$RUN_ID" -n stage-sizes -D head; then
+            echo "Run $RUN_ID has no stage sizes: its board builds did not finish."
+            exit 0
+          fi
+          # The artifact comes from the pull request's own build: check what
+          # it claims before acting on it. CI built GitHub's test merge of the
+          # pull request, whose parents are the base it built on and the head
+          # of this run.
+          read -r pr merge < <(python3 -c '
+          import json, re
+          d = json.load(open("head/stage-sizes.json"))
+          assert re.fullmatch(r"[0-9a-f]{40}", d["commit"])
+          print(int(d["pr"]), d["commit"])')
+          if [ "$(gh api "repos/$GH_REPO/pulls/$pr" -q .head.sha)" != "$HEAD_SHA" ]; then
+            echo "Pull request #$pr is not at $HEAD_SHA; not reporting."
+            exit 0
+          fi
+          read -r base head < <(gh api "repos/$GH_REPO/commits/$merge" -q '[.parents[].sha] | join(" ")')
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "$merge is not a merge of $HEAD_SHA; not reporting."
+            exit 0
+          fi
+
+          # The base commit's master run, else the newest master run with sizes.
+          runs=$(gh run list -w CI -c "$base" -e push --json databaseId -q '.[].databaseId')
+          runs="$runs $(gh run list -w CI -b master -e push -L 30 --json databaseId -q '.[].databaseId')"
+          for run in $runs; do
+            gh run download "$run" -n stage-sizes -D base 2>/dev/null && break
+          done
+          if [ ! -f base/stage-sizes.json ]; then
+            echo "No master run with stage sizes yet."
+            exit 0
+          fi
+
+          python3 ci/stage_sizes.py report base/stage-sizes.json head/stage-sizes.json > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          comment=$(gh api "repos/$GH_REPO/issues/$pr/comments" --paginate \
+            -q '.[] | select(.user.login == "github-actions[bot]")
+                    | select(.body | startswith("<!-- fstart-stage-sizes -->")) | .id' | head -1)
+          if [ -n "$comment" ]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$comment" -F body=@report.md >/dev/null
+          else
+            gh pr comment "$pr" -F report.md
+          fi

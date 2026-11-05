@@ -20,6 +20,9 @@ enum Command {
         payload: Option<PayloadChoice>,
         #[command(flatten)]
         options: BuildArgs,
+        /// Append the stage sizes as one JSON line to this file.
+        #[arg(long)]
+        size_report: Option<std::path::PathBuf>,
     },
     Run {
         #[arg(short, long, default_value_t = false)]
@@ -92,7 +95,14 @@ fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result
             release,
             payload,
             options,
-        } => build(manifest, release, payload, &options).map(|_| ()),
+            size_report,
+        } => {
+            let result = build(manifest, release, payload, &options)?;
+            match size_report {
+                Some(path) => crate::sizes::append(&path, &manifest.board, &result.stages),
+                None => Ok(()),
+            }
+        }
         Command::Run {
             release,
             payload,
