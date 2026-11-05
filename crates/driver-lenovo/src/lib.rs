@@ -22,6 +22,7 @@ pub mod ec;
 pub mod eeprom;
 
 pub mod h8;
+pub mod options;
 pub mod pmh7;
 pub mod t6;
 pub mod wacom;

@@ -28,17 +28,35 @@ pub struct Devices {
     pub ide_primary: Option<bool>,
     pub native_brightness: bool,
 }
+/// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
+/// them.
+pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 10] = {
+    use fstart_driver_lenovo::options::*;
+    [
+        TOUCHPAD,
+        TRACKPOINT,
+        BLUETOOTH,
+        WWAN,
+        WLAN,
+        STICKY_FN,
+        POWER_MANAGEMENT_BEEPS,
+        LOW_BATTERY_BEEP,
+        VOLUME,
+        FIRST_BATTERY,
+    ]
+};
 
 pub fn init_ec_and_bay(
     bdc: &mut impl InputPin,
     legacy_module: &mut impl InputPin,
     console_failed: bool,
+    ec: &fstart_driver_lenovo::options::Options,
 ) -> Result<Devices, ServiceError> {
     use fstart_driver_lenovo::{
         h8::H8,
         t6::{self, dock},
     };
-    if !t6::ec_init(crate::MODEL, bdc, &crate::T6_H8, false) {
+    if !t6::ec_init(crate::MODEL, bdc, &crate::T6_H8, ec, false) {
         fstart_log::error!("T6: EC/thermal initialization incomplete");
     }
     let legacy = dock::legacy_io_present(legacy_module)?;

@@ -60,21 +60,26 @@ fn detect_bluetooth(bdc_presence: &mut impl InputPin) -> bool {
 
 /// Runtime EC/PMH7 bring-up, mirroring coreboot's `h8_enable()` and the
 /// PMH7 `enable_dev()`: thermal management and event/hotkey reporting on,
-/// trackpoint and USB power on, radios per presence, PMH7 backlight and
-/// dock events. `bdc_presence` is the [`BDC_PRESENCE_GPIO`] pin. Returns
+/// trackpoint and USB power on, radios per presence and `options`, PMH7
+/// backlight and dock events. `bdc_presence` is the [`BDC_PRESENCE_GPIO`] pin. Returns
 /// whether every EC write was acknowledged.
-pub fn ec_init(bdc_presence: &mut impl InputPin, h8: &H8Config, resume: bool) -> bool {
+pub fn ec_init(
+    bdc_presence: &mut impl InputPin,
+    h8: &H8Config,
+    options: &crate::options::Options,
+    resume: bool,
+) -> bool {
     let bluetooth = detect_bluetooth(bdc_presence);
     BLUETOOTH_PRESENT.store(bluetooth, Ordering::Relaxed);
     let pmh7 = Pmh7::new(h8.resources.pmh7_base.raw());
     pmh7.log_identity();
     pmh7.backlight_enable(true);
     pmh7.dock_event_enable(true);
-    pmh7.touchpad_enable(true);
-    pmh7.trackpoint_enable(true);
+    pmh7.touchpad_enable(options.touchpad);
+    pmh7.trackpoint_enable(options.trackpoint);
 
     let h8 = H8::new(Ec::new(h8.resources.os));
-    let initialized = h8.init_legacy_thinkpad(&EVENT_MASKS, bluetooth, resume);
+    let initialized = h8.init_legacy_thinkpad(&EVENT_MASKS, bluetooth, options, resume);
     let dock = h8.dock_latch(false)
         && (!dock::connected() || (h8.dock_latch(true) && h8.set_led(H8Led::Dock1, H8LedMode::On)));
     initialized && dock

@@ -11,6 +11,7 @@ acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros"]
 x86_64 = ["fstart-arch/x86_64"]
 
 [dependencies]
+fstart-options = { workspace = true }
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
 embedded-hal = { workspace = true }

@@ -809,6 +809,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-superio",
  "fstart-log",
+ "fstart-options",
  "tock-registers",
  "ufmt",
 ]
