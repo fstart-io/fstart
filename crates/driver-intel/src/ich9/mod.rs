@@ -593,12 +593,7 @@ fn sata_map(ports: u8, ahci: bool) -> u16 {
     (if ahci { 0x60 } else { 0 }) | (u16::from((ports ^ 0x3f) & 0x3f) << 8)
 }
 
-/// SATA controller operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SataMode {
-    Ide,
-    Ahci,
-}
+pub use crate::southbridge::options::SataMode;
 
 /// USB controller configuration.
 #[derive(Debug, Clone, Copy)]
@@ -946,6 +941,8 @@ impl Rcba {
 /// Intel ICH9 southbridge driver.
 pub struct IntelIch9 {
     config: &'static IntelIch9Config,
+    /// The user options over the board config.
+    options: crate::southbridge::options::Options,
     smbus: Option<I801SmBus>,
     pm: PmIo,
     /// Advertise `_S3_`; set by the mainstage once resume state persisted.
@@ -960,6 +957,14 @@ unsafe impl Send for IntelIch9 {}
 unsafe impl Sync for IntelIch9 {}
 
 impl IntelIch9 {
+    /// The board's SATA config in the user's mode.
+    fn sata(&self) -> Option<SataConfig> {
+        self.config.sata.map(|sata| SataConfig {
+            mode: self.options.sata_mode.unwrap_or(sata.mode),
+            ..sata
+        })
+    }
+
     /// The GPIO controller, for board code to take the pins it wires.
     /// Pad configuration is chipset config, applied before the console.
     #[must_use]
@@ -1297,7 +1302,7 @@ impl IntelIch9 {
 
     fn configure_power_options(&self) {
         let lpc = self.lpc_regs();
-        let after_g3 = match self.config.power_on_after_fail {
+        let after_g3 = match self.options.power_on_after_fail {
             0 => 1,                                                     // off
             1 => 0,                                                     // on
             _ => lpc.gen_pmcon_3.read(GEN_PMCON_3_REG::STATE_AFTER_G3), // keep
@@ -1351,19 +1356,7 @@ impl IntelIch9 {
         throttle |= (u32::from(self.config.throttle_duty & 7)) << 5;
         self.pm().write32(0x10, throttle);
 
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            // SAFETY: legacy NMI control ports on x86 PCs.
-            let mut port61 = fstart_core::pio::inb(0x61);
-            port61 &= 0x0f;
-            port61 &= !(1 << 3);
-            port61 |= 1 << 2;
-            fstart_core::pio::outb(0x61, port61);
-            // Port 0x70 is write-only; 0x74 is its readable alias.
-            let mut nmi = fstart_core::pio::inb(0x74);
-            nmi |= 1 << 7;
-            fstart_core::pio::outb(0x70, nmi);
-        }
+        crate::southbridge::options::nmi(self.options.nmi);
     }
 
     fn configure_cstates(&self) {
@@ -2167,6 +2160,21 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
     type Config = IntelIch9Config;
     const ACPI_LPC_NAME: &'static str = "LPCB";
 
+    type Options = crate::southbridge::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
+        crate::southbridge::options::POWER_ON_AFTER_FAIL_KEEP,
+        crate::southbridge::options::SATA_MODE,
+        crate::southbridge::options::NMI,
+    ];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         let routing = config.pirq.as_ref();
         if config
@@ -2283,6 +2291,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
         Ok(Self {
             config,
+            options: crate::southbridge::options::Options::from_config(
+                config.power_on_after_fail,
+                match config.sata {
+                    Some(sata) => Some(sata.mode),
+                    None => None,
+                },
+            ),
             smbus: None,
             pm: PmIo::new(ich9::DEFAULT_PMBASE),
             s3_enabled: false,
@@ -2327,7 +2342,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         self.hide_disabled_root_ports();
         self.pm().write32(GPE0_EN_ICH9, self.config.gpe0_en);
         self.enable_hpet();
-        if let Some(sata) = self.config.sata.as_ref() {
+        if let Some(sata) = self.sata().as_ref() {
             self.sata_enable(sata);
         }
         // The platform samples S3 after early_init; do not clear SLP_TYP here.
@@ -2396,7 +2411,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         if let Some(hda) = self.config.hda.as_ref() {
             self.hda_init(hda);
         }
-        if let Some(sata) = self.config.sata.as_ref() {
+        if let Some(sata) = self.sata().as_ref() {
             self.sata_init(sata);
         }
         self.ramstage_lpc_init();

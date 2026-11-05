@@ -170,6 +170,8 @@ register_structs! {
 /// GM45 driver: early decode and (once trained) memory-map readback.
 pub struct IntelGm45 {
     config: &'static IntelGm45Config,
+    /// The user options over the board config.
+    options: crate::igd::options::Options,
     graphics: Gm45GraphicsPolicy,
     mmio32_window: Option<(u64, u64)>,
     bootstrap_windows: Option<[(u32, u32); 2]>,
@@ -281,13 +283,24 @@ impl IntelGm45 {
         }
     }
 
+    /// The GMS field of `mb` MiB of graphics stolen memory.
+    pub(crate) const fn gms_of_mb(mb: u16) -> Option<u16> {
+        let mut gms = 1;
+        while gms < GMS_UMA_MIB.len() {
+            if GMS_UMA_MIB[gms] == mb {
+                return Some(gms as u16);
+            }
+            gms += 1;
+        }
+        None
+    }
+
     // coreboot gm45/memmap.c: graphics stolen and GTT follow TOLUD, then TSEG.
     fn reserved_memory(gcc: u16, esmramc: u8) -> Option<u32> {
-        const UMA_MIB: [u16; 14] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256, 96, 160, 224, 352];
         let mut reserved = Self::tseg_size_from_esmramc(esmramc)?;
         if gcc & 2 == 0 {
             let gms = usize::from((gcc >> 4) & 0xf);
-            let uma = u32::from(*UMA_MIB.get(gms)?) << 20;
+            let uma = u32::from(*GMS_UMA_MIB.get(gms)?) << 20;
             let gtt = match (gcc >> 8) & 0xf {
                 0 => 0,
                 1 => 1 << 20,
@@ -367,10 +380,38 @@ impl crate::IntelEcamConfig for IntelGm45Config {
     }
 }
 
+/// Stolen memory of each GMS value, in MiB (GM45 GGC bits 7:4).
+const GMS_UMA_MIB: [u16; 14] = [0, 1, 4, 8, 16, 32, 48, 64, 128, 256, 96, 160, 224, 352];
+
+/// The stolen-memory sizes the GMS field encodes, in MiB.
+const UMA_SIZES: &[fstart_options::Choice] = &[
+    fstart_options::Choice::new(32, "32 MiB"),
+    fstart_options::Choice::new(48, "48 MiB"),
+    fstart_options::Choice::new(64, "64 MiB"),
+    fstart_options::Choice::new(96, "96 MiB"),
+    fstart_options::Choice::new(128, "128 MiB"),
+    fstart_options::Choice::new(160, "160 MiB"),
+    fstart_options::Choice::new(224, "224 MiB"),
+    fstart_options::Choice::new(256, "256 MiB"),
+    fstart_options::Choice::new(352, "352 MiB"),
+];
+
 impl crate::IntelNorthbridgeDriver for IntelGm45 {
     type Config = IntelGm45Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
+    type Options = crate::igd::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
+        &[crate::igd::options::uma(UMA_SIZES)];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         let buses = config.ecam_buses;
         if !matches!(buses, 64 | 128 | 256)
@@ -390,6 +431,10 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         }
         Ok(Self {
             config,
+            options: crate::igd::options::Options::new(
+                !matches!(config.graphics, Gm45GraphicsPolicy::Discrete),
+                32,
+            ),
             graphics: config.graphics,
             mmio32_window: None,
             bootstrap_windows: None,
@@ -624,6 +669,7 @@ impl IntelGm45 {
             fsb_mhz,
             capid_high,
             self.graphics,
+            self.options.uma_mb,
             &channels,
             &timing,
             replay.as_ref(),
