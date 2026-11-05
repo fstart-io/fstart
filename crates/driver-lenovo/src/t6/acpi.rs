@@ -121,8 +121,10 @@ mod tests {
             let mut aml = acpi_dsl! {
                 Scope(#{const "\\_SB_"}) {
                     Device("PCI0") {
-                        Device("LPCB") {}
+                        Name("_HID", EisaId("PNP0A08"));
+                        Device("LPCB") { Name("_ADR", 0x001F0000u32); }
                         Device("GFX0") {
+                            Name("_ADR", 0x00020000u32);
                             Method("INCB", 0, NotSerialized) {}
                             Method("DECB", 0, NotSerialized) {}
                         }
