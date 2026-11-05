@@ -97,28 +97,30 @@ pub fn dock_present(id: &mut [impl InputPin; 3]) -> bool {
     value != 7
 }
 
-/// Runtime EC/PMH7 bring-up (coreboot `h8_enable()` and the PMH7
-/// `enable_dev()`), then `h8_mb_init()`: connect a present dock. On S3
-/// resume the suspend LED blinks (coreboot `mainboard_enable()`). Returns
-/// whether the Bluetooth card is fitted and every EC write was
-/// acknowledged.
+/// Runtime EC/PMH7 bring-up with the user's `options` (coreboot
+/// `h8_enable()` and the PMH7 `enable_dev()`), then `h8_mb_init()`:
+/// connect a present dock. On S3 resume the suspend LED blinks (coreboot
+/// `mainboard_enable()`). Returns whether the Bluetooth card is fitted and
+/// every EC write was acknowledged.
 pub fn ec_init(
     bdc_presence: &mut impl InputPin,
     dock_id: &mut [impl InputPin; 3],
     dock_connect_pin: &mut impl OutputPin,
     h8_config: &H8Config,
+    options: &crate::options::Options,
     resume: bool,
 ) -> (bool, bool) {
     let bluetooth = bdc_presence.is_low().unwrap_or(false);
     let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
     pmh7.backlight_enable(true);
     pmh7.dock_event_enable(true);
-    pmh7.trackpoint_enable(true);
-    pmh7.touchpad_enable(true);
+    pmh7.trackpoint_enable(options.trackpoint);
+    pmh7.touchpad_enable(options.touchpad);
 
     let ec = Ec::new(h8_config.resources.os);
     let h8 = H8::new(ec);
-    let mut acknowledged = h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, None, resume);
+    let mut acknowledged =
+        h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, false, options, resume);
     if dock_present(dock_id) {
         fstart_log::info!("x201: dock is connected");
         acknowledged &= dock_connect(ec, dock_connect_pin);
