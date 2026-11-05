@@ -357,6 +357,19 @@ const fn default_spd_addresses() -> [u8; 4] {
     [0x50, 0x51, 0x52, 0x53]
 }
 
+/// The Graphics Mode Select of `mb` MiB of stolen memory; 8 MiB (GMS 3)
+/// for a size the field cannot encode.
+const fn gms_of_mb(mb: u16) -> u16 {
+    let mut gms = 1;
+    while gms < 8 {
+        if decode_igd_memory_size_kb(gms) == mb as u32 * 1024 {
+            return gms as u16;
+        }
+        gms += 1;
+    }
+    3
+}
+
 /// Graphics Mode Select to UMA size in KiB (`ggc2uma` from `memmap.c`).
 #[must_use]
 pub const fn decode_igd_memory_size_kb(gms: u32) -> u32 {
@@ -453,6 +466,8 @@ impl crate::MmioBar for DmiBar {
 /// Intel i945 northbridge driver.
 pub struct IntelI945 {
     config: &'static IntelI945Config,
+    /// The user options over the board config.
+    options: crate::igd::options::Options,
     detected_size: u64,
     boot_path: crate::BootPath,
     /// PCI mmio32 window derived from the e820 map after memory detection.
@@ -572,7 +587,7 @@ impl IntelI945 {
         // MTRRs, which require TSEG_BASE aligned to TSEG_SIZE).
         Self::hostbridge_regs()
             .ggc
-            .write(GGC_REG::GMS.val(u16::from(self.config.gfx_gms & 7)));
+            .write(GGC_REG::GMS.val(gms_of_mb(self.options.uma_mb)));
         hb.and8_or8(hostbridge::ESMRAMC, !0x07, (1 << 1) | (1 << 0));
 
         // C0000-FFFFF RAM on both reads and writes.
@@ -1227,7 +1242,7 @@ impl IntelI945 {
         }
         let func1 = ecam::EcamDevice::new(0, hostbridge::IGD_DEV, 1);
         func1.or16(PCI_COMMAND, PCI_CMD_MASTER);
-        func1.write8(IGD_LBB, 0xff);
+        func1.write8(IGD_LBB, self.options.brightness);
     }
 
     fn tolud(&self) -> u32 {
@@ -1295,14 +1310,44 @@ impl crate::IntelEcamConfig for IntelI945Config {
     }
 }
 
+/// The stolen-memory sizes the GMS field encodes, in MiB.
+const UMA_SIZES: &[fstart_options::Choice] = &[
+    fstart_options::Choice::new(1, "1 MiB"),
+    fstart_options::Choice::new(4, "4 MiB"),
+    fstart_options::Choice::new(8, "8 MiB"),
+    fstart_options::Choice::new(16, "16 MiB"),
+    fstart_options::Choice::new(32, "32 MiB"),
+    fstart_options::Choice::new(48, "48 MiB"),
+    fstart_options::Choice::new(64, "64 MiB"),
+];
+
 impl crate::IntelNorthbridgeDriver for IntelI945 {
     type Config = IntelI945Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    type Options = crate::igd::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
+        crate::igd::options::uma(UMA_SIZES),
+        crate::igd::options::BRIGHTNESS,
+    ];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
+            options: crate::igd::options::Options::new(
+                true,
+                (decode_igd_memory_size_kb(config.gfx_gms as u32 & 7) / 1024) as u16,
+            )
+            .with_panel(config.igd.panel.is_some()),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             mmio32_window: None,

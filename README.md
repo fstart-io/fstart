@@ -32,4 +32,5 @@ cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 ## Documentation
 
 - **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.
+- **[Options](docs/options.md)** — user settings: knobs, their stores and the setup menu.
 - **[Measured boot](docs/measured-boot.md)** — TPM measurements and the payload interface.

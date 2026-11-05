@@ -216,6 +216,14 @@ pub trait IntelNorthbridgeDriver:
     /// ACPI name of the integrated graphics device on that root.
     const ACPI_IGD_NAME: &'static str;
 
+    /// The user options the driver consumes (`fstart_options`): the
+    /// configuration its knobs change, set before `pre_console_init` in
+    /// every stage that runs the driver.
+    type Options: Clone + 'static;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>];
+    /// The board's values of the options.
+    fn options(&self) -> Self::Options;
+    fn set_options(&mut self, options: Self::Options);
     fn new_from_config(
         config: &'static Self::Config,
     ) -> Result<Self, fstart_core::services::ServiceError>;
@@ -315,6 +323,14 @@ pub trait IntelSouthbridgeDriver: Sized {
     type Config: 'static;
     /// ACPI name of the LPC bridge, coreboot's `lpc_acpi_name()`.
     const ACPI_LPC_NAME: &'static str;
+    /// The user options the driver consumes (`fstart_options`): the
+    /// configuration its knobs change, set before `pre_console_init` in
+    /// every stage that runs the driver.
+    type Options: Clone + 'static;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>];
+    /// The board's values of the options.
+    fn options(&self) -> Self::Options;
+    fn set_options(&mut self, options: Self::Options);
 
     fn new_from_config(
         config: &'static Self::Config,
@@ -399,5 +415,37 @@ mod mmio_tests {
     #[should_panic]
     fn window_rejects_offset_overflow() {
         Window(0).register_address(u32::MAX, 4);
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "ich7",
+    feature = "ich8",
+    feature = "ich9",
+    feature = "i945",
+    feature = "pineview",
+    feature = "gm965",
+    feature = "gm45"
+))]
+mod option_tests {
+    use super::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+
+    fn pair<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>() {
+        let metas = fstart_log::option::KNOBS
+            .iter()
+            .map(|k| &k.meta)
+            .chain(N::KNOBS.iter().map(|k| &k.meta))
+            .chain(S::KNOBS.iter().map(|k| &k.meta));
+        assert_eq!(fstart_options::duplicate_key(metas.clone()), None);
+        assert_eq!(fstart_options::cmos::collision(metas), None);
+    }
+
+    #[test]
+    fn every_chipset_pairing_has_distinct_option_keys() {
+        pair::<crate::i945::IntelI945, crate::ich7::IntelIch7>();
+        pair::<crate::pineview::IntelPineview, crate::ich7::IntelIch7>();
+        pair::<crate::gm965::IntelGm965, crate::ich8::IntelIch8>();
+        pair::<crate::gm45::IntelGm45, crate::ich9::IntelIch9>();
     }
 }

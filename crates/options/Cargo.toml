@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 
 [features]
+# The resolution report and its CFR form, for stages with a heap.
+alloc = []
 # Options stored in an EDK2 variable store (`varstore`), as CrabEFI writes
 # them.
 varstore = ["dep:crabefi-efi-types"]
@@ -16,3 +18,7 @@ varstore = ["dep:crabefi-efi-types"]
 git = "https://github.com/ArthurHeymans/CrabEFI.git"
 rev = "551c6b836b99f7fe9ed30c6027de5794c5eb61dc"
 optional = true
+
+# The tests use the report.
+[dev-dependencies]
+fstart-options = { path = ".", features = ["alloc"] }

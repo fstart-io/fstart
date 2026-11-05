@@ -842,3 +842,90 @@ mod tests {
         assert_eq!(vbt_len(&bytes), None);
     }
 }
+
+/// The IGD's user options, under coreboot's names: the graphics stolen
+/// memory, which the northbridge reserves before DRAM is mapped, and the
+/// i945's panel brightness.
+pub mod options {
+    use fstart_options::{Availability, Choice, Kind, Knob, Meta};
+
+    /// What a board's IGD options can change.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Options {
+        /// Whether the board enables the IGD; its options do nothing
+        /// otherwise.
+        pub igd: bool,
+        /// Graphics stolen memory, in MiB.
+        pub uma_mb: u16,
+        /// Whether the board has an internal panel.
+        pub panel: bool,
+        /// Legacy backlight brightness (LBB), 0 to 255.
+        pub brightness: u8,
+    }
+
+    impl Options {
+        /// The board's stolen memory, no panel.
+        pub const fn new(igd: bool, uma_mb: u16) -> Self {
+            Self {
+                igd,
+                uma_mb,
+                panel: false,
+                brightness: 0xff,
+            }
+        }
+
+        /// With an internal panel at full brightness.
+        pub const fn with_panel(self, panel: bool) -> Self {
+            Self { panel, ..self }
+        }
+    }
+
+    const fn igd(o: &Options) -> Availability {
+        if o.igd {
+            Availability::Editable
+        } else {
+            Availability::Inactive("the integrated graphics are off")
+        }
+    }
+
+    /// The stolen-memory knob over a chipset's sizes, in MiB.
+    pub const fn uma(choices: &'static [Choice]) -> Knob<Options> {
+        Knob::new(
+            Meta {
+                key: "gfx_uma_size",
+                form: "Graphics",
+                label: "Graphics memory",
+                help: "System memory reserved for the integrated graphics. Applies at the next boot.",
+                kind: Kind::Enum(choices),
+            },
+            |o: &Options| o.uma_mb.into(),
+            |o: &mut Options, v| o.uma_mb = v as u16,
+        )
+        .when(igd)
+    }
+
+    /// The LBB panel brightness the firmware leaves (coreboot
+    /// `tft_brightness`).
+    pub const BRIGHTNESS: Knob<Options> = Knob::new(
+        Meta {
+            key: "tft_brightness",
+            form: "Graphics",
+            label: "Panel brightness",
+            help: "The panel's backlight level before the OS sets it, 0 to 255.",
+            kind: Kind::Number {
+                min: 0,
+                max: 255,
+                step: 1,
+            },
+        },
+        |o: &Options| o.brightness.into(),
+        |o: &mut Options, v| o.brightness = v as u8,
+    )
+    .when(|o: &Options| {
+        if o.igd && o.panel {
+            Availability::Editable
+        } else {
+            Availability::Inactive("this board has no internal panel")
+        }
+    });
+}

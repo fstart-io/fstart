@@ -88,6 +88,8 @@ pub mod bootblock;
 #[cfg(feature = "stage")]
 mod memory_info;
 #[cfg(feature = "stage")]
+pub mod options;
+#[cfg(feature = "stage")]
 pub mod postcar;
 #[cfg(feature = "stage")]
 pub mod ramstage;

@@ -85,18 +85,19 @@ pub const fn hash(key: &str) -> u16 {
 
 /// The first two of `metas` whose keys share a [`hash`], for a board test
 /// over the knobs it offers with CMOS storage.
-pub fn collision<'a>(
-    metas: impl IntoIterator<Item = &'a Meta>,
-) -> Option<(&'static str, &'static str)> {
-    let mut seen: alloc::vec::Vec<&'a Meta> = alloc::vec::Vec::new();
-    for meta in metas {
-        if let Some(other) = seen
-            .iter()
+pub fn collision<'a, I>(metas: I) -> Option<(&'static str, &'static str)>
+where
+    I: IntoIterator<Item = &'a Meta> + Clone,
+{
+    for (i, meta) in metas.clone().into_iter().enumerate() {
+        if let Some(other) = metas
+            .clone()
+            .into_iter()
+            .take(i)
             .find(|o| o.key != meta.key && hash(o.key) == hash(meta.key))
         {
             return Some((other.key, meta.key));
         }
-        seen.push(meta);
     }
     None
 }
@@ -133,11 +134,15 @@ impl<R: Ram> Cmos<R> {
         u16::from_be_bytes([self.ram.read(at), self.ram.read(at + 1)]) == self.sum()
     }
 
-    /// Every `(hash, value)` record, or `Corrupt` for a malformed one.
-    fn records(&self) -> Result<alloc::vec::Vec<(u16, u32)>, SourceError> {
-        let mut records = alloc::vec::Vec::new();
+    /// Each `(hash, value, offset, len)` record, in order, until `each`
+    /// returns `false`; `Corrupt` for a malformed record. A window with an
+    /// unset checksum has none.
+    fn records(
+        &self,
+        mut each: impl FnMut(u16, u32, u8, usize) -> bool,
+    ) -> Result<(), SourceError> {
         if !self.valid() {
-            return Ok(records);
+            return Ok(());
         }
         let range = self.window.records();
         let mut at = range.start;
@@ -153,34 +158,53 @@ impl<R: Ram> Cmos<R> {
             let value = (0..len).fold(0u32, |v, k| {
                 v | u32::from(self.ram.read(at + (HEADER + k) as u8)) << (8 * k)
             });
-            records.push((hash, value));
+            if !each(hash, value, at, len) {
+                break;
+            }
             at += (HEADER + len) as u8;
         }
-        Ok(records)
+        Ok(())
     }
 
     /// Store `value` under `key`, keeping the other records. A window with
-    /// an unset checksum starts empty.
+    /// an unset or corrupt checksum starts empty.
     pub fn write(&self, key: &str, value: u32) -> Result<(), WriteError> {
-        let mut records = self.records().unwrap_or_default();
         let name = hash(key);
-        match records.iter_mut().find(|(h, _)| *h == name) {
-            Some(record) => record.1 = value,
-            None => records.push((name, value)),
-        }
-        let mut bytes = alloc::vec::Vec::new();
-        for (hash, value) in records {
+        // The window's records without `key`'s, then `key`'s: built in a
+        // window-sized buffer, then written back with the sum.
+        let mut bytes = [0u8; 0x80];
+        let mut used = 0;
+        let keep = |hash: u16, value: u32, bytes: &mut [u8; 0x80], used: &mut usize| {
             let len = (4 - value.leading_zeros() as usize / 8).max(1);
-            bytes.push(len as u8);
-            bytes.extend_from_slice(&hash.to_le_bytes());
-            bytes.extend_from_slice(&value.to_le_bytes()[..len]);
+            let record = HEADER + len;
+            let Some(slot) = bytes.get_mut(*used..*used + record) else {
+                return false;
+            };
+            slot[0] = len as u8;
+            slot[1..HEADER].copy_from_slice(&hash.to_le_bytes());
+            slot[HEADER..].copy_from_slice(&value.to_le_bytes()[..len]);
+            *used += record;
+            true
+        };
+        let mut fits = true;
+        if self
+            .records(|hash, value, _, _| {
+                if hash != name {
+                    fits &= keep(hash, value, &mut bytes, &mut used);
+                }
+                true
+            })
+            .is_err()
+        {
+            used = 0;
         }
+        fits &= keep(name, value, &mut bytes, &mut used);
         let range = self.window.records();
-        if bytes.len() > usize::from(range.end - range.start) {
+        if !fits || used > usize::from(range.end - range.start) {
             return Err(WriteError::Full);
         }
         for (i, at) in range.enumerate() {
-            self.ram.write(at, bytes.get(i).copied().unwrap_or(0));
+            self.ram.write(at, bytes[i]);
         }
         let [high, low] = self.sum().to_be_bytes();
         self.ram.write(self.window.last - 1, high);
@@ -203,10 +227,13 @@ impl<R: Ram> Source for Cmos<R> {
 
     fn read(&self, key: &str) -> Result<Option<u32>, SourceError> {
         let name = hash(key);
-        Ok(self
-            .records()?
-            .into_iter()
-            .find(|(h, _)| *h == name)
-            .map(|(_, value)| value))
+        let mut found = None;
+        self.records(|hash, value, _, _| {
+            if hash == name {
+                found = Some(value);
+            }
+            found.is_none()
+        })?;
+        Ok(found)
     }
 }
