@@ -581,7 +581,8 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn map_pcie(self, f: impl FnOnce(PcieEngine) -> PcieEngine) -> Self {
+    /// The engine with its PCIe configuration changed by `f`.
+    pub fn map_pcie(self, f: impl FnOnce(PcieEngine) -> PcieEngine) -> Self {
         match self.kind {
             EngineKind::Pcie(p) => Self {
                 kind: EngineKind::Pcie(f(p)),
@@ -609,14 +610,19 @@ impl<'a> Engine<'a> {
     }
 
     /// Bifurcate into `width`-lane PCIe links. The children take the next
-    /// free default devfn and no slot/hotplug (the Rome OEM path clears
-    /// dev/fn; a slot number on every child would repeat it).
+    /// free default devfn and no slot number (the Rome OEM path clears
+    /// dev/fn; a slot number on every child would repeat it). A hotplug
+    /// slot stays one slot with one power control: the first link keeps
+    /// its hotplug (an I²C slot's SMU entry), the others become native
+    /// hotplug ports of the same kind.
     pub fn split(self, width: u8) -> impl Iterator<Item = Engine<'a>> {
-        self.lanes.split(width).map(move |lanes| {
+        self.lanes.split(width).enumerate().map(move |(i, lanes)| {
             Engine { lanes, ..self }.map_pcie(|p| PcieEngine {
                 devfn: None,
                 slot: None,
-                hotplug: None,
+                hotplug: p
+                    .hotplug
+                    .map(|h| if i == 0 { h } else { Hotplug::new(h.kind) }),
                 ..p
             })
         })
@@ -922,6 +928,48 @@ mod tests {
         assert_eq!(
             (KNOBS[1].available)(&g),
             Availability::Inactive("fused off")
+        );
+    }
+
+    #[test]
+    fn a_split_hotplug_slot_keeps_one_power_control() {
+        use super::super::hotplug::{HotplugI2c, HotplugKind};
+        let smu = Hotplug {
+            kind: HotplugKind::ExpressModule,
+            i2c: Some(HotplugI2c {
+                slot: 4,
+                format: 0,
+                function: super::super::hotplug::HotplugFunction {
+                    bit: 0,
+                    byte: 0,
+                    address: 0x23,
+                    expander: super::super::hotplug::Expander::Pca9535,
+                    bus: 0,
+                    mask: 0,
+                },
+                reset: None,
+            }),
+        };
+        let x16 = Engine::pcie(
+            0,
+            Lanes::sp3(Group::P2, 0, 16).reversed(),
+            PcieEngine::new().slot(4).with_hotplug(smu),
+        );
+        let engines: std::vec::Vec<_> = x16.split(4).collect();
+        let links: std::vec::Vec<_> = engines.iter().filter_map(Engine::pcie_config).collect();
+        assert_eq!(links.len(), 4);
+        assert_eq!(links[0].hotplug, Some(smu));
+        assert!(
+            links[1..]
+                .iter()
+                .all(|p| p.hotplug == Some(Hotplug::new(HotplugKind::ExpressModule)))
+        );
+        assert!(links.iter().all(|p| p.slot.is_none()));
+        let plain = Engine::pcie(0, Lanes::sp3(Group::P0, 0, 16), PcieEngine::new());
+        assert!(
+            plain
+                .split(8)
+                .all(|e| e.pcie_config().unwrap().hotplug.is_none())
         );
     }
 

@@ -496,6 +496,8 @@ pub struct DxioPolicy {
     pub sp3: Sp3Policy,
     /// Optional board-selected Milan pre-training PCIe capabilities.
     pub pcie_features: Option<ports::PcieFeatures>,
+    /// SMU hotplug settings, for boards with I2C-signaled hotplug slots.
+    pub hotplug: hotplug::HotplugPolicy,
     pub timeout_us: u64,
 }
 
@@ -514,6 +516,16 @@ impl DxioPolicy {
             },
             sp3: Sp3Policy::new(generation),
             pcie_features: None,
+            hotplug: hotplug::HotplugPolicy {
+                i2c_switch_base: 0,
+                slot_base: 0,
+                poll: false,
+                poll_interval: 0,
+                naples_gpio_polling: false,
+                debug_flags: 0,
+                firmware_first: false,
+                enable_bit6: false,
+            },
             timeout_us: TIMEOUT_US,
         }
     }
