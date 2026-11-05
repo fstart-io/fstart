@@ -31,7 +31,7 @@ pub fn compose(
     let ffs_bytes = ffs.map(read).transpose()?;
     let sources: Vec<_> = inputs.iter().map(|input| input.bytes()).collect();
     let image = operation.assemble(&sources, &reset_bytes, ffs_bytes.as_deref())?;
-    let whole = image.is_whole_flash(operation.flash_size);
+    let whole = image.is_whole_flash();
     let output = directory.join(if whole {
         format!("{board}.rom")
     } else {
@@ -39,13 +39,19 @@ pub fn compose(
     });
     let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
     fs::write(&output, &image.bytes).map_err(|e| format!("{}: {e}", output.display()))?;
+    if let Some(bank) = image.boot_bank() {
+        fs::write(output.with_extension("bank.rom"), bank).map_err(|e| e.to_string())?;
+    }
     let receipt = serde_json::json!({
         "flash_offset": image.offset,
         "bytes": image.bytes.len(),
         "whole_flash": whole,
         "sha256": sha256(&image.bytes),
-        "efs": image.facts.efs,
-        "reset_offset": image.facts.reset_offset,
+        "efs": image.banks[0].bios.efs,
+        "reset_offset": image.banks[0].bios.reset_offset,
+        "banks": image.banks,
+        "ffs_offset": image.ffs_offset,
+        "patched": image.patched,
         "inputs": bindings.iter().zip(&sources).map(|(binding, bytes)| serde_json::json!({
             "environment": binding.environment, "path": binding.path, "sha256": sha256(bytes),
         })).collect::<Vec<_>>(),
@@ -59,11 +65,19 @@ pub fn compose(
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("{}: {e}", metadata.display()))?;
+    if operation.ffs.is_some()
+        && operation.locator == fstart_image_build::amd::stage::StageLocator::FlashAnchor
+        && (!image.patched.locator || !image.patched.flash)
+    {
+        eprintln!(
+            "[fstart] WARNING: reset stage lacks FFS locator/flash-anchor sites; it must not attempt runtime FFS access"
+        );
+    }
     if whole {
         eprintln!(
             "[fstart] AMD flash image: {} (reset image at {:#x})",
             output.display(),
-            image.facts.reset_offset
+            image.banks[0].bios.reset_offset
         );
     } else {
         eprintln!(

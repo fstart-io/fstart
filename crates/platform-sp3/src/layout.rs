@@ -17,7 +17,7 @@
 //! geometry ([`RESET`]) and the image builder points every `0x62` entry of
 //! every composed generation at it: one copy at the top of the lower half
 //! (unified layout), or one per half (dual layout), see
-//! `fstart_image_build::sp3_flash`. The FFS is in the lower half only; the
+//! `fstart_image_build::amd::assembly`. The FFS is in the lower half only; the
 //! reset image finds it through the FCH ROM3 window by absolute flash
 //! offset (the flash anchor the builder patches), whichever half the ROM2
 //! window at `0xff00_0000` shows.
