@@ -251,6 +251,7 @@ pub fn resolve(
         },
     };
     let plan = BuildPlan {
+        publication_payloads: ["halt", "linux", "uefi"].map(String::from).to_vec(),
         payload,
         units: vec![unit],
         stages: vec!["stage".into()],

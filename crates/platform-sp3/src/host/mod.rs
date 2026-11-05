@@ -479,7 +479,13 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             (String::new(), halves, microcode)
         }
         (None, image) => {
-            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
+            let vendor_image = image.clone().unwrap_or_else(|| {
+                if selection.defer_firmware {
+                    fstart_image_build::bundle::DONOR_PATH.into()
+                } else {
+                    B::VENDOR_IMAGE.into()
+                }
+            });
             let microcode = microcode::<B>(&vendor_image)?;
             (vendor_image, vec![], microcode)
         }
@@ -500,6 +506,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         }
     };
     let plan = BuildPlan {
+        publication_payloads: ["halt", "linux", "uefi"].map(String::from).to_vec(),
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],

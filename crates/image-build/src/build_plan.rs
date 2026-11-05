@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
+    /// Public CLI payload selections supported by this board's platform.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publication_payloads: Vec<String>,
     pub payload: String,
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
@@ -334,6 +337,9 @@ impl BuildPlan {
         selection: &crate::plan::BuildSelection,
     ) -> Result<(), String> {
         match (&selection.image_config, &self.assembly) {
+            (None, Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if !selection.defer_firmware || image.path == crate::bundle::DONOR_PATH) => {
+                Ok(())
+            }
             (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
                 Ok(())
             }
@@ -627,6 +633,7 @@ mod tests {
             flat_capacity: span.size,
         };
         BuildPlan {
+            publication_payloads: vec![],
             payload: "halt".into(),
             units: vec![
                 launch,
@@ -829,6 +836,7 @@ mod tests {
             build: BoardBuildPolicy::default(),
         };
         let plan = |units| BuildPlan {
+            publication_payloads: vec![],
             payload: "halt".into(),
             units,
             stages: vec![],

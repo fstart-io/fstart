@@ -31,5 +31,7 @@ cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 
 ## Documentation
 
+- **[Distributing firmware](docs/distribution.md)** — bundles, nightly releases and the web assembler: build images without a Rust toolchain.
+
 - **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.
 - **[Measured boot](docs/measured-boot.md)** — TPM measurements and the payload interface.
