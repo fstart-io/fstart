@@ -9,6 +9,8 @@ mod cpu;
 #[cfg(feature = "acpi")]
 pub mod namespace;
 
+#[cfg(feature = "baytrail")]
+pub mod baytrail;
 pub mod generic;
 #[cfg(feature = "gm965")]
 pub mod gm965;
@@ -244,6 +246,12 @@ pub trait IntelNorthbridgeDriver:
     fn finish_early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
+    /// Ramstage chip init before PCI enumeration (coreboot's
+    /// `BS_DEV_INIT_CHIPS` and device `enable` hooks): work that decides
+    /// which functions enumeration finds.
+    fn pre_bus_scan(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     /// Mainstage chipset init after the bus scan and before the southbridge
     /// devices (coreboot `northbridge_init`), including DMA-remap windows.
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
@@ -303,6 +311,12 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn set_resume(&mut self, _resume: bool) {}
     fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
         None
+    }
+    /// Ramstage chip init before PCI enumeration, after the northbridge's:
+    /// hiding disabled functions and probing ports (coreboot device
+    /// `enable` hooks).
+    fn pre_bus_scan(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
     }
     /// Enable the southbridge DMI peer before northbridge negotiation.
     fn prepare_early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
