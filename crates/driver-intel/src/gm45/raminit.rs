@@ -112,7 +112,10 @@ pub fn probe_ddr3<B: SmBus + ?Sized>(
         }
         let mem_type = match bus.read_byte(addr, SPD_MEMORY_TYPE) {
             Ok(mem_type) => mem_type,
-            Err(_) => continue, // An unpopulated optional slot does not respond.
+            // An unpopulated slot does not acknowledge; a timeout or a
+            // controller error must not hide an installed DIMM.
+            Err(ServiceError::NoDevice) => continue,
+            Err(error) => return Err(error),
         };
         // A responding but unknown SPD is not an empty slot.
         if mem_type != DDR3 {
@@ -2177,13 +2180,33 @@ mod tests {
     impl SmBus for FakeBus {
         fn read_byte(&mut self, addr: u8, cmd: u8) -> Result<u8, ServiceError> {
             if addr != 0x50 && !(addr == 0x51 && self.extra_slot) {
-                return Err(ServiceError::HardwareError);
+                // An empty slot NAKs its address, as on the ICH9 SMBus.
+                return Err(ServiceError::NoDevice);
             }
             Ok(self.spd[cmd as usize])
         }
         fn write_byte(&mut self, _: u8, _: u8, _: u8) -> Result<(), ServiceError> {
             Ok(())
         }
+    }
+
+    /// A bus whose transactions time out: a stuck controller, not an empty slot.
+    struct StuckBus;
+    impl SmBus for StuckBus {
+        fn read_byte(&mut self, _: u8, _: u8) -> Result<u8, ServiceError> {
+            Err(ServiceError::Timeout)
+        }
+        fn write_byte(&mut self, _: u8, _: u8, _: u8) -> Result<(), ServiceError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn gm45_spd_probe_reports_bus_errors_instead_of_empty_slots() {
+        assert_eq!(
+            probe_ddr3(&mut StuckBus, &[0x50, 0, 0x51, 0]).err(),
+            Some(ServiceError::Timeout)
+        );
     }
     fn spd() -> [u8; 256] {
         let mut spd = [0; 256];
