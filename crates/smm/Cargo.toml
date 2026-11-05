@@ -9,6 +9,8 @@ default = []
 std = []
 coreboot = []
 stage-bin = []
+# Trace every SMI exit to QEMU's debug console port (0x402).
+debugcon = []
 
 [dependencies]
 fstart-core = { workspace = true }

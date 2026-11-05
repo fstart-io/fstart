@@ -2,7 +2,7 @@
 use core::panic::PanicInfo;
 
 pub use crate::SmmEntryParams;
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "debugcon"))]
 use crate::debug_trace;
 use crate::{SmmContext, enter_rendezvous, leave_rendezvous};
 
@@ -87,7 +87,7 @@ pub unsafe fn handle<C: Copy>(
     }
 
     if !unsafe { enter_rendezvous(&ctx) } {
-        #[cfg(not(test))]
+        #[cfg(all(not(test), feature = "debugcon"))]
         unsafe {
             debug_trace(ctx.cpu())
         };
@@ -98,7 +98,7 @@ pub unsafe fn handle<C: Copy>(
         handler(&mut ctx, config);
     }
     unsafe {
-        #[cfg(not(test))]
+        #[cfg(all(not(test), feature = "debugcon"))]
         debug_trace(ctx.cpu());
         leave_rendezvous(&ctx);
     }
