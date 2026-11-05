@@ -17,6 +17,7 @@ const MAGIC: [u8; 8] = *b"FSTMEM01";
 pub const SIZE_UNKNOWN: u32 = u32::MAX;
 /// SMBIOS Type 17 memory types.
 pub const MEMORY_TYPE_DDR2: u8 = 0x13;
+pub const MEMORY_TYPE_DDR3: u8 = 0x18;
 pub const MEMORY_TYPE_DDR4: u8 = 0x1a;
 /// SMBIOS Type 17 form factors.
 pub const FORM_FACTOR_UNKNOWN: u8 = 0x02;

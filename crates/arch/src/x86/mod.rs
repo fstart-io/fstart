@@ -203,7 +203,10 @@ const IA32_PERF_STATUS: u32 = 0x0198;
 /// 100 MHz. Fall back to a conservative 1 GHz only for unsupported CPUs.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn tsc_frequency_hz() -> u64 {
-    if let Some(freq) = cpuid_tsc_frequency_hz().or_else(amd_tsc_frequency_hz) {
+    if let Some(freq) = cpuid_tsc_frequency_hz()
+        .or_else(amd_tsc_frequency_hz)
+        .or_else(silvermont_tsc_frequency_hz)
+    {
         return freq;
     }
     bus_clock().map_or(1_000_000_000, |clock| {
@@ -231,6 +234,21 @@ fn amd_tsc_frequency_hz() -> Option<u64> {
     // SAFETY: ring 0; HwPstate reports the P-state MSRs.
     let msr = unsafe { cpu::msr::NativeMsr::new() };
     cpu::amd::msr::tsc_mhz(&msr).map(|mhz| u64::from(mhz) * 1_000_000)
+}
+
+/// Silvermont (Bay Trail) has no CPUID leaf 0x15: the TSC runs at the bus
+/// clock times the maximum non-turbo ratio. Firmware only.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn silvermont_tsc_frequency_hz() -> Option<u64> {
+    if cfg!(not(target_os = "none")) || family_model() != (6, 0x37) {
+        return None;
+    }
+    let (_, ebx, ecx, edx) = cpuid(0);
+    if (ebx, edx, ecx) != (0x756e_6547, 0x4965_6e69, 0x6c65_746e) {
+        return None;
+    }
+    let mhz = cpu::intel::silvermont::tsc_freq_mhz();
+    (mhz != 0).then(|| u64::from(mhz) * 1_000_000)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

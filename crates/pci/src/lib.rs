@@ -9,6 +9,8 @@
 pub mod config;
 pub mod ecam;
 pub mod ecam_host;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod legacy;
 pub mod overlay;
 pub mod register;
 pub mod window;
@@ -20,7 +22,9 @@ pub use ecam_host::{
     PciFixedBarType, PciFixedBars,
 };
 pub use overlay::{PciType0Config, PciType1Config};
-pub use pci_types::{ConfigRegionAccess, HeaderType, PciAddress, PciHeader, capability};
+pub use pci_types::{
+    ConfigRegionAccess, EndpointHeader, HeaderType, PciAddress, PciHeader, capability,
+};
 pub use register::{ConfigRegister, bdf, devfn, devfn_parts};
 pub use window::{PciWindow, PciWindowKind};
 

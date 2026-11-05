@@ -8,5 +8,6 @@ pub mod core2_cpu;
 pub mod feature_control;
 pub mod microcode;
 pub mod pineview;
+pub mod silvermont;
 pub mod smm;
 pub mod smrr;
