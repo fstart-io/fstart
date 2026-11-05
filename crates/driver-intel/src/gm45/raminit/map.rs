@@ -21,18 +21,22 @@ pub(super) struct FinalMap {
 pub(super) fn compute(
     dimms: &Ddr3Channels,
     igd_requested: bool,
+    uma_mb: u16,
     capid_high: u32,
     me_active: bool,
 ) -> Result<FinalMap, ServiceError> {
     let bad = ServiceError::HardwareError;
-    // igd_compute_ggc(): fixed 32 MiB UMA; 2 MiB GTT, plus 2 MiB
-    // shadow GTT when VT-d is present. CMOS gfx_uma_size is not used.
+    // igd_compute_ggc(): `uma_mb` of stolen memory (coreboot's gfx_uma_size,
+    // 32 MiB by default); 2 MiB GTT, plus 2 MiB shadow GTT when VT-d is
+    // present.
     let ggc = if igd_requested && capid_high & (1 << 1) == 0 {
-        if capid_high & (1 << 16) == 0 {
-            0x0b50
+        let gms = super::super::IntelGm45::gms_of_mb(uma_mb).ok_or(bad)?;
+        let ggms = if capid_high & (1 << 16) == 0 {
+            0xb
         } else {
-            0x0350
-        }
+            0x3
+        };
+        ggms << 8 | gms << 4
     } else {
         2
     };

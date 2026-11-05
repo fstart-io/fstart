@@ -607,12 +607,7 @@ pub struct PciePowerLimit {
     pub scale: u8,
 }
 
-/// SATA controller operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SataMode {
-    Ide,
-    Ahci,
-}
+pub use crate::southbridge::options::SataMode;
 
 /// USB controller configuration.
 #[derive(Debug, Clone, Copy)]
@@ -928,6 +923,8 @@ impl Rcba {
 /// Intel ICH8 southbridge driver.
 pub struct IntelIch8 {
     config: &'static IntelIch8Config,
+    /// The user options over the board config.
+    options: crate::southbridge::options::Options,
     smbus: Option<I801SmBus>,
     pm: PmIo,
     ide_primary: Option<bool>,
@@ -941,6 +938,14 @@ unsafe impl Send for IntelIch8 {}
 unsafe impl Sync for IntelIch8 {}
 
 impl IntelIch8 {
+    /// The board's SATA config in the user's mode.
+    fn sata(&self) -> Option<SataConfig> {
+        self.config.sata.map(|sata| SataConfig {
+            mode: self.options.sata_mode.unwrap_or(sata.mode),
+            ..sata
+        })
+    }
+
     /// The GPIO controller, for board code to take the pins it wires.
     /// Pad configuration is chipset config, applied before the console.
     #[must_use]
@@ -1274,7 +1279,7 @@ impl IntelIch8 {
             .modify(PMIR_REG::USB_TRANSIENT_DISCONNECT.val(3) + PMIR_REG::CF9GR::SET);
 
         lpc.gen_pmcon_3.modify(
-            GEN_PMCON_3_REG::STATE_AFTER_G3.val(if self.config.power_on_after_fail == 0 {
+            GEN_PMCON_3_REG::STATE_AFTER_G3.val(if self.options.power_on_after_fail == 0 {
                 1
             } else {
                 0
@@ -1321,18 +1326,7 @@ impl IntelIch8 {
         throttle |= (u32::from(self.config.throttle_duty & 7)) << 5;
         self.pm().write32(0x10, throttle);
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        unsafe {
-            // SAFETY: legacy NMI control ports on x86 PCs.
-            let mut port61 = fstart_core::pio::inb(0x61);
-            port61 &= 0x0f;
-            port61 &= !(1 << 3);
-            port61 |= 1 << 2;
-            fstart_core::pio::outb(0x61, port61);
-            let mut nmi = fstart_core::pio::inb(0x74);
-            nmi |= 1 << 7;
-            fstart_core::pio::outb(0x70, nmi);
-        }
+        crate::southbridge::options::nmi(self.options.nmi);
     }
 
     fn configure_cstates(&self) {
@@ -2030,6 +2024,21 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
     type Config = IntelIch8Config;
     const ACPI_LPC_NAME: &'static str = "LPCB";
 
+    type Options = crate::southbridge::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
+        crate::southbridge::options::POWER_ON_AFTER_FAIL,
+        crate::southbridge::options::SATA_MODE,
+        crate::southbridge::options::NMI,
+    ];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         if config
             .lpc_decode
@@ -2053,6 +2062,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
 
         Ok(Self {
             config,
+            options: crate::southbridge::options::Options::from_config(
+                config.power_on_after_fail,
+                match config.sata {
+                    Some(sata) => Some(sata.mode),
+                    None => None,
+                },
+            ),
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),
             ide_primary: None,
@@ -2093,7 +2109,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         self.pm().write32(GPE0_STS_ICH8, 0xffff_ffff);
         self.pm().write32(GPE0_EN_ICH8, self.config.gpe0_en);
         self.enable_hpet();
-        if let Some(sata) = self.config.sata.as_ref() {
+        if let Some(sata) = self.sata().as_ref() {
             self.sata_enable(sata);
         }
         fstart_log::info!("intel-ich8: early init complete (fd_mask={:#x})", fd.bits());
@@ -2157,7 +2173,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         if let Some(hda) = self.config.hda.as_ref() {
             self.hda_init(hda);
         }
-        if let Some(sata) = self.config.sata.as_ref() {
+        if let Some(sata) = self.sata().as_ref() {
             self.sata_init(sata);
         }
         self.ramstage_lpc_init();

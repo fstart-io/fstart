@@ -109,12 +109,7 @@ impl UsbPort {
     }
 }
 
-/// SATA controller operating mode (coreboot CMOS option `sata_mode`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SataMode {
-    Ahci,
-    Ide,
-}
+pub use crate::southbridge::options::SataMode;
 
 /// SATA 1 policy (coreboot `sata_port_map`, `sata_interface_speed_support`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +202,7 @@ pub struct IntelIbexPeakConfig {
     pub laptop: bool,
     /// After G3: 0 = stay off, 1 = power on, 2 = previous state.
     pub power_on_after_fail: u8,
-    /// Unmask NMI sources (coreboot CMOS option `nmi`).
+    /// Unmask NMI sources.
     pub nmi: bool,
     /// Hide the MEI when the ME reports an error (coreboot
     /// `HIDE_MEI_ON_ERROR`).
@@ -265,6 +260,8 @@ impl Default for IntelIbexPeakConfig {
 /// Intel 5 Series PCH driver.
 pub struct IntelIbexPeak {
     config: &'static IntelIbexPeakConfig,
+    /// The user options over the board config.
+    options: crate::southbridge::options::Options,
     smbus: Option<I801SmBus>,
     /// Advertise `_S3_`; set once training and stage caches persisted.
     s3_enabled: bool,
@@ -316,7 +313,7 @@ impl IntelIbexPeak {
             crate::southbridge::smi::ICH8_GPE0,
         )
         .with_sleep_smi(self.config.gpiobase)
-        .with_power_on_after_fail(self.config.power_on_after_fail == 1);
+        .with_power_on_after_fail(self.options.power_on_after_fail == 1);
         match self.config.dram_reset_gate_gpio {
             Some(gpio) => smi.with_dram_reset_gate(gpio),
             None => smi,
@@ -326,6 +323,29 @@ impl IntelIbexPeak {
     #[must_use]
     pub const fn config_ref(&self) -> &'static IntelIbexPeakConfig {
         self.config
+    }
+
+    /// The board's SATA config in the user's mode.
+    pub(crate) fn sata(&self) -> Option<SataConfig> {
+        self.config.sata.map(|sata| SataConfig {
+            mode: self.options.sata_mode.unwrap_or(sata.mode),
+            ..sata
+        })
+    }
+}
+
+impl IntelIbexPeakConfig {
+    /// The board's values of the user options.
+    pub const fn options(&self) -> crate::southbridge::options::Options {
+        let mut options = crate::southbridge::options::Options::from_config(
+            self.power_on_after_fail,
+            match self.sata {
+                Some(sata) => Some(sata.mode),
+                None => None,
+            },
+        );
+        options.nmi = self.nmi;
+        options
     }
 }
 
@@ -447,11 +467,26 @@ fn validate(config: &IntelIbexPeakConfig) -> Result<(), ServiceError> {
 impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
     type Config = IntelIbexPeakConfig;
     const ACPI_LPC_NAME: &'static str = "LPCB";
+    type Options = crate::southbridge::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
+        crate::southbridge::options::POWER_ON_AFTER_FAIL_KEEP,
+        crate::southbridge::options::SATA_MODE,
+        crate::southbridge::options::NMI,
+    ];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         validate(config)?;
         Ok(Self {
             config,
+            options: config.options(),
             smbus: None,
             s3_enabled: false,
             resume: false,
@@ -536,7 +571,7 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
     /// `.enable` hooks: device enables before resource allocation.
     fn chip_init(&mut self) -> Result<(), ServiceError> {
         self.enable_functions();
-        if let Some(sata) = self.config.sata {
+        if let Some(sata) = self.sata() {
             self.sata_enable(&sata);
         }
         Ok(())
@@ -556,7 +591,7 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
         }
         self.pci_bridge_init();
         self.lpc_init();
-        if let Some(sata) = self.config.sata {
+        if let Some(sata) = self.sata() {
             self.sata_init(&sata);
         }
         self.smbus_init();
@@ -708,6 +743,19 @@ mod tests {
             };
             assert_eq!(pch.smm_handler_config(), expected.smm_handler_config());
         }
+        // The user's choice, not the board's, reaches SMM.
+        let mut pch = IntelIbexPeak::new_from_config(&CONFIGS[0]).unwrap();
+        let board = pch.smm_handler_config();
+        let mut options = pch.options();
+        options.power_on_after_fail = 1;
+        pch.set_options(options);
+        assert_ne!(pch.smm_handler_config(), board);
+        assert_eq!(
+            pch.smm_handler_config(),
+            IntelIbexPeak::new_from_config(&CONFIGS[1])
+                .unwrap()
+                .smm_handler_config()
+        );
     }
 
     #[test]
