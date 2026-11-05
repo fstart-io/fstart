@@ -249,6 +249,56 @@ fn bool_metas_are_bool_knobs() {
 }
 
 #[test]
+fn resolve_each_needs_no_report() {
+    let stored = source(&[("slot1", Ok(8)), ("power_on_after_fail", Ok(7))]);
+    let mut config = BOARD;
+    let mut seen = [None; 4];
+    let mut n = 0;
+    resolve_each(
+        &KNOBS,
+        &stored,
+        &mut config,
+        |_| Ok(()),
+        |setting| {
+            seen[n] = Some((setting.meta.key, setting.provenance));
+            n += 1;
+        },
+    );
+    assert_eq!(config.width, [16, 8]);
+    assert_eq!(n, 4);
+    assert_eq!(seen[3], Some(("slot1", Provenance::Override)));
+    assert!(matches!(
+        seen[0],
+        Some((
+            "power_on_after_fail",
+            Provenance::Rejected {
+                stored: 7,
+                why: Rejection::OutOfRange
+            }
+        ))
+    ));
+    // The same set, rejected as a whole: the board's values, reported so.
+    let mut config = BOARD;
+    let mut rejected = 0;
+    resolve_each(
+        &KNOBS,
+        &stored,
+        &mut config,
+        |_| Err("no"),
+        |setting| {
+            rejected += matches!(
+                setting.provenance,
+                Provenance::Rejected {
+                    why: Rejection::Conflict("no"),
+                    ..
+                }
+            ) as u32;
+        },
+    );
+    assert_eq!((config, rejected), (BOARD, 1));
+}
+
+#[test]
 fn kinds_check_their_values() {
     assert!(Kind::Bool.contains(1) && !Kind::Bool.contains(2));
     let number = Kind::Number {

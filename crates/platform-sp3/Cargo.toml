@@ -615,8 +615,8 @@ fstart-driver-amd = { workspace = true, features = ["zeppelin"] }
 fstart-driver-ipmi = { path = "../driver-ipmi" }
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
-fstart-log = { workspace = true }
-fstart-options = { workspace = true, features = ["varstore"] }
+fstart-log = { workspace = true, features = ["alloc"] }
+fstart-options = { workspace = true, features = ["alloc", "varstore"] }
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-stage = { workspace = true, optional = true }

@@ -24,7 +24,7 @@ sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
 fstart-core = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
-fstart-options = { workspace = true, optional = true }
+fstart-options = { workspace = true, optional = true, features = ["alloc"] }
 fstart-tcg = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
