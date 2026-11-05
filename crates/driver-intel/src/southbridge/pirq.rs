@@ -10,6 +10,17 @@
 //! 16. Deriving the GSI from the pin index instead (as a hand-written table
 //! does) silently drops the interrupt of every pin the router rotates.
 
+/// Valid legacy ICH PIRQx_ROUT value: a routable IRQ, zero, or disabled.
+#[must_use]
+pub const fn valid_pirq_route(route: u8) -> bool {
+    route == 0
+        || route == 0x80
+        || (route >= 3 && route <= 7)
+        || (route >= 9 && route <= 12)
+        || route == 14
+        || route == 15
+}
+
 /// PIRQs are mapped to ACPI/APIC GSIs starting at 16.
 pub const GSI_BASE: u8 = 16;
 

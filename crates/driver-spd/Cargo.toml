@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# The synthetic SPD images of `ddr3::testing`, for controller driver tests.
+testing = []
+
 [dependencies]
 fstart-core = { workspace = true }
 tock-registers = { workspace = true }

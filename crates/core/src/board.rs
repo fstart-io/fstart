@@ -205,6 +205,10 @@ pub struct BoardBuildPolicy {
     /// Zero disables it; the MRC journal currently uses two 64-KiB banks.
     #[serde(default)]
     pub mrc_cache_size: u32,
+    /// Intel mutable FFS region after the MRC cache for the SPI flash
+    /// console (coreboot `CONSOLE_SPI_FLASH`); zero disables it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flash_console_size: u32,
     /// QEMU machine selection for boards with non-default emulation.
     #[serde(default)]
     pub qemu_machine: Option<QemuMachine>,
@@ -499,4 +503,8 @@ pub enum FirmwareKind {
     /// ARM Trusted Firmware BL31.
     /// Entry: x0=&bl_params.
     ArmTrustedFirmware,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }

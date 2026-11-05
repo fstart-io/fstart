@@ -24,6 +24,26 @@ pub enum LogLevel {
     Trace,
 }
 
+/// Opt-in debug facilities a platform compiles in (`--debug`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DebugOption {
+    /// The board's EHCI debug port console.
+    Ehci,
+    /// A log every stage appends to a reserved SPI flash region, read back
+    /// with a programmer (coreboot `CONSOLE_SPI_FLASH`).
+    FlashConsole,
+}
+
+impl DebugOption {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ehci => "ehci",
+            Self::FlashConsole => "flash-console",
+        }
+    }
+}
+
 impl LogLevel {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -93,6 +113,10 @@ pub struct BuildArgs {
     /// `info` at runtime.
     #[arg(long, value_enum, env = "FSTART_LOG_LEVEL")]
     pub log_level: Option<LogLevel>,
+    /// Compile in a debug facility the platform offers; repeatable. Off by
+    /// default: release images carry none of them.
+    #[arg(long = "debug", value_enum)]
+    pub debug: Vec<DebugOption>,
     /// File handed to a coreboot payload, as NAME=PATH; repeatable. The
     /// payload finds it by NAME, e.g. `vgaroms/seavgabios.bin` for SeaBIOS.
     #[arg(long = "payload-file", value_parser = parse_payload_file)]
@@ -116,6 +140,7 @@ impl Default for BuildArgs {
             linux_bootargs: None,
             linux_print_mtrrs: false,
             log_level: None,
+            debug: Vec::new(),
             payload_files: Vec::new(),
             signing_key: None,
         }
@@ -136,6 +161,11 @@ impl BuildArgs {
             x86_linux_bootargs: self.linux_bootargs.clone(),
             x86_linux_print_mtrrs: self.linux_print_mtrrs,
             log_level: self.log_level.map(|level| level.as_str().to_owned()),
+            debug: self
+                .debug
+                .iter()
+                .map(|option| option.as_str().to_owned())
+                .collect(),
         }
     }
 
@@ -167,6 +197,9 @@ impl BuildArgs {
         }
         if let Some(level) = self.log_level {
             args.extend(["--log-level".into(), level.as_str().into()]);
+        }
+        for option in &self.debug {
+            args.extend(["--debug".into(), option.as_str().into()]);
         }
         for (name, path) in &self.payload_files {
             args.extend(["--payload-file".into(), format!("{name}={path}")]);

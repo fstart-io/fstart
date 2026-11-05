@@ -80,6 +80,10 @@ pub struct X86Fadt {
     pub p_lvl2_lat: u16,
     pub p_lvl3_lat: u16,
     pub duty_offset: u8,
+    /// Width of the P_CNT throttling duty field; zero without throttling.
+    pub duty_width: u8,
+    /// One-byte PM2 control block (`ARB_DIS`) at this PMBASE offset.
+    pub pm2_cnt_offset: Option<u16>,
 }
 
 impl Default for X86Fadt {
@@ -93,6 +97,8 @@ impl Default for X86Fadt {
             p_lvl2_lat: defaults.p_lvl2_lat,
             p_lvl3_lat: defaults.p_lvl3_lat,
             duty_offset: defaults.duty_offset,
+            duty_width: defaults.duty_width,
+            pm2_cnt_offset: None,
         }
     }
 }
@@ -191,6 +197,11 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         p_lvl2_lat: config.fadt.p_lvl2_lat,
         p_lvl3_lat: config.fadt.p_lvl3_lat,
         duty_offset: config.fadt.duty_offset,
+        duty_width: config.fadt.duty_width,
+        pm2_cnt_blk: config
+            .fadt
+            .pm2_cnt_offset
+            .map_or(0, |offset| pmbase + u32::from(offset)),
     };
 
     (platform_tables, fadt_config)

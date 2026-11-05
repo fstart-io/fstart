@@ -291,15 +291,31 @@ pub(crate) struct OutputPipeline {
 }
 
 impl OutputPipeline {
-    /// Resolve the current single-output legacy GMCH pipeline.
+    /// Resolve a legacy GMCH output on its default pipe.
+    #[cfg(test)]
     pub fn legacy_gmch(
         cpu: Cpu,
         port: Port,
         mode: Mode,
         surface: SurfaceConfig,
     ) -> Result<Self, GmaError> {
+        Self::legacy_gmch_on(cpu, port, pipe_for_legacy_gmch_port(port)?, mode, surface)
+    }
+
+    /// Resolve a legacy GMCH output on the pipe display probing assigned.
+    /// Gen4 GMCH ports take either pipe; pre-i965 LVDS only sources pipe B
+    /// (libgfxinit `LVDS_Needs_Pipe_B`).
+    pub fn legacy_gmch_on(
+        cpu: Cpu,
+        port: Port,
+        pipe: Pipe,
+        mode: Mode,
+        surface: SurfaceConfig,
+    ) -> Result<Self, GmaError> {
         validate_current_board_port(cpu, port)?;
-        let pipe = pipe_for_legacy_gmch_port(port)?;
+        if !legacy_gmch_port_can_use_pipe(cpu, port, pipe) {
+            return Err(GmaError::UnsupportedPort);
+        }
         let address_model = legacy_plane_address_model(cpu);
         Ok(Self {
             port,
@@ -332,6 +348,33 @@ pub(crate) const fn pipe_for_legacy_gmch_port(port: Port) -> Result<Pipe, GmaErr
         Port::Lvds => Ok(Pipe::B),
         Port::Vga | Port::HdmiA | Port::HdmiB | Port::DpA | Port::DpB | Port::DpC => Ok(Pipe::A),
         _ => Err(GmaError::UnsupportedPort),
+    }
+}
+
+/// Whether a legacy GMCH port can be driven by `pipe`: the two GMCH pipes,
+/// and on pre-i965 parts LVDS only from pipe B.
+pub(crate) const fn legacy_gmch_port_can_use_pipe(cpu: Cpu, port: Port, pipe: Pipe) -> bool {
+    match pipe {
+        Pipe::C => false,
+        Pipe::A => {
+            !(matches!(port, Port::Lvds)
+                && matches!(crate::caps_for(cpu).generation, crate::Generation::I945))
+        }
+        Pipe::B => true,
+    }
+}
+
+/// The DisplayPort or HDMI port sharing a GMCH digital port's pins
+/// (libgfxinit `Sibling_Port`).
+pub(crate) const fn sibling_port(port: Port) -> Option<Port> {
+    match port {
+        Port::HdmiA => Some(Port::DpA),
+        Port::HdmiB => Some(Port::DpB),
+        Port::HdmiC => Some(Port::DpC),
+        Port::DpA => Some(Port::HdmiA),
+        Port::DpB => Some(Port::HdmiB),
+        Port::DpC => Some(Port::HdmiC),
+        _ => None,
     }
 }
 

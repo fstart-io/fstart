@@ -136,6 +136,8 @@ pub fn x86_config(inputs: &Inputs, windows: &[GsiWindow]) -> X86Config {
             p_lvl2_lat: 100,
             p_lvl3_lat: 1001,
             duty_offset: 0,
+            duty_width: 0,
+            pm2_cnt_offset: None,
         },
     }
 }

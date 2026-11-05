@@ -227,9 +227,29 @@ const fn gpi_routing(previous: u32, gpi: u8, acpi: bool) -> u32 {
     (previous & !(3 << shift)) | ((if acpi { 2 } else { 1 }) << shift)
 }
 
+/// A PM1 event raised this SMI while firmware, not OSPM, owns PM1 events.
+#[inline(always)]
+const fn legacy_pm1_smi(smi_status: u32, pm1_control: u16) -> bool {
+    smi_status & pmio::PM1_SMI_STS != 0 && pm1_control & pmio::SCI_EN as u16 == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pm1_events_are_owned_only_for_a_legacy_pm1_smi() {
+        for source in [
+            0,
+            pmio::APM_STS,
+            pmio::TCO_STS,
+            pmio::PM1_SMI_STS,
+            pmio::PM1_SMI_STS | pmio::APM_STS,
+        ] {
+            assert_eq!(legacy_pm1_smi(source, 0), source & pmio::PM1_SMI_STS != 0);
+            assert!(!legacy_pm1_smi(source, pmio::SCI_EN as u16));
+        }
+    }
 
     #[test]
     fn gpi_route_preserves_other_pins() {
@@ -338,8 +358,14 @@ impl PendingSmi {
         if self.smi_sts & pmio::TCO_STS != 0 {
             pm.tco().reset_tco_status();
         }
-        if self.smi_sts & pmio::PM1_SMI_STS != 0 {
-            pm.write16(pmio::PM1_STS, 0xffff);
+        if legacy_pm1_smi(self.smi_sts, pm.read16(pmio::PM1_CNT)) {
+            let status = pm.reset_pm1_status();
+            // coreboot southbridge_smi_pm1(): before OSPM owns PM1 events, a
+            // power-button press enters S5. With SCI_EN set, the status
+            // belongs to the OS.
+            if status & pmio::PWRBTN_STS != 0 {
+                pm.poweroff();
+            }
         }
         if self.smi_sts & pmio::GPE0_SMI_STS != 0 {
             self.gpe0.clear_status(&pm);

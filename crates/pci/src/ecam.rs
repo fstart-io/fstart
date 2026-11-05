@@ -166,6 +166,29 @@ impl EcamDevice {
         unsafe { &*(self.addr(0, 1) as *const T) }
     }
 
+    /// One config register of this function as a `Copy` tock register, for
+    /// composite registers such as `fstart_core::indexed::Indexed` (an
+    /// index/data pair in config space).
+    ///
+    /// # Safety
+    ///
+    /// The caller owns the register as with the typed accessors; `reg` is
+    /// naturally aligned for `T`. Accesses are plain volatile MMIO, so not
+    /// for AMD config space, which requires the access paths of `access`.
+    #[inline]
+    pub unsafe fn register<T, R>(&self, reg: u16) -> fstart_core::mmio::MmioRegister<T, R>
+    where
+        T: tock_registers::UIntLike,
+        R: tock_registers::RegisterLongName,
+    {
+        let address = self
+            .register_address(reg, core::mem::size_of::<T>())
+            .expect("invalid or unmapped ECAM register");
+        // SAFETY: a mapped, aligned register of this function; the caller's
+        // contract covers ownership.
+        unsafe { fstart_core::mmio::MmioRegister::new(address) }
+    }
+
     /// Read a 32-bit PCI config register.
     #[inline]
     pub fn read32(&self, reg: u16) -> u32 {
@@ -362,6 +385,40 @@ impl EcamDevice {
         self.write8(reg, (v & mask) | bits);
     }
 
+    /// Offset of the first standard capability `id`. The walk is bounded by
+    /// the 48 dwords a capability list can occupy, so a cycle terminates.
+    pub fn find_capability(&self, id: u8) -> Option<u16> {
+        const STATUS_CAP_LIST: u16 = 1 << 4;
+        if self.read16(0x06) & STATUS_CAP_LIST == 0 {
+            return None;
+        }
+        let mut next = self.read8(0x34) & !3;
+        for _ in 0..48 {
+            if next < 0x40 {
+                return None;
+            }
+            if self.read8(next.into()) == id {
+                return Some(next.into());
+            }
+            next = self.read8(u16::from(next) + 1) & !3;
+        }
+        None
+    }
+
+    /// Program the subsystem vendor/device dword (vendor in the low half),
+    /// like coreboot `pci_dev_set_subsystem()`: type-0 headers at 0x2c,
+    /// bridges through their SSVID capability. Returns whether a register
+    /// was found; the registers are often write-once.
+    pub fn set_subsystem(&self, id: u32) -> bool {
+        const CAP_ID_SSVID: u8 = 0x0d;
+        let offset = match self.read8(0x0e) & 0x7f {
+            0 => Some(0x2c),
+            1 => self.find_capability(CAP_ID_SSVID).map(|cap| cap + 4),
+            _ => None,
+        };
+        offset.inspect(|offset| self.write32(*offset, id)).is_some()
+    }
+
     /// Physical base of the memory BAR at `reg` as PCI enumeration assigned
     /// it, or `None` when the window is unassigned or an I/O BAR.
     ///
@@ -499,5 +556,68 @@ impl ConfigRegionAccess for EcamDevice {
             "device accessor used for another PCI function"
         );
         self.write32(offset, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+
+    /// `init` sets the process-wide ECAM base, and the tests free the memory
+    /// behind it: tests that call it must not overlap.
+    static ECAM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn subsystem_ids_use_header_type_and_bounded_ssvid_walk() {
+        let _ecam = ECAM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        use std::alloc::{Layout, alloc_zeroed, dealloc};
+        // Bus 0 needs 1 MiB of ECAM, 1 MiB aligned (init masks the base).
+        let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
+        let memory = unsafe { alloc_zeroed(layout) };
+        assert!(!memory.is_null());
+        init(memory as usize);
+        let endpoint = EcamDevice::new(0, 1, 0);
+        assert!(endpoint.set_subsystem(0x20f2_17aa));
+        assert_eq!(endpoint.read32(0x2c), 0x20f2_17aa);
+
+        let bridge = EcamDevice::new(0, 2, 0);
+        bridge.write8(0x0e, 0x81);
+        assert!(!bridge.set_subsystem(1)); // no capability list
+        bridge.write16(0x06, 1 << 4);
+        bridge.write8(0x34, 0x40);
+        bridge.write16(0x40, 0x9010); // PCIe -> SSVID
+        bridge.write16(0x90, 0x000d);
+        assert_eq!(bridge.find_capability(0x0d), Some(0x90));
+        assert!(bridge.set_subsystem(0x20f3_17aa));
+        assert_eq!(bridge.read32(0x94), 0x20f3_17aa);
+        bridge.write8(0x91, 0x40); // cycle without SSVID
+        bridge.write8(0x90, 0x05);
+        assert_eq!(bridge.find_capability(0x0d), None);
+        init(0);
+        unsafe { dealloc(memory, layout) };
+    }
+
+    #[test]
+    fn capability_walk_is_bounded() {
+        let _ecam = ECAM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        use std::alloc::{Layout, alloc_zeroed, dealloc};
+        // Bus 0 needs 1 MiB of ECAM, 1 MiB aligned (init masks the base).
+        let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
+        let memory = unsafe { alloc_zeroed(layout) };
+        assert!(!memory.is_null());
+        init(memory as usize);
+        let device = EcamDevice::new(0, 3, 0);
+        assert_eq!(device.find_capability(0x0a), None); // no capability list
+        device.write16(0x06, 1 << 4);
+        device.write8(0x34, 0x50);
+        device.write16(0x50, 0x5801); // PM -> debug port
+        device.write16(0x58, 0x000a);
+        assert_eq!(device.find_capability(0x0a), Some(0x58));
+        device.write8(0x59, 0x50); // cycle without the capability
+        device.write8(0x58, 0x05);
+        assert_eq!(device.find_capability(0x0a), None);
+        init(0);
+        unsafe { dealloc(memory, layout) };
     }
 }

@@ -32,6 +32,8 @@ members = [
   "crates/driver-ipmi",
   "crates/driver-tpm",
   "crates/tcg",
+  "crates/driver-flash-console",
+  "crates/driver-usbdebug",
   "crates/driver-intel",
   "crates/driver-sunxi",
   "crates/driver-sifive",
@@ -78,8 +80,8 @@ x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
-rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "29ee7febf0354f57ddf44e5078d90ef2af5d48c4", default-features = false }
-rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "29ee7febf0354f57ddf44e5078d90ef2af5d48c4", default-features = false }
+rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
+rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
@@ -122,6 +124,8 @@ fstart-driver-i2c = { path = "crates/driver-i2c" }
 fstart-driver-spd = { path = "crates/driver-spd" }
 fstart-driver-tpm = { path = "crates/driver-tpm" }
 fstart-tcg = { path = "crates/tcg" }
+fstart-driver-flash-console = { path = "crates/driver-flash-console" }
+fstart-driver-usbdebug = { path = "crates/driver-usbdebug" }
 fstart-stage = { path = "crates/stage" }
 fstart-acpi = { path = "crates/acpi" }
 fstart-smm = { path = "crates/smm" }
@@ -188,6 +192,8 @@ opt-level = "s"
 [profile.dev.package.fstart-driver-superio]
 opt-level = "s"
 [profile.dev.package.fstart-driver-uart]
+opt-level = "s"
+[profile.dev.package.fstart-driver-usbdebug]
 opt-level = "s"
 [profile.dev.package.lz4_flex]
 opt-level = 2

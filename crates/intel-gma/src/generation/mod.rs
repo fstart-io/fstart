@@ -15,7 +15,13 @@ pub(crate) fn output_pipe(
     available: &[Pipe],
 ) -> Result<Pipe, GmaError> {
     let pipe = match crate::caps_for(cpu).generation {
-        Generation::I945 | Generation::G45 => crate::port::pipe_for_legacy_gmch_port(port)?,
+        // Pre-i965 LVDS needs pipe B; libgfxinit swaps it there.
+        Generation::I945 => crate::port::pipe_for_legacy_gmch_port(port)?,
+        // libgfxinit `Scan_Ports`: probed outputs take the pipes in order.
+        Generation::G45 => *available
+            .iter()
+            .find(|pipe| crate::port::legacy_gmch_port_can_use_pipe(cpu, port, **pipe))
+            .ok_or(GmaError::UnsupportedPort)?,
         Generation::Ironlake => ironlake::ironlake_pipeline_plan(cpu, port, mode)?.fdi_pipe(),
         _ => *available.first().ok_or(GmaError::UnsupportedPort)?,
     };

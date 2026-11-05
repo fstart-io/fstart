@@ -1,4 +1,4 @@
-//! Register subset shared by the ICH7/ICH8 LPC flash interfaces.
+//! Register subset shared by the ICH7/ICH8/ICH9 LPC flash interfaces.
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_pci::{ecam::EcamDevice, pci_type0_config};
@@ -52,7 +52,7 @@ pub fn device() -> EcamDevice {
 }
 
 /// # Safety
-/// The caller must have mapped and enabled ICH7/ICH8 ECAM.
+/// The caller must have mapped and enabled ICH7/ICH8/ICH9 ECAM.
 pub unsafe fn flash_config() -> &'static LpcFlashConfig {
     unsafe { device().regs() }
 }
@@ -70,10 +70,33 @@ pub fn training_identity(header: &fstart_pci::overlay::PciType0Config) -> [u8; 5
     ]
 }
 
+/// Check an ICH7/8/9 GENx_DEC window before programming it.
+#[must_use]
+pub const fn valid_generic_io_window(base: u16, size: u16) -> bool {
+    size >= 4 && size <= 0x100 && size.is_power_of_two() && base & (size - 1) == 0
+}
+
+/// Encode a naturally aligned power-of-two LPC I/O window.
+#[must_use]
+pub const fn encode_generic_io_window(base: u16, size: u16) -> Option<u32> {
+    if !valid_generic_io_window(base, size) {
+        return None;
+    }
+    Some(((size as u32 - 4) << 16) | (base & 0xfffc) as u32 | 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tock_registers::interfaces::Writeable;
+
+    #[test]
+    fn generic_decode_requires_a_naturally_aligned_power_of_two() {
+        assert_eq!(encode_generic_io_window(0x1600, 0x80), Some(0x007c_1601));
+        assert_eq!(encode_generic_io_window(0x15e0, 0x10), Some(0x000c_15e1));
+        assert_eq!(encode_generic_io_window(0x1600, 12), None);
+        assert_eq!(encode_generic_io_window(0x1610, 0x20), None);
+    }
 
     #[test]
     fn flash_read_policy_preserves_protection_and_neighboring_bytes() {

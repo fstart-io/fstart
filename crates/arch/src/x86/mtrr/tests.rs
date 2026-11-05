@@ -66,6 +66,42 @@ fn x61_covers_all_high_ram_and_keeps_mmio_uc_with_wc_framebuffer() {
 }
 
 #[test]
+fn high_ram_is_dropped_only_when_the_mtrrs_run_out() {
+    // GM45 with 32 MiB ME and 7.5 GiB: 2 GiB MMIO window, remapped high RAM.
+    let ram = [
+        (0, 0xa0000),
+        (ONE_MIB, 0x7dd00000 - ONE_MIB),
+        (0x100000000, 0x25c000000 - 0x100000000),
+    ];
+    assert_eq!(
+        Plan::build(caps(7), ram, []).unwrap_err(),
+        ServiceError::NotSupported
+    );
+    let plan = Plan::build_ram(caps(7), ram, []).unwrap();
+    assert_span(&plan, ONE_MIB, 0x7dd00000, CacheType::WriteBack);
+    assert_span(&plan, 0x7dd00000, 1 << 36, CacheType::Uncacheable);
+    // With MTRRs to spare, high RAM stays cached.
+    let plan = Plan::build_ram(caps(8), ram, []).unwrap();
+    assert_span(&plan, 0x100000000, 0x25c000000, CacheType::WriteBack);
+}
+
+#[test]
+fn final_solution_drops_wc_before_high_ram() {
+    let wc = [(0xd0000000, 0x10000000)];
+    let full = Plan::build(caps(8), X61_RAM, wc).unwrap().ranges.len();
+    let without_wc = Plan::build(caps(8), X61_RAM, []).unwrap().ranges.len();
+    assert!(without_wc < full);
+    // The WC aperture alone exhausts the budget: keep all RAM cached.
+    let plan = Plan::final_solution(caps(without_wc), X61_RAM, &wc).unwrap();
+    assert_span(&plan, 0x100000000, 0x13c000000, CacheType::WriteBack);
+    assert_span(&plan, 0xd0000000, 0xe0000000, CacheType::Uncacheable);
+    // With both kept, nothing is given up.
+    let plan = Plan::final_solution(caps(full), X61_RAM, &wc).unwrap();
+    assert_span(&plan, 0xd0000000, 0xe0000000, CacheType::WriteCombining);
+    assert_span(&plan, 0x100000000, 0x13c000000, CacheType::WriteBack);
+}
+
+#[test]
 fn fixed_mtrrs_uncache_only_the_vga_window() {
     const WB: u64 = 0x0606_0606_0606_0606;
     let values: [u64; 11] = core::array::from_fn(fixed_msr_value);

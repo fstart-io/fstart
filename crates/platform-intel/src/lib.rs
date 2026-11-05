@@ -21,6 +21,7 @@ extern crate ufmt;
 )]
 pub mod tables;
 
+pub mod debug_console;
 pub mod facts;
 pub mod memory_cache;
 
@@ -66,6 +67,8 @@ macro_rules! entry {
     };
 }
 
+#[cfg(feature = "gm45-ich9")]
+pub mod gm45;
 #[cfg(feature = "gm965-ich8")]
 pub mod gm965;
 #[cfg(feature = "i945-ich7")]
@@ -140,7 +143,11 @@ pub trait IntelEarlyPlatform:
     #[cfg(feature = "mp")]
     type Cpu: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
     #[cfg(feature = "mp")]
-    fn cpu_driver(microcode: Option<&'static [u8]>) -> Self::Cpu;
+    fn cpu_driver(
+        microcode: Option<&'static [u8]>,
+        northbridge: &Self::Northbridge,
+        southbridge: &Self::Southbridge,
+    ) -> Self::Cpu;
 }
 
 /// ACPI contribution required of a northbridge driver; vacuous without ACPI.

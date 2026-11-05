@@ -40,7 +40,63 @@ pub struct DpLinkConfig {
     pub aux_rd_interval: u8,
 }
 
+/// DisplayPort data and link M/N values (libgfxinit `DP_Info.Calculate_M_N`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DpMn {
+    pub data_m: u32,
+    pub data_n: u32,
+    pub link_m: u32,
+    pub link_n: u32,
+}
+
+/// Largest M or N value the registers hold.
+const M_N_MAX: u64 = (1 << 24) - 1;
+const DATA_N_MAX: u64 = 0x80_0000;
+const LINK_N_MAX: u64 = 0x10_0000;
+
+/// libgfxinit `Cancel_M_N`: round N up to a power of two at most `n_max`,
+/// scale M with it and keep both within the register width.
+const fn cancel_m_n(m: u64, n: u64, n_max: u64) -> (u32, u32) {
+    let mut rounded = n_max;
+    while rounded / 2 >= n {
+        rounded /= 2;
+    }
+    let mut m = m * rounded / n;
+    let mut n = rounded;
+    while m > M_N_MAX {
+        m /= 2;
+        n /= 2;
+    }
+    (m as u32, n as u32)
+}
+
 impl DpLinkConfig {
+    /// Symbol clock in Hz: a tenth of the lane bit rate.
+    pub(crate) const fn symbol_rate_hz(self) -> u64 {
+        match self.link_rate {
+            DpLinkRate::Hbr => 270_000_000,
+            DpLinkRate::Hbr2 => 540_000_000,
+            _ => 162_000_000,
+        }
+    }
+
+    /// M/N for a mode of `bpc` bits per colour on this link.
+    pub(crate) const fn m_n(self, mode: Mode, bpc: u64) -> DpMn {
+        let dotclock = mode.pixel_clock_khz as u64 * 1000;
+        let (data_m, data_n) = cancel_m_n(
+            3 * bpc * dotclock,
+            8 * self.symbol_rate_hz() * self.lane_count as u64,
+            DATA_N_MAX,
+        );
+        let (link_m, link_n) = cancel_m_n(dotclock, self.symbol_rate_hz(), LINK_N_MAX);
+        DpMn {
+            data_m,
+            data_n,
+            link_m,
+            link_n,
+        }
+    }
+
     /// Convert to the GMCH source-register link config.
     pub(crate) const fn gmch(self) -> GmchDpLinkConfig {
         GmchDpLinkConfig {

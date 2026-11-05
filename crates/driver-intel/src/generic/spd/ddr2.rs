@@ -107,7 +107,7 @@ pub fn read_spd<B: SmBus + ?Sized>(
     addr: u8,
 ) -> Result<Option<[u8; 256]>, ServiceError> {
     let mut spd = [0u8; 256];
-    if !read_eeprom(smbus, addr, 0, &mut spd[..SPD_SIZE_MAX_DDR2])? {
+    if !super::read_eeprom(smbus, addr, 0, &mut spd[..SPD_SIZE_MAX_DDR2])? {
         return Ok(None);
     }
     if spd[..SPD_SIZE_MAX_DDR2].iter().all(|b| *b == 0) {
@@ -136,7 +136,7 @@ pub fn read_spd_cached<B: SmBus + ?Sized>(
         return read_spd(smbus, addr);
     };
     let mut identity = [0u8; SPD_IDENTITY_LEN];
-    if !read_eeprom(smbus, addr, SPD_CHECKSUM, &mut identity)? {
+    if !super::read_eeprom(smbus, addr, SPD_CHECKSUM, &mut identity)? {
         return Ok(None);
     }
     if identity[..] != cached[SPD_IDENTITY] {
@@ -146,35 +146,6 @@ pub fn read_spd_cached<B: SmBus + ?Sized>(
     let mut spd = [0u8; 256];
     spd[..SPD_SIZE_MAX_DDR2].copy_from_slice(cached);
     Ok(Some(spd))
-}
-
-/// Fill `buf` from the EEPROM at `addr`; `false` when nothing answers.
-///
-/// Prefers the controller's I2C sequential read and, like coreboot, falls
-/// back to byte reads when that fails.
-fn read_eeprom<B: SmBus + ?Sized>(
-    smbus: &mut B,
-    addr: u8,
-    offset: u8,
-    buf: &mut [u8],
-) -> Result<bool, ServiceError> {
-    match smbus.i2c_eeprom_read(addr, offset, buf) {
-        Ok(()) => return Ok(true),
-        Err(ServiceError::NoDevice) => return Ok(false),
-        Err(error) => fstart_log::warn!(
-            "spd: I2C read at {:#x} failed (code {}), reading byte by byte",
-            addr,
-            error as u8
-        ),
-    }
-    for (byte, cmd) in buf.iter_mut().zip(offset..=u8::MAX) {
-        match smbus.read_byte(addr, cmd) {
-            Ok(value) => *byte = value,
-            Err(ServiceError::NoDevice) if cmd == offset => return Ok(false),
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(true)
 }
 
 /// Return the index of the most-significant set bit in `value`.

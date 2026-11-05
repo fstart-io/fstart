@@ -44,6 +44,22 @@ pub const fn gen3_display_clock_hz(cpu: Cpu, gcfgc: Option<u16>) -> u32 {
     i945_cdclk(cpu, gcfgc) as u32
 }
 
+/// GM45 display clock in Hz from the MCH `HPLLVCO` selector and `GCFGC`
+/// (libgfxinit `Get_CDClk`, coreboot `gm45/gma.c get_cdclk()`). Chipset
+/// code needs it for the panel power-cycle divider and the backlight PWM.
+#[must_use]
+pub fn gm45_display_clock_hz(hpllvco_selector: u8, gcfgc: u16) -> u32 {
+    let selector = usize::from(hpllvco_selector & 7);
+    cdclk_from_gcfgc(
+        Cpu::Gm45,
+        HpllVco {
+            hz: gm45_vco_hz(selector),
+            divisors: gm45_divisors(selector),
+        },
+        Some(gcfgc),
+    ) as u32
+}
+
 /// Initialize/read legacy GMCH clocks for GM965/G45/GM45/Pineview.
 pub(crate) fn initialize_legacy_gmch(
     mmio: &Mmio,
@@ -377,6 +393,20 @@ mod tests {
         assert_eq!(cdclk_from_gcfgc(Cpu::Gm965, vco, Some(1 << 8)), 200_000_000);
         assert_eq!(cdclk_from_gcfgc(Cpu::Gm965, vco, Some(2 << 8)), 333_333_333);
         assert_eq!(cdclk_from_gcfgc(Cpu::Gm965, vco, Some(0)), 200_000_000);
+    }
+
+    #[test]
+    fn gm45_cdclk_matches_coreboot_get_cdclk() {
+        const CD: u16 = 1 << 12;
+        // VCO selector 0 is 3200 MHz, 1 is 4000, 2 is 5333, 4 is 2667.
+        assert_eq!(gm45_display_clock_hz(0, CD), 320_000_000);
+        assert_eq!(gm45_display_clock_hz(0, 0), 228_571_428);
+        for vco in [1, 2, 4] {
+            assert_eq!(gm45_display_clock_hz(vco, CD), 333_333_333);
+            assert_eq!(gm45_display_clock_hz(vco, 0), 222_222_222);
+        }
+        // Unknown VCOs fall back to 222 MHz either way.
+        assert_eq!(gm45_display_clock_hz(3, CD), 222_222_222);
     }
 
     #[test]

@@ -65,6 +65,7 @@ register_bitfields![u8,
         WLAN_ENABLE OFFSET(5) NUMBITS(1) [],
         WWAN_ENABLE OFFSET(6) NUMBITS(1) []
     ],
+    pub UWB_CONTROL [ENABLE OFFSET(2) NUMBITS(1) []],
     pub USB_CONTROL [
         THINKLIGHT OFFSET(1) NUMBITS(1) [],
         POWER_ENABLE OFFSET(4) NUMBITS(1) []
@@ -112,6 +113,7 @@ ec_registers! {
     ALWAYS_ON_CONTROL => 0x0d,
     FAN_CONTROL => 0x2f,
     VOLUME_CONTROL => 0x30,
+    UWB_CONTROL => 0x31,
     RADIO_CONTROL => 0x3a,
     USB_CONTROL => 0x3b,
     STATUS1 => 0x47,
@@ -256,11 +258,26 @@ impl H8 {
     /// The H8 is also the PC/AT keyboard controller; it is left quiet for
     /// the OS.
     pub fn init_legacy_thinkpad(&self, events: &[u8; 16], bluetooth: bool, resume: bool) -> bool {
+        self.init_thinkpad(0x05, events, bluetooth, None, resume)
+    }
+
+    /// coreboot `h8_enable()` for a ThinkPad: CONFIG0-3 with the ThinkLight,
+    /// event masks, radios (UWB only where the board has the switch), USB
+    /// power and the default Fn/charge/audio policy. `config1` is the
+    /// devicetree `config1`. The OS restores its own volume on resume.
+    pub fn init_thinkpad(
+        &self,
+        config1: u8,
+        events: &[u8; 16],
+        bluetooth: bool,
+        uwb: Option<bool>,
+        resume: bool,
+    ) -> bool {
         self.clear_out_queue();
         let acknowledged = [
             self.init_config0(H8_CONFIG0_EVENTS_ENABLE),
             self.init_controls(
-                [0x05, 0xa0, 0x01],
+                [config1, 0xa0, 0x01],
                 Some(H8Illumination::Thinklight),
                 [0xfe, 0x96],
             ),
@@ -270,6 +287,7 @@ impl H8 {
             self.wlan_enable(true),
             self.bluetooth_enable(bluetooth),
             self.wwan_enable(true),
+            uwb.is_none_or(|on| self.uwb_enable(on)),
             self.usb_always_on_disable(),
             self.fn_ctrl_swap(false),
             self.sticky_fn(false),
@@ -315,6 +333,12 @@ impl H8 {
     pub fn wwan_enable(&self, on: bool) -> bool {
         self.channel
             .modify_register(RADIO_CONTROL::WWAN_ENABLE.val(on.into()))
+    }
+
+    /// Controls the radio-off pin in the UWB MiniPCIe slot (coreboot h8.c).
+    pub fn uwb_enable(&self, on: bool) -> bool {
+        self.channel
+            .modify_register(UWB_CONTROL::ENABLE.val(on.into()))
     }
 
     pub fn audio_mute(&self, mute: bool) -> bool {
@@ -587,6 +611,17 @@ impl H8Resources {
     }
 }
 
+/// EC threshold register layouts used by different ThinkPad generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum H8BatteryThresholdBackend {
+    /// Independent start/stop bytes at 0xb0..0xb3 (later ThinkPads).
+    RegistersB0,
+    /// Shared start/stop selector at 0x03 bit 2 and battery bytes 0x24/0x25.
+    /// `bit7` matches coreboot H8_BAT_THRESHOLDS_BIT7: true uses raw values,
+    /// false sets bit 7 on writes and masks it on reads (including X200).
+    Registers24 { bit7: bool },
+}
+
 /// Board-declared H8 capabilities and ACPI knobs (coreboot `chip.h` +
 /// Kconfig selections).
 #[derive(Debug, Clone, Copy)]
@@ -610,6 +645,7 @@ pub struct H8Config {
     pub bat_charge_behaviour: bool,
     /// Charge-threshold methods (`H8_HAS_BAT_THRESHOLDS_IMPL`).
     pub bat_thresholds: bool,
+    pub bat_threshold_backend: H8BatteryThresholdBackend,
     /// Alternative Fn-F2/Fn-F3 hotkey layout.
     pub alt_fn_f2f3_layout: bool,
     /// Hotkey hub EISAID ("IBM0068" on all models up to *61; "LEN0068" later).
@@ -639,6 +675,7 @@ impl H8Config {
             bat_info_extended: false,
             bat_charge_behaviour: false,
             bat_thresholds: false,
+            bat_threshold_backend: H8BatteryThresholdBackend::RegistersB0,
             alt_fn_f2f3_layout: false,
             hkey_eisaid,
             critical_temp_celsius: 0,

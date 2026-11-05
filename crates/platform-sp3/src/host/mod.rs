@@ -393,6 +393,7 @@ fn ffs_assembly(
 
 /// Resolve the board's plan: one build for every generation it supports.
 pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan, String> {
+    selection.reject_debug()?;
     if B::GENERATIONS.is_empty() {
         return Err("the board lists no SP3 generation".into());
     }

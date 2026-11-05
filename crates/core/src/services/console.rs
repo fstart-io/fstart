@@ -71,3 +71,32 @@ pub trait Console: Send + Sync {
         self.flush()
     }
 }
+
+/// The console of a board without one, such as a laptop with no serial
+/// port. Output goes only to the debug consoles a build adds next to it.
+pub struct NoConsole;
+
+impl ConsoleDevice for NoConsole {
+    type Config = ();
+    const NAME: &'static str = "no board";
+
+    fn new((): ()) -> Result<Self, ServiceError> {
+        Ok(Self)
+    }
+
+    fn init(&mut self) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+impl Console for NoConsole {
+    fn write_byte(&self, _: u8) -> Result<(), ServiceError> {
+        Err(ServiceError::NotSupported)
+    }
+    fn write_bytes(&self, _: &[u8]) -> Result<(), ServiceError> {
+        Err(ServiceError::NotSupported)
+    }
+    fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
+        Ok(None)
+    }
+}

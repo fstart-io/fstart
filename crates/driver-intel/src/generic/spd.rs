@@ -7,6 +7,7 @@
 use fstart_core::services::{ServiceError, SmBus};
 
 pub mod ddr2;
+pub mod ddr3;
 
 // ===================================================================
 // Shared SPD constants
@@ -15,33 +16,11 @@ pub mod ddr2;
 /// SPD byte 2: memory type (shared across all DDR generations).
 pub const SPD_MEMORY_TYPE: u8 = 2;
 
-/// DDR3 memory type identifier.
-pub const DDR3: u8 = 0x0B;
-
 // ===================================================================
 // Shared types
 // ===================================================================
 
-/// DDR chip width classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChipWidth {
-    X4 = 0,
-    X8 = 1,
-    X16 = 2,
-    X32 = 3,
-}
-
-/// DDR chip capacity classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChipCapacity {
-    Cap256M = 0,
-    Cap512M = 1,
-    Cap1G = 2,
-    Cap2G = 3,
-    Cap4G = 4,
-    Cap8G = 5,
-    Cap16G = 6,
-}
+pub use fstart_driver_spd::{ChipCapacity, ChipWidth};
 
 /// FSB clock frequency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +133,35 @@ pub fn read_spd<B: SmBus>(
         buf[i as usize] = smbus.read_byte(addr, i)?;
     }
     Ok(())
+}
+
+/// Fill `buf` from the EEPROM at `addr`; `false` when nothing answers.
+///
+/// Prefers the controller's I2C sequential read and, like coreboot, falls
+/// back to byte reads when that fails.
+pub(crate) fn read_eeprom<B: SmBus + ?Sized>(
+    smbus: &mut B,
+    addr: u8,
+    offset: u8,
+    buf: &mut [u8],
+) -> Result<bool, ServiceError> {
+    match smbus.i2c_eeprom_read(addr, offset, buf) {
+        Ok(()) => return Ok(true),
+        Err(ServiceError::NoDevice) => return Ok(false),
+        Err(error) => fstart_log::warn!(
+            "spd: I2C read at {:#x} failed (code {}), reading byte by byte",
+            addr,
+            error as u8
+        ),
+    }
+    for (byte, cmd) in buf.iter_mut().zip(offset..=u8::MAX) {
+        match smbus.read_byte(addr, cmd) {
+            Ok(value) => *byte = value,
+            Err(ServiceError::NoDevice) if cmd == offset => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(true)
 }
 
 /// Check if a DIMM slot is populated.
