@@ -652,16 +652,17 @@ impl Framebuffer for IgdDisplay {
     }
 }
 
-/// GMCH IGD ACPI node (`GFX0`): coreboot's static `_DOD` output list,
+/// GMCH IGD ACPI node, named by the northbridge `NB` (`GFX0`): coreboot's
+/// static `_DOD` output list,
 /// OpRegion ASLE brightness requests with a direct `BLC_PWM_CTL` fallback,
 /// `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
 /// `INCB`/`DECB` hooks ThinkPad hotkeys call. `gttmmio` is the assigned
 /// GTTMMADR; zero while the IGD is absent.
 #[cfg(feature = "acpi")]
 #[must_use]
-pub fn gfx0_acpi_node(gttmmio: u64) -> alloc::vec::Vec<u8> {
+pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc::vec::Vec<u8> {
     fstart_acpi_macros::acpi_dsl! {
-        Device("GFX0") {
+        Device(#{const name NB::ACPI_IGD_NAME}) {
             Name("_ADR", 0x00020000u32);
             OperationRegion("GFXC", PciConfig, 0x00u32, 0x100u32);
             Field("GFXC", DWordAcc, NoLock, Preserve) {

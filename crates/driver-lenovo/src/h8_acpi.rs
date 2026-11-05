@@ -1324,7 +1324,7 @@ mod tests {
                     "IBM0068",
                 )
             };
-            let aml = dsdt_aml(&cfg, "\\_SB_.PCI0.LPCB");
+            let aml = dsdt_aml::<TestNamespace>(&cfg);
             for name in ["BCCS", "BCSS", "BCTG", "BCSG", "SETT", "GETT"] {
                 assert!(aml.windows(4).any(|bytes| bytes == name.as_bytes()));
             }
@@ -1467,7 +1467,7 @@ mod tests {
                 Scope("\\_SB_") { Device("PCI0") { Device("LPCB") { } } }
             }
             .into();
-            let h8 = dsdt_aml(&cfg, "\\_SB_.PCI0.LPCB");
+            let h8 = dsdt_aml::<TestNamespace>(&cfg);
             assert_eq!(
                 h8.windows(4).filter(|bytes| *bytes == b"_BIX").count(),
                 if extended { 2 } else { 0 }

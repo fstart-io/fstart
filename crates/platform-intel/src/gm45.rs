@@ -491,27 +491,19 @@ impl Default for Gm45Ich9Config {
     }
 }
 
-/// Platform-owned ACPI namespace context for GM45/ICH9 flows.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Gm45Ich9AcpiContext;
-
-impl Gm45Ich9AcpiContext {
-    #[must_use]
-    pub const fn sb_scope(self) -> &'static str {
-        "\\_SB_"
-    }
-    #[must_use]
-    pub const fn lpc_scope(self) -> &'static str {
-        "\\_SB_.PCI0.LPCB"
-    }
-    #[must_use]
-    pub const fn gpe_scope(self) -> &'static str {
-        "\\_GPE"
-    }
-}
-
 /// Cantiga chipset pairing; CPU-package policy is independent of the MCH.
 pub struct Gm45Ich9<C = crate::legacy_cpu::Bga956>(core::marker::PhantomData<C>);
+
+/// The GM45/ICH9 devices boards attach to, from the names the drivers give them.
+#[cfg(feature = "namespace")]
+impl<C> fstart_acpi::PcNamespace for Gm45Ich9<C> {
+    const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
+        fstart_driver_intel::gm45::IntelGm45,
+        fstart_driver_intel::ich9::IntelIch9,
+    >();
+    const IGD: fstart_acpi::AcpiPath =
+        fstart_driver_intel::namespace::igd::<fstart_driver_intel::gm45::IntelGm45>();
+}
 
 impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm45Ich9<C> {
     type Config = Gm45Ich9Platform;
@@ -567,8 +559,6 @@ mod stage {
                 },
             )
         }
-        #[cfg(feature = "acpi")]
-        type AcpiContext = Gm45Ich9AcpiContext;
     }
 
     impl IntelChipsetConfig for Gm45Ich9Platform {

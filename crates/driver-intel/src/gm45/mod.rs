@@ -114,7 +114,6 @@ pub struct IntelGm45Config {
     pub cstates: crate::cpu::Core2Cstates,
     /// ME functions 03.0-03.3 the board disables (bit n hides 03.n).
     pub disabled_me_functions: u8,
-    pub acpi_name: Option<&'static str>,
 }
 
 impl IntelGm45Config {
@@ -134,7 +133,6 @@ impl IntelGm45Config {
             igd: Gm45IgdConfig::new(),
             cstates: crate::cpu::CORE2_MOBILE_CSTATES,
             disabled_me_functions: 0,
-            acpi_name: Some("PCI0"),
         }
     }
 }
@@ -371,6 +369,8 @@ impl crate::IntelEcamConfig for IntelGm45Config {
 
 impl crate::IntelNorthbridgeDriver for IntelGm45 {
     type Config = IntelGm45Config;
+    const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
+    const ACPI_IGD_NAME: &'static str = "GFX0";
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         let buses = config.ecam_buses;
         if !matches!(buses, 64 | 128 | 256)
@@ -762,6 +762,8 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm45 {
 #[cfg(feature = "acpi")]
 mod acpi_impl {
     use super::*;
+    use crate::IntelNorthbridgeDriver;
+    use crate::namespace::pci_root;
     use alloc::vec::Vec;
     use fstart_acpi::device::AcpiDevice;
     use fstart_acpi_macros::acpi_dsl;
@@ -790,7 +792,7 @@ mod acpi_impl {
             let high_limit = (1u64 << phys_address_bits()) - 1;
             let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
             let mut aml: Vec<u8> = acpi_dsl! {
-                Device("PCI0") {
+                Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_SEG", 0u32);
@@ -839,8 +841,8 @@ mod acpi_impl {
             .into();
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec(
-                    "\\_SB_.PCI0",
-                    &crate::igd::gfx0_acpi_node(gttmmio),
+                    const { pci_root::<Self>() }.as_str(),
+                    &crate::igd::gfx0_acpi_node::<Self>(gttmmio),
                 )
                 .expect("GM45 GFX0 emission failed"),
             );

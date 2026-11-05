@@ -1905,8 +1905,8 @@ mod acpi_impl {
 
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec(
-                    "\\_SB_.PCI0",
-                    &crate::igd::gfx0_acpi_node(gttmmio),
+                    const { crate::namespace::pci_root::<Self>() }.as_str(),
+                    &crate::igd::gfx0_acpi_node::<Self>(gttmmio),
                 )
                 .expect("GM965 GFX0 emission failed"),
             );

@@ -12,6 +12,14 @@ use fstart_driver_lenovo::{
 };
 use std::{fs, process::Command};
 
+/// The GM45/ICH9 namespace, from the drivers' names as the platform derives it.
+struct Gm45Ich9;
+
+impl fstart_acpi::PcNamespace for Gm45Ich9 {
+    const LPC: fstart_acpi::AcpiPath = crate::namespace::lpc::<IntelGm45, IntelIch9>();
+    const IGD: fstart_acpi::AcpiPath = crate::namespace::igd::<IntelGm45>();
+}
+
 #[test]
 fn x200_sleep_and_passive_cooling_namespace_resolves() {
     const fn c3(mwait_hint: u8) -> [crate::cpu::CState; 2] {
@@ -56,7 +64,11 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     let nb = IntelGm45::new_from_config(&NB).unwrap();
     let sb = IntelIch9::new_from_config(&SB).unwrap();
     let mut aml = nb.dsdt_aml(&NB);
-    aml.extend(sb.dsdt_aml(&SB));
+    aml.extend(crate::namespace::SouthbridgeAcpi::dsdt_aml(
+        &sb,
+        &SB,
+        &crate::namespace::pci_root::<IntelGm45>(),
+    ));
     let h8 = H8Config {
         second_thermal_zone: true,
         critical_temp_celsius: 100,
@@ -69,10 +81,7 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
             "IBM0068",
         )
     };
-    aml.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml(
-        &h8,
-        "\\_SB_.PCI0.LPCB",
-    ));
+    aml.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml::<Gm45Ich9>(&h8));
     assert!(!aml.windows(4).any(|bytes| bytes == b"_S3_"));
     let dir = tempfile::tempdir().unwrap();
     fs::write(

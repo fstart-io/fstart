@@ -4,11 +4,10 @@
 
 extern crate alloc;
 
+use crate::ec;
 use embedded_hal::digital::{OutputPin, PinState};
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
-use crate::ec;
-use fstart_platform_intel::gm45::Gm45Ich9AcpiContext;
 
 /// The ICH9 GPIOs the board's own devices hang off.
 pub struct Pins {
@@ -131,26 +130,21 @@ pub struct Acpi {
 }
 
 impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = Gm45Ich9AcpiContext;
+    type Config = ();
 
-    fn dsdt_aml(&self, context: &Self::Config) -> alloc::vec::Vec<u8> {
-        x200_mainboard_dsdt_aml(*context, self.bluetooth, self.digitizer)
+    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
+        x200_mainboard_dsdt_aml(self.bluetooth, self.digitizer)
     }
 }
 
 /// Assemble the X200 DSDT.
-pub fn x200_mainboard_dsdt_aml(
-    context: Gm45Ich9AcpiContext,
-    bluetooth: bool,
-    digitizer: bool,
-) -> alloc::vec::Vec<u8> {
+pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> alloc::vec::Vec<u8> {
     let h8 = fstart_driver_lenovo::h8::H8Config {
         has_bluetooth: bluetooth,
         ..crate::config::X200_H8
     };
-    crate::acpi::dsdt_aml(
+    crate::acpi::dsdt_aml::<<crate::Board as fstart_platform_intel::IntelBoardFacts>::Platform>(
         &h8,
-        context.lpc_scope(),
         fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,
         digitizer,
     )

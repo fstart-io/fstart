@@ -818,8 +818,6 @@ pub struct IntelIch9Config {
     pub smbus_base: u16,
     /// GPIO pad configuration.
     pub gpio: GpioConfig,
-    /// ACPI device name (reserved for future ACPI device generation).
-    pub acpi_name: Option<&'static str>,
     /// Board is a laptop (coreboot `SYSTEM_TYPE_LAPTOP`): mobile FADT profile.
     pub laptop: bool,
     /// After-power-failure behaviour: 0=off, 1=on, 2=last-state.
@@ -861,7 +859,6 @@ impl IntelIch9Config {
             io_traps: ConstVec::new(empty_io_trap()),
             smbus_base: ich9::DEFAULT_SMBUS_BASE,
             gpio: GpioConfig::new(),
-            acpi_name: Some("LPCB"),
             laptop: false,
             power_on_after_fail: 1,
             throttle_duty: 0,
@@ -2168,6 +2165,7 @@ impl crate::southbridge::smi::SmiControl for IntelIch9 {
 
 impl crate::IntelSouthbridgeDriver for IntelIch9 {
     type Config = IntelIch9Config;
+    const ACPI_LPC_NAME: &'static str = "LPCB";
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         let routing = config.pirq.as_ref();
@@ -2706,8 +2704,10 @@ mod tests {
 mod acpi_impl {
     extern crate alloc;
 
+    use crate::IntelSouthbridgeDriver;
+    use crate::namespace::SouthbridgeAcpi;
     use alloc::vec::Vec;
-    use fstart_acpi::device::AcpiDevice;
+    use fstart_acpi::AcpiPath;
     use fstart_acpi::fadt::{Flags, PmProfile};
     use fstart_acpi::platform::{
         HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
@@ -2852,16 +2852,14 @@ mod acpi_impl {
         }
     }
 
-    impl AcpiDevice for IntelIch9 {
-        type Config = IntelIch9Config;
-
-        /// Produce ICH9-M DSDT content under `\\_SB.PCI0`.
+    impl SouthbridgeAcpi for IntelIch9 {
+        /// Produce ICH9-M DSDT content in the northbridge's `pci_root`.
         ///
         /// This is the reusable southbridge ACPI namespace: LPC legacy
         /// devices, PIRQ links, USB/HDA/SATA/SMBus/PCIe/PCI bridge device
         /// nodes, and APIC-mode `_PRT` routing. Mainboard-specific EC,
         /// dock/GPE/SMI trap glue is emitted by mainboard drivers.
-        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
+        fn dsdt_aml(&self, config: &Self::Config, pci_root: &AcpiPath) -> Vec<u8> {
             // PM/GPIO SystemIO OpRegions are intentionally omitted until an
             // emitted AML method actually consumes them. Declaring unused
             // regions makes ACPI claim the native lpc_ich driver resources.
@@ -3032,19 +3030,15 @@ mod acpi_impl {
             lpcb.extend_from_slice(&acpi_fragments::ps2_controller_nodes());
 
             body.extend_from_slice(
-                &fstart_acpi::aml_linker::device_vec("LPCB", &lpcb)
+                &fstart_acpi::aml_linker::device_vec(Self::ACPI_LPC_NAME, &lpcb)
                     .expect("ICH9 LPCB device emission"),
             );
 
             aml.extend_from_slice(
-                &fstart_acpi::aml_linker::scope_vec("\\_SB_.PCI0", &body)
+                &fstart_acpi::aml_linker::scope_vec(pci_root.as_str(), &body)
                     .expect("ICH9 PCI scope emission"),
             );
             aml
-        }
-
-        fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            Vec::new()
         }
     }
 
@@ -3078,7 +3072,7 @@ mod acpi_impl {
             config.pirq = Some(super::super::tests::ROUTING);
             let config = alloc::boxed::Box::leak(alloc::boxed::Box::new(config));
             let south = IntelIch9::new_from_config(config).expect("ICH9 config is valid");
-            let aml = south.dsdt_aml(config);
+            let aml = south.dsdt_aml(config, &AcpiPath::SB.child("PCI0"));
 
             let has_adr = |adr: u32| aml.windows(10).any(|window| window == adr_name_aml(adr));
             // Coreboot i82801ix: USB1-3 on device 0x1D, USB4-6 on 0x1A.

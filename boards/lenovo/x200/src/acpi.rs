@@ -5,54 +5,59 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use fstart_acpi::PcNamespace;
 use fstart_acpi_macros::acpi_dsl;
 
 use fstart_driver_lenovo::h8::H8Config;
+use fstart_driver_lenovo::h8_acpi::ec;
 
-/// Board DSDT. `\_SB.PCI0.GFX0` provides `INCB`/`DECB`, the Core 2 CPU
+/// Board DSDT. The platform's IGD provides `INCB`/`DECB`, the Core 2 CPU
 /// AML provides `\CNOT`; `gpio_base` is the ICH GPIOBASE.
 #[must_use]
-pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, gpio_base: u16, digitizer: bool) -> Vec<u8> {
+pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) -> Vec<u8> {
     // Coreboot x200 dsdt.asl: hotkey brightness goes through GFX0.
     let brightness = acpi_dsl! {
         Scope("\\") {
-            Method("BRTU", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.INCB"}(); }
-            Method("BRTD", 0, NotSerialized) { #{const "\\_SB_.PCI0.GFX0.DECB"}(); }
+            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
+            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
         }
     };
-    let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness(h8, lpc_scope, &brightness);
+    let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness::<N>(h8, &brightness);
     aml.extend_from_slice(&acpi_dsl! {
         Scope("\\") {
             // ec/lenovo/h8/acpi/thinklight.asl, for thinkpad_acpi.
             Method("UCMS", 1, Serialized) {
                 If (Arg0 == 0x0Cu32) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.LGHT"}(1u32);
+                    #{const path 5 ec::<N>().child("LGHT")}(1u32);
                 }
                 If (Arg0 == 0x0Du32) {
-                    #{const "\\_SB_.PCI0.LPCB.EC__.LGHT"}(0u32);
+                    #{const path 5 ec::<N>().child("LGHT")}(0u32);
                 }
             }
             Method("_PTS", 1, NotSerialized) {
-                #{const "\\_SB_.PCI0.LPCB.EC__.MUTE"}(1u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.USBP"}(0u32);
-                #{const "\\_SB_.PCI0.LPCB.EC__.RADI"}(0u32);
+                #{const path 5 ec::<N>().child("MUTE")}(1u32);
+                #{const path 5 ec::<N>().child("USBP")}(0u32);
+                #{const path 5 ec::<N>().child("RADI")}(0u32);
             }
             Method("_WAK", 1, NotSerialized) {
-                #{const "\\_SB_.PCI0.LPCB.EC__.HKEY.WAKE"}(Arg0);
+                #{const path 6 ec::<N>().child("HKEY").child("WAKE")}(Arg0);
                 Return(Package(0u32, 0u32));
             }
         }
         Scope("\\_GPE") {
             Method("_L18", 0, NotSerialized) {
-                Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.WAKE"};
+                Local0 = #{const path 5 ec::<N>().child("WAKE")};
             }
         }
     });
-    aml.extend(dock_aml(gpio_base));
+    aml.extend(dock_aml::<N>(gpio_base));
     if digitizer {
         aml.extend(
-            fstart_acpi::aml_linker::scope_vec(lpc_scope, &fstart_driver_lenovo::wacom::digitizer_aml())
-                .expect("X200 digitizer emission"),
+            fstart_acpi::aml_linker::scope_vec(
+                N::LPC.as_str(),
+                &fstart_driver_lenovo::wacom::digitizer_aml(),
+            )
+            .expect("X200 digitizer emission"),
         );
     }
     aml
@@ -61,7 +66,7 @@ pub fn dsdt_aml(h8: &H8Config, lpc_scope: &str, gpio_base: u16, digitizer: bool)
 /// Coreboot x200 `acpi/dock.asl`: the dock device keyed on the GPIO2-4 dock
 /// ID and EC DKR1, plus the EC dock queries. Only the GPIO level bits the
 /// dock methods use are declared (GPIOBASE + 0x0c).
-fn dock_aml(gpio_base: u16) -> Vec<u8> {
+fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
     let gpio_level = u32::from(gpio_base) + 0x0c;
     let mut aml: Vec<u8> = acpi_dsl! {
         Scope("\\") {
@@ -79,7 +84,7 @@ fn dock_aml(gpio_base: u16) -> Vec<u8> {
     .into();
     // DKR1 lives in the EC; DOCK switches it through this setter.
     aml.extend_from_slice(&acpi_dsl! {
-        Scope(#{const "\\_SB_.PCI0.LPCB.EC__"}) {
+        Scope(#{const path 4 ec::<N>()}) {
             Method("DKSE", 1, NotSerialized) { DKR1 = Arg0; }
         }
     });
@@ -104,20 +109,20 @@ fn dock_aml(gpio_base: u16) -> Vec<u8> {
                 Name("_PCL", Package(#{const "\\_SB_"}));
                 Method("_DCK", 1, NotSerialized) {
                     GP28 = Arg0;
-                    #{const "\\_SB_.PCI0.LPCB.EC__.DKSE"}(Arg0);
-                    Local1 = #{const "\\_SB_.PCI0.LPCB.EC__.DKR1"};
+                    #{const path 5 ec::<N>().child("DKSE")}(Arg0);
+                    Local1 = #{const path 5 ec::<N>().child("DKR1")};
                     Local0 = Arg0 ^ Local1;
                     Return(Local0);
                 }
                 Method("_STA", 0, NotSerialized) {
-                    Local0 = #{const "\\_SB_.PCI0.LPCB.EC__.DKR1"};
+                    Local0 = #{const path 5 ec::<N>().child("DKR1")};
                     Return(Local0);
                 }
             }
         }
     });
     aml.extend_from_slice(&acpi_dsl! {
-        Scope(#{const "\\_SB_.PCI0.LPCB.EC__"}) {
+        Scope(#{const path 4 ec::<N>()}) {
             Method("_Q18", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
             Method("_Q37", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
             Method("_Q45", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
@@ -164,7 +169,9 @@ mod tests {
             Scope("\\_SB_") { Device("PCI0") { Device("LPCB") { } } }
         }
         .into();
-        aml.extend(dsdt_aml(&h8, "\\_SB_.PCI0.LPCB", 0x580, true));
+        aml.extend(dsdt_aml::<fstart_platform_intel::gm45::Gm45Ich9>(
+            &h8, 0x580, true,
+        ));
         assert_eq!(aml.windows(4).filter(|name| *name == b"DTR_").count(), 1);
         let dir =
             std::env::temp_dir().join(std::format!("fstart-x200-glue-{}", std::process::id()));
