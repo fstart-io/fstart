@@ -244,8 +244,8 @@ Not implemented: a single multi-generation EFS with a combo directory
 ## Settings
 
 The user overrides board configuration through `fstart-options`
-(`crates/options`). A knob is one field of a configuration with its legal
-values; the SoC code defines it, the board offers it:
+([options](options.md)). A knob is one field of a configuration with its
+legal values; the SoC code defines it, the board offers it:
 
 | Knobs | Configuration | Applied |
 |---|---|---|

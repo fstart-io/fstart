@@ -136,5 +136,7 @@ D510MO only.
 ## Related
 
 - [`docs/smm.md`](smm.md): Pineview/Atom SMM layout.
+- [`docs/options.md`](options.md): the CMOS options (`debug_level`,
+  `power_on_after_fail`, `nmi`, `gfx_uma_size`) and the setup menu.
 - [`ci/payloads/seabios/README.md`](../ci/payloads/seabios/README.md): SeaBIOS
   payload recipe.
