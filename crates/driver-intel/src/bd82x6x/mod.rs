@@ -34,7 +34,8 @@ pub use crate::southbridge::ehci_debug::EhciController;
 pub use crate::southbridge::gpio_ich::{GpiRoute, GpioConfig, GpioPin};
 pub use crate::southbridge::hda::{HdaConfig, HdaVerbTable};
 pub use crate::southbridge::lpc::LpcGenericIoDecode;
-pub use crate::southbridge::options::SataMode;
+pub use crate::southbridge::options::{MeState, SataMode};
+pub use me::MeStateGuard;
 
 /// Fixed southbridge resources (coreboot `pch.h` and Kconfig defaults).
 pub const DEFAULT_PMBASE: u16 = 0x0500;
@@ -218,6 +219,12 @@ pub struct IntelBd82x6xConfig {
     pub spi_ops: SwseqConfig,
     /// Devicetree-disabled functions.
     pub disabled: ConstVec<PchFunction, 24>,
+    /// The board's ME state (coreboot `me_state`), which the user option
+    /// overrides; `None` leaves the ME as it is. Hiding MEI is `disabled`.
+    pub me_state: Option<MeState>,
+    /// Where an ME state change records its attempt; without it the
+    /// firmware never changes the ME's state.
+    pub me_state_guard: Option<MeStateGuard>,
     /// After G3: 0 = stay off, 1 = power on, 2 = previous state.
     pub power_on_after_fail: u8,
     /// Unmask NMI sources.
@@ -264,6 +271,8 @@ impl IntelBd82x6xConfig {
             spi_lvscc: 0,
             spi_ops: SwseqConfig::DEFAULT,
             disabled: ConstVec::new(PchFunction::Xhci),
+            me_state: None,
+            me_state_guard: None,
             power_on_after_fail: 1,
             nmi: false,
             laptop: false,
@@ -309,6 +318,7 @@ impl IntelBd82x6xConfig {
             },
         );
         options.nmi = self.nmi;
+        options.me_state = self.me_state;
         options
     }
 }
@@ -487,26 +497,73 @@ impl IntelBd82x6x {
         Me::new()
     }
 
-    /// coreboot `intel_me_init` for the ramstage: report the ME and hide
-    /// it on S3 resume, where the OS gets no MEI.
-    fn me_init(&self) {
+    /// The user's ME policy, when the platform can guard its transition.
+    fn me_control(&self) -> Option<me::MeControl> {
+        let state = self.options.me_state?;
+        match self.config.me_state_guard {
+            Some(guard) => Some(me::MeControl { state, guard }),
+            None => {
+                fstart_log::error!("bd82x6x: no ME state guard storage; ME left as it is");
+                None
+            }
+        }
+    }
+
+    /// coreboot `intel_me_init`: report the ME, apply the optional state
+    /// policy before lockdown, and hide it on S3 without sending MKHI
+    /// messages.
+    fn me_init(&self) -> Result<(), ServiceError> {
         let me = self.me();
-        match me.bios_path(self.resume) {
+        let control = self.me_control();
+        let path = me.bios_path(self.resume);
+        fstart_log::info!("bd82x6x: ME BIOS path {}", path as u8);
+        match path {
             MeBiosPath::S3Wake => {
                 me.hide(|| self.rcba().fd2.modify(FD2::MEI1::SET));
             }
             MeBiosPath::Normal => {
-                me.extend_valid();
-                if let Some(mei) = me.mei() {
+                // Do not send a state-changing request on an invalid extend
+                // register or an incomplete ME 8 MBP stream.
+                let initialized = (|| {
+                    if !me.extend_valid() {
+                        return Err(ServiceError::HardwareError);
+                    }
+                    let mei = me.mei().ok_or(ServiceError::NotInitialized)?;
                     if me.device_id() == Some(me::DEVID_ME_8) {
-                        let _ = mei.read_mbp();
+                        mei.read_mbp()?;
                     } else {
-                        let _ = mei.log_firmware_version();
+                        mei.log_firmware_version()?;
+                    }
+                    Ok(mei)
+                })();
+                match initialized {
+                    Ok(mei) => {
+                        if let Some(control) = control {
+                            me.apply_control(control, path, Some(&mei))?.perform();
+                        }
+                    }
+                    Err(err) => {
+                        fstart_log::error!("bd82x6x: ME initialization failed");
+                        if control.is_some() {
+                            return Err(err);
+                        }
                     }
                 }
             }
-            path => fstart_log::info!("bd82x6x: ME BIOS path {}", path as u8),
+            MeBiosPath::Disable => {
+                if let Some(control) = control {
+                    me.apply_control(control, path, None)?.perform();
+                }
+                me.hide(|| self.rcba().fd2.modify(FD2::MEI1::SET));
+            }
+            _ => {
+                // Error/recovery is not a usable normal or soft-disable state.
+                if control.is_some() {
+                    return Err(ServiceError::NotInitialized);
+                }
+            }
         }
+        Ok(())
     }
 
     /// coreboot `intel_pch_finalize_smm` + `intel_me_finalize_smm`.
@@ -584,6 +641,7 @@ fn validate(config: &IntelBd82x6xConfig) -> Result<(), ServiceError> {
             .any(|port| port.oc_pin.is_some_and(|pin| pin > 7))
         || config.pcie_aspm.iter().any(|aspm| *aspm > 3)
         || config.dram_reset_gate_gpio.is_some_and(|gpio| gpio > 75)
+        || (config.me_state.is_some() && !config.enabled(PchFunction::Mei1))
         || config
             .ehci_debug_controller
             .is_some_and(|controller| !config.enabled(controller.into()))
@@ -622,6 +680,7 @@ impl crate::IntelSouthbridgeDriver for IntelBd82x6x {
         crate::southbridge::options::POWER_ON_AFTER_FAIL_KEEP,
         crate::southbridge::options::SATA_MODE,
         crate::southbridge::options::NMI,
+        crate::southbridge::options::ME_STATE,
     ];
 
     fn board_options(config: &Self::Config) -> Self::Options {
@@ -785,7 +844,7 @@ impl crate::IntelSouthbridgeDriver for IntelBd82x6x {
             self.hda_init();
         }
         if self.config.enabled(PchFunction::Mei1) {
-            self.me_init();
+            self.me_init()?;
         }
         self.write_interrupt_lines();
         fstart_log::info!("bd82x6x: ramstage init complete");
@@ -899,6 +958,19 @@ mod tests {
         assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1d, 0)));
         config.disabled = config.disabled.push(PchFunction::Ehci1);
         assert_eq!(debug(&config), None);
+    }
+
+    #[test]
+    fn explicit_me_policy_requires_mei1_to_be_enumerated() {
+        static CONFIG: IntelBd82x6xConfig = IntelBd82x6xConfig {
+            me_state: Some(MeState::Disabled),
+            disabled: ConstVec::new(PchFunction::Xhci).push(PchFunction::Mei1),
+            ..IntelBd82x6xConfig::new()
+        };
+        assert!(matches!(
+            IntelBd82x6x::new_from_config(&CONFIG),
+            Err(ServiceError::InvalidParam)
+        ));
     }
 
     #[test]

@@ -86,13 +86,27 @@ and native modeset; ACPI/SMBIOS; and the finalize locks.
   allocator still sizes the functions it hides.
 * `cmos.layout` options use the platform's CMOS option store by key, not
   coreboot's bit layout. `hyper_threading` and the PCIe root port enables
-  remain board configuration.
+  remain board configuration; `me_state` defaults to leaving the ME as it
+  is rather than to "Normal".
 * S1 is not advertised, as on Ibex Peak.
 * The PCH DisplayPort outputs (`gma-mainboard.ads` DP1..3, the dock) are
   not selected; LVDS, VGA and HDMI are.
 * TPM: probed, described (`PNP0C31`) and restored on S3; no measured boot.
 * xHCI (Panther Point): node, routing registers and `_PRW` only. The
   `_OSC` switch and the PPT A0 S3 workaround do not apply to the X220.
+
+## ME state
+
+The `me_state` option (coreboot's name and values, plus "Unchanged", the
+default) asks the ME for its soft temporary disable or back to normal. This
+is ME firmware policy, not firmware removal or HAP. After the normal MEI
+and MBP initialization, a change is requested (MKHI `SET_RULE` 6 to
+disable, `H_GS` to re-enable), then the platform resets globally. Like
+coreboot's `me_state_prev`, the attempted state is recorded first in the
+CMOS option store, so an ME that ignores the request costs one reset, not a
+reset loop; changing the option, or clearing CMOS, allows another attempt.
+Nothing is sent on S3, on error or recovery paths, during a firmware update
+or in debug/override operation modes.
 
 ## Build
 
