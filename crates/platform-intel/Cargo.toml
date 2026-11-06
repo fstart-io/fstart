@@ -61,7 +61,7 @@ acpi = [
   "fstart-driver-intel/acpi",
 ]
 mp = ["dep:fstart-arch", "dep:fstart-ffs", "dep:fstart-stage", "fstart-stage/ffs"]
-smbios = ["dep:fstart-acpi", "dep:fstart-arch"]
+smbios = ["dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-arch"]
 
 [dev-dependencies]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it

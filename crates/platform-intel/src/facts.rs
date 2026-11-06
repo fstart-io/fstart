@@ -68,6 +68,8 @@ pub struct BoardFacts {
     /// Build every stage for 32-bit protected mode instead of long mode, for
     /// CPUs without AMD64 (Core Duo and older). No paging, no UEFI payload.
     pub protected_mode: bool,
+    /// Physical expansion slots; populated and empty slots both get Type 9.
+    pub smbios_slots: &'static [fstart_core::smbios::PciSlot<'static>],
 }
 
 impl BoardFacts {
@@ -91,7 +93,17 @@ impl BoardFacts {
             data_assets: &[],
             memory_cache: false,
             protected_mode: false,
+            smbios_slots: &[],
         }
+    }
+
+    #[must_use]
+    pub const fn with_smbios_slots(
+        mut self,
+        slots: &'static [fstart_core::smbios::PciSlot<'static>],
+    ) -> Self {
+        self.smbios_slots = slots;
+        self
     }
 
     #[must_use]

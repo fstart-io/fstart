@@ -610,6 +610,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
+ "fstart-pci",
  "tock-registers",
  "zerocopy",
 ]

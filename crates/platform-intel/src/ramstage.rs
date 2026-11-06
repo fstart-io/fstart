@@ -630,6 +630,7 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
             rom_size: B::FACTS.flash_size,
             memory: memory.as_ref(),
             pci: self.pci.as_ref(),
+            slots: B::FACTS.smbios_slots,
         };
         let smbios =
             crate::tables::prepare_smbios(store, self.ctx.e820_state(), identity, &runtime)?;

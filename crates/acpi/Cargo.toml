@@ -7,6 +7,8 @@ license.workspace = true
 [features]
 default = ["arm"]
 std = []
+# Type 9 PCIe-slot occupancy and endpoint association from cached PCI topology.
+pci = ["dep:fstart-pci"]
 arm = []
 # x86 tables; SMBIOS processor packages from fstart-arch's CPUID records.
 x86 = ["dep:fstart-arch"]
@@ -14,6 +16,7 @@ x86 = ["dep:fstart-arch"]
 [dependencies]
 acpi_tables = "0.2"
 fstart-core = { path = "../core" }
+fstart-pci = { workspace = true, optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros" }
 tock-registers = { workspace = true }

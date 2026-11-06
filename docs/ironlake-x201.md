@@ -76,10 +76,23 @@ and chipset lockdown).
 * The dock's DisplayPort (libgfxinit `DP2`): `fstart-intel-gma` has no PCH
   DisplayPort path for Ironlake yet. The port stays in the X201 output list
   and is skipped until it does; LVDS, VGA and HDMI are driven.
-* `smbios_slot_desc` for the ExpressCard slot is not emitted.
 * Not hardware-validated: raminit timing/training, the ME handshake and
   the SMM handlers have only been checked against the coreboot sources and
   with host tests.
+
+## ExpressCard SMBIOS
+
+The ExpressCard slot now uses the shared [SMBIOS Type 9 support](smbios-slots.md).
+The board supplies coreboot's physical description (type 7, short length 3,
+x1 width encoding 8) and its upstream bridge, 00:1c.3. The generic PCI
+helper derives usage from enumeration; merely finding the root port does
+not make the slot occupied.
+
+Unlike coreboot's current writer, the emitted PCI association identifies
+the card on the bridge's assigned secondary bus, not the root port. Empty
+or unknown slots retain their physical description with an unknown PCI
+address. This follows DSP0134 section 7.10.8. USB-only ExpressCards cannot
+be detected from PCI enumeration, and SMBIOS is a boot-time snapshot.
 
 ## Rebase and source comparison
 
@@ -115,8 +128,8 @@ Checks against that coreboot tree:
 * Board tests cover GPIO, HDA, flash/SPD facts, the five-byte clock-generator
   write, and a complete DSDT disassembly/recompile with iasl.
 
-The dock DisplayPort and ExpressCard SMBIOS gaps listed above are still
-present. Booting and suspending/resuming a real X201 remains necessary;
+The dock DisplayPort gap listed above is still present. Booting and
+suspending/resuming a real X201 remains necessary;
 passing builds and AML round trips cannot validate DRAM training, ME
 firmware behavior or SMM hardware effects.
 

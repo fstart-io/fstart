@@ -263,6 +263,8 @@ pub struct SmbiosRuntime<'a> {
     pub memory: Option<&'a fstart_core::memory_info::MemoryInfo>,
     /// Enumerated PCI hierarchy; root-bus functions are onboard devices.
     pub pci: Option<&'a fstart_pci::PciEcam>,
+    /// Board-owned physical slots, associated with upstream PCI bridges.
+    pub slots: &'a [fstart_core::smbios::PciSlot<'a>],
 }
 
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
@@ -432,6 +434,7 @@ fn add_onboard_devices(w: &mut fstart_acpi::smbios::SmbiosWriter, pci: &fstart_p
 /// Handles:
 /// - Type 0 (BIOS), Type 1 (System), Type 3 (Chassis), Type 2 (Baseboard)
 /// - Type 4 (Processor) with runtime Type 7 (Cache) detection
+/// - Type 9 (System Slots) for board-declared expansion slots
 /// - Type 11 (OEM Strings) when the board provides one
 /// - Type 16/17/19 from raminit's inventory, else Type 16 from e820 alone
 /// - Type 41 (Onboard Devices) for root-bus PCI functions
@@ -469,6 +472,12 @@ pub fn prepare_smbios(
                 w.add_physical_memory_array(total_ram / 1024, 0, 0x02);
             }
             None => {}
+        }
+        for slot in runtime.slots {
+            let (device, function) = fstart_pci::devfn_parts(slot.bridge_devfn);
+            let bridge =
+                fstart_pci::PciAddress::new(slot.bridge_segment, slot.bridge_bus, device, function);
+            w.add_pci_slot(&slot.slot, bridge, runtime.pci);
         }
         if let Some(pci) = runtime.pci {
             add_onboard_devices(&mut *w, pci);
