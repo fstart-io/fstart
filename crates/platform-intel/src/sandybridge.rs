@@ -8,7 +8,7 @@
 
 pub use fstart_driver_intel::bd82x6x::{
     EhciController, GpiRoute, GpioPin, HdaConfig, HdaVerbTable, IntelBd82x6xConfig,
-    LpcGenericIoDecode, PchFunction, SataConfig, SataMode, UsbPort,
+    LpcGenericIoDecode, MeState, PchFunction, SataConfig, SataMode, UsbPort,
 };
 pub use fstart_driver_intel::sandybridge::{
     CpuCstate, IntelSandybridgeConfig, Model206axConfig, PanelPort, PsiState, SandybridgeDevices,
@@ -312,6 +312,16 @@ impl SandybridgeBd82x6xConfig {
         self
     }
 
+    /// The ME state the firmware enforces by default (coreboot `me_state`;
+    /// the `me_state` option overrides it): `None` leaves the ME as it is.
+    /// A change needs a global reset; the platform's CMOS option store
+    /// keeps coreboot's `me_state_prev` guard against reset loops.
+    #[must_use]
+    pub const fn me_state(mut self, state: Option<MeState>) -> Self {
+        self.southbridge.me_state = state;
+        self
+    }
+
     /// coreboot `DRAM_RESET_GATE_GPIO`.
     #[must_use]
     pub const fn dram_reset_gate_gpio(mut self, gpio: u8) -> Self {
@@ -336,9 +346,13 @@ impl SandybridgeBd82x6xConfig {
         northbridge.rcba = self.southbridge.rcba;
         northbridge.pmbase = self.southbridge.pmbase;
         northbridge.hda_enabled = !const_contains(&self.southbridge, PchFunction::Hda);
+        let mut southbridge = self.southbridge;
+        southbridge.me_state_guard = Some(fstart_driver_intel::bd82x6x::MeStateGuard::new(
+            crate::facts::OPTION_WINDOW,
+        ));
         SandybridgeBd82x6xPlatform {
             northbridge,
-            southbridge: self.southbridge,
+            southbridge,
             max_cpus: self.max_cpus,
             pcie_attached: self.pcie_attached,
             pci_subsystem_ids: self.pci_subsystem_ids,
@@ -501,6 +515,17 @@ mod tests {
             .build();
         let debug = CONFIG.ehci_debug().unwrap();
         assert_eq!((debug.device, debug.function), (0x1a, 0));
+    }
+
+    #[test]
+    fn me_policy_is_opt_in_and_reaches_the_pch() {
+        const DEFAULT: SandybridgeBd82x6xPlatform = SandybridgeBd82x6xConfig::new().build();
+        assert_eq!(DEFAULT.southbridge.me_state, None);
+        assert!(DEFAULT.southbridge.me_state_guard.is_some());
+        const CONFIG: SandybridgeBd82x6xPlatform = SandybridgeBd82x6xConfig::new()
+            .me_state(Some(MeState::Disabled))
+            .build();
+        assert_eq!(CONFIG.southbridge.me_state, Some(MeState::Disabled));
     }
 
     #[test]

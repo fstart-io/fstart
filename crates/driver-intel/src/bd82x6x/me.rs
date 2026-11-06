@@ -5,7 +5,9 @@
 //! to size its UMA, tell it when DRAM is up (the DRAM-init-done message) and
 //! perform the reset the ME then requests. The ramstage half
 //! (`me.c`, `me_common.c`, `me_smm.c`) picks the BIOS path, drains the ME 8
-//! boot parameters, sends END_OF_POST and hides the interface.
+//! boot parameters, applies the optional soft-disable policy, sends
+//! END_OF_POST and hides the interface. This is ME firmware policy, not
+//! firmware removal.
 
 use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::ServiceError;
@@ -151,6 +153,11 @@ pub const DEVID_ME_8: u16 = 0x1e3a;
 const MEI_ADDRESS_MKHI: u32 = 0x07;
 const MKHI_GROUP_ID_GEN: u32 = 0xff;
 const MKHI_END_OF_POST: u32 = 0x0c;
+const MKHI_GROUP_ID_FWCAPS: u32 = 0x03;
+const MKHI_FWCAPS_SET_RULE: u32 = 0x03;
+const MKHI_DISABLE_RULE_ID: u32 = 0x06;
+// coreboot `struct me_disable`: packed u32 rule_id followed by u16 data.
+const SOFT_DISABLE_REQUEST: [u8; 6] = [6, 0, 0, 0, 1, 0];
 const MEI_RETRY: u32 = 100_000;
 const MEI_DELAY_US: u32 = 10;
 
@@ -162,6 +169,132 @@ pub enum MeBiosPath {
     Error,
     Recovery,
     Disable,
+    FirmwareUpdate,
+}
+
+pub use crate::southbridge::options::MeState;
+
+register_bitfields![u8,
+    /// coreboot `me_state_prev`: the state a transition was attempted to.
+    ME_CONTROL_STATE [
+        DISABLED OFFSET(0) NUMBITS(1) [],
+        ATTEMPTED OFFSET(1) NUMBITS(1) []
+    ]
+];
+
+/// The CMOS option record of [`ME_CONTROL_STATE`], beside the `me_state`
+/// option it guards.
+const ME_STATE_PREV: &str = "me_state_prev";
+
+/// The reset-loop guard of an ME state change (coreboot `me_state_prev`),
+/// a record in the platform's CMOS option store: a requested state is
+/// attempted once, until the request changes or the record is cleared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeStateGuard {
+    window: fstart_options::cmos::Window,
+}
+
+impl MeStateGuard {
+    #[must_use]
+    pub const fn new(window: fstart_options::cmos::Window) -> Self {
+        Self { window }
+    }
+
+    fn store(self) -> fstart_options::cmos::Cmos<fstart_driver_rtc::Cmos> {
+        fstart_options::cmos::Cmos::new(self.window, fstart_driver_rtc::Cmos)
+    }
+
+    fn load(self) -> Option<u8> {
+        use fstart_options::Source;
+        let value = self.store().read(ME_STATE_PREV).ok().flatten()?;
+        u8::try_from(value).ok()
+    }
+
+    fn save(self, state: MeState) -> Result<(), ServiceError> {
+        if self
+            .store()
+            .write(ME_STATE_PREV, u32::from(state.marker()))
+            .is_err()
+        {
+            fstart_log::error!("intel-me: cannot persist transition guard; refusing reset");
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(())
+    }
+}
+
+/// The requested ME state and the storage for its reset-loop guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeControl {
+    pub state: MeState,
+    pub guard: MeStateGuard,
+}
+
+trait Marker {
+    fn marker(self) -> u8;
+}
+
+impl Marker for MeState {
+    fn marker(self) -> u8 {
+        (ME_CONTROL_STATE::DISABLED.val(u8::from(self == Self::Disabled))
+            + ME_CONTROL_STATE::ATTEMPTED::SET)
+            .value
+    }
+}
+
+impl MeBiosPath {
+    fn from_status(device_id: u16, hfs: u32, gmes: u32) -> Self {
+        let hfs = tock_registers::LocalRegisterCopy::<u32, HFS::Register>::new(hfs);
+        let gmes = tock_registers::LocalRegisterCopy::<u32, GMES::Register>::new(gmes);
+        let mut path = match hfs.read(HFS::WORKING_STATE) {
+            5 => Self::Normal,
+            2 => Self::Recovery,
+            _ => Self::Disable,
+        };
+        if !hfs.matches_all(HFS::OPERATION_MODE::Normal) {
+            path = Self::Disable;
+        }
+        if hfs.is_set(HFS::UPDATE_IN_PROGRESS) {
+            path = Self::FirmwareUpdate;
+        }
+        if hfs.read(HFS::ERROR_CODE) != 0 || hfs.is_set(HFS::FPT_BAD) {
+            path = Self::Error;
+        }
+        // MBP belongs to normal ME 8 startup, not soft-disable mode. In
+        // particular its absence must not prevent the H_GS re-enable path.
+        if path == Self::Normal && device_id == DEVID_ME_8 && !gmes.is_set(GMES::MBP_READY) {
+            path = Self::Error;
+        }
+        path
+    }
+}
+
+impl MeControl {
+    fn transition(
+        self,
+        path: MeBiosPath,
+        mode: u32,
+        previous: Option<u8>,
+    ) -> Result<Option<MeState>, ServiceError> {
+        let current = match path {
+            MeBiosPath::Normal => MeState::Normal,
+            MeBiosPath::Disable if mode == HFS::OPERATION_MODE::Value::Disable as u32 => {
+                MeState::Disabled
+            }
+            // No MKHI or H_GS writes on S3, errors, recovery, debug/override.
+            _ => return Ok(None),
+        };
+        if current == self.state {
+            return Ok(None);
+        }
+        if previous == Some(self.state.marker()) {
+            fstart_log::error!(
+                "intel-me: state transition already attempted; refusing another reset"
+            );
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(Some(self.state))
+    }
 }
 
 /// Polling budget for the UMA-valid bit (coreboot `ME_RETRY` * `ME_DELAY`).
@@ -397,22 +530,77 @@ impl Me {
         let hfs = regs.hfs.extract();
         let gmes = regs.gmes.extract();
         self.log_status();
-        let mut path = match hfs.read(HFS::WORKING_STATE) {
-            5 => MeBiosPath::Normal,
-            4 => MeBiosPath::Recovery,
-            _ => MeBiosPath::Disable,
-        };
-        if !hfs.matches_all(HFS::OPERATION_MODE::Normal) {
-            path = MeBiosPath::Disable;
+        MeBiosPath::from_status(regs.device_id.get(), hfs.get(), gmes.get())
+    }
+
+    /// Apply an explicit board policy after normal MEI/MBP initialization,
+    /// before END_OF_POST. The caller performs a returned global reset before
+    /// PCH lockdown. Failed commands never trigger a reset.
+    pub fn apply_control(
+        &self,
+        control: MeControl,
+        path: MeBiosPath,
+        mei: Option<&Mei>,
+    ) -> Result<MeAction, ServiceError> {
+        if !matches!(path, MeBiosPath::Normal | MeBiosPath::Disable) {
+            return Ok(MeAction::Continue);
         }
-        if hfs.read(HFS::ERROR_CODE) != 0 || hfs.is_set(HFS::FPT_BAD) {
-            path = MeBiosPath::Error;
+        let regs = self.regs().ok_or(ServiceError::NotInitialized)?;
+        if !matches!(regs.device_id.get(), DEVID_ME_7 | DEVID_ME_8) {
+            return Err(ServiceError::HardwareError);
         }
-        if regs.device_id.get() == DEVID_ME_8 && !gmes.is_set(GMES::MBP_READY) {
-            fstart_log::error!("intel-me: MBP is not ready");
-            path = MeBiosPath::Error;
+        let hfs = regs.hfs.extract();
+        let mode = hfs.read(HFS::OPERATION_MODE);
+        // Status can change while the MBP/version exchange is in progress.
+        if hfs.is_set(HFS::FPT_BAD)
+            || hfs.is_set(HFS::UPDATE_IN_PROGRESS)
+            || hfs.read(HFS::ERROR_CODE) != 0
+            || (path == MeBiosPath::Normal
+                && (hfs.read(HFS::WORKING_STATE) != 5
+                    || !hfs.matches_all(HFS::OPERATION_MODE::Normal)))
+        {
+            return Err(ServiceError::HardwareError);
         }
-        path
+        if path == MeBiosPath::Disable && mode != HFS::OPERATION_MODE::Value::Disable as u32 {
+            // Debug/jumper/override modes are not soft-disable mode.
+            fstart_log::error!("intel-me: requested policy cannot change this operation mode");
+            return Err(ServiceError::HardwareError);
+        }
+        let previous = control.guard.load();
+        let transition = control.transition(path, mode, previous)?;
+        if transition == Some(MeState::Disabled) && mei.is_none() {
+            return Err(ServiceError::NotInitialized);
+        }
+        if previous != Some(control.state.marker()) {
+            // Persist before the command: even an ambiguous failure must not
+            // cause an automatic retry/reset loop on the next boot.
+            control.guard.save(control.state)?;
+        }
+        match transition {
+            None => return Ok(MeAction::Continue),
+            Some(MeState::Disabled) => {
+                let mei = mei.ok_or(ServiceError::NotInitialized)?;
+                fstart_log::info!("intel-me: entering soft temporary disable mode");
+                mei.enter_soft_temp_disable()?;
+                // coreboot/vendor requirement: an ACK alone is too early to
+                // reset; ME needs one second to commit the requested state.
+                fstart_arch::udelay(1_000_000);
+            }
+            Some(MeState::Normal) => {
+                fstart_log::info!("intel-me: leaving soft temporary disable mode");
+                // H_GS = 0x20000000, not an MKHI enable request.
+                regs.h_gs.write(H_GS::INIT_DONE.val(2));
+                let ready = (0..400).any(|_| {
+                    fstart_arch::udelay(50_000);
+                    regs.hfs.is_set(HFS::FW_INIT_COMPLETE)
+                });
+                if !ready {
+                    fstart_log::error!("intel-me: enable timed out after 20 seconds");
+                    return Err(ServiceError::Timeout);
+                }
+            }
+        }
+        Ok(MeAction::GlobalReset)
     }
 
     /// coreboot `intel_me_extend_valid`: log the firmware hash.
@@ -532,21 +720,66 @@ impl Mei {
 
     fn free(&self) -> u32 {
         let host = self.mmio.h_csr.extract();
-        host.read(MEI_CSR::DEPTH) - host.read(MEI_CSR::WRITE_PTR)
+        let used = host
+            .read(MEI_CSR::WRITE_PTR)
+            .wrapping_sub(host.read(MEI_CSR::READ_PTR))
+            & 0xff;
+        host.read(MEI_CSR::DEPTH).saturating_sub(used)
     }
 
-    /// One MKHI request with `data` and a response of `response.len()`
-    /// dwords (coreboot `mei_sendrecv`).
+    fn request_header(payload_len: usize) -> Result<u32, ServiceError> {
+        let length = 4usize
+            .checked_add(payload_len)
+            .ok_or(ServiceError::InvalidParam)?;
+        if length > 0x1ff {
+            return Err(ServiceError::InvalidParam);
+        }
+        Ok((MEI_HEADER::CLIENT.val(MEI_ADDRESS_MKHI)
+            + MEI_HEADER::LENGTH.val(length as u32)
+            + MEI_HEADER::COMPLETE::SET)
+            .value)
+    }
+
+    fn payload_words(data: &[u8]) -> impl Iterator<Item = u32> + '_ {
+        data.chunks(4).map(|chunk| {
+            let mut word = [0u8; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            u32::from_le_bytes(word)
+        })
+    }
+
+    fn response_header_valid(raw: u32, words: usize) -> bool {
+        let header = tock_registers::LocalRegisterCopy::<u32, MEI_HEADER::Register>::new(raw);
+        header.is_set(MEI_HEADER::COMPLETE)
+            && header.read(MEI_HEADER::CLIENT) == MEI_ADDRESS_MKHI
+            && header.read(MEI_HEADER::HOST) == 0
+            && header.read(MEI_HEADER::LENGTH) as usize == 4 + 4 * words
+    }
+
+    fn reply_valid(raw: u32, group: u32, command: u32) -> bool {
+        let reply = tock_registers::LocalRegisterCopy::<u32, MKHI_HEADER::Register>::new(raw);
+        reply.is_set(MKHI_HEADER::RESPONSE)
+            && reply.read(MKHI_HEADER::GROUP) == group
+            && reply.read(MKHI_HEADER::COMMAND) == command
+            && reply.read(MKHI_HEADER::RESULT) == 0
+    }
+
+    /// One MKHI request with a byte-exact payload and a response of
+    /// `response.len()` dwords (coreboot `mei_sendrecv`).
     pub fn sendrecv(
         &self,
         group: u32,
         command: u32,
-        data: &[u32],
+        data: &[u8],
         response: &mut [u32],
     ) -> Result<(), ServiceError> {
         // MEI header, MKHI header, payload.
-        let length = 4 + 4 * data.len() as u32;
-        let needed = 1 + length / 4;
+        if response.len() > 126 {
+            return Err(ServiceError::InvalidParam);
+        }
+        let header = Self::request_header(data.len())?;
+        let length = MEI_HEADER::LENGTH.read(header);
+        let needed = 1 + length.div_ceil(4);
         if self.free() < needed {
             fstart_log::error!("intel-me: circular buffer full, resetting");
             self.reset();
@@ -556,15 +789,10 @@ impl Mei {
             return Err(ServiceError::HardwareError);
         }
         let mkhi = (MKHI_HEADER::GROUP.val(group) + MKHI_HEADER::COMMAND.val(command)).value;
-        self.mmio.h_cb_ww.set(
-            (MEI_HEADER::CLIENT.val(MEI_ADDRESS_MKHI)
-                + MEI_HEADER::LENGTH.val(length)
-                + MEI_HEADER::COMPLETE::SET)
-                .value,
-        );
+        self.mmio.h_cb_ww.set(header);
         self.mmio.h_cb_ww.set(mkhi);
-        for word in data {
-            self.mmio.h_cb_ww.set(*word);
+        for word in Self::payload_words(data) {
+            self.mmio.h_cb_ww.set(word);
         }
         self.mmio.h_csr.modify(MEI_CSR::INTERRUPT_GENERATE::SET);
         self.wait_me_ready()?;
@@ -585,24 +813,11 @@ impl Mei {
             fstart_log::error!("intel-me: timeout waiting for data");
             return Err(ServiceError::HardwareError);
         }
-        let header = tock_registers::LocalRegisterCopy::<u32, MEI_HEADER::Register>::new(
-            self.mmio.me_cb_rw.get(),
-        );
-        if !header.is_set(MEI_HEADER::COMPLETE) {
-            fstart_log::error!("intel-me: response is not complete");
+        if !Self::response_header_valid(self.mmio.me_cb_rw.get(), response.len()) {
+            fstart_log::error!("intel-me: invalid response envelope");
             return Err(ServiceError::HardwareError);
         }
-        if header.read(MEI_HEADER::LENGTH).div_ceil(4) != expected - 1 {
-            fstart_log::error!("intel-me: response is missing data");
-            return Err(ServiceError::HardwareError);
-        }
-        let reply = tock_registers::LocalRegisterCopy::<u32, MKHI_HEADER::Register>::new(
-            self.mmio.me_cb_rw.get(),
-        );
-        if !reply.is_set(MKHI_HEADER::RESPONSE)
-            || reply.read(MKHI_HEADER::GROUP) != group
-            || reply.read(MKHI_HEADER::COMMAND) != command
-        {
+        if !Self::reply_valid(self.mmio.me_cb_rw.get(), group, command) {
             fstart_log::error!("intel-me: invalid response");
             return Err(ServiceError::HardwareError);
         }
@@ -613,6 +828,22 @@ impl Mei {
             .h_csr
             .modify(MEI_CSR::INTERRUPT_STATUS::SET + MEI_CSR::INTERRUPT_GENERATE::SET);
         self.wait_me_ready()
+    }
+
+    /// coreboot `enter_soft_temp_disable`: SET_RULE 6 with u16 value 1.
+    pub fn enter_soft_temp_disable(&self) -> Result<(), ServiceError> {
+        let mut response = [0u32; 1];
+        self.sendrecv(
+            MKHI_GROUP_ID_FWCAPS,
+            MKHI_FWCAPS_SET_RULE,
+            &SOFT_DISABLE_REQUEST,
+            &mut response,
+        )?;
+        if response[0] != MKHI_DISABLE_RULE_ID {
+            fstart_log::error!("intel-me: disable response has wrong rule ID");
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(())
     }
 
     /// coreboot `mkhi_get_fw_version` (ME 7): log the firmware version.
@@ -724,6 +955,189 @@ fn log_gmes(raw: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn control(state: MeState) -> MeControl {
+        MeControl {
+            state,
+            guard: MeStateGuard::new(fstart_options::cmos::Window {
+                first: 0x40,
+                last: 0x7f,
+            }),
+        }
+    }
+
+    #[test]
+    fn disable_request_is_the_packed_coreboot_rule_not_two_dwords() {
+        let header = Mei::request_header(SOFT_DISABLE_REQUEST.len()).unwrap();
+        assert_eq!(header, 0x800a_0007); // 4 MKHI + 6 data bytes
+        assert_eq!(1 + MEI_HEADER::LENGTH.read(header).div_ceil(4), 4);
+        let words: alloc::vec::Vec<_> = Mei::payload_words(&SOFT_DISABLE_REQUEST).collect();
+        assert_eq!(words, [MKHI_DISABLE_RULE_ID, 1]);
+        assert_eq!(Mei::request_header(0), Ok(0x8004_0007));
+        assert!(Mei::request_header(508).is_err());
+        assert!(Mei::request_header(usize::MAX).is_err());
+        // Re-enable uses H_GS, not an invented MKHI command.
+        assert_eq!(H_GS::INIT_DONE.val(2).value, 0x2000_0000);
+    }
+
+    #[test]
+    fn disable_ack_requires_correct_envelope_command_and_success() {
+        let header =
+            (MEI_HEADER::CLIENT.val(7) + MEI_HEADER::LENGTH.val(8) + MEI_HEADER::COMPLETE::SET)
+                .value;
+        let reply =
+            (MKHI_HEADER::GROUP.val(3) + MKHI_HEADER::COMMAND.val(3) + MKHI_HEADER::RESPONSE::SET)
+                .value;
+        assert!(Mei::response_header_valid(header, 1));
+        assert!(Mei::reply_valid(reply, 3, 3));
+        assert!(!Mei::response_header_valid(header & !(1 << 31), 1));
+        assert!(!Mei::response_header_valid(header | 1 << 8, 1));
+        assert!(!Mei::response_header_valid(header ^ 1, 1));
+        for length in [4, 7, 9, 12] {
+            let bad = (MEI_HEADER::CLIENT.val(7)
+                + MEI_HEADER::LENGTH.val(length)
+                + MEI_HEADER::COMPLETE::SET)
+                .value;
+            assert!(!Mei::response_header_valid(bad, 1));
+        }
+        assert!(!Mei::reply_valid(reply & !(1 << 15), 3, 3));
+        assert!(!Mei::reply_valid(reply ^ 1, 3, 3));
+        assert!(!Mei::reply_valid(reply ^ 1 << 8, 3, 3));
+        assert!(!Mei::reply_valid(reply | 1 << 24, 3, 3));
+    }
+
+    #[test]
+    fn circular_buffer_capacity_tracks_both_wrapping_pointers() {
+        for (read, write, expected) in [
+            (250, 254, 12),
+            (254, 3, 11),
+            (4, 4, 16),
+            (4, 20, 0),
+            (4, 21, 0),
+        ] {
+            let csr = (MEI_CSR::DEPTH.val(16)
+                + MEI_CSR::READ_PTR.val(read)
+                + MEI_CSR::WRITE_PTR.val(write))
+            .value;
+            let words = alloc::boxed::Box::leak(alloc::boxed::Box::new([0, csr, 0, 0]));
+            // SAFETY: aligned, live backing storage for the complete register block.
+            let mmio = unsafe { &*(words.as_ptr() as *const MeiMmio) };
+            assert_eq!(Mei { mmio }.free(), expected);
+        }
+    }
+
+    #[test]
+    fn policy_changes_are_guarded_and_idempotent() {
+        let disabled = HFS::OPERATION_MODE::Value::Disable as u32;
+        let off = control(MeState::Disabled);
+        let on = control(MeState::Normal);
+        assert_eq!(
+            off.transition(MeBiosPath::Normal, 0, None),
+            Ok(Some(off.state))
+        );
+        assert_eq!(
+            off.transition(MeBiosPath::Normal, 0, Some(on.state.marker())),
+            Ok(Some(off.state))
+        );
+        assert!(
+            off.transition(MeBiosPath::Normal, 0, Some(off.state.marker()))
+                .is_err()
+        );
+        assert_eq!(
+            off.transition(MeBiosPath::Disable, disabled, Some(off.state.marker())),
+            Ok(None)
+        );
+        assert_eq!(
+            on.transition(MeBiosPath::Disable, disabled, Some(off.state.marker())),
+            Ok(Some(on.state))
+        );
+        assert!(
+            on.transition(MeBiosPath::Disable, disabled, Some(on.state.marker()))
+                .is_err()
+        );
+        assert_eq!(
+            on.transition(MeBiosPath::Normal, 0, Some(on.state.marker())),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn policy_never_transitions_on_s3_recovery_errors_updates_or_override() {
+        for state in [MeState::Normal, MeState::Disabled] {
+            for path in [
+                MeBiosPath::S3Wake,
+                MeBiosPath::Recovery,
+                MeBiosPath::Error,
+                MeBiosPath::FirmwareUpdate,
+            ] {
+                assert_eq!(control(state).transition(path, 3, None), Ok(None));
+            }
+            for mode in [0, 2, 4, 5] {
+                assert_eq!(
+                    control(state).transition(MeBiosPath::Disable, mode, None),
+                    Ok(None)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn guard_record_does_not_collide_with_an_option() {
+        use crate::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+        let guard = fstart_options::cmos::hash(ME_STATE_PREV);
+        let keys = fstart_log::option::KNOBS
+            .iter()
+            .map(|k| k.meta.key)
+            .chain(
+                crate::sandybridge::IntelSandybridge::KNOBS
+                    .iter()
+                    .map(|k| k.meta.key),
+            )
+            .chain(super::super::IntelBd82x6x::KNOBS.iter().map(|k| k.meta.key));
+        for key in keys {
+            assert_ne!(fstart_options::cmos::hash(key), guard, "{key}");
+        }
+    }
+
+    #[test]
+    fn guard_markers_are_coreboot_me_state_prev_values() {
+        assert_eq!(MeState::Normal.marker(), 2);
+        assert_eq!(MeState::Disabled.marker(), 3);
+    }
+
+    #[test]
+    fn bios_path_uses_recovery_state_two_and_allows_me8_reenable_without_mbp() {
+        let normal = (HFS::WORKING_STATE.val(5) + HFS::OPERATION_MODE::Normal).value;
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_7, normal, 0),
+            MeBiosPath::Normal
+        );
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_8, normal, 0),
+            MeBiosPath::Error
+        );
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_8, normal, GMES::MBP_READY::SET.value),
+            MeBiosPath::Normal
+        );
+        let disabled = (HFS::WORKING_STATE.val(4) + HFS::OPERATION_MODE::Disable).value;
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_8, disabled, 0),
+            MeBiosPath::Disable
+        );
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_7, 2, 0),
+            MeBiosPath::Recovery
+        );
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_7, normal | HFS::FPT_BAD::SET.value, 0),
+            MeBiosPath::Error
+        );
+        assert_eq!(
+            MeBiosPath::from_status(DEVID_ME_7, normal | HFS::UPDATE_IN_PROGRESS::SET.value, 0),
+            MeBiosPath::FirmwareUpdate
+        );
+    }
 
     #[test]
     fn did_message_matches_coreboot_layout() {
