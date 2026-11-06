@@ -20,7 +20,10 @@ fn slot_state(
 }
 
 impl SmbiosWriter<'_> {
-    /// Describe a physical slot attached to `bridge`, including when empty.
+    /// Describe a physical slot attached to a dedicated `bridge`, including
+    /// when empty. Do not use a shared conventional PCI bridge containing
+    /// multiple slots or onboard devices: its first child is not necessarily
+    /// a card in the described slot.
     ///
     /// Board metadata names the upstream bridge; the emitted Type 9 address
     /// names the lowest-ordered function *in the slot*, as SMBIOS requires.

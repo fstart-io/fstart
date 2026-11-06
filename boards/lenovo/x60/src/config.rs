@@ -186,7 +186,9 @@ pub static X60_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
     .pci_mmio_size(768)
     // Channel 0 and channel 1 slot 0 only (`mainboard_get_spd_map`).
     .spd_addresses([0x50, 0x00, 0x51, 0x00])
-    // 1c.0 Ethernet, 1c.1 WLAN, 1c.2/1c.3 ExpressCard and dock.
+    // 1c.0 Ethernet, 1c.1 WLAN; coreboot also enables 1c.2/1c.3
+    // without identifying their physical connectors. The X60's external
+    // PC Card slot uses the Ricoh CardBus controller behind 1e.0.
     .pcie_port(0, true)
     .pcie_port(1, true)
     .pcie_port(2, true)
