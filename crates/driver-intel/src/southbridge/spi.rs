@@ -288,10 +288,6 @@ impl CacheSpi {
         if status & STATUS_BP == 0 {
             return operation(self);
         }
-        fstart_log::info!(
-            "spi-cache: temporarily clearing block protection SR={:#x}",
-            status
-        );
         let result = self.write_status(status & !STATUS_BP).and_then(|()| {
             if self.read_status()? & STATUS_BP != 0 {
                 // BPL with WP# asserted ignores WRSR.
@@ -308,6 +304,8 @@ impl CacheSpi {
         result.and(restored)
     }
 
+    // This is also the flash console's backend. Never log from the write
+    // path: the caller may already hold fstart-log's console lock.
     fn with_write(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
@@ -321,10 +319,6 @@ impl CacheSpi {
         if before.is_set(BIOS_CONTROL::LOCK_ENABLE)
             || before.is_set(BIOS_CONTROL::SMM_WRITE_PROTECT)
         {
-            fstart_log::error!(
-                "spi-cache: BIOS writes locked, BIOS_CNTL={:#x}",
-                before.get()
-            );
             return Err(ServiceError::HardwareError);
         }
         let result = self
@@ -351,10 +345,7 @@ impl CacheSpi {
                     .min(256 - (current as usize & 255));
                 this.controller
                     .controller_write(current, &bytes[done..done + count])
-                    .map_err(|_| {
-                        fstart_log::error!("spi-cache: program cycle failed at {:#x}", current);
-                        ServiceError::HardwareError
-                    })?;
+                    .map_err(|_| ServiceError::HardwareError)?;
                 done += count;
             }
             Ok(())
@@ -371,10 +362,7 @@ impl CacheSpi {
         self.with_write(|this| {
             this.controller
                 .controller_erase(address, length)
-                .map_err(|_| {
-                    fstart_log::error!("spi-cache: erase cycle failed at {:#x}", address);
-                    ServiceError::HardwareError
-                })
+                .map_err(|_| ServiceError::HardwareError)
         })
     }
 }
