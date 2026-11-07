@@ -15,8 +15,8 @@
 //! [`FLASH_CONSOLE_SIZE`]: crate::facts::FLASH_CONSOLE_SIZE
 
 /// Add the debug consoles the build selects. ECAM and RCBA must be mapped;
-/// the board's console is already installed. `flash_log` says nothing else
-/// reads the flash while the log programs it (see the flash module).
+/// the board's console is already installed. `flash_log` requires code, data
+/// and page tables in DRAM, with no other flash readers during programming.
 #[cfg(feature = "stage")]
 pub(crate) fn install<B: crate::IntelBoardFacts>(flash_log: bool) {
     #[cfg(feature = "ehci-console")]
@@ -85,9 +85,8 @@ mod flash {
             return;
         }
         // SAFETY: the image builder reserves the extent as an erased `console`
-        // region nothing else writes; an XIP bootblock passes its image, which
-        // the console caches before every program cycle, and postcar runs on
-        // DRAM page tables (install's `flash_log`).
+        // region nothing else writes; install's `flash_log` is enabled only
+        // once execution and page tables have moved to DRAM.
         let Ok(spi) = (unsafe { CacheSpi::new(extent) }) else {
             return;
         };
