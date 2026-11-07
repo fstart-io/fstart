@@ -548,10 +548,16 @@ impl fstart_core::services::MemoryInit for IntelIronlake {
             return Ok(None);
         };
         let bytes = record.as_bytes();
-        capture
-            .get_mut(..bytes.len())
-            .ok_or(ServiceError::InvalidParam)?
-            .copy_from_slice(bytes);
+        let available = capture.len();
+        let Some(destination) = capture.get_mut(..bytes.len()) else {
+            fstart_log::error!(
+                "ironlake: training record {} bytes exceeds capture {}",
+                bytes.len(),
+                available
+            );
+            return Err(ServiceError::InvalidParam);
+        };
+        destination.copy_from_slice(bytes);
         Ok(Some(bytes.len()))
     }
 }

@@ -10,7 +10,9 @@ use sha2::{Digest, Sha256};
 use zerocopy::byteorder::{LittleEndian, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-pub const MAX_PAYLOAD: usize = 768;
+// Ironlake's saved lane timings and bounds need more than the legacy
+// GM45-sized 768-byte record. Keep both capture and journal storage large enough.
+pub const MAX_PAYLOAD: usize = 2048;
 const MAGIC: [u8; 8] = *b"FSTMRC01";
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
