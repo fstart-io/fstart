@@ -78,8 +78,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// A layout before detection, for the knobs' build-time values: no
-    /// override (Auto) on every group.
+    /// The four slots before detection, for the knobs' build-time records:
+    /// every group offered, Auto. The boot hides a group the straps or the
+    /// I/O fuse remove.
     pub const UNDETECTED: Self = Self {
         selectors: [0; 4],
         bifurcation: [None; 4],
@@ -135,9 +136,9 @@ group_knob!(P2, 2, "ethanolx_p2_bifurcation", "P2 (slot 4) bifurcation");
 group_knob!(P3, 3, "ethanolx_p3_bifurcation", "P3 (slot 2) bifurcation");
 
 fstart_options::option_set!(
-    /// The bifurcation of the four socket-0 groups: Auto by default, offered
-    /// as the straps and fuses the board reads at boot allow.
-    pub static KNOBS: [Layout = Layout::UNDETECTED; offered at runtime] = [P0, P1, P2, P3]
+    /// The bifurcation of the four socket-0 slots: Auto by default, hidden
+    /// at boot where the straps or fuses remove the group.
+    pub static KNOBS: [Layout = Layout::UNDETECTED] = [P0, P1, P2, P3]
 );
 
 /// Whether the layout's engines are valid on the SoC.

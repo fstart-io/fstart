@@ -36,9 +36,11 @@ availability as JSON. There is no list per board.
   the set's `Record`s, in the order the set lists them, as one array into
   its own `.rodata.fstart.options.*` section: each knob's `Meta`, its
   value on the set's constant configuration and whether that
-  configuration offers it, evaluated at build time. A set over a
-  configuration the board detects (Ethanol-X's straps) records what it
-  can and says the rest is decided at boot.
+  configuration offers it, evaluated at build time. A board's slots are
+  fixed, what is in them is not: Ethanol-X records its four slot groups
+  over the layout before detection, all offered at Auto, and the boot
+  hides a group its straps (the SATA/Ethernet card) or the CPU's I/O fuse
+  remove.
 - The Intel chipset's records come from the platform config's
   `option_records`, which `entry!` writes into each stage for its `Board`;
   `options::chipset` references them.

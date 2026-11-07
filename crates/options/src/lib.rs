@@ -306,10 +306,11 @@ macro_rules! knob {
 
 /// The knobs of a configuration `C` as one static array, with a [`Record`]
 /// per knob. With `C = CONST`, the records carry each knob's board value
-/// and availability, evaluated at build time; with `C = CONST; offered at
-/// runtime`, the value only (the board detects what it offers); with
-/// `C = runtime`, the configuration is detected at boot and the records
-/// say so.
+/// and availability, evaluated at build time; with `C = runtime`, the
+/// configuration is detected at boot and the records say so. A board whose
+/// fixed hardware (its slots) holds what it detects (the cards, the CPU's
+/// fuses) gives the configuration before detection: the build offers the
+/// knobs, the boot hides those the machine lacks.
 ///
 /// ```
 /// use fstart_options::{Meta, knob, option_set};
@@ -329,14 +330,6 @@ macro_rules! option_set {
             [$($crate::Record::__new(
                 <$knob>::META,
                 $crate::Baseline::Runtime,
-                $crate::Offered::Runtime,
-            )),+]);
-    };
-    ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = $default:expr; offered at runtime] = [$($knob:path),+ $(,)?]) => {
-        $crate::__option_set!($(#[$attr])* $vis $name: $config; [$($knob),+];
-            [$($crate::Record::__new(
-                <$knob>::META,
-                $crate::Baseline::Known(<$knob>::get(&{ const DEFAULT: $config = $default; DEFAULT })),
                 $crate::Offered::Runtime,
             )),+]);
     };
