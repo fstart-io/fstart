@@ -24,19 +24,27 @@ option; sizes are in MiB rather than coreboot's per-chipset indices.
 
 ## What a build offers
 
-Each knob's `Meta` is a `'static` record made by `fstart_options::meta!`,
-in its own `.rodata.fstart.options.*` section. The linker keeps the records
-of the knobs a stage resolves and drops the others, and fstart's linker
-scripts collect them between `_fstart_options_start` and
-`_fstart_options_end`. So a build describes its own options, with no list
-per board: `fbuild options <stage ELFs>` prints them as JSON (key, form,
-label, help and the legal values), merged across stages. The X61 gets the
-radios its EC knobs offer but not the X200's UWB, though both live in
-`driver-lenovo`.
+A build describes its own options: `fbuild options <stage ELFs>` prints
+each option's key, form, label, help, legal values, board value and
+availability as JSON, merged across stages. There is no list per board.
 
-Availability is decided on the machine, so a knob a driver offers can be
-listed for a board where it is always inactive (the i945's panel
-brightness on a desktop).
+- A knob is a type made by `fstart_options::knob!`, with `const fn`
+  accessors.
+- `fstart_options::option_set!` declares the knobs a configuration offers
+  (the ThinkPads' `EC_KNOBS`, the S8030's slots, the log level) and writes
+  a `Record` per knob into its own `.rodata.fstart.options.*` section: the
+  knob's `Meta`, its value on the set's constant configuration and
+  whether that configuration offers it, evaluated at build time. A set
+  over a configuration the board detects (Ethanol-X's straps) records
+  what it can and says the rest is decided at boot.
+- The Intel chipset's records come from the platform config's
+  `option_records`, which `entry!` writes into each stage for its `Board`;
+  `options::chipset` references them.
+- The linker keeps the records a stage's knobs reference and drops the
+  rest, and fstart's linker scripts collect them between
+  `_fstart_options_start` and `_fstart_options_end`. So the X61 offers
+  the radios its EC set lists but not the X200's UWB, and the D945GCLF
+  records its panel brightness as inactive: it has no panel.
 
 ## Resolution
 

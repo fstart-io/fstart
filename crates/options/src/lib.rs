@@ -128,11 +128,52 @@ pub enum Availability {
     Inactive(&'static str),
 }
 
-/// A knob's [`Meta`] as a `'static` record the build can find: each in its
-/// own `.rodata.fstart.options.*` section, so the linker keeps exactly the
-/// knobs a stage resolves and drops the rest. fstart's linker scripts put
-/// them between `_fstart_options_start` and `_fstart_options_end`; image
-/// tools read the options of a build from there.
+/// What the build knows of an option's value before the machine runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, u32)]
+pub enum Baseline {
+    /// The board's value with no override: its configuration is a constant.
+    Known(u32),
+    /// The board detects its configuration at boot.
+    Runtime,
+}
+
+/// What the build knows of whether a machine offers an option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, u32)]
+pub enum Offered {
+    Editable,
+    Inactive(&'static str),
+    /// Decided at boot, from what the board detects.
+    Runtime,
+}
+
+impl Offered {
+    pub const fn of(availability: Availability) -> Self {
+        match availability {
+            Availability::Editable => Self::Editable,
+            Availability::Inactive(why) => Self::Inactive(why),
+        }
+    }
+}
+
+/// A knob as the build records it: its [`Meta`] and, where the knob meets a
+/// constant configuration ([`option_set!`]), its board value and whether
+/// the board offers it. Records sit in `.rodata.fstart.options.*` sections
+/// that the stage's knobs reference, so the linker keeps exactly the records
+/// of the knobs a stage resolves; fstart's linker scripts collect them
+/// between `_fstart_options_start` and `_fstart_options_end`, and image
+/// tools read a build's options from there. `repr(C)`, with `meta` first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Record {
+    pub meta: Meta,
+    pub baseline: Baseline,
+    pub offered: Offered,
+}
+
+/// A knob's [`Meta`] as a [`Record`] without board facts: for knobs whose
+/// configuration the build cannot see.
 ///
 /// ```
 /// use fstart_options::{Kind, Knob, Meta, meta};
@@ -147,12 +188,16 @@ pub enum Availability {
 macro_rules! meta {
     ($meta:expr) => {{
         #[unsafe(link_section = $crate::__meta_section!())]
-        static META: $crate::Meta = $meta;
-        &META
+        static RECORD: $crate::Record = $crate::Record {
+            meta: $meta,
+            baseline: $crate::Baseline::Runtime,
+            offered: $crate::Offered::Runtime,
+        };
+        &RECORD.meta
     }};
 }
 
-/// The section of a [`meta!`] record: unique per invocation, so the linker
+/// The section of a [`Record`]: unique per invocation, so the linker
 /// drops each unused one on its own.
 #[doc(hidden)]
 #[macro_export]
@@ -167,6 +212,155 @@ macro_rules! __meta_section {
             column!()
         )
     };
+}
+
+/// Define a knob as a type whose accessors are `const fn`, so a set can
+/// record the board value and availability at build time
+/// ([`option_set!`]):
+///
+/// ```
+/// use fstart_options::{Meta, knob};
+/// pub struct Options { pub wlan: bool }
+/// knob! {
+///     /// The WLAN radio.
+///     pub Wlan: Options = Meta::bool("wlan", "Radios", "WLAN", "The WLAN card's radio.");
+///     get(o) => o.wlan as u32;
+///     set(o, v) => o.wlan = v != 0;
+/// }
+/// assert_eq!(Wlan::get(&Options { wlan: true }), 1);
+/// ```
+///
+/// `available(o) => ...;` is optional (always editable).
+#[macro_export]
+macro_rules! knob {
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident: $config:ty = $meta:expr;
+        get($g:ident) => $get:expr;
+        set($s:ident, $v:ident) => $set:expr;
+        $(available($a:ident) => $available:expr;)?
+    ) => {
+        $(#[$attr])*
+        $vis struct $name;
+
+        impl $name {
+            pub const META: $crate::Meta = $meta;
+
+            pub const fn get($g: &$config) -> u32 {
+                $get
+            }
+
+            pub fn set($s: &mut $config, $v: u32) {
+                $set;
+            }
+
+            #[allow(unused_variables)]
+            pub const fn available(config: &$config) -> $crate::Availability {
+                $(
+                    let $a = config;
+                    return $available;
+                )?
+                #[allow(unreachable_code)]
+                $crate::Availability::Editable
+            }
+
+            /// The runtime knob without a [`Record`], for sets whose records a
+            /// board writes elsewhere (the chipset's, at its entry point).
+            pub const KNOB: $crate::Knob<$config> = Self::knob(&Self::META);
+
+            /// The runtime knob, described by `meta` (a set's [`Record`]).
+            pub const fn knob(meta: &'static $crate::Meta) -> $crate::Knob<$config> {
+                $crate::Knob {
+                    meta,
+                    get: Self::get,
+                    set: Self::set,
+                    available: Self::available,
+                }
+            }
+        }
+    };
+}
+
+/// The knobs of a configuration `C` as one static array, with a [`Record`]
+/// per knob. With `C = CONST`, the records carry each knob's board value
+/// and availability, evaluated at build time; with `C = CONST; offered at
+/// runtime`, the value only (the board detects what it offers); with
+/// `C = runtime`, the configuration is detected at boot and the records
+/// say so.
+///
+/// ```
+/// use fstart_options::{Meta, knob, option_set};
+/// pub struct Options { pub wlan: bool }
+/// knob! {
+///     pub Wlan: Options = Meta::bool("wlan", "Radios", "WLAN", "The WLAN card's radio.");
+///     get(o) => o.wlan as u32;
+///     set(o, v) => o.wlan = v != 0;
+/// }
+/// option_set!(pub static KNOBS: [Options = Options { wlan: true }] = [Wlan]);
+/// assert_eq!(KNOBS.len(), 1);
+/// ```
+#[macro_export]
+macro_rules! option_set {
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = runtime] = [$($knob:path),+ $(,)?]) => {
+        $(#[$attr])*
+        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = [$(
+            <$knob>::knob({
+                #[unsafe(link_section = $crate::__meta_section!())]
+                static RECORD: $crate::Record = $crate::Record {
+                    meta: <$knob>::META,
+                    baseline: $crate::Baseline::Runtime,
+                    offered: $crate::Offered::Runtime,
+                };
+                &RECORD.meta
+            })
+        ),+];
+    };
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = $default:expr; offered at runtime] = [$($knob:path),+ $(,)?]) => {
+        $(#[$attr])*
+        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = [$(
+            <$knob>::knob({
+                const DEFAULT: $config = $default;
+                #[unsafe(link_section = $crate::__meta_section!())]
+                static RECORD: $crate::Record = $crate::Record {
+                    meta: <$knob>::META,
+                    baseline: $crate::Baseline::Known(<$knob>::get(&DEFAULT)),
+                    offered: $crate::Offered::Runtime,
+                };
+                &RECORD.meta
+            })
+        ),+];
+    };
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = $default:expr] = [$($knob:path),+ $(,)?]) => {
+        $(#[$attr])*
+        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = [$(
+            <$knob>::knob({
+                const DEFAULT: $config = $default;
+                #[unsafe(link_section = $crate::__meta_section!())]
+                static RECORD: $crate::Record = $crate::record!($knob, &DEFAULT);
+                &RECORD.meta
+            })
+        ),+];
+    };
+}
+
+/// The [`Record`] of a [`knob!`] type over a constant configuration:
+/// its board value and availability, evaluated at build time.
+#[macro_export]
+macro_rules! record {
+    ($knob:path, $config:expr) => {
+        $crate::Record {
+            meta: <$knob>::META,
+            baseline: $crate::Baseline::Known(<$knob>::get($config)),
+            offered: $crate::Offered::of(<$knob>::available($config)),
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __count {
+    () => { 0 };
+    ($head:tt $($tail:tt)*) => { 1 + $crate::__count!($($tail)*) };
 }
 
 /// One overridable field of a configuration `C`.

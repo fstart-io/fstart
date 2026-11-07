@@ -3,7 +3,7 @@
 //! starts from its board config ([`Options::from_config`]) and the
 //! platform resolves the knobs over it (`fstart_options`).
 
-use fstart_options::{Availability, Choice, Kind, Knob, Meta};
+use fstart_options::{Availability, Choice, Kind, Meta};
 
 /// SATA controller operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,54 +53,48 @@ const fn power_meta(choices: &'static [Choice]) -> Meta {
     }
 }
 
-const fn power(meta: &'static Meta) -> Knob<Options> {
-    Knob::new(
-        meta,
-        |o: &Options| o.power_on_after_fail.into(),
-        |o: &mut Options, v| o.power_on_after_fail = v as u8,
-    )
+fstart_options::knob! {
+    /// The power state after a power failure, off or on (ICH7, ICH8).
+    pub PowerOnAfterFail: Options = power_meta(POWER);
+    get(o) => o.power_on_after_fail as u32;
+    set(o, v) => o.power_on_after_fail = v as u8;
 }
 
-/// The power state after a power failure, off or on (ICH7, ICH8).
-pub const POWER_ON_AFTER_FAIL: Knob<Options> = power(fstart_options::meta!(power_meta(POWER)));
-/// The power state after a power failure, also the previous one (ICH9).
-pub const POWER_ON_AFTER_FAIL_KEEP: Knob<Options> =
-    power(fstart_options::meta!(power_meta(POWER_KEEP)));
+fstart_options::knob! {
+    /// The power state after a power failure, also the previous one (ICH9).
+    pub PowerOnAfterFailKeep: Options = power_meta(POWER_KEEP);
+    get(o) => o.power_on_after_fail as u32;
+    set(o, v) => o.power_on_after_fail = v as u8;
+}
 
-/// The SATA mode, coreboot's 0 AHCI, 1 IDE.
-pub const SATA_MODE: Knob<Options> = Knob::new(
-    fstart_options::meta!(Meta {
+fstart_options::knob! {
+    /// The SATA mode, coreboot's 0 AHCI, 1 IDE.
+    pub Sata: Options = Meta {
         key: "sata_mode",
         form: "Storage",
         label: "SATA mode",
         help: "AHCI, or legacy IDE for operating systems without an AHCI driver.",
         kind: Kind::Enum(&[Choice::new(0, "AHCI"), Choice::new(1, "IDE")]),
-    }),
-    |o: &Options| matches!(o.sata_mode, Some(SataMode::Ide)).into(),
-    |o: &mut Options, v| {
-        o.sata_mode = Some(if v == 1 {
-            SataMode::Ide
-        } else {
-            SataMode::Ahci
-        })
-    },
-)
-.when(|o: &Options| match o.sata_mode {
-    Some(_) => Availability::Editable,
-    None => Availability::Inactive("this board has no SATA controller"),
-});
+    };
+    get(o) => matches!(o.sata_mode, Some(SataMode::Ide)) as u32;
+    set(o, v) => o.sata_mode = Some(if v == 1 { SataMode::Ide } else { SataMode::Ahci });
+    available(o) => match o.sata_mode {
+        Some(_) => Availability::Editable,
+        None => Availability::Inactive("this board has no SATA controller"),
+    };
+}
 
-/// NMIs on SERR# and IOCHK#.
-pub const NMI: Knob<Options> = Knob::new(
-    fstart_options::meta!(Meta::bool(
+fstart_options::knob! {
+    /// NMIs on SERR# and IOCHK#.
+    pub Nmi: Options = Meta::bool(
         "nmi",
         "Advanced",
         "NMI sources",
         "Raise an NMI on PCI SERR# and IOCHK#.",
-    )),
-    |o: &Options| o.nmi.into(),
-    |o: &mut Options, v| o.nmi = v != 0,
-);
+    );
+    get(o) => o.nmi as u32;
+    set(o, v) => o.nmi = v != 0;
+}
 
 /// Program the legacy NMI sources (ports 0x61, 0x70/0x74), as coreboot's
 /// ICH LPC init does: IOCHK# on, SERR# off, the NMI mask from `enable`.
@@ -134,14 +128,14 @@ mod tests {
     fn sata_mode_is_only_offered_with_sata() {
         let none = Options::from_config(1, None);
         assert_eq!(
-            (SATA_MODE.available)(&none),
+            Sata::available(&none),
             Availability::Inactive("this board has no SATA controller")
         );
         let mut ahci = Options::from_config(1, Some(SataMode::Ahci));
-        assert_eq!((SATA_MODE.get)(&ahci), 0);
-        (SATA_MODE.set)(&mut ahci, 1);
+        assert_eq!(Sata::get(&ahci), 0);
+        Sata::set(&mut ahci, 1);
         assert_eq!(ahci.sata_mode, Some(SataMode::Ide));
-        assert!(!POWER_ON_AFTER_FAIL.meta.kind.contains(2));
-        assert!(POWER_ON_AFTER_FAIL_KEEP.meta.kind.contains(2));
+        assert!(!PowerOnAfterFail::META.kind.contains(2));
+        assert!(PowerOnAfterFailKeep::META.kind.contains(2));
     }
 }

@@ -289,12 +289,15 @@ impl Console for ConsoleMux {
     }
 }
 
-/// Current maximum log level; the build-time level when one was set.
-static MAX_LEVEL: SyncCell<Level> = SyncCell::new(match BUILD_VERBOSITY {
+/// The level a stage starts with: the build-time level when one was set.
+pub const BUILD_LEVEL: Level = match BUILD_VERBOSITY {
     Some(Verbosity::Max(level)) => level,
     Some(Verbosity::Off) => Level::Error,
     None => Level::Info,
-});
+};
+
+/// Current maximum log level.
+static MAX_LEVEL: SyncCell<Level> = SyncCell::new(BUILD_LEVEL);
 
 /// Register the global console backend for log macros.
 ///
@@ -468,19 +471,24 @@ pub mod option {
         }
     }
 
-    /// The console log level knob, over the level a flow then sets with
-    /// [`super::set_max_level`].
-    pub static KNOBS: [Knob<Level>; 1] = [Knob::new(
-        fstart_options::meta!(Meta {
+    fstart_options::knob! {
+        /// The console log level, over the level a flow then sets with
+        /// [`super::set_max_level`].
+        pub DebugLevel: Level = Meta {
             key: "debug_level",
             form: "Console",
             label: "Console log level",
             help: "The most verbose firmware messages the console shows.",
             kind: Kind::Enum(CHOICES),
-        }),
-        |l| value(*l),
-        |l, v| *l = level(v),
-    )];
+        };
+        get(l) => value(*l);
+        set(l, v) => *l = level(v);
+    }
+
+    fstart_options::option_set!(
+        /// The log knobs, over the build's level.
+        pub static KNOBS: [Level = super::BUILD_LEVEL] = [DebugLevel]
+    );
 
     /// Log a knob's outcome: an applied override or a rejected value.
     pub fn log(setting: &Setting) {

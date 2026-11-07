@@ -269,7 +269,25 @@ impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm965Ich8<C> {
     const MICROCODE_SIGNATURES: &'static [&'static str] = C::MICROCODE_SIGNATURES;
 }
 
+impl Gm965Ich8Platform {
+    /// The chipset's option records for this board: each knob's value and
+    /// availability on this configuration, for the board's stages to keep
+    /// ([`crate::entry!`]).
+    pub const fn option_records(&self) -> [fstart_options::Record; 4] {
+        use fstart_driver_intel::southbridge::options::{Nmi, PowerOnAfterFail, Sata};
+        let nb = self.northbridge.options();
+        let sb = self.southbridge.options();
+        [
+            fstart_options::record!(fstart_driver_intel::gm965::Uma, &nb),
+            fstart_options::record!(PowerOnAfterFail, &sb),
+            fstart_options::record!(Sata, &sb),
+            fstart_options::record!(Nmi, &sb),
+        ]
+    }
+}
+
 impl crate::IntelPlatformConfig for Gm965Ich8Platform {
+    type OptionRecords = [fstart_options::Record; 4];
     fn max_cpus(&self) -> u16 {
         self.max_cpus
     }

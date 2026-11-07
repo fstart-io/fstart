@@ -107,20 +107,20 @@ impl Identity {
 }
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
 /// them.
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 9] = {
-    use fstart_driver_lenovo::options::*;
-    [
-        BLUETOOTH,
-        WWAN,
-        WLAN,
-        TRACKPOINT,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        VOLUME,
-        FIRST_BATTERY,
+fstart_options::option_set!(
+    pub static EC_KNOBS: [fstart_driver_lenovo::options::Options =
+        fstart_driver_lenovo::options::Options::DEFAULT] = [
+        fstart_driver_lenovo::options::Bluetooth,
+        fstart_driver_lenovo::options::Wwan,
+        fstart_driver_lenovo::options::Wlan,
+        fstart_driver_lenovo::options::Trackpoint,
+        fstart_driver_lenovo::options::StickyFn,
+        fstart_driver_lenovo::options::PowerManagementBeeps,
+        fstart_driver_lenovo::options::LowBatteryBeep,
+        fstart_driver_lenovo::options::Volume,
+        fstart_driver_lenovo::options::FirstBattery,
     ]
-};
+);
 
 /// EC/PMH7, dock power, the identity EEPROM and the SD slot, once the
 /// chipset devices are up. `smbus` is on the EEPROM branch. EC setup is

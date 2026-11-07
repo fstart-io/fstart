@@ -325,6 +325,21 @@ pub struct IronlakeIbexPeakPlatform {
     pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
+impl IronlakeIbexPeakPlatform {
+    /// The records of the chipset's options over this configuration.
+    pub const fn option_records(&self) -> [fstart_options::Record; 4] {
+        use fstart_driver_intel::southbridge::options::{Nmi, PowerOnAfterFailKeep, Sata};
+        let nb = self.northbridge.options();
+        let sb = self.southbridge.options();
+        [
+            fstart_options::record!(fstart_driver_intel::ironlake::Uma, &nb),
+            fstart_options::record!(PowerOnAfterFailKeep, &sb),
+            fstart_options::record!(Sata, &sb),
+            fstart_options::record!(Nmi, &sb),
+        ]
+    }
+}
+
 /// The Arrandale/Clarkdale + 5 Series pairing.
 pub struct IronlakeIbexPeak;
 
@@ -349,6 +364,7 @@ impl crate::IntelPlatform for IronlakeIbexPeak {
 }
 
 impl crate::IntelPlatformConfig for IronlakeIbexPeakPlatform {
+    type OptionRecords = [fstart_options::Record; 4];
     fn max_cpus(&self) -> u16 {
         self.max_cpus
     }

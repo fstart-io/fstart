@@ -26,6 +26,17 @@ pub fn store() -> Cmos<&'static (dyn Ram + Sync)> {
     Cmos::new(WINDOW, &RAM as &(dyn Ram + Sync))
 }
 
+unsafe extern "C" {
+    /// The board's chipset option records, from `entry!`.
+    static FSTART_CHIPSET_OPTIONS: u8;
+}
+
+/// Keep the chipset's option records in a stage that resolves its options.
+fn records() {
+    // SAFETY: a byte of the records `entry!` defines in every stage.
+    unsafe { core::ptr::read_volatile(&raw const FSTART_CHIPSET_OPTIONS) };
+}
+
 /// The console level, then the chipset's options: what a stage does once
 /// its console is up, before the chipset's early init. Allocates nothing.
 pub fn chipset<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>(
@@ -33,6 +44,7 @@ pub fn chipset<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>(
     southbridge: &mut S,
 ) {
     use fstart_log::option::resolve;
+    records();
     let source = store();
     level(&source);
     let mut options = northbridge.options();
@@ -59,6 +71,7 @@ pub fn chipset_into<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>(
     report: &mut fstart_options::Report,
 ) {
     use fstart_log::option::resolve_into;
+    records();
     let source = store();
     let mut level = fstart_log::max_level();
     resolve_into(

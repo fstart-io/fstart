@@ -469,9 +469,9 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
     const ACPI_LPC_NAME: &'static str = "LPCB";
     type Options = crate::southbridge::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
-        crate::southbridge::options::POWER_ON_AFTER_FAIL_KEEP,
-        crate::southbridge::options::SATA_MODE,
-        crate::southbridge::options::NMI,
+        crate::southbridge::options::PowerOnAfterFailKeep::KNOB,
+        crate::southbridge::options::Sata::KNOB,
+        crate::southbridge::options::Nmi::KNOB,
     ];
 
     fn options(&self) -> Self::Options {

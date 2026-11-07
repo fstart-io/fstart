@@ -117,6 +117,16 @@ pub struct IntelGm45Config {
 }
 
 impl IntelGm45Config {
+    /// The board's values of the user options (`fstart_options`).
+    pub const fn options(&self) -> crate::igd::options::Options {
+        crate::igd::options::Options::new(
+            !matches!(self.graphics, Gm45GraphicsPolicy::Discrete),
+            32,
+        )
+    }
+}
+
+impl IntelGm45Config {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -396,14 +406,14 @@ const UMA_SIZES: &[fstart_options::Choice] = &[
     fstart_options::Choice::new(352, "352 MiB"),
 ];
 
+crate::igd::options::uma_knob!(UMA_SIZES);
+
 impl crate::IntelNorthbridgeDriver for IntelGm45 {
     type Config = IntelGm45Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
     type Options = crate::igd::options::Options;
-    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[crate::igd::options::uma(
-        fstart_options::meta!(crate::igd::options::uma_meta(UMA_SIZES)),
-    )];
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[Uma::KNOB];
 
     fn options(&self) -> Self::Options {
         self.options
@@ -432,10 +442,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         }
         Ok(Self {
             config,
-            options: crate::igd::options::Options::new(
-                !matches!(config.graphics, Gm45GraphicsPolicy::Discrete),
-                32,
-            ),
+            options: config.options(),
             graphics: config.graphics,
             mmio32_window: None,
             bootstrap_windows: None,

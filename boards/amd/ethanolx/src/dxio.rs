@@ -10,11 +10,10 @@
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::hotplug::{Hotplug, HotplugKind};
 use fstart_driver_amd::sp3::dxio::lanes::{
-    Bifurcation, Bifurcations, Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
-    validate,
+    Bifurcation, Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_options::{Availability, Knob};
+use fstart_options::Availability;
 
 use crate::i2c::{Detected, RedriverMode};
 
@@ -79,6 +78,14 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// A layout before detection, for the knobs' build-time values: no
+    /// override (Auto) on every group.
+    pub const UNDETECTED: Self = Self {
+        selectors: [0; 4],
+        bifurcation: [None; 4],
+        limited_io: false,
+    };
+
     /// The layout the straps select on revision 0x30. Other revisions
     /// have different socket-1 and forced-x8 wiring: do not apply this
     /// policy to an unknown board.
@@ -94,9 +101,9 @@ impl Layout {
     }
 
     /// Whether group `index` can be bifurcated.
-    fn available(&self, index: usize) -> Availability {
+    const fn available(&self, index: usize) -> Availability {
         let group = GROUPS[index].0;
-        if self.limited_io && group == Group::P1 {
+        if self.limited_io && matches!(group, Group::P1) {
             Availability::Inactive("this processor's I/O fuse removes the group")
         } else if mixed(group, self.selectors[index]) {
             Availability::Inactive("the straps select the SATA/Ethernet card")
@@ -106,42 +113,32 @@ impl Layout {
     }
 }
 
-impl Bifurcations for Layout {
-    fn bifurcation(&self, index: usize) -> Option<Bifurcation> {
-        self.bifurcation[index]
-    }
-    fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>) {
-        self.bifurcation[index] = bifurcation;
-    }
-    fn availability(&self, index: usize) -> Availability {
-        self.available(index)
-    }
+/// A group's bifurcation knob: its value is the link width; 0 (Auto)
+/// keeps the card's links.
+macro_rules! group_knob {
+    ($name:ident, $index:literal, $key:literal, $label:literal) => {
+        fstart_options::knob! {
+            pub $name: Layout = Bifurcation::meta($key, $label, true);
+            get(l) => match l.bifurcation[$index] {
+                Some(b) => b.width() as u32,
+                None => 0,
+            };
+            set(l, v) => l.bifurcation[$index] = Bifurcation::from_width(v);
+            available(l) => l.available($index);
+        }
+    };
 }
 
-/// The bifurcation of the four socket-0 groups; Auto keeps the card's
-/// links.
-pub static KNOBS: [Knob<Layout>; 4] = [
-    Bifurcation::knob::<Layout, 0>(fstart_options::meta!(Bifurcation::meta(
-        "ethanolx_p0_bifurcation",
-        "P0 (slot 1) bifurcation",
-        true
-    ))),
-    Bifurcation::knob::<Layout, 1>(fstart_options::meta!(Bifurcation::meta(
-        "ethanolx_p1_bifurcation",
-        "P1 (slot 3) bifurcation",
-        true
-    ))),
-    Bifurcation::knob::<Layout, 2>(fstart_options::meta!(Bifurcation::meta(
-        "ethanolx_p2_bifurcation",
-        "P2 (slot 4) bifurcation",
-        true
-    ))),
-    Bifurcation::knob::<Layout, 3>(fstart_options::meta!(Bifurcation::meta(
-        "ethanolx_p3_bifurcation",
-        "P3 (slot 2) bifurcation",
-        true
-    ))),
-];
+group_knob!(P0, 0, "ethanolx_p0_bifurcation", "P0 (slot 1) bifurcation");
+group_knob!(P1, 1, "ethanolx_p1_bifurcation", "P1 (slot 3) bifurcation");
+group_knob!(P2, 2, "ethanolx_p2_bifurcation", "P2 (slot 4) bifurcation");
+group_knob!(P3, 3, "ethanolx_p3_bifurcation", "P3 (slot 2) bifurcation");
+
+fstart_options::option_set!(
+    /// The bifurcation of the four socket-0 groups: Auto by default, offered
+    /// as the straps and fuses the board reads at boot allow.
+    pub static KNOBS: [Layout = Layout::UNDETECTED; offered at runtime] = [P0, P1, P2, P3]
+);
 
 /// Whether the layout's engines are valid on the SoC.
 pub fn check(layout: &Layout) -> Result<(), &'static str> {

@@ -319,6 +319,17 @@ pub struct IntelI945Config {
 }
 
 impl IntelI945Config {
+    /// The board's values of the user options (`fstart_options`).
+    pub const fn options(&self) -> crate::igd::options::Options {
+        crate::igd::options::Options::new(
+            true,
+            (decode_igd_memory_size_kb(self.gfx_gms as u32 & 7) / 1024) as u16,
+        )
+        .with_panel(self.igd.panel.is_some())
+    }
+}
+
+impl IntelI945Config {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -1321,18 +1332,16 @@ const UMA_SIZES: &[fstart_options::Choice] = &[
     fstart_options::Choice::new(64, "64 MiB"),
 ];
 
+crate::igd::options::uma_knob!(UMA_SIZES);
+
 impl crate::IntelNorthbridgeDriver for IntelI945 {
     type Config = IntelI945Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
     type Options = crate::igd::options::Options;
-    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
-        crate::igd::options::uma(fstart_options::meta!(crate::igd::options::uma_meta(
-            UMA_SIZES
-        ))),
-        crate::igd::options::BRIGHTNESS,
-    ];
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
+        &[Uma::KNOB, crate::igd::options::Brightness::KNOB];
 
     fn options(&self) -> Self::Options {
         self.options
@@ -1345,11 +1354,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
-            options: crate::igd::options::Options::new(
-                true,
-                (decode_igd_memory_size_kb(config.gfx_gms as u32 & 7) / 1024) as u16,
-            )
-            .with_panel(config.igd.panel.is_some()),
+            options: config.options(),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             mmio32_window: None,

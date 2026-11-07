@@ -500,6 +500,13 @@ pub struct IntelGm965Config {
 }
 
 impl IntelGm965Config {
+    /// The board's values of the user options (`fstart_options`).
+    pub const fn options(&self) -> crate::igd::options::Options {
+        crate::igd::options::Options::new(self.igd.enable_vga, self.igd.stolen_memory_mb)
+    }
+}
+
+impl IntelGm965Config {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -1324,15 +1331,15 @@ const UMA_SIZES: &[fstart_options::Choice] = &[
     fstart_options::Choice::new(64, "64 MiB"),
 ];
 
+crate::igd::options::uma_knob!(UMA_SIZES);
+
 impl crate::IntelNorthbridgeDriver for IntelGm965 {
     type Config = IntelGm965Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
     type Options = crate::igd::options::Options;
-    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[crate::igd::options::uma(
-        fstart_options::meta!(crate::igd::options::uma_meta(UMA_SIZES)),
-    )];
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[Uma::KNOB];
 
     fn options(&self) -> Self::Options {
         self.options
@@ -1345,10 +1352,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
-            options: crate::igd::options::Options::new(
-                config.igd.enable_vga,
-                config.igd.stolen_memory_mb,
-            ),
+            options: config.options(),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             s3_enabled: false,

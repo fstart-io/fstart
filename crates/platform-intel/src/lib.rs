@@ -60,10 +60,28 @@ pub use host::Plan;
 macro_rules! entry {
     ($main:path) => {
         $crate::stage_runtime::stage_bin!(main: $main);
+        $crate::__chipset_options!();
     };
     ($main:path, reset_vector) => {
         $crate::stage_runtime::stage_bin!(main: $main);
         $crate::arch_runtime::x86_reset_entry!();
+        $crate::__chipset_options!();
+    };
+}
+
+/// The chipset's option records of the stage's `Board` (`fstart_options`),
+/// for tools that read a build's options: [`options::chipset`] references
+/// them, so a stage that resolves the chipset's options keeps them.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __chipset_options {
+    () => {
+        #[unsafe(no_mangle)]
+        #[unsafe(link_section = ".rodata.fstart.options.chipset")]
+        static FSTART_CHIPSET_OPTIONS: <<<Board as $crate::IntelBoardFacts>::Platform as $crate::IntelPlatform>::Config as $crate::IntelPlatformConfig>::OptionRecords =
+            <<<Board as $crate::IntelBoardFacts>::Platform as $crate::IntelPlatform>::Config>::option_records(
+                <Board as $crate::IntelBoardFacts>::CONFIG,
+            );
     };
 }
 

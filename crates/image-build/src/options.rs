@@ -1,9 +1,10 @@
 //! The options a firmware build offers, read from its stage ELFs: the
-//! `fstart_options::meta!` records the linker keeps between
-//! `_fstart_options_start` and `_fstart_options_end`. Each record is a
-//! `repr(C)` `fstart_options::Meta`; its strings and choices are pointers
-//! into the same image. The linker drops the records of knobs a stage does
-//! not resolve, so a build's options are exactly what its stages read.
+//! `fstart_options::Record`s the linker keeps between
+//! `_fstart_options_start` and `_fstart_options_end`. Each is `repr(C)`:
+//! the knob's `Meta` (strings and choices are pointers into the same
+//! image), then what the build knows of the board's value and whether the
+//! board offers the option. The linker drops the records of knobs a stage
+//! does not resolve, so a build's options are exactly what its stages read.
 
 use object::{Object, ObjectSection, ObjectSymbol};
 use serde::Serialize;
@@ -16,6 +17,20 @@ pub struct OptionSchema {
     pub label: String,
     pub help: String,
     pub kind: OptionKind,
+    /// The board's value without an override; `None` when the board
+    /// detects its configuration at boot.
+    pub default: Option<u32>,
+    pub availability: OptionAvailability,
+}
+
+/// Whether the board offers an option.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionAvailability {
+    Editable,
+    Inactive(String),
+    /// Decided at boot, from what the board detects.
+    Runtime,
 }
 
 /// The values an option takes.
@@ -52,7 +67,7 @@ pub fn from_elf(data: &[u8]) -> Result<Vec<OptionSchema>, String> {
         file: &file,
         pointer: if file.is_64() { 8 } else { 4 },
     };
-    let size = image.meta_size();
+    let size = record_size(image.pointer);
     if (end - start) % size != 0 {
         return Err(format!(
             "option records span {:#x} bytes, not a multiple of {size}",
@@ -60,7 +75,7 @@ pub fn from_elf(data: &[u8]) -> Result<Vec<OptionSchema>, String> {
         ));
     }
     (0..(end - start) / size)
-        .map(|i| image.meta(start + i * size))
+        .map(|i| image.record(start + i * size))
         .collect()
 }
 
@@ -102,6 +117,16 @@ const fn union_offset(pointer: u64) -> u64 {
     4u64.next_multiple_of(pointer)
 }
 
+/// `size_of::<Record>()`: the `Meta`, `Baseline` (`repr(C, u32)` over a
+/// `u32`), then `Offered` (`repr(C, u32)` over a `&str`), pointer aligned.
+const fn record_size(pointer: u64) -> u64 {
+    (offered_offset(pointer) + union_offset(pointer) + 2 * pointer).next_multiple_of(pointer)
+}
+
+const fn offered_offset(pointer: u64) -> u64 {
+    (meta_size(pointer) + 8).next_multiple_of(pointer)
+}
+
 /// `size_of::<Choice>()`: a `u32`, then a pointer-aligned `&str`.
 const fn choice_size(pointer: u64) -> u64 {
     (4 + 2 * pointer).next_multiple_of(pointer)
@@ -113,10 +138,6 @@ struct Image<'a, 'd> {
 }
 
 impl Image<'_, '_> {
-    fn meta_size(&self) -> u64 {
-        meta_size(self.pointer)
-    }
-
     fn bytes(&self, address: u64, len: u64) -> Result<&[u8], String> {
         for section in self.file.sections() {
             let (base, size) = (section.address(), section.size());
@@ -188,15 +209,36 @@ impl Image<'_, '_> {
             label: field(2)?,
             help: field(3)?,
             kind,
+            default: None,
+            availability: OptionAvailability::Runtime,
         })
+    }
+
+    fn record(&self, address: u64) -> Result<OptionSchema, String> {
+        let p = self.pointer;
+        let mut option = self.meta(address)?;
+        let baseline = address + meta_size(p);
+        option.default = match self.u32(baseline)? {
+            0 => Some(self.u32(baseline + 4)?),
+            1 => None,
+            tag => return Err(format!("option record at {address:#x}: baseline {tag}")),
+        };
+        let offered = address + offered_offset(p);
+        option.availability = match self.u32(offered)? {
+            0 => OptionAvailability::Editable,
+            1 => OptionAvailability::Inactive(self.str(offered + union_offset(p))?),
+            2 => OptionAvailability::Runtime,
+            tag => return Err(format!("option record at {address:#x}: offered {tag}")),
+        };
+        Ok(option)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{choice_size, kind_size, meta_size, union_offset};
+    use super::{choice_size, kind_size, meta_size, offered_offset, record_size, union_offset};
     use core::mem::{offset_of, size_of};
-    use fstart_options::{Choice, Kind, Meta};
+    use fstart_options::{Choice, Kind, Meta, Record};
 
     /// The reader's layout is the host's `repr(C)` one (64-bit); 32-bit
     /// stages follow the same rules with 4-byte pointers.
@@ -208,7 +250,10 @@ mod tests {
         assert_eq!(8 * p, offset_of!(Meta, kind) as u64);
         assert_eq!(choice_size(p), size_of::<Choice>() as u64);
         assert_eq!(union_offset(p), offset_of!(Choice, label) as u64);
-        // i686 stages: 48-byte records, 12-byte choices.
-        assert_eq!((meta_size(4), choice_size(4)), (48, 12));
+        assert_eq!(record_size(p), size_of::<Record>() as u64);
+        assert_eq!(meta_size(p), offset_of!(Record, baseline) as u64);
+        assert_eq!(offered_offset(p), offset_of!(Record, offered) as u64);
+        // i686 stages: 68-byte records, 48-byte metas, 12-byte choices.
+        assert_eq!((record_size(4), meta_size(4), choice_size(4)), (68, 48, 12));
     }
 }
