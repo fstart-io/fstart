@@ -10,14 +10,24 @@ was ported where, and the remaining differences from coreboot, see
 From the repository root:
 
 ```sh
-cargo fbuild build --board lenovo-x201 --release --payload halt
-cargo fbuild assemble --board lenovo-x201 --release --payload halt
+cargo fbuild build --board lenovo-x201 --release --payload halt \
+  --debug ehci --debug flash-console --log-level debug
+cargo fbuild assemble --board lenovo-x201 --release --payload halt \
+  --debug ehci --debug flash-console --log-level debug
 ```
 
 Assembly needs `intel-ucode/06-25-02` and `intel-ucode/06-25-05` from the
 pinned `intel-microcode` submodule. In a jj workspace, populate them
 separately. Without `--signing-key` the image is signed with an ephemeral
 development key.
+
+Debug consoles are opt-in. With `--debug ehci` the platform installs a
+best-effort EHCI console; an absent gadget does not prevent flash logging
+or boot. `--debug flash-console` reserves a 256 KiB SPI log at flash offsets
+`0x520000..0x560000`, after the 128 KiB training cache. The read-only image
+then begins at `0x560000`. These offsets describe the board's configured
+8 MiB layout; verify the actual machine's descriptor before flashing.
+The halt payload deliberately does not boot the installed OS.
 
 The binding includes the bootblock (CAR, DDR3 raminit with the QuickPath
 CPU reset), postcar, ramstage and SMM. Raminit replays the cached training

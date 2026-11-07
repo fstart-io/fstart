@@ -3,14 +3,15 @@
 #![no_std]
 #![no_main]
 
-use fstart_board_lenovo_x201::{Board, mainboard};
-use fstart_driver_usbdebug::EhciDebug;
+use fstart_board_lenovo_x201::Board;
+use fstart_core::services::NoConsole;
 use fstart_log::StaticConsole;
 
-static CONSOLE: StaticConsole<EhciDebug> = StaticConsole::new();
+// The platform installs the debug consoles selected by `fbuild --debug`.
+static CONSOLE: StaticConsole<NoConsole> = StaticConsole::new();
 
 fstart_platform_intel::entry!(main);
 
 fn main() -> ! {
-    fstart_platform_intel::postcar::run::<Board, _>(&CONSOLE, mainboard::console())
+    fstart_platform_intel::postcar::run::<Board, _>(&CONSOLE, ())
 }

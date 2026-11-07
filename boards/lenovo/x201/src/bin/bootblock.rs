@@ -4,20 +4,21 @@
 #![no_main]
 
 use fstart_board_lenovo_x201::{Board, mainboard};
-use fstart_driver_usbdebug::EhciDebug;
+use fstart_core::services::NoConsole;
 use fstart_log::StaticConsole;
 use fstart_platform_intel::bootblock::Bootblock;
 
-static CONSOLE: StaticConsole<EhciDebug> = StaticConsole::new();
+// The platform installs the debug consoles selected by `fbuild --debug`.
+static CONSOLE: StaticConsole<NoConsole> = StaticConsole::new();
 
 fstart_platform_intel::entry!(main, reset_vector);
 
 fn main() -> ! {
     let bb = Bootblock::<Board>::enter();
-    // The X201 has no serial port: the console is the EHCI debug port,
-    // which needs the EC's USB power first.
+    // Power USB before the optional EHCI debug console starts. An absent
+    // gadget must not stop boot before the SPI flash logger can be installed.
     mainboard::early_usb_power();
-    let mut bb = bb.console(&CONSOLE, mainboard::console());
+    let mut bb = bb.console(&CONSOLE, ());
     // coreboot mainboard_pre_raminit(): the clock generator before the
     // SPDs are read.
     if mainboard::set_fsb_frequency(bb.smbus()).is_err() {

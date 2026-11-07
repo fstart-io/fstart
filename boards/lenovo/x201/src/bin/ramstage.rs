@@ -5,11 +5,12 @@
 #![no_main]
 
 use fstart_board_lenovo_x201::{Board, mainboard};
-use fstart_driver_usbdebug::EhciDebug;
+use fstart_core::services::NoConsole;
 use fstart_log::StaticConsole;
 use fstart_platform_intel::ramstage::{Path, Ramstage};
 
-static CONSOLE: StaticConsole<EhciDebug> = StaticConsole::new();
+// The platform installs the debug consoles selected by `fbuild --debug`.
+static CONSOLE: StaticConsole<NoConsole> = StaticConsole::new();
 
 fstart_platform_intel::entry!(main);
 
@@ -17,7 +18,7 @@ fn main() -> ! {
     let rs = Ramstage::<Board>::enter();
     let mut pins = mainboard::Pins::of(rs.southbridge().gpio());
     let rs = rs
-        .console(&CONSOLE, mainboard::console())
+        .console(&CONSOLE, ())
         .memory_map()
         .scan_bus(&[]);
     let mut rs = rs.init_chipset();
