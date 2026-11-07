@@ -104,9 +104,9 @@ impl Layout {
     const fn available(&self, index: usize) -> Availability {
         let group = GROUPS[index].0;
         if self.limited_io && matches!(group, Group::P1) {
-            Availability::Inactive("this processor's I/O fuse removes the group")
+            Availability::Hidden("this processor's I/O fuse removes the group")
         } else if mixed(group, self.selectors[index]) {
-            Availability::Inactive("the straps select the SATA/Ethernet card")
+            Availability::Hidden("the straps select the SATA/Ethernet card")
         } else {
             Availability::Editable
         }
@@ -527,8 +527,8 @@ mod tests {
         )
         .unwrap();
         let offered: std::vec::Vec<_> = (0..4).map(|i| layout.available(i)).collect();
-        assert!(matches!(offered[0], Availability::Inactive(_)));
-        assert!(matches!(offered[1], Availability::Inactive(_)));
+        assert!(matches!(offered[0], Availability::Hidden(_)));
+        assert!(matches!(offered[1], Availability::Hidden(_)));
         assert_eq!(offered[2..], [Availability::Editable; 2]);
         let mut source_layout = layout;
         let mut report = fstart_options::Report::new();

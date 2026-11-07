@@ -4,8 +4,8 @@
 //! payloads' setup menus parse: one form per [`Meta::form`], in the order
 //! the forms first appear, holding the forms' knobs. Each option's default
 //! is the board's value ([`Setting::default`]), so a menu that finds no
-//! stored value shows what the board would boot with. A knob that is
-//! [`Availability::Inactive`] is greyed out with its reason; a stored value
+//! stored value shows what the board would boot with. A knob the machine
+//! does not have ([`Availability::Hidden`]) is left out; a stored value
 //! that was not applied says why in the help text.
 //!
 //! [`Meta::form`]: crate::Meta::form
@@ -30,13 +30,16 @@ const TAG_OPT_NAME: u32 = 7;
 const TAG_UI_NAME: u32 = 8;
 const TAG_UI_HELPTEXT: u32 = 9;
 
-/// Option flag: shown, not editable.
-pub const FLAG_INACTIVE: u32 = 1 << 1;
-
 /// The CFR record of `report`, with its root header.
 pub fn encode(report: &Report) -> Vec<u8> {
     let mut forms: Vec<&'static str> = Vec::new();
-    for setting in &report.settings {
+    let shown = || {
+        report
+            .settings
+            .iter()
+            .filter(|s| !matches!(s.availability, Availability::Hidden(_)))
+    };
+    for setting in shown() {
         if !forms.contains(&setting.meta.form) {
             forms.push(setting.meta.form);
         }
@@ -50,7 +53,7 @@ pub fn encode(report: &Report) -> Vec<u8> {
     for form in forms {
         let mut children = Vec::new();
         varchar(&mut children, TAG_UI_NAME, form);
-        for setting in report.settings.iter().filter(|s| s.meta.form == form) {
+        for setting in shown().filter(|s| s.meta.form == form) {
             option(&mut children, setting, next_id());
         }
         let mut header = Vec::new();
@@ -75,10 +78,7 @@ fn option(out: &mut Vec<u8>, setting: &Setting, id: u64) {
         Kind::Enum(_) => (TAG_ENUM, 0, 0, 0),
         Kind::Number { min, max, step } => (TAG_NUMBER, min, max, step.max(1)),
     };
-    let flags = match setting.availability {
-        Availability::Editable => 0,
-        Availability::Inactive(_) => FLAG_INACTIVE,
-    };
+    let flags = 0;
     let mut header = Vec::new();
     put_u64(&mut header, id);
     put_u64(&mut header, 0);
@@ -107,14 +107,11 @@ fn option(out: &mut Vec<u8>, setting: &Setting, id: u64) {
 /// The knob's help, with why it is greyed out or its stored value unused.
 fn help(setting: &Setting) -> String {
     let mut help = String::from(setting.meta.help);
-    if let Availability::Inactive(why) = setting.availability {
-        let _ = write!(help, " Unavailable: {why}.");
-    }
     if let Provenance::Rejected { stored, why } = setting.provenance {
         let _ = write!(help, " Stored value {stored} not applied this boot: ");
         let _ = match why {
             Rejection::OutOfRange => help.write_str("not a valid value."),
-            Rejection::Inactive => help.write_str("the option is unavailable."),
+            Rejection::Hidden => help.write_str("this machine does not have it."),
             Rejection::Source(SourceError::Unavailable) => help.write_str("no settings store."),
             Rejection::Source(SourceError::Corrupt) => help.write_str("the store is corrupt."),
             Rejection::Conflict(why) => write!(help, "{why}."),

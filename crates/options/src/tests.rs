@@ -78,7 +78,7 @@ static KNOBS: [Knob<Config>; 4] = [
     )
     .when(|c| {
         if c.fused {
-            Availability::Inactive("fused off")
+            Availability::Hidden("fused off")
         } else {
             Availability::Editable
         }
@@ -184,12 +184,12 @@ fn inactive_knobs_ignore_their_stored_value() {
         report.settings[3].provenance,
         Provenance::Rejected {
             stored: 4,
-            why: Rejection::Inactive
+            why: Rejection::Hidden
         }
     );
     assert_eq!(
         report.settings[3].availability,
-        Availability::Inactive("fused off")
+        Availability::Hidden("fused off")
     );
 }
 
@@ -406,12 +406,9 @@ fn cfr_has_one_form_per_page_with_board_defaults() {
     let smee = &forms[1].children[1];
     assert_eq!((smee.tag, u32_at(&smee.header, 20)), (5, 1));
 
-    let slot1 = &forms[2].children[2];
-    assert_eq!(text(&slot1.children, 7), "slot1");
-    assert_eq!(u32_at(&slot1.header, 16), cfr::FLAG_INACTIVE);
-    let help = text(&slot1.children, 9);
-    assert!(help.contains("Unavailable: fused off."), "{help}");
-    assert!(help.contains("Stored value 4 not applied"), "{help}");
+    // The fused-off slot is left out: the form has the name and slot0.
+    assert_eq!(forms[2].children.len(), 2);
+    assert_eq!(text(&forms[2].children[1].children, 7), "slot0");
 
     // Object IDs are unique and nonzero.
     let mut ids: Vec<u64> = forms

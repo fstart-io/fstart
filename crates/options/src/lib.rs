@@ -120,12 +120,13 @@ impl Choice {
     }
 }
 
-/// Whether the running machine lets the user change a knob.
+/// Whether the running machine has a knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Availability {
     Editable,
-    /// Shown greyed out with the reason; a stored value is ignored.
-    Inactive(&'static str),
+    /// The machine does not have what the knob changes (no panel, a fused
+    /// off group): menus and tools leave it out, a stored value is ignored.
+    Hidden(&'static str),
 }
 
 /// What the build knows of an option's value before the machine runs.
@@ -143,7 +144,7 @@ pub enum Baseline {
 #[repr(C, u32)]
 pub enum Offered {
     Editable,
-    Inactive(&'static str),
+    Hidden(&'static str),
     /// Decided at boot, from what the board detects.
     Runtime,
 }
@@ -152,7 +153,7 @@ impl Offered {
     pub const fn of(availability: Availability) -> Self {
         match availability {
             Availability::Editable => Self::Editable,
-            Availability::Inactive(why) => Self::Inactive(why),
+            Availability::Hidden(why) => Self::Hidden(why),
         }
     }
 }
@@ -167,9 +168,34 @@ impl Offered {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Record {
-    pub meta: Meta,
-    pub baseline: Baseline,
-    pub offered: Offered,
+    meta: Meta,
+    baseline: Baseline,
+    offered: Offered,
+}
+
+impl Record {
+    /// Only the macros make records, so every knob has one in the options
+    /// section.
+    #[doc(hidden)]
+    pub const fn __new(meta: Meta, baseline: Baseline, offered: Offered) -> Self {
+        Self {
+            meta,
+            baseline,
+            offered,
+        }
+    }
+
+    pub const fn meta(&self) -> &Meta {
+        &self.meta
+    }
+
+    pub const fn baseline(&self) -> Baseline {
+        self.baseline
+    }
+
+    pub const fn offered(&self) -> Offered {
+        self.offered
+    }
 }
 
 /// A knob's [`Meta`] as a [`Record`] without board facts: for knobs whose
@@ -188,12 +214,9 @@ pub struct Record {
 macro_rules! meta {
     ($meta:expr) => {{
         #[unsafe(link_section = $crate::__meta_section!())]
-        static RECORD: $crate::Record = $crate::Record {
-            meta: $meta,
-            baseline: $crate::Baseline::Runtime,
-            offered: $crate::Offered::Runtime,
-        };
-        &RECORD.meta
+        static RECORD: $crate::Record =
+            $crate::Record::__new($meta, $crate::Baseline::Runtime, $crate::Offered::Runtime);
+        &RECORD
     }};
 }
 
@@ -264,18 +287,18 @@ macro_rules! knob {
                 $crate::Availability::Editable
             }
 
-            /// The runtime knob without a [`Record`], for sets whose records a
-            /// board writes elsewhere (the chipset's, at its entry point).
-            pub const KNOB: $crate::Knob<$config> = Self::knob(&Self::META);
+            /// The runtime knob of a set whose records a board writes
+            /// elsewhere (the chipset's, at its entry point).
+            pub const KNOB: $crate::Knob<$config> = $crate::Knob::__unrecorded(
+                &Self::META,
+                Self::get,
+                Self::set,
+                Self::available,
+            );
 
-            /// The runtime knob, described by `meta` (a set's [`Record`]).
-            pub const fn knob(meta: &'static $crate::Meta) -> $crate::Knob<$config> {
-                $crate::Knob {
-                    meta,
-                    get: Self::get,
-                    set: Self::set,
-                    available: Self::available,
-                }
+            /// The runtime knob `index` of a set with the records `set`.
+            pub const fn knob(set: &'static [$crate::Record], index: usize) -> $crate::Knob<$config> {
+                $crate::Knob::__new(set, index, Self::get, Self::set, Self::available)
             }
         }
     };
@@ -302,44 +325,50 @@ macro_rules! knob {
 #[macro_export]
 macro_rules! option_set {
     ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = runtime] = [$($knob:path),+ $(,)?]) => {
-        $(#[$attr])*
-        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = [$(
-            <$knob>::knob({
-                #[unsafe(link_section = $crate::__meta_section!())]
-                static RECORD: $crate::Record = $crate::Record {
-                    meta: <$knob>::META,
-                    baseline: $crate::Baseline::Runtime,
-                    offered: $crate::Offered::Runtime,
-                };
-                &RECORD.meta
-            })
-        ),+];
+        $crate::__option_set!($(#[$attr])* $vis $name: $config; [$($knob),+];
+            [$($crate::Record::__new(
+                <$knob>::META,
+                $crate::Baseline::Runtime,
+                $crate::Offered::Runtime,
+            )),+]);
     };
     ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = $default:expr; offered at runtime] = [$($knob:path),+ $(,)?]) => {
-        $(#[$attr])*
-        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = [$(
-            <$knob>::knob({
-                const DEFAULT: $config = $default;
-                #[unsafe(link_section = $crate::__meta_section!())]
-                static RECORD: $crate::Record = $crate::Record {
-                    meta: <$knob>::META,
-                    baseline: $crate::Baseline::Known(<$knob>::get(&DEFAULT)),
-                    offered: $crate::Offered::Runtime,
-                };
-                &RECORD.meta
-            })
-        ),+];
+        $crate::__option_set!($(#[$attr])* $vis $name: $config; [$($knob),+];
+            [$($crate::Record::__new(
+                <$knob>::META,
+                $crate::Baseline::Known(<$knob>::get(&{ const DEFAULT: $config = $default; DEFAULT })),
+                $crate::Offered::Runtime,
+            )),+]);
     };
     ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = $default:expr] = [$($knob:path),+ $(,)?]) => {
+        $crate::__option_set!($(#[$attr])* $vis $name: $config; [$($knob),+];
+            [$($crate::record!($knob, &{ const DEFAULT: $config = $default; DEFAULT })),+]);
+    };
+}
+
+/// A set's records as one ordered array in one section, and its knobs.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __option_set {
+    ($(#[$attr:meta])* $vis:vis $name:ident: $config:ty; [$($knob:path),+]; [$($record:expr),+]) => {
         $(#[$attr])*
-        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = [$(
-            <$knob>::knob({
-                const DEFAULT: $config = $default;
-                #[unsafe(link_section = $crate::__meta_section!())]
-                static RECORD: $crate::Record = $crate::record!($knob, &DEFAULT);
-                &RECORD.meta
-            })
-        ),+];
+        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = {
+            #[unsafe(link_section = $crate::__meta_section!())]
+            static RECORDS: [$crate::Record; $crate::__count!($($knob)+)] = [$($record),+];
+            $crate::__knobs!(RECORDS; []; []; $($knob),+)
+        };
+    };
+}
+
+/// `[K0::knob(&RECORDS, 0), K1::knob(&RECORDS, 1), ..]`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __knobs {
+    ($records:ident; [$($done:expr),*]; [$($prev:tt)*]; $head:path $(, $tail:path)*) => {
+        $crate::__knobs!($records; [$($done,)* <$head>::knob(&$records, $crate::__count!($($prev)*))]; [$($prev)* x]; $($tail),*)
+    };
+    ($records:ident; [$($done:expr),*]; [$($prev:tt)*];) => {
+        [$($done),*]
     };
 }
 
@@ -348,11 +377,11 @@ macro_rules! option_set {
 #[macro_export]
 macro_rules! record {
     ($knob:path, $config:expr) => {
-        $crate::Record {
-            meta: <$knob>::META,
-            baseline: $crate::Baseline::Known(<$knob>::get($config)),
-            offered: $crate::Offered::of(<$knob>::available($config)),
-        }
+        $crate::Record::__new(
+            <$knob>::META,
+            $crate::Baseline::Known(<$knob>::get($config)),
+            $crate::Offered::of(<$knob>::available($config)),
+        )
     };
 }
 
@@ -363,25 +392,63 @@ macro_rules! __count {
     ($head:tt $($tail:tt)*) => { 1 + $crate::__count!($($tail)*) };
 }
 
-/// One overridable field of a configuration `C`.
+/// One overridable field of a configuration `C`, made by [`knob!`],
+/// [`option_set!`] or over a [`meta!`] record.
 pub struct Knob<C: 'static> {
     pub meta: &'static Meta,
     /// The field's value.
     pub get: fn(&C) -> u32,
     /// Set the field; only called with a value of [`Meta::kind`].
     pub set: fn(&mut C, u32),
-    /// Whether this machine, as `C` describes it, lets the user change it.
+    /// Whether this machine, as `C` describes it, has the knob.
     pub available: fn(&C) -> Availability,
+    /// The records of the knob's set. Only [`Record`]s make knobs, and a
+    /// reference to the whole array keeps the set's records in order: LLVM
+    /// splits an array it only sees indexed by constants.
+    _set: &'static [Record],
 }
 
 impl<C> Knob<C> {
-    /// An always available knob.
-    pub const fn new(meta: &'static Meta, get: fn(&C) -> u32, set: fn(&mut C, u32)) -> Self {
+    /// An always available knob described by `record` ([`meta!`]).
+    pub const fn new(record: &'static Record, get: fn(&C) -> u32, set: fn(&mut C, u32)) -> Self {
+        Self::__new(core::slice::from_ref(record), 0, get, set, |_| {
+            Availability::Editable
+        })
+    }
+
+    /// Knob `index` of the set whose records are `set`.
+    #[doc(hidden)]
+    pub const fn __new(
+        set: &'static [Record],
+        index: usize,
+        get: fn(&C) -> u32,
+        set_value: fn(&mut C, u32),
+        available: fn(&C) -> Availability,
+    ) -> Self {
+        Self {
+            meta: set[index].meta(),
+            get,
+            set: set_value,
+            available,
+            _set: set,
+        }
+    }
+
+    /// A knob without a record: its set's records are written elsewhere
+    /// (the Intel chipset's, at the board's entry point).
+    #[doc(hidden)]
+    pub const fn __unrecorded(
+        meta: &'static Meta,
+        get: fn(&C) -> u32,
+        set_value: fn(&mut C, u32),
+        available: fn(&C) -> Availability,
+    ) -> Self {
         Self {
             meta,
             get,
-            set,
-            available: |_| Availability::Editable,
+            set: set_value,
+            available,
+            _set: &[],
         }
     }
 
@@ -485,8 +552,8 @@ impl<A: Source, B: Source> Source for Layered<A, B> {
 pub enum Rejection {
     /// Not one of the knob's values.
     OutOfRange,
-    /// The knob is [`Availability::Inactive`] on this machine.
-    Inactive,
+    /// The machine does not have the knob ([`Availability::Hidden`]).
+    Hidden,
     /// The source failed.
     Source(SourceError),
     /// The configuration with every override failed the consumer's check.
@@ -533,7 +600,7 @@ pub fn resolve_knob<C: 'static>(
         },
         Ok(Some(stored)) if availability != Availability::Editable => Provenance::Rejected {
             stored,
-            why: Rejection::Inactive,
+            why: Rejection::Hidden,
         },
         Ok(Some(stored)) => {
             (knob.set)(config, stored);

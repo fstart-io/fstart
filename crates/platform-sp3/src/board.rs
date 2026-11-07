@@ -39,28 +39,6 @@ pub struct Policy {
     pub dxio: DxioPolicy,
 }
 
-/// Knobs of the silicon [`Policy`] a board can offer in
-/// [`Board::OPTIONS`].
-pub mod knob {
-    use fstart_driver_amd::sp3::fch::common::env::PowerFailState;
-    use fstart_options::{Kind, Knob, Meta};
-
-    use super::Policy;
-
-    /// What the system does when AC power returns.
-    pub const POWER_FAIL: Knob<Policy> = Knob::new(
-        fstart_options::meta!(Meta {
-            key: "power_on_after_fail",
-            form: "Power",
-            label: "Restore on AC power loss",
-            help: "What the system does when AC power returns.",
-            kind: Kind::Enum(PowerFailState::CHOICES),
-        }),
-        |p| p.fch_env.power_fail.option(),
-        |p, v| p.fch_env.power_fail = PowerFailState::from_option(v),
-    );
-}
-
 /// The board's FCH GPIO program (`Stage::program_gpio`), applied in this
 /// order after the M.2 / strap detect pads were read.
 #[derive(Debug, Clone, Copy)]
@@ -96,10 +74,10 @@ pub trait Board: Sp3BoardFacts + 'static {
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
 
-    /// The silicon policy knobs the user may override (`fstart_options`).
-    /// The flow applies them when it has the console, after the FCH reset
-    /// tasks: a knob may change any policy but [`Policy::sata`], which the
-    /// reset tasks already used. Board knobs outside the policy go through
+    /// The [`Policy::fch_env`] knobs the user may override, an
+    /// `fstart_options::option_set!` over the board's constant policy (as
+    /// `env::PowerFail`). The flow applies them when it has the console,
+    /// before the FCH env tasks. Board knobs outside the policy go through
     /// `Stage::resolve_options`.
-    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[];
+    const FCH_ENV_OPTIONS: &'static [fstart_options::Knob<EnvPolicy>] = &[];
 }

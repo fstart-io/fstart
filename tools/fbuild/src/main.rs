@@ -91,10 +91,10 @@ enum Command {
         #[arg(short, long)]
         image: String,
     },
-    /// Print the options a build offers, as JSON: the knob records its stage
-    /// ELFs keep (`fstart_options::meta!`).
+    /// Print the options a build offers, as JSON: the option records of its
+    /// last stage, checked against the earlier ones.
     Options {
-        /// The build's stage ELFs.
+        /// The build's stage ELFs, in boot order.
         #[arg(required = true)]
         elfs: Vec<String>,
     },
@@ -370,7 +370,7 @@ fn main() {
         }),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Options { elfs } => (|| {
-            use fstart_image_build::options::{from_elf, merge};
+            use fstart_image_build::options::{from_elf, schema};
             let stages = elfs
                 .iter()
                 .map(|elf| {
@@ -378,7 +378,7 @@ fn main() {
                     from_elf(&data).map_err(|e| format!("{elf}: {e}"))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-            let options = merge(stages)?;
+            let options = schema(stages)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&options).map_err(|e| e.to_string())?

@@ -52,6 +52,19 @@ pub struct EnvPolicy {
     pub power_fail: PowerFailState,
 }
 
+fstart_options::knob! {
+    /// What the system does when AC power returns.
+    pub PowerFail: EnvPolicy = fstart_options::Meta {
+        key: "power_on_after_fail",
+        form: "Power",
+        label: "Restore on AC power loss",
+        help: "What the system does when AC power returns.",
+        kind: fstart_options::Kind::Enum(PowerFailState::CHOICES),
+    };
+    get(p) => p.power_fail.option();
+    set(p, v) => p.power_fail = PowerFailState::from_option(v);
+}
+
 /// af5f: ACPI config, SCI map, (ZP) clock generator, Huashan PM bits.
 /// The donor also stores a pointer to its FCH data block in CMOS RAM
 /// `0x608..0x60B` for its SMM code; fstart's SMM does not use it.

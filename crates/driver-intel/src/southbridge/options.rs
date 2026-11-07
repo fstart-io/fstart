@@ -80,7 +80,7 @@ fstart_options::knob! {
     set(o, v) => o.sata_mode = Some(if v == 1 { SataMode::Ide } else { SataMode::Ahci });
     available(o) => match o.sata_mode {
         Some(_) => Availability::Editable,
-        None => Availability::Inactive("this board has no SATA controller"),
+        None => Availability::Hidden("this board has no SATA controller"),
     };
 }
 
@@ -129,7 +129,7 @@ mod tests {
         let none = Options::from_config(1, None);
         assert_eq!(
             Sata::available(&none),
-            Availability::Inactive("this board has no SATA controller")
+            Availability::Hidden("this board has no SATA controller")
         );
         let mut ahci = Options::from_config(1, Some(SataMode::Ahci));
         assert_eq!(Sata::get(&ahci), 0);

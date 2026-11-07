@@ -23,12 +23,13 @@ pub struct OptionSchema {
     pub availability: OptionAvailability,
 }
 
-/// Whether the board offers an option.
+/// Whether the board offers an option. Options the build knows the board
+/// lacks are left out of a build's options.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OptionAvailability {
     Editable,
-    Inactive(String),
+    Hidden(String),
     /// Decided at boot, from what the board detects.
     Runtime,
 }
@@ -79,24 +80,42 @@ pub fn from_elf(data: &[u8]) -> Result<Vec<OptionSchema>, String> {
         .collect()
 }
 
-/// The options of a build: every stage's, once per key. Stages that
-/// describe a key differently are an error.
-pub fn merge(
-    stages: impl IntoIterator<Item = Vec<OptionSchema>>,
-) -> Result<Vec<OptionSchema>, String> {
-    let mut options: Vec<OptionSchema> = Vec::new();
-    for option in stages.into_iter().flatten() {
-        match options.iter().find(|o| o.key == option.key) {
-            Some(known) if *known == option => {}
-            Some(_) => {
-                return Err(format!(
-                    "stages describe option `{}` differently",
-                    option.key
-                ));
+/// The options of a build, from its stages' records in boot order: the
+/// last stage's, which hands the options to the payload's menu, without
+/// those the build knows the board lacks. An option an earlier stage
+/// resolves must be in the last one, described the same way: a menu could
+/// not change it otherwise.
+pub fn schema(stages: Vec<Vec<OptionSchema>>) -> Result<Vec<OptionSchema>, String> {
+    let Some((last, earlier)) = stages.split_last() else {
+        return Ok(Vec::new());
+    };
+    for (stage, options) in earlier.iter().enumerate() {
+        for option in options {
+            match last.iter().find(|o| o.key == option.key) {
+                Some(known) if known == option => {}
+                Some(_) => {
+                    return Err(format!(
+                        "stage {stage} and the last stage describe option `{}` differently",
+                        option.key
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "stage {stage} resolves option `{}`, the last stage does not",
+                        option.key
+                    ));
+                }
             }
-            None => options.push(option),
         }
     }
+    let mut options: Vec<OptionSchema> = Vec::new();
+    for option in last {
+        if options.iter().any(|o| o.key == option.key) {
+            return Err(format!("option `{}` is recorded twice", option.key));
+        }
+        options.push(option.clone());
+    }
+    options.retain(|o| !matches!(o.availability, OptionAvailability::Hidden(_)));
     Ok(options)
 }
 
@@ -226,7 +245,7 @@ impl Image<'_, '_> {
         let offered = address + offered_offset(p);
         option.availability = match self.u32(offered)? {
             0 => OptionAvailability::Editable,
-            1 => OptionAvailability::Inactive(self.str(offered + union_offset(p))?),
+            1 => OptionAvailability::Hidden(self.str(offered + union_offset(p))?),
             2 => OptionAvailability::Runtime,
             tag => return Err(format!("option record at {address:#x}: offered {tag}")),
         };
@@ -236,12 +255,46 @@ impl Image<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{choice_size, kind_size, meta_size, offered_offset, record_size, union_offset};
+    use super::{
+        OptionAvailability, OptionKind, OptionSchema, choice_size, kind_size, meta_size,
+        offered_offset, record_size, schema, union_offset,
+    };
     use core::mem::{offset_of, size_of};
-    use fstart_options::{Choice, Kind, Meta, Record};
+    use fstart_options::{Baseline, Choice, Kind, Meta, Offered, Record};
 
     /// The reader's layout is the host's `repr(C)` one (64-bit); 32-bit
     /// stages follow the same rules with 4-byte pointers.
+    fn option(key: &str, default: Option<u32>, availability: OptionAvailability) -> OptionSchema {
+        OptionSchema {
+            key: key.into(),
+            form: "f".into(),
+            label: "l".into(),
+            help: "h".into(),
+            kind: OptionKind::Bool,
+            default,
+            availability,
+        }
+    }
+
+    #[test]
+    fn the_last_stage_has_every_option() {
+        use OptionAvailability::{Editable, Hidden};
+        let level = option("debug_level", Some(6), Editable);
+        let panel = option("tft_brightness", Some(255), Hidden("no panel".into()));
+        let last = vec![level.clone(), panel, option("wlan", Some(1), Editable)];
+        let options = schema(vec![vec![level.clone()], vec![], last.clone()]).unwrap();
+        let keys: Vec<_> = options.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, ["debug_level", "wlan"], "hidden options left out");
+        assert!(
+            schema(vec![
+                vec![option("sata_mode", Some(0), Editable)],
+                last.clone()
+            ])
+            .is_err()
+        );
+        assert!(schema(vec![vec![option("debug_level", Some(7), Editable)], last]).is_err());
+    }
+
     #[test]
     fn record_layout_matches_the_options_crate() {
         let p = size_of::<usize>() as u64;
@@ -251,8 +304,20 @@ mod tests {
         assert_eq!(choice_size(p), size_of::<Choice>() as u64);
         assert_eq!(union_offset(p), offset_of!(Choice, label) as u64);
         assert_eq!(record_size(p), size_of::<Record>() as u64);
-        assert_eq!(meta_size(p), offset_of!(Record, baseline) as u64);
-        assert_eq!(offered_offset(p), offset_of!(Record, offered) as u64);
+        // The tags and values where the reader looks for them.
+        let record = Record::__new(
+            Meta::bool("k", "f", "l", "h"),
+            Baseline::Known(0x1234_5678),
+            Offered::Hidden("why"),
+        );
+        // SAFETY: `Record` is `repr(C)` and fully initialized here.
+        let bytes = unsafe {
+            core::slice::from_raw_parts((&raw const record).cast::<u8>(), size_of::<Record>())
+        };
+        let u32_at = |at: u64| u32::from_le_bytes(bytes[at as usize..][..4].try_into().unwrap());
+        assert_eq!(u32_at(meta_size(p)), 0, "Baseline::Known");
+        assert_eq!(u32_at(meta_size(p) + 4), 0x1234_5678);
+        assert_eq!(u32_at(offered_offset(p)), 1, "Offered::Hidden");
         // i686 stages: 68-byte records, 48-byte metas, 12-byte choices.
         assert_eq!((record_size(4), meta_size(4), choice_size(4)), (68, 48, 12));
     }

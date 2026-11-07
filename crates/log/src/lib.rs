@@ -507,7 +507,7 @@ pub mod option {
                 stored,
                 match why {
                     Rejection::OutOfRange => "invalid value",
-                    Rejection::Inactive => "unavailable",
+                    Rejection::Hidden => "not on this machine",
                     Rejection::Source(_) => "store unreadable",
                     Rejection::Conflict(why) => why,
                 },

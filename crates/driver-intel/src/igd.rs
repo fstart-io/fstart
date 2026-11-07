@@ -923,7 +923,7 @@ pub mod options {
         if o.igd {
             Availability::Editable
         } else {
-            Availability::Inactive("the integrated graphics are off")
+            Availability::Hidden("the integrated graphics are off")
         }
     }
 
@@ -958,7 +958,7 @@ pub mod options {
         available(o) => if o.igd && o.panel {
             Availability::Editable
         } else {
-            Availability::Inactive("this board has no internal panel")
+            Availability::Hidden("this board has no internal panel")
         };
     }
 
