@@ -252,15 +252,16 @@ impl CacheSpi {
         Ok(status[0])
     }
 
-    /// rflasher `protection::write_status`: EWSR, WRSR, then WIP for up to
-    /// 100 ms (SST specifies 10 ms).
+    /// rflasher `protection::write_status`: SST needs EWSR; Macronix uses
+    /// WREN (the controller's atomic prefix), then WRSR and WIP polling.
     fn write_status(&mut self, value: u8) -> Result<(), ServiceError> {
+        if self.writable == Some(Protection::SstStatus) {
+            self.controller
+                .execute(&mut SpiCommand::simple(0x50))
+                .map_err(|_| ServiceError::HardwareError)?;
+        }
         self.controller
-            .execute(&mut SpiCommand::simple(0x50))
-            .and_then(|()| {
-                self.controller
-                    .execute(&mut SpiCommand::write_reg(0x01, &[value & !3]))
-            })
+            .execute(&mut SpiCommand::write_reg(0x01, &[value & !3]))
             .map_err(|_| ServiceError::HardwareError)?;
         for _ in 0..1000 {
             if self.read_status()? & 1 == 0 {
@@ -277,22 +278,29 @@ impl CacheSpi {
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
     ) -> Result<(), ServiceError> {
-        let Some(Protection::SstStatus) = self.writable else {
-            return operation(self);
-        };
-        let status = self.read_status()?;
-        if status & SST_BP == 0 {
+        if !matches!(
+            self.writable,
+            Some(Protection::SstStatus | Protection::MacronixStatus)
+        ) {
             return operation(self);
         }
-        let result = self.write_status(status & !SST_BP).and_then(|()| {
-            if self.read_status()? & SST_BP != 0 {
+        let status = self.read_status()?;
+        if status & STATUS_BP == 0 {
+            return operation(self);
+        }
+        fstart_log::info!(
+            "spi-cache: temporarily clearing block protection SR={:#x}",
+            status
+        );
+        let result = self.write_status(status & !STATUS_BP).and_then(|()| {
+            if self.read_status()? & STATUS_BP != 0 {
                 // BPL with WP# asserted ignores WRSR.
                 return Err(ServiceError::HardwareError);
             }
             operation(self)
         });
         let restored = self.write_status(status).and_then(|()| {
-            if self.read_status()? & SST_BP != status & SST_BP {
+            if self.read_status()? & STATUS_BP != status & STATUS_BP {
                 return Err(ServiceError::HardwareError);
             }
             Ok(())
@@ -313,6 +321,10 @@ impl CacheSpi {
         if before.is_set(BIOS_CONTROL::LOCK_ENABLE)
             || before.is_set(BIOS_CONTROL::SMM_WRITE_PROTECT)
         {
+            fstart_log::error!(
+                "spi-cache: BIOS writes locked, BIOS_CNTL={:#x}",
+                before.get()
+            );
             return Err(ServiceError::HardwareError);
         }
         let result = self
@@ -339,7 +351,10 @@ impl CacheSpi {
                     .min(256 - (current as usize & 255));
                 this.controller
                     .controller_write(current, &bytes[done..done + count])
-                    .map_err(|_| ServiceError::HardwareError)?;
+                    .map_err(|_| {
+                        fstart_log::error!("spi-cache: program cycle failed at {:#x}", current);
+                        ServiceError::HardwareError
+                    })?;
                 done += count;
             }
             Ok(())
@@ -356,7 +371,10 @@ impl CacheSpi {
         self.with_write(|this| {
             this.controller
                 .controller_erase(address, length)
-                .map_err(|_| ServiceError::HardwareError)
+                .map_err(|_| {
+                    fstart_log::error!("spi-cache: erase cycle failed at {:#x}", address);
+                    ServiceError::HardwareError
+                })
         })
     }
 }
@@ -380,10 +398,12 @@ enum Protection {
     None,
     /// SST25: BP0-3 in SR1, rewritten through EWSR + WRSR.
     SstStatus,
+    /// MX25L: BP0-3 in SR1, rewritten through WREN + WRSR.
+    MacronixStatus,
 }
 
-/// SST25 SR1 BP0-BP3 (rflasher `Unlock::Status`).
-const SST_BP: u8 = 0x3c;
+/// SST25/MX25L SR1 BP0-BP3 (rflasher `Unlock::Status`).
+const STATUS_BP: u8 = 0x3c;
 
 impl Protection {
     /// Opcodes the procedure needs beyond program/erase/RDSR.
@@ -391,6 +411,7 @@ impl Protection {
         match self {
             Self::None => &[],
             Self::SstStatus => &[0x50, 0x01],
+            Self::MacronixStatus => &[0x01],
         }
     }
 }
@@ -401,8 +422,11 @@ impl Protection {
 fn supported_geometry(id: [u8; 3], chip_size: u32) -> Option<Protection> {
     let supported = match id {
         [0xef, 0x30, capacity @ 0x15..=0x17] => chip_size == 1u32 << capacity,
-        [0xef, 0x40, capacity] | [0xc2, 0x20, capacity] => {
+        [0xef, 0x40, capacity] => {
             (0x15..=0x18).contains(&capacity) && chip_size == 1u32 << capacity
+        }
+        [0xc2, 0x20, capacity @ 0x15..=0x18] => {
+            return (chip_size == 1u32 << capacity).then_some(Protection::MacronixStatus);
         }
         [0x1f, 0x47, 0x00 | 0x01] => chip_size == 0x400000,
         // Ships in the ThinkPad X200; powers up block-protected.
@@ -419,7 +443,12 @@ mod tests {
         use super::{Protection, supported_geometry};
         let none = Some(Protection::None);
         assert_eq!(supported_geometry([0xef, 0x40, 0x18], 0x1000000), none);
-        assert_eq!(supported_geometry([0xc2, 0x20, 0x16], 0x400000), none);
+        for (capacity, size) in [(0x16, 0x400000), (0x17, 0x800000)] {
+            assert_eq!(
+                supported_geometry([0xc2, 0x20, capacity], size),
+                Some(Protection::MacronixStatus)
+            );
+        }
         assert_eq!(supported_geometry([0xef, 0x30, 0x17], 0x800000), none);
         assert_eq!(supported_geometry([0x1f, 0x47, 0x00], 0x400000), none);
         assert_eq!(supported_geometry([0x1f, 0x47, 0x01], 0x400000), none);

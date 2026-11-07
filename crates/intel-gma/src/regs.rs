@@ -519,6 +519,14 @@ register_bitfields! [u32,
     // Split-PCH connector, PLL, transcoder, and FDI registers.
     // ---------------------------------------------------------------------
 
+    /// Split-PCH 120 MHz display reference clock control (0xc6200).
+    pub PCH_DREF_CONTROL [
+        CPU_OUTPUT OFFSET(13) NUMBITS(2) [Ssc = 2, NonSsc = 3],
+        SSC_ENABLE OFFSET(11) NUMBITS(2) [Enabled = 2],
+        NONSSC_ENABLE OFFSET(9) NUMBITS(2) [Enabled = 2],
+        SSC_MODULATION_ENABLE OFFSET(1) NUMBITS(1) []
+    ],
+
     /// Split-PCH ADPA VGA/CRT port control register.
     pub PCH_ADPA [
         /// Enable VGA DAC output.

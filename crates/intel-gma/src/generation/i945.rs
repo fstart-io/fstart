@@ -66,7 +66,7 @@ impl GenerationOps for I945 {
         enable_port(&mmio, port, pipe, mode)?;
 
         if port == Port::Lvds {
-            g45::panel_power_on(&mmio)?;
+            crate::power::panel_power_on(&mmio, crate::panel::PanelPowerRegs::GMCH)?;
             panel_backlight_on(&mmio, ctx.config.cpu, panel);
         }
         Ok(())
@@ -339,7 +339,7 @@ fn panel_backlight_on(mmio: &Mmio, cpu: Cpu, panel: Option<LfpPanelMetadata>) {
             .map(|backlight| backlight.is_pwm())
             .unwrap_or(false)
     {
-        g45::apply_panel_op(
+        crate::power::apply_panel_op(
             mmio,
             set_pnv_backlight_op(g45::BLC_PWM_GMCH_CTL, PNV_BLC_PWM_DUTY_MAX),
         );

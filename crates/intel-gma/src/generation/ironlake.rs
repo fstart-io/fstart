@@ -17,9 +17,9 @@ use heapless::Vec;
 use crate::port::PortRegisterOp;
 use crate::regs::{
     CPU_DP_CTL, CPU_DSPCNTR, CPU_PIPECONF, FDI_RX_CTL, FDI_RX_IIR, FDI_RX_MISC, FDI_RX_TUSIZE1,
-    FDI_TX_CTL, IronlakeFdiRxOffsets, IronlakeFdiTxOffsets, PCH_ADPA as PCH_ADPA_REG, PCH_DPLL,
-    PCH_DPLL_SEL as PCH_DPLL_SEL_REG, PCH_FP, PCH_HDMI as PCH_HDMI_REG, PCH_LVDS as PCH_LVDS_REG,
-    TRANS_CONF,
+    FDI_TX_CTL, GMCH_DATA_M, GMCH_M_N, IronlakeFdiRxOffsets, IronlakeFdiTxOffsets,
+    PCH_ADPA as PCH_ADPA_REG, PCH_DPLL, PCH_DPLL_SEL as PCH_DPLL_SEL_REG, PCH_FP,
+    PCH_HDMI as PCH_HDMI_REG, PCH_LVDS as PCH_LVDS_REG, TRANS_CONF,
 };
 use crate::types::{Cpu, Generation, Pipe, Plane, Port};
 
@@ -40,7 +40,59 @@ impl GenerationOps for Ironlake {
         }
         let plane = primary_for_pipe(pipe);
         let mut mmio = ctx.mmio();
-        execute_ironlake_init_plan_registers(&mut mmio, &plan, port, mode, ctx.surface, pipe, plane)
+        mmio.write32(0x41000, crate::regs::VGACNTRL::VGA_DISPLAY_DISABLE::SET.value);
+        // libgfxinit Power_And_Clocks.Initialize: both PCH PLL references
+        // must be running before enabling the pixel and FDI clocks.
+        let dref = crate::regs::PCH_DREF_CONTROL::SSC_ENABLE::Enabled
+            + crate::regs::PCH_DREF_CONTROL::NONSSC_ENABLE::Enabled
+            + crate::regs::PCH_DREF_CONTROL::SSC_MODULATION_ENABLE::SET;
+        mmio.write32(0xc6200, dref.value);
+        mmio.posting_read(0xc6200);
+        crate::mmio::delay_us(1);
+        if port == Port::Lvds {
+            use crate::panel::{PanelPowerDelays, PanelPowerPortSelect, PanelPowerRegs};
+            let regs = PanelPowerRegs::PCH;
+            let delays = PanelPowerDelays::from_registers(
+                mmio.read32(regs.on_delays),
+                mmio.read32(regs.off_delays),
+                mmio.read32(regs.divisor),
+            );
+            let panel = crate::panel::panel_power_sequencer_plan(
+                regs,
+                delays,
+                PanelPowerPortSelect::Lvds,
+                true,
+                true,
+            );
+            // Unlock before changing the protected delay registers.
+            crate::power::apply_panel_op(&mmio, panel.control);
+            if panel.override_delays {
+                crate::power::apply_panel_op(&mmio, panel.on_delays);
+                crate::power::apply_panel_op(&mmio, panel.off_delays);
+                crate::power::apply_panel_op(&mmio, panel.cycle_delay);
+            }
+        }
+        execute_ironlake_init_plan_registers(
+            &mut mmio,
+            &plan,
+            port,
+            mode,
+            ctx.surface,
+            pipe,
+            plane,
+        )?;
+        if port == Port::Lvds {
+            let regs = crate::panel::PanelPowerRegs::PCH;
+            crate::power::panel_power_on(&mmio, regs)?;
+            mmio.update32(
+                regs.control,
+                crate::regs::PP_CONTROL::UNLOCK_KEY.val(0xffff).value,
+                crate::regs::PP_CONTROL::UNLOCK_KEY.val(0xabcd).value
+                    | crate::regs::PP_CONTROL::BACKLIGHT_ENABLE::SET.value,
+            );
+            mmio.posting_read(regs.control);
+        }
+        Ok(())
     }
 
     fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
@@ -1550,16 +1602,14 @@ fn ironlake_init_sequence_plan(
         &mut ops,
         IronlakeInitOp::PchDpllSelect(pch_dpll_sel_op(pipeline.fdi, pipeline.pll)),
     )?;
-    push_init_op(&mut ops, IronlakeInitOp::ProgramCpuPipe)?;
-    push_init_op(
-        &mut ops,
-        IronlakeInitOp::ProgramPchTranscoder(pch_transcoder_timing_plan(pipeline.fdi, mode)),
-    )?;
-    push_init_op(&mut ops, IronlakeInitOp::ProgramPrimaryPlane)?;
+    // The CPU pipe needs the FDI clocks before it can run. The PCH
+    // transcoder, conversely, must not run until the FDI link is trained.
     for op in fdi.rx_ops {
         push_init_op(&mut ops, IronlakeInitOp::FdiPreTrainRx(op))?;
     }
     push_init_op(&mut ops, IronlakeInitOp::FdiPreTrainTx(fdi.tx_op))?;
+    push_init_op(&mut ops, IronlakeInitOp::ProgramCpuPipe)?;
+    push_init_op(&mut ops, IronlakeInitOp::ProgramPrimaryPlane)?;
     push_init_op(
         &mut ops,
         IronlakeInitOp::FdiTrain {
@@ -1567,6 +1617,10 @@ fn ironlake_init_sequence_plan(
             mode: fdi_training_mode(cpu)?,
             config: pipeline.fdi_link,
         },
+    )?;
+    push_init_op(
+        &mut ops,
+        IronlakeInitOp::ProgramPchTranscoder(pch_transcoder_timing_plan(pipeline.fdi, mode)),
     )?;
     push_init_op(
         &mut ops,
@@ -1669,9 +1723,24 @@ pub(crate) fn execute_ironlake_init_plan_registers<S: IronlakeMmioSink>(
                 // libgfxinit waits 150 us after enabling the PCH VCO.
                 crate::mmio::delay_us(150);
             }
+            IronlakeInitOp::FdiPreTrainRx(port_op) => {
+                apply_executor_port_op(sink, port_op);
+                if let PortRegisterOp::Write { register, value } = port_op
+                    && value & FDI_RX_CTL_FDI_PLL_ENABLE != 0
+                    && [FdiPort::A, FdiPort::B, FdiPort::C]
+                        .iter()
+                        .any(|fdi| fdi_rx_regs(*fdi).ctl == register)
+                {
+                    sink.posting_read(register);
+                    crate::mmio::delay_us(220);
+                }
+            }
+            IronlakeInitOp::FdiPreTrainTx(port_op) => {
+                apply_executor_port_op(sink, port_op);
+                sink.posting_read(fdi_tx_ctl_register(fdi_for_port(port)?));
+                crate::mmio::delay_us(100);
+            }
             IronlakeInitOp::PchDpllSelect(port_op)
-            | IronlakeInitOp::FdiPreTrainRx(port_op)
-            | IronlakeInitOp::FdiPreTrainTx(port_op)
             | IronlakeInitOp::EnablePchPort(port_op)
             | IronlakeInitOp::SetPortMask(port_op) => apply_executor_port_op(sink, port_op),
             IronlakeInitOp::ProgramPchTranscoder(timing) => {
@@ -1825,10 +1894,20 @@ fn execute_fdi_train_step<S: IronlakeMmioSink>(
 ) -> bool {
     // libgfxinit programs the CPU FDI transmitter first, then the PCH receiver.
     apply_executor_port_op(sink, step.tx_op);
+    sink.posting_read(fdi_tx_ctl_register(fdi));
     apply_executor_port_op(sink, step.rx_op);
+    sink.posting_read(fdi_rx_regs(fdi).ctl);
     let Some(bit) = step.lock_bit else {
+        crate::mmio::delay_us(31);
         return true;
     };
+    crate::mmio::delay_us(1);
+    if bit & FDI_RX_BIT_LOCK != 0 {
+        if !poll_register_set(sink, fdi_rx_regs(fdi).iir, FDI_RX_BIT_LOCK) {
+            return false;
+        }
+        sink.write32(fdi_rx_regs(fdi).iir, FDI_RX_BIT_LOCK);
+    }
     // `PCH.FDI.Check_Lock` polls symbol lock, acknowledges it, then polls
     // interlane alignment, instead of requiring both at once.
     if bit & FDI_RX_SYMBOL_LOCK != 0 {
@@ -1853,7 +1932,14 @@ fn poll_register_set<S: IronlakeMmioSink>(sink: &mut S, register: usize, mask: u
             return true;
         }
         tries += 1;
+        crate::mmio::delay_us(1);
     }
+    fstart_log::warn!(
+        "intel-gma: FDI lock timeout register={:#x} expected={:#x} actual={:#x}",
+        register,
+        mask,
+        sink.read32(register)
+    );
     false
 }
 
@@ -1865,6 +1951,23 @@ fn program_cpu_pipe_for_executor<S: IronlakeMmioSink>(
 ) -> Result<(), GmaError> {
     let regs = CpuPipeRegs::for_pipe(pipe)?;
     let pipe_config = crate::pipe::PipeConfig::new(pipe, mode);
+    // FDI uses the same 8b/10b M/N calculation as DisplayPort, at HBR.
+    let link = crate::dp_training::DpLinkConfig {
+        link_rate: crate::dp_aux::DpLinkRate::Hbr,
+        lane_count: FdiLinkConfig::DEFAULT.lane_count,
+        enhanced_framing: true,
+        tps3_supported: false,
+        aux_rd_interval: 0,
+    };
+    let mn = link.m_n(mode, if port == Port::Lvds { 6 } else { 8 });
+    let mn_base = regs.htotal + 0x30; // PIPE_DATA_M1, N1, LINK_M1, N1
+    sink.write32(
+        mn_base,
+        (GMCH_DATA_M::TU_SIZE.val(63) + GMCH_DATA_M::VALUE.val(mn.data_m)).value,
+    );
+    sink.write32(mn_base + 4, GMCH_M_N::VALUE.val(mn.data_n).value);
+    sink.write32(mn_base + 0x10, GMCH_M_N::VALUE.val(mn.link_m).value);
+    sink.write32(mn_base + 0x14, GMCH_M_N::VALUE.val(mn.link_n).value);
     sink.write32(regs.htotal, pipe_config.htotal());
     sink.write32(regs.hblank, pipe_config.hblank());
     sink.write32(regs.hsync, pipe_config.hsync());
@@ -2537,9 +2640,13 @@ mod tests {
             plan[6],
             IronlakeInitOp::PchDpllSelect(pch_dpll_sel_op(FdiPort::B, PchPll::B))
         );
-        assert_eq!(plan[7], IronlakeInitOp::ProgramCpuPipe);
+        assert!(matches!(plan[7], IronlakeInitOp::FdiPreTrainRx(_)));
+        assert!(matches!(plan[12], IronlakeInitOp::FdiPreTrainRx(_)));
+        assert!(matches!(plan[13], IronlakeInitOp::FdiPreTrainTx(_)));
+        assert_eq!(plan[14], IronlakeInitOp::ProgramCpuPipe);
+        assert_eq!(plan[15], IronlakeInitOp::ProgramPrimaryPlane);
         assert!(matches!(
-            plan[8],
+            plan[17],
             IronlakeInitOp::ProgramPchTranscoder(PchTranscoderTimingPlan {
                 regs: PchTranscoderRegs {
                     timing: TRANS_TIMING_B,
@@ -2548,18 +2655,15 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(plan[9], IronlakeInitOp::ProgramPrimaryPlane);
-        assert!(matches!(plan[10], IronlakeInitOp::FdiPreTrainRx(_)));
-        assert!(matches!(plan[15], IronlakeInitOp::FdiPreTrainRx(_)));
         assert!(matches!(
-            plan[16],
+            plan[13],
             IronlakeInitOp::FdiPreTrainTx(PortRegisterOp::Write {
                 register: FDI_TX_CTL_B,
                 ..
             })
         ));
         assert_eq!(
-            plan[17],
+            plan[16],
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::B,
                 mode: FdiTrainingMode::Simple,
@@ -2589,7 +2693,7 @@ mod tests {
             IronlakeInitOp::PchDpllSelect(pch_dpll_sel_op(FdiPort::A, PchPll::A))
         );
         assert!(matches!(
-            vga[17],
+            vga[16],
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::A,
                 mode: FdiTrainingMode::Full,
@@ -2603,7 +2707,7 @@ mod tests {
 
         let hdmi = ironlake_init_sequence_plan(Cpu::Ivybridge, Port::HdmiB, mode, clock).unwrap();
         assert!(matches!(
-            hdmi[17],
+            hdmi[16],
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::A,
                 mode: FdiTrainingMode::Auto,
@@ -2658,6 +2762,10 @@ mod tests {
         // LVDS is an 18bpp path: 6 bpc (2 << 5) with dithering.
         assert_eq!(sink.latest(0x71008) & (7 << 5), 2 << 5);
         assert_eq!(sink.latest(0x71008) & (1 << 4), 1 << 4);
+        // CPU FDI data/link M/N must be populated before the pipe runs.
+        for register in [0x61030, 0x61034, 0x61040, 0x61044] {
+            assert_ne!(sink.latest(register), 0);
+        }
         assert!(sink.wrote(PCH_FPB0, encode_pch_fp(clock)));
         assert!(sink.wrote(PCH_DPLL_B, encode_pch_dpll(PchDpllMode::Lvds, clock)));
         assert_eq!(
@@ -2724,9 +2832,32 @@ mod tests {
         assert_ne!(sink.latest(PCH_ADPA) & PCH_ADPA_DAC_ENABLE, 0);
     }
 
-    #[derive(Default)]
+    #[test]
+    fn fdi_training_rejects_missing_bit_lock() {
+        let mut sink = MockSink {
+            locks: false,
+            ..MockSink::default()
+        };
+        let plan = fdi_simple_training_plan(FdiPort::B, FdiLinkConfig::DEFAULT);
+        assert!(!execute_fdi_train_step(
+            &mut sink,
+            FdiPort::B,
+            plan.steps[0]
+        ));
+    }
+
     struct MockSink {
         writes: std::vec::Vec<(usize, u32)>,
+        locks: bool,
+    }
+
+    impl Default for MockSink {
+        fn default() -> Self {
+            Self {
+                writes: std::vec::Vec::new(),
+                locks: true,
+            }
+        }
     }
 
     impl MockSink {
@@ -2748,12 +2879,28 @@ mod tests {
 
     impl IronlakeMmioSink for MockSink {
         fn read32(&mut self, register: usize) -> u32 {
-            // Status registers latch bits: acknowledge writes must not make a
-            // previously reported lock disappear in the mock.
-            self.writes
-                .iter()
-                .filter(|(written, _)| *written == register)
-                .fold(0u32, |acc, (_, value)| acc | *value)
+            // IIR is W1C: writing the stale-status mask cannot produce a lock.
+            // Model lock acquisition only for enabled TX/RX training patterns.
+            for fdi in [FdiPort::A, FdiPort::B, FdiPort::C] {
+                if register == fdi_rx_regs(fdi).iir {
+                    let tx = self.latest(fdi_tx_ctl_register(fdi));
+                    let rx = self.latest(fdi_rx_regs(fdi).ctl);
+                    if !self.locks
+                        || tx & FDI_TX_CTL_FDI_TX_ENABLE == 0
+                        || rx & FDI_RX_CTL_FDI_RX_ENABLE == 0
+                    {
+                        return 0;
+                    }
+                    return match rx & fdi_rx_training_pattern_mask(false) {
+                        0 => FDI_RX_BIT_LOCK,
+                        value if value == 1 << 28 => {
+                            FDI_RX_SYMBOL_LOCK | FDI_RX_INTERLANE_ALIGNMENT
+                        }
+                        _ => 0,
+                    };
+                }
+            }
+            self.latest(register)
         }
 
         fn write32(&mut self, register: usize, value: u32) {

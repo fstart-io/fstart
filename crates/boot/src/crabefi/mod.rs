@@ -344,6 +344,11 @@ impl<'a, C: fstart_core::services::Console + ?Sized> ConsoleAdapter<'a, C> {
 impl<C: fstart_core::services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapter<'_, C> {
     fn write_byte(&mut self, byte: u8) {
         let _ = self.console.write_byte(byte);
+        // EHCI and SPI are buffered; a complete CrabEFI log line must not
+        // wait for an unrelated later message to fill the transmit buffer.
+        if byte == b'\n' {
+            let _ = self.console.flush();
+        }
     }
 
     fn try_read_byte(&self) -> Option<u8> {
@@ -361,9 +366,9 @@ impl<C: fstart_core::services::Console + ?Sized> fmt::Write for ConsoleAdapter<'
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
             if byte == b'\n' {
-                let _ = self.console.write_byte(b'\r');
+                crabefi::DebugOutput::write_byte(self, b'\r');
             }
-            let _ = self.console.write_byte(byte);
+            crabefi::DebugOutput::write_byte(self, byte);
         }
         Ok(())
     }

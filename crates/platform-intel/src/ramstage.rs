@@ -290,7 +290,9 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         let console = slot.install(console);
         crate::debug_console::install::<B>(true);
         self.uart = console.uart_port();
-        self.console = Some(console);
+        // Payload debug/input must retain the optional EHCI console too, not
+        // just the board's console (which may deliberately be NoConsole).
+        self.console = Some(&fstart_log::ConsoleMux);
         fstart_log::info!("{} ramstage: {} console ready", B::Platform::NAME, C::NAME);
         let early = self
             .northbridge

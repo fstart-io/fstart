@@ -17,7 +17,7 @@ use crate::MmioBar;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
-    E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
+    E820Entry, E820Kind, E820State, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind, ecam,
@@ -564,6 +564,21 @@ impl fstart_core::services::MemoryInit for IntelIronlake {
     }
 }
 
+/// Preserve remapped RAM above 8 GiB; only the 64 MiB immediately below
+/// 8 GiB is non-DMA-capable (coreboot `mc_read_resources`).
+fn build_ironlake_e820(map: MemoryMap, entries: &mut [E820Entry]) -> Result<usize, ServiceError> {
+    let mut state = E820State::new();
+    let count = build_pc_compatible_e820(state.entries_mut(), map.tseg, map.touud, map.tolud)?;
+    state.set_detected(count, map.tom)?;
+    state.reserve_range_as(0x1_fc00_0000, 0x0400_0000, E820Kind::Unusable)?;
+    let count = state.count();
+    entries
+        .get_mut(..count)
+        .ok_or(ServiceError::NotSupported)?
+        .copy_from_slice(state.entries());
+    Ok(count)
+}
+
 impl MemoryDetector for IntelIronlake {
     /// coreboot `mc_read_resources()`: RAM below TSEG and above 4 GiB;
     /// TSEG, the gap to the GTT and the IGD stolen memory reserved.
@@ -572,14 +587,7 @@ impl MemoryDetector for IntelIronlake {
             return Err(ServiceError::NotInitialized);
         }
         let map = self.read_memory_map()?;
-        // coreboot: above 8 GiB − 64 MiB the top 64 MiB below 8 GiB is not
-        // DMA-capable; keep it out of the RAM map.
-        let touud = if map.touud >= (8192 - 64) << 20 {
-            map.touud.min(0x1_fc00_0000)
-        } else {
-            map.touud
-        };
-        let count = build_pc_compatible_e820(entries, map.tseg, touud, map.tolud)?;
+        let count = build_ironlake_e820(map, entries)?;
         // Publish hardware RAM before ramstage restores write-back caching.
         fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
             entries[..count]
@@ -672,6 +680,28 @@ mod tests {
             ..IntelIronlakeConfig::new()
         };
         assert!(IntelIronlake::new_from_config(&BAD_UMA).is_err());
+    }
+
+    #[test]
+    fn e820_keeps_remapped_ram_above_the_non_dma_hole() {
+        let map = MemoryMap {
+            tom: 8192 << 20,
+            tolud: 2112 << 20,
+            touud: 10112 << 20,
+            tseg: 2040 << 20,
+        };
+        let mut entries = [E820Entry::zeroed(); 32];
+        let count = build_ironlake_e820(map, &mut entries).unwrap();
+        assert!(entries[..count].iter().any(|entry| {
+            entry.kind == E820Kind::Unusable as u32
+                && entry.addr == 0x1_fc00_0000
+                && entry.size == 0x0400_0000
+        }));
+        assert!(entries[..count].iter().any(|entry| {
+            entry.kind == E820Kind::Ram as u32
+                && entry.addr == 0x2_0000_0000
+                && entry.addr + entry.size == 10112 << 20
+        }));
     }
 
     #[test]

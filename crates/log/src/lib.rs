@@ -223,6 +223,38 @@ fn consoles() -> impl Iterator<Item = &'static dyn Console> {
     core::iter::once(console).chain(debug).flatten()
 }
 
+/// Raw console access for payloads, using the same board and optional debug
+/// backends as firmware logging. Input is taken from the first ready backend.
+/// This does not apply log prefixes or verbosity filtering.
+pub struct ConsoleMux;
+
+impl Console for ConsoleMux {
+    fn write_byte(&self, byte: u8) -> Result<(), fstart_core::services::ServiceError> {
+        raw_write_byte(byte);
+        Ok(())
+    }
+
+    fn read_byte(&self) -> Result<Option<u8>, fstart_core::services::ServiceError> {
+        #[cfg(feature = "debug-consoles")]
+        for console in consoles() {
+            if let Ok(Some(byte)) = console.read_byte() {
+                return Ok(Some(byte));
+            }
+        }
+        #[cfg(not(feature = "debug-consoles"))]
+        // SAFETY: console registration finishes during single-threaded init.
+        if let Some(console) = unsafe { *CONSOLE.0.get() } {
+            return console.read_byte();
+        }
+        Ok(None)
+    }
+
+    fn flush(&self) -> Result<(), fstart_core::services::ServiceError> {
+        flush();
+        Ok(())
+    }
+}
+
 /// Current maximum log level; the build-time level when one was set.
 static MAX_LEVEL: SyncCell<Level> = SyncCell::new(match BUILD_VERBOSITY {
     Some(Verbosity::Max(level)) => level,

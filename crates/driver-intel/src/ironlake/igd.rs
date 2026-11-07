@@ -187,6 +187,9 @@ impl IntelIronlake {
             &self.config.igd.vbt,
             opregion,
         );
+        // The native modeset needs the board's panel delays and PWM setup
+        // before it asks the PCH sequencer to power the panel.
+        self.igd_pm_init_post_vbios(bars.gtt_mmio);
         if self.config.igd.display.is_some()
             && let Ok(map) = self.read_memory_map()
         {
@@ -210,7 +213,6 @@ impl IntelIronlake {
                 vbt.as_deref(),
             );
         }
-        self.igd_pm_init_post_vbios(bars.gtt_mmio);
         self.igd_enable_swsci();
     }
 

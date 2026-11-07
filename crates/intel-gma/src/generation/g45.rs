@@ -17,7 +17,7 @@ use tock_registers::interfaces::{Readable, Writeable};
 use crate::GmaContext;
 use crate::panel::{
     BacklightRegisterModel, LfpPanelMetadata, PanelPowerDelays, PanelPowerPortSelect,
-    PanelPowerRegs, PanelRegisterOp, panel_power_sequencer_plan, set_backlight_op,
+    PanelPowerRegs, panel_power_sequencer_plan, set_backlight_op,
 };
 use crate::plane::PlaneAddressModel;
 use crate::pll::{self, LegacyPll};
@@ -26,6 +26,7 @@ use crate::port::{
     hdmi_disable_op, lvds_disable_op, lvds_port_value_with_config, vga_disable_op,
 };
 use crate::power;
+use crate::power::{apply_panel_op, panel_power_on};
 use crate::regs::{
     DSPCNTR, GMCH_DATA_M, GMCH_M_N, GMCH_VGACNTRL_OFFSET, GmchDpMnRegs, GmchPanelRegs,
     GmchPipeTimingRegs, GmchPlaneRegs, PFIT_CONTROL, PIPECONF, PP_CONTROL, PP_STATUS, VGACNTRL,
@@ -96,7 +97,7 @@ impl GenerationOps for G45 {
             )?;
         }
         if pipeline.port == Port::Lvds {
-            panel_power_on(&mmio)?;
+            panel_power_on(&mmio, PanelPowerRegs::GMCH)?;
             panel_backlight_on(&mmio, panel);
         }
         Ok(())
@@ -460,19 +461,6 @@ pub(crate) fn setup_gmch_panel_power_sequencer(mmio: &Mmio) {
     apply_panel_op(mmio, plan.control);
 }
 
-pub(crate) fn apply_panel_op(mmio: &Mmio, op: PanelRegisterOp) {
-    match op {
-        PanelRegisterOp::Write { register, value } => mmio.write32(register, value),
-        PanelRegisterOp::Update {
-            register,
-            mask_unset,
-            mask_set,
-        } => mmio.update32(register, mask_unset, mask_set),
-        PanelRegisterOp::Set { register, mask } => mmio.update32(register, 0, mask),
-        PanelRegisterOp::Clear { register, mask } => mmio.update32(register, mask, 0),
-    }
-}
-
 pub(crate) fn program_vbt_panel_registers(mmio: &Mmio, panel: LfpPanelMetadata) {
     let Some(timing) = panel.fp_timing else {
         return;
@@ -716,40 +704,6 @@ pub(crate) fn panel_fitter_off_for_pipe(mmio: &Mmio, cpu: Cpu, pipe: Pipe) {
         panel_regs.pfit_control.set(0);
         panel_regs.pfit_pgm_ratios.set(0);
         let _ = panel_regs.pfit_control.get();
-    }
-}
-
-pub(crate) fn panel_power_on(mmio: &Mmio) -> Result<(), GmaError> {
-    let panel_regs = gmch_panel_regs(mmio);
-    let control = panel_regs.pp_control.get();
-    let was_on = panel_regs.pp_control.is_set(PP_CONTROL::TARGET_ON);
-    panel_regs.pp_control.set(panel_control_unlocked(
-        control | PP_CONTROL::TARGET_ON::SET.value,
-    ));
-    let _ = panel_regs.pp_control.get();
-    if !was_on {
-        delay_us(210_000);
-    }
-    // libgfxinit Panel.Wait_On allows a full second for the sequencer. A
-    // CPU-speed-dependent iteration budget can expire during normal delays.
-    let deadline = fstart_arch::x86::timestamp_us().saturating_add(1_000_000);
-    loop {
-        let status = panel_regs.pp_status.extract();
-        if status.read(PP_STATUS::SEQUENCE) == 0 && status.is_set(PP_STATUS::ON) {
-            return Ok(());
-        }
-        if fstart_arch::x86::timestamp_us() >= deadline {
-            fstart_log::error!(
-                "intel-gma: panel power timeout: status={:#x}, control={:#x}, on={:#x}, off={:#x}, divisor={:#x}",
-                status.get(),
-                panel_regs.pp_control.get(),
-                panel_regs.pp_on_delays.get(),
-                panel_regs.pp_off_delays.get(),
-                panel_regs.pp_divisor.get()
-            );
-            return Err(GmaError::Timeout);
-        }
-        core::hint::spin_loop();
     }
 }
 
