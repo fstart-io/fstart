@@ -244,34 +244,31 @@ impl Bifurcation {
         Choice::new(4, "x4x4x4x4"),
     ];
 
-    /// The knob of x16 group `I` of a board configuration `C`: its value
-    /// is the link width. With `auto`, 0 keeps the board's links
+    /// The description of a group's bifurcation knob, for [`Self::knob`]:
+    /// its value is the link width; with `auto`, 0 keeps the board's links
     /// ([`Bifurcations::bifurcation`] `None`).
-    pub const fn knob<C: Bifurcations, const I: usize>(
-        key: &'static str,
-        label: &'static str,
-        auto: bool,
-    ) -> Knob<C> {
-        Knob::new(
-            Meta {
-                key,
-                form: "PCIe",
-                label,
-                help: if auto {
-                    "How the 16 lanes split into links; Auto keeps the board's. Applies at the next boot."
-                } else {
-                    "How the 16 lanes split into links. Applies at the next boot."
-                },
-                kind: Kind::Enum(if auto {
-                    Self::CHOICES_AUTO
-                } else {
-                    Self::CHOICES
-                }),
+    pub const fn meta(key: &'static str, label: &'static str, auto: bool) -> Meta {
+        Meta {
+            key,
+            form: "PCIe",
+            label,
+            help: if auto {
+                "How the 16 lanes split into links; Auto keeps the board's. Applies at the next boot."
+            } else {
+                "How the 16 lanes split into links. Applies at the next boot."
             },
-            get::<C, I>,
-            set::<C, I>,
-        )
-        .when(availability::<C, I>)
+            kind: Kind::Enum(if auto {
+                Self::CHOICES_AUTO
+            } else {
+                Self::CHOICES
+            }),
+        }
+    }
+
+    /// The knob of x16 group `I` of a board configuration `C`, described by
+    /// `meta` (`fstart_options::meta!(Bifurcation::meta(..))`).
+    pub const fn knob<C: Bifurcations, const I: usize>(meta: &'static Meta) -> Knob<C> {
+        Knob::new(meta, get::<C, I>, set::<C, I>).when(availability::<C, I>)
     }
 }
 
@@ -907,8 +904,12 @@ mod tests {
     #[test]
     fn bifurcation_knobs_read_and_split_their_group() {
         static KNOBS: [Knob<Groups>; 2] = [
-            Bifurcation::knob::<Groups, 0>("a", "A", true),
-            Bifurcation::knob::<Groups, 1>("b", "B", false),
+            Bifurcation::knob::<Groups, 0>(fstart_options::meta!(Bifurcation::meta(
+                "a", "A", true
+            ))),
+            Bifurcation::knob::<Groups, 1>(fstart_options::meta!(Bifurcation::meta(
+                "b", "B", false
+            ))),
         ];
         let mut g = Groups::default();
         assert_eq!((KNOBS[0].get)(&g), 0, "auto");

@@ -203,68 +203,58 @@ impl Bifurcations for Options {
 
 /// The Setup knobs behind the OEM patches, as user options.
 pub static KNOBS: [Knob<Options>; 9] = [
-    Bifurcation::knob::<Options, { Slot::Pcie1.index() }>(
-        "s8030_pcie1_bifurcation",
-        "PCIE#1 (J12) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie2.index() }>(
-        "s8030_pcie2_bifurcation",
-        "PCIE#2 (J9) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie3.index() }>(
-        "s8030_pcie3_bifurcation",
-        "PCIE#3 (J11) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie4.index() }>(
-        "s8030_pcie4_bifurcation",
-        "PCIE#4 (J10) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie5.index() }>(
-        "s8030_pcie5_bifurcation",
-        "PCIE#5 (J13) bifurcation",
-        false,
-    ),
+    Bifurcation::knob::<Options, { Slot::Pcie1.index() }>(fstart_options::meta!(
+        Bifurcation::meta("s8030_pcie1_bifurcation", "PCIE#1 (J12) bifurcation", false)
+    )),
+    Bifurcation::knob::<Options, { Slot::Pcie2.index() }>(fstart_options::meta!(
+        Bifurcation::meta("s8030_pcie2_bifurcation", "PCIE#2 (J9) bifurcation", false)
+    )),
+    Bifurcation::knob::<Options, { Slot::Pcie3.index() }>(fstart_options::meta!(
+        Bifurcation::meta("s8030_pcie3_bifurcation", "PCIE#3 (J11) bifurcation", false)
+    )),
+    Bifurcation::knob::<Options, { Slot::Pcie4.index() }>(fstart_options::meta!(
+        Bifurcation::meta("s8030_pcie4_bifurcation", "PCIE#4 (J10) bifurcation", false)
+    )),
+    Bifurcation::knob::<Options, { Slot::Pcie5.index() }>(fstart_options::meta!(
+        Bifurcation::meta("s8030_pcie5_bifurcation", "PCIE#5 (J13) bifurcation", false)
+    )),
     Knob::new(
-        Meta::bool(
+        fstart_options::meta!(Meta::bool(
             "s8030_pcie_compliance",
             "PCIe",
             "PCIe compliance mode",
             "Sets the compliance bit of the PCIe engines, for link testing.",
-        ),
+        )),
         |o| o.compliance.into(),
         |o, v| o.compliance = v != 0,
     ),
     Knob::new(
-        Meta::bool(
+        fstart_options::meta!(Meta::bool(
             "s8030_lan1",
             "PCIe",
             "Onboard LAN1 (i210)",
             "Trains the link of the first i210.",
-        ),
+        )),
         |o| o.lan[0].into(),
         |o, v| o.lan[0] = v != 0,
     ),
     Knob::new(
-        Meta::bool(
+        fstart_options::meta!(Meta::bool(
             "s8030_lan2",
             "PCIe",
             "Onboard LAN2 (i210)",
             "Trains the link of the second i210.",
-        ),
+        )),
         |o| o.lan[1].into(),
         |o, v| o.lan[1] = v != 0,
     ),
     Knob::new(
-        Meta::bool(
+        fstart_options::meta!(Meta::bool(
             "s8030_onboard_vga",
             "PCIe",
             "Onboard VGA (AST2500)",
             "Trains the link of the BMC's VGA.",
-        ),
+        )),
         |o| o.onboard_vga.into(),
         |o, v| o.onboard_vga = v != 0,
     ),

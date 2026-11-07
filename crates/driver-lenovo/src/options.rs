@@ -67,7 +67,7 @@ macro_rules! switch {
     ($name:ident, $field:ident, $key:literal, $form:literal, $label:literal, $help:literal) => {
         #[doc = $help]
         pub const $name: Knob<Options> = Knob::new(
-            Meta::bool($key, $form, $label, $help),
+            fstart_options::meta!(Meta::bool($key, $form, $label, $help)),
             |o: &Options| o.$field.into(),
             |o: &mut Options, v| o.$field = v != 0,
         );
@@ -150,7 +150,7 @@ switch!(
 
 /// USB power while the machine is off.
 pub const USB_ALWAYS_ON: Knob<Options> = Knob::new(
-    Meta {
+    fstart_options::meta!(Meta {
         key: "usb_always_on",
         form: "Power",
         label: "USB power when off",
@@ -160,14 +160,14 @@ pub const USB_ALWAYS_ON: Knob<Options> = Knob::new(
             Choice::new(1, "On AC and battery"),
             Choice::new(2, "On AC only"),
         ]),
-    },
+    }),
     |o: &Options| o.usb_always_on.into(),
     |o: &mut Options, v| o.usb_always_on = v as u8,
 );
 
 /// The volume a cold boot sets.
 pub const VOLUME: Knob<Options> = Knob::new(
-    Meta {
+    fstart_options::meta!(Meta {
         key: "volume",
         form: "Sound",
         label: "Volume",
@@ -177,20 +177,20 @@ pub const VOLUME: Knob<Options> = Knob::new(
             max: 14,
             step: 1,
         },
-    },
+    }),
     |o: &Options| o.volume.into(),
     |o: &mut Options, v| o.volume = v as u8,
 );
 
 /// The battery the EC charges first.
 pub const FIRST_BATTERY: Knob<Options> = Knob::new(
-    Meta {
+    fstart_options::meta!(Meta {
         key: "first_battery",
         form: "Power",
         label: "Battery charged first",
         help: "Which battery charges first when both are fitted.",
         kind: Kind::Enum(&[Choice::new(0, "Secondary"), Choice::new(1, "Primary")]),
-    },
+    }),
     |o: &Options| o.first_battery.into(),
     |o: &mut Options, v| o.first_battery = v as u8,
 );
@@ -216,7 +216,7 @@ mod tests {
             VOLUME,
             FIRST_BATTERY,
         ];
-        let metas = ALL.iter().map(|k| &k.meta);
+        let metas = ALL.iter().map(|k| k.meta);
         assert_eq!(fstart_options::duplicate_key(metas.clone()), None);
         assert_eq!(fstart_options::cmos::collision(metas.clone()), None);
         // The chipset's knobs share the CMOS window with these.

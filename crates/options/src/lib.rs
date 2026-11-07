@@ -47,7 +47,11 @@ pub mod varstore;
 use alloc::vec::Vec;
 
 /// What a knob is, independent of the configuration it changes.
+///
+/// `repr(C)`: the build reads the knobs a stage links from its ELF
+/// ([`meta!`]), so tools see the options of a build without its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub struct Meta {
     /// Storage name: the CFR option name, the EFI variable name under the
     /// CFR GUID, the CMOS layout entry. Stable across builds; ASCII.
@@ -79,6 +83,7 @@ impl Meta {
 
 /// The values a knob takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, u32)]
 pub enum Kind {
     /// 0 or 1.
     Bool,
@@ -103,6 +108,7 @@ impl Kind {
 
 /// One value of an enum knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub struct Choice {
     pub value: u32,
     pub label: &'static str,
@@ -122,9 +128,50 @@ pub enum Availability {
     Inactive(&'static str),
 }
 
+/// A knob's [`Meta`] as a `'static` record the build can find: each in its
+/// own `.rodata.fstart.options.*` section, so the linker keeps exactly the
+/// knobs a stage resolves and drops the rest. fstart's linker scripts put
+/// them between `_fstart_options_start` and `_fstart_options_end`; image
+/// tools read the options of a build from there.
+///
+/// ```
+/// use fstart_options::{Kind, Knob, Meta, meta};
+/// static NMI: Knob<bool> = Knob::new(
+///     meta!(Meta::bool("nmi", "Advanced", "NMI sources", "NMIs on SERR#.")),
+///     |c| (*c).into(),
+///     |c, v| *c = v != 0,
+/// );
+/// assert_eq!(NMI.meta.kind, Kind::Bool);
+/// ```
+#[macro_export]
+macro_rules! meta {
+    ($meta:expr) => {{
+        #[unsafe(link_section = $crate::__meta_section!())]
+        static META: $crate::Meta = $meta;
+        &META
+    }};
+}
+
+/// The section of a [`meta!`] record: unique per invocation, so the linker
+/// drops each unused one on its own.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __meta_section {
+    () => {
+        concat!(
+            ".rodata.fstart.options.",
+            module_path!(),
+            ".",
+            line!(),
+            ".",
+            column!()
+        )
+    };
+}
+
 /// One overridable field of a configuration `C`.
 pub struct Knob<C: 'static> {
-    pub meta: Meta,
+    pub meta: &'static Meta,
     /// The field's value.
     pub get: fn(&C) -> u32,
     /// Set the field; only called with a value of [`Meta::kind`].
@@ -135,7 +182,7 @@ pub struct Knob<C: 'static> {
 
 impl<C> Knob<C> {
     /// An always available knob.
-    pub const fn new(meta: Meta, get: fn(&C) -> u32, set: fn(&mut C, u32)) -> Self {
+    pub const fn new(meta: &'static Meta, get: fn(&C) -> u32, set: fn(&mut C, u32)) -> Self {
         Self {
             meta,
             get,
@@ -304,7 +351,7 @@ pub fn resolve_knob<C: 'static>(
         },
     };
     Setting {
-        meta: &knob.meta,
+        meta: knob.meta,
         default,
         value: (knob.get)(config),
         provenance,
@@ -409,7 +456,7 @@ pub fn resolve_checked<C: Clone + 'static>(
         if report.settings.iter().any(|s| s.meta.key == key)
             || fresh.iter().any(|k| k.meta.key == key)
         {
-            report.duplicates.push(&knob.meta);
+            report.duplicates.push(knob.meta);
         } else {
             fresh.push(knob);
         }

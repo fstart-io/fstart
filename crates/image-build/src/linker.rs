@@ -806,6 +806,12 @@ fn generate_xip_layout(
     writeln!(out, "    .rodata : ALIGN(16) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
     writeln!(out, "        *(.eh_frame_hdr .eh_frame)").unwrap();
+    // The knob records of `fstart_options::meta!`, one input section each,
+    // so the stage keeps the knobs it resolves; tools read them here.
+    writeln!(out, "        . = ALIGN(8);").unwrap();
+    writeln!(out, "        _fstart_options_start = .;").unwrap();
+    writeln!(out, "        *(SORT_BY_NAME(.rodata.fstart.options.*))").unwrap();
+    writeln!(out, "        _fstart_options_end = .;").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > ROM\n").unwrap();
 
@@ -1034,6 +1040,12 @@ fn write_rodata_section(out: &mut String, region: &str) {
     writeln!(out, "        _rodata_start = .;").unwrap();
     // The bootstrap pin stays only where the initial stage reads it.
     writeln!(out, "        *(.fstart.bootstrap_pin)").unwrap();
+    // The knob records of `fstart_options::meta!`, one input section each,
+    // so the stage keeps the knobs it resolves; tools read them here.
+    writeln!(out, "        . = ALIGN(8);").unwrap();
+    writeln!(out, "        _fstart_options_start = .;").unwrap();
+    writeln!(out, "        *(SORT_BY_NAME(.rodata.fstart.options.*))").unwrap();
+    writeln!(out, "        _fstart_options_end = .;").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }

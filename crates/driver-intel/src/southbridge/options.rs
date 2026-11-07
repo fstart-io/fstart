@@ -43,34 +43,39 @@ const POWER_KEEP: &[Choice] = &[
     Choice::new(2, "Previous state"),
 ];
 
-const fn power(choices: &'static [Choice]) -> Knob<Options> {
+const fn power_meta(choices: &'static [Choice]) -> Meta {
+    Meta {
+        key: "power_on_after_fail",
+        form: "Power",
+        label: "Restore on AC power loss",
+        help: "What the system does when AC power returns.",
+        kind: Kind::Enum(choices),
+    }
+}
+
+const fn power(meta: &'static Meta) -> Knob<Options> {
     Knob::new(
-        Meta {
-            key: "power_on_after_fail",
-            form: "Power",
-            label: "Restore on AC power loss",
-            help: "What the system does when AC power returns.",
-            kind: Kind::Enum(choices),
-        },
+        meta,
         |o: &Options| o.power_on_after_fail.into(),
         |o: &mut Options, v| o.power_on_after_fail = v as u8,
     )
 }
 
 /// The power state after a power failure, off or on (ICH7, ICH8).
-pub const POWER_ON_AFTER_FAIL: Knob<Options> = power(POWER);
+pub const POWER_ON_AFTER_FAIL: Knob<Options> = power(fstart_options::meta!(power_meta(POWER)));
 /// The power state after a power failure, also the previous one (ICH9).
-pub const POWER_ON_AFTER_FAIL_KEEP: Knob<Options> = power(POWER_KEEP);
+pub const POWER_ON_AFTER_FAIL_KEEP: Knob<Options> =
+    power(fstart_options::meta!(power_meta(POWER_KEEP)));
 
 /// The SATA mode, coreboot's 0 AHCI, 1 IDE.
 pub const SATA_MODE: Knob<Options> = Knob::new(
-    Meta {
+    fstart_options::meta!(Meta {
         key: "sata_mode",
         form: "Storage",
         label: "SATA mode",
         help: "AHCI, or legacy IDE for operating systems without an AHCI driver.",
         kind: Kind::Enum(&[Choice::new(0, "AHCI"), Choice::new(1, "IDE")]),
-    },
+    }),
     |o: &Options| matches!(o.sata_mode, Some(SataMode::Ide)).into(),
     |o: &mut Options, v| {
         o.sata_mode = Some(if v == 1 {
@@ -87,12 +92,12 @@ pub const SATA_MODE: Knob<Options> = Knob::new(
 
 /// NMIs on SERR# and IOCHK#.
 pub const NMI: Knob<Options> = Knob::new(
-    Meta::bool(
+    fstart_options::meta!(Meta::bool(
         "nmi",
         "Advanced",
         "NMI sources",
         "Raise an NMI on PCI SERR# and IOCHK#.",
-    ),
+    )),
     |o: &Options| o.nmi.into(),
     |o: &mut Options, v| o.nmi = v != 0,
 );

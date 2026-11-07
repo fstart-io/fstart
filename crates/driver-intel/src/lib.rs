@@ -454,9 +454,9 @@ mod option_tests {
     fn pair<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>() {
         let metas = fstart_log::option::KNOBS
             .iter()
-            .map(|k| &k.meta)
-            .chain(N::KNOBS.iter().map(|k| &k.meta))
-            .chain(S::KNOBS.iter().map(|k| &k.meta));
+            .map(|k| k.meta)
+            .chain(N::KNOBS.iter().map(|k| k.meta))
+            .chain(S::KNOBS.iter().map(|k| k.meta));
         assert_eq!(fstart_options::duplicate_key(metas.clone()), None);
         assert_eq!(fstart_options::cmos::collision(metas), None);
     }

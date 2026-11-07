@@ -115,9 +115,9 @@ mod tests {
         use board::Board as _;
         let metas = fstart_log::option::KNOBS
             .iter()
-            .map(|k| &k.meta)
-            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
-            .chain(dxio::KNOBS.iter().map(|k| &k.meta));
+            .map(|k| k.meta)
+            .chain(Board::OPTIONS.iter().map(|k| k.meta))
+            .chain(dxio::KNOBS.iter().map(|k| k.meta));
         assert_eq!(fstart_options::duplicate_key(metas), None);
     }
 }

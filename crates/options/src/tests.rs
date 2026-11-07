@@ -33,46 +33,46 @@ const WIDTH: &[Choice] = &[
 
 static KNOBS: [Knob<Config>; 4] = [
     Knob::new(
-        Meta {
+        crate::meta!(Meta {
             key: "power_on_after_fail",
             form: "Power",
             label: "Restore AC power loss",
             help: "State after power returns.",
             kind: Kind::Enum(POWER),
-        },
+        }),
         |c| c.power,
         |c, v| c.power = v,
     ),
     Knob::new(
-        Meta {
+        crate::meta!(Meta {
             key: "smee",
             form: "CPU",
             label: "Memory encryption",
             help: "SYSCFG.SMEE.",
             kind: Kind::Bool,
-        },
+        }),
         |c| c.smee.into(),
         |c, v| c.smee = v != 0,
     ),
     Knob::new(
-        Meta {
+        crate::meta!(Meta {
             key: "slot0",
             form: "PCIe",
             label: "Slot 0",
             help: "Bifurcation.",
             kind: Kind::Enum(WIDTH),
-        },
+        }),
         |c| c.width[0].into(),
         |c, v| c.width[0] = v as u8,
     ),
     Knob::<Config>::new(
-        Meta {
+        crate::meta!(Meta {
             key: "slot1",
             form: "PCIe",
             label: "Slot 1",
             help: "Bifurcation.",
             kind: Kind::Enum(WIDTH),
-        },
+        }),
         |c| c.width[1].into(),
         |c, v| c.width[1] = v as u8,
     )
@@ -238,9 +238,9 @@ fn a_second_knob_with_a_known_key_is_not_resolved() {
     assert_eq!(report.settings.len(), 4);
     assert_eq!(report.duplicates.len(), 4);
     assert_eq!(report.duplicates[0].key, "power_on_after_fail");
-    let metas = KNOBS.iter().chain(&KNOBS).map(|k| &k.meta);
+    let metas = KNOBS.iter().chain(&KNOBS).map(|k| k.meta);
     assert_eq!(duplicate_key(metas), Some("power_on_after_fail"));
-    assert_eq!(duplicate_key(KNOBS.iter().map(|k| &k.meta)), None);
+    assert_eq!(duplicate_key(KNOBS.iter().map(|k| k.meta)), None);
 }
 
 #[test]

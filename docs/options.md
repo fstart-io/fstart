@@ -22,6 +22,22 @@ consumes a field defines its knob; a board only picks the knobs it offers.
 Keys and values follow coreboot's option names where coreboot has the
 option; sizes are in MiB rather than coreboot's per-chipset indices.
 
+## What a build offers
+
+Each knob's `Meta` is a `'static` record made by `fstart_options::meta!`,
+in its own `.rodata.fstart.options.*` section. The linker keeps the records
+of the knobs a stage resolves and drops the others, and fstart's linker
+scripts collect them between `_fstart_options_start` and
+`_fstart_options_end`. So a build describes its own options, with no list
+per board: `fbuild options <stage ELFs>` prints them as JSON (key, form,
+label, help and the legal values), merged across stages. The X61 gets the
+radios its EC knobs offer but not the X200's UWB, though both live in
+`driver-lenovo`.
+
+Availability is decided on the machine, so a knob a driver offers can be
+listed for a board where it is always inactive (the i945's panel
+brightness on a desktop).
+
 ## Resolution
 
 `resolve_each` applies the stored values of a knob set to its

@@ -1328,7 +1328,9 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
 
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
-        crate::igd::options::uma(UMA_SIZES),
+        crate::igd::options::uma(fstart_options::meta!(crate::igd::options::uma_meta(
+            UMA_SIZES
+        ))),
         crate::igd::options::BRIGHTNESS,
     ];
 

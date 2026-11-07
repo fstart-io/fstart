@@ -471,13 +471,13 @@ pub mod option {
     /// The console log level knob, over the level a flow then sets with
     /// [`super::set_max_level`].
     pub static KNOBS: [Knob<Level>; 1] = [Knob::new(
-        Meta {
+        fstart_options::meta!(Meta {
             key: "debug_level",
             form: "Console",
             label: "Console log level",
             help: "The most verbose firmware messages the console shows.",
             kind: Kind::Enum(CHOICES),
-        },
+        }),
         |l| value(*l),
         |l, v| *l = level(v),
     )];

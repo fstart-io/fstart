@@ -128,6 +128,6 @@
       "_stack_top": 1076887552
     }
   },
-  "linker_sha256": "14a365c6fbc4139d0c8aefa2803ac0d4869f6e50f937dfb19beb7ba2efd568ba",
+  "linker_sha256": "0713206cac65108493e58ab81bf6105ce6d640e1246025f424340109914c8ded",
   "target": "armv7a-none-eabi"
 }

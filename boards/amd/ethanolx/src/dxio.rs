@@ -121,10 +121,26 @@ impl Bifurcations for Layout {
 /// The bifurcation of the four socket-0 groups; Auto keeps the card's
 /// links.
 pub static KNOBS: [Knob<Layout>; 4] = [
-    Bifurcation::knob::<Layout, 0>("ethanolx_p0_bifurcation", "P0 (slot 1) bifurcation", true),
-    Bifurcation::knob::<Layout, 1>("ethanolx_p1_bifurcation", "P1 (slot 3) bifurcation", true),
-    Bifurcation::knob::<Layout, 2>("ethanolx_p2_bifurcation", "P2 (slot 4) bifurcation", true),
-    Bifurcation::knob::<Layout, 3>("ethanolx_p3_bifurcation", "P3 (slot 2) bifurcation", true),
+    Bifurcation::knob::<Layout, 0>(fstart_options::meta!(Bifurcation::meta(
+        "ethanolx_p0_bifurcation",
+        "P0 (slot 1) bifurcation",
+        true
+    ))),
+    Bifurcation::knob::<Layout, 1>(fstart_options::meta!(Bifurcation::meta(
+        "ethanolx_p1_bifurcation",
+        "P1 (slot 3) bifurcation",
+        true
+    ))),
+    Bifurcation::knob::<Layout, 2>(fstart_options::meta!(Bifurcation::meta(
+        "ethanolx_p2_bifurcation",
+        "P2 (slot 4) bifurcation",
+        true
+    ))),
+    Bifurcation::knob::<Layout, 3>(fstart_options::meta!(Bifurcation::meta(
+        "ethanolx_p3_bifurcation",
+        "P3 (slot 2) bifurcation",
+        true
+    ))),
 ];
 
 /// Whether the layout's engines are valid on the SoC.

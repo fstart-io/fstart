@@ -403,8 +403,9 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
     type Options = crate::igd::options::Options;
-    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
-        &[crate::igd::options::uma(UMA_SIZES)];
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[crate::igd::options::uma(
+        fstart_options::meta!(crate::igd::options::uma_meta(UMA_SIZES)),
+    )];
 
     fn options(&self) -> Self::Options {
         self.options

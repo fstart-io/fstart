@@ -49,13 +49,13 @@ pub mod knob {
 
     /// What the system does when AC power returns.
     pub const POWER_FAIL: Knob<Policy> = Knob::new(
-        Meta {
+        fstart_options::meta!(Meta {
             key: "power_on_after_fail",
             form: "Power",
             label: "Restore on AC power loss",
             help: "What the system does when AC power returns.",
             kind: Kind::Enum(PowerFailState::CHOICES),
-        },
+        }),
         |p| p.fch_env.power_fail.option(),
         |p, v| p.fch_env.power_fail = PowerFailState::from_option(v),
     );

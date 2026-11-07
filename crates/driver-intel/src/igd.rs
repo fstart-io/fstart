@@ -926,16 +926,23 @@ pub mod options {
         }
     }
 
-    /// The stolen-memory knob over a chipset's sizes, in MiB.
-    pub const fn uma(choices: &'static [Choice]) -> Knob<Options> {
+    /// The stolen-memory knob's description over a chipset's sizes, in
+    /// MiB, for [`uma`].
+    pub const fn uma_meta(choices: &'static [Choice]) -> Meta {
+        Meta {
+            key: "gfx_uma_size",
+            form: "Graphics",
+            label: "Graphics memory",
+            help: "System memory reserved for the integrated graphics. Applies at the next boot.",
+            kind: Kind::Enum(choices),
+        }
+    }
+
+    /// The stolen-memory knob, described by
+    /// `fstart_options::meta!(uma_meta(SIZES))`.
+    pub const fn uma(meta: &'static Meta) -> Knob<Options> {
         Knob::new(
-            Meta {
-                key: "gfx_uma_size",
-                form: "Graphics",
-                label: "Graphics memory",
-                help: "System memory reserved for the integrated graphics. Applies at the next boot.",
-                kind: Kind::Enum(choices),
-            },
+            meta,
             |o: &Options| o.uma_mb.into(),
             |o: &mut Options, v| o.uma_mb = v as u16,
         )
@@ -945,7 +952,7 @@ pub mod options {
     /// The LBB panel brightness the firmware leaves (coreboot
     /// `tft_brightness`).
     pub const BRIGHTNESS: Knob<Options> = Knob::new(
-        Meta {
+        fstart_options::meta!(Meta {
             key: "tft_brightness",
             form: "Graphics",
             label: "Panel brightness",
@@ -955,7 +962,7 @@ pub mod options {
                 max: 255,
                 step: 1,
             },
-        },
+        }),
         |o: &Options| o.brightness.into(),
         |o: &mut Options, v| o.brightness = v as u8,
     )

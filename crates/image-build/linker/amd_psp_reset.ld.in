@@ -46,6 +46,12 @@ SECTIONS {
     .rodata : ALIGN(8) {
         _rodata_start = .;
         KEEP(*(.fstart.bootstrap_pin))
+        /* fstart_options records: the stage keeps the records of the knobs
+         * it resolves; tools read them here. */
+        . = ALIGN(8);
+        _fstart_options_start = .;
+        *(SORT_BY_NAME(.rodata.fstart.options.*))
+        _fstart_options_end = .;
         *(.rodata .rodata.* .lrodata .lrodata.*)
     } > IMAGE
     .data.rel.ro : ALIGN(8) { *(.data.rel.ro .data.rel.ro.*) } > IMAGE
