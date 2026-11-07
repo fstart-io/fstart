@@ -79,7 +79,13 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     let flash_log = dram_page_tables();
     crate::debug_console::install::<B>(flash_log);
     fstart_log::info!("{} postcar: {} console ready", platform, C::NAME);
-    crate::options::level(&crate::options::store());
+    // The bootblock's console level, which it resolved from the options.
+    if let Ok((base, size)) = geometry.firmware()
+        && let Ok(stash) = crate::boot::handoff(base, size)
+    {
+        // SAFETY: the BSP, before MP.
+        unsafe { fstart_log::set_max_level(fstart_log::option::level(stash.log_level)) };
+    }
 
     // Postcar keeps the bootblock's ROM page tables: it runs uncached from
     // DRAM, so it stays small, and the ramstage builds the DRAM tables first.

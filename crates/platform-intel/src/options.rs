@@ -55,8 +55,8 @@ pub fn chipset<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>(
     southbridge.set_options(options);
 }
 
-/// The console level only (postcar).
-pub fn level(source: &dyn Source) {
+/// The console level: the bootblock hands it to postcar.
+fn level(source: &dyn Source) {
     let mut level = fstart_log::max_level();
     fstart_log::option::resolve(&fstart_log::option::KNOBS, source, &mut level, |_| Ok(()));
     // SAFETY: the BSP, before MP.

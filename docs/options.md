@@ -92,13 +92,13 @@ A `Source` reads stored values by key; `Layered` reads one before another.
 ## Stages on the Intel CAR platforms
 
 The chipset drivers declare `Options` and `KNOBS`; the platform applies
-them in every stage that runs the driver, before its early init, reading
+them in the stages that run the driver, before its early init, reading
 CMOS without allocating:
 
 | Stage | Knobs |
 |---|---|
 | bootblock | `debug_level`, northbridge (stolen memory is reserved in raminit), southbridge (SATA mode) |
-| postcar | `debug_level` |
+| postcar | none: the bootblock hands it its console level in the post-CAR stash |
 | ramstage | the same, into the report; board knobs through `Ramstage::resolve_options` (the ThinkPads' EC knobs) |
 
 With the UEFI payload the ramstage hands CrabEFI the CFR form and the CMOS
