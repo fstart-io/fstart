@@ -16,7 +16,9 @@ pub use igd::{IronlakeIgdConfig, PanelPort};
 use crate::MmioBar;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
-use fstart_core::services::memory_detect::{E820Entry, MemoryDetector, build_pc_compatible_e820};
+use fstart_core::services::memory_detect::{
+    E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
+};
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind, ecam,
     pci_type0_config,
@@ -577,7 +579,15 @@ impl MemoryDetector for IntelIronlake {
         } else {
             map.touud
         };
-        build_pc_compatible_e820(entries, map.tseg, touud, map.tolud)
+        let count = build_pc_compatible_e820(entries, map.tseg, touud, map.tolud)?;
+        // Publish hardware RAM before ramstage restores write-back caching.
+        fstart_arch::x86::mtrr::set_ram_wb_ranges_from(
+            entries[..count]
+                .iter()
+                .filter(|entry| entry.kind == E820Kind::Ram as u32)
+                .map(|entry| (entry.addr, entry.size)),
+        )?;
+        Ok(count)
     }
     fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
         if !self.dram_ready {
