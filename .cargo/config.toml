@@ -6,3 +6,8 @@ fbuild = "run --package fbuild --"
 # x86 stage. Nothing in this tree can act on that report.
 [future-incompat-report]
 frequency = "never"
+
+# X201 bring-up: pinned CrabEFI checkout with active-EHCI-debug preservation.
+# Replace with an upstream revision once the fix is published.
+[patch."https://github.com/ArthurHeymans/CrabEFI.git"]
+crabefi-core = { path = "../CrabEFI-x201-debug/crabefi-core" }

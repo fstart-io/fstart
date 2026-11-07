@@ -40,7 +40,10 @@ impl GenerationOps for Ironlake {
         }
         let plane = primary_for_pipe(pipe);
         let mut mmio = ctx.mmio();
-        mmio.write32(0x41000, crate::regs::VGACNTRL::VGA_DISPLAY_DISABLE::SET.value);
+        mmio.write32(
+            0x41000,
+            crate::regs::VGACNTRL::VGA_DISPLAY_DISABLE::SET.value,
+        );
         // libgfxinit Power_And_Clocks.Initialize: both PCH PLL references
         // must be running before enabling the pixel and FDI clocks.
         let dref = crate::regs::PCH_DREF_CONTROL::SSC_ENABLE::Enabled
@@ -1530,7 +1533,10 @@ pub(crate) fn ironlake_pipeline_plan(
     fdi_link.new_source = matches!(training, FdiTrainingMode::Auto);
     fdi_link.new_sink = matches!(training, FdiTrainingMode::Auto);
     fdi_link.rx_power_down = matches!(cpu, Cpu::Ivybridge);
-    fdi_link.has_bpc = matches!(cpu, Cpu::Sandybridge | Cpu::Ivybridge);
+    // Has_FDI_BPC applies to the entire Ironlake generation, including
+    // Arrandale. The receiver must unpack the same BPC the CPU pipe sends.
+    fdi_link.has_bpc = true;
+    fdi_link.bpc = if port == Port::Lvds { 6 } else { 8 };
     let pch_port_enable = match port {
         Port::Lvds => pch_lvds_enable_op(fdi, mode),
         Port::Vga => pch_vga_enable_op(fdi, mode),
@@ -1991,7 +1997,9 @@ fn program_primary_plane_for_executor<S: IronlakeMmioSink>(
 ) -> Result<(), GmaError> {
     let regs = CpuPlaneRegs::for_plane(plane)?;
     let plane_config = PlaneConfig::new(plane, pipe, PlaneAddressModel::Surface, surface);
-    let pri = CPU_DSPCNTR_FORMAT_XRGB8888 | cpu_dspcntr_pipe_select(pipe);
+    let pri = CPU_DSPCNTR_FORMAT_XRGB8888
+        | CPU_DSPCNTR::DISABLE_TRICKLE_FEED::SET.value
+        | plane_config.legacy_tiling_bits();
     // libgfxinit `Setup_Hires_Plane`: control without enable, then geometry and
     // offsets, then the enable write that self-arms the plane.
     sink.write32(regs.cntr, pri);
@@ -2096,14 +2104,6 @@ impl CpuPlaneRegs {
 const CPU_PIPECONF_ENABLE: u32 = CPU_PIPECONF::ENABLE::SET.value;
 const CPU_DSPCNTR_ENABLE: u32 = CPU_DSPCNTR::ENABLE::SET.value;
 const CPU_DSPCNTR_FORMAT_XRGB8888: u32 = CPU_DSPCNTR::FORMAT::Xrgb8888.value;
-
-const fn cpu_dspcntr_pipe_select(pipe: Pipe) -> u32 {
-    match pipe {
-        Pipe::A => CPU_DSPCNTR::PIPE_SELECT::PipeA.value,
-        Pipe::B => CPU_DSPCNTR::PIPE_SELECT::PipeB.value,
-        Pipe::C => CPU_DSPCNTR::PIPE_SELECT::PipeC.value,
-    }
-}
 
 fn apply_executor_port_op<S: IronlakeMmioSink>(sink: &mut S, op: PortRegisterOp) {
     match op {
@@ -2667,7 +2667,11 @@ mod tests {
             IronlakeInitOp::FdiTrain {
                 fdi: FdiPort::B,
                 mode: FdiTrainingMode::Simple,
-                config: FdiLinkConfig::DEFAULT,
+                config: FdiLinkConfig {
+                    bpc: 6,
+                    has_bpc: true,
+                    ..FdiLinkConfig::DEFAULT
+                },
             }
         );
         assert_eq!(
@@ -2762,6 +2766,13 @@ mod tests {
         // LVDS is an 18bpp path: 6 bpc (2 << 5) with dithering.
         assert_eq!(sink.latest(0x71008) & (7 << 5), 2 << 5);
         assert_eq!(sink.latest(0x71008) & (1 << 4), 1 << 4);
+        // LVDS is 6 BPC at both ends of FDI, not 6 at TX and 8 at RX.
+        assert_eq!(
+            sink.latest(fdi_rx_regs(FdiPort::B).ctl) & (7 << 16),
+            2 << 16
+        );
+        assert_eq!(sink.latest(0x71180) & (3 << 24), 0);
+        assert_ne!(sink.latest(0x71180) & (1 << 14), 0);
         // CPU FDI data/link M/N must be populated before the pipe runs.
         for register in [0x61030, 0x61034, 0x61040, 0x61044] {
             assert_ne!(sink.latest(register), 0);
