@@ -34,6 +34,8 @@ pub enum UpdateStatus {
 pub enum MicrocodeError {
     /// A record's advertised size would run past the supplied blob.
     TruncatedRecord,
+    /// The update data pointer does not meet Intel's 16-byte alignment.
+    UnalignedUpdate,
     /// A matching update was found but the CPU did not report the new revision.
     LoadFailed { expected: u32, actual: u32 },
 }
@@ -56,10 +58,14 @@ impl<'a> MicrocodePatch<'a> {
         self.revision
     }
 
-    fn data_ptr(self) -> u64 {
-        // Intel SDM: IA32_BIOS_UPDT_TRIG receives a physical pointer to the
-        // encrypted update data following the 48-byte header.
-        self.record.as_ptr().wrapping_add(HEADER_SIZE) as u64
+    fn data_ptr(self) -> Result<u64, MicrocodeError> {
+        // Intel SDM: IA32_BIOS_UPDT_TRIG receives a 16-byte-aligned physical
+        // pointer to the encrypted data following the 48-byte header.
+        let address = self.record.as_ptr().wrapping_add(HEADER_SIZE) as u64;
+        if address & 15 != 0 {
+            return Err(MicrocodeError::UnalignedUpdate);
+        }
+        Ok(address)
     }
 }
 
@@ -216,7 +222,8 @@ pub unsafe fn load(patch: MicrocodePatch<'_>) -> Result<UpdateStatus, MicrocodeE
         return Ok(UpdateStatus::AlreadyCurrent { rev: old_rev });
     }
 
-    unsafe { wrmsr(IA32_BIOS_UPDT_TRIG, patch.data_ptr()) };
+    let address = patch.data_ptr()?;
+    unsafe { wrmsr(IA32_BIOS_UPDT_TRIG, address) };
 
     let new_rev = current_revision();
     if new_rev == patch.revision {
@@ -267,5 +274,25 @@ pub unsafe fn update_current_cpu_logged(blob: &[u8]) {
         Err(MicrocodeError::TruncatedRecord) => {
             fstart_log::error!("microcode: blob has a truncated record");
         }
+        Err(MicrocodeError::UnalignedUpdate) => {
+            fstart_log::error!("microcode: update data is not 16-byte aligned");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_data_requires_16_byte_alignment_not_just_eight() {
+        #[repr(align(16))]
+        struct Aligned([u8; HEADER_SIZE + 16]);
+        let storage = Aligned([0; HEADER_SIZE + 16]);
+        let aligned = MicrocodePatch { record: &storage.0, revision: 1 };
+        assert_eq!(aligned.data_ptr(), Ok(storage.0.as_ptr() as u64 + HEADER_SIZE as u64));
+        // Reproduce the X201 image: both record and update data were 8 mod 16.
+        let unaligned = MicrocodePatch { record: &storage.0[8..], revision: 1 };
+        assert_eq!(unaligned.data_ptr(), Err(MicrocodeError::UnalignedUpdate));
     }
 }

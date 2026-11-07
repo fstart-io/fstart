@@ -558,11 +558,12 @@ fn lay_out_file(
     let entry_offset = image_len(image)? - region_base;
 
     for seg in &file.segments {
-        // Align each segment to 8 bytes so embedded structures (like
-        // the FSTART_ANCHOR in the bootblock) remain scannable at
-        // 8-byte-aligned offsets. Without this, segments extracted
-        // from ELF PT_LOAD headers land at arbitrary offsets.
-        let pad = (8 - (image.len() % 8)) % 8;
+        // Anchors need 8-byte alignment. Microcode needs 16: Intel's
+        // pre-CAR loader passes the in-flash record + 48 to WRMSR 0x79,
+        // which requires a 16-byte-aligned update-data address. A preceding
+        // compressed stage can otherwise leave that pointer 8 bytes off.
+        let alignment = if file.file_type == FileType::CpuMicrocode { 16 } else { 8 };
+        let pad = (alignment - (image.len() % alignment)) % alignment;
         image.extend(core::iter::repeat_n(0u8, pad));
 
         let (stored_data, in_place_size, actual_compression) = match seg.compression {

@@ -421,6 +421,11 @@ core::arch::global_asm!(
     "cmpl 4(%esi), %edx",
     "jge 9f",
     "leal 48(%esi), %eax",
+    // Never issue an invalid update before an IDT exists. The packer aligns
+    // microcode records to 16 bytes; skip a malformed/older unaligned image
+    // rather than taking a pre-CAR fault with no usable diagnostic console.
+    "testl $15, %eax",
+    "jnz 9f",
     "xorl %edx, %edx",
     "movl $0x79, %ecx",
     "wrmsr",
