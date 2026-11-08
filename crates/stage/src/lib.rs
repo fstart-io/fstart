@@ -6,14 +6,18 @@
 
 #![no_std]
 
-#[cfg(any(
-    feature = "acpi",
-    feature = "ffs",
-    feature = "alloc",
-    feature = "smbios"
+#[cfg(all(
+    feature = "runtime",
+    any(
+        feature = "acpi",
+        feature = "ffs",
+        feature = "alloc",
+        feature = "smbios"
+    )
 ))]
 mod alloc;
 
+#[cfg(feature = "runtime")]
 mod runtime;
 
 #[cfg(any(feature = "ffs", feature = "alloc"))]

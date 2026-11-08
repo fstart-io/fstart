@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 [features]
-default = []
+default = ["runtime"]
+# The stage owns the binary: panic handler and, when something allocates,
+# the bump global allocator over the linker-reserved heap. A firmware that
+# links fstart as a library disables default features and supplies both.
+runtime = []
 # Platform selection (exactly one must be enabled)
 armv7 = ["fstart-arch/armv7"]
 aarch64 = ["fstart-arch/aarch64"]
