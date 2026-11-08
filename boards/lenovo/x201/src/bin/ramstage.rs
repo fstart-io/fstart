@@ -17,13 +17,19 @@ fstart_platform_intel::entry!(main);
 fn main() -> ! {
     let rs = Ramstage::<Board>::enter();
     let mut pins = mainboard::Pins::of(rs.southbridge().gpio());
-    let rs = rs
-        .console(&CONSOLE, ())
-        .memory_map()
-        .scan_bus(&[]);
+    let rs = rs.console(&CONSOLE, ()).memory_map().scan_bus(&[]);
     let mut rs = rs.init_chipset();
     let resume = rs.is_resume();
-    let (identity, acpi) = mainboard::init_devices(&mut pins, rs.smbus(), resume);
+    let (identity, acpi) =
+        mainboard::init_devices(&mut pins, rs.smbus(), resume).unwrap_or_else(|error| {
+            match error {
+                fstart_driver_tpm::Error::Code(code) => {
+                    fstart_log::error!("lenovo-x201: TPM resume failed, code {:#x}", code);
+                }
+                _ => fstart_log::error!("lenovo-x201: TPM resume transport failed"),
+            }
+            rs.fail("TPM resume")
+        });
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {
         Path::Cold(rs) => rs.emit_tables(&identity.smbios(), &acpi),

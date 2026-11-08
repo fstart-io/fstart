@@ -459,6 +459,14 @@ impl BiosPath {
             Self::Disable => "Disable",
         }
     }
+
+    const fn should_hide_mei(self, hide_on_error: bool) -> bool {
+        match self {
+            Self::Disable => true,
+            Self::Error => hide_on_error,
+            Self::Normal | Self::Recovery | Self::S3Wake => false,
+        }
+    }
 }
 
 impl IntelIbexPeak {
@@ -484,8 +492,10 @@ impl IntelIbexPeak {
         path
     }
 
-    /// coreboot `intel_me_init()`: hide the MEI when the ME is disabled or
-    /// resuming, else check the extend register and prepare the MEI.
+    /// Hide a disabled ME, else check the extend register and prepare MEI.
+    /// Unlike coreboot's old S3 policy, leave MEI visible on resume: Linux
+    /// still owns the enumerated device and restores it from D3hot. S3
+    /// skips the cold-boot MEI handshake without disabling the function.
     pub(super) fn me_init(&self) {
         if !self.config.enabled(PchFunction::Mei1) {
             return;
@@ -496,12 +506,7 @@ impl IntelIbexPeak {
         }
         let path = self.me_path(me);
         fstart_log::info!("ME: BIOS path {}", path.name());
-        let hide = match path {
-            BiosPath::S3Wake | BiosPath::Disable => true,
-            BiosPath::Error => self.config.hide_mei_on_error,
-            BiosPath::Normal | BiosPath::Recovery => false,
-        };
-        if hide {
+        if path.should_hide_mei(self.config.hide_mei_on_error) {
             // pch_enable() of a disabled device.
             me.write16(0x04, me.read16(0x04) & !0x7);
             self.rcba().fd2.modify(FD2::MEI1::SET);
@@ -558,6 +563,20 @@ fn extend_valid(me: EcamDevice) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_keeps_mei_visible_without_changing_disabled_or_error_policy() {
+        for hide_on_error in [false, true] {
+            assert!(!BiosPath::S3Wake.should_hide_mei(hide_on_error));
+            assert!(!BiosPath::Normal.should_hide_mei(hide_on_error));
+            assert!(!BiosPath::Recovery.should_hide_mei(hide_on_error));
+            assert!(BiosPath::Disable.should_hide_mei(hide_on_error));
+            assert_eq!(
+                BiosPath::Error.should_hide_mei(hide_on_error),
+                hide_on_error
+            );
+        }
+    }
 
     #[test]
     fn mei_header_layout_matches_coreboot() {

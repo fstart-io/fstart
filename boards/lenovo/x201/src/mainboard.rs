@@ -85,8 +85,13 @@ impl Identity {
 }
 
 /// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
-/// chipset devices are up. Returns the identity and the board ACPI device.
-pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (Identity, Acpi) {
+/// chipset devices are up. Restores the optional TPM on S3 before returning
+/// the identity and the board ACPI device.
+pub fn init_devices(
+    pins: &mut Pins,
+    smbus: &mut impl SmBus,
+    resume: bool,
+) -> Result<(Identity, Acpi), fstart_driver_tpm::Error> {
     let mut identity = Identity::default();
     let (bluetooth, acknowledged) = x201::ec_init(
         &mut pins.bluetooth_card,
@@ -122,34 +127,42 @@ pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (I
     let digitizer = fstart_driver_lenovo::thinkpad::digitizer_init(
         identity.eeprom.as_ref().map(|e| e.part_number()),
     );
-    (
+    Ok((
         identity,
         Acpi {
             bluetooth,
             digitizer,
-            tpm: probe_tpm(),
+            tpm: init_tpm(resume)?,
         },
-    )
+    ))
 }
 
-/// The optional TPM 1.2 on the LPC TIS window (coreboot `drivers/pc80/tpm`
-/// `enable_dev()`): described to the OS only when it answers.
-fn probe_tpm() -> Option<fstart_acpi::devices::tpm::TpmFamily> {
+/// Identify the optional LPC TIS TPM and restore its saved state on S3.
+/// Cold boots leave startup to the payload, as before.
+fn init_tpm(
+    resume: bool,
+) -> Result<Option<fstart_acpi::devices::tpm::TpmFamily>, fstart_driver_tpm::Error> {
     use fstart_acpi::devices::tpm::TpmFamily;
     use fstart_driver_tpm::{Family, tis};
     // SAFETY: the PCH decodes the TIS window to LPC; nothing else drives it.
-    let tis = unsafe { tis::Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
-    let id = tis.probe()?;
+    let mut tis = unsafe { tis::Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
+    let Some(id) = tis.probe() else {
+        return Ok(None);
+    };
     fstart_log::info!(
         "lenovo-x201: TPM {:#x}:{:#x} revision {}",
         id.vendor,
         id.device,
         id.revision
     );
-    Some(match id.family {
+    if resume {
+        fstart_driver_tpm::resume(&mut tis, id.family)?;
+        fstart_log::info!("lenovo-x201: TPM S3 state restored");
+    }
+    Ok(Some(match id.family {
         Family::Tpm12 => TpmFamily::Tpm12,
         Family::Tpm20 => TpmFamily::Tpm20,
-    })
+    }))
 }
 
 /// The board's ACPI: H8 EC surface, sleep hooks, ThinkLight, dock, the
