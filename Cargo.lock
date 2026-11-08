@@ -795,6 +795,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-gigabyte-mj11-ec1-bmc"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-aspeed",
+]
+
+[[package]]
 name = "fstart-board-google-vilboz"
 version = "0.1.0"
 dependencies = [
