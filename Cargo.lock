@@ -1614,6 +1614,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-platform-rs"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-boot",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-uart",
+ "fstart-image-build",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-amd",
+ "fstart-stage",
+ "heapless 0.8.0",
+ "serde_json",
+ "tock-registers",
+ "toml",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-platform-sifive"
 version = "0.1.0"
 dependencies = [
