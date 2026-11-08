@@ -32,7 +32,10 @@ fn main() -> ! {
         });
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {
-        Path::Cold(rs) => rs.emit_tables(&identity.smbios(), &acpi),
+        Path::Cold(rs) => {
+            mainboard::legacy_ec_events();
+            rs.emit_tables(&identity.smbios(), &acpi)
+        }
         Path::Resume(rs) => rs.keep_tables(),
     };
     rs.boot()

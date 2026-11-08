@@ -164,10 +164,17 @@ The follow-up comparison uses coreboot `1958b5d923a`:
 
 * `drivers/mrc_cache/mrc_cache.c::mrc_cache_current_mmap_leak()` returns a
   mapped flash pointer; Ironlake's `get_cached_training()` does not put a
-  maximum-size record on the stack. fstart's copied journal records are now
-  const-sized by the platform: 768 bytes for legacy platforms, 2048 for
-  Ironlake. The X200 keeps its 8-KiB stack and 768-byte CAR capture buffer.
-  Tests also reject an Ironlake-sized record through a legacy journal.
+  maximum-size record on the stack. fstart's journal likewise owns no
+  payload array: `Record` borrows bytes, and verification streams 64-byte
+  chunks. Each runtime platform supplies a one-shot CAR workspace for
+  cached input and capture; the common flow only sees slices. Payload
+  limits and allocations stay in the platform, with no chipset names,
+  feature checks or capacity dispatch in the journal or boot flow. The
+  X200 retains its 8-KiB stack and 768-byte buffers; Ironlake provides
+  2048-byte buffers. The linker accounts for these static CAR workspaces;
+  the pending DRAM entry uses the record's encoded length, not a fixed slot.
+  Tests cover arbitrary buffer lengths, oversized-record
+  fallback, I/O errors and torn writes without changing the wire format.
 * `console/console.c` broadcasts output, while `console/printk.c` locks
   formatted log records. fstart preserves the board's original payload
   console unless EHCI/flash debug consoles are selected. The debug mux

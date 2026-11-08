@@ -345,7 +345,6 @@ impl crate::IntelPlatform for IronlakeIbexPeak {
     const CAR_BASE: u64 = 0xfefc_0000;
     const CAR_SIZE: u64 = 0x10000;
     const BOOTBLOCK_STACK: u64 = 0x4000;
-    const MEMORY_CACHE_PAYLOAD: usize = crate::memory_cache::IRONLAKE_PAYLOAD;
     const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-25-02", "06-25-05"];
 }
 
@@ -369,6 +368,12 @@ mod stage {
     use fstart_driver_intel::ironlake::IntelIronlake;
 
     impl IntelEarlyPlatform for IronlakeIbexPeak {
+        #[cfg(feature = "memory-cache")]
+        fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
+            static WORKSPACE: crate::memory_cache::TrainingWorkspace<2048> =
+                crate::memory_cache::TrainingWorkspace::new();
+            WORKSPACE.take()
+        }
         /// The OS display driver restores the screen; resume skips the
         /// modeset like coreboot (`gma_func0_init()` on S3).
         #[cfg(feature = "acpi")]

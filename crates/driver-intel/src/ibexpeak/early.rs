@@ -83,7 +83,8 @@ impl IntelIbexPeak {
         let pmcon3 = self.lpc().read8(GEN_PMCON_3_OFFSET);
         self.lpc().write8(
             GEN_PMCON_3_OFFSET,
-            (pmcon3 & !(GEN_PMCON_3::PWR_FLR::SET.value as u8))
+            (pmcon3
+                & !((GEN_PMCON_3::PWR_FLR::SET + GEN_PMCON_3::RTC_BATTERY_DEAD::SET).value as u8))
                 | GEN_PMCON_3::AFTER_G3::SET.value as u8,
         );
         lpc.etr3.modify(ETR3::CF9GR::CLEAR);
@@ -182,8 +183,12 @@ impl IntelIbexPeak {
         let lpc = self.lpc_regs();
         let rcba = self.rcba();
         let raw = self.rcba_raw();
-        // Byte OR like coreboot; RTC_BATTERY_DEAD (W1C) stays untouched.
-        self.lpc().or8(GEN_PMCON_3_OFFSET, 0xfb);
+        // Write zero to RTC_BATTERY_DEAD (W1C), preserving it for rtc_init().
+        let pmcon3 = self.lpc().read8(GEN_PMCON_3_OFFSET);
+        self.lpc().write8(
+            GEN_PMCON_3_OFFSET,
+            (pmcon3 | 0xfb) & !(GEN_PMCON_3::RTC_BATTERY_DEAD::SET.value as u8),
+        );
         rcba.gcs.modify(GCS::FERR_MUX::SET);
         raw.setbits8(0x3430, 0xfc);
         raw.write32(cir::CIR7, 0xf);

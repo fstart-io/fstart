@@ -165,6 +165,15 @@ fn init_tpm(
     }))
 }
 
+/// Route EC events to the installed SMM handler until OSPM enables ACPI.
+/// Call only on cold boot: S3 must retain the OS's SCI ownership.
+pub fn legacy_ec_events() {
+    use fstart_driver_intel::southbridge::smi::{ICH8_GPE0, IchSmi};
+    let smi = IchSmi::new(fstart_platform_intel::ironlake::IBEXPEAK_PMBASE, ICH8_GPE0);
+    // SAFETY: the BSP owns PCI config after MP/SMM installation completes.
+    unsafe { smi.route_gpi(x201::EC_SCI_GPI, false) };
+}
+
 /// The board's ACPI: H8 EC surface, sleep hooks, ThinkLight, dock, the
 /// keyboard controller, the X201T digitizer and the TPM.
 pub struct Acpi {

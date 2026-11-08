@@ -20,6 +20,8 @@ impl AcpiDevice for IntelIronlake {
         let dmibar = config.dmibar as u32;
         let epbar = config.epbar as u32;
         let rcba = config.rcba as u32;
+        let ecam_base = config.ecam_base as u32;
+        let ecam_size = u32::from(config.ecam_buses) << 20;
         // The QuickPath bus is outside the PCI0 domain.
         let bus_max = u16::from(config.quickpath_bus()) - 1;
         let qpi_bus = u32::from(config.quickpath_bus());
@@ -68,6 +70,7 @@ impl AcpiDevice for IntelIronlake {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 1u32);
                 Name("_CRS", ResourceTemplate {
+                    Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                     Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
                     Memory32Fixed(ReadWrite, #{dword mchbar}, 0x8000u32);
                     Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
@@ -194,6 +197,28 @@ impl AcpiDevice for IntelIronlake {
 mod tests {
     use super::*;
     use crate::IntelNorthbridgeDriver;
+
+    #[test]
+    fn pdrc_reserves_the_configured_ecam_including_quickpath() {
+        for buses in [64, 128, 256] {
+            let config = alloc::boxed::Box::leak(alloc::boxed::Box::new(IntelIronlakeConfig {
+                ecam_buses: buses,
+                ..IntelIronlakeConfig::new()
+            }));
+            let driver = IntelIronlake::new_from_config(config).unwrap();
+            let aml = driver.dsdt_aml(config);
+            let pdrc = aml.windows(4).position(|name| name == b"PDRC").unwrap();
+            let mcrs = aml.windows(4).position(|name| name == b"MCRS").unwrap();
+            let mut resource = alloc::vec![0x86, 9, 0, 1]; // Memory32Fixed, ReadWrite
+            resource.extend_from_slice(&(config.ecam_base as u32).to_le_bytes());
+            resource.extend_from_slice(&(u32::from(config.ecam_buses) << 20).to_le_bytes());
+            assert!(
+                aml[pdrc..mcrs]
+                    .windows(resource.len())
+                    .any(|w| w == resource)
+            );
+        }
+    }
 
     #[test]
     fn uncore_root_acknowledges_pcie_osc() {
