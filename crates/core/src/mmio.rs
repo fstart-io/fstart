@@ -16,11 +16,16 @@
 //! - **Write**: `fence → write_volatile → fence`
 //! - **Read**:  `read_volatile → fence`
 //!
-//! On ARM and AArch64, barriers use inline `dmb sy` (full-system data
+//! On ARMv7, ARMv6-M and AArch64, barriers use inline `dmb sy` (full-system data
 //! memory barrier), matching U-Boot exactly.  Rust's
 //! `core::sync::atomic::fence(SeqCst)` cannot be used here because LLVM
 //! lowers it to `dmb ish` (inner-shareable), which does NOT order accesses
 //! to device memory outside the inner-shareable domain.
+//!
+//! ARMv5TE and the ARMv6 A-profile have no `dmb`; there the CP15
+//! drain-write-buffer operation (the ARMv6 DSB) takes its place. Earlier
+//! ARM architectures may lack CP15 altogether and are rejected at build
+//! time.
 //!
 //! On RISC-V, targeted `fence iorw, iorw` instructions are used since
 //! Rust's generic fence doesn't map to these precise orderings.
@@ -68,17 +73,43 @@ pub use tock_registers;
 
 /// Full-system data memory barrier for MMIO ordering.
 ///
-/// - ARM/AArch64: `dmb sy` — must be full-system (`sy`), NOT inner-shareable
+/// - ARMv7/ARMv6-M/AArch64: `dmb sy` — must be full-system (`sy`), NOT inner-shareable
 ///   (`ish`).  Rust's `fence(SeqCst)` emits `dmb ish` which does NOT order
 ///   device-memory accesses.  U-Boot uses `dmb sy` everywhere for MMIO.
+/// - ARMv5TE/ARMv6 A-profile: `mcr p15, 0, rN, c7, c10, 4` (drain write
+///   buffer; DSB on ARMv6), the only barrier these cores have.
 /// - RISC-V: targeted `fence iorw, iorw` (full device+memory barrier).
 /// - Other targets (host tests): no-op.
+#[cfg(all(target_arch = "arm", not(target_feature = "v5te")))]
+compile_error!("MMIO barriers need ARMv5TE or later: earlier cores may have no CP15");
+
 #[inline(always)]
 fn iomb() {
-    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(
+            target_arch = "arm",
+            any(target_feature = "v7", target_feature = "v6m")
+        ),
+        target_arch = "aarch64"
+    ))]
     // SAFETY: `dmb sy` is a full-system data memory barrier, no side effects.
     unsafe {
         core::arch::asm!("dmb sy", options(nostack, preserves_flags));
+    }
+
+    #[cfg(all(
+        target_arch = "arm",
+        target_feature = "v5te",
+        not(any(target_feature = "v7", target_feature = "v6m"))
+    ))]
+    // SAFETY: CP15 c7/c10/4 drains the write buffer; the source register
+    // should be zero and nothing else changes.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {zero}, c7, c10, 4",
+            zero = in(reg) 0u32,
+            options(nostack, preserves_flags)
+        );
     }
 
     #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
