@@ -137,7 +137,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
         })
         .collect();
     let cpu = crate::hw::msr();
-    let pstates = power::pstates(&cpu);
+    let pstates = power::pstates(&cpu, power::Voltage::Svi2);
     let threads_per_core = 1 + crate::mp::this_thread(ctx.generation).smt() as u8;
     let (domains, memory): (Vec<acpi::Domain>, Vec<acpi::MemoryAffinity>) = numa_plan
         .as_ref()

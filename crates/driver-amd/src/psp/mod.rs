@@ -10,7 +10,10 @@
 //! Every die has a PSP; the native flows only use die 0's mailbox.
 
 pub mod command;
+#[cfg(feature = "rs")]
+pub mod einj;
 pub mod mailbox;
+pub mod p2c;
 #[cfg(feature = "sp3")]
 pub mod ras;
 
@@ -28,6 +31,8 @@ pub enum Variant {
     Ssp,
     /// Milan.
     Gn,
+    /// Genoa and Siena: Milan's mailbox rules.
+    Rs,
 }
 
 /// The PSP MMIO bases of all dies, 0 where the BAR isn't enabled, for the

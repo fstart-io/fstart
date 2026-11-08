@@ -31,6 +31,8 @@ register_bitfields![u32,
         WAKE_S4_S5 OFFSET(15) NUMBITS(1) [],
         PIN OFFSET(16) NUMBITS(1) [],
         DRIVE_STRENGTH OFFSET(17) NUMBITS(2) [],
+        /// Pull-up strength select (CPM setting bit 2).
+        PULL_UP_SELECT OFFSET(19) NUMBITS(1) [],
         PULL_UP OFFSET(20) NUMBITS(1) [],
         PULL_DOWN OFFSET(21) NUMBITS(1) [],
         OUTPUT OFFSET(22) NUMBITS(1) [],
@@ -395,6 +397,40 @@ impl<B: Bus> Gpio<B> {
             return Err(Error::InvalidPad);
         }
         Ok(self.fch.reg(control(pin)))
+    }
+    /// Apply an AMD CPM board GPIO setting (the OEM `GPIO_DEF` tables),
+    /// as Rs AmdCpmInitPeim `ffd57fe5`/`ffd581ab` does: bit 7 rewrites the
+    /// pulls from bits 2/5/6; unless bit 3 keeps the direction, bit 1 makes
+    /// the pad an input and otherwise an output driving bit 0; bit 11
+    /// selects IOMUX function `(setting >> 8) & 7`, written last.
+    pub fn apply_cpm(&self, pin: u8, setting: u16) -> Result<(), Error> {
+        let mux = (setting >> 8) & 7;
+        if !self.bank.exists(pin) || (setting & 0x800 != 0 && mux > 3) {
+            return Err(Error::InvalidPad);
+        }
+        let control = self.fch.reg(control(pin));
+        let mut value = control.extract();
+        let bit = |b: u16| u32::from(setting & b != 0);
+        if setting & 0x80 != 0 {
+            value.modify(
+                Control::PULL_UP_SELECT.val(bit(4))
+                    + Control::PULL_UP.val(bit(0x20))
+                    + Control::PULL_DOWN.val(bit(0x40)),
+            );
+        }
+        if setting & 8 == 0 {
+            if setting & 2 != 0 {
+                value.modify(Control::OUTPUT_ENABLE::CLEAR);
+            } else {
+                value.modify(Control::OUTPUT_ENABLE::SET + Control::OUTPUT.val(bit(1)));
+            }
+        }
+        // Never write back latched W1C status.
+        control.set(value.get() & !STATUS_MASK);
+        if setting & 0x800 != 0 {
+            self.fch.reg(iomux::at::<u8, ()>(pin.into())).set(mux as u8);
+        }
+        Ok(())
     }
     /// The level of `pin`.
     pub fn get(&self, pin: u8) -> Result<bool, Error> {

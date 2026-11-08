@@ -26,6 +26,8 @@ pub mod event;
 pub mod mem;
 pub mod nps;
 pub mod phy;
+#[cfg(feature = "rs")]
+pub mod rs;
 #[cfg(feature = "smbios")]
 pub mod smbios;
 pub mod sysmap;
@@ -119,32 +121,42 @@ pub enum ApobError {
     Value { group: u32, kind: u32, value: u32 },
 }
 
-/// A validated APOB.
+/// Container version/first-entry policy, separate from record schemas or
+/// mailbox generation. An Rs container cannot be passed to SP3-only decoders.
+pub trait Format: Copy {
+    fn first_entry(self, version: u32, first: u32) -> Result<u32, ApobError>;
+}
+
+impl Format for Variant {
+    fn first_entry(self, version: u32, first: u32) -> Result<u32, ApobError> {
+        match self {
+            Variant::Zp if version < 5 => Ok(NAPLES_LEGACY_FIRST_ENTRY as u32),
+            Variant::Ssp | Variant::Gn if version <= 4 => Err(ApobError::Version(version)),
+            _ => Ok(first),
+        }
+    }
+}
+
+/// A validated APOB; existing callers retain their legacy PSP format type.
 #[derive(Clone, Copy)]
-pub struct Apob<'a> {
+pub struct Apob<'a, F = Variant> {
     data: &'a [u8],
-    variant: Variant,
+    variant: F,
     version: u32,
     first: usize,
 }
 
-impl<'a> Apob<'a> {
+impl<'a, F: Format> Apob<'a, F> {
     /// Parse the APOB in `data` (at least `size` bytes as the header says)
     /// and check every entry header, unknown groups included.
-    pub fn new(data: &'a [u8], variant: Variant) -> Result<Self, ApobError> {
+    pub fn new(data: &'a [u8], variant: F) -> Result<Self, ApobError> {
         let (header, _) = Header::ref_from_prefix(data).map_err(|_| ApobError::Signature)?;
         if header.signature != SIGNATURE {
             return Err(ApobError::Signature);
         }
         let version = header.version.get();
         let (size, first) = (header.size.get(), header.first_entry.get());
-        let first_entry = match variant {
-            Variant::Zp if version < 5 => NAPLES_LEGACY_FIRST_ENTRY as u32,
-            Variant::Ssp | Variant::Gn if version <= 4 => {
-                return Err(ApobError::Version(version));
-            }
-            Variant::Zp | Variant::Rv | Variant::Ssp | Variant::Gn => first,
-        };
+        let first_entry = variant.first_entry(version, first)?;
         let size_error = ApobError::Size { size, first };
         let data = data.get(..size as usize).ok_or(size_error)?;
         if (first_entry as usize) < size_of::<Header>()
@@ -167,7 +179,7 @@ impl<'a> Apob<'a> {
     /// # Safety
     /// `address` holds an APOB written by the PSP and stays unchanged and
     /// unaliased by writes for `'static`.
-    pub unsafe fn from_address(address: u64, variant: Variant) -> Result<Apob<'static>, ApobError> {
+    pub unsafe fn from_address(address: u64, variant: F) -> Result<Apob<'static, F>, ApobError> {
         let ptr = address as usize as *const u8;
         // SAFETY: the caller's contract covers the header.
         let header = unsafe { core::slice::from_raw_parts(ptr, size_of::<Header>()) };
@@ -189,7 +201,7 @@ impl<'a> Apob<'a> {
         )
     }
 
-    pub fn variant(&self) -> Variant {
+    pub fn variant(&self) -> F {
         self.variant
     }
 
@@ -256,14 +268,17 @@ impl<'a> Apob<'a> {
         &self,
         group: u32,
         kind: u32,
-    ) -> impl Iterator<Item = Result<Entry<'a>, ApobError>> + use<'a> {
+    ) -> impl Iterator<Item = Result<Entry<'a>, ApobError>> + use<'a, F> {
         self.entries().filter(move |e| {
             e.as_ref()
                 .map_or(true, |e| (e.group(), e.kind()) == (group, kind))
         })
     }
+}
 
-    /// Fail unless the record exists on this PSP.
+impl Apob<'_> {
+    /// Fail unless the record exists on this legacy PSP. Rs records use a
+    /// distinct format type and cannot silently take an SP3 schema.
     pub(crate) fn require(
         &self,
         group: u32,

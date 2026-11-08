@@ -27,10 +27,24 @@ use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::Variant;
-use super::{Apob, ApobError, Entry, group};
+use super::{Apob, ApobError, Entry, Format, group};
 
-/// Most holes accepted (Oxide's Milan cap; AGESA has none).
-pub const MAX_HOLES: usize = 18;
+/// Storage budget for the largest implemented record (Rs: 49 holes).
+/// Legacy decoders retain their existing 18-hole acceptance limit.
+pub const MAX_HOLES: usize = 49;
+
+/// Record capacity and hole semantics are format policy, not the PSP's
+/// mailbox generation. Unknown types must never become usable RAM.
+pub trait MemoryFormat: Format {
+    const MAX_HOLES: usize;
+    fn classify(self, kind: u32) -> HoleClass;
+}
+impl MemoryFormat for Variant {
+    const MAX_HOLES: usize = 18;
+    fn classify(self, kind: u32) -> HoleClass {
+        classify(self, kind)
+    }
+}
 /// Most regions [`memory_map`] returns.
 pub const MAX_REGIONS: usize = 2 * (2 * MAX_HOLES + 1) + 1;
 /// Start of the reserved region below 1 TiB.
@@ -150,20 +164,24 @@ impl MemoryMap {
 }
 
 /// Read 9/9 instance 0.
-pub fn system_memory_map<'a>(apob: &Apob<'a>) -> Result<SystemMemoryMap<'a>, ApobError> {
-    parse(apob.find(group::FABRIC, KIND, 0)?)
+pub fn system_memory_map<'a, F: MemoryFormat>(
+    apob: &Apob<'a, F>,
+) -> Result<SystemMemoryMap<'a>, ApobError> {
+    parse(apob.find(group::FABRIC, KIND, 0)?, F::MAX_HOLES)
 }
 
 /// Read the first 9/9 record of any instance, as the noncar SoCs (Picasso,
 /// Zeppelin) do.
-pub fn first_system_memory_map<'a>(apob: &Apob<'a>) -> Result<SystemMemoryMap<'a>, ApobError> {
-    parse(apob.first(group::FABRIC, KIND)?)
+pub fn first_system_memory_map<'a, F: MemoryFormat>(
+    apob: &Apob<'a, F>,
+) -> Result<SystemMemoryMap<'a>, ApobError> {
+    parse(apob.first(group::FABRIC, KIND)?, F::MAX_HOLES)
 }
 
-fn parse(entry: Entry<'_>) -> Result<SystemMemoryMap<'_>, ApobError> {
+fn parse(entry: Entry<'_>, limit: usize) -> Result<SystemMemoryMap<'_>, ApobError> {
     let head: &RawHead = entry.at(0x30)?;
     let count = head.count.get();
-    if count as usize > MAX_HOLES {
+    if count as usize > limit.min(MAX_HOLES) {
         return Err(ApobError::Value {
             group: group::FABRIC,
             kind: KIND,
@@ -255,16 +273,22 @@ pub enum MapError {
 /// The physical memory map below `top` from the 9/9 holes, sorted, with
 /// every non-RAM range listed (see the module documentation for the
 /// differences to AGESA). Zero-sized holes are dropped.
-pub fn memory_map(
-    variant: Variant,
+pub fn memory_map<F: MemoryFormat>(
+    variant: F,
     top: u64,
     holes: impl IntoIterator<Item = Hole>,
 ) -> Result<Vec<Region, MAX_REGIONS>, MapError> {
+    if top == 0 {
+        return Err(MapError::NoDram);
+    }
     let mut holes: Vec<Hole, MAX_HOLES> = holes
         .into_iter()
         .filter(|h| h.size != 0)
         .try_fold(Vec::new(), |mut v, h| v.push(h).map(|_| v))
         .map_err(|_| MapError::TooManyHoles)?;
+    if holes.len() > F::MAX_HOLES {
+        return Err(MapError::TooManyHoles);
+    }
     if let Some(h) = holes.iter().find(|h| h.base.checked_add(h.size).is_none()) {
         return Err(MapError::Wraps(*h));
     }
@@ -280,7 +304,7 @@ pub fn memory_map(
         |s: (u64, u64, RegionKind, bool)| spans.push(s).map_err(|_| MapError::TooManyHoles);
     for h in &holes {
         let end = h.base + h.size;
-        match classify(variant, h.kind) {
+        match variant.classify(h.kind) {
             HoleClass::Uma => push((h.base, end, RegionKind::Uma, false))?,
             HoleClass::Mmio => push((h.base, end, RegionKind::Mmio, false))?,
             HoleClass::Reserved => push((h.base, end, RegionKind::Reserved(h.kind), false))?,
@@ -324,6 +348,40 @@ pub fn memory_map(
     });
     emit(cursor, top, RegionKind::Ram);
     Ok(out)
+}
+
+/// The highest `size`-aligned window of `size` bytes in one RAM region below
+/// `limit` (and 4 GiB) that overlaps none of `avoid`: where TSEG goes (the
+/// SMM_ADDR/SMM_MASK pair needs a naturally aligned power of two).
+pub fn place_tseg(
+    regions: &[Region],
+    limit: u64,
+    size: u64,
+    avoid: &[core::ops::Range<u64>],
+) -> Option<core::ops::Range<u64>> {
+    if !size.is_power_of_two() {
+        return None;
+    }
+    let limit = limit.min(1 << 32);
+    let fit = |r: &Region| {
+        let mut top = r.end().min(limit) & !(size - 1);
+        while top >= r.base + size {
+            let candidate = top - size..top;
+            match avoid
+                .iter()
+                .find(|a| a.start < candidate.end && candidate.start < a.end)
+            {
+                Some(a) => top = a.start & !(size - 1),
+                None => return Some(candidate),
+            }
+        }
+        None
+    };
+    regions
+        .iter()
+        .filter(|r| r.kind.is_ram() && r.base < limit)
+        .filter_map(fit)
+        .max_by_key(|s| s.start)
 }
 
 #[cfg(test)]

@@ -21,6 +21,8 @@ pub mod threads;
 pub mod v10;
 #[cfg(any(feature = "rome", feature = "milan"))]
 pub mod v11;
+#[cfg(feature = "rs")]
+pub mod v13;
 #[cfg(any(feature = "zeppelin", feature = "naples"))]
 pub mod v9;
 

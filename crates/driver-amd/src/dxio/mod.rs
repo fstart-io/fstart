@@ -18,9 +18,6 @@ pub mod wire;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
-use core::ptr::NonNull;
-use core::sync::atomic::{Ordering, compiler_fence};
-
 use fstart_core::services::Timer;
 use heapless::Vec;
 use zerocopy::FromBytes;
@@ -163,58 +160,20 @@ impl From<SmuError> for DxioError {
     }
 }
 
-/// A DMA window the SMU reads the heaps from and writes GetEngineCfg into.
-/// Accesses are volatile: the firmware writes it behind the compiler's back.
-pub struct DmaBuffer {
-    ptr: NonNull<u8>,
-    len: usize,
-    phys: u32,
+/// The DMA window the SMU reads the heaps from and writes GetEngineCfg
+/// into: the shared primitive, with this protocol's minimum size.
+pub type DmaBuffer = crate::dma::Window<DMA_SIZE>;
+
+impl From<crate::dma::InvalidWindow> for DxioError {
+    fn from(_: crate::dma::InvalidWindow) -> Self {
+        Self::Buffer
+    }
 }
 
 /// Bytes a [`DmaBuffer`] needs: heap 3, then heap 6 at [`ANCILLARY_OFFSET`].
 pub const DMA_SIZE: usize = ANCILLARY_OFFSET + ANCILLARY_MAX;
 /// Heap 6 offset in the DMA window.
 pub const ANCILLARY_OFFSET: usize = ENGINE_HEAP_MAX.next_multiple_of(64);
-
-impl DmaBuffer {
-    /// # Safety
-    /// `ptr..ptr + len` is memory the caller owns for the buffer's lifetime,
-    /// not accessed through other references, and visible to the SMU at
-    /// physical address `phys`.
-    pub unsafe fn new(ptr: *mut u8, len: usize, phys: u64) -> Result<Self, DxioError> {
-        let fits = len >= DMA_SIZE && phys.checked_add(len as u64).is_some_and(|e| e <= 1 << 32);
-        match NonNull::new(ptr) {
-            Some(ptr) if fits => Ok(Self {
-                ptr,
-                len,
-                phys: phys as u32,
-            }),
-            _ => Err(DxioError::Buffer),
-        }
-    }
-
-    pub fn phys(&self, offset: usize) -> u32 {
-        self.phys + offset as u32
-    }
-
-    fn write(&self, offset: usize, data: &[u8]) {
-        assert!(offset + data.len() <= self.len);
-        data.iter().enumerate().for_each(|(i, &b)| {
-            // SAFETY: in bounds; constructor contract.
-            unsafe { self.ptr.as_ptr().add(offset + i).write_volatile(b) }
-        });
-        compiler_fence(Ordering::SeqCst);
-    }
-
-    fn read(&self, offset: usize, out: &mut [u8]) {
-        assert!(offset + out.len() <= self.len);
-        compiler_fence(Ordering::SeqCst);
-        out.iter_mut().enumerate().for_each(|(i, b)| {
-            // SAFETY: in bounds; constructor contract.
-            *b = unsafe { self.ptr.as_ptr().add(offset + i).read_volatile() }
-        });
-    }
-}
 
 /// Memory reserved for one [`DmaBuffer`], for a firmware without a heap
 /// allocator: a static of this type, identity mapped below 4 GiB.
@@ -241,7 +200,7 @@ impl DmaArea {
     pub unsafe fn buffer(&'static mut self) -> Result<DmaBuffer, DxioError> {
         let ptr = self.0.get_mut().as_mut_ptr();
         // SAFETY: the exclusive static borrow; the caller's contract.
-        unsafe { DmaBuffer::new(ptr, DMA_SIZE, ptr as u64) }
+        Ok(unsafe { DmaBuffer::new(ptr, DMA_SIZE, ptr as u64) }?)
     }
 }
 

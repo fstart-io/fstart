@@ -29,18 +29,13 @@ pub mod source {
     pub const SMI_COMMAND: u8 = 75;
 }
 
-pub use super::{Pm1Enable, Pm1Status};
+pub use super::{Pm1Control, Pm1Enable, Pm1Status};
 pub use super::{SMI_TRIGGER0 as TRIGGER0, SmiMode as Mode, SmiTrigger0, smi_control as control};
 register_bitfields![u16,
     /// SMIx94: which status registers hold events.
     pub SmiPointer [
         SCI OFFSET(0) NUMBITS(1) [],
         STATUS OFFSET(1) NUMBITS(5) []
-    ],
-    pub Pm1Control [
-        SCI_EN OFFSET(0) NUMBITS(1) [],
-        SLP_TYP OFFSET(10) NUMBITS(3) [S5 = 5],
-        SLP_EN OFFSET(13) NUMBITS(1) []
     ]
 ];
 
@@ -207,6 +202,55 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
         smi.clear_all_status();
         smi.fch
             .reg(TRIGGER0)
+            .modify(SmiTrigger0::SMI_DISABLE::CLEAR + SmiTrigger0::EOS::SET);
+    }
+}
+
+/// Only the SMI command port and the PSP's SMI, for a platform whose OS runs
+/// ACPI without SMM (FADT SMI_CMD 0): SCI_EN, SLP_TYP and the power button
+/// stay as normal mode left them. `C` is the platform handler's
+/// configuration. The PSP SMI follows AGESA's SmmInfo preparation: its
+/// status and SmiTrig0\[25\] clear, source 33 routed to SMI (`FED802A8`
+/// bits 3:2 = 1, which SmmInfo's `psp_smi_control` check expects).
+pub struct SoftwareSmi<C> {
+    config: C,
+}
+
+impl<C: Copy> SoftwareSmi<C> {
+    /// # Safety
+    /// ACPI MMIO is decoded and the caller owns the FCH SMI registers.
+    pub const unsafe fn new(config: C) -> Self {
+        Self { config }
+    }
+
+    fn fch(&self) -> Fch<NativeBus> {
+        // SAFETY: the constructor's contract.
+        Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
+    }
+}
+
+impl<C: Copy> fstart_arch::x86::cpu::amd::smm::SmiControl for SoftwareSmi<C> {
+    type HandlerConfig = C;
+
+    fn smm_handler_config(&self) -> C {
+        self.config
+    }
+
+    fn disable_smi(&self) {
+        self.fch()
+            .reg(TRIGGER0)
+            .modify(SmiTrigger0::SMI_DISABLE::SET);
+    }
+
+    fn enable_smi(&self) {
+        let fch = self.fch();
+        fch.reg(PM_ACPI_SMI_CMD).set(APM_CNT);
+        fch.reg(TRIGGER0).modify(SmiTrigger0::PSP::CLEAR);
+        let psp = fch.reg(status(usize::from(source::PSP / 32)));
+        psp.set(1 << (source::PSP % 32));
+        super::smi_route(&fch, source::SMI_COMMAND, Mode::Smi);
+        super::smi_route(&fch, source::PSP, Mode::Smi);
+        fch.reg(TRIGGER0)
             .modify(SmiTrigger0::SMI_DISABLE::CLEAR + SmiTrigger0::EOS::SET);
     }
 }

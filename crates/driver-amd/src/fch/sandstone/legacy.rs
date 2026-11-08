@@ -20,21 +20,6 @@ register_bitfields![u32,
 register_bitfields![u8,
     RtcB [DST_EN OFFSET(0) NUMBITS(1) []],
     RtcA [BIT4 OFFSET(4) NUMBITS(1) []],
-    /// PCI_INTR index 8: the source of the IOAPIC inputs shared with legacy
-    /// devices. IRQ14/15 come from the legacy IDE unless routed: then the
-    /// internal sources [`initialize`] maps to them reach the IOAPIC.
-    IntrMiscMap [
-        IRQ1_ROUTED OFFSET(1) NUMBITS(1) [],
-        IRQ12_ROUTED OFFSET(3) NUMBITS(1) [],
-        IRQ14 OFFSET(4) NUMBITS(2) [
-            LegacyIde = 0,
-            Routed = 3
-        ],
-        IRQ15 OFFSET(6) NUMBITS(2) [
-            LegacyIde = 0,
-            Routed = 3
-        ]
-    ],
     /// The PM1 status bits 8 (power button) and 10 (RTC) of the high byte.
     Pm1StatusHigh [
         PWRBTN OFFSET(0) NUMBITS(1) [],
@@ -43,8 +28,6 @@ register_bitfields![u8,
     ]
 ];
 const PM_ESPI_INTR_MASK: crate::fch::AcpiReg<u32, EspiInterruptMask::Register> = pm::at(0x40);
-/// The PCI_INTR index/data pair.
-const PCI_INTR_INDEX: u16 = 0xc00;
 /// The PM1 status high byte of Picasso's ACPI block at 0x400.
 const PM1_STATUS_HIGH: u16 = 0x401;
 
@@ -117,15 +100,7 @@ pub fn initialize<B: Bus>(fch: &Fch<B>, espi: bool, legacy_sd: bool) {
     bus.reg(Reg::<u8>::io(SMBUS_ASF_IO_BASE + 0x14)).set(0); // SMBus autopoll off
     indexed_io::<B, RtcB::Register>(bus, RTC_INDEX, 0x0b).modify(RtcB::DST_EN::CLEAR);
     indexed_io::<B, RtcA::Register>(bus, RTC_INDEX, 0x0a).modify(RtcA::BIT4::CLEAR);
-    let irq = |index| indexed_io::<B, ()>(bus, PCI_INTR_INDEX, index);
-    indexed_io::<B, IntrMiscMap::Register>(bus, PCI_INTR_INDEX, 8).modify(
-        IntrMiscMap::IRQ1_ROUTED::SET
-            + IntrMiscMap::IRQ12_ROUTED::SET
-            + IntrMiscMap::IRQ14::Routed
-            + IntrMiscMap::IRQ15::Routed,
-    );
-    let misc0 = irq(9).get();
-    irq(9).set((misc0 & 0x99) | 0x10);
+    crate::fch::irq::route_legacy(bus);
     bus.reg(Reg::<u8>::io(SMBUS_ASF_IO_BASE + 0x2a)).set(0x2f); // ASF W1C status
     let smi_enable = fch.reg(smi_bank::at::<u32, ()>(4)).get();
     let wake = bus.reg(Reg::<u8, Pm1StatusHigh::Register>::io(PM1_STATUS_HIGH));
@@ -137,7 +112,7 @@ pub fn initialize<B: Bus>(fch: &Fch<B>, espi: bool, legacy_sd: bool) {
         wake.write(Pm1StatusHigh::WAKE::SET);
     }
     for (index, apic) in INTERNAL_IRQS {
-        irq(index | 0x80).set(apic);
+        crate::fch::irq::write(bus, index, crate::fch::irq::Mode::Apic, apic);
     }
     if !legacy_sd {
         fch.legacy_sd_off();

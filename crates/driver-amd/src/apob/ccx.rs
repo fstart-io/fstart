@@ -12,7 +12,7 @@ use heapless::Vec;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::Variant;
-use super::{Apob, ApobError, group, instance};
+use super::{Apob, ApobError, Entry, group, instance};
 
 /// Absent CCD/CCX/core id.
 pub const ABSENT: u8 = 0xff;
@@ -43,6 +43,8 @@ struct RawCcd<const N: usize> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Core {
+    /// Logical slot in the record (not the physical SMN/APIC identity).
+    pub logical: u8,
     /// Physical core id within the CCX.
     pub id: u8,
     pub threads: [bool; 2],
@@ -50,6 +52,7 @@ pub struct Core {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ccx {
+    pub logical: u8,
     /// Physical CCX id within the CCD.
     pub id: u8,
     pub cores: Vec<Core, 8>,
@@ -57,6 +60,7 @@ pub struct Ccx {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ccd {
+    pub logical: u8,
     /// Physical CCD id (the `0x2000000` SMN stride of the CCD registers).
     pub id: u8,
     pub ccxs: Vec<Ccx, CCXS>,
@@ -64,11 +68,11 @@ pub struct Ccd {
 
 /// The present CCDs, CCXs and cores of one socket, in APOB order.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CoreMap {
-    pub ccds: Vec<Ccd, CCDS>,
+pub struct CoreMap<const C: usize = CCDS> {
+    pub ccds: Vec<Ccd, C>,
 }
 
-impl CoreMap {
+impl<const C: usize> CoreMap<C> {
     /// Enabled threads.
     pub fn threads(&self) -> usize {
         self.cores()
@@ -84,29 +88,44 @@ impl CoreMap {
             .flat_map(|(d, x)| x.cores.iter().map(move |c| (d, x.id, c)))
     }
 
-    fn parse<const N: usize>(raw: &[RawCcd<N>; CCDS]) -> Self {
+    /// Decode the shared packed shape, with capacity selected by the
+    /// caller's independently checked record format (not a CPU alias).
+    pub(super) fn parse_entry<const N: usize>(entry: Entry<'_>) -> Result<Self, ApobError> {
+        Ok(Self::parse::<N>(entry.at(0x30)?))
+    }
+
+    fn parse<const N: usize>(raw: &[RawCcd<N>; C]) -> Self {
         let present = |id: &u8| *id != ABSENT;
         // Capacities equal the record's array lengths: pushes cannot fail.
-        let ccds = raw.iter().filter(|d| present(&d.id)).map(|d| Ccd {
-            id: d.id,
-            ccxs: d
-                .ccxs
-                .iter()
-                .filter(|x| present(&x.id))
-                .map(|x| Ccx {
-                    id: x.id,
-                    cores: x
-                        .cores
-                        .iter()
-                        .filter(|c| present(&c.id))
-                        .map(|c| Core {
-                            id: c.id,
-                            threads: c.threads.map(|t| t != 0),
-                        })
-                        .collect(),
-                })
-                .collect(),
-        });
+        let ccds = raw
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| present(&d.id))
+            .map(|(logical, d)| Ccd {
+                logical: logical as u8,
+                id: d.id,
+                ccxs: d
+                    .ccxs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, x)| present(&x.id))
+                    .map(|(logical, x)| Ccx {
+                        logical: logical as u8,
+                        id: x.id,
+                        cores: x
+                            .cores
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| present(&c.id))
+                            .map(|(logical, c)| Core {
+                                logical: logical as u8,
+                                id: c.id,
+                                threads: c.threads.map(|t| t != 0),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            });
         Self {
             ccds: ccds.collect(),
         }
@@ -118,8 +137,8 @@ pub fn core_map(apob: &Apob<'_>, socket: u8) -> Result<CoreMap, ApobError> {
     apob.require(group::CCX, KIND, &[Variant::Ssp, Variant::Gn])?;
     let entry = apob.find(group::CCX, KIND, instance(socket, 0))?;
     Ok(match apob.variant() {
-        Variant::Gn => CoreMap::parse::<8>(entry.at(0x30)?),
-        _ => CoreMap::parse::<4>(entry.at(0x30)?),
+        Variant::Gn => CoreMap::parse_entry::<8>(entry)?,
+        _ => CoreMap::parse_entry::<4>(entry)?,
     })
 }
 

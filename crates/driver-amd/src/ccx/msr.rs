@@ -34,6 +34,20 @@ register_bitfields![u64,
     pub McaIntrCfg [
         THRESHOLD_LVT_VALID OFFSET(3) NUMBITS(1) []
     ],
+    /// Core::X86::Msr::LS_CFG.
+    pub LsCfg [
+        /// PPR-reserved. Every AGESA write-combining speculation setup clears
+        /// it (Zen 4 PEI, openSIL Turin CcxMiscInit), whichever way it goes.
+        WC_SPEC_RSVD OFFSET(53) NUMBITS(1) [],
+        SPEC_LOCK_MAP_DIS OFFSET(54) NUMBITS(1) []
+    ],
+    /// Core::X86::Msr::LS_CFG3.
+    pub LsCfg3 [
+        EN_SPEC_ST_FILL OFFSET(26) NUMBITS(1) [],
+        /// Write-combining speculation (AmdWcSpecConfiguration): both bits.
+        WC_SPEC0 OFFSET(30) NUMBITS(1) [],
+        WC_SPEC1 OFFSET(33) NUMBITS(1) []
+    ],
     /// Core::X86::Msr::TW_CFG.
     pub TwCfg [
         COMBINE_CR0_CD OFFSET(49) NUMBITS(1) []
@@ -79,7 +93,7 @@ pub const RMP_BASE: Msr = Msr::new(0xc001_0132);
 pub const RMP_END: Msr = Msr::new(0xc001_0133);
 pub const CSTATE_CONFIG: Msr<CstateConfig::Register> = Msr::new(0xc001_0296);
 pub const MCODE_CTL: Msr = Msr::new(0xc001_1000);
-pub const LS_CFG: Msr = Msr::new(0xc001_1020);
+pub const LS_CFG: Msr<LsCfg::Register> = Msr::new(0xc001_1020);
 pub const IC_CFG: Msr = Msr::new(0xc001_1021);
 pub const DC_CFG: Msr = Msr::new(0xc001_1022);
 pub const TW_CFG: Msr<TwCfg::Register> = Msr::new(0xc001_1023);
@@ -90,7 +104,7 @@ pub const DPM_WAC_ACC_INDEX: Msr = Msr::new(0xc001_1076);
 pub const DPM_WAC_DATA: Msr = Msr::new(0xc001_1077);
 /// Unnamed; Milan's PCD 0x302 controls bit 13.
 pub const C001_10DD: Msr = Msr::new(0xc001_10dd);
-pub const LS_CFG3: Msr = Msr::new(0xc001_10e5);
+pub const LS_CFG3: Msr<LsCfg3::Register> = Msr::new(0xc001_10e5);
 pub const MCA_INTR_CFG: Msr<McaIntrCfg::Register> = Msr::new(0xc000_0410);
 
 /// MCAX register `offset` of MCA `bank` (MSRC000_2xxx).

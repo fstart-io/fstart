@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The PCIe core and port registers of the NBIO, all in SMN. A Zeppelin die
 //! has two PCIe cores, Picasso one.
+#[cfg(feature = "rs")]
+pub mod rs;
+
 use crate::smn::SmnReg;
 use tock_registers::register_bitfields;
 

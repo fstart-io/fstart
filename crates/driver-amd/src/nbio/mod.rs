@@ -3,15 +3,17 @@
 //! map and BARs ([`iohc`]), the IOAPIC ([`ioapic`]), the IOMMU ([`iommu`])
 //! and the PCIe cores ([`pcie`]), the same IP on Raven/Picasso and Zeppelin.
 //! What the SoCs program differently, the vendor register tables and the
-//! NBIF setup above all, is [`picasso`] (AGESA AmdNbioBaseRV) and
-//! [`zeppelin`] (AmdNbioBaseZP). The ZP die's tables, which Naples runs
-//! too, are [`zp`].
+//! NBIF setup above all, is [`picasso`] (AGESA AmdNbioBaseRV),
+//! [`zeppelin`] (AmdNbioBaseZP) and [`rs`] (Genoa and Siena, AmdNbioPei).
+//! The ZP die's tables, which Naples runs too, are [`zp`].
 pub mod ioapic;
 pub mod iohc;
 pub mod iommu;
 pub mod pcie;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+#[cfg(feature = "rs")]
+pub mod rs;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 #[cfg(any(feature = "zeppelin", feature = "naples"))]
