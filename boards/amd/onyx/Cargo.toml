@@ -1,0 +1,46 @@
+[package]
+name = "fstart-board-amd-onyx"
+description = "AMD Onyx (SP5, Genoa) reference board"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "amd-onyx"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+build-profile = { dependency = "fstart-platform-rs", name = "rust" }
+
+# The board's APCBs, as its firmware image has them; the SoC's files are
+# in fstart-platform-rs's table.
+[package.metadata.fstart.amd]
+soc = "genoa"
+apcb = { entries = [
+  { type = 0x60, file = "onyx/apcb-60-0.bin" },
+  { type = 0x60, instance = 1, file = "onyx/apcb-60-1.bin" },
+  { type = 0x68, file = "onyx/apcb-68-0.bin" },
+  { type = 0x68, instance = 8, file = "onyx/apcb-68-8.bin" },
+  { type = 0x68, instance = 9, file = "onyx/apcb-68-9.bin" },
+] }
+
+[features]
+default = []
+# The board's SMM handler (the SMM unit only).
+smm = ["fstart-platform-rs/smm"]
+
+[dependencies]
+fstart-platform-rs = { path = "../../../crates/platform-rs", features = ["genoa"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rs"] }
+heapless = { version = "0.8", default-features = false }
+tock-registers = "0.10"
+
+[dev-dependencies]
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rs", "testing"] }
+
+[[bin]]
+name = "stage"
+path = "src/bin/stage.rs"
+test = false
+bench = false
