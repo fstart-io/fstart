@@ -196,6 +196,7 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
         let static_entries = static_regions(&description);
         crate::crabefi::launch_flat_uefi(
             UefiLaunchConfig {
+                acpi_s5: description.acpi_s5,
                 acpi_devices: &[],
                 console: description.console,
                 peripherals: handoff.peripherals,
@@ -328,6 +329,7 @@ impl Riscv64UefiPayload {
         });
         crate::crabefi::launch_flat_uefi(
             UefiLaunchConfig {
+                acpi_s5: description.acpi_s5,
                 acpi_devices: &[],
                 console: description.console,
                 peripherals: handoff.peripherals,
@@ -563,6 +565,7 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
         fstart_stage::timestamps::handoff();
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
+                acpi_s5: description.acpi_s5,
                 console: description.console,
                 acpi_devices: description.acpi_devices,
                 peripherals: handoff.peripherals,

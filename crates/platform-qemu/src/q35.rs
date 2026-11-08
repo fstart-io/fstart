@@ -20,7 +20,7 @@ const ICH9_LPC_DEV: u8 = 31;
 const ICH9_LPC_FUNC: u8 = 0;
 const ICH9_PMBASE_REG: u8 = 0x40;
 const ICH9_ACPI_CNTL: u8 = 0x44;
-const Q35_PMBASE: u16 = 0x0600;
+pub(crate) const Q35_PMBASE: u16 = 0x0600;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

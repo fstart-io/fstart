@@ -4,7 +4,9 @@
 
 use fstart_core::mmio32;
 use fstart_driver_uart::sifive::SifiveUartConfig;
-use fstart_platform_sifive::{Fu740Board, Fu740Config, Fu740DdrConfig, Fu740PrciConfig};
+use fstart_platform_sifive::{
+    Fu740Board, Fu740Config, Fu740DdrConfig, Fu740PrciConfig, PllConfig, PllSettings,
+};
 
 use crate::ddr_regs::{HIFIVE_UNMATCHED_DENALI_CTL, HIFIVE_UNMATCHED_DENALI_PHY};
 
@@ -15,7 +17,17 @@ impl Fu740Board for crate::Board {
 
 /// 16 GiB of DDR4, the SPI flash's FFS window and the payload placement.
 pub static HIFIVE_UNMATCHED: Fu740Config = Fu740Config {
-    prci: Fu740PrciConfig::new(26_000_000),
+    // Proven Unmatched divisors for its 26 MHz oscillator.
+    prci: Fu740PrciConfig::new(
+        26_000_000,
+        PllConfig {
+            core: PllSettings::new(0, 76, 2, 4),
+            ddr: PllSettings::new(0, 71, 2, 4),
+            gemgxl: PllSettings::new(0, 76, 5, 4),
+            hfpclk: PllSettings::new(1, 39, 2, 4),
+            cltx: PllSettings::new(1, 39, 2, 4),
+        },
+    ),
     ddr: Fu740DdrConfig::new(
         &HIFIVE_UNMATCHED_DENALI_CTL,
         &HIFIVE_UNMATCHED_DENALI_PHY,

@@ -68,6 +68,9 @@ pub struct BoardAcpi {
     pub sb_aml: Vec<u8>,
 }
 
+/// FCH `_S5` type, also handed to boot-lifetime payload reset handlers.
+pub const S5_SLEEP_TYPE: u8 = 5;
+
 /// What a SoC's ACPI tables differ in.
 #[derive(Debug, Clone, Copy)]
 pub struct SocAcpi {
@@ -381,7 +384,7 @@ fn sleep_states() -> Vec<u8> {
         Name("_S0_", Package(0u8, 0u8, 0u8, 0u8));
         Name("_S1_", Package(1u8, 1u8, 0u8, 0u8));
         Name("_S4_", Package(4u8, 4u8, 0u8, 0u8));
-        Name("_S5_", Package(5u8, 5u8, 0u8, 0u8));
+        Name("_S5_", Package(#{byte S5_SLEEP_TYPE}, #{byte S5_SLEEP_TYPE}, 0u8, 0u8));
     }
     .into()
 }

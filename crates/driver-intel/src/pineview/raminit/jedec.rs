@@ -38,7 +38,7 @@ fn send_jedec_cmd(mch: &MchBar, rank: u8, jmode: u8, jval: u16) {
     unsafe { fstart_arch::x86::read_phys32(addr as usize) };
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 
-    fstart_arch::x86::hpet_udelay(2);
+    crate::ich7::HPET.delay_us(2);
 }
 
 /// JEDEC DDR2 initialization sequence.
@@ -81,7 +81,7 @@ pub fn jedec_init(si: &SysInfo, mch: &MchBar) {
     }
 
     // 200 µs settling time.
-    fstart_arch::x86::hpet_udelay(200);
+    crate::ich7::HPET.delay_us(200);
 
     // The temporary DRB map packs populated ranks into consecutive 128 MiB
     // regions. JEDEC address strobes use that packed index, not the physical

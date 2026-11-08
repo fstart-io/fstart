@@ -767,6 +767,19 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
         description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.northbridge));
         description.framebuffer = self.northbridge.framebuffer_info();
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
+        #[cfg(feature = "acpi")]
+        let acpi_s5 = {
+            use fstart_acpi::platform::X86PlatformProvider;
+            use fstart_driver_intel::southbridge::pmio_ich;
+            [fstart_core::description::AcpiSleepControl::new(
+                self.southbridge.x86_platform_config(0).pmbase + pmio_ich::PM1_CNT,
+                pmio_ich::S5_SLEEP_TYPE,
+            )]
+        };
+        #[cfg(feature = "acpi")]
+        {
+            description.acpi_s5 = &acpi_s5;
+        }
         description.smbios = self.ctx.smbios();
         description.mainboard = (&self.mainboard.0, &self.mainboard.1);
         description.tables = &tables;

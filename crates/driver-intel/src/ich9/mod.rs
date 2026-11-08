@@ -1185,11 +1185,8 @@ impl IntelIch9 {
             .modify(HPTC::ENABLE::SET + HPTC::ADDRESS_SELECT.val(0));
         let _ = rcba.regs().hptc.get();
 
-        // SAFETY: HPET base is fixed once enabled through HPTC.
-        unsafe {
-            let cfg = fstart_core::mmio::read32((HPET_BASE + 0x10) as *const u32);
-            fstart_core::mmio::write32((HPET_BASE + 0x10) as *mut u32, cfg | 1);
-        }
+        // SAFETY: HPTC has decoded this UC HPET register block.
+        unsafe { fstart_arch::x86::hpet::Hpet::new(HPET_BASE) }.enable();
     }
 
     fn is_mobile(&self) -> bool {

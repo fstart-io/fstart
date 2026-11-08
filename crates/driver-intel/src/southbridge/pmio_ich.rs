@@ -130,6 +130,8 @@ pub const TMROF_EN: u16 = 1 << 0;
 pub const SLP_TYP_MASK: u32 = PM_CONTROL::SLEEP_TYPE.val(7).value;
 /// Sleep Type shift.
 pub const SLP_TYP_SHIFT: u32 = 10;
+/// The unshifted `_S5` type shared by ICH/PCH ACPI and payload handoff.
+pub const S5_SLEEP_TYPE: u8 = (PM_CONTROL::SLEEP_TYPE::S5.value >> SLP_TYP_SHIFT) as u8;
 /// Sleep Enable bit (bit 13). Writing 1 enters the sleep state in SLP_TYP.
 pub const SLP_EN: u32 = PM_CONTROL::SLEEP_ENABLE::SET.value;
 /// Global Release (bit 2).

@@ -116,8 +116,11 @@ impl BoardFacts {
     /// build selects it) before the read-only image at the beginning of the
     /// BIOS mapping.
     pub const fn mutable_prefix(&self, flash_console: bool) -> u32 {
-        (if self.memory_cache { 0x20000 } else { 0 })
-            + if flash_console { FLASH_CONSOLE_SIZE } else { 0 }
+        (if self.memory_cache {
+            crate::memory_cache::EXTENT_SIZE
+        } else {
+            0
+        }) + if flash_console { FLASH_CONSOLE_SIZE } else { 0 }
     }
 
     /// Opt in to 32-bit protected-mode stages (see [`Self::protected_mode`]).

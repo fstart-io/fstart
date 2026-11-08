@@ -237,11 +237,9 @@ pub type ResolvedPlan = crate::build_plan::BuildPlan;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IntelPlan {
+    /// Platform-resolved mutable prefix; this transport does not know its formats.
     #[serde(default)]
-    pub memory_cache: bool,
-    /// Size of the SPI flash console region after the MRC cache; 0 if none.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub flash_console: u32,
+    pub mutable_regions: fstart_core::board::MutableFlashRegions,
     pub reservations: crate::intel_plan::IntelReservations,
     /// Long mode or 32-bit protected mode; selects the target triple.
     pub platform: fstart_core::Platform,
@@ -367,7 +365,6 @@ impl IntelPlan {
         if flash != self.reservations.flash || firmware != self.reservations.firmware {
             return Err("physical layout differs from resolved flash/firmware windows".into());
         }
-        let prefix = u64::from(self.flash_console) + if self.memory_cache { 0x20000 } else { 0 };
         let bios_offset = match &self.flash {
             FlashTransport::IntelIfd(layout) => {
                 layout
@@ -378,10 +375,12 @@ impl IntelPlan {
             }
             FlashTransport::X86Legacy(_) => 0,
         };
+        let prefix = u64::from(fstart_core::board::mutable_prefix_size(
+            &self.mutable_regions,
+            bios_offset,
+        )?);
         if self.reservations.bootblock.image.base != firmware.base + prefix
             || firmware.size.checked_sub(prefix) != Some(self.reservations.bootblock.image.size)
-            || (prefix != 0 && bios_offset % 0x10000 != 0)
-            || self.flash_console % 0x10000 != 0
         {
             return Err("mutable cache and reset image geometry differ".into());
         }
@@ -393,8 +392,4 @@ impl IntelPlan {
         }
         self.flash.decode()
     }
-}
-
-fn is_zero(value: &u32) -> bool {
-    *value == 0
 }

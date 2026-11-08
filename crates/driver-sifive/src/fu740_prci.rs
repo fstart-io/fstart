@@ -1,7 +1,7 @@
 //! FU740 power-reset-clock-interrupt controller.
 //!
-//! The PLL programming sequence follows the proven HiFive Unmatched setup.
-//! The PRCI brings up the core, DDR and peripheral clocks; a board with
+//! The board supplies PLL divisors for its reference clock. The PRCI owns
+//! the programming sequence for core, DDR and peripheral clocks; a board with
 //! Ethernet resets its PHY, then enables the GEMGXL clock.
 
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -59,8 +59,9 @@ const PLLS_DDRPLL: u32 = 1 << 2;
 const PLLS_HFPCLKPLL: u32 = 1 << 3;
 const PLLS_COREPLL: u32 = 1 << 5;
 
-#[derive(Clone, Copy)]
-struct PllSettings {
+/// PLL divisors and input range selected for the board's reference clock.
+#[derive(Debug, Clone, Copy)]
+pub struct PllSettings {
     divr: u32,
     divf: u32,
     divq: u32,
@@ -68,6 +69,17 @@ struct PllSettings {
 }
 
 impl PllSettings {
+    #[must_use]
+    pub const fn new(divr: u32, divf: u32, divq: u32, range: u32) -> Self {
+        assert!(divr <= 0x3f && divf <= 0x1ff && divq <= 7 && range <= 7);
+        Self {
+            divr,
+            divf,
+            divq,
+            range,
+        }
+    }
+
     const fn to_reg(self) -> u32 {
         (self.divr << PLLCFG_DIVR_SHIFT)
             | (self.divf << PLLCFG_DIVF_SHIFT)
@@ -77,47 +89,27 @@ impl PllSettings {
     }
 }
 
-// Keep these proven HiFive Unmatched programming values verbatim.
-const COREPLL: PllSettings = PllSettings {
-    divr: 0,
-    divf: 76,
-    divq: 2,
-    range: 4,
-};
-const DDRPLL: PllSettings = PllSettings {
-    divr: 0,
-    divf: 71,
-    divq: 2,
-    range: 4,
-};
-const GEMGXLPLL: PllSettings = PllSettings {
-    divr: 0,
-    divf: 76,
-    divq: 5,
-    range: 4,
-};
-const HFPCLKPLL: PllSettings = PllSettings {
-    divr: 1,
-    divf: 39,
-    divq: 2,
-    range: 4,
-};
-const CLTXPLL: PllSettings = PllSettings {
-    divr: 1,
-    divf: 39,
-    divq: 2,
-    range: 4,
-};
+/// Board-selected PLL programming, not a driver-owned default clock tree.
+#[derive(Debug, Clone, Copy)]
+pub struct PllConfig {
+    pub core: PllSettings,
+    pub ddr: PllSettings,
+    pub gemgxl: PllSettings,
+    pub hfpclk: PllSettings,
+    pub cltx: PllSettings,
+}
 
 /// FU740 clock/reset driver.
-pub struct Fu740Prci;
+pub struct Fu740Prci {
+    config: &'static Fu740PrciConfig,
+}
 
 impl Fu740Prci {
     pub fn new(config: &'static Fu740PrciConfig) -> Result<Self, DeviceError> {
         if config.reference_clock_hz == 0 {
             return Err(DeviceError::ConfigError);
         }
-        Ok(Self)
+        Ok(Self { config })
     }
 
     #[inline(always)]
@@ -167,7 +159,7 @@ impl Fu740Prci {
     fn init_coreclk(&self) -> Result<(), DeviceError> {
         self.write(CORE_CLK_SEL, CORECLKSEL_HFCLK);
         if self.read(PRCI_PLLS) & PLLS_COREPLL != 0 {
-            self.configure_pll(CORE_PLLCFG, COREPLL)?;
+            self.configure_pll(CORE_PLLCFG, self.config.plls.core)?;
             self.write(CORE_CLK_SEL, CORECLKSEL_CORECLKPLL);
         }
         Ok(())
@@ -176,7 +168,7 @@ impl Fu740Prci {
     fn init_ddrclk(&self) -> Result<(), DeviceError> {
         if self.read(PRCI_PLLS) & PLLS_DDRPLL != 0 {
             self.clear_bits(DDR_PLLOUTDIV, DDR_PLLOUTDIV_EN);
-            self.configure_pll(DDR_PLLCFG, DDRPLL)?;
+            self.configure_pll(DDR_PLLCFG, self.config.plls.ddr)?;
             self.set_bits(DDR_PLLOUTDIV, DDR_PLLOUTDIV_EN);
         }
         Ok(())
@@ -197,7 +189,7 @@ impl Fu740Prci {
 
     fn init_hfpclk(&self) -> Result<(), DeviceError> {
         self.set_bits(HFPCLKPLLSEL, HFPCLKSEL_HFCLK);
-        self.configure_pll(HFPCLK_PLLCFG, HFPCLKPLL)?;
+        self.configure_pll(HFPCLK_PLLCFG, self.config.plls.hfpclk)?;
         self.set_bits(HFPCLK_PLLOUTDIV, HFPCLK_PLLOUTDIV_EN);
         spin_delay_us(1_000);
         self.clear_bits(HFPCLKPLLSEL, HFPCLKSEL_HFCLK);
@@ -207,7 +199,7 @@ impl Fu740Prci {
 
     fn init_cltx(&self) -> Result<(), DeviceError> {
         self.clear_bits(CLTX_PLLOUTDIV, CLTX_PLLOUTDIV_EN);
-        self.configure_pll(CLTX_PLLCFG, CLTXPLL)?;
+        self.configure_pll(CLTX_PLLCFG, self.config.plls.cltx)?;
         self.set_bits(CLTX_PLLOUTDIV, CLTX_PLLOUTDIV_EN);
         spin_delay_us(70);
         Ok(())
@@ -218,7 +210,7 @@ impl Fu740Prci {
     pub fn enable_ethernet(&self) -> Result<(), DeviceError> {
         if self.read(PRCI_PLLS) & PLLS_GEMGXLPLL != 0 {
             self.clear_bits(GEMGXL_PLLOUTDIV, GEMGXL_PLLOUTDIV_EN);
-            self.configure_pll(GEMGXL_PLLCFG, GEMGXLPLL)?;
+            self.configure_pll(GEMGXL_PLLCFG, self.config.plls.gemgxl)?;
             self.set_bits(GEMGXL_PLLOUTDIV, GEMGXL_PLLOUTDIV_EN);
         }
         self.reset_deassert(RST_GEMGXL);
@@ -247,16 +239,67 @@ impl Fu740Prci {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn plls(divf: u32) -> PllConfig {
+        let setting = PllSettings::new(0, divf, 2, 4);
+        PllConfig {
+            core: setting,
+            ddr: setting,
+            gemgxl: setting,
+            hfpclk: setting,
+            cltx: setting,
+        }
+    }
+    static CLOCK26: Fu740PrciConfig = Fu740PrciConfig::new(26_000_000, plls(76));
+    static CLOCK24: Fu740PrciConfig = Fu740PrciConfig::new(24_000_000, plls(80));
+
+    #[test]
+    fn retains_caller_clock_plan_instead_of_substituting_a_board_default() {
+        let a = Fu740Prci::new(&CLOCK26).unwrap();
+        let b = Fu740Prci::new(&CLOCK24).unwrap();
+        for settings in [
+            a.config.plls.core,
+            a.config.plls.ddr,
+            a.config.plls.gemgxl,
+            a.config.plls.hfpclk,
+            a.config.plls.cltx,
+        ] {
+            assert_eq!(settings.to_reg(), 0x0211_1300);
+        }
+        assert_eq!(b.config.plls.core.to_reg(), 0x0211_1400);
+        assert_eq!(b.config.reference_clock_hz, 24_000_000);
+        static INVALID: Fu740PrciConfig = Fu740PrciConfig::new(0, plls(76));
+        assert!(matches!(
+            Fu740Prci::new(&INVALID),
+            Err(DeviceError::ConfigError)
+        ));
+    }
+
+    #[test]
+    #[should_panic]
+    fn rejects_divisors_outside_the_register_fields() {
+        let _ = PllSettings::new(64, 0, 0, 0);
+    }
+}
+
 /// Static FU740 PRCI policy.
 #[derive(Debug, Clone, Copy)]
 pub struct Fu740PrciConfig {
+    /// The PLL settings are explicitly selected for this reference, not scaled.
     pub reference_clock_hz: u32,
+    pub plls: PllConfig,
 }
 
 impl Fu740PrciConfig {
     #[must_use]
-    pub const fn new(reference_clock_hz: u32) -> Self {
-        Self { reference_clock_hz }
+    pub const fn new(reference_clock_hz: u32, plls: PllConfig) -> Self {
+        Self {
+            reference_clock_hz,
+            plls,
+        }
     }
 
     #[must_use]

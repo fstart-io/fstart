@@ -101,7 +101,9 @@ jobs:
             --features acpi,i945,gm965,ich8,pineview \
             --features gm45,ich9,ironlake,spi,display --lib
           cargo test -p fstart-platform-intel \
-            --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi --lib
+            --features i945-ich7,gm965-ich8,pineview-ich7 \
+            --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi,host --lib
+          cargo test -p fstart-boot --features crabefi-ui --lib
           cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles

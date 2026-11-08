@@ -15,13 +15,8 @@ use fstart_core::services::ServiceError;
 use fstart_pci::ecam;
 use tock_registers::LocalRegisterCopy;
 
-/// Microsecond delay for raminit sequences.
-///
-/// Use the calibrated x86 delay rather than a CPU-frequency-dependent
-/// spin-loop guess.
-fn hpet_udelay(us: u32) {
-    fstart_arch::x86::hpet_udelay(us);
-}
+// The ICH7 early phase enables this device before Pineview raminit.
+use crate::ich7::HPET;
 
 // ===================================================================
 // PLL calibration tables (from coreboot sdram_calibratepll)
@@ -828,7 +823,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 
     for _ in 0..3 {
         mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
-        hpet_udelay(1000);
+        HPET.delay_us(1000);
         while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
             core::hint::spin_loop();
         }
@@ -842,7 +837,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
     }
 
     mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
-    hpet_udelay(1000);
+    HPET.delay_us(1000);
     while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
         core::hint::spin_loop();
     }
@@ -1231,9 +1226,9 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
     let mut matches = true;
     for _ in 0..count {
         mch.clrbits8(mchbar::C0RSTCTL, 1 << 1);
-        hpet_udelay(1);
+        HPET.delay_us(1);
         mch.setbits8(mchbar::C0RSTCTL, 1 << 1);
-        hpet_udelay(1);
+        HPET.delay_us(1);
 
         // SAFETY: Intentionally reads from physical address 0 to trigger
         // a DRAM read cycle for DQS sampling during receive-enable
@@ -1243,7 +1238,7 @@ fn sample_dqs(mch: &MchBar, dqshighaddr: u32, highlow: u8, count: u8) -> bool {
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         unsafe { fstart_arch::x86::read_phys32(0) };
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-        hpet_udelay(1);
+        HPET.delay_us(1);
 
         if ((mch.read8(dqshighaddr) & (1 << 6)) >> 6) != highlow {
             matches = false;

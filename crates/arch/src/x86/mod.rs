@@ -9,6 +9,7 @@ pub use crate::x86_crate::*;
 
 pub mod boot;
 pub mod cpu;
+pub mod hpet;
 pub mod ioapic;
 pub mod lapic;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -51,30 +52,6 @@ pub unsafe fn read_phys32(addr: usize) {
         );
     }
     core::hint::black_box(value);
-}
-
-/// Delay using the Intel-compatible HPET main counter.
-///
-/// The Pineview/ICH7 platform enables HPET before entering raminit. The
-/// chipset's coreboot implementation uses 15 counter ticks per microsecond;
-/// retain its wraparound-safe comparison here.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn hpet_udelay(us: u32) {
-    const HPET_BASE: usize = 0xFED0_0000;
-    const MAIN_COUNTER: usize = 0xF0;
-    let delay = us.saturating_mul(15);
-    let start = unsafe { fstart_core::mmio::read32((HPET_BASE + MAIN_COUNTER) as *const u32) };
-    let finish = start.wrapping_add(delay);
-    loop {
-        let now = unsafe { fstart_core::mmio::read32((HPET_BASE + MAIN_COUNTER) as *const u32) };
-        if if finish > start {
-            now >= finish
-        } else {
-            now < start && now >= finish
-        } {
-            break;
-        }
-    }
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

@@ -26,6 +26,8 @@ pub use fstart_driver_amd::fch::HPET_MIN_TICK;
 /// FCH ACPI fixed hardware: PM1a_EVT 0x800, PM1a_CNT 0x804, PM_TMR 0x808,
 /// GPE0 0x820 (8 bytes), SCI on IRQ 9 (ACPI_SMM §3.1, FCH §3.2 SCI map).
 pub const PM_BASE: u16 = 0x800;
+/// FCH `_S5` type, shared by AML and payload handoff.
+pub const S5_SLEEP_TYPE: u8 = 5;
 pub const GPE0_OFFSET: u16 = 0x20;
 pub const GPE0_LEN: u8 = 8;
 pub const SCI_IRQ: u8 = 9;

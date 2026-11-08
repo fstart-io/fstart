@@ -353,6 +353,10 @@ const IOAPIC_BASE: usize = 0xFEC0_0000;
 const LAPIC_BASE: usize = 0xFEE0_0000;
 /// HPET base address (after HPTC enable).
 const HPET_BASE: usize = 0xFED0_0000;
+/// ICH7's HPET after `early_init` has decoded/enabled it.
+// SAFETY: HPTC address selection 0 maps this UC register block before use.
+pub const HPET: fstart_arch::x86::hpet::Hpet =
+    unsafe { fstart_arch::x86::hpet::Hpet::new(HPET_BASE) };
 // PM register offsets and bit definitions live in the shared
 // fstart-pmio-ich crate.  Import the ones used locally.
 use crate::southbridge::pmio_ich::{self as pmio, PmIo};
@@ -890,50 +894,19 @@ impl IntelIch7 {
         gpio.setup(&self.config.gpio);
     }
 
-    fn ioapic_read(reg: u32) -> u32 {
-        // SAFETY: IOAPIC selector/data registers are fixed MMIO registers.
-        unsafe {
-            fstart_core::mmio::write32(IOAPIC_BASE as *mut u32, reg);
-            fstart_core::mmio::read32((IOAPIC_BASE + 0x10) as *const u32)
-        }
-    }
-
-    fn ioapic_write(reg: u32, value: u32) {
-        // SAFETY: IOAPIC selector/data registers are fixed MMIO registers.
-        unsafe {
-            fstart_core::mmio::write32(IOAPIC_BASE as *mut u32, reg);
-            fstart_core::mmio::write32((IOAPIC_BASE + 0x10) as *mut u32, value);
-        }
-    }
-
     fn setup_ioapic(&self) {
-        const INT_DISABLED: u32 = 1 << 16;
-        const EXTINT: u32 = 7 << 8;
-        let id = Self::ioapic_read(0x00);
-        let version = Self::ioapic_read(0x01);
-        let max_redir = ((version >> 16) & 0xff).min(23);
+        // SAFETY: ICH7 has decoded this UC-mapped IOAPIC, exclusively owned by
+        // the BSP until interrupt routing has been initialized.
+        let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(IOAPIC_BASE) };
+        let bsp_lapic_id = fstart_arch::x86::lapic::Lapic::at(LAPIC_BASE).id();
+        // coreboot register_new_ioapic_gsi0(): ID 0, mask the table, then
+        // route the legacy 8259 output to the BSP as ExtINT.
+        ioapic.set_id(0);
+        ioapic.mask_all();
+        ioapic.route_i8259(bsp_lapic_id as u8);
         fstart_log::info!(
-            "intel-ich7: IOAPIC id={:#x} version={:#x} redirs={}",
-            id,
-            version,
-            max_redir + 1,
-        );
-
-        // Match coreboot register_new_ioapic_gsi0(): set ID 0, mask all
-        // redirection entries, then route IRQ0 as ExtINT to the BSP LAPIC.
-        Self::ioapic_write(0x00, id & 0x00ff_ffff);
-        for irq in 0..=max_redir {
-            Self::ioapic_write(0x10 + irq * 2, INT_DISABLED);
-            Self::ioapic_write(0x11 + irq * 2, 0);
-        }
-
-        // SAFETY: LAPIC ID register is fixed MMIO when the local APIC is enabled.
-        let bsp_lapic_id =
-            unsafe { fstart_core::mmio::read32((LAPIC_BASE + 0x20) as *const u32) >> 24 };
-        Self::ioapic_write(0x10, EXTINT);
-        Self::ioapic_write(0x11, bsp_lapic_id << 24);
-        fstart_log::info!(
-            "intel-ich7: IOAPIC IRQ0 ExtINT routed to LAPIC {}",
+            "intel-ich7: IOAPIC redirs={} IRQ0 ExtINT routed to LAPIC {}",
+            ioapic.redirection_entries(),
             bsp_lapic_id
         );
     }
@@ -973,7 +946,7 @@ impl IntelIch7 {
     /// Enable HPET via RCBA.
     ///
     /// Ported from coreboot `enable_hpet()`. Raminit needs HPET for
-    /// microsecond-resolution delays (hpet_udelay).
+    /// microsecond-resolution delays.
     fn enable_hpet(&self, rcba: &Rcba) {
         rcba.regs()
             .hptc
@@ -981,12 +954,7 @@ impl IntelIch7 {
         // Read back for posted write.
         let _ = rcba.regs().hptc.get();
 
-        // Enable the main HPET counter.
-        // SAFETY: HPET base is a fixed MMIO address enabled by HPTC.
-        unsafe {
-            let cfg = fstart_core::mmio::read32((HPET_BASE + 0x10) as *const u32);
-            fstart_core::mmio::write32((HPET_BASE + 0x10) as *mut u32, cfg | 1);
-        }
+        HPET.enable();
 
         fstart_log::info!("intel-ich7: HPET enabled at {:#x}", HPET_BASE);
     }

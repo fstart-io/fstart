@@ -528,6 +528,11 @@ impl<S: Soc> Stage<S, Published<S>> {
             Description::new(machine.e820.entries(), Range::new(ffs.base, ffs.size));
         description.console = Some(machine.console);
         description.acpi = rsdp.map(AcpiTables::at);
+        let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(
+            silicon.acpi.ports.control,
+            crate::acpi::S5_SLEEP_TYPE,
+        )];
+        description.acpi_s5 = &acpi_s5;
         description.smbios = smbios;
         description.acpi_devices = &silicon.devices;
         description.framebuffer = silicon.framebuffer;

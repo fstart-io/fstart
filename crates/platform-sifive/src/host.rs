@@ -352,12 +352,21 @@ fn lim_linker_script(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Fu740DdrConfig, Fu740PrciConfig};
+    use crate::{Fu740DdrConfig, Fu740PrciConfig, PllConfig, PllSettings};
 
     static CTL: [u32; 265] = [0; 265];
     static PHY: [u32; 1215] = [0; 1215];
     static CONFIG: Fu740Config = Fu740Config {
-        prci: Fu740PrciConfig::new(26_000_000),
+        prci: Fu740PrciConfig::new(
+            24_000_000,
+            PllConfig {
+                core: PllSettings::new(0, 80, 2, 4),
+                ddr: PllSettings::new(0, 75, 2, 4),
+                gemgxl: PllSettings::new(0, 80, 5, 4),
+                hfpclk: PllSettings::new(1, 42, 2, 4),
+                cltx: PllSettings::new(1, 42, 2, 4),
+            },
+        ),
         ddr: Fu740DdrConfig::new(&CTL, &PHY, 0x4_0000_0000),
         firmware_base: 0x2000_0000,
         firmware_size: 0x0200_0000,

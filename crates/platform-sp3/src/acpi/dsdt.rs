@@ -317,7 +317,7 @@ fn root_objects(uids: usize) -> Result<Vec<u8>, AmlError> {
         .collect();
     let fixed: Vec<u8> = acpi_dsl! {
         Name("_S0_", Package(0u8, 0u8, 0u8, 0u8));
-        Name("_S5_", Package(5u8, 0u8, 0u8, 0u8));
+        Name("_S5_", Package(#{byte super::fixed::S5_SLEEP_TYPE}, 0u8, 0u8, 0u8));
     }
     .into();
     Ok([ioapic_acpi::pic_aml(&nbios)?, scope_vec("\\", &fixed)?].concat())
