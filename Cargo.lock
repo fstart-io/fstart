@@ -1100,6 +1100,7 @@ dependencies = [
  "embedded-hal",
  "fstart-amdfw-format",
  "heapless 0.8.0",
+ "portable-atomic",
  "serde",
  "tock-registers",
  "ufmt",
@@ -1406,6 +1407,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-core",
  "fstart-timestamp",
+ "portable-atomic",
  "ufmt",
 ]
 
@@ -1645,6 +1647,9 @@ dependencies = [
 [[package]]
 name = "fstart-timestamp"
 version = "0.1.0"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "generic-array"
@@ -1721,6 +1726,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
  "hash32",
+ "portable-atomic",
  "serde",
  "stable_deref_trait",
 ]
@@ -2010,6 +2016,12 @@ dependencies = [
  "der",
  "spki",
 ]
+
+[[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "primeorder"

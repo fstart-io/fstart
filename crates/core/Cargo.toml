@@ -19,6 +19,7 @@ zerocopy = { workspace = true }
 fstart-amdfw-format = { workspace = true, features = ["serde"], optional = true }
 embedded-hal = { workspace = true }
 tock-registers = { workspace = true }
+portable-atomic = { workspace = true }
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 x86 = { workspace = true }

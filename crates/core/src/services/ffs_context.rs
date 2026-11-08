@@ -6,7 +6,7 @@
 //! knowing about those assets.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use portable_atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 type VerifiedAssetReader = fn(&str) -> Option<&'static [u8]>;
 

@@ -17,7 +17,7 @@
 #![no_std]
 
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use portable_atomic::{AtomicPtr, Ordering};
 
 /// A milestone identifier. Values below 1000 follow coreboot's
 /// `timestamp_serialized.h` where the meaning matches; fstart-specific ones

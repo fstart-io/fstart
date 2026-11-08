@@ -142,7 +142,7 @@ pub const fn build_enabled(level: Level) -> bool {
 // ---------------------------------------------------------------------------
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use portable_atomic::{AtomicBool, Ordering};
 
 /// Guards the console across CPUs.
 ///
