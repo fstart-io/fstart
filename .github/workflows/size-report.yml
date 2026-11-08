@@ -37,11 +37,14 @@ jobs:
           # it claims before acting on it. CI built GitHub's test merge of the
           # pull request, whose parents are the base it built on and the head
           # of this run.
-          read -r pr merge < <(python3 -c '
-          import json, re
-          d = json.load(open("head/stage-sizes.json"))
-          assert re.fullmatch(r"[0-9a-f]{40}", d["commit"])
-          print(int(d["pr"]), d["commit"])')
+          read -r pr merge < <(jq -r '
+            select(.commit | test("^[0-9a-f]{40}$"))
+            | select(.pr | type == "number")
+            | "\(.pr) \(.commit)"' head/stage-sizes.json)
+          if [ -z "$pr" ] || [ -z "$merge" ]; then
+            echo "Stage sizes carry no usable commit/pull request; not reporting."
+            exit 0
+          fi
           if [ "$(gh api "repos/$GH_REPO/pulls/$pr" -q .head.sha)" != "$HEAD_SHA" ]; then
             echo "Pull request #$pr is not at $HEAD_SHA; not reporting."
             exit 0
