@@ -121,6 +121,16 @@ impl AcpiDevice for IntelIronlake {
                     Name("_CRS", ResourceTemplate {
                         WordBusNumber(#{word qpi_bus as u16}, #{word qpi_bus as u16});
                     });
+                    // Linux disables ASPM globally when this second root's
+                    // optional _OSC is absent, even after PCI0 granted it.
+                    Method("_OSC", 4, NotSerialized) {
+                        If (Arg0 == ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")) {
+                            Return(Arg3);
+                        }
+                        CreateDwordField(Arg3, 0u32, "CDW1");
+                        CDW1 = CDW1 | 4u32;
+                        Return(Arg3);
+                    }
                     Device("SAD_") {
                         Name("_ADR", 1u32);
                         Name("RID_", 0u32);
@@ -177,5 +187,25 @@ impl AcpiDevice for IntelIronlake {
         let mut bytes = Vec::new();
         fstart_acpi::Aml::to_aml_bytes(&mcfg, &mut bytes);
         alloc::vec![bytes]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IntelNorthbridgeDriver;
+
+    #[test]
+    fn uncore_root_acknowledges_pcie_osc() {
+        static CONFIG: IntelIronlakeConfig = IntelIronlakeConfig::new();
+        let driver = IntelIronlake::new_from_config(&CONFIG).unwrap();
+        let aml = driver.dsdt_aml(&CONFIG);
+        let uncore = aml.windows(4).position(|name| name == b"UNCR").unwrap();
+        let sad = aml[uncore..]
+            .windows(4)
+            .position(|name| name == b"SAD_")
+            .unwrap()
+            + uncore;
+        assert!(aml[uncore..sad].windows(4).any(|name| name == b"_OSC"));
     }
 }

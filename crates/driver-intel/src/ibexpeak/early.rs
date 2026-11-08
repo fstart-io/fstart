@@ -30,7 +30,11 @@ impl IntelIbexPeak {
     /// coreboot `bootblock_early_southbridge_init()`.
     pub(super) fn bootblock_init(&self) {
         // SAFETY: fixed LPC function; ECAM is up.
-        unsafe { crate::southbridge::lpc::flash_config() }.enable_prefetching_and_caching();
+        let flash = unsafe { crate::southbridge::lpc::flash_config() };
+        flash.enable_prefetching_and_caching();
+        // Cache commits precede device finalization. Establish the same write
+        // policy coreboot's spi_init() does before the first flash operation.
+        flash.prepare_firmware_writes();
         let lpc = self.lpc_regs();
         lpc.rcba
             .write(RCBA::BASE.val(u32::from(self.config.rcba as u32 >> 14)) + RCBA::ENABLE::SET);

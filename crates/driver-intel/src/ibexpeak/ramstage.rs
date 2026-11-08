@@ -5,7 +5,6 @@ use super::regs::{FDSW, GCS, GEN_PMCON_1, GEN_PMCON_LOCK, PRSTS, SERIRQ_CNTL, TC
 use super::{IntelIbexPeak, SataConfig, SataMode};
 use crate::MmioBar;
 use crate::southbridge::hda::{HdaConfig, HdaController};
-use crate::southbridge::lpc::BIOS_CONTROL;
 use crate::southbridge::pmio_ich as pmio;
 use fstart_pci::ecam::EcamDevice;
 use fstart_pci::{PCI_COMMAND_BITS, PciType0Config, PciType1Config};
@@ -573,11 +572,7 @@ impl IntelIbexPeak {
         raw.write16(OPTYPE, optype);
         // SAFETY: fixed LPC function; ECAM is up.
         let flash = unsafe { crate::southbridge::lpc::flash_config() };
-        flash.bios_control.modify(
-            BIOS_CONTROL::LOCK_ENABLE::CLEAR
-                + BIOS_CONTROL::SMM_WRITE_PROTECT::CLEAR
-                + BIOS_CONTROL::WRITE_ENABLE::SET,
-        );
+        flash.prepare_firmware_writes();
     }
 
     /// coreboot `intel_pch_finalize_smm()`, run from the ramstage before

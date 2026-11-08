@@ -213,7 +213,15 @@ impl CacheSpi {
         let identified = controller
             .execute(&mut SpiCommand::read_reg(0x9f, &mut id))
             .is_ok();
-        fstart_log::info!("spi-cache: JEDEC {:#x}:{:#x}:{:#x}", id[0], id[1], id[2]);
+        // Construction is outside the console's write callback. Keep status
+        // diagnostics here, never in program/erase/unlock (logger re-entry).
+        fstart_log::info!(
+            "spi-cache: JEDEC {:#x}:{:#x}:{:#x}, BIOS_CNTL={:#x}",
+            id[0],
+            id[1],
+            id[2],
+            lpc.bios_control.get()
+        );
         let writable = identified
             .then(|| supported_geometry(id, extent.chip_size))
             .flatten()

@@ -45,6 +45,17 @@ impl LpcFlashConfig {
         self.bios_control
             .modify(BIOS_CONTROL::READ_CONFIGURATION::PrefetchAndCache);
     }
+
+    /// Platform-owned write policy, before firmware cache/log writes and
+    /// before any final lockdown. Matches coreboot's spi_init(). Regional
+    /// protection and each writer's bounded extent remain enforced.
+    pub fn prepare_firmware_writes(&self) {
+        self.bios_control.modify(
+            BIOS_CONTROL::LOCK_ENABLE::CLEAR
+                + BIOS_CONTROL::SMM_WRITE_PROTECT::CLEAR
+                + BIOS_CONTROL::WRITE_ENABLE::SET,
+        );
+    }
 }
 
 pub fn device() -> EcamDevice {
@@ -122,6 +133,16 @@ mod tests {
         assert_eq!(encode_generic_io_window(0x15e0, 0x10), Some(0x000c_15e1));
         assert_eq!(encode_generic_io_window(0x1600, 12), None);
         assert_eq!(encode_generic_io_window(0x1610, 0x20), None);
+    }
+
+    #[test]
+    fn firmware_write_policy_preserves_read_configuration_and_neighboring_bytes() {
+        let mut bytes = [0xaaaa_aaaau32; core::mem::size_of::<LpcFlashConfig>() / 4];
+        let config = unsafe { &*(bytes.as_mut_ptr() as *const LpcFlashConfig) };
+        config.bios_control.set(0xfb);
+        config.prepare_firmware_writes();
+        assert_eq!(bytes[0xdc / 4], 0xaaaa_aad9);
+        assert_eq!(bytes[0xe0 / 4], 0xaaaa_aaaa);
     }
 
     #[test]
