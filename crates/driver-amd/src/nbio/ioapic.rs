@@ -19,11 +19,31 @@ register_bitfields![u32,
         GROUP OFFSET(0) NUMBITS(3) [],
         /// INTA..D rotation.
         SWIZZLE OFFSET(4) NUMBITS(2) [Abcd = 0, Bcda = 1, Cdab = 2, Dabc = 3],
-        /// First IOAPIC pin of the group.
+        /// Bridge's own interrupt destination (downstream uses GROUP/SWIZZLE).
         MAP OFFSET(16) NUMBITS(5) []
     ],
     pub IoapicId [ID OFFSET(24) NUMBITS(8) []]
 ];
+
+/// One hardware bridge route. Silicon-specific tables choose the values;
+/// the separate own/external interrupt paths share this register mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    pub group: u8,
+    pub swizzle: u8,
+    pub map: u8,
+}
+impl Route {
+    pub const fn value(self) -> u32 {
+        self.group as u32 | (self.swizzle as u32) << 4 | (self.map as u32) << 16
+    }
+    /// INTA..D (0..3) from the device behind this bridge.
+    pub const fn secondary_pin(self, intx: u8) -> u8 {
+        4 * self.group + (intx + 4 - self.swizzle % 4) % 4
+    }
+}
+#[cfg(feature = "rs")]
+pub mod rs;
 
 pub const IOAPIC_FEATURES_ENABLE: SmnReg<IoapicFeatures::Register> = SmnReg::new(0x1430_0000);
 /// IOAPIC_BR_INTERRUPT_ROUTING of bridge `i`.

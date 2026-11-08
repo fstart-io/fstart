@@ -85,7 +85,7 @@ pub fn install<S: super::Soc>(
             let index = die.index();
             // SAFETY: the IOMMU MMIO is in the identity-mapped pool.
             host.acpi(index, ioapics[usize::from(index)], unsafe {
-                iommu::read(die)
+                iommu::read(&die.smn())
             })
         })
         .collect();
@@ -95,7 +95,7 @@ pub fn install<S: super::Soc>(
     // Every core runs the BSP's P-state table and C-state setup.
     // SAFETY: the BSP, reading the architectural P-state and C-state MSRs.
     let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
-    let pstates = power::pstates(&msr);
+    let pstates = power::pstates(&msr, power::Voltage::Svi2);
     let tables = acpi::build(&Inputs {
         soc,
         apic_ids,

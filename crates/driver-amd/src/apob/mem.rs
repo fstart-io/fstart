@@ -178,6 +178,8 @@ pub fn spd<'a>(apob: &Apob<'a>, socket: u8, die: u8) -> Result<SpdTable<'a>, Apo
         Variant::Zp => channels > 2,
         Variant::Ssp | Variant::Gn => channels > 8,
         Variant::Rv => false,
+        // The Rs APOB has its own format (`apob::rs`), not this record.
+        Variant::Rs => true,
     } || (apob.variant() != Variant::Rv
         && (dimms_per_channel > 2 || (channels == 0) != (dimms_per_channel == 0)));
     if invalid {
@@ -293,7 +295,8 @@ impl Type17Seed {
                     present: l.is_set(SspLocation::PRESENT),
                 })
             }
-            Variant::Rv => None,
+            // RV seeds are unknown; the Rs APOB has its own format.
+            Variant::Rv | Variant::Rs => None,
         }
     }
 }

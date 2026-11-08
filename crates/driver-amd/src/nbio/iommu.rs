@@ -1,23 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The NBIO IOMMU of every die: its MMIO window and the registers the IVRS
-//! describes, after the vendor AMI NbDxe and AmdNbioIOMMUZPDxe (sp4r2 report
-//! NBIO_BASE_ZP 3.6 and 3.7). The IOMMU tables of the NBIO early init already
-//! set up the L1s and the L2; translation stays off until the OS enables it.
+//! NBIO IOMMU capability/MMIO capture, shared independently of the legacy
+//! SoC/Die ownership model. Legacy initialization follows AMI NbDxe and
+//! AmdNbioIOMMUZPDxe (sp4r2 report NBIO_BASE_ZP 3.6/3.7); mapping/capture
+//! alone does NOT initialize L1/L2 policy or enable translation.
 //!
 //! The IOMMU is function 2 of device 0 on the die's root bus. Its
 //! configuration space is aliased in SMN, with the IOMMU capability at 0x40:
 //! NbDxe programs the base at SMN 0x13f00044/48 (D0F2 0x44/0x48),
 //! [`IOMMU_BAR`].
+#[cfg(feature = "rs")]
+pub mod rs;
 use super::iohc::IOMMU_BAR;
-use crate::smn::{SmnAddr, SmnReg};
-use tock_registers::register_bitfields;
+use crate::smn::{SmnAccess, SmnAddr, SmnReg};
+use fstart_core::mmio::MmioReadOnly;
+use fstart_log::Hex;
+use tock_registers::{
+    LocalRegisterCopy, interfaces::Readable, register_bitfields, register_structs,
+};
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 use {
     crate::{df::Die, soc::Soc},
-    fstart_core::mmio::MmioReadOnly,
-    fstart_log::Hex,
     fstart_pci::ConfigRegionAccess,
-    tock_registers::{interfaces::Readable, register_structs},
 };
 
 /// Offset of the IOMMU capability in D0F2's configuration space.
@@ -65,11 +68,14 @@ const _: () = assert!(IOMMU_BAR.low.address() == CAP_HEADER.address() + 0x04);
 pub const RANGE: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x0c);
 pub const MISC: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x10);
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+register_bitfields![u64,
+    /// IOMMU MMIO control at18h; mapping the BAR must not enable translation.
+    pub Control [ENABLE OFFSET(0) NUMBITS(1) []]
+];
 register_structs! {
     Mmio {
         (0x0000 => _reserved0),
-        (0x0018 => control: MmioReadOnly<u64>),
+        (0x0018 => control: MmioReadOnly<u64, Control::Register>),
         (0x0020 => _reserved1),
         (0x0030 => efr: MmioReadOnly<u64>),
         (0x0038 => _reserved2),
@@ -98,8 +104,7 @@ pub fn init_bar<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, base: u32
 /// What the IVRS describes of an IOMMU: the capability header, range and
 /// miscellaneous information 0 registers and MMIO 0x18 (control), 0x30
 /// (EFR), 0x1a0 (EFR2) and 0x4000 (counter configuration).
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Iommu {
     pub base: u64,
     pub capability: u32,
@@ -111,45 +116,80 @@ pub struct Iommu {
     pub counter_config: u64,
 }
 
-/// The IOMMU of `die` as [`init_bar`] mapped it, `None` if it isn't mapped
-/// or its MMIO doesn't decode.
+impl Iommu {
+    pub fn translation_enabled(&self) -> bool {
+        LocalRegisterCopy::<u64, Control::Register>::new(self.control).is_set(Control::ENABLE)
+    }
+}
+
+/// Capture an enabled IOMMU through the caller's checked IOHC SMN transport,
+/// `None` if its BAR isn't enabled or its MMIO doesn't decode.
 ///
 /// # Safety
 /// The IOMMU MMIO is identity mapped and uncached.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
-pub unsafe fn read<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Option<Iommu> {
-    let smn = die.smn();
-    let base = IOMMU_BAR.base(&smn)?;
+pub unsafe fn read(smn: &impl SmnAccess) -> Option<Iommu> {
+    let base = IOMMU_BAR.base(smn)?;
+    // SAFETY: the caller's decoded, UC, identity-mapped window contract.
+    unsafe {
+        capture(
+            base,
+            smn.reg(CAP_HEADER).get(),
+            smn.reg(RANGE).get(),
+            smn.reg(MISC).get(),
+        )
+    }
+}
+
+/// Capture the common MMIO block with capability metadata read through
+/// either the correct instance's SMN view or its own PCI capability.
+///
+/// # Safety
+/// `base..base+MMIO_SIZE` is the decoded IOMMU register window, identity
+/// mapped and uncached, with exclusive access for these register reads.
+pub unsafe fn capture(base: u64, capability: u32, range: u32, misc: u32) -> Option<Iommu> {
     // SAFETY: the enabled IOMMU register window, per the caller.
     let mmio = unsafe { &*(base as usize as *const Mmio) };
     let iommu = Iommu {
         base,
-        capability: smn.reg(CAP_HEADER).get(),
-        range: smn.reg(RANGE).get(),
-        misc: smn.reg(MISC).get(),
+        capability,
+        range,
+        misc,
         control: mmio.control.get(),
         efr: mmio.efr.get(),
         efr2: mmio.efr2.get(),
         counter_config: mmio.counter_config.get(),
     };
     fstart_log::debug!(
-        "IOMMU {}: capability {} EFR {}",
-        die.index(),
+        "IOMMU base {}: capability {} EFR {}",
+        Hex(base),
         Hex(iommu.capability.into()),
         Hex(iommu.efr)
     );
     if iommu.efr == u64::MAX {
-        fstart_log::error!("IOMMU {}: MMIO doesn't decode", die.index());
+        fstart_log::error!("IOMMU base {}: MMIO doesn't decode", Hex(base));
         return None;
     }
     Some(iommu)
 }
 
-#[cfg(all(test, feature = "zeppelin"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "zeppelin")]
     use crate::soc::zeppelin::test_pci::Pci;
 
+    #[test]
+    fn capture_does_not_confuse_other_control_bits_with_translation() {
+        let mut iommu = Iommu {
+            control: 1 << 10,
+            ..Default::default()
+        };
+        assert!(!iommu.translation_enabled());
+        iommu.control |= Control::ENABLE::SET.value;
+        assert!(iommu.translation_enabled());
+    }
+
+    #[cfg(feature = "zeppelin")]
     #[test]
     fn maps_each_die_with_an_iommu_in_its_pool() {
         let pci = Pci::new(&[0, 0x40], |_| [0; 6]);
@@ -162,6 +202,6 @@ mod tests {
         // No IOMMU capability: left alone.
         assert_eq!(init_bar(&dies[1], 0xc000_0000), None);
         assert_eq!(pci.smn(1, IOMMU_BAR.low), 0);
-        assert_eq!(unsafe { read(&dies[1]) }, None);
+        assert_eq!(unsafe { read(&dies[1].smn()) }, None);
     }
 }

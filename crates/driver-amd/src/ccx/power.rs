@@ -4,7 +4,7 @@
 //! (`_CST`), and with the `acpi` feature the power objects of every
 //! processor device ([`PowerAml`]). The formulas are the vendor CCX code's
 //! P-state service, which coreboot's `cpu_power_state.c` shares: MHz from
-//! FID/DID, SVI2 voltage, power from IddValue/IddDiv.
+//! FID/DID, explicitly selected SVI2/SVI3 voltage, power from IddValue/IddDiv.
 use super::msr::{CSTATE_BASE_ADDR, CSTATE_CONFIG, CstateBaseAddr, CstateConfig};
 use fstart_arch::x86::cpu::amd::msr::{
     PSTATE_0, PSTATE_CURRENT_LIMIT, PstateCurLim, PstateDef, pstate_mhz,
@@ -23,15 +23,29 @@ pub struct Pstate {
     pub milliwatts: u32,
 }
 
-/// Decode a PStateDef value (formulas of the donors' P-state protocol).
-pub fn decode_pstate(index: u8, raw: u64) -> Option<Pstate> {
+/// Voltage encoding is platform policy, not just the CPUID family: Milan
+/// uses SVI2 whereas Genoa uses SVI3 and the extra VID bit in PStateDef[32].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Voltage {
+    Svi2,
+    Svi3,
+}
+
+/// Decode an enabled PStateDef using the selected voltage interface.
+pub fn decode_pstate(index: u8, raw: u64, voltage: Voltage) -> Option<Pstate> {
     let r = LocalRegisterCopy::<u64, PstateDef::Register>::new(raw);
     if !r.is_set(PstateDef::PSTATE_EN) {
         return None;
     }
     let mhz = pstate_mhz(raw)?;
-    // SVI2: 1.55 V − VID × 6.25 mV.
-    let microvolts = 0xf8u32.saturating_sub(r.read(PstateDef::CPU_VID) as u32) * 6250;
+    let vid = r.read(PstateDef::CPU_VID) as u32;
+    let microvolts = match voltage {
+        Voltage::Svi2 => 0xf8u32.saturating_sub(vid) * 6250,
+        Voltage::Svi3 => {
+            let vid = vid | ((r.read(PstateDef::CPU_VID_HIGH) as u32) << 8);
+            if vid == 0 { 0 } else { 245_000 + vid * 5000 }
+        }
+    };
     let div = [100u64, 1000, 10000].get(r.read(PstateDef::IDD_DIV) as usize)?;
     let milliwatts = (u64::from(microvolts) / 10 * r.read(PstateDef::IDD_VALUE) / div) as u32;
     Some(Pstate {
@@ -43,12 +57,12 @@ pub fn decode_pstate(index: u8, raw: u64) -> Option<Pstate> {
 }
 
 /// The enabled P-states up to PstateMaxVal, for `_PSS`.
-pub fn pstates<M: MsrAccess + ?Sized>(cpu: &M) -> Vec<Pstate, 8> {
+pub fn pstates<M: MsrAccess + ?Sized>(cpu: &M, voltage: Voltage) -> Vec<Pstate, 8> {
     let max = cpu
         .reg(PSTATE_CURRENT_LIMIT)
         .read(PstateCurLim::PSTATE_MAX_VAL) as u8;
     (0..=max)
-        .filter_map(|i| decode_pstate(i, cpu.reg(PSTATE_0.offset(i.into())).get()))
+        .filter_map(|i| decode_pstate(i, cpu.reg(PSTATE_0.offset(i.into())).get(), voltage))
         .collect()
 }
 
@@ -206,11 +220,57 @@ mod tests {
     fn pstate_decode() {
         // FID 0x8c, DID 8, VID 0x48, Idd 0x5a / 10: 3500 MHz, 1.1 V.
         let raw = 1 << 63 | 1 << 30 | 0x5a << 22 | 0x48 << 14 | 8 << 8 | 0x8c;
-        let p = decode_pstate(0, raw).unwrap();
+        let p = decode_pstate(0, raw, Voltage::Svi2).unwrap();
         assert_eq!((p.mhz, p.microvolts, p.milliwatts), (3500, 1_100_000, 9900));
-        assert!(decode_pstate(1, 0x8c).is_none());
+        assert!(decode_pstate(1, 0x8c, Voltage::Svi2).is_none());
         let cpu = MsrSpace::new([(0xc001_0061, 0x10), (0xc001_0064, raw), (0xc001_0065, raw)]);
-        assert_eq!(pstates(&cpu).len(), 2);
+        assert_eq!(pstates(&cpu, Voltage::Svi2).len(), 2);
+    }
+
+    #[test]
+    fn genoa_svi3_voltage_uses_nine_bits_and_preserves_svi2_policy() {
+        let raw = (PstateDef::PSTATE_EN::SET
+            + PstateDef::CPU_FID.val(104)
+            + PstateDef::CPU_DFS_ID.val(8)
+            + PstateDef::CPU_VID.val(131)
+            + PstateDef::IDD_VALUE.val(26)
+            + PstateDef::IDD_DIV.val(1))
+        .value;
+        let p = decode_pstate(0, raw, Voltage::Svi3).unwrap();
+        assert_eq!((p.mhz, p.microvolts, p.milliwatts), (2600, 900_000, 2340));
+        assert_ne!(
+            p.microvolts,
+            decode_pstate(0, raw, Voltage::Svi2).unwrap().microvolts
+        );
+        let mut high = LocalRegisterCopy::<u64, PstateDef::Register>::new(raw);
+        high.modify(PstateDef::CPU_VID.val(0) + PstateDef::CPU_VID_HIGH::SET);
+        assert_eq!(
+            decode_pstate(0, high.get(), Voltage::Svi3)
+                .unwrap()
+                .microvolts,
+            1_525_000
+        );
+        high.modify(PstateDef::CPU_VID_HIGH::CLEAR);
+        assert_eq!(
+            decode_pstate(0, high.get(), Voltage::Svi3)
+                .unwrap()
+                .microvolts,
+            0
+        );
+        assert!(decode_pstate(0, raw | PstateDef::IDD_DIV.val(3).value, Voltage::Svi3).is_none());
+        assert!(decode_pstate(0, raw & !PstateDef::PSTATE_EN::SET.value, Voltage::Svi3).is_none());
+    }
+
+    #[test]
+    fn measured_onyx_definitions_match_the_factory_pss() {
+        for (index, raw, mhz, uv, mw) in [
+            (0, 0x8000000046a0c868, 2600, 900_000, 2340),
+            (1, 0x80000000451e4850, 2000, 850_000, 1700),
+            (2, 0x8000000043dbcc5a, 1500, 800_000, 1200),
+        ] {
+            let p = decode_pstate(index, raw, Voltage::Svi3).unwrap();
+            assert_eq!((p.mhz, p.microvolts, p.milliwatts), (mhz, uv, mw));
+        }
     }
 
     #[test]
@@ -243,7 +303,7 @@ mod tests {
     #[cfg(feature = "acpi")]
     #[test]
     fn processor_objects() {
-        let pstates = [decode_pstate(0, 1 << 63 | 8 << 8 | 0x6c).unwrap()];
+        let pstates = [decode_pstate(0, 1 << 63 | 8 << 8 | 0x6c, Voltage::Svi2).unwrap()];
         let aml = PowerAml::new(&Power {
             pstates: &pstates,
             cstates: Some(CstateInfo {

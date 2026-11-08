@@ -20,8 +20,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use fstart_acpi::aml::{
-    AddressSpace, AddressSpaceCacheable, EISAName, IO, Memory32Fixed, Name, PackageBuilder, Path,
-    ResourceTemplate,
+    AddressSpace, AddressSpaceCacheable, EISAName, IO, Memory32Fixed, Name, Path, ResourceTemplate,
 };
 use fstart_acpi::aml_linker::{device_vec, scope_vec};
 use fstart_acpi::processor::{ProcessorName, cpc_aml, processor_device};
@@ -122,18 +121,7 @@ fn crs(rb: &RootBridgeAcpi) -> Vec<u8> {
 }
 
 /// `Name(_PRT, Package { {addr, pin, 0, gsi} ... })`.
-fn prt_aml(entries: impl Iterator<Item = (u8, u8, u32)>) -> Vec<u8> {
-    let mut prt = PackageBuilder::new();
-    entries.for_each(|(device, pin, gsi)| {
-        let mut e = PackageBuilder::new();
-        e.add_element(&(u32::from(device) << 16 | 0xFFFF));
-        e.add_element(&pin);
-        e.add_element(&0u8);
-        e.add_element(&gsi);
-        prt.add_element(&e);
-    });
-    name("_PRT", &prt)
-}
+use fstart_acpi::pirq::prt_name_aml as prt_aml;
 
 /// PME/wake GPE of the internal bridges (donor `GPRW(0x0B, 4)` on
 /// Rome/Milan 7.1 and 8.1 of every NBIO, notified by `\_GPE._L0B`).

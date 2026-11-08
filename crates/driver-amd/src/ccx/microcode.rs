@@ -3,7 +3,7 @@
 //! FFS carry them, not AMD container or signed-wrapper parsing. A patch is
 //! for the CPUs whose equivalence ID its header names (+0x18), and that ID
 //! sizes it ([`fstart_amdfw_format::microcode::patch_size`]): 0xc80 bytes on
-//! Family 17h, 0x15c0 on Milan.
+//! Family 17h, 0x15c0 on Milan/Genoa.
 //!
 //! A patch that names a northbridge or southbridge is rejected (fail closed)
 //! rather than matched against bus 0: no vendor patch for these SoCs does.
@@ -333,6 +333,31 @@ mod tests {
         bytes[24..26].copy_from_slice(&equivalence_id(signature).to_le_bytes());
         bytes
     }
+    #[test]
+    fn genoa_flat_patch_matches_exact_stepping_and_uses_common_loader() {
+        let signature = 0x00a1_0f10;
+        let revision = 0x0a10_1020;
+        let data = bytes(signature, revision, 0x15c0);
+        let patch = Patch::parse(&data, signature).unwrap();
+        assert_eq!(equivalence_id(signature), 0xa110);
+        assert!(Patch::parse(&data, signature + 1).is_err());
+        assert!(Patch::parse(&data[..data.len() - 1], signature).is_err());
+        assert_eq!(patch.validate_address(0x0a10_0001), Err(Error::Address));
+        let cpu = cpu(0, revision);
+        // SAFETY: modeled MSRs, no real load or physical memory access.
+        assert_eq!(
+            unsafe { patch.apply(&cpu, 0x0a10_0000, signature, Load::default()) },
+            Ok(Outcome::Installed(revision))
+        );
+        assert_eq!(writes(&cpu), [PATCH_LOADER.index()]);
+        // SAFETY: modeled MSRs; the second call is a current-level readback.
+        assert_eq!(
+            unsafe { patch.apply(&cpu, 0x0a10_0000, signature, Load::default()) },
+            Ok(Outcome::AlreadyCurrent(revision))
+        );
+        assert!(writes(&cpu).is_empty());
+    }
+
     #[test]
     fn bundle_preflights_every_entry_and_selects_without_fallback() {
         let a = bytes(0x00810f80, 0x08108002, FAMILY_17H);

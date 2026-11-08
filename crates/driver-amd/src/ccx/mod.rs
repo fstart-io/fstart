@@ -16,6 +16,10 @@ pub mod msr;
 pub mod picasso;
 pub mod power;
 pub mod tsc;
+#[cfg(feature = "rs")]
+pub mod zen4;
+#[cfg(feature = "rs")]
+pub mod zen4_tables;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
@@ -173,13 +177,7 @@ pub fn cpu_init(
 
     // Memory above 4 GiB is write-back. The early cache plan usually set it
     // already; only toggle the cache when there is something to change.
-    let syscfg = cpu.reg(SYSCFG).extract();
-    if syscfg.is_set(Syscfg::TOM2_EN) && !syscfg.is_set(Syscfg::TOM2_WB) {
-        cpu.disable();
-        cpu.flush();
-        cpu.reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
-        cpu.enable();
-    }
+    cache::enable_tom2_writeback(cpu);
 
     mca_setup(cpu, &soc.mca, cap, thread);
 
@@ -212,7 +210,9 @@ pub fn cpu_init(
 }
 
 /// CC6 enabled.
-const CSTATE_CONFIG_CC6: u64 = 0x48_4848;
+/// CSTATE_CONFIG with CC6 on in all three CCRs and CC1 DFS ID 8: AGESA,
+/// openSIL CcxInitializeC6 and the S8040's NFX firmware (C001_0296).
+pub const CSTATE_CONFIG_CC6: u64 = 0x48_4848;
 
 /// The MCA init alone, e.g. for the BSP before MP init.
 pub fn mca_init(cpu: &impl MsrAccess, mca: &Mca, thread: Thread) -> Result<(), Error> {

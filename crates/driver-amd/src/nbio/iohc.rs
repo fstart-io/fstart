@@ -25,7 +25,7 @@ register_bitfields![u32,
         TOM_4G OFFSET(0) NUMBITS(1) [],
         TOM OFFSET(23) NUMBITS(9) []
     ],
-    pub NbPciCtrl [MMIO_ENABLE OFFSET(23) NUMBITS(1) []],
+    pub NbPciCtrl [USB_PME_DISABLE OFFSET(4) NUMBITS(1) [], MMIO_ENABLE OFFSET(23) NUMBITS(1) []],
     /// CFG_IOHC_PCI.
     pub CfgIohcPci [
         /// Config accesses to D0F2, the IOMMU.
@@ -33,6 +33,8 @@ register_bitfields![u32,
         /// Fused IOMMU disable.
         IOMMU_DIS OFFSET(31) NUMBITS(1) []
     ],
+    /// Hardware PCI configuration-retry delay and finite retry count.
+    pub ConfigRetry [DELAY OFFSET(0) NUMBITS(16) [], LIMIT OFFSET(16) NUMBITS(12) []],
     pub NbBusNumCntl [
         BUS OFFSET(0) NUMBITS(8) [],
         LAT_MODE OFFSET(8) NUMBITS(1) []
@@ -112,6 +114,7 @@ pub const NB_TOP_OF_DRAM_SLOT1: u16 = 0x90;
 const IOHC_BASE: u32 = 0x13b1_0000;
 pub const CFG_IOHC_PCI: SmnReg<CfgIohcPci::Register> = SmnReg::new(IOHC_BASE + 0x034);
 pub const NB_BUS_NUM_CNTL: SmnReg<NbBusNumCntl::Register> = SmnReg::new(IOHC_BASE + 0x044);
+pub const CONFIG_RETRY: SmnReg<ConfigRetry::Register> = SmnReg::new(IOHC_BASE + 0x028);
 /// MMIO base above DRAM, address bits 47:16.
 pub const NB_MMIOBASE: SmnReg = SmnReg::new(IOHC_BASE + 0x05c);
 pub const NB_MMIOLIMIT: SmnReg = SmnReg::new(IOHC_BASE + 0x060);
@@ -130,6 +133,61 @@ pub const fn iohc_rb_bus_route(rb: usize) -> SmnReg<IohcRbBusRoute::Register> {
 /// The 16 PCIe bridges of a die each have a bridge control register.
 pub const fn iohc_bridge_cntl(bridge: usize) -> SmnReg<IohcBridgeCntl::Register> {
     SmnReg::new(0x13b3_1004 + bridge as u32 * 0x400)
+}
+
+/// Publish this IOHC's root-bus identity. Rs NFX AmdNbioBaseInit writes
+/// 13B10044h + physical IOS * 1 MiB before link initialization. Preserve
+/// reserved bits rather than reproducing its uninitialized stack padding.
+/// The caller supplies a checked physical bank, not a filtered root ordinal.
+pub fn set_bus_number_at(smn: &impl SmnAccess, offset: u32, bus: u8) -> Result<(), u32> {
+    let reg = smn.reg(NB_BUS_NUM_CNTL.offset(offset));
+    let mut value = reg.extract();
+    if value.get() == u32::MAX {
+        return Err(value.get());
+    }
+    value.modify(NbBusNumCntl::BUS.val(u32::from(bus)) + NbBusNumCntl::LAT_MODE::SET);
+    reg.set(value.get());
+    let actual = reg.get();
+    if actual != value.get() {
+        return Err(actual);
+    }
+    Ok(())
+}
+
+/// Publish which IOHC owns the southbridge (FCH) link, at a physical bank.
+///
+/// Rs NFX AmdNbioBaseInit ffa31ef5..ffa31f7b, next to the bus identity: the
+/// FCH's IOHC copies its live SB_LOCATION into the IOAGR L1 and the L2 IOMMU;
+/// every other IOHC clears SB_LOCATION. Its reset value claims an SB port,
+/// so configuration requests no local function or bridge decodes (absent
+/// root-bus devices, unclaimed buses) are forwarded to a link that does not
+/// exist and never complete. Returns the location now in force.
+pub fn set_southbridge_location_at(
+    smn: &impl SmnAccess,
+    offset: u32,
+    fch: bool,
+) -> Result<u32, u32> {
+    use super::iommu::{L1_SSP, L2_SB_LOCATION, l1_sb_location};
+    let location = smn.reg(SB_LOCATION.offset(offset));
+    let value = location.get();
+    if value == u32::MAX || (fch && value == 0) {
+        return Err(value);
+    }
+    if !fch {
+        location.set(0);
+        return match location.get() {
+            0 => Ok(0),
+            actual => Err(actual),
+        };
+    }
+    for copy in [l1_sb_location(L1_SSP[3]), L2_SB_LOCATION] {
+        let copy = smn.reg(copy.offset(offset));
+        copy.set(value);
+        if copy.get() != value {
+            return Err(copy.get());
+        }
+    }
+    Ok(value)
 }
 
 /// A 64-bit MMIO BAR in SMN: the low half holds the enable bit and the
@@ -152,10 +210,21 @@ impl<R: RegisterLongName> Bar<R> {
     /// Decode the block at `base` below 4 GiB: clear the high half, write
     /// the address, then enable it.
     pub fn map(&self, smn: &impl SmnAccess, base: u32) {
+        self.map_registers(&smn.reg(self.low), &smn.reg(self.high), base);
+    }
+    /// The same BAR sequence over typed registers: either indexed SMN or
+    /// the block's own PCI capability. Selecting a root's SMN access bus
+    /// alone does not relocate an IOD-wide register address.
+    pub fn map_registers(
+        &self,
+        low: &impl Writeable<T = u32, R = R>,
+        high: &impl Writeable<T = u32, R = BarHigh::Register>,
+        base: u32,
+    ) {
         let address = || self.address.val(base >> self.address.shift);
-        smn.reg(self.high).set(0);
-        smn.reg(self.low).write(address());
-        smn.reg(self.low).write(address() + self.enable.val(1));
+        high.set(0);
+        low.write(address());
+        low.write(address() + self.enable.val(1));
     }
     /// The low half of the decoded base, `None` if the BAR isn't enabled.
     /// [`Self::map`] clears the high half.
@@ -167,8 +236,19 @@ impl<R: RegisterLongName> Bar<R> {
     /// The decoded base, `None` if the BAR isn't enabled. Reads the high
     /// half only for an enabled BAR.
     pub fn base(&self, smn: &impl SmnAccess) -> Option<u64> {
-        let low = self.base_below_4g(smn)?;
-        Some(u64::from(smn.reg(self.high).read(BarHigh::ADDRESS)) << 32 | u64::from(low))
+        self.base_registers(&smn.reg(self.low), &smn.reg(self.high))
+    }
+    /// Decode an enabled BAR from either register transport.
+    pub fn base_registers(
+        &self,
+        low: &impl Readable<T = u32, R = R>,
+        high: &impl Readable<T = u32, R = BarHigh::Register>,
+    ) -> Option<u64> {
+        let low = low.extract();
+        low.is_set(self.enable).then(|| {
+            u64::from(high.read(BarHigh::ADDRESS)) << 32
+                | u64::from(low.read(self.address) << self.address.shift)
+        })
     }
 }
 
@@ -237,6 +317,19 @@ pub fn set_tom(
     tops: DramTops,
     style: TopStyle,
 ) {
+    set_tom_at(smn, slot1, tops, style, 0)
+}
+
+/// The same IOHC register mechanism on an explicitly selected SMN bank.
+/// Rs host bridges share the SMN namespace; physical IOHC n is relocated by
+/// n*1MiB. Existing translated SMN views continue to use offset zero.
+pub fn set_tom_at(
+    smn: &impl SmnAccess,
+    slot1: &impl ReadWriteable<T = u32, R = TopOfDram::Register>,
+    tops: DramTops,
+    style: TopStyle,
+    offset: u32,
+) {
     let tom = TopOfDram::TOM.val((tops.tom >> 23) as u32);
     slot1.modify(match style {
         TopStyle::MmioWindow => tom,
@@ -245,8 +338,8 @@ pub fn set_tom(
     // 1 TiB in 64-KiB units.
     let mut mmio_base = 0x0100_0000;
     if let Some(tom2) = tops.tom2 {
-        let lower = smn.reg(NB_LOWER_TOP_OF_DRAM2);
-        let upper = smn.reg(NB_UPPER_TOP_OF_DRAM2);
+        let lower = smn.reg(NB_LOWER_TOP_OF_DRAM2.offset(offset));
+        let upper = smn.reg(NB_UPPER_TOP_OF_DRAM2.offset(offset));
         if tom2_above_1t(tom2) {
             // TOM2 stops at the HyperTransport hole below 1 TiB; DRAM above
             // it is decoded by TOM3 or the MMIO base.
@@ -254,7 +347,7 @@ pub fn set_tom(
             upper.modify(UpperTopOfDram2::TOM2.val(0x1ff));
             match style {
                 TopStyle::MmioWindow => mmio_base = (((tom2 - 1) >> 16) + 1) as u32,
-                TopStyle::Tom3 => smn.reg(NB_TOP_OF_DRAM3).write(
+                TopStyle::Tom3 => smn.reg(NB_TOP_OF_DRAM3.offset(offset)).write(
                     TopOfDram3::ENABLE::SET + TopOfDram3::LIMIT.val(((tom2 - 1) >> 22) as u32),
                 ),
             }
@@ -268,11 +361,12 @@ pub fn set_tom(
     if style == TopStyle::MmioWindow {
         // The fixed ZP values; the donor ORs bit 30 from an uninitialised
         // stack word (hazard), 0x83ffffff is the intended value.
-        smn.reg(NB_TOP_OF_DRAM3).set(0x83ff_ffff);
-        smn.reg(NB_MMIOBASE).set(mmio_base);
-        smn.reg(NB_MMIOLIMIT).set(0x7fff_ffff);
+        smn.reg(NB_TOP_OF_DRAM3.offset(offset)).set(0x83ff_ffff);
+        smn.reg(NB_MMIOBASE.offset(offset)).set(mmio_base);
+        smn.reg(NB_MMIOLIMIT.offset(offset)).set(0x7fff_ffff);
     }
-    smn.reg(NB_PCI_CTRL).modify(NbPciCtrl::MMIO_ENABLE::SET);
+    smn.reg(NB_PCI_CTRL.offset(offset))
+        .modify(NbPciCtrl::MMIO_ENABLE::SET);
 }
 
 /// Tell the IOHC of a die about the DRAM map and the MMIO above 4 GiB.
@@ -313,6 +407,96 @@ mod tests {
         (space, slot1.get())
     }
 
+    #[test]
+    fn rs_configuration_retry_fields_preserve_reserved_high_nibble() {
+        let hw = SmnSpace::default();
+        let reg = CONFIG_RETRY.offset(0x200000);
+        assert_eq!(reg.address(), 0x13d1_0028);
+        hw.set(reg, 0xa000_0000);
+        hw.smn()
+            .reg(reg)
+            .modify(ConfigRetry::DELAY.val(6) + ConfigRetry::LIMIT.val(0x262));
+        assert_eq!(hw.get(reg), 0xa262_0006);
+        assert_eq!(hw.get(CONFIG_RETRY), 0);
+    }
+
+    #[test]
+    fn root_bus_identity_uses_physical_bank_and_preserves_reserved_bits() {
+        let space = SmnSpace::default();
+        for (bank, bus) in [(0, 0xc0), (0x200000, 0), (0x300000, 0x40)] {
+            space.set(NB_BUS_NUM_CNTL.offset(bank), 0xabcd_2000);
+            assert_eq!(set_bus_number_at(&space.smn(), bank, bus), Ok(()));
+            assert_eq!(
+                space.get(NB_BUS_NUM_CNTL.offset(bank)),
+                0xabcd_2100 | u32::from(bus)
+            );
+        }
+        assert_eq!(space.get(NB_BUS_NUM_CNTL.offset(0x100000)), 0);
+        space.set(NB_BUS_NUM_CNTL, u32::MAX);
+        assert_eq!(set_bus_number_at(&space.smn(), 0, 0), Err(u32::MAX));
+        assert_eq!(space.get(NB_BUS_NUM_CNTL), u32::MAX);
+    }
+
+    #[test]
+    fn southbridge_location_is_forwarded_by_the_fch_iohc_and_cleared_elsewhere() {
+        use crate::nbio::iommu::{L1_SSP, L2_SB_LOCATION, l1_sb_location};
+        let space = SmnSpace::default();
+        for bank in [0u32, 0x200000, 0x300000] {
+            space.set(SB_LOCATION.offset(bank), 0x0004_0001);
+        }
+        let smn = space.smn();
+        assert_eq!(
+            set_southbridge_location_at(&smn, 0x200000, true),
+            Ok(0x40001)
+        );
+        assert_eq!(
+            space.get(l1_sb_location(L1_SSP[3]).offset(0x200000)),
+            0x40001
+        );
+        assert_eq!(space.get(L2_SB_LOCATION.offset(0x200000)), 0x40001);
+        assert_eq!(space.get(SB_LOCATION.offset(0x200000)), 0x40001);
+        for bank in [0u32, 0x300000] {
+            assert_eq!(set_southbridge_location_at(&smn, bank, false), Ok(0));
+            assert_eq!(space.get(SB_LOCATION.offset(bank)), 0);
+            assert_eq!(space.get(L2_SB_LOCATION.offset(bank)), 0);
+        }
+        // An FCH IOHC without a location, or an absent bank, is rejected
+        // before any copy is written.
+        space.set(SB_LOCATION.offset(0x100000), 0);
+        assert_eq!(set_southbridge_location_at(&smn, 0x100000, true), Err(0));
+        assert_eq!(space.get(L2_SB_LOCATION.offset(0x100000)), 0);
+        space.set(SB_LOCATION.offset(0x100000), u32::MAX);
+        assert_eq!(
+            set_southbridge_location_at(&smn, 0x100000, false),
+            Err(u32::MAX)
+        );
+        assert_eq!(space.get(SB_LOCATION.offset(0x100000)), u32::MAX);
+    }
+
+    #[test]
+    fn explicit_physical_iohc_bank_does_not_touch_bank_zero() {
+        let space = SmnSpace::default();
+        let slot = tock_registers::registers::InMemoryRegister::new(0);
+        set_tom_at(
+            &space.smn(),
+            &slot,
+            DramTops {
+                tom: 0xb0000000,
+                tom2: Some(0x6050000000),
+            },
+            TopStyle::Tom3,
+            0x200000,
+        );
+        assert_eq!(slot.get(), 0xb0000000);
+        assert_eq!(
+            space.get(NB_LOWER_TOP_OF_DRAM2.offset(0x200000)),
+            0x50000001
+        );
+        assert_eq!(space.get(NB_UPPER_TOP_OF_DRAM2.offset(0x200000)), 0x60);
+        assert_eq!(space.get(NB_PCI_CTRL.offset(0x200000)), 1 << 23);
+        assert_eq!(space.get(NB_LOWER_TOP_OF_DRAM2), 0);
+        assert_eq!(space.get(NB_PCI_CTRL), 0);
+    }
     #[test]
     fn tom2_below_and_above_1t_with_the_mmio_window() {
         // 32 GiB: TOM2 in the IOHC, MMIO from 1 TiB up.
@@ -387,6 +571,47 @@ mod tests {
         assert_eq!(space.get(NB_LOWER_TOP_OF_DRAM2), 0xff80_0001);
         assert_eq!(space.get(NB_UPPER_TOP_OF_DRAM2), 0x1ff);
         assert_eq!(space.get(NB_TOP_OF_DRAM3), 0x8000_0000 | 0x7_ffff);
+    }
+
+    #[test]
+    fn per_function_pci_capability_bars_do_not_alias_other_roots() {
+        use fstart_pci::{ConfigRegister, PciAddress, PciEcam, PciEcamConfig};
+        let mut memory = std::vec![0u32; 4 << 18];
+        let pci = PciEcam::from_config(&PciEcamConfig {
+            ecam_base: memory.as_mut_ptr() as u64,
+            ecam_size: 4 << 20,
+            mmio32_base: 0,
+            mmio32_size: 0,
+            mmio64_base: 0,
+            mmio64_size: 0,
+            pio_base: 0,
+            pio_size: 0,
+            bus_start: 0,
+            bus_end: 3,
+        })
+        .unwrap();
+        for bus in 0..4u8 {
+            let address = PciAddress::new(0, bus, 0, 2);
+            // SAFETY: exclusively owned modeled ECAM, aligned dword fields.
+            let (low, high) = unsafe {
+                (
+                    ConfigRegister::new(&pci, address, super::super::iommu::CAPABILITY + 4),
+                    ConfigRegister::new(&pci, address, super::super::iommu::CAPABILITY + 8),
+                )
+            };
+            let base = 0xb6000000 + u32::from(bus) * 0x100000;
+            assert_eq!(IOMMU_BAR.base_registers(&low, &high), None);
+            IOMMU_BAR.map_registers(&low, &high, base);
+            assert_eq!(IOMMU_BAR.base_registers(&low, &high), Some(u64::from(base)));
+            for earlier in 0..=bus {
+                let dev = pci.device(PciAddress::new(0, earlier, 0, 2)).unwrap();
+                assert_eq!(
+                    dev.read32(super::super::iommu::CAPABILITY + 4),
+                    0xb6000001 + u32::from(earlier) * 0x100000
+                );
+                assert_eq!(dev.read32(super::super::iommu::CAPABILITY + 8), 0);
+            }
+        }
     }
 
     #[test]

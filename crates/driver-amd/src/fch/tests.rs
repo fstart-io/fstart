@@ -126,6 +126,22 @@ fn early_smbus_and_power_failure_state() {
 }
 
 #[test]
+fn irq_mux_uses_existing_indexed_transport_and_preserves_other_bits() {
+    let world = World::default();
+    world.set_indexed(PCI_INTR_INDEX, 9, 0xef);
+    let reg = indexed_io::<_, PciIntr09::Register>(&world, PCI_INTR_INDEX, 9);
+    reg.modify(PciIntr09::CONTROL_6_4.val(1));
+    assert_eq!(
+        world.writes(),
+        [
+            (Space::Io, 0xc00, 1, 9),
+            (Space::Io, 0xc00, 1, 9),
+            (Space::Io, 0xc01, 1, 0x9f),
+        ]
+    );
+}
+
+#[test]
 fn abcfg_transactions_reset_index_after_read_and_write() {
     let world = World::default();
     world.set_indexed(alink::INDEX, 0xc000_0054, 0x1234_5678);

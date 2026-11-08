@@ -249,9 +249,13 @@ mod tests {
                 kind: 2,
             },
         ];
-        memory_map(Generation::Rome.into(), 1536 * GIB, holes)
-            .unwrap()
-            .to_vec()
+        memory_map(
+            fstart_driver_amd::psp::Variant::from(Generation::Rome),
+            1536 * GIB,
+            holes,
+        )
+        .unwrap()
+        .to_vec()
     }
 
     #[test]

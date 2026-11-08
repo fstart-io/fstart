@@ -8,7 +8,7 @@
 //! Per PSP generation (AGESA, instruction-checked except where noted; RV
 //! as the native Picasso flow found it on the Vilboz):
 //!
-//! | | Naples, Zeppelin (ZP) | Picasso (RV) | Rome (SSP) | Milan (GN) |
+//! | | Naples, Zeppelin (ZP) | Picasso (RV) | Rome (SSP) | Milan (GN), Genoa/Siena (RS) |
 //! |---|---|---|---|---|
 //! | precheck | wait for bit 29, 30 (or 31); recovery iff only 30 | bit 30 set: recovery | as RV | as RV |
 //! | done | `READY` and no command | as ZP | no command | as SSP |
@@ -293,7 +293,7 @@ impl<T: C2pTransport> Mailbox<T> {
         let recovery = C2P_CMD::RECOVERY.is_set(value);
         match self.generation {
             Variant::Zp => recovery && !C2P_CMD::NORMAL.is_set(value),
-            Variant::Rv | Variant::Ssp | Variant::Gn => recovery,
+            Variant::Rv | Variant::Ssp | Variant::Gn | Variant::Rs => recovery,
         }
     }
 
@@ -306,7 +306,9 @@ impl<T: C2pTransport> Mailbox<T> {
         };
         match self.generation {
             Variant::Zp => self.wait(timer, Wait::Boot, any),
-            Variant::Rv | Variant::Ssp | Variant::Gn => self.wait(timer, Wait::Boot, |_| true),
+            Variant::Rv | Variant::Ssp | Variant::Gn | Variant::Rs => {
+                self.wait(timer, Wait::Boot, |_| true)
+            }
         }
         .map(drop)
     }
@@ -326,7 +328,7 @@ impl<T: C2pTransport> Mailbox<T> {
         // The native RV/ZP flows also wait for READY again.
         let value = match self.generation {
             Variant::Rv | Variant::Zp => self.wait(timer, Wait::Done, ready)?,
-            Variant::Ssp | Variant::Gn => {
+            Variant::Ssp | Variant::Gn | Variant::Rs => {
                 self.wait(timer, Wait::Done, |v| C2P_CMD::COMMAND.read(v) == 0)?
             }
         };
@@ -370,7 +372,7 @@ impl<T: C2pTransport> Mailbox<T> {
                     s => Err(error(s.into())),
                 }
             }
-            Variant::Gn => match status {
+            Variant::Gn | Variant::Rs => match status {
                 0 => Ok(()),
                 s => Err(error(s.into())),
             },

@@ -89,7 +89,7 @@ impl Bridge {
 
     /// IOAPIC pin of INTx `intx` of a device behind the bridge.
     pub const fn secondary_pin(&self, intx: u8) -> u8 {
-        4 * self.route.group + (intx + 4 - self.route.swizzle % 4) % 4
+        self.route.secondary_pin(intx)
     }
 }
 
