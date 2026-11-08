@@ -3,6 +3,7 @@
 //! These structs describe how the build tool links and packages each stage.
 //! Runtime ordering lives in platform flow code, not in this metadata.
 
+#[cfg(feature = "host")]
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,7 @@ pub const POSTCAR_STAGE_NAME: &str = "postcar";
 /// How stages are laid out for this board.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)] // no_std: can't Box heapless containers
+#[cfg(feature = "host")]
 pub enum StageLayout {
     /// Single binary firmware image.
     Monolithic(MonolithicConfig),
@@ -28,6 +30,7 @@ pub enum StageLayout {
 /// Configuration for a monolithic (single-stage) build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "host")]
 pub struct MonolithicConfig {
     /// Build-time features and packaging inputs this stage needs.
     #[serde(default)]
@@ -61,6 +64,7 @@ pub struct MonolithicConfig {
 /// Configuration for one stage in a multi-stage build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "host")]
 pub struct StageConfig {
     /// Stage name (e.g., "bootblock", "main")
     pub name: HString<32>,
@@ -109,6 +113,7 @@ pub struct StageConfig {
 /// image entries a board-owned stage needs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "host")]
 pub struct StageBuildConfig {
     /// Whether this stage reads the firmware image/FFS from the board's
     /// configured firmware window.
@@ -143,6 +148,7 @@ pub struct StageBuildConfig {
 /// Firmware-image access needed by a stage.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "host")]
 pub struct FirmwareImageConfig {
     /// Optional temporary RAM arena available to FFS/payload code.
     #[serde(default)]
@@ -152,6 +158,7 @@ pub struct FirmwareImageConfig {
 /// MP/SMM build metadata for a stage.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "host")]
 pub struct MpBuildConfig {
     /// Maximum logical CPU count to attempt (BSP + APs).
     pub max_cpus: u16,
@@ -176,6 +183,7 @@ pub struct MpBuildConfig {
 /// required; the distinction is fully expressed by the presence of
 /// `memory.car` in the memory map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg(feature = "host")]
 pub enum RunsFrom {
     /// Execute in place from ROM (XIP).
     ///
@@ -190,6 +198,7 @@ pub enum RunsFrom {
     Ram,
 }
 
+#[cfg(feature = "host")]
 fn default_stage_compression() -> crate::ffs::Compression {
     crate::ffs::Compression::None
 }
@@ -200,6 +209,7 @@ fn default_stage_compression() -> crate::ffs::Compression {
 /// ROM/XIP stage. In that case the address is chosen inside the topmost ROM
 /// region; x86 linker and FFS assembly then top-align the actual bootblock
 /// bytes within that region.
+#[cfg(feature = "host")]
 pub fn effective_stage_load_addr(
     config: &crate::board::BoardConfig,
     stage_index: usize,

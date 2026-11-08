@@ -8,7 +8,7 @@ publish = false
 
 [features]
 default = []
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 stage = [
   "dep:fstart-arch", "dep:fstart-driver-uart", "dep:fstart-log", "dep:fstart-stage", "dep:fstart-payload",
   "fstart-arch/riscv64", "fstart-stage/riscv64",

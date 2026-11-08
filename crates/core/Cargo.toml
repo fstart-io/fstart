@@ -8,14 +8,14 @@ license.workspace = true
 default = []
 std = ["serde/std", "heapless/serde"]
 alloc = ["serde/alloc"]
-host = ["std"]
+host = ["std", "dep:fstart-amdfw-format"]
 pci = []
 
 [dependencies]
 serde = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
-fstart-amdfw-format = { workspace = true, features = ["serde"] }
+fstart-amdfw-format = { workspace = true, features = ["serde"], optional = true }
 embedded-hal = { workspace = true }
 tock-registers = { workspace = true }
 

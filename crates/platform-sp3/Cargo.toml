@@ -34,7 +34,7 @@ payload-uefi = ["fstart-payload/crabefi"]
 smm = ["dep:fstart-smm"]
 bundle-smm = ["smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 
 # The AMD firmware files of each generation's PSP partition: the two-level
 # directories of the vendor images (level 1 the recovery set; the PSP and
