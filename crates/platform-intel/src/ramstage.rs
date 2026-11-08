@@ -603,10 +603,16 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         use fstart_driver_intel::namespace::{SouthbridgeAcpi, pci_root};
         // coreboot's dsdt.asl: the southbridge's devices in the northbridge's root.
         let pci_root = const { pci_root::<Nb<B>>() };
-        let platform = fstart_acpi::platform::PlatformConfig::X86(
-            self.southbridge
-                .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus())),
-        );
+        let mut x86 = self
+            .southbridge
+            .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus()));
+        // CPU ordinals are not LAPIC IDs. MP recorded each responding CPU's
+        // hardware ID, including holes in Arrandale's APIC numbering.
+        x86.apic_ids = fstart_arch::x86::mp::online_apic_ids().collect();
+        for (uid, apic_id) in x86.apic_ids.iter().enumerate() {
+            fstart_log::info!("ACPI: CPU {} LAPIC ID {}", uid, apic_id);
+        }
+        let platform = fstart_acpi::platform::PlatformConfig::X86(x86);
         let (northbridge, southbridge) = (&self.northbridge, &self.southbridge);
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let rsdp = crate::tables::prepare_acpi(store, &platform, |dsdt, extra| {
