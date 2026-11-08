@@ -6,4 +6,10 @@
 
 #![no_std]
 
+pub mod facts;
 pub mod head;
+#[cfg(feature = "host")]
+pub mod host;
+
+#[cfg(feature = "host")]
+pub use host::Plan;

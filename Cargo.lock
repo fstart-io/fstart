@@ -1473,6 +1473,9 @@ name = "fstart-platform-aspeed"
 version = "0.1.0"
 dependencies = [
  "fstart-arch",
+ "fstart-core",
+ "fstart-image-build",
+ "serde_json",
 ]
 
 [[package]]
