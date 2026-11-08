@@ -32,7 +32,7 @@ Source: `crates/driver-amd/src/cpu.rs` (`Revision::from_signature`),
 | `crates/driver-amd/src/sp3/` | `soc` (identify, per-generation constants), `topology`, `df`, `nbio`, `dxio`, `ccx`, `fch` |
 | `crates/driver-amd/src/` | `apob`, `psp`, `smn`, `smu` (used by the SP3 flow) |
 | `crates/platform-sp3/src/` | `board` (Board facts, `Policy`, `Gpio`), `layout` (memory map, `Sp3BoardFacts`), `flow` (boot steps), `mp`, `memory`, `smm`, `smbios`, `acpi`, `pci`, `einj`, `host` (build plan) |
-| `crates/platform-sp3/asm/reset.S`, `linker/stage.ld.in` | reset entry and the reset image linker script |
+| `crates/arch/asm/amd_psp_reset.S`, `crates/image-build/src/amd/reset.rs` | reset entry (shared with the noncar SoCs) and the reset image's linker script and ELF contract |
 | `crates/platform-sp3/build.rs` | checks the SMM image fits TSEG |
 | `crates/image-build/src/sp3_flash.rs` | vendor ROM composition and verification |
 | `crates/amdfw-format` | flash anchor, EFS, BIOS/PSP directory readers |
@@ -141,14 +141,14 @@ Defined in `crates/platform-sp3/src/layout.rs`.
 | `RESET` | `[0x75de_0000, 0x7600_0000)`, flash `0xde_0000`, 0x22_0000 bytes | reset image (BIOS entry `0x62`) |
 | `CACHE_WINDOW` | `[0x7500_0000, 0x7600_0000)` | write-back MTRR window |
 | `EARLY_REGION` | `[0x7500_0000, 0x75c0_0000)` | firmware-owned DRAM below the image |
-| `PAGE_TABLES` | 256 PDPTs of 1 GiB pages, from `0x7500_0000` | identity map (`reset.S`) |
+| `PAGE_TABLES` | 256 PDPTs of 1 GiB pages, from `0x7500_0000` | identity map (`amd_psp_reset.S`) |
 | `DATA` / `HEAP` / `STACK` / `STORE` | `0x7520_0000` / `0x7560_0000` / `0x75a0_0000` / `0x75b0_0000` | BSS and AP stacks / heap / BSP stack / store |
 | `ROM3` | `[0xfd_0000_0000, +64 MiB)` | whole flash, above 4 GiB |
 | `FFS_WINDOW` | `[0xfd_0060_0000, 0xfd_00de_0000)` | FFS upper bound: lower-half flash `[0x60_0000, 0xde_0000)` |
 
 The reset image is linked once at the smallest vendor geometry and every
 `0x62` entry of every composed generation points at it. The linker script
-asserts it fits (`stage.ld.in`). The 16-bit entry sits in the last 64 KiB
+asserts it fits (`amd_psp_reset.ld.in`). The 16-bit entry sits in the last 64 KiB
 and the reset vector in the last 16 bytes of the image.
 
 ## Flash image

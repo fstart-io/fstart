@@ -14,6 +14,7 @@ pub mod lapic;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod legacy_pc;
 pub mod mp;
+pub mod psp_reset;
 
 /// Read the x86 Time Stamp Counter.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

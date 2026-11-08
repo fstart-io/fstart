@@ -15,7 +15,7 @@ rome = ["fstart-driver-amd/rome"]
 milan = ["fstart-driver-amd/milan"]
 acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios", "fstart-driver-ipmi/acpi"]
 # The stage firmware unit (host::STAGE_FEATURE): its entry
-# (asm/reset.S, which enters the arch crate's `_start_ram`), the stage
+# (the arch crate's asm/amd_psp_reset.S, which enters `_start_ram`), the stage
 # runtime; `ffs` brings the stage allocator the arch identity paging
 # needs and mounts the FFS the payload comes from, whose root the signature
 # features authenticate; the flow builds ACPI. Payloads may be compressed
@@ -25,6 +25,7 @@ bundle-stage = [
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
   "acpi", "fstart-stage/tcg", "fstart-payload/tcg",
   "dep:fstart-driver-tpm", "dep:fstart-tcg", "dep:fstart-driver-uart",
+  "fstart-arch/amd-psp-reset",
 ]
 # Payload launchers; fbuild enables the one `--payload` selects.
 payload-linux = ["fstart-payload/linux"]

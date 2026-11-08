@@ -211,6 +211,26 @@ pub fn layout_section(layout: &crate::layout::EncodedLayout, region: &str) -> St
     out
 }
 
+/// Fill a linker `template`: each `@KEY@` of `values` with its value in
+/// hex and `@LAYOUT_SECTION@` with `layout`'s descriptor placed in
+/// `region`. A placeholder left over is an error.
+pub fn fill(
+    template: &str,
+    values: &[(&str, u64)],
+    layout: &crate::layout::EncodedLayout,
+    region: &str,
+) -> Result<String, String> {
+    let mut script = template.to_string();
+    for (key, value) in values {
+        script = script.replace(&format!("@{key}@"), &format!("{value:#x}"));
+    }
+    script = script.replace("@LAYOUT_SECTION@", &layout_section(layout, region));
+    if script.contains('@') {
+        return Err("unresolved linker template placeholder".into());
+    }
+    Ok(script)
+}
+
 /// Fixed-budget XIP placement. Image/BSS growth never moves the heap or stack.
 pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
     layout.validate()?;

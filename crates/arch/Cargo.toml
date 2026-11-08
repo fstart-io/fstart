@@ -18,6 +18,9 @@ x86_64 = ["dep:fstart-smm"]
 # The SMM handler image: call-free POST-port delays instead of the TSC
 # calibration, which the handler cannot afford.
 smm-handler = []
+# The shared AMD PSP-copied reset entry's AP route and BIST (`x86::psp_reset`);
+# the platform includes `asm/amd_psp_reset.S`.
+amd-psp-reset = ["x86_64"]
 # Identity page tables built in Rust (`boot::paging`, needs `alloc`).
 x86-identity-paging = ["x86_64", "dep:x86_64_crate"]
 # Raw COM1 transition checkpoints for physical postcar bring-up only.
