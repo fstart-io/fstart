@@ -11,6 +11,7 @@ default = ["runtime"]
 runtime = []
 # Platform selection (exactly one must be enabled)
 armv7 = ["fstart-arch/armv7"]
+armv5te = ["fstart-arch/armv5te"]
 aarch64 = ["fstart-arch/aarch64"]
 aarch64-el2-relocate-entry = ["fstart-arch/aarch64-el2-relocate-entry"]
 aarch64-sunxi-rmr-entry = ["fstart-arch/aarch64-sunxi-rmr-entry"]
