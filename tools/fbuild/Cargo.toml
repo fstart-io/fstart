@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 clap = { workspace = true }
 object = { workspace = true }
-fstart-core = { workspace = true }
+fstart-core = { workspace = true, features = ["host"] }
 fstart-image-build = { workspace = true }
 heapless = { workspace = true }
 serde = { workspace = true }

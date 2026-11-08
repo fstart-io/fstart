@@ -8,7 +8,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod acpi;
+#[cfg(feature = "host")]
 pub mod board;
+#[cfg(feature = "host")]
 pub mod builder;
 pub mod const_vec;
 pub mod description;
@@ -19,7 +21,9 @@ pub mod indexed;
 pub mod layout;
 pub mod memory;
 pub mod memory_info;
+pub mod meta;
 pub mod once;
+pub mod platform;
 pub mod security;
 pub mod smbios;
 pub mod smm;
@@ -36,12 +40,14 @@ pub use acpi::{
     AcpiAhciDevice, AcpiConfig, AcpiGenericDevice, AcpiInterruptFlags, AcpiPcieRootDevice,
     AcpiPlatform, AcpiResource, AcpiWatchdog, AcpiXhciDevice, ArmPlatformAcpi,
 };
+#[cfg(feature = "host")]
 pub use board::{
-    BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FirmwareKind,
-    FitParseMode, PayloadConfig, PayloadKind, Platform, QemuMachine, SocImageFormat,
+    BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FitParseMode,
+    PayloadConfig, PayloadKind, SocImageFormat,
 };
+#[cfg(feature = "host")]
 pub use builder::{
-    default_security_config, hstr, hvec, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
+    default_security_config, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
 };
 pub use const_vec::ConstVec;
 pub use device::BusAddress;
@@ -54,11 +60,15 @@ pub use memory::{
     CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,
     MemoryMapError, MemoryRegion, RegionKind, X86LegacyFlashLayout,
 };
+pub use meta::{hstr, hvec};
+pub use platform::{FirmwareKind, Platform, QemuMachine};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig};
+#[cfg(feature = "host")]
 pub use stage::{
-    FirmwareImageConfig, MonolithicConfig, MpBuildConfig, POSTCAR_STAGE_NAME, RunsFrom,
-    StageBuildConfig, StageConfig, StageLayout, TempRamBuffer, effective_stage_load_addr,
+    FirmwareImageConfig, MonolithicConfig, MpBuildConfig, RunsFrom, StageBuildConfig, StageConfig,
+    StageLayout, effective_stage_load_addr,
 };
+pub use stage::{POSTCAR_STAGE_NAME, TempRamBuffer};
 pub use typed::{Io8, Io16, IoAddr, Irq, Mmio8, Mmio16, Mmio32, Mmio64, MmioAddr, io16, mmio32};

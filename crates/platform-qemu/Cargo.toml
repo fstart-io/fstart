@@ -8,7 +8,7 @@ license.workspace = true
 default = []
 virt-riscv64 = ["stage"]
 virt-aarch64 = ["stage", "fstart-arch/aarch64-el2-relocate-entry"]
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 # Firmware policy belongs to this platform, not per-board forwarding recipes.
 bundle-riscv64 = ["virt-riscv64", "riscv64", "virt-image"]
 bundle-armv7 = ["stage", "armv7", "virt-image"]
