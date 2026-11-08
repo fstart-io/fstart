@@ -289,10 +289,19 @@ mod tests {
         #[repr(align(16))]
         struct Aligned([u8; HEADER_SIZE + 16]);
         let storage = Aligned([0; HEADER_SIZE + 16]);
-        let aligned = MicrocodePatch { record: &storage.0, revision: 1 };
-        assert_eq!(aligned.data_ptr(), Ok(storage.0.as_ptr() as u64 + HEADER_SIZE as u64));
+        let aligned = MicrocodePatch {
+            record: &storage.0,
+            revision: 1,
+        };
+        assert_eq!(
+            aligned.data_ptr(),
+            Ok(storage.0.as_ptr() as u64 + HEADER_SIZE as u64)
+        );
         // Reproduce the X201 image: both record and update data were 8 mod 16.
-        let unaligned = MicrocodePatch { record: &storage.0[8..], revision: 1 };
+        let unaligned = MicrocodePatch {
+            record: &storage.0[8..],
+            revision: 1,
+        };
         assert_eq!(unaligned.data_ptr(), Err(MicrocodeError::UnalignedUpdate));
     }
 }

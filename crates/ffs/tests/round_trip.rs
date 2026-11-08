@@ -88,8 +88,11 @@ fn anchored_microcode_remains_16_byte_aligned_after_arbitrary_stage_sizes() {
         assert_eq!((offset + 48) % 16, 0);
         assert_eq!(anchor.microcode_size.get() as usize, microcode.len());
         assert_eq!(&built.image[offset..offset + microcode.len()], microcode);
-        let location = built.file_data.iter()
-            .find(|file| file.name == "cpu_microcode_blob.bin").unwrap();
+        let location = built
+            .file_data
+            .iter()
+            .find(|file| file.name == "cpu_microcode_blob.bin")
+            .unwrap();
         assert_eq!(location.data_offset as usize, offset);
     }
 }

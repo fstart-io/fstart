@@ -562,7 +562,11 @@ fn lay_out_file(
         // pre-CAR loader passes the in-flash record + 48 to WRMSR 0x79,
         // which requires a 16-byte-aligned update-data address. A preceding
         // compressed stage can otherwise leave that pointer 8 bytes off.
-        let alignment = if file.file_type == FileType::CpuMicrocode { 16 } else { 8 };
+        let alignment = if file.file_type == FileType::CpuMicrocode {
+            16
+        } else {
+            8
+        };
         let pad = (alignment - (image.len() % alignment)) % alignment;
         image.extend(core::iter::repeat_n(0u8, pad));
 

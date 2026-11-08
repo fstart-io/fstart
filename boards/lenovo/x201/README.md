@@ -1,7 +1,8 @@
 # Lenovo ThinkPad X201 bring-up
 
-Experimental Arrandale (Ironlake uncore) / QM57 (Ibex Peak) binding ported
-from coreboot's `mainboard/lenovo/x201`. **Not hardware-validated.** For what
+Arrandale (Ironlake uncore) / QM57 (Ibex Peak) binding ported from
+coreboot's `mainboard/lenovo/x201`. Validated on one X201 with an i7 M620
+and 8 GiB of RAM, including Linux boot and RTC-timed S3 resume. For what
 was ported where, and the remaining differences from coreboot, see
 [`docs/ironlake-x201.md`](../../../docs/ironlake-x201.md).
 
@@ -10,9 +11,9 @@ was ported where, and the remaining differences from coreboot, see
 From the repository root:
 
 ```sh
-cargo fbuild build --board lenovo-x201 --release --payload halt \
+cargo fbuild build --board lenovo-x201 --release --payload uefi-ui \
   --debug ehci --debug flash-console --log-level debug
-cargo fbuild assemble --board lenovo-x201 --release --payload halt \
+cargo fbuild assemble --board lenovo-x201 --release --payload uefi-ui \
   --debug ehci --debug flash-console --log-level debug
 ```
 
@@ -27,7 +28,8 @@ or boot. `--debug flash-console` reserves a 256 KiB SPI log at flash offsets
 `0x520000..0x560000`, after the 128 KiB training cache. The read-only image
 then begins at `0x560000`. These offsets describe the board's configured
 8 MiB layout; verify the actual machine's descriptor before flashing.
-The halt payload deliberately does not boot the installed OS.
+The `uefi-ui` payload provides CrabEFI's setup and boot menu. Use `halt`
+instead when deliberately stopping before the installed OS.
 
 The binding includes the bootblock (CAR, DDR3 raminit with the QuickPath
 CPU reset), postcar, ramstage and SMM. Raminit replays the cached training
@@ -73,11 +75,28 @@ complete backup from the actual machine and keep an external programmer
 around. As coreboot notes (`ME_CLEANER_ARGS`), a cleaned ME needs its EFFS
 partition (`me_cleaner -S -w EFFS`) or USB and SATA misbehave.
 
-## First hardware checks
+## Hardware status
+
+On the tested i7 M620 / 8 GiB machine, CrabEFI boots Linux 6.12 from SATA
+with the LVDS panel, keyboard, TrackPoint and networking available. All four
+logical CPUs are online using their discovered, non-contiguous LAPIC IDs.
+PCI ASPM control is granted to Linux.
+
+A 10-second `rtcwake -m mem -s 10` test resumed the same Linux session with
+all four CPUs online, MEI enabled and all 24 TPM 1.2 PCRs readable. The kernel
+reported one successful suspend and no failures, without MEI or TPM resume
+errors. This validates one RTC wake cycle, not every wake source or DIMM
+configuration. The GPIO OpRegion overlap warning is still present.
+
+Flash logging and the training cache require firmware SPI writes. This is
+a development configuration, not a production flash-lockdown policy; an
+ephemeral image-signing key does not establish a production root of trust.
+
+For further hardware validation:
 
 1. Capture a cold boot through `chipset_init`, the QuickPath CPU reset, the
    second raminit pass, the ME UMA handshake, DMI, PCI allocation, SMM, the
-   tables and the halt payload. The cold boot reaches the payload after
+   tables and the selected payload. The cold boot reaches the payload after
    exactly one CPU-only reset.
 2. Check `memory cache: committed and verified`, then `already current`, and
    suspend/resume from Linux: no retraining, DIMMs held through GPIO10.
@@ -85,8 +104,9 @@ partition (`me_cleaner -S -w EFFS`) or USB and SATA misbehave.
    fan/thermal, PMH7 input power, radios, docking/undocking (button,
    power-loss and dock-event paths in SMM before ACPI), Fn keys, battery
    thresholds and the X201T digitizer.
-4. Check both cores and their threads come up, the turbo ratios, the
-   P-states/C-states, and that the TPM (if fitted) appears as `PNP0C31`.
+4. Check turbo ratios, P-states/C-states and sustained thermal behavior;
+   repeat RTC, lid and power-button wake tests, including TPM use after
+   repeated resumes.
 
 Host validation:
 

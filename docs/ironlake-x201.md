@@ -4,8 +4,9 @@ This port brings coreboot's `northbridge/intel/ironlake`,
 `southbridge/intel/ibexpeak`, `cpu/intel/model_2065x` and
 `mainboard/lenovo/x201` to fstart. Chipset code is shared: another Arrandale
 or Clarkdale board (T410, ms2290, a desktop with
-`IronlakeIbexPeakConfig::desktop()`) only needs a board crate. Nothing here
-has run on hardware yet.
+`IronlakeIbexPeakConfig::desktop()`) only needs a board crate. An X201 with
+an i7 M620 and 8 GiB of RAM now boots Linux through CrabEFI and passes a
+10-second RTC-timed S3 resume; other board bindings remain untested.
 
 ## Where the code lives
 
@@ -66,8 +67,13 @@ and chipset lockdown).
 * The `MCHC` CTDP methods coreboot inherits from Sandy Bridge are omitted:
   Ironlake has no configurable TDP behind them.
 * The TPM is probed and described (`PNP0C31` under `\_SB.PCI0`) like
-  `drivers/pc80/tpm`. Measured boot is off, as in coreboot's default
-  X201 configuration.
+  `drivers/pc80/tpm`. On S3, the shared TPM driver sends `Startup(STATE)`
+  before returning to Linux, independently of measured boot. Measured boot
+  is off, as in coreboot's default X201 configuration.
+* Unlike coreboot's old ME S3 policy, MEI remains visible on resume. The
+  cold-boot MEI handshake is skipped and Linux restores its existing device.
+* `UNCR` acknowledges PCI `_OSC` capabilities as `PCI0` does, so its legacy
+  PCI-root description does not cause Linux to disable ASPM ownership.
 * vboot, CFR and the EDK2 SMMSTORE options are coreboot-specific and not
   ported.
 
@@ -76,9 +82,12 @@ and chipset lockdown).
 * The dock's DisplayPort (libgfxinit `DP2`): `fstart-intel-gma` has no PCH
   DisplayPort path for Ironlake yet. The port stays in the X201 output list
   and is skipped until it does; LVDS, VGA and HDMI are driven.
-* Not hardware-validated: raminit timing/training, the ME handshake and
-  the SMM handlers have only been checked against the coreboot sources and
-  with host tests.
+* Only the i7 M620 / 8 GiB X201 configuration has been exercised. VGA,
+  HDMI, dock behavior, the X201T digitizer, other CPU/DIMM combinations,
+  repeated sleep cycles and non-RTC wake sources still need validation.
+* Firmware SPI writes remain enabled for the training cache and debug log.
+  Production flash protection and a provisioned signing trust anchor are
+  outside this development bring-up.
 
 ## ExpressCard SMBIOS
 
@@ -128,9 +137,12 @@ Checks against that coreboot tree:
 * Board tests cover GPIO, HDA, flash/SPD facts, the five-byte clock-generator
   write, and a complete DSDT disassembly/recompile with iasl.
 
-The dock DisplayPort gap listed above is still present. Booting and
-suspending/resuming a real X201 remains necessary;
-passing builds and AML round trips cannot validate DRAM training, ME
+The dock DisplayPort gap listed above is still present. Hardware bring-up
+subsequently verified cold boot, RAM publication, LVDS modesetting, the
+four actual LAPIC IDs and cache persistence. A 10-second RTC-timed S3 test
+returned to the same Linux session with four CPUs, MEI enabled and all 24
+TPM PCRs readable, without MEI or TPM resume errors. This is limited
+single-machine evidence, not exhaustive validation of DRAM training, ME
 firmware behavior or SMM hardware effects.
 
 Rebase validation passed: arch, Intel (including GM45/ICH9 regression),
