@@ -5,8 +5,8 @@
 use crate::boot::MemoryPolicy;
 use crate::boot::MemoryWindow;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU8, Ordering};
 use fstart_core::services::ServiceError;
+use portable_atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Workspace {

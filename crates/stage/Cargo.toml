@@ -54,6 +54,7 @@ fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
+portable-atomic = { workspace = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

@@ -9,7 +9,7 @@
 //! Deallocation is a no-op — memory is never reclaimed.
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use portable_atomic::{AtomicUsize, Ordering};
 
 // The definitions come from the generated linker script (or `#[no_mangle]`
 // statics in special stages). We declare `_FSTART_HEAP` as `u8` because only

@@ -3,7 +3,7 @@
 use crate::boot::{LoadError, MemoryWindow};
 use crate::heap::boxed::Box;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use portable_atomic::{AtomicBool, AtomicPtr, Ordering};
 
 const MAX_LOADED_WINDOWS: usize = 32;
 // Current consumers load one FFS segment or a FIT kernel+ramdisk pair.
