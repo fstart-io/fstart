@@ -13,6 +13,7 @@ use fstart_arch::x86::{
     },
     mp::{self, CpuDriver, MpConfig, MpError, MpHandle, SipiUnlock},
     mtrr::{self, SipiMsrs},
+    psp_reset::ApRoute,
 };
 use fstart_driver_amd::{
     ccx::{Thread, cache, tsc::Tsc},
@@ -22,6 +23,15 @@ use fstart_driver_amd::{
 use fstart_pci::ecam::GlobalEcam;
 use heapless::Vec;
 use tock_registers::interfaces::ReadWriteable;
+
+/// Arm (or park) the AP path of the shared reset entry, which the SMU
+/// releases the APs into.
+fn route_aps(route: ApRoute) {
+    #[cfg(all(feature = "bundle", target_os = "none"))]
+    fstart_arch::x86::psp_reset::set_ap_route(route);
+    #[cfg(not(all(feature = "bundle", target_os = "none")))]
+    let _ = route;
+}
 
 /// The CPUs MP init brought up.
 pub struct Cpus {
@@ -41,9 +51,12 @@ pub fn start<S: Soc, E>(
     let threads = threads::thread_count(dies, Policy::DEFAULT).map_err(|_| "CPU topology")?;
     let cpu = Fam17hCpu::<S, _>::new(S::CPU_NAME, microcode, init);
     let drivers: [&dyn CpuDriver; 1] = [&cpu];
+    let route = ApRoute::to(mp::AP_BOOTSTRAP_ADDRESS).map_err(|_| "AP route")?;
     let mut launch = |aps: u16| {
-        // SAFETY: the reset vector sends APs to the SIPI trampoline the MP
+        // The APs leave the reset entry for the SIPI trampoline the MP
         // engine installed before calling this.
+        route_aps(route);
+        // SAFETY: the reset vector sends the APs to that trampoline.
         unsafe { threads::launch(dies, Policy::DEFAULT, usize::from(aps), &mut { clock }) }.map_err(
             |error| {
                 if let threads::Error::ApCount { started, requested } = error {
@@ -61,6 +74,7 @@ pub fn start<S: Soc, E>(
         },
         &mut launch,
     );
+    route_aps(ApRoute::PARK);
     let mp = match mp {
         Ok(mp) => {
             fstart_log::info!(

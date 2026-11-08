@@ -23,21 +23,22 @@ impl Region {
     }
 }
 
-/// Size of the 16-bit entry at the end of the image (`.init16`, `.reset`).
-pub const INIT16_SIZE: u64 = 0x2000;
+/// PDPTs of 1-GiB pages the shared reset entry builds after its PML4: the
+/// first 512 GiB, above everything a noncar SoC addresses before the
+/// payload's tables ([`super::boot::map_ram`]).
+pub const PDPT_COUNT: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     /// Reserved through the OS handoff; holds everything below.
     pub early: Region,
-    /// Six pages: PML4, PDPT and four page directories for the 4-GiB
-    /// identity map of the reset entry.
+    /// The PML4 and [`PDPT_COUNT`] PDPTs of the reset entry's identity map.
     pub page_tables: u64,
-    /// Writable data and BSS.
+    /// BSS (initialized data runs in place in the image).
     pub data: Region,
     pub heap: Region,
     pub stack: Region,
-    /// The PSP-loaded image; its last 8 KiB hold the 16-bit entry.
+    /// The PSP-loaded image; its last 4 KiB hold the 16-bit entry.
     pub image: Region,
     /// The boot flash, mapped below 4 GiB.
     pub flash: Region,
@@ -48,20 +49,47 @@ impl Layout {
     pub const fn reset_vector(&self) -> u64 {
         self.image.end() - 0x10
     }
-    pub const fn init16(&self) -> u64 {
-        self.image.end() - INIT16_SIZE
+    /// The page tables of the reset entry.
+    pub const fn pages(&self) -> Region {
+        Region::new(self.page_tables, (PDPT_COUNT + 1) * 0x1000)
+    }
+    /// The write-back MTRR the reset entry opens until the cache plan
+    /// replaces it: the smallest naturally aligned power-of-two window over
+    /// the early region.
+    pub const fn cache_window(&self) -> Region {
+        let mut size = 0x1000;
+        loop {
+            let base = self.early.base & !(size - 1);
+            if base + size >= self.early.end() {
+                return Region::new(base, size);
+            }
+            size <<= 1;
+        }
     }
     /// Check the layout at compile time: `const LAYOUT: Layout = Layout {..}.check();`.
     pub const fn check(self) -> Self {
-        let tables = Region::new(self.page_tables, 0x6000);
+        let tables = self.pages();
+        assert!(tables.base.is_multiple_of(0x1000));
         assert!(tables.within(&self.early) && tables.end() <= self.data.base);
         assert!(self.data.end() <= self.heap.base && self.heap.end() <= self.stack.base);
         assert!(self.stack.end() <= self.image.base && self.image.within(&self.early));
         assert!(self.data.within(&self.early) && self.stack.within(&self.early));
         assert!(self.image.end().is_multiple_of(0x1_0000) && self.image.end() <= 1 << 32);
+        assert!(self.image.size >= 0x1000);
         if let Some(ffs) = self.ffs {
             assert!(ffs.within(&self.flash));
         }
         self
+    }
+}
+
+#[cfg(all(test, feature = "picasso", feature = "zeppelin"))]
+mod tests {
+    #[test]
+    fn cache_windows_cover_the_early_regions() {
+        let picasso = crate::picasso::LAYOUT.cache_window();
+        assert_eq!((picasso.base, picasso.size), (0x0200_0000, 0x200_0000));
+        let zeppelin = crate::zeppelin::layout::LAYOUT.cache_window();
+        assert_eq!((zeppelin.base, zeppelin.size), (0x7600_0000, 0x100_0000));
     }
 }
