@@ -110,7 +110,7 @@ fn chunks(base: u64, size: u64) -> impl Iterator<Item = (u64, u64)> {
         let size = if next == 0 {
             max_size
         } else {
-            max_size.min(next & next.wrapping_neg())
+            max_size.min(next.isolate_lowest_one())
         };
         let base = next;
         next += size;
@@ -157,10 +157,8 @@ impl Plan {
             if kind == CacheType::WriteCombining && !caps.write_combining {
                 return Err(ServiceError::NotSupported);
             }
-            if caps.fixed && kind == CacheType::WriteBack {
-                if base <= ONE_MIB {
-                    base = 0;
-                }
+            if caps.fixed && kind == CacheType::WriteBack && base <= ONE_MIB {
+                base = 0;
             }
             occupied
                 .push(Range { base, end, kind })

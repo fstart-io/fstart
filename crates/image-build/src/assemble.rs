@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::StageBinary;
-
+#[allow(clippy::too_many_arguments)] // the assembler takes the plan and every input
 pub fn assemble(
     workspace_root: &Path,
     board_dir: &Path,
@@ -361,7 +361,9 @@ fn ffs_input_regions(
     }
     let console_size = config.build.flash_console_size;
     if console_size != 0
-        && (console_size % 0x10000 != 0 || !config.full_flash_image || !config.platform.is_x86())
+        && (!console_size.is_multiple_of(0x10000)
+            || !config.full_flash_image
+            || !config.platform.is_x86())
     {
         return Err(
             "the flash console requires an Intel full-flash image and 64-KiB erase blocks".into(),

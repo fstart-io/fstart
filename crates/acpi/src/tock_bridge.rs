@@ -467,7 +467,7 @@ mod tests {
         // Expected: UARTEN(1), Reserved(7), TXE(1), RXE(1), Reserved(22)
         assert_eq!(entries.len(), 5);
 
-        assert_eq!(entries[0], FieldEntry::Named([b'U', b'A', b'R', b'T'], 1));
+        assert_eq!(entries[0], FieldEntry::Named(*b"UART", 1));
         assert_eq!(entries[1], FieldEntry::Reserved(7));
         assert_eq!(entries[2], FieldEntry::Named(*b"TXE_", 1));
         assert_eq!(entries[3], FieldEntry::Named(*b"RXE_", 1));
@@ -522,7 +522,7 @@ mod tests {
         assert!(bytes.windows(4).any(|w| w == b"RXFE"));
         assert!(bytes.windows(4).any(|w| w == b"TXFF"));
         // CR fields should be present too (truncated to 4 chars)
-        assert!(bytes.windows(4).any(|w| w == [b'U', b'A', b'R', b'T']));
+        assert!(bytes.windows(4).any(|w| w == *b"UART"));
         assert!(bytes.windows(4).any(|w| w == b"TXE_"));
         assert!(bytes.windows(4).any(|w| w == b"RXE_"));
     }

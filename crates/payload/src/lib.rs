@@ -483,7 +483,7 @@ pub enum Selected {
 const LAUNCHERS: u8 = cfg!(feature = "linux") as u8
     + cfg!(feature = "crabefi-basic") as u8
     + cfg!(feature = "coreboot") as u8;
-const _: () = assert!(LAUNCHERS <= 1, "enable one payload launcher per stage");
+const _: () = assert!(LAUNCHERS < 2, "enable one payload launcher per stage");
 
 /// The launcher this stage was built with.
 pub const SELECTED: Selected = if cfg!(feature = "crabefi-basic") {

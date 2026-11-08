@@ -263,6 +263,7 @@ pub struct ArtifactBinding {
 
 /// Bounded format operations, not platform identities or arbitrary commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)] // host-only plan transport
 pub enum UnitOutput {
     Executable {
         expectations: crate::elf::Expectations,

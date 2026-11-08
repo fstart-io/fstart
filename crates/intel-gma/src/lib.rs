@@ -480,6 +480,7 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
 }
 
 /// Reject an omitted modeset executor before touching display registers.
+#[allow(clippy::match_like_matches_macro)] // each arm selects a different feature
 pub(crate) fn validate_generation(cpu: Cpu) -> Result<(), GmaError> {
     let enabled = match caps_for(cpu).generation {
         Generation::I945 => cfg!(feature = "i945"),

@@ -233,34 +233,6 @@ const fn legacy_pm1_smi(smi_status: u32, pm1_control: u16) -> bool {
     smi_status & pmio::PM1_SMI_STS != 0 && pm1_control & pmio::SCI_EN as u16 == 0
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pm1_events_are_owned_only_for_a_legacy_pm1_smi() {
-        for source in [
-            0,
-            pmio::APM_STS,
-            pmio::TCO_STS,
-            pmio::PM1_SMI_STS,
-            pmio::PM1_SMI_STS | pmio::APM_STS,
-        ] {
-            assert_eq!(legacy_pm1_smi(source, 0), source & pmio::PM1_SMI_STS != 0);
-            assert!(!legacy_pm1_smi(source, pmio::SCI_EN as u16));
-        }
-    }
-
-    #[test]
-    fn gpi_route_preserves_other_pins() {
-        assert_eq!(
-            gpi_routing(0xa5a5_a5a5, 2, true),
-            0xa5a5_a5a5 & !0x30 | 0x20
-        );
-        assert_eq!(gpi_routing(0xffff_ffff, 2, false), 0xffff_ffdf);
-    }
-}
-
 /// The sources of one SMI on any ICH PM I/O layout, read once by
 /// [`PendingSmi::take`]; the board's SMI handler acts on the ones it owns
 /// and ends the SMI with [`PendingSmi::finish`].
@@ -381,4 +353,32 @@ impl PendingSmi {
 pub fn handle(_ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
     // SAFETY: bound as the board's SMI handler, so it owns the rendezvous.
     unsafe { PendingSmi::take(config) }.finish();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pm1_events_are_owned_only_for_a_legacy_pm1_smi() {
+        for source in [
+            0,
+            pmio::APM_STS,
+            pmio::TCO_STS,
+            pmio::PM1_SMI_STS,
+            pmio::PM1_SMI_STS | pmio::APM_STS,
+        ] {
+            assert_eq!(legacy_pm1_smi(source, 0), source & pmio::PM1_SMI_STS != 0);
+            assert!(!legacy_pm1_smi(source, pmio::SCI_EN as u16));
+        }
+    }
+
+    #[test]
+    fn gpi_route_preserves_other_pins() {
+        assert_eq!(
+            gpi_routing(0xa5a5_a5a5, 2, true),
+            0xa5a5_a5a5 & !0x30 | 0x20
+        );
+        assert_eq!(gpi_routing(0xffff_ffff, 2, false), 0xffff_ffdf);
+    }
 }

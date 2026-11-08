@@ -55,6 +55,17 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      # Same feature sets as the test step: the workspace defaults plus the
+      # chipset and SoC configurations that CI links.
+      - name: Clippy
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p fstart-driver-intel \
+            --features acpi,i945,gm965,ich8,pineview --lib -- -D warnings
+          for soc in picasso zeppelin naples rome milan; do
+            cargo clippy -p fstart-driver-amd --no-default-features --features "$soc" -- -D warnings
+          done
+
       - name: Install test dependencies
         run: |
           sudo apt-get update

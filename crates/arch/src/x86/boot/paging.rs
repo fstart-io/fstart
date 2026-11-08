@@ -110,7 +110,7 @@ impl IdentityTables {
         size: usize,
         spans: impl IntoIterator<Item = (u64, u64)>,
     ) -> Result<Self, ServiceError> {
-        if base % 4096 != 0 {
+        if !base.is_multiple_of(4096) {
             return Err(ServiceError::InvalidParam);
         }
         let frames = Frames::Fixed {
@@ -316,7 +316,13 @@ mod tests {
                 ],
             )
             .unwrap();
-            for address in [0, 0xfff_fffff, 0x13bc_00000, 0x13bff_ffff, 0x200_000000] {
+            for address in [
+                0,
+                0xffff_ffff,
+                0x0001_3bc0_0000,
+                0x0001_3bff_ffff,
+                0x200_000000,
+            ] {
                 assert_eq!(translate(&mut tables, address), Some(address), "{gib}");
             }
             assert_eq!(translate(&mut tables, 0x240_000000), None);
@@ -325,16 +331,16 @@ mod tests {
         assert_eq!(
             translate(
                 &mut heap(false, &[(0x100_000000, 0x3c00_0000)]).unwrap(),
-                0x13c00_0000
+                0x0001_3c00_0000
             ),
             None
         );
         assert_eq!(
             translate(
                 &mut heap(true, &[(0x100_000000, 0x3c00_0000)]).unwrap(),
-                0x13c00_0000
+                0x0001_3c00_0000
             ),
-            Some(0x13c00_0000)
+            Some(0x0001_3c00_0000)
         );
     }
 

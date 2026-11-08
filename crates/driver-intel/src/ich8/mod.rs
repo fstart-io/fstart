@@ -28,6 +28,7 @@ pub use crate::southbridge::hda::{
 };
 
 /// ICH8/ICH8-M PCI config and RCBA constants.
+#[allow(clippy::module_inception)] // the register module names the chipset
 pub mod ich8 {
     pub const LAN_DEV: u8 = 0x19;
     pub const LAN_FUNC: u8 = 0;

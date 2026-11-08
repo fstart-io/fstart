@@ -501,6 +501,7 @@ pub fn check_reset(_si: &SysInfo) {
 /// Program detailed timing registers into MCHBAR.
 ///
 /// This is a faithful line-by-line port of coreboot `sdram_timings()`.
+#[allow(clippy::needless_range_loop)] // the index is the DIMM slot and its register offset
 pub fn sdram_timings(si: &SysInfo, mch: &MchBar) {
     let t = &si.selected_timings;
     let wl = t.cas.saturating_sub(1);

@@ -262,6 +262,7 @@ impl Rcba {
 }
 
 /// ICH7 / NM10 PCI config and RCBA register constants.
+#[allow(clippy::module_inception)] // the register module names the chipset
 pub mod ich7 {
     /// LPC bridge: bus 0, dev 0x1f, func 0.
     pub use crate::southbridge::lpc::{LPC_DEV, LPC_FUNC};
@@ -2576,6 +2577,7 @@ mod acpi_impl {
 
 /// Software-sequencing cycle type of one SPI opcode menu entry.
 #[derive(Clone, Copy)]
+#[allow(clippy::enum_variant_names)] // the shared suffix is the SPI opcode vocabulary
 enum SpiOpType {
     ReadNoAddr = 0,
     WriteNoAddr = 1,

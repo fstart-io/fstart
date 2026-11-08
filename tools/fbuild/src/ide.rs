@@ -56,7 +56,7 @@ pub fn generate_image(
         selection,
     )
 }
-
+#[allow(clippy::too_many_arguments)] // the generator takes the resolved selection
 fn generate_selection(
     root: &Path,
     board: &BoardManifest,

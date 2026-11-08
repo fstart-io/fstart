@@ -237,7 +237,7 @@ fn apcbs_own_their_sectors_and_the_efs_is_where_the_boot_rom_looks() {
         assert!(
             files
                 .iter()
-                .filter(|(_, other)| other != apcb && other.len() != 0)
+                .filter(|(_, other)| other != apcb && !other.is_empty())
                 .all(|(_, other)| other.end <= sectors.start || other.start >= sectors.end),
             "{kind:#x} shares a sector"
         );

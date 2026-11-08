@@ -53,6 +53,7 @@ pub fn initial_stage() {
 /// Call once during single-threaded stage entry before media services/APs start.
 /// `capacity` must be the independently established platform/device limit, not
 /// a value taken from the carried locator. The caller establishes provenance.
+#[allow(clippy::result_unit_err)] // the caller only decides fatal or not
 pub unsafe fn install_locator(locator: LocatorBlock, capacity: u64) -> Result<(), ()> {
     if !LOCATOR.load(Ordering::Acquire).is_null() || !locator.media().validate(capacity) {
         return Err(());

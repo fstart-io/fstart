@@ -18,7 +18,7 @@ fn linked_sipi_page_holds_exact_msr_records_without_changing_neighbors() {
     ];
     let mut page = [0x55; 4096];
     assert_eq!(sipi_blob::TRAMPOLINE.len(), page.len());
-    assert!(sipi_blob::MSR_COUNT_OFFSET + 4 <= sipi_blob::MSR_TABLE_OFFSET);
+    const _: () = assert!(sipi_blob::MSR_COUNT_OFFSET + 4 <= sipi_blob::MSR_TABLE_OFFSET);
     patch_msr_table(&mut page, &entries).unwrap();
     assert_eq!(
         u32::from_le_bytes(
@@ -29,7 +29,9 @@ fn linked_sipi_page_holds_exact_msr_records_without_changing_neighbors() {
         2
     );
     for (bytes, expected) in page[sipi_blob::MSR_TABLE_OFFSET..sipi_blob::MSR_TABLE_OFFSET + 24]
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .zip(entries)
     {
         let actual = MsrEntry::read_from_bytes(bytes).unwrap();
