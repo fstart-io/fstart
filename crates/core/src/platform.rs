@@ -89,6 +89,9 @@ pub enum QemuMachine {
     OrangePiPc,
     /// Arm SBSA reference platform, booted TF-A-first from two pflash banks.
     SbsaRef,
+    /// ASPEED AST2500 EVB executing the composite SPI image in place from
+    /// FMC CE0, with the MJ11-EC1's 64 MiB MT25QL512 flash model.
+    Ast2500Evb,
 }
 
 /// Kind of runtime firmware loaded before the OS.

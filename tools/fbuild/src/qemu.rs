@@ -36,6 +36,7 @@ pub fn run(
     let use_sbsa_ref = build_policy.qemu_machine == Some(QemuMachine::SbsaRef);
     let use_sifive_u = build_policy.qemu_machine == Some(QemuMachine::SifiveU);
     let use_orangepi_pc = build_policy.qemu_machine == Some(QemuMachine::OrangePiPc);
+    let use_ast2500_evb = build_policy.qemu_machine == Some(QemuMachine::Ast2500Evb);
     let (qemu_bin, mut args) = if use_sbsa_ref {
         if platform != Platform::Aarch64 {
             return Err("QEMU sbsa-ref requires the aarch64 platform".to_string());
@@ -81,6 +82,20 @@ pub fn run(
                 "-nographic".to_string(),
                 "-sd".to_string(),
                 sd.display().to_string(),
+            ],
+        )
+    } else if use_ast2500_evb {
+        if platform != Platform::Armv5te {
+            return Err("QEMU ast2500-evb requires the armv5te platform".to_string());
+        }
+        (
+            find_qemu("qemu-system-arm"),
+            vec![
+                "-M".to_string(),
+                "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab".to_string(),
+                "-nographic".to_string(),
+                "-drive".to_string(),
+                format!("file={},format=raw,if=mtd", binary.display()),
             ],
         )
     } else if use_sifive_u {
@@ -217,7 +232,7 @@ pub fn run(
 
     // Keep one backend-free PCI function present on architecture QEMU machines
     // so every normal boot exercises ECAM enumeration and BAR assignment.
-    if !platform.is_x86() && !use_sifive_u && !use_orangepi_pc {
+    if !platform.is_x86() && !use_sifive_u && !use_orangepi_pc && !use_ast2500_evb {
         args.extend([
             "-device".to_string(),
             "virtio-scsi-pci,id=fstart-pci-test".to_string(),
