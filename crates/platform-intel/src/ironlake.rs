@@ -57,9 +57,13 @@ impl IronlakeIbexPeakConfig {
     }
 
     /// coreboot `mainboard_get_spd_map()`: channel 0 slot 0/1, channel 1
-    /// slot 0/1; zero means absent.
+    /// slot 0/1; zero means absent. Only one DIMM per channel is currently
+    /// supported, so the second-slot entries (1 and 3) must remain zero.
     #[must_use]
     pub const fn spd_addresses(mut self, addresses: [u8; 4]) -> Self {
+        if addresses[1] != 0 || addresses[3] != 0 {
+            panic!("Ironlake raminit supports one DIMM per channel");
+        }
         self.northbridge.spd_addresses = addresses;
         self
     }
@@ -424,6 +428,18 @@ mod tests {
         assert_eq!(CONFIG.southbridge.dmibar, IRONLAKE_DMIBAR);
         assert_eq!(CONFIG.northbridge.spd_addresses, [0x50, 0, 0x51, 0]);
         assert!(CONFIG.southbridge.laptop);
+    }
+
+    #[test]
+    #[should_panic(expected = "one DIMM per channel")]
+    fn rejects_channel_zero_second_slot() {
+        let _ = IronlakeIbexPeakConfig::new().spd_addresses([0x50, 0x52, 0x51, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "one DIMM per channel")]
+    fn rejects_channel_one_second_slot() {
+        let _ = IronlakeIbexPeakConfig::new().spd_addresses([0x50, 0, 0x51, 0x53]);
     }
 
     #[test]

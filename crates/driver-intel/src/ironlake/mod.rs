@@ -146,6 +146,7 @@ pub struct IntelIronlakeConfig {
     pub gpiobase: u16,
     pub hecibar: u32,
     /// SPD addresses: channel 0 slot 0/1, channel 1 slot 0/1; 0 = absent.
+    /// Raminit supports one DIMM per channel: entries 1 and 3 must be zero.
     pub spd_addresses: [u8; 4],
     /// IGD stolen memory selector (coreboot CMOS `gfx_uma_size`): 0 = 32 MiB,
     /// 1 = 48, 2 = 64, 3 = 128, 4 = 256, 5 = 96, 6 = 160, 7 = 224, 8 = 352.
@@ -366,6 +367,8 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
                 .any(|base| *base == 0 || *base > u64::from(u32::MAX) || base & 0xfff != 0)
             || config.mchbar & 0x7fff != 0
             || config.gfx_uma_size > 8
+            || config.spd_addresses[1] != 0
+            || config.spd_addresses[3] != 0
             || config.pmbase == 0
             || config.gpiobase == 0
         {
@@ -680,6 +683,26 @@ mod tests {
             ..IntelIronlakeConfig::new()
         };
         assert!(IntelIronlake::new_from_config(&BAD_UMA).is_err());
+    }
+
+    #[test]
+    fn rejects_second_slot_spd_wiring_before_hardware_access() {
+        static CONFIGS: [IntelIronlakeConfig; 2] = [
+            IntelIronlakeConfig {
+                spd_addresses: [0x50, 0x52, 0x51, 0],
+                ..IntelIronlakeConfig::new()
+            },
+            IntelIronlakeConfig {
+                spd_addresses: [0x50, 0, 0x51, 0x53],
+                ..IntelIronlakeConfig::new()
+            },
+        ];
+        for config in &CONFIGS {
+            assert!(matches!(
+                IntelIronlake::new_from_config(config),
+                Err(ServiceError::InvalidParam)
+            ));
+        }
     }
 
     #[test]

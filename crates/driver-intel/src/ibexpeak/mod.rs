@@ -315,7 +315,8 @@ impl IntelIbexPeak {
             self.config.pmbase,
             crate::southbridge::smi::ICH8_GPE0,
         )
-        .with_sleep_smi(self.config.gpiobase);
+        .with_sleep_smi(self.config.gpiobase)
+        .with_power_on_after_fail(self.config.power_on_after_fail == 1);
         match self.config.dram_reset_gate_gpio {
             Some(gpio) => smi.with_dram_reset_gate(gpio),
             None => smi,
@@ -664,6 +665,33 @@ mod tests {
             ..IntelIbexPeakConfig::new()
         };
         assert!(IntelIbexPeak::new_from_config(&HOTPLUG_ON_DISABLED).is_err());
+    }
+
+    #[test]
+    fn smm_receives_the_configured_power_on_after_failure_policy() {
+        use crate::southbridge::smi::{ICH8_GPE0, IchSmi, SmiControl};
+        static CONFIGS: [IntelIbexPeakConfig; 3] = [
+            IntelIbexPeakConfig::new(),
+            IntelIbexPeakConfig {
+                power_on_after_fail: 1,
+                ..IntelIbexPeakConfig::new()
+            },
+            IntelIbexPeakConfig {
+                power_on_after_fail: 2,
+                ..IntelIbexPeakConfig::new()
+            },
+        ];
+        for config in &CONFIGS {
+            let pch = IntelIbexPeak::new_from_config(config).unwrap();
+            let expected = IchSmi::new(config.pmbase, ICH8_GPE0)
+                .with_sleep_smi(config.gpiobase)
+                .with_power_on_after_fail(config.power_on_after_fail == 1);
+            let expected = match config.dram_reset_gate_gpio {
+                Some(gpio) => expected.with_dram_reset_gate(gpio),
+                None => expected,
+            };
+            assert_eq!(pch.smm_handler_config(), expected.smm_handler_config());
+        }
     }
 
     #[test]

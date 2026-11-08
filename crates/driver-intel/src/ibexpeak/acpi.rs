@@ -264,12 +264,12 @@ fn ehci_rmh_node(name: &str, adr: u32, ports: u8) -> Vec<u8> {
 
 impl SouthbridgeAcpi for IntelIbexPeak {
     fn dsdt_aml(&self, config: &Self::Config, pci_root: &AcpiPath) -> Vec<u8> {
-        // coreboot sleepstates.asl with HAVE_ACPI_RESUME: S1, S3, S4, S5.
         // S3 only once this image's training and stage caches persisted.
+        // Do not advertise S1: the returning sleep-SMI path does not yet
+        // re-arm interception, which is required for subsequent S3 entry.
         let mut aml: Vec<u8> = acpi_dsl! {
             Scope("\\") {
                 Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
-                Name("_S1_", Package(1u32, 0u32, 0u32, 0u32));
                 Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
                 Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
             }
@@ -404,6 +404,21 @@ mod tests {
 
     fn count(aml: &[u8], name: &[u8]) -> usize {
         aml.windows(name.len()).filter(|w| *w == name).count()
+    }
+
+    #[test]
+    fn sleep_states_omit_s1_and_gate_s3_on_persistence() {
+        use crate::{IntelSouthbridgeDriver, ibexpeak::IntelIbexPeakConfig};
+        static CONFIG: IntelIbexPeakConfig = IntelIbexPeakConfig::new();
+        let mut pch = IntelIbexPeak::new_from_config(&CONFIG).unwrap();
+        for enabled in [false, true] {
+            pch.set_s3_enabled(enabled);
+            let aml = pch.dsdt_aml(&CONFIG, &ROOT);
+            assert_eq!(count(&aml, b"_S1_"), 0);
+            assert_eq!(count(&aml, b"_S3_"), usize::from(enabled));
+            assert_eq!(count(&aml, b"_S4_"), 1);
+            assert_eq!(count(&aml, b"_S5_"), 1);
+        }
     }
 
     #[test]
