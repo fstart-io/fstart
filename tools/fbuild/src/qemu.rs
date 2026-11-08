@@ -137,6 +137,9 @@ pub fn run(
                 args.extend(virt_flash_args(binary)?);
                 (find_qemu("qemu-system-arm"), args)
             }
+            Platform::Armv5te => {
+                return Err("ARMv5TE has no QEMU virt machine; the board must name one".to_string());
+            }
             Platform::X86_64 | Platform::X86 => {
                 let pflash_size = 16 * 1024 * 1024;
                 // The plan build always hands over the linked stage ELF;

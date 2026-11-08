@@ -62,12 +62,12 @@ pub fn resolved_ram_stage(
         size: region_end - load_addr,
     };
     let architecture = match config.platform {
-        Platform::Armv7 => crate::elf::Architecture::Arm,
+        Platform::Armv7 | Platform::Armv5te => crate::elf::Architecture::Arm,
         Platform::Aarch64 => crate::elf::Architecture::Aarch64,
         Platform::Riscv64 => crate::elf::Architecture::Riscv64,
         _ => return Err("unsupported RAM stage ELF architecture".into()),
     };
-    let elf64 = !matches!(config.platform, Platform::Armv7 | Platform::X86);
+    let elf64 = !config.platform.is_32bit();
     let expectations = crate::elf::Expectations {
         architecture,
         elf64,
@@ -117,11 +117,7 @@ impl Xip {
             .chain(self.execution)
         {
             range.end()?;
-            crate::elf::address_extent(
-                !matches!(self.platform, Platform::Armv7 | Platform::X86),
-                range.base,
-                range.size,
-            )?;
+            crate::elf::address_extent(!self.platform.is_32bit(), range.base, range.size)?;
             if range.base % 16 != 0 || range.size % 16 != 0 {
                 return Err("unaligned XIP reservation".into());
             }
@@ -141,7 +137,7 @@ impl Xip {
                     .into(),
             );
         }
-        let elf64 = !matches!(self.platform, Platform::Armv7 | Platform::X86);
+        let elf64 = !self.platform.is_32bit();
         // The stack top is emitted as an ELF symbol, not merely a range end.
         crate::elf::address_extent(elf64, self.stack.end()?, 0)?;
         let descriptor = fstart_core::layout::Layout::parse(self.descriptor.as_bytes())
@@ -158,14 +154,14 @@ impl Xip {
         use crate::elf::{Architecture, CopyMapping, Descriptor, Expectations};
         self.validate()?;
         let architecture = match self.platform {
-            Platform::Armv7 => Architecture::Arm,
+            Platform::Armv7 | Platform::Armv5te => Architecture::Arm,
             Platform::Aarch64 => Architecture::Aarch64,
             Platform::Riscv64 => Architecture::Riscv64,
             _ => return Err("unsupported XIP ELF architecture".into()),
         };
         Ok(Expectations {
             architecture,
-            elf64: !matches!(self.platform, Platform::Armv7 | Platform::X86),
+            elf64: !self.platform.is_32bit(),
             little_endian: true,
             stored: vec![self.image],
             runtime: vec![self.code_reservation(), self.writable],
@@ -1013,10 +1009,7 @@ fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap
 }
 
 fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64) {
-    let word = match platform {
-        Platform::Armv7 | Platform::X86 => "LONG",
-        _ => "QUAD",
-    };
+    let word = if platform.is_32bit() { "LONG" } else { "QUAD" };
     writeln!(out, "        . = ALIGN(8);").unwrap();
     writeln!(out, "        _FSTART_HEAP_SIZE = .;").unwrap();
     writeln!(out, "        {word}({heap_size:#x})").unwrap();

@@ -14,7 +14,11 @@ impl TargetSpec {
             platform_feature: platform.as_str(),
             needs_flat_binary: matches!(
                 platform,
-                Platform::Aarch64 | Platform::Riscv64 | Platform::Armv7 | Platform::X86_64
+                Platform::Aarch64
+                    | Platform::Riscv64
+                    | Platform::Armv7
+                    | Platform::Armv5te
+                    | Platform::X86_64
             ),
         }
     }
