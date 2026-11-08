@@ -469,16 +469,16 @@ pub enum FitParseMode {
 }
 
 /// Where the Flattened Device Tree comes from.
+///
+/// A platform always supplies the blob; only where it comes from is a build
+/// choice. There is no generator to name, so the variants that promised one
+/// are gone rather than left to fail at assembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FdtSource {
     /// Use the DTB passed by QEMU/firmware at reset
     Platform,
-    /// Generate FDT automatically from board metadata.
-    Generated,
     /// Use a separate DTS file (path relative to board directory)
     Override(HString<128>),
-    /// Generate from board metadata but merge in DTS fragments
-    GeneratedWithOverride(HString<128>),
 }
 
 /// Configuration for the SBI firmware (RISC-V) or ATF BL31 (AArch64)
