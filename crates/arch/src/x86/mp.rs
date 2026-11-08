@@ -210,10 +210,13 @@ pub trait CpuDriver: Send + Sync {
 /// SIPI trampoline sets them in the AP's own value before the replay and
 /// clears them afterwards, as for SYSCFG.MtrrFixDramModEn and the fixed
 /// MTRRs' RdDram/WrDram bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SipiUnlock {
     msr: u32,
     bits: u32,
+    post_set: u32,
+    post_test: u32,
+    post_then: u32,
 }
 impl SipiUnlock {
     /// `field` of `msr`; the trampoline handles the low 32 bits only.
@@ -226,7 +229,28 @@ impl SipiUnlock {
         Self {
             msr: msr.index(),
             bits: bits as u32,
+            post_set: 0,
+            post_test: 0,
+            post_then: 0,
         }
+    }
+
+    /// Update the AP's OWN value after replay, still with caching off:
+    /// clear the modification gate, OR `set`, and OR `then` if any `test`
+    /// bit is set. This avoids copying BSP-only/reserved MSR state to APs
+    /// (AMD Rs: DRAM routing enables, conditional TOM2 write-back).
+    pub const fn with_post_replay<R: tock_registers::RegisterLongName>(
+        mut self,
+        set: tock_registers::fields::FieldValue<u64, R>,
+        test: tock_registers::fields::FieldValue<u64, R>,
+        then: tock_registers::fields::FieldValue<u64, R>,
+    ) -> Self {
+        assert!((set.value | test.value | then.value) >> 32 == 0);
+        assert!((set.value | then.value) & self.bits as u64 == 0);
+        self.post_set = set.value as u32;
+        self.post_test = test.value as u32;
+        self.post_then = then.value as u32;
+        self
     }
 }
 
@@ -356,6 +380,13 @@ static mut AP_STACKS: ApStacks = ApStacks([[0; AP_STACK_SIZE]; MAX_APS]);
 
 /// Atomic counter: number of APs that have checked in.
 static AP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// APs that reached Rust after their trampoline/cache replay. Platform
+/// launchers may serialize first reset releases against this counter; it
+/// does not mean CPU-driver initialization or the flight plan has finished.
+pub fn ap_checkins() -> u16 {
+    AP_COUNT.load(Ordering::Acquire) as u16
+}
 
 /// Flag: tells APs to enter the mailbox loop (vs flight plan).
 static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
@@ -910,6 +941,46 @@ fn patch_msr_table(page: &mut [u8], msrs: &[crate::x86::mtrr::MsrEntry]) -> Resu
     Ok(())
 }
 
+fn patch_sipi_unlock(page: &mut [u8], unlock: Option<SipiUnlock>) -> Result<(), MpError> {
+    let unlock = unlock.unwrap_or_default();
+    let fields = [
+        (sipi_blob::UNLOCK_MSR_OFFSET, unlock.msr),
+        (sipi_blob::UNLOCK_BITS_OFFSET, unlock.bits),
+        (sipi_blob::POST_SET_OFFSET, unlock.post_set),
+        (sipi_blob::POST_TEST_OFFSET, unlock.post_test),
+        (sipi_blob::POST_THEN_OFFSET, unlock.post_then),
+    ];
+    if fields
+        .iter()
+        .any(|(offset, _)| offset.checked_add(4).is_none_or(|end| end > page.len()))
+    {
+        return Err(MpError::TrampolinePlacementFailed);
+    }
+    for (offset, value) in fields {
+        page[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// Independent volatile readback: a chipset may drop low-memory writes
+/// when DRAM routing is not initialized. Never release APs into that page.
+unsafe fn verify_sipi_page(base: *const u8, expected: &[u8]) -> Result<(), MpError> {
+    for (offset, &byte) in expected.iter().enumerate() {
+        // SAFETY: caller supplies the complete readable copied-page extent.
+        let actual = unsafe { base.add(offset).read_volatile() };
+        if actual != byte {
+            fstart_log::error!(
+                "mp: trampoline readback mismatch offset={:#x} expected={:#x} actual={:#x}",
+                offset,
+                byte,
+                actual
+            );
+            return Err(MpError::TrampolinePlacementFailed);
+        }
+    }
+    Ok(())
+}
+
 fn install_sipi_trampoline(
     max_aps: u16,
     _lapic: &Lapic,
@@ -923,38 +994,34 @@ fn install_sipi_trampoline(
     // SAFETY: we only expose the raw stack arena address to AP startup code;
     // Rust never creates references to individual AP stacks while they run.
     let stack_base = unsafe { core::ptr::addr_of_mut!(AP_STACKS.0) as u64 };
-    // SAFETY: SIPI_VECTOR_ADDR is a conventional-memory page reserved for AP
-    // startup. The copied blob occupies one page and all patch offsets are
-    // emitted by the build script from symbols inside that blob.
+    // Patch an owned staging page first: an ineffective physical copy must
+    // not become both the write target and its own expected readback data.
+    let mut expected = [0u8; 4096];
+    let expected = &mut expected[..sipi_blob::TRAMPOLINE.len()];
+    expected.copy_from_slice(sipi_blob::TRAMPOLINE);
+    let patch = expected.as_mut_ptr();
+    // SAFETY: linked patch offsets lie inside this owned page; the physical
+    // destination is the reserved, mapped SIPI page and APs have not started.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            sipi_blob::TRAMPOLINE.as_ptr(),
-            dst,
-            sipi_blob::TRAMPOLINE.len(),
-        );
-
-        patch_u64(dst, sipi_blob::CR3_OFFSET, read_cr3());
+        patch_u64(patch, sipi_blob::CR3_OFFSET, read_cr3());
         patch_u64(
-            dst,
+            patch,
             sipi_blob::ENTRY_OFFSET,
             fstart_ap_entry as *const () as usize as u64,
         );
-        patch_u64(dst, sipi_blob::STACK_BASE_OFFSET, stack_base);
-        patch_u32(dst, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
-        patch_u32(dst, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
-        patch_u32(dst, sipi_blob::AP_COUNTER_OFFSET, 0);
-        let unlock = unlock.unwrap_or(SipiUnlock { msr: 0, bits: 0 });
-        patch_u32(dst, sipi_blob::UNLOCK_MSR_OFFSET, unlock.msr);
-        patch_u32(dst, sipi_blob::UNLOCK_BITS_OFFSET, unlock.bits);
-        patch_msr_table(
-            core::slice::from_raw_parts_mut(dst, sipi_blob::TRAMPOLINE.len()),
-            msrs,
-        )?;
-
-        // INIT leaves AP caches disabled. Write the complete copied and patched
-        // trampoline back to DRAM before sending SIPI, as coreboot does for its
-        // SIPI module.
-        crate::x86::writeback_cache_range(dst, sipi_blob::TRAMPOLINE.len());
+        patch_u64(patch, sipi_blob::STACK_BASE_OFFSET, stack_base);
+        patch_u32(patch, sipi_blob::STACK_SIZE_OFFSET, AP_STACK_SIZE as u32);
+        patch_u32(patch, sipi_blob::AP_LIMIT_OFFSET, u32::from(max_aps));
+        patch_u32(patch, sipi_blob::AP_COUNTER_OFFSET, 0);
+    }
+    patch_sipi_unlock(expected, unlock)?;
+    patch_msr_table(expected, msrs)?;
+    // SAFETY: as above; INIT leaves AP caches disabled, so write back the
+    // complete copy and verify it before allowing the launcher to run.
+    unsafe {
+        core::ptr::copy_nonoverlapping(expected.as_ptr(), dst, expected.len());
+        crate::x86::writeback_cache_range(dst, expected.len());
+        verify_sipi_page(dst, expected)?;
     }
 
     // Diagnostic: the AP's first fetch depends entirely on this page and the

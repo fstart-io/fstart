@@ -34,11 +34,14 @@ pub enum Error {
     OutsidePrefix { start: usize, end: usize },
     AncillaryPointer(u32),
     ResetFlags,
+    PatchOverlap { start: usize, end: usize },
 }
 
 /// Format policy, not board wiring or a bag of CPU-family conditionals.
 /// New platforms can supply their own profile without changing the reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Profile {
     pub bios: BiosDirectorySlot,
     /// Bits the boot ROM requires clear in EFS +0x24; zero for Gen1.
@@ -53,6 +56,33 @@ pub struct Profile {
     pub apob_nv_alias: bool,
 }
 impl Profile {
+    /// Read-only inspection policy for observed Siena/SP6 images: the BIOS
+    /// pointer occupies the Family19h EFS slot, but FFFFFFFEh is not accepted
+    /// by Milan's mask3 policy. This does not establish hardware boot-ROM
+    /// selection, fuse state or authentication. Combo images still require
+    /// an explicit PSP/chip identity; do not borrow Milan's ID.
+    pub const SIENA: Self = Self {
+        bios: BiosDirectorySlot::Family19h,
+        generation_mask: 1,
+        psp_id: None,
+        chip_id: None,
+        legacy_offsets: true,
+        apob_nv_alias: false,
+    };
+
+    /// Read-only policy for the surveyed Onyx/Genoa coreboot image: EFS
+    /// generation zero and the Family19h BIOS slot. This does not establish
+    /// boot-ROM selection or authenticate the image; combo selection must
+    /// use an explicit identity instead of inheriting Milan's PSP ID.
+    pub const GENOA: Self = Self {
+        bios: BiosDirectorySlot::Family19h,
+        generation_mask: 3,
+        psp_id: None,
+        chip_id: None,
+        legacy_offsets: true,
+        apob_nv_alias: false,
+    };
+
     pub const fn for_slot(bios: BiosDirectorySlot) -> Self {
         let (generation_mask, psp_id) = match bios {
             BiosDirectorySlot::Family17hModel00 => (0, Some(0xbc09_0000)),
@@ -248,8 +278,85 @@ impl<'a> Flash<'a> {
         kept: usize,
         reset: Option<Range<usize>>,
     ) -> Result<(), Error> {
-        if kept > self.bytes.len() {
-            return Err(Error::Truncated(kept));
+        self.validate_regions(
+            slot,
+            Bounds {
+                limit: kept,
+                patch: None,
+                reset: None,
+            },
+            reset,
+        )
+    }
+    /// Verify an in-place replacement against EVERY reachable directory and
+    /// dependency, including PSP backup/combo branches and other BIOS slots.
+    /// Only exact aliases of the selected reset may overlap. The stored
+    /// allocation may be shorter than its uncompressed BIOS-entry size.
+    pub fn validate_reset_patch(
+        &self,
+        slot: BiosDirectorySlot,
+        allocation: Range<usize>,
+    ) -> Result<(), Error> {
+        let levels = self.bios_directories_checked(slot)?;
+        let boot = levels.boot();
+        let mut entries = boot
+            .entries
+            .iter()
+            .filter(|e| e.kind == directory::bios::RESET_IMAGE);
+        let reset = *entries.next().ok_or(Error::MissingDirectory)?;
+        if entries.next().is_some()
+            || !reset.reset()
+            || !reset.copy()
+            || reset.read_only()
+            || reset.rom_id() != 0
+        {
+            return Err(Error::ResetFlags);
+        }
+        let range = boot.range(&reset)?;
+        if allocation.start != range.start
+            || allocation.end <= allocation.start
+            || allocation.end > range.end
+        {
+            return Err(Error::Address(allocation.start as u64));
+        }
+        self.validate_regions(
+            slot,
+            Bounds {
+                limit: self.bytes.len(),
+                patch: Some(&allocation),
+                reset: Some(reset),
+            },
+            Some(range),
+        )
+    }
+    /// Check a new allocation without exempting any old reset or other
+    /// dependency. Erasure/ownership of that storage is a caller policy.
+    pub fn validate_new_storage(
+        &self,
+        slot: BiosDirectorySlot,
+        allocation: Range<usize>,
+    ) -> Result<(), Error> {
+        if allocation.start >= allocation.end || allocation.end > self.bytes.len() {
+            return Err(Error::Address(allocation.start as u64));
+        }
+        self.validate_regions(
+            slot,
+            Bounds {
+                limit: self.bytes.len(),
+                patch: Some(&allocation),
+                reset: None,
+            },
+            None,
+        )
+    }
+    fn validate_regions(
+        &self,
+        slot: BiosDirectorySlot,
+        kept: Bounds<'_>,
+        reset: Option<Range<usize>>,
+    ) -> Result<(), Error> {
+        if kept.limit > self.bytes.len() {
+            return Err(Error::Truncated(kept.limit));
         }
         let (offset, efs) = self.efs_checked()?;
         self.within(offset..offset + size_of::<Efs>(), kept)?;
@@ -287,8 +394,13 @@ impl<'a> Flash<'a> {
             let pointer = pointer.get();
             if !matches!(pointer, 0 | u32::MAX) {
                 let blob = self.resolve(pointer.into(), 0, 0)?;
-                if kept != self.bytes.len() && blob >= lowest_directory {
+                if (kept.limit != self.bytes.len() || kept.patch.is_some())
+                    && blob >= lowest_directory
+                {
                     return Err(Error::AncillaryPointer(pointer));
+                }
+                if kept.patch.is_some() {
+                    self.within(blob..lowest_directory, kept)?;
                 }
             }
         }
@@ -355,20 +467,41 @@ impl<'a> Flash<'a> {
     fn validate_bios_directory(
         &self,
         dir: Directory<'a, BiosEntry>,
-        kept: usize,
+        kept: Bounds<'_>,
         reset: Option<&Range<usize>>,
     ) -> Result<(), Error> {
-        self.within(dir.extent()?, kept)?;
+        // dir_size allocates the directory AND its files. For patching,
+        // protect serialized table bytes and walk each actual dependency;
+        // treating the entire container as a file would reject its reset.
+        self.within(
+            if kept.patch.is_some() {
+                dir.offset..dir.offset + dir.table().len()
+            } else {
+                dir.extent()?
+            },
+            kept,
+        )?;
         for entry in dir.entries {
             if !entry.has_data() {
                 continue;
             }
             let range = dir.range(entry)?;
+            if kept.patch.is_some() && entry.kind == directory::bios::LEVEL2 {
+                continue;
+            }
             if entry.kind == directory::bios::RESET_IMAGE {
                 if !entry.reset() || !entry.copy() {
                     return Err(Error::ResetFlags);
                 }
                 if reset == Some(&range) {
+                    if let Some(expected) = kept.reset
+                        && (entry.flags != expected.flags
+                            || entry.destination != expected.destination
+                            || entry.subprogram != expected.subprogram
+                            || entry.region != expected.region)
+                    {
+                        return Err(Error::ResetFlags);
+                    }
                     continue;
                 }
             }
@@ -379,11 +512,18 @@ impl<'a> Flash<'a> {
     fn validate_psp(
         &self,
         offset: usize,
-        kept: usize,
+        kept: Bounds<'_>,
         reset: Option<&Range<usize>>,
     ) -> Result<(), Error> {
         for dir in Levels::<PspEntry>::read_checked(*self, offset)?.iter() {
-            self.within(dir.extent()?, kept)?;
+            self.within(
+                if kept.patch.is_some() {
+                    dir.offset..dir.offset + dir.table().len()
+                } else {
+                    dir.extent()?
+                },
+                kept,
+            )?;
             for entry in dir.entries {
                 if matches!(
                     entry.kind,
@@ -395,7 +535,12 @@ impl<'a> Flash<'a> {
                     continue;
                 }
                 let range = dir.range(entry)?;
-                self.within(range.clone(), kept)?;
+                if kept.patch.is_some() && entry.kind == directory::psp::LEVEL2 {
+                    continue;
+                }
+                if kept.patch.is_none() || entry.kind != directory::psp::BIOS_TABLE {
+                    self.within(range.clone(), kept)?;
+                }
                 if entry.kind == directory::psp::BIOS_TABLE {
                     let level = usize::from(
                         self.bytes[range.start..].starts_with(&directory::BIOS_LEVEL2_COOKIE),
@@ -421,9 +566,17 @@ impl<'a> Flash<'a> {
         }
         Ok(())
     }
-    fn within(&self, range: Range<usize>, kept: usize) -> Result<(), Error> {
-        if range.end > kept {
+    fn within(&self, range: Range<usize>, kept: Bounds<'_>) -> Result<(), Error> {
+        if range.end > kept.limit {
             Err(Error::OutsidePrefix {
+                start: range.start,
+                end: range.end,
+            })
+        } else if kept
+            .patch
+            .is_some_and(|p| range.start < p.end && p.start < range.end)
+        {
+            Err(Error::PatchOverlap {
                 start: range.start,
                 end: range.end,
             })
@@ -431,6 +584,12 @@ impl<'a> Flash<'a> {
             Ok(())
         }
     }
+}
+#[derive(Clone, Copy)]
+struct Bounds<'a> {
+    limit: usize,
+    patch: Option<&'a Range<usize>>,
+    reset: Option<BiosEntry>,
 }
 
 /// Size of one flash half of a "Two 16M in 32MB" image (AMD #55758

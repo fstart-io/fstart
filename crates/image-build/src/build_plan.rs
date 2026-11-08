@@ -341,7 +341,10 @@ impl BuildPlan {
         selection: &crate::plan::BuildSelection,
     ) -> Result<(), String> {
         match (&selection.image_config, &self.assembly) {
-            (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
+            (Some(path), Assembly::Amd(image))
+                if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. }
+                | crate::amd::assembly::Firmware::Preserved { image, .. } if image.path == *path) =>
+            {
                 Ok(())
             }
             (None, Assembly::Amd(image))

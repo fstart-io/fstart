@@ -1,0 +1,26 @@
+[package]
+name = "fstart-driver-usb"
+description = "Bounded firmware USB host and read-only bulk-only storage diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+# Bare-metal polling composition: one executor, no USB users in IRQ/NMI/APs.
+# Other environments supply their own ax-sync runtime instead.
+single-executor = ["dep:ax-sync", "dep:ax-crate-interface"]
+
+[dependencies]
+ax-sync = { workspace = true, optional = true }
+ax-crate-interface = { workspace = true, optional = true }
+fstart-core.workspace = true
+fstart-log.workspace = true
+crab-usb.workspace = true
+dma-api.workspace = true
+cotton-scsi.workspace = true
+xhci.workspace = true
+heapless.workspace = true
+sha2.workspace = true
+ufmt.workspace = true

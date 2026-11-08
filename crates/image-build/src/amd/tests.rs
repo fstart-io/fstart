@@ -700,3 +700,98 @@ fn the_psp_inflates_the_reset_image() {
     }
     assert_eq!(raw[0xdb_0000..], plain[0xdb_0000..]);
 }
+
+fn preserved(origin: u32) -> AmdAssembly {
+    let mut plan = mj11();
+    plan.flash_size = 0x400_0000;
+    plan.ffs = None;
+    plan.firmware = Firmware::Preserved {
+        image: crate::build_plan::FileBinding {
+            environment: "VENDOR_FLASH".into(),
+            path: "full-chip.bin".into(),
+            capacity: 0x400_0000,
+        },
+        region: assembly::VendorRegion {
+            origin,
+            size: 0x100_0000,
+            prefix_size: 0x29_4000,
+            profile: fstart_amdfw_format::Profile::for_slot(SLOT),
+        },
+        reset: None,
+        relocate: None,
+    };
+    plan
+}
+
+#[test]
+fn full_chip_composition_preserves_every_byte_outside_the_selected_reset() {
+    // Physical chip geometry and top-mapped bank geometry are independent.
+    // A nonzero bank origin must work as well as the first bank.
+    for origin in [0, 0x200_0000] {
+        let plan = preserved(origin);
+        let mut vendor = vec![0x69; plan.flash_size as usize];
+        let start = origin as usize;
+        vendor[start..start + 0x100_0000].copy_from_slice(&two_level_vendor());
+        let stage = vec![0xa5; plan.reset_size as usize];
+        let image = plan.assemble(&[&vendor], &stage, None).unwrap();
+        let reset = start + 0xdb_0000;
+        assert!(image.is_whole_flash(plan.flash_size));
+        assert_eq!(image.facts.reset_offset as usize, reset);
+        assert_eq!(image.bytes[..reset], vendor[..reset]);
+        assert_eq!(image.bytes[reset..reset + stage.len()], stage);
+        assert_eq!(
+            image.bytes[reset + stage.len()..],
+            vendor[reset + stage.len()..]
+        );
+        let serialized = serde_json::to_string(&plan).unwrap();
+        serde_json::from_str::<AmdAssembly>(&serialized)
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
+}
+
+#[test]
+fn preserved_images_fail_closed_on_geometry_or_mutating_options() {
+    let mut plan = preserved(0);
+    let mut vendor = vec![0x69; plan.flash_size as usize];
+    vendor[..0x100_0000].copy_from_slice(&two_level_vendor());
+    let mut compressed = vendor.clone();
+    modify_entries::<BiosEntry>(&mut compressed, 0xf_7000, |e| {
+        if e.kind == 0x62 {
+            e.flags |= BiosEntry::COMPRESSED;
+        }
+    })
+    .unwrap();
+    modify_entries::<BiosEntry>(&mut compressed, 0x22_9000, |e| {
+        if e.kind == 0x62 {
+            e.flags |= BiosEntry::COMPRESSED;
+        }
+    })
+    .unwrap();
+    assert!(
+        plan.check_vendor(&compressed)
+            .unwrap_err()
+            .contains("uncompressed")
+    );
+    assert!(plan.check_vendor(&vendor[..0x100_0000]).is_err());
+    plan.reset_destination += 0x1_0000;
+    assert!(plan.check_vendor(&vendor).is_err());
+    plan = preserved(0);
+    plan.psp.compress_reset = true;
+    assert!(plan.validate().is_err());
+    plan = preserved(0);
+    plan.psp.spi = Some((7, 1));
+    assert!(plan.validate().is_err());
+    plan = preserved(0);
+    plan.ffs = Some(ffs_window(0x300000, 0x1000));
+    assert!(plan.validate().is_err());
+    for origin in [1, 0x400_0000, 0xff00_0000] {
+        assert!(preserved(origin).validate().is_err());
+    }
+    let Firmware::Preserved { ref mut region, .. } = plan.firmware else {
+        unreachable!()
+    };
+    region.size = 0;
+    assert!(plan.validate().is_err());
+}

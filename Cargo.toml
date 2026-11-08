@@ -25,6 +25,7 @@ members = [
   "crates/driver-lenovo",
   "crates/driver-ricoh",
   "crates/driver-uart",
+  "crates/driver-usb",
   "crates/driver-vbios",
   "crates/driver-i2c",
   "crates/driver-redriver",
@@ -83,6 +84,17 @@ x86_64_crate = { package = "x86_64", version = "0.15", default-features = false 
 rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 
+# USB host mechanisms (no_std; firmware supplies MMIO, DMA and timer ownership).
+# 0.11 and dma-api 0.10 share ax-sync 0.5's runtime ABI. CrabUSB 0.12
+# uses ax-sync 0.6, whose identically named global hooks have incompatible
+# signatures: those versions must NOT share one firmware runtime provider.
+crab-usb = { version = "=0.11.0", default-features = false }
+dma-api = { version = "=0.10.0", default-features = false }
+cotton-scsi = { version = "=0.2.0", default-features = false }
+xhci = "0.9"
+ax-sync = { version = "=0.5.32", default-features = false }
+ax-crate-interface = "=0.5.8"
+
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
 
@@ -119,6 +131,7 @@ fstart-driver-sunxi = { path = "crates/driver-sunxi" }
 fstart-driver-sifive = { path = "crates/driver-sifive" }
 fstart-driver-superio = { path = "crates/driver-superio" }
 fstart-driver-uart = { path = "crates/driver-uart" }
+fstart-driver-usb = { path = "crates/driver-usb" }
 fstart-driver-vbios = { path = "crates/driver-vbios" }
 fstart-driver-i2c = { path = "crates/driver-i2c" }
 fstart-driver-spd = { path = "crates/driver-spd" }

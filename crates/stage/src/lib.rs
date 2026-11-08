@@ -13,6 +13,13 @@
     feature = "smbios"
 ))]
 mod alloc;
+#[cfg(any(
+    feature = "acpi",
+    feature = "ffs",
+    feature = "alloc",
+    feature = "smbios"
+))]
+pub use alloc::adopt_freeing_heap;
 
 mod runtime;
 

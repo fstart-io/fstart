@@ -742,6 +742,47 @@ pub fn boot_linux_direct(
     zero_page_addr: u64,
     print_x86_mtrrs: bool,
 ) -> ! {
+    // SAFETY: the legacy pointer contract supplies a complete bzImage. Read
+    // its typed header to derive the declared extent, not an arbitrary 8 MiB
+    // cap (larger valid images were already supported by the pointer loader).
+    let header = unsafe { core::slice::from_raw_parts(kernel_addr as *const u8, 4096) };
+    let header = LinuxBootParams::ref_from_bytes(header).expect("bzImage header page");
+    let setup_sects = if header.setup_sects == 0 {
+        4
+    } else {
+        u64::from(header.setup_sects)
+    };
+    let size = (setup_sects + 1) * 512 + u64::from(header.syssize.get()) * 16;
+    let Ok(size) = usize::try_from(size) else {
+        fstart_log::error!("linux: bzImage extent exceeds address space");
+        halt();
+    };
+    // SAFETY: same complete-image contract; the bounded API below checks the
+    // header/protocol and protected-mode extent before copying any image data.
+    let bzimage = unsafe { core::slice::from_raw_parts(kernel_addr as *const u8, size) };
+    boot_linux_bzimage(
+        bzimage,
+        rsdp_addr,
+        e820_entries,
+        bootargs,
+        zero_page_addr,
+        print_x86_mtrrs,
+    )
+}
+
+/// Boot a bounded bzImage from ROM or RAM through the shared Linux protocol.
+/// The caller owns the conventional zero/command-line pages and supplies an
+/// e820 map excluding every still-live firmware, AP and DMA allocation.
+/// The slice bounds the input; pointer callers derive its extent from the header.
+pub fn boot_linux_bzimage(
+    bzimage: &[u8],
+    rsdp_addr: u64,
+    e820_entries: &[E820Entry],
+    bootargs: &str,
+    zero_page_addr: u64,
+    print_x86_mtrrs: bool,
+) -> ! {
+    let kernel_addr = bzimage.as_ptr() as u64;
     let zero_page = zero_page_addr;
     let cmd_line = zero_page + 0x1000; // command line follows zero page
 
@@ -760,11 +801,14 @@ pub fn boot_linux_direct(
     // the first 0x200 bytes) so the kernel can read critical fields like
     // kernel_alignment (0x230), init_size (0x260), xloadflags (0x236),
     // relocatable_kernel (0x234), etc.
-    let bzimage = unsafe { core::slice::from_raw_parts(kernel_addr as *const u8, 0x80_0000) };
+    let Some(header) = bzimage.get(..4096) else {
+        fstart_log::error!("linux: truncated bzImage setup header");
+        halt();
+    };
 
     // Read setup_sects (offset 0x1F1) to determine the size of the
     // real-mode portion of the bzImage.
-    let image_params = LinuxBootParams::ref_from_bytes(&bzimage[..4096])
+    let image_params = LinuxBootParams::ref_from_bytes(header)
         .expect("bzImage setup header must fit in its first page");
     // Refuse anything that is not a bzImage new enough to carry the fields
     // used below (init_size and pref_address arrived with protocol 2.10).
@@ -849,6 +893,15 @@ pub fn boot_linux_direct(
     let pm_kernel_src = kernel_addr + pm_kernel_offset;
     // syssize (offset 0x1F4): protected-mode code size in 16-byte paragraphs.
     let syssize = image_params.syssize.get() as u64 * 16;
+    if syssize == 0
+        || pm_kernel_offset
+            .checked_add(syssize)
+            .is_none_or(|end| end > bzimage.len() as u64)
+        || (cfg!(target_arch = "x86_64") && image_params.xloadflags.get() & 1 == 0)
+    {
+        fstart_log::error!("linux: truncated protected-mode image or no 64-bit entry");
+        halt();
+    }
     let footprint = u64::from(image_params.init_size.get()).max(syssize);
     let Some(pm_kernel_addr) = linux_boot_params::place_kernel(
         e820,

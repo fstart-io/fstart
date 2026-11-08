@@ -52,6 +52,11 @@ impl IoApic {
         Indexed::new(self.mmio(SELECT), self.mmio(WINDOW), register)
     }
 
+    /// Read the programmed ID without changing routing/redirection state.
+    pub fn id(&self) -> u8 {
+        self.reg::<Id::Register>(ID).read(Id::ID) as u8
+    }
+
     /// The 8-bit ID field; the APIC bus only decodes its low 4 bits.
     pub fn set_id(&self, id: u8) {
         self.reg::<Id::Register>(ID).modify(Id::ID.val(id.into()));
@@ -73,6 +78,14 @@ impl IoApic {
         }
     }
 
+    /// Read back that every redirection entry is masked.
+    pub fn all_masked(&self) -> bool {
+        (0..self.redirection_entries()).all(|pin| {
+            self.reg::<RedirectionLow::Register>(redirection(pin))
+                .is_set(RedirectionLow::MASKED)
+        })
+    }
+
     /// Assert `pin` through the IRQ pin assertion register of chipset
     /// IOAPICs.
     pub fn assert_pin(&self, pin: u8) {
@@ -86,5 +99,25 @@ impl IoApic {
             .write(RedirectionLow::DELIVERY::ExtInt);
         self.reg::<RedirectionHigh::Register>(redirection(0) + 1)
             .write(RedirectionHigh::DESTINATION.val(bsp_apic_id.into()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn identity_probe_only_writes_the_index_not_routing_data() {
+        let mut words = [0u32; 5];
+        words[4] = 0x1234_0000;
+        // SAFETY: modeled select/window in aligned, exclusively owned RAM.
+        let apic = unsafe { IoApic::new(words.as_mut_ptr() as usize) };
+        assert_eq!(apic.id(), 0x12);
+        assert_eq!(words[0], 0);
+        assert_eq!(apic.redirection_entries(), 0x35);
+        assert_eq!(words[0], 1);
+        assert_eq!(words[4], 0x1234_0000);
+        assert!(!apic.all_masked());
+        words[4] = 0x0001_0000;
+        assert!(apic.all_masked());
     }
 }

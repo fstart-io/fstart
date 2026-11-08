@@ -478,4 +478,6 @@ impl PicassoImage {
 }
 
 #[cfg(test)]
+mod patch_tests;
+#[cfg(test)]
 mod tests;

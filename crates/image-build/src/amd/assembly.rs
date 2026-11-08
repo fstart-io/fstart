@@ -135,6 +135,23 @@ pub enum Firmware {
         image: FileBinding,
         prefix_size: u32,
     },
+    /// A full-chip recovery image with an explicitly mapped firmware bank.
+    /// Only its existing reset-image allocation is replaced. All other bytes,
+    /// including inactive banks and mutable vendor data, stay. Without an
+    /// explicit allocation this retains the raw, top-of-bank reset contract.
+    /// This is composition, not PSP authentication or a PSB/fuse check.
+    Preserved {
+        image: FileBinding,
+        region: VendorRegion,
+        /// Explicit absolute stored allocation for a mid-bank reset. Must
+        /// exactly match the original raw/compressed file's stored length;
+        /// its compression/flags and all directory bytes remain unchanged.
+        #[serde(default)]
+        reset: Option<FlashRegion>,
+        /// Growth into erased, dependency-free storage; original reset stays.
+        #[serde(default)]
+        relocate: Option<ResetRelocation>,
+    },
     /// Blobs packed into a PSP partition, as the SoC and board tables
     /// ([`super::blobs`]) resolve them in a blob directory. With `reset_offset`
     /// the result is a whole native flash image: the partition, the reset
@@ -145,6 +162,27 @@ pub enum Firmware {
         reset_offset: Option<u32>,
     },
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetRelocation {
+    pub original_size: u32,
+    pub original_destination: u64,
+    pub storage: FlashRegion,
+}
+
+/// A top-mapped firmware bank within a larger physical host NOR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VendorRegion {
+    /// Bank offset in the full-chip image.
+    pub origin: u32,
+    pub size: u32,
+    /// Bytes all non-reset dependencies must fit. For an explicit reset
+    /// allocation this must equal the whole bank size (every other byte stays).
+    pub prefix_size: u32,
+    pub profile: Profile,
+}
+
 /// The FFS and its flash window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FfsWindow {
@@ -190,7 +228,7 @@ pub struct PspOptions {
 
 /// The PSP's compressed image: a 256-byte header with the compressed size at
 /// 0x14, then the zlib stream.
-fn amd_compress(data: &[u8]) -> Vec<u8> {
+pub(super) fn amd_compress(data: &[u8]) -> Vec<u8> {
     let stream = miniz_oxide::deflate::compress_to_vec_zlib(data, 9);
     let mut out = vec![0; 256];
     out[0x14..0x18].copy_from_slice(&(stream.len() as u32).to_le_bytes());
@@ -241,7 +279,18 @@ pub fn read_bios_directory(
     kept: u32,
     slot: BiosDirectorySlot,
 ) -> Result<BiosDirectoryFacts, String> {
-    let flash = Flash::new(image).with_profile(Profile::for_slot(slot));
+    read_bios_directory_view(
+        Flash::new(image).with_profile(Profile::for_slot(slot)),
+        kept,
+        slot,
+    )
+}
+
+fn read_bios_directory_view(
+    flash: Flash<'_>,
+    kept: u32,
+    slot: BiosDirectorySlot,
+) -> Result<BiosDirectoryFacts, String> {
     let (efs, _) = flash.efs_checked().map_err(|e| format!("EFS: {e:?}"))?;
     let levels = flash
         .bios_directories_checked(slot)
@@ -297,9 +346,38 @@ pub fn read_bios_directory(
 }
 
 impl AmdAssembly {
-    /// The vendor image keeps the reset image at the top of the flash.
+    /// The reset image ends at the selected bank's end, not necessarily
+    /// the physical chip's end. Called only after layout validation.
     fn vendor_reset_offset(&self) -> u32 {
-        self.flash_size - self.reset_size
+        match &self.firmware {
+            Firmware::Preserved {
+                relocate: Some(relocation),
+                ..
+            } => relocation.storage.offset,
+            Firmware::Preserved {
+                reset: Some(reset), ..
+            } => reset.offset,
+            Firmware::Preserved { region, .. } => region.origin + region.size - self.reset_size,
+            _ => self.flash_size - self.reset_size,
+        }
+    }
+
+    fn flash<'a>(&self, image: &'a [u8]) -> Result<Flash<'a>, String> {
+        Ok(match &self.firmware {
+            Firmware::Preserved { region, .. } => {
+                let end = region
+                    .origin
+                    .checked_add(region.size)
+                    .ok_or("bank overflow")?;
+                Flash::region(
+                    image.get(..end as usize).ok_or("truncated firmware bank")?,
+                    region.origin as usize,
+                    (1u64 << 32) - u64::from(region.size),
+                    region.profile,
+                )
+            }
+            _ => Flash::new(image).with_profile(Profile::for_slot(self.bios_directory)),
+        })
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -313,7 +391,8 @@ impl AmdAssembly {
                 .reset_destination
                 .checked_add(u64::from(self.reset_size))
                 .is_none_or(|end| end > 0x1_0000_0000 || end & 0xffff != 0)
-            || !(0x40000..=0x1000000).contains(&self.flash_size)
+            || !(0x40000..=0x4000000).contains(&self.flash_size)
+            || (self.flash_size > 0x1000000 && !matches!(self.firmware, Firmware::Preserved { .. }))
             || !self.flash_size.is_power_of_two()
         {
             return Err("the reset image must end on a 64-KiB DRAM boundary below 4 GiB".into());
@@ -331,6 +410,52 @@ impl AmdAssembly {
             return Err("FFS window outside AMD flash".into());
         }
         match (&self.firmware, &self.ffs) {
+            (
+                Firmware::Preserved {
+                    image,
+                    region,
+                    reset,
+                    relocate,
+                },
+                ffs,
+            ) => {
+                if let Some(relocation) = relocate
+                    && (reset.is_none()
+                        || relocation.original_size == 0
+                        || relocation.original_destination == 0
+                        || relocation.storage.size == 0
+                        || relocation.storage.offset < region.origin
+                        || end(relocation.storage.offset, relocation.storage.size)?
+                            > end(region.origin, region.size)?)
+                {
+                    return Err("invalid explicit reset relocation".into());
+                }
+                if !(0x40000..=0x1000000).contains(&region.size)
+                    || !region.size.is_power_of_two()
+                    || region.origin % region.size != 0
+                    || end(region.origin, region.size)? > self.flash_size
+                    || self.reset_size > region.size
+                    || region.prefix_size == 0
+                    || match reset {
+                        None => region.prefix_size > region.size - self.reset_size,
+                        Some(allocation) => {
+                            region.prefix_size != region.size
+                                || allocation.size == 0
+                                || allocation.size > self.reset_size
+                                || allocation.offset < region.origin
+                                || end(allocation.offset, allocation.size)?
+                                    > end(region.origin, region.size)?
+                        }
+                    }
+                    || region.profile.bios != self.bios_directory
+                    || image.capacity != u64::from(self.flash_size)
+                    || self.shared_memory.is_some()
+                    || ffs.is_some()
+                    || self.psp != PspOptions::default()
+                {
+                    return Err("preserved firmware needs a mapped bank, an unchanged prefix, and only a reset replacement".into());
+                }
+            }
             (Firmware::Vendor { image, prefix_size }, ffs) => {
                 let ffs_end = match ffs {
                     Some(ffs) if ffs.offset < *prefix_size => {
@@ -450,7 +575,9 @@ impl AmdAssembly {
     pub fn bindings(&self) -> Result<Vec<FileBinding>, String> {
         self.validate()?;
         Ok(match &self.firmware {
-            Firmware::Vendor { image, .. } => vec![image.clone()],
+            Firmware::Vendor { image, .. } | Firmware::Preserved { image, .. } => {
+                vec![image.clone()]
+            }
             Firmware::Packed { files, .. } => {
                 let capacity = u64::from(files.partition_end - files.efs_offset);
                 let blobs = [("PSP", &files.psp), ("BIOS", &files.bios)]
@@ -495,8 +622,11 @@ impl AmdAssembly {
     /// Check a vendor image against the layout: its BIOS directory must
     /// describe this reset image and APOB, within the prefix.
     pub fn check_vendor(&self, vendor: &[u8]) -> Result<BiosDirectoryFacts, String> {
-        let Firmware::Vendor { prefix_size, .. } = &self.firmware else {
-            return Err("not a vendor image assembly".into());
+        self.validate()?;
+        let kept = match &self.firmware {
+            Firmware::Vendor { prefix_size, .. } => *prefix_size,
+            Firmware::Preserved { region, .. } => region.origin + region.prefix_size,
+            _ => return Err("not a vendor image assembly".into()),
         };
         if vendor.len() != self.flash_size as usize {
             return Err(format!(
@@ -505,9 +635,121 @@ impl AmdAssembly {
                 self.flash_size
             ));
         }
-        let facts = read_bios_directory(vendor, *prefix_size, self.bios_directory)?;
-        self.check_facts(&facts, self.vendor_reset_offset())?;
+        let flash = self.flash(vendor)?;
+        let facts = read_bios_directory_view(flash, kept, self.bios_directory)?;
+        if matches!(self.firmware, Firmware::Preserved { reset: None, .. })
+            && flash
+                .bios_directories_checked(self.bios_directory)
+                .map_err(|e| format!("BIOS directory: {e:?}"))?
+                .iter()
+                .flat_map(|directory| directory.entries.iter())
+                .any(|entry| entry.kind == bios::RESET_IMAGE && entry.compressed())
+        {
+            return Err("preserved firmware requires an uncompressed reset image".into());
+        }
+        let original_size = if let Firmware::Preserved {
+            reset: Some(allocation),
+            relocate: Some(relocation),
+            ..
+        } = &self.firmware
+        {
+            if (
+                facts.reset_offset,
+                facts.reset_size,
+                facts.reset_destination,
+                facts.apob_destination,
+            ) != (
+                allocation.offset,
+                relocation.original_size,
+                relocation.original_destination,
+                self.apob_destination,
+            ) {
+                return Err("original reset handoff differs from the relocation contract".into());
+            }
+            let storage = relocation.storage;
+            flash
+                .validate_new_storage(
+                    self.bios_directory,
+                    storage.offset as usize..(storage.offset + storage.size) as usize,
+                )
+                .map_err(|e| format!("relocated reset storage overlaps firmware: {e:?}"))?;
+            if vendor[storage.offset as usize..(storage.offset + storage.size) as usize]
+                .iter()
+                .any(|&b| b != 0xff)
+            {
+                return Err("relocated reset storage is not erased".into());
+            }
+            for directory in flash
+                .bios_directories_checked(self.bios_directory)
+                .map_err(|e| format!("BIOS directory: {e:?}"))?
+                .iter()
+            {
+                if directory.header.address_mode() != 1
+                    || directory
+                        .entries
+                        .iter()
+                        .any(|e| matches!(e.kind, bios::RTM_PUBKEY | bios::SIGNATURE))
+                {
+                    return Err(
+                        "reset relocation requires mode1 and no BIOS signing entries".into(),
+                    );
+                }
+            }
+            relocation.original_size
+        } else {
+            self.check_facts(&facts, self.vendor_reset_offset())?;
+            self.reset_size
+        };
+        if let Firmware::Preserved {
+            reset: Some(allocation),
+            ..
+        } = &self.firmware
+        {
+            let start = allocation.offset as usize;
+            let end = start + allocation.size as usize;
+            flash
+                .validate_reset_patch(self.bios_directory, start..end)
+                .map_err(|e| {
+                    format!("reset replacement would overwrite a firmware dependency: {e:?}")
+                })?;
+            if self.reset_is_compressed(flash)? {
+                let file = vendor.get(start..end).ok_or("stored reset outside flash")?;
+                let size = u32::read_from_bytes(
+                    file.get(0x14..0x18)
+                        .ok_or("truncated AMD compression header")?,
+                )
+                .map_err(|_| "invalid AMD compression header")? as usize;
+                if size.checked_add(256) != Some(file.len())
+                    || file[..256]
+                        .iter()
+                        .enumerate()
+                        .any(|(i, &b)| !(0x14..0x18).contains(&i) && b != 0)
+                    || amd_decompress(file, original_size as usize)
+                        .is_none_or(|raw| raw.len() != original_size as usize)
+                {
+                    return Err(
+                        "invalid, signed/unknown or mismatched AMD compressed reset allocation"
+                            .into(),
+                    );
+                }
+            } else if allocation.size != original_size {
+                return Err("raw reset allocation must match the BIOS size".into());
+            }
+        }
         Ok(facts)
+    }
+
+    fn reset_is_compressed(&self, flash: Flash<'_>) -> Result<bool, String> {
+        let levels = flash
+            .bios_directories_checked(self.bios_directory)
+            .map_err(|e| format!("BIOS directory: {e:?}"))?;
+        levels
+            .boot()
+            .entries
+            .iter()
+            .find(|e| e.kind == bios::RESET_IMAGE)
+            .map(|e| e.compressed())
+            .ok_or("missing BIOS reset entry".into())
     }
 
     fn check_facts(&self, facts: &BiosDirectoryFacts, reset_offset: u32) -> Result<(), String> {
@@ -571,6 +813,64 @@ impl AmdAssembly {
         // The EFS, the BIOS directory and the reset image's flash offset
         // the PSP must find.
         let (offset, bytes, kept, efs, reset_offset) = match &self.firmware {
+            Firmware::Preserved { region, .. } => {
+                let vendor = sources[0];
+                let facts = self.check_vendor(vendor)?;
+                let mut image = vendor.to_vec();
+                let stored = if self.reset_is_compressed(self.flash(vendor)?)? {
+                    amd_compress(&stage)
+                } else {
+                    stage.clone()
+                };
+                let capacity = match &self.firmware {
+                    Firmware::Preserved {
+                        relocate: Some(relocation),
+                        ..
+                    } => relocation.storage.size as usize,
+                    Firmware::Preserved {
+                        reset: Some(allocation),
+                        ..
+                    } => allocation.size as usize,
+                    _ => stage.len(),
+                };
+                if stored.len() > capacity {
+                    return Err("replacement exceeds the original stored reset allocation".into());
+                }
+                let destination = self.vendor_reset_offset();
+                image[destination as usize..][..stored.len()].copy_from_slice(&stored);
+                if matches!(
+                    self.firmware,
+                    Firmware::Preserved {
+                        relocate: Some(_),
+                        ..
+                    }
+                ) {
+                    let tables: Vec<_> = self
+                        .flash(vendor)?
+                        .bios_directories_checked(self.bios_directory)
+                        .map_err(|e| format!("BIOS directory: {e:?}"))?
+                        .iter()
+                        .map(|d| d.offset)
+                        .collect();
+                    for offset in tables {
+                        modify_entries::<BiosEntry>(&mut image, offset, |entry| {
+                            if entry.kind == bios::RESET_IMAGE {
+                                entry.source.set(u64::from(destination - region.origin));
+                                entry.destination.set(self.reset_destination);
+                                entry.size.set(self.reset_size);
+                            }
+                        })
+                        .ok_or("cannot update checked reset relocation table")?;
+                    }
+                }
+                (
+                    0,
+                    image,
+                    region.origin + region.prefix_size,
+                    facts.efs,
+                    Some(destination),
+                )
+            }
             Firmware::Vendor { prefix_size, .. } => {
                 let vendor = sources[0];
                 let facts = self.check_vendor(vendor)?;
@@ -624,11 +924,11 @@ impl AmdAssembly {
         // an EFS in fstart's bytes.
         let mut flash = vec![0xff; self.flash_size as usize];
         flash[offset as usize..offset as usize + bytes.len()].copy_from_slice(&bytes);
-        let facts = read_bios_directory(&flash, kept, self.bios_directory)?;
+        let facts = read_bios_directory_view(self.flash(&flash)?, kept, self.bios_directory)?;
         self.check_facts(&facts, reset_offset.unwrap_or(facts.reset_offset))?;
         let start = facts.reset_offset as usize;
         let region = flash.get(start..start + stage.len()).unwrap_or_default();
-        let found = if self.psp.compress_reset {
+        let found = if self.reset_is_compressed(self.flash(&flash)?)? {
             amd_decompress(region, stage.len())
         } else {
             Some(region.to_vec())
@@ -659,8 +959,8 @@ impl AmdAssembly {
                 .0
                 .set_spi(self.bios_directory, mode, speed);
         }
-        let levels: Vec<usize> = Flash::new(image)
-            .with_profile(Profile::for_slot(self.bios_directory))
+        let levels: Vec<usize> = self
+            .flash(image)?
             .bios_directories(self.bios_directory)
             .ok_or("no BIOS directory")?
             .iter()

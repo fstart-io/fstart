@@ -14,7 +14,7 @@ use acpi_tables::aml::{Name, PackageBuilder};
 /// data the chipset's interrupt router is programmed with, so the two cannot
 /// disagree.
 #[must_use]
-pub fn prt_name_aml(routes: impl Iterator<Item = (u8, u8, u8)>) -> Vec<u8> {
+pub fn prt_name_aml<G: Into<u32>>(routes: impl Iterator<Item = (u8, u8, G)>) -> Vec<u8> {
     let mut entries = PackageBuilder::new();
     for (slot, pin, gsi) in routes {
         let address = (u32::from(slot) << 16) | 0xFFFF;
@@ -22,7 +22,7 @@ pub fn prt_name_aml(routes: impl Iterator<Item = (u8, u8, u8)>) -> Vec<u8> {
         entry.add_element(&address);
         entry.add_element(&u32::from(pin));
         entry.add_element(&0u32);
-        entry.add_element(&u32::from(gsi));
+        entry.add_element(&gsi.into());
         entries.add_element(&entry);
     }
 
@@ -37,6 +37,11 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn prt_gsis_above_255_do_not_truncate() {
+        let bytes = prt_name_aml([(2u8, 0u8, 0x123u32)].into_iter());
+        assert!(bytes.windows(3).any(|b| b == [0x0b, 0x23, 0x01]));
+    }
     #[test]
     fn prt_aml_encodes_entries_in_order() {
         let bytes = prt_name_aml([(0x02u8, 0u8, 16u8), (0x1Du8, 0u8, 23u8)].into_iter());
