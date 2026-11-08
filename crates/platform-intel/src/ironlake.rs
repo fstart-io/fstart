@@ -345,6 +345,7 @@ impl crate::IntelPlatform for IronlakeIbexPeak {
     const CAR_BASE: u64 = 0xfefc_0000;
     const CAR_SIZE: u64 = 0x10000;
     const BOOTBLOCK_STACK: u64 = 0x4000;
+    const MEMORY_CACHE_PAYLOAD: usize = crate::memory_cache::IRONLAKE_PAYLOAD;
     const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-25-02", "06-25-05"];
 }
 

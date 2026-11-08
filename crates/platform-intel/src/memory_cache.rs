@@ -10,9 +10,16 @@ use sha2::{Digest, Sha256};
 use zerocopy::byteorder::{LittleEndian, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-// Ironlake's saved lane timings and bounds need more than the legacy
-// GM45-sized 768-byte record. Keep both capture and journal storage large enough.
-pub const MAX_PAYLOAD: usize = 2048;
+pub const LEGACY_PAYLOAD: usize = 768;
+pub const IRONLAKE_PAYLOAD: usize = 2048;
+// Static CAR capture storage follows the selected chipset features. Journal
+// records are independently sized by the platform, including multi-chipset tests.
+#[cfg(all(feature = "stage", feature = "memory-cache"))]
+pub(crate) const CAPTURE_CAPACITY: usize = if cfg!(feature = "ironlake-ibexpeak") {
+    IRONLAKE_PAYLOAD
+} else {
+    LEGACY_PAYLOAD
+};
 const MAGIC: [u8; 8] = *b"FSTMRC01";
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
@@ -40,23 +47,23 @@ pub trait Storage {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Record {
+pub struct Record<const CAPACITY: usize = LEGACY_PAYLOAD> {
     pub key: [u8; 32],
     pub sequence: u32,
-    payload: [u8; MAX_PAYLOAD],
+    payload: [u8; CAPACITY],
     length: usize,
 }
-impl Record {
+impl<const CAPACITY: usize> Record<CAPACITY> {
     pub const fn empty() -> Self {
         Self {
             key: [0; 32],
             sequence: 0,
-            payload: [0; MAX_PAYLOAD],
+            payload: [0; CAPACITY],
             length: 0,
         }
     }
     pub fn new(key: [u8; 32], payload: &[u8]) -> Result<Self, ServiceError> {
-        if payload.is_empty() || payload.len() > MAX_PAYLOAD {
+        if payload.is_empty() || payload.len() > CAPACITY {
             return Err(ServiceError::InvalidParam);
         }
         let mut record = Self::empty();
@@ -72,14 +79,18 @@ impl Record {
 
 /// Geometry for exactly two independently erasable banks.
 #[derive(Clone, Copy)]
-pub struct Journal {
+pub struct Journal<const CAPACITY: usize = LEGACY_PAYLOAD> {
     bank_size: u32,
 }
-impl Journal {
+impl<const CAPACITY: usize> Journal<CAPACITY> {
     pub fn new(bank_size: u32, extent_size: u32) -> Result<Self, ServiceError> {
         if !bank_size.is_power_of_two()
             || bank_size < 4096
             || bank_size.checked_mul(2) != Some(extent_size)
+            || CAPACITY == 0
+            || HEADER_SIZE
+                .checked_add(CAPACITY)
+                .is_none_or(|size| size > bank_size as usize)
         {
             return Err(ServiceError::InvalidParam);
         }
@@ -91,7 +102,7 @@ impl Journal {
         flash: &mut impl Storage,
         bank: usize,
         committed: bool,
-    ) -> Result<Option<Record>, ServiceError> {
+    ) -> Result<Option<Record<CAPACITY>>, ServiceError> {
         let offset = bank as u32 * self.bank_size;
         let mut bytes = [0u8; HEADER_SIZE];
         flash.read(offset, &mut bytes)?;
@@ -101,7 +112,7 @@ impl Journal {
             || header.version.get() != 1
             || header.reserved.get() != 0
             || length == 0
-            || length > MAX_PAYLOAD
+            || length > CAPACITY
             || HEADER_SIZE + length > self.bank_size as usize
             || header.commit.get() != if committed { 0 } else { u32::MAX }
         {
@@ -122,7 +133,10 @@ impl Journal {
     /// Load the newest complete record. Storage failures are not cache misses.
     /// Callers must independently match `key` and decode/validate the payload;
     /// on S3, any mismatch or miss must reset rather than cold-train retained RAM.
-    pub fn load(&self, flash: &mut impl Storage) -> Result<Option<(usize, Record)>, ServiceError> {
+    pub fn load(
+        &self,
+        flash: &mut impl Storage,
+    ) -> Result<Option<(usize, Record<CAPACITY>)>, ServiceError> {
         let first = self.read_bank(flash, 0, true)?;
         let second = self.read_bank(flash, 1, true)?;
         Ok(match (first, second) {
@@ -144,10 +158,10 @@ impl Journal {
     pub fn save(
         &self,
         flash: &mut impl Storage,
-        record: &Record,
+        record: &Record<CAPACITY>,
         boot: BootPath,
     ) -> Result<bool, ServiceError> {
-        if boot == BootPath::S3Resume || record.length == 0 || record.length > MAX_PAYLOAD {
+        if boot == BootPath::S3Resume || record.length == 0 || record.length > CAPACITY {
             return Err(ServiceError::InvalidParam);
         }
         let current = self.load(flash)?;
@@ -286,9 +300,11 @@ pub(crate) unsafe fn publish_pending(
     region: fstart_core::layout::Region,
     key: [u8; 32],
     payload: &[u8],
+    capacity: usize,
 ) -> Result<(), ServiceError> {
     if payload.is_empty()
-        || payload.len() > MAX_PAYLOAD
+        || payload.len() > capacity
+        || capacity > CAPTURE_CAPACITY
         || region.size < (HEADER_SIZE + payload.len()) as u64
         || region.base % 4 != 0
     {
@@ -345,6 +361,27 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
     geometry: crate::layout::IntelBootLayout<'static>,
     store: &fstart_store::Store,
 ) -> Result<(), ServiceError> {
+    // Stable const generics cannot use an associated platform constant as a
+    // type argument. Specialize the two supported capacities before entering
+    // the record-owning frame; GM45 never allocates an Ironlake-sized Record.
+    match <B::Platform as crate::IntelPlatform>::MEMORY_CACHE_PAYLOAD {
+        LEGACY_PAYLOAD => {
+            commit_sized::<B, LEGACY_PAYLOAD>(northbridge, southbridge, geometry, store)
+        }
+        IRONLAKE_PAYLOAD => {
+            commit_sized::<B, IRONLAKE_PAYLOAD>(northbridge, southbridge, geometry, store)
+        }
+        _ => Err(ServiceError::InvalidParam),
+    }
+}
+
+#[cfg(all(feature = "stage", feature = "memory-cache"))]
+fn commit_sized<B: crate::IntelBoard, const CAPACITY: usize>(
+    northbridge: &<B::Platform as crate::IntelEarlyPlatform>::Northbridge,
+    southbridge: &<B::Platform as crate::IntelEarlyPlatform>::Southbridge,
+    geometry: crate::layout::IntelBootLayout<'static>,
+    store: &fstart_store::Store,
+) -> Result<(), ServiceError> {
     use fstart_driver_intel::southbridge::spi::{CacheSpi, FlashExtent};
     if !fstart_stage::directory::matches_raw_reservation("mrc-cache", 0, EXTENT_SIZE, 0xff) {
         return Err(ServiceError::InvalidParam);
@@ -355,7 +392,7 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
         .find(fstart_store::tag::TRAINING)
         .ok_or(ServiceError::NotInitialized)?;
     let mut ram = unsafe { MappedRead::new(store.address(&pending), pending.len()) };
-    let record = Journal {
+    let record = Journal::<CAPACITY> {
         bank_size: pending.len() as u32,
     }
     .read_bank(&mut ram, 0, true)?
@@ -381,7 +418,7 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
             chip_size: B::FACTS.flash_size,
         })?
     };
-    let journal = Journal::new(BANK_SIZE, EXTENT_SIZE)?;
+    let journal = Journal::<CAPACITY>::new(BANK_SIZE, EXTENT_SIZE)?;
     let changed = journal.save(&mut flash, &record, BootPath::Normal)?;
     fstart_log::info!(
         "memory cache: {}",
@@ -424,6 +461,8 @@ impl Storage for fstart_driver_intel::southbridge::spi::CacheSpi {
 mod tests {
     extern crate std;
     use super::*;
+    type Record = super::Record<LEGACY_PAYLOAD>;
+    type Journal = super::Journal<LEGACY_PAYLOAD>;
     use std::vec;
     use std::vec::Vec;
 
@@ -476,13 +515,56 @@ mod tests {
             }
         }
     }
+    #[cfg(all(feature = "gm45-ich9", feature = "ironlake-ibexpeak"))]
+    #[test]
+    fn platform_budgets_keep_gm45_storage_and_stack_unchanged() {
+        use crate::IntelPlatform;
+        type Gm45 = crate::gm45::Gm45Ich9<crate::legacy_cpu::Bga956>;
+        type Ironlake = crate::ironlake::IronlakeIbexPeak;
+        assert_eq!(Gm45::MEMORY_CACHE_PAYLOAD, LEGACY_PAYLOAD);
+        assert_eq!(Gm45::BOOTBLOCK_STACK, 0x2000);
+        assert_eq!(Ironlake::MEMORY_CACHE_PAYLOAD, IRONLAKE_PAYLOAD);
+        assert_eq!(Ironlake::BOOTBLOCK_STACK, 0x4000);
+    }
+
+    #[test]
+    fn capacity_sizes_storage_and_rejects_cross_platform_oversized_records() {
+        type LargeRecord = super::Record<IRONLAKE_PAYLOAD>;
+        type LargeJournal = super::Journal<IRONLAKE_PAYLOAD>;
+        assert!(core::mem::size_of::<Record>() <= LEGACY_PAYLOAD + 48);
+        assert_eq!(
+            core::mem::size_of::<LargeRecord>() - core::mem::size_of::<Record>(),
+            IRONLAKE_PAYLOAD - LEGACY_PAYLOAD,
+        );
+        let mut flash = Flash::new();
+        let large = LargeRecord::new([5; 32], &[9; 1500]).unwrap();
+        let large_journal = LargeJournal::new(4096, 8192).unwrap();
+        large_journal
+            .save(&mut flash, &large, BootPath::Normal)
+            .unwrap();
+        assert_eq!(
+            large_journal.load(&mut flash).unwrap().unwrap().1.payload(),
+            large.payload()
+        );
+        assert!(
+            Journal::new(4096, 8192)
+                .unwrap()
+                .load(&mut flash)
+                .unwrap()
+                .is_none()
+        );
+        assert!(Record::new([5; 32], large.payload()).is_err());
+    }
+
     #[test]
     fn geometry_records_and_resume_policy() {
         assert!(Journal::new(4096, 4096).is_err());
         assert!(Journal::new(2048, 4096).is_err());
         assert!(Journal::new(1 << 31, 0).is_err());
+        assert!(super::Journal::<0>::new(4096, 8192).is_err());
+        assert!(super::Journal::<4096>::new(4096, 8192).is_err());
         assert!(Record::new([0; 32], &[]).is_err());
-        assert!(Record::new([0; 32], &[0; MAX_PAYLOAD + 1]).is_err());
+        assert!(Record::new([0; 32], &[0; LEGACY_PAYLOAD + 1]).is_err());
         let journal = Journal::new(4096, 8192).unwrap();
         let mut flash = Flash::new();
         let record = Record::new([3; 32], b"SPD and training").unwrap();
@@ -502,9 +584,14 @@ mod tests {
     }
     #[test]
     fn interrupted_inactive_bank_never_destroys_active_record() {
-        let journal = Journal::new(4096, 8192).unwrap();
-        let old = Record::new([1; 32], &[1; MAX_PAYLOAD]).unwrap();
-        let new = Record::new([2; 32], &[2; MAX_PAYLOAD]).unwrap();
+        check_interrupted_bank::<LEGACY_PAYLOAD>();
+        check_interrupted_bank::<IRONLAKE_PAYLOAD>();
+    }
+
+    fn check_interrupted_bank<const CAPACITY: usize>() {
+        let journal = super::Journal::<CAPACITY>::new(4096, 8192).unwrap();
+        let old = super::Record::<CAPACITY>::new([1; 32], &[1; CAPACITY]).unwrap();
+        let new = super::Record::<CAPACITY>::new([2; 32], &[2; CAPACITY]).unwrap();
         let mut baseline = Flash::new();
         journal.save(&mut baseline, &old, BootPath::Normal).unwrap();
         baseline.mutations = 0;

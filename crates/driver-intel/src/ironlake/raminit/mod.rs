@@ -18,6 +18,8 @@ mod training;
 
 use super::{DmiBar, EpBar, MchBar};
 use crate::MmioBar;
+use fstart_arch::x86::cpu::intel::model_2065x::{TEMPERATURE_TARGET, TURBO_POWER_CURRENT_LIMIT};
+use fstart_arch::x86::mtrr::{IA32_MTRR_PHYSBASE0, IA32_MTRR_PHYSMASK0};
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;
 use tables::*;
@@ -1096,7 +1098,7 @@ impl Raminit<'_> {
         self.write_1d0(0x4, 0x151, 4, 1);
         self.write_1d0(0, 0x142, 3, 1);
         // SAFETY: model 2065x implements MSR_TURBO_POWER_CURRENT_LIMIT.
-        unsafe { fstart_arch::x86::msr::rdmsr(0x1ac) };
+        unsafe { fstart_arch::x86::msr::rdmsr(TURBO_POWER_CURRENT_LIMIT.index()) };
         self.write_500(1, 1, 0x6b3, 4, 1);
         self.write_500(1, 1, 0x6cf, 4, 1);
 
@@ -1558,7 +1560,7 @@ impl Raminit<'_> {
             (8, 0)
         };
         // SAFETY: model 2065x implements MSR_TEMPERATURE_TARGET.
-        unsafe { fstart_arch::x86::msr::rdmsr(0x1a2) };
+        unsafe { fstart_arch::x86::msr::rdmsr(TEMPERATURE_TARGET.index()) };
         mch.write32(0x1014, 0xffff_ffff);
         mch.write32(
             0x1010,

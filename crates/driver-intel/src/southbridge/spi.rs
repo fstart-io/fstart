@@ -151,10 +151,13 @@ impl FlashExtent {
     }
 }
 
-/// Bounded controller for mutable firmware data. Write methods restore BIOSWE
-/// on every exit and refuse locked/SMM-only configurations rather than bypassing
-/// protection. Writes require a positively identified, known page-program NOR
-/// geometry; unsupported chips remain read-only rather than guessing opcodes.
+/// Bounded controller for mutable firmware data. Write methods restore the
+/// entry BIOSWE value and refuse BLE/SMM-only protection present at call time.
+/// They do not establish or lock the platform's global flash policy: Ibex Peak
+/// explicitly opens that policy for development cache/log and payload writes
+/// through `LpcFlashConfig::prepare_firmware_writes` before this driver runs.
+/// Writes require positively identified page-program NOR geometry; unsupported
+/// chips remain read-only rather than guessing opcodes.
 pub struct CacheSpi {
     controller: IchSpiController<FirmwareHost>,
     extent: FlashExtent,

@@ -40,6 +40,71 @@ pub fn system_reset(hard: bool) -> ! {
     }
 }
 
+// One IMC-family list for CAR setup and both teardown ABIs. The caller has
+// already extracted the display model into `register`; no stack is required.
+macro_rules! imc_nem_model_branch {
+    ($register:literal, $target:literal) => {
+        concat!(
+            "cmpl $0x1a, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x1e, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x1f, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x25, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x2a, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x2c, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x2d, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x2e, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x2f, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x3a, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x3e, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+        )
+    };
+}
+pub(crate) use imc_nem_model_branch;
+
 pub mod car;
 pub mod car_teardown;
 pub mod cpuid;
@@ -422,10 +487,14 @@ core::arch::global_asm!(
     "jge 9f",
     "leal 48(%esi), %eax",
     // Never issue an invalid update before an IDT exists. The packer aligns
-    // microcode records to 16 bytes; skip a malformed/older unaligned image
-    // rather than taking a pre-CAR fault with no usable diagnostic console.
+    // microcode records to 16 bytes. POST 0xe6 makes rejection observable
+    // before a console/IDT exists; never issue the invalid update.
     "testl $15, %eax",
-    "jnz 9f",
+    "jz 4f",
+    "movb $0xe6, %al",
+    "outb %al, $0x80",
+    "jmp 9f",
+    "4:",
     "xorl %edx, %edx",
     "movl $0x79, %ecx",
     "wrmsr",

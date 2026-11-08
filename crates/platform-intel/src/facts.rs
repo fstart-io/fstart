@@ -12,6 +12,9 @@ pub trait IntelPlatform: 'static {
     /// Bootblock stack in CAR. Chipsets whose raminit keeps more on the
     /// stack (the training cache record, deep call chains) raise it.
     const BOOTBLOCK_STACK: u64 = 0x2000;
+    /// Inline training-record storage, not just a wire-format length limit.
+    /// Legacy platforms keep their original CAR stack/capture footprint.
+    const MEMORY_CACHE_PAYLOAD: usize = crate::memory_cache::LEGACY_PAYLOAD;
     const MICROCODE_SIGNATURES: &'static [&'static str];
 }
 

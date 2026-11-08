@@ -157,3 +157,46 @@ revision `98f8d817ca3d560c48ae988bd805d1b53b48a631`. Assembly used an
 ephemeral development signing key. Vendor descriptor/GbE/ME contents are
 still not bundled; the resulting image is not a replacement for an
 actual-machine flash backup.
+
+## Shared-code review against coreboot
+
+The follow-up comparison uses coreboot `1958b5d923a`:
+
+* `drivers/mrc_cache/mrc_cache.c::mrc_cache_current_mmap_leak()` returns a
+  mapped flash pointer; Ironlake's `get_cached_training()` does not put a
+  maximum-size record on the stack. fstart's copied journal records are now
+  const-sized by the platform: 768 bytes for legacy platforms, 2048 for
+  Ironlake. The X200 keeps its 8-KiB stack and 768-byte CAR capture buffer.
+  Tests also reject an Ironlake-sized record through a legacy journal.
+* `console/console.c` broadcasts output, while `console/printk.c` locks
+  formatted log records. fstart preserves the board's original payload
+  console unless EHCI/flash debug consoles are selected. The debug mux
+  shares the log lock through nonblocking acquisition, propagates failures
+  when no backend succeeds, and keeps documented board-first input
+  priority. Reentrant callbacks fail rather than deadlocking.
+* Unlike coreboot's general flash-console enable, fstart deliberately
+  withholds SPI logging throughout the Intel bootblock. Its code and page
+  tables can still be flash-backed; programming then risks XIP fetches.
+  EHCI/UART diagnostics remain available before DRAM. This changes all
+  Intel boards selecting the flash console, not just X201.
+* The pre-CAR microcode loader emits POST `0xe6` when a matching newer
+  update has an unaligned data pointer. The builder still aligns every
+  microcode segment to 16 bytes; rejecting a malformed image is not silent.
+* `southbridge/intel/common/smihandler.c` shares the sleep trap, fixed LPC
+  configuration accesses and recursive bus-master disable across ICH/PCH.
+  fstart keeps that mechanism shared and opt-in; Ibex Peak enables it, not
+  the legacy ICH9 binding. S1 remains unadvertised until its returning path
+  is supported and tested.
+* Coreboot's common SPI driver opens firmware writes in `spi_init()` and
+  selects SMM-only protection later through its finalization policy.
+  fstart's Ibex Peak binding intentionally leaves BLE/SMM_BWP clear for
+  development flash logging and payload writes. `CacheSpi` refuses locks
+  present at each call, but does not undo the chipset's earlier policy.
+  SPI opcode lockdown is not BIOS write protection. Production relocking
+  requires a corresponding authorized SMM write service.
+
+CI now runs Ironlake/GM45/SPI/display tests and the generated Intel board
+libraries on the host, in addition to linking every board's firmware.
+These follow-ups have not been reflashed; X200 cold, cache-hit and S3
+hardware regression checks remain necessary before treating its shared
+paths as hardware-validated.

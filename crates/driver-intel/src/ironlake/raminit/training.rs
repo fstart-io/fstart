@@ -132,16 +132,16 @@ fn enable_cache_region(base: u32, size: u32) {
     let mask = !((size + 4096) & !4095).wrapping_sub(1) | (1 << 11);
     // SAFETY: MTRR 3 is free during raminit (CAR uses 0 and 1).
     unsafe {
-        fstart_arch::x86::msr::wrmsr(0x206, u64::from(base | 5));
-        fstart_arch::x86::msr::wrmsr(0x207, u64::from(mask) | (0xf << 32));
+        fstart_arch::x86::msr::wrmsr(IA32_MTRR_PHYSBASE0 + 2 * 3, u64::from(base | 5));
+        fstart_arch::x86::msr::wrmsr(IA32_MTRR_PHYSMASK0 + 2 * 3, u64::from(mask) | (0xf << 32));
     }
 }
 
 fn disable_cache_region() {
     // SAFETY: as for enable_cache_region.
     unsafe {
-        fstart_arch::x86::msr::wrmsr(0x206, 0);
-        fstart_arch::x86::msr::wrmsr(0x207, 0);
+        fstart_arch::x86::msr::wrmsr(IA32_MTRR_PHYSBASE0 + 2 * 3, 0);
+        fstart_arch::x86::msr::wrmsr(IA32_MTRR_PHYSMASK0 + 2 * 3, 0);
     }
 }
 

@@ -344,17 +344,7 @@ fn root_hub_node(ports: u8) -> Vec<u8> {
 /// Integrated keyboard controller (coreboot `i82801{hx,ix}/acpi/lpc.asl`).
 #[must_use]
 pub fn ps2_controller_nodes() -> Vec<u8> {
-    let mut aml = ps2_keyboard_node(fstart_acpi::eisa_id("PNP0303"));
-    aml.extend_from_slice(&acpi_dsl! {
-        Device("PS2M") {
-            Name("_HID", EisaId("PNP0F13"));
-            Name("_CRS", ResourceTemplate {
-                IRQ(Edge, ActiveHigh, Exclusive, 12u32);
-            });
-            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-        }
-    });
-    aml
+    ps2_controller_nodes_with("PNP0303", "PNP0F13")
 }
 
 /// The keyboard controller with board EISA IDs (coreboot
@@ -480,4 +470,15 @@ pub fn pcie_root_port(name: &str, adr: u32, port: u8, hotplug: bool) -> Vec<u8> 
     body.extend_from_slice(&prt);
 
     fstart_acpi::aml_linker::device_vec(name, &body).expect("root port device emission")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn default_ps2_ids_use_the_same_compatible_ids_as_board_overrides() {
+        assert_eq!(
+            super::ps2_controller_nodes(),
+            super::ps2_controller_nodes_with("PNP0303", "PNP0F13")
+        );
+    }
 }

@@ -473,7 +473,8 @@ impl Raminit<'_> {
         if self.info.revision >= 0x18 && ratio <= 12 {
             // TDP limit in 1/8 W.
             // SAFETY: model 2065x implements MSR_TURBO_POWER_CURRENT_LIMIT.
-            let limit = unsafe { fstart_arch::x86::msr::rdmsr(0x1ac) } as u32;
+            let limit =
+                unsafe { fstart_arch::x86::msr::rdmsr(TURBO_POWER_CURRENT_LIMIT.index()) } as u32;
             if limit & 0x7fff <= 90 {
                 reg32 = 0;
             }

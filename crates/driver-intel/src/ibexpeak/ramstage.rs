@@ -539,7 +539,9 @@ impl IntelIbexPeak {
 
     /// coreboot `spi_finalize_ops()` for the ICH9-style SPI controller:
     /// the software-sequencing opcode menu flashrom expects, and BIOS
-    /// writes left to the OS (no SMM BIOS write protection).
+    /// writes left to the OS (no SMM BIOS write protection). This bring-up
+    /// policy deliberately does not re-lock BLE/SMM_BWP at finalization;
+    /// firmware flash logging and payload writers have no SMM write service.
     pub(super) fn spi_finalize(&self) {
         const HSFS: u32 = 0x3804;
         const PREOP: u32 = 0x3894;

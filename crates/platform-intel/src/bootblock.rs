@@ -56,7 +56,8 @@ struct Training {
 }
 
 #[cfg(feature = "memory-cache")]
-static mut CAPTURE: [u8; crate::memory_cache::MAX_PAYLOAD] = [0; crate::memory_cache::MAX_PAYLOAD];
+static mut CAPTURE: [u8; crate::memory_cache::CAPTURE_CAPACITY] =
+    [0; crate::memory_cache::CAPTURE_CAPACITY];
 
 /// The bootblock of an Intel CAR board, in phase `S`.
 pub struct Bootblock<B: IntelBoard, S = Early> {
@@ -246,10 +247,26 @@ impl<B: IntelBoard> Bootblock<B, Console> {
 
     #[cfg(feature = "memory-cache")]
     fn dram_init(&mut self) -> Result<(), ServiceError> {
-        use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
+        use crate::memory_cache::{IRONLAKE_PAYLOAD, LEGACY_PAYLOAD};
         if !B::FACTS.memory_cache {
             return self.train_uncached();
         }
+        if B::Platform::MEMORY_CACHE_PAYLOAD > crate::memory_cache::CAPTURE_CAPACITY {
+            return Err(ServiceError::InvalidParam);
+        }
+        // Select the record-owning frame before loading either journal bank.
+        // This keeps the legacy 768-byte Record on GM45's 8-KiB stack.
+        match B::Platform::MEMORY_CACHE_PAYLOAD {
+            LEGACY_PAYLOAD => self.dram_init_cached::<LEGACY_PAYLOAD>(),
+            IRONLAKE_PAYLOAD => self.dram_init_cached::<IRONLAKE_PAYLOAD>(),
+            _ => Err(ServiceError::InvalidParam),
+        }
+    }
+
+    #[cfg(feature = "memory-cache")]
+    #[inline(never)]
+    fn dram_init_cached<const CAPACITY: usize>(&mut self) -> Result<(), ServiceError> {
+        use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
         let key = crate::memory_cache::runtime_key::<B>(
             &self.northbridge,
             &self.southbridge,
@@ -261,15 +278,17 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         }
         // The extent comes from linked board policy, not an unverified directory.
         let mut flash = unsafe { MappedRead::new(firmware_base as usize, EXTENT_SIZE as usize) };
-        let cached = Journal::new(BANK_SIZE, EXTENT_SIZE)?
+        let cached = Journal::<CAPACITY>::new(BANK_SIZE, EXTENT_SIZE)?
             .load(&mut flash)?
             .map(|(_, record)| record)
             .filter(|record| record.key == key);
         self.training.key = Some(key);
         // SAFETY: the bootblock is single-threaded; only training writes it.
         let capture = unsafe { &mut *core::ptr::addr_of_mut!(CAPTURE) };
-        self.training.captured =
-            self.bring_up(cached.as_ref().map(|record| record.payload()), capture)?;
+        self.training.captured = self.bring_up(
+            cached.as_ref().map(|record| record.payload()),
+            &mut capture[..CAPACITY],
+        )?;
         Ok(())
     }
 
@@ -362,7 +381,14 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
             // Only cold/warm initialization captures, after the driver's RAM test.
             // SAFETY: training is done; nothing writes the capture any more.
             let capture = unsafe { &*core::ptr::addr_of!(CAPTURE) };
-            unsafe { crate::memory_cache::publish_pending(pending, key, &capture[..length])? };
+            unsafe {
+                crate::memory_cache::publish_pending(
+                    pending,
+                    key,
+                    &capture[..length],
+                    B::Platform::MEMORY_CACHE_PAYLOAD,
+                )?
+            };
         }
 
         fstart_log::info!(

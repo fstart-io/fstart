@@ -46,9 +46,12 @@ impl LpcFlashConfig {
             .modify(BIOS_CONTROL::READ_CONFIGURATION::PrefetchAndCache);
     }
 
-    /// Platform-owned write policy, before firmware cache/log writes and
-    /// before any final lockdown. Matches coreboot's spi_init(). Regional
-    /// protection and each writer's bounded extent remain enforced.
+    /// Platform-owned development write policy, matching coreboot's
+    /// `spi_init()` / `spi_set_smm_only_flashing(false)`. Ibex Peak deliberately
+    /// keeps this policy through payload handoff; its SPI opcode lockdown
+    /// does not restore BLE/SMM_BWP. Production relocking needs an authorized
+    /// SMM write service for subsequent flash logging/payload writes.
+    /// Regional protection and each writer's bounded extent remain enforced.
     pub fn prepare_firmware_writes(&self) {
         self.bios_control.modify(
             BIOS_CONTROL::LOCK_ENABLE::CLEAR

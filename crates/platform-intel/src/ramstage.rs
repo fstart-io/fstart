@@ -290,9 +290,14 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         let console = slot.install(console);
         crate::debug_console::install::<B>(true);
         self.uart = console.uart_port();
-        // Payload debug/input must retain the optional EHCI console too, not
-        // just the board's console (which may deliberately be NoConsole).
-        self.console = Some(&fstart_log::ConsoleMux);
+        // Preserve the original board-console handoff unless debug fan-out
+        // was explicitly selected. In debug builds NoConsole must not hide
+        // the optional EHCI input/output from the payload.
+        self.console = Some(console);
+        #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+        {
+            self.console = Some(&fstart_log::ConsoleMux);
+        }
         fstart_log::info!("{} ramstage: {} console ready", B::Platform::NAME, C::NAME);
         let early = self
             .northbridge
