@@ -68,6 +68,9 @@ fn main() {
              pub const MSR_COUNT_OFFSET: usize = {:#x};\n\
              pub const UNLOCK_MSR_OFFSET: usize = {:#x};\n\
              pub const UNLOCK_BITS_OFFSET: usize = {:#x};\n\
+             pub const POST_SET_OFFSET: usize = {:#x};\n\
+             pub const POST_TEST_OFFSET: usize = {:#x};\n\
+             pub const POST_THEN_OFFSET: usize = {:#x};\n\
              pub const MSR_TABLE_OFFSET: usize = {:#x};\n",
             bin.display(),
             find_symbol_offset(elf.as_path(), "fstart_sipi_cr3"),
@@ -79,6 +82,9 @@ fn main() {
             find_symbol_offset(elf.as_path(), "fstart_sipi_msr_count"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_unlock_msr"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_unlock_bits"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_post_set"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_post_test"),
+            find_symbol_offset(elf.as_path(), "fstart_sipi_post_then"),
             find_symbol_offset(elf.as_path(), "fstart_sipi_msr_table"),
         ),
     )
