@@ -1469,6 +1469,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-platform-aspeed"
+version = "0.1.0"
+dependencies = [
+ "fstart-arch",
+]
+
+[[package]]
 name = "fstart-platform-intel"
 version = "0.1.0"
 dependencies = [

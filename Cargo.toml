@@ -16,6 +16,7 @@ members = [
   "crates/coreboot",
   "crates/platform-intel",
   "crates/platform-sunxi",
+  "crates/platform-aspeed",
   "crates/platform-qemu",
   "crates/ffs",
   "crates/load",
@@ -180,6 +181,8 @@ opt-level = "s"
 [profile.dev.package.fstart-driver-chromeec]
 opt-level = "s"
 [profile.dev.package.fstart-platform-sunxi]
+opt-level = "s"
+[profile.dev.package.fstart-platform-aspeed]
 opt-level = "s"
 [profile.dev.package.fstart-platform-qemu]
 opt-level = "s"
