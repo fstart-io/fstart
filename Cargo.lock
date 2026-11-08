@@ -74,6 +74,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "aspeed-pac"
+version = "0.1.0"
+source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=a5eed56e4d49586ec18ac20e47c5b6c767e39553#a5eed56e4d49586ec18ac20e47c5b6c767e39553"
+
+[[package]]
 name = "atomic_refcell"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1472,10 +1477,15 @@ dependencies = [
 name = "fstart-platform-aspeed"
 version = "0.1.0"
 dependencies = [
+ "aspeed-pac",
  "fstart-arch",
  "fstart-core",
+ "fstart-driver-uart",
  "fstart-image-build",
+ "fstart-log",
+ "fstart-stage",
  "serde_json",
+ "ufmt",
 ]
 
 [[package]]

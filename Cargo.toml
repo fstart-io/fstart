@@ -88,6 +88,9 @@ x86_64_crate = { package = "x86_64", version = "0.15", default-features = false 
 rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 
+# ASPEED register access, generated from kyanitecomputer/aspeed-data.
+aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "a5eed56e4d49586ec18ac20e47c5b6c767e39553", default-features = false }
+
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
 

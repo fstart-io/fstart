@@ -6,10 +6,24 @@
 
 #![no_std]
 
+#[cfg(feature = "stage")]
+extern crate ufmt;
+
+#[cfg(all(feature = "stage", feature = "ast2500", target_arch = "arm"))]
+pub mod ast2500;
 pub mod facts;
 pub mod head;
 #[cfg(feature = "host")]
 pub mod host;
 
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_stage as stage_runtime;
 #[cfg(feature = "host")]
 pub use host::Plan;
+
+/// Declare a board's stage `main`: `entry!(main);`.
+#[macro_export]
+macro_rules! entry {
+    ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
+}

@@ -9,12 +9,25 @@ publish = false
 [features]
 default = []
 host = ["dep:fstart-image-build", "dep:serde_json"]
-armv5te = ["fstart-arch/armv5te"]
+stage = [
+  "dep:fstart-driver-uart",
+  "dep:fstart-log",
+  "dep:fstart-stage",
+  "dep:ufmt",
+]
+armv5te = ["fstart-arch/armv5te", "fstart-stage?/armv5te"]
+ast2500 = ["dep:aspeed-pac", "aspeed-pac?/ast2500-arm"]
+bundle-ast2500-bootblock = ["stage", "ast2500", "armv5te"]
 
 [dependencies]
+aspeed-pac = { workspace = true, optional = true }
 fstart-core = { workspace = true }
+fstart-driver-uart = { workspace = true, optional = true }
 fstart-image-build = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+ufmt = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "arm")'.dependencies]
 fstart-arch = { workspace = true }
