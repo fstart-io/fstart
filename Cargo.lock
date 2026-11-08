@@ -698,6 +698,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-amd-onyx"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-amd",
+ "fstart-platform-rs",
+ "heapless 0.8.0",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-board-asus-p5gc-mx"
 version = "0.1.0"
 dependencies = [
@@ -1074,6 +1084,19 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-platform-sp3",
+ "heapless 0.8.0",
+ "tock-registers",
+]
+
+[[package]]
+name = "fstart-board-tyan-s8040"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-driver-amd",
+ "fstart-driver-ipmi",
+ "fstart-driver-superio",
+ "fstart-platform-rs",
  "heapless 0.8.0",
  "tock-registers",
 ]

@@ -1,0 +1,51 @@
+[package]
+name = "fstart-board-tyan-s8040"
+description = "Tyan S8040GM2NE (SP6, Siena)"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The image is packed from blobs (`--blobs`, or `--donor` with a vendor
+# image to extract them from); see README.md.
+[package.metadata.fstart]
+schema = 1
+board = "tyan-s8040"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+build-profile = { dependency = "fstart-platform-rs", name = "rust" }
+
+# The board's APCBs, as its vendor image (NFX V2.00) has them; the SoC's
+# files are in fstart-platform-rs's table.
+[package.metadata.fstart.amd]
+soc = "siena"
+# The vendor EFS's eSPI0 configuration: the PSP brings up the link to the
+# AST2600 (COM1, KCS) before x86 runs, and the flow keeps it.
+efs-espi = [0x0e, 0xff, 0xff, 0xff]
+apcb = { entries = [
+  { type = 0x60, level = 2, file = "s8040/apcb-60-0.bin" },
+  { type = 0x60, instance = 1, level = 2, file = "s8040/apcb-60-1.bin" },
+  { type = 0x68, file = "s8040/apcb-68-0.bin" },
+  { type = 0x68, instance = 8, file = "s8040/apcb-68-8.bin" },
+  { type = 0x68, instance = 9, file = "s8040/apcb-68-9.bin" },
+] }
+
+[features]
+default = []
+# The board's SMM handler (the SMM unit only).
+smm = ["fstart-platform-rs/smm"]
+
+[dependencies]
+fstart-platform-rs = { path = "../../../crates/platform-rs", features = ["siena"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rs"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
+fstart-driver-ipmi = { path = "../../../crates/driver-ipmi", features = ["acpi"] }
+embedded-hal = { version = "1", default-features = false }
+heapless = { version = "0.8", default-features = false }
+tock-registers = "0.10"
+
+[[bin]]
+name = "stage"
+path = "src/bin/stage.rs"
+test = false
+bench = false

@@ -118,7 +118,7 @@ jobs:
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles
           # Each AMD SoC on its own: the boards select one, the tests all.
-          for soc in picasso zeppelin naples rome milan; do
+          for soc in picasso zeppelin naples rome milan rs; do
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"
           done
 
