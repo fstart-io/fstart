@@ -6,9 +6,25 @@ license.workspace = true
 
 [features]
 default = []
+# Rs architectural bootstrap shared by Genoa and Siena, not a legacy noncar flow.
+rs = ["fstart-driver-amd/rs", "dep:fstart-arch", "dep:heapless"]
+rs-usb = ["rs"]
+# Native ACPI of an Rs SoC (`rs_acpi`).
+rs-acpi = ["rs", "dep:fstart-acpi", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios"]
+# The ROM-resident Linux payload (`rs_linux`).
+rs-linux = ["rs"]
+# An Rs reset-image stage (fstart-platform-rs's bundle-reset): the firmware
+# side of the Rs sequences and the shared reset entry's AP route.
+rs-stage = ["rs", "fstart-arch/amd-psp-reset"]
+# SMM for the PSP (`rs_smm`): the normal-mode installer's FCH SMI policy.
+rs-smi = ["rs", "fstart-driver-amd/smi"]
+# The PSP's SMM handler and `smm_bin!` for an Rs board's SMM unit.
+rs-smm = ["rs-smi", "fstart-driver-amd/smm", "dep:fstart-smm"]
+# SMM-unit builds only: adds the SMM panic handler.
+bundle-rs-smm = ["rs-smm", "fstart-smm/stage-bin"]
 picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2", "fstart-core/host"]
+host = ["dep:fstart-image-build", "dep:fstart-amdfw-format", "dep:serde_json", "dep:sha2", "fstart-core/host"]
 zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
@@ -412,6 +428,6 @@ fstart-smm = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The unit tests cover every SoC, also in `cargo test --workspace`.
-fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "host", "smm"] }
+fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "host", "smm", "rs", "rs-acpi"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
