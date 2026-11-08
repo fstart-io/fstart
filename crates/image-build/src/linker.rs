@@ -101,6 +101,7 @@ pub fn resolved_ram_stage(
 /// Platforms supply the already-validated reservations and descriptor bytes.
 pub struct Xip {
     pub platform: Platform,
+    pub soc_image_format: fstart_core::SocImageFormat,
     pub boot_hart_id: u32,
     pub image: crate::plan::Span,
     pub execution: Option<crate::plan::Span>,
@@ -265,6 +266,12 @@ pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
         "ROM"
     };
     out.push_str("}\nSECTIONS {\n");
+    if layout.soc_image_format == fstart_core::SocImageFormat::AspeedSpi {
+        if layout.execution.is_some() {
+            return Err("ASPEED SPI images execute in place".into());
+        }
+        write_aspeed_head_section(&mut out);
+    }
     write_text_section(&mut out, code, ".text.entry");
     // LLD's BYTE-only sections inherit flags from the preceding section.
     // Emit immediately after executable text, before potentially writable
@@ -1067,6 +1074,18 @@ fn write_discard_egon_header(out: &mut String) {
     writeln!(out, "    /DISCARD/ : {{ *(.head.text) *(.head.egon) }}\n").unwrap();
 }
 
+/// The vector table and strap block must open the flash image: the CPU
+/// fetches its reset vector from 0 and the SoC scans for the strap block in
+/// the first 8 KiB.
+fn write_aspeed_head_section(out: &mut String) {
+    writeln!(out, "    .head : {{ KEEP(*(.head.aspeed)) }} > ROM").unwrap();
+    writeln!(
+        out,
+        "    ASSERT(ADDR(.head) == ORIGIN(ROM) && SIZEOF(.head) > 0x40, \"ASPEED head must open the image\")\n"
+    )
+    .unwrap();
+}
+
 fn write_allwinner_egon_section(out: &mut String, region: &str) {
     writeln!(out, "    .head : {{").unwrap();
     writeln!(out, "        KEEP(*(.head.text))").unwrap();
@@ -1099,6 +1118,46 @@ mod tests {
     };
 
     use super::{generate_linker_script, resolved_ram_stage};
+
+    fn aspeed_xip(execution: Option<crate::plan::Span>) -> super::Xip {
+        let span = |base, size| crate::plan::Span { base, size };
+        super::Xip {
+            platform: Platform::Armv5te,
+            soc_image_format: fstart_core::SocImageFormat::AspeedSpi,
+            boot_hart_id: 0,
+            image: span(0, 0x1_0000),
+            execution,
+            writable: span(0x1e72_0000, 0x9000),
+            heap: span(0x1e72_7000, 0x1000),
+            stack: span(0x1e72_8000, 0x1000),
+            descriptor: crate::layout::EncodedLayout::encode(
+                0,
+                &[
+                    span(0, 0x1_0000).region(fstart_core::layout::RegionKind::Image),
+                    span(0x1e72_0000, 0x9000).region(fstart_core::layout::RegionKind::Writable),
+                ],
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn aspeed_spi_head_opens_the_xip_image() {
+        let script = super::resolved_xip(&aspeed_xip(None)).unwrap();
+        let head = script.find("KEEP(*(.head.aspeed))").unwrap();
+        let entry = script.find("KEEP(*(.text.entry))").unwrap();
+        assert!(head < entry);
+        assert!(script.contains("ASSERT(ADDR(.head) == ORIGIN(ROM)"));
+    }
+
+    #[test]
+    fn aspeed_spi_head_requires_execute_in_place() {
+        let execution = Some(crate::plan::Span {
+            base: 0x8000_0000,
+            size: 0x1_0000,
+        });
+        assert!(super::resolved_xip(&aspeed_xip(execution)).is_err());
+    }
     use crate::layout::EncodedLayout;
     use crate::plan::Span;
     use fstart_core::layout::RegionKind as LayoutKind;

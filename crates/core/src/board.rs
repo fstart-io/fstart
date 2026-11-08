@@ -377,6 +377,11 @@ pub enum SocImageFormat {
     ///
     /// See oreboot's D1 implementation for the reference Rust approach.
     AllwinnerEgon,
+    /// ASPEED AST2400/AST2500 SPI boot: the ARM core executes FMC CE0 flash
+    /// in place from address 0. The image starts with the ARM vector table
+    /// and, at offset 0x40, the strap block the SoC loads from flash before
+    /// releasing the CPU (both in `.head.aspeed`).
+    AspeedSpi,
 }
 
 /// Payload configuration: what to boot after firmware init.
