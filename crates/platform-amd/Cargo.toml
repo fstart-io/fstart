@@ -26,6 +26,7 @@ bundle = [
   "noncar",
   "dep:fstart-stage", "dep:fstart-payload",
   "fstart-arch/x86-identity-paging",
+  "fstart-arch/amd-psp-reset",
   "fstart-stage/x86_64",
   "fstart-stage/ffs",
   "fstart-stage/ffs-signature",

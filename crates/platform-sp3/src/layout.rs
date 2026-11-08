@@ -167,7 +167,7 @@ pub const EARLY_REGION: Span = Span::new(0x7500_0000, 0xc0_0000);
 /// canonical half (128 TiB), so DRAM of a full 2P system and the DF's
 /// 64-bit MMIO windows are mapped without later table growth.
 pub const PDPT_COUNT: u64 = 256;
-/// PML4 followed by [`PDPT_COUNT`] PDPTs, built by `reset.S`.
+/// PML4 followed by [`PDPT_COUNT`] PDPTs, built by the reset entry (`amd_psp_reset.S`).
 pub const PAGE_TABLES: Span = Span::new(0x7500_0000, 0x1000 * (1 + PDPT_COUNT));
 /// `.data` stays in the image (it is already in DRAM); this is BSS and
 /// the arch crate's per-AP stacks (4 KiB × CPUs).

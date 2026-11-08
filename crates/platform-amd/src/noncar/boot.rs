@@ -10,8 +10,9 @@ use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
 use heapless::Vec;
 
 /// Mount and authenticate the FFS at `ffs`; loads may only go to RAM outside
-/// the firmware's own windows.
-pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
+/// the firmware's own windows: its `early` reservation (the running image,
+/// its page tables, BSS, heap and stack) and the media.
+pub fn mount(e820: &E820State, early: Region, ffs: Region) -> Result<(), ServiceError> {
     fstart_arch::x86::boot::enable_boot_media_rom_cache();
     let mut writable = Vec::<MemoryWindow, 32>::new();
     let mut reserved = Vec::<MemoryWindow, 32>::new();
@@ -30,14 +31,10 @@ pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
                 .map_err(|_| ServiceError::InvalidParam)?;
         }
     }
-    for window in fstart_stage::boot::running_stage_windows()
-        .map_err(|_| ServiceError::InvalidParam)?
-        .into_iter()
-        .chain([MemoryWindow {
-            start: ffs.base,
-            size: ffs.size,
-        }])
-    {
+    for window in [early, ffs].map(|region| MemoryWindow {
+        start: region.base,
+        size: region.size,
+    }) {
         reserved
             .push(window)
             .map_err(|_| ServiceError::InvalidParam)?;
@@ -47,8 +44,8 @@ pub fn mount(e820: &E820State, ffs: Region) -> Result<(), ServiceError> {
         reserved: &reserved,
         entry_alignment: 1,
     };
-    // SAFETY: discovered RAM only, with the live stage, the firmware region
-    // and the media excluded; no device has DMA buffers outside the reserved
+    // SAFETY: discovered RAM only, with the firmware region (the live stage
+    // within it) and the media excluded; no device has DMA buffers outside the reserved
     // early region.
     unsafe {
         fstart_stage::directory::set_load_policy(

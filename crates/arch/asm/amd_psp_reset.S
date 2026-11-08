@@ -1,10 +1,16 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /*
- * SP3 reset entry: the PSP-copied reset image (BIOS directory entry 0x62).
+ * AMD PSP-copied DRAM reset entry (BIOS directory entry 0x62), shared by
+ * every SoC whose PSP copies the BIOS reset image to DRAM: SP3 (Naples,
+ * Rome, Milan), Picasso and Zeppelin.
  *
  * This file is a `core::arch::global_asm!` template (AT&T syntax), included
- * by src/entry.rs. Brace-delimited names are const operands holding
- * layout constants from src/layout.rs (so comments here use no braces); `_sp3_*` section placement comes from linker/stage.ld.in.
+ * by the platform's entry module. Brace-delimited names are const operands
+ * selecting its cache window and page-table count (so comments here use no
+ * braces); no SoC resource, FCH or AP-release policy lives here. The
+ * historical `_sp3_*` names are the entry's ELF ABI, not a generation
+ * choice. Section placement comes from fstart-image-build's
+ * linker/amd_psp_reset.ld.in.
  *
  * Start state (FIRMWARE_IMAGE §5, CCX §3.7):
  *   - The PSP has trained DRAM, copied the image to [dest, 0x76000000) and
@@ -38,7 +44,7 @@
  * MTRR window and SYSCFG bits, then page tables and long mode, and the arch
  * crate's 64-bit RAM entry `_start_ram` (BSS, IDT, fstart_main(0)).
  *
- * Section placement (linker/stage.ld.in):
+ * Section placement (linker/amd_psp_reset.ld.in):
  *   .sp3.entry16       at END - 0x1000 = segment offset 0xf000
  *   .sp3.reset_vector  at END - 0x10   = segment offset 0xfff0
  */

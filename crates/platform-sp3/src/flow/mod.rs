@@ -1015,7 +1015,7 @@ fn cache_ram(regions: &[Region]) {
     // SAFETY: BSP only, before any AP runs.
     unsafe { fstart_arch::x86::mtrr::setup_ram_wb() }.or_halt("MTRRs");
     // SAFETY: BSP only, caching enabled; SYSCFG.MtrrFixDramModEn is clear
-    // (reset.S), so the fixed MTRRs' DRAM routing is hidden again after.
+    // (amd_psp_reset.S), so the fixed MTRRs' DRAM routing is hidden again after.
     unsafe { fstart_arch::x86::cpu::amd::mtrr::route_fixed_wb_to_dram(&msr()) };
     msr().reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
 }

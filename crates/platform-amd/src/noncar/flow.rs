@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stage phases: the PSP released the BSP at the reset vector of the
-//! image it copied to DRAM. `psp_reset.S` enters long mode and continues at
-//! the architectural `_start_ram` (stack, BSS, data, IDT), which calls the
-//! board's `main` (`fstart_platform_amd::entry!`).
+//! image it copied to DRAM. The arch crate's shared `amd_psp_reset.S` opens a
+//! write-back window over the firmware RAM, builds the identity map, enters
+//! long mode and continues at the architectural `_start_ram` (stack, BSS,
+//! IDT), which calls the board's `main` (`fstart_platform_amd::entry!`).
 //!
 //! The board's `main` drives the phases and does its own work between them.
 //! Each phase consumes the previous one ([`Stage`]'s second parameter), so
@@ -41,20 +42,23 @@ use fstart_log::{Hex, StaticConsole};
 use fstart_pci::{PciEcam, ecam::GlobalEcam};
 use heapless::Vec;
 
-core::arch::global_asm!(
-    include_str!("../../asm/psp_reset.S"),
-    ap_reset_segment = const {
-        let address = fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS;
-        assert!(address & 15 == 0 && address <= 0xffff0);
-        address >> 4
-    },
-);
-core::arch::global_asm!(
-    ".code64",
-    ".global _fstart_amd_long_mode_entry",
-    "_fstart_amd_long_mode_entry:",
-    "jmp _start_ram",
-);
+/// The shared AMD PSP reset entry with the selected SoC's geometry; a
+/// reset image is for one SoC.
+mod entry {
+    #[cfg(all(feature = "picasso", feature = "zeppelin"))]
+    compile_error!("a noncar reset image is for one SoC: enable picasso or zeppelin, not both");
+    #[cfg(feature = "picasso")]
+    use crate::picasso::LAYOUT;
+    #[cfg(feature = "zeppelin")]
+    use crate::zeppelin::layout::LAYOUT;
+    core::arch::global_asm!(
+        include_str!("../../../arch/asm/amd_psp_reset.S"),
+        cache_base = const LAYOUT.cache_window().base,
+        cache_mask = const !(LAYOUT.cache_window().size - 1) & 0xffff_ffff,
+        pdpts = const crate::noncar::layout::PDPT_COUNT,
+        options(att_syntax),
+    );
+}
 
 fn halt() -> ! {
     fstart_arch::x86::boot::halt()
@@ -207,7 +211,7 @@ impl<S: Soc> Early<S> {
         // The verified FFS, mounted before the silicon init: MP init loads the CPUs'
         // microcode from it.
         if let Some(ffs) = S::LAYOUT.ffs
-            && boot::mount(&e820, ffs).is_err()
+            && boot::mount(&e820, S::LAYOUT.early, ffs).is_err()
         {
             fail::<S>("boot media");
         }

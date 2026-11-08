@@ -14,6 +14,7 @@ pub mod blobs;
 pub mod config;
 pub mod levels;
 pub mod psp_app;
+pub mod reset;
 
 use fstart_amdfw_format::{
     directory::{BIOS_COOKIE, BiosEntry, PSP_COOKIE, PspEntry, bios, psp, write_table},

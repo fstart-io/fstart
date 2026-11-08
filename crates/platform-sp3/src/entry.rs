@@ -2,9 +2,10 @@
 //!
 //! The PSP copies BIOS directory entry `0x62` to DRAM and releases the BSP
 //! at its last 16 bytes (`0x75ff_fff0`, 16-bit, CS base `0x75ff_0000`); the
-//! SMU later releases each AP into the same vector. `asm/reset.S` (compiled
-//! here when the build unit selects `feature = "bundle-stage"`, which
-//! also compiles out the arch crate's own reset vector):
+//! SMU later releases each AP into the same vector. The arch crate's
+//! shared `asm/amd_psp_reset.S` (compiled here when the build unit selects
+//! `feature = "bundle-stage"`, which also compiles out the arch crate's own
+//! reset vector):
 //!
 //! 1. splits BSP and APs on `APIC_BAR.BSP`, as the vendor SEC does;
 //! 2. BSP: saves the BIST (`EAX`), loads its GDT, enters protected mode,
@@ -40,94 +41,13 @@ use fstart_stage as _;
 
 #[cfg(all(target_os = "none", feature = "bundle-stage"))]
 core::arch::global_asm!(
-    include_str!("../asm/reset.S"),
+    include_str!("../../arch/asm/amd_psp_reset.S"),
     cache_base = const crate::layout::CACHE_WINDOW.base,
     cache_mask = const !(crate::layout::CACHE_WINDOW.size - 1) & 0xffff_ffff,
     pdpts = const crate::layout::PDPT_COUNT,
     options(att_syntax),
 );
 
-/// A real-mode far pointer (`m16:16`) APs at the reset vector jump through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ApRoute {
-    offset: u16,
-    segment: u16,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteError {
-    /// Real-mode targets must be below 1 MiB, 16-byte aligned and not 0.
-    Unreachable(u64),
-}
-
-impl ApRoute {
-    /// Leave APs parked at the reset vector.
-    pub const PARK: Self = Self {
-        offset: 0,
-        segment: 0,
-    };
-
-    /// Enter `address` with `CS = address >> 4`, `IP = 0`: the convention
-    /// of a SIPI vector, so the arch trampoline runs unchanged.
-    pub const fn to(address: u64) -> Result<Self, RouteError> {
-        if address == 0 || address >= 0x10_0000 || !address.is_multiple_of(16) {
-            return Err(RouteError::Unreachable(address));
-        }
-        Ok(Self {
-            offset: 0,
-            segment: (address >> 4) as u16,
-        })
-    }
-
-    /// The word `reset.S` reads: offset low, segment high.
-    pub const fn word(self) -> u32 {
-        (self.segment as u32) << 16 | self.offset as u32
-    }
-}
-
+pub use fstart_arch::x86::psp_reset::{ApRoute, RouteError};
 #[cfg(all(target_os = "none", feature = "bundle-stage"))]
-mod runtime {
-    use super::ApRoute;
-
-    unsafe extern "C" {
-        static mut _sp3_ap_route: u32;
-        static _sp3_bsp_bist: u32;
-    }
-
-    /// Arm (or disarm with [`ApRoute::PARK`]) the AP path of the reset
-    /// vector. Call before the SMU releases APs: they fetch with caches
-    /// off, so the word is written back to DRAM here.
-    pub fn set_ap_route(route: ApRoute) {
-        let word = &raw mut _sp3_ap_route;
-        // SAFETY: `_sp3_ap_route` is an aligned u32 in the reset image
-        // (DRAM, writable); only the BSP writes it, APs only read it.
-        unsafe {
-            word.write_volatile(route.word());
-            fstart_arch::x86::writeback_cache_range(word.cast(), 4);
-        }
-    }
-
-    /// `EAX` at the BSP's release (BIST result, 0 = passed).
-    pub fn bsp_bist() -> u32 {
-        // SAFETY: written once by reset.S before any Rust code runs.
-        unsafe { (&raw const _sp3_bsp_bist).read_volatile() }
-    }
-}
-
-#[cfg(all(target_os = "none", feature = "bundle-stage"))]
-pub use runtime::{bsp_bist, set_ap_route};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn route_is_a_sipi_style_far_pointer() {
-        let r = ApRoute::to(0x8000).unwrap();
-        assert_eq!(r.word(), 0x0800_0000);
-        assert_eq!(ApRoute::PARK.word(), 0);
-        for bad in [0, 0x8008, 0x10_0000] {
-            assert_eq!(ApRoute::to(bad), Err(RouteError::Unreachable(bad)));
-        }
-    }
-}
+pub use fstart_arch::x86::psp_reset::{bsp_bist, set_ap_route};

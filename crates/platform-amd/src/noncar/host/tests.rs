@@ -107,13 +107,17 @@ fn picasso_ui_reserves_the_larger_reset_image_and_entry() {
     assert_eq!(*load_address, 0x0300_0000);
     assert_eq!(*flat_capacity, 0x40_0000);
     assert_eq!(expectations.entry, Some(0x033f_fff0));
-    assert_eq!(picasso::LAYOUT.init16(), 0x033f_e000);
+    assert_eq!(expectations.symbols["_sp3_entry16"], 0x033f_f000);
+    assert_eq!(expectations.symbols["_sp3_page_tables"], 0x0202_0000);
     assert_eq!(picasso::LAYOUT.early.end(), 0x0340_0000);
     assert_eq!(picasso::LAYOUT.image.end(), picasso::LAYOUT.early.end());
+    // The shared entry: firmware RAM below the image, the image in place.
+    assert_eq!(expectations.runtime[1].base, 0x0200_0000);
+    assert_eq!(expectations.runtime[1].size, 0x100_0000);
     let script = unit.linker_script.as_ref().unwrap();
-    assert!(script.contains("_fstart_early_reserved_end = 0x3400000;"));
-    assert!(script.contains(".init16 0x33fe000"));
-    assert!(script.contains(".reset 0x33ffff0"));
+    assert!(script.contains("ENTRY(_sp3_reset_vector)"));
+    assert!(script.contains("IMAGE (rwx) : ORIGIN = 0x3000000, LENGTH = 0x400000"));
+    assert!(script.contains("PAGES (rw)  : ORIGIN = 0x2020000, LENGTH = 0x2000"));
 }
 
 #[test]
@@ -186,9 +190,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "ea96dec909b52a5bc8fd8125da763aadef9021eac9d5afd69ce8490e71af9910",
-            "506e7e2fb1a2539325693376dcaa582ddce659d6fef7fd2b33ede82ff5b038af",
-            "3f6c964b5bdd36e9ad68b18e38a03f42efa70fd4e2289428fce86d22e8b6219f",
+            "64303b27ad5537c57659c9350c92e2f58cc7398461f534dff434747088a8b10d",
+            "9e80c84abf1f7f0c40e7371c799ee4dade1aeef7e0a941285c5dbab1d36620c7",
+            "41806ae882e43782ca1cafd23b16f1bc28371936d4dced5c2f7a7b86f5a3dec8",
         ]
     );
 }

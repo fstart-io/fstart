@@ -14,8 +14,12 @@ Zeppelin and Picasso; see the SoC pages for their details:
   image's reset vector (image end − 0x10).
 - There is no cache-as-RAM (`_has_car = 0` in the generated linker script).
   One stage runs from the reset vector to the payload.
-- The reset entry is `crates/platform-amd/asm/psp_reset.S`. It enters long
-  mode and continues at `_start_ram`. APs go to the SIPI trampoline at `0x8000`.
+- The reset entry is the one SP3 uses, the arch crate's
+  `asm/amd_psp_reset.S`: it opens a write-back MTRR over the firmware DRAM
+  (`Layout::cache_window`), identity maps 512 GiB with 1-GiB pages, enters
+  long mode and continues at `_start_ram`. The SMU releases the APs into
+  the same vector; they park there until MP init arms the route
+  (`fstart_arch::x86::psp_reset`) to the SIPI trampoline at `0x8000`.
 
 ## Code
 
@@ -118,16 +122,17 @@ Every phase after the console gives the board `dies()`, `fch()` (die 0),
 | Field | Meaning |
 | --- | --- |
 | `early` | Firmware DRAM, reserved through the OS handoff |
-| `page_tables` | Six pages: 4-GiB identity map for the reset entry |
-| `data` | Data and BSS (ACPI tables are in BSS) |
+| `page_tables` | The reset entry's PML4 and `PDPT_COUNT` PDPTs |
+| `data` | BSS (ACPI tables are in BSS); `.data` runs in place in the image |
 | `heap`, `stack` | Firmware heap and BSP stack |
-| `image` | PSP-loaded reset image; the last 8 KiB hold the 16-bit entry |
+| `image` | PSP-loaded reset image; the last 4 KiB hold the 16-bit entry |
 | `flash` | Boot flash, mapped below 4 GiB |
 | `ffs` | FFS window in the flash, if any |
 
 `Layout::check()` asserts the ordering at compile time. The host plan
-(`noncar/host.rs`) generates from the same `Layout` the linker script, the
-`.fstart.layout` descriptor and the ELF expectations.
+(`noncar/host.rs`) maps the same `Layout` onto the shared reset image
+contract (`fstart_image_build::amd::reset::Layout`), which generates the
+linker script, the `.fstart.layout` descriptor and the ELF expectations.
 
 ## Memory map
 

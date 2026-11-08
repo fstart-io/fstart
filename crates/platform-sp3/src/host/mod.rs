@@ -4,8 +4,8 @@
 //! (which implements [`Sp3BoardFacts`]) and the JSON [`BuildSelection`];
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
 //! `reset`, built with every generation the board supports, linked at the
-//! common reset image address ([`layout::RESET`]) with
-//! `linker/stage.ld.in`, and an
+//! common reset image address ([`layout::RESET`]) through the shared AMD
+//! reset entry ([`reset::Layout`]), and an
 //! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
 //! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
@@ -36,12 +36,12 @@ use fstart_core::{
     PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_image_build::amd::blobs;
+use fstart_image_build::amd::{blobs, reset};
 use fstart_image_build::build_plan::{
     ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, InputFile,
     UnitOutput,
 };
-use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
+use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
 use fstart_image_build::sp3_flash::{FlashPlan, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey};
@@ -69,7 +69,6 @@ pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
 /// (it has no indirect calls) needs about 1 KiB; 128 threads take 1 MiB of
 /// the 8 MiB TSEG.
 pub const SMM_STACK_SIZE: u32 = 0x2000;
-const LINKER_TEMPLATE: &str = include_str!("../../linker/stage.ld.in");
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
@@ -110,89 +109,38 @@ fn region(kind: RegionKind, span: Span) -> Region {
     }
 }
 
+/// The reset image's link contract: the common reset image, the early
+/// region below it, the page tables, BSS, heap and stack.
+fn reset_layout() -> reset::Layout {
+    reset::Layout {
+        image: plan_span(RESET.dram()),
+        early: plan_span(EARLY_REGION),
+        pages: plan_span(PAGE_TABLES),
+        data: plan_span(DATA),
+        heap: plan_span(HEAP),
+        stack: plan_span(STACK),
+    }
+}
+
 /// Runtime layout descriptor of the reset image (read by
-/// `fstart_stage::layout::current()`): image, writable/stack/heap, the
-/// flash (ROM3) and the FFS window within it, the store, and the page
-/// tables as an exclusion.
+/// `fstart_stage::layout::current()`): the shared entry's regions plus the
+/// flash (ROM3), the FFS window within it and the store.
 pub fn descriptor() -> Result<EncodedLayout, String> {
-    let writable = Span::new(DATA.base, STACK.end() - DATA.base);
-    EncodedLayout::encode(
-        0,
-        &[
-            region(RegionKind::Image, RESET.dram()),
-            region(RegionKind::Writable, writable),
-            region(RegionKind::Stack, STACK),
-            region(RegionKind::Heap, HEAP),
-            region(RegionKind::Flash, ROM3),
-            region(RegionKind::Firmware, FFS_WINDOW),
-            region(RegionKind::FirmwareStore, STORE),
-            region(RegionKind::Reserved, PAGE_TABLES),
-        ],
-    )
-    .map_err(|e| format!("SP3 layout descriptor: {e:?}"))
+    reset_layout().descriptor(&[
+        region(RegionKind::Flash, ROM3),
+        region(RegionKind::Firmware, FFS_WINDOW),
+        region(RegionKind::FirmwareStore, STORE),
+    ])
 }
 
 /// The reset image linker script (one for every generation).
 pub fn linker_script() -> Result<String, String> {
-    let reset = RESET;
-    let hex = |v: u64| format!("{v:#x}");
-    let section = fstart_image_build::linker::layout_section(&descriptor()?, "IMAGE");
-    let values = [
-        ("@IMAGE_BASE@", hex(reset.destination)),
-        ("@IMAGE_SIZE@", hex(u64::from(reset.size))),
-        ("@IMAGE_END@", hex(reset.dram().end())),
-        ("@PT_BASE@", hex(PAGE_TABLES.base)),
-        ("@PT_SIZE@", hex(PAGE_TABLES.size)),
-        ("@DATA_BASE@", hex(DATA.base)),
-        ("@DATA_SIZE@", hex(DATA.size)),
-        ("@HEAP_BASE@", hex(HEAP.base)),
-        ("@HEAP_SIZE@", hex(HEAP.size)),
-        ("@STACK_BASE@", hex(STACK.base)),
-        ("@STACK_SIZE@", hex(STACK.size)),
-        ("@LAYOUT_SECTION@", section),
-    ];
-    let script = values
-        .iter()
-        .fold(LINKER_TEMPLATE.to_string(), |s, (key, value)| {
-            s.replace(key, value)
-        });
-    if script.contains('@') {
-        return Err("unresolved placeholder in the SP3 linker script".into());
-    }
-    Ok(script)
+    reset_layout().linker_script(&descriptor()?)
 }
 
-/// What the linked reset image must look like: one ELF64 x86-64, stored
-/// exactly as the common reset image, running there and in the early
-/// region, entered at the reset vector.
+/// What the linked reset image must look like.
 pub fn expectations() -> Result<Expectations, String> {
-    let reset = RESET;
-    let image = plan_span(reset.dram());
-    let expectations = Expectations {
-        architecture: Architecture::X86_64,
-        elf64: true,
-        little_endian: true,
-        stored: vec![image],
-        runtime: vec![image, plan_span(EARLY_REGION)],
-        identity_mapping: true,
-        entry: Some(reset.reset_vector()),
-        copy: None,
-        descriptor: Some(Descriptor {
-            section: ".fstart.layout".into(),
-            start_symbol: "_fstart_layout_start".into(),
-            end_symbol: "_fstart_layout_end".into(),
-            bytes: descriptor()?.as_bytes().to_vec(),
-            reservation: image,
-        }),
-        stored_flags: None,
-        symbols: BTreeMap::from([
-            ("_sp3_reset_vector".into(), reset.reset_vector()),
-            ("_sp3_entry16".into(), reset.dram().end() - 0x1000),
-            ("_sp3_page_tables".into(), PAGE_TABLES.base),
-        ]),
-    };
-    expectations.validate()?;
-    Ok(expectations)
+    reset_layout().expectations(&descriptor()?)
 }
 
 /// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
