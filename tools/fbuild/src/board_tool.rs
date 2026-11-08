@@ -1,168 +1,6 @@
-use clap::{Parser, Subcommand};
-
 use crate::build_plan::ParsedBoard;
 use crate::payload::{BuildArgs, PayloadChoice};
 use fstart_core::StageLayout;
-
-#[derive(Parser)]
-#[command(name = "fbuild", about = "fstart firmware build tool")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    Build {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
-        #[command(flatten)]
-        options: BuildArgs,
-        /// Append the stage sizes as one JSON line to this file.
-        #[arg(long)]
-        size_report: Option<std::path::PathBuf>,
-    },
-    Run {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
-        #[command(flatten)]
-        options: BuildArgs,
-        #[arg(short, long)]
-        kernel: Option<String>,
-        #[arg(short, long)]
-        firmware: Option<String>,
-        #[arg(long)]
-        fit: Option<String>,
-        #[arg(short, long)]
-        disk: Option<String>,
-        #[arg(short, long)]
-        memory: Option<String>,
-        /// Complete secure pflash image used only by QEMU SBSA-ref.
-        #[arg(long)]
-        secure_firmware: Option<String>,
-    },
-    Test {
-        #[command(flatten)]
-        options: BuildArgs,
-    },
-    Assemble {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[arg(long, value_enum)]
-        payload: Option<PayloadChoice>,
-        #[command(flatten)]
-        options: BuildArgs,
-        #[arg(short, long)]
-        kernel: Option<String>,
-        #[arg(short, long)]
-        firmware: Option<String>,
-        #[arg(long)]
-        fit: Option<String>,
-    },
-    Flash {
-        #[arg(short, long, default_value_t = false)]
-        release: bool,
-        #[command(flatten)]
-        options: BuildArgs,
-        #[arg(long, default_value_t = false)]
-        probe_run: bool,
-        #[arg(long)]
-        chip: Option<String>,
-        #[arg(long)]
-        probe: Option<String>,
-        #[arg(long)]
-        base_address: Option<String>,
-    },
-}
-
-/// Run a migrated board directly in fbuild; no board Rust is built on the host.
-pub fn run_metadata(
-    manifest: &crate::board_manifest::BoardManifest,
-    args: &[String],
-) -> Result<(), String> {
-    let cli = Cli::try_parse_from(std::iter::once("fbuild").chain(args.iter().map(String::as_str)))
-        .map_err(|e| e.to_string())?;
-    dispatch(cli, manifest)
-}
-
-fn dispatch(cli: Cli, manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
-    match cli.command {
-        Command::Build {
-            release,
-            payload,
-            options,
-            size_report,
-        } => {
-            let result = build(manifest, release, payload, &options)?;
-            match size_report {
-                Some(path) => crate::sizes::append(&path, &manifest.board, &result.stages),
-                None => Ok(()),
-            }
-        }
-        Command::Run {
-            release,
-            payload,
-            options,
-            kernel,
-            firmware,
-            fit,
-            disk,
-            memory,
-            secure_firmware,
-        } => run(
-            manifest,
-            release,
-            payload,
-            kernel.as_deref(),
-            firmware.as_deref(),
-            fit.as_deref(),
-            disk.as_deref(),
-            memory.as_deref(),
-            secure_firmware.as_deref(),
-            &options,
-        ),
-        Command::Test { options } => run(
-            manifest, true, None, None, None, None, None, None, None, &options,
-        ),
-        Command::Assemble {
-            release,
-            payload,
-            options,
-            kernel,
-            firmware,
-            fit,
-        } => assemble(
-            manifest,
-            release,
-            payload,
-            kernel.as_deref(),
-            firmware.as_deref(),
-            fit.as_deref(),
-            &options,
-        )
-        .map(|_| ()),
-        Command::Flash {
-            release,
-            options,
-            probe_run,
-            chip,
-            probe,
-            base_address,
-        } => flash(
-            manifest,
-            release,
-            &options,
-            probe_run,
-            chip.as_deref(),
-            probe.as_deref(),
-            base_address.as_deref(),
-        ),
-    }
-}
 
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
@@ -183,7 +21,7 @@ fn load(
     ))
 }
 
-fn build(
+pub fn build(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
@@ -196,7 +34,7 @@ fn build(
 }
 
 #[allow(clippy::too_many_arguments)] // the CLI's flat assemble options
-fn assemble(
+pub fn assemble(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
@@ -389,7 +227,7 @@ fn assemble_loaded(
     )
 }
 
-fn flash(
+pub fn flash(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     options: &BuildArgs,
@@ -507,7 +345,7 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-fn run(
+pub fn run(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,

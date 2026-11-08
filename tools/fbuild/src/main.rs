@@ -151,125 +151,27 @@ enum Command {
     },
 }
 
-fn dispatch_board(board: &str, args: &[String]) -> Result<(), String> {
-    let workspace_root = build_board::workspace_root_pub()?;
-    let manifest = board_manifest::find(&workspace_root, board)?;
+/// Resolve the board package the requested build selects.
+fn manifest_for(board: &str) -> Result<board_manifest::BoardManifest, String> {
+    let root = build_board::workspace_root_pub()?;
+    let manifest = board_manifest::find(&root, board)?;
     if manifest.build_profile.is_none() {
         return Err(format!(
             "board '{board}' has no build-profile; legacy host tools are retired"
         ));
     }
-    fbuild::board_tool::run_metadata(&manifest, args)
+    Ok(manifest)
 }
 
-/// `--size-report` for the board tool, made absolute: the tool runs in its
-/// own workspace directory.
-fn size_report_args(path: Option<std::path::PathBuf>) -> Result<Vec<String>, String> {
-    let Some(path) = path else {
-        return Ok(Vec::new());
-    };
-    let path =
-        std::path::absolute(&path).map_err(|e| format!("--size-report {}: {e}", path.display()))?;
-    Ok(vec!["--size-report".into(), path.display().to_string()])
-}
-
-fn board_tool_build_args(
-    subcommand: &str,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    options: &BuildArgs,
-) -> Vec<String> {
-    let mut args = vec![subcommand.to_string()];
-    if release {
-        args.push("--release".to_string());
-    }
-    if let Some(payload) = payload {
-        args.push("--payload".to_string());
-        args.push(payload.as_str().to_string());
-    }
-    options.append_cli_args(&mut args);
-    args
-}
-
-fn board_tool_assemble_args(
-    subcommand: &str,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    kernel: Option<String>,
-    firmware: Option<String>,
-    fit: Option<String>,
-    options: &BuildArgs,
-) -> Vec<String> {
-    let mut args = board_tool_build_args(subcommand, release, payload, options);
-    if let Some(kernel) = kernel {
-        args.push("--kernel".to_string());
-        args.push(kernel);
-    }
-    if let Some(firmware) = firmware {
-        args.push("--firmware".to_string());
-        args.push(firmware);
-    }
-    if let Some(fit) = fit {
-        args.push("--fit".to_string());
-        args.push(fit);
-    }
-    args
-}
-
-fn board_tool_run_args(
-    subcommand: &str,
-    release: bool,
-    payload: Option<PayloadChoice>,
-    kernel: Option<String>,
-    firmware: Option<String>,
-    fit: Option<String>,
-    disk: Option<String>,
-    memory: Option<String>,
-    secure_firmware: Option<String>,
-    options: &BuildArgs,
-) -> Vec<String> {
-    let mut args =
-        board_tool_assemble_args(subcommand, release, payload, kernel, firmware, fit, options);
-    if let Some(disk) = disk {
-        args.push("--disk".to_string());
-        args.push(disk);
-    }
-    if let Some(memory) = memory {
-        args.push("--memory".to_string());
-        args.push(memory);
-    }
-    if let Some(secure_firmware) = secure_firmware {
-        args.push("--secure-firmware".to_string());
-        args.push(secure_firmware);
-    }
-    args
-}
-
-fn board_tool_flash_args(
-    release: bool,
-    options: &BuildArgs,
-    probe_run: bool,
-    chip: Option<String>,
-    probe: Option<String>,
-    base_address: Option<String>,
-) -> Vec<String> {
-    let mut args = board_tool_build_args("flash", release, None, options);
-    if probe_run {
-        args.push("--probe-run".to_string());
-    }
-    if let Some(chip) = chip {
-        args.push("--chip".to_string());
-        args.push(chip);
-    }
-    if let Some(probe) = probe {
-        args.push("--probe".to_string());
-        args.push(probe);
-    }
-    if let Some(base_address) = base_address {
-        args.push("--base-address".to_string());
-        args.push(base_address);
-    }
-    args
+/// Resolve the size report path against the caller's cwd before the build
+/// writes artifacts elsewhere.
+fn absolute_size_report(
+    path: Option<std::path::PathBuf>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    path.map(|path| {
+        std::path::absolute(&path).map_err(|e| format!("--size-report {}: {e}", path.display()))
+    })
+    .transpose()
 }
 
 fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
@@ -346,10 +248,12 @@ fn main() {
             (Some(name), None) => {
                 compile_named(&board, options.selection(payload), release, &name, false)
             }
-            (None, size_report) => size_report_args(size_report).and_then(|extra| {
-                let mut args = board_tool_build_args("build", release, payload, &options);
-                args.extend(extra);
-                dispatch_board(&board, &args)
+            (None, size_report) => manifest_for(&board).and_then(|manifest| {
+                let build = fbuild::board_tool::build(&manifest, release, payload, &options)?;
+                match absolute_size_report(size_report)? {
+                    Some(path) => fbuild::sizes::append(&path, &manifest.board, &build.stages),
+                    None => Ok(()),
+                }
             }),
         },
         Command::Run {
@@ -363,25 +267,25 @@ fn main() {
             disk,
             memory,
             secure_firmware,
-        } => dispatch_board(
-            &board,
-            &board_tool_run_args(
-                "run",
+        } => manifest_for(&board).and_then(|manifest| {
+            fbuild::board_tool::run(
+                &manifest,
                 release,
                 payload,
-                kernel,
-                firmware,
-                fit,
-                disk,
-                memory,
-                secure_firmware,
+                kernel.as_deref(),
+                firmware.as_deref(),
+                fit.as_deref(),
+                disk.as_deref(),
+                memory.as_deref(),
+                secure_firmware.as_deref(),
                 &options,
-            ),
-        ),
-        Command::Test { board, options } => dispatch_board(
-            &board,
-            &board_tool_build_args("test", false, None, &options),
-        ),
+            )
+        }),
+        Command::Test { board, options } => manifest_for(&board).and_then(|manifest| {
+            fbuild::board_tool::run(
+                &manifest, true, None, None, None, None, None, None, None, &options,
+            )
+        }),
         Command::Assemble {
             board,
             release,
@@ -390,12 +294,18 @@ fn main() {
             kernel,
             firmware,
             fit,
-        } => dispatch_board(
-            &board,
-            &board_tool_assemble_args(
-                "assemble", release, payload, kernel, firmware, fit, &options,
-            ),
-        ),
+        } => manifest_for(&board).and_then(|manifest| {
+            fbuild::board_tool::assemble(
+                &manifest,
+                release,
+                payload,
+                kernel.as_deref(),
+                firmware.as_deref(),
+                fit.as_deref(),
+                &options,
+            )
+            .map(|_| ())
+        }),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
         Command::Blobs {
             board,
@@ -446,10 +356,17 @@ fn main() {
             chip,
             probe,
             base_address,
-        } => dispatch_board(
-            &board,
-            &board_tool_flash_args(release, &options, probe_run, chip, probe, base_address),
-        ),
+        } => manifest_for(&board).and_then(|manifest| {
+            fbuild::board_tool::flash(
+                &manifest,
+                release,
+                &options,
+                probe_run,
+                chip.as_deref(),
+                probe.as_deref(),
+                base_address.as_deref(),
+            )
+        }),
     };
 
     if let Err(e) = result {

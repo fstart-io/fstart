@@ -14,6 +14,7 @@ mod ide_lock;
 pub mod intel_layout;
 #[cfg(test)]
 mod intel_linker_tests;
+#[cfg(test)]
 pub mod linker;
 pub mod payload;
 mod plan_executor;
@@ -23,5 +24,5 @@ pub mod qemu;
 mod qemu_golden_tests;
 pub mod resolved_image;
 mod selection;
-mod sizes;
+pub mod sizes;
 pub mod toolchain;
