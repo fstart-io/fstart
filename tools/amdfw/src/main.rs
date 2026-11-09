@@ -193,6 +193,7 @@ fn pack(a: PackArgs) -> amd::Result<()> {
             .map(|(offset, size)| FlashRegion { offset, size })
     };
     let packed = SingleLevelImage {
+        bios_directory: fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10,
         flash_size: a.flash_size,
         efs_offset: a.efs_offset,
         partition_end: a.partition_end,

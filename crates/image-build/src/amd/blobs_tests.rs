@@ -114,6 +114,7 @@ fn sp3_generation_and_board_tables_resolve() {
 /// outside them.
 fn vendor_image() -> Vec<u8> {
     let packed = SingleLevelImage {
+        bios_directory: BiosDirectorySlot::Family17hModel10,
         flash_size: 0x100_0000,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,

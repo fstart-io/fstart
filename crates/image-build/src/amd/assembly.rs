@@ -469,9 +469,8 @@ impl AmdAssembly {
                         || files.spi_speed.is_none_or(|speed| speed > 3)
                         || files.soft_fuse.is_none()
                         || !files.fixed.is_empty()
-                        || self.bios_directory != SingleLevelImage::BIOS_DIRECTORY
                     {
-                        return Err("invalid Picasso PSP image settings".into());
+                        return Err("invalid single-level PSP image settings".into());
                     }
                     for (bios, blobs) in [(false, &files.psp), (true, &files.bios)] {
                         for file in blobs {
@@ -792,6 +791,7 @@ impl AmdAssembly {
             }
         }
         SingleLevelImage {
+            bios_directory: self.bios_directory,
             flash_size: files.flash_size,
             efs_offset: files.efs_offset,
             partition_end: files.partition_end,
