@@ -24,8 +24,10 @@ const DRAM: DramConfig = DramConfig {
     ecc_bytes: Some(424 << 20),
 };
 
-/// Test all usable DRAM after every training (cold boots only).
-const MEMTEST: bool = true;
+/// Test all usable DRAM after every training (cold boots only). Off: the
+/// test takes about a minute over 424 MiB, and training passed it on this
+/// board. Turn it on for DRAM work.
+const MEMTEST: bool = false;
 
 fstart_platform_aspeed::spi_head!(STRAP_WRITES);
 fstart_platform_aspeed::entry!(main);
