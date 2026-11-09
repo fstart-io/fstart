@@ -192,6 +192,7 @@ jobs:
     if: always()
     needs: [test, build-board, stage-sizes]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require tests and board builds to pass
         env:
@@ -376,6 +377,7 @@ jobs:
     if: always()
     needs: [qemu-boot-assets, qemu-boot-matrix, tpm-boot-tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require all QEMU jobs to pass
         env:

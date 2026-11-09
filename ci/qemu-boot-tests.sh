@@ -77,7 +77,7 @@ matches_filter() {
 	return 1
 }
 
-mkdir -p "$LOG_DIR"
+[[ $LIST_ONLY -eq 1 ]] || mkdir -p "$LOG_DIR"
 failures=0
 selected=0
 

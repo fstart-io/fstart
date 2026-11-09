@@ -37,10 +37,12 @@ jobs:
           # it claims before acting on it. CI built GitHub's test merge of the
           # pull request, whose parents are the base it built on and the head
           # of this run.
+          # read fails under `bash -e` when jq selects nothing; the guard
+          # below handles that case, so keep the step alive to reach it.
           read -r pr merge < <(jq -r '
             select(.commit | test("^[0-9a-f]{40}$"))
             | select(.pr | type == "number")
-            | "\(.pr) \(.commit)"' head/stage-sizes.json)
+            | "\(.pr) \(.commit)"' head/stage-sizes.json) || true
           if [ -z "$pr" ] || [ -z "$merge" ]; then
             echo "Stage sizes carry no usable commit/pull request; not reporting."
             exit 0

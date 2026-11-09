@@ -125,14 +125,39 @@ class QemuBootTests(unittest.TestCase):
     def test_list_prints_every_combination_without_building(self):
         result = self.run_list()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        combos = result.stdout.splitlines()
-        # Asset-gated entries are listed even though no assets exist, and
-        # nothing was built or booted to find them.
-        self.assertIn("qemu-q35 uefi-disk", combos)
-        self.assertIn("qemu-sbsa halt", combos)
-        self.assertIn("orangepi-r1 linux", combos)
-        self.assertEqual(len(combos), len(set(combos)))
+        # The combinations CI shards over, in script order. Asset-gated
+        # entries (uefi-disk, qemu-sbsa, orangepi-r1 linux) are listed even
+        # though no assets exist here, and listing builds and boots nothing,
+        # creates no log directory and copies no DTB.
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "qemu-q35 halt",
+                "qemu-q35 halt-smp4",
+                "qemu-q35 halt-smp4-multisocket",
+                "qemu-q35 halt-smp4-hotplug",
+                "qemu-q35 uefi",
+                "qemu-q35 uefi-disk",
+                "qemu-q35-i686 halt",
+                "qemu-q35-i686 halt-smp2",
+                "qemu-riscv64 halt",
+                "qemu-riscv64 linux",
+                "qemu-riscv64 uefi",
+                "qemu-sifive-u halt",
+                "qemu-sifive-u linux",
+                "qemu-aarch64 halt",
+                "qemu-aarch64 linux",
+                "qemu-aarch64 uefi",
+                "qemu-armv7 halt",
+                "qemu-armv7 linux",
+                "qemu-sbsa halt",
+                "orangepi-r1 halt",
+                "orangepi-r1 linux",
+            ],
+        )
         self.assertFalse(self.calls.exists())
+        self.assertFalse(self.log_dir.exists())
+        self.assertFalse((self.root / "boards").exists())
 
     def test_list_honours_filters(self):
         result = self.run_list("--board", "qemu-q35", "--payload", "uefi")
