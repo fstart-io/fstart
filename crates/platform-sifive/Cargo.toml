@@ -12,10 +12,11 @@ host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 stage = [
   "dep:fstart-arch", "dep:fstart-driver-uart", "dep:fstart-log", "dep:fstart-stage", "dep:fstart-payload",
   "fstart-arch/riscv64", "fstart-stage/riscv64",
+  "fstart-stage/bootstrap", "fstart-stage/handoff",
   "fstart-stage/ffs", "fstart-stage/ffs-signature", "fstart-stage/ed25519",
   "fstart-stage/sha2-digest", "fstart-stage/fdt",
 ]
-# The FU740 stage, the one firmware unit.
+# The FU740 stages: the LIM bootblock and the DRAM mainstage.
 bundle-fu740 = ["stage"]
 linux = ["fstart-payload?/linux"]
 crabefi = ["fstart-payload?/crabefi"]

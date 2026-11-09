@@ -1,16 +1,21 @@
-//! The FU740 stage, from the reset vector to the payload, as phases:
+//! The FU740 stages. The LIM bootblock, from the reset vector to the
+//! authenticated DRAM mainstage, as phases:
 //!
 //! ```ignore
 //! Fu740::enter(&CONFIG)            // PRCI: core, DDR and peripheral clocks
 //!     .console(&CONSOLE, &UART)
 //!     .train_memory()
-//!     .boot_media()
-//!     .boot()
+//!     .boot_next()                  // load the mainstage and jump to it
 //! ```
+//!
+//! The DRAM mainstage starts at [`main_stage`]: it takes the bootblock's
+//! handoff, retires the LIM aperture by enabling every L2 way for
+//! caching, mounts the verified FFS and boots the payload.
 
 use core::marker::PhantomData;
 
 use fstart_core::description::Range;
+use fstart_core::layout::{Layout, Region, RegionKind};
 use fstart_core::services::{MemoryInit, ServiceError};
 use fstart_driver_sifive::fu740_ddr::{FU740_DRAM_BASE, Fu740Ddr};
 use fstart_driver_sifive::fu740_prci::Fu740Prci;
@@ -21,14 +26,24 @@ use fstart_stage::{fail, step};
 
 use crate::config::{FU740_ECAM_BASE, FU740_MMIO, Fu740Config};
 
+/// Route UART0 to its pads: GPIO 16 (RX) and 17 (TX) on IOF0. Nothing
+/// in the reset state does this; a previous boot stage having done it
+/// is not something to rely on.
+fn route_console_uart() {
+    // SAFETY: the FU740 GPIO controller's fixed register block.
+    let gpio = unsafe {
+        fstart_driver_sifive::gpio::Gpio::new(fstart_driver_sifive::gpio::FU740_GPIO_BASE)
+    };
+    gpio.route_iof(16, false);
+    gpio.route_iof(17, false);
+}
+
 /// The clocks run.
 pub struct Clocks;
 /// The console is up.
 pub struct Console;
 /// DRAM is trained.
 pub struct Dram;
-/// The verified boot media is mounted.
-pub struct Ready;
 
 /// The FU740 stage, in phase `S`.
 pub struct Fu740<S> {
@@ -85,6 +100,7 @@ impl Fu740<Clocks> {
         slot: &'static StaticConsole<SifiveUart>,
         uart: &'static SifiveUartConfig,
     ) -> Fu740<Console> {
+        route_console_uart();
         let Ok(mut console) = SifiveUart::new(uart) else {
             fstart_arch::riscv64::halt()
         };
@@ -108,26 +124,136 @@ impl Fu740<Console> {
 }
 
 impl Fu740<Dram> {
-    /// Grant the loader the trained DRAM and mount the verified FFS on the
-    /// SPI flash.
-    pub fn boot_media(self) -> Fu740<Ready> {
-        // The only stage: no predecessor handoff to keep out of loads.
-        step("boot media", || {
-            install_boot_context(self.config, self.dram.size, 0)
+    /// Load the pinned mainstage into trained DRAM, leave the handoff
+    /// below it and jump. Nothing after this needs the LIM.
+    pub fn boot_next(self) -> ! {
+        let entry = step("mainstage load", || load_mainstage(self.config, self.dram));
+        let handoff = step("layout", || region(RegionKind::Reserved));
+        // SAFETY: load_mainstage kept the handoff window out of the
+        // mainstage's load footprint.
+        step("handoff", || unsafe {
+            fstart_stage::next_stage::write_handoff(self.dram.size, handoff.base)
+                .map_err(|_| ServiceError::InvalidParam)
         });
-        self.into()
+        fstart_arch::riscv64::jump_to_with_handoff(entry, handoff.base as usize)
     }
 }
 
-impl Fu740<Ready> {
-    /// Describe the board to the build's payload launcher and boot it.
-    pub fn boot(self) -> ! {
-        fstart_log::info!("fu740 ramstage: ready for payload");
-        let console = self.console.unwrap_or_else(|| fail("console"));
-        hand_off(self.config, console, |handoff| {
-            fstart_payload::boot(handoff, ())
-        })
+fn regions() -> Result<Layout<'static>, ServiceError> {
+    fstart_stage::layout::current().map_err(|_| ServiceError::InvalidParam)
+}
+
+/// One required role from this stage's layout descriptor.
+fn region(kind: RegionKind) -> Result<Region, ServiceError> {
+    regions()?.region(kind).ok_or(ServiceError::InvalidParam)
+}
+
+fn window(region: Region) -> fstart_stage::boot::MemoryWindow {
+    fstart_stage::boot::MemoryWindow {
+        start: region.base,
+        size: region.size,
     }
+}
+
+/// Load only the descriptor pinned into this bootblock, from the SPI
+/// flash the firmware window maps. The pin detects mainstage
+/// corruption, not whole-image replacement: the board has no
+/// established protected verifier for the initial image.
+fn load_mainstage(config: &Fu740Config, dram: Range) -> Result<u64, ServiceError> {
+    use fstart_core::services::boot_media::MemoryMapped;
+    use fstart_stage::boot::MemoryPolicy;
+
+    fstart_log::info!(
+        "fu740: development integrity; no hardware secure boot or rollback enforcement"
+    );
+    let descriptor = fstart_stage::next_stage::pinned_bootstrap_descriptor()
+        .map_err(|_| ServiceError::InvalidParam)?;
+    let destination = region(RegionKind::BootstrapMainstage)?;
+    let handoff = region(RegionKind::Reserved)?;
+    if descriptor.load_addr != destination.base
+        || descriptor
+            .loaded_size
+            .checked_add(descriptor.scratch_size)
+            .is_none_or(|size| size > destination.size)
+        || dram.size == 0
+    {
+        return Err(ServiceError::InvalidParam);
+    }
+    let writable = [fstart_stage::boot::MemoryWindow {
+        start: dram.base,
+        size: dram.size,
+    }];
+    let reserved = [window(handoff)];
+    let policy = MemoryPolicy {
+        writable: &writable,
+        reserved: &reserved,
+        entry_alignment: 4,
+    };
+    // SAFETY: the firmware window is the board's mapped SPI flash. DDR
+    // training completed; the loader authenticates the mainstage before
+    // granting its entry, within the bounded DRAM policy above. This
+    // stage's code, stack and heap live in LIM, disjoint from DRAM.
+    let executable = unsafe {
+        let media = MemoryMapped::from_raw_addr(
+            config.firmware_base,
+            usize::try_from(config.firmware_size).map_err(|_| ServiceError::InvalidParam)?,
+        );
+        fstart_stage::boot::load_bootstrap(
+            &media,
+            &descriptor,
+            &policy,
+            const { fstart_stage::boot::codec(crate::compression::MAIN_STAGE) },
+            &fstart_stage::boot::Measurement::NONE,
+        )
+    }
+    .map_err(|_| ServiceError::InvalidParam)?;
+    Ok(executable.entry())
+}
+
+/// The DRAM mainstage: take the bootblock's handoff, retire the LIM,
+/// mount the verified FFS and boot the payload.
+pub fn main_stage(
+    config: &'static Fu740Config,
+    slot: &'static StaticConsole<SifiveUart>,
+    uart: &'static SifiveUartConfig,
+    handoff_addr: usize,
+) -> ! {
+    route_console_uart();
+    let Ok(mut console) = SifiveUart::new(uart) else {
+        fstart_arch::riscv64::halt()
+    };
+    if console.init().is_err() {
+        fstart_arch::riscv64::halt();
+    }
+    let console = slot.install(console);
+    let handoff = step("handoff window", || region(RegionKind::Reserved));
+    if handoff_addr != handoff.base as usize {
+        fail("handoff address");
+    }
+    // SAFETY: the bootblock serialized the handoff into this reserved
+    // window before jumping here, and kept it out of this stage's load.
+    let inherited = match unsafe { fstart_stage::handoff::try_deserialize(handoff.base as usize) } {
+        Some(inherited) => inherited,
+        None => fail("handoff"),
+    };
+    // Only the bounded locator is inherited, not predecessor trust.
+    let locator = inherited.locator;
+    if locator.image_offset.get() != 0 || !locator.media().validate(config.firmware_size) {
+        fail("locator");
+    }
+    // SAFETY: single-hart entry, before any directory is mounted.
+    if unsafe { fstart_stage::anchor::install_locator(locator, config.firmware_size) }.is_err() {
+        fail("locator");
+    }
+    // Never grant more RAM than the trusted DDR profile initialized.
+    let dram_size = inherited.dram_size.get().min(config.ddr.dram_size);
+    // This stage runs from DRAM; nothing live is left in LIM.
+    fstart_driver_sifive::fu740_l2::enable_all_ways();
+    step("boot media", || {
+        install_boot_context(config, dram_size, handoff_addr)
+    });
+    fstart_log::info!("fu740 mainstage: ready for payload");
+    hand_off(config, console, |handoff| fstart_payload::boot(handoff, ()))
 }
 
 /// OpenSBI's return into S-mode: launch CrabEFI with the console in `slot`.

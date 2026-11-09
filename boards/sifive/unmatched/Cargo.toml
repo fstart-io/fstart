@@ -20,4 +20,5 @@ fstart-driver-uart = { path = "../../../crates/driver-uart" }
 fstart-log = { path = "../../../crates/log" }
 fstart-platform-sifive = { path = "../../../crates/platform-sifive", default-features = false }
 
-# One binary per stage, named after the stage: src/bin/stage.rs.
+# One binary per stage, named after the stage: src/bin/bootblock.rs and
+# src/bin/main.rs.

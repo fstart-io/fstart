@@ -28,8 +28,12 @@ _start:
     //
     // Following coreboot's approach (src/arch/riscv/bootblock.S): save DTB
     // in the mscratch CSR which is immune to stack overflow. The hart ID
-    // can always be re-read from mhartid.
+    // can always be re-read from mhartid. Preserve a0 itself in s1 across
+    // the copy/clear loops: from the ROM it is the hart ID, from a
+    // predecessor stage (jump_to_with_handoff) it is the handoff address
+    // fstart_main receives.
     csrw mscratch, a1
+    mv   s1, a0
 
     // --- Multi-hart parking ---
     // Park all harts except the designated boot hart. On the SiFive FU740,
@@ -79,9 +83,9 @@ _start:
     addi t0, t0, 8
     j 3b
 4:
-    // Jump to Rust entry point.
-    // a0 = handoff_ptr = 0 (no inter-stage handoff on RISC-V yet).
-    li a0, 0
+    // Jump to Rust entry point with the preserved a0 (hart ID from the
+    // ROM, handoff address from a predecessor stage).
+    mv a0, s1
     call fstart_main
     // Should never return; fall through to park
 
