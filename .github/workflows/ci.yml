@@ -101,9 +101,10 @@ jobs:
           cargo test
           cargo test -p fstart-stage \
             --features ffs,ffs-signature,fdt,fit,x86_64 --lib
-          # Coreboot payloads call the stage's public measured loader, also
-          # without a TPM. Check both selections before boot-asset jobs run.
-          for features in coreboot coreboot,tcg; do
+          # Coreboot and bare ELF payloads call the stage's public measured
+          # loader, also without a TPM. Check the selections before boot-asset
+          # jobs run.
+          for features in coreboot coreboot,tcg elf; do
             cargo check -p fstart-payload \
               --features "$features,fstart-stage/x86_64" --lib
           done
