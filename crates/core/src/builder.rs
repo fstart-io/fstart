@@ -80,6 +80,27 @@ pub fn x86_coreboot_payload(compression: Compression) -> PayloadConfig {
     }
 }
 
+/// Bare ELF payload policy; the ELF comes from the build's `kernel` input.
+#[must_use]
+pub fn elf_payload(compression: Compression) -> PayloadConfig {
+    PayloadConfig {
+        kind: PayloadKind::CustomElf,
+        kernel_file: None,
+        kernel_load_addr: None,
+        x86_zero_page_addr: None,
+        fdt: FdtSource::Platform,
+        dtb_addr: None,
+        src_dtb_addr: None,
+        bootargs: None,
+        print_x86_mtrrs: false,
+        compression,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    }
+}
+
 /// Ed25519 signatures over SHA-256 file digests.
 #[must_use]
 pub fn default_security_config() -> SecurityConfig {

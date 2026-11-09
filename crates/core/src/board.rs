@@ -457,7 +457,8 @@ pub enum PayloadKind {
     FitImage,
     /// Interactive debug shell
     Shell,
-    /// Custom ELF payload
+    /// Bare ELF: its loadable segments loaded with BSS cleared, entered at
+    /// `e_entry` with no arguments.
     CustomElf,
     /// UEFI payload via CrabEFI library.
     ///

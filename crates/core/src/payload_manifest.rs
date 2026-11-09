@@ -1,6 +1,9 @@
 //! Build-generated payload policy consumed by runtime launchers.
 //!
-//! Wire format: an 8-byte magic (`FSLNX001`, trailing `001` is the version),
+//! Bare ELF ([`ElfManifest`]): the 8-byte magic `FSELF001`, then the entry
+//! address little-endian; exactly [`ElfManifest::LEN`] bytes.
+//!
+//! x86 Linux ([`X86LinuxManifest`]): an 8-byte magic (`FSLNX001`, trailing `001` is the version),
 //! then the [`Header`] fields little-endian (kernel load address, zero-page
 //! address, flags, bootargs length, two reserved zero bytes), then the raw
 //! UTF-8 bootargs with no NUL terminator. Total length must equal exactly
@@ -30,6 +33,49 @@ pub const X86_LINUX_DEFAULT_ZERO_PAGE_ADDR: u64 = 0x0009_0000;
 pub const X86_LINUX_MAX_BOOTARGS: usize = 256;
 /// Shared error when x86 Linux boot arguments exceed [`X86_LINUX_MAX_BOOTARGS`].
 pub const X86_LINUX_BOOTARGS_TOO_LONG: &str = "x86 Linux boot arguments exceed 256 bytes";
+
+/// Verified FFS asset holding a bare ELF payload's entry point.
+pub const ELF_MANIFEST_ASSET: &str = "elf-manifest";
+
+const ELF_MAGIC: [u8; 8] = *b"FSELF001";
+
+#[derive(Clone, Copy, Debug, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct ElfHeader {
+    magic: [u8; 8],
+    entry: U64<LE>,
+}
+
+/// Where a bare ELF payload is entered: its ELF header's `e_entry`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ElfManifest {
+    pub entry: u64,
+}
+
+impl ElfManifest {
+    pub const LEN: usize = core::mem::size_of::<ElfHeader>();
+
+    #[must_use]
+    pub fn encode(&self) -> [u8; Self::LEN] {
+        let mut bytes = [0; Self::LEN];
+        bytes.copy_from_slice(
+            ElfHeader {
+                magic: ELF_MAGIC,
+                entry: U64::new(self.entry),
+            }
+            .as_bytes(),
+        );
+        bytes
+    }
+
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let header = ElfHeader::read_from_bytes(bytes).ok()?;
+        (header.magic == ELF_MAGIC).then_some(Self {
+            entry: header.entry.get(),
+        })
+    }
+}
 
 const MAGIC: [u8; 8] = *b"FSLNX001";
 const HEADER_LEN: usize = core::mem::size_of::<Header>();
@@ -112,6 +158,22 @@ impl X86LinuxManifest<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elf_manifest_round_trips_and_rejects_other_lengths() {
+        let bytes = ElfManifest { entry: 0x8009_60A0 }.encode();
+        assert_eq!(
+            ElfManifest::decode(&bytes),
+            Some(ElfManifest { entry: 0x8009_60A0 })
+        );
+        assert_eq!(ElfManifest::decode(&bytes[..ElfManifest::LEN - 1]), None);
+        let mut long = [0; ElfManifest::LEN + 1];
+        long[..ElfManifest::LEN].copy_from_slice(&bytes);
+        assert_eq!(ElfManifest::decode(&long), None);
+        let mut magic = bytes;
+        magic[0] = b'X';
+        assert_eq!(ElfManifest::decode(&magic), None);
+    }
 
     fn encode_default(bootargs: &str, print_mtrrs: bool) -> heapless::Vec<u8, 288> {
         X86LinuxManifest::encode(

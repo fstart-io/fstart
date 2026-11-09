@@ -36,19 +36,8 @@ pub(crate) fn add(
     let image = crate::elf_flat::flatten(&data)
         .map_err(|e| format!("coreboot payload {}: {e}", elf_path.display()))?;
 
-    ro_files.push(InputFile {
-        name: "payload".into(),
-        file_type: FileType::Payload,
-        segments: vec![InputSegment {
-            name: ".text".into(),
-            kind: SegmentKind::Code,
-            mem_size: (image.mem_size > image.data.len() as u64).then_some(image.mem_size),
-            data: image.data,
-            load_addr: image.load_addr,
-            compression: payload.compression,
-            flags: SegmentFlags::CODE,
-        }],
-    });
+    let entry = image.entry;
+    ro_files.push(crate::elf_flat::payload_file(image, payload.compression));
 
     let contents = files
         .iter()
@@ -60,7 +49,7 @@ pub(crate) fn add(
         .collect::<Result<Vec<_>, String>>()?;
     let files: Vec<(&str, &[u8])> = contents.iter().map(|(n, d)| (*n, d.as_slice())).collect();
     let mut bytes = vec![0; manifest::encoded_len(&files)];
-    manifest::encode(image.entry, &files, &mut bytes)?;
+    manifest::encode(entry, &files, &mut bytes)?;
     ro_files.push(data_file(
         manifest::ASSET.into(),
         bytes,

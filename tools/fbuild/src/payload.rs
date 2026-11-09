@@ -10,6 +10,9 @@ pub enum PayloadChoice {
     Linux,
     /// coreboot payload ELF from `--kernel`, e.g. SeaBIOS.
     Coreboot,
+    /// Bare ELF from `--kernel`, entered at its entry point with no
+    /// arguments, e.g. a TamaGo image.
+    Elf,
     Halt,
 }
 
@@ -67,6 +70,7 @@ impl PayloadChoice {
             Self::UefiBasic => "uefi-basic",
             Self::Linux => "linux",
             Self::Coreboot => "coreboot",
+            Self::Elf => "elf",
             Self::Halt => "halt",
         }
     }

@@ -2,6 +2,8 @@
 //! segments are zero-filled, trailing BSS stays a memory size the loader
 //! clears.
 
+use fstart_core::ffs::{Compression, FileType, SegmentFlags, SegmentKind};
+use fstart_ffs::builder::{InputFile, InputSegment};
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 
@@ -15,6 +17,23 @@ pub(crate) struct FlatImage {
     /// Loaded footprint including trailing BSS.
     pub mem_size: u64,
     pub entry: u64,
+}
+
+/// The FFS payload file loading `image` at its address.
+pub(crate) fn payload_file(image: FlatImage, compression: Compression) -> InputFile {
+    InputFile {
+        name: "payload".into(),
+        file_type: FileType::Payload,
+        segments: vec![InputSegment {
+            name: ".text".into(),
+            kind: SegmentKind::Code,
+            mem_size: (image.mem_size > image.data.len() as u64).then_some(image.mem_size),
+            data: image.data,
+            load_addr: image.load_addr,
+            compression,
+            flags: SegmentFlags::CODE,
+        }],
+    }
 }
 
 pub(crate) fn flatten(elf_data: &[u8]) -> Result<FlatImage, String> {
