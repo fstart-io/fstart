@@ -90,7 +90,9 @@ rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "
 rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 
 # ASPEED register access, generated from kyanitecomputer/aspeed-data.
-aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "a5eed56e4d49586ec18ac20e47c5b6c767e39553", default-features = false }
+aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "f0a6500555d973689963bf608f14bae851393fa7", default-features = false }
+# Blocking ASPEED driver cores; pins the same aspeed-data revision.
+aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "a0b9be4af82d71569c2cde0b0603996679ce191a", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
@@ -143,6 +145,7 @@ fstart-boot = { path = "crates/boot" }
 fstart-resume = { path = "crates/resume" }
 fstart-store = { path = "crates/store" }
 fstart-timestamp = { path = "crates/timestamp" }
+fstart-memtest = { path = "crates/memtest" }
 
 [profile.dev]
 panic = "abort"

@@ -74,9 +74,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aspeed-hal"
+version = "0.1.0"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=a0b9be4af82d71569c2cde0b0603996679ce191a#a0b9be4af82d71569c2cde0b0603996679ce191a"
+dependencies = [
+ "aspeed-mmio",
+ "aspeed-pac",
+]
+
+[[package]]
+name = "aspeed-mmio"
+version = "0.1.0"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=a0b9be4af82d71569c2cde0b0603996679ce191a#a0b9be4af82d71569c2cde0b0603996679ce191a"
+
+[[package]]
 name = "aspeed-pac"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=a5eed56e4d49586ec18ac20e47c5b6c767e39553#a5eed56e4d49586ec18ac20e47c5b6c767e39553"
+source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=f0a6500555d973689963bf608f14bae851393fa7#f0a6500555d973689963bf608f14bae851393fa7"
 
 [[package]]
 name = "atomic_refcell"
@@ -1491,12 +1505,14 @@ dependencies = [
 name = "fstart-platform-aspeed"
 version = "0.1.0"
 dependencies = [
+ "aspeed-hal",
  "aspeed-pac",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
+ "fstart-memtest",
  "fstart-stage",
  "serde_json",
  "ufmt",
