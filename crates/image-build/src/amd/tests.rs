@@ -6,8 +6,12 @@ use fstart_amdfw_format::{
     efs::BiosDirectorySlot,
 };
 use zerocopy::FromBytes;
-fn image() -> PicassoImage {
-    PicassoImage {
+/// The slot Picasso's PSP takes the BIOS directory from.
+const PICASSO: BiosDirectorySlot = BiosDirectorySlot::Family17hModel10;
+
+fn image() -> SingleLevelImage {
+    SingleLevelImage {
+        bios_directory: PICASSO,
         flash_size: 0x1000000,
         efs_offset: 0xe20000,
         partition_end: 0x1000000,
@@ -70,7 +74,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         ffs: None,
         stage_unit: "stage".into(),
         flash_size: raw.flash_size,
-        bios_directory: PicassoImage::BIOS_DIRECTORY,
+        bios_directory: PICASSO,
         reset_destination: raw.reset_destination,
         reset_size: raw.reset_image.len() as u32,
         apob_destination: raw.apob_destination,
@@ -547,7 +551,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         ffs: Some(ffs_window(0xb8_0000, 0x29_f000)),
         stage_unit: "stage".into(),
         flash_size: 0x100_0000,
-        bios_directory: PicassoImage::BIOS_DIRECTORY,
+        bios_directory: PICASSO,
         reset_size,
         reset_destination: 0x300_0000,
         apob_destination: 0x200_1000,
@@ -589,9 +593,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
             .iter()
             .all(|&b| b == 0xff)
     );
-    let levels = Flash::new(&image.bytes)
-        .bios_directories(PicassoImage::BIOS_DIRECTORY)
-        .unwrap();
+    let levels = Flash::new(&image.bytes).bios_directories(PICASSO).unwrap();
     let boot = levels.boot();
     let reset = boot
         .entries
