@@ -281,6 +281,12 @@ impl Riscv64UefiPayload {
             fstart_log::error!("RISC-V UEFI payload: OpenSBI load failed");
             fstart_arch::riscv64::halt();
         }
+        // Without a device tree from the boot ROM or emulator (a stage a
+        // predecessor entered passes none), the FFS carries the board's.
+        if dtb_addr == 0 && boot.load_fdt(placement.device_tree).is_err() {
+            fstart_log::error!("RISC-V UEFI payload: FFS device tree load failed");
+            fstart_arch::riscv64::halt();
+        }
 
         let info = fstart_arch::riscv64::FwDynamicInfo::new(
             fstart_arch::riscv64::sbi_resume_trampoline(),
