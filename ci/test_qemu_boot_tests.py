@@ -107,6 +107,38 @@ class QemuBootTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("1 passed, 0 failed", result.stdout)
 
+    def run_list(self, *filters):
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--list", *filters],
+            cwd=self.root,
+            env=dict(
+                os.environ,
+                PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+                QEMU_BOOT_LOG_DIR=str(self.log_dir),
+                QEMU_BOOT_X86_ASSETS=str(self.x86_assets),
+            ),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+    def test_list_prints_every_combination_without_building(self):
+        result = self.run_list()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        combos = result.stdout.splitlines()
+        # Asset-gated entries are listed even though no assets exist, and
+        # nothing was built or booted to find them.
+        self.assertIn("qemu-q35 uefi-disk", combos)
+        self.assertIn("qemu-sbsa halt", combos)
+        self.assertIn("orangepi-r1 linux", combos)
+        self.assertEqual(len(combos), len(set(combos)))
+        self.assertFalse(self.calls.exists())
+
+    def test_list_honours_filters(self):
+        result = self.run_list("--board", "qemu-q35", "--payload", "uefi")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["qemu-q35 uefi"])
+
     def test_cold_build_does_not_consume_boot_timeout(self):
         result, calls = self.run_matrix(MOCK_BUILD_DELAY="2")
         self.assert_passed(result)
