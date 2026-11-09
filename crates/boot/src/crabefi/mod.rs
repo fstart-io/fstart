@@ -65,6 +65,9 @@ pub struct PlatformConfig<'a> {
 
 /// Common fstart-owned UEFI launch inputs.
 pub struct UefiLaunchConfig<'a> {
+    /// Boot-lifetime ACPI shutdown controls supplied by the platform.
+    /// These do not extend the pinned separate runtime image's reset ABI.
+    pub acpi_s5: &'a [fstart_core::description::AcpiSleepControl],
     /// Enabled fixed-address devices from the platform, without re-parsing AML.
     pub acpi_devices: &'a [fstart_core::acpi::AcpiGenericDevice],
     /// Console selected by board policy for UEFI debug/input adapters.
@@ -160,7 +163,9 @@ pub fn launch_x86_uefi(
 ) -> ! {
     fstart_arch::x86::boot::disable_boot_media_rom_cache_for_handoff();
     let timer = TscTimer::new();
-    let reset = X86Reset;
+    let reset = X86Reset {
+        controls: launch.acpi_s5,
+    };
     let rng = X86Rng::new();
     let mut memory_map_buf: [MemoryRegion; 64] = [MemoryRegion {
         base: 0,
@@ -344,6 +349,11 @@ impl<'a, C: fstart_core::services::Console + ?Sized> ConsoleAdapter<'a, C> {
 impl<C: fstart_core::services::Console + ?Sized> crabefi::DebugOutput for ConsoleAdapter<'_, C> {
     fn write_byte(&mut self, byte: u8) {
         let _ = self.console.write_byte(byte);
+        // EHCI and SPI are buffered; a complete CrabEFI log line must not
+        // wait for an unrelated later message to fill the transmit buffer.
+        if byte == b'\n' {
+            let _ = self.console.flush();
+        }
     }
 
     fn try_read_byte(&self) -> Option<u8> {
@@ -361,9 +371,9 @@ impl<C: fstart_core::services::Console + ?Sized> fmt::Write for ConsoleAdapter<'
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
             if byte == b'\n' {
-                let _ = self.console.write_byte(b'\r');
+                crabefi::DebugOutput::write_byte(self, b'\r');
             }
-            let _ = self.console.write_byte(byte);
+            crabefi::DebugOutput::write_byte(self, byte);
         }
         Ok(())
     }
@@ -660,21 +670,19 @@ impl crabefi::Timer for TscTimer {
 // x86 Keyboard Controller Reset → CrabEFI ResetHandler
 // ---------------------------------------------------------------------------
 
-/// CrabEFI [`ResetHandler`](crabefi::ResetHandler) using the x86 keyboard
-/// controller reset (port 0x64) with triple-fault fallback.
+/// Boot-lifetime reset adapter: platform-owned ACPI shutdown controls and
+/// keyboard-controller reboot with triple-fault fallback.
 #[cfg(target_arch = "x86_64")]
-pub struct X86Reset;
+pub struct X86Reset<'a> {
+    controls: &'a [fstart_core::description::AcpiSleepControl],
+}
 
 #[cfg(target_arch = "x86_64")]
-impl crabefi::ResetHandler for X86Reset {
+impl crabefi::ResetHandler for X86Reset<'_> {
     fn reset(&self, reset_type: crabefi::ResetType) -> ! {
         match reset_type {
             crabefi::ResetType::Shutdown => {
-                // ACPI S5 (soft-off) via QEMU's ACPI PM1a control register.
-                // QEMU Q35: PM1a_CNT at I/O port 0x0404.
-                unsafe {
-                    fstart_core::pio::outw(0x0404, 0x2000); // SLP_EN (bit 13); QEMU _S5 defines SLP_TYP=0
-                }
+                fstart_arch::x86::legacy_pc::enter_acpi_s5(self.controls);
             }
             _ => {
                 // Keyboard controller reset: pulse CPU reset line

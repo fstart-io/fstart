@@ -10,6 +10,62 @@
 use heapless::String as HString;
 use serde::{Deserialize, Serialize};
 
+/// Physical system-slot description (SMBIOS Type 9), independent of chipset
+/// and of whether a card happened to be present during boot.
+///
+/// Numeric fields use SMBIOS encodings, not PCI encodings. In particular,
+/// `data_bus_width = 0x08` means x1, not eight bits. PCI association and
+/// occupancy are runtime facts, not part of this physical description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemSlot<'a> {
+    pub designation: &'a str,
+    pub slot_type: u8,
+    pub data_bus_width: u8,
+    pub length: u8,
+    pub id: u16,
+    /// SMBIOS slot characteristics bytes 1 and 2 (voltage, PME, hot-plug, ...).
+    pub characteristics: [u8; 2],
+}
+
+impl<'a> SystemSlot<'a> {
+    /// An otherwise unknown physical slot; platforms can fill in known facts.
+    pub const fn new(designation: &'a str) -> Self {
+        Self {
+            designation,
+            slot_type: 0x02,
+            data_bus_width: 0x02,
+            length: 0x02,
+            id: 0,
+            characteristics: [1, 0],
+        }
+    }
+}
+
+/// Board-fixed association of a physical slot with its upstream PCI bridge.
+/// These are enumeration lookup coordinates, not the PCI address emitted in
+/// Type 9. The split fields allow const board metadata without replacing the
+/// canonical PCI address/access APIs used at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciSlot<'a> {
+    pub slot: SystemSlot<'a>,
+    pub bridge_segment: u16,
+    pub bridge_bus: u8,
+    /// Device/function encoded as in a PCI config address.
+    pub bridge_devfn: u8,
+}
+
+/// Boot-time slot usage (SMBIOS Type 9). A present root port alone does not
+/// mean that its physical slot is occupied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SlotUsage {
+    Other = 0x01,
+    Unknown = 0x02,
+    Available = 0x03,
+    InUse = 0x04,
+    Unavailable = 0x05,
+}
+
 /// Top-level SMBIOS configuration, from the board metadata `smbios` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -10,10 +10,52 @@ use sha2::{Digest, Sha256};
 use zerocopy::byteorder::{LittleEndian, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-pub const MAX_PAYLOAD: usize = 768;
+/// Platform-owned CAR buffers: the cached record and the new training output.
+/// They are independent so replay input cannot alias the driver's capture.
+pub struct TrainingBuffers<'a> {
+    pub cached: &'a mut [u8],
+    pub capture: &'a mut [u8],
+}
+
+/// One-shot static storage, instantiated at the platform's chosen capacity.
+/// The common journal and boot flow only see the borrowed slices.
+pub struct TrainingWorkspace<const N: usize> {
+    buffers: core::cell::UnsafeCell<[[u8; N]; 2]>,
+    taken: core::sync::atomic::AtomicBool,
+}
+
+// SAFETY: only the successful take() can access the private buffers; the
+// token is never released, so no second mutable reference can be created.
+unsafe impl<const N: usize> Sync for TrainingWorkspace<N> {}
+
+impl<const N: usize> TrainingWorkspace<N> {
+    pub const fn new() -> Self {
+        assert!(N > 0, "training buffers must not be empty");
+        Self {
+            buffers: core::cell::UnsafeCell::new([[0; N]; 2]),
+            taken: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn take(&'static self) -> Option<TrainingBuffers<'static>> {
+        use core::sync::atomic::Ordering;
+        self.taken
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()?;
+        // SAFETY: this call owns the only token, and the storage is static.
+        let [cached, capture] = unsafe { &mut *self.buffers.get() };
+        Some(TrainingBuffers { cached, capture })
+    }
+}
+
+impl<const N: usize> Default for TrainingWorkspace<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 const MAGIC: [u8; 8] = *b"FSTMRC01";
 
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 struct Header {
     magic: [u8; 8],
@@ -29,6 +71,21 @@ const HEADER_SIZE: usize = core::mem::size_of::<Header>();
 const COMMIT_OFFSET: usize = HEADER_SIZE - 4;
 const DIGEST_OFFSET: usize = COMMIT_OFFSET - 32;
 
+impl Header {
+    fn payload_len(&self, extent: usize, committed: bool) -> Option<usize> {
+        let length = self.length.get() as usize;
+        (self.magic == MAGIC
+            && self.version.get() == 1
+            && self.reserved.get() == 0
+            && length != 0
+            && HEADER_SIZE
+                .checked_add(length)
+                .is_some_and(|end| end <= extent)
+            && self.commit.get() == if committed { 0 } else { u32::MAX })
+        .then_some(length)
+    }
+}
+
 /// Narrow storage contract; every offset is relative to the trusted cache
 /// extent. The backend enforces physical bounds, chip geometry and protection.
 pub trait Storage {
@@ -37,34 +94,53 @@ pub trait Storage {
     fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError>;
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Record {
+/// A validated payload view; moving a record never copies the training bytes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Record<'a> {
     pub key: [u8; 32],
     pub sequence: u32,
-    payload: [u8; MAX_PAYLOAD],
-    length: usize,
+    payload: &'a [u8],
 }
-impl Record {
-    pub const fn empty() -> Self {
-        Self {
-            key: [0; 32],
-            sequence: 0,
-            payload: [0; MAX_PAYLOAD],
-            length: 0,
-        }
-    }
-    pub fn new(key: [u8; 32], payload: &[u8]) -> Result<Self, ServiceError> {
-        if payload.is_empty() || payload.len() > MAX_PAYLOAD {
+impl<'a> Record<'a> {
+    pub fn new(key: [u8; 32], payload: &'a [u8]) -> Result<Self, ServiceError> {
+        if payload.is_empty()
+            || u32::try_from(payload.len()).is_err()
+            || HEADER_SIZE.checked_add(payload.len()).is_none()
+        {
             return Err(ServiceError::InvalidParam);
         }
-        let mut record = Self::empty();
-        record.key = key;
-        record.length = payload.len();
-        record.payload[..payload.len()].copy_from_slice(payload);
-        Ok(record)
+        Ok(Self {
+            key,
+            sequence: 0,
+            payload,
+        })
     }
-    pub fn payload(&self) -> &[u8] {
-        &self.payload[..self.length]
+    pub fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+    /// Exact encoded size for a pending record in the firmware store.
+    pub fn encoded_size(&self) -> usize {
+        HEADER_SIZE + self.payload.len()
+    }
+
+    /// Validate a committed record in caller-owned RAM without copying it.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, ServiceError> {
+        let header = bytes
+            .get(..HEADER_SIZE)
+            .and_then(|bytes| Header::ref_from_bytes(bytes).ok())
+            .ok_or(ServiceError::HardwareError)?;
+        let length = header
+            .payload_len(bytes.len(), true)
+            .ok_or(ServiceError::HardwareError)?;
+        let payload = &bytes[HEADER_SIZE..HEADER_SIZE + length];
+        if checksum(&bytes[..DIGEST_OFFSET], payload) != header.digest {
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(Self {
+            key: header.key,
+            sequence: header.sequence.get(),
+            payload,
+        })
     }
 }
 
@@ -84,57 +160,86 @@ impl Journal {
         Ok(Self { bank_size })
     }
 
+    // Verification uses a fixed chunk, never a payload-sized stack object.
     fn read_bank(
         &self,
         flash: &mut impl Storage,
         bank: usize,
         committed: bool,
-    ) -> Result<Option<Record>, ServiceError> {
+        capacity: usize,
+    ) -> Result<Option<Header>, ServiceError> {
         let offset = bank as u32 * self.bank_size;
         let mut bytes = [0u8; HEADER_SIZE];
         flash.read(offset, &mut bytes)?;
-        let header = Header::ref_from_bytes(&bytes).map_err(|_| ServiceError::InvalidParam)?;
-        let length = header.length.get() as usize;
-        if header.magic != MAGIC
-            || header.version.get() != 1
-            || header.reserved.get() != 0
-            || length == 0
-            || length > MAX_PAYLOAD
-            || HEADER_SIZE + length > self.bank_size as usize
-            || header.commit.get() != if committed { 0 } else { u32::MAX }
-        {
+        let header = Header::read_from_bytes(&bytes).map_err(|_| ServiceError::InvalidParam)?;
+        let Some(length) = header
+            .payload_len(self.bank_size as usize, committed)
+            .filter(|length| *length <= capacity)
+        else {
             return Ok(None);
+        };
+        let mut hash = Sha256::new();
+        hash.update(&bytes[..DIGEST_OFFSET]);
+        let mut chunk = [0; 64];
+        for at in (0..length).step_by(chunk.len()) {
+            let count = chunk.len().min(length - at);
+            flash.read(offset + HEADER_SIZE as u32 + at as u32, &mut chunk[..count])?;
+            hash.update(&chunk[..count]);
         }
-        let mut record = Record::empty();
-        record.key = header.key;
-        record.sequence = header.sequence.get();
-        record.length = length;
-        flash.read(offset + HEADER_SIZE as u32, &mut record.payload[..length])?;
-        let digest = checksum(&bytes[..DIGEST_OFFSET], record.payload());
-        if digest != header.digest {
-            return Ok(None);
-        }
-        Ok(Some(record))
+        let digest: [u8; 32] = hash.finalize().into();
+        Ok((digest == header.digest).then_some(header))
     }
 
-    /// Load the newest complete record. Storage failures are not cache misses.
-    /// Callers must independently match `key` and decode/validate the payload;
-    /// on S3, any mismatch or miss must reset rather than cold-train retained RAM.
-    pub fn load(&self, flash: &mut impl Storage) -> Result<Option<(usize, Record)>, ServiceError> {
-        let first = self.read_bank(flash, 0, true)?;
-        let second = self.read_bank(flash, 1, true)?;
-        Ok(match (first, second) {
-            (None, None) => None,
-            (Some(a), None) => Some((0, a)),
-            (None, Some(b)) => Some((1, b)),
-            (Some(a), Some(b)) => {
-                if newer(b.sequence, a.sequence) {
-                    Some((1, b))
-                } else {
-                    Some((0, a))
-                }
+    fn valid_banks(
+        &self,
+        flash: &mut impl Storage,
+        capacity: usize,
+    ) -> Result<[Option<(usize, Header)>; 2], ServiceError> {
+        let mut banks = [
+            self.read_bank(flash, 0, true, capacity)?
+                .map(|header| (0, header)),
+            self.read_bank(flash, 1, true, capacity)?
+                .map(|header| (1, header)),
+        ];
+        if matches!((&banks[0], &banks[1]), (Some((_, a)), Some((_, b)))
+            if newer(b.sequence.get(), a.sequence.get()))
+        {
+            banks.swap(0, 1);
+        }
+        Ok(banks)
+    }
+
+    /// Load into caller-owned storage and borrow the verified payload from it.
+    /// Oversized records are cache misses; I/O failures remain errors. Callers
+    /// must match `key` and decode the payload. An S3 miss must reset, not train.
+    pub fn load<'a>(
+        &self,
+        flash: &mut impl Storage,
+        buffer: &'a mut [u8],
+    ) -> Result<Option<(usize, Record<'a>)>, ServiceError> {
+        let mut selected = None;
+        for (bank, header) in self.valid_banks(flash, buffer.len())?.into_iter().flatten() {
+            let length = header.length.get() as usize;
+            flash.read(
+                bank as u32 * self.bank_size + HEADER_SIZE as u32,
+                &mut buffer[..length],
+            )?;
+            // Check the actual bytes returned to the caller, too.
+            if checksum(&header.as_bytes()[..DIGEST_OFFSET], &buffer[..length]) == header.digest {
+                selected = Some((bank, header));
+                break;
             }
-        })
+        }
+        Ok(selected.map(|(bank, header)| {
+            (
+                bank,
+                Record {
+                    key: header.key,
+                    sequence: header.sequence.get(),
+                    payload: &buffer[..header.length.get() as usize],
+                },
+            )
+        }))
     }
 
     /// Commit into the inactive bank, preserving the active one on any error.
@@ -142,27 +247,37 @@ impl Journal {
     pub fn save(
         &self,
         flash: &mut impl Storage,
-        record: &Record,
+        record: &Record<'_>,
         boot: BootPath,
     ) -> Result<bool, ServiceError> {
-        if boot == BootPath::S3Resume || record.length == 0 || record.length > MAX_PAYLOAD {
+        if boot == BootPath::S3Resume
+            || record.payload.is_empty()
+            || record.payload.len() > self.bank_size as usize - HEADER_SIZE
+        {
             return Err(ServiceError::InvalidParam);
         }
-        let current = self.load(flash)?;
-        if current
-            .as_ref()
-            .is_some_and(|(_, old)| old.key == record.key && old.payload() == record.payload())
-        {
+        let current = self
+            .valid_banks(flash, self.bank_size as usize - HEADER_SIZE)?
+            .into_iter()
+            .flatten()
+            .next();
+        // Like coreboot's MRC metadata comparison, compare the verified
+        // digest instead of copying another full payload to RAM.
+        if current.as_ref().is_some_and(|(_, old)| {
+            old.key == record.key
+                && old.length.get() as usize == record.payload.len()
+                && checksum(&old.as_bytes()[..DIGEST_OFFSET], record.payload) == old.digest
+        }) {
             return Ok(false);
         }
         let (bank, sequence) = current.map_or((0, 0), |(bank, old)| {
-            (1 - bank, old.sequence.wrapping_add(1))
+            (1 - bank, old.sequence.get().wrapping_add(1))
         });
         let mut header = Header {
             magic: MAGIC,
             version: 1.into(),
             sequence: sequence.into(),
-            length: (record.length as u32).into(),
+            length: (record.payload.len() as u32).into(),
             reserved: 0.into(),
             key: record.key,
             digest: [0; 32],
@@ -178,19 +293,15 @@ impl Journal {
         for (chunk, bytes) in record.payload().chunks(64).enumerate() {
             flash.program(offset + HEADER_SIZE as u32 + (chunk * 64) as u32, bytes)?;
         }
-        let verified = self
-            .read_bank(flash, bank, false)?
-            .ok_or(ServiceError::HardwareError)?;
-        if verified.key != record.key
-            || verified.sequence != sequence
-            || verified.payload() != record.payload()
-        {
+        if self.read_bank(flash, bank, false, record.payload.len())? != Some(header) {
             return Err(ServiceError::HardwareError);
         }
         // Commit marker is programmed LAST, only after a full uncached readback.
         flash.program(offset + COMMIT_OFFSET as u32, &[0; 4])?;
-        self.read_bank(flash, bank, true)?
-            .ok_or(ServiceError::HardwareError)?;
+        header.commit = 0.into();
+        if self.read_bank(flash, bank, true, record.payload.len())? != Some(header) {
+            return Err(ServiceError::HardwareError);
+        }
         Ok(true)
     }
 }
@@ -279,15 +390,24 @@ pub(crate) fn runtime_key<B: crate::IntelBoard>(
     Ok(hash.finalize().into())
 }
 
-#[cfg(all(feature = "stage", feature = "memory-cache"))]
+/// Publish into an owned DRAM store entry. The store's final writeback
+/// publishes this entry along with the other entries before CAR teardown.
+///
+/// # Safety
+/// `region` must be exclusively owned, mapped RAM, disjoint from `payload`.
+/// The caller must write the store back before a transition that could discard
+/// dirty cache lines.
+#[cfg(any(all(feature = "stage", feature = "memory-cache"), test))]
 pub(crate) unsafe fn publish_pending(
     region: fstart_core::layout::Region,
     key: [u8; 32],
     payload: &[u8],
 ) -> Result<(), ServiceError> {
     if payload.is_empty()
-        || payload.len() > MAX_PAYLOAD
-        || region.size < (HEADER_SIZE + payload.len()) as u64
+        || u32::try_from(payload.len()).is_err()
+        || HEADER_SIZE
+            .checked_add(payload.len())
+            .is_none_or(|size| region.size < size as u64)
         || region.base % 4 != 0
     {
         return Err(ServiceError::InvalidParam);
@@ -305,7 +425,7 @@ pub(crate) unsafe fn publish_pending(
     header.digest = checksum(&header.as_bytes()[..DIGEST_OFFSET], payload);
     let base = region.base as *mut u8;
     // The linked OS-reserved handoff is written only after successful cold
-    // memory testing. CAR teardown must not discard dirty cached copies.
+    // memory testing; the owner flushes the whole store before teardown.
     unsafe {
         core::ptr::write_volatile(base.add(COMMIT_OFFSET).cast::<u32>(), u32::MAX);
         for (offset, byte) in header.as_bytes()[..COMMIT_OFFSET]
@@ -322,16 +442,6 @@ pub(crate) unsafe fn publish_pending(
             core::ptr::write_volatile(base.add(offset), *byte);
         }
         core::ptr::write_volatile(base.add(COMMIT_OFFSET).cast::<u32>(), 0);
-        // Some chipset memory tests already enable WB MTRRs. INVD must not
-        // discard this record with CAR, regardless of the current RAM type.
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            core::arch::asm!("mfence", options(nostack, preserves_flags));
-            for offset in (0..HEADER_SIZE + payload.len()).step_by(64) {
-                core::arch::asm!("clflush [{}]", in(reg) base.add(offset), options(nostack, preserves_flags));
-            }
-            core::arch::asm!("mfence", options(nostack, preserves_flags));
-        }
     }
     Ok(())
 }
@@ -352,12 +462,10 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
     let pending = store
         .find(fstart_store::tag::TRAINING)
         .ok_or(ServiceError::NotInitialized)?;
-    let mut ram = unsafe { MappedRead::new(store.address(&pending), pending.len()) };
-    let record = Journal {
-        bank_size: pending.len() as u32,
-    }
-    .read_bank(&mut ram, 0, true)?
-    .ok_or(ServiceError::HardwareError)?;
+    // SAFETY: this entry belongs to the store and only the boot CPU accesses
+    // its data here. Borrow the DRAM payload; do not allocate another copy.
+    let bytes = unsafe { store.bytes_mut(&pending) };
+    let record = Record::parse(bytes)?;
     if record.key != runtime_key::<B>(northbridge, southbridge, geometry)? {
         return Err(ServiceError::HardwareError);
     }
@@ -430,6 +538,7 @@ mod tests {
         bytes: Vec<u8>,
         cut: Option<usize>,
         mutations: usize,
+        read_failure: Option<u32>,
     }
     impl Flash {
         fn new() -> Self {
@@ -437,6 +546,7 @@ mod tests {
                 bytes: vec![0xff; 8192],
                 cut: None,
                 mutations: 0,
+                read_failure: None,
             }
         }
         fn fail(&mut self) -> bool {
@@ -447,6 +557,12 @@ mod tests {
     }
     impl Storage for Flash {
         fn read(&mut self, o: u32, b: &mut [u8]) -> Result<(), ServiceError> {
+            if self
+                .read_failure
+                .is_some_and(|at| o <= at && at < o + b.len() as u32)
+            {
+                return Err(ServiceError::HardwareError);
+            }
             b.copy_from_slice(&self.bytes[o as usize..o as usize + b.len()]);
             Ok(())
         }
@@ -475,16 +591,162 @@ mod tests {
         }
     }
     #[test]
+    fn journal_wire_layout_is_unchanged() {
+        assert_eq!(HEADER_SIZE, 92);
+        assert_eq!(DIGEST_OFFSET, 56);
+        assert_eq!(COMMIT_OFFSET, 88);
+    }
+
+    #[test]
+    fn workspace_is_one_shot_and_input_does_not_alias_capture() {
+        static WORKSPACE: TrainingWorkspace<37> = TrainingWorkspace::new();
+        let TrainingBuffers { cached, capture } = WORKSPACE.take().unwrap();
+        assert_eq!(cached.len(), 37);
+        assert_eq!(capture.len(), 37);
+        cached.fill(5);
+        assert!(capture.iter().all(|byte| *byte == 0));
+        capture.fill(9);
+        assert!(cached.iter().all(|byte| *byte == 5));
+        assert!(WORKSPACE.take().is_none());
+    }
+
+    #[test]
+    fn records_borrow_payloads_and_the_caller_bounds_loading() {
+        assert!(core::mem::size_of::<Record<'_>>() <= 64);
+        let mut flash = Flash::new();
+        let payload = vec![9; 1537];
+        let large = Record::new([5; 32], &payload).unwrap();
+        assert_eq!(large.payload().as_ptr(), payload.as_ptr());
+        assert_eq!(large.encoded_size(), HEADER_SIZE + payload.len());
+        let journal = Journal::new(4096, 8192).unwrap();
+        journal.save(&mut flash, &large, BootPath::Normal).unwrap();
+        let mut small = [0; 37];
+        assert!(journal.load(&mut flash, &mut small).unwrap().is_none());
+        let mut buffer = vec![0; payload.len()];
+        let address = buffer.as_ptr();
+        let loaded = journal.load(&mut flash, &mut buffer).unwrap().unwrap().1;
+        assert_eq!(loaded.payload(), payload);
+        assert_eq!(loaded.payload().as_ptr(), address);
+        let parsed = Record::parse(&flash.bytes[..large.encoded_size()]).unwrap();
+        assert_eq!(parsed.payload(), payload);
+        assert_eq!(
+            parsed.payload().as_ptr(),
+            flash.bytes[HEADER_SIZE..].as_ptr()
+        );
+    }
+
+    #[test]
+    fn same_key_payload_changes_are_saved_and_digest_comparison_skips_duplicates() {
+        let journal = Journal::new(4096, 8192).unwrap();
+        let mut flash = Flash::new();
+        let first = Record::new([3; 32], b"first").unwrap();
+        let second = Record::new([3; 32], b"other").unwrap();
+        assert!(journal.save(&mut flash, &first, BootPath::Normal).unwrap());
+        assert!(journal.save(&mut flash, &second, BootPath::Normal).unwrap());
+        let before = flash.mutations;
+        assert!(!journal.save(&mut flash, &second, BootPath::Normal).unwrap());
+        assert_eq!(flash.mutations, before);
+        let mut buffer = [0; 31];
+        let loaded = journal.load(&mut flash, &mut buffer).unwrap().unwrap().1;
+        assert_eq!(loaded.sequence, 1);
+        assert_eq!(loaded.payload(), second.payload());
+    }
+
+    #[test]
+    fn bounded_loading_and_corruption_fall_back_but_io_errors_propagate() {
+        let journal = Journal::new(4096, 8192).unwrap();
+        let mut flash = Flash::new();
+        let small = Record::new([1; 32], b"small").unwrap();
+        let bytes = vec![7; 1537];
+        let large = Record::new([2; 32], &bytes).unwrap();
+        journal.save(&mut flash, &small, BootPath::Normal).unwrap();
+        journal.save(&mut flash, &large, BootPath::Normal).unwrap();
+        let mut buffer = vec![0; bytes.len()];
+        assert_eq!(
+            journal
+                .load(&mut flash, &mut buffer[..37])
+                .unwrap()
+                .unwrap()
+                .1
+                .key,
+            small.key
+        );
+        assert_eq!(
+            journal
+                .load(&mut flash, &mut buffer)
+                .unwrap()
+                .unwrap()
+                .1
+                .key,
+            large.key
+        );
+        for at in [0, HEADER_SIZE as u32, 4096, 4096 + HEADER_SIZE as u32] {
+            flash.read_failure = Some(at);
+            assert!(matches!(
+                journal.load(&mut flash, &mut buffer),
+                Err(ServiceError::HardwareError)
+            ));
+            let before = flash.mutations;
+            assert!(journal.save(&mut flash, &large, BootPath::Normal).is_err());
+            assert_eq!(flash.mutations, before);
+        }
+        flash.read_failure = None;
+        flash.bytes[4096 + HEADER_SIZE] ^= 1;
+        assert_eq!(
+            journal
+                .load(&mut flash, &mut buffer)
+                .unwrap()
+                .unwrap()
+                .1
+                .key,
+            small.key
+        );
+    }
+
+    #[test]
+    fn pending_handoff_uses_the_encoded_length_without_a_fixed_slot_size() {
+        use fstart_core::layout::{Region, RegionKind};
+        #[repr(align(8))]
+        struct Pending([u8; 512]);
+        let mut pending = Pending([0xa5; 512]);
+        let payload = [7; 317];
+        let record = Record::new([3; 32], &payload).unwrap();
+        let region = Region {
+            kind: RegionKind::FirmwareStore,
+            base: pending.0.as_mut_ptr() as u64,
+            size: record.encoded_size() as u64,
+        };
+        // SAFETY: the aligned buffer is exclusively owned and disjoint from payload.
+        unsafe { publish_pending(region, record.key, record.payload()).unwrap() };
+        let parsed = Record::parse(&pending.0[..record.encoded_size()]).unwrap();
+        assert_eq!(parsed.key, record.key);
+        assert_eq!(parsed.payload(), record.payload());
+        assert!(
+            pending.0[record.encoded_size()..]
+                .iter()
+                .all(|byte| *byte == 0xa5)
+        );
+        let before = pending.0;
+        let short = Region {
+            size: region.size - 1,
+            ..region
+        };
+        // SAFETY: same owned buffer, with a deliberately too-short bound.
+        assert!(unsafe { publish_pending(short, record.key, record.payload()) }.is_err());
+        assert_eq!(pending.0, before);
+    }
+
+    #[test]
     fn geometry_records_and_resume_policy() {
         assert!(Journal::new(4096, 4096).is_err());
         assert!(Journal::new(2048, 4096).is_err());
         assert!(Journal::new(1 << 31, 0).is_err());
         assert!(Record::new([0; 32], &[]).is_err());
-        assert!(Record::new([0; 32], &[0; MAX_PAYLOAD + 1]).is_err());
         let journal = Journal::new(4096, 8192).unwrap();
         let mut flash = Flash::new();
         let record = Record::new([3; 32], b"SPD and training").unwrap();
-        assert!(journal.load(&mut flash).unwrap().is_none());
+        let mut buffer = [0; 53];
+        assert!(journal.load(&mut flash, &mut buffer).unwrap().is_none());
         assert!(
             journal
                 .save(&mut flash, &record, BootPath::S3Resume)
@@ -492,17 +754,38 @@ mod tests {
         );
         assert!(journal.save(&mut flash, &record, BootPath::Normal).unwrap());
         assert!(!journal.save(&mut flash, &record, BootPath::Normal).unwrap());
-        let loaded = journal.load(&mut flash).unwrap().unwrap().1;
+        let loaded = journal.load(&mut flash, &mut buffer).unwrap().unwrap().1;
         assert_eq!(loaded.payload(), record.payload());
         assert_eq!(loaded.key, record.key);
         flash.bytes[HEADER_SIZE] ^= 1;
-        assert!(journal.load(&mut flash).unwrap().is_none());
+        assert!(journal.load(&mut flash, &mut buffer).unwrap().is_none());
+        let oversized = [0; 4096];
+        let before = flash.mutations;
+        assert!(
+            journal
+                .save(
+                    &mut flash,
+                    &Record::new([0; 32], &oversized).unwrap(),
+                    BootPath::Normal
+                )
+                .is_err()
+        );
+        assert_eq!(flash.mutations, before);
     }
     #[test]
     fn interrupted_inactive_bank_never_destroys_active_record() {
+        for length in [1, 37, 913, 1500, 4096 - HEADER_SIZE] {
+            check_interrupted_bank(length);
+        }
+    }
+
+    fn check_interrupted_bank(length: usize) {
         let journal = Journal::new(4096, 8192).unwrap();
-        let old = Record::new([1; 32], &[1; MAX_PAYLOAD]).unwrap();
-        let new = Record::new([2; 32], &[2; MAX_PAYLOAD]).unwrap();
+        let old_bytes = vec![1; length];
+        let new_bytes = vec![2; length];
+        let old = Record::new([1; 32], &old_bytes).unwrap();
+        let new = Record::new([2; 32], &new_bytes).unwrap();
+        let mut buffer = vec![0; length];
         let mut baseline = Flash::new();
         journal.save(&mut baseline, &old, BootPath::Normal).unwrap();
         baseline.mutations = 0;
@@ -514,12 +797,17 @@ mod tests {
             let mut cut = baseline.clone();
             cut.cut = Some(boundary);
             assert!(journal.save(&mut cut, &new, BootPath::Normal).is_err());
-            let loaded = journal.load(&mut cut).unwrap().unwrap().1;
+            let loaded = journal.load(&mut cut, &mut buffer).unwrap().unwrap().1;
             assert_eq!(loaded.key, old.key);
             assert_eq!(loaded.payload(), old.payload());
         }
         assert_eq!(
-            journal.load(&mut successful).unwrap().unwrap().1.payload(),
+            journal
+                .load(&mut successful, &mut buffer)
+                .unwrap()
+                .unwrap()
+                .1
+                .payload(),
             new.payload()
         );
     }
@@ -527,6 +815,7 @@ mod tests {
     fn rejects_uncommitted_malformed_and_truncated_record_headers() {
         let journal = Journal::new(4096, 8192).unwrap();
         let record = Record::new([7; 32], b"training").unwrap();
+        let mut buffer = [0; 47];
         let mut baseline = Flash::new();
         journal
             .save(&mut baseline, &record, BootPath::Normal)
@@ -541,12 +830,14 @@ mod tests {
         ] {
             let mut bad = baseline.clone();
             bad.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
-            assert!(journal.load(&mut bad).unwrap().is_none());
+            assert!(journal.load(&mut bad, &mut buffer).unwrap().is_none());
+            assert!(Record::parse(&bad.bytes[..4096]).is_err());
         }
         for length in 0..HEADER_SIZE + record.payload().len() {
             let mut truncated = baseline.clone();
             truncated.bytes[length..4096].fill(0xff);
-            assert!(journal.load(&mut truncated).unwrap().is_none());
+            assert!(journal.load(&mut truncated, &mut buffer).unwrap().is_none());
+            assert!(Record::parse(&baseline.bytes[..length]).is_err());
         }
         assert!(newer(0, u32::MAX));
         assert!(!newer(u32::MAX, 0));

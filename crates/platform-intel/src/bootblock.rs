@@ -52,11 +52,8 @@ pub struct Dram;
 #[cfg(feature = "memory-cache")]
 struct Training {
     key: Option<[u8; 32]>,
-    captured: Option<usize>,
+    captured: Option<&'static [u8]>,
 }
-
-#[cfg(feature = "memory-cache")]
-static mut CAPTURE: [u8; crate::memory_cache::MAX_PAYLOAD] = [0; crate::memory_cache::MAX_PAYLOAD];
 
 /// The bootblock of an Intel CAR board, in phase `S`.
 pub struct Bootblock<B: IntelBoard, S = Early> {
@@ -185,7 +182,10 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             fstart_arch::x86::boot::halt()
         }
         slot.install(console);
-        crate::debug_console::install::<B>(true);
+        // Code and page tables still live in the SPI ROM. Cache warming is
+        // not sufficient to guarantee progress while that chip is busy.
+        // Keep EHCI here; postcar installs the flash log once it runs in DRAM.
+        crate::debug_console::install::<B>(false);
         fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
         fstart_log::info!("{} bootblock: {} console ready", B::Platform::NAME, C::NAME);
         fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);
@@ -233,6 +233,8 @@ impl<B: IntelBoard> Bootblock<B, Console> {
     /// reachable on the southbridge's SMBus.
     pub fn train_memory(mut self) -> Bootblock<B, Trained> {
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
+        let prepared = self.southbridge.pre_raminit_init();
+        self.check("pre-raminit init", prepared);
         fstart_log::info!("{}: initializing DRAM", B::Platform::NAME);
         let trained = self.dram_init();
         self.check("DRAM init", trained);
@@ -241,10 +243,12 @@ impl<B: IntelBoard> Bootblock<B, Console> {
 
     #[cfg(feature = "memory-cache")]
     fn dram_init(&mut self) -> Result<(), ServiceError> {
-        use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead};
+        use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead, TrainingBuffers};
         if !B::FACTS.memory_cache {
             return self.train_uncached();
         }
+        let TrainingBuffers { cached, capture } =
+            B::Platform::training_buffers().ok_or(ServiceError::NotSupported)?;
         let key = crate::memory_cache::runtime_key::<B>(
             &self.northbridge,
             &self.southbridge,
@@ -257,14 +261,18 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         // The extent comes from linked board policy, not an unverified directory.
         let mut flash = unsafe { MappedRead::new(firmware_base as usize, EXTENT_SIZE as usize) };
         let cached = Journal::new(BANK_SIZE, EXTENT_SIZE)?
-            .load(&mut flash)?
+            .load(&mut flash, cached)?
             .map(|(_, record)| record)
             .filter(|record| record.key == key);
         self.training.key = Some(key);
-        // SAFETY: the bootblock is single-threaded; only training writes it.
-        let capture = unsafe { &mut *core::ptr::addr_of_mut!(CAPTURE) };
-        self.training.captured =
-            self.bring_up(cached.as_ref().map(|record| record.payload()), capture)?;
+        let length = self.bring_up(
+            cached.as_ref().map(|record| record.payload()),
+            &mut *capture,
+        )?;
+        self.training.captured = match length {
+            Some(length) => Some(capture.get(..length).ok_or(ServiceError::HardwareError)?),
+            None => None,
+        };
         Ok(())
     }
 
@@ -345,9 +353,10 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
         crate::store::move_timestamps(&mut store, TIMESTAMP_CAPACITY);
         crate::memory_info::publish(&mut store, self.northbridge.memory_info().as_ref())?;
         #[cfg(feature = "memory-cache")]
-        if let (Some(key), Some(length)) = (self.training.key, self.training.captured) {
+        if let (Some(key), Some(payload)) = (self.training.key, self.training.captured) {
+            let size = crate::memory_cache::Record::new(key, payload)?.encoded_size();
             let entry = store
-                .add(fstart_store::tag::TRAINING, 0x1000, 3)
+                .add(fstart_store::tag::TRAINING, size, 3)
                 .map_err(|_| ServiceError::InvalidParam)?;
             let pending = fstart_core::layout::Region {
                 kind: RegionKind::FirmwareStore,
@@ -355,9 +364,10 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
                 size: entry.len() as u64,
             };
             // Only cold/warm initialization captures, after the driver's RAM test.
-            // SAFETY: training is done; nothing writes the capture any more.
-            let capture = unsafe { &*core::ptr::addr_of!(CAPTURE) };
-            unsafe { crate::memory_cache::publish_pending(pending, key, &capture[..length])? };
+            // SAFETY: the store owns this DRAM entry; the platform's CAR
+            // capture remains borrowed and immutable until it is copied.
+            // write_back(&store) below covers this entry before CAR teardown.
+            unsafe { crate::memory_cache::publish_pending(pending, key, payload)? };
         }
 
         fstart_log::info!(

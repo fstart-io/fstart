@@ -197,7 +197,7 @@ pub fn reservations<P: IntelPlatform>(
             // The linker places the actual initialized image at its upper end.
             image: span(firmware.base + cache_prefix, firmware.size - cache_prefix),
             writable: car,
-            stack: 0x2000,
+            stack: P::BOOTBLOCK_STACK,
             heap: 0,
         },
         postcar: StageReservation {
@@ -324,13 +324,27 @@ fn resolve_for<P: IntelPlatform>(
         ),
         _ => None,
     };
+    let mut mutable_regions = fstart_core::board::MutableFlashRegions::new();
+    if facts.memory_cache {
+        mutable_regions
+            .push(fstart_core::board::MutableFlashRegion {
+                name: fstart_core::hstr("mrc-cache"),
+                size: crate::memory_cache::EXTENT_SIZE,
+                alignment: crate::memory_cache::BANK_SIZE,
+            })
+            .expect("MRC prefix fits the region transport");
+    }
+    if debug.flash_console {
+        mutable_regions
+            .push(fstart_core::board::MutableFlashRegion {
+                name: fstart_core::hstr("console"),
+                size: crate::facts::FLASH_CONSOLE_SIZE,
+                alignment: 0x10000,
+            })
+            .expect("console prefix fits the region transport");
+    }
     let plan = IntelPlan {
-        memory_cache: facts.memory_cache,
-        flash_console: if debug.flash_console {
-            crate::facts::FLASH_CONSOLE_SIZE
-        } else {
-            0
-        },
+        mutable_regions,
         reservations,
         platform: if facts.protected_mode {
             fstart_core::Platform::X86
@@ -398,6 +412,30 @@ mod tests {
         selection: BuildSelection,
     ) -> Result<IntelPlan, std::string::String> {
         resolve_for::<Gm965>(facts, 2, false, selection)
+    }
+
+    #[test]
+    fn mutable_regions_come_from_the_runtime_owners_and_survive_transport() {
+        let mut plan = resolve(
+            FACTS.with_memory_cache(),
+            BuildSelection {
+                debug: vec!["flash-console".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let regions = &plan.mutable_regions;
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].name, "mrc-cache");
+        assert_eq!(regions[0].size, crate::memory_cache::EXTENT_SIZE);
+        assert_eq!(regions[0].alignment, crate::memory_cache::BANK_SIZE);
+        assert_eq!(regions[1].name, "console");
+        assert_eq!(regions[1].size, crate::facts::FLASH_CONSOLE_SIZE);
+        let config = plan.assembly().unwrap().config("test").unwrap();
+        assert_eq!(config.build.mutable_regions[0].size, regions[0].size);
+        assert_eq!(config.build.mutable_regions[1].size, regions[1].size);
+        plan.mutable_regions[0].alignment = 3;
+        assert!(plan.validate().is_err());
     }
 
     #[test]

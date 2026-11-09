@@ -9,6 +9,7 @@ pub use crate::x86_crate::*;
 
 pub mod boot;
 pub mod cpu;
+pub mod hpet;
 pub mod ioapic;
 pub mod lapic;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -51,30 +52,6 @@ pub unsafe fn read_phys32(addr: usize) {
         );
     }
     core::hint::black_box(value);
-}
-
-/// Delay using the Intel-compatible HPET main counter.
-///
-/// The Pineview/ICH7 platform enables HPET before entering raminit. The
-/// chipset's coreboot implementation uses 15 counter ticks per microsecond;
-/// retain its wraparound-safe comparison here.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn hpet_udelay(us: u32) {
-    const HPET_BASE: usize = 0xFED0_0000;
-    const MAIN_COUNTER: usize = 0xF0;
-    let delay = us.saturating_mul(15);
-    let start = unsafe { fstart_core::mmio::read32((HPET_BASE + MAIN_COUNTER) as *const u32) };
-    let finish = start.wrapping_add(delay);
-    loop {
-        let now = unsafe { fstart_core::mmio::read32((HPET_BASE + MAIN_COUNTER) as *const u32) };
-        if if finish > start {
-            now >= finish
-        } else {
-            now < start && now >= finish
-        } {
-            break;
-        }
-    }
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -204,7 +181,10 @@ const IA32_PERF_STATUS: u32 = 0x0198;
 /// 100 MHz. Fall back to a conservative 1 GHz only for unsupported CPUs.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn tsc_frequency_hz() -> u64 {
-    if let Some(freq) = cpuid_tsc_frequency_hz().or_else(amd_tsc_frequency_hz) {
+    if let Some(freq) = cpuid_tsc_frequency_hz()
+        .or_else(amd_tsc_frequency_hz)
+        .or_else(platform_info_tsc_frequency_hz)
+    {
         return freq;
     }
     bus_clock().map_or(1_000_000_000, |clock| {
@@ -232,6 +212,25 @@ fn amd_tsc_frequency_hz() -> Option<u64> {
     // SAFETY: ring 0; HwPstate reports the P-state MSRs.
     let msr = unsafe { cpu::msr::NativeMsr::new() };
     cpu::amd::msr::tsc_mhz(&msr).map(|mhz| u64::from(mhz) * 1_000_000)
+}
+
+/// Nehalem through Ivy Bridge: the TSC runs at the maximum non-turbo ratio
+/// (`MSR_PLATFORM_INFO[15:8]`) times the base clock, 133 MHz before Sandy
+/// Bridge and 100 MHz after (coreboot `cpu/intel/common/fsb.c`).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn platform_info_tsc_frequency_hz() -> Option<u64> {
+    const MSR_PLATFORM_INFO: u32 = 0xce;
+    if cfg!(not(target_os = "none")) {
+        return None;
+    }
+    let bclk_khz: u64 = match family_model() {
+        (6, 0x1a | 0x1e | 0x1f | 0x2e | 0x25 | 0x2c | 0x2f) => 133_333,
+        (6, 0x2a | 0x2d | 0x3a | 0x3e) => 100_000,
+        _ => return None,
+    };
+    // SAFETY: every model selected above implements MSR_PLATFORM_INFO.
+    let ratio = (unsafe { x86::msr::rdmsr(MSR_PLATFORM_INFO) } >> 8) & 0xff;
+    (ratio != 0).then(|| ratio * bclk_khz * 1000)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

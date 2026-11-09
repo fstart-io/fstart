@@ -17,7 +17,8 @@ use rflasher_internal::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
-/// SPIBAR is RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9.
+/// SPIBAR is RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9 and the 5
+/// Series PCH.
 #[derive(Clone, Copy)]
 struct FirmwareHost {
     spi_offset: u64,
@@ -150,10 +151,13 @@ impl FlashExtent {
     }
 }
 
-/// Bounded controller for mutable firmware data. Write methods restore BIOSWE
-/// on every exit and refuse locked/SMM-only configurations rather than bypassing
-/// protection. Writes require a positively identified, known page-program NOR
-/// geometry; unsupported chips remain read-only rather than guessing opcodes.
+/// Bounded controller for mutable firmware data. Write methods restore the
+/// entry BIOSWE value and refuse BLE/SMM-only protection present at call time.
+/// They do not establish or lock the platform's global flash policy: Ibex Peak
+/// explicitly opens that policy for development cache/log and payload writes
+/// through `LpcFlashConfig::prepare_firmware_writes` before this driver runs.
+/// Writes require positively identified page-program NOR geometry; unsupported
+/// chips remain read-only rather than guessing opcodes.
 pub struct CacheSpi {
     controller: IchSpiController<FirmwareHost>,
     extent: FlashExtent,
@@ -184,7 +188,8 @@ impl CacheSpi {
         let host = FirmwareHost {
             spi_offset: match entry.chipset {
                 IchChipset::Ich7 | IchChipset::Ich8 => 0x3020,
-                IchChipset::Ich9 => 0x3800,
+                // The 5 Series PCH keeps ICH9's SPI block and offset.
+                IchChipset::Ich9 | IchChipset::Series5IbexPeak => 0x3800,
                 _ => return Err(ServiceError::NotSupported),
             },
         };
@@ -211,7 +216,15 @@ impl CacheSpi {
         let identified = controller
             .execute(&mut SpiCommand::read_reg(0x9f, &mut id))
             .is_ok();
-        fstart_log::info!("spi-cache: JEDEC {:#x}:{:#x}:{:#x}", id[0], id[1], id[2]);
+        // Construction is outside the console's write callback. Keep status
+        // diagnostics here, never in program/erase/unlock (logger re-entry).
+        fstart_log::info!(
+            "spi-cache: JEDEC {:#x}:{:#x}:{:#x}, BIOS_CNTL={:#x}",
+            id[0],
+            id[1],
+            id[2],
+            lpc.bios_control.get()
+        );
         let writable = identified
             .then(|| supported_geometry(id, extent.chip_size))
             .flatten()
@@ -250,15 +263,16 @@ impl CacheSpi {
         Ok(status[0])
     }
 
-    /// rflasher `protection::write_status`: EWSR, WRSR, then WIP for up to
-    /// 100 ms (SST specifies 10 ms).
+    /// rflasher `protection::write_status`: SST needs EWSR; Macronix uses
+    /// WREN (the controller's atomic prefix), then WRSR and WIP polling.
     fn write_status(&mut self, value: u8) -> Result<(), ServiceError> {
+        if self.writable == Some(Protection::SstStatus) {
+            self.controller
+                .execute(&mut SpiCommand::simple(0x50))
+                .map_err(|_| ServiceError::HardwareError)?;
+        }
         self.controller
-            .execute(&mut SpiCommand::simple(0x50))
-            .and_then(|()| {
-                self.controller
-                    .execute(&mut SpiCommand::write_reg(0x01, &[value & !3]))
-            })
+            .execute(&mut SpiCommand::write_reg(0x01, &[value & !3]))
             .map_err(|_| ServiceError::HardwareError)?;
         for _ in 0..1000 {
             if self.read_status()? & 1 == 0 {
@@ -275,22 +289,25 @@ impl CacheSpi {
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
     ) -> Result<(), ServiceError> {
-        let Some(Protection::SstStatus) = self.writable else {
-            return operation(self);
-        };
-        let status = self.read_status()?;
-        if status & SST_BP == 0 {
+        if !matches!(
+            self.writable,
+            Some(Protection::SstStatus | Protection::MacronixStatus)
+        ) {
             return operation(self);
         }
-        let result = self.write_status(status & !SST_BP).and_then(|()| {
-            if self.read_status()? & SST_BP != 0 {
+        let status = self.read_status()?;
+        if status & STATUS_BP == 0 {
+            return operation(self);
+        }
+        let result = self.write_status(status & !STATUS_BP).and_then(|()| {
+            if self.read_status()? & STATUS_BP != 0 {
                 // BPL with WP# asserted ignores WRSR.
                 return Err(ServiceError::HardwareError);
             }
             operation(self)
         });
         let restored = self.write_status(status).and_then(|()| {
-            if self.read_status()? & SST_BP != status & SST_BP {
+            if self.read_status()? & STATUS_BP != status & STATUS_BP {
                 return Err(ServiceError::HardwareError);
             }
             Ok(())
@@ -298,6 +315,8 @@ impl CacheSpi {
         result.and(restored)
     }
 
+    // This is also the flash console's backend. Never log from the write
+    // path: the caller may already hold fstart-log's console lock.
     fn with_write(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<(), ServiceError>,
@@ -378,10 +397,12 @@ enum Protection {
     None,
     /// SST25: BP0-3 in SR1, rewritten through EWSR + WRSR.
     SstStatus,
+    /// MX25L: BP0-3 in SR1, rewritten through WREN + WRSR.
+    MacronixStatus,
 }
 
-/// SST25 SR1 BP0-BP3 (rflasher `Unlock::Status`).
-const SST_BP: u8 = 0x3c;
+/// SST25/MX25L SR1 BP0-BP3 (rflasher `Unlock::Status`).
+const STATUS_BP: u8 = 0x3c;
 
 impl Protection {
     /// Opcodes the procedure needs beyond program/erase/RDSR.
@@ -389,6 +410,7 @@ impl Protection {
         match self {
             Self::None => &[],
             Self::SstStatus => &[0x50, 0x01],
+            Self::MacronixStatus => &[0x01],
         }
     }
 }
@@ -399,8 +421,11 @@ impl Protection {
 fn supported_geometry(id: [u8; 3], chip_size: u32) -> Option<Protection> {
     let supported = match id {
         [0xef, 0x30, capacity @ 0x15..=0x17] => chip_size == 1u32 << capacity,
-        [0xef, 0x40, capacity] | [0xc2, 0x20, capacity] => {
+        [0xef, 0x40, capacity] => {
             (0x15..=0x18).contains(&capacity) && chip_size == 1u32 << capacity
+        }
+        [0xc2, 0x20, capacity @ 0x15..=0x18] => {
+            return (chip_size == 1u32 << capacity).then_some(Protection::MacronixStatus);
         }
         [0x1f, 0x47, 0x00 | 0x01] => chip_size == 0x400000,
         // Ships in the ThinkPad X200; powers up block-protected.
@@ -417,7 +442,12 @@ mod tests {
         use super::{Protection, supported_geometry};
         let none = Some(Protection::None);
         assert_eq!(supported_geometry([0xef, 0x40, 0x18], 0x1000000), none);
-        assert_eq!(supported_geometry([0xc2, 0x20, 0x16], 0x400000), none);
+        for (capacity, size) in [(0x16, 0x400000), (0x17, 0x800000)] {
+            assert_eq!(
+                supported_geometry([0xc2, 0x20, capacity], size),
+                Some(Protection::MacronixStatus)
+            );
+        }
         assert_eq!(supported_geometry([0xef, 0x30, 0x17], 0x800000), none);
         assert_eq!(supported_geometry([0x1f, 0x47, 0x00], 0x400000), none);
         assert_eq!(supported_geometry([0x1f, 0x47, 0x01], 0x400000), none);

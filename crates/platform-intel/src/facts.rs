@@ -9,6 +9,9 @@ pub trait IntelPlatform: 'static {
     const NAME: &'static str;
     const CAR_BASE: u64;
     const CAR_SIZE: u64;
+    /// Bootblock stack in CAR. Chipsets whose raminit keeps more on the
+    /// stack (the training cache record, deep call chains) raise it.
+    const BOOTBLOCK_STACK: u64 = 0x2000;
     const MICROCODE_SIGNATURES: &'static [&'static str];
 }
 
@@ -65,6 +68,8 @@ pub struct BoardFacts {
     /// Build every stage for 32-bit protected mode instead of long mode, for
     /// CPUs without AMD64 (Core Duo and older). No paging, no UEFI payload.
     pub protected_mode: bool,
+    /// Physical expansion slots; populated and empty slots both get Type 9.
+    pub smbios_slots: &'static [fstart_core::smbios::PciSlot<'static>],
 }
 
 impl BoardFacts {
@@ -88,7 +93,17 @@ impl BoardFacts {
             data_assets: &[],
             memory_cache: false,
             protected_mode: false,
+            smbios_slots: &[],
         }
+    }
+
+    #[must_use]
+    pub const fn with_smbios_slots(
+        mut self,
+        slots: &'static [fstart_core::smbios::PciSlot<'static>],
+    ) -> Self {
+        self.smbios_slots = slots;
+        self
     }
 
     #[must_use]
@@ -101,8 +116,11 @@ impl BoardFacts {
     /// build selects it) before the read-only image at the beginning of the
     /// BIOS mapping.
     pub const fn mutable_prefix(&self, flash_console: bool) -> u32 {
-        (if self.memory_cache { 0x20000 } else { 0 })
-            + if flash_console { FLASH_CONSOLE_SIZE } else { 0 }
+        (if self.memory_cache {
+            crate::memory_cache::EXTENT_SIZE
+        } else {
+            0
+        }) + if flash_console { FLASH_CONSOLE_SIZE } else { 0 }
     }
 
     /// Opt in to 32-bit protected-mode stages (see [`Self::protected_mode`]).

@@ -719,20 +719,7 @@ impl LpcFixedIoDecode {
     }
 }
 
-/// One LPC generic I/O decode window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcGenericIoDecode {
-    /// I/O base address. Must be 4-byte aligned.
-    pub base: u16,
-    /// Window size in bytes. Must be a power of two from 4 through 256.
-    pub size: u16,
-}
-
-impl LpcGenericIoDecode {
-    fn encode(self) -> Option<u32> {
-        crate::southbridge::lpc::encode_generic_io_window(self.base, self.size)
-    }
-}
+pub use crate::southbridge::lpc::LpcGenericIoDecode;
 
 /// Board-level LPC decode policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -893,9 +880,7 @@ pub const fn valid_io_trap(trap: IoTrapConfig) -> bool {
 
 #[must_use]
 pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecode) -> bool {
-    let a_end = a.base as u32 + a.size as u32;
-    let b_end = b.base as u32 + b.size as u32;
-    (a.base as u32) < b_end && (b.base as u32) < a_end
+    a.overlaps(b)
 }
 
 const fn empty_lpc_generic_io() -> LpcGenericIoDecode {
@@ -1200,11 +1185,8 @@ impl IntelIch9 {
             .modify(HPTC::ENABLE::SET + HPTC::ADDRESS_SELECT.val(0));
         let _ = rcba.regs().hptc.get();
 
-        // SAFETY: HPET base is fixed once enabled through HPTC.
-        unsafe {
-            let cfg = fstart_core::mmio::read32((HPET_BASE + 0x10) as *const u32);
-            fstart_core::mmio::write32((HPET_BASE + 0x10) as *mut u32, cfg | 1);
-        }
+        // SAFETY: HPTC has decoded this UC HPET register block.
+        unsafe { fstart_arch::x86::hpet::Hpet::new(HPET_BASE) }.enable();
     }
 
     fn is_mobile(&self) -> bool {

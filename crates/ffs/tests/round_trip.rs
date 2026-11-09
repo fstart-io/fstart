@@ -41,6 +41,63 @@ fn stage_data_with_anchor(extra: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn anchored_microcode_remains_16_byte_aligned_after_arbitrary_stage_sizes() {
+    let (signing_key, vk) = dev_keypair();
+    let microcode = vec![0x5a; 2048];
+    for tail in 0..16 {
+        let config = FfsImageConfig {
+            keys: vec![vk.clone()],
+            regions: vec![InputRegion::Container {
+                name: "ro".into(),
+                files: vec![
+                    InputFile {
+                        name: "bootblock".into(),
+                        file_type: FileType::StageCode,
+                        segments: vec![InputSegment {
+                            name: ".text".into(),
+                            kind: SegmentKind::Code,
+                            data: stage_data_with_anchor(&vec![0xaa; tail]),
+                            mem_size: None,
+                            load_addr: 0xfff0_0000,
+                            compression: Compression::None,
+                            flags: SegmentFlags::CODE,
+                        }],
+                    },
+                    InputFile {
+                        name: "cpu_microcode_blob.bin".into(),
+                        file_type: FileType::CpuMicrocode,
+                        segments: vec![InputSegment {
+                            name: ".microcode".into(),
+                            kind: SegmentKind::ReadOnlyData,
+                            data: microcode.clone(),
+                            mem_size: None,
+                            load_addr: 0,
+                            compression: Compression::None,
+                            flags: SegmentFlags::RODATA,
+                        }],
+                    },
+                ],
+            }],
+        };
+        let built = build_image(&config, &make_signer(&signing_key)).unwrap();
+        let reader = FfsReader::new(&built.image);
+        let anchor = reader.read_anchor(built.anchor_offset).unwrap();
+        let offset = anchor.microcode_offset.get() as usize;
+        assert_eq!(offset % 16, 0, "preceding stage tail size {tail}");
+        // IA32_BIOS_UPDT_TRIG takes the data following Intel's 48-byte header.
+        assert_eq!((offset + 48) % 16, 0);
+        assert_eq!(anchor.microcode_size.get() as usize, microcode.len());
+        assert_eq!(&built.image[offset..offset + microcode.len()], microcode);
+        let location = built
+            .file_data
+            .iter()
+            .find(|file| file.name == "cpu_microcode_blob.bin")
+            .unwrap();
+        assert_eq!(location.data_offset as usize, offset);
+    }
+}
+
+#[test]
 fn test_ro_only_round_trip() {
     let (signing_key, vk) = dev_keypair();
 

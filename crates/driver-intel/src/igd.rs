@@ -652,17 +652,37 @@ impl Framebuffer for IgdDisplay {
     }
 }
 
-/// GMCH IGD ACPI node, named by the northbridge `NB` (`GFX0`): coreboot's
-/// static `_DOD` output list,
-/// OpRegion ASLE brightness requests with a direct `BLC_PWM_CTL` fallback,
+/// Where the backlight duty (`BCLV`) and PWM period (`BCLM`) live.
+#[cfg(feature = "acpi")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GfxBacklight {
+    /// GMCH: both halves of `BLC_PWM_CTL` (0x61254).
+    Gmch,
+    /// Ironlake and later with a PCH: duty in `BLC_PWM_CPU_CTL` (0x48254),
+    /// period in `BLC_PWM_PCH_CTL2` (0xc8256), coreboot's
+    /// `INTEL_GMA_BCLV_OFFSET`/`INTEL_GMA_BCLM_OFFSET`.
+    Pch,
+}
+
+/// The GMCH layout of [`gfx0_acpi_node_with`].
+#[cfg(feature = "acpi")]
+#[must_use]
+pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc::vec::Vec<u8> {
+    gfx0_acpi_node_with::<NB>(gttmmio, GfxBacklight::Gmch)
+}
+
+/// IGD ACPI node (`GFX0`): coreboot's static `_DOD` output list,
+/// OpRegion ASLE brightness requests with a direct PWM fallback,
 /// `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
 /// `INCB`/`DECB` hooks ThinkPad hotkeys call. `gttmmio` is the assigned
 /// GTTMMADR; zero while the IGD is absent.
 #[cfg(feature = "acpi")]
 #[must_use]
-pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc::vec::Vec<u8> {
-    fstart_acpi_macros::acpi_dsl! {
-        Device(#{const name NB::ACPI_IGD_NAME}) {
+pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
+    gttmmio: u64,
+    backlight: GfxBacklight,
+) -> alloc::vec::Vec<u8> {
+    let mut body: alloc::vec::Vec<u8> = fstart_acpi_macros::acpi_dsl! {
             Name("_ADR", 0x00020000u32);
             OperationRegion("GFXC", PciConfig, 0x00u32, 0x100u32);
             Field("GFXC", DWordAcc, NoLock, Preserve) {
@@ -687,12 +707,31 @@ pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc:
                 PFIT, 32,
                 CBLV, 32,
             }
+    }
+    .into();
+    let registers: alloc::vec::Vec<u8> = match backlight {
+        GfxBacklight::Gmch => fstart_acpi_macros::acpi_dsl! {
             OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x80000u32);
             Field("GFRG", DWordAcc, NoLock, Preserve) {
                 Offset(0x61254),
                 BCLV, 16,
                 BCLM, 16,
             }
+        }
+        .into(),
+        GfxBacklight::Pch => fstart_acpi_macros::acpi_dsl! {
+            OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x100000u32);
+            Field("GFRG", DWordAcc, NoLock, Preserve) {
+                Offset(0x48254),
+                BCLV, 16,
+                Offset(0xC8256),
+                BCLM, 16,
+            }
+        }
+        .into(),
+    };
+    body.extend(registers);
+    body.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
             Name("BRLV", 100u32);
             Name("BRVA", 0u32);
             Name("BRIG", Package(100u32, 100u32, 0u32, 10u32, 20u32, 30u32, 40u32, 50u32, 60u32, 70u32, 80u32, 90u32, 100u32));
@@ -785,9 +824,8 @@ pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc:
             Method("_PS3", 0, NotSerialized) { }
             Method("_S0W", 0, NotSerialized) { Return(3u32); }
             Method("_S3D", 0, NotSerialized) { Return(3u32); }
-        }
-    }
-    .into()
+            });
+    fstart_acpi::aml_linker::device_vec(NB::ACPI_IGD_NAME, &body).expect("IGD emission")
 }
 
 #[cfg(test)]

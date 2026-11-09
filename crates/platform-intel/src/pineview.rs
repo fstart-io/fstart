@@ -303,6 +303,12 @@ mod stage {
     use fstart_driver_intel::pineview::IntelPineview;
 
     impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for PineviewIch7<C> {
+        #[cfg(feature = "memory-cache")]
+        fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
+            static WORKSPACE: crate::memory_cache::TrainingWorkspace<768> =
+                crate::memory_cache::TrainingWorkspace::new();
+            WORKSPACE.take()
+        }
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelPineview;

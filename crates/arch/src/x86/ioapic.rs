@@ -57,6 +57,14 @@ impl IoApic {
         self.reg::<Id::Register>(ID).modify(Id::ID.val(id.into()));
     }
 
+    /// Rewrite the write-once maximum-redirection field with its current
+    /// value, locking the full table size (coreboot
+    /// `ioapic_lock_max_vectors()`).
+    pub fn lock_redirection_entries(&self) {
+        let version = self.reg::<Version::Register>(VERSION);
+        version.set(version.get());
+    }
+
     pub fn redirection_entries(&self) -> u32 {
         self.reg::<Version::Register>(VERSION)
             .read(Version::MAX_REDIRECTION)

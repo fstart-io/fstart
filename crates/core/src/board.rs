@@ -131,18 +131,109 @@ pub enum UefiBuildProfile {
     Basic,
 }
 
+/// A platform-owned mutable region before the read-only FFS container.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutableFlashRegion {
+    pub name: HString<32>,
+    pub size: u32,
+    /// Erase/alignment requirement in bytes, supplied by the flash owner.
+    pub alignment: u32,
+}
+
+pub type MutableFlashRegions = heapless::Vec<MutableFlashRegion, { crate::ffs::MAX_IMAGE_REGIONS }>;
+
+/// Validate a contiguous mutable prefix at a physical flash offset.
+/// No cache format, chipset, region names or erase geometry are inferred.
+pub fn mutable_prefix_size(regions: &[MutableFlashRegion], base: u32) -> Result<u32, &'static str> {
+    let mut end = base;
+    for (index, region) in regions.iter().enumerate() {
+        if region.name.is_empty()
+            || region.name.eq_ignore_ascii_case("ro")
+            || regions[..index]
+                .iter()
+                .any(|other| other.name.eq_ignore_ascii_case(&region.name))
+        {
+            return Err("mutable flash region names must be unique and not reserved");
+        }
+        if !region.alignment.is_power_of_two()
+            || region.size == 0
+            || end % region.alignment != 0
+            || region.size % region.alignment != 0
+        {
+            return Err("mutable flash region violates its declared alignment");
+        }
+        end = end
+            .checked_add(region.size)
+            .ok_or("mutable flash prefix overflows")?;
+    }
+    Ok(end - base)
+}
+
+#[cfg(test)]
+mod mutable_region_tests {
+    use super::*;
+
+    fn region(name: &str, size: u32, alignment: u32) -> MutableFlashRegion {
+        MutableFlashRegion {
+            name: crate::hstr(name),
+            size,
+            alignment,
+        }
+    }
+
+    #[test]
+    fn accepts_platform_owned_names_sizes_and_erase_geometry() {
+        let regions = [
+            region("calibration", 0x1800, 0x800),
+            region("variables", 0x2000, 0x800),
+        ];
+        assert_eq!(mutable_prefix_size(&regions, 0x4000), Ok(0x3800));
+        let intel = [
+            region("mrc-cache", 0x20000, 0x10000),
+            region("console", 0x40000, 0x10000),
+        ];
+        assert_eq!(mutable_prefix_size(&intel, 0x500000), Ok(0x60000));
+        assert_eq!(mutable_prefix_size(&[], u32::MAX), Ok(0));
+    }
+
+    #[test]
+    fn rejects_misalignment_empty_regions_and_overflow() {
+        for bad in [
+            region("x", 0, 4096),
+            region("x", 4096, 0),
+            region("x", 4096, 3),
+            region("x", 4097, 4096),
+        ] {
+            assert!(mutable_prefix_size(&[bad], 0).is_err());
+        }
+        assert!(mutable_prefix_size(&[region("x", 4096, 4096)], 1).is_err());
+        assert!(mutable_prefix_size(&[region("x", 8192, 4096)], 0xfffff000).is_err());
+        // A following region must also start on its own declared boundary.
+        assert!(
+            mutable_prefix_size(&[region("a", 2048, 2048), region("b", 4096, 4096)], 0).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_empty_and_reserved_region_names() {
+        for name in ["", "ro", "RO"] {
+            assert!(mutable_prefix_size(&[region(name, 4096, 4096)], 0).is_err());
+        }
+        assert!(
+            mutable_prefix_size(&[region("data", 4096, 4096), region("DATA", 4096, 4096)], 0)
+                .is_err()
+        );
+    }
+}
+
 /// Board/platform-owned host build policy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardBuildPolicy {
-    /// Intel mutable FFS prefix, disjoint from the RO container and reset code.
-    /// Zero disables it; the MRC journal currently uses two 64-KiB banks.
-    #[serde(default)]
-    pub mrc_cache_size: u32,
-    /// Intel mutable FFS region after the MRC cache for the SPI flash
-    /// console (coreboot `CONSOLE_SPI_FLASH`); zero disables it.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub flash_console_size: u32,
+    /// Named, aligned mutable regions, disjoint from the RO/reset container.
+    #[serde(default, skip_serializing_if = "heapless::Vec::is_empty")]
+    pub mutable_regions: MutableFlashRegions,
     /// QEMU machine selection for boards with non-default emulation.
     #[serde(default)]
     pub qemu_machine: Option<QemuMachine>,
@@ -415,8 +506,4 @@ pub struct FirmwareConfig {
     pub file: HString<128>,
     /// Address in RAM where the firmware blob is loaded
     pub load_addr: u64,
-}
-
-fn is_zero(value: &u32) -> bool {
-    *value == 0
 }

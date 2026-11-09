@@ -98,7 +98,15 @@ jobs:
           python3 -m unittest discover -s ci/tpm -p 'test_*.py'
           cargo test --workspace
           cargo test -p fstart-driver-intel \
-            --features acpi,i945,gm965,ich8,pineview --lib
+            --features acpi,i945,gm965,ich8,pineview \
+            --features gm45,ich9,ironlake,spi,display --lib
+          cargo test -p fstart-platform-intel \
+            --features i945-ich7,gm965-ich8,pineview-ich7 \
+            --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi,host --lib
+          cargo test -p fstart-boot --features crabefi-ui --lib
+          cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
+          cargo test -p fstart-log --no-default-features
+          cargo test -p fstart-log --features debug-consoles
           # Each AMD SoC on its own: the boards select one, the tests all.
           for soc in picasso zeppelin naples rome milan; do
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"
@@ -124,6 +132,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           llvm-tools: "true"
+          packages: acpica-tools
 
       # NOTE: FSTART_EXTRA_RUSTFLAGS must NOT be set here. Resolved builds
       # fail closed on unrecorded ambient inputs (see
@@ -134,6 +143,34 @@ jobs:
         run: |
           cargo fbuild build --board "$BOARD" --release \
             --size-report "stage-sizes-$BOARD.jsonl"
+
+      # Linking firmware does not execute the workspace-excluded Intel
+      # boards' policy, SPD-map or complete-DSDT host tests.
+      - name: Test Intel board library
+        env:
+          BOARD: ${{ matrix.board }}
+          RUST_MIN_STACK: 8388608
+        run: |
+          package=$(python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import tomllib
+
+          for manifest in Path("boards").glob("*/*/Cargo.toml"):
+              data = tomllib.loads(manifest.read_text())
+              if "fstart-platform-intel" not in data.get("dependencies", {}):
+                  continue
+              metadata = data["package"]["metadata"]["fstart"]
+              if metadata["board"] == os.environ["BOARD"]:
+                  print(data["package"]["name"])
+          PY
+          )
+          if [[ -n "$package" ]]; then
+            host=$(rustc -vV | awk '$1 == "host:" { print $2 }')
+            manifest="target/fstart-workspaces/$BOARD/Cargo.toml"
+            cargo test --manifest-path "$manifest" \
+              -p "$package" --target "$host" --lib
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -157,7 +194,6 @@ jobs:
           pattern: stage-sizes-*
           merge-multiple: true
           path: stage-sizes
-
       - name: Record stage sizes
         env:
           PR: ${{ github.event.pull_request.number }}

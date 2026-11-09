@@ -47,6 +47,29 @@ impl PciRootInfo {
     }
 }
 
+/// A platform-owned PM1 control block and its `_S5` sleep-type value.
+/// An absent block is omitted, not represented by a guessed I/O port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpiSleepControl {
+    port: u16,
+    sleep_type: u8,
+}
+
+impl AcpiSleepControl {
+    #[must_use]
+    pub const fn new(port: u16, sleep_type: u8) -> Self {
+        assert!(port != 0 && port & 1 == 0 && sleep_type <= 7);
+        Self { port, sleep_type }
+    }
+
+    pub const fn port(self) -> u16 {
+        self.port
+    }
+    pub const fn sleep_type(self) -> u8 {
+        self.sleep_type
+    }
+}
+
 /// The ACPI tables the firmware built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiTables {
@@ -87,6 +110,8 @@ pub struct Description<'a> {
     pub pci_root: Option<PciRootInfo>,
     pub framebuffer: Option<FramebufferInfo>,
     pub acpi: Option<AcpiTables>,
+    /// Legacy ACPI shutdown controls, matching this platform's FADT and `_S5`.
+    pub acpi_s5: &'a [AcpiSleepControl],
     /// SMBIOS entry point physical address.
     pub smbios: Option<u64>,
     /// The device tree the platform got (from QEMU, the boot ROM or the FFS).
@@ -115,6 +140,7 @@ impl<'a> Description<'a> {
             pci_root: None,
             framebuffer: None,
             acpi: None,
+            acpi_s5: &[],
             smbios: None,
             device_tree: None,
             acpi_devices: &[],

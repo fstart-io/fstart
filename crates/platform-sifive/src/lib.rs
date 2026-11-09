@@ -23,7 +23,7 @@ mod stage;
 
 pub use config::{FU740_ECAM_BASE, FU740_MMIO, Fu740Config};
 pub use fstart_driver_sifive::fu740_ddr::{FU740_DRAM_BASE, Fu740DdrConfig};
-pub use fstart_driver_sifive::fu740_prci::Fu740PrciConfig;
+pub use fstart_driver_sifive::fu740_prci::{Fu740PrciConfig, PllConfig, PllSettings};
 #[cfg(feature = "host")]
 pub use host::Plan;
 #[cfg(all(feature = "stage", target_arch = "riscv64"))]

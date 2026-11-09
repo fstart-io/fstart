@@ -570,6 +570,12 @@ mod stage {
                 rsdp,
                 region: acpi_buffer,
             });
+            // Q35's fw_cfg `_S5` uses type 0; PMBASE is programmed by q35.rs.
+            let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(
+                crate::q35::Q35_PMBASE + 4,
+                0,
+            )];
+            description.acpi_s5 = &acpi_s5;
             description.mainboard = ("QEMU", "Q35");
             description.tables = &tables;
             #[allow(unused_mut)]

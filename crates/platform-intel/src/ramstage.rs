@@ -290,7 +290,14 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         let console = slot.install(console);
         crate::debug_console::install::<B>(true);
         self.uart = console.uart_port();
+        // Preserve the original board-console handoff unless debug fan-out
+        // was explicitly selected. In debug builds NoConsole must not hide
+        // the optional EHCI input/output from the payload.
         self.console = Some(console);
+        #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+        {
+            self.console = Some(&fstart_log::ConsoleMux);
+        }
         fstart_log::info!("{} ramstage: {} console ready", B::Platform::NAME, C::NAME);
         let early = self
             .northbridge
@@ -324,6 +331,7 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             // coreboot chip_operations.init: before PCI enumeration, e.g.
             // hiding functions the board disables.
             self.northbridge.chip_init()?;
+            self.southbridge.chip_init()?;
             // Cache is still off: the RAM-stage entry tore down CAR. The ranges
             // the northbridge just published are enough to restore caching now.
             // The complete solution is selected after PCI allocation.
@@ -469,7 +477,7 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
             // init; the registers are commonly write-once.
             for entry in B::CONFIG.pci_subsystem_ids() {
                 let dev = fstart_pci::ecam::EcamDevice::new(0, entry.device, entry.function);
-                if dev.is_present() && !dev.set_subsystem(entry.id) {
+                if dev.is_present() && !rs.southbridge.program_subsystem_id(dev, entry.id) {
                     fstart_log::error!(
                         "pci: 00:{:02x}.{} has no subsystem ID register",
                         entry.device,
@@ -600,10 +608,16 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         use fstart_driver_intel::namespace::{SouthbridgeAcpi, pci_root};
         // coreboot's dsdt.asl: the southbridge's devices in the northbridge's root.
         let pci_root = const { pci_root::<Nb<B>>() };
-        let platform = fstart_acpi::platform::PlatformConfig::X86(
-            self.southbridge
-                .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus())),
-        );
+        let mut x86 = self
+            .southbridge
+            .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus()));
+        // CPU ordinals are not LAPIC IDs. MP recorded each responding CPU's
+        // hardware ID, including holes in Arrandale's APIC numbering.
+        x86.apic_ids = fstart_arch::x86::mp::online_apic_ids().collect();
+        for (uid, apic_id) in x86.apic_ids.iter().enumerate() {
+            fstart_log::info!("ACPI: CPU {} LAPIC ID {}", uid, apic_id);
+        }
+        let platform = fstart_acpi::platform::PlatformConfig::X86(x86);
         let (northbridge, southbridge) = (&self.northbridge, &self.southbridge);
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let rsdp = crate::tables::prepare_acpi(store, &platform, |dsdt, extra| {
@@ -629,6 +643,7 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
             rom_size: B::FACTS.flash_size,
             memory: memory.as_ref(),
             pci: self.pci.as_ref(),
+            slots: B::FACTS.smbios_slots,
         };
         let smbios =
             crate::tables::prepare_smbios(store, self.ctx.e820_state(), identity, &runtime)?;
@@ -752,6 +767,19 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
         description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.northbridge));
         description.framebuffer = self.northbridge.framebuffer_info();
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
+        #[cfg(feature = "acpi")]
+        let acpi_s5 = {
+            use fstart_acpi::platform::X86PlatformProvider;
+            use fstart_driver_intel::southbridge::pmio_ich;
+            [fstart_core::description::AcpiSleepControl::new(
+                self.southbridge.x86_platform_config(0).pmbase + pmio_ich::PM1_CNT,
+                pmio_ich::S5_SLEEP_TYPE,
+            )]
+        };
+        #[cfg(feature = "acpi")]
+        {
+            description.acpi_s5 = &acpi_s5;
+        }
         description.smbios = self.ctx.smbios();
         description.mainboard = (&self.mainboard.0, &self.mainboard.1);
         description.tables = &tables;
@@ -780,11 +808,14 @@ fn init_mp<P: IntelEarlyPlatform>(
     // happens in pre-CAR assembly; the blob sits in boot flash.
     let cpu = P::cpu_driver(fstart_stage::microcode_blob(), northbridge, southbridge);
     let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-    // The supported Core 2 / Pineview platforms are single-socket, as in
-    // coreboot's model_1067x get_cpu_count(). CPUID is package-local; future
-    // multi-socket platforms must provide system-wide discovery instead.
-    let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
-    let num_cpus = (((ebx >> 16) & 0xff) as u16).max(1);
+    // The supported Intel platforms are single-socket. The CPU model reports
+    // its enabled threads when CPUID cannot (coreboot model_2065x
+    // get_cpu_count()); otherwise CPUID's package-local count is used, as
+    // in model_1067x. Multi-socket platforms need system-wide discovery.
+    let num_cpus = fstart_arch::x86::mp::CpuDriver::logical_cpu_count(&cpu).unwrap_or_else(|| {
+        let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
+        (((ebx >> 16) & 0xff) as u16).max(1)
+    });
     let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
         cpu_drivers: &drivers,
         num_cpus,

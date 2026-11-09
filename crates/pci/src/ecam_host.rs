@@ -1188,6 +1188,37 @@ impl PciEcam {
         self.devices.iter().map(|device| device.addr)
     }
 
+    /// Functions enumeration found immediately behind this bridge.
+    ///
+    /// This is a boot-time topology snapshot, not hot-plug presence detection:
+    /// an empty bridge is not itself evidence of an installed card. Returns
+    /// `None` for an undiscovered/non-bridge function or an unconfigured bus.
+    /// No config-space I/O or subordinate-bus-range guessing is needed.
+    pub fn bridge_devices(
+        &self,
+        address: PciAddress,
+    ) -> Option<impl Iterator<Item = PciAddress> + '_> {
+        let root = self.root_of(address)?;
+        let bridge = self.devices.iter().find(|device| device.addr == address)?;
+        if !matches!(
+            bridge.header_type,
+            PCI_HEADER_TYPE_BRIDGE | PCI_HEADER_TYPE_CARDBUS
+        ) || bridge.secondary_bus == 0
+            || bridge.secondary_bus == address.bus()
+        {
+            return None;
+        }
+        Some(
+            self.devices
+                .iter()
+                .filter(move |child| {
+                    child.addr.bus() == bridge.secondary_bus
+                        && self.root_of(child.addr) == Some(root)
+                })
+                .map(|child| child.addr),
+        )
+    }
+
     /// The discovered bridge/function chain, from the root bus to `address`.
     ///
     /// Uses the allocator's cached secondary-bus topology, not ECAM rescans or
@@ -1636,6 +1667,42 @@ mod tests {
         assert_eq!(device.read32(0xffc), u32::MAX);
         pci.roots[0].ecam_size = 0xfff; // A truncated function is not a mapped device.
         assert!(pci.device(PciAddress::new(0, 0, 0, 0)).is_none());
+    }
+
+    #[test]
+    fn bridge_children_distinguish_empty_slots_from_present_ports() {
+        let (mut pci, _memory) = test_pci();
+        let bridge = PciAddress::new(0, 0, 28, 3);
+        assert!(pci.bridge_devices(bridge).is_none());
+        pci.devices
+            .push(PciDev {
+                header_type: PCI_HEADER_TYPE_BRIDGE,
+                secondary_bus: 1,
+                subordinate_bus: 2,
+                ..endpoint(bridge, &[])
+            })
+            .ok()
+            .unwrap();
+        assert_eq!(pci.bridge_devices(bridge).unwrap().count(), 0);
+        // A sibling's bus or another segment must not occupy this slot.
+        pci.devices
+            .push(endpoint(PciAddress::new(0, 2, 0, 0), &[]))
+            .ok()
+            .unwrap();
+        pci.devices
+            .push(endpoint(PciAddress::new(1, 1, 0, 0), &[]))
+            .ok()
+            .unwrap();
+        assert_eq!(pci.bridge_devices(bridge).unwrap().count(), 0);
+        let card = PciAddress::new(0, 1, 0, 0);
+        pci.devices.push(endpoint(card, &[])).ok().unwrap();
+        assert_eq!(
+            pci.bridge_devices(bridge).unwrap().collect::<Vec<_>>(),
+            [card]
+        );
+        assert!(pci.bridge_devices(card).is_none());
+        pci.devices[0].secondary_bus = 0;
+        assert!(pci.bridge_devices(bridge).is_none());
     }
 
     #[test]

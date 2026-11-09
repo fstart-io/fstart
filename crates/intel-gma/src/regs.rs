@@ -519,6 +519,14 @@ register_bitfields! [u32,
     // Split-PCH connector, PLL, transcoder, and FDI registers.
     // ---------------------------------------------------------------------
 
+    /// Split-PCH 120 MHz display reference clock control (0xc6200).
+    pub PCH_DREF_CONTROL [
+        CPU_OUTPUT OFFSET(13) NUMBITS(2) [Ssc = 2, NonSsc = 3],
+        SSC_ENABLE OFFSET(11) NUMBITS(2) [Enabled = 2],
+        NONSSC_ENABLE OFFSET(9) NUMBITS(2) [Enabled = 2],
+        SSC_MODULATION_ENABLE OFFSET(1) NUMBITS(1) []
+    ],
+
     /// Split-PCH ADPA VGA/CRT port control register.
     pub PCH_ADPA [
         /// Enable VGA DAC output.
@@ -796,11 +804,10 @@ register_bitfields! [u32,
         FORMAT OFFSET(26) NUMBITS(4) [
             Xrgb8888 = 6
         ],
-        PIPE_SELECT OFFSET(24) NUMBITS(2) [
-            PipeA = 0,
-            PipeB = 1,
-            PipeC = 2
-        ]
+        /// Ironlake planes are wired to their matching pipe; bits 25:24
+        /// are not the legacy GMCH pipe-select field.
+        DISABLE_TRICKLE_FEED OFFSET(14) NUMBITS(1) [],
+        TILED_SURFACE OFFSET(10) NUMBITS(1) []
     ],
 
     // ---------------------------------------------------------------------

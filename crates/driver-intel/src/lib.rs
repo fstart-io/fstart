@@ -8,7 +8,8 @@ extern crate alloc;
     feature = "gm45",
     feature = "gm965",
     feature = "i945",
-    feature = "pineview"
+    feature = "pineview",
+    feature = "ironlake"
 ))]
 pub mod cpu;
 #[cfg(feature = "acpi")]
@@ -22,6 +23,8 @@ pub mod gm965;
 pub mod gmch;
 #[cfg(feature = "i945")]
 pub mod i945;
+#[cfg(feature = "ibexpeak")]
+pub mod ibexpeak;
 #[cfg(feature = "ich7")]
 pub mod ich7;
 #[cfg(feature = "ich8")]
@@ -29,6 +32,8 @@ pub mod ich8;
 #[cfg(feature = "ich9")]
 pub mod ich9;
 pub mod igd;
+#[cfg(feature = "ironlake")]
+pub mod ironlake;
 #[cfg(feature = "pineview")]
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
@@ -323,6 +328,21 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    /// Bootblock-only setup right before DRAM training (coreboot romstage
+    /// `early_pch_init()`), which the DRAM mainstage must not repeat.
+    fn pre_raminit_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Mainstage function enables before PCI enumeration (coreboot
+    /// `enable_dev`/`.enable`), e.g. hiding the functions a board disables.
+    fn chip_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Program a bus-0 function's subsystem ID; chipsets with
+    /// write-protected subsystem registers unlock them here.
+    fn program_subsystem_id(&self, device: fstart_pci::ecam::EcamDevice, id: u32) -> bool {
+        device.set_subsystem(id)
+    }
     /// Chipset-owned PCI BARs that generic resource allocation must preserve.
     fn fixed_pci_bars(&self) -> fstart_pci::PciFixedBars {
         fstart_pci::PciFixedBars::new()

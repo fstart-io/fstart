@@ -59,7 +59,7 @@ pub fn setup_environment() -> Result<(), ServiceError> {
     let pending = environment.prepare(&crate::ENVIRONMENT)?;
     // ICH7 early_init has enabled HPET. Keep full cooling on failed qualification.
     if pending
-        .enable_automatic(fstart_arch::x86::hpet_udelay)
+        .enable_automatic(|us| fstart_driver_intel::ich7::HPET.delay_us(us))
         .is_err()
     {
         fstart_log::warn!("ga-945gcm: sensor qualification failed; fans remain full-speed");

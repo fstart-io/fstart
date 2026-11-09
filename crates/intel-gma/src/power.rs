@@ -12,8 +12,62 @@ use tock_registers::LocalRegisterCopy;
 use tock_registers::interfaces::Readable;
 
 use crate::mmio::Mmio;
-use crate::regs::{GCFGC, GMCH_CLKCFG, GMCH_HPLLVCO, GmchClockRegs};
+use crate::panel::{PanelPowerRegs, PanelRegisterOp};
+use crate::regs::{GCFGC, GMCH_CLKCFG, GMCH_HPLLVCO, GmchClockRegs, PP_CONTROL, PP_STATUS};
 use crate::types::Cpu;
+
+pub(crate) fn apply_panel_op(mmio: &Mmio, op: PanelRegisterOp) {
+    match op {
+        PanelRegisterOp::Write { register, value } => mmio.write32(register, value),
+        PanelRegisterOp::Update {
+            register,
+            mask_unset,
+            mask_set,
+        } => {
+            mmio.update32(register, mask_unset, mask_set);
+        }
+        PanelRegisterOp::Set { register, mask } => mmio.update32(register, 0, mask),
+        PanelRegisterOp::Clear { register, mask } => mmio.update32(register, mask, 0),
+    }
+}
+
+/// Request panel power and wait for the GMCH or PCH sequencer to finish.
+pub(crate) fn panel_power_on(
+    mmio: &Mmio,
+    regs: PanelPowerRegs,
+) -> Result<(), crate::error::GmaError> {
+    let control = mmio.read32(regs.control);
+    let was_on = control & PP_CONTROL::TARGET_ON::SET.value != 0;
+    mmio.write32(
+        regs.control,
+        (control & !PP_CONTROL::UNLOCK_KEY.val(0xffff).value)
+            | PP_CONTROL::UNLOCK_KEY.val(0xabcd).value
+            | PP_CONTROL::TARGET_ON::SET.value,
+    );
+    mmio.posting_read(regs.control);
+    if !was_on {
+        crate::mmio::delay_us(210_000);
+    }
+    let deadline = fstart_arch::x86::timestamp_us().saturating_add(1_000_000);
+    loop {
+        let status = LocalRegisterCopy::<u32, PP_STATUS::Register>::new(mmio.read32(regs.status));
+        if status.read(PP_STATUS::SEQUENCE) == 0 && status.is_set(PP_STATUS::ON) {
+            return Ok(());
+        }
+        if fstart_arch::x86::timestamp_us() >= deadline {
+            fstart_log::error!(
+                "intel-gma: panel power timeout: status={:#x}, control={:#x}, on={:#x}, off={:#x}, divisor={:#x}",
+                status.get(),
+                mmio.read32(regs.control),
+                mmio.read32(regs.on_delays),
+                mmio.read32(regs.off_delays),
+                mmio.read32(regs.divisor)
+            );
+            return Err(crate::error::GmaError::Timeout);
+        }
+        core::hint::spin_loop();
+    }
+}
 
 /// Legacy GMCH clock state discovered before modesetting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

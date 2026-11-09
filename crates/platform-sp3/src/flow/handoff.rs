@@ -97,6 +97,11 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
         Description::new(ctx.e820.entries(), Range::new(ctx.ffs.base, ctx.ffs.size));
     description.console = Some(console);
     description.acpi = ctx.rsdp.map(AcpiTables::at);
+    let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(
+        crate::acpi::fixed::PM_BASE + 4,
+        crate::acpi::fixed::S5_SLEEP_TYPE,
+    )];
+    description.acpi_s5 = &acpi_s5;
     description.smbios = ctx.smbios;
     description.pci_root = Some(ctx.pci_root);
     fstart_payload::boot(Handoff::new(description, Placement::default()), ())

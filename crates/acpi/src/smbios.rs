@@ -14,6 +14,7 @@
 //! | 3    | System Enclosure            |
 //! | 4    | Processor Information       |
 //! | 7    | Cache Information           |
+//! | 9    | System Slots                |
 //! | 11   | OEM Strings                 |
 //! | 16   | Physical Memory Array       |
 //! | 17   | Memory Device               |
@@ -38,8 +39,13 @@
 //! })?;
 //! ```
 
+pub use fstart_core::smbios::{SlotUsage, SystemSlot};
+
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{Immutable, IntoBytes};
+
+#[cfg(feature = "pci")]
+mod pci;
 
 #[cfg(feature = "x86")]
 mod package;
@@ -75,6 +81,7 @@ const TYPE_BASEBOARD_INFO: u8 = 2;
 const TYPE_ENCLOSURE: u8 = 3;
 const TYPE_PROCESSOR: u8 = 4;
 const TYPE_CACHE_INFO: u8 = 7;
+const TYPE_SYSTEM_SLOT: u8 = 9;
 const TYPE_OEM_STRINGS: u8 = 11;
 const TYPE_PHYS_MEM_ARRAY: u8 = 16;
 const TYPE_MEMORY_DEVICE: u8 = 17;
@@ -411,6 +418,25 @@ struct RawType4 {
     thread_count2: U16,
 }
 const _: () = assert!(size_of::<RawType4>() == 0x30);
+
+/// Type 9: System Slots through the SMBIOS 2.6 PCI association (17 bytes).
+/// No SMBIOS 3.2+ negotiated-width/peer fields are advertised by this layout.
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RawType9 {
+    header: RawHeader,
+    designation: u8,
+    slot_type: u8,
+    data_bus_width: u8,
+    current_usage: u8,
+    length: u8,
+    id: U16,
+    characteristics: [u8; 2],
+    segment: U16,
+    bus: u8,
+    devfn: u8,
+}
+const _: () = assert!(size_of::<RawType9>() == 0x11);
 
 /// Type 11: OEM Strings (5 bytes).
 #[repr(C)]
@@ -998,6 +1024,39 @@ impl<'a> SmbiosWriter<'a> {
         self.write_strings(&strings);
     }
 
+    /// Add a Type 9 (System Slots) structure, including empty slots.
+    ///
+    /// The descriptor is board-fixed wiring; `usage` is a boot-time snapshot.
+    /// Use `Unknown` when the platform cannot establish occupancy. The address
+    /// identifies the card in the slot, not its upstream PCIe bridge (DSP0134
+    /// section 7.10.8). Pass all-ones address fields when unknown/non-PCI.
+    /// This writer performs no PCI access and also supports non-PCI slots.
+    pub fn add_system_slot(
+        &mut self,
+        slot: &SystemSlot<'_>,
+        usage: SlotUsage,
+        segment: u16,
+        bus: u8,
+        devfn: u8,
+    ) {
+        let [designation] = string_indices([slot.designation]);
+        let (header, _) = self.begin::<RawType9>(TYPE_SYSTEM_SLOT);
+        self.emplace(&RawType9 {
+            header,
+            designation,
+            slot_type: slot.slot_type,
+            data_bus_width: slot.data_bus_width,
+            current_usage: usage as u8,
+            length: slot.length,
+            id: U16::new(slot.id),
+            characteristics: slot.characteristics,
+            segment: U16::new(segment),
+            bus,
+            devfn,
+        });
+        self.write_strings(&[slot.designation]);
+    }
+
     // -----------------------------------------------------------------------
     // Type 11: OEM Strings
     // -----------------------------------------------------------------------
@@ -1370,6 +1429,86 @@ mod tests {
             .take_while(|string| !string.is_empty())
             .map(|string| core::str::from_utf8(string).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn system_slots_encode_the_wire_layout_and_keep_empty_slots() {
+        let slot = SystemSlot {
+            designation: "PCIe Slot 2",
+            slot_type: 0xa9,      // PCI Express x8
+            data_bus_width: 0x0b, // x8 (not the lane count 8)
+            length: 4,
+            id: 0x5678,
+            characteristics: [4, 3],
+        };
+        for usage in [SlotUsage::Available, SlotUsage::InUse, SlotUsage::Unknown] {
+            let (buf, total) = write_to_buffer(|w| {
+                w.add_system_slot(&slot, usage, 0x1234, 0x42, 0xab);
+                w.add_end_of_table();
+            });
+            let table = &buf[ENTRY_POINT_SIZE..total];
+            assert_eq!(
+                &table[..0x11],
+                &[
+                    9,
+                    0x11,
+                    1,
+                    0,
+                    1,
+                    0xa9,
+                    0x0b,
+                    usage as u8,
+                    4,
+                    0x78,
+                    0x56,
+                    4,
+                    3,
+                    0x34,
+                    0x12,
+                    0x42,
+                    0xab,
+                ]
+            );
+            assert_eq!(strings(table), ["PCIe Slot 2"]);
+            let next = 0x11 + slot.designation.len() + 2;
+            assert_eq!(&table[next..next + 4], &[127, 4, 2, 0]);
+        }
+    }
+
+    #[test]
+    fn unknown_slots_have_no_fabricated_pci_address_or_empty_string() {
+        let (buf, total) = write_to_buffer(|w| {
+            w.add_system_slot(
+                &SystemSlot::new(""),
+                SlotUsage::Unknown,
+                u16::MAX,
+                u8::MAX,
+                u8::MAX,
+            );
+            w.add_end_of_table();
+        });
+        let table = &buf[ENTRY_POINT_SIZE..total];
+        assert_eq!(table[4], 0);
+        assert_eq!(&table[13..17], &[0xff; 4]);
+        assert_eq!(&table[17..19], &[0, 0]);
+        assert_eq!(&table[19..23], &[127, 4, 2, 0]);
+    }
+
+    #[test]
+    fn system_slot_overflow_publishes_no_entry_point() {
+        let mut buf = [0xff; ENTRY_POINT_SIZE + 20];
+        let result = assemble_into(&mut buf, 0x1000, |w| {
+            w.add_system_slot(
+                &SystemSlot::new("long slot designation"),
+                SlotUsage::Unknown,
+                u16::MAX,
+                u8::MAX,
+                u8::MAX,
+            );
+            w.add_end_of_table();
+        });
+        assert_eq!(result, Err(WriteError::TableTooLarge));
+        assert_eq!(&buf[..ENTRY_POINT_SIZE], &[0; ENTRY_POINT_SIZE]);
     }
 
     #[test]

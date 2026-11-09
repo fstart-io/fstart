@@ -73,6 +73,8 @@ pub mod gm45;
 pub mod gm965;
 #[cfg(feature = "i945-ich7")]
 pub mod i945;
+#[cfg(feature = "ironlake-ibexpeak")]
+pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
 #[cfg(feature = "pineview-ich7")]
@@ -131,6 +133,13 @@ pub trait IntelEarlyPlatform:
     /// so resume skips the modeset flicker.
     #[cfg(feature = "acpi")]
     const RESUME_DISPLAY_INIT: bool;
+    /// Take platform-owned CAR scratch once for cached input and new training.
+    /// A cache-capable platform supplies its own workspace; the common flow
+    /// only borrows slices and never selects or allocates a payload size.
+    #[cfg(feature = "memory-cache")]
+    fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
+        None
+    }
     type Northbridge: IntelNorthbridgeDriver
         + fstart_arch::x86::cpu::intel::smm::SmramControl
         + NorthbridgeAcpi<Self::Northbridge>;

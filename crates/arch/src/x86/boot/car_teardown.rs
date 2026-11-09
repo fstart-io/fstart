@@ -30,7 +30,8 @@ global_asm!(
     // _car_teardown — Intel CAR teardown.
     //
     // Core2/X61 uses MTRR-backed CAR and must not touch the no-evict MSR.
-    // Atom/NEM systems clear MSR 0x2e0 below after CPUID model gating.
+    // Atom and integrated-memory-controller cores use no-evict mode and
+    // clear MSR 0x2e0 below after CPUID model gating.
     //
     // Callable from the postcar entry while still on the inherited CAR
     // stack: capture the return address before disabling CAR, then touch
@@ -52,7 +53,7 @@ global_asm!(
     "rdmsr",
     "andl $0xfffff7ff, %eax",
     "wrmsr",
-    // Disable no-evict mode RUN then SETUP only on Atom/NEM models.
+    // Disable no-evict mode RUN then SETUP only on the NEM models.
     "movl $1, %eax",
     "cpuid",
     "movl %eax, %edx",
@@ -70,6 +71,8 @@ global_asm!(
     "je 1f",
     "cmpl $0x35, %edx",
     "je 1f",
+    // Integrated-memory-controller cores, as car.rs's _car_nem_imc.
+    super::imc_nem_model_branch!("%edx", "1f"),
     "cmpl $0x36, %edx",
     "jne 2f",
     "1:",
@@ -119,6 +122,8 @@ global_asm!(
     "je 1f",
     "cmpl $0x35, %edx",
     "je 1f",
+    // Integrated-memory-controller cores, as car.rs's _car_nem_imc.
+    super::imc_nem_model_branch!("%edx", "1f"),
     "cmpl $0x36, %edx",
     "jne 2f",
     "1:",

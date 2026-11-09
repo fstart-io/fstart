@@ -48,7 +48,7 @@
 #[doc(hidden)]
 pub use ufmt;
 
-use fstart_core::services::Console;
+use fstart_core::services::{Console, ServiceError};
 
 // ---------------------------------------------------------------------------
 // Level
@@ -159,6 +159,13 @@ static CONSOLE_LOCK: AtomicBool = AtomicBool::new(false);
 struct ConsoleLockGuard;
 
 impl ConsoleLockGuard {
+    fn try_acquire() -> Result<Self, ServiceError> {
+        CONSOLE_LOCK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map(|_| Self)
+            .map_err(|_| ServiceError::IoError)
+    }
+
     fn acquire() -> Self {
         while CONSOLE_LOCK
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -221,6 +228,65 @@ fn consoles() -> impl Iterator<Item = &'static dyn Console> {
     // SAFETY: written once each during init, then only read.
     let (console, debug) = unsafe { (*CONSOLE.0.get(), *DEBUG.0.get()) };
     core::iter::once(console).chain(debug).flatten()
+}
+
+#[cfg(not(feature = "debug-consoles"))]
+#[inline]
+fn consoles() -> impl Iterator<Item = &'static dyn Console> {
+    // SAFETY: written once during single-threaded init, then only read.
+    core::iter::once(unsafe { *CONSOLE.0.get() }).flatten()
+}
+
+/// Raw payload console for builds opting into firmware debug backends.
+/// Output succeeds if any backend accepts it; otherwise its error is returned.
+/// Input has fixed board-first priority, falling back past idle/failed backends.
+///
+/// Each call is serialized with firmware log records. Reentrant or concurrent
+/// calls return `IoError` instead of waiting: a backend can itself cause payload
+/// logging. This applies identically with and without `debug-consoles`.
+pub struct ConsoleMux;
+
+fn mux_output(
+    mut operation: impl FnMut(&dyn Console) -> Result<(), ServiceError>,
+) -> Result<(), ServiceError> {
+    let _guard = ConsoleLockGuard::try_acquire()?;
+    let mut error = ServiceError::NotInitialized;
+    let mut accepted = false;
+    for console in consoles() {
+        match timed(|| operation(console)) {
+            Ok(()) => accepted = true,
+            Err(failure) => error = failure,
+        }
+    }
+    if accepted { Ok(()) } else { Err(error) }
+}
+
+impl Console for ConsoleMux {
+    fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
+        mux_output(|console| console.write_byte(byte))
+    }
+
+    fn write_bytes(&self, bytes: &[u8]) -> Result<(), ServiceError> {
+        mux_output(|console| console.write_bytes(bytes))
+    }
+
+    fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
+        let _guard = ConsoleLockGuard::try_acquire()?;
+        let mut error = ServiceError::NotInitialized;
+        let mut idle = false;
+        for console in consoles() {
+            match console.read_byte() {
+                Ok(Some(byte)) => return Ok(Some(byte)),
+                Ok(None) => idle = true,
+                Err(failure) => error = failure,
+            }
+        }
+        if idle { Ok(None) } else { Err(error) }
+    }
+
+    fn flush(&self) -> Result<(), ServiceError> {
+        mux_output(|console| console.flush())
+    }
 }
 
 /// Current maximum log level; the build-time level when one was set.

@@ -22,6 +22,32 @@ tock_registers::register_bitfields![u16,
 pub struct IchSmmConfig {
     pm_base: u16,
     gpe0: Gpe0Block,
+    sleep: SleepSmi,
+}
+
+/// Sleep-transition SMI policy (coreboot `southbridge_smi_sleep()`): off on
+/// chipsets whose SMM has no sleep work. 5 Series and later PCHs gate the
+/// DIMM reset across S3 from it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleepSmi {
+    enabled: bool,
+    /// GPIOBASE, for the DRAM reset gate.
+    gpio_base: u16,
+    /// coreboot `DRAM_RESET_GATE_GPIO`, driven low on S3 entry; 0xff: none.
+    dram_reset_gate: u8,
+    /// Leave AFTER_G3 at "power on" when entering S5 (coreboot's
+    /// `power_on_after_fail` CMOS option, `MAINBOARD_POWER_ON`).
+    power_on_after_fail: bool,
+}
+
+impl SleepSmi {
+    const NONE: Self = Self {
+        enabled: false,
+        gpio_base: 0,
+        dram_reset_gate: 0xff,
+        power_on_after_fail: false,
+    };
 }
 
 /// ICH GPE0 register geometry, owned by the Intel southbridge driver.
@@ -36,6 +62,16 @@ impl Gpe0Block {
     #[inline(always)]
     const fn enable_offset(self) -> u16 {
         self.sts_offset + if self.wide { 8 } else { 4 }
+    }
+
+    /// coreboot S5 entry: `GPE0_EN = 0`.
+    #[inline(always)]
+    fn disable_all(self, pm: &PmIo) {
+        let enable = self.enable_offset();
+        pm.write32(enable, 0);
+        if self.wide {
+            pm.write32(enable + 4, 0);
+        }
     }
 
     #[inline(always)]
@@ -72,6 +108,7 @@ pub const ICH8_GPE0: Gpe0Block = Gpe0Block {
 pub struct IchSmi {
     pm: PmIo,
     gpe0: Gpe0Block,
+    sleep: SleepSmi,
 }
 
 impl IchSmi {
@@ -80,7 +117,32 @@ impl IchSmi {
         Self {
             pm: PmIo::new(pm_base),
             gpe0,
+            sleep: SleepSmi::NONE,
         }
+    }
+
+    /// Trap the OS's sleep transitions (`SLP_SMI_EN`) and run coreboot's
+    /// `southbridge_smi_sleep()` before entering them.
+    #[must_use]
+    pub const fn with_sleep_smi(mut self, gpio_base: u16) -> Self {
+        self.sleep.enabled = true;
+        self.sleep.gpio_base = gpio_base;
+        self
+    }
+
+    /// Drive `gpio` low on S3 entry so the DIMMs keep their contents
+    /// (coreboot `southbridge_gate_memory_reset()`).
+    #[must_use]
+    pub const fn with_dram_reset_gate(mut self, gpio: u8) -> Self {
+        self.sleep.dram_reset_gate = gpio;
+        self
+    }
+
+    /// Keep "power on after power failure" when entering S5.
+    #[must_use]
+    pub const fn with_power_on_after_fail(mut self, power_on: bool) -> Self {
+        self.sleep.power_on_after_fail = power_on;
+        self
     }
 
     /// Switch one ICH GPI between OS SCI and firmware SMI, preserving all
@@ -131,6 +193,7 @@ impl SmiControl for IchSmi {
         IchSmmConfig {
             pm_base: self.pm.base(),
             gpe0: self.gpe0,
+            sleep: self.sleep,
         }
     }
 
@@ -198,14 +261,19 @@ impl SmiControl for IchSmi {
             self.pm.write32(gpe0_en + 4, previous.gpe0_high);
         }
         self.pm.write16(pmio::ALT_GP_SMI_EN, previous.alt_gp);
-        // No `SLP_SMI_EN`: this SMM has no sleep-transition work to do, and
-        // intercepting the OS's sleep write would run a handler during the
-        // machine's most delicate transition. coreboot's ICH7 boards without
-        // SMM do not intercept it either (their SMM sleep handler exists only
-        // to gate the memory reset on newer PCHs).
+        // `SLP_SMI_EN` only where SMM has sleep-transition work: gating the
+        // memory reset on the PCHs. Otherwise intercepting the OS's sleep
+        // write would run a handler during the machine's most delicate
+        // transition for nothing; coreboot's ICH7 boards without SMM do not
+        // intercept it either.
+        let sleep = if self.sleep.enabled {
+            pmio::SLP_SMI_EN
+        } else {
+            0
+        };
         self.pm.write32(
             pmio::SMI_EN,
-            pmio::TCO_EN | pmio::APMC_EN | pmio::GBL_SMI_EN | pmio::EOS,
+            pmio::TCO_EN | pmio::APMC_EN | sleep | pmio::GBL_SMI_EN | pmio::EOS,
         );
     }
 }
@@ -271,7 +339,12 @@ mod tests {
 pub struct PendingSmi {
     pm: PmIo,
     gpe0: Gpe0Block,
+    sleep_policy: SleepSmi,
     smi_sts: u32,
+    /// The ACPI sleep state the OS is entering (`SLP_TYP` decoded: 0, 1,
+    /// 3, 4 or 5), when the sleep trap raised this SMI. [`Self::finish`]
+    /// enters it after the board's own sleep work.
+    pub sleep: Option<u8>,
     /// The APM command, when the APM port raised this SMI. ACPI enable and
     /// disable are applied already; FINALIZE never shows up here.
     pub apm: Option<u8>,
@@ -315,6 +388,16 @@ impl PendingSmi {
             _ => {}
         }
 
+        // coreboot southbridge_smi_sleep(): no further sleep SMIs, then
+        // decode SLP_TYP.
+        let sleep = (smi_sts & pmio::SLP_SMI_STS != 0).then(|| {
+            pm.write8(
+                pmio::SMI_EN,
+                pm.read8(pmio::SMI_EN) & !(pmio::SLP_SMI_EN as u8),
+            );
+            acpi_sleep_state(pm.read32(pmio::PM1_CNT))
+        });
+
         let tco = (smi_sts & pmio::TCO_STS != 0)
             .then(|| pm.tco())
             .filter(|tco| tco.read32(pmio::TCO1_STS) & pmio::SW_TCO_SMI != 0)
@@ -336,7 +419,9 @@ impl PendingSmi {
         Self {
             pm,
             gpe0,
+            sleep_policy: config.sleep,
             smi_sts,
+            sleep,
             // FINALIZE has no chipset work yet; never hand it to the board.
             apm: apm.filter(|command| *command != APM_CNT_FINALIZE),
             tco,
@@ -371,7 +456,97 @@ impl PendingSmi {
             self.gpe0.clear_status(&pm);
         }
         pm.write32(pmio::SMI_STS, self.smi_sts);
+        if let Some(state) = self.sleep {
+            self.enter_sleep(state);
+        }
         pm.setbits32(pmio::SMI_EN, pmio::EOS);
+    }
+
+    /// coreboot `southbridge_smi_sleep()` after `mainboard_smi_sleep()`:
+    /// prepare the platform and re-issue the OS's sleep request. Never
+    /// returns for S3, S4 and S5.
+    #[inline(always)]
+    fn enter_sleep(&self, state: u8) {
+        let pm = self.pm;
+        let policy = self.sleep_policy;
+        match state {
+            3 => {
+                if policy.dram_reset_gate != 0xff {
+                    super::gpio_ich::IchGpio::new(policy.gpio_base)
+                        .output(policy.dram_reset_gate, false);
+                }
+                // SAFETY: SMM owns the CPU; caches are on.
+                unsafe { fstart_arch::x86::writeback_invalidate_caches() };
+            }
+            5 => {
+                self.gpe0.disable_all(&pm);
+                // SAFETY: the SMM rendezvous owner accesses PCI config.
+                unsafe {
+                    let pmcon3 = fstart_core::pio::pci_cfg_read8(0, 0x1f, 0, 0xa4);
+                    let pmcon3 = if policy.power_on_after_fail {
+                        pmcon3 & !1
+                    } else {
+                        pmcon3 | 1
+                    };
+                    fstart_core::pio::pci_cfg_write8(0, 0x1f, 0, 0xa4, pmcon3);
+                    busmaster_disable_on_bus(0);
+                }
+            }
+            _ => {}
+        }
+        let pm1 = pm.read32(pmio::PM1_CNT);
+        pm.write32(pmio::PM1_CNT, pm1 | pmio::SLP_EN);
+        if state >= 3 {
+            loop {
+                // SAFETY: the platform is powering down.
+                unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
+            }
+        }
+        // S1 woke up: a non-ACPI OS gets S0 back.
+        let pm1 = pm.read32(pmio::PM1_CNT);
+        if pm1 & pmio::SCI_EN != 0 {
+            pm.write32(pmio::PM1_CNT, pm1 & !(pmio::SLP_EN | pmio::SLP_TYP_MASK));
+        }
+    }
+}
+
+/// coreboot `acpi_sleep_from_pm1()` for Intel PM1_CNT.SLP_TYP.
+#[inline(always)]
+const fn acpi_sleep_state(pm1_cnt: u32) -> u8 {
+    match (pm1_cnt & pmio::SLP_TYP_MASK) >> pmio::SLP_TYP_SHIFT {
+        1 => 1,
+        5 => 3,
+        6 => 4,
+        7 => 5,
+        _ => 0,
+    }
+}
+
+/// coreboot `busmaster_disable_on_bus()`: no DMA while powering off.
+///
+/// # Safety
+/// The caller owns PCI configuration access (the SMM rendezvous).
+#[inline(always)]
+unsafe fn busmaster_disable_on_bus(bus: u8) {
+    for slot in 0..32u8 {
+        for func in 0..8u8 {
+            let id = unsafe { fstart_core::pio::pci_cfg_read32(bus, slot, func, 0) };
+            if matches!(id, 0xffff_ffff | 0 | 0x0000_ffff | 0xffff_0000) {
+                continue;
+            }
+            let command = unsafe { fstart_core::pio::pci_cfg_read16(bus, slot, func, 0x04) };
+            unsafe {
+                fstart_core::pio::pci_cfg_write16(bus, slot, func, 0x04, command & !(1 << 2))
+            };
+            let header = unsafe { fstart_core::pio::pci_cfg_read8(bus, slot, func, 0x0e) } & 0x7f;
+            if header == 1 || header == 2 {
+                let buses = unsafe { fstart_core::pio::pci_cfg_read32(bus, slot, func, 0x18) };
+                let secondary = ((buses >> 8) & 0xff) as u8;
+                if secondary > bus {
+                    unsafe { busmaster_disable_on_bus(secondary) };
+                }
+            }
+        }
     }
 }
 

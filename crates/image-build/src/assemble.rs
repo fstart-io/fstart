@@ -353,21 +353,10 @@ fn ffs_input_regions(
     config: &BoardConfig,
     ro_files: Vec<InputFile>,
 ) -> Result<Vec<InputRegion>, String> {
-    let cache_size = config.build.mrc_cache_size;
-    if cache_size != 0
-        && (cache_size != 0x20000 || !config.full_flash_image || !config.platform.is_x86())
-    {
-        return Err("MRC cache requires an Intel full-flash image and two 64-KiB banks".into());
+    let has_mutable = !config.build.mutable_regions.is_empty();
+    if has_mutable && !config.full_flash_image {
+        return Err("mutable flash prefixes require a full-flash image".into());
     }
-    let console_size = config.build.flash_console_size;
-    if console_size != 0
-        && (console_size % 0x10000 != 0 || !config.full_flash_image || !config.platform.is_x86())
-    {
-        return Err(
-            "the flash console requires an Intel full-flash image and 64-KiB erase blocks".into(),
-        );
-    }
-    let mutable_size = cache_size + console_size;
     let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout else {
         if config.full_flash_image {
             let flash_image = firmware_image_from_policy(config)?.ok_or_else(|| {
@@ -376,8 +365,8 @@ fn ffs_input_regions(
             let flash_size = flash_image.size;
             let flash_size_u32 = u32::try_from(flash_size)
                 .map_err(|_| format!("flash size {flash_size:#x} exceeds FFS u32 limits"))?;
-            if mutable_size != 0 {
-                return cached_ro_regions(config, ro_files, flash_size_u32);
+            if has_mutable {
+                return cached_ro_regions(config, ro_files, flash_size_u32, 0);
             }
             let (files, external_files) =
                 externalize_xip_bootblock(config, ro_files, flash_size_u32)?;
@@ -419,11 +408,8 @@ fn ffs_input_regions(
             fill: 0xff,
         });
     }
-    if mutable_size != 0 {
-        if bios.offset % 0x10000 != 0 {
-            return Err("mutable flash regions need a 64-KiB erase aligned BIOS start".into());
-        }
-        regions.extend(cached_ro_regions(config, ro_files, bios.size)?);
+    if has_mutable {
+        regions.extend(cached_ro_regions(config, ro_files, bios.size, bios.offset)?);
         if regions.len() > fstart_core::ffs::MAX_IMAGE_REGIONS {
             return Err("mutable flash regions exceed FFS region capacity".into());
         }
@@ -441,19 +427,20 @@ fn ffs_input_regions(
     Ok(regions)
 }
 
-/// Mutable bytes (the MRC cache, then the flash console) physically prefix
-/// the BIOS image; RO offsets must be relative to its shortened container,
+/// Platform-supplied mutable regions physically prefix the firmware image;
+/// RO offsets must be relative to its shortened container,
 /// while linked external load addresses stay fixed.
 fn cached_ro_regions(
     config: &BoardConfig,
     files: Vec<InputFile>,
     bios_size: u32,
+    physical_offset: u32,
 ) -> Result<Vec<InputRegion>, String> {
-    let mutable = [
-        ("mrc-cache", config.build.mrc_cache_size),
-        ("console", config.build.flash_console_size),
-    ];
-    let prefix: u32 = mutable.iter().map(|(_, size)| size).sum();
+    let mutable = &config.build.mutable_regions;
+    let prefix = fstart_core::board::mutable_prefix_size(mutable, physical_offset)?;
+    if mutable.len() >= fstart_core::ffs::MAX_IMAGE_REGIONS {
+        return Err("mutable flash regions leave no FFS region for RO".into());
+    }
     let ro_size = bios_size
         .checked_sub(prefix)
         .filter(|&n| n > 4096)
@@ -469,11 +456,10 @@ fn cached_ro_regions(
             .ok_or("mutable flash regions overlap the bootblock")?;
     }
     let mut regions: Vec<InputRegion> = mutable
-        .into_iter()
-        .filter(|&(_, size)| size != 0)
-        .map(|(name, size)| InputRegion::Raw {
-            name: name.into(),
-            size,
+        .iter()
+        .map(|region| InputRegion::Raw {
+            name: region.name.to_string(),
+            size: region.size,
             fill: 0xff,
         })
         .collect();

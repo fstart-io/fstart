@@ -200,6 +200,14 @@ pub trait CpuDriver: Send + Sync {
     /// BSP-only: called after all CPUs are initialized and APs are parked.
     fn post_mp_init(&self) {}
 
+    /// BSP-only: the logical CPUs the package has enabled, when the model
+    /// reports them better than `CPUID.1:EBX[23:16]` (coreboot
+    /// `mp_ops.get_cpu_count`). On Nehalem and later that field is the
+    /// addressable APIC-ID span, not the number of threads.
+    fn logical_cpu_count(&self) -> Option<u16> {
+        None
+    }
+
     /// Return true if this driver supports `identity`.
     fn matches(&self, identity: CpuIdentity) -> bool {
         self.id_table().iter().any(|id| id.matches(identity))
@@ -308,7 +316,8 @@ struct ApMailbox {
     func: AtomicUsize,
     /// Raw data pointer (argument to trampoline).
     data: AtomicUsize,
-    /// CPU index assigned to this AP (1-based; 0 = BSP).
+    /// Hardware LAPIC ID recorded by this AP; its mailbox slot determines
+    /// the 1-based firmware CPU index.
     cpu_index: AtomicUsize,
 }
 
@@ -362,6 +371,8 @@ static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 
 /// Total logical CPUs brought online by the most recent MP init.
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
+/// BSP's hardware ID, captured before releasing APs (zero before MP init).
+static BSP_APIC_ID: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
 // Flight plan (internal)
@@ -628,6 +639,18 @@ pub fn online_cpus() -> u16 {
     ONLINE_CPUS.load(Ordering::Acquire) as u16
 }
 
+/// Hardware LAPIC IDs in firmware CPU-index order, BSP first. AP IDs are
+/// recorded at check-in and need not be contiguous (e.g. 0, 1, 4, 5).
+/// Use these IDs, not logical ordinals, when publishing OS CPU topology.
+pub fn online_apic_ids() -> impl Iterator<Item = u32> + Clone {
+    let aps = usize::from(online_cpus()).saturating_sub(1).min(MAX_APS);
+    core::iter::once(BSP_APIC_ID.load(Ordering::Acquire) as u32).chain(
+        MAILBOXES[..aps]
+            .iter()
+            .map(|mailbox| mailbox.cpu_index.load(Ordering::Acquire) as u32),
+    )
+}
+
 /// Copy the SIPI trampoline, send INIT + SIPI and wait for every expected AP
 /// to check in. Zero or partial check-in is boot-fatal before barriers open.
 /// The trampoline resets the machine on a responder beyond `max_aps` before it
@@ -768,6 +791,7 @@ fn mp_init_inner(
     lapic.enable();
     lapic.setup_virtual_wire(true);
 
+    BSP_APIC_ID.store(lapic.id() as usize, Ordering::Release);
     fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
 
     // The BSP solution is complete before any AP starts. Model drivers must
@@ -1335,6 +1359,26 @@ fn delay_us(us: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn os_topology_uses_sparse_hardware_ids_not_cpu_ordinals() {
+        if MAX_APS < 3 {
+            return;
+        }
+        let old_bsp = BSP_APIC_ID.swap(0, Ordering::AcqRel);
+        let mut old_ids = [0; 3];
+        for ((mailbox, old), id) in MAILBOXES.iter().zip(old_ids.iter_mut()).zip([1, 4, 5]) {
+            *old = mailbox.cpu_index.swap(id, Ordering::AcqRel);
+        }
+        let old_count = ONLINE_CPUS.swap(4, Ordering::AcqRel);
+        let ids: heapless::Vec<u32, 4> = online_apic_ids().collect();
+        ONLINE_CPUS.store(old_count, Ordering::Release);
+        BSP_APIC_ID.store(old_bsp, Ordering::Release);
+        for (mailbox, id) in MAILBOXES.iter().zip(old_ids) {
+            mailbox.cpu_index.store(id, Ordering::Release);
+        }
+        assert_eq!(ids.as_slice(), &[0, 1, 4, 5]);
+    }
 
     #[test]
     fn total_cpu_capacity_includes_the_bsp() {

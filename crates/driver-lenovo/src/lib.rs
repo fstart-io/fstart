@@ -9,6 +9,11 @@
 //!   trackpoint and ultrabay power switching, plus its PNP0C02 resource
 //!   device.
 //! - [`wacom`]: tablet digitizer detection and its ACPI device.
+//! - [`thinkpad`]: what the H8-era ThinkPads share across chipsets: the
+//!   PC87382 tablet digitizer and the DSDT glue (ThinkLight, sleep hooks,
+//!   EC wake GPE, hotkey brightness).
+//! - [`x201`]: ThinkPad X201 policy: EC/PMH7 setup, the dock connection
+//!   and the dock DSDT and SMM event handling.
 //! - [`x6`]: X60/X61 family policy: EC/PMH7 setup, DSDT glue and the X6
 //!   UltraBase dock (DLPC LPC switch and dock-side PC87392 SuperIO).
 //!
@@ -24,7 +29,9 @@ pub mod eeprom;
 pub mod h8;
 pub mod pmh7;
 pub mod t6;
+pub mod thinkpad;
 pub mod wacom;
+pub mod x201;
 pub mod x6;
 
 #[cfg(feature = "acpi")]

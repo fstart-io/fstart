@@ -18,6 +18,7 @@ gm45-ich9 = ["dep:konst", "namespace", "fstart-driver-intel/gm45", "fstart-drive
 gm965-ich8 = ["dep:konst", "namespace", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
 i945-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
 pineview-ich7 = ["dep:konst", "namespace", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
+ironlake-ibexpeak = ["namespace", "fstart-driver-intel/ironlake", "fstart-driver-intel/ibexpeak"]
 host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
@@ -60,7 +61,7 @@ acpi = [
   "fstart-driver-intel/acpi",
 ]
 mp = ["dep:fstart-arch", "dep:fstart-ffs", "dep:fstart-stage", "fstart-stage/ffs"]
-smbios = ["dep:fstart-acpi", "dep:fstart-arch"]
+smbios = ["dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-arch"]
 
 [dev-dependencies]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it

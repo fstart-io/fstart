@@ -349,6 +349,12 @@ mod stage {
     use fstart_driver_intel::ich8::IntelIch8;
 
     impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for Gm965Ich8<C> {
+        #[cfg(feature = "memory-cache")]
+        fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
+            static WORKSPACE: crate::memory_cache::TrainingWorkspace<768> =
+                crate::memory_cache::TrainingWorkspace::new();
+            WORKSPACE.take()
+        }
         #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelGm965;

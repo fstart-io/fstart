@@ -1,10 +1,68 @@
-//! PC/AT interrupt and ISA DMA mechanisms shared by chipset flows.
+//! PC/AT interrupt, ISA DMA and legacy ACPI sleep mechanisms.
 //!
 //! Platforms choose vector offsets and interrupt masks. Call only during
 //! serialized firmware initialization with interrupts disabled and the legacy
 //! controllers decoded.
 
-use fstart_core::pio::{inb, outb};
+use fstart_core::description::AcpiSleepControl;
+use fstart_core::pio::{PioRegister, inb, outb};
+use tock_registers::{
+    LocalRegisterCopy,
+    interfaces::{ReadWriteable, Readable, Writeable},
+    register_bitfields,
+};
+
+register_bitfields![u16,
+    Pm1Control [SLEEP_TYPE OFFSET(10) NUMBITS(3) [], SLEEP_ENABLE OFFSET(13) NUMBITS(1) []]
+];
+
+fn sleep_control(current: u16, sleep_type: u8, enable: bool) -> u16 {
+    let mut value = LocalRegisterCopy::<u16, Pm1Control::Register>::new(current);
+    value.modify(
+        Pm1Control::SLEEP_TYPE.val(u16::from(sleep_type))
+            + Pm1Control::SLEEP_ENABLE.val(u16::from(enable)),
+    );
+    value.get()
+}
+
+/// Enter the platform's S5 state, then halt if it returns.
+/// An unsupported shutdown never guesses a port or falls back to rebooting.
+/// The platform owns and has decoded the supplied PM1 I/O blocks.
+pub fn enter_acpi_s5(controls: &[AcpiSleepControl]) -> ! {
+    // SAFETY: a firmware reset/shutdown request will not return to its caller.
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
+    // ACPI PM1a/PM1b: program both sleep types before asserting either SLP_EN.
+    for control in controls {
+        let reg = PioRegister::<u16, Pm1Control::Register>::new(control.port());
+        reg.set(sleep_control(reg.get(), control.sleep_type(), false));
+    }
+    for control in controls {
+        let reg = PioRegister::<u16, Pm1Control::Register>::new(control.port());
+        reg.modify(Pm1Control::SLEEP_ENABLE::SET);
+    }
+    loop {
+        // SAFETY: shutdown has been requested; an SMI may return, but not reset us.
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
+    }
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+
+    #[test]
+    fn platform_sleep_types_preserve_unrelated_control_bits() {
+        for (port, sleep_type, expected) in [(0x604, 0, 0), (0x504, 7, 0x1c00), (0x804, 5, 0x1400)]
+        {
+            let control = AcpiSleepControl::new(port, sleep_type);
+            assert_eq!(control.port(), port);
+            let current = 0xc3ff | 0x3c00;
+            let prepared = sleep_control(current, control.sleep_type(), false);
+            assert_eq!(prepared, 0xc3ff | expected);
+            assert_eq!(sleep_control(prepared, sleep_type, true), prepared | 0x2000);
+        }
+    }
+}
 
 pub const PIC_MASTER_MASK: u16 = 0x21;
 pub const PIC_SLAVE_MASK: u16 = 0xa1;
