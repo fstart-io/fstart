@@ -215,7 +215,7 @@ pub struct IntelIbexPeakConfig {
     /// GPIO that gates the DIMM reset across S3 (coreboot
     /// `DRAM_RESET_GATE_GPIO`), driven low by SMM on S3 entry.
     pub dram_reset_gate_gpio: Option<u8>,
-    /// The EHCI debug-port console's fixed BAR, kept by the allocator.
+    /// Board EHCI debug wiring; the platform reserves its BAR only when selected.
     pub ehci_debug_bar: Option<EhciDebugConfig>,
 }
 
@@ -529,10 +529,6 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
             prefetchable: false,
         })
         .expect("Ibex Peak fixed PCI resource capacity");
-        if let Some(debug) = self.config.ehci_debug_bar {
-            bars.push(debug.fixed_bar())
-                .expect("Ibex Peak fixed PCI resource capacity");
-        }
         bars
     }
 
@@ -665,6 +661,26 @@ mod tests {
             ..IntelIbexPeakConfig::new()
         };
         assert!(IntelIbexPeak::new_from_config(&HOTPLUG_ON_DISABLED).is_err());
+    }
+
+    #[test]
+    fn debug_wiring_alone_does_not_reserve_an_uninitialized_ehci_bar() {
+        static CONFIG: IntelIbexPeakConfig = IntelIbexPeakConfig {
+            ehci_debug_bar: Some(EhciDebugConfig {
+                ecam_base: 0xe000_0000,
+                bus: 0,
+                device: 0x1a,
+                function: 0,
+                bar: DEFAULT_EHCI_DEBUG_BAR,
+            }),
+            ..IntelIbexPeakConfig::new()
+        };
+        let driver = IntelIbexPeak::new_from_config(&CONFIG).unwrap();
+        let bars = driver.fixed_pci_bars();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].address, PciAddress::new(0, 0, 0x1f, 3));
+        assert_eq!(bars[0].register, 0x20);
+        assert_eq!(bars[0].base, u64::from(CONFIG.smbus_base));
     }
 
     #[test]
