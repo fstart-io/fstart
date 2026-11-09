@@ -1,6 +1,6 @@
 //! MJ11-EC1 BMC bootblock, executing SPI flash in place from the reset
 //! vector. The SoC's flow is the whole `main`; the board only picks the
-//! DRAM setup.
+//! DRAM setup and whether to test it.
 
 #![no_std]
 #![no_main]
@@ -24,9 +24,12 @@ const DRAM: DramConfig = DramConfig {
     ecc_bytes: Some(424 << 20),
 };
 
+/// Test all usable DRAM after every training (cold boots only).
+const MEMTEST: bool = true;
+
 fstart_platform_aspeed::spi_head!(STRAP_WRITES);
 fstart_platform_aspeed::entry!(main);
 
 fn main() -> ! {
-    fstart_platform_aspeed::ast2500::bootblock(&CONSOLE, board::console(), &DRAM)
+    fstart_platform_aspeed::ast2500::bootblock(&CONSOLE, board::console(), &DRAM, MEMTEST)
 }

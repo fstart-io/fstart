@@ -15,6 +15,7 @@ pub mod facts;
 pub mod head;
 #[cfg(feature = "host")]
 pub mod host;
+pub mod layout;
 
 #[cfg(feature = "stage")]
 #[doc(hidden)]
@@ -22,8 +23,10 @@ pub use fstart_stage as stage_runtime;
 #[cfg(feature = "host")]
 pub use host::Plan;
 
-/// Declare a board's stage `main`: `entry!(main);`.
+/// Declare a board's stage `main`: `entry!(main);`, or `entry!(main, handoff);`
+/// for a stage whose `main` takes its predecessor's handoff address.
 #[macro_export]
 macro_rules! entry {
     ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
+    ($main:path, handoff) => { $crate::stage_runtime::stage_bin!(main_handoff: $main); };
 }

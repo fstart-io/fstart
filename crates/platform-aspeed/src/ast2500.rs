@@ -1,14 +1,24 @@
-//! AST2500 bootblock: the ARM1176 executes SPI flash in place from the reset
-//! vector.
+//! AST2500 stages: the bootblock, which the ARM1176 executes from SPI flash
+//! in place from the reset vector, and the main stage it loads into DRAM.
 
+use crate::layout::{
+    DRAM_BASE as DRAM, FIRMWARE_WINDOW_SIZE, FLASH_ALIAS, HANDOFF_ADDR, MAIN_STAGE_BASE,
+    MAIN_STAGE_SIZE,
+};
 use aspeed_hal::ast2500::reset::{self, InitialReset};
 use aspeed_hal::ast2500::sdmc::train::ScanError;
-use aspeed_hal::ast2500::sdmc::{self, DRAM_BASE, Dram, TrainError};
+use aspeed_hal::ast2500::sdmc::{self, Dram, TrainError};
 pub use aspeed_hal::ast2500::sdmc::{CkDrive, Ddr4Odt, DramConfig, Organization, Speed};
 use aspeed_pac as pac;
+use fstart_core::ffs::Compression;
+use fstart_core::handoff::HANDOFF_MAX_SIZE;
+use fstart_core::services::boot_media::MemoryMapped;
+use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
 use fstart_log::{Hex, StaticConsole};
 use fstart_memtest::{Phase, Progress};
+use fstart_payload::{Description, Handoff, Placement, Range};
+use fstart_stage::boot::{Measurement, MemoryPolicy, MemoryWindow, codec, load_bootstrap};
 
 /// SCU00 protection key.
 const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;
@@ -17,9 +27,9 @@ const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;
 const MEMTEST_STEP: usize = 64 << 20;
 
 /// Stop what fires without us, protect the flash, bring up the console,
-/// take the first reset of a cold boot, then train DRAM and test all of
-/// the usable DRAM. Boards pass their DRAM choices; their bootblock `main`
-/// calls this.
+/// take the first reset of a cold boot, train DRAM, test it if `memtest`
+/// and it was just trained, then load the main stage into DRAM and enter
+/// it. Boards pass their DRAM choices; their bootblock `main` calls this.
 ///
 /// WDT3 resets the SoC about one second after power-on to retry the SPI
 /// address mode, and the strap may arm WDT2 to switch to the alternate boot
@@ -29,7 +39,9 @@ pub fn bootblock(
     slot: &'static StaticConsole<Ns16550>,
     console: Ns16550Config,
     dram: &DramConfig,
+    memtest: bool,
 ) -> ! {
+    fstart_stage::anchor::initial_stage();
     pac::WDT3.CTRL().modify(|w| w.set_WDT_EN(false));
     pac::WDT2.CTRL().modify(|w| w.set_WDT_EN(false));
     pac::FMC
@@ -38,13 +50,7 @@ pub fn bootblock(
     pac::SCU.PROTECT().write(|w| w.set_KEY(SCU_UNLOCK_KEY));
     enable_peripheral_port();
 
-    let Ok(mut uart) = Ns16550::new(console) else {
-        fstart_arch::halt()
-    };
-    if uart.init().is_err() {
-        fstart_arch::halt()
-    }
-    slot.install(uart);
+    start_console(slot, console);
 
     let strap = pac::SCU.HWSTRAP().read();
     fstart_log::info!("ast2500: bootblock from SPI");
@@ -85,10 +91,155 @@ pub fn bootblock(
         }
     };
     log_dram(&dram);
+    if memtest && dram.training.is_some() {
+        self::memtest(dram.usable_bytes);
+    }
 
-    memtest(dram.usable_bytes);
-    fstart_log::info!("ast2500: halting");
+    let usable = u64::from(dram.usable_bytes);
+    if DRAM + usable < MAIN_STAGE_BASE + MAIN_STAGE_SIZE {
+        fstart_log::error!("ast2500: usable DRAM ends below the main stage");
+        fstart_arch::halt()
+    }
+    let entry = load_main(usable).unwrap_or_else(|reason| {
+        fstart_log::error!("ast2500: main stage: {}", reason);
+        fstart_arch::halt()
+    });
+    // SAFETY: the handoff page lies in trained, usable DRAM, below the main
+    // stage and reserved from its load.
+    if unsafe { fstart_stage::next_stage::write_handoff(usable, HANDOFF_ADDR) }.is_err() {
+        fstart_log::error!("ast2500: no locator for the handoff");
+        fstart_arch::halt()
+    }
+    fstart_log::info!("ast2500: entering the main stage at {}", Hex(entry));
+    fstart_log::flush();
+    fstart_arch::armv5te::jump_to_with_handoff(entry, HANDOFF_ADDR as usize)
+}
+
+/// The DRAM main stage: take over the bootblock's locator and DRAM size,
+/// mount and verify the FFS, then boot the build's payload. The board's
+/// main stage `main` calls this with the handoff address.
+pub fn main_stage(
+    slot: &'static StaticConsole<Ns16550>,
+    console: Ns16550Config,
+    handoff_addr: usize,
+) -> ! {
+    start_console(slot, console);
+    fstart_log::info!("ast2500: main stage");
+    if handoff_addr != HANDOFF_ADDR as usize {
+        fail("handoff at an unexpected address");
+    }
+    // SAFETY: the bootblock wrote this reserved page before jumping here.
+    let Some(handoff) = (unsafe { fstart_stage::handoff::try_deserialize(handoff_addr) }) else {
+        fail("no handoff");
+    };
+    let dram_size = handoff.dram_size.get();
+    // SAFETY: single-threaded stage entry; the capacity is CE0's firmware
+    // window, not taken from the locator.
+    if unsafe { fstart_stage::anchor::install_locator(handoff.locator, FIRMWARE_WINDOW_SIZE) }
+        .is_err()
+    {
+        fail("bad locator");
+    }
+
+    let Ok(running) = fstart_stage::boot::running_stage_windows() else {
+        fail("no stage windows");
+    };
+    let writable = [MemoryWindow {
+        start: DRAM,
+        size: dram_size,
+    }];
+    let reserved = [
+        running[0],
+        running[1],
+        MemoryWindow {
+            start: HANDOFF_ADDR,
+            size: HANDOFF_MAX_SIZE as u64,
+        },
+    ];
+    let policy = MemoryPolicy {
+        writable: &writable,
+        reserved: &reserved,
+        entry_alignment: 4,
+    };
+    // SAFETY: trained DRAM with this stage, its allocator and the handoff
+    // excluded; nothing on the AST2500 does DMA at this point.
+    if unsafe {
+        fstart_stage::directory::set_load_policy(&policy, const { codec(Compression::None) })
+    }
+    .is_err()
+    {
+        fail("load policy");
+    }
+    let image_size = fstart_stage::anchor::image_size();
+    let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(FLASH_ALIAS, image_size);
+    if ffs.mount().is_err() || ffs.verify().is_err() {
+        fail("FFS mount or verification");
+    }
+
+    let memory = [E820Entry::new(DRAM, dram_size, E820Kind::Ram)];
+    let description = Description::new(&memory, Range::new(FLASH_ALIAS, image_size as u64));
+    fstart_payload::boot(Handoff::new(description, Placement::default()), ())
+}
+
+fn start_console(slot: &'static StaticConsole<Ns16550>, console: Ns16550Config) {
+    let Ok(mut uart) = Ns16550::new(console) else {
+        fstart_arch::halt()
+    };
+    if uart.init().is_err() {
+        fstart_arch::halt()
+    }
+    slot.install(uart);
+}
+
+fn fail(reason: &str) -> ! {
+    fstart_log::error!("ast2500: {}", reason);
     fstart_arch::halt()
+}
+
+/// Authenticate the FFS root through CE0's window and load the main stage
+/// it describes into `usable` bytes of DRAM; returns its entry.
+fn load_main(usable: u64) -> Result<u64, &'static str> {
+    // SAFETY: CE0's decode window maps the boot flash, readable for the
+    // whole boot.
+    let media = unsafe { MemoryMapped::from_raw_addr(FLASH_ALIAS, FIRMWARE_WINDOW_SIZE as usize) };
+    let root =
+        fstart_stage::root::authenticate_boot_root(fstart_stage::fstart_anchor_bytes(), &media)
+            .map_err(|_| "FFS root authentication failed")?;
+    let main = root
+        .descriptors()
+        .iter()
+        .flatten()
+        .find(|d| d.role == fstart_ffs::root::BootstrapRole::Mainstage)
+        .ok_or("no main stage in the FFS root")?;
+    if main.load_addr != MAIN_STAGE_BASE {
+        return Err("main stage linked elsewhere");
+    }
+    let writable = [MemoryWindow {
+        start: DRAM,
+        size: usable,
+    }];
+    let reserved = [MemoryWindow {
+        start: HANDOFF_ADDR,
+        size: HANDOFF_MAX_SIZE as u64,
+    }];
+    let policy = MemoryPolicy {
+        writable: &writable,
+        reserved: &reserved,
+        entry_alignment: 4,
+    };
+    // SAFETY: the bootblock runs from flash with its state in SRAM; the
+    // trained DRAM is unused and the handoff page reserved.
+    let main = unsafe {
+        load_bootstrap(
+            &media,
+            main,
+            &policy,
+            const { codec(Compression::None) },
+            &Measurement::NONE,
+        )
+    }
+    .map_err(|_| "load or verification failed")?;
+    Ok(main.entry())
 }
 
 /// Route `0x0000_0000..0x8000_0000` (flash and I/O) through the ARM1176
@@ -163,7 +314,7 @@ fn log_dram(dram: &Dram) {
         dram.capacity.bytes() >> 20,
         dram.vga_bytes >> 20,
         dram.usable_bytes >> 20,
-        Hex(DRAM_BASE.into())
+        Hex(DRAM)
     );
 }
 
@@ -185,7 +336,7 @@ fn memtest(bytes: u32) {
     // there yet (stack and data are in SRAM).
     let result = unsafe {
         fstart_memtest::own_address(
-            DRAM_BASE as *mut u32,
+            DRAM as *mut u32,
             bytes as usize / 4,
             MEMTEST_STEP / 4,
             progress,

@@ -1,36 +1,42 @@
 //! ASPEED build plans.
 //!
-//! AST2500: one stage executing SPI flash in place from the reset vector,
-//! with its data, stack and heap in the on-chip SRAM. The FFS is packed
-//! behind it inside the 16 MiB the boot-time 3-byte address mode reaches;
-//! the composite image is padded to the whole flash part.
+//! AST2500: the bootblock executes SPI flash in place from the reset vector,
+//! with its data, stack and heap in the on-chip SRAM. Once DRAM is up it
+//! loads the main stage into DRAM, which boots the payload. The FFS is
+//! packed behind the bootblock inside the 16 MiB the boot-time 3-byte
+//! address mode reaches; the composite image is padded to the whole flash
+//! part.
 extern crate std;
 use crate::facts::{AspeedBoardFacts, AspeedSoc, BoardFacts};
+use crate::layout::*;
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::{
-    build_plan::{BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, UnitOutput},
+    build_plan::{
+        BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
+        UnitOutput,
+    },
     layout::EncodedLayout,
-    linker::Xip,
+    linker::{Xip, resolved_ram_stage},
     plan::{BuildSelection, Span},
 };
 use std::{
     collections::BTreeMap,
     string::{String, ToString},
     vec,
+    vec::Vec,
 };
 
-/// CE0 is mapped at the reset vector.
-pub const FLASH_BASE: u64 = 0;
-/// What 3-byte SPI addressing reaches after reset.
-pub const FIRMWARE_WINDOW_SIZE: u64 = 16 * 1024 * 1024;
 /// AST2500 on-chip SRAM: 36 KiB at 0x1E72_0000.
 pub const AST2500_SRAM: Span = Span {
     base: 0x1E72_0000,
     size: 0x9000,
 };
-pub const STACK_SIZE: u64 = 0x1000;
+/// The bootblock authenticates the FFS root (Ed25519) on this stack.
+pub const STACK_SIZE: u64 = 0x4000;
 pub const HEAP_SIZE: u64 = 0x1000;
+pub const MAIN_STACK_SIZE: u32 = 0x1_0000;
+pub const MAIN_HEAP_SIZE: u32 = 0x4_0000;
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: AspeedBoardFacts> Plan<B> {
@@ -51,7 +57,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
     }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     if payload != "halt" {
-        return Err("the AST2500 bootblock has no payload stage yet; use halt".into());
+        return Err("the AST2500 main stage boots only halt".into());
     }
     let AspeedSoc::Ast2500 = facts.soc;
     if facts.flash_size < FIRMWARE_WINDOW_SIZE {
@@ -96,6 +102,36 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         )
         .map_err(|e| e.to_string())?,
     };
+    let stages = StageLayout::MultiStage(hvec([
+        StageConfig {
+            name: hstr("bootblock"),
+            build: StageBuildConfig {
+                load_next_stage: Some(hstr("main")),
+                ..StageBuildConfig::default()
+            },
+            load_addr: image.base,
+            stack_size: stack.size as u32,
+            heap_size: Some(heap.size as u32),
+            runs_from: RunsFrom::Rom,
+            compression: fstart_core::ffs::Compression::None,
+            data_addr: Some(writable.base),
+        },
+        StageConfig {
+            name: hstr("main"),
+            build: StageBuildConfig {
+                verify_firmware: true,
+                payload: true,
+                ..StageBuildConfig::default()
+            },
+            load_addr: MAIN_STAGE_BASE,
+            stack_size: MAIN_STACK_SIZE,
+            heap_size: Some(MAIN_HEAP_SIZE),
+            runs_from: RunsFrom::Ram,
+            compression: fstart_core::ffs::Compression::None,
+            data_addr: None,
+        },
+    ]));
+    let main = main_stage(&stages)?;
     let assembly = Assembly {
         platform: Platform::Armv5te,
         memory: vec![
@@ -111,17 +147,11 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
                 size: writable.size,
                 kind: RegionKind::Ram,
             },
+            main_dram(),
         ],
         flash: None,
-        bootstrap: vec![],
-        stages: StageLayout::Monolithic(MonolithicConfig {
-            external: false,
-            build: StageBuildConfig::default(),
-            load_addr: image.base,
-            data_addr: Some(writable.base),
-            stack_size: stack.size as u32,
-            heap_size: Some(heap.size as u32),
-        }),
+        bootstrap: vec![("main".into(), BootstrapRole::Mainstage)],
+        stages,
         security: default_security_config(),
         payload: None,
         microcode: None,
@@ -137,36 +167,116 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ..Default::default()
         },
     };
+    let inputs: Vec<InputFile> = vec![];
     let plan = BuildPlan {
         payload,
-        units: vec![CompilationUnit {
-            name: "bootblock".into(),
-            cargo_target: CargoTarget::BoardBinary,
-            target: Platform::Armv5te.target_triple().into(),
-            features: vec!["bundle-ast2500-bootblock".into()],
-            build_std: Some("core,alloc".into()),
-            rustflags: vec![
-                "-Zub-checks=no".into(),
-                "--cfg=portable_atomic_unsafe_assume_single_core".into(),
-            ],
-            release_only: false,
-            linker_script: Some(fstart_image_build::linker::resolved_xip(&layout)?),
-            environment_values: BTreeMap::new(),
-            bindings: vec![],
-            file_bindings: vec![],
-            board_features: vec![],
-            output: UnitOutput::Executable {
-                expectations: layout.elf_expectations()?,
-                load_address: image.base,
-                flat_capacity: image.size,
-            },
-        }],
-        stages: vec!["bootblock".into()],
+        units: vec![
+            unit(
+                "bootblock",
+                "bundle-ast2500-bootblock",
+                fstart_image_build::linker::resolved_xip(&layout)?,
+                UnitOutput::Executable {
+                    expectations: layout.elf_expectations()?,
+                    load_address: image.base,
+                    flat_capacity: image.size,
+                },
+            ),
+            unit(
+                "main",
+                "bundle-ast2500-main",
+                main.linker_script,
+                UnitOutput::Executable {
+                    expectations: main.expectations,
+                    load_address: main.memory.base,
+                    flat_capacity: main.memory.size,
+                },
+            ),
+        ],
+        stages: vec!["bootblock".into(), "main".into()],
         assembly: assembly.into(),
-        inputs: vec![],
+        inputs,
     };
     plan.order()?;
     Ok(plan)
+}
+
+/// DRAM up to the end of the main stage: what every accepted DRAM
+/// configuration provides.
+fn main_dram() -> MemoryRegion {
+    MemoryRegion {
+        name: hstr("dram"),
+        base: DRAM_BASE,
+        size: MAIN_STAGE_BASE + MAIN_STAGE_SIZE - DRAM_BASE,
+        kind: RegionKind::Ram,
+    }
+}
+
+/// Link the main stage into its DRAM window, with the handoff page below
+/// it reserved.
+fn main_stage(
+    stages: &StageLayout,
+) -> Result<fstart_image_build::linker::ResolvedRamStage, String> {
+    let config = BoardConfig {
+        name: hstr("ast2500"),
+        platform: Platform::Armv5te,
+        memory: MemoryMap {
+            regions: hvec([main_dram()]),
+            flash_layout: None,
+            car: None,
+        },
+        stages: stages.clone(),
+        security: default_security_config(),
+        payload: None,
+        microcode: None,
+        data_assets: Default::default(),
+        file_assets: Default::default(),
+        soc_image_format: SocImageFormat::AspeedSpi,
+        full_flash_image: true,
+        boot_hart_id: 0,
+        build: BoardBuildPolicy::default(),
+        acpi: None,
+        smbios: None,
+        smm: None,
+    };
+    let window = Span {
+        base: MAIN_STAGE_BASE,
+        size: MAIN_STAGE_SIZE,
+    };
+    let handoff = Span {
+        base: HANDOFF_ADDR,
+        size: fstart_core::handoff::HANDOFF_MAX_SIZE as u64,
+    };
+    let descriptor = EncodedLayout::encode(
+        1,
+        &[
+            window.region(Kind::Image),
+            window.region(Kind::Writable),
+            handoff.region(Kind::Reserved),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    resolved_ram_stage(&config, "main", &descriptor)
+}
+
+fn unit(name: &str, bundle: &str, linker_script: String, output: UnitOutput) -> CompilationUnit {
+    CompilationUnit {
+        name: name.into(),
+        cargo_target: CargoTarget::BoardBinary,
+        target: Platform::Armv5te.target_triple().into(),
+        features: vec![bundle.into()],
+        build_std: Some("core,alloc".into()),
+        rustflags: vec![
+            "-Zub-checks=no".into(),
+            "--cfg=portable_atomic_unsafe_assume_single_core".into(),
+        ],
+        release_only: false,
+        linker_script: Some(linker_script),
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
+        file_bindings: vec![],
+        board_features: vec![],
+        output,
+    }
 }
 
 #[cfg(test)]
@@ -180,16 +290,30 @@ mod tests {
     };
 
     #[test]
-    fn ast2500_bootblock_executes_in_place_with_the_head() {
+    fn ast2500_bootblock_executes_in_place_and_loads_main_into_dram() {
         let plan = resolve(MJ11, BuildSelection::default()).unwrap();
-        let [unit] = &plan.units[..] else {
-            panic!("one stage")
+        let [bootblock, main] = &plan.units[..] else {
+            panic!("bootblock and main")
         };
-        assert_eq!(unit.target, "armv5te-none-eabi");
-        let script = unit.linker_script.as_deref().unwrap();
+        assert_eq!(bootblock.target, "armv5te-none-eabi");
+        let script = bootblock.linker_script.as_deref().unwrap();
         assert!(script.contains("KEEP(*(.head.aspeed))"));
         assert!(script.contains("ROM (rx) : ORIGIN = 0x0, LENGTH = 0x1000000"));
         assert!(script.contains("RAM (rw) : ORIGIN = 0x1e720000"));
+        assert_eq!(main.features, ["bundle-ast2500-main"]);
+        let UnitOutput::Executable {
+            load_address,
+            flat_capacity,
+            ..
+        } = main.output
+        else {
+            panic!("main is an executable")
+        };
+        assert_eq!(
+            (load_address, flat_capacity),
+            (MAIN_STAGE_BASE, MAIN_STAGE_SIZE)
+        );
+        assert!(HANDOFF_ADDR + fstart_core::handoff::HANDOFF_MAX_SIZE as u64 <= MAIN_STAGE_BASE);
     }
 
     #[test]
