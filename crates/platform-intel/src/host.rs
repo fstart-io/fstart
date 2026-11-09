@@ -328,7 +328,7 @@ fn resolve_for<P: IntelPlatform>(
     if facts.memory_cache {
         mutable_regions
             .push(fstart_core::board::MutableFlashRegion {
-                name: fstart_core::builder::hstr("mrc-cache"),
+                name: fstart_core::hstr("mrc-cache"),
                 size: crate::memory_cache::EXTENT_SIZE,
                 alignment: crate::memory_cache::BANK_SIZE,
             })
@@ -337,7 +337,7 @@ fn resolve_for<P: IntelPlatform>(
     if debug.flash_console {
         mutable_regions
             .push(fstart_core::board::MutableFlashRegion {
-                name: fstart_core::builder::hstr("console"),
+                name: fstart_core::hstr("console"),
                 size: crate::facts::FLASH_CONSOLE_SIZE,
                 alignment: 0x10000,
             })

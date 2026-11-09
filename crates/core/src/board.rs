@@ -176,7 +176,7 @@ mod mutable_region_tests {
 
     fn region(name: &str, size: u32, alignment: u32) -> MutableFlashRegion {
         MutableFlashRegion {
-            name: crate::builder::hstr(name),
+            name: crate::hstr(name),
             size,
             alignment,
         }
