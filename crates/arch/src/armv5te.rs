@@ -76,6 +76,23 @@ _exception_hang:
     "#
 );
 
+/// `fence(SeqCst)` lowers to this libcall on ARMv5TE, which has no barrier
+/// instruction, and the bare-metal compiler builtins do not provide it. The
+/// cores run single-threaded with the MMU off, so draining the write buffer
+/// orders memory as a full barrier.
+#[unsafe(no_mangle)]
+pub extern "C" fn __sync_synchronize() {
+    // SAFETY: CP15 c7/c10/4 drains the write buffer; the source register
+    // should be zero and nothing else changes.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {zero}, c7, c10, 4",
+            zero = in(reg) 0u32,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
 /// Wait for an interrupt through CP15; ARMv5TE has no `wfi` instruction.
 #[inline(always)]
 pub fn wait_for_interrupt() {
