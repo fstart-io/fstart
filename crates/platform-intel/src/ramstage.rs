@@ -405,7 +405,16 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
         let mut pci = fstart_pci::PciEcam::from_provider(&self.northbridge)
             .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
             .map_err(|_| ServiceError::HardwareError)?;
-        let fixed_bars = self.southbridge.fixed_pci_bars();
+        let mut fixed_bars = self.southbridge.fixed_pci_bars();
+        // Board debug wiring is only a capability. Without --debug ehci,
+        // no console initialized this BAR: let PCI allocate it normally.
+        if cfg!(feature = "ehci-console")
+            && let Some(debug) = B::CONFIG.ehci_debug()
+        {
+            fixed_bars
+                .push(debug.fixed_bar())
+                .map_err(|_| ServiceError::InvalidParam)?;
+        }
         pci.add_fixed_bars(fixed_bars.as_slice())
             .inspect_err(|error| {
                 fstart_log::error!("pci: fixed BAR reservation failed: {:?}", error);

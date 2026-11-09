@@ -789,7 +789,7 @@ pub struct IntelIch9Config {
     pub sata: Option<SataConfig>,
     /// USB configuration.
     pub usb: Option<UsbConfig>,
-    /// Active early EHCI console BAR, excluded from PCI sizing/relocation.
+    /// Board EHCI debug wiring; the platform reserves its BAR only when selected.
     pub ehci_debug_bar: Option<fstart_driver_usbdebug::Config>,
     /// PCIe root ports 1..6 enabled.
     pub pcie_ports: [bool; 6],
@@ -2350,10 +2350,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
             prefetchable: false,
         })
         .expect("ICH9 fixed PCI resource list capacity");
-        if let Some(debug) = self.config.ehci_debug_bar {
-            bars.push(debug.fixed_bar())
-                .expect("ICH9 fixed PCI resource list capacity");
-        }
         bars
     }
 
@@ -2622,9 +2618,13 @@ mod tests {
             ..IntelIch9Config::new()
         };
         let driver = make_driver(config).unwrap();
-        assert!(driver.fixed_pci_bars().iter().any(|bar| {
-            bar.address == PciAddress::new(0, 0, 0x1a, 7) && bar.base == 0xfed0_4000
-        }));
+        // Merely offering EHCI debug must not pin an uninitialized BAR:
+        // non-EHCI builds need normal resource allocation for this controller.
+        let bars = driver.fixed_pci_bars();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].address, PciAddress::new(0, 0, 0x1f, 3));
+        assert_eq!(bars[0].register, ich9::SMB_BASE);
+        assert_eq!(bars[0].base, u64::from(config.smbus_base));
         config.usb = None;
         assert!(matches!(
             make_driver(config),
