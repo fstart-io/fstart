@@ -200,7 +200,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Prepare each shared asset cache once, not in every board job.
+      # The cache carries the assets across runs; within a run they travel
+      # as artifacts (uploaded below) so a boot job cannot be failed by a
+      # cache eviction between this job and its consumers.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: matrix.assets == 'payloads'
         id: payload-cache
@@ -238,6 +240,13 @@ jobs:
             boot-assets/x86_64/grubx64.efi boot-assets/x86_64/vmlinuz \
             boot-assets/x86_64/initramfs.cpio boot-assets/x86_64/grub.cfg
 
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boot-assets-${{ matrix.assets }}
+          path: boot-assets/${{ matrix.assets }}
+          if-no-files-found: error
+          retention-days: 1
+
   qemu-boot-matrix:
     needs: [qemu-boot-assets, boards]
     runs-on: ubuntu-latest
@@ -252,20 +261,19 @@ jobs:
         with:
           packages: qemu-system-arm qemu-system-misc qemu-system-x86
 
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Missing assets must fail CI, not silently skip optional boots:
+      # download-artifact errors when the producer uploaded nothing.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         if: matrix.board != 'qemu-q35'
         with:
+          name: boot-assets-payloads
           path: boot-assets/payloads
-          key: ${{ runner.os }}-qemu-payloads-${{ hashFiles('ci/build-payloads.sh', 'ci/kernel-*.config') }}
-          # Missing assets must fail CI, not silently skip optional boots.
-          fail-on-cache-miss: true
 
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         if: matrix.board == 'qemu-q35'
         with:
+          name: boot-assets-x86_64
           path: boot-assets/x86_64
-          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
-          fail-on-cache-miss: true
 
       - name: Run QEMU boot test
         env:
@@ -295,11 +303,10 @@ jobs:
             grub-pc-bin grub-efi-amd64-bin grub-common xorriso
             mtools gdisk dosfstools cpio
 
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
+          name: boot-assets-x86_64
           path: boot-assets/x86_64
-          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
-          fail-on-cache-miss: true
 
       # This revision continues fstart's ACPI event log and locks the TPM.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
