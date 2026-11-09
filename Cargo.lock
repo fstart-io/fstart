@@ -1566,6 +1566,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-platform-spacemit"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-image-build",
+ "serde_json",
+]
+
+[[package]]
 name = "fstart-platform-sunxi"
 version = "0.1.0"
 dependencies = [

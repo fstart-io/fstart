@@ -42,6 +42,7 @@ members = [
   "crates/driver-sunxi",
   "crates/driver-sifive",
   "crates/platform-sifive",
+  "crates/platform-spacemit",
   "crates/driver-superio",
   "crates/pci",
   "crates/stage",
@@ -191,6 +192,8 @@ opt-level = "s"
 [profile.dev.package.fstart-driver-sifive]
 opt-level = "s"
 [profile.dev.package.fstart-platform-sifive]
+opt-level = "s"
+[profile.dev.package.fstart-platform-spacemit]
 opt-level = "s"
 [profile.dev.package.fstart-driver-superio]
 opt-level = "s"
