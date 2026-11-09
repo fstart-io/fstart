@@ -161,7 +161,13 @@ pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
         },
     ])
     .gpe0_en(0x0104_0046)
-    .gpi_routing([0, 0, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0])
+    .gpi_routing({
+        let mut routes = [gpio::GpiRoute::Disabled; 16];
+        routes[2] = gpio::GpiRoute::Sci; // EC events
+        routes[8] = gpio::GpiRoute::Sci;
+        routes[13] = gpio::GpiRoute::Sci;
+        routes
+    })
     .ide(IdeConfig {
         // Enabled dynamically only for a populated, connected dock UltraBay.
         enable_primary: false,

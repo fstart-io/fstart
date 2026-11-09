@@ -20,7 +20,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 
 pub use crate::southbridge::gpio_ich::{
-    GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset,
+    GpiRoute, GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset,
 };
 pub use crate::southbridge::hda::{
     HdaConfig, HdaController, HdaVerbTable, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
@@ -733,20 +733,7 @@ impl LpcFixedIoDecode {
     }
 }
 
-/// One LPC generic I/O decode window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcGenericIoDecode {
-    /// I/O base address. Must be 4-byte aligned.
-    pub base: u16,
-    /// Window size in bytes. Must be a power of two from 4 through 256.
-    pub size: u16,
-}
-
-impl LpcGenericIoDecode {
-    fn encode(self) -> Option<u32> {
-        crate::southbridge::lpc::encode_generic_io_window(self.base, self.size)
-    }
-}
+pub use crate::southbridge::lpc::LpcGenericIoDecode;
 
 /// Board-level LPC decode policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -795,8 +782,8 @@ pub struct IntelIch8Config {
     pub pirq_routing: [u8; 8],
     /// GPE0 enable bits (ICH8 low dword at PMBASE+0x28).
     pub gpe0_en: u32,
-    /// GPI routing selectors for GPIO0..15 (0=no route, 1=SMI, 2=SCI).
-    pub gpi_routing: [u8; 16],
+    /// GPI event destinations for GPIO0..15.
+    pub gpi_routing: [GpiRoute; 16],
     /// Alternate GPI SMI enable bits.
     pub alt_gp_smi_en: u16,
     /// Enable C4-on-C3 in GEN_PMCON_1 for mobile board power policy.
@@ -850,7 +837,7 @@ impl IntelIch8Config {
             dmibar: 0xFED1_8000,
             pirq_routing: [0x0b; 8],
             gpe0_en: 0,
-            gpi_routing: [0; 16],
+            gpi_routing: [GpiRoute::Disabled; 16],
             alt_gp_smi_en: 0,
             c4_on_c3: true,
             c5_enable: false,
@@ -883,11 +870,6 @@ impl Default for IntelIch8Config {
 }
 
 #[must_use]
-pub const fn valid_lpc_generic_io(range: LpcGenericIoDecode) -> bool {
-    crate::southbridge::lpc::valid_generic_io_window(range.base, range.size)
-}
-
-#[must_use]
 pub const fn valid_io_trap(trap: IoTrapConfig) -> bool {
     trap.index <= 3
         && trap.base & 0x3 == 0
@@ -896,13 +878,6 @@ pub const fn valid_io_trap(trap: IoTrapConfig) -> bool {
         && trap.size & 0x3 == 0
         && trap.size.is_power_of_two()
         && trap.base & (trap.size - 1) == 0
-}
-
-#[must_use]
-pub const fn lpc_generic_io_overlaps(a: LpcGenericIoDecode, b: LpcGenericIoDecode) -> bool {
-    let a_end = a.base as u32 + a.size as u32;
-    let b_end = b.base as u32 + b.size as u32;
-    (a.base as u32) < b_end && (b.base as u32) < a_end
 }
 
 const fn empty_lpc_generic_io() -> LpcGenericIoDecode {
@@ -1465,11 +1440,11 @@ impl IntelIch8 {
     }
 
     fn configure_gpi_routing(&self) {
-        let mut value = 0u32;
-        for (idx, route) in self.config.gpi_routing.iter().enumerate() {
-            value |= ((*route as u32) & 0x03) << (idx * 2);
-        }
-        self.lpc_regs().gpio_rout.set(value);
+        self.lpc_regs()
+            .gpio_rout
+            .set(crate::southbridge::gpio_ich::encode_gpi_routes(
+                &self.config.gpi_routing,
+            ));
     }
 
     fn sata_indexed_write32(&self, idx: u8, val: u32) {

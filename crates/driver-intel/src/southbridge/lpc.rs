@@ -1,4 +1,4 @@
-//! Register subset shared by the ICH7/ICH8/ICH9 LPC flash interfaces.
+//! Shared ICH/PCH LPC decode policy and flash register interface.
 
 use fstart_core::mmio::MmioReadWrite;
 use fstart_pci::{ecam::EcamDevice, pci_type0_config};
@@ -84,8 +84,8 @@ pub fn training_identity(header: &fstart_pci::overlay::PciType0Config) -> [u8; 5
     ]
 }
 
-/// One LPC generic I/O decode window (GENx_DEC), shared by ICH9 and the
-/// 5 Series PCH.
+/// One LPC generic I/O decode window (GENx_DEC), shared by ICH7/8/9 and
+/// the 5 Series PCH.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcGenericIoDecode {
     /// I/O base address. Must be 4-byte aligned.
@@ -95,6 +95,28 @@ pub struct LpcGenericIoDecode {
 }
 
 impl LpcGenericIoDecode {
+    /// Validate all active windows before any decoder is programmed.
+    /// Const evaluation rejects malformed and overlapping board policy.
+    pub const fn validate_all<const N: usize>(decodes: &fstart_core::ConstVec<Self, N>) {
+        let mut index = 0;
+        while index < decodes.len() {
+            let decode = decodes.get(index);
+            assert!(
+                decode.encode().is_some(),
+                "LPC generic I/O decode is invalid"
+            );
+            let mut next = index + 1;
+            while next < decodes.len() {
+                assert!(
+                    !decode.overlaps(decodes.get(next)),
+                    "LPC generic I/O decodes overlap"
+                );
+                next += 1;
+            }
+            index += 1;
+        }
+    }
+
     /// The GENx_DEC value, or `None` for a window the decoder cannot express.
     #[must_use]
     pub const fn encode(self) -> Option<u32> {
@@ -136,6 +158,50 @@ mod tests {
         assert_eq!(encode_generic_io_window(0x15e0, 0x10), Some(0x000c_15e1));
         assert_eq!(encode_generic_io_window(0x1600, 12), None);
         assert_eq!(encode_generic_io_window(0x1610, 0x20), None);
+    }
+
+    #[test]
+    fn decode_validation_accepts_empty_and_adjacent_windows() {
+        use fstart_core::ConstVec;
+        let first = LpcGenericIoDecode {
+            base: 0x1600,
+            size: 0x20,
+        };
+        let adjacent = LpcGenericIoDecode {
+            base: 0x1620,
+            size: 0x20,
+        };
+        LpcGenericIoDecode::validate_all(&ConstVec::<_, 4>::new(first));
+        let valid = ConstVec::<_, 4>::new(first).push(first).push(adjacent);
+        LpcGenericIoDecode::validate_all(&valid);
+    }
+
+    #[test]
+    #[should_panic(expected = "LPC generic I/O decodes overlap")]
+    fn decode_validation_rejects_a_window_contained_in_another() {
+        let first = LpcGenericIoDecode {
+            base: 0x1600,
+            size: 0x20,
+        };
+        let contained = LpcGenericIoDecode {
+            base: 0x1610,
+            size: 0x10,
+        };
+        let windows = fstart_core::ConstVec::<_, 4>::new(first)
+            .push(first)
+            .push(contained);
+        LpcGenericIoDecode::validate_all(&windows);
+    }
+
+    #[test]
+    #[should_panic(expected = "LPC generic I/O decode is invalid")]
+    fn decode_validation_rejects_an_unaligned_window() {
+        let window = LpcGenericIoDecode {
+            base: 0x1604,
+            size: 0x20,
+        };
+        let windows = fstart_core::ConstVec::<_, 4>::new(window).push(window);
+        LpcGenericIoDecode::validate_all(&windows);
     }
 
     #[test]

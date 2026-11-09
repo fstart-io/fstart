@@ -57,7 +57,12 @@ impl GpiRoute {
     }
 }
 
-#[cfg(any(feature = "ich7", feature = "ich9", feature = "ibexpeak"))]
+#[cfg(any(
+    feature = "ich7",
+    feature = "ich8",
+    feature = "ich9",
+    feature = "ibexpeak"
+))]
 pub(crate) fn encode_gpi_routes(routes: &[GpiRoute; 16]) -> u32 {
     routes
         .iter()

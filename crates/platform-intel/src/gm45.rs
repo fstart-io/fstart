@@ -400,7 +400,7 @@ impl Gm45Ich9Config {
         if self.lpc_decode.fixed_io.com_a as u8 == self.lpc_decode.fixed_io.com_b as u8 {
             panic!("ICH9 COMA and COMB decode the same port");
         }
-        validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
+        LpcGenericIoDecode::validate_all(&self.lpc_decode.generic_io);
         validate_io_traps(&self.io_traps);
         if konst::iter::eval!(
             0..self.pirq_routing.len(),
@@ -439,32 +439,6 @@ const fn empty_io_trap() -> IoTrapConfig {
         size: 0,
         access: IoTrapAccess::Any,
     }
-}
-
-const fn validate_lpc_generic_io_decodes(decodes: &ConstVec<LpcGenericIoDecode, 4>) {
-    if konst::iter::eval!(
-        0..decodes.len(),
-        any(|idx| { !ich9::valid_lpc_generic_io(decodes.get(idx)) })
-    ) {
-        panic!("ICH9 LPC generic I/O decode is invalid");
-    }
-    if konst::iter::eval!(
-        0..decodes.len(),
-        any(|idx| { lpc_generic_io_overlaps_later(decodes, idx) })
-    ) {
-        panic!("ICH9 LPC generic I/O decodes overlap");
-    }
-}
-
-const fn lpc_generic_io_overlaps_later(
-    decodes: &ConstVec<LpcGenericIoDecode, 4>,
-    idx: usize,
-) -> bool {
-    let decode = decodes.get(idx);
-    konst::iter::eval!(
-        idx + 1..decodes.len(),
-        any(|next_idx| { ich9::lpc_generic_io_overlaps(decode, decodes.get(next_idx)) })
-    )
 }
 
 const fn validate_io_traps(traps: &ConstVec<IoTrapConfig, 4>) {
@@ -616,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ICH9 LPC generic I/O decode is invalid")]
+    #[should_panic(expected = "LPC generic I/O decode is invalid")]
     fn gm45_ich9_rejects_invalid_lpc_decode() {
         let _ = Gm45Ich9Config::new()
             .lpc_generic_io([LpcGenericIoDecode {
@@ -627,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ICH9 LPC generic I/O decodes overlap")]
+    #[should_panic(expected = "LPC generic I/O decodes overlap")]
     fn gm45_ich9_rejects_overlapping_lpc_decodes() {
         let _ = Gm45Ich9Config::new()
             .lpc_generic_io([
