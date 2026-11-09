@@ -1356,6 +1356,7 @@ dependencies = [
 name = "fstart-image-build"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "ed25519-dalek",
  "fstart-amdfw-format",
  "fstart-boot",
