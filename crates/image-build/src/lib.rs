@@ -4,6 +4,7 @@ pub mod build_plan;
 
 mod coreboot_payload;
 pub mod elf;
+mod elf_flat;
 pub mod image;
 pub mod inspect;
 mod intel_assembly;
