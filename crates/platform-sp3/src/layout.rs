@@ -213,7 +213,6 @@ pub const STORE: Span = Span::new(0x75b0_0000, 0x10_0000);
 /// ```ignore
 /// impl Sp3BoardFacts for Board {
 ///     const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
-///     const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
 ///     const MAX_CPUS: u16 = 128;
 /// }
 /// ```
@@ -222,20 +221,12 @@ pub const STORE: Span = Span::new(0x75b0_0000, 0x10_0000);
 /// plan runner builds the board crate without its own `host` feature.
 pub trait Sp3BoardFacts {
     /// Generations the board supports. The platform must be built with
-    /// each one's feature; one firmware build serves all of them.
+    /// each one's feature; one firmware build serves all of them, and the
+    /// image packs a half for each one its blobs have.
     const GENERATIONS: &'static [Generation];
-    /// Workspace-relative vendor ROM: the 32 MiB dual image, one 16 MiB
-    /// half, or a full readout with [`Self::FLASH_MIRRORS`]. Its PSP/BIOS
-    /// directories, blobs and APCB stay in place.
-    const VENDOR_IMAGE: &'static str;
     /// Logical CPU ceiling over every supported generation (all sockets);
     /// sizes the AP stacks and SMM.
     const MAX_CPUS: u16;
-    /// Flash offsets past the 16 MiB boot bank where the board's flash
-    /// export mirrors it. [`Self::VENDOR_IMAGE`] may then be the full
-    /// readout, and the build is a full flash image with the bank at 0 and
-    /// at every mirror.
-    const FLASH_MIRRORS: &'static [u32] = &[];
 }
 
 /// Whether this build carries `generation`'s silicon code (its platform

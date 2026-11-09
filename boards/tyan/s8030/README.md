@@ -5,16 +5,15 @@ Linux with an EPYC 7502P (Rome) on the S8030GM2NE test bench.
 
 One board id, `tyan-s8030`, and one build for both generations: the
 platform's `rome` and `milan` features are enabled on its dependency, and
-the reset image picks the generation from the CPU at runtime. Each half
-keeps the vendor's EFS and directories; its `0x62` entries name a copy of
-the one reset image, and the FFS exists once, in the lower half
-(docs/amd-sp3.md, "Flash image").
+the reset image picks the generation from the CPU at runtime. fstart packs
+each generation's PSP partition into its own 16 MiB half; its `0x62`
+entries name a copy of the one reset image, and the FFS exists once, in
+the lower half.
 
 ```sh
 cargo fbuild build --board tyan-s8030 --release
-cargo fbuild assemble --board tyan-s8030 --release        # -> tyan-s8030.rom
 cargo fbuild assemble --board tyan-s8030 --release \
-    --image-config /path/to/flash-backup.bin                # another vendor build
+    --donor /path/to/8030V404.ROM                          # -> tyan-s8030.rom
 ```
 
 ## Settings
@@ -32,24 +31,28 @@ The board default is the vendor's (every slot x16); the
 carrier (the test bench), so it boots right before anything is stored.
 
 ```sh
-cargo fbuild assemble --board tyan-s8030-pcie3-x4x4x4x4 --release --payload uefi --image-config ...
+cargo fbuild assemble --board tyan-s8030-pcie3-x4x4x4x4 --release --payload uefi --donor ...
 ```
 
-## Vendor ROM
+## Donor image
 
-Every supported half keeps its PSP/BIOS directories and blobs in place
-(PSP, ABL, SMU, PMU and DXIO firmware, APCB). Supply the Tyan v4.04 dual
-image (`8030V404.ROM`, 32 MiB, SHA-256 pinned in the sp3 workspace's
-`firmware/donors/SHA256SUMS`) as `vendor/8030V404.ROM`, or pass the
-board's own flash backup with `--image-config`. Neither is part of this
-repository.
+The AMD firmware (PSP, ABL, SMU, PMU and DXIO firmware, APCB) is vendor
+firmware and not part of this repository. `--donor` takes it from a vendor
+image: fbuild extracts the files the platform's Rome and Milan tables name
+(`fbuild blobs` does the same into a directory for `--blobs`), and fstart
+packs them into its own layout; nothing else of the donor is kept. The Tyan
+v4.04 dual image (`8030V404.ROM`, 32 MiB, SHA-256 pinned in the sp3
+workspace's `firmware/donors/SHA256SUMS`) gives both generations; a board's
+own flash backup gives what it carries (the test bench's: Rome only, so the
+image is the Rome half).
 
-| | Tyan v4.04 | Test bench S8030GM2NE (Rome-only build) |
+| | Both generations | Rome-only donor |
 |---|---|---|
-| Lower half | Rome: vendor EFS, directories to `0x54b000` | Rome: vendor EFS, directories to `0x50b000` |
-| Upper half | Milan: vendor EFS, directories to `0x586000` | zeros, kept |
+| Lower half | Rome partition from `0x20000` | Rome partition from `0x20000` |
+| Upper half | Milan partition from `0x20000` | none: a 16 MiB image |
 | Reset image (`0x220000` bytes, linked at `0x75de0000`) | `0xde0000` in each half | `0xde0000` |
-| FFS | `[0x600000, 0xde0000)`, lower half only | same |
+| FFS | `[0x600000, 0xda0000)`, lower half only | same |
+| Settings store | `[0xda0000, 0xde0000)`, erased | same |
 
 A Rome boot reads the FFS through ROM2; a Milan boot, from the upper half,
 through the FCH ROM3 window above 4 GiB.

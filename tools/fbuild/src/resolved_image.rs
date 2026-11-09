@@ -23,7 +23,10 @@ impl ResolvedImage {
         }
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
-        plan.validate_image_selection(&selection)?;
+        // The halves of the generations the blobs have.
+        if let fstart_image_build::build_plan::Assembly::Sp3Flash(image) = &mut plan.assembly {
+            image.keep_present(&|path| root.join(path).exists())?;
+        }
         let environment = [
             ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
             ("FSTART_LOG_LEVEL", &selection.log_level),

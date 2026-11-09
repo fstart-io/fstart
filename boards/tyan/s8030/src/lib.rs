@@ -47,14 +47,11 @@ use fstart_platform_sp3::layout::Sp3BoardFacts;
 /// The Tyan S8030 board marker.
 pub struct Board;
 
-/// Rome and Milan; the PSP boots the vendor ROM's Rome (lower) or Milan
+/// Rome and Milan; the PSP boots the image's Rome (lower) or Milan
 /// (upper) half and both carry this build. Their platform features are
 /// enabled on the `fstart-platform-sp3` dependency.
 impl Sp3BoardFacts for Board {
     const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
-    /// The vendor 32 MiB dual image (Rome lower half, Milan upper half);
-    /// the user supplies it (see `vendor/README.md`).
-    const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
     /// 1P, 64 cores with SMT (Rome and Milan alike).
     const MAX_CPUS: u16 = 128;
 }

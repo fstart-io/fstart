@@ -85,9 +85,6 @@ pub struct BuildArgs {
     /// The selected platform must bind each request unchanged, without fallback.
     #[arg(long = "compiler-input", value_parser = CompilerFileSelection::parse)]
     pub compiler_inputs: Vec<CompilerFileSelection>,
-    /// Explicit image configuration interpreted by the selected platform.
-    #[arg(long)]
-    pub image_config: Option<String>,
     /// Directory of the vendor firmware blobs the platform packs (e.g. AMD
     /// PSP firmware; see `fbuild blobs`).
     #[arg(long, conflicts_with = "donor")]
@@ -132,7 +129,6 @@ impl Default for BuildArgs {
     fn default() -> Self {
         Self {
             compiler_inputs: Vec::new(),
-            image_config: None,
             blobs: None,
             donor: None,
             smbios_date: current_smbios_date(),
@@ -152,7 +148,6 @@ impl BuildArgs {
         BuildSelection {
             payload: payload.map(|choice| choice.as_str().to_owned()),
             compiler_files: self.compiler_inputs.clone(),
-            image_config: self.image_config.clone(),
             blobs: self.blobs.clone(),
             donor: self.donor.clone(),
             manifests: Default::default(),
@@ -175,9 +170,6 @@ impl BuildArgs {
                 "--compiler-input".into(),
                 format!("{}={}", input.environment, input.path),
             ]);
-        }
-        if let Some(path) = &self.image_config {
-            args.extend(["--image-config".into(), path.clone()]);
         }
         if let Some(path) = &self.blobs {
             args.extend(["--blobs".into(), path.clone()]);
@@ -308,8 +300,6 @@ mod tests {
             "inputs",
             "--compiler-input",
             "FSTART_BYTES=a path/file=1.bin",
-            "--image-config",
-            "a path/image=2.json",
             "--donor",
             "vendor.rom",
         ])
@@ -317,10 +307,6 @@ mod tests {
         let selected = cli.options.selection(None);
         selected.validate_compiler_files().unwrap();
         assert_eq!(selected.compiler_files[0].path, "a path/file=1.bin");
-        assert_eq!(
-            selected.image_config.as_deref(),
-            Some("a path/image=2.json")
-        );
         let mut forwarded = vec!["inputs".into()];
         cli.options.append_cli_args(&mut forwarded);
         let forwarded = InputCli::try_parse_from(forwarded)
@@ -331,7 +317,6 @@ mod tests {
             forwarded.compiler_files[0].path,
             selected.compiler_files[0].path
         );
-        assert_eq!(forwarded.image_config, selected.image_config);
         assert_eq!(forwarded.donor.as_deref(), Some("vendor.rom"));
         let duplicates = InputCli::try_parse_from([
             "inputs",
