@@ -6,8 +6,17 @@
 
 #![no_std]
 
-#[cfg(all(feature = "runtime", feature = "alloc"))]
+// The stage's allocator, when it owns the binary. Host builds (tools) keep
+// the host's allocator; host tests exercise the heap.
+#[cfg(all(feature = "runtime", feature = "alloc", any(target_os = "none", test)))]
 mod alloc;
+// Cargo cannot select the allocator's crates on that condition, only on the
+// `alloc` feature.
+#[cfg(all(
+    feature = "alloc",
+    not(all(feature = "runtime", any(target_os = "none", test)))
+))]
+use {linked_list_allocator as _, spin as _};
 
 #[cfg(feature = "runtime")]
 mod runtime;
@@ -79,6 +88,14 @@ pub fn step<T, E: ufmt::uDebug>(name: &str, f: impl FnOnce() -> Result<T, E>) ->
     }
 }
 
+/// Stage setup before the board's `main`: hand the heap to the allocator.
+#[doc(hidden)]
+#[inline(always)]
+pub fn enter() {
+    #[cfg(all(feature = "runtime", feature = "alloc", target_os = "none"))]
+    alloc::init();
+}
+
 /// Bind a board's stage `main` to the stage entry (`fstart_main`). Platform
 /// `entry!` macros expand to this.
 ///
@@ -91,6 +108,7 @@ macro_rules! stage_bin {
     (main: $main:path) => {
         #[unsafe(no_mangle)]
         pub extern "Rust" fn fstart_main(_handoff: usize) -> ! {
+            $crate::enter();
             $main()
         }
         #[used]
@@ -101,6 +119,7 @@ macro_rules! stage_bin {
     (main_handoff: $main:path) => {
         #[unsafe(no_mangle)]
         pub extern "Rust" fn fstart_main(handoff: usize) -> ! {
+            $crate::enter();
             $main(handoff)
         }
         #[used]

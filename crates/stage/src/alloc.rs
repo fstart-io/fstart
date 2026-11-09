@@ -1,110 +1,101 @@
-//! Bump allocator for firmware stages.
+//! The stage's global allocator: a linked-list heap over the linker-owned
+//! arena, so a dropped buffer's memory is reused.
 //!
-//! Provides a simple bump-only allocator whose backing store is supplied by
-//! the stage link. The generated linker script reserves `_FSTART_HEAP` (the
-//! storage, sized by the stage build config's `heap_size`) and emits
-//! `_FSTART_HEAP_SIZE` (a pointer-sized byte count); special stages such as
-//! the SMM stage may instead define both as `#[no_mangle]` statics.
-//! This crate references them via `extern "C"` at link time.
-//! Deallocation is a no-op — memory is never reclaimed.
+//! [`init`] hands the arena over at stage entry. That reference to
+//! `_FSTART_HEAP` is reachable from the entry point, so a stage without a heap
+//! that selects the allocator fails to link even when nothing allocates.
+//!
+//! The spin lock must not be taken by an interrupt or exception handler that
+//! may have interrupted an allocation; panic and logging paths do not
+//! allocate. An x86 stage with a heap must enter with caching enabled: the
+//! lock's locked RMW hangs with CR0.CD=1 on i945.
 
 use core::alloc::{GlobalAlloc, Layout};
-use portable_atomic::{AtomicUsize, Ordering};
+use core::ptr::{self, NonNull};
 
-// The definitions come from the generated linker script (or `#[no_mangle]`
-// statics in special stages). We declare `_FSTART_HEAP` as `u8` because only
-// its *address* is used — the type mismatch is intentional and harmless (same
-// pattern as C linker symbols declared as `extern char`).
-#[cfg(not(test))]
-unsafe extern "C" {
-    /// Heap backing store (stage-provided, 16-byte aligned).
-    static _FSTART_HEAP: u8;
-    /// Heap size in bytes (stage-provided).
-    static _FSTART_HEAP_SIZE: usize;
-}
+use linked_list_allocator::Heap;
+use spin::mutex::SpinMutex;
 
-#[cfg(test)]
-#[repr(align(4096))]
-struct TestHeap(core::cell::UnsafeCell<[u8; 16 * 1024 * 1024]>);
+/// A linked-list heap behind a spin lock whose atomics come from
+/// portable-atomic: ARMv5TE and riscv32imc have no compare-and-swap, which
+/// rules out linked_list_allocator's own `LockedHeap`.
+struct StageHeap(SpinMutex<Heap>);
 
-#[cfg(test)]
-unsafe impl Sync for TestHeap {}
-
-#[cfg(test)]
-static TEST_HEAP: TestHeap = TestHeap(core::cell::UnsafeCell::new([0; 16 * 1024 * 1024]));
-
-/// Get the heap base address from the stage-provided symbol.
-#[inline]
-pub fn heap_start() -> usize {
-    #[cfg(test)]
-    {
-        TEST_HEAP.0.get() as *mut u8 as usize
-    }
-    #[cfg(not(test))]
-    {
-        // SAFETY: `_FSTART_HEAP` is defined by the stage link; we only use its
-        // address.
-        unsafe { &_FSTART_HEAP as *const u8 as usize }
+impl StageHeap {
+    const fn empty() -> Self {
+        Self(SpinMutex::new(Heap::empty()))
     }
 }
 
-/// Get the heap size from the stage-provided symbol.
-#[inline]
-pub fn heap_size() -> usize {
-    #[cfg(test)]
-    {
-        16 * 1024 * 1024
-    }
-    #[cfg(not(test))]
-    {
-        // SAFETY: `_FSTART_HEAP_SIZE` is pointer-sized data defined by the
-        // stage link.
-        unsafe { _FSTART_HEAP_SIZE }
-    }
-}
-
-/// Monotonically advancing allocation cursor (offset from heap start).
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-/// A trivial bump allocator. Allocations advance a cursor; frees are no-ops.
-struct BumpAllocator;
-
-#[global_allocator]
-static ALLOCATOR: BumpAllocator = BumpAllocator;
-
-unsafe impl GlobalAlloc for BumpAllocator {
+// SAFETY: the lock serialises the heap, which only hands out memory of the
+// arena it was given.
+unsafe impl GlobalAlloc for StageHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size();
-        let align = layout.align();
-        let limit = heap_size();
+        self.0
+            .lock()
+            .allocate_first_fit(layout)
+            .map_or(ptr::null_mut(), NonNull::as_ptr)
+    }
 
-        loop {
-            let current = NEXT.load(Ordering::Relaxed);
-            let aligned = (current + align - 1) & !(align - 1);
-            let new_next = aligned + size;
-
-            if new_next > limit {
-                return core::ptr::null_mut();
-            }
-
-            // CAS loop handles the (unlikely) multi-hart race. Requires
-            // caching enabled: locked RMW hangs with CR0.CD=1 on i945.
-            if NEXT
-                .compare_exchange_weak(current, new_next, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                // SAFETY: `aligned` is within the linker-reserved heap
-                // (checked against `limit` above) and the region
-                // [aligned..new_next) is exclusively ours. Deriving the
-                // pointer from the heap base keeps its provenance.
-                return unsafe { (heap_start() as *mut u8).add(aligned) };
-            }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the caller frees a live allocation of this heap, made with
+        // `layout`; allocations are never null.
+        unsafe {
+            self.0
+                .lock()
+                .deallocate(NonNull::new_unchecked(pointer), layout)
         }
     }
+}
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        // Bump allocator never frees.
-        // SAFETY: `GlobalAlloc::dealloc` requires `ptr` to be non-null and allocated by this allocator.
-        let _ = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
+#[cfg(target_os = "none")]
+#[global_allocator]
+static ALLOCATOR: StageHeap = StageHeap::empty();
+
+/// Give the stage heap to the allocator, before anything allocates.
+#[cfg(target_os = "none")]
+pub(crate) fn init() {
+    // Defined by the stage's linker script.
+    unsafe extern "C" {
+        static mut _FSTART_HEAP: u8;
+        static _FSTART_HEAP_SIZE: usize;
+    }
+    // SAFETY: the link reserves the arena for the allocator alone, and the
+    // stage entry calls this once, before any allocation.
+    unsafe {
+        ALLOCATOR
+            .0
+            .lock()
+            .init(&raw mut _FSTART_HEAP, _FSTART_HEAP_SIZE)
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StageHeap;
+    use core::alloc::{GlobalAlloc, Layout};
+
+    #[test]
+    fn freed_memory_is_reused() {
+        #[repr(align(4096))]
+        struct Arena([u8; 32 * 1024]);
+        let mut arena = Arena([0; 32 * 1024]);
+        let heap = StageHeap::empty();
+        // SAFETY: the arena outlives the heap and nothing else uses it.
+        unsafe { heap.0.lock().init(arena.0.as_mut_ptr(), arena.0.len()) };
+
+        // Many times the arena, in buffers that are freed again.
+        let layout = Layout::from_size_align(1024, 256).unwrap();
+        for _ in 0..4 * arena.0.len() / layout.size() {
+            // SAFETY: a non-zero layout; the buffer is freed with it.
+            let buffer = unsafe { heap.alloc(layout) };
+            assert!(!buffer.is_null());
+            assert!((buffer as usize).is_multiple_of(layout.align()));
+            unsafe { heap.dealloc(buffer, layout) };
+        }
+        assert_eq!(heap.0.lock().used(), 0);
+        // Exhaustion is a null pointer, not a panic.
+        let huge = Layout::from_size_align(2 * arena.0.len(), 8).unwrap();
+        assert!(unsafe { heap.alloc(huge) }.is_null());
     }
 }

@@ -1680,7 +1680,9 @@ dependencies = [
  "fstart-tcg",
  "fstart-timestamp",
  "heapless 0.8.0",
+ "linked_list_allocator",
  "portable-atomic",
+ "spin",
  "ufmt",
  "zerocopy",
 ]
@@ -2409,6 +2411,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
 dependencies = [
  "lock_api",
+ "portable-atomic",
 ]
 
 [[package]]

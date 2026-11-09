@@ -281,6 +281,6 @@ pub(crate) fn read_asset(media: &(impl BootMedia + ?Sized), name: &str) -> Optio
     )
     .ok()?;
     bytes.truncate(usize::try_from(descriptor.loaded_size).ok()?);
-    // Avoid shrinking/reallocating with the stage's non-reclaiming allocator.
+    // Retain the authenticated allocation without an unnecessary shrink/copy.
     Some(bytes.leak())
 }
