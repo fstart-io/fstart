@@ -22,10 +22,12 @@ fn file(kind: u8, instance: u8, level: Level, size: usize) -> Entry {
 fn image(slot: BiosDirectorySlot) -> TwoLevelImage {
     TwoLevelImage {
         slot,
+        generation_mask: Profile::for_slot(slot).generation_mask,
         flash_size: 0x100_0000,
         efs_offset: 0x2_0000,
         partition_end: 0x60_0000,
         spi: Some((7, 1)),
+        espi: None,
         psp: vec![
             file(0x00, 0, Level::One, 0x240),
             file(0x01, 0, Level::Both, 0x2_0000),
@@ -254,4 +256,44 @@ fn apcbs_own_their_sectors_and_the_efs_is_where_the_boot_rom_looks() {
     i.efs_offset = 0x42_0000;
     i.partition_end = 0x5b_0000;
     i.pack().unwrap();
+}
+
+#[test]
+fn a_socs_generation_word_overrides_its_slots() {
+    // Siena's boot ROM checks only bit 0 of the Family 19h EFS generation
+    // word; its vendor images keep bit 1 set.
+    let mut siena = image(BiosDirectorySlot::Family19h);
+    siena.generation_mask = 1;
+    let bytes = flash(&siena);
+    assert_eq!(bytes[0x2_0024..0x2_0028], 0xffff_fffeu32.to_le_bytes());
+    let mut profile = Profile::for_slot(BiosDirectorySlot::Family19h);
+    assert!(
+        Flash::new(&bytes)
+            .with_profile(profile)
+            .efs_checked()
+            .is_err()
+    );
+    profile.generation_mask = 1;
+    let flash = Flash::new(&bytes).with_profile(profile);
+    assert_eq!(flash.efs_checked().unwrap().0, 0x2_0000);
+    assert!(flash.bios_directories_checked(profile.bios).is_ok());
+    // A donor image is read as its SoC's boot ROM reads it.
+    let soc = |generation_mask| crate::amd::blobs::SocBlobs {
+        bios_directory: BiosDirectorySlot::Family19h,
+        levels: 2,
+        generation_mask,
+        efs_offset: 0x2_0000,
+        partition_end: 0x60_0000,
+        spi_read_mode: None,
+        spi_speed: None,
+        micron: false,
+        soft_fuse: None,
+        apob_destination: None,
+        psp: vec![],
+        bios: vec![],
+        microcode: vec![],
+        vbios: vec![],
+    };
+    assert!(crate::amd::blobs::donor_image(&bytes, &soc(None)).is_none());
+    assert!(crate::amd::blobs::donor_image(&bytes, &soc(Some(1))).is_some());
 }

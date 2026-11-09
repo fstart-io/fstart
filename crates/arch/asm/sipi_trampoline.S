@@ -146,7 +146,9 @@ replay_turn:
 	orl SIPI_BASE + fstart_sipi_unlock_bits - fstart_sipi_start, %eax
 	wrmsr
 1:
-	/* Does an MTRR (any record but PAT) differ from the BSP's? */
+	/* Only actual MTRRs may trigger disabling the shared core's MTRRs.
+	 * A per-thread ECAM/routing MSR can differ on the BSP's SMT sibling
+	 * while its MTRRs already match: disabling them would disrupt BSP. */
 	movl $SIPI_BASE + fstart_sipi_msr_table - fstart_sipi_start, %edi
 	movl SIPI_BASE + fstart_sipi_msr_count - fstart_sipi_start, %ebp
 mtrr_compare:
@@ -155,8 +157,23 @@ mtrr_compare:
 	movl 0(%edi), %ecx
 	addl $12, %edi
 	decl %ebp
-	cmpl $0x277, %ecx /* IA32_PAT */
-	je mtrr_compare
+	cmpl $0x2ff, %ecx /* MTRR_DEF_TYPE */
+	je mtrr_read
+	cmpl $0x200, %ecx /* up to32 variable base/mask pairs */
+	jb mtrr_compare
+	cmpl $0x240, %ecx
+	jb mtrr_read
+	cmpl $0x250, %ecx
+	je mtrr_read
+	cmpl $0x258, %ecx
+	je mtrr_read
+	cmpl $0x259, %ecx
+	je mtrr_read
+	cmpl $0x268, %ecx
+	jb mtrr_compare
+	cmpl $0x270, %ecx
+	jae mtrr_compare
+mtrr_read:
 	rdmsr
 	cmpl -8(%edi), %eax
 	jne mtrr_differs
@@ -197,6 +214,14 @@ msr_replay_done:
 	movl SIPI_BASE + fstart_sipi_unlock_bits - fstart_sipi_start, %ebx
 	notl %ebx
 	andl %ebx, %eax
+	/* Preserve the AP's own state. Optional vendor routing bits become
+	 * active only AFTER fixed-MTRR DRAM routing was replayed, and before
+	 * caching is enabled. No BSP-only SYSCFG value is transplanted. */
+	orl SIPI_BASE + fstart_sipi_post_set - fstart_sipi_start, %eax
+	testl SIPI_BASE + fstart_sipi_post_test - fstart_sipi_start, %eax
+	jz 2f
+	orl SIPI_BASE + fstart_sipi_post_then - fstart_sipi_start, %eax
+2:
 	wrmsr
 1:
 	/* Hand the replay to the next ordinal. */
@@ -295,6 +320,12 @@ fstart_sipi_replay_turn:
 fstart_sipi_unlock_msr:
 	.long 0
 fstart_sipi_unlock_bits:
+	.long 0
+fstart_sipi_post_set:
+	.long 0
+fstart_sipi_post_test:
+	.long 0
+fstart_sipi_post_then:
 	.long 0
 fstart_sipi_msr_count:
 	.long 0

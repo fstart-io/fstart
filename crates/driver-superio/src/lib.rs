@@ -5,6 +5,7 @@ mod generic;
 mod ldn;
 pub use ldn::{DmaResource, IoResource, IrqResource, LogicalDevice};
 pub mod aspeed_ast2400;
+pub mod aspeed_ast2600;
 pub mod ite8718f;
 pub mod ite8720f;
 pub mod ite8721f;
