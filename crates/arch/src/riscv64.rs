@@ -433,8 +433,12 @@ pub fn jump_to(addr: u64) -> ! {
     // is a non-returning jump.
     unsafe {
         core::arch::asm!(
+            "fence rw, rw",
+            "fence.i",
             "jr {0}",
             in(reg) addr,
+            // No boot DTB is passed to a firmware entry; see jump_to_with_handoff.
+            in("a1") 0_u64,
             options(noreturn),
         );
     }
@@ -448,15 +452,25 @@ pub fn jump_to(addr: u64) -> ! {
 /// On RISC-V the convention is to pass the handoff address in `a0`.
 /// The next stage's `_start` saves `a0` and makes it available via
 /// [`boot_hart_id`] or a dedicated handoff reader.
+///
+/// `_start` records `a1` as the boot DTB ([`boot_dtb_addr`]). A firmware
+/// stage transition passes no DTB, so `a1` is explicitly zero rather than
+/// whatever the compiler left in the register. The jump is preceded by
+/// `fence.i`: the successor was usually just loaded through data stores.
 #[inline(always)]
 pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
     // SAFETY: caller guarantees entry and handoff_ptr are valid addresses in mapped
     // memory.
     unsafe {
+        // The successor was just written through the D-cache; make those
+        // stores visible to instruction fetch before entering it.
         core::arch::asm!(
+            "fence rw, rw",
+            "fence.i",
             "jr {addr}",
             addr = in(reg) addr,
             in("a0") handoff_addr,
+            in("a1") 0_u64,
             options(noreturn),
         );
     }
