@@ -91,6 +91,10 @@ fn stage<'a>(stages: &'a [StageBinary], unit: &str) -> Result<&'a StageBinary, S
 /// image contract and is an error here, not an empty success.
 pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs, String> {
     plan.order()?;
+    // A halved flash packs the generations whose blobs are there.
+    let mut plan = plan.clone();
+    halved_flash::keep_present(&mut plan, &|path| Path::new(path).is_file())?;
+    let plan = &plan;
     if plan.images.is_empty() {
         return Err("plan has no image steps".into());
     }
@@ -263,9 +267,8 @@ fn amd_efs(
     Ok(output)
 }
 
-/// Compose the consumed FFS artefact and the reset stage into the
-/// halved vendor ROM (or its packed halves). Writes `<ffs>.rom`, and
-/// `<ffs>.bank.rom` when the readout carries mirrored boot banks.
+/// Compose the consumed FFS artefact and the reset stage with the halves
+/// packed from their files. Writes `<ffs>.rom`.
 fn amd_halved_flash(
     ctx: &ImageContext<'_>,
     image: &halved_flash::AmdHalvedFlashAssembly,
@@ -287,28 +290,18 @@ fn amd_halved_flash(
             seed.offset, plan.nvram
         ));
     }
-    // Relative vendor paths are workspace-relative (`--image-config`
-    // replaces the board's vendor ROM).
-    let vendor_path = ctx.workspace_root.join(&image.vendor_image);
-    let vendor = if image.packed.is_empty() {
-        notes.push(format!("AMD vendor ROM {}", vendor_path.display()));
-        read(&vendor_path)?
-    } else {
-        let read = |path: &str| read(Path::new(path));
-        let rom = halved_flash::packed_rom(&image.packed, plan, &read)?;
-        for half in &image.packed {
-            notes.push(format!(
-                "AMD {} PSP firmware packed from its files",
-                name(half.generation)
-            ));
-        }
-        rom
-    };
+    let rom = halved_flash::packed_rom(&image.packed, plan, &|path: &str| read(Path::new(path)))?;
+    for half in &image.packed {
+        notes.push(format!(
+            "AMD {} PSP firmware packed from its files",
+            name(half.generation)
+        ));
+    }
     let ffs_path = ffs_artifact(ffs, "AMD halved flash")?;
     let ffs = read(&ffs_path)?;
     let reset = stage(ctx.stages, &image.stage_unit)?;
     let flash = halved_flash::compose_seeded(
-        &vendor,
+        &rom,
         plan,
         &read(&reset.run_path)?,
         &ffs,
@@ -330,8 +323,7 @@ fn amd_halved_flash(
                 layout.prefix_end,
             )),
             HalfAction::Keep(generation) => notes.push(format!(
-                "warning: AMD {half:?} half kept from {} ({}: not supported by the board)",
-                vendor_path.display(),
+                "warning: AMD {half:?} half kept ({}: not supported by the board)",
                 generation.map_or("no EFS", name),
             )),
         }
@@ -343,17 +335,6 @@ fn amd_halved_flash(
     };
     let out = ffs_path.with_extension("rom");
     write(&out, &flash.image)?;
-    if flash.image.len() != plan.boot_window(&flash.image)?.len() {
-        // Programmers that mirror the bank themselves (a BMC BIOS update)
-        // take the 16 MiB boot bank, not the full readout.
-        let bank = out.with_extension("bank.rom");
-        write(&bank, &flash.image[..HALF_SIZE])?;
-        notes.push(format!(
-            "AMD boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
-            plan.mirrors,
-            bank.display()
-        ));
-    }
     notes.push(format!(
         "AMD halved flash image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; \
          reset image {:#x} bytes at {:#x} ({reset_copies})",

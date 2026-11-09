@@ -29,7 +29,6 @@ impl ResolvedImage {
         }
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
-        plan.validate_image_selection(&selection)?;
         let environment = [
             ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
             ("FSTART_LOG_LEVEL", &selection.log_level),

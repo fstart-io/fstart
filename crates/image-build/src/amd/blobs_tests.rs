@@ -317,3 +317,17 @@ fn donor_halves_by_generation() {
     assert!(donor_image(&rome_half, &milan).is_none());
     assert!(donor_image(&efs_half(0xffff_ffff, Family17hModel30, 0x40000), &rome).is_none());
 }
+
+#[test]
+fn a_soc_the_donor_lacks_is_absent() {
+    let board = fstart_table("../../boards/tyan/s8030/Cargo.toml");
+    let platform = fstart_table("../platform-amd/Cargo.toml");
+    // A donor of none of them.
+    let none = vec![0xff; fstart_amdfw_format::HALF_SIZE];
+    let error = extract_tables(&board, &platform, &none, false).unwrap_err();
+    assert!(error.contains("none of the board's SoCs"), "{error}");
+    // Each SoC the donor lacks is listed, not an error of its own.
+    let donated = extract_tables(&board, &platform, &none, true).unwrap();
+    assert_eq!(donated.board, "tyan-s8030");
+    assert_eq!(donated.absent, ["milan", "rome"]);
+}

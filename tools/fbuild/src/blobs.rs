@@ -81,6 +81,7 @@ fn extract_from(
         board: name,
         found,
         missing,
+        absent,
     } = fstart_image_build::donor::extract(
         table,
         &source.platform["metadata"]["fstart"],
@@ -130,6 +131,12 @@ fn extract_from(
     }
     for file in &missing {
         eprintln!("[fstart] warning: {file} not in {}", rom.display());
+    }
+    for soc in &absent {
+        eprintln!(
+            "[fstart] {} has no {soc} firmware: the image packs the others",
+            rom.display()
+        );
     }
     let receipt_path = out.join(RECEIPT);
     fs::write(&receipt_path, receipt).map_err(|e| format!("{}: {e}", receipt_path.display()))?;

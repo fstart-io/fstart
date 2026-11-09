@@ -1172,7 +1172,6 @@ name = "fstart-core"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
- "fstart-amdfw-format",
  "heapless 0.8.0",
  "portable-atomic",
  "serde",

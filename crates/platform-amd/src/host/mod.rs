@@ -14,7 +14,7 @@
 //!
 //! What the flash image is made of is the SoC's image kind ([`Image`]):
 //! one 16 MiB image with the PSP firmware of one SoC ([`single`]), or the
-//! SP3 flash with a vendor half per generation ([`dual`]).
+//! SP3 flash with a half per generation ([`dual`]).
 extern crate std;
 
 pub mod dual;
@@ -82,8 +82,7 @@ pub struct Host {
 pub enum Image {
     /// One 16 MiB image with the PSP firmware of one SoC.
     Single(single::Image),
-    /// The SP3 flash: a 16 MiB half per generation, composed into a vendor
-    /// ROM or packed from blobs.
+    /// The SP3 flash: a 16 MiB half per generation, packed from blobs.
     Dual(dual::Image),
 }
 
@@ -354,7 +353,6 @@ pub fn resolve(
     };
     plan.order()?;
     plan.validate_compiler_selections(selection)?;
-    plan.validate_image_selection(selection)?;
     Ok(plan)
 }
 

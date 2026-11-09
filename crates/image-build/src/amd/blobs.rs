@@ -605,12 +605,15 @@ pub fn extract_tables(
     platform_table: &serde_json::Value,
     rom: &[u8],
     allow_missing: bool,
-) -> Result<(String, Vec<Extracted>, Vec<String>), String> {
+) -> Result<Donated, String> {
     let name = board_table["board"]
         .as_str()
         .ok_or("the board has no name")?
         .to_string();
-    let (mut found, mut missing) = (Vec::new(), Vec::new());
+    let mut donated = Donated {
+        board: name,
+        ..Default::default()
+    };
     for board_blobs in board_tables(&board_table["amd"])? {
         let soc: SocBlobs = serde_json::from_value(platform_table["amd"][&board_blobs.soc].clone())
             .map_err(|e| {
@@ -619,21 +622,39 @@ pub fn extract_tables(
                     board_blobs.soc
                 )
             })?;
+        // A donor may carry only some of a board's SoCs (an SP3 vendor
+        // build of one generation): the image then packs those.
         let Some(donor) = donor_image(rom, &soc) else {
-            if !allow_missing {
-                return Err(format!(
-                    "the vendor image has no {} firmware",
-                    board_blobs.soc
-                ));
-            }
-            missing.push(format!("{} firmware", board_blobs.soc));
+            donated.absent.push(board_blobs.soc.clone());
             continue;
         };
-        let (f, m) = extract(&soc, &board_blobs, &name, donor)?;
-        found.extend(f);
-        missing.extend(m);
+        let (found, missing) = extract(&soc, &board_blobs, &donated.board, donor)?;
+        if !missing.is_empty() && !allow_missing {
+            return Err(format!(
+                "the vendor image's {} firmware does not have: {}",
+                board_blobs.soc,
+                missing.join(", ")
+            ));
+        }
+        donated.found.extend(found);
+        donated.missing.extend(missing);
     }
-    Ok((name, found, missing))
+    if donated.found.is_empty() && !allow_missing {
+        return Err("the vendor image has firmware for none of the board's SoCs".into());
+    }
+    Ok(donated)
+}
+
+/// The files a donor image gave for a board ([`extract_tables`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Donated {
+    /// The board's name, as its table states it.
+    pub board: String,
+    pub found: Vec<Extracted>,
+    /// Files of a SoC the donor has firmware of, but not these.
+    pub missing: Vec<String>,
+    /// The SoCs the donor has no firmware of at all.
+    pub absent: Vec<String>,
 }
 
 #[cfg(test)]

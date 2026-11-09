@@ -9,7 +9,7 @@ default = []
 std = []
 alloc = []
 # Host tools: the build plan carries these types as JSON.
-host = ["std", "dep:serde", "serde/std", "heapless/serde", "dep:fstart-amdfw-format"]
+host = ["std", "dep:serde", "serde/std", "heapless/serde"]
 pci = []
 # Test doubles of the services (`ManualTimer`).
 testing = []
@@ -19,7 +19,6 @@ ufmt = { workspace = true }
 serde = { workspace = true, optional = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
-fstart-amdfw-format = { workspace = true, features = ["serde"], optional = true }
 embedded-hal = { workspace = true }
 tock-registers = { workspace = true }
 portable-atomic = { workspace = true }

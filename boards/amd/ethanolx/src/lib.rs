@@ -45,11 +45,6 @@ impl fstart_platform_amd::board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
     const SOCS: &'static [SocId] = &[SocId::Milan];
     const MAX_CPUS: u16 = 256;
-    /// The BMC's 64 MiB readout (or just its lower 16 MiB boot bank).
-    const VENDOR_IMAGE: &'static str = "boards/amd/ethanolx/vendor/RXM100CB.bin";
-    /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
-    /// 64 MiB export and leaves [16, 48) MiB alone.
-    const FLASH_MIRRORS: &'static [u32] = &[0x300_0000];
     const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
         &[&POLICY_OPTIONS, &dxio::SETUP];
 }

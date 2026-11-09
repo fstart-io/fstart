@@ -128,15 +128,11 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
         "vbios": [{ "device": 0x15dd, "file": "vbios.bin" }],
     }}});
     let plan = resolve::<Vilboz>(selection.clone()).unwrap();
-    plan.validate_image_selection(&selection).unwrap();
     let image = amd(&plan);
     let Firmware::Packed {
         files,
         reset_offset,
-    } = &image.firmware
-    else {
-        unreachable!()
-    };
+    } = &image.firmware;
     assert_eq!(*reset_offset, Some(0x78_0000));
     assert_eq!(image.reset_size, 0x40_0000);
     assert_eq!(image.reset_destination, 0x0300_0000);
@@ -210,15 +206,11 @@ fn zeppelin_packs_a_two_level_native_image() {
         "microcode": [{ "equivalence-id": 0x8012, "file": "ucode.bin" }],
     }}});
     let plan = resolve::<Mj11>(selection.clone()).unwrap();
-    plan.validate_image_selection(&selection).unwrap();
     let image = amd(&plan);
     let Firmware::Packed {
         files,
         reset_offset,
-    } = &image.firmware
-    else {
-        unreachable!()
-    };
+    } = &image.firmware;
     assert_eq!(*reset_offset, Some(0xdb_0000));
     assert!(files.two_level && image.psp.compress_reset);
     assert_eq!((files.spi_read_mode, files.spi_speed), (Some(7), Some(1)));
@@ -235,7 +227,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     assert!(
         matches!(&plan.ffs_assembly().unwrap().microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1)
     );
-    // A vendor image instead of the blobs.
+    // A vendor image is no option: it only donates blobs.
     let mut vendor = selection;
     vendor.options.remove("blobs");
     vendor.set_option("image-config", "vendor.rom");

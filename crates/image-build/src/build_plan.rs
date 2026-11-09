@@ -495,50 +495,6 @@ impl BuildPlan {
         Ok(())
     }
 
-    pub fn validate_image_selection(
-        &self,
-        selection: &crate::plan::BuildSelection,
-    ) -> Result<(), String> {
-        // An explicit `--image-config` must be bound unchanged by the one
-        // image step that consumes a vendor image; a packed image and
-        // plans without such a step bind no image configuration.
-        let requested = selection.image_config();
-        for step in &self.images {
-            let bound = match &step.operation {
-                ImageOperation::AmdEfs(image) => match &image.firmware {
-                    crate::amd::assembly::Firmware::Vendor { image, .. } => {
-                        Some(Some(image.path.as_str()))
-                    }
-                    crate::amd::assembly::Firmware::Packed { .. } => Some(None),
-                },
-                // A halved flash may fall back to the board's own vendor
-                // ROM, so only an explicit request must match it.
-                ImageOperation::AmdHalvedFlash(image) => {
-                    return match requested {
-                        None => Ok(()),
-                        Some(path) if path == image.vendor_image => Ok(()),
-                        Some(_) => Err(
-                            "image configuration was not bound unchanged by the platform".into(),
-                        ),
-                    };
-                }
-                ImageOperation::Ffs(_) | ImageOperation::X86Flash(_) => None,
-            };
-            if let Some(bound) = bound {
-                return if requested == bound {
-                    Ok(())
-                } else {
-                    Err("image configuration was not bound unchanged by the platform".into())
-                };
-            }
-        }
-        if requested.is_none() {
-            Ok(())
-        } else {
-            Err("image configuration was not bound unchanged by the platform".into())
-        }
-    }
-
     pub fn unit(&self, name: &str) -> Result<&CompilationUnit, String> {
         self.units
             .iter()

@@ -53,14 +53,13 @@ pub const LAYOUT: Layout = Layout {
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Picasso {
     const RELEASE_ONLY: bool = true;
-    const SOURCE: crate::host::single::Source = crate::host::single::Source::Packed {
+    const SOURCE: crate::host::single::Source = crate::host::single::Source {
         // Reserve the full uncompressed size before the fixed FFS window.
         reset_offset: Some(
             (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
         ),
         psp: fstart_image_build::amd::assembly::PspOptions {
             compress_reset: true,
-            spi: None,
         },
     };
 }
