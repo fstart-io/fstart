@@ -90,17 +90,37 @@ pub fn wait_for_interrupt() {
     }
 }
 
-/// Jump unconditionally to an ARM stage or payload entry.
+/// Make code just written to RAM visible to instruction fetch: drain the
+/// write buffer, then invalidate the I-cache, which `_start` turned on (on
+/// the ARM1176 this also flushes the branch target cache). The MMU and
+/// D-cache stay off, so no data needs cleaning.
+#[inline(always)]
+fn sync_icache() {
+    // SAFETY: CP15 c7/c10/4 and c7/c5/0 drain the write buffer and
+    // invalidate the whole I-cache; the source register should be zero.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {zero}, c7, c10, 4",
+            "mcr p15, 0, {zero}, c7, c5, 0",
+            zero = in(reg) 0u32,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// Jump unconditionally to an ARM stage or payload entry loaded into RAM.
 #[inline(always)]
 pub fn jump_to(addr: u64) -> ! {
+    sync_icache();
     let addr = addr as u32;
     // SAFETY: caller provides a valid executable ARM entry point.
     unsafe { core::arch::asm!("bx {addr}", addr = in(reg) addr, options(noreturn)) }
 }
 
-/// Jump to an ARM entry with a handoff pointer in `r0`.
+/// Jump to an ARM entry loaded into RAM with a handoff pointer in `r0`.
 #[inline(always)]
 pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
+    sync_icache();
     let addr = addr as u32;
     let handoff_addr = handoff_addr as u32;
     // SAFETY: caller provides a valid entry point and handoff buffer.
