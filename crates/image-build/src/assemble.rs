@@ -305,6 +305,12 @@ pub fn assemble(
     .map_err(|e| format!("write patched artifact identities: {e}"))?;
     let image_path = output_dir.join(format!("{}.ffs", config.name));
     fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
+    write_launch_elf(
+        &stage_binaries[0],
+        &image_bytes,
+        &ffs_image.file_data,
+        &launch_elf_path(&image_path),
+    )?;
 
     let (out_path, placement) = if config.full_flash_image {
         let full_flash = FullFlashInput {
@@ -1433,6 +1439,70 @@ fn add_firmware_blob(
     Ok(())
 }
 
+/// Debug launchers (`probe-rs run`) load an ELF, not the image. This is the
+/// initial stage's ELF carrying the bytes the image actually stores for it.
+pub fn launch_elf_path(image: &Path) -> PathBuf {
+    image.with_extension("launch.elf")
+}
+
+/// Replace the initial stage ELF's loaded bytes with the stage as stored in
+/// the final image: anchor, locator, bootstrap-pin and header patches
+/// included. Only written when the image stores the initial stage flat and
+/// uncompressed (optionally zero-padded); otherwise (e.g. an externalized XIP
+/// bootblock) no launch ELF exists.
+fn write_launch_elf(
+    stage: &StageBinary,
+    image: &[u8],
+    files: &[fstart_ffs::builder::FileDataLocation],
+    out: &Path,
+) -> Result<(), String> {
+    if let Err(error) = fs::remove_file(out)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("remove stale {}: {error}", out.display()));
+    }
+    let Some(location) = files.iter().find(|file| file.name == stage.name) else {
+        return Ok(());
+    };
+    let raw = fs::read(&stage.run_path)
+        .map_err(|e| format!("failed to read {}: {e}", stage.run_path.display()))?;
+    let start = location.data_offset as usize;
+    let stored = image
+        .get(start..start + location.data_size as usize)
+        .ok_or("initial stage outside image")?;
+    // A flat stage may be zero-padded in the image (eGON pads to 8 KiB);
+    // anything else is not the stage's flat bytes.
+    let Some((stored, padding)) = (stored.len() >= raw.len()).then(|| stored.split_at(raw.len()))
+    else {
+        return Ok(());
+    };
+    if padding.iter().any(|&byte| byte != 0) {
+        return Ok(());
+    }
+    let mut elf = fs::read(&stage.path)
+        .map_err(|e| format!("failed to read {}: {e}", stage.path.display()))?;
+    let segments = elf_load_segments(&elf, &stage.path)?;
+    for (index, (&new, &old)) in stored.iter().zip(&raw).enumerate() {
+        if new == old {
+            continue;
+        }
+        let address = stage.load_addr + index as u64;
+        let Some(byte) = segments
+            .iter()
+            .find(|s| s.paddr <= address && address - s.paddr < s.filesz)
+            .and_then(|s| usize::try_from(s.offset + (address - s.paddr)).ok())
+            .filter(|&offset| elf.get(offset) == Some(&old))
+        else {
+            // The image patches bytes the ELF does not load (x86 ROM
+            // stages patch outside PT_LOAD file data); no launch ELF
+            // can faithfully carry them.
+            return Ok(());
+        };
+        elf[byte] = new;
+    }
+    fs::write(out, elf).map_err(|e| format!("failed to write {}: {e}", out.display()))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ElfLoadSegment {
     offset: u64,
@@ -1592,5 +1662,74 @@ mod trust_copy_tests {
         );
         patch_initial_trust(&mut initial, &built.trust_bytes);
         assert_eq!(&initial[64..64 + TRUST_SIZE], &built.trust_bytes);
+    }
+}
+
+#[cfg(test)]
+mod launch_elf_tests {
+    use super::*;
+
+    /// Minimal little-endian ELF64 with one PT_LOAD of `data` at `paddr`.
+    fn elf(paddr: u64, data: &[u8]) -> Vec<u8> {
+        let mut elf = vec![0; 64 + 56];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = elf::ELFCLASS64;
+        elf[5] = elf::ELFDATA2LSB;
+        elf[6] = 1;
+        elf[16..18].copy_from_slice(&elf::ET_EXEC.to_le_bytes());
+        elf[18..20].copy_from_slice(&elf::EM_RISCV.to_le_bytes());
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+        let header = &mut elf[64..];
+        header[..4].copy_from_slice(&elf::PT_LOAD.to_le_bytes());
+        header[8..16].copy_from_slice(&120u64.to_le_bytes());
+        header[16..24].copy_from_slice(&paddr.to_le_bytes());
+        header[24..32].copy_from_slice(&paddr.to_le_bytes());
+        header[32..40].copy_from_slice(&(data.len() as u64).to_le_bytes());
+        header[40..48].copy_from_slice(&(data.len() as u64).to_le_bytes());
+        elf.extend_from_slice(data);
+        elf
+    }
+
+    #[test]
+    fn launch_elf_carries_the_bytes_the_image_stores() {
+        let dir = std::env::temp_dir().join(format!("fstart-launch-elf-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let raw = [0xaa; 64];
+        let stage = StageBinary {
+            name: "bootblock".into(),
+            path: dir.join("stage.elf"),
+            run_path: dir.join("stage.bin"),
+            load_addr: 0x0800_0000,
+        };
+        fs::write(&stage.path, elf(stage.load_addr, &raw)).unwrap();
+        fs::write(&stage.run_path, raw).unwrap();
+        let mut image = vec![0; 16];
+        image.extend_from_slice(&raw);
+        image[16 + 8..16 + 12].copy_from_slice(b"PIN!");
+        let files = [fstart_ffs::builder::FileDataLocation {
+            name: "bootblock".into(),
+            data_offset: 16,
+            data_size: 64,
+        }];
+        let out = dir.join("image.launch.elf");
+        write_launch_elf(&stage, &image, &files, &out).unwrap();
+        let launch = fs::read(&out).unwrap();
+        assert_eq!(&launch[120..], &image[16..]);
+        // Zero padding after the flat stage (eGON) is not loaded ELF data.
+        image.extend_from_slice(&[0; 32]);
+        let padded = [fstart_ffs::builder::FileDataLocation {
+            name: "bootblock".into(),
+            data_offset: 16,
+            data_size: 96,
+        }];
+        write_launch_elf(&stage, &image, &padded, &out).unwrap();
+        assert_eq!(&fs::read(&out).unwrap()[120..], &image[16..80]);
+        // A compressed or externalized initial stage leaves no stale launcher.
+        write_launch_elf(&stage, &image, &[], &out).unwrap();
+        assert!(!out.exists());
     }
 }

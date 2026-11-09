@@ -289,6 +289,57 @@ impl UnitOutput {
     }
 }
 
+/// Payload, payload-firmware and device-tree destinations are written while
+/// the stage described by this layout is live. Reject any overlap with each
+/// other, with the stage's own footprint, exclusions and successor
+/// reservations, or with CPU-mapped flash. This is the same descriptor the stage consumes at runtime.
+pub fn validate_load_destinations(descriptor: &[u8]) -> Result<(), String> {
+    use fstart_core::layout::{Layout, RegionKind as Kind};
+    let layout = Layout::parse(descriptor).map_err(|e| e.to_string())?;
+    let destination = |kind| {
+        matches!(
+            kind,
+            Kind::Payload | Kind::PayloadFirmware | Kind::DeviceTree
+        )
+    };
+    let occupied = |kind| {
+        destination(kind)
+            || matches!(
+                kind,
+                Kind::Image
+                    | Kind::Writable
+                    | Kind::Stack
+                    | Kind::Heap
+                    | Kind::Reserved
+                    | Kind::Execution
+                    | Kind::BootstrapPostcar
+                    | Kind::BootstrapMainstage
+                    | Kind::FirmwareStore
+                    | Kind::Flash
+                    | Kind::Firmware
+            )
+    };
+    let regions: Vec<_> = layout.regions().collect();
+    for (index, load) in regions.iter().enumerate() {
+        if !destination(load.kind) {
+            continue;
+        }
+        for (other_index, other) in regions.iter().enumerate() {
+            if index != other_index
+                && occupied(other.kind)
+                && load.base < other.base.saturating_add(other.size)
+                && other.base < load.base.saturating_add(load.size)
+            {
+                return Err(format!(
+                    "{:?} destination {:#x}+{:#x} overlaps {:?} {:#x}+{:#x}",
+                    load.kind, load.base, load.size, other.kind, other.base, other.size
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -411,6 +462,18 @@ impl BuildPlan {
                 UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
             {
                 return Err("FFS executable needs its runtime layout descriptor".into());
+            }
+            if let UnitOutput::Executable {
+                expectations:
+                    crate::elf::Expectations {
+                        descriptor: Some(descriptor),
+                        ..
+                    },
+                ..
+            } = &unit.output
+            {
+                validate_load_destinations(&descriptor.bytes)
+                    .map_err(|e| format!("{}: {e}", unit.name))?;
             }
             let mut bindings = BTreeSet::new();
             for binding in &unit.bindings {
@@ -629,7 +692,13 @@ mod tests {
                     section: ".layout".into(),
                     start_symbol: "begin".into(),
                     end_symbol: "end".into(),
-                    bytes: vec![],
+                    bytes: crate::layout::EncodedLayout::encode(
+                        0,
+                        &[span.region(fstart_core::layout::RegionKind::Image)],
+                    )
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
                     reservation: span,
                 }),
                 stored_flags: None,
@@ -666,6 +735,69 @@ mod tests {
             }
             .into(),
         }
+    }
+
+    #[test]
+    fn load_destinations_cannot_overlap_live_or_other_destinations() {
+        use crate::plan::Span;
+        use fstart_core::layout::RegionKind as Kind;
+        let layout = |regions: &[fstart_core::layout::Region]| {
+            crate::layout::EncodedLayout::encode(0, regions)
+                .unwrap()
+                .as_bytes()
+                .to_vec()
+        };
+        let main = Span {
+            base: 0x8100_0000,
+            size: 0x0200_0000,
+        };
+        let handoff = Span {
+            base: 0x8000_0000,
+            size: 0x1000,
+        };
+        let firmware = Span {
+            base: 0x8300_0000,
+            size: 0x0100_0000,
+        };
+        let flash = Span {
+            base: 0x2000_0000,
+            size: 0x0200_0000,
+        };
+        let disjoint = [
+            main.region(Kind::Image),
+            handoff.region(Kind::Reserved),
+            flash.region(Kind::Flash),
+            firmware.region(Kind::PayloadFirmware),
+        ];
+        super::validate_load_destinations(&layout(&disjoint)).unwrap();
+        for (kind, other) in [
+            (Kind::Image, main),
+            (Kind::Reserved, handoff),
+            (Kind::BootstrapMainstage, main),
+            (Kind::DeviceTree, firmware),
+        ] {
+            let inside = Span {
+                base: other.base + 0x100,
+                size: 0x100,
+            };
+            let regions = [
+                other.region(kind),
+                inside.region(if kind == Kind::DeviceTree {
+                    Kind::Payload
+                } else {
+                    Kind::PayloadFirmware
+                }),
+            ];
+            assert!(
+                super::validate_load_destinations(&layout(&regions))
+                    .unwrap_err()
+                    .contains("overlaps"),
+                "{kind:?}"
+            );
+        }
+        // Loads target RAM, never the CPU-mapped flash window.
+        let xip = [flash.region(Kind::Flash), flash.region(Kind::Payload)];
+        assert!(super::validate_load_destinations(&layout(&xip)).is_err());
     }
 
     #[test]
