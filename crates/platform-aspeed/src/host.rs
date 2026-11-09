@@ -56,9 +56,11 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         return Err("x86 Linux options are supported only by Intel platforms".into());
     }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
-    if payload != "halt" {
-        return Err("the AST2500 main stage boots only halt".into());
-    }
+    let elf = match payload.as_str() {
+        "halt" => false,
+        "elf" => true,
+        _ => return Err("the AST2500 main stage boots halt or a bare ELF".into()),
+    };
     let AspeedSoc::Ast2500 = facts.soc;
     if facts.flash_size < FIRMWARE_WINDOW_SIZE {
         return Err("the boot flash must cover the 16 MiB firmware window".into());
@@ -153,7 +155,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         bootstrap: vec![("main".into(), BootstrapRole::Mainstage)],
         stages,
         security: default_security_config(),
-        payload: None,
+        payload: elf.then(|| fstart_core::elf_payload(fstart_core::ffs::Compression::None)),
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
@@ -167,13 +169,22 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ..Default::default()
         },
     };
-    let inputs: Vec<InputFile> = vec![];
+    // The payload ELF; the assembler enforces what actually fits.
+    let inputs: Vec<InputFile> = if elf {
+        vec![InputFile {
+            name: "kernel".into(),
+            default: None,
+            capacity: FIRMWARE_WINDOW_SIZE,
+        }]
+    } else {
+        vec![]
+    };
     let plan = BuildPlan {
         payload,
         units: vec![
             unit(
                 "bootblock",
-                "bundle-ast2500-bootblock",
+                &["bundle-ast2500-bootblock"],
                 fstart_image_build::linker::resolved_xip(&layout)?,
                 UnitOutput::Executable {
                     expectations: layout.elf_expectations()?,
@@ -183,7 +194,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                "bundle-ast2500-main",
+                &["bundle-ast2500-main", "elf"][..1 + usize::from(elf)],
                 main.linker_script,
                 UnitOutput::Executable {
                     expectations: main.expectations,
@@ -258,12 +269,17 @@ fn main_stage(
     resolved_ram_stage(&config, "main", &descriptor)
 }
 
-fn unit(name: &str, bundle: &str, linker_script: String, output: UnitOutput) -> CompilationUnit {
+fn unit(
+    name: &str,
+    features: &[&str],
+    linker_script: String,
+    output: UnitOutput,
+) -> CompilationUnit {
     CompilationUnit {
         name: name.into(),
         cargo_target: CargoTarget::BoardBinary,
         target: Platform::Armv5te.target_triple().into(),
-        features: vec![bundle.into()],
+        features: features.iter().map(|f| (*f).into()).collect(),
         build_std: Some("core,alloc".into()),
         rustflags: vec![
             "-Zub-checks=no".into(),
@@ -314,6 +330,22 @@ mod tests {
             (MAIN_STAGE_BASE, MAIN_STAGE_SIZE)
         );
         assert!(HANDOFF_ADDR + fstart_core::handoff::HANDOFF_MAX_SIZE as u64 <= MAIN_STAGE_BASE);
+    }
+
+    #[test]
+    fn elf_payloads_come_from_the_kernel_input() {
+        let selection = BuildSelection {
+            payload: Some("elf".into()),
+            ..BuildSelection::default()
+        };
+        let plan = resolve(MJ11, selection).unwrap();
+        assert_eq!(plan.units[1].features, ["bundle-ast2500-main", "elf"]);
+        assert_eq!(plan.inputs[0].name, "kernel");
+        let linux = BuildSelection {
+            payload: Some("linux".into()),
+            ..BuildSelection::default()
+        };
+        assert!(resolve(MJ11, linux).is_err());
     }
 
     #[test]
