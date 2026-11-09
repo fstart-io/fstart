@@ -7,8 +7,7 @@
 A firmware framework in Rust using Rust board crates with builder-pattern board
 metadata, fixed handwritten stage flow, and step-based hardware initialization.
 
-Supports RISC-V 64, AArch64, and ARMv7. Boots Linux. Runs on QEMU and real
-hardware (Allwinner A20).
+Supports RISC-V 64, AArch64, ARMv7 and x86. Boots Linux and UEFI.
 
 **Experimental.** This is early-stage software. Internals, APIs, and the board
 file format may change drastically without notice.
@@ -31,5 +30,4 @@ cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 
 ## Documentation
 
-- **[Pineview boards](docs/pineview-boards.md)** — build selections, driver policy and hardware-validation limits.
-- **[Measured boot](docs/measured-boot.md)** — TPM measurements and the payload interface.
+TODO
