@@ -520,6 +520,8 @@ mod tests {
             // Board ACPI, and the heap it needs, belong to the ramstage only.
             let board_features: &[&str] = if name == "ramstage" { &["acpi"] } else { &[] };
             assert_eq!(unit.board_features, board_features);
+            let script = unit.linker_script.as_ref().unwrap();
+            assert_eq!(script.contains("_FSTART_HEAP ="), name == "ramstage");
             assert!(unit.rustflags.contains(&"-Ccode-model=small".into()));
             assert!(unit.rustflags.contains(&"-Clink-arg=-no-pie".into()));
             let relocation = if name == "bootblock" { "pic" } else { "static" };
