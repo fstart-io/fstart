@@ -20,12 +20,16 @@
 
 mod fields;
 pub mod raminit;
+#[cfg(test)]
+mod register_tests;
+mod registers;
+
+pub use registers::{I945HostBridgePciConfig, dmibar, epbar};
 
 use self::fields::*;
 
 use crate::MmioBar;
 use crate::ich7::Rcba;
-use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
@@ -35,8 +39,9 @@ use fstart_pci::ecam;
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };
+use registers::igd::{IGD_GDRST, IGD_LBB, IGD_MSAC};
+use registers::panel::{BLC_PWM_CTL, PP_DIVISOR, PP_OFF_DELAYS, PP_ON_DELAYS};
 use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::{register_bitfields, register_structs};
 
 /// i945 host bridge (D0:F0) PCI configuration offsets.
 pub mod hostbridge {
@@ -44,26 +49,11 @@ pub mod hostbridge {
     pub const HOST_DEV: u8 = 0;
     pub const HOST_FUNC: u8 = 0;
 
-    pub const EPBAR: u16 = 0x40;
-    pub const MCHBAR: u16 = 0x44;
-    pub const PCIEXBAR: u16 = 0x48;
-    pub const DMIBAR: u16 = 0x4c;
-    pub const X60BAR: u16 = 0x60;
-
-    /// GMCH graphics control (16-bit write in coreboot).
-    pub const GGC: u16 = 0x52;
-    pub const DEVEN: u16 = 0x54;
-    pub const DEVEN_D0F0: u16 = 1 << 0;
-    pub const DEVEN_D1F0: u16 = 1 << 1;
-    pub const DEVEN_D2F0: u16 = 1 << 3;
-    pub const DEVEN_D2F1: u16 = 1 << 4;
-
-    pub const PAM0: u16 = 0x90;
-    pub const TOLUD: u16 = 0x9c;
-    pub const SMRAM: u16 = 0x9d;
-    pub const ESMRAMC: u16 = 0x9e;
-    pub const TOM: u16 = 0xa0;
-    pub const SKPAD: u16 = 0xdc;
+    pub use super::registers::hostbridge::*;
+    pub const DEVEN_D0F0: u16 = super::registers::DEVEN_REG::D0F0::SET.value;
+    pub const DEVEN_D1F0: u16 = super::registers::DEVEN_REG::D1F0::SET.value;
+    pub const DEVEN_D2F0: u16 = super::registers::DEVEN_REG::D2F0::SET.value;
+    pub const DEVEN_D2F1: u16 = super::registers::DEVEN_REG::D2F1::SET.value;
 
     /// PCI device IDs used by `early_initialization` chipset detection.
     pub const DID_DESKTOP: u32 = 0x2770_8086;
@@ -74,39 +64,14 @@ pub mod hostbridge {
     pub const PEG_FUNC: u8 = 0;
     pub const IGD_DEV: u8 = 2;
     pub const IGD_FUNC: u8 = 0;
-    pub const IGD_BSM: u16 = 0x5c;
-    /// Graphics clock frequency and gating control.
-    pub const IGD_GCFC: u16 = 0xf0;
-
-    /// PEG (D0:F1) extended offsets from `i945.h`.
-    pub mod peg {
-        pub const SLOTSTS: u16 = 0xba;
-        pub const SLOTCAP: u16 = 0xb4;
-        pub const PEG_CAP: u16 = 0xa2;
-        pub const PEG_LC: u16 = 0xec;
-        pub const PEGTC: u16 = 0x204;
-        pub const PEGSTS: u16 = 0x214;
-        pub const PEGCC: u16 = 0x208;
-        pub const LE1D: u16 = 0x150;
-        pub const LE1A: u16 = 0x158;
-        pub const VC0RCTL: u16 = 0x114;
-        pub const PVCCAP1: u16 = 0x104;
-    }
+    pub use super::registers::igd::{IGD_BSM, IGD_GCFC};
+    pub use super::registers::peg;
 }
 
-/// IGD PCI configuration offsets, panel registers and command bits.
-const IGD_MSAC: u16 = 0x62;
-const IGD_GDRST: u16 = 0xc0;
-/// Legacy Backlight Brightness, in the 0:2.1 configuration space.
-const IGD_LBB: u16 = 0xf4;
+/// Standard PCI command register and bits.
 const PCI_COMMAND: u16 = 0x04;
 const PCI_CMD_MEMORY: u16 = 1 << 1;
 const PCI_CMD_MASTER: u16 = 1 << 2;
-/// Panel power sequencing registers, shared with the later GMCH parts.
-const PP_ON_DELAYS: u32 = 0x61208;
-const PP_OFF_DELAYS: u32 = 0x6120c;
-const PP_DIVISOR: u32 = 0x61210;
-const BLC_PWM_CTL: u32 = 0x61254;
 /// Gen3 backlight control lives in the legacy PWM register.
 const BLM_LEGACY_MODE: u32 = 1 << 16;
 /// Backlight PWM frequency coreboot uses when the board names none.
@@ -184,61 +149,12 @@ impl Default for I945PanelConfig {
     }
 }
 
-/// i945 MCHBAR register offsets from `i945.h`.
+/// i945 MCHBAR register offsets generated from the shared catalog.
 pub mod mchbar {
-    pub const CLKCFG: u32 = 0x0c00;
-    pub const UPMC1: u32 = 0x0c14;
-    pub const SSKPD: u32 = 0x0c1c;
-    pub const DFT_STRAP1: u32 = 0x0e08;
-    pub const FSBSNPCTL: u32 = 0x0048;
-    pub const FSBPMC3: u32 = 0x0040;
-    pub const SLFRCS: u32 = 0x0f14;
-    pub const MMARB1: u32 = 0x0224;
-}
+    pub use super::registers::mchbar::*;
 
-/// i945 EPBAR register offsets from `i945.h`.
-pub mod epbar {
-    pub const EPVC0RCTL: u32 = 0x014;
-    pub const EPPVCCAP1: u32 = 0x004;
-    pub const EPVC1RCAP: u32 = 0x01c;
-    pub const EPVC1RCTL: u32 = 0x020;
-    pub const EPVC1RSTS: u32 = 0x026;
-    pub const EPVC1MTS: u32 = 0x028;
-    pub const EPVC1IST_LO: u32 = 0x038;
-    pub const EPVC1IST_HI: u32 = 0x03c;
-    pub const EPESD: u32 = 0x044;
-    pub const EPLE1D: u32 = 0x050;
-    pub const EPLE1A: u32 = 0x058;
-    pub const EPLE2D: u32 = 0x060;
-    pub const PORTARB: u32 = 0x100;
-    /// VC1 resource control register at EPBAR+0x2c (unnamed in `i945.h`).
-    pub const VC1_MISC: u32 = 0x02c;
-}
-
-/// i945 DMIBAR register offsets from `i945.h`.
-pub mod dmibar {
-    pub const DMIVC0RCTL0: u32 = 0x014;
-    pub const DMIPVCCAP1: u32 = 0x004;
-    pub const DMIVC1RCTL: u32 = 0x020;
-    pub const DMIVC1RSTS: u32 = 0x026;
-    pub const DMILE1D: u32 = 0x050;
-    pub const DMILE1A: u32 = 0x058;
-    pub const DMILE2D: u32 = 0x060;
-    pub const DMILE2A: u32 = 0x068;
-    pub const DMILCAP: u32 = 0x084;
-    pub const DMILCTL: u32 = 0x088;
-    pub const DMICC: u32 = 0x208;
-    pub const DMICTL1: u32 = 0x0f0;
-    pub const DMICTL2: u32 = 0x0fc;
-    pub const DMI_UNCERRSTS: u32 = 0x1c4;
-    pub const DMI_CORERRSTS: u32 = 0x1d0;
-    pub const DMI_MISC_200: u32 = 0x200;
-    pub const DMI_MISC_204: u32 = 0x204;
-    pub const DMI_MISC_224: u32 = 0x224;
-    pub const DMI_MISC_228: u32 = 0x228;
-    pub const DMI_MISC_2C: u32 = 0x02c;
-    pub const DMI_MISC_32: u32 = 0x032;
-    pub const DMIDRCCFG: u32 = 0xeb4;
+    /// Byte stride between the two DRAM channel register windows.
+    pub use super::registers::mchbar::C0DRT0_STRIDE as C1_BASE;
 }
 
 /// i945 silicon stepping target.
@@ -366,35 +282,6 @@ pub const fn decode_igd_memory_size_kb(gms: u32) -> u32 {
     }
     GGC2UMA_KB[gms as usize]
 }
-
-register_structs! {
-    /// Sparse typed overlay for the early i945 host-bridge registers.
-    pub I945HostBridgePciConfig {
-        (0x00 => _pad0: [u8; 0x52]),
-        (0x52 => pub ggc: MmioReadWrite<u16, GGC_REG::Register>),
-        (0x54 => pub deven: MmioReadWrite<u16, DEVEN_REG::Register>),
-        (0x56 => _pad1: [u8; 0xa0 - 0x56]),
-        (0xa0 => pub tom: MmioReadWrite<u16, TOM_REG::Register>),
-        (0xa2 => @END),
-    }
-}
-
-register_bitfields! [u16,
-    GGC_REG [
-        GMS OFFSET(4) NUMBITS(3) [],
-        RAW OFFSET(0) NUMBITS(16) []
-    ],
-    DEVEN_REG [
-        D0F0 OFFSET(0) NUMBITS(1) [],
-        D1F0 OFFSET(1) NUMBITS(1) [],
-        D2F0 OFFSET(3) NUMBITS(1) [],
-        D2F1 OFFSET(4) NUMBITS(1) [],
-        RAW OFFSET(0) NUMBITS(16) []
-    ],
-    TOM_REG [
-        RAW OFFSET(0) NUMBITS(16) []
-    ]
-];
 
 /// Thin MCHBAR accessor.
 #[derive(Clone, Copy)]

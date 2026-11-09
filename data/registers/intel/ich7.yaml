@@ -1,0 +1,544 @@
+# Intel ICH7 / NM10: existing fstart register knowledge.
+# This is not a complete datasheet.
+# Sources: coreboot southbridge/intel/i82801gx; fstart ICH7 driver.
+
+block/RcbaRegs:
+  description: |-
+    ICH7 Root Complex Base Address MMIO registers.
+    Bind to the RCBA programmed by the platform.
+  items:
+    - name: "v0ctl"
+      byte_offset: 0x14
+      bit_size: 32
+    - name: "v1cap"
+      byte_offset: 0x1c
+      bit_size: 32
+    - name: "v1ctl"
+      byte_offset: 0x20
+      bit_size: 32
+    - name: "fd2"
+      byte_offset: 0x50
+      bit_size: 32
+      fieldset: "FD2_REG"
+    - name: "cir1"
+      byte_offset: 0x88
+      bit_size: 32
+    - name: "esd"
+      byte_offset: 0x104
+      bit_size: 32
+    - name: "uld"
+      byte_offset: 0x110
+      bit_size: 32
+    - name: "ulba_lo"
+      byte_offset: 0x118
+      bit_size: 32
+    - name: "rp1d"
+      byte_offset: 0x120
+      bit_size: 32
+    - name: "rp2d"
+      byte_offset: 0x130
+      bit_size: 32
+    - name: "rp3d"
+      byte_offset: 0x140
+      bit_size: 32
+    - name: "rp4d"
+      byte_offset: 0x150
+      bit_size: 32
+    - name: "hdd"
+      byte_offset: 0x160
+      bit_size: 32
+    - name: "rp5d"
+      byte_offset: 0x170
+      bit_size: 32
+    - name: "rp6d"
+      byte_offset: 0x180
+      bit_size: 32
+    - name: "lcap"
+      byte_offset: 0x1a4
+      bit_size: 32
+    - name: "lctl"
+      byte_offset: 0x1a8
+      bit_size: 16
+    - name: "cir2"
+      byte_offset: 0x1f4
+      bit_size: 32
+    - name: "cir3"
+      byte_offset: 0x1fc
+      bit_size: 16
+    - name: "cir4"
+      byte_offset: 0x200
+      bit_size: 16
+    - name: "cir5"
+      byte_offset: 0x214
+      bit_size: 32
+    - name: "cir6"
+      byte_offset: 0x218
+      bit_size: 32
+    - name: "bcr"
+      byte_offset: 0x220
+      bit_size: 8
+    - name: "sata_prefetch"
+      byte_offset: 0x1d40
+      bit_size: 32
+      fieldset: "SATA_PREFETCH_REG"
+    - name: "misc_2010"
+      byte_offset: 0x2010
+      bit_size: 32
+    - name: "cir_2027"
+      byte_offset: 0x2027
+      bit_size: 8
+    - name: "cir_2034"
+      byte_offset: 0x2034
+      bit_size: 32
+      fieldset: "CIR_2034_REG"
+    - name: "cir_21a4"
+      byte_offset: 0x21a4
+      bit_size: 32
+    - name: "spi"
+      byte_offset: 0x3020
+      bit_size: 16
+      fieldset: "SPI_REG"
+    - name: "spi_ctrl"
+      byte_offset: 0x3022
+      bit_size: 16
+      fieldset: "SPI_CTRL_REG"
+    - name: "spi_addr"
+      byte_offset: 0x3024
+      bit_size: 32
+    - name: "spi_data"
+      byte_offset: 0x3028
+      bit_size: 8
+      array:
+        len: 64
+        stride: 1
+    - name: "spi_preop"
+      byte_offset: 0x3074
+      bit_size: 8
+      array:
+        len: 2
+        stride: 1
+    - name: "spi_optype"
+      byte_offset: 0x3076
+      bit_size: 16
+    - name: "spi_opmenu"
+      byte_offset: 0x3078
+      bit_size: 8
+      array:
+        len: 8
+        stride: 1
+    - name: "d31ip"
+      byte_offset: 0x3100
+      bit_size: 32
+    - name: "d30ip"
+      byte_offset: 0x3104
+      bit_size: 32
+    - name: "d29ip"
+      byte_offset: 0x3108
+      bit_size: 32
+    - name: "d28ip"
+      byte_offset: 0x310c
+      bit_size: 32
+    - name: "d27ip"
+      byte_offset: 0x3110
+      bit_size: 32
+    - name: "d31ir"
+      byte_offset: 0x3140
+      bit_size: 16
+    - name: "d30ir"
+      byte_offset: 0x3142
+      bit_size: 16
+    - name: "d29ir"
+      byte_offset: 0x3144
+      bit_size: 16
+    - name: "d28ir"
+      byte_offset: 0x3146
+      bit_size: 16
+    - name: "d27ir"
+      byte_offset: 0x3148
+      bit_size: 16
+    - name: "oic"
+      byte_offset: 0x31ff
+      bit_size: 8
+      fieldset: "OIC_REG"
+    - name: "bios_cntl"
+      byte_offset: 0x3400
+      bit_size: 32
+    - name: "hptc"
+      byte_offset: 0x3404
+      bit_size: 32
+      fieldset: "HPTC_REG"
+    - name: "gcs"
+      byte_offset: 0x3410
+      bit_size: 32
+      fieldset: "GCS_REG"
+    - name: "fd"
+      byte_offset: 0x3418
+      bit_size: 32
+      fieldset: "FD_REG"
+    - name: "cg"
+      byte_offset: 0x341c
+      bit_size: 32
+      fieldset: "CG_REG"
+    - name: "fdsw8"
+      byte_offset: 0x3420
+      bit_size: 8
+      fieldset: "FDSW8"
+    - name: "cir8"
+      byte_offset: 0x3430
+      bit_size: 32
+      fieldset: "CIR8_REG"
+    - name: "port_3e08"
+      byte_offset: 0x3e08
+      bit_size: 16
+      fieldset: "PCIE_TUNING16"
+    - name: "port_3e0e"
+      byte_offset: 0x3e0e
+      bit_size: 8
+      fieldset: "PCIE_TUNING8"
+    - name: "port_3e48"
+      byte_offset: 0x3e48
+      bit_size: 16
+      fieldset: "PCIE_TUNING16"
+    - name: "port_3e4e"
+      byte_offset: 0x3e4e
+      bit_size: 8
+      fieldset: "PCIE_TUNING8"
+block/Ich7LpcPciConfig:
+  description: >-
+    ICH7 LPC bridge PCI configuration space, following the shared Type 0 header.
+  items:
+    - name: "pmbase"
+      byte_offset: 0x40
+      bit_size: 32
+    - name: "acpi_cntl"
+      byte_offset: 0x44
+      bit_size: 8
+      fieldset: "ACPI_CNTL_REG"
+    - name: "gpio_base"
+      byte_offset: 0x48
+      bit_size: 32
+    - name: "gpio_cntl"
+      byte_offset: 0x4c
+      bit_size: 8
+    - name: "pirqa_rout"
+      byte_offset: 0x60
+      bit_size: 32
+    - name: "serirq_cntl"
+      byte_offset: 0x64
+      bit_size: 8
+      fieldset: "SERIRQ_REG"
+    - name: "pirqe_rout"
+      byte_offset: 0x68
+      bit_size: 32
+    - name: "lpc_io_dec"
+      byte_offset: 0x80
+      bit_size: 16
+    - name: "lpc_en"
+      byte_offset: 0x82
+      bit_size: 16
+    - name: "gen_dec"
+      byte_offset: 0x84
+      bit_size: 32
+      array:
+        len: 4
+        stride: 4
+    - name: "gen_pmcon_1"
+      byte_offset: 0xa0
+      bit_size: 16
+      fieldset: "GEN_PMCON_1_REG"
+    - name: "gen_pmcon_3"
+      byte_offset: 0xa4
+      bit_size: 8
+      fieldset: "GEN_PMCON_3_REG"
+    - name: "gen_pmcon_lock"
+      byte_offset: 0xa6
+      bit_size: 8
+      fieldset: "GEN_PMCON_LOCK_REG"
+    - name: "etr3"
+      byte_offset: 0xac
+      bit_size: 32
+      fieldset: "ETR3_REG"
+    - name: "rcba_reg"
+      byte_offset: 0xf0
+      bit_size: 32
+block/SmBusPci:
+  description: "ICH7 SMBus PCI configuration offsets."
+  items:
+    - name: "SMB_BASE"
+      byte_offset: 0x20
+      bit_size: 32
+    - name: "HOSTC"
+      byte_offset: 0x40
+      bit_size: 8
+    - name: "PCI_COMMAND"
+      byte_offset: 0x4
+      bit_size: 16
+block/HdaPci:
+  description: "ICH7 HDA PCI configuration offsets."
+  items:
+    - name: "HDA_BAR0"
+      byte_offset: 0x10
+      bit_size: 32
+block/SataPci:
+  description: "ICH7 SATA PCI configuration offsets."
+  items:
+    - name: "SATA_ABAR"
+      byte_offset: 0x24
+      bit_size: 32
+block/EhciPci:
+  description: "ICH7 EHCI PCI configuration offsets."
+  items:
+    - name: "EHCI_BAR0"
+      byte_offset: 0x10
+      bit_size: 32
+block/EhciMmio:
+  description: "ICH7 EHCI MMIO operational-register offsets used by firmware."
+  items:
+    - name: "EHCI_USBSTS"
+      byte_offset: 0x24
+      bit_size: 32
+fieldset/GCS_REG:
+  bit_size: 32
+  fields:
+    - name: "FERR_MUX_ENABLE"
+      bit_offset: 6
+      bit_size: 1
+    - name: "NO_REBOOT"
+      bit_offset: 5
+      bit_size: 1
+    - name: "BILD"
+      bit_offset: 0
+      bit_size: 1
+  description: "General Control and Status."
+fieldset/HPTC_REG:
+  bit_size: 32
+  fields:
+    - name: "ADDRESS_SELECT"
+      bit_offset: 0
+      bit_size: 2
+    - name: "ENABLE"
+      bit_offset: 7
+      bit_size: 1
+  description: "HPET Configuration."
+fieldset/FD_REG:
+  bit_size: 32
+  fields:
+    - name: "PERFORMANCE_COUNTER_DISABLE"
+      bit_offset: 0
+      bit_size: 1
+    - name: "RAW"
+      bit_offset: 0
+      bit_size: 32
+  description: "Function Disable register."
+fieldset/FD2_REG:
+  bit_size: 32
+  fields:
+    - name: "TCLOCKDN"
+      bit_offset: 31
+      bit_size: 1
+  description: "Function Disable 2 / TC lockdown register."
+fieldset/CG_REG:
+  bit_size: 32
+  fields:
+    - name: "PCIE_ROOT_PORT_STATIC"
+      bit_offset: 0
+      bit_size: 1
+    - name: "RAW"
+      bit_offset: 0
+      bit_size: 32
+  description: "Clock-gating control."
+fieldset/SATA_PREFETCH_REG:
+  bit_size: 32
+  fields:
+    - name: "ENABLE"
+      bit_offset: 0
+      bit_size: 1
+  description: "SATA prefetch/caching control."
+fieldset/CIR8_REG:
+  bit_size: 32
+  fields:
+    - name: "FIELD_1_0"
+      bit_offset: 0
+      bit_size: 2
+fieldset/CIR_2034_REG:
+  bit_size: 32
+  fields:
+    - name: "FIELD_19_16"
+      bit_offset: 16
+      bit_size: 4
+fieldset/ETR3_REG:
+  bit_size: 32
+  fields:
+    - name: "CWORWRE"
+      bit_offset: 18
+      bit_size: 1
+    - name: "CF9GR"
+      bit_offset: 20
+      bit_size: 1
+    - name: "CF9LOCK"
+      bit_offset: 31
+      bit_size: 1
+  description: "LPC ETR3 reset-control register."
+fieldset/GEN_PMCON_1_REG:
+  bit_size: 16
+  fields:
+    - name: "SMI_RATE"
+      bit_offset: 0
+      bit_size: 2
+    - name: "CLKRUN_EN"
+      bit_offset: 2
+      bit_size: 1
+    - name: "SPEEDSTEP_EN"
+      bit_offset: 3
+      bit_size: 1
+    - name: "SMI_LOCK"
+      bit_offset: 4
+      bit_size: 1
+    - name: "CPUSLP_EN"
+      bit_offset: 5
+      bit_size: 1
+    - name: "C4ONC3_EN"
+      bit_offset: 7
+      bit_size: 1
+    - name: "BIOS_PCI_EXP_EN"
+      bit_offset: 10
+      bit_size: 1
+  description: "LPC GEN_PMCON_1 register."
+fieldset/SPI_REG:
+  bit_size: 16
+  fields:
+    - name: "CYCLE_IN_PROGRESS"
+      bit_offset: 0
+      bit_size: 1
+    - name: "CYCLE_DONE"
+      bit_offset: 2
+      bit_size: 1
+    - name: "CYCLE_ERROR"
+      bit_offset: 3
+      bit_size: 1
+    - name: "LOCK"
+      bit_offset: 15
+      bit_size: 1
+  description: "SPI status (SPIS)."
+fieldset/SPI_CTRL_REG:
+  bit_size: 16
+  fields:
+    - name: "ACCESS_REQUEST"
+      bit_offset: 0
+      bit_size: 1
+    - name: "CYCLE_GO"
+      bit_offset: 1
+      bit_size: 1
+    - name: "OPCODE_INDEX"
+      bit_offset: 4
+      bit_size: 3
+    - name: "DATA_BYTES"
+      bit_offset: 8
+      bit_size: 6
+    - name: "DATA_CYCLE"
+      bit_offset: 14
+      bit_size: 1
+  description: "SPI control (SPIC)."
+fieldset/PCIE_TUNING16:
+  bit_size: 16
+  fields:
+    - name: "BIT7"
+      bit_offset: 7
+      bit_size: 1
+fieldset/SATA_PORT_ENABLE:
+  bit_size: 8
+  fields:
+    - name: "PORTS"
+      bit_offset: 0
+      bit_size: 4
+  description: "SATA PCS port-enable bits (the low nibble)."
+enum/SERIRQ_REG_MODE:
+  bit_size: 1
+  variants:
+    - name: "Quiet"
+      value: 0
+    - name: "Continuous"
+      value: 1
+enum/SERIRQ_REG_START_PULSE:
+  bit_size: 2
+  variants:
+    - name: "Clocks4"
+      value: 0
+    - name: "Clocks6"
+      value: 1
+    - name: "Clocks8"
+      value: 2
+fieldset/SERIRQ_REG:
+  bit_size: 8
+  fields:
+    - name: "ENABLE"
+      bit_offset: 7
+      bit_size: 1
+    - name: "MODE"
+      bit_offset: 6
+      bit_size: 1
+      enum: "SERIRQ_REG_MODE"
+    - name: "FRAME_SIZE"
+      bit_offset: 2
+      bit_size: 4
+    - name: "START_PULSE"
+      bit_offset: 0
+      bit_size: 2
+      enum: "SERIRQ_REG_START_PULSE"
+  description: "LPC SIRQ_CNTL. The frame-size field is read-only (21 frames)."
+fieldset/ACPI_CNTL_REG:
+  bit_size: 8
+  fields:
+    - name: "ACPI_EN"
+      bit_offset: 7
+      bit_size: 1
+  description: "LPC ACPI control register."
+fieldset/GEN_PMCON_3_REG:
+  bit_size: 8
+  fields:
+    - name: "STATE_AFTER_G3"
+      bit_offset: 0
+      bit_size: 1
+    - name: "RTC_BATTERY_DEAD"
+      bit_offset: 2
+      bit_size: 1
+    - name: "MIN_SLP_S4_ASSERT"
+      bit_offset: 3
+      bit_size: 1
+    - name: "SLP_S3_STRETCH"
+      bit_offset: 4
+      bit_size: 2
+  description: "LPC GEN_PMCON_3 register."
+fieldset/GEN_PMCON_LOCK_REG:
+  bit_size: 8
+  fields:
+    - name: "ACPI_BASE_LOCK"
+      bit_offset: 1
+      bit_size: 1
+    - name: "SLP_STR_POL_LOCK"
+      bit_offset: 2
+      bit_size: 1
+  description: "LPC GEN_PMCON_LOCK register."
+fieldset/OIC_REG:
+  bit_size: 8
+  fields:
+    - name: "AEN"
+      bit_offset: 0
+      bit_size: 1
+    - name: "OAEN"
+      bit_offset: 1
+      bit_size: 1
+  description: "Other Interrupt Control."
+fieldset/FDSW8:
+  bit_size: 8
+  fields:
+    - name: "LOCK"
+      bit_offset: 7
+      bit_size: 1
+  description: "Function Disable SUS Well byte used during final lockdown."
+fieldset/PCIE_TUNING8:
+  bit_size: 8
+  fields:
+    - name: "BIT7"
+      bit_offset: 7
+      bit_size: 1

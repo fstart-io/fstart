@@ -1,0 +1,1153 @@
+# Intel i945: existing fstart register knowledge, not a complete datasheet.
+# Sources: coreboot northbridge/intel/i945/{i945.h,raminit.c,early_init.c}.
+# Timing field widths and overlapping views are preserved verbatim.
+
+block/I945HostBridgePciConfig:
+  description: "Sparse early i945 host-bridge ECAM overlay."
+  items:
+    - name: "epbar"
+      byte_offset: 0x40
+      bit_size: 32
+    - name: "mchbar"
+      byte_offset: 0x44
+      bit_size: 32
+    - name: "pciexbar"
+      byte_offset: 0x48
+      bit_size: 32
+    - name: "dmibar"
+      byte_offset: 0x4c
+      bit_size: 32
+    - name: "x60bar"
+      byte_offset: 0x60
+      bit_size: 32
+    - name: "ggc"
+      byte_offset: 0x52
+      bit_size: 16
+      fieldset: "GGC_REG"
+    - name: "deven"
+      byte_offset: 0x54
+      bit_size: 16
+      fieldset: "DEVEN_REG"
+    - name: "pam0"
+      byte_offset: 0x90
+      bit_size: 8
+    - name: "tolud"
+      byte_offset: 0x9c
+      bit_size: 8
+    - name: "smram"
+      byte_offset: 0x9d
+      bit_size: 8
+    - name: "esmramc"
+      byte_offset: 0x9e
+      bit_size: 8
+    - name: "tom"
+      byte_offset: 0xa0
+      bit_size: 16
+      fieldset: "TOM_REG"
+    - name: "skpad"
+      byte_offset: 0xdc
+      bit_size: 32
+block/MchBar:
+  description: >-
+    i945 MCHBAR offsets from coreboot northbridge/intel/i945/i945.h.
+  items:
+    - name: "FSBPMC3"
+      byte_offset: 0x40
+      bit_size: 32
+      fieldset: "FSBPMC3_REG"
+    - name: "FSBPMC4"
+      byte_offset: 0x44
+      bit_size: 32
+      fieldset: "FSBPMC4_REG"
+    - name: "FSBSNPCTL"
+      byte_offset: 0x48
+      bit_size: 32
+      fieldset: "FSBSNPCTL_REG"
+    - name: "SLPCTL"
+      byte_offset: 0x90
+      bit_size: 32
+      fieldset: "SLPCTL_REG"
+    - name: "C0DRB0"
+      byte_offset: 0x100
+      bit_size: 8
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRA0"
+      byte_offset: 0x108
+      bit_size: 16
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DCLKDIS"
+      byte_offset: 0x10c
+      bit_size: 8
+      array:
+        len: 2
+        stride: 128
+    - name: "C0BNKARC"
+      byte_offset: 0x10e
+      bit_size: 16
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRT0"
+      byte_offset: 0x110
+      bit_size: 32
+      fieldset: "DRT0_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRT1"
+      byte_offset: 0x114
+      bit_size: 32
+      fieldset: "DRT1_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRT2"
+      byte_offset: 0x118
+      bit_size: 32
+      fieldset: "DRT2_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRT3"
+      byte_offset: 0x11c
+      bit_size: 32
+      fieldset: "DRT3_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRC0"
+      byte_offset: 0x120
+      bit_size: 32
+      fieldset: "DRC0_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRC1"
+      byte_offset: 0x124
+      bit_size: 32
+      fieldset: "DRC1_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DRC2"
+      byte_offset: 0x128
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0AIT_LO"
+      byte_offset: 0x130
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DCCFT_LO"
+      byte_offset: 0x138
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0GTEW"
+      byte_offset: 0x140
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0GTC"
+      byte_offset: 0x144
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DTPEW_LO"
+      byte_offset: 0x148
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DTAEW_LO"
+      byte_offset: 0x150
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DTC"
+      byte_offset: 0x158
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "C0DMC"
+      byte_offset: 0x164
+      bit_size: 32
+      fieldset: "DMC_REG"
+      array:
+        len: 2
+        stride: 128
+    - name: "C0ODT_LO"
+      byte_offset: 0x168
+      bit_size: 32
+      array:
+        len: 2
+        stride: 128
+    - name: "DCC"
+      byte_offset: 0x200
+      bit_size: 32
+      fieldset: "DCC_REG"
+    - name: "CCCFT_LO"
+      byte_offset: 0x208
+      bit_size: 32
+    - name: "WCC"
+      byte_offset: 0x218
+      bit_size: 32
+      fieldset: "WCC_REG"
+    - name: "MMARB0"
+      byte_offset: 0x220
+      bit_size: 32
+    - name: "MMARB1"
+      byte_offset: 0x224
+      bit_size: 32
+    - name: "SBTEST"
+      byte_offset: 0x230
+      bit_size: 32
+    - name: "SBOCC"
+      byte_offset: 0x238
+      bit_size: 32
+      fieldset: "SBOCC_REG"
+    - name: "ODTC"
+      byte_offset: 0x284
+      bit_size: 32
+      fieldset: "ODTC_REG"
+    - name: "SMVREFC"
+      byte_offset: 0x2a0
+      bit_size: 32
+      fieldset: "SMVREFC_REG"
+    - name: "DRTST"
+      byte_offset: 0x2a8
+      bit_size: 32
+      fieldset: "DRTST_REG"
+    - name: "REPC"
+      byte_offset: 0x2e0
+      bit_size: 32
+      fieldset: "REPC_REG"
+    - name: "DQSMT"
+      byte_offset: 0x2f4
+      bit_size: 16
+      fieldset: "DQSMT_REG"
+    - name: "RCVENMT"
+      byte_offset: 0x2f8
+      bit_size: 32
+      fieldset: "RCVENMT_REG"
+    - name: "C0R0B00DQST"
+      byte_offset: 0x300
+      bit_size: 32
+    - name: "C0WL0REOST"
+      byte_offset: 0x340
+      bit_size: 8
+    - name: "WDLLBYPMODE"
+      byte_offset: 0x360
+      bit_size: 16
+    - name: "C0WDLLCMC"
+      byte_offset: 0x36c
+      bit_size: 8
+    - name: "C0HCTC"
+      byte_offset: 0x37c
+      bit_size: 8
+      fieldset: "HCTC_REG"
+    - name: "GBRCOMPCTL"
+      byte_offset: 0x400
+      bit_size: 32
+      fieldset: "GBRCOMPCTL_REG"
+    - name: "SMSRCTL"
+      byte_offset: 0x408
+      bit_size: 32
+      fieldset: "SMSRCTL_REG"
+    - name: "C0DRAMW"
+      byte_offset: 0x40c
+      bit_size: 16
+    - name: "G1SC"
+      byte_offset: 0x410
+      bit_size: 32
+    - name: "G1SRPUT"
+      byte_offset: 0x500
+      bit_size: 32
+    - name: "G2SRPUT"
+      byte_offset: 0x540
+      bit_size: 32
+    - name: "G3SRPUT"
+      byte_offset: 0x580
+      bit_size: 32
+    - name: "G4SRPUT"
+      byte_offset: 0x5c0
+      bit_size: 32
+    - name: "G5SRPUT"
+      byte_offset: 0x600
+      bit_size: 32
+    - name: "G6SRPUT"
+      byte_offset: 0x640
+      bit_size: 32
+    - name: "G7SRPUT"
+      byte_offset: 0x680
+      bit_size: 32
+    - name: "G8SRPUT"
+      byte_offset: 0x6c0
+      bit_size: 32
+    - name: "MISC_B00"
+      byte_offset: 0xb00
+      bit_size: 8
+      fieldset: "MISC_B00_REG"
+    - name: "MISC_B18"
+      byte_offset: 0xb18
+      bit_size: 32
+      fieldset: "MISC_B18_REG"
+    - name: "MIPMC3"
+      byte_offset: 0xbd8
+      bit_size: 32
+    - name: "CLKCFG"
+      byte_offset: 0xc00
+      bit_size: 32
+    - name: "UPMC1"
+      byte_offset: 0xc14
+      bit_size: 16
+    - name: "CPCTL"
+      byte_offset: 0xc16
+      bit_size: 16
+      fieldset: "CPCTL_REG"
+    - name: "SSKPD"
+      byte_offset: 0xc1c
+      bit_size: 16
+    - name: "UPMC2"
+      byte_offset: 0xc20
+      bit_size: 16
+    - name: "UPMC4"
+      byte_offset: 0xc30
+      bit_size: 32
+    - name: "PLLMON"
+      byte_offset: 0xc34
+      bit_size: 32
+    - name: "HGIPMC2"
+      byte_offset: 0xc38
+      bit_size: 32
+    - name: "DFT_STRAP1"
+      byte_offset: 0xe08
+      bit_size: 32
+    - name: "C2C3TT"
+      byte_offset: 0xf00
+      bit_size: 32
+    - name: "C3C4TT"
+      byte_offset: 0xf04
+      bit_size: 32
+    - name: "MIPMC4"
+      byte_offset: 0xf08
+      bit_size: 16
+    - name: "MIPMC5"
+      byte_offset: 0xf0a
+      bit_size: 16
+    - name: "MIPMC6"
+      byte_offset: 0xf0c
+      bit_size: 16
+    - name: "PMCFG"
+      byte_offset: 0xf10
+      bit_size: 32
+      fieldset: "PMCFG_REG"
+    - name: "SLFRCS"
+      byte_offset: 0xf14
+      bit_size: 8
+      fieldset: "SLFRCS_REG"
+    - name: "GIPMC1"
+      byte_offset: 0xfb0
+      bit_size: 32
+    - name: "FSBPMC1"
+      byte_offset: 0xfb8
+      bit_size: 32
+    - name: "UPMC3"
+      byte_offset: 0xfc0
+      bit_size: 32
+    - name: "ECO"
+      byte_offset: 0xffc
+      bit_size: 32
+      fieldset: "ECO_REG"
+block/EpBar:
+  description: "i945 egress port offsets from coreboot i945.h."
+  items:
+    - name: "EPVC0RCTL"
+      byte_offset: 0x14
+      bit_size: 32
+    - name: "EPPVCCAP1"
+      byte_offset: 0x4
+      bit_size: 32
+      fieldset: "EPPVCCAP1_REG"
+    - name: "EPVC1RCAP"
+      byte_offset: 0x1c
+      bit_size: 32
+      fieldset: "EPVC1RCAP_REG"
+    - name: "EPVC1RCTL"
+      byte_offset: 0x20
+      bit_size: 32
+      fieldset: "EPVC1RCTL_REG"
+    - name: "EPVC1RSTS"
+      byte_offset: 0x26
+      bit_size: 16
+    - name: "EPVC1MTS"
+      byte_offset: 0x28
+      bit_size: 32
+    - name: "EPVC1IST_LO"
+      byte_offset: 0x38
+      bit_size: 32
+    - name: "EPVC1IST_HI"
+      byte_offset: 0x3c
+      bit_size: 32
+    - name: "EPESD"
+      byte_offset: 0x44
+      bit_size: 32
+      fieldset: "EPESD_REG"
+    - name: "EPLE1D"
+      byte_offset: 0x50
+      bit_size: 32
+    - name: "EPLE1A"
+      byte_offset: 0x58
+      bit_size: 32
+    - name: "EPLE2D"
+      byte_offset: 0x60
+      bit_size: 32
+    - name: "PORTARB"
+      byte_offset: 0x100
+      bit_size: 32
+    - name: "VC1_MISC"
+      byte_offset: 0x2c
+      bit_size: 32
+block/DmiBar:
+  description: "i945 DMI offsets from coreboot i945.h."
+  items:
+    - name: "DMIVC0RCTL0"
+      byte_offset: 0x14
+      bit_size: 32
+    - name: "DMIPVCCAP1"
+      byte_offset: 0x4
+      bit_size: 32
+      fieldset: "DMIPVCCAP1_REG"
+    - name: "DMIVC1RCTL"
+      byte_offset: 0x20
+      bit_size: 32
+      fieldset: "DMIVC1RCTL_REG"
+    - name: "DMIVC1RSTS"
+      byte_offset: 0x26
+      bit_size: 16
+    - name: "DMILE1D"
+      byte_offset: 0x50
+      bit_size: 32
+    - name: "DMILE1A"
+      byte_offset: 0x58
+      bit_size: 32
+    - name: "DMILE2D"
+      byte_offset: 0x60
+      bit_size: 32
+    - name: "DMILE2A"
+      byte_offset: 0x68
+      bit_size: 32
+    - name: "DMILCAP"
+      byte_offset: 0x84
+      bit_size: 32
+      fieldset: "DMILCAP_REG"
+    - name: "DMILCTL"
+      byte_offset: 0x88
+      bit_size: 32
+      fieldset: "DMILCTL_REG"
+    - name: "DMICC"
+      byte_offset: 0x208
+      bit_size: 32
+      fieldset: "DMICC_REG"
+    - name: "DMICTL1"
+      byte_offset: 0xf0
+      bit_size: 32
+      fieldset: "DMICTL1_REG"
+    - name: "DMICTL2"
+      byte_offset: 0xfc
+      bit_size: 32
+      fieldset: "DMICTL2_REG"
+    - name: "DMI_UNCERRSTS"
+      byte_offset: 0x1c4
+      bit_size: 32
+    - name: "DMI_CORERRSTS"
+      byte_offset: 0x1d0
+      bit_size: 32
+    - name: "DMI_MISC_200"
+      byte_offset: 0x200
+      bit_size: 32
+    - name: "DMI_MISC_204"
+      byte_offset: 0x204
+      bit_size: 32
+    - name: "DMI_MISC_224"
+      byte_offset: 0x224
+      bit_size: 32
+    - name: "DMI_MISC_228"
+      byte_offset: 0x228
+      bit_size: 32
+    - name: "DMI_MISC_2C"
+      byte_offset: 0x2c
+      bit_size: 32
+    - name: "DMI_MISC_32"
+      byte_offset: 0x32
+      bit_size: 16
+    - name: "DMIDRCCFG"
+      byte_offset: 0xeb4
+      bit_size: 32
+      fieldset: "DMIDRCCFG_REG"
+block/PegPci:
+  description: "i945 PEG PCI configuration offsets from coreboot i945.h."
+  items:
+    - name: "SLOTSTS"
+      byte_offset: 0xba
+      bit_size: 16
+    - name: "SLOTCAP"
+      byte_offset: 0xb4
+      bit_size: 32
+    - name: "PEG_CAP"
+      byte_offset: 0xa2
+      bit_size: 16
+    - name: "PEG_LC"
+      byte_offset: 0xec
+      bit_size: 16
+    - name: "PEGTC"
+      byte_offset: 0x204
+      bit_size: 32
+    - name: "PEGSTS"
+      byte_offset: 0x214
+      bit_size: 32
+    - name: "PEGCC"
+      byte_offset: 0x208
+      bit_size: 32
+    - name: "LE1D"
+      byte_offset: 0x150
+      bit_size: 32
+    - name: "LE1A"
+      byte_offset: 0x158
+      bit_size: 32
+    - name: "VC0RCTL"
+      byte_offset: 0x114
+      bit_size: 32
+    - name: "PVCCAP1"
+      byte_offset: 0x104
+      bit_size: 32
+block/IgdPci:
+  description: "i945 IGD PCI configuration offsets."
+  items:
+    - name: "IGD_BSM"
+      byte_offset: 0x5c
+      bit_size: 32
+    - name: "IGD_GCFC"
+      byte_offset: 0xf0
+      bit_size: 16
+    - name: "IGD_MSAC"
+      byte_offset: 0x62
+      bit_size: 8
+    - name: "IGD_GDRST"
+      byte_offset: 0xc0
+      bit_size: 8
+    - name: "IGD_LBB"
+      byte_offset: 0xf4
+      bit_size: 8
+block/Panel:
+  description: "Gen3 panel MMIO offsets shared with later GMCH parts."
+  items:
+    - name: "PP_ON_DELAYS"
+      byte_offset: 0x61208
+      bit_size: 32
+    - name: "PP_OFF_DELAYS"
+      byte_offset: 0x6120c
+      bit_size: 32
+    - name: "PP_DIVISOR"
+      byte_offset: 0x61210
+      bit_size: 32
+    - name: "BLC_PWM_CTL"
+      byte_offset: 0x61254
+      bit_size: 32
+enum/DCC_REG_COMMAND:
+  bit_size: 3
+  variants:
+    - name: "Nop"
+      value: 1
+    - name: "Precharge"
+      value: 2
+    - name: "Mrs"
+      value: 3
+    - name: "Emrs"
+      value: 4
+    - name: "Cbr"
+      value: 6
+    - name: "Normal"
+      value: 7
+fieldset/DCC_REG:
+  bit_size: 32
+  fields:
+    - name: "COMMAND"
+      bit_offset: 16
+      bit_size: 3
+      enum: "DCC_REG_COMMAND"
+    - name: "INIT_COMPLETE"
+      bit_offset: 19
+      bit_size: 1
+    - name: "XOR_EN"
+      bit_offset: 9
+      bit_size: 1
+    - name: "XOR_DIS"
+      bit_offset: 10
+      bit_size: 1
+  description: "DRAM Controller Control (MCHBAR DCC, 0x200)."
+fieldset/DRT0_REG:
+  bit_size: 32
+  fields:
+    - name: "B2B_W_PCHG"
+      bit_offset: 28
+      bit_size: 4
+      description: >-
+        B2B write precharge, same bank: CL-1 + BL/2 + tWR (max ~13).
+    - name: "B2B_W2R"
+      bit_offset: 24
+      bit_size: 4
+      description: "B2B write-to-read spacing: CL-1 + BL/2 + tWTR (max ~11)."
+    - name: "FIXED"
+      bit_offset: 16
+      bit_size: 8
+      description: "Fixed per coreboot: (1<<22)|(3<<20)|(1<<18)."
+    - name: "TRD"
+      bit_offset: 11
+      bit_size: 4
+      description: >-
+        tRD delay on the FSB in mclk domain: CAS + FSB bump (max ~8).
+    - name: "W_AUTO_PCHG"
+      bit_offset: 4
+      bit_size: 5
+      description: "Write auto-precharge, same bank: + tRP (max ~19)."
+    - name: "R_AP_TO_ACT"
+      bit_offset: 0
+      bit_size: 8
+      description: "Read auto-precharge to activate: fixed 8."
+  description: "DRAM Timing 0 (CxDRT0): read-to-write and tRD assembly."
+fieldset/DRT1_REG:
+  bit_size: 32
+  fields:
+    - name: "PAGE"
+      bit_offset: 30
+      bit_size: 2
+      description: "Page-size selector: 0, 1, or 2."
+    - name: "TRTP_667"
+      bit_offset: 28
+      bit_size: 1
+      description: "Read-to-precharge at 667 MHz."
+    - name: "RCVEN_COARSE"
+      bit_offset: 24
+      bit_size: 4
+      description: "Receive-enable coarse delay (training)."
+    - name: "TRAS"
+      bit_offset: 19
+      bit_size: 8
+      description: "Activate to precharge: tras (capped at 0x18)."
+    - name: "CAS"
+      bit_offset: 8
+      bit_size: 3
+      description: "CAS latency encoding (cas_table value 0-3)."
+    - name: "TRCD"
+      bit_offset: 4
+      bit_size: 3
+      description: "RAS-to-CAS delay: trcd - 2 (max 4)."
+    - name: "TRP"
+      bit_offset: 0
+      bit_size: 3
+      description: "RAS precharge: trp - 2 (max 4)."
+  description: "DRAM Timing 1 (CxDRT1): CAS/RAS assembly."
+fieldset/DRT3_REG:
+  bit_size: 32
+  fields:
+    - name: "US_HI"
+      bit_offset: 16
+      bit_size: 8
+      description: "High byte of the 1us field (table constant)."
+    - name: "US_LO"
+      bit_offset: 10
+      bit_size: 6
+      description: "Low nibble-ish of the 1us field (table constant)."
+    - name: "REF_MINUS_TRFC"
+      bit_offset: 0
+      bit_size: 9
+      description: "788ns minus tRFC, masked to 9 bits at the use site."
+  description: "DRAM Timing 3 (CxDRT3): refresh-window assembly."
+fieldset/DRC0_REG:
+  bit_size: 32
+  fields:
+    - name: "SC1_SECOND_DIMM"
+      bit_offset: 15
+      bit_size: 1
+      description: "Single-channel-0 second-DIMM present path."
+    - name: "REFRESH"
+      bit_offset: 8
+      bit_size: 3
+      description: "Refresh rate: 1 = 15.6us, 2 = 7.8us."
+    - name: "BURST8"
+      bit_offset: 2
+      bit_size: 1
+      description: "Burst length 8."
+  description: "DRAM Controller 0 (CxDRC0)."
+fieldset/DRC1_REG:
+  bit_size: 32
+  fields:
+    - name: "XOR_MODE"
+      bit_offset: 24
+      bit_size: 8
+      description: "Channel XOR mode (enhanced addressing)."
+    - name: "CKE"
+      bit_offset: 11
+      bit_size: 2
+      description: "CKE control pair (programmed to 3 by CKE/PM setup)."
+    - name: "IO_BUF_EN"
+      bit_offset: 8
+      bit_size: 1
+      description: "Channel IO buffer enable."
+    - name: "RCVEN_TOGGLE"
+      bit_offset: 6
+      bit_size: 1
+      description: "Receive-enable toggle strobe."
+  description: "DRAM Controller 1 (CxDRC1)."
+fieldset/WCC_REG:
+  bit_size: 32
+  fields:
+    - name: "WRITE_DIS"
+      bit_offset: 29
+      bit_size: 3
+    - name: "READ_DIS"
+      bit_offset: 25
+      bit_size: 2
+    - name: "POSTED_WRITE"
+      bit_offset: 10
+      bit_size: 1
+  description: "Write Control (MCHBAR WCC, 0x218)."
+fieldset/GBRCOMPCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "RCOMP_DONE"
+      bit_offset: 29
+      bit_size: 1
+    - name: "RCOMP_CFG27"
+      bit_offset: 27
+      bit_size: 2
+    - name: "RCOMP_CFG26"
+      bit_offset: 26
+      bit_size: 1
+    - name: "RCOMP_CFG21"
+      bit_offset: 21
+      bit_size: 2
+    - name: "PERIODIC_DIS"
+      bit_offset: 23
+      bit_size: 1
+    - name: "RCOMP_FORCE"
+      bit_offset: 8
+      bit_size: 1
+    - name: "RCOMP_ALT"
+      bit_offset: 5
+      bit_size: 2
+    - name: "RCOMP_DONE_FLAG"
+      bit_offset: 10
+      bit_size: 1
+    - name: "RCOMP_CFG2"
+      bit_offset: 2
+      bit_size: 2
+    - name: "RCOMP_EN"
+      bit_offset: 0
+      bit_size: 2
+  description: "Global RCOMP Control (MCHBAR GBRCOMPCTL, 0x400)."
+fieldset/SBOCC_REG:
+  bit_size: 32
+  fields:
+    - name: "OCC_TIMER"
+      bit_offset: 8
+      bit_size: 16
+    - name: "OCC_EN"
+      bit_offset: 0
+      bit_size: 1
+  description: "Scheduler Buffer/OCC config (MCHBAR SBOCC, 0x238)."
+fieldset/ODTC_REG:
+  bit_size: 32
+  fields:
+    - name: "RCOMP_FORCE_ODT"
+      bit_offset: 28
+      bit_size: 1
+    - name: "ODT_MODE"
+      bit_offset: 16
+      bit_size: 2
+    - name: "ODT_EN"
+      bit_offset: 14
+      bit_size: 1
+    - name: "ODT_REF"
+      bit_offset: 6
+      bit_size: 1
+  description: "ODT Control (MCHBAR ODTC, 0x284)."
+fieldset/RCVENMT_REG:
+  bit_size: 32
+  fields:
+    - name: "CH0_EN"
+      bit_offset: 11
+      bit_size: 1
+    - name: "CH0_MED"
+      bit_offset: 9
+      bit_size: 1
+    - name: "CH0_MEDIUM"
+      bit_offset: 2
+      bit_size: 2
+    - name: "CH1_MEDIUM"
+      bit_offset: 0
+      bit_size: 2
+  description: "Receive-Enable Mode (MCHBAR RCVENMT, 0x2f8)."
+fieldset/DRTST_REG:
+  bit_size: 32
+  fields:
+    - name: "CH0_EMPTY"
+      bit_offset: 31
+      bit_size: 1
+    - name: "CH1_EMPTY"
+      bit_offset: 30
+      bit_size: 1
+    - name: "CH1_IO0"
+      bit_offset: 9
+      bit_size: 1
+    - name: "CH1_IO1"
+      bit_offset: 8
+      bit_size: 1
+    - name: "CH0_IO0"
+      bit_offset: 7
+      bit_size: 1
+    - name: "CH0_IO1"
+      bit_offset: 5
+      bit_size: 1
+    - name: "TEST_EN"
+      bit_offset: 6
+      bit_size: 1
+    - name: "TEST_MODE"
+      bit_offset: 4
+      bit_size: 1
+    - name: "IO_EN"
+      bit_offset: 3
+      bit_size: 1
+    - name: "IO_MODE"
+      bit_offset: 2
+      bit_size: 1
+  description: "DRAM Test (MCHBAR DRTST, 0x2a8)."
+fieldset/EPVC1RCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "VC_EN"
+      bit_offset: 31
+      bit_size: 1
+    - name: "VC_ID"
+      bit_offset: 24
+      bit_size: 3
+    - name: "ARB_LOAD"
+      bit_offset: 16
+      bit_size: 1
+    - name: "VC_ARB"
+      bit_offset: 7
+      bit_size: 1
+    - name: "TC_VC_MAP"
+      bit_offset: 1
+      bit_size: 7
+    - name: "TC0_VC"
+      bit_offset: 0
+      bit_size: 1
+  description: "Egress VC1 control (EPBAR EPVC1RCTL, 0x20)."
+fieldset/DMIVC1RCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "VC_EN"
+      bit_offset: 31
+      bit_size: 1
+    - name: "VC_ID"
+      bit_offset: 24
+      bit_size: 3
+    - name: "VC_ARB"
+      bit_offset: 7
+      bit_size: 1
+    - name: "TC_VC_MAP"
+      bit_offset: 1
+      bit_size: 7
+    - name: "TC0_VC"
+      bit_offset: 0
+      bit_size: 1
+  description: "DMI VC1 control (DMIBAR DMIVC1RCTL, 0x20)."
+fieldset/DMILCAP_REG:
+  bit_size: 32
+  fields:
+    - name: "L1_EXIT_LAT"
+      bit_offset: 15
+      bit_size: 3
+    - name: "L0S_EXIT_LAT"
+      bit_offset: 12
+      bit_size: 3
+  description: "DMI link capabilities (DMIBAR DMILCAP, 0x84)."
+fieldset/DMICC_REG:
+  bit_size: 32
+  fields:
+    - name: "VC1_EN"
+      bit_offset: 20
+      bit_size: 2
+    - name: "VC0_EN"
+      bit_offset: 0
+      bit_size: 2
+  description: "DMI chip control (DMIBAR DMICC, 0x208)."
+fieldset/FSBPMC3_REG:
+  bit_size: 32
+  fields:
+    - name: "DIS_QPML"
+      bit_offset: 29
+      bit_size: 1
+    - name: "PM_ENABLE"
+      bit_offset: 21
+      bit_size: 1
+    - name: "FAST_DISPATCH"
+      bit_offset: 19
+      bit_size: 1
+    - name: "GM_ERRATA"
+      bit_offset: 13
+      bit_size: 1
+    - name: "PROC_SIDE"
+      bit_offset: 2
+      bit_size: 1
+    - name: "FAST_DISPATCH_EN"
+      bit_offset: 1
+      bit_size: 1
+  description: "FSB power management 3 (MCHBAR FSBPMC3, 0x40)."
+fieldset/FSBPMC4_REG:
+  bit_size: 32
+  fields:
+    - name: "PM_MODE"
+      bit_offset: 24
+      bit_size: 2
+    - name: "PM_EN21"
+      bit_offset: 21
+      bit_size: 1
+    - name: "PM_EN5"
+      bit_offset: 5
+      bit_size: 1
+    - name: "PM_POLARITY"
+      bit_offset: 4
+      bit_size: 1
+  description: "FSB power management 4 (MCHBAR FSBPMC4, 0x44)."
+fieldset/PMCFG_REG:
+  bit_size: 32
+  fields:
+    - name: "PM_MODE"
+      bit_offset: 17
+      bit_size: 2
+    - name: "PM_EN"
+      bit_offset: 4
+      bit_size: 1
+  description: "Power management config (MCHBAR PMCFG, 0xf10)."
+fieldset/DMILCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "ASPM_CTRL"
+      bit_offset: 0
+      bit_size: 2
+  description: "DMI link control (DMIBAR DMILCTL, 0x88): ASPM enable."
+fieldset/DMICTL1_REG:
+  bit_size: 32
+  fields:
+    - name: "MISC_CTRL"
+      bit_offset: 24
+      bit_size: 2
+  description: "DMI control 1 (DMIBAR DMICTL1, 0xf0)."
+fieldset/DMICTL2_REG:
+  bit_size: 32
+  fields:
+    - name: "MISC_CTRL31"
+      bit_offset: 31
+      bit_size: 1
+  description: "DMI control 2 (DMIBAR DMICTL2, 0xfc)."
+fieldset/DMIDRCCFG_REG:
+  bit_size: 32
+  fields:
+    - name: "MISC_CTRL31"
+      bit_offset: 31
+      bit_size: 1
+  description: "DMI DRCCFG (DMIBAR DMIDRCCFG, 0xeb4)."
+fieldset/REPC_REG:
+  bit_size: 32
+  fields:
+    - name: "RCVEN_EN"
+      bit_offset: 0
+      bit_size: 1
+  description: "Receive-Enable Phase Control (MCHBAR REPC, 0x2e0)."
+fieldset/SMVREFC_REG:
+  bit_size: 32
+  fields:
+    - name: "SMVREF_EN"
+      bit_offset: 6
+      bit_size: 1
+  description: "SM Voltage Reference Control (MCHBAR SMVREFC, 0x2a0)."
+fieldset/SMSRCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "SM_RCOMP_EN"
+      bit_offset: 0
+      bit_size: 1
+  description: "SMS RCOMP Control (MCHBAR SMSRCTL, 0x408)."
+fieldset/ECO_REG:
+  bit_size: 32
+  fields:
+    - name: "ECO_BIT16"
+      bit_offset: 16
+      bit_size: 1
+  description: "ECO strapping (MCHBAR ECO, 0xffc)."
+fieldset/MISC_B18_REG:
+  bit_size: 32
+  fields:
+    - name: "MISC_CTRL21"
+      bit_offset: 21
+      bit_size: 1
+  description: "Misc BAR 0x0b18 (MCHBAR)."
+fieldset/SLPCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "SLPCTL_B8"
+      bit_offset: 8
+      bit_size: 1
+  description: "Sleep Control (MCHBAR SLPCTL, 0x90, rev A0)."
+fieldset/DMC_REG:
+  bit_size: 32
+  fields:
+    - name: "PWR_DOWN_ACPI"
+      bit_offset: 24
+      bit_size: 1
+  description: "DRAM Controller power-down (MCHBAR CxDMC, 0x164)."
+fieldset/EPPVCCAP1_REG:
+  bit_size: 32
+  fields:
+    - name: "VC_COUNT"
+      bit_offset: 0
+      bit_size: 3
+  description: "Egress port VC capability 1 (EPBAR EPPVCCAP1, 0x04)."
+fieldset/EPVC1RCAP_REG:
+  bit_size: 32
+  fields:
+    - name: "VC1_MTS"
+      bit_offset: 16
+      bit_size: 7
+  description: "Egress VC1 resource capability (EPBAR EPVC1RCAP, 0x1c)."
+fieldset/DMIPVCCAP1_REG:
+  bit_size: 32
+  fields:
+    - name: "VC_COUNT"
+      bit_offset: 0
+      bit_size: 3
+  description: "DMI VC capability 1 (DMIBAR DMIPVCCAP1, 0x04)."
+fieldset/FSBSNPCTL_REG:
+  bit_size: 32
+  fields:
+    - name: "SNP_MODE"
+      bit_offset: 2
+      bit_size: 8
+  description: "FSB snoop control (MCHBAR FSBSNPCTL, 0x48)."
+fieldset/EPESD_REG:
+  bit_size: 32
+  fields:
+    - name: "COMP_ID"
+      bit_offset: 16
+      bit_size: 8
+  description: "Egress port element self-description (EPBAR EPESD, 0x44)."
+fieldset/DRT2_REG:
+  bit_size: 32
+  fields:
+    - name: "CKE_IDLE"
+      bit_offset: 4
+      bit_size: 2
+    - name: "TIMER_LO"
+      bit_offset: 0
+      bit_size: 8
+  description: "DRAM Timing 2 (CxDRT2): idle timers in the low byte."
+fieldset/CPCTL_REG:
+  bit_size: 16
+  fields:
+    - name: "PM_DIV"
+      bit_offset: 11
+      bit_size: 3
+    - name: "PM_UPDATE"
+      bit_offset: 10
+      bit_size: 1
+  description: "Clock control for power, PM divider (MCHBAR CPCTL, 0xc16)."
+fieldset/DQSMT_REG:
+  bit_size: 16
+  fields:
+    - name: "DQSMT_B13"
+      bit_offset: 13
+      bit_size: 1
+    - name: "DQSMT_B12"
+      bit_offset: 12
+      bit_size: 1
+    - name: "DQSMT_B10"
+      bit_offset: 10
+      bit_size: 1
+    - name: "DQSMT_LO"
+      bit_offset: 0
+      bit_size: 4
+  description: |-
+    DQ Sense Max Threshold (MCHBAR DQSMT, 0x2f4).
+    Programmed bit-exact: clear {13,12,10,3..0}, set {13,3,2}.
+fieldset/MISC_B00_REG:
+  bit_size: 8
+  fields:
+    - name: "PROC_SIDE_INIT"
+      bit_offset: 0
+      bit_size: 1
+  description: "Misc BAR 0x0b00 (MCHBAR): processor-side init bit."
+fieldset/HCTC_REG:
+  bit_size: 8
+  fields:
+    - name: "HCTC_MODE"
+      bit_offset: 0
+      bit_size: 5
+  description: "Host Clock Timing Control (MCHBAR CxHCTC, 8-bit)."
+fieldset/SLFRCS_REG:
+  bit_size: 8
+  fields:
+    - name: "SR_CH1"
+      bit_offset: 1
+      bit_size: 1
+    - name: "SR_CH0"
+      bit_offset: 0
+      bit_size: 1
+  description: "Self-refresh status clear (MCHBAR SLFRCS, 8-bit)."
+fieldset/GGC_REG:
+  bit_size: 16
+  fields:
+    - name: "GMS"
+      bit_offset: 4
+      bit_size: 3
+    - name: "RAW"
+      bit_offset: 0
+      bit_size: 16
+fieldset/DEVEN_REG:
+  bit_size: 16
+  fields:
+    - name: "D0F0"
+      bit_offset: 0
+      bit_size: 1
+    - name: "D1F0"
+      bit_offset: 1
+      bit_size: 1
+    - name: "D2F0"
+      bit_offset: 3
+      bit_size: 1
+    - name: "D2F1"
+      bit_offset: 4
+      bit_size: 1
+    - name: "RAW"
+      bit_offset: 0
+      bit_size: 16
+fieldset/TOM_REG:
+  bit_size: 16
+  fields:
+    - name: "RAW"
+      bit_offset: 0
+      bit_size: 16

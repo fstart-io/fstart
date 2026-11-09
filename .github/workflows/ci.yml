@@ -92,6 +92,9 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Register definitions
+        run: cargo register-gen --check
+
       - name: Tests
         env:
           RUST_MIN_STACK: 8388608
