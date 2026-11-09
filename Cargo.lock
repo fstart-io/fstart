@@ -1569,9 +1569,14 @@ dependencies = [
 name = "fstart-platform-spacemit"
 version = "0.1.0"
 dependencies = [
+ "fstart-arch",
  "fstart-core",
+ "fstart-driver-uart",
  "fstart-image-build",
+ "fstart-log",
+ "fstart-stage",
  "serde_json",
+ "ufmt",
 ]
 
 [[package]]

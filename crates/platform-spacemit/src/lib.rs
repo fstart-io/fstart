@@ -8,6 +8,17 @@
 pub mod facts;
 #[cfg(feature = "host")]
 pub mod host;
+#[cfg(all(feature = "stage", feature = "k3", target_arch = "riscv64"))]
+pub mod k3;
 
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_stage as stage_runtime;
 #[cfg(feature = "host")]
 pub use host::Plan;
+
+/// Declare a board's stage `main`: `entry!(main);`.
+#[macro_export]
+macro_rules! entry {
+    ($main:path) => { $crate::stage_runtime::stage_bin!(main: $main); };
+}
