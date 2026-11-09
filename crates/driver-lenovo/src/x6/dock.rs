@@ -163,6 +163,7 @@ fn dlpc_gpio_init() {
 /// Initialize the laptop-side DLPC switch and its GPIO block. Required even
 /// when undocked: the switch is what isolates the dock LPC segment.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(clippy::result_unit_err)] // no data to carry; callers retry or fail the stage
 pub fn dlpc_init() -> Result<(), ()> {
     // Enable the 14.318 MHz clock on CLKIN.
     dlpc_write(0x29, 0xa0);
@@ -177,6 +178,7 @@ pub fn dlpc_init() -> Result<(), ()> {
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+#[allow(clippy::result_unit_err)] // no data to carry; callers retry or fail the stage
 pub fn dlpc_init() -> Result<(), ()> {
     Ok(())
 }
@@ -201,6 +203,7 @@ pub fn connected() -> bool {
 
 /// Connect the dock-side LPC bus and initialize dock GPIO, power and LDNs.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(clippy::result_unit_err)] // no data to carry; callers retry or fail the stage
 pub fn connect(ec: Ec) -> Result<(), ()> {
     // Start from the vendor state: dock reset asserted and DLPC powered down,
     // preserving unrelated DLPC GPIO outputs. The dock UART sits behind this
@@ -276,6 +279,7 @@ pub fn connect(ec: Ec) -> Result<(), ()> {
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+#[allow(clippy::result_unit_err)] // no data to carry; callers retry or fail the stage
 pub fn connect(_ec: Ec) -> Result<(), ()> {
     Ok(())
 }

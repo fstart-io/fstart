@@ -141,7 +141,9 @@ fn directories_and_copy_to_dram() {
         fletcher32(&packed.bytes[start + 8..start + 16 + count * 24])
     );
     let entries: Vec<_> = packed.bytes[start + 16..start + 16 + count * 24]
-        .chunks_exact(24)
+        .as_chunks::<24>()
+        .0
+        .iter()
         .map(|b| BiosEntry::read_from_bytes(b).unwrap())
         .collect();
     let bin = entries.iter().find(|e| e.kind == 0x62).unwrap();

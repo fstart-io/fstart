@@ -724,12 +724,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             if let Some(p) = linux {
                 regions.push(span(p.kernel_addr, p.kernel_capacity).region(Kind::Payload));
             }
-            if keep_firmware {
-                if let Some(p) = &policy.linux {
-                    regions.push(
-                        span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware),
-                    );
-                }
+            if keep_firmware && let Some(p) = &policy.linux {
+                regions
+                    .push(span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware));
             }
             if let Some(dtb) = dtb {
                 regions.push(dtb.region(Kind::DeviceTree));
@@ -1271,7 +1268,8 @@ mod tests {
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));
         assert!(payload.firmware.is_none());
         assert!(uefi.inputs.is_empty());
-        for machine in [VirtMachine::SifiveU] {
+        {
+            let machine = VirtMachine::SifiveU;
             // The legacy Linux defaults survive: kernel plus OpenSBI firmware
             // at the historic DRAM addresses with the SIF0 bootargs.
             let linux = resolve(

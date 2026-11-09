@@ -38,11 +38,16 @@ const DISCONNECTED_LEDS: [(H8Led, H8LedMode); 2] = [
     (H8Led::Dock1, H8LedMode::Off),
 ];
 
-fn set_dock_leds(h8: &H8, commands: [(H8Led, H8LedMode); 2]) -> bool {
-    commands
-        .into_iter()
-        .map(|(led, mode)| h8.set_led(led, mode))
-        .fold(true, |ok, acknowledged| acknowledged && ok)
+fn set_dock_leds(
+    mut set_led: impl FnMut(H8Led, H8LedMode) -> bool,
+    commands: [(H8Led, H8LedMode); 2],
+) -> bool {
+    let mut acknowledged = true;
+    for (led, mode) in commands {
+        // Always update both indicators, even after an EC timeout.
+        acknowledged &= set_led(led, mode);
+    }
+    acknowledged
 }
 const DLPC_INDEX: u16 = 0x164e;
 const DLPC_SWITCH: u16 = 0x164c;
@@ -275,7 +280,7 @@ pub fn mainstage_power_policy(ec: Ec, config: &H8Config, legacy: bool) -> bool {
             if power { H8LedMode::On } else { H8LedMode::Off },
         ),
         set_dock_leds(
-            &h8,
+            |led, mode| h8.set_led(led, mode),
             if connected() {
                 CONNECTED_LEDS
             } else {
@@ -308,12 +313,15 @@ pub fn smm_dock_command(ec: Ec, command: u8, legacy: bool) -> Option<u8> {
             // establish clock, GPIO decode and pin modes again, not manufacture
             // a handle that bypasses a failed boot-stage initialization.
             let success = initialize_dlpc().and_then(|gpio| connect(&gpio)).is_ok();
-            let leds = set_dock_leds(&h8, if success { CONNECTED_LEDS } else { FAILED_LEDS });
+            let leds = set_dock_leds(
+                |led, mode| h8.set_led(led, mode),
+                if success { CONNECTED_LEDS } else { FAILED_LEDS },
+            );
             Some(u8::from(success && leds))
         }
         SMI_DOCK_DISCONNECT => {
             let success = disconnect().is_ok();
-            let leds = set_dock_leds(&h8, DISCONNECTED_LEDS);
+            let leds = set_dock_leds(|led, mode| h8.set_led(led, mode), DISCONNECTED_LEDS);
             Some(u8::from(success && leds))
         }
         SMI_DOCK_STATUS => Some(u8::from(!legacy && connected())),
@@ -324,6 +332,29 @@ pub fn smm_dock_command(ec: Ec, command: u8, legacy: bool) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dock_leds_attempt_both_commands_after_a_failed_write() {
+        for commands in [CONNECTED_LEDS, FAILED_LEDS, IDLE_LEDS, DISCONNECTED_LEDS] {
+            for failures in 0..4 {
+                let mut writes = 0;
+                let acknowledged = set_dock_leds(
+                    |led, mode| {
+                        let expected = commands[writes];
+                        assert_eq!(led as u8, expected.0 as u8);
+                        assert_eq!(mode as u8, expected.1 as u8);
+                        let success = failures & (1 << writes) == 0;
+                        writes += 1;
+                        success
+                    },
+                    commands,
+                );
+                assert_eq!(writes, commands.len(), "failure mask {failures}");
+                assert_eq!(acknowledged, failures == 0);
+            }
+        }
+    }
+
     #[test]
     fn dock_indicator_commands_match_the_t60_ec_bytes() {
         use crate::h8::LED_CONTROL;

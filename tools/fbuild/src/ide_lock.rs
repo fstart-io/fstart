@@ -64,45 +64,6 @@ fn normalized(graph: &Value) -> Result<Value, String> {
     Ok(json!({"roots":roots, "units":result}))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn graph_agreement_ignores_workspace_aliases_and_order_but_checks_edges_and_features() {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ide_lock.rs");
-        let leaf = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
-        let original = json!({"version":1,"roots":[0],"units":[
-            {"pkg_id":"selected-root", "target":{"src_path":source}, "features":["a"],
-             "dependencies":[{"index":1,"extern_crate_name":"leaf","noprelude":false}]},
-            {"pkg_id":"selected-leaf", "target":{"src_path":leaf}, "features":[], "dependencies":[]}
-        ]});
-        let mut reordered = original.clone();
-        reordered["units"].as_array_mut().unwrap().swap(0, 1);
-        reordered["roots"] = json!([1]);
-        reordered["units"][1]["pkg_id"] = json!("inventory-root");
-        reordered["units"][1]["target"]["src_path"] =
-            json!(source.parent().unwrap().join("../src/ide_lock.rs"));
-        reordered["units"][1]["dependencies"][0]["index"] = json!(0);
-        assert_eq!(
-            normalized(&original).unwrap(),
-            normalized(&reordered).unwrap()
-        );
-        let mut changed = reordered.clone();
-        changed["units"][1]["features"] = json!(["b"]);
-        assert_ne!(
-            normalized(&original).unwrap(),
-            normalized(&changed).unwrap()
-        );
-        changed = reordered;
-        changed["units"][1]["dependencies"][0]["extern_crate_name"] = json!("other");
-        assert_ne!(
-            normalized(&original).unwrap(),
-            normalized(&changed).unwrap()
-        );
-    }
-}
-
 pub(crate) fn audit(root: &Path, selection: &Selection) -> Result<Value, String> {
     let boards = crate::board_manifest::discover(root)?;
     let directory = crate::build_board::prepare_inventory_workspace(root, &boards)?;
@@ -171,4 +132,43 @@ pub(crate) fn audit(root: &Path, selection: &Selection) -> Result<Value, String>
         ));
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_agreement_ignores_workspace_aliases_and_order_but_checks_edges_and_features() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ide_lock.rs");
+        let leaf = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let original = json!({"version":1,"roots":[0],"units":[
+            {"pkg_id":"selected-root", "target":{"src_path":source}, "features":["a"],
+             "dependencies":[{"index":1,"extern_crate_name":"leaf","noprelude":false}]},
+            {"pkg_id":"selected-leaf", "target":{"src_path":leaf}, "features":[], "dependencies":[]}
+        ]});
+        let mut reordered = original.clone();
+        reordered["units"].as_array_mut().unwrap().swap(0, 1);
+        reordered["roots"] = json!([1]);
+        reordered["units"][1]["pkg_id"] = json!("inventory-root");
+        reordered["units"][1]["target"]["src_path"] =
+            json!(source.parent().unwrap().join("../src/ide_lock.rs"));
+        reordered["units"][1]["dependencies"][0]["index"] = json!(0);
+        assert_eq!(
+            normalized(&original).unwrap(),
+            normalized(&reordered).unwrap()
+        );
+        let mut changed = reordered.clone();
+        changed["units"][1]["features"] = json!(["b"]);
+        assert_ne!(
+            normalized(&original).unwrap(),
+            normalized(&changed).unwrap()
+        );
+        changed = reordered;
+        changed["units"][1]["dependencies"][0]["extern_crate_name"] = json!("other");
+        assert_ne!(
+            normalized(&original).unwrap(),
+            normalized(&changed).unwrap()
+        );
+    }
 }

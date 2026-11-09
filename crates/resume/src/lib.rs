@@ -50,6 +50,7 @@ fn entry_media(store: &Store, entry: &fstart_store::Entry) -> MemoryMapped<Linea
 /// # Safety
 /// As [`fstart_load::load_bootstrap`]: `policy` describes exclusive writable
 /// RAM, and its reservations exclude live code, stack, heap and the store.
+#[allow(clippy::too_many_arguments)] // the loader takes the stage and its policy
 pub unsafe fn load_stage(
     media: &(impl BootMedia + ?Sized),
     stage: CachedStage,

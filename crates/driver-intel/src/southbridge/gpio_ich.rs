@@ -604,6 +604,48 @@ impl IchGpio {
     pub fn invert(&self, _pin: u8, _enable: bool) {}
 }
 
+/// One ICH GPIO. Configuration (mode, direction, reset) comes from the
+/// chipset's [`GpioConfig`]; this only reads and drives the level.
+#[derive(Debug, Clone, Copy)]
+pub struct IchPin {
+    gpio: IchGpio,
+    pin: u8,
+}
+
+impl IchPin {
+    /// The GPIO number.
+    #[must_use]
+    pub const fn number(&self) -> u8 {
+        self.pin
+    }
+}
+
+impl embedded_hal::digital::ErrorType for IchPin {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::digital::InputPin for IchPin {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(self.gpio.get(self.pin))
+    }
+
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!self.gpio.get(self.pin))
+    }
+}
+
+impl embedded_hal::digital::OutputPin for IchPin {
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.gpio.set(self.pin, true);
+        Ok(())
+    }
+
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.gpio.set(self.pin, false);
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -766,50 +808,8 @@ mod tests {
             reset: GpioReset::Pwrok,
         });
         let regs = GpioRegisters::from_config(&cfg);
-        for i in 0..3 {
-            assert_eq!(regs.use_sel[i], 0);
+        for selection in &regs.use_sel {
+            assert_eq!(*selection, 0);
         }
-    }
-}
-
-/// One ICH GPIO. Configuration (mode, direction, reset) comes from the
-/// chipset's [`GpioConfig`]; this only reads and drives the level.
-#[derive(Debug, Clone, Copy)]
-pub struct IchPin {
-    gpio: IchGpio,
-    pin: u8,
-}
-
-impl IchPin {
-    /// The GPIO number.
-    #[must_use]
-    pub const fn number(&self) -> u8 {
-        self.pin
-    }
-}
-
-impl embedded_hal::digital::ErrorType for IchPin {
-    type Error = core::convert::Infallible;
-}
-
-impl embedded_hal::digital::InputPin for IchPin {
-    fn is_high(&mut self) -> Result<bool, Self::Error> {
-        Ok(self.gpio.get(self.pin))
-    }
-
-    fn is_low(&mut self) -> Result<bool, Self::Error> {
-        Ok(!self.gpio.get(self.pin))
-    }
-}
-
-impl embedded_hal::digital::OutputPin for IchPin {
-    fn set_high(&mut self) -> Result<(), Self::Error> {
-        self.gpio.set(self.pin, true);
-        Ok(())
-    }
-
-    fn set_low(&mut self) -> Result<(), Self::Error> {
-        self.gpio.set(self.pin, false);
-        Ok(())
     }
 }

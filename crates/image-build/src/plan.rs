@@ -40,76 +40,6 @@ impl Span {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn explicit_compiler_selections_preserve_paths_and_reject_duplicates() {
-        let file = CompilerFileSelection::parse("FSTART_BYTES=/a path/bytes=1.bin").unwrap();
-        assert_eq!(file.path, "/a path/bytes=1.bin");
-        for invalid in [
-            "FILE",
-            "=file",
-            "FILE=",
-            "PATH=file",
-            "RUSTFLAGS=file",
-            "1FILE=file",
-            "FILE=bad\0path",
-        ] {
-            assert!(CompilerFileSelection::parse(invalid).is_err());
-        }
-        let mut selection = BuildSelection {
-            compiler_files: vec![file.clone()],
-            ..Default::default()
-        };
-        selection.validate_compiler_files().unwrap();
-        selection.compiler_files.push(file);
-        assert!(selection.validate_compiler_files().is_err());
-    }
-
-    #[test]
-    fn imported_ifd_rejects_overlap_duplicate_overflow_and_bad_alignment() {
-        let valid = || {
-            IfdTransport(vec![
-                (IntelIfdRegion::Descriptor, 0, 0x1000),
-                (IntelIfdRegion::Gbe, 0x1000, 0x2000),
-                (IntelIfdRegion::Me, 0x3000, 0x27d000),
-                (IntelIfdRegion::Bios, 0x280000, 0x180000),
-            ])
-        };
-        let layout = valid().decode().unwrap();
-        assert_eq!(layout.size(), 0x400000);
-        assert_eq!(layout.regions.len(), 4);
-        assert_eq!(
-            layout
-                .regions
-                .as_slice()
-                .iter()
-                .map(|r| r.kind)
-                .collect::<Vec<_>>(),
-            vec![
-                IntelIfdRegion::Descriptor,
-                IntelIfdRegion::Gbe,
-                IntelIfdRegion::Me,
-                IntelIfdRegion::Bios
-            ]
-        );
-        assert_eq!(IfdTransport::from(layout).0, valid().0);
-        let mut bad = valid();
-        bad.0[0].1 = 0x1000;
-        assert!(bad.decode().unwrap_err().contains("overlap"));
-        let mut bad = valid();
-        bad.0.push(bad.0[0]);
-        assert!(bad.decode().unwrap_err().contains("duplicate"));
-        let mut bad = valid();
-        bad.0[1].1 = 0xfffff000;
-        assert!(bad.decode().is_err());
-        let mut bad = valid();
-        bad.0[1].1 += 1;
-        assert!(bad.decode().is_err());
-    }
-}
-
 /// Explicit consuming-compiler namespace and source path, not an ambient value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilerFileSelection {
@@ -381,7 +311,7 @@ impl IntelPlan {
         if self.reservations.bootblock.image.base != firmware.base + prefix
             || firmware.size.checked_sub(prefix) != Some(self.reservations.bootblock.image.size)
             || (prefix != 0 && bios_offset % 0x10000 != 0)
-            || self.flash_console % 0x10000 != 0
+            || !self.flash_console.is_multiple_of(0x10000)
         {
             return Err("mutable cache and reset image geometry differ".into());
         }
@@ -397,4 +327,74 @@ impl IntelPlan {
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn explicit_compiler_selections_preserve_paths_and_reject_duplicates() {
+        let file = CompilerFileSelection::parse("FSTART_BYTES=/a path/bytes=1.bin").unwrap();
+        assert_eq!(file.path, "/a path/bytes=1.bin");
+        for invalid in [
+            "FILE",
+            "=file",
+            "FILE=",
+            "PATH=file",
+            "RUSTFLAGS=file",
+            "1FILE=file",
+            "FILE=bad\0path",
+        ] {
+            assert!(CompilerFileSelection::parse(invalid).is_err());
+        }
+        let mut selection = BuildSelection {
+            compiler_files: vec![file.clone()],
+            ..Default::default()
+        };
+        selection.validate_compiler_files().unwrap();
+        selection.compiler_files.push(file);
+        assert!(selection.validate_compiler_files().is_err());
+    }
+
+    #[test]
+    fn imported_ifd_rejects_overlap_duplicate_overflow_and_bad_alignment() {
+        let valid = || {
+            IfdTransport(vec![
+                (IntelIfdRegion::Descriptor, 0, 0x1000),
+                (IntelIfdRegion::Gbe, 0x1000, 0x2000),
+                (IntelIfdRegion::Me, 0x3000, 0x27d000),
+                (IntelIfdRegion::Bios, 0x280000, 0x180000),
+            ])
+        };
+        let layout = valid().decode().unwrap();
+        assert_eq!(layout.size(), 0x400000);
+        assert_eq!(layout.regions.len(), 4);
+        assert_eq!(
+            layout
+                .regions
+                .as_slice()
+                .iter()
+                .map(|r| r.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                IntelIfdRegion::Descriptor,
+                IntelIfdRegion::Gbe,
+                IntelIfdRegion::Me,
+                IntelIfdRegion::Bios
+            ]
+        );
+        assert_eq!(IfdTransport::from(layout).0, valid().0);
+        let mut bad = valid();
+        bad.0[0].1 = 0x1000;
+        assert!(bad.decode().unwrap_err().contains("overlap"));
+        let mut bad = valid();
+        bad.0.push(bad.0[0]);
+        assert!(bad.decode().unwrap_err().contains("duplicate"));
+        let mut bad = valid();
+        bad.0[1].1 = 0xfffff000;
+        assert!(bad.decode().is_err());
+        let mut bad = valid();
+        bad.0[1].1 += 1;
+        assert!(bad.decode().is_err());
+    }
 }

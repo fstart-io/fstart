@@ -296,6 +296,27 @@ fn append_entry(
     Ok(())
 }
 
+// No global e820 state: the mainstage context owns the authoritative
+// E820State and passes references to consumers. A global static would sit
+// in every stage's .bss — including bootblocks with tiny CAR windows — and
+// invited divergence between the global and per-stage copies.
+
+/// A device that can detect the system memory layout at runtime.
+pub trait MemoryDetector {
+    /// Discover memory regions and write them to `entries`.
+    ///
+    /// Returns the number of entries written. The caller provides a
+    /// buffer of at least 128 entries (the x86 e820 protocol maximum).
+    fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError>;
+
+    /// Return the total usable RAM in bytes.
+    ///
+    /// This is the sum of all `E820Kind::Ram` regions. Implementations
+    /// may compute this from `detect_memory()` results or from a
+    /// separate query (e.g., fw_cfg `FW_CFG_RAM_SIZE`).
+    fn total_ram_bytes(&self) -> Result<u64, ServiceError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,25 +395,4 @@ mod tests {
             ]
         );
     }
-}
-
-// No global e820 state: the mainstage context owns the authoritative
-// E820State and passes references to consumers. A global static would sit
-// in every stage's .bss — including bootblocks with tiny CAR windows — and
-// invited divergence between the global and per-stage copies.
-
-/// A device that can detect the system memory layout at runtime.
-pub trait MemoryDetector {
-    /// Discover memory regions and write them to `entries`.
-    ///
-    /// Returns the number of entries written. The caller provides a
-    /// buffer of at least 128 entries (the x86 e820 protocol maximum).
-    fn detect_memory(&self, entries: &mut [E820Entry]) -> Result<usize, ServiceError>;
-
-    /// Return the total usable RAM in bytes.
-    ///
-    /// This is the sum of all `E820Kind::Ram` regions. Implementations
-    /// may compute this from `detect_memory()` results or from a
-    /// separate query (e.g., fw_cfg `FW_CFG_RAM_SIZE`).
-    fn total_ram_bytes(&self) -> Result<u64, ServiceError>;
 }

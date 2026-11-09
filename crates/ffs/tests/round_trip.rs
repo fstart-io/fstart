@@ -130,7 +130,7 @@ fn test_ro_only_round_trip() {
 fn test_multi_segment_file() {
     let (signing_key, vk) = dev_keypair();
 
-    let text_data = stage_data_with_anchor(&vec![0x01; 64]); // code with anchor
+    let text_data = stage_data_with_anchor(&[0x01; 64]); // code with anchor
     let rodata = vec![0x02; 32]; // read-only data
     let data = vec![0x03; 16]; // read-write data
 

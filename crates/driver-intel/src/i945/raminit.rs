@@ -1389,6 +1389,7 @@ fn enable_system_memory_io(ctx: &Ctx<'_>, sys: &SysInfo) {
 }
 
 /// Program DRB/TOLUD/TOM (`sdram_program_row_boundaries`).
+#[allow(clippy::needless_range_loop)] // the index is the bank and its register offset
 fn program_row_boundaries(ctx: &Ctx<'_>, sys: &SysInfo) {
     let mut cum0 = 0u32;
     for i in 0..4 {
@@ -1486,6 +1487,7 @@ fn program_refresh_rate(ctx: &Ctx<'_>, sys: &SysInfo) {
 }
 
 /// Program CKE tristate (`sdram_program_cke_tristate`).
+#[allow(clippy::needless_range_loop)] // the index is the bank and its bit position
 fn program_cke_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
     let mut reg = ctx.mch.read32(r::C0DRC1);
     for i in 0..4 {
@@ -1507,6 +1509,7 @@ fn program_cke_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
 }
 
 /// Program ODT tristate (`sdram_program_odt_tristate`).
+#[allow(clippy::needless_range_loop)] // the index is the bank and its bit position
 fn program_odt_tristate(ctx: &Ctx<'_>, sys: &SysInfo) {
     let mut reg = ctx.mch.read32(r::C0DRC2);
     for i in 0..4 {
