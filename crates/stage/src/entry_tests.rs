@@ -33,7 +33,16 @@ fn valid_digest_does_not_authorize_a_different_configured_entry() {
     // SAFETY: source and destination are distinct live arrays; the destination
     // is exclusively owned for the complete verification operation.
     let media = unsafe { MemoryMapped::from_raw_addr(stored.as_ptr() as u64, stored.len()) };
-    let executable = unsafe { crate::boot::load_bootstrap(&media, &descriptor, &policy) }.unwrap();
+    let executable = unsafe {
+        crate::boot::load_bootstrap(
+            &media,
+            &descriptor,
+            &policy,
+            &crate::boot::Stored,
+            &crate::boot::Measurement::NONE,
+        )
+    }
+    .unwrap();
     let mut linux = MemoryMappedLinuxBoot::new(0, 0, 0);
     linux.kernel_addr = executable.entry();
     assert!(linux.checked_boot_params(address + 1, 0, 0, "").is_err());

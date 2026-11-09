@@ -4,8 +4,8 @@
 #![no_std]
 #![no_main]
 
-use fstart_driver_uart::pl011::Pl011;
 use fstart_board_qemu_aarch64::{QEMU_AARCH64_VIRT, console};
+use fstart_driver_uart::pl011::Pl011;
 use fstart_log::StaticConsole;
 use fstart_platform_qemu::Virt;
 

@@ -114,10 +114,7 @@ impl Selection {
             ),
         )
         .map_err(|e| e.to_string())?;
-        let manifest = root
-            .join("target/fstart-workspaces")
-            .join(&board.board)
-            .join("Cargo.toml");
+        let manifest = root.join("Cargo.toml");
         let mut args = vec![
             "--locked".into(),
             "--no-default-features".into(),

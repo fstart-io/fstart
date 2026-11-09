@@ -1,52 +1,74 @@
-//! Compile a thin conventional platform export in Cargo's selected-source graph.
-//! The pre-existing preparation resolves a root-seeded disposable lock. Only
-//! after that preparation do we append the runner's local entry and use --locked.
+//! Evaluate a board's Rust plan on the host using the source workspace's pins.
+//! Cargo prepares the disposable runner's lock offline from a copy of Cargo.lock.
+//! Every external pin must already exist in that source lock; the build then
+//! runs --locked. No manifest or lock in the source workspace is rewritten.
 use crate::profile_source::ProfileSource;
 use fstart_image_build::plan::{BuildSelection, ResolvedPlan};
 use std::{fs, path::Path, process::Command};
 
 const RUNNER: &str = "fstart-plan-runner";
 
-/// Preserve every prepared package entry/pin verbatim. No resolver fallback.
-fn runner_lock(lock: &str, dependencies: &[String]) -> Result<String, String> {
-    let parsed: toml::Value = toml::from_str(lock).map_err(|e| e.to_string())?;
-    let packages = parsed["package"].as_array().ok_or("lock has no packages")?;
-    let mut dependencies = dependencies.to_vec();
-    dependencies.sort();
-    dependencies.dedup();
-    for name in &dependencies {
-        if packages
-            .iter()
-            .filter(|p| p["name"].as_str() == Some(name))
-            .count()
-            != 1
-        {
-            return Err(format!(
-                "runner dependency {name} must identify one prepared package"
-            ));
-        }
+#[derive(Debug, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+struct Pin {
+    name: String,
+    version: String,
+    source: Option<String>,
+    checksum: Option<String>,
+}
+
+fn external_pins(text: &str) -> Result<std::collections::BTreeSet<Pin>, String> {
+    #[derive(serde::Deserialize)]
+    struct Lock {
+        package: Vec<Pin>,
     }
-    if packages.iter().any(|p| p["name"].as_str() == Some(RUNNER)) {
-        return Err("prepared lock already contains the reserved plan runner package".into());
+    let lock: Lock = toml::from_str(text).map_err(|e| format!("Cargo.lock: {e}"))?;
+    Ok(lock
+        .package
+        .into_iter()
+        .filter(|pin| pin.source.is_some())
+        .collect())
+}
+
+fn prepare_lock(root: &Path, manifest: &Path) -> Result<String, String> {
+    let before = fs::read_to_string(root.join("Cargo.lock")).map_err(|e| e.to_string())?;
+    let lock_path = manifest.with_file_name("Cargo.lock");
+    fs::write(&lock_path, &before).map_err(|e| e.to_string())?;
+    let prepared = Command::new("cargo")
+        .current_dir(root)
+        .args([
+            "metadata",
+            "--offline",
+            "--format-version=1",
+            "--manifest-path",
+        ])
+        .arg(manifest)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env("RUSTFLAGS", "")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !prepared.status.success() {
+        return Err(format!(
+            "host plan lock preparation: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        ));
     }
-    let dependencies = dependencies
-        .iter()
-        .map(|s| serde_json::to_string(s).unwrap())
-        .collect::<Vec<_>>()
-        .join(",\n ");
-    Ok(format!(
-        "{lock}\n[[package]]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\ndependencies = [\n {dependencies},\n]\n"
-    ))
+    let locked = fs::read_to_string(&lock_path).map_err(|e| e.to_string())?;
+    if !external_pins(&locked)?.is_subset(&external_pins(&before)?) {
+        return Err("host plan dependencies differ from the source Cargo.lock".into());
+    }
+    Ok(locked)
 }
 
 pub(crate) fn load(
     root: &Path,
     source: &ProfileSource,
-    variant_features: &[String],
+    board: &crate::board_manifest::BoardManifest,
     selection: &BuildSelection,
 ) -> Result<ResolvedPlan, String> {
-    let workspace = &source.workspace;
-    let runner = workspace.join("plan-runner");
+    let runner = root
+        .join("target/fstart-host")
+        .join(&board.board)
+        .join("plan-runner");
     fs::create_dir_all(runner.join("src")).map_err(|e| e.to_string())?;
     let package = |p: &serde_json::Value| -> Result<(String, String), String> {
         Ok((
@@ -62,10 +84,10 @@ pub(crate) fn load(
     let (platform_name, platform_path) = package(&source.platform)?;
     let quoted = |s: &str| serde_json::to_string(s).unwrap();
     let manifest = format!(
-        "[package]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\n",
+        "[workspace]\n[package]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\n",
         quoted(&board_name),
         quoted(&board_path),
-        serde_json::to_string(variant_features).map_err(|e| e.to_string())?,
+        serde_json::to_string(&board.variant_features).map_err(|e| e.to_string())?,
         quoted(&platform_name),
         quoted(&platform_path)
     );
@@ -80,20 +102,9 @@ pub(crate) fn load(
             fs::write(path, contents).map_err(|e| e.to_string())?;
         }
     }
-    let manifest_path = workspace.join("Cargo.toml");
-    let workspace_manifest = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-    if !workspace_manifest.contains("members = [") {
-        return Err("selected workspace has no member list".into());
-    }
-    fs::write(
-        &manifest_path,
-        workspace_manifest.replacen("members = [", "members = [\n  \"plan-runner\",", 1),
-    )
-    .map_err(|e| e.to_string())?;
-    let lock_path = workspace.join("Cargo.lock");
-    let before = fs::read_to_string(&lock_path).map_err(|e| e.to_string())?;
-    let locked = runner_lock(&before, &[board_name.clone(), platform_name])?;
-    fs::write(&lock_path, &locked).map_err(|e| e.to_string())?;
+    let manifest_path = runner.join("Cargo.toml");
+    let lock_path = runner.join("Cargo.lock");
+    let locked = prepare_lock(root, &manifest_path)?;
     let rustc = Command::new("rustc")
         .current_dir(root)
         .arg("-vV")
@@ -107,7 +118,7 @@ pub(crate) fn load(
         .lines()
         .find_map(|s| s.strip_prefix("host: "))
         .ok_or("rustc did not report host target")?;
-    let target = root.join("target/fstart-host").join(&board_name);
+    let target = root.join("target/fstart-host").join(&board.board);
     let output = Command::new("cargo")
         .current_dir(root)
         .args(["build", "--locked", "--manifest-path"])
@@ -175,110 +186,83 @@ pub(crate) fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn cargo_accepts_local_runner_entry_on_fresh_and_cached_graphs() {
+    fn runner_uses_real_sources_without_rewriting_the_workspace_lock() {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
         let directory =
-            std::env::temp_dir().join(format!("fstart-runner-lock-test-{}", std::process::id()));
-        if directory.exists() {
-            fs::remove_dir_all(&directory).unwrap();
-        }
-        fs::create_dir_all(&directory).unwrap();
+            Scratch(std::env::temp_dir().join(format!("fstart-host-lock-{}", std::process::id())));
+        fs::create_dir_all(directory.0.join("board/src")).unwrap();
         fs::write(
-            directory.join("Cargo.toml"),
-            "[workspace]\nresolver = \"3\"\nmembers = [\"board\", \"platform\"]\n",
+            directory.0.join("Cargo.toml"),
+            "[workspace]\nresolver='3'\nmembers=['board']\n",
         )
         .unwrap();
-        for name in ["board", "platform"] {
-            let package = directory.join(name);
-            fs::create_dir_all(package.join("src")).unwrap();
-            fs::write(
-                package.join("Cargo.toml"),
-                format!(
-                    "[package]\nname = \"actual-{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
-                ),
-            )
+        fs::write(
+            directory.0.join("board/Cargo.toml"),
+            "[package]\nname='board-real'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        fs::write(directory.0.join("board/src/lib.rs"), "pub struct Marker;\n").unwrap();
+        let status = Command::new("cargo")
+            .current_dir(&directory.0)
+            .args(["generate-lockfile", "--offline"])
+            .status()
             .unwrap();
-            fs::write(package.join("src/lib.rs"), "pub struct Marker;\n").unwrap();
-        }
-        let cargo = |args: &[&str]| {
-            Command::new("cargo")
-                .current_dir(&directory)
-                .args(args)
-                .env("RUSTFLAGS", "")
-                .env_remove("CARGO_ENCODED_RUSTFLAGS")
-                .output()
-                .unwrap()
-        };
-        let prepared = cargo(&["generate-lockfile", "--offline"]);
-        assert!(
-            prepared.status.success(),
-            "{}",
-            String::from_utf8_lossy(&prepared.stderr)
-        );
-        let before = fs::read_to_string(directory.join("Cargo.lock")).unwrap();
-        let expected =
-            runner_lock(&before, &["actual-board".into(), "actual-platform".into()]).unwrap();
-        fs::write(directory.join("Cargo.lock"), &expected).unwrap();
-        fs::write(
-            directory.join("Cargo.toml"),
-            "[workspace]\nresolver = \"3\"\nmembers = [\"board\", \"platform\", \"runner\"]\n",
-        )
-        .unwrap();
-        let runner = directory.join("runner");
+        assert!(status.success());
+        let before = fs::read_to_string(directory.0.join("Cargo.lock")).unwrap();
+        let runner = directory.0.join("runner");
         fs::create_dir_all(runner.join("src")).unwrap();
-        fs::write(runner.join("Cargo.toml"), "[package]\nname = \"fstart-plan-runner\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = { package = \"actual-board\", path = \"../board\" }\nplatform = { package = \"actual-platform\", path = \"../platform\" }\n").unwrap();
+        let manifest = runner.join("Cargo.toml");
+        fs::write(&manifest, "[workspace]\n[package]\nname='fstart-plan-runner'\nversion='0.0.0'\nedition='2024'\n[dependencies]\nboard={package='board-real',path='../board'}\n").unwrap();
         fs::write(
             runner.join("src/main.rs"),
-            "fn main() { let _ = (board::Marker, platform::Marker); }\n",
+            "fn main() { let _ = board::Marker; }\n",
         )
         .unwrap();
-        for fresh in [false, true] {
-            let output = cargo(&[
-                "build",
-                "--offline",
-                "--locked",
-                "-p",
-                RUNNER,
-                "--message-format=json",
-            ]);
+        let expected = prepare_lock(&directory.0, &manifest).unwrap();
+        for _ in 0..2 {
+            let output = Command::new("cargo")
+                .current_dir(&directory.0)
+                .args(["build", "--offline", "--locked", "--manifest-path"])
+                .arg(&manifest)
+                .env_remove("CARGO_ENCODED_RUSTFLAGS")
+                .env("RUSTFLAGS", "")
+                .output()
+                .unwrap();
             assert!(
                 output.status.success(),
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let receipts = output
-                .stdout
-                .split(|b| *b == b'\n')
-                .filter(|s| !s.is_empty())
-                .map(|s| serde_json::from_slice::<serde_json::Value>(s).unwrap())
-                .filter(|r| r["reason"] == "compiler-artifact")
-                .collect::<Vec<_>>();
-            assert_eq!(receipts.len(), 3);
-            assert!(receipts.iter().all(|r| r["fresh"] == fresh));
             assert_eq!(
-                fs::read_to_string(directory.join("Cargo.lock")).unwrap(),
+                fs::read_to_string(directory.0.join("Cargo.lock")).unwrap(),
+                before
+            );
+            assert_eq!(
+                fs::read_to_string(runner.join("Cargo.lock")).unwrap(),
                 expected
             );
         }
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn runner_entry_uses_package_names_and_preserves_prepared_lock() {
-        let original = "version = 4\n[[package]]\nname = \"board-real\"\nversion = \"0.1.0\"\n[[package]]\nname = \"platform-real\"\nversion = \"0.2.0\"\n";
-        let augmented =
-            runner_lock(original, &["platform-real".into(), "board-real".into()]).unwrap();
-        assert!(augmented.starts_with(original));
-        let packages = toml::from_str::<toml::Value>(&augmented).unwrap();
-        assert_eq!(
-            packages["package"][2]["dependencies"][0].as_str(),
-            Some("board-real")
-        );
-        assert_eq!(
-            packages["package"][2]["dependencies"][1].as_str(),
-            Some("platform-real")
-        );
-        assert!(runner_lock(&augmented, &["board-real".into()]).is_err());
-        assert!(runner_lock(original, &["missing".into()]).is_err());
+    fn pin_comparison_rejects_changed_versions_sources_and_checksums() {
+        let original = "[[package]]\nname='dep'\nversion='1.0.0'\nsource='registry+https://example.com'\nchecksum='abc'\n";
+        let pins = external_pins(original).unwrap();
+        let local = format!("{original}[[package]]\nname='board'\nversion='0.1.0'\n");
+        assert_eq!(external_pins(&local).unwrap(), pins);
+        for changed in [
+            original.replace("1.0.0", "1.0.1"),
+            original.replace("example.com", "other.com"),
+            original.replace("abc", "def"),
+        ] {
+            assert!(!external_pins(&changed).unwrap().is_subset(&pins));
+        }
     }
 }

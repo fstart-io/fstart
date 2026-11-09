@@ -1,6 +1,4 @@
-//! Load and execute a concrete Rust platform plan.
-//! Every board resolves through this module; the BoardConfig host-callback
-//! path is retired.
+//! Load and execute a board's Rust platform plan.
 use crate::{board_manifest::BoardManifest, plan_executor::Resolved};
 use fstart_image_build::plan::BuildSelection;
 use std::path::{Path, PathBuf};
@@ -23,7 +21,7 @@ impl ResolvedImage {
             let blobs = crate::blobs::from_donor(root, &source, std::path::Path::new(&donor))?;
             selection.blobs = Some(blobs.to_string_lossy().into_owned());
         }
-        let mut plan = crate::host_plan::load(root, &source, &board.variant_features, &selection)?;
+        let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
         plan.validate_image_selection(&selection)?;
         let environment = [

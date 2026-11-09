@@ -3,17 +3,12 @@ use crate::boot::MemoryPolicy;
 use crate::boot::{Event, Measurement, load_bootstrap, read_exact};
 use crate::heap::vec::Vec;
 use fstart_core::ffs::{Compression, FileType, SegmentKind};
-use fstart_core::services::{BootMedia, TempRamArena};
+use fstart_core::services::BootMedia;
+#[cfg(feature = "fit")]
+use fstart_core::services::TempRamArena;
 use fstart_crypto::digest::hash_sha256;
 use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole};
-use fstart_ffs::{FileView, ManifestView, ReaderError};
-
-pub(crate) fn read_manifest_from_media(
-    media: &(impl BootMedia + ?Sized),
-    _anchor: fstart_core::ffs::AnchorRef<'_>,
-) -> Result<ManifestView<'static>, ReaderError> {
-    crate::directory::view(media)
-}
+use fstart_ffs::{FileView, ManifestView};
 
 fn descriptor(file: &FileView<'_>) -> Option<BootstrapDescriptor> {
     let [segment] = file.segments() else {
@@ -143,24 +138,7 @@ pub(crate) fn load_file_segments_from_media(
     Some(verified.entry())
 }
 
-pub fn load_ffs_file_by_type(
-    _anchor_data: &[u8],
-    media: &(impl BootMedia + ?Sized),
-    file_type: FileType,
-) -> bool {
-    load_ffs_file_entry_by_type(media, file_type).is_some()
-}
-
-/// Return the entry actually loaded and verified, not merely a success flag.
-pub fn load_ffs_file_entry_by_type(
-    media: &(impl BootMedia + ?Sized),
-    file_type: FileType,
-) -> Option<u64> {
-    load_ffs_file_measured(media, file_type, &Measurement::NONE)
-}
-
-/// [`load_ffs_file_entry_by_type`], measuring the file's stored bytes as
-/// `measurement` on the way.
+/// Load a directory file and measure its verified stored bytes on the way.
 pub fn load_ffs_file_measured(
     media: &(impl BootMedia + ?Sized),
     file_type: FileType,
@@ -171,7 +149,7 @@ pub fn load_ffs_file_measured(
     load_file_segments_from_media(media, &file, media.size(), measurement)
 }
 
-pub fn load_ffs_file_by_name(
+pub(crate) fn load_ffs_file_by_name(
     _anchor_data: &[u8],
     media: &(impl BootMedia + ?Sized),
     name: &str,
@@ -199,7 +177,7 @@ fn stored_file(directory: ManifestView<'_>, file_type: FileType) -> Option<Boots
 /// Return authenticated owned data, never a view into mutable boot media.
 /// The allocation is retained for stage lifetime to preserve the legacy slice
 /// API. Callers with a temporary arena should prefer the scratch variant.
-pub fn find_ffs_file_data<'a>(
+fn find_ffs_file_data<'a>(
     _anchor_data: &[u8],
     media: &'a (impl BootMedia + ?Sized),
     file_type: FileType,
@@ -256,7 +234,8 @@ pub fn microcode_blob() -> Option<&'static [u8]> {
 
 /// Authenticate the exact stable scratch bytes before returning them to parsers
 /// on both block and mmap media. `as_slice()` never grants media immutability.
-pub fn find_ffs_file_data_with_scratch<'a>(
+#[cfg(feature = "fit")]
+pub(crate) fn find_ffs_file_data_with_scratch<'a>(
     anchor_data: &[u8],
     media: &'a (impl BootMedia + ?Sized),
     file_type: FileType,
@@ -304,61 +283,4 @@ pub(crate) fn read_asset(media: &(impl BootMedia + ?Sized), name: &str) -> Optio
     bytes.truncate(usize::try_from(descriptor.loaded_size).ok()?);
     // Avoid shrinking/reallocating with the stage's non-reclaiming allocator.
     Some(bytes.leak())
-}
-
-pub(crate) fn reader_error_str(_err: ReaderError) -> &'static str {
-    "FFS authentication, format, or bounds failure"
-}
-
-/// Early compatibility entry, now selects a bounded root descriptor, never a
-/// directory record. Family code should use root + role selection explicitly.
-#[cfg(feature = "ffs-signature")]
-pub fn ffs_file_extent(
-    anchor_data: &[u8],
-    media: &(impl BootMedia + ?Sized),
-    name: &str,
-) -> Option<BootstrapDescriptor> {
-    let role = match name {
-        "postcar" => BootstrapRole::Postcar,
-        "ramstage" | "mainstage" | "main" => BootstrapRole::Mainstage,
-        _ => return None,
-    };
-    let root = crate::root::authenticate_boot_root(anchor_data, media).ok()?;
-    let mut matches = root
-        .descriptors()
-        .iter()
-        .flatten()
-        .filter(|d| d.role == role);
-    let descriptor = *matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(descriptor)
-}
-
-/// Early explicit-policy API. No directory and no allocator are required.
-///
-/// # Safety
-/// The caller must satisfy `boot::load_bootstrap`'s exclusive physical mapping,
-/// reservation, and protected working-memory contract.
-#[cfg(feature = "ffs-signature")]
-pub unsafe fn stage_load_with_policy(
-    anchor_data: &[u8],
-    media: &(impl BootMedia + ?Sized),
-    role: BootstrapRole,
-    policy: &MemoryPolicy<'_>,
-    codec: &dyn crate::boot::Codec,
-) -> Option<crate::boot::VerifiedExecutable> {
-    let root = crate::root::authenticate_boot_root(anchor_data, media).ok()?;
-    let mut descriptors = root
-        .descriptors()
-        .iter()
-        .flatten()
-        .filter(|d| d.role == role);
-    let descriptor = descriptors.next()?;
-    if descriptors.next().is_some() {
-        return None;
-    }
-    // SAFETY: caller supplies the same physical mapping contract as load_bootstrap.
-    unsafe { load_bootstrap(media, descriptor, policy, codec, &Measurement::NONE) }.ok()
 }

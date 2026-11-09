@@ -108,7 +108,10 @@ pub(crate) fn load_stage_with_cache(
             fstart_log::flush();
             fstart_arch::x86::boot::system_reset(true)
         }
-        Err(fstart_resume::Error::Load(_)) => Err(ServiceError::HardwareError),
+        Err(fstart_resume::Error::Load(error)) => {
+            fstart_log::error!("stage cache: {} load failed: {:?}", stage.name(), error);
+            Err(ServiceError::HardwareError)
+        }
     }
 }
 

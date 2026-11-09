@@ -12,6 +12,7 @@ host = ["std", "dep:fstart-amdfw-format"]
 pci = []
 
 [dependencies]
+ufmt = { workspace = true }
 serde = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }

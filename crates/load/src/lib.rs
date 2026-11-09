@@ -42,7 +42,7 @@ use fstart_ffs::root::BootstrapDescriptor;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum LoadError {
     Bounds,
     MemoryPolicy,

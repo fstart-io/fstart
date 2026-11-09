@@ -76,6 +76,13 @@ fn ambient_artifact_environment_isolation() {
         return;
     }
     let unbound = prepare(BTreeMap::new()).unwrap();
+    assert_eq!(unbound.manifest, root.join("Cargo.toml"));
+    assert!(
+        unbound
+            .args
+            .windows(2)
+            .any(|args| { args[0] == "--package" && args[1] == board.package })
+    );
     let mut command = std::process::Command::new("env");
     unbound.apply_environment(&mut command);
     let output = String::from_utf8(command.output().unwrap().stdout).unwrap();

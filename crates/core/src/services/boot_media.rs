@@ -33,19 +33,6 @@
 //!
 //! - **[`SubRegion`]**: Analogous to coreboot's `rdev_chain()` — provides
 //!   a windowed view into a parent medium with offset translation.
-//!
-//! # Example: Stage Loading
-//!
-//! ```ignore
-//! // Memory-mapped with linear mapping (zero-cost):
-//! let media = unsafe { MemoryMapped::from_raw_addr(0x20000000, 0x2000000) };
-//! fstart_stage::stage_load("main", anchor, &media, jump_to);
-//!
-//! // Block device (SPI NOR flash — same API, different backend):
-//! let spi_flash = SpiNorFlash::new(&config)?;
-//! let media = BlockDeviceMedia::new(&spi_flash, 0, 0x2000000);
-//! fstart_stage::stage_load("main", anchor, &media, jump_to);
-//! ```
 
 use crate::TempRamBuffer;
 

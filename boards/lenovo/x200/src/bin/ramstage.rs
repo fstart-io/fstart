@@ -18,10 +18,7 @@ fstart_platform_intel::entry!(main);
 fn main() -> ! {
     let rs = Ramstage::<Board>::enter();
     let mut pins = mainboard::Pins::of(rs.southbridge().gpio());
-    let rs = rs
-        .console(&CONSOLE, ())
-        .memory_map()
-        .scan_bus(&[]);
+    let rs = rs.console(&CONSOLE, ()).memory_map().scan_bus(&[]);
     let mut rs = rs.init_chipset();
     let resume = rs.is_resume();
     let (identity, acpi) = mainboard::init_devices(&mut pins, rs.smbus(), resume);

@@ -127,7 +127,8 @@ impl<B: IntelBoard, S> Ramstage<B, S> {
         fstart_timestamp::add(id);
         let name = fstart_timestamp::name(id);
         fstart_log::info!("{} ramstage: {}", B::Platform::NAME, name);
-        if f(self).is_err() {
+        if let Err(error) = f(self) {
+            fstart_log::error!("{} ramstage: {}: {:?}", B::Platform::NAME, name, error);
             self.fail(name);
         }
     }
@@ -303,7 +304,8 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             .northbridge
             .early_init()
             .and_then(|()| self.southbridge.early_init());
-        if early.is_err() {
+        if let Err(error) = early {
+            fstart_log::error!("early init: {:?}", error);
             self.fail("early init");
         }
         self.into()
@@ -338,7 +340,8 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             // SAFETY: BSP-only, after the memory map is published.
             unsafe { fstart_arch::x86::mtrr::setup_ram_wb() }
         })();
-        if detected.is_err() {
+        if let Err(error) = detected {
+            fstart_log::error!("memory detection: {:?}", error);
             self.fail("memory detection");
         }
         // Reserve the firmware's own windows before any loader policy or table

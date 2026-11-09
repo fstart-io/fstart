@@ -4,8 +4,8 @@
 #![no_std]
 #![no_main]
 
-use fstart_driver_uart::ns16550::Ns16550;
 use fstart_board_qemu_riscv64::{QEMU_RISCV64_VIRT, console};
+use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
 use fstart_platform_qemu::Virt;
 

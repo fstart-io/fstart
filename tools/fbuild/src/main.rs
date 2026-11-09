@@ -66,6 +66,11 @@ enum Command {
         #[command(flatten)]
         options: BuildArgs,
     },
+    /// Execute host library tests for one board variant, or every discovered variant.
+    TestLibrary {
+        #[arg(short, long)]
+        board: Option<String>,
+    },
     Assemble {
         #[arg(short, long)]
         board: String,
@@ -102,7 +107,7 @@ enum Command {
         #[arg(long)]
         allow_missing: bool,
     },
-    /// Explain a migrated board's resolved geometry and compiler selection.
+    /// Explain a board's resolved geometry and compiler selection.
     Explain {
         board: String,
         #[arg(long, value_enum)]
@@ -110,7 +115,7 @@ enum Command {
         #[command(flatten)]
         options: BuildArgs,
     },
-    /// Type-check a migrated board using its resolved firmware selection.
+    /// Type-check a board using its resolved firmware selection.
     Check {
         board: String,
         /// Check one named unit after building its producer closure.
@@ -135,9 +140,6 @@ enum Command {
         /// Select a named compilation unit from the resolved platform plan.
         #[arg(long)]
         stage: Option<String>,
-        /// Compare against a disposable all-board build-lock prototype.
-        #[arg(long)]
-        audit_lock: bool,
     },
     Flash {
         #[arg(short, long)]
@@ -162,9 +164,7 @@ fn manifest_for(board: &str) -> Result<board_manifest::BoardManifest, String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
     if manifest.build_profile.is_none() {
-        return Err(format!(
-            "board '{board}' has no build-profile; legacy host tools are retired"
-        ));
+        return Err(format!("board '{board}' has no build-profile"));
     }
     Ok(manifest)
 }
@@ -220,21 +220,28 @@ fn ide(
     board: &str,
     selection: BuildSelection,
     release: bool,
-    audit_lock: bool,
     stage: Option<String>,
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    let workspace = fbuild::ide::generate_image(
-        &root,
-        &manifest,
-        &resolved,
-        stage.as_deref(),
-        release,
-        audit_lock,
-    )?;
+    let workspace =
+        fbuild::ide::generate_image(&root, &manifest, &resolved, stage.as_deref(), release)?;
     println!("{}", workspace.display());
+    Ok(())
+}
+
+fn test_libraries(board: Option<&str>) -> Result<(), String> {
+    if let Some(board) = board {
+        return fbuild::board_tool::test_library(&manifest_for(board)?);
+    }
+    let root = build_board::workspace_root_pub()?;
+    for board in board_manifest::discover(&root)? {
+        fbuild::board_tool::test_library(&board)?;
+        for (variant, _) in &board.variants {
+            fbuild::board_tool::test_library(&board_manifest::find(&root, variant)?)?;
+        }
+    }
     Ok(())
 }
 
@@ -333,6 +340,7 @@ fn main() {
                 &manifest, true, None, None, None, None, None, None, None, &options,
             )
         }),
+        Command::TestLibrary { board } => test_libraries(board.as_deref()),
         Command::Assemble {
             board,
             release,
@@ -379,15 +387,8 @@ fn main() {
             payload,
             options,
             release,
-            audit_lock,
             stage,
-        } => ide(
-            &board,
-            options.selection(payload),
-            release,
-            audit_lock,
-            stage,
-        ),
+        } => ide(&board, options.selection(payload), release, stage),
         Command::Check {
             board,
             payload,
@@ -419,5 +420,17 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_tests_do_not_accept_firmware_selection_options() {
+        assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "lenovo-x61"]).is_ok());
+        assert!(Cli::try_parse_from(["fbuild", "test-library"]).is_ok());
+        assert!(Cli::try_parse_from(["fbuild", "test-library", "--payload", "uefi"]).is_err());
     }
 }

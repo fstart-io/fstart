@@ -96,7 +96,7 @@ pub fn load_fit_components_with_scratch(
     fit_config: Option<&str>,
     scratch: Option<&mut fstart_core::services::TempRamArena>,
 ) -> Result<FitBootInfo, FitBootError> {
-    let fit_slice = crate::find_ffs_file_data_with_scratch(
+    let fit_slice = crate::ffs_helpers::find_ffs_file_data_with_scratch(
         anchor_data,
         media,
         fstart_core::ffs::FileType::FitImage,

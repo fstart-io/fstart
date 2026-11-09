@@ -40,7 +40,7 @@ pub use spi::SpiBus;
 pub use timer::{Timer, TimerDelay};
 
 /// Common error type for service operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum ServiceError {
     /// Operation timed out
     Timeout,

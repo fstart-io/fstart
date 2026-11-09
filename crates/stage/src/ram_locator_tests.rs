@@ -1,6 +1,5 @@
-//! A later stage's locator import. Run with
-//! --features ffs,x86_64,fstart-ffs/std --lib ram_locator_tests.
-//! The real publish-once statics start fresh in this isolated test process;
+//! A later stage's locator import through the real publish-once statics.
+//! They start fresh in this test process;
 //! no other test publishes a locator.
 
 use crate::{

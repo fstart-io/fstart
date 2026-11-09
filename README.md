@@ -23,11 +23,7 @@ cargo fbuild run --board qemu-aarch64
 cargo fbuild build --board qemu-riscv64
 
 # Build a signed firmware image (FFS). Without --signing-key the image is
-# signed with a throwaway key; see docs/authenticated-boot.md.
+# signed with a fresh throwaway key, discarded after the build.
 openssl genpkey -algorithm ed25519 -out signing.pem
 cargo fbuild assemble --board qemu-riscv64 --signing-key signing.pem
 ```
-
-## Documentation
-
-TODO

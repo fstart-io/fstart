@@ -65,3 +65,7 @@ fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 
 # CrabEFI adapter lives in fstart-boot behind the crabefi feature.
+
+[dev-dependencies]
+# Locator tests construct authenticated directory fixtures on the host.
+fstart-ffs = { workspace = true, features = ["std"] }

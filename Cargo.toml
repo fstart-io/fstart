@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
+# Default commands exercise host libraries and tools. Firmware units are
+# selected individually by fbuild with their target, features and artifacts.
+default-members = ["tools/fbuild", "tools/amdfw", "crates/*"]
 members = [
+  "boards/*/*",
   "tools/fbuild",
   "tools/amdfw",
   "crates/amdfw-format",
@@ -49,7 +53,6 @@ members = [
   "crates/store",
   "crates/timestamp",
 ]
-exclude = ["boards"]
 
 [workspace.package]
 version = "0.1.0"

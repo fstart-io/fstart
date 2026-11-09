@@ -1,8 +1,8 @@
 //! Native FCH dispatch and MCA observation on the S8030. RAS is platform
 //! functionality selected by this board's policy, not a different board.
 
-use fstart_platform_sp3::smm::{self, Policy, SmmConfig};
 use fstart_platform_sp3::smm::ras::SelTransport;
+use fstart_platform_sp3::smm::{self, Policy, SmmConfig};
 use fstart_platform_sp3::smm_runtime::SmmContext;
 
 const RAS: Policy = Policy {

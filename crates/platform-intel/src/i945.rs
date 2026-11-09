@@ -270,7 +270,7 @@ impl I945Ich7Config {
         {
             panic!("ICH7 SATA enabled with invalid ports");
         }
-        validate_lpc_generic_io_decodes(&self.lpc_decode.generic_io);
+        LpcGenericIoDecode::validate_all(&self.lpc_decode.generic_io);
         validate_pirq_routing(&self.pirq_routing);
         if !ich7::valid_gpe0_en(self.gpe0_en) {
             panic!("ICH7 GPE0 enable has reserved bits set");
@@ -287,33 +287,6 @@ impl I945Ich7Config {
             max_cpus: self.max_cpus,
         }
     }
-}
-
-const fn validate_lpc_generic_io_decodes(decodes: &fstart_core::ConstVec<LpcGenericIoDecode, 4>) {
-    if konst::iter::eval!(
-        0..decodes.len(),
-        any(|idx| { !ich7::valid_lpc_generic_io(decodes.get(idx)) })
-    ) {
-        panic!("ICH7 LPC generic I/O decode is invalid");
-    }
-
-    if konst::iter::eval!(
-        0..decodes.len(),
-        any(|idx| { lpc_generic_io_overlaps_later(decodes, idx) })
-    ) {
-        panic!("ICH7 LPC generic I/O decodes overlap");
-    }
-}
-
-const fn lpc_generic_io_overlaps_later(
-    decodes: &fstart_core::ConstVec<LpcGenericIoDecode, 4>,
-    idx: usize,
-) -> bool {
-    let decode = decodes.get(idx);
-    konst::iter::eval!(
-        idx + 1..decodes.len(),
-        any(|next_idx| { ich7::lpc_generic_io_overlaps(decode, decodes.get(next_idx)) })
-    )
 }
 
 const fn validate_pirq_routing(routing: &[u8; 8]) {

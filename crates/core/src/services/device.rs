@@ -21,6 +21,24 @@ pub enum DeviceError {
     BusError,
 }
 
+impl ufmt::uDebug for DeviceError {
+    fn fmt<W: ufmt::uWrite + ?Sized>(
+        &self,
+        f: &mut ufmt::Formatter<'_, W>,
+    ) -> Result<(), W::Error> {
+        match self {
+            Self::MissingResource(name) => {
+                f.write_str("MissingResource(")?;
+                f.write_str(name)?;
+                f.write_str(")")
+            }
+            Self::ConfigError => f.write_str("ConfigError"),
+            Self::InitFailed => f.write_str("InitFailed"),
+            Self::BusError => f.write_str("BusError"),
+        }
+    }
+}
+
 /// Trait for devices that live on a parent bus.
 ///
 /// A bus device requires a parent controller that provides a bus-level
