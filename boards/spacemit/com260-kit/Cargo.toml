@@ -1,0 +1,22 @@
+[package]
+name = "fstart-board-spacemit-com260-kit"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The SpacemiT K3 CoM260 module on its carrier kit.
+[package.metadata.fstart]
+schema = 1
+board = "spacemit-com260-kit"
+platform = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+build-profile = { dependency = "fstart-platform-spacemit", name = "rust" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core" }
+fstart-platform-spacemit = { path = "../../../crates/platform-spacemit" }
+fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-log = { path = "../../../crates/log" }
+
+# One binary per stage, named after the stage: src/bin/<stage>.rs.

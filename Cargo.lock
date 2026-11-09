@@ -1062,6 +1062,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-spacemit-com260-kit"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-spacemit",
+]
+
+[[package]]
 name = "fstart-board-tyan-s8030"
 version = "0.1.0"
 dependencies = [
