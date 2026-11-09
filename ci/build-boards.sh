@@ -6,7 +6,7 @@
 # Usage: ci/build-boards.sh SIZE_DIR BOARD...
 #
 # SIZE_DIR receives one stage-sizes-BOARD.jsonl per board (see
-# ci/stage_sizes.py). Linking firmware does not execute board policy or
+# `fbuild sizes`). Linking firmware does not execute board policy or
 # protocol tests, hence the library tests.
 #
 # NOTE: FSTART_EXTRA_RUSTFLAGS must NOT be set here. Resolved builds fail

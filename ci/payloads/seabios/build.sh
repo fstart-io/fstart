@@ -13,8 +13,8 @@ out=$(mkdir -p "${2:-$here/../../../target/seabios}" && cd "${2:-$here/../../../
 cp "$here/defconfig" "$out/.config"
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" olddefconfig >/dev/null
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" -j"$(nproc)" >/dev/null
-# SeaBIOS mirrors its text screen (menus, boot messages) to this port.
-python3 -c 'import struct,sys; sys.stdout.buffer.write(struct.pack("<Q", 0x3f8))' >"$out/sercon-port"
+# SeaBIOS mirrors its text screen to this port (0x3f8 as a little-endian u64).
+printf '\370\003\000\000\000\000\000\000' >"$out/sercon-port"
 
 echo "--payload coreboot --kernel $out/bios.bin.elf" \
     "--payload-file vgaroms/seavgabios.bin=$out/vgabios.bin" \

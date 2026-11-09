@@ -23,5 +23,8 @@ pub mod qemu;
 mod qemu_golden_tests;
 pub mod resolved_image;
 mod selection;
+pub mod shards;
+pub mod size_report;
 pub mod sizes;
 pub mod toolchain;
+pub mod tpm_log;

@@ -24,8 +24,16 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.event.workflow_run.id }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Build only the default-branch checkout, never code from the PR artifact.
+      - name: Build trusted reporter
+        run: |
+          rustup toolchain install
+          cargo build --locked -p fbuild
 
       - name: Report stage sizes
         run: |
@@ -37,13 +45,12 @@ jobs:
           # it claims before acting on it. CI built GitHub's test merge of the
           # pull request, whose parents are the base it built on and the head
           # of this run.
-          # read fails under `bash -e` when jq selects nothing; the guard
-          # below handles that case, so keep the step alive to reach it.
-          read -r pr merge < <(jq -r '
-            select(.commit | test("^[0-9a-f]{40}$"))
+          if ! read -r pr merge < <(jq -er '
+            select(.commit | type == "string")
+            | select(.commit | test("^[0-9a-f]{40}$"))
             | select(.pr | type == "number")
-            | "\(.pr) \(.commit)"' head/stage-sizes.json) || true
-          if [ -z "$pr" ] || [ -z "$merge" ]; then
+            | select(.pr > 0 and .pr == (.pr | floor))
+            | "\(.pr) \(.commit)"' head/stage-sizes.json); then
             echo "Stage sizes carry no usable commit/pull request; not reporting."
             exit 0
           fi
@@ -68,7 +75,7 @@ jobs:
             exit 0
           fi
 
-          python3 ci/stage_sizes.py report base/stage-sizes.json head/stage-sizes.json > report.md
+          target/debug/fbuild sizes report base/stage-sizes.json head/stage-sizes.json > report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
           comment=$(gh api "repos/$GH_REPO/issues/$pr/comments" --paginate \
             -q '.[] | select(.user.login == "github-actions[bot]")

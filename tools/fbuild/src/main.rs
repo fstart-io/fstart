@@ -21,6 +21,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the CI firmware job matrix. Reads the boot tests, one
+    /// "board payload" line each (`ci/qemu-boot-tests.sh --list`), on stdin.
+    Shards,
+    /// Merge and compare CI stage-size artifacts.
+    Sizes {
+        #[command(subcommand)]
+        command: fbuild::size_report::Command,
+    },
+    /// Replay a Linux guest's TCG log and verify its PCR readings.
+    VerifyTpmLog {
+        serial: std::path::PathBuf,
+        #[arg(long)]
+        expect: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        banks: Option<Vec<String>>,
+    },
     Build {
         /// Build one named unit and its producers instead of the complete image.
         #[arg(long)]
@@ -290,6 +306,32 @@ fn main() {
 
     let result: Result<(), String> = match cli.command {
         Command::Boards { json } => boards(json),
+        Command::Shards => std::io::read_to_string(std::io::stdin())
+            .map_err(|e| e.to_string())
+            .and_then(|boots| fbuild::shards::run(&boots)),
+        Command::Sizes { command } => command.run(),
+        Command::VerifyTpmLog {
+            serial,
+            expect,
+            banks,
+        } => std::fs::read(serial)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                match fbuild::tpm_log::verify(
+                    &String::from_utf8_lossy(&bytes),
+                    &expect,
+                    banks.as_deref(),
+                ) {
+                    Ok(report) => {
+                        print!("{report}");
+                        Ok(())
+                    }
+                    Err(error) => {
+                        println!("FAIL: {error}");
+                        Err("TPM verification failed".into())
+                    }
+                }
+            }),
         Command::Build {
             board,
             release,

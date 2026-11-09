@@ -14,13 +14,20 @@ use std::path::Path;
 /// NOLOAD reservations the linker scripts size from the stage layout.
 const RESERVATIONS: &[&str] = &[".fstart.heap", ".stack", ".page_tables", ".sp3.page_tables"];
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageSizes {
     pub text: u64,
     pub rodata: u64,
     pub data: u64,
     pub bss: u64,
     pub flat: u64,
+}
+
+/// One board's JSON-lines record, shared by the collector and CI reporter.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct BoardSizes {
+    pub board: String,
+    pub stages: std::collections::BTreeMap<String, StageSizes>,
 }
 
 /// Sizes of a stage ELF by section kind, plus its flat image `flat`.
@@ -64,23 +71,20 @@ pub fn append(
     board: &str,
     stages: &[fstart_image_build::StageBinary],
 ) -> Result<(), String> {
-    let mut record = serde_json::Map::new();
+    let mut record = std::collections::BTreeMap::new();
     for stage in stages {
         let elf = std::fs::read(&stage.path)
             .map_err(|e| format!("read {}: {e}", stage.path.display()))?;
         let flat = std::fs::metadata(&stage.run_path)
             .map_err(|e| format!("stat {}: {e}", stage.run_path.display()))?
             .len();
-        let s = stage_sizes(&elf, flat)?;
-        record.insert(
-            stage.name.clone(),
-            serde_json::json!({
-                "text": s.text, "rodata": s.rodata, "data": s.data,
-                "bss": s.bss, "flat": s.flat,
-            }),
-        );
+        record.insert(stage.name.clone(), stage_sizes(&elf, flat)?);
     }
-    let line = serde_json::json!({ "board": board, "stages": record });
+    let line = serde_json::to_string(&BoardSizes {
+        board: board.into(),
+        stages: record,
+    })
+    .map_err(|e| e.to_string())?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
