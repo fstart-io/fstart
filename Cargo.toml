@@ -53,6 +53,7 @@ members = [
   "crates/resume",
   "crates/store",
   "crates/timestamp",
+  "crates/memtest",
 ]
 
 [workspace.package]
