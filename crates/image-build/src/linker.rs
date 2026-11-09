@@ -1041,11 +1041,12 @@ fn write_heap(out: &mut String, heap_size: u64, region: &str) {
 fn write_rodata_section(out: &mut String, region: &str) {
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
-    // Retain entry roots and allocator heap requirements even under LTO/GC.
-    writeln!(out, "        KEEP(*(.fstart.keep))").unwrap();
     // The bootstrap pin stays only where the initial stage reads it.
     writeln!(out, "        *(.fstart.bootstrap_pin)").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
+    // Retain entry roots and heap requirements under LTO/GC, but append them:
+    // a leading pointer would add a page of padding before ROM page tables.
+    writeln!(out, "        KEEP(*(.fstart.keep))").unwrap();
     writeln!(out, "    }} > {region}\n").unwrap();
 }
 

@@ -620,7 +620,7 @@ fn qemu_q35_linker_script(
         heap.size
     )
     .map_err(|e| e.to_string())?;
-    out.push_str("    .rodata : ALIGN(16) {\n        _rodata_start = .;\n        KEEP(*(.fstart.keep))\n        *(.rodata .rodata.* .lrodata .lrodata.*)\n        _rodata_end = .;\n    } > ROM\n");
+    out.push_str("    .rodata : ALIGN(16) {\n        _rodata_start = .;\n        *(.rodata .rodata.* .lrodata .lrodata.*)\n        KEEP(*(.fstart.keep))\n        _rodata_end = .;\n    } > ROM\n");
     // Statically resolved GOT; i386 links always reserve a `.got.plt` header.
     out.push_str("    .got : ALIGN(8) { *(.got) *(.got.plt) } > ROM\n");
     out.push_str("    .data : ALIGN(16) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        _data_end = .;\n    } > RAM AT > ROM\n    _data_load = LOADADDR(.data);\n");

@@ -280,14 +280,53 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
             "{role:?} silently exceeded code capacity"
         );
 
-        // An unused allocator requirement must survive GC: only ramstage
-        // provides a heap. No entry/text relocation points at this section.
+        // Model the page-aligned ROM tables. A small retained pointer before
+        // this input would insert almost an entire page of alignment padding.
+        let tables = input.add_section(
+            Vec::new(),
+            b".rodata.tables".to_vec(),
+            object::SectionKind::ReadOnlyData,
+        );
+        input.append_section_data(tables, &[0; 4096], 4096);
+        let symbol = input.section_symbol(tables);
+        let offset = input.append_section_data(text, &[0; 8], 8);
+        input
+            .add_relocation(
+                text,
+                object::write::Relocation {
+                    offset,
+                    symbol,
+                    addend: 0,
+                    flags: object::RelocationFlags::Elf {
+                        r_type: object::elf::R_X86_64_64,
+                    },
+                },
+            )
+            .unwrap();
         let keep = input.add_section(
             Vec::new(),
             b".fstart.keep".to_vec(),
             object::SectionKind::ReadOnlyData,
         );
         input.append_section_data(keep, &[0; 8], 8);
+        fs::write(&object_path, input.write().unwrap()).unwrap();
+        fs::write(&script, &original).unwrap();
+        let result = link();
+        assert!(
+            result.status.success(),
+            "{role:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bytes = fs::read(&elf).unwrap();
+        let linked = object::File::parse(&*bytes).unwrap();
+        assert_eq!(
+            linked.section_by_name(".rodata").unwrap().size(),
+            4096 + 8,
+            "{role:?}: retained pointers must not precede aligned tables"
+        );
+
+        // An unused allocator requirement must still survive GC: only
+        // ramstage provides a heap. Entry code does not reference `keep`.
         let heap = input.add_symbol(object::write::Symbol {
             name: b"_FSTART_HEAP".to_vec(),
             value: 0,
