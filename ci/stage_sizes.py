@@ -6,7 +6,7 @@ them into `stage-sizes.json` (uploaded as the `stage-sizes` artifact of every
 run) and the size-report workflow compares a pull request's sizes with its
 base commit's:
 
-    stage_sizes.py merge LINES.jsonl OUT.json --commit SHA [--pr N]
+    stage_sizes.py merge LINES.jsonl OUT.json --commit SHA --source-date-epoch SECONDS [--pr N]
     stage_sizes.py report BASE.json HEAD.json > report.md
 """
 
@@ -22,14 +22,16 @@ SHA = re.compile(r"[0-9a-f]{40}")
 MARKER = "<!-- fstart-stage-sizes -->"
 
 
-def merge(lines, commit, pr=None):
+def merge(lines, commit, source_date_epoch, pr=None):
+    if type(source_date_epoch) is not int or source_date_epoch < 0:
+        raise ValueError("SOURCE_DATE_EPOCH must be a nonnegative integer")
     boards = {}
     for line in lines:
         if not line.strip():
             continue
         record = json.loads(line)
         boards[record["board"]] = record["stages"]
-    merged = {"commit": commit, "boards": boards}
+    merged = {"commit": commit, "source_date_epoch": source_date_epoch, "boards": boards}
     if pr is not None:
         merged["pr"] = pr
     return merged
@@ -72,6 +74,15 @@ def report(base, head):
         "(bss without the heap and stack reservations)."
     )
     lines.append("")
+    old_epoch, new_epoch = base.get("source_date_epoch"), head.get("source_date_epoch")
+    if (type(old_epoch) is not int or old_epoch < 0
+            or type(new_epoch) is not int or old_epoch != new_epoch):
+        lines += [
+            "Stage sizes are not comparable: the builds do not record the same "
+            "`SOURCE_DATE_EPOCH`. A baseline built with the same fixed epoch is needed.",
+            "",
+        ]
+        return "\n".join(lines)
     changed = [k for k in sorted(new) if k in old and new[k] != old[k]]
     added = sorted(k for k in new if k not in old)
     removed = sorted(k for k in old if k not in new)
@@ -119,6 +130,7 @@ def main(argv=None):
     m.add_argument("lines")
     m.add_argument("out")
     m.add_argument("--commit", required=True)
+    m.add_argument("--source-date-epoch", type=int, required=True)
     m.add_argument("--pr", type=int)
     r = commands.add_parser("report")
     r.add_argument("base")
@@ -126,7 +138,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "merge":
         with open(args.lines) as lines:
-            merged = merge(lines, args.commit, args.pr)
+            merged = merge(lines, args.commit, args.source_date_epoch, args.pr)
         with open(args.out, "w") as out:
             json.dump(merged, out, indent=1, sort_keys=True)
     else:
