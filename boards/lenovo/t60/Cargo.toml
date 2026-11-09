@@ -17,7 +17,11 @@ features = ["r60"]
 [package.metadata.fstart.variants.lenovo-z61t]
 features = ["z61t"]
 [features]
-default = []
+# Host tests and tools see the whole board. fbuild builds every stage with
+# --no-default-features and adds `acpi` to the ramstage only.
+default = ["acpi"]
+# The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
+acpi = ["dep:fstart-acpi", "fstart-driver-lenovo/acpi", "fstart-platform-intel/acpi"]
 r60 = []
 z61t = []
 # The SMM handler module, enabled only for the SMM image.
@@ -26,13 +30,13 @@ smm = ["fstart-platform-intel/bundle-smm"]
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["i945-ich7"] }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-pci = { path = "../../../crates/pci" }
 embedded-hal = { workspace = true }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
-fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }

@@ -5,11 +5,12 @@
 //! are not implemented. Docking/Ultrabay, panel/VBT, audio and PCIe behavior
 //! remain unvalidated. A laptop without a dock/module has no serial console.
 #![no_std]
-extern crate alloc;
 #[cfg(test)]
 extern crate std;
 #[cfg(all(feature = "r60", feature = "z61t"))]
 compile_error!("r60 and z61t are distinct board selections");
+#[cfg(feature = "acpi")]
+pub mod acpi;
 pub mod config;
 pub mod mainboard;
 #[cfg(feature = "smm")]

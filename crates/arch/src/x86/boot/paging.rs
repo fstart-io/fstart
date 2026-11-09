@@ -16,9 +16,6 @@
 /// [`IdentityTables::build_in`] without extra spans.
 pub const TABLE_BYTES: usize = 6 * 4096;
 
-extern crate alloc;
-
-use alloc::{boxed::Box, vec::Vec};
 use fstart_core::services::ServiceError;
 use x86_64_crate::structures::paging::{
     FrameAllocator, Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame,
@@ -35,66 +32,69 @@ pub fn gib_pages() -> bool {
         && crate::x86::cpuid(0x8000_0001).3 & (1 << 26) != 0
 }
 
-/// Where the table frames come from.
-enum Frames {
-    /// Heap pages; the platform keeps the heap reserved through handoff.
-    Heap(Vec<Box<PageTable>>),
-    /// A fixed, identity-mapped, reserved buffer.
-    Fixed {
-        base: u64,
-        used: usize,
-        capacity: usize,
-    },
+/// The page-table frames that map the low 4 GiB plus `spans`: the PML4, a
+/// PDPT per 512 GiB and, without 1 GiB leaves, a page directory per GiB.
+/// Spans that overlap each other above 4 GiB are counted twice.
+pub fn frames_needed(gib: bool, spans: &[(u64, u64)]) -> usize {
+    let tables = |shift: u32| {
+        let low = (u64::from(u32::MAX)) >> shift;
+        let above: u64 = spans
+            .iter()
+            .filter(|(_, size)| *size != 0)
+            .map(|&(base, size)| {
+                let first = (base >> shift).max(low + 1);
+                let last = base.saturating_add(size - 1) >> shift;
+                (last + 1).saturating_sub(first)
+            })
+            .sum();
+        low + 1 + above
+    };
+    let directories = if gib { 0 } else { tables(30) };
+    usize::try_from(1 + tables(39) + directories).unwrap_or(usize::MAX)
 }
 
-/// An identity map, owned until installation. Dropping an uninstalled map
-/// leaves the CPU's page tables alone (and frees heap frames).
+/// An identity map in a run of 4 KiB frames, owned until installation. The
+/// first frame is the PML4. Dropping an uninstalled map leaves the CPU's page
+/// tables alone.
 pub struct IdentityTables {
-    frames: Frames,
-    root: u64,
+    base: u64,
+    used: usize,
+    capacity: usize,
 }
 
-// SAFETY: each frame is a distinct, aligned, zeroed PageTable retained by
-// `frames`. Firmware memory is identity mapped, so its pointer is its
-// physical address.
+// SAFETY: each frame is a distinct, aligned, zeroed PageTable of the run.
+// Firmware memory is identity mapped, so its pointer is its physical address.
 unsafe impl FrameAllocator<Size4KiB> for IdentityTables {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        let address = match &mut self.frames {
-            Frames::Heap(pages) => {
-                let mut page = Box::new(PageTable::new());
-                let address = (&mut *page as *mut PageTable) as u64;
-                pages.push(page);
-                address
-            }
-            Frames::Fixed {
-                base,
-                used,
-                capacity,
-            } => {
-                if *used == *capacity {
-                    return None;
-                }
-                let address = *base + (*used * 4096) as u64;
-                *used += 1;
-                // SAFETY: an unused, aligned page of the caller's buffer.
-                unsafe { (address as *mut PageTable).write(PageTable::new()) };
-                address
-            }
-        };
+        if self.used == self.capacity {
+            return None;
+        }
+        let address = self.base + (self.used * 4096) as u64;
+        self.used += 1;
+        // SAFETY: an unused, aligned page of the run.
+        unsafe { (address as *mut PageTable).write(PageTable::new()) };
         PhysFrame::from_start_address(PhysAddr::try_new(address).ok()?).ok()
     }
 }
 
 impl IdentityTables {
-    /// Map the low 4 GiB plus `spans` (base, size) with heap frames.
+    /// Map the low 4 GiB plus `spans` (base, size) with frames from the heap.
     ///
     /// # Safety
     ///
     /// The heap must be identity-mapped DRAM that stays reserved from the
     /// payload until it replaces CR3 (including S3). The spans must be valid
     /// platform physical addresses.
+    #[cfg(feature = "alloc")]
     pub unsafe fn build(spans: impl IntoIterator<Item = (u64, u64)>) -> Result<Self, ServiceError> {
-        Self::map(Frames::Heap(Vec::new()), gib_pages(), spans)
+        extern crate alloc;
+        let spans: alloc::vec::Vec<_> = spans.into_iter().collect();
+        let gib = gib_pages();
+        let frames = alloc::boxed::Box::<[PageTable]>::new_uninit_slice(frames_needed(gib, &spans));
+        let size = core::mem::size_of_val(&*frames);
+        // Never freed: the tables outlive the stage, like the heap itself.
+        let base = alloc::boxed::Box::leak(frames).as_mut_ptr() as u64;
+        Self::map(base, size, gib, spans)
     }
 
     /// Map the low 4 GiB plus `spans` with frames from the buffer at `base`
@@ -110,30 +110,28 @@ impl IdentityTables {
         size: usize,
         spans: impl IntoIterator<Item = (u64, u64)>,
     ) -> Result<Self, ServiceError> {
-        if base % 4096 != 0 {
+        if !base.is_multiple_of(4096) {
             return Err(ServiceError::InvalidParam);
         }
-        let frames = Frames::Fixed {
+        Self::map(base, size, gib_pages(), spans)
+    }
+
+    fn map(
+        base: u64,
+        size: usize,
+        gib: bool,
+        spans: impl IntoIterator<Item = (u64, u64)>,
+    ) -> Result<Self, ServiceError> {
+        let mut tables = Self {
             base,
             used: 0,
             capacity: size / 4096,
         };
-        Self::map(frames, gib_pages(), spans)
-    }
-
-    fn map(
-        frames: Frames,
-        gib: bool,
-        spans: impl IntoIterator<Item = (u64, u64)>,
-    ) -> Result<Self, ServiceError> {
-        let mut tables = Self { frames, root: 0 };
-        let root = tables.allocate_frame().ok_or(ServiceError::HardwareError)?;
-        tables.root = root.start_address().as_u64();
-        // SAFETY: the root is a new zeroed page owned by `tables`; frame
-        // allocation never moves it or aliases its entries.
-        let mut mapper = unsafe {
-            OffsetPageTable::new(&mut *(tables.root as *mut PageTable), VirtAddr::zero())
-        };
+        tables.allocate_frame().ok_or(ServiceError::HardwareError)?;
+        // SAFETY: the root is a new zeroed page of the run; frame allocation
+        // never moves it or aliases its entries.
+        let mut mapper =
+            unsafe { OffsetPageTable::new(&mut *(base as *mut PageTable), VirtAddr::zero()) };
         for (base, size) in core::iter::once((0, 1u64 << 32)).chain(spans) {
             if gib {
                 map_span::<Size1GiB>(&mut mapper, &mut tables, base, size)?;
@@ -153,27 +151,10 @@ impl IdentityTables {
     /// reserved until the payload replaces CR3 (including S3).
     pub unsafe fn install(self) -> u64 {
         // APs walk the tables with caching disabled at first: publish them.
-        match &self.frames {
-            Frames::Heap(pages) => {
-                for page in pages {
-                    // SAFETY: each page is a live, aligned allocation.
-                    unsafe {
-                        crate::x86::writeback_cache_range(
-                            (&**page as *const PageTable).cast(),
-                            core::mem::size_of::<PageTable>(),
-                        );
-                    }
-                }
-            }
-            Frames::Fixed { base, used, .. } => {
-                // SAFETY: the used part of the caller's buffer.
-                unsafe { crate::x86::writeback_cache_range(*base as *const u8, *used * 4096) };
-            }
-        }
-        load_cr3(self.root);
-        let root = self.root;
-        core::mem::forget(self);
-        root
+        // SAFETY: the used part of the run.
+        unsafe { crate::x86::writeback_cache_range(self.base as *const u8, self.used * 4096) };
+        load_cr3(self.base);
+        self.base
     }
 }
 
@@ -288,16 +269,20 @@ pub fn load_cr3(value: u64) {
 mod tests {
     use super::*;
     use x86_64_crate::structures::paging::Translate;
+    extern crate std;
 
+    /// A map in leaked host frames, sized like [`IdentityTables::build`].
     fn heap(gib: bool, spans: &[(u64, u64)]) -> Result<IdentityTables, ServiceError> {
-        IdentityTables::map(Frames::Heap(Vec::new()), gib, spans.iter().copied())
+        let frames = std::vec![PageTable::new(); frames_needed(gib, spans)].leak();
+        let size = core::mem::size_of_val(frames);
+        IdentityTables::map(frames.as_mut_ptr() as u64, size, gib, spans.iter().copied())
     }
 
     fn translate(tables: &mut IdentityTables, address: u64) -> Option<u64> {
         // SAFETY: host allocations have pointer-as-physical addressing for
         // the software walk; these tables are never installed.
         let mapper = unsafe {
-            OffsetPageTable::new(&mut *(tables.root as *mut PageTable), VirtAddr::zero())
+            OffsetPageTable::new(&mut *(tables.base as *mut PageTable), VirtAddr::zero())
         };
         mapper
             .translate_addr(VirtAddr::new(address))
@@ -341,17 +326,12 @@ mod tests {
     #[test]
     fn low_4gib_uses_the_requested_leaf_size() {
         let tables = heap(true, &[]).unwrap();
-        let Frames::Heap(pages) = &tables.frames else {
-            unreachable!()
-        };
-        assert_eq!(pages.len(), 2, "PML4 and one PDPT of 1 GiB leaves");
+        assert_eq!(tables.used, 2, "PML4 and one PDPT of 1 GiB leaves");
         let tables = heap(false, &[]).unwrap();
-        let Frames::Heap(pages) = &tables.frames else {
-            unreachable!()
-        };
-        assert_eq!(pages.len(), 6, "PML4, PDPT and four 2 MiB directories");
+        assert_eq!(tables.used, 6, "PML4, PDPT and four 2 MiB directories");
+        assert_eq!(tables.used * 4096, TABLE_BYTES);
         // Leaves map their own address, write-back (no PWT/PCD).
-        let pdpt = &*pages[1];
+        let pdpt = unsafe { &*((tables.base + 4096) as *const PageTable) };
         let pd = unsafe { &*(pdpt[3].addr().as_u64() as *const PageTable) };
         assert_eq!(pd[511].addr().as_u64(), 0xffe0_0000);
         assert!(pd[511].flags().contains(PageTableFlags::HUGE_PAGE));
@@ -363,28 +343,32 @@ mod tests {
     }
 
     #[test]
+    fn heap_frames_match_what_disjoint_spans_need() {
+        // Below 4 GiB, across a GiB boundary, and past the first 512 GiB.
+        let spans = [
+            (0x8000_0000, 0x1000),
+            (0x1_3fe0_0000, 0x40_0000),
+            (1 << 40, 1),
+        ];
+        for gib in [false, true] {
+            let tables = heap(gib, &spans).unwrap();
+            assert_eq!(tables.used, frames_needed(gib, &spans), "{gib}");
+        }
+    }
+
+    #[test]
     fn fixed_buffer_fits_the_low_4gib_and_fails_cleanly_when_full() {
         #[repr(align(4096))]
         struct Storage([u8; TABLE_BYTES]);
         let mut storage = Storage([0xa5; TABLE_BYTES]);
         let base = storage.0.as_mut_ptr() as u64;
         for gib in [false, true] {
-            let frames = Frames::Fixed {
-                base,
-                used: 0,
-                capacity: TABLE_BYTES / 4096,
-            };
-            let mut tables = IdentityTables::map(frames, gib, []).unwrap();
-            assert_eq!(tables.root, base);
+            let mut tables = IdentityTables::map(base, TABLE_BYTES, gib, []).unwrap();
+            assert_eq!(tables.base, base);
             assert_eq!(translate(&mut tables, 0xffff_ffff), Some(0xffff_ffff));
         }
-        let frames = Frames::Fixed {
-            base,
-            used: 0,
-            capacity: TABLE_BYTES / 4096,
-        };
         // A span above 512 GiB needs another PDPT (and directory).
-        assert!(IdentityTables::map(frames, false, [(1 << 40, 0x1000)]).is_err());
+        assert!(IdentityTables::map(base, TABLE_BYTES, false, [(1 << 40, 0x1000)]).is_err());
     }
 
     #[test]

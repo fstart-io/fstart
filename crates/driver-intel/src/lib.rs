@@ -2,6 +2,7 @@
 #![recursion_limit = "256"]
 #![allow(clippy::modulo_one)]
 
+#[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 
 #[cfg(any(

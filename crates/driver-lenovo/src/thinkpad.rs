@@ -2,6 +2,7 @@
 //! on Ironlake): the PC87382 tablet digitizer and the DSDT glue around the
 //! H8 (coreboot `mainboard/lenovo/{x200,x201}`).
 
+#[cfg(feature = "acpi")]
 use crate::h8::H8Config;
 
 /// The PC87382 config port. Only its LDN 3 serial port is wired, to the

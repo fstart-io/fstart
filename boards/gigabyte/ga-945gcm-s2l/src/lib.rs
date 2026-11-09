@@ -1,8 +1,8 @@
 //! Shared Gigabyte GA-945GCM-S2L/S2C wiring and board sequencing.
 #![no_std]
 
-extern crate alloc;
-
+#[cfg(feature = "acpi")]
+pub mod acpi;
 pub mod config;
 pub mod mainboard;
 #[cfg(feature = "smm")]

@@ -26,6 +26,7 @@ pub(crate) fn publish(
 }
 
 /// The inventory raminit published, if any.
+#[cfg(feature = "ramstage")]
 pub(crate) fn read(store: &Store) -> Option<MemoryInfo> {
     let entry = store.find(tag::MEMORY_INFO)?;
     // SAFETY: the entry holds the record the CAR stage wrote.
