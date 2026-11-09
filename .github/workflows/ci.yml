@@ -9,6 +9,11 @@ on:
 permissions: read-all
 
 env:
+  # Size comparisons must use the same SMBIOS date on master and PRs.
+  # A changing date also changes plan hashes and compiler/linker paths,
+  # perturbing code generation even in stages that do not use SMBIOS.
+  # 2025-01-01 UTC; deliberately not a commit timestamp.
+  SOURCE_DATE_EPOCH: "1735689600"
   # Incremental state is never reused on CI and only inflates the cache.
   CARGO_INCREMENTAL: 0
   # Host-side debug info (tests, fbuild, platform plan runners) is several GiB
@@ -118,7 +123,8 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           python3 ci/stage_sizes.py merge "$RUNNER_TEMP/stage-sizes.jsonl" stage-sizes.json \
-            --commit "$GITHUB_SHA" ${PR:+--pr "$PR"}
+            --commit "$GITHUB_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" ${PR:+--pr "$PR"}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
