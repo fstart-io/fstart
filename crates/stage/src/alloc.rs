@@ -1,15 +1,26 @@
-//! Bump allocator for firmware stages.
+//! Linker-backed allocation for firmware stages.
 //!
-//! Provides a simple bump-only allocator whose backing store is supplied by
-//! the stage link. The generated linker script reserves `_FSTART_HEAP` (the
-//! storage, sized by the stage build config's `heap_size`) and emits
-//! `_FSTART_HEAP_SIZE` (a pointer-sized byte count); special stages such as
-//! the SMM stage may instead define both as `#[no_mangle]` statics.
-//! This crate references them via `extern "C"` at link time.
-//! Deallocation is a no-op — memory is never reclaimed.
+//! Both allocator profiles use the backing store supplied by the stage link.
+//! The generated linker script reserves `_FSTART_HEAP` (the storage, sized by
+//! the stage build config's `heap_size`) and emits `_FSTART_HEAP_SIZE` (a
+//! pointer-sized byte count); special stages such as the SMM stage may instead
+//! define both as `#[no_mangle]` statics.
+//!
+//! Boot-only stages retain the bump allocator. Long-lived payloads can select
+//! `reclaiming-alloc` to return temporary Rust allocations to the same arena.
 
+#[cfg(not(feature = "reclaiming-alloc"))]
 use core::alloc::{GlobalAlloc, Layout};
+#[cfg(not(feature = "reclaiming-alloc"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(feature = "reclaiming-alloc")]
+#[path = "alloc_reclaim.rs"]
+mod reclaim;
+
+#[cfg(feature = "reclaiming-alloc")]
+#[global_allocator]
+static ALLOCATOR: reclaim::ReclaimingAllocator = reclaim::ReclaimingAllocator::new();
 
 // The definitions come from the generated linker script (or `#[no_mangle]`
 // statics in special stages). We declare `_FSTART_HEAP` as `u8` because only
@@ -64,14 +75,18 @@ pub fn heap_size() -> usize {
 }
 
 /// Monotonically advancing allocation cursor (offset from heap start).
+#[cfg(not(feature = "reclaiming-alloc"))]
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// A trivial bump allocator. Allocations advance a cursor; frees are no-ops.
+#[cfg(not(feature = "reclaiming-alloc"))]
 struct BumpAllocator;
 
+#[cfg(not(feature = "reclaiming-alloc"))]
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator;
 
+#[cfg(not(feature = "reclaiming-alloc"))]
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = layout.size();
@@ -108,3 +123,7 @@ unsafe impl GlobalAlloc for BumpAllocator {
         let _ = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
     }
 }
+
+#[cfg(test)]
+#[path = "alloc_tests.rs"]
+mod tests;

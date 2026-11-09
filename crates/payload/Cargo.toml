@@ -18,7 +18,7 @@ crabefi = ["crabefi-basic", "fstart-boot/crabefi"]
 crabefi-ui = ["crabefi", "fstart-boot/crabefi-ui"]
 crabefi-elan-i2c = ["crabefi-basic", "fstart-boot/crabefi-elan-i2c"]
 crabefi-hid-i2c = ["crabefi-basic", "fstart-boot/crabefi-hid-i2c"]
-crabefi-basic = ["fstart-stage/alloc", "fstart-stage/bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
+crabefi-basic = ["fstart-stage/reclaiming-alloc", "fstart-stage/bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
 
 [dependencies]
 fstart-arch = { workspace = true }

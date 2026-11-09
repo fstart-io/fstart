@@ -97,6 +97,7 @@ jobs:
           python3 -m unittest discover -s ci -p 'test_*.py'
           python3 -m unittest discover -s ci/tpm -p 'test_*.py'
           cargo test --workspace
+          bash ci/test-stage-allocator.sh
           cargo test -p fstart-driver-intel \
             --features acpi,i945,gm965,ich8,pineview \
             --features gm45,ich9,ironlake,spi,display --lib
