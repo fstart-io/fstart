@@ -3,10 +3,13 @@
 # invoke nix develop itself.
 #
 # Usage: ci/qemu-boot-tests.sh [asset-dir] [--board BOARD] [--payload PAYLOAD]
+#        ci/qemu-boot-tests.sh --list [--board BOARD] [--payload PAYLOAD]
 #
 # QEMU_BUILD_TIMEOUT bounds each firmware build (default: 15m), separately from
 # QEMU_BOOT_TIMEOUT for each boot (default: 120s). Filters may be repeated and
-# are useful when diagnosing one matrix entry.
+# are useful when diagnosing one matrix entry. --list prints the selected
+# "board payload" combinations (asset-gated entries included) instead of
+# running them, so CI can shard its matrix straight from this script.
 
 set -euo pipefail
 
@@ -25,9 +28,11 @@ BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120s}"
 LOG_DIR="${QEMU_BOOT_LOG_DIR:-target/qemu-boot-tests}"
 board_filters=()
 payload_filters=()
+LIST_ONLY=0
 
 usage() {
 	echo "Usage: $0 [asset-dir] [--board BOARD] [--payload PAYLOAD]" >&2
+	echo "       $0 --list [--board BOARD] [--payload PAYLOAD]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -40,6 +45,10 @@ while [[ $# -gt 0 ]]; do
 		payload_filters+=("${2:?--payload requires a payload}")
 		shift 2
 		;;
+	--list)
+		LIST_ONLY=1
+		shift
+		;;
 	-h|--help)
 		usage
 		exit 0
@@ -50,6 +59,12 @@ while [[ $# -gt 0 ]]; do
 		;;
 	esac
 done
+
+# Entries gated on a boot asset belong to the matrix even when --list runs
+# before any assets exist.
+asset_present() {
+	[[ $LIST_ONLY -eq 1 || -f $1 ]]
+}
 
 matches_filter() {
 	local value="$1"
@@ -62,7 +77,7 @@ matches_filter() {
 	return 1
 }
 
-mkdir -p "$LOG_DIR"
+[[ $LIST_ONLY -eq 1 ]] || mkdir -p "$LOG_DIR"
 failures=0
 selected=0
 
@@ -73,6 +88,7 @@ require_boot_marker() {
 
 	matches_filter "$board" "${board_filters[@]}" || return 0
 	matches_filter "$payload" "${payload_filters[@]}" || return 0
+	[[ $LIST_ONLY -eq 1 ]] && return 0
 
 	local log="$LOG_DIR/${board}-${payload}.log"
 	if grep -Fq "$marker" "$log"; then
@@ -87,6 +103,7 @@ reject_boot_marker() {
 	local board="$1" payload="$2" marker="$3"
 	matches_filter "$board" "${board_filters[@]}" || return 0
 	matches_filter "$payload" "${payload_filters[@]}" || return 0
+	[[ $LIST_ONLY -eq 1 ]] && return 0
 	local log="$LOG_DIR/${board}-${payload}.log"
 	if grep -Fq "$marker" "$log"; then
 		printf 'FAIL %-14s %-6s unexpected %s (%s)\n' "$board" "$payload" "$marker" "$log"
@@ -104,6 +121,10 @@ run_boot() {
 
 	matches_filter "$board" "${board_filters[@]}" || return 0
 	matches_filter "$payload" "${payload_filters[@]}" || return 0
+	if [[ $LIST_ONLY -eq 1 ]]; then
+		printf '%s %s\n' "$board" "$payload"
+		return 0
+	fi
 	selected=$((selected + 1))
 
 	# The matrix label may carry a variant suffix (uefi-disk, halt-smp4);
@@ -177,7 +198,7 @@ for variant in halt-smp4 halt-smp4-multisocket halt-smp4-hotplug; do
 done
 run_boot qemu-q35 uefi 'Boot manager finished'
 # Full boot chain: fstart -> CrabEFI -> GRUB (ESP) -> Linux -> u-root init.
-if [[ -f "$X86_ASSET_DIR/disk.img" ]]; then
+if asset_present "$X86_ASSET_DIR/disk.img"; then
 	run_boot qemu-q35 uefi-disk UROOT_BOOT_SUCCESS \
 		--disk "$X86_ASSET_DIR/disk.img"
 else
@@ -216,7 +237,7 @@ run_boot qemu-armv7 linux FSTART_CI_BOOT_SUCCESS \
 	--kernel "$ASSET_DIR/zImage-armv7"
 
 # TF-A-first SBSA: fstart is BL33 in pflash1, entered NS from BL31.
-if [[ -f "$ASSET_DIR/sbsa-secure.pflash" ]]; then
+if asset_present "$ASSET_DIR/sbsa-secure.pflash"; then
 	run_boot qemu-sbsa halt 'qemu-sbsa ramstage: ready for payload' \
 		--secure-firmware "$ASSET_DIR/sbsa-secure.pflash"
 	require_boot_marker qemu-sbsa halt 'PCI root ready ('
@@ -231,14 +252,16 @@ run_boot orangepi-r1 halt 'h3 mainstage: 1024 MiB DRAM'
 # still halt rather than trying to load absent Linux payload files.
 reject_boot_marker orangepi-r1 halt 'FFS payload'
 reject_boot_marker orangepi-r1 halt 'invalid mainstage memory policy'
-if [[ -f "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" ]]; then
-	cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/xunlong/orangepi-r1/
+if asset_present "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb"; then
+	[[ $LIST_ONLY -eq 1 ]] || cp "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb" boards/xunlong/orangepi-r1/
 	run_boot orangepi-r1 linux FSTART_CI_BOOT_SUCCESS \
 		--kernel "$ASSET_DIR/zImage-armv7"
 else
 	printf 'SKIP %-14s %-6s %s (no %s)\n' orangepi-r1 linux \
 		FSTART_CI_BOOT_SUCCESS "$ASSET_DIR/sun8i-h2-plus-orangepi-r1.dtb"
 fi
+
+[[ $LIST_ONLY -eq 1 ]] && exit 0
 
 if [[ $selected -eq 0 ]]; then
 	echo 'No boot tests selected.' >&2

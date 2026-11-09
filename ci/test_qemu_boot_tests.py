@@ -107,6 +107,63 @@ class QemuBootTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("1 passed, 0 failed", result.stdout)
 
+    def run_list(self, *filters):
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--list", *filters],
+            cwd=self.root,
+            env=dict(
+                os.environ,
+                PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+                QEMU_BOOT_LOG_DIR=str(self.log_dir),
+                QEMU_BOOT_X86_ASSETS=str(self.x86_assets),
+            ),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+    def test_list_prints_every_combination_without_building(self):
+        result = self.run_list()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The combinations CI shards over, in script order. Asset-gated
+        # entries (uefi-disk, qemu-sbsa, orangepi-r1 linux) are listed even
+        # though no assets exist here, and listing builds and boots nothing,
+        # creates no log directory and copies no DTB.
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "qemu-q35 halt",
+                "qemu-q35 halt-smp4",
+                "qemu-q35 halt-smp4-multisocket",
+                "qemu-q35 halt-smp4-hotplug",
+                "qemu-q35 uefi",
+                "qemu-q35 uefi-disk",
+                "qemu-q35-i686 halt",
+                "qemu-q35-i686 halt-smp2",
+                "qemu-riscv64 halt",
+                "qemu-riscv64 linux",
+                "qemu-riscv64 uefi",
+                "qemu-sifive-u halt",
+                "qemu-sifive-u linux",
+                "qemu-aarch64 halt",
+                "qemu-aarch64 linux",
+                "qemu-aarch64 uefi",
+                "qemu-armv7 halt",
+                "qemu-armv7 linux",
+                "qemu-sbsa halt",
+                "orangepi-r1 halt",
+                "orangepi-r1 linux",
+            ],
+        )
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.log_dir.exists())
+        self.assertFalse((self.root / "boards").exists())
+
+    def test_list_honours_filters(self):
+        result = self.run_list("--board", "qemu-q35", "--payload", "uefi")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["qemu-q35 uefi"])
+
     def test_cold_build_does_not_consume_boot_timeout(self):
         result, calls = self.run_matrix(MOCK_BUILD_DELAY="2")
         self.assert_passed(result)

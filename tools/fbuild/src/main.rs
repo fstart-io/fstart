@@ -15,6 +15,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List every board fbuild can build, sorted by board id.
+    Boards {
+        /// Print one JSON array of board objects instead of one id per line.
+        #[arg(long)]
+        json: bool,
+    },
     Build {
         /// Build one named unit and its producers instead of the complete image.
         #[arg(long)]
@@ -232,10 +238,51 @@ fn ide(
     Ok(())
 }
 
+/// The `fbuild boards --json` view of one discovered board.
+#[derive(serde::Serialize)]
+struct BoardEntry<'a> {
+    board: &'a str,
+    package: &'a str,
+    dir: String,
+    platform: Option<&'a str>,
+    target: Option<&'a str>,
+    build_profile: Option<&'a board_manifest::ProfileRef>,
+    variants: Vec<&'a str>,
+}
+
+fn boards(json: bool) -> Result<(), String> {
+    let root = build_board::workspace_root_pub()?;
+    let boards = board_manifest::discover(&root)?;
+    if json {
+        let entries: Vec<_> = boards
+            .iter()
+            .map(|board| BoardEntry {
+                board: &board.board,
+                package: &board.package,
+                dir: board.rel_dir.display().to_string(),
+                platform: board.platform.as_deref(),
+                target: board.target.as_deref(),
+                build_profile: board.build_profile.as_ref(),
+                variants: board.variants.iter().map(|(id, _)| id.as_str()).collect(),
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?
+        );
+    } else {
+        for board in &boards {
+            println!("{}", board.board);
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
+        Command::Boards { json } => boards(json),
         Command::Build {
             board,
             release,
