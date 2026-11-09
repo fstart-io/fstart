@@ -6,5 +6,6 @@
 - Reinventing the wheel. I saw agents reinvent PCI ECAM in like 5 different locations or stupid traits that wrap around the original ECAM functions. If you need these boilerplate wrappers your code is wrong!
 
 ## Code I do like
-- I love Tock-register! Tock-register is a library to program registers and define per register bitfields. We're a hardware project and we should use this uquitously
-  This is not only for MMIO registers. If you have some port of a mailbox or staged offset + data writes (common in superio), the tock-register trait "Readable, Writeable, ReadWriteable" allow us to use the same register offset + bitfields for this.
+- Prefer an existing PAC (Peripheral Access Crate) and/or HAL (Hardware Abstraction Layer) for the hardware over defining registers or drivers ourselves. Reuse these directly rather than rewriting them with tock-registers or adding boilerplate wrappers.
+- When no suitable PAC or HAL is available, use tock-registers to define registers and per-register bitfields.
+  This is not only for MMIO registers. For mailboxes or staged offset + data writes (common in Super I/O), implement the tock-registers access traits so the same register definitions and bitfields can be used.
