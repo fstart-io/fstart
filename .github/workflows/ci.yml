@@ -30,13 +30,19 @@ env:
   # fbuild's recorded firmware selections and the build cache, untouched.
   CARGO_UNSTABLE_WARNINGS: true
   CARGO_BUILD_WARNINGS: deny
-
-# Build caching: host builds use rust-cache (see .github/actions/setup).
-# Firmware jobs cache the whole target/ directory, not just third-party
-# dependencies, so the -Zbuild-std core/alloc and firmware units under
-# target/fstart-build/ are kept too; each board job has a cache of its
-# own. Firmware caches are only saved from master; pull requests restore
-# the most recent master cache for the same toolchain and Cargo.lock.
+  # Compilation is cached per rustc invocation by sccache (installed by
+  # .github/actions/setup) and shared by every job through the GitHub
+  # Actions cache, firmware units included.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  # sccache up to 0.19.0 caps client<->daemon frames at 8 MiB, but a frame
+  # carries a whole compiler output, and rustc's future-incompat report
+  # when building core for x86 is a single 18 MiB JSON line: the daemon
+  # could not answer those compiles and clients hung until its 600 s idle
+  # timeout. Raise the cap to the 4-byte wire maximum until a release
+  # ships without the 8 MiB default (and closes the connection when a
+  # reply cannot be written). The daemon inherits this on auto-start.
+  SCCACHE_MAX_FRAME_LENGTH: "4294967295"
 
 jobs:
   # The board lists the matrices below run on. fbuild resolves them from
@@ -117,23 +123,7 @@ jobs:
           submodules: true
       - uses: ./.github/actions/setup
         with:
-          cache: "false"
           llvm-tools: "true"
-
-      # Each board owns its firmware cache; matrix jobs must not race to
-      # save different target/ contents under the same key.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: &firmware-cache-paths |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
-
-      - name: Mark build start
-        run: touch "$RUNNER_TEMP/build-start"
 
       # NOTE: FSTART_EXTRA_RUSTFLAGS must NOT be set here. Resolved builds
       # fail closed on unrecorded ambient inputs (see
@@ -151,16 +141,6 @@ jobs:
           path: stage-sizes-${{ matrix.board }}.jsonl
           if-no-files-found: error
           retention-days: 7
-
-      - name: Prune stale firmware builds
-        if: github.event_name == 'push'
-        run: ci/prune-build-cache.sh "$RUNNER_TEMP/build-start"
-
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: github.event_name == 'push'
-        with:
-          path: *firmware-cache-paths
-          key: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
 
   # Stage sizes of every board, kept as an artifact of each run. The
   # size-report workflow compares a pull request's with its base's. Builds
@@ -220,7 +200,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Prepare each shared asset cache once, not in every board job.
+      # The cache carries the assets across runs; within a run they travel
+      # as artifacts (uploaded below) so a boot job cannot be failed by a
+      # cache eviction between this job and its consumers.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: matrix.assets == 'payloads'
         id: payload-cache
@@ -258,6 +240,13 @@ jobs:
             boot-assets/x86_64/grubx64.efi boot-assets/x86_64/vmlinuz \
             boot-assets/x86_64/initramfs.cpio boot-assets/x86_64/grub.cfg
 
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boot-assets-${{ matrix.assets }}
+          path: boot-assets/${{ matrix.assets }}
+          if-no-files-found: error
+          retention-days: 1
+
   qemu-boot-matrix:
     needs: [qemu-boot-assets, boards]
     runs-on: ubuntu-latest
@@ -270,32 +259,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
-          cache: "false"
           packages: qemu-system-arm qemu-system-misc qemu-system-x86
 
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Missing assets must fail CI, not silently skip optional boots:
+      # download-artifact errors when the producer uploaded nothing.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         if: matrix.board != 'qemu-q35'
         with:
+          name: boot-assets-payloads
           path: boot-assets/payloads
-          key: ${{ runner.os }}-qemu-payloads-${{ hashFiles('ci/build-payloads.sh', 'ci/kernel-*.config') }}
-          # Missing assets must fail CI, not silently skip optional boots.
-          fail-on-cache-miss: true
 
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         if: matrix.board == 'qemu-q35'
         with:
+          name: boot-assets-x86_64
           path: boot-assets/x86_64
-          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
-          fail-on-cache-miss: true
-
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: *firmware-cache-paths
-          key: rust-${{ github.job }}-${{ matrix.board }}-${{ matrix.payload }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: rust-${{ github.job }}-${{ matrix.board }}-${{ matrix.payload }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
-
-      - name: Mark build start
-        run: touch "$RUNNER_TEMP/build-start"
 
       - name: Run QEMU boot test
         env:
@@ -304,16 +282,6 @@ jobs:
         run: >-
           ci/qemu-boot-tests.sh boot-assets/payloads
           --board "$BOARD" --payload "$PAYLOAD"
-
-      - name: Prune stale firmware builds
-        if: github.event_name == 'push'
-        run: ci/prune-build-cache.sh "$RUNNER_TEMP/build-start"
-
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: github.event_name == 'push'
-        with:
-          path: *firmware-cache-paths
-          key: rust-${{ github.job }}-${{ matrix.board }}-${{ matrix.payload }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
@@ -330,23 +298,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
-          cache: "false"
           packages: >-
             qemu-system-x86 swtpm swtpm-tools busybox-static
             grub-pc-bin grub-efi-amd64-bin grub-common xorriso
             mtools gdisk dosfstools cpio
 
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
+          name: boot-assets-x86_64
           path: boot-assets/x86_64
-          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
-          fail-on-cache-miss: true
-
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: *firmware-cache-paths
-          key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
       # This revision continues fstart's ACPI event log and locks the TPM.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -364,12 +324,6 @@ jobs:
 
       - name: Test TPM 1.2 and 2.0 through SeaBIOS and CrabEFI
         run: ci/tpm/run-tests.sh target/tpm-guest target/seabios
-
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: github.event_name == 'push'
-        with:
-          path: *firmware-cache-paths
-          key: rust-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()

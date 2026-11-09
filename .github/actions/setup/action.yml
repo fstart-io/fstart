@@ -1,8 +1,8 @@
 name: Set up the Rust CI environment
 description: >-
-  Install the pinned Rust toolchain and the cargo cache, and optionally
-  install apt packages and put llvm-tools on PATH. Run after
-  actions/checkout.
+  Install the pinned Rust toolchain, sccache and the shared cargo
+  cache, and optionally install apt packages and put llvm-tools on
+  PATH. Run after actions/checkout.
 
 inputs:
   packages:
@@ -11,13 +11,6 @@ inputs:
   llvm-tools:
     description: Put the toolchain's llvm-tools bin directory on PATH.
     default: "false"
-  cache:
-    description: >-
-      Restore the shared cargo cache with rust-cache. Firmware jobs turn
-      this off and keep a whole-target cache of their own instead, since
-      rust-cache's cleanup discards the -Zbuild-std core/alloc artifacts
-      and fbuild unit state under target/fstart-build/.
-    default: "true"
   cache-targets:
     description: Also cache compiled dependencies in target/ (cache only).
     default: "false"
@@ -36,17 +29,21 @@ runs:
       shell: bash
       run: rustup toolchain install
 
+    # Compilation results are shared across jobs and runs through the
+    # GitHub Actions cache backend (see SCCACHE_GHA_ENABLED /
+    # RUSTC_WRAPPER in ci.yml, which also carries the frame-length
+    # workaround that makes sccache viable for x86 firmware builds).
+    # Only the sccache binary version is pinned here.
+    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      with:
+        version: v0.19.0
+
     # The cargo registry (and optionally dependency artifacts), keyed
-    # automatically on the toolchain and Cargo.lock.
-    #
-    # There is deliberately no sccache here: with RUSTC_WRAPPER=sccache,
-    # x86 firmware builds hang for 600 s per affected unit. Cargo always
-    # passes --json=future-incompat with its JSON message formats, x86
-    # -Zbuild-std core answers with an 18 MiB single-line report (8,747
-    # `sse` entries, rust-lang/rust#117938), and sccache 0.19.0 deadlocks
-    # relaying it. Revisit once sccache handles that message.
+    # automatically on the toolchain and Cargo.lock. Build outputs beyond
+    # that come from sccache per compiler invocation, which also covers
+    # the -Zbuild-std firmware units - rust-cache's target cleanup would
+    # discard those.
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      if: inputs.cache == 'true'
       with:
         cache-targets: ${{ inputs.cache-targets }}
         shared-key: ${{ inputs.shared-key }}
