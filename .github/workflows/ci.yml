@@ -144,6 +144,21 @@ jobs:
           cargo fbuild build --board "$BOARD" --release \
             --size-report "stage-sizes-$BOARD.jsonl"
 
+      # CI cannot boot the Unmatched, so at least assemble every payload
+      # its plan offers. Inputs are placeholders: this checks the plan's
+      # input inventory and image construction, not the payload itself.
+      - name: Assemble payloads
+        if: matrix.board == 'sifive-unmatched'
+        run: |
+          input="$RUNNER_TEMP/placeholder.bin"
+          printf 'fstart CI placeholder' > "$input"
+          cp "$input" boards/sifive/unmatched/unmatched.dtb
+          cargo fbuild assemble --board sifive-unmatched --release --payload halt
+          cargo fbuild assemble --board sifive-unmatched --release --payload linux \
+            --kernel "$input" --firmware "$input"
+          cargo fbuild assemble --board sifive-unmatched --release --payload uefi \
+            --firmware "$input"
+
       # Linking firmware does not execute the workspace-excluded Intel
       # boards' policy, SPD-map or complete-DSDT host tests.
       - name: Test Intel board library

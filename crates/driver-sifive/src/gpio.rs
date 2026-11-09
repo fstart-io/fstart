@@ -15,7 +15,10 @@ register_structs! {
         (0x04 => input_en: MmioReadWrite<u32>),
         (0x08 => output_en: MmioReadWrite<u32>),
         (0x0c => output_val: MmioReadWrite<u32>),
-        (0x10 => @END),
+        (0x10 => _reserved0),
+        (0x38 => iof_en: MmioReadWrite<u32>),
+        (0x3c => iof_sel: MmioReadWrite<u32>),
+        (0x40 => @END),
     }
 }
 
@@ -36,6 +39,21 @@ impl Gpio {
     fn regs(&self) -> &GpioRegs {
         // SAFETY: `new` was given the controller's register block.
         unsafe { &*(self.base as *const GpioRegs) }
+    }
+
+    /// Route `pin` to peripheral function `sel` (IOF0/IOF1) instead of
+    /// software GPIO. Nothing at reset routes e.g. the UART0 pads
+    /// (GPIO 16/17, IOF0), so early firmware must do this itself rather
+    /// than inherit whatever a previous boot stage left behind.
+    pub fn route_iof(self, pin: u8, sel: bool) {
+        let mask = 1u32 << pin;
+        let regs = self.regs();
+        if sel {
+            regs.iof_sel.set(regs.iof_sel.get() | mask);
+        } else {
+            regs.iof_sel.set(regs.iof_sel.get() & !mask);
+        }
+        regs.iof_en.set(regs.iof_en.get() | mask);
     }
 
     /// Drive `pin` as an output, starting from its current output level.

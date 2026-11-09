@@ -28,8 +28,12 @@ _start:
     //
     // Following coreboot's approach (src/arch/riscv/bootblock.S): save DTB
     // in the mscratch CSR which is immune to stack overflow. The hart ID
-    // can always be re-read from mhartid.
+    // can always be re-read from mhartid. Preserve a0 itself in s1 across
+    // the copy/clear loops: from the ROM it is the hart ID, from a
+    // predecessor stage (jump_to_with_handoff) it is the handoff address
+    // fstart_main receives.
     csrw mscratch, a1
+    mv   s1, a0
 
     // --- Multi-hart parking ---
     // Park all harts except the designated boot hart. On the SiFive FU740,
@@ -79,9 +83,9 @@ _start:
     addi t0, t0, 8
     j 3b
 4:
-    // Jump to Rust entry point.
-    // a0 = handoff_ptr = 0 (no inter-stage handoff on RISC-V yet).
-    li a0, 0
+    // Jump to Rust entry point with the preserved a0 (hart ID from the
+    // ROM, handoff address from a predecessor stage).
+    mv a0, s1
     call fstart_main
     // Should never return; fall through to park
 
@@ -433,8 +437,12 @@ pub fn jump_to(addr: u64) -> ! {
     // is a non-returning jump.
     unsafe {
         core::arch::asm!(
+            "fence rw, rw",
+            "fence.i",
             "jr {0}",
             in(reg) addr,
+            // No boot DTB is passed to a firmware entry; see jump_to_with_handoff.
+            in("a1") 0_u64,
             options(noreturn),
         );
     }
@@ -448,15 +456,25 @@ pub fn jump_to(addr: u64) -> ! {
 /// On RISC-V the convention is to pass the handoff address in `a0`.
 /// The next stage's `_start` saves `a0` and makes it available via
 /// [`boot_hart_id`] or a dedicated handoff reader.
+///
+/// `_start` records `a1` as the boot DTB ([`boot_dtb_addr`]). A firmware
+/// stage transition passes no DTB, so `a1` is explicitly zero rather than
+/// whatever the compiler left in the register. The jump is preceded by
+/// `fence.i`: the successor was usually just loaded through data stores.
 #[inline(always)]
 pub fn jump_to_with_handoff(addr: u64, handoff_addr: usize) -> ! {
     // SAFETY: caller guarantees entry and handoff_ptr are valid addresses in mapped
     // memory.
     unsafe {
+        // The successor was just written through the D-cache; make those
+        // stores visible to instruction fetch before entering it.
         core::arch::asm!(
+            "fence rw, rw",
+            "fence.i",
             "jr {addr}",
             addr = in(reg) addr,
             in("a0") handoff_addr,
+            in("a1") 0_u64,
             options(noreturn),
         );
     }

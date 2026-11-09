@@ -231,6 +231,126 @@ pub fn fill(
     Ok(script)
 }
 
+/// RAM-resident stage: one reservation holds code, data and BSS, with a fixed
+/// heap and stack at its top. Image/BSS growth never moves the heap or stack.
+pub struct RamStage {
+    pub platform: Platform,
+    pub boot_hart_id: u32,
+    pub memory: crate::plan::Span,
+    pub heap: crate::plan::Span,
+    pub stack: crate::plan::Span,
+    pub descriptor: crate::layout::EncodedLayout,
+}
+
+impl RamStage {
+    fn elf64(&self) -> bool {
+        !matches!(self.platform, Platform::Armv7 | Platform::X86)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        for range in [self.memory, self.heap, self.stack] {
+            range.end()?;
+            crate::elf::address_extent(self.elf64(), range.base, range.size)?;
+            if range.base % 16 != 0 || range.size % 16 != 0 {
+                return Err("unaligned RAM stage reservation".into());
+            }
+        }
+        if !self.memory.contains(self.heap.base, self.heap.size)
+            || !self.memory.contains(self.stack.base, self.stack.size)
+            || self.heap.base <= self.memory.base
+            || self.heap.end()? != self.stack.base
+            || self.stack.end()? != self.memory.end()?
+        {
+            return Err("RAM stage heap and stack reservations overlap or are inconsistent".into());
+        }
+        let descriptor = fstart_core::layout::Layout::parse(self.descriptor.as_bytes())
+            .map_err(|e| e.to_string())?;
+        for region in descriptor.regions() {
+            crate::elf::address_extent(self.elf64(), region.base, region.size)?;
+        }
+        Ok(())
+    }
+
+    pub fn elf_expectations(&self) -> Result<crate::elf::Expectations, String> {
+        use crate::elf::{Architecture, Descriptor, Expectations};
+        self.validate()?;
+        let architecture = match self.platform {
+            Platform::Armv7 => Architecture::Arm,
+            Platform::Aarch64 => Architecture::Aarch64,
+            Platform::Riscv64 => Architecture::Riscv64,
+            _ => return Err("unsupported RAM stage ELF architecture".into()),
+        };
+        Ok(Expectations {
+            architecture,
+            elf64: self.elf64(),
+            little_endian: true,
+            stored: vec![self.memory],
+            runtime: vec![self.memory],
+            identity_mapping: true,
+            entry: Some(self.memory.base),
+            copy: None,
+            descriptor: Some(Descriptor {
+                section: ".fstart.layout".into(),
+                start_symbol: "_fstart_layout_start".into(),
+                end_symbol: "_fstart_layout_end".into(),
+                bytes: self.descriptor.as_bytes().to_vec(),
+                reservation: self.memory,
+            }),
+            stored_flags: None,
+            symbols: std::collections::BTreeMap::from([
+                ("_stack_bottom".into(), self.stack.base),
+                ("_stack_top".into(), self.stack.end()?),
+                ("_FSTART_HEAP".into(), self.heap.base),
+            ]),
+        })
+    }
+}
+
+/// Linker script for a [`RamStage`].
+pub fn resolved_ram(layout: &RamStage) -> Result<String, String> {
+    layout.validate()?;
+    let platform = layout.platform;
+    let mut out = format!(
+        "OUTPUT_ARCH({})\nENTRY(_start)\n_boot_hart_id = {};\nMEMORY {{\n",
+        platform.linker_arch(),
+        layout.boot_hart_id
+    );
+    for (name, flags, base, size) in [
+        (
+            "RAM",
+            "rwx",
+            layout.memory.base,
+            layout.heap.base - layout.memory.base,
+        ),
+        ("HEAP", "rw", layout.heap.base, layout.heap.size),
+        ("STACK", "rw", layout.stack.base, layout.stack.size),
+    ] {
+        writeln!(
+            out,
+            " {name} ({flags}) : ORIGIN = {base:#x}, LENGTH = {size:#x}"
+        )
+        .unwrap();
+    }
+    out.push_str("}\nSECTIONS {\n");
+    write_text_section(&mut out, "RAM", entry_section("_start"));
+    // LLD's BYTE-only sections inherit flags from the preceding section.
+    out.push_str(&layout_section(&layout.descriptor, "RAM"));
+    write_anchor_section(&mut out, "RAM", platform, layout.heap.size);
+    write_rodata_section(&mut out, "RAM");
+    for section in [".fstart.keep", ".eh_frame_hdr", ".eh_frame"] {
+        writeln!(out, " {section} : ALIGN(8) {{ *({section}) }} > RAM").unwrap();
+    }
+    write_data_section(&mut out, "RAM");
+    write_bss_section(&mut out, "RAM");
+    write_page_tables_section(&mut out, "RAM", platform);
+    write_heap(&mut out, layout.heap.size, "HEAP");
+    write_stack(&mut out, layout.stack.size, "STACK");
+    out.push_str(
+        " ASSERT(_bss_end <= ORIGIN(HEAP), \"stage data/BSS exceed resolved capacity\")\n}\n",
+    );
+    Ok(out)
+}
+
 /// Fixed-budget XIP placement. Image/BSS growth never moves the heap or stack.
 pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
     layout.validate()?;

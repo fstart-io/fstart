@@ -1,17 +1,18 @@
-//! The FU740 build plan: one stage running from the L2 LIM, the FFS on the
-//! SPI flash, and the payload (Linux or CrabEFI with OpenSBI) in DRAM.
-//! Addresses come from the board's [`Fu740Config`], the one the firmware
-//! reads.
+//! The FU740 build plan: a bootblock running from the L2 LIM and a
+//! mainstage it authenticates into DRAM, the FFS on the SPI flash, and
+//! the payload (Linux or CrabEFI with OpenSBI) in DRAM. Addresses come
+//! from the board's [`Fu740Config`], the one the firmware reads.
 
 extern crate std;
 
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::build_plan::{
-    BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile, UnitOutput,
+    BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
+    UnitOutput,
 };
-use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
+use fstart_image_build::linker::{RamStage, resolved_ram};
 use fstart_image_build::plan::{BuildSelection, Span};
 use std::{
     collections::BTreeMap,
@@ -22,10 +23,20 @@ use std::{
 
 use crate::{FU740_DRAM_BASE, Fu740Board, Fu740Config};
 
-/// The L2 loosely-integrated memory the stage runs from.
-const LIM: Span = span(0x0800_0000, 0x0020_0000);
-const STACK_SIZE: u64 = 0x4000;
-const HEAP_SIZE: u64 = 0x4000;
+/// The L2 LIM aperture at reset: way zero is always cache, so only the
+/// remaining 15 of 16 ways (1.875 MiB of the 2 MiB window) back it.
+const LIM: Span = span(0x0800_0000, 0x001e_0000);
+const BOOT_STACK_SIZE: u64 = 0x4000;
+const BOOT_HEAP_SIZE: u64 = 0x4000;
+/// The DRAM window the mainstage is loaded into and runs from.
+const MAIN: Span = span(0x8100_0000, 0x0200_0000);
+const MAIN_STACK_SIZE: u64 = 0x1_0000;
+const MAIN_HEAP_SIZE: u64 = 0x10_0000;
+/// Serialized bootblock-to-mainstage handoff at the start of DRAM.
+const HANDOFF: Span = span(
+    FU740_DRAM_BASE,
+    fstart_core::handoff::HANDOFF_MAX_SIZE as u64,
+);
 const KERNEL_FILE: &str = "Image-riscv64";
 const KERNEL_CAPACITY: u64 = 0x0b00_0000;
 const OPENSBI_FILE: &str = "fw_dynamic.bin";
@@ -51,6 +62,76 @@ impl<B: Fu740Board> Plan<B> {
     }
 }
 
+/// One stage's linker script and executable output: its layout
+/// descriptor carries its own regions first, then the payload
+/// destinations both stages agree on.
+fn stage(
+    config: &Fu740Config,
+    memory: Span,
+    heap_size: u64,
+    stack_size: u64,
+    index: u16,
+    own: &[fstart_core::layout::Region],
+    payload_regions: &[fstart_core::layout::Region],
+) -> Result<(String, UnitOutput), String> {
+    let stack = Span {
+        base: memory.end()? - stack_size,
+        size: stack_size,
+    };
+    let heap = Span {
+        base: stack.base - heap_size,
+        size: heap_size,
+    };
+    let mut regions = vec![
+        memory.region(Kind::Image),
+        memory.region(Kind::Writable),
+        stack.region(Kind::Stack),
+        heap.region(Kind::Heap),
+        HANDOFF.region(Kind::Reserved),
+    ];
+    regions.extend_from_slice(own);
+    regions.extend_from_slice(payload_regions);
+    let layout = RamStage {
+        platform: Platform::Riscv64,
+        boot_hart_id: u32::try_from(config.boot_hart_id).map_err(|e| e.to_string())?,
+        memory,
+        heap,
+        stack,
+        descriptor: EncodedLayout::encode(index, &regions).map_err(|e| e.to_string())?,
+    };
+    Ok((
+        resolved_ram(&layout)?,
+        UnitOutput::Executable {
+            expectations: layout.elf_expectations()?,
+            load_address: memory.base,
+            flat_capacity: memory.size,
+        },
+    ))
+}
+
+fn unit(
+    name: &str,
+    features: Vec<String>,
+    linker_script: String,
+    output: UnitOutput,
+) -> CompilationUnit {
+    CompilationUnit {
+        name: name.into(),
+        cargo_target: CargoTarget::BoardBinary,
+        target: "riscv64gc-unknown-none-elf".into(),
+        features,
+        build_std: Some("core,alloc".into()),
+        rustflags: vec!["-Zub-checks=no".into()],
+        release_only: false,
+        linker_script: Some(linker_script),
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
+        file_bindings: vec![],
+        board_features: vec![],
+        output,
+    }
+}
+
 /// The plan for `config` and the payload `selection` names.
 pub fn resolve(
     config: &Fu740Config,
@@ -65,52 +146,48 @@ pub fn resolve(
     let linux = payload == "linux";
     let keep_firmware = payload != "halt";
     let firmware_image = span(config.firmware_base, config.firmware_size);
-    let (stack, heap) = stack_heap(LIM, STACK_SIZE, HEAP_SIZE)?;
+    let dram = span(FU740_DRAM_BASE, config.ddr.dram_size);
+    for range in [MAIN, HANDOFF] {
+        if !dram.contains(range.base, range.size) {
+            return Err("FU740 stage window outside populated DRAM".into());
+        }
+    }
 
-    let mut regions = vec![
-        LIM.region(Kind::Writable),
-        stack.region(Kind::Stack),
-        heap.region(Kind::Heap),
-        LIM.region(Kind::Image),
+    // Payload destinations both stages see; overlap with either stage's
+    // footprint or the handoff is rejected by the common plan validation.
+    let mut payload_regions = vec![
         firmware_image.region(Kind::Flash),
         firmware_image.region(Kind::Firmware),
     ];
     if linux {
-        regions.push(span(config.kernel_addr, KERNEL_CAPACITY).region(Kind::Payload));
+        payload_regions.push(span(config.kernel_addr, KERNEL_CAPACITY).region(Kind::Payload));
+        payload_regions.push(span(config.dtb_addr, DTB_CAPACITY).region(Kind::DeviceTree));
     }
     if keep_firmware {
-        regions.push(span(config.firmware_addr, OPENSBI_CAPACITY).region(Kind::PayloadFirmware));
+        payload_regions
+            .push(span(config.firmware_addr, OPENSBI_CAPACITY).region(Kind::PayloadFirmware));
     }
-    if linux {
-        regions.push(span(config.dtb_addr, DTB_CAPACITY).region(Kind::DeviceTree));
+    if payload == "uefi" {
+        payload_regions.push(span(config.dtb_addr, DTB_CAPACITY).region(Kind::DeviceTree));
     }
-    let descriptor = EncodedLayout::encode(0, &regions).map_err(|e| e.to_string())?;
-    let boot_hart_id = u32::try_from(config.boot_hart_id).map_err(|e| e.to_string())?;
-    let linker_script = lim_linker_script(LIM, heap, stack, boot_hart_id, &descriptor)?;
-    let expectations = Expectations {
-        architecture: Architecture::Riscv64,
-        elf64: true,
-        little_endian: true,
-        stored: vec![LIM],
-        runtime: vec![LIM],
-        identity_mapping: true,
-        entry: Some(LIM.base),
-        copy: None,
-        descriptor: Some(Descriptor {
-            section: ".fstart.layout".into(),
-            start_symbol: "_fstart_layout_start".into(),
-            end_symbol: "_fstart_layout_end".into(),
-            bytes: descriptor.as_bytes().to_vec(),
-            reservation: LIM,
-        }),
-        stored_flags: None,
-        symbols: BTreeMap::from([
-            ("_stack_bottom".into(), stack.base),
-            ("_stack_top".into(), stack.end()?),
-            ("_FSTART_HEAP".into(), heap.base),
-        ]),
-    };
-    expectations.validate().map_err(|e| e.to_string())?;
+    let (boot_script, boot_output) = stage(
+        config,
+        LIM,
+        BOOT_HEAP_SIZE,
+        BOOT_STACK_SIZE,
+        0,
+        &[MAIN.region(Kind::BootstrapMainstage)],
+        &payload_regions,
+    )?;
+    let (main_script, main_output) = stage(
+        config,
+        MAIN,
+        MAIN_HEAP_SIZE,
+        MAIN_STACK_SIZE,
+        1,
+        &[],
+        &payload_regions,
+    )?;
 
     let opensbi = || FirmwareConfig {
         kind: FirmwareKind::OpenSbi,
@@ -152,6 +229,7 @@ pub fn resolve(
         }),
         _ => None,
     };
+    let boot_hart_id = u32::try_from(config.boot_hart_id).map_err(|e| e.to_string())?;
     let assembly = Assembly {
         platform: Platform::Riscv64,
         memory: vec![
@@ -175,24 +253,39 @@ pub fn resolve(
             },
         ],
         flash: None,
-        bootstrap: vec![],
-        stages: StageLayout::Monolithic(MonolithicConfig {
-            external: false,
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig {
-                    temp_ram_buffer: None,
-                }),
-                verify_firmware: true,
-                payload: true,
-                fdt: true,
-                pci: false,
-                ..Default::default()
+        // The assembler patches the named mainstage descriptor into the
+        // bootblock's bootstrap pin; the bootblock itself has no role.
+        bootstrap: vec![("main".into(), BootstrapRole::Mainstage)],
+        stages: StageLayout::MultiStage(hvec([
+            StageConfig {
+                name: hstr("bootblock"),
+                build: StageBuildConfig {
+                    load_next_stage: Some(hstr("main")),
+                    ..Default::default()
+                },
+                load_addr: LIM.base,
+                stack_size: BOOT_STACK_SIZE as u32,
+                heap_size: Some(BOOT_HEAP_SIZE as u32),
+                runs_from: RunsFrom::Ram,
+                compression: Compression::None,
+                data_addr: None,
             },
-            load_addr: LIM.base,
-            data_addr: None,
-            stack_size: stack.size as u32,
-            heap_size: Some(heap.size as u32),
-        }),
+            StageConfig {
+                name: hstr("main"),
+                build: StageBuildConfig {
+                    verify_firmware: true,
+                    payload: true,
+                    fdt: true,
+                    ..Default::default()
+                },
+                load_addr: MAIN.base,
+                stack_size: MAIN_STACK_SIZE as u32,
+                heap_size: Some(MAIN_HEAP_SIZE as u32),
+                runs_from: RunsFrom::Ram,
+                compression: crate::compression::MAIN_STAGE,
+                data_addr: None,
+            },
+        ])),
         security: fstart_core::default_security_config(),
         payload: assembly_payload,
         microcode: None,
@@ -226,127 +319,28 @@ pub fn resolve(
             capacity: OPENSBI_CAPACITY,
         });
     }
-    let mut features = vec!["bundle-fu740".into()];
+    let bootblock = unit(
+        "bootblock",
+        vec!["bundle-fu740".into()],
+        boot_script,
+        boot_output,
+    );
+    let mut main_features = vec!["bundle-fu740".into()];
     match payload.as_str() {
-        "linux" => features.push("linux".into()),
-        "uefi" => features.push("crabefi".into()),
+        "linux" => main_features.push("linux".into()),
+        "uefi" => main_features.push("crabefi".into()),
         _ => {}
     }
-    let unit = CompilationUnit {
-        name: "stage".into(),
-        cargo_target: CargoTarget::BoardBinary,
-        target: "riscv64gc-unknown-none-elf".into(),
-        features,
-        build_std: Some("core,alloc".into()),
-        rustflags: vec!["-Zub-checks=no".into()],
-        release_only: false,
-        linker_script: Some(linker_script),
-        environment_values: BTreeMap::new(),
-        bindings: vec![],
-        file_bindings: vec![],
-        board_features: vec![],
-        output: UnitOutput::Executable {
-            expectations,
-            load_address: LIM.base,
-            flat_capacity: LIM.size,
-        },
-    };
+    let main = unit("main", main_features, main_script, main_output);
     let plan = BuildPlan {
         payload,
-        units: vec![unit],
-        stages: vec!["stage".into()],
+        units: vec![bootblock, main],
+        stages: vec!["bootblock".into(), "main".into()],
         assembly: assembly.into(),
         inputs,
     };
     plan.order()?;
     Ok(plan)
-}
-
-/// Heap and stack at the top of `writable`, stack last.
-fn stack_heap(writable: Span, stack_size: u64, heap_size: u64) -> Result<(Span, Span), String> {
-    let stack = span(
-        writable
-            .end()?
-            .checked_sub(stack_size)
-            .ok_or("stack capacity")?,
-        stack_size,
-    );
-    let heap = span(
-        stack.base.checked_sub(heap_size).ok_or("heap capacity")?,
-        heap_size,
-    );
-    if heap.base <= writable.base {
-        return Err("heap/stack exceed writable reservation".into());
-    }
-    Ok((stack, heap))
-}
-
-/// The stage, its heap and stack all in LIM, so the early entry never
-/// depends on DRAM; the SPI firmware window stays a separate storage
-/// reservation.
-fn lim_linker_script(
-    lim: Span,
-    heap: Span,
-    stack: Span,
-    boot_hart_id: u32,
-    descriptor: &EncodedLayout,
-) -> Result<String, String> {
-    use std::fmt::Write as _;
-    for range in [lim, heap, stack] {
-        range.end()?;
-        if range.base % 16 != 0 || range.size % 16 != 0 {
-            return Err("unaligned LIM reservation".into());
-        }
-    }
-    if !lim.contains(heap.base, heap.size)
-        || !lim.contains(stack.base, stack.size)
-        || heap.end()? != stack.base
-        || stack.end()? != lim.end()?
-    {
-        return Err("LIM heap and stack reservations overlap or are inconsistent".into());
-    }
-    let data_len = heap.base - lim.base;
-    let mut out = String::new();
-    writeln!(
-        out,
-        "OUTPUT_ARCH(riscv)\nENTRY(_start)\n_boot_hart_id = {boot_hart_id};\nMEMORY {{\n \
-         RAM (rwx) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
-         HEAP (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
-         STACK (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n}}",
-        lim.base, data_len, heap.base, heap.size, stack.base, stack.size
-    )
-    .map_err(|e| e.to_string())?;
-    out.push_str("\nSECTIONS\n{\n");
-    out.push_str("    .text : {\n        _text_start = .;\n        KEEP(*(.text.entry))\n        *(.text .text.* .ltext .ltext.*)\n        KEEP(*(.vectors .vectors.*))\n        _text_end = .;\n    } > RAM\n");
-    out.push_str(&fstart_image_build::linker::layout_section(
-        descriptor, "RAM",
-    ));
-    writeln!(
-        out,
-        "    .fstart.anchor : ALIGN(8) {{\n        *(.fstart.anchor)\n        . = ALIGN(8);\n        _FSTART_HEAP_SIZE = .;\n        QUAD({:#x})\n    }} > RAM\n",
-        heap.size
-    )
-    .map_err(|e| e.to_string())?;
-    out.push_str("    .rodata : ALIGN(8) {\n        _rodata_start = .;\n        KEEP(*(.fstart.bootstrap_pin))\n        *(.rodata .rodata.* .lrodata .ldata.*)\n    } > RAM\n");
-    out.push_str("    .data : ALIGN(8) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        _data_end = .;\n    } > RAM\n    _data_load = LOADADDR(.data);\n");
-    out.push_str("    .bss (NOLOAD) : ALIGN(8) {\n        _bss_start = .;\n        *(.bss .bss.* .lbss .lbss.*)\n        *(COMMON)\n        _bss_end = .;\n    } > RAM\n");
-    writeln!(
-        out,
-        "    .fstart.heap (NOLOAD) : ALIGN(16) {{\n        _FSTART_HEAP = .;\n        . = . + {:#x};\n    }} > HEAP\n",
-        heap.size
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(
-        out,
-        "    .stack (NOLOAD) : ALIGN(16) {{\n        _stack_bottom = .;\n        . = . + {:#x};\n        . = ALIGN(16);\n        _stack_top = .;\n        _writable_end = .;\n    }} > STACK\n",
-        stack.size
-    )
-    .map_err(|e| e.to_string())?;
-    out.push_str("    _binary_end = _data_end;\n");
-    out.push_str(
-        "    ASSERT(_bss_end <= ORIGIN(HEAP), \"stage data/BSS exceed resolved capacity\")\n}\n",
-    );
-    Ok(out)
 }
 
 #[cfg(test)]
