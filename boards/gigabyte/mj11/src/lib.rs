@@ -108,7 +108,9 @@ register_bitfields![u32,
         PIN139_HIGH OFFSET(28) NUMBITS(4) []
     ]
 ];
-/// SMBusSwitch's GPIO137 and IOMUX settings.
+/// The select of the DIMM SMBus switch: high connects the DIMMs (SPD and
+/// thermal sensors, behind the PCA954x at 0x71) to the FCH's SMBus port 0,
+/// low to the BMC.
 const GPIO137: u8 = 137;
 
 /// GbtPreBootSvid: the AST2500 VGA on the last bus behind 00:01.1 gets the
@@ -263,10 +265,14 @@ pub fn set_vga_ssid(die0: &Die<GlobalEcam>) {
     ast_vga_set_ssid(&die0.pci());
 }
 
-/// The vendor's SMBusSwitch at ReadyToBoot. Inferred purpose: hand the
-/// SMBus to the OS. The vendor writes the IOMUX of pins 136-139 through SMN;
-/// it is the same register as the ACPI MMIO one.
-pub fn hand_smbus_to_os(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
+/// The vendor's SMBusSwitch at ReadyToBoot: hand the DIMM SMBus to the BMC,
+/// which reads the DIMM temperature (`DIMMG0_TEMP`) from it while the OS
+/// runs. The host keeps the bus only during POST, when the PSP reads the
+/// SPDs. Linux still probes SMBus port 0 for SPDs at boot because SMBIOS
+/// lists DDR4 DIMMs, so `ee1004 ... error -5` is expected on this board.
+/// The vendor writes the IOMUX of pins 136-139 through SMN; it is the same
+/// register as the ACPI MMIO one.
+pub fn hand_dimm_smbus_to_bmc(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
     // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
     fch.reg(iomux::at::<u32, Iomux136::Register>(136))
         .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));
