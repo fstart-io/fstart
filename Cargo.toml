@@ -84,9 +84,8 @@ x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
-# Heapless import fixes backported from rflasher#115 onto the existing pin.
-rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f", default-features = false }
-rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f", default-features = false }
+rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "30f97fbaaafa40ef8cac012a0285131176c746b4", default-features = false }
+rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "30f97fbaaafa40ef8cac012a0285131176c746b4", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
