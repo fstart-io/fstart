@@ -1,11 +1,12 @@
-//! SiFive SoC blocks: the FU740's clock controller and DDR controller, and
-//! the SiFive GPIO controller.
+//! SiFive SoC blocks: the FU740's clock controller, DDR controller and
+//! composable cache, and the SiFive GPIO controller.
 
 #![no_std]
 
 extern crate ufmt;
 
 pub mod fu740_ddr;
+pub mod fu740_l2;
 pub mod fu740_prci;
 pub mod gpio;
 
