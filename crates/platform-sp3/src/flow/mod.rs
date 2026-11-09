@@ -1,4 +1,4 @@
-//! The fixed SP3 boot flow (NATIVE_PORT_PLAN §4, INTEGRATION_NOTES).
+//! SP3 boot phases called by the board's stage `main`.
 //!
 //! Phases from the PSP's release of the BSP to the payload, which the
 //! board's stage `main` runs with its own work in between: [`start`]
@@ -210,8 +210,7 @@ pub(crate) fn fail(step: &str) -> ! {
     fstart_arch::x86::boot::halt()
 }
 
-/// `Result`/`Option` unwrapping that halts with the step's name (fail
-/// closed, INTEGRATION_NOTES "Errors: log and halt").
+/// `Result`/`Option` unwrapping that halts with the step's name.
 pub(crate) trait OrHalt<T> {
     fn or_halt(self, step: &str) -> T;
 }

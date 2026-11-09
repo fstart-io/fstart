@@ -21,6 +21,49 @@ fn load(
     ))
 }
 
+/// Run board policy and protocol tests with the selected variant's features.
+/// Firmware build selections remain separate: a host test must not inherit a
+/// stage's linker script, target or generated artifact bindings.
+pub fn test_library(manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
+    let root = crate::build_board::workspace_root_pub()?;
+    let version = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("query host compiler: {e}"))?;
+    if !version.status.success() {
+        return Err("cannot query the Rust host target".into());
+    }
+    let version = String::from_utf8(version.stdout).map_err(|e| e.to_string())?;
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .ok_or("rustc did not report its host target")?;
+    let mut command = std::process::Command::new("cargo");
+    command
+        .current_dir(&root)
+        .args([
+            "test",
+            "--locked",
+            "--lib",
+            "--no-default-features",
+            "--manifest-path",
+        ])
+        .arg(root.join("Cargo.toml"))
+        .args(["--package", &manifest.package, "--target", host])
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env("RUSTFLAGS", "");
+    if !manifest.variant_features.is_empty() {
+        command.args(["--features", &manifest.variant_features.join(",")]);
+    }
+    let status = command
+        .status()
+        .map_err(|e| format!("board library tests: {e}"))?;
+    if !status.success() {
+        return Err(format!("{} library tests failed: {status}", manifest.board));
+    }
+    Ok(())
+}
+
 pub fn build(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,

@@ -462,6 +462,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10b9676967e363917337edd70a68e1444efb68c28d6b1960e72faac57be379a7"
 
 [[package]]
+name = "eeprom24x"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7a31bca283ff29097bb5e7c0dbdb39fbe165dda33b825e19f8ac04f15a8eef"
+dependencies = [
+ "embedded-hal",
+ "embedded-storage",
+]
+
+[[package]]
 name = "elliptic-curve"
 version = "0.13.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -535,6 +545,12 @@ checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
 dependencies = [
  "embedded-io",
 ]
+
+[[package]]
+name = "embedded-storage"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c815b3ed4213d85d6cfd274b871f430c0681084e28dfd4a537877f47f844ec83"
 
 [[package]]
 name = "equivalent"
@@ -660,6 +676,409 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-amd-ethanolx"
+version = "0.1.0"
+dependencies = [
+ "eeprom24x",
+ "embedded-hal",
+ "embedded-hal-mock",
+ "fstart-acpi",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-i2c",
+ "fstart-driver-ipmi",
+ "fstart-driver-redriver",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sp3",
+ "heapless 0.8.0",
+ "pca9535",
+ "ufmt",
+ "xca9548a",
+]
+
+[[package]]
+name = "fstart-board-asus-p5gc-mx"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-bananapi-m1"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-sunxi",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sunxi",
+]
+
+[[package]]
+name = "fstart-board-foxconn-d41s"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-gigabyte-ga-945gcm-s2l"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-gigabyte-ga-d510ud"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-gigabyte-mj11"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-driver-amd",
+ "fstart-driver-ipmi",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-amd",
+ "tock-registers",
+ "ufmt",
+ "zerocopy",
+]
+
+[[package]]
+name = "fstart-board-google-vilboz"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-driver-amd",
+ "fstart-driver-chromeec",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-amd",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-ibase-mb899"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-intel-d510mo"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-intel-d945gclf"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-lenovo-t60"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-lenovo-x200"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-superio",
+ "fstart-driver-usbdebug",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-lenovo-x201"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-superio",
+ "fstart-driver-tpm",
+ "fstart-driver-usbdebug",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-lenovo-x60"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-ricoh",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-lenovo-x61"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-ricoh",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-intel-gma",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
+name = "fstart-board-licheerv-dock"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-sunxi",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sunxi",
+]
+
+[[package]]
+name = "fstart-board-orangepi-pc2"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-sunxi",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sunxi",
+]
+
+[[package]]
+name = "fstart-board-orangepi-r1"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-sunxi",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sunxi",
+]
+
+[[package]]
+name = "fstart-board-qemu-aarch64"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-qemu-armv7"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-qemu-q35"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-uart",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-qemu-q35-i686"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-intel",
+ "fstart-driver-uart",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-qemu-riscv64"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-qemu-sbsa"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-uart",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-qemu-sifive-u"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-uart",
+ "fstart-platform-qemu",
+]
+
+[[package]]
+name = "fstart-board-sifive-unmatched"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-core",
+ "fstart-driver-sifive",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sifive",
+]
+
+[[package]]
+name = "fstart-board-tyan-s8030"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-core",
+ "fstart-driver-amd",
+ "fstart-driver-ipmi",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-sp3",
+ "heapless 0.8.0",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-boot"
 version = "0.1.0"
 dependencies = [
@@ -683,6 +1102,7 @@ dependencies = [
  "heapless 0.8.0",
  "serde",
  "tock-registers",
+ "ufmt",
  "x86",
  "zerocopy",
 ]
@@ -977,6 +1397,7 @@ dependencies = [
  "fstart-core",
  "fstart-crypto",
  "fstart-ffs",
+ "ufmt",
 ]
 
 [[package]]
@@ -1551,6 +1972,15 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pca9535"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d18c64d2a5d513a8cc0638efd94a9c5ae76d1ca63e6b346d7571a98fd52fb8d1"
+dependencies = [
+ "embedded-hal",
+]
 
 [[package]]
 name = "pci_types"
@@ -2166,6 +2596,15 @@ dependencies = [
  "const_fn",
  "rustversion",
  "volatile",
+]
+
+[[package]]
+name = "xca9548a"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94495e7f28d551b72b2bf5304267fbb0075d78b182b49fbfb74f8910d63fec"
+dependencies = [
+ "embedded-hal",
 ]
 
 [[package]]

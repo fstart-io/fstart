@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ufmt = { workspace = true }
 fstart-core = { workspace = true }
 fstart-crypto = { workspace = true, features = ["sha2-digest"] }
 fstart-ffs = { workspace = true }

@@ -4,7 +4,6 @@ use crate::board_manifest::BoardManifest;
 use std::{path::Path, process::Command};
 
 pub(crate) struct ProfileSource {
-    pub workspace: std::path::PathBuf,
     pub platform: serde_json::Value,
     pub package: serde_json::Value,
     pub metadata: serde_json::Value,
@@ -15,21 +14,24 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
         .build_profile
         .as_ref()
         .ok_or("missing build-profile")?;
-    let workspace = crate::build_board::prepare_selected_board_workspace(root, board)?;
+    let features = board
+        .variant_features
+        .iter()
+        .map(|feature| format!("{}/{feature}", board.package))
+        .collect::<Vec<_>>()
+        .join(",");
     let output = Command::new("cargo")
         .current_dir(root)
         .args([
             "metadata",
+            "--locked",
             "--format-version=1",
             "--no-default-features",
             "--features",
-            &std::iter::once(format!("{}/host", reference.dependency))
-                .chain(board.variant_features.iter().cloned())
-                .collect::<Vec<_>>()
-                .join(","),
+            &features,
         ])
         .arg("--manifest-path")
-        .arg(workspace.join("Cargo.toml"))
+        .arg(root.join("Cargo.toml"))
         .output()
         .map_err(|e| format!("cargo metadata: {e}"))?;
     if !output.status.success() {
@@ -37,7 +39,6 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
     }
     let metadata: serde_json::Value =
         serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    crate::build_board::prune_unused_entries(&workspace, &metadata)?;
     let packages = metadata["packages"]
         .as_array()
         .ok_or("Cargo metadata has no packages")?;
@@ -87,7 +88,6 @@ pub(crate) fn load_profile(root: &Path, board: &BoardManifest) -> Result<Profile
         .find(|p| p["id"] == dep["pkg"])
         .ok_or("missing platform package")?;
     Ok(ProfileSource {
-        workspace,
         platform: platform.clone(),
         package: package.clone(),
         metadata,

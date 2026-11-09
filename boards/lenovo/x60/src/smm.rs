@@ -8,7 +8,6 @@ use fstart_driver_lenovo::h8::H8;
 use fstart_driver_lenovo::x6::dock as x6_dock;
 use fstart_platform_intel::smm::SmmContext;
 
-
 const EC_GPIO: u8 = crate::config::EC_SCI_GPIO;
 
 /// No mutable port globals: chipset ACPI ownership determines the SMM channel.

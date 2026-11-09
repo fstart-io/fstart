@@ -19,7 +19,7 @@ use fstart_store::Store;
 use stage_cache::{CachedStage, STAGE_CACHE_HEADER_LEN};
 
 /// Why [`load_stage`] could not hand out a stage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum Error {
     /// The cold boot load from flash failed.
     Load(fstart_load::LoadError),

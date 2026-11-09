@@ -63,14 +63,16 @@ jobs:
       - name: List boards
         id: list
         run: |
+          set -o pipefail
           cargo fbuild boards --json > "$RUNNER_TEMP/boards.json"
+          boards=$(jq -c '[.[] | .board, .variants[]] | sort' \
+            "$RUNNER_TEMP/boards.json")
+          # Every boot has its own timeout, not one shared by a board's boots.
+          qemu_matrix=$(ci/qemu-boot-tests.sh --list | jq -Rnc '
+            {include: [inputs | split(" ") | {board: .[0], payload: .[1]}]}')
           {
-            echo "boards=$(jq -c '[.[].board]' "$RUNNER_TEMP/boards.json")"
-            # The boot script names its own combinations, one CI job each:
-            # every boot runs against its own timeout, so a board's serial
-            # boots (qemu-q35 alone has six) must not share one job.
-            echo "qemu-matrix=$(ci/qemu-boot-tests.sh --list | jq -Rnc '
-              {include: [inputs | split(" ") | {board: .[0], payload: .[1]}]}')"
+            echo "boards=$boards"
+            echo "qemu-matrix=$qemu_matrix"
           } >> "$GITHUB_OUTPUT"
 
   test:
@@ -96,7 +98,15 @@ jobs:
         run: |
           python3 -m unittest discover -s ci -p 'test_*.py'
           python3 -m unittest discover -s ci/tpm -p 'test_*.py'
-          cargo test --workspace
+          cargo test
+          cargo test -p fstart-stage \
+            --features ffs,ffs-signature,fdt,fit,x86_64 --lib
+          # Coreboot payloads call the stage's public measured loader, also
+          # without a TPM. Check both selections before boot-asset jobs run.
+          for features in coreboot coreboot,tcg; do
+            cargo check -p fstart-payload \
+              --features "$features,fstart-stage/x86_64" --lib
+          done
           cargo test -p fstart-driver-intel \
             --features acpi,i945,gm965,ich8,pineview \
             --features gm45,ich9,ironlake,spi,display --lib
@@ -112,9 +122,8 @@ jobs:
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"
           done
 
-  # Release builds are the reference configuration: every board must link
-  # there (see AGENTS.md). One job per board; a failure never cancels the
-  # boards still running.
+  # Every discovered board and variant must link in release. A failure
+  # never cancels the boards still running.
   build-board:
     needs: boards
     runs-on: ubuntu-latest
@@ -144,33 +153,13 @@ jobs:
           cargo fbuild build --board "$BOARD" --release \
             --size-report "stage-sizes-$BOARD.jsonl"
 
-      # Linking firmware does not execute the workspace-excluded Intel
-      # boards' policy, SPD-map or complete-DSDT host tests.
-      - name: Test Intel board library
+      # Linking firmware does not execute board policy or protocol tests.
+      - name: Test board library
         env:
           BOARD: ${{ matrix.board }}
           RUST_MIN_STACK: 8388608
         run: |
-          package=$(python3 - <<'PY'
-          from pathlib import Path
-          import os
-          import tomllib
-
-          for manifest in Path("boards").glob("*/*/Cargo.toml"):
-              data = tomllib.loads(manifest.read_text())
-              if "fstart-platform-intel" not in data.get("dependencies", {}):
-                  continue
-              metadata = data["package"]["metadata"]["fstart"]
-              if metadata["board"] == os.environ["BOARD"]:
-                  print(data["package"]["name"])
-          PY
-          )
-          if [[ -n "$package" ]]; then
-            host=$(rustc -vV | awk '$1 == "host:" { print $2 }')
-            manifest="target/fstart-workspaces/$BOARD/Cargo.toml"
-            cargo test --manifest-path "$manifest" \
-              -p "$package" --target "$host" --lib
-          fi
+          cargo fbuild test-library --board "$BOARD"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
