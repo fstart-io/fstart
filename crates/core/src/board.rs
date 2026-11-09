@@ -377,6 +377,14 @@ pub enum SocImageFormat {
     ///
     /// See oreboot's D1 implementation for the reference Rust approach.
     AllwinnerEgon,
+    /// SpacemiT K3 first-stage boot loader (AIHD container).
+    ///
+    /// The boot ROM loads the container into SRAM at `0xC080_0000`, from a
+    /// block device through the bootinfo block at 1 MiB or over USB fastboot.
+    /// The first stage, linked at `0xC080_1000`, follows the container's
+    /// 4 KiB head. Assembly wraps the first stage and writes the container
+    /// and the block-device boot area beside the FFS.
+    SpacemitK3Fsbl,
 }
 
 /// Payload configuration: what to boot after firmware init.

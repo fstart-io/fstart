@@ -293,6 +293,16 @@ pub fn assemble(
         .unwrap_or_else(|| workspace_root.join("target").join("ffs"));
     fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
 
+    let spacemit_fsbl = if config.soc_image_format == SocImageFormat::SpacemitK3Fsbl {
+        Some(write_spacemit_k3_fsbl(
+            &output_dir,
+            config,
+            stage_binaries.first().ok_or("missing initial stage")?,
+        )?)
+    } else {
+        None
+    };
+
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let identities = ffs_image.patched_inputs.iter().map(|input| format!(
         "region={:?} file={:?} segment={} patched_input_sha256={} constant_trust_sha256={}\n",
@@ -306,7 +316,9 @@ pub fn assemble(
     let image_path = output_dir.join(format!("{}.ffs", config.name));
     fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
 
-    let (out_path, placement) = if config.full_flash_image {
+    let (out_path, placement) = if let Some(fsbl) = spacemit_fsbl {
+        (fsbl, Placement::bare())
+    } else if config.full_flash_image {
         let full_flash = FullFlashInput {
             config,
             board_dir,
@@ -347,6 +359,39 @@ pub fn assemble(
     );
 
     Ok(out_path)
+}
+
+/// Wrap the K3 first stage in its boot ROM container and write it beside
+/// the block-device boot area (`.sdboot`, written at 1 MiB).
+fn write_spacemit_k3_fsbl(
+    output_dir: &Path,
+    config: &BoardConfig,
+    initial: &StageBinary,
+) -> Result<PathBuf, String> {
+    use crate::image::spacemit;
+    let code = fs::read(&initial.run_path)
+        .map_err(|e| format!("failed to read {}: {e}", initial.run_path.display()))?;
+    let entry = spacemit::K3_FSBL_LOAD_ADDR + spacemit::FSBL_CODE_OFFSET as u64;
+    if initial.load_addr != entry {
+        return Err(format!(
+            "K3 first stage is linked at {:#x}, the boot ROM enters {entry:#x}",
+            initial.load_addr
+        ));
+    }
+    let fsbl = spacemit::k3_fsbl(&code)?;
+    let area = spacemit::k3_block_boot_area(&fsbl)?;
+    let fsbl_path = output_dir.join(format!("{}.fsbl", config.name));
+    let area_path = output_dir.join(format!("{}.sdboot", config.name));
+    fs::write(&fsbl_path, &fsbl).map_err(|e| format!("failed to write K3 FSBL: {e}"))?;
+    fs::write(&area_path, &area).map_err(|e| format!("failed to write K3 boot area: {e}"))?;
+    eprintln!(
+        "[fstart] K3 FSBL {} ({} bytes): fastboot stage + continue, or block boot area {} at {:#x}",
+        fsbl_path.display(),
+        fsbl.len(),
+        area_path.display(),
+        spacemit::K3_BLOCK_BOOTINFO_OFFSET
+    );
+    Ok(fsbl_path)
 }
 
 fn ffs_input_regions(
