@@ -11,13 +11,6 @@ inputs:
   llvm-tools:
     description: Put the toolchain's llvm-tools bin directory on PATH.
     default: "false"
-  cache:
-    description: >-
-      Restore the shared cargo cache with rust-cache. Firmware jobs turn
-      this off and keep a whole-target cache of their own instead, since
-      rust-cache's cleanup discards the -Zbuild-std core/alloc artifacts
-      and fbuild unit state under target/fstart-build/.
-    default: "true"
   cache-targets:
     description: Also cache compiled dependencies in target/ (cache only).
     default: "false"
@@ -37,7 +30,10 @@ runs:
       run: rustup toolchain install
 
     # The cargo registry (and optionally dependency artifacts), keyed
-    # automatically on the toolchain and Cargo.lock.
+    # automatically on the toolchain and Cargo.lock. Firmware jobs keep
+    # target/ itself in a cache of their own on top of this, since
+    # rust-cache's cleanup discards the -Zbuild-std core/alloc artifacts
+    # and fbuild unit state under target/fstart-build/.
     #
     # There is deliberately no sccache here: with RUSTC_WRAPPER=sccache,
     # x86 firmware builds hang for 600 s per affected unit. Cargo always
@@ -46,7 +42,6 @@ runs:
     # `sse` entries, rust-lang/rust#117938), and sccache 0.19.0 deadlocks
     # relaying it. Revisit once sccache handles that message.
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      if: inputs.cache == 'true'
       with:
         cache-targets: ${{ inputs.cache-targets }}
         shared-key: ${{ inputs.shared-key }}

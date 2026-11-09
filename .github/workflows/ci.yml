@@ -31,12 +31,14 @@ env:
   CARGO_UNSTABLE_WARNINGS: true
   CARGO_BUILD_WARNINGS: deny
 
-# Build caching: host builds use rust-cache (see .github/actions/setup).
-# Firmware jobs cache the whole target/ directory, not just third-party
-# dependencies, so the -Zbuild-std core/alloc and firmware units under
-# target/fstart-build/ are kept too; each board job has a cache of its
-# own. Firmware caches are only saved from master; pull requests restore
-# the most recent master cache for the same toolchain and Cargo.lock.
+# Build caching: one shared cargo-home cache serves every job through
+# rust-cache (see .github/actions/setup). Firmware jobs additionally cache
+# the whole target/ directory - the registry stays out of it, so it is not
+# duplicated into dozens of per-board caches - so the -Zbuild-std
+# core/alloc and firmware units under target/fstart-build/ are kept too;
+# each board job has a target cache of its own. Firmware caches are only
+# saved from master; pull requests restore the most recent master cache
+# for the same toolchain and Cargo.lock.
 
 jobs:
   # The board lists the matrices below run on. fbuild resolves them from
@@ -117,18 +119,13 @@ jobs:
           submodules: true
       - uses: ./.github/actions/setup
         with:
-          cache: "false"
           llvm-tools: "true"
 
       # Each board owns its firmware cache; matrix jobs must not race to
       # save different target/ contents under the same key.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: &firmware-cache-paths |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
+          path: &firmware-cache-paths target/
           key: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
           restore-keys: rust-${{ github.job }}-${{ matrix.board }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
@@ -270,7 +267,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
-          cache: "false"
           packages: qemu-system-arm qemu-system-misc qemu-system-x86
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -330,7 +326,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
-          cache: "false"
           packages: >-
             qemu-system-x86 swtpm swtpm-tools busybox-static
             grub-pc-bin grub-efi-amd64-bin grub-common xorriso
