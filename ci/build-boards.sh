@@ -7,7 +7,8 @@
 #
 # SIZE_DIR receives one stage-sizes-BOARD.jsonl per board (see
 # `fbuild sizes`). Linking firmware does not execute board policy or
-# protocol tests, hence the library tests.
+# protocol tests, hence the library tests. Boards CI cannot boot also
+# assemble their payloads.
 #
 # NOTE: FSTART_EXTRA_RUSTFLAGS must NOT be set here. Resolved builds fail
 # closed on unrecorded ambient inputs (see tools/fbuild/src/selection.rs).
@@ -27,13 +28,35 @@ github() {
 	[[ -z ${GITHUB_ACTIONS:-} ]] || echo "$1"
 }
 
+# CI cannot boot these boards, so at least assemble every payload their
+# plans offer. Inputs are placeholders: this checks the plan's input
+# inventory and image construction, not the payloads.
+assemble_payloads() {
+	case $1 in
+	sifive-unmatched)
+		local input dtb=boards/sifive/unmatched/unmatched.dtb status=0
+		input=$(mktemp)
+		printf 'fstart CI placeholder' >"$input"
+		cp "$input" "$dtb"
+		cargo fbuild assemble --board "$1" --release --payload halt &&
+			cargo fbuild assemble --board "$1" --release --payload linux \
+				--kernel "$input" --firmware "$input" &&
+			cargo fbuild assemble --board "$1" --release --payload uefi \
+				--firmware "$input" || status=$?
+		rm -f "$input" "$dtb"
+		return "$status"
+		;;
+	esac
+}
+
 failed=()
 for board; do
 	github "::group::$board"
 	start=$SECONDS
 	if cargo fbuild build --board "$board" --release \
 		--size-report "$size_dir/stage-sizes-$board.jsonl" &&
-		cargo fbuild test-library --board "$board"; then
+		cargo fbuild test-library --board "$board" &&
+		assemble_payloads "$board"; then
 		result=PASS
 	else
 		result=FAIL
