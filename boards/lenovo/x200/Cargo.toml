@@ -15,23 +15,30 @@ build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["gm45-ich9"] }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-acpi-macros = { path = "../../../crates/acpi-macros" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../../../crates/acpi-macros", optional = true }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
 fstart-pci = { path = "../../../crates/pci" }
 embedded-hal = { workspace = true }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
-fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-log = { path = "../../../crates/log" }
 # Required at the crate root wherever fstart_log macros expand
 # (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
 ufmt = { workspace = true }
 
+[dev-dependencies]
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-acpi-macros = { path = "../../../crates/acpi-macros" }
+fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["acpi"] }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo", features = ["acpi"] }
+
 [features]
 default = []
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-lenovo/acpi", "fstart-platform-intel/acpi"]
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-intel/bundle-smm"]
 

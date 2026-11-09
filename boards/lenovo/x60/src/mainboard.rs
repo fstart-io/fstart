@@ -54,6 +54,7 @@ pub struct Identity {
     ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
+#[cfg(any(feature = "acpi", test))]
 impl Identity {
     pub fn smbios(&self) -> fstart_acpi::smbios::SmbiosIdentity<'_> {
         let mut identity = X60_SMBIOS_IDENTITY;
@@ -148,6 +149,7 @@ fn ricoh_sd_write_protect() -> Result<(), ServiceError> {
 }
 
 pub struct Acpi;
+#[cfg(any(feature = "acpi", test))]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
     fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
@@ -155,11 +157,14 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+#[cfg(any(feature = "acpi", test))]
 pub fn x60_mainboard_dsdt_aml() -> alloc::vec::Vec<u8> {
     fstart_driver_lenovo::x6::acpi::dsdt_aml::<crate::config::Hardware>(&crate::config::X60_H8)
 }
 
+#[cfg(any(feature = "acpi", test))]
 static X60_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
+#[cfg(any(feature = "acpi", test))]
 pub static X60_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

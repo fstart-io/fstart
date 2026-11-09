@@ -1,6 +1,7 @@
 //! Gigabyte GA-D510UD Pineview/NM10 board support.
 #![no_std]
 
+#[cfg(feature = "acpi")]
 extern crate alloc;
 
 pub mod config;

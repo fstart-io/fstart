@@ -16,8 +16,10 @@
 /// [`IdentityTables::build_in`] without extra spans.
 pub const TABLE_BYTES: usize = 6 * 4096;
 
+#[cfg(any(feature = "alloc", test))]
 extern crate alloc;
 
+#[cfg(any(feature = "alloc", test))]
 use alloc::{boxed::Box, vec::Vec};
 use fstart_core::services::ServiceError;
 use x86_64_crate::structures::paging::{
@@ -38,6 +40,7 @@ pub fn gib_pages() -> bool {
 /// Where the table frames come from.
 enum Frames {
     /// Heap pages; the platform keeps the heap reserved through handoff.
+    #[cfg(any(feature = "alloc", test))]
     Heap(Vec<Box<PageTable>>),
     /// A fixed, identity-mapped, reserved buffer.
     Fixed {
@@ -60,6 +63,7 @@ pub struct IdentityTables {
 unsafe impl FrameAllocator<Size4KiB> for IdentityTables {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         let address = match &mut self.frames {
+            #[cfg(any(feature = "alloc", test))]
             Frames::Heap(pages) => {
                 let mut page = Box::new(PageTable::new());
                 let address = (&mut *page as *mut PageTable) as u64;
@@ -93,6 +97,7 @@ impl IdentityTables {
     /// The heap must be identity-mapped DRAM that stays reserved from the
     /// payload until it replaces CR3 (including S3). The spans must be valid
     /// platform physical addresses.
+    #[cfg(feature = "alloc")]
     pub unsafe fn build(spans: impl IntoIterator<Item = (u64, u64)>) -> Result<Self, ServiceError> {
         Self::map(Frames::Heap(Vec::new()), gib_pages(), spans)
     }
@@ -154,6 +159,7 @@ impl IdentityTables {
     pub unsafe fn install(self) -> u64 {
         // APs walk the tables with caching disabled at first: publish them.
         match &self.frames {
+            #[cfg(any(feature = "alloc", test))]
             Frames::Heap(pages) => {
                 for page in pages {
                     // SAFETY: each page is a live, aligned allocation.

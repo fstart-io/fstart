@@ -17,6 +17,7 @@ features = ["s2c"]
 
 [features]
 default = []
+acpi = ["dep:fstart-acpi", "fstart-driver-superio/acpi", "fstart-platform-intel/acpi"]
 s2c = []
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-intel/bundle-smm"]
@@ -25,9 +26,9 @@ smm = ["fstart-platform-intel/bundle-smm"]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["i945-ich7"] }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
-fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
 fstart-log = { path = "../../../crates/log" }

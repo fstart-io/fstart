@@ -73,6 +73,7 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false, features = ["serde"] }
+linked_list_allocator = { version = "0.10.6", default-features = false, features = ["use_spin"] }
 konst = { version = "0.4", default-features = false, features = ["iter"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
@@ -83,8 +84,9 @@ x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
-rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
-rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
+# Heapless import fixes backported from rflasher#115 onto the existing pin.
+rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f", default-features = false }
+rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }

@@ -115,6 +115,7 @@ pub(crate) fn load_stage_with_cache(
     }
 }
 
+#[cfg(feature = "ramstage")]
 pub(crate) fn import_intel_directory(
     image_base: u64,
     image_size: usize,
@@ -194,6 +195,7 @@ pub(crate) fn reserve_firmware_memory(
     Ok(())
 }
 
+#[cfg(feature = "ramstage")]
 pub(crate) fn install_intel_load_policy(
     entries: &[fstart_core::services::memory_detect::E820Entry],
     geometry: IntelBootLayout<'static>,

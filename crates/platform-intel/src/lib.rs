@@ -91,7 +91,7 @@ pub mod bootblock;
 mod memory_info;
 #[cfg(feature = "stage")]
 pub mod postcar;
-#[cfg(feature = "stage")]
+#[cfg(feature = "ramstage")]
 pub mod ramstage;
 #[cfg(feature = "stage")]
 mod store;

@@ -37,6 +37,7 @@ pub fn setup_superio() -> Result<(), ServiceError> {
 /// The board's ACPI: sleep/power buttons and the SuperIO scope.
 pub struct Acpi;
 
+#[cfg(feature = "acpi")]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
 
@@ -45,8 +46,10 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+#[cfg(feature = "acpi")]
 static D945GCLF_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket 441"];
 
+#[cfg(feature = "acpi")]
 pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",
@@ -67,6 +70,7 @@ pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static
         oem_string: None,
     };
 
+#[cfg(feature = "acpi")]
 mod acpi_impl {
     use alloc::vec::Vec;
     use fstart_acpi_macros::acpi_dsl;
@@ -102,4 +106,5 @@ mod acpi_impl {
     }
 }
 
+#[cfg(feature = "acpi")]
 pub use acpi_impl::d945gclf_mainboard_dsdt_aml;

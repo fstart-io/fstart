@@ -2,6 +2,7 @@
 //! SMBus mux, H8/PMH7 policy, the dock connection, the identity EEPROM and
 //! the X200t digitizer.
 
+#[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 
 use crate::ec;
@@ -55,6 +56,7 @@ pub struct Identity {
     ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
+#[cfg(any(feature = "acpi", test))]
 impl Identity {
     /// The SMBIOS identity: like coreboot (`at24rf08c/lenovo_serials.c`),
     /// the EEPROM fields describe both system and board.
@@ -76,6 +78,7 @@ impl Identity {
 
 /// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
 /// chipset devices are up. Returns the identity and the board ACPI device.
+#[cfg(any(feature = "acpi", test))]
 pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (Identity, Acpi) {
     let mut identity = Identity::default();
     let (bluetooth, acknowledged) = ec::init(
@@ -129,6 +132,7 @@ pub struct Acpi {
     digitizer: bool,
 }
 
+#[cfg(any(feature = "acpi", test))]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
 
@@ -138,6 +142,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
 }
 
 /// Assemble the X200 DSDT.
+#[cfg(any(feature = "acpi", test))]
 pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> alloc::vec::Vec<u8> {
     let h8 = fstart_driver_lenovo::h8::H8Config {
         has_bluetooth: bluetooth,
@@ -150,8 +155,10 @@ pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> alloc::vec::
     )
 }
 
+#[cfg(any(feature = "acpi", test))]
 static X200_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["BGA956"];
 
+#[cfg(any(feature = "acpi", test))]
 pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

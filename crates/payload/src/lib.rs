@@ -7,6 +7,14 @@
 
 #![no_std]
 
+#[cfg(any(
+    feature = "crabefi-basic",
+    all(
+        feature = "linux",
+        feature = "tcg",
+        any(target_arch = "x86", target_arch = "x86_64")
+    )
+))]
 extern crate alloc as heap;
 
 // The launchers load through the stage crate's verified loaders; a build

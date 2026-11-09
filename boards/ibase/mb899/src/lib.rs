@@ -2,6 +2,7 @@
 //! Protected-mode stages support Socket M Core Duo and Core 2 configurations.
 #![no_std]
 
+#[cfg(feature = "acpi")]
 extern crate alloc;
 #[cfg(test)]
 extern crate std;

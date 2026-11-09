@@ -187,8 +187,10 @@ impl Xip {
             symbols: std::collections::BTreeMap::from([
                 ("_stack_bottom".into(), self.stack.base),
                 ("_stack_top".into(), self.stack.end()?),
-                ("_FSTART_HEAP".into(), self.heap.base),
-            ]),
+            ])
+            .into_iter()
+            .chain((self.heap.size != 0).then(|| ("_FSTART_HEAP".into(), self.heap.base)))
+            .collect(),
         })
     }
 }
@@ -1013,6 +1015,9 @@ fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap
 }
 
 fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64) {
+    if heap_size == 0 {
+        return;
+    }
     let word = match platform {
         Platform::Armv7 | Platform::X86 => "LONG",
         _ => "QUAD",
@@ -1023,6 +1028,10 @@ fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64
 }
 
 fn write_heap(out: &mut String, heap_size: u64, region: &str) {
+    // An absent heap must not satisfy an allocator's retained relocation.
+    if heap_size == 0 {
+        return;
+    }
     writeln!(out, "    .fstart.heap (NOLOAD) : ALIGN(16) {{").unwrap();
     writeln!(out, "        _FSTART_HEAP = .;").unwrap();
     writeln!(out, "        . = . + {heap_size:#x};").unwrap();
@@ -1032,6 +1041,8 @@ fn write_heap(out: &mut String, heap_size: u64, region: &str) {
 fn write_rodata_section(out: &mut String, region: &str) {
     writeln!(out, "    .rodata : ALIGN(8) {{").unwrap();
     writeln!(out, "        _rodata_start = .;").unwrap();
+    // Retain entry roots and allocator heap requirements even under LTO/GC.
+    writeln!(out, "        KEEP(*(.fstart.keep))").unwrap();
     // The bootstrap pin stays only where the initial stage reads it.
     writeln!(out, "        *(.fstart.bootstrap_pin)").unwrap();
     writeln!(out, "        *(.rodata .rodata.* .lrodata .lrodata.*)").unwrap();
@@ -1177,6 +1188,31 @@ mod tests {
             smbios: None,
             smm: None,
             boot_hart_id: 0,
+        }
+    }
+
+    #[test]
+    fn heapless_scripts_cannot_satisfy_an_allocator() {
+        for platform in [
+            Platform::Armv7,
+            Platform::Aarch64,
+            Platform::Riscv64,
+            Platform::X86_64,
+        ] {
+            for heap in [None, Some(0), Some(4096)] {
+                let mut config = sunxi_like_config();
+                config.platform = platform;
+                let StageLayout::MultiStage(stages) = &mut config.stages else {
+                    unreachable!()
+                };
+                stages[0].heap_size = heap;
+                let script = generate_linker_script(&config, Some("bootblock"));
+                let has_heap = heap.unwrap_or(0) != 0;
+                assert_eq!(script.contains("_FSTART_HEAP ="), has_heap);
+                assert_eq!(script.contains("_FSTART_HEAP_SIZE ="), has_heap);
+                assert_eq!(script.contains(".fstart.heap (NOLOAD)"), has_heap);
+                assert!(script.contains("KEEP(*(.fstart.keep))"));
+            }
         }
     }
 

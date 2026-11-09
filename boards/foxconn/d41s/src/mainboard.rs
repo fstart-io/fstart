@@ -43,6 +43,7 @@ pub fn setup_clock(bus: &mut impl SmBus) {
 /// The board's ACPI: its DSDT fragment.
 pub struct Acpi;
 
+#[cfg(feature = "acpi")]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
 
@@ -51,6 +52,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+#[cfg(feature = "acpi")]
 mod acpi_impl {
     use alloc::vec::Vec;
 
@@ -65,10 +67,13 @@ mod acpi_impl {
     }
 }
 
+#[cfg(feature = "acpi")]
 pub use acpi_impl::d41s_mainboard_dsdt_aml;
 
+#[cfg(feature = "acpi")]
 static D41S_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["FCBGA559"];
 
+#[cfg(feature = "acpi")]
 pub static D41S_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

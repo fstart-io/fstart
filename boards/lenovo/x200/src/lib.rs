@@ -11,6 +11,7 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(any(feature = "acpi", test))]
 pub mod acpi;
 pub mod config;
 pub mod ec;

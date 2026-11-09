@@ -67,6 +67,7 @@ pub fn init_hwmon() -> Result<(), ServiceError> {
 
 /// The board's ACPI: its DSDT fragment.
 pub struct Acpi;
+#[cfg(feature = "acpi")]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
     fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
@@ -79,6 +80,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+#[cfg(feature = "acpi")]
 pub static MB899_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

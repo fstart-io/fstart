@@ -165,12 +165,17 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
                 .address()
         };
         assert_eq!(symbol("_stack_top"), stage.stack_span().base + stage.stack);
-        assert_eq!(
-            symbol("_FSTART_HEAP"),
-            stage
-                .heap_span()
-                .map_or(stage.stack_span().base, |heap| heap.base)
-        );
+        if let Some(heap) = stage.heap_span() {
+            assert_eq!(symbol("_FSTART_HEAP"), heap.base);
+        } else {
+            assert!(!linked.symbols().any(|s| s.name() == Ok("_FSTART_HEAP")));
+            assert!(
+                !linked
+                    .symbols()
+                    .any(|s| s.name() == Ok("_FSTART_HEAP_SIZE"))
+            );
+            assert!(linked.section_by_name(".fstart.heap").is_none());
+        }
         if role == IntelStage::Bootblock {
             assert_eq!(symbol("_data_start"), stage.writable.base);
         } else {
@@ -274,5 +279,49 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
             !link().status.success(),
             "{role:?} silently exceeded code capacity"
         );
+
+        // An unused allocator requirement must survive GC: only ramstage
+        // provides a heap. No entry/text relocation points at this section.
+        let keep = input.add_section(
+            Vec::new(),
+            b".fstart.keep".to_vec(),
+            object::SectionKind::ReadOnlyData,
+        );
+        input.append_section_data(keep, &[0; 8], 8);
+        let heap = input.add_symbol(object::write::Symbol {
+            name: b"_FSTART_HEAP".to_vec(),
+            value: 0,
+            size: 0,
+            kind: object::SymbolKind::Data,
+            scope: object::SymbolScope::Linkage,
+            weak: false,
+            section: object::write::SymbolSection::Undefined,
+            flags: object::SymbolFlags::None,
+        });
+        input
+            .add_relocation(
+                keep,
+                object::write::Relocation {
+                    offset: 0,
+                    symbol: heap,
+                    addend: 0,
+                    flags: object::RelocationFlags::Elf {
+                        r_type: object::elf::R_X86_64_64,
+                    },
+                },
+            )
+            .unwrap();
+        fs::write(&object_path, input.write().unwrap()).unwrap();
+        fs::write(&script, &original).unwrap();
+        let result = link();
+        assert_eq!(
+            result.status.success(),
+            stage.heap != 0,
+            "{role:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if stage.heap == 0 {
+            assert!(String::from_utf8_lossy(&result.stderr).contains("symbol: _FSTART_HEAP"));
+        }
     }
 }

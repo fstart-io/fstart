@@ -9,6 +9,7 @@
 
 #![allow(clippy::result_unit_err)]
 
+#[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
@@ -87,6 +88,7 @@ pub struct Identity {
     ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
+#[cfg(any(feature = "acpi", test))]
 impl Identity {
     /// The SMBIOS identity: like coreboot, the EEPROM fields describe both
     /// system and board.
@@ -198,6 +200,7 @@ fn ricoh_sd_write_protect() -> Result<(), ServiceError> {
 /// and the complete H8 EC surface from the Lenovo driver.
 pub struct Acpi;
 
+#[cfg(any(feature = "acpi", test))]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
 
@@ -207,12 +210,15 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
 }
 
 /// Assemble the X61 DSDT.
+#[cfg(any(feature = "acpi", test))]
 pub fn x61_mainboard_dsdt_aml() -> alloc::vec::Vec<u8> {
     fstart_driver_lenovo::x6::acpi::dsdt_aml::<crate::config::Hardware>(&crate::config::X61_H8)
 }
 
+#[cfg(any(feature = "acpi", test))]
 static X61_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["Socket M"];
 
+#[cfg(any(feature = "acpi", test))]
 pub static X61_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

@@ -222,6 +222,40 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             );
             input.append_section_bss(tables, 0x4000, 4096);
         }
+        // Match the allocator's retained relocation, with no reference from
+        // entry code. GC must not hide an accidentally selected allocator.
+        let keep = input.add_section(
+            Vec::new(),
+            b".fstart.keep".to_vec(),
+            object::SectionKind::ReadOnlyData,
+        );
+        let width = if architecture == object::Architecture::Arm {
+            4
+        } else {
+            8
+        };
+        input.append_section_data(keep, &vec![0; width], width as u64);
+        let heap = input.add_symbol(object::write::Symbol {
+            name: b"_FSTART_HEAP".to_vec(),
+            value: 0,
+            size: 0,
+            kind: object::SymbolKind::Data,
+            scope: object::SymbolScope::Linkage,
+            weak: false,
+            section: object::write::SymbolSection::Undefined,
+            flags: object::SymbolFlags::None,
+        });
+        input
+            .add_relocation(
+                keep,
+                object::write::Relocation {
+                    offset: 0,
+                    symbol: heap,
+                    addend: 0,
+                    flags: object::RelocationFlags::Elf { r_type: relocation },
+                },
+            )
+            .unwrap();
         let object_path = scratch.0.join("anchors.o");
         let script = scratch.0.join("resolved.ld");
         let elf = scratch.0.join("resolved.elf");
@@ -311,6 +345,20 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
             assert!(!overflow.status.success());
             assert!(String::from_utf8_lossy(&overflow.stderr).contains("EXEC"));
         }
+        let heapless = script_text.replace("_FSTART_HEAP = .;", "");
+        assert_ne!(heapless, script_text);
+        fs::write(&script, heapless).unwrap();
+        let missing_heap = link();
+        assert!(
+            !missing_heap.status.success(),
+            "GC discarded the heap requirement"
+        );
+        assert!(
+            String::from_utf8_lossy(&missing_heap.stderr).contains("symbol: _FSTART_HEAP"),
+            "{}",
+            String::from_utf8_lossy(&missing_heap.stderr)
+        );
+
         if architecture == object::Architecture::Arm {
             assert!(!linked.is_64());
             let mut wrong_architecture = expectations.clone();

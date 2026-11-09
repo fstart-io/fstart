@@ -2,12 +2,15 @@
 //! debug console, the clock generator, H8/PMH7 policy, the dock
 //! connection, the identity EEPROM and the X201T digitizer.
 
+#[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 
+#[cfg(any(feature = "acpi", test))]
 use fstart_acpi::PcNamespace;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
 use fstart_driver_lenovo::x201;
+#[cfg(any(feature = "acpi", test))]
 use fstart_platform_intel::ironlake::IronlakeIbexPeak;
 
 /// The EHCI debug port of EHCI2 (00:1a.0): coreboot's X201
@@ -65,6 +68,7 @@ pub struct Identity {
     ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
+#[cfg(any(feature = "acpi", test))]
 impl Identity {
     /// The SMBIOS identity: like coreboot (`at24rf08c/lenovo_serials.c`),
     /// the EEPROM fields describe both system and board.
@@ -87,6 +91,7 @@ impl Identity {
 /// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
 /// chipset devices are up. Restores the optional TPM on S3 before returning
 /// the identity and the board ACPI device.
+#[cfg(any(feature = "acpi", test))]
 pub fn init_devices(
     pins: &mut Pins,
     smbus: &mut impl SmBus,
@@ -139,6 +144,7 @@ pub fn init_devices(
 
 /// Identify the optional LPC TIS TPM and restore its saved state on S3.
 /// Cold boots leave startup to the payload, as before.
+#[cfg(any(feature = "acpi", test))]
 fn init_tpm(
     resume: bool,
 ) -> Result<Option<fstart_acpi::devices::tpm::TpmFamily>, fstart_driver_tpm::Error> {
@@ -176,12 +182,14 @@ pub fn legacy_ec_events() {
 
 /// The board's ACPI: H8 EC surface, sleep hooks, ThinkLight, dock, the
 /// keyboard controller, the X201T digitizer and the TPM.
+#[cfg(any(feature = "acpi", test))]
 pub struct Acpi {
     bluetooth: bool,
     digitizer: bool,
     tpm: Option<fstart_acpi::devices::tpm::TpmFamily>,
 }
 
+#[cfg(any(feature = "acpi", test))]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
 
@@ -204,6 +212,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
 }
 
 /// Assemble the X201 DSDT.
+#[cfg(any(feature = "acpi", test))]
 pub fn x201_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> alloc::vec::Vec<u8> {
     let h8 = fstart_driver_lenovo::h8::H8Config {
         has_bluetooth: bluetooth,
@@ -227,8 +236,10 @@ pub fn x201_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> alloc::vec::
     aml
 }
 
+#[cfg(any(feature = "acpi", test))]
 static X201_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["BGA1288"];
 
+#[cfg(any(feature = "acpi", test))]
 pub static X201_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

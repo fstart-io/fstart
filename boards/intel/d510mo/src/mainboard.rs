@@ -30,6 +30,7 @@ pub fn init_clock(smbus: &mut impl SmBus, resume: bool) -> Result<(), ServiceErr
 
 pub struct Acpi;
 
+#[cfg(feature = "acpi")]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
     fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
@@ -52,6 +53,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
         aml
     }
 }
+#[cfg(feature = "acpi")]
 pub static D510MO_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

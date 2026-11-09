@@ -446,7 +446,7 @@ pub(crate) unsafe fn publish_pending(
     Ok(())
 }
 
-#[cfg(all(feature = "stage", feature = "memory-cache"))]
+#[cfg(all(feature = "ramstage", feature = "memory-cache"))]
 pub(crate) fn commit_pending<B: crate::IntelBoard>(
     northbridge: &<B::Platform as crate::IntelEarlyPlatform>::Northbridge,
     southbridge: &<B::Platform as crate::IntelEarlyPlatform>::Southbridge,

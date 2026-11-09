@@ -70,6 +70,7 @@ pub struct Identity {
     ec_oem: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
+#[cfg(feature = "acpi")]
 impl Identity {
     pub fn smbios(&self) -> fstart_acpi::smbios::SmbiosIdentity<'_> {
         let mut result = T6_SMBIOS_IDENTITY;
@@ -108,6 +109,7 @@ pub struct Acpi {
     pub native_brightness: bool,
 }
 
+#[cfg(feature = "acpi")]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
     fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
@@ -118,7 +120,9 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+#[cfg(feature = "acpi")]
 static SOCKETS: [&str; 1] = ["Socket M"];
+#[cfg(feature = "acpi")]
 pub static T6_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

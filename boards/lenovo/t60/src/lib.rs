@@ -5,6 +5,7 @@
 //! are not implemented. Docking/Ultrabay, panel/VBT, audio and PCIe behavior
 //! remain unvalidated. A laptop without a dock/module has no serial console.
 #![no_std]
+#[cfg(feature = "acpi")]
 extern crate alloc;
 #[cfg(test)]
 extern crate std;

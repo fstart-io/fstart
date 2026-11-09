@@ -114,6 +114,6 @@
       "_stack_top": 2168455168
     }
   },
-  "linker_sha256": "fe025ae6b29aa895dbf0bfa27dde072bd2cae0be558efc8366cb38b3c4666173",
+  "linker_sha256": "65e980ead168c8d03795aca5ee1d6469888058378aae0b20b38d601da4a800ca",
   "target": "riscv64gc-unknown-none-elf"
 }

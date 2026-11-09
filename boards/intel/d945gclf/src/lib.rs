@@ -6,6 +6,7 @@
 
 #![no_std]
 
+#[cfg(feature = "acpi")]
 extern crate alloc;
 
 pub mod config;

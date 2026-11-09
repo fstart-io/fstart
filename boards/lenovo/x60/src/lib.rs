@@ -2,6 +2,7 @@
 
 #![no_std]
 
+#[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 #[cfg(test)]
 extern crate std;

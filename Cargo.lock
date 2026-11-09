@@ -1193,8 +1193,8 @@ dependencies = [
  "fstart-smm",
  "fstart-timestamp",
  "heapless 0.8.0",
- "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
- "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
+ "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f)",
+ "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f)",
  "sha2 0.10.9",
  "tempfile",
  "tock-registers",
@@ -1620,6 +1620,7 @@ dependencies = [
  "fstart-tcg",
  "fstart-timestamp",
  "heapless 0.8.0",
+ "linked_list_allocator",
  "ufmt",
  "zerocopy",
 ]
@@ -2090,7 +2091,7 @@ dependencies = [
 [[package]]
 name = "rflasher-chip-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d#c8f01c849a2714c2ea38b2cd60744595db70878d"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f#b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f"
 dependencies = [
  "bitflags 2.10.0",
  "heapless 0.8.0",
@@ -2112,13 +2113,13 @@ dependencies = [
 [[package]]
 name = "rflasher-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d#c8f01c849a2714c2ea38b2cd60744595db70878d"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f#b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f"
 dependencies = [
  "bitflags 2.10.0",
  "embedded-io",
  "embedded-io-async",
  "log",
- "rflasher-chip-types 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
+ "rflasher-chip-types 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f)",
  "zerocopy",
 ]
 
@@ -2135,11 +2136,11 @@ dependencies = [
 [[package]]
 name = "rflasher-internal"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d#c8f01c849a2714c2ea38b2cd60744595db70878d"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f#b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f"
 dependencies = [
  "log",
- "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
- "rflasher-pci 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d)",
+ "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f)",
+ "rflasher-pci 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f)",
 ]
 
 [[package]]
@@ -2153,7 +2154,7 @@ dependencies = [
 [[package]]
 name = "rflasher-pci"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=c8f01c849a2714c2ea38b2cd60744595db70878d#c8f01c849a2714c2ea38b2cd60744595db70878d"
+source = "git+https://github.com/ArthurHeymans/rflasher.git?rev=b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f#b0ff74b74a5a7cf39cd7a4d337c3131c5e993d3f"
 dependencies = [
  "pci_types",
 ]

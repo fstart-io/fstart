@@ -6,17 +6,12 @@
 
 #![no_std]
 
-#[cfg(any(
-    feature = "acpi",
-    feature = "ffs",
-    feature = "alloc",
-    feature = "smbios"
-))]
+#[cfg(feature = "alloc")]
 mod alloc;
 
 mod runtime;
 
-#[cfg(any(feature = "ffs", feature = "alloc"))]
+#[cfg(feature = "alloc")]
 extern crate alloc as heap;
 
 // The arch crate supplies entry code and the early FFS anchor.

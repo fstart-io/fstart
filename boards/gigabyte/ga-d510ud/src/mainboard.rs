@@ -29,6 +29,7 @@ pub fn setup_superio() -> Result<(), ServiceError> {
 
 pub struct Acpi;
 
+#[cfg(feature = "acpi")]
 impl fstart_acpi::device::AcpiDevice for Acpi {
     type Config = ();
     fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
@@ -40,6 +41,7 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
         .expect("GA-D510UD Super I/O AML")
     }
 }
+#[cfg(feature = "acpi")]
 pub static GA_D510UD_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",
