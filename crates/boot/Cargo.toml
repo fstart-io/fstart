@@ -13,6 +13,8 @@ crabefi = ["crabefi-basic", "crabefi/full"]
 crabefi-ui = ["crabefi", "crabefi/ui"]
 crabefi-elan-i2c = ["crabefi-basic", "crabefi/elan-i2c"]
 crabefi-hid-i2c = ["crabefi-basic", "crabefi/hid-i2c"]
+# CrabEFI's own xHCI driver, without the rest of `full` (SPI flash, TPM, ...).
+crabefi-xhci = ["crabefi-basic", "crabefi/xhci"]
 # Continue fstart's measured boot (fstart-tcg) in CrabEFI's full profile.
 tcg = ["dep:fstart-tcg", "dep:fstart-driver-tpm"]
 crabefi-basic = ["dep:crabefi", "crabefi/cfr", "dep:fstart-arch", "dep:fstart-core", "dep:fstart-log", "dep:fstart-options"]
