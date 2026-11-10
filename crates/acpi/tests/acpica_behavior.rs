@@ -122,3 +122,121 @@ DefinitionBlock ("", "SSDT", 2, "FSTART", "EXTTEST_", 1) {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn pci_osc_negotiates_only_validated_control_and_rejects_bad_requests() {
+    let dir = std::env::temp_dir().join(format!("fstart-pci-osc-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let osc = fstart_acpi::osc::pci_host_osc(0x10);
+    let identity = acpi_dsl! { Name("_HID",EisaId("PNP0A08")); Name("_CID",EisaId("PNP0A03")); };
+    let test = acpi_dsl! {
+        Name("BUF0",Buffer(0u8,0u8,0u8,0u8,15u8,0u8,0u8,0u8,255u8,0u8,0u8,0u8));
+        Name("SHRT",Buffer(0u8,0u8,0u8,0u8));
+        Name("TINY",Buffer(0u8));
+        Method("TEST",1,Serialized) {
+            Local0=BUF0;
+            Local1=ToUUID("33db4d5b-1ff7-401c-9657-7441c03dd766");
+            Local2=1u8; Local3=3u8;
+            CreateDwordField(Local0,0u8,"QURY");
+            CreateDwordField(Local0,8u8,"CTRL");
+            If (Arg0==1u8) { QURY=1u8; }
+            If (Arg0==2u8) { Local1=ToUUID("00000000-0000-0000-0000-000000000000"); }
+            If (Arg0==3u8) { Local2=2u8; }
+            If (Arg0==4u8) { Local0=SHRT; Local3=1u8; }
+            If (Arg0==5u8) { CTRL=16u8; }
+            If (Arg0==6u8) { Local0=TINY; }
+            Return(_OSC(Local1,Local2,Local3,Local0));
+        }
+    };
+    let mut storage = [0; 4096];
+    let table = AmlWriter::table(
+        &mut storage,
+        *b"DSDT",
+        2,
+        *b"FSTART",
+        *b"OSC_TEST",
+        1,
+        |writer| {
+            writer.scope("\\_SB_", |writer| {
+                writer.device("PCI0", |writer| {
+                    writer.emit(&identity, &[])?;
+                    writer.raw(&osc)?;
+                    writer.emit(&test, &[])
+                })
+            })
+        },
+    )
+    .unwrap();
+    fs::write(dir.join("dsdt.aml"), table.as_slice().unwrap()).unwrap();
+    run(&dir, "iasl", &["-d", "dsdt.aml"]);
+    assert!(run(&dir, "iasl", &["-tc", "dsdt.dsl"]).contains("0 Errors"));
+    let expected = [
+        "10 00 00 00 0F 00 00 00 10 00 00 00",
+        "11 00 00 00 0F 00 00 00 10 00 00 00",
+        "04 00 00 00 0F 00 00 00 FF 00 00 00",
+        "08 00 00 00 0F 00 00 00 FF 00 00 00",
+        "02 00 00 00",
+        "00 00 00 00 0F 00 00 00 10 00 00 00",
+        "02 00 00 00",
+    ];
+    for (case, expected) in expected.iter().enumerate() {
+        let command = format!("execute \\_SB.PCI0.TEST {case}");
+        let output = run(&dir, "acpiexec", &["-dt", "-b", &command, "dsdt.aml"]);
+        assert!(output.contains(expected), "case {case}: {output}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pci_prt_resolves_bridge_scope_and_preserves_wide_gsi_values() {
+    let dir = std::env::temp_dir().join(format!("fstart-prt-behavior-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let root = fstart_acpi::pirq::prt_name_aml([(7u8, 0u8, 27u32)].into_iter());
+    let child = fstart_acpi::pirq::prt_name_aml([(0u8, 2u8, 0x123u32), (1, 3, 98)].into_iter());
+    let identity = acpi_dsl! { Name("_HID",EisaId("PNP0A08")); Name("_CID",EisaId("PNP0A03")); };
+    let adr = acpi_dsl! { Name("_ADR",0x00070001u32); };
+    let mut storage = [0; 4096];
+    let table = AmlWriter::table(
+        &mut storage,
+        *b"DSDT",
+        2,
+        *b"FSTART",
+        *b"PRT_TEST",
+        1,
+        |w| {
+            w.scope("\\_SB_", |w| {
+                w.device("PCI0", |w| {
+                    w.emit(&identity, &[])?;
+                    w.raw(&root)?;
+                    w.device("P039", |w| {
+                        w.emit(&adr, &[])?;
+                        w.raw(&child)
+                    })
+                })
+            })
+        },
+    )
+    .unwrap();
+    fs::write(dir.join("dsdt.aml"), table.as_slice().unwrap()).unwrap();
+    run(&dir, "iasl", &["-d", "dsdt.aml"]);
+    assert!(run(&dir, "iasl", &["-tc", "dsdt.dsl"]).contains("0 Errors"));
+    let output = run(
+        &dir,
+        "acpiexec",
+        &[
+            "-dt",
+            "-b",
+            "evaluate \\_SB.PCI0._PRT;evaluate \\_SB.PCI0.P039._PRT",
+            "dsdt.aml",
+        ],
+    );
+    for value in [
+        "000000000007FFFF",
+        "000000000000001B",
+        "0000000000000123",
+        "0000000000000062",
+    ] {
+        assert!(output.contains(value), "{value}: {output}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
