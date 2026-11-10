@@ -53,23 +53,16 @@ fn main() -> ExitCode {
         }
         if args.fix {
             match ffmt::fix_source(&src) {
-                Ok(Some(new)) => {
-                    if !ffmt::check_source(&new).is_empty() {
-                        eprintln!("{}: reflow left violations; not written", file.display());
-                        found += 1;
-                        continue;
+                Ok(Some(new)) => match std::fs::write(file, new) {
+                    Ok(()) => {
+                        rewritten += 1;
+                        println!("rewrote {}", file.display());
                     }
-                    match std::fs::write(file, new) {
-                        Ok(()) => {
-                            rewritten += 1;
-                            println!("rewrote {}", file.display());
-                        }
-                        Err(e) => {
-                            eprintln!("{}: {e}", file.display());
-                            errors += 1;
-                        }
+                    Err(e) => {
+                        eprintln!("{}: {e}", file.display());
+                        errors += 1;
                     }
-                }
+                },
                 Ok(None) => {}
                 Err(e) => {
                     eprintln!("{}: {e}", file.display());
@@ -78,7 +71,15 @@ fn main() -> ExitCode {
             }
             continue;
         }
-        for violation in ffmt::check_source(&src) {
+        let violations = match ffmt::check_source(&src) {
+            Ok(violations) => violations,
+            Err(e) => {
+                eprintln!("{}: {e}", file.display());
+                errors += 1;
+                continue;
+            }
+        };
+        for violation in violations {
             println!(
                 "{}:{}: {}",
                 file.display(),
@@ -101,7 +102,10 @@ fn main() -> ExitCode {
 }
 
 fn collect(path: &Path, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
     if meta.is_file() {
         out.push(path.to_path_buf());
         return Ok(());
@@ -109,10 +113,8 @@ fn collect(path: &Path, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) -> 
     if !meta.is_dir() {
         return Err("not a file or a directory".into());
     }
-    // A symlinked directory can point at one of its own parents; visiting each
-    // physical directory once keeps a cycle from scanning the same file over
-    // and over.
-    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Deduplicate overlapping scan roots, without traversing symlinks.
+    let key = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     if !seen.insert(key) {
         return Ok(());
     }
@@ -121,11 +123,12 @@ fn collect(path: &Path, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) -> 
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy().into_owned();
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_dir() {
             if !matches!(name.as_str(), "target" | ".git" | "node_modules") {
                 collect(&path, seen, out)?;
             }
-        } else if name.ends_with(".rs") {
+        } else if file_type.is_file() && name.ends_with(".rs") {
             out.push(path);
         }
     }
