@@ -76,7 +76,7 @@ dependencies = [
 [[package]]
 name = "aspeed-hal"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=6233756e6929c26fc68ed6b3fa7c2237301c59a9#6233756e6929c26fc68ed6b3fa7c2237301c59a9"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=584969669dfa6d5820a346f771bc7f70f5d322ac#584969669dfa6d5820a346f771bc7f70f5d322ac"
 dependencies = [
  "aspeed-mmio",
  "aspeed-pac",
@@ -85,12 +85,12 @@ dependencies = [
 [[package]]
 name = "aspeed-mmio"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=6233756e6929c26fc68ed6b3fa7c2237301c59a9#6233756e6929c26fc68ed6b3fa7c2237301c59a9"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=584969669dfa6d5820a346f771bc7f70f5d322ac#584969669dfa6d5820a346f771bc7f70f5d322ac"
 
 [[package]]
 name = "aspeed-pac"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=f0a6500555d973689963bf608f14bae851393fa7#f0a6500555d973689963bf608f14bae851393fa7"
+source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=e2834759833ae2247ed0c7647460fd4507389ad3#e2834759833ae2247ed0c7647460fd4507389ad3"
 
 [[package]]
 name = "atomic_refcell"

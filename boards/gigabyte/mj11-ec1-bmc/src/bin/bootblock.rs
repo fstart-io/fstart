@@ -1,6 +1,6 @@
 //! MJ11-EC1 BMC bootblock, executing SPI flash in place from the reset
 //! vector. The SoC's flow is the whole `main`; the board only picks the
-//! DRAM setup and whether to test it.
+//! flash clock, the MAC timing, the DRAM setup and whether to test it.
 
 #![no_std]
 #![no_main]
@@ -8,7 +8,7 @@
 use fstart_board_gigabyte_mj11_ec1_bmc::{self as board, STRAP_WRITES};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_aspeed::ast2500::{Ddr4Odt, DramConfig, Organization, Speed};
+use fstart_platform_aspeed::ast2500::{Ddr4Odt, DramConfig, Mac, MacConfig, Organization, Speed};
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
@@ -30,6 +30,29 @@ const DRAM: DramConfig = DramConfig {
 /// delay reads correctly at HCLK/2 (99 MHz), HCLK/3 (66 MHz) does.
 const FLASH_MAX_HZ: u32 = 66_000_000;
 
+/// MAC1 is strapped to RMII for NC-SI to the host's network controller,
+/// which drives the 50 MHz reference clock; MAC2 to RGMII for the
+/// dedicated management PHY. Both use transmit clock delay 8 and receive
+/// clock delay 2; the RGMII transmit clock duty is calibrated and
+/// inverted, at stage 4 for MAC1 and 6 for MAC2. Both MDIO ports are
+/// routed to their pins.
+const MACS: MacConfig = MacConfig {
+    mac1: Mac {
+        tx_delay: 8,
+        rx_delay: 2,
+        tx_duty: 0x64,
+        rmii_clock_out: false,
+        mdio: true,
+    },
+    mac2: Mac {
+        tx_delay: 8,
+        rx_delay: 2,
+        tx_duty: 0x66,
+        rmii_clock_out: false,
+        mdio: true,
+    },
+};
+
 /// Test all usable DRAM after every training (cold boots only). Off: the
 /// test takes about a minute over 424 MiB, and training passed it on this
 /// board. Turn it on for DRAM work.
@@ -43,6 +66,7 @@ fn main() -> ! {
         &CONSOLE,
         board::console(),
         FLASH_MAX_HZ,
+        &MACS,
         &DRAM,
         MEMTEST,
     )

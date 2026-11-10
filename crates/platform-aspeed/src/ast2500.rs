@@ -6,11 +6,12 @@ use crate::layout::{
     FLASH_CALIBRATION_SIZE, HANDOFF_ADDR, MAIN_STAGE_BASE, MAIN_STAGE_SIZE, TIMESTAMPS,
     TIMESTAMPS_SIZE,
 };
-use aspeed_hal::ast2500::fmc;
+pub use aspeed_hal::ast2500::mac::{Mac, MacConfig};
 use aspeed_hal::ast2500::reset::{self, InitialReset};
 use aspeed_hal::ast2500::sdmc::train::ScanError;
 use aspeed_hal::ast2500::sdmc::{self, Dram, TrainError};
 pub use aspeed_hal::ast2500::sdmc::{CkDrive, Ddr4Odt, DramConfig, Organization, Speed};
+use aspeed_hal::ast2500::{fmc, mac};
 use aspeed_pac as pac;
 use fstart_arch::armv5te::TranslationTable;
 use fstart_core::ffs::Compression;
@@ -32,10 +33,10 @@ const MEMTEST_STEP: usize = 64 << 20;
 
 /// Stop what fires without us, protect the flash, bring up the console,
 /// take the first reset of a cold boot, switch CE0 to the fastest
-/// calibrated read up to `flash_max_hz`, train DRAM, test it if `memtest`
-/// and it was just trained, then load the main stage into DRAM and enter
-/// it. Boards pass their flash and DRAM choices; their bootblock `main`
-/// calls this.
+/// calibrated read up to `flash_max_hz`, set up the MAC clocks and pins
+/// for `macs`, train DRAM, test it if `memtest` and it was just trained,
+/// then load the main stage into DRAM and enter it. Boards pass their
+/// flash, MAC and DRAM choices; their bootblock `main` calls this.
 ///
 /// WDT3 resets the SoC about one second after power-on to retry the SPI
 /// address mode, and the strap may arm WDT2 to switch to the alternate boot
@@ -45,6 +46,7 @@ pub fn bootblock(
     slot: &'static StaticConsole<Ns16550>,
     console: Ns16550Config,
     flash_max_hz: u32,
+    macs: &MacConfig,
     dram: &DramConfig,
     memtest: bool,
 ) -> ! {
@@ -88,6 +90,12 @@ pub fn bootblock(
 
     fstart_timestamp::add(id::EARLY_INIT);
     set_flash_read(flash_max_hz);
+    mac::init(macs);
+    fstart_log::info!(
+        "mac: D2-PLL 250 MHz, MAC1 {}, MAC2 {}",
+        if strap.MAC1_RGMII() { "RGMII" } else { "RMII" },
+        if strap.MAC2_RGMII() { "RGMII" } else { "RMII" }
+    );
 
     fstart_timestamp::add(id::INITRAM_START);
     let dram = match sdmc::init(dram, log_retry) {
