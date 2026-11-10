@@ -414,11 +414,15 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         }],
         Payload::Halt | Payload::Uefi => vec![],
     };
-    // The PSP firmware is packed from the blob directory: `--blobs`, or
-    // the blobs fbuild extracts from a `--donor` image. Without one the
-    // plan builds the units and assembles no image.
+    // The PSP firmware is packed from the blob directory: `--blobs`, the
+    // blobs fbuild extracts from a `--donor` image, or for a bundle those
+    // its assembly extracts. Without one the plan builds the units and
+    // assembles no image.
     let config = payload.config(selection)?;
-    let (assembly, inputs) = match &selection.blobs {
+    let deferred = selection
+        .defer_firmware
+        .then_some(fstart_image_build::bundle::BLOBS_DIR.to_string());
+    let (assembly, inputs) = match selection.blobs.as_ref().or(deferred.as_ref()) {
         Some(dir) => {
             let (packed, microcode) = packed::<B>(selection, dir)?;
             let assembly = Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
@@ -437,6 +441,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         ),
     };
     let plan = BuildPlan {
+        publication_payloads: ["halt", "linux", "uefi"].map(String::from).to_vec(),
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],
@@ -457,7 +462,11 @@ fn packed<B: Sp3BoardFacts>(
     selection: &BuildSelection,
     dir: &str,
 ) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
-    let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
+    let dir = if selection.defer_firmware {
+        std::path::PathBuf::from(dir)
+    } else {
+        std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?
+    };
     let tables = &selection.manifests;
     let boards = blobs::board_tables(&tables.board["amd"])?;
     let name = tables.board["board"]

@@ -2,7 +2,7 @@
 //! files the board's and its SoC's AMD firmware tables name, at the paths
 //! `--blobs` builds read them from.
 use crate::{board_manifest::BoardManifest, profile_source::ProfileSource};
-use fstart_image_build::amd::blobs::{self, SocBlobs};
+use fstart_image_build::amd::blobs::{self, BoardBlobs, SocBlobs};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -67,6 +67,20 @@ pub(crate) fn from_donor(
     Ok(dir)
 }
 
+/// The blob tables of a board's AMD firmware: its own and its platform's,
+/// one pair per SoC the board has (the SP3 generations).
+pub(crate) fn donor_tables(source: &ProfileSource) -> Result<Vec<(SocBlobs, BoardBlobs)>, String> {
+    let mut tables = Vec::new();
+    for board in blobs::board_tables(&source.package["metadata"]["fstart"]["amd"])? {
+        let soc: SocBlobs = serde_json::from_value(
+            source.platform["metadata"]["fstart"]["amd"][&board.soc].clone(),
+        )
+        .map_err(|e| format!("platform [package.metadata.fstart.amd.{}]: {e}", board.soc))?;
+        tables.push((soc, board));
+    }
+    Ok(tables)
+}
+
 fn extract_from(
     source: &ProfileSource,
     rom: &Path,
@@ -76,20 +90,7 @@ fn extract_from(
     let table = &source.package["metadata"]["fstart"];
     let name = table["board"].as_str().ok_or("the board has no name")?;
     let image = fs::read(rom).map_err(|e| format!("{}: {e}", rom.display()))?;
-    // One table per SoC the board has (the SP3 generations).
-    let mut tables = Vec::new();
-    for board_blobs in blobs::board_tables(&table["amd"])? {
-        let soc: SocBlobs = serde_json::from_value(
-            source.platform["metadata"]["fstart"]["amd"][&board_blobs.soc].clone(),
-        )
-        .map_err(|e| {
-            format!(
-                "platform [package.metadata.fstart.amd.{}]: {e}",
-                board_blobs.soc
-            )
-        })?;
-        tables.push((soc, board_blobs));
-    }
+    let tables = donor_tables(source)?;
     let blobs::Donated {
         found,
         missing,

@@ -307,7 +307,10 @@ fn microcode(packed: Option<&blobs::Resolved>) -> Result<Option<MicrocodeConfig>
 /// (`[package.metadata.fstart.amd]`) in the selected blob directory. None
 /// without a blob directory.
 fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolved>, String> {
-    let Some(dir) = &selection.blobs else {
+    let deferred = selection
+        .defer_firmware
+        .then_some(fstart_image_build::bundle::BLOBS_DIR.to_string());
+    let Some(dir) = selection.blobs.as_ref().or(deferred.as_ref()) else {
         return Ok(None);
     };
     let tables = &selection.manifests;
@@ -331,7 +334,11 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
     let name = tables.board["board"]
         .as_str()
         .ok_or("the board table has no board name")?;
-    let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
+    let dir = if selection.defer_firmware {
+        std::path::PathBuf::from(dir)
+    } else {
+        std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?
+    };
     blobs::resolve(&soc, &board, name, &dir, S::LAYOUT.flash.size as u32).map(Some)
 }
 
@@ -453,6 +460,13 @@ where
         },
     };
     let plan = BuildPlan {
+        publication_payloads: if policy.payloads {
+            ["halt", "linux", "uefi", "uefi-ui", "uefi-basic"]
+                .map(String::from)
+                .to_vec()
+        } else {
+            vec!["halt".into()]
+        },
         payload: payload.into(),
         stages: vec![UNIT.into()],
         inputs,

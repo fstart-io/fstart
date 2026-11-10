@@ -8,13 +8,16 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "lenovo-t60"
+name = "ThinkPad T60"
 platform = "x86"
 target = "i686-unknown-none"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [package.metadata.fstart.variants.lenovo-r60]
+name = "ThinkPad R60"
 features = ["r60"]
 [package.metadata.fstart.variants.lenovo-z61t]
+name = "ThinkPad Z61t"
 features = ["z61t"]
 [features]
 default = []

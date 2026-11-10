@@ -1,6 +1,8 @@
 pub mod amd;
 pub mod assemble;
 pub mod build_plan;
+pub mod bundle;
+pub mod files;
 
 mod coreboot_payload;
 pub mod elf;
@@ -12,13 +14,14 @@ pub mod layout;
 pub mod linker;
 pub mod options;
 pub mod plan;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod smm_image;
 pub mod sp3_flash;
 mod summary;
 
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StageBinary {
     pub name: String,
     pub path: PathBuf,

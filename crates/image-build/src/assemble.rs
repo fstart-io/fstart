@@ -1,3 +1,4 @@
+use crate::files::{Files, HostFiles};
 use crate::summary::{FlashArea, Placement};
 use fstart_core::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
@@ -12,7 +13,6 @@ use fstart_ffs::builder::{
 };
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::StageBinary;
@@ -30,7 +30,39 @@ pub fn assemble(
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
     signing_key: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let (signing_key, verification_key) = load_signing_key(signing_key, config)?;
+    assemble_with_files(
+        &HostFiles,
+        workspace_root,
+        board_dir,
+        config,
+        stage_binaries,
+        output_dir,
+        kernel_path,
+        firmware_path,
+        fit_path,
+        payload_files,
+        bootstrap,
+        signing_key,
+    )
+}
+
+/// Identical assembly operation for disk and browser-owned byte inputs.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_with_files(
+    files: &dyn Files,
+    workspace_root: &Path,
+    board_dir: &Path,
+    config: &BoardConfig,
+    stage_binaries: &[StageBinary],
+    output_dir: Option<&Path>,
+    kernel_path: Option<&str>,
+    firmware_path: Option<&str>,
+    fit_path: Option<&str>,
+    payload_files: &[(String, String)],
+    bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
+    signing_key: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let (signing_key, verification_key) = load_signing_key(files, signing_key, config)?;
 
     let mut ro_files = Vec::new();
 
@@ -39,7 +71,8 @@ pub fn assemble(
         StageLayout::Monolithic(mono) => {
             let stage = &stage_binaries[0];
 
-            let bin_data = fs::read(&stage.run_path)
+            let bin_data = files
+                .read(&stage.run_path)
                 .map_err(|e| format!("failed to read {}: {e}", stage.run_path.display()))?;
 
             ro_files.push(InputFile {
@@ -59,7 +92,7 @@ pub fn assemble(
         StageLayout::MultiStage(stages) => {
             for (i, stage_bin) in stage_binaries.iter().enumerate() {
                 if i == 0 {
-                    let mut bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
+                    let mut bin_data = files.read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
                     if config.soc_image_format == SocImageFormat::AllwinnerEgon {
@@ -94,7 +127,7 @@ pub fn assemble(
                             stage_bin.name, compression
                         ));
                     };
-                    let bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
+                    let bin_data = files.read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
                     ro_files.push(InputFile {
@@ -116,7 +149,7 @@ pub fn assemble(
     }
 
     if let Some(ref microcode) = config.microcode {
-        assemble_microcode(microcode, workspace_root, board_dir, &mut ro_files)?;
+        assemble_microcode(files, microcode, workspace_root, board_dir, &mut ro_files)?;
     }
 
     let mut data_file = |name: String, data: Vec<u8>| {
@@ -138,12 +171,15 @@ pub fn assemble(
     // same authenticated data-file path.
     for name in &config.data_assets {
         let path = board_dir.join(name.as_str());
-        let data = fs::read(&path).map_err(|e| format!("failed to read data asset {name}: {e}"))?;
+        let data = files
+            .read(&path)
+            .map_err(|e| format!("failed to read data asset {name}: {e}"))?;
         data_file(name.as_str().to_string(), data);
     }
     for asset in &config.file_assets {
         let path = workspace_root.join(asset.path.as_str());
-        let data = fs::read(&path)
+        let data = files
+            .read(&path)
             .map_err(|e| format!("failed to read data asset {}: {e}", path.display()))?;
         data_file(asset.name.as_str().to_string(), data);
     }
@@ -157,9 +193,16 @@ pub fn assemble(
     }
     if let Some(ref payload) = config.payload {
         if payload.kind == fstart_core::PayloadKind::FitImage {
-            assemble_fit_payload(payload, board_dir, fit_path.or(kernel_path), &mut ro_files)?;
+            assemble_fit_payload(
+                files,
+                payload,
+                board_dir,
+                fit_path.or(kernel_path),
+                &mut ro_files,
+            )?;
         } else if coreboot {
             crate::coreboot_payload::add(
+                files,
                 payload,
                 board_dir,
                 kernel_path,
@@ -168,6 +211,7 @@ pub fn assemble(
             )?;
         } else {
             assemble_linux_payload(
+                files,
                 payload,
                 board_dir,
                 kernel_path,
@@ -178,9 +222,10 @@ pub fn assemble(
 
         if let FdtSource::Override(ref dtb_name) = payload.fdt {
             let dtb_path = board_dir.join(dtb_name.as_str());
-            if dtb_path.exists() {
-                let dtb_data =
-                    fs::read(&dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
+            if files.exists(&dtb_path) {
+                let dtb_data = files
+                    .read(&dtb_path)
+                    .map_err(|e| format!("failed to read DTB: {e}"))?;
                 let dtb_load_addr = payload.dtb_addr.unwrap_or(0);
 
                 ro_files.push(InputFile {
@@ -291,23 +336,29 @@ pub fn assemble(
     let output_dir = output_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| workspace_root.join("target").join("ffs"));
-    fs::create_dir_all(&output_dir).map_err(|e| format!("failed to create output dir: {e}"))?;
+    files
+        .create_dir_all(&output_dir)
+        .map_err(|e| format!("failed to create output dir: {e}"))?;
 
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let identities = ffs_image.patched_inputs.iter().map(|input| format!(
         "region={:?} file={:?} segment={} patched_input_sha256={} constant_trust_sha256={}\n",
         input.region, input.file, input.segment, hex(&input.sha256), hex(&input.trust_sha256),
     )).collect::<String>();
-    fs::write(
-        output_dir.join(format!("{}.inputs.txt", config.name)),
-        identities,
-    )
-    .map_err(|e| format!("write patched artifact identities: {e}"))?;
+    files
+        .write(
+            &output_dir.join(format!("{}.inputs.txt", config.name)),
+            identities.as_bytes(),
+        )
+        .map_err(|e| format!("write patched artifact identities: {e}"))?;
     let image_path = output_dir.join(format!("{}.ffs", config.name));
-    fs::write(&image_path, &image_bytes).map_err(|e| format!("failed to write FFS image: {e}"))?;
+    files
+        .write(&image_path, &image_bytes)
+        .map_err(|e| format!("failed to write FFS image: {e}"))?;
 
     let (out_path, placement) = if config.full_flash_image {
         let full_flash = FullFlashInput {
+            files,
             config,
             board_dir,
             bootblock_elf: &stage_binaries[0].path,
@@ -331,9 +382,7 @@ pub fn assemble(
             .read_manifest(&anchor)
             .map_err(|e| format!("failed to re-read FFS manifest: {e:?}"))?
     };
-    let file_size = fs::metadata(&out_path)
-        .map_err(|e| format!("failed to stat {}: {e}", out_path.display()))?
-        .len();
+    let file_size = files.read(&out_path)?.len() as u64;
     let shown_path = out_path.strip_prefix(workspace_root).unwrap_or(&out_path);
     eprint!(
         "\n{}",
@@ -560,6 +609,7 @@ fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
 }
 
 struct FullFlashInput<'a> {
+    files: &'a dyn Files,
     config: &'a BoardConfig,
     board_dir: &'a Path,
     bootblock_elf: &'a Path,
@@ -573,6 +623,7 @@ struct FullFlashInput<'a> {
 /// Compose a non-x86 XIP image from the linked stage and its separate FFS
 /// window. The two windows are board data: no board-name dispatch is needed.
 fn create_xip_flash_image(
+    files: &dyn Files,
     config: &BoardConfig,
     bootblock_elf: &Path,
     bootblock_bin: &Path,
@@ -609,7 +660,7 @@ fn create_xip_flash_image(
         ));
     }
 
-    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+    let elf_data = files.read(bootblock_elf).map_err(|e| {
         format!(
             "failed to read bootblock ELF {}: {e}",
             bootblock_elf.display()
@@ -647,7 +698,7 @@ fn create_xip_flash_image(
         // A RAM-linked stage is still flashed at offset zero for its reset
         // stub to relocate. Its flat binary is already contiguous by PT_LOAD
         // address, unlike an ELF whose addresses intentionally lie in RAM.
-        let stage = fs::read(bootblock_bin).map_err(|e| {
+        let stage = files.read(bootblock_bin).map_err(|e| {
             format!(
                 "failed to read RAM-linked bootblock binary {}: {e}",
                 bootblock_bin.display()
@@ -674,9 +725,8 @@ fn create_xip_flash_image(
         patch_stage_anchor(&mut image, ffs_data, ffs_anchor_offset)?;
     }
 
-    let mib = image.len() / (1024 * 1024);
-    let out_path = ffs_path.with_file_name(format!("{}-{mib}m.pflash", config.name));
-    fs::write(&out_path, &image).map_err(|e| {
+    let out_path = ffs_path.with_file_name(pflash_name(&config.name, image.len()));
+    files.write(&out_path, &image).map_err(|e| {
         format!(
             "failed to write XIP flash image {}: {e}",
             out_path.display()
@@ -750,6 +800,7 @@ fn policy_window(
 
 fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placement), String> {
     let FullFlashInput {
+        files,
         config,
         board_dir,
         bootblock_elf,
@@ -762,6 +813,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
 
     if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
         return create_intel_ifd_flash_image(
+            files,
             config,
             board_dir,
             layout,
@@ -776,6 +828,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
 
     if config.build.flash_image.is_some() {
         return create_xip_flash_image(
+            files,
             config,
             bootblock_elf,
             bootblock_bin,
@@ -812,7 +865,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
 
     image[..ffs_data.len()].copy_from_slice(ffs_data);
 
-    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+    let elf_data = files.read(bootblock_elf).map_err(|e| {
         format!(
             "failed to read bootblock ELF {}: {e}",
             bootblock_elf.display()
@@ -839,7 +892,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
     }
 
-    let mut bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+    let mut bootblock_data = files.read(bootblock_bin).map_err(|e| {
         format!(
             "failed to read bootblock flat binary {}: {e}",
             bootblock_bin.display()
@@ -871,9 +924,8 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
 
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, 0)?;
 
-    let mib = flash_size / (1024 * 1024);
-    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
-    fs::write(&out_path, &image).map_err(|e| {
+    let out_path = ffs_path.with_file_name(pflash_name(&config.name, flash_size));
+    files.write(&out_path, &image).map_err(|e| {
         format!(
             "failed to write full flash image {}: {e}",
             out_path.display()
@@ -893,6 +945,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
 
 #[allow(clippy::too_many_arguments)]
 fn create_intel_ifd_flash_image(
+    files: &dyn Files,
     config: &BoardConfig,
     _board_dir: &Path,
     layout: &IntelIfdFlashLayout,
@@ -931,7 +984,7 @@ fn create_intel_ifd_flash_image(
     let bios_start = bios.offset as usize;
     image[bios_start..bios_start + ffs_data.len()].copy_from_slice(ffs_data);
 
-    let elf_data = fs::read(bootblock_elf).map_err(|e| {
+    let elf_data = files.read(bootblock_elf).map_err(|e| {
         format!(
             "failed to read bootblock ELF {}: {e}",
             bootblock_elf.display()
@@ -958,7 +1011,7 @@ fn create_intel_ifd_flash_image(
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
     }
 
-    let mut bootblock_data = fs::read(bootblock_bin).map_err(|e| {
+    let mut bootblock_data = files.read(bootblock_bin).map_err(|e| {
         format!(
             "failed to read bootblock flat binary {}: {e}",
             bootblock_bin.display()
@@ -990,9 +1043,8 @@ fn create_intel_ifd_flash_image(
 
     patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
 
-    let mib = layout.size() as usize / (1024 * 1024);
-    let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
-    fs::write(&out_path, &image).map_err(|e| {
+    let out_path = ffs_path.with_file_name(pflash_name(&config.name, layout.size() as usize));
+    files.write(&out_path, &image).map_err(|e| {
         format!(
             "failed to write Intel IFD flash image {}: {e}",
             out_path.display()
@@ -1047,13 +1099,15 @@ fn patch_xip_anchor(
 
 /// Concatenate `files`, relative paths taken from `base`.
 fn concat_files<'a>(
+    source: &dyn Files,
     files: impl IntoIterator<Item = &'a str>,
     base: &Path,
     what: &str,
 ) -> Result<Vec<u8>, String> {
     files.into_iter().try_fold(Vec::new(), |mut blob, file| {
         let path = base.join(file);
-        let data = fs::read(&path)
+        let data = source
+            .read(&path)
             .map_err(|e| format!("failed to read {what} {}: {e}", path.display()))?;
         blob.extend_from_slice(&data);
         Ok(blob)
@@ -1061,11 +1115,13 @@ fn concat_files<'a>(
 }
 
 /// The flat patches of `config`, its files in order.
-pub(crate) fn amd_microcode(
+pub(crate) fn amd_microcode_from(
+    files: &dyn Files,
     config: &fstart_core::board::AmdMicrocodeConfig,
     workspace_root: &Path,
 ) -> Result<Vec<u8>, String> {
     let blob = concat_files(
+        files,
         config.files.iter().map(|f| f.as_str()),
         workspace_root,
         "AMD microcode",
@@ -1079,6 +1135,7 @@ pub(crate) fn amd_microcode(
 }
 
 fn assemble_microcode(
+    files: &dyn Files,
     microcode: &fstart_core::board::MicrocodeConfig,
     workspace_root: &Path,
     board_dir: &Path,
@@ -1092,14 +1149,16 @@ fn assemble_microcode(
         fstart_core::board::MicrocodeConfig::Intel(config) => (
             "cpu_microcode_blob.bin",
             concat_files(
+                files,
                 config.files.iter().map(|f| f.as_str()),
                 board_dir,
                 "Intel microcode",
             )?,
         ),
-        fstart_core::board::MicrocodeConfig::Amd(config) => {
-            ("cpu_microcode.bin", amd_microcode(config, workspace_root)?)
-        }
+        fstart_core::board::MicrocodeConfig::Amd(config) => (
+            "cpu_microcode.bin",
+            amd_microcode_from(files, config, workspace_root)?,
+        ),
     };
     if blob.is_empty() {
         return Err("microcode config did not include any bytes".to_string());
@@ -1132,6 +1191,7 @@ fn stage_loaded_via_stage_load(stages: &[fstart_core::StageConfig], stage_name: 
 }
 
 fn assemble_fit_payload(
+    files: &dyn Files,
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     kernel_override: Option<&str>,
@@ -1158,7 +1218,7 @@ fn assemble_fit_payload(
         }
     };
 
-    if !fit_path.exists() {
+    if !files.exists(&fit_path) {
         eprintln!(
             "[fstart] warning: FIT image not found: {}",
             fit_path.display()
@@ -1166,7 +1226,9 @@ fn assemble_fit_payload(
         return Ok(());
     }
 
-    let fit_data = fs::read(&fit_path).map_err(|e| format!("failed to read FIT image: {e}"))?;
+    let fit_data = files
+        .read(&fit_path)
+        .map_err(|e| format!("failed to read FIT image: {e}"))?;
 
     let fit = fstart_boot::fit::FitImage::parse(&fit_data)
         .map_err(|e| format!("failed to parse FIT image: {e:?}"))?;
@@ -1259,19 +1321,20 @@ fn assemble_fit_payload(
         }
     }
 
-    add_firmware_blob(payload, board_dir, None, ro_files)?;
+    add_firmware_blob(files, payload, board_dir, None, ro_files)?;
 
     Ok(())
 }
 
 fn assemble_linux_payload(
+    files: &dyn Files,
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     ro_files: &mut Vec<InputFile>,
 ) -> Result<(), String> {
-    add_firmware_blob(payload, board_dir, firmware_path, ro_files)?;
+    add_firmware_blob(files, payload, board_dir, firmware_path, ro_files)?;
 
     if let Some(zero_page_addr) = payload.x86_zero_page_addr {
         let manifest = fstart_core::payload_manifest::X86LinuxManifest::encode(
@@ -1306,9 +1369,10 @@ fn assemble_linux_payload(
     });
 
     if let Some(ref k_path) = kernel_file {
-        if k_path.exists() {
-            let kernel_data =
-                fs::read(k_path).map_err(|e| format!("failed to read kernel blob: {e}"))?;
+        if files.exists(k_path) {
+            let kernel_data = files
+                .read(k_path)
+                .map_err(|e| format!("failed to read kernel blob: {e}"))?;
             // Kernel blobs are stored verbatim and the platform jumps to the
             // configured kernel_addr, so an ELF (vmlinux) would have its ELF
             // header executed — a silent hang at boot. Require flat images.
@@ -1351,6 +1415,7 @@ fn assemble_linux_payload(
 }
 
 fn add_firmware_blob(
+    files: &dyn Files,
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     firmware_path: Option<&str>,
@@ -1364,9 +1429,10 @@ fn add_firmware_blob(
     });
 
     if let Some(ref fw_path) = fw_file {
-        if fw_path.exists() {
-            let fw_data =
-                fs::read(fw_path).map_err(|e| format!("failed to read firmware blob: {e}"))?;
+        if files.exists(fw_path) {
+            let fw_data = files
+                .read(fw_path)
+                .map_err(|e| format!("failed to read firmware blob: {e}"))?;
             let fw_load_addr = payload
                 .firmware
                 .as_ref()
@@ -1450,6 +1516,7 @@ where
 /// fresh in-memory key that is never written anywhere. There are no default
 /// or per-board keys.
 fn load_signing_key(
+    files: &dyn Files,
     path: Option<&Path>,
     config: &BoardConfig,
 ) -> Result<(ed25519_dalek::SigningKey, VerificationKey), String> {
@@ -1464,8 +1531,9 @@ fn load_signing_key(
     }
     let signing_key = match path {
         Some(path) => {
-            let bytes =
-                fs::read(path).map_err(|e| format!("signing key {}: {e}", path.display()))?;
+            let bytes = files
+                .read(path)
+                .map_err(|e| format!("signing key {}: {e}", path.display()))?;
             match core::str::from_utf8(&bytes) {
                 Ok(pem) if pem.trim_start().starts_with("-----BEGIN") => {
                     SigningKey::from_pkcs8_pem(pem).map_err(|e| e.to_string())
@@ -1561,5 +1629,14 @@ mod trust_copy_tests {
         );
         patch_initial_trust(&mut initial, &built.trust_bytes);
         assert_eq!(&initial[64..64 + TRUST_SIZE], &built.trust_bytes);
+    }
+}
+
+/// `<board>-8m.pflash`, or `<board>-512k.pflash` for flashes under 1 MiB.
+fn pflash_name(board: &str, size: usize) -> String {
+    if size % (1 << 20) == 0 {
+        format!("{board}-{}m.pflash", size >> 20)
+    } else {
+        format!("{board}-{}k.pflash", size >> 10)
     }
 }

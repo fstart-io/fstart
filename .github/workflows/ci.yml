@@ -117,6 +117,13 @@ jobs:
           cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles
+          # fbuild compiles each platform's host plan adapter on demand;
+          # build them all here, so a broken plan fails the PR, not the
+          # master distribution job.
+          for platform in amd intel qemu sifive sunxi; do
+            cargo check -p "fstart-platform-$platform" --features host --lib
+          done
+          cargo check -p fstart-platform-sp3 --features host,rome --lib
           # Each AMD SoC on its own: the boards select one, the tests all.
           for soc in picasso zeppelin naples rome milan; do
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"

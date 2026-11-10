@@ -167,10 +167,6 @@ fn compose_sp3_flash(
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
     };
     let plan = &image.compose;
-    let rom = {
-        let read = |path: &str| read(&workspace_root.join(path));
-        fstart_image_build::sp3_flash::packed_rom(&image.packed, plan, &read)?
-    };
     for half in &image.packed {
         eprintln!(
             "[fstart] SP3 {} PSP firmware packed from its files",
@@ -183,7 +179,11 @@ fn compose_sp3_flash(
         .iter()
         .find(|stage| stage.name == image.stage_unit)
         .ok_or("SP3 stage unit was not built")?;
-    let flash = fstart_image_build::sp3_flash::compose(&rom, plan, &read(&reset.run_path)?, &ffs)?;
+    let flash = image.assemble(
+        &|path| read(&workspace_root.join(path)),
+        &read(&reset.run_path)?,
+        &ffs,
+    )?;
     if !flash.patched.locator || !flash.patched.flash {
         eprintln!(
             "[fstart] warning: the SP3 stage unit links no FFS locator or flash anchor; it cannot read its FFS"
