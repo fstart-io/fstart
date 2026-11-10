@@ -22,11 +22,8 @@ fn main() -> ! {
         .set_ide_primary_enabled(mainboard::ultrabay_populated());
     let mut rs = rs.init_chipset();
     let resume = rs.is_resume();
-    let mut ec = fstart_driver_lenovo::options::Options::DEFAULT;
-    rs.resolve_options(&mainboard::EC_KNOBS, &mut ec, |_| Ok(()));
-    let mut cpu = fstart_driver_intel::cpu::options::Options::default();
-    rs.resolve_options(&mainboard::CPU_KNOBS, &mut cpu, |_| Ok(()));
-    cpu.apply();
+    let ec = rs.resolve_set(&mainboard::EC, |_| Ok(()));
+    rs.resolve_set(&mainboard::CPU, |_| Ok(())).apply();
     let identity = mainboard::init_devices(&mut pins.bluetooth_card, rs.smbus(), &ec, resume);
     let rs = rs
         .start_cpus()

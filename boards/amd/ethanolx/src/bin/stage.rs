@@ -32,7 +32,12 @@ fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     stage.program_gpio(&ethanolx::GPIO_PROGRAM);
     let mut layout = ethanolx::dxio_layout(stage.fch(), stage.timer())
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
-    stage.resolve_options(&ethanolx::dxio::KNOBS, &mut layout, ethanolx::dxio::check);
+    // From what the board detected, not the slots' undetected values.
+    stage.resolve_options(
+        ethanolx::dxio::SETUP.knobs,
+        &mut layout,
+        ethanolx::dxio::check,
+    );
     let engines = ethanolx::dxio_engines(&layout, stage.timer())
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
     let mut stage = stage

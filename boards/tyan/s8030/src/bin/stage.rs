@@ -33,10 +33,7 @@ fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     let levels = stage.read_pads(platform::detect_pads(generation));
     stage.program_gpio(&platform::gpio(generation));
     let detected = platform::detect(&levels, stage.timer());
-    let mut options = dxio::Options::BUILD;
-    stage.resolve_options(&dxio::KNOBS, &mut options, |o| {
-        dxio::check(generation, o, &detected)
-    });
+    let options = stage.resolve_set(&dxio::SETUP, |o| dxio::check(generation, o, &detected));
     let engines = platform::dxio_engines(generation, &options, &detected);
     let mut stage = stage
         .train_dxio(&engines)

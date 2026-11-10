@@ -251,6 +251,7 @@ pub fn resolve(
         },
     };
     let plan = BuildPlan {
+        options: Default::default(),
         payload,
         units: vec![unit],
         stages: vec!["stage".into()],

@@ -14,6 +14,7 @@ mod intel_assembly;
 pub mod intel_plan;
 pub mod layout;
 pub mod linker;
+pub mod options;
 pub mod plan;
 pub mod run;
 pub mod smm_image;

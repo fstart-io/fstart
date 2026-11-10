@@ -41,7 +41,9 @@ impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
             })
             .transpose()?
             .unwrap_or_default();
+        let log_level = selection.log_level.clone();
         let mut plan = compilation_plan(resolve::<B>(selection, options.linux)?)?;
+        plan.options = self::options::<B>(log_level.as_deref())?;
         let stage_names = plan.stages.clone();
         let Some(fstart_image_build::build_plan::ImageStep {
             operation: fstart_image_build::build_plan::ImageOperation::Ffs(image),
@@ -94,6 +96,28 @@ fn image_assets(bytes: &[u8]) -> Result<Vec<fstart_core::board::FileAsset>, std:
         }
     }
     Ok(assets)
+}
+
+/// The options a build of `B` at `log_level` offers, kept in CMOS: the
+/// console level it starts at, the chipset's, the board's, in the order
+/// the ramstage resolves them.
+pub fn options<B: IntelBoardFacts>(
+    log_level: Option<&str>,
+) -> Result<fstart_image_build::options::Options, std::string::String> {
+    use fstart_image_build::options::{OptionStore, collect};
+    let level = fstart_log::start_level(log_level.map(fstart_log::parse_verbosity));
+    let window = crate::facts::OPTION_WINDOW;
+    let store = OptionStore::Cmos {
+        first: window.first,
+        last: window.last,
+    };
+    collect(Some(store), |each| {
+        fstart_options::describe(&fstart_log::option::KNOBS, &level, each);
+        B::CONFIG.describe_options(each);
+        for set in B::OPTIONS {
+            set.describe(each);
+        }
+    })
 }
 
 pub fn compilation_plan(
@@ -196,6 +220,7 @@ pub fn compilation_plan(
         .into_iter()
         .collect::<Vec<_>>();
     let resolved = BuildPlan {
+        options: Default::default(),
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),

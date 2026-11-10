@@ -29,6 +29,7 @@ pub fn host<S: HostSoc>(max_cpus: u16) -> Host {
             apob_destination: S::APOB.base,
             source: S::SOURCE,
         }),
+        option_store: None,
     }
 }
 

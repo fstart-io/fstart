@@ -50,7 +50,15 @@ impl fstart_platform_amd::board::Board for Board {
     /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
     /// 64 MiB export and leaves [16, 48) MiB alone.
     const FLASH_MIRRORS: &'static [u32] = &[0x300_0000];
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
+        &[&POLICY_OPTIONS, &dxio::SETUP];
 }
+
+/// The policy knobs over Milan's policy, as the boot resolves them.
+static POLICY_OPTIONS: board::PolicyOptions = board::PolicyOptions {
+    config,
+    generation: Generation::Milan,
+};
 
 /// The policy knobs the user may override.
 pub static OPTIONS: [fstart_options::Knob<Policy>; 1] = [board::knob::POWER_FAIL];

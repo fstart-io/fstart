@@ -42,7 +42,15 @@ impl fstart_platform_amd::board::Board for Board {
         kcs_spacing: bmc::KCS_SPACING as u8,
         sw_smi_base: 0xC0,
     });
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
+        &[&POLICY_OPTIONS, &dxio::SETUP];
 }
+
+/// The policy knobs over Rome's policy; Milan's board values are the same.
+static POLICY_OPTIONS: board::PolicyOptions = board::PolicyOptions {
+    config,
+    generation: Generation::Rome,
+};
 
 /// The policy knobs the user may override: "Restore AC Power Loss", as the
 /// vendor Setup offers it.

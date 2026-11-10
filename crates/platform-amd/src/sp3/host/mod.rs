@@ -58,6 +58,11 @@ pub fn host<B: Board>() -> Host {
             vendor_image: B::VENDOR_IMAGE,
             plan: flash_plan::<B>(),
         }),
+        // The settings store below the reset image of the lower half.
+        option_store: Some(fstart_image_build::options::OptionStore::Varstore {
+            offset: layout::NVRAM.offset,
+            size: layout::NVRAM.size,
+        }),
     }
 }
 

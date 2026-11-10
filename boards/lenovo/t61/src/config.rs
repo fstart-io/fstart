@@ -50,6 +50,8 @@ pub const FLASH: fstart_core::IntelIfdFlashLayout = {
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     type Platform = Hardware;
+    const OPTIONS: &'static [&'static dyn fstart_options::Describe] =
+        &[&crate::mainboard::EC, &crate::mainboard::CPU];
     const CONFIG: &'static Gm965Ich8Platform = &T61_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(

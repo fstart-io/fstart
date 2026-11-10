@@ -2146,6 +2146,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         crate::southbridge::options::NMI,
     ];
 
+    fn board_options(config: &Self::Config) -> Self::Options {
+        crate::southbridge::options::Options::from_config(
+            config.power_on_after_fail,
+            config.sata.map(|sata| sata.mode),
+        )
+    }
+
     fn options(&self) -> Self::Options {
         self.options
     }
@@ -2270,10 +2277,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
         Ok(Self {
             config,
-            options: crate::southbridge::options::Options::from_config(
-                config.power_on_after_fail,
-                config.sata.map(|sata| sata.mode),
-            ),
+            options: Self::board_options(config),
             smbus: None,
             pm: PmIo::new(ich9::DEFAULT_PMBASE),
             s3_enabled: false,

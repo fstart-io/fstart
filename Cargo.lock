@@ -1463,6 +1463,7 @@ dependencies = [
  "fstart-coreboot",
  "fstart-crypto",
  "fstart-ffs",
+ "fstart-options",
  "fstart-smm",
  "heapless 0.8.0",
  "iced-x86",

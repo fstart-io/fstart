@@ -62,23 +62,26 @@ pub struct Identity {
 }
 
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
-/// them.
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 12] = {
+/// them. Their board values are coreboot's defaults.
+pub static EC: fstart_options::OptionSet<fstart_driver_lenovo::options::Options> = {
     use fstart_driver_lenovo::options::*;
-    [
-        FIRST_BATTERY,
-        BLUETOOTH,
-        WWAN,
-        TOUCHPAD,
-        WLAN,
-        TRACKPOINT,
-        FN_CTRL_SWAP,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        USB_ALWAYS_ON,
-        VOLUME,
-    ]
+    fstart_options::OptionSet {
+        knobs: &[
+            FIRST_BATTERY,
+            BLUETOOTH,
+            WWAN,
+            TOUCHPAD,
+            WLAN,
+            TRACKPOINT,
+            FN_CTRL_SWAP,
+            STICKY_FN,
+            POWER_MANAGEMENT_BEEPS,
+            LOW_BATTERY_BEEP,
+            USB_ALWAYS_ON,
+            VOLUME,
+        ],
+        board: Options::DEFAULT,
+    }
 };
 
 /// EC/PMH7 with the user's `ec` options, the dock, the identity EEPROM and

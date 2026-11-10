@@ -29,21 +29,24 @@ pub struct Devices {
     pub native_brightness: bool,
 }
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
-/// them.
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 10] = {
+/// them. Their board values are coreboot's defaults.
+pub static EC: fstart_options::OptionSet<fstart_driver_lenovo::options::Options> = {
     use fstart_driver_lenovo::options::*;
-    [
-        TOUCHPAD,
-        TRACKPOINT,
-        BLUETOOTH,
-        WWAN,
-        WLAN,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        VOLUME,
-        FIRST_BATTERY,
-    ]
+    fstart_options::OptionSet {
+        knobs: &[
+            TOUCHPAD,
+            TRACKPOINT,
+            BLUETOOTH,
+            WWAN,
+            WLAN,
+            STICKY_FN,
+            POWER_MANAGEMENT_BEEPS,
+            LOW_BATTERY_BEEP,
+            VOLUME,
+            FIRST_BATTERY,
+        ],
+        board: Options::DEFAULT,
+    }
 };
 
 pub fn init_ec_and_bay(

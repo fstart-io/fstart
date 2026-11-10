@@ -68,6 +68,13 @@ pub trait Board: 'static {
     /// readout, and the build is a full flash image with the bank at 0 and
     /// at every mirror).
     const FLASH_MIRRORS: &'static [u32] = &[];
+    /// The option sets the board offers, in the order its boot resolves
+    /// them after the console level: on SP3 its policy knobs
+    /// ([`crate::sp3::board::PolicyOptions`]), then its own sets, each the
+    /// `fstart_options::OptionSet` its stage `main` resolves. The build
+    /// lists their options (`fbuild options`); nothing else describes
+    /// them. A SoC without a settings store lists none.
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] = &[];
 }
 
 /// What the flow's services read of the board ([`Board`]).

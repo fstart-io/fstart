@@ -24,6 +24,10 @@ pub struct BuildPlan {
     /// emulator equivalent. Host-only data: it never reaches firmware.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::run::RunRecipe>,
+    /// The options the build offers (`fbuild options`), from the board's
+    /// option sets.
+    #[serde(default, skip_serializing_if = "crate::options::Options::is_empty")]
+    pub options: crate::options::Options,
 }
 
 /// One image-format operation in a plan. The format's config type and its
@@ -880,6 +884,7 @@ mod tests {
             flat_capacity: span.size,
         };
         BuildPlan {
+            options: Default::default(),
             payload: "halt".into(),
             platform: Platform::Aarch64,
             units: vec![
@@ -1161,6 +1166,7 @@ mod tests {
             build: BoardBuildPolicy::default(),
         };
         let plan = |units| BuildPlan {
+            options: Default::default(),
             payload: "halt".into(),
             platform: Platform::X86_64,
             units,

@@ -85,25 +85,31 @@ pub struct Identity {
     pub ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
-/// them.
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 9] = {
+/// them. Their board values are coreboot's defaults.
+pub static EC: fstart_options::OptionSet<fstart_driver_lenovo::options::Options> = {
     use fstart_driver_lenovo::options::*;
-    [
-        BLUETOOTH,
-        WWAN,
-        WLAN,
-        TRACKPOINT,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        VOLUME,
-        FIRST_BATTERY,
-    ]
+    fstart_options::OptionSet {
+        knobs: &[
+            BLUETOOTH,
+            WWAN,
+            WLAN,
+            TRACKPOINT,
+            STICKY_FN,
+            POWER_MANAGEMENT_BEEPS,
+            LOW_BATTERY_BEEP,
+            VOLUME,
+            FIRST_BATTERY,
+        ],
+        board: Options::DEFAULT,
+    }
 };
 
 /// Optional SpeedStep voltage reduction; stock voltage unless explicitly set.
-pub static CPU_KNOBS: [fstart_options::Knob<fstart_driver_intel::cpu::options::Options>; 1] =
-    [fstart_driver_intel::cpu::options::UNDERVOLT];
+pub static CPU: fstart_options::OptionSet<fstart_driver_intel::cpu::options::Options> =
+    fstart_options::OptionSet {
+        knobs: &[fstart_driver_intel::cpu::options::UNDERVOLT],
+        board: fstart_driver_intel::cpu::options::Options::STOCK,
+    };
 
 /// EC/PMH7, dock power, the identity EEPROM and the SD slot, once the
 /// chipset devices are up. `smbus` is on the EEPROM branch. EC setup is

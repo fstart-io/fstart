@@ -8,15 +8,9 @@
 
 use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 use fstart_options::Source;
-use fstart_options::cmos::{Cmos, Ram, Window};
+use fstart_options::cmos::{Cmos, Ram};
 
-/// The CMOS bytes the options keep, after the clock and its
-/// century/alarm bytes; the last two hold the checksum.
-pub const WINDOW: Window = Window {
-    first: 0x40,
-    last: 0x7f,
-};
-const _: () = assert!(WINDOW.check());
+pub use crate::facts::OPTION_WINDOW as WINDOW;
 
 /// CMOS RAM bank 0.
 static RAM: fstart_driver_rtc::Cmos = fstart_driver_rtc::Cmos;
