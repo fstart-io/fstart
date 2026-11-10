@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 160" fill="none" role="img" aria-labelledby="title desc">
+<title id="title">fstart — Silicon crab, PCB refinement</title>
+<desc id="desc">The fstart wordmark beside a crab built from copper traces, 45-degree bends, and annular solder pads. All vector, with no font dependency.</desc>
+<g transform="translate(12 27) scale(.8)" color="#d95230">
+  <g stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Shell: an octagonal copper trace, not a filled mascot body. -->
+    <path d="M46 48H90L100 58V78L90 88H46L36 78V58Z"/>
+    <!-- Eye stalks, with through-hole vias at their tips. -->
+    <path d="M54 48V36M82 48V36"/>
+    <!-- Claw feeds and open, forked pincers, routed at 45 degrees. -->
+    <path d="M36 60H30L18 48V36M100 60H106L118 48V36"/>
+    <path d="M8 16V26L18 36L28 26V16M108 16V26L118 36L128 26V16"/>
+    <!-- Three separately routed legs on each side. -->
+    <path d="M36 70H22L12 80M42 84L26 100H20M54 88V98L44 108"/>
+    <path d="M100 70H114L124 80M94 84L110 100H116M82 88V98L92 108"/>
+  </g>
+  <!-- A small f-shaped route inside the shell. -->
+  <path d="M57 78V64L63 58H78M57 69H74" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Annular pads are true holes: no background-colored circles. -->
+  <g stroke="currentColor" stroke-width="3.5">
+    <circle cx="54" cy="31" r="4.5"/>
+    <circle cx="82" cy="31" r="4.5"/>
+    <circle cx="8" cy="11" r="4.5"/>
+    <circle cx="28" cy="11" r="4.5"/>
+    <circle cx="108" cy="11" r="4.5"/>
+    <circle cx="128" cy="11" r="4.5"/>
+    <circle cx="9" cy="83" r="4.5"/>
+    <circle cx="15" cy="100" r="4.5"/>
+    <circle cx="41" cy="111" r="4.5"/>
+    <circle cx="127" cy="83" r="4.5"/>
+    <circle cx="121" cy="100" r="4.5"/>
+    <circle cx="95" cy="111" r="4.5"/>
+  </g>
+</g><g transform="translate(149 44)"><g fill="none" stroke="#f5f3ee" stroke-linecap="square" stroke-linejoin="round" stroke-width="8.5"><path transform="translate(0 0)" d="M9 63V20Q9 5 25 5H31M0 29H28"/><path transform="translate(40 0)" d="M31 23H13Q3 23 3 33Q3 43 15 43H20Q32 43 32 53Q32 63 21 63H2"/><path transform="translate(81 0)" d="M10 10V50Q10 63 23 63H30M0 24H29"/><path transform="translate(120 0)" d="M3 25H20Q32 25 32 37V63M32 42H15Q2 42 2 53Q2 63 15 63Q32 63 32 50"/><path transform="translate(164 0)" d="M4 63V25M4 39Q9 23 29 25"/><path transform="translate(199 0)" d="M10 10V50Q10 63 23 63H30M0 24H29"/></g></g>
+</svg>
