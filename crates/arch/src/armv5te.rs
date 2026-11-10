@@ -78,8 +78,9 @@ _exception_hang:
 
 /// `fence(SeqCst)` lowers to this libcall on ARMv5TE, which has no barrier
 /// instruction, and the bare-metal compiler builtins do not provide it. The
-/// cores run single-threaded with the MMU off, so draining the write buffer
-/// orders memory as a full barrier.
+/// cores run single-threaded, with the MMU off or write-through caching
+/// (see [`enable_dcache`]), so draining the write buffer orders memory as a
+/// full barrier.
 #[unsafe(no_mangle)]
 pub extern "C" fn __sync_synchronize() {
     // SAFETY: CP15 c7/c10/4 drains the write buffer; the source register
@@ -107,19 +108,100 @@ pub fn wait_for_interrupt() {
     }
 }
 
-/// Make code just written to RAM visible to instruction fetch: drain the
-/// write buffer, then invalidate the I-cache, which `_start` turned on (on
-/// the ARM1176 this also flushes the branch target cache). The MMU and
-/// D-cache stay off, so no data needs cleaning.
-#[inline(always)]
-fn sync_icache() {
-    // SAFETY: CP15 c7/c10/4 and c7/c5/0 drain the write buffer and
-    // invalidate the whole I-cache; the source register should be zero.
+/// A first-level translation table: one descriptor per 1 MiB section.
+#[repr(C, align(16384))]
+pub struct TranslationTable([u32; 4096]);
+
+impl TranslationTable {
+    pub const fn new() -> Self {
+        Self([0; 4096])
+    }
+}
+
+impl Default for TranslationTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Section descriptor in the ARMv5 format, which the ARM1176 also reads
+/// with its extended format off: full access in domain 0, bit 4 set as the
+/// ARM926 requires. Without C and B the section is uncached, unbuffered.
+const SECTION: u32 = 0b11 << 10 | 1 << 4 | 0b10;
+/// C without B: cached write-through.
+const WRITE_THROUGH: u32 = 1 << 3;
+
+/// Map the address space flat in 1 MiB sections and turn on the MMU and the
+/// D-cache. Sections wholly inside a `cached` range (start, size) are
+/// cached write-through, everything else stays uncached and unbuffered.
+///
+/// Write-through leaves no dirty lines, so the jump helpers below turn the
+/// MMU and D-cache off again without cleaning anything, as the next stage
+/// or payload expects them.
+///
+/// # Safety
+///
+/// The `cached` ranges are memory without read side effects that nothing
+/// but this CPU writes while the D-cache is on.
+pub unsafe fn enable_dcache(table: &'static mut TranslationTable, cached: &[(u64, u64)]) {
+    const MIB: u64 = 1 << 20;
+    for (section, entry) in (0u64..).zip(table.0.iter_mut()) {
+        let start = section * MIB;
+        let wholly = |&(base, size): &(u64, u64)| base <= start && start + MIB <= base + size;
+        *entry = start as u32
+            | SECTION
+            | if cached.iter().any(wholly) {
+                WRITE_THROUGH
+            } else {
+                0
+            };
+    }
+    // SAFETY: the table is written to memory (D-cache off) and maps every
+    // address to itself, so execution continues where it is. CP15: drain
+    // the write buffer, invalidate the D-cache and TLBs, domain 0 client,
+    // table base, then the MMU and D-cache on with the ARM1176's extended
+    // table format (bit 23) off.
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {zero}, c7, c10, 4",
+            "mcr p15, 0, {zero}, c7, c6, 0",
+            "mcr p15, 0, {zero}, c8, c7, 0",
+            "mcr p15, 0, {client}, c3, c0, 0",
+            "mcr p15, 0, {table}, c2, c0, 0",
+            "mrc p15, 0, {ctrl}, c1, c0, 0",
+            "bic {ctrl}, {ctrl}, #0x800000",
+            "orr {ctrl}, {ctrl}, #0x5",
+            "mcr p15, 0, {ctrl}, c1, c0, 0",
+            zero = in(reg) 0u32,
+            client = in(reg) 1u32,
+            table = in(reg) table.0.as_ptr(),
+            ctrl = out(reg) _,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// Leave the CPU as a stage or payload loaded into RAM expects it: drain
+/// the write buffer, turn the MMU and D-cache off (write-through, see
+/// [`enable_dcache`], so nothing needs cleaning), then invalidate the
+/// D-cache, the TLBs and the I-cache, which `_start` turned on, so that
+/// the code just written is visible to instruction fetch (on the ARM1176
+/// this also flushes the branch target cache).
+#[inline(always)]
+fn sync_icache() {
+    // SAFETY: the running code is mapped flat if the MMU is on, so turning
+    // it off changes no address; the CP15 operations take a zero register.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {zero}, c7, c10, 4",
+            "mrc p15, 0, {ctrl}, c1, c0, 0",
+            "bic {ctrl}, {ctrl}, #0x5",
+            "mcr p15, 0, {ctrl}, c1, c0, 0",
+            "mcr p15, 0, {zero}, c7, c6, 0",
+            "mcr p15, 0, {zero}, c8, c7, 0",
             "mcr p15, 0, {zero}, c7, c5, 0",
             zero = in(reg) 0u32,
+            ctrl = out(reg) _,
             options(nostack, preserves_flags)
         );
     }
