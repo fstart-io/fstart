@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/logo.jpeg" width="200" alt="fstart logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logos/fstart-dark.svg">
+    <img src="docs/assets/logos/fstart.svg" width="420" alt="fstart — PCB crab logo">
+  </picture>
 </p>
 
 # fstart
