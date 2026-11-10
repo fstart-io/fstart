@@ -134,6 +134,9 @@ pub struct Reset {
 pub struct TwoLevelImage {
     /// The EFS field the SoC's PSP takes the BIOS directory from.
     pub slot: BiosDirectorySlot,
+    /// The EFS generation bits (+0x24) the SoC's boot ROM requires clear
+    /// in a second-generation EFS; the others stay set.
+    pub generation_mask: u32,
     /// The flash (or 16 MiB half) the boot ROM maps; offsets below are in it.
     pub flash_size: u32,
     pub efs_offset: u32,
@@ -141,6 +144,9 @@ pub struct TwoLevelImage {
     pub partition_end: u32,
     /// The PSP's SPI read mode and speed, else the erased defaults.
     pub spi: Option<(u8, u8)>,
+    /// The eSPI configuration the PSP applies (EFS +0x50, in its order),
+    /// else erased.
+    pub espi: Option<[u8; 4]>,
     pub psp: Vec<Entry>,
     pub bios: Vec<Entry>,
     pub reset: Reset,
@@ -408,8 +414,7 @@ impl TwoLevelImage {
             // The second-generation EFS: the generation word the boot ROM
             // checks, and the older BIOS directory fields cleared, as the
             // vendor images have them.
-            let profile = fstart_amdfw_format::Profile::for_slot(self.slot);
-            efs.generation.set(!profile.generation_mask);
+            efs.generation.set(!self.generation_mask);
             for slot in [
                 BiosDirectorySlot::Family17hModel00,
                 BiosDirectorySlot::Family17hModel10,
@@ -424,6 +429,14 @@ impl TwoLevelImage {
             .set(self.address(bios1) as u32);
         if let Some((mode, speed)) = self.spi {
             efs.set_spi(self.slot, mode, speed);
+        }
+        if let Some([espi0_config0, espi1_config0, espi0_config1, espi1_config1]) = self.espi {
+            efs.espi = fstart_amdfw_format::efs::Espi {
+                espi0_config0,
+                espi1_config0,
+                espi0_config1,
+                espi1_config1,
+            };
         }
         layout.write(self.efs_offset, efs.as_bytes());
         Ok(PackedImage {
