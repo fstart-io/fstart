@@ -3,7 +3,7 @@
 
 use crate::layout::{
     DRAM_BASE as DRAM, FIRMWARE_WINDOW_SIZE, FLASH_ALIAS, HANDOFF_ADDR, MAIN_STAGE_BASE,
-    MAIN_STAGE_SIZE,
+    MAIN_STAGE_SIZE, TIMESTAMPS, TIMESTAMPS_SIZE,
 };
 use aspeed_hal::ast2500::reset::{self, InitialReset};
 use aspeed_hal::ast2500::sdmc::train::ScanError;
@@ -19,6 +19,7 @@ use fstart_log::{Hex, StaticConsole};
 use fstart_memtest::{Phase, Progress};
 use fstart_payload::{Description, Handoff, Placement, Range};
 use fstart_stage::boot::{Measurement, MemoryPolicy, MemoryWindow, codec, load_bootstrap};
+use fstart_timestamp::{Counter, id};
 
 /// SCU00 protection key.
 const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;
@@ -42,6 +43,7 @@ pub fn bootblock(
     memtest: bool,
 ) -> ! {
     fstart_stage::anchor::initial_stage();
+    start_timestamps();
     pac::WDT3.CTRL().modify(|w| w.set_WDT_EN(false));
     pac::WDT2.CTRL().modify(|w| w.set_WDT_EN(false));
     pac::FMC
@@ -51,6 +53,7 @@ pub fn bootblock(
     enable_peripheral_port();
 
     start_console(slot, console);
+    fstart_timestamp::add(id::CONSOLE_READY);
 
     let strap = pac::SCU.HWSTRAP().read();
     fstart_log::info!("ast2500: bootblock from SPI");
@@ -75,6 +78,7 @@ pub fn bootblock(
         fstart_log::info!("ast2500: first SoC reset done");
     }
 
+    fstart_timestamp::add(id::INITRAM_START);
     let dram = match sdmc::init(dram, log_retry) {
         Ok(dram) => dram,
         Err(e) => {
@@ -91,7 +95,9 @@ pub fn bootblock(
         }
     };
     log_dram(&dram);
+    fstart_timestamp::add(id::INITRAM_END);
     if memtest && dram.training.is_some() {
+        fstart_timestamp::add(id::RAMINIT_MEMORY_TEST);
         self::memtest(dram.usable_bytes);
     }
 
@@ -123,6 +129,11 @@ pub fn main_stage(
     console: Ns16550Config,
     handoff_addr: usize,
 ) -> ! {
+    fstart_timestamp::set_counter(&TIMESTAMP_COUNTER);
+    // SAFETY: the bootblock started the table there; nothing else uses the
+    // end of SRAM.
+    unsafe { fstart_timestamp::attach(TIMESTAMPS as *mut u8, TIMESTAMPS_SIZE as usize) };
+    fstart_timestamp::add(id::RAMSTAGE_START);
     start_console(slot, console);
     fstart_log::info!("ast2500: main stage");
     if handoff_addr != HANDOFF_ADDR as usize {
@@ -172,13 +183,51 @@ pub fn main_stage(
     }
     let image_size = fstart_stage::anchor::image_size();
     let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(FLASH_ALIAS, image_size);
-    if ffs.mount().is_err() || ffs.verify().is_err() {
-        fail("FFS mount or verification");
+    fstart_timestamp::add(id::MOUNT_BOOT_MEDIA);
+    if ffs.mount().is_err() {
+        fail("FFS mount");
+    }
+    fstart_timestamp::add(id::VERIFY_BOOT_MEDIA);
+    if ffs.verify().is_err() {
+        fail("FFS verification");
     }
 
     let memory = [E820Entry::new(DRAM, dram_size, E820Kind::Ram)];
     let description = Description::new(&memory, Range::new(FLASH_ALIAS, image_size as u64));
+    fstart_timestamp::add(id::LOAD_PAYLOAD);
     fstart_payload::boot(Handoff::new(description, Placement::default()), ())
+}
+
+/// Timer 4 (index 3 of the per-timer registers) counts the boot timestamps
+/// from the bootblock to the payload jump, free-running at 1 MHz. Timers 1
+/// and 2 are the payload's; the DRAM init delays use timer 3.
+const TIMESTAMP_TIMER: usize = 3;
+
+static TIMESTAMP_COUNTER: Counter = Counter {
+    read: || u64::from(u32::MAX - pac::TIMER.STATUS(TIMESTAMP_TIMER).read().VALUE()),
+    hz: 1_000_000,
+    stop: || {
+        pac::TIMER.CTRL().modify(|w| {
+            w.set_T4_EN(false);
+            w.set_T4_CLK_SEL(false);
+        })
+    },
+};
+
+/// Start timer 4 and an empty timestamp table at the end of SRAM.
+fn start_timestamps() {
+    pac::TIMER
+        .RELOAD(TIMESTAMP_TIMER)
+        .write(|w| w.set_VALUE(u32::MAX));
+    pac::TIMER.CTRL().modify(|w| {
+        w.set_T4_EN(true);
+        w.set_T4_CLK_SEL(true);
+    });
+    fstart_timestamp::set_counter(&TIMESTAMP_COUNTER);
+    // SAFETY: the table span at the end of SRAM is outside the bootblock's
+    // data, heap and stack, and 8-byte aligned.
+    unsafe { fstart_timestamp::init(TIMESTAMPS as *mut u8, TIMESTAMPS_SIZE as usize, 0) };
+    fstart_timestamp::add(id::BOOTBLOCK_START);
 }
 
 fn start_console(slot: &'static StaticConsole<Ns16550>, console: Ns16550Config) {
@@ -202,6 +251,7 @@ fn load_main(usable: u64) -> Result<u64, &'static str> {
     // SAFETY: CE0's decode window maps the boot flash, readable for the
     // whole boot.
     let media = unsafe { MemoryMapped::from_raw_addr(FLASH_ALIAS, FIRMWARE_WINDOW_SIZE as usize) };
+    fstart_timestamp::add(id::VERIFY_BOOT_ROOT);
     let root =
         fstart_stage::root::authenticate_boot_root(fstart_stage::fstart_anchor_bytes(), &media)
             .map_err(|_| "FFS root authentication failed")?;
@@ -229,6 +279,7 @@ fn load_main(usable: u64) -> Result<u64, &'static str> {
     };
     // SAFETY: the bootblock runs from flash with its state in SRAM; the
     // trained DRAM is unused and the handoff page reserved.
+    fstart_timestamp::add(id::LOAD_RAMSTAGE);
     let main = unsafe {
         load_bootstrap(
             &media,

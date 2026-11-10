@@ -27,10 +27,10 @@ use std::{
     vec::Vec,
 };
 
-/// AST2500 on-chip SRAM: 36 KiB at 0x1E72_0000.
+/// AST2500 on-chip SRAM below the boot timestamp table.
 pub const AST2500_SRAM: Span = Span {
-    base: 0x1E72_0000,
-    size: 0x9000,
+    base: SRAM_BASE,
+    size: TIMESTAMPS - SRAM_BASE,
 };
 /// The bootblock authenticates the FFS root (Ed25519) on this stack.
 pub const STACK_SIZE: u64 = 0x4000;

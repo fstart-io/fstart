@@ -15,3 +15,9 @@ pub const MAIN_STAGE_BASE: u64 = 0x8200_0000;
 pub const MAIN_STAGE_SIZE: u64 = 0x0020_0000;
 /// The bootblock's handoff to the main stage, just below it.
 pub const HANDOFF_ADDR: u64 = 0x81FF_F000;
+/// On-chip SRAM: the bootblock's data, heap and stack, then the boot
+/// timestamp table, which the main stage takes over.
+pub const SRAM_BASE: u64 = 0x1E72_0000;
+pub const SRAM_SIZE: u64 = 0x9000;
+pub const TIMESTAMPS_SIZE: u64 = 0x400;
+pub const TIMESTAMPS: u64 = SRAM_BASE + SRAM_SIZE - TIMESTAMPS_SIZE;
