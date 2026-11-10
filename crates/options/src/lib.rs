@@ -47,7 +47,11 @@ pub mod varstore;
 use alloc::vec::Vec;
 
 /// What a knob is, independent of the configuration it changes.
+///
+/// `repr(C)`: the build reads the knobs a stage links from its ELF
+/// ([`meta!`]), so tools see the options of a build without its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub struct Meta {
     /// Storage name: the CFR option name, the EFI variable name under the
     /// CFR GUID, the CMOS layout entry. Stable across builds; ASCII.
@@ -79,6 +83,7 @@ impl Meta {
 
 /// The values a knob takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, u32)]
 pub enum Kind {
     /// 0 or 1.
     Bool,
@@ -103,6 +108,7 @@ impl Kind {
 
 /// One value of an enum knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub struct Choice {
     pub value: u32,
     pub label: &'static str,
@@ -114,33 +120,328 @@ impl Choice {
     }
 }
 
-/// Whether the running machine lets the user change a knob.
+/// Whether the running machine has a knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Availability {
     Editable,
-    /// Shown greyed out with the reason; a stored value is ignored.
-    Inactive(&'static str),
+    /// The machine does not have what the knob changes (no panel, a fused
+    /// off group): menus and tools leave it out, a stored value is ignored.
+    Hidden(&'static str),
 }
 
-/// One overridable field of a configuration `C`.
+/// What the build knows of an option's value before the machine runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, u32)]
+pub enum Baseline {
+    /// The board's value with no override: its configuration is a constant.
+    Known(u32),
+    /// The board detects its configuration at boot.
+    Runtime,
+}
+
+/// What the build knows of whether a machine offers an option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, u32)]
+pub enum Offered {
+    Editable,
+    Hidden(&'static str),
+    /// Decided at boot, from what the board detects.
+    Runtime,
+}
+
+impl Offered {
+    pub const fn of(availability: Availability) -> Self {
+        match availability {
+            Availability::Editable => Self::Editable,
+            Availability::Hidden(why) => Self::Hidden(why),
+        }
+    }
+}
+
+/// A knob as the build records it: its [`Meta`] and, where the knob meets a
+/// constant configuration ([`option_set!`]), its board value and whether
+/// the board offers it. Records sit in `.rodata.fstart.options.*` sections
+/// that the stage's knobs reference, so the linker keeps exactly the records
+/// of the knobs a stage resolves; fstart's linker scripts collect them
+/// between `_fstart_options_start` and `_fstart_options_end`, and image
+/// tools read a build's options from there. `repr(C)`, with `meta` first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Record {
+    meta: Meta,
+    baseline: Baseline,
+    offered: Offered,
+}
+
+impl Record {
+    /// Only the macros make records, so every knob has one in the options
+    /// section.
+    #[doc(hidden)]
+    pub const fn __new(meta: Meta, baseline: Baseline, offered: Offered) -> Self {
+        Self {
+            meta,
+            baseline,
+            offered,
+        }
+    }
+
+    pub const fn meta(&self) -> &Meta {
+        &self.meta
+    }
+
+    pub const fn baseline(&self) -> Baseline {
+        self.baseline
+    }
+
+    pub const fn offered(&self) -> Offered {
+        self.offered
+    }
+}
+
+/// A knob's [`Meta`] as a [`Record`] without board facts: for knobs whose
+/// configuration the build cannot see.
+///
+/// ```
+/// use fstart_options::{Kind, Knob, Meta, meta};
+/// static NMI: Knob<bool> = Knob::new(
+///     meta!(Meta::bool("nmi", "Advanced", "NMI sources", "NMIs on SERR#.")),
+///     |c| (*c).into(),
+///     |c, v| *c = v != 0,
+/// );
+/// assert_eq!(NMI.meta.kind, Kind::Bool);
+/// ```
+#[macro_export]
+macro_rules! meta {
+    ($meta:expr) => {{
+        #[unsafe(link_section = $crate::__meta_section!())]
+        static RECORD: $crate::Record =
+            $crate::Record::__new($meta, $crate::Baseline::Runtime, $crate::Offered::Runtime);
+        &RECORD
+    }};
+}
+
+/// The section of a [`Record`]: unique per invocation, so the linker
+/// drops each unused one on its own.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __meta_section {
+    () => {
+        concat!(
+            ".rodata.fstart.options.",
+            module_path!(),
+            ".",
+            line!(),
+            ".",
+            column!()
+        )
+    };
+}
+
+/// Define a knob as a type whose accessors are `const fn`, so a set can
+/// record the board value and availability at build time
+/// ([`option_set!`]):
+///
+/// ```
+/// use fstart_options::{Meta, knob};
+/// pub struct Options { pub wlan: bool }
+/// knob! {
+///     /// The WLAN radio.
+///     pub Wlan: Options = Meta::bool("wlan", "Radios", "WLAN", "The WLAN card's radio.");
+///     get(o) => o.wlan as u32;
+///     set(o, v) => o.wlan = v != 0;
+/// }
+/// assert_eq!(Wlan::get(&Options { wlan: true }), 1);
+/// ```
+///
+/// `available(o) => ...;` is optional (always editable).
+#[macro_export]
+macro_rules! knob {
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident: $config:ty = $meta:expr;
+        get($g:ident) => $get:expr;
+        set($s:ident, $v:ident) => $set:expr;
+        $(available($a:ident) => $available:expr;)?
+    ) => {
+        $(#[$attr])*
+        $vis struct $name;
+
+        impl $name {
+            pub const META: $crate::Meta = $meta;
+
+            pub const fn get($g: &$config) -> u32 {
+                $get
+            }
+
+            pub fn set($s: &mut $config, $v: u32) {
+                $set;
+            }
+
+            #[allow(unused_variables)]
+            pub const fn available(config: &$config) -> $crate::Availability {
+                $(
+                    let $a = config;
+                    return $available;
+                )?
+                #[allow(unreachable_code)]
+                $crate::Availability::Editable
+            }
+
+            /// The runtime knob of a set whose records a board writes
+            /// elsewhere (the chipset's, at its entry point).
+            pub const KNOB: $crate::Knob<$config> = $crate::Knob::__unrecorded(
+                &Self::META,
+                Self::get,
+                Self::set,
+                Self::available,
+            );
+
+            /// The runtime knob `index` of a set with the records `set`.
+            pub const fn knob(set: &'static [$crate::Record], index: usize) -> $crate::Knob<$config> {
+                $crate::Knob::__new(set, index, Self::get, Self::set, Self::available)
+            }
+        }
+    };
+}
+
+/// The knobs of a configuration `C` as one static array, with a [`Record`]
+/// per knob. With `C = CONST`, the records carry each knob's board value
+/// and availability, evaluated at build time; with `C = runtime`, the
+/// configuration is detected at boot and the records say so. A board whose
+/// fixed hardware (its slots) holds what it detects (the cards, the CPU's
+/// fuses) gives the configuration before detection: the build offers the
+/// knobs, the boot hides those the machine lacks.
+///
+/// ```
+/// use fstart_options::{Meta, knob, option_set};
+/// pub struct Options { pub wlan: bool }
+/// knob! {
+///     pub Wlan: Options = Meta::bool("wlan", "Radios", "WLAN", "The WLAN card's radio.");
+///     get(o) => o.wlan as u32;
+///     set(o, v) => o.wlan = v != 0;
+/// }
+/// option_set!(pub static KNOBS: [Options = Options { wlan: true }] = [Wlan]);
+/// assert_eq!(KNOBS.len(), 1);
+/// ```
+#[macro_export]
+macro_rules! option_set {
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = runtime] = [$($knob:path),+ $(,)?]) => {
+        $crate::__option_set!($(#[$attr])* $vis $name: $config; [$($knob),+];
+            [$($crate::Record::__new(
+                <$knob>::META,
+                $crate::Baseline::Runtime,
+                $crate::Offered::Runtime,
+            )),+]);
+    };
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [$config:ty = $default:expr] = [$($knob:path),+ $(,)?]) => {
+        $crate::__option_set!($(#[$attr])* $vis $name: $config; [$($knob),+];
+            [$($crate::record!($knob, &{ const DEFAULT: $config = $default; DEFAULT })),+]);
+    };
+}
+
+/// A set's records as one ordered array in one section, and its knobs.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __option_set {
+    ($(#[$attr:meta])* $vis:vis $name:ident: $config:ty; [$($knob:path),+]; [$($record:expr),+]) => {
+        $(#[$attr])*
+        $vis static $name: [$crate::Knob<$config>; $crate::__count!($($knob)+)] = {
+            #[unsafe(link_section = $crate::__meta_section!())]
+            static RECORDS: [$crate::Record; $crate::__count!($($knob)+)] = [$($record),+];
+            $crate::__knobs!(RECORDS; []; []; $($knob),+)
+        };
+    };
+}
+
+/// `[K0::knob(&RECORDS, 0), K1::knob(&RECORDS, 1), ..]`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __knobs {
+    ($records:ident; [$($done:expr),*]; [$($prev:tt)*]; $head:path $(, $tail:path)*) => {
+        $crate::__knobs!($records; [$($done,)* <$head>::knob(&$records, $crate::__count!($($prev)*))]; [$($prev)* x]; $($tail),*)
+    };
+    ($records:ident; [$($done:expr),*]; [$($prev:tt)*];) => {
+        [$($done),*]
+    };
+}
+
+/// The [`Record`] of a [`knob!`] type over a constant configuration:
+/// its board value and availability, evaluated at build time.
+#[macro_export]
+macro_rules! record {
+    ($knob:path, $config:expr) => {
+        $crate::Record::__new(
+            <$knob>::META,
+            $crate::Baseline::Known(<$knob>::get($config)),
+            $crate::Offered::of(<$knob>::available($config)),
+        )
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __count {
+    () => { 0 };
+    ($head:tt $($tail:tt)*) => { 1 + $crate::__count!($($tail)*) };
+}
+
+/// One overridable field of a configuration `C`, made by [`knob!`],
+/// [`option_set!`] or over a [`meta!`] record.
 pub struct Knob<C: 'static> {
-    pub meta: Meta,
+    pub meta: &'static Meta,
     /// The field's value.
     pub get: fn(&C) -> u32,
     /// Set the field; only called with a value of [`Meta::kind`].
     pub set: fn(&mut C, u32),
-    /// Whether this machine, as `C` describes it, lets the user change it.
+    /// Whether this machine, as `C` describes it, has the knob.
     pub available: fn(&C) -> Availability,
+    /// The records of the knob's set. Only [`Record`]s make knobs, and a
+    /// reference to the whole array keeps the set's records in order: LLVM
+    /// splits an array it only sees indexed by constants.
+    _set: &'static [Record],
 }
 
 impl<C> Knob<C> {
-    /// An always available knob.
-    pub const fn new(meta: Meta, get: fn(&C) -> u32, set: fn(&mut C, u32)) -> Self {
+    /// An always available knob described by `record` ([`meta!`]).
+    pub const fn new(record: &'static Record, get: fn(&C) -> u32, set: fn(&mut C, u32)) -> Self {
+        Self::__new(core::slice::from_ref(record), 0, get, set, |_| {
+            Availability::Editable
+        })
+    }
+
+    /// Knob `index` of the set whose records are `set`.
+    #[doc(hidden)]
+    pub const fn __new(
+        set: &'static [Record],
+        index: usize,
+        get: fn(&C) -> u32,
+        set_value: fn(&mut C, u32),
+        available: fn(&C) -> Availability,
+    ) -> Self {
+        Self {
+            meta: set[index].meta(),
+            get,
+            set: set_value,
+            available,
+            _set: set,
+        }
+    }
+
+    /// A knob without a record: its set's records are written elsewhere
+    /// (the Intel chipset's, at the board's entry point).
+    #[doc(hidden)]
+    pub const fn __unrecorded(
+        meta: &'static Meta,
+        get: fn(&C) -> u32,
+        set_value: fn(&mut C, u32),
+        available: fn(&C) -> Availability,
+    ) -> Self {
         Self {
             meta,
             get,
-            set,
-            available: |_| Availability::Editable,
+            set: set_value,
+            available,
+            _set: &[],
         }
     }
 
@@ -244,8 +545,8 @@ impl<A: Source, B: Source> Source for Layered<A, B> {
 pub enum Rejection {
     /// Not one of the knob's values.
     OutOfRange,
-    /// The knob is [`Availability::Inactive`] on this machine.
-    Inactive,
+    /// The machine does not have the knob ([`Availability::Hidden`]).
+    Hidden,
     /// The source failed.
     Source(SourceError),
     /// The configuration with every override failed the consumer's check.
@@ -292,7 +593,7 @@ pub fn resolve_knob<C: 'static>(
         },
         Ok(Some(stored)) if availability != Availability::Editable => Provenance::Rejected {
             stored,
-            why: Rejection::Inactive,
+            why: Rejection::Hidden,
         },
         Ok(Some(stored)) => {
             (knob.set)(config, stored);
@@ -304,7 +605,7 @@ pub fn resolve_knob<C: 'static>(
         },
     };
     Setting {
-        meta: &knob.meta,
+        meta: knob.meta,
         default,
         value: (knob.get)(config),
         provenance,
@@ -409,7 +710,7 @@ pub fn resolve_checked<C: Clone + 'static>(
         if report.settings.iter().any(|s| s.meta.key == key)
             || fresh.iter().any(|k| k.meta.key == key)
         {
-            report.duplicates.push(&knob.meta);
+            report.duplicates.push(knob.meta);
         } else {
             fresh.push(knob);
         }

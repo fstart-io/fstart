@@ -42,10 +42,10 @@ mod tuning;
 
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::{
-    Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
+    Bifurcation, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_options::{Knob, Meta};
+use fstart_options::Meta;
 use heapless::Vec;
 
 /// The five x16 slots, in Setup order (`PCIE#1..5`).
@@ -189,86 +189,97 @@ impl Options {
     }
 }
 
-/// The slots' bifurcation is their Setup value; there is no Auto.
-impl Bifurcations for Options {
-    fn bifurcation(&self, index: usize) -> Option<Bifurcation> {
-        Some(self.slots[index].bifurcation)
-    }
-    fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>) {
-        if let Some(b) = bifurcation {
-            self.slots[index].bifurcation = b;
+/// A slot's bifurcation knob: its value is the link width; there is no
+/// Auto.
+macro_rules! slot_knob {
+    ($name:ident, $slot:expr, $key:literal, $label:literal) => {
+        fstart_options::knob! {
+            pub $name: Options = Bifurcation::meta($key, $label, false);
+            get(o) => o.slots[$slot.index()].bifurcation.width() as u32;
+            set(o, v) => if let Some(b) = Bifurcation::from_width(v) {
+                o.slots[$slot.index()].bifurcation = b;
+            };
         }
-    }
+    };
 }
 
-/// The Setup knobs behind the OEM patches, as user options.
-pub static KNOBS: [Knob<Options>; 9] = [
-    Bifurcation::knob::<Options, { Slot::Pcie1.index() }>(
-        "s8030_pcie1_bifurcation",
-        "PCIE#1 (J12) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie2.index() }>(
-        "s8030_pcie2_bifurcation",
-        "PCIE#2 (J9) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie3.index() }>(
-        "s8030_pcie3_bifurcation",
-        "PCIE#3 (J11) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie4.index() }>(
-        "s8030_pcie4_bifurcation",
-        "PCIE#4 (J10) bifurcation",
-        false,
-    ),
-    Bifurcation::knob::<Options, { Slot::Pcie5.index() }>(
-        "s8030_pcie5_bifurcation",
-        "PCIE#5 (J13) bifurcation",
-        false,
-    ),
-    Knob::new(
-        Meta::bool(
-            "s8030_pcie_compliance",
-            "PCIe",
-            "PCIe compliance mode",
-            "Sets the compliance bit of the PCIe engines, for link testing.",
-        ),
-        |o| o.compliance.into(),
-        |o, v| o.compliance = v != 0,
-    ),
-    Knob::new(
-        Meta::bool(
-            "s8030_lan1",
-            "PCIe",
-            "Onboard LAN1 (i210)",
-            "Trains the link of the first i210.",
-        ),
-        |o| o.lan[0].into(),
-        |o, v| o.lan[0] = v != 0,
-    ),
-    Knob::new(
-        Meta::bool(
-            "s8030_lan2",
-            "PCIe",
-            "Onboard LAN2 (i210)",
-            "Trains the link of the second i210.",
-        ),
-        |o| o.lan[1].into(),
-        |o, v| o.lan[1] = v != 0,
-    ),
-    Knob::new(
-        Meta::bool(
-            "s8030_onboard_vga",
-            "PCIe",
-            "Onboard VGA (AST2500)",
-            "Trains the link of the BMC's VGA.",
-        ),
-        |o| o.onboard_vga.into(),
-        |o, v| o.onboard_vga = v != 0,
-    ),
-];
+/// A knob switching one of the OEM's PCIe links, the `bool` at `$place`.
+macro_rules! link_knob {
+    ($name:ident, |$o:ident| $place:expr, $key:literal, $label:literal, $help:literal) => {
+        fstart_options::knob! {
+            pub $name: Options = Meta::bool($key, "PCIe", $label, $help);
+            get($o) => $place as u32;
+            set($o, v) => $place = v != 0;
+        }
+    };
+}
+
+slot_knob!(
+    Pcie1,
+    Slot::Pcie1,
+    "s8030_pcie1_bifurcation",
+    "PCIE#1 (J12) bifurcation"
+);
+slot_knob!(
+    Pcie2,
+    Slot::Pcie2,
+    "s8030_pcie2_bifurcation",
+    "PCIE#2 (J9) bifurcation"
+);
+slot_knob!(
+    Pcie3,
+    Slot::Pcie3,
+    "s8030_pcie3_bifurcation",
+    "PCIE#3 (J11) bifurcation"
+);
+slot_knob!(
+    Pcie4,
+    Slot::Pcie4,
+    "s8030_pcie4_bifurcation",
+    "PCIE#4 (J10) bifurcation"
+);
+slot_knob!(
+    Pcie5,
+    Slot::Pcie5,
+    "s8030_pcie5_bifurcation",
+    "PCIE#5 (J13) bifurcation"
+);
+link_knob!(
+    Compliance,
+    |o| o.compliance,
+    "s8030_pcie_compliance",
+    "PCIe compliance mode",
+    "Sets the compliance bit of the PCIe engines, for link testing."
+);
+link_knob!(
+    Lan1,
+    |o| o.lan[0],
+    "s8030_lan1",
+    "Onboard LAN1 (i210)",
+    "Trains the link of the first i210."
+);
+link_knob!(
+    Lan2,
+    |o| o.lan[1],
+    "s8030_lan2",
+    "Onboard LAN2 (i210)",
+    "Trains the link of the second i210."
+);
+link_knob!(
+    OnboardVga,
+    |o| o.onboard_vga,
+    "s8030_onboard_vga",
+    "Onboard VGA (AST2500)",
+    "Trains the link of the BMC's VGA."
+);
+
+fstart_options::option_set!(
+    /// The Setup knobs behind the OEM patches, as user options, over the
+    /// build's values.
+    pub static KNOBS: [Options = Options::BUILD] = [
+        Pcie1, Pcie2, Pcie3, Pcie4, Pcie5, Compliance, Lan1, Lan2, OnboardVga,
+    ]
+);
 
 /// Whether `options` give the SoC a valid engine list with `detected`.
 pub fn check(

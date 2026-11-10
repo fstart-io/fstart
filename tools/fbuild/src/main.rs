@@ -91,6 +91,13 @@ enum Command {
         #[arg(short, long)]
         image: String,
     },
+    /// Print the options a build offers, as JSON: the option records of its
+    /// last stage, checked against the earlier ones.
+    Options {
+        /// The build's stage ELFs, in boot order.
+        #[arg(required = true)]
+        elfs: Vec<String>,
+    },
     /// Extract a board's vendor firmware blobs (AMD PSP firmware, APCBs,
     /// microcode, video BIOS) from a vendor flash image into a blob
     /// directory for `--blobs`.
@@ -362,6 +369,22 @@ fn main() {
             .map(|_| ())
         }),
         Command::Inspect { image } => fstart_image_build::inspect::inspect(&image),
+        Command::Options { elfs } => (|| {
+            use fstart_image_build::options::{from_elf, schema};
+            let stages = elfs
+                .iter()
+                .map(|elf| {
+                    let data = std::fs::read(elf).map_err(|e| format!("{elf}: {e}"))?;
+                    from_elf(&data).map_err(|e| format!("{elf}: {e}"))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let options = schema(stages)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&options).map_err(|e| e.to_string())?
+            );
+            Ok(())
+        })(),
         Command::Blobs {
             board,
             from,

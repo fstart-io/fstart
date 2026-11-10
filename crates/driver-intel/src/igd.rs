@@ -885,7 +885,7 @@ mod tests {
 /// memory, which the northbridge reserves before DRAM is mapped, and the
 /// i945's panel brightness.
 pub mod options {
-    use fstart_options::{Availability, Choice, Kind, Knob, Meta};
+    use fstart_options::{Availability, Choice, Kind, Meta};
 
     /// What a board's IGD options can change.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -918,34 +918,31 @@ pub mod options {
         }
     }
 
-    const fn igd(o: &Options) -> Availability {
+    /// Whether the IGD is on, for its knobs.
+    pub const fn igd(o: &Options) -> Availability {
         if o.igd {
             Availability::Editable
         } else {
-            Availability::Inactive("the integrated graphics are off")
+            Availability::Hidden("the integrated graphics are off")
         }
     }
 
-    /// The stolen-memory knob over a chipset's sizes, in MiB.
-    pub const fn uma(choices: &'static [Choice]) -> Knob<Options> {
-        Knob::new(
-            Meta {
-                key: "gfx_uma_size",
-                form: "Graphics",
-                label: "Graphics memory",
-                help: "System memory reserved for the integrated graphics. Applies at the next boot.",
-                kind: Kind::Enum(choices),
-            },
-            |o: &Options| o.uma_mb.into(),
-            |o: &mut Options, v| o.uma_mb = v as u16,
-        )
-        .when(igd)
+    /// The stolen-memory knob's description over a chipset's sizes, in
+    /// MiB, for [`uma`].
+    pub const fn uma_meta(choices: &'static [Choice]) -> Meta {
+        Meta {
+            key: "gfx_uma_size",
+            form: "Graphics",
+            label: "Graphics memory",
+            help: "System memory reserved for the integrated graphics. Applies at the next boot.",
+            kind: Kind::Enum(choices),
+        }
     }
 
-    /// The LBB panel brightness the firmware leaves (coreboot
-    /// `tft_brightness`).
-    pub const BRIGHTNESS: Knob<Options> = Knob::new(
-        Meta {
+    fstart_options::knob! {
+        /// The LBB panel brightness the firmware leaves (coreboot
+        /// `tft_brightness`).
+        pub Brightness: Options = Meta {
             key: "tft_brightness",
             form: "Graphics",
             label: "Panel brightness",
@@ -955,15 +952,30 @@ pub mod options {
                 max: 255,
                 step: 1,
             },
-        },
-        |o: &Options| o.brightness.into(),
-        |o: &mut Options, v| o.brightness = v as u8,
-    )
-    .when(|o: &Options| {
-        if o.igd && o.panel {
+        };
+        get(o) => o.brightness as u32;
+        set(o, v) => o.brightness = v as u8;
+        available(o) => if o.igd && o.panel {
             Availability::Editable
         } else {
-            Availability::Inactive("this board has no internal panel")
-        }
-    });
+            Availability::Hidden("this board has no internal panel")
+        };
+    }
+
+    /// A chipset's stolen-memory knob over the sizes `$sizes` (MiB) its GMS
+    /// field encodes.
+    #[macro_export]
+    #[doc(hidden)]
+    macro_rules! __uma_knob {
+        ($sizes:expr) => {
+            fstart_options::knob! {
+                /// Graphics stolen memory (coreboot `gfx_uma_size`), in MiB.
+                pub Uma: $crate::igd::options::Options = $crate::igd::options::uma_meta($sizes);
+                get(o) => o.uma_mb as u32;
+                set(o, v) => o.uma_mb = v as u16;
+                available(o) => $crate::igd::options::igd(o);
+            }
+        };
+    }
+    pub use __uma_knob as uma_knob;
 }

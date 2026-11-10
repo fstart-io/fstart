@@ -17,6 +17,9 @@ pub trait IntelPlatform: 'static {
 
 /// Hardware population needed by both host planning and runtime bring-up.
 pub trait IntelPlatformConfig {
+    /// The chipset's option records for a board ([`crate::entry!`] writes
+    /// them, from the config's inherent `const fn option_records`).
+    type OptionRecords: 'static;
     fn max_cpus(&self) -> u16;
     /// Board subsystem IDs for bus-0 functions (coreboot devicetree
     /// `subsystemid`), programmed before device init.

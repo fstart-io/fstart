@@ -480,7 +480,13 @@ impl<B: Board, S: Silicon> Early<B, S> {
         );
         // SAFETY: BSP only, before MP.
         unsafe { fstart_log::set_max_level(level) };
-        options::resolve(nvram, B::OPTIONS, &mut policy, &mut options, |_| Ok(()));
+        options::resolve(
+            nvram,
+            B::FCH_ENV_OPTIONS,
+            &mut policy.fch_env,
+            &mut options,
+            |_| Ok(()),
+        );
 
         step(0x15, "memory map");
         let tops = top_of_memory();

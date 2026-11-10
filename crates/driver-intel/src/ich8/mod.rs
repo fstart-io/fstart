@@ -824,6 +824,19 @@ pub struct IntelIch8Config {
 }
 
 impl IntelIch8Config {
+    /// The board's values of the user options (`fstart_options`).
+    pub const fn options(&self) -> crate::southbridge::options::Options {
+        crate::southbridge::options::Options::from_config(
+            self.power_on_after_fail,
+            match self.sata {
+                Some(sata) => Some(sata.mode),
+                None => None,
+            },
+        )
+    }
+}
+
+impl IntelIch8Config {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -2026,9 +2039,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
 
     type Options = crate::southbridge::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
-        crate::southbridge::options::POWER_ON_AFTER_FAIL,
-        crate::southbridge::options::SATA_MODE,
-        crate::southbridge::options::NMI,
+        crate::southbridge::options::PowerOnAfterFail::KNOB,
+        crate::southbridge::options::Sata::KNOB,
+        crate::southbridge::options::Nmi::KNOB,
     ];
 
     fn options(&self) -> Self::Options {
@@ -2062,13 +2075,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
 
         Ok(Self {
             config,
-            options: crate::southbridge::options::Options::from_config(
-                config.power_on_after_fail,
-                match config.sata {
-                    Some(sata) => Some(sata.mode),
-                    None => None,
-                },
-            ),
+            options: config.options(),
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),
             ide_primary: None,

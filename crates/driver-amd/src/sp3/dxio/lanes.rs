@@ -12,7 +12,7 @@
 //! engine list at runtime with [`Engine::split`], [`Engine::with_max_speed`]
 //! and friends rather than by editing descriptor bytes.
 
-use fstart_options::{Availability, Choice, Kind, Knob, Meta};
+use fstart_options::{Choice, Kind, Meta};
 use fstart_pci::devfn;
 
 use super::hotplug::Hotplug;
@@ -244,59 +244,26 @@ impl Bifurcation {
         Choice::new(4, "x4x4x4x4"),
     ];
 
-    /// The knob of x16 group `I` of a board configuration `C`: its value
-    /// is the link width. With `auto`, 0 keeps the board's links
-    /// ([`Bifurcations::bifurcation`] `None`).
-    pub const fn knob<C: Bifurcations, const I: usize>(
-        key: &'static str,
-        label: &'static str,
-        auto: bool,
-    ) -> Knob<C> {
-        Knob::new(
-            Meta {
-                key,
-                form: "PCIe",
-                label,
-                help: if auto {
-                    "How the 16 lanes split into links; Auto keeps the board's. Applies at the next boot."
-                } else {
-                    "How the 16 lanes split into links. Applies at the next boot."
-                },
-                kind: Kind::Enum(if auto {
-                    Self::CHOICES_AUTO
-                } else {
-                    Self::CHOICES
-                }),
+    /// The description of a group's bifurcation knob, for the board's
+    /// `fstart_options::knob!`: its value is the link width; with `auto`, 0
+    /// keeps the board's links.
+    pub const fn meta(key: &'static str, label: &'static str, auto: bool) -> Meta {
+        Meta {
+            key,
+            form: "PCIe",
+            label,
+            help: if auto {
+                "How the 16 lanes split into links; Auto keeps the board's. Applies at the next boot."
+            } else {
+                "How the 16 lanes split into links. Applies at the next boot."
             },
-            get::<C, I>,
-            set::<C, I>,
-        )
-        .when(availability::<C, I>)
+            kind: Kind::Enum(if auto {
+                Self::CHOICES_AUTO
+            } else {
+                Self::CHOICES
+            }),
+        }
     }
-}
-
-/// A board configuration with x16 groups the user may split
-/// ([`Bifurcation::knob`]).
-pub trait Bifurcations {
-    /// The split of group `index`; `None` keeps the board's links.
-    fn bifurcation(&self, index: usize) -> Option<Bifurcation>;
-    fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>);
-    /// Whether group `index` may be split now.
-    fn availability(&self, _index: usize) -> Availability {
-        Availability::Editable
-    }
-}
-
-fn get<C: Bifurcations, const I: usize>(c: &C) -> u32 {
-    c.bifurcation(I).map_or(0, |b| u32::from(b.width()))
-}
-
-fn set<C: Bifurcations, const I: usize>(c: &mut C, value: u32) {
-    c.set_bifurcation(I, Bifurcation::from_width(value));
-}
-
-fn availability<C: Bifurcations, const I: usize>(c: &C) -> Availability {
-    c.availability(I)
 }
 
 /// Naples board lane number: die `n` owns lanes `32n..32n+31` of its
@@ -885,44 +852,11 @@ pub fn validate(generation: Generation, engines: &[Engine<'_>]) -> Result<(), (u
 mod tests {
     use super::*;
 
-    #[derive(Default)]
-    struct Groups([Option<Bifurcation>; 2]);
-
-    impl Bifurcations for Groups {
-        fn bifurcation(&self, index: usize) -> Option<Bifurcation> {
-            self.0[index]
-        }
-        fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>) {
-            self.0[index] = bifurcation;
-        }
-        fn availability(&self, index: usize) -> Availability {
-            if index == 1 {
-                Availability::Inactive("fused off")
-            } else {
-                Availability::Editable
-            }
-        }
-    }
-
     #[test]
-    fn bifurcation_knobs_read_and_split_their_group() {
-        static KNOBS: [Knob<Groups>; 2] = [
-            Bifurcation::knob::<Groups, 0>("a", "A", true),
-            Bifurcation::knob::<Groups, 1>("b", "B", false),
-        ];
-        let mut g = Groups::default();
-        assert_eq!((KNOBS[0].get)(&g), 0, "auto");
-        assert!(KNOBS[0].meta.kind.contains(0));
-        assert!(!KNOBS[1].meta.kind.contains(0), "no auto");
-        (KNOBS[0].set)(&mut g, 4);
-        assert_eq!(g.0, [Some(Bifurcation::X4x4x4x4), None]);
-        (KNOBS[0].set)(&mut g, 0);
-        assert_eq!(g.0[0], None);
-        assert_eq!((KNOBS[0].available)(&g), Availability::Editable);
-        assert_eq!(
-            (KNOBS[1].available)(&g),
-            Availability::Inactive("fused off")
-        );
+    fn bifurcation_metas_offer_auto_on_request() {
+        assert!(Bifurcation::meta("a", "A", true).kind.contains(0));
+        assert!(!Bifurcation::meta("b", "B", false).kind.contains(0));
+        assert!(Bifurcation::meta("b", "B", false).kind.contains(4));
     }
 
     fn wire(g: Group, first: u8, count: u8, rev: bool) -> (Placement, (u8, u8)) {

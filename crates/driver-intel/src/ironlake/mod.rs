@@ -369,6 +369,8 @@ const UMA_SIZES: &[fstart_options::Choice] = &[
     fstart_options::Choice::new(352, "352 MiB"),
 ];
 
+crate::igd::options::uma_knob!(UMA_SIZES);
+
 /// The GMS selector of `mb` of stolen memory.
 const fn gms_of_mb(mb: u16) -> Option<u8> {
     let mut selector = 0;
@@ -403,8 +405,7 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
     type Options = crate::igd::options::Options;
-    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
-        &[crate::igd::options::uma(UMA_SIZES)];
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[Uma::KNOB];
 
     fn options(&self) -> Self::Options {
         self.options

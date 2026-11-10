@@ -75,22 +75,22 @@ impl Identity {
 }
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
 /// them.
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 11] = {
-    use fstart_driver_lenovo::options::*;
-    [
-        BLUETOOTH,
-        WWAN,
-        WLAN,
-        UWB,
-        TRACKPOINT,
-        FN_CTRL_SWAP,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        VOLUME,
-        FIRST_BATTERY,
+fstart_options::option_set!(
+    pub static EC_KNOBS: [fstart_driver_lenovo::options::Options =
+        fstart_driver_lenovo::options::Options::DEFAULT] = [
+        fstart_driver_lenovo::options::Bluetooth,
+        fstart_driver_lenovo::options::Wwan,
+        fstart_driver_lenovo::options::Wlan,
+        fstart_driver_lenovo::options::Uwb,
+        fstart_driver_lenovo::options::Trackpoint,
+        fstart_driver_lenovo::options::FnCtrlSwap,
+        fstart_driver_lenovo::options::StickyFn,
+        fstart_driver_lenovo::options::PowerManagementBeeps,
+        fstart_driver_lenovo::options::LowBatteryBeep,
+        fstart_driver_lenovo::options::Volume,
+        fstart_driver_lenovo::options::FirstBattery,
     ]
-};
+);
 
 /// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
 /// chipset devices are up. Returns the identity and the board ACPI device.

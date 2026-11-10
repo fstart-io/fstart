@@ -175,7 +175,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 
 /// The compilation units, hence the stage binaries, stay as they are.
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
-/// entry cfg, and again without the payload cfg.)
+/// entry cfg, again without the payload cfg, and for the options section
+/// of the shared PSP reset script.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -190,9 +191,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "64303b27ad5537c57659c9350c92e2f58cc7398461f534dff434747088a8b10d",
-            "9e80c84abf1f7f0c40e7371c799ee4dade1aeef7e0a941285c5dbab1d36620c7",
-            "41806ae882e43782ca1cafd23b16f1bc28371936d4dced5c2f7a7b86f5a3dec8",
+            "6da8b2dba01dd165df260529d938de724b8866e787af8b484b895e274f5e0e97",
+            "fa00600300f076dae74e13575e7c33fedc03a7c707e7e81b71216e092b29f61e",
+            "b436eb249c5b784a2f970900979794c8c4fa9c2e8bb32e782211f0d572ff624a",
         ]
     );
 }

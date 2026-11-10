@@ -7,6 +7,7 @@ use fstart_core::services::{Timer, TimerDelay};
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::FchHw;
+use fstart_driver_amd::sp3::fch::common::env::{self, EnvPolicy};
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
@@ -34,11 +35,15 @@ impl board::Board for Board {
         sw_smi_base: 0xC0,
     });
     /// "Restore AC Power Loss", as the vendor Setup offers it.
-    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+    const FCH_ENV_OPTIONS: &'static [fstart_options::Knob<EnvPolicy>] = &FCH_ENV_OPTIONS;
 }
 
 /// The board's console: the AST2500's Super I/O UART.
 pub const CONSOLE: Ns16550Config = bmc::CONSOLE;
+
+fstart_options::option_set!(
+    static FCH_ENV_OPTIONS: [EnvPolicy = policy::fch_env()] = [env::PowerFail]
+);
 
 /// The silicon policy for `generation`.
 pub fn policy(generation: Generation) -> Policy {
@@ -115,9 +120,9 @@ mod tests {
         use board::Board as _;
         let metas = fstart_log::option::KNOBS
             .iter()
-            .map(|k| &k.meta)
-            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
-            .chain(dxio::KNOBS.iter().map(|k| &k.meta));
+            .map(|k| k.meta)
+            .chain(Board::FCH_ENV_OPTIONS.iter().map(|k| k.meta))
+            .chain(dxio::KNOBS.iter().map(|k| k.meta));
         assert_eq!(fstart_options::duplicate_key(metas), None);
     }
 }

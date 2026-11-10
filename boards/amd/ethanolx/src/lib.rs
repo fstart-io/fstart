@@ -21,6 +21,7 @@ use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::PcieFeatures;
+use fstart_driver_amd::sp3::fch::common::env::{self, EnvPolicy, PowerFailState};
 use fstart_driver_amd::sp3::fch::gpio::{Pad, Pin};
 use fstart_driver_amd::sp3::fch::huashan::sata::{Controller, SataPolicy};
 use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
@@ -51,8 +52,17 @@ const BAUD: u32 = 115_200;
 
 impl board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
-    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+    const FCH_ENV_OPTIONS: &'static [fstart_options::Knob<EnvPolicy>] = &FCH_ENV_OPTIONS;
 }
+
+/// The FCH env policy: the FCH driver's, off after AC power loss.
+const FCH_ENV: EnvPolicy = EnvPolicy {
+    power_fail: PowerFailState::Off,
+};
+
+fstart_options::option_set!(
+    static FCH_ENV_OPTIONS: [EnvPolicy = FCH_ENV] = [env::PowerFail]
+);
 
 /// The board's console: the FCH's MMIO UART 1.
 pub const CONSOLE: Ns16550Config = Ns16550Config {
@@ -101,7 +111,7 @@ pub fn policy(generation: Generation) -> Policy {
         nbio: Default::default(),
         power: Default::default(),
         ccx: ccx::Policy::default(),
-        fch_env: Default::default(),
+        fch_env: FCH_ENV,
         sata: [sata0, sata1],
         dxio,
     }
@@ -192,9 +202,9 @@ mod tests {
         use fstart_platform_sp3::board::Board as _;
         let metas = fstart_log::option::KNOBS
             .iter()
-            .map(|k| &k.meta)
-            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
-            .chain(dxio::KNOBS.iter().map(|k| &k.meta));
+            .map(|k| k.meta)
+            .chain(Board::FCH_ENV_OPTIONS.iter().map(|k| k.meta))
+            .chain(dxio::KNOBS.iter().map(|k| k.meta));
         assert_eq!(fstart_options::duplicate_key(metas), None);
     }
 

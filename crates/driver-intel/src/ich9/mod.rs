@@ -815,6 +815,19 @@ pub struct IntelIch9Config {
 }
 
 impl IntelIch9Config {
+    /// The board's values of the user options (`fstart_options`).
+    pub const fn options(&self) -> crate::southbridge::options::Options {
+        crate::southbridge::options::Options::from_config(
+            self.power_on_after_fail,
+            match self.sata {
+                Some(sata) => Some(sata.mode),
+                None => None,
+            },
+        )
+    }
+}
+
+impl IntelIch9Config {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -2113,9 +2126,9 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
     type Options = crate::southbridge::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
-        crate::southbridge::options::POWER_ON_AFTER_FAIL_KEEP,
-        crate::southbridge::options::SATA_MODE,
-        crate::southbridge::options::NMI,
+        crate::southbridge::options::PowerOnAfterFailKeep::KNOB,
+        crate::southbridge::options::Sata::KNOB,
+        crate::southbridge::options::Nmi::KNOB,
     ];
 
     fn options(&self) -> Self::Options {
@@ -2242,13 +2255,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
         Ok(Self {
             config,
-            options: crate::southbridge::options::Options::from_config(
-                config.power_on_after_fail,
-                match config.sata {
-                    Some(sata) => Some(sata.mode),
-                    None => None,
-                },
-            ),
+            options: config.options(),
             smbus: None,
             pm: PmIo::new(ich9::DEFAULT_PMBASE),
             s3_enabled: false,

@@ -86,23 +86,23 @@ impl Identity {
 
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
 /// them.
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 12] = {
-    use fstart_driver_lenovo::options::*;
-    [
-        FIRST_BATTERY,
-        BLUETOOTH,
-        WWAN,
-        TOUCHPAD,
-        WLAN,
-        TRACKPOINT,
-        FN_CTRL_SWAP,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        USB_ALWAYS_ON,
-        VOLUME,
+fstart_options::option_set!(
+    pub static EC_KNOBS: [fstart_driver_lenovo::options::Options =
+        fstart_driver_lenovo::options::Options::DEFAULT] = [
+        fstart_driver_lenovo::options::FirstBattery,
+        fstart_driver_lenovo::options::Bluetooth,
+        fstart_driver_lenovo::options::Wwan,
+        fstart_driver_lenovo::options::Touchpad,
+        fstart_driver_lenovo::options::Wlan,
+        fstart_driver_lenovo::options::Trackpoint,
+        fstart_driver_lenovo::options::FnCtrlSwap,
+        fstart_driver_lenovo::options::StickyFn,
+        fstart_driver_lenovo::options::PowerManagementBeeps,
+        fstart_driver_lenovo::options::LowBatteryBeep,
+        fstart_driver_lenovo::options::UsbAlwaysOn,
+        fstart_driver_lenovo::options::Volume,
     ]
-};
+);
 
 /// EC/PMH7 with the user's `ec` options, the dock, the identity EEPROM and
 /// the digitizer, once the chipset devices are up. Restores the optional
