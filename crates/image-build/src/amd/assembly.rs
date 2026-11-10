@@ -70,6 +70,14 @@ pub struct PspFiles {
     /// Picasso's single level.
     #[serde(default)]
     pub two_level: bool,
+    /// The EFS generation bits (+0x24) the SoC's boot ROM requires clear,
+    /// if not those of its BIOS directory slot ([`Profile::for_slot`]).
+    #[serde(default)]
+    pub generation_mask: Option<u32>,
+    /// The board's eSPI configuration for the PSP (EFS +0x50, in its
+    /// order), two-level partitions only.
+    #[serde(default)]
+    pub espi: Option<[u8; 4]>,
     pub psp: Vec<FileBlob>,
     pub bios: Vec<FileBlob>,
     #[serde(default)]
@@ -241,7 +249,17 @@ pub fn read_bios_directory(
     kept: u32,
     slot: BiosDirectorySlot,
 ) -> Result<BiosDirectoryFacts, String> {
-    let flash = Flash::new(image).with_profile(Profile::for_slot(slot));
+    read_bios_directory_as(image, kept, Profile::for_slot(slot))
+}
+
+/// [`read_bios_directory`] as the boot ROM of `profile` reads the EFS.
+fn read_bios_directory_as(
+    image: &[u8],
+    kept: u32,
+    profile: Profile,
+) -> Result<BiosDirectoryFacts, String> {
+    let slot = profile.bios;
+    let flash = Flash::new(image).with_profile(profile);
     let (efs, _) = flash.efs_checked().map_err(|e| format!("EFS: {e:?}"))?;
     let levels = flash
         .bios_directories_checked(slot)
@@ -302,6 +320,36 @@ impl AmdAssembly {
         self.flash_size - self.reset_size
     }
 
+    /// How the SoC's boot ROM reads the image: its BIOS directory slot and,
+    /// for a packed image, the SoC's EFS generation bits.
+    fn profile(&self) -> Profile {
+        let mut profile = Profile::for_slot(self.bios_directory);
+        if let Firmware::Packed { files, .. } = &self.firmware
+            && let Some(mask) = files.generation_mask
+        {
+            profile.generation_mask = mask;
+        }
+        profile
+    }
+
+    /// The largest flash: 16 MiB, the window the boot ROM maps, unless the
+    /// image is a packed two-level partition that addresses its files by
+    /// flash offset; those boot ROMs read flash parts up to 64 MiB.
+    fn max_flash_size(&self) -> u32 {
+        match &self.firmware {
+            Firmware::Packed { files, .. }
+                if files.two_level
+                    && matches!(
+                        levels::Addressing::of(self.bios_directory),
+                        levels::Addressing::Offsets { .. }
+                    ) =>
+            {
+                0x400_0000
+            }
+            _ => 0x100_0000,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let end = |offset: u32, size: u32| offset.checked_add(size).ok_or("layout overflows");
         if self.stage_unit.is_empty()
@@ -313,7 +361,7 @@ impl AmdAssembly {
                 .reset_destination
                 .checked_add(u64::from(self.reset_size))
                 .is_none_or(|end| end > 0x1_0000_0000 || end & 0xffff != 0)
-            || !(0x40000..=0x1000000).contains(&self.flash_size)
+            || !(0x40000..=self.max_flash_size()).contains(&self.flash_size)
             || !self.flash_size.is_power_of_two()
         {
             return Err("the reset image must end on a 64-KiB DRAM boundary below 4 GiB".into());
@@ -414,7 +462,9 @@ impl AmdAssembly {
                             .into());
                     }
                 } else {
-                    if files.spi_read_mode.is_none_or(|mode| mode > 7)
+                    if files.generation_mask.is_some()
+                        || files.espi.is_some()
+                        || files.spi_read_mode.is_none_or(|mode| mode > 7)
                         || files.spi_speed.is_none_or(|speed| speed > 3)
                         || files.soft_fuse.is_none()
                         || !files.fixed.is_empty()
@@ -624,7 +674,7 @@ impl AmdAssembly {
         // an EFS in fstart's bytes.
         let mut flash = vec![0xff; self.flash_size as usize];
         flash[offset as usize..offset as usize + bytes.len()].copy_from_slice(&bytes);
-        let facts = read_bios_directory(&flash, kept, self.bios_directory)?;
+        let facts = read_bios_directory_as(&flash, kept, self.profile())?;
         self.check_facts(&facts, reset_offset.unwrap_or(facts.reset_offset))?;
         let start = facts.reset_offset as usize;
         let region = flash.get(start..start + stage.len()).unwrap_or_default();
@@ -831,10 +881,16 @@ impl PspFiles {
         }
         Ok(TwoLevelImage {
             slot,
-            flash_size: self.flash_size,
+            generation_mask: self
+                .generation_mask
+                .unwrap_or(Profile::for_slot(slot).generation_mask),
+            // The boot ROM maps the first 16 MiB of a larger part; flash
+            // offsets address it from the part's start.
+            flash_size: self.flash_size.min(0x100_0000),
             efs_offset: self.efs_offset,
             partition_end: self.partition_end,
             spi: self.spi_read_mode.zip(self.spi_speed),
+            espi: self.espi,
             psp,
             bios,
             reset,
