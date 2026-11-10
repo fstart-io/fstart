@@ -16,7 +16,7 @@ x86_64 = ["fstart-arch/x86_64"]
 
 # FFS / crypto features
 bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-load", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
-ffs = ["bootstrap", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor"]
+ffs = ["bootstrap", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor", "dep:linked_list_allocator"]
 ffs-signature = ["bootstrap", "fstart-ffs/ed25519", "fstart-arch/early-ffs-anchor"]
 ed25519 = ["ffs-signature"]
 sha2-digest = [
@@ -39,11 +39,11 @@ fit = ["ffs", "dep:fstart-boot", "fstart-boot/fit"]
 handoff = []
 # ACPI table generation lives in the selected board/platform crate; fstart-stage
 # only provides the allocator needed by ACPI-capable flows.
-acpi = []
+acpi = ["dep:linked_list_allocator"]
 # SMBIOS-capable fixed flows use the same stage-local allocator.
-smbios = []
+smbios = ["dep:linked_list_allocator"]
 # The stage-local allocator, for code that allocates (payload launchers).
-alloc = []
+alloc = ["dep:linked_list_allocator"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -54,6 +54,8 @@ fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
+# The freeing heap a payload environment adopts (`alloc::adopt_freeing_heap`).
+linked_list_allocator = { version = "0.10.6", default-features = false, features = ["use_spin"], optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
