@@ -12,6 +12,7 @@ members = [
   "crates/driver-chromeec",
   "crates/platform-amd",
   "crates/platform-sp3",
+  "crates/platform-rs",
   "crates/core",
   "crates/coreboot",
   "crates/platform-intel",

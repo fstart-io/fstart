@@ -1,0 +1,504 @@
+[package]
+name = "fstart-platform-rs"
+description = "AMD Rs (SP5/Genoa, SP6/Siena) native PSP reset through payload handoff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+# The board's SoC: selects the reset image's geometry. One per reset image.
+genoa = []
+siena = []
+bundle-reset = [
+  "fstart-platform-amd/rs-usb",
+  "fstart-platform-amd/rs-acpi",
+  "fstart-platform-amd/rs-smi",
+  "fstart-platform-amd/rs-stage",
+  "fstart-driver-amd/smbios",
+  "dep:fstart-stage",
+  "fstart-stage/x86_64",
+  "fstart-stage/acpi",
+  "dep:fstart-acpi",
+  "dep:fstart-pci",
+  "dep:fstart-driver-uart",
+  "dep:ufmt",
+]
+payload-linux = ["fstart-platform-amd/rs-linux"]
+# CrabEFI, which finds and drives the boot controllers itself.
+payload-uefi = ["dep:fstart-boot"]
+# The board's SMM unit (`smm_bin!` with `RsSmmHandler`).
+smm = ["fstart-platform-amd/rs-smm"]
+bundle-smm = ["smm", "fstart-platform-amd/bundle-rs-smm"]
+host = ["dep:fstart-image-build", "dep:serde_json", "fstart-platform-amd/host"]
+
+[dependencies]
+fstart-platform-amd = { path = "../platform-amd", features = ["rs"], optional = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-core.workspace = true
+fstart-driver-amd = { workspace = true, features = ["rs"] }
+fstart-log.workspace = true
+fstart-acpi = { workspace = true, optional = true, features = ["x86"] }
+fstart-pci = { workspace = true, optional = true }
+fstart-driver-uart = { workspace = true, optional = true, features = ["pio"] }
+fstart-boot = { workspace = true, optional = true, features = ["crabefi-xhci"] }
+fstart-stage = { workspace = true, optional = true }
+fstart-image-build = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+heapless.workspace = true
+tock-registers.workspace = true
+ufmt = { workspace = true, optional = true }
+
+[dev-dependencies]
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+
+# Genoa's (SP5) AMD firmware, as packed by fstart (crates/image-build/src/amd):
+# the directory entries by type, subprogram, instance and level, with the
+# file names of AMD's public blobs (coreboot 3rdparty/amd_blobs/genoa), so
+# `--blobs` can be that directory plus the board's APCBs. The levels are
+# those of the image booted on Onyx; the NV areas are erased flash. The
+# reset image ends the 16 MiB the boot ROM maps, the partition before it.
+# The EFS generation word is AMD's for Genoa (amdfwtool: FFFFFFFEh).
+[package.metadata.fstart.amd.genoa]
+bios-directory = "Family19h"
+levels = 2
+generation-mask = 1
+efs-offset = 0x20000
+partition-end = 0x800000
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x00
+file = "genoa/PSP/Typex0_0_0_0_AmdPubKey.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x01
+file = "genoa/PSP/Typex1_0_0_0_PspBootLoader.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x03
+level = 1
+file = "genoa/PSP/Typex3_0_0_0_PspRecBL.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x08
+file = "genoa/PSP/Typex8_0_0_0_Smu.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x08
+subprogram = 1
+file = "genoa/PSP/Typex8_0_0_1_Smu.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x08
+subprogram = 2
+file = "genoa/PSP/Typex8_0_0_2_Smu.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x09
+level = 2
+file = "genoa/PSP/Typex9_0_0_0_DbgKey.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x0a
+file = "genoa/PSP/Typexa_0_0_0_OemAblKey.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x0b
+value = 0x1
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x12
+file = "genoa/PSP/Typex12_0_0_0_Smu2.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x12
+subprogram = 1
+file = "genoa/PSP/Typex12_0_0_1_Smu2.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x12
+subprogram = 2
+file = "genoa/PSP/Typex12_0_0_2_Smu2.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x13
+file = "genoa/PSP/Typex13_0_0_0_PspEarlyUnlock.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x21
+file = "genoa/PSP/Typex21_0_0_0_ikek.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x22
+erased = 0x1000
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x24
+file = "genoa/PSP/Typex24_0_0_0_SecureGasket.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x24
+subprogram = 1
+file = "genoa/PSP/Typex24_0_0_1_SecureGasket.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x24
+subprogram = 2
+file = "genoa/PSP/Typex24_0_0_2_SecureGasket.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x2a
+file = "genoa/PSP/Typex2a_0_0_0_Mp5Fw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x2a
+subprogram = 1
+file = "genoa/PSP/Typex2a_0_0_1_Mp5Fw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x2a
+subprogram = 2
+file = "genoa/PSP/Typex2a_0_0_2_Mp5Fw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x30
+file = "genoa/PSP/Typex30_0_0_0_PspAgesaBL0.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x38
+level = 2
+erased = 0x8000
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x39
+level = 2
+file = "genoa/PSP/Typex39_0_0_0_SevCode.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x42
+file = "genoa/PSP/Typex42_0_0_0_DxioFw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x44
+level = 2
+file = "genoa/PSP/Typex44_0_0_0_UsbPhyFw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x47
+level = 2
+file = "genoa/PSP/Typex47_0_0_0_DrtmTa.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x50
+file = "genoa/PSP/Typex50_0_0_0_PspBlPubKey.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x55
+file = "genoa/PSP/Typex55_0_0_0_BLAntiRB.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x5d
+level = 2
+file = "genoa/PSP/Typex5d_0_0_0_MPIOOffchipFW.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x76
+level = 2
+file = "genoa/PSP/Typex76_0_0_0_RIB.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x8c
+file = "genoa/PSP/Typex8c_0_0_0_MpdmaTfFw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x91
+file = "genoa/PSP/Typex91_0_0_0_Gmi3PhyFw.bin"
+
+[[package.metadata.fstart.amd.genoa.psp]]
+type = 0x92
+file = "genoa/PSP/Typex92_0_0_0_MpdmaPmFw.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x64
+instance = 3
+file = "genoa/PSP/Typex64_0_3_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x64
+instance = 4
+file = "genoa/PSP/Typex64_0_4_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x64
+instance = 9
+file = "genoa/PSP/Typex64_0_9_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x64
+instance = 10
+file = "genoa/PSP/Typex64_0_a_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x64
+instance = 11
+file = "genoa/PSP/Typex64_0_b_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x65
+instance = 3
+file = "genoa/PSP/Typex65_0_3_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x65
+instance = 4
+file = "genoa/PSP/Typex65_0_4_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x65
+instance = 9
+file = "genoa/PSP/Typex65_0_9_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x65
+instance = 10
+file = "genoa/PSP/Typex65_0_a_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x65
+instance = 11
+file = "genoa/PSP/Typex65_0_b_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.genoa.bios]]
+type = 0x65
+instance = 12
+file = "genoa/PSP/Typex65_0_c_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.genoa.microcode]]
+equivalence-id = 0xa110
+file = "genoa/PSP/Typex66_0_3_0_UCodePatch.bin"
+
+# Siena's (SP6) AMD firmware, laid out as Genoa's: the levels of the S8040
+# vendor image (NFX V2.00), its NV areas erased (the PSP's SEV state,
+# token unlock data and the APOB NV copy), and its EFS generation word.
+[package.metadata.fstart.amd.siena]
+bios-directory = "Family19h"
+levels = 2
+generation-mask = 1
+efs-offset = 0x20000
+partition-end = 0xa00000
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x00
+level = 1
+file = "siena/PSP/Typex0_0_0_0_AmdPubKey.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x01
+file = "siena/PSP/Typex1_0_0_0_PspBootLoader.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x03
+level = 1
+file = "siena/PSP/Typex3_0_0_0_PspRecBL.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x08
+file = "siena/PSP/Typex8_0_0_0_Smu.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x08
+subprogram = 1
+file = "siena/PSP/Typex8_0_0_1_Smu.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x08
+subprogram = 2
+file = "siena/PSP/Typex8_0_0_2_Smu.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x09
+level = 2
+file = "siena/PSP/Typex9_0_0_0_DbgKey.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x0a
+file = "siena/PSP/Typexa_0_0_0_OemAblKey.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x0b
+value = 0x1
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x12
+file = "siena/PSP/Typex12_0_0_0_Smu2.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x12
+subprogram = 1
+file = "siena/PSP/Typex12_0_0_1_Smu2.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x12
+subprogram = 2
+file = "siena/PSP/Typex12_0_0_2_Smu2.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x13
+file = "siena/PSP/Typex13_0_0_0_PspEarlyUnlock.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x21
+file = "siena/PSP/Typex21_0_0_0_ikek.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x22
+level = 2
+erased = 0x1000
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x24
+file = "siena/PSP/Typex24_0_0_0_SecureGasket.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x24
+subprogram = 1
+file = "siena/PSP/Typex24_0_0_1_SecureGasket.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x24
+subprogram = 2
+file = "siena/PSP/Typex24_0_0_2_SecureGasket.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x2a
+file = "siena/PSP/Typex2a_0_0_0_Mp5Fw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x2a
+subprogram = 1
+file = "siena/PSP/Typex2a_0_0_1_Mp5Fw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x2a
+subprogram = 2
+file = "siena/PSP/Typex2a_0_0_2_Mp5Fw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x30
+file = "siena/PSP/Typex30_0_0_0_PspAgesaBL0.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x38
+level = 2
+erased = 0x8000
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x39
+level = 2
+file = "siena/PSP/Typex39_0_0_0_SevCode.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x42
+file = "siena/PSP/Typex42_0_0_0_DxioFw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x44
+file = "siena/PSP/Typex44_0_0_0_UsbPhyFw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x47
+level = 2
+file = "siena/PSP/Typex47_0_0_0_DrtmTa.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x50
+file = "siena/PSP/Typex50_0_0_0_PspBlPubKey.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x55
+file = "siena/PSP/Typex55_0_0_0_BLAntiRB.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x5d
+file = "siena/PSP/Typex5d_0_0_0_MPIOOffchipFW.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x76
+file = "siena/PSP/Typex76_0_0_0_RIB.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x8c
+file = "siena/PSP/Typex8c_0_0_0_MpdmaTfFw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x91
+file = "siena/PSP/Typex91_0_0_0_Gmi3PhyFw.bin"
+
+[[package.metadata.fstart.amd.siena.psp]]
+type = 0x92
+file = "siena/PSP/Typex92_0_0_0_MpdmaPmFw.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x63
+level = 2
+erased = 0xb0000
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x64
+instance = 3
+file = "siena/PSP/Typex64_0_3_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x64
+instance = 4
+file = "siena/PSP/Typex64_0_4_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x64
+instance = 9
+file = "siena/PSP/Typex64_0_9_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x64
+instance = 10
+file = "siena/PSP/Typex64_0_a_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x64
+instance = 11
+file = "siena/PSP/Typex64_0_b_0_PmuCode.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x65
+instance = 3
+file = "siena/PSP/Typex65_0_3_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x65
+instance = 4
+file = "siena/PSP/Typex65_0_4_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x65
+instance = 9
+file = "siena/PSP/Typex65_0_9_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x65
+instance = 10
+file = "siena/PSP/Typex65_0_a_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x65
+instance = 11
+file = "siena/PSP/Typex65_0_b_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.siena.bios]]
+type = 0x65
+instance = 12
+file = "siena/PSP/Typex65_0_c_0_PmuData.bin"
+
+[[package.metadata.fstart.amd.siena.microcode]]
+equivalence-id = 0xaa02
+file = "siena/PSP/Typex66_0_2_0_UCodePatch.bin"
