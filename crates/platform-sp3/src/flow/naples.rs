@@ -24,12 +24,14 @@ use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::dxio::{self, DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::multi::{self, NaplesDie};
 use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::window::{SmnWindow, Window};
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
@@ -177,21 +179,27 @@ pub(crate) fn dxio(
             let _ = units.push(unit);
         }
     }
-    let fchs = ctx
+    // SAFETY: the BSP owns these buses' SMN index/data pairs during init.
+    let window = |smn| unsafe { SmnWindow::new(smn, fch::acpimmio::SMN_BASE) };
+    let windows: heapless::Vec<_, 8> = ctx
         .topology
         .root_bridges
         .iter()
-        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
         .map(|rb| {
-            ((rb.socket, rb.index), unsafe {
-                Smn::on_bus(ctx.pci, rb.bus_base)
-            })
+            (
+                (rb.socket, rb.index),
+                window(unsafe { Smn::on_bus(ctx.pci, rb.bus_base) }),
+            )
         })
         .collect();
+    let fchs = windows
+        .iter()
+        .map(|(k, w)| (*k, w as &dyn Window))
+        .collect();
     // The donor also drives PERST on bus 0x40 (die 1 of the equal split).
-    let also = si.nbios.get(1).map(|n| n.smn());
+    let also = si.nbios.get(1).map(|n| window(n.smn()));
     // SAFETY: live FCHs; DXIO owns their PERST GPIOs.
-    let perst = unsafe { FchPerst::new(generation, fchs, also) };
+    let perst = unsafe { FchPerst::new(generation, fchs, also.as_ref().map(|w| w as &dyn Window)) };
     let mut setup = PortSetup::new(generation, &si.nbios, engines, perst);
     super::dxio_or_halt(dxio::train(
         generation, &mut units, &mut setup, &ctx.timer, &policy,

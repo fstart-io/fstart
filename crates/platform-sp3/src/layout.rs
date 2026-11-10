@@ -148,13 +148,40 @@ const _: () = assert!(RESET.check().is_ok());
 /// if a vendor prefix reaches further.
 pub const FFS_OFFSET: u32 = 0x60_0000;
 
+/// A range of the SPI flash, in flash offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlashRange {
+    pub offset: u32,
+    pub size: u32,
+}
+
+impl FlashRange {
+    pub const fn end(&self) -> u32 {
+        self.offset + self.size
+    }
+}
+
+/// The settings store: the EFI variable store CrabEFI writes, which also
+/// holds the option overrides the boot reads (`fstart_options`). It sits
+/// at the top of the FFS window of the lower half, below the reset image,
+/// in 4 KiB sectors the SPI100 command engine erases; a new image has it
+/// erased. Inside the low 16 MiB, so 3-byte SPI commands reach it.
+pub const NVRAM: FlashRange = FlashRange {
+    offset: RESET.flash_offset - NVRAM_SIZE,
+    size: NVRAM_SIZE,
+};
+/// CrabEFI's default variable store size.
+const NVRAM_SIZE: u32 = 0x4_0000;
+
 /// Upper bound of the FFS in the ROM3 view, the window the FFS is built
-/// for: `[FFS_OFFSET, RESET.flash_offset)` of the lower half. The runtime
-/// reads only what the flash anchor and FFS locator describe.
+/// for: `[FFS_OFFSET, NVRAM.offset)` of the lower half. The runtime reads
+/// only what the flash anchor and FFS locator describe.
 pub const FFS_WINDOW: Span = Span::new(
     ROM3.base + FFS_OFFSET as u64,
-    (RESET.flash_offset - FFS_OFFSET) as u64,
+    (NVRAM.offset - FFS_OFFSET) as u64,
 );
+
+const _: () = assert!(NVRAM.end() == RESET.flash_offset && NVRAM.offset.is_multiple_of(0x1000));
 
 /// The 16 MiB write-back window opened before anything is written (the
 /// vendor's MTRR 7 window): early region plus reset image.
@@ -230,7 +257,8 @@ mod tests {
         assert_eq!(RESET.reset_vector(), 0x75ff_fff0);
         assert!(CACHE_WINDOW.contains(&RESET.dram()));
         assert_eq!(FFS_WINDOW.base, 0xfd_0060_0000);
-        assert_eq!(FFS_WINDOW.end(), ROM3.base + u64::from(RESET.flash_offset));
+        assert_eq!(FFS_WINDOW.end(), ROM3.base + u64::from(NVRAM.offset));
+        assert_eq!(NVRAM.offset, 0xda_0000);
         let low = ResetGeometry {
             flash_offset: 0xb0_0000,
             size: 0x50_0000,

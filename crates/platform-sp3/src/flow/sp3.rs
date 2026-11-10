@@ -39,6 +39,7 @@ use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::window::Window;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -362,10 +363,16 @@ pub(crate) fn dxio(
             let _ = units.push(unit);
         }
     }
-    let fchs = (0..ctx.topology.sockets)
-        // SAFETY: the BSP owns this bus's SMN index/data pair during init.
-        .map(|s| ((s, 0), unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)) }))
-        .collect();
+    // Socket 0's reset pins through host MMIO, as the donors do: on Milan
+    // SMN writes to them are lost. Socket 1 through its SMN (the SSP donor;
+    // GN relocates socket 1's ACPI-MMIO instead, which fstart does not).
+    let fch0 = crate::hw::primary_fch(ctx.timer);
+    let fch1 = (ctx.topology.sockets > 1).then(|| secondary_fch(socket_bus(ctx, 1), ctx.timer));
+    let mut fchs: heapless::Vec<((u8, u8), &dyn Window), 8> = heapless::Vec::new();
+    let _ = fchs.push(((0, 0), &fch0.acpi));
+    if let Some(fch1) = &fch1 {
+        let _ = fchs.push(((1, 0), &fch1.acpi));
+    }
     // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
     let perst = unsafe { FchPerst::new(generation, fchs, None) };
     let mut setup =
@@ -404,11 +411,67 @@ pub(crate) fn dxio(
             p.trained as u8
         );
     }
+    hotplug(ctx, &setup, &dxio_smus, &policy.hotplug);
     // 2P xGMI (`dxio::ports::xgmi_init`) needs F1x330 and the CCD mask of
     // each socket; not wired until a 2P board exists.
     if ctx.topology.sockets > 1 {
         fstart_log::warn!("dxio: 2P xGMI init not wired");
     }
+}
+
+/// Start the SMU hotplug firmware for the board's I2C-signaled slots and
+/// release every hotplug port to train (Oxide `zen_fabric_pcie_hotplug_init`,
+/// the vendor's `SmuV11DxeGN` hotplug path): the switch base, the table on
+/// every socket, the slots, the I2C master for the SMU, the flags and the
+/// start on socket 0, then each slot's power from its presence.
+fn hotplug(
+    ctx: &Ctx,
+    setup: &PortSetup<'_, '_, Pci, FchPerst<'_>>,
+    smus: &[Smu],
+    policy: &dxio::hotplug::HotplugPolicy,
+) {
+    use fstart_driver_amd::sp3::dxio::hotplug;
+    let table = match setup.hotplug_table() {
+        Ok(table) => table,
+        Err(error) => {
+            let detail = alloc::format!("{error:?}");
+            fstart_log::error!("dxio: hotplug table: {}", detail.as_str());
+            None
+        }
+    };
+    let Some(table) = table else {
+        let ports = setup.hotplug_prepare();
+        if ports > 0 {
+            fstart_log::info!("dxio: {} native hotplug ports released", ports as u32);
+        }
+        return;
+    };
+    let bytes = zerocopy::IntoBytes::as_bytes(&table);
+    let buffer = dma_alloc(bytes.len(), 0x1000);
+    buffer.copy_from_slice(bytes);
+    let sockets: heapless::Vec<&Smu, 2> = smus.iter().collect();
+    if let Err(error) = hotplug::load_v11(ctx.generation, &sockets, buffer.as_ptr() as u64, policy)
+    {
+        let detail = alloc::format!("{error:?}");
+        fstart_log::error!("dxio: hotplug table load: {}", detail.as_str());
+        return;
+    }
+    let ports = setup.hotplug_prepare();
+    // SAFETY: board I2C users of controller 0 run before DXIO; the SMU
+    // owns the bus from here on.
+    if unsafe { fch::smbus::i2c_for_smu(ctx.timer) }.is_err() {
+        fstart_log::error!("dxio: I2C0 not ready for the SMU hotplug firmware");
+    }
+    if let Err(error) = hotplug::enable_v11(sockets[0], policy) {
+        let detail = alloc::format!("{error:?}");
+        fstart_log::error!("dxio: hotplug start: {}", detail.as_str());
+        return;
+    }
+    // The SMU may hide the slots' bridges shortly after the start.
+    let mut timer = ctx.timer;
+    fstart_driver_amd::ccx::tsc::DelayNs::delay_ms(&mut timer, 100);
+    setup.hotplug_started();
+    fstart_log::info!("dxio: hotplug started, {} ports", ports as u32);
 }
 
 /// SATA env per socket (FCH_SP3 §3.1).

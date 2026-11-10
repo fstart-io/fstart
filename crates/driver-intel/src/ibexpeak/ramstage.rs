@@ -250,7 +250,7 @@ impl IntelIbexPeak {
             lpc.gen_pmcon_3
                 .modify(super::regs::GEN_PMCON_3::RTC_BATTERY_DEAD::SET);
         }
-        crate::southbridge::rtc::init_clock("ibexpeak", failed);
+        fstart_driver_rtc::init_clock("ibexpeak", failed);
     }
 
     /// coreboot `enable_clock_gating()`.

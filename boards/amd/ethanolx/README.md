@@ -80,6 +80,18 @@ descriptors of the mixed layouts are dropped with a warning.
 The board selects the vendor's pre-training PCIe capabilities (10-bit
 tags, Data Link Feature Exchange: PCDs `0x1c2`/`0x16d`/`0x16e`).
 
+With the UEFI payload, CrabEFI's firmware settings menu overrides the
+bifurcation of each socket-0 group (Auto keeps the card's straps; x16,
+x8x8 or x4x4x4x4 split the card's x16 link and keep its redriver setting)
+and Restore on AC power loss. A group with the SATA/Ethernet card or fused
+off is shown but not editable; a set that does not give a valid DXIO lane
+map is ignored with a warning.
+
+Slot 4 (socket 0 P2) is an ExpressModule slot: the SMU hotplug firmware
+drives its power and presence through the PCA9535 at `0x23` (behind the
+PCA9545A at `0x70`). Split into x4x4x4x4 from the menu, the first link
+carries the SMU slot and the other three are native hotplug ports.
+
 ## Sources
 
 All board data comes from the bench's own RXM100CB image, not a donor:
@@ -104,7 +116,12 @@ full, boots RAM-only Linux with:
 - SMBIOS decoded by dmidecode: 2 packages, 96 cores, 192 threads, 16 of
   16 DIMMs, 262144 MiB;
 - a KVM guest run, IOMMU with interrupt remapping (59 groups);
-- with straps `0x0000`, `pciehp` on `e0:03.1`–`e0:03.4`.
+- with straps `0x0000`, `pciehp` on `e0:03.1`–`e0:03.4`;
+- slot 4 at x4x4x4x4 (the settings menu's value; this run forced it in
+  the build) with a passive x16 to 4× M.2 adapter: four NVMe drives (three Patriot 128 GB at Gen3, a
+  Samsung 512 GB at Gen4) with 64 MiB read back from each and no AER
+  errors. One Patriot links at x2 only, in the same position on both
+  runs.
 
 Earlier runs of the port also covered the FCH UART1 console, four xHCI
 controllers with a USB 3 disk read, AHCI on four controllers with 17
@@ -114,7 +131,6 @@ and CrabEFI up to its boot manager.
 Socket 1's SMU rejects the CPPC table (`CppcSetTable` answers 0xff), so
 only socket 0 gets `_CPC` and Linux leaves amd_pstate off.
 
-Not validated: other strap settings, the redriver paths, populated slots
-and hot insertion, SATA links, an installed OS from disk, persistent
-CrabEFI variables (there is no backend). More than 254 threads needs x2APIC,
-which the SP3 MP code does not do yet.
+Not validated: other strap settings, the redriver paths, other populated
+slots and hot insertion, SATA links, an installed OS from disk. More than
+254 threads needs x2APIC, which the SP3 MP code does not do yet.

@@ -44,7 +44,9 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{FlashPlan, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey};
+use fstart_image_build::sp3_flash::{
+    FlashPlan, NvramSlot, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey,
+};
 
 use crate::layout::{
     self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
@@ -282,6 +284,10 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
         mirrors: B::FLASH_MIRRORS.to_vec(),
+        nvram: Some(NvramSlot {
+            flash_offset: layout::NVRAM.offset,
+            size: layout::NVRAM.size,
+        }),
     }
 }
 
@@ -726,12 +732,16 @@ mod tests {
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
                 mirrors: Vec::new(),
+                nvram: Some(NvramSlot {
+                    flash_offset: 0xda_0000,
+                    size: 0x4_0000
+                }),
             }
         );
         let config = plan.assembly.config("tyan-s8030").unwrap();
         assert_eq!(
             config.build.firmware_image,
-            FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x7e_0000)
+            FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x7a_0000)
         );
         let StageLayout::Monolithic(stage) = &config.stages else {
             panic!("not monolithic")
@@ -788,7 +798,7 @@ mod tests {
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
         assert_eq!(find(RegionKind::Image).base, 0x75de_0000);
         assert_eq!(find(RegionKind::Firmware).base, 0xfd_0060_0000);
-        assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00de_0000));
+        assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00da_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
         assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
     }
@@ -801,7 +811,7 @@ mod tests {
             return;
         }
         let survey = check_vendor::<S8030>(&root).unwrap();
-        assert_eq!(survey.ffs, 0x60_0000..0xde_0000);
+        assert_eq!(survey.ffs, 0x60_0000..0xda_0000);
         let composed: std::vec::Vec<_> = survey
             .halves
             .iter()

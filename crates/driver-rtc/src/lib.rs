@@ -1,4 +1,5 @@
-//! mc146818 RTC/CMOS configuration shared by Intel southbridges.
+//! The PC/AT mc146818 RTC behind ports 0x70/0x71, on every x86 chipset:
+//! clock setup, and CMOS RAM bank 0 as option storage ([`Cmos`]).
 //!
 //! Ported from coreboot `drivers/pc80/rtc/mc146818rtc.c` (`cmos_init`).
 //!
@@ -7,6 +8,8 @@
 //! the OS hangs on the update-in-progress bit and reports that it cannot read
 //! the hardware clock. coreboot's answer, kept here, is to program the divider,
 //! the control register and the validity bit, and to put a known date back.
+
+#![cfg_attr(not(test), no_std)]
 
 use tock_registers::register_bitfields;
 
@@ -95,6 +98,19 @@ impl Rtc {
             fstart_core::pio::outb(0x70, register);
             fstart_core::pio::outb(0x71, value);
         }
+    }
+}
+
+/// CMOS RAM bank 0, where boards keep options (`fstart_options::cmos`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Cmos;
+
+impl fstart_options::cmos::Ram for Cmos {
+    fn read(&self, index: u8) -> u8 {
+        RTC.read(index)
+    }
+    fn write(&self, index: u8, value: u8) {
+        RTC.write(value, index)
     }
 }
 

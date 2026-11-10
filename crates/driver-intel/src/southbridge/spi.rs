@@ -6,7 +6,7 @@
 
 use crate::MmioBar;
 use crate::southbridge::lpc::{self, BIOS_CONTROL, ROOT_COMPLEX_BASE};
-use fstart_core::services::ServiceError;
+use fstart_core::services::{FlashRegion, ServiceError};
 use fstart_pci::ecam::EcamDevice;
 use rflasher_core::spi::{SpiCommand, opcodes};
 use rflasher_internal::chipset::IchChipset;
@@ -248,13 +248,6 @@ impl CacheSpi {
         self.writable.is_some()
     }
 
-    pub fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
-        let address = self.extent.address(offset, bytes.len())?;
-        self.controller
-            .controller_read(address, bytes, self.extent.chip_size as usize)
-            .map_err(|_| ServiceError::HardwareError)
-    }
-
     fn read_status(&mut self) -> Result<u8, ServiceError> {
         let mut status = [0];
         self.controller
@@ -344,8 +337,17 @@ impl CacheSpi {
         }
         result
     }
+}
 
-    pub fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
+impl FlashRegion for CacheSpi {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
+        let address = self.extent.address(offset, bytes.len())?;
+        self.controller
+            .controller_read(address, bytes, self.extent.chip_size as usize)
+            .map_err(|_| ServiceError::HardwareError)
+    }
+
+    fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
         let address = self.extent.address(offset, bytes.len())?;
         self.with_write(|this| {
             let mut done = 0;
@@ -366,7 +368,7 @@ impl CacheSpi {
     /// Erase complete 64-KiB units only, as the verified chip's 4-KiB sectors:
     /// rflasher erases and polls, with the geometry `new` verified. Neither
     /// can cross the extent.
-    pub fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
+    fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
         const SECTOR: u32 = 0x1000;
         let address = self.extent.address(offset, length as usize)?;
         if address % 0x10000 != 0 || length % 0x10000 != 0 {
@@ -385,10 +387,10 @@ impl CacheSpi {
 /// [`CacheSpi::new`] for the rest of the contract.
 impl fstart_driver_flash_console::Medium for CacheSpi {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
-        CacheSpi::read(self, offset, bytes)
+        FlashRegion::read(self, offset, bytes)
     }
     fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
-        CacheSpi::program(self, offset, bytes)
+        FlashRegion::program(self, offset, bytes)
     }
 }
 

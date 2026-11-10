@@ -33,6 +33,8 @@ impl board::Board for Board {
         kcs_spacing: bmc::KCS_SPACING as u8,
         sw_smi_base: 0xC0,
     });
+    /// "Restore AC Power Loss", as the vendor Setup offers it.
+    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
 }
 
 /// The board's console: the AST2500's Super I/O UART.
@@ -82,20 +84,40 @@ pub fn early_init<H: FchHw>(fch: &H) -> Result<(), BoardError> {
     bmc::early_init().map(drop).map_err(|_| BoardError::Device)
 }
 
-/// The DXIO lane map: the detected M.2 modes and the BMC's Gen3 cap.
-/// Needs the KCS window [`early_init`] opened.
-pub fn dxio_engines<H: FchHw>(
-    generation: Generation,
-    levels: &[bool],
-    _fch: &H,
-    timer: &dyn Timer,
-) -> Result<heapless::Vec<Engine<'static>, MAX_ENGINES>, BoardError> {
+/// What the DXIO lane map depends on at runtime: the M.2 modes from the
+/// detect pad `levels` and the BMC's Gen3 cap. Needs the KCS window
+/// [`early_init`] opened.
+pub fn detect(levels: &[bool], timer: &dyn Timer) -> Detected {
     let level = |i: usize| levels.get(i).copied().unwrap_or(true);
     // SAFETY: `early_init` opened the KCS window; the flow owns it.
     let mut kcs = unsafe { bmc::kcs(TimerDelay(timer)) };
-    let detected = Detected {
+    Detected {
         m2: [M2Mode::from_detect(level(0)), M2Mode::from_detect(level(1))],
         m2_gen3: bmc::m2_gen3_cap(&mut kcs),
-    };
-    Ok(dxio::engines(generation, &Options::BUILD, &detected))
+    }
+}
+
+/// The DXIO lane map with the slot `options`.
+pub fn dxio_engines(
+    generation: Generation,
+    options: &Options,
+    detected: &Detected,
+) -> heapless::Vec<Engine<'static>, MAX_ENGINES> {
+    dxio::engines(generation, options, detected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_offered_knob_has_its_own_key() {
+        use board::Board as _;
+        let metas = fstart_log::option::KNOBS
+            .iter()
+            .map(|k| &k.meta)
+            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
+            .chain(dxio::KNOBS.iter().map(|k| &k.meta));
+        assert_eq!(fstart_options::duplicate_key(metas), None);
+    }
 }

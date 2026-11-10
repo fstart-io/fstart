@@ -8,9 +8,12 @@ license.workspace = true
 # Debug consoles next to the board's console (`fbuild --debug`). Without it
 # the log writes to the one console, at no cost to builds without them.
 debug-consoles = []
+# Option resolution into a report (`option::resolve_into`).
+alloc = ["fstart-options/alloc"]
 
 [dependencies]
 ufmt = { workspace = true }
 fstart-core = { workspace = true }
 fstart-timestamp = { workspace = true }
 portable-atomic = { workspace = true }
+fstart-options = { workspace = true }

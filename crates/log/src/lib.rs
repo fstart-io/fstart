@@ -429,6 +429,161 @@ pub fn max_level() -> Level {
     unsafe { *MAX_LEVEL.0.get() }
 }
 
+/// User options (`fstart_options`): their logged resolution, and the
+/// console log level as an option under coreboot's name and values (`debug_level`: 3 error, 4 warning, 6 info,
+/// 7 debug, 8 spew), so a store coreboot shares reads the same. A level
+/// above the build's `FSTART_LOG_LEVEL` prints nothing more: those
+/// messages are not compiled in.
+pub mod option {
+    use super::Level;
+    use fstart_options::{Choice, Kind, Knob, Meta, Provenance, Rejection, Setting, Source};
+
+    const CHOICES: &[Choice] = &[
+        Choice::new(3, "Error"),
+        Choice::new(4, "Warning"),
+        Choice::new(6, "Info"),
+        Choice::new(7, "Debug"),
+        Choice::new(8, "Trace"),
+    ];
+
+    /// The coreboot `debug_level` value of `level`.
+    pub const fn value(level: Level) -> u32 {
+        match level {
+            Level::Error => 3,
+            Level::Warn => 4,
+            Level::Info => 6,
+            Level::Debug => 7,
+            Level::Trace => 8,
+        }
+    }
+
+    /// The level of a `debug_level` value of [`KNOBS`].
+    pub const fn level(value: u32) -> Level {
+        match value {
+            0..=3 => Level::Error,
+            4 | 5 => Level::Warn,
+            6 => Level::Info,
+            7 => Level::Debug,
+            _ => Level::Trace,
+        }
+    }
+
+    /// The console log level knob, over the level a flow then sets with
+    /// [`super::set_max_level`].
+    pub static KNOBS: [Knob<Level>; 1] = [Knob::new(
+        Meta {
+            key: "debug_level",
+            form: "Console",
+            label: "Console log level",
+            help: "The most verbose firmware messages the console shows.",
+            kind: Kind::Enum(CHOICES),
+        },
+        |l| value(*l),
+        |l, v| *l = level(v),
+    )];
+
+    /// Log a knob's outcome: an applied override or a rejected value.
+    pub fn log(setting: &Setting) {
+        let key = setting.meta.key;
+        match setting.provenance {
+            Provenance::Board => {}
+            Provenance::Override => crate::info!(
+                "options: {} = {} (board {})",
+                key,
+                setting.value,
+                setting.default
+            ),
+            Provenance::Rejected { stored, why } => crate::warn!(
+                "options: {} = {} not applied ({}), keeping {}",
+                key,
+                stored,
+                match why {
+                    Rejection::OutOfRange => "invalid value",
+                    Rejection::Inactive => "unavailable",
+                    Rejection::Source(_) => "store unreadable",
+                    Rejection::Conflict(why) => why,
+                },
+                setting.value
+            ),
+        }
+    }
+
+    /// Log how many knobs were read from which backends.
+    pub fn log_sources(count: usize, source: &dyn Source) {
+        let mut names = [""; 3];
+        let mut n = 0;
+        source.names(&mut |name| {
+            if let Some(slot) = names.get_mut(n) {
+                *slot = name;
+            }
+            n += 1;
+        });
+        match n {
+            0 | 1 => crate::info!("options: {} knobs from {}", count, names[0]),
+            2 => crate::info!(
+                "options: {} knobs from {}, then {}",
+                count,
+                names[0],
+                names[1]
+            ),
+            _ => crate::info!(
+                "options: {} knobs from {}, then {}, then {}",
+                count,
+                names[0],
+                names[1],
+                names[2]
+            ),
+        }
+    }
+
+    /// [`fstart_options::resolve_each`], logged. Allocates nothing, so
+    /// pre-DRAM stages use it.
+    pub fn resolve<C: Clone + 'static>(
+        knobs: &'static [Knob<C>],
+        source: &dyn Source,
+        config: &mut C,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        fstart_options::resolve_each(knobs, source, config, check, |s| log(&s));
+        log_sources(knobs.len(), source);
+    }
+
+    /// [`fstart_options::resolve_checked`] into `report`, logged.
+    #[cfg(feature = "alloc")]
+    pub fn resolve_into<C: Clone + 'static>(
+        knobs: &'static [Knob<C>],
+        source: &dyn Source,
+        config: &mut C,
+        report: &mut fstart_options::Report,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let first = report.settings.len();
+        let duplicates = report.duplicates.len();
+        fstart_options::resolve_checked(knobs, source, config, report, check);
+        for meta in &report.duplicates[duplicates..] {
+            crate::error!(
+                "options: {} is a key of another knob, not resolved",
+                meta.key
+            );
+        }
+        report.settings[first..].iter().for_each(log);
+        log_sources(report.settings.len() - first, source);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_choice_is_its_levels_value() {
+            for choice in CHOICES {
+                assert_eq!(value(level(choice.value)), choice.value);
+            }
+            assert_eq!(value(Level::Info), 6);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Writer adapter
 // ---------------------------------------------------------------------------

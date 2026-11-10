@@ -1123,6 +1123,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-driver-tpm",
  "fstart-log",
+ "fstart-options",
  "fstart-tcg",
  "heapless 0.8.0",
 ]
@@ -1175,10 +1176,13 @@ dependencies = [
  "fstart-driver-i2c",
  "fstart-driver-spd",
  "fstart-log",
+ "fstart-options",
  "fstart-pci",
  "fstart-smm",
  "heapless 0.8.0",
  "libc",
+ "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
+ "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
  "tock-registers",
  "ufmt",
  "zerocopy",
@@ -1220,6 +1224,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-flash-console",
  "fstart-driver-lenovo",
+ "fstart-driver-rtc",
  "fstart-driver-spd",
  "fstart-driver-usbdebug",
  "fstart-intel-gma",
@@ -1279,6 +1284,17 @@ dependencies = [
  "fstart-core",
  "fstart-pci",
  "tock-registers",
+]
+
+[[package]]
+name = "fstart-driver-rtc"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-log",
+ "fstart-options",
+ "tock-registers",
+ "ufmt",
 ]
 
 [[package]]
@@ -1440,6 +1456,7 @@ name = "fstart-log"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "fstart-options",
  "fstart-timestamp",
  "portable-atomic",
  "ufmt",
@@ -1448,6 +1465,14 @@ dependencies = [
 [[package]]
 name = "fstart-memtest"
 version = "0.1.0"
+
+[[package]]
+name = "fstart-options"
+version = "0.1.0"
+dependencies = [
+ "crabefi-efi-types",
+ "fstart-options",
+]
 
 [[package]]
 name = "fstart-payload"
@@ -1611,6 +1636,7 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-image-build",
  "fstart-log",
+ "fstart-options",
  "fstart-payload",
  "fstart-pci",
  "fstart-platform-sp3",

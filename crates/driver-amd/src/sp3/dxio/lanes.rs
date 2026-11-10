@@ -12,6 +12,7 @@
 //! engine list at runtime with [`Engine::split`], [`Engine::with_max_speed`]
 //! and friends rather than by editing descriptor bytes.
 
+use fstart_options::{Availability, Choice, Kind, Knob, Meta};
 use fstart_pci::devfn;
 
 use super::hotplug::Hotplug;
@@ -198,6 +199,104 @@ impl Lanes {
             self.with(self.first() + k * width, width)
         })
     }
+}
+
+/// How a x16 slot splits into links, as Setup menus offer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bifurcation {
+    X16,
+    X8x8,
+    X4x4x4x4,
+}
+
+impl Bifurcation {
+    /// The width of every link.
+    pub const fn width(self) -> u8 {
+        match self {
+            Self::X16 => 16,
+            Self::X8x8 => 8,
+            Self::X4x4x4x4 => 4,
+        }
+    }
+
+    /// The bifurcation of `width`-lane links.
+    pub const fn from_width(width: u32) -> Option<Self> {
+        match width {
+            16 => Some(Self::X16),
+            8 => Some(Self::X8x8),
+            4 => Some(Self::X4x4x4x4),
+            _ => None,
+        }
+    }
+
+    /// The option values of a bifurcation knob: the link width.
+    pub const CHOICES: &'static [Choice] = &[
+        Choice::new(16, "x16"),
+        Choice::new(8, "x8x8"),
+        Choice::new(4, "x4x4x4x4"),
+    ];
+
+    /// [`Self::CHOICES`] and 0, which keeps the board's links.
+    pub const CHOICES_AUTO: &'static [Choice] = &[
+        Choice::new(0, "Auto"),
+        Choice::new(16, "x16"),
+        Choice::new(8, "x8x8"),
+        Choice::new(4, "x4x4x4x4"),
+    ];
+
+    /// The knob of x16 group `I` of a board configuration `C`: its value
+    /// is the link width. With `auto`, 0 keeps the board's links
+    /// ([`Bifurcations::bifurcation`] `None`).
+    pub const fn knob<C: Bifurcations, const I: usize>(
+        key: &'static str,
+        label: &'static str,
+        auto: bool,
+    ) -> Knob<C> {
+        Knob::new(
+            Meta {
+                key,
+                form: "PCIe",
+                label,
+                help: if auto {
+                    "How the 16 lanes split into links; Auto keeps the board's. Applies at the next boot."
+                } else {
+                    "How the 16 lanes split into links. Applies at the next boot."
+                },
+                kind: Kind::Enum(if auto {
+                    Self::CHOICES_AUTO
+                } else {
+                    Self::CHOICES
+                }),
+            },
+            get::<C, I>,
+            set::<C, I>,
+        )
+        .when(availability::<C, I>)
+    }
+}
+
+/// A board configuration with x16 groups the user may split
+/// ([`Bifurcation::knob`]).
+pub trait Bifurcations {
+    /// The split of group `index`; `None` keeps the board's links.
+    fn bifurcation(&self, index: usize) -> Option<Bifurcation>;
+    fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>);
+    /// Whether group `index` may be split now.
+    fn availability(&self, _index: usize) -> Availability {
+        Availability::Editable
+    }
+}
+
+fn get<C: Bifurcations, const I: usize>(c: &C) -> u32 {
+    c.bifurcation(I).map_or(0, |b| u32::from(b.width()))
+}
+
+fn set<C: Bifurcations, const I: usize>(c: &mut C, value: u32) {
+    c.set_bifurcation(I, Bifurcation::from_width(value));
+}
+
+fn availability<C: Bifurcations, const I: usize>(c: &C) -> Availability {
+    c.availability(I)
 }
 
 /// Naples board lane number: die `n` owns lanes `32n..32n+31` of its
@@ -482,7 +581,8 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn map_pcie(self, f: impl FnOnce(PcieEngine) -> PcieEngine) -> Self {
+    /// The engine with its PCIe configuration changed by `f`.
+    pub fn map_pcie(self, f: impl FnOnce(PcieEngine) -> PcieEngine) -> Self {
         match self.kind {
             EngineKind::Pcie(p) => Self {
                 kind: EngineKind::Pcie(f(p)),
@@ -510,14 +610,19 @@ impl<'a> Engine<'a> {
     }
 
     /// Bifurcate into `width`-lane PCIe links. The children take the next
-    /// free default devfn and no slot/hotplug (the Rome OEM path clears
-    /// dev/fn; a slot number on every child would repeat it).
+    /// free default devfn and no slot number (the Rome OEM path clears
+    /// dev/fn; a slot number on every child would repeat it). A hotplug
+    /// slot stays one slot with one power control: the first link keeps
+    /// its hotplug (an I²C slot's SMU entry), the others become native
+    /// hotplug ports of the same kind.
     pub fn split(self, width: u8) -> impl Iterator<Item = Engine<'a>> {
-        self.lanes.split(width).map(move |lanes| {
+        self.lanes.split(width).enumerate().map(move |(i, lanes)| {
             Engine { lanes, ..self }.map_pcie(|p| PcieEngine {
                 devfn: None,
                 slot: None,
-                hotplug: None,
+                hotplug: p
+                    .hotplug
+                    .map(|h| if i == 0 { h } else { Hotplug::new(h.kind) }),
                 ..p
             })
         })
@@ -785,6 +890,88 @@ pub fn validate(generation: Generation, engines: &[Engine<'_>]) -> Result<(), (u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Groups([Option<Bifurcation>; 2]);
+
+    impl Bifurcations for Groups {
+        fn bifurcation(&self, index: usize) -> Option<Bifurcation> {
+            self.0[index]
+        }
+        fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>) {
+            self.0[index] = bifurcation;
+        }
+        fn availability(&self, index: usize) -> Availability {
+            if index == 1 {
+                Availability::Inactive("fused off")
+            } else {
+                Availability::Editable
+            }
+        }
+    }
+
+    #[test]
+    fn bifurcation_knobs_read_and_split_their_group() {
+        static KNOBS: [Knob<Groups>; 2] = [
+            Bifurcation::knob::<Groups, 0>("a", "A", true),
+            Bifurcation::knob::<Groups, 1>("b", "B", false),
+        ];
+        let mut g = Groups::default();
+        assert_eq!((KNOBS[0].get)(&g), 0, "auto");
+        assert!(KNOBS[0].meta.kind.contains(0));
+        assert!(!KNOBS[1].meta.kind.contains(0), "no auto");
+        (KNOBS[0].set)(&mut g, 4);
+        assert_eq!(g.0, [Some(Bifurcation::X4x4x4x4), None]);
+        (KNOBS[0].set)(&mut g, 0);
+        assert_eq!(g.0[0], None);
+        assert_eq!((KNOBS[0].available)(&g), Availability::Editable);
+        assert_eq!(
+            (KNOBS[1].available)(&g),
+            Availability::Inactive("fused off")
+        );
+    }
+
+    #[test]
+    fn a_split_hotplug_slot_keeps_one_power_control() {
+        use super::super::hotplug::{HotplugI2c, HotplugKind};
+        let smu = Hotplug {
+            kind: HotplugKind::ExpressModule,
+            i2c: Some(HotplugI2c {
+                slot: 4,
+                format: 0,
+                function: super::super::hotplug::HotplugFunction {
+                    bit: 0,
+                    byte: 0,
+                    address: 0x23,
+                    expander: super::super::hotplug::Expander::Pca9535,
+                    bus: 0,
+                    mask: 0,
+                },
+                reset: None,
+            }),
+        };
+        let x16 = Engine::pcie(
+            0,
+            Lanes::sp3(Group::P2, 0, 16).reversed(),
+            PcieEngine::new().slot(4).with_hotplug(smu),
+        );
+        let engines: std::vec::Vec<_> = x16.split(4).collect();
+        let links: std::vec::Vec<_> = engines.iter().filter_map(Engine::pcie_config).collect();
+        assert_eq!(links.len(), 4);
+        assert_eq!(links[0].hotplug, Some(smu));
+        assert!(
+            links[1..]
+                .iter()
+                .all(|p| p.hotplug == Some(Hotplug::new(HotplugKind::ExpressModule)))
+        );
+        assert!(links.iter().all(|p| p.slot.is_none()));
+        let plain = Engine::pcie(0, Lanes::sp3(Group::P0, 0, 16), PcieEngine::new());
+        assert!(
+            plain
+                .split(8)
+                .all(|e| e.pcie_config().unwrap().hotplug.is_none())
+        );
+    }
 
     fn wire(g: Group, first: u8, count: u8, rev: bool) -> (Placement, (u8, u8)) {
         let l = Lanes::sp3(g, first, count);

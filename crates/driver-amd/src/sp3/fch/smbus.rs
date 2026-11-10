@@ -20,6 +20,24 @@ pub const I2C_TIMING: Timing = Timing {
     sda_hold: None,
 };
 
+/// Hand I2C controller 0 to the SMU hotplug firmware: it drives the slot
+/// expanders on that bus but relies on x86 for the master configuration
+/// (Oxide `milan_fixup_i2c_clock`). The controller is left configured
+/// and disabled.
+///
+/// # Safety
+/// Nothing on x86 uses controller 0 from now on.
+pub unsafe fn i2c_for_smu<D: embedded_hal::delay::DelayNs>(
+    delay: D,
+) -> Result<(), fstart_driver_i2c::designware::Error> {
+    // SAFETY: the FCH APB window is decoded since reset; the caller gives
+    // up the controller.
+    unsafe {
+        fstart_driver_i2c::designware::DesignWare::new(i2c_base(0) as usize, &I2C_TIMING, delay)
+    }
+    .map(drop)
+}
+
 /// SMBus host I/O base after ResetHwAcpi (PMx00\[15:8\] = `0Bh`).
 pub const SMBUS_IO: u32 = 0xB00;
 /// ASF I/O base.

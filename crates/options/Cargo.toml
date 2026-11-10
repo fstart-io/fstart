@@ -1,0 +1,24 @@
+[package]
+name = "fstart-options"
+description = "User overrides of a board's configuration: knobs, option sources and the CFR form"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[features]
+# The resolution report and its CFR form, for stages with a heap.
+alloc = []
+# Options stored in an EDK2 variable store (`varstore`), as CrabEFI writes
+# them.
+varstore = ["dep:crabefi-efi-types"]
+
+[dependencies.crabefi-efi-types]
+git = "https://github.com/ArthurHeymans/CrabEFI.git"
+rev = "1eccb286ffd0677c5f3c0f0bf50939db47caf224"
+optional = true
+
+# The tests use the report.
+[dev-dependencies]
+fstart-options = { path = ".", features = ["alloc"] }

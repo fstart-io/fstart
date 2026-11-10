@@ -19,10 +19,12 @@ use super::engine::FwEngine;
 use super::hotplug::HotplugKind;
 use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
 use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
-use crate::smn::{Smn, SmnAddr};
+use crate::smn::SmnAddr;
 use crate::smu::SmuMessages;
+use crate::sp3::fch::gpio::{self, Pin};
 use crate::sp3::nbio::{Nbio, NbioReg, nbif};
 use crate::sp3::soc::Generation;
+use crate::window::Window;
 
 register_bitfields![u32,
     /// IOHC `IOHC_BRIDGE_CNTL` (`0x13B31004 + bridge * 0x400`).
@@ -130,10 +132,51 @@ register_bitfields![u32,
     ],
     /// Root port config `0x6C`: slot capabilities.
     pub CFG_SLOT_CAP [
+        ATTENTION_BUTTON OFFSET(0) NUMBITS(1) [],
+        POWER_CONTROLLER OFFSET(1) NUMBITS(1) [],
+        MRL_SENSOR OFFSET(2) NUMBITS(1) [],
+        ATTENTION_INDICATOR OFFSET(3) NUMBITS(1) [],
+        POWER_INDICATOR OFFSET(4) NUMBITS(1) [],
         HOTPLUG_SURPRISE OFFSET(5) NUMBITS(1) [],
         HOTPLUG_CAPABLE OFFSET(6) NUMBITS(1) [],
+        ELECTROMECHANICAL_LOCK OFFSET(17) NUMBITS(1) [],
         NO_COMMAND_COMPLETED OFFSET(18) NUMBITS(1) [],
         PHYSICAL_SLOT OFFSET(19) NUMBITS(13) []
+    ],
+    /// Root port config `0x70`: slot control (15:0) and slot status
+    /// (31:16, write 1 to clear).
+    pub CFG_SLOT_CTL [
+        ATTENTION_BUTTON_EN OFFSET(0) NUMBITS(1) [],
+        POWER_FAULT_EN OFFSET(1) NUMBITS(1) [],
+        PRESENCE_CHANGE_EN OFFSET(3) NUMBITS(1) [],
+        HOTPLUG_INTERRUPT_EN OFFSET(5) NUMBITS(1) [],
+        /// Slot power off when set.
+        POWER_OFF OFFSET(10) NUMBITS(1) [],
+        /// Status: the W1C change bits.
+        STATUS_CHANGES OFFSET(16) NUMBITS(5) [],
+        PRESENCE_DETECTED OFFSET(22) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_PCTL`.
+    pub PCTL [
+        POWER_FAULT_EN OFFSET(4) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL5`.
+    pub LC_CTL5 [
+        /// Hold the LTSSM in Detect (cleared for hotplug slots).
+        WAIT_DETECT OFFSET(28) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_HP_CTL`: the slot the SMU hotplug firmware drives.
+    pub HP_CTL [
+        SLOT OFFSET(0) NUMBITS(13) [],
+        ACTIVE OFFSET(31) NUMBITS(1) []
+    ],
+    /// `PCIECORE::PCIE_PRESENCE_DETECT_SELECT`.
+    pub CORE_PRES [
+        /// 0: in-band OR out-of-band presence.
+        MODE OFFSET(24) NUMBITS(1) [
+            Or = 0,
+            And = 1
+        ]
     ],
     /// Root port config `0x80`: device control 2.
     pub CFG_DEV_CTL2 [
@@ -144,22 +187,12 @@ register_bitfields![u32,
         SECONDARY OFFSET(8) NUMBITS(8) [],
         SUBORDINATE OFFSET(16) NUMBITS(8) []
     ],
-    /// FCH GPIO control (Linux `pinctrl-amd` bit names).
-    pub FCH_GPIO [
-        DRV_STRENGTH OFFSET(17) NUMBITS(2) [],
-        PULL_UP_ENABLE OFFSET(20) NUMBITS(1) [],
-        OUTPUT_VALUE OFFSET(22) NUMBITS(1) [],
-        OUTPUT_ENABLE OFFSET(23) NUMBITS(1) []
-    ],
-    /// The IOMUX dword holding pins 24..27; pin 26 is byte 2.
-    pub FCH_IOMUX_24 [
-        PIN26 OFFSET(16) NUMBITS(8) []
-    ]
 ];
 
 /// Port register offsets (`PCIE_PORT_*`).
 pub mod port {
     pub const HW_DBG: u32 = 0x008;
+    pub const PCTL: u32 = 0x040;
     pub const TX_CTL: u32 = 0x080;
     pub const TX_ID: u32 = 0x084;
     pub const LC_CTL: u32 = 0x280;
@@ -169,7 +202,9 @@ pub mod port {
     pub const LC_CTL2: u32 = 0x2C4;
     pub const LC_CTL6: u32 = 0x2EC;
     pub const LC_CTL4: u32 = 0x2D8;
+    pub const LC_CTL5: u32 = 0x2DC;
     pub const STRAP_MISC: u32 = 0x304;
+    pub const HP_CTL: u32 = 0x36C;
     pub const LC_CTL8: u32 = 0x374;
     pub const LC_CTL11: u32 = 0x390;
 }
@@ -182,10 +217,13 @@ pub mod core_reg {
     pub const P_CTL: u32 = 0x100;
     pub const SDP_CTL: u32 = 0x18C;
     pub const STRAP_F0: u32 = 0x2C0;
+    /// `SWRST_CONTROL_6`: per-port HOLD_TRAINING (bit = port).
+    pub const SWRST_CTL6: u32 = 0x428;
     pub const RSMU_TIMER: u32 = 0x488;
     pub const RX_MARGIN_CTL_CAP: u32 = 0x4D4;
     pub const RX_MARGIN1: u32 = 0x4D8;
     pub const RX_MARGIN2: u32 = 0x4DC;
+    pub const PRES: u32 = 0x4E0;
 }
 
 /// Root-port config offsets reached through the SMN config aperture.
@@ -193,6 +231,7 @@ pub mod cfg {
     pub const BUSES: u32 = 0x18;
     pub const PCIE_CAP: u32 = 0x58;
     pub const SLOT_CAP: u32 = 0x6C;
+    pub const SLOT_CTL: u32 = 0x70;
     pub const DEV_CTL2: u32 = 0x80;
     pub const DPC_STATUS: u32 = 0x388;
 }
@@ -673,6 +712,80 @@ pub fn hotplug_port<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8
         .modify(LC_TRAIN_CTL::BIT13::SET);
 }
 
+/// A slot the SMU hotplug firmware drives over I2C, before hotplug starts
+/// (Oxide `milan_fabric_hotplug_port_init`, `..._init_pcie_hotplug_slot_caps`):
+/// the slot number for the SMU, no LTSSM hold in Detect, power faults,
+/// and the slot capabilities its expander wiring provides.
+pub fn hotplug_slot<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    port: u8,
+    slot: u16,
+    features: &super::hotplug::SlotFeatures,
+) {
+    c.port_reg::<HP_CTL::Register>(port, port::HP_CTL)
+        .modify(HP_CTL::SLOT.val(slot as u32) + HP_CTL::ACTIVE::SET);
+    c.port_reg::<LC_CTL5::Register>(port, port::LC_CTL5)
+        .modify(LC_CTL5::WAIT_DETECT::CLEAR);
+    c.port_reg::<PCTL::Register>(port, port::PCTL)
+        .modify(PCTL::POWER_FAULT_EN::SET);
+    let flag = |on: bool| on as u32;
+    c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+        .modify(
+            CFG_SLOT_CAP::HOTPLUG_SURPRISE::SET
+                + CFG_SLOT_CAP::HOTPLUG_CAPABLE::SET
+                + CFG_SLOT_CAP::MRL_SENSOR::CLEAR
+                + CFG_SLOT_CAP::ATTENTION_BUTTON.val(flag(features.attention_button))
+                + CFG_SLOT_CAP::POWER_CONTROLLER.val(flag(features.power_controller))
+                + CFG_SLOT_CAP::ATTENTION_INDICATOR.val(flag(features.attention_indicator))
+                + CFG_SLOT_CAP::POWER_INDICATOR.val(flag(features.power_indicator))
+                + CFG_SLOT_CAP::ELECTROMECHANICAL_LOCK.val(flag(features.electromechanical_lock))
+                + CFG_SLOT_CAP::NO_COMMAND_COMPLETED.val(flag(features.no_command_completed)),
+        );
+}
+
+/// Presence of a core's hotplug slots: in-band OR out-of-band (Oxide
+/// `milan_fabric_hotplug_core_init`).
+pub fn hotplug_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
+    c.core_reg::<CORE_PRES::Register>(core_reg::PRES)
+        .modify(CORE_PRES::MODE::Or);
+}
+
+/// Let a hotplug port train: DXIO holds hotplug ports in
+/// `SWRST_CONTROL_6` (Oxide `milan_fabric_hotplug_port_unblock_training`).
+pub fn release_training<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) {
+    let hold = c.core_reg::<()>(core_reg::SWRST_CTL6);
+    hold.set(hold.get() & !(1 << port));
+}
+
+/// After the SMU started hotplug: enable the slot's events and set its
+/// power from presence. Without a slot control write the SMU leaves the
+/// expander outputs at their reset state (Oxide
+/// `zen_hotplug_bridge_post_start`). Returns the slot control/status.
+pub fn hotplug_started<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) -> u32 {
+    let cap = c
+        .cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+        .extract();
+    let ctl = c.cfg_reg::<CFG_SLOT_CTL::Register>(port, cfg::SLOT_CTL);
+    let now = ctl.extract();
+    let mut next = now;
+    // Leave the status change bits alone (write 1 clears).
+    next.modify(CFG_SLOT_CTL::STATUS_CHANGES.val(0));
+    next.modify(
+        CFG_SLOT_CTL::POWER_FAULT_EN::SET
+            + CFG_SLOT_CTL::PRESENCE_CHANGE_EN::SET
+            + CFG_SLOT_CTL::HOTPLUG_INTERRUPT_EN::SET,
+    );
+    if cap.is_set(CFG_SLOT_CAP::ATTENTION_BUTTON) {
+        next.modify(CFG_SLOT_CTL::ATTENTION_BUTTON_EN::SET);
+    }
+    if cap.is_set(CFG_SLOT_CAP::POWER_CONTROLLER) {
+        let present = now.is_set(CFG_SLOT_CTL::PRESENCE_DETECTED);
+        next.modify(CFG_SLOT_CTL::POWER_OFF.val(!present as u32));
+    }
+    ctl.set(next.get());
+    ctl.get()
+}
+
 /// Wait for the SMU hotplug firmware to settle: 100 000 ticks of the core
 /// RSMU timer, at most 1000 reads (SmuV11Dxe `0x3FE8` bounds it the same
 /// way; Naples does not).
@@ -727,37 +840,37 @@ pub fn xgmi_init<M: SmuMessages + ?Sized>(
         .map(|_| ())
 }
 
-/// FCH ACPI MMIO block (0xFED80000) on SMN.
-pub const FCH_SMN: SmnAddr = 0x02D0_1000;
 /// GPIO26 PCIE_RST0_L, GPIO27 PCIE_RST3_L, RMT GPIO10/11 PCIE_RST1/2_L
-/// (Oxide `milan/iomux.h` names), as FCH offsets.
-pub const PERST_PINS: [u32; 4] = [0x1568, 0x156C, 0x1228, 0x122C];
-/// IOMUX dword holding pin 26.
-pub const IOMUX_24: u32 = 0x0D18;
+/// (Oxide `milan/iomux.h` names).
+pub const PERST_PINS: [Pin; 4] = [Pin(26), Pin(27), Pin(266), Pin(267)];
 
-/// PERST release through the FCH GPIOs over SMN (§3.4): Rome/Milan drive
-/// all four PCIE_RST pins high (`0xC40000`: output enable, high, drive
+/// PERST release through the FCH reset pins (§3.4). Rome/Milan drive all
+/// four PCIE_RST pins high (`0xC40000`: output enable, high, drive
 /// strength 2); Naples sets GPIO26 to `0xD20000` (adds the pull-up) and
 /// IOMUX 26 to the native PCIE_RST0_L function, on the die's FCH and on
-/// `naples_also` (the donor hard-codes bus 0x40). Rome writes socket 0
-/// through MMIO; SMN reaches the same block (as the donor does for
-/// socket 1). Each unit is released once.
-pub struct FchPerst<P> {
+/// `naples_also` (the donor hard-codes bus 0x40). Each unit is released
+/// once.
+///
+/// `fchs` are the ACPI-MMIO windows of the FCHs. The SSP and GN donors
+/// write socket 0 through host MMIO (`0xFED80000`); SMN writes to socket
+/// 0's FCH GPIOs do not reach the pins on Milan (Ethanol-X: the reset pins
+/// kept their power-on value and no slot trained).
+pub struct FchPerst<'w> {
     pub generation: Generation,
-    /// `((socket, die), SMN of that FCH's root bus)`.
-    pub fchs: Vec<((u8, u8), Smn<P>), 8>,
-    pub naples_also: Option<Smn<P>>,
+    /// `((socket, die), that FCH's ACPI-MMIO window)`.
+    pub fchs: Vec<((u8, u8), &'w dyn Window), 8>,
+    pub naples_also: Option<&'w dyn Window>,
     released: u16,
 }
 
-impl<P: ConfigRegionAccess + Clone> FchPerst<P> {
+impl<'w> FchPerst<'w> {
     /// # Safety
-    /// Every SMN handle reaches a live FCH and the caller owns its GPIO
+    /// Every window reaches a live FCH and the caller owns its GPIO
     /// registers for PERST.
     pub unsafe fn new(
         generation: Generation,
-        fchs: Vec<((u8, u8), Smn<P>), 8>,
-        naples_also: Option<Smn<P>>,
+        fchs: Vec<((u8, u8), &'w dyn Window), 8>,
+        naples_also: Option<&'w dyn Window>,
     ) -> Self {
         Self {
             generation,
@@ -767,33 +880,31 @@ impl<P: ConfigRegionAccess + Clone> FchPerst<P> {
         }
     }
 
-    fn drive(&self, smn: &Smn<P>) {
-        let gpio = |pin: u32| smn.reg(crate::smn::SmnReg::<FCH_GPIO::Register>::new(FCH_SMN + pin));
+    fn drive(&self, acpi: &dyn Window) {
+        // `&dyn Window` is itself a (sized) window.
+        let control = |pin: Pin| Window::reg::<u32, gpio::CONTROL::Register>(&acpi, pin.control());
         match self.generation {
             Generation::Naples => {
-                gpio(PERST_PINS[0]).write(
-                    FCH_GPIO::OUTPUT_ENABLE::SET
-                        + FCH_GPIO::OUTPUT_VALUE::SET
-                        + FCH_GPIO::PULL_UP_ENABLE::SET
-                        + FCH_GPIO::DRV_STRENGTH.val(1),
+                control(PERST_PINS[0]).write(
+                    gpio::CONTROL::OUTPUT_ENABLE::SET
+                        + gpio::CONTROL::OUTPUT_VALUE::SET
+                        + gpio::CONTROL::PULL_UP::SET
+                        + gpio::CONTROL::DRIVE_STRENGTH.val(1),
                 );
-                smn.reg(crate::smn::SmnReg::<FCH_IOMUX_24::Register>::new(
-                    FCH_SMN + IOMUX_24,
-                ))
-                .modify(FCH_IOMUX_24::PIN26.val(0));
+                Window::reg::<u8, ()>(&acpi, PERST_PINS[0].iomux()).set(0);
             }
             Generation::Rome | Generation::Milan => PERST_PINS.iter().for_each(|&pin| {
-                gpio(pin).write(
-                    FCH_GPIO::OUTPUT_ENABLE::SET
-                        + FCH_GPIO::OUTPUT_VALUE::SET
-                        + FCH_GPIO::DRV_STRENGTH.val(2),
+                control(pin).write(
+                    gpio::CONTROL::OUTPUT_ENABLE::SET
+                        + gpio::CONTROL::OUTPUT_VALUE::SET
+                        + gpio::CONTROL::DRIVE_STRENGTH.val(2),
                 )
             }),
         }
     }
 }
 
-impl<P: ConfigRegionAccess + Clone> PcieReset for FchPerst<P> {
+impl PcieReset for FchPerst<'_> {
     fn release(&mut self, socket: u8, die: u8) {
         let bit = 1u16 << (socket * 4 + die);
         if self.released & bit != 0 {
@@ -804,13 +915,19 @@ impl<P: ConfigRegionAccess + Clone> PcieReset for FchPerst<P> {
             Generation::Naples => (socket, die),
             Generation::Rome | Generation::Milan => (socket, 0),
         };
-        if let Some((_, smn)) = self.fchs.iter().find(|(k, _)| *k == key) {
-            self.drive(smn);
+        if let Some(&(_, acpi)) = self.fchs.iter().find(|(k, _)| *k == key) {
+            self.drive(acpi);
+            fstart_log::info!(
+                "dxio: PERST released on socket {} die {}: {:#x}",
+                socket,
+                die,
+                acpi.read32(PERST_PINS[0].control())
+            );
         }
         if self.generation == Generation::Naples
-            && let Some(smn) = &self.naples_also
+            && let Some(acpi) = self.naples_also
         {
-            self.drive(smn);
+            self.drive(acpi);
         }
     }
 }
@@ -980,6 +1097,65 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
                 enable_sata(nbio);
             }
         });
+    }
+
+    /// The SMU hotplug table of the I2C-signaled hotplug slots, `None`
+    /// without any (slot numbers are the table indices).
+    pub fn hotplug_table(
+        &self,
+    ) -> Result<Option<super::hotplug::HotplugTableV11>, super::hotplug::HotplugError> {
+        super::hotplug::HotplugTableV11::build(self.board, &self.ports, 0)
+    }
+
+    /// Hotplug port setup before the SMU starts hotplug: the I2C slots'
+    /// slot setup and their cores' presence mode, then every hotplug port
+    /// released to train. Returns the number of hotplug ports.
+    pub fn hotplug_prepare(&self) -> usize {
+        let mut cores: Vec<(u8, u8, u8), 32> = Vec::new();
+        let mut count = 0;
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let Some(hotplug) = pcie.hotplug else {
+                continue;
+            };
+            let c = PcieCore::new(n, p.core);
+            if let Some(i2c) = hotplug.i2c {
+                hotplug_slot(&c, p.port, i2c.slot.into(), &i2c.features());
+                let key = (p.socket, p.nbio, p.core);
+                if !cores.contains(&key) {
+                    let _ = cores.push(key);
+                    hotplug_core(&c);
+                }
+            }
+            release_training(&c, p.port);
+            count += 1;
+        }
+        count
+    }
+
+    /// After the SMU started hotplug: show the I2C slots' bridges again
+    /// (the SMU may hide them) and put their power into a defined state.
+    pub fn hotplug_started(&self) {
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let Some(i2c) = pcie.hotplug.and_then(|h| h.i2c) else {
+                continue;
+            };
+            show_bridge(n, p.bridge as usize);
+            let slot = hotplug_started(&PcieCore::new(n, p.core), p.port);
+            fstart_log::info!(
+                "dxio: hotplug slot {} at {}.{} port {}: slot control/status {:#x}",
+                i2c.slot as u32,
+                p.socket,
+                p.nbio,
+                p.port,
+                slot
+            );
+        }
     }
 
     /// Clear the bus numbers early training left on the bridges of early
@@ -1451,9 +1627,17 @@ mod tests {
             ]
         );
 
+        use crate::smn::Smn;
+        use crate::sp3::fch::acpimmio;
+        use crate::window::SmnWindow;
+        let window = |m: &Model, bus| unsafe {
+            SmnWindow::new(Smn::on_bus(m.clone(), bus), acpimmio::SMN_BASE)
+        };
+
         let model = Model::default();
-        let mut fchs = Vec::new();
-        let _ = fchs.push(((1, 0), unsafe { Smn::on_bus(model.clone(), 0x80) }));
+        let socket1 = window(&model, 0x80);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((1, 0), &socket1));
         // SAFETY: model.
         let mut p = unsafe { FchPerst::new(Generation::Rome, fchs, None) };
         p.release(1, 0);
@@ -1470,16 +1654,12 @@ mod tests {
             .borrow_mut()
             .smn
             .insert((0, 0x02D0_1D18), 0x0102_0304);
-        let mut fchs = Vec::new();
-        let _ = fchs.push(((0, 1), unsafe { Smn::on_bus(model.clone(), 0) }));
+        let die1 = window(&model, 0);
+        let also = window(&model, 0x40);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((0, 1), &die1));
         // SAFETY: model.
-        let mut z = unsafe {
-            FchPerst::new(
-                Generation::Naples,
-                fchs,
-                Some(Smn::on_bus(model.clone(), 0x40)),
-            )
-        };
+        let mut z = unsafe { FchPerst::new(Generation::Naples, fchs, Some(&also)) };
         z.release(0, 1);
         let st = model.0.borrow();
         assert_eq!(st.smn[&(0, 0x02D0_2568)], 0xD2_0000);
@@ -1493,5 +1673,25 @@ mod tests {
             0xD2_0000,
             "and the hard-coded socket-1 bus"
         );
+
+        // Milan: socket 0 through its own window (host MMIO on hardware),
+        // socket 1 through SMN; each socket once.
+        let mmio = crate::sp3::fch::model::Mem::default();
+        let model = Model::default();
+        let socket1 = window(&model, 0x80);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((0, 0), &mmio));
+        let _ = fchs.push(((1, 0), &socket1));
+        // SAFETY: models.
+        let mut m = unsafe { FchPerst::new(Generation::Milan, fchs, None) };
+        m.release(0, 0);
+        m.release(0, 0);
+        for pin in [0x1568, 0x156C, 0x1228, 0x122C] {
+            assert_eq!(mmio.get(pin, 4), 0xC4_0000);
+        }
+        assert_eq!(mmio.0.borrow().log.len(), 4, "socket 0 once");
+        assert!(model.0.borrow().log.is_empty(), "not socket 1's");
+        m.release(1, 0);
+        assert_eq!(model.0.borrow().smn[&(0x80, 0x02D0_2228)], 0xC4_0000);
     }
 }

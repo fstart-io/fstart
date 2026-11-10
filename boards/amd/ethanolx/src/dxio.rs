@@ -2,12 +2,21 @@
 //!
 //! OEM patcher 0xffd6814f, group builder 0xffd67b60, descriptor stride
 //! 0x1b0. Zero physical-slot fields are left unspecified, not invented.
+//!
+//! The straps select a card per socket-0 group ([`Layout`]); the user can
+//! override the bifurcation of a PCIe card's group ([`KNOBS`]), which keeps
+//! the card's redriver setting and splits its x16 link.
 
 use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::hotplug::{Hotplug, HotplugKind};
-use fstart_driver_amd::sp3::dxio::lanes::{
-    Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
+use fstart_driver_amd::sp3::dxio::hotplug::{
+    Expander, Hotplug, HotplugFunction, HotplugI2c, HotplugKind, format,
 };
+use fstart_driver_amd::sp3::dxio::lanes::{
+    Bifurcation, Bifurcations, Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
+    validate,
+};
+use fstart_driver_amd::sp3::soc::Generation;
+use fstart_options::{Availability, Knob};
 
 use crate::i2c::{Detected, RedriverMode};
 
@@ -46,13 +55,118 @@ pub struct Plan {
     pub disabled_xgbe: u8,
 }
 
+/// Group, input-word shift, unbifurcated device number, physical slot.
+const GROUPS: [(Group, u16, u8, u16); 4] = [
+    (Group::P0, 0, 3, 1),
+    (Group::P1, 8, 1, 3),
+    (Group::P2, 12, 1, 4),
+    (Group::P3, 4, 3, 2),
+];
+
+/// Slot 4 (socket 0 P2) is an ExpressModule hotplug slot: presence, power
+/// enable and fault, LEDs, attention button and interlock on the PCA9535
+/// at 0x23, byte 0, which the SMU drives through I2C0 (RXM100CB
+/// `ServerHotplugDxe` entry lanes 95–80, slot 4, function `0x08c0`; Oxide
+/// `oxio_ethanolx.c`). Without it the slot is never powered.
+pub const SLOT4: Hotplug = Hotplug {
+    kind: HotplugKind::ExpressModule,
+    i2c: Some(HotplugI2c {
+        slot: 4,
+        format: format::EXPRESS_MODULE_A,
+        function: HotplugFunction {
+            bit: 0,
+            byte: 0,
+            address: 0x23,
+            expander: Expander::Pca9535,
+            // Switch 0x70 port 0, as the vendor table has it.
+            bus: 0,
+            // Every ExpressModule pin is wired.
+            mask: 0,
+        },
+        reset: None,
+    }),
+};
+
+/// Whether `selector` is the mixed SATA/Ethernet card on `group`.
+const fn mixed(group: Group, selector: u8) -> bool {
+    matches!(selector, 8 | 9) && matches!(group, Group::P0 | Group::P1)
+}
+
+/// The socket-0 PCIe layout: the card each group's straps select, and the
+/// user's bifurcation of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// The 4-bit strap selector of P0..P3.
+    pub selectors: [u8; 4],
+    /// The link width a group is split into; `None` keeps the card's.
+    pub bifurcation: [Option<Bifurcation>; 4],
+    /// The I/O fuse removes socket 0's P1 and socket 1's P0.
+    pub limited_io: bool,
+}
+
+impl Layout {
+    /// The layout the straps select on revision 0x30. Other revisions
+    /// have different socket-1 and forced-x8 wiring: do not apply this
+    /// policy to an unknown board.
+    pub fn new(detected: Detected, limited_io: bool) -> Result<Self, Error> {
+        if detected.board_id != 0x30 {
+            return Err(Error::Board(detected.board_id));
+        }
+        Ok(Self {
+            selectors: GROUPS.map(|(_, shift, ..)| ((detected.straps >> shift) & 0xf) as u8),
+            bifurcation: [None; 4],
+            limited_io,
+        })
+    }
+
+    /// Whether group `index` can be bifurcated.
+    fn available(&self, index: usize) -> Availability {
+        let group = GROUPS[index].0;
+        if self.limited_io && group == Group::P1 {
+            Availability::Inactive("this processor's I/O fuse removes the group")
+        } else if mixed(group, self.selectors[index]) {
+            Availability::Inactive("the straps select the SATA/Ethernet card")
+        } else {
+            Availability::Editable
+        }
+    }
+}
+
+impl Bifurcations for Layout {
+    fn bifurcation(&self, index: usize) -> Option<Bifurcation> {
+        self.bifurcation[index]
+    }
+    fn set_bifurcation(&mut self, index: usize, bifurcation: Option<Bifurcation>) {
+        self.bifurcation[index] = bifurcation;
+    }
+    fn availability(&self, index: usize) -> Availability {
+        self.available(index)
+    }
+}
+
+/// The bifurcation of the four socket-0 groups; Auto keeps the card's
+/// links.
+pub static KNOBS: [Knob<Layout>; 4] = [
+    Bifurcation::knob::<Layout, 0>("ethanolx_p0_bifurcation", "P0 (slot 1) bifurcation", true),
+    Bifurcation::knob::<Layout, 1>("ethanolx_p1_bifurcation", "P1 (slot 3) bifurcation", true),
+    Bifurcation::knob::<Layout, 2>("ethanolx_p2_bifurcation", "P2 (slot 4) bifurcation", true),
+    Bifurcation::knob::<Layout, 3>("ethanolx_p3_bifurcation", "P3 (slot 2) bifurcation", true),
+];
+
+/// Whether the layout's engines are valid on the SoC.
+pub fn check(layout: &Layout) -> Result<(), &'static str> {
+    let plan = plan(layout).map_err(|_| "too many DXIO engines")?;
+    validate(Generation::Milan, &plan.engines).map_err(|_| "the lane map does not validate")
+}
+
 fn group_ports(
     group: Group,
     selector: u8,
     device: u8,
     slot: u16,
+    bifurcation: Option<Bifurcation>,
 ) -> heapless::Vec<Engine<'static>, 6> {
-    if matches!(selector, 8 | 9) && matches!(group, Group::P0 | Group::P1) {
+    if mixed(group, selector) {
         // The OEM supplies flag 0x20 only for P0/P1. There, ffd67b60
         // selects SATA 0..3, Ethernet 4..7 and (selector 8) upper PCIe x8.
         let sata = Engine::sata(0, Lanes::sp3(group, 0, 4), SataEngine::new(0)).tuning(SATA_TUNING);
@@ -81,6 +195,24 @@ fn group_ports(
             _ => (16, false, false),
         }
     };
+    // The plain slot 4 is powered by the SMU hotplug firmware.
+    let slot_hotplug = (ordinary && group == Group::P2).then_some(SLOT4);
+    if let Some(bifurcation) = bifurcation {
+        // The card's x16 link, in its lane order, split as the user chose.
+        let lanes = Lanes::sp3(group, 0, 16);
+        let lanes = if reverse { lanes.reversed() } else { lanes };
+        let p = PcieEngine::new().turn_off_unused().devfn(device, 1);
+        let p = if ordinary { p.slot(slot) } else { p };
+        let p = match slot_hotplug {
+            Some(h) => p.with_hotplug(h),
+            None => p,
+        };
+        let x16 = Engine::pcie(0, lanes, p);
+        if bifurcation == Bifurcation::X16 {
+            return core::iter::once(x16).collect();
+        }
+        return x16.split(bifurcation.width()).collect();
+    }
     (0u8..16)
         .step_by(usize::from(width))
         .map(|first| {
@@ -91,6 +223,8 @@ fn group_ports(
             let p = if ordinary { p.slot(slot) } else { p };
             let p = if hotplug {
                 p.with_hotplug(Hotplug::new(HotplugKind::EnterpriseSsd))
+            } else if let Some(h) = slot_hotplug {
+                p.with_hotplug(h)
             } else {
                 p
             };
@@ -99,33 +233,22 @@ fn group_ports(
         .collect()
 }
 
-pub fn plan(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
-    // Other reference revisions have different socket-1 and forced-x8 wiring.
-    // Do not apply revision 0x30's outputs/lane policy to an unknown board.
-    if detected.board_id != 0x30 {
-        return Err(Error::Board(detected.board_id));
-    }
+pub fn plan(layout: &Layout) -> Result<Plan, Error> {
+    let limited_io = layout.limited_io;
     let mut engines = heapless::Vec::new();
     let mut redrivers = [RedriverMode::Off; 4];
     let mut disabled_xgbe = 0;
-    // Group, input-word shift, unbifurcated device number, physical slot.
-    let groups = [
-        (Group::P0, 0, 3, 1),
-        (Group::P1, 8, 1, 3),
-        (Group::P2, 12, 1, 4),
-        (Group::P3, 4, 3, 2),
-    ];
-    for (i, (group, shift, device, slot)) in groups.into_iter().enumerate() {
+    for (i, (group, _, device, slot)) in GROUPS.into_iter().enumerate() {
         if limited_io && group == Group::P1 {
             continue;
         }
-        let selector = ((detected.straps >> shift) & 0xf) as u8;
+        let selector = layout.selectors[i];
         redrivers[i] = match selector {
             8 if matches!(group, Group::P0 | Group::P1) => RedriverMode::SataEthernet,
             0xa => RedriverMode::Pcie,
             _ => RedriverMode::Off,
         };
-        for engine in group_ports(group, selector, device, slot) {
+        for engine in group_ports(group, selector, device, slot, layout.bifurcation[i]) {
             // OEM ffd67825 removes Ethernet entries when the xGbE PCDs
             // 148..14f are false (all false in this Milan image). Do not
             // enable MACs merely because the card straps request them.
@@ -180,12 +303,15 @@ pub fn plan(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::dxio::lanes::{place, validate};
-    use fstart_driver_amd::sp3::soc::Generation;
+    use fstart_driver_amd::sp3::dxio::lanes::place;
+
+    fn plan_of(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
+        Layout::new(detected, limited_io).and_then(|layout| plan(&layout))
+    }
 
     #[test]
     fn bench_straps_cover_both_sockets_and_native_nvme_hotplug() {
-        let p = plan(
+        let p = plan_of(
             Detected {
                 board_id: 0x30,
                 straps: 0,
@@ -202,14 +328,23 @@ mod tests {
         );
         let bmc = place(Generation::Milan, &p.engines[4]).unwrap();
         assert_eq!((bmc.nbio, bmc.phy), (0, (129, 129)));
+        // Socket 1's four NVMe ports and slot 4.
         assert_eq!(
             p.engines
                 .iter()
                 .filter_map(Engine::pcie_config)
                 .filter(|p| p.hotplug.is_some())
                 .count(),
-            4
+            5
         );
+        let slot4: std::vec::Vec<_> = p
+            .engines
+            .iter()
+            .filter_map(Engine::pcie_config)
+            .filter(|p| p.hotplug == Some(SLOT4))
+            .collect();
+        assert_eq!(slot4.len(), 1);
+        assert_eq!(slot4[0].slot, Some(4));
         assert_eq!(p.redrivers, [RedriverMode::Off; 4]);
         assert_eq!(p.disabled_xgbe, 0);
     }
@@ -217,7 +352,7 @@ mod tests {
     #[test]
     fn pcie_modes_validate_without_lane_overlap() {
         for selector in 0u16..16 {
-            let result = plan(
+            let result = plan_of(
                 Detected {
                     board_id: 0x30,
                     straps: selector * 0x1111,
@@ -253,7 +388,7 @@ mod tests {
     fn mixed_cards_keep_sata_ethernet_and_pcie_distinct() {
         for (group, shift) in [(Group::P0, 0), (Group::P1, 8)] {
             for selector in [8, 9] {
-                let raw = group_ports(group, selector, 3, 1);
+                let raw = group_ports(group, selector, 3, 1, None);
                 validate(Generation::Milan, &raw).unwrap();
                 assert!(matches!(raw[0].kind, EngineKind::Sata(_)));
                 assert_eq!((raw[0].lanes.first(), raw[0].lanes.count()), (0, 4));
@@ -280,7 +415,7 @@ mod tests {
                 } else {
                     assert_eq!(raw.len(), 5);
                 }
-                let p = plan(
+                let p = plan_of(
                     Detected {
                         board_id: 0x30,
                         straps: (selector as u16) << shift,
@@ -320,12 +455,12 @@ mod tests {
     fn mixed_selectors_on_p2_p3_use_the_vendor_x16_fallback() {
         for (group, shift) in [(Group::P2, 12), (Group::P3, 4)] {
             for selector in [8, 9] {
-                let raw = group_ports(group, selector, 3, 1);
+                let raw = group_ports(group, selector, 3, 1, None);
                 assert_eq!(raw.len(), 1);
                 assert!(raw[0].pcie_config().is_some());
                 assert_eq!(raw[0].lanes.count(), 16);
                 assert!(raw[0].lanes.is_reversed());
-                let p = plan(
+                let p = plan_of(
                     Detected {
                         board_id: 0x30,
                         straps: (selector as u16) << shift,
@@ -342,7 +477,7 @@ mod tests {
 
     #[test]
     fn harvested_io_omits_the_two_vendor_gated_groups() {
-        let p = plan(
+        let p = plan_of(
             Detected {
                 board_id: 0x30,
                 straps: 0,
@@ -352,17 +487,17 @@ mod tests {
         .unwrap();
         validate(Generation::Milan, &p.engines).unwrap();
         assert_eq!(p.engines.len(), 6);
-        assert!(
-            p.engines
-                .iter()
-                .all(|e| e.pcie_config().is_none_or(|p| p.hotplug.is_none()))
-        );
+        // Only slot 4 keeps hotplug: socket 1's NVMe ports are fused off.
+        assert!(p.engines.iter().all(|e| {
+            e.pcie_config()
+                .is_none_or(|p| p.hotplug.is_none_or(|h| h == SLOT4))
+        }));
     }
 
     #[test]
     fn other_board_revisions_require_their_own_policy() {
         assert!(matches!(
-            plan(
+            plan_of(
                 Detected {
                     board_id: 0x31,
                     straps: 0
@@ -371,5 +506,120 @@ mod tests {
             ),
             Err(Error::Board(0x31))
         ));
+    }
+
+    #[test]
+    fn bifurcation_overrides_split_the_cards_link_and_keep_its_redriver() {
+        let bench = Detected {
+            board_id: 0x30,
+            straps: 0xa << 12,
+        };
+        for width in [16u8, 8, 4] {
+            let mut layout = Layout::new(bench, false).unwrap();
+            let all = Bifurcation::from_width(width.into());
+            layout.bifurcation = [all; 4];
+            check(&layout).unwrap();
+            let p = plan(&layout).unwrap();
+            // P2's NVMe card keeps its PCIe redriver profile.
+            assert_eq!(p.redrivers[2], RedriverMode::Pcie);
+            let p3: std::vec::Vec<_> = p
+                .engines
+                .iter()
+                .filter(|e| {
+                    e.socket == 0
+                        && matches!(
+                            e.lanes,
+                            Lanes::Sp3 {
+                                group: Group::P3,
+                                ..
+                            }
+                        )
+                })
+                .collect();
+            assert_eq!(p3.len(), usize::from(16 / width));
+            assert!(p3.iter().all(|e| e.lanes.count() == width));
+            // The ordinary slot is reversed: the highest lanes come first.
+            if width < 16 {
+                assert!(p3[0].lanes.first() > p3[1].lanes.first());
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_cards_and_fused_groups_are_not_offered() {
+        let layout = Layout::new(
+            Detected {
+                board_id: 0x30,
+                straps: 0x8,
+            },
+            true,
+        )
+        .unwrap();
+        let offered: std::vec::Vec<_> = (0..4).map(|i| layout.available(i)).collect();
+        assert!(matches!(offered[0], Availability::Inactive(_)));
+        assert!(matches!(offered[1], Availability::Inactive(_)));
+        assert_eq!(offered[2..], [Availability::Editable; 2]);
+        let mut source_layout = layout;
+        let mut report = fstart_options::Report::new();
+        struct All(u32);
+        impl fstart_options::Source for All {
+            fn name(&self) -> &'static str {
+                "all"
+            }
+            fn read(&self, _: &str) -> Result<Option<u32>, fstart_options::SourceError> {
+                Ok(Some(self.0))
+            }
+        }
+        fstart_options::resolve_checked(&KNOBS, &All(4), &mut source_layout, &mut report, check);
+        let four = Some(Bifurcation::X4x4x4x4);
+        assert_eq!(source_layout.bifurcation, [None, None, four, four]);
+    }
+
+    #[test]
+    fn a_split_slot_4_keeps_one_smu_slot_and_follows_with_native_ports() {
+        let mut layout = Layout::new(
+            Detected {
+                board_id: 0x30,
+                straps: 0,
+            },
+            false,
+        )
+        .unwrap();
+        layout.bifurcation[2] = Some(Bifurcation::X4x4x4x4);
+        let p = plan(&layout).unwrap();
+        validate(Generation::Milan, &p.engines).unwrap();
+        let p2: std::vec::Vec<_> = p
+            .engines
+            .iter()
+            .filter(|e| {
+                e.socket == 0
+                    && matches!(
+                        e.lanes,
+                        Lanes::Sp3 {
+                            group: Group::P2,
+                            ..
+                        }
+                    )
+            })
+            .filter_map(Engine::pcie_config)
+            .map(|p| p.hotplug)
+            .collect();
+        let native = Some(Hotplug::new(HotplugKind::ExpressModule));
+        assert_eq!(p2, [Some(SLOT4), native, native, native]);
+        // P0 stays a plain slot.
+        assert!(
+            p.engines
+                .iter()
+                .filter(|e| e.socket == 0
+                    && matches!(
+                        e.lanes,
+                        Lanes::Sp3 {
+                            group: Group::P0,
+                            ..
+                        }
+                    ))
+                .filter_map(Engine::pcie_config)
+                .all(|p| p.hotplug.is_none())
+        );
     }
 }
