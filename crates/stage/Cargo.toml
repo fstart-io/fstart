@@ -6,7 +6,7 @@ license.workspace = true
 [features]
 default = ["runtime"]
 # The stage owns the binary: panic handler and, when something allocates,
-# the bump global allocator over the linker-reserved heap. A firmware that
+# the global allocator over the linker-reserved heap. A firmware that
 # links fstart as a library disables default features and supplies both.
 runtime = []
 # Platform selection (exactly one must be enabled)
@@ -49,7 +49,7 @@ acpi = ["alloc"]
 # SMBIOS-capable fixed flows use the same stage-local allocator.
 smbios = ["alloc"]
 # The stage-local allocator, for code that allocates (payload launchers).
-alloc = ["fstart-arch/alloc"]
+alloc = ["dep:linked_list_allocator", "dep:spin", "fstart-arch/alloc"]
 
 [dependencies]
 # Core firmware infrastructure
@@ -61,6 +61,8 @@ ufmt = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 portable-atomic = { workspace = true }
+linked_list_allocator = { workspace = true, optional = true }
+spin = { workspace = true, optional = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }
