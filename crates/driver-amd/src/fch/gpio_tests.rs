@@ -106,3 +106,23 @@ fn interrupt_status_is_taken_once_without_clearing_wake_status() {
     assert_eq!(gpio.take_interrupt_status(9), Ok(false));
     assert_eq!(writes(&world, CONTROL_9).len(), 1);
 }
+#[test]
+fn cpm_settings_follow_the_rs_cpm_encoding() {
+    let world = world();
+    let gpio = gpio(&world, &crate::fch::songshan::GPIO_BANK);
+    // Function 0, pulls off, output high: PIN and drive strength survive,
+    // the latched W1C status is not written back.
+    gpio.apply_cpm(9, 0x881).unwrap();
+    let base = (1 << 17) | (1 << 22);
+    assert_eq!(writes(&world, CONTROL_9), [base | (1 << 23)]);
+    assert_eq!(writes(&world, ACPI_MMIO + 0xd09), [0]);
+    // Function 1 input, pull-up selected and enabled.
+    gpio.apply_cpm(9, 0x9a6).unwrap();
+    assert_eq!(writes(&world, CONTROL_9)[1], base | (1 << 19) | (1 << 20));
+    assert_eq!(writes(&world, ACPI_MMIO + 0xd09), [0, 1]);
+    // Bit 3 keeps the direction; no IOMUX write without bit 11.
+    gpio.apply_cpm(9, 0x0088).unwrap();
+    assert_eq!(writes(&world, ACPI_MMIO + 0xd09), [0, 1]);
+    assert_eq!(gpio.apply_cpm(200, 0x881), Err(Error::InvalidPad));
+    assert_eq!(gpio.apply_cpm(9, 0xc81), Err(Error::InvalidPad));
+}

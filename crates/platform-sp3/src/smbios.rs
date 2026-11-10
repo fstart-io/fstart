@@ -20,6 +20,7 @@ pub(crate) mod runtime {
             smbios::{dimms as smbios_dimms, dram_ranges},
             sysmap,
         },
+        psp::Variant,
         sp3::{ccx::topology::ApicLayout, soc::Generation},
     };
 
@@ -102,7 +103,7 @@ pub(crate) mod runtime {
         );
         let map = sysmap::system_memory_map(&ctx.apob).or_halt("SMBIOS memory map");
         let regions: Vec<DramRange> = dram_ranges(
-            &sysmap::memory_map(ctx.generation.into(), map.top, map.holes())
+            &sysmap::memory_map::<Variant>(ctx.generation.into(), map.top, map.holes())
                 .or_halt("SMBIOS DRAM ranges"),
         );
         let bytes = crate::flow::dma_alloc(smbios::BUFFER_SIZE, 16);

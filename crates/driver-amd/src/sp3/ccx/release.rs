@@ -271,12 +271,16 @@ mod tests {
         CoreMap {
             ccds: ccds
                 .iter()
-                .map(|&id| Ccd {
+                .enumerate()
+                .map(|(logical, &id)| Ccd {
+                    logical: logical as u8,
                     id,
                     ccxs: [Ccx {
+                        logical: 0,
                         id: 0,
                         cores: (0..cores as u8)
                             .map(|c| Core {
+                                logical: c,
                                 id: c * 2,
                                 threads: [true, smt],
                             })

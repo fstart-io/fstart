@@ -44,11 +44,14 @@ pub mod gpio;
 mod gpio_tests;
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod i2c;
+pub mod irq;
 pub mod lpc;
 #[cfg(feature = "picasso")]
 pub mod sandstone;
 #[cfg(feature = "smi")]
 pub mod smi;
+#[cfg(feature = "rs")]
+pub mod songshan;
 pub mod spi;
 #[cfg(feature = "zeppelin")]
 pub mod taishan;
@@ -202,6 +205,8 @@ pub fn indexed_io<B: Bus, R: RegisterLongName>(bus: &B, index: u16, at: u8) -> I
 pub const PM_INDEX: u16 = 0xcd6;
 /// CMOS bank 0 index/data.
 pub const RTC_INDEX: u16 = 0x70;
+/// PCI/legacy interrupt routing index/data, through [`indexed_io`].
+pub const PCI_INTR_INDEX: u16 = 0xc00;
 
 /// Native transport: MMIO, port I/O and, with `CONFIG`, ECAM byte-granular
 /// config access. SMM uses [`SmmBus`]: the config spaces aren't decoded
@@ -385,6 +390,18 @@ bank!(
 );
 
 register_bitfields![u8,
+    /// PCI_INTR index 08h: the source of the IOAPIC inputs shared with
+    /// legacy devices. IRQ14/15 come from the legacy IDE unless routed: then
+    /// the internal sources mapped to them reach the IOAPIC.
+    pub IntrMiscMap [
+        IRQ1_ROUTED OFFSET(1) NUMBITS(1) [],
+        IRQ12_ROUTED OFFSET(3) NUMBITS(1) [],
+        IRQ14 OFFSET(4) NUMBITS(2) [LegacyIde = 0, Routed = 3],
+        IRQ15 OFFSET(6) NUMBITS(2) [LegacyIde = 0, Routed = 3]
+    ],
+    /// PCI_INTR index 09h. The public PPR does not name these controls;
+    /// keep positional names rather than guessing individual bit semantics.
+    pub PciIntr09 [CONTROL_2_1 OFFSET(1) NUMBITS(2) [], CONTROL_6_4 OFFSET(4) NUMBITS(3) []],
     /// AOAC device D3 control (AOAC 0x40 + 2 * device).
     pub AoacControl [TARGET OFFSET(0) NUMBITS(2) [Initialized=1], POWER OFFSET(3) NUMBITS(1) []],
     pub AoacState [POWER_RESET OFFSET(0) NUMBITS(1) [], REFERENCE_CLOCK OFFSET(1) NUMBITS(1) []],
@@ -449,6 +466,9 @@ register_bitfields![u32,
     ]
 ];
 register_bitfields![u16,
+    /// PM1 control is shared by native SCI handoff and the optional SMM owner.
+    pub Pm1Control [SCI_EN OFFSET(0) NUMBITS(1) [],
+        SLP_TYP OFFSET(10) NUMBITS(3) [S5 = 5], SLP_EN OFFSET(13) NUMBITS(1) []],
     /// The PM1 status and enable registers of the ACPI block.
     pub Pm1Status [
         PWRBTN OFFSET(8) NUMBITS(1) [],
@@ -490,6 +510,7 @@ pub mod regs {
     /// The PM1 block through the ACPI MMIO.
     pub const ACPI_PM1_STATUS: AcpiReg<u16, Pm1Status::Register> = acpi::at(0x00);
     pub const ACPI_PM1_ENABLE: AcpiReg<u16, Pm1Enable::Register> = acpi::at(0x02);
+    pub const ACPI_PM1_CONTROL: AcpiReg<u16, Pm1Control::Register> = acpi::at(0x04);
     pub const SMBUS_ASF_IO_BASE: u16 = 0xb00;
     /// The AOAC D3 control and state of a device.
     pub const fn aoac_control(device: u8) -> AcpiReg<u8, AoacControl::Register> {
@@ -528,6 +549,17 @@ pub fn smi_route(fch: &Fch<impl Bus>, source: u8, mode: SmiMode) {
         let field = tock_registers::fields::Field::<u32, ()>::new(3, usize::from(source % 16) * 2);
         fch.reg(smi_control(index)).modify(field.val(mode as u32));
     }
+}
+
+/// What SMI source `source` raises: [`SmiMode`] or another 2-bit value
+/// (NMI, IRQ13).
+pub fn smi_routing(fch: &Fch<impl Bus>, source: u8) -> u32 {
+    let index = usize::from(source / 16);
+    if index >= SMI_CONTROLS {
+        return 0;
+    }
+    use tock_registers::interfaces::Readable;
+    fch.reg(smi_control(index)).get() >> (usize::from(source % 16) * 2) & 3
 }
 
 /// The ACPI fixed I/O blocks the FCH decodes (PMx60..PMx68).

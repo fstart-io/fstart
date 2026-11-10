@@ -14,7 +14,7 @@ use fstart_arch::x86::{
         IA32_MTRR_FIX64K_00000, IA32_MTRR_PHYSBASE0, IA32_MTRR_PHYSMASK0,
     },
 };
-use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 const MAX_RANGES: usize = 10;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -135,6 +135,19 @@ impl CacheControl for fstart_arch::x86::cpu::msr::NativeMsr {
     fn enable(&self) {
         // SAFETY: the callers enable caching after a coherent MTRR setup.
         unsafe { fstart_arch::x86::mtrr::enable_cache() }
+    }
+}
+
+/// Enable TOM2 write-back only when high DRAM is decoded and not already
+/// cached. BSP before MP, or exclusive ownership of the current core's
+/// cache state; interrupts/SMIs must be excluded, as for cache installation.
+pub fn enable_tom2_writeback(cpu: &(impl MsrAccess + CacheControl)) {
+    let syscfg = cpu.reg(SYSCFG).extract();
+    if syscfg.is_set(Syscfg::TOM2_EN) && !syscfg.is_set(Syscfg::TOM2_WB) {
+        cpu.disable();
+        cpu.flush();
+        cpu.reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
+        cpu.enable();
     }
 }
 

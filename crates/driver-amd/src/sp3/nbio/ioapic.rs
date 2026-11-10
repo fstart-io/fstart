@@ -22,24 +22,7 @@ pub const NBIO_IOAPIC_PINS: u32 = 32;
 /// Redirection entries of the FCH IOAPIC (GSI 0..23).
 pub const FCH_IOAPIC_PINS: u32 = 24;
 
-/// One bridge's legacy INTx route into the NBIO IOAPIC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Route {
-    /// Interrupt group.
-    pub group: u8,
-    /// INTA..D rotation (0 = ABCD, 1 = BCDA, 2 = CDAB, 3 = DABC).
-    pub swizzle: u8,
-    /// First IOAPIC pin of the group (pins `map..map+3`, INF from the
-    /// field name BRIDGE_MAP).
-    pub map: u8,
-}
-
-impl Route {
-    /// The register value (mask 0x001F0037).
-    pub const fn value(&self) -> u32 {
-        self.group as u32 | (self.swizzle as u32) << 4 | (self.map as u32) << 16
-    }
-}
+pub use crate::nbio::ioapic::Route;
 
 const fn route(i: usize, tail: &[Route]) -> Route {
     match i {

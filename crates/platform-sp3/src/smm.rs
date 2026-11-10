@@ -50,23 +50,9 @@ pub mod sw {
 /// The highest `size`-aligned window of `size` bytes inside one RAM region
 /// below `tom` (and 4 GiB) that overlaps none of `avoid`.
 pub fn place_tseg(regions: &[Region], tom: u64, size: u64, avoid: &[Span]) -> Option<Span> {
-    let limit = tom.min(FOUR_GIB);
-    let fit = |r: &Region| {
-        let mut top = r.end().min(limit) & !(size - 1);
-        while top >= r.base + size {
-            let candidate = Span::new(top - size, size);
-            match avoid.iter().find(|a| a.overlaps(&candidate)) {
-                Some(a) => top = a.base & !(size - 1),
-                None => return Some(candidate),
-            }
-        }
-        None
-    };
-    regions
-        .iter()
-        .filter(|r| r.kind.is_ram() && r.base < limit)
-        .filter_map(fit)
-        .max_by_key(|s| s.base)
+    let avoid: heapless::Vec<_, 8> = avoid.iter().map(|a| a.base..a.end()).collect();
+    fstart_driver_amd::apob::sysmap::place_tseg(regions, tom.min(FOUR_GIB), size, &avoid)
+        .map(|t| Span::new(t.start, t.end - t.start))
 }
 
 /// What the normal-mode installer writes into SMRAM for the handler.
@@ -250,31 +236,6 @@ mod handler {
     const PSP_SMI: Source = Source::new(0x84, 1);
     const PSP_TRIGGER: u32 = 1 << 25;
 
-    /// P2C buffer: dword 0 the PSP's command, dword 1 flags, then the
-    /// command buffer `{size, status, data}` (PSP_APOB §3.4; layout from
-    /// AmdPspP2CmboxV2Ssp `0x720`, Rome a9724bd1, instruction-checked).
-    mod p2c {
-        pub const COMMAND: usize = 0;
-        pub const FLAGS: usize = 1;
-        pub const SIZE: usize = 2;
-        pub const STATUS: usize = 3;
-        /// x86 ready for the next request. Every donor sets it with
-        /// COMMAND = 0 before SmmInfo (Naples d8a42c95 `0xbef`, Rome
-        /// a9724bd1 `0xcef`), clears it while it works and sets it again
-        /// when done.
-        pub const READY: u32 = 1 << 31;
-        /// The PSP asks for a byte-sum checksum in FLAGS\[7:0\].
-        pub const CHECKSUM: u32 = 1 << 8;
-        /// Largest command buffer that stays inside the P2C buffer (the
-        /// donor accepts 0x2000, 8 bytes more than it has).
-        pub const MAX_SIZE: u32 = super::P2C_BUFFER_SIZE as u32 - 8;
-        /// Statuses the donor writes: done, invalid request, and what its
-        /// RPMC services return ("unsupported").
-        pub const OK: u32 = 0;
-        pub const INVALID: u32 = 1;
-        pub const UNSUPPORTED: u32 = 4;
-    }
-
     /// The SP3 FCH SMI dispatcher.
     /// CPU-local work on every CPU that enters SMM, before the rendezvous:
     /// MCA capture when `policy` observes MCEs. Bind it as the board's
@@ -360,7 +321,9 @@ mod handler {
             smi::clear(acpi, source::USB_NBIO);
         }
         if smi::is_pending(acpi, PSP_SMI) {
-            p2c_answer();
+            // SAFETY: the SmmInfo-registered P2C static, owned by the
+            // rendezvous owner.
+            unsafe { fstart_driver_amd::psp::p2c::answer(&*P2C.0.get().cast()) };
             // AmdPspP2CmboxV2Ssp `0x944` (instruction-checked): answer,
             // then drop SmiTrig0[25]; its dispatcher then clears the status.
             // A trigger left set keeps the source asserted.
@@ -411,16 +374,8 @@ mod handler {
         )
     }
 
-    /// The P2C buffer's dword `index`.
-    #[inline(never)]
-    fn p2c_word(index: usize) -> *mut u32 {
-        // SAFETY: in bounds of the SMRAM static; the caller owns the
-        // rendezvous.
-        unsafe { P2C.0.get().cast::<u32>().add(index) }
-    }
-
     /// SmmInfo (PSP_APOB §3.3) with this handler's buffers, the P2C
-    /// mailbox idle and ready first as on every donor (see [`p2c::READY`];
+    /// mailbox idle and ready first as on every donor (see `psp::p2c::Flags::READY`;
     /// the driver's `P2C_HEADER1_MILAN` is the same bit). Once per boot, as
     /// AGESA's driver entry: the OS can raise SW SMI D0 too.
     #[inline(never)]
@@ -433,11 +388,9 @@ mod handler {
         let cpu = msr();
         let p2c = P2C.0.get() as u64;
         let c2p = C2P.0.get() as u64;
-        // SAFETY: SMRAM static, owned by the rendezvous owner.
-        unsafe {
-            p2c_word(p2c::COMMAND).write_volatile(0);
-            p2c_word(p2c::FLAGS).write_volatile(p2c::READY);
-        }
+        // SAFETY: SMRAM static of the buffer's size, owned by the rendezvous
+        // owner.
+        fstart_driver_amd::psp::p2c::ready(unsafe { &*P2C.0.get().cast() });
         let info = SmmInfo::new(cpu.reg(SMM_ADDR).get(), cpu.reg(SMM_MASK).get(), p2c, c2p);
         let registration = psp(config).send(timer, &mut C2pBuffer::new(info));
         // Bounded read-only backend diagnostics in the fixed comm page.
@@ -543,41 +496,6 @@ mod handler {
         }
         let _ = (config, address);
         None
-    }
-
-    /// Answer the PSP's P2C request the way AGESA's mailbox does
-    /// (AmdPspP2CmboxV2Ssp `0x720`): busy, status, checksum when asked,
-    /// write back, command 0, ready. 0x81/0x82 need nothing from x86; the
-    /// SPI NV (0x83–0x86), RPMC (0x88/0x89) and ARS (0x8a) services are
-    /// not implemented and get the donor's RPMC answer, anything else
-    /// "invalid".
-    fn p2c_answer() {
-        // SAFETY: the P2C static is SMRAM owned by the rendezvous owner;
-        // the PSP only writes it while READY is set.
-        unsafe {
-            let flags = p2c_word(p2c::FLAGS).read_volatile() & !p2c::READY;
-            p2c_word(p2c::FLAGS).write_volatile(flags);
-            let size = p2c_word(p2c::SIZE).read_volatile();
-            let status = match p2c_word(p2c::COMMAND).read_volatile() {
-                _ if size > p2c::MAX_SIZE => p2c::INVALID,
-                0x81 | 0x82 => p2c::OK,
-                0x83..=0x86 | 0x88..=0x8a => p2c::UNSUPPORTED,
-                _ => p2c::INVALID,
-            };
-            p2c_word(p2c::STATUS).write_volatile(status);
-            if status == p2c::OK && flags & p2c::CHECKSUM != 0 {
-                let bytes = P2C.0.get().cast::<u8>().add(4 * p2c::SIZE);
-                let sum = (0..size as usize)
-                    .map(|i| bytes.add(i).read_volatile())
-                    .fold(0u8, u8::wrapping_add);
-                p2c_word(p2c::FLAGS).write_volatile(flags & !0xff | u32::from(sum));
-            }
-            fstart_arch::x86::writeback_invalidate_caches();
-            p2c_word(p2c::COMMAND).write_volatile(0);
-            let flags = p2c_word(p2c::FLAGS).read_volatile();
-            p2c_word(p2c::FLAGS).write_volatile(flags | p2c::READY);
-            fstart_arch::x86::writeback_invalidate_caches();
-        }
     }
 
     /// SW SMI D2 (Milan ReadyToBoot): LockFCHReg through the C2P page.

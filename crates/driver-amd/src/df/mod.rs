@@ -32,6 +32,8 @@ pub mod map;
 pub mod picasso;
 pub mod regs;
 pub mod v2;
+#[cfg(feature = "rs")]
+pub mod v4;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
@@ -49,6 +51,18 @@ register_bitfields![u32,
         INSTANCE OFFSET(16) NUMBITS(8) []
     ]
 ];
+
+register_bitfields![u32,
+    /// DF4 FICAA3: register-number bits10:1, not DF2/3's bits10:2.
+    pub Ficaa4 [
+        INSTANCE_ACCESS OFFSET(0) NUMBITS(1) [],
+        REGISTER OFFSET(1) NUMBITS(10) [],
+        FUNCTION OFFSET(11) NUMBITS(3) [],
+        INSTANCE OFFSET(16) NUMBITS(8) []
+    ]
+];
+pub const FICAA4: u16 = 0x8c;
+pub const FICAD4_LO: u16 = 0xb8;
 
 /// F4x5C FICAA and F4x98 FICAD_LO.
 pub const FICAA: u16 = 0x5c;
@@ -79,7 +93,7 @@ impl<R: RegisterLongName> DfReg<R> {
     /// Checked in debug builds only: the SMM RAS handler builds registers
     /// at run time and must not link a panic.
     pub const fn new(function: u8, offset: u16) -> Self {
-        debug_assert!(function < 8 && offset < 2048 && offset & 3 == 0);
+        debug_assert!(function < 8 && offset < 4096 && offset & 3 == 0);
         Self {
             function,
             offset,
@@ -110,10 +124,25 @@ pub fn ficaa<R: RegisterLongName>(
     instance: u8,
     targeted: bool,
 ) -> FieldValue<u32, Ficaa::Register> {
+    // DF2/DF3's selector has only nine register-number bits. Extended
+    // DF4 descriptors may be used for direct config access, never silently
+    // truncated through this older indirect protocol.
+    debug_assert!(reg.offset < 2048);
     Ficaa::INSTANCE_ACCESS.val(u32::from(targeted))
         + Ficaa::REGISTER.val(u32::from(reg.offset >> 2))
         + Ficaa::FUNCTION.val(u32::from(reg.function))
         + Ficaa::INSTANCE.val(u32::from(instance))
+}
+
+/// DF4 selector, deliberately distinct from the earlier selector's ABI.
+pub fn ficaa4<R: RegisterLongName>(
+    reg: DfReg<R>,
+    instance: u8,
+) -> FieldValue<u32, Ficaa4::Register> {
+    Ficaa4::INSTANCE_ACCESS::SET
+        + Ficaa4::REGISTER.val(u32::from(reg.offset >> 2))
+        + Ficaa4::FUNCTION.val(u32::from(reg.function))
+        + Ficaa4::INSTANCE.val(u32::from(instance))
 }
 
 /// Where an access goes.
@@ -128,13 +157,16 @@ pub enum Target {
 
 /// A Data Fabric register of one node or fabric instance as a tock
 /// register.
-pub struct DfRegister<P, R: RegisterLongName = ()> {
+pub type DfRegister<P, R = ()> = FabricRegister<P, R, false>;
+
+/// Shared register transport with its IP-version-specific indirect pair.
+pub struct FabricRegister<P, R: RegisterLongName, const V4: bool> {
     pci: P,
     node: u8,
     target: Target,
     reg: DfReg<R>,
 }
-impl<P: ConfigRegionAccess, R: RegisterLongName> DfRegister<P, R> {
+impl<P: ConfigRegionAccess, R: RegisterLongName, const V4: bool> FabricRegister<P, R, V4> {
     /// `reg` of DF `node` at `target`.
     ///
     /// # Safety
@@ -158,21 +190,29 @@ impl<P: ConfigRegionAccess, R: RegisterLongName> DfRegister<P, R> {
         match self.target {
             Target::Node => self.config(self.reg.function, self.reg.offset),
             Target::Instance(instance) => {
-                self.config::<Ficaa::Register>(4, FICAA)
-                    .write(ficaa(self.reg, instance, true));
-                self.config(4, FICAD_LO)
+                let (index, selector, data) = if V4 {
+                    (FICAA4, ficaa4(self.reg, instance).value, FICAD4_LO)
+                } else {
+                    (FICAA, ficaa(self.reg, instance, true).value, FICAD_LO)
+                };
+                self.config::<()>(4, index).set(selector);
+                self.config(4, data)
             }
         }
     }
 }
-impl<P: ConfigRegionAccess, R: RegisterLongName> Readable for DfRegister<P, R> {
+impl<P: ConfigRegionAccess, R: RegisterLongName, const V4: bool> Readable
+    for FabricRegister<P, R, V4>
+{
     type T = u32;
     type R = R;
     fn get(&self) -> u32 {
         self.data().get()
     }
 }
-impl<P: ConfigRegionAccess, R: RegisterLongName> Writeable for DfRegister<P, R> {
+impl<P: ConfigRegionAccess, R: RegisterLongName, const V4: bool> Writeable
+    for FabricRegister<P, R, V4>
+{
     type T = u32;
     type R = R;
     fn set(&self, value: u32) {
@@ -181,11 +221,15 @@ impl<P: ConfigRegionAccess, R: RegisterLongName> Writeable for DfRegister<P, R> 
 }
 
 /// The Data Fabric of one node.
-pub struct Df<P> {
+pub type Df<P> = Fabric<P, false>;
+
+/// Data Fabric transport, selected by IP register encoding rather than
+/// board policy. Existing DF2/3 users retain the Df type alias.
+pub struct Fabric<P, const V4: bool> {
     pci: P,
     node: u8,
 }
-impl<P: ConfigRegionAccess> Df<P> {
+impl<P: ConfigRegionAccess, const V4: bool> Fabric<P, V4> {
     /// Data Fabric of node 0.
     /// # Safety
     /// D18F0..F7 exist; the FICAA/FICAD pair is exclusively owned by this caller.
@@ -200,14 +244,18 @@ impl<P: ConfigRegionAccess> Df<P> {
         Self { pci, node }
     }
     /// The node's own register, what AGESA calls a broadcast access.
-    pub fn reg<R: RegisterLongName>(&self, reg: DfReg<R>) -> DfRegister<&P, R> {
+    pub fn reg<R: RegisterLongName>(&self, reg: DfReg<R>) -> FabricRegister<&P, R, V4> {
         // SAFETY: the constructor's contract.
-        unsafe { DfRegister::new(&self.pci, self.node, Target::Node, reg) }
+        unsafe { FabricRegister::new(&self.pci, self.node, Target::Node, reg) }
     }
     /// The register of fabric instance `instance`, through FICAA/FICAD.
-    pub fn instance<R: RegisterLongName>(&self, reg: DfReg<R>, instance: u8) -> DfRegister<&P, R> {
-        // SAFETY: the constructor's contract covers the FICAA/FICAD pair.
-        unsafe { DfRegister::new(&self.pci, self.node, Target::Instance(instance), reg) }
+    pub fn instance<R: RegisterLongName>(
+        &self,
+        reg: DfReg<R>,
+        instance: u8,
+    ) -> FabricRegister<&P, R, V4> {
+        // SAFETY: the constructor's contract covers the selected IP's pair.
+        unsafe { FabricRegister::new(&self.pci, self.node, Target::Instance(instance), reg) }
     }
 }
 /// A vendor Data Fabric table record: the node's own register
@@ -221,7 +269,10 @@ pub const fn df_write(reg: DfReg, instance: Option<u8>, value: u32) -> DfRecord 
 }
 
 /// Apply a vendor Data Fabric table in order.
-pub fn apply_df(df: &Df<impl ConfigRegionAccess>, records: impl IntoIterator<Item = DfRecord>) {
+pub fn apply_df<P: ConfigRegionAccess, const V4: bool>(
+    df: &Fabric<P, V4>,
+    records: impl IntoIterator<Item = DfRecord>,
+) {
     table::apply(records, |(reg, instance)| match instance {
         None => df.reg(reg),
         Some(instance) => df.instance(reg, instance),
@@ -244,6 +295,7 @@ pub mod testing {
     #[derive(Default)]
     pub struct DfSpace {
         ficaa: Cell<u32>,
+        ficaa4: Cell<u32>,
         pub regs: RefCell<BTreeMap<DfKey, u32>>,
         pub writes: RefCell<std::vec::Vec<(DfKey, u32)>>,
     }
@@ -254,6 +306,17 @@ pub mod testing {
         }
         fn target(&self, address: PciAddress, offset: u16) -> DfKey {
             assert_eq!((address.bus(), address.device()), (0, 0x18));
+            if (address.function(), offset) == (4, FICAD4_LO) {
+                let ficaa = tock_registers::LocalRegisterCopy::<u32, Ficaa4::Register>::new(
+                    self.ficaa4.get(),
+                );
+                assert!(ficaa.is_set(Ficaa4::INSTANCE_ACCESS));
+                return (
+                    ficaa.read(Ficaa4::FUNCTION) as u8,
+                    (ficaa.read(Ficaa4::REGISTER) << 2) as u16,
+                    Some(ficaa.read(Ficaa4::INSTANCE) as u8),
+                );
+            }
             if (address.function(), offset) == (4, FICAD_LO) {
                 let ficaa = tock_registers::LocalRegisterCopy::<u32, Ficaa::Register>::new(
                     self.ficaa.get(),
@@ -272,6 +335,10 @@ pub mod testing {
             self.regs.borrow().get(&target).copied().unwrap_or(0)
         }
         unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+            if (address.function(), offset) == (4, FICAA4) {
+                self.ficaa4.set(value);
+                return;
+            }
             if (address.function(), offset) == (4, FICAA) {
                 self.ficaa.set(value);
                 return;

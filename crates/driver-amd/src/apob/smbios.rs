@@ -135,6 +135,40 @@ pub fn dram_ranges<'a>(
         .collect()
 }
 
+/// Shared memory writer for SP3 and the independently decoded Rs inventory.
+/// `ecc` is the SMBIOS encoding: use Unknown (2), not a guessed active mode,
+/// when the source reports only ECC capability. Labels are logical topology.
+pub fn add_memory_inventory(
+    writer: &mut smbios::SmbiosWriter<'_>,
+    dimms: &[Dimm],
+    regions: &[DramRange],
+    max_dimm_mib: u32,
+    ecc: u8,
+) {
+    if dimms.is_empty() || max_dimm_mib == 0 {
+        return;
+    }
+    writer.add_physical_memory_array(
+        u64::from(max_dimm_mib) * 1024 * dimms.len() as u64,
+        dimms.len() as u16,
+        ecc,
+    );
+    for dimm in dimms {
+        let bank = format!(
+            "Socket{} Die{} Channel{}",
+            dimm.socket, dimm.die, dimm.device.channel
+        );
+        let locator = format!("{} DIMM{}", bank, dimm.device.slot);
+        writer.add_dimm(&dimm.device, &locator, &bank);
+    }
+    // One physical DIMM makes the partition width unambiguous, even with
+    // two DDR5 subchannels. Otherwise do not guess rank/channel interleave.
+    let width = u8::from(dimms.iter().filter(|d| d.device.is_populated()).count() == 1);
+    for region in regions.iter().filter(|r| r.end > r.base) {
+        writer.add_memory_array_mapped_address(region.base, region.end - 1, width);
+    }
+}
+
 pub struct Inputs<'a> {
     pub identity: SmbiosIdentity<'a>,
     pub processors: &'a [Processor<'a>],
@@ -180,28 +214,13 @@ pub fn build_into(bytes: &mut [u8], address: u64, input: &Inputs<'_>) -> Result<
                 current_speed_mhz: 0,
             });
         }
-        if !input.dimms.is_empty() && input.max_dimm_mib != 0 {
-            writer.add_physical_memory_array(
-                u64::from(input.max_dimm_mib) * 1024 * input.dimms.len() as u64,
-                input.dimms.len() as u16,
-                if input.ecc { 6 } else { 3 },
-            );
-            for dimm in input.dimms {
-                // These are explicit topology labels, not unverified silkscreen
-                // names or DIMM-to-error/SEL mappings.
-                let bank = format!(
-                    "Socket{} Die{} Channel{}",
-                    dimm.socket, dimm.die, dimm.device.channel
-                );
-                let locator = format!("{} DIMM{}", bank, dimm.device.slot);
-                writer.add_dimm(&dimm.device, &locator, &bank);
-            }
-            for region in input.regions.iter().filter(|r| r.end > r.base) {
-                // Channel/rank interleave width is not known from an address
-                // range. SMBIOS uses zero for an unknown partition width.
-                writer.add_memory_array_mapped_address(region.base, region.end - 1, 0);
-            }
-        }
+        add_memory_inventory(
+            writer,
+            input.dimms,
+            input.regions,
+            input.max_dimm_mib,
+            if input.ecc { 6 } else { 3 },
+        );
         writer.add_system_boot_info();
         writer.add_end_of_table();
     })

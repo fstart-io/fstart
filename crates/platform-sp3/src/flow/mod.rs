@@ -972,7 +972,8 @@ fn memory_regions(
     generation: Generation,
 ) -> heapless::Vec<Region, { sysmap::MAX_REGIONS }> {
     let map = sysmap::system_memory_map(apob).or_halt("APOB memory map");
-    sysmap::memory_map(generation.into(), map.top, map.holes()).or_halt("memory map")
+    sysmap::memory_map::<fstart_driver_amd::psp::Variant>(generation.into(), map.top, map.holes())
+        .or_halt("memory map")
 }
 
 fn build_e820(

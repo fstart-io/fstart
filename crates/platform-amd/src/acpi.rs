@@ -999,7 +999,12 @@ mod tests {
     fn power() -> power::Power<'static> {
         static PSTATES: std::sync::LazyLock<[power::Pstate; 3]> = std::sync::LazyLock::new(|| {
             [(0, 0x6c, 8), (1, 0x98, 0x10), (2, 0x60, 0x10)].map(|(i, fid, did)| {
-                power::decode_pstate(i, 1 << 63 | 0x50 << 22 | 0x40 << 14 | did << 8 | fid).unwrap()
+                power::decode_pstate(
+                    i,
+                    1 << 63 | 0x50 << 22 | 0x40 << 14 | did << 8 | fid,
+                    power::Voltage::Svi2,
+                )
+                .unwrap()
             })
         });
         power::Power {
