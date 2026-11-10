@@ -160,6 +160,57 @@ struct PciDev {
     subordinate_bus: u8,
 }
 
+/// The diagnostic path shares the allocator's bounded bus walk, but journals
+/// routing changes and never probes BARs or changes command/decode policy.
+enum Scan<'a> {
+    Resources {
+        targets: Option<&'a [PciAddress]>,
+        exact: bool,
+    },
+    ConfigOnly(ConfigScan<'a>),
+}
+struct ConfigScan<'a> {
+    routes: &'a mut RouteJournal,
+    targets: &'a [PciAddress],
+    exact: bool,
+}
+
+impl Scan<'_> {
+    fn save_route(&mut self, device: crate::EcamDevice, original: u32) -> Result<(), PciEcamError> {
+        if let Self::ConfigOnly(config) = self {
+            config
+                .routes
+                .0
+                .push((device, original))
+                .map_err(|_| PciEcamError::ConfigError)?;
+        }
+        Ok(())
+    }
+}
+
+struct RouteJournal(HVec<(crate::EcamDevice, u32), MAX_PCI_DEVICES>);
+impl RouteJournal {
+    fn restore(&mut self) -> Result<(), PciEcamError> {
+        let mut exact = true;
+        // Children first: their config space disappears when the parent
+        // route is restored. Attempt every restoration even after a fault.
+        while let Some((device, original)) = self.0.pop() {
+            device.write32(PCI_PRIMARY_BUS, original);
+            exact &= device.read32(PCI_PRIMARY_BUS) == original;
+        }
+        if exact {
+            Ok(())
+        } else {
+            Err(PciEcamError::ConfigError)
+        }
+    }
+}
+impl Drop for RouteJournal {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
 /// Maximum number of free intervals kept for one resource type.
 const MAX_RESOURCE_RANGES: usize = 16;
 
@@ -195,6 +246,14 @@ fn fixed_bars_overlap(left: &PciFixedBar, right: &PciFixedBar) -> bool {
     same_space
         && left.base < right.base.saturating_add(right.size)
         && right.base < left.base.saturating_add(left.size)
+}
+
+/// No movable bits means no BAR, except a 64-bit memory BAR of 4 GiB or
+/// more: its low half has no movable address bits, only its type (64-bit
+/// memory) identifies it, and its size lives in the upper half, which is
+/// never a BAR of its own.
+const fn bar_unimplemented(ones: u32, moving_lo: u32) -> bool {
+    moving_lo == 0 && ones & 0x7 != 0x4
 }
 
 fn size_from_moving_bits(moving: u64, address_mask: u64) -> Result<u64, PciEcamError> {
@@ -324,6 +383,8 @@ struct Root {
     /// Remaining allocatable address windows after fixed reservations.
     windows: [PciWindow; MAX_WINDOWS],
     window_count: usize,
+    /// Existing routes through this bus belong to a different owner.
+    reserved_through: u8,
     /// Next bus number to assign to a bridge.
     next_bus: u16,
 }
@@ -368,6 +429,7 @@ pub struct PciEcam {
     roots: HVec<Root, MAX_PCI_ROOTS>,
     devices: HVec<PciDev, MAX_PCI_DEVICES>,
     fixed_bars: PciFixedBars,
+    auto_bus_master: bool,
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses from the board metadata.
@@ -377,6 +439,41 @@ unsafe impl Sync for PciEcam {}
 
 impl PciEcam {
     // -- Window management (public for composition by platform drivers) --
+
+    /// Leave bus mastering disabled after allocation until a device driver
+    /// owns its DMA. Must be selected before discovery/resource writes.
+    pub fn disable_auto_bus_master(&mut self) -> Result<(), PciEcamError> {
+        if !self.devices.is_empty() {
+            return Err(PciEcamError::ConfigError);
+        }
+        self.auto_bus_master = false;
+        Ok(())
+    }
+
+    /// Preserve an already-owned downstream bus prefix without changing the
+    /// root bus or its ECAM addresses. New routes start strictly after it.
+    /// The caller must exclude the retained bridges from resource discovery.
+    pub fn reserve_bus_prefix(
+        &mut self,
+        segment: u16,
+        root_bus: u8,
+        through: u8,
+    ) -> Result<(), PciEcamError> {
+        if !self.devices.is_empty() {
+            return Err(PciEcamError::ConfigError);
+        }
+        let root = self
+            .roots
+            .iter_mut()
+            .find(|r| r.segment == segment && r.bus_start == root_bus)
+            .ok_or(PciEcamError::ConfigError)?;
+        if through < root.bus_start || through > root.bus_end {
+            return Err(PciEcamError::ConfigError);
+        }
+        root.reserved_through = root.reserved_through.max(through);
+        root.next_bus = u16::from(root.reserved_through) + 1;
+        Ok(())
+    }
 
     /// Replace the resource pools and rebuild the external window list.
     ///
@@ -622,7 +719,7 @@ impl PciEcam {
             fixed: false,
         };
 
-        if moving_lo == 0 {
+        if bar_unimplemented(ones, moving_lo) {
             return Ok((none, false));
         }
 
@@ -693,7 +790,11 @@ impl PciEcam {
     }
 
     /// Probe a single device/function, size its BARs.
-    fn probe_device(&self, addr: PciAddress) -> Result<Option<PciDev>, PciEcamError> {
+    fn probe_device(
+        &self,
+        addr: PciAddress,
+        probe_bars: bool,
+    ) -> Result<Option<PciDev>, PciEcamError> {
         let vendor_device = self.read32(addr, PCI_VENDOR_ID);
         if vendor_device == PCI_VENDOR_INVALID {
             return Ok(None);
@@ -729,24 +830,26 @@ impl PciEcam {
         // I/O cycles. Restore the chipset's original policy immediately after
         // probing; allocation disables decode again around each BAR write.
         let command = self.read16(addr, PCI_COMMAND);
-        self.write16(addr, PCI_COMMAND, command & !(PCI_CMD_IO | PCI_CMD_MEMORY));
+        if probe_bars {
+            self.write16(addr, PCI_COMMAND, command & !(PCI_CMD_IO | PCI_CMD_MEMORY));
 
-        let sizing_result = (|| {
-            let mut i = 0;
-            while i < max_bars {
-                let (info, is_64) = self.size_bar(addr, i).inspect_err(|error| {
-                    error.log_bar("BAR probe", addr, PCI_BAR0 + i as u16 * 4);
-                })?;
-                bars[i] = info;
-                if is_64 {
-                    i += 1; // skip upper half
+            let sizing_result = (|| {
+                let mut i = 0;
+                while i < max_bars {
+                    let (info, is_64) = self.size_bar(addr, i).inspect_err(|error| {
+                        error.log_bar("BAR probe", addr, PCI_BAR0 + i as u16 * 4);
+                    })?;
+                    bars[i] = info;
+                    if is_64 {
+                        i += 1; // skip upper half
+                    }
+                    i += 1;
                 }
-                i += 1;
-            }
-            Ok(())
-        })();
-        self.write16(addr, PCI_COMMAND, command);
-        sizing_result?;
+                Ok(())
+            })();
+            self.write16(addr, PCI_COMMAND, command);
+            sizing_result?;
+        }
 
         Ok(Some(PciDev {
             addr,
@@ -763,10 +866,21 @@ impl PciEcam {
 
     /// Enumerate a bus of root `root` recursively.  Discovers devices,
     /// assigns bus numbers of the root to bridges, and recurses behind them.
-    fn enumerate_bus(&mut self, root: usize, bus: u8) -> Result<(), PciEcamError> {
+    fn enumerate_bus(
+        &mut self,
+        root: usize,
+        bus: u8,
+        mode: &mut Scan,
+        single_device: bool,
+    ) -> Result<(), PciEcamError> {
+        use crate::PCI_BRIDGE_BUSES;
+        use tock_registers::LocalRegisterCopy;
         let Root {
             segment, bus_end, ..
         } = self.roots[root];
+        if matches!(mode, Scan::ConfigOnly(_)) {
+            fstart_log::info!("pci: config-only enter bus={:#x}", bus);
+        }
         // The next bus number of this root, if it has one left.
         let next_bus = |pci: &Self| {
             u8::try_from(pci.roots[root].next_bus)
@@ -774,48 +888,108 @@ impl PciEcam {
                 .filter(|&next| next <= bus_end)
                 .ok_or(PciEcamError::ResourceExhausted)
         };
-        for dev in 0..32u8 {
-            let addr = PciAddress::new(segment, bus, dev, 0);
-            if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
-                continue;
+        let selected = match mode {
+            Scan::ConfigOnly(config) if config.exact || bus == self.roots[root].bus_start => {
+                Some(config.targets)
             }
-
-            // Check multi-function bit
-            let device = self.device(addr).ok_or(PciEcamError::ConfigError)?;
-            let multi_func = device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC;
-            let max_func = if multi_func != 0 { 8 } else { 1 };
+            Scan::Resources { targets, exact } if *exact || bus == self.roots[root].bus_start => {
+                *targets
+            }
+            _ => None,
+        };
+        // PCIe root/downstream ports are point-to-point: only device0 can
+        // exist on the secondary bus. Never send impossible Type0 requests.
+        for dev in 0..if single_device { 1u8 } else { 32u8 } {
+            let max_func = if let Some(ports) = selected {
+                if !ports
+                    .iter()
+                    .any(|p| p.segment() == segment && p.bus() == bus && p.device() == dev)
+                {
+                    continue;
+                }
+                8
+            } else {
+                let addr = PciAddress::new(segment, bus, dev, 0);
+                if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                    continue;
+                }
+                let device = self.device(addr).ok_or(PciEcamError::ConfigError)?;
+                if device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0 {
+                    8
+                } else {
+                    1
+                }
+            };
 
             for func in 0..max_func {
                 let faddr = PciAddress::new(segment, bus, dev, func);
-                if func > 0 && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                if selected.is_some_and(|ports| !ports.contains(&faddr)) {
+                    continue;
+                }
+                if matches!(mode, Scan::ConfigOnly(_)) {
+                    fstart_log::info!(
+                        "pci: config-only reading bus={:#x} device={:#x} function={}",
+                        bus,
+                        dev,
+                        func
+                    );
+                }
+                if (func > 0 || selected.is_some())
+                    && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID
+                {
                     continue;
                 }
 
-                if let Some(mut pci_dev) = self.probe_device(faddr)? {
+                if let Some(mut pci_dev) =
+                    self.probe_device(faddr, matches!(mode, Scan::Resources { .. }))?
+                {
+                    if matches!(mode, Scan::ConfigOnly(_)) {
+                        fstart_log::info!(
+                            "pci: config-only function bus={:#x} device={:#x} function={} header={:#x}",
+                            bus,
+                            dev,
+                            func,
+                            pci_dev.header_type
+                        );
+                    }
+                    if matches!(mode,Scan::ConfigOnly(config) if !config.exact)
+                        && bus == self.roots[root].bus_start
+                        && pci_dev.header_type != PCI_HEADER_TYPE_BRIDGE
+                    {
+                        return Err(PciEcamError::ConfigError);
+                    }
                     match pci_dev.header_type {
                         PCI_HEADER_TYPE_BRIDGE => {
                             let secondary = next_bus(self)?;
                             self.roots[root].next_bus += 1;
                             pci_dev.secondary_bus = secondary;
 
-                            // Temporarily set subordinate to max so scanning works.
-                            self.write32(
-                                faddr,
-                                PCI_PRIMARY_BUS,
-                                (bus as u32) | ((secondary as u32) << 8) | ((bus_end as u32) << 16),
+                            let device = self.device(faddr).ok_or(PciEcamError::ConfigError)?;
+                            let mut buses =
+                                LocalRegisterCopy::<u32, PCI_BRIDGE_BUSES::Register>::new(
+                                    device.read32(PCI_PRIMARY_BUS),
+                                );
+                            mode.save_route(device, buses.get())?;
+                            // Preserve the secondary latency byte.
+                            buses.modify(
+                                PCI_BRIDGE_BUSES::PRIMARY.val(bus.into())
+                                    + PCI_BRIDGE_BUSES::SECONDARY.val(secondary.into())
+                                    + PCI_BRIDGE_BUSES::SUBORDINATE.val(bus_end.into()),
                             );
+                            self.write32(faddr, PCI_PRIMARY_BUS, buses.get());
 
-                            self.enumerate_bus(root, secondary)?;
+                            let single_device=device.find_capability(0x10).filter(|&c|c+4<=0x100).is_some_and(|c| {
+                                let caps=LocalRegisterCopy::<u16,crate::PCI_EXPRESS_CAPABILITIES::Register>::new(device.read16(c+2));
+                                caps.matches_all(crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::RootPort) || caps.matches_all(crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::DownstreamPort)
+                            });
+                            self.enumerate_bus(root, secondary, mode, single_device)?;
 
                             // Finalise subordinate = highest bus found.
                             pci_dev.subordinate_bus = (self.roots[root].next_bus - 1) as u8;
-                            self.write32(
-                                faddr,
-                                PCI_PRIMARY_BUS,
-                                (bus as u32)
-                                    | ((secondary as u32) << 8)
-                                    | ((pci_dev.subordinate_bus as u32) << 16),
+                            buses.modify(
+                                PCI_BRIDGE_BUSES::SUBORDINATE.val(pci_dev.subordinate_bus.into()),
                             );
+                            self.write32(faddr, PCI_PRIMARY_BUS, buses.get());
                         }
                         PCI_HEADER_TYPE_CARDBUS => {
                             let secondary = next_bus(self)?;
@@ -827,19 +1001,27 @@ impl PciEcam {
                             self.roots[root].next_bus = u16::from(subordinate) + 1;
                             pci_dev.secondary_bus = secondary;
                             pci_dev.subordinate_bus = subordinate;
-                            self.write32(
-                                faddr,
-                                PCI_PRIMARY_BUS,
-                                (bus as u32)
-                                    | ((secondary as u32) << 8)
-                                    | ((subordinate as u32) << 16),
+                            let device = self.device(faddr).ok_or(PciEcamError::ConfigError)?;
+                            let mut buses =
+                                LocalRegisterCopy::<u32, PCI_BRIDGE_BUSES::Register>::new(
+                                    device.read32(PCI_PRIMARY_BUS),
+                                );
+                            mode.save_route(device, buses.get())?;
+                            buses.modify(
+                                PCI_BRIDGE_BUSES::PRIMARY.val(bus.into())
+                                    + PCI_BRIDGE_BUSES::SECONDARY.val(secondary.into())
+                                    + PCI_BRIDGE_BUSES::SUBORDINATE.val(subordinate.into()),
                             );
+                            self.write32(faddr, PCI_PRIMARY_BUS, buses.get());
                         }
                         _ => {}
                     }
 
                     if self.devices.push(pci_dev).is_err() {
                         return Err(PciEcamError::ConfigError);
+                    }
+                    if matches!(mode, Scan::ConfigOnly(_)) {
+                        fstart_log::info!("pci: config-only metadata stored");
                     }
                 }
             }
@@ -855,10 +1037,10 @@ impl PciEcam {
         device.addr.bus() != self.roots[device.root].bus_start
     }
 
-    fn endpoint_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
-        if self.devices[dev_idx].header_type == PCI_HEADER_TYPE_BRIDGE {
-            return false;
-        }
+    /// Whether the function's BARs belong to `pass`: 0 for the root bus,
+    /// 1 behind a bridge. A bridge's own BARs (a switch upstream port's
+    /// registers) decode on its primary bus, inside its parent's window.
+    fn bars_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
         let behind_bridge = self.behind_bridge(dev_idx);
         (pass == 0 && !behind_bridge) || (pass == 1 && behind_bridge)
     }
@@ -888,7 +1070,7 @@ impl PciEcam {
     fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize, BarRank)> = None;
         for dev_idx in 0..self.devices.len() {
-            if !self.endpoint_in_pass(dev_idx, pass) {
+            if !self.bars_in_pass(dev_idx, pass) {
                 continue;
             }
             for bar_idx in 0..6 {
@@ -942,6 +1124,7 @@ impl PciEcam {
         let root = self.devices[dev_idx].root;
         let bar = self.devices[dev_idx].bars[bar_idx];
         let align = self.bar_allocation_alignment(dev_idx, bar_idx);
+        let behind_bridge = self.behind_bridge(dev_idx);
         let pending = self.pending_low_bytes(root);
         let pools = &mut self.roots[root];
         let base = match bar.bar_type {
@@ -951,6 +1134,11 @@ impl PciEcam {
             // devices that declare a 64-bit BAR still do not decode that high.
             // The above-4-GiB window takes what does not fit, and what would
             // strand a 32-bit BAR that has no other home.
+            // A bridge forwards non-prefetchable memory only through its
+            // 32-bit window: behind one, such a BAR has no home above 4 GiB.
+            BarType::Memory64 if !bar.prefetchable && behind_bridge => {
+                pools.mmio32.allocate_aligned(bar.size, align)
+            }
             BarType::Memory64 => {
                 let mut low = pools.mmio32;
                 low.allocate_aligned(bar.size, align)
@@ -1038,7 +1226,11 @@ impl PciEcam {
             if has_memory {
                 new_cmd |= PCI_CMD_MEMORY;
             }
-            new_cmd |= PCI_CMD_BUS_MASTER;
+            if self.auto_bus_master {
+                new_cmd |= PCI_CMD_BUS_MASTER;
+            } else {
+                new_cmd &= !PCI_CMD_BUS_MASTER;
+            }
             self.write16(dev.addr, PCI_COMMAND, new_cmd);
         }
 
@@ -1054,12 +1246,28 @@ impl PciEcam {
             let sub = self.devices[i].subordinate_bus;
 
             // Compute the span of addresses used by children behind this bridge.
+            // The prefetchable window is 64-bit, the other one 32-bit only:
+            // when any prefetchable BAR behind the bridge lies above 4 GiB, the
+            // prefetchable window covers exactly those, and prefetchable BARs
+            // below 4 GiB go through the non-prefetchable window (prefetchable
+            // memory may always be forwarded as non-prefetchable). Otherwise a
+            // window spanning both regions would claim the fixed apertures and
+            // DRAM in between.
             let mut mem_lo: u64 = u64::MAX;
             let mut mem_hi: u64 = 0;
             let mut pref_lo: u64 = u64::MAX;
             let mut pref_hi: u64 = 0;
             let mut io_lo: u64 = u64::MAX;
             let mut io_hi: u64 = 0;
+            let high_pref = self.devices.iter().any(|child| {
+                child.root == root
+                    && (sec..=sub).contains(&child.addr.bus())
+                    && child.bars.iter().any(|bar| {
+                        bar.prefetchable
+                            && bar.bar_type == BarType::Memory64
+                            && self.read32(child.addr, bar.reg + 4) != 0
+                    })
+            });
 
             for child in &self.devices {
                 if child.root != root || child.addr.bus() < sec || child.addr.bus() > sub {
@@ -1090,7 +1298,7 @@ impl PciEcam {
                     }
                     let end = base + bar.size;
 
-                    if bar.prefetchable {
+                    if bar.prefetchable && (!high_pref || base >= 1 << 32) {
                         pref_lo = pref_lo.min(base);
                         pref_hi = pref_hi.max(end);
                     } else {
@@ -1139,9 +1347,14 @@ impl PciEcam {
                 self.write32(baddr, PCI_IO_BASE, 0x00FF);
             }
 
-            // Enable memory + IO + bus master on the bridge.
-            let new_cmd =
-                self.devices[i].original_command | PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+            // Enable forwarding, but defer mastering when DMA ownership is
+            // explicitly left to the device driver.
+            let mut new_cmd = self.devices[i].original_command | PCI_CMD_IO | PCI_CMD_MEMORY;
+            if self.auto_bus_master {
+                new_cmd |= PCI_CMD_BUS_MASTER;
+            } else {
+                new_cmd &= !PCI_CMD_BUS_MASTER;
+            }
             self.write16(baddr, PCI_COMMAND, new_cmd);
         }
         Ok(())
@@ -1153,12 +1366,155 @@ impl PciEcam {
 // -----------------------------------------------------------------------
 
 impl PciEcam {
+    /// Inspect config identities below explicit root-port functions using
+    /// temporary bus routing. Does not probe silicon-owned root functions.
+    /// Uses the same bounded traversal as resource enumeration, but
+    /// never sizes/writes BARs, changes command bits or enables bus mastering.
+    /// Child-first routing restoration is read back on success and error;
+    /// unwinding also restores routing. Temporary BDFs are not final assignments.
+    ///
+    /// # Safety
+    /// The caller exclusively owns an uninitialized hierarchy, with no active
+    /// device transactions, and the ECAM mappings are valid. `inspect` must only
+    /// read config space and must not treat temporary BDFs as stable addresses.
+    pub unsafe fn with_config_topology<R>(
+        &mut self,
+        root_ports: &[PciAddress],
+        inspect: impl FnOnce(&Self) -> R,
+    ) -> Result<R, PciEcamError> {
+        self.inspect_config_targets(root_ports, false, inspect)
+    }
+
+    /// Inspect only explicitly allowed functions, including functions below
+    /// bridges. Unlike a subtree walk this never probes omitted function0 or
+    /// reserved sibling functions. Bus assignments are temporary and must be
+    /// described by the caller's validated topology.
+    ///
+    /// # Safety
+    /// Same exclusive ownership and read-only callback contract as
+    /// `with_config_topology`; every target is a valid platform-owned function.
+    pub unsafe fn with_config_functions<R>(
+        &mut self,
+        targets: &[PciAddress],
+        inspect: impl FnOnce(&Self) -> R,
+    ) -> Result<R, PciEcamError> {
+        self.inspect_config_targets(targets, true, inspect)
+    }
+
+    fn inspect_config_targets<R>(
+        &mut self,
+        targets: &[PciAddress],
+        exact: bool,
+        inspect: impl FnOnce(&Self) -> R,
+    ) -> Result<R, PciEcamError> {
+        if targets.is_empty()
+            || targets.iter().any(|p| {
+                !self.roots.iter().any(|r| {
+                    if exact {
+                        r.contains(*p)
+                    } else {
+                        p.segment() == r.segment && p.bus() == r.bus_start
+                    }
+                })
+            })
+        {
+            return Err(PciEcamError::ConfigError);
+        }
+        if !self.devices.is_empty() {
+            return Err(PciEcamError::ConfigError);
+        }
+        let mut routes = RouteJournal(HVec::new());
+        let mut mode = Scan::ConfigOnly(ConfigScan {
+            routes: &mut routes,
+            targets,
+            exact,
+        });
+        let result = (|| {
+            for root in 0..self.roots.len() {
+                self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false)?;
+            }
+            if exact
+                && targets
+                    .iter()
+                    .any(|p| !self.devices.iter().any(|d| d.addr == *p))
+            {
+                return Err(PciEcamError::ConfigError);
+            }
+            Ok(inspect(self))
+        })();
+        let restored = routes.restore();
+        self.devices.clear();
+        for root in &mut self.roots {
+            root.next_bus = u16::from(root.reserved_through) + 1;
+        }
+        restored?;
+        result
+    }
+
     /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
     pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
+        self.enumerate_resource_targets(None, true)
+    }
+
+    /// Allocate resources only for explicitly selected functions and their
+    /// selected bridges, without touching reserved sibling functions. Targets
+    /// use the deterministic fresh bus-number allocation of this root object.
+    pub fn enumerate_functions_and_allocate(
+        &mut self,
+        targets: &[PciAddress],
+    ) -> Result<(), PciEcamError> {
+        if targets.is_empty()
+            || !self.devices.is_empty()
+            || targets.iter().any(|p| self.root_of(*p).is_none())
+        {
+            return Err(PciEcamError::ConfigError);
+        }
+        self.enumerate_resource_targets(Some(targets), true)
+    }
+
+    /// Allocate only selected root-port subtrees, leaving unrelated host
+    /// functions/retained bridges untouched. Unlike exact-function discovery,
+    /// all ordinary functions below the selected ports are discovered.
+    /// As with full allocation, an error can leave partial resource writes;
+    /// fail-stop rather than retrying or handing off that partial topology.
+    pub fn enumerate_root_ports_and_allocate(
+        &mut self,
+        ports: &[PciAddress],
+    ) -> Result<(), PciEcamError> {
+        if ports.is_empty()
+            || !self.devices.is_empty()
+            || ports.iter().any(|p| {
+                !self
+                    .roots
+                    .iter()
+                    .any(|r| p.segment() == r.segment && p.bus() == r.bus_start)
+                    || self.device(*p).is_none_or(|d| {
+                        !d.is_present() || d.read8(PCI_HEADER_TYPE) & 0x7f != PCI_HEADER_TYPE_BRIDGE
+                    })
+            })
+        {
+            return Err(PciEcamError::ConfigError);
+        }
+        self.enumerate_resource_targets(Some(ports), false)
+    }
+
+    fn enumerate_resource_targets(
+        &mut self,
+        targets: Option<&[PciAddress]>,
+        exact: bool,
+    ) -> Result<(), PciEcamError> {
+        let mut mode = Scan::Resources { targets, exact };
         for root in 0..self.roots.len() {
-            self.enumerate_bus(root, self.roots[root].bus_start)?;
+            self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false)?;
         }
 
+        if targets.is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|p| !self.devices.iter().any(|d| d.addr == *p))
+        }) {
+            return Err(PciEcamError::ConfigError);
+        }
         if let Some(fixed) = self.fixed_bars.iter().find(|fixed| {
             !self.devices.iter().any(|dev| {
                 dev.addr == fixed.address
@@ -1278,22 +1634,33 @@ impl PciEcam {
     /// Assigned memory BAR spans together with their owning PCI address.
     /// Consumers can inspect the device without rediscovering BAR sizes.
     pub fn assigned_memory_bars(&self) -> impl Iterator<Item = (PciAddress, PciWindow)> + '_ {
+        self.assigned_bars()
+            .filter(|(_, window)| window.kind == PciWindowKind::Mmio)
+    }
+
+    /// Assigned I/O and memory BARs, using recorded sizes and live readback.
+    /// No BAR sizing or configuration writes occur during inspection.
+    pub fn assigned_bars(&self) -> impl Iterator<Item = (PciAddress, PciWindow)> + '_ {
         self.devices.iter().flat_map(move |device| {
             device.bars.iter().filter_map(move |bar| {
-                if !bar.allocated || !matches!(bar.bar_type, BarType::Memory32 | BarType::Memory64)
-                {
+                if !bar.allocated {
                     return None;
                 }
-                let low = self.read32(device.addr, bar.reg) & 0xffff_fff0;
-                let base = if bar.bar_type == BarType::Memory64 {
-                    u64::from(low) | (u64::from(self.read32(device.addr, bar.reg + 4)) << 32)
-                } else {
-                    u64::from(low)
+                let low = self.read32(device.addr, bar.reg);
+                let (kind, base) = match bar.bar_type {
+                    BarType::None => return None,
+                    BarType::Io => (PciWindowKind::Io, u64::from(low & !3)),
+                    BarType::Memory32 => (PciWindowKind::Mmio, u64::from(low & !0xf)),
+                    BarType::Memory64 => (
+                        PciWindowKind::Mmio,
+                        u64::from(low & !0xf)
+                            | (u64::from(self.read32(device.addr, bar.reg + 4)) << 32),
+                    ),
                 };
                 Some((
                     device.addr,
                     PciWindow {
-                        kind: PciWindowKind::Mmio,
+                        kind,
                         base,
                         size: bar.size,
                         prefetchable: bar.prefetchable,
@@ -1349,6 +1716,7 @@ impl PciEcam {
             roots,
             devices: HVec::new(),
             fixed_bars: PciFixedBars::new(),
+            auto_bus_master: true,
         }
     }
 
@@ -1417,6 +1785,7 @@ impl PciEcam {
             io_pool: ResourcePool::new(config.pio_base, config.pio_size)?,
             windows,
             window_count: wc,
+            reserved_through: config.bus_start,
             next_bus: u16::from(config.bus_start) + 1,
         };
         Ok(Self::new(HVec::from_iter([root])))
@@ -1481,6 +1850,7 @@ impl Root {
             io_pool,
             windows,
             window_count,
+            reserved_through: info.bus_start,
             next_bus: u16::from(info.bus_start) + 1,
         })
     }
@@ -1556,9 +1926,308 @@ mod tests {
             io_pool: ResourcePool::new(0x1000, 0xf000).unwrap(),
             windows: [dummy; MAX_WINDOWS],
             window_count: 0,
+            reserved_through: 0,
             next_bus: 1,
         };
         (PciEcam::new(HVec::from_iter([root])), config_space)
+    }
+
+    fn config_topology_fixture() -> (PciEcam, Vec<u32>) {
+        let (pci, mut ram) = test_pci();
+        ram.fill(u32::MAX);
+        for (addr, id, header, class) in [
+            // Unselected silicon host functions must not be scanned.
+            (PciAddress::new(0, 0, 0, 0), 0x14a41022, 0x80, 0x06000000),
+            (PciAddress::new(0, 0, 0, 1), 0xdeadc0de, 1, 0x06040000),
+            (PciAddress::new(0, 0, 1, 0), 0x14781002, 1, 0x06040000),
+            (PciAddress::new(0, 1, 0, 0), 0x14791002, 1, 0x06040000),
+            (PciAddress::new(0, 2, 0, 0), 0x744c1002, 0x80, 0x03000000),
+            (PciAddress::new(0, 2, 0, 1), 0x01001d82, 0, 0x01080200),
+        ] {
+            let dev = pci.device(addr).unwrap();
+            dev.write32(PCI_VENDOR_ID, id);
+            dev.write8(PCI_HEADER_TYPE, header);
+            dev.write32(PCI_COMMAND, 0xa5a50003);
+            dev.write32(crate::PCI_CLASS_REVISION, class);
+        }
+        pci.write32(PciAddress::new(0, 0, 1, 0), PCI_PRIMARY_BUS, 0x7a000000);
+        pci.write32(PciAddress::new(0, 1, 0, 0), PCI_PRIMARY_BUS, 0x6b000000);
+        (pci, ram)
+    }
+
+    #[test]
+    fn a_32_gib_bar_is_one_64_bit_bar_not_a_32_bit_upper_half() {
+        // AMD 1002:7460 BAR0: 32 GiB, 64-bit prefetchable.
+        assert!(!bar_unimplemented(0x0000_000c, 0));
+        assert_eq!(
+            size_from_moving_bits(0xffff_fff8_0000_0000, 0xFFFF_FFFF_FFFF_FFF0),
+            Ok(0x8_0000_0000)
+        );
+        // Unimplemented and fixed 32-bit registers stay absent.
+        assert!(bar_unimplemented(0, 0));
+        assert!(bar_unimplemented(0x0000_0008, 0));
+        assert!(!bar_unimplemented(0xffff_c000, 0xffff_c000));
+    }
+
+    #[test]
+    fn selected_resource_subtree_preserves_owned_bus_prefix_and_defers_dma() {
+        let (mut pci, mut ram) = test_pci();
+        ram.fill(u32::MAX);
+        let retained = PciAddress::new(0, 0, 2, 0);
+        let selected = PciAddress::new(0, 0, 1, 1); // no function zero
+        let child = PciAddress::new(0, 2, 0, 0);
+        for (address, header, class) in [
+            (retained, 1, 0x06040000),
+            (selected, 1, 0x06040000),
+            (child, 0, 0x01080200),
+        ] {
+            let dev = pci.device(address).unwrap();
+            dev.write32(PCI_VENDOR_ID, 0x12341022);
+            dev.write8(PCI_HEADER_TYPE, header);
+            dev.write32(crate::PCI_CLASS_REVISION, class);
+            dev.write32(PCI_COMMAND, 0);
+            for index in 0..if header == 1 { 2 } else { 6 } {
+                dev.write32(PCI_BAR0 + index * 4, 0);
+            }
+        }
+        pci.write32(retained, PCI_PRIMARY_BUS, 0x00010100);
+        pci.write32(selected, PCI_PRIMARY_BUS, 0x7a000000);
+        pci.write16(child, PCI_COMMAND, PCI_CMD_BUS_MASTER);
+        let before = ram.clone();
+        assert_eq!(
+            pci.reserve_bus_prefix(1, 0, 1),
+            Err(PciEcamError::ConfigError)
+        );
+        assert_eq!(
+            pci.reserve_bus_prefix(0, 0, 3),
+            Err(PciEcamError::ConfigError)
+        );
+        pci.reserve_bus_prefix(0, 0, 1).unwrap();
+        pci.disable_auto_bus_master().unwrap();
+        // SAFETY: modeled ECAM and read-only callback; journal must retain
+        // the allocator's reservation after temporary discovery.
+        assert_eq!(
+            unsafe { pci.with_config_topology(&[selected], |p| p.devices().count()) }.unwrap(),
+            2
+        );
+        assert_eq!(ram, before);
+        assert_eq!(pci.roots[0].next_bus, 2);
+        assert_eq!(
+            pci.enumerate_root_ports_and_allocate(&[child]),
+            Err(PciEcamError::ConfigError)
+        );
+        assert_eq!(ram, before);
+        pci.enumerate_root_ports_and_allocate(&[selected]).unwrap();
+        assert_eq!(pci.devices().count(), 2);
+        assert_eq!(pci.read32(selected, PCI_PRIMARY_BUS), 0x7a020200);
+        assert_eq!(pci.read32(retained, PCI_PRIMARY_BUS), 0x00010100);
+        assert_eq!(&ram[1 << 18..2 << 18], &before[1 << 18..2 << 18]);
+        for address in [selected, child] {
+            assert_eq!(pci.read16(address, PCI_COMMAND) & PCI_CMD_BUS_MASTER, 0);
+        }
+        assert_eq!(
+            pci.reserve_bus_prefix(0, 0, 2),
+            Err(PciEcamError::ConfigError)
+        );
+        assert_eq!(
+            pci.disable_auto_bus_master(),
+            Err(PciEcamError::ConfigError)
+        );
+    }
+
+    #[test]
+    fn exhausted_retained_prefix_survives_failed_config_scope_without_wraparound() {
+        let (mut pci, ram) = config_topology_fixture();
+        let before = ram.clone();
+        pci.reserve_bus_prefix(0, 0, 2).unwrap();
+        pci.reserve_bus_prefix(0, 0, 1).unwrap(); // Cannot shrink ownership.
+        // SAFETY: modeled ECAM; no downstream bus remains to assign.
+        assert_eq!(
+            unsafe { pci.with_config_topology(&[PciAddress::new(0, 0, 1, 0)], |_| ()) },
+            Err(PciEcamError::ResourceExhausted)
+        );
+        assert_eq!(ram, before);
+        assert_eq!(pci.roots[0].next_bus, 3);
+        assert_eq!(pci.roots[0].reserved_through, 2);
+    }
+
+    #[test]
+    fn config_only_walks_nested_multifunction_tree_and_restores_every_byte() {
+        let (mut pci, ram) = config_topology_fixture();
+        let before = ram.clone();
+        let found = unsafe {
+            pci.with_config_topology(&[PciAddress::new(0, 0, 1, 0)], |view| {
+                assert_eq!(
+                    view.read32(PciAddress::new(0, 0, 1, 0), PCI_PRIMARY_BUS),
+                    0x7a020100
+                );
+                assert_eq!(
+                    view.read32(PciAddress::new(0, 1, 0, 0), PCI_PRIMARY_BUS),
+                    0x6b020201
+                );
+                assert!(
+                    view.devices
+                        .iter()
+                        .all(|d| d.bars.iter().all(|b| b.bar_type == BarType::None))
+                );
+                view.devices().collect::<Vec<_>>()
+            })
+        }
+        .unwrap();
+        assert_eq!(found.len(), 4);
+        assert!(found.contains(&PciAddress::new(0, 2, 0, 1)));
+        assert_eq!(ram, before);
+        assert!(pci.devices.is_empty());
+        assert_eq!(pci.roots[0].next_bus, 1);
+        assert_eq!(
+            unsafe {
+                pci.with_config_topology(&[PciAddress::new(0, 0, 1, 0)], |p| p.devices().count())
+            }
+            .unwrap(),
+            4
+        );
+        assert_eq!(ram, before);
+    }
+
+    #[test]
+    fn config_only_selected_root_port_does_not_require_function_zero() {
+        let (mut pci, ram) = config_topology_fixture();
+        let original = PciAddress::new(0, 0, 1, 0);
+        let selected = PciAddress::new(0, 0, 1, 1);
+        for reg in (0..256u16).step_by(4) {
+            pci.write32(selected, reg, pci.read32(original, reg));
+        }
+        pci.write32(original, PCI_VENDOR_ID, PCI_VENDOR_INVALID);
+        let before = ram.clone();
+        assert_eq!(
+            unsafe { pci.with_config_topology(&[selected], |p| p.devices().count()) }.unwrap(),
+            4
+        );
+        assert_eq!(ram, before);
+        assert_eq!(
+            unsafe { pci.with_config_topology(&[], |_| ()) },
+            Err(PciEcamError::ConfigError)
+        );
+    }
+
+    #[test]
+    fn pcie_downstream_bus_never_probes_nonzero_device_numbers() {
+        let (mut pci, ram) = config_topology_fixture();
+        let downstream = pci.device(PciAddress::new(0, 1, 0, 0)).unwrap();
+        downstream.write16(crate::PCI_STATUS, 0x10);
+        downstream.write8(crate::PCI_CAPABILITIES_PTR, 0x40);
+        downstream.write16(0x40, 0x10);
+        downstream.write16(0x42, 0x60);
+        let impossible = PciAddress::new(0, 2, 1, 0);
+        pci.write32(impossible, PCI_VENDOR_ID, 0xdeadbeef);
+        pci.device(impossible).unwrap().write8(PCI_HEADER_TYPE, 1);
+        let before = ram.clone();
+        assert_eq!(
+            unsafe {
+                pci.with_config_topology(&[PciAddress::new(0, 0, 1, 0)], |p| p.devices().count())
+            }
+            .unwrap(),
+            4
+        );
+        assert_eq!(ram, before);
+    }
+
+    fn exact_function_fixture() -> (PciEcam, Vec<u32>, [PciAddress; 2]) {
+        let (pci, ram) = config_topology_fixture();
+        let bridge = PciAddress::new(0, 0, 1, 0);
+        let endpoint = PciAddress::new(0, 1, 0, 4);
+        let dev = pci.device(endpoint).unwrap();
+        dev.write32(PCI_VENDOR_ID, 0x14c91022);
+        dev.write8(PCI_HEADER_TYPE, 0);
+        dev.write32(crate::PCI_CLASS_REVISION, 0x0c033000);
+        dev.write16(PCI_COMMAND, 0);
+        for reg in (PCI_BAR0..=PCI_BAR0 + 20).step_by(4) {
+            dev.write32(reg, 0);
+        }
+        for reg in [PCI_BAR0, PCI_BAR0 + 4] {
+            pci.write32(bridge, reg, 0);
+        }
+        (pci, ram, [bridge, endpoint])
+    }
+
+    #[test]
+    fn exact_config_scope_skips_hidden_function_zero_and_restores_all_bytes() {
+        let (mut pci, ram, targets) = exact_function_fixture();
+        let before = ram.clone();
+        let found =
+            unsafe { pci.with_config_functions(&targets, |p| p.devices().collect::<Vec<_>>()) }
+                .unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&targets[1]));
+        assert_eq!(ram, before);
+        let absent = [targets[0], PciAddress::new(0, 1, 0, 7)];
+        assert_eq!(
+            unsafe { pci.with_config_functions(&absent, |_| ()) },
+            Err(PciEcamError::ConfigError)
+        );
+        assert_eq!(ram, before);
+    }
+    #[test]
+    fn exact_resource_scope_allocates_selected_endpoint_without_touching_siblings() {
+        let (mut pci, _ram, targets) = exact_function_fixture();
+        let hidden = PciAddress::new(0, 1, 0, 0);
+        let original = pci.read32(hidden, PCI_PRIMARY_BUS);
+        pci.enumerate_functions_and_allocate(&targets).unwrap();
+        assert_eq!(pci.devices().count(), 2);
+        assert_ne!(pci.read32(targets[1], PCI_BAR0), 0);
+        assert_ne!(pci.read16(targets[1], PCI_COMMAND) & PCI_CMD_BUS_MASTER, 0);
+        assert_eq!(pci.read32(hidden, PCI_PRIMARY_BUS), original);
+    }
+
+    #[test]
+    fn config_only_exhaustion_restores_routes_and_resets_metadata() {
+        let (mut pci, ram) = config_topology_fixture();
+        let before = ram.clone();
+        pci.roots[0].bus_end = 1;
+        for _ in 0..2 {
+            let result = unsafe {
+                pci.with_config_topology::<()>(&[PciAddress::new(0, 0, 1, 0)], |_| {
+                    panic!("incomplete walk must not be inspected")
+                })
+            };
+            assert_eq!(result, Err(PciEcamError::ResourceExhausted));
+            assert_eq!(ram, before);
+            assert!(pci.devices.is_empty());
+            assert_eq!(pci.roots[0].next_bus, 1);
+        }
+    }
+
+    #[test]
+    fn config_only_unwinding_restores_the_hierarchy() {
+        extern crate std;
+        let (mut pci, ram) = config_topology_fixture();
+        let before = ram.clone();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<(), _> = unsafe {
+                pci.with_config_topology(&[PciAddress::new(0, 0, 1, 0)], |_| {
+                    panic!("observer failed")
+                })
+            };
+        }));
+        assert!(panic.is_err());
+        assert_eq!(ram, before);
+    }
+
+    #[test]
+    fn route_journal_restores_children_before_parents() {
+        let mut ram = [0u32; 16];
+        let parent = crate::EcamDevice::at_config_base(
+            PciAddress::new(0, 0, 1, 0),
+            ram.as_mut_ptr() as usize,
+        );
+        // Aliased test registers make restoration order directly observable.
+        let child = crate::EcamDevice::at_config_base(
+            PciAddress::new(0, 1, 0, 0),
+            ram.as_mut_ptr() as usize,
+        );
+        let mut routes = RouteJournal(HVec::from_iter([(parent, 0xaabbccdd), (child, 0x11223344)]));
+        routes.restore().unwrap();
+        assert_eq!(parent.read32(PCI_PRIMARY_BUS), 0xaabbccdd);
     }
 
     #[test]
@@ -1994,6 +2663,30 @@ mod tests {
     }
 
     #[test]
+    fn assigned_bar_inspection_includes_io_without_changing_memory_consumers() {
+        let (mut pci, _space) = test_pci();
+        pci.configure_windows(0xb0000000, 0x1000000, 0, 0, 0x4000, 0x4000)
+            .unwrap();
+        let address = PciAddress::new(0, 0, 1, 0);
+        assert!(
+            pci.devices
+                .push(endpoint(
+                    address,
+                    &[(0, BarType::Memory32, 0x100000), (1, BarType::Io, 0x80)]
+                ))
+                .is_ok()
+        );
+        pci.allocate_resources().unwrap();
+        let all: HVec<_, 6> = pci.assigned_bars().collect();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].1.kind, PciWindowKind::Mmio);
+        assert_eq!(all[1].1.kind, PciWindowKind::Io);
+        assert_eq!((all[1].1.base, all[1].1.size), (0x4000, 0x80));
+        assert_eq!(pci.assigned_memory_bars().count(), 1);
+        assert_eq!(pci.assigned_memory_windows().count(), 1);
+    }
+
+    #[test]
     fn graphics_mmio_bar_reuses_gap_before_aligned_framebuffer() {
         let (mut pci, _config_space) = test_pci();
         // X61's aperture runs from TOLUD (3 GiB) to ECAM (3.5 GiB).
@@ -2129,7 +2822,7 @@ mod tests {
         }])
         .unwrap();
 
-        let dev = pci.probe_device(smbus).unwrap().unwrap();
+        let dev = pci.probe_device(smbus, true).unwrap().unwrap();
         assert_ne!(pci.read16(smbus, PCI_COMMAND) & PCI_CMD_IO, 0);
         assert!(dev.bars[4].fixed);
         assert_eq!(io_bar_base(&pci, smbus, 4), 0x400);
@@ -2168,7 +2861,7 @@ mod tests {
         pci.write16(host, PCI_COMMAND, PCI_CMD_MEMORY);
         pci.write32(host, PCI_BAR0, 0xdead_beef);
 
-        let dev = pci.probe_device(host).unwrap().unwrap();
+        let dev = pci.probe_device(host, true).unwrap().unwrap();
 
         assert!(dev.bars.iter().all(|bar| bar.bar_type == BarType::None));
         assert_eq!(pci.read32(host, PCI_BAR0), 0xdead_beef);
@@ -2193,7 +2886,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            pci.probe_device(smbus),
+            pci.probe_device(smbus, true),
             Err(PciEcamError::FixedBarInvalid)
         ));
     }
