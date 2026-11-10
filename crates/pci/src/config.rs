@@ -64,10 +64,28 @@ pub const PCI_CMD_MEMORY: u16 = 0x0002;
 /// Bus Master Enable (bit 2).
 pub const PCI_CMD_BUS_MASTER: u16 = 0x0004;
 
+register_bitfields! [u32,
+    /// Type-1 bus routing dword at18h. Preserve the secondary latency byte.
+    pub PCI_BRIDGE_BUSES [
+        PRIMARY OFFSET(0) NUMBITS(8) [], SECONDARY OFFSET(8) NUMBITS(8) [],
+        SUBORDINATE OFFSET(16) NUMBITS(8) []
+    ]
+];
+
 register_bitfields! [u16,
     /// PCI Express Capabilities word, at offset 0x02 within the capability.
     pub PCI_EXPRESS_CAPABILITIES [
+        DEVICE_PORT_TYPE OFFSET(4) NUMBITS(4) [
+            Endpoint=0, LegacyEndpoint=1, RootPort=4, UpstreamPort=5,
+            DownstreamPort=6, PcieToPciBridge=7, PciToPcieBridge=8,
+            IntegratedEndpoint=9, EventCollector=10
+        ],
         SLOT_IMPLEMENTED OFFSET(8) NUMBITS(1) []
+    ],
+    /// Link Status word at PCI Express capability+12h.
+    pub PCI_EXPRESS_LINK_STATUS [
+        SPEED OFFSET(0) NUMBITS(4) [], WIDTH OFFSET(4) NUMBITS(6) [],
+        TRAINING OFFSET(11) NUMBITS(1) [], DLL_ACTIVE OFFSET(13) NUMBITS(1) []
     ],
     /// PCI command register bitfields.
     pub PCI_COMMAND_BITS [
@@ -82,10 +100,14 @@ register_bitfields! [u16,
         FAST_BACK_TO_BACK OFFSET(9) NUMBITS(1) [],
         INT_DISABLE OFFSET(10) NUMBITS(1) []
     ],
+    /// Type-1 memory base/limit word; address bits [31:20]. The limit is inclusive.
+    pub PCI_BRIDGE_MEMORY_BOUND [ADDRESS OFFSET(4) NUMBITS(12) []],
     /// Type-1 bridge control for forwarding the legacy VGA apertures.
     pub PCI_BRIDGE_CONTROL_BITS [
         VGA_ENABLE OFFSET(3) NUMBITS(1) [],
-        VGA_16BIT_DECODE OFFSET(4) NUMBITS(1) []
+        VGA_16BIT_DECODE OFFSET(4) NUMBITS(1) [],
+        /// W1C: keep zero when changing forwarding policy.
+        DISCARD_TIMER_STATUS OFFSET(10) NUMBITS(1) []
     ],
     /// PCI status register bitfields. Many bits are write-1-to-clear; avoid
     /// generic read-modify-write helpers for clearing status.
