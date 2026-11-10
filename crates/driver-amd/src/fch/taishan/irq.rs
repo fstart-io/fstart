@@ -108,7 +108,13 @@ pub const SOURCES: &[(u8, &str)] = &[
 const PCI_INTR_INDEX: u16 = 0xc00;
 
 register_bitfields![u8,
-    Index [SOURCE OFFSET(0) NUMBITS(7) [], MODE OFFSET(7) NUMBITS(1) [Pic = 0, Apic = 1]]
+    Index [
+        SOURCE OFFSET(0) NUMBITS(7) [],
+        MODE OFFSET(7) NUMBITS(1) [
+            Pic = 0,
+            Apic = 1
+        ]
+    ]
 ];
 
 /// Which of the two values of a source.

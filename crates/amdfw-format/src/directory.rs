@@ -39,8 +39,16 @@ pub mod bios {
     pub const LEVEL2: u8 = 0x70;
 }
 register_bitfields![u32,
-    Info0 [ BLOCKS OFFSET(0) NUMBITS(10) [], MODE OFFSET(29) NUMBITS(2) [], VERSION OFFSET(31) NUMBITS(1) [] ],
-    Info1 [ BLOCKS OFFSET(0) NUMBITS(16) [], HEADER_KIB OFFSET(20) NUMBITS(4) [], MODE OFFSET(24) NUMBITS(2) [] ]
+    Info0 [
+        BLOCKS OFFSET(0) NUMBITS(10) [],
+        MODE OFFSET(29) NUMBITS(2) [],
+        VERSION OFFSET(31) NUMBITS(1) []
+    ],
+    Info1 [
+        BLOCKS OFFSET(0) NUMBITS(16) [],
+        HEADER_KIB OFFSET(20) NUMBITS(4) [],
+        MODE OFFSET(24) NUMBITS(2) []
+    ]
 ];
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]

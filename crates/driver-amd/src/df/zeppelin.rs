@@ -22,7 +22,10 @@ use tock_registers::{
 };
 
 register_bitfields![u32,
-    Ccm104 [B5 OFFSET(5) NUMBITS(1) [], B28 OFFSET(28) NUMBITS(1) []],
+    Ccm104 [
+        B5 OFFSET(5) NUMBITS(1) [],
+        B28 OFFSET(28) NUMBITS(1) []
+    ],
     Ccm108 [B6 OFFSET(6) NUMBITS(1) []],
     Ioms04c [B5 OFFSET(5) NUMBITS(1) []],
     Ioms300 [B8 OFFSET(8) NUMBITS(1) []],
@@ -32,8 +35,14 @@ register_bitfields![u32,
         LINT_ERRATUM_1158 OFFSET(8) NUMBITS(1) [],
         DIS_SYNC_FLOOD_PROP OFFSET(19) NUMBITS(1) []
     ],
-    ScrubBase [ENABLE OFFSET(0) NUMBITS(1) [], BASE OFFSET(4) NUMBITS(28) []],
-    ScrubLimit [RATE OFFSET(0) NUMBITS(4) [], LIMIT OFFSET(4) NUMBITS(28) []],
+    ScrubBase [
+        ENABLE OFFSET(0) NUMBITS(1) [],
+        BASE OFFSET(4) NUMBITS(28) []
+    ],
+    ScrubLimit [
+        RATE OFFSET(0) NUMBITS(4) [],
+        LIMIT OFFSET(4) NUMBITS(28) []
+    ],
     ClkGateDc [IOMS OFFSET(0) NUMBITS(1) []]
 ];
 

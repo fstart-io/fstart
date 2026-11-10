@@ -35,7 +35,10 @@ register_bitfields![u32,
         WIDEIO2 OFFSET(25) NUMBITS(1) []
     ],
     /// D14F3x64 (ranges 0 and 1) and D14F3x90 (range 2).
-    pub WideIo [LOW OFFSET(0) NUMBITS(16) [], HIGH OFFSET(16) NUMBITS(16) []],
+    pub WideIo [
+        LOW OFFSET(0) NUMBITS(16) [],
+        HIGH OFFSET(16) NUMBITS(16) []
+    ],
     /// D14F3x74: wide I/O ranges of 16 bytes instead of 512.
     pub AltWideIo [
         WIDEIO0 OFFSET(0) NUMBITS(1) [],
@@ -64,7 +67,10 @@ register_bitfields![u32,
 ];
 register_bitfields![u16,
     /// D14F3xBA: ROM DMA control, written as words by the vendor code.
-    pub RomDmaControl [BIT7 OFFSET(7) NUMBITS(1) [], BIT8 OFFSET(8) NUMBITS(1) []]
+    pub RomDmaControl [
+        BIT7 OFFSET(7) NUMBITS(1) [],
+        BIT8 OFFSET(8) NUMBITS(1) []
+    ]
 ];
 register_bitfields![u8,
     /// D14F3x40.
@@ -74,8 +80,14 @@ register_bitfields![u8,
         EXT_ROM_SHARING_EN OFFSET(4) NUMBITS(1) []
     ],
     /// The vendor's bits of single bytes: D14F3x78, 0x7C, 0xBA, 0xBB, 0xD1.
-    pub Bits [B0 OFFSET(0) NUMBITS(1) [], B1 OFFSET(1) NUMBITS(1) [], B2 OFFSET(2) NUMBITS(1) [],
-        B3 OFFSET(3) NUMBITS(1) [], B5 OFFSET(5) NUMBITS(1) [], B6 OFFSET(6) NUMBITS(1) []]
+    pub Bits [
+        B0 OFFSET(0) NUMBITS(1) [],
+        B1 OFFSET(1) NUMBITS(1) [],
+        B2 OFFSET(2) NUMBITS(1) [],
+        B3 OFFSET(3) NUMBITS(1) [],
+        B5 OFFSET(5) NUMBITS(1) [],
+        B6 OFFSET(6) NUMBITS(1) []
+    ]
 ];
 
 pub const ID: Reg<u32, Id::Register> = Reg::lpc(0x00);

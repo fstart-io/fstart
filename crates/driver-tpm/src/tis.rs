@@ -44,7 +44,10 @@ register_bitfields![u8,
     pub Sts3 [
         COMMAND_CANCEL OFFSET(0) NUMBITS(1) [],
         RESET_ESTABLISHMENT OFFSET(1) NUMBITS(1) [],
-        FAMILY OFFSET(2) NUMBITS(2) [Tpm12 = 0, Tpm20 = 1]
+        FAMILY OFFSET(2) NUMBITS(2) [
+            Tpm12 = 0,
+            Tpm20 = 1
+        ]
     ]
 ];
 
@@ -53,16 +56,27 @@ register_bitfields![u32,
     pub IntfCapability [
         DATA_TRANSFER_SIZE OFFSET(9) NUMBITS(2) [],
         BURST_COUNT_STATIC OFFSET(8) NUMBITS(1) [],
-        INTERFACE_VERSION OFFSET(28) NUMBITS(3) [Tis12 = 0, Tis13 = 2, PtpFifo = 3]
+        INTERFACE_VERSION OFFSET(28) NUMBITS(3) [
+            Tis12 = 0,
+            Tis13 = 2,
+            PtpFifo = 3
+        ]
     ],
     /// `TPM_INTERFACE_ID_x` (PTP; all ones on TIS 1.3 parts).
     pub InterfaceId [
-        INTERFACE_TYPE OFFSET(0) NUMBITS(4) [Fifo = 0, Crb = 1, Tis13 = 0xF],
+        INTERFACE_TYPE OFFSET(0) NUMBITS(4) [
+            Fifo = 0,
+            Crb = 1,
+            Tis13 = 0xF
+        ],
         INTERFACE_VERSION OFFSET(4) NUMBITS(4) [],
         CAP_LOCALITY OFFSET(8) NUMBITS(1) [],
         CAP_FIFO OFFSET(13) NUMBITS(1) [],
         CAP_CRB OFFSET(14) NUMBITS(1) [],
-        INTERFACE_SELECTOR OFFSET(17) NUMBITS(2) [Fifo = 0, Crb = 1],
+        INTERFACE_SELECTOR OFFSET(17) NUMBITS(2) [
+            Fifo = 0,
+            Crb = 1
+        ],
         INTF_SEL_LOCK OFFSET(19) NUMBITS(1) [],
         RID OFFSET(24) NUMBITS(8) []
     ],

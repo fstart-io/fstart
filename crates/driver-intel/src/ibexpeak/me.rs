@@ -23,8 +23,13 @@ register_bitfields![u32,
     /// Host Firmware Status (`PCI_ME_HFS`, 0x40).
     pub HFS [
         WORKING_STATE OFFSET(0) NUMBITS(4) [
-            Reset = 0, Init = 1, Recovery = 2, Normal = 5, Wait = 6,
-            Transition = 7, Invalid = 8
+            Reset = 0,
+            Init = 1,
+            Recovery = 2,
+            Normal = 5,
+            Wait = 6,
+            Transition = 7,
+            Invalid = 8
         ],
         MFG_MODE OFFSET(4) NUMBITS(1) [],
         FPT_BAD OFFSET(5) NUMBITS(1) [],
@@ -34,7 +39,11 @@ register_bitfields![u32,
         UPDATE_IN_PROGRESS OFFSET(11) NUMBITS(1) [],
         ERROR_CODE OFFSET(12) NUMBITS(4) [],
         OPERATION_MODE OFFSET(16) NUMBITS(4) [
-            Normal = 0, Debug = 2, Disabled = 3, OverrideJumper = 4, OverrideMei = 5
+            Normal = 0,
+            Debug = 2,
+            Disabled = 3,
+            OverrideJumper = 4,
+            OverrideMei = 5
         ],
         BOOT_OPTIONS_PRESENT OFFSET(24) NUMBITS(1) [],
         ACK_DATA OFFSET(25) NUMBITS(3) [],
@@ -62,7 +71,10 @@ register_bitfields![u32,
     ],
     /// Extend register status (`PCI_ME_HERES`, 0xbc).
     pub HERES [
-        ALGORITHM OFFSET(0) NUMBITS(4) [Sha1 = 0, Sha256 = 2],
+        ALGORITHM OFFSET(0) NUMBITS(4) [
+            Sha1 = 0,
+            Sha256 = 2
+        ],
         FEATURE_PRESENT OFFSET(30) NUMBITS(1) [],
         VALID OFFSET(31) NUMBITS(1) []
     ],

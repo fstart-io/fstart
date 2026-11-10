@@ -31,8 +31,13 @@ register_bitfields![u8,
         INTREN OFFSET(0) NUMBITS(1) [],
         KILL OFFSET(1) NUMBITS(1) [],
         TYPE OFFSET(2) NUMBITS(3) [
-            Quick = 0, Byte = 1, ByteData = 2, WordData = 3,
-            ProcessCall = 4, BlockData = 5, I2cBlockData = 6
+            Quick = 0,
+            Byte = 1,
+            ByteData = 2,
+            WordData = 3,
+            ProcessCall = 4,
+            BlockData = 5,
+            I2cBlockData = 6
         ],
         LAST_BYTE OFFSET(5) NUMBITS(1) [],
         START OFFSET(6) NUMBITS(1) [],

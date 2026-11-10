@@ -9,7 +9,10 @@ use tock_registers::{interfaces::ReadWriteable, register_bitfields};
 
 register_bitfields![u8,
     GLOBAL_OPTIONS [
-        CLOCK OFFSET(6) NUMBITS(1) [Mhz24 = 0, Mhz48 = 1],
+        CLOCK OFFSET(6) NUMBITS(1) [
+            Mhz24 = 0,
+            Mhz48 = 1
+        ],
         SYSTEM_FAN_PUSH_PULL OFFSET(4) NUMBITS(1) [],
         CPU_FAN_PUSH_PULL OFFSET(3) NUMBITS(1) [],
     ],
@@ -21,9 +24,10 @@ register_bitfields![u8,
         VID_VRM10 OFFSET(3) NUMBITS(1) [],
         UART_B_PINS OFFSET(0) NUMBITS(2) [Uart = 3],
     ],
-    UART_CLOCK [ SOURCE OFFSET(0) NUMBITS(2) [Standard = 0] ],
+    UART_CLOCK [SOURCE OFFSET(0) NUMBITS(2) [Standard = 0]],
     UART_B_MODE [
-        RX_INVERT OFFSET(0) NUMBITS(1) [], TX_INVERT OFFSET(1) NUMBITS(1) [],
+        RX_INVERT OFFSET(0) NUMBITS(1) [],
+        TX_INVERT OFFSET(1) NUMBITS(1) [],
         INFRARED OFFSET(3) NUMBITS(3) [Disabled = 0],
     ],
 ];

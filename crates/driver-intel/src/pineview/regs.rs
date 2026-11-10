@@ -48,8 +48,14 @@ register_bitfields! [u8,
 register_bitfields! [u32,
     /// Clock straps and the DDR frequency programming latch (MCHBAR+0xc00).
     pub CLKCFG_REG [
-        FSB OFFSET(0) NUMBITS(3) [Fsb800 = 2, Fsb667 = 3],
-        DDR OFFSET(4) NUMBITS(3) [Ddr667 = 2, Ddr800 = 3],
+        FSB OFFSET(0) NUMBITS(3) [
+            Fsb800 = 2,
+            Fsb667 = 3
+        ],
+        DDR OFFSET(4) NUMBITS(3) [
+            Ddr667 = 2,
+            Ddr800 = 3
+        ],
         UPDATE OFFSET(10) NUMBITS(1) []
     ],
     pub PMSTS_REG [

@@ -54,10 +54,15 @@ use fstart_core::{
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
-register_bitfields![u32, GCTL [CRST OFFSET(0) NUMBITS(1) []]];
+register_bitfields![u32,
+    GCTL [CRST OFFSET(0) NUMBITS(1) []]
+];
 register_bitfields![u16,
     STATESTS [CODECS OFFSET(0) NUMBITS(15) []],
-    ICS [BUSY OFFSET(0) NUMBITS(1) [], VALID OFFSET(1) NUMBITS(1) []]
+    ICS [
+        BUSY OFFSET(0) NUMBITS(1) [],
+        VALID OFFSET(1) NUMBITS(1) []
+    ]
 ];
 
 register_structs! {

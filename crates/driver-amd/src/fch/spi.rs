@@ -26,7 +26,10 @@ register_bitfields![u16,
         FAST OFFSET(8) NUMBITS(4) [],
         NORMAL OFFSET(12) NUMBITS(4) [Mhz33 = 1]
     ],
-    pub Spi100HostPrefetch [BIT14 OFFSET(14) NUMBITS(1) [], RD4DW_EN_HOST OFFSET(15) NUMBITS(1) []]
+    pub Spi100HostPrefetch [
+        BIT14 OFFSET(14) NUMBITS(1) [],
+        RD4DW_EN_HOST OFFSET(15) NUMBITS(1) []
+    ]
 ];
 
 pub const CNTRL0: Reg<u32, Cntrl0::Register> = Reg::mmio(SPI_BASE);

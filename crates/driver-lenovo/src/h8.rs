@@ -22,7 +22,12 @@ register_bitfields![u8,
     ],
     pub CONFIG1 [
         BACKLIGHT_LID_CONTROL OFFSET(0) NUMBITS(1) [],
-        ILLUMINATION OFFSET(2) NUMBITS(2) [Both = 0, Keyboard = 1, Thinklight = 2, None = 3],
+        ILLUMINATION OFFSET(2) NUMBITS(2) [
+            Both = 0,
+            Keyboard = 1,
+            Thinklight = 2,
+            None = 3
+        ],
         ULTRABAY_POWER OFFSET(5) NUMBITS(1) []
     ],
     pub CONFIG2 [
@@ -36,25 +41,57 @@ register_bitfields![u8,
     ],
     pub LED_CONTROL [
         SELECTOR OFFSET(0) NUMBITS(4) [
-            Power = 0, Battery0 = 1, Battery1 = 2, Ultrabay = 4, FnLock = 6,
-            Suspend = 7, Dock1 = 8, Dock2 = 9, Logo = 10, AcDc = 12, Mute = 14
+            Power = 0,
+            Battery0 = 1,
+            Battery1 = 2,
+            Ultrabay = 4,
+            FnLock = 6,
+            Suspend = 7,
+            Dock1 = 8,
+            Dock2 = 9,
+            Logo = 10,
+            AcDc = 12,
+            Mute = 14
         ],
-        MODE OFFSET(5) NUMBITS(3) [Off = 0, On = 4, Pulse = 5, Blink = 6]
+        MODE OFFSET(5) NUMBITS(3) [
+            Off = 0,
+            On = 4,
+            Pulse = 5,
+            Blink = 6
+        ]
     ],
-    pub TRACKPOINT_CONTROL [MODE OFFSET(0) NUMBITS(2) [Auto = 1, Off = 2, On = 3]],
+    pub TRACKPOINT_CONTROL [
+        MODE OFFSET(0) NUMBITS(2) [
+            Auto = 1,
+            Off = 2,
+            On = 3
+        ]
+    ],
     // Speed levels and disengaged/automatic modes match Linux thinkpad_acpi.
     pub FAN_CONTROL [
         LEVEL OFFSET(0) NUMBITS(3) [
-            Stop = 0, Level1 = 1, Level2 = 2, Level3 = 3,
-            Level4 = 4, Level5 = 5, Level6 = 6, Level7 = 7
+            Stop = 0,
+            Level1 = 1,
+            Level2 = 2,
+            Level3 = 3,
+            Level4 = 4,
+            Level5 = 5,
+            Level6 = 6,
+            Level7 = 7
         ],
         DISENGAGED OFFSET(6) NUMBITS(1) [],
         AUTO OFFSET(7) NUMBITS(1) []
     ],
-    pub VOLUME_CONTROL [LEVEL OFFSET(0) NUMBITS(4) [], MUTE OFFSET(6) NUMBITS(1) []],
+    pub VOLUME_CONTROL [
+        LEVEL OFFSET(0) NUMBITS(4) [],
+        MUTE OFFSET(6) NUMBITS(1) []
+    ],
     // Beep-enable bytes are board policy; only the low-battery event is
     // documented by coreboot. Do not invent names for the other enable bits.
-    pub SOUND_ENABLE0 [EVENTS OFFSET(0) NUMBITS(8) [], LOW_BATTERY OFFSET(1) NUMBITS(1) []],
+    pub SOUND_ENABLE0 [
+        EVENTS OFFSET(0) NUMBITS(8) [],
+        LOW_BATTERY OFFSET(1) NUMBITS(1) []
+    ],
     pub SOUND_ENABLE1 [EVENTS OFFSET(0) NUMBITS(8) []],
     pub SOUND_COMMAND [TONE OFFSET(0) NUMBITS(8) [Silence = 0]],
     pub SOUND_REPEAT [COUNT OFFSET(0) NUMBITS(8) []],
@@ -73,8 +110,15 @@ register_bitfields![u8,
     pub FN_CONTROL [SWAP_CTRL OFFSET(4) NUMBITS(1) []],
     pub ALWAYS_ON_CONTROL [
         ENABLE OFFSET(0) NUMBITS(1) [],
-        AC_ONLY OFFSET(2) NUMBITS(2) [AnyPower = 0, AcOnly = 3],
-        KEYBOARD_BACKLIGHT OFFSET(6) NUMBITS(2) [Off = 0, Low = 1, High = 2]
+        AC_ONLY OFFSET(2) NUMBITS(2) [
+            AnyPower = 0,
+            AcOnly = 3
+        ],
+        KEYBOARD_BACKLIGHT OFFSET(6) NUMBITS(2) [
+            Off = 0,
+            Low = 1,
+            High = 2
+        ]
     ],
     pub STATUS1 [
         ULTRABAY_ABSENT OFFSET(0) NUMBITS(1) [],

@@ -15,8 +15,15 @@ use tock_registers::{
 register_bitfields![u32,
     pub Control [
         DEBOUNCE OFFSET(0) NUMBITS(8) [],
-        LEVEL OFFSET(8) NUMBITS(1) [Edge = 0, Level = 1],
-        POLARITY OFFSET(9) NUMBITS(2) [High = 0, Low = 1, Both = 2],
+        LEVEL OFFSET(8) NUMBITS(1) [
+            Edge = 0,
+            Level = 1
+        ],
+        POLARITY OFFSET(9) NUMBITS(2) [
+            High = 0,
+            Low = 1,
+            Both = 2
+        ],
         STATUS_ENABLE OFFSET(11) NUMBITS(1) [],
         DELIVERY_ENABLE OFFSET(12) NUMBITS(1) [],
         WAKE_S0I3 OFFSET(13) NUMBITS(1) [],
@@ -31,7 +38,10 @@ register_bitfields![u32,
         INTERRUPT_STATUS OFFSET(28) NUMBITS(1) [],
         WAKE_STATUS OFFSET(29) NUMBITS(1) []
     ],
-    pub Master [MASK_STATUS OFFSET(28) NUMBITS(1) [], INTERRUPTS OFFSET(30) NUMBITS(1) []],
+    pub Master [
+        MASK_STATUS OFFSET(28) NUMBITS(1) [],
+        INTERRUPTS OFFSET(30) NUMBITS(1) []
+    ],
     /// SMIx08 and SMIx0C: SCI trigger polarity and level, bit per GEVENT.
     pub SciTrigger [GEVENTS OFFSET(0) NUMBITS(24) []],
     pub SciLevel [GEVENTS OFFSET(0) NUMBITS(24) []]

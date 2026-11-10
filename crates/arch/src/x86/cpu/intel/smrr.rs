@@ -9,11 +9,17 @@ use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u32,
-    CPUID_1_EDX [ MTRR OFFSET(12) NUMBITS(1) [] ]
+    CPUID_1_EDX [MTRR OFFSET(12) NUMBITS(1) []]
 ];
 register_bitfields![u64,
-    SMRR_BASE [ MEMORY_TYPE OFFSET(0) NUMBITS(8) [], ADDRESS OFFSET(12) NUMBITS(20) [] ],
-    SMRR_MASK [ VALID OFFSET(11) NUMBITS(1) [], ADDRESS OFFSET(12) NUMBITS(20) [] ]
+    SMRR_BASE [
+        MEMORY_TYPE OFFSET(0) NUMBITS(8) [],
+        ADDRESS OFFSET(12) NUMBITS(20) []
+    ],
+    SMRR_MASK [
+        VALID OFFSET(11) NUMBITS(1) [],
+        ADDRESS OFFSET(12) NUMBITS(20) []
+    ]
 ];
 
 const CORE2_SMRR_PHYS_BASE: u32 = 0x0a0;

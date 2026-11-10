@@ -37,7 +37,10 @@ register_bitfields![u8,
     /// EC RAM 0x1a: the second dock link enable (ACPI `DKR2`).
     pub DOCK_LINK2 [CONNECT OFFSET(0) NUMBITS(1) []],
     /// EC RAM 0x32: the wake sources the OS armed.
-    pub WAKE_CONTROL [EVENTS OFFSET(2) NUMBITS(1) [], LID OFFSET(4) NUMBITS(1) []],
+    pub WAKE_CONTROL [
+        EVENTS OFFSET(2) NUMBITS(1) [],
+        LID OFFSET(4) NUMBITS(1) []
+    ],
     /// EC RAM 0xfe: the third dock link enable (ACPI `DKR3`).
     pub DOCK_LINK3 [CONNECT OFFSET(4) NUMBITS(1) []]
 ];

@@ -18,7 +18,14 @@ pub const PORTS: u32 = 8;
 
 register_bitfields![u32,
     /// PxSCTL/PxSSTS device detection.
-    Det [DET OFFSET(0) NUMBITS(4) [Idle = 0, Comreset = 1, Present = 3, Offline = 4]],
+    Det [
+        DET OFFSET(0) NUMBITS(4) [
+            Idle = 0,
+            Comreset = 1,
+            Present = 3,
+            Offline = 4
+        ]
+    ],
     pub(super) Control [
         /// Set to switch off a controller without lanes.
         BIT0 OFFSET(0) NUMBITS(1) [],
@@ -42,9 +49,16 @@ register_bitfields![u32,
     MsiControl [MULTIPLE_CAPABLE OFFSET(24) NUMBITS(3) []],
     R1024 [BIT0 OFFSET(0) NUMBITS(1) []],
     /// SGPIO control.
-    Sgpio10f4 [SGPIO0 OFFSET(4) NUMBITS(1) [], SGPIO1 OFFSET(8) NUMBITS(1) []],
-    Sgpio10f8 [BYTE0 OFFSET(0) NUMBITS(8) [], BYTE2 OFFSET(16) NUMBITS(8) [],
-        BIT20 OFFSET(20) NUMBITS(1) [], BYTE3 OFFSET(24) NUMBITS(8) []],
+    Sgpio10f4 [
+        SGPIO0 OFFSET(4) NUMBITS(1) [],
+        SGPIO1 OFFSET(8) NUMBITS(1) []
+    ],
+    Sgpio10f8 [
+        BYTE0 OFFSET(0) NUMBITS(8) [],
+        BYTE2 OFFSET(16) NUMBITS(8) [],
+        BIT20 OFFSET(20) NUMBITS(1) [],
+        BYTE3 OFFSET(24) NUMBITS(8) []
+    ],
     PortConfig [PORT OFFSET(8) NUMBITS(3) []],
     NbifStrap0c [BIT18 OFFSET(18) NUMBITS(1) []]
 ];

@@ -68,7 +68,11 @@ register_bitfields![u32,
         OUT OFFSET(4) NUMBITS(1) [],
         GO OFFSET(5) NUMBITS(1) [],
         ERROR OFFSET(6) NUMBITS(1) [],
-        EXCEPTION OFFSET(7) NUMBITS(3) [None = 0, Transaction = 1, Hardware = 2],
+        EXCEPTION OFFSET(7) NUMBITS(3) [
+            None = 0,
+            Transaction = 1,
+            Hardware = 2
+        ],
         IN_USE OFFSET(10) NUMBITS(1) [],
         DONE OFFSET(16) NUMBITS(1) [],
         ENABLED OFFSET(28) NUMBITS(1) [],

@@ -19,22 +19,38 @@ register_bitfields![u8,
         SMBUS_ISOLATION_DISABLE OFFSET(7) NUMBITS(1) [],
         K8_SOFTWARE_POWER_DISABLE OFFSET(6) NUMBITS(1) [],
         VID_TURBO OFFSET(5) NUMBITS(1) [],
-        FAN_TAC5 OFFSET(4) NUMBITS(1) [], FAN_TAC4 OFFSET(3) NUMBITS(1) [],
-        PCIRSTIN OFFSET(2) NUMBITS(1) [], VCCH5V_DIVIDER OFFSET(1) NUMBITS(1) [],
+        FAN_TAC5 OFFSET(4) NUMBITS(1) [],
+        FAN_TAC4 OFFSET(3) NUMBITS(1) [],
+        PCIRSTIN OFFSET(2) NUMBITS(1) [],
+        VCCH5V_DIVIDER OFFSET(1) NUMBITS(1) [],
         ATXPG_DIVIDER OFFSET(0) NUMBITS(1) [],
     ],
     BUS_SELECT [
-        RESET OFFSET(6) NUMBITS(2) [Rsmrst = 0, Lreset = 1, PowerOk = 2],
-        DISABLE OFFSET(5) NUMBITS(1) [], OUTPUT_ENABLE OFFSET(4) NUMBITS(1) [],
+        RESET OFFSET(6) NUMBITS(2) [
+            Rsmrst = 0,
+            Lreset = 1,
+            PowerOk = 2
+        ],
+        DISABLE OFFSET(5) NUMBITS(1) [],
+        OUTPUT_ENABLE OFFSET(4) NUMBITS(1) [],
         READ_OUTPUT OFFSET(3) NUMBITS(1) [],
-        BSEL0 OFFSET(0) NUMBITS(1) [], BSEL1 OFFSET(1) NUMBITS(1) [], BSEL2 OFFSET(2) NUMBITS(1) [],
+        BSEL0 OFFSET(0) NUMBITS(1) [],
+        BSEL1 OFFSET(1) NUMBITS(1) [],
+        BSEL2 OFFSET(2) NUMBITS(1) [],
     ],
     WATCHDOG [
-        SECONDS OFFSET(7) NUMBITS(1) [], KEYBOARD_RESET OFFSET(6) NUMBITS(1) [],
-        SHORT_PERIOD OFFSET(5) NUMBITS(1) [], POWER_OK_RESET OFFSET(4) NUMBITS(1) [],
+        SECONDS OFFSET(7) NUMBITS(1) [],
+        KEYBOARD_RESET OFFSET(6) NUMBITS(1) [],
+        SHORT_PERIOD OFFSET(5) NUMBITS(1) [],
+        POWER_OK_RESET OFFSET(4) NUMBITS(1) [],
         IRQ OFFSET(0) NUMBITS(4) [],
     ],
-    FLASH_SELECT [ BANK OFFSET(0) NUMBITS(1) [Main = 0, Backup = 1] ],
+    FLASH_SELECT [
+        BANK OFFSET(0) NUMBITS(1) [
+            Main = 0,
+            Backup = 1
+        ]
+    ],
 ];
 
 #[derive(Debug, Clone, Copy)]

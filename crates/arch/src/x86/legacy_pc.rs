@@ -13,7 +13,10 @@ use tock_registers::{
 };
 
 register_bitfields![u16,
-    Pm1Control [SLEEP_TYPE OFFSET(10) NUMBITS(3) [], SLEEP_ENABLE OFFSET(13) NUMBITS(1) []]
+    Pm1Control [
+        SLEEP_TYPE OFFSET(10) NUMBITS(3) [],
+        SLEEP_ENABLE OFFSET(13) NUMBITS(1) []
+    ]
 ];
 
 fn sleep_control(current: u16, sleep_type: u8, enable: bool) -> u16 {

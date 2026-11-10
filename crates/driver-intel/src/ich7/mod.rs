@@ -104,13 +104,20 @@ register_bitfields! [u16,
 
 register_bitfields! [u8,
     /// SATA PCS port-enable bits (the low nibble).
-    SATA_PORT_ENABLE [ PORTS OFFSET(0) NUMBITS(4) [] ],
+    SATA_PORT_ENABLE [PORTS OFFSET(0) NUMBITS(4) []],
     /// LPC SIRQ_CNTL. The frame-size field is read-only (21 frames).
     SERIRQ_REG [
         ENABLE OFFSET(7) NUMBITS(1) [],
-        MODE OFFSET(6) NUMBITS(1) [Quiet = 0, Continuous = 1],
+        MODE OFFSET(6) NUMBITS(1) [
+            Quiet = 0,
+            Continuous = 1
+        ],
         FRAME_SIZE OFFSET(2) NUMBITS(4) [],
-        START_PULSE OFFSET(0) NUMBITS(2) [Clocks4 = 0, Clocks6 = 1, Clocks8 = 2],
+        START_PULSE OFFSET(0) NUMBITS(2) [
+            Clocks4 = 0,
+            Clocks6 = 1,
+            Clocks8 = 2
+        ],
     ],
     /// LPC ACPI control register.
     ACPI_CNTL_REG [

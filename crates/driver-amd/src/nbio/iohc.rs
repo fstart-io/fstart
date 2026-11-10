@@ -99,7 +99,10 @@ register_bitfields![u32,
     ],
     /// The IOMMU capability's base address register; the base is 512 KiB
     /// aligned.
-    pub IommuBar [ENABLE OFFSET(0) NUMBITS(1) [], BASE OFFSET(19) NUMBITS(13) []],
+    pub IommuBar [
+        ENABLE OFFSET(0) NUMBITS(1) [],
+        BASE OFFSET(19) NUMBITS(13) []
+    ],
     /// Bits 47:32 of a BAR.
     pub BarHigh [ADDRESS OFFSET(0) NUMBITS(16) []]
 ];

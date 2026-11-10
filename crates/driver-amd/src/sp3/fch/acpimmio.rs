@@ -116,7 +116,11 @@ register_bitfields![u8,
     ],
     /// PMx5B FCH::PM::RTCShadow: the AC-loss policy (FCH_SP3 §8).
     pub RTC_SHADOW [
-        PWR_FAIL OFFSET(0) NUMBITS(2) [Off = 0, On = 1, Previous = 3],
+        PWR_FAIL OFFSET(0) NUMBITS(2) [
+            Off = 0,
+            On = 1,
+            Previous = 3
+        ],
         PWR_FAIL_SHADOW_EN OFFSET(2) NUMBITS(1) [],
         PWR_FAIL_BIT3 OFFSET(3) NUMBITS(1) []
     ],

@@ -2,11 +2,12 @@
 resolver = "3"
 # Default commands exercise host libraries and tools. Firmware units are
 # selected individually by fbuild with their target, features and artifacts.
-default-members = ["tools/fbuild", "tools/amdfw", "crates/*"]
+default-members = ["tools/fbuild", "tools/amdfw", "tools/ffmt", "crates/*"]
 members = [
   "boards/*/*",
   "tools/fbuild",
   "tools/amdfw",
+  "tools/ffmt",
   "crates/amdfw-format",
   "crates/driver-amd",
   "crates/driver-chromeec",

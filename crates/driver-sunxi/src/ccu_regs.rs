@@ -38,7 +38,10 @@ register_bitfields! [u32,
         OCLK_DLY OFFSET(8) NUMBITS(3) [],
         N OFFSET(16) NUMBITS(2) [],
         SCLK_DLY OFFSET(20) NUMBITS(3) [],
-        CLK_SRC OFFSET(24) NUMBITS(2) [Osc24M = 0, Pll6 = 1],
+        CLK_SRC OFFSET(24) NUMBITS(2) [
+            Osc24M = 0,
+            Pll6 = 1
+        ],
         ENABLE OFFSET(31) NUMBITS(1) []
     ]
 ];

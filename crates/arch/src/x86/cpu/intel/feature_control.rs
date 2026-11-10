@@ -10,7 +10,10 @@ use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 pub(super) const IA32_FEATURE_CONTROL: u32 = 0x03a;
 register_bitfields![u32,
-    CPUID_1_ECX [ VMX OFFSET(5) NUMBITS(1) [], SMX OFFSET(6) NUMBITS(1) [] ]
+    CPUID_1_ECX [
+        VMX OFFSET(5) NUMBITS(1) [],
+        SMX OFFSET(6) NUMBITS(1) []
+    ]
 ];
 register_bitfields![u64,
     pub(super) FEATURE_CONTROL [
