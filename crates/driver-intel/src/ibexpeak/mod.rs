@@ -474,6 +474,10 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
         crate::southbridge::options::NMI,
     ];
 
+    fn board_options(config: &Self::Config) -> Self::Options {
+        config.options()
+    }
+
     fn options(&self) -> Self::Options {
         self.options
     }
@@ -486,7 +490,7 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
         validate(config)?;
         Ok(Self {
             config,
-            options: config.options(),
+            options: Self::board_options(config),
             smbus: None,
             s3_enabled: false,
             resume: false,

@@ -454,6 +454,7 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
                     security_version: root.root().security_version,
                     locator: locator_bytes,
                     boot_flags,
+                    log_level: fstart_log::option::value(fstart_log::max_level()),
                 },
             )
         };

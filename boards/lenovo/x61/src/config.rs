@@ -75,6 +75,7 @@ pub type Hardware = fstart_platform_intel::gm965::Gm965Ich8<
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     type Platform = Hardware;
+    const OPTIONS: &'static [&'static dyn fstart_options::Describe] = &[&crate::mainboard::EC];
     const CONFIG: &'static Gm965Ich8Platform = &X61_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(

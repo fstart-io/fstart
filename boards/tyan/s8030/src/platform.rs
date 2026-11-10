@@ -35,6 +35,10 @@ impl board::Board for Board {
     });
     /// "Restore AC Power Loss", as the vendor Setup offers it.
     const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+    fn policy(generation: Generation) -> Policy {
+        policy(generation)
+    }
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] = &[&dxio::SETUP];
 }
 
 /// The board's console: the AST2500's Super I/O UART.

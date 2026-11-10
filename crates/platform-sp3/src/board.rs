@@ -15,6 +15,7 @@ use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::nbio::NbioPolicy;
+use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::{ccx, df};
 
 use crate::layout::Sp3BoardFacts;
@@ -102,4 +103,13 @@ pub trait Board: Sp3BoardFacts + 'static {
     /// reset tasks already used. Board knobs outside the policy go through
     /// `Stage::resolve_options`.
     const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[];
+
+    /// The silicon policy of `generation` before any override: what the
+    /// board's `main` starts the FCH with, and the board values of
+    /// [`Self::OPTIONS`] in the build's option list.
+    fn policy(generation: Generation) -> Policy;
+
+    /// The option sets the board offers outside the policy (its slots):
+    /// each the `fstart_options::OptionSet` its `main` resolves.
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] = &[];
 }

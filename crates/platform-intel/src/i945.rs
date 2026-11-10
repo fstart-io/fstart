@@ -362,6 +362,19 @@ impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for I945Ich7<C> {
 }
 
 impl crate::IntelPlatformConfig for I945Ich7Platform {
+    fn describe_options(&self, each: &mut dyn FnMut(fstart_options::Entry)) {
+        use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+        fstart_options::describe(
+            fstart_driver_intel::i945::IntelI945::KNOBS,
+            &fstart_driver_intel::i945::IntelI945::board_options(&self.northbridge),
+            each,
+        );
+        fstart_options::describe(
+            fstart_driver_intel::ich7::IntelIch7::KNOBS,
+            &fstart_driver_intel::ich7::IntelIch7::board_options(&self.southbridge),
+            each,
+        );
+    }
     fn max_cpus(&self) -> u16 {
         self.max_cpus
     }

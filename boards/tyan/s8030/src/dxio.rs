@@ -270,6 +270,12 @@ pub static KNOBS: [Knob<Options>; 9] = [
     ),
 ];
 
+/// The Setup knobs over the options of this build.
+pub static SETUP: fstart_options::OptionSet<Options> = fstart_options::OptionSet {
+    knobs: &KNOBS,
+    board: Options::BUILD,
+};
+
 /// Whether `options` give the SoC a valid engine list with `detected`.
 pub fn check(
     generation: Generation,

@@ -662,6 +662,19 @@ impl<B: Board, S: Silicon, P> Stage<B, S, P> {
         options::resolve(ctx.nvram, knobs, config, &mut ctx.options, check);
     }
 
+    /// The board's values of `set` with the stored overrides
+    /// ([`Self::resolve_options`]). The set is one of the board's
+    /// [`Board::OPTION_SETS`], so the build lists its options.
+    pub fn resolve_set<C: Clone>(
+        &mut self,
+        set: &'static fstart_options::OptionSet<C>,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) -> C {
+        let mut config = set.board.clone();
+        self.resolve_options(set.knobs, &mut config, check);
+        config
+    }
+
     fn into_phase<Q>(self, next: Q) -> Stage<B, S, Q> {
         Stage {
             machine: self.machine,

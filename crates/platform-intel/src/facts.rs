@@ -17,6 +17,9 @@ pub trait IntelPlatform: 'static {
 
 /// Hardware population needed by both host planning and runtime bring-up.
 pub trait IntelPlatformConfig {
+    /// The chipset's options with the board's values: its drivers' knobs
+    /// over what they start from on this configuration.
+    fn describe_options(&self, each: &mut dyn FnMut(fstart_options::Entry));
     fn max_cpus(&self) -> u16;
     /// Board subsystem IDs for bus-0 functions (coreboot devicetree
     /// `subsystemid`), programmed before device init.
@@ -143,4 +146,16 @@ pub trait IntelBoardFacts {
     /// Config lives in `.rodata`, never reconstructed on the CAR stack.
     const CONFIG: &'static <Self::Platform as IntelPlatform>::Config;
     const FACTS: BoardFacts;
+    /// The option sets the board offers on top of the chipset's (a
+    /// ThinkPad's EC options): each the `fstart_options::OptionSet` its
+    /// ramstage resolves.
+    const OPTIONS: &'static [&'static dyn fstart_options::Describe] = &[];
 }
+
+/// The CMOS bytes the options keep, after the clock and its
+/// century/alarm bytes; the last two hold the checksum.
+pub const OPTION_WINDOW: fstart_options::cmos::Window = fstart_options::cmos::Window {
+    first: 0x40,
+    last: 0x7f,
+};
+const _: () = assert!(OPTION_WINDOW.check());

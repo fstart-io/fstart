@@ -150,6 +150,51 @@ impl<C> Knob<C> {
     }
 }
 
+/// What a board offers of one knob before any override: the knob, the
+/// board's value and whether the board has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entry {
+    pub meta: &'static Meta,
+    /// The board's value.
+    pub default: u32,
+    pub availability: Availability,
+}
+
+/// Each of `knobs` over the board's `config`, in order.
+pub fn describe<C>(knobs: &'static [Knob<C>], config: &C, each: &mut dyn FnMut(Entry)) {
+    for knob in knobs {
+        each(Entry {
+            meta: &knob.meta,
+            default: (knob.get)(config),
+            availability: (knob.available)(config),
+        });
+    }
+}
+
+/// Knobs with the board's values of their configuration: what a stage
+/// resolves the stored overrides over, and what the build lists as the
+/// board's options. One value serves both, so they cannot differ.
+pub struct OptionSet<C: 'static> {
+    pub knobs: &'static [Knob<C>],
+    /// The board's configuration, before any override. A board that
+    /// detects part of it at boot gives what its fixed hardware offers.
+    pub board: C,
+}
+
+/// The options of a set, whatever its configuration: a board lists the
+/// sets it offers as `&[&dyn Describe]`. The build runs the list on the
+/// host for the options a firmware image offers; nothing else describes
+/// them.
+pub trait Describe: Sync {
+    fn describe(&self, each: &mut dyn FnMut(Entry));
+}
+
+impl<C: Sync + 'static> Describe for OptionSet<C> {
+    fn describe(&self, each: &mut dyn FnMut(Entry)) {
+        describe(self.knobs, &self.board, each)
+    }
+}
+
 /// The first key two of `metas` share, for a board test over every knob
 /// set it offers.
 pub fn duplicate_key<'a, I>(metas: I) -> Option<&'static str>

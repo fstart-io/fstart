@@ -14,13 +14,37 @@ impl<B: IntelBoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {
         let selection: BuildSelection =
             serde_json::from_str(selection_json).expect("invalid build selection");
+        let log_level = selection.log_level.clone();
         let plan = resolve::<B>(selection).expect("invalid Intel board plan");
+        let mut build = compilation_plan(plan).expect("concrete Intel plan");
+        build.options = options::<B>(log_level.as_deref()).expect("invalid board options");
         std::println!(
             "{}",
-            serde_json::to_string(&compilation_plan(plan).expect("concrete Intel plan"))
-                .expect("serialize Intel plan")
+            serde_json::to_string(&build).expect("serialize Intel plan")
         );
     }
+}
+
+/// The options a build of `B` at `log_level` offers, kept in CMOS: the
+/// console level it starts at, the chipset's, the board's, in the order
+/// the ramstage resolves them.
+pub fn options<B: IntelBoardFacts>(
+    log_level: Option<&str>,
+) -> Result<fstart_image_build::options::Options, std::string::String> {
+    use fstart_image_build::options::{OptionStore, collect};
+    let level = fstart_log::start_level(log_level.map(fstart_log::parse_verbosity));
+    let window = crate::facts::OPTION_WINDOW;
+    let store = OptionStore::Cmos {
+        first: window.first,
+        last: window.last,
+    };
+    collect(Some(store), |each| {
+        fstart_options::describe(&fstart_log::option::KNOBS, &level, each);
+        B::CONFIG.describe_options(each);
+        for set in B::OPTIONS {
+            set.describe(each);
+        }
+    })
 }
 
 pub fn compilation_plan(
@@ -125,6 +149,7 @@ pub fn compilation_plan(
         .into_iter()
         .collect::<Vec<_>>();
     let resolved = BuildPlan {
+        options: Default::default(),
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),

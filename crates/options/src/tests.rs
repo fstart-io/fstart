@@ -442,7 +442,7 @@ fn crc_matches_coreboot() {
 }
 
 mod cmos {
-    use crate::cmos::{Cmos, Ram, Window, WriteError, collision, hash};
+    use crate::cmos::{Cmos, Ram, Window, WriteError, collision, hash, record_size};
     use crate::{Layered, Meta, Source, SourceError};
     use core::cell::RefCell;
 
@@ -495,13 +495,51 @@ mod cmos {
     fn records_fill_the_window_and_no_further() {
         let bank = Bank(RefCell::new([0; 128]));
         let cmos = Cmos::new(WINDOW, &bank);
-        // 14 record bytes: three 1-byte records (4 bytes each) fit.
-        for key in ["a", "b", "c"] {
+        // 14 record bytes: four records of a small value (3 bytes each) fit.
+        assert_eq!(WINDOW.capacity(), 14);
+        for key in ["a", "b", "c", "d"] {
             assert_eq!(cmos.write(key, 1), Ok(()));
         }
-        assert_eq!(cmos.write("d", 1), Err(WriteError::Full));
-        assert_eq!(cmos.read("c"), Ok(Some(1)));
-        assert_eq!(cmos.read("d"), Ok(None));
+        assert_eq!(cmos.write("e", 1), Err(WriteError::Full));
+        assert_eq!(cmos.read("d"), Ok(Some(1)));
+        assert_eq!(cmos.read("e"), Ok(None));
+        // A removed record's bytes are free again; removing twice is fine.
+        assert_eq!(cmos.remove("b"), Ok(()));
+        assert_eq!(cmos.remove("b"), Ok(()));
+        assert_eq!(cmos.read("b"), Ok(None));
+        assert_eq!(cmos.write("e", 1), Ok(()));
+        assert_eq!(cmos.read("a"), Ok(Some(1)));
+    }
+
+    #[test]
+    fn a_small_value_is_in_its_tag_and_a_large_one_after_the_hash() {
+        assert_eq!([0, 1, 127].map(record_size), [3; 3]);
+        assert_eq!(
+            [128, 255, 256, 0x1_0000, u32::MAX].map(record_size),
+            [4, 4, 5, 6, 7]
+        );
+        let bank = Bank(RefCell::new([0; 128]));
+        let cmos = Cmos::new(WINDOW, &bank);
+        for value in [0, 127, 128, 0x1234, u32::MAX] {
+            assert_eq!(cmos.write("volume", value), Ok(()));
+            assert_eq!(cmos.read("volume"), Ok(Some(value)));
+        }
+        // A record written with its value after the hash reads the same.
+        let [low, high] = hash("wlan").to_le_bytes();
+        for (i, byte) in [1, low, high, 1].into_iter().enumerate() {
+            bank.write(0x40 + i as u8, byte);
+        }
+        (0x44..0x4e).for_each(|i| bank.write(i, 0));
+        let sum: u16 = (0x40..0x4e).map(|i| u16::from(bank.read(i))).sum();
+        let [high, low] = sum.to_be_bytes();
+        bank.write(0x4e, high);
+        bank.write(0x4f, low);
+        assert_eq!(cmos.read("wlan"), Ok(Some(1)));
+        // Removing from a window that holds nothing leaves it unset.
+        let unset = Bank(RefCell::new([0x77; 128]));
+        let cmos = Cmos::new(WINDOW, &unset);
+        assert_eq!(cmos.remove("wlan"), Ok(()));
+        assert!(!cmos.valid());
     }
 
     #[test]

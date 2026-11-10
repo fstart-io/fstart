@@ -52,6 +52,10 @@ const BAUD: u32 = 115_200;
 impl board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
     const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+    fn policy(generation: Generation) -> Policy {
+        policy(generation)
+    }
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] = &[&dxio::SLOTS];
 }
 
 /// The board's console: the FCH's MMIO UART 1.

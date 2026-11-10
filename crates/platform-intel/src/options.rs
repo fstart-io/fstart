@@ -8,15 +8,9 @@
 
 use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 use fstart_options::Source;
-use fstart_options::cmos::{Cmos, Ram, Window};
+use fstart_options::cmos::{Cmos, Ram};
 
-/// The CMOS bytes the options keep, after the clock and its
-/// century/alarm bytes; the last two hold the checksum.
-pub const WINDOW: Window = Window {
-    first: 0x40,
-    last: 0x7f,
-};
-const _: () = assert!(WINDOW.check());
+pub use crate::facts::OPTION_WINDOW as WINDOW;
 
 /// CMOS RAM bank 0.
 static RAM: fstart_driver_rtc::Cmos = fstart_driver_rtc::Cmos;
@@ -43,8 +37,8 @@ pub fn chipset<N: IntelNorthbridgeDriver, S: IntelSouthbridgeDriver>(
     southbridge.set_options(options);
 }
 
-/// The console level only (postcar).
-pub fn level(source: &dyn Source) {
+/// The console level: the bootblock hands it to postcar.
+fn level(source: &dyn Source) {
     let mut level = fstart_log::max_level();
     fstart_log::option::resolve(&fstart_log::option::KNOBS, source, &mut level, |_| Ok(()));
     // SAFETY: the BSP, before MP.

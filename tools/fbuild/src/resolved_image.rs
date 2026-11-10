@@ -42,6 +42,11 @@ impl ResolvedImage {
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
+    /// The options the build offers, as the board's platform plan lists
+    /// them from the board's option sets.
+    pub fn options(&self) -> &fstart_image_build::options::Options {
+        &self.build.plan.options
+    }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         self.build.artifact_dir(root, board, release)
     }
