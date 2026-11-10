@@ -32,6 +32,11 @@ pub struct SocBlobs {
     /// `$PSP` + `$PL2` and `$BHD` + `$BL2` instead of a single level.
     #[serde(default = "one")]
     pub levels: u8,
+    /// The EFS generation bits (+0x24) the SoC's boot ROM requires clear,
+    /// if not those of its BIOS directory slot: Siena's vendor images keep
+    /// bit 1 of the Family 19h slot's set.
+    #[serde(default)]
+    pub generation_mask: Option<u32>,
     /// Flash offset of the EFS, the start of the PSP partition.
     pub efs_offset: u32,
     /// End of the PSP partition.
@@ -63,6 +68,17 @@ pub struct SocBlobs {
 
 const fn one() -> u8 {
     1
+}
+
+impl SocBlobs {
+    /// How the SoC's boot ROM reads a flash image.
+    pub fn profile(&self) -> Profile {
+        let mut profile = Profile::for_slot(self.bios_directory);
+        if let Some(mask) = self.generation_mask {
+            profile.generation_mask = mask;
+        }
+        profile
+    }
 }
 
 /// A PSP or BIOS directory entry: its file, or the erased flash or value it
@@ -154,6 +170,11 @@ pub struct BoardBlobs {
     /// firmware moves it from the platform's.
     #[serde(default)]
     pub apob_destination: Option<u64>,
+    /// The eSPI configuration the board's PSP applies before x86 runs
+    /// (EFS +0x50: eSPI0 config 0, eSPI1 config 0, eSPI0 config 1, eSPI1
+    /// config 1), e.g. for a BMC on eSPI. Erased if absent.
+    #[serde(default)]
+    pub efs_espi: Option<[u8; 4]>,
 }
 
 /// The board tables of `table` (`[package.metadata.fstart.amd]`): itself
@@ -189,7 +210,7 @@ pub fn board_tables(table: &serde_json::Value) -> Result<Vec<BoardBlobs>, String
 /// generation's EFS can satisfy an earlier one's boot ROM too: the half
 /// with exactly the SoC's generation word wins.
 pub fn donor_image<'a>(rom: &'a [u8], soc: &SocBlobs) -> Option<&'a [u8]> {
-    let profile = Profile::for_slot(soc.bios_directory);
+    let profile = soc.profile();
     let candidates = rom
         .chunks(fstart_amdfw_format::HALF_SIZE)
         .filter_map(|image| {
@@ -342,6 +363,8 @@ pub fn resolve(
             micron: soc.micron,
             soft_fuse: soc.soft_fuse,
             two_level: soc.levels == 2,
+            generation_mask: soc.generation_mask,
+            espi: board.efs_espi,
             psp,
             bios,
             fixed,
@@ -378,7 +401,7 @@ pub fn extract(
     rom: &[u8],
 ) -> Result<(Vec<Extracted>, Vec<String>), String> {
     let slot = soc.bios_directory;
-    let flash = Flash::new(rom).with_profile(Profile::for_slot(slot));
+    let flash = Flash::new(rom).with_profile(soc.profile());
     let psp = flash
         .psp_directories()
         .map_err(|e| format!("vendor PSP directory: {e:?}"))?;

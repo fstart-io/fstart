@@ -53,6 +53,31 @@ pub struct Profile {
     pub apob_nv_alias: bool,
 }
 impl Profile {
+    /// Siena's (SP6) boot ROM: the Family 19h BIOS directory slot, but only
+    /// bit 0 of the EFS generation word must be clear; its vendor images
+    /// keep bit 1 set (FFFFFFFEh), which Milan's mask rejects. No combo
+    /// identity: combo images must name theirs explicitly.
+    pub const SIENA: Self = Self {
+        bios: BiosDirectorySlot::Family19h,
+        generation_mask: 1,
+        psp_id: None,
+        chip_id: None,
+        legacy_offsets: true,
+        apob_nv_alias: false,
+    };
+
+    /// Genoa's (SP5) boot ROM: the Family 19h BIOS directory slot, only
+    /// bit 0 of the EFS generation word clear (AMD's tools write
+    /// FFFFFFFEh), and no Milan combo identity.
+    pub const GENOA: Self = Self {
+        bios: BiosDirectorySlot::Family19h,
+        generation_mask: 1,
+        psp_id: None,
+        chip_id: None,
+        legacy_offsets: true,
+        apob_nv_alias: false,
+    };
+
     pub const fn for_slot(bios: BiosDirectorySlot) -> Self {
         let (generation_mask, psp_id) = match bios {
             BiosDirectorySlot::Family17hModel00 => (0, Some(0xbc09_0000)),
