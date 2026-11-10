@@ -55,6 +55,11 @@ pub fn bootblock(
     start_console(slot, console);
     fstart_timestamp::add(id::CONSOLE_READY);
 
+    let initial_reset = reset::initial_reset(|| {
+        fstart_log::info!("ast2500: cold boot, first SoC reset");
+        fstart_log::flush();
+    });
+
     let strap = pac::SCU.HWSTRAP().read();
     fstart_log::info!("ast2500: bootblock from SPI");
     fstart_log::info!(
@@ -71,10 +76,7 @@ pub fn bootblock(
         Hex(pac::SCU.VGA_HANDSHAKE0().read().0.into())
     );
 
-    if strap.ICE_FAST_RESET() {
-        fstart_log::info!("ast2500: fast-reset flag set, first SoC reset");
-    }
-    if reset::initial_reset() == InitialReset::Completed {
+    if initial_reset == InitialReset::Completed {
         fstart_log::info!("ast2500: first SoC reset done");
     }
 
