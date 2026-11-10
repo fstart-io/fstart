@@ -12,6 +12,7 @@ use aspeed_hal::ast2500::sdmc::train::ScanError;
 use aspeed_hal::ast2500::sdmc::{self, Dram, TrainError};
 pub use aspeed_hal::ast2500::sdmc::{CkDrive, Ddr4Odt, DramConfig, Organization, Speed};
 use aspeed_pac as pac;
+use fstart_arch::armv5te::TranslationTable;
 use fstart_core::ffs::Compression;
 use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_core::services::boot_media::MemoryMapped;
@@ -154,6 +155,7 @@ pub fn main_stage(
         fail("no handoff");
     };
     let dram_size = handoff.dram_size.get();
+    enable_dcache(dram_size);
     // SAFETY: single-threaded stage entry; the capacity is CE0's firmware
     // window, not taken from the locator.
     if unsafe { fstart_stage::anchor::install_locator(handoff.locator, FIRMWARE_WINDOW_SIZE) }
@@ -206,6 +208,23 @@ pub fn main_stage(
     let description = Description::new(&memory, Range::new(FLASH_ALIAS, image_size as u64));
     fstart_timestamp::add(id::LOAD_PAYLOAD);
     fstart_payload::boot(Handoff::new(description, Placement::default()), ())
+}
+
+/// Cache DRAM and CE0's firmware window from here to the payload jump: the
+/// payload copy and its hash otherwise wait on every DRAM and flash access.
+fn enable_dcache(dram_size: u64) {
+    static mut TRANSLATION: TranslationTable = TranslationTable::new();
+    let table = &raw mut TRANSLATION;
+    // SAFETY: the main stage enters once and takes the table only here.
+    let table = unsafe { &mut *table };
+    // SAFETY: usable DRAM and the flash window are plain memory; nothing
+    // on the AST2500 does DMA into them before the payload.
+    unsafe {
+        fstart_arch::armv5te::enable_dcache(
+            table,
+            &[(DRAM, dram_size), (FLASH_ALIAS, FIRMWARE_WINDOW_SIZE)],
+        )
+    };
 }
 
 /// Timer 4 (index 3 of the per-timer registers) counts the boot timestamps
