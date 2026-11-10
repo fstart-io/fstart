@@ -1,0 +1,17 @@
+[package]
+name = "fstart-register-gen"
+description = "Generate firmware register definitions from chiptool YAML"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+chiptool = { git = "https://github.com/ch32-rs/chiptool", rev = "305bd6ee3e57009ae93be2c81d6e94b9896a03b1" }
+serde = { workspace = true, features = ["std"] }
+serde_yaml = "0.9"
+syn = { version = "2", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3"

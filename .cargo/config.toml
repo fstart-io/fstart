@@ -1,5 +1,6 @@
 [alias]
 fbuild = "run --package fbuild --"
+register-gen = "run --package fstart-register-gen --"
 
 # -Zbuild-std of core for x86_64-unknown-none trips the `sse` target-feature
 # future-incompat lint inside core itself (rust-lang/rust#117938) on every

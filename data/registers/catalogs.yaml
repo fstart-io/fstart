@@ -1,0 +1,51 @@
+# Hardware descriptions use chiptool IR, as in ch32-data. This manifest only
+# selects Rust outputs and bindings; no absolute MMIO addresses live here.
+catalogs:
+  - source: data/registers/intel/ich7.yaml
+    output: crates/driver-intel/src/ich7/registers.rs
+    blocks:
+      RcbaRegs:
+        size: 0x3e4f
+        crate_private: true
+        offsets: rcba
+      Ich7LpcPciConfig:
+        size: 0x1000
+        pci_type0: true
+        offsets: lpc
+        offset_type: u16
+      SmBusPci:
+        offsets: smbus_pci
+        offset_type: u16
+      HdaPci:
+        offsets: hda_pci
+        offset_type: u16
+      SataPci:
+        offsets: sata_pci
+        offset_type: u16
+      EhciPci:
+        offsets: ehci_pci
+        offset_type: u16
+      EhciMmio:
+        offsets: ehci_mmio
+        offset_type: usize
+  - source: data/registers/intel/i945.yaml
+    output: crates/driver-intel/src/i945/registers.rs
+    blocks:
+      I945HostBridgePciConfig:
+        size: 0xe0
+        offsets: hostbridge
+        offset_type: u16
+      PegPci:
+        offsets: peg
+        offset_type: u16
+      IgdPci:
+        offsets: igd
+        offset_type: u16
+      Panel:
+        offsets: panel
+      MchBar:
+        offsets: mchbar
+      EpBar:
+        offsets: epbar
+      DmiBar:
+        offsets: dmibar

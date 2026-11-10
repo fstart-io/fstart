@@ -28,95 +28,19 @@ use crate::generic::spd::ddr2;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;
 
-// ---------------------------------------------------------------------------
-// MCHBAR register block (offsets from coreboot `i945.h`)
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-mod r {
-    pub const C0DRB0: u32 = 0x100;
-    pub const C0DRA0: u32 = 0x108;
-    pub const C0DCLKDIS: u32 = 0x10c;
-    pub const C0BNKARC: u32 = 0x10e;
-    pub const C0DRT0: u32 = 0x110;
-    pub const C0DRT1: u32 = 0x114;
-    pub const C0DRT2: u32 = 0x118;
-    pub const C0DRT3: u32 = 0x11c;
-    pub const C0DRC0: u32 = 0x120;
-    pub const C0DRC1: u32 = 0x124;
-    pub const C0DRC2: u32 = 0x128;
-    pub const C0AIT_LO: u32 = 0x130;
-    pub const C0DCCFT_LO: u32 = 0x138;
-    pub const C0GTEW: u32 = 0x140;
-    pub const C0GTC: u32 = 0x144;
-    pub const C0DTPEW_LO: u32 = 0x148;
-    pub const C0DTAEW_LO: u32 = 0x150;
-    pub const C0DTC: u32 = 0x158;
-    pub const C0DMC: u32 = 0x164;
-    pub const C0ODT_LO: u32 = 0x168;
-    pub const C1_BASE: u32 = 0x80;
-    pub const DCC: u32 = 0x200;
-    pub const CCCFT_LO: u32 = 0x208;
-    pub const WCC: u32 = 0x218;
-    pub const MMARB0: u32 = 0x220;
-    pub const MMARB1: u32 = 0x224;
-    pub const SBTEST: u32 = 0x230;
-    pub const SBOCC: u32 = 0x238;
-    pub const ODTC: u32 = 0x284;
-    pub const SMVREFC: u32 = 0x2a0;
-    pub const DRTST: u32 = 0x2a8;
-    pub const REPC: u32 = 0x2e0;
-    pub const DQSMT: u32 = 0x2f4;
-    pub const RCVENMT: u32 = 0x2f8;
-    pub const C0R0B00DQST: u32 = 0x300;
-    pub const C0WL0REOST: u32 = 0x340;
-    pub const WDLLBYPMODE: u32 = 0x360;
-    pub const C0WDLLCMC: u32 = 0x36c;
-    pub const C0HCTC: u32 = 0x37c;
-    pub const GBRCOMPCTL: u32 = 0x400;
-    pub const SMSRCTL: u32 = 0x408;
-    pub const C0DRAMW: u32 = 0x40c;
-    pub const G1SC: u32 = 0x410;
-    pub const G1SRPUT: u32 = 0x500;
-    pub const G2SRPUT: u32 = 0x540;
-    pub const G3SRPUT: u32 = 0x580;
-    pub const G4SRPUT: u32 = 0x5c0;
-    pub const G5SRPUT: u32 = 0x600;
-    pub const G6SRPUT: u32 = 0x640;
-    pub const G7SRPUT: u32 = 0x680;
-    pub const G8SRPUT: u32 = 0x6c0;
-    pub const UPMC2: u32 = 0x0c20;
-    pub const UPMC3: u32 = 0x0fc0;
-    pub const UPMC4: u32 = 0x0c30;
-    pub const CPCTL: u32 = 0x0c16;
-    pub const PLLMON: u32 = 0x0c34;
-    pub const HGIPMC2: u32 = 0x0c38;
-    pub const FSBPMC4: u32 = 0x0044;
-    pub const SLPCTL: u32 = 0x0090;
-    pub const MISC_B00: u32 = 0x0b00;
-    pub const MISC_B18: u32 = 0x0b18;
-    pub const MIPMC3: u32 = 0x0bd8;
-    pub const C2C3TT: u32 = 0x0f00;
-    pub const C3C4TT: u32 = 0x0f04;
-    pub const MIPMC4: u32 = 0x0f08;
-    pub const MIPMC5: u32 = 0x0f0a;
-    pub const MIPMC6: u32 = 0x0f0c;
-    pub const PMCFG: u32 = 0x0f10;
-    pub const GIPMC1: u32 = 0x0fb0;
-    pub const FSBPMC1: u32 = 0x0fb8;
-    pub const ECO: u32 = 0x0ffc;
-}
+// Raminit and early initialization share the generated MCHBAR catalog.
+use super::mchbar as r;
 
 // ---------------------------------------------------------------------------
 // DRAM command encoding (`do_ram_command`)
 // ---------------------------------------------------------------------------
 
-const RAM_COMMAND_NOP: u32 = 0x1 << 16;
-const RAM_COMMAND_PRECHARGE: u32 = 0x2 << 16;
-const RAM_COMMAND_MRS: u32 = 0x3 << 16;
-const RAM_COMMAND_EMRS: u32 = 0x4 << 16;
-const RAM_COMMAND_CBR: u32 = 0x6 << 16;
-const RAM_COMMAND_NORMAL: u32 = 0x7 << 16;
+const RAM_COMMAND_NOP: u32 = DCC_REG::COMMAND::Nop.value;
+const RAM_COMMAND_PRECHARGE: u32 = DCC_REG::COMMAND::Precharge.value;
+const RAM_COMMAND_MRS: u32 = DCC_REG::COMMAND::Mrs.value;
+const RAM_COMMAND_EMRS: u32 = DCC_REG::COMMAND::Emrs.value;
+const RAM_COMMAND_CBR: u32 = DCC_REG::COMMAND::Cbr.value;
+const RAM_COMMAND_NORMAL: u32 = DCC_REG::COMMAND::Normal.value;
 
 const RAM_EMRS_1: u32 = 0x0 << 21;
 const RAM_EMRS_2: u32 = 0x1 << 21;
