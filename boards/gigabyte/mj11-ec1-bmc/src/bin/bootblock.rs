@@ -24,6 +24,11 @@ const DRAM: DramConfig = DramConfig {
     ecc_bytes: Some(424 << 20),
 };
 
+/// SPI clock limit for the boot flash. The MT25QL512 reads at up to 133
+/// MHz; the bootblock calibrates the read delay and takes the fastest
+/// HCLK divisor at or below this that reads correctly.
+const FLASH_MAX_HZ: u32 = 50_000_000;
+
 /// Test all usable DRAM after every training (cold boots only). Off: the
 /// test takes about a minute over 424 MiB, and training passed it on this
 /// board. Turn it on for DRAM work.
@@ -33,5 +38,11 @@ fstart_platform_aspeed::spi_head!(STRAP_WRITES);
 fstart_platform_aspeed::entry!(main);
 
 fn main() -> ! {
-    fstart_platform_aspeed::ast2500::bootblock(&CONSOLE, board::console(), &DRAM, MEMTEST)
+    fstart_platform_aspeed::ast2500::bootblock(
+        &CONSOLE,
+        board::console(),
+        FLASH_MAX_HZ,
+        &DRAM,
+        MEMTEST,
+    )
 }

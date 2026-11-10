@@ -92,7 +92,7 @@ rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev
 # ASPEED register access, generated from kyanitecomputer/aspeed-data.
 aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "f0a6500555d973689963bf608f14bae851393fa7", default-features = false }
 # Blocking ASPEED driver cores; pins the same aspeed-data revision.
-aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "9694606b0a96ab0e22eb766dfc36f8acda106617", default-features = false }
+aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "6233756e6929c26fc68ed6b3fa7c2237301c59a9", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }

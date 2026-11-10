@@ -76,7 +76,7 @@ dependencies = [
 [[package]]
 name = "aspeed-hal"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=9694606b0a96ab0e22eb766dfc36f8acda106617#9694606b0a96ab0e22eb766dfc36f8acda106617"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=6233756e6929c26fc68ed6b3fa7c2237301c59a9#6233756e6929c26fc68ed6b3fa7c2237301c59a9"
 dependencies = [
  "aspeed-mmio",
  "aspeed-pac",
@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "aspeed-mmio"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=9694606b0a96ab0e22eb766dfc36f8acda106617#9694606b0a96ab0e22eb766dfc36f8acda106617"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=6233756e6929c26fc68ed6b3fa7c2237301c59a9#6233756e6929c26fc68ed6b3fa7c2237301c59a9"
 
 [[package]]
 name = "aspeed-pac"

@@ -2,9 +2,11 @@
 //! in place from the reset vector, and the main stage it loads into DRAM.
 
 use crate::layout::{
-    DRAM_BASE as DRAM, FIRMWARE_WINDOW_SIZE, FLASH_ALIAS, HANDOFF_ADDR, MAIN_STAGE_BASE,
-    MAIN_STAGE_SIZE, TIMESTAMPS, TIMESTAMPS_SIZE,
+    DRAM_BASE as DRAM, FIRMWARE_WINDOW_SIZE, FLASH_ALIAS, FLASH_CALIBRATION,
+    FLASH_CALIBRATION_SIZE, HANDOFF_ADDR, MAIN_STAGE_BASE, MAIN_STAGE_SIZE, TIMESTAMPS,
+    TIMESTAMPS_SIZE,
 };
+use aspeed_hal::ast2500::fmc;
 use aspeed_hal::ast2500::reset::{self, InitialReset};
 use aspeed_hal::ast2500::sdmc::train::ScanError;
 use aspeed_hal::ast2500::sdmc::{self, Dram, TrainError};
@@ -28,9 +30,11 @@ const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;
 const MEMTEST_STEP: usize = 64 << 20;
 
 /// Stop what fires without us, protect the flash, bring up the console,
-/// take the first reset of a cold boot, train DRAM, test it if `memtest`
+/// take the first reset of a cold boot, switch CE0 to the fastest
+/// calibrated read up to `flash_max_hz`, train DRAM, test it if `memtest`
 /// and it was just trained, then load the main stage into DRAM and enter
-/// it. Boards pass their DRAM choices; their bootblock `main` calls this.
+/// it. Boards pass their flash and DRAM choices; their bootblock `main`
+/// calls this.
 ///
 /// WDT3 resets the SoC about one second after power-on to retry the SPI
 /// address mode, and the strap may arm WDT2 to switch to the alternate boot
@@ -39,6 +43,7 @@ const MEMTEST_STEP: usize = 64 << 20;
 pub fn bootblock(
     slot: &'static StaticConsole<Ns16550>,
     console: Ns16550Config,
+    flash_max_hz: u32,
     dram: &DramConfig,
     memtest: bool,
 ) -> ! {
@@ -79,6 +84,9 @@ pub fn bootblock(
     if initial_reset == InitialReset::Completed {
         fstart_log::info!("ast2500: first SoC reset done");
     }
+
+    fstart_timestamp::add(id::EARLY_INIT);
+    set_flash_read(flash_max_hz);
 
     fstart_timestamp::add(id::INITRAM_START);
     let dram = match sdmc::init(dram, log_retry) {
@@ -245,6 +253,29 @@ fn start_console(slot: &'static StaticConsole<Ns16550>, console: Ns16550Config) 
 fn fail(reason: &str) -> ! {
     fstart_log::error!("ast2500: {}", reason);
     fstart_arch::halt()
+}
+
+/// Read CE0 with the dual output fast read at the fastest SPI clock up to
+/// `max_hz` that calibrates, so that executing in place and loading from
+/// flash speed up.
+fn set_flash_read(max_hz: u32) {
+    let area = (FLASH_ALIAS + FLASH_CALIBRATION) as u32;
+    match fmc::fast_read(max_hz, area, FLASH_CALIBRATION_SIZE as u32) {
+        Ok(read) => fstart_log::info!(
+            "fmc: CE0 dual fast read at HCLK/{} ({} kHz), read delay {}",
+            read.divisor,
+            read.spi_hz / 1000,
+            read.delay.map_or(Hex(0), |d| Hex(d.into()))
+        ),
+        Err(e) => fstart_log::warn!(
+            "fmc: CE0 stays at normal read, HCLK/16: {}",
+            match e {
+                fmc::Error::UniformArea => "calibration area uniform",
+                fmc::Error::Dma => "DMA checksum timed out",
+                fmc::Error::NoTiming => "no clock read correctly",
+            }
+        ),
+    }
 }
 
 /// Authenticate the FFS root through CE0's window and load the main stage

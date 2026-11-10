@@ -7,6 +7,10 @@ pub const FLASH_BASE: u64 = 0;
 pub const FLASH_ALIAS: u64 = 0x2000_0000;
 /// What 3-byte SPI addressing reaches after reset.
 pub const FIRMWARE_WINDOW_SIZE: u64 = 16 * 1024 * 1024;
+/// Flash the bootblock reads to calibrate the SPI read timing, as an
+/// offset into CE0: 4 KiB of its own code.
+pub const FLASH_CALIBRATION: u64 = 0x1000;
+pub const FLASH_CALIBRATION_SIZE: u64 = 0x1000;
 /// DRAM starts here whatever its size.
 pub const DRAM_BASE: u64 = 0x8000_0000;
 /// The DRAM main stage: code, data, heap and stack. The bootblock refuses
