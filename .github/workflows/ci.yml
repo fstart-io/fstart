@@ -45,35 +45,35 @@ env:
   SCCACHE_MAX_FRAME_LENGTH: "4294967295"
 
 jobs:
-  # The board lists the matrices below run on. fbuild resolves them from
-  # boards/<vendor>/<board>/Cargo.toml package.metadata.fstart, the same
-  # discovery every other fbuild command uses.
+  # The cheap gate every firmware job waits for: formatting, and the job
+  # matrix. fbuild resolves the boards from boards/<vendor>/<board>/Cargo.toml
+  # package.metadata.fstart, the same discovery every other fbuild command
+  # uses; ci/shards.py groups them into jobs.
   boards:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      boards: ${{ steps.list.outputs.boards }}
-      qemu-matrix: ${{ steps.list.outputs.qemu-matrix }}
+      shards: ${{ steps.list.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           save-cache: "true"
 
-      - name: List boards
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Register layout
+        run: cargo ffmt --check
+
+      - name: List firmware shards
         id: list
         run: |
           set -o pipefail
           cargo fbuild boards --json > "$RUNNER_TEMP/boards.json"
-          boards=$(jq -c '[.[] | .board, .variants[]] | sort' \
-            "$RUNNER_TEMP/boards.json")
-          # Every boot has its own timeout, not one shared by a board's boots.
-          qemu_matrix=$(ci/qemu-boot-tests.sh --list | jq -Rnc '
-            {include: [inputs | split(" ") | {board: .[0], payload: .[1]}]}')
-          {
-            echo "boards=$boards"
-            echo "qemu-matrix=$qemu_matrix"
-          } >> "$GITHUB_OUTPUT"
+          shards=$(ci/qemu-boot-tests.sh --list |
+            ci/shards.py "$RUNNER_TEMP/boards.json")
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
 
   test:
     runs-on: ubuntu-latest
@@ -88,12 +88,6 @@ jobs:
           cache-targets: "true"
           shared-key: test
           save-cache: "true"
-
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Register layout
-        run: cargo ffmt --check
 
       - name: Tests
         env:
@@ -142,16 +136,22 @@ jobs:
               --features fstart-stage/ffs,fstart-stage/ed25519,fstart-stage/fdt,fstart-stage/handoff,fstart-stage/alloc
           done
 
-  # Every discovered board and variant must link in release. A failure
-  # never cancels the boards still running.
-  build-board:
-    needs: boards
+  # Every discovered board and variant must link in release, and the QEMU
+  # boards must boot. Runners are the scarce resource, so a job builds a
+  # whole shard of boards in one target directory (host tools and shared
+  # units compile once) and then boots the shard's QEMU boards from it. A
+  # failing board or boot never stops the ones after it, nor other shards.
+  # Nor do failed boot assets stop the builds: the job waits for the assets
+  # but runs without them, and only the boots that need them are lost.
+  firmware:
+    name: firmware (${{ matrix.shard }})
+    needs: [boards, qemu-boot-assets]
+    if: ${{ !cancelled() && needs.boards.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        board: ${{ fromJSON(needs.boards.outputs.boards) }}
+      matrix: ${{ fromJSON(needs.boards.outputs.shards) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -161,38 +161,58 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           llvm-tools: "true"
-          packages: acpica-tools
+          packages: acpica-tools ${{ matrix.qemu }}
 
-      # NOTE: FSTART_EXTRA_RUSTFLAGS must NOT be set here. Resolved builds
-      # fail closed on unrecorded ambient inputs (see
-      # tools/fbuild/src/selection.rs).
-      - name: Build ${{ matrix.board }}
+      - name: Build and test boards
         env:
-          BOARD: ${{ matrix.board }}
-        run: |
-          cargo fbuild build --board "$BOARD" --release \
-            --size-report "stage-sizes-$BOARD.jsonl"
-
-      # Linking firmware does not execute board policy or protocol tests.
-      - name: Test board library
-        env:
-          BOARD: ${{ matrix.board }}
+          BOARDS: ${{ matrix.boards }}
           RUST_MIN_STACK: 8388608
         run: |
-          cargo fbuild test-library --board "$BOARD"
+          read -ra boards <<< "$BOARDS"
+          ci/build-boards.sh stage-sizes "${boards[@]}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: stage-sizes-${{ matrix.board }}
-          path: stage-sizes-${{ matrix.board }}.jsonl
+          name: stage-sizes-${{ matrix.shard }}
+          path: stage-sizes/
           if-no-files-found: error
           retention-days: 7
+
+      # Missing assets must fail CI, not silently skip optional boots:
+      # download-artifact errors when the producer uploaded nothing.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        id: boot-assets
+        if: ${{ !cancelled() && matrix.assets != '' }}
+        with:
+          name: boot-assets-${{ matrix.assets }}
+          path: boot-assets/${{ matrix.assets }}
+
+      # Boots still run when another board of the shard failed to build.
+      - name: Run QEMU boot tests
+        if: >-
+          ${{ !cancelled() && matrix.boots != '' &&
+              steps.boot-assets.outcome == 'success' }}
+        env:
+          BOOTS: ${{ matrix.boots }}
+        run: |
+          filters=()
+          for board in $BOOTS; do
+            filters+=(--board "$board")
+          done
+          ci/qemu-boot-tests.sh boot-assets/payloads "${filters[@]}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: qemu-boot-logs-${{ matrix.shard }}
+          path: target/qemu-boot-tests/
+          if-no-files-found: ignore
 
   # Stage sizes of every board, kept as an artifact of each run. The
   # size-report workflow compares a pull request's with its base's. Builds
   # are only comparable from the same checkout path, which CI always uses.
   stage-sizes:
-    needs: build-board
+    needs: firmware
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -221,14 +241,14 @@ jobs:
   # Keep a single stable status check for everything the old check job ran.
   check:
     if: always()
-    needs: [test, build-board, stage-sizes]
+    needs: [test, firmware, stage-sizes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require tests and board builds to pass
+      - name: Require tests and firmware jobs to pass
         env:
           TEST_RESULT: ${{ needs.test.result }}
-          BUILD_RESULT: ${{ needs.build-board.result }}
+          BUILD_RESULT: ${{ needs.firmware.result }}
           SIZES_RESULT: ${{ needs.stage-sizes.result }}
         run: >-
           test "$TEST_RESULT" = success &&
@@ -292,49 +312,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  qemu-boot-matrix:
-    needs: [qemu-boot-assets, boards]
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      # Report failures from every boot rather than cancelling sibling jobs.
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.boards.outputs.qemu-matrix) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
-        with:
-          packages: qemu-system-arm qemu-system-misc qemu-system-x86
-
-      # Missing assets must fail CI, not silently skip optional boots:
-      # download-artifact errors when the producer uploaded nothing.
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        if: matrix.board != 'qemu-q35'
-        with:
-          name: boot-assets-payloads
-          path: boot-assets/payloads
-
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        if: matrix.board == 'qemu-q35'
-        with:
-          name: boot-assets-x86_64
-          path: boot-assets/x86_64
-
-      - name: Run QEMU boot test
-        env:
-          BOARD: ${{ matrix.board }}
-          PAYLOAD: ${{ matrix.payload }}
-        run: >-
-          ci/qemu-boot-tests.sh boot-assets/payloads
-          --board "$BOARD" --payload "$PAYLOAD"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with:
-          name: qemu-boot-logs-${{ matrix.board }}-${{ matrix.payload }}
-          path: target/qemu-boot-tests/
-          if-no-files-found: ignore
-
   tpm-boot-tests:
     needs: qemu-boot-assets
     runs-on: ubuntu-latest
@@ -380,14 +357,14 @@ jobs:
   # Keep a single stable status check for branch protection.
   qemu-boot-tests:
     if: always()
-    needs: [qemu-boot-assets, qemu-boot-matrix, tpm-boot-tests]
+    needs: [qemu-boot-assets, firmware, tpm-boot-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require all QEMU jobs to pass
         env:
           ASSETS_RESULT: ${{ needs.qemu-boot-assets.result }}
-          BOOT_RESULT: ${{ needs.qemu-boot-matrix.result }}
+          BOOT_RESULT: ${{ needs.firmware.result }}
           TPM_RESULT: ${{ needs.tpm-boot-tests.result }}
         run: >-
           test "$ASSETS_RESULT" = success &&
