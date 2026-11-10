@@ -192,7 +192,7 @@ pub fn inventory(
         dimm.jedec_bank = identity[0] & 0x7f;
         dimm.jedec_id = identity[1];
         dimm.serial.copy_from_slice(&identity[5..9]);
-        dimm.part_number.copy_from_slice(&identity[9..29]);
+        dimm.part_number[..20].copy_from_slice(&identity[9..29]);
     }
     Ok(dimm)
 }

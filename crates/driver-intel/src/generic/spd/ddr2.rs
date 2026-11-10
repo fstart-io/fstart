@@ -424,7 +424,7 @@ pub fn memory_device(
         .filter(|tck| *tck != 0)
         // Two transfers per clock: MT/s = 2 * 1000 / tCK[ns].
         .map_or(0, |tck| ((512_000 + tck / 2) / tck) as u16);
-    let mut part_number = [b' '; 20];
+    let mut part_number = [b' '; 30];
     part_number[..SPD_PART_NUMBER_LEN].copy_from_slice(
         &spd[SPD_PART_NUMBER as usize..SPD_PART_NUMBER as usize + SPD_PART_NUMBER_LEN],
     );
