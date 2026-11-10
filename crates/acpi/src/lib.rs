@@ -48,6 +48,7 @@ pub mod descriptors;
 pub mod device;
 pub mod devices;
 pub mod dmar;
+pub mod einj;
 pub mod ext;
 pub mod gpe;
 pub mod gtdt;
@@ -766,7 +767,7 @@ pub(crate) fn encode_pkg_length(content_len: usize) -> Vec<u8> {
 }
 
 /// Serialize an Aml object to a `Vec<u8>`.
-pub(crate) fn serialize(aml: &dyn Aml) -> Vec<u8> {
+pub fn serialize(aml: &dyn Aml) -> Vec<u8> {
     let mut bytes = Vec::new();
     aml.to_aml_bytes(&mut bytes);
     bytes

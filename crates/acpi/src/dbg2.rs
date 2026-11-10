@@ -76,7 +76,7 @@ mod serial_subtype {
 }
 
 /// DBG2 PL011 configuration.
-pub struct Dbg2Pl011Config<'a> {
+pub struct Dbg2MmioConfig<'a> {
     /// Physical MMIO base address of the PL011 peripheral.
     pub base_addr: u64,
     /// Size of the MMIO region in bytes (e.g., 0x1000).
@@ -85,8 +85,19 @@ pub struct Dbg2Pl011Config<'a> {
     pub namespace: &'a str,
 }
 
+pub type Dbg2Pl011Config<'a> = Dbg2MmioConfig<'a>;
+
 /// Build a DBG2 table for a PL011 UART debug port.
 pub fn build_dbg2_pl011(config: &Dbg2Pl011Config<'_>) -> Sdt {
+    build_mmio(config, serial_subtype::ARM_PL011)
+}
+
+/// Generic 16550 with 32-bit accesses/four-byte stride.
+pub fn build_dbg2_16550_mmio32(config: &Dbg2MmioConfig<'_>) -> Sdt {
+    build_mmio(config, serial_subtype::FULL_16550)
+}
+
+fn build_mmio(config: &Dbg2MmioConfig<'_>, subtype: u16) -> Sdt {
     let ns_bytes = config.namespace.as_bytes();
     let ns_len = ns_bytes.len() + 1; // include NUL terminator
 
@@ -134,7 +145,7 @@ pub fn build_dbg2_pl011(config: &Dbg2Pl011Config<'_>) -> Sdt {
             oem_data_length: 0,
             oem_data_offset: 0,
             port_type: port_type::SERIAL,
-            port_subtype: serial_subtype::ARM_PL011,
+            port_subtype: subtype,
             _reserved: 0,
             base_address_offset: base_addr_off,
             address_size_offset: addr_size_off,
