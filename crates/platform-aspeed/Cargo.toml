@@ -27,7 +27,7 @@ stage = [
   "fstart-stage?/ffs-signature",
   "fstart-stage?/sha2-digest",
 ]
-armv5te = ["fstart-arch/armv5te", "fstart-stage?/armv5te"]
+armv5te = ["fstart-arch/armv5te", "fstart-stage?/armv5te", "fstart-payload?/armv5te"]
 ast2500 = ["dep:aspeed-pac", "aspeed-pac?/ast2500-arm", "dep:aspeed-hal", "aspeed-hal?/ast2500"]
 bundle-ast2500-bootblock = ["stage", "ast2500", "armv5te"]
 bundle-ast2500-main = ["stage", "ast2500", "armv5te"]

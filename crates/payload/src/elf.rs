@@ -54,9 +54,9 @@ fn load_payload() -> Result<u64, &'static str> {
 /// Jump to `entry`; the arch helper makes the freshly loaded code visible
 /// to instruction fetch first.
 fn enter(entry: u64) -> ! {
-    #[cfg(all(target_arch = "arm", not(target_feature = "v7")))]
+    #[cfg(all(feature = "armv5te", target_arch = "arm"))]
     fstart_arch::armv5te::jump_to(entry);
-    #[cfg(not(all(target_arch = "arm", not(target_feature = "v7"))))]
+    #[cfg(not(all(feature = "armv5te", target_arch = "arm")))]
     {
         let _ = entry;
         halt("not supported on this architecture")
