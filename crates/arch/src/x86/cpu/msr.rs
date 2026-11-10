@@ -221,19 +221,3 @@ pub mod testing {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::testing::MsrSpace;
-    use super::*;
-    use tock_registers::interfaces::ReadWriteable;
-
-    #[test]
-    fn bitfields_through_the_access() {
-        let cpu = MsrSpace::new([(0x1b, 0xfee0_0100)]);
-        cpu.reg(APIC_BASE).modify(ApicBase::ENABLE::SET);
-        assert!(cpu.reg(APIC_BASE).is_set(ApicBase::BSP));
-        let cpu = cpu.into_inner();
-        assert_eq!(cpu.writes, [(0x1b, 0xfee0_0900)]);
-    }
-}

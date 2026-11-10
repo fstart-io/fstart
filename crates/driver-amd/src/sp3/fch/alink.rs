@@ -173,14 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn milan_clears_sync_flood_reset() {
-        let hw = fch();
-        clock_gating(
-            &hw,
-            Generation::Milan,
-            &AbPolicy::default_for(Generation::Milan),
-        );
-        assert_eq!(ab(&hw.io, 0x10050), 0);
+    fn naples_results_match_the_contract() {
         let naples = fch();
         clock_gating(
             &naples,

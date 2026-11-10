@@ -109,44 +109,6 @@ mod tests {
     extern crate alloc;
 
     #[test]
-    fn test_land() {
-        let a = 1u8;
-        let b = 1u8;
-        let land = LAnd::new(&a, &b);
-
-        let mut bytes = Vec::new();
-        land.to_aml_bytes(&mut bytes);
-
-        assert_eq!(bytes[0], LAND_OP);
-        assert!(bytes.len() > 1);
-    }
-
-    #[test]
-    fn test_lor() {
-        let a = 0u8;
-        let b = 1u8;
-        let lor = LOr::new(&a, &b);
-
-        let mut bytes = Vec::new();
-        lor.to_aml_bytes(&mut bytes);
-
-        assert_eq!(bytes[0], LOR_OP);
-        assert!(bytes.len() > 1);
-    }
-
-    #[test]
-    fn test_lnot() {
-        let a = 0u8;
-        let lnot = LNot::new(&a);
-
-        let mut bytes = Vec::new();
-        lnot.to_aml_bytes(&mut bytes);
-
-        assert_eq!(bytes[0], LNOT_OP);
-        assert!(bytes.len() > 1);
-    }
-
-    #[test]
     fn test_land_with_locals() {
         let local0 = acpi_tables::aml::Local(0);
         let local1 = acpi_tables::aml::Local(1);

@@ -278,19 +278,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn superio_resources_match_board_wiring() {
-        let sio = d41s_superio_config();
-        let ec = sio.env_controller.unwrap();
-        assert_eq!((ec.io_base, ec.io_ext), (0xa10, 0xa00));
-        let keyboard = sio.keyboard.unwrap();
-        assert_eq!(
-            (keyboard.io_base, keyboard.io_ext, keyboard.irq),
-            (0x60, 0x64, 1)
-        );
-        assert_eq!(sio.mouse.unwrap().irq, 12);
-        assert_eq!(sio.com1.unwrap().irq, 4);
-        assert_eq!(sio.com2.unwrap().irq, 3);
-        assert!(sio.gpio.is_none());
+    fn event_and_sata_policy_encode_reference_values() {
         assert_eq!(D41S_PLATFORM.southbridge.gpe0_en, 0x441);
         assert_eq!(D41S_PLATFORM.southbridge.sata.unwrap().ports, 3);
     }

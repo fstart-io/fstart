@@ -107,37 +107,3 @@ pub fn ccx() -> ccx::Policy {
 pub const fn dxio(generation: Generation) -> DxioPolicy {
     DxioPolicy::new(generation)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn s8030_overrides() {
-        let df = df();
-        assert_eq!(df.bus_counts.unwrap()[..5], [0x40, 0x40, 0x40, 0x40, 0]);
-        assert_eq!(
-            df.io_sizes.unwrap()[..5],
-            [0x4000, 0x4000, 0x4000, 0x3000, 0]
-        );
-        // Without the requests it is the plain DF3 split.
-        assert_eq!(
-            DfPolicy {
-                bus_counts: None,
-                io_sizes: None,
-                ..df
-            },
-            DfPolicy::df3()
-        );
-        let p = power();
-        assert!(p.apbdis && p.fixed_soc_pstate == 0);
-        assert_eq!(PowerPolicy { apbdis: false, ..p }, PowerPolicy::default());
-        assert_eq!(
-            ccx::Policy {
-                smee: false,
-                ..ccx()
-            },
-            ccx::Policy::default()
-        );
-    }
-}

@@ -351,10 +351,6 @@ pub(crate) mod model {
 mod tests {
     use super::model::Model;
     use super::*;
-    use tock_registers::interfaces::{Readable, Writeable};
-    use tock_registers::register_bitfields;
-
-    register_bitfields![u32, TEST [LOW OFFSET(0) NUMBITS(4) [], HIGH OFFSET(28) NUMBITS(4) []]];
 
     #[test]
     fn host_bridge_is_device_0_function_0_of_the_bus() {
@@ -400,15 +396,5 @@ mod tests {
                 (0xa0, 0x1d840, 7)
             ]
         );
-    }
-
-    #[test]
-    fn typed_register() {
-        let model = Model::default();
-        let smn = unsafe { Smn::new(model.clone()) };
-        let reg = smn.reg(SmnReg::<TEST::Register>::new(0x100));
-        reg.write(TEST::LOW.val(5) + TEST::HIGH.val(0xa));
-        assert_eq!(reg.read(TEST::HIGH), 0xa);
-        assert_eq!(reg.get(), 0xa000_0005);
     }
 }

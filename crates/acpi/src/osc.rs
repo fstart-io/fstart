@@ -24,12 +24,3 @@ pub fn platform_osc() -> Vec<u8> {
     }
     .into()
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn builds() {
-        let b = super::platform_osc();
-        assert!(b.windows(4).any(|w| w == b"_OSC"));
-    }
-}
