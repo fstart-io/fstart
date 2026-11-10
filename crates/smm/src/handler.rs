@@ -9,7 +9,9 @@ use core::sync::atomic::Ordering;
 use crate::runtime::{HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY};
 pub use crate::runtime::{SmmEntryParams, SmmRuntime};
 
-/// Debug console port used by [`debug_trace`].
+/// Debug console port used by [`debug_trace`]: QEMU's `-debugcon`. Real
+/// chipsets decode other registers here (Bay Trail's PM1_EN at ACPI base
+/// 0x400), so the trace is only built with the `debugcon` feature.
 pub const DEBUGCON: u16 = 0x0402;
 
 /// Per-entry view handed to the concrete SMM handler.
