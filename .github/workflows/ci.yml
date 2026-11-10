@@ -45,6 +45,34 @@ env:
   SCCACHE_MAX_FRAME_LENGTH: "4294967295"
 
 jobs:
+  distribution:
+    needs: [check, qemu-boot-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: ./.github/actions/setup
+        with:
+          packages: acpica-tools
+      # coreboot payload bundles ship SeaBIOS, the boot tests' revision.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fstart-io/seabios
+          ref: 44ed85f85fac03107009242c067fdcc01ce55546
+          path: target/seabios-src
+          persist-credentials: false
+      - name: Export every board, variant, payload and unit binary
+        run: bash ci/build-distribution.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distribution
+          path: target/distribution/
+          compression-level: 0 # Each bundle is already ZIP/DEFLATE compressed.
+          retention-days: 2 # Daily promotion moves these onto Releases.
+          if-no-files-found: error
+
   # The board lists the matrices below run on. fbuild resolves them from
   # boards/<vendor>/<board>/Cargo.toml package.metadata.fstart, the same
   # discovery every other fbuild command uses.
