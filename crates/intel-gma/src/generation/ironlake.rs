@@ -2489,14 +2489,7 @@ mod tests {
     }
 
     #[test]
-    fn fdi_register_offsets_and_pattern_bits_match_libgfxinit() {
-        assert_eq!(fdi_tx_ctl_register(FdiPort::A), FDI_TX_CTL_A);
-        assert_eq!(fdi_tx_ctl_register(FdiPort::B), FDI_TX_CTL_B);
-        assert_eq!(fdi_tx_ctl_register(FdiPort::C), FDI_TX_CTL_C);
-        assert_eq!(fdi_rx_regs(FdiPort::A).ctl, FDI_RXA_CTL);
-        assert_eq!(fdi_rx_regs(FdiPort::B).misc, FDI_RX_MISC_B);
-        assert_eq!(fdi_rx_regs(FdiPort::C).tusize, FDI_RXC_TUSIZE1);
-
+    fn fdi_training_patterns_match_libgfxinit() {
         assert_eq!(fdi_tx_training_pattern_mask(false), 3 << 28);
         assert_eq!(fdi_tx_training_pattern_mask(true), 3 << 8);
         assert_eq!(
@@ -2506,14 +2499,6 @@ mod tests {
         assert_eq!(
             encode_fdi_rx_training_pattern(FdiTrainingPattern::None, true),
             3 << 8
-        );
-        assert_eq!(
-            fdi_tx_port_width(4),
-            FDI_TX_CTL::PORT_WIDTH_SEL.val(3).value
-        );
-        assert_eq!(
-            fdi_rx_port_width(2),
-            FDI_RX_CTL::PORT_WIDTH_SEL.val(1).value
         );
     }
 

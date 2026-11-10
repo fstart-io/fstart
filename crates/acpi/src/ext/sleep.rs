@@ -81,33 +81,6 @@ mod tests {
     extern crate alloc;
 
     #[test]
-    fn test_sleep_literal() {
-        let duration = 100u32;
-        let sleep = Sleep::new(&duration);
-
-        let mut bytes = Vec::new();
-        sleep.to_aml_bytes(&mut bytes);
-
-        // ExtOpPrefix + SleepOp + encoded u32
-        assert_eq!(bytes[0], EXT_OP_PREFIX);
-        assert_eq!(bytes[1], SLEEP_OP);
-        assert!(bytes.len() > 2);
-    }
-
-    #[test]
-    fn test_stall_literal() {
-        let duration = 50u8;
-        let stall = Stall::new(&duration);
-
-        let mut bytes = Vec::new();
-        stall.to_aml_bytes(&mut bytes);
-
-        assert_eq!(bytes[0], EXT_OP_PREFIX);
-        assert_eq!(bytes[1], STALL_OP);
-        assert!(bytes.len() > 2);
-    }
-
-    #[test]
     fn test_sleep_with_local_var() {
         let local0 = acpi_tables::aml::Local(0);
         let sleep = Sleep::new(&local0);

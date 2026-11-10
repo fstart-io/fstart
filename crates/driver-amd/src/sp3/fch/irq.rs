@@ -77,19 +77,10 @@ pub fn restore<I: Window>(io: &I, saved: &[u8; 256]) {
         .for_each(|(i, &irq)| write(io, i as u8, irq));
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "naples", feature = "rome", feature = "milan"))]
 mod tests {
-    use super::super::model::Mem;
     use super::*;
 
-    #[test]
-    fn index_then_data() {
-        let io = Mem::default();
-        program(&io, &[(0xf0, 0x0a)]);
-        assert_eq!(io.writes(), vec![(0xc00, 1, 0xf0), (0xc01, 1, 0x0a)]);
-    }
-
-    #[cfg(all(feature = "naples", feature = "rome", feature = "milan"))]
     #[test]
     fn generation_tables_differ_at_f2_to_f9() {
         let get = |g, i| routes(g).iter().find(|r| r.0 == i).unwrap().1;

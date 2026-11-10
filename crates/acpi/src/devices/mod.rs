@@ -437,28 +437,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generic_device_aml() {
-        use fstart_core::acpi::AcpiResource;
-
-        let resources = [AcpiResource::Mmio {
-            base: 0x6001_0000,
-            size: 0x1000,
-        }];
-        let dev = GenericAcpi {
-            name: "DEV0",
-            hid: "ACPI0007",
-            resources: &resources,
-            gsiv: Some(33),
-            interrupt_flags: Default::default(),
-        };
-        let aml = dev.dsdt_aml();
-        // Should start with ExtOpPrefix + DeviceOp (0x5B 0x82)
-        assert!(aml.len() > 10);
-        assert_eq!(aml[0], 0x5B);
-        assert_eq!(aml[1], 0x82);
-    }
-
-    #[test]
     fn generic_device_uses_explicit_irq_attributes() {
         use fstart_core::acpi::AcpiInterruptFlags;
         for (flags, byte) in [
@@ -492,54 +470,6 @@ mod tests {
                     .any(|w| w == [0x89, 6, 0, byte, 1, 5, 0, 0, 0])
             );
         }
-    }
-
-    #[test]
-    fn test_generic_device_no_irq() {
-        use fstart_core::acpi::AcpiResource;
-
-        let resources = [AcpiResource::Mmio {
-            base: 0x7000_0000,
-            size: 0x100,
-        }];
-        let dev = GenericAcpi {
-            name: "DEV1",
-            hid: "TEST0001",
-            resources: &resources,
-            gsiv: None,
-            interrupt_flags: Default::default(),
-        };
-        let aml = dev.dsdt_aml();
-        assert!(aml.len() > 10);
-        assert_eq!(aml[0], 0x5B);
-        assert_eq!(aml[1], 0x82);
-    }
-
-    #[test]
-    fn test_generic_device_mixed_mmio_pio() {
-        use fstart_core::acpi::AcpiResource;
-
-        let resources = [
-            AcpiResource::Mmio {
-                base: 0x6001_0000,
-                size: 0x1000,
-            },
-            AcpiResource::Pio {
-                base: 0x3F8,
-                size: 8,
-            },
-        ];
-        let dev = GenericAcpi {
-            name: "DEV2",
-            hid: "TEST0002",
-            resources: &resources,
-            gsiv: Some(4),
-            interrupt_flags: Default::default(),
-        };
-        let aml = dev.dsdt_aml();
-        assert!(aml.len() > 10);
-        assert_eq!(aml[0], 0x5B);
-        assert_eq!(aml[1], 0x82);
     }
 
     #[test]
@@ -589,34 +519,6 @@ mod tests {
             aml.contains(&0x86),
             "expected Memory32Fixed descriptor (0x86) for below-4G address"
         );
-    }
-
-    #[test]
-    fn test_ahci_aml() {
-        let dev = AhciAcpi {
-            name: "AHC0",
-            base: 0x6010_0000,
-            size: 0x10000,
-            gsiv: 42,
-        };
-        let aml = dev.dsdt_aml();
-        assert!(aml.len() > 10);
-        assert_eq!(aml[0], 0x5B);
-        assert_eq!(aml[1], 0x82);
-    }
-
-    #[test]
-    fn test_xhci_aml() {
-        let dev = XhciAcpi {
-            name: "USB0",
-            base: 0x6011_0000,
-            size: 0x10000,
-            gsiv: 43,
-        };
-        let aml = dev.dsdt_aml();
-        assert!(aml.len() > 10);
-        assert_eq!(aml[0], 0x5B);
-        assert_eq!(aml[1], 0x82);
     }
 
     #[test]

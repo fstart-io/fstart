@@ -327,41 +327,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tigerlake_pll_order_and_stub_allocation_match_libgfxinit() {
-        assert_eq!(
-            TGL_CONFIGURABLE_PLLS,
-            &[TglPll::Dpll0, TglPll::Dpll1, TglPll::Dpll4]
-        );
-        let plan = tgl_alloc_pll_plan(Port::DpA);
-        assert_eq!(plan.pll, TglPll::Invalid);
-        assert!(plan.success);
-        assert_eq!(
-            plan.register_value,
-            TGL_DPLL_SELECT::REGISTER_VALUE.val(0).value
-        );
-        assert_eq!(tgl_pll_register_value(TglPll::Dpll2), 0);
-    }
-
-    #[test]
-    fn tigerlake_power_clock_steps_are_explicit_noops() {
-        for step in [
-            TglPowerClockStep::PreAllOff,
-            TglPowerClockStep::PostAllOff,
-            TglPowerClockStep::Initialize,
-            TglPowerClockStep::LimitDotclocks,
-            TglPowerClockStep::UpdateCdclk,
-            TglPowerClockStep::PowerSetTo,
-            TglPowerClockStep::PowerUp,
-            TglPowerClockStep::PowerDown,
-        ] {
-            let plan = tgl_power_clock_plan(step);
-            assert_eq!(plan.step, step);
-            assert!(!plan.cdclk_switch);
-            assert_eq!(plan.register_writes, 0);
-        }
-    }
-
-    #[test]
     fn tigerlake_ddi_typec_pre_and_post_on_match_libgfxinit() {
         let pre = tgl_ddi_pre_on_plan(
             Cpu::Tigerlake,

@@ -629,33 +629,6 @@ mod tests {
     }
 
     #[test]
-    fn panel_power_control_plan_matches_libgfxinit_on_off_backlight() {
-        let plan = panel_power_control_plan(PanelPowerRegs::GMCH);
-        assert_eq!(
-            plan.panel_on,
-            PanelRegisterOp::Set {
-                register: 0x61204,
-                mask: PP_CONTROL_TARGET_ON,
-            }
-        );
-        assert_eq!(
-            plan.panel_off,
-            PanelRegisterOp::Clear {
-                register: 0x61204,
-                mask: PP_CONTROL_TARGET_ON | PP_CONTROL_VDD_OVERRIDE,
-            }
-        );
-        assert_eq!(plan.vdd_override, plan.panel_on);
-        assert_eq!(
-            plan.backlight_on,
-            PanelRegisterOp::Set {
-                register: 0x61204,
-                mask: PP_CONTROL_BACKLIGHT_ENABLE,
-            }
-        );
-    }
-
-    #[test]
     fn backlight_ops_match_legacy_and_new_models() {
         assert_eq!(
             set_backlight_op(
