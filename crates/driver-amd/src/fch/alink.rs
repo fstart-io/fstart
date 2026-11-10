@@ -14,7 +14,10 @@ pub const DATA: u16 = 0xcdc;
 
 register_bitfields![u32,
     /// A-Link index: register space in [31:29].
-    AbIndex [ADDRESS OFFSET(0) NUMBITS(29) [], SPACE OFFSET(29) NUMBITS(3) [Abcfg = 6]]
+    AbIndex [
+        ADDRESS OFFSET(0) NUMBITS(29) [],
+        SPACE OFFSET(29) NUMBITS(3) [Abcfg = 6]
+    ]
 ];
 
 /// A record of an ABCFG table ([`crate::table`]); the tables are

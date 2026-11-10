@@ -18,7 +18,12 @@ register_bitfields![u32,
     pub BridgeRouting [
         GROUP OFFSET(0) NUMBITS(3) [],
         /// INTA..D rotation.
-        SWIZZLE OFFSET(4) NUMBITS(2) [Abcd = 0, Bcda = 1, Cdab = 2, Dabc = 3],
+        SWIZZLE OFFSET(4) NUMBITS(2) [
+            Abcd = 0,
+            Bcda = 1,
+            Cdab = 2,
+            Dabc = 3
+        ],
         /// First IOAPIC pin of the group.
         MAP OFFSET(16) NUMBITS(5) []
     ],

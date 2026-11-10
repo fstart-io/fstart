@@ -386,18 +386,35 @@ bank!(
 
 register_bitfields![u8,
     /// AOAC device D3 control (AOAC 0x40 + 2 * device).
-    pub AoacControl [TARGET OFFSET(0) NUMBITS(2) [Initialized=1], POWER OFFSET(3) NUMBITS(1) []],
-    pub AoacState [POWER_RESET OFFSET(0) NUMBITS(1) [], REFERENCE_CLOCK OFFSET(1) NUMBITS(1) []],
+    pub AoacControl [
+        TARGET OFFSET(0) NUMBITS(2) [Initialized=1],
+        POWER OFFSET(3) NUMBITS(1) []
+    ],
+    pub AoacState [
+        POWER_RESET OFFSET(0) NUMBITS(1) [],
+        REFERENCE_CLOCK OFFSET(1) NUMBITS(1) []
+    ],
     /// PMx74.
-    pub AcpiConfig [DECODE_STD OFFSET(0) NUMBITS(1) [], GLOBAL_EN OFFSET(1) NUMBITS(1) [],
-        RTC_EN_EN OFFSET(2) NUMBITS(1) [], TIMER_EN_EN OFFSET(4) NUMBITS(1) []],
+    pub AcpiConfig [
+        DECODE_STD OFFSET(0) NUMBITS(1) [],
+        GLOBAL_EN OFFSET(1) NUMBITS(1) [],
+        RTC_EN_EN OFFSET(2) NUMBITS(1) [],
+        TIMER_EN_EN OFFSET(4) NUMBITS(1) []
+    ],
     /// PMx75: PMx74[15:8].
     pub AcpiConfigHigh [PWRBTN_EN OFFSET(0) NUMBITS(1) []],
     /// PMxBE.
-    pub ResetControl1 [KB_RESET_EN OFFSET(4) NUMBITS(1) [], SLP_TYPE_EN OFFSET(5) NUMBITS(1) []],
+    pub ResetControl1 [
+        KB_RESET_EN OFFSET(4) NUMBITS(1) [],
+        SLP_TYPE_EN OFFSET(5) NUMBITS(1) []
+    ],
     /// PMx5B: the setting goes into the low nibble, hardware copies it up.
     pub RtcShadow [
-        POWER_FAILURE OFFSET(0) NUMBITS(2) [Off = 0, On = 1, Previous = 3],
+        POWER_FAILURE OFFSET(0) NUMBITS(2) [
+            Off = 0,
+            On = 1,
+            Previous = 3
+        ],
         /// Has to be written as 1.
         POWER_STATE OFFSET(2) NUMBITS(1) []
     ],
@@ -408,21 +425,32 @@ register_bitfields![u8,
     /// PMxEC.
     pub LpcGating [LPC_ENABLE OFFSET(0) NUMBITS(1) []],
     /// PMx0A.
-    pub Pm0a [BIT3 OFFSET(3) NUMBITS(1) [], BIT4 OFFSET(4) NUMBITS(1) []],
+    pub Pm0a [
+        BIT3 OFFSET(3) NUMBITS(1) [],
+        BIT4 OFFSET(4) NUMBITS(1) []
+    ],
     /// PMxC0: bit 1 clears the reset status.
     pub PmC0 [CLEAR_RESET_STATUS OFFSET(1) NUMBITS(1) []]
 ];
 register_bitfields![u32,
     /// PMx00 decode enables.
-    pub Decode [LEGACY OFFSET(0) NUMBITS(1) [], CF9 OFFSET(1) NUMBITS(1) [],
-        DMA OFFSET(2) NUMBITS(1) [], DMA80 OFFSET(3) NUMBITS(1) [],
+    pub Decode [
+        LEGACY OFFSET(0) NUMBITS(1) [],
+        CF9 OFFSET(1) NUMBITS(1) [],
+        DMA OFFSET(2) NUMBITS(1) [],
+        DMA80 OFFSET(3) NUMBITS(1) [],
         SMBUS_ASF_IO OFFSET(4) NUMBITS(1) [],
-        IOAPIC OFFSET(5) NUMBITS(1) [], HPET OFFSET(6) NUMBITS(1) [],
+        IOAPIC OFFSET(5) NUMBITS(1) [],
+        HPET OFFSET(6) NUMBITS(1) [],
         SMBUS_ASF_IO_BASE OFFSET(8) NUMBITS(8) [],
-        HPET64 OFFSET(28) NUMBITS(1) [], HPET_MSI OFFSET(29) NUMBITS(1) []],
+        HPET64 OFFSET(28) NUMBITS(1) [],
+        HPET_MSI OFFSET(29) NUMBITS(1) []
+    ],
     /// PMx08.
-    pub PciControl [FORCE_STPCLK_RETRY OFFSET(24) NUMBITS(1) [],
-        FORCE_SLPSTATE_RETRY OFFSET(25) NUMBITS(1) []],
+    pub PciControl [
+        FORCE_STPCLK_RETRY OFFSET(24) NUMBITS(1) [],
+        FORCE_SLPSTATE_RETRY OFFSET(25) NUMBITS(1) []
+    ],
     /// PMxE0: the A-Link index/data I/O base.
     pub AbRegBar [PORT OFFSET(0) NUMBITS(16) []],
     /// MISCx08: CGPLLConfig1.
@@ -455,7 +483,10 @@ register_bitfields![u16,
         PCIEXP_WAKE OFFSET(14) NUMBITS(1) [],
         WAK OFFSET(15) NUMBITS(1) []
     ],
-    pub Pm1Enable [PWRBTN OFFSET(8) NUMBITS(1) [], PCIEXP_WAKE_DIS OFFSET(14) NUMBITS(1) []],
+    pub Pm1Enable [
+        PWRBTN OFFSET(8) NUMBITS(1) [],
+        PCIEXP_WAKE_DIS OFFSET(14) NUMBITS(1) []
+    ],
     /// The legacy UART I/O decodes of the AL2AHB UARTs.
     pub LegacyUartDecode [RANGES OFFSET(0) NUMBITS(16) []]
 ];

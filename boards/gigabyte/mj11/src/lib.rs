@@ -103,7 +103,10 @@ pub fn clear_pm1(fch: &Fch<impl Bus>) {
 
 register_bitfields![u32,
     /// The IOMUX bytes of pins 136-139 as one dword.
-    Iomux136 [PIN137_BIT1 OFFSET(9) NUMBITS(1) [], PIN139_HIGH OFFSET(28) NUMBITS(4) []]
+    Iomux136 [
+        PIN137_BIT1 OFFSET(9) NUMBITS(1) [],
+        PIN139_HIGH OFFSET(28) NUMBITS(4) []
+    ]
 ];
 /// SMBusSwitch's GPIO137 and IOMUX settings.
 const GPIO137: u8 = 137;

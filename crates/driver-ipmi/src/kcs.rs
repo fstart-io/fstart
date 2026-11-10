@@ -13,7 +13,12 @@ register_bitfields![u8,
     pub Status [
         OBF OFFSET(0) NUMBITS(1) [],
         IBF OFFSET(1) NUMBITS(1) [],
-        STATE OFFSET(6) NUMBITS(2) [Idle = 0, Read = 1, Write = 2, Error = 3]
+        STATE OFFSET(6) NUMBITS(2) [
+            Idle = 0,
+            Read = 1,
+            Write = 2,
+            Error = 3
+        ]
     ]
 ];
 

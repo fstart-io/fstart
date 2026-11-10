@@ -14,7 +14,10 @@ use tock_registers::{
 register_bitfields![u32,
     PgfsmControl [POWER_ON OFFSET(0) NUMBITS(1) []],
     PgfsmStatus [STATE OFFSET(0) NUMBITS(2) [On = 0]],
-    SoftReset [AUDIO OFFSET(0) NUMBITS(1) [], AUDIO_DONE OFFSET(16) NUMBITS(1) []],
+    SoftReset [
+        AUDIO OFFSET(0) NUMBITS(1) [],
+        AUDIO_DONE OFFSET(16) NUMBITS(1) []
+    ],
     Control [CLK_EN OFFSET(0) NUMBITS(1) []],
     DynamicCgMasterControl [ENABLE OFFSET(0) NUMBITS(16) []],
     PgmemCtrl [SHUT_DOWN OFFSET(16) NUMBITS(12) []],

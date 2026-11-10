@@ -13,10 +13,22 @@ const REG_IE: usize = 0x10;
 const REG_DIV: usize = 0x18;
 
 register_bitfields! [u32,
-    TXDATA [ DATA OFFSET(0) NUMBITS(8) [], FULL OFFSET(31) NUMBITS(1) [] ],
-    RXDATA [ DATA OFFSET(0) NUMBITS(8) [], EMPTY OFFSET(31) NUMBITS(1) [] ],
-    TXCTRL [ TXEN OFFSET(0) NUMBITS(1) [], TXCNT OFFSET(16) NUMBITS(3) [] ],
-    RXCTRL [ RXEN OFFSET(0) NUMBITS(1) [], RXCNT OFFSET(16) NUMBITS(3) [] ],
+    TXDATA [
+        DATA OFFSET(0) NUMBITS(8) [],
+        FULL OFFSET(31) NUMBITS(1) []
+    ],
+    RXDATA [
+        DATA OFFSET(0) NUMBITS(8) [],
+        EMPTY OFFSET(31) NUMBITS(1) []
+    ],
+    TXCTRL [
+        TXEN OFFSET(0) NUMBITS(1) [],
+        TXCNT OFFSET(16) NUMBITS(3) []
+    ],
+    RXCTRL [
+        RXEN OFFSET(0) NUMBITS(1) [],
+        RXCNT OFFSET(16) NUMBITS(3) []
+    ],
 ];
 
 /// Static SiFive UART wiring and precomputed baud divisor.

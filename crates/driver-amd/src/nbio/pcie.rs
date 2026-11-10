@@ -31,7 +31,10 @@ register_bitfields![u32,
     /// Bit per port 1-7 of the core: not trained.
     pub LinkStatus [NOT_TRAINED OFFSET(0) NUMBITS(8) []],
     /// [2:0] function and [15:3] of 0x084: the devfn the port answers to.
-    pub Port008 [FUNCTION OFFSET(0) NUMBITS(3) [], BIT15 OFFSET(15) NUMBITS(1) []],
+    pub Port008 [
+        FUNCTION OFFSET(0) NUMBITS(3) [],
+        BIT15 OFFSET(15) NUMBITS(1) []
+    ],
     pub Port084 [DEVICE OFFSET(3) NUMBITS(13) []],
     pub TxCntl [TX_FLUSH_TLP_DIS OFFSET(15) NUMBITS(1) []],
     pub LcCntl [LC_L1_IMMEDIATE_ACK OFFSET(23) NUMBITS(1) []],

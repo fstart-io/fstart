@@ -294,7 +294,11 @@ pub mod epbar {
 register_bitfields! [u32,
     /// Active FSB strap in MCHBAR clock configuration.
     pub CLKCFG_REG [
-        FSB OFFSET(0) NUMBITS(3) [Fsb533 = 1, Fsb800 = 2, Fsb667 = 3]
+        FSB OFFSET(0) NUMBITS(3) [
+            Fsb533 = 1,
+            Fsb800 = 2,
+            Fsb667 = 3
+        ]
     ],
     /// FSBPMC5 — Front Side Bus Power Management Control 5.
     pub FSBPMC5_REG [

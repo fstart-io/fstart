@@ -344,7 +344,12 @@ mod tests {
     use tock_registers::interfaces::ReadWriteable;
     use tock_registers::register_bitfields;
 
-    register_bitfields![u8, T8 [A OFFSET(1) NUMBITS(2) [], B OFFSET(7) NUMBITS(1) []]];
+    register_bitfields![u8,
+        T8 [
+            A OFFSET(1) NUMBITS(2) [],
+            B OFFSET(7) NUMBITS(1) []
+        ]
+    ];
 
     #[test]
     fn ops_and_typed_registers() {

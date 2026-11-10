@@ -58,7 +58,10 @@ const ASF_IO: u16 = SMBUS_IO + 0x20;
 
 tock_registers::register_bitfields![u32,
     /// NBIF function strap: [15:0] device ID, bit 28 enable.
-    pub NbifStrap [DEVICE_ID OFFSET(0) NUMBITS(16) [], ENABLE OFFSET(28) NUMBITS(1) []]
+    pub NbifStrap [
+        DEVICE_ID OFFSET(0) NUMBITS(16) [],
+        ENABLE OFFSET(28) NUMBITS(1) []
+    ]
 ];
 
 #[cfg(test)]

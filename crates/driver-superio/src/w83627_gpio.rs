@@ -12,14 +12,15 @@ use tock_registers::{
 };
 
 register_bitfields![u8,
-    PIN_BITS [ PINS OFFSET(0) NUMBITS(8) [] ],
+    PIN_BITS [PINS OFFSET(0) NUMBITS(8) []],
     MULTIFUNCTION [
-        GP34_RESET OFFSET(7) NUMBITS(1) [], GP33_RESET OFFSET(6) NUMBITS(1) [],
+        GP34_RESET OFFSET(7) NUMBITS(1) [],
+        GP33_RESET OFFSET(6) NUMBITS(1) [],
         GP32_RESET OFFSET(5) NUMBITS(1) [],
         UART_B_PINS OFFSET(0) NUMBITS(2) [Gpio = 2],
     ],
-    SMBUS [ ENABLE OFFSET(1) NUMBITS(1) [] ],
-    GPIO1_MUX [ GPIO OFFSET(0) NUMBITS(1) [] ],
+    SMBUS [ENABLE OFFSET(1) NUMBITS(1) []],
+    GPIO1_MUX [GPIO OFFSET(0) NUMBITS(1) []],
     THG_GPIO3_MUX [
         GP32 OFFSET(0) NUMBITS(2) [Gpio = 0],
         GP33 OFFSET(2) NUMBITS(2) [Gpio = 0],

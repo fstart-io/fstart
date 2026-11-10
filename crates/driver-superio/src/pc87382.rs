@@ -31,7 +31,10 @@ pub struct GpioPinConfig {
 
 tock_registers::register_bitfields![u8,
     DLPC_CONTROL [
-        REQUEST OFFSET(0) NUMBITS(3) [Disconnect = 0, Connect = 7],
+        REQUEST OFFSET(0) NUMBITS(3) [
+            Disconnect = 0,
+            Connect = 7
+        ],
         CONNECTED OFFSET(3) NUMBITS(1) []
     ],
     GPIO_MODE_IMAGE [VALUE OFFSET(0) NUMBITS(8) []],

@@ -42,7 +42,10 @@ register_bitfields![u32,
         /// Complexes − 1.
         COMPLEX_COUNT OFFSET(4) NUMBITS(4) [],
         /// 1 = one thread per core.
-        SMT_MODE OFFSET(8) NUMBITS(1) [Smt = 0, OneThread = 1],
+        SMT_MODE OFFSET(8) NUMBITS(1) [
+            Smt = 0,
+            OneThread = 1
+        ],
         /// Request SMT off from the next warm reset (CCX_SP3 §3.6).
         SMT_DISABLE OFFSET(9) NUMBITS(1) []
     ],

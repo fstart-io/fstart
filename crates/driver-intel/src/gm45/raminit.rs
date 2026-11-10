@@ -230,8 +230,12 @@ pub fn select_ddr3_timing(
 }
 
 register_bitfields![u32,
-    Dcc [INTERLEAVED OFFSET(1) NUMBITS(1) [], NO_CHANXOR OFFSET(10) NUMBITS(1) [],
-        COMMAND OFFSET(16) NUMBITS(3) [], EREG OFFSET(21) NUMBITS(2) []]
+    Dcc [
+        INTERLEAVED OFFSET(1) NUMBITS(1) [],
+        NO_CHANXOR OFFSET(10) NUMBITS(1) [],
+        COMMAND OFFSET(16) NUMBITS(3) [],
+        EREG OFFSET(21) NUMBITS(2) []
+    ]
 ];
 
 // Named fixed offsets are represented by the MCHBAR overlay; the RCOMP

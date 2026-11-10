@@ -17,8 +17,11 @@ use tock_registers::{
 register_bitfields![u32,
     /// The controller's reset bits; bit 0 is released first, bit 2 then
     /// bit 1 after the PHY setup.
-    pub(super) ResetControl [BIT0 OFFSET(0) NUMBITS(1) [], BIT1 OFFSET(1) NUMBITS(1) [],
-        BIT2 OFFSET(2) NUMBITS(1) []],
+    pub(super) ResetControl [
+        BIT0 OFFSET(0) NUMBITS(1) [],
+        BIT1 OFFSET(1) NUMBITS(1) [],
+        BIT2 OFFSET(2) NUMBITS(1) []
+    ],
     pub(super) R14c [BIT31 OFFSET(31) NUMBITS(1) []],
     Status108 [BUSY OFFSET(8) NUMBITS(2) []],
     R118 [
@@ -26,9 +29,15 @@ register_bitfields![u32,
         PCD_97 OFFSET(12) NUMBITS(1) []
     ],
     /// USB3 PHY tuning: vendor CBS defaults, the same for every PHY.
-    Usb3Tuning [LOS_BIAS OFFSET(5) NUMBITS(3) [], DEEMPH_3P5 OFFSET(18) NUMBITS(6) [],
-        DEEMPH_6 OFFSET(24) NUMBITS(6) []],
-    Usb3Swing [SWING OFFSET(0) NUMBITS(7) [], VBOOST OFFSET(7) NUMBITS(3) []],
+    Usb3Tuning [
+        LOS_BIAS OFFSET(5) NUMBITS(3) [],
+        DEEMPH_3P5 OFFSET(18) NUMBITS(6) [],
+        DEEMPH_6 OFFSET(24) NUMBITS(6) []
+    ],
+    Usb3Swing [
+        SWING OFFSET(0) NUMBITS(7) [],
+        VBOOST OFFSET(7) NUMBITS(3) []
+    ],
     Usb3RxEq [CONTROL OFFSET(6) NUMBITS(6) []]
 ];
 

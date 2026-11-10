@@ -12,7 +12,10 @@ use tock_registers::{
 
 register_bitfields![u32,
     /// PMx40: eSPI interrupt masks.
-    EspiInterruptMask [BIT1 OFFSET(1) NUMBITS(1) [], BIT12 OFFSET(12) NUMBITS(1) []]
+    EspiInterruptMask [
+        BIT1 OFFSET(1) NUMBITS(1) [],
+        BIT12 OFFSET(12) NUMBITS(1) []
+    ]
 ];
 register_bitfields![u8,
     RtcB [DST_EN OFFSET(0) NUMBITS(1) []],
@@ -23,12 +26,21 @@ register_bitfields![u8,
     IntrMiscMap [
         IRQ1_ROUTED OFFSET(1) NUMBITS(1) [],
         IRQ12_ROUTED OFFSET(3) NUMBITS(1) [],
-        IRQ14 OFFSET(4) NUMBITS(2) [LegacyIde = 0, Routed = 3],
-        IRQ15 OFFSET(6) NUMBITS(2) [LegacyIde = 0, Routed = 3]
+        IRQ14 OFFSET(4) NUMBITS(2) [
+            LegacyIde = 0,
+            Routed = 3
+        ],
+        IRQ15 OFFSET(6) NUMBITS(2) [
+            LegacyIde = 0,
+            Routed = 3
+        ]
     ],
     /// The PM1 status bits 8 (power button) and 10 (RTC) of the high byte.
-    Pm1StatusHigh [PWRBTN OFFSET(0) NUMBITS(1) [], RTC OFFSET(2) NUMBITS(1) [],
-        WAKE OFFSET(6) NUMBITS(1) []]
+    Pm1StatusHigh [
+        PWRBTN OFFSET(0) NUMBITS(1) [],
+        RTC OFFSET(2) NUMBITS(1) [],
+        WAKE OFFSET(6) NUMBITS(1) []
+    ]
 ];
 const PM_ESPI_INTR_MASK: crate::fch::AcpiReg<u32, EspiInterruptMask::Register> = pm::at(0x40);
 /// The PCI_INTR index/data pair.

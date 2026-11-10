@@ -7,8 +7,14 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
 register_bitfields![u32,
-    Clock [UPDATE OFFSET(3) NUMBITS(1) [], POWER_UP OFFSET(21) NUMBITS(2) []],
-    Dcc [COMMAND OFFSET(16) NUMBITS(3) [Nop = 1], INITIALIZED OFFSET(19) NUMBITS(1) []],
+    Clock [
+        UPDATE OFFSET(3) NUMBITS(1) [],
+        POWER_UP OFFSET(21) NUMBITS(2) []
+    ],
+    Dcc [
+        COMMAND OFFSET(16) NUMBITS(3) [Nop = 1],
+        INITIALIZED OFFSET(19) NUMBITS(1) []
+    ],
     Drc0 [RANKS OFFSET(24) NUMBITS(4) []],
     Drc1 [NOT_POPULATED OFFSET(16) NUMBITS(4) []],
     Drc2 [NOT_POPULATED OFFSET(24) NUMBITS(4) []]

@@ -16,7 +16,10 @@ use tock_registers::register_bitfields;
 
 register_bitfields![u8,
     GLOBAL_OPTIONS [
-        CLOCK OFFSET(6) NUMBITS(1) [Mhz24 = 0, Mhz48 = 1],
+        CLOCK OFFSET(6) NUMBITS(1) [
+            Mhz24 = 0,
+            Mhz48 = 1
+        ],
         MUST_ONE OFFSET(1) NUMBITS(1) [],
     ],
     FAN_OUTPUTS [
@@ -26,19 +29,31 @@ register_bitfields![u8,
     ],
     LDN7_ENABLE [
         GPIO1_GAME_MIDI OFFSET(0) NUMBITS(1) [],
-        GAME OFFSET(1) NUMBITS(1) [], MIDI OFFSET(2) NUMBITS(1) [],
+        GAME OFFSET(1) NUMBITS(1) [],
+        MIDI OFFSET(2) NUMBITS(1) [],
         GPIO5 OFFSET(3) NUMBITS(1) [],
     ],
-    LDN9_ENABLE [ GPIO3 OFFSET(0) NUMBITS(1) [], GPIO4 OFFSET(1) NUMBITS(1) [] ],
+    LDN9_ENABLE [
+        GPIO3 OFFSET(0) NUMBITS(1) [],
+        GPIO4 OFFSET(1) NUMBITS(1) []
+    ],
     KBC_CONFIG [
-        CLOCK OFFSET(6) NUMBITS(2) [Mhz6 = 0, Mhz8 = 1, Mhz12 = 2, Mhz16 = 3],
+        CLOCK OFFSET(6) NUMBITS(2) [
+            Mhz6 = 0,
+            Mhz8 = 1,
+            Mhz12 = 2,
+            Mhz16 = 3
+        ],
         PORT92 OFFSET(2) NUMBITS(1) [],
         A20_SPEEDUP OFFSET(1) NUMBITS(1) [],
         RESET_SPEEDUP OFFSET(0) NUMBITS(1) [],
     ],
-    UART_CLOCK [ CLOCK OFFSET(0) NUMBITS(2) [Standard = 0] ],
+    UART_CLOCK [CLOCK OFFSET(0) NUMBITS(2) [Standard = 0]],
     SERIAL_CONFIG [
-        IR_LOCATION OFFSET(6) NUMBITS(1) [UartPins = 0, IrPins = 1],
+        IR_LOCATION OFFSET(6) NUMBITS(1) [
+            UartPins = 0,
+            IrPins = 1
+        ],
         IR_MODE OFFSET(3) NUMBITS(3) [Disabled = 0],
         HALF_DUPLEX OFFSET(2) NUMBITS(1) [],
         TX_INVERT OFFSET(1) NUMBITS(1) [],

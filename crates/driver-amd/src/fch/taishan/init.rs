@@ -80,9 +80,16 @@ const PEI_ACPIMMIO_MAIN: &[Rmw] = &[
 register_bitfields![u8,
     RtcB [DST_EN OFFSET(0) NUMBITS(1) []],
     RtcA [BIT4 OFFSET(4) NUMBITS(1) []],
-    RtcD [VALID OFFSET(0) NUMBITS(6) [], BIT6 OFFSET(6) NUMBITS(1) [], VRT OFFSET(7) NUMBITS(1) []],
+    RtcD [
+        VALID OFFSET(0) NUMBITS(6) [],
+        BIT6 OFFSET(6) NUMBITS(1) [],
+        VRT OFFSET(7) NUMBITS(1) []
+    ],
     /// PMx54.
-    SerialIrq [MODE OFFSET(6) NUMBITS(1) [], ENABLE OFFSET(7) NUMBITS(1) []],
+    SerialIrq [
+        MODE OFFSET(6) NUMBITS(1) [],
+        ENABLE OFFSET(7) NUMBITS(1) []
+    ],
     /// PMx08: the A0 workaround.
     Pm08 [A0 OFFSET(5) NUMBITS(2) []],
     Pm0c8 [BIT4 OFFSET(4) NUMBITS(1) []],
@@ -90,13 +97,22 @@ register_bitfields![u8,
     /// PMx00 bit 7 (vendor PCD 0xa1).
     Pm00 [PCD_A1 OFFSET(7) NUMBITS(1) []],
     Pm06 [BIT0 OFFSET(0) NUMBITS(1) []],
-    Misc68 [BIT1 OFFSET(1) NUMBITS(1) [], BIT2 OFFSET(2) NUMBITS(1) []],
-    Misc2e [BIT0 OFFSET(0) NUMBITS(1) [], BIT1 OFFSET(1) NUMBITS(1) []],
+    Misc68 [
+        BIT1 OFFSET(1) NUMBITS(1) [],
+        BIT2 OFFSET(2) NUMBITS(1) []
+    ],
+    Misc2e [
+        BIT0 OFFSET(0) NUMBITS(1) [],
+        BIT1 OFFSET(1) NUMBITS(1) []
+    ],
     /// SMBus host and ASF controller registers.
     SmbusAutopoll [ENABLE OFFSET(0) NUMBITS(8) []],
     /// The PM1 status bits 8 (power button) and 10 (RTC) of the high byte.
-    Pm1StatusHigh [PWRBTN OFFSET(0) NUMBITS(1) [], RTC OFFSET(2) NUMBITS(1) [],
-        WAKE OFFSET(6) NUMBITS(1) []]
+    Pm1StatusHigh [
+        PWRBTN OFFSET(0) NUMBITS(1) [],
+        RTC OFFSET(2) NUMBITS(1) [],
+        WAKE OFFSET(6) NUMBITS(1) []
+    ]
 ];
 register_bitfields![u32,
     /// AOACx94.

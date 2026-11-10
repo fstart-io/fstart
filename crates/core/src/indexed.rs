@@ -77,7 +77,12 @@ mod tests {
     use tock_registers::interfaces::ReadWriteable;
     use tock_registers::register_bitfields;
 
-    register_bitfields![u8, Config [ENABLE OFFSET(0) NUMBITS(1) [], MODE OFFSET(4) NUMBITS(2) []]];
+    register_bitfields![u8,
+        Config [
+            ENABLE OFFSET(0) NUMBITS(1) [],
+            MODE OFFSET(4) NUMBITS(2) []
+        ]
+    ];
 
     /// An index/data pair over 32 bytes, logging every port access.
     #[derive(Default)]
