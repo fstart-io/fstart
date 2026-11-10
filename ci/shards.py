@@ -13,7 +13,7 @@ built them.
 
 prints the job matrix: {"include": [{"shard", "boards", "boots", "qemu",
 "assets"}, ...]}. `boards` and `boots` are space separated board ids;
-`qemu` is the apt package emulating the shard's architecture and `assets`
+`qemu` is the apt packages emulating the shard's architecture and `assets`
 the boot-assets artifact its boots read, both empty without boots.
 """
 
@@ -24,10 +24,13 @@ import sys
 # Builds per job: a board and each of its variants count as one build each.
 MAX_BUILDS = 7
 
+# CI installs no recommended packages, but the network cards of the virt
+# machines need the option ROMs of ipxe-qemu and sbsa-ref's display the
+# VGA BIOS of seabios, which only qemu-system-x86 depends on.
 QEMU_PACKAGES = {
-    "aarch64": "qemu-system-arm",
-    "armv7": "qemu-system-arm",
-    "riscv64": "qemu-system-misc",
+    "aarch64": "qemu-system-arm ipxe-qemu seabios",
+    "armv7": "qemu-system-arm ipxe-qemu",
+    "riscv64": "qemu-system-misc ipxe-qemu",
     "x86": "qemu-system-x86",
     "x86_64": "qemu-system-x86",
 }
