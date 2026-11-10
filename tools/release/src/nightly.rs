@@ -122,9 +122,13 @@ fn verify(directory: &Path, revision: &str) -> Result<Value> {
     {
         return Err("artifact catalog does not match successful CI revision".into());
     }
-    let mut expected: BTreeSet<String> = ["catalog.json", "host-tools-linux-x86_64.tar.gz"]
-        .map(String::from)
-        .into();
+    let mut expected: BTreeSet<String> = [
+        "catalog.json",
+        "image-web.zip",
+        "host-tools-linux-x86_64.tar.gz",
+    ]
+    .map(String::from)
+    .into();
     for build in &catalog.builds {
         let name = &build.asset;
         if !name.ends_with(".bundle.zip")

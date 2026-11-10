@@ -1449,6 +1449,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-image-web"
+version = "0.1.0"
+dependencies = [
+ "fstart-image-build",
+ "js-sys",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "fstart-intel-gma"
 version = "0.1.0"
 dependencies = [
@@ -1676,6 +1686,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "time",
+ "zip",
 ]
 
 [[package]]

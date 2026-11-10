@@ -56,6 +56,10 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           packages: acpica-tools
+      - name: Install the WASM target and wasm-bindgen
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.130 --locked
       # coreboot payload bundles ship SeaBIOS, the boot tests' revision.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,6 +76,28 @@ jobs:
           compression-level: 0 # Each bundle is already ZIP/DEFLATE compressed.
           retention-days: 2 # Daily promotion moves these onto Releases.
           if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-web
+          path: target/image-web/
+          include-hidden-files: true
+          retention-days: 2
+          if-no-files-found: error
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - name: Browser assembler builds for WASM
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --locked --target wasm32-unknown-unknown \
+            -p fstart-image-web
+      - name: Client and release proxy tests
+        run: |
+          node --test tools/image-web/client.test.mjs \
+            tools/image-web/proxy/worker.test.mjs
 
   # The board lists the matrices below run on. fbuild resolves them from
   # boards/<vendor>/<board>/Cargo.toml package.metadata.fstart, the same
