@@ -27,6 +27,6 @@ fn main() -> ! {
     mj11::set_vga_ssid(&stage.dies()[0]);
     mj11::bmc::post_done(stage.fch(), stage.clock());
     let stage = stage.ready_to_boot();
-    mj11::hand_smbus_to_os(&stage.gpio(), stage.fch());
+    mj11::hand_dimm_smbus_to_bmc(&stage.gpio(), stage.fch());
     stage.emit_tables(&mj11::SMBIOS, mj11::acpi()).boot()
 }
