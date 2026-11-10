@@ -187,6 +187,7 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
     let soc = SocBlobs {
         bios_directory: BiosDirectorySlot::Family17hModel10,
         levels: 1,
+        generation_mask: None,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,
         spi_read_mode: Some(4),
@@ -211,6 +212,7 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         psp_app: true,
         apcb: BoardApcb::Files { instances: 2 },
         apob_destination: None,
+        efs_espi: None,
     };
     let (found, missing) = extract(&soc, &board, "board", &image).unwrap();
     assert_eq!(missing, ["psp/os.bin"]);
@@ -239,6 +241,7 @@ fn entries_share_a_file_only_with_the_same_bytes() {
     let soc = |psp: Vec<DirectoryFile>, bios: Vec<DirectoryFile>| SocBlobs {
         bios_directory: BiosDirectorySlot::Family17hModel10,
         levels: 1,
+        generation_mask: None,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,
         spi_read_mode: Some(4),
@@ -256,6 +259,7 @@ fn entries_share_a_file_only_with_the_same_bytes() {
         psp_app: false,
         apcb: BoardApcb::Files { instances: 0 },
         apob_destination: None,
+        efs_espi: None,
     };
     // The same entry twice: one file.
     let same = soc(vec![file(1, 0, 0, "a.bin"), file(1, 0, 0, "a.bin")], vec![]);

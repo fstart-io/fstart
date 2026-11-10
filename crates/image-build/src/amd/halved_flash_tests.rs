@@ -325,6 +325,8 @@ fn packed_half(generation: Generation) -> PackedHalf {
             micron: false,
             soft_fuse: None,
             two_level: true,
+            generation_mask: None,
+            espi: None,
             psp: vec![file(0, Level::One, "key"), file(1, Level::Both, "boot")],
             bios: vec![
                 file(bios::APCB, Level::Two, "apcb"),

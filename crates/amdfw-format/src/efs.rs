@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD #55758 EFS wire layout and directory selection. No silicon driver
 //! or host packing dependencies; board layout is supplied by the caller.
-use zerocopy::little_endian::U32;
+use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 pub const SIGNATURE: u32 = 0x55aa_55aa;
 pub const WINDOW: u32 = 16 << 20;
@@ -44,9 +44,28 @@ pub struct Efs {
     pub spi_read_mode_f17_30: u8,
     pub spi_speed_f17_30: u8,
     pub micron_detect_f17_30: u8,
-    pub rest: [u8; 0x16],
+    pub reserved_4a: [u8; 2],
+    pub vendor_id: U16,
+    pub board_id: U16,
+    /// The eSPI controllers' configuration the PSP applies before x86
+    /// runs (server SoCs): [`Espi`].
+    pub espi: Espi,
+    pub rest: [u8; 0xc],
 }
 const _: () = assert!(size_of::<Efs>() == 0x60);
+
+/// The EFS's eSPI configuration bytes (+0x50), erased if unused.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct Espi {
+    pub espi0_config0: u8,
+    pub espi1_config0: u8,
+    pub espi0_config1: u8,
+    pub espi1_config1: u8,
+}
+const _: () = assert!(core::mem::offset_of!(Efs, espi) == 0x50);
 impl Efs {
     pub fn erased() -> Self {
         let mut raw = Self::read_from_bytes(&[0xff; size_of::<Self>()]).unwrap();

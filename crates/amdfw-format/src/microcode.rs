@@ -14,8 +14,12 @@ pub const fn patch_size(equivalence_id: u16) -> Option<usize> {
     match equivalence_id >> 8 {
         // Family 17h: Zeppelin, Raven/Picasso, Rome, ...
         0x80..=0x8f => Some(0xc80),
-        // Family 19h models 00h-0Fh: Milan.
-        0xa0 => Some(0x15c0),
+        // Family 19h models 00h-0Fh (Milan) and 10h-1Fh (Genoa).
+        // Genoa's installed flat A110 patch is also exactly 5568 bytes.
+        0xa0..=0xa1 => Some(0x15c0),
+        // Family 19h models A0h-AFh: Siena. NFX BIOS directory type 0x66
+        // instances 0..2 are each exactly 5568 bytes (A0 and A2 patches).
+        0xaa => Some(0x15c0),
         _ => None,
     }
 }
@@ -67,13 +71,15 @@ mod tests {
         let blob = [
             patch(0x8310, 0xc80),
             patch(0xa011, 0x15c0),
+            patch(0xa110, 0x15c0),
+            patch(0xaa02, 0x15c0),
             patch(0x8012, 0xc80),
         ]
         .concat();
         let ids: Vec<_> = patches(&blob)
             .map(|p| equivalence_id(p.unwrap()).unwrap())
             .collect();
-        assert_eq!(ids, [0x8310, 0xa011, 0x8012]);
+        assert_eq!(ids, [0x8310, 0xa011, 0xa110, 0xaa02, 0x8012]);
         assert!(patches(&[]).next().is_none());
     }
 

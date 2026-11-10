@@ -631,6 +631,36 @@ fn corrupt_referenced_level_2_is_rejected() {
 }
 
 #[test]
+fn genoa_inspection_uses_generation_zero_and_no_implicit_combo_identity() {
+    let mut image = image(Slot::Family19h);
+    image[0x20024..0x20028].fill(0);
+    let flash = Flash::new(&image).with_profile(Profile::GENOA);
+    let (_, efs) = flash.efs_checked().unwrap();
+    assert_eq!(efs.generation.get(), 0);
+    assert_eq!(flash.psp_directories().unwrap().iter().count(), 1);
+    assert_eq!(
+        flash
+            .bios_directories_checked(Profile::GENOA.bios)
+            .unwrap()
+            .iter()
+            .count(),
+        2
+    );
+    assert_eq!(
+        (Profile::GENOA.psp_id, Profile::GENOA.chip_id),
+        (None, None)
+    );
+    // The generation word fstart packs for Genoa.
+    image[0x20024..0x20028].copy_from_slice(&0xffff_fffeu32.to_le_bytes());
+    assert!(
+        Flash::new(&image)
+            .with_profile(Profile::GENOA)
+            .efs_checked()
+            .is_ok()
+    );
+}
+
+#[test]
 fn fletcher_reference_vectors() {
     assert_eq!(fletcher32(&[0; 8]), 0xffff_ffff);
     assert_eq!(fletcher32(&[1, 0, 2, 0, 3, 0, 4, 0]), 0x0014_000a);
