@@ -87,8 +87,8 @@ x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
-rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
-rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
+rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "01b8e1554ec4a7df8a9d9008c19dc82aeb219df8", default-features = false }
+rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "01b8e1554ec4a7df8a9d9008c19dc82aeb219df8", default-features = false }
 
 # ASPEED register access, generated from kyanitecomputer/aspeed-data.
 aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "e2834759833ae2247ed0c7647460fd4507389ad3", default-features = false }

@@ -289,5 +289,5 @@ pub fn fdt_prepare_platform(
 
 /// Bytes the registered device-tree workspace holds (0 without one).
 pub fn fdt_workspace_capacity() -> u64 {
-    destination().map_or(0, |range| range.size)
+    workspace().map_or(0, |workspace| workspace.destination.size)
 }

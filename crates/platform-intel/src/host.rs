@@ -98,7 +98,7 @@ pub fn compilation_plan(
             environment_values: mp_capacity(),
             bindings,
             file_bindings: vec![],
-            board_features: vec![],
+            board_features: if ram { vec!["acpi".into()] } else { vec![] },
             output: UnitOutput::Executable {
                 expectations: plan.reservations.elf_expectations(row.role, plan.platform)?, load_address: reservation.image.base,
                 flat_capacity: if boot { reservation.image.size } else { reservation.load_window()?.size },
@@ -517,6 +517,11 @@ mod tests {
         let plan = compilation_plan(resolve(FACTS, BuildSelection::default()).unwrap()).unwrap();
         for name in ["bootblock", "postcar", "ramstage"] {
             let unit = plan.unit(name).unwrap();
+            // Board ACPI, and the heap it needs, belong to the ramstage only.
+            let board_features: &[&str] = if name == "ramstage" { &["acpi"] } else { &[] };
+            assert_eq!(unit.board_features, board_features);
+            let script = unit.linker_script.as_ref().unwrap();
+            assert_eq!(script.contains("_FSTART_HEAP ="), name == "ramstage");
             assert!(unit.rustflags.contains(&"-Ccode-model=small".into()));
             assert!(unit.rustflags.contains(&"-Clink-arg=-no-pie".into()));
             let relocation = if name == "bootblock" { "pic" } else { "static" };

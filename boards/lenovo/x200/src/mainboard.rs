@@ -2,8 +2,6 @@
 //! SMBus mux, H8/PMH7 policy, the dock connection, the identity EEPROM and
 //! the X200t digitizer.
 
-extern crate alloc;
-
 use crate::ec;
 use embedded_hal::digital::{OutputPin, PinState};
 use fstart_core::services::{ServiceError, SmBus};
@@ -51,27 +49,8 @@ pub fn select_smbus(mux: &mut impl OutputPin, branch: SmbusBranch) -> Result<(),
 /// What the board read from its own hardware for the tables.
 #[derive(Default)]
 pub struct Identity {
-    eeprom: Option<fstart_driver_lenovo::eeprom::Identity>,
-    ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
-}
-
-impl Identity {
-    /// The SMBIOS identity: like coreboot (`at24rf08c/lenovo_serials.c`),
-    /// the EEPROM fields describe both system and board.
-    pub fn smbios(&self) -> fstart_acpi::smbios::SmbiosIdentity<'_> {
-        let mut identity = X200_SMBIOS_IDENTITY;
-        if let Some(eeprom) = &self.eeprom {
-            identity.sys_product = eeprom.part_number();
-            identity.sys_version = eeprom.version();
-            identity.sys_serial = Some(eeprom.serial_number());
-            identity.sys_uuid = Some(eeprom.uuid);
-            identity.bb_product = eeprom.part_number();
-            identity.bb_version = eeprom.version();
-            identity.bb_serial = Some(eeprom.serial_number());
-        }
-        identity.oem_string = self.ec_oem_string.as_ref().map(|oem| oem.as_str());
-        identity
-    }
+    pub eeprom: Option<fstart_driver_lenovo::eeprom::Identity>,
+    pub ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
 /// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
@@ -125,54 +104,9 @@ pub fn init_devices(pins: &mut Pins, smbus: &mut impl SmBus, resume: bool) -> (I
 /// The board's ACPI: H8 EC surface, sleep hooks, ThinkLight, dock and the
 /// X200t digitizer from the Lenovo driver.
 pub struct Acpi {
-    bluetooth: bool,
-    digitizer: bool,
+    pub bluetooth: bool,
+    pub digitizer: bool,
 }
-
-impl fstart_acpi::device::AcpiDevice for Acpi {
-    type Config = ();
-
-    fn dsdt_aml(&self, _: &Self::Config) -> alloc::vec::Vec<u8> {
-        x200_mainboard_dsdt_aml(self.bluetooth, self.digitizer)
-    }
-}
-
-/// Assemble the X200 DSDT.
-pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> alloc::vec::Vec<u8> {
-    let h8 = fstart_driver_lenovo::h8::H8Config {
-        has_bluetooth: bluetooth,
-        ..crate::config::X200_H8
-    };
-    crate::acpi::dsdt_aml::<<crate::Board as fstart_platform_intel::IntelBoardFacts>::Platform>(
-        &h8,
-        fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,
-        digitizer,
-    )
-}
-
-static X200_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["BGA956"];
-
-pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
-    fstart_acpi::smbios::SmbiosIdentity {
-        bios_vendor: "fstart",
-        // Non-OEM firmware ID, following coreboot and the X61 binding;
-        // Linux thinkpad_acpi validates this before the ThinkPad model string.
-        bios_version: "CBET4000 fstart 0.1.0",
-        bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
-        sys_manufacturer: "LENOVO",
-        sys_product: "ThinkPad X200",
-        sys_version: "ThinkPad X200",
-        sys_serial: None,
-        sys_uuid: None,
-        bb_manufacturer: "LENOVO",
-        bb_product: "ThinkPad X200",
-        bb_version: "1.0",
-        bb_serial: None,
-        chassis_type: 0x0a,
-        chassis_manufacturer: "LENOVO",
-        processor_sockets: &X200_SMBIOS_PROCESSOR_SOCKETS,
-        oem_string: None,
-    };
 
 #[cfg(test)]
 mod tests {

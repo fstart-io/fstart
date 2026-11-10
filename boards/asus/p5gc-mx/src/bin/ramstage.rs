@@ -3,7 +3,7 @@
 #![no_std]
 #![no_main]
 
-use fstart_board_asus_p5gc_mx::{Board, mainboard};
+use fstart_board_asus_p5gc_mx::{Board, acpi, mainboard};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
 use fstart_platform_intel::ramstage::{Path, Ramstage};
@@ -26,7 +26,7 @@ fn main() -> ! {
         .verify_boot_media()
         .init_display();
     let rs = match rs.boot_path() {
-        Path::Cold(rs) => rs.emit_tables(&mainboard::P5GC_MX_SMBIOS_IDENTITY, &mainboard::Acpi),
+        Path::Cold(rs) => rs.emit_tables(&acpi::P5GC_MX_SMBIOS_IDENTITY, &mainboard::Acpi),
         Path::Resume(rs) => rs.keep_tables(),
     };
     rs.boot()

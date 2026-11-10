@@ -360,8 +360,8 @@ impl VbtSource {
     }
 }
 
-/// VBT bytes: borrowed from a fixed window, or copied out of a verified asset.
-pub type Vbt = alloc::borrow::Cow<'static, [u8]>;
+/// VBT bytes borrowed from a fixed window or a retained verified asset.
+pub type Vbt = &'static [u8];
 
 /// Validate a VBT header and return its declared length.
 #[must_use]
@@ -401,11 +401,9 @@ pub fn locate_vbt(source: &VbtSource) -> Option<Vbt> {
     if let Some(file_name) = source.file {
         let bytes = fstart_core::services::ffs_context::read_verified_asset(file_name)?;
         let len = vbt_len(bytes)?;
-        return Some(Vbt::Owned(bytes[..len].to_vec()));
+        return Some(&bytes[..len]);
     }
-    staged_vbt(source.staged)
-        .or_else(|| legacy_vbt(source.legacy_probe))
-        .map(Vbt::Borrowed)
+    staged_vbt(source.staged).or_else(|| legacy_vbt(source.legacy_probe))
 }
 
 /// IGD config-space register that arms the OpRegion software SCI.

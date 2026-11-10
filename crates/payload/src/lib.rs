@@ -8,6 +8,8 @@
 
 #![no_std]
 
+// Only the launchers that allocate link alloc; both select the stage heap.
+#[cfg(any(feature = "crabefi-basic", feature = "tcg"))]
 extern crate alloc as heap;
 
 // The launchers load through the stage crate's verified loaders; a build

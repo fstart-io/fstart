@@ -6,8 +6,8 @@
 
 #![no_std]
 
-extern crate alloc;
-
+#[cfg(feature = "acpi")]
+pub mod acpi;
 pub mod config;
 pub mod mainboard;
 /// The SMM handler, built into the separate SMM image.

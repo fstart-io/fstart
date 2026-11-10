@@ -1,15 +1,80 @@
 //! X200 DSDT glue around the H8 EC: sleep/wake hooks, GFX0
 //! brightness hotkeys, the ThinkLight `\UCMS` method, the EC wake GPE, the
-//! dock (coreboot x200 `dsdt.asl`, `acpi/*.asl`) and the X200t digitizer.
+//! dock (coreboot x200 `dsdt.asl`, `acpi/*.asl`) and the X200t digitizer,
+//! plus the SMBIOS identity. Ramstage-only: they need the heap.
 
 extern crate alloc;
 
+use crate::mainboard::{Acpi, Identity};
 use alloc::vec::Vec;
 use fstart_acpi::PcNamespace;
 use fstart_acpi_macros::acpi_dsl;
-
 use fstart_driver_lenovo::h8::H8Config;
 use fstart_driver_lenovo::h8_acpi::ec;
+
+impl Identity {
+    /// The SMBIOS identity: like coreboot (`at24rf08c/lenovo_serials.c`),
+    /// the EEPROM fields describe both system and board.
+    pub fn smbios(&self) -> fstart_acpi::smbios::SmbiosIdentity<'_> {
+        let mut identity = X200_SMBIOS_IDENTITY;
+        if let Some(eeprom) = &self.eeprom {
+            identity.sys_product = eeprom.part_number();
+            identity.sys_version = eeprom.version();
+            identity.sys_serial = Some(eeprom.serial_number());
+            identity.sys_uuid = Some(eeprom.uuid);
+            identity.bb_product = eeprom.part_number();
+            identity.bb_version = eeprom.version();
+            identity.bb_serial = Some(eeprom.serial_number());
+        }
+        identity.oem_string = self.ec_oem_string.as_ref().map(|oem| oem.as_str());
+        identity
+    }
+}
+
+impl fstart_acpi::device::AcpiDevice for Acpi {
+    type Config = ();
+
+    fn dsdt_aml(&self, _: &Self::Config) -> Vec<u8> {
+        x200_mainboard_dsdt_aml(self.bluetooth, self.digitizer)
+    }
+}
+
+/// Assemble the X200 DSDT.
+pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> Vec<u8> {
+    let h8 = fstart_driver_lenovo::h8::H8Config {
+        has_bluetooth: bluetooth,
+        ..crate::config::X200_H8
+    };
+    dsdt_aml::<<crate::Board as fstart_platform_intel::IntelBoardFacts>::Platform>(
+        &h8,
+        fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,
+        digitizer,
+    )
+}
+
+static X200_SMBIOS_PROCESSOR_SOCKETS: [&str; 1] = ["BGA956"];
+
+pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
+    fstart_acpi::smbios::SmbiosIdentity {
+        bios_vendor: "fstart",
+        // Non-OEM firmware ID, following coreboot and the X61 binding;
+        // Linux thinkpad_acpi validates this before the ThinkPad model string.
+        bios_version: "CBET4000 fstart 0.1.0",
+        bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
+        sys_manufacturer: "LENOVO",
+        sys_product: "ThinkPad X200",
+        sys_version: "ThinkPad X200",
+        sys_serial: None,
+        sys_uuid: None,
+        bb_manufacturer: "LENOVO",
+        bb_product: "ThinkPad X200",
+        bb_version: "1.0",
+        bb_serial: None,
+        chassis_type: 0x0a,
+        chassis_manufacturer: "LENOVO",
+        processor_sockets: &X200_SMBIOS_PROCESSOR_SOCKETS,
+        oem_string: None,
+    };
 
 /// Board DSDT. The platform's IGD provides `INCB`/`DECB`, the Core 2 CPU
 /// AML provides `\CNOT`; `gpio_base` is the ICH GPIOBASE.

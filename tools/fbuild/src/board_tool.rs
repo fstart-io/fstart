@@ -21,9 +21,10 @@ fn load(
     ))
 }
 
-/// Run board policy and protocol tests with the selected variant's features.
-/// Firmware build selections remain separate: a host test must not inherit a
-/// stage's linker script, target or generated artifact bindings.
+/// Run board policy and protocol tests with the board's default and the
+/// selected variant's features. Firmware build selections remain separate: a
+/// host test must not inherit a stage's linker script, target or generated
+/// artifact bindings.
 pub fn test_library(manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
     let root = crate::build_board::workspace_root_pub()?;
     let version = std::process::Command::new("rustc")
@@ -41,13 +42,7 @@ pub fn test_library(manifest: &crate::board_manifest::BoardManifest) -> Result<(
     let mut command = std::process::Command::new("cargo");
     command
         .current_dir(&root)
-        .args([
-            "test",
-            "--locked",
-            "--lib",
-            "--no-default-features",
-            "--manifest-path",
-        ])
+        .args(["test", "--locked", "--lib", "--manifest-path"])
         .arg(root.join("Cargo.toml"))
         .args(["--package", &manifest.package, "--target", host])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")

@@ -8,7 +8,7 @@ use crate::MmioBar;
 use crate::southbridge::lpc::{self, BIOS_CONTROL, ROOT_COMPLEX_BASE};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam::EcamDevice;
-use rflasher_core::spi::SpiCommand;
+use rflasher_core::spi::{SpiCommand, opcodes};
 use rflasher_internal::chipset::IchChipset;
 use rflasher_internal::controller::Controller;
 use rflasher_internal::{
@@ -214,7 +214,7 @@ impl CacheSpi {
         }
         let mut id = [0u8; 3];
         let identified = controller
-            .execute(&mut SpiCommand::read_reg(0x9f, &mut id))
+            .execute(&mut SpiCommand::read_reg(opcodes::RDID, &mut id))
             .is_ok();
         // Construction is outside the console's write callback. Keep status
         // diagnostics here, never in program/erase/unlock (logger re-entry).
@@ -228,10 +228,10 @@ impl CacheSpi {
         let writable = identified
             .then(|| supported_geometry(id, extent.chip_size))
             .flatten()
-            // Require the known 4-KiB erase protocol so rflasher cannot select
-            // a different menu opcode whose geometry this whitelist lacks.
+            // Require the known 4-KiB erase protocol: `erase` names SE_20
+            // and its sector size for the geometry this whitelist verified.
             .filter(|protection| {
-                [0x20, 0x02, 0x05]
+                [opcodes::SE_20, opcodes::PP, opcodes::RDSR]
                     .into_iter()
                     .chain(protection.opcodes().iter().copied())
                     .all(|opcode| controller.probe_opcode(opcode))
@@ -258,7 +258,7 @@ impl CacheSpi {
     fn read_status(&mut self) -> Result<u8, ServiceError> {
         let mut status = [0];
         self.controller
-            .execute(&mut SpiCommand::read_reg(0x05, &mut status))
+            .execute(&mut SpiCommand::read_reg(opcodes::RDSR, &mut status))
             .map_err(|_| ServiceError::HardwareError)?;
         Ok(status[0])
     }
@@ -268,11 +268,11 @@ impl CacheSpi {
     fn write_status(&mut self, value: u8) -> Result<(), ServiceError> {
         if self.writable == Some(Protection::SstStatus) {
             self.controller
-                .execute(&mut SpiCommand::simple(0x50))
+                .execute(&mut SpiCommand::simple(opcodes::EWSR))
                 .map_err(|_| ServiceError::HardwareError)?;
         }
         self.controller
-            .execute(&mut SpiCommand::write_reg(0x01, &[value & !3]))
+            .execute(&mut SpiCommand::write_reg(opcodes::WRSR, &[value & !3]))
             .map_err(|_| ServiceError::HardwareError)?;
         for _ in 0..1000 {
             if self.read_status()? & 1 == 0 {
@@ -363,16 +363,18 @@ impl CacheSpi {
         })
     }
 
-    /// Erase complete 64-KiB units only. The controller may split them into
-    /// the verified chip's supported 4-KiB sectors; neither can cross the extent.
+    /// Erase complete 64-KiB units only, as the verified chip's 4-KiB sectors:
+    /// rflasher erases and polls, with the geometry `new` verified. Neither
+    /// can cross the extent.
     pub fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
+        const SECTOR: u32 = 0x1000;
         let address = self.extent.address(offset, length as usize)?;
         if address % 0x10000 != 0 || length % 0x10000 != 0 {
             return Err(ServiceError::InvalidParam);
         }
         self.with_write(|this| {
             this.controller
-                .controller_erase(address, length)
+                .swseq_erase_blocks(opcodes::SE_20, SECTOR, address, length)
                 .map_err(|_| ServiceError::HardwareError)
         })
     }
@@ -409,8 +411,8 @@ impl Protection {
     fn opcodes(self) -> &'static [u8] {
         match self {
             Self::None => &[],
-            Self::SstStatus => &[0x50, 0x01],
-            Self::MacronixStatus => &[0x01],
+            Self::SstStatus => &[opcodes::EWSR, opcodes::WRSR],
+            Self::MacronixStatus => &[opcodes::WRSR],
         }
     }
 }

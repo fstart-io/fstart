@@ -165,12 +165,15 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
                 .address()
         };
         assert_eq!(symbol("_stack_top"), stage.stack_span().base + stage.stack);
-        assert_eq!(
-            symbol("_FSTART_HEAP"),
-            stage
-                .heap_span()
-                .map_or(stage.stack_span().base, |heap| heap.base)
-        );
+        // Only a stage with a heap can link the allocator.
+        if let Some(heap) = stage.heap_span() {
+            assert_eq!(symbol("_FSTART_HEAP"), heap.base);
+        } else {
+            for name in ["_FSTART_HEAP", "_FSTART_HEAP_SIZE"] {
+                assert!(!linked.symbols().any(|s| s.name() == Ok(name)), "{name}");
+            }
+            assert!(linked.section_by_name(".fstart.heap").is_none());
+        }
         if role == IntelStage::Bootblock {
             assert_eq!(symbol("_data_start"), stage.writable.base);
         } else {

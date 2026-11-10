@@ -37,17 +37,15 @@ d1 = []
 h3 = []
 linux = ["fstart-payload?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
 # Firmware policy belongs to this platform, not per-board forwarding recipes.
-# The SRAM SPL verifies firmware through the hash-pinned bootstrap only; it
-# still links the FFS reader for the stage-local allocator the current
-# bootstrap path requires at link time.
-bundle-a20-bootblock = ["stage", "a20", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
+# SRAM SPLs use only the bounded, allocation-free bootstrap loader.
+bundle-a20-bootblock = ["stage", "a20", "armv7", "fstart-stage?/armv7"]
 bundle-a20-main = [
   "stage", "a20", "armv7",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
   "fstart-stage?/fdt",
 ]
-bundle-h3-bootblock = ["stage", "h3", "armv7", "fstart-stage?/armv7", "fstart-stage?/ffs"]
+bundle-h3-bootblock = ["stage", "h3", "armv7", "fstart-stage?/armv7"]
 bundle-h3-main = [
   "stage", "h3", "armv7",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
@@ -56,7 +54,7 @@ bundle-h3-main = [
 ]
 bundle-h5-bootblock = [
   "stage", "h3", "aarch64",
-  "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry", "fstart-stage?/ffs",
+  "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry",
 ]
 bundle-h5-main = [
   "stage", "h3", "aarch64",
@@ -67,7 +65,7 @@ bundle-h5-main = [
 ]
 bundle-d1-bootblock = [
   "stage", "d1", "riscv64",
-  "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry", "fstart-stage?/ffs",
+  "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry",
 ]
 bundle-d1-main = [
   "stage", "d1", "riscv64",
