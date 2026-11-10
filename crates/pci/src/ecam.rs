@@ -9,6 +9,10 @@ use crate::{ConfigRegionAccess, PciAddress};
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(test)]
+#[path = "ecam_caps_tests.rs"]
+mod capability_tests;
+
 pub(crate) const FUNCTION_CONFIG_BYTES: usize = 0x1000;
 
 /// ECAM function offset from the segment's bus-zero mapping.
@@ -148,6 +152,36 @@ impl EcamDevice {
     fn addr(&self, reg: u16, width: usize) -> usize {
         self.register_address(reg, width)
             .expect("invalid or unmapped ECAM register")
+    }
+
+    /// Find a conventional capability with bounded, cycle-checked traversal.
+    /// Returns None for an absent/malformed list; never follows it into ECAM
+    /// extended capability space or beyond the function's mapping.
+    pub fn find_capability(&self, id: u8) -> Option<u16> {
+        use crate::config::{PCI_CAPABILITIES_PTR, PCI_STATUS, PCI_STATUS_BITS};
+        if !self.is_present()
+            || self.read8(crate::config::PCI_HEADER_TYPE) & 0x7f > 1
+            || !PCI_STATUS_BITS::CAPABILITIES_LIST.is_set(self.read16(PCI_STATUS))
+        {
+            return None;
+        }
+        let mut pointer = self.read8(PCI_CAPABILITIES_PTR);
+        let mut seen = 0u64;
+        for _ in 0..48 {
+            if !(0x40..=0xfc).contains(&pointer) || pointer & 3 != 0 {
+                return None;
+            }
+            let bit = 1u64 << (pointer / 4);
+            if seen & bit != 0 {
+                return None;
+            }
+            seen |= bit;
+            if self.read8(pointer.into()) == id {
+                return Some(pointer.into());
+            }
+            pointer = self.read8(u16::from(pointer) + 1);
+        }
+        None
     }
 
     /// Return a typed config-space overlay for this device.
@@ -383,26 +417,6 @@ impl EcamDevice {
     pub fn and8_or8(&self, reg: u16, mask: u8, bits: u8) {
         let v = self.read8(reg);
         self.write8(reg, (v & mask) | bits);
-    }
-
-    /// Offset of the first standard capability `id`. The walk is bounded by
-    /// the 48 dwords a capability list can occupy, so a cycle terminates.
-    pub fn find_capability(&self, id: u8) -> Option<u16> {
-        const STATUS_CAP_LIST: u16 = 1 << 4;
-        if self.read16(0x06) & STATUS_CAP_LIST == 0 {
-            return None;
-        }
-        let mut next = self.read8(0x34) & !3;
-        for _ in 0..48 {
-            if next < 0x40 {
-                return None;
-            }
-            if self.read8(next.into()) == id {
-                return Some(next.into());
-            }
-            next = self.read8(u16::from(next) + 1) & !3;
-        }
-        None
     }
 
     /// Program the subsystem vendor/device dword (vendor in the low half),
