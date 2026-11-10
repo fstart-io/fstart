@@ -60,6 +60,8 @@ register_bitfields![u64,
         CPU_VID OFFSET(14) NUMBITS(8) [],
         IDD_VALUE OFFSET(22) NUMBITS(8) [],
         IDD_DIV OFFSET(30) NUMBITS(2) [],
+        /// VID bit8 on SVI3 (Genoa); reserved on the SVI2 models.
+        CPU_VID_HIGH OFFSET(32) NUMBITS(1) [],
         PSTATE_EN OFFSET(63) NUMBITS(1) []
     ],
     pub SmmMask [
