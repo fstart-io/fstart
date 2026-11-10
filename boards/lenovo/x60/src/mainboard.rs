@@ -70,15 +70,32 @@ impl Identity {
         identity
     }
 }
+/// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
+/// them.
+pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 9] = {
+    use fstart_driver_lenovo::options::*;
+    [
+        BLUETOOTH,
+        WWAN,
+        WLAN,
+        TRACKPOINT,
+        STICKY_FN,
+        POWER_MANAGEMENT_BEEPS,
+        LOW_BATTERY_BEEP,
+        VOLUME,
+        FIRST_BATTERY,
+    ]
+};
 
 /// Initialize EC, dock, clock, EEPROM and SD policy in their original order.
 pub fn init_devices(
     bluetooth_card: &mut impl InputPin,
     smbus: &mut impl SmBus,
+    ec: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> Identity {
     let mut identity = Identity::default();
-    if !fstart_driver_lenovo::x6::ec_init(bluetooth_card, &crate::config::X60_H8, resume) {
+    if !fstart_driver_lenovo::x6::ec_init(bluetooth_card, &crate::config::X60_H8, ec, resume) {
         fstart_log::error!("lenovo-x60: H8 EC initialization incomplete");
     }
     if !resume {

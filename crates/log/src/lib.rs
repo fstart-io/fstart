@@ -436,7 +436,7 @@ pub fn max_level() -> Level {
 /// messages are not compiled in.
 pub mod option {
     use super::Level;
-    use fstart_options::{Choice, Kind, Knob, Meta, Provenance, Rejection, Report, Source};
+    use fstart_options::{Choice, Kind, Knob, Meta, Provenance, Rejection, Setting, Source};
 
     const CHOICES: &[Choice] = &[
         Choice::new(3, "Error"),
@@ -482,48 +482,34 @@ pub mod option {
         |l, v| *l = level(v),
     )];
 
-    /// [`fstart_options::resolve_checked`], logging every override applied
-    /// and every stored value it rejects.
-    pub fn resolve<C: Clone>(
-        knobs: &'static [Knob<C>],
-        source: &dyn Source,
-        config: &mut C,
-        report: &mut Report,
-        check: impl FnOnce(&C) -> Result<(), &'static str>,
-    ) {
-        let first = report.settings.len();
-        let duplicates = report.duplicates.len();
-        fstart_options::resolve_checked(knobs, source, config, report, check);
-        for meta in &report.duplicates[duplicates..] {
-            crate::error!(
-                "options: {} is a key of another knob, not resolved",
-                meta.key
-            );
+    /// Log a knob's outcome: an applied override or a rejected value.
+    pub fn log(setting: &Setting) {
+        let key = setting.meta.key;
+        match setting.provenance {
+            Provenance::Board => {}
+            Provenance::Override => crate::info!(
+                "options: {} = {} (board {})",
+                key,
+                setting.value,
+                setting.default
+            ),
+            Provenance::Rejected { stored, why } => crate::warn!(
+                "options: {} = {} not applied ({}), keeping {}",
+                key,
+                stored,
+                match why {
+                    Rejection::OutOfRange => "invalid value",
+                    Rejection::Inactive => "unavailable",
+                    Rejection::Source(_) => "store unreadable",
+                    Rejection::Conflict(why) => why,
+                },
+                setting.value
+            ),
         }
-        for setting in &report.settings[first..] {
-            let key = setting.meta.key;
-            match setting.provenance {
-                Provenance::Board => {}
-                Provenance::Override => crate::info!(
-                    "options: {} = {} (board {})",
-                    key,
-                    setting.value,
-                    setting.default
-                ),
-                Provenance::Rejected { stored, why } => crate::warn!(
-                    "options: {} = {} not applied ({}), keeping {}",
-                    key,
-                    stored,
-                    match why {
-                        Rejection::OutOfRange => "invalid value",
-                        Rejection::Inactive => "unavailable",
-                        Rejection::Source(_) => "store unreadable",
-                        Rejection::Conflict(why) => why,
-                    },
-                    setting.value
-                ),
-            }
-        }
+    }
+
+    /// Log how many knobs were read from which backends.
+    pub fn log_sources(count: usize, source: &dyn Source) {
         let mut names = [""; 3];
         let mut n = 0;
         source.names(&mut |name| {
@@ -532,7 +518,6 @@ pub mod option {
             }
             n += 1;
         });
-        let count = report.settings.len() - first;
         match n {
             0 | 1 => crate::info!("options: {} knobs from {}", count, names[0]),
             2 => crate::info!(
@@ -549,6 +534,40 @@ pub mod option {
                 names[2]
             ),
         }
+    }
+
+    /// [`fstart_options::resolve_each`], logged. Allocates nothing, so
+    /// pre-DRAM stages use it.
+    pub fn resolve<C: Clone + 'static>(
+        knobs: &'static [Knob<C>],
+        source: &dyn Source,
+        config: &mut C,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        fstart_options::resolve_each(knobs, source, config, check, |s| log(&s));
+        log_sources(knobs.len(), source);
+    }
+
+    /// [`fstart_options::resolve_checked`] into `report`, logged.
+    #[cfg(feature = "alloc")]
+    pub fn resolve_into<C: Clone + 'static>(
+        knobs: &'static [Knob<C>],
+        source: &dyn Source,
+        config: &mut C,
+        report: &mut fstart_options::Report,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let first = report.settings.len();
+        let duplicates = report.duplicates.len();
+        fstart_options::resolve_checked(knobs, source, config, report, check);
+        for meta in &report.duplicates[duplicates..] {
+            crate::error!(
+                "options: {} is a key of another knob, not resolved",
+                meta.key
+            );
+        }
+        report.settings[first..].iter().for_each(log);
+        log_sources(report.settings.len() - first, source);
     }
 
     #[cfg(test)]

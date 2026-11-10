@@ -183,6 +183,8 @@ const PCI_BUS_END: u8 = 0xff;
 /// Pineview NB driver.
 pub struct IntelPineview {
     config: &'static IntelPineviewConfig,
+    /// The user options over the board config.
+    options: crate::igd::options::Options,
     /// Detected DRAM size (bytes), populated by `init()`.
     detected_size: u64,
     boot_path: crate::BootPath,
@@ -345,12 +347,12 @@ impl IntelPineview {
         );
         // GGC: Pineview uses a fixed 1 MiB GTT reservation (GGMS=1), while
         // the board chooses the stolen framebuffer reservation through GMS.
-        let (stolen_memory_mb, gms) = match pineview_gms(self.config.igd.stolen_memory_mb) {
-            Some(gms) => (self.config.igd.stolen_memory_mb, gms),
+        let (stolen_memory_mb, gms) = match pineview_gms(self.options.uma_mb) {
+            Some(gms) => (self.options.uma_mb, gms),
             None => {
                 fstart_log::error!(
                     "pineview: unsupported stolen_memory_mb={}, using 16 MiB",
-                    self.config.igd.stolen_memory_mb
+                    self.options.uma_mb
                 );
                 (default_stolen_memory_mb(), 4)
             }
@@ -516,14 +518,38 @@ impl crate::IntelEcamConfig for IntelPineviewConfig {
     }
 }
 
+/// The stolen-memory sizes the GMS field encodes, in MiB.
+const UMA_SIZES: &[fstart_options::Choice] = &[
+    fstart_options::Choice::new(8, "8 MiB"),
+    fstart_options::Choice::new(16, "16 MiB"),
+    fstart_options::Choice::new(32, "32 MiB"),
+    fstart_options::Choice::new(48, "48 MiB"),
+    fstart_options::Choice::new(64, "64 MiB"),
+    fstart_options::Choice::new(128, "128 MiB"),
+    fstart_options::Choice::new(256, "256 MiB"),
+];
+
 impl crate::IntelNorthbridgeDriver for IntelPineview {
     type Config = IntelPineviewConfig;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    type Options = crate::igd::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
+        &[crate::igd::options::uma(UMA_SIZES)];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
+            options: crate::igd::options::Options::new(true, config.igd.stolen_memory_mb),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             display: super::igd::IgdDisplay::new(),

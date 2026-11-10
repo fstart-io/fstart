@@ -67,6 +67,7 @@ pub fn ec_init(
     model: Model,
     bdc_presence: &mut impl InputPin,
     config: &H8Config,
+    options: &crate::options::Options,
     resume: bool,
 ) -> bool {
     let bluetooth = detect_bluetooth(model, bdc_presence);
@@ -75,9 +76,14 @@ pub fn ec_init(
     pmh7.log_identity();
     pmh7.backlight_enable(true);
     pmh7.dock_event_enable(true);
-    pmh7.touchpad_enable(true);
-    pmh7.trackpoint_enable(true);
-    H8::new(Ec::new(config.resources.os)).init_legacy_thinkpad(&EVENT_MASKS, bluetooth, resume)
+    pmh7.touchpad_enable(options.touchpad);
+    pmh7.trackpoint_enable(options.trackpoint);
+    H8::new(Ec::new(config.resources.os)).init_legacy_thinkpad(
+        &EVENT_MASKS,
+        bluetooth,
+        options,
+        resume,
+    )
 }
 
 #[cfg(test)]

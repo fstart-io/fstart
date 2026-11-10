@@ -1194,6 +1194,7 @@ dependencies = [
  "fstart-driver-usbdebug",
  "fstart-intel-gma",
  "fstart-log",
+ "fstart-options",
  "fstart-pci",
  "fstart-smm",
  "fstart-timestamp",
@@ -1229,6 +1230,7 @@ dependencies = [
  "fstart-core",
  "fstart-driver-superio",
  "fstart-log",
+ "fstart-options",
  "tock-registers",
  "ufmt",
 ]
@@ -1431,6 +1433,7 @@ name = "fstart-options"
 version = "0.1.0"
 dependencies = [
  "crabefi-efi-types",
+ "fstart-options",
 ]
 
 [[package]]
@@ -1500,11 +1503,13 @@ dependencies = [
  "fstart-coreboot",
  "fstart-driver-flash-console",
  "fstart-driver-intel",
+ "fstart-driver-rtc",
  "fstart-driver-uart",
  "fstart-driver-usbdebug",
  "fstart-ffs",
  "fstart-image-build",
  "fstart-log",
+ "fstart-options",
  "fstart-payload",
  "fstart-pci",
  "fstart-resume",

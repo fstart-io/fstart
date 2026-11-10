@@ -527,6 +527,8 @@ impl Default for IntelGm965Config {
 /// in `.rodata` instead of copying it onto the tiny CAR stack.
 pub struct IntelGm965 {
     config: &'static IntelGm965Config,
+    /// The user options over the board config.
+    options: crate::igd::options::Options,
     detected_size: u64,
     boot_path: crate::BootPath,
     s3_enabled: bool,
@@ -660,7 +662,7 @@ impl IntelGm965 {
             return 0x0002;
         }
 
-        let (stolen_mb, gms) = match self.config.igd.stolen_memory_mb {
+        let (stolen_mb, gms) = match self.options.uma_mb {
             1 => (1, 1),
             4 => (4, 2),
             8 => (8, 3),
@@ -1311,14 +1313,41 @@ impl crate::IntelEcamConfig for IntelGm965Config {
     }
 }
 
+/// The stolen-memory sizes the GMS field encodes, in MiB.
+const UMA_SIZES: &[fstart_options::Choice] = &[
+    fstart_options::Choice::new(1, "1 MiB"),
+    fstart_options::Choice::new(4, "4 MiB"),
+    fstart_options::Choice::new(8, "8 MiB"),
+    fstart_options::Choice::new(16, "16 MiB"),
+    fstart_options::Choice::new(32, "32 MiB"),
+    fstart_options::Choice::new(48, "48 MiB"),
+    fstart_options::Choice::new(64, "64 MiB"),
+];
+
 impl crate::IntelNorthbridgeDriver for IntelGm965 {
     type Config = IntelGm965Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    type Options = crate::igd::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
+        &[crate::igd::options::uma(UMA_SIZES)];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
+            options: crate::igd::options::Options::new(
+                config.igd.enable_vga,
+                config.igd.stolen_memory_mb,
+            ),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             s3_enabled: false,

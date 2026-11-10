@@ -45,6 +45,7 @@ fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-intel-gma = { workspace = true }
 
 fstart-log = { workspace = true }
+fstart-options = { workspace = true }
 fstart-driver-rtc = { workspace = true }
 fstart-timestamp = { workspace = true }
 

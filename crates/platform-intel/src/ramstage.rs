@@ -94,6 +94,9 @@ pub struct Ramstage<B: IntelBoard, S = Entered> {
     /// that survived in RAM must not be reinitialized blindly.
     resume: bool,
     wake_vector: Option<u32>,
+    /// The outcome of every option knob resolved so far, for the payload's
+    /// settings menu.
+    options: fstart_options::Report,
     _state: PhantomData<(B, S)>,
 }
 
@@ -114,8 +117,24 @@ impl<B: IntelBoard, S> Ramstage<B, S> {
             mainboard: self.mainboard,
             resume: self.resume,
             wake_vector: self.wake_vector,
+            options: self.options,
             _state: PhantomData,
         }
+    }
+
+    /// Apply the stored overrides of the board's `knobs` to `config`
+    /// (`fstart_options`), before the board uses it. `check` is the whole-set
+    /// validation of the consumer: if the overridden configuration fails
+    /// it, `config` keeps the board's values. The knobs are shown in the
+    /// payload's settings menu.
+    pub fn resolve_options<C: Clone + 'static>(
+        &mut self,
+        knobs: &'static [fstart_options::Knob<C>],
+        config: &mut C,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let source = crate::options::store();
+        fstart_log::option::resolve_into(knobs, &source, config, &mut self.options, check);
     }
 
     /// Run one named phase: timestamp, log, and stop the boot on failure.
@@ -256,6 +275,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             mainboard: (String::new(), String::new()),
             resume,
             wake_vector: None,
+            options: fstart_options::Report::new(),
             _state: PhantomData,
         };
         // Postcar authenticated our initialized image before entry. Import only
@@ -300,6 +320,11 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             self.console = Some(&fstart_log::ConsoleMux);
         }
         fstart_log::info!("{} ramstage: {} console ready", B::Platform::NAME, C::NAME);
+        crate::options::chipset_into(
+            &mut self.northbridge,
+            &mut self.southbridge,
+            &mut self.options,
+        );
         let early = self
             .northbridge
             .early_init()
@@ -806,7 +831,17 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
                 .coreboot_window
                 .map(|(base, size)| unsafe { fstart_payload::coreboot::Window::new(base, size) });
         }
-        fstart_payload::boot(Handoff::new(description, placement), ())
+        #[allow(unused_mut)]
+        let mut handoff = Handoff::new(description, placement);
+        // CrabEFI shows the options in its menu and writes them to CMOS.
+        #[cfg(feature = "payload-uefi-basic")]
+        {
+            handoff.settings = Some(fstart_payload::crabefi::settings::FirmwareSettings {
+                cfr: fstart_options::cfr::encode(&self.options),
+                cmos: Some(crate::options::store()),
+            });
+        }
+        fstart_payload::boot(handoff, ())
     }
 }
 
