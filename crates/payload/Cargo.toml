@@ -10,6 +10,10 @@ default = []
 linux = ["fstart-stage/fdt"]
 # x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
 coreboot = ["fstart-stage/ffs", "dep:fstart-coreboot", "dep:heapless"]
+# Bare ELF payloads (TamaGo, bare-metal programs): entered at e_entry.
+elf = ["fstart-stage/ffs"]
+# The ARMv5TE entry helpers, which enter bare ELF payloads.
+armv5te = ["fstart-arch/armv5te"]
 # Measured boot of the payload (TPM 1.2 and 2.0).
 tcg = ["fstart-stage/tcg", "dep:fstart-tcg", "fstart-boot?/tcg"]
 # CrabEFI UEFI payload, linked as a library. The UI profile adds CrabEFI's

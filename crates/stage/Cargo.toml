@@ -4,9 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 [features]
-default = []
+default = ["runtime"]
+# The stage owns the binary: panic handler and, when something allocates,
+# the bump global allocator over the linker-reserved heap. A firmware that
+# links fstart as a library disables default features and supplies both.
+runtime = []
 # Platform selection (exactly one must be enabled)
 armv7 = ["fstart-arch/armv7"]
+armv5te = ["fstart-arch/armv5te"]
 aarch64 = ["fstart-arch/aarch64"]
 aarch64-el2-relocate-entry = ["fstart-arch/aarch64-el2-relocate-entry"]
 aarch64-sunxi-rmr-entry = ["fstart-arch/aarch64-sunxi-rmr-entry"]
@@ -54,6 +59,7 @@ fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
+portable-atomic = { workspace = true }
 
 # FFS (optional, behind ffs feature)
 fstart-ffs = { workspace = true, optional = true }

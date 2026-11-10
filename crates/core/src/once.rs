@@ -1,5 +1,5 @@
 //! Things that may happen once per boot.
-use core::sync::atomic::{AtomicBool, Ordering};
+use portable_atomic::{AtomicBool, Ordering};
 
 /// A one-way flag: the first [`TakeOnce::take`] gets it, every later one,
 /// also after an error of the first taker, doesn't.

@@ -3,10 +3,10 @@
 //! once in DRAM, authenticated before parsing, and never reread from media.
 use crate::boot::{Codec, LoadError, MemoryPolicy, MemoryWindow, read_exact};
 use crate::heap::{boxed::Box, vec::Vec};
-use core::sync::atomic::{AtomicPtr, Ordering};
 use fstart_core::services::BootMedia;
 use fstart_ffs::root::DirectoryRef;
 use fstart_ffs::{ManifestView, ReaderError};
+use portable_atomic::{AtomicPtr, Ordering};
 
 pub const MAX_DIRECTORY_SIZE: u64 = 64 * 1024;
 const MAX_WINDOWS: usize = 32;

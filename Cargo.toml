@@ -17,6 +17,7 @@ members = [
   "crates/coreboot",
   "crates/platform-intel",
   "crates/platform-sunxi",
+  "crates/platform-aspeed",
   "crates/platform-qemu",
   "crates/ffs",
   "crates/load",
@@ -53,6 +54,7 @@ members = [
   "crates/resume",
   "crates/store",
   "crates/timestamp",
+  "crates/memtest",
 ]
 
 [workspace.package]
@@ -73,10 +75,11 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
-heapless = { version = "0.8", default-features = false, features = ["serde"] }
+heapless = { version = "0.8", default-features = false, features = ["serde", "portable-atomic"] }
 konst = { version = "0.4", default-features = false, features = ["iter"] }
 ufmt = { version = "0.2", default-features = false }
 bitflags = "2"
+portable-atomic = "1"
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 tock-registers = "0.10"
 pci_types = "0.10.1"
@@ -86,6 +89,11 @@ x86_64_crate = { package = "x86_64", version = "0.15", default-features = false 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
 rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
 rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "c8f01c849a2714c2ea38b2cd60744595db70878d", default-features = false }
+
+# ASPEED register access, generated from kyanitecomputer/aspeed-data.
+aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "e2834759833ae2247ed0c7647460fd4507389ad3", default-features = false }
+# Blocking ASPEED driver cores; pins the same aspeed-data revision.
+aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "584969669dfa6d5820a346f771bc7f70f5d322ac", default-features = false }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
@@ -138,6 +146,7 @@ fstart-boot = { path = "crates/boot" }
 fstart-resume = { path = "crates/resume" }
 fstart-store = { path = "crates/store" }
 fstart-timestamp = { path = "crates/timestamp" }
+fstart-memtest = { path = "crates/memtest" }
 
 [profile.dev]
 panic = "abort"
@@ -180,6 +189,8 @@ opt-level = "s"
 [profile.dev.package.fstart-driver-chromeec]
 opt-level = "s"
 [profile.dev.package.fstart-platform-sunxi]
+opt-level = "s"
+[profile.dev.package.fstart-platform-aspeed]
 opt-level = "s"
 [profile.dev.package.fstart-platform-qemu]
 opt-level = "s"

@@ -1,0 +1,53 @@
+[package]
+name = "fstart-platform-aspeed"
+description = "ASPEED BMC SoC platform flows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+host = ["dep:fstart-image-build", "dep:serde_json"]
+# Both stages read the signed FFS through the CE0 window: the bootblock
+# authenticates the root to load the main stage, the main stage the payload.
+stage = [
+  "dep:fstart-driver-uart",
+  "dep:fstart-ffs",
+  "dep:fstart-log",
+  "dep:fstart-memtest",
+  "dep:fstart-payload",
+  "dep:fstart-stage",
+  "dep:fstart-timestamp",
+  "dep:ufmt",
+  "fstart-stage?/handoff",
+  "fstart-stage?/bootstrap",
+  "fstart-stage?/ffs",
+  "fstart-stage?/ed25519",
+  "fstart-stage?/ffs-signature",
+  "fstart-stage?/sha2-digest",
+]
+armv5te = ["fstart-arch/armv5te", "fstart-stage?/armv5te", "fstart-payload?/armv5te"]
+ast2500 = ["dep:aspeed-pac", "aspeed-pac?/ast2500-arm", "dep:aspeed-hal", "aspeed-hal?/ast2500"]
+bundle-ast2500-bootblock = ["stage", "ast2500", "armv5te"]
+bundle-ast2500-main = ["stage", "ast2500", "armv5te"]
+# Bare ELF payloads, entered at e_entry.
+elf = ["fstart-payload?/elf"]
+
+[dependencies]
+aspeed-hal = { workspace = true, optional = true }
+aspeed-pac = { workspace = true, optional = true }
+fstart-core = { workspace = true }
+fstart-driver-uart = { workspace = true, optional = true }
+fstart-ffs = { workspace = true, optional = true }
+fstart-image-build = { workspace = true, optional = true }
+fstart-log = { workspace = true, optional = true }
+fstart-memtest = { workspace = true, optional = true }
+fstart-payload = { workspace = true, optional = true }
+fstart-stage = { workspace = true, optional = true }
+fstart-timestamp = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+ufmt = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+fstart-arch = { workspace = true }

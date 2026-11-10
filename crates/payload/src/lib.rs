@@ -1,9 +1,10 @@
-//! Payload launchers: Linux, UEFI (CrabEFI) and coreboot payloads.
+//! Payload launchers: Linux, UEFI (CrabEFI), coreboot and bare ELF payloads.
 //!
 //! The platform describes the machine once ([`Description`]) and adds where
 //! the launcher places the payload's pieces ([`Placement`]); [`boot`] hands
 //! the [`Handoff`] to the launcher `--payload` selected, which exports what
-//! its payload needs (e820 and zero page, coreboot tables, device tree, UEFI).
+//! its payload needs (e820 and zero page, coreboot tables, device tree, UEFI;
+//! a bare ELF needs nothing).
 
 #![no_std]
 
@@ -19,6 +20,8 @@ pub use fstart_core::description::{AcpiTables, Description, PciRootInfo, Range};
 pub use fstart_boot::crabefi;
 #[cfg(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))]
 pub mod coreboot;
+#[cfg(feature = "elf")]
+pub mod elf;
 
 /// A payload launcher. `devices` carries what a platform's own
 /// launcher needs beyond the handoff (its boot media); the common
@@ -480,11 +483,13 @@ pub enum Selected {
     Linux,
     Uefi,
     Coreboot,
+    Elf,
 }
 
 const LAUNCHERS: u8 = cfg!(feature = "linux") as u8
     + cfg!(feature = "crabefi-basic") as u8
-    + cfg!(feature = "coreboot") as u8;
+    + cfg!(feature = "coreboot") as u8
+    + cfg!(feature = "elf") as u8;
 const _: () = assert!(LAUNCHERS <= 1, "enable one payload launcher per stage");
 
 /// The launcher this stage was built with.
@@ -494,12 +499,14 @@ pub const SELECTED: Selected = if cfg!(feature = "crabefi-basic") {
     Selected::Linux
 } else if cfg!(feature = "coreboot") {
     Selected::Coreboot
+} else if cfg!(feature = "elf") {
+    Selected::Elf
 } else {
     Selected::Halt
 };
 
 /// Boot the [`SELECTED`] payload.
-#[allow(unreachable_code)]
+#[allow(unreachable_code, clippy::diverging_sub_expression)]
 pub fn boot<D>(handoff: Handoff<'_>, devices: D) -> ! {
     #[cfg(all(feature = "crabefi-basic", target_arch = "aarch64"))]
     return <Aarch64UefiPayload as MainstagePayload<D>>::boot(handoff, devices);
@@ -519,6 +526,8 @@ pub fn boot<D>(handoff: Handoff<'_>, devices: D) -> ! {
     return <LinuxPayload as MainstagePayload<D>>::boot(handoff, devices);
     #[cfg(all(feature = "coreboot", any(target_arch = "x86", target_arch = "x86_64")))]
     return <crate::coreboot::X86CorebootPayload as MainstagePayload<D>>::boot(handoff, devices);
+    #[cfg(feature = "elf")]
+    return <crate::elf::ElfPayload as MainstagePayload<D>>::boot(handoff, devices);
     <HaltPayload as MainstagePayload<D>>::boot(handoff, devices)
 }
 

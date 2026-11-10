@@ -14,7 +14,12 @@ extern crate x86 as x86_crate;
 
 #[cfg(all(
     not(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64"))),
-    any(feature = "armv7", feature = "aarch64", feature = "riscv64")
+    any(
+        feature = "armv7",
+        feature = "armv5te",
+        feature = "aarch64",
+        feature = "riscv64"
+    )
 ))]
 pub fn udelay(us: u32) {
     for _ in 0..us.saturating_mul(100) {
@@ -29,6 +34,8 @@ pub use x86::wait_us;
 
 #[cfg(all(feature = "aarch64", target_arch = "aarch64"))]
 pub mod aarch64;
+#[cfg(all(feature = "armv5te", target_arch = "arm"))]
+pub mod armv5te;
 #[cfg(all(feature = "armv7", target_arch = "arm"))]
 pub mod armv7;
 #[cfg(all(feature = "riscv64", target_arch = "riscv64"))]
@@ -42,7 +49,12 @@ pub mod x86;
 // mdelay — millisecond delay
 // ---------------------------------------------------------------------------
 
-#[cfg(any(feature = "armv7", feature = "aarch64", feature = "riscv64",))]
+#[cfg(any(
+    feature = "armv7",
+    feature = "armv5te",
+    feature = "aarch64",
+    feature = "riscv64",
+))]
 pub fn mdelay(ms: u32) {
     for _ in 0..ms {
         udelay(1000);
@@ -124,6 +136,13 @@ pub fn halt() -> ! {
     }
 }
 
+#[cfg(all(feature = "armv5te", target_arch = "arm"))]
+pub fn halt() -> ! {
+    loop {
+        armv5te::wait_for_interrupt();
+    }
+}
+
 #[cfg(all(feature = "aarch64", target_arch = "aarch64"))]
 pub fn halt() -> ! {
     loop {
@@ -150,6 +169,7 @@ pub fn halt() -> ! {
 
 #[cfg(not(any(
     all(feature = "armv7", target_arch = "arm"),
+    all(feature = "armv5te", target_arch = "arm"),
     all(feature = "aarch64", target_arch = "aarch64"),
     all(feature = "riscv64", target_arch = "riscv64"),
     all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")),

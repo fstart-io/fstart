@@ -1,10 +1,10 @@
 //! Constant verification policy and initial-only mutable location storage.
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicPtr, Ordering};
 use fstart_core::ffs::{
     locator::{LOCATOR_SIZE, LocatorBlock},
     trust::{TRUST_SIZE, TrustBlock},
 };
+use portable_atomic::{AtomicPtr, Ordering};
 
 #[repr(transparent)]
 struct Patchable<T>(UnsafeCell<T>);

@@ -62,12 +62,12 @@ pub fn resolved_ram_stage(
         size: region_end - load_addr,
     };
     let architecture = match config.platform {
-        Platform::Armv7 => crate::elf::Architecture::Arm,
+        Platform::Armv7 | Platform::Armv5te => crate::elf::Architecture::Arm,
         Platform::Aarch64 => crate::elf::Architecture::Aarch64,
         Platform::Riscv64 => crate::elf::Architecture::Riscv64,
         _ => return Err("unsupported RAM stage ELF architecture".into()),
     };
-    let elf64 = !matches!(config.platform, Platform::Armv7 | Platform::X86);
+    let elf64 = !config.platform.is_32bit();
     let expectations = crate::elf::Expectations {
         architecture,
         elf64,
@@ -101,6 +101,7 @@ pub fn resolved_ram_stage(
 /// Platforms supply the already-validated reservations and descriptor bytes.
 pub struct Xip {
     pub platform: Platform,
+    pub soc_image_format: fstart_core::SocImageFormat,
     pub boot_hart_id: u32,
     pub image: crate::plan::Span,
     pub execution: Option<crate::plan::Span>,
@@ -117,11 +118,7 @@ impl Xip {
             .chain(self.execution)
         {
             range.end()?;
-            crate::elf::address_extent(
-                !matches!(self.platform, Platform::Armv7 | Platform::X86),
-                range.base,
-                range.size,
-            )?;
+            crate::elf::address_extent(!self.platform.is_32bit(), range.base, range.size)?;
             if range.base % 16 != 0 || range.size % 16 != 0 {
                 return Err("unaligned XIP reservation".into());
             }
@@ -141,7 +138,7 @@ impl Xip {
                     .into(),
             );
         }
-        let elf64 = !matches!(self.platform, Platform::Armv7 | Platform::X86);
+        let elf64 = !self.platform.is_32bit();
         // The stack top is emitted as an ELF symbol, not merely a range end.
         crate::elf::address_extent(elf64, self.stack.end()?, 0)?;
         let descriptor = fstart_core::layout::Layout::parse(self.descriptor.as_bytes())
@@ -158,14 +155,14 @@ impl Xip {
         use crate::elf::{Architecture, CopyMapping, Descriptor, Expectations};
         self.validate()?;
         let architecture = match self.platform {
-            Platform::Armv7 => Architecture::Arm,
+            Platform::Armv7 | Platform::Armv5te => Architecture::Arm,
             Platform::Aarch64 => Architecture::Aarch64,
             Platform::Riscv64 => Architecture::Riscv64,
             _ => return Err("unsupported XIP ELF architecture".into()),
         };
         Ok(Expectations {
             architecture,
-            elf64: !matches!(self.platform, Platform::Armv7 | Platform::X86),
+            elf64: !self.platform.is_32bit(),
             little_endian: true,
             stored: vec![self.image],
             runtime: vec![self.code_reservation(), self.writable],
@@ -269,6 +266,12 @@ pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
         "ROM"
     };
     out.push_str("}\nSECTIONS {\n");
+    if layout.soc_image_format == fstart_core::SocImageFormat::AspeedSpi {
+        if layout.execution.is_some() {
+            return Err("ASPEED SPI images execute in place".into());
+        }
+        write_aspeed_head_section(&mut out);
+    }
     write_text_section(&mut out, code, ".text.entry");
     // LLD's BYTE-only sections inherit flags from the preceding section.
     // Emit immediately after executable text, before potentially writable
@@ -1013,10 +1016,7 @@ fn write_anchor_section(out: &mut String, region: &str, platform: Platform, heap
 }
 
 fn write_heap_size_constant(out: &mut String, platform: Platform, heap_size: u64) {
-    let word = match platform {
-        Platform::Armv7 | Platform::X86 => "LONG",
-        _ => "QUAD",
-    };
+    let word = if platform.is_32bit() { "LONG" } else { "QUAD" };
     writeln!(out, "        . = ALIGN(8);").unwrap();
     writeln!(out, "        _FSTART_HEAP_SIZE = .;").unwrap();
     writeln!(out, "        {word}({heap_size:#x})").unwrap();
@@ -1074,6 +1074,18 @@ fn write_discard_egon_header(out: &mut String) {
     writeln!(out, "    /DISCARD/ : {{ *(.head.text) *(.head.egon) }}\n").unwrap();
 }
 
+/// The vector table and strap block must open the flash image: the CPU
+/// fetches its reset vector from 0 and the SoC scans for the strap block in
+/// the first 8 KiB.
+fn write_aspeed_head_section(out: &mut String) {
+    writeln!(out, "    .head : {{ KEEP(*(.head.aspeed)) }} > ROM").unwrap();
+    writeln!(
+        out,
+        "    ASSERT(ADDR(.head) == ORIGIN(ROM) && SIZEOF(.head) > 0x40, \"ASPEED head must open the image\")\n"
+    )
+    .unwrap();
+}
+
 fn write_allwinner_egon_section(out: &mut String, region: &str) {
     writeln!(out, "    .head : {{").unwrap();
     writeln!(out, "        KEEP(*(.head.text))").unwrap();
@@ -1106,6 +1118,46 @@ mod tests {
     };
 
     use super::{generate_linker_script, resolved_ram_stage};
+
+    fn aspeed_xip(execution: Option<crate::plan::Span>) -> super::Xip {
+        let span = |base, size| crate::plan::Span { base, size };
+        super::Xip {
+            platform: Platform::Armv5te,
+            soc_image_format: fstart_core::SocImageFormat::AspeedSpi,
+            boot_hart_id: 0,
+            image: span(0, 0x1_0000),
+            execution,
+            writable: span(0x1e72_0000, 0x9000),
+            heap: span(0x1e72_7000, 0x1000),
+            stack: span(0x1e72_8000, 0x1000),
+            descriptor: crate::layout::EncodedLayout::encode(
+                0,
+                &[
+                    span(0, 0x1_0000).region(fstart_core::layout::RegionKind::Image),
+                    span(0x1e72_0000, 0x9000).region(fstart_core::layout::RegionKind::Writable),
+                ],
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn aspeed_spi_head_opens_the_xip_image() {
+        let script = super::resolved_xip(&aspeed_xip(None)).unwrap();
+        let head = script.find("KEEP(*(.head.aspeed))").unwrap();
+        let entry = script.find("KEEP(*(.text.entry))").unwrap();
+        assert!(head < entry);
+        assert!(script.contains("ASSERT(ADDR(.head) == ORIGIN(ROM)"));
+    }
+
+    #[test]
+    fn aspeed_spi_head_requires_execute_in_place() {
+        let execution = Some(crate::plan::Span {
+            base: 0x8000_0000,
+            size: 0x1_0000,
+        });
+        assert!(super::resolved_xip(&aspeed_xip(execution)).is_err());
+    }
     use crate::layout::EncodedLayout;
     use crate::plan::Span;
     use fstart_core::layout::RegionKind as LayoutKind;

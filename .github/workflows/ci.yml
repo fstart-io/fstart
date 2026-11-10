@@ -104,9 +104,10 @@ jobs:
           cargo test
           cargo test -p fstart-stage \
             --features ffs,ffs-signature,fdt,fit,x86_64 --lib
-          # Coreboot payloads call the stage's public measured loader, also
-          # without a TPM. Check both selections before boot-asset jobs run.
-          for features in coreboot coreboot,tcg; do
+          # Coreboot and bare ELF payloads call the stage's public measured
+          # loader, also without a TPM. Check the selections before boot-asset
+          # jobs run.
+          for features in coreboot coreboot,tcg elf; do
             cargo check -p fstart-payload \
               --features "$features,fstart-stage/x86_64" --lib
           done
@@ -123,6 +124,22 @@ jobs:
           # Each AMD SoC on its own: the boards select one, the tests all.
           for soc in picasso zeppelin naples rome milan; do
             cargo check -p fstart-driver-amd --no-default-features --features "$soc"
+          done
+
+      # fstart linked as a library by a foreign firmware (the AST2700
+      # BootMCU, riscv32imc) and the ARMv5TE BMC cores: neither has
+      # compare-and-swap, and the library build owns no lang items.
+      - name: Library-mode builds
+        env:
+          RUSTFLAGS: --cfg portable_atomic_unsafe_assume_single_core
+        run: |
+          for target in riscv32imc-unknown-none-elf armv5te-none-eabi; do
+            cargo build -Zbuild-std=core,alloc --target "$target" \
+              --no-default-features \
+              -p fstart-core -p fstart-log -p fstart-timestamp \
+              -p fstart-crypto -p fstart-ffs -p fstart-fdt -p fstart-store \
+              -p fstart-load -p fstart-stage \
+              --features fstart-stage/ffs,fstart-stage/ed25519,fstart-stage/fdt,fstart-stage/handoff,fstart-stage/alloc
           done
 
   # Every discovered board and variant must link in release. A failure

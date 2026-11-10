@@ -47,7 +47,7 @@ pub use board::{
 };
 #[cfg(feature = "host")]
 pub use builder::{
-    default_security_config, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
+    default_security_config, elf_payload, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
 };
 pub use const_vec::ConstVec;
 pub use device::BusAddress;

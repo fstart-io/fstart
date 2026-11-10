@@ -1,10 +1,16 @@
 //! Boot timestamp report at payload handoff.
 
-/// Record the payload jump and report the boot timestamps.
+/// Record the payload jump and report the boot timestamps. A platform
+/// counter is stopped afterwards, so the payload finds it quiet.
 pub fn handoff() {
     fstart_timestamp::add(fstart_timestamp::id::PAYLOAD_JUMP);
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     report(fstart_arch::x86::tsc_frequency_hz());
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    if let Some(hz) = fstart_timestamp::counter_hz() {
+        report(hz);
+        fstart_timestamp::release_counter();
+    }
 }
 
 /// One report line. The report is printed whatever the log level, short
@@ -30,7 +36,7 @@ pub fn report(tick_hz: u64) {
     };
     let us = |ticks: u64| (u128::from(ticks) * 1_000_000 / u128::from(tick_hz.max(1))) as u64;
     line!(
-        "timestamps: us since reset, +us until the next (console us); TSC {} kHz",
+        "timestamps: us since reset, +us until the next (console us); counter {} kHz",
         tick_hz / 1000
     );
     for (record, next) in records

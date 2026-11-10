@@ -196,6 +196,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     }
     let layout = Xip {
         platform: policy.platform,
+        soc_image_format: SocImageFormat::None,
         boot_hart_id: 0,
         image,
         execution,
@@ -736,6 +737,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             }
             let layout = Xip {
                 platform: policy.platform,
+                soc_image_format: SocImageFormat::None,
                 boot_hart_id: policy.boot_hart_id,
                 image,
                 execution,

@@ -16,6 +16,9 @@ pub enum Platform {
     Aarch64,
     /// ARMv7-A (armv7a-none-eabi)
     Armv7,
+    /// ARMv5TE (armv5te-none-eabi): the ARM926EJ-S, and the ARM1176 when
+    /// LDREX/STREX are unusable (no exclusive monitor with the MMU off).
+    Armv5te,
     /// x86-64 / AMD64 (x86_64-unknown-none)
     X86_64,
     /// 32-bit x86 in protected mode, for CPUs without long mode
@@ -30,6 +33,7 @@ impl Platform {
             Platform::Riscv64 => "riscv64gc-unknown-none-elf",
             Platform::Aarch64 => "aarch64-unknown-none",
             Platform::Armv7 => "armv7a-none-eabi",
+            Platform::Armv5te => "armv5te-none-eabi",
             Platform::X86_64 => "x86_64-unknown-none",
             Platform::X86 => "i686-unknown-none",
         }
@@ -40,7 +44,7 @@ impl Platform {
         match self {
             Platform::Riscv64 => "riscv",
             Platform::Aarch64 => "aarch64",
-            Platform::Armv7 => "arm",
+            Platform::Armv7 | Platform::Armv5te => "arm",
             Platform::X86_64 => "i386:x86-64",
             Platform::X86 => "i386",
         }
@@ -52,6 +56,7 @@ impl Platform {
             Platform::Riscv64 => "riscv64",
             Platform::Aarch64 => "aarch64",
             Platform::Armv7 => "armv7",
+            Platform::Armv5te => "armv5te",
             Platform::X86_64 => "x86_64",
             Platform::X86 => "x86",
         }
@@ -61,6 +66,11 @@ impl Platform {
     /// staying in 32-bit protected mode.
     pub const fn is_x86(&self) -> bool {
         matches!(self, Platform::X86_64 | Platform::X86)
+    }
+
+    /// 32-bit address space and ELF32 images.
+    pub const fn is_32bit(&self) -> bool {
+        matches!(self, Platform::Armv7 | Platform::Armv5te | Platform::X86)
     }
 }
 
@@ -79,6 +89,9 @@ pub enum QemuMachine {
     OrangePiPc,
     /// Arm SBSA reference platform, booted TF-A-first from two pflash banks.
     SbsaRef,
+    /// ASPEED AST2500 EVB executing the composite SPI image in place from
+    /// FMC CE0, with the MJ11-EC1's 64 MiB MT25QL512 flash model.
+    Ast2500Evb,
 }
 
 /// Kind of runtime firmware loaded before the OS.

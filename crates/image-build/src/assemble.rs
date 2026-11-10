@@ -166,6 +166,8 @@ pub fn assemble(
                 payload_files,
                 &mut ro_files,
             )?;
+        } else if payload.kind == fstart_core::PayloadKind::CustomElf {
+            crate::elf_payload::add(payload, board_dir, kernel_path, &mut ro_files)?;
         } else {
             assemble_linux_payload(
                 payload,
