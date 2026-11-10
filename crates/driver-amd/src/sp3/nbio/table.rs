@@ -23,49 +23,19 @@ pub enum Op {
     Copy { from: SmnAddr },
 }
 
-/// A Naples ("legacy" GNB bytecode) record.
-///
-/// A record with a non-zero `property` applies when it shares a bit with
-/// the live property word ([`super::naples::property`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LegacyEntry {
-    pub addr: SmnAddr,
-    pub op: Op,
-    pub property: u32,
-}
+/// The records of the ZP tables Naples runs ([`crate::nbio::zp`]).
+#[cfg(feature = "naples")]
+pub use crate::nbio::zp::LegacyEntry;
 
-impl LegacyEntry {
-    pub const fn write(addr: SmnAddr, value: u32) -> Self {
-        Self {
-            addr,
-            op: Op::Write(value),
-            property: 0,
+#[cfg(feature = "naples")]
+impl From<crate::table::Op<SmnAddr, u32>> for Op {
+    fn from(op: crate::table::Op<SmnAddr, u32>) -> Self {
+        use crate::table::Op as Shared;
+        match op {
+            Shared::Write(value) => Self::Write(value),
+            Shared::Update { clear, set } => Self::Rmw { clear, set },
+            Shared::Copy { from } => Self::Copy { from },
         }
-    }
-
-    pub const fn rmw(addr: SmnAddr, clear: u32, set: u32) -> Self {
-        Self {
-            addr,
-            op: Op::Rmw { clear, set },
-            property: 0,
-        }
-    }
-
-    pub const fn copy(to: SmnAddr, from: SmnAddr) -> Self {
-        Self {
-            addr: to,
-            op: Op::Copy { from },
-            property: 0,
-        }
-    }
-
-    pub const fn property(self, property: u32) -> Self {
-        Self { property, ..self }
-    }
-
-    /// Whether the record applies under the live `property`.
-    pub const fn applies(&self, property: u32) -> bool {
-        self.property == 0 || self.property & property != 0
     }
 }
 
@@ -210,11 +180,12 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     }
 
     /// Run a Naples table on this die under the live `property`.
+    #[cfg(feature = "naples")]
     pub fn run_legacy(&self, table: &[LegacyEntry], property: u32) {
         table
             .iter()
             .filter(|e| e.applies(property))
-            .for_each(|e| self.apply(e.addr, e.op));
+            .for_each(|e| self.apply(e.addr, e.op.into()));
     }
 
     /// Run a Rome/Milan table as quadrant `quadrant` through this NBIO's
@@ -233,6 +204,7 @@ mod tests {
     use super::*;
     use crate::sp3::nbio::tests::nbio;
 
+    #[cfg(feature = "naples")]
     #[test]
     fn legacy_property_and_copy() {
         let (model, n) = nbio(Generation::Naples, 0, 0x20);
