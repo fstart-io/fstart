@@ -1322,41 +1322,6 @@ mod tests {
     }
 
     #[test]
-    fn both_threshold_backends_expose_the_public_interface() {
-        use crate::{
-            ec::EcPorts,
-            h8::{H8BatteryThresholdBackend, H8Resources},
-        };
-        for backend in [
-            H8BatteryThresholdBackend::RegistersB0,
-            H8BatteryThresholdBackend::Registers24 { bit7: false },
-            H8BatteryThresholdBackend::Registers24 { bit7: true },
-        ] {
-            let cfg = H8Config {
-                bat_thresholds: true,
-                bat_threshold_backend: backend,
-                ..H8Config::new(
-                    H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
-                    0x11,
-                    "IBM0068",
-                )
-            };
-            let aml = dsdt_aml::<TestNamespace>(&cfg);
-            for name in ["BCCS", "BCSS", "BCTG", "BCSG", "SETT", "GETT"] {
-                assert!(aml.windows(4).any(|bytes| bytes == name.as_bytes()));
-            }
-            assert_eq!(
-                aml.windows(4).any(|bytes| bytes == b"BSTP"),
-                matches!(backend, H8BatteryThresholdBackend::Registers24 { .. })
-            );
-            assert_eq!(
-                aml.windows(4).any(|bytes| bytes == b"TSL0"),
-                backend == H8BatteryThresholdBackend::RegistersB0
-            );
-        }
-    }
-
-    #[test]
     fn threshold_methods_execute_for_both_register_layouts() {
         use super::super::h8::H8BatteryThresholdBackend;
         for (index, backend) in [

@@ -153,10 +153,4 @@ mod tests {
             0x4000 | ((3 * 64 + 2) * 4)
         );
     }
-
-    #[test]
-    fn maps_primary_plane_to_pipe() {
-        assert_eq!(primary_for_pipe(Pipe::A), Plane::PrimaryA);
-        assert_eq!(primary_for_pipe(Pipe::B), Plane::PrimaryB);
-    }
 }

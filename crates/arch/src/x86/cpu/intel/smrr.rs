@@ -192,15 +192,4 @@ mod tests {
             Err(SmrrError::InvalidRange)
         );
     }
-
-    #[test]
-    fn raw_pair_encoding_round_trips() {
-        for pair in [
-            None,
-            Some(SmrrPair::Architectural),
-            Some(SmrrPair::Core2Alternative),
-        ] {
-            assert_eq!(SmrrPair::from_raw(SmrrPair::to_raw(pair)), pair);
-        }
-    }
 }

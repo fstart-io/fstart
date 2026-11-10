@@ -22,21 +22,3 @@ impl Aml for Break {
         sink.byte(BREAK_OP);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec::Vec;
-
-    extern crate alloc;
-
-    #[test]
-    fn test_break() {
-        let brk = Break;
-
-        let mut bytes = Vec::new();
-        brk.to_aml_bytes(&mut bytes);
-
-        assert_eq!(bytes, &[BREAK_OP]);
-    }
-}

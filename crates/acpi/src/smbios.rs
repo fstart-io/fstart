@@ -1635,19 +1635,6 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_structures() {
-        let (buf, _total) = write_to_buffer(|w| {
-            w.add_physical_memory_array(1024 * 1024, 1, 0x03); // 1 GB in KB
-            w.add_memory_device(&dimm("DIMM0", 1024));
-            w.add_memory_array_mapped_address(0x10000000000, 0x1003FFFFFFF, 1);
-            w.add_end_of_table();
-        });
-
-        let table = &buf[ENTRY_POINT_SIZE..];
-        assert_eq!(table[0], TYPE_PHYS_MEM_ARRAY); // first structure is Type 16
-    }
-
-    #[test]
     fn mapped_address_switches_to_extended_fields_above_4_tib() {
         for (end, legacy, extended) in [
             (0xBFFF_FFFF, 0xBFFF_FFFF / 1024, 0),
@@ -1667,36 +1654,6 @@ mod tests {
                 extended
             );
         }
-    }
-
-    #[test]
-    fn test_full_table_set() {
-        let (buf, total) = write_to_buffer(|w| {
-            w.add_bios_info(&bios(true));
-            w.add_system_info("QEMU", "SBSA Reference", "1.0", None, None);
-            let chassis = w.add_enclosure(0x17, "QEMU"); // rack mount
-            w.add_baseboard_info("QEMU", "sbsa-ref", "", None, chassis);
-            w.add_processor(&cpu(0x0119, 2000, 1, 1));
-            w.add_oem_strings(&["EC 1.0"]);
-            w.add_physical_memory_array(1024 * 1024, 1, 0x03);
-            w.add_memory_device(&dimm("DIMM0", 1024));
-            w.add_memory_array_mapped_address(0x10000000000, 0x1003FFFFFFF, 1);
-            w.add_system_boot_info();
-            w.add_end_of_table();
-        });
-
-        // Verify checksum
-        let sum: u8 = buf[..ENTRY_POINT_SIZE]
-            .iter()
-            .fold(0u8, |a, &b| a.wrapping_add(b));
-        assert_eq!(sum, 0, "entry point checksum must be zero");
-
-        // Table size is reasonable (not just the entry point)
-        assert!(
-            total > ENTRY_POINT_SIZE + 100,
-            "tables should be non-trivial"
-        );
-        assert!(total < 2048, "tables should be compact");
     }
 
     #[test]

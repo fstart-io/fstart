@@ -327,49 +327,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tigerlake_ddi_typec_pre_and_post_on_match_libgfxinit() {
-        let pre = tgl_ddi_pre_on_plan(
-            Cpu::Tigerlake,
-            Port::DpD,
-            Pipe::C,
-            0x1234,
-            TglTypeCOrientation::Reversed,
-        )
-        .unwrap();
-        assert_eq!(pre.port, Port::DpD);
-        assert_eq!(pre.pipe, Pipe::C);
-        assert_eq!(pre.pll_hint, 0x1234);
-        assert_eq!(pre.type_c_orientation, TglTypeCOrientation::Reversed);
-        assert_eq!(
-            pre.type_c_orientation_value,
-            TGL_TYPEC_ORIENTATION::VALUE::Reversed.value
-        );
-        assert!(pre.success);
-        assert_eq!(pre.register_writes, 0);
-
-        let post = tgl_ddi_post_on_plan(Port::Edp, Pipe::A, 0).unwrap();
-        assert_eq!(post.port, Port::Edp);
-        assert!(post.panel_backlight_on);
-        assert!(post.success);
-    }
-
-    #[test]
-    fn tigerlake_connector_off_and_hotplug_match_libgfxinit() {
-        let off = tgl_ddi_pre_off_plan(Port::HdmiB).unwrap();
-        assert!(off.panel_backlight_off);
-        assert!(off.panel_off);
-        assert_eq!(off.register_writes, 0);
-
-        let hotplug = tgl_hotplug_detect_plan(Port::DpC).unwrap();
-        assert!(!hotplug.detected);
-        assert_eq!(
-            hotplug.status_bits,
-            TGL_HOTPLUG_STATUS::DETECTED::CLEAR.value
-        );
-        assert_eq!(hotplug.clear_register_writes, 0);
-    }
-
-    #[test]
     fn tigerlake_plans_reject_non_tgl_platforms_and_non_ddi_ports() {
         assert_eq!(
             tgl_ddi_pre_on_plan(

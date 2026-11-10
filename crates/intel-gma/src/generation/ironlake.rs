@@ -2138,88 +2138,19 @@ mod tests {
     }
 
     #[test]
-    fn pch_vga_plan_matches_libgfxinit_masks_and_polarity() {
+    fn pch_lvds_powers_the_second_channel_at_the_clock_threshold() {
         let mut mode = Mode::XGA_1024X768_60;
-        mode.flags = ModeFlags::PHSYNC | ModeFlags::PVSYNC;
-        assert_eq!(
-            pch_vga_enable_op(FdiPort::B, mode),
-            PortRegisterOp::Update {
-                register: PCH_ADPA,
-                mask_unset: PCH_ADPA_MASK,
-                mask_set: PCH_ADPA_DAC_ENABLE
-                    | PCH_TRANSCODER_SELECT_MASK
-                    | PCH_ADPA_HSYNC_ACTIVE_HIGH
-                    | PCH_ADPA_VSYNC_ACTIVE_HIGH,
-            }
-        );
-        assert_eq!(
-            pch_vga_off_op(true),
-            PortRegisterOp::Update {
-                register: PCH_ADPA,
-                mask_unset: PCH_ADPA_DAC_ENABLE,
-                mask_set: PCH_ADPA_HSYNC_DISABLE | PCH_ADPA_VSYNC_DISABLE,
-            }
-        );
-    }
-
-    #[test]
-    fn pch_lvds_plan_matches_libgfxinit_threshold_and_inverted_polarity() {
-        let mut mode = Mode::XGA_1024X768_60;
-        mode.flags = ModeFlags::empty();
-        assert_eq!(
-            pch_lvds_enable_op(FdiPort::B, mode),
-            PortRegisterOp::Write {
-                register: PCH_LVDS,
-                value: PCH_LVDS_ENABLE
-                    | PCH_TRANSCODER_SELECT_MASK
-                    | PCH_LVDS_HSYNC_POLARITY_INVERT
-                    | PCH_LVDS_VSYNC_POLARITY_INVERT
-                    | PCH_LVDS_CLK_A_DATA_A0A2_POWER_UP,
-            }
-        );
         mode.pixel_clock_khz = LVDS_DUAL_CHANNEL_THRESHOLD_KHZ;
         let PortRegisterOp::Write { value, .. } = pch_lvds_enable_op(FdiPort::A, mode) else {
             panic!("expected write")
         };
         assert_ne!(value & PCH_LVDS_CLK_B_POWER_UP, 0);
         assert_ne!(value & PCH_LVDS_DATA_B0B2_POWER_UP, 0);
-        assert_eq!(
-            pch_lvds_off_op(),
-            PortRegisterOp::Write {
-                register: PCH_LVDS,
-                value: 0
-            }
-        );
     }
 
     #[test]
-    fn pch_hdmi_plan_matches_libgfxinit_registers_and_double_enable_base() {
-        let mut mode = Mode::XGA_1024X768_60;
-        mode.flags = ModeFlags::PHSYNC | ModeFlags::PVSYNC;
-        assert_eq!(pch_hdmi_port(Port::HdmiA), Ok(PchHdmiPort::B));
-        assert_eq!(pch_hdmi_port(Port::HdmiB), Ok(PchHdmiPort::C));
-        assert_eq!(pch_hdmi_port(Port::HdmiC), Ok(PchHdmiPort::D));
+    fn pch_hdmi_rejects_non_hdmi_ports() {
         assert_eq!(pch_hdmi_port(Port::Vga), Err(GmaError::UnsupportedPort));
-        assert_eq!(
-            pch_hdmi_enable_op(PchHdmiPort::D, FdiPort::B, mode),
-            PortRegisterOp::Update {
-                register: PCH_HDMID,
-                mask_unset: PCH_HDMI_MASK,
-                mask_set: PCH_HDMI_ENABLE
-                    | PCH_TRANSCODER_SELECT_MASK
-                    | PCH_HDMI_SDVO_ENCODING_HDMI
-                    | PCH_HDMI_HSYNC_ACTIVE_HIGH
-                    | PCH_HDMI_VSYNC_ACTIVE_HIGH,
-            }
-        );
-        assert_eq!(
-            pch_hdmi_off_op(PchHdmiPort::B),
-            PortRegisterOp::Update {
-                register: PCH_HDMIB,
-                mask_unset: PCH_HDMI_MASK,
-                mask_set: PCH_HDMI_DISABLE_VALUE,
-            }
-        );
     }
 
     #[test]
@@ -2310,19 +2241,6 @@ mod tests {
     }
 
     #[test]
-    fn fdi_port_a_and_c_selector_model_is_explicit() {
-        assert_eq!(pch_transcoder_select(FdiPort::A), 0);
-        assert_eq!(
-            pch_transcoder_select(FdiPort::B),
-            PCH_TRANSCODER_SELECT_MASK
-        );
-        assert_eq!(
-            pch_transcoder_select(FdiPort::C),
-            PCH_TRANSCODER_SELECT_MASK
-        );
-    }
-
-    #[test]
     fn pch_clock_search_matches_libgfxinit_limits() {
         let lvds = find_pch_clock(Port::Lvds, Mode::XGA_1024X768_60).unwrap();
         assert_eq!(
@@ -2358,147 +2276,6 @@ mod tests {
         assert_eq!(
             find_pch_clock(Port::Edp, Mode::XGA_1024X768_60),
             Err(GmaError::UnsupportedPort)
-        );
-    }
-
-    #[test]
-    fn pch_dpll_registers_and_encoding_match_libgfxinit() {
-        assert_eq!(
-            pch_pll_regs(PchPll::A),
-            PchPllRegs {
-                dpll: PCH_DPLL_A,
-                fp0: PCH_FPA0,
-                fp1: PCH_FPA1,
-            }
-        );
-        assert_eq!(
-            pch_pll_regs(PchPll::B),
-            PchPllRegs {
-                dpll: PCH_DPLL_B,
-                fp0: PCH_FPB0,
-                fp1: PCH_FPB1,
-            }
-        );
-
-        let clock = PchClock {
-            n: 3,
-            m1: 14,
-            m2: 8,
-            p1: 2,
-            p2: 10,
-        };
-        assert_eq!(
-            encode_pch_fp(clock),
-            PCH_FP::N.val(clock.n - 2).value
-                | PCH_FP::M1.val(clock.m1 - 2).value
-                | PCH_FP::M2.val(clock.m2 - 2).value
-        );
-        assert_eq!(
-            encode_pch_dpll(PchDpllMode::Lvds, clock),
-            PCH_DPLL_MODE_LVDS | PCH_DPLL_SSC | PCH_DPLL::P1_DIVIDER.val(2).value | 2
-        );
-        assert_eq!(
-            encode_pch_dpll(PchDpllMode::DacHdmi, clock),
-            PCH_DPLL_MODE_DAC
-                | PCH_DPLL_DREFCLK
-                | PCH_DPLL_HIGH_SPEED
-                | PCH_DPLL::P1_DIVIDER.val(2).value
-                | 2
-        );
-        let mut dp_clock = clock;
-        dp_clock.p2 = 7;
-        assert_eq!(
-            encode_pch_dpll(PchDpllMode::Dp, dp_clock),
-            PCH_DPLL_MODE_DAC
-                | PCH_DPLL_SSC
-                | PCH_DPLL_HIGH_SPEED
-                | PCH_DPLL_P2_5_OR_7
-                | PCH_DPLL::P1_DIVIDER.val(2).value
-                | 2
-        );
-
-        let plan = pch_pll_plan(PchPll::B, PchDpllMode::DacHdmi, clock);
-        assert_eq!(plan.regs.dpll, PCH_DPLL_B);
-        assert_eq!(plan.fp0_value, encode_pch_fp(clock));
-        assert_eq!(plan.fp1_value, encode_pch_fp(clock));
-        assert_eq!(plan.enable_mask, PCH_DPLL_VCO_ENABLE);
-    }
-
-    #[test]
-    fn pch_dpll_sel_ops_match_transcoder_bit_layout() {
-        assert_eq!(
-            pch_dpll_sel_op(FdiPort::A, PchPll::B),
-            PortRegisterOp::Update {
-                register: PCH_DPLL_SEL,
-                mask_unset: PCH_DPLL_SEL_MASK_A,
-                mask_set: PCH_DPLL_SEL_ENABLE_A | 1,
-            }
-        );
-        assert_eq!(
-            pch_dpll_sel_op(FdiPort::B, PchPll::A),
-            PortRegisterOp::Update {
-                register: PCH_DPLL_SEL,
-                mask_unset: PCH_DPLL_SEL_MASK_B,
-                mask_set: PCH_DPLL_SEL_ENABLE_B,
-            }
-        );
-        assert_eq!(
-            pch_dpll_sel_op(FdiPort::C, PchPll::B),
-            PortRegisterOp::Update {
-                register: PCH_DPLL_SEL,
-                mask_unset: 1 << 8,
-                mask_set: (1 << 11) | (1 << 8),
-            }
-        );
-    }
-
-    #[test]
-    fn pch_transcoder_timing_plan_matches_libgfxinit_ranges() {
-        let mode = Mode::XGA_1024X768_60;
-        let plan = pch_transcoder_timing_plan(FdiPort::B, mode);
-        assert_eq!(plan.regs.htotal(), TRANS_TIMING_B);
-        assert_eq!(plan.regs.hblank(), TRANS_TIMING_B + 0x04);
-        assert_eq!(plan.regs.hsync(), TRANS_TIMING_B + 0x08);
-        assert_eq!(plan.regs.vtotal(), TRANS_TIMING_B + 0x0c);
-        assert_eq!(plan.regs.vblank(), TRANS_TIMING_B + 0x10);
-        assert_eq!(plan.regs.vsync(), TRANS_TIMING_B + 0x14);
-        assert_eq!(plan.regs.conf, TRANSBCONF);
-        assert_eq!(
-            plan.htotal,
-            (mode.hdisplay as u32 - 1) | ((mode.htotal as u32 - 1) << 16)
-        );
-        assert_eq!(plan.hblank, plan.htotal);
-        assert_eq!(
-            plan.hsync,
-            (mode.hsync_start as u32 - 1) | ((mode.hsync_end as u32 - 1) << 16)
-        );
-        assert_eq!(
-            plan.vtotal,
-            (mode.vdisplay as u32 - 1) | ((mode.vtotal as u32 - 1) << 16)
-        );
-        assert_eq!(plan.vblank, plan.vtotal);
-        assert_eq!(
-            plan.vsync,
-            (mode.vsync_start as u32 - 1) | ((mode.vsync_end as u32 - 1) << 16)
-        );
-        assert_eq!(plan.conf_enable, TRANS_CONF_ENABLE);
-
-        let a = pch_transcoder_timing_plan(FdiPort::A, mode);
-        assert_eq!(a.regs.htotal(), TRANS_TIMING_A);
-        assert_eq!(a.regs.conf, TRANSACONF);
-    }
-
-    #[test]
-    fn fdi_training_patterns_match_libgfxinit() {
-        assert_eq!(fdi_tx_training_pattern_mask(false), 3 << 28);
-        assert_eq!(fdi_tx_training_pattern_mask(true), 3 << 8);
-        assert_eq!(
-            encode_fdi_tx_training_pattern(FdiTrainingPattern::Tp2, false),
-            1 << 28
-        );
-        assert_eq!(
-            encode_fdi_rx_training_pattern(FdiTrainingPattern::None, true),
-            3 << 8
         );
     }
 

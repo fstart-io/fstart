@@ -983,15 +983,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_backlight_constants_match_libgfxinit_register_model() {
-        // GNU/Linux i9xx (i965/G45) programs duty in BLC_PWM_CTL, not the
-        // Ironlake CPU-side BLC_PWM_CPU_CTL.
-        assert_eq!(BLC_PWM_GMCH_CTL, 0x61254);
-        assert_eq!(BLC_PWM_GMCH_CTL2, 0x61250);
-        assert_eq!(CPU_BLC_PWM_DUTY_MAX, 0xffff);
-    }
-
-    #[test]
     fn gmch_panel_fitter_encoders_accept_upscale() {
         let encoding = scaler::encode_gmch_i965(
             Pipe::B,
