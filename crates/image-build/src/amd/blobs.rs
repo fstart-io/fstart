@@ -368,6 +368,42 @@ pub struct Extracted {
     pub origin: String,
 }
 
+/// The files a donor image gave for a board's SoCs ([`extract_donor`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Donated {
+    pub found: Vec<Extracted>,
+    /// Files of a SoC the donor has firmware of, but not these.
+    pub missing: Vec<String>,
+    /// The SoCs the donor has no firmware of at all: a donor may carry
+    /// only some of an SP3 board's generations.
+    pub absent: Vec<String>,
+}
+
+/// The blob directory's files of every SoC table of a board (one
+/// [`SocBlobs`] and [`BoardBlobs`] pair per SoC, as [`board_tables`] lists
+/// the board's) from the donor image `rom`. Fails if the donor has firmware
+/// for none of them.
+pub fn extract_donor(
+    tables: &[(SocBlobs, BoardBlobs)],
+    board_name: &str,
+    rom: &[u8],
+) -> Result<Donated, String> {
+    let mut donated = Donated::default();
+    for (soc, board) in tables {
+        let Some(image) = donor_image(rom, soc) else {
+            donated.absent.push(board.soc.clone());
+            continue;
+        };
+        let (found, missing) = extract(soc, board, board_name, image)?;
+        donated.found.extend(found);
+        donated.missing.extend(missing);
+    }
+    if donated.found.is_empty() {
+        return Err("the donor has firmware for none of the board's SoCs".into());
+    }
+    Ok(donated)
+}
+
 /// The blob directory's files of `soc` and `board`, taken from the vendor
 /// flash image `rom`.
 /// Returns what was found, and the files that were not.

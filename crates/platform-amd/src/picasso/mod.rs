@@ -127,14 +127,13 @@ impl noncar::host::HostSoc for Picasso {
         payloads: true,
         smm: true,
         release_only: true,
-        image_config: noncar::host::ImageConfig::Packed {
+        image: noncar::host::PackedImage {
             // Reserve the full uncompressed size before the fixed FFS window.
             reset_offset: Some(
                 (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
             ),
             psp: fstart_image_build::amd::assembly::PspOptions {
                 compress_reset: true,
-                spi: None,
             },
         },
     };

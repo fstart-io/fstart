@@ -6,11 +6,11 @@
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) through the shared AMD
 //! reset entry ([`reset::Layout`]), and an
-//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
-//! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
-//! a reset image copy per composed half, one FFS in the lower half
-//! (`--image-config` composes into another vendor ROM, e.g. the target
-//! board's flash backup).
+//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes with
+//! [`fstart_image_build::sp3_flash`]: one PSP partition per generation the
+//! blobs have, packed from them (`--blobs`, or `--donor`, whose blobs
+//! fbuild extracts), a reset image copy per half, one FFS in the lower
+//! half. Without blobs the plan builds the units and assembles no image.
 //!
 //! The FFS holds the payload and a copy of the stage unit: the FFS builder
 //! finalizes the unit's trust policy only in FFS-resident files, and the
@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::string::{String, ToString};
 use std::{format, vec};
 
-use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig};
+use fstart_core::board::{AmdMicrocodeConfig, MicrocodeConfig};
 use fstart_core::layout::{Region, RegionKind};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
@@ -45,7 +45,7 @@ use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
 use fstart_image_build::sp3_flash::{
-    FlashPlan, NvramSlot, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey,
+    FlashPlan, NvramSlot, PackedHalf, ResetSlot, Sp3FlashAssembly,
 };
 
 use crate::layout::{
@@ -269,10 +269,9 @@ impl Payload {
     }
 }
 
-/// How the build is composed into the board's vendor ROM: every `0x62`
-/// entry of a supported generation names the reset image at the top of
-/// the lower half (above the early region), the FFS starts at
-/// [`layout::FFS_OFFSET`] or above.
+/// How the build's halves are laid out: every `0x62` entry of a packed
+/// generation names the reset image at the top of the lower half (above
+/// the early region), the FFS starts at [`layout::FFS_OFFSET`].
 pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
     FlashPlan {
         generations: B::GENERATIONS.iter().map(|g| g.profile().bios).collect(),
@@ -283,7 +282,6 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
         },
         ffs_offset: layout::FFS_OFFSET,
         dram_floor: EARLY_REGION.end(),
-        mirrors: B::FLASH_MIRRORS.to_vec(),
         nvram: Some(NvramSlot {
             flash_offset: layout::NVRAM.offset,
             size: layout::NVRAM.size,
@@ -416,36 +414,33 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         }],
         Payload::Halt | Payload::Uefi => vec![],
     };
-    // The PSP firmware: packed from the blob directory (`--blobs`,
-    // `--donor`), or the board's vendor ROM, which `--image-config`
-    // replaces (same workspace-relative or absolute path rules).
-    let (vendor_image, packed, microcode) = match (&selection.blobs, &selection.image_config) {
-        (Some(_), Some(_)) => {
-            return Err(
-                "SP3 images are packed from --blobs or composed into --image-config".into(),
-            );
+    // The PSP firmware is packed from the blob directory: `--blobs`, or
+    // the blobs fbuild extracts from a `--donor` image. Without one the
+    // plan builds the units and assembles no image.
+    let config = payload.config(selection)?;
+    let (assembly, inputs) = match &selection.blobs {
+        Some(dir) => {
+            let (packed, microcode) = packed::<B>(selection, dir)?;
+            let assembly = Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
+                ffs: ffs_assembly(payload, config, Some(microcode)),
+                packed,
+                stage_unit: STAGE_UNIT.into(),
+                compose: flash_plan::<B>(),
+            }));
+            (assembly, inputs)
         }
-        (Some(dir), None) => {
-            let (halves, microcode) = packed::<B>(selection, dir)?;
-            (String::new(), halves, microcode)
-        }
-        (None, image) => {
-            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
-            let microcode = microcode::<B>(&vendor_image)?;
-            (vendor_image, vec![], microcode)
-        }
+        None => (
+            Assembly::Unassembled {
+                platform: fstart_core::Platform::X86_64,
+            },
+            vec![],
+        ),
     };
     let plan = BuildPlan {
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],
-        assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
-            ffs: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
-            vendor_image,
-            packed,
-            stage_unit: STAGE_UNIT.into(),
-            compose: flash_plan::<B>(),
-        })),
+        assembly,
         inputs,
     };
     plan.order()?;
@@ -455,7 +450,9 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
 /// The halves packed from the blob directory `dir`: one per generation the
 /// board lists, in boot ROM order (Naples below Rome below Milan), from the
 /// platform's `[package.metadata.fstart.amd.<generation>]` table and the
-/// board's; and the microcode files of all of them for the FFS.
+/// board's; and the microcode files of all of them for the FFS. The
+/// assembly keeps those the blobs have
+/// ([`Sp3FlashAssembly::keep_present`]).
 fn packed<B: Sp3BoardFacts>(
     selection: &BuildSelection,
     dir: &str,
@@ -504,62 +501,23 @@ fn packed<B: Sp3BoardFacts>(
                 .apob_destination
                 .or(soc.apob_destination)
                 .ok_or_else(|| format!("the {soc_name} table has no APOB destination"))?,
+            microcode: resolved.microcode,
         });
     }
     if halves.len() > 2 {
         return Err("an SP3 flash has two halves, not one per generation".into());
     }
-    Ok((
-        halves,
-        MicrocodeConfig::Amd(AmdMicrocodeConfig {
-            files,
-            vendor_images: heapless::Vec::new(),
-        }),
-    ))
-}
-
-/// The microcode the FFS carries for MP init: the BIOS directory patches of
-/// every generation the board supports, from either half of the vendor ROM
-/// (the composer decides which half boots which generation).
-fn microcode<B: Sp3BoardFacts>(vendor_image: &str) -> Result<MicrocodeConfig, String> {
-    let mut vendor_images = heapless::Vec::new();
-    for generation in B::GENERATIONS {
-        for origin in [0, fstart_amdfw_format::HALF_SIZE as u32] {
-            vendor_images
-                .push(AmdVendorMicrocode {
-                    image: vendor_image
-                        .try_into()
-                        .map_err(|_| format!("vendor image path {vendor_image} is too long"))?,
-                    bios_directory: generation.profile().bios,
-                    origin,
-                })
-                .map_err(|_| "too many microcode sources")?;
-        }
-    }
-    Ok(MicrocodeConfig::Amd(AmdMicrocodeConfig {
-        files: heapless::Vec::new(),
-        vendor_images,
-    }))
-}
-
-/// Check the board's vendor ROM against the build without composing: the
-/// halves it would compose and keep and the FFS window. `root` is the workspace root.
-pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
-    let path = root.join(B::VENDOR_IMAGE);
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(flash_plan::<B>().survey(&bytes)?)
+    Ok((halves, MicrocodeConfig::Amd(AmdMicrocodeConfig { files })))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_image_build::sp3_flash::{self, FlashHalf, HalfAction};
+    use fstart_image_build::sp3_flash;
 
     struct S8030;
     impl Sp3BoardFacts for S8030 {
         const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
-        const VENDOR_IMAGE: &'static str =
-            "../sp3/firmware/tyan-s8030gm2ne/S8030GM2NE_BIOS_V4.04/8030V404.ROM";
         const MAX_CPUS: u16 = 256;
     }
 
@@ -601,16 +559,24 @@ mod tests {
         struct Nothing;
         impl Sp3BoardFacts for Nothing {
             const GENERATIONS: &'static [Generation] = &[];
-            const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
             const MAX_CPUS: u16 = 1;
         }
         assert!(resolve::<Nothing>(&BuildSelection::default()).is_err());
     }
 
-    #[test]
-    fn packs_one_half_per_generation_from_the_blob_tables() {
+    /// The selection packing the S8030's tables from a blob directory
+    /// with the PSP firmware of the generations in `present`.
+    fn packed_selection(name: &str, present: &[&str]) -> BuildSelection {
+        let dir =
+            std::env::temp_dir().join(std::format!("fstart-sp3-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for soc in present {
+            std::fs::create_dir_all(dir.join(soc)).unwrap();
+            std::fs::write(dir.join(soc).join("boot.bin"), [0u8; 16]).unwrap();
+        }
         let mut selection = BuildSelection {
-            blobs: Some(std::env::temp_dir().to_str().unwrap().into()),
+            blobs: Some(dir.to_str().unwrap().into()),
             ..Default::default()
         };
         let apcb = |soc: &str| {
@@ -622,32 +588,33 @@ mod tests {
             "board": "b",
             "amd": { "milan": apcb("milan"), "rome": apcb("rome") },
         });
-        let soc = |slot: &str, ucode: &str| {
+        let soc = |name: &str, slot: &str| {
             serde_json::json!({
                 "bios-directory": slot, "levels": 2,
                 "efs-offset": 0x2_0000, "partition-end": 0x60_0000,
                 "apob-destination": 0x3000_0000,
-                "psp": [{ "type": 1, "file": "boot.bin" }],
+                "psp": [{ "type": 1, "file": format!("{name}/boot.bin") }],
                 "bios": [],
-                "microcode": [{ "equivalence-id": 0x8310, "file": ucode }],
+                "microcode": [{ "equivalence-id": 0x8310, "file": format!("{name}/ucode.bin") }],
             })
         };
         selection.manifests.platform = serde_json::json!({ "amd": {
-            "rome": soc("Family17hModel30", "rome.bin"),
-            "milan": soc("Family19h", "milan.bin"),
+            "rome": soc("rome", "Family17hModel30"),
+            "milan": soc("milan", "Family19h"),
         }});
+        selection
+    }
+
+    fn generations(plan: &BuildPlan) -> std::vec::Vec<fstart_image_build::sp3_flash::Generation> {
+        sp3(plan).packed.iter().map(|h| h.generation).collect()
+    }
+
+    #[test]
+    fn packs_one_half_per_generation_from_the_blob_tables() {
+        let selection = packed_selection("both", &["rome", "milan"]);
         let plan = resolve::<S8030>(&selection).unwrap();
-        plan.validate_image_selection(&selection).unwrap();
         let image = sp3(&plan);
-        assert!(image.vendor_image.is_empty());
-        assert_eq!(
-            image
-                .packed
-                .iter()
-                .map(|h| h.generation)
-                .collect::<std::vec::Vec<_>>(),
-            [sp3_flash::ROME, sp3_flash::MILAN]
-        );
+        assert_eq!(generations(&plan), [sp3_flash::ROME, sp3_flash::MILAN]);
         assert_eq!(
             image.packed[1].files.bios[0].path.rsplit('/').next(),
             Some("apcb.bin")
@@ -656,18 +623,41 @@ mod tests {
             panic!("no microcode")
         };
         assert_eq!(microcode.files.len(), 2);
-        assert!(microcode.vendor_images.is_empty());
-        // Not both a vendor image and blobs; every listed generation needs
-        // a board table.
-        let mut both = selection.clone();
-        both.image_config = Some("vendor.rom".into());
-        assert!(resolve::<S8030>(&both).is_err());
+        // A donor with only one generation's firmware packs that one,
+        // without the other's microcode.
+        let rome = packed_selection("rome", &["rome"]);
+        let mut plan = resolve::<S8030>(&rome).unwrap();
+        let Assembly::Sp3Flash(image) = &mut plan.assembly else {
+            panic!("not an SP3 flash")
+        };
+        image
+            .keep_present(&|path| std::path::Path::new(path).exists())
+            .unwrap();
+        assert_eq!(generations(&plan), [sp3_flash::ROME]);
+        let Some(MicrocodeConfig::Amd(microcode)) = &sp3(&plan).ffs.microcode else {
+            panic!("no microcode")
+        };
+        assert_eq!(microcode.files.len(), 1);
+        assert!(microcode.files[0].ends_with("rome/ucode.bin"));
+        // None of them, or a board without a generation's table, fails.
+        let mut plan = resolve::<S8030>(&packed_selection("none", &[])).unwrap();
+        let Assembly::Sp3Flash(image) = &mut plan.assembly else {
+            panic!("not an SP3 flash")
+        };
+        assert!(
+            image
+                .keep_present(&|path| std::path::Path::new(path).exists())
+                .is_err()
+        );
         let mut rome_only = selection;
         rome_only.manifests.board["amd"]
             .as_object_mut()
             .unwrap()
             .remove("milan");
         assert!(resolve::<S8030>(&rome_only).is_err());
+        // Without blobs the plan builds the units and assembles no image.
+        let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
+        assert!(matches!(plan.assembly, Assembly::Unassembled { .. }));
     }
 
     #[test]
@@ -716,9 +706,9 @@ mod tests {
 
     #[test]
     fn plan_composes_every_supported_half_with_the_ffs_in_the_common_window() {
-        let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
+        let packed = packed_selection("plan", &["rome", "milan"]);
+        let plan = resolve::<S8030>(&packed).unwrap();
         let image = sp3(&plan);
-        assert_eq!(image.vendor_image, S8030::VENDOR_IMAGE);
         assert_eq!(image.stage_unit, STAGE_UNIT);
         assert_eq!(
             image.compose,
@@ -731,7 +721,6 @@ mod tests {
                 },
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
-                mirrors: Vec::new(),
                 nvram: Some(NvramSlot {
                     flash_offset: 0xda_0000,
                     size: 0x4_0000
@@ -749,10 +738,10 @@ mod tests {
         assert!(!stage.external && stage.load_addr == 0x75de_0000);
         assert!(config.payload.is_none() && plan.inputs.is_empty());
 
-        // Payloads, the vendor ROM override and what is refused.
+        // Payloads and what is refused.
         let select = |payload: &str| BuildSelection {
             payload: Some(payload.into()),
-            ..Default::default()
+            ..packed.clone()
         };
         let linux = resolve::<S8030>(&BuildSelection {
             x86_linux_bootargs: Some("console=ttyS0,115200".into()),
@@ -777,13 +766,6 @@ mod tests {
             })
             .is_err()
         );
-        let custom = BuildSelection {
-            image_config: Some("/tmp/dump.rom".into()),
-            ..Default::default()
-        };
-        let plan = resolve::<S8030>(&custom).unwrap();
-        assert_eq!(sp3(&plan).vendor_image, "/tmp/dump.rom");
-        plan.validate_image_selection(&custom).unwrap();
         // The plan round-trips through fbuild's JSON transport.
         let json = serde_json::to_string(&plan).unwrap();
         let back: BuildPlan = serde_json::from_str(&json).unwrap();
@@ -801,38 +783,5 @@ mod tests {
         assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00da_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
         assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
-    }
-
-    #[test]
-    fn vendor_check_against_the_s8030_rom() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        if !root.join(S8030::VENDOR_IMAGE).exists() {
-            std::eprintln!("skipping: S8030 v4.04 ROM not present");
-            return;
-        }
-        let survey = check_vendor::<S8030>(&root).unwrap();
-        assert_eq!(survey.ffs, 0x60_0000..0xda_0000);
-        let composed: std::vec::Vec<_> = survey
-            .halves
-            .iter()
-            .map(|(half, action)| match action {
-                HalfAction::Compose(layout) => (*half, layout.generation),
-                HalfAction::Keep(g) => panic!("{half:?} kept ({g:?})"),
-            })
-            .collect();
-        assert_eq!(
-            composed,
-            [
-                (FlashHalf::Lower, sp3_flash::ROME),
-                (FlashHalf::Upper, sp3_flash::MILAN)
-            ]
-        );
-        struct Naples;
-        impl Sp3BoardFacts for Naples {
-            const GENERATIONS: &'static [Generation] = &[Generation::Naples];
-            const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
-            const MAX_CPUS: u16 = 1;
-        }
-        assert!(check_vendor::<Naples>(&root).is_err());
     }
 }

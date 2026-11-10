@@ -138,7 +138,6 @@ fn plan(generations: &[Generation]) -> FlashPlan {
         reset: IMAGE,
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
-        mirrors: Vec::new(),
         nvram: None,
     }
 }
@@ -342,6 +341,7 @@ fn packed_half(generation: Generation) -> PackedHalf {
             assets: vec![],
             psp_app: false,
         },
+        microcode: vec![],
         apob_destination: 0x3000_0000,
     }
 }
@@ -468,41 +468,6 @@ fn single_generation_and_kept_halves() {
 }
 
 #[test]
-fn full_readout_mirrors_the_composed_bank() {
-    let milan = synthetic(MILAN);
-    let mut readout = vec![0xff; 4 * HALF];
-    readout[..HALF].copy_from_slice(&milan);
-    readout[2 * HALF..2 * HALF + 0x100].fill(0x5a);
-    readout[3 * HALF..].copy_from_slice(&milan);
-    readout[3 * HALF + 0x80_0000] = 0x42;
-    let plan = FlashPlan {
-        mirrors: vec![3 * HALF as u32],
-        ..plan(&[MILAN])
-    };
-    let ffs = ffs(0x1_0000);
-    let bank = compose(&milan, &plan, &linked_reset(), &ffs).unwrap();
-    assert_eq!(bank.image.len(), HALF);
-    let full = compose(&readout, &plan, &linked_reset(), &ffs).unwrap();
-    assert_eq!(full.image.len(), 4 * HALF);
-    // The same bank (and flash anchor) at 0 and at the mirror; the middle
-    // of the readout is kept byte for byte.
-    assert_eq!(full.image[..HALF], bank.image[..]);
-    assert_eq!(full.image[3 * HALF..], bank.image[..]);
-    assert_eq!(full.image[HALF..3 * HALF], readout[HALF..3 * HALF]);
-    assert_eq!(full.survey, bank.survey);
-    // A readout too small for the mirror is not silently truncated.
-    assert!(matches!(
-        compose(&readout[..2 * HALF], &plan, &linked_reset(), &ffs),
-        Err(ImageError::Layout(_))
-    ));
-    let overlapping = FlashPlan {
-        mirrors: vec![0x80_0000],
-        ..plan.clone()
-    };
-    assert!(matches!(overlapping.check(), Err(ImageError::Plan(_))));
-}
-
-#[test]
 fn reset_image_gets_trust_locator_and_flash_anchor() {
     let ffs = ffs(0x1000);
     let anchor = FlashAnchor::new(2 * HALF as u32, 0x60_0000, 0x1000);
@@ -589,77 +554,6 @@ fn donor_halves_match_the_firmware_image_report() {
     }
 }
 
-const S8030: &str = "tyan-s8030gm2ne/S8030GM2NE_BIOS_V4.04/8030V404.ROM";
-
-#[test]
-fn donor_s8030_dual() {
-    let Some(rom) = donor(S8030) else {
-        return;
-    };
-    let ffs = ffs(0x10_0000);
-    let both = plan(&[ROME, MILAN]);
-    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
-    let image = &out.image;
-    check_dual(image).unwrap();
-    for half in [FlashHalf::Lower, FlashHalf::Upper] {
-        let efs = half.offset() + EFS_OFFSET;
-        assert_eq!(image[efs..efs + 0x60], rom[efs..efs + 0x60]);
-    }
-    check_trees(image, &rom[..HALF], ROME, 0xde_0000);
-    check_trees(image, &rom[HALF..], MILAN, HALF + 0xde_0000);
-    check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
-    assert_eq!(image[0xde_0000..HALF], image[HALF + 0xde_0000..]);
-    // Milan v4.00 composes the same way.
-    if let Some(v400) = donor("tyan-s8030gm2ne/S8030GM2NE_bios_v400/8030V400.ROM") {
-        compose(&v400, &both, &linked_reset(), &ffs).unwrap();
-    }
-}
-
-#[test]
-fn donor_s8026_naples_rome() {
-    let rom = donor("tyan-s8026/x/8026V202.ROM").or_else(|| {
-        let naples = donor("donors/naples-s8026-v202.bin")?;
-        Some([naples, donor("donors/rome-s8026-v202.bin")?].concat())
-    });
-    let Some(rom) = rom else {
-        return;
-    };
-    let ffs = ffs(0x10_0000);
-    let both = plan(&[NAPLES, ROME]);
-    let out = compose(&rom, &both, &linked_reset(), &ffs).unwrap();
-    let image = &out.image;
-    check_dual(image).unwrap();
-    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
-    check_trees(image, &rom[..HALF], NAPLES, 0xde_0000);
-    check_trees(image, &rom[HALF..], ROME, HALF + 0xde_0000);
-    check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
-}
-
-/// The test bench's own flash (Tyan S8030GM2NE backup,
-/// `reports/HW_S8030_BENCH.md`): a Rome-only vendor build in the lower
-/// half, the upper half all zeros.
-#[test]
-fn bench_s8030_backup() {
-    let Some(rom) = donor("hw/s8030gm2ne-CCSF2AK45016/host-pnor.read1.bin") else {
-        return;
-    };
-    let ffs = ffs(0x10_0000);
-    let out = compose(&rom, &plan(&[ROME, MILAN]), &linked_reset(), &ffs).unwrap();
-    let image = &out.image;
-    assert_eq!(
-        out.survey.halves[1],
-        (FlashHalf::Upper, HalfAction::Keep(None))
-    );
-    assert_eq!(out.survey.ffs, 0x60_0000..0xde_0000);
-    assert_eq!(image[HALF..], rom[HALF..]);
-    assert_eq!(booted_half(image, ROME), Some(FlashHalf::Lower));
-    // Everything below the first BIOS directory (0x246000: EFS, PSP
-    // directories, blobs) is the vendor's; check_trees covers the rest.
-    assert_eq!(image[..0x24_6000], rom[..0x24_6000]);
-    check_trees(image, &rom[..HALF], ROME, 0xde_0000);
-    check_payloads(image, 0xde_0000, &ffs, 0x60_0000);
-}
-
 fn sha256(bytes: &[u8]) -> String {
     fstart_crypto::digest::hash_sha256(bytes)
         .iter()
@@ -667,8 +561,7 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The composed images, byte for byte: the synthetic halves and every
-/// donor present.
+/// The composed images, byte for byte.
 #[test]
 fn composes_the_pinned_images() {
     let ffs = ffs(0x10_0000);
@@ -696,68 +589,6 @@ fn composes_the_pinned_images() {
     ];
     for (hash, expected) in synthetic {
         assert_eq!(hash, expected);
-    }
-    let donors: [(&str, &[Generation], &str); 11] = [
-        (
-            "donors/naples-s8026-v202.bin",
-            &[NAPLES],
-            "d958a6740fbedc092e24c5abcb6f0b06d694cd52c0d71fa1b60aea292766f2b5",
-        ),
-        (
-            "donors/naples2p-knppd32-1801.bin",
-            &[NAPLES],
-            "e3883adf546aaf7e6788c2eaff05d1a8057035a23c7bb39aae65afdd5bcf45a2",
-        ),
-        (
-            "donors/rome-s8026-v202.bin",
-            &[ROME],
-            "5ddb79ff968612c380e9675c9066f1b8203b90b72b735401bea91ff74d838bbc",
-        ),
-        (
-            "donors/rome-s8030-v404.bin",
-            &[ROME],
-            "3e5ca588c41af4424f994cf06d1cc5be3806a76b87406f0bc0819b7fe2fa7dfe",
-        ),
-        (
-            "donors/rome2p-s8253-v203.bin",
-            &[ROME],
-            "d289b9f753946d4b920954371a0d7def7538b6d9bd8b3685376c64b186e5110e",
-        ),
-        (
-            "donors/milan-s8030-v404.bin",
-            &[MILAN],
-            "2d8647843b607b8d2388e75cd5d52c5c9fa7309212837e2cc04c3dbc03dd4dcd",
-        ),
-        (
-            "donors/milan2p-s8253-v203.bin",
-            &[MILAN],
-            "f17605f332c64a0c874d58602e7ed0a48f9181f69006de6a66f1a25dd800f9d1",
-        ),
-        (
-            S8030,
-            &[ROME, MILAN],
-            "64a83561e74ab97483da32712b2ec33f85601a078aff206f8b55a5c2da93219e",
-        ),
-        (
-            "tyan-s8030gm2ne/S8030GM2NE_bios_v400/8030V400.ROM",
-            &[ROME, MILAN],
-            "9901bd95a5dd9cc918b22ff9b9323d5ad37e9490adb59307d1b2a83bc812efdf",
-        ),
-        (
-            "tyan-s8026/x/8026V202.ROM",
-            &[NAPLES, ROME],
-            "a0ee05faf086cc66dd1af8841aa442e246e7c9a89c43c823639a541043c066d5",
-        ),
-        (
-            "hw/s8030gm2ne-CCSF2AK45016/host-pnor.read1.bin",
-            &[ROME, MILAN],
-            "546e75fe601f9d7d9cec9d50836425e505890d8f9c7945df3df73e448236f26c",
-        ),
-    ];
-    for (path, generations, expected) in donors {
-        if let Some(rom) = donor(path) {
-            assert_eq!(pinned(&rom, generations), expected, "{path}");
-        }
     }
 }
 
@@ -802,4 +633,37 @@ fn the_settings_store_ends_the_ffs_window_and_starts_erased() {
         };
         assert!(matches!(plan.check(), Err(ImageError::Plan(_))), "{bad:?}");
     }
+}
+
+#[test]
+fn keeps_the_halves_whose_firmware_the_blobs_have() {
+    use fstart_core::board::{AmdMicrocodeConfig, MicrocodeConfig};
+    let mut rome = packed_half(ROME);
+    rome.microcode = vec!["rome/ucode".into()];
+    let mut milan = packed_half(MILAN);
+    milan.microcode = vec!["milan/ucode".into()];
+    let mut image = Sp3FlashAssembly {
+        ffs: crate::build_plan::FfsAssembly {
+            microcode: Some(MicrocodeConfig::Amd(AmdMicrocodeConfig {
+                files: ["rome/ucode", "milan/ucode"]
+                    .map(|f| f.try_into().unwrap())
+                    .into_iter()
+                    .collect(),
+            })),
+            ..crate::amd::tests::ffs_window(0, 0).assembly
+        },
+        packed: vec![rome, milan],
+        stage_unit: "stage".into(),
+        compose: plan(&[ROME, MILAN]),
+    };
+    let rome_only = |path: &str| path.starts_with("rome/");
+    let mut none = image.clone();
+    assert!(none.keep_present(&|_| false).is_err());
+    image.keep_present(&rome_only).unwrap();
+    assert_eq!(image.packed.len(), 1);
+    assert_eq!(image.packed[0].generation, ROME);
+    let Some(MicrocodeConfig::Amd(microcode)) = &image.ffs.microcode else {
+        panic!("no microcode")
+    };
+    assert_eq!(microcode.files.len(), 1);
 }

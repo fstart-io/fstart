@@ -6,8 +6,12 @@ use fstart_amdfw_format::{
     efs::BiosDirectorySlot,
 };
 use zerocopy::FromBytes;
-fn image() -> PicassoImage {
-    PicassoImage {
+/// The slot Picasso's PSP takes the BIOS directory from.
+const PICASSO: BiosDirectorySlot = BiosDirectorySlot::Family17hModel10;
+
+fn image() -> SingleLevelImage {
+    SingleLevelImage {
+        bios_directory: PICASSO,
         flash_size: 0x1000000,
         efs_offset: 0xe20000,
         partition_end: 0x1000000,
@@ -70,7 +74,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         ffs: None,
         stage_unit: "stage".into(),
         flash_size: raw.flash_size,
-        bios_directory: PicassoImage::BIOS_DIRECTORY,
+        bios_directory: PICASSO,
         reset_destination: raw.reset_destination,
         reset_size: raw.reset_image.len() as u32,
         apob_destination: raw.apob_destination,
@@ -102,9 +106,8 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
     );
     let with_files = |change: fn(&mut PspFiles)| {
         let mut changed = operation.clone();
-        if let Firmware::Packed { files, .. } = &mut changed.firmware {
-            change(files);
-        }
+        let Firmware::Packed { files, .. } = &mut changed.firmware;
+        change(files);
         changed
     };
     assert!(
@@ -339,10 +342,6 @@ fn the_psp_boots_from_level_2() {
     assert!(read_bios_directory(&image, 0x29_4000, SLOT).is_err());
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// An MJ11-like vendor image: the EFS, a level-1 BIOS directory that
 /// points to a level 2 and contents up to the prefix end.
 fn two_level_vendor() -> Vec<u8> {
@@ -416,7 +415,7 @@ fn ffs_and_stage(reset_size: usize) -> (Vec<u8>, Vec<u8>) {
     (ffs, stage)
 }
 
-fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
+pub(crate) fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
     use fstart_core::*;
     assembly::FfsWindow {
         assembly: crate::build_plan::FfsAssembly {
@@ -438,56 +437,6 @@ fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
         offset,
         size,
     }
-}
-
-/// MJ11's layout with its vendor image.
-fn mj11() -> AmdAssembly {
-    AmdAssembly {
-        firmware: Firmware::Vendor {
-            image: crate::build_plan::FileBinding {
-                environment: "VENDOR_FLASH".into(),
-                path: "vendor.rom".into(),
-                capacity: 0x100_0000,
-            },
-            prefix_size: 0x29_4000,
-        },
-        ffs: Some(ffs_window(0x29_4000, 0xdb_0000 - 0x29_4000)),
-        stage_unit: "stage".into(),
-        flash_size: 0x100_0000,
-        bios_directory: SLOT,
-        reset_size: 0x25_0000,
-        reset_destination: 0x76db_0000,
-        apob_destination: 0x3000_0000,
-        shared_memory: None,
-        psp: Default::default(),
-    }
-}
-
-#[test]
-fn composes_the_pinned_image() {
-    let (ffs, stage) = ffs_and_stage(0x25_0000);
-    let vendor = two_level_vendor();
-    let image = mj11().assemble(&[&vendor], &stage, Some(&ffs)).unwrap();
-    assert!(image.is_whole_flash(0x100_0000));
-    let image = image.bytes;
-    assert_eq!(image[..0x29_4000], vendor[..0x29_4000]);
-    assert_eq!(image[0x29_4000..0x29_6000], ffs);
-    // The stage got the FFS's locator.
-    assert_eq!(image[0xdb_1000..0xdb_1028], ffs[0x40..0x68]);
-    assert_eq!(
-        hex(&fstart_crypto::digest::hash_sha256(&image)),
-        "f40ad114b05e11aaf06812c9fbcdac7193b8db0e215381ea75f0c3aaffb6dabb"
-    );
-    // The vendor image must describe the layout.
-    let mut other = mj11();
-    other.reset_destination = 0x7600_0000;
-    assert!(other.assemble(&[&vendor], &stage, Some(&ffs)).is_err());
-    assert!(
-        mj11()
-            .assemble(&[&vendor], &stage[1..], Some(&ffs))
-            .is_err()
-    );
-    assert!(mj11().assemble(&[&vendor], &stage, None).is_err());
 }
 
 #[test]
@@ -547,14 +496,13 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         ffs: Some(ffs_window(0xb8_0000, 0x29_f000)),
         stage_unit: "stage".into(),
         flash_size: 0x100_0000,
-        bios_directory: PicassoImage::BIOS_DIRECTORY,
+        bios_directory: PICASSO,
         reset_size,
         reset_destination: 0x300_0000,
         apob_destination: 0x200_1000,
         shared_memory: None,
         psp: PspOptions {
             compress_reset: true,
-            spi: None,
         },
     };
     assert_eq!(
@@ -589,9 +537,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
             .iter()
             .all(|&b| b == 0xff)
     );
-    let levels = Flash::new(&image.bytes)
-        .bios_directories(PicassoImage::BIOS_DIRECTORY)
-        .unwrap();
+    let levels = Flash::new(&image.bytes).bios_directories(PICASSO).unwrap();
     let boot = levels.boot();
     let reset = boot
         .entries
@@ -623,80 +569,4 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
     let mut overlapping = operation.clone();
     overlapping.ffs = Some(ffs_window(0x99_0000, 0x10_0000));
     assert!(overlapping.validate().is_err());
-}
-
-#[test]
-fn takes_the_vendor_microcode_from_level_2() {
-    use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode};
-    let mut vendor = two_level_vendor();
-    // The level-2 microcode patch is for Zeppelin (equivalence ID 0x8012).
-    vendor[0x25_f818..0x25_f81a].copy_from_slice(&0x8012u16.to_le_bytes());
-    let path = std::env::temp_dir().join(format!("fstart-amd-ucode-{}.bin", std::process::id()));
-    std::fs::write(&path, &vendor).unwrap();
-    let config = AmdMicrocodeConfig {
-        files: Default::default(),
-        vendor_images: heapless::Vec::from_slice(&[AmdVendorMicrocode {
-            image: path.to_str().unwrap().try_into().unwrap(),
-            bios_directory: SLOT,
-            origin: 0,
-        }])
-        .unwrap(),
-    };
-    let blob = crate::assemble::amd_microcode(&config, std::path::Path::new("/"));
-    std::fs::remove_file(&path).unwrap();
-    assert_eq!(blob.unwrap(), vendor[0x25_f800..0x25_f800 + 0xc80]);
-}
-
-#[test]
-fn the_psp_inflates_the_reset_image() {
-    use fstart_amdfw_format::{Flash, directory::BiosEntry};
-    let (ffs, stage) = ffs_and_stage(0x25_0000);
-    let vendor = two_level_vendor();
-    let plain = mj11()
-        .assemble(&[&vendor], &stage, Some(&ffs))
-        .unwrap()
-        .bytes;
-    let mut operation = mj11();
-    operation.psp = assembly::PspOptions {
-        compress_reset: true,
-        spi: Some((7, 1)),
-    };
-    let image = operation
-        .assemble(&[&vendor], &stage, Some(&ffs))
-        .unwrap()
-        .bytes;
-    let levels = Flash::new(&image).bios_directories(SLOT).unwrap();
-    assert_eq!(levels.iter().count(), 2);
-    for directory in levels.iter() {
-        let reset = directory.entries.iter().find(|e| e.kind == 0x62).unwrap();
-        assert_eq!(reset.flags & BiosEntry::COMPRESSED, BiosEntry::COMPRESSED);
-    }
-    assert_eq!(image[0x2_0043..0x2_0045], [7, 1]);
-    // In the prefix only the EFS SPI fields and each directory's checksum
-    // and reset entry flags change.
-    let allowed = |i: usize| {
-        matches!(i, 0x2_0043 | 0x2_0044 | 0xf_7042 | 0x22_9042)
-            || (0xf_7004..0xf_7008).contains(&i)
-            || (0x22_9004..0x22_9008).contains(&i)
-    };
-    assert!((0..0x29_4000).all(|i| image[i] == vendor[i] || allowed(i)));
-    assert_eq!(image[0x29_4000..0xdb_0000], plain[0x29_4000..0xdb_0000]);
-    let inflated = assembly::amd_decompress(&image[0xdb_0000..], 0x25_0000).unwrap();
-    assert_eq!(inflated, plain[0xdb_0000..]);
-    // An uncompressed replacement must not inherit a compressed vendor flag.
-    let raw = mj11()
-        .assemble(&[&image], &stage, Some(&ffs))
-        .unwrap()
-        .bytes;
-    for directory in Flash::new(&raw).bios_directories(SLOT).unwrap().iter() {
-        assert!(
-            !directory
-                .entries
-                .iter()
-                .find(|e| e.kind == 0x62)
-                .unwrap()
-                .compressed()
-        );
-    }
-    assert_eq!(raw[0xdb_0000..], plain[0xdb_0000..]);
 }

@@ -4,8 +4,8 @@
 //! the PSP copies, runs from the reset vector to the payload. A payload and
 //! its manifest go into an FFS in the flash if the layout has one.
 //!
-//! With `--image-config` the plan also composes the flash image with the PSP
-//! firmware ([`ImageConfig`]).
+//! With `--blobs` (or `--donor`, whose blobs fbuild extracts) the plan
+//! also packs the flash image's PSP firmware ([`PackedImage`]).
 extern crate std;
 use super::{
     Board, Soc,
@@ -14,7 +14,7 @@ use super::{
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout,
-    board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig},
+    board::{AmdMicrocodeConfig, MicrocodeConfig},
     layout::RegionKind,
 };
 use fstart_image_build::{
@@ -23,8 +23,8 @@ use fstart_image_build::{
         blobs, reset,
     },
     build_plan::{
-        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
-        FileBinding, InputFile, UnitOutput,
+        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, InputFile,
+        UnitOutput,
     },
     layout::EncodedLayout,
     plan::{BuildSelection, Span},
@@ -51,24 +51,18 @@ pub struct Policy {
     pub smm: bool,
     /// Debug builds don't fit the image.
     pub release_only: bool,
-    /// Where the PSP firmware of a full image comes from.
-    pub image_config: ImageConfig,
+    /// How the PSP firmware of a full image is packed.
+    pub image: PackedImage,
 }
 
-/// What the `--image-config` of a full image is.
-pub enum ImageConfig {
-    /// A vendor flash image: its first `prefix` bytes (EFS, directories,
-    /// signed blobs) stay apart from the `psp` fields, the stage replaces
-    /// the reset image.
-    Vendor { prefix: u32, psp: PspOptions },
-    /// PSP firmware packed from the files of the SoC's and the board's blob
-    /// tables in the `--blobs` directory ([`blobs`]). With
-    /// `reset_offset`, a whole native image: the PSP partition, the reset
-    /// image at that flash offset and the layout's FFS.
-    Packed {
-        reset_offset: Option<u32>,
-        psp: PspOptions,
-    },
+/// A full image's PSP firmware, packed from the files of the SoC's and the
+/// board's blob tables in the `--blobs` directory ([`blobs`]; `--donor`
+/// extracts them from a vendor image). With `reset_offset`, a whole native
+/// image: the PSP partition, the reset image at that flash offset and the
+/// layout's FFS.
+pub struct PackedImage {
+    pub reset_offset: Option<u32>,
+    pub psp: PspOptions,
 }
 
 /// A noncar SoC's host build.
@@ -292,41 +286,19 @@ fn bounded<const N: usize>(path: &str) -> Result<heapless::String<N>, String> {
         .map_err(|_| format!("microcode path {path} is too long"))
 }
 
-/// The microcode patches the FFS carries for the CPU driver: the BIOS
-/// directory microcode of a vendor image, or the microcode files of the
-/// SoC's blob table. None without an image configuration or blobs.
-fn microcode<S: HostSoc>(
-    selection: &BuildSelection,
-    packed: Option<&blobs::Resolved>,
-) -> Result<Option<MicrocodeConfig>, String> {
-    let config = match (&S::POLICY.image_config, &selection.image_config, packed) {
-        (ImageConfig::Vendor { .. }, Some(path), _) => {
-            let image =
-                std::fs::canonicalize(path).map_err(|e| format!("vendor image {path}: {e}"))?;
-            AmdMicrocodeConfig {
-                files: heapless::Vec::new(),
-                vendor_images: heapless::Vec::from_slice(&[AmdVendorMicrocode {
-                    image: bounded(&image.to_string_lossy())?,
-                    bios_directory: S::BIOS_DIRECTORY,
-                    origin: 0,
-                }])
-                .map_err(|_| "too many vendor images")?,
-            }
-        }
-        (ImageConfig::Packed { .. }, _, Some(packed)) if !packed.microcode.is_empty() => {
-            let mut files = heapless::Vec::new();
-            for file in &packed.microcode {
-                files
-                    .push(bounded(file)?)
-                    .map_err(|_| "too many microcode files")?;
-            }
-            AmdMicrocodeConfig {
-                files,
-                vendor_images: heapless::Vec::new(),
-            }
-        }
-        _ => return Ok(None),
+/// The microcode patches the FFS carries for the CPU driver: the microcode
+/// files of the SoC's blob table. None without blobs.
+fn microcode(packed: Option<&blobs::Resolved>) -> Result<Option<MicrocodeConfig>, String> {
+    let Some(packed) = packed.filter(|packed| !packed.microcode.is_empty()) else {
+        return Ok(None);
     };
+    let mut files = heapless::Vec::new();
+    for file in &packed.microcode {
+        files
+            .push(bounded(file)?)
+            .map_err(|_| "too many microcode files")?;
+    }
+    let config = AmdMicrocodeConfig { files };
     Ok(Some(MicrocodeConfig::Amd(config)))
 }
 
@@ -335,16 +307,9 @@ fn microcode<S: HostSoc>(
 /// (`[package.metadata.fstart.amd]`) in the selected blob directory. None
 /// without a blob directory.
 fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolved>, String> {
-    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, &selection.blobs)
-    else {
+    let Some(dir) = &selection.blobs else {
         return Ok(None);
     };
-    if selection.image_config.is_some() {
-        return Err(format!(
-            "{} images are packed from --blobs, not --image-config",
-            S::NAME
-        ));
-    }
     let tables = &selection.manifests;
     let board: blobs::BoardBlobs = serde_json::from_value(tables.board["amd"].clone())
         .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
@@ -371,40 +336,27 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
 }
 
 fn assembly<S: HostSoc>(
-    selection: &BuildSelection,
     packed: Option<blobs::Resolved>,
     ffs: Option<FfsAssembly>,
 ) -> Result<Assembly, String> {
     let layout = &S::LAYOUT;
     let flash_size = layout.flash.size as u32;
-    let (firmware, psp) = match (S::POLICY.image_config, &selection.image_config, packed) {
-        (ImageConfig::Vendor { prefix, psp }, Some(path), _) => (
-            Firmware::Vendor {
-                image: FileBinding {
-                    environment: "VENDOR_FLASH".into(),
-                    path: path.clone(),
-                    capacity: u64::from(flash_size),
-                },
-                prefix_size: prefix,
+    let image = &S::POLICY.image;
+    let Some(packed) = packed else {
+        return Ok(match ffs {
+            Some(ffs) => Assembly::Ffs(Box::new(ffs)),
+            None => Assembly::Unassembled {
+                platform: Platform::X86_64,
             },
-            psp,
-        ),
-        (ImageConfig::Packed { reset_offset, psp }, _, Some(packed)) => (
-            Firmware::Packed {
-                files: packed.files,
-                reset_offset,
-            },
-            psp,
-        ),
-        _ => {
-            return Ok(match ffs {
-                Some(ffs) => Assembly::Ffs(Box::new(ffs)),
-                None => Assembly::Unassembled {
-                    platform: Platform::X86_64,
-                },
-            });
-        }
+        });
     };
+    let (firmware, psp) = (
+        Firmware::Packed {
+            files: packed.files,
+            reset_offset: image.reset_offset,
+        },
+        image.psp,
+    );
     let assembly = AmdAssembly {
         firmware,
         ffs: ffs.zip(layout.ffs).map(|(assembly, window)| FfsWindow {
@@ -423,15 +375,6 @@ fn assembly<S: HostSoc>(
         psp,
     };
     assembly.validate()?;
-    // Check the vendor image against the layout the stage is linked for
-    // before building.
-    if let Firmware::Vendor { image, .. } = &assembly.firmware {
-        let path = &image.path;
-        let vendor = std::fs::read(path).map_err(|e| format!("vendor image {path}: {e}"))?;
-        assembly
-            .check_vendor(&vendor)
-            .map_err(|e| format!("vendor image {path}: {e}"))?;
-    }
     Ok(Assembly::Amd(Box::new(assembly)))
 }
 
@@ -463,13 +406,13 @@ where
         _ => vec![],
     };
     let packed = packed::<B::Soc>(&selection)?;
-    let microcode = microcode::<B::Soc>(&selection, packed.as_ref())?;
+    let microcode = microcode(packed.as_ref())?;
     let mut ffs = ffs_window.map(|window| ffs(layout, window, payload_config, microcode));
     // The video BIOSes of the SoC's blob table go into the FFS.
     if let (Some(ffs), Some(packed)) = (&mut ffs, &packed) {
         ffs.file_assets = packed.files.assets.clone();
     }
-    let assembly = assembly::<B::Soc>(&selection, packed, ffs)?;
+    let assembly = assembly::<B::Soc>(packed, ffs)?;
     let stage = CompilationUnit {
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
@@ -523,7 +466,7 @@ where
     };
     plan.order()?;
     plan.validate_compiler_selections(&selection)?;
-    plan.validate_image_selection(&selection)?;
+
     Ok(plan)
 }
 

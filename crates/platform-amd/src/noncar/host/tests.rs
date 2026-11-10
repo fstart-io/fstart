@@ -142,17 +142,13 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
         "vbios": [{ "device": 0x15dd, "file": "vbios.bin" }],
     }}});
     let plan = resolve::<Vilboz>(selection.clone()).unwrap();
-    plan.validate_image_selection(&selection).unwrap();
     let Assembly::Amd(image) = &plan.assembly else {
         unreachable!()
     };
     let Firmware::Packed {
         files,
         reset_offset,
-    } = &image.firmware
-    else {
-        unreachable!()
-    };
+    } = &image.firmware;
     assert_eq!(*reset_offset, Some(0x78_0000));
     assert_eq!(image.reset_size, 0x40_0000);
     assert_eq!(image.reset_destination, 0x0300_0000);
@@ -225,17 +221,13 @@ fn zeppelin_packs_a_two_level_native_image() {
         "microcode": [{ "equivalence-id": 0x8012, "file": "ucode.bin" }],
     }}});
     let plan = resolve::<Mj11>(selection.clone()).unwrap();
-    plan.validate_image_selection(&selection).unwrap();
     let Assembly::Amd(image) = &plan.assembly else {
         unreachable!()
     };
     let Firmware::Packed {
         files,
         reset_offset,
-    } = &image.firmware
-    else {
-        unreachable!()
-    };
+    } = &image.firmware;
     assert_eq!(*reset_offset, Some(0xdb_0000));
     assert!(files.two_level && image.psp.compress_reset);
     assert_eq!((files.spi_read_mode, files.spi_speed), (Some(7), Some(1)));
@@ -250,9 +242,9 @@ fn zeppelin_packs_a_two_level_native_image() {
         (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
     );
     assert!(matches!(&ffs.assembly.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
-    // A vendor image instead of the blobs.
-    let mut vendor = selection;
-    vendor.blobs = None;
-    vendor.image_config = Some("vendor.rom".into());
-    assert!(resolve::<Mj11>(vendor).is_err());
+    // Without blobs the plan builds the units and assembles no full image.
+    let mut unpacked = selection;
+    unpacked.blobs = None;
+    let plan = resolve::<Mj11>(unpacked).unwrap();
+    assert!(!matches!(plan.assembly, Assembly::Amd(_)));
 }

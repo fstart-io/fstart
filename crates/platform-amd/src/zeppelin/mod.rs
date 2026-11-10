@@ -108,11 +108,10 @@ impl noncar::host::HostSoc for Zeppelin {
         // inflates the stage instead of copying the whole 2.3 MiB reset
         // region, and reads the flash with Fast Read at 33 MHz (the SoC
         // table's EFS SPI settings): about 1.4 s faster to x86 on the MJ11.
-        image_config: noncar::host::ImageConfig::Packed {
+        image: noncar::host::PackedImage {
             reset_offset: Some(layout::RESET_FLASH_OFFSET),
             psp: fstart_image_build::amd::assembly::PspOptions {
                 compress_reset: true,
-                spi: None,
             },
         },
     };

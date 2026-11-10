@@ -336,30 +336,6 @@ impl BuildPlan {
         Ok(())
     }
 
-    pub fn validate_image_selection(
-        &self,
-        selection: &crate::plan::BuildSelection,
-    ) -> Result<(), String> {
-        match (&selection.image_config, &self.assembly) {
-            (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
-                Ok(())
-            }
-            (None, Assembly::Amd(image))
-                if matches!(
-                    image.firmware,
-                    crate::amd::assembly::Firmware::Packed { .. }
-                ) =>
-            {
-                Ok(())
-            }
-            (Some(path), Assembly::Sp3Flash(image)) if *path == image.vendor_image => Ok(()),
-            (None, Assembly::Ffs(_) | Assembly::Sp3Flash(_) | Assembly::Unassembled { .. }) => {
-                Ok(())
-            }
-            _ => Err("image configuration was not bound unchanged by the platform".into()),
-        }
-    }
-
     pub fn unit(&self, name: &str) -> Result<&CompilationUnit, String> {
         self.units
             .iter()

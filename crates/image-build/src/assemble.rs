@@ -1060,47 +1060,16 @@ fn concat_files<'a>(
     })
 }
 
-/// The flat patches of `config`: its files, then the BIOS directory
-/// microcode entries of its vendor images as the PSP finds that directory,
-/// each patch once.
+/// The flat patches of `config`, its files in order.
 pub(crate) fn amd_microcode(
     config: &fstart_core::board::AmdMicrocodeConfig,
     workspace_root: &Path,
 ) -> Result<Vec<u8>, String> {
-    let mut blob = concat_files(
+    let blob = concat_files(
         config.files.iter().map(|f| f.as_str()),
         workspace_root,
         "AMD microcode",
     )?;
-    let mut vendor_patches: Vec<Vec<u8>> = Vec::new();
-    for vendor in &config.vendor_images {
-        let path = workspace_root.join(vendor.image.as_str());
-        let image = fs::read(&path)
-            .map_err(|e| format!("failed to read vendor image {}: {e}", path.display()))?;
-        // The 16 MiB the PSP maps below 4 GiB. A half without the slot's
-        // directory does not boot that SoC.
-        let origin = vendor.origin as usize;
-        let end = image.len().min(origin + fstart_amdfw_format::HALF_SIZE);
-        let Some(half) = image.get(origin..end) else {
-            continue;
-        };
-        fstart_amdfw_format::Flash::new(half)
-            .bios_files(
-                vendor.bios_directory,
-                fstart_amdfw_format::directory::bios::MICROCODE,
-            )
-            .for_each(|patch| {
-                if !vendor_patches.iter().any(|known| known == patch) {
-                    vendor_patches.push(patch.to_vec());
-                }
-            });
-    }
-    vendor_patches
-        .iter()
-        .for_each(|p| blob.extend_from_slice(p));
-    if !config.vendor_images.is_empty() && blob.is_empty() {
-        return Err("the vendor images carry no microcode".into());
-    }
     if let Some(Err(at)) = fstart_amdfw_format::microcode::patches(&blob).find(Result::is_err) {
         return Err(format!(
             "AMD microcode at {at:#x} is not a patch of a known CPU family"

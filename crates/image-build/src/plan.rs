@@ -147,9 +147,6 @@ pub struct BuildSelection {
     /// A selected platform must bind every request, unchanged, to compiler units.
     #[serde(default)]
     pub compiler_files: Vec<CompilerFileSelection>,
-    /// Explicit platform-owned image configuration, not a compiler environment.
-    #[serde(default)]
-    pub image_config: Option<String>,
     /// The directory of the vendor firmware blobs the platform's tables
     /// name (e.g. AMD's PSP firmware).
     #[serde(default)]
@@ -189,12 +186,9 @@ pub struct PackageTables {
 
 impl BuildSelection {
     pub fn validate_compiler_files(&self) -> Result<(), String> {
-        for path in [&self.image_config, &self.blobs, &self.donor]
-            .into_iter()
-            .flatten()
-        {
+        for path in [&self.blobs, &self.donor].into_iter().flatten() {
             if path.is_empty() || path.contains('\0') {
-                return Err("invalid image configuration or blob directory path".into());
+                return Err("invalid blob directory or donor image path".into());
             }
         }
         let mut names = std::collections::BTreeSet::new();

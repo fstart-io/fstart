@@ -19,25 +19,23 @@ map, GPIO, SATA policy, the FCH UART1 console and the BMC's IPMI KCS.
 ## Build
 
 ```sh
-cargo fbuild assemble --board amd-ethanolx --release
-cargo fbuild assemble --board amd-ethanolx --release --payload uefi
+cargo fbuild assemble --board amd-ethanolx --release --donor /path/to/RXM100CB.bin
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi --donor ...
 ```
 
-The vendor ROM is the board's own flash (`vendor/README.md`). The BMC
-exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased bytes at
-`[16, 48 MiB)` and a second copy at `[48, 64 MiB)`. Its BIOS update
-(non-combo mode) writes a 16 MiB upload to **both** the lower and the
-upper bank and leaves the middle alone; this was confirmed by complete
-readbacks. The board declares that mirror (`FLASH_MIRRORS`), so with the
-64 MiB readout as vendor ROM the build produces:
+The AMD firmware comes from a donor image, the board's own flash
+(`vendor/README.md`): fbuild extracts the files the platform's Milan table
+names, and fstart packs them into its own 16 MiB bank, `amd-ethanolx.rom`.
+The bank layout: the Milan partition from `0x20000`, the FFS at
+`[0x600000, 0xda0000)`, the settings store at `[0xda0000, 0xde0000)`, the
+reset image at `0xde0000`.
 
-- `amd-ethanolx.rom`: the full 64 MiB flash image, bank at 0 and 48 MiB,
-  the readout's middle kept byte for byte, for an external programmer;
-- `amd-ethanolx.bank.rom`: the 16 MiB bank, for the BMC BIOS update.
-
-With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
-The bank layout: vendor EFS and directories to `0x893000`, FFS from
-`0x893000`, reset image at `0xde0000`.
+The BMC exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased
+bytes at `[16, 48 MiB)` and a second copy at `[48, 64 MiB)`. Its BIOS
+update (non-combo mode) writes a 16 MiB upload to **both** the lower and
+the upper bank and leaves the middle alone; this was confirmed by complete
+readbacks. Upload the bank; for an external programmer, place it at 0 and
+48 MiB of the readout.
 
 There is no on-flash vendor fallback after an update: both banks hold the
 new image. Keep verified external readouts for recovery, verify the
