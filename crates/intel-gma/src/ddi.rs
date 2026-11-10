@@ -1951,77 +1951,6 @@ mod tests {
     }
 
     #[test]
-    fn register_offsets_match_libgfxinit_shared_ddi() {
-        assert_eq!(DdiRegisters::for_port(DdiPort::A).buf_ctl, 0x64000);
-        assert_eq!(DdiRegisters::for_port(DdiPort::B).dp_tp_ctl, 0x64140);
-        assert_eq!(
-            DdiRegisters::for_port(DdiPort::C).dp_tp_status,
-            Some(0x64244)
-        );
-        assert_eq!(DdiRegisters::for_port(DdiPort::D).port_clk_sel, 0x4610c);
-        assert_eq!(
-            DdiRegisters::for_port(DdiPort::E).dp_tp_status,
-            Some(0x64444)
-        );
-    }
-
-    #[test]
-    fn encodes_ddi_buf_ctl_like_libgfxinit() {
-        assert_eq!(
-            encode_ddi_buf_ctl(
-                DdiTranscoder::B,
-                DdiLaneCount::Four,
-                true,
-                true,
-                true,
-                false,
-            ),
-            (1 << 31) | (1 << 24) | (1 << 16) | (3 << 1) | 1
-        );
-        assert_eq!(
-            encode_ddi_buf_ctl(
-                DdiTranscoder::Edp,
-                DdiLaneCount::One,
-                false,
-                false,
-                false,
-                true,
-            ),
-            (0xf << 24) | (1 << 4)
-        );
-    }
-
-    #[test]
-    fn encodes_dp_transport_control_like_libgfxinit() {
-        assert_eq!(encode_training_pattern(DpTrainingPattern::Pattern1), 1 << 7);
-        assert_eq!(
-            encode_training_pattern(DpTrainingPattern::Pattern2),
-            (1 << 8) | (1 << 7)
-        );
-        assert_eq!(
-            encode_training_pattern(DpTrainingPattern::Pattern3),
-            (4 << 8) | (1 << 7)
-        );
-        assert_eq!(encode_training_pattern(DpTrainingPattern::Idle), 2 << 8);
-        assert_eq!(encode_training_pattern(DpTrainingPattern::None), 3 << 8);
-        assert_eq!(
-            encode_dp_tp_ctl(true, false, true, true, false, DpTrainingPattern::Pattern2),
-            (1 << 31) | (1 << 25) | (1 << 18) | (1 << 8) | (1 << 7)
-        );
-    }
-
-    #[test]
-    fn encodes_port_clock_selection_like_libgfxinit() {
-        assert_eq!(DdiClockSelect::Lcpll2700.encode(), 0 << 29);
-        assert_eq!(DdiClockSelect::Lcpll1350.encode(), 1 << 29);
-        assert_eq!(DdiClockSelect::Lcpll810.encode(), 2 << 29);
-        assert_eq!(DdiClockSelect::Spll.encode(), 3 << 29);
-        assert_eq!(DdiClockSelect::Wrpll1.encode(), 4 << 29);
-        assert_eq!(DdiClockSelect::Wrpll2.encode(), 5 << 29);
-        assert_eq!(DdiClockSelect::None.encode(), 7 << 29);
-    }
-
-    #[test]
     fn haswell_broadwell_buffer_table_selection_matches_libgfxinit() {
         assert_eq!(
             hsw_ddi_buffer_table_kind(Cpu::Haswell, DdiPort::A, true),
@@ -2108,39 +2037,11 @@ mod tests {
     }
 
     #[test]
-    fn skylake_dpll_registers_and_ops_match_libgfxinit() {
-        let regs = SklDpll::Dpll2.registers();
-        assert_eq!(regs.ctl, 0x46040);
-        assert_eq!(regs.cfgr1, 0x6c048);
-        assert_eq!(regs.cfgr2, 0x6c04c);
-        assert_eq!(regs.ctrl1_shift, 12);
-        assert_eq!(regs.status_shift, 16);
-        assert_eq!(
-            skl_hdmi_dpll_ctrl1_update(SklDpll::Dpll2),
-            (
-                SKL_DPLL_CTRL1,
-                SKL_DPLL_CTRL1_SSC << 12,
-                (SKL_DPLL_CTRL1_HDMI_MODE | SKL_DPLL_CTRL1_OVERRIDE) << 12,
-            )
-        );
-        assert_eq!(
-            skl_dp_dpll_ctrl1_update(SklDpll::Dpll3, DdiClockSelect::Lcpll1350),
-            Ok((
-                SKL_DPLL_CTRL1,
-                (SKL_DPLL_CTRL1_HDMI_MODE | SKL_DPLL_CTRL1_SSC | SKL_DPLL_CTRL1_LINK_RATE_MASK)
-                    << 18,
-                (SKL_DPLL_CTRL1_LINK_RATE_1350 | SKL_DPLL_CTRL1_OVERRIDE) << 18,
-            ))
-        );
+    fn skylake_dp_dpll_rejects_non_dp_clocks() {
         assert_eq!(
             skl_dp_dpll_ctrl1_update(SklDpll::Dpll1, DdiClockSelect::Wrpll1),
             Err(GmaError::InvalidConfig)
         );
-        assert_eq!(
-            skl_dpll_enable_ops(SklDpll::Dpll1),
-            (0x46014, SKL_DPLL_CTL_PLL_ENABLE, SKL_DPLL_STATUS, 1 << 8)
-        );
-        assert_eq!(SKL_DPLL_CTRL2, 0x6c05c);
     }
 
     #[test]

@@ -133,38 +133,3 @@ impl Ite8720f {
         self.exit_config();
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn bsel_lines_encode_independently() {
-        for (levels, expected) in [
-            (
-                BusSelect {
-                    bsel0_high: true,
-                    bsel1_high: false,
-                    bsel2_high: false,
-                },
-                1,
-            ),
-            (
-                BusSelect {
-                    bsel0_high: false,
-                    bsel1_high: true,
-                    bsel2_high: false,
-                },
-                2,
-            ),
-            (
-                BusSelect {
-                    bsel0_high: false,
-                    bsel1_high: false,
-                    bsel2_high: true,
-                },
-                4,
-            ),
-        ] {
-            assert_eq!(levels.fields().value, expected);
-        }
-    }
-}

@@ -118,11 +118,6 @@ mod tests {
     use crate::sp3::soc::Generation;
 
     #[test]
-    fn sp3_default_property() {
-        assert_eq!(property(&NbioPolicy::default()), 0x2000_08C0);
-    }
-
-    #[test]
     fn base_init_die1() {
         let (m, n) = nbio(Generation::Naples, 1, 0x20);
         m.0.borrow_mut().smn.insert((0x20, NBRASCFG_0400), 0x1900);

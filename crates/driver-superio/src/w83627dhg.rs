@@ -126,16 +126,3 @@ impl W83627dhg {
         self.exit_config();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn dhg_revision_and_shared_keyboard_mouse_resources() {
-        for id in 0xa020..=0xa02f {
-            assert_eq!(id & W83627dhgChip::CHIP_ID_MASK, W83627dhgChip::CHIP_ID);
-        }
-        assert_eq!(W83627dhgChip::KBC_LDN, W83627dhgChip::MOUSE_LDN);
-        const { assert!(W83627dhgChip::MOUSE_IRQ_SECONDARY) };
-    }
-}

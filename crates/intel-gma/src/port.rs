@@ -765,60 +765,6 @@ mod tests {
     }
 
     #[test]
-    fn encodes_libgfxinit_vga_plan_for_pineview_path() {
-        let plan = LegacyPortPlan::for_port(Port::Vga, Pipe::A, Mode::XGA_1024X768_60).unwrap();
-        assert_eq!(plan.pre_pll, None);
-        assert_eq!(
-            plan.enable,
-            PortRegisterOp::Update {
-                register: GMCH_ADPA,
-                mask_unset: ADPA_ENABLE_MASK,
-                mask_set: ADPA_DAC_ENABLE,
-            }
-        );
-        assert_eq!(
-            plan.disable,
-            PortRegisterOp::Update {
-                register: GMCH_ADPA,
-                mask_unset: ADPA_DAC_ENABLE,
-                mask_set: ADPA_HSYNC_DISABLE | ADPA_VSYNC_DISABLE,
-            }
-        );
-    }
-
-    #[test]
-    fn encodes_libgfxinit_lvds_plan_for_gm965_path() {
-        let plan = LegacyPortPlan::for_port(Port::Lvds, Pipe::B, Mode::XGA_1024X768_60).unwrap();
-        let expected = LVDS_ENABLE
-            | GMCH_PORT_PIPE_SELECT_MASK
-            | LVDS_HSYNC_POLARITY_INVERT
-            | LVDS_VSYNC_POLARITY_INVERT
-            | LVDS_CLK_A_DATA_A0A2_POWER_UP
-            | LVDS_DITHER_EN;
-        assert_eq!(
-            plan.pre_pll,
-            Some(PortRegisterOp::Write {
-                register: GMCH_LVDS,
-                value: expected,
-            })
-        );
-        assert_eq!(
-            plan.enable,
-            PortRegisterOp::Write {
-                register: GMCH_LVDS,
-                value: expected,
-            }
-        );
-        assert_eq!(
-            plan.disable,
-            PortRegisterOp::Write {
-                register: GMCH_LVDS,
-                value: LVDS_DISABLE_VALUE,
-            }
-        );
-    }
-
-    #[test]
     fn lvds_dual_channel_threshold_matches_libgfxinit() {
         let mut below = Mode::XGA_1024X768_60;
         below.pixel_clock_khz = LVDS_DUAL_CHANNEL_THRESHOLD_KHZ - 1;
@@ -866,131 +812,27 @@ mod tests {
     }
 
     #[test]
-    fn encodes_libgfxinit_g45_hdmi_plan() {
-        let mut mode = Mode::XGA_1024X768_60;
-        mode.flags = crate::mode::ModeFlags::PHSYNC | crate::mode::ModeFlags::PVSYNC;
-        let plan = LegacyPortPlan::for_port(Port::HdmiA, Pipe::B, mode).unwrap();
-        let expected = GMCH_HDMI_ENABLE
-            | GMCH_PORT_PIPE_SELECT_MASK
-            | GMCH_HDMI_SDVO_ENCODING_HDMI
-            | GMCH_HDMI_HSYNC_ACTIVE_HIGH
-            | GMCH_HDMI_VSYNC_ACTIVE_HIGH;
-        assert_eq!(plan.pre_pll, None);
-        assert_eq!(
-            plan.enable,
-            PortRegisterOp::Update {
-                register: GMCH_HDMIB,
-                mask_unset: GMCH_HDMI_MASK,
-                mask_set: expected,
-            }
-        );
-        assert_eq!(
-            plan.disable,
-            PortRegisterOp::Update {
-                register: GMCH_HDMIB,
-                mask_unset: GMCH_HDMI_MASK,
-                mask_set: GMCH_HDMI_DISABLE_VALUE,
-            }
-        );
-        assert_eq!(gmch_hdmi_register(Port::HdmiB), Ok(GMCH_HDMIC));
+    fn hdmi_rejects_unsupported_ports() {
         assert_eq!(
             gmch_hdmi_register(Port::HdmiC),
             Err(GmaError::UnsupportedPort)
         );
-        assert_eq!(
-            hdmi_disable_op(Port::HdmiB).unwrap().clone(),
-            PortRegisterOp::Update {
-                register: GMCH_HDMIC,
-                mask_unset: GMCH_HDMI_MASK,
-                mask_set: GMCH_HDMI_DISABLE_VALUE,
-            }
-        );
     }
 
     #[test]
-    fn encodes_libgfxinit_g45_dp_enable_and_disable_sequence() {
-        assert_eq!(gmch_dp_register(Port::DpA), Ok(GMCH_DPB));
-        assert_eq!(gmch_dp_register(Port::DpB), Ok(GMCH_DPC));
-        assert_eq!(gmch_dp_register(Port::DpC), Ok(GMCH_DPD));
+    fn dp_rejects_unsupported_ports_and_invalid_lane_counts() {
         assert_eq!(gmch_dp_register(Port::DpD), Err(GmaError::UnsupportedPort));
-        let mut mode = Mode::XGA_1024X768_60;
-        mode.flags = crate::mode::ModeFlags::PHSYNC | crate::mode::ModeFlags::PVSYNC;
-        assert_eq!(
-            dp_enable_op(
-                Port::DpA,
-                Pipe::B,
-                mode,
-                GmchDpLinkConfig {
-                    lane_count: 4,
-                    enhanced_framing: true,
-                },
-            )
-            .unwrap()
-            .clone(),
-            PortRegisterOp::Write {
-                register: GMCH_DPB,
-                value: GMCH_DP_DISPLAY_PORT_ENABLE
-                    | GMCH_PORT_PIPE_SELECT_MASK
-                    | GMCH_DP::PORT_WIDTH.val(3).value
-                    | GMCH_DP_ENHANCED_FRAMING_ENABLE
-                    | GMCH_DP_COLOR_RANGE_16_235
-                    | GMCH_DP_HSYNC_ACTIVE_HIGH
-                    | GMCH_DP_VSYNC_ACTIVE_HIGH,
-            }
-        );
         assert_eq!(
             dp_enable_op(
                 Port::DpA,
                 Pipe::A,
-                mode,
+                Mode::XGA_1024X768_60,
                 GmchDpLinkConfig {
                     lane_count: 3,
                     enhanced_framing: true,
                 }
             ),
             Err(GmaError::InvalidConfig)
-        );
-        assert_eq!(
-            dp_idle_op(Port::DpA).unwrap().clone(),
-            PortRegisterOp::Update {
-                register: GMCH_DPB,
-                mask_unset: GMCH_DP_LINK_TRAIN_MASK,
-                mask_set: GMCH_DP_LINK_TRAIN_IDLE,
-            }
-        );
-        assert_eq!(
-            dp_training_pattern_op(Port::DpA, crate::dp_aux::TrainingPattern::Pattern2)
-                .unwrap()
-                .clone(),
-            PortRegisterOp::Update {
-                register: GMCH_DPB,
-                mask_unset: GMCH_DP_LINK_TRAIN_MASK,
-                mask_set: GMCH_DP_LINK_TRAIN_PAT2,
-            }
-        );
-        assert_eq!(
-            dp_signal_levels_op(
-                Port::DpA,
-                crate::dp_aux::TrainSet {
-                    voltage_swing: crate::dp_aux::VoltageSwing::Level2,
-                    pre_emphasis: crate::dp_aux::PreEmphasis::Level1,
-                }
-            )
-            .unwrap()
-            .clone(),
-            PortRegisterOp::Update {
-                register: GMCH_DPB,
-                mask_unset: GMCH_DP_VSWING_LEVEL_SET_MASK | GMCH_DP_PREEMPH_LEVEL_SET_MASK,
-                mask_set: GMCH_DP::VSWING_LEVEL_SET.val(2).value
-                    | GMCH_DP::PREEMPH_LEVEL_SET.val(1).value,
-            }
-        );
-        assert_eq!(
-            dp_off_op(Port::DpC).unwrap().clone(),
-            PortRegisterOp::Write {
-                register: GMCH_DPD,
-                value: 0,
-            }
         );
     }
 

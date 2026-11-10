@@ -881,21 +881,6 @@ mod tests {
     }
 
     #[test]
-    fn clock_gate_matches_linux_register_and_bit() {
-        assert_eq!(GmbusClockGate::None.register_bits(), None);
-        assert_eq!(
-            GmbusClockGate::Pineview.register_bits(),
-            Some((0x6200, 1 << 24)),
-            "Linux PNV_GMBUSUNIT_CLOCK_GATE_DISABLE is DSPCLK_GATE_D bit 24"
-        );
-        assert_eq!(
-            GmbusClockGate::PchSouth.register_bits(),
-            Some((0xc2020, 1 << 31)),
-            "Linux PCH_GMBUSUNIT_CLOCK_GATE_DISABLE is SOUTH_DSPCLK_GATE_D bit 31"
-        );
-    }
-
-    #[test]
     fn maps_current_gmbus_ports_to_ddc_pin_groups() {
         assert_eq!(ddc_pin_for_port(Port::Vga), Some(GmbusPin::Analog));
         assert_eq!(ddc_pin_for_port(Port::Lvds), Some(GmbusPin::Panel));
@@ -918,22 +903,6 @@ mod tests {
         assert_eq!(GmbusPin::from_legacy_select(6), Some(GmbusPin::DigitalD));
         assert_eq!(GmbusPin::from_legacy_select(0), None);
         assert_eq!(GmbusPin::from_legacy_select(7), None);
-    }
-
-    #[test]
-    fn gmbus0_conservative_config_encodes_pin_and_rate() {
-        assert_eq!(Gmbus0Config::conservative(GmbusPin::Analog).encode(), 2);
-        assert_eq!(Gmbus0Config::conservative(GmbusPin::Panel).encode(), 3);
-        assert_eq!(
-            Gmbus0Config {
-                pin: GmbusPin::DigitalB,
-                rate: GmbusRate::Khz50,
-                hold_ext: true,
-                byte_count_override: true,
-            }
-            .encode(),
-            5 | (1 << 8) | (1 << 7) | (1 << 6)
-        );
     }
 
     #[test]

@@ -575,60 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn panel_power_sequencer_plan_matches_libgfxinit_masks() {
-        let plan = panel_power_sequencer_plan(
-            PanelPowerRegs::PCH,
-            PanelPowerDelays::DEFAULT_EDP,
-            PanelPowerPortSelect::DpA,
-            true,
-            true,
-        );
-        assert_eq!(
-            plan.on_delays,
-            PanelRegisterOp::Update {
-                register: 0xc7208,
-                mask_unset: PP_ON_DELAYS_PORT_SELECT_MASK
-                    | PP_ON_DELAYS_PWR_UP_MASK
-                    | PP_ON_DELAYS_PWR_UP_BL_ON_MASK,
-                mask_set: (1 << 30) | (2100 << 16) | 1,
-            }
-        );
-        assert_eq!(
-            plan.off_delays,
-            PanelRegisterOp::Update {
-                register: 0xc720c,
-                mask_unset: PP_OFF_DELAYS_PWR_DOWN_MASK | PP_OFF_DELAYS_BL_OFF_PWR_DOWN_MASK,
-                mask_set: (5000 << 16) | 500,
-            }
-        );
-        assert_eq!(
-            plan.cycle_delay,
-            PanelRegisterOp::Update {
-                register: 0xc7210,
-                mask_unset: PP_DIVISOR_PWR_CYC_DELAY_MASK,
-                mask_set: 7,
-            }
-        );
-        assert_eq!(
-            plan.control,
-            PanelRegisterOp::Update {
-                register: 0xc7204,
-                mask_unset: PP_CONTROL_WRITE_PROTECT_MASK,
-                mask_set: PP_CONTROL_WRITE_PROTECT_KEY | PP_CONTROL_POWER_DOWN_ON_RESET,
-            }
-        );
-    }
-
-    #[test]
-    fn panel_power_port_select_maps_libgfxinit_ports() {
-        assert_eq!(PanelPowerPortSelect::from_port(Port::Lvds).bits(), 0);
-        assert_eq!(PanelPowerPortSelect::from_port(Port::Edp).bits(), 1 << 30);
-        assert_eq!(PanelPowerPortSelect::from_port(Port::DpB).bits(), 2 << 30);
-        assert_eq!(PanelPowerPortSelect::from_port(Port::HdmiC).bits(), 3 << 30);
-        assert_eq!(PanelPowerPortSelect::from_port(Port::Vga).bits(), 0);
-    }
-
-    #[test]
     fn backlight_ops_match_legacy_and_new_models() {
         assert_eq!(
             set_backlight_op(

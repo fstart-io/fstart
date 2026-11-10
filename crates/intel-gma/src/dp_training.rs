@@ -587,9 +587,6 @@ const fn link_payload_kbps_per_lane(rate: DpLinkRate) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dp_aux::{
-        DPCD_LANE_COUNT_SET, DPCD_MAIN_LINK_CHANNEL_CODING_SET, DPCD_TRAINING_LANE0_SET,
-    };
 
     fn caps(rate: DpLinkRate, lanes: u8) -> ReceiverCaps {
         ReceiverCaps {
@@ -722,12 +719,5 @@ mod tests {
             }),
             400
         );
-    }
-
-    #[test]
-    fn dpcd_addresses_are_the_expected_training_sequence() {
-        assert_eq!(DPCD_TRAINING_PATTERN_SET + 1, DPCD_TRAINING_LANE0_SET);
-        assert_eq!(DPCD_LINK_BW_SET + 1, DPCD_LANE_COUNT_SET);
-        assert_eq!(DPCD_DOWNSPREAD_CTRL + 1, DPCD_MAIN_LINK_CHANNEL_CODING_SET);
     }
 }

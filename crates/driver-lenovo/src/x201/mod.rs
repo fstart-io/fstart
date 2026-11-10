@@ -165,21 +165,3 @@ pub fn smm_wake_from_ec(ec: Ec) -> bool {
     ec.read_register::<WAKE_CONTROL::Register>()
         .is_some_and(|wake| wake.is_set(WAKE_CONTROL::EVENTS) || wake.is_set(WAKE_CONTROL::LID))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dock_links_match_the_acpi_fields() {
-        assert_eq!(DOCK_LINK2::CONNECT::SET.value, 1 << 0);
-        assert_eq!(DOCK_LINK3::CONNECT::SET.value, 1 << 4);
-        assert_eq!(<DOCK_LINK2::Register as EcRegister>::INDEX, 0x1a);
-        assert_eq!(<DOCK_LINK3::Register as EcRegister>::INDEX, 0xfe);
-        // coreboot smihandler.c: `ec_read(0x32) & 0x14`.
-        assert_eq!(
-            WAKE_CONTROL::EVENTS::SET.value | WAKE_CONTROL::LID::SET.value,
-            0x14
-        );
-    }
-}

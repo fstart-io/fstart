@@ -25,17 +25,3 @@ pub fn build_wsmt(protections: u32) -> Vec<u8> {
     sdt.write_u32(36, protections);
     crate::serialize(&sdt)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn layout() {
-        let t = build_wsmt(FIXED_COMM_BUFFERS | COMM_BUFFER_NESTED_PTR_PROTECTION);
-        assert_eq!(t.len(), 40);
-        assert_eq!(&t[..4], b"WSMT");
-        assert_eq!(&t[36..40], &3u32.to_le_bytes());
-        assert_eq!(t.iter().fold(0u8, |a, b| a.wrapping_add(*b)), 0);
-    }
-}

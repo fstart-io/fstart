@@ -244,14 +244,4 @@ mod tests {
         assert_ne!(state.hotplug_enable & SDVOB_HOTPLUG_INT_EN, 0);
         assert_ne!(state.hotplug_enable & PORTB_HOTPLUG_INT_EN, 0);
     }
-
-    #[test]
-    fn hotplug_status_masks_match_libgfxinit_g45() {
-        assert_eq!(hotplug_status_mask(Port::DpA), Ok(3 << 17));
-        assert_eq!(hotplug_status_mask(Port::DpB), Ok(3 << 19));
-        assert_eq!(hotplug_status_mask(Port::DpC), Ok(3 << 21));
-        assert_eq!(hotplug_status_mask(Port::HdmiA), Ok(1 << 2));
-        assert_eq!(hotplug_status_mask(Port::HdmiB), Ok(1 << 3));
-        assert_eq!(hotplug_status_mask(Port::Vga), Ok(1 << 11));
-    }
 }

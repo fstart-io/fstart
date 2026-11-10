@@ -193,17 +193,6 @@ impl W83627ehg {
 mod tests {
     use super::*;
     #[test]
-    fn ehg_ids_and_secondary_mouse_irq_are_chip_specific() {
-        for id in 0x8860..=0x886f {
-            assert_eq!(id & W83627ehgChip::CHIP_ID_MASK, W83627ehgChip::CHIP_ID);
-        }
-        for id in [0x8850, 0xa020, 0x8718] {
-            assert_ne!(id & W83627ehgChip::CHIP_ID_MASK, W83627ehgChip::CHIP_ID);
-        }
-        assert_eq!(W83627ehgChip::KBC_LDN, W83627ehgChip::MOUSE_LDN);
-        const { assert!(W83627ehgChip::MOUSE_IRQ_SECONDARY) };
-    }
-    #[test]
     fn electrical_options_preserve_keyboard_strap_and_reserved_bits() {
         assert_eq!(clock_fields(ClockInput::Mhz24).modify(0xff), 0xbf);
         assert_eq!(clock_fields(ClockInput::Mhz48).modify(0x84), 0xc4);

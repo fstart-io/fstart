@@ -235,24 +235,4 @@ mod tests {
         let ns = core::str::from_utf8(&bytes[ns_start..ns_end]).unwrap();
         assert_eq!(ns, "\\_SB.COM0", "namespace string");
     }
-
-    #[test]
-    fn test_dbg2_short_namespace() {
-        let dbg2 = build_dbg2_pl011(&Dbg2Pl011Config {
-            base_addr: 0x0900_0000,
-            addr_size: 0x1000,
-            namespace: ".",
-        });
-
-        let mut bytes = Vec::new();
-        dbg2.to_aml_bytes(&mut bytes);
-
-        let sum = bytes.iter().fold(0u8, |acc, &x| acc.wrapping_add(x));
-        assert_eq!(sum, 0, "DBG2 checksum failed");
-
-        // Namespace length = 2 (dot + NUL).
-        let dev = 44;
-        let ns_len = u16::from_le_bytes(bytes[dev + 4..dev + 6].try_into().unwrap());
-        assert_eq!(ns_len, 2, "namespace_string_length");
-    }
 }

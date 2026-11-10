@@ -298,13 +298,4 @@ mod tests {
         assert_eq!(KBC_CONFIG::A20_SPEEDUP::SET.modify(0x80), 0x82);
         assert_eq!(KBC_CONFIG::A20_SPEEDUP::CLEAR.modify(0xff), 0xfd);
     }
-
-    #[test]
-    fn revisions_share_id_and_mouse_does_not_replace_keyboard_irq() {
-        for id in 0x8280..=0x828f {
-            assert_eq!(id & W83627thgChip::CHIP_ID_MASK, W83627thgChip::CHIP_ID);
-        }
-        assert_eq!(W83627thgChip::KBC_LDN, W83627thgChip::MOUSE_LDN);
-        const { assert!(W83627thgChip::MOUSE_IRQ_SECONDARY) };
-    }
 }

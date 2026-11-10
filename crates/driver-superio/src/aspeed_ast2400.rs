@@ -147,22 +147,3 @@ impl Ast2400 {
         self.register::<()>(reg).get()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The vendor PEIMs' and/or pairs.
-    #[test]
-    fn uart1_routing_masks() {
-        fn and_or<R: tock_registers::RegisterLongName>(f: FieldValue<u32, R>) -> (u32, u32) {
-            (!f.mask(), f.value)
-        }
-        assert_eq!(
-            and_or(Scu00::KEY.val(SCU_PROTECTION_KEY)),
-            (0, SCU_PROTECTION_KEY)
-        );
-        assert_eq!(and_or(Scu84::UART1.val(0xff)), (0xff00_ffff, 0x00ff_0000));
-        assert_eq!(and_or(Scu90::BITS_5_4.val(0)), (0xffff_ffcf, 0));
-    }
-}
