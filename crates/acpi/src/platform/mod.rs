@@ -261,8 +261,12 @@ pub fn assemble(
     let fadt_off = offset;
     offset += crate::align_up(fadt_size, 16);
 
+    // FACS requires absolute 64-byte alignment, unlike ordinary SDTs.
+    if facs_size != 0 {
+        offset += ((64 - ((base_addr + offset as u64) & 63)) & 63) as usize;
+    }
     let facs_off = offset;
-    offset += crate::align_up(facs_size, 16);
+    offset += crate::align_up(facs_size, 64);
 
     // Platform tables (MADT, GTDT, etc.)
     let mut platform_offsets = Vec::new();

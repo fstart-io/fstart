@@ -1095,6 +1095,15 @@ impl<'a> SmbiosWriter<'a> {
         } else {
             max_capacity_kb as u32
         };
+        // DSP0134: the extended field MUST be zero unless the marker is used.
+        let extended = if max_cap_field == 0x8000_0000 {
+            max_capacity_kb.checked_mul(1024).unwrap_or_else(|| {
+                self.overflow = true;
+                0
+            })
+        } else {
+            0
+        };
         let (header, handle) = self.begin::<RawType16>(TYPE_PHYS_MEM_ARRAY);
         self.last_phys_mem_array_handle = handle;
         self.emplace(&RawType16 {
@@ -1105,7 +1114,7 @@ impl<'a> SmbiosWriter<'a> {
             max_capacity_kb: U32::new(max_cap_field),
             error_handle: U16::new(0xFFFE), // not provided
             num_devices: U16::new(num_devices),
-            ext_max_capacity_bytes: U64::new(max_capacity_kb * 1024),
+            ext_max_capacity_bytes: U64::new(extended),
         });
 
         // No strings
@@ -1166,8 +1175,9 @@ impl<'a> SmbiosWriter<'a> {
             attributes: dimm.ranks & 0x0f,
             extended_size_mb: U32::new(if unknown { 0 } else { dimm.size_mb }),
             configured_clock_mts: U16::new(dimm.configured_mts),
-            min_voltage_mv: U16::new(dimm.voltage_mv),
-            max_voltage_mv: U16::new(dimm.voltage_mv),
+            // A configured-voltage readback proves no supported min/max.
+            min_voltage_mv: U16::new(0),
+            max_voltage_mv: U16::new(0),
             configured_voltage_mv: U16::new(dimm.voltage_mv),
             memory_technology: if dimm.size_mb == 0 { 0 } else { 0x03 }, // DRAM
             operating_mode_cap: U16::new(if dimm.size_mb == 0 { 0 } else { 1 << 3 }), // volatile
@@ -1632,6 +1642,34 @@ mod tests {
         let table = &buf[ENTRY_POINT_SIZE..];
         assert_eq!(table[0x06], 0xBF);
         assert_eq!(u16::from_le_bytes([table[0x28], table[0x29]]), 0xBF);
+    }
+
+    #[test]
+    fn type16_extended_capacity_is_zero_without_marker_and_overflow_fails() {
+        for kib in [1u64 << 20, 0x7fff_ffff, 0x8000_0000, 3u64 << 30] {
+            let (bytes, _) = write_to_buffer(|w| {
+                w.add_physical_memory_array(kib, 12, 2);
+            });
+            let r = &bytes[ENTRY_POINT_SIZE..];
+            let legacy = u32::from_le_bytes(r[7..11].try_into().unwrap());
+            let extended = u64::from_le_bytes(r[15..23].try_into().unwrap());
+            if kib < 0x8000_0000 {
+                assert_eq!(legacy, kib as u32);
+                assert_eq!(extended, 0);
+            } else {
+                assert_eq!(legacy, 0x8000_0000);
+                assert_eq!(extended, kib * 1024);
+            }
+        }
+        let mut bytes = [0; 256];
+        assert!(
+            assemble_into(&mut bytes, 0x100000, |w| {
+                w.add_physical_memory_array(u64::MAX, 1, 2);
+                w.add_end_of_table();
+            })
+            .is_err()
+        );
+        assert_eq!(&bytes[..5], &[0; 5]);
     }
 
     #[test]
