@@ -69,5 +69,6 @@ fn main() -> ! {
         &MACS,
         &DRAM,
         MEMTEST,
+        board::TIMESTAMPS,
     )
 }

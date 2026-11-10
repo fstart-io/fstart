@@ -13,5 +13,10 @@ static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 fstart_platform_aspeed::entry!(main, handoff);
 
 fn main(handoff: usize) -> ! {
-    fstart_platform_aspeed::ast2500::main_stage(&CONSOLE, board::console(), handoff)
+    fstart_platform_aspeed::ast2500::main_stage(
+        &CONSOLE,
+        board::console(),
+        handoff,
+        board::TIMESTAMPS,
+    )
 }

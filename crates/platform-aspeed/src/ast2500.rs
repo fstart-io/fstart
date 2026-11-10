@@ -35,8 +35,10 @@ const MEMTEST_STEP: usize = 64 << 20;
 /// take the first reset of a cold boot, switch CE0 to the fastest
 /// calibrated read up to `flash_max_hz`, set up the MAC clocks and pins
 /// for `macs`, train DRAM, test it if `memtest` and it was just trained,
-/// then load the main stage into DRAM and enter it. Boards pass their
-/// flash, MAC and DRAM choices; their bootblock `main` calls this.
+/// then load the main stage into DRAM and enter it. With `timestamps`, the
+/// stages time their milestones and report them at the payload jump.
+/// Boards pass their flash, MAC and DRAM choices; their bootblock `main`
+/// calls this.
 ///
 /// WDT3 resets the SoC about one second after power-on to retry the SPI
 /// address mode, and the strap may arm WDT2 to switch to the alternate boot
@@ -49,9 +51,12 @@ pub fn bootblock(
     macs: &MacConfig,
     dram: &DramConfig,
     memtest: bool,
+    timestamps: bool,
 ) -> ! {
     fstart_stage::anchor::initial_stage();
-    start_timestamps();
+    if timestamps {
+        start_timestamps();
+    }
     pac::WDT3.CTRL().modify(|w| w.set_WDT_EN(false));
     pac::WDT2.CTRL().modify(|w| w.set_WDT_EN(false));
     pac::FMC
@@ -142,16 +147,20 @@ pub fn bootblock(
 
 /// The DRAM main stage: take over the bootblock's locator and DRAM size,
 /// mount and verify the FFS, then boot the build's payload. The board's
-/// main stage `main` calls this with the handoff address.
+/// main stage `main` calls this with the handoff address and the same
+/// `timestamps` choice as its bootblock.
 pub fn main_stage(
     slot: &'static StaticConsole<Ns16550>,
     console: Ns16550Config,
     handoff_addr: usize,
+    timestamps: bool,
 ) -> ! {
-    fstart_timestamp::set_counter(&TIMESTAMP_COUNTER);
-    // SAFETY: the bootblock started the table there; nothing else uses the
-    // end of SRAM.
-    unsafe { fstart_timestamp::attach(TIMESTAMPS as *mut u8, TIMESTAMPS_SIZE as usize) };
+    if timestamps {
+        fstart_timestamp::set_counter(&TIMESTAMP_COUNTER);
+        // SAFETY: the bootblock started the table there; nothing else uses
+        // the end of SRAM.
+        unsafe { fstart_timestamp::attach(TIMESTAMPS as *mut u8, TIMESTAMPS_SIZE as usize) };
+    }
     fstart_timestamp::add(id::RAMSTAGE_START);
     start_console(slot, console);
     fstart_log::info!("ast2500: main stage");

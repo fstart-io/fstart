@@ -27,6 +27,10 @@ pub const STRAP_WRITES: [StrapWrite; 3] = [
     StrapWrite::new(0x1E6E_207C, 0x0000_0004),
 ];
 
+/// Time the boot milestones on a spare SoC timer and report them before
+/// the payload jump. Off: a measuring tool, not needed on every boot.
+pub const TIMESTAMPS: bool = false;
+
 /// UART5, the AST2500 debug console, at 115200 baud from its 24 MHz clock.
 pub const fn console() -> Ns16550Config {
     Ns16550Config {
