@@ -6,7 +6,9 @@
 #        ci/qemu-boot-tests.sh --list [--board BOARD] [--payload PAYLOAD]
 #
 # QEMU_BUILD_TIMEOUT bounds each firmware build (default: 15m), separately from
-# QEMU_BOOT_TIMEOUT for each boot (default: 120s). Filters may be repeated and
+# QEMU_BOOT_TIMEOUT for each boot (default: 120s). A booted guest rarely powers
+# off, so a boot is stopped once its marker is in the log and the log has been
+# silent for QEMU_BOOT_QUIET seconds (default: 10). Filters may be repeated and
 # are useful when diagnosing one matrix entry. --list prints the selected
 # "board payload" combinations (asset-gated entries included) instead of
 # running them, so CI can tell which firmware jobs boot which boards.
@@ -25,6 +27,7 @@ X86_ASSET_DIR="${QEMU_BOOT_X86_ASSETS:-boot-assets/x86_64}"
 
 BUILD_TIMEOUT="${QEMU_BUILD_TIMEOUT:-15m}"
 BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120s}"
+BOOT_QUIET="${QEMU_BOOT_QUIET:-10}"
 LOG_DIR="${QEMU_BOOT_LOG_DIR:-target/qemu-boot-tests}"
 board_filters=()
 payload_filters=()
@@ -170,12 +173,35 @@ run_boot() {
 	)
 	command+=("$@")
 
+	# Most guests halt or idle after the marker instead of powering off.
+	# Waiting out the boot deadline for each of them was two minutes a
+	# boot; stop QEMU once the marker is there and the log has gone quiet,
+	# which leaves time for the lines the checks after this boot look for.
+	"${command[@]}" >"$log" 2>&1 &
+	local pid=$! stopped=0 size last_size=-1 quiet=0
+	while kill -0 "$pid" 2>/dev/null; do
+		sleep 1
+		size=$(wc -c <"$log")
+		if [[ $size -eq $last_size ]] && grep -Fq "$marker" "$log"; then
+			quiet=$((quiet + 1))
+			if [[ $quiet -ge $BOOT_QUIET ]]; then
+				# timeout passes the signal on to cargo, fbuild and QEMU.
+				kill -TERM "$pid" 2>/dev/null || true
+				stopped=1
+				break
+			fi
+		else
+			quiet=0
+		fi
+		last_size=$size
+	done
 	set +e
-	"${command[@]}" >"$log" 2>&1
+	wait "$pid"
 	status=$?
 	set -e
 
-	if grep -Fq "$marker" "$log" && { [[ $status -eq 0 || $status -eq 124 ]]; }; then
+	if grep -Fq "$marker" "$log" &&
+		{ [[ $stopped -eq 1 || $status -eq 0 || $status -eq 124 ]]; }; then
 		printf 'PASS %-14s %-6s %s\n' "$board" "$payload" "$marker"
 	else
 		printf 'FAIL %-14s %-6s %s (exit %d; %s)\n' \

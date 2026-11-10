@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -198,6 +199,26 @@ class QemuBootTests(unittest.TestCase):
     def test_halt_marker_still_passes_when_qemu_is_stopped_by_timeout(self):
         result, _ = self.run_matrix(QEMU_BOOT_TIMEOUT="0.5s", MOCK_BOOT_DELAY="2")
         self.assert_passed(result)
+
+    def test_boot_stops_once_the_marker_is_logged_and_the_log_is_quiet(self):
+        # The guest would idle until the 60 s deadline (and the 15 s limit of
+        # this test); the marker and one quiet second end the boot instead.
+        start = time.monotonic()
+        result, _ = self.run_matrix(
+            QEMU_BOOT_TIMEOUT="60s", MOCK_BOOT_DELAY="60", QEMU_BOOT_QUIET="1"
+        )
+        self.assert_passed(result)
+        self.assertLess(time.monotonic() - start, 10)
+
+    def test_quiet_log_without_the_marker_still_waits_for_the_deadline(self):
+        result, _ = self.run_matrix(
+            QEMU_BOOT_TIMEOUT="3s",
+            MOCK_BOOT_DELAY="10",
+            MOCK_NO_BOOT_MARKERS="1",
+            QEMU_BOOT_QUIET="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("(exit 124;", result.stdout)
 
     def test_marker_does_not_hide_a_run_failure(self):
         result, _ = self.run_matrix(MOCK_BOOT_STATUS="9")
