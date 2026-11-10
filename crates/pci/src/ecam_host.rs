@@ -278,8 +278,16 @@ impl ResourcePool {
         }
         for idx in 0..self.count {
             let range = self.ranges[idx];
-            let aligned = range.base.checked_add(align - 1)? & !(align - 1);
-            let end = aligned.checked_add(size)?;
+            let Some(aligned) = range
+                .base
+                .checked_add(align - 1)
+                .map(|base| base & !(align - 1))
+            else {
+                continue;
+            };
+            let Some(end) = aligned.checked_add(size) else {
+                continue;
+            };
             if end > range.end {
                 continue;
             }
@@ -855,10 +863,8 @@ impl PciEcam {
         device.addr.bus() != self.roots[device.root].bus_start
     }
 
-    fn endpoint_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
-        if self.devices[dev_idx].header_type == PCI_HEADER_TYPE_BRIDGE {
-            return false;
-        }
+    fn device_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
+        // A bridge's own BARs live on its primary bus, just like an endpoint's.
         let behind_bridge = self.behind_bridge(dev_idx);
         (pass == 0 && !behind_bridge) || (pass == 1 && behind_bridge)
     }
@@ -888,7 +894,7 @@ impl PciEcam {
     fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize, BarRank)> = None;
         for dev_idx in 0..self.devices.len() {
-            if !self.endpoint_in_pass(dev_idx, pass) {
+            if !self.device_in_pass(dev_idx, pass) {
                 continue;
             }
             for bar_idx in 0..6 {
@@ -924,10 +930,7 @@ impl PciEcam {
     /// still need.
     fn pending_low_bytes(&self, root: usize) -> u64 {
         (0..self.devices.len())
-            .filter(|&dev_idx| {
-                let device = &self.devices[dev_idx];
-                device.root == root && device.header_type != PCI_HEADER_TYPE_BRIDGE
-            })
+            .filter(|&dev_idx| self.devices[dev_idx].root == root)
             .flat_map(|dev_idx| (0..6).map(move |bar_idx| (dev_idx, bar_idx)))
             .filter(|&(dev_idx, bar_idx)| {
                 let bar = self.devices[dev_idx].bars[bar_idx];
@@ -943,6 +946,9 @@ impl PciEcam {
         let bar = self.devices[dev_idx].bars[bar_idx];
         let align = self.bar_allocation_alignment(dev_idx, bar_idx);
         let pending = self.pending_low_bytes(root);
+        // A type-1 bridge has only a 32-bit non-prefetchable memory window.
+        // A 64-bit BAR does not by itself make high placement forwardable.
+        let can_use_high = bar.prefetchable || !self.behind_bridge(dev_idx);
         let pools = &mut self.roots[root];
         let base = match bar.bar_type {
             BarType::Memory32 => pools.mmio32.allocate_aligned(bar.size, align),
@@ -956,7 +962,11 @@ impl PciEcam {
                 low.allocate_aligned(bar.size, align)
                     .filter(|_| low.free_bytes() >= pending)
                     .inspect(|_| pools.mmio32 = low)
-                    .or_else(|| pools.mmio64.allocate_aligned(bar.size, align))
+                    .or_else(|| {
+                        can_use_high
+                            .then(|| pools.mmio64.allocate_aligned(bar.size, align))
+                            .flatten()
+                    })
             }
             BarType::Io => pools.io_pool.allocate_aligned(bar.size, align),
             BarType::None => None,
@@ -1004,10 +1014,10 @@ impl PciEcam {
         Ok(())
     }
 
-    /// Allocate and program BARs for all non-bridge devices, then program
-    /// bridge forwarding windows.
+    /// Allocate and program function BARs, including bridges' own BARs, then
+    /// program bridge forwarding windows.
     fn allocate_resources(&mut self) -> Result<(), PciEcamError> {
-        // Phase 1: allocate endpoint BARs. Within each topology pass, allocate
+        // Phase 1: allocate function BARs. Within each topology pass, allocate
         // largest-alignment BARs first. This avoids consuming the front of a
         // constrained 32-bit aperture with a small BAR, then aligning a large
         // framebuffer BAR up and stranding the remaining space below it.
@@ -1529,13 +1539,17 @@ impl ConfigRegionAccess for PciEcam {
 }
 
 #[cfg(test)]
+#[path = "ecam_host/allocator_tests.rs"]
+mod allocator_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
     use alloc::vec;
     use alloc::vec::Vec;
 
-    fn test_pci() -> (PciEcam, Vec<u32>) {
+    pub(super) fn test_pci() -> (PciEcam, Vec<u32>) {
         const BUSES: usize = 3;
         let mut config_space = vec![0u32; BUSES << 18];
         let ecam_base = config_space.as_mut_ptr() as usize;
@@ -1778,7 +1792,7 @@ mod tests {
         assert!(sata_window.contains(&(pci.read32(sata, PCI_BAR0 + 20) & !0xf)));
     }
 
-    fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
+    pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
         let none = BarInfo {
             bar_type: BarType::None,
             size: 0,
