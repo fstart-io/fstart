@@ -45,11 +45,13 @@ A `Source` reads stored values by key; `Layered` reads one before another.
 - **CMOS** (`cmos`, Intel CAR platforms): a window of RTC RAM bank 0 the
   platform leaves free (`platform-intel` uses `0x40`..`0x7f`). An override
   is a record of its key's 16-bit hash and its value, so nothing about the
-  options is declared, only changed values take space and later firmware
-  reads the same records. The window's last two bytes hold its byte sum;
-  while it does not match (new board, dead battery, cleared CMOS) the
-  board's values boot. Tests check that a board's keys have distinct
-  hashes (`cmos::collision`).
+  options is declared and later firmware reads the same records. An on/off
+  or a choice takes three bytes; the window holds 20 of them. It only has
+  room for what differs from the board's values: the menu removes the
+  record of an option that is set back to the board's value. The window's
+  last two bytes hold its byte sum; while it does not match (new board,
+  dead battery, cleared CMOS) the board's values boot. Tests check that a
+  board's keys have distinct hashes (`cmos::collision`).
 
 ## Stages on the Intel CAR platforms
 
