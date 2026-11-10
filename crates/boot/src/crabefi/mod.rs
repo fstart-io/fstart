@@ -220,6 +220,22 @@ pub fn launch_flat_uefi(
     launch_with_adapters(launch, memory_map, &timer, &reset, None)
 }
 
+/// Launch on x86 with an already reserved EFI memory map. CrabEFI finds its
+/// devices through `launch.ecam_regions`, as on the boards whose map comes
+/// from e820 ([`launch_x86_uefi`]); it only reads the BARs fstart assigned.
+/// An empty region set disables PCI discovery, legacy fallback included.
+#[cfg(target_arch = "x86_64")]
+pub fn launch_x86_memory_map(launch: UefiLaunchConfig<'_>, memory_map: &[MemoryRegion]) -> ! {
+    let timer = TscTimer::new();
+    let reset = X86Reset {
+        controls: launch.acpi_s5,
+    };
+    let rng = X86Rng::new();
+    crabefi::drivers::pci::set_ecam_regions(launch.ecam_regions).expect("PCI ECAM regions");
+    fstart_arch::x86::boot::disable_boot_media_rom_cache_for_handoff();
+    launch_with_adapters(launch, memory_map, &timer, &reset, Some(&rng))
+}
+
 fn launch_with_adapters(
     launch: UefiLaunchConfig<'_>,
     memory_map: &[MemoryRegion],

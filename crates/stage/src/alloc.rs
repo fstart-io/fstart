@@ -7,9 +7,13 @@
 //! the SMM stage may instead define both as `#[no_mangle]` statics.
 //! This crate references them via `extern "C"` at link time.
 //! Deallocation is a no-op — memory is never reclaimed.
+//!
+//! A long-running payload environment that frees (CrabEFI) can switch later
+//! allocations to a freeing heap with [`adopt_freeing_heap`]; bump memory
+//! allocated before stays permanent.
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // The definitions come from the generated linker script (or `#[no_mangle]`
 // statics in special stages). We declare `_FSTART_HEAP` as `u8` because only
@@ -72,8 +76,43 @@ struct BumpAllocator;
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator;
 
+/// The freeing heap that serves every allocation once adopted.
+static FREEING: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
+static ADOPTED: AtomicBool = AtomicBool::new(false);
+
+/// Serve every later allocation from a freeing heap over `region`, for a
+/// payload environment whose transient buffers would exhaust the bump heap.
+/// Bump allocations made before stay permanent and their frees stay no-ops,
+/// so firmware state and DMA memory allocated earlier keep that contract.
+///
+/// # Safety
+/// `region` is exclusively owned, writable, identity-mapped RAM, disjoint
+/// from the bump heap, and stays so while anything allocated from it lives.
+/// Call before any other CPU allocates; no allocation may be in progress.
+pub unsafe fn adopt_freeing_heap(region: core::ops::Range<usize>) -> Result<(), ()> {
+    let bump = heap_start()..heap_start() + heap_size();
+    if region.start >= region.end
+        || (region.start < bump.end && bump.start < region.end)
+        || ADOPTED.load(Ordering::Acquire)
+    {
+        return Err(());
+    }
+    // SAFETY: the caller's contract: owned, unused RAM.
+    unsafe {
+        FREEING
+            .lock()
+            .init(region.start as *mut u8, region.end - region.start)
+    };
+    ADOPTED.store(true, Ordering::Release);
+    Ok(())
+}
+
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if ADOPTED.load(Ordering::Acquire) {
+            // SAFETY: forwarded GlobalAlloc contract.
+            return unsafe { FREEING.alloc(layout) };
+        }
         let size = layout.size();
         let align = layout.align();
         let limit = heap_size();
@@ -102,7 +141,14 @@ unsafe impl GlobalAlloc for BumpAllocator {
         }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let address = ptr as usize;
+        if ADOPTED.load(Ordering::Acquire)
+            && !(heap_start()..heap_start() + heap_size()).contains(&address)
+        {
+            // SAFETY: not bump memory, so the freeing heap allocated it.
+            return unsafe { FREEING.dealloc(ptr, layout) };
+        }
         // Bump allocator never frees.
         // SAFETY: `GlobalAlloc::dealloc` requires `ptr` to be non-null and allocated by this allocator.
         let _ = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
