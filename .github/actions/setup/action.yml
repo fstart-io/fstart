@@ -58,9 +58,12 @@ runs:
         PACKAGES: ${{ inputs.packages }}
       run: |
         sudo apt-get update
-        # Word splitting is the interface: callers pass a package list.
+        # Recommended packages are most of a QEMU install (GUI, audio and
+        # storage backends CI never starts) and the runners' apt mirror is
+        # often slow. Word splitting is the interface: callers pass a
+        # package list.
         # shellcheck disable=SC2086
-        sudo apt-get install -y $PACKAGES
+        sudo apt-get install -y --no-install-recommends $PACKAGES
 
     - name: Add llvm-tools to PATH
       if: inputs.llvm-tools == 'true'

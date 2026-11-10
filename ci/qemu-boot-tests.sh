@@ -9,7 +9,7 @@
 # QEMU_BOOT_TIMEOUT for each boot (default: 120s). Filters may be repeated and
 # are useful when diagnosing one matrix entry. --list prints the selected
 # "board payload" combinations (asset-gated entries included) instead of
-# running them, so CI can shard its matrix straight from this script.
+# running them, so CI can tell which firmware jobs boot which boards.
 
 set -euo pipefail
 
