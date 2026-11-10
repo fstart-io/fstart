@@ -11,6 +11,9 @@
 //! hardware initialisation and firmware logic. `fstart-log` accounts its
 //! console writes through [`add_console_time`].
 //!
+//! Targets without an architectural counter (the TSC) register a platform
+//! [`Counter`] in each stage.
+//!
 //! Without an attached table, or on targets without a supported counter,
 //! everything here is a cheap no-op.
 
@@ -143,6 +146,43 @@ pub const fn table_size(capacity: usize) -> usize {
 
 static TABLE: AtomicPtr<Header> = AtomicPtr::new(null_mut());
 
+/// A platform's free-running counter, for targets without an architectural
+/// one.
+pub struct Counter {
+    /// Current value; counts up.
+    pub read: fn() -> u64,
+    /// Ticks per second.
+    pub hz: u64,
+    /// Stop the counter, leaving its hardware as the payload expects.
+    pub stop: fn(),
+}
+
+static COUNTER: AtomicPtr<Counter> = AtomicPtr::new(null_mut());
+
+/// Use `counter` for this stage's milestones and console time. The
+/// platform starts it first.
+pub fn set_counter(counter: &'static Counter) {
+    COUNTER.store((counter as *const Counter).cast_mut(), Ordering::Relaxed);
+}
+
+fn counter() -> Option<&'static Counter> {
+    // SAFETY: only `set_counter` stores, from a `'static` reference.
+    unsafe { COUNTER.load(Ordering::Relaxed).as_ref() }
+}
+
+/// Ticks per second of the registered platform counter.
+pub fn counter_hz() -> Option<u64> {
+    counter().map(|c| c.hz)
+}
+
+/// Stop and unregister the platform counter; [`now`] reads zero after.
+pub fn release_counter() {
+    if let Some(c) = counter() {
+        COUNTER.store(null_mut(), Ordering::Relaxed);
+        (c.stop)();
+    }
+}
+
 /// Current counter value; zero without a supported counter.
 #[inline]
 pub fn now() -> u64 {
@@ -158,7 +198,7 @@ pub fn now() -> u64 {
     }
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
-        0
+        counter().map_or(0, |c| (c.read)())
     }
 }
 
@@ -340,5 +380,24 @@ mod tests {
         );
         unsafe { assert!(attach(dram.0.as_mut_ptr(), dram.0.len())) };
         unsafe { assert!(!attach(dram.0.as_mut_ptr(), table_size(1))) };
+    }
+
+    #[test]
+    fn a_released_counter_is_stopped_once() {
+        use portable_atomic::AtomicU32;
+        static STOPS: AtomicU32 = AtomicU32::new(0);
+        static COUNTER: Counter = Counter {
+            read: || 7,
+            hz: 1_000_000,
+            stop: || {
+                STOPS.fetch_add(1, Ordering::Relaxed);
+            },
+        };
+        assert_eq!(counter_hz(), None);
+        set_counter(&COUNTER);
+        assert_eq!(counter_hz(), Some(1_000_000));
+        release_counter();
+        release_counter();
+        assert_eq!((counter_hz(), STOPS.load(Ordering::Relaxed)), (None, 1));
     }
 }
