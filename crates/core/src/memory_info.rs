@@ -7,10 +7,11 @@
 use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-/// Upper bound on described slots; every supported controller has at most 4.
+/// Small cross-stage record limit; server inventories use `MemoryDevice` slices.
 pub const MAX_MEMORY_DEVICES: usize = 4;
 
-const MAGIC: [u8; 8] = *b"FSTMEM01";
+// Version 2 extends part numbers to DDR5's full 30-byte field.
+const MAGIC: [u8; 8] = *b"FSTMEM02";
 
 /// A populated device whose capacity could not be established. This must
 /// not be reported as an empty socket (SMBIOS Type 17 size = 0xffff).
@@ -19,6 +20,7 @@ pub const SIZE_UNKNOWN: u32 = u32::MAX;
 pub const MEMORY_TYPE_DDR2: u8 = 0x13;
 pub const MEMORY_TYPE_DDR3: u8 = 0x18;
 pub const MEMORY_TYPE_DDR4: u8 = 0x1a;
+pub const MEMORY_TYPE_DDR5: u8 = 0x22;
 /// SMBIOS Type 17 form factors.
 pub const FORM_FACTOR_UNKNOWN: u8 = 0x02;
 pub const FORM_FACTOR_DIMM: u8 = 0x09;
@@ -59,7 +61,7 @@ pub struct MemoryDevice {
     pub slot: u8,
     pub serial: [u8; 4],
     /// Module part number as stored in SPD, including space padding.
-    pub part_number: [u8; 20],
+    pub part_number: [u8; 30],
 }
 
 impl MemoryDevice {
@@ -210,6 +212,9 @@ mod tests {
         assert_eq!(parsed.devices()[0].part_number(), Some("M4 70T56"));
 
         assert!(MemoryInfo::from_bytes(&[0; size_of::<MemoryInfo>()]).is_none());
+        let mut legacy = info;
+        legacy.magic = *b"FSTMEM01";
+        assert!(MemoryInfo::from_bytes(legacy.as_bytes()).is_none());
         let full = (0..MAX_MEMORY_DEVICES).all(|_| info.push(MemoryDevice::default()));
         assert!(!full);
     }

@@ -7,6 +7,7 @@
 
 pub mod ddr3;
 pub mod ddr4;
+pub mod ddr5;
 
 /// DDR chip width classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

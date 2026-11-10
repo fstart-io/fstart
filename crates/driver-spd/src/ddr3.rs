@@ -271,7 +271,7 @@ pub fn memory_device(
         tck => (16_000 / u32::from(tck)) as u16,
     };
     let [jedec_bank, jedec_id] = dimm.module_manufacturer_id.to_le_bytes();
-    let mut part_number = [b' '; 20];
+    let mut part_number = [b' '; 30];
     part_number[..SPD_DDR3_PART_LEN].copy_from_slice(&dimm.part_number);
     mi::MemoryDevice {
         size_mib: dimm
