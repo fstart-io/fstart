@@ -1332,6 +1332,14 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
         crate::igd::options::BRIGHTNESS,
     ];
 
+    fn board_options(config: &Self::Config) -> Self::Options {
+        crate::igd::options::Options::new(
+            true,
+            (decode_igd_memory_size_kb(config.gfx_gms as u32 & 7) / 1024) as u16,
+        )
+        .with_panel(config.igd.panel.is_some())
+    }
+
     fn options(&self) -> Self::Options {
         self.options
     }
@@ -1343,11 +1351,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         Ok(Self {
             config,
-            options: crate::igd::options::Options::new(
-                true,
-                (decode_igd_memory_size_kb(config.gfx_gms as u32 & 7) / 1024) as u16,
-            )
-            .with_panel(config.igd.panel.is_some()),
+            options: Self::board_options(config),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             mmio32_window: None,

@@ -99,7 +99,8 @@ const BUILD_LIMIT: u8 = match BUILD_VERBOSITY {
     Some(Verbosity::Max(level)) => level as u8 + 1,
 };
 
-const fn parse_verbosity(name: &str) -> Verbosity {
+/// The verbosity `FSTART_LOG_LEVEL=name` selects.
+pub const fn parse_verbosity(name: &str) -> Verbosity {
     const fn is(name: &str, expected: &str) -> bool {
         let (a, b) = (name.as_bytes(), expected.as_bytes());
         if a.len() != b.len() {
@@ -290,11 +291,17 @@ impl Console for ConsoleMux {
 }
 
 /// Current maximum log level; the build-time level when one was set.
-static MAX_LEVEL: SyncCell<Level> = SyncCell::new(match BUILD_VERBOSITY {
-    Some(Verbosity::Max(level)) => level,
-    Some(Verbosity::Off) => Level::Error,
-    None => Level::Info,
-});
+static MAX_LEVEL: SyncCell<Level> = SyncCell::new(start_level(BUILD_VERBOSITY));
+
+/// The level a build with `verbosity` starts at: the board's value of the
+/// `debug_level` option.
+pub const fn start_level(verbosity: Option<Verbosity>) -> Level {
+    match verbosity {
+        Some(Verbosity::Max(level)) => level,
+        Some(Verbosity::Off) => Level::Error,
+        None => Level::Info,
+    }
+}
 
 /// Register the global console backend for log macros.
 ///

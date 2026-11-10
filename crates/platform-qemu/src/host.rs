@@ -304,6 +304,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     })
     .collect::<Vec<_>>();
     let plan = BuildPlan {
+        options: Default::default(),
         payload: payload.clone(),
         units: vec![CompilationUnit {
             name: "stage".into(),
@@ -1020,6 +1021,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         },
     });
     let plan = BuildPlan {
+        options: Default::default(),
         payload: payload.clone(),
         units,
         stages: vec!["stage".into()],

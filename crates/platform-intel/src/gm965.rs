@@ -270,6 +270,19 @@ impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm965Ich8<C> {
 }
 
 impl crate::IntelPlatformConfig for Gm965Ich8Platform {
+    fn describe_options(&self, each: &mut dyn FnMut(fstart_options::Entry)) {
+        use fstart_driver_intel::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
+        fstart_options::describe(
+            fstart_driver_intel::gm965::IntelGm965::KNOBS,
+            &fstart_driver_intel::gm965::IntelGm965::board_options(&self.northbridge),
+            each,
+        );
+        fstart_options::describe(
+            fstart_driver_intel::ich8::IntelIch8::KNOBS,
+            &fstart_driver_intel::ich8::IntelIch8::board_options(&self.southbridge),
+            each,
+        );
+    }
     fn max_cpus(&self) -> u16 {
         self.max_cpus
     }

@@ -19,7 +19,7 @@ gm965-ich8 = ["dep:konst", "fstart-driver-intel/gm965", "fstart-driver-intel/ich
 i945-ich7 = ["dep:konst", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
 pineview-ich7 = ["dep:konst", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
 ironlake-ibexpeak = ["fstart-driver-intel/ironlake", "fstart-driver-intel/ibexpeak"]
-host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:fstart-log", "fstart-core/host"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
 # The union still builds, so one selection type-checks every binary.

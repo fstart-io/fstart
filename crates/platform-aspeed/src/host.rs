@@ -180,6 +180,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         vec![]
     };
     let plan = BuildPlan {
+        options: Default::default(),
         payload,
         units: vec![
             unit(

@@ -115,6 +115,17 @@ enum Command {
         #[command(flatten)]
         options: BuildArgs,
     },
+    /// Print the options a build offers, as JSON: each option's key, form,
+    /// label, help, legal values and the board's value, and where the
+    /// board keeps stored values. The board's option sets are the only
+    /// description; its platform plan runs them on the host.
+    Options {
+        board: String,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
+        #[command(flatten)]
+        options: BuildArgs,
+    },
     /// Type-check a board using its resolved firmware selection.
     Check {
         board: String,
@@ -382,6 +393,24 @@ fn main() {
             payload,
             options,
         } => explain(&board, options.selection(payload)),
+        Command::Options {
+            board,
+            payload,
+            options,
+        } => (|| {
+            let root = build_board::workspace_root_pub()?;
+            let manifest = board_manifest::find(&root, &board)?;
+            let resolved = fbuild::resolved_image::ResolvedImage::load(
+                &root,
+                &manifest,
+                options.selection(payload),
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(resolved.options()).map_err(|e| e.to_string())?
+            );
+            Ok(())
+        })(),
         Command::Ide {
             board,
             payload,

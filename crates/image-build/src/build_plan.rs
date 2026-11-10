@@ -14,6 +14,10 @@ pub struct BuildPlan {
     /// or artifact dependencies from the image projection.
     pub assembly: Assembly,
     pub inputs: Vec<InputFile>,
+    /// The options the build offers (`fbuild options`), from the board's
+    /// option sets.
+    #[serde(default, skip_serializing_if = "crate::options::Options::is_empty")]
+    pub options: crate::options::Options,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -639,6 +643,7 @@ mod tests {
             flat_capacity: span.size,
         };
         BuildPlan {
+            options: Default::default(),
             payload: "halt".into(),
             units: vec![
                 launch,
@@ -841,6 +846,7 @@ mod tests {
             build: BoardBuildPolicy::default(),
         };
         let plan = |units| BuildPlan {
+            options: Default::default(),
             payload: "halt".into(),
             units,
             stages: vec![],

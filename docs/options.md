@@ -22,6 +22,41 @@ consumes a field defines its knob; a board only picks the knobs it offers.
 Keys and values follow coreboot's option names where coreboot has the
 option; sizes are in MiB rather than coreboot's per-chipset indices.
 
+## What a build offers
+
+A build lists its own options: `fbuild options <board>` prints each
+option's key, form, label, help, legal values and the board's value as
+JSON, and where the board keeps stored values (the CMOS window or the
+flash variable store). Tools that work on a finished build (the web
+assembler's settings form, image presets, an OS tool) read that list.
+
+Nothing but the board's Rust describes the options. A knob set and the
+board's values of its configuration are one `OptionSet`, which the stage
+resolves and the board lists:
+
+```rust
+pub static EC: OptionSet<lenovo::Options> = OptionSet {
+    knobs: &[BLUETOOTH, WLAN, VOLUME],
+    board: lenovo::Options::DEFAULT,
+};
+// board facts
+const OPTIONS: &'static [&'static dyn Describe] = &[&mainboard::EC];
+// ramstage
+let ec = rs.resolve_set(&mainboard::EC, |_| Ok(()));
+```
+
+The platform's plan, which fbuild already runs on the host for every
+build, walks the list: the console level, the chipset drivers' `KNOBS`
+over `board_options(config)` (Intel) or the policy's over
+`Board::policy` (SP3), then the board's sets. It fails the build on what
+would otherwise only show on the board: a key offered twice, a board
+value its option does not take, two keys with one CMOS record name, or
+more options than the CMOS window holds when every one is changed.
+
+A board that detects part of a configuration at boot gives the set what
+its fixed hardware offers (Ethanol-X: its four slots, Auto); the boot
+resolves from what it detected and withholds what the machine lacks.
+
 ## Resolution
 
 `resolve_each` applies the stored values of a knob set to its

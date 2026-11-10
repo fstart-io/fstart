@@ -510,6 +510,7 @@ where
         },
     };
     let plan = BuildPlan {
+        options: Default::default(),
         payload: payload.into(),
         stages: vec![UNIT.into()],
         inputs,

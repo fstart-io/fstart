@@ -137,6 +137,20 @@ impl<B: IntelBoard, S> Ramstage<B, S> {
         fstart_log::option::resolve_into(knobs, &source, config, &mut self.options, check);
     }
 
+    /// The board's values of `set` with the stored overrides
+    /// ([`Self::resolve_options`]). The set is one of the board's
+    /// [`IntelBoardFacts::OPTIONS`](crate::IntelBoardFacts::OPTIONS), so
+    /// the build lists its options.
+    pub fn resolve_set<C: Clone + 'static>(
+        &mut self,
+        set: &'static fstart_options::OptionSet<C>,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) -> C {
+        let mut config = set.board.clone();
+        self.resolve_options(set.knobs, &mut config, check);
+        config
+    }
+
     /// Run one named phase: timestamp, log, and stop the boot on failure.
     fn phase(
         &mut self,

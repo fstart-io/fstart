@@ -349,6 +349,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         flat_capacity: main.memory.size,
     };
     let plan = BuildPlan {
+        options: Default::default(),
         payload: payload.clone(),
         units: vec![
             unit(

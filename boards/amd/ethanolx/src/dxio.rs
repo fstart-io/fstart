@@ -105,6 +105,15 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// The four slots before detection, for the build's option list: every
+    /// group offered, Auto. The boot starts from what it detects and
+    /// withholds a group the straps or the I/O fuse remove.
+    pub const UNDETECTED: Self = Self {
+        selectors: [0; 4],
+        bifurcation: [None; 4],
+        limited_io: false,
+    };
+
     /// The layout the straps select on revision 0x30. Other revisions
     /// have different socket-1 and forced-x8 wiring: do not apply this
     /// policy to an unknown board.
@@ -152,6 +161,12 @@ pub static KNOBS: [Knob<Layout>; 4] = [
     Bifurcation::knob::<Layout, 2>("ethanolx_p2_bifurcation", "P2 (slot 4) bifurcation", true),
     Bifurcation::knob::<Layout, 3>("ethanolx_p3_bifurcation", "P3 (slot 2) bifurcation", true),
 ];
+
+/// The slots' knobs over the layout before detection.
+pub static SLOTS: fstart_options::OptionSet<Layout> = fstart_options::OptionSet {
+    knobs: &KNOBS,
+    board: Layout::UNDETECTED,
+};
 
 /// Whether the layout's engines are valid on the SoC.
 pub fn check(layout: &Layout) -> Result<(), &'static str> {

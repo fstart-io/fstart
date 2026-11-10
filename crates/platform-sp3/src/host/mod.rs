@@ -75,16 +75,42 @@ pub const SMM_STACK_SIZE: u32 = 0x2000;
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
-impl<B: Sp3BoardFacts> Plan<B> {
+impl<B: crate::board::Board> Plan<B> {
     pub fn emit(selection_json: &str) {
         let selection: BuildSelection =
             serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve::<B>(&selection).expect("invalid SP3 board plan");
+        let mut plan = resolve::<B>(&selection).expect("invalid SP3 board plan");
+        plan.options = options::<B>(selection.log_level.as_deref()).expect("invalid board options");
         std::println!(
             "{}",
             serde_json::to_string(&plan).expect("serialize SP3 plan")
         );
     }
+}
+
+/// The options a build of `B` at `log_level` offers, kept in the settings
+/// store: the console level it starts at, the policy's, the board's sets,
+/// in the order the stage resolves them. The policy is the first
+/// generation's.
+pub fn options<B: crate::board::Board>(
+    log_level: Option<&str>,
+) -> Result<fstart_image_build::options::Options, String> {
+    use fstart_image_build::options::{OptionStore, collect};
+    let level = fstart_log::start_level(log_level.map(fstart_log::parse_verbosity));
+    let generation = *B::GENERATIONS
+        .first()
+        .ok_or("the board lists no SP3 generation")?;
+    let store = OptionStore::Varstore {
+        offset: crate::layout::NVRAM.offset,
+        size: crate::layout::NVRAM.size,
+    };
+    collect(Some(store), |each| {
+        fstart_options::describe(&fstart_log::option::KNOBS, &level, each);
+        fstart_options::describe(B::OPTIONS, &B::policy(generation), each);
+        for set in B::OPTION_SETS {
+            set.describe(each);
+        }
+    })
 }
 
 /// The platform feature of a generation.
@@ -436,6 +462,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         }
     };
     let plan = BuildPlan {
+        options: Default::default(),
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],
