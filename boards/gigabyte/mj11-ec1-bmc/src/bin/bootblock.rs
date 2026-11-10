@@ -26,8 +26,9 @@ const DRAM: DramConfig = DramConfig {
 
 /// SPI clock limit for the boot flash. The MT25QL512 reads at up to 133
 /// MHz; the bootblock calibrates the read delay and takes the fastest
-/// HCLK divisor at or below this that reads correctly.
-const FLASH_MAX_HZ: u32 = 50_000_000;
+/// HCLK divisor at or below this that reads correctly. On this board no
+/// delay reads correctly at HCLK/2 (99 MHz), HCLK/3 (66 MHz) does.
+const FLASH_MAX_HZ: u32 = 66_000_000;
 
 /// Test all usable DRAM after every training (cold boots only). Off: the
 /// test takes about a minute over 424 MiB, and training passed it on this
