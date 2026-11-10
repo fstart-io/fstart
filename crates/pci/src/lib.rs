@@ -242,6 +242,23 @@ impl PciRoot {
         })
     }
 
+    /// The bridge has since been made to forward `range` as well: a route
+    /// the firmware chose after enumeration (the legacy VGA memory, to the
+    /// root the display turned out to be behind). It is reported; it is not
+    /// the allocator's, and it may not be a motherboard resource.
+    pub(crate) fn forward(&mut self, range: PciWindow) -> Result<(), PciEcamError> {
+        let overlaps = |held: &PciWindow| {
+            held.kind == range.kind && held.base < range.end() && range.base < held.end()
+        };
+        if range.size == 0
+            || range.base.checked_add(range.size).is_none()
+            || self.motherboard.iter().any(overlaps)
+        {
+            return Err(PciEcamError::ConfigError);
+        }
+        join(&mut self.forwarded, range)
+    }
+
     /// The root bridge's identity and place in the ECAM.
     pub fn info(&self) -> PciRootInfo {
         self.info

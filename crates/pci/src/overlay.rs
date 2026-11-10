@@ -7,7 +7,9 @@
 use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use tock_registers::register_structs;
 
-use crate::config::{PCI_BRIDGE_CONTROL_BITS, PCI_COMMAND_BITS, PCI_STATUS_BITS};
+use crate::config::{
+    PCI_BRIDGE_CONTROL_BITS, PCI_BRIDGE_MEMORY_BOUND, PCI_COMMAND_BITS, PCI_STATUS_BITS,
+};
 
 register_structs! {
     /// Conservative Type 0 PCI configuration header overlay.
@@ -65,8 +67,8 @@ register_structs! {
         (0x1c => pub io_base: MmioReadWrite<u8>),
         (0x1d => pub io_limit: MmioReadWrite<u8>),
         (0x1e => pub secondary_status_raw: MmioReadWrite<u16, PCI_STATUS_BITS::Register>),
-        (0x20 => pub memory_base: MmioReadWrite<u16>),
-        (0x22 => pub memory_limit: MmioReadWrite<u16>),
+        (0x20 => pub memory_base: MmioReadWrite<u16, PCI_BRIDGE_MEMORY_BOUND::Register>),
+        (0x22 => pub memory_limit: MmioReadWrite<u16, PCI_BRIDGE_MEMORY_BOUND::Register>),
         (0x24 => pub prefetchable_memory_base: MmioReadWrite<u16>),
         (0x26 => pub prefetchable_memory_limit: MmioReadWrite<u16>),
         (0x28 => pub prefetchable_base_upper32: MmioReadWrite<u32>),
@@ -80,6 +82,30 @@ register_structs! {
         (0x3d => pub interrupt_pin: MmioReadOnly<u8>),
         (0x3e => pub bridge_control: MmioReadWrite<u16, PCI_BRIDGE_CONTROL_BITS::Register>),
         (0x40 => @END),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+    #[test]
+    fn memory_limit_extension_preserves_base_reserved_bits_and_neighbors() {
+        #[repr(C, align(4))]
+        struct Image([u8; 64]);
+        let mut image = Image([0; 64]);
+        image.0[6..8].copy_from_slice(&0xa55au16.to_le_bytes());
+        let registers = unsafe { &*(image.0.as_ptr().cast::<PciType1Config>()) };
+        registers.memory_base.set(0xb001);
+        registers.memory_limit.set(0xb00a);
+        registers.prefetchable_memory_base.set(0x1234);
+        registers
+            .memory_limit
+            .modify(PCI_BRIDGE_MEMORY_BOUND::ADDRESS.val(0xb0f));
+        assert_eq!(registers.memory_base.get(), 0xb001);
+        assert_eq!(registers.memory_limit.get(), 0xb0fa);
+        assert_eq!(registers.prefetchable_memory_base.get(), 0x1234);
+        assert_eq!(registers.status_raw.get(), 0xa55a);
     }
 }
 

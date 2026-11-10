@@ -479,7 +479,7 @@ fn fixed_64bit_pair_survives_probing_and_allocation() {
     pci.write32(addr, 0x20, 0x8000_000c);
     pci.write32(addr, 0x24, 1);
     pci.add_fixed_bars(&[fixed]).unwrap();
-    let dev = pci.probe_device(addr).unwrap().unwrap();
+    let dev = pci.probe_device(addr, true).unwrap().unwrap();
     assert_eq!(dev.bars[5].bar_type, BarType::None);
     assert!(pci.devices.push(dev).is_ok());
     pci.allocate_resources().unwrap();
