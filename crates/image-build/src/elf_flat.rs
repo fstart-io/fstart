@@ -56,7 +56,11 @@ fn flatten_for<Elf: FileHeader>(elf_data: &[u8]) -> Result<FlatImage, String> {
             let file = phdr
                 .data(endian, elf_data)
                 .map_err(|_| "segment outside the file")?;
-            Ok((paddr, file, phdr.p_memsz(endian).into()))
+            let memsz: u64 = phdr.p_memsz(endian).into();
+            if file.len() as u64 > memsz {
+                return Err("segment has more file data than memory");
+            }
+            Ok((paddr, file, memsz))
         })
         .collect::<Result<Vec<(u64, &[u8], u64)>, &str>>()?;
     let start = segments
@@ -93,4 +97,44 @@ fn flatten_for<Elf: FileHeader>(elf_data: &[u8]) -> Result<FlatImage, String> {
         mem_size: end - start,
         entry,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flatten;
+
+    /// A little-endian ELF32 executable with one `PT_LOAD` segment of
+    /// `data` at `paddr`, `memsz` bytes in memory, entered at `paddr`.
+    fn elf32(paddr: u32, data: &[u8], memsz: u32) -> Vec<u8> {
+        let mut elf = vec![0x7F, b'E', b'L', b'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for half in [2u16, 40] {
+            elf.extend(half.to_le_bytes());
+        }
+        for word in [1u32, paddr, 52, 0, 0] {
+            elf.extend(word.to_le_bytes());
+        }
+        for half in [52u16, 32, 1, 40, 0, 0] {
+            elf.extend(half.to_le_bytes());
+        }
+        let filesz = data.len() as u32;
+        for word in [1u32, 84, paddr, paddr, filesz, memsz, 5, 4] {
+            elf.extend(word.to_le_bytes());
+        }
+        elf.extend(data);
+        elf
+    }
+
+    #[test]
+    fn trailing_memory_is_bss() {
+        let image = flatten(&elf32(0x8000_0000, &[1, 2, 3, 4], 16)).unwrap();
+        assert_eq!(
+            (image.load_addr, image.data, image.mem_size, image.entry),
+            (0x8000_0000, vec![1, 2, 3, 4], 16, 0x8000_0000)
+        );
+    }
+
+    #[test]
+    fn segments_with_more_file_than_memory_are_rejected() {
+        assert!(flatten(&elf32(0x8000_0000, &[1, 2, 3, 4, 5, 6, 7, 8], 4)).is_err());
+    }
 }
