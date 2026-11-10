@@ -447,12 +447,7 @@ impl SataConfig {
     }
 }
 
-/// SATA controller operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SataMode {
-    Ide,
-    Ahci,
-}
+pub use crate::southbridge::options::SataMode;
 
 /// USB controller configuration.
 #[derive(Debug, Clone, Copy)]
@@ -763,6 +758,8 @@ pub const fn valid_sata_ports(ports: u8) -> bool {
 /// Intel ICH7 southbridge driver.
 pub struct IntelIch7 {
     config: &'static IntelIch7Config,
+    /// The user options over the board config.
+    options: crate::southbridge::options::Options,
     /// I801 SMBus controller, initialised during `early_init`.
     smbus: Option<I801SmBus>,
     s3_enabled: bool,
@@ -779,6 +776,14 @@ unsafe impl Send for IntelIch7 {}
 unsafe impl Sync for IntelIch7 {}
 
 impl IntelIch7 {
+    /// The board's SATA config in the user's mode.
+    fn sata(&self) -> Option<SataConfig> {
+        self.config.sata.map(|sata| SataConfig {
+            mode: self.options.sata_mode.unwrap_or(sata.mode),
+            ..sata
+        })
+    }
+
     /// The GPIO controller, for board code to take the pins it wires.
     /// Pad configuration is chipset config, applied before the console.
     #[must_use]
@@ -1090,6 +1095,21 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
     type Config = IntelIch7Config;
     const ACPI_LPC_NAME: &'static str = "LPCB";
 
+    type Options = crate::southbridge::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
+        crate::southbridge::options::POWER_ON_AFTER_FAIL,
+        crate::southbridge::options::SATA_MODE,
+        crate::southbridge::options::NMI,
+    ];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
+
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         if config
             .lpc_decode
@@ -1104,6 +1124,13 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
 
         Ok(Self {
             config,
+            options: crate::southbridge::options::Options::from_config(
+                config.power_on_after_fail,
+                match config.sata {
+                    Some(sata) => Some(sata.mode),
+                    None => None,
+                },
+            ),
             smbus: None,
             s3_enabled: false,
             resume: false,
@@ -1224,7 +1251,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // AHCI mode (BAR4 grows from 16 to 32 bytes). Coreboot performs this
         // in the device-enable phase, before read_resources(), for the same
         // reason.
-        if let Some(sata) = self.config.sata.as_ref() {
+        if let Some(sata) = self.sata().as_ref() {
             self.set_sata_mode(self.sata_mode(sata.mode));
         }
 
@@ -1439,7 +1466,7 @@ impl IntelIch7 {
         }
 
         // ---- SATA ----
-        if let Some(ref sata) = self.config.sata {
+        if let Some(ref sata) = self.sata() {
             self.sata_init(sata);
         }
 
@@ -1672,7 +1699,7 @@ impl IntelIch7 {
 
         // Power-on after failure.
         lpc.gen_pmcon_3.modify(
-            GEN_PMCON_3_REG::STATE_AFTER_G3.val(if self.config.power_on_after_fail == 0 {
+            GEN_PMCON_3_REG::STATE_AFTER_G3.val(if self.options.power_on_after_fail == 0 {
                 1
             } else {
                 0
@@ -1787,19 +1814,7 @@ impl IntelIch7 {
                 .write16(pmio::PM1_EN, pmio::RTC_EN | pmio::PWRBTN_EN);
         }
 
-        // NMI source control (port 0x61).
-        unsafe {
-            use fstart_core::pio::{inb, outb};
-            let mut nmi = inb(0x61);
-            nmi &= 0x0F; // Upper nibble must be 0
-            nmi |= 1 << 2; // PCI SERR# disable (for now)
-            nmi &= !(1 << 3); // IOCHK# NMI enable
-            outb(0x61, nmi);
-
-            // Disable NMI sources (port 0x70 bit 7).
-            let nmi_ctl = inb(0x70);
-            outb(0x70, nmi_ctl | (1 << 7));
-        }
+        crate::southbridge::options::nmi(self.options.nmi);
 
         // PM1_CNT: enable SCI, bus-master C3→C0 wakeup.
         self.pm().enable_acpi_pm1();

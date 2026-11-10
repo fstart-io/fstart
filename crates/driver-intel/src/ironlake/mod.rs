@@ -148,7 +148,7 @@ pub struct IntelIronlakeConfig {
     /// SPD addresses: channel 0 slot 0/1, channel 1 slot 0/1; 0 = absent.
     /// Raminit supports one DIMM per channel: entries 1 and 3 must be zero.
     pub spd_addresses: [u8; 4],
-    /// IGD stolen memory selector (coreboot CMOS `gfx_uma_size`): 0 = 32 MiB,
+    /// IGD stolen memory selector (coreboot `gfx_uma_size`): 0 = 32 MiB,
     /// 1 = 48, 2 = 64, 3 = 128, 4 = 256, 5 = 96, 6 = 160, 7 = 224, 8 = 352.
     pub gfx_uma_size: u8,
     /// PEG port 00:01.0 enabled in the devicetree.
@@ -212,6 +212,8 @@ static mut RAM_STATE: raminit::RamState = raminit::RamState::new();
 /// Ironlake northbridge driver.
 pub struct IntelIronlake {
     config: &'static IntelIronlakeConfig,
+    /// The user options over the board config.
+    options: crate::igd::options::Options,
     dram_ready: bool,
     boot_path: crate::BootPath,
     mmio32_window: Option<(u64, u64)>,
@@ -351,10 +353,66 @@ impl IntelIronlake {
     }
 }
 
+/// The stolen-memory sizes of the GGC GMS selectors 0 to 8, in MiB.
+const GMS_MB: [u16; 9] = [32, 48, 64, 128, 256, 96, 160, 224, 352];
+
+/// The user's stolen-memory sizes, in MiB.
+const UMA_SIZES: &[fstart_options::Choice] = &[
+    fstart_options::Choice::new(32, "32 MiB"),
+    fstart_options::Choice::new(48, "48 MiB"),
+    fstart_options::Choice::new(64, "64 MiB"),
+    fstart_options::Choice::new(96, "96 MiB"),
+    fstart_options::Choice::new(128, "128 MiB"),
+    fstart_options::Choice::new(160, "160 MiB"),
+    fstart_options::Choice::new(224, "224 MiB"),
+    fstart_options::Choice::new(256, "256 MiB"),
+    fstart_options::Choice::new(352, "352 MiB"),
+];
+
+/// The GMS selector of `mb` of stolen memory.
+const fn gms_of_mb(mb: u16) -> Option<u8> {
+    let mut selector = 0;
+    while selector < GMS_MB.len() {
+        if GMS_MB[selector] == mb {
+            return Some(selector as u8);
+        }
+        selector += 1;
+    }
+    None
+}
+
+impl IntelIronlakeConfig {
+    /// The board's values of the user options.
+    pub const fn options(&self) -> crate::igd::options::Options {
+        crate::igd::options::Options::new(
+            self.igd_enabled,
+            GMS_MB[self.gfx_uma_size as usize % GMS_MB.len()],
+        )
+    }
+}
+
+impl IntelIronlake {
+    /// The GMS selector of the user's stolen memory.
+    fn gms(&self) -> u8 {
+        gms_of_mb(self.options.uma_mb).unwrap_or(self.config.gfx_uma_size)
+    }
+}
+
 impl crate::IntelNorthbridgeDriver for IntelIronlake {
     type Config = IntelIronlakeConfig;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
+    type Options = crate::igd::options::Options;
+    const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
+        &[crate::igd::options::uma(UMA_SIZES)];
+
+    fn options(&self) -> Self::Options {
+        self.options
+    }
+
+    fn set_options(&mut self, options: Self::Options) {
+        self.options = options;
+    }
 
     fn new_from_config(config: &'static Self::Config) -> Result<Self, ServiceError> {
         let buses = config.ecam_buses;
@@ -376,6 +434,7 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
         }
         Ok(Self {
             config,
+            options: config.options(),
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
             mmio32_window: None,
@@ -415,7 +474,7 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
         Some(crate::generic::training::identity(
             b"ironlake-raminit-v1",
             &self.config.spd_addresses,
-            u16::from(self.config.gfx_uma_size),
+            u16::from(self.gms()),
             u8::from(self.config.igd_enabled),
             crate::generic::training::HardwareIdentity {
                 vendor_id: hb.vendor_id.get(),
@@ -528,7 +587,7 @@ impl fstart_core::services::MemoryInit for IntelIronlake {
             pmbase: self.config.pmbase,
             hecibar: self.config.hecibar as usize,
             qpi_bus: self.config.quickpath_bus(),
-            gfx_uma_size: self.config.gfx_uma_size,
+            gfx_uma_size: self.gms(),
         };
         // SAFETY: the bootblock is single-threaded and only raminit uses
         // this CAR-resident state.
@@ -683,6 +742,26 @@ mod tests {
             ..IntelIronlakeConfig::new()
         };
         assert!(IntelIronlake::new_from_config(&BAD_UMA).is_err());
+    }
+
+    #[test]
+    fn stolen_memory_options_are_the_gms_sizes() {
+        // The choices are exactly the selectors' sizes.
+        let mut sizes = GMS_MB.map(u32::from);
+        sizes.sort_unstable();
+        assert!(UMA_SIZES.iter().map(|c| c.value).eq(sizes));
+        // The board's selector is the default, the user's size reaches
+        // raminit as its selector.
+        static BOARD: IntelIronlakeConfig = IntelIronlakeConfig {
+            gfx_uma_size: 5,
+            ..IntelIronlakeConfig::new()
+        };
+        let mut nb = IntelIronlake::new_from_config(&BOARD).unwrap();
+        assert_eq!((nb.options().uma_mb, nb.gms()), (96, 5));
+        let mut options = nb.options();
+        options.uma_mb = 352;
+        nb.set_options(options);
+        assert_eq!(nb.gms(), 8);
     }
 
     #[test]

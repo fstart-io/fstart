@@ -46,7 +46,11 @@ stage = [
   "fstart-core/pci",
 ]
 # An Intel ramstage always builds ACPI, SMBIOS and MP.
-ramstage = ["stage", "acpi", "mp", "smbios", "dep:fstart-payload", "fstart-stage/ffs", "fstart-arch/alloc"]
+ramstage = [
+  "stage", "acpi", "mp", "smbios", "dep:fstart-payload", "fstart-stage/ffs", "fstart-arch/alloc",
+  # The option report; earlier stages resolve without allocating.
+  "fstart-log/alloc",
+]
 # The chipset's ACPI namespace (fstart_acpi::PcNamespace) for board ACPI.
 namespace = ["dep:fstart-acpi", "fstart-driver-intel/acpi"]
 acpi = [
@@ -88,6 +92,8 @@ fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-arch = { workspace = true, optional = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-log = { workspace = true, optional = true }
+fstart-options = { workspace = true }
+fstart-driver-rtc = { workspace = true }
 fstart-timestamp = { workspace = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }

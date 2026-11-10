@@ -62,18 +62,19 @@ pub fn init(
     dock_id: &mut [impl InputPin; 3],
     dock_connect: &mut impl OutputPin,
     h8_config: &H8Config,
+    options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (bool, bool) {
     let bluetooth = bdc_presence.is_low().unwrap_or(false);
     let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
     pmh7.backlight_enable(true);
     pmh7.dock_event_enable(true);
-    pmh7.trackpoint_enable(true);
-    pmh7.touchpad_enable(true);
+    pmh7.trackpoint_enable(options.trackpoint);
+    pmh7.touchpad_enable(options.touchpad);
 
     let ec = Ec::new(h8_config.resources.os);
     let h8 = H8::new(ec);
-    let initialized = h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, Some(true), resume);
+    let initialized = h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, true, options, resume);
     let docked = dock_present(dock_id);
     // `dock_connect()`: dock USB power in the EC, then the connect GPIO.
     let dock = !docked

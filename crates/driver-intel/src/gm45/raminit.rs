@@ -1658,6 +1658,7 @@ pub(super) fn prepare_ddr3(
     fsb_mhz: u32,
     capid_high: u32,
     graphics: crate::gm45::Gm45GraphicsPolicy,
+    uma_mb: u16,
     dimms: &Ddr3Channels,
     timing: &Ddr3Timing,
     replay: Option<&TrainingRecord>,
@@ -1689,7 +1690,7 @@ pub(super) fn prepare_ddr3(
     // Reject unsupported geometry before training, not after JEDEC/calibration.
     // ME presence is independent of the requested DEVEN policy.
     let me_active = EcamDevice::new(0, 3, 0).read8(0x08) != 0xff;
-    let final_map = map::compute(dimms, igd_enabled, capid_high, me_active)?;
+    let final_map = map::compute(dimms, igd_enabled, uma_mb, capid_high, me_active)?;
     let regs = mch.regs();
     regs.dram_ctrl.set(regs.dram_ctrl.get() | 3);
     set_memory_clock(&mch, timing.clock, fsb_mhz)?;
@@ -2066,7 +2067,7 @@ mod tests {
         };
         let one = probe_ddr3(&mut bus, &[0x50, 0, 0, 0]).unwrap();
         let rank_mb = one.dimms[0].unwrap().rank_capacity_mb;
-        let single = map::compute(&one, false, 1 << 15, false).unwrap();
+        let single = map::compute(&one, false, 32, 1 << 15, false).unwrap();
         assert!(!single.interleaved);
         assert_eq!(single.bounds[0][0], ((rank_mb >> 5) & 0x1fc) * 0x1_0001);
         assert_eq!(single.bounds[1][0], single.bounds[0][0]);
@@ -2075,11 +2076,11 @@ mod tests {
         assert_eq!(single.touud, rank_mb as u16);
         assert_eq!(single.remap_base, 0x3ff);
         assert_eq!(single.ggc, 2);
-        assert_eq!(map::compute(&one, true, 1 << 1, false).unwrap().ggc, 2);
+        assert_eq!(map::compute(&one, true, 32, 1 << 1, false).unwrap().ggc, 2);
         let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
         both.dimms[0].as_mut().unwrap().ranks = 2;
         both.dimms[1].as_mut().unwrap().ranks = 2;
-        let dual = map::compute(&both, true, 0, false).unwrap();
+        let dual = map::compute(&both, true, 32, 0, false).unwrap();
         assert!(dual.interleaved);
         assert_eq!(dual.bounds[0], dual.bounds[1]);
         assert_eq!(
@@ -2104,7 +2105,7 @@ mod tests {
         let mut both = probe_ddr3(&mut bus, &[0x50, 0, 0x51, 0]).unwrap();
         both.dimms[0].as_mut().unwrap().ranks = 2;
         both.dimms[1].as_mut().unwrap().ranks = 2;
-        let map = map::compute(&both, true, 1 << 16, true).unwrap();
+        let map = map::compute(&both, true, 32, 1 << 16, true).unwrap();
         // No VT-d shadow GTT: 32 MiB UMA + 2 MiB GTT + 2 MiB TSEG.
         assert_eq!(map.ggc, 0x0350);
         assert_eq!(map.tolud, 2048 << 4);
@@ -2141,7 +2142,7 @@ mod tests {
         both.dimms[1].as_mut().unwrap().ranks = 2;
         // Coreboot: 1 GiB + 2 GiB stays interleaved, each channel from zero,
         // and an active ME takes 32 MiB rather than 64 when sizes differ.
-        let map = map::compute(&both, false, 0, true).unwrap();
+        let map = map::compute(&both, false, 32, 0, true).unwrap();
         assert!(map.interleaved);
         assert_eq!(map.bounds[0], [(1024 >> 5) | ((1024 >> 5) << 16); 2]);
         assert_eq!(map.bounds[1][0], (1024 >> 5) | ((2048 >> 5) << 16));
@@ -2152,10 +2153,10 @@ mod tests {
         assert_eq!(map.touud, 4096 + (3008 - 2048));
         both.dimms[1].as_mut().unwrap().ranks = 1;
         both.dimms[0].as_mut().unwrap().rank_capacity_mb = 33;
-        assert!(map::compute(&both, false, 0, false).is_err());
+        assert!(map::compute(&both, false, 32, 0, false).is_err());
         both.dimms[0].as_mut().unwrap().rank_capacity_mb = 1024;
         both.dimms[0].as_mut().unwrap().page_size = 0;
-        assert!(map::compute(&both, false, 0, false).is_err());
+        assert!(map::compute(&both, false, 32, 0, false).is_err());
     }
 
     #[test]

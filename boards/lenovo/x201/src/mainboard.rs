@@ -61,12 +61,33 @@ pub struct Identity {
     pub ec_oem_string: Option<fstart_driver_lenovo::h8::EcOemString>,
 }
 
-/// EC/PMH7, the dock, the identity EEPROM and the digitizer, once the
-/// chipset devices are up. Restores the optional TPM on S3 before returning
-/// the identity and the board ACPI device.
+/// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
+/// them.
+pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 12] = {
+    use fstart_driver_lenovo::options::*;
+    [
+        FIRST_BATTERY,
+        BLUETOOTH,
+        WWAN,
+        TOUCHPAD,
+        WLAN,
+        TRACKPOINT,
+        FN_CTRL_SWAP,
+        STICKY_FN,
+        POWER_MANAGEMENT_BEEPS,
+        LOW_BATTERY_BEEP,
+        USB_ALWAYS_ON,
+        VOLUME,
+    ]
+};
+
+/// EC/PMH7 with the user's `ec` options, the dock, the identity EEPROM and
+/// the digitizer, once the chipset devices are up. Restores the optional
+/// TPM on S3 before returning the identity and the board ACPI device.
 pub fn init_devices(
     pins: &mut Pins,
     smbus: &mut impl SmBus,
+    ec: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> Result<(Identity, Acpi), fstart_driver_tpm::Error> {
     let mut identity = Identity::default();
@@ -75,6 +96,7 @@ pub fn init_devices(
         &mut pins.dock_id,
         &mut pins.dock_connect,
         &crate::config::X201_H8,
+        ec,
         resume,
     );
     if !acknowledged {

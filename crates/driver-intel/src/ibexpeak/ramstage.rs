@@ -159,7 +159,7 @@ impl IntelIbexPeak {
         use super::regs::GEN_PMCON_3 as P3;
         let lpc = self.lpc_regs();
         let mut pmcon3 = lpc.gen_pmcon_3.extract();
-        pmcon3.modify(P3::AFTER_G3.val(u16::from(self.config.power_on_after_fail == 0)));
+        pmcon3.modify(P3::AFTER_G3.val(u16::from(self.options.power_on_after_fail == 0)));
         // SLP_S4# assertion stretch 4 s, SLP_S3# 50 ms, no stretch after SUS.
         pmcon3.modify(
             P3::SLP_S4_MIN.val(0)
@@ -172,37 +172,22 @@ impl IntelIbexPeak {
         lpc.gen_pmcon_3.set(pmcon3.get());
         fstart_log::info!(
             "ibexpeak: power {} after power failure",
-            match self.config.power_on_after_fail {
+            match self.options.power_on_after_fail {
                 0 => "off",
                 1 => "on",
                 _ => "state keep",
             }
         );
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        // SAFETY: the legacy NMI control ports of the PCH.
-        unsafe {
-            let mut port61 = fstart_core::pio::inb(0x61) & 0x0f;
-            port61 &= !(1 << 3); // IOCHK# NMI enable
-            port61 |= 1 << 2; // PCI SERR# NMI disabled for now
-            fstart_core::pio::outb(0x61, port61);
-            // Port 0x70 is write-only on this PCH; 0x74 is its readable alias.
-            let mut nmi = fstart_core::pio::inb(0x74);
-            if self.config.nmi {
-                nmi &= !(1 << 7);
+        crate::southbridge::options::nmi(self.options.nmi);
+        fstart_log::info!(
+            "ibexpeak: NMI sources {}",
+            if self.options.nmi {
+                "enabled"
             } else {
-                nmi |= 1 << 7;
+                "disabled"
             }
-            fstart_core::pio::outb(0x70, nmi);
-            fstart_log::info!(
-                "ibexpeak: NMI sources {}",
-                if self.config.nmi {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
-        }
+        );
 
         // CPU_SLP# and SpeedStep stay, SMI# rate 1 minute, native PME.
         lpc.gen_pmcon_1

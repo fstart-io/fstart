@@ -301,20 +301,28 @@ impl H8 {
     ///
     /// The H8 is also the PC/AT keyboard controller; it is left quiet for
     /// the OS.
-    pub fn init_legacy_thinkpad(&self, events: &[u8; 16], bluetooth: bool, resume: bool) -> bool {
-        self.init_thinkpad(0x05, events, bluetooth, None, resume)
+    pub fn init_legacy_thinkpad(
+        &self,
+        events: &[u8; 16],
+        bluetooth: bool,
+        options: &crate::options::Options,
+        resume: bool,
+    ) -> bool {
+        self.init_thinkpad(0x05, events, bluetooth, false, options, resume)
     }
 
     /// coreboot `h8_enable()` for a ThinkPad: CONFIG0-3 with the ThinkLight,
-    /// event masks, radios (UWB only where the board has the switch), USB
-    /// power and the default Fn/charge/audio policy. `config1` is the
-    /// devicetree `config1`. The OS restores its own volume on resume.
+    /// event masks, radios (Bluetooth if the card is fitted, UWB where the
+    /// board has the switch), USB power, Fn keys, charging and audio from the
+    /// user's `options`. `config1` is the devicetree `config1`. The OS
+    /// restores its own volume on resume.
     pub fn init_thinkpad(
         &self,
         config1: u8,
         events: &[u8; 16],
         bluetooth: bool,
-        uwb: Option<bool>,
+        uwb: bool,
+        options: &crate::options::Options,
         resume: bool,
     ) -> bool {
         self.clear_out_queue();
@@ -323,20 +331,20 @@ impl H8 {
             self.init_controls(
                 [config1, 0xa0, 0x01],
                 Some(H8Illumination::Thinklight),
-                [0xfe, 0x96],
+                options.beep_masks([0xfe, 0x96]),
             ),
             self.program_event_masks(events),
             self.trackpoint_enable(true),
             self.usb_power_enable(true),
-            self.wlan_enable(true),
-            self.bluetooth_enable(bluetooth),
-            self.wwan_enable(true),
-            uwb.is_none_or(|on| self.uwb_enable(on)),
-            self.usb_always_on_disable(),
-            self.fn_ctrl_swap(false),
-            self.sticky_fn(false),
-            self.charge_primary_first(true),
-            resume || self.volume(3),
+            self.wlan_enable(options.wlan),
+            self.bluetooth_enable(bluetooth && options.bluetooth),
+            self.wwan_enable(options.wwan),
+            !uwb || self.uwb_enable(options.uwb),
+            self.usb_always_on(options.usb_always_on),
+            self.fn_ctrl_swap(options.fn_ctrl_swap),
+            self.sticky_fn(options.sticky_fn),
+            self.charge_primary_first(options.first_battery != 0),
+            resume || self.volume(options.volume),
             self.audio_mute(false),
         ]
         .into_iter()
@@ -411,10 +419,15 @@ impl H8 {
             .modify_register(CONFIG0::SECONDARY_CHARGE_FIRST.val((!primary).into()))
     }
 
-    /// Disable USB-always-on, preserving the unrelated EC policy bits.
-    pub fn usb_always_on_disable(&self) -> bool {
-        self.channel
-            .modify_register(ALWAYS_ON_CONTROL::ENABLE::CLEAR + ALWAYS_ON_CONTROL::AC_ONLY.val(0))
+    /// USB power while off (coreboot `h8_usb_always_on_enable`): 0 never,
+    /// 1 on AC and battery, 2 on AC only; the unrelated EC policy bits keep
+    /// their value.
+    pub fn usb_always_on(&self, mode: u8) -> bool {
+        self.channel.modify_register(match mode {
+            0 => ALWAYS_ON_CONTROL::ENABLE::CLEAR + ALWAYS_ON_CONTROL::AC_ONLY::AnyPower,
+            1 => ALWAYS_ON_CONTROL::ENABLE::SET + ALWAYS_ON_CONTROL::AC_ONLY::AnyPower,
+            _ => ALWAYS_ON_CONTROL::ENABLE::SET + ALWAYS_ON_CONTROL::AC_ONLY::AcOnly,
+        })
     }
 
     /// Set the volume level (0..=14) and optional mute bit in an exact write.
