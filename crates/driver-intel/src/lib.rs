@@ -22,6 +22,14 @@ pub mod gm45;
 #[cfg(feature = "gm965")]
 pub mod gm965;
 pub mod gmch;
+#[cfg(any(
+    feature = "gm45",
+    feature = "gm965",
+    feature = "i945",
+    feature = "pineview",
+    feature = "ironlake"
+))]
+mod host_bridge;
 #[cfg(feature = "i945")]
 pub mod i945;
 #[cfg(feature = "ibexpeak")]

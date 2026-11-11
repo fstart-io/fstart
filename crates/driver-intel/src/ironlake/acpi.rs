@@ -20,17 +20,7 @@ impl AcpiDevice for IntelIronlake {
         let dmibar = config.dmibar as u32;
         let epbar = config.epbar as u32;
         let rcba = config.rcba as u32;
-        let ecam_base = config.ecam_base as u32;
-        let ecam_size = u32::from(config.ecam_buses) << 20;
-        // The QuickPath bus is outside the PCI0 domain.
-        let bus_max = u16::from(config.quickpath_bus()) - 1;
         let qpi_bus = u32::from(config.quickpath_bus());
-        // PCI MMIO from top of low usable DRAM to the I/O APIC.
-        let tolud = self
-            .dram_ready
-            .then(|| self.read_memory_map().ok())
-            .flatten()
-            .map_or(0x8000_0000, |map| map.tolud);
         let mut pci0: Vec<u8> = acpi_dsl! {
             Name("_HID", EisaId("PNP0A08"));
             Name("_CID", EisaId("PNP0A03"));
@@ -70,7 +60,6 @@ impl AcpiDevice for IntelIronlake {
                 Name("_HID", EisaId("PNP0C02"));
                 Name("_UID", 1u32);
                 Name("_CRS", ResourceTemplate {
-                    Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                     Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
                     Memory32Fixed(ReadWrite, #{dword mchbar}, 0x8000u32);
                     Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
@@ -80,34 +69,11 @@ impl AcpiDevice for IntelIronlake {
                     Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
                 });
             }
-            // hostbridge.asl MCRS, with the PCI window fixed up at build time.
-            Name("MCRS", ResourceTemplate {
-                WordBusNumber(0x0000u16, #{word bus_max});
-                DWordIO(0x0000u32, 0x0CF7u32);
-                IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-                DWordIO(0x0D00u32, 0xFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000C3FFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000C4000u32, 0x000C7FFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000C8000u32, 0x000CBFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000CC000u32, 0x000CFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000D0000u32, 0x000D3FFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000D4000u32, 0x000D7FFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000D8000u32, 0x000DBFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000DC000u32, 0x000DFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000E0000u32, 0x000E3FFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000E4000u32, 0x000E7FFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000E8000u32, 0x000EBFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000EC000u32, 0x000EFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0x000F0000u32, 0x000FFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, #{dword tolud}, 0xFEBFFFFFu32);
-                DWordMemory(Cacheable, ReadWrite, 0xFED40000u32, 0xFED44FFFu32);
-            });
-            Method("_CRS", 0, Serialized) {
-                Return(MCRS);
-            }
         }
         .into();
+        // PCI MMIO from TOLUD to the I/O APIC; the QuickPath bus is outside
+        // the PCI0 domain.
+        pci0.extend(crate::host_bridge::crs(self));
         let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
         pci0.extend(crate::igd::gfx0_acpi_node_with::<Self>(
             gttmmio,
@@ -115,6 +81,9 @@ impl AcpiDevice for IntelIronlake {
         ));
         let mut aml = fstart_acpi::aml_linker::scope_vec("\\_SB_", &{
             let mut sb = fstart_acpi::aml_linker::device_vec("PCI0", &pci0).expect("PCI0 emission");
+            // The ECAM window, QuickPath bus included, is the host bridge's
+            // own: a motherboard resource next to PCI0, outside its `_CRS`.
+            sb.extend(self.host_bridge().ecam_reservation());
             // uncore.asl: the QuickPath bus with the SAD's PAM registers.
             let uncore: Vec<u8> = acpi_dsl! {
                 Device("UNCR") {
@@ -199,7 +168,7 @@ mod tests {
     use crate::IntelNorthbridgeDriver;
 
     #[test]
-    fn pdrc_reserves_the_configured_ecam_including_quickpath() {
+    fn the_ecam_reservation_includes_quickpath_and_is_outside_pci0() {
         for buses in [64, 128, 256] {
             let config = alloc::boxed::Box::leak(alloc::boxed::Box::new(IntelIronlakeConfig {
                 ecam_buses: buses,
@@ -207,16 +176,16 @@ mod tests {
             }));
             let driver = IntelIronlake::new_from_config(config).unwrap();
             let aml = driver.dsdt_aml(config);
-            let pdrc = aml.windows(4).position(|name| name == b"PDRC").unwrap();
-            let mcrs = aml.windows(4).position(|name| name == b"MCRS").unwrap();
+            let position = |name: &[u8; 4]| aml.windows(4).position(|n| n == name).unwrap();
+            // \_SB_.PERC follows the PCI0 device and precedes the uncore.
+            let (gfx0, perc, uncore) = (position(b"GFX0"), position(b"PERC"), position(b"UNCR"));
+            assert!(gfx0 < perc && perc < uncore);
             let mut resource = alloc::vec![0x86, 9, 0, 1]; // Memory32Fixed, ReadWrite
             resource.extend_from_slice(&(config.ecam_base as u32).to_le_bytes());
             resource.extend_from_slice(&(u32::from(config.ecam_buses) << 20).to_le_bytes());
-            assert!(
-                aml[pdrc..mcrs]
-                    .windows(resource.len())
-                    .any(|w| w == resource)
-            );
+            let holds = |aml: &[u8]| aml.windows(resource.len()).any(|w| w == resource);
+            assert!(holds(&aml[perc..uncore]));
+            assert!(!holds(&aml[..perc]));
         }
     }
 

@@ -32,9 +32,7 @@ use fstart_core::services::memory_detect::{
 };
 use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
+use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -471,7 +469,8 @@ pub struct IntelI945 {
     detected_size: u64,
     boot_path: crate::BootPath,
     /// PCI mmio32 window derived from the e820 map after memory detection.
-    mmio32_window: Option<(u64, u64)>,
+    /// Where PCI MMIO starts below 4 GiB, once memory is detected.
+    low_dram_end: Option<u64>,
     /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
     display: super::igd::IgdDisplay,
     /// Slot inventory recorded by DRAM init for SMBIOS.
@@ -1350,7 +1349,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
             .with_panel(config.igd.panel.is_some()),
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
-            mmio32_window: None,
+            low_dram_end: None,
             display: super::igd::IgdDisplay::new(),
             memory_info: None,
         })
@@ -1424,39 +1423,21 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
     }
 
     fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {
-        self.mmio32_window = default_mmio32_window_from_e820(e820, self.config.ecam_base);
+        self.low_dram_end = crate::host_bridge::low_dram_end(e820);
     }
 }
 
-fn default_mmio32_window_from_e820(
-    state: &fstart_core::services::memory_detect::E820State,
-    limit: u64,
-) -> Option<(u64, u64)> {
-    if state.count() == 0 {
-        return None;
-    }
-
-    let mut low_ram_top = 0x0010_0000u64;
-    let mut reserved_after_ram_top = 0u64;
-    for entry in state.entries() {
-        let end = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
-        if entry.kind == E820Kind::Ram as u32 && entry.addr < 0x1_0000_0000 {
-            low_ram_top = low_ram_top.max(end);
+impl IntelI945 {
+    /// What the host bridge sends to PCI: from the top of low DRAM to the
+    /// I/O APIC.
+    fn host_bridge(&self) -> crate::host_bridge::HostBridge {
+        let ecam = self.config.ecam_base;
+        crate::host_bridge::HostBridge {
+            ecam: (ecam, ecam + (u64::from(self.config.ecam_buses) << 20)),
+            low_dram_end: self.low_dram_end,
+            above_4g: None,
         }
     }
-    for entry in state.entries() {
-        let end = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
-        if entry.kind != E820Kind::Ram as u32
-            && entry.addr >= low_ram_top
-            && entry.addr < 0x1_0000_0000
-        {
-            reserved_after_ram_top = reserved_after_ram_top.max(end);
-        }
-    }
-
-    let base = (reserved_after_ram_top.max(low_ram_top) + 0x000f_ffff) & !0x000f_ffff;
-    let limit = limit.min(0x1_0000_0000);
-    (base < limit).then_some((base, limit - base))
 }
 
 impl PciRootProvider for IntelI945 {
@@ -1468,32 +1449,11 @@ impl PciRootProvider for IntelI945 {
             bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
         }
     }
-
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        let (mmio32_base, mmio32_size) = self.mmio32_window.unwrap_or((0xC000_0000, 0));
-
-        if mmio32_size != 0 {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base: mmio32_base,
-                    size: mmio32_size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                // Below 0x1000 is legacy ISA and chipset I/O (PIC, PIT, KBC).
-                base: 0x1000,
-                size: 0xf000,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-
-        Ok(windows)
+        self.host_bridge().windows()
+    }
+    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        self.host_bridge().reserved()
     }
 }
 
@@ -1617,16 +1577,6 @@ mod acpi_impl {
             let mchbar = config.mchbar as u32;
             let dmibar = config.dmibar as u32;
             let epbar = config.epbar as u32;
-            let ecam_base = config.ecam_base as u32;
-            let ecam_size =
-                (u64::from(config.ecam_buses) * 1024 * 1024).min(u64::from(u32::MAX)) as u32;
-            // Use the same detected lower bound as the BAR allocator. A 2 GiB
-            // floor hides firmware-assigned BARs on machines with less RAM.
-            let pci_mmio_base = self
-                .mmio32_window
-                .map_or(0x8000_0000, |(base, _)| base as u32);
-            let pci_bus_end = u16::from(self.root_info().bus_end);
-            let pci_mmio_limit = 0xfebf_ffffu32;
             let rcba = config.rcba as u32;
 
             let mut aml: Vec<u8> = acpi_dsl! {
@@ -1691,19 +1641,6 @@ mod acpi_impl {
                         }
                     }
 
-                    Name("MCRS", ResourceTemplate {
-                        WordBusNumber(0x0000u16, #{word pci_bus_end});
-                        DWordIO(0x0000u32, 0x0CF7u32);
-                        IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-                        DWordIO(0x0D00u32, 0xFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
-                        DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
-                        Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
-                    });
-                    Method("_CRS", 0, Serialized) {
-                        Return(MCRS);
-                    }
                     Method("_OSC", 4, NotSerialized) {
                         Return(Arg3);
                     }
@@ -1716,15 +1653,19 @@ mod acpi_impl {
                             Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
                             Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
                             Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                         });
                     }
                 }
-            }.into();
+            }
+            .into();
 
             // PEGP and the IGD (coreboot `i945.asl`: `peg.asl`, `gfx.asl`
             // and, with an LVDS panel, the `igd.asl` backlight methods).
-            let mut pci0 = crate::gmch::acpi::peg_node();
+            // The ECAM window is the host bridge's own: a motherboard resource
+            // next to PCI0, outside its `_CRS`.
+            aml.extend(self.host_bridge().ecam_reservation());
+            let mut pci0 = crate::host_bridge::crs(self);
+            pci0.extend(crate::gmch::acpi::peg_node());
             pci0.extend(gfx_aml(config.igd.panel.is_some()));
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec(const { pci_root::<Self>() }.as_str(), &pci0)

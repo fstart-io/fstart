@@ -20,8 +20,7 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, E820State, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind, ecam,
-    pci_type0_config,
+    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, ecam, pci_type0_config,
 };
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
@@ -33,12 +32,8 @@ pub const DEFAULT_EPBAR: u64 = 0xfed1_9000;
 pub const DEFAULT_ECAM_BASE: u64 = 0xe000_0000;
 /// The QuickPath uncore sits on the topmost bus PCIEXBAR decodes.
 pub const DEFAULT_ECAM_BUSES: u16 = 256;
-const PCI_PIO_BASE: u64 = 0x1000;
-const PCI_PIO_SIZE: u64 = 0xf000;
 /// QuickPath non-core: bit 0 disables multicore, bit 1 quadcore, bit 8 HT.
 const DESIRED_CORES: u16 = 0x80;
-/// coreboot `DOMAIN_RESOURCE_32BIT_LIMIT`.
-const MMIO32_LIMIT: u64 = 0xfec0_0000;
 
 register_bitfields![u32,
     /// DEVEN.
@@ -216,7 +211,8 @@ pub struct IntelIronlake {
     options: crate::igd::options::Options,
     dram_ready: bool,
     boot_path: crate::BootPath,
-    mmio32_window: Option<(u64, u64)>,
+    /// Where PCI MMIO starts below 4 GiB (TOLUD), once memory is detected.
+    low_dram_end: Option<u64>,
     igd_bars: Option<crate::igd::IgdBars>,
     display: crate::igd::IgdDisplay,
 }
@@ -437,7 +433,7 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
             options: config.options(),
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
-            mmio32_window: None,
+            low_dram_end: None,
             igd_bars: None,
             display: crate::igd::IgdDisplay::new(),
         })
@@ -546,16 +542,8 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     }
 
     fn memory_detected(&mut self, state: &fstart_core::services::memory_detect::E820State) {
-        let Ok(map) = self.read_memory_map() else {
-            self.mmio32_window = None;
-            return;
-        };
         let _ = state;
-        // PCI MMIO from TOLUD to the I/O APIC, around the fixed ECAM window
-        // (coreboot `DOMAIN_RESOURCE_32BIT_LIMIT`).
-        let base = u64::from(map.tolud);
-        let limit = self.config.ecam_base.min(MMIO32_LIMIT);
-        self.mmio32_window = (base < limit).then_some((base, limit - base));
+        self.low_dram_end = self.read_memory_map().ok().map(|map| u64::from(map.tolud));
     }
 }
 
@@ -667,6 +655,19 @@ impl MemoryDetector for IntelIronlake {
     }
 }
 
+impl IntelIronlake {
+    /// What the host bridge sends to PCI: from TOLUD to the I/O APIC. ECAM
+    /// covers the QuickPath bus too.
+    fn host_bridge(&self) -> crate::host_bridge::HostBridge {
+        let ecam = self.config.ecam_base;
+        crate::host_bridge::HostBridge {
+            ecam: (ecam, ecam + (u64::from(self.config.ecam_buses) << 20)),
+            low_dram_end: self.low_dram_end,
+            above_4g: None,
+        }
+    }
+}
+
 impl PciRootProvider for IntelIronlake {
     fn root_info(&self) -> PciRootInfo {
         PciRootInfo {
@@ -678,26 +679,10 @@ impl PciRootProvider for IntelIronlake {
         }
     }
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        if let Some((base, size)) = self.mmio32_window {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base,
-                    size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-        Ok(windows)
+        self.host_bridge().windows()
+    }
+    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        self.host_bridge().reserved()
     }
 }
 

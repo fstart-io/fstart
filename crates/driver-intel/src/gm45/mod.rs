@@ -17,9 +17,7 @@ use fstart_core::services::memory_detect::{
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
+use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -31,8 +29,6 @@ const DEVEN_HOST: u32 = 1;
 const DEVEN_PEG: u32 = 1 << 1;
 const DEVEN_IGD: u32 = 1 << 3;
 const DEVEN_IGD_SECONDARY: u32 = 1 << 4;
-const PCI_PIO_BASE: u64 = 0x1000;
-const PCI_PIO_SIZE: u64 = 0xf000;
 
 pci_type0_config! {
     /// GM45 host bridge register layout (PCI 00:00.0).
@@ -173,7 +169,8 @@ pub struct IntelGm45 {
     /// The user options over the board config.
     options: crate::igd::options::Options,
     graphics: Gm45GraphicsPolicy,
-    mmio32_window: Option<(u64, u64)>,
+    /// Where PCI MMIO starts below 4 GiB, once memory is detected.
+    low_dram_end: Option<u64>,
     bootstrap_windows: Option<[(u32, u32); 2]>,
     dram_ready: bool,
     boot_path: crate::BootPath,
@@ -436,7 +433,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
                 32,
             ),
             graphics: config.graphics,
-            mmio32_window: None,
+            low_dram_end: None,
             bootstrap_windows: None,
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
@@ -564,31 +561,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         Ok(())
     }
     fn memory_detected(&mut self, state: &fstart_core::services::memory_detect::E820State) {
-        if state.count() == 0 {
-            self.mmio32_window = None;
-            return;
-        }
-        let low_ram_top = state
-            .entries()
-            .iter()
-            .filter(|e| e.kind == E820Kind::Ram as u32 && e.addr < 0x1_0000_0000)
-            .map(|e| e.addr.saturating_add(e.size).min(0x1_0000_0000))
-            .max()
-            .unwrap_or(0x10_0000);
-        // The E820 reserved interval above RAM includes stolen graphics and
-        // TSEG; PCI BARs must start after those reservations, not after RAM.
-        let reserved_top = state
-            .entries()
-            .iter()
-            .filter(|e| {
-                e.kind != E820Kind::Ram as u32 && e.addr >= low_ram_top && e.addr < 0x1_0000_0000
-            })
-            .map(|e| e.addr.saturating_add(e.size).min(0x1_0000_0000))
-            .max()
-            .unwrap_or(low_ram_top);
-        let base = (reserved_top.max(low_ram_top).saturating_add(0xfffff)) & !0xfffff;
-        let limit = self.config.ecam_base.min(0x1_0000_0000);
-        self.mmio32_window = (base < limit).then_some((base, limit.saturating_sub(base)));
+        self.low_dram_end = crate::host_bridge::low_dram_end(state);
     }
 }
 
@@ -750,6 +723,37 @@ impl MemoryDetector for IntelGm45 {
     }
 }
 
+/// CPUID physical address width; 36 bits (Penryn) on hosts.
+fn phys_address_bits() -> u32 {
+    #[cfg(target_os = "none")]
+    {
+        let (max, _, _, _) = fstart_arch::x86::cpuid(0x8000_0000);
+        if max >= 0x8000_0008 {
+            return fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff;
+        }
+    }
+    36
+}
+
+impl IntelGm45 {
+    /// What the host bridge sends to PCI: below 4 GiB from the top of low
+    /// DRAM to the I/O APIC, above it from TOUUD to the CPU's physical
+    /// address limit (coreboot A4GB/A4GS).
+    fn host_bridge(&self) -> crate::host_bridge::HostBridge {
+        let ecam = self.config.ecam_base;
+        let touud = self
+            .dram_ready
+            .then(|| self.memory_map().ok())
+            .flatten()
+            .map_or(1 << 32, |(_, _, touud)| touud);
+        crate::host_bridge::HostBridge {
+            ecam: (ecam, ecam + (u64::from(self.config.ecam_buses) << 20)),
+            low_dram_end: self.low_dram_end,
+            above_4g: Some((touud.max(1 << 32), 1 << phys_address_bits())),
+        }
+    }
+}
+
 impl PciRootProvider for IntelGm45 {
     fn root_info(&self) -> PciRootInfo {
         PciRootInfo {
@@ -760,26 +764,10 @@ impl PciRootProvider for IntelGm45 {
         }
     }
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        if let Some((base, size)) = self.mmio32_window {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base,
-                    size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-        Ok(windows)
+        self.host_bridge().windows()
+    }
+    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        self.host_bridge().reserved()
     }
 }
 
@@ -824,18 +812,6 @@ mod acpi_impl {
             let dmibar = config.dmibar;
             let epbar = config.epbar;
             let rcba = config.rcba;
-            let ecam_base = config.ecam_base;
-            let ecam_size = u64::from(config.ecam_buses) << 20;
-            let bus_max = config.ecam_buses - 1;
-            // PCI MMIO runs from TOLUD to the I/O APIC; above 4 GiB from
-            // TOUUD to the CPU's physical address limit (coreboot A4GB/A4GS).
-            let (tolud, touud) = self
-                .dram_ready
-                .then(|| self.memory_map().ok())
-                .flatten()
-                .map_or((0x8000_0000, 1 << 32), |(_, tolud, touud)| (tolud, touud));
-            let high_base = touud.max(1 << 32);
-            let high_limit = (1u64 << phys_address_bits()) - 1;
             let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
             let mut aml: Vec<u8> = acpi_dsl! {
                 Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
@@ -853,25 +829,10 @@ mod acpi_impl {
                             Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
                             Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
                             Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                             Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
                             Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                             Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
                         });
-                    }
-                    Name("MCRS", ResourceTemplate {
-                        WordBusNumber(0x0000u16, #{word bus_max});
-                        DWordIO(0x0000u32, 0x0CF7u32);
-                        IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-                        DWordIO(0x0D00u32, 0xFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, #{dword tolud}, 0xFEBFFFFFu32);
-                        QWordMemory(Cacheable, ReadWrite, #{qword high_base}, #{qword high_limit});
-                        DWordMemory(Cacheable, ReadWrite, 0xFED40000u32, 0xFED44FFFu32);
-                    });
-                    Method("_CRS", 0, Serialized) {
-                        Return(MCRS);
                     }
                     Method("_OSC", 4, NotSerialized) {
                         If (Arg0 == ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")) {
@@ -885,12 +846,14 @@ mod acpi_impl {
                 }
             }
             .into();
+            // The ECAM window is the host bridge's own: a motherboard resource
+            // next to PCI0, outside its `_CRS`.
+            aml.extend(self.host_bridge().ecam_reservation());
+            let mut pci0 = crate::host_bridge::crs(self);
+            pci0.extend(crate::igd::gfx0_acpi_node::<Self>(gttmmio));
             aml.extend(
-                fstart_acpi::aml_linker::scope_vec(
-                    const { pci_root::<Self>() }.as_str(),
-                    &crate::igd::gfx0_acpi_node::<Self>(gttmmio),
-                )
-                .expect("GM45 GFX0 emission failed"),
+                fstart_acpi::aml_linker::scope_vec(const { pci_root::<Self>() }.as_str(), &pci0)
+                    .expect("GM45 PCI0 scope emission failed"),
             );
             // Root PPKG is consumed by the ThinkPad thermal zones. Keep the
             // CPU devices in the same root scope as the other Core 2 boards.
@@ -956,18 +919,6 @@ mod acpi_impl {
             let width = (phys_address_bits() - 1) as u8;
             alloc::vec![mcfg_bytes, dmar(width, &units)]
         }
-    }
-
-    /// CPUID physical address width; 36 bits (Penryn) on hosts.
-    fn phys_address_bits() -> u32 {
-        #[cfg(target_os = "none")]
-        {
-            let (max, _, _, _) = fstart_arch::x86::cpuid(0x8000_0000);
-            if max >= 0x8000_0008 {
-                return fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff;
-            }
-        }
-        36
     }
 }
 

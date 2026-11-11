@@ -28,9 +28,7 @@ use fstart_core::services::memory_detect::{
 use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
+use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
@@ -473,10 +471,6 @@ impl Default for Gm965IgdConfig {
     }
 }
 
-const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
-const PCI_PIO_BASE: u64 = 0x1000;
-const PCI_PIO_SIZE: u64 = 0xf000;
-
 const IGD_GTTMMADR_SIZE: u32 = 1024 * 1024;
 /// Crestline fixes the page-table half of GTTMMADR at 512 KiB; unlike GM45,
 /// GM965 has no configurable GGMS stolen-memory field.
@@ -537,7 +531,8 @@ pub struct IntelGm965 {
     boot_path: crate::BootPath,
     s3_enabled: bool,
     /// PCI mmio32 window derived from the e820 map after memory detection.
-    mmio32_window: Option<(u64, u64)>,
+    /// Where PCI MMIO starts below 4 GiB, once memory is detected.
+    low_dram_end: Option<u64>,
     /// Framebuffer programmed by the shared GMA layer, if the board asked for it.
     display: super::igd::IgdDisplay,
     /// IGD windows as PCI enumeration assigned them; read in the mainstage.
@@ -1355,7 +1350,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             s3_enabled: false,
-            mmio32_window: None,
+            low_dram_end: None,
             display: super::igd::IgdDisplay::new(),
             igd_bars: None,
             memory_info: None,
@@ -1495,39 +1490,21 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     }
 
     fn memory_detected(&mut self, e820: &fstart_core::services::memory_detect::E820State) {
-        self.mmio32_window = default_mmio32_window_from_e820(e820, self.config.ecam_base);
+        self.low_dram_end = crate::host_bridge::low_dram_end(e820);
     }
 }
 
-fn default_mmio32_window_from_e820(
-    state: &fstart_core::services::memory_detect::E820State,
-    limit: u64,
-) -> Option<(u64, u64)> {
-    if state.count() == 0 {
-        return None;
-    }
-
-    let mut low_ram_top = 0x0010_0000u64;
-    let mut reserved_after_ram_top = 0u64;
-    for entry in state.entries() {
-        let end = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
-        if entry.kind == E820Kind::Ram as u32 && entry.addr < 0x1_0000_0000 {
-            low_ram_top = low_ram_top.max(end);
+impl IntelGm965 {
+    /// What the host bridge sends to PCI: from the top of low DRAM to the
+    /// I/O APIC.
+    fn host_bridge(&self) -> crate::host_bridge::HostBridge {
+        let ecam = self.config.ecam_base;
+        crate::host_bridge::HostBridge {
+            ecam: (ecam, ecam + (u64::from(self.config.ecam_buses) << 20)),
+            low_dram_end: self.low_dram_end,
+            above_4g: None,
         }
     }
-    for entry in state.entries() {
-        let end = entry.addr.saturating_add(entry.size).min(0x1_0000_0000);
-        if entry.kind != E820Kind::Ram as u32
-            && entry.addr >= low_ram_top
-            && entry.addr < 0x1_0000_0000
-        {
-            reserved_after_ram_top = reserved_after_ram_top.max(end);
-        }
-    }
-
-    let base = (reserved_after_ram_top.max(low_ram_top) + 0x000f_ffff) & !0x000f_ffff;
-    let limit = limit.min(0x1_0000_0000);
-    (base < limit).then_some((base, limit - base))
 }
 
 impl PciRootProvider for IntelGm965 {
@@ -1539,32 +1516,11 @@ impl PciRootProvider for IntelGm965 {
             bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
         }
     }
-
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        let (mmio32_base, mmio32_size) =
-            self.mmio32_window.unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));
-
-        if mmio32_size != 0 {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base: mmio32_base,
-                    size: mmio32_size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-
-        Ok(windows)
+        self.host_bridge().windows()
+    }
+    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        self.host_bridge().reserved()
     }
 }
 
@@ -1801,21 +1757,6 @@ mod acpi_impl {
             let mchbar = config.mchbar;
             let dmibar = config.dmibar;
             let epbar = config.epbar;
-            let ecam_base = config.ecam_base;
-            let ecam_size = u64::from(config.ecam_buses) * 1024 * 1024;
-            // Keep the root window's lower bound identical to the BAR allocator,
-            // including machines with less than 2 GiB of DRAM.
-            let pci_mmio_base = self
-                .mmio32_window
-                .map_or(0x8000_0000, |(base, _)| base as u32);
-            let pci_bus_end = u16::from(self.root_info().bus_end);
-            // Match coreboot GM45/GM965 hostbridge.asl: the PCI MMIO
-            // producer window runs from TOLUD through 0xfebf_ffff.  ECAM,
-            // MCHBAR/DMIBAR/EPBAR/RCBA, HPET, and TPM are also described as
-            // motherboard resources so Linux will not allocate over them; the
-            // device BARs the firmware allocator placed below 0xfec0_0000
-            // need a host bridge window that covers them.
-            let pci_mmio_limit = 0xfebf_ffffu32;
             // The GTTMMADR window PCI enumeration assigned; zero while the
             // IGD is absent or the mainstage has not resolved it.
             let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
@@ -1892,19 +1833,6 @@ mod acpi_impl {
                         }
                     }
 
-                    Name("MCRS", ResourceTemplate {
-                        WordBusNumber(0x0000u16, #{word pci_bus_end});
-                        DWordIO(0x0000u32, 0x0CF7u32);
-                        IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-                        DWordIO(0x0D00u32, 0xFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
-                        DWordMemory(Cacheable, ReadWrite, 0x000C0000u32, 0x000FFFFFu32);
-                        DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
-                        Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
-                    });
-                    Method("_CRS", 0, Serialized) {
-                        Return(MCRS);
-                    }
                     Method("_OSC", 4, NotSerialized) {
                         Return(Arg3);
                     }
@@ -1917,7 +1845,6 @@ mod acpi_impl {
                             Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
                             Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
                             Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
-                            Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
                             Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
                             Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
                             Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
@@ -1934,14 +1861,23 @@ mod acpi_impl {
                         ));
                     }
                 }
-            }.into();
+            }
+            .into();
 
+            // The ECAM window is the host bridge's own: a motherboard resource
+            // next to PCI0, outside its `_CRS`.
+            aml.extend(self.host_bridge().ecam_reservation());
+            // The host bridge's windows (coreboot GM45/GM965 hostbridge.asl):
+            // what the allocator placed BARs in. MCHBAR/DMIBAR/EPBAR/RCBA,
+            // HPET and the TPM are motherboard resources in PDRC.
+            let mut pci0 = crate::host_bridge::crs(self);
+            pci0.extend(crate::igd::gfx0_acpi_node::<Self>(gttmmio));
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec(
                     const { crate::namespace::pci_root::<Self>() }.as_str(),
-                    &crate::igd::gfx0_acpi_node::<Self>(gttmmio),
+                    &pci0,
                 )
-                .expect("GM965 GFX0 emission failed"),
+                .expect("GM965 PCI0 scope emission failed"),
             );
 
             aml.extend_from_slice(&acpi_dsl! {
