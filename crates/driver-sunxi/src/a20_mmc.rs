@@ -29,15 +29,14 @@ use fstart_arch::udelay;
 // ---------------------------------------------------------------------------
 
 /// A20 MMC controllers supported by this initial boot closure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A20MmcController {
     /// SD/MMC controller zero.
     Mmc0,
 }
 
 /// Board-owned MMC policy. Fixed A20 addresses are not configuration.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct A20MmcConfig {
     pub controller: A20MmcController,
 }

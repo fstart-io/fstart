@@ -30,7 +30,6 @@
 
 use fstart_core::BusAddress;
 use fstart_core::services::device::{BusDevice, DeviceError};
-use serde::{Deserialize, Serialize};
 
 use crate::{IoResource, IrqResource, LogicalDevice};
 use core::marker::PhantomData;
@@ -203,38 +202,28 @@ pub trait SuperIoChip: Send + Sync + 'static {
 /// Board authors enable individual functions by setting the matching
 /// field to `Some(...)`. The base port (e.g., `0x2e`) comes from the
 /// device's `bus: Lpc(0x2e)` attachment, not from this config.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
 pub struct SuperIoConfig {
     /// Primary UART (COM1).
-    #[serde(default)]
     pub com1: Option<ComPortConfig>,
     /// Secondary UART (COM2).
-    #[serde(default)]
     pub com2: Option<ComPortConfig>,
     /// PS/2 keyboard controller.
-    #[serde(default)]
     pub keyboard: Option<KbcConfig>,
     /// PS/2 mouse.
-    #[serde(default)]
     pub mouse: Option<MouseConfig>,
     /// Embedded / environment controller.
-    #[serde(default)]
     pub env_controller: Option<EcConfig>,
     /// Parallel port.
-    #[serde(default)]
     pub parallel: Option<ParallelConfig>,
     /// Consumer IR receiver.
-    #[serde(default)]
     pub cir: Option<CirConfig>,
     /// General-purpose I/O.
-    #[serde(default)]
     pub gpio: Option<GpioConfig>,
     /// ACPI namespace name for the SuperIO container device (e.g., "SIO0").
     ///
     /// When set, ACPI generation emits child device nodes for each
     /// enabled LDN (COM1, KBC, mouse, etc.) with standard PNP HIDs.
-    #[serde(default)]
     pub acpi_name: Option<heapless::String<8>>,
     /// Which COM port to use as the firmware console.
     ///
@@ -244,30 +233,22 @@ pub struct SuperIoConfig {
     /// (baud divisor, 8N1, FIFO enable) during `init()` and provides
     /// `write_byte`/`read_byte` via port I/O at the COM port's
     /// configured `io_base`.
-    #[serde(default)]
     pub console_port: Option<heapless::String<8>>,
 }
 
 /// 16550-compatible UART settings exposed by the SuperIO.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct ComPortConfig {
     /// I/O base port (e.g., `0x3F8`).
     pub io_base: u16,
     /// IRQ number.
     pub irq: u8,
     /// Desired baud rate (default 115200).
-    #[serde(default = "default_baud")]
     pub baud_rate: u32,
 }
 
-fn default_baud() -> u32 {
-    115200
-}
-
 /// PS/2 keyboard controller settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct KbcConfig {
     /// Primary I/O base (typically `0x60`).
     pub io_base: u16,
@@ -278,16 +259,14 @@ pub struct KbcConfig {
 }
 
 /// PS/2 mouse settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct MouseConfig {
     /// IRQ number (typically 12).
     pub irq: u8,
 }
 
 /// Embedded controller / environment controller settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct EcConfig {
     /// Primary EC I/O base.
     pub io_base: u16,
@@ -296,8 +275,7 @@ pub struct EcConfig {
 }
 
 /// Parallel port settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct ParallelConfig {
     /// I/O base port (typically `0x378`).
     pub io_base: u16,
@@ -306,8 +284,7 @@ pub struct ParallelConfig {
 }
 
 /// Consumer IR receiver settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct CirConfig {
     /// I/O base port.
     pub io_base: u16,
@@ -316,8 +293,7 @@ pub struct CirConfig {
 }
 
 /// GPIO block settings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct GpioConfig {
     /// Base I/O port for the GPIO registers.
     pub io_base: u16,

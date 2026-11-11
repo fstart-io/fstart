@@ -5,15 +5,13 @@ use fstart_driver_sunxi::a20_ccu::{A20CcuConfig, A20Uart};
 use fstart_driver_sunxi::a20_dramc::A20DramcConfig;
 use fstart_driver_sunxi::a20_mmc::{A20MmcConfig, A20MmcController};
 use fstart_driver_sunxi::a20_spi::{A20_SPI_DEFAULT_FREQ, A20_SPI_DEFAULT_SIZE, A20SpiConfig};
-use serde::Serialize;
 
 /// A20 physical DRAM window. The controller detects the actual populated size.
 pub const A20_DRAM_BASE: u64 = 0x4000_0000;
 pub const A20_DRAM_END: u64 = 0x8000_0000;
 
 /// Closed, board-owned A20 policy consumed by the handwritten flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct A20Config {
     pub ccu: A20CcuConfig,
     pub dram: A20DramcConfig,

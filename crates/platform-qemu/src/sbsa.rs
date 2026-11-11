@@ -1,7 +1,6 @@
 //! Handwritten QEMU SBSA-ref flow.
 
 use crate::virt::QemuPciRootConfig;
-use serde::Serialize;
 
 pub const QEMU_SBSA_FLASH_BASE: u64 = 0x1000_0000;
 pub const QEMU_SBSA_FLASH_SIZE: u64 = 0x1000_0000;
@@ -13,8 +12,7 @@ pub const QEMU_SBSA_UART_BASE: u64 = 0x6000_0000;
 const QEMU_SBSA_FFS_OFFSET: u64 = 0x10_0000;
 
 /// Closed SBSA-ref facts consumed by the fixed flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct QemuSbsaConfig {
     pub ram_base: u64,
     pub ram_size: u64,

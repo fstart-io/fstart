@@ -605,7 +605,7 @@ fn repeat_byte(b: u8) -> u32 {
 /// The H3 and H5 share the same DesignWare IP but differ in PHY
 /// configuration, MBUS priorities, ZQ calibration, bit delays, and
 /// several timing/control register values.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SunxiDramcVariant {
     /// Allwinner H3/H2+ (sun8i).
     #[default]
@@ -642,8 +642,7 @@ pub enum SunxiDramcVariant {
 ///     variant:    H5,
 /// ))
 /// ```
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct H3DramcConfig {
     pub clock: u32,
     pub zq: u32,

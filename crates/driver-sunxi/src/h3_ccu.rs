@@ -110,8 +110,7 @@ const UART0_TX_FUNC: u8 = 2;
 const UART0_RX_FUNC: u8 = 2;
 
 /// Typed configuration for the H3/H2+ CCU driver.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct H3CcuConfig {
     pub uart_index: u8,
 }

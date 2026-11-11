@@ -16,6 +16,5 @@ fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 fstart-log = { workspace = true }
 fstart-core = { workspace = true }
 heapless = { workspace = true }
-serde = { workspace = true }
 ufmt = { workspace = true }
 tock-registers = { workspace = true }

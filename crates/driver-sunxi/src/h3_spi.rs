@@ -32,8 +32,7 @@ use crate::spi_nor::{
 
 /// H3 SPI0 NOR flash policy. Fixed controller/CCU/PIO addresses are not
 /// configuration.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct H3SpiConfig {
     /// Desired SPI bus clock in Hz. The achieved frequency is at or below
     /// this; above 25 MHz the NOR layer switches to Fast Read.

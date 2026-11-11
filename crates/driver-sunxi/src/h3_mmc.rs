@@ -31,15 +31,14 @@ pub const H3_MMC0_BASE: u64 = 0x01c0_f000;
 // ---------------------------------------------------------------------------
 
 /// H3 MMC controllers supported by this initial boot closure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum H3MmcController {
     /// SD/MMC controller zero.
     Mmc0,
 }
 
 /// Board-owned MMC policy. Fixed A20 addresses are not configuration.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct H3MmcConfig {
     pub controller: H3MmcController,
 }

@@ -114,8 +114,6 @@ pub use fstart_smm as smm;
 pub use stage::{QemuQ35Mainstage, run_q35};
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use serde::Serialize;
-
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const QEMU_Q35_PLATFORM_NODE: &str = "q35";
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -150,8 +148,7 @@ pub const QEMU_Q35_UART_BAUD_RATE: u32 = 115_200;
 
 /// Closed QEMU q35 platform facts consumed by the handwritten QEMU flow.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct QemuQ35Config {
     pub fw_cfg: fw_cfg::QemuFwCfgConfig,
     pub hostbridge: q35::Q35HostBridgeConfig,

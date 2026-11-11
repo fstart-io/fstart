@@ -11,7 +11,6 @@ use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-use serde::{Deserialize, Serialize};
 
 const FW_CFG_SIGNATURE: u16 = 0x0000;
 const FW_CFG_ID: u16 = 0x0001;
@@ -86,8 +85,7 @@ pub trait FwCfgTransport: Copy {
 }
 
 /// q35's legacy port-I/O fw_cfg window.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct QemuFwCfgIoConfig {
     pub ctl_port: u16,
     pub data_port: u16,
@@ -127,8 +125,7 @@ impl FwCfgTransport for QemuFwCfgIoConfig {
 }
 
 /// QEMU virt's MMIO fw_cfg window.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct QemuFwCfgMmioConfig {
     pub base: u64,
 }

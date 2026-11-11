@@ -1,7 +1,6 @@
 //! Initial-image location metadata. This is bounded transport, never key or
 //! signature policy. Only uncompressed initial images may contain a patch site.
 
-use serde::{Deserialize, Serialize};
 use zerocopy::byteorder::{LE, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -36,8 +35,7 @@ const _: () = {
 
 /// Media-relative values carried through a protected predecessor handoff.
 /// Expected keys/family/minimum version deliberately cannot be transported here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaLocator {
     pub image_offset: u64,
     pub image_size: u64,

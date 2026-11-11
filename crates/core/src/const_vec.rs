@@ -1,6 +1,3 @@
-use serde::ser::{SerializeSeq, SerializeStruct};
-use serde::{Serialize, Serializer};
-
 /// Const-buildable fixed-capacity vector for POD firmware config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConstVec<T, const N: usize> {
@@ -68,29 +65,37 @@ impl<T: Default, const N: usize> Default for ConstVec<T, N> {
     }
 }
 
-impl<T: Serialize, const N: usize> Serialize for ConstVec<T, N> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("ConstVec", 2)?;
-        state.serialize_field("items", &Items(&self.items))?;
-        state.serialize_field("len", &self.len)?;
-        state.end()
-    }
-}
+/// For the host's build plan, which carries board descriptions as JSON.
+#[cfg(feature = "host")]
+mod host {
+    use super::ConstVec;
+    use serde::ser::{SerializeSeq, SerializeStruct};
+    use serde::{Serialize, Serializer};
 
-struct Items<'a, T, const N: usize>(&'a [T; N]);
-
-impl<T: Serialize, const N: usize> Serialize for Items<'_, T, N> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(N))?;
-        for item in self.0 {
-            seq.serialize_element(item)?;
+    impl<T: Serialize, const N: usize> Serialize for ConstVec<T, N> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut state = serializer.serialize_struct("ConstVec", 2)?;
+            state.serialize_field("items", &Items(&self.items))?;
+            state.serialize_field("len", &self.len)?;
+            state.end()
         }
-        seq.end()
+    }
+
+    struct Items<'a, T, const N: usize>(&'a [T; N]);
+
+    impl<T: Serialize, const N: usize> Serialize for Items<'_, T, N> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut seq = serializer.serialize_seq(Some(N))?;
+            for item in self.0 {
+                seq.serialize_element(item)?;
+            }
+            seq.end()
+        }
     }
 }

@@ -5,15 +5,13 @@ use fstart_driver_sunxi::h3_ccu::H3CcuConfig;
 use fstart_driver_sunxi::h3_dramc::H3DramcConfig;
 use fstart_driver_sunxi::h3_mmc::{H3MmcConfig, H3MmcController};
 use fstart_driver_sunxi::h3_spi::{H3_SPI_DEFAULT_FREQ, H3_SPI_DEFAULT_SIZE, H3SpiConfig};
-use serde::Serialize;
 
 /// H3 physical DRAM window. The controller detects the actual populated size.
 pub const H3_DRAM_BASE: u64 = 0x4000_0000;
 pub const H3_DRAM_END: u64 = 0x8000_0000;
 
 /// Closed, board-owned H3 policy consumed by the handwritten flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct H3Config {
     pub ccu: H3CcuConfig,
     pub dram: H3DramcConfig,
