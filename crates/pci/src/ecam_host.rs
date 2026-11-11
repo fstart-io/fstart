@@ -285,7 +285,9 @@ impl ResourcePool {
 /// Three is typical (low MMIO, high MMIO, I/O) but a few extra slots
 /// accommodate unusual platforms.
 const MAX_WINDOWS: usize = crate::MAX_PCI_ROOT_WINDOWS;
-const MAX_PCI_DEVICES: usize = 128;
+/// Functions of all the root bridges of one allocator: two SP3 sockets have
+/// about 160.
+const MAX_PCI_DEVICES: usize = 256;
 
 /// One root bridge: its buses in the ECAM and its allocation pools.
 #[derive(Clone, Copy)]
@@ -1841,6 +1843,58 @@ mod tests {
             let endpoint = PciAddress::new(0, endpoint, 0, 0);
             let bar = u64::from(pci.read32(endpoint, PCI_BAR0) & !0xf);
             assert!(window.contains(&bar), "{endpoint:?}: {bar:#x}");
+        }
+    }
+
+    /// Two SP3 sockets: eight root bridges with 160 functions between them.
+    #[test]
+    fn eight_roots_hold_the_functions_of_two_sockets() {
+        const ROOTS: u8 = 8;
+        const FUNCTIONS: u8 = 20;
+        // One bus of test RAM per root, 0x20 buses apart; every BAR sizes as
+        // 16 bytes of 32-bit memory.
+        let mut ecam = vec![0u32; (usize::from(ROOTS - 1) * 0x20 + 1) << 18];
+        let base = ecam.as_mut_ptr() as usize;
+        let config = |bus: u8, device: u8, offset: usize| {
+            (usize::from(bus) << 18) + (usize::from(device) << 13) + offset / 4
+        };
+        for root in 0..ROOTS {
+            let bus = root * 0x20;
+            (0..32).for_each(|device| ecam[config(bus, device, 0)] = u32::MAX);
+            for device in 0..FUNCTIONS {
+                ecam[config(bus, device, 0)] = 0x1234_1022;
+                ecam[config(bus, device, 8)] = 0x0200 << 16;
+            }
+        }
+        let roots: Vec<Domain> = (0..ROOTS)
+            .map(|root| {
+                let info = PciRootInfo {
+                    segment: 0,
+                    ecam_base: base as u64,
+                    bus_start: root * 0x20,
+                    bus_end: root * 0x20 + 0x1f,
+                };
+                Domain(info, 0x8000_0000 + u64::from(root) * 0x1000_0000)
+            })
+            .collect();
+        let mut pci = PciEcam::from_providers(&roots).unwrap();
+
+        pci.enumerate_and_allocate().unwrap();
+
+        assert_eq!(
+            pci.device_count(),
+            usize::from(ROOTS) * usize::from(FUNCTIONS)
+        );
+        for root in 0..ROOTS {
+            let window = 0x8000_0000 + u64::from(root) * 0x1000_0000;
+            for device in [0, FUNCTIONS - 1] {
+                let function = PciAddress::new(0, root * 0x20, device, 0);
+                let bar = u64::from(pci.read32(function, PCI_BAR0) & !0xf);
+                assert!(
+                    (window..window + 0x1000_0000).contains(&bar),
+                    "{function:?}: {bar:#x}"
+                );
+            }
         }
     }
 

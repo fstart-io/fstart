@@ -88,9 +88,9 @@ fn span_window(span: Span) -> MemoryWindow {
 }
 
 /// Hand the e820, RSDP and console to the build's payload launcher.
-pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550) -> ! {
-    // The allocators' assignments are in the hardware now.
-    drop(roots);
+pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
+    // The allocator's assignments are in the hardware now.
+    drop(pci);
     fstart_log::info!("sp3: handing off to the payload");
     fstart_log::flush();
     let mut description =
