@@ -1506,7 +1506,6 @@ dependencies = [
  "fstart-log",
  "heapless 0.8.0",
  "pci_types",
- "serde",
  "tock-registers",
  "ufmt",
 ]

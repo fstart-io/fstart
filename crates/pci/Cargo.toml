@@ -12,4 +12,3 @@ ufmt = { workspace = true }
 tock-registers = { workspace = true }
 heapless = { workspace = true }
 pci_types = { workspace = true }
-serde = { workspace = true }

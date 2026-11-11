@@ -32,40 +32,10 @@ use crate::{
     PCI_PREF_MEMORY_BASE, PCI_PRIMARY_BUS, PCI_VENDOR_ID, PCI_VENDOR_INVALID, PciAddress,
     PciWindow, PciWindowKind,
 };
-use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
 // Config
 // -----------------------------------------------------------------------
-
-/// Typed configuration for the PCI ECAM host bridge.
-///
-/// All addresses come from the board metadata and describe the fixed platform
-/// windows that QEMU / the SoC provides for PCI.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PciEcamConfig {
-    /// ECAM base address (memory-mapped PCI config space).
-    pub ecam_base: u64,
-    /// Size of the ECAM region in bytes (256 MB for 256 buses).
-    pub ecam_size: u64,
-    /// 32-bit MMIO window base for BAR allocation.
-    pub mmio32_base: u64,
-    /// 32-bit MMIO window size.
-    pub mmio32_size: u64,
-    /// 64-bit MMIO window base for BAR allocation.
-    pub mmio64_base: u64,
-    /// 64-bit MMIO window size.
-    pub mmio64_size: u64,
-    /// PCI I/O port window base (MMIO-mapped on ARM).
-    pub pio_base: u64,
-    /// PCI I/O port window size.
-    pub pio_size: u64,
-    /// First bus number in this segment.
-    pub bus_start: u8,
-    /// Last bus number in this segment.
-    pub bus_end: u8,
-}
 
 // -----------------------------------------------------------------------
 // Internal types
@@ -217,6 +187,7 @@ impl ResourcePool {
         }
     }
 
+    #[cfg(test)]
     fn new(base: u64, size: u64) -> Result<Self, PciEcamError> {
         let mut pool = Self {
             ranges: [EMPTY_RESOURCE_RANGE; MAX_RESOURCE_RANGES],
@@ -342,6 +313,7 @@ impl Root {
     }
 
     /// Rebuild the external `windows` array from the current resource pools.
+    #[cfg(test)]
     fn rebuild_windows(&mut self) {
         let pools = [
             (&self.mmio32, PciWindowKind::Mmio, false),
@@ -384,14 +356,10 @@ unsafe impl Send for PciEcam {}
 unsafe impl Sync for PciEcam {}
 
 impl PciEcam {
-    // -- Window management (public for composition by platform drivers) --
-
-    /// Replace the resource pools and rebuild the external window list.
-    ///
-    /// Platform host-bridge drivers (e.g., Q35) use this to set MMIO/IO
-    /// windows computed at runtime from hardware state (TOLUD, e820).
-    /// Must be called **before** `init()`, on a single root bridge.
-    pub fn configure_windows(
+    /// Replace the resource pools of the single root: how the tests size
+    /// their windows.
+    #[cfg(test)]
+    pub(crate) fn configure_windows(
         &mut self,
         mmio32_base: u64,
         mmio32_size: u64,
@@ -1360,76 +1328,6 @@ impl PciEcam {
             devices: HVec::new(),
             fixed_bars: PciFixedBars::new(),
         }
-    }
-
-    /// Construct an ECAM root bridge from a temporary config.
-    ///
-    /// `PciEcam` copies only scalar window values into runtime pools and does
-    /// not retain a reference to the config, so composed host bridges can build
-    /// this from hardware-derived local values without cloning a board config.
-    pub fn from_config(config: &PciEcamConfig) -> Result<Self, PciEcamError> {
-        if config.bus_end < config.bus_start {
-            return Err(PciEcamError::ConfigError);
-        }
-
-        // Build the window list from the config.  Only add windows that
-        // have a non-zero size (the platform may omit some).
-        let dummy = PciWindow {
-            kind: PciWindowKind::Mmio,
-            base: 0,
-            size: 0,
-            prefetchable: false,
-        };
-        let mut windows = [dummy; MAX_WINDOWS];
-        let mut wc = 0;
-
-        let (mmio32_base, mmio32_size) = (config.mmio32_base, config.mmio32_size);
-
-        if mmio32_size > 0 {
-            windows[wc] = PciWindow {
-                kind: PciWindowKind::Mmio,
-                base: mmio32_base,
-                size: mmio32_size,
-                prefetchable: false,
-            };
-            wc += 1;
-        }
-        if config.mmio64_size > 0 {
-            windows[wc] = PciWindow {
-                kind: PciWindowKind::Mmio,
-                base: config.mmio64_base,
-                size: config.mmio64_size,
-                // The high MMIO window is typically used for prefetchable
-                // 64-bit BARs (framebuffers, NVMe, etc.).  Mark it
-                // prefetchable so ACPI _CRS descriptors are correct.
-                prefetchable: true,
-            };
-            wc += 1;
-        }
-        if config.pio_size > 0 {
-            windows[wc] = PciWindow {
-                kind: PciWindowKind::Io,
-                base: config.pio_base,
-                size: config.pio_size,
-                prefetchable: false,
-            };
-            wc += 1;
-        }
-
-        let root = Root {
-            segment: 0,
-            ecam_base: config.ecam_base as usize,
-            ecam_size: config.ecam_size as usize,
-            bus_start: config.bus_start,
-            bus_end: config.bus_end,
-            mmio32: ResourcePool::new(mmio32_base, mmio32_size)?,
-            mmio64: ResourcePool::new(config.mmio64_base, config.mmio64_size)?,
-            io_pool: ResourcePool::new(config.pio_base, config.pio_size)?,
-            windows,
-            window_count: wc,
-            next_bus: u16::from(config.bus_start) + 1,
-        };
-        Ok(Self::new(HVec::from_iter([root])))
     }
 }
 

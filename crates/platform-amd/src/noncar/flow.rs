@@ -559,7 +559,7 @@ fn enumerate<S: Soc>(
         .iter()
         .map(|die| {
             let reserved = silicon.reserved_mmio[usize::from(die.index())];
-            pci::Root::new(&map::root_complex(die)?, ecam_region, reserved)
+            pci::root(&map::root_complex(die)?, ecam_region, reserved)
         })
         .collect();
     let Some(roots) = roots else {

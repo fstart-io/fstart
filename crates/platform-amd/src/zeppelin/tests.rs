@@ -10,7 +10,11 @@ use super::{
 };
 use crate::{
     acpi::{self, BoardAcpi, DieAcpi, Inputs},
-    noncar::{acpi::HostBridge, layout::Region, pci::Root},
+    noncar::{
+        acpi::HostBridge,
+        layout::Region,
+        pci::{Root, root},
+    },
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 use fstart_driver_amd::cpu::{Package, Revision};
@@ -253,7 +257,7 @@ fn mj11_ec1_pci_root() {
     let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();
     let ecam = Region::new(0xf000_0000, 128 << 20);
     let reserved = Region::new(state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
-    let root = Root::new(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
+    let root = root(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
     assert_eq!(root.buses(), 0..=127);
     assert!(root.io().eq(core::iter::once(0x1000..=0xffff)));
     assert_eq!(
@@ -365,7 +369,7 @@ fn sp4_pci_roots_and_host_bridges() {
         .map(|die| {
             let pool = state.nonpci[usize::from(die.index())];
             let reserved = Region::new(pool.into(), NONPCI_MMIO_SIZE.into());
-            Root::new(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
+            root(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
         })
         .collect();
     let mut pci = PciEcam::from_providers(&roots).unwrap();

@@ -16,8 +16,8 @@ pub mod window;
 pub use config::*;
 pub use ecam::EcamDevice;
 pub use ecam_host::{
-    MAX_PCI_FIXED_BARS, MAX_PCI_ROOTS, PciEcam, PciEcamConfig, PciEcamError, PciFixedBar,
-    PciFixedBarType, PciFixedBars,
+    MAX_PCI_FIXED_BARS, MAX_PCI_ROOTS, PciEcam, PciEcamError, PciFixedBar, PciFixedBarType,
+    PciFixedBars,
 };
 pub use overlay::{PciType0Config, PciType1Config};
 pub use pci_types::{ConfigRegionAccess, HeaderType, PciAddress, PciHeader, capability};
@@ -56,4 +56,73 @@ pub trait PciRootProvider: Send + Sync {
 
     /// Compute the windows currently available for PCI resource allocation.
     fn resource_windows(&self) -> Result<PciRootWindows, PciRootError>;
+}
+
+/// A PCI root bridge: its identity and the windows its allocator may use.
+///
+/// This is the one description of a root bridge. A chipset or SoC builds it
+/// from what decides its windows (TOLUD and the memory map, a device tree,
+/// the Data Fabric's routes); the allocator ([`PciEcam::from_provider`]),
+/// the ACPI host bridge and the payload read it.
+#[derive(Debug, Clone)]
+pub struct PciRoot {
+    pub info: PciRootInfo,
+    pub windows: PciRootWindows,
+}
+
+impl PciRoot {
+    /// The root `info` with the non-empty `windows`.
+    pub fn new(
+        info: PciRootInfo,
+        windows: impl IntoIterator<Item = PciWindow>,
+    ) -> Result<Self, PciRootError> {
+        if info.bus_end < info.bus_start {
+            return Err(PciRootError::InvalidConfig);
+        }
+        let mut kept = PciRootWindows::new();
+        for window in windows.into_iter().filter(|window| window.size != 0) {
+            kept.push(window)
+                .map_err(|_| PciRootError::TooManyWindows)?;
+        }
+        Ok(Self {
+            info,
+            windows: kept,
+        })
+    }
+
+    /// The buses the root bridge owns.
+    pub fn buses(&self) -> core::ops::RangeInclusive<u8> {
+        self.info.bus_start..=self.info.bus_end
+    }
+
+    /// The I/O windows as port ranges.
+    pub fn io(&self) -> impl Iterator<Item = core::ops::RangeInclusive<u16>> + '_ {
+        self.ranges(PciWindowKind::Io)
+            .map(|range| *range.start() as u16..=*range.end() as u16)
+    }
+
+    /// The MMIO windows as address ranges.
+    pub fn mmio(&self) -> impl Iterator<Item = core::ops::RangeInclusive<u64>> + '_ {
+        self.ranges(PciWindowKind::Mmio)
+    }
+
+    fn ranges(
+        &self,
+        kind: PciWindowKind,
+    ) -> impl Iterator<Item = core::ops::RangeInclusive<u64>> + '_ {
+        self.windows
+            .iter()
+            .filter(move |window| window.kind == kind)
+            .map(|window| window.base..=window.end() - 1)
+    }
+}
+
+impl PciRootProvider for PciRoot {
+    fn root_info(&self) -> PciRootInfo {
+        self.info
+    }
+
+    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
+        Ok(self.windows.clone())
+    }
 }
