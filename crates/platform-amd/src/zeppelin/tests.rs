@@ -33,7 +33,7 @@ use fstart_driver_amd::{
         zeppelin::{Die, NONPCI_MMIO_SIZE},
     },
 };
-use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam};
+use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam, PciWindowKind};
 use std::vec::Vec;
 
 const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -259,16 +259,31 @@ fn mj11_ec1_pci_root() {
     let reserved = Region::new(state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
     let root = root(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
     assert_eq!(root.buses(), 0..=127);
-    assert!(root.io().eq(core::iter::once(0x1000..=0xffff)));
+    // What the DF routes to the die, without the ECAM window.
+    assert!(root.io().eq(core::iter::once(0..=0xffff)));
     assert_eq!(
         root.mmio().collect::<Vec<_>>(),
         [
-            0xf800_0000..=0xfe3f_ffff,
+            0xf800_0000..=0xfebf_ffff,
             0x8000_0000..=0xefff_ffff,
-            // What the DF routes above 4 GiB: from 1 TiB up.
-            0x100_0000_0000..=0xffff_ffff_ffff
+            // Above 4 GiB: from 1 TiB to the fabric's reserved top 12 GiB.
+            0x100_0000_0000..=0xfffc_ffff_ffff
         ]
     );
+    // What the firmware keeps of it: the legacy I/O and the non-PCI pool.
+    assert_eq!(
+        root.reserved()
+            .iter()
+            .map(|part| (part.kind, part.base, part.size))
+            .collect::<Vec<_>>(),
+        [
+            (PciWindowKind::Io, 0, 0x1000),
+            (PciWindowKind::Mmio, 0xfe40_0000, 0x80_0000),
+        ]
+    );
+    // The allocator has the rest: no BAR in the pool.
+    let pci = PciEcam::new([&root]).unwrap();
+    assert_eq!(pci.roots().len(), 1);
 }
 
 const DIE1: &[Descriptor] = &[pcie(0, 7, 1, 1), pcie(16, 31, 3, 1)];
@@ -421,9 +436,11 @@ fn sp4_pci_roots_and_host_bridges() {
         address_spaces(&aml[..pci1]),
         [
             (2, 0, 0x3f),
-            (1, 0x1000, 0x7fff),
+            // The I/O the DF routes to die 0, around the configuration ports.
+            (1, 0, 0xcf7),
+            (1, 0xd00, 0x7fff),
             vga,
-            (0, 0xe800_0000, 0xef7f_ffff),
+            (0, 0xe800_0000, 0xefff_ffff),
             (0, 0xf800_0000, 0xfebf_ffff),
         ]
     );
@@ -432,7 +449,27 @@ fn sp4_pci_roots_and_host_bridges() {
         [
             (2, 0x40, 0x7f),
             (1, 0x8000, 0xffff),
-            (0, 0xe000_0000, 0xe77f_ffff)
+            (0, 0xe000_0000, 0xe7ff_ffff)
         ]
     );
+    // Each die's non-PCI pool is in its window and a motherboard resource
+    // of its root bridge, in pieces around the IOAPIC (the model has no
+    // IOMMU): before it, its page, after it.
+    for (die, scope) in [&aml[..pci1], &aml[pci1..]].into_iter().enumerate() {
+        let (pool, ioapic) = (state.nonpci[die], state.ioapics[die]);
+        let sysr = scope.windows(4).position(|name| name == b"SYSR").unwrap();
+        for (base, size) in [
+            (pool, ioapic - pool),
+            (ioapic, 0x1000),
+            (ioapic + 0x1000, pool + NONPCI_MMIO_SIZE - ioapic - 0x1000),
+        ] {
+            let mut fixed = std::vec![0x86, 9, 0, 1]; // Memory32Fixed, ReadWrite
+            fixed.extend_from_slice(&base.to_le_bytes());
+            fixed.extend_from_slice(&size.to_le_bytes());
+            assert!(
+                scope[sysr..].windows(fixed.len()).any(|w| w == fixed),
+                "{base:#x} {size:#x}"
+            );
+        }
+    }
 }

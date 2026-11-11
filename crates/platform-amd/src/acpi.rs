@@ -536,6 +536,7 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
         acpi_dsl! { Name("_PXM", #{byte uid}); }.emit(&mut body)?;
     }
     body.extend(fstart_acpi::pci_root::crs(die.root, index == 0));
+    body.extend(firmware_memory(die)?);
     body.extend(ioapic_acpi::nbio_default_aml()?);
     let routes = inputs.soc.bridge_routes;
     body.extend(root_prt(
@@ -551,6 +552,55 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
         body.extend(lpc_bridge(&inputs.board.lpc_aml)?);
     }
     Ok(device_vec(&format!("PCI{index}"), &body)?)
+}
+
+/// `Device(SYSR)`: the memory the firmware keeps within the root bridge's
+/// windows (the NBIO's non-PCI pool) as motherboard resources. `_CRS` of
+/// the bridge offers the windows whole; this keeps the OS from giving the
+/// firmware's part to a PCI device. Nothing if it keeps no memory.
+///
+/// The pool is listed in pieces, split where the NBIO IOAPIC and the IOMMU
+/// sit: their drivers own those registers through the MADT and the IVRS,
+/// and an OS that finds part of a range taken reserves none of it.
+fn firmware_memory(die: &DieAcpi) -> Result<Vec<u8>, Error> {
+    use fstart_acpi::Aml;
+    use fstart_acpi::aml::{EISAName, Memory32Fixed, Name, Path, ResourceTemplate};
+    let ioapic = (u64::from(die.ioapic_base), 0x1000);
+    let iommu = die.iommu.map(|iommu| (iommu.base, iommu::MMIO_SIZE));
+    let mut resources = Vec::new();
+    for part in die.root.reserved() {
+        if part.kind != fstart_pci::PciWindowKind::Mmio {
+            continue;
+        }
+        // The ends of the pieces: the part's own, and those of the devices
+        // in it.
+        let mut ends: Vec<u64> = [Some(ioapic), iommu]
+            .into_iter()
+            .flatten()
+            .flat_map(|(base, size)| [base, base + size])
+            .filter(|end| (part.base + 1..part.end()).contains(end))
+            .chain([part.end()])
+            .collect();
+        ends.sort_unstable();
+        let mut base = part.base;
+        for end in ends {
+            let narrow = |value| u32::try_from(value).map_err(|_| AmlError::InvalidOperand);
+            Memory32Fixed::new(true, narrow(base)?, narrow(end - base)?)
+                .to_aml_bytes(&mut resources);
+            base = end;
+        }
+    }
+    if resources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut body = Vec::new();
+    Name::new(Path::new("_HID"), &EISAName::new("PNP0C02")).to_aml_bytes(&mut body);
+    Name::new(
+        Path::new("_CRS"),
+        &ResourceTemplate::new(vec![&fstart_acpi::RawAml(&resources)]),
+    )
+    .to_aml_bytes(&mut body);
+    Ok(device_vec("SYSR", &body)?)
 }
 
 /// The root bus `_PRT`. On die 0 the IOMMU (device 0) and the FCH SMBus/LPC
