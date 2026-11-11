@@ -3,12 +3,12 @@
 use core::fmt;
 
 use heapless::String as HString;
-use serde::{Deserialize, Serialize};
 
 use crate::const_vec::ConstVec;
 
 /// Complete memory map for a board.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize))]
 pub struct MemoryMap {
     /// Named memory regions (ROM, RAM only — not per-device MMIO)
     pub regions: heapless::Vec<MemoryRegion, 16>,
@@ -17,7 +17,7 @@ pub struct MemoryMap {
     /// Descriptor-based systems can split SPI flash into descriptor, GbE, ME,
     /// BIOS, and other regions. Host-side image assembly can describe and
     /// optionally populate non-firmware regions.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub flash_layout: Option<FlashLayout>,
     /// Cache-as-RAM (CAR) region for pre-DRAM x86 stages.
     ///
@@ -34,7 +34,7 @@ pub struct MemoryMap {
     ///
     /// `None` for boards that don't need CAR (ARM / RISC-V, where
     /// DRAM is live at reset; QEMU virt; etc.).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub car: Option<CarConfig>,
 }
 
@@ -194,8 +194,9 @@ impl fmt::Display for MemoryMapError {
 /// storage before the DRAM controller is programmed. The firmware's
 /// bootblock enters this mode via MTRR programming + a CPU-specific
 /// which  is detected at runtime using cpuid
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct CarConfig {
     /// Base physical address of the CAR region.
     ///
@@ -210,8 +211,9 @@ pub struct CarConfig {
 }
 
 /// A single memory region.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct MemoryRegion {
     /// Region name (e.g., "rom", "ram", "mmio")
     pub name: HString<32>,
@@ -226,7 +228,8 @@ pub struct MemoryRegion {
 /// Type of memory region.
 ///
 /// Device MMIO ranges do not belong here — keep them in typed driver/platform config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum RegionKind {
     /// Read-only memory (flash, ROM)
     Rom,
@@ -237,7 +240,8 @@ pub enum RegionKind {
 }
 
 /// Physical flash layout for platforms with non-BIOS firmware regions.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "host", derive(serde::Serialize))]
 pub enum FlashLayout {
     /// Intel Firmware Descriptor controlled SPI flash.
     IntelIfd(IntelIfdFlashLayout),
@@ -259,8 +263,9 @@ impl FlashLayout {
 }
 
 /// Contiguous x86 flash mapped immediately below the 4-GiB boundary.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct X86LegacyFlashLayout {
     /// Total flash size in bytes.
     pub size: u32,
@@ -281,7 +286,8 @@ impl X86LegacyFlashLayout {
 }
 
 /// Intel Firmware Descriptor flash layout.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "host", derive(serde::Serialize))]
 pub struct IntelIfdFlashLayout {
     /// Regions described by the descriptor.
     pub regions: ConstVec<IntelIfdRegionConfig, 8>,
@@ -419,8 +425,9 @@ impl IntelIfdFlashLayout {
 }
 
 /// One Intel IFD flash region declared in board metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct IntelIfdRegionConfig {
     /// Descriptor region kind.
     pub kind: IntelIfdRegion,
@@ -431,7 +438,8 @@ pub struct IntelIfdRegionConfig {
 }
 
 /// Intel IFD region identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum IntelIfdRegion {
     /// Flash descriptor.
     Descriptor,

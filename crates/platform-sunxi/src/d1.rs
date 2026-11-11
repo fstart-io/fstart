@@ -10,15 +10,13 @@ use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_driver_sunxi::d1_ccu::D1CcuConfig;
 use fstart_driver_sunxi::d1_dramc::D1DramcConfig;
 use fstart_driver_sunxi::d1_mmc::{D1MmcConfig, D1MmcController};
-use serde::Serialize;
 
 /// D1 physical DRAM window.
 pub const D1_DRAM_BASE: u64 = 0x4000_0000;
 pub const D1_DRAM_END: u64 = 0x8000_0000;
 
 /// Closed, board-owned D1 policy consumed by the handwritten flow.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct D1Config {
     pub ccu: D1CcuConfig,
     pub dram: D1DramcConfig,

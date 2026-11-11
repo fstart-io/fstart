@@ -9,19 +9,20 @@
 //! driver's own `Config` struct, not here.
 
 use heapless::String as HString;
-use serde::{Deserialize, Serialize};
 
 /// Top-level ACPI configuration, from the board metadata `acpi` field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct AcpiConfig {
     /// Platform ACPI selector/parameters.
     pub platform: AcpiPlatform,
     /// Print ACPICA/acpixtract-compatible hex dumps of generated tables.
-    #[serde(default = "default_print_hex")]
+    #[cfg_attr(feature = "host", serde(default = "default_print_hex"))]
     pub print_hex: bool,
 }
 
+#[cfg(feature = "host")]
 fn default_print_hex() -> bool {
     true
 }
@@ -31,7 +32,8 @@ fn default_print_hex() -> bool {
 /// ARM carries platform-level table parameters. x86 carries only a
 /// selector; its interrupt-controller, timer, and power-management facts are
 /// provided by the chipset/platform driver.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum AcpiPlatform {
     /// ARM platform -- GICv3, generic timers, HW-reduced ACPI with PSCI.
     ///
@@ -50,8 +52,9 @@ pub enum AcpiPlatform {
 ///
 /// Describes the GICv3 interrupt controller, ARM generic timer, and
 /// optional SBSA watchdog for MADT, GTDT, and FADT generation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct ArmPlatformAcpi {
     /// Number of CPUs.
     pub num_cpus: u32,
@@ -65,30 +68,31 @@ pub struct ArmPlatformAcpi {
     /// per CPU for GICv3). Set explicitly when the hardware maps a
     /// larger region than strictly needed (e.g., QEMU SBSA-ref maps
     /// 64 MiB regardless of CPU count).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub gic_redist_length: Option<u32>,
     /// GIC Interrupt Translation Service (ITS) base address.
     ///
     /// Required for MSI/MSI-X support with PCIe devices on GICv3.
     /// If `None`, no GIC ITS subtable is added to the MADT.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub gic_its_base: Option<u64>,
     /// Timer GSIVs: (secure_el1, nonsecure_el1, virtual, nonsecure_el2).
     pub timer_gsivs: (u32, u32, u32, u32),
     /// SBSA Generic Watchdog (optional).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub watchdog: Option<AcpiWatchdog>,
     /// IORT (IO Remapping Table) configuration.
     ///
     /// Required when PCIe devices use MSI/MSI-X through the GIC ITS.
     /// Maps PCI Request IDs to GIC ITS device IDs.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub iort: Option<AcpiIort>,
 }
 
 /// SBSA Generic Watchdog parameters for GTDT.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct AcpiWatchdog {
     /// Refresh frame base address.
     pub refresh_base: u64,
@@ -102,28 +106,31 @@ pub struct AcpiWatchdog {
 ///
 /// Describes the mapping between PCI Request IDs and GIC ITS device IDs.
 /// Without IORT, PCIe MSI/MSI-X cannot be routed through the GIC ITS.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct AcpiIort {
     /// GIC ITS identifiers (must match MADT GIC ITS entries).
     ///
     /// Typically `[0]` for a single-ITS system.
     pub its_ids: heapless::Vec<u32, 8>,
     /// PCI segment number (usually 0).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub pci_segment: u32,
     /// Memory address size limit in bits (e.g., 48 for 256 TiB).
-    #[serde(default = "default_memory_address_limit")]
+    #[cfg_attr(feature = "host", serde(default = "default_memory_address_limit"))]
     pub memory_address_limit: u8,
     /// Number of PCI Request IDs to map (e.g., 0x10000 for full 16-bit range).
-    #[serde(default = "default_id_count")]
+    #[cfg_attr(feature = "host", serde(default = "default_id_count"))]
     pub id_count: u32,
 }
 
+#[cfg(feature = "host")]
 fn default_memory_address_limit() -> u8 {
     48
 }
 
+#[cfg(feature = "host")]
 fn default_id_count() -> u32 {
     0x10000
 }
@@ -137,7 +144,7 @@ fn default_id_count() -> u32 {
 /// These entries produce DSDT device nodes and optional standalone
 /// tables.  Each variant carries the minimum hardware parameters
 /// needed for ACPI table generation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum AcpiExtraDevice {
     /// Generic MMIO device with a single MMIO region and interrupt.
     Generic(AcpiGenericDevice),
@@ -153,7 +160,7 @@ pub enum AcpiExtraDevice {
 ///
 /// Follows coreboot's resource model: each device can have multiple
 /// MMIO regions and/or Port I/O ranges, each described separately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpiResource {
     /// Memory-mapped I/O region.
     ///
@@ -179,8 +186,7 @@ pub enum AcpiResource {
 /// Electrical attributes of an ACPI extended interrupt resource.
 ///
 /// The default preserves the generic device's level-high, exclusive IRQ.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiInterruptFlags {
     pub edge_triggered: bool,
     pub active_low: bool,
@@ -188,8 +194,7 @@ pub struct AcpiInterruptFlags {
 }
 
 /// A generic device for ACPI — multiple MMIO/PIO regions + optional interrupt.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct AcpiGenericDevice {
     /// ACPI namespace name (e.g., "DEV0").
     pub name: HString<8>,
@@ -198,16 +203,13 @@ pub struct AcpiGenericDevice {
     /// Hardware resources (MMIO regions, Port I/O ranges).
     pub resources: heapless::Vec<AcpiResource, 8>,
     /// Interrupt GSIV (optional).
-    #[serde(default)]
     pub gsiv: Option<u32>,
     /// Electrical attributes of `gsiv`; ignored when no IRQ is present.
-    #[serde(default)]
     pub interrupt_flags: AcpiInterruptFlags,
 }
 
 /// AHCI SATA controller for ACPI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct AcpiAhciDevice {
     /// ACPI namespace name (e.g., "AHC0").
     pub name: HString<8>,
@@ -220,8 +222,7 @@ pub struct AcpiAhciDevice {
 }
 
 /// xHCI USB controller for ACPI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct AcpiXhciDevice {
     /// ACPI namespace name (e.g., "USB0").
     pub name: HString<8>,
@@ -234,8 +235,7 @@ pub struct AcpiXhciDevice {
 }
 
 /// PCIe Root Complex for ACPI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct AcpiPcieRootDevice {
     /// ACPI namespace name (e.g., "PCI0").
     pub name: HString<8>,
@@ -246,20 +246,13 @@ pub struct AcpiPcieRootDevice {
     /// 64-bit MMIO window (start, end inclusive).
     pub mmio64: (u64, u64),
     /// PIO window base address.
-    #[serde(default)]
     pub pio_base: Option<u64>,
     /// Bus number range (start, end).
-    #[serde(default = "default_bus_range")]
     pub bus_range: (u8, u8),
     /// PCIe interrupt GSIVs (INTA..INTD).
     pub irqs: [u32; 4],
     /// PCI segment group number.
-    #[serde(default)]
     pub segment: u16,
-}
-
-fn default_bus_range() -> (u8, u8) {
-    (0, 0xFF)
 }
 
 // ---------------------------------------------------------------------------
@@ -267,8 +260,7 @@ fn default_bus_range() -> (u8, u8) {
 // ---------------------------------------------------------------------------
 
 /// SMI command values for ACPI mode switching.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct AcpiSmiConfig {
     /// SMI command port, normally APM_CNT 0xb2 on PC chipsets.
     pub smi_cmd: u32,

@@ -15,6 +15,5 @@ embedded-hal = { workspace = true }
 fstart-arch = { workspace = true, features = ["armv7"] }
 fstart-core = { workspace = true }
 fstart-log = { workspace = true }
-serde = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }

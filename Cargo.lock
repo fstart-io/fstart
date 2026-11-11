@@ -1333,7 +1333,6 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-log",
- "serde",
  "tock-registers",
  "ufmt",
 ]
@@ -1347,7 +1346,6 @@ dependencies = [
  "fstart-core",
  "fstart-log",
  "heapless 0.8.0",
- "serde",
  "tock-registers",
  "ufmt",
 ]
@@ -1366,7 +1364,6 @@ name = "fstart-driver-uart"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
- "serde",
  "tock-registers",
 ]
 
@@ -1610,7 +1607,6 @@ dependencies = [
  "fstart-stage",
  "fstart-tcg",
  "heapless 0.8.0",
- "serde",
  "serde_json",
  "ufmt",
  "zerocopy",
@@ -1672,7 +1668,6 @@ dependencies = [
  "fstart-log",
  "fstart-payload",
  "fstart-stage",
- "serde",
  "serde_json",
  "ufmt",
 ]

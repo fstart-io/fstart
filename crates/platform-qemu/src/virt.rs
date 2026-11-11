@@ -5,12 +5,10 @@ use fstart_core::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 use fstart_pci::{
     PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
 };
-use serde::Serialize;
 
 pub const QEMU_RISCV64_ECAM_BASE: u64 = 0x3000_0000;
 /// Generic ECAM host description used by QEMU's architecture machines.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct QemuPciRootConfig {
     pub ecam_base: u64,
     pub bus_end: u8,

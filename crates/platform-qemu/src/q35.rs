@@ -6,7 +6,6 @@ use fstart_pci::{
     PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PciAddress,
     PciEcam, PciRoot, PciRootInfo, PciWindow, PciWindowKind,
 };
-use serde::{Deserialize, Serialize};
 
 const MMIO32_LIMIT: u64 = 0xFE00_0000;
 const PAM0: u16 = 0x90;
@@ -22,8 +21,7 @@ const ICH9_PMBASE_REG: u8 = 0x40;
 const ICH9_ACPI_CNTL: u8 = 0x44;
 pub(crate) const Q35_PMBASE: u16 = 0x0600;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct Q35HostBridgeConfig {
     pub ecam_base: u64,
     pub ecam_size: u64,

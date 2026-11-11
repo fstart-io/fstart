@@ -280,8 +280,7 @@ fn poll_reg(addr: usize, mask: u32, expected: u32) -> bool {
 /// Typed configuration for the D1/T113 DRAM controller.
 ///
 /// Parameters from U-Boot defconfig (MangoPi MQ-R / Lichee RV defaults).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct D1DramcConfig {
     /// DRAM clock frequency in MHz (e.g., 792).
     pub dram_clk: u32,

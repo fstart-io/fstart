@@ -125,7 +125,7 @@ register_bitfields! [u8,
 /// MMIO mode carries register shift and width to support both classic
 /// NS16550A (byte-stride) and DesignWare APB UARTs (4-byte stride,
 /// 32-bit width).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum AccessMode {
     /// Memory-mapped I/O with configurable register layout.
     ///
@@ -168,8 +168,7 @@ impl Default for AccessMode {
 ///
 /// The `regs` field defaults to `Mmio { base: 0, reg_shift: 0, reg_width: 0 }`
 /// for board crates that use `Default` during incremental construction.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct Ns16550Config {
     /// Register access mechanism (MMIO or PIO) with base address.
     pub regs: AccessMode,

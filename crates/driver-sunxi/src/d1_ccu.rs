@@ -44,8 +44,7 @@ const UART0_TX_FUNC: u8 = 6;
 const UART0_RX_FUNC: u8 = 6;
 
 /// Typed configuration for the D1/T113 CCU driver.
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct D1CcuConfig {
     /// UART index to configure (0-based, 0-5).
     pub uart_index: u8,

@@ -116,8 +116,7 @@ impl SuperIoChip for Pc87382Chip {
 pub type Pc87382 = SuperIo<Pc87382Chip>;
 
 /// Board-facing PC87382 config.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
 pub struct Pc87382Config(pub SuperIoConfig);
 
 impl core::ops::Deref for Pc87382Config {

@@ -2,8 +2,6 @@
 
 use core::marker::PhantomData;
 
-use serde::{Deserialize, Serialize};
-
 /// Marker for 8-bit MMIO register access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mmio8 {}
@@ -29,11 +27,9 @@ pub enum Io8 {}
 pub enum Io16 {}
 
 /// Typed memory-mapped I/O address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MmioAddr<T> {
     raw: u64,
-    #[serde(skip)]
     _kind: PhantomData<T>,
 }
 
@@ -55,11 +51,9 @@ impl<T> MmioAddr<T> {
 }
 
 /// Typed port-I/O address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoAddr<T> {
     raw: u16,
-    #[serde(skip)]
     _kind: PhantomData<T>,
 }
 
@@ -93,6 +87,5 @@ pub const fn io16(raw: u16) -> IoAddr<Io16> {
 }
 
 /// Interrupt request line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Irq(pub u8);

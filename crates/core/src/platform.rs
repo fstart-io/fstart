@@ -1,14 +1,13 @@
 //! Target platform / ISA identity.
 
-use serde::{Deserialize, Serialize};
-
 /// Target platform / ISA.
 ///
 /// This enum is the single source of truth for platform identity.
 /// Adding a new platform variant automatically produces compiler errors
 /// at every `match` site that needs updating — no stringly-typed
 /// matching required.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum Platform {
     /// RISC-V 64-bit (riscv64gc-unknown-none-elf)
     Riscv64,
@@ -81,7 +80,8 @@ impl core::fmt::Display for Platform {
 }
 
 /// QEMU machine selected by a board's host build policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum QemuMachine {
     /// SiFive FU740-compatible `sifive_u` machine, booted through `-bios`.
     SifiveU,
@@ -95,7 +95,8 @@ pub enum QemuMachine {
 }
 
 /// Kind of runtime firmware loaded before the OS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum FirmwareKind {
     /// OpenSBI or RustSBI using the fw_dynamic protocol.
     /// Entry: a0=hartid, a1=dtb, a2=&fw_dynamic_info.
