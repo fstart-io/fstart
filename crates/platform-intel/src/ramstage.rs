@@ -430,7 +430,11 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
         &mut self,
         resources: &[fstart_core::acpi::AcpiResource],
     ) -> Result<(), ServiceError> {
-        let mut pci = fstart_pci::PciEcam::from_provider(&self.northbridge)
+        // The root bridge is described once: the allocator is built from
+        // it and keeps it for PCI0's `_CRS`.
+        let root = self.northbridge.pci_root();
+        let mut pci = root
+            .and_then(|root| fstart_pci::PciEcam::new([&root]))
             .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
             .map_err(|_| ServiceError::HardwareError)?;
         let mut fixed_bars = self.southbridge.fixed_pci_bars();
@@ -656,9 +660,16 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         }
         let platform = fstart_acpi::platform::PlatformConfig::X86(x86);
         let (northbridge, southbridge) = (&self.northbridge, &self.southbridge);
+        // What the OS is told the root bridge forwards is what the allocator
+        // was given.
+        let root = self.pci.as_ref().and_then(|pci| pci.roots().first());
+        let root = root.ok_or(ServiceError::NotInitialized)?;
+        let crs = fstart_driver_intel::namespace::pci_root_crs::<Nb<B>>(root)
+            .map_err(|_| ServiceError::HardwareError)?;
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let rsdp = crate::tables::prepare_acpi(store, &platform, |dsdt, extra| {
             dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
+            dsdt.extend(crs);
             dsdt.extend(southbridge.dsdt_aml(southbridge.config(), &pci_root));
             dsdt.extend(board.dsdt_aml(&()));
             extra.extend(northbridge.extra_tables(northbridge.config()));
@@ -801,7 +812,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             Description::new(self.e820(), Range::new(firmware_base, firmware_size as u64));
         description.console = self.console;
         description.uart = self.uart;
-        description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.northbridge));
+        description.pci_root = Some(self.northbridge.pci_root_info());
         description.framebuffer = self.northbridge.framebuffer_info();
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
         #[cfg(feature = "acpi")]

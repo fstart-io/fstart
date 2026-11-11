@@ -377,7 +377,7 @@ fn sp4_pci_roots_and_host_bridges() {
             root(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
         })
         .collect();
-    let mut pci = PciEcam::from_providers(&roots).unwrap();
+    let mut pci = PciEcam::new(&roots).unwrap();
     pci.enumerate_and_allocate().unwrap();
     let read = |address, offset| pci.device(address).unwrap().read32(offset);
 

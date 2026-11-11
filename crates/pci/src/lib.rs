@@ -31,97 +31,84 @@ pub mod fstart_core {
 
 pub use fstart_core::description::PciRootInfo;
 
-/// Maximum number of allocation windows supplied by one PCI root bridge.
+/// The most windows, and the most reservations, one PCI root bridge has.
 pub const MAX_PCI_ROOT_WINDOWS: usize = 8;
 
-/// Allocation-window snapshot supplied by a PCI root provider.
-pub type PciRootWindows = heapless::Vec<PciWindow, MAX_PCI_ROOT_WINDOWS>;
+/// The windows of one PCI root bridge.
+type PciRootWindows = heapless::Vec<PciWindow, MAX_PCI_ROOT_WINDOWS>;
 
-/// Error while describing a PCI root bridge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PciRootError {
-    /// The root topology or a resource window is invalid.
-    InvalidConfig,
-    /// The provider supplied more windows than the bounded snapshot can hold.
-    TooManyWindows,
-}
-
-/// Runtime provider for PCI root identity and allocatable address windows.
+/// A PCI root bridge: its identity, the windows it forwards to PCI and the
+/// parts of them the firmware keeps for itself.
 ///
-/// Root identity is fixed, while windows may be derived after memory discovery
-/// from chipset registers, the memory map, and reserved firmware regions.
-pub trait PciRootProvider: Send + Sync {
-    /// Return fixed root-bridge identity and ECAM topology.
-    fn root_info(&self) -> PciRootInfo;
-
-    /// The windows the root bridge forwards to PCI: what the OS is told it
-    /// may use. The ECAM window is not one of them.
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError>;
-
-    /// The parts of those windows the firmware keeps for itself (legacy
-    /// I/O, fixed chipset MMIO, a non-PCI pool): the allocator stays out of
-    /// them, the root bridge still decodes them.
-    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        Ok(PciRootWindows::new())
-    }
-}
-
-/// A PCI root bridge: its identity, the windows it decodes and the parts of
-/// them the firmware keeps for itself.
-///
-/// This is the one description of a root bridge. A chipset or SoC builds it
-/// from what decides its windows (everything that is not DRAM on an Intel
-/// host bridge, a device tree, the Data Fabric's routes). ACPI reports the
-/// windows; the allocator ([`PciEcam::from_provider`]) works in them
-/// outside the reserved parts.
+/// This is the one description of a root bridge and the only way into the
+/// allocator. A chipset or SoC builds it once from what decides its windows
+/// (everything that is not DRAM on an Intel host bridge, a device tree, the
+/// Data Fabric's routes). ACPI reports the windows; the allocator
+/// ([`PciEcam::new`]) works in them outside the reserved parts.
 #[derive(Debug, Clone)]
 pub struct PciRoot {
-    pub info: PciRootInfo,
-    /// What the root bridge forwards to PCI. Never its ECAM window, which
-    /// it consumes itself.
-    pub windows: PciRootWindows,
-    /// What the allocator must leave alone within the windows.
-    pub reserved: PciRootWindows,
+    info: PciRootInfo,
+    windows: PciRootWindows,
+    reserved: PciRootWindows,
 }
 
 impl PciRoot {
-    /// The root `info` with the non-empty `windows`.
+    /// The root bridge `info` forwarding `windows` to PCI, of which the
+    /// firmware keeps `reserved` (legacy I/O, fixed chipset MMIO, a non-PCI
+    /// pool). Empty ranges are dropped.
+    ///
+    /// The ECAM window is never a window: the bridge consumes it itself.
+    /// Every reservation lies in one window; a root with more windows or
+    /// reservations than [`MAX_PCI_ROOT_WINDOWS`] is refused, not cut short.
     pub fn new(
         info: PciRootInfo,
         windows: impl IntoIterator<Item = PciWindow>,
-    ) -> Result<Self, PciRootError> {
+        reserved: impl IntoIterator<Item = PciWindow>,
+    ) -> Result<Self, PciEcamError> {
         if info.bus_end < info.bus_start {
-            return Err(PciRootError::InvalidConfig);
+            return Err(PciEcamError::ConfigError);
         }
-        let mut kept = PciRootWindows::new();
-        for window in windows.into_iter().filter(|window| window.size != 0) {
-            kept.push(window)
-                .map_err(|_| PciRootError::TooManyWindows)?;
+        let collect = |ranges: &mut dyn Iterator<Item = PciWindow>| {
+            let mut kept = PciRootWindows::new();
+            for range in ranges.filter(|range| range.size != 0) {
+                if range.base.checked_add(range.size).is_none() {
+                    return Err(PciEcamError::ConfigError);
+                }
+                kept.push(range)
+                    .map_err(|_| PciEcamError::ResourceRangeLimit)?;
+            }
+            Ok(kept)
+        };
+        let windows = collect(&mut windows.into_iter())?;
+        let reserved = collect(&mut reserved.into_iter())?;
+        let forwarded = |part: &PciWindow| {
+            windows.iter().any(|window| {
+                window.kind == part.kind && window.base <= part.base && part.end() <= window.end()
+            })
+        };
+        if !reserved.iter().all(forwarded) {
+            return Err(PciEcamError::ConfigError);
         }
         Ok(Self {
             info,
-            windows: kept,
-            reserved: PciRootWindows::new(),
+            windows,
+            reserved,
         })
     }
 
-    /// The same root with `reserved` kept out of the allocator's hands.
-    pub fn reserve(
-        mut self,
-        reserved: impl IntoIterator<Item = PciWindow>,
-    ) -> Result<Self, PciRootError> {
-        for window in reserved.into_iter().filter(|window| window.size != 0) {
-            self.reserved
-                .push(window)
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        Ok(self)
+    /// The root bridge's identity and place in the ECAM.
+    pub fn info(&self) -> PciRootInfo {
+        self.info
     }
 
-    /// The root bridge a provider describes, as data.
-    pub fn of(provider: &(impl PciRootProvider + ?Sized)) -> Result<Self, PciRootError> {
-        Self::new(provider.root_info(), provider.resource_windows()?)?
-            .reserve(provider.reserved_windows()?)
+    /// What the root bridge forwards to PCI.
+    pub fn windows(&self) -> &[PciWindow] {
+        &self.windows
+    }
+
+    /// What the allocator leaves alone within the windows.
+    pub fn reserved(&self) -> &[PciWindow] {
+        &self.reserved
     }
 
     /// The buses the root bridge owns.
@@ -148,19 +135,5 @@ impl PciRoot {
             .iter()
             .filter(move |window| window.kind == kind)
             .map(|window| window.base..=window.end() - 1)
-    }
-}
-
-impl PciRootProvider for PciRoot {
-    fn root_info(&self) -> PciRootInfo {
-        self.info
-    }
-
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        Ok(self.windows.clone())
-    }
-
-    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        Ok(self.reserved.clone())
     }
 }

@@ -4,7 +4,7 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_pci::{
     PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PciAddress,
-    PciEcam, PciRoot, PciRootInfo, PciWindow, PciWindowKind,
+    PciEcam, PciRoot, PciRootInfo, PciWindow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -69,9 +69,10 @@ impl Q35HostBridge {
                 bus_end: config.bus_end,
             },
             windows,
+            [],
         )
         .map_err(|_| ServiceError::InvalidParam)?;
-        PciEcam::from_provider(&root).map_err(|_| ServiceError::InvalidParam)
+        PciEcam::new([&root]).map_err(|_| ServiceError::InvalidParam)
     }
 
     pub fn init_with_e820(&mut self, entries: &[E820Entry]) -> Result<(), ServiceError> {
@@ -95,19 +96,13 @@ impl Q35HostBridge {
             mmio64_base + mmio64_size,
         );
 
-        let window = |kind, base, size, prefetchable| PciWindow {
-            kind,
-            base,
-            size,
-            prefetchable,
-        };
         self.ecam = Self::allocator(
             &self.config,
             [
-                window(PciWindowKind::Mmio, mmio32_base, mmio32_size, false),
-                // The high window takes the prefetchable 64-bit BARs.
-                window(PciWindowKind::Mmio, mmio64_base, mmio64_size, true),
-                window(PciWindowKind::Io, PIO_BASE, PIO_SIZE, false),
+                PciWindow::mmio(mmio32_base, mmio32_size),
+                // The window above 4 GiB takes the prefetchable 64-bit BARs.
+                PciWindow::mmio(mmio64_base, mmio64_size),
+                PciWindow::io(PIO_BASE, PIO_SIZE),
             ],
         )
         .map_err(|_| ServiceError::HardwareError)?;

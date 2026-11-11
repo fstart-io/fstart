@@ -15,14 +15,14 @@
 
 #[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 use fstart_core::services::memory_detect::{E820Kind, E820State};
-use fstart_pci::{PciRootError, PciRootWindows, PciWindow, PciWindowKind};
+use fstart_pci::{PciEcamError, PciRoot, PciRootInfo, PciWindow};
 
 /// Legacy ISA and chipset I/O (PIC, PIT, KBC, EC, ACPI PM block).
-const LEGACY_IO: (u64, u64) = (0, 0x1000);
+const LEGACY_IO: PciWindow = PciWindow::io(0, 0x1000);
 /// Option ROMs and the BIOS shadow, behind the PAM registers.
-const OPTION_ROMS: (u64, u64) = (0xc_0000, 0x10_0000);
+const OPTION_ROMS: PciWindow = PciWindow::mmio(0xc_0000, 0x4_0000);
 /// TPM TIS registers, decoded by LPC.
-const TPM: (u64, u64) = (0xfed4_0000, 0xfed4_5000);
+const TPM: PciWindow = PciWindow::mmio(0xfed4_0000, 0x5000);
 /// The I/O APIC: 32-bit PCI MMIO ends below the fixed chipset blocks
 /// (coreboot `DOMAIN_RESOURCE_32BIT_LIMIT`).
 const MMIO32_END: u64 = 0xfec0_0000;
@@ -39,49 +39,36 @@ pub(crate) struct HostBridge {
     pub above_4g: Option<(u64, u64)>,
 }
 
-fn collect(
-    ranges: impl IntoIterator<Item = (PciWindowKind, (u64, u64))>,
-) -> Result<PciRootWindows, PciRootError> {
-    let mut windows = PciRootWindows::new();
-    for (kind, (base, end)) in ranges {
-        if base < end {
-            windows
-                .push(PciWindow {
-                    kind,
-                    base,
-                    size: end - base,
-                    prefetchable: base >= 1 << 32,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-    }
-    Ok(windows)
-}
-
 impl HostBridge {
-    /// What the host bridge decodes: `PciRootProvider::resource_windows`.
-    pub fn windows(&self) -> Result<PciRootWindows, PciRootError> {
-        use PciWindowKind::{Io, Mmio};
-        collect(
-            [(Io, (0, 0x1_0000)), (Mmio, OPTION_ROMS)]
+    /// The root bridge `info` of this host bridge: what it forwards to PCI
+    /// and what of that the firmware keeps.
+    pub fn root(&self, info: PciRootInfo) -> Result<PciRoot, PciEcamError> {
+        let mmio = |(base, end): (u64, u64)| PciWindow::mmio(base, end.saturating_sub(base));
+        let (ecam_base, ecam_end) = self.ecam;
+        // Below and above the ECAM window.
+        let low = self.low_dram_end.into_iter().flat_map(|base| {
+            [
+                mmio((base, ecam_base.min(MMIO32_END))),
+                mmio((base.max(ecam_end), MMIO32_END)),
+            ]
+        });
+        PciRoot::new(
+            info,
+            [PciWindow::io(0, 0x1_0000), OPTION_ROMS]
                 .into_iter()
-                .chain(self.low_dram_end.into_iter().flat_map(|base| {
-                    // Below and above the ECAM window.
-                    let (ecam_base, ecam_end) = self.ecam;
-                    [
-                        (Mmio, (base, ecam_base.min(MMIO32_END))),
-                        (Mmio, (base.max(ecam_end), MMIO32_END)),
-                    ]
-                }))
-                .chain([(Mmio, TPM)])
-                .chain(self.above_4g.map(|window| (Mmio, window))),
+                .chain(low)
+                .chain([TPM])
+                .chain(self.above_4g.map(mmio)),
+            [LEGACY_IO, OPTION_ROMS, TPM],
         )
     }
 
-    /// What the allocator leaves alone: `PciRootProvider::reserved_windows`.
-    pub fn reserved(&self) -> Result<PciRootWindows, PciRootError> {
-        use PciWindowKind::{Io, Mmio};
-        collect([(Io, LEGACY_IO), (Mmio, OPTION_ROMS), (Mmio, TPM)])
+    /// `Device(PERC)`, for `\_SB`: the ECAM window as a motherboard resource.
+    #[cfg(feature = "acpi")]
+    pub fn ecam_reservation(&self) -> alloc::vec::Vec<u8> {
+        let (base, end) = self.ecam;
+        fstart_acpi::pci_root::ecam_reservation(base, end - base)
+            .expect("the ECAM window is not empty")
     }
 }
 
@@ -112,79 +99,70 @@ pub(crate) fn low_dram_end(memory: &E820State) -> Option<u64> {
     Some((reserved_end.max(ram_end) + 0xf_ffff) & !0xf_ffff)
 }
 
-#[cfg(feature = "acpi")]
-impl HostBridge {
-    /// `Device(PERC)`, for `\\_SB`: the ECAM window as a motherboard resource.
-    pub fn ecam_reservation(&self) -> alloc::vec::Vec<u8> {
-        let (base, end) = self.ecam;
-        fstart_acpi::pci_root::ecam_reservation(base, end - base)
-            .expect("the ECAM window is not empty")
-    }
-}
-
-/// `Name(_CRS, ...)` of PCI0: what `bridge` forwards to PCI.
-#[cfg(feature = "acpi")]
-pub(crate) fn crs(bridge: &impl fstart_pci::PciRootProvider) -> alloc::vec::Vec<u8> {
-    let root = fstart_pci::PciRoot::of(bridge).expect("the host bridge's windows fit one root");
-    fstart_acpi::pci_root::crs(&root, true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fstart_pci::PciWindowKind::{Io, Mmio};
+
+    const INFO: PciRootInfo = PciRootInfo {
+        segment: 0,
+        ecam_base: 0xf000_0000,
+        bus_start: 0,
+        bus_end: 0x3f,
+    };
+
+    fn spans(windows: &[PciWindow]) -> alloc::vec::Vec<(fstart_pci::PciWindowKind, u64, u64)> {
+        windows.iter().map(|w| (w.kind, w.base, w.end())).collect()
+    }
 
     #[test]
-    fn decodes_what_is_not_dram_and_keeps_the_fixed_parts() {
-        let bridge = HostBridge {
+    fn forwards_what_is_not_dram_and_keeps_the_fixed_parts() {
+        let root = HostBridge {
             ecam: (0xf000_0000, 0xf400_0000),
             low_dram_end: Some(0x8000_0000),
             above_4g: Some((0x1_4000_0000, 0x10_0000_0000)),
-        };
-        let spans = |windows: PciRootWindows| -> alloc::vec::Vec<_> {
-            windows
-                .iter()
-                .map(|w| (w.kind, w.base, w.end(), w.prefetchable))
-                .collect()
-        };
-        use PciWindowKind::{Io, Mmio};
+        }
+        .root(INFO)
+        .unwrap();
         assert_eq!(
-            spans(bridge.windows().unwrap()),
+            spans(root.windows()),
             [
-                (Io, 0, 0x1_0000, false),
-                (Mmio, 0xc_0000, 0x10_0000, false),
+                (Io, 0, 0x1_0000),
+                (Mmio, 0xc_0000, 0x10_0000),
                 // TOLUD to the I/O APIC, without the ECAM window.
-                (Mmio, 0x8000_0000, 0xf000_0000, false),
-                (Mmio, 0xf400_0000, 0xfec0_0000, false),
-                (Mmio, 0xfed4_0000, 0xfed4_5000, false),
-                (Mmio, 0x1_4000_0000, 0x10_0000_0000, true),
+                (Mmio, 0x8000_0000, 0xf000_0000),
+                (Mmio, 0xf400_0000, 0xfec0_0000),
+                (Mmio, 0xfed4_0000, 0xfed4_5000),
+                (Mmio, 0x1_4000_0000, 0x10_0000_0000),
             ]
         );
         assert_eq!(
-            spans(bridge.reserved().unwrap()),
+            spans(root.reserved()),
             [
-                (Io, 0, 0x1000, false),
-                (Mmio, 0xc_0000, 0x10_0000, false),
-                (Mmio, 0xfed4_0000, 0xfed4_5000, false),
+                (Io, 0, 0x1000),
+                (Mmio, 0xc_0000, 0x10_0000),
+                (Mmio, 0xfed4_0000, 0xfed4_5000),
             ]
         );
     }
 
     #[test]
     fn no_window_holds_the_ecam_window_wherever_it_is() {
-        // Below the top of low DRAM never happens; above it, in it, at its
-        // end and above the I/O APIC must all leave ECAM out.
+        // Above the top of low DRAM, at it, and up against the I/O APIC.
         for ecam in [
             (0xe000_0000, 0xf000_0000),
             (0xf000_0000, 0xf400_0000),
             (0xc000_0000, 0xd000_0000),
             (0xf800_0000, 0xfc00_0000),
         ] {
-            let bridge = HostBridge {
+            let root = HostBridge {
                 ecam,
                 low_dram_end: Some(0xc000_0000),
                 above_4g: None,
-            };
-            let windows = bridge.windows().unwrap();
+            }
+            .root(INFO)
+            .unwrap();
+            let windows = root.windows();
             assert!(
                 windows
                     .iter()
@@ -202,37 +180,28 @@ mod tests {
 
     #[test]
     fn the_allocator_takes_the_root() {
-        let bridge = HostBridge {
+        let root = HostBridge {
             ecam: (0xe000_0000, 0xf000_0000),
             low_dram_end: Some(0xc000_0000),
             above_4g: Some((1 << 32, 1 << 36)),
-        };
-        let root = fstart_pci::PciRoot::new(
-            fstart_pci::PciRootInfo {
-                segment: 0,
-                ecam_base: 0xe000_0000,
-                bus_start: 0,
-                bus_end: 0xff,
-            },
-            bridge.windows().unwrap(),
-        )
-        .unwrap()
-        .reserve(bridge.reserved().unwrap())
+        }
+        .root(INFO)
         .unwrap();
-        assert!(fstart_pci::PciEcam::from_provider(&root).is_ok());
+        let pci = fstart_pci::PciEcam::new([&root]).unwrap();
+        assert_eq!(pci.roots().len(), 1);
     }
 
     #[test]
     fn nothing_below_4g_before_memory_is_known() {
-        let bridge = HostBridge {
+        let root = HostBridge {
             ecam: (0xe000_0000, 0xf000_0000),
             low_dram_end: None,
             above_4g: None,
-        };
+        }
+        .root(INFO)
+        .unwrap();
         assert!(
-            bridge
-                .windows()
-                .unwrap()
+            root.windows()
                 .iter()
                 .all(|w| w.base < 0x10_0000 || w.base == 0xfed4_0000)
         );

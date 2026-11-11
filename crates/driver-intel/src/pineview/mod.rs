@@ -28,9 +28,9 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_intel_gma::types::{Cpu, PciAddress, Port};
+use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
 use tock_registers::interfaces::{Readable, Writeable};
 
 fn publish_mtrr_wb_ranges(entries: &[E820Entry]) -> Result<(), ServiceError> {
@@ -529,6 +529,18 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: PCI_BUS_START,
+            bus_end: PCI_BUS_END,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        self.host_bridge().root(self.pci_root_info())
+    }
+
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -814,23 +826,6 @@ impl IntelPineview {
                 fstart_arch::x86::physical_address_limit(),
             )),
         }
-    }
-}
-
-impl PciRootProvider for IntelPineview {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: PCI_BUS_START,
-            bus_end: PCI_BUS_END,
-        }
-    }
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        self.host_bridge().windows()
-    }
-    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        self.host_bridge().reserved()
     }
 }
 
@@ -1375,8 +1370,8 @@ mod acpi_impl {
             // The ECAM window is the host bridge's own: a motherboard resource
             // next to PCI0, outside its `_CRS`.
             aml.extend(self.host_bridge().ecam_reservation());
-            let mut pci0 = crate::host_bridge::crs(self);
-            pci0.extend(crate::gmch::acpi::peg_node());
+            // PCI0's `_CRS` is the platform's: from the root bridge it enumerated.
+            let mut pci0 = crate::gmch::acpi::peg_node();
             let mut gfx: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
                 Name("_ADR", 0x00020000u32);
             }
@@ -1408,7 +1403,9 @@ mod acpi_impl {
         }
 
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
+            alloc::vec![crate::gmch::acpi::mcfg(
+                crate::IntelNorthbridgeDriver::pci_root_info(self)
+            )]
         }
     }
 }

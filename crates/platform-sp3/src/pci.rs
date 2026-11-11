@@ -10,7 +10,7 @@
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::sp3::df::plan::{Pools, RootBridgePlan, Window};
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_pci::{PciRoot, PciWindow, PciWindowKind};
+use fstart_pci::{PciRoot, PciWindow};
 
 /// The span of the PCI pools (prefetch then non-prefetch, contiguous by
 /// construction of the planner) of a window.
@@ -51,15 +51,8 @@ fn outside(window: Window, keep: Option<Window>) -> [Window; 2] {
 /// rest (legacy I/O, the non-PCI pools of the NBIO's own BARs, a second
 /// low window) is reserved.
 pub fn root(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<PciRoot> {
-    let window = |kind, span: Window, prefetchable| PciWindow {
-        kind,
-        base: span.base,
-        size: span.size,
-        prefetchable,
-    };
-    let io = |span| window(PciWindowKind::Io, span, false);
-    let low = |span| window(PciWindowKind::Mmio, span, false);
-    let high = |span| window(PciWindowKind::Mmio, span, true);
+    let io = |span: Window| PciWindow::io(span.base, span.size);
+    let mmio = |span: Window| PciWindow::mmio(span.base, span.size);
     let below_pci = pci_span(&rb.below_pools);
     let above_pci = rb.above_pools.map(|pools| pci_span(&pools));
     PciRoot::new(
@@ -71,23 +64,20 @@ pub fn root(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<PciRoot> {
         rb.io
             .map(io)
             .into_iter()
-            .chain([low(rb.below)])
-            .chain(rb.second_below.map(low))
-            .chain(rb.above.map(high)),
-    )
-    .ok()?
-    .reserve(
+            .chain([mmio(rb.below)])
+            .chain(rb.second_below.map(mmio))
+            .chain(rb.above.map(mmio)),
         rb.io
             .into_iter()
             .flat_map(|routed| outside(routed, rb.io_pool))
             .map(io)
-            .chain(outside(rb.below, Some(below_pci)).map(low))
-            .chain(rb.second_below.map(low))
+            .chain(outside(rb.below, Some(below_pci)).map(mmio))
+            .chain(rb.second_below.map(mmio))
             .chain(
                 rb.above
                     .into_iter()
                     .flat_map(|routed| outside(routed, above_pci))
-                    .map(high),
+                    .map(mmio),
             ),
     )
     .ok()
@@ -131,6 +121,7 @@ impl NonPci {
 mod tests {
     use super::*;
     use fstart_driver_amd::sp3::df::BusRange;
+    use fstart_pci::PciWindowKind;
 
     fn plan() -> RootBridgePlan {
         let below = Window::new(0xa000_0000, 0x1000_0000);
@@ -165,7 +156,7 @@ mod tests {
     fn root_decodes_the_df_routes_and_allocates_from_the_pci_pools() {
         let plan = plan();
         let root = root(&plan, &segment(Generation::Milan)).unwrap();
-        assert_eq!(root.info.ecam_base, 0xe000_0000);
+        assert_eq!(root.info().ecam_base, 0xe000_0000);
         assert_eq!(root.buses(), 0..=0x3f);
         // What ACPI reports: the routes.
         assert!(root.io().eq([0..=0x3fff]));
@@ -175,7 +166,7 @@ mod tests {
         ]));
         // What the allocator stays out of: everything but the PCI pools.
         let reserved: Vec<_> = root
-            .reserved
+            .reserved()
             .iter()
             .map(|w| (w.kind, w.base, w.size))
             .collect();

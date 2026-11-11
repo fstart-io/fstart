@@ -18,7 +18,8 @@ pub type Root = PciRoot;
 /// `ecam`, its I/O windows above the legacy I/O, its MMIO windows below
 /// 4 GiB minus the ECAM and the `reserved` MMIO (a non-PCI pool), and its
 /// MMIO windows above 4 GiB. The allocator fills the low windows first;
-/// ACPI reports all of them. `None` if the buses are outside the ECAM.
+/// ACPI reports all of them. `None` if the buses are outside the ECAM or
+/// the DF routes more windows than a root bridge holds.
 pub fn root(routes: &RootComplex, ecam: Region, reserved: Region) -> Option<Root> {
     let last_bus = u8::try_from((ecam.size >> 20).checked_sub(1)?).ok()?;
     let buses = *routes.buses.start()..=(*routes.buses.end()).min(last_bus);
@@ -53,20 +54,14 @@ pub fn root(routes: &RootComplex, ecam: Region, reserved: Region) -> Option<Root
             kind,
             base: lo,
             size: hi - lo,
-            prefetchable: lo >= 1 << 32,
-        })
-        .take(fstart_pci::MAX_PCI_ROOT_WINDOWS)
-        .collect();
-    Some(PciRoot {
-        info: PciRootInfo {
-            segment: 0,
-            ecam_base: ecam.base,
-            bus_start: *buses.start(),
-            bus_end: *buses.end(),
-        },
-        windows,
-        reserved: Default::default(),
-    })
+        });
+    let info = PciRootInfo {
+        segment: 0,
+        ecam_base: ecam.base,
+        bus_start: *buses.start(),
+        bus_end: *buses.end(),
+    };
+    PciRoot::new(info, windows, []).ok()
 }
 
 /// `range` without `hole`, as up to two ranges.

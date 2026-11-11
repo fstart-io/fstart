@@ -64,6 +64,9 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     let nb = IntelGm45::new_from_config(&NB).unwrap();
     let sb = IntelIch9::new_from_config(&SB).unwrap();
     let mut aml = nb.dsdt_aml(&NB);
+    // PCI0's `_CRS`, as the platform adds it from the root bridge.
+    let root = crate::IntelNorthbridgeDriver::pci_root(&nb).unwrap();
+    aml.extend(crate::namespace::pci_root_crs::<IntelGm45>(&root).unwrap());
     aml.extend(crate::namespace::SouthbridgeAcpi::dsdt_aml(
         &sb,
         &SB,

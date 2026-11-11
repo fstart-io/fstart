@@ -30,7 +30,6 @@ fn pci_root(bridge: &RootBridge) -> &'static fstart_pci::PciRoot {
         kind,
         base,
         size: limit - base + 1,
-        prefetchable: false,
     };
     let io = if bridge.primary {
         (0, 0x0FFF)
@@ -49,6 +48,7 @@ fn pci_root(bridge: &RootBridge) -> &'static fstart_pci::PciRoot {
             window(PciWindowKind::Mmio, 0xC000_0000, 0xC7FF_FFFF),
             window(PciWindowKind::Mmio, 0x100_0000_0000, 0x10F_FFFF_FFFF),
         ],
+        [],
     )
     .unwrap();
     Box::leak(Box::new(root))

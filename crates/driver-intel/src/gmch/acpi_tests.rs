@@ -5,9 +5,9 @@ use crate::IntelNorthbridgeDriver;
 use fstart_acpi::device::AcpiDevice;
 #[cfg(any(feature = "i945", feature = "gm965"))]
 use fstart_core::services::memory_detect::{E820State, build_pc_compatible_e820};
+use fstart_pci::PciRootInfo;
 #[cfg(any(feature = "i945", feature = "gm965"))]
 use fstart_pci::PciWindowKind;
-use fstart_pci::{PciRootInfo, PciRootProvider};
 use std::{format, fs, process::Command, string::String};
 
 /// What ACPICA makes of the `_CRS` of `device` in a DSDT holding `aml`.
@@ -57,13 +57,25 @@ fn check_mcfg(tables: &[alloc::vec::Vec<u8>], root: PciRootInfo) {
     assert_eq!(&mcfg[54..56], &[root.bus_start, root.bus_end]);
 }
 
+/// The northbridge's namespace with PCI0's `_CRS` from its root bridge, as
+/// the platform assembles it.
+fn dsdt_aml<N>(north: &N) -> alloc::vec::Vec<u8>
+where
+    N: IntelNorthbridgeDriver + AcpiDevice<Config = <N as IntelNorthbridgeDriver>::Config>,
+{
+    let root = north.pci_root().unwrap();
+    let mut aml = north.dsdt_aml(IntelNorthbridgeDriver::config(north));
+    aml.extend(crate::namespace::pci_root_crs::<N>(&root).unwrap());
+    aml
+}
+
 #[cfg(any(feature = "i945", feature = "gm965"))]
 fn check_low_memory_root<N>(label: &str, mut north: N)
 where
     N: IntelNorthbridgeDriver + AcpiDevice<Config = <N as IntelNorthbridgeDriver>::Config>,
 {
     let config = IntelNorthbridgeDriver::config(&north);
-    let root = PciRootProvider::root_info(&north);
+    let root = north.pci_root_info();
     check_mcfg(&north.extra_tables(config), root);
     for tolud in [0x2000_0000u32, 0x4000_0000, 0x8000_0000, 0xc000_0000] {
         let mut memory = E820State::new();
@@ -76,14 +88,15 @@ where
         .unwrap();
         memory.set_detected(count, u64::from(tolud)).unwrap();
         north.memory_detected(&memory);
-        let windows = north.resource_windows().unwrap();
+        let described = north.pci_root().unwrap();
         // The window PCI devices are allocated in, above the option ROMs.
-        let mmio = windows
+        let mmio = described
+            .windows()
             .iter()
             .find(|window| window.kind == PciWindowKind::Mmio && window.base >= 0x10_0000)
             .unwrap();
         assert_eq!(mmio.base, u64::from(tolud));
-        let aml = north.dsdt_aml(config);
+        let aml = dsdt_aml(&north);
         let text = resources(label, "PCI0", &aml);
         // Two windows from TOLUD to the I/O APIC, around the ECAM window.
         let (ecam, ecam_end) = (root.ecam_base, root.ecam_base + root.ecam_size());
@@ -152,8 +165,8 @@ fn pineview_root_includes_the_aperture_above_4g() {
     use crate::pineview::{IntelPineview, IntelPineviewConfig};
     static CONFIG: IntelPineviewConfig = IntelPineviewConfig::new();
     let north = IntelPineview::new_from_config(&CONFIG).unwrap();
-    check_mcfg(&north.extra_tables(&CONFIG), north.root_info());
-    let text = resources("pineview", "PCI0", &north.dsdt_aml(&CONFIG));
+    check_mcfg(&north.extra_tables(&CONFIG), north.pci_root_info());
+    let text = resources("pineview", "PCI0", &dsdt_aml(&north));
     let high = text
         .split("64-Bit QWORD Address Space Resource")
         .nth(1)

@@ -12,6 +12,18 @@ pub const fn pci_root<NB: IntelNorthbridgeDriver>() -> AcpiPath {
     AcpiPath::SB.child(NB::ACPI_PCI_ROOT_NAME)
 }
 
+/// `_CRS` of the northbridge's PCI root, in its scope: what `root` forwards
+/// to PCI. The platform passes the root bridge its allocator was built
+/// from, so the OS is told about the windows the firmware allocated in.
+pub fn pci_root_crs<NB: IntelNorthbridgeDriver>(
+    root: &fstart_pci::PciRoot,
+) -> Result<Vec<u8>, fstart_acpi::AmlError> {
+    fstart_acpi::aml_linker::scope_vec(
+        const { pci_root::<NB>() }.as_str(),
+        &fstart_acpi::pci_root::crs(root, true),
+    )
+}
+
 /// The integrated graphics device, `\_SB_.PCI0.GFX0`.
 #[must_use]
 pub const fn igd<NB: IntelNorthbridgeDriver>() -> AcpiPath {

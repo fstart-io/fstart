@@ -26,9 +26,9 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_intel_gma::types::{Cpu, PciAddress};
+use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{PciRootError, PciRootInfo, PciRootProvider, PciRootWindows};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
@@ -1328,6 +1328,18 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        self.host_bridge().root(self.pci_root_info())
+    }
+
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -1504,23 +1516,6 @@ impl IntelGm965 {
             low_dram_end: self.low_dram_end,
             above_4g: None,
         }
-    }
-}
-
-impl PciRootProvider for IntelGm965 {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: 0,
-            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
-        }
-    }
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        self.host_bridge().windows()
-    }
-    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        self.host_bridge().reserved()
     }
 }
 
@@ -1867,11 +1862,10 @@ mod acpi_impl {
             // The ECAM window is the host bridge's own: a motherboard resource
             // next to PCI0, outside its `_CRS`.
             aml.extend(self.host_bridge().ecam_reservation());
-            // The host bridge's windows (coreboot GM45/GM965 hostbridge.asl):
-            // what the allocator placed BARs in. MCHBAR/DMIBAR/EPBAR/RCBA,
-            // HPET and the TPM are motherboard resources in PDRC.
-            let mut pci0 = crate::host_bridge::crs(self);
-            pci0.extend(crate::igd::gfx0_acpi_node::<Self>(gttmmio));
+            // PCI0's `_CRS` is the platform's: from the root bridge it enumerated.
+            // MCHBAR/DMIBAR/EPBAR/RCBA, HPET and the TPM are motherboard
+            // resources in PDRC.
+            let pci0 = crate::igd::gfx0_acpi_node::<Self>(gttmmio);
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec(
                     const { crate::namespace::pci_root::<Self>() }.as_str(),
@@ -1913,7 +1907,9 @@ mod acpi_impl {
 
         /// Produce an MCFG table for the GM965 PCIEXBAR ECAM window.
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
+            alloc::vec![crate::gmch::acpi::mcfg(
+                crate::IntelNorthbridgeDriver::pci_root_info(self)
+            )]
         }
     }
 }

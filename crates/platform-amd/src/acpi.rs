@@ -876,7 +876,6 @@ mod tests {
             kind,
             base: start,
             size: end - start + 1,
-            prefetchable: false,
         };
         let root = PciRoot::new(
             PciRootInfo {
@@ -894,6 +893,7 @@ mod tests {
                 mmio.iter()
                     .map(|range| window(PciWindowKind::Mmio, *range.start(), *range.end())),
             ),
+            [],
         )
         .unwrap();
         std::boxed::Box::leak(std::boxed::Box::new(root))

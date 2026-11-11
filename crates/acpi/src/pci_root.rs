@@ -130,12 +130,10 @@ mod tests {
                 bus_start: 0x40,
                 bus_end: 0x7f,
             },
-            windows.iter().map(|&(kind, base, size)| PciWindow {
-                kind,
-                base,
-                size,
-                prefetchable: false,
-            }),
+            windows
+                .iter()
+                .map(|&(kind, base, size)| PciWindow { kind, base, size }),
+            [],
         )
         .unwrap()
     }

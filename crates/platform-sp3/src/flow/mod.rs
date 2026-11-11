@@ -1306,7 +1306,7 @@ fn install_smm<S: Steps>(
 /// Enumerate every root bridge the DF routes, each within its own buses and
 /// windows, with one allocator for the segment.
 pub(crate) fn enumerate(ctx: &Ctx) -> fstart_pci::PciEcam {
-    let mut pci = fstart_pci::PciEcam::from_providers(&ctx.roots).or_halt("PCI root");
+    let mut pci = fstart_pci::PciEcam::new(&ctx.roots).or_halt("PCI root");
     pci.enumerate_and_allocate().or_halt("PCI enumeration");
     for (rb, root) in ctx.plan.root_bridges.iter().zip(&ctx.roots) {
         let buses = root.buses();

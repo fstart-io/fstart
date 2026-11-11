@@ -19,9 +19,7 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, E820State, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, ecam, pci_type0_config,
-};
+use fstart_pci::{PciRootInfo, ecam, pci_type0_config};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
@@ -398,6 +396,19 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     type Config = IntelIronlakeConfig;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
+
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            // The QuickPath bus is not part of the PCI domain.
+            bus_end: self.config.quickpath_bus() - 1,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        self.host_bridge().root(self.pci_root_info())
+    }
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -665,24 +676,6 @@ impl IntelIronlake {
             low_dram_end: self.low_dram_end,
             above_4g: None,
         }
-    }
-}
-
-impl PciRootProvider for IntelIronlake {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: 0,
-            // The QuickPath bus is not part of the PCI domain.
-            bus_end: self.config.quickpath_bus() - 1,
-        }
-    }
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        self.host_bridge().windows()
-    }
-    fn reserved_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        self.host_bridge().reserved()
     }
 }
 

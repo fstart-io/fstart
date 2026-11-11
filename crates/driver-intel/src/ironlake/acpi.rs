@@ -71,9 +71,7 @@ impl AcpiDevice for IntelIronlake {
             }
         }
         .into();
-        // PCI MMIO from TOLUD to the I/O APIC; the QuickPath bus is outside
-        // the PCI0 domain.
-        pci0.extend(crate::host_bridge::crs(self));
+        // PCI0's `_CRS` is the platform's: from the root bridge it enumerated.
         let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
         pci0.extend(crate::igd::gfx0_acpi_node_with::<Self>(
             gttmmio,

@@ -565,7 +565,7 @@ fn enumerate<S: Soc>(
     let Some(roots) = roots else {
         fail::<S>("PCI root")
     };
-    let mut ecam = match PciEcam::from_providers(&roots) {
+    let mut ecam = match PciEcam::new(&roots) {
         Ok(ecam) => ecam,
         Err(_) => fail::<S>("PCI root"),
     };

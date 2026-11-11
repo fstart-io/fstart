@@ -139,7 +139,7 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
             description.reserved = &reserved;
         }
         description.mmio = config.mmio;
-        description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&config.pci));
+        description.pci_root = Some(config.pci.root_info());
         let placement = Placement {
             kernel: self.range(RegionKind::Payload).base,
             device_tree: self.range(RegionKind::DeviceTree).base,
