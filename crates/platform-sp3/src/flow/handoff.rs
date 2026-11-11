@@ -6,10 +6,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
-use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
+use fstart_stage::boot::MemoryWindow;
 
 use super::{Ctx, OrHalt};
 use crate::layout::{self, Span};
@@ -19,65 +18,22 @@ use crate::layout::{self, Span};
 /// says): the locator and trust block the composer put into the reset
 /// image (`fstart_anchor_bytes`) describe it.
 pub(crate) fn mount_boot_media(ctx: &Ctx) {
-    let window = ctx.ffs;
-    let (writable, reserved): (Vec<MemoryWindow>, Vec<MemoryWindow>) = {
-        let to_window = |e: &E820Entry| MemoryWindow {
-            start: e.addr,
-            size: e.size,
-        };
-        let ram = |e: &&E820Entry| e.kind == E820Kind::Ram as u32;
-        // The running image (text, in-place data: `layout::RESET`) and its
-        // BSS, heap and stacks (`layout::EARLY_REGION`) are reserved by
-        // span: `running_stage_windows` assumes data and BSS are
-        // contiguous, which this layout does not keep.
-        let image = MemoryWindow {
-            start: layout::RESET.destination,
-            size: u64::from(layout::RESET.size),
-        };
-        (
-            ctx.e820
-                .entries()
-                .iter()
-                .filter(ram)
-                .map(to_window)
-                .collect(),
-            ctx.e820
-                .entries()
-                .iter()
-                .filter(|e| !ram(e))
-                .map(to_window)
-                .chain([
-                    image,
-                    span_window(layout::EARLY_REGION),
-                    span_window(window),
-                ])
-                .collect(),
-        )
+    // The running image (text, in-place data: `layout::RESET`) and its
+    // BSS, heap and stacks (`layout::EARLY_REGION`) are reserved by
+    // span: `running_stage_windows` assumes data and BSS are
+    // contiguous, which this layout does not keep.
+    let image = MemoryWindow {
+        start: layout::RESET.destination,
+        size: u64::from(layout::RESET.size),
     };
-    let policy = MemoryPolicy {
-        writable: &writable,
-        reserved: &reserved,
-        entry_alignment: 1,
-    };
-    // SAFETY: platform RAM only, with the stage, early region and flash
-    // excluded; no device has a DMA buffer outside the early region.
-    unsafe {
-        fstart_stage::directory::set_load_policy(
-            &policy,
-            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
-        )
+    if let Err(error) = fstart_platform_amd::media::mount(
+        ctx.e820.entries(),
+        &[image, span_window(layout::EARLY_REGION)],
+        span_window(ctx.ffs),
+        const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
+    ) {
+        super::fail(error.step());
     }
-    .or_halt("load policy");
-    let locator = fstart_stage::anchor::media_locator().or_halt("FFS locator");
-    if !locator.validate(window.size) {
-        super::fail("FFS locator");
-    }
-    let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(
-        window.base,
-        usize::try_from(locator.image_size).or_halt("FFS size"),
-    );
-    ffs.mount().or_halt("FFS mount");
-    ffs.verify().or_halt("FFS verify");
 }
 
 fn span_window(span: Span) -> MemoryWindow {
