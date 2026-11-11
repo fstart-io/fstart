@@ -387,22 +387,14 @@ fn sleep_states() -> Vec<u8> {
 
 /// The ECAM window is a motherboard resource.
 fn ecam_reservation(inputs: &Inputs) -> Result<Vec<u8>, Error> {
-    let base = inputs.pci.ecam_base;
     let size = inputs.pci.ecam_size();
     if size == 0 {
         return Err(Error::EcamBuses);
     }
-    let mut aml = Vec::new();
-    acpi_dsl! {
-        Device("PERC") {
-            Name("_HID", EisaId("PNP0C02"));
-            Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadWrite, #{dword base}, #{dword size});
-            });
-        }
-    }
-    .emit(&mut aml)?;
-    Ok(aml)
+    Ok(fstart_acpi::pci_root::ecam_reservation(
+        inputs.pci.ecam_base,
+        size,
+    )?)
 }
 
 /// The FCH IOAPIC and the HPET interrupt as the FCH SMBus device 0:14.0.

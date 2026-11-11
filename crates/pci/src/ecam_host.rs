@@ -1380,6 +1380,20 @@ impl Root {
             window_count += 1;
         }
 
+        // What the firmware keeps for itself stays decoded, not allocatable.
+        for reserved in provider
+            .reserved_windows()
+            .map_err(|_| PciEcamError::ConfigError)?
+        {
+            match reserved.kind {
+                PciWindowKind::Io => io_pool.reserve_range(reserved.base, reserved.size)?,
+                PciWindowKind::Mmio => {
+                    mmio32.reserve_range(reserved.base, reserved.size)?;
+                    mmio64.reserve_range(reserved.base, reserved.size)?;
+                }
+            }
+        }
+
         Ok(Self {
             segment: info.segment,
             ecam_base: info.ecam_base as usize,
@@ -1844,6 +1858,43 @@ mod tests {
             let bar = u64::from(pci.read32(endpoint, PCI_BAR0) & !0xf);
             assert!(window.contains(&bar), "{endpoint:?}: {bar:#x}");
         }
+    }
+
+    #[test]
+    fn reserved_parts_stay_decoded_but_are_not_allocated() {
+        let window = |kind, base, size| PciWindow {
+            kind,
+            base,
+            size,
+            prefetchable: false,
+        };
+        let info = PciRootInfo {
+            segment: 0,
+            ecam_base: 0xe000_0000,
+            bus_start: 0,
+            bus_end: 0xff,
+        };
+        let root = crate::PciRoot::new(
+            info,
+            [
+                window(PciWindowKind::Io, 0, 0x1_0000),
+                window(PciWindowKind::Mmio, 0x8000_0000, 0x1000_0000),
+            ],
+        )
+        .unwrap()
+        .reserve([
+            window(PciWindowKind::Io, 0, 0x1000),
+            window(PciWindowKind::Mmio, 0x8f00_0000, 0x0100_0000),
+        ])
+        .unwrap();
+        // ACPI sees what the bridge decodes.
+        assert!(root.io().eq([0..=0xffff]));
+        assert!(root.mmio().eq([0x8000_0000..=0x8fff_ffff]));
+        // The allocator has the rest.
+        let mut pci = PciEcam::from_provider(&root).unwrap();
+        let pools = &mut pci.roots[0];
+        assert_eq!(pools.io_pool.allocate_aligned(0x100, 0x100), Some(0x1000));
+        assert_eq!(pools.mmio32.free_bytes(), 0x0f00_0000);
     }
 
     /// Two SP3 sockets: eight root bridges with 160 functions between them.

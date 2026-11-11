@@ -1,14 +1,25 @@
-//! The ACPI view of a PCI root bridge: `_CRS` from the same [`PciRoot`] the
-//! allocator took its windows from, so the OS is told about exactly the
-//! buses and windows the firmware enumerated and allocated in.
+//! The ACPI view of a PCI root bridge, from the same [`PciRoot`] the
+//! allocator was built from.
+//!
+//! `_CRS` holds what the bridge forwards to PCI. An OS takes every address
+//! descriptor in a host bridge's `_CRS` for such a window (the
+//! consumer/producer bit is ignored in Word, DWord and QWord descriptors),
+//! so what the bridge consumes itself is not in it: the configuration ports
+//! are a fixed I/O descriptor, and the ECAM window is a motherboard
+//! resource next to the bridge ([`ecam_reservation`]). The parts of the
+//! windows the firmware reserved are forwarded all the same; the platform
+//! describes those under the devices that own them.
 
 use alloc::vec::Vec;
 use core::ops::RangeInclusive;
 
 use fstart_pci::PciRoot;
 
-use crate::aml::{AddressSpace, AddressSpaceCacheable, IO, Name, Path, ResourceTemplate};
-use crate::{Aml, RawAml};
+use crate::aml::{
+    AddressSpace, AddressSpaceCacheable, EISAName, IO, Memory32Fixed, Name, Path, ResourceTemplate,
+};
+use crate::aml_linker::device_vec;
+use crate::{Aml, AmlError, RawAml};
 
 /// The configuration mechanism #1 ports: the primary root bridge consumes
 /// them and no window may produce them.
@@ -75,6 +86,35 @@ pub fn crs(root: &PciRoot, primary: bool) -> Vec<u8> {
     )
     .to_aml_bytes(&mut out);
     out
+}
+
+/// `Device(PERC)`, for `\_SB`: the ECAM window `base..base + size` as a
+/// motherboard resource.
+///
+/// PCI Firmware 3.2, 4.1.2: the range in MCFG "must be reserved by declaring
+/// a motherboard resource. For most systems, the motherboard resource would
+/// appear at the root of the ACPI namespace (under `\_SB`) in a node with a
+/// _HID of EISAID (PNP0C02), and the resources in this case should not be
+/// claimed in the root PCI bus's _CRS." Linux does not use ECAM without it
+/// unless the memory map reserves the range.
+pub fn ecam_reservation(base: u64, size: u64) -> Result<Vec<u8>, AmlError> {
+    let end = base.checked_add(size).ok_or(AmlError::InvalidOperand)?;
+    if size == 0 {
+        return Err(AmlError::InvalidOperand);
+    }
+    let mut resources = Vec::new();
+    match (u32::try_from(base), u32::try_from(size)) {
+        (Ok(base), Ok(size)) => Memory32Fixed::new(true, base, size).to_aml_bytes(&mut resources),
+        _ => memory(&(base..=end - 1), &mut resources),
+    }
+    let mut body = Vec::new();
+    Name::new(Path::new("_HID"), &EISAName::new("PNP0C02")).to_aml_bytes(&mut body);
+    Name::new(
+        Path::new("_CRS"),
+        &ResourceTemplate::new(alloc::vec![&RawAml(&resources)]),
+    )
+    .to_aml_bytes(&mut body);
+    device_vec("PERC", &body)
 }
 
 #[cfg(test)]

@@ -65,6 +65,7 @@ pub fn root(routes: &RootComplex, ecam: Region, reserved: Region) -> Option<Root
             bus_end: *buses.end(),
         },
         windows,
+        reserved: Default::default(),
     })
 }
 
