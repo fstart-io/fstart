@@ -1295,9 +1295,8 @@ pub(crate) fn enumerate(ctx: &Ctx) -> Vec<fstart_pci::PciEcam> {
         .root_bridges
         .iter()
         .map(|rb| {
-            let mut pci =
-                fstart_pci::PciEcam::from_config(&crate::pci::root_config(rb, &ctx.pci_root))
-                    .or_halt("PCI root");
+            let root = crate::pci::root(rb, &ctx.pci_root).or_halt("PCI root");
+            let mut pci = fstart_pci::PciEcam::from_provider(&root).or_halt("PCI root");
             pci.enumerate_and_allocate().or_halt("PCI enumeration");
             fstart_log::info!(
                 "pci: rb {}.{}: {} functions",

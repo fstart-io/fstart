@@ -10,7 +10,7 @@
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::df::plan::{Pools, RootBridgePlan, Window};
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_pci::PciEcamConfig;
+use fstart_pci::{PciRoot, PciWindow, PciWindowKind};
 
 /// The span of the PCI pools (prefetch then non-prefetch, contiguous by
 /// construction of the planner) of a window.
@@ -32,24 +32,35 @@ pub fn segment(generation: Generation) -> PciRootInfo {
     }
 }
 
-/// The allocator configuration of one root bridge in the segment `pci`:
-/// config addresses are absolute.
-pub fn root_config(rb: &RootBridgePlan, pci: &PciRootInfo) -> PciEcamConfig {
-    let below = pci_span(&rb.below_pools);
-    let above = rb.above_pools.map(|p| pci_span(&p));
-    let io = rb.io_pool.unwrap_or(Window::new(0, 0));
-    PciEcamConfig {
-        ecam_base: pci.ecam_base,
-        ecam_size: pci.ecam_size(),
-        mmio32_base: below.base,
-        mmio32_size: below.size,
-        mmio64_base: above.map_or(0, |w| w.base),
-        mmio64_size: above.map_or(0, |w| w.size),
-        pio_base: io.base,
-        pio_size: io.size,
-        bus_start: rb.bus.base,
-        bus_end: rb.bus.limit,
-    }
+/// One root bridge in the segment `pci`, with the windows the DF plan gives
+/// PCI: the pools below 4 GiB, the prefetchable ones above it and its I/O.
+pub fn root(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<PciRoot> {
+    let window = |kind, span: Window, prefetchable| PciWindow {
+        kind,
+        base: span.base,
+        size: span.size,
+        prefetchable,
+    };
+    PciRoot::new(
+        PciRootInfo {
+            bus_start: rb.bus.base,
+            bus_end: rb.bus.limit,
+            ..*pci
+        },
+        [
+            Some(window(
+                PciWindowKind::Mmio,
+                pci_span(&rb.below_pools),
+                false,
+            )),
+            rb.above_pools
+                .map(|pools| window(PciWindowKind::Mmio, pci_span(&pools), true)),
+            rb.io_pool.map(|io| window(PciWindowKind::Io, io, false)),
+        ]
+        .into_iter()
+        .flatten(),
+    )
+    .ok()
 }
 
 /// Bump allocator over a root bridge's non-PCI MMIO pool (below 4 GiB).
@@ -121,13 +132,28 @@ mod tests {
     }
 
     #[test]
-    fn root_config_uses_the_pci_pools_and_absolute_ecam() {
-        let c = root_config(&plan(), &segment(Generation::Milan));
-        assert_eq!((c.ecam_base, c.ecam_size), (0xe000_0000, 0x1000_0000));
-        assert_eq!((c.mmio32_base, c.mmio32_size), (0xa000_0000, 0x0f00_0000));
-        assert_eq!(c.mmio64_base, 0x100_2020_0000);
-        assert_eq!((c.pio_base, c.pio_size), (0x1000, 0x3000));
-        assert_eq!((c.bus_start, c.bus_end), (0, 0x3f));
+    fn root_uses_the_pci_pools_and_the_segment_ecam() {
+        let root = root(&plan(), &segment(Generation::Milan)).unwrap();
+        assert_eq!(root.info.ecam_base, 0xe000_0000);
+        assert_eq!(root.buses(), 0..=0x3f);
+        let windows: Vec<_> = root
+            .windows
+            .iter()
+            .map(|w| (w.kind, w.base, w.size, w.prefetchable))
+            .collect();
+        assert_eq!(
+            windows,
+            [
+                (PciWindowKind::Mmio, 0xa000_0000, 0x0f00_0000, false),
+                (
+                    PciWindowKind::Mmio,
+                    0x100_2020_0000,
+                    (0x3000_0000_0000 >> 8) + 0x1000_0000,
+                    true
+                ),
+                (PciWindowKind::Io, 0x1000, 0x3000, false),
+            ]
+        );
     }
 
     #[test]
