@@ -15,11 +15,10 @@ const FIXED_MMIO: u64 = 0xfec0_0000;
 pub type Root = PciRoot;
 
 /// The root bridge of the root complex `routes`: its buses in the ECAM
-/// `ecam`, its I/O windows above the legacy I/O and its MMIO windows
-/// below 4 GiB, minus the ECAM and the `reserved` MMIO (a non-PCI pool).
-/// Only 32-bit windows: the 64-bit DF windows start at 1 TiB, beyond
-/// what firmware maps, and the OS can still use them. `None` if the
-/// buses are outside the ECAM.
+/// `ecam`, its I/O windows above the legacy I/O, its MMIO windows below
+/// 4 GiB minus the ECAM and the `reserved` MMIO (a non-PCI pool), and its
+/// MMIO windows above 4 GiB. The allocator fills the low windows first;
+/// ACPI reports all of them. `None` if the buses are outside the ECAM.
 pub fn root(routes: &RootComplex, ecam: Region, reserved: Region) -> Option<Root> {
     let last_bus = u8::try_from((ecam.size >> 20).checked_sub(1)?).ok()?;
     let buses = *routes.buses.start()..=(*routes.buses.end()).min(last_bus);
@@ -39,14 +38,22 @@ pub fn root(routes: &RootComplex, ecam: Region, reserved: Region) -> Option<Root
         .flat_map(|&(base, size)| cut((base, (base + size).min(FIXED_MMIO)), ecam_range))
         .flat_map(|range| cut(range, pool))
         .map(|range| (PciWindowKind::Mmio, range));
+    // What the DF routes to the die above 4 GiB, for the 64-bit prefetchable
+    // BARs that do not fit below.
+    let high = routes
+        .mmio
+        .iter()
+        .filter(|&&(base, _)| base >= 1 << 32)
+        .map(|&(base, size)| (PciWindowKind::Mmio, (base, base + size)));
     let windows = io
         .chain(mmio)
+        .chain(high)
         .filter(|(_, (lo, hi))| hi > lo)
         .map(|(kind, (lo, hi))| PciWindow {
             kind,
             base: lo,
             size: hi - lo,
-            prefetchable: false,
+            prefetchable: lo >= 1 << 32,
         })
         .take(fstart_pci::MAX_PCI_ROOT_WINDOWS)
         .collect();

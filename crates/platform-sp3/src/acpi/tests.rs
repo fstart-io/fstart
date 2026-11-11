@@ -22,24 +22,37 @@ struct System {
     bridges: Vec<RootBridge>,
 }
 
-const IO: [Window<u16>; 1] = [Window {
-    base: 0,
-    limit: 0x0FFF,
-}];
-const IO_HI: [Window<u16>; 1] = [Window {
-    base: 0x1000,
-    limit: 0x1FFF,
-}];
-const MMIO: [Window<u64>; 2] = [
-    Window {
-        base: 0xC000_0000,
-        limit: 0xC7FF_FFFF,
-    },
-    Window {
-        base: 0x100_0000_0000,
-        limit: 0x10F_FFFF_FFFF,
-    },
-];
+/// The root bridge of `bridge` as the allocator had it: the primary with
+/// the legacy I/O, each with one window below and one above 4 GiB.
+fn pci_root(bridge: &RootBridge) -> &'static fstart_pci::PciRoot {
+    use fstart_pci::{PciRoot, PciWindow, PciWindowKind};
+    let window = |kind, base: u64, limit: u64| PciWindow {
+        kind,
+        base,
+        size: limit - base + 1,
+        prefetchable: false,
+    };
+    let io = if bridge.primary {
+        (0, 0x0FFF)
+    } else {
+        (0x1000, 0x1FFF)
+    };
+    let root = PciRoot::new(
+        PciRootInfo {
+            segment: 0,
+            ecam_base: 0xE000_0000,
+            bus_start: bridge.bus_base,
+            bus_end: bridge.bus_limit,
+        },
+        [
+            window(PciWindowKind::Io, io.0, io.1),
+            window(PciWindowKind::Mmio, 0xC000_0000, 0xC7FF_FFFF),
+            window(PciWindowKind::Mmio, 0x100_0000_0000, 0x10F_FFFF_FFFF),
+        ],
+    )
+    .unwrap();
+    Box::leak(Box::new(root))
+}
 
 fn system(generation: Generation, sockets: u8, threads: u32) -> System {
     let bridges: Vec<RootBridge> = (0..sockets)
@@ -107,8 +120,7 @@ fn root_bridges(s: &System) -> Vec<RootBridgeAcpi<'static>> {
         .iter()
         .map(|&bridge| RootBridgeAcpi {
             bridge,
-            io: if bridge.primary { &IO } else { &IO_HI },
-            mmio: &MMIO,
+            root: pci_root(&bridge),
             domain: None,
             ioapic_features: 0x1430_0000 + (u32::from(bridge.index) << 20),
         })

@@ -33,12 +33,7 @@ use fstart_driver_amd::sp3::fch::acpi as fch_acpi;
 use fstart_driver_amd::sp3::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
-use super::{Inputs, RootBridgeAcpi, Window, prt};
-
-/// PCI configuration ports, consumed by the primary root bridge.
-const CONFIG_PORTS: (u16, u16) = (0xCF8, 0xCFF);
-/// Legacy VGA memory, routed to the primary root bridge.
-const VGA: (u32, u32) = (0xA_0000, 0xB_FFFF);
+use super::{Inputs, RootBridgeAcpi, prt};
 
 fn serialize(aml: &dyn Aml) -> Vec<u8> {
     let mut v = Vec::new();
@@ -65,21 +60,6 @@ fn as_str(n: &[u8; 4]) -> &str {
     core::str::from_utf8(n).unwrap_or("PCI0")
 }
 
-/// Split IO windows around the configuration ports.
-fn io_windows(io: &[Window<u16>]) -> impl Iterator<Item = (u16, u16)> + '_ {
-    let (lo, hi) = CONFIG_PORTS;
-    io.iter().flat_map(move |w| {
-        let parts = match w.base <= hi && w.limit >= lo {
-            true => [
-                (w.base < lo).then_some((w.base, lo - 1)),
-                (w.limit > hi).then_some((hi + 1, w.limit)),
-            ],
-            false => [Some((w.base, w.limit)), None],
-        };
-        parts.into_iter().flatten()
-    })
-}
-
 fn mmio_descriptor(base: u64, limit: u64, out: &mut Vec<u8>) {
     match u32::try_from(limit) {
         Ok(limit) => AddressSpace::<u32>::new_memory(
@@ -99,26 +79,6 @@ fn mmio_descriptor(base: u64, limit: u64, out: &mut Vec<u8>) {
         )
         .to_aml_bytes(out),
     }
-}
-
-/// `_CRS` of a root bridge: bus range, config ports and VGA on the primary,
-/// then the DF IO and MMIO windows.
-fn crs(rb: &RootBridgeAcpi) -> Vec<u8> {
-    let mut d = Vec::new();
-    AddressSpace::<u16>::new_bus_number(rb.bridge.bus_base.into(), rb.bridge.bus_limit.into())
-        .to_aml_bytes(&mut d);
-    if rb.bridge.primary {
-        IO::new(CONFIG_PORTS.0, CONFIG_PORTS.0, 1, 8).to_aml_bytes(&mut d);
-    }
-    io_windows(rb.io)
-        .for_each(|(lo, hi)| AddressSpace::<u16>::new_io(lo, hi, None).to_aml_bytes(&mut d));
-    if rb.bridge.primary {
-        mmio_descriptor(VGA.0.into(), VGA.1.into(), &mut d);
-    }
-    rb.mmio
-        .iter()
-        .for_each(|w| mmio_descriptor(w.base, w.limit, &mut d));
-    name("_CRS", &ResourceTemplate::new(alloc::vec![&RawAml(&d)]))
 }
 
 /// `Name(_PRT, Package { {addr, pin, 0, gsi} ... })`.
@@ -293,7 +253,7 @@ fn root_bridge(
         name("_SEG", &0u8),
         name("_BBN", &b.bus_base),
         rb.domain.map(|d| name("_PXM", &d)).unwrap_or_default(),
-        crs(rb),
+        fstart_acpi::pci_root::crs(rb.root, rb.bridge.primary),
         osc(),
         ioapic_acpi::nbio_aml(rb.ioapic_features)?,
     ]
@@ -376,25 +336,4 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
     out.extend(inputs.fch.sb_aml()?);
     out.extend_from_slice(inputs.board.sb_aml);
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_ports_are_cut_out() {
-        let io = [
-            Window {
-                base: 0,
-                limit: 0xFFF,
-            },
-            Window {
-                base: 0x1000,
-                limit: 0x1FFF,
-            },
-        ];
-        let got: Vec<_> = io_windows(&io).collect();
-        assert_eq!(got, [(0, 0xCF7), (0xD00, 0xFFF), (0x1000, 0x1FFF)]);
-    }
 }

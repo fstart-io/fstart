@@ -54,22 +54,13 @@ pub struct Cpu {
     pub domain: u32,
 }
 
-/// An inclusive address window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Window<T> {
-    pub base: T,
-    pub limit: T,
-}
-
-/// A root bridge with the resources the DF routes to it.
+/// A root bridge with the resources it was enumerated with.
 #[derive(Debug, Clone, Copy)]
 pub struct RootBridgeAcpi<'a> {
     pub bridge: RootBridge,
-    /// DF IO windows (the primary's legacy range included; 0xCF8–0xCFF is
-    /// cut out and claimed as a consumer).
-    pub io: &'a [Window<u16>],
-    /// DF MMIO windows below and above 4 GiB, ECAM excluded.
-    pub mmio: &'a [Window<u64>],
+    /// The root bridge the allocator enumerated: `_CRS` reports its buses and
+    /// windows.
+    pub root: &'a fstart_pci::PciRoot,
     /// `_PXM` when SRAT is built.
     pub domain: Option<u32>,
     /// SMN address of this NBIO's `IOAPIC::FEATURES_ENABLE` through its own
