@@ -85,7 +85,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     si: &S,
     board_acpi: &crate::acpi::Board<'_>,
 ) -> u64 {
-    use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
+    use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::sp3::ccx::power;
@@ -118,43 +118,16 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
             })
         })
         .collect();
-    type Windows = (Vec<Window<u16>>, Vec<Window<u64>>);
-    let windows: Vec<Windows> = ctx
-        .plan
-        .root_bridges
-        .iter()
-        .map(|rb| {
-            let io = rb
-                .io
-                .iter()
-                .map(|w| Window {
-                    base: w.base as u16,
-                    limit: (w.end() - 1) as u16,
-                })
-                .collect();
-            let mmio = [Some(rb.below), rb.second_below, rb.above]
-                .into_iter()
-                .flatten()
-                .filter(|w| w.size != 0)
-                .map(|w| Window {
-                    base: w.base,
-                    limit: w.end() - 1,
-                })
-                .collect();
-            (io, mmio)
-        })
-        .collect();
     let root_bridges: Vec<RootBridgeAcpi<'_>> = ctx
         .topology
         .root_bridges
         .iter()
-        .zip(&windows)
+        .zip(&ctx.roots)
         .zip(si.nbios())
         .enumerate()
-        .map(|(i, ((&bridge, (io, mmio)), n))| RootBridgeAcpi {
+        .map(|(i, ((&bridge, root), n))| RootBridgeAcpi {
             bridge,
-            io,
-            mmio,
+            root,
             domain: numa_plan
                 .as_ref()
                 .and_then(|p| p.root_bridges.get(i).copied()),

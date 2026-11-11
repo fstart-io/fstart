@@ -262,7 +262,12 @@ fn mj11_ec1_pci_root() {
     assert!(root.io().eq(core::iter::once(0x1000..=0xffff)));
     assert_eq!(
         root.mmio().collect::<Vec<_>>(),
-        [0xf800_0000..=0xfe3f_ffff, 0x8000_0000..=0xefff_ffff]
+        [
+            0xf800_0000..=0xfe3f_ffff,
+            0x8000_0000..=0xefff_ffff,
+            // What the DF routes above 4 GiB: from 1 TiB up.
+            0x100_0000_0000..=0xffff_ffff_ffff
+        ]
     );
 }
 
@@ -417,9 +422,9 @@ fn sp4_pci_roots_and_host_bridges() {
         [
             (2, 0, 0x3f),
             (1, 0x1000, 0x7fff),
+            vga,
             (0, 0xe800_0000, 0xef7f_ffff),
             (0, 0xf800_0000, 0xfebf_ffff),
-            vga
         ]
     );
     assert_eq!(

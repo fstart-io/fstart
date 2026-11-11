@@ -406,7 +406,7 @@ fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi = { workspace = true, features = ["x86", "pci"], optional = true }
 embedded-hal = { workspace = true, optional = true }
 # Devices sharing an I2C controller handed to CrabEFI.
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"], optional = true }

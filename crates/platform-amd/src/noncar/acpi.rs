@@ -3,7 +3,6 @@
 //! built by [`crate::acpi`] into reserved firmware memory.
 use super::{MAX_DIES, pci::Root};
 use crate::acpi::{self, BoardAcpi, Bridge, DieAcpi, Inputs, SocAcpi};
-use core::ops::RangeInclusive;
 use fstart_driver_amd::{
     ccx::power,
     df::Die,
@@ -11,15 +10,13 @@ use fstart_driver_amd::{
     nbio::iommu::{self, Iommu},
 };
 use fstart_log::Hex;
-use fstart_pci::{MAX_PCI_ROOT_WINDOWS, PciEcam, ecam::GlobalEcam};
+use fstart_pci::{PciEcam, ecam::GlobalEcam};
 use heapless::Vec;
 
 /// The ACPI host bridge of a root complex: its buses and windows and the
 /// bridges the enumeration found on its root bus.
 pub struct HostBridge {
-    buses: RangeInclusive<u8>,
-    io: Vec<RangeInclusive<u16>, MAX_PCI_ROOT_WINDOWS>,
-    mmio: Vec<RangeInclusive<u64>, MAX_PCI_ROOT_WINDOWS>,
+    root: Root,
     bridges: Vec<Bridge, 32>,
 }
 impl HostBridge {
@@ -37,9 +34,7 @@ impl HostBridge {
             })
             .collect();
         Self {
-            io: root.io().collect(),
-            mmio: root.mmio().collect(),
-            buses,
+            root: root.clone(),
             bridges,
         }
     }
@@ -48,11 +43,10 @@ impl HostBridge {
     /// (ID 1 + die) and its IOMMU.
     pub fn acpi(&self, die: u8, ioapic_base: u32, iommu: Option<Iommu>) -> DieAcpi<'_> {
         DieAcpi {
-            buses: self.buses.clone(),
+            buses: self.root.buses(),
             ioapic_id: 1 + die,
             ioapic_base,
-            io: &self.io,
-            mmio: &self.mmio,
+            root: &self.root,
             vga: die == 0,
             bridges: &self.bridges,
             iommu,
