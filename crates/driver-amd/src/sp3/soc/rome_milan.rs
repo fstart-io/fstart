@@ -4,7 +4,6 @@
 //! branches): fused NBIO quadrants, the IOMMU BAR in PEI, SMEE-dependent
 //! address bits and the PSP FCH lock.
 extern crate alloc;
-use super::cpu::collect_apic_ids;
 use super::cpu::{Sp3Cpu, release_all, this_thread};
 use super::hw::{Pci, Tsc, msr, secondary_fch};
 use super::hw::{SMU_POLL_US, SMU_TIMEOUT_US, primary_fch};
@@ -691,7 +690,12 @@ impl Steps for Silicon {
 
     /// Every thread ran its CCX steps: the BSP's last ones, then the SMU's
     /// CCX-done.
-    fn cpus_up(ctx: &mut Ctx, si: &mut Silicon, mp: &MpHandle) -> Result<(), &'static str> {
+    fn cpus_up(
+        ctx: &mut Ctx,
+        si: &mut Silicon,
+        #[cfg_attr(not(feature = "acpi"), allow(unused_variables))] mp: &MpHandle,
+        apic_ids: &[u32],
+    ) -> Result<(), &'static str> {
         let generation = ctx.generation;
         let cpu = msr();
         let bsp = this_thread(generation);
@@ -699,7 +703,7 @@ impl Steps for Silicon {
         mca::init(&cpu, &bsp);
         power::write_cac_weights(&cpu, &cac);
 
-        ctx.apic_ids = collect_apic_ids(mp);
+        ctx.apic_ids = apic_ids.to_vec();
         let rev = ctx.identity.revision;
         // Keep CC6 disabled until boot-time calibration finishes. Milan's early
         // CC6 PPI belongs to the topology-change reset path, not normal boot.

@@ -548,7 +548,9 @@ impl<S: Soc> Stage<S, Published<S>> {
         if !fstart_arch::x86::mp::park_aps_for_payload() {
             fail::<S>("parking the APs");
         }
-        S::boot_done(&ctx, &mut silicon.state);
+        if let Err(what) = S::boot_done(&ctx, &mut silicon.state) {
+            fail::<S>(what);
+        }
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(0x44);
         use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};

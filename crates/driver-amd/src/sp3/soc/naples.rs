@@ -2,7 +2,6 @@
 //! DXIO, Taishan FCHs on every die and the per-die SMU thread release
 //! (INTEGRATION_NOTES §3–§9, the Naples paragraphs).
 extern crate alloc;
-use super::cpu::collect_apic_ids;
 use super::cpu::{Sp3Cpu, release_all, this_thread};
 use super::hw::{Pci, Tsc, msr, secondary_fch};
 use super::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
@@ -296,7 +295,12 @@ impl Steps for Silicon {
 
     /// Every thread ran its CCX steps: the BSP's last ones, then the SMU's
     /// CCX-done.
-    fn cpus_up(ctx: &mut Ctx, si: &mut Silicon, mp: &MpHandle) -> Result<(), &'static str> {
+    fn cpus_up(
+        ctx: &mut Ctx,
+        si: &mut Silicon,
+        _: &MpHandle,
+        apic_ids: &[u32],
+    ) -> Result<(), &'static str> {
         let generation = ctx.generation;
         let policy = ctx.policy.ccx;
         let cpu = msr();
@@ -305,7 +309,7 @@ impl Steps for Silicon {
         security::set_smee(&cpu, policy.smee);
         mca::init(&cpu, &bsp);
         power::write_cac_weights(&cpu, &cac);
-        ctx.apic_ids = collect_apic_ids(mp);
+        ctx.apic_ids = apic_ids.to_vec();
         // TODO(naples): the QOS bit (PCD 0x17) and the per-revision removals
         // are not decoded (NBIO_SMU open item); the SP3 base mask is sent.
         let features = v9::feature_mask(false, 0);

@@ -3,21 +3,25 @@
 //! The PSP trains DRAM and starts the BSP in DRAM; one stage runs from the
 //! reset vector to the payload, and the board's `main` is that stage:
 //!
-//! 1. [`start`]: ECAM, FCH pre-init ([`Init::fch_pre_init`]);
-//!    [`Early::console`]: console, CPU identification ([`Init::identify`]),
-//!    the memory map from the APOB, the cache plan, the FFS.
+//! 1. [`start`]: ECAM, the SoC's handles and its FCH setup for the console
+//!    ([`Init::enter`]); [`Early::console`]: console, CPU identification
+//!    ([`Init::identify`]), the memory map from the APOB, the cache plan,
+//!    the FFS.
 //! 2. The silicon phases on [`Stage`], each a step of the SoC's driver
 //!    ([`Init`]): `init_fch`, `train_dxio`, `init_chipset` and
-//!    `start_cpus`, which runs MP init ([`crate::mp::start`]) and SMM with the
-//!    PSP's SMM info ([`smm::install`], [`psp::notify_smm`]).
-//! 3. [`Stage::scan_bus`]: PCI enumeration and resource allocation, then
+//!    `start_cpus`, which runs MP init ([`crate::mp::start`]) with the
+//!    SoC's CPU driver and installs SMM ([`smm::install`]); the SoC then
+//!    gives the PSP its SMM info ([`Init::smm_installed`]).
+//! 3. [`Stage::scan_bus`]: PCI enumeration and resource allocation below
+//!    the root bridges the SoC reports ([`Init::roots`]), then
 //!    [`Init::after_resources`].
-//! 4. [`Stage::ready_to_boot`]: the IOAPICs, then [`Init::ready_to_boot`]
-//!    and the display ([`Soc::init_display`]).
-//! 5. [`Stage::emit_tables`]: [`Init::end_of_post`], the ACPI tables from
-//!    what the silicon and the board report ([`crate::acpi`]) and SMBIOS.
-//! 6. [`Stage::boot`]: PSP LockDFReg (a failure halts), the payload's
-//!    memory map and page tables, PSP BootDone and the payload.
+//! 4. [`Stage::ready_to_boot`]: [`Init::ready_to_boot`], which includes
+//!    the IOAPICs, and the display ([`Soc::init_display`]).
+//! 5. [`Stage::emit_tables`]: [`Init::end_of_post`], then the SoC's ACPI
+//!    and SMBIOS tables with the board's part ([`Soc::tables`]).
+//! 6. [`Stage::boot`]: the SoC's locks ([`Init::finalize`], a failure
+//!    halts), the payload's memory map and page tables, the PSP's BootDone
+//!    ([`Init::boot_done`]) and the payload.
 //!
 //! The SoC's driver (`fstart_driver_amd::soc`) owns the silicon; this
 //! module keeps the host side: enumeration, resources, ACPI, memory map,

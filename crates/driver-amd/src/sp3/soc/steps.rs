@@ -215,8 +215,13 @@ pub trait Steps: Sized {
     /// Release `aps` APs into the reset vector, which the flow routed to
     /// the MP engine.
     fn release_aps(ctx: &Ctx, si: &Self, aps: u16) -> Result<(), u32>;
-    /// Every thread ran the driver.
-    fn cpus_up(ctx: &mut Ctx, si: &mut Self, mp: &MpHandle) -> Result<(), &'static str>;
+    /// Every thread ran the driver; `apic_ids` are theirs, the BSP's first.
+    fn cpus_up(
+        ctx: &mut Ctx,
+        si: &mut Self,
+        mp: &MpHandle,
+        apic_ids: &[u32],
+    ) -> Result<(), &'static str>;
     fn pci_pre(ctx: &mut Ctx, si: &mut Self) -> Result<(), &'static str>;
     fn pci_post(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
     fn fch_late(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
@@ -267,8 +272,11 @@ pub(super) fn microcode_candidates(blob: Option<&'static [u8]>) -> Vec<&'static 
 /// the reserved early region, so it stays the firmware's after handoff):
 /// DMA buffers and tables the SMU/PSP keep using.
 pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'static str> {
+    if size == 0 {
+        return Err("DMA layout");
+    }
     let layout = core::alloc::Layout::from_size_align(size, align).step("DMA layout")?;
-    // SAFETY: nonzero size; never freed; zeroed before use.
+    // SAFETY: the size is not zero; never freed; zeroed before use.
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err("DMA allocation");
@@ -428,4 +436,14 @@ pub fn psp(
         unsafe { MmioTransport::new(ctx.psp_bar) },
         ctx.generation.into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dma_alloc_rejects_an_empty_or_misaligned_request() {
+        assert_eq!(super::dma_alloc(0, 0x1000).err(), Some("DMA layout"));
+        assert_eq!(super::dma_alloc(0x1000, 3).err(), Some("DMA layout"));
+        assert_eq!(super::dma_alloc(0x20, 0x10).unwrap().len(), 0x20);
+    }
 }
