@@ -9,11 +9,12 @@
 //! register ([`Df::reg`]). Single-die SoCs (Raven/Picasso) have die 0 on
 //! bus 0. The threads of the dies are [`crate::smu::threads`]'.
 use super::{
-    Df,
+    Df, MAX_ROOT_BRIDGES, RootBridge,
     regs::{self, CFG_ADDR_CTL, COMPONENT_CNT},
 };
-use crate::{ccx::tsc::DelayNs, smn::Smn, smu, soc::Soc};
+use crate::{smn::Smn, smu, soc::Soc};
 use core::marker::PhantomData;
+use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::Readable;
 
@@ -72,6 +73,10 @@ impl<S: Soc, P: ConfigRegionAccess + Copy> Die<S, P> {
         // SAFETY: as above.
         unsafe { Df::for_node(self.pci, self.index) }
     }
+    /// This die's SMU as a message sink (no ID limit), waiting with `delay`.
+    pub fn mailbox<D: DelayNs + Copy>(&self, delay: D) -> smu::Smu<P, D> {
+        smu::Smu::new(self.smn(), S::SMU, delay, u32::MAX)
+    }
     /// Send a message to this die's SMU.
     pub fn smu(
         &self,
@@ -81,6 +86,26 @@ impl<S: Soc, P: ConfigRegionAccess + Copy> Die<S, P> {
     ) -> Result<[u32; smu::ARGUMENT_COUNT], smu::Error> {
         S::SMU.request(&self.smn(), message, arguments, delay)
     }
+}
+
+/// The root bridges of `dies` for the resource planner: one per die (four
+/// per socket), die 0 primary, each with the buses up to the next die's
+/// root bus and the last one's up to `last_bus`.
+pub fn root_bridges<S: Soc, P: ConfigRegionAccess + Copy>(
+    dies: &[Die<S, P>],
+    last_bus: u8,
+) -> heapless::Vec<RootBridge, MAX_ROOT_BRIDGES> {
+    dies.iter()
+        .enumerate()
+        .map(|(i, die)| RootBridge {
+            socket: die.index / 4,
+            index: die.index % 4,
+            fabric_id: die.ioms_fabric_id().into(),
+            bus_base: die.bus,
+            bus_limit: dies.get(i + 1).map_or(last_bus, |next| next.bus - 1),
+            primary: die.index == 0,
+        })
+        .collect()
 }
 
 /// All dies of the system, in order: die 0 on bus 0 alone on a single-die

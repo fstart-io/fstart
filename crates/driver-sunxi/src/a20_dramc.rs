@@ -239,8 +239,7 @@ const POLL_TIMEOUT: u32 = 1_000_000;
 /// Board-owned A20 DDR3 timing and calibration policy.
 ///
 /// Fixed A20 MMIO addresses are intentionally not configuration.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct A20DramcConfig {
     pub clock: u32,
     pub mbus_clock: u32,

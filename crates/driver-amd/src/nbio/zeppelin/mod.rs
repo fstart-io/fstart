@@ -6,6 +6,7 @@ use super::{
     ioapic::{IOAPIC_FEATURES_ENABLE, IoapicFeatures},
     iohc::{NB_BUS_NUM_CNTL, NbBusNumCntl},
     pcie::{self, PCIE_PORTS_PER_CORE},
+    zp::{LegacyEntry, property, tables},
 };
 use crate::cpu::Revision;
 use crate::{
@@ -18,8 +19,26 @@ use tock_registers::{
     register_bitfields,
 };
 
-mod tables;
-pub use tables::{BASE, IOMMU};
+/// The property word of the ZP tables on a Zeppelin SoC: the SP4/SP4r2
+/// defaults (IOMMU and SST clock gating on, RAS on).
+pub const PROPERTY: u32 = property::IOMMU_L1_CG
+    | property::IOMMU_L2_CG
+    | property::SERVER_PACKAGE
+    | property::IOHC_CG
+    | property::RAS;
+
+/// The records of a ZP table a Zeppelin SoC runs, in order.
+fn records(table: &'static [LegacyEntry]) -> impl Iterator<Item = Reg> {
+    table
+        .iter()
+        .filter(|entry| entry.applies(PROPERTY))
+        .map(LegacyEntry::record)
+}
+
+/// AmdNbioBaseZPPei's base table as a Zeppelin SoC runs it.
+pub fn base() -> impl Iterator<Item = Reg> {
+    records(tables::BASE)
+}
 
 register_bitfields![u32,
     NbifBusCfg [BUS OFFSET(24) NUMBITS(8) []],
@@ -93,8 +112,8 @@ fn die_init(smn: &Smn<impl ConfigRegionAccess>, die: u8, bus: u8, revision: Revi
             .modify(NbifBusCfg::BUS.val(bus.into()));
     }
 
-    apply(smn, BASE.iter().copied());
-    apply(smn, IOMMU.iter().copied());
+    apply(smn, base());
+    apply(smn, records(tables::IOMMU));
 
     // ZP A0/B0/B1 only: vendor PCD 0xb9 (0).
     if matches!(revision, Revision::ZpA0 | Revision::ZpB0 | Revision::ZpB1) {
@@ -155,6 +174,15 @@ mod tests {
         assert_eq!(space.get(0x10_u32), 5);
         assert_eq!(space.get(0x14_u32), 0xf001);
         assert_eq!(space.get(0x18_u32), 0x1234);
+    }
+
+    /// The SP4r2 PEIM's tables: 156 of its 158 base records and 36 of the
+    /// 38 IOMMU records apply with its defaults.
+    #[test]
+    fn zeppelin_runs_the_zp_tables_without_the_iommu_off_and_sst_records() {
+        assert_eq!(base().count(), 156);
+        assert_eq!(records(tables::IOMMU).count(), 36);
+        assert_eq!(PROPERTY, 0x6000_08c0);
     }
 
     #[test]

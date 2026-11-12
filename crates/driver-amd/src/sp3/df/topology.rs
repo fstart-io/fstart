@@ -154,7 +154,7 @@ fn read_maps<P: ConfigRegionAccess + Clone, V: Version>(
 
 #[cfg(feature = "naples")]
 fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, TopologyError> {
-    use super::v2::Df2;
+    use crate::df::v2::Df2;
     use crate::df::v2::{self, SYSTEM_CFG};
 
     // SAFETY (all reads below): F1x200/F1x204/F0x84/F0xA0 of present nodes.

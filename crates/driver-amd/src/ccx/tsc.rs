@@ -3,13 +3,7 @@
 //! `fstart_arch::x86::cpu::amd::msr::tsc_mhz`.
 use core::num::{NonZeroU32, NonZeroU64};
 
-pub use embedded_hal::delay::DelayNs;
-
-/// A monotonic microsecond clock that can also wait: what the silicon
-/// init needs for its timeouts.
-pub trait Clock: DelayNs {
-    fn now_us(&mut self) -> u64;
-}
+use embedded_hal::delay::DelayNs;
 
 /// The invariant TSC as the time base, at a nonzero frequency, so that its
 /// divisions have no panic path (SMM images link it and may not contain
@@ -53,12 +47,6 @@ impl DelayNs for Tsc {
     }
 }
 #[cfg(target_arch = "x86_64")]
-impl Clock for Tsc {
-    fn now_us(&mut self) -> u64 {
-        self.now()
-    }
-}
-#[cfg(target_arch = "x86_64")]
 impl fstart_core::services::Timer for Tsc {
     fn delay_us(&self, us: u64) {
         self.wait(us.saturating_mul(u64::from(self.mhz.get())))
@@ -71,7 +59,7 @@ impl fstart_core::services::Timer for Tsc {
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
     //! Delays for tests.
-    use super::{Clock, DelayNs};
+    use super::DelayNs;
 
     /// Hands every microsecond delay to a closure: `Delay(|us| ...)`.
     #[derive(Clone, Copy)]
@@ -87,22 +75,5 @@ pub mod testing {
     /// No delay at all.
     pub fn none() -> Delay<impl FnMut(u32)> {
         Delay(|_| {})
-    }
-
-    /// A clock that only moves when the code waits.
-    #[derive(Debug, Default)]
-    pub struct Elapsed(pub u64);
-    impl DelayNs for Elapsed {
-        fn delay_ns(&mut self, ns: u32) {
-            self.0 += u64::from(ns.div_ceil(1000))
-        }
-        fn delay_us(&mut self, us: u32) {
-            self.0 += u64::from(us)
-        }
-    }
-    impl Clock for Elapsed {
-        fn now_us(&mut self) -> u64 {
-            self.0
-        }
     }
 }

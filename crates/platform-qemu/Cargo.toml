@@ -64,7 +64,6 @@ fstart-driver-intel = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
-serde = { workspace = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 ufmt = { workspace = true }

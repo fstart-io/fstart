@@ -21,6 +21,7 @@ acpi = ["dep:fstart-acpi", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios",
 # features authenticate; the flow builds ACPI. Payloads may be compressed
 # by the image builder, so the resident loader needs LZ4 as well.
 bundle-stage = [
+  "dep:fstart-platform-amd",
   "dep:fstart-stage", "dep:fstart-payload", "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
   "acpi", "fstart-stage/tcg", "fstart-payload/tcg",
@@ -619,6 +620,8 @@ fstart-log = { workspace = true, features = ["alloc"] }
 fstart-options = { workspace = true, features = ["alloc", "varstore"] }
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-acpi = { workspace = true, features = ["x86", "pci"], optional = true }
+# The pieces of the flow every PSP-booted SoC shares.
+fstart-platform-amd = { path = "../platform-amd", optional = true, features = ["media"] }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }

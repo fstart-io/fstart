@@ -8,7 +8,7 @@
 //! IOMMU) through [`NonPci`].
 
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::sp3::df::plan::{Pools, RootBridgePlan, Window};
+use fstart_driver_amd::df::plan::{Pools, RootBridgePlan, Window};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_pci::{PciRole, PciRoot};
 
@@ -114,7 +114,7 @@ impl NonPci {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::df::BusRange;
+    use fstart_driver_amd::df::BusRange;
     use fstart_pci::PciWindowKind;
 
     fn plan() -> RootBridgePlan {

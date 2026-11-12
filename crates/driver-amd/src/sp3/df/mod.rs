@@ -18,15 +18,11 @@
 
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::RegisterLongName;
-use tock_registers::fields::FieldValue;
 use tock_registers::interfaces::{Readable, Writeable};
 
 pub mod dram;
-pub mod plan;
 pub mod program;
 pub mod topology;
-#[cfg(feature = "naples")]
-pub mod v2;
 #[cfg(any(feature = "rome", feature = "milan"))]
 pub mod v3;
 
@@ -41,85 +37,8 @@ pub mod rome;
 #[allow(dead_code)]
 pub(crate) mod model;
 
+pub use crate::df::{BusRange, DramRule, Version};
 use crate::df::{DfReg, DfRegister, Target};
-
-use crate::df::regs;
-
-/// An inclusive bus range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BusRange {
-    pub base: u8,
-    pub limit: u8,
-}
-
-impl BusRange {
-    pub const fn count(&self) -> u16 {
-        self.limit as u16 - self.base as u16 + 1
-    }
-}
-
-/// A decoded DRAM address rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DramRule {
-    /// First byte.
-    pub base: u64,
-    /// One past the last byte.
-    pub end: u64,
-    /// DstFabricID of the rule (the CS, or the first CS of an interleave).
-    pub dst: u16,
-    /// The rule's range has the MMIO hole (DramHoleControl) cut out.
-    pub hole: bool,
-    /// Interleaved across sockets.
-    pub socket_interleave: bool,
-    /// Die interleave field (DF2 `limit[11:10]`, DF3 `base[7:6]`).
-    pub die_interleave: u8,
-    /// Channel interleave encoding (DF2 `base[7:4]`, DF3 `base[5:2]`).
-    pub channel_interleave: u8,
-}
-
-/// The per-version DF layout: DstFabricID widths and the fields that moved
-/// between DF2 and DF3 (SOC_DF §3.1, §3.4.4).
-pub trait Version {
-    /// MmioAddress rule triples.
-    const MMIO_PAIRS: u8 = 16;
-    /// X86IO rule pairs.
-    const IO_PAIRS: u8 = 8;
-    /// CfgAddressMap registers.
-    const CFG_MAPS: u8 = 8;
-    /// DramBase/LimitAddress rules.
-    const DRAM_RULES: u8 = 16;
-
-    type MmioCtrl: RegisterLongName;
-    type IoLimit: RegisterLongName;
-    type CfgMap: RegisterLongName;
-    type VgaEn: RegisterLongName;
-
-    /// MmioAddressControl routing to `dst`, RE and WE set, NP clear.
-    fn mmio_ctrl(dst: u16) -> FieldValue<u32, Self::MmioCtrl>;
-    /// X86IOLimitAddress: `limit` is the last port, routed to `dst`.
-    fn io_limit(limit: u32, dst: u16) -> FieldValue<u32, Self::IoLimit>;
-    /// CfgAddressMap routing `bus` to `dst`, RE and WE set.
-    fn cfg_map(bus: BusRange, dst: u16) -> FieldValue<u32, Self::CfgMap>;
-    /// Decode an enabled (RE and WE) CfgAddressMap.
-    fn decode_cfg_map(value: u32) -> Option<(BusRange, u16)>;
-    /// Decode a valid DRAM rule.
-    fn decode_dram(base: u32, limit: u32) -> Option<DramRule>;
-    /// VGAEn routing the legacy VGA window to `dst`, enabled, CPU access on.
-    fn vga(dst: u16) -> FieldValue<u32, Self::VgaEn>;
-
-    fn mmio_ctrl_reg(pair: u8) -> DfReg<Self::MmioCtrl> {
-        DfReg::new(0, regs::MMIO_CTRL_OFFSET).at(pair, regs::MMIO_STRIDE)
-    }
-    fn io_limit_reg(pair: u8) -> DfReg<Self::IoLimit> {
-        DfReg::new(0, regs::IO_LIMIT_OFFSET).at(pair, regs::IO_STRIDE)
-    }
-    fn cfg_map_reg(map: u8) -> DfReg<Self::CfgMap> {
-        DfReg::new(0, regs::CFG_MAP_OFFSET).at(map, regs::CFG_MAP_STRIDE)
-    }
-    fn vga_reg() -> DfReg<Self::VgaEn> {
-        DfReg::new(0, regs::VGA_EN_OFFSET)
-    }
-}
 
 /// The DF of a system, reached through config space on bus 0.
 #[derive(Clone, Copy)]
@@ -162,6 +81,24 @@ impl<P: ConfigRegionAccess + Clone> Df<P> {
         unsafe { self.reg(node, Target::Node, reg) }
     }
 
+    /// Each of `nodes` as its own [`crate::df::Df`], for the writers
+    /// shared with the single-socket SoCs.
+    ///
+    /// # Safety
+    /// As [`reg`](Self::reg), for every node in `nodes`.
+    pub unsafe fn each(
+        &self,
+        nodes: &[crate::sp3::topology::Node],
+    ) -> heapless::Vec<crate::df::Df<P>, { crate::df::MAX_NODES as usize }> {
+        nodes
+            .iter()
+            // SAFETY: forwarded contract.
+            .map(|n| unsafe {
+                crate::df::Df::for_node(self.pci.clone(), n.device - crate::df::NODE0_DEVICE)
+            })
+            .collect()
+    }
+
     /// Instance `inst` of `reg` on `node` ([`Target::Instance`]).
     ///
     /// # Safety
@@ -187,6 +124,7 @@ pub(crate) fn or_bits<P: ConfigRegionAccess + Clone>(reg: &DfRegister<P>, bits: 
 mod tests {
     use super::model::DfModel;
     use super::*;
+    use crate::df::regs;
 
     #[test]
     fn node_and_instance_access() {

@@ -1,9 +1,7 @@
 //! Device attachment address types.
 
-use serde::{Deserialize, Serialize};
-
 /// How a device physically attaches to its parent bus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusAddress {
     /// PCI or PCIe device: (device number, function number).
     Pci(u8, u8),

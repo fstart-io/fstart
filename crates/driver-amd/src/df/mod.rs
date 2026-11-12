@@ -6,10 +6,12 @@
 //! during silicon init.
 //!
 //! Every die has its own Data Fabric PCI device 0x18 + node on bus 0
-//! ([`Die`]). Single-die parts (Raven/Picasso) use node 0. The address map
-//! and its resource split are [`map`]; the init sequences of the SoCs'
-//! fabrics are [`picasso`] (AGESA AmdFabricRv) and [`zeppelin`]
-//! (AmdFabricZp).
+//! ([`Die`]). Single-die parts (Raven/Picasso) use node 0. The MMIO, I/O
+//! and bus split over the root bridges is [`plan`], its writers
+//! [`program`], and the per-version layout of those rules [`Version`]
+//! ([`v2::Df2`]; DF3 is SP3's). [`map`] reads back what is routed; the init
+//! sequences of the SoCs' fabrics are [`picasso`] (AGESA AmdFabricRv) and
+//! [`zeppelin`] (AmdFabricZp).
 //!
 //! ```ignore
 //! df.instance(F3_CCM_108, INST_CCM0).modify(Ccm108::BIT6::SET);
@@ -30,13 +32,120 @@ mod die;
 pub mod map;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+pub mod plan;
+pub mod program;
 pub mod regs;
 pub mod v2;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
 #[cfg(any(feature = "picasso", feature = "zeppelin"))]
-pub use die::{Die, die_count, dies};
+pub use die::{Die, die_count, dies, root_bridges};
+
+/// Most root bridges a system has: 2 sockets × 4 (Naples dies, Rome/Milan
+/// NBIO quadrants).
+pub const MAX_ROOT_BRIDGES: usize = 8;
+
+/// One PCI root bridge: a ZP die's NBIO (Naples) or an IOMS/NBIO quadrant
+/// (Rome, Milan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootBridge {
+    pub socket: u8,
+    /// Die (Naples) or NBIO quadrant / IOMS index (Rome, Milan) within the
+    /// socket.
+    pub index: u8,
+    /// DF fabric ID of the IOMS, as DstFabricID in the address maps.
+    pub fabric_id: u16,
+    /// First bus routed to this root bridge.
+    pub bus_base: u8,
+    /// Last bus routed to this root bridge.
+    pub bus_limit: u8,
+    /// The root bridge with the FCH (legacy IO/MMIO, VGA by default).
+    pub primary: bool,
+}
+
+impl RootBridge {
+    /// Physical index over the system: `socket * per_socket + index`.
+    pub const fn physical(&self, per_socket: usize) -> usize {
+        self.socket as usize * per_socket + self.index as usize
+    }
+}
+
+/// An inclusive bus range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusRange {
+    pub base: u8,
+    pub limit: u8,
+}
+
+impl BusRange {
+    pub const fn count(&self) -> u16 {
+        self.limit as u16 - self.base as u16 + 1
+    }
+}
+
+/// A decoded DRAM address rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DramRule {
+    /// First byte.
+    pub base: u64,
+    /// One past the last byte.
+    pub end: u64,
+    /// DstFabricID of the rule (the CS, or the first CS of an interleave).
+    pub dst: u16,
+    /// The rule's range has the MMIO hole (DramHoleControl) cut out.
+    pub hole: bool,
+    /// Interleaved across sockets.
+    pub socket_interleave: bool,
+    /// Die interleave field (DF2 `limit[11:10]`, DF3 `base[7:6]`).
+    pub die_interleave: u8,
+    /// Channel interleave encoding (DF2 `base[7:4]`, DF3 `base[5:2]`).
+    pub channel_interleave: u8,
+}
+
+/// The per-version DF layout: DstFabricID widths and the fields that moved
+/// between DF2 and DF3 (SOC_DF §3.1, §3.4.4).
+pub trait Version {
+    /// MmioAddress rule triples.
+    const MMIO_PAIRS: u8 = 16;
+    /// X86IO rule pairs.
+    const IO_PAIRS: u8 = 8;
+    /// CfgAddressMap registers.
+    const CFG_MAPS: u8 = 8;
+    /// DramBase/LimitAddress rules.
+    const DRAM_RULES: u8 = 16;
+
+    type MmioCtrl: RegisterLongName;
+    type IoLimit: RegisterLongName;
+    type CfgMap: RegisterLongName;
+    type VgaEn: RegisterLongName;
+
+    /// MmioAddressControl routing to `dst`, RE and WE set, NP clear.
+    fn mmio_ctrl(dst: u16) -> FieldValue<u32, Self::MmioCtrl>;
+    /// X86IOLimitAddress: `limit` is the last port, routed to `dst`.
+    fn io_limit(limit: u32, dst: u16) -> FieldValue<u32, Self::IoLimit>;
+    /// CfgAddressMap routing `bus` to `dst`, RE and WE set.
+    fn cfg_map(bus: BusRange, dst: u16) -> FieldValue<u32, Self::CfgMap>;
+    /// Decode an enabled (RE and WE) CfgAddressMap.
+    fn decode_cfg_map(value: u32) -> Option<(BusRange, u16)>;
+    /// Decode a valid DRAM rule.
+    fn decode_dram(base: u32, limit: u32) -> Option<DramRule>;
+    /// VGAEn routing the legacy VGA window to `dst`, enabled, CPU access on.
+    fn vga(dst: u16) -> FieldValue<u32, Self::VgaEn>;
+
+    fn mmio_ctrl_reg(pair: u8) -> DfReg<Self::MmioCtrl> {
+        DfReg::new(0, regs::MMIO_CTRL_OFFSET).at(pair, regs::MMIO_STRIDE)
+    }
+    fn io_limit_reg(pair: u8) -> DfReg<Self::IoLimit> {
+        DfReg::new(0, regs::IO_LIMIT_OFFSET).at(pair, regs::IO_STRIDE)
+    }
+    fn cfg_map_reg(map: u8) -> DfReg<Self::CfgMap> {
+        DfReg::new(0, regs::CFG_MAP_OFFSET).at(map, regs::CFG_MAP_STRIDE)
+    }
+    fn vga_reg() -> DfReg<Self::VgaEn> {
+        DfReg::new(0, regs::VGA_EN_OFFSET)
+    }
+}
 
 register_bitfields![u32,
     /// F4x5C FabricIndirectConfigAccessAddress (set 3, the one the x86 may

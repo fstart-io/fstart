@@ -13,9 +13,8 @@
 use fstart_core::services::Timer;
 
 use super::lanes::{Engine, EngineKind, Speed};
-use super::{
-    DxioError, DxioPolicy, Hooks, LoopRules, PerstPolicy, Unit, finish_unit, prop, run, state, var,
-};
+use super::{DxioPolicy, PerstPolicy};
+use crate::dxio::{DxioError, Hooks, LoopRules, Unit, finish_unit, prop, run, state, var};
 use crate::smu::SmuMessages;
 use crate::sp3::soc::Generation;
 
@@ -132,11 +131,13 @@ pub const fn rules(policy: &DxioPolicy) -> LoopRules {
             pause_at: &[state::CONFIGURED],
             perst: true,
             perst_deassert_delay_ms: policy.perst_deassert_delay_ms,
+            resume_delay_us: 0,
         },
         PerstPolicy::Deferred => LoopRules {
             pause_at: &[state::VETTING],
             perst: false,
             perst_deassert_delay_ms: 0,
+            resume_delay_us: 0,
         },
     }
 }
@@ -151,7 +152,7 @@ pub fn train<M, H, T>(
 ) -> Result<(), DxioError>
 where
     M: SmuMessages + ?Sized,
-    H: Hooks + ?Sized,
+    H: Hooks<Error = DxioError> + ?Sized,
     T: Timer + ?Sized,
 {
     let rules = rules(policy);
@@ -170,9 +171,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dxio::{Dxio, op};
     use crate::sp3::dxio::lanes::{Engine, Group, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::{FakeSmu, FakeTimer, Recorder, Window};
-    use crate::sp3::dxio::{Dxio, op};
+    use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
+    use fstart_core::services::ManualTimer;
 
     fn board() -> [Engine<'static>; 2] {
         [
@@ -246,7 +248,7 @@ mod tests {
             Generation::Rome,
             &mut units,
             &mut hooks,
-            &FakeTimer::default(),
+            &ManualTimer::ticking(),
             &policy,
         )
         .unwrap();
@@ -359,7 +361,7 @@ mod tests {
             Generation::Rome,
             &mut units,
             &mut setup,
-            &FakeTimer::default(),
+            &ManualTimer::ticking(),
             &policy,
         )
         .unwrap();
@@ -401,7 +403,7 @@ mod tests {
             Generation::Milan,
             &mut units,
             &mut hooks,
-            &FakeTimer::default(),
+            &ManualTimer::ticking(),
             &policy,
         )
         .unwrap();

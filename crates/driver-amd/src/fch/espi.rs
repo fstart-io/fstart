@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Four-window AMD eSPI controller.
 //! Picasso has none of the newer extended-window/ALERT_ENABLE register bits.
-pub use crate::ccx::tsc::Clock;
+use fstart_core::services::Timer;
 use heapless::Vec;
 use tock_registers::{
     interfaces::{Readable, Writeable},
@@ -79,16 +79,16 @@ fn update(r: &mut impl Registers, offset: u16, clear: u32, set: u32) -> Result<(
     r.write32(offset, (old & !clear) | set);
     Ok(())
 }
-fn ready(r: &mut impl Registers, clock: &mut impl Clock) -> Result<(), Error> {
-    let start = clock.now_us();
+fn ready(r: &mut impl Registers, timer: &impl Timer) -> Result<(), Error> {
+    let start = timer.timestamp_us();
     for _ in 0..=100 {
         if available(r.read32(0))? & 8 == 0 {
             return Ok(());
         }
-        if clock.now_us().wrapping_sub(start) >= 100 {
+        if timer.timestamp_us().wrapping_sub(start) >= 100 {
             break;
         }
-        clock.delay_us(1);
+        timer.delay_us(1);
     }
     Err(Error::BusyTimeout)
 }
@@ -101,20 +101,20 @@ fn clear_status(r: &mut impl Registers) -> Result<(), Error> {
 }
 fn command(
     r: &mut impl Registers,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
     header: u32,
     data: u32,
     payload: u32,
     allowed: u32,
 ) -> Result<(), Error> {
-    ready(r, clock)?;
+    ready(r, timer)?;
     clear_status(r)?;
     r.write32(4, data);
     r.write32(8, 0);
     r.write32(0xc, payload);
     r.write32(0, header | 8); // Trigger LAST.
-    ready(r, clock)?;
-    let start = clock.now_us();
+    ready(r, timer)?;
+    let start = timer.timestamp_us();
     for _ in 0..=100 {
         let status = available(r.read32(0x70))?;
         if status != 0 {
@@ -124,27 +124,22 @@ fn command(
             r.write32(0x70, status);
             return Ok(());
         }
-        if clock.now_us().wrapping_sub(start) >= 100 {
+        if timer.timestamp_us().wrapping_sub(start) >= 100 {
             break;
         }
-        clock.delay_us(1);
+        timer.delay_us(1);
     }
     Err(Error::CompletionTimeout)
 }
 fn header(kind: u32, address: u16) -> u32 {
     kind | (u32::from(address >> 8) << 8) | (u32::from(address & 255) << 16)
 }
-fn get(r: &mut impl Registers, clock: &mut impl Clock, address: u16) -> Result<u32, Error> {
-    command(r, clock, header(1, address), 0, 0, 0)?;
+fn get(r: &mut impl Registers, timer: &impl Timer, address: u16) -> Result<u32, Error> {
+    command(r, timer, header(1, address), 0, 0, 0)?;
     available(r.read32(4))
 }
-fn set(
-    r: &mut impl Registers,
-    clock: &mut impl Clock,
-    address: u16,
-    value: u32,
-) -> Result<(), Error> {
-    command(r, clock, header(0, address), value, 0, 0)
+fn set(r: &mut impl Registers, timer: &impl Timer, address: u16, value: u32) -> Result<(), Error> {
+    command(r, timer, header(0, address), value, 0, 0)
 }
 /// Expand board resource ranges into physical 256-byte windows before reset.
 /// Reject wrapping, overlapping ranges or exhaustion before any hardware write.
@@ -212,24 +207,24 @@ fn general(config: &Config, caps: u32) -> Result<(u32, u32), Error> {
 }
 fn channel(
     r: &mut impl Registers,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
     address: u16,
     config: u32,
     host_bit: u32,
 ) -> Result<(), Error> {
-    set(r, clock, address, config)?;
+    set(r, timer, address, config)?;
     if config & 1 == 0 {
         return Ok(());
     }
-    let start = clock.now_us();
+    let start = timer.timestamp_us();
     for _ in 0..=10000 {
-        if get(r, clock, address)? & 2 != 0 {
+        if get(r, timer, address)? & 2 != 0 {
             return update(r, 0x68, 0, host_bit);
         }
-        if clock.now_us().wrapping_sub(start) >= 10000 {
+        if timer.timestamp_us().wrapping_sub(start) >= 10000 {
             break;
         }
-        clock.delay_us(1);
+        timer.delay_us(1);
     }
     Err(Error::ChannelTimeout)
 }
@@ -238,7 +233,7 @@ fn channel(
 /// reset an already-active PSP/EC connection merely to rediscover CBI facts.
 pub fn initialize(
     r: &mut impl Registers,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
     config: &Config,
 ) -> Result<u32, Error> {
     let ranges = windows(config)?;
@@ -261,25 +256,25 @@ pub fn initialize(
     };
     r.write32(0x68, initial);
     // Native workaround tolerates NO_RESPONSE only when reset COMPLETE is set.
-    command(r, clock, 2, 0, 0, 1 << 4)?;
+    command(r, timer, 2, 0, 0, 1 << 4)?;
     r.write32(0x68, initial);
-    let caps = get(r, clock, 8)?;
+    let caps = get(r, timer, 8)?;
     let (slave, host) = general(config, caps)?;
-    set(r, clock, 8, slave)?;
+    set(r, timer, 8, slave)?;
     r.write32(0x68, host);
     r.write32(0xac, config.irq_polarity); // BEFORE enabling VW.
     if config.virtual_wire {
         if caps & 2 == 0 {
             return Err(Error::Capability);
         }
-        let slave_vw = get(r, clock, 0x20)?;
+        let slave_vw = get(r, timer, 0x20)?;
         let master = available(r.read32(0x2c))?;
         let count = (slave_vw >> 8 & 63).min(master >> 13 & 63);
-        channel(r, clock, 0x20, 1 | count << 16, 4)?;
-        command(r, clock, 5, 0, 3 | (0x20 << 8), 0)?; // Assert PLTRST
-        command(r, clock, 5, 0, 3 | (0x22 << 8), 0)?; // Deassert PLTRST
+        channel(r, timer, 0x20, 1 | count << 16, 4)?;
+        command(r, timer, 5, 0, 3 | (0x20 << 8), 0)?; // Assert PLTRST
+        command(r, timer, 5, 0, 3 | (0x22 << 8), 0)?; // Deassert PLTRST
     }
-    let mut peripheral = get(r, clock, 0x10)?;
+    let mut peripheral = get(r, timer, 0x10)?;
     if config.peripheral {
         if caps & 1 == 0 {
             return Err(Error::Capability);
@@ -288,7 +283,7 @@ pub fn initialize(
     } else {
         peripheral &= !5;
     }
-    channel(r, clock, 0x10, peripheral, 8)?;
+    channel(r, timer, 0x10, peripheral, 8)?;
     for (enabled, capability, address, bit) in
         [(config.oob, 4, 0x30, 2), (config.flash, 8, 0x40, 1)]
     {
@@ -298,8 +293,8 @@ pub fn initialize(
         if caps & capability == 0 {
             return Err(Error::Capability);
         }
-        let old = get(r, clock, address)?;
-        channel(r, clock, address, old | 1, bit)?;
+        let old = get(r, timer, address)?;
+        channel(r, timer, address, old | 1, bit)?;
     }
     let standard =
         u32::from(config.port80) << 2 | u32::from(config.keyboard) << 1 | u32::from(config.superio);

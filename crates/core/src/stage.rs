@@ -5,7 +5,6 @@
 
 #[cfg(feature = "host")]
 use heapless::String as HString;
-use serde::{Deserialize, Serialize};
 
 /// Fixed stage name for the Intel CAR-teardown loader stage.
 ///
@@ -17,7 +16,8 @@ use serde::{Deserialize, Serialize};
 pub const POSTCAR_STAGE_NAME: &str = "postcar";
 
 /// How stages are laid out for this board.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 #[allow(clippy::large_enum_variant)] // no_std: can't Box heapless containers
 #[cfg(feature = "host")]
 pub enum StageLayout {
@@ -28,12 +28,13 @@ pub enum StageLayout {
 }
 
 /// Configuration for a monolithic (single-stage) build.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 #[cfg(feature = "host")]
 pub struct MonolithicConfig {
     /// Build-time features and packaging inputs this stage needs.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub build: StageBuildConfig,
     /// Load/run address
     pub load_addr: u64,
@@ -45,7 +46,7 @@ pub struct MonolithicConfig {
     /// allocation. The build emits a sized static
     /// (`_FSTART_HEAP`) and a size constant (`_FSTART_HEAP_SIZE`) that
     /// the stage allocator references via `extern "C"` at link time.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub heap_size: Option<u32>,
     /// Explicit address for data/BSS/stack in RAM (XIP builds only).
     ///
@@ -53,37 +54,41 @@ pub struct MonolithicConfig {
     /// placed in RAM. By default they go at the start of the first RAM
     /// region. Set this to reserve the start of RAM for other uses
     /// (e.g., QEMU places the DTB at the base of RAM on AArch64).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub data_addr: Option<u64>,
     /// The stage reaches memory by other means (an AMD PSP copies it from
     /// its own flash region), so the FFS carries no copy of it.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    #[cfg_attr(
+        feature = "host",
+        serde(default, skip_serializing_if = "core::ops::Not::not")
+    )]
     pub external: bool,
 }
 
 /// Configuration for one stage in a multi-stage build.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 #[cfg(feature = "host")]
 pub struct StageConfig {
     /// Stage name (e.g., "bootblock", "main")
     pub name: HString<32>,
     /// Build-time features and packaging inputs this stage needs.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub build: StageBuildConfig,
     /// Where this stage is loaded in memory.
     ///
     /// For the first x86_64 ROM/XIP stage this may be omitted/zero; tooling
     /// then selects the topmost ROM region and the linker/FFS place the
     /// bootblock top-aligned in that region.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub load_addr: u64,
     /// Stack size in bytes
     pub stack_size: u32,
     /// Heap size in bytes for the bump allocator.
     ///
     /// Same semantics as [`MonolithicConfig::heap_size`].
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub heap_size: Option<u32>,
     /// Where this stage executes from
     pub runs_from: RunsFrom,
@@ -94,7 +99,7 @@ pub struct StageConfig {
     /// `Lz4` when loaded by the stage-load helper; stages copied directly by
     /// platform boot-source code must remain `None` because that path copies raw
     /// bytes and jumps.
-    #[serde(default = "default_stage_compression")]
+    #[cfg_attr(feature = "host", serde(default = "default_stage_compression"))]
     pub compression: crate::ffs::Compression,
     /// Explicit address for data/BSS/stack in RAM (XIP stages only).
     ///
@@ -102,7 +107,7 @@ pub struct StageConfig {
     /// runs from ROM (XIP), this offsets writable sections away from the
     /// default RAM base. Needed on AArch64 where QEMU places the DTB at
     /// the base of RAM.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub data_addr: Option<u64>,
 }
 
@@ -111,59 +116,62 @@ pub struct StageConfig {
 /// This is deliberately not an execution plan. Fixed platform flows decide
 /// runtime ordering; this only tells the build tool which optional code and
 /// image entries a board-owned stage needs.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 #[cfg(feature = "host")]
 pub struct StageBuildConfig {
     /// Whether this stage reads the firmware image/FFS from the board's
     /// configured firmware window.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub firmware_image: Option<FirmwareImageConfig>,
     /// Whether this stage verifies the FFS manifest signature.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub verify_firmware: bool,
     /// Name of the next stage this stage packages/loads from FFS, if any.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub load_next_stage: Option<HString<32>>,
     /// Whether this stage hands off to the selected payload.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub payload: bool,
     /// Whether this stage prepares an FDT.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub fdt: bool,
     /// Whether this stage scans/initializes PCI.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub pci: bool,
     /// Whether this stage emits or loads ACPI tables.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub acpi: bool,
     /// Whether this stage emits SMBIOS tables.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub smbios: bool,
     /// Whether this stage initializes APs/SMM.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub mp: Option<MpBuildConfig>,
 }
 
 /// Firmware-image access needed by a stage.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 #[cfg(feature = "host")]
 pub struct FirmwareImageConfig {
     /// Optional temporary RAM arena available to FFS/payload code.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub temp_ram_buffer: Option<TempRamBuffer>,
 }
 
 /// MP/SMM build metadata for a stage.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 #[cfg(feature = "host")]
 pub struct MpBuildConfig {
     /// Maximum logical CPU count to attempt (BSP + APs).
     pub max_cpus: u16,
     /// Enable SMM setup.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub smm: bool,
 }
 
@@ -182,7 +190,8 @@ pub struct MpBuildConfig {
 /// board without, it lands them in RAM. No separate `Car` variant is
 /// required; the distinction is fully expressed by the presence of
 /// `memory.car` in the memory map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 #[cfg(feature = "host")]
 pub enum RunsFrom {
     /// Execute in place from ROM (XIP).
@@ -239,8 +248,9 @@ pub fn effective_stage_load_addr(
 /// it for short-lived copies needed by non-memory-mapped providers or parsers
 /// that need contiguous input. The buffer must be valid writable RAM and must
 /// not overlap any source image bytes being copied into it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct TempRamBuffer {
     /// Base address of the scratch arena in RAM.
     pub base: u64,

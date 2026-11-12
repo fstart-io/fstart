@@ -6,14 +6,17 @@ license.workspace = true
 
 [features]
 default = []
-std = ["serde/std", "heapless/serde"]
-alloc = ["serde/alloc"]
-host = ["std", "dep:fstart-amdfw-format"]
+std = []
+alloc = []
+# Host tools: the build plan carries these types as JSON.
+host = ["std", "dep:serde", "serde/std", "heapless/serde", "dep:fstart-amdfw-format"]
 pci = []
+# Test doubles of the services (`ManualTimer`).
+testing = []
 
 [dependencies]
 ufmt = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, optional = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 fstart-amdfw-format = { workspace = true, features = ["serde"], optional = true }

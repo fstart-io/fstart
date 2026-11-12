@@ -7,7 +7,7 @@
 //! override the bifurcation of a PCIe card's group ([`KNOBS`]), which keeps
 //! the card's redriver setting and splits its x16 link.
 
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::hotplug::{
     Expander, Hotplug, HotplugFunction, HotplugI2c, HotplugKind, format,
 };

@@ -31,15 +31,14 @@ pub const D1_MMC0_BASE: u64 = 0x0402_0000;
 // ---------------------------------------------------------------------------
 
 /// D1 MMC controllers supported by this initial boot closure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum D1MmcController {
     /// SD/MMC controller zero.
     Mmc0,
 }
 
 /// Board-owned MMC policy. Fixed D1 addresses are not configuration.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct D1MmcConfig {
     pub controller: D1MmcController,
 }

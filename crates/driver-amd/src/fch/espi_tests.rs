@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::espi::*;
-use crate::ccx::tsc::testing::Elapsed as Timer;
+use fstart_core::services::ManualTimer;
 use std::{collections::BTreeMap, vec::Vec};
 struct Controller {
     regs: BTreeMap<u16, u32>,
@@ -120,7 +120,7 @@ fn config() -> Config {
 fn dalboz_connection_channels_pltrst_and_exact_decode_widths() {
     let mut controller = Controller::new();
     assert_eq!(
-        initialize(&mut controller, &mut Timer(0), &config()).unwrap(),
+        initialize(&mut controller, &ManualTimer::new(), &config()).unwrap(),
         0xe200000c
     );
     assert_eq!(
@@ -189,7 +189,7 @@ fn malformed_ranges_preflight_and_command_error_stops_connection() {
     });
     let mut controller = Controller::new();
     assert_eq!(
-        initialize(&mut controller, &mut Timer(0), &invalid),
+        initialize(&mut controller, &ManualTimer::new(), &invalid),
         Err(Error::Window)
     );
     assert!(controller.writes.is_empty());
@@ -218,7 +218,7 @@ fn malformed_ranges_preflight_and_command_error_stops_connection() {
     );
     controller.fail = Some(3);
     assert_eq!(
-        initialize(&mut controller, &mut Timer(0), &config()),
+        initialize(&mut controller, &ManualTimer::new(), &config()),
         Err(Error::Status((1 << 28) | 4))
     );
     assert_eq!(controller.frames.len(), 3);

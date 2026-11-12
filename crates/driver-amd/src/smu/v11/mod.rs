@@ -501,8 +501,9 @@ pub fn sp3_workarounds<M: SmuMessages + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smu::model::{FakeTimer, NoDelay, SmuModel};
+    use crate::smu::model::{NoDelay, SmuModel};
     use crate::smu::response;
+    use fstart_core::services::ManualTimer;
 
     fn mailbox(m: &SmuModel, generation: Generation) -> crate::smu::Smu<SmuModel, NoDelay> {
         m.smu(id_limit(generation))
@@ -523,7 +524,7 @@ mod tests {
         let mb = mailbox(&m, Generation::Milan);
         let mask = feature_mask(Revision::GnB1, &FeaturePolicy::default());
         let p = CcxDonePolicy::donor(Revision::GnB1);
-        ccx_done(&mb, Generation::Milan, mask, &p, &FakeTimer::default()).unwrap();
+        ccx_done(&mb, Generation::Milan, mask, &p, &ManualTimer::ticking()).unwrap();
         let sent = m.sent.borrow();
         let ids: Vec<_> = sent.iter().map(|s| s.0).collect();
         assert_eq!(ids, [0x03, 0x0C, 0x38, 0x37, 0x43, 0x03, 0x42]);
@@ -537,12 +538,12 @@ mod tests {
     fn ccx_done_rome_waits_and_rejects_milan_ids() {
         let m = SmuModel::new(MAILBOX, response::OK);
         let mb = mailbox(&m, Generation::Rome);
-        let timer = FakeTimer::default();
+        let timer = ManualTimer::ticking();
         let p = CcxDonePolicy::donor(Revision::SspB0);
         ccx_done(&mb, Generation::Rome, features::ROME_SP3, &p, &timer).unwrap();
         assert_eq!(m.ids(), [0x03, 0x0C, 0x03]);
         assert_eq!(m.sent.borrow()[1].1[0], 0x86);
-        assert!(timer.0.load(core::sync::atomic::Ordering::Relaxed) >= 10_000);
+        assert!(timer.now() >= 10_000);
         assert_eq!(
             send1(&mb, milan::SET_HOTPLUG_TABLE_ADDR, 0),
             Err(SmuError::Rejected(response::UNKNOWN_CMD))

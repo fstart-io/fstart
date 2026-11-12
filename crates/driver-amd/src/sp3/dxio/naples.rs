@@ -9,7 +9,8 @@
 
 use fstart_core::services::Timer;
 
-use super::{DxioError, DxioPolicy, Hooks, LoopRules, Unit, finish_unit, run, state, var};
+use super::DxioPolicy;
+use crate::dxio::{DxioError, Hooks, LoopRules, Unit, finish_unit, run, state, var};
 use crate::smu::SmuMessages;
 
 /// The DXIO SMU message on Naples (`smu::v9::msg::DXIO`).
@@ -42,6 +43,7 @@ pub const fn rules(concurrent: bool) -> LoopRules {
         pause_at: if concurrent { &[state::VETTING] } else { &[] },
         perst: true,
         perst_deassert_delay_ms: 0,
+        resume_delay_us: 0,
     }
 }
 
@@ -53,7 +55,7 @@ pub fn train<M, H, T>(
 ) -> Result<(), DxioError>
 where
     M: SmuMessages + ?Sized,
-    H: Hooks + ?Sized,
+    H: Hooks<Error = DxioError> + ?Sized,
     T: Timer + ?Sized,
 {
     let rules = rules(policy.naples_concurrent);
@@ -76,10 +78,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dxio::{Dxio, op};
     use crate::sp3::dxio::lanes::{Engine, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::{FakeSmu, FakeTimer, Recorder, Window};
-    use crate::sp3::dxio::{Dxio, op};
+    use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
     use crate::sp3::soc::Generation;
+    use fstart_core::services::ManualTimer;
 
     #[test]
     fn sequential_per_die() {
@@ -121,7 +124,7 @@ mod tests {
             (20, 27)
         );
         let mut hooks = Recorder::default();
-        train(&mut units, &mut hooks, &FakeTimer::default(), &policy).unwrap();
+        train(&mut units, &mut hooks, &ManualTimer::ticking(), &policy).unwrap();
         use op::*;
         let tail = [
             INIT,

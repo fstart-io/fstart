@@ -11,7 +11,6 @@ use super::{
     Devices, NbifStrap, sata,
     usb::{self, ResetControl},
 };
-use crate::ccx::tsc::DelayNs;
 use crate::cpu::Package;
 use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
@@ -23,6 +22,7 @@ use crate::{
     soc::zeppelin::Die,
     table,
 };
+use embedded_hal::delay::DelayNs;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

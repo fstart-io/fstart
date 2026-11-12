@@ -1,593 +1,648 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The DXIO (PCIe/SATA lane) firmware client of Picasso and Zeppelin: the
-//! platform descriptors, the engine record, the requests, the DMA slot of
-//! the engine configuration and the event loop of the training. Zeppelin
-//! uses the Picasso descriptor format, and both DXIO firmwares take the
-//! same 0x28-byte engine record.
+//! The DXIO (PCIe/SATA lane) firmware client every Zen SoC shares: the
+//! opcodes, the RPC over an SMU message, the wire records ([`wire`]), the
+//! DMA window of the heaps and the state-machine event loop.
 //!
-//! The firmware runs on the SMU of each die and is reached through the SoC's
-//! DXIO service message ([`Soc::DXIO_SERVICE`]) with the operation in the
-//! first argument. The SoC owns the lane mapping, the PCIe core registers
-//! and the NBIF settings around the training ([`Training`]): [`picasso`]
-//! and [`zeppelin`].
-use crate::{
-    ccx::tsc::{Clock, DelayNs},
-    df::Die,
-    smu,
-    soc::Soc,
-};
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{Ordering, compiler_fence},
-};
-use fstart_log::{Hex, debug, error, warn};
-use fstart_pci::ConfigRegionAccess;
-use tock_registers::{LocalRegisterCopy, register_bitfields};
-use zerocopy::{
-    FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Unaligned,
-    byteorder::{LittleEndian, U16, U32},
-};
+//! DXIO is an RPC carried by one SMU message: per die on Picasso, Zeppelin
+//! and Naples (0x0F on ZP), per IOD on Rome and Milan (0x08). All take the
+//! same opcodes, the same 0x28-byte engine record and the same state
+//! machine; they differ in how board lanes become engines, in the request
+//! sequence and in the work at the events ([`Hooks`]): [`picasso`],
+//! [`zeppelin`] and [`crate::sp3::dxio`].
 
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+mod descriptor;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+pub mod wire;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum EngineType {
-    Pcie = 1,
-    Sata = 3,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum LinkSpeed {
-    Maximum = 0,
-    Gen1 = 1,
-    Gen2 = 2,
-    Gen3 = 3,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Hotplug {
-    Disabled,
-    Basic,
-    Server,
-    Enhanced,
-    Inboard,
-    ServerSsd,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Aspm {
-    Disabled,
-    L0s,
-    L1,
-    L0sL1,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ClockRequest {
-    Disabled = 0,
-    Pin0,
-    Pin1,
-    Pin2,
-    Pin3,
-    Pin4,
-    Pin5,
-    Pin6,
-    Pin7,
-    Pin8,
-    Graphics = 12,
-    Always = 255,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SataChannel {
-    Other,
-    Short,
-    Long,
+use core::ptr::NonNull;
+use core::sync::atomic::{Ordering, compiler_fence};
+
+use fstart_core::services::Timer;
+use heapless::Vec;
+use zerocopy::FromBytes;
+
+use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub use descriptor::*;
+use wire::{ANCILLARY_MAX, ENGINE_HEAP_MAX, FwEngine, Heaps, MAX_ENGINES};
+
+/// DXIO opcodes (`args[0]`). Names as in Oxide's `milan/dxio_impl.h`,
+/// checked against the donor's use of each (§3.1).
+pub mod op {
+    /// Initialize the firmware.
+    pub const INIT: u32 = 0x00;
+    pub const GET_SM_STATE: u32 = 0x09;
+    /// `| SINGLE` for one engine.
+    pub const SET_LINK_SPEED: u32 = 0x10;
+    pub const SET_LINK_SPEED_SINGLE: u32 = 0x800;
+    /// Reply `[2]`, `[3]` = major, minor.
+    pub const GET_VERSION: u32 = 0x13;
+    pub const GET_ENGINE_CFG: u32 = 0x14;
+    pub const SET_VARIABLE: u32 = 0x22;
+    pub const LOAD_DATA: u32 = 0x23;
+    pub const LOAD_CAPS: u32 = 0x24;
+    /// Only on the early-train unit.
+    pub const RELOAD_SM: u32 = 0x2D;
+    /// ZP post-training (Zeppelin; Naples packages other than 4/8, unused
+    /// on SP3). Its result is ignored.
+    pub const POST_TRAINING: u32 = 0x34;
+    pub const SET_RUNTIME_PROP: u32 = 0x3A;
+    /// Milan 2P xGMI (meaning unnamed, "xGMI18GACOFC", §3.13).
+    pub const XGMI_BER_ADAPT: u32 = 0x40;
+    pub const INIT_ESM: u32 = 0x53;
+    pub const SM_START: u32 = 0x307;
+    pub const SM_RESUME: u32 = 0x308;
 }
 
-/// One engine (PCIe port or SATA lane group) of a board. The lanes are
-/// logical lanes; `start_lane > end_lane` means lane reversal.
+/// Heap types of LOAD_DATA.
+pub mod heap {
+    pub const MACPCS: u32 = 2;
+    pub const ENGINE_CONFIG: u32 = 3;
+    pub const GPIO: u32 = 5;
+    pub const ANCILLARY: u32 = 6;
+}
+
+/// SET_VARIABLE variables (Oxide names, §3.2).
+pub mod var {
+    pub const SKIP_PSP: u32 = 0x0D;
+    pub const RET_AFTER_MAP: u32 = 0x0E;
+    pub const RET_AFTER_CONF: u32 = 0x0F;
+    pub const ANCILLARY_V1: u32 = 0x10;
+    pub const NTB_HP_EN: u32 = 0x11;
+    pub const MAP_EXACT_MATCH: u32 = 0x12;
+    pub const S3_MODE: u32 = 0x13;
+    pub const PHY_PROG: u32 = 0x14;
+    pub const PCIE_COMPL: u32 = 0x23;
+    pub const SLIP_INTERVAL: u32 = 0x24;
+    pub const POWER_OFF_DELAY: u32 = 0x25;
+}
+
+/// SET_RUNTIME_PROP `{engine, sub}` groups.
+pub mod prop {
+    pub const SET_CONF: u32 = 0;
+    pub const TRAINING_TIMERS: u32 = 2;
+    pub const CLOCK_GATING: u32 = 3;
+    /// `args[1]` of the xGMI requests.
+    pub const XGMI: u32 = 0x22;
+}
+
+/// GetSmState reply types (Oxide `zen/dxio.h`).
+pub mod reply {
+    pub const NONE: u32 = 0;
+    pub const GENERIC: u32 = 1;
+    pub const SM: u32 = 2;
+    pub const HPSM: u32 = 3;
+    pub const RESET: u32 = 4;
+}
+
+/// State machine states (Oxide names).
+pub mod state {
+    pub const INIT: u32 = 0x00;
+    pub const DISABLED: u32 = 0x01;
+    pub const SCANNED: u32 = 0x02;
+    pub const CANNED: u32 = 0x03;
+    pub const LOADED: u32 = 0x04;
+    pub const CONFIGURED: u32 = 0x05;
+    pub const IN_EARLY_TRAIN: u32 = 0x06;
+    pub const EARLY_TRAINED: u32 = 0x07;
+    pub const VETTING: u32 = 0x08;
+    pub const GET_VET: u32 = 0x09;
+    pub const NO_VET: u32 = 0x0A;
+    pub const GPIO_INIT: u32 = 0x0B;
+    pub const NHP_TRAIN: u32 = 0x0C;
+    pub const DONE: u32 = 0x0D;
+    pub const ERROR: u32 = 0x0E;
+    pub const MAPPED: u32 = 0x0F;
+}
+
+/// DXIO result codes (`args[0]` low byte).
+pub mod result {
+    pub const ERROR: u32 = 2;
+    pub const OK: u32 = 3;
+}
+
+/// The donor waits forever; fstart bounds the state machine at 60 s.
+pub const TIMEOUT_US: u64 = 60_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Descriptor {
-    pub engine: EngineType,
-    pub start_lane: u8,
-    pub end_lane: u8,
-    /// `gpio_group_id`: unused on Picasso, passed through on Zeppelin.
-    pub gpio_group: u8,
-    pub device: u8,
-    pub function: u8,
-    pub present: bool,
-    pub speed: LinkSpeed,
-    pub hotplug: Hotplug,
-    pub aspm: Aspm,
-    pub clock_request: ClockRequest,
-    pub l1_1: bool,
-    pub l1_2: bool,
-    pub turn_off_unused_lanes: bool,
-    pub sata_channel: SataChannel,
-}
-impl Descriptor {
-    /// A present PCIe port at maximum speed without hotplug or ASPM.
-    pub const fn pcie(start_lane: u8, end_lane: u8, device: u8, function: u8) -> Self {
-        Self {
-            engine: EngineType::Pcie,
-            start_lane,
-            end_lane,
-            gpio_group: 1,
-            device,
-            function,
-            present: true,
-            speed: LinkSpeed::Maximum,
-            hotplug: Hotplug::Disabled,
-            aspm: Aspm::Disabled,
-            clock_request: ClockRequest::Disabled,
-            l1_1: false,
-            l1_2: false,
-            turn_off_unused_lanes: false,
-            sata_channel: SataChannel::Other,
-        }
-    }
-    pub const fn sata(start_lane: u8, end_lane: u8, channel: SataChannel) -> Self {
-        Self {
-            engine: EngineType::Sata,
-            present: false,
-            device: 0,
-            function: 0,
-            sata_channel: channel,
-            ..Self::pcie(start_lane, end_lane, 0, 0)
-        }
-    }
-    /// (lowest, highest) lane.
-    pub const fn lanes(&self) -> (u8, u8) {
-        if self.start_lane <= self.end_lane {
-            (self.start_lane, self.end_lane)
-        } else {
-            (self.end_lane, self.start_lane)
-        }
-    }
-    pub const fn devfn(&self) -> u8 {
-        fstart_pci::devfn(self.device, self.function)
-    }
-}
-
-register_bitfields![u32,
-    /// Engine record +0x10, PCIe engines only.
-    pub PortFlags [
-        PRESENT OFFSET(0) NUMBITS(1) [],
-        LANE_REVERSAL OFFSET(3) NUMBITS(1) [],
-        SPEED OFFSET(4) NUMBITS(2) [],
-        HOTPLUG OFFSET(8) NUMBITS(3) [],
-        /// Always set by the vendor code (meaning unknown).
-        FLAG_19 OFFSET(19) NUMBITS(1) [],
-        TURN_OFF_UNUSED_LANES OFFSET(20) NUMBITS(1) []
-    ]
-];
-
-/// The engine record of the DXIO firmware's platform descriptor. The
-/// firmware fills in `port` (the port of the engine's PCIe core) and clears
-/// `PortFlags::PRESENT` of ports it could not use.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
-pub struct Engine {
-    pub(crate) kind: u8,
-    pub(crate) hotplug: u8,
-    pub(crate) start_lane: u8,
-    pub(crate) end_lane: u8,
-    pub(crate) gpio_group: u8,
-    /// Zeppelin: the descriptor's GPIO group; zero on Picasso.
-    pub(crate) gpio_group2: u8,
-    reserved06: [u8; 2],
-    pub(crate) sata_channel: u8,
-    reserved09: [u8; 3],
-    pub(crate) devfn: U32<LittleEndian>,
-    pub(crate) port_flags: U32<LittleEndian>,
-    reserved14: [u8; 5],
-    pub(crate) port: u8,
-    reserved1a: [u8; 14],
-}
-const _: () = assert!(size_of::<Engine>() == 0x28);
-impl Engine {
-    /// Encode `d` with its lanes already translated into the firmware's
-    /// numbering. Both SoCs override speed and lane power-off by policy.
-    pub(crate) fn new(
-        d: &Descriptor,
-        (start, end): (u8, u8),
-        speed: LinkSpeed,
-        turn_off_unused_lanes: bool,
-    ) -> Self {
-        let mut engine = Self::new_zeroed();
-        engine.kind = d.engine as u8;
-        engine.hotplug = u8::from(d.hotplug != Hotplug::Disabled);
-        engine.start_lane = start;
-        engine.end_lane = end;
-        engine.gpio_group = 1;
-        if d.engine == EngineType::Sata {
-            engine.sata_channel = d.sata_channel as u8;
-            return engine;
-        }
-        engine.devfn = U32::new(u32::from(d.devfn()));
-        let hotplug = match d.hotplug {
-            Hotplug::ServerSsd => Hotplug::Server,
-            other => other,
-        };
-        let flags = PortFlags::PRESENT.val(u32::from(d.present))
-            + PortFlags::LANE_REVERSAL.val(u32::from(d.end_lane < d.start_lane))
-            + PortFlags::SPEED.val(speed as u32)
-            + PortFlags::HOTPLUG.val(hotplug as u32)
-            + PortFlags::FLAG_19::SET
-            + PortFlags::TURN_OFF_UNUSED_LANES.val(u32::from(turn_off_unused_lanes));
-        engine.port_flags = U32::new(flags.value);
-        engine
-    }
-    pub fn kind(&self) -> u8 {
-        self.kind
-    }
-    /// Lanes in the firmware's numbering.
-    pub fn lanes(&self) -> (u8, u8) {
-        (self.start_lane, self.end_lane)
-    }
-    /// Port of the engine's PCIe core, as the firmware assigned it.
-    pub fn port(&self) -> u8 {
-        self.port
-    }
-    pub fn port_flags(&self) -> LocalRegisterCopy<u32, PortFlags::Register> {
-        LocalRegisterCopy::new(self.port_flags.get())
-    }
-    /// The firmware kept the port: it can train.
-    pub fn present(&self) -> bool {
-        self.port_flags().is_set(PortFlags::PRESENT)
-    }
-}
-
-/// The platform descriptor the DXIO firmware reads (LoadData type 3) and
-/// returns (EngineConfig): a header, `N` engine records and an 8-byte tail.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
-pub struct EngineConfig<const N: usize> {
-    reserved00: [u8; 12],
-    pub(crate) count: U16<LittleEndian>,
-    reserved0e: [u8; 2],
-    pub(crate) engines: [Engine; N],
-    reserved_tail: [u8; 8],
-}
-impl<const N: usize> EngineConfig<N> {
-    /// The first `count` records hold engines.
-    pub(crate) fn from_engines(engines: impl IntoIterator<Item = Engine>) -> Self {
-        let mut config = Self::new_zeroed();
-        let count = config
-            .engines
-            .iter_mut()
-            .zip(engines)
-            .map(|(slot, engine)| *slot = engine)
-            .count();
-        config.count = U16::new(count as u16);
-        config
-    }
-    /// Fails if the firmware returned more engines than fit.
-    pub fn engines(&self) -> Result<&[Engine], EngineCountError> {
-        self.engines
-            .get(..usize::from(self.count.get()))
-            .ok_or(EngineCountError)
-    }
-    /// Active engine records followed by eight zero tail bytes; the compact
-    /// tail lies in the next zeroed record when fewer than `N` engines exist.
-    pub fn transfer_size(&self) -> Result<usize, EngineCountError> {
-        Ok(16 + size_of_val(self.engines()?) + 8)
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EngineCountError;
-
-/// DXIO operations, the first argument of the SMU DXIO service message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum Operation {
-    Version = 0,
-    State = 9,
-    Init = 0x13,
-    EngineConfig = 0x14,
-    SetVariable = 0x22,
-    LoadData = 0x23,
-    LoadCapabilities = 0x24,
-    CleanupEarly = 0x2d,
-    PostTraining = 0x34,
-    Start = 0x307,
-    Resume = 0x308,
-}
-
-/// A failed exchange with the DXIO firmware.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
-    Smu(smu::Error),
-    /// Unexpected version response.
-    Version(u32),
-    /// A request didn't return.
-    Result(u8),
-    /// The state machine failed in this state, or reported it out of order.
-    StateMachine(u8),
-    Timeout,
-    /// The DMA buffer is not below 4 GiB.
-    DmaAddress,
-    /// The firmware returned more engines than it got.
-    EngineCount,
-}
-impl From<EngineCountError> for Error {
-    fn from(_: EngineCountError) -> Self {
-        Self::EngineCount
-    }
-}
-
-const RESULT_ERROR: u8 = 2;
-const RESULT_OK: u8 = 3;
-const EVENT_NONE: u8 = 0;
-const EVENT_RESUME: u8 = 1;
-const EVENT_SM: u8 = 2;
-const EVENT_PERST: u8 = 4;
-/// The ports are configured, not trained yet.
-pub const SM_CONFIGURED: u8 = 0x05;
-const SM_DONE: u8 = 0x0d;
-/// The firmware mapped the engines to ports.
-pub const SM_MAPPED: u8 = 0x0f;
-/// Return to the host after mapping, after configuring, and use the
-/// version 1 ancillary data.
-pub const VAR_RET_AFTER_MAP: u32 = 0x0e;
-pub const VAR_RET_AFTER_CONF: u32 = 0x0f;
-pub const VAR_ANCILLARY_V1: u32 = 0x10;
-/// LoadData types.
-pub const DATA_MACPCS: u32 = 2;
-pub const DATA_ENGINE_CONFIG: u32 = 3;
-pub const DATA_GPIO: u32 = 5;
-pub const DATA_ANCILLARY: u32 = 6;
-const TIMEOUT_US: u64 = 60_000_000;
-
-/// A reply to the state request of the event loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    Done,
-    State(u8),
-    Perst {
-        deassert: bool,
+pub enum DxioError {
+    Smu(SmuError),
+    /// A request answered with a result other than OK.
+    Rpc {
+        op: u32,
+        result: u32,
     },
-    /// An error event the vendor code goes on after.
-    Error(u8),
-    Resume,
-    Unknown(u8),
+    /// GetSmState answered neither OK nor error ("Mailbox did not return").
+    NoReturn(u32),
+    /// The state machine reported an error (Rome/Milan return 8, Naples 6).
+    StateMachine {
+        state: u32,
+    },
+    Timeout,
+    /// Board engine `.0` rejected.
+    #[cfg(feature = "sp3")]
+    Lanes(usize, crate::sp3::dxio::lanes::LaneError),
+    TooManyEngines,
+    /// Unsupported tuning ID.
+    Tuning(u8),
+    /// DMA buffer too small or not reachable below 4 GiB.
+    Buffer,
+    /// The generation is not built into this firmware.
+    Unsupported,
+    /// A requested devfn is not in the default devfn table.
+    BadDevfn(u8),
 }
-pub fn event(reply: [u32; 6]) -> Result<Event, Error> {
-    let [result, kind, state] = [reply[0] as u8, reply[1] as u8, reply[2] as u8];
-    match (result, kind) {
-        (RESULT_ERROR, EVENT_SM) => Err(Error::StateMachine(state)),
-        (RESULT_ERROR, _) => Ok(Event::Error(kind)),
-        (RESULT_OK, EVENT_NONE) => Ok(Event::Done),
-        (RESULT_OK, EVENT_SM) if state == SM_DONE => Ok(Event::Done),
-        (RESULT_OK, EVENT_SM) => Ok(Event::State(state)),
-        (RESULT_OK, EVENT_PERST) => Ok(Event::Perst {
-            deassert: state != 0,
-        }),
-        (RESULT_OK, EVENT_RESUME) => Ok(Event::Resume),
-        (RESULT_OK, _) => Ok(Event::Unknown(kind)),
-        _ => Err(Error::Result(result)),
+
+impl From<SmuError> for DxioError {
+    fn from(e: SmuError) -> Self {
+        Self::Smu(e)
     }
 }
 
-/// Send `operation` to the DXIO firmware of `die`.
-pub fn rpc<S: Soc, P: ConfigRegionAccess + Copy>(
-    die: &Die<S, P>,
-    operation: Operation,
-    mut arguments: [u32; 6],
-    delay: &mut impl DelayNs,
-) -> Result<[u32; 6], Error> {
-    arguments[0] = operation as u32;
-    let reply = die.smu(S::DXIO_SERVICE, arguments, delay).map_err(|e| {
-        error!(
-            "DXIO operation {} on die {} failed",
-            Hex(operation as u64),
-            die.index()
-        );
-        Error::Smu(e)
-    })?;
-    fstart_log::trace!(
-        "DXIO {} op {}: {} {} {}",
-        die.index(),
-        Hex(operation as u64),
-        Hex(reply[0].into()),
-        Hex(reply[1].into()),
-        Hex(reply[2].into())
-    );
-    Ok(reply)
+/// A DMA window the SMU reads the heaps from and writes GetEngineCfg into.
+/// Accesses are volatile: the firmware writes it behind the compiler's back.
+pub struct DmaBuffer {
+    ptr: NonNull<u8>,
+    len: usize,
+    phys: u32,
 }
 
-/// The firmware version the client speaks; afterwards Init.
-pub fn init<S: Soc, P: ConfigRegionAccess + Copy>(
-    die: &Die<S, P>,
-    delay: &mut impl DelayNs,
-) -> Result<(), Error> {
-    let version = rpc(die, Operation::Version, [0; 6], delay)?;
-    if version[0] as u8 != RESULT_OK {
-        error!(
-            "DXIO {}: unexpected version response {}",
-            die.index(),
-            Hex(version[0].into())
-        );
-        return Err(Error::Version(version[0]));
+/// Bytes a [`DmaBuffer`] needs: heap 3, then heap 6 at [`ANCILLARY_OFFSET`].
+pub const DMA_SIZE: usize = ANCILLARY_OFFSET + ANCILLARY_MAX;
+/// Heap 6 offset in the DMA window.
+pub const ANCILLARY_OFFSET: usize = ENGINE_HEAP_MAX.next_multiple_of(64);
+
+impl DmaBuffer {
+    /// # Safety
+    /// `ptr..ptr + len` is memory the caller owns for the buffer's lifetime,
+    /// not accessed through other references, and visible to the SMU at
+    /// physical address `phys`.
+    pub unsafe fn new(ptr: *mut u8, len: usize, phys: u64) -> Result<Self, DxioError> {
+        let fits = len >= DMA_SIZE && phys.checked_add(len as u64).is_some_and(|e| e <= 1 << 32);
+        match NonNull::new(ptr) {
+            Some(ptr) if fits => Ok(Self {
+                ptr,
+                len,
+                phys: phys as u32,
+            }),
+            _ => Err(DxioError::Buffer),
+        }
     }
-    rpc(die, Operation::Init, [0; 6], delay).map(drop)
+
+    pub fn phys(&self, offset: usize) -> u32 {
+        self.phys + offset as u32
+    }
+
+    fn write(&self, offset: usize, data: &[u8]) {
+        assert!(offset + data.len() <= self.len);
+        data.iter().enumerate().for_each(|(i, &b)| {
+            // SAFETY: in bounds; constructor contract.
+            unsafe { self.ptr.as_ptr().add(offset + i).write_volatile(b) }
+        });
+        compiler_fence(Ordering::SeqCst);
+    }
+
+    fn read(&self, offset: usize, out: &mut [u8]) {
+        assert!(offset + out.len() <= self.len);
+        compiler_fence(Ordering::SeqCst);
+        out.iter_mut().enumerate().for_each(|(i, b)| {
+            // SAFETY: in bounds; constructor contract.
+            *b = unsafe { self.ptr.as_ptr().add(offset + i).read_volatile() }
+        });
+    }
 }
 
-pub fn set_variable<S: Soc, P: ConfigRegionAccess + Copy>(
-    die: &Die<S, P>,
-    variable: u32,
-    value: u32,
-    delay: &mut impl DelayNs,
-) -> Result<(), Error> {
-    rpc(
-        die,
-        Operation::SetVariable,
-        [0, variable, value, 0, 0, 0],
-        delay,
-    )
-    .map(drop)
-}
+/// Memory reserved for one [`DmaBuffer`], for a firmware without a heap
+/// allocator: a static of this type, identity mapped below 4 GiB.
+#[repr(C, align(64))]
+pub struct DmaArea(core::cell::UnsafeCell<[u8; DMA_SIZE]>);
 
-/// LoadData `kind` from DMA `address`, `dwords` long. Without an address,
-/// the firmware's defaults of that kind.
-pub fn load_data<S: Soc, P: ConfigRegionAccess + Copy>(
-    die: &Die<S, P>,
-    kind: u32,
-    data: Option<(u32, u32)>,
-    delay: &mut impl DelayNs,
-) -> Result<(), Error> {
-    let arguments = match data {
-        Some((address, dwords)) => [0, 0, address, dwords, 0, kind],
-        None => [0, 0, 0, 0, 1, kind],
-    };
-    rpc(die, Operation::LoadData, arguments, delay).map(drop)
-}
-
-/// The engine configuration of a die in DRAM, where the firmware reads it
-/// (LoadData) and writes it back (EngineConfig) with DMA.
-#[repr(C, align(16))]
-pub struct Slot<const N: usize>(UnsafeCell<EngineConfig<N>>);
-impl<const N: usize> Default for Slot<N> {
+impl Default for DmaArea {
     fn default() -> Self {
         Self::new()
     }
 }
-impl<const N: usize> Slot<N> {
+
+impl DmaArea {
     pub const fn new() -> Self {
-        // SAFETY: an EngineConfig is plain bytes; all zeros is valid.
-        Self(UnsafeCell::new(unsafe { core::mem::zeroed() }))
+        Self(core::cell::UnsafeCell::new([0; DMA_SIZE]))
     }
-    /// The DMA address, 16-byte aligned below 4 GiB.
-    pub fn address(&self) -> Result<u32, Error> {
-        let start = self.0.get() as usize;
-        let end = start + size_of::<EngineConfig<N>>();
-        if start & 15 != 0 || end > u32::MAX as usize {
-            return Err(Error::DmaAddress);
-        }
-        Ok(start as u32)
-    }
-    /// Put `config` where the firmware loads it from.
-    pub fn load(&mut self, config: &EngineConfig<N>) {
-        *self.0.get_mut() = *config;
-        compiler_fence(Ordering::SeqCst);
-    }
-    /// The engine configuration of the firmware now (EngineConfig), `size`
-    /// bytes, at most what it was loaded with.
-    pub fn read_back<S: Soc, P: ConfigRegionAccess + Copy>(
-        &self,
-        die: &Die<S, P>,
-        size: usize,
-        delay: &mut impl DelayNs,
-    ) -> Result<EngineConfig<N>, Error> {
-        // SAFETY: no DXIO request is in flight; the slot is ours.
-        unsafe { core::ptr::write_bytes(self.0.get(), 0, 1) };
-        compiler_fence(Ordering::SeqCst);
-        let arguments = [0, 0, self.address()?, (size / 4) as u32, 0, 0];
-        rpc(die, Operation::EngineConfig, arguments, delay)?;
-        compiler_fence(Ordering::SeqCst);
-        // SAFETY: the synchronous request completed its DMA. DRAM, not MMIO.
-        let config = unsafe { self.0.get().read_volatile() };
-        if config.transfer_size()? > size {
-            return Err(Error::EngineCount);
-        }
-        Ok(config)
+
+    /// The area as the DMA window of one DXIO instance.
+    ///
+    /// # Safety
+    /// The area is identity mapped, coherent DRAM the SMU reaches. It stays
+    /// reserved and unmodified until platform reset: a failed or timed-out
+    /// request does not establish DMA quiescence.
+    pub unsafe fn buffer(&'static mut self) -> Result<DmaBuffer, DxioError> {
+        let ptr = self.0.get_mut().as_mut_ptr();
+        // SAFETY: the exclusive static borrow; the caller's contract.
+        unsafe { DmaBuffer::new(ptr, DMA_SIZE, ptr as u64) }
     }
 }
 
-/// What a SoC does at the events of a die's training.
-pub trait Training {
-    type Error: From<Error>;
-    /// Wait after each resume.
-    const PAUSE_US: u32 = 0;
-    /// [`SM_MAPPED`]: the firmware mapped the engines to ports.
-    fn mapped(&mut self, delay: &mut impl DelayNs) -> Result<(), Self::Error>;
-    /// [`SM_CONFIGURED`]: the ports are configured, not trained yet.
-    fn configured(&mut self) -> Result<(), Self::Error>;
-    /// The firmware asks to assert or deassert PERST.
-    fn perst(&mut self, deassert: bool);
+impl DxioError {
+    /// A name and up to two numbers, for logs without `Debug`.
+    pub fn parts(&self) -> (&'static str, u32, u32) {
+        match *self {
+            Self::Smu(SmuError::BusyTimeout) => ("SMU mailbox busy", 0, 0),
+            Self::Smu(SmuError::CompletionTimeout) => ("SMU mailbox timeout", 0, 0),
+            Self::Smu(SmuError::Unavailable) => ("SMU mailbox unavailable", 0, 0),
+            Self::Smu(SmuError::Rejected(status)) => ("SMU mailbox status", status, 0),
+            Self::Rpc { op, result } => ("RPC result", op, result),
+            Self::NoReturn(r) => ("GetSmState no return", r, 0),
+            Self::StateMachine { state } => ("state machine error", state, 0),
+            Self::Timeout => ("state machine timeout", 0, 0),
+            #[cfg(feature = "sp3")]
+            Self::Lanes(engine, _) => ("board engine rejected", engine as u32, 0),
+            Self::TooManyEngines => ("too many engines", 0, 0),
+            Self::Tuning(id) => ("unsupported tuning", id as u32, 0),
+            Self::Buffer => ("DMA buffer", 0, 0),
+            Self::Unsupported => ("generation not built", 0, 0),
+            Self::BadDevfn(d) => ("devfn not a root port", d as u32, 0),
+        }
+    }
 }
 
-/// Start the training of `die` and answer its events until it is done or
-/// fails, at most 60 s.
-pub fn run<S: Soc, P: ConfigRegionAccess + Copy, T: Training>(
-    die: &Die<S, P>,
-    training: &mut T,
-    clock: &mut impl Clock,
-) -> Result<(), T::Error> {
-    let started = clock.now_us();
-    rpc(die, Operation::Start, [0; 6], clock)?;
-    // Also bound the states if the clock malfunctions.
-    for _ in 0..TIMEOUT_US / u64::from(T::PAUSE_US.max(1)) {
-        if clock.now_us().wrapping_sub(started) >= TIMEOUT_US {
-            break;
-        }
-        let reply = rpc(die, Operation::State, [0; 6], clock)?;
-        let event = event(reply).inspect_err(|e| match *e {
-            Error::StateMachine(state) => {
-                error!("DXIO state machine error, state {}", Hex(state.into()))
-            }
-            Error::Result(result) => {
-                error!("DXIO request didn't return: {}", Hex(result.into()))
-            }
-            _ => {}
+/// The DXIO RPC of one SMU instance.
+pub struct Dxio<'s, M: ?Sized> {
+    smu: &'s M,
+    msg: u32,
+}
+
+impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
+    /// DXIO over `smu` with SMU message `msg` (V9 0x0F, V11 0x08).
+    pub fn new(smu: &'s M, msg: u32) -> Self {
+        Self { smu, msg }
+    }
+
+    /// Send `op` with request words `req`; returns the six reply words
+    /// without judging the result.
+    pub fn raw(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
+        let mut args = [op, req[0], req[1], req[2], req[3], req[4]];
+        self.smu.send(self.msg, &mut args).inspect_err(|e| {
+            let (status, timeout) = match e {
+                SmuError::Rejected(s) => (*s, false),
+                SmuError::BusyTimeout | SmuError::CompletionTimeout | SmuError::Unavailable => {
+                    (0, true)
+                }
+            };
+            fstart_log::error!(
+                "dxio: SMU message {:#x} op {:#x}: status {:#x} timeout {}",
+                self.msg,
+                op,
+                status,
+                timeout
+            );
         })?;
-        match event {
-            Event::Done => return Ok(()),
-            Event::State(state) => {
-                debug!("DXIO {} state {}", die.index(), Hex(state.into()));
-                match state {
-                    SM_CONFIGURED => training.configured()?,
-                    SM_MAPPED => training.mapped(clock)?,
+        Ok(args)
+    }
+
+    /// Send `op` and require result OK. Rome normalizes
+    /// `(word & 0xFFFFFF00) == 0x300` to OK; the low byte carries the code.
+    pub fn rpc(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
+        let r = self.raw(op, req)?;
+        fstart_log::info!(
+            "dxio: op {:#x} req {:x} {:x} {:x} {:x} {:x} -> {:x} {:x} {:x} {:x} {:x} {:x}",
+            op,
+            req[0],
+            req[1],
+            req[2],
+            req[3],
+            req[4],
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            r[5]
+        );
+        match result_of(r[0]) {
+            result::OK => Ok(r),
+            result => Err(DxioError::Rpc { op, result }),
+        }
+    }
+
+    pub fn init(&self) -> Result<(), DxioError> {
+        self.rpc(op::INIT, [0; 5]).map(|_| ())
+    }
+
+    /// `(major, minor)`.
+    pub fn version(&self) -> Result<(u32, u32), DxioError> {
+        self.rpc(op::GET_VERSION, [0; 5]).map(|r| (r[2], r[3]))
+    }
+
+    pub fn set_var(&self, var: u32, value: u32, value2: u32) -> Result<(), DxioError> {
+        self.rpc(op::SET_VARIABLE, [var, value, value2, 0, 0])
+            .map(|_| ())
+    }
+
+    /// `{1, sub, a, b, c}`.
+    pub fn set_prop(&self, sub: u32, a: u32, b: u32, c: u32) -> Result<(), DxioError> {
+        self.rpc(op::SET_RUNTIME_PROP, [1, sub, a, b, c])
+            .map(|_| ())
+    }
+
+    pub fn load_caps(&self) -> Result<(), DxioError> {
+        self.rpc(op::LOAD_CAPS, [0; 5]).map(|_| ())
+    }
+
+    /// LOAD_DATA of `dwords` at `addr` (below 4 GiB).
+    pub fn load_heap(&self, heap: u32, addr: u32, dwords: u32) -> Result<(), DxioError> {
+        self.rpc(op::LOAD_DATA, [0, addr, dwords, 0, heap])
+            .map(|_| ())
+    }
+
+    /// An empty heap (flag 1): heaps 2 and 5 are always sent this way.
+    pub fn load_empty(&self, heap: u32) -> Result<(), DxioError> {
+        self.rpc(op::LOAD_DATA, [0, 0, 0, 1, heap]).map(|_| ())
+    }
+
+    pub fn get_engine_cfg(&self, addr: u32, dwords: u32) -> Result<(), DxioError> {
+        self.rpc(op::GET_ENGINE_CFG, [0, addr, dwords, 0, 0])
+            .map(|_| ())
+    }
+
+    pub fn reload_sm(&self, arg: u32) -> Result<(), DxioError> {
+        self.rpc(op::RELOAD_SM, [arg, 0, 0, 0, 0]).map(|_| ())
+    }
+
+    pub fn sm_start(&self) -> Result<(), DxioError> {
+        self.rpc(op::SM_START, [0; 5]).map(|_| ())
+    }
+
+    pub fn sm_resume(&self) -> Result<(), DxioError> {
+        self.rpc(op::SM_RESUME, [0; 5]).map(|_| ())
+    }
+}
+
+pub(crate) const fn result_of(word: u32) -> u32 {
+    if word & 0xFFFF_FF00 == 0x300 {
+        result::OK
+    } else {
+        word & 0xFF
+    }
+}
+
+/// What the hooks see of a DXIO instance.
+pub struct UnitView<'u> {
+    pub socket: u8,
+    /// Die within the socket (Naples; 0 on Rome/Milan).
+    pub die: u8,
+    /// The wire engines (after a GetEngineCfg readback where one happened).
+    pub engines: &'u [FwEngine],
+    /// Board engine index of each wire engine.
+    pub board: &'u [u8],
+}
+
+/// x86 work at state machine events (§3.4). Every event is followed by a
+/// resume unless the orchestrator pauses there.
+pub trait Hooks {
+    /// What the hooks and with them the event loop fail with.
+    type Error: From<DxioError>;
+    /// State 0xF MAPPED, after the GetEngineCfg readback: port mapping,
+    /// devfn remap, straps (`DxioPortMapping`, `DxioCfgBeforeReconfig`).
+    fn mapped(&mut self, _unit: &UnitView<'_>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    /// State 5 CONFIGURED (`DxioCfgAfterReconfig`).
+    fn configured(&mut self, _unit: &UnitView<'_>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    /// State 7 EARLY_TRAINED.
+    fn early_trained(&mut self, _unit: &UnitView<'_>) {}
+    /// Type 4: a PERST assert/deassert request; `reply` is the raw reply.
+    fn perst(&mut self, _unit: &UnitView<'_>, _reply: &[u32; ARGUMENT_COUNT]) {}
+    /// Deferred PERST policy: release every socket's resets between the
+    /// passes (Rome PCD 0x160, Milan 0x18F "Deassert all resets").
+    fn release_all(&mut self) {}
+}
+
+/// No-op hooks.
+impl Hooks for () {
+    type Error = DxioError;
+}
+
+/// One DXIO instance: a Naples die or a Rome/Milan socket.
+pub struct Unit<'s, M: ?Sized> {
+    pub socket: u8,
+    pub die: u8,
+    pub dxio: Dxio<'s, M>,
+    dma: DmaBuffer,
+    engine_dwords: u32,
+    pub(crate) anc_dwords: u32,
+    engines: Vec<FwEngine, MAX_ENGINES>,
+    board: Vec<u8, MAX_ENGINES>,
+    paused: bool,
+    /// GetVersion reply (Rome/Milan; Naples after Init).
+    pub version: Option<(u32, u32)>,
+}
+
+impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
+    /// A unit over `dxio` with `heaps` placed in `dma`; `board` is the
+    /// board engine index of each engine in heap 3.
+    pub fn with_heaps(
+        socket: u8,
+        die: u8,
+        dxio: Dxio<'s, M>,
+        dma: DmaBuffer,
+        heaps: &Heaps,
+        board: impl Iterator<Item = u8>,
+    ) -> Result<Option<Self>, DxioError> {
+        dma.write(0, heaps.engine_bytes());
+        dma.write(ANCILLARY_OFFSET, heaps.ancillary_bytes());
+        Ok(Some(Self {
+            socket,
+            die,
+            dxio,
+            engine_dwords: heaps.engines_len.div_ceil(4) as u32,
+            anc_dwords: (heaps.ancillary_len / 4) as u32,
+            engines: heaps.fw_engines().iter().copied().collect(),
+            board: board.collect(),
+            dma,
+            paused: false,
+            version: None,
+        }))
+    }
+
+    /// The wire engines as last sent or read back.
+    pub fn engines(&self) -> &[FwEngine] {
+        &self.engines
+    }
+
+    pub fn view(&self) -> UnitView<'_> {
+        UnitView {
+            socket: self.socket,
+            die: self.die,
+            engines: &self.engines,
+            board: &self.board,
+        }
+    }
+
+    /// Heaps 6 (if any), 2, 5 and 3, the order of every generation.
+    pub fn load_heaps(&self) -> Result<(), DxioError> {
+        if self.anc_dwords != 0 {
+            self.dxio.load_heap(
+                heap::ANCILLARY,
+                self.dma.phys(ANCILLARY_OFFSET),
+                self.anc_dwords,
+            )?;
+        }
+        self.dxio.load_empty(heap::MACPCS)?;
+        self.dxio.load_empty(heap::GPIO)?;
+        self.dxio
+            .load_heap(heap::ENGINE_CONFIG, self.dma.phys(0), self.engine_dwords)
+    }
+
+    /// GetEngineCfg into the DMA window and copy the engines back.
+    pub fn read_back(&mut self) -> Result<(), DxioError> {
+        self.dma
+            .write(0, &[0; ENGINE_HEAP_MAX][..self.engine_dwords as usize * 4]);
+        self.dxio
+            .get_engine_cfg(self.dma.phys(0), self.engine_dwords)?;
+        let mut buf = [0u8; ENGINE_HEAP_MAX];
+        self.dma
+            .read(0, &mut buf[..self.engine_dwords as usize * 4]);
+        let n = self.engines.len();
+        let returned = buf
+            .get(0x10..0x10 + n * 0x28)
+            .and_then(|b| <[FwEngine]>::ref_from_bytes(b).ok())
+            .ok_or(DxioError::Buffer)?;
+        self.engines.clear();
+        self.engines.extend(returned.iter().copied());
+        Ok(())
+    }
+}
+
+/// How one run of the event loop ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Done,
+    /// Paused at this state; the next pass resumes.
+    Paused(u32),
+}
+
+/// Per-generation event loop differences (§3.4).
+#[derive(Debug, Clone, Copy)]
+pub struct LoopRules {
+    /// States at which the loop returns without resuming.
+    pub pause_at: &'static [u32],
+    /// PERST requests are forwarded to the hooks.
+    pub perst: bool,
+    pub perst_deassert_delay_ms: u16,
+    /// Wait after each resume (Picasso: 1 ms).
+    pub resume_delay_us: u32,
+}
+
+/// Run the state machine of `unit` until DONE, a pause state or an error
+/// (Rome `ffe02383`, Milan `ffd156a0`, Naples `ffdf13fc`). Bounded by
+/// `timeout_us` where the donor polls forever.
+pub fn run<M, H, T>(
+    unit: &mut Unit<'_, M>,
+    hooks: &mut H,
+    timer: &T,
+    rules: &LoopRules,
+    timeout_us: u64,
+) -> Result<Stop, H::Error>
+where
+    M: SmuMessages + ?Sized,
+    H: Hooks + ?Sized,
+    T: Timer + ?Sized,
+{
+    let start = timer.timestamp_us();
+    let mut delayed = false;
+    let mut last = None;
+    loop {
+        if timer.timestamp_us().wrapping_sub(start) >= timeout_us {
+            return Err(DxioError::Timeout.into());
+        }
+        let r = unit.dxio.raw(op::GET_SM_STATE, [0; 5])?;
+        let (res, kind, st) = (result_of(r[0]), r[1] & 0xFF, r[2]);
+        // Bring-up trace: every distinct state-machine reply.
+        if last != Some(r) {
+            fstart_log::info!(
+                "dxio: socket {} sm {:x} {:x} {:x} {:x} {:x} {:x}",
+                unit.socket,
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5]
+            );
+            last = Some(r);
+        }
+        match (res, kind) {
+            (result::ERROR, reply::SM) => {
+                return Err(DxioError::StateMachine { state: st }.into());
+            }
+            // Error with another type: the donor logs (Naples event
+            // a1271100) and resumes.
+            (result::ERROR, _) => {}
+            (result::OK, reply::NONE) => return Ok(Stop::Done),
+            (result::OK, reply::SM) => {
+                match st {
+                    state::MAPPED => {
+                        unit.read_back()?;
+                        hooks.mapped(&unit.view())?;
+                    }
+                    state::CONFIGURED => hooks.configured(&unit.view())?,
+                    state::EARLY_TRAINED => hooks.early_trained(&unit.view()),
+                    state::DONE => return Ok(Stop::Done),
                     _ => {}
                 }
+                if rules.pause_at.contains(&st) {
+                    unit.paused = true;
+                    return Ok(Stop::Paused(st));
+                }
             }
-            Event::Perst { deassert } => {
-                debug!(
-                    "DXIO {}: PERST {}",
-                    die.index(),
-                    if deassert { "deassert" } else { "assert" }
-                );
-                training.perst(deassert);
+            (result::OK, reply::RESET) => {
+                if rules.perst {
+                    hooks.perst(&unit.view(), &r);
+                    // Deassert (state ≠ 0) waits once per loop call.
+                    if st != 0 && !delayed && rules.perst_deassert_delay_ms != 0 {
+                        timer.delay_ms(rules.perst_deassert_delay_ms as u64);
+                        delayed = true;
+                    }
+                }
             }
-            Event::Error(kind) => warn!("DXIO error event {}", Hex(kind.into())),
-            Event::Unknown(kind) => warn!("DXIO: unknown event {}", Hex(kind.into())),
-            Event::Resume => {}
+            // GENERIC, HPSM and unknown types resume.
+            (result::OK, _) => {}
+            (other, _) => return Err(DxioError::NoReturn(other).into()),
         }
-        rpc(die, Operation::Resume, [0; 6], clock)?;
-        if T::PAUSE_US != 0 {
-            clock.delay_us(T::PAUSE_US);
+        unit.dxio.sm_resume()?;
+        if rules.resume_delay_us != 0 {
+            timer.delay_us(u64::from(rules.resume_delay_us));
         }
     }
-    error!("DXIO timeout");
-    Err(Error::Timeout.into())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn state_events() {
-        assert_eq!(event([3, 2, 0x0f, 0, 0, 0]), Ok(Event::State(SM_MAPPED)));
-        assert_eq!(
-            event([3, 2, 0x05, 0, 0, 0]),
-            Ok(Event::State(SM_CONFIGURED))
-        );
-        assert_eq!(event([3, 2, 0x0d, 0, 0, 0]), Ok(Event::Done));
-        assert_eq!(event([3, 0, 0, 0, 0, 0]), Ok(Event::Done));
-        assert_eq!(event([3, 1, 0, 0, 0, 0]), Ok(Event::Resume));
-        assert_eq!(
-            event([3, 4, 1, 0, 0, 0]),
-            Ok(Event::Perst { deassert: true })
-        );
-        assert_eq!(event([3, 9, 0, 0, 0, 0]), Ok(Event::Unknown(9)));
-        assert_eq!(event([2, 4, 0, 0, 0, 0]), Ok(Event::Error(4)));
-        assert_eq!(event([2, 2, 7, 0, 0, 0]), Err(Error::StateMachine(7)));
-        assert_eq!(event([1, 2, 0x0d, 0, 0, 0]), Err(Error::Result(1)));
+/// Resume a paused unit and run it to DONE, then read the engines back
+/// (the end of every orchestration: 0x308, loop, 0x14).
+pub fn finish_unit<M, H, T>(
+    unit: &mut Unit<'_, M>,
+    hooks: &mut H,
+    timer: &T,
+    rules: &LoopRules,
+    timeout_us: u64,
+) -> Result<(), H::Error>
+where
+    M: SmuMessages + ?Sized,
+    H: Hooks + ?Sized,
+    T: Timer + ?Sized,
+{
+    if unit.paused {
+        unit.paused = false;
+        unit.dxio.sm_resume()?;
+        let rules = LoopRules {
+            pause_at: &[],
+            ..*rules
+        };
+        run(unit, hooks, timer, &rules, timeout_us)?;
     }
+    Ok(unit.read_back()?)
 }

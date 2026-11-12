@@ -48,7 +48,6 @@ pub mod locator;
 pub mod trust;
 
 use heapless::String as HString;
-use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // Magic and version
@@ -177,8 +176,7 @@ pub enum KeyBytes {
 ///
 /// This replaces the old `Manifest` type. Instead of separate fields for
 /// RO entries, RW slot pointers, and NVS pointers, everything is a `Region`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct ImageManifest {
     /// All top-level regions in the image.
     ///
@@ -203,8 +201,7 @@ pub const MAX_IMAGE_REGIONS: usize = 8;
 ///
 /// Every meaningful byte range is a Region. The `content` enum discriminates
 /// what the region contains.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct Region {
     /// Region name (e.g., `"ro"`, `"rw-a"`, `"rw-b"`, `"nvs"`).
     pub name: HString<64>,
@@ -221,7 +218,7 @@ pub struct Region {
 /// The `Container` variant is much larger than `Raw` because it holds a
 /// `heapless::Vec` of entries. This is inherent to bounded `no_std` types —
 /// we cannot use `Box` in firmware code.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum RegionContent {
     /// A container holding file entries (stages, configs, data blobs).
@@ -250,8 +247,7 @@ pub enum RegionContent {
 ///
 /// Each entry is a named, typed byte range within its parent region.
 /// Offsets are relative to the parent `Region`'s offset.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct RegionEntry {
     /// Entry name (e.g., `"bootblock"`, `"main"`, `"board.cfg"`).
     pub name: HString<64>,
@@ -267,7 +263,7 @@ pub struct RegionEntry {
 ///
 /// The `File` variant is much larger than `Raw` due to the segment vec.
 /// Cannot use `Box` in `no_std`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum EntryContent {
     /// A loadable file composed of segments (stages, payloads, configs).
@@ -299,7 +295,7 @@ pub enum EntryContent {
 ///
 /// File type influences how the loader treats the file (e.g., code files
 /// may need I-cache invalidation after loading).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     /// Executable stage binary — loaded and jumped to.
     StageCode,
@@ -350,8 +346,7 @@ pub enum FileType {
 /// decompression at build time. `in_place_size` records the minimum buffer
 /// size required (always `>= loaded_size`). For uncompressed segments
 /// `in_place_size == 0` (unused).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct Segment {
     /// Segment name (e.g., `".text"`, `".data"`, `".rodata"`, `".bss"`).
     pub name: HString<32>,
@@ -385,7 +380,7 @@ pub struct Segment {
 }
 
 /// Segment content kind — influences cache management and paging.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentKind {
     /// Executable code — may need I-cache invalidation after loading.
     Code,
@@ -402,8 +397,7 @@ pub enum SegmentKind {
 ///
 /// These are used by stages that set up page tables or MPU regions.
 /// Firmware running without memory protection can ignore them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentFlags {
     /// Segment contains executable code.
     pub execute: bool,
@@ -443,7 +437,8 @@ impl Default for SegmentFlags {
 }
 
 /// Compression algorithm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum Compression {
     /// No compression.
     None,
@@ -459,8 +454,7 @@ pub enum Compression {
 ///
 /// Both digests may be present simultaneously for dual-digest verification.
 /// At least one must be present for any file in a verified manifest.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
 pub struct DigestSet {
     /// SHA-256 digest (32 bytes).
     pub sha256: Option<[u8; 32]>,
@@ -473,7 +467,7 @@ pub struct DigestSet {
 // ============================================================================
 
 /// Which signature algorithm is used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureKind {
     /// Ed25519 (64-byte signature, 32-byte public key).
     Ed25519,
@@ -482,8 +476,7 @@ pub enum SignatureKind {
 }
 
 /// Cryptographic signature over a manifest (algorithm-agile).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct Signature {
     /// Which key was used to produce this signature (matches constant-policy key_id).
     pub key_id: u8,

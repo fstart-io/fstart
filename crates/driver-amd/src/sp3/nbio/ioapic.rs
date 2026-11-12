@@ -233,7 +233,7 @@ mod tests {
             route_values(
                 crate::sp3::nbio::naples::tables::BASE
                     .iter()
-                    .map(|e| (e.addr, e.op))
+                    .map(|e| (e.addr, e.op.into()))
             ),
             ROUTES_NAPLES.map(|r| r.value())
         );

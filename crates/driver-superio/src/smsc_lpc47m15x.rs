@@ -68,8 +68,7 @@ impl SmscLpc47m15x {
 }
 
 /// Board-facing LPC47M15x config.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
 pub struct SmscLpc47m15xConfig(pub SuperIoConfig);
 
 impl core::ops::Deref for SmscLpc47m15xConfig {

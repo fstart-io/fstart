@@ -5,6 +5,7 @@
 
 #[cfg(feature = "acpi")]
 pub mod acpi;
+use fstart_core::services::Timer;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LittleEndian, U16, U32},
@@ -16,10 +17,6 @@ const CAPACITY: usize = 256;
 pub trait Io {
     fn read8(&mut self, port: u16) -> u8;
     fn write8(&mut self, port: u16, value: u8);
-}
-pub trait Clock {
-    fn now_us(&mut self) -> u64;
-    fn delay_us(&mut self, us: u32);
 }
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
@@ -63,8 +60,8 @@ pub enum Error {
 fn checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte))
 }
-fn wait(io: &mut impl Io, clock: &mut impl Clock) -> Result<(), Error> {
-    let start = clock.now_us();
+fn wait(io: &mut impl Io, timer: &impl Timer) -> Result<(), Error> {
+    let start = timer.timestamp_us();
     for _ in 0..=300000 {
         let status = io.read8(STATUS);
         if status == 0xff {
@@ -73,10 +70,10 @@ fn wait(io: &mut impl Io, clock: &mut impl Clock) -> Result<(), Error> {
         if status & 6 == 0 {
             return Ok(());
         }
-        if clock.now_us().wrapping_sub(start) >= 30_000_000 {
+        if timer.timestamp_us().wrapping_sub(start) >= 30_000_000 {
             break;
         }
-        clock.delay_us(100);
+        timer.delay_us(100);
     }
     Err(Error::Timeout)
 }
@@ -111,7 +108,7 @@ impl<I: Io> Ec<I> {
         version: u8,
         input: &[u8],
         output: &mut [u8],
-        clock: &mut impl Clock,
+        timer: &impl Timer,
     ) -> Result<usize, Error> {
         if self.poisoned {
             return Err(Error::Poisoned);
@@ -119,7 +116,7 @@ impl<I: Io> Ec<I> {
         if input.len() > CAPACITY - 8 || output.len() > CAPACITY - 8 {
             return Err(Error::Length);
         }
-        wait(&mut self.io, clock)?;
+        wait(&mut self.io, timer)?;
         let mut request = Request {
             version: 3,
             checksum: 0,
@@ -140,7 +137,7 @@ impl<I: Io> Ec<I> {
         }
         self.poisoned = true;
         self.io.write8(STATUS, 0xda);
-        wait(&mut self.io, clock)?;
+        wait(&mut self.io, timer)?;
         let result = self.io.read8(DATA);
         if result == 0xff {
             return Err(Error::Unavailable);
@@ -185,20 +182,20 @@ impl<I: Io> Ec<I> {
     }
     /// Legacy GET_BOARD_VERSION is command 6 with a two-byte response, NOT
     /// CBI tag0. Firmware can report different values through the two paths.
-    pub fn board_version(&mut self, clock: &mut impl Clock) -> Result<u16, Error> {
+    pub fn board_version(&mut self, timer: &impl Timer) -> Result<u16, Error> {
         let mut data = [0; 2];
-        if self.command(0x0006, 0, &[], &mut data, clock)? != 2 {
+        if self.command(0x0006, 0, &[], &mut data, timer)? != 2 {
             return Err(Error::Length);
         }
         Ok(u16::from_le_bytes(data))
     }
-    pub fn cbi_u32(&mut self, tag: CbiTag, clock: &mut impl Clock) -> Result<u32, Error> {
+    pub fn cbi_u32(&mut self, tag: CbiTag, timer: &impl Timer) -> Result<u32, Error> {
         let request = CbiRequest {
             tag: U32::new(tag as u32),
             flags: U32::new(0),
         };
         let mut data = [0; 4];
-        let length = self.command(0x011f, 0, request.as_bytes(), &mut data, clock)?;
+        let length = self.command(0x011f, 0, request.as_bytes(), &mut data, timer)?;
         // CBI integer tags explicitly allow uint32 or smaller. Preserve the
         // original zero extension, but reject empty integer responses.
         if length == 0 {

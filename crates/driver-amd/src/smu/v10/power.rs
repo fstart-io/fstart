@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! SMU policy v0x13 and persistent DMA pages.
-use crate::ccx::tsc::DelayNs;
 use crate::smn::Smn;
 use crate::smu::v10 as smu;
 use core::{
     cell::UnsafeCell,
     sync::atomic::{Ordering, compiler_fence},
 };
+use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use zerocopy::{
     FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Unaligned,

@@ -24,7 +24,7 @@ smm = ["smi", "dep:fstart-smm"]
 # A reserved boot-flash region through the FCH SPI100 command engine.
 spi-flash = ["dep:rflasher-core", "dep:rflasher-internal", "dep:fstart-log", "dep:embedded-hal"]
 # Host models of the register spaces, for the tests of dependent crates.
-testing = ["dep:libc"]
+testing = ["dep:libc", "fstart-core/testing"]
 
 [dependencies]
 tock-registers.workspace = true
@@ -47,6 +47,7 @@ rflasher-core = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
 
 [dev-dependencies]
+fstart-core = { workspace = true, features = ["testing"] }
 # The unit tests cover every SoC, also in `cargo test --workspace`.
 fstart-driver-amd = { path = ".", features = ["picasso", "zeppelin", "smm", "naples", "rome", "milan", "acpi", "smbios", "spi-flash"] }
 fstart-pci = { workspace = true }

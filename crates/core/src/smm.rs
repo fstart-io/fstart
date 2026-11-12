@@ -4,38 +4,38 @@
 //! board crate supplies the handler binding; this data only controls image
 //! layout and optional compatibility outputs.
 
-use serde::{Deserialize, Serialize};
-
 /// Optional coreboot compatibility outputs for the standalone SMM image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct CorebootSmmCompat {
     /// Generate a C header containing image-relative offsets that coreboot can
     /// include from its build. The header is an output artifact, not runtime
     /// data in the firmware image.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub emit_header: bool,
     /// Include the coreboot-style module-argument block in the image and emit
     /// its relative offset in the generated header.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub module_args: bool,
 }
 
 /// Top-level SMM image settings from board metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct SmmConfig {
     /// Number of PIC entry stubs to precompile into the SMM image.
     ///
     /// If omitted, fbuild uses the stage build's MP CPU count. When present,
     /// it must be greater than or equal to that count.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub entry_points: Option<u16>,
     /// Per-CPU SMM stack size in bytes.
-    #[serde(default = "default_stack_size")]
+    #[cfg_attr(feature = "host", serde(default = "default_stack_size"))]
     pub stack_size: u32,
     /// Coreboot compatibility outputs/ABI blocks.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub coreboot: CorebootSmmCompat,
 }
 
