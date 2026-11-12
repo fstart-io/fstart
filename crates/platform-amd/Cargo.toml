@@ -9,7 +9,7 @@ default = []
 picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2", "fstart-core/host"]
-zeppelin = ["noncar", "fstart-driver-amd/zeppelin", "dep:embedded-hal", "dep:zerocopy"]
+zeppelin = ["noncar", "fstart-driver-amd/zeppelin"]
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
   "fstart-driver-amd/smi",
@@ -405,9 +405,7 @@ fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
-zerocopy = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86", "pci"], optional = true }
-embedded-hal = { workspace = true, optional = true }
 # Devices sharing an I2C controller handed to CrabEFI.
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }

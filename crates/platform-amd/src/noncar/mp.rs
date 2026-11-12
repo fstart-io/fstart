@@ -42,10 +42,10 @@ pub struct Cpus {
 
 /// The patch for these CPUs from `microcode` and the CCX init `init` on
 /// every CPU, the SMU releases the APs of `dies`.
-pub fn start<S: Soc, E>(
+pub fn start<S: Soc>(
     dies: &[Die<S, GlobalEcam>],
     microcode: Option<&'static [u8]>,
-    init: impl Fn(&NativeMsr, Thread) -> Result<(), E> + Send + Sync,
+    init: impl Fn(&NativeMsr, Thread) -> bool + Send + Sync,
     clock: Tsc,
 ) -> Result<Cpus, &'static str> {
     let threads = threads::thread_count(dies, Policy::DEFAULT).map_err(|_| "CPU topology")?;

@@ -1,10 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
 use super::Soc;
-use crate::fch::gpio::{Bank, FAMILY17H_EVENTS};
+use crate::{
+    dxio::Descriptor,
+    fch::{
+        emmc, espi,
+        gpio::{Bank, FAMILY17H_EVENTS, Pad},
+        sandstone::{preinit::SpiConfig, usb},
+    },
+    nbio::picasso as nbio,
+};
 
+mod init;
 #[cfg(test)]
 mod tests;
+pub use init::{Chipset, FchUp, Runtime, State, Trained};
 
 /// The Raven/Picasso SoC, one die: [`crate::ccx::picasso`],
 /// [`crate::df::picasso`], [`crate::nbio::picasso`], [`crate::dxio::picasso`],
@@ -45,3 +55,56 @@ pub const ECAM_BUSES: u8 = 64;
 pub const UART_BASES: [usize; 4] = [0xfedc9000, 0xfedca000, 0xfedce000, 0xfedcf000];
 pub const UART_AOAC: [u8; 4] = [11, 12, 16, 26];
 pub const EARLY_AOAC: &[u8] = &[17, 7, 8, 9, 27];
+
+/// A board's Picasso configuration: how the board wires the SoC's blocks.
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    pub fch: FchConfig,
+    pub pcie: &'static [Descriptor],
+    pub usb: usb::Config,
+    /// The eMMC controller, if the board can have eMMC fitted.
+    pub emmc: Option<emmc::Config>,
+    pub graphics: nbio::gfx::Config,
+    /// FCH I2C controllers and their devices, for the UEFI payload to
+    /// drive and the OS to find in ACPI.
+    pub i2c: &'static [I2cBus],
+}
+
+/// An FCH I2C controller and the devices on it.
+#[derive(Debug, Clone, Copy)]
+pub struct I2cBus {
+    pub controller: usize,
+    pub timing: crate::fch::i2c::Timing,
+    pub devices: &'static [I2cDevice],
+}
+
+/// An I2C device, possibly one of several fitted alternatives.
+#[derive(Debug, Clone, Copy)]
+pub struct I2cDevice {
+    /// ACPI hardware and compatible IDs, which select the payload's driver.
+    pub ids: &'static [&'static str],
+    pub address: u8,
+    pub interrupt: Option<GpioInterrupt>,
+    /// HID descriptor register of a HID-over-I2C device.
+    pub hid_descriptor_register: Option<u16>,
+}
+
+/// A GPIO interrupt as its pad is configured.
+#[derive(Debug, Clone, Copy)]
+pub enum GpioInterrupt {
+    /// Level-triggered, read from the pad.
+    Level { pin: u8, active_low: bool },
+    /// Edge-triggered, latched in the pad's interrupt status.
+    Edge { pin: u8, falling: bool },
+}
+
+/// The Sandstone FCH setup before and right after the console.
+#[derive(Debug, Clone, Copy)]
+pub struct FchConfig {
+    /// The FCH UART of the console (0-3).
+    pub console_uart: u8,
+    /// SPI ROM read mode and speeds.
+    pub spi: SpiConfig,
+    /// eSPI link to the EC and its pads.
+    pub espi: Option<(espi::Config, &'static [Pad])>,
+}

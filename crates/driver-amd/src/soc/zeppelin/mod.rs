@@ -6,11 +6,21 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
+mod init;
+pub mod silicon;
 #[cfg(test)]
 pub(crate) mod test_pci;
+pub use init::FchUp;
 
 use super::Soc;
-use crate::fch::gpio::{Bank, FAMILY17H_EVENTS};
+use crate::{
+    dxio::Descriptor,
+    fch::{
+        early::PowerFailure,
+        gpio::{Bank, FAMILY17H_EVENTS},
+        taishan::{Devices, irq::Route},
+    },
+};
 use fstart_driver_i2c::designware::{Speed, Timing};
 
 /// The Zeppelin SoC: [`crate::ccx::zeppelin`], [`crate::df::zeppelin`],
@@ -52,6 +62,78 @@ impl crate::ccx::microcode::Family for Zeppelin {
 }
 pub const MAX_DIES: usize = Zeppelin::MAX_DIES;
 pub type Die<P> = crate::df::Die<Zeppelin, P>;
+
+/// A board's Zeppelin configuration, by IP block.
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    /// Subsystem ID of the FCH, NBIO and PCIe functions.
+    pub subsystem_id: u32,
+    pub ccx: CcxConfig,
+    pub fch: FchConfig,
+    pub dxio: DxioConfig,
+}
+
+/// The cores.
+#[derive(Debug, Clone, Copy)]
+pub struct CcxConfig {
+    /// SYSCFG.SMEE on every thread, as the vendor firmware sets it: the OS
+    /// may use SME (`mem_encrypt=on`) and SEV. Off by default: the PSP's SEV
+    /// firmware keeps its state in flash through the SMM handler's P2C SPI
+    /// services (PSP_ZP §3.5), which fstart doesn't implement, so Linux's
+    /// SEV setup times out (5 s) and disables the PSP driver.
+    pub memory_encryption: bool,
+}
+impl CcxConfig {
+    pub const DEFAULT: Self = Self {
+        memory_encryption: false,
+    };
+}
+impl Default for CcxConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The Taishan FCH.
+#[derive(Debug, Clone, Copy)]
+pub struct FchConfig {
+    /// AC power-loss policy.
+    pub power_failure: PowerFailure,
+    /// FCH devices in use, per die.
+    pub devices: [Devices; MAX_DIES],
+    /// The PCI interrupt router (0xc00/0xc01) table.
+    pub irq_routes: &'static [Route],
+    /// GEVENT pins (bit n = GEVENTn) routed to the board's SMI handler
+    /// (`fstart_driver_amd::fch::smi::PendingSmi::gevents`).
+    pub smi_gevents: u32,
+    /// Spread spectrum on the CG1 PLL, which clocks the PCIe reference
+    /// clocks. On by default, as the vendor Setup default; a board whose
+    /// PCIe devices don't tolerate the spread turns it off.
+    pub spread_spectrum: bool,
+}
+impl FchConfig {
+    pub const DEFAULT: Self = Self {
+        power_failure: PowerFailure::Previous,
+        devices: [Devices {
+            xhci: true,
+            sata: true,
+        }; MAX_DIES],
+        irq_routes: &[],
+        smi_gevents: 0,
+        spread_spectrum: true,
+    };
+}
+impl Default for FchConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The DXIO engines (PCIe, SATA lanes) of each die.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DxioConfig {
+    pub descriptors: [&'static [Descriptor]; MAX_DIES],
+}
 
 /// Non-PCI MMIO pool of a die, the top 8 MiB of its below-4G DF window: the
 /// PSP BAR at +0, the FCH ACPI MMIO of dies >= 1 at +1 MiB, the IOMMU (512

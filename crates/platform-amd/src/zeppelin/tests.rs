@@ -4,10 +4,7 @@
 //! markers, so their places in the sequence are pinned too. MP init is
 //! stood in by the SMU's AP release.
 extern crate std;
-use super::{
-    Config, DxioConfig, FchConfig,
-    silicon::{self, Identity, SmuPages, SmuPolicy, State},
-};
+use super::{Config, DxioConfig, FchConfig};
 use crate::{
     acpi::{self, BoardAcpi, DieAcpi, Inputs},
     noncar::{
@@ -22,7 +19,7 @@ use fstart_driver_amd::{
     apob::{self, Apob},
     df::{self, map},
     dxio::{self, Descriptor, SataChannel},
-    fch::{Acpimmio, Bus, Fch, Space, taishan::irq},
+    fch::{self, Acpimmio, Bus, Fch, Space, taishan::irq},
     smu::{
         self,
         threads::{self, Policy},
@@ -30,7 +27,10 @@ use fstart_driver_amd::{
     },
     soc::{
         testing::{Hw, low},
-        zeppelin::{Die, NONPCI_MMIO_SIZE},
+        zeppelin::{
+            Die, NONPCI_MMIO_SIZE,
+            silicon::{self, Identity, SmuPages, SmuPolicy, State},
+        },
     },
 };
 use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam, PciWindow, PciWindowKind};
@@ -125,12 +125,12 @@ fn flow(
     let apob = Apob::new(&apob, fstart_driver_amd::psp::Variant::Zp).unwrap();
 
     // Entry
-    silicon::post(&fch, 0x30);
+    fch::post(&fch, 0x30);
     silicon::fch_pre_init(&fch).unwrap();
     marker(hw, 1); // early_init
-    silicon::post(&fch, 0x31);
+    fch::post(&fch, 0x31);
     silicon::fch_early_init(&fch, config);
-    silicon::post(&fch, 0x32);
+    fch::post(&fch, 0x32);
 
     // Silicon init
     let config = &{ *config };
@@ -165,7 +165,7 @@ fn flow(
     let threads = threads::thread_count(&dies, Policy::DEFAULT).unwrap();
     unsafe { threads::launch(&dies, Policy::DEFAULT, threads - 1, &mut clock) }.unwrap();
     silicon::cpus_up(&dies, &mut clock);
-    silicon::post(&fch, 0x42);
+    fch::post(&fch, 0x42);
     silicon::route_interrupts(&fch, config).unwrap();
 
     // After resource allocation
@@ -178,8 +178,8 @@ fn flow(
     silicon::ready_to_boot(&dies, &fch, Some(sata));
     marker(hw, 5); // the board's ready-to-boot work
     silicon::end_of_post(&dies);
-    silicon::post(&fch, 0x43);
-    silicon::post(&fch, 0x44);
+    fch::post(&fch, 0x43);
+    fch::post(&fch, 0x44);
     state
 }
 
