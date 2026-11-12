@@ -113,7 +113,7 @@ impl SmmConfig {
 /// The FCH side of SMM installation on socket 0's FCH.
 #[cfg(feature = "bundle-stage")]
 pub struct Sp3Smi<'a> {
-    pub fch: &'a crate::hw::PrimaryFch,
+    pub fch: &'a fstart_driver_amd::sp3::soc::hw::PrimaryFch,
     pub config: SmmConfig,
 }
 
@@ -150,7 +150,7 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 /// The FCH bits AGESA sets before SmmInfo (PSP_APOB §3.3): SmiStatus1
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
 #[cfg(feature = "bundle-stage")]
-pub fn prepare_psp_smi(fch: &crate::hw::PrimaryFch) {
+pub fn prepare_psp_smi(fch: &fstart_driver_amd::sp3::soc::hw::PrimaryFch) {
     use fstart_driver_amd::sp3::fch::{FchHw, acpimmio};
     use fstart_driver_amd::window::{Window, update};
     let acpi = fch.acpi();
@@ -193,7 +193,7 @@ mod handler {
 
     use super::ras::Policy;
     use super::{SmmConfig, sw};
-    use crate::hw::{Tsc, msr};
+    use fstart_driver_amd::sp3::soc::hw::{Tsc, msr};
 
     /// Config space in SMM: the global ECAM window (`ecam::init` with the
     /// installer's base on every SMI) without `GlobalEcam`'s panic on an
@@ -294,14 +294,14 @@ mod handler {
         let pci = Ecam;
         // SAFETY: SMM owns the CPU; the index is restored below.
         let saved = unsafe { pci.read(host, fstart_driver_amd::smn::SMN_INDEX) };
-        super::ras::flush(policy, crate::hw::tsc());
+        super::ras::flush(policy, fstart_driver_amd::sp3::soc::hw::tsc());
         dispatch(config, policy);
         // SAFETY: as above.
         unsafe { pci.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
     }
 
     fn dispatch(config: &SmmConfig, policy: &Policy) {
-        let timer = crate::hw::tsc();
+        let timer = fstart_driver_amd::sp3::soc::hw::tsc();
         let hw = primary_fch(timer);
         let acpi = hw.acpi();
         let generation = config.generation;
@@ -398,8 +398,8 @@ mod handler {
         };
         Some(
             Smu::new(smn, regs, timer, limit)
-                .with_timeout_us(crate::hw::SMU_TIMEOUT_US)
-                .with_poll_us(crate::hw::SMU_POLL_US),
+                .with_timeout_us(fstart_driver_amd::sp3::soc::hw::SMU_TIMEOUT_US)
+                .with_poll_us(fstart_driver_amd::sp3::soc::hw::SMU_POLL_US),
         )
     }
 

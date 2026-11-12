@@ -34,7 +34,7 @@ pub(crate) fn storage(
     ctx: &Ctx,
 ) -> Option<
     fstart_payload::crabefi::settings::FlashStorage<
-        fstart_driver_amd::fch::spi::flash::Flash<crate::hw::Tsc>,
+        fstart_driver_amd::fch::spi::flash::Flash<fstart_driver_amd::sp3::soc::hw::Tsc>,
     >,
 > {
     use fstart_driver_amd::fch::spi::flash::{ERASE_SIZE, Extent, Flash};
@@ -49,7 +49,7 @@ pub(crate) fn storage(
     // SAFETY: the FCH decodes SPI100 at its fixed base (FCH reset tasks);
     // the payload launcher is the only user of the command engine, and the
     // stage runs from DRAM.
-    let Ok(flash) = (unsafe { Flash::new(ctx.timer, extent, ctx.ffs_offset, probe) }) else {
+    let Ok(flash) = (unsafe { Flash::new(ctx.soc.timer, extent, ctx.ffs_offset, probe) }) else {
         fstart_log::error!("options: SPI100 command engine unusable, settings are volatile");
         return None;
     };

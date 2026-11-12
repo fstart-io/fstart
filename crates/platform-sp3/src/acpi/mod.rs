@@ -7,7 +7,7 @@
 //! | Table | Source | Module |
 //! |---|---|---|
 //! | FADT, MADT, HPET | donor values per generation | [`fixed`] |
-//! | MCFG | `crate::pci::segment` | `fstart_acpi::build_mcfg` |
+//! | MCFG | `fstart_driver_amd::sp3::soc::hw::segment` | `fstart_acpi::build_mcfg` |
 //! | SRAT, MSCT, SLIT | only with more than one domain | [`numa`] |
 //! | IVRS | per IOMMU, types 10h/11h | [`ivrs`] |
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
@@ -89,7 +89,7 @@ pub struct Board<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct Inputs<'a> {
     pub generation: Generation,
-    /// The PCI segment (`crate::pci::segment`), as the payload gets it.
+    /// The PCI segment (`fstart_driver_amd::sp3::soc::hw::segment`), as the payload gets it.
     pub pci: PciRootInfo,
     pub cpus: &'a [Cpu],
     /// FCH IOAPIC ID (`nbio::ioapic::fch_ioapic_id` unless reprogrammed).

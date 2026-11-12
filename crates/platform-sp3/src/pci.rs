@@ -9,7 +9,6 @@
 
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::df::plan::{Pools, RootBridgePlan, Window};
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_pci::{PciRole, PciRoot};
 
 /// The span of the PCI pools (prefetch then non-prefetch, contiguous by
@@ -18,18 +17,6 @@ fn pci_span(pools: &Pools) -> Window {
     let base = pools.prefetch.base.min(pools.non_prefetch.base);
     let end = pools.prefetch.end().max(pools.non_prefetch.end());
     Window::new(base, end - base)
-}
-
-/// The PCI segment `generation`'s ECAM window decodes: what the allocator,
-/// the MCFG, the DSDT and the payload all use.
-pub fn segment(generation: Generation) -> PciRootInfo {
-    let (ecam_base, buses) = generation.ecam();
-    PciRootInfo {
-        segment: 0,
-        ecam_base,
-        bus_start: 0,
-        bus_end: (buses - 1) as u8,
-    }
 }
 
 /// One root bridge in the segment `pci`, from what the DF routes to it.
@@ -77,44 +64,11 @@ pub fn root(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<PciRoot> {
     .ok()
 }
 
-/// Bump allocator over a root bridge's non-PCI MMIO pool (below 4 GiB).
-/// Allocations are naturally aligned (every NBIO BAR is aligned to its
-/// size) and taken from the top down, keeping the pool base free for the
-/// larger ones that follow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NonPci {
-    base: u64,
-    top: u64,
-}
-
-impl NonPci {
-    pub const fn new(pool: Window) -> Self {
-        Self {
-            base: pool.base,
-            top: pool.base + pool.size,
-        }
-    }
-
-    /// The non-PCI pool below 4 GiB of `rb`.
-    pub const fn of(rb: &RootBridgePlan) -> Self {
-        Self::new(rb.below_pools.non_pci)
-    }
-
-    /// `size` bytes aligned to `size` (rounded up to a power of two).
-    pub fn alloc(&mut self, size: u64) -> Option<u64> {
-        let align = size.checked_next_power_of_two()?;
-        let base = self.top.checked_sub(size)? & !(align - 1);
-        (base >= self.base && size != 0).then(|| {
-            self.top = base;
-            base
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use fstart_driver_amd::df::BusRange;
+    use fstart_driver_amd::sp3::soc::{Generation, NonPci, hw::segment};
     use fstart_pci::PciWindowKind;
 
     fn plan() -> RootBridgePlan {

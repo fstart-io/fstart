@@ -59,7 +59,7 @@ pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
     )];
     description.acpi_s5 = &acpi_s5;
     description.smbios = ctx.smbios;
-    description.pci_root = Some(ctx.pci_root);
+    description.pci_root = Some(ctx.soc.pci_root);
     #[allow(unused_mut)]
     let mut handoff = Handoff::new(description, Placement::default());
     // CrabEFI keeps its variables, the option overrides among them, in the
@@ -80,7 +80,7 @@ pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
 /// RSDP address. The tables live in the stage heap, inside the reserved
 /// early region.
 #[cfg(feature = "acpi")]
-pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
+pub(crate) fn acpi<B: crate::board::Board, S: fstart_driver_amd::sp3::soc::Steps>(
     ctx: &Ctx,
     si: &S,
     pci: &fstart_pci::PciEcam,
@@ -93,8 +93,9 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     use fstart_driver_amd::sp3::fch::smi;
     use fstart_driver_amd::sp3::nbio::ioapic::{IoapicInfo, fch_ioapic_id};
 
-    let numa_plan = S::numa(ctx, si);
+    let numa_plan = S::numa(&ctx.soc, si);
     let cpus: Vec<Cpu> = ctx
+        .soc
         .apic_ids
         .iter()
         .enumerate()
@@ -110,7 +111,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     let iommus: Vec<IommuAcpi> = si
         .nbios()
         .iter()
-        .zip(&ctx.topology.root_bridges)
+        .zip(&ctx.soc.topology.root_bridges)
         .filter_map(|(n, rb)| {
             n.iommu_info().map(|info| IommuAcpi {
                 info,
@@ -120,6 +121,7 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
         })
         .collect();
     let root_bridges: Vec<RootBridgeAcpi<'_>> = ctx
+        .soc
         .topology
         .root_bridges
         .iter()
@@ -136,9 +138,10 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
             ioapic_features: n.at(IOAPIC_FEATURES_ENABLE.address()),
         })
         .collect();
-    let cpu = crate::hw::msr();
+    let cpu = fstart_driver_amd::sp3::soc::hw::msr();
     let pstates = power::pstates(&cpu);
-    let threads_per_core = 1 + crate::mp::this_thread(ctx.generation).smt() as u8;
+    let threads_per_core =
+        1 + fstart_driver_amd::sp3::soc::cpu::this_thread(ctx.soc.generation).smt() as u8;
     let (domains, memory): (Vec<acpi::Domain>, Vec<acpi::MemoryAffinity>) = numa_plan
         .as_ref()
         .map(|p| {
@@ -163,11 +166,12 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     }
     let fch = {
         use fstart_driver_amd::sp3::fch::FchHw;
-        acpi::FchAcpi::read(ctx.fch.mmio(), ctx.fch.io())
+        acpi::FchAcpi::read(ctx.soc.fch.mmio(), ctx.soc.fch.io())
     };
     // SAFETY: the HPET general capabilities register, read only.
     let hpet_block_id = unsafe { fstart_core::mmio::read32(0xfed0_0000 as *const u32) };
     let cppc: Vec<_> = ctx
+        .soc
         .cppc
         .iter()
         .map(|c| acpi::CppcAcpi {
@@ -180,10 +184,10 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
         })
         .collect();
     let inputs = Inputs {
-        generation: ctx.generation,
-        pci: ctx.pci_root,
+        generation: ctx.soc.generation,
+        pci: ctx.soc.pci_root,
         cpus: &cpus,
-        fch_ioapic_id: fch_ioapic_id(ctx.generation),
+        fch_ioapic_id: fch_ioapic_id(ctx.soc.generation),
         ioapics: &ioapics,
         hpet_block_id,
         root_bridges: &root_bridges,
@@ -191,11 +195,11 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
         numa: numa_plan.as_ref().map(|_| acpi::Numa {
             domains: &domains,
             memory: &memory,
-            phys_addr_bits: ctx.phys_addr_bits,
+            phys_addr_bits: ctx.soc.phys_addr_bits,
         }),
         power: Some(Power {
             pstates: &pstates,
-            cstates: power::cstate_info(&ctx.policy.ccx.cstates),
+            cstates: power::cstate_info(&ctx.soc.policy.ccx.cstates),
             threads_per_core,
             c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
         }),
@@ -245,7 +249,8 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     }
     let tables = acpi::build(&inputs).or_halt("ACPI tables");
     const ACPI_SIZE: usize = 0x4_0000;
-    let bytes = super::dma_alloc(ACPI_SIZE, 0x1000);
+    let bytes =
+        fstart_driver_amd::sp3::soc::steps::dma_alloc(ACPI_SIZE, 0x1000).or_halt("DMA allocation");
     let base = bytes.as_ptr() as u64;
     let len = tables.assemble_into(bytes, base).or_halt("ACPI layout");
     fstart_log::info!("acpi: {} bytes at {:#x}", len as u32, base);
@@ -258,7 +263,7 @@ fn iommu_registers(
     info: &fstart_driver_amd::sp3::nbio::iommu::IommuInfo,
 ) -> fstart_acpi::ivrs::IommuRegisters {
     use fstart_pci::{ConfigRegionAccess, PciAddress};
-    let pci = crate::hw::Pci::default();
+    let pci = fstart_driver_amd::sp3::soc::hw::Pci::default();
     let function = PciAddress::new(0, info.bus, info.devfn >> 3, info.devfn & 7);
     let cap = u16::from(info.cap_offset);
     // SAFETY: the IOMMU function and its enabled MMIO block, read only.

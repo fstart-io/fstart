@@ -1,16 +1,16 @@
-//! Hardware handles the flow passes to the silicon drivers: config space,
-//! the TSC timer, POST codes, the ECAM MSR and the FCH views.
+//! The hardware handles of the SP3 silicon steps: config space, the TSC
+//! timer, POST codes, the ECAM MSR and the FCH views.
 
 use core::num::NonZeroU32;
 use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
+use super::Generation;
+use crate::fch::{Bus, NativeBus};
+use crate::smn::Smn;
+use crate::sp3::fch::{Fch, acpimmio};
+use crate::window::{Mmio, Ports, SmnWindow};
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::fch::{Bus, NativeBus};
-use fstart_driver_amd::smn::Smn;
-use fstart_driver_amd::sp3::fch::{Fch, acpimmio};
-use fstart_driver_amd::sp3::soc::Generation;
-use fstart_driver_amd::window::{Mmio, Ports, SmnWindow};
 use tock_registers::interfaces::Writeable;
 
 /// Config space of every function through the global ECAM base.
@@ -29,20 +29,12 @@ pub fn msr() -> NativeMsr {
 }
 
 /// Microsecond timer on the TSC.
-pub type Tsc = fstart_driver_amd::ccx::tsc::Tsc;
+pub type Tsc = crate::ccx::tsc::Tsc;
 
 /// SMU message timing on SP3: 10-us polls, each wait bounded by 1 s
 /// unless a step needs longer.
-#[allow(
-    dead_code,
-    reason = "the boot flow and the SMM handler, not the host build"
-)]
-pub(crate) const SMU_POLL_US: u32 = 10;
-#[allow(
-    dead_code,
-    reason = "the boot flow and the SMM handler, not the host build"
-)]
-pub(crate) const SMU_TIMEOUT_US: u32 = 1_000_000;
+pub const SMU_POLL_US: u32 = 10;
+pub const SMU_TIMEOUT_US: u32 = 1_000_000;
 
 /// The TSC, at 1 GHz if its P-state is disabled.
 pub fn tsc() -> Tsc {
@@ -56,7 +48,7 @@ pub fn post(code: u8) {
     // SAFETY: an I/O port write only; port 80h is the POST port on every
     // SP3 board.
     unsafe { NativeBus::<false>::without_config() }
-        .reg(fstart_driver_amd::fch::POST_CODE)
+        .reg(crate::fch::POST_CODE)
         .set(code)
 }
 
@@ -64,7 +56,7 @@ pub fn post(code: u8) {
 /// §3.2) and publish it to the PCI layer. The PSP/ABL leave the window
 /// unset; every thread must get the same value (the MP code mirrors it).
 pub fn enable_ecam(generation: Generation) -> PciRootInfo {
-    let pci = crate::pci::segment(generation);
+    let pci = segment(generation);
     let buses = u64::from(pci.bus_end) + 1;
     msr().reg(MMIO_CFG_BASE).write(
         MmioCfgBase::ENABLE::SET
@@ -105,5 +97,17 @@ pub fn secondary_fch(bus: u8, timer: Tsc) -> SecondaryFch {
             bus,
             timer,
         }
+    }
+}
+
+/// The PCI segment `generation`'s ECAM window decodes: what the allocator,
+/// the MCFG, the DSDT and the payload all use.
+pub fn segment(generation: Generation) -> PciRootInfo {
+    let (ecam_base, buses) = generation.ecam();
+    PciRootInfo {
+        segment: 0,
+        ecam_base,
+        bus_start: 0,
+        bus_end: (buses - 1) as u8,
     }
 }

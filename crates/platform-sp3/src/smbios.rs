@@ -33,11 +33,12 @@ pub(crate) mod runtime {
         rom_size: u32,
         identity: fstart_acpi::smbios::SmbiosIdentity<'_>,
     ) -> u64 {
-        let smt = crate::mp::this_thread(ctx.generation).smt();
-        let layout = ApicLayout::new(ctx.generation, smt);
-        let ids: Vec<Vec<u32>> = (0..ctx.topology.sockets)
+        let smt = fstart_driver_amd::sp3::soc::cpu::this_thread(ctx.soc.generation).smt();
+        let layout = ApicLayout::new(ctx.soc.generation, smt);
+        let ids: Vec<Vec<u32>> = (0..ctx.soc.topology.sockets)
             .map(|socket| {
-                ctx.apic_ids
+                ctx.soc
+                    .apic_ids
                     .iter()
                     .copied()
                     .filter(|id| layout.decode(*id).socket == socket)
@@ -50,6 +51,7 @@ pub(crate) mod runtime {
                 continue;
             };
             let index = ctx
+                .soc
                 .apic_ids
                 .iter()
                 .position(|&id| id == leader)
@@ -84,28 +86,30 @@ pub(crate) mod runtime {
                 enabled_cores: cores,
             });
         }
-        let seeds = mem::smbios_info(&ctx.apob).ok();
+        let seeds = mem::smbios_info(&ctx.soc.apob).ok();
         let dimms = smbios_dimms(
-            &ctx.apob,
-            match ctx.generation {
+            &ctx.soc.apob,
+            match ctx.soc.generation {
                 Generation::Naples => 2,
                 Generation::Rome | Generation::Milan => 8,
             },
             |socket, die| {
-                socket < ctx.topology.sockets
+                socket < ctx.soc.topology.sockets
                     && ctx
+                        .soc
                         .topology
                         .nodes
                         .iter()
                         .any(|node| node.socket == socket && node.die == die)
             },
         );
-        let map = sysmap::system_memory_map(&ctx.apob).or_halt("SMBIOS memory map");
+        let map = sysmap::system_memory_map(&ctx.soc.apob).or_halt("SMBIOS memory map");
         let regions: Vec<DramRange> = dram_ranges(
-            &sysmap::memory_map(ctx.generation.into(), map.top, map.holes())
+            &sysmap::memory_map(ctx.soc.generation.into(), map.top, map.holes())
                 .or_halt("SMBIOS DRAM ranges"),
         );
-        let bytes = crate::flow::dma_alloc(smbios::BUFFER_SIZE, 16);
+        let bytes = fstart_driver_amd::sp3::soc::steps::dma_alloc(smbios::BUFFER_SIZE, 16)
+            .or_halt("DMA allocation");
         let address = bytes.as_ptr() as u64;
         let used = build_into(
             bytes,
@@ -119,7 +123,7 @@ pub(crate) mod runtime {
                 // 256 GiB. Position count comes from the board's ABL seeds,
                 // not eight/32 assumed slots or the installed DIMM sizes.
                 socket_upgrade: 0x37, // Socket SP3
-                max_dimm_mib: match ctx.generation {
+                max_dimm_mib: match ctx.soc.generation {
                     Generation::Naples => 128 * 1024,
                     _ => 256 * 1024,
                 },

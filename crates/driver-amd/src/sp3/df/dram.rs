@@ -1,5 +1,6 @@
 //! DRAM map read-back (the ABL programs it; the x86 only reads) and the
 //! NPS → NUMA domain mapping for SRAT (SOC_DF §3.7, ACPI_SMM §3.5).
+extern crate alloc;
 
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
@@ -149,6 +150,25 @@ pub const fn ioms_channel(ioms: u8) -> u8 {
 /// channel up). Milan shares the IOD layout (inferred).
 pub const fn ccd_channel(ccd: u8) -> u8 {
     ccd
+}
+
+/// Merge per-node DRAM views into sorted, unique proximity ranges:
+/// base, end and domain.
+pub fn memory_from_maps(
+    maps: impl IntoIterator<Item = DramMap>,
+    domains: &[NumaDomain],
+) -> alloc::vec::Vec<(u64, u64, u32)> {
+    let mut memory: alloc::vec::Vec<_> = maps
+        .into_iter()
+        .flat_map(|map| map.ranges().collect::<alloc::vec::Vec<_>>())
+        .filter_map(|(base, end, dst)| {
+            let (socket, channel) = df3_channel(dst)?;
+            Some((base, end, domain_of(domains, socket, channel)?))
+        })
+        .collect();
+    memory.sort_unstable();
+    memory.dedup();
+    memory
 }
 
 #[cfg(test)]
