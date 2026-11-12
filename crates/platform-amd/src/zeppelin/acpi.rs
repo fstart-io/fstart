@@ -70,15 +70,14 @@ const ROUTES: [Route; 18] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::{nbio::zeppelin::BASE, table::Op};
+    use fstart_driver_amd::{nbio::zeppelin::base, table::Op};
 
     /// The ACPI routing is the one the NBIO base table programs.
     #[test]
     fn routes_match_the_nbio_ioapic_bridge_table() {
         for (bridge, route) in ROUTES.iter().enumerate() {
             let address = 0x1430_0040 + 4 * bridge as u32;
-            let set = BASE
-                .iter()
+            let set = base()
                 .find_map(|reg| match reg.op {
                     Op::Update { set, .. } if reg.reg.address() == address => Some(set),
                     _ => None,

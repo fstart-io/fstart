@@ -12,31 +12,12 @@
 //! IOMMU / PSP (die ≥ 1) BARs, and after enumeration
 //! [`Nbio::nbif_hw_init_lock`].
 
-#[rustfmt::skip]
-pub mod tables;
+pub use crate::nbio::zp::{property, tables};
 
 use fstart_pci::ConfigRegionAccess;
 
 use super::{Nbio, NbioPolicy};
 use crate::cpu::Revision;
-
-/// Property bits of the legacy tables (../sp4r2 NBIO_BASE_ZP §3.2).
-pub mod property {
-    /// IOMMU disabled (PCD 0x02 == 0).
-    pub const IOMMU_OFF: u32 = 0x2;
-    /// SST clock gating disabled (PCD 0x8B == 0).
-    pub const SST_CG_OFF: u32 = 0x4;
-    /// IOMMU L1 clock gating (PCD 0x86).
-    pub const IOMMU_L1_CG: u32 = 0x40;
-    /// IOMMU L2 clock gating (PCD 0x87).
-    pub const IOMMU_L2_CG: u32 = 0x80;
-    /// Package in {SP4, SP4r2, SP3}: always set here.
-    pub const SERVER_PACKAGE: u32 = 0x800;
-    /// IOHC clock gating (PCD 0x88).
-    pub const IOHC_CG: u32 = 0x2000_0000;
-    /// RAS / poison (PCD 0x14).
-    pub const RAS: u32 = 0x4000_0000;
-}
 
 /// The live property word for `policy` (SP3 defaults: 0x200008C0).
 pub fn property(policy: &NbioPolicy) -> u32 {
@@ -72,6 +53,7 @@ pub fn base_init<P: ConfigRegionAccess + Clone>(
     nbio.set_nbif_bus_numbers(policy);
     let live = property(policy);
     nbio.run_legacy(tables::BASE, live);
+    nbio.run_legacy(tables::BASE_NAPLES, live);
     nbio.run_legacy(tables::IOMMU, live);
     if matches!(revision, Revision::ZpA0 | Revision::ZpB0 | Revision::ZpB1) {
         nbio.modify32(

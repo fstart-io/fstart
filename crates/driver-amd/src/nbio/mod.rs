@@ -4,7 +4,8 @@
 //! and the PCIe cores ([`pcie`]), the same IP on Raven/Picasso and Zeppelin.
 //! What the SoCs program differently, the vendor register tables and the
 //! NBIF setup above all, is [`picasso`] (AGESA AmdNbioBaseRV) and
-//! [`zeppelin`] (AmdNbioBaseZP).
+//! [`zeppelin`] (AmdNbioBaseZP). The ZP die's tables, which Naples runs
+//! too, are [`zp`].
 pub mod ioapic;
 pub mod iohc;
 pub mod iommu;
@@ -13,3 +14,5 @@ pub mod pcie;
 pub mod picasso;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;
+#[cfg(any(feature = "zeppelin", feature = "naples"))]
+pub mod zp;
