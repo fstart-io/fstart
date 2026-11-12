@@ -1651,6 +1651,7 @@ dependencies = [
  "fstart-options",
  "fstart-payload",
  "fstart-pci",
+ "fstart-platform-amd",
  "fstart-platform-sp3",
  "fstart-smm",
  "fstart-stage",

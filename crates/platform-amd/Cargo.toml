@@ -21,9 +21,12 @@ noncar = [
   "dep:fstart-acpi-macros",
   "dep:heapless",
 ]
+# The boot media mount of a PSP-booted stage, shared with fstart-platform-sp3.
+media = ["dep:fstart-stage", "fstart-stage/ffs"]
 # A noncar reset image: one DRAM stage from reset vector to payload.
 bundle = [
   "noncar",
+  "media",
   "dep:fstart-stage", "dep:fstart-payload",
   "fstart-arch/x86-identity-paging",
   "fstart-arch/amd-psp-reset",

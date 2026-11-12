@@ -2,68 +2,25 @@
 //! Boot media and payload handoff: the FFS in the boot flash, verified with
 //! the policy the image builder patched into this stage.
 use super::layout::Region;
-use fstart_core::services::{
-    ServiceError,
-    memory_detect::{E820Kind, E820State},
-};
-use fstart_stage::boot::{MemoryPolicy, MemoryWindow};
-use heapless::Vec;
+use fstart_core::services::{ServiceError, memory_detect::E820State};
+use fstart_stage::boot::MemoryWindow;
 
 /// Mount and authenticate the FFS at `ffs`; loads may only go to RAM outside
 /// the firmware's own windows: its `early` reservation (the running image,
 /// its page tables, BSS, heap and stack) and the media.
 pub fn mount(e820: &E820State, early: Region, ffs: Region) -> Result<(), ServiceError> {
     fstart_arch::x86::boot::enable_boot_media_rom_cache();
-    let mut writable = Vec::<MemoryWindow, 32>::new();
-    let mut reserved = Vec::<MemoryWindow, 32>::new();
-    for entry in e820.entries() {
-        let window = MemoryWindow {
-            start: entry.addr,
-            size: entry.size,
-        };
-        if entry.kind == E820Kind::Ram as u32 {
-            writable
-                .push(window)
-                .map_err(|_| ServiceError::InvalidParam)?;
-        } else {
-            reserved
-                .push(window)
-                .map_err(|_| ServiceError::InvalidParam)?;
-        }
-    }
-    for window in [early, ffs].map(|region| MemoryWindow {
+    let window = |region: Region| MemoryWindow {
         start: region.base,
         size: region.size,
-    }) {
-        reserved
-            .push(window)
-            .map_err(|_| ServiceError::InvalidParam)?;
-    }
-    let policy = MemoryPolicy {
-        writable: &writable,
-        reserved: &reserved,
-        entry_alignment: 1,
     };
-    // SAFETY: discovered RAM only, with the firmware region (the live stage
-    // within it) and the media excluded; no device has DMA buffers outside the reserved
-    // early region.
-    unsafe {
-        fstart_stage::directory::set_load_policy(
-            &policy,
-            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
-        )
-    }
-    .map_err(|_| ServiceError::InvalidParam)?;
-    let locator = fstart_stage::anchor::media_locator().ok_or(ServiceError::InvalidParam)?;
-    if locator.image_offset != 0 || !locator.validate(ffs.size) {
-        return Err(ServiceError::InvalidParam);
-    }
-    let media = fstart_stage::fixed_helpers::MemoryMappedFfs::new(
-        ffs.base,
-        usize::try_from(locator.image_size).map_err(|_| ServiceError::InvalidParam)?,
-    );
-    media.mount()?;
-    media.verify()
+    crate::media::mount(
+        e820.entries(),
+        &[window(early)],
+        window(ffs),
+        const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
+    )
+    .map_err(|_| ServiceError::InvalidParam)
 }
 
 /// Identity map the memory map and assigned PCI BARs before the payload.
