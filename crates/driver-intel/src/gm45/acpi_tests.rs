@@ -64,6 +64,10 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
     let nb = IntelGm45::new_from_config(&NB).unwrap();
     let sb = IntelIch9::new_from_config(&SB).unwrap();
     let mut aml = nb.dsdt_aml(&NB);
+    // PCI0's `_CRS` and `PDRC`, as the platform adds them from the root
+    // bridge.
+    let root = crate::IntelNorthbridgeDriver::pci_root(&nb).unwrap();
+    aml.extend(crate::namespace::pci_root_resources::<IntelGm45>(&root).unwrap());
     aml.extend(crate::namespace::SouthbridgeAcpi::dsdt_aml(
         &sb,
         &SB,
@@ -99,7 +103,7 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
                 "execute \\_TZ.THM0._CRT;execute \\_TZ.THM0._PSV;execute \\_TZ.THM0._AC0;",
                 "execute \\C000._UID;execute \\C001._UID;",
                 "execute \\C000._PSS;execute \\C000._PCT;execute \\C000._CST;",
-                "execute \\PNOT;execute \\_SB.PCI0._CRS;execute \\_SB.PCI0.PDRC._CRS;",
+                "execute \\PNOT;execute \\_SB.PCI0._CRS;execute \\_SB.PDRC._CRS;",
                 // PCIe _OSC UUID, revision 1, three dwords of control requests.
                 "execute \\_SB.PCI0._OSC (5B 4D DB 33 F7 1F 1C 40 96 57 74 41 C0 3D D7 66) ",
                 "1 3 (00 00 00 00 1F 00 00 00 1D 00 00 00);",
