@@ -12,7 +12,7 @@ pub use fstart_driver_amd::apob::smbios::{Dimm, DramRange, Inputs, Processor, bu
 #[cfg(feature = "bundle-stage")]
 pub(crate) mod runtime {
     use super::*;
-    use crate::flow::{Ctx, OrHalt};
+    use crate::sp3::flow::{Ctx, OrHalt};
     use alloc::vec::Vec;
     use fstart_driver_amd::{
         apob::{

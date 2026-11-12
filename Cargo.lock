@@ -718,7 +718,7 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-options",
- "fstart-platform-sp3",
+ "fstart-platform-amd",
  "heapless 0.8.0",
  "pca9535",
  "ufmt",
@@ -1115,7 +1115,7 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-options",
- "fstart-platform-sp3",
+ "fstart-platform-amd",
  "heapless 0.8.0",
  "tock-registers",
 ]
@@ -1519,20 +1519,25 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",
+ "fstart-driver-ipmi",
+ "fstart-driver-tpm",
  "fstart-driver-uart",
  "fstart-driver-vbios",
  "fstart-image-build",
  "fstart-log",
+ "fstart-options",
  "fstart-payload",
  "fstart-pci",
  "fstart-platform-amd",
  "fstart-smm",
  "fstart-stage",
+ "fstart-tcg",
  "heapless 0.8.0",
  "serde_json",
  "sha2 0.10.9",
  "tock-registers",
  "ufmt",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1625,35 +1630,6 @@ dependencies = [
  "fstart-stage",
  "serde_json",
  "ufmt",
-]
-
-[[package]]
-name = "fstart-platform-sp3"
-version = "0.1.0"
-dependencies = [
- "fstart-acpi",
- "fstart-amdfw-format",
- "fstart-arch",
- "fstart-core",
- "fstart-driver-amd",
- "fstart-driver-ipmi",
- "fstart-driver-tpm",
- "fstart-driver-uart",
- "fstart-image-build",
- "fstart-log",
- "fstart-options",
- "fstart-payload",
- "fstart-pci",
- "fstart-platform-amd",
- "fstart-platform-sp3",
- "fstart-smm",
- "fstart-stage",
- "fstart-tcg",
- "heapless 0.8.0",
- "serde_json",
- "tock-registers",
- "ufmt",
- "zerocopy",
 ]
 
 [[package]]

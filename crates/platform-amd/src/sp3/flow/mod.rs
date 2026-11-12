@@ -64,9 +64,9 @@ use fstart_log::StaticConsole;
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
-use crate::board::{Board, Gpio, Policy};
-use crate::layout::{self, Span};
-use crate::memory::{self, TopOfMemory};
+use crate::sp3::board::{Board, Gpio, Policy};
+use crate::sp3::layout::{self, Span};
+use crate::sp3::memory::{self, TopOfMemory};
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::soc::hw::{self, PrimaryFch, Tsc, msr, post};
 
@@ -84,9 +84,9 @@ compile_error!("a stage build enables at least one of naples, rome, milan");
 
 /// Arm (or park) the AP path of the reset entry, which the SMU releases
 /// the APs into.
-fn route_aps(route: crate::entry::ApRoute) {
+fn route_aps(route: crate::sp3::entry::ApRoute) {
     #[cfg(all(target_os = "none", feature = "bundle-stage"))]
-    crate::entry::set_ap_route(route);
+    crate::sp3::entry::set_ap_route(route);
     #[cfg(not(all(target_os = "none", feature = "bundle-stage")))]
     let _ = route;
 }
@@ -138,7 +138,7 @@ pub(crate) struct Ctx {
     pub options: fstart_options::Report,
     pub tseg: Span,
     pub e820: E820State,
-    pub smm: Option<crate::smm::SmmConfig>,
+    pub smm: Option<crate::sp3::smm::SmmConfig>,
     pub rsdp: Option<u64>,
     pub smbios: Option<u64>,
 }
@@ -182,7 +182,7 @@ pub enum Start<B> {
 /// halts at POST 13 before the console (its FCH bring-up is not compiled
 /// in).
 pub fn start<B: Board>() -> Start<B> {
-    crate::stage_runtime::anchor::initial_stage();
+    fstart_stage::anchor::initial_stage();
     let identity = identify();
     match identity.generation() {
         #[cfg(feature = "naples")]
@@ -332,10 +332,10 @@ impl<B: Board, S: Silicon> Early<B, S> {
         step(0x15, "memory map");
         let tops = top_of_memory();
         let regions = memory_regions(&apob, generation);
-        let tseg = crate::smm::place_tseg(
+        let tseg = crate::sp3::smm::place_tseg(
             &regions,
             tops.tom,
-            crate::smm::TSEG_SIZE,
+            crate::sp3::smm::TSEG_SIZE,
             &[layout::CACHE_WINDOW, apob_span],
         )
         .or_halt("TSEG placement");
@@ -450,7 +450,7 @@ pub struct Tables<'a> {
     /// Board identity only. CPU packages, DIMMs and memory ranges are
     /// discovered by shared drivers.
     pub smbios: fstart_acpi::smbios::SmbiosIdentity<'a>,
-    pub acpi: crate::acpi::Board<'a>,
+    pub acpi: crate::sp3::acpi::Board<'a>,
 }
 
 impl<B: Board, S: Silicon, P> Stage<B, S, P> {
@@ -558,7 +558,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
         step(0x50, "MP and CCX");
         let cpu = S::cpu_driver(&mut ctx.soc, si, fstart_stage::microcode_blob())
             .unwrap_or_else(|what| fail(what));
-        let route = crate::entry::ApRoute::to(fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS)
+        let route = crate::sp3::entry::ApRoute::to(fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS)
             .or_halt("AP route");
         let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
         let mp = fstart_arch::x86::mp::mp_init_with_launcher(
@@ -575,7 +575,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
             },
         )
         .or_halt("MP init");
-        route_aps(crate::entry::ApRoute::PARK);
+        route_aps(crate::sp3::entry::ApRoute::PARK);
         if cpu.failures() != 0 {
             fail("AP microcode");
         }
@@ -593,7 +593,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Cpus> {
         let Machine { ctx, si, .. } = &mut self.machine;
         step(0x60, "PCI enumeration");
         S::pci_pre(&mut ctx.soc, si).unwrap_or_else(|what| fail(what));
-        let pci = crate::flow::enumerate(ctx);
+        let pci = crate::sp3::flow::enumerate(ctx);
         S::pci_post(&ctx.soc, si).unwrap_or_else(|what| fail(what));
         let Stage {
             machine,
@@ -626,7 +626,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Enumerated> {
                 &self.phase.pci,
                 &tables.acpi,
             ));
-            ctx.smbios = Some(crate::smbios::runtime::prepare(
+            ctx.smbios = Some(crate::sp3::smbios::runtime::prepare(
                 ctx,
                 &self.phase.mp,
                 *rom_size,
@@ -672,8 +672,8 @@ impl<B: Board, S: Silicon> Stage<B, S, Published> {
 /// lists).
 fn check_identity<B: Board>(identity: &Identity, tsc_mhz: u32) {
     #[cfg(all(target_os = "none", feature = "bundle-stage"))]
-    if crate::entry::bsp_bist() != 0 {
-        fstart_log::error!("sp3: BSP BIST {:#x}", crate::entry::bsp_bist());
+    if crate::sp3::entry::bsp_bist() != 0 {
+        fstart_log::error!("sp3: BSP BIST {:#x}", crate::sp3::entry::bsp_bist());
         fail("BIST");
     }
     let generation = identity.generation();
@@ -911,7 +911,7 @@ fn cache_ram(regions: &[Region]) {
 
 /// Select and reserve scratch pages using the live routing map. This runs
 /// before payload loading and before the immutable SMM config is installed.
-fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
+fn plan_einj(ctx: &mut Ctx) -> Option<crate::sp3::smm::EinjConfig> {
     #[cfg(feature = "rome")]
     if ctx.soc.generation == Generation::Rome && (1..=2).contains(&ctx.soc.topology.sockets) {
         use fstart_driver_amd::{
@@ -920,7 +920,7 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
             smn::Smn,
             sp3::df::{self, v3},
         };
-        let mut config = crate::smm::EinjConfig {
+        let mut config = crate::sp3::smm::EinjConfig {
             sockets: ctx.soc.topology.sockets,
             ..Default::default()
         };
@@ -935,8 +935,11 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
                 .bus_base;
         }
         let map = df::dram::read::<v3::Df3, _>(&ctx.soc.df, 0, Target::Instance(v3::CCM0));
-        config.targets =
-            crate::einj::plan_targets(config.sockets, ctx.e820.entries(), &map.rules, |address| {
+        config.targets = crate::sp3::einj::plan_targets(
+            config.sockets,
+            ctx.e820.entries(),
+            &map.rules,
+            |address| {
                 ras::memory_target(
                     address,
                     config.sockets,
@@ -958,24 +961,25 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
                         Smn::on_bus(ctx.soc.pci, config.buses[usize::from(socket)]).read32(address)
                     },
                 )
-            });
+            },
+        );
         for (i, &target) in config.targets.iter().enumerate().filter(|(_, t)| **t != 0) {
-            let page = target & !(crate::einj::SCRATCH_SIZE - 1);
+            let page = target & !(crate::sp3::einj::SCRATCH_SIZE - 1);
             if config.targets[..i]
                 .iter()
-                .any(|&t| t != 0 && t & !(crate::einj::SCRATCH_SIZE - 1) == page)
+                .any(|&t| t != 0 && t & !(crate::sp3::einj::SCRATCH_SIZE - 1) == page)
             {
                 continue;
             }
-            if page != crate::einj::SCRATCH {
+            if page != crate::sp3::einj::SCRATCH {
                 ctx.e820
-                    .reserve_range(page, crate::einj::SCRATCH_SIZE)
+                    .reserve_range(page, crate::sp3::einj::SCRATCH_SIZE)
                     .or_halt("EINJ scratch reservation");
             }
             // SAFETY: legacy reserved scratch or a fresh page just removed
             // from usable RAM; all DRAM is identity mapped by the reset image.
             unsafe {
-                core::ptr::write_bytes(page as *mut u8, 0, crate::einj::SCRATCH_SIZE as usize)
+                core::ptr::write_bytes(page as *mut u8, 0, crate::sp3::einj::SCRATCH_SIZE as usize)
             };
         }
         return Some(config);
@@ -1000,9 +1004,9 @@ fn install_smm<S: Steps>(
     ctx: &mut Ctx,
     si: &S,
     mp: &MpHandle,
-    bmc: Option<crate::smm::SleepNotify>,
+    bmc: Option<crate::sp3::smm::SleepNotify>,
 ) {
-    let config = crate::smm::SmmConfig {
+    let config = crate::sp3::smm::SmmConfig {
         generation: ctx.soc.generation,
         ecam_base: ctx.soc.pci_root.ecam_base,
         psp_bar: ctx.soc.psp_bar as u32,
@@ -1017,18 +1021,18 @@ fn install_smm<S: Steps>(
         tpm::measure_smm(IMAGE);
         // The handler's page tables map the low 4 GiB only; a PSP BAR
         // above would fault in SMM at SmmInfo, after the lock.
-        if ctx.soc.psp_bar == 0 || ctx.soc.psp_bar >= crate::memory::FOUR_GIB {
+        if ctx.soc.psp_bar == 0 || ctx.soc.psp_bar >= crate::sp3::memory::FOUR_GIB {
             fail("PSP BAR for SMM");
         }
-        let smi = crate::smm::Sp3Smi {
+        let smi = crate::sp3::smm::Sp3Smi {
             fch: &ctx.soc.fch,
             config,
         };
         fstart_arch::x86::cpu::amd::smm::AmdSmm::new("sp3", &smi)
             .install(mp, IMAGE, ctx.tseg.base, ctx.tseg.size as u32)
             .or_halt("SMM install");
-        crate::smm::prepare_psp_smi(&ctx.soc.fch);
-        fch::smi::software_smi(ctx.soc.fch.io(), crate::smm::sw::PSP_SMM_INFO);
+        crate::sp3::smm::prepare_psp_smi(&ctx.soc.fch);
+        fch::smi::software_smi(ctx.soc.fch.io(), crate::sp3::smm::sw::PSP_SMM_INFO);
         ctx.smm = Some(config);
         ctx.soc.smm_installed = true;
     }
@@ -1052,7 +1056,7 @@ fn install_smm<S: Steps>(
 pub(crate) fn enumerate(ctx: &Ctx) -> fstart_pci::PciEcam {
     let roots: heapless::Vec<fstart_pci::PciRoot, MAX_ROOT_BRIDGES> = (ctx.soc.plan.root_bridges)
         .iter()
-        .map(|rb| crate::pci::root(rb, &ctx.soc.pci_root))
+        .map(|rb| crate::sp3::pci::root(rb, &ctx.soc.pci_root))
         .collect::<Option<_>>()
         .or_halt("PCI root");
     let mut pci = fstart_pci::PciEcam::new(roots).or_halt("PCI root");

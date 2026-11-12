@@ -1,7 +1,7 @@
 //! ACPI 6.5 §18.6 EINJ, backed by the native fixed-buffer SMM service.
 
 extern crate alloc;
-use crate::einj::*;
+use crate::sp3::einj::*;
 use alloc::vec::Vec;
 use fstart_acpi::{Aml, sdt::Sdt};
 

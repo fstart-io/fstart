@@ -1,4 +1,4 @@
-//! The settings store ([`crate::layout::NVRAM`]): option overrides read at
+//! The settings store ([`crate::sp3::layout::NVRAM`]): option overrides read at
 //! boot, and the store and the options' form handed to the UEFI payload.
 //!
 //! The store is CrabEFI's EFI variable store, which its menu writes. Every
@@ -40,7 +40,7 @@ pub(crate) fn storage(
     use fstart_driver_amd::fch::spi::flash::{ERASE_SIZE, Extent, Flash};
     use fstart_payload::crabefi::settings::FlashStorage;
 
-    let nvram = crate::layout::NVRAM;
+    let nvram = crate::sp3::layout::NVRAM;
     let extent = Extent {
         offset: nvram.offset,
         size: nvram.size,

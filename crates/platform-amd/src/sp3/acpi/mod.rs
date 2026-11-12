@@ -113,7 +113,7 @@ pub struct Inputs<'a> {
     /// The BMC sleep-state notification; needs [`Inputs::acpi_smi`].
     pub bmc_sx_notify: Option<fstart_driver_ipmi::SleepNotify>,
     /// The discrete TPM measured boot started on
-    /// (`crate::board::Board::DISCRETE_TPM`), with its event log.
+    /// (`crate::sp3::board::Board::DISCRETE_TPM`), with its event log.
     pub tpm: Option<fstart_acpi::devices::tpm::TpmTisAcpi>,
     /// SMU-served CPPC: `_CPC` per processor and the PCCT.
     pub cppc: &'a [CppcAcpi<'a>],

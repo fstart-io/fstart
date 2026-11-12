@@ -91,12 +91,18 @@ pub(crate) fn load(
         quoted(&platform_name),
         quoted(&platform_path)
     );
+    let module = board
+        .build_profile
+        .as_ref()
+        .and_then(|profile| profile.module.as_deref())
+        .map(|module| format!("{module}::"))
+        .unwrap_or_default();
+    let main = format!(
+        "fn main() {{ platform::{module}Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n"
+    );
     for (path, contents) in [
         (runner.join("Cargo.toml"), manifest.as_str()),
-        (
-            runner.join("src/main.rs"),
-            "fn main() { platform::Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }\n",
-        ),
+        (runner.join("src/main.rs"), main.as_str()),
     ] {
         if fs::read_to_string(&path).ok().as_deref() != Some(contents) {
             fs::write(path, contents).map_err(|e| e.to_string())?;

@@ -1,9 +1,9 @@
 //! Native FCH dispatch and MCA observation on the S8030. RAS is platform
 //! functionality selected by this board's policy, not a different board.
 
-use fstart_platform_sp3::smm::ras::SelTransport;
-use fstart_platform_sp3::smm::{self, Policy, SmmConfig};
-use fstart_platform_sp3::smm_runtime::SmmContext;
+use fstart_platform_amd::sp3::smm::ras::SelTransport;
+use fstart_platform_amd::sp3::smm::{self, Policy, SmmConfig};
+use fstart_platform_amd::sp3::smm_runtime::SmmContext;
 
 const RAS: Policy = Policy {
     observe_mce: true,
@@ -25,4 +25,4 @@ fn smi_handler(ctx: &mut SmmContext<'_>, config: &SmmConfig) {
     smm::handle(ctx, config, &RAS);
 }
 
-fstart_platform_sp3::smm_runtime::smm_bin!(handler: smi_handler, enter_cpu: enter_cpu);
+fstart_platform_amd::sp3::smm_runtime::smm_bin!(handler: smi_handler, enter_cpu: enter_cpu);

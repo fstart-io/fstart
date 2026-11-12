@@ -228,11 +228,3 @@ pub struct SmbiosFacts {
     /// Memory channels per die: how the APOB numbers its DIMM seeds.
     pub channels_per_die: u8,
 }
-
-/// Declare the board's stage `main`: `fstart_platform_amd::entry!(main);`
-#[macro_export]
-macro_rules! entry {
-    ($main:path) => {
-        $crate::__stage::stage_bin!(main: $main);
-    };
-}

@@ -75,7 +75,7 @@ fn zeppelin_and_mj11_tables_resolve_to_a_two_level_partition() {
 
 #[test]
 fn sp3_generation_and_board_tables_resolve() {
-    let platform = fstart_table("../platform-sp3/Cargo.toml");
+    let platform = fstart_table("../platform-amd/Cargo.toml");
     for (board, generations) in [
         ("../../boards/tyan/s8030/Cargo.toml", &["milan", "rome"][..]),
         ("../../boards/amd/ethanolx/Cargo.toml", &["milan"][..]),
@@ -288,7 +288,7 @@ fn donor_halves_by_generation() {
     use BiosDirectorySlot::{Family17hModel30, Family19h};
     let soc = |slot| SocBlobs {
         bios_directory: slot,
-        ..serde_json::from_value(fstart_table("../platform-sp3/Cargo.toml")["amd"]["rome"].clone())
+        ..serde_json::from_value(fstart_table("../platform-amd/Cargo.toml")["amd"]["rome"].clone())
             .unwrap()
     };
     let (rome, milan) = (soc(Family17hModel30), soc(Family19h));

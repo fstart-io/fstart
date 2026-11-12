@@ -7,14 +7,14 @@
 use fstart_board_tyan_s8030::{Board, bmc, dxio, platform};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_sp3::{Identified, Silicon, Start, Tables};
+use fstart_platform_amd::sp3::{Identified, Silicon, Start, Tables};
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
-fstart_platform_sp3::entry!(main);
+fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
-    let Start::RomeMilan(id) = fstart_platform_sp3::start::<Board>();
+    let Start::RomeMilan(id) = fstart_platform_amd::sp3::start::<Board>();
     flow(id)
 }
 

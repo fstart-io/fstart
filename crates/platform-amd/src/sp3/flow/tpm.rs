@@ -7,7 +7,7 @@
 //! launchers measure the rest. The TCG event log lives in the reserved
 //! early region and ACPI points the OS at it (`TPM2`/`TCPA`).
 //!
-//! [`Board::DISCRETE_TPM`]: crate::board::Board::DISCRETE_TPM
+//! [`Board::DISCRETE_TPM`]: crate::sp3::board::Board::DISCRETE_TPM
 
 use fstart_amdfw_format::directory::bios;
 use fstart_driver_amd::sp3::soc::Generation;

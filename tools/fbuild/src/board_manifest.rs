@@ -30,6 +30,10 @@ pub struct BoardManifest {
 pub struct ProfileRef {
     pub dependency: String,
     pub name: String,
+    /// The module of the dependency that has the board's `Plan`, if it is
+    /// not the crate root: a platform with more than one kind of board.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 }
 
 // Only fstart's tables are closed. Cargo and other tools own the rest of the
@@ -187,6 +191,22 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
     {
         return Err(format!(
             "build-profile must name 'rust' in {}",
+            manifest.display()
+        ));
+    }
+    if let Some(module) = metadata
+        .build_profile
+        .as_ref()
+        .and_then(|profile| profile.module.as_deref())
+        && !module.split("::").all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
+        })
+    {
+        return Err(format!(
+            "build-profile module '{module}' is not a module path in {}",
             manifest.display()
         ));
     }
