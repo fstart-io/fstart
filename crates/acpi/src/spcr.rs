@@ -44,6 +44,18 @@ pub fn build_spcr_16550_io(port: u16, irq: u8) -> Sdt {
     )
 }
 
+/// Generic 16550 MMIO, 32-bit registers at four-byte stride, polling.
+/// Used by AMD's AMDI0020 UART; this is not the port-I/O 16550 subtype.
+pub fn build_spcr_16550_mmio32(base: u64, clock: u32) -> Sdt {
+    let mut table = build(0x12, (0, base), (0, 0, 0));
+    table.write_u8(41, 32);
+    table.write_u8(43, 3);
+    table.write_u32(76, clock);
+    table.write_u32(80, 115200);
+    table.update_checksum();
+    table
+}
+
 /// `(address space, address)` of the registers, `(interrupt type, IRQ,
 /// GSI)`.
 fn build(interface: u8, (space, address): (u8, u64), (kind, irq, gsi): (u8, u8, u32)) -> Sdt {
