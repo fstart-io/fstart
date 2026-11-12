@@ -172,9 +172,6 @@ impl Default for IntelPineviewConfig {
 }
 
 const PCI_ECAM_SIZE: u64 = 0x1000_0000;
-const PCI_MMIO32_LIMIT: u64 = 0xfec0_0000;
-const PCI_PIO_BASE: u64 = 0x1000;
-const PCI_PIO_SIZE: u64 = 0xf000;
 const PCI_BUS_START: u8 = 0;
 const PCI_BUS_END: u8 = 0xff;
 
@@ -527,12 +524,10 @@ const UMA_SIZES: &[fstart_options::Choice] = &[
     fstart_options::Choice::new(256, "256 MiB"),
 ];
 
-impl crate::IntelNorthbridgeDriver for IntelPineview {
-    type Config = IntelPineviewConfig;
-    const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
-    const ACPI_IGD_NAME: &'static str = "GFX0";
-
-    fn pci_root_info(&self) -> PciRootInfo {
+impl IntelPineview {
+    /// The fixed identity of the PCI root bridge, for its description and
+    /// the MCFG.
+    fn root_info(&self) -> PciRootInfo {
         PciRootInfo {
             segment: 0,
             ecam_base: self.config.ecam_base,
@@ -540,19 +535,44 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             bus_end: PCI_BUS_END,
         }
     }
+}
+
+impl crate::IntelNorthbridgeDriver for IntelPineview {
+    type Config = IntelPineviewConfig;
+    const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
+    const ACPI_IGD_NAME: &'static str = "GFX0";
+
     fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
-        use fstart_pci::PciRole::{Own, Window};
-        let low = u64::from(self.usable_low_memory_top()).max(u64::from(self.tolud()));
-        let high = self.touud().max(0x1_0000_0000);
-        let limit = fstart_arch::x86::physical_address_limit();
+        use fstart_pci::PciRole::Own;
+        let config = self.config;
+        // Live chipset bounds; a host build has no chipset to read. Above
+        // 4 GiB from TOUUD to the CPU's physical address limit.
+        #[cfg(target_os = "none")]
+        let (low, touud) = (
+            u64::from(self.usable_low_memory_top()).max(u64::from(self.tolud())),
+            self.touud(),
+        );
+        #[cfg(not(target_os = "none"))]
+        let (low, touud) = (0x8000_0000, 1 << 32);
+        let above_4g = Some((
+            touud.max(1 << 32),
+            fstart_arch::x86::physical_address_limit(),
+        ));
+        // What the chipset decodes itself, on top of what every host
+        // bridge forwards.
+        let chipset = [
+            Own.mmio(config.ecam_base, PCI_ECAM_SIZE),
+            Own.mmio(0xfed1_c000, 0x4000), // RCBA, the ICH7's default
+            Own.mmio(config.mchbar, 0x4000),
+            Own.mmio(config.dmibar, 0x1000),
+            Own.mmio(config.epbar, 0x1000),
+            // TXT, and the chipset's reserved block above the TPM.
+            Own.mmio(0xfed2_0000, 0x2_0000),
+            Own.mmio(0xfed4_5000, 0x4_b000),
+        ];
         fstart_pci::PciRoot::new(
-            self.pci_root_info(),
-            [
-                Window.mmio(low, PCI_MMIO32_LIMIT.saturating_sub(low)),
-                Own.mmio(self.config.ecam_base, PCI_ECAM_SIZE),
-                Window.mmio(high, limit.saturating_sub(high)),
-                Window.io(PCI_PIO_BASE, PCI_PIO_SIZE),
-            ],
+            self.root_info(),
+            (crate::host_bridge::forwarded(Some(low), above_4g).into_iter()).chain(chipset),
         )
     }
 
@@ -1227,11 +1247,7 @@ mod acpi_impl {
         /// runtime bounds are read while generating the tables.
         ///
         /// Ported from coreboot `northbridge/intel/pineview/acpi/`.
-        fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let mchbar = config.mchbar as u32;
-            let dmibar = config.dmibar as u32;
-            let epbar = config.epbar as u32;
-
+        fn dsdt_aml(&self, _config: &Self::Config) -> Vec<u8> {
             // 1. MCHC device with PCI config OperationRegion.
             //
             // Coreboot hostbridge.asl: MCHP OpRegion in PCI_Config
@@ -1313,90 +1329,28 @@ mod acpi_impl {
             }
             .into();
 
-            // 2. PDRC — Platform Device Resource Consumption.
-            //
-            // Reserves MMIO ranges for RCBA, MCHBAR, DMIBAR, EPBAR,
-            // and miscellaneous ICH regions so the OS won't allocate
-            // PCI BARs over them.
-            // Coreboot: pineview.asl Device(PDRC)
-            let rcba: u32 = 0xFED1_C000; // ICH7 default RCBA
-            let ecam_base = config.ecam_base as u32;
-            let ecam_size: u32 = 0x1000_0000; // 256 MiB, buses 0..255
-            aml.extend(Vec::from(fstart_acpi_macros::acpi_dsl! {
-                Device("PDRC") {
-                    Name("_HID", EisaId("PNP0C02"));
-                    Name("_UID", 1u32);
-                    Name("_CRS", ResourceTemplate {
-                        Memory32Fixed(ReadWrite, #{dword rcba}, 0x4000u32);
-                        Memory32Fixed(ReadWrite, #{dword mchbar}, 0x4000u32);
-                        Memory32Fixed(ReadWrite, #{dword dmibar}, 0x1000u32);
-                        Memory32Fixed(ReadWrite, #{dword epbar}, 0x1000u32);
-                        // PCI Express ECAM/MMCONFIG window. Linux requires
-                        // every MCFG range to be reserved by motherboard
-                        // resources (PNP0C02), otherwise it refuses ECAM.
-                        Memory32Fixed(ReadWrite, #{dword ecam_base}, #{dword ecam_size});
-                        // Misc ICH MMIO (HPET area, TPM, etc.)
-                        Memory32Fixed(ReadWrite, 0xFED20000u32, 0x00020000u32);
-                        Memory32Fixed(ReadWrite, 0xFED40000u32, 0x00005000u32);
-                        Memory32Fixed(ReadWrite, 0xFED45000u32, 0x0004B000u32);
-                    });
-                }
-            }));
-
             // 3. PCI0 host bridge identity + _CRS.
             //
             // _HID PNP0A08 (PCIe), _CID PNP0A03 (PCI), _BBN 0.
-            // The _CRS declares bus numbers, I/O ports, VGA memory,
-            // and the PCI MMIO windows, using the live chipset bounds.
+            // The _CRS is what the host bridge decodes, from the live
+            // chipset bounds: the windows the allocator worked in.
             //
-            // Coreboot: hostbridge.asl Names + MCRS + _CRS Method.
-            // The PCI host-bridge MMIO aperture begins at the live chipset
-            // TOLUD value programmed by raminit. This is evaluated while ACPI
-            // tables are generated in ramstage, not baked into the board metadata.
-            #[cfg(target_os = "none")]
-            let (pci_mmio_base, pci_mmio64_base) = (self.tolud(), self.touud().max(0x1_0000_0000));
-            #[cfg(not(target_os = "none"))]
-            let (pci_mmio_base, pci_mmio64_base) = (0x8000_0000u32, 0x1_0000_0000u64);
-            let pci_mmio_limit = 0xFEBF_FFFFu32;
-            let pci_mmio64_limit = fstart_arch::x86::physical_address_limit() - 1;
-
+            // Coreboot: hostbridge.asl.
             aml.extend(Vec::from(fstart_acpi_macros::acpi_dsl! {
                 Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                     Name("_HID", EisaId("PNP0A08"));
                     Name("_CID", EisaId("PNP0A03"));
                     Name("_BBN", 0u32);
 
-                // Bounds are captured from hardware during table generation.
-                Name("MCRS", ResourceTemplate {
-                    // Bus numbers 0x00-0xFF.
-                    WordBusNumber(0x0000u16, 0x00FFu16);
-                    // I/O below PCI config (0x0000-0x0CF7).
-                    DWordIO(0x0000u32, 0x0CF7u32);
-                    // PCI Config I/O (0x0CF8-0x0CFF) — separate so OSPM
-                    // knows it's the config mechanism.
-                    IO(0x0CF8u16, 0x0CF8u16, 0x01u8, 0x08u8);
-                    // I/O above PCI config (0x0D00-0xFFFF).
-                    DWordIO(0x0D00u32, 0xFFFFu32);
-                    // VGA memory (0xA0000-0xBFFFF).
-                    DWordMemory(Cacheable, ReadWrite, 0x000A0000u32, 0x000BFFFFu32);
-                    // PCI MMIO window: TOLUD..0xFEBFFFFF. Anything below
-                    // TOLUD is low DRAM; anything at/above TOLUD and below
-                    // the fixed chipset MMIO blocks is available for PCI.
-                    DWordMemory(NotCacheable, ReadWrite, #{dword pci_mmio_base}, #{dword pci_mmio_limit});
-                    QWordMemory(Prefetchable, ReadWrite, #{qword pci_mmio64_base}, #{qword pci_mmio64_limit});
-                });
-
                 Method("_OSC", 4, NotSerialized) {
                     Return(Arg3);
-                }
-                Method("_CRS", 0, Serialized) {
-                    Return(MCRS);
                 }
                 }
             }));
 
             // PEGP and the integrated graphics function (coreboot
             // `pineview.asl`: `peg.asl` and `gfx.asl`).
+            // PCI0's `_CRS` is the platform's: from the root bridge it enumerated.
             let mut pci0 = crate::gmch::acpi::peg_node();
             let mut gfx: Vec<u8> = fstart_acpi_macros::acpi_dsl! {
                 Name("_ADR", 0x00020000u32);
@@ -1429,9 +1383,7 @@ mod acpi_impl {
         }
 
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            alloc::vec![crate::gmch::acpi::mcfg(
-                crate::IntelNorthbridgeDriver::pci_root_info(self)
-            )]
+            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
         }
     }
 }

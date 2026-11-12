@@ -10,13 +10,22 @@ use fstart_pci::PciRootInfo;
 use fstart_pci::PciWindowKind;
 use std::{format, fs, process::Command, string::String};
 
-fn resources(label: &str, aml: &[u8]) -> String {
-    let dir = std::env::temp_dir().join(format!("fstart-root-{label}-{}", std::process::id()));
+/// What ACPICA makes of the `_CRS` of `device` in a DSDT holding `aml`.
+fn resources(label: &str, device: &str, aml: &[u8]) -> String {
+    let dir = std::env::temp_dir().join(format!(
+        "fstart-root-{label}-{device}-{}",
+        std::process::id()
+    ));
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("dsdt.aml"), fstart_acpi::platform::build_dsdt(aml)).unwrap();
     let output = Command::new("acpiexec")
         .current_dir(&dir)
-        .args(["-dt", "-b", "resources \\_SB.PCI0", "dsdt.aml"])
+        .args([
+            "-dt",
+            "-b",
+            &format!("resources \\_SB.{device}"),
+            "dsdt.aml",
+        ])
         .output()
         .unwrap();
     let text = format!(
@@ -48,13 +57,25 @@ fn check_mcfg(tables: &[alloc::vec::Vec<u8>], root: PciRootInfo) {
     assert_eq!(&mcfg[54..56], &[root.bus_start, root.bus_end]);
 }
 
+/// The northbridge's namespace with PCI0's `_CRS` and `PDRC` from its root
+/// bridge, as the platform assembles it.
+fn dsdt_aml<N>(north: &N) -> alloc::vec::Vec<u8>
+where
+    N: IntelNorthbridgeDriver + AcpiDevice<Config = <N as IntelNorthbridgeDriver>::Config>,
+{
+    let root = north.pci_root().unwrap();
+    let mut aml = north.dsdt_aml(IntelNorthbridgeDriver::config(north));
+    aml.extend(crate::namespace::pci_root_resources::<N>(&root).unwrap());
+    aml
+}
+
 #[cfg(any(feature = "i945", feature = "gm965"))]
 fn check_low_memory_root<N>(label: &str, mut north: N)
 where
     N: IntelNorthbridgeDriver + AcpiDevice<Config = <N as IntelNorthbridgeDriver>::Config>,
 {
     let config = IntelNorthbridgeDriver::config(&north);
-    let root = north.pci_root_info();
+    let root = north.pci_root().unwrap().info();
     check_mcfg(&north.extra_tables(config), root);
     for tolud in [0x2000_0000u32, 0x4000_0000, 0x8000_0000, 0xc000_0000] {
         let mut memory = E820State::new();
@@ -68,22 +89,55 @@ where
         memory.set_detected(count, u64::from(tolud)).unwrap();
         north.memory_detected(&memory);
         let described = north.pci_root().unwrap();
+        // The window PCI devices are allocated in.
         let mmio = described
             .allocatable()
             .iter()
             .find(|window| window.kind == PciWindowKind::Mmio)
             .unwrap();
         assert_eq!(mmio.base, u64::from(tolud));
-        let text = resources(label, &north.dsdt_aml(config));
+        let aml = dsdt_aml(&north);
+        let text = resources(label, "PCI0", &aml);
+        // Two windows from TOLUD to the I/O APIC, around the ECAM window.
+        let (ecam, ecam_end) = (root.ecam_base, root.ecam_base + root.ecam_size());
+        for (base, end) in [(mmio.base, ecam), (ecam_end, 0xfec0_0000)] {
+            for field in [
+                format!("Address Minimum : {base:08X}"),
+                format!("Address Maximum : {:08X}", end - 1),
+                format!("Address Length : {:08X}", end - base),
+            ] {
+                assert!(text.contains(&field), "{field}\n{text}");
+            }
+        }
+        // The ECAM window is the chipset's own: not in PCI0's _CRS, but a
+        // motherboard resource in \_SB_.PDRC, with MCHBAR.
         assert!(
-            text.contains(&format!("Address Minimum : {:08X}", mmio.base)),
+            !text.contains(&format!("Address Minimum : {ecam:08X}")),
             "{text}"
         );
-        assert!(text.contains("Address Maximum : FEBFFFFF"), "{text}");
-        assert!(
-            text.contains(&format!("Address Length : {:08X}", 0xfec0_0000 - mmio.base)),
-            "{text}"
-        );
+        let board = resources(label, "PDRC", &aml);
+        for field in [
+            format!("Address : {ecam:08X}"),
+            format!("Address Length : {:08X}", ecam_end - ecam),
+            format!("Address : {:08X}", 0xfed1_4000u32),
+        ] {
+            assert!(board.contains(&field), "{field}\n{board}");
+        }
+        // What the allocator may use is in what `_CRS` reports.
+        for usable in described.allocatable() {
+            assert!(described.forwarded().iter().any(|whole| {
+                whole.kind == usable.kind
+                    && whole.base <= usable.base
+                    && usable.end() <= whole.end()
+            }));
+        }
+        // The legacy ranges the bridge forwards and the firmware keeps.
+        for legacy in ["0CF7", "FFFF", "000FFFFF", "FED44FFF"] {
+            assert!(
+                text.contains(&format!("Address Maximum : {legacy}")),
+                "{text}"
+            );
+        }
         assert!(
             text.contains(&format!("Address Maximum : {:04X}", root.bus_end)),
             "{text}"
@@ -116,17 +170,19 @@ fn gm965_root_covers_low_ram_bars_and_matches_ecam_topology() {
 
 #[cfg(feature = "pineview")]
 #[test]
-fn pineview_root_includes_the_high_prefetchable_aperture() {
+fn pineview_root_includes_the_aperture_above_4g() {
     use crate::pineview::{IntelPineview, IntelPineviewConfig};
     static CONFIG: IntelPineviewConfig = IntelPineviewConfig::new();
     let north = IntelPineview::new_from_config(&CONFIG).unwrap();
-    check_mcfg(&north.extra_tables(&CONFIG), north.pci_root_info());
-    let text = resources("pineview", &north.dsdt_aml(&CONFIG));
+    check_mcfg(
+        &north.extra_tables(&CONFIG),
+        north.pci_root().unwrap().info(),
+    );
+    let text = resources("pineview", "PCI0", &dsdt_aml(&north));
     let high = text
         .split("64-Bit QWORD Address Space Resource")
         .nth(1)
         .expect("missing high MMIO window");
-    assert!(high.contains("Caching : Prefetchable"), "{high}");
     assert!(
         high.contains("Address Minimum : 0000000100000000"),
         "{high}"

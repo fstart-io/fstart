@@ -13,6 +13,7 @@ default = []
 display = []
 acpi = [
   "dep:fstart-acpi",
+  "fstart-acpi/pci",
   "dep:fstart-acpi-macros",
 ]
 gm45 = ["fstart-intel-gma/g45"]

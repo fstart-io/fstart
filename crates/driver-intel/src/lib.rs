@@ -22,6 +22,14 @@ pub mod gm45;
 #[cfg(feature = "gm965")]
 pub mod gm965;
 pub mod gmch;
+#[cfg(any(
+    feature = "gm45",
+    feature = "gm965",
+    feature = "i945",
+    feature = "pineview",
+    feature = "ironlake"
+))]
+mod host_bridge;
 #[cfg(feature = "i945")]
 pub mod i945;
 #[cfg(feature = "ibexpeak")]
@@ -221,11 +229,11 @@ pub trait IntelNorthbridgeDriver:
     /// ACPI name of the integrated graphics device on that root.
     const ACPI_IGD_NAME: &'static str;
 
-    /// The fixed identity of the PCI root bridge: segment, ECAM and buses.
-    fn pci_root_info(&self) -> fstart_pci::PciRootInfo;
-    /// The PCI root bridge, once memory is detected: what the host bridge
-    /// forwards and what that is for. The platform asks once; the allocator
-    /// is built from the answer.
+    /// The PCI root bridge, once memory is detected: its identity, what the
+    /// host bridge forwards and what that is for. The platform asks once;
+    /// the allocator is built from the answer and keeps it, and PCI0's
+    /// `_CRS`, `PDRC` and the payload's view of the root all come from the
+    /// allocator's copy.
     fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError>;
 
     /// The user options the driver consumes (`fstart_options`): the
