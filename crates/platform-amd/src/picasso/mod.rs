@@ -261,12 +261,7 @@ impl noncar::Soc for Picasso {
                 .map(|(_, w)| w)
                 .collect();
             windows
-                .push(fstart_pci::PciWindow {
-                    kind: fstart_pci::PciWindowKind::Mmio,
-                    base: uma.base,
-                    size: uma.size,
-                    prefetchable: false,
-                })
+                .push(fstart_pci::PciWindow::mmio(uma.base, uma.size))
                 .map_err(|_| "VGA resource windows")?;
             // SAFETY: allocated VGA BARs and reserved UMA, BSP only, before
             // any payload/display driver runs. Only an authenticated ROM is used.

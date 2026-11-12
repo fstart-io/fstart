@@ -5,9 +5,9 @@ use crate::IntelNorthbridgeDriver;
 use fstart_acpi::device::AcpiDevice;
 #[cfg(any(feature = "i945", feature = "gm965"))]
 use fstart_core::services::memory_detect::{E820State, build_pc_compatible_e820};
+use fstart_pci::PciRootInfo;
 #[cfg(any(feature = "i945", feature = "gm965"))]
 use fstart_pci::PciWindowKind;
-use fstart_pci::{PciRootInfo, PciRootProvider};
 use std::{format, fs, process::Command, string::String};
 
 fn resources(label: &str, aml: &[u8]) -> String {
@@ -54,7 +54,7 @@ where
     N: IntelNorthbridgeDriver + AcpiDevice<Config = <N as IntelNorthbridgeDriver>::Config>,
 {
     let config = IntelNorthbridgeDriver::config(&north);
-    let root = PciRootProvider::root_info(&north);
+    let root = north.pci_root_info();
     check_mcfg(&north.extra_tables(config), root);
     for tolud in [0x2000_0000u32, 0x4000_0000, 0x8000_0000, 0xc000_0000] {
         let mut memory = E820State::new();
@@ -67,8 +67,9 @@ where
         .unwrap();
         memory.set_detected(count, u64::from(tolud)).unwrap();
         north.memory_detected(&memory);
-        let windows = north.resource_windows().unwrap();
-        let mmio = windows
+        let described = north.pci_root().unwrap();
+        let mmio = described
+            .allocatable()
             .iter()
             .find(|window| window.kind == PciWindowKind::Mmio)
             .unwrap();
@@ -119,7 +120,7 @@ fn pineview_root_includes_the_high_prefetchable_aperture() {
     use crate::pineview::{IntelPineview, IntelPineviewConfig};
     static CONFIG: IntelPineviewConfig = IntelPineviewConfig::new();
     let north = IntelPineview::new_from_config(&CONFIG).unwrap();
-    check_mcfg(&north.extra_tables(&CONFIG), north.root_info());
+    check_mcfg(&north.extra_tables(&CONFIG), north.pci_root_info());
     let text = resources("pineview", &north.dsdt_aml(&CONFIG));
     let high = text
         .split("64-Bit QWORD Address Space Resource")

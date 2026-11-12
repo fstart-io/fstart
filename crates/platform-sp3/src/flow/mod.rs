@@ -287,10 +287,6 @@ pub(crate) struct Ctx {
     pub plan: Plan,
     /// Non-PCI MMIO of each root bridge, physical order.
     pub non_pci: heapless::Vec<NonPci, MAX_ROOT_BRIDGES>,
-    /// The root bridges as PCI sees them, physical order: what the DF routes
-    /// once [`data_fabric`] has programmed it. Empty before, so nothing can
-    /// be enumerated through an unprogrammed fabric.
-    pub roots: heapless::Vec<fstart_pci::PciRoot, MAX_ROOT_BRIDGES>,
     pub phys_addr_bits: u8,
     /// Socket 0's (Naples: die 0's) PSP BAR.
     pub psp_bar: u64,
@@ -535,7 +531,6 @@ impl<B: Board, S: Silicon> Early<B, S> {
                 above_ecam: 0,
             },
             non_pci: heapless::Vec::new(),
-            roots: heapless::Vec::new(),
             phys_addr_bits: 0,
             psp_bar: 0,
             apic_ids: Vec::new(),
@@ -775,7 +770,12 @@ impl<B: Board, S: Silicon> Stage<B, S, Enumerated> {
             let Machine {
                 ctx, si, rom_size, ..
             } = &mut self.machine;
-            ctx.rsdp = Some(handoff::acpi::<B, S>(ctx, si, &tables.acpi));
+            ctx.rsdp = Some(handoff::acpi::<B, S>(
+                ctx,
+                si,
+                &self.phase.pci,
+                &tables.acpi,
+            ));
             ctx.smbios = Some(crate::smbios::runtime::prepare(
                 ctx,
                 &self.phase.mp,
@@ -1132,12 +1132,6 @@ fn data_fabric<S: Steps>(ctx: &mut Ctx) {
         );
     }
     ctx.non_pci = plan.root_bridges.iter().map(NonPci::of).collect();
-    ctx.roots = plan
-        .root_bridges
-        .iter()
-        .map(|rb| crate::pci::root(rb, &ctx.pci_root))
-        .collect::<Option<_>>()
-        .or_halt("PCI root");
     ctx.topology = topology;
     ctx.plan = plan;
 }
@@ -1305,10 +1299,20 @@ fn install_smm<S: Steps>(
 
 /// Enumerate every root bridge the DF routes, each within its own buses and
 /// windows, with one allocator for the segment.
+///
+/// The root bridges are described here, from the plan [`data_fabric`]
+/// programmed: before that the plan is empty and there is nothing to
+/// enumerate through an unprogrammed fabric. The allocator keeps them, and
+/// the tables are built from its copy.
 pub(crate) fn enumerate(ctx: &Ctx) -> fstart_pci::PciEcam {
-    let mut pci = fstart_pci::PciEcam::from_providers(&ctx.roots).or_halt("PCI root");
+    let roots: heapless::Vec<fstart_pci::PciRoot, MAX_ROOT_BRIDGES> = (ctx.plan.root_bridges)
+        .iter()
+        .map(|rb| crate::pci::root(rb, &ctx.pci_root))
+        .collect::<Option<_>>()
+        .or_halt("PCI root");
+    let mut pci = fstart_pci::PciEcam::new(roots).or_halt("PCI root");
     pci.enumerate_and_allocate().or_halt("PCI enumeration");
-    for (rb, root) in ctx.plan.root_bridges.iter().zip(&ctx.roots) {
+    for (rb, root) in ctx.plan.root_bridges.iter().zip(pci.roots()) {
         let buses = root.buses();
         fstart_log::info!(
             "pci: rb {}.{}: {} functions",

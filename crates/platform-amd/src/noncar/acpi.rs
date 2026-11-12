@@ -47,7 +47,6 @@ impl HostBridge {
             ioapic_id: 1 + die,
             ioapic_base,
             root: &self.root,
-            vga: die == 0,
             bridges: &self.bridges,
             iommu,
         }

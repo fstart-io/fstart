@@ -31,10 +31,8 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_intel_gma::types::{Cpu, PciAddress};
+use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -1326,6 +1324,24 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        use fstart_pci::PciRole::Window;
+        let (base, size) = self.mmio32_window.unwrap_or((0, 0));
+        // Below 0x1000 is legacy ISA and chipset I/O (PIC, PIT, KBC).
+        fstart_pci::PciRoot::new(
+            self.pci_root_info(),
+            [Window.mmio(base, size), Window.io(0x1000, 0xf000)],
+        )
+    }
+
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] = &[
         crate::igd::options::uma(UMA_SIZES),
@@ -1459,44 +1475,6 @@ fn default_mmio32_window_from_e820(
     (base < limit).then_some((base, limit - base))
 }
 
-impl PciRootProvider for IntelI945 {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: 0,
-            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
-        }
-    }
-
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        let (mmio32_base, mmio32_size) = self.mmio32_window.unwrap_or((0xC000_0000, 0));
-
-        if mmio32_size != 0 {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base: mmio32_base,
-                    size: mmio32_size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                // Below 0x1000 is legacy ISA and chipset I/O (PIC, PIT, KBC).
-                base: 0x1000,
-                size: 0xf000,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-
-        Ok(windows)
-    }
-}
-
 impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelI945 {
     fn tseg(&self) -> Option<(u64, u32)> {
         let (base, size) = self.smm_region();
@@ -1625,7 +1603,7 @@ mod acpi_impl {
             let pci_mmio_base = self
                 .mmio32_window
                 .map_or(0x8000_0000, |(base, _)| base as u32);
-            let pci_bus_end = u16::from(self.root_info().bus_end);
+            let pci_bus_end = u16::from(crate::IntelNorthbridgeDriver::pci_root_info(self).bus_end);
             let pci_mmio_limit = 0xfebf_ffffu32;
             let rcba = config.rcba as u32;
 
@@ -1748,7 +1726,9 @@ mod acpi_impl {
         }
 
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
+            alloc::vec![crate::gmch::acpi::mcfg(
+                crate::IntelNorthbridgeDriver::pci_root_info(self)
+            )]
         }
     }
 }

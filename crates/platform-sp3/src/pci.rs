@@ -10,7 +10,7 @@
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::sp3::df::plan::{Pools, RootBridgePlan, Window};
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_pci::{PciRoot, PciWindow, PciWindowKind};
+use fstart_pci::{PciRole, PciRoot};
 
 /// The span of the PCI pools (prefetch then non-prefetch, contiguous by
 /// construction of the planner) of a window.
@@ -32,33 +32,47 @@ pub fn segment(generation: Generation) -> PciRootInfo {
     }
 }
 
-/// One root bridge in the segment `pci`, with the windows the DF plan gives
-/// PCI: the pools below 4 GiB, the prefetchable ones above it and its I/O.
+/// One root bridge in the segment `pci`, from what the DF routes to it.
+///
+/// Its routes are forwarded: its I/O (the primary's legacy ports included)
+/// and its MMIO below and above 4 GiB, the primary's with the legacy VGA
+/// memory, the FCH's fixed decodes and a second low window. PCI devices get the plan's PCI pools.
+/// The non-PCI pools hold the NBIO's own MMIO and are not forwarded, nor is
+/// the ECAM window, which the primary owns.
 pub fn root(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<PciRoot> {
-    let window = |kind, span: Window, prefetchable| PciWindow {
-        kind,
-        base: span.base,
-        size: span.size,
-        prefetchable,
+    use PciRole::{Forwarded, Own};
+    // The DF routes all of its 25-bit I/O space; the ports end at 64 Ki.
+    let io = |role: PciRole, span: Window| {
+        role.io(
+            span.base,
+            span.end().min(0x1_0000).saturating_sub(span.base),
+        )
     };
+    let mmio = |role: PciRole, span: Window| role.mmio(span.base, span.size);
+    let pools = |pools: &Pools| {
+        [
+            mmio(PciRole::Window, pci_span(pools)),
+            mmio(Own, pools.non_pci),
+        ]
+    };
+    // What only the primary has: the legacy VGA memory routed to it, and
+    // the ECAM window.
+    let primary = |size: u64| if rb.primary { size } else { 0 };
     PciRoot::new(
         PciRootInfo {
             bus_start: rb.bus.base,
             bus_end: rb.bus.limit,
             ..*pci
         },
-        [
-            Some(window(
-                PciWindowKind::Mmio,
-                pci_span(&rb.below_pools),
-                false,
-            )),
-            rb.above_pools
-                .map(|pools| window(PciWindowKind::Mmio, pci_span(&pools), true)),
-            rb.io_pool.map(|io| window(PciWindowKind::Io, io, false)),
-        ]
-        .into_iter()
-        .flatten(),
+        (rb.io.map(|route| io(Forwarded, route)).into_iter())
+            .chain(rb.io_pool.map(|pool| io(PciRole::Window, pool)))
+            .chain([Forwarded.mmio(0xa_0000, primary(0x2_0000))])
+            .chain([mmio(Forwarded, rb.below)])
+            .chain(pools(&rb.below_pools))
+            .chain(rb.second_below.map(|window| mmio(Forwarded, window)))
+            .chain(rb.above.map(|route| mmio(Forwarded, route)))
+            .chain(rb.above_pools.iter().flat_map(pools))
+            .chain([Own.mmio(pci.ecam_base, primary(pci.ecam_size()))]),
     )
     .ok()
 }
@@ -101,6 +115,7 @@ impl NonPci {
 mod tests {
     use super::*;
     use fstart_driver_amd::sp3::df::BusRange;
+    use fstart_pci::PciWindowKind;
 
     fn plan() -> RootBridgePlan {
         let below = Window::new(0xa000_0000, 0x1000_0000);
@@ -132,28 +147,61 @@ mod tests {
     }
 
     #[test]
-    fn root_uses_the_pci_pools_and_the_segment_ecam() {
-        let root = root(&plan(), &segment(Generation::Milan)).unwrap();
-        assert_eq!(root.info.ecam_base, 0xe000_0000);
+    fn root_forwards_the_df_routes_and_allocates_from_the_pci_pools() {
+        use PciWindowKind::{Io, Mmio};
+        let plan = plan();
+        let root = root(&plan, &segment(Generation::Milan)).unwrap();
+        assert_eq!(root.info().ecam_base, 0xe000_0000);
         assert_eq!(root.buses(), 0..=0x3f);
-        let windows: Vec<_> = root
-            .windows
-            .iter()
-            .map(|w| (w.kind, w.base, w.size, w.prefetchable))
-            .collect();
+        let spans = |ranges: &[fstart_pci::PciWindow]| -> Vec<_> {
+            ranges.iter().map(|r| (r.kind, r.base, r.end())).collect()
+        };
+        // `_CRS`: the routes without the non-PCI pools.
         assert_eq!(
-            windows,
+            spans(root.forwarded()),
             [
-                (PciWindowKind::Mmio, 0xa000_0000, 0x0f00_0000, false),
-                (
-                    PciWindowKind::Mmio,
-                    0x100_2020_0000,
-                    (0x3000_0000_0000 >> 8) + 0x1000_0000,
-                    true
-                ),
-                (PciWindowKind::Io, 0x1000, 0x3000, false),
+                (Io, 0, 0x4000),
+                (Mmio, 0xa_0000, 0xc_0000),
+                (Mmio, 0xa000_0000, 0xaf00_0000),
+                (Mmio, 0x100_2020_0000, 0x140_0000_0000),
             ]
         );
+        // The allocator: the PCI pools.
+        assert_eq!(
+            spans(root.allocatable()),
+            [
+                (Io, 0x1000, 0x4000),
+                (Mmio, 0xa000_0000, 0xaf00_0000),
+                // The test plan's pools stop short of the routed window.
+                (Mmio, 0x100_2020_0000, 0x130_3020_0000),
+            ]
+        );
+        // The motherboard device: the non-PCI pools and, on the primary,
+        // the ECAM window of the segment.
+        assert_eq!(
+            spans(root.motherboard()),
+            [
+                (Mmio, 0xaf00_0000, 0xb000_0000),
+                (Mmio, 0x100_0000_0000, 0x100_2020_0000),
+                (Mmio, 0xe000_0000, 0xf000_0000),
+            ]
+        );
+        // Another root bridge does not own the ECAM window. The last one
+        // has the rest of the DF's I/O space routed to it: the ports end at
+        // 64 Ki.
+        let last = RootBridgePlan {
+            primary: false,
+            io: Some(Window::new(0xd000, 0x200_0000 - 0xd000)),
+            io_pool: Some(Window::new(0xd000, 0x3000)),
+            ..plan
+        };
+        let last = root_of(&last);
+        assert_eq!(last.motherboard().len(), 2);
+        assert!(last.io().eq([0xd000..=0xffff]));
+    }
+
+    fn root_of(plan: &RootBridgePlan) -> PciRoot {
+        root(plan, &segment(Generation::Milan)).unwrap()
     }
 
     #[test]

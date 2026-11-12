@@ -15,11 +15,9 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_core::services::{ServiceError, SmBus};
+use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{register_bitfields, register_structs};
 
@@ -400,6 +398,26 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     type Config = IntelGm45Config;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
+
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            bus_end: (self.config.ecam_buses - 1) as u8,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        use fstart_pci::PciRole::Window;
+        let (base, size) = self.mmio32_window.unwrap_or((0, 0));
+        fstart_pci::PciRoot::new(
+            self.pci_root_info(),
+            [
+                Window.mmio(base, size),
+                Window.io(PCI_PIO_BASE, PCI_PIO_SIZE),
+            ],
+        )
+    }
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -747,39 +765,6 @@ impl MemoryDetector for IntelGm45 {
             return Err(ServiceError::NotInitialized);
         }
         Ok(self.tom())
-    }
-}
-
-impl PciRootProvider for IntelGm45 {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: 0,
-            bus_end: (self.config.ecam_buses - 1) as u8,
-        }
-    }
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        if let Some((base, size)) = self.mmio32_window {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base,
-                    size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-        Ok(windows)
     }
 }
 

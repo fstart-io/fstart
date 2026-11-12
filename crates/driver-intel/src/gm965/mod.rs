@@ -26,11 +26,9 @@ use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
 use fstart_intel_gma::types::{Cpu, PciAddress};
+use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
@@ -473,7 +471,6 @@ impl Default for Gm965IgdConfig {
     }
 }
 
-const PCI_MMIO32_FALLBACK_BASE: u64 = 0x8000_0000;
 const PCI_PIO_BASE: u64 = 0x1000;
 const PCI_PIO_SIZE: u64 = 0xf000;
 
@@ -1333,6 +1330,26 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: 0,
+            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        use fstart_pci::PciRole::Window;
+        let (base, size) = self.mmio32_window.unwrap_or((0, 0));
+        fstart_pci::PciRoot::new(
+            self.pci_root_info(),
+            [
+                Window.mmio(base, size),
+                Window.io(PCI_PIO_BASE, PCI_PIO_SIZE),
+            ],
+        )
+    }
+
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -1528,44 +1545,6 @@ fn default_mmio32_window_from_e820(
     let base = (reserved_after_ram_top.max(low_ram_top) + 0x000f_ffff) & !0x000f_ffff;
     let limit = limit.min(0x1_0000_0000);
     (base < limit).then_some((base, limit - base))
-}
-
-impl PciRootProvider for IntelGm965 {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: 0,
-            bus_end: self.config.ecam_buses.saturating_sub(1).min(255) as u8,
-        }
-    }
-
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        let (mmio32_base, mmio32_size) =
-            self.mmio32_window.unwrap_or((PCI_MMIO32_FALLBACK_BASE, 0));
-
-        if mmio32_size != 0 {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base: mmio32_base,
-                    size: mmio32_size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-
-        Ok(windows)
-    }
 }
 
 fn gm965_ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError> {
@@ -1808,7 +1787,7 @@ mod acpi_impl {
             let pci_mmio_base = self
                 .mmio32_window
                 .map_or(0x8000_0000, |(base, _)| base as u32);
-            let pci_bus_end = u16::from(self.root_info().bus_end);
+            let pci_bus_end = u16::from(crate::IntelNorthbridgeDriver::pci_root_info(self).bus_end);
             // Match coreboot GM45/GM965 hostbridge.asl: the PCI MMIO
             // producer window runs from TOLUD through 0xfebf_ffff.  ECAM,
             // MCHBAR/DMIBAR/EPBAR/RCBA, HPET, and TPM are also described as
@@ -1977,7 +1956,9 @@ mod acpi_impl {
 
         /// Produce an MCFG table for the GM965 PCIEXBAR ECAM window.
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
+            alloc::vec![crate::gmch::acpi::mcfg(
+                crate::IntelNorthbridgeDriver::pci_root_info(self)
+            )]
         }
     }
 }
