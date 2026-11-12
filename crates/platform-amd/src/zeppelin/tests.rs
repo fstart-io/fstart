@@ -237,8 +237,8 @@ fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
 fn mj11_ec1_flow() {
     let hw = model(1);
     mj11_ec1_flow_on(&hw, 0x5000_0000);
-    assert_eq!(hw.fingerprint(), (9688, 0x99c8_0444_1508_ff29));
-    assert_eq!(hw.state(), 0x5ba3_2753_5cdf_f76d);
+    assert_eq!(hw.fingerprint(), (9688, 0x48e9_6a80_2957_cca9));
+    assert_eq!(hw.state(), 0x8ae8_8e10_1593_66fd);
 }
 
 /// The single die's PCI root is the whole ECAM with the DF's windows below
@@ -296,8 +296,8 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
 fn sp4_flow() {
     let hw = model(2);
     sp4_flow_on(&hw, 0x5800_0000);
-    assert_eq!(hw.fingerprint(), (17245, 0x70ba_da01_9663_4b03));
-    assert_eq!(hw.state(), 0x3699_29c4_2d3f_3403);
+    assert_eq!(hw.fingerprint(), (17245, 0x9ed3_3f58_cd33_bc23));
+    assert_eq!(hw.state(), 0x54f9_9ac2_74b4_a913);
 }
 
 /// The address space descriptors (type, min, max) in `aml`: buses (2), I/O

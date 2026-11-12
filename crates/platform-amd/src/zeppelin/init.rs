@@ -34,14 +34,14 @@ impl Stage<Zeppelin, Mapped> {
     pub fn init_fch(self) -> Stage<Zeppelin, FchUp> {
         let ctx = self.ctx();
         let memory = self.memory();
-        let mut clock = ctx.clock;
+        let clock = ctx.clock;
         let nonpci = silicon::pre_mp_reset(
             ctx.dies,
             ctx.fch,
             self.identity(),
             (memory.top_mem, memory.top_mem2),
             memory.apob,
-            &mut clock,
+            &clock,
         )
         .unwrap_or_else(|why| self.stop(why.into()));
         self.into_phase(FchUp { nonpci })
@@ -55,7 +55,7 @@ impl Stage<Zeppelin, FchUp> {
         static mut DXIO_BUFFERS: dxio::zeppelin::Buffers = dxio::zeppelin::Buffers::new();
         let ctx = self.ctx();
         let memory = self.memory();
-        let mut clock = ctx.clock;
+        let clock = ctx.clock;
         // SAFETY: firmware BSS in the reserved early region below 4 GiB,
         // handed out once here.
         let buffers = unsafe { &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS) };
@@ -71,7 +71,7 @@ impl Stage<Zeppelin, FchUp> {
             (memory.top_mem, memory.top_mem2),
             self.phase.nonpci,
             buffers,
-            &mut clock,
+            &clock,
         )
         .unwrap_or_else(|why| self.stop(why.into()));
         self.into_phase(Trained(trained))
@@ -92,7 +92,7 @@ impl Stage<Zeppelin, Trained> {
         let stage = Stage { machine, phase: () };
         let ctx = stage.ctx();
         let memory = stage.memory();
-        let mut clock = ctx.clock;
+        let clock = ctx.clock;
         // SAFETY: reserved firmware BSS below 4 GiB, handed out once here.
         let (smu_pages, smu_policy) = unsafe {
             (
@@ -109,7 +109,7 @@ impl Stage<Zeppelin, Trained> {
             trained,
             smu_pages,
             smu_policy,
-            &mut clock,
+            &clock,
         );
         stage.into_phase(Chipset(state))
     }

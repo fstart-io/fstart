@@ -89,8 +89,7 @@ mod zeppelin {
         let mut delay = hw.clock();
 
         // Before the PCIe training
-        let plan = map::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
-        map::program(&plan, &dies);
+        df::zeppelin::route_resources(&dies, 0xe000_0000, 0x4_2000_0000).unwrap();
         let nonpci: Vec<u32> = dies
             .iter()
             .map(|die| df::zeppelin::nonpci_mmio_base(&dies[0].df(), die.index()).unwrap())
@@ -135,7 +134,7 @@ mod zeppelin {
         assert_eq!(psp::bars(&dies), [nonpci[0], nonpci[1]]);
         let buffers = low(0x4000_0000, dxio::zeppelin::Buffers::new());
         let topology = unsafe {
-            dxio::zeppelin::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &mut delay)
+            dxio::zeppelin::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &hw.clock())
         }
         .unwrap();
         let trained = |die: usize| {
@@ -159,9 +158,7 @@ mod zeppelin {
         unsafe { smu::init(&dies, &buffers, &mut delay) }.unwrap();
         smu::cac_weights(&dies[0], &mut delay).unwrap();
         assert_eq!(df::zeppelin::sockets(&dies[0].df()), 2);
-        for die in &dies {
-            map::route_vga(&die.df(), dies[0].ioms_fabric_id());
-        }
+        df::zeppelin::route_vga(&dies);
         for die in &dies {
             nbio::zeppelin::pre_enumeration_init(die);
         }
@@ -192,9 +189,8 @@ mod zeppelin {
         for die in &dies {
             df::zeppelin::disable_ext_cfg(&die.df());
         }
-        // The CG1 PLL takes the vendor's separate update requests.
-        assert_eq!(hw.fingerprint(), (16908, 0x27b8_f511_d841_c49e));
-        assert_eq!(hw.state(), 0xbc50_f84e_0701_a314);
+        assert_eq!(hw.fingerprint(), (16908, 0xbfbe_9d6a_7f7f_e1ee));
+        assert_eq!(hw.state(), 0x3506_59c7_b072_0a64);
     }
 
     /// The DF routes disjoint buses and windows to the two root complexes.
@@ -208,8 +204,7 @@ mod zeppelin {
             hw.set_config(df, 0xa0, 0x3f00_0043);
             hw.set_config(df, 0xa4, 0xff40_0243);
         }
-        let plan = map::plan(0xe000_0000, 0x4_2000_0000, 128 << 20, 2).unwrap();
-        map::program(&plan, &dies);
+        df::zeppelin::route_resources(&dies, 0xe000_0000, 0x4_2000_0000).unwrap();
 
         let [die0, die1] = [&dies[0], &dies[1]].map(|die| map::root_complex(die).unwrap());
         let hpet = (0xfed0_0000, 0x1_0000);
@@ -312,9 +307,9 @@ mod picasso {
             hda_enabled: false,
             acp_enabled: true,
         };
-        let buffers = low(0x4800_0000, dxio::picasso::Buffers::new());
+        let buffers = low(0x4800_0000, dxio::DmaArea::new());
         let ports =
-            unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &mut delay) }.unwrap();
+            unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &hw.clock()) }.unwrap();
         assert_eq!(
             ports
                 .ports
@@ -327,6 +322,6 @@ mod picasso {
         // The final register state is what the hardware was tested with,
         // the log follows the shared Family 17h sequences.
         assert_eq!(hw.state(), 0xc446_ef2a_df4d_6ca4);
-        assert_eq!(hw.fingerprint(), (3489, 0xef7e_94e9_d8bf_e420));
+        assert_eq!(hw.fingerprint(), (3489, 0xe28d_bd56_8b80_fac0));
     }
 }

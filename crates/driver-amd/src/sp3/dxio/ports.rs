@@ -15,10 +15,11 @@ use heapless::Vec;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{RegisterLongName, register_bitfields};
 
-use super::engine::FwEngine;
+use super::PcieReset;
 use super::hotplug::HotplugKind;
 use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
-use super::{Dxio, DxioError, Hooks, PcieReset, UnitView, op, prop};
+use crate::dxio::wire::FwEngine;
+use crate::dxio::{Dxio, DxioError, Hooks, UnitView, op, prop};
 use crate::smn::SmnAddr;
 use crate::smu::SmuMessages;
 use crate::sp3::fch::gpio::{self, Pin};
@@ -1175,6 +1176,8 @@ impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R
 }
 
 impl<P: ConfigRegionAccess + Clone, R: PcieReset> Hooks for PortSetup<'_, '_, P, R> {
+    type Error = DxioError;
+
     fn mapped(&mut self, unit: &UnitView<'_>) -> Result<(), DxioError> {
         let (socket, die) = (unit.socket, unit.die);
         let generation = self.generation;
@@ -1259,14 +1262,14 @@ impl<P: ConfigRegionAccess + Clone, R: PcieReset> Hooks for PortSetup<'_, '_, P,
 pub fn early_trained(engines: &[FwEngine]) -> impl Iterator<Item = &FwEngine> {
     engines
         .iter()
-        .filter(|e| e.caps().is_set(super::engine::CAPS::EARLY_TRAIN))
+        .filter(|e| e.caps().is_set(crate::dxio::wire::CAPS::EARLY_TRAIN))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dxio::wire::{FwEngine, kind};
     use crate::smn::model::Model;
-    use crate::sp3::dxio::engine::{FwEngine, kind};
     use crate::sp3::dxio::lanes::{Group, Lanes, SataEngine, Speed};
     use crate::sp3::dxio::tables::SP3_DEFAULT_DEVFN;
     use crate::sp3::nbio::tests::nbio;

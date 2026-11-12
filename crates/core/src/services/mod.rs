@@ -39,6 +39,8 @@ pub use measure::{Measure, Measurement, Unmeasured};
 pub use memory_init::MemoryInit;
 pub use smbus::SmBus;
 pub use spi::SpiBus;
+#[cfg(any(test, feature = "testing"))]
+pub use timer::ManualTimer;
 pub use timer::{Timer, TimerDelay};
 
 /// Common error type for service operations.

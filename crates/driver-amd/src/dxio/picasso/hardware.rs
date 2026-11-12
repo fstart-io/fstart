@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native cold-boot DXIO sequencing.
-use super::{
-    super::{self as dxio, Slot},
-    Descriptor, EngineConfig, Error, Hotplug, LinkSpeed, Operation, PORTS, PowerPolicy, Topology,
+use super::super::wire::Heaps;
+use super::super::{
+    DmaArea, Dxio, DxioError, Hooks, LoopRules, TIMEOUT_US, Unit, UnitView, run, state, var,
 };
-use crate::ccx::tsc::{Clock, DelayNs};
+use super::{
+    ANCILLARY_PSPP, Descriptor, Error, Hotplug, LinkSpeed, PowerPolicy, Topology, engines,
+};
 use crate::nbio::{
     iohc::{IohcBridgeCntl, NbProgDeviceRemap, iohc_bridge_cntl, nb_prog_device_remap},
     pcie,
 };
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v10 as smu;
+use crate::soc::{Soc, picasso::Picasso};
 use crate::{acp, soc::picasso::Die};
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{Ordering, compiler_fence},
-};
 use fstart_core::indexed::Indexed;
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -48,46 +48,6 @@ const fn nbif_strap(function: u32) -> SmnReg<NbifStrap::Register> {
 const NBIF_FUNCTION_ENABLE: SmnReg<NbifFunctionEnable::Register> = SmnReg::new(0x1013_a008);
 const HDA: u32 = 6;
 
-/// Resident identity-mapped coherent DRAM, borrowed exclusively for the
-/// entire transaction: the engine configuration and the ancillary data.
-/// UnsafeCell permits firmware DMA without holding a Rust reference to the
-/// active transfer. No initialized writable global.
-#[repr(C, align(16))]
-pub struct Buffers {
-    engines: Slot<PORTS>,
-    ancillary: UnsafeCell<[u8; 16]>,
-}
-impl Default for Buffers {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl Buffers {
-    pub const fn new() -> Self {
-        Self {
-            engines: Slot::new(),
-            ancillary: UnsafeCell::new([0; 16]),
-        }
-    }
-    fn ancillary(&mut self) -> Result<u32, dxio::Error> {
-        let start = self.ancillary.get() as usize;
-        if start & 15 != 0 || start + 16 > u32::MAX as usize {
-            return Err(dxio::Error::DmaAddress);
-        }
-        for (bytes, word) in self
-            .ancillary
-            .get_mut()
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(super::ANCILLARY_PSPP)
-        {
-            bytes.copy_from_slice(&word.to_le_bytes());
-        }
-        compiler_fence(Ordering::SeqCst);
-        Ok(start as u32)
-    }
-}
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub power: PowerPolicy,
@@ -281,28 +241,29 @@ fn post_training(smn: &Smn<impl ConfigRegionAccess>, topology: &Topology) {
 /// equalization presets once configured. Each happens once, in that order.
 struct Training<'a, P> {
     die: &'a Die<P>,
-    slot: &'a Slot<PORTS>,
     descriptors: &'a [Descriptor],
-    size: usize,
     mapped: Option<Topology>,
     configured: bool,
 }
-impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
+impl<P: ConfigRegionAccess + Copy> Hooks for Training<'_, P> {
     type Error = Error;
-    const PAUSE_US: u32 = 1000;
 
-    fn mapped(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
+    fn mapped(&mut self, unit: &UnitView<'_>) -> Result<(), Error> {
         if self.mapped.is_some() {
-            return Err(dxio::Error::StateMachine(dxio::SM_MAPPED).into());
+            return Err(DxioError::StateMachine {
+                state: state::MAPPED,
+            }
+            .into());
         }
-        let snapshot = self.slot.read_back(self.die, self.size, delay)?;
-        let (topology, map) = Topology::mapped(&snapshot, self.descriptors)?;
+        let (topology, map) = Topology::mapped(unit.engines, self.descriptors)?;
         remap(&self.die.smn(), map);
         self.mapped = Some(topology);
         Ok(())
     }
-    fn configured(&mut self) -> Result<(), Error> {
-        let state = dxio::Error::StateMachine(dxio::SM_CONFIGURED);
+    fn configured(&mut self, _unit: &UnitView<'_>) -> Result<(), Error> {
+        let state = DxioError::StateMachine {
+            state: state::CONFIGURED,
+        };
         if self.configured {
             return Err(state.into());
         }
@@ -311,9 +272,16 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
         self.configured = true;
         Ok(())
     }
-    /// The board released PERST before the training.
-    fn perst(&mut self, _deassert: bool) {}
+    // The board released PERST before the training.
 }
+
+/// Resumes are followed by 1 ms; the board released PERST before.
+const RULES: LoopRules = LoopRules {
+    pause_at: &[],
+    perst: false,
+    perst_deassert_delay_ms: 0,
+    resume_delay_us: 1000,
+};
 
 /// Train cold-boot PCIe/SATA without FSP. Failure after submission owns the
 /// partially programmed silicon: stop/reset, never fall back to FSP.
@@ -324,71 +292,73 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
 /// failure: a timeout does NOT establish DMA quiescence. Keep them mapped,
 /// resident and unmodified until platform reset; do not reclaim or retry on
 /// any post-submission error. The caller exclusively owns SMN/PHY/PCI access,
-/// supplies a working monotonic microsecond clock, and has released board PERST
+/// supplies a working monotonic microsecond timer, and has released board PERST
 /// and power sequencing before training. Firmware must honor DMA completion.
 pub unsafe fn train(
     die: &Die<impl ConfigRegionAccess + Copy>,
-    buffers: &'static mut Buffers,
+    buffers: &'static mut DmaArea,
     descriptors: &[Descriptor],
     options: Options,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<Topology, Error> {
-    let config = EngineConfig::build(descriptors, options.power)?;
+    let delay = &mut TimerDelay(timer);
+    let engines = engines(descriptors, options.power)?;
     if options.hda_enabled && !options.acp_enabled {
         return Err(Error::AudioPolicy);
     }
-    let size = config.transfer_size()?;
-    let dma = buffers.engines.address()?;
-    let ancillary = buffers.ancillary()?;
-    buffers.engines.load(&config);
+    let pspp: [u8; 16] = zerocopy::transmute!(ANCILLARY_PSPP.map(u32::to_le));
+    let ancillary: &[u8] = if options.power == PowerPolicy::Disabled {
+        &[]
+    } else {
+        &pspp
+    };
+    let heaps = Heaps::from_engines(&engines, ancillary).ok_or(DxioError::Buffer)?;
+    // SAFETY: the caller's contract.
+    let dma = unsafe { buffers.buffer() }?;
     let smn = &die.smn();
-    smu::MAILBOX.test(smn, clock).map_err(dxio::Error::Smu)?;
+    smu::MAILBOX.test(smn, delay).map_err(DxioError::Smu)?;
     pre_training(smn, options);
-    acp::power_off(smn, options.acp_enabled, clock).map_err(Error::Acp)?;
-    dxio::init(die, clock)?;
-    for variable in [
-        dxio::VAR_RET_AFTER_MAP,
-        dxio::VAR_RET_AFTER_CONF,
-        dxio::VAR_ANCILLARY_V1,
-    ] {
-        dxio::set_variable(die, variable, 1, clock)?;
+    acp::power_off(smn, options.acp_enabled, delay).map_err(Error::Acp)?;
+    let mailbox = die.mailbox(TimerDelay(timer));
+    let dxio = Dxio::new(&mailbox, Picasso::DXIO_SERVICE);
+    dxio.init()?;
+    dxio.version()?;
+    for variable in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
+        dxio.set_var(variable, 1, 0)?;
     }
     if options.am4 {
-        dxio::set_variable(die, 0x0d, 0, clock)?;
+        dxio.set_var(var::SKIP_PSP, 0, 0)?;
     }
     let silicon = u32::from(options.silicon_id & (1 << 31) != 0);
-    dxio::set_variable(die, 0x12, silicon, clock)?;
-    dxio::rpc(die, Operation::LoadCapabilities, [0; 6], clock)?;
-    if options.power != PowerPolicy::Disabled {
-        dxio::load_data(die, dxio::DATA_ANCILLARY, Some((ancillary, 4)), clock)?;
-    }
-    for kind in [dxio::DATA_MACPCS, dxio::DATA_GPIO] {
-        dxio::load_data(die, kind, None, clock)?;
-    }
-    let engines = Some((dma, size as u32 / 4));
-    dxio::load_data(die, dxio::DATA_ENGINE_CONFIG, engines, clock)?;
-    let started = clock.now_us();
+    dxio.set_var(var::MAP_EXACT_MATCH, silicon, 0)?;
+    dxio.load_caps()?;
+    let mut unit = Unit::with_heaps(0, 0, dxio, dma, &heaps, 0..engines.len() as u8)?
+        .ok_or(DxioError::Buffer)?;
+    unit.load_heaps()?;
+    let started = timer.timestamp_us();
+    unit.dxio.sm_start()?;
     let mut training = Training {
         die,
-        slot: &buffers.engines,
         descriptors,
-        size,
         mapped: None,
         configured: false,
     };
-    dxio::run(die, &mut training, clock)?;
+    run(&mut unit, &mut training, timer, &RULES, TIMEOUT_US)?;
     // The two requested return events must precede success.
-    let mut topology = training
-        .mapped
-        .ok_or(dxio::Error::StateMachine(dxio::SM_MAPPED))?;
+    let mut topology = training.mapped.ok_or(DxioError::StateMachine {
+        state: state::MAPPED,
+    })?;
     if !training.configured {
-        return Err(dxio::Error::StateMachine(dxio::SM_CONFIGURED).into());
+        return Err(DxioError::StateMachine {
+            state: state::CONFIGURED,
+        }
+        .into());
     }
-    let snapshot = buffers.engines.read_back(die, size, clock)?;
+    unit.read_back()?;
     let inhibit = smn.reg(pcie::link_status(0)).get();
-    topology.training_done(&snapshot, descriptors, inhibit)?;
-    if clock.now_us().wrapping_sub(started) >= 60_000_000 {
-        return Err(dxio::Error::Timeout.into());
+    topology.training_done(unit.engines(), descriptors, inhibit)?;
+    if timer.timestamp_us().wrapping_sub(started) >= TIMEOUT_US {
+        return Err(DxioError::Timeout.into());
     }
     post_training(smn, &topology);
     Ok(topology)

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso DXIO board-to-engine mapping; the firmware client is
 //! [`crate::dxio`].
-use super::{
-    self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
-};
+use super::wire::FwEngine;
+use super::{Descriptor, DxioError, EngineType, Hotplug, LinkSpeed};
 use crate::acp;
+use heapless::Vec;
 
 mod hardware;
-pub use hardware::{Buffers, Options, train};
+pub use hardware::{Options, train};
 
 pub const PORTS: usize = 8;
 pub const REMAPPABLE_PORTS: usize = 7;
@@ -30,16 +30,11 @@ pub enum Error {
     Remap,
     AudioPolicy,
     Acp(acp::Error),
-    Firmware(dxio::Error),
+    Firmware(DxioError),
 }
-impl From<dxio::Error> for Error {
-    fn from(error: dxio::Error) -> Self {
+impl From<DxioError> for Error {
+    fn from(error: DxioError) -> Self {
         Self::Firmware(error)
-    }
-}
-impl From<EngineCountError> for Error {
-    fn from(error: EngineCountError) -> Self {
-        Self::Firmware(error.into())
     }
 }
 
@@ -77,33 +72,37 @@ pub fn validate(descriptors: &[Descriptor]) -> Result<(), Error> {
     Ok(())
 }
 
-pub type EngineConfig = dxio::EngineConfig<PORTS>;
-const _: () = assert!(size_of::<EngineConfig>() == 344);
-impl EngineConfig {
-    pub fn build(descriptors: &[Descriptor], policy: PowerPolicy) -> Result<Self, Error> {
-        validate(descriptors)?;
-        let engines = descriptors.iter().map(|d| {
+/// The wire engines of `descriptors`; balanced power trains at Gen1.
+pub fn engines(
+    descriptors: &[Descriptor],
+    policy: PowerPolicy,
+) -> Result<Vec<FwEngine, PORTS>, Error> {
+    validate(descriptors)?;
+    Ok(descriptors
+        .iter()
+        .map(|d| {
             let speed = if policy == PowerPolicy::Balanced {
                 LinkSpeed::Gen1
             } else {
                 d.speed
             };
-            Engine::new(d, d.lanes(), speed, d.turn_off_unused_lanes)
-        });
-        Ok(Self::from_engines(engines))
-    }
-    fn descriptor<'a>(
-        engine: &Engine,
-        descriptors: &'a [Descriptor],
-    ) -> Result<&'a Descriptor, Error> {
-        descriptors
-            .iter()
-            .find(|d| {
-                let (low, high) = d.lanes();
-                d.engine as u8 == engine.kind && engine.start_lane == low && engine.end_lane == high
-            })
-            .ok_or(Error::UnmatchedEngine)
-    }
+            d.engine(d.lanes(), 0, speed, d.turn_off_unused_lanes)
+        })
+        .collect())
+}
+
+/// The descriptor of a returned engine.
+fn descriptor<'a>(
+    engine: &FwEngine,
+    descriptors: &'a [Descriptor],
+) -> Result<&'a Descriptor, Error> {
+    descriptors
+        .iter()
+        .find(|d| {
+            let (low, high) = d.lanes();
+            d.engine as u8 == engine.kind && engine.start_lane == low && engine.end_lane == high
+        })
+        .ok_or(Error::UnmatchedEngine)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,18 +133,17 @@ impl Topology {
     /// Unlike the C helper, a conflicting requested devfn cannot be silently
     /// replaced while keeping an inconsistent software topology.
     pub fn mapped(
-        config: &EngineConfig,
+        engines: &[FwEngine],
         descriptors: &[Descriptor],
     ) -> Result<(Self, [u8; 7]), Error> {
         let mut topology = Self::default();
         let mut map = [0; REMAPPABLE_PORTS];
         let mut claimed = 0u8;
-        let engines = config.engines()?;
         if engines.len() != descriptors.len() {
             return Err(Error::EngineCount);
         }
         for engine in engines {
-            let d = *EngineConfig::descriptor(engine, descriptors)?;
+            let d = *descriptor(engine, descriptors)?;
             let index = descriptors
                 .iter()
                 .position(|candidate| candidate == &d)
@@ -159,21 +157,21 @@ impl Topology {
             }
             let port = topology
                 .ports
-                .get_mut(usize::from(engine.port))
+                .get_mut(usize::from(engine.mac_port_id))
                 .ok_or(Error::UnmatchedEngine)?;
             if port.descriptor.is_some() {
                 return Err(Error::DuplicatePort);
             }
             let devfn = if d.devfn() == 0 {
-                DEFAULT_DEVFNS[usize::from(engine.port)]
+                DEFAULT_DEVFNS[usize::from(engine.mac_port_id)]
             } else {
                 d.devfn()
             };
-            if usize::from(engine.port) < REMAPPABLE_PORTS {
+            if usize::from(engine.mac_port_id) < REMAPPABLE_PORTS {
                 if !(9..=15).contains(&devfn) || map.contains(&devfn) {
                     return Err(Error::Remap);
                 }
-                map[usize::from(engine.port)] = devfn;
+                map[usize::from(engine.mac_port_id)] = devfn;
                 port.devfn_index = devfn - 9;
             } else if devfn != 17 {
                 return Err(Error::Remap);
@@ -192,23 +190,23 @@ impl Topology {
     }
     pub fn training_done(
         &mut self,
-        config: &EngineConfig,
+        engines: &[FwEngine],
         descriptors: &[Descriptor],
         inhibit: u32,
     ) -> Result<(), Error> {
         // Check returned engine identity against the completed mapping before
         // marking any link usable. A malformed reply does not alter topology.
-        let (mut done, _) = Self::mapped(config, descriptors)?;
+        let (mut done, _) = Self::mapped(engines, descriptors)?;
         if done.ports.iter().zip(&self.ports).any(|(after, before)| {
             after.descriptor != before.descriptor || after.devfn != before.devfn
         }) {
             return Err(Error::UnmatchedEngine);
         }
-        for engine in config.engines()? {
+        for engine in engines {
             if engine.kind != EngineType::Pcie as u8 {
                 continue;
             }
-            let index = usize::from(engine.port);
+            let index = usize::from(engine.mac_port_id);
             if done.ports[index].devfn != self.ports[index].devfn
                 || self.ports[index].descriptor.is_none()
             {
@@ -224,22 +222,20 @@ impl Topology {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zerocopy::IntoBytes;
     #[test]
     fn wire_records_match_the_native_firmware_contract() {
         let mut descriptor = Descriptor::pcie(5, 4, 1, 7);
         descriptor.hotplug = Hotplug::ServerSsd;
         descriptor.turn_off_unused_lanes = true;
-        let config = EngineConfig::build(&[descriptor], PowerPolicy::Balanced).unwrap();
-        let bytes = config.as_bytes();
-        assert_eq!(config.transfer_size().unwrap(), 64);
+        let wire = engines(&[descriptor], PowerPolicy::Balanced).unwrap();
+        let heaps = super::super::wire::Heaps::from_engines(&wire, &[]).unwrap();
+        let bytes = heaps.engine_bytes();
+        assert_eq!(bytes.len(), 64);
         assert_eq!(&bytes[12..16], &[1, 0, 0, 0]);
         assert_eq!(&bytes[16..24], &[1, 1, 4, 5, 1, 0, 0, 0]);
         assert_eq!(&bytes[28..35], &[15, 0, 0, 0, 0x19, 2, 0x18]);
         assert_eq!(&bytes[56..64], &[0; 8]);
-        assert!(
-            EngineConfig::build(&[Descriptor::pcie(1, 2, 1, 1)], PowerPolicy::Disabled).is_err()
-        );
+        assert!(engines(&[Descriptor::pcie(1, 2, 1, 1)], PowerPolicy::Disabled).is_err());
         assert!(validate(&[descriptor, Descriptor::pcie(4, 4, 1, 2)]).is_err());
         assert!(validate(&[descriptor, Descriptor::pcie(0, 0, 1, 7)]).is_err());
     }
@@ -250,33 +246,31 @@ mod tests {
             Descriptor::pcie(0, 0, 1, 2),
             Descriptor::pcie(1, 1, 1, 3),
         ];
-        let mut config = EngineConfig::build(&descriptors, PowerPolicy::Performance).unwrap();
-        for (engine, port) in config.engines.iter_mut().zip([5, 3, 1]) {
-            engine.port = port;
+        let mut config = engines(&descriptors, PowerPolicy::Performance).unwrap();
+        for (engine, port) in config.iter_mut().zip([5, 3, 1]) {
+            engine.mac_port_id = port;
         }
         let (mut topology, map) = Topology::mapped(&config, &descriptors).unwrap();
         assert_eq!(map, [9, 11, 12, 10, 13, 15, 14]);
         assert_eq!(topology.ports[5].devfn_index, 6);
-        let flags = &mut config.engines[1].port_flags;
-        *flags = zerocopy::byteorder::U32::new(flags.get() & !1);
+        let caps = &mut config[1].caps;
+        *caps = zerocopy::byteorder::U32::new(caps.get() & !1);
         topology
             .training_done(&config, &descriptors, 1 << 1)
             .unwrap();
         assert!(topology.ports[5].trained);
         assert!(!topology.ports[3].trained);
         assert!(!topology.ports[1].trained);
-        config.engines[0].port = 4;
+        config[0].mac_port_id = 4;
         assert_eq!(
             topology.training_done(&config, &descriptors, 0),
             Err(Error::UnmatchedEngine)
         );
         assert!(topology.ports[5].trained);
-        config.engines[0].port = 3;
+        config[0].mac_port_id = 3;
         assert!(matches!(
             Topology::mapped(&config, &descriptors),
             Err(Error::DuplicatePort)
         ));
-        config.count = zerocopy::byteorder::U16::new(9);
-        assert_eq!(config.transfer_size(), Err(EngineCountError));
     }
 }

@@ -27,8 +27,8 @@ use rflasher_internal::{
     HostAccess, InternalError, MmioAccess, PciAddress, PciConfigAccess, Spi100Controller,
 };
 
-use crate::ccx::tsc::DelayNs;
 use crate::fch::SPI_BASE;
+use embedded_hal::delay::DelayNs;
 
 /// Highest address a 3-byte command reaches.
 const LIMIT_3BYTE: u32 = 16 << 20;

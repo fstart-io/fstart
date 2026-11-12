@@ -4,7 +4,7 @@
 //! detected M.2 modes and the BMC's Gen3 cap, and the silicon policy.
 
 use fstart_core::services::{Timer, TimerDelay};
-use fstart_driver_amd::sp3::dxio::engine::MAX_ENGINES;
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::FchHw;
 use fstart_driver_amd::sp3::fch::gpio::Pad;

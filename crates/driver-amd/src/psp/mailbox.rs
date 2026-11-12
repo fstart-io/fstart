@@ -567,22 +567,14 @@ pub(crate) mod model {
             }
         }
     }
-
-    pub struct NoDelay;
-
-    impl Timer for NoDelay {
-        fn delay_us(&self, _: u64) {}
-        fn timestamp_us(&self) -> u64 {
-            0
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::model::{Model, NoDelay};
+    use super::model::Model;
     use super::*;
     use crate::psp::command::{BootDone, DisableDrtm, Header, LockDfReg};
+    use fstart_core::services::ManualTimer;
 
     const READY: u32 = 0x8000_0000;
 
@@ -591,7 +583,7 @@ mod tests {
         let model = Model::new(READY, |_, _| 0);
         let mbox = Mailbox::new(&model, Variant::Ssp);
         let mut buf = C2pBuffer::new(LockDfReg);
-        mbox.send(&NoDelay, &mut buf).unwrap();
+        mbox.send(&ManualTimer::new(), &mut buf).unwrap();
         let addr = core::ptr::from_ref(&buf) as u64;
         assert_eq!(model.0.borrow().log, [(0x1b, addr)]);
         assert_eq!(addr % 32, 0, "AGESA aligns buffers to 32 bytes");
@@ -603,7 +595,7 @@ mod tests {
         for generation in [Variant::Ssp, Variant::Gn] {
             let model = Model::new(READY | 1 << 30, |_, _| 0);
             let mbox = Mailbox::new(&model, generation);
-            let err = mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone));
+            let err = mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone));
             assert_eq!(err, Err(PspError::Recovery));
             assert!(model.0.borrow().log.is_empty());
         }
@@ -611,12 +603,15 @@ mod tests {
         let model = Model::new(READY | 1 << 30, |_, _| 0);
         let mbox = Mailbox::new(&model, Variant::Zp);
         assert_eq!(
-            mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)),
+            mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone)),
             Err(PspError::Recovery)
         );
         let model = Model::new(READY | 3 << 29, |_, _| 0);
         let mbox = Mailbox::new(&model, Variant::Zp);
-        assert_eq!(mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)), Ok(()));
+        assert_eq!(
+            mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone)),
+            Ok(())
+        );
     }
 
     #[test]
@@ -624,18 +619,20 @@ mod tests {
         let model = Model::new(READY | 1 << 29, |_, _| 0);
         model.0.borrow_mut().busy_polls = 5;
         let mbox = Mailbox::new(&model, Variant::Zp);
-        mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)).unwrap();
+        mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone))
+            .unwrap();
 
         // A Zeppelin PSP showing only READY passes.
         let model = Model::new(READY, |_, _| 0);
         let mbox = Mailbox::new(&model, Variant::Zp);
-        mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)).unwrap();
+        mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone))
+            .unwrap();
 
         // Bits 29-31 never set: bounded.
         let model = Model::new(0, |_, _| 0);
         let mbox = Mailbox::new(&model, Variant::Zp).with_timeout(100);
         assert_eq!(
-            mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)),
+            mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone)),
             Err(PspError::Timeout(Wait::Boot))
         );
     }
@@ -646,7 +643,7 @@ mod tests {
         model.0.borrow_mut().hang = true;
         let mbox = Mailbox::new(&model, Variant::Gn).with_timeout(1000);
         assert_eq!(
-            mbox.send(&NoDelay, &mut C2pBuffer::new(BootDone)),
+            mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(BootDone)),
             Err(PspError::Timeout(Wait::Done))
         );
     }
@@ -657,7 +654,7 @@ mod tests {
             let model = Model::new(READY | 1 << 29, |_, _| 5);
             let mbox = Mailbox::new(&model, generation);
             let mut buf = C2pBuffer::new(LockDfReg);
-            (mbox.send(&NoDelay, &mut buf), buf.header.status)
+            (mbox.send(&ManualTimer::new(), &mut buf), buf.header.status)
         };
         let status = Err(PspError::Status {
             command: 0x1b,
@@ -678,16 +675,18 @@ mod tests {
         let model = Model::new(READY, |_, _| 0);
         let mut session = Session::new(Mailbox::new(&model, Variant::Rv), storage()).unwrap();
         let buffer = session
-            .send(&NoDelay, Default32::<LockDfReg>::new())
+            .send(&ManualTimer::new(), Default32::<LockDfReg>::new())
             .unwrap();
         // The native 32-byte default buffer.
         assert_eq!(buffer.header.size, 32);
         session
-            .send(&NoDelay, Default32::<BootDone>::new())
+            .send(&ManualTimer::new(), Default32::<BootDone>::new())
             .unwrap();
         assert!(session.finished());
         assert_eq!(
-            session.send(&NoDelay, Default32::<LockDfReg>::new()).err(),
+            session
+                .send(&ManualTimer::new(), Default32::<LockDfReg>::new())
+                .err(),
             Some(PspError::Finished)
         );
         assert_eq!(model.0.borrow().log.len(), 2);
@@ -697,11 +696,15 @@ mod tests {
         let mailbox = Mailbox::new(&hung, Variant::Rv).with_timeout(100);
         let mut session = Session::new(mailbox, storage()).unwrap();
         assert_eq!(
-            session.send(&NoDelay, Default32::<LockDfReg>::new()).err(),
+            session
+                .send(&ManualTimer::new(), Default32::<LockDfReg>::new())
+                .err(),
             Some(PspError::Timeout(Wait::Done))
         );
         assert_eq!(
-            session.send(&NoDelay, Default32::<LockDfReg>::new()).err(),
+            session
+                .send(&ManualTimer::new(), Default32::<LockDfReg>::new())
+                .err(),
             Some(PspError::Poisoned)
         );
     }
@@ -718,7 +721,7 @@ mod tests {
             for variant in [Variant::Rv, Variant::Ssp, Variant::Gn] {
                 let mbox = Mailbox::new(&model, variant);
                 let done = |v| C2P_CMD::COMMAND.read(v) == 0;
-                assert_eq!(mbox.wait(&NoDelay, Wait::Done, done), Err(error));
+                assert_eq!(mbox.wait(&ManualTimer::new(), Wait::Done, done), Err(error));
             }
         }
     }
@@ -732,7 +735,7 @@ mod tests {
                 0
             });
             let mbox = Mailbox::new(&model, Variant::Rv);
-            mbox.send(&NoDelay, &mut C2pBuffer::new(LockDfReg))
+            mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(LockDfReg))
         };
         assert_eq!(send(READY, 0), Ok(()));
         assert_eq!(
@@ -751,7 +754,7 @@ mod tests {
         let model = Model::new(READY, |_, _| 0);
         let mbox = Mailbox::new(&model, Variant::Ssp);
         assert_eq!(
-            mbox.send(&NoDelay, &mut C2pBuffer::new(DisableDrtm::new())),
+            mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(DisableDrtm::new())),
             Err(PspError::Unsupported {
                 command: 0x62,
                 generation: Variant::Ssp

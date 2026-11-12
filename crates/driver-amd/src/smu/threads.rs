@@ -3,12 +3,12 @@
 //! their ThreadEn bit ([`launch`]); its ThreadConfig is the thread topology,
 //! which a [`Policy`] can reduce for the next reset ([`apply`]).
 use crate::{
-    ccx::tsc::DelayNs,
     df::Die,
     smn::Smn,
     smu::{self, DOWNCORE, THREAD_CONFIG, THREAD_ENABLE, ThreadConfig},
     soc::Soc,
 };
+use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
     LocalRegisterCopy,

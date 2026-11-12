@@ -11,11 +11,11 @@
 
 extern crate alloc;
 
+use fstart_driver_amd::sp3::ccx;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::nbio::NbioPolicy;
-use fstart_driver_amd::sp3::{ccx, df};
 
 use crate::layout::Sp3BoardFacts;
 
@@ -23,7 +23,7 @@ use crate::layout::Sp3BoardFacts;
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
     /// DF resource planner: the generation's split plus bus/IO requests.
-    pub df: df::plan::Policy,
+    pub df: fstart_driver_amd::df::plan::Policy,
     pub nbio: NbioPolicy,
     /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
     #[cfg(any(feature = "rome", feature = "milan"))]

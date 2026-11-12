@@ -5,13 +5,11 @@
 //! It logs every write and delay in order. Unset registers read as noise,
 //! so a read-modify-write and a plain write differ.
 extern crate std;
-use crate::{
-    ccx::tsc::{Clock, DelayNs},
-    fch::{Bus, Space},
-};
-use core::cell::RefCell;
+use crate::fch::{Bus, Space};
+use embedded_hal::delay::DelayNs;
+use fstart_core::services::Timer;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
-use std::{collections::BTreeMap, vec::Vec};
+use std::{collections::BTreeMap, sync::Mutex, vec::Vec};
 
 const MESSAGE: u32 = 0x03b1_0528;
 const RESPONSE: u32 = 0x03b1_0564;
@@ -96,7 +94,7 @@ pub struct Hw {
     arguments: u32,
     dxio: u32,
     replies: &'static [(u32, u32)],
-    state: RefCell<State>,
+    state: Mutex<State>,
 }
 impl Hw {
     pub fn new(buses: &[u8], arguments: u32, dxio: u32, replies: &'static [(u32, u32)]) -> Self {
@@ -105,7 +103,7 @@ impl Hw {
             arguments,
             dxio,
             replies,
-            state: RefCell::default(),
+            state: Mutex::default(),
         };
         for die in 0..buses.len() as u8 {
             hw.set_smn(die, RESPONSE, 1);
@@ -114,13 +112,14 @@ impl Hw {
     }
     pub fn set_config(&self, address: PciAddress, offset: u16, value: u32) {
         self.state
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .config
             .insert((address, offset), value);
     }
     /// Preset `bytes` bytes of an FCH register space, without a log entry.
     pub fn set_fch(&self, space: Space, address: u32, bytes: u8, value: u32) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         for i in 0..u32::from(bytes) {
             state
                 .fch
@@ -129,13 +128,14 @@ impl Hw {
     }
     pub fn set_smn(&self, die: u8, address: impl Into<u32>, value: u32) {
         self.state
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .smn
             .insert((die, address.into()), value);
     }
     pub fn smn(&self, die: u8, address: impl Into<u32>) -> u32 {
         let address = address.into();
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         state
             .smn
             .get(&(die, address))
@@ -148,7 +148,7 @@ impl Hw {
     }
     /// (writes and delays, order-sensitive digest).
     pub fn fingerprint(&self) -> (usize, u64) {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         let hash = state
             .events
             .iter()
@@ -161,7 +161,7 @@ impl Hw {
     /// A digest of the final register state, independent of the order of
     /// the writes.
     pub fn state(&self) -> u64 {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         let config = state.config.iter().map(|(&(a, o), &v)| {
             [
                 1,
@@ -212,7 +212,7 @@ impl Hw {
     /// type 3, numbers the PCIe engines per core (the last one dropped) and
     /// returns them with EngineConfig.
     fn dxio(&self, die: u8, arguments: [u32; 6]) -> [u32; 6] {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         let dxio = state.dxio.entry(die).or_default();
         let ok = [3, 0, 0, 0, 0, 0];
         match arguments[0] {
@@ -289,14 +289,14 @@ impl ConfigRegionAccess for Hw {
         let (bus, device, function) = (address.bus(), address.device(), address.function());
         if let (Some(die), 0, 0) = (self.die_of(bus), device, function) {
             let index = match offset {
-                SMN_DATA => self.state.borrow().smn_index[&bus],
+                SMN_DATA => self.state.lock().unwrap().smn_index[&bus],
                 _ => NB_CONFIG + u32::from(offset),
             };
             return self.smn(die, index);
         }
         if (bus, function, offset) == (0, 4, FICAD) && (0x18..0x20).contains(&device) {
             let node = device - 0x18;
-            let state = self.state.borrow();
+            let state = self.state.lock().unwrap();
             let ficaa = state.ficaa[&node];
             return state
                 .df
@@ -304,7 +304,7 @@ impl ConfigRegionAccess for Hw {
                 .copied()
                 .unwrap_or_else(|| noise(&[3, node.into(), ficaa.into()]));
         }
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         state
             .config
             .get(&(address, offset))
@@ -316,17 +316,18 @@ impl ConfigRegionAccess for Hw {
     unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
         let (bus, device, function) = (address.bus(), address.device(), address.function());
         self.state
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .events
             .push(Event::Config(address, offset, value));
         if let (Some(die), 0, 0) = (self.die_of(bus), device, function) {
             match offset {
                 SMN_INDEX => {
-                    self.state.borrow_mut().smn_index.insert(bus, value);
+                    self.state.lock().unwrap().smn_index.insert(bus, value);
                     return;
                 }
                 SMN_DATA => {
-                    let index = self.state.borrow().smn_index[&bus];
+                    let index = self.state.lock().unwrap().smn_index[&bus];
                     self.smn_write(die, index, value);
                     return;
                 }
@@ -338,7 +339,7 @@ impl ConfigRegionAccess for Hw {
         }
         if (bus, function) == (0, 4) && (0x18..0x20).contains(&device) {
             let node = device - 0x18;
-            let mut state = self.state.borrow_mut();
+            let mut state = self.state.lock().unwrap();
             match offset {
                 FICAA => {
                     state.ficaa.insert(node, value);
@@ -358,7 +359,7 @@ impl ConfigRegionAccess for Hw {
 
 impl Bus for Hw {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32 {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         (0..u32::from(bytes)).rev().fold(0, |value, i| {
             let byte = state
                 .fch
@@ -369,7 +370,7 @@ impl Bus for Hw {
         })
     }
     fn write(&self, space: Space, address: u32, bytes: u8, value: u32) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         state.events.push(Event::Fch(space, address, bytes, value));
         for i in 0..u32::from(bytes) {
             state
@@ -385,12 +386,16 @@ impl DelayNs for Time<'_> {
         self.delay_us(ns.div_ceil(1000))
     }
     fn delay_us(&mut self, us: u32) {
-        self.0.state.borrow_mut().events.push(Event::Delay(us));
+        self.0.state.lock().unwrap().events.push(Event::Delay(us));
     }
 }
-impl Clock for Time<'_> {
-    fn now_us(&mut self) -> u64 {
-        let mut state = self.0.state.borrow_mut();
+impl Timer for Time<'_> {
+    fn delay_us(&self, us: u64) {
+        let us = u32::try_from(us).unwrap_or(u32::MAX);
+        self.0.state.lock().unwrap().events.push(Event::Delay(us));
+    }
+    fn timestamp_us(&self) -> u64 {
+        let mut state = self.0.state.lock().unwrap();
         state.clock += 1;
         state.clock
     }

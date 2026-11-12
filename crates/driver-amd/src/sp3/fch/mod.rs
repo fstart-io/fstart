@@ -150,12 +150,10 @@ where
 pub(crate) mod model {
     //! A byte-addressed register model with a write log, and an FCH built
     //! from models.
+    use fstart_core::services::ManualTimer;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use fstart_core::services::Timer;
 
     use super::Fch;
     use crate::smn::model::Model;
@@ -272,18 +270,6 @@ pub(crate) mod model {
         }
     }
 
-    /// A timer that only counts.
-    #[derive(Default)]
-    pub struct Clock(pub AtomicU64);
-    impl Timer for Clock {
-        fn delay_us(&self, us: u64) {
-            self.0.fetch_add(us, Ordering::Relaxed);
-        }
-        fn timestamp_us(&self) -> u64 {
-            self.0.load(Ordering::Relaxed)
-        }
-    }
-
     /// An SMU that answers OK and records `(id, args)`.
     #[derive(Clone, Default)]
     pub struct Smu(pub Rc<RefCell<Vec<Message>>>);
@@ -300,7 +286,7 @@ pub(crate) mod model {
         }
     }
 
-    pub type TestFch = Fch<Mem, Mem, Mem, Model, Clock>;
+    pub type TestFch = Fch<Mem, Mem, Mem, Model, ManualTimer>;
 
     pub fn fch() -> TestFch {
         let pci = Model::default();
@@ -315,7 +301,7 @@ pub(crate) mod model {
             io: Mem::ports(),
             pci,
             bus: 0,
-            timer: Clock::default(),
+            timer: ManualTimer::new(),
         }
     }
 

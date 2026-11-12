@@ -8,7 +8,7 @@
 //! IOMMU) through [`NonPci`].
 
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::sp3::df::plan::{Pools, RootBridgePlan, Window};
+use fstart_driver_amd::df::plan::{Pools, RootBridgePlan, Window};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_pci::PciEcamConfig;
 
@@ -89,7 +89,7 @@ impl NonPci {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::df::BusRange;
+    use fstart_driver_amd::df::BusRange;
 
     fn plan() -> RootBridgePlan {
         let below = Window::new(0xa000_0000, 0x1000_0000);

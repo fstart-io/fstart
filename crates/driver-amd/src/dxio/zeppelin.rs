@@ -30,10 +30,11 @@
 //!     pcie(23, 16, 3, 3),
 //! ];
 //! ```
+use super::wire::{FwEngine, Heaps};
 use super::{
-    self as dxio, Descriptor, Engine, EngineCountError, EngineType, Hotplug, LinkSpeed, Operation,
+    Descriptor, DmaArea, Dxio, DxioError, EngineType, Hooks, Hotplug, LinkSpeed, LoopRules,
+    TIMEOUT_US, Unit, UnitView, op, run, var,
 };
-use crate::ccx::tsc::{Clock, DelayNs};
 use crate::nbio::{
     iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
     pcie::{self, PCIE_PORTS_PER_CORE},
@@ -41,9 +42,14 @@ use crate::nbio::{
 };
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v9 as smu;
-use crate::soc::zeppelin::{Die, ECAM_BUSES, MAX_DIES};
+use crate::soc::{
+    Soc,
+    zeppelin::{Die, ECAM_BUSES, MAX_DIES, Zeppelin},
+};
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
+use heapless::Vec;
 use tock_registers::{
     LocalRegisterCopy,
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -52,7 +58,6 @@ use tock_registers::{
 
 /// Engine records of a die's platform descriptor.
 pub const ENGINES: usize = 16;
-pub type EngineConfig = dxio::EngineConfig<ENGINES>;
 
 /// Default devfn of the PCIe ports of a die, also the order of the bridge
 /// control registers.
@@ -92,16 +97,11 @@ pub enum Error {
         port: u8,
     },
     DuplicatePort,
-    Firmware(dxio::Error),
+    Firmware(DxioError),
 }
-impl From<dxio::Error> for Error {
-    fn from(error: dxio::Error) -> Self {
+impl From<DxioError> for Error {
+    fn from(error: DxioError) -> Self {
         Self::Firmware(error)
-    }
-}
-impl From<EngineCountError> for Error {
-    fn from(error: EngineCountError) -> Self {
-        Self::Firmware(error.into())
     }
 }
 
@@ -138,48 +138,46 @@ const fn wire_to_die_lane(lane: u8) -> u8 {
     if lane > 15 { lane - 4 } else { lane }
 }
 
-/// The platform descriptor of a die for the DXIO firmware.
-pub fn engine_config(descriptors: &[Descriptor]) -> Result<EngineConfig, Error> {
+/// The wire engines of a die for the DXIO firmware.
+pub fn engines(descriptors: &[Descriptor]) -> Result<Vec<FwEngine, ENGINES>, Error> {
     let valid = |d: &Descriptor| d.lanes().1 < 32 && d.device < 32 && d.function < 8;
     if descriptors.len() > ENGINES || !descriptors.iter().all(valid) {
         return Err(Error::Descriptors);
     }
-    Ok(EngineConfig::from_engines(descriptors.iter().map(|d| {
-        let (start, end) = d.lanes();
-        // Single-step training with the descriptor speed (vendor PCD 0xe6 =
-        // 0). The vendor code turns off unused lanes on every engine.
-        let mut engine = Engine::new(
-            d,
-            (die_to_wire_lane(start), die_to_wire_lane(end)),
-            d.speed,
-            true,
-        );
-        engine.gpio_group2 = d.gpio_group;
-        engine
-    })))
+    Ok(descriptors
+        .iter()
+        .map(|d| {
+            let (start, end) = d.lanes();
+            // Single-step training with the descriptor speed (vendor PCD
+            // 0xe6 = 0). The vendor code turns off unused lanes on every
+            // engine.
+            let wire = (die_to_wire_lane(start), die_to_wire_lane(end));
+            d.engine(wire, d.gpio_group, d.speed, true)
+        })
+        .collect())
 }
 
 /// The DXIO firmware numbers the ports per PCIe core.
-fn engine_port(engine: &Engine) -> usize {
+fn engine_port(engine: &FwEngine) -> usize {
     let core = if wire_to_die_lane(engine.start_lane) >= 16 {
         PCIE_PORTS_PER_CORE
     } else {
         0
     };
-    core + usize::from(engine.port & 7)
+    core + usize::from(engine.mac_port_id & 7)
 }
 
 /// Place the PCIe engines the firmware mapped at the devfn of their
 /// descriptors. Returns the topology and the devfn of every port: the ports
 /// without an engine get the remaining default devfns in order.
 fn map_ports(
-    config: &EngineConfig,
+    engines: &[FwEngine],
     descriptors: &[Descriptor],
 ) -> Result<(PcieTopology, [u8; PCIE_PORT_COUNT]), Error> {
     let mut topology = PcieTopology::default();
     let mut used = [false; PCIE_PORT_COUNT];
-    for engine in config.engines()? {
-        if engine.kind() != EngineType::Pcie as u8 {
+    for engine in engines {
+        if engine.kind != EngineType::Pcie as u8 {
             continue;
         }
         let start = wire_to_die_lane(engine.start_lane);
@@ -278,11 +276,11 @@ fn port_trained(smn: &Smn<impl ConfigRegionAccess>, p: usize) -> bool {
 /// Training results of the final engine configuration.
 fn training_done(
     smn: &Smn<impl ConfigRegionAccess>,
-    config: &EngineConfig,
+    engines: &[FwEngine],
     topology: &mut PcieTopology,
 ) -> Result<(), Error> {
-    for engine in config.engines()? {
-        if engine.kind() != EngineType::Pcie as u8 {
+    for engine in engines {
+        if engine.kind != EngineType::Pcie as u8 {
             continue;
         }
         let p = engine_port(engine);
@@ -296,9 +294,8 @@ fn training_done(
     Ok(())
 }
 
-/// The DXIO firmware reads and writes the platform descriptor of each die
-/// with DMA: one slot per die.
-pub struct Buffers([dxio::Slot<ENGINES>; MAX_DIES]);
+/// The DMA windows of the dies' DXIO firmware, one per die.
+pub struct Buffers([DmaArea; MAX_DIES]);
 impl Default for Buffers {
     fn default() -> Self {
         Self::new()
@@ -306,7 +303,7 @@ impl Default for Buffers {
 }
 impl Buffers {
     pub const fn new() -> Self {
-        Self([const { dxio::Slot::new() }; MAX_DIES])
+        Self([const { DmaArea::new() }; MAX_DIES])
     }
 }
 
@@ -314,17 +311,13 @@ impl Buffers {
 struct Training<'a, P> {
     die: &'a Die<P>,
     descriptors: &'a [Descriptor],
-    buffer: &'a dxio::Slot<ENGINES>,
-    /// Transfer size of the platform descriptor.
-    size: usize,
     topology: PcieTopology,
 }
-impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
+impl<P: ConfigRegionAccess + Copy> Hooks for Training<'_, P> {
     type Error = Error;
 
-    fn mapped(&mut self, delay: &mut impl DelayNs) -> Result<(), Error> {
-        let config = self.buffer.read_back(self.die, self.size, delay)?;
-        let (topology, map) = map_ports(&config, self.descriptors).inspect_err(|e| {
+    fn mapped(&mut self, unit: &UnitView<'_>) -> Result<(), Error> {
+        let (topology, map) = map_ports(unit.engines, self.descriptors).inspect_err(|e| {
             if let Error::Unmapped { start, end, port } = e {
                 error!("DXIO: can't map lanes {}-{} (port {})", start, end, port);
             }
@@ -347,7 +340,7 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
     }
 
     /// The vendor ffdeb04b/ffdeb296.
-    fn configured(&mut self) -> Result<(), Error> {
+    fn configured(&mut self, _unit: &UnitView<'_>) -> Result<(), Error> {
         let smn = self.die.smn();
         for (p, port) in self.topology.ports.iter().enumerate() {
             let Some(port) = port else { continue };
@@ -379,40 +372,36 @@ impl<P: ConfigRegionAccess + Copy> dxio::Training for Training<'_, P> {
     /// The vendor code answers both assert and deassert by giving GPIO26
     /// (PCIE_RST_L) back to its native function on the FCH of that die,
     /// through the SMN alias of the FCH ACPI MMIO (0x02d01000).
-    fn perst(&mut self, _deassert: bool) {
+    fn perst(&mut self, _unit: &UnitView<'_>, _reply: &[u32; crate::smu::ARGUMENT_COUNT]) {
         let smn = self.die.smn();
         smn.reg(FCH_GPIO26).set(0x00d2_0000);
         smn.reg(FCH_IOMUX_24).modify(IomuxDword::PIN26.val(0));
     }
 }
-impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
-    fn train(&mut self, clock: &mut impl Clock) -> Result<(), Error> {
-        let address = self.buffer.address()?;
-        let die = self.die;
-        dxio::init(die, clock)?;
-        for variable in [
-            dxio::VAR_RET_AFTER_MAP,
-            dxio::VAR_RET_AFTER_CONF,
-            dxio::VAR_ANCILLARY_V1,
-        ] {
-            dxio::set_variable(die, variable, 1, clock)?;
-        }
-        dxio::rpc(die, Operation::LoadCapabilities, [0; 6], clock)?;
-        // No ancillary data: the descriptors have no tuning records.
-        for kind in [dxio::DATA_MACPCS, dxio::DATA_GPIO] {
-            dxio::load_data(die, kind, None, clock)?;
-        }
-        let dwords = (self.size / 4) as u32;
-        dxio::load_data(
-            die,
-            dxio::DATA_ENGINE_CONFIG,
-            Some((address, dwords)),
-            clock,
-        )?;
 
-        dxio::run(die, self, clock)?;
-        let config = self.buffer.read_back(die, self.size, clock)?;
-        training_done(&die.smn(), &config, &mut self.topology)?;
+/// Every event is answered at once; PERST requests reach the hooks.
+const RULES: LoopRules = LoopRules {
+    pause_at: &[],
+    perst: true,
+    perst_deassert_delay_ms: 0,
+    resume_delay_us: 0,
+};
+
+impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
+    /// Train the die's engines through `unit` (heaps placed, firmware
+    /// initialized by the caller up to the capabilities).
+    fn train<M: crate::smu::SmuMessages + ?Sized>(
+        &mut self,
+        unit: &mut Unit<'_, M>,
+        timer: &impl Timer,
+    ) -> Result<(), Error> {
+        let die = self.die;
+        // No ancillary data: the descriptors have no tuning records.
+        unit.load_heaps()?;
+        unit.dxio.sm_start()?;
+        run(unit, self, timer, &RULES, TIMEOUT_US)?;
+        unit.read_back()?;
+        training_done(&die.smn(), unit.engines(), &mut self.topology)?;
         for port in self.topology.ports.iter().flatten() {
             info!(
                 "PCIe {}:{}.{} lanes {}-{}: {}",
@@ -617,12 +606,12 @@ fn post_training<P: ConfigRegionAccess + Copy>(
     die: &Die<P>,
     topology: &PcieTopology,
     subsystem_id: u32,
-    delay: &mut impl DelayNs,
+    dxio: &Dxio<'_, impl crate::smu::SmuMessages + ?Sized>,
 ) {
     bridges(&die.smn(), topology);
     // Not on AM4: meaning unknown, the argument depends on the socket count
     // (0xf: one socket). The vendor code ignores the result.
-    let _ = dxio::rpc(die, Operation::PostTraining, [0, 0, 0xf, 0, 0, 0], delay);
+    let _ = dxio.raw(op::POST_TRAINING, [0, 0xf, 0, 0, 0]);
     interface_after_dxio(die, topology);
     set_subsystem_ids(&die.smn(), subsystem_id);
 }
@@ -660,8 +649,9 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     descriptors: &[&[Descriptor]],
     subsystem_id: u32,
     buffers: &'static mut Buffers,
-    clock: &mut impl Clock,
+    timer: &impl Timer,
 ) -> Result<[PcieTopology; MAX_DIES], Error> {
+    let delay = &mut TimerDelay(timer);
     let mut topologies = [PcieTopology::default(); MAX_DIES];
     let board = |die: &Die<P>| -> &[Descriptor] {
         descriptors
@@ -673,57 +663,72 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         return Err(Error::Dies);
     }
     // Reject bad descriptors before touching the hardware.
-    let configs = dies
+    let heaps = dies
         .iter()
-        .map(|die| engine_config(board(die)))
-        .collect::<Result<heapless::Vec<_, MAX_DIES>, _>>()?;
+        .map(|die| {
+            let engines = engines(board(die))?;
+            Heaps::from_engines(&engines, &[]).ok_or(Error::Descriptors)
+        })
+        .collect::<Result<Vec<_, MAX_DIES>, _>>()?;
     let Some(first) = dies.first() else {
         return Ok(topologies);
     };
     smu::MAILBOX
-        .test(&first.smn(), clock)
-        .map_err(dxio::Error::Smu)?;
+        .test(&first.smn(), delay)
+        .map_err(DxioError::Smu)?;
     for die in dies {
         pre_training(&die.smn());
     }
 
+    let mailboxes: Vec<_, MAX_DIES> = dies
+        .iter()
+        .map(|die| die.mailbox(TimerDelay(timer)))
+        .collect();
     let per_die = dies
         .iter()
-        .zip(&configs)
-        .zip(&mut buffers.0)
+        .zip(&heaps)
+        .zip(buffers.0.iter_mut())
+        .zip(&mailboxes)
         .zip(&mut topologies);
-    for (((die, config), buffer), topology) in per_die {
+    for ((((die, heaps), buffer), mailbox), topology) in per_die {
         let descriptors = board(die);
-        let size = config.transfer_size()?;
-        buffer.load(config);
-        let buffer = &*buffer;
         if descriptors.iter().any(|d| d.engine == EngineType::Sata) {
             nbif_sata_enable(&die.smn());
         }
-
-        let mut training = Training {
-            die,
-            descriptors,
-            buffer,
-            size,
-            topology: PcieTopology::default(),
-        };
+        let dxio = Dxio::new(mailbox, Zeppelin::DXIO_SERVICE);
         // Vendor PCD 0xcd/0xce/0xcf select die 0 for the early init cleanup.
         if die.index() == 0 {
-            dxio::rpc(die, Operation::CleanupEarly, [0; 6], clock)?;
+            dxio.reload_sm(0)?;
         }
         if descriptors.is_empty() {
             continue;
         }
         debug!("DXIO {}: {} engines", die.index(), descriptors.len());
-        training.train(clock)?;
+        dxio.init()?;
+        dxio.version()?;
+        for variable in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
+            dxio.set_var(variable, 1, 0)?;
+        }
+        dxio.load_caps()?;
+        // SAFETY: the caller's contract.
+        let dma = unsafe { buffer.buffer() }?;
+        let board_engines = 0..descriptors.len() as u8;
+        let mut unit = Unit::with_heaps(0, die.index(), dxio, dma, heaps, board_engines)?
+            .ok_or(DxioError::Buffer)?;
+        let mut training = Training {
+            die,
+            descriptors,
+            topology: PcieTopology::default(),
+        };
+        training.train(&mut unit, timer)?;
         *topology = training.topology;
     }
 
-    for (die, topology) in dies.iter().zip(&topologies) {
-        post_training(die, topology, subsystem_id, clock);
+    for ((die, topology), mailbox) in dies.iter().zip(&topologies).zip(&mailboxes) {
+        let dxio = Dxio::new(mailbox, Zeppelin::DXIO_SERVICE);
+        post_training(die, topology, subsystem_id, &dxio);
     }
-    let buses: heapless::Vec<u8, MAX_DIES> = dies.iter().map(Die::bus).collect();
+    let buses: Vec<u8, MAX_DIES> = dies.iter().map(Die::bus).collect();
     for (i, die) in dies.iter().enumerate() {
         bus_routing(&die.smn(), i, &buses);
     }
@@ -735,7 +740,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::{dxio::SataChannel, smn::testing::SmnSpace};
-    use zerocopy::{IntoBytes, byteorder::U32};
+    use zerocopy::byteorder::U32;
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
         Descriptor {
@@ -757,9 +762,9 @@ mod tests {
 
     #[test]
     fn mj11_ec1_x8x8_wire_format() {
-        let config = engine_config(MJ11_EC1).unwrap();
-        let bytes = config.as_bytes();
-        assert_eq!(config.transfer_size(), Ok(16 + 8 * 40 + 8));
+        let heaps = Heaps::from_engines(&engines(MJ11_EC1).unwrap(), &[]).unwrap();
+        let bytes = heaps.engine_bytes();
+        assert_eq!(bytes.len(), 16 + 8 * 40 + 8);
         assert_eq!(&bytes[12..14], &[8, 0]);
         let engine = |i: usize| &bytes[16 + i * 40..16 + (i + 1) * 40];
         // SATA: lanes, GPIO groups and nothing else.
@@ -784,18 +789,18 @@ mod tests {
         );
         assert!(engine(7)[0x14..].iter().all(|&b| b == 0));
         assert!(matches!(
-            engine_config(&[pcie(32, 32, 1, 1)]),
+            engines(&[pcie(32, 32, 1, 1)]),
             Err(Error::Descriptors)
         ));
     }
 
     /// The engine configuration as the firmware returns it after mapping.
-    fn mapped(ports: [u8; 7]) -> EngineConfig {
-        let mut config = engine_config(MJ11_EC1).unwrap();
-        for (engine, port) in config.engines[1..].iter_mut().zip(ports) {
-            engine.port = port;
+    fn mapped(ports: [u8; 7]) -> Vec<FwEngine, ENGINES> {
+        let mut engines = engines(MJ11_EC1).unwrap();
+        for (engine, port) in engines[1..].iter_mut().zip(ports) {
+            engine.mac_port_id = port;
         }
-        config
+        engines
     }
 
     #[test]
@@ -832,7 +837,7 @@ mod tests {
             Err(Error::DuplicatePort)
         );
         let mut config = mapped([0, 1, 2, 3, 4, 1, 0]);
-        config.engines[7].start_lane = 18; // die lanes 14-23 belong to no descriptor
+        config[7].start_lane = 18; // die lanes 14-23 belong to no descriptor
         assert!(matches!(
             map_ports(&config, MJ11_EC1),
             Err(Error::Unmapped { .. })
@@ -849,8 +854,8 @@ mod tests {
         space.set(pcie::link_status(0), 1 << 1);
         space.set(pcie::lc_port_2dc(8), 1 << 28);
         // The firmware dropped the AST2500.
-        let flags = &mut config.engines[5].port_flags;
-        *flags = U32::new(flags.get() & !1);
+        let caps = &mut config[5].caps;
+        *caps = U32::new(caps.get() & !1);
         training_done(&smn, &config, &mut topology).unwrap();
         let trained: [bool; 7] =
             core::array::from_fn(|i| topology.ports[[0, 1, 2, 3, 4, 9, 8][i]].unwrap().trained);

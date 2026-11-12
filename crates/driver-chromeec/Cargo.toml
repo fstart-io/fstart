@@ -12,3 +12,6 @@ zerocopy.workspace = true
 fstart-core.workspace = true
 fstart-acpi = { workspace = true, optional = true }
 fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+
+[dev-dependencies]
+fstart-core = { workspace = true, features = ["testing"] }
