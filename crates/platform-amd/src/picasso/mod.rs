@@ -7,7 +7,7 @@
 //! ACPI before handing off to the selected payload.
 pub mod acpi;
 use crate::noncar::{
-    self, Ctx, Devices, Silicon, Stop, Tables,
+    self, Ctx, Devices, Silicon, Stop,
     layout::{Layout, Region},
 };
 pub use fstart_driver_amd::soc::picasso::{
@@ -83,18 +83,13 @@ impl noncar::Stage<Picasso, noncar::FchUp<Picasso>> {
     }
 }
 
-impl noncar::Soc for Picasso {
+impl noncar::DieSoc for Picasso {
     const LAYOUT: Layout = LAYOUT;
     const APOB: Region = Region::new(0x0200_1000, 0x1_0000);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
-    /// 8 MiB of TSEG.
-    const TSEG_SIZE: u32 = 8 << 20;
     /// The topology decoder's envelope: 2 CCXs, 4 cores, 2 threads.
     const MAX_CPUS: u16 = 16;
-    type Smbios<'a> = crate::acpi::SmbiosIdentity<'a>;
-    type Acpi = crate::acpi::BoardAcpi;
-
     /// The eMMC controller if it is set up, the FCH GPIO controller and the
     /// board's I2C controllers with the devices behind them.
     fn acpi_devices(
@@ -187,27 +182,6 @@ impl noncar::Soc for Picasso {
         Ok(())
     }
 
-    #[cfg(all(feature = "bundle", target_os = "none"))]
-    fn tables(
-        ctx: &Ctx<'_, Self>,
-        silicon: &mut Silicon<Self>,
-        pci: &fstart_pci::PciEcam,
-        smbios: &crate::acpi::SmbiosIdentity<'_>,
-        acpi: crate::acpi::BoardAcpi,
-    ) -> Tables {
-        noncar::tables(ctx, silicon, pci, smbios, acpi)
-    }
-    #[cfg(not(all(feature = "bundle", target_os = "none")))]
-    fn tables(
-        _: &Ctx<'_, Self>,
-        _: &mut Silicon<Self>,
-        _: &fstart_pci::PciEcam,
-        _: &crate::acpi::SmbiosIdentity<'_>,
-        _: crate::acpi::BoardAcpi,
-    ) -> Tables {
-        unreachable!("the tables are the stage's")
-    }
-
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
     fn peripherals(ctx: &Ctx<'_, Self>, config: &Config) -> noncar::Peripherals {
         config
@@ -216,9 +190,7 @@ impl noncar::Soc for Picasso {
             .flat_map(|bus| uefi::i2c_peripherals(ctx, bus))
             .collect()
     }
-}
 
-impl noncar::DieSoc for Picasso {
     /// FP5 is a BGA package with two channels.
     const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
         socket_upgrade: 0x06,

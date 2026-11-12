@@ -18,6 +18,9 @@ pub mod compression {
     pub const PAYLOAD: Compression = Compression::Lz4;
 }
 
+/// The boot flow, for every SoC.
+#[cfg(any(feature = "noncar", feature = "sp3"))]
+pub mod flow;
 /// The boot media mount every AMD flow shares.
 #[cfg(feature = "media")]
 pub mod media;

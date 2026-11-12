@@ -29,37 +29,14 @@
 //! What the silicon needs in each phase is the SoC driver's
 //! ([`fstart_driver_amd::soc::Init`]); the phases are the same for every
 //! SoC.
-use super::{Board, Ctx, Memory, Silicon, Soc, Stop, Tables, boot, memory, smm};
+use super::{Ctx, Mapped, Memory, Silicon, Soc, Stop, Tables};
 use crate::mp;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
-use fstart_driver_amd::{
-    apob::Apob,
-    ccx::{cache, msr, tsc::Tsc},
-    fch::post_native as post,
-    soc::Entered,
-};
+use fstart_driver_amd::{apob::Apob, ccx::tsc::Tsc, fch::post_native as post, soc::Entered};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::{Hex, StaticConsole};
 use fstart_pci::PciEcam;
-
-/// The shared AMD PSP reset entry with the selected SoC's geometry; a
-/// reset image is for one SoC.
-mod entry {
-    #[cfg(all(feature = "picasso", feature = "zeppelin"))]
-    compile_error!("a noncar reset image is for one SoC: enable picasso or zeppelin, not both");
-    #[cfg(feature = "picasso")]
-    use crate::picasso::LAYOUT;
-    #[cfg(feature = "zeppelin")]
-    use crate::zeppelin::layout::LAYOUT;
-    core::arch::global_asm!(
-        include_str!("../../../arch/asm/amd_psp_reset.S"),
-        cache_base = const LAYOUT.cache_window().base,
-        cache_mask = const !(LAYOUT.cache_window().size - 1) & 0xffff_ffff,
-        pdpts = const crate::noncar::layout::PDPT_COUNT,
-        options(att_syntax),
-    );
-}
 
 fn halt() -> ! {
     fstart_arch::x86::boot::halt()
@@ -80,32 +57,26 @@ fn fail<S: Soc>(what: &'static str) -> ! {
     stop::<S>(Stop::Failed(what))
 }
 
-fn apob_bytes<S: Soc>() -> &'static [u8] {
-    // SAFETY: the PSP wrote the APOB here before releasing the BSP and the
-    // memory map keeps it reserved.
-    unsafe { core::slice::from_raw_parts(S::APOB.base as *const u8, S::APOB.size as usize) }
-}
-
-/// The board's first phase: ECAM and the SoC's FCH setup before the
-/// console, from the board's configuration of the SoC.
-pub fn start<B: Board>() -> Early<B::Soc> {
-    Early::enter(B::CONFIG)
+/// The first phase: ECAM and the SoC's FCH setup before the console, from
+/// the board's configuration `config` of the SoC.
+pub fn enter<S: Soc>(config: S::Config) -> Early<S> {
+    Early::enter(config)
 }
 
 /// Right after the reset vector: ECAM and the FCH decode the console needs.
 pub struct Early<S: Soc> {
-    config: &'static S::Config,
+    config: S::Config,
     msr: NativeMsr,
     entered: Entered<S>,
 }
 
 impl<S: Soc> Early<S> {
-    fn enter(config: &'static S::Config) -> Self {
+    fn enter(config: S::Config) -> Self {
         fstart_stage::anchor::initial_stage();
         // SAFETY: BSP only, single-threaded cold boot.
         let msr = unsafe { NativeMsr::new() };
         // A failure is reported once there is a console.
-        let entered = S::enter(config, &msr);
+        let entered = S::enter(&config, &msr);
         Self {
             config,
             msr,
@@ -119,15 +90,16 @@ impl<S: Soc> Early<S> {
         &self.entered.hw
     }
 
-    /// Bring up the console, identify the CPU, build the memory map from the
-    /// APOB, cache it and mount the verified FFS.
+    /// Bring up the console, identify the CPU, then the SoC's memory map
+    /// from the APOB, cached, with the verified FFS mounted
+    /// ([`Soc::map`]).
     pub fn console(
         self,
         slot: &'static StaticConsole<Ns16550>,
         config: fstart_driver_uart::ns16550::Ns16550Config,
-    ) -> Stage<S, Mapped> {
+    ) -> Stage<S, Console> {
         let Self {
-            config: soc_config,
+            config: mut soc_config,
             msr,
             entered:
                 Entered {
@@ -148,54 +120,28 @@ impl<S: Soc> Early<S> {
             fail::<S>(what);
         }
 
-        let identity = match S::identify(&hw, soc_config, clock) {
+        let bist = fstart_arch::x86::psp_reset::bsp_bist();
+        if bist != 0 {
+            fstart_log::error!("{}: BSP BIST {}", S::NAME, Hex(bist.into()));
+            fail::<S>("BIST");
+        }
+        let identity = match S::identify(&hw, &soc_config, clock) {
             Ok(identity) => identity,
             Err(what) => fail::<S>(what),
         };
         let Some(clock) = clock else {
             fail::<S>("CPU identification")
         };
-        let Ok((top_mem, top_mem2)) = msr::memory_limits(&msr) else {
-            fail::<S>("TOP_MEM from the PSP")
-        };
-        let apob = Apob::new(apob_bytes::<S>(), S::psp(&hw)).ok();
-        let map = apob.as_ref().and_then(|apob| {
-            let map = fstart_driver_amd::apob::sysmap::first_system_memory_map(apob).ok()?;
-            map.sorted().ok()
-        });
-        let Some(map) = map else { fail::<S>("APOB") };
-        fstart_log::info!(
-            "{}: TOM {}, TOM2 {}, APOB top {}",
-            S::NAME,
-            Hex(top_mem),
-            Hex(top_mem2.unwrap_or(0)),
-            Hex(map.top)
-        );
-        let tseg_size = u64::from(S::TSEG_SIZE);
-        let tseg = memory::tseg_base(&map, top_mem, tseg_size);
-        let e820 = match memory::e820(&map, top_mem, tseg_size, &[S::LAYOUT.early, S::APOB]) {
-            Ok(e820) => e820,
-            Err(_) => fail::<S>("memory map"),
-        };
-
-        // The early cache plan: WB DRAM, WP flash.
-        let address_bits = fstart_arch::x86::physical_address_bits() as u8;
-        // SAFETY: CPUID reported MTRRs; the cache plan rejects CPUs without.
-        let mtrrs = unsafe { fstart_arch::x86::mtrr::variable_count() } as usize;
-        let installed = cache::Plan::new(memory::low_top(&map, top_mem), address_bits, mtrrs)
-            .and_then(|plan| cache::install(&msr, &plan));
-        if installed.is_err() {
-            fail::<S>("MTRR setup");
-        }
+        let Mapped {
+            top_mem,
+            top_mem2,
+            apob,
+            tseg,
+            e820,
+            ffs,
+            flow,
+        } = S::map(&hw, &mut soc_config, &msr, clock).unwrap_or_else(|what| fail::<S>(what));
         post(0x32);
-
-        // The verified FFS, mounted before the silicon init: MP init loads the CPUs'
-        // microcode from it.
-        if let Some(ffs) = S::LAYOUT.ffs
-            && boot::mount(&e820, S::LAYOUT.early, ffs).is_err()
-        {
-            fail::<S>("boot media");
-        }
 
         Stage {
             machine: Machine {
@@ -210,15 +156,17 @@ impl<S: Soc> Early<S> {
                 apob,
                 tseg,
                 e820,
+                ffs,
+                flow,
             },
-            phase: Mapped,
+            phase: Console,
         }
     }
 }
 
 /// What every phase after the console works on.
 struct Machine<S: Soc> {
-    config: &'static S::Config,
+    config: S::Config,
     console: &'static Ns16550,
     hw: S::Hw,
     msr: NativeMsr,
@@ -229,6 +177,10 @@ struct Machine<S: Soc> {
     apob: Option<Apob<'static>>,
     tseg: u64,
     e820: E820State,
+    /// The FFS with the payload.
+    ffs: core::ops::Range<u64>,
+    /// What the SoC's flow services keep between the phases.
+    flow: S::Flow,
 }
 
 /// The stage after the console, in phase `P`.
@@ -238,7 +190,7 @@ pub struct Stage<S: Soc, P> {
 }
 
 /// The console is up, DRAM is mapped and cached, the FFS is mounted.
-pub struct Mapped;
+pub struct Console;
 
 /// The FCH's buses are up ([`fstart_driver_amd::soc::Init::init_fch`]).
 pub struct FchUp<S: Soc>(S::FchUp);
@@ -279,7 +231,7 @@ impl<S: Soc> Machine<S> {
     /// What the SoC's steps work on.
     fn ctx(&self) -> Ctx<'_, S> {
         Ctx {
-            config: self.config,
+            config: &self.config,
             identity: self.identity,
             hw: &self.hw,
             msr: &self.msr,
@@ -298,8 +250,8 @@ impl<S: Soc> Machine<S> {
 
 impl<S: Soc, P> Stage<S, P> {
     /// The board's configuration of the SoC.
-    pub fn config(&self) -> &'static S::Config {
-        self.machine.config
+    pub fn config(&self) -> &S::Config {
+        &self.machine.config
     }
 
     /// What the SoC's CPU identification found.
@@ -333,7 +285,7 @@ impl<S: Soc, P> Stage<S, P> {
     }
 }
 
-impl<S: Soc> Stage<S, Mapped> {
+impl<S: Soc> Stage<S, Console> {
     /// The silicon up to the FCH's buses; the board's devices on them and
     /// its early pads come next.
     pub fn init_fch(self) -> Stage<S, FchUp<S>> {
@@ -384,10 +336,20 @@ impl<S: Soc> Stage<S, Chipset<S>> {
     /// SMM info, then what the SoC does before PCI enumeration.
     pub fn start_cpus(self) -> Stage<S, Cpus<S>> {
         let Stage {
-            machine,
+            mut machine,
             phase: Chipset(chipset),
         } = self;
-        let silicon = start_cpus(&machine, chipset).unwrap_or_else(|what| fail::<S>(what));
+        let (silicon, reserved) =
+            start_cpus(&machine, chipset).unwrap_or_else(|what| fail::<S>(what));
+        for range in reserved {
+            if machine
+                .e820
+                .reserve_range(range.start, range.end - range.start)
+                .is_err()
+            {
+                fail::<S>("memory map");
+            }
+        }
         Stage {
             machine,
             phase: Cpus(silicon),
@@ -398,7 +360,7 @@ impl<S: Soc> Stage<S, Chipset<S>> {
 fn start_cpus<S: Soc>(
     machine: &Machine<S>,
     mut chipset: S::Chipset,
-) -> Result<Silicon<S>, &'static str> {
+) -> Result<(Silicon<S>, super::Reserved), &'static str> {
     let ctx = machine.ctx();
     let cpu = S::cpu_driver(&ctx, &mut chipset, fstart_stage::microcode_blob())?;
     let threads = S::threads(&ctx, &chipset)?;
@@ -407,28 +369,24 @@ fn start_cpus<S: Soc>(
         &cpu,
         || S::cpu_errors(&cpu),
         threads,
-        S::MAX_CPUS,
+        S::max_cpus(ctx.config),
         |aps| S::release_aps(&ctx, &chipset, aps),
     )?;
     let mut state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
-    let tseg = smm::install(
-        S::NAME,
-        &cpus.mp,
-        &S::smi(&ctx, &state),
-        ctx.memory.tseg,
-        S::TSEG_SIZE,
-    )?;
-    S::smm_installed(&ctx, &mut state, &tseg)?;
+    let reserved = S::install_smm(&ctx, &mut state, &cpus.mp, &machine.flow)?;
     S::before_enumeration(&ctx, &mut state)?;
     let (devices, aml) = S::acpi_devices(ctx.config, &state)?;
-    Ok(Silicon {
-        cpus,
-        devices,
-        aml,
-        tables: alloc::vec::Vec::new(),
-        framebuffer: None,
-        state,
-    })
+    Ok((
+        Silicon {
+            cpus,
+            devices,
+            aml,
+            tables: alloc::vec::Vec::new(),
+            framebuffer: None,
+            state,
+        },
+        reserved,
+    ))
 }
 
 impl<S: Soc> Stage<S, Cpus<S>> {
@@ -502,9 +460,9 @@ impl<S: Soc> Stage<S, Ready<S>> {
         } = self;
         let ctx = machine.ctx();
         S::end_of_post(&ctx, &mut silicon.state);
-        let tables = S::tables(&ctx, &mut silicon, &pci, smbios, acpi);
+        let tables = S::tables(&ctx, &mut silicon, &pci, &machine.flow, smbios, acpi);
         #[cfg(feature = "payload-uefi-basic")]
-        let peripherals = S::peripherals(&ctx, machine.config);
+        let peripherals = S::peripherals(&ctx, &machine.config);
         Stage {
             machine,
             phase: Published {
@@ -539,10 +497,7 @@ impl<S: Soc> Stage<S, Published<S>> {
         }
         post(0x43);
 
-        let Some(ffs) = S::LAYOUT.ffs else {
-            fail::<S>("boot media")
-        };
-        if boot::map_ram(&machine.e820, &pci).is_err() {
+        if S::map_payload_ram(&machine.e820, &pci).is_err() {
             fail::<S>("page tables");
         }
         if !fstart_arch::x86::mp::park_aps_for_payload() {
@@ -554,8 +509,11 @@ impl<S: Soc> Stage<S, Published<S>> {
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(0x44);
         use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
-        let mut description =
-            Description::new(machine.e820.entries(), Range::new(ffs.base, ffs.size));
+        let ffs = &machine.ffs;
+        let mut description = Description::new(
+            machine.e820.entries(),
+            Range::new(ffs.start, ffs.end - ffs.start),
+        );
         description.console = Some(machine.console);
         description.acpi = tables.rsdp.map(AcpiTables::at);
         let acpi_s5 = [tables.s5];
@@ -570,7 +528,7 @@ impl<S: Soc> Stage<S, Published<S>> {
         {
             handoff.peripherals = peripherals;
         }
-        fstart_payload::boot(handoff, ())
+        S::launch(handoff, &ctx, &machine.flow)
     }
 }
 

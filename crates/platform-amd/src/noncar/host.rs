@@ -8,7 +8,7 @@
 //! firmware ([`ImageConfig`]).
 extern crate std;
 use super::{
-    Board, Soc,
+    Board, DieSoc,
     layout::{Layout, Region},
 };
 use fstart_core::{
@@ -72,7 +72,7 @@ pub enum ImageConfig {
 }
 
 /// A noncar SoC's host build.
-pub trait HostSoc: Soc {
+pub trait HostSoc: DieSoc {
     const POLICY: Policy;
     /// Check a board's configuration before building.
     fn check(_config: &Self::Config) -> Result<(), &'static str> {
@@ -441,7 +441,7 @@ where
     B::Soc: HostSoc,
 {
     let policy = &<B::Soc as HostSoc>::POLICY;
-    let layout = &<B::Soc as Soc>::LAYOUT;
+    let layout = &<B::Soc as DieSoc>::LAYOUT;
     selection.reject_debug()?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
@@ -490,7 +490,7 @@ where
         linker_script: Some(reset_layout(layout).linker_script(&descriptor)?),
         environment_values: BTreeMap::from([(
             "FSTART_MP_MAX_CPUS".into(),
-            <B::Soc as Soc>::MAX_CPUS.to_string(),
+            <B::Soc as DieSoc>::MAX_CPUS.to_string(),
         )]),
         bindings: policy
             .smm
