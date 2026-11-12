@@ -129,6 +129,15 @@ pub fn post(fch: &Fch<impl Bus>, code: u8) {
     fch.bus().reg(POST_CODE).set(code);
 }
 
+/// A POST code to the port 80 snoop, without an FCH handle: the port is
+/// the same on every SoC.
+pub fn post_native(code: u8) {
+    // SAFETY: an I/O port write only.
+    unsafe { NativeBus::<false>::without_config() }
+        .reg(POST_CODE)
+        .set(code);
+}
+
 /// Carries the accesses of the FCH register spaces.
 pub trait Bus {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32;

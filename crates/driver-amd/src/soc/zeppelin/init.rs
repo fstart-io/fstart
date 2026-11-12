@@ -9,14 +9,18 @@ use super::{
     silicon::{self, Identity, SmuPages, SmuPolicy, State, Trained},
 };
 use crate::{
-    ccx::{self, Thread, tsc::Tsc},
+    ccx::{self, mp::Fam17hCpu, tsc::Tsc},
     cpu::{Package, Revision},
     dxio,
-    fch::{Fch, NativeBus, post, smi::FchSmi, taishan},
-    psp,
-    soc::{Ctx, Init},
+    fch::{post, smi::FchSmi, taishan},
+    psp::{self, boot::Psp},
+    soc::{Ctx, Entered, Hw, Init, Roots},
 };
-use fstart_arch::x86::cpu::msr::NativeMsr;
+use fstart_arch::x86::{
+    cpu::{amd::smm::InstalledTseg, msr::NativeMsr},
+    mp::MpHandle,
+};
+use fstart_core::description::PciRootInfo;
 use fstart_pci::PciEcam;
 
 /// After the DF and the FCH reset init.
@@ -24,14 +28,35 @@ pub struct FchUp {
     nonpci: [u32; MAX_DIES],
 }
 
+/// The silicon after MP, with die 0's PSP mailbox once it took the SMM
+/// info.
+pub struct Up {
+    pub silicon: State,
+    bsp_apic: u8,
+    psp: Option<Psp>,
+}
+
+impl Zeppelin {
+    /// The NBIO IOAPIC of `die`.
+    pub fn ioapic(state: &State, die: u8) -> u32 {
+        state.ioapics.get(usize::from(die)).copied().unwrap_or(0)
+    }
+
+    /// The non-PCI MMIO pool of `die`, base and size.
+    fn nonpci_mmio(state: &State, die: u8) -> (u64, u64) {
+        state
+            .nonpci
+            .get(usize::from(die))
+            .map_or((0, 0), |&base| (base.into(), NONPCI_MMIO_SIZE.into()))
+    }
+}
+
 impl Init for Zeppelin {
     const NAME: &'static str = "zeppelin";
-    const ECAM: u64 = super::ECAM;
-    const ECAM_BUSES: u16 = super::ECAM_BUSES;
-    const PSP: psp::Variant = psp::Variant::Zp;
 
     type Config = Config;
     type Identity = Identity;
+    type Hw = Hw<Self>;
     /// The DXIO engines, in place of the configuration's: a board may
     /// only know them once its I2C devices answer.
     type Lanes<'a> = &'a DxioConfig;
@@ -39,20 +64,23 @@ impl Init for Zeppelin {
     type FchUp = FchUp;
     type Trained = Trained;
     type Chipset = State;
-    type CpuPolicy = ccx::zeppelin::CpuPolicy;
-    type State = State;
+    type Cpu = Fam17hCpu<Self, ccx::zeppelin::CpuPolicy>;
+    type Smi = FchSmi;
+    type State = Up;
 
-    fn fch_pre_init(fch: &Fch<NativeBus>, _: &Config, _: Option<Tsc>) -> Result<(), &'static str> {
-        silicon::fch_pre_init(fch).map_err(|_| "FCH pre-init")
+    fn enter(_: &Config, msr: &NativeMsr) -> Entered<Self> {
+        Hw::enter(msr, super::ECAM, super::ECAM_BUSES, |fch, _| {
+            silicon::fch_pre_init(fch).map_err(|_| "FCH pre-init")
+        })
     }
 
     fn identify(
-        fch: &Fch<NativeBus>,
+        hw: &Hw<Self>,
         config: &Config,
-        mhz: u32,
-        dies: u8,
+        clock: Option<Tsc>,
     ) -> Result<Identity, &'static str> {
-        silicon::fch_early_init(fch, config);
+        silicon::fch_early_init(&hw.fch, config);
+        let mhz = clock.map_or(0, |clock| clock.mhz());
         let (ext_eax, ext_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
         let package = Package::from_cpuid(ext_ebx);
         let revision = Revision::from_signature(ext_eax)
@@ -65,16 +93,29 @@ impl Init for Zeppelin {
             mhz
         );
         let revision = revision
-            .filter(|_| package.dies() == Some(dies) && mhz != 0)
+            .filter(|_| package.dies() == Some(hw.dies.len() as u8) && mhz != 0)
             .ok_or("CPU identification")?;
         Ok(Identity { revision, package })
+    }
+
+    fn pci_segment(_: &Hw<Self>) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: super::ECAM,
+            bus_start: 0,
+            bus_end: (super::ECAM_BUSES - 1) as u8,
+        }
+    }
+
+    fn psp(_: &Hw<Self>) -> psp::Variant {
+        psp::Variant::Zp
     }
 
     /// The DF MMIO/IO map and init, then the FCH reset init.
     fn init_fch(ctx: &Ctx<'_, Self>) -> Result<FchUp, &'static str> {
         let nonpci = silicon::pre_mp_reset(
-            ctx.dies,
-            ctx.fch,
+            &ctx.hw.dies,
+            &ctx.hw.fch,
             ctx.identity,
             (ctx.memory.top_mem, ctx.memory.top_mem2),
             ctx.memory.apob,
@@ -95,8 +136,8 @@ impl Init for Zeppelin {
         // handed out once here.
         let buffers = unsafe { &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS) };
         silicon::pre_mp_dxio(
-            ctx.dies,
-            ctx.fch,
+            &ctx.hw.dies,
+            &ctx.hw.fch,
             ctx.msr,
             &Config {
                 dxio: *lanes,
@@ -124,8 +165,8 @@ impl Init for Zeppelin {
             )
         };
         Ok(silicon::pre_mp_finish(
-            ctx.dies,
-            ctx.fch,
+            &ctx.hw.dies,
+            &ctx.hw.fch,
             ctx.config,
             ctx.identity,
             ctx.memory.apob,
@@ -136,66 +177,101 @@ impl Init for Zeppelin {
         ))
     }
 
-    fn cpu_policy(_: &Ctx<'_, Self>, state: &State) -> Result<Self::CpuPolicy, &'static str> {
-        Ok(state.cpu_policy())
+    fn cpu_driver(
+        _: &Ctx<'_, Self>,
+        state: &mut State,
+        microcode: Option<&'static [u8]>,
+    ) -> Result<Self::Cpu, &'static str> {
+        Ok(Fam17hCpu::new(
+            "AMD Zeppelin",
+            microcode,
+            state.cpu_policy(),
+            |policy, msr, thread| ccx::zeppelin::cpu_init(msr, policy, thread).is_ok(),
+        ))
     }
 
-    fn cpu_init(policy: &Self::CpuPolicy, msr: &NativeMsr, thread: Thread) -> bool {
-        ccx::zeppelin::cpu_init(msr, policy, thread).is_ok()
+    fn threads(ctx: &Ctx<'_, Self>, _: &State) -> Result<u16, &'static str> {
+        ctx.hw.threads()
     }
 
-    fn cpus_up(ctx: &Ctx<'_, Self>, state: State) -> Result<State, &'static str> {
-        silicon::cpus_up(ctx.dies, &mut { ctx.clock });
-        Ok(state)
+    fn release_aps(ctx: &Ctx<'_, Self>, _: &State, aps: u16) -> Result<(), u32> {
+        ctx.hw.release_aps(aps, ctx.clock)
     }
 
-    fn smi(ctx: &Ctx<'_, Self>) -> FchSmi {
+    fn cpu_errors(cpu: &Self::Cpu) -> u32 {
+        cpu.errors()
+    }
+
+    fn cpus_up(
+        ctx: &Ctx<'_, Self>,
+        silicon: State,
+        _: &MpHandle,
+        apic_ids: &[u32],
+    ) -> Result<Up, &'static str> {
+        silicon::cpus_up(&ctx.hw.dies, &mut { ctx.clock });
+        Ok(Up {
+            silicon,
+            bsp_apic: apic_ids.first().copied().unwrap_or(0) as u8,
+            psp: None,
+        })
+    }
+
+    fn smi(ctx: &Ctx<'_, Self>, _: &Up) -> FchSmi {
         // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
         // decoded since the FCH init.
         unsafe { FchSmi::new(taishan::ACPI_PORTS, ctx.config.fch.smi_gevents) }
     }
 
-    /// PCI: the interrupt router first.
-    fn before_enumeration(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
-        post(ctx.fch, 0x42);
-        silicon::route_interrupts(ctx.fch, ctx.config)
-    }
-
-    fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) {
-        silicon::after_resources(ctx.fch);
-    }
-
-    /// The vendor firmware's ReadyToBoot, up to the board's own work.
-    fn ready_to_boot(
+    /// The PSP gets the SMM info now, LockDFReg after the last DF write and
+    /// BootDone right before the payload.
+    fn smm_installed(
         ctx: &Ctx<'_, Self>,
-        _: &mut State,
-        pci: &PciEcam,
+        up: &mut Up,
+        tseg: &InstalledTseg,
     ) -> Result<(), &'static str> {
+        up.psp = psp::boot::notify_smm(up.silicon.psp_bars[0], psp::Variant::Zp, tseg, &ctx.clock);
+        Ok(())
+    }
+
+    /// PCI: the interrupt router first.
+    fn before_enumeration(ctx: &Ctx<'_, Self>, _: &mut Up) -> Result<(), &'static str> {
+        post(&ctx.hw.fch, 0x42);
+        silicon::route_interrupts(&ctx.hw.fch, ctx.config)
+    }
+
+    fn roots(ctx: &Ctx<'_, Self>, up: &Up) -> Option<Roots> {
+        ctx.hw.roots(&Self::pci_segment(ctx.hw), |die| {
+            Self::nonpci_mmio(&up.silicon, die)
+        })
+    }
+
+    fn after_resources(ctx: &Ctx<'_, Self>, _: &mut Up) {
+        silicon::after_resources(&ctx.hw.fch);
+    }
+
+    /// The IOAPICs, then the vendor firmware's ReadyToBoot, up to the
+    /// board's own work.
+    fn ready_to_boot(ctx: &Ctx<'_, Self>, up: &mut Up, pci: &PciEcam) -> Result<(), &'static str> {
+        ctx.hw
+            .init_ioapics(up.bsp_apic, |die| Self::ioapic(&up.silicon, die));
         let sata = pci
             .devices()
             .find(|a| pci.device(*a).is_some_and(|d| d.read32(0) == 0x7901_1022));
-        silicon::ready_to_boot(ctx.dies, ctx.fch, sata);
+        silicon::ready_to_boot(&ctx.hw.dies, &ctx.hw.fch, sata);
         Ok(())
     }
 
     /// The end of the vendor ReadyToBoot, after the board's work.
-    fn end_of_post(ctx: &Ctx<'_, Self>, _: &mut State) {
-        silicon::end_of_post(ctx.dies);
+    fn end_of_post(ctx: &Ctx<'_, Self>, _: &mut Up) {
+        silicon::end_of_post(&ctx.hw.dies);
     }
 
-    fn psp_bar(state: &State) -> u32 {
-        state.psp_bars[0]
+    fn finalize(ctx: &Ctx<'_, Self>, up: &mut Up) -> Result<(), &'static str> {
+        psp::boot::lock_df_registers(up.psp.as_mut(), &ctx.clock)
     }
 
-    fn ioapic(state: &State, die: u8) -> u32 {
-        state.ioapics.get(usize::from(die)).copied().unwrap_or(0)
-    }
-
-    /// The non-PCI MMIO pool.
-    fn nonpci_mmio(state: &State, die: u8) -> (u64, u64) {
-        state
-            .nonpci
-            .get(usize::from(die))
-            .map_or((0, 0), |&base| (base.into(), NONPCI_MMIO_SIZE.into()))
+    fn boot_done(ctx: &Ctx<'_, Self>, up: &mut Up) {
+        // SAFETY: the flow is done with the CPUs and SMM is locked.
+        unsafe { psp::boot::boot_done(up.psp.as_mut(), &ctx.clock) };
     }
 }

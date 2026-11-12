@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The ACPI tables of the flow: what the dies and the enumeration report,
 //! built by [`crate::acpi`] into reserved firmware memory.
-use super::{MAX_DIES, pci::Root};
+use super::MAX_DIES;
 use crate::acpi::{self, BoardAcpi, Bridge, DieAcpi, Inputs, SocAcpi};
 use fstart_driver_amd::{
     ccx::power,
@@ -10,6 +10,7 @@ use fstart_driver_amd::{
     nbio::iommu::{self, Iommu},
 };
 use fstart_log::Hex;
+use fstart_pci::PciRoot as Root;
 use fstart_pci::{PciEcam, ecam::GlobalEcam};
 use heapless::Vec;
 
@@ -55,7 +56,7 @@ impl HostBridge {
 
 /// Build the tables for `dies` with their host bridges `hosts`, their NBIO
 /// IOAPICs at `ioapics` (by die) and the CPUs `apic_ids`; returns the RSDP.
-pub fn install<S: super::Soc>(
+pub fn install<S: super::DieSoc>(
     soc: &SocAcpi,
     dies: &[Die<S, GlobalEcam>],
     hosts: &[HostBridge],

@@ -4,7 +4,7 @@
 //! APOB's SMBIOS seeds with their SPD copies, and the APOB's DRAM ranges.
 extern crate alloc;
 
-use super::Soc;
+use super::DieSoc;
 use alloc::vec::Vec;
 use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
 use fstart_driver_amd::apob::{
@@ -16,9 +16,10 @@ use fstart_log::Hex;
 
 /// Build the tables into reserved firmware memory; returns their entry
 /// point's address.
-pub fn install<S: Soc>(
+pub fn install<S: DieSoc>(
     identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
     apob: Option<&Apob>,
+    psp: fstart_driver_amd::psp::Variant,
     apic_ids: &[u32],
 ) -> Option<u64> {
     #[repr(C, align(4096))]
@@ -42,7 +43,7 @@ pub fn install<S: Soc>(
     let map: Option<MemoryMap> =
         apob.and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok());
     let regions: Vec<DramRange> = map
-        .and_then(|map| sysmap::memory_map(S::PSP, map.top, map.holes().iter().copied()).ok())
+        .and_then(|map| sysmap::memory_map(psp, map.top, map.holes().iter().copied()).ok())
         .map(|regions| dram_ranges(&regions))
         .unwrap_or_default();
     let ecc = apob

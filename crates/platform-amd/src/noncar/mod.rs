@@ -27,7 +27,6 @@
 pub mod acpi;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod boot;
-pub mod cpu;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod flow;
 #[cfg(feature = "host")]
@@ -35,8 +34,6 @@ pub mod host;
 pub mod layout;
 pub mod memory;
 pub mod mp;
-pub mod pci;
-pub mod psp;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod smbios;
 pub mod smm;
@@ -52,11 +49,8 @@ pub use flow::{
 
 use crate::acpi::SocAcpi;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
+pub use fstart_driver_amd::soc::{Ctx, Hw, Memory};
 use fstart_driver_amd::{df::Die, soc::Init};
-pub use fstart_driver_amd::{
-    fch::post,
-    soc::{Ctx, Memory},
-};
 use fstart_pci::ecam::GlobalEcam;
 use layout::{Layout, Region};
 
@@ -81,22 +75,11 @@ impl From<&'static str> for Stop {
 /// discovery.
 pub type Devices = heapless::Vec<fstart_core::acpi::AcpiGenericDevice, 16>;
 
-/// A noncar SoC: its silicon init ([`Init`], the SoC's driver) and what
-/// the flow needs to know of it beyond the silicon: where the PSP puts
+/// A SoC on the flow: its silicon init ([`Init`], the SoC's driver) and
+/// what the flow needs to know of it beyond the silicon: where the PSP puts
 /// what, and what its tables say.
 pub trait Soc: Init {
-    /// The name of the CPU driver in the MP init log.
-    const CPU_NAME: &'static str;
     const LAYOUT: Layout;
-    /// The PCI segment ECAM decodes: what MCFG, the DSDT and the payload see.
-    fn pci_root() -> fstart_core::description::PciRootInfo {
-        fstart_core::description::PciRootInfo {
-            segment: 0,
-            ecam_base: Self::ECAM,
-            bus_start: 0,
-            bus_end: (Self::ECAM_BUSES - 1) as u8,
-        }
-    }
     /// Where the PSP writes the APOB.
     const APOB: Region;
     /// Where the PSP finds the BIOS directory.
@@ -105,26 +88,23 @@ pub trait Soc: Init {
     const TSEG_SIZE: u32;
     /// The most CPUs of the SoC's packages.
     const MAX_CPUS: u16;
-    /// What the SMBIOS tables say of the package and its memory.
-    const SMBIOS: SmbiosFacts;
-    /// What the SoC's ACPI tables differ in.
-    const ACPI: &'static SocAcpi;
+
+    /// The board's part of the tables: its SMBIOS identity and its ACPI.
+    type Smbios<'a>;
+    type Acpi;
 
     /// The SoC's own controllers for the tables, once the silicon init is
     /// done: the enabled fixed-address devices and further `\_SB` AML (FCH
     /// controllers and the devices behind them).
     fn acpi_devices(
-        config: &Self::Config,
-        state: &Self::State,
-    ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str>;
-    /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
-    /// nodes: several and not interleaved.
-    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
-        None
+        _config: &Self::Config,
+        _state: &Self::State,
+    ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
+        Ok((Devices::new(), alloc::vec::Vec::new()))
     }
-    /// The display, at ready to boot after [`Init::ready_to_boot`]: its
-    /// contributions (a framebuffer, the posted video ROM's tables) must
-    /// be ready before ACPI publication and the PSP's DF lock.
+    /// The display, at ready to boot after the SoC's own ready-to-boot:
+    /// its contributions (a framebuffer, the posted video ROM's tables)
+    /// must be ready before ACPI publication and the PSP's DF lock.
     fn init_display(
         _silicon: &mut Silicon<Self>,
         _ctx: &Ctx<'_, Self>,
@@ -132,6 +112,15 @@ pub trait Soc: Init {
     ) -> Result<(), Stop> {
         Ok(())
     }
+    /// Install ACPI with the board's `acpi` and SMBIOS with its `smbios`,
+    /// from what the silicon reports and `pci` enumerated.
+    fn tables(
+        ctx: &Ctx<'_, Self>,
+        silicon: &mut Silicon<Self>,
+        pci: &fstart_pci::PciEcam,
+        smbios: &Self::Smbios<'_>,
+        acpi: Self::Acpi,
+    ) -> Tables;
 
     /// The board's devices for CrabEFI to drive, after the buses are set up.
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
@@ -140,11 +129,77 @@ pub trait Soc: Init {
     }
 }
 
+/// Where the installed tables are, and how the OS turns the system off.
+pub struct Tables {
+    pub rsdp: Option<u64>,
+    pub smbios: Option<u64>,
+    pub s5: fstart_core::description::AcpiSleepControl,
+}
+
+/// A SoC made of dies ([`Hw`]): what its tables differ in from the other
+/// such SoCs'. [`tables`] builds them.
+pub trait DieSoc: Soc<Hw = Hw<Self>> + fstart_driver_amd::soc::Soc {
+    /// What the SMBIOS tables say of the package and its memory.
+    const SMBIOS: SmbiosFacts;
+    /// What the SoC's ACPI tables differ in.
+    const ACPI: &'static SocAcpi;
+    /// The NBIO IOAPIC of `die`.
+    fn ioapic(state: &Self::State, die: u8) -> u32;
+    /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
+    /// nodes: several and not interleaved.
+    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
+        None
+    }
+}
+
+/// [`Soc::tables`] of a SoC made of dies: a host bridge per die from the
+/// root bridges `pci` was built from, with what the display and the SoC's
+/// controllers contributed.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub fn tables<S: DieSoc>(
+    ctx: &Ctx<'_, S>,
+    silicon: &mut Silicon<S>,
+    pci: &fstart_pci::PciEcam,
+    identity: &crate::acpi::SmbiosIdentity<'_>,
+    mut board: crate::acpi::BoardAcpi,
+) -> Tables {
+    let hosts: heapless::Vec<acpi::HostBridge, MAX_DIES> = pci
+        .roots()
+        .iter()
+        .map(|root| acpi::HostBridge::new(root, pci))
+        .collect();
+    board.tables.append(&mut silicon.tables);
+    board.devices.extend(silicon.devices.iter().cloned());
+    board.sb_aml.extend_from_slice(&silicon.aml);
+    let ioapics: [u32; MAX_DIES] = core::array::from_fn(|die| S::ioapic(&silicon.state, die as u8));
+    let rsdp = acpi::install::<S>(
+        S::ACPI,
+        &ctx.hw.dies,
+        &hosts,
+        &ioapics,
+        S::pci_segment(ctx.hw),
+        &silicon.cpus.apic_ids,
+        &board,
+    );
+    let smbios = smbios::install::<S>(
+        identity,
+        ctx.memory.apob,
+        S::psp(ctx.hw),
+        &silicon.cpus.apic_ids,
+    );
+    Tables {
+        rsdp,
+        smbios,
+        s5: fstart_core::description::AcpiSleepControl::new(
+            S::ACPI.ports.control,
+            crate::acpi::S5_SLEEP_TYPE,
+        ),
+    }
+}
+
 /// What the silicon init hands the later phases.
 pub struct Silicon<S: Soc> {
     pub cpus: mp::Cpus,
-    /// Die 0's PSP mailbox, if it took the SMM info.
-    pub psp: Option<psp::Psp>,
     /// Enabled fixed-address devices, shared by ACPI and payload discovery.
     pub devices: Devices,
     /// Further `\_SB` AML: FCH controllers and the devices behind them.

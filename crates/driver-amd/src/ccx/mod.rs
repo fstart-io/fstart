@@ -11,6 +11,8 @@
 pub mod brand;
 pub mod cache;
 pub mod microcode;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod mp;
 pub mod msr;
 #[cfg(feature = "picasso")]
 pub mod picasso;

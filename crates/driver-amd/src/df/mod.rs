@@ -35,6 +35,8 @@ pub mod picasso;
 pub mod plan;
 pub mod program;
 pub mod regs;
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod root;
 pub mod v2;
 #[cfg(feature = "zeppelin")]
 pub mod zeppelin;

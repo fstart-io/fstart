@@ -7,11 +7,11 @@ pub mod layout;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
-use crate::noncar::{self, Devices, layout::Region};
+use crate::noncar::{self, Ctx, Devices, Silicon, Tables, layout::Region};
 pub use fstart_driver_amd::soc::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
 use fstart_driver_amd::{
     fch::taishan,
-    soc::zeppelin::{self as soc, Zeppelin, silicon::State},
+    soc::zeppelin::{self as soc, Up, Zeppelin},
 };
 
 #[cfg(feature = "host")]
@@ -37,7 +37,6 @@ impl noncar::host::HostSoc for Zeppelin {
 }
 
 impl noncar::Soc for Zeppelin {
-    const CPU_NAME: &'static str = "AMD Zeppelin";
     const LAYOUT: noncar::layout::Layout = layout::LAYOUT;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
@@ -46,20 +45,14 @@ impl noncar::Soc for Zeppelin {
     const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
-    /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
-    /// LRDIMMs up to 64 GiB.
-    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
-        socket_upgrade: 0x06,
-        max_dimm_mib: 64 * 1024,
-        channels_per_die: 2,
-    };
-    const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
+    type Smbios<'a> = crate::acpi::SmbiosIdentity<'a>;
+    type Acpi = crate::acpi::BoardAcpi;
 
     /// The FCH GPIO controller (AMDI0030) on the IRQ the board routes it
     /// to, as the vendor DSDT has it: three banks.
     fn acpi_devices(
         config: &Config,
-        _: &State,
+        _: &Up,
     ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
         let aml = config
             .fch
@@ -69,6 +62,42 @@ impl noncar::Soc for Zeppelin {
             .and_then(|route| fstart_driver_amd::fch::aml::gpio(route.apic, 0x300).ok())
             .unwrap_or_default();
         Ok((Devices::new(), aml))
+    }
+
+    #[cfg(all(feature = "bundle", target_os = "none"))]
+    fn tables(
+        ctx: &Ctx<'_, Self>,
+        silicon: &mut Silicon<Self>,
+        pci: &fstart_pci::PciEcam,
+        smbios: &crate::acpi::SmbiosIdentity<'_>,
+        acpi: crate::acpi::BoardAcpi,
+    ) -> Tables {
+        noncar::tables(ctx, silicon, pci, smbios, acpi)
+    }
+    #[cfg(not(all(feature = "bundle", target_os = "none")))]
+    fn tables(
+        _: &Ctx<'_, Self>,
+        _: &mut Silicon<Self>,
+        _: &fstart_pci::PciEcam,
+        _: &crate::acpi::SmbiosIdentity<'_>,
+        _: crate::acpi::BoardAcpi,
+    ) -> Tables {
+        unreachable!("the tables are the stage's")
+    }
+}
+
+impl noncar::DieSoc for Zeppelin {
+    /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
+    /// LRDIMMs up to 64 GiB.
+    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+        socket_upgrade: 0x06,
+        max_dimm_mib: 64 * 1024,
+        channels_per_die: 2,
+    };
+    const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
+
+    fn ioapic(up: &Up, die: u8) -> u32 {
+        Zeppelin::ioapic(&up.silicon, die)
     }
 
     /// The dies of an SP4 as AmdFabricZpDxe reports them for SRAT.

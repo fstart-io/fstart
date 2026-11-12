@@ -7,17 +7,16 @@ extern crate std;
 use super::{Config, DxioConfig, FchConfig};
 use crate::{
     acpi::{self, BoardAcpi, DieAcpi, Inputs},
-    noncar::{
-        acpi::HostBridge,
-        layout::Region,
-        pci::{Root, root},
-    },
+    noncar::acpi::HostBridge,
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::{self, Apob},
-    df::{self, map},
+    df::{
+        self, map,
+        root::{Root, root},
+    },
     dxio::{self, Descriptor, SataChannel},
     fch::{self, Acpimmio, Bus, Fch, Space, taishan::irq},
     smu::{
@@ -255,8 +254,8 @@ fn mj11_ec1_pci_root() {
     hw.set_config(PciAddress::new(0, 0, 0x18, 0), 0xa0, 0xff00_0043);
     let state = mj11_ec1_flow_on(&hw, 0x6800_0000);
     let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();
-    let ecam = Region::new(0xf000_0000, 128 << 20);
-    let reserved = Region::new(state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
+    let ecam = (0xf000_0000, 128 << 20);
+    let reserved = (state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
     let root = root(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
     assert_eq!(root.buses(), 0..=127);
     // `_CRS`: what the DF routes to the die, without what the die decodes
@@ -394,12 +393,12 @@ fn sp4_pci_roots_and_host_bridges() {
         }
     }
     // The test RAM is above 4 GiB; the real ECAM is between the dies' windows.
-    let ecam_region = Region::new(ecam.as_mut_ptr() as u64, 128 << 20);
+    let ecam_region = (ecam.as_mut_ptr() as u64, 128 << 20);
     let roots: Vec<Root> = dies
         .iter()
         .map(|die| {
             let pool = state.nonpci[usize::from(die.index())];
-            let reserved = Region::new(pool.into(), NONPCI_MMIO_SIZE.into());
+            let reserved = (pool.into(), NONPCI_MMIO_SIZE.into());
             root(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
         })
         .collect();
@@ -481,7 +480,7 @@ fn sp4_pci_roots_and_host_bridges() {
         let owns_ecam = roots[die]
             .motherboard()
             .iter()
-            .any(|range| (range.base, range.size) == (ecam_region.base, ecam_region.size));
+            .any(|range| (range.base, range.size) == ecam_region);
         assert_eq!(owns_ecam, die == 0);
     }
 }
