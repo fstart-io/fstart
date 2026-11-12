@@ -549,7 +549,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
         step(0x50, "MP and CCX");
         let cpu = S::cpu_driver(&mut ctx.soc, si, fstart_stage::microcode_blob())
             .unwrap_or_else(|what| fail(what));
-        let crate::mp::Cpus { mp, .. } = crate::mp::start(
+        let crate::mp::Cpus { mp, apic_ids } = crate::mp::start(
             "sp3",
             &cpu,
             || cpu.failures(),
@@ -558,7 +558,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
             |aps| S::release_aps(&ctx.soc, si, aps),
         )
         .unwrap_or_else(|what| fail(what));
-        S::cpus_up(&mut ctx.soc, si, &mp).unwrap_or_else(|what| fail(what));
+        S::cpus_up(&mut ctx.soc, si, &mp, &apic_ids).unwrap_or_else(|what| fail(what));
 
         step(0x58, "SMM");
         install_smm(ctx, si, &mp, B::BMC_SX_NOTIFY);

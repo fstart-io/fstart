@@ -228,8 +228,9 @@ pub trait Init: Sized + 'static {
     /// After the last fabric write: lock what the OS must not change. A
     /// failure halts.
     fn finalize(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
-    /// Right before the payload, the APs parked: the PSP's BootDone.
-    fn boot_done(ctx: &Ctx<'_, Self>, state: &mut Self::State);
+    /// Right before the payload, the APs parked: the PSP's BootDone. A
+    /// SoC whose payload must not run without it returns the failure.
+    fn boot_done(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
 }
 
 /// The register handles of a SoC whose dies each have a Data Fabric node

@@ -170,6 +170,8 @@ pub(crate) fn acpi<B: crate::sp3::board::Board, S: fstart_driver_amd::sp3::soc::
     };
     // SAFETY: the HPET general capabilities register, read only.
     let hpet_block_id = unsafe { fstart_core::mmio::read32(0xfed0_0000 as *const u32) };
+    // Naples has no CPPC through the SMU.
+    #[cfg(any(feature = "rome", feature = "milan"))]
     let cppc: Vec<_> = ctx
         .soc
         .cppc
@@ -183,6 +185,8 @@ pub(crate) fn acpi<B: crate::sp3::board::Board, S: fstart_driver_amd::sp3::soc::
             slots: &c.slots,
         })
         .collect();
+    #[cfg(not(any(feature = "rome", feature = "milan")))]
+    let cppc: Vec<acpi::CppcAcpi> = Vec::new();
     let inputs = Inputs {
         generation: ctx.soc.generation,
         pci: ctx.soc.pci_root,

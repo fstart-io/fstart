@@ -405,9 +405,12 @@ impl Init for Picasso {
         psp::boot::lock_df_registers(state.psp.as_mut(), &ctx.clock)
     }
 
-    fn boot_done(ctx: &Ctx<'_, Self>, state: &mut State) {
+    /// A failed BootDone is logged: the session refuses a retry, and the
+    /// transition may have happened.
+    fn boot_done(ctx: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {
         // SAFETY: the flow is done with the CPUs and SMM is locked.
         unsafe { psp::boot::boot_done(state.psp.as_mut(), &ctx.clock) };
+        Ok(())
     }
 }
 

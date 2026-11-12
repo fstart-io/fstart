@@ -198,12 +198,7 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         .build_profile
         .as_ref()
         .and_then(|profile| profile.module.as_deref())
-        && !module.split("::").all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
-        })
+        && !module.split("::").all(is_module_name)
     {
         return Err(format!(
             "build-profile module '{module}' is not a module path in {}",
@@ -261,8 +256,37 @@ fn rel_dir_under_boards(dir: &Path) -> PathBuf {
     dir.file_name().map(PathBuf::from).unwrap_or_default()
 }
 
+/// Whether `name` can be a module in the path the plan runner writes: a
+/// lower-case Rust identifier that is not a keyword.
+fn is_module_name(name: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
+        "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
+        "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub",
+        "ref", "return", "self", "static", "struct", "super", "trait", "true", "try", "type",
+        "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+    ];
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
+        && !KEYWORDS.contains(&name)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_plan_module_is_a_lower_case_identifier() {
+        for name in ["sp3", "a", "die_socs", "x86"] {
+            assert!(super::is_module_name(name), "{name}");
+        }
+        for name in [
+            "", "9bad", "_", "_x", "type", "crate", "Sp3", "a-b", "a b", "a::b",
+        ] {
+            assert!(!super::is_module_name(name), "{name}");
+        }
+    }
+
     use super::{discover, find, parse};
     use std::fs;
     use std::path::{Path, PathBuf};
