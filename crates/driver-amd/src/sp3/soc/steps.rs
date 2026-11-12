@@ -23,7 +23,6 @@ use crate::sp3::fch::common::env::EnvPolicy;
 use crate::sp3::nbio::{Nbio, NbioPolicy};
 use crate::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_arch::x86::mp::MpHandle;
-use fstart_arch::x86::psp_reset::ApRoute;
 use fstart_core::description::PciRootInfo;
 
 use super::hw::{Pci, PrimaryFch, Tsc};
@@ -204,16 +203,20 @@ pub trait Steps: Sized {
         engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
     ) -> Result<(), &'static str>;
     fn fch_env(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
-    /// CCX on the BSP, the release of every thread into the flow's AP
-    /// route (`route_aps` arms and parks it), CCX on every thread. The
-    /// microcode patches are those of `microcode`.
-    fn mp(
+    /// CCX on the BSP and the driver every thread runs, with the patches
+    /// of `microcode`.
+    fn cpu_driver(
         ctx: &mut Ctx,
-        si: &Self,
-        max_cpus: u16,
+        si: &mut Self,
         microcode: Option<&'static [u8]>,
-        route_aps: &dyn Fn(ApRoute),
-    ) -> Result<MpHandle, &'static str>;
+    ) -> Result<super::cpu::Sp3Cpu, &'static str>;
+    /// The threads MP brings up, the BSP included.
+    fn threads(si: &Self) -> u16;
+    /// Release `aps` APs into the reset vector, which the flow routed to
+    /// the MP engine.
+    fn release_aps(ctx: &Ctx, si: &Self, aps: u16) -> Result<(), u32>;
+    /// Every thread ran the driver.
+    fn cpus_up(ctx: &mut Ctx, si: &mut Self, mp: &MpHandle) -> Result<(), &'static str>;
     fn pci_pre(ctx: &mut Ctx, si: &mut Self) -> Result<(), &'static str>;
     fn pci_post(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
     fn fch_late(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;

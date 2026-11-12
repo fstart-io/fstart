@@ -19,7 +19,7 @@ use crate::smu::Smu as SmuMailbox;
 use crate::smu::v9;
 use crate::sp3::ccx::release::{self, Launch, SmuPwr};
 use crate::sp3::ccx::x2apic::{self, ApicMode};
-use crate::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
+use crate::sp3::ccx::{Ccx, brand, mca, power, security};
 use crate::sp3::dxio;
 use crate::sp3::dxio::lanes::Engine;
 use crate::sp3::dxio::ports::{FchPerst, PortSetup};
@@ -32,8 +32,7 @@ use crate::sp3::nbio::{Nbio, naples as nbio_naples};
 use crate::sp3::topology::MAX_ROOT_BRIDGES;
 use crate::window::{SmnWindow, Window};
 use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
-use fstart_arch::x86::psp_reset::ApRoute;
+use fstart_arch::x86::mp::MpHandle;
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
@@ -45,6 +44,11 @@ pub type Smu = SmuMailbox<Pci, Tsc>;
 pub struct Silicon {
     pub nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES>,
     pub smus: heapless::Vec<Smu, MAX_ROOT_BRIDGES>,
+    /// The threads MP brings up and the order the SMU releases them in,
+    /// once the CPU driver is made.
+    threads: u16,
+    order: heapless::Vec<Launch, { release::MAX_THREADS }>,
+    cac: power::CacWeights,
 }
 const IOMMU_BAR: u64 = 512 << 10;
 const IOAPIC_BAR: u64 = 0x1000;
@@ -104,6 +108,9 @@ impl Steps for Silicon {
         Ok(Silicon {
             nbios,
             smus: heapless::Vec::new(),
+            threads: 0,
+            order: heapless::Vec::new(),
+            cac: power::CacWeights::new(),
         })
     }
 
@@ -207,13 +214,13 @@ impl Steps for Silicon {
 
     /// CCX on the BSP, SMU release per die, CCX on every thread, CCX-done per
     /// die (CCX_SP3 §2, NBIO_SMU §3.8 V9).
-    fn mp(
+    /// CCX on the BSP and the driver every thread runs, with the patches
+    /// of `microcode`; the order the threads are released in.
+    fn cpu_driver(
         ctx: &mut Ctx,
-        si: &Silicon,
-        max_cpus: u16,
+        si: &mut Silicon,
         microcode: Option<&'static [u8]>,
-        route_aps: &dyn Fn(ApRoute),
-    ) -> Result<MpHandle, &'static str> {
+    ) -> Result<Sp3Cpu, &'static str> {
         let generation = ctx.generation;
         let policy = ctx.policy.ccx;
         let mut dies = [[None; 4]; 2];
@@ -250,55 +257,55 @@ impl Steps for Silicon {
         let cac = power::read_cac_weights(generation, &si.smus[0]).step("CAC weights")?;
         let driver = Sp3Cpu::new(
             ccx,
-            &policy,
-            ApInputs {
-                microcode: patch,
-                wdt,
-                wdt_severity: policy.wdt_severity,
-                cac_weights: &cac,
-                rmp: None,
-            },
+            policy,
+            patch,
             wdt,
+            policy.wdt_severity,
+            cac.clone(),
             [Some(ctx.psp_bar), None],
         );
+        si.threads = threads as u16;
+        si.order = order;
+        si.cac = cac;
+        Ok(driver)
+    }
+
+    fn threads(si: &Silicon) -> u16 {
+        si.threads
+    }
+
+    fn release_aps(ctx: &Ctx, si: &Silicon, aps: u16) -> Result<(), u32> {
+        let generation = ctx.generation;
+        if usize::from(aps) != si.order.len() {
+            return Err(0);
+        }
         let node = |l: &Launch| {
             ctx.topology
                 .root_bridges
                 .iter()
                 .position(|rb| rb.socket == l.socket && rb.index == l.die)
         };
-        let route = ApRoute::to(AP_BOOTSTRAP_ADDRESS).step("AP route")?;
-        let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&driver];
-        let mut launch = |aps: u16| {
-            if usize::from(aps) != order.len() {
-                return Err(0);
-            }
-            route_aps(route);
-            release_all(&order, |l| {
-                let n = node(l).ok_or(release::ReleaseError::BadTopology {
-                    socket: l.socket,
-                    die: l.die,
-                })?;
-                release::launch(&si.nbios[n].smn(), &si.smus[n], l, generation)
-            })
-        };
-        let mp = fstart_arch::x86::mp::mp_init_with_launcher(
-            &MpConfig {
-                cpu_drivers: &drivers,
-                num_cpus: threads as u16,
-                max_cpus: max_cpus,
-            },
-            &mut launch,
-        )
-        .step("MP init")?;
-        route_aps(ApRoute::PARK);
-        if driver.failures() != 0 {
-            return Err("AP microcode");
-        }
+        release_all(&si.order, |l| {
+            let n = node(l).ok_or(release::ReleaseError::BadTopology {
+                socket: l.socket,
+                die: l.die,
+            })?;
+            release::launch(&si.nbios[n].smn(), &si.smus[n], l, generation)
+        })
+    }
+
+    /// Every thread ran its CCX steps: the BSP's last ones, then the SMU's
+    /// CCX-done.
+    fn cpus_up(ctx: &mut Ctx, si: &mut Silicon, mp: &MpHandle) -> Result<(), &'static str> {
+        let generation = ctx.generation;
+        let policy = ctx.policy.ccx;
+        let cpu = msr();
+        let bsp = this_thread(generation);
+        let cac = si.cac.clone();
         security::set_smee(&cpu, policy.smee);
         mca::init(&cpu, &bsp);
         power::write_cac_weights(&cpu, &cac);
-        ctx.apic_ids = collect_apic_ids(&mp);
+        ctx.apic_ids = collect_apic_ids(mp);
         // TODO(naples): the QOS bit (PCD 0x17) and the per-revision removals
         // are not decoded (NBIO_SMU open item); the SP3 base mask is sent.
         let features = v9::feature_mask(false, 0);
@@ -306,10 +313,9 @@ impl Steps for Silicon {
             v9::ccx_done(smu, features).step("SMU CCX done")?;
             v9::after_ap_launch(smu, i == 0).step("SMU after AP launch")?;
         }
-        Ok(mp)
+        Ok(())
     }
 
-    /// IOAPIC BAR/ID and IOMMU BAR per die before enumeration.
     fn pci_pre(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
         let generation = ctx.generation;
         set_fch_ioapic_id(generation);

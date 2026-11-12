@@ -23,7 +23,7 @@ use crate::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
 use crate::sp3::ccx::release::{self, Launch};
 use crate::sp3::ccx::topology::{ApicLayout, Location};
 use crate::sp3::ccx::x2apic::{self, ApicMode};
-use crate::sp3::ccx::{ApInputs, Ccx, brand, mca, power, security};
+use crate::sp3::ccx::{Ccx, brand, mca, power, security};
 use crate::sp3::df::v3::{Df3, SocketMemory};
 use crate::sp3::dxio;
 use crate::sp3::dxio::engine::Ancillary;
@@ -39,8 +39,7 @@ use crate::sp3::topology::MAX_ROOT_BRIDGES;
 use crate::window::Window;
 use alloc::vec::Vec;
 use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_arch::x86::mp::{AP_BOOTSTRAP_ADDRESS, MpConfig, MpHandle};
-use fstart_arch::x86::psp_reset::ApRoute;
+use fstart_arch::x86::mp::MpHandle;
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
@@ -55,6 +54,12 @@ pub struct Silicon {
     pub smus: heapless::Vec<Smu, 2>,
     /// APOB 3/3 core map per socket.
     pub maps: heapless::Vec<CoreMap, 2>,
+    /// The threads MP brings up, the order the SMU releases them in and
+    /// each socket's SMN, once the CPU driver is made.
+    threads: u16,
+    order: heapless::Vec<Launch, { release::MAX_THREADS }>,
+    smns: heapless::Vec<Smn<Pci>, 2>,
+    cac: power::CacWeights,
 }
 const NBIO_SMU_BAR: u64 = 1 << 20;
 const IOMMU_BAR: u64 = 512 << 10;
@@ -366,6 +371,10 @@ impl Steps for Silicon {
             nbios,
             smus: heapless::Vec::new(),
             maps: heapless::Vec::new(),
+            threads: 0,
+            order: heapless::Vec::new(),
+            smns: heapless::Vec::new(),
+            cac: power::CacWeights::new(),
         })
     }
 
@@ -594,13 +603,13 @@ impl Steps for Silicon {
     /// CCX on the BSP, SMU release of every thread through the reset vector,
     /// CCX on every thread, then the BSP tail and CCX-done per socket
     /// (CCX_SP3 §2, NBIO_SMU §3.8).
-    fn mp(
+    /// CCX on the BSP and the driver every thread runs, with the patches
+    /// of `microcode`; the order the threads are released in.
+    fn cpu_driver(
         ctx: &mut Ctx,
-        si: &Silicon,
-        max_cpus: u16,
+        si: &mut Silicon,
         microcode: Option<&'static [u8]>,
-        route_aps: &dyn Fn(ApRoute),
-    ) -> Result<MpHandle, &'static str> {
+    ) -> Result<Sp3Cpu, &'static str> {
         let generation = ctx.generation;
         let policy = ctx.policy.ccx;
         let threads: usize = si.maps.iter().map(CoreMap::threads).sum();
@@ -643,15 +652,11 @@ impl Steps for Silicon {
         }
         let driver = Sp3Cpu::new(
             ccx,
-            &policy,
-            ApInputs {
-                microcode: patch,
-                wdt,
-                wdt_severity: policy.wdt_severity,
-                cac_weights: &cac,
-                rmp: None,
-            },
+            policy,
+            patch,
             wdt,
+            policy.wdt_severity,
+            cac.clone(),
             psp_addr,
         );
         let buses = socket_buses(ctx)?;
@@ -662,35 +667,39 @@ impl Steps for Silicon {
         // SMEE on the BSP before the APs copy its SYSCFG (the donor's order):
         // set afterwards, the APs disagree and the OS clears SME/SEV per CPU.
         security::set_smee(&cpu, policy.smee);
-        let route = ApRoute::to(AP_BOOTSTRAP_ADDRESS).step("AP route")?;
-        let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&driver];
-        let mut launch = |aps: u16| {
-            if usize::from(aps) != order.len() {
-                return Err(0);
-            }
-            route_aps(route);
-            release_all(&order, |l: &Launch| {
-                let s = usize::from(l.socket);
-                release::launch(&smns[s], &si.smus[s], l, generation)
-            })
-        };
-        let mp = fstart_arch::x86::mp::mp_init_with_launcher(
-            &MpConfig {
-                cpu_drivers: &drivers,
-                num_cpus: threads as u16,
-                max_cpus: max_cpus,
-            },
-            &mut launch,
-        )
-        .step("MP init")?;
-        route_aps(ApRoute::PARK);
-        if driver.failures() != 0 {
-            return Err("AP microcode");
+        si.threads = threads as u16;
+        si.order = order;
+        si.smns = smns;
+        si.cac = cac;
+        Ok(driver)
+    }
+
+    fn threads(si: &Silicon) -> u16 {
+        si.threads
+    }
+
+    fn release_aps(ctx: &Ctx, si: &Silicon, aps: u16) -> Result<(), u32> {
+        let generation = ctx.generation;
+        if usize::from(aps) != si.order.len() {
+            return Err(0);
         }
+        release_all(&si.order, |l: &Launch| {
+            let s = usize::from(l.socket);
+            release::launch(&si.smns[s], &si.smus[s], l, generation)
+        })
+    }
+
+    /// Every thread ran its CCX steps: the BSP's last ones, then the SMU's
+    /// CCX-done.
+    fn cpus_up(ctx: &mut Ctx, si: &mut Silicon, mp: &MpHandle) -> Result<(), &'static str> {
+        let generation = ctx.generation;
+        let cpu = msr();
+        let bsp = this_thread(generation);
+        let cac = si.cac.clone();
         mca::init(&cpu, &bsp);
         power::write_cac_weights(&cpu, &cac);
 
-        ctx.apic_ids = collect_apic_ids(&mp);
+        ctx.apic_ids = collect_apic_ids(mp);
         let rev = ctx.identity.revision;
         // Keep CC6 disabled until boot-time calibration finishes. Milan's early
         // CC6 PPI belongs to the topology-change reset path, not normal boot.
@@ -710,13 +719,11 @@ impl Steps for Silicon {
         }
         #[cfg(feature = "acpi")]
         {
-            ctx.cppc = cppc(ctx, si, &mp)?;
+            ctx.cppc = cppc(ctx, si, mp)?;
         }
-        Ok(mp)
+        Ok(())
     }
 
-    /// PCI enumeration prerequisites (NBIO_SMU §3.5 step 6): NBIO IOAPIC BAR
-    /// and ID, Rome's IOMMU BAR; the FCH IOAPIC ID.
     fn pci_pre(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
         let generation = ctx.generation;
         set_fch_ioapic_id(generation);

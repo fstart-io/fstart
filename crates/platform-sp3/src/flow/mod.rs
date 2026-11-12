@@ -556,14 +556,30 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
     pub fn start_cpus(mut self) -> Stage<B, S, Cpus> {
         let Machine { ctx, si, .. } = &mut self.machine;
         step(0x50, "MP and CCX");
-        let mp = S::mp(
-            &mut ctx.soc,
-            si,
-            B::MAX_CPUS,
-            fstart_stage::microcode_blob(),
-            &route_aps,
+        let cpu = S::cpu_driver(&mut ctx.soc, si, fstart_stage::microcode_blob())
+            .unwrap_or_else(|what| fail(what));
+        let route = crate::entry::ApRoute::to(fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS)
+            .or_halt("AP route");
+        let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
+        let mp = fstart_arch::x86::mp::mp_init_with_launcher(
+            &fstart_arch::x86::mp::MpConfig {
+                cpu_drivers: &drivers,
+                num_cpus: S::threads(si),
+                max_cpus: B::MAX_CPUS,
+            },
+            &mut |aps| {
+                // The APs leave the reset entry for the SIPI trampoline the
+                // MP engine installed before calling this.
+                route_aps(route);
+                S::release_aps(&ctx.soc, si, aps)
+            },
         )
-        .unwrap_or_else(|what| fail(what));
+        .or_halt("MP init");
+        route_aps(crate::entry::ApRoute::PARK);
+        if cpu.failures() != 0 {
+            fail("AP microcode");
+        }
+        S::cpus_up(&mut ctx.soc, si, &mp).unwrap_or_else(|what| fail(what));
 
         step(0x58, "SMM");
         install_smm(ctx, si, &mp, B::BMC_SX_NOTIFY);

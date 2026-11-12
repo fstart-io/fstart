@@ -13,8 +13,9 @@ extern crate alloc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::Generation;
+use crate::ccx::microcode::Patch;
 use crate::ccx::msr::PSP_ADDRESS;
-use crate::sp3::ccx::power::Wdt;
+use crate::sp3::ccx::power::{CacWeights, Wdt};
 use crate::sp3::ccx::release::{Launch, ReleaseError};
 use crate::sp3::ccx::topology::Thread;
 use crate::sp3::ccx::{self, ApInputs, Ccx};
@@ -41,30 +42,38 @@ pub fn apic_id() -> u32 {
 }
 
 /// The SP3 CPU driver handed to `mp_init_with_launcher`.
-pub struct Sp3Cpu<'a> {
+pub struct Sp3Cpu {
     pub ccx: Ccx,
-    pub policy: &'a ccx::Policy,
-    pub inputs: ApInputs<'a>,
+    pub policy: ccx::Policy,
+    /// The patch the BSP loaded, for every other thread.
+    pub microcode: Option<Patch<'static>>,
+    /// From [`ccx::power::wdt_setting`].
     pub wdt: Option<Wdt>,
+    pub wdt_severity: Option<u8>,
+    pub cac: CacWeights,
     /// `PSP_ADDR` per socket: every thread loads its socket's PSP BAR
     /// (PSP_APOB §3.2; Naples: die 0's, the BAR AGESA uses).
     pub psp_addr: [Option<u64>; 2],
     failures: AtomicU32,
 }
 
-impl<'a> Sp3Cpu<'a> {
+impl Sp3Cpu {
     pub fn new(
         ccx: Ccx,
-        policy: &'a ccx::Policy,
-        inputs: ApInputs<'a>,
+        policy: ccx::Policy,
+        microcode: Option<Patch<'static>>,
         wdt: Option<Wdt>,
+        wdt_severity: Option<u8>,
+        cac: CacWeights,
         psp_addr: [Option<u64>; 2],
     ) -> Self {
         Self {
             ccx,
             policy,
-            inputs,
+            microcode,
             wdt,
+            wdt_severity,
+            cac,
             psp_addr,
             failures: AtomicU32::new(0),
         }
@@ -76,7 +85,7 @@ impl<'a> Sp3Cpu<'a> {
     }
 }
 
-impl CpuDriver for Sp3Cpu<'_> {
+impl CpuDriver for Sp3Cpu {
     fn name(&self) -> &'static str {
         "amd-sp3"
     }
@@ -107,11 +116,18 @@ impl CpuDriver for Sp3Cpu<'_> {
             self.ccx.early(&cpu, &thread);
             // SAFETY: ring 0 with caching enabled; the BSP's patch is
             // identity mapped and stays reserved.
-            if unsafe { self.ccx.ap_init(&cpu, &thread, &self.inputs) }.is_err() {
+            let inputs = ApInputs {
+                microcode: self.microcode,
+                wdt: self.wdt,
+                wdt_severity: self.wdt_severity,
+                cac_weights: &self.cac,
+                rmp: None,
+            };
+            if unsafe { self.ccx.ap_init(&cpu, &thread, &inputs) }.is_err() {
                 self.failures.fetch_add(1, Ordering::AcqRel);
             }
         }
-        self.ccx.all_threads(&cpu, &thread, self.policy, self.wdt);
+        self.ccx.all_threads(&cpu, &thread, &self.policy, self.wdt);
     }
 
     /// The BSP's memory routing (TOP_MEM/TOM2, SYSCFG, MMIO_CFG_BASE: the
