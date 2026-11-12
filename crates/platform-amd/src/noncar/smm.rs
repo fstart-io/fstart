@@ -6,7 +6,6 @@ use fstart_arch::x86::{
     cpu::amd::smm::{AmdSmm, InstalledTseg},
     mp::MpHandle,
 };
-use fstart_driver_amd::fch::smi::FchSmi;
 
 /// The board's SMM image that fbuild built from its `smm.rs`.
 #[cfg(fstart_amd_has_smm_image)]
@@ -19,7 +18,7 @@ const IMAGE: Option<&[u8]> = None;
 pub fn install(
     name: &'static str,
     mp: &MpHandle,
-    smi: &FchSmi,
+    smi: &impl fstart_arch::x86::cpu::amd::smm::SmiControl,
     base: u64,
     size: u32,
 ) -> Result<InstalledTseg, &'static str> {

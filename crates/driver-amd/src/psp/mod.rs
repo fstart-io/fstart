@@ -9,6 +9,8 @@
 //! sender in AGESA is gated by a PCD and the boot does not depend on them.
 //! Every die has a PSP; the native flows only use die 0's mailbox.
 
+#[cfg(any(feature = "picasso", feature = "zeppelin"))]
+pub mod boot;
 pub mod command;
 pub mod mailbox;
 #[cfg(feature = "sp3")]

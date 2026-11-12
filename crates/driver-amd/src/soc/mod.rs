@@ -22,19 +22,22 @@
 //! payload) is the platform's and the same for every SoC.
 use crate::{
     apob::Apob,
-    ccx::{Thread, microcode::Family, tsc::Tsc},
+    ccx::tsc::Tsc,
     df::Die,
     fch::{
         Acpimmio, Fch, NativeBus,
         gpio::{Bank, Gpio},
-        smi::FchSmi,
     },
     psp,
     smu::Mailbox,
 };
-use fstart_arch::x86::cpu::msr::NativeMsr;
-use fstart_core::services::memory_detect::E820State;
-use fstart_pci::{PciEcam, ecam::GlobalEcam};
+use fstart_arch::x86::{
+    cpu::{amd::smm::InstalledTseg, amd::smm::SmiControl, msr::NativeMsr},
+    ioapic::IoApic,
+    mp::CpuDriver,
+};
+use fstart_core::{description::PciRootInfo, services::memory_detect::E820State};
+use fstart_pci::{MAX_PCI_ROOTS, PciEcam, PciRoot, ecam::GlobalEcam};
 
 #[cfg(feature = "picasso")]
 pub mod picasso;
@@ -74,13 +77,12 @@ pub struct Memory<'a> {
 }
 
 /// What the steps of [`Init`] work on: the board's configuration, what
-/// [`Init::identify`] found, the dies, die 0's FCH, the BSP's MSRs, the
-/// clock and the memory map.
+/// [`Init::identify`] found, the SoC's register handles, the BSP's MSRs,
+/// the clock and the memory map.
 pub struct Ctx<'a, S: Init> {
-    pub config: &'static S::Config,
+    pub config: &'a S::Config,
     pub identity: S::Identity,
-    pub dies: &'a [Die<S, GlobalEcam>],
-    pub fch: &'a Fch<NativeBus>,
+    pub hw: &'a S::Hw,
     pub msr: &'a NativeMsr,
     pub clock: Tsc,
     pub memory: Memory<'a>,
@@ -91,40 +93,38 @@ impl<S: Init> Clone for Ctx<'_, S> {
     }
 }
 impl<S: Init> Copy for Ctx<'_, S> {}
-impl<S: Init> Ctx<'_, S> {
-    /// The FCH of die 0, for pad routing and the like.
-    pub fn fch(&self) -> Fch<NativeBus> {
-        // SAFETY: board work runs on the BSP between the flow's own FCH
-        // accesses, with the ACPI MMIO and ECAM decoded.
-        Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
-    }
 
-    /// The GPIO pads of die 0.
-    pub fn gpio(&self) -> Gpio<NativeBus> {
-        Gpio::new(self.fch(), S::GPIO_BANK)
-    }
+/// What [`Init::enter`] leaves: the handles, the clock if the TSC frequency
+/// is known, and whether the FCH setup for the console succeeded (a
+/// failure is reported once there is a console).
+pub struct Entered<S: Init> {
+    pub hw: S::Hw,
+    pub clock: Option<Tsc>,
+    pub pre_init: Result<(), &'static str>,
 }
+
+/// The root bridges of a SoC, for one PCI allocator.
+pub type Roots = heapless::Vec<PciRoot, MAX_PCI_ROOTS>;
 
 /// The cold init of a SoC's silicon: the steps a platform's boot flow
 /// calls on the BSP, each once and in the order they are declared in. The
-/// flow owns the console, the memory map, MP, SMM, PCI enumeration, the
-/// tables and the payload; a SoC says what its silicon needs at each point
-/// of that flow and in which order it programs its IP blocks there.
+/// flow owns the console, the memory map, the MP engine, the SMM
+/// installation, PCI enumeration, the tables and the payload; a SoC says
+/// what its silicon needs at each point of that flow and in which order it
+/// programs its IP blocks there. Its register handles are its own
+/// ([`Init::Hw`]), and so is what a step leaves for the next.
 ///
 /// A step that fails returns its name; the flow logs it and halts.
-pub trait Init: Soc + Family + Send + Sync + Sized {
+pub trait Init: Sized + 'static {
     /// The log prefix.
     const NAME: &'static str;
-    /// PCIe ECAM and its bus count.
-    const ECAM: u64;
-    const ECAM_BUSES: u16;
-    /// The PSP: its mailbox rules and APOB format.
-    const PSP: psp::Variant;
 
     /// A board's configuration of the SoC, by IP block.
     type Config: 'static;
     /// What [`Init::identify`] found.
     type Identity: Copy;
+    /// The register handles of the SoC.
+    type Hw;
     /// What a board decides at run time for [`Init::train_dxio`] and
     /// [`Init::init_chipset`], `()` if nothing.
     type Lanes<'a>;
@@ -133,26 +133,28 @@ pub trait Init: Soc + Family + Send + Sync + Sized {
     type FchUp;
     type Trained;
     type Chipset;
-    /// What every CPU's [`Init::cpu_init`] needs.
-    type CpuPolicy: Send + Sync;
+    /// The CPU driver of the MP engine: the CCX init of every thread.
+    type Cpu: CpuDriver;
+    /// The FCH as the owner of the SMI sources.
+    type Smi: SmiControl;
     /// What the silicon init leaves for the steps after MP.
     type State;
 
-    /// FCH setup before the console: the decodes the board's console
-    /// needs. `clock` is `None` if the TSC frequency is unknown.
-    fn fch_pre_init(
-        fch: &Fch<NativeBus>,
+    /// Right after the reset vector: ECAM, the handles and the FCH setup
+    /// the board's console needs.
+    fn enter(config: &Self::Config, msr: &NativeMsr) -> Entered<Self>;
+    /// After the console: identify the CPU and finish the early FCH setup.
+    fn identify(
+        hw: &Self::Hw,
         config: &Self::Config,
         clock: Option<Tsc>,
-    ) -> Result<(), &'static str>;
-    /// After the console: identify the CPU (TSC at `mhz`, `dies` dies) and
-    /// finish the early FCH setup.
-    fn identify(
-        fch: &Fch<NativeBus>,
-        config: &Self::Config,
-        mhz: u32,
-        dies: u8,
     ) -> Result<Self::Identity, &'static str>;
+    /// The PCI segment ECAM decodes: what the allocator, MCFG, the DSDT
+    /// and the payload see.
+    fn pci_segment(hw: &Self::Hw) -> PciRootInfo;
+    /// The PSP: its mailbox rules and APOB format.
+    fn psp(hw: &Self::Hw) -> psp::Variant;
+
     /// With the memory map: up to the FCH's buses, which the board's
     /// devices on them wait for.
     fn init_fch(ctx: &Ctx<'_, Self>) -> Result<Self::FchUp, &'static str>;
@@ -168,25 +170,49 @@ pub trait Init: Soc + Family + Send + Sync + Sized {
         trained: Self::Trained,
         runtime: Self::Runtime,
     ) -> Result<Self::Chipset, &'static str>;
-    /// On the BSP, before the APs are released.
-    fn cpu_policy(
+
+    /// On the BSP, before the APs are released: its own CCX init and the
+    /// driver every thread runs, with the patches of `microcode`.
+    fn cpu_driver(
         ctx: &Ctx<'_, Self>,
-        chipset: &Self::Chipset,
-    ) -> Result<Self::CpuPolicy, &'static str>;
-    /// The CCX init of `thread`, on that thread; whether it succeeded.
-    fn cpu_init(policy: &Self::CpuPolicy, msr: &NativeMsr, thread: Thread) -> bool;
-    /// Every CPU ran [`Init::cpu_init`].
-    fn cpus_up(ctx: &Ctx<'_, Self>, chipset: Self::Chipset) -> Result<Self::State, &'static str>;
-    /// The FCH as the owner of the SMI sources, for the SMM installation.
-    fn smi(ctx: &Ctx<'_, Self>) -> FchSmi;
-    /// SMM is installed and the PSP has its SMM info; PCI enumeration is
-    /// next.
+        chipset: &mut Self::Chipset,
+        microcode: Option<&'static [u8]>,
+    ) -> Result<Self::Cpu, &'static str>;
+    /// The threads MP init brings up, the BSP included.
+    fn threads(ctx: &Ctx<'_, Self>, chipset: &Self::Chipset) -> Result<u16, &'static str>;
+    /// Release `aps` APs into the reset vector, which the flow routed to
+    /// the MP engine. The error is for the MP engine's log.
+    fn release_aps(ctx: &Ctx<'_, Self>, chipset: &Self::Chipset, aps: u16) -> Result<(), u32>;
+    /// Threads whose CCX init or microcode load failed.
+    fn cpu_errors(cpu: &Self::Cpu) -> u32;
+    /// Every thread ran its CCX init; `apic_ids` are theirs, the BSP's
+    /// first.
+    fn cpus_up(
+        ctx: &Ctx<'_, Self>,
+        chipset: Self::Chipset,
+        mp: &fstart_arch::x86::mp::MpHandle,
+        apic_ids: &[u32],
+    ) -> Result<Self::State, &'static str>;
+
+    /// The owner of the SMI sources, for the SMM installation.
+    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> Self::Smi;
+    /// SMM is installed and locked in `tseg`: the PSP gets its SMM info.
+    fn smm_installed(
+        ctx: &Ctx<'_, Self>,
+        state: &mut Self::State,
+        tseg: &InstalledTseg,
+    ) -> Result<(), &'static str>;
+
+    /// PCI enumeration is next.
     fn before_enumeration(
         _ctx: &Ctx<'_, Self>,
         _state: &mut Self::State,
     ) -> Result<(), &'static str> {
         Ok(())
     }
+    /// The root bridges: what the fabric routes to each and what that is
+    /// for. The allocator and the tables both take them from here.
+    fn roots(ctx: &Ctx<'_, Self>, state: &Self::State) -> Option<Roots>;
     /// After the PCI resource allocation.
     fn after_resources(ctx: &Ctx<'_, Self>, state: &mut Self::State);
     /// Ready to boot, before the tables: the devices `pci` enumerated are
@@ -199,11 +225,127 @@ pub trait Init: Soc + Family + Send + Sync + Sized {
     /// The last step before the tables, after the board's own
     /// ready-to-boot work.
     fn end_of_post(_ctx: &Ctx<'_, Self>, _state: &mut Self::State) {}
+    /// After the last fabric write: lock what the OS must not change. A
+    /// failure halts.
+    fn finalize(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
+    /// Right before the payload, the APs parked: the PSP's BootDone.
+    fn boot_done(ctx: &Ctx<'_, Self>, state: &mut Self::State);
+}
 
-    /// Die 0's PSP BAR, for the flow's PSP mailbox.
-    fn psp_bar(state: &Self::State) -> u32;
-    /// The NBIO IOAPIC of `die`.
-    fn ioapic(state: &Self::State, die: u8) -> u32;
-    /// The MMIO of `die` that PCI resources must avoid, base and size.
-    fn nonpci_mmio(state: &Self::State, die: u8) -> (u64, u64);
+/// The register handles of a SoC whose dies each have a Data Fabric node
+/// with one root complex ([`Die`]): Picasso, Zeppelin.
+pub struct Hw<S: Soc> {
+    /// Die 0's FCH.
+    pub fch: Fch<NativeBus>,
+    /// The dies, die 0 first.
+    pub dies: heapless::Vec<Die<S, GlobalEcam>, 8>,
+}
+
+impl<S: Soc> Hw<S> {
+    /// ECAM at `ecam` with `buses` buses first, everything else uses it;
+    /// then the ACPI MMIO, the clock and the SoC's FCH setup for the
+    /// console, `pre_init`.
+    pub fn enter<I: Init<Hw = Self>>(
+        msr: &NativeMsr,
+        ecam: u64,
+        buses: u16,
+        pre_init: impl FnOnce(&Fch<NativeBus>, Option<Tsc>) -> Result<(), &'static str>,
+    ) -> Entered<I> {
+        // SAFETY: BSP only, single-threaded cold boot; the ECAM comes up
+        // before the first config space access.
+        let fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);
+        crate::fch::post(&fch, 0x30);
+        crate::ccx::msr::enable_ecam(msr, ecam, buses);
+        fstart_pci::ecam::init(ecam as usize);
+        // SAFETY: exclusive FCH programming before the console.
+        unsafe { crate::fch::enable_acpimmio() };
+        let mhz = fstart_arch::x86::cpu::amd::msr::tsc_mhz(msr).unwrap_or(0);
+        let clock = core::num::NonZeroU32::new(mhz).map(Tsc::new);
+        let pre_init = pre_init(&fch, clock);
+        // SAFETY: BSP-only silicon init serializes all die register accesses.
+        let dies = unsafe { crate::df::dies(GlobalEcam) }.collect();
+        Entered {
+            hw: Self { fch, dies },
+            clock,
+            pre_init,
+        }
+    }
+
+    /// The FCH of die 0, for pad routing and the like.
+    pub fn fch(&self) -> Fch<NativeBus> {
+        // SAFETY: board work runs on the BSP between the flow's own FCH
+        // accesses, with the ACPI MMIO and ECAM decoded.
+        Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
+    }
+
+    /// The GPIO pads of die 0.
+    pub fn gpio(&self) -> Gpio<NativeBus> {
+        Gpio::new(self.fch(), S::GPIO_BANK)
+    }
+
+    /// The LPC bridge, for decodes and Super I/O routing of a console
+    /// behind it.
+    pub fn lpc(&self) -> crate::fch::lpc::Lpc<&NativeBus> {
+        // SAFETY: exclusive LPC decode programming on the BSP.
+        unsafe { crate::fch::lpc::Lpc::new(self.fch.bus()) }
+    }
+
+    /// The threads the SMU releases, the BSP included.
+    pub fn threads(&self) -> Result<u16, &'static str> {
+        crate::smu::threads::thread_count(&self.dies, crate::smu::threads::Policy::DEFAULT)
+            .map(|threads| threads as u16)
+            .map_err(|_| "CPU topology")
+    }
+
+    /// The SMU releases `aps` APs.
+    pub fn release_aps(&self, aps: u16, clock: Tsc) -> Result<(), u32> {
+        use crate::smu::threads::{self, Policy};
+        // SAFETY: the flow routed the reset vector to the MP engine.
+        unsafe {
+            threads::launch(&self.dies, Policy::DEFAULT, usize::from(aps), &mut {
+                clock
+            })
+        }
+        .map_err(|error| {
+            if let threads::Error::ApCount { started, requested } = error {
+                fstart_log::error!("smu: started {} of {} APs", started, requested);
+            }
+            1
+        })
+    }
+
+    /// Each die's root complex as a PCI root bridge in `segment`, with the
+    /// die's own MMIO `non_pci` (base, size).
+    pub fn roots(
+        &self,
+        segment: &PciRootInfo,
+        non_pci: impl Fn(u8) -> (u64, u64),
+    ) -> Option<Roots> {
+        let ecam = (segment.ecam_base, segment.ecam_size());
+        self.dies
+            .iter()
+            .map(|die| {
+                let routes = crate::df::map::root_complex(die)?;
+                crate::df::root::root(&routes, ecam, non_pci(die.index()))
+            })
+            .collect()
+    }
+
+    /// The FCH's IOAPIC (GSI 0-23, ID 0) in virtual-wire mode to the BSP
+    /// `bsp_apic`, then one per die's NBIO at `ioapic(die)` (ID 1 + die),
+    /// all masked.
+    pub fn init_ioapics(&self, bsp_apic: u8, ioapic: impl Fn(u8) -> u32) {
+        self.fch.enable_hpet_ioapic();
+        // SAFETY: decoded IOAPIC MMIO, BSP only.
+        let fch_ioapic = unsafe { IoApic::new(crate::fch::IOAPIC as usize) };
+        fch_ioapic.set_id(0);
+        fch_ioapic.mask_all();
+        fch_ioapic.route_i8259(bsp_apic);
+        for die in &self.dies {
+            // SAFETY: as above, mapped by the silicon init.
+            let nbio = unsafe { IoApic::new(ioapic(die.index()) as usize) };
+            nbio.set_id(1 + die.index());
+            nbio.mask_all();
+        }
+    }
 }

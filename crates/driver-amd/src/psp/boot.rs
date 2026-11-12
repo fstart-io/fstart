@@ -2,12 +2,12 @@
 //! The x86 side of the PSP's boot: the SMM info right after SMM is set up,
 //! LockDFReg after the last DF write and
 //! BootDone right before the payload.
-use fstart_arch::x86::cpu::amd::smm::InstalledTseg;
-use fstart_core::services::Timer;
-use fstart_driver_amd::psp::{
+use super::{
     Mailbox, MmioTransport, Session, Storage, Variant,
     command::{BootDone, Default32, LockDfReg, SmmInfo},
 };
+use fstart_arch::x86::cpu::amd::smm::InstalledTseg;
+use fstart_core::services::Timer;
 
 /// Die 0's PSP mailbox, the one owner of the boot, after it took the SMM
 /// info. BootDone ends its use.

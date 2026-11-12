@@ -10,7 +10,7 @@ mod init;
 pub mod silicon;
 #[cfg(test)]
 pub(crate) mod test_pci;
-pub use init::FchUp;
+pub use init::{FchUp, Up};
 
 use super::Soc;
 use crate::{

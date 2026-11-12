@@ -18,7 +18,7 @@ fn main() -> ! {
     let stage = fstart_platform_amd::noncar::start::<Board>()
         .console(&CONSOLE, vilboz::console())
         .init_fch();
-    let gpio = stage.gpio();
+    let gpio = stage.hw().gpio();
     if vilboz::early_gpios(&gpio).is_err() {
         stage.fail("board GPIOs");
     }

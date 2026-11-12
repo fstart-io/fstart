@@ -2,8 +2,7 @@
 //! The PCI root complex of a die as a PCI root bridge: what the DF routes
 //! to it and what that is for. The allocator and the ACPI host bridge of
 //! the die both take it from here.
-use super::layout::Region;
-use fstart_driver_amd::df::map::RootComplex;
+use super::map::RootComplex;
 use fstart_pci::PciRole::{Forwarded, Own, Window};
 use fstart_pci::{PciRoot, PciRootInfo};
 
@@ -31,8 +30,12 @@ pub type Root = PciRoot;
 ///
 /// `None` if the buses are outside the ECAM or the DF routes more than a
 /// root bridge holds.
-pub fn root(routes: &RootComplex, ecam: Region, non_pci: Region) -> Option<Root> {
-    let last_bus = u8::try_from((ecam.size >> 20).checked_sub(1)?).ok()?;
+pub fn root(
+    routes: &RootComplex,
+    (ecam_base, ecam_size): (u64, u64),
+    (non_pci_base, non_pci_size): (u64, u64),
+) -> Option<Root> {
+    let last_bus = u8::try_from((ecam_size >> 20).checked_sub(1)?).ok()?;
     let buses = *routes.buses.start()..=(*routes.buses.end()).min(last_bus);
     if buses.is_empty() {
         return None;
@@ -63,13 +66,13 @@ pub fn root(routes: &RootComplex, ecam: Region, non_pci: Region) -> Option<Root>
     let primary = |size: u64| if *buses.start() == 0 { size } else { 0 };
     let vga = [Forwarded.mmio(0xa_0000, primary(0x2_0000))];
     let own = [
-        Own.mmio(non_pci.base, non_pci.size),
-        Own.mmio(ecam.base, primary(ecam.size)),
+        Own.mmio(non_pci_base, non_pci_size),
+        Own.mmio(ecam_base, primary(ecam_size)),
     ];
     PciRoot::new(
         PciRootInfo {
             segment: 0,
-            ecam_base: ecam.base,
+            ecam_base,
             bus_start: *buses.start(),
             bus_end: *buses.end(),
         },
