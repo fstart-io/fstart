@@ -21,6 +21,9 @@ pub mod compression {
 /// The boot media mount every AMD flow shares.
 #[cfg(feature = "media")]
 pub mod media;
+/// MP init, for every flow.
+#[cfg(any(feature = "noncar", feature = "sp3"))]
+pub mod mp;
 #[cfg(feature = "noncar")]
 pub mod noncar;
 #[cfg(feature = "picasso")]

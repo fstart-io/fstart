@@ -82,15 +82,6 @@ pub use fstart_driver_amd::sp3::soc::rome_milan::Silicon as RomeMilanSilicon;
 #[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
 compile_error!("a stage build enables at least one of naples, rome, milan");
 
-/// Arm (or park) the AP path of the reset entry, which the SMU releases
-/// the APs into.
-fn route_aps(route: crate::sp3::entry::ApRoute) {
-    #[cfg(all(target_os = "none", feature = "bundle-stage"))]
-    crate::sp3::entry::set_ap_route(route);
-    #[cfg(not(all(target_os = "none", feature = "bundle-stage")))]
-    let _ = route;
-}
-
 /// Halt after logging a failed step; the POST code of the step stays on
 /// port 80h.
 pub(crate) fn fail(step: &str) -> ! {
@@ -558,27 +549,15 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
         step(0x50, "MP and CCX");
         let cpu = S::cpu_driver(&mut ctx.soc, si, fstart_stage::microcode_blob())
             .unwrap_or_else(|what| fail(what));
-        let route = crate::sp3::entry::ApRoute::to(fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS)
-            .or_halt("AP route");
-        let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-        let mp = fstart_arch::x86::mp::mp_init_with_launcher(
-            &fstart_arch::x86::mp::MpConfig {
-                cpu_drivers: &drivers,
-                num_cpus: S::threads(si),
-                max_cpus: B::MAX_CPUS,
-            },
-            &mut |aps| {
-                // The APs leave the reset entry for the SIPI trampoline the
-                // MP engine installed before calling this.
-                route_aps(route);
-                S::release_aps(&ctx.soc, si, aps)
-            },
+        let crate::mp::Cpus { mp, .. } = crate::mp::start(
+            "sp3",
+            &cpu,
+            || cpu.failures(),
+            S::threads(si),
+            B::MAX_CPUS,
+            |aps| S::release_aps(&ctx.soc, si, aps),
         )
-        .or_halt("MP init");
-        route_aps(crate::sp3::entry::ApRoute::PARK);
-        if cpu.failures() != 0 {
-            fail("AP microcode");
-        }
+        .unwrap_or_else(|what| fail(what));
         S::cpus_up(&mut ctx.soc, si, &mp).unwrap_or_else(|what| fail(what));
 
         step(0x58, "SMM");

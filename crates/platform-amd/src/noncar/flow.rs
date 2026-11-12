@@ -29,7 +29,8 @@
 //! What the silicon needs in each phase is the SoC driver's
 //! ([`fstart_driver_amd::soc::Init`]); the phases are the same for every
 //! SoC.
-use super::{Board, Ctx, Memory, Silicon, Soc, Stop, Tables, boot, memory, mp, smm};
+use super::{Board, Ctx, Memory, Silicon, Soc, Stop, Tables, boot, memory, smm};
+use crate::mp;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::{
@@ -401,7 +402,14 @@ fn start_cpus<S: Soc>(
     let ctx = machine.ctx();
     let cpu = S::cpu_driver(&ctx, &mut chipset, fstart_stage::microcode_blob())?;
     let threads = S::threads(&ctx, &chipset)?;
-    let cpus = mp::start::<S>(&cpu, threads, |aps| S::release_aps(&ctx, &chipset, aps))?;
+    let cpus = mp::start(
+        S::NAME,
+        &cpu,
+        || S::cpu_errors(&cpu),
+        threads,
+        S::MAX_CPUS,
+        |aps| S::release_aps(&ctx, &chipset, aps),
+    )?;
     let mut state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
     let tseg = smm::install(
         S::NAME,

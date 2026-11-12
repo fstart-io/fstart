@@ -8,7 +8,7 @@
 //!    the memory map from the APOB, the cache plan, the FFS.
 //! 2. The silicon phases on [`Stage`], each a step of the SoC's driver
 //!    ([`Init`]): `init_fch`, `train_dxio`, `init_chipset` and
-//!    `start_cpus`, which runs MP init ([`mp::start`]) and SMM with the
+//!    `start_cpus`, which runs MP init ([`crate::mp::start`]) and SMM with the
 //!    PSP's SMM info ([`smm::install`], [`psp::notify_smm`]).
 //! 3. [`Stage::scan_bus`]: PCI enumeration and resource allocation, then
 //!    [`Init::after_resources`].
@@ -33,7 +33,6 @@ mod flow;
 pub mod host;
 pub mod layout;
 pub mod memory;
-pub mod mp;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod smbios;
 pub mod smm;
@@ -199,7 +198,7 @@ pub fn tables<S: DieSoc>(
 
 /// What the silicon init hands the later phases.
 pub struct Silicon<S: Soc> {
-    pub cpus: mp::Cpus,
+    pub cpus: crate::mp::Cpus,
     /// Enabled fixed-address devices, shared by ACPI and payload discovery.
     pub devices: Devices,
     /// Further `\_SB` AML: FCH controllers and the devices behind them.
