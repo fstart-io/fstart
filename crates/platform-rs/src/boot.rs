@@ -67,11 +67,6 @@ pub fn launch<S: crate::Soc>(
     }
     // SAFETY: proven RAM outside every firmware reservation and the bump
     // heap; nothing else owns it, and CrabEFI keeps it as boot-services data.
-    unsafe { fstart_stage::adopt_freeing_heap(heap.start as usize..heap.end as usize) }
-        .unwrap_or_else(|_| {
-            fstart_log::error!("{}: CrabEFI heap adoption refused", name);
-            fstart_arch::halt()
-        });
     // Only the buses the DF routes: a fused IOS's range has no target.
     let ecam: Vec<_> = roots
         .iter()
@@ -104,6 +99,9 @@ pub fn launch<S: crate::Soc>(
             smbios: Some(fstart_acpi::smbios::LEGACY_ENTRY_POINT),
             fdt: None,
             ecam_regions: &ecam,
+            // Volatile variables and no settings menu yet.
+            variable_storage: None,
+            settings: None,
         },
         &map,
     )
