@@ -175,3 +175,14 @@ mod tests {
         assert_eq!(identify(0x0080_0F12, 1 << 28), Err(Unsupported::Package(1)));
     }
 }
+
+pub mod cpu;
+pub mod hw;
+#[cfg(feature = "naples")]
+pub mod naples;
+#[cfg(any(feature = "rome", feature = "milan"))]
+pub mod rome_milan;
+pub mod steps;
+#[cfg(any(feature = "rome", feature = "milan"))]
+pub use steps::Cppc;
+pub use steps::{Ctx, NonPci, NumaPlan, Policy, Steps};

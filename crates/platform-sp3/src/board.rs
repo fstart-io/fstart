@@ -11,33 +11,11 @@
 
 extern crate alloc;
 
-use fstart_driver_amd::sp3::ccx;
-use fstart_driver_amd::sp3::dxio::DxioPolicy;
-use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
-use fstart_driver_amd::sp3::nbio::NbioPolicy;
 
 use crate::layout::Sp3BoardFacts;
 
-/// Silicon policy of a board (NATIVE_PORT_PLAN §4 steps 6–12).
-#[derive(Debug, Clone, Copy)]
-pub struct Policy {
-    /// DF resource planner: the generation's split plus bus/IO requests.
-    pub df: fstart_driver_amd::df::plan::Policy,
-    pub nbio: NbioPolicy,
-    /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
-    #[cfg(any(feature = "rome", feature = "milan"))]
-    pub power: fstart_driver_amd::smu::v11::pptable::PowerPolicy,
-    pub ccx: ccx::Policy,
-    /// FCH env: power-failure state after AC loss.
-    pub fch_env: EnvPolicy,
-    /// Per-socket AHCI policy, used consistently at reset, env and late.
-    /// A secondary socket with SATA lanes must not inherit the donor's
-    /// all-disabled secondary-controller policy.
-    #[cfg(any(feature = "rome", feature = "milan"))]
-    pub sata: [fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy; 2],
-    pub dxio: DxioPolicy,
-}
+pub use fstart_driver_amd::sp3::soc::Policy;
 
 /// Knobs of the silicon [`Policy`] a board can offer in
 /// [`Board::OPTIONS`].

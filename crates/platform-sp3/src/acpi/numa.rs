@@ -10,8 +10,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 pub use fstart_acpi::numa::{CpuAffinity, MemoryAffinity};
-#[cfg(any(feature = "bundle-stage", test))]
-use fstart_driver_amd::sp3::df::dram::{DramMap, NumaDomain, df3_channel, domain_of};
 use fstart_driver_amd::sp3::soc::Generation;
 
 /// A proximity domain; its proximity number is its index.
@@ -30,25 +28,6 @@ pub struct Numa<'a> {
 }
 
 use super::Cpu;
-
-/// Merge per-node DRAM views into sorted, unique proximity ranges.
-#[cfg(any(feature = "bundle-stage", test))]
-pub(crate) fn memory_from_maps(
-    maps: impl IntoIterator<Item = DramMap>,
-    domains: &[NumaDomain],
-) -> Vec<(u64, u64, u32)> {
-    let mut memory: Vec<_> = maps
-        .into_iter()
-        .flat_map(|map| map.ranges().collect::<Vec<_>>())
-        .filter_map(|(base, end, dst)| {
-            let (socket, channel) = df3_channel(dst)?;
-            Some((base, end, domain_of(domains, socket, channel)?))
-        })
-        .collect();
-    memory.sort_unstable();
-    memory.dedup();
-    memory
-}
 
 /// SLIT distance between two different domains at the donor defaults:
 /// Naples PCD 0x112 = 0xFF → other die 16, other socket 32; Rome/Milan
@@ -81,7 +60,7 @@ pub fn tables(generation: Generation, numa: &Numa, cpus: &[Cpu]) -> Vec<Vec<u8>>
 mod tests {
     use super::*;
     use fstart_driver_amd::sp3::df::DramRule;
-    use fstart_driver_amd::sp3::df::dram::{Nps, numa_domains};
+    use fstart_driver_amd::sp3::df::dram::{DramMap, Nps, memory_from_maps, numa_domains};
 
     const CPUS: [Cpu; 2] = [
         Cpu {

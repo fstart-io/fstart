@@ -37,12 +37,8 @@ pub mod host;
 #[cfg(feature = "host")]
 pub use host::Plan;
 pub mod einj;
-#[cfg(target_arch = "x86_64")]
-pub mod hw;
 pub mod layout;
 pub mod memory;
-#[cfg(target_arch = "x86_64")]
-pub mod mp;
 pub mod pci;
 #[cfg(feature = "acpi")]
 pub mod smbios;

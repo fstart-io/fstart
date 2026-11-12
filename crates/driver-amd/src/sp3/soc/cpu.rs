@@ -8,21 +8,23 @@
 //! from the BSP before it enables caching ([`Sp3Cpu::sipi_msrs`]) and the
 //! CCX work per thread ([`Sp3Cpu::init_cpu`]).
 
+extern crate alloc;
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use super::Generation;
+use crate::ccx::msr::PSP_ADDRESS;
+use crate::sp3::ccx::power::Wdt;
+use crate::sp3::ccx::release::{Launch, ReleaseError};
+use crate::sp3::ccx::topology::Thread;
+use crate::sp3::ccx::{self, ApInputs, Ccx};
 use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, SYSCFG, Syscfg, TOP_MEM, TOP_MEM2};
 use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlock};
+use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, MpHandle, SipiUnlock};
 use fstart_arch::x86::mtrr::{MsrEntry, SipiMsrs};
-use fstart_driver_amd::ccx::msr::PSP_ADDRESS;
-use fstart_driver_amd::sp3::ccx::power::Wdt;
-use fstart_driver_amd::sp3::ccx::release::{Launch, ReleaseError};
-use fstart_driver_amd::sp3::ccx::topology::Thread;
-use fstart_driver_amd::sp3::ccx::{self, ApInputs, Ccx};
-use fstart_driver_amd::sp3::soc::Generation;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
-use crate::hw::msr;
+use super::hw::msr;
 
 /// The executing thread as the CCX code sees it.
 pub fn this_thread(generation: Generation) -> Thread {
@@ -165,6 +167,19 @@ pub fn release_all(
         .iter()
         .enumerate()
         .try_for_each(|(i, l)| launch(l).map_err(|_| i as u32 + 1))
+}
+
+/// Every online thread's APIC ID, BSP (CPU 0) first.
+pub fn collect_apic_ids(mp: &MpHandle) -> alloc::vec::Vec<u32> {
+    let ids: alloc::vec::Vec<AtomicU32> = (0..mp.num_cpus()).map(|_| AtomicU32::new(0)).collect();
+    mp.scope(|s| {
+        s.scatter(&|cpu: u32| {
+            if let Some(slot) = ids.get(cpu as usize) {
+                slot.store(apic_id(), Ordering::Release);
+            }
+        })
+    });
+    ids.iter().map(|i| i.load(Ordering::Acquire)).collect()
 }
 
 #[cfg(test)]

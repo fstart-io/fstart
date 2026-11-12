@@ -7,10 +7,10 @@
 //! ([`Early::console`]), the board's GPIO table ([`Stage::program_gpio`]),
 //! DXIO with the board's lanes, the chipset, the CPUs, PCI, the tables and
 //! the payload. Each phase consumes the one before ([`Stage`]'s phase
-//! parameter). The shared steps live here; the silicon steps that differ
-//! are in [`sp3`] (Rome and Milan, with the Milan deltas inline) and
-//! [`naples`], bound to the flow by
-//! [`Steps`]. One reset image carries every family the board supports:
+//! parameter). The flow is here; the silicon steps it runs are the
+//! driver's (`fstart_driver_amd::sp3::soc`: Naples, and Rome and Milan
+//! with the Milan deltas inline). One reset image carries every family
+//! the board supports:
 //! [`start`] returns the running one ([`Start`]); a
 //! generation this build does not carry halts at POST 13 before the
 //! console (its FCH bring-up is not compiled in), one the board does not
@@ -42,8 +42,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-
 use fstart_amdfw_format::anchor::FlashAnchor;
 use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
@@ -53,15 +51,12 @@ use fstart_core::description::PciRootInfo;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
-use fstart_driver_amd::df::plan::{self, Plan};
-use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::sp3::df::topology::{self, Topology};
-use fstart_driver_amd::sp3::df::{self as sp3_df, Df};
+use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::rom3::{self, FlashMap, Rom3};
 use fstart_driver_amd::sp3::fch::{self, FchHw};
-use fstart_driver_amd::sp3::nbio::Nbio;
+use fstart_driver_amd::sp3::soc::steps::{self, Steps};
 use fstart_driver_amd::sp3::soc::{self, Generation, Identity};
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_uart::ns16550::Ns16550;
@@ -70,131 +65,31 @@ use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
 use crate::board::{Board, Gpio, Policy};
-use crate::hw::{self, Pci, PrimaryFch, Tsc, msr, post};
 use crate::layout::{self, Span};
 use crate::memory::{self, TopOfMemory};
-use crate::pci::NonPci;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
+use fstart_driver_amd::sp3::soc::hw::{self, PrimaryFch, Tsc, msr, post};
 
 mod handoff;
-#[cfg(feature = "naples")]
-pub(crate) mod naples;
 mod options;
-#[cfg(feature = "naples")]
-pub use naples::Silicon as NaplesSilicon;
-#[cfg(any(feature = "rome", feature = "milan"))]
-pub(crate) mod sp3;
-#[cfg(any(feature = "rome", feature = "milan"))]
-pub use sp3::Silicon as RomeMilanSilicon;
 mod tpm;
+
+#[cfg(feature = "naples")]
+pub use fstart_driver_amd::sp3::soc::naples::Silicon as NaplesSilicon;
+#[cfg(any(feature = "rome", feature = "milan"))]
+pub use fstart_driver_amd::sp3::soc::rome_milan::Silicon as RomeMilanSilicon;
 
 #[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
 compile_error!("a stage build enables at least one of naples, rome, milan");
 
-/// The silicon steps of one family, in flow order: [`naples`] (DF2, an
-/// NBIO and SMU V9 per die) and [`sp3`] (DF3, SMU V11 per IOD; Rome and
-/// Milan). Each module implements them as free functions of the same
-/// names, bound by [`steps!`].
-pub(crate) trait Steps: Sized {
-    /// The DF version's rule layout.
-    type DfLayout: Version;
-    fn df_init(ctx: &mut Ctx);
-    fn nbio_early(ctx: &mut Ctx) -> Self;
-    fn smu_init(ctx: &mut Ctx, si: &mut Self);
-    fn fch_secondaries(ctx: &mut Ctx, si: &Self);
-    fn dxio(ctx: &mut Ctx, si: &Self, engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>);
-    fn fch_env(ctx: &Ctx, si: &Self);
-    fn mp<B: Board>(ctx: &mut Ctx, si: &Self) -> MpHandle;
-    fn pci_pre(ctx: &mut Ctx, si: &mut Self);
-    fn pci_post(ctx: &Ctx, si: &Self);
-    fn fch_late(ctx: &Ctx, si: &Self);
-    fn usb_buses(ctx: &Ctx, si: &Self) -> [u8; 8];
-    fn usb_bus_count(ctx: &Ctx) -> u8;
-    /// NUMA domains for SRAT/SLIT/MSCT and `_PXM`; `None` with one domain.
-    fn numa(ctx: &Ctx, si: &Self) -> Option<NumaPlan>;
-    /// Every present NBIO, physical order.
-    fn nbios(&self) -> &[Nbio<Pci>];
+/// Arm (or park) the AP path of the reset entry, which the SMU releases
+/// the APs into.
+fn route_aps(route: crate::entry::ApRoute) {
+    #[cfg(all(target_os = "none", feature = "bundle-stage"))]
+    crate::entry::set_ap_route(route);
+    #[cfg(not(all(target_os = "none", feature = "bundle-stage")))]
+    let _ = route;
 }
-
-/// The SMU-served CPPC PCC region (`smu::v11::cppc`).
-pub(crate) struct Cppc {
-    pub base: u64,
-    pub smu_bar: u64,
-    pub info: fstart_driver_amd::smu::v11::CppcInfo,
-    pub lowest_mhz: u32,
-    pub nominal_mhz: u32,
-    /// APIC ID of each local PCC slot (this socket's PPTable CPPC map).
-    pub slots: Vec<u32>,
-}
-
-/// NUMA domains as ACPI needs them.
-pub(crate) struct NumaPlan {
-    /// Socket of each proximity domain.
-    pub domains: Vec<u8>,
-    /// DRAM `(base, end, domain)`.
-    pub memory: Vec<(u64, u64, u32)>,
-    /// Domain of each thread, in [`Ctx::apic_ids`] order.
-    pub cpus: Vec<u32>,
-    /// Domain of each root bridge, in topology order.
-    pub root_bridges: Vec<u32>,
-}
-
-/// Implement [`Steps`] for a silicon module's `Silicon` with the module's
-/// free functions.
-macro_rules! steps {
-    () => {
-        impl super::Steps for Silicon {
-            type DfLayout = DfVersion;
-            fn df_init(ctx: &mut Ctx) {
-                df_init(ctx)
-            }
-            fn nbio_early(ctx: &mut Ctx) -> Self {
-                nbio_early(ctx)
-            }
-            fn smu_init(ctx: &mut Ctx, si: &mut Self) {
-                smu_init(ctx, si)
-            }
-            fn fch_secondaries(ctx: &mut Ctx, si: &Self) {
-                fch_secondaries(ctx, si)
-            }
-            fn dxio(
-                ctx: &mut Ctx,
-                si: &Self,
-                engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
-            ) {
-                dxio(ctx, si, engines)
-            }
-            fn fch_env(ctx: &Ctx, si: &Self) {
-                fch_env(ctx, si)
-            }
-            fn mp<B: Board>(ctx: &mut Ctx, si: &Self) -> MpHandle {
-                mp::<B>(ctx, si)
-            }
-            fn pci_pre(ctx: &mut Ctx, si: &mut Self) {
-                pci_pre(ctx, si)
-            }
-            fn pci_post(ctx: &Ctx, si: &Self) {
-                pci_post(ctx, si)
-            }
-            fn fch_late(ctx: &Ctx, si: &Self) {
-                fch_late(ctx, si)
-            }
-            fn usb_buses(ctx: &Ctx, si: &Self) -> [u8; 8] {
-                usb_buses(ctx, si)
-            }
-            fn usb_bus_count(ctx: &Ctx) -> u8 {
-                usb_bus_count(ctx)
-            }
-            fn numa(ctx: &Ctx, si: &Self) -> Option<super::NumaPlan> {
-                numa(ctx, si)
-            }
-            fn nbios(&self) -> &[fstart_driver_amd::sp3::nbio::Nbio<Pci>] {
-                &self.nbios
-            }
-        }
-    };
-}
-use steps;
 
 /// Halt after logging a failed step; the POST code of the step stays on
 /// port 80h.
@@ -215,15 +110,6 @@ impl<T, E> OrHalt<T> for Result<T, E> {
     }
 }
 
-/// DXIO training, halting with the error's details logged.
-pub(crate) fn dxio_or_halt(result: Result<(), fstart_driver_amd::dxio::DxioError>) {
-    if let Err(e) = result {
-        let (what, a, b) = e.parts();
-        fstart_log::error!("sp3: DXIO error {} ({:#x}, {:#x})", what, a, b);
-        fail("DXIO training");
-    }
-}
-
 impl<T> OrHalt<T> for Option<T> {
     fn or_halt(self, step: &str) -> T {
         self.unwrap_or_else(|| fail(step))
@@ -236,31 +122,10 @@ pub(crate) fn step(code: u8, name: &str) {
     fstart_log::info!("sp3: [{:#x}] {}", code, name);
 }
 
-/// Physically contiguous, identity-mapped DRAM from the stage heap (inside
-/// the reserved early region, so it stays the firmware's after handoff):
-/// DMA buffers and tables the SMU/PSP keep using.
-pub(crate) fn dma_alloc(size: usize, align: usize) -> &'static mut [u8] {
-    let layout = core::alloc::Layout::from_size_align(size, align).or_halt("DMA layout");
-    // SAFETY: nonzero size; never freed; zeroed before use.
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if ptr.is_null() {
-        fail("DMA allocation");
-    }
-    // SAFETY: fresh allocation of `size` bytes.
-    unsafe { core::slice::from_raw_parts_mut(ptr, size) }
-}
-
-/// State the steps hand on.
+/// What the flow hands from phase to phase: the silicon steps' state
+/// ([`fstart_driver_amd::sp3::soc::Ctx`]) and the flow's own.
 pub(crate) struct Ctx {
-    pub generation: Generation,
-    pub identity: Identity,
-    pub timer: Tsc,
-    pub pci: Pci,
-    /// The PCI segment, as the allocator, ACPI and the payload see it.
-    pub pci_root: PciRootInfo,
-    pub fch: PrimaryFch,
-    pub resume: bool,
-    pub policy: Policy,
+    pub soc: soc::Ctx,
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     pub ffs: Span,
     /// The FFS's flash offset, for the payload's settings storage.
@@ -271,22 +136,8 @@ pub(crate) struct Ctx {
     pub nvram: Option<&'static [u8]>,
     /// The outcome of every option knob resolved so far.
     pub options: fstart_options::Report,
-    pub apob: Apob<'static>,
-    pub tops: TopOfMemory,
     pub tseg: Span,
     pub e820: E820State,
-    pub df: Df<Pci>,
-    pub topology: Topology,
-    pub plan: Plan,
-    /// Non-PCI MMIO of each root bridge, physical order.
-    pub non_pci: heapless::Vec<NonPci, MAX_ROOT_BRIDGES>,
-    pub phys_addr_bits: u8,
-    /// Socket 0's (Naples: die 0's) PSP BAR.
-    pub psp_bar: u64,
-    /// APIC IDs of every enabled thread, BSP first (MADT order).
-    pub apic_ids: Vec<u32>,
-    /// CPPC through the SMU, when the SMU reports it enabled.
-    pub cppc: Vec<Cppc>,
     pub smm: Option<crate::smm::SmmConfig>,
     pub rsdp: Option<u64>,
     pub smbios: Option<u64>,
@@ -321,10 +172,10 @@ impl<S: Steps> Silicon for S {}
 /// with each; a build carries only the families its features enable.
 pub enum Start<B> {
     #[cfg(feature = "naples")]
-    Naples(Identified<B, naples::Silicon>),
+    Naples(Identified<B, NaplesSilicon>),
     /// Rome and Milan share the SP3 steps (Milan deltas inline).
     #[cfg(any(feature = "rome", feature = "milan"))]
-    RomeMilan(Identified<B, sp3::Silicon>),
+    RomeMilan(Identified<B, RomeMilanSilicon>),
 }
 
 /// Identify the CPU and bring up ECAM. A CPU this build does not carry
@@ -378,7 +229,8 @@ impl<B: Board, S: Silicon> Identified<B, S> {
     /// Socket 0's FCH reset tasks with the board's silicon `policy`.
     pub fn init_fch(self, policy: Policy) -> Early<B, S> {
         step(0x11, "FCH reset tasks");
-        let resume = fch_reset(&self.fch, self.generation(), &policy);
+        let resume = steps::fch_reset(&self.fch, self.generation(), &policy)
+            .unwrap_or_else(|what| fail(what));
         Early {
             identity: self.identity,
             pci_root: self.pci_root,
@@ -491,43 +343,25 @@ impl<B: Board, S: Silicon> Early<B, S> {
         cache_ram(&regions);
 
         let mut ctx = Ctx {
-            generation,
-            identity,
-            timer,
-            pci: Pci::default(),
-            pci_root,
-            fch,
-            resume: false,
-            policy,
+            soc: soc::Ctx::new(
+                identity,
+                timer,
+                pci_root,
+                fch,
+                policy,
+                apob,
+                DramTops {
+                    tom: tops.tom,
+                    tom2: tops.tom2,
+                },
+            ),
             ffs,
             #[cfg(feature = "payload-uefi")]
             ffs_offset,
             nvram,
             options,
-            apob,
-            tops,
             tseg,
             e820,
-            df: Df::new(Pci::default()),
-            topology: Topology {
-                generation,
-                sockets: 0,
-                nodes: heapless::Vec::new(),
-                root_bridges: heapless::Vec::new(),
-            },
-            plan: Plan {
-                mmio: heapless::Vec::new(),
-                io: heapless::Vec::new(),
-                root_bridges: heapless::Vec::new(),
-                above_ecam_too_small: false,
-                below_ecam_too_small: false,
-                above_ecam: 0,
-            },
-            non_pci: heapless::Vec::new(),
-            phys_addr_bits: 0,
-            psp_bar: 0,
-            apic_ids: Vec::new(),
-            cppc: Vec::new(),
             smm: None,
             rsdp: None,
             smbios: None,
@@ -539,16 +373,16 @@ impl<B: Board, S: Silicon> Early<B, S> {
         }
 
         step(0x20, "DF topology and maps");
-        data_fabric::<S>(&mut ctx);
+        steps::data_fabric::<S>(&mut ctx.soc).unwrap_or_else(|what| fail(what));
         step(0x21, "DF init");
-        S::df_init(&mut ctx);
+        S::df_init(&mut ctx.soc).unwrap_or_else(|what| fail(what));
 
         step(0x30, "NBIO early");
-        let mut si = S::nbio_early(&mut ctx);
+        let mut si = S::nbio_early(&mut ctx.soc).unwrap_or_else(|what| fail(what));
         step(0x31, "SMU");
-        S::smu_init(&mut ctx, &mut si);
+        S::smu_init(&mut ctx.soc, &mut si).unwrap_or_else(|what| fail(what));
         step(0x32, "FCH secondaries, USB");
-        S::fch_secondaries(&mut ctx, &si);
+        S::fch_secondaries(&mut ctx.soc, &si).unwrap_or_else(|what| fail(what));
 
         Stage {
             machine: Machine {
@@ -622,17 +456,17 @@ pub struct Tables<'a> {
 impl<B: Board, S: Silicon, P> Stage<B, S, P> {
     /// The running CPU's generation.
     pub fn generation(&self) -> Generation {
-        self.machine.ctx.generation
+        self.machine.ctx.soc.generation
     }
 
     /// Socket 0's FCH.
     pub fn fch(&self) -> &PrimaryFch {
-        &self.machine.ctx.fch
+        &self.machine.ctx.soc.fch
     }
 
     /// The calibrated clock, to pace board device transactions.
     pub fn timer(&self) -> &dyn fstart_core::services::Timer {
-        &self.machine.ctx.timer
+        &self.machine.ctx.soc.timer
     }
 
     /// Stop the boot after logging `what`.
@@ -669,7 +503,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Mapped> {
     /// straps), in order, before its GPIO table.
     pub fn read_pads(&self, pads: &[Pad]) -> heapless::Vec<bool, 8> {
         step(0x38, "DXIO");
-        let acpi = self.machine.ctx.fch.acpi();
+        let acpi = self.machine.ctx.soc.fch.acpi();
         pads.iter()
             .map(|pad| {
                 fch::gpio::configure(acpi, pad);
@@ -683,7 +517,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Mapped> {
     /// (BOARD_S8030 §2 steps 3–5), so board enables and resets are in place
     /// when the links train.
     pub fn program_gpio(self, gpio: &Gpio) -> Stage<B, S, Configured> {
-        let acpi = self.machine.ctx.fch.acpi();
+        let acpi = self.machine.ctx.soc.fch.acpi();
         fch::gpio::configure_all(acpi, gpio.early);
         fch::gpio::configure_all(acpi, gpio.table);
         self.into_phase(Configured)
@@ -697,7 +531,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Configured> {
         engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
     ) -> Stage<B, S, Trained> {
         let Machine { ctx, si, .. } = &mut self.machine;
-        S::dxio(ctx, si, engines);
+        S::dxio(&mut ctx.soc, si, engines).unwrap_or_else(|what| fail(what));
         self.into_phase(Trained)
     }
 }
@@ -708,8 +542,8 @@ impl<B: Board, S: Silicon> Stage<B, S, Trained> {
     pub fn init_chipset(self) -> Stage<B, S, Chipset> {
         let Machine { ctx, si, .. } = &self.machine;
         step(0x40, "FCH env");
-        fch_env(ctx);
-        S::fch_env(ctx, si);
+        steps::fch_env(&ctx.soc);
+        S::fch_env(&ctx.soc, si).unwrap_or_else(|what| fail(what));
 
         step(0x48, "boot media");
         handoff::mount_boot_media(ctx);
@@ -722,7 +556,14 @@ impl<B: Board, S: Silicon> Stage<B, S, Chipset> {
     pub fn start_cpus(mut self) -> Stage<B, S, Cpus> {
         let Machine { ctx, si, .. } = &mut self.machine;
         step(0x50, "MP and CCX");
-        let mp = S::mp::<B>(ctx, si);
+        let mp = S::mp(
+            &mut ctx.soc,
+            si,
+            B::MAX_CPUS,
+            fstart_stage::microcode_blob(),
+            &route_aps,
+        )
+        .unwrap_or_else(|what| fail(what));
 
         step(0x58, "SMM");
         install_smm(ctx, si, &mp, B::BMC_SX_NOTIFY);
@@ -735,9 +576,9 @@ impl<B: Board, S: Silicon> Stage<B, S, Cpus> {
     pub fn scan_bus(mut self) -> Stage<B, S, Enumerated> {
         let Machine { ctx, si, .. } = &mut self.machine;
         step(0x60, "PCI enumeration");
-        S::pci_pre(ctx, si);
+        S::pci_pre(&mut ctx.soc, si).unwrap_or_else(|what| fail(what));
         let pci = crate::flow::enumerate(ctx);
-        S::pci_post(ctx, si);
+        S::pci_post(&ctx.soc, si).unwrap_or_else(|what| fail(what));
         let Stage {
             machine,
             phase: Cpus { mp },
@@ -800,7 +641,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Published> {
             ..
         } = self;
         step(0x80, "ReadyToBoot");
-        ready_to_boot(&ctx, &si);
+        steps::ready_to_boot(&ctx.soc, &si).unwrap_or_else(|what| fail(what));
 
         step(0x90, "payload");
         if !fstart_arch::x86::mp::park_aps_for_payload() {
@@ -808,30 +649,6 @@ impl<B: Board, S: Silicon> Stage<B, S, Published> {
         }
         handoff::boot(ctx, pci, console)
     }
-}
-
-/// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns
-/// whether this is an S3 resume.
-#[cfg_attr(not(any(feature = "rome", feature = "milan")), allow(unused_variables))]
-fn fch_reset(fch: &PrimaryFch, generation: Generation, policy: &Policy) -> bool {
-    use fch::common::reset;
-    reset::prelim(fch, generation);
-    reset::ab_bar(fch);
-    fch::spi::reset(fch, generation, &fch::spi::SpiPolicy::default());
-    reset::hw_acpi(fch, generation);
-    match generation {
-        #[cfg(feature = "naples")]
-        Generation::Naples => fch::taishan::sata::reset(fch, true),
-        #[cfg(any(feature = "rome", feature = "milan"))]
-        Generation::Rome | Generation::Milan => {
-            fch::huashan::sata::reset(fch, generation, &policy.sata[0])
-        }
-        #[allow(unreachable_patterns)]
-        _ => fail("FCH SATA reset"),
-    }
-    fch::lpc::reset(fch, generation);
-    reset::espi(fch, false);
-    reset::resume_sleep_type(fch) == 3
 }
 
 /// With the console up: the BSP BIST and whether the board supports the
@@ -979,18 +796,6 @@ fn bios_directories(
         .ok()
 }
 
-/// The microcode patches of the verified FFS, copied to RAM (the patch
-/// loader reads them at their address).
-pub(crate) fn microcode_candidates() -> Vec<&'static [u8]> {
-    fstart_stage::microcode_blob()
-        .map(|blob| {
-            fstart_amdfw_format::microcode::patches(blob)
-                .map_while(Result::ok)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The APOB from BIOS directory entry 0x61 (PSP_APOB §3.5); logs the ABL
 /// event log and the APCB recovery flag.
 fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'static>, Span) {
@@ -1088,87 +893,11 @@ fn cache_ram(regions: &[Region]) {
     msr().reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
 }
 
-/// DF topology, board bus counts, the MMIO/IO planner and its maps
-/// (SOC_DF §3.3–3.4). Runs before NBIO: every NBIO access goes through a
-/// root bus the DF routes.
-fn data_fabric<S: Steps>(ctx: &mut Ctx) {
-    let mut topology = topology::discover(&ctx.df, ctx.generation).or_halt("DF topology");
-    if let Some(ranges) =
-        plan::plan_buses(&topology.root_bridges, &ctx.policy.df).or_halt("DF bus plan")
-    {
-        sp3_df::program::bus_maps::<S::DfLayout, _>(&ctx.df, &mut topology, &ranges);
-    }
-    ctx.phys_addr_bits = phys_addr_bits(ctx.generation, ctx.policy.ccx.smee);
-    let plan = plan::plan(
-        &plan::Input {
-            tom: ctx.tops.tom,
-            tom2: ctx.tops.tom2.unwrap_or(0),
-            ecam_base: ctx.pci_root.ecam_base,
-            ecam_size: ctx.pci_root.ecam_size(),
-            phys_addr_bits: ctx.phys_addr_bits,
-            root_bridges: &topology.root_bridges,
-            mmio_pairs: <S::DfLayout as Version>::MMIO_PAIRS,
-        },
-        &ctx.policy.df,
-    )
-    .or_halt("DF plan");
-    // SAFETY: the BSP owns every node's DF during the silicon init.
-    let nodes = unsafe { ctx.df.each(&topology.nodes) };
-    program::mmio::<S::DfLayout, _>(&nodes, &plan.mmio);
-    program::io::<S::DfLayout, _>(&nodes, &plan.io);
-    program::vga::<S::DfLayout, _>(&nodes, topology.primary().fabric_id);
-    for rb in &plan.root_bridges {
-        fstart_log::info!(
-            "df: rb {}.{} buses {:#x}-{:#x} mmio {:#x}+{:#x}",
-            rb.socket,
-            rb.index,
-            rb.bus.base,
-            rb.bus.limit,
-            rb.below.base,
-            rb.below.size
-        );
-    }
-    ctx.non_pci = plan.root_bridges.iter().map(NonPci::of).collect();
-    ctx.topology = topology;
-    ctx.plan = plan;
-}
-
-/// CPUID 8000_0008 EAX\[7:0\], minus the memory-encryption reduction
-/// (8000_001F EBX\[11:6\]) where it applies: Rome always, Milan with SMEE
-/// (SOC_DF §3.4).
-fn phys_addr_bits(generation: Generation, smee: bool) -> u8 {
-    let bits = fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff;
-    let reduced = (fstart_arch::x86::cpuid(0x8000_001f).1 >> 6) & 0x3f;
-    let reduce = match generation {
-        Generation::Naples => false,
-        Generation::Rome => true,
-        Generation::Milan => smee,
-    };
-    (bits - if reduce { reduced } else { 0 }) as u8
-}
-
-/// FCH env (DXE) tasks on socket 0 (FCH_SP3 §2.2).
-fn fch_env(ctx: &Ctx) {
-    use fch::common::env;
-    let (fch, generation) = (&ctx.fch, ctx.generation);
-    env::hw_acpi_pre(fch, generation);
-    env::hw_acpi(fch, generation, &ctx.policy.fch_env);
-    fch::lpc::env(fch, generation);
-    env::sd(fch, generation);
-    fch::alink::clock_gating(
-        fch,
-        generation,
-        &fch::alink::AbPolicy::default_for(generation),
-    );
-}
-
-pub(crate) use crate::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
-
 /// Select and reserve scratch pages using the live routing map. This runs
 /// before payload loading and before the immutable SMM config is installed.
 fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
     #[cfg(feature = "rome")]
-    if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
+    if ctx.soc.generation == Generation::Rome && (1..=2).contains(&ctx.soc.topology.sockets) {
         use fstart_driver_amd::{
             df::Target,
             psp::ras,
@@ -1176,26 +905,28 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
             sp3::df::{self, v3},
         };
         let mut config = crate::smm::EinjConfig {
-            sockets: ctx.topology.sockets,
+            sockets: ctx.soc.topology.sockets,
             ..Default::default()
         };
         for socket in 0..config.sockets {
             config.df[usize::from(socket)] = fstart_driver_amd::df::node_address(socket, 4);
             config.buses[usize::from(socket)] = ctx
+                .soc
                 .topology
                 .root_bridges
                 .iter()
                 .find(|r| r.socket == socket && r.index == 0)?
                 .bus_base;
         }
-        let map = df::dram::read::<v3::Df3, _>(&ctx.df, 0, Target::Instance(v3::CCM0));
+        let map = df::dram::read::<v3::Df3, _>(&ctx.soc.df, 0, Target::Instance(v3::CCM0));
         config.targets =
             crate::einj::plan_targets(config.sockets, ctx.e820.entries(), &map.rules, |address| {
                 ras::memory_target(
                     address,
                     config.sockets,
                     |socket, instance, reg| unsafe {
-                        ctx.df
+                        ctx.soc
+                            .df
                             .reg(
                                 socket,
                                 if instance == ras::BROADCAST {
@@ -1208,7 +939,7 @@ fn plan_einj(ctx: &mut Ctx) -> Option<crate::smm::EinjConfig> {
                             .get()
                     },
                     |socket, address| unsafe {
-                        Smn::on_bus(ctx.pci, config.buses[usize::from(socket)]).read32(address)
+                        Smn::on_bus(ctx.soc.pci, config.buses[usize::from(socket)]).read32(address)
                     },
                 )
             });
@@ -1256,12 +987,12 @@ fn install_smm<S: Steps>(
     bmc: Option<crate::smm::SleepNotify>,
 ) {
     let config = crate::smm::SmmConfig {
-        generation: ctx.generation,
-        ecam_base: ctx.pci_root.ecam_base,
-        psp_bar: ctx.psp_bar as u32,
+        generation: ctx.soc.generation,
+        ecam_base: ctx.soc.pci_root.ecam_base,
+        psp_bar: ctx.soc.psp_bar as u32,
         einj: plan_einj(ctx).unwrap_or_default(),
-        usb_buses: S::usb_buses(ctx, si),
-        usb_bus_count: S::usb_bus_count(ctx),
+        usb_buses: S::usb_buses(&ctx.soc, si).unwrap_or_else(|what| fail(what)),
+        usb_bus_count: S::usb_bus_count(&ctx.soc),
         bmc,
     };
     #[cfg(fstart_sp3_has_smm_image)]
@@ -1270,19 +1001,20 @@ fn install_smm<S: Steps>(
         tpm::measure_smm(IMAGE);
         // The handler's page tables map the low 4 GiB only; a PSP BAR
         // above would fault in SMM at SmmInfo, after the lock.
-        if ctx.psp_bar == 0 || ctx.psp_bar >= crate::memory::FOUR_GIB {
+        if ctx.soc.psp_bar == 0 || ctx.soc.psp_bar >= crate::memory::FOUR_GIB {
             fail("PSP BAR for SMM");
         }
         let smi = crate::smm::Sp3Smi {
-            fch: &ctx.fch,
+            fch: &ctx.soc.fch,
             config,
         };
         fstart_arch::x86::cpu::amd::smm::AmdSmm::new("sp3", &smi)
             .install(mp, IMAGE, ctx.tseg.base, ctx.tseg.size as u32)
             .or_halt("SMM install");
-        crate::smm::prepare_psp_smi(&ctx.fch);
-        fch::smi::software_smi(ctx.fch.io(), crate::smm::sw::PSP_SMM_INFO);
+        crate::smm::prepare_psp_smi(&ctx.soc.fch);
+        fch::smi::software_smi(ctx.soc.fch.io(), crate::smm::sw::PSP_SMM_INFO);
         ctx.smm = Some(config);
+        ctx.soc.smm_installed = true;
     }
     #[cfg(not(fstart_sp3_has_smm_image))]
     {
@@ -1302,14 +1034,14 @@ fn install_smm<S: Steps>(
 /// enumerate through an unprogrammed fabric. The allocator keeps them, and
 /// the tables are built from its copy.
 pub(crate) fn enumerate(ctx: &Ctx) -> fstart_pci::PciEcam {
-    let roots: heapless::Vec<fstart_pci::PciRoot, MAX_ROOT_BRIDGES> = (ctx.plan.root_bridges)
+    let roots: heapless::Vec<fstart_pci::PciRoot, MAX_ROOT_BRIDGES> = (ctx.soc.plan.root_bridges)
         .iter()
-        .map(|rb| crate::pci::root(rb, &ctx.pci_root))
+        .map(|rb| crate::pci::root(rb, &ctx.soc.pci_root))
         .collect::<Option<_>>()
         .or_halt("PCI root");
     let mut pci = fstart_pci::PciEcam::new(roots).or_halt("PCI root");
     pci.enumerate_and_allocate().or_halt("PCI enumeration");
-    for (rb, root) in ctx.plan.root_bridges.iter().zip(pci.roots()) {
+    for (rb, root) in ctx.soc.plan.root_bridges.iter().zip(pci.roots()) {
         let buses = root.buses();
         fstart_log::info!(
             "pci: rb {}.{}: {} functions",
@@ -1321,69 +1053,4 @@ pub(crate) fn enumerate(ctx: &Ctx) -> fstart_pci::PciEcam {
         );
     }
     pci
-}
-
-/// ReadyToBoot (SOC_DF §3.7, PSP_APOB §3.4, FCH_SP3 §2.3): FCH late
-/// tasks, DF extended config off, PSP LockDFReg, Milan DRTM off and TPM
-/// establishment reset, BootDone last.
-fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) {
-    use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
-    fch::common::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
-    S::fch_late(ctx, si);
-    sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
-    let psp = psp(ctx);
-    psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))
-        .or_halt("PSP LockDFReg");
-    #[cfg(feature = "milan")]
-    if ctx.generation == Generation::Milan {
-        use fstart_driver_amd::psp::command::{DisableDrtm, ResetTpmEstablishment};
-        psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))
-            .or_halt("PSP DisableDrtm");
-        // SAFETY: the TPM locality-0 page; all-ones means no TPM.
-        let tpm = unsafe { fstart_core::mmio::read32(0xfed4_0000 as *const u32) };
-        if tpm != u32::MAX {
-            psp.send(&ctx.timer, &mut C2pBuffer::new(ResetTpmEstablishment))
-                .or_halt("PSP ResetTpmEstablishment");
-        }
-    }
-    psp.send(&ctx.timer, &mut C2pBuffer::new(BootDone))
-        .or_halt("PSP BootDone");
-}
-
-/// Socket 0's C2P mailbox through its PSP BAR.
-pub(crate) fn psp(
-    ctx: &Ctx,
-) -> fstart_driver_amd::psp::mailbox::Mailbox<fstart_driver_amd::psp::mailbox::MmioTransport> {
-    use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
-    if ctx.psp_bar == 0 {
-        fail("PSP BAR");
-    }
-    // SAFETY: the BAR NBIO programmed; the flow owns the mailbox.
-    Mailbox::new(
-        unsafe { MmioTransport::new(ctx.psp_bar) },
-        ctx.generation.into(),
-    )
-}
-
-/// Every online thread's APIC ID, BSP (CPU 0) first.
-pub(crate) fn collect_apic_ids(mp: &MpHandle) -> Vec<u32> {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    let ids: Vec<AtomicU32> = (0..mp.num_cpus()).map(|_| AtomicU32::new(0)).collect();
-    mp.scope(|s| {
-        s.scatter(&|cpu: u32| {
-            if let Some(slot) = ids.get(cpu as usize) {
-                slot.store(crate::mp::apic_id(), Ordering::Release);
-            }
-        })
-    });
-    ids.iter().map(|i| i.load(Ordering::Acquire)).collect()
-}
-
-/// The FCH IOAPIC (`FEC0_0000h`) gets the generation's ID (ACPI_SMM §3.2).
-pub(crate) fn set_fch_ioapic_id(generation: Generation) {
-    // SAFETY: the FCH IOAPIC is decoded at its fixed address.
-    let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
-    ioapic.set_id(fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(
-        generation,
-    ));
 }

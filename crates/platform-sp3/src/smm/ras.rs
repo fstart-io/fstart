@@ -163,7 +163,7 @@ fn enter_enabled(logical_cpu: u32, generation: Generation) {
     let Some(state) = CPU_STATE.get(logical_cpu as usize) else {
         return;
     };
-    let cpu = crate::hw::msr();
+    let cpu = fstart_driver_amd::sp3::soc::hw::msr();
     let smbase = cpu.reg(SMM_BASE).get() as usize;
     // SAFETY: this thread's locked SMBASE window, entirely identity-mapped.
     let saved = unsafe {
@@ -290,7 +290,7 @@ fn sel(record: &Record) -> SelRecord {
 /// first failure trips a circuit breaker. There is no retry, abort recovery,
 /// SEL-info query or wait for BMC readiness. A late entrant's queued record
 /// may wait until a later SMI; OS handoff never depends on this delivery.
-pub(super) fn flush(policy: &Policy, timer: crate::hw::Tsc) {
+pub(super) fn flush(policy: &Policy, timer: fstart_driver_amd::sp3::soc::hw::Tsc) {
     let Some(transport) = policy.sel.filter(|_| policy.observe_mce) else {
         return;
     };
@@ -298,7 +298,7 @@ pub(super) fn flush(policy: &Policy, timer: crate::hw::Tsc) {
 }
 
 #[inline(never)]
-fn flush_enabled(transport: SelTransport, timer: crate::hw::Tsc) {
+fn flush_enabled(transport: SelTransport, timer: fstart_driver_amd::sp3::soc::hw::Tsc) {
     if SEL_FAILED.load(Ordering::Relaxed) {
         if PROBE.load(Ordering::Acquire) == 1 {
             PROBE.store(3, Ordering::Release);
