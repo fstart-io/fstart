@@ -22,7 +22,7 @@ fn main() -> ! {
     let stage = stage.train_dxio(&mj11::dxio(riser));
     mj11::apply_phy_tuning(&stage.dies()[0]);
     mj11::wait_for_bmc(&stage.gpio(), stage.clock());
-    let stage = stage.init_chipset().start_cpus().scan_bus();
+    let stage = stage.init_chipset(()).start_cpus().scan_bus();
     mj11::program_vendor_gpios(&stage.gpio());
     mj11::set_vga_ssid(&stage.dies()[0]);
     mj11::bmc::post_done(stage.fch(), stage.clock());

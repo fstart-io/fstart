@@ -1512,7 +1512,6 @@ dependencies = [
 name = "fstart-platform-amd"
 version = "0.1.0"
 dependencies = [
- "embedded-hal",
  "embedded-hal-bus",
  "fstart-acpi",
  "fstart-acpi-macros",
@@ -1534,7 +1533,6 @@ dependencies = [
  "sha2 0.10.9",
  "tock-registers",
  "ufmt",
- "zerocopy",
 ]
 
 [[package]]

@@ -124,6 +124,11 @@ impl<T: Width, R: RegisterLongName> Reg<T, R> {
 /// snoop, a debug card).
 pub const POST_CODE: Reg<u8> = Reg::io(0x80);
 
+/// A POST code to the port 80 snoop.
+pub fn post(fch: &Fch<impl Bus>, code: u8) {
+    fch.bus().reg(POST_CODE).set(code);
+}
+
 /// Carries the accesses of the FCH register spaces.
 pub trait Bus {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32;

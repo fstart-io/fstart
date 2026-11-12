@@ -1,94 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native AMD Picasso on the noncar flow.
+//! AMD Picasso on the noncar flow: the reset image's layout, the host
+//! plan, the display and the tables of the SoC whose silicon init is
+//! `fstart_driver_amd::soc::picasso`.
 //!
 //! One PSP-loaded stage runs the native silicon init, MP/SMM, PCI and
 //! ACPI before handing off to the selected payload.
 pub mod acpi;
-#[cfg(all(feature = "bundle", target_os = "none"))]
-mod init;
 use crate::noncar::{
-    self, Ctx, Silicon, Stop,
+    self, Ctx, Devices, Silicon, Stop,
     layout::{Layout, Region},
 };
-use fstart_driver_amd::{
-    ccx::{
-        picasso::{self as cpu, Identity},
-        tsc::Tsc,
-    },
-    fch::{
-        Fch, NativeBus, espi,
-        gpio::{Gpio, Pad, Pull},
-        sandstone::preinit::SpiConfig,
-    },
-    nbio::picasso as nbio,
-    soc::{
-        Soc as _,
-        picasso::{self as soc, EARLY_AOAC, Picasso, UART_AOAC, UART_BASES},
-    },
+pub use fstart_driver_amd::soc::picasso::{
+    Config, FchConfig, GpioInterrupt, I2cBus, I2cDevice, Runtime,
 };
 use fstart_driver_amd::{
-    dxio::Descriptor,
-    fch::{
-        emmc,
-        sandstone::{self, usb},
-    },
+    ccx::picasso as cpu,
+    soc::picasso::{Picasso, State, UART_BASES},
 };
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-#[cfg(all(feature = "bundle", target_os = "none"))]
-pub use init::{Chipset, FchUp, Trained};
-
-/// A board's Picasso configuration: how the board wires the SoC's blocks.
-#[derive(Debug, Clone, Copy)]
-pub struct Config {
-    pub fch: FchConfig,
-    pub pcie: &'static [Descriptor],
-    pub usb: usb::Config,
-    /// The eMMC controller, if the board can have eMMC fitted.
-    pub emmc: Option<emmc::Config>,
-    pub graphics: nbio::gfx::Config,
-    /// FCH I2C controllers and their devices, for the UEFI payload to
-    /// drive and the OS to find in ACPI.
-    pub i2c: &'static [I2cBus],
-}
-
-/// An FCH I2C controller and the devices on it.
-#[derive(Debug, Clone, Copy)]
-pub struct I2cBus {
-    pub controller: usize,
-    pub timing: fstart_driver_amd::fch::i2c::Timing,
-    pub devices: &'static [I2cDevice],
-}
-
-/// An I2C device, possibly one of several fitted alternatives.
-#[derive(Debug, Clone, Copy)]
-pub struct I2cDevice {
-    /// ACPI hardware and compatible IDs, which select the payload's driver.
-    pub ids: &'static [&'static str],
-    pub address: u8,
-    pub interrupt: Option<GpioInterrupt>,
-    /// HID descriptor register of a HID-over-I2C device.
-    pub hid_descriptor_register: Option<u16>,
-}
-
-/// A GPIO interrupt as its pad is configured.
-#[derive(Debug, Clone, Copy)]
-pub enum GpioInterrupt {
-    /// Level-triggered, read from the pad.
-    Level { pin: u8, active_low: bool },
-    /// Edge-triggered, latched in the pad's interrupt status.
-    Edge { pin: u8, falling: bool },
-}
-
-/// The Sandstone FCH setup before and right after the console.
-#[derive(Debug, Clone, Copy)]
-pub struct FchConfig {
-    /// The FCH UART of the console (0-3).
-    pub console_uart: u8,
-    /// SPI ROM read mode and speeds.
-    pub spi: SpiConfig,
-    /// eSPI link to the EC and its pads.
-    pub espi: Option<(espi::Config, &'static [Pad])>,
-}
 
 /// The console on FCH UART `uart`.
 pub const fn console(uart: u8) -> Ns16550Config {
@@ -145,14 +74,18 @@ impl noncar::host::HostSoc for Picasso {
     }
 }
 
+/// `DISABLE_SPI_FLASH_ROM_SHARING`: stop sharing the SPI ROM with the EC.
+/// Boards that need it call it once their early pads are set.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+impl noncar::Stage<Picasso, noncar::FchUp<Picasso>> {
+    pub fn disable_rom_sharing(&self) {
+        fstart_driver_amd::fch::sandstone::legacy::disable_rom_sharing(self.fch().bus());
+    }
+}
+
 impl noncar::Soc for Picasso {
-    const NAME: &'static str = "picasso";
     const CPU_NAME: &'static str = "native-picasso";
     const LAYOUT: Layout = LAYOUT;
-    const ECAM: u64 = soc::ECAM;
-    const ECAM_BUSES: u16 = soc::ECAM_BUSES as u16;
-    /// BIOS directory entry 0x61.
-    const PSP: fstart_driver_amd::psp::Variant = fstart_driver_amd::psp::Variant::Rv;
     const APOB: Region = Region::new(0x0200_1000, 0x1_0000);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
@@ -166,77 +99,35 @@ impl noncar::Soc for Picasso {
         max_dimm_mib: 32 * 1024,
         channels_per_die: 2,
     };
-    type Config = Config;
-    type Identity = Identity;
-    /// The reserved UMA when this part has a GPU.
-    type State = Option<(fstart_driver_amd::apob::Hole, cpu::Silicon)>;
+    const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
 
-    /// The console: ACPI MMIO decode, legacy decode, AOAC power of the
-    /// early devices and the console UART, its pads.
-    fn fch_pre_init(
-        fch: &Fch<NativeBus>,
+    /// The eMMC controller if it is set up, the FCH GPIO controller and the
+    /// board's I2C controllers with the devices behind them.
+    fn acpi_devices(
         config: &Config,
-        clock: Option<Tsc>,
-    ) -> Result<(), &'static str> {
-        let mut delay = clock.ok_or("TSC frequency")?;
-        let uart = config.fch.console_uart;
-        fch.enable_legacy_decode();
-        // Power all common early devices before waiting, then the UART.
-        fch.power_devices(EARLY_AOAC, 10000, &mut delay)
-            .map_err(|_| "AOAC power")?;
-        let aoac = *UART_AOAC.get(usize::from(uart)).ok_or("console UART")?;
-        fch.power_devices(&[aoac], 10000, &mut delay)
-            .map_err(|_| "AOAC power")?;
-        // Range_0 comes out of reset enabled; clear legacy UART aliases.
-        fch.clear_legacy_uart_decode();
-        let pins = match uart {
-            0 => [
-                Pad::native(138, 0, Pull::None),
-                Pad::native(136, 0, Pull::None),
-            ],
-            1 => [
-                Pad::native(143, 0, Pull::None),
-                Pad::native(141, 0, Pull::None),
-            ],
-            2 => [
-                Pad::native(137, 1, Pull::None),
-                Pad::native(135, 1, Pull::None),
-            ],
-            _ => [
-                Pad::native(140, 1, Pull::None),
-                Pad::native(142, 1, Pull::None),
-            ],
-        };
-        // SAFETY: as the flow's FCH: BSP only, before the console.
-        let fch = Fch::new(unsafe { NativeBus::new() }, fch.acpimmio());
-        Gpio::new(fch, Picasso::GPIO_BANK)
-            .configure(&pins, &[])
-            .map_err(|_| "console pads")
+        state: &State,
+    ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
+        let devices = state
+            .emmc
+            .into_iter()
+            .map(|_| acpi::emmc())
+            .collect::<Result<_, _>>()
+            .map_err(|_| "eMMC ACPI")?;
+        let aml = acpi::devices(config.i2c, state.emmc.is_some()).map_err(|_| "ACPI devices")?;
+        Ok((devices, aml))
     }
 
-    fn identify(_: &Fch<NativeBus>, _: &Config, mhz: u32, _: u8) -> Result<Identity, &'static str> {
-        fstart_log::info!("fstart: AMD Picasso cold boot, TSC {} MHz", mhz);
-        let (signature, _, _, _) = fstart_arch::x86::cpuid(1);
-        let (_, extended_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
-        Identity::from_cpuid(signature, extended_ebx, 0).map_err(|_| "CPU identification")
-    }
-
-    fn after_resources(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
-        ctx.fch.acpi_ports(sandstone::ACPI_PORTS);
-    }
-
-    fn ready_to_boot(
+    /// The GPU's video ROM, if this part has a GPU: its framebuffer for the
+    /// payload, and VFCT and `_ROM` for the OS.
+    fn init_display(
         silicon: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
     ) -> Result<(), Stop> {
-        let devices: heapless::Vec<_, 256> = pci.devices().collect();
-        nbio::late::after_enumeration(&ctx.dies[0].smn(), &ctx.dies[0].pci(), &devices);
-        if let Some((uma, kind)) = silicon.state {
+        if let Some((uma, kind)) = silicon.state.uma {
             extern crate alloc;
-            let address = devices
-                .iter()
-                .copied()
+            let address = pci
+                .devices()
                 .find(|&a| {
                     pci.device(a)
                         .is_some_and(|d| d.read8(0x0b) == 3 && d.read16(0) == 0x1002)

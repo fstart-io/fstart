@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD family flows: the PSP-booted ("noncar") SoCs from Family 17h on
-//! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. Each SoC module
-//! implements the flow's [`noncar::Soc`].
+//! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. The silicon
+//! init of a SoC is its driver's (`fstart_driver_amd::soc::Init`), which
+//! the flow's phases call; a SoC module here adds the reset image's layout,
+//! the host plan and the SoC's tables ([`noncar::Soc`]).
 #![no_std]
 extern crate alloc;
 #[cfg(feature = "noncar")]

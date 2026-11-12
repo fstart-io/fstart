@@ -1,100 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Native AMD Zeppelin (EPYC Embedded 3000) on the noncar flow.
+//! AMD Zeppelin (EPYC Embedded 3000) on the noncar flow: the reset image's
+//! layout, the host plan and the tables of the SoC whose silicon init is
+//! `fstart_driver_amd::soc::zeppelin`.
 pub mod acpi;
-#[cfg(all(feature = "bundle", target_os = "none"))]
-mod init;
 pub mod layout;
-pub mod silicon;
-#[cfg(all(feature = "bundle", target_os = "none"))]
-pub use init::{Chipset, FchUp, Trained};
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
-use crate::noncar::{self, Ctx, Silicon, Stop, layout::Region};
-use fstart_driver_amd::cpu::{Package, Revision};
+use crate::noncar::{self, Devices, layout::Region};
+pub use fstart_driver_amd::soc::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
 use fstart_driver_amd::{
-    ccx,
-    dxio::Descriptor,
-    fch::{
-        Fch, NativeBus,
-        early::PowerFailure,
-        taishan::{Devices, irq::Route},
-    },
-    soc::zeppelin::{self as soc, MAX_DIES, Zeppelin},
+    fch::taishan,
+    soc::zeppelin::{self as soc, Zeppelin, silicon::State},
 };
-use silicon::Identity;
-
-/// A board's Zeppelin configuration, by IP block.
-#[derive(Debug, Clone, Copy)]
-pub struct Config {
-    /// Subsystem ID of the FCH, NBIO and PCIe functions.
-    pub subsystem_id: u32,
-    pub ccx: CcxConfig,
-    pub fch: FchConfig,
-    pub dxio: DxioConfig,
-}
-
-/// The cores.
-#[derive(Debug, Clone, Copy)]
-pub struct CcxConfig {
-    /// SYSCFG.SMEE on every thread, as the vendor firmware sets it: the OS
-    /// may use SME (`mem_encrypt=on`) and SEV. Off by default: the PSP's SEV
-    /// firmware keeps its state in flash through the SMM handler's P2C SPI
-    /// services (PSP_ZP §3.5), which fstart doesn't implement, so Linux's
-    /// SEV setup times out (5 s) and disables the PSP driver.
-    pub memory_encryption: bool,
-}
-impl CcxConfig {
-    pub const DEFAULT: Self = Self {
-        memory_encryption: false,
-    };
-}
-impl Default for CcxConfig {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-/// The Taishan FCH.
-#[derive(Debug, Clone, Copy)]
-pub struct FchConfig {
-    /// AC power-loss policy.
-    pub power_failure: PowerFailure,
-    /// FCH devices in use, per die.
-    pub devices: [Devices; MAX_DIES],
-    /// The PCI interrupt router (0xc00/0xc01) table.
-    pub irq_routes: &'static [Route],
-    /// GEVENT pins (bit n = GEVENTn) routed to the board's SMI handler
-    /// (`fstart_driver_amd::fch::smi::PendingSmi::gevents`).
-    pub smi_gevents: u32,
-    /// Spread spectrum on the CG1 PLL, which clocks the PCIe reference
-    /// clocks. On by default, as the vendor Setup default; a board whose
-    /// PCIe devices don't tolerate the spread turns it off.
-    pub spread_spectrum: bool,
-}
-impl FchConfig {
-    pub const DEFAULT: Self = Self {
-        power_failure: PowerFailure::Previous,
-        devices: [Devices {
-            xhci: true,
-            sata: true,
-        }; MAX_DIES],
-        irq_routes: &[],
-        smi_gevents: 0,
-        spread_spectrum: true,
-    };
-}
-impl Default for FchConfig {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-/// The DXIO engines (PCIe, SATA lanes) of each die.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DxioConfig {
-    pub descriptors: [&'static [Descriptor]; MAX_DIES],
-}
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Zeppelin {
@@ -119,12 +37,8 @@ impl noncar::host::HostSoc for Zeppelin {
 }
 
 impl noncar::Soc for Zeppelin {
-    const NAME: &'static str = "zeppelin";
     const CPU_NAME: &'static str = "AMD Zeppelin";
     const LAYOUT: noncar::layout::Layout = layout::LAYOUT;
-    const ECAM: u64 = soc::ECAM;
-    const ECAM_BUSES: u16 = soc::ECAM_BUSES;
-    const PSP: fstart_driver_amd::psp::Variant = fstart_driver_amd::psp::Variant::Zp;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;
@@ -139,44 +53,22 @@ impl noncar::Soc for Zeppelin {
         max_dimm_mib: 64 * 1024,
         channels_per_die: 2,
     };
-    type Config = Config;
-    type Identity = Identity;
-    type State = silicon::State;
+    const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
 
-    fn fch_pre_init(
-        fch: &Fch<NativeBus>,
-        _: &Config,
-        _: Option<ccx::tsc::Tsc>,
-    ) -> Result<(), &'static str> {
-        silicon::fch_pre_init(fch).map_err(|_| "FCH pre-init")
-    }
-
-    fn identify(
-        fch: &Fch<NativeBus>,
+    /// The FCH GPIO controller (AMDI0030) on the IRQ the board routes it
+    /// to, as the vendor DSDT has it: three banks.
+    fn acpi_devices(
         config: &Config,
-        mhz: u32,
-        dies: u8,
-    ) -> Result<Identity, &'static str> {
-        silicon::fch_early_init(fch, config);
-        let (ext_eax, ext_ebx, _, _) = fstart_arch::x86::cpuid(0x8000_0001);
-        let package = Package::from_cpuid(ext_ebx);
-        let revision = Revision::from_signature(ext_eax)
-            .ok()
-            .filter(|revision| revision.zp());
-        fstart_log::info!(
-            "fstart: AMD Zeppelin {}, package {}, TSC {} MHz",
-            revision.map_or("unknown", Revision::name),
-            package.name(),
-            mhz
-        );
-        let revision = revision
-            .filter(|_| package.dies() == Some(dies) && mhz != 0)
-            .ok_or("CPU identification")?;
-        Ok(Identity { revision, package })
-    }
-
-    fn after_resources(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
-        silicon::after_resources(ctx.fch);
+        _: &State,
+    ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
+        let aml = config
+            .fch
+            .irq_routes
+            .iter()
+            .find(|route| route.source == taishan::irq::GPIO)
+            .and_then(|route| fstart_driver_amd::fch::aml::gpio(route.apic, 0x300).ok())
+            .unwrap_or_default();
+        Ok((Devices::new(), aml))
     }
 
     /// The dies of an SP4 as AmdFabricZpDxe reports them for SRAT.
@@ -197,24 +89,5 @@ impl noncar::Soc for Zeppelin {
                 })
                 .collect(),
         )
-    }
-
-    /// The vendor firmware's ReadyToBoot.
-    /// The vendor firmware's ReadyToBoot, up to the board's own work.
-    fn ready_to_boot(
-        _: &mut Silicon<Self>,
-        ctx: &Ctx<'_, Self>,
-        pci: &fstart_pci::PciEcam,
-    ) -> Result<(), Stop> {
-        let sata = pci
-            .devices()
-            .find(|a| pci.device(*a).is_some_and(|d| d.read32(0) == 0x7901_1022));
-        silicon::ready_to_boot(ctx.dies, ctx.fch, sata);
-        Ok(())
-    }
-
-    /// The end of the vendor ReadyToBoot, after the board's work.
-    fn end_of_post(_: &mut Silicon<Self>, ctx: &Ctx<'_, Self>) {
-        silicon::end_of_post(ctx.dies);
     }
 }

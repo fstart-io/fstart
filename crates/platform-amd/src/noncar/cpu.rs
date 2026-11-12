@@ -78,10 +78,10 @@ impl<M: Family, F> Fam17hCpu<M, F> {
     }
 }
 
-impl<M, F, E> CpuDriver for Fam17hCpu<M, F>
+impl<M, F> CpuDriver for Fam17hCpu<M, F>
 where
     M: Family + Send + Sync,
-    F: Fn(&NativeMsr, Thread) -> Result<(), E> + Send + Sync,
+    F: Fn(&NativeMsr, Thread) -> bool + Send + Sync,
 {
     fn name(&self) -> &'static str {
         self.name
@@ -113,7 +113,7 @@ where
         self.locked(|| {
             // SAFETY: serialized MSR access on a CPU the driver matched.
             let msr = unsafe { NativeMsr::new() };
-            let ok = (self.init)(&msr, Thread::current()).is_ok();
+            let ok = (self.init)(&msr, Thread::current());
             super::mp::hide_fixed_dram_routing(&msr);
             ok
         });

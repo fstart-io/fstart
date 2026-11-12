@@ -8,6 +8,7 @@
 use fstart_board_google_vilboz::{self as vilboz, Board};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
+use fstart_platform_amd::picasso::Runtime;
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
@@ -25,8 +26,11 @@ fn main() -> ! {
     stage.disable_rom_sharing();
     let cbi = vilboz::after_fch(&gpio, &stage.clock());
     stage
-        .train_dxio()
-        .init_chipset(cbi.native_power(), cbi.has_emmc())
+        .train_dxio(())
+        .init_chipset(Runtime {
+            power: cbi.native_power(),
+            emmc_fitted: cbi.has_emmc(),
+        })
         .start_cpus()
         .scan_bus()
         .ready_to_boot()

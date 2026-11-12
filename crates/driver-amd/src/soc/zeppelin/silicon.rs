@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Zeppelin silicon init. Generic over the register
-//! transports, so the host model of the dies can log the whole sequence
-//! (`tests.rs`). It is split where the vendor board PEIMs run, so the
-//! board's `main` does that work between the steps.
-use super::Config;
-use embedded_hal::delay::DelayNs;
-use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_core::services::{Timer, TimerDelay};
-use fstart_driver_amd::cpu::{Package, Revision};
-use fstart_driver_amd::{
+//! transports, so the host model of the dies can log the whole sequence.
+//! It is split where the vendor board PEIMs run, so a board does that work
+//! between the steps ([`super::init`] binds them to [`crate::soc::Init`]).
+use super::{self as soc, Config, Die, MAX_DIES};
+use crate::cpu::{Package, Revision};
+use crate::{
     apob::Apob,
     ccx::{self, CacWeights, Thread},
     df, dxio,
-    fch::{Bus, Fch, early, taishan},
+    fch::{Bus, Fch, early, post, taishan},
     nbio::{self, iohc, iommu},
     psp,
     smu::v9 as smu,
-    soc::zeppelin::{self as soc, Die, MAX_DIES},
 };
+use embedded_hal::delay::DelayNs;
+use fstart_arch::x86::cpu::msr::MsrAccess;
+use fstart_core::services::{Timer, TimerDelay};
 use fstart_log::Hex;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use zerocopy::IntoBytes;
@@ -61,8 +60,6 @@ impl State {
 pub struct SmuPages(pub [[u8; 4096]; 2 * MAX_DIES]);
 #[repr(C, align(64))]
 pub struct SmuPolicy(pub [u8; 0x80]);
-
-pub use crate::noncar::post;
 
 /// FCH setup before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
 pub fn fch_pre_init(fch: &Fch<impl Bus>) -> Result<(), early::Error> {

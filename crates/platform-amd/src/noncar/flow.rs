@@ -13,20 +13,25 @@
 //! let stage = noncar::start::<Board>();           // ECAM, FCH pre-init
 //! // board: LPC decodes for its console
 //! let stage = stage.console(&CONSOLE, console)    // memory map, FFS
-//!     .init_fch();                                // the SoC's: DF, FCH
+//!     .init_fch();                                // DF, FCH
 //! // board: devices on the FCH's buses, early pads
-//! let stage = stage.train_dxio(/* SoC input */);  // the SoC's
+//! let stage = stage.train_dxio(/* lanes */);
 //! // board: links are trained
-//! let stage = stage.init_chipset(/* SoC input */) // the SoC's
-//!     .start_cpus()                               // the SoC's: MP, SMM
+//! let stage = stage.init_chipset(/* what the board found */)
+//!     .start_cpus()                               // MP, SMM
 //!     .scan_bus();
 //! // board: after PCI enumeration
 //! let stage = stage.ready_to_boot();
 //! // board: right before the tables
 //! stage.emit_tables(&SMBIOS, board_acpi).boot()
 //! ```
+//!
+//! What the silicon needs in each phase is the SoC driver's
+//! ([`fstart_driver_amd::soc::Init`]); the phases are the same for every
+//! SoC.
 use super::{
-    Board, Ctx, Memory, Silicon, Soc, Stop, acpi, boot, layout::Region, memory, pci, post, psp,
+    Board, Ctx, Memory, Silicon, Soc, Stop, acpi, boot, layout::Region, memory, mp, pci, post, psp,
+    smm,
 };
 use crate::acpi::BoardAcpi;
 use fstart_arch::x86::{cpu::msr::NativeMsr, ioapic::IoApic};
@@ -254,16 +259,23 @@ pub(crate) struct Machine<S: Soc> {
     e820: E820State,
 }
 
-/// The stage after the console, in phase `P`. The SoC modules add their
-/// silicon phases (`init_fch` .. `start_cpus`); the phases from
-/// [`Cpus`] on are shared.
+/// The stage after the console, in phase `P`.
 pub struct Stage<S: Soc, P> {
-    pub(crate) machine: Machine<S>,
-    pub(crate) phase: P,
+    machine: Machine<S>,
+    phase: P,
 }
 
 /// The console is up, DRAM is mapped and cached, the FFS is mounted.
 pub struct Mapped;
+
+/// The FCH's buses are up ([`fstart_driver_amd::soc::Init::init_fch`]).
+pub struct FchUp<S: Soc>(S::FchUp);
+
+/// The links are trained.
+pub struct Trained<S: Soc>(S::Trained);
+
+/// The silicon is ready for MP.
+pub struct Chipset<S: Soc>(S::Chipset);
 
 /// The silicon init is done: MP, SMM and what the SoC reports for the
 /// tables.
@@ -298,49 +310,41 @@ struct Pci {
 }
 
 impl<S: Soc> Machine<S> {
+    /// What the SoC's steps work on.
     fn ctx(&self) -> Ctx<'_, S> {
         Ctx {
+            config: self.config,
+            identity: self.identity,
             dies: &self.dies,
             fch: &self.fch,
             msr: &self.msr,
             clock: self.clock,
+            memory: Memory {
+                top_mem: self.top_mem,
+                top_mem2: self.top_mem2,
+                apob: self.apob.as_ref(),
+                tseg: self.tseg,
+                tseg_size: S::TSEG_SIZE,
+                e820: &self.e820,
+            },
         }
     }
 }
 
 impl<S: Soc, P> Stage<S, P> {
-    /// What the silicon phases work on.
-    pub(crate) fn ctx(&self) -> Ctx<'_, S> {
-        self.machine.ctx()
-    }
-
-    /// The same machine in phase `next`.
-    pub(crate) fn into_phase<Q>(self, next: Q) -> Stage<S, Q> {
-        Stage {
-            machine: self.machine,
-            phase: next,
-        }
-    }
-
     /// The board's configuration of the SoC.
     pub fn config(&self) -> &'static S::Config {
         self.machine.config
     }
 
-    /// What [`Soc::identify`] found.
+    /// What the SoC's CPU identification found.
     pub fn identity(&self) -> S::Identity {
         self.machine.identity
     }
 
     /// The memory map from the APOB and the CPU's TOP_MEM/TOM2.
     pub fn memory(&self) -> Memory<'_> {
-        Memory {
-            top_mem: self.machine.top_mem,
-            top_mem2: self.machine.top_mem2,
-            apob: self.machine.apob.as_ref(),
-            tseg: self.machine.tseg,
-            e820: &self.machine.e820,
-        }
+        self.machine.ctx().memory
     }
 
     /// The dies, die 0 first.
@@ -355,17 +359,12 @@ impl<S: Soc, P> Stage<S, P> {
 
     /// The GPIO pads of die 0.
     pub fn gpio(&self) -> Gpio<NativeBus> {
-        self.ctx().gpio()
+        self.machine.ctx().gpio()
     }
 
     /// The calibrated clock, to pace board device transactions.
     pub fn clock(&self) -> Tsc {
         self.machine.clock
-    }
-
-    /// The verified microcode patches of the FFS, for MP init.
-    pub fn microcode(&self) -> Option<&'static [u8]> {
-        fstart_stage::microcode_blob()
     }
 
     /// Stop the boot with `why`.
@@ -379,9 +378,107 @@ impl<S: Soc, P> Stage<S, P> {
     }
 }
 
+impl<S: Soc> Stage<S, Mapped> {
+    /// The silicon up to the FCH's buses; the board's devices on them and
+    /// its early pads come next.
+    pub fn init_fch(self) -> Stage<S, FchUp<S>> {
+        let up = S::init_fch(&self.machine.ctx()).unwrap_or_else(|what| fail::<S>(what));
+        Stage {
+            machine: self.machine,
+            phase: FchUp(up),
+        }
+    }
+}
+
+impl<S: Soc> Stage<S, FchUp<S>> {
+    /// Link training of the board's `lanes`; board work that needs trained
+    /// links comes next.
+    pub fn train_dxio(self, lanes: S::Lanes<'_>) -> Stage<S, Trained<S>> {
+        let Stage {
+            machine,
+            phase: FchUp(up),
+        } = self;
+        let trained =
+            S::train_dxio(&machine.ctx(), up, lanes).unwrap_or_else(|what| fail::<S>(what));
+        Stage {
+            machine,
+            phase: Trained(trained),
+        }
+    }
+}
+
+impl<S: Soc> Stage<S, Trained<S>> {
+    /// The rest of the silicon init before MP, with what the board learned
+    /// at run time since the FCH came up (`runtime`).
+    pub fn init_chipset(self, runtime: S::Runtime) -> Stage<S, Chipset<S>> {
+        let Stage {
+            machine,
+            phase: Trained(trained),
+        } = self;
+        let chipset = S::init_chipset(&machine.ctx(), trained, runtime)
+            .unwrap_or_else(|what| fail::<S>(what));
+        Stage {
+            machine,
+            phase: Chipset(chipset),
+        }
+    }
+}
+
+impl<S: Soc> Stage<S, Chipset<S>> {
+    /// MP init with the SoC's CCX init on every CPU, SMM with the PSP's SMM
+    /// info, then what the SoC does before PCI enumeration.
+    pub fn start_cpus(self) -> Stage<S, Cpus<S>> {
+        let Stage {
+            machine,
+            phase: Chipset(chipset),
+        } = self;
+        let silicon = start_cpus(&machine, chipset).unwrap_or_else(|what| fail::<S>(what));
+        Stage {
+            machine,
+            phase: Cpus(silicon),
+        }
+    }
+}
+
+fn start_cpus<S: Soc>(
+    machine: &Machine<S>,
+    chipset: S::Chipset,
+) -> Result<Silicon<S>, &'static str> {
+    let ctx = machine.ctx();
+    let policy = S::cpu_policy(&ctx, &chipset)?;
+    let cpus = mp::start::<S>(
+        ctx.dies,
+        fstart_stage::microcode_blob(),
+        move |msr, thread| S::cpu_init(&policy, msr, thread),
+        ctx.clock,
+    )?;
+    let mut state = S::cpus_up(&ctx, chipset)?;
+    let tseg = smm::install(
+        S::NAME,
+        &cpus.mp,
+        &S::smi(&ctx),
+        ctx.memory.tseg,
+        S::TSEG_SIZE,
+    )?;
+    // The PSP gets the SMM info now, LockDFReg at ready-to-boot and
+    // BootDone right before the payload.
+    let psp = psp::notify_smm(S::psp_bar(&state), S::PSP, &tseg, &ctx.clock);
+    S::before_enumeration(&ctx, &mut state)?;
+    let (devices, aml) = S::acpi_devices(ctx.config, &state)?;
+    Ok(Silicon {
+        cpus,
+        psp,
+        devices,
+        aml,
+        tables: alloc::vec::Vec::new(),
+        framebuffer: None,
+        state,
+    })
+}
+
 impl<S: Soc> Stage<S, Cpus<S>> {
     /// PCI enumeration and resource allocation, write-combining for the
-    /// framebuffer apertures, then [`Soc::after_resources`].
+    /// framebuffer apertures, then what the SoC does after the allocation.
     pub fn scan_bus(self) -> Stage<S, Enumerated<S>> {
         let Stage {
             machine,
@@ -408,7 +505,7 @@ impl<S: Soc> Stage<S, Cpus<S>> {
                 fail::<S>("framebuffer cache policy");
             }
         }
-        S::after_resources(&mut silicon, &ctx);
+        S::after_resources(&ctx, &mut silicon.state);
         let pci = Pci { ecam };
         Stage {
             machine,
@@ -418,8 +515,9 @@ impl<S: Soc> Stage<S, Cpus<S>> {
 }
 
 impl<S: Soc> Stage<S, Enumerated<S>> {
-    /// The IOAPICs, then [`Soc::ready_to_boot`]. Graphics POST may patch the
-    /// ROM and contribute its ACPI; everything the tables describe is ready
+    /// The IOAPICs, the SoC's ready-to-boot, then the display
+    /// ([`Soc::init_display`]). Graphics POST may patch the ROM and
+    /// contribute its ACPI; everything the tables describe is ready
     /// afterwards.
     pub fn ready_to_boot(self) -> Stage<S, Ready<S>> {
         let Stage {
@@ -428,7 +526,10 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
         } = self;
         let ctx = machine.ctx();
         ioapics(&ctx, &silicon);
-        if let Err(why) = S::ready_to_boot(&mut silicon, &ctx, &pci.ecam) {
+        if let Err(what) = S::ready_to_boot(&ctx, &mut silicon.state, &pci.ecam) {
+            fail::<S>(what);
+        }
+        if let Err(why) = S::init_display(&mut silicon, &ctx, &pci.ecam) {
             stop::<S>(why);
         }
         Stage {
@@ -439,9 +540,8 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
 }
 
 impl<S: Soc> Stage<S, Ready<S>> {
-    /// Finish the SoC's ready-to-boot ([`Soc::end_of_post`]), then install
-    /// ACPI with the board's contribution `board` and SMBIOS with its
-    /// `identity`.
+    /// Finish the SoC's ready-to-boot, then install ACPI with the board's
+    /// contribution `board` and SMBIOS with its `identity`.
     pub fn emit_tables(
         self,
         identity: &crate::acpi::SmbiosIdentity<'_>,
@@ -452,7 +552,7 @@ impl<S: Soc> Stage<S, Ready<S>> {
             phase: Ready { mut silicon, pci },
         } = self;
         let ctx = machine.ctx();
-        S::end_of_post(&mut silicon, &ctx);
+        S::end_of_post(&ctx, &mut silicon.state);
         let hosts: Vec<acpi::HostBridge, { super::MAX_DIES }> = pci
             .ecam
             .roots()
@@ -462,11 +562,13 @@ impl<S: Soc> Stage<S, Ready<S>> {
         board.tables.append(&mut silicon.tables);
         board.devices.extend(silicon.devices.iter().cloned());
         board.sb_aml.extend_from_slice(&silicon.aml);
+        let ioapics: [u32; super::MAX_DIES] =
+            core::array::from_fn(|die| S::ioapic(&silicon.state, die as u8));
         let rsdp = acpi::install(
-            silicon.acpi,
+            S::ACPI,
             ctx.dies,
             &hosts,
-            &silicon.ioapics,
+            &ioapics,
             S::pci_root(),
             &silicon.cpus.apic_ids,
             &board,
@@ -530,7 +632,7 @@ impl<S: Soc> Stage<S, Published<S>> {
         description.console = Some(machine.console);
         description.acpi = rsdp.map(AcpiTables::at);
         let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(
-            silicon.acpi.ports.control,
+            S::ACPI.ports.control,
             crate::acpi::S5_SLEEP_TYPE,
         )];
         description.acpi_s5 = &acpi_s5;
@@ -556,8 +658,12 @@ fn enumerate<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) -> PciEcam {
         .dies
         .iter()
         .map(|die| {
-            let non_pci = silicon.reserved_mmio[usize::from(die.index())];
-            pci::root(&map::root_complex(die)?, ecam_region, non_pci)
+            let (base, size) = S::nonpci_mmio(&silicon.state, die.index());
+            pci::root(
+                &map::root_complex(die)?,
+                ecam_region,
+                Region::new(base, size),
+            )
         })
         .collect();
     let Some(roots) = roots else {
@@ -598,7 +704,7 @@ fn ioapics<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) {
     fch_ioapic.route_i8259(silicon.cpus.apic_ids.first().copied().unwrap_or(0) as u8);
     for die in ctx.dies {
         // SAFETY: as above, mapped by the silicon init.
-        let ioapic = unsafe { IoApic::new(silicon.ioapics[usize::from(die.index())] as usize) };
+        let ioapic = unsafe { IoApic::new(S::ioapic(&silicon.state, die.index()) as usize) };
         ioapic.set_id(1 + die.index());
         ioapic.mask_all();
     }
