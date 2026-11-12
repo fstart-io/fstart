@@ -13,3 +13,4 @@ testing = []
 [dependencies]
 fstart-core = { workspace = true }
 tock-registers = { workspace = true }
+ufmt = { workspace = true }

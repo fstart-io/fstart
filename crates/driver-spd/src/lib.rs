@@ -18,6 +18,19 @@ pub enum ChipWidth {
     X32 = 3,
 }
 
+impl ChipWidth {
+    /// The device's data width in bits.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        match self {
+            Self::X4 => 4,
+            Self::X8 => 8,
+            Self::X16 => 16,
+            Self::X32 => 32,
+        }
+    }
+}
+
 /// DDR chip capacity classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipCapacity {
