@@ -32,7 +32,7 @@ use crate::{
     smu::Mailbox,
 };
 use fstart_arch::x86::{
-    cpu::{amd::smm::InstalledTseg, amd::smm::SmiControl, msr::NativeMsr},
+    cpu::{amd::smm::InstalledTseg, msr::NativeMsr},
     ioapic::IoApic,
     mp::CpuDriver,
 };
@@ -68,7 +68,7 @@ pub trait Soc: 'static {
 pub struct Memory<'a> {
     pub top_mem: u64,
     pub top_mem2: Option<u64>,
-    pub apob: Option<&'a Apob<'a>>,
+    pub apob: Option<&'a Apob<'static>>,
     /// TSEG, at the top of the DRAM below 4 GiB.
     pub tseg: u64,
     pub tseg_size: u32,
@@ -135,8 +135,6 @@ pub trait Init: Sized + 'static {
     type Chipset;
     /// The CPU driver of the MP engine: the CCX init of every thread.
     type Cpu: CpuDriver;
-    /// The FCH as the owner of the SMI sources.
-    type Smi: SmiControl;
     /// What the silicon init leaves for the steps after MP.
     type State;
 
@@ -194,15 +192,6 @@ pub trait Init: Sized + 'static {
         apic_ids: &[u32],
     ) -> Result<Self::State, &'static str>;
 
-    /// The owner of the SMI sources, for the SMM installation.
-    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> Self::Smi;
-    /// SMM is installed and locked in `tseg`: the PSP gets its SMM info.
-    fn smm_installed(
-        ctx: &Ctx<'_, Self>,
-        state: &mut Self::State,
-        tseg: &InstalledTseg,
-    ) -> Result<(), &'static str>;
-
     /// PCI enumeration is next.
     fn before_enumeration(
         _ctx: &Ctx<'_, Self>,
@@ -214,7 +203,7 @@ pub trait Init: Sized + 'static {
     /// for. The allocator and the tables both take them from here.
     fn roots(ctx: &Ctx<'_, Self>, state: &Self::State) -> Option<Roots>;
     /// After the PCI resource allocation.
-    fn after_resources(ctx: &Ctx<'_, Self>, state: &mut Self::State);
+    fn after_resources(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
     /// Ready to boot, before the tables: the devices `pci` enumerated are
     /// where they stay.
     fn ready_to_boot(
@@ -231,6 +220,20 @@ pub trait Init: Sized + 'static {
     /// Right before the payload, the APs parked: the PSP's BootDone. A
     /// SoC whose payload must not run without it returns the failure.
     fn boot_done(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
+}
+
+/// What the SMM installation of a SoC made of dies ([`Hw`]) needs: the
+/// FCH as the owner of the SMI sources, and the PSP's SMM info through
+/// die 0's mailbox afterwards.
+pub trait DieInit: Init<Hw = Hw<Self>> + Soc {
+    /// The owner of the SMI sources.
+    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> crate::fch::smi::FchSmi;
+    /// SMM is installed and locked in `tseg`: the PSP gets its SMM info.
+    fn smm_installed(
+        ctx: &Ctx<'_, Self>,
+        state: &mut Self::State,
+        tseg: &InstalledTseg,
+    ) -> Result<(), &'static str>;
 }
 
 /// The register handles of a SoC whose dies each have a Data Fabric node

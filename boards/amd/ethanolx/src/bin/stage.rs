@@ -7,7 +7,7 @@
 use fstart_board_amd_ethanolx::{self as ethanolx, Board};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_amd::sp3::{Identified, Silicon, Start, Tables};
+use fstart_platform_amd::sp3::{Identified, Silicon, Start};
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
@@ -18,15 +18,14 @@ fn main() -> ! {
     flow(id)
 }
 
-fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
+fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
     let generation = id.generation();
     let stage = id.init_fch(ethanolx::policy(generation));
     if ethanolx::early_init(stage.fch()).is_err() {
         stage.fail("board early init");
     }
-    let mut stage = stage
-        .console(&CONSOLE, ethanolx::CONSOLE)
-        .program_gpio(&ethanolx::GPIO_PROGRAM);
+    let mut stage = stage.console(&CONSOLE, ethanolx::CONSOLE).init_fch();
+    stage.program_gpio(&ethanolx::GPIO_PROGRAM);
     let mut layout = ethanolx::dxio_layout(stage.fch(), stage.timer())
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
     stage.resolve_options(&ethanolx::dxio::KNOBS, &mut layout, ethanolx::dxio::check);
@@ -34,12 +33,10 @@ fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
         .unwrap_or_else(|_| stage.fail("board DXIO devices"));
     stage
         .train_dxio(&engines)
-        .init_chipset()
+        .init_chipset(())
         .start_cpus()
         .scan_bus()
-        .emit_tables(Tables {
-            smbios: ethanolx::smbios_identity(),
-            acpi: ethanolx::acpi_board(),
-        })
+        .ready_to_boot()
+        .emit_tables(&ethanolx::smbios_identity(), ethanolx::acpi_board())
         .boot()
 }

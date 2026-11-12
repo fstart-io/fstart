@@ -23,7 +23,7 @@ static mut TIS: Option<Tis<fstart_arch::x86::Udelay>> = None;
 
 /// Start measured boot on the TPM, if one answers, and measure the reset
 /// image of the booted half `flash`.
-pub(super) fn start(flash: &'static [u8], generation: Generation) {
+pub(crate) fn start(flash: &'static [u8], generation: Generation) {
     // SAFETY: the FCH decodes FED4_0xxx to the TPM on LPC (D14F3x7C
     // Tpm12En, set at reset); nothing else drives it.
     let tis = unsafe { Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
@@ -84,7 +84,7 @@ pub(super) fn start(flash: &'static [u8], generation: Generation) {
 }
 
 /// The SMM handler, before it is installed.
-pub(super) fn measure_smm(image: &'static [u8]) {
+pub(crate) fn measure_smm(image: &'static [u8]) {
     fstart_tcg::measure_blob(
         0,
         EV_POST_CODE2,
@@ -97,7 +97,7 @@ pub(super) fn measure_smm(image: &'static [u8]) {
 /// The ACPI description of the TPM measured boot started on. A TPM that
 /// could not start, also an owner-disabled TPM 1.2, is not described.
 #[cfg(feature = "acpi")]
-pub(super) fn acpi() -> Option<fstart_acpi::devices::tpm::TpmTisAcpi> {
+pub(crate) fn acpi() -> Option<fstart_acpi::devices::tpm::TpmTisAcpi> {
     use fstart_acpi::devices::tpm::{LogArea, TpmFamily, TpmTisAcpi};
     let log = fstart_tcg::log()?;
     fstart_log::info!("acpi: TPM event log at {:#x}", log.base);

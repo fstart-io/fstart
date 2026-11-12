@@ -7,7 +7,7 @@
 use fstart_board_tyan_s8030::{Board, bmc, dxio, platform};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_amd::sp3::{Identified, Silicon, Start, Tables};
+use fstart_platform_amd::sp3::{Identified, Silicon, Start};
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
@@ -18,15 +18,15 @@ fn main() -> ! {
     flow(id)
 }
 
-fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
+fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
     let generation = id.generation();
     let stage = id.init_fch(platform::policy(generation));
     if platform::early_init(stage.fch()).is_err() {
         stage.fail("board early init");
     }
-    let stage = stage.console(&CONSOLE, platform::CONSOLE);
+    let mut stage = stage.console(&CONSOLE, platform::CONSOLE).init_fch();
     let levels = stage.read_pads(platform::detect_pads(generation));
-    let mut stage = stage.program_gpio(&platform::gpio(generation));
+    stage.program_gpio(&platform::gpio(generation));
     let detected = platform::detect(&levels, stage.timer());
     let mut options = dxio::Options::BUILD;
     stage.resolve_options(&dxio::KNOBS, &mut options, |o| {
@@ -36,12 +36,10 @@ fn flow<S: Silicon>(id: Identified<Board, S>) -> ! {
     let lpc_aml = bmc::lpc_aml();
     stage
         .train_dxio(&engines)
-        .init_chipset()
+        .init_chipset(())
         .start_cpus()
         .scan_bus()
-        .emit_tables(Tables {
-            smbios: platform::smbios_identity(),
-            acpi: bmc::acpi_board(&lpc_aml),
-        })
+        .ready_to_boot()
+        .emit_tables(&platform::smbios_identity(), bmc::acpi_board(&lpc_aml))
         .boot()
 }

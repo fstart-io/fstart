@@ -8,16 +8,15 @@
 //!
 //! A board crate implements [`board::Board`] (and
 //! [`layout::Sp3BoardFacts`]), its facts, and owns the stage `main`: it
-//! matches the family [`start`] returns and does its own work between the
-//! phases ([`Identified`], [`Early`], then [`Stage`] in each phase),
-//! passing its policy, console, GPIO, DXIO lanes and tables to them
-//! (feature `bundle-stage`).
+//! matches the family `start` returns and runs the flow's phases
+//! ([`crate::flow`]) with its own work in between, passing its policy,
+//! console, GPIO, DXIO lanes and tables to them (feature `bundle-stage`).
 #[cfg(feature = "acpi")]
 pub mod acpi;
 pub mod board;
 
 pub mod entry;
-#[cfg(feature = "bundle-stage")]
+#[cfg(all(feature = "bundle-stage", target_os = "none"))]
 mod flow;
 #[cfg(feature = "host")]
 pub mod host;
@@ -34,14 +33,7 @@ pub mod smm;
 #[cfg(feature = "smm")]
 pub use fstart_smm as smm_runtime;
 
-#[cfg(all(feature = "bundle-stage", feature = "naples"))]
-pub use flow::NaplesSilicon;
-#[cfg(all(feature = "bundle-stage", any(feature = "rome", feature = "milan")))]
-pub use flow::RomeMilanSilicon;
-#[cfg(all(feature = "bundle-stage", feature = "acpi"))]
-pub use flow::Tables;
-#[cfg(feature = "bundle-stage")]
-pub use flow::{
-    Chipset, Configured, Cpus, Early, Enumerated, Identified, Mapped, Published, Silicon, Stage,
-    Start, Trained, start,
-};
+#[cfg(all(feature = "bundle-stage", target_os = "none"))]
+pub mod soc;
+#[cfg(all(feature = "bundle-stage", target_os = "none"))]
+pub use soc::{Identified, Silicon, Start, start};

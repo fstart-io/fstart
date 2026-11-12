@@ -1,90 +1,22 @@
-//! The end of the flow: ACPI tables, the boot media (FFS) and the payload
-//! (Linux or CrabEFI, as `--payload` selects), with the firmware's
-//! e820 and RSDP (INTEGRATION_NOTES §10).
+//! The ACPI tables of the flow, from what the silicon steps left
+//! (INTEGRATION_NOTES §10).
 
 extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_driver_uart::ns16550::Ns16550;
-use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
-use fstart_stage::boot::MemoryWindow;
-
 use super::{Ctx, OrHalt};
-use crate::sp3::layout::{self, Span};
-
-/// Publish the load policy (RAM from e820 minus the running image) and
-/// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor
-/// says): the locator and trust block the composer put into the reset
-/// image (`fstart_anchor_bytes`) describe it.
-pub(crate) fn mount_boot_media(ctx: &Ctx) {
-    // The running image (text, in-place data: `layout::RESET`) and its
-    // BSS, heap and stacks (`layout::EARLY_REGION`) are reserved by
-    // span: `running_stage_windows` assumes data and BSS are
-    // contiguous, which this layout does not keep.
-    let image = MemoryWindow {
-        start: layout::RESET.destination,
-        size: u64::from(layout::RESET.size),
-    };
-    if let Err(error) = crate::media::mount(
-        ctx.e820.entries(),
-        &[image, span_window(layout::EARLY_REGION)],
-        span_window(ctx.ffs),
-        const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
-    ) {
-        super::fail(error.step());
-    }
-}
-
-fn span_window(span: Span) -> MemoryWindow {
-    MemoryWindow {
-        start: span.base,
-        size: span.size,
-    }
-}
-
-/// Hand the e820, RSDP and console to the build's payload launcher.
-pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
-    // The allocator's assignments are in the hardware now.
-    drop(pci);
-    fstart_log::info!("sp3: handing off to the payload");
-    fstart_log::flush();
-    let mut description =
-        Description::new(ctx.e820.entries(), Range::new(ctx.ffs.base, ctx.ffs.size));
-    description.console = Some(console);
-    description.acpi = ctx.rsdp.map(AcpiTables::at);
-    let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(
-        crate::sp3::acpi::fixed::PM_BASE + 4,
-        crate::sp3::acpi::fixed::S5_SLEEP_TYPE,
-    )];
-    description.acpi_s5 = &acpi_s5;
-    description.smbios = ctx.smbios;
-    description.pci_root = Some(ctx.soc.pci_root);
-    #[allow(unused_mut)]
-    let mut handoff = Handoff::new(description, Placement::default());
-    // CrabEFI keeps its variables, the option overrides among them, in the
-    // settings store, and shows the options in its menu.
-    #[cfg(feature = "payload-uefi")]
-    let mut storage = super::options::storage(&ctx);
-    #[cfg(feature = "payload-uefi")]
-    {
-        handoff.settings = Some(super::options::settings(&ctx));
-        handoff.variable_storage = storage
-            .as_mut()
-            .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
-    }
-    fstart_payload::boot(handoff, ())
-}
 
 /// Build and place the ACPI tables (ACPI_SMM, `crate::sp3::acpi`); returns the
 /// RSDP address. The tables live in the stage heap, inside the reserved
 /// early region.
 #[cfg(feature = "acpi")]
-pub(crate) fn acpi<B: crate::sp3::board::Board, S: fstart_driver_amd::sp3::soc::Steps>(
-    ctx: &Ctx,
+pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
+    ctx: &Ctx<'_>,
     si: &S,
     pci: &fstart_pci::PciEcam,
     board_acpi: &crate::sp3::acpi::Board<'_>,
+    bmc_sx_notify: Option<crate::sp3::smm::SleepNotify>,
 ) -> u64 {
     use crate::sp3::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
     use fstart_core::acpi::AcpiSmiConfig;
@@ -224,7 +156,7 @@ pub(crate) fn acpi<B: crate::sp3::board::Board, S: fstart_driver_amd::sp3::soc::
         },
         fch: &fch,
         tpm: super::tpm::acpi(),
-        bmc_sx_notify: B::BMC_SX_NOTIFY,
+        bmc_sx_notify,
         cppc: &cppc,
         board: *board_acpi,
     };

@@ -89,7 +89,7 @@ pub trait Soc: Init {
     type Flow;
     /// The board's part of the tables: its SMBIOS identity and its ACPI.
     type Smbios<'a>;
-    type Acpi;
+    type Acpi<'a>;
 
     /// The most CPUs of a board with `config`.
     fn max_cpus(config: &Self::Config) -> u16;
@@ -99,7 +99,7 @@ pub trait Soc: Init {
     /// loads the CPUs' microcode from it). The SoC may adjust `config`
     /// from what the boot media holds.
     fn map(
-        hw: &Self::Hw,
+        hw: &mut Self::Hw,
         config: &mut Self::Config,
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         clock: fstart_driver_amd::ccx::tsc::Tsc,
@@ -141,7 +141,7 @@ pub trait Soc: Init {
         pci: &fstart_pci::PciEcam,
         flow: &Self::Flow,
         smbios: &Self::Smbios<'_>,
-        acpi: Self::Acpi,
+        acpi: Self::Acpi<'_>,
     ) -> Tables;
     #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
     /// Page tables for what the payload reaches beyond the reset entry's
@@ -164,7 +164,12 @@ pub trait Soc: Init {
     }
     /// Start the payload with `handoff`.
     #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
-    fn launch(handoff: fstart_payload::Handoff<'_>, _ctx: &Ctx<'_, Self>, _flow: &Self::Flow) -> ! {
+    fn launch(
+        handoff: fstart_payload::Handoff<'_>,
+        _ctx: &Ctx<'_, Self>,
+        _state: &Self::State,
+        _flow: &Self::Flow,
+    ) -> ! {
         fstart_payload::boot(handoff, ())
     }
 }

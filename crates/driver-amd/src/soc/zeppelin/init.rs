@@ -14,7 +14,7 @@ use crate::{
     dxio,
     fch::{post, smi::FchSmi, taishan},
     psp::{self, boot::Psp},
-    soc::{Ctx, Entered, Hw, Init, Roots},
+    soc::{Ctx, DieInit, Entered, Hw, Init, Roots},
 };
 use fstart_arch::x86::{
     cpu::{amd::smm::InstalledTseg, msr::NativeMsr},
@@ -65,7 +65,6 @@ impl Init for Zeppelin {
     type Trained = Trained;
     type Chipset = State;
     type Cpu = Fam17hCpu<Self, ccx::zeppelin::CpuPolicy>;
-    type Smi = FchSmi;
     type State = Up;
 
     fn enter(_: &Config, msr: &NativeMsr) -> Entered<Self> {
@@ -216,23 +215,6 @@ impl Init for Zeppelin {
         })
     }
 
-    fn smi(ctx: &Ctx<'_, Self>, _: &Up) -> FchSmi {
-        // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
-        // decoded since the FCH init.
-        unsafe { FchSmi::new(taishan::ACPI_PORTS, ctx.config.fch.smi_gevents) }
-    }
-
-    /// The PSP gets the SMM info now, LockDFReg after the last DF write and
-    /// BootDone right before the payload.
-    fn smm_installed(
-        ctx: &Ctx<'_, Self>,
-        up: &mut Up,
-        tseg: &InstalledTseg,
-    ) -> Result<(), &'static str> {
-        up.psp = psp::boot::notify_smm(up.silicon.psp_bars[0], psp::Variant::Zp, tseg, &ctx.clock);
-        Ok(())
-    }
-
     /// PCI: the interrupt router first.
     fn before_enumeration(ctx: &Ctx<'_, Self>, _: &mut Up) -> Result<(), &'static str> {
         post(&ctx.hw.fch, 0x42);
@@ -245,8 +227,9 @@ impl Init for Zeppelin {
         })
     }
 
-    fn after_resources(ctx: &Ctx<'_, Self>, _: &mut Up) {
+    fn after_resources(ctx: &Ctx<'_, Self>, _: &mut Up) -> Result<(), &'static str> {
         silicon::after_resources(&ctx.hw.fch);
+        Ok(())
     }
 
     /// The IOAPICs, then the vendor firmware's ReadyToBoot, up to the
@@ -275,6 +258,25 @@ impl Init for Zeppelin {
     fn boot_done(ctx: &Ctx<'_, Self>, up: &mut Up) -> Result<(), &'static str> {
         // SAFETY: the flow is done with the CPUs and SMM is locked.
         unsafe { psp::boot::boot_done(up.psp.as_mut(), &ctx.clock) };
+        Ok(())
+    }
+}
+
+impl DieInit for Zeppelin {
+    fn smi(ctx: &Ctx<'_, Self>, _: &Up) -> FchSmi {
+        // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
+        // decoded since the FCH init.
+        unsafe { FchSmi::new(taishan::ACPI_PORTS, ctx.config.fch.smi_gevents) }
+    }
+
+    /// The PSP gets the SMM info now, LockDFReg after the last DF write and
+    /// BootDone right before the payload.
+    fn smm_installed(
+        ctx: &Ctx<'_, Self>,
+        up: &mut Up,
+        tseg: &InstalledTseg,
+    ) -> Result<(), &'static str> {
+        up.psp = psp::boot::notify_smm(up.silicon.psp_bars[0], psp::Variant::Zp, tseg, &ctx.clock);
         Ok(())
     }
 }

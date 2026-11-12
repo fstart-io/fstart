@@ -58,7 +58,7 @@ pub const TSEG_SIZE: u32 = 8 << 20;
 /// its silicon init, and what its tables differ in from the other such
 /// SoCs'. The flow's services ([`crate::flow::Soc`]) are the same for all
 /// of them.
-pub trait DieSoc: Init<Hw = Hw<Self>> + fstart_driver_amd::soc::Soc {
+pub trait DieSoc: fstart_driver_amd::soc::DieInit {
     const LAYOUT: Layout;
     /// Where the PSP writes the APOB.
     const APOB: Region;
@@ -106,7 +106,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     const TSEG_SIZE: u32 = TSEG_SIZE;
     type Flow = ();
     type Smbios<'a> = crate::acpi::SmbiosIdentity<'a>;
-    type Acpi = crate::acpi::BoardAcpi;
+    type Acpi<'a> = crate::acpi::BoardAcpi;
 
     fn max_cpus(_: &S::Config) -> u16 {
         S::MAX_CPUS
@@ -117,7 +117,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     /// FFS of the layout.
     #[cfg(all(feature = "bundle", target_os = "none"))]
     fn map(
-        hw: &Hw<S>,
+        hw: &mut Hw<S>,
         _: &mut S::Config,
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         _: fstart_driver_amd::ccx::tsc::Tsc,
