@@ -28,11 +28,9 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
 use fstart_intel_gma::types::{Cpu, PciAddress, Port};
+use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
 use tock_registers::interfaces::{Readable, Writeable};
 
 fn publish_mtrr_wb_ranges(entries: &[E820Entry]) -> Result<(), ServiceError> {
@@ -534,6 +532,30 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
 
+    fn pci_root_info(&self) -> PciRootInfo {
+        PciRootInfo {
+            segment: 0,
+            ecam_base: self.config.ecam_base,
+            bus_start: PCI_BUS_START,
+            bus_end: PCI_BUS_END,
+        }
+    }
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        use fstart_pci::PciRole::{Own, Window};
+        let low = u64::from(self.usable_low_memory_top()).max(u64::from(self.tolud()));
+        let high = self.touud().max(0x1_0000_0000);
+        let limit = fstart_arch::x86::physical_address_limit();
+        fstart_pci::PciRoot::new(
+            self.pci_root_info(),
+            [
+                Window.mmio(low, PCI_MMIO32_LIMIT.saturating_sub(low)),
+                Own.mmio(self.config.ecam_base, PCI_ECAM_SIZE),
+                Window.mmio(high, limit.saturating_sub(high)),
+                Window.io(PCI_PIO_BASE, PCI_PIO_SIZE),
+            ],
+        )
+    }
+
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -795,59 +817,6 @@ impl fstart_core::services::MemoryInit for IntelPineview {
             self.memory_test()?;
         }
         Ok(initialized.captured)
-    }
-}
-
-impl PciRootProvider for IntelPineview {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: PCI_BUS_START,
-            bus_end: PCI_BUS_END,
-        }
-    }
-
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        let low_base = u64::from(self.usable_low_memory_top()).max(u64::from(self.tolud()));
-        let low_limit = PCI_MMIO32_LIMIT;
-        let ecam_base = self.config.ecam_base;
-        let ecam_end = ecam_base.saturating_add(PCI_ECAM_SIZE);
-
-        let mut push_mmio = |base: u64, limit: u64, prefetchable: bool| {
-            if base >= limit {
-                return Ok(());
-            }
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base,
-                    size: limit - base,
-                    prefetchable,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)
-        };
-
-        push_mmio(low_base, low_limit.min(ecam_base), false)?;
-        push_mmio(low_base.max(ecam_end), low_limit, false)?;
-
-        let mmio64_base = self.touud().max(0x1_0000_0000);
-        push_mmio(
-            mmio64_base,
-            fstart_arch::x86::physical_address_limit(),
-            true,
-        )?;
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-
-        Ok(windows)
     }
 }
 
@@ -1460,7 +1429,9 @@ mod acpi_impl {
         }
 
         fn extra_tables(&self, _config: &Self::Config) -> Vec<Vec<u8>> {
-            alloc::vec![crate::gmch::acpi::mcfg(self.root_info())]
+            alloc::vec![crate::gmch::acpi::mcfg(
+                crate::IntelNorthbridgeDriver::pci_root_info(self)
+            )]
         }
     }
 }

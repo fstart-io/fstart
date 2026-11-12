@@ -106,8 +106,6 @@ pub struct DieAcpi<'a> {
     /// The die's root bridge as the allocator enumerated it: `_CRS` reports
     /// its windows.
     pub root: &'a fstart_pci::PciRoot,
-    /// The legacy VGA ranges are routed to this die.
-    pub vga: bool,
     /// The enabled PCIe and internal (7.1, 8.1) bridges on the root bus.
     pub bridges: &'a [Bridge],
     /// The IOMMU (00.2), if its MMIO is enabled.
@@ -167,8 +165,6 @@ pub enum Error {
         die: u8,
         devfn: u8,
     },
-    /// An ECAM window with no buses.
-    EcamBuses,
     /// More dies than the GSIs of their IOAPICs fit in a byte.
     Dies,
     Aml(AmlError),
@@ -224,7 +220,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, Error> {
     let nbios: Vec<_> = (0..inputs.dies.len())
         .map(|index| format!("\\_SB_.PCI{index}.NBIO"))
         .collect();
-    let dsdt_aml = [scope_vec("\\", &sleep_states())?, ecam_reservation(inputs)?]
+    let dsdt_aml = [scope_vec("\\", &sleep_states())?]
         .into_iter()
         .chain(root_bridges)
         .chain(inputs.board.devices.iter().map(|device| {
@@ -385,26 +381,6 @@ fn sleep_states() -> Vec<u8> {
     .into()
 }
 
-/// The ECAM window is a motherboard resource.
-fn ecam_reservation(inputs: &Inputs) -> Result<Vec<u8>, Error> {
-    let base = inputs.pci.ecam_base;
-    let size = inputs.pci.ecam_size();
-    if size == 0 {
-        return Err(Error::EcamBuses);
-    }
-    let mut aml = Vec::new();
-    acpi_dsl! {
-        Device("PERC") {
-            Name("_HID", EisaId("PNP0C02"));
-            Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadWrite, #{dword base}, #{dword size});
-            });
-        }
-    }
-    .emit(&mut aml)?;
-    Ok(aml)
-}
-
 /// The FCH IOAPIC and the HPET interrupt as the FCH SMBus device 0:14.0.
 const FCH_SMBUS: u16 = fstart_pci::bdf(0, 0x14, 0);
 
@@ -543,7 +519,7 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
     if inputs.numa.is_some() {
         acpi_dsl! { Name("_PXM", #{byte uid}); }.emit(&mut body)?;
     }
-    body.extend(fstart_acpi::pci_root::crs(die.root, index == 0));
+    body.extend(fstart_acpi::pci_root::crs(die.root));
     body.extend(ioapic_acpi::nbio_default_aml()?);
     let routes = inputs.soc.bridge_routes;
     body.extend(root_prt(
@@ -558,7 +534,14 @@ fn root_bridge(index: u8, die: &DieAcpi, inputs: &Inputs) -> Result<Vec<u8>, Err
     if index == 0 {
         body.extend(lpc_bridge(&inputs.board.lpc_aml)?);
     }
-    Ok(device_vec(&format!("PCI{index}"), &body)?)
+    // Next to the bridge: what its die decodes itself (the ECAM window, the
+    // NBIO's non-PCI pool), which `_CRS` leaves out.
+    let mut aml = device_vec(&format!("PCI{index}"), &body)?;
+    aml.extend(fstart_acpi::pci_root::motherboard(
+        &format!("MBR{index}"),
+        die.root,
+    )?);
+    Ok(aml)
 }
 
 /// The root bus `_PRT`. On die 0 the IOMMU (device 0) and the FCH SMBus/LPC
@@ -879,29 +862,31 @@ mod tests {
         io: &RangeInclusive<u16>,
         mmio: &[RangeInclusive<u64>],
     ) -> &'static fstart_pci::PciRoot {
-        use fstart_pci::{PciRoot, PciRootInfo, PciWindow, PciWindowKind};
-        let window = |kind, start: u64, end: u64| PciWindow {
-            kind,
-            base: start,
-            size: end - start + 1,
-            prefetchable: false,
-        };
+        use fstart_pci::PciRole::{Forwarded, Own, Window};
+        use fstart_pci::{PciRoot, PciRootInfo};
+        let size = |range: &RangeInclusive<u64>| range.end() - range.start() + 1;
+        let (ports, ecam) = (u64::from(*io.start())..=u64::from(*io.end()), 0xf000_0000);
+        let primary = |size: u64| if *buses.start() == 0 { size } else { 0 };
+        // PCI devices get the ports above the legacy ones.
+        let pci = (*ports.start()).max(0x1000);
         let root = PciRoot::new(
             PciRootInfo {
                 segment: 0,
-                ecam_base: 0xf000_0000,
+                ecam_base: ecam,
                 bus_start: *buses.start(),
                 bus_end: *buses.end(),
             },
-            core::iter::once(window(
-                PciWindowKind::Io,
-                (*io.start()).into(),
-                (*io.end()).into(),
-            ))
-            .chain(
-                mmio.iter()
-                    .map(|range| window(PciWindowKind::Mmio, *range.start(), *range.end())),
-            ),
+            // The die with bus 0 has the legacy I/O and VGA memory routed
+            // to it and owns the ECAM window of its 128 buses.
+            [Forwarded.io(0, primary(0x1000))]
+                .into_iter()
+                .chain([Window.io(pci, (ports.end() + 1).saturating_sub(pci))])
+                .chain([Forwarded.mmio(0xa_0000, primary(0x2_0000))])
+                .chain(
+                    mmio.iter()
+                        .map(|range| Window.mmio(*range.start(), size(range))),
+                )
+                .chain([Own.mmio(ecam, primary(128 << 20))]),
         )
         .unwrap();
         std::boxed::Box::leak(std::boxed::Box::new(root))
@@ -933,7 +918,6 @@ mod tests {
             ioapic_id: 1 + index,
             ioapic_base: 0xfeb0_0000 - u32::from(index) * 0x0800_0000,
             root: pci_root(index * 64..=index * 64 + 63, &IO, &MMIO),
-            vga: index == 0,
             bridges: &BRIDGES,
             iommu: Some(Iommu {
                 base: 0xfe60_0000 - u64::from(index) * 0x0800_0000,
@@ -1239,8 +1223,8 @@ mod tests {
         const CFG: [u8; 8] = [0x47, 1, 0xf8, 0x0c, 0xf8, 0x0c, 1, 8];
         let vga = 0xa_0000u32.to_le_bytes();
         let [die0, die1] = dies();
-        let die0 = fstart_acpi::pci_root::crs(die0.root, true);
-        let die1 = fstart_acpi::pci_root::crs(die1.root, false);
+        let die0 = fstart_acpi::pci_root::crs(die0.root);
+        let die1 = fstart_acpi::pci_root::crs(die1.root);
         assert!(die0.windows(8).any(|w| w == CFG) && die0.windows(4).any(|w| w == vga));
         assert!(!die1.windows(8).any(|w| w == CFG) && !die1.windows(4).any(|w| w == vga));
     }
@@ -1529,7 +1513,6 @@ mod tests {
             ioapic_id: 1,
             ioapic_base: 0xfeb0_0000,
             root: pci_root(0..=127, &io, &mmio),
-            vga: true,
             bridges: &bridges,
             iommu: Some(Iommu {
                 base: 0xfe60_0000,
@@ -1590,7 +1573,7 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
                 (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
             });
-        assert_eq!((len, hash), (4976, 0xa49a_a898_b6b7_8257));
+        assert_eq!((len, hash), (4976, 0x2395_e3ce_9a10_ba41));
     }
 
     /// The table with `signature`: the first match whose length and

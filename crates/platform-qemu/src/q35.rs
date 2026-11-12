@@ -4,7 +4,7 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_pci::{
     PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PciAddress,
-    PciEcam, PciRoot, PciRootInfo, PciWindow, PciWindowKind,
+    PciEcam, PciResource, PciRole::Window, PciRoot, PciRootInfo,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,10 +56,12 @@ impl Q35HostBridge {
         })
     }
 
-    /// The allocator of the one q35 root bridge with `windows`.
+    /// The allocator of the one q35 root bridge with `windows`. The
+    /// description is for the allocator only: QEMU supplies the tables, and
+    /// its ECAM window is outside the windows it gives.
     fn allocator(
         config: &Q35HostBridgeConfig,
-        windows: impl IntoIterator<Item = PciWindow>,
+        windows: impl IntoIterator<Item = PciResource>,
     ) -> Result<PciEcam, ServiceError> {
         let root = PciRoot::new(
             PciRootInfo {
@@ -71,7 +73,7 @@ impl Q35HostBridge {
             windows,
         )
         .map_err(|_| ServiceError::InvalidParam)?;
-        PciEcam::from_provider(&root).map_err(|_| ServiceError::InvalidParam)
+        PciEcam::new([root]).map_err(|_| ServiceError::InvalidParam)
     }
 
     pub fn init_with_e820(&mut self, entries: &[E820Entry]) -> Result<(), ServiceError> {
@@ -95,19 +97,13 @@ impl Q35HostBridge {
             mmio64_base + mmio64_size,
         );
 
-        let window = |kind, base, size, prefetchable| PciWindow {
-            kind,
-            base,
-            size,
-            prefetchable,
-        };
         self.ecam = Self::allocator(
             &self.config,
             [
-                window(PciWindowKind::Mmio, mmio32_base, mmio32_size, false),
-                // The high window takes the prefetchable 64-bit BARs.
-                window(PciWindowKind::Mmio, mmio64_base, mmio64_size, true),
-                window(PciWindowKind::Io, PIO_BASE, PIO_SIZE, false),
+                Window.mmio(mmio32_base, mmio32_size),
+                // The window above 4 GiB takes the prefetchable 64-bit BARs.
+                Window.mmio(mmio64_base, mmio64_size),
+                Window.io(PIO_BASE, PIO_SIZE),
             ],
         )
         .map_err(|_| ServiceError::HardwareError)?;

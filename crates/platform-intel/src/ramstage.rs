@@ -430,7 +430,8 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
         &mut self,
         resources: &[fstart_core::acpi::AcpiResource],
     ) -> Result<(), ServiceError> {
-        let mut pci = fstart_pci::PciEcam::from_provider(&self.northbridge)
+        let mut pci = (self.northbridge.pci_root())
+            .and_then(|root| fstart_pci::PciEcam::new([root]))
             .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
             .map_err(|_| ServiceError::HardwareError)?;
         let mut fixed_bars = self.southbridge.fixed_pci_bars();
@@ -801,7 +802,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             Description::new(self.e820(), Range::new(firmware_base, firmware_size as u64));
         description.console = self.console;
         description.uart = self.uart;
-        description.pci_root = Some(fstart_pci::PciRootProvider::root_info(&self.northbridge));
+        description.pci_root = Some(self.northbridge.pci_root_info());
         description.framebuffer = self.northbridge.framebuffer_info();
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
         #[cfg(feature = "acpi")]

@@ -291,9 +291,9 @@ pub struct Published<S: Soc> {
     peripherals: super::Peripherals,
 }
 
-/// PCI after enumeration and resource allocation.
+/// PCI after enumeration and resource allocation. The allocator keeps the
+/// root bridges it was built from; the tables describe those.
 struct Pci {
-    roots: Vec<pci::Root, { super::MAX_DIES }>,
     ecam: PciEcam,
 }
 
@@ -388,7 +388,7 @@ impl<S: Soc> Stage<S, Cpus<S>> {
             phase: Cpus(mut silicon),
         } = self;
         let ctx = machine.ctx();
-        let (roots, ecam) = enumerate::<S>(&ctx, &silicon);
+        let ecam = enumerate::<S>(&ctx, &silicon);
         // PCI resources become known after AMD's required MP and SMU steps.
         // Extend cacheability coherently on all CPUs without replacing AMD's
         // fixed DRAM routing, high-memory TOM2WB or the existing RAM/ROM MTRRs.
@@ -409,7 +409,7 @@ impl<S: Soc> Stage<S, Cpus<S>> {
             }
         }
         S::after_resources(&mut silicon, &ctx);
-        let pci = Pci { roots, ecam };
+        let pci = Pci { ecam };
         Stage {
             machine,
             phase: Enumerated { silicon, pci },
@@ -454,7 +454,8 @@ impl<S: Soc> Stage<S, Ready<S>> {
         let ctx = machine.ctx();
         S::end_of_post(&mut silicon, &ctx);
         let hosts: Vec<acpi::HostBridge, { super::MAX_DIES }> = pci
-            .roots
+            .ecam
+            .roots()
             .iter()
             .map(|root| acpi::HostBridge::new(root, &pci.ecam))
             .collect();
@@ -549,23 +550,20 @@ impl<S: Soc> Stage<S, Published<S>> {
 
 /// PCI enumeration and resource allocation below the root complex of every
 /// die, each from what the DF routes to it.
-fn enumerate<S: Soc>(
-    ctx: &Ctx<'_, S>,
-    silicon: &Silicon<S>,
-) -> (Vec<pci::Root, { super::MAX_DIES }>, PciEcam) {
+fn enumerate<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) -> PciEcam {
     let ecam_region = Region::new(S::ECAM, u64::from(S::ECAM_BUSES) << 20);
     let roots: Option<Vec<pci::Root, { super::MAX_DIES }>> = ctx
         .dies
         .iter()
         .map(|die| {
-            let reserved = silicon.reserved_mmio[usize::from(die.index())];
-            pci::root(&map::root_complex(die)?, ecam_region, reserved)
+            let non_pci = silicon.reserved_mmio[usize::from(die.index())];
+            pci::root(&map::root_complex(die)?, ecam_region, non_pci)
         })
         .collect();
     let Some(roots) = roots else {
         fail::<S>("PCI root")
     };
-    let mut ecam = match PciEcam::from_providers(&roots) {
+    let mut ecam = match PciEcam::new(roots) {
         Ok(ecam) => ecam,
         Err(_) => fail::<S>("PCI root"),
     };
@@ -586,7 +584,7 @@ fn enumerate<S: Soc>(
             );
         }
     }
-    (roots, ecam)
+    ecam
 }
 
 /// The FCH's IOAPIC (GSI 0-23, ID 0) in virtual-wire mode, then one per

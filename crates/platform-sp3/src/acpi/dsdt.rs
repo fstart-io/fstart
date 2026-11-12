@@ -19,10 +19,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_acpi::aml::{
-    AddressSpace, AddressSpaceCacheable, EISAName, IO, Memory32Fixed, Name, PackageBuilder, Path,
-    ResourceTemplate,
-};
+use fstart_acpi::aml::{EISAName, IO, Memory32Fixed, Name, PackageBuilder, Path, ResourceTemplate};
 use fstart_acpi::aml_linker::{device_vec, scope_vec};
 use fstart_acpi::processor::{ProcessorName, cpc_aml, processor_device};
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
@@ -58,27 +55,6 @@ fn pci_name(uid: usize) -> [u8; 4] {
 
 fn as_str(n: &[u8; 4]) -> &str {
     core::str::from_utf8(n).unwrap_or("PCI0")
-}
-
-fn mmio_descriptor(base: u64, limit: u64, out: &mut Vec<u8>) {
-    match u32::try_from(limit) {
-        Ok(limit) => AddressSpace::<u32>::new_memory(
-            AddressSpaceCacheable::NotCacheable,
-            true,
-            base as u32,
-            limit,
-            None,
-        )
-        .to_aml_bytes(out),
-        Err(_) => AddressSpace::<u64>::new_memory(
-            AddressSpaceCacheable::NotCacheable,
-            true,
-            base,
-            limit,
-            None,
-        )
-        .to_aml_bytes(out),
-    }
 }
 
 /// `Name(_PRT, Package { {addr, pin, 0, gsi} ... })`.
@@ -190,15 +166,12 @@ fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
     device_vec("LPCB", &[adr.as_slice(), &fch, board_aml].concat())
 }
 
-/// Motherboard resources the root-bridge windows would otherwise offer:
-/// ECAM, FCH/LAPIC/IOAPIC MMIO, NBIO IOAPIC and IOMMU BARs, FCH IO.
-fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError> {
+/// Motherboard resources of the FCH and the CPUs inside what the primary
+/// root bridge forwards: FCH/LAPIC/IOAPIC MMIO and FCH I/O. What the root
+/// bridges decode themselves (the ECAM window, the NBIO IOAPICs and IOMMUs
+/// in the non-PCI pools) is in the motherboard device of each root bridge.
+fn system_resources() -> Result<Vec<u8>, AmlError> {
     let mut d = Vec::new();
-    let mem = |base: u64, len: u64, d: &mut Vec<u8>| match u32::try_from(base + len) {
-        Ok(_) => Memory32Fixed::new(true, base as u32, len as u32).to_aml_bytes(d),
-        Err(_) => mmio_descriptor(base, base + len - 1, d),
-    };
-    mem(inputs.pci.ecam_base, inputs.pci.ecam_size(), &mut d);
     [(FCH_IOAPIC_BASE, 0x1000), (LAPIC_BASE, 0x1000)]
         .iter()
         .copied()
@@ -207,19 +180,7 @@ fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, A
                 .iter()
                 .map(|&(b, l)| (u64::from(b), u64::from(l))),
         )
-        .chain(
-            windows
-                .iter()
-                .filter(|w| w.nbio.is_some())
-                .map(|w| (w.base, 0x1000)),
-        )
-        .chain(
-            inputs
-                .iommus
-                .iter()
-                .map(|m| (m.info.base, fstart_driver_amd::nbio::iommu::MMIO_SIZE)),
-        )
-        .for_each(|(b, l)| mem(b, l, &mut d));
+        .for_each(|(b, l)| Memory32Fixed::new(true, b as u32, l as u32).to_aml_bytes(&mut d));
     // The FCH's legacy and index ports (the SMI command port is in
     // 0xA2..0xBF) and the ACPI PM blocks.
     fch_acpi::SYSTEM_IO
@@ -253,7 +214,7 @@ fn root_bridge(
         name("_SEG", &0u8),
         name("_BBN", &b.bus_base),
         rb.domain.map(|d| name("_PXM", &d)).unwrap_or_default(),
-        fstart_acpi::pci_root::crs(rb.root, rb.bridge.primary),
+        fstart_acpi::pci_root::crs(rb.root),
         osc(),
         ioapic_acpi::nbio_aml(rb.ioapic_features)?,
     ]
@@ -265,9 +226,15 @@ fn root_bridge(
     }
     if b.primary {
         body.extend(lpc(inputs.board.lpc_aml)?);
-        body.extend(system_resources(inputs, windows)?);
+        body.extend(system_resources()?);
     }
-    device_vec(as_str(&pci_name(uid)), &body)
+    // Next to the bridge: what it decodes itself, which `_CRS` leaves out.
+    let mut aml = device_vec(as_str(&pci_name(uid)), &body)?;
+    aml.extend(fstart_acpi::pci_root::motherboard(
+        &alloc::format!("MBR{uid:X}"),
+        rb.root,
+    )?);
+    Ok(aml)
 }
 
 /// `\PICM`, `\_PIC`, `\_S0`, `\_S5`.

@@ -2,9 +2,8 @@
 
 use fstart_core::description::Range;
 use fstart_core::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
+use fstart_pci::PciRole::Window;
+use fstart_pci::{PciEcamError, PciRoot, PciRootInfo};
 use serde::Serialize;
 
 pub const QEMU_RISCV64_ECAM_BASE: u64 = 0x3000_0000;
@@ -54,8 +53,9 @@ impl QemuPciRootConfig {
     }
 }
 
-impl PciRootProvider for QemuPciRootConfig {
-    fn root_info(&self) -> PciRootInfo {
+impl QemuPciRootConfig {
+    /// The root bridge's fixed identity.
+    pub fn root_info(&self) -> PciRootInfo {
         PciRootInfo {
             segment: 0,
             ecam_base: self.ecam_base,
@@ -64,37 +64,18 @@ impl PciRootProvider for QemuPciRootConfig {
         }
     }
 
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        let mut push = |window| {
-            windows
-                .push(window)
-                .map_err(|_| PciRootError::TooManyWindows)
-        };
-
-        if self.mmio32_size != 0 {
-            push(PciWindow {
-                kind: PciWindowKind::Mmio,
-                base: self.mmio32_base,
-                size: self.mmio32_size,
-                prefetchable: false,
-            })?;
-        }
-        if self.mmio64_size != 0 {
-            push(PciWindow {
-                kind: PciWindowKind::Mmio,
-                base: self.mmio64_base,
-                size: self.mmio64_size,
-                prefetchable: true,
-            })?;
-        }
-        push(PciWindow {
-            kind: PciWindowKind::Io,
-            base: 0x1000,
-            size: 0xf000,
-            prefetchable: false,
-        })?;
-        Ok(windows)
+    /// The root bridge: its 32-bit and 64-bit MMIO windows and its I/O.
+    /// For the allocator only: the device tree or QEMU's own tables describe
+    /// the bridge to the OS, and the ECAM window is outside these windows.
+    pub fn root(&self) -> Result<PciRoot, PciEcamError> {
+        PciRoot::new(
+            self.root_info(),
+            [
+                Window.mmio(self.mmio32_base, self.mmio32_size),
+                Window.mmio(self.mmio64_base, self.mmio64_size),
+                Window.io(0x1000, 0xf000),
+            ],
+        )
     }
 }
 
@@ -195,8 +176,8 @@ pub(crate) fn enumerate_pci(
     config: &QemuPciRootConfig,
 ) -> Result<fstart_pci::PciEcam, fstart_core::services::ServiceError> {
     use fstart_core::services::ServiceError;
-    let mut pci =
-        fstart_pci::PciEcam::from_provider(config).map_err(|_| ServiceError::InvalidParam)?;
+    let root = config.root().map_err(|_| ServiceError::InvalidParam)?;
+    let mut pci = fstart_pci::PciEcam::new([root]).map_err(|_| ServiceError::InvalidParam)?;
     pci.enumerate_and_allocate()
         .map_err(|_| ServiceError::HardwareError)?;
     Ok(pci)

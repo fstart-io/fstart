@@ -83,6 +83,7 @@ pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
 pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     ctx: &Ctx,
     si: &S,
+    pci: &fstart_pci::PciEcam,
     board_acpi: &crate::acpi::Board<'_>,
 ) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
@@ -122,7 +123,8 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
         .topology
         .root_bridges
         .iter()
-        .zip(&ctx.roots)
+        // The root bridges the allocator was built from.
+        .zip(pci.roots())
         .zip(si.nbios())
         .enumerate()
         .map(|(i, ((&bridge, root), n))| RootBridgeAcpi {

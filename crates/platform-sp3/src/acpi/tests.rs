@@ -25,17 +25,14 @@ struct System {
 /// The root bridge of `bridge` as the allocator had it: the primary with
 /// the legacy I/O, each with one window below and one above 4 GiB.
 fn pci_root(bridge: &RootBridge) -> &'static fstart_pci::PciRoot {
-    use fstart_pci::{PciRoot, PciWindow, PciWindowKind};
-    let window = |kind, base: u64, limit: u64| PciWindow {
-        kind,
-        base,
-        size: limit - base + 1,
-        prefetchable: false,
-    };
-    let io = if bridge.primary {
-        (0, 0x0FFF)
+    use fstart_pci::PciRole::{Forwarded, Own, Window};
+    use fstart_pci::PciRoot;
+    // The primary forwards the legacy ports and VGA memory too and owns
+    // the ECAM window.
+    let (io, vga, ecam) = if bridge.primary {
+        (0, 0x2_0000, 256 << 20)
     } else {
-        (0x1000, 0x1FFF)
+        (0x1000, 0, 0)
     };
     let root = PciRoot::new(
         PciRootInfo {
@@ -45,9 +42,12 @@ fn pci_root(bridge: &RootBridge) -> &'static fstart_pci::PciRoot {
             bus_end: bridge.bus_limit,
         },
         [
-            window(PciWindowKind::Io, io.0, io.1),
-            window(PciWindowKind::Mmio, 0xC000_0000, 0xC7FF_FFFF),
-            window(PciWindowKind::Mmio, 0x100_0000_0000, 0x10F_FFFF_FFFF),
+            Forwarded.io(io, 0x2000 - io),
+            Window.io(0x1000, 0x1000),
+            Forwarded.mmio(0xa_0000, vga),
+            Window.mmio(0xC000_0000, 0x0800_0000),
+            Window.mmio(0x100_0000_0000, 0x10_0000_0000),
+            Own.mmio(0xE000_0000, ecam),
         ],
     )
     .unwrap();

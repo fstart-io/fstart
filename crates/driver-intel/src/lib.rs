@@ -211,7 +211,6 @@ pub struct SpdTraining<'a> {
 /// the SPDs and training cache, reporting the bytes captured, if any.
 pub trait IntelNorthbridgeDriver:
     fstart_core::services::memory_detect::MemoryDetector
-    + fstart_pci::PciRootProvider
     + for<'a> fstart_core::services::MemoryInit<Input<'a> = SpdTraining<'a>, Output = Option<usize>>
     + Sized
 {
@@ -221,6 +220,13 @@ pub trait IntelNorthbridgeDriver:
     const ACPI_PCI_ROOT_NAME: &'static str;
     /// ACPI name of the integrated graphics device on that root.
     const ACPI_IGD_NAME: &'static str;
+
+    /// The fixed identity of the PCI root bridge: segment, ECAM and buses.
+    fn pci_root_info(&self) -> fstart_pci::PciRootInfo;
+    /// The PCI root bridge, once memory is detected: what the host bridge
+    /// forwards and what that is for. The platform asks once; the allocator
+    /// is built from the answer.
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError>;
 
     /// The user options the driver consumes (`fstart_options`): the
     /// configuration its knobs change, set before `pre_console_init` in
