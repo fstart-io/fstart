@@ -602,12 +602,12 @@ pub struct Cpus {
 pub struct Enumerated {
     #[cfg_attr(not(feature = "acpi"), allow(dead_code))]
     mp: MpHandle,
-    roots: Vec<fstart_pci::PciEcam>,
+    pci: fstart_pci::PciEcam,
 }
 
 /// The ACPI and SMBIOS tables are installed.
 pub struct Published {
-    roots: Vec<fstart_pci::PciEcam>,
+    pci: fstart_pci::PciEcam,
 }
 
 /// The board's contributions to the tables the payload gets.
@@ -736,7 +736,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Cpus> {
         let Machine { ctx, si, .. } = &mut self.machine;
         step(0x60, "PCI enumeration");
         S::pci_pre(ctx, si);
-        let roots = crate::flow::enumerate(ctx);
+        let pci = crate::flow::enumerate(ctx);
         S::pci_post(ctx, si);
         let Stage {
             machine,
@@ -745,7 +745,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Cpus> {
         } = self;
         Stage {
             machine,
-            phase: Enumerated { mp, roots },
+            phase: Enumerated { mp, pci },
             _board,
         }
     }
@@ -763,7 +763,12 @@ impl<B: Board, S: Silicon> Stage<B, S, Enumerated> {
             let Machine {
                 ctx, si, rom_size, ..
             } = &mut self.machine;
-            ctx.rsdp = Some(handoff::acpi::<B, S>(ctx, si, &tables.acpi));
+            ctx.rsdp = Some(handoff::acpi::<B, S>(
+                ctx,
+                si,
+                &self.phase.pci,
+                &tables.acpi,
+            ));
             ctx.smbios = Some(crate::smbios::runtime::prepare(
                 ctx,
                 &self.phase.mp,
@@ -773,12 +778,12 @@ impl<B: Board, S: Silicon> Stage<B, S, Enumerated> {
         }
         let Stage {
             machine,
-            phase: Enumerated { roots, .. },
+            phase: Enumerated { pci, .. },
             _board,
         } = self;
         Stage {
             machine,
-            phase: Published { roots },
+            phase: Published { pci },
             _board,
         }
     }
@@ -791,7 +796,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Published> {
             machine: Machine {
                 ctx, si, console, ..
             },
-            phase: Published { roots },
+            phase: Published { pci },
             ..
         } = self;
         step(0x80, "ReadyToBoot");
@@ -801,7 +806,7 @@ impl<B: Board, S: Silicon> Stage<B, S, Published> {
         if !fstart_arch::x86::mp::park_aps_for_payload() {
             fail("AP park");
         }
-        handoff::boot(ctx, roots, console)
+        handoff::boot(ctx, pci, console)
     }
 }
 
@@ -1289,25 +1294,33 @@ fn install_smm<S: Steps>(
     }
 }
 
-/// Enumerate every root bridge with the allocator windows of the DF plan.
-pub(crate) fn enumerate(ctx: &Ctx) -> Vec<fstart_pci::PciEcam> {
-    ctx.plan
-        .root_bridges
+/// Enumerate every root bridge the DF routes, each within its own buses and
+/// windows, with one allocator for the segment.
+///
+/// The root bridges are described here, from the plan [`data_fabric`]
+/// programmed: before that the plan is empty and there is nothing to
+/// enumerate through an unprogrammed fabric. The allocator keeps them, and
+/// the tables are built from its copy.
+pub(crate) fn enumerate(ctx: &Ctx) -> fstart_pci::PciEcam {
+    let roots: heapless::Vec<fstart_pci::PciRoot, MAX_ROOT_BRIDGES> = (ctx.plan.root_bridges)
         .iter()
-        .map(|rb| {
-            let mut pci =
-                fstart_pci::PciEcam::from_config(&crate::pci::root_config(rb, &ctx.pci_root))
-                    .or_halt("PCI root");
-            pci.enumerate_and_allocate().or_halt("PCI enumeration");
-            fstart_log::info!(
-                "pci: rb {}.{}: {} functions",
-                rb.socket,
-                rb.index,
-                pci.device_count()
-            );
-            pci
-        })
-        .collect()
+        .map(|rb| crate::pci::root(rb, &ctx.pci_root))
+        .collect::<Option<_>>()
+        .or_halt("PCI root");
+    let mut pci = fstart_pci::PciEcam::new(roots).or_halt("PCI root");
+    pci.enumerate_and_allocate().or_halt("PCI enumeration");
+    for (rb, root) in ctx.plan.root_bridges.iter().zip(pci.roots()) {
+        let buses = root.buses();
+        fstart_log::info!(
+            "pci: rb {}.{}: {} functions",
+            rb.socket,
+            rb.index,
+            pci.devices()
+                .filter(|address| buses.contains(&address.bus()))
+                .count()
+        );
+    }
+    pci
 }
 
 /// ReadyToBoot (SOC_DF §3.7, PSP_APOB §3.4, FCH_SP3 §2.3): FCH late

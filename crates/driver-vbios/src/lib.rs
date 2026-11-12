@@ -903,12 +903,7 @@ mod tests {
         mode.linear_stride.set(5632);
         mode.base.set(0xe0000000);
         mode.linear_color = [8, 16, 8, 8, 8, 0, 8, 24];
-        let windows = [PciWindow {
-            kind: fstart_pci::PciWindowKind::Mmio,
-            base: 0xe0000000,
-            size: 0x1000000,
-            prefetchable: true,
-        }];
+        let windows = [PciWindow::mmio(0xe0000000, 0x1000000)];
         let info = mode.framebuffer(0x300, &windows).unwrap();
         assert_eq!((info.width, info.height, info.stride), (1366, 768, 1408));
         mode.linear_color[3] = 16;

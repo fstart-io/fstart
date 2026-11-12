@@ -619,7 +619,7 @@ fstart-pci = { workspace = true }
 fstart-log = { workspace = true, features = ["alloc"] }
 fstart-options = { workspace = true, features = ["alloc", "varstore"] }
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi = { workspace = true, features = ["x86", "pci"], optional = true }
 # The pieces of the flow every PSP-booted SoC shares.
 fstart-platform-amd = { path = "../platform-amd", optional = true, features = ["media"] }
 fstart-stage = { workspace = true, optional = true }

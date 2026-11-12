@@ -19,10 +19,7 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, E820State, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind, ecam,
-    pci_type0_config,
-};
+use fstart_pci::{PciRootInfo, ecam, pci_type0_config};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
@@ -33,12 +30,8 @@ pub const DEFAULT_EPBAR: u64 = 0xfed1_9000;
 pub const DEFAULT_ECAM_BASE: u64 = 0xe000_0000;
 /// The QuickPath uncore sits on the topmost bus PCIEXBAR decodes.
 pub const DEFAULT_ECAM_BUSES: u16 = 256;
-const PCI_PIO_BASE: u64 = 0x1000;
-const PCI_PIO_SIZE: u64 = 0xf000;
 /// QuickPath non-core: bit 0 disables multicore, bit 1 quadcore, bit 8 HT.
 const DESIRED_CORES: u16 = 0x80;
-/// coreboot `DOMAIN_RESOURCE_32BIT_LIMIT`.
-const MMIO32_LIMIT: u64 = 0xfec0_0000;
 
 register_bitfields![u32,
     /// DEVEN.
@@ -216,7 +209,8 @@ pub struct IntelIronlake {
     options: crate::igd::options::Options,
     dram_ready: bool,
     boot_path: crate::BootPath,
-    mmio32_window: Option<(u64, u64)>,
+    /// Where PCI MMIO starts below 4 GiB (TOLUD), once memory is detected.
+    low_dram_end: Option<u64>,
     igd_bars: Option<crate::igd::IgdBars>,
     display: crate::igd::IgdDisplay,
 }
@@ -402,6 +396,34 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     type Config = IntelIronlakeConfig;
     const ACPI_PCI_ROOT_NAME: &'static str = "PCI0";
     const ACPI_IGD_NAME: &'static str = "GFX0";
+
+    fn pci_root(&self) -> Result<fstart_pci::PciRoot, fstart_pci::PciEcamError> {
+        use fstart_pci::PciRole::Own;
+        let config = self.config;
+        // What the chipset decodes itself, on top of what every host
+        // bridge forwards.
+        let chipset = [
+            // The ECAM window covers the QuickPath bus too.
+            Own.mmio(config.ecam_base, u64::from(config.ecam_buses) << 20),
+            Own.mmio(config.rcba, 0x4000),
+            Own.mmio(config.mchbar, 0x8000),
+            Own.mmio(config.dmibar, 0x1000),
+            Own.mmio(config.epbar, 0x1000),
+            // TXT, and the chipset's reserved block above the TPM.
+            Own.mmio(0xfed2_0000, 0x2_0000),
+            Own.mmio(0xfed4_5000, 0x4_b000),
+        ];
+        fstart_pci::PciRoot::new(
+            PciRootInfo {
+                segment: 0,
+                ecam_base: self.config.ecam_base,
+                bus_start: 0,
+                // The QuickPath bus is not part of the PCI domain.
+                bus_end: self.config.quickpath_bus() - 1,
+            },
+            (crate::host_bridge::forwarded(self.low_dram_end, None).into_iter()).chain(chipset),
+        )
+    }
     type Options = crate::igd::options::Options;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
@@ -437,7 +459,7 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
             options: config.options(),
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
-            mmio32_window: None,
+            low_dram_end: None,
             igd_bars: None,
             display: crate::igd::IgdDisplay::new(),
         })
@@ -546,16 +568,8 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     }
 
     fn memory_detected(&mut self, state: &fstart_core::services::memory_detect::E820State) {
-        let Ok(map) = self.read_memory_map() else {
-            self.mmio32_window = None;
-            return;
-        };
         let _ = state;
-        // PCI MMIO from TOLUD to the I/O APIC, around the fixed ECAM window
-        // (coreboot `DOMAIN_RESOURCE_32BIT_LIMIT`).
-        let base = u64::from(map.tolud);
-        let limit = self.config.ecam_base.min(MMIO32_LIMIT);
-        self.mmio32_window = (base < limit).then_some((base, limit - base));
+        self.low_dram_end = self.read_memory_map().ok().map(|map| u64::from(map.tolud));
     }
 }
 
@@ -664,40 +678,6 @@ impl MemoryDetector for IntelIronlake {
             return Err(ServiceError::NotInitialized);
         }
         Ok(self.read_memory_map()?.tom)
-    }
-}
-
-impl PciRootProvider for IntelIronlake {
-    fn root_info(&self) -> PciRootInfo {
-        PciRootInfo {
-            segment: 0,
-            ecam_base: self.config.ecam_base,
-            bus_start: 0,
-            // The QuickPath bus is not part of the PCI domain.
-            bus_end: self.config.quickpath_bus() - 1,
-        }
-    }
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        let mut windows = PciRootWindows::new();
-        if let Some((base, size)) = self.mmio32_window {
-            windows
-                .push(PciWindow {
-                    kind: PciWindowKind::Mmio,
-                    base,
-                    size,
-                    prefetchable: false,
-                })
-                .map_err(|_| PciRootError::TooManyWindows)?;
-        }
-        windows
-            .push(PciWindow {
-                kind: PciWindowKind::Io,
-                base: PCI_PIO_BASE,
-                size: PCI_PIO_SIZE,
-                prefetchable: false,
-            })
-            .map_err(|_| PciRootError::TooManyWindows)?;
-        Ok(windows)
     }
 }
 

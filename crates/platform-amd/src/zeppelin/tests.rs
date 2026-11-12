@@ -10,7 +10,11 @@ use super::{
 };
 use crate::{
     acpi::{self, BoardAcpi, DieAcpi, Inputs},
-    noncar::{acpi::HostBridge, layout::Region, pci::Root},
+    noncar::{
+        acpi::HostBridge,
+        layout::Region,
+        pci::{Root, root},
+    },
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 use fstart_driver_amd::cpu::{Package, Revision};
@@ -29,7 +33,7 @@ use fstart_driver_amd::{
         zeppelin::{Die, NONPCI_MMIO_SIZE},
     },
 };
-use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam};
+use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam, PciWindow, PciWindowKind};
 use std::vec::Vec;
 
 const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -253,12 +257,43 @@ fn mj11_ec1_pci_root() {
     let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();
     let ecam = Region::new(0xf000_0000, 128 << 20);
     let reserved = Region::new(state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
-    let root = Root::new(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
+    let root = root(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
     assert_eq!(root.buses(), 0..=127);
-    assert!(root.io().eq(core::iter::once(0x1000..=0xffff)));
+    // `_CRS`: what the DF routes to the die, without what the die decodes
+    // itself: the ECAM window and the non-PCI pool.
+    assert!(root.io().eq(core::iter::once(0..=0xffff)));
     assert_eq!(
         root.mmio().collect::<Vec<_>>(),
-        [0xf800_0000..=0xfe3f_ffff, 0x8000_0000..=0xefff_ffff]
+        [
+            // The legacy VGA memory, routed to the die with bus 0.
+            0xa_0000..=0xb_ffff,
+            0xf800_0000..=0xfe3f_ffff,
+            0x8000_0000..=0xefff_ffff,
+            // Above 4 GiB: from 1 TiB to the fabric's reserved top 12 GiB.
+            0x100_0000_0000..=0xfffc_ffff_ffff
+        ]
+    );
+    let spans = |ranges: &[PciWindow]| -> Vec<_> {
+        ranges.iter().map(|r| (r.kind, r.base, r.end())).collect()
+    };
+    use PciWindowKind::{Io, Mmio};
+    // The allocator: the same without the legacy ports.
+    assert_eq!(
+        spans(root.allocatable()),
+        [
+            (Io, 0x1000, 0x1_0000),
+            (Mmio, 0xf800_0000, 0xfe40_0000),
+            (Mmio, 0x8000_0000, 0xf000_0000),
+            (Mmio, 0x100_0000_0000, 0xfffd_0000_0000),
+        ]
+    );
+    // The motherboard device: the pool and the ECAM window.
+    assert_eq!(
+        spans(root.motherboard()),
+        [
+            (Mmio, 0xfe40_0000, 0xfec0_0000),
+            (Mmio, 0xf000_0000, 0xf800_0000)
+        ]
     );
 }
 
@@ -365,10 +400,10 @@ fn sp4_pci_roots_and_host_bridges() {
         .map(|die| {
             let pool = state.nonpci[usize::from(die.index())];
             let reserved = Region::new(pool.into(), NONPCI_MMIO_SIZE.into());
-            Root::new(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
+            root(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
         })
         .collect();
-    let mut pci = PciEcam::from_providers(&roots).unwrap();
+    let mut pci = PciEcam::new(roots.clone()).unwrap();
     pci.enumerate_and_allocate().unwrap();
     let read = |address, offset| pci.device(address).unwrap().read32(offset);
 
@@ -412,10 +447,12 @@ fn sp4_pci_roots_and_host_bridges() {
         address_spaces(&aml[..pci1]),
         [
             (2, 0, 0x3f),
-            (1, 0x1000, 0x7fff),
+            // The I/O the DF routes to die 0, around the configuration ports.
+            (1, 0, 0xcf7),
+            (1, 0xd00, 0x7fff),
+            vga,
             (0, 0xe800_0000, 0xef7f_ffff),
             (0, 0xf800_0000, 0xfebf_ffff),
-            vga
         ]
     );
     assert_eq!(
@@ -426,4 +463,25 @@ fn sp4_pci_roots_and_host_bridges() {
             (0, 0xe000_0000, 0xe77f_ffff)
         ]
     );
+    // Next to each root bridge, the motherboard device of its die: the
+    // non-PCI pool, and on die 0 the ECAM window.
+    for (die, pool) in [(0, 0xef80_0000u32), (1, 0xe780_0000)] {
+        let name = std::format!("MBR{die}");
+        let device = aml.windows(4).position(|n| n == name.as_bytes()).unwrap();
+        let fixed = |base: u32, size: u32| {
+            let mut fixed = std::vec![0x86, 9, 0, 1]; // Memory32Fixed, ReadWrite
+            fixed.extend_from_slice(&base.to_le_bytes());
+            fixed.extend_from_slice(&size.to_le_bytes());
+            aml[device..]
+                .windows(fixed.len())
+                .position(|bytes| bytes == fixed)
+        };
+        assert!(fixed(pool, NONPCI_MMIO_SIZE).is_some_and(|at| at < 64));
+        // (The test's ECAM is test RAM above 4 GiB: not a 32-bit descriptor.)
+        let owns_ecam = roots[die]
+            .motherboard()
+            .iter()
+            .any(|range| (range.base, range.size) == (ecam_region.base, ecam_region.size));
+        assert_eq!(owns_ecam, die == 0);
+    }
 }

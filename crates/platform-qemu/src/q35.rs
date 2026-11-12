@@ -4,7 +4,7 @@ use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_pci::{
     PCI_HEADER_TYPE, PCI_HEADER_TYPE_MULTI_FUNC, PCI_INTERRUPT_LINE, PCI_INTERRUPT_PIN, PciAddress,
-    PciEcam, PciEcamConfig,
+    PciEcam, PciResource, PciRole::Window, PciRoot, PciRootInfo,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,25 +45,35 @@ unsafe impl Sync for Q35HostBridge {}
 
 impl Q35HostBridge {
     pub fn new(config: Q35HostBridgeConfig) -> Result<Self, ServiceError> {
-        let ecam = PciEcam::from_config(&PciEcamConfig {
-            ecam_base: config.ecam_base,
-            ecam_size: config.ecam_size,
-            mmio32_base: 0,
-            mmio32_size: 0,
-            mmio64_base: 0,
-            mmio64_size: 0,
-            pio_base: 0,
-            pio_size: 0,
-            bus_start: config.bus_start,
-            bus_end: config.bus_end,
-        })
-        .map_err(|_| ServiceError::InvalidParam)?;
+        // No windows yet: they depend on the memory map. Configuration
+        // access works from here on.
+        let ecam = Self::allocator(&config, [])?;
         Ok(Self {
             config,
             ecam,
             #[cfg(all(feature = "smm", feature = "stage"))]
             tseg_base: 0,
         })
+    }
+
+    /// The allocator of the one q35 root bridge with `windows`. The
+    /// description is for the allocator only: QEMU supplies the tables, and
+    /// its ECAM window is outside the windows it gives.
+    fn allocator(
+        config: &Q35HostBridgeConfig,
+        windows: impl IntoIterator<Item = PciResource>,
+    ) -> Result<PciEcam, ServiceError> {
+        let root = PciRoot::new(
+            PciRootInfo {
+                segment: 0,
+                ecam_base: config.ecam_base,
+                bus_start: config.bus_start,
+                bus_end: config.bus_end,
+            },
+            windows,
+        )
+        .map_err(|_| ServiceError::InvalidParam)?;
+        PciEcam::new([root]).map_err(|_| ServiceError::InvalidParam)
     }
 
     pub fn init_with_e820(&mut self, entries: &[E820Entry]) -> Result<(), ServiceError> {
@@ -87,16 +97,16 @@ impl Q35HostBridge {
             mmio64_base + mmio64_size,
         );
 
-        self.ecam
-            .configure_windows(
-                mmio32_base,
-                mmio32_size,
-                mmio64_base,
-                mmio64_size,
-                PIO_BASE,
-                PIO_SIZE,
-            )
-            .map_err(|_| ServiceError::HardwareError)?;
+        self.ecam = Self::allocator(
+            &self.config,
+            [
+                Window.mmio(mmio32_base, mmio32_size),
+                // The window above 4 GiB takes the prefetchable 64-bit BARs.
+                Window.mmio(mmio64_base, mmio64_size),
+                Window.io(PIO_BASE, PIO_SIZE),
+            ],
+        )
+        .map_err(|_| ServiceError::HardwareError)?;
         self.ecam
             .enumerate_and_allocate()
             .map_err(|_| ServiceError::HardwareError)?;

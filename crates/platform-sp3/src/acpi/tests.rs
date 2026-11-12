@@ -22,24 +22,37 @@ struct System {
     bridges: Vec<RootBridge>,
 }
 
-const IO: [Window<u16>; 1] = [Window {
-    base: 0,
-    limit: 0x0FFF,
-}];
-const IO_HI: [Window<u16>; 1] = [Window {
-    base: 0x1000,
-    limit: 0x1FFF,
-}];
-const MMIO: [Window<u64>; 2] = [
-    Window {
-        base: 0xC000_0000,
-        limit: 0xC7FF_FFFF,
-    },
-    Window {
-        base: 0x100_0000_0000,
-        limit: 0x10F_FFFF_FFFF,
-    },
-];
+/// The root bridge of `bridge` as the allocator had it: the primary with
+/// the legacy I/O, each with one window below and one above 4 GiB.
+fn pci_root(bridge: &RootBridge) -> &'static fstart_pci::PciRoot {
+    use fstart_pci::PciRole::{Forwarded, Own, Window};
+    use fstart_pci::PciRoot;
+    // The primary forwards the legacy ports and VGA memory too and owns
+    // the ECAM window.
+    let (io, vga, ecam) = if bridge.primary {
+        (0, 0x2_0000, 256 << 20)
+    } else {
+        (0x1000, 0, 0)
+    };
+    let root = PciRoot::new(
+        PciRootInfo {
+            segment: 0,
+            ecam_base: 0xE000_0000,
+            bus_start: bridge.bus_base,
+            bus_end: bridge.bus_limit,
+        },
+        [
+            Forwarded.io(io, 0x2000 - io),
+            Window.io(0x1000, 0x1000),
+            Forwarded.mmio(0xa_0000, vga),
+            Window.mmio(0xC000_0000, 0x0800_0000),
+            Window.mmio(0x100_0000_0000, 0x10_0000_0000),
+            Own.mmio(0xE000_0000, ecam),
+        ],
+    )
+    .unwrap();
+    Box::leak(Box::new(root))
+}
 
 fn system(generation: Generation, sockets: u8, threads: u32) -> System {
     let bridges: Vec<RootBridge> = (0..sockets)
@@ -107,8 +120,7 @@ fn root_bridges(s: &System) -> Vec<RootBridgeAcpi<'static>> {
         .iter()
         .map(|&bridge| RootBridgeAcpi {
             bridge,
-            io: if bridge.primary { &IO } else { &IO_HI },
-            mmio: &MMIO,
+            root: pci_root(&bridge),
             domain: None,
             ioapic_features: 0x1430_0000 + (u32::from(bridge.index) << 20),
         })

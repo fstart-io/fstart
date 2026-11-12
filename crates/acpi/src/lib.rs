@@ -59,6 +59,8 @@ pub mod numa;
 pub mod osc;
 pub mod path;
 pub mod pcct;
+#[cfg(feature = "pci")]
+pub mod pci_root;
 pub mod pirq;
 pub mod platform;
 pub mod processor;

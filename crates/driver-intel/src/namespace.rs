@@ -12,6 +12,22 @@ pub const fn pci_root<NB: IntelNorthbridgeDriver>() -> AcpiPath {
     AcpiPath::SB.child(NB::ACPI_PCI_ROOT_NAME)
 }
 
+/// What the tables say about the northbridge's PCI root, all of it from
+/// `root`: `_CRS` in the root's scope with what it forwards, and next to it
+/// the motherboard device `PDRC` with what the chipset decodes itself. The
+/// platform passes the root bridge its allocator was built from, so the OS
+/// is told about the windows the firmware allocated in.
+pub fn pci_root_resources<NB: IntelNorthbridgeDriver>(
+    root: &fstart_pci::PciRoot,
+) -> Result<Vec<u8>, fstart_acpi::AmlError> {
+    let mut aml = fstart_acpi::aml_linker::scope_vec(
+        const { pci_root::<NB>() }.as_str(),
+        &fstart_acpi::pci_root::crs(root),
+    )?;
+    aml.extend(fstart_acpi::pci_root::motherboard("PDRC", root)?);
+    Ok(aml)
+}
+
 /// The integrated graphics device, `\_SB_.PCI0.GFX0`.
 #[must_use]
 pub const fn igd<NB: IntelNorthbridgeDriver>() -> AcpiPath {

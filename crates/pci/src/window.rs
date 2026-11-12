@@ -10,7 +10,12 @@ pub enum PciWindowKind {
     Io,
 }
 
-/// One address window decoded by a PCI root bridge.
+/// One span of PCI address space: a window of a root bridge, a part of one
+/// the firmware reserved, or the range a BAR was assigned.
+///
+/// Whether a BAR is prefetchable is the BAR's own property, and where the
+/// allocator puts it its own policy (below 4 GiB first, above only what
+/// may go there); a window does not say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciWindow {
     /// Kind of address space.
@@ -19,11 +24,27 @@ pub struct PciWindow {
     pub base: u64,
     /// Size of the window in bytes.
     pub size: u64,
-    /// Whether this memory window supports prefetchable transactions.
-    pub prefetchable: bool,
 }
 
 impl PciWindow {
+    /// `size` ports from `base`.
+    pub const fn io(base: u64, size: u64) -> Self {
+        Self {
+            kind: PciWindowKind::Io,
+            base,
+            size,
+        }
+    }
+
+    /// `size` bytes of memory from `base`.
+    pub const fn mmio(base: u64, size: u64) -> Self {
+        Self {
+            kind: PciWindowKind::Mmio,
+            base,
+            size,
+        }
+    }
+
     /// Exclusive end address (`base + size`), saturating at `u64::MAX`.
     pub const fn end(&self) -> u64 {
         self.base.saturating_add(self.size)

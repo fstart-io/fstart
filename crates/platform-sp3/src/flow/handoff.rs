@@ -44,9 +44,9 @@ fn span_window(span: Span) -> MemoryWindow {
 }
 
 /// Hand the e820, RSDP and console to the build's payload launcher.
-pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550) -> ! {
-    // The allocators' assignments are in the hardware now.
-    drop(roots);
+pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
+    // The allocator's assignments are in the hardware now.
+    drop(pci);
     fstart_log::info!("sp3: handing off to the payload");
     fstart_log::flush();
     let mut description =
@@ -83,9 +83,10 @@ pub(crate) fn boot(ctx: Ctx, roots: Vec<fstart_pci::PciEcam>, console: &Ns16550)
 pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
     ctx: &Ctx,
     si: &S,
+    pci: &fstart_pci::PciEcam,
     board_acpi: &crate::acpi::Board<'_>,
 ) -> u64 {
-    use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi, Window};
+    use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::sp3::ccx::power;
@@ -118,43 +119,17 @@ pub(crate) fn acpi<B: crate::board::Board, S: super::Steps>(
             })
         })
         .collect();
-    type Windows = (Vec<Window<u16>>, Vec<Window<u64>>);
-    let windows: Vec<Windows> = ctx
-        .plan
-        .root_bridges
-        .iter()
-        .map(|rb| {
-            let io = rb
-                .io
-                .iter()
-                .map(|w| Window {
-                    base: w.base as u16,
-                    limit: (w.end() - 1) as u16,
-                })
-                .collect();
-            let mmio = [Some(rb.below), rb.second_below, rb.above]
-                .into_iter()
-                .flatten()
-                .filter(|w| w.size != 0)
-                .map(|w| Window {
-                    base: w.base,
-                    limit: w.end() - 1,
-                })
-                .collect();
-            (io, mmio)
-        })
-        .collect();
     let root_bridges: Vec<RootBridgeAcpi<'_>> = ctx
         .topology
         .root_bridges
         .iter()
-        .zip(&windows)
+        // The root bridges the allocator was built from.
+        .zip(pci.roots())
         .zip(si.nbios())
         .enumerate()
-        .map(|(i, ((&bridge, (io, mmio)), n))| RootBridgeAcpi {
+        .map(|(i, ((&bridge, root), n))| RootBridgeAcpi {
             bridge,
-            io,
-            mmio,
+            root,
             domain: numa_plan
                 .as_ref()
                 .and_then(|p| p.root_bridges.get(i).copied()),

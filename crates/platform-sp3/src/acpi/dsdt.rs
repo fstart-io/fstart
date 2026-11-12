@@ -19,10 +19,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use fstart_acpi::aml::{
-    AddressSpace, AddressSpaceCacheable, EISAName, IO, Memory32Fixed, Name, PackageBuilder, Path,
-    ResourceTemplate,
-};
+use fstart_acpi::aml::{EISAName, IO, Memory32Fixed, Name, PackageBuilder, Path, ResourceTemplate};
 use fstart_acpi::aml_linker::{device_vec, scope_vec};
 use fstart_acpi::processor::{ProcessorName, cpc_aml, processor_device};
 use fstart_acpi::{Aml, AmlError, RawAml, acpi_dsl, gpe};
@@ -33,12 +30,7 @@ use fstart_driver_amd::sp3::fch::acpi as fch_acpi;
 use fstart_driver_amd::sp3::soc::Generation;
 
 use super::fixed::{FCH_IOAPIC_BASE, GsiWindow, HPET_BASE, LAPIC_BASE, PM_BASE};
-use super::{Inputs, RootBridgeAcpi, Window, prt};
-
-/// PCI configuration ports, consumed by the primary root bridge.
-const CONFIG_PORTS: (u16, u16) = (0xCF8, 0xCFF);
-/// Legacy VGA memory, routed to the primary root bridge.
-const VGA: (u32, u32) = (0xA_0000, 0xB_FFFF);
+use super::{Inputs, RootBridgeAcpi, prt};
 
 fn serialize(aml: &dyn Aml) -> Vec<u8> {
     let mut v = Vec::new();
@@ -63,62 +55,6 @@ fn pci_name(uid: usize) -> [u8; 4] {
 
 fn as_str(n: &[u8; 4]) -> &str {
     core::str::from_utf8(n).unwrap_or("PCI0")
-}
-
-/// Split IO windows around the configuration ports.
-fn io_windows(io: &[Window<u16>]) -> impl Iterator<Item = (u16, u16)> + '_ {
-    let (lo, hi) = CONFIG_PORTS;
-    io.iter().flat_map(move |w| {
-        let parts = match w.base <= hi && w.limit >= lo {
-            true => [
-                (w.base < lo).then_some((w.base, lo - 1)),
-                (w.limit > hi).then_some((hi + 1, w.limit)),
-            ],
-            false => [Some((w.base, w.limit)), None],
-        };
-        parts.into_iter().flatten()
-    })
-}
-
-fn mmio_descriptor(base: u64, limit: u64, out: &mut Vec<u8>) {
-    match u32::try_from(limit) {
-        Ok(limit) => AddressSpace::<u32>::new_memory(
-            AddressSpaceCacheable::NotCacheable,
-            true,
-            base as u32,
-            limit,
-            None,
-        )
-        .to_aml_bytes(out),
-        Err(_) => AddressSpace::<u64>::new_memory(
-            AddressSpaceCacheable::NotCacheable,
-            true,
-            base,
-            limit,
-            None,
-        )
-        .to_aml_bytes(out),
-    }
-}
-
-/// `_CRS` of a root bridge: bus range, config ports and VGA on the primary,
-/// then the DF IO and MMIO windows.
-fn crs(rb: &RootBridgeAcpi) -> Vec<u8> {
-    let mut d = Vec::new();
-    AddressSpace::<u16>::new_bus_number(rb.bridge.bus_base.into(), rb.bridge.bus_limit.into())
-        .to_aml_bytes(&mut d);
-    if rb.bridge.primary {
-        IO::new(CONFIG_PORTS.0, CONFIG_PORTS.0, 1, 8).to_aml_bytes(&mut d);
-    }
-    io_windows(rb.io)
-        .for_each(|(lo, hi)| AddressSpace::<u16>::new_io(lo, hi, None).to_aml_bytes(&mut d));
-    if rb.bridge.primary {
-        mmio_descriptor(VGA.0.into(), VGA.1.into(), &mut d);
-    }
-    rb.mmio
-        .iter()
-        .for_each(|w| mmio_descriptor(w.base, w.limit, &mut d));
-    name("_CRS", &ResourceTemplate::new(alloc::vec![&RawAml(&d)]))
 }
 
 /// `Name(_PRT, Package { {addr, pin, 0, gsi} ... })`.
@@ -230,15 +166,12 @@ fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
     device_vec("LPCB", &[adr.as_slice(), &fch, board_aml].concat())
 }
 
-/// Motherboard resources the root-bridge windows would otherwise offer:
-/// ECAM, FCH/LAPIC/IOAPIC MMIO, NBIO IOAPIC and IOMMU BARs, FCH IO.
-fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError> {
+/// Motherboard resources of the FCH and the CPUs inside what the primary
+/// root bridge forwards: FCH/LAPIC/IOAPIC MMIO and FCH I/O. What the root
+/// bridges decode themselves (the ECAM window, the NBIO IOAPICs and IOMMUs
+/// in the non-PCI pools) is in the motherboard device of each root bridge.
+fn system_resources() -> Result<Vec<u8>, AmlError> {
     let mut d = Vec::new();
-    let mem = |base: u64, len: u64, d: &mut Vec<u8>| match u32::try_from(base + len) {
-        Ok(_) => Memory32Fixed::new(true, base as u32, len as u32).to_aml_bytes(d),
-        Err(_) => mmio_descriptor(base, base + len - 1, d),
-    };
-    mem(inputs.pci.ecam_base, inputs.pci.ecam_size(), &mut d);
     [(FCH_IOAPIC_BASE, 0x1000), (LAPIC_BASE, 0x1000)]
         .iter()
         .copied()
@@ -247,19 +180,7 @@ fn system_resources(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, A
                 .iter()
                 .map(|&(b, l)| (u64::from(b), u64::from(l))),
         )
-        .chain(
-            windows
-                .iter()
-                .filter(|w| w.nbio.is_some())
-                .map(|w| (w.base, 0x1000)),
-        )
-        .chain(
-            inputs
-                .iommus
-                .iter()
-                .map(|m| (m.info.base, fstart_driver_amd::nbio::iommu::MMIO_SIZE)),
-        )
-        .for_each(|(b, l)| mem(b, l, &mut d));
+        .for_each(|(b, l)| Memory32Fixed::new(true, b as u32, l as u32).to_aml_bytes(&mut d));
     // The FCH's legacy and index ports (the SMI command port is in
     // 0xA2..0xBF) and the ACPI PM blocks.
     fch_acpi::SYSTEM_IO
@@ -293,7 +214,7 @@ fn root_bridge(
         name("_SEG", &0u8),
         name("_BBN", &b.bus_base),
         rb.domain.map(|d| name("_PXM", &d)).unwrap_or_default(),
-        crs(rb),
+        fstart_acpi::pci_root::crs(rb.root),
         osc(),
         ioapic_acpi::nbio_aml(rb.ioapic_features)?,
     ]
@@ -305,9 +226,15 @@ fn root_bridge(
     }
     if b.primary {
         body.extend(lpc(inputs.board.lpc_aml)?);
-        body.extend(system_resources(inputs, windows)?);
+        body.extend(system_resources()?);
     }
-    device_vec(as_str(&pci_name(uid)), &body)
+    // Next to the bridge: what it decodes itself, which `_CRS` leaves out.
+    let mut aml = device_vec(as_str(&pci_name(uid)), &body)?;
+    aml.extend(fstart_acpi::pci_root::motherboard(
+        &alloc::format!("MBR{uid:X}"),
+        rb.root,
+    )?);
+    Ok(aml)
 }
 
 /// `\PICM`, `\_PIC`, `\_S0`, `\_S5`.
@@ -376,25 +303,4 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
     out.extend(inputs.fch.sb_aml()?);
     out.extend_from_slice(inputs.board.sb_aml);
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_ports_are_cut_out() {
-        let io = [
-            Window {
-                base: 0,
-                limit: 0xFFF,
-            },
-            Window {
-                base: 0x1000,
-                limit: 0x1FFF,
-            },
-        ];
-        let got: Vec<_> = io_windows(&io).collect();
-        assert_eq!(got, [(0, 0xCF7), (0xD00, 0xFFF), (0x1000, 0x1FFF)]);
-    }
 }

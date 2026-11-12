@@ -1,108 +1,79 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The PCI root complex of a die as a PCI root bridge: the buses and windows
-//! the DF routes to it. The allocator and the ACPI host bridge
-//! of the die both take them from here.
+//! The PCI root complex of a die as a PCI root bridge: what the DF routes
+//! to it and what that is for. The allocator and the ACPI host bridge of
+//! the die both take it from here.
 use super::layout::Region;
-use core::ops::RangeInclusive;
 use fstart_driver_amd::df::map::RootComplex;
-use fstart_pci::{
-    PciRootError, PciRootInfo, PciRootProvider, PciRootWindows, PciWindow, PciWindowKind,
-};
+use fstart_pci::PciRole::{Forwarded, Own, Window};
+use fstart_pci::{PciRoot, PciRootInfo};
 
-/// Legacy LPC/FCH I/O stays below 0x1000; PCI gets the rest of the 64 KiB.
-const PCI_IO: (u64, u64) = (0x1000, 0x1_0000);
+/// Where the legacy LPC/FCH I/O ends: forwarded like the rest, not for PCI
+/// devices.
+const LEGACY_IO: u64 = 0x1000;
 /// The IOAPIC, HPET and FCH fixed MMIO and everything above.
 const FIXED_MMIO: u64 = 0xfec0_0000;
+/// The top 12 GiB of the 48-bit address space are the fabric's own and
+/// cannot hold MMIO (coreboot `DF_RESERVED_TOP_12GB_MMIO_SIZE`).
+const FABRIC_RESERVED: u64 = (1 << 48) - (12 << 30);
 
-pub struct Root {
-    info: PciRootInfo,
-    windows: PciRootWindows,
-}
+/// A die's root complex as a PCI root bridge.
+pub type Root = PciRoot;
 
-impl Root {
-    /// The root bridge of the root complex `routes`: its buses in the ECAM
-    /// `ecam`, its I/O windows above the legacy I/O and its MMIO windows
-    /// below 4 GiB, minus the ECAM and the `reserved` MMIO (a non-PCI pool).
-    /// Only 32-bit windows: the 64-bit DF windows start at 1 TiB, beyond
-    /// what firmware maps, and the OS can still use them. `None` if the
-    /// buses are outside the ECAM.
-    pub fn new(routes: &RootComplex, ecam: Region, reserved: Region) -> Option<Self> {
-        let last_bus = u8::try_from((ecam.size >> 20).checked_sub(1)?).ok()?;
-        let buses = *routes.buses.start()..=(*routes.buses.end()).min(last_bus);
-        if buses.is_empty() {
-            return None;
+/// The root bridge of the root complex `routes`, with its buses in the ECAM
+/// `ecam`.
+///
+/// What the DF routes to the die is forwarded: its I/O, the legacy ports
+/// to the FCH's fixed devices and the rest to PCI, and its MMIO, below the
+/// fixed MMIO and below the fabric's reserved top; on the die with bus 0
+/// the legacy VGA memory too. Two ranges of that are the die's own and not
+/// forwarded: `non_pci`, the pool of the NBIO's own MMIO, and, on the die
+/// with bus 0, the ECAM window.
+///
+/// `None` if the buses are outside the ECAM or the DF routes more than a
+/// root bridge holds.
+pub fn root(routes: &RootComplex, ecam: Region, non_pci: Region) -> Option<Root> {
+    let last_bus = u8::try_from((ecam.size >> 20).checked_sub(1)?).ok()?;
+    let buses = *routes.buses.start()..=(*routes.buses.end()).min(last_bus);
+    if buses.is_empty() {
+        return None;
+    }
+    let io = routes.io.iter().flat_map(|&(base, size)| {
+        let end = (base + size).min(0x1_0000);
+        let pci = base.max(LEGACY_IO);
+        [
+            Forwarded.io(base, end.saturating_sub(base)),
+            Window.io(pci, end.saturating_sub(pci)),
+        ]
+    });
+    // The windows below 4 GiB first: the allocator fills them in this order.
+    let below = |&&(base, size): &&(u64, u64)| base + size <= 1 << 32;
+    let mmio = |limit: u64| {
+        move |&(base, size): &(u64, u64)| {
+            Window.mmio(base, (base + size).min(limit).saturating_sub(base))
         }
-        let pool = (reserved.base, reserved.end());
-        let ecam_range = (ecam.base, ecam.end());
-        let io = routes.io.iter().map(|&(base, size)| {
-            let window = (base.max(PCI_IO.0), (base + size).min(PCI_IO.1));
-            (PciWindowKind::Io, window)
-        });
-        let mmio = routes
-            .mmio
-            .iter()
-            .filter(|&&(base, size)| base + size <= 1 << 32)
-            .flat_map(|&(base, size)| cut((base, (base + size).min(FIXED_MMIO)), ecam_range))
-            .flat_map(|range| cut(range, pool))
-            .map(|range| (PciWindowKind::Mmio, range));
-        let windows = io
-            .chain(mmio)
-            .filter(|(_, (lo, hi))| hi > lo)
-            .map(|(kind, (lo, hi))| PciWindow {
-                kind,
-                base: lo,
-                size: hi - lo,
-                prefetchable: false,
-            })
-            .take(fstart_pci::MAX_PCI_ROOT_WINDOWS)
-            .collect();
-        Some(Self {
-            info: PciRootInfo {
-                segment: 0,
-                ecam_base: ecam.base,
-                bus_start: *buses.start(),
-                bus_end: *buses.end(),
-            },
-            windows,
-        })
-    }
-
-    pub fn buses(&self) -> RangeInclusive<u8> {
-        self.info.bus_start..=self.info.bus_end
-    }
-
-    /// The I/O windows as port ranges.
-    pub fn io(&self) -> impl Iterator<Item = RangeInclusive<u16>> + '_ {
-        self.ranges(PciWindowKind::Io)
-            .map(|range| *range.start() as u16..=*range.end() as u16)
-    }
-
-    /// The MMIO windows as address ranges.
-    pub fn mmio(&self) -> impl Iterator<Item = RangeInclusive<u64>> + '_ {
-        self.ranges(PciWindowKind::Mmio)
-    }
-
-    fn ranges(&self, kind: PciWindowKind) -> impl Iterator<Item = RangeInclusive<u64>> + '_ {
-        self.windows
-            .iter()
-            .filter(move |window| window.kind == kind)
-            .map(|window| window.base..=window.end() - 1)
-    }
-}
-
-/// `range` without `hole`, as up to two ranges.
-fn cut((lo, hi): (u64, u64), (hole_lo, hole_hi): (u64, u64)) -> [(u64, u64); 2] {
-    if hole_hi <= lo || hole_lo >= hi {
-        return [(lo, hi), (0, 0)];
-    }
-    [(lo, hole_lo.max(lo)), (hole_hi.min(hi), hi)]
-}
-
-impl PciRootProvider for Root {
-    fn root_info(&self) -> PciRootInfo {
-        self.info
-    }
-    fn resource_windows(&self) -> Result<PciRootWindows, PciRootError> {
-        Ok(self.windows.clone())
-    }
+    };
+    let low = routes.mmio.iter().filter(below).map(mmio(FIXED_MMIO));
+    let high = routes
+        .mmio
+        .iter()
+        .filter(|route| !below(route))
+        .map(mmio(FABRIC_RESERVED));
+    // The die with bus 0 has the legacy VGA memory routed to it and owns
+    // the ECAM window.
+    let primary = |size: u64| if *buses.start() == 0 { size } else { 0 };
+    let vga = [Forwarded.mmio(0xa_0000, primary(0x2_0000))];
+    let own = [
+        Own.mmio(non_pci.base, non_pci.size),
+        Own.mmio(ecam.base, primary(ecam.size)),
+    ];
+    PciRoot::new(
+        PciRootInfo {
+            segment: 0,
+            ecam_base: ecam.base,
+            bus_start: *buses.start(),
+            bus_end: *buses.end(),
+        },
+        io.chain(vga).chain(low).chain(high).chain(own),
+    )
+    .ok()
 }
