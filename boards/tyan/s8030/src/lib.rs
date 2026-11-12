@@ -10,11 +10,11 @@
 //! | [`gpio`] | the CPM `$A10` pad table, the M.2 detect pads, Rome GPIO4/5 |
 //! | [`policy`] | silicon policy from the S8030 setup defaults |
 //! | [`bmc`] | AST2500 LPC decodes, Super I/O and SCU, COM1 console, IPMI KCS, ACPI |
-//! | `platform` | the `fstart_platform_sp3::board::Board` implementation over the above |
+//! | `platform` | the `fstart_platform_amd::sp3::board::Board` implementation over the above |
 //! | `smm` | the SMM image's handler binding (SMM unit only) |
 //!
 //! One build serves both generations: the reset image identifies the CPU
-//! and the [`fstart_platform_sp3::board::Board`] hooks take its generation.
+//! and the [`fstart_platform_amd::sp3::board::Board`] hooks take its generation.
 //! The same image goes into both 16 MiB halves of the 32 MiB flash.
 //!
 //! Where the pieces go in the SP3 boot flow (NATIVE_PORT_PLAN §4):
@@ -42,14 +42,14 @@ pub mod policy;
 mod smm;
 
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_platform_sp3::layout::Sp3BoardFacts;
+use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
 
 /// The Tyan S8030 board marker.
 pub struct Board;
 
 /// Rome and Milan; the PSP boots the vendor ROM's Rome (lower) or Milan
 /// (upper) half and both carry this build. Their platform features are
-/// enabled on the `fstart-platform-sp3` dependency.
+/// enabled on the `fstart-platform-amd` dependency.
 impl Sp3BoardFacts for Board {
     const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
     /// The vendor 32 MiB dual image (Rome lower half, Milan upper half);
@@ -68,7 +68,7 @@ mod tests {
         assert!(
             Board::GENERATIONS
                 .iter()
-                .all(|&g| fstart_platform_sp3::layout::compiled(g))
+                .all(|&g| fstart_platform_amd::sp3::layout::compiled(g))
         );
     }
 }

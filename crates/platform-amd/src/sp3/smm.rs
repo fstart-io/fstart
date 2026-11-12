@@ -33,8 +33,8 @@
 use fstart_driver_amd::apob::sysmap::Region;
 use fstart_driver_amd::sp3::soc::Generation;
 
-use crate::layout::Span;
-use crate::memory::FOUR_GIB;
+use crate::sp3::layout::Span;
+use crate::sp3::memory::FOUR_GIB;
 
 /// TSEG size: 8 MiB, as the donors' SMM_MASK (PSP_APOB §3.3 example
 /// `0xffff_ff80_0000`-style masks); a power of two the MSR pair describes.
@@ -318,7 +318,9 @@ mod handler {
                 smi::sw::ACPI_ENABLE => sx::acpi_enable(&hw),
                 smi::sw::ACPI_DISABLE => sx::acpi_disable(&hw),
                 sw::PSP_SMM_INFO => smm_info(config, &timer, policy.memory_einj),
-                crate::einj::SW_BEGIN | crate::einj::SW_END | crate::einj::SW_EXECUTE => {
+                crate::sp3::einj::SW_BEGIN
+                | crate::sp3::einj::SW_END
+                | crate::sp3::einj::SW_EXECUTE => {
                     // SAFETY: shared dispatch owner; registered SMRAM page.
                     unsafe {
                         super::einj::dispatch(
@@ -442,10 +444,10 @@ mod handler {
         let registration = psp(config).send(timer, &mut C2pBuffer::new(info));
         // Bounded read-only backend diagnostics in the fixed comm page.
         unsafe {
-            ((crate::einj::BASE + 224) as *mut u64)
+            ((crate::sp3::einj::BASE + 224) as *mut u64)
                 .write_volatile(registration.map_or_else(super::einj::status, |_| 0));
-            ((crate::einj::BASE + 232) as *mut u64).write_volatile(0);
-            ((crate::einj::BASE + 240) as *mut u64).write_volatile(u64::from(memory_einj));
+            ((crate::sp3::einj::BASE + 232) as *mut u64).write_volatile(0);
+            ((crate::sp3::einj::BASE + 240) as *mut u64).write_volatile(u64::from(memory_einj));
         }
         let supported = registration.is_ok()
             && memory_einj
@@ -492,9 +494,9 @@ mod handler {
                 if n < 32 {
                     // Fixed output-only trace, never used as input.
                     unsafe {
-                        ((crate::einj::BASE + 256 + n * 8) as *mut u64)
+                        ((crate::sp3::einj::BASE + 256 + n * 8) as *mut u64)
                             .write_volatile(u64::from(tag) | (u64::from(value) << 32));
-                        ((crate::einj::BASE + 232) as *mut u64).write_volatile(n + 1);
+                        ((crate::sp3::einj::BASE + 232) as *mut u64).write_volatile(n + 1);
                     }
                     count.set(n + 1);
                 }
@@ -624,7 +626,7 @@ mod tests {
             },
             ram(FOUR_GIB, 0x1_0000_0000),
         ];
-        let early = crate::layout::CACHE_WINDOW;
+        let early = crate::sp3::layout::CACHE_WINDOW;
         let t = place_tseg(&regions, 0x8000_0000, TSEG_SIZE, &[early]).unwrap();
         assert_eq!(t, Span::new(0x7f80_0000, TSEG_SIZE));
         // TOM inside the firmware window: step below it.

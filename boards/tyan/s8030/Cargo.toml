@@ -19,7 +19,7 @@ schema = 1
 board = "tyan-s8030"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
+build-profile = { dependency = "fstart-platform-amd", name = "rust", module = "sp3" }
 
 # The board's APCBs of each generation, as its vendor image has them.
 [package.metadata.fstart.amd.rome]
@@ -45,7 +45,7 @@ features = ["pcie3-x4x4x4x4"]
 
 [features]
 # The SMM handler module, enabled only for the SMM image.
-smm = ["fstart-platform-sp3/smm"]
+smm = ["fstart-platform-amd/smm"]
 pcie3-x4x4x4x4 = []
 
 # Versions are spelled out instead of inherited: boards are outside the
@@ -54,7 +54,7 @@ pcie3-x4x4x4x4 = []
 [dependencies]
 fstart-log = { path = "../../../crates/log" }
 fstart-options = { path = "../../../crates/options" }
-fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "rome", "milan"] }
+fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["acpi", "rome", "milan"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rome", "milan"] }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-core = { path = "../../../crates/core" }
@@ -66,7 +66,7 @@ heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
 
 # The only stage, which the PSP copies to DRAM; fbuild builds it with
-# fstart-platform-sp3/bundle-stage. Board unit tests (`cargo test`) only
+# fstart-platform-amd/bundle-stage. Board unit tests (`cargo test`) only
 # build the library.
 [[bin]]
 name = "stage"

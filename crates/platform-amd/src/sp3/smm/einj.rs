@@ -1,7 +1,7 @@
 //! Native EINJ dispatcher. Called only by the shared SMM dispatch owner.
 //! The shared request is copied once and validated before any PSP command.
 
-use crate::einj::*;
+use crate::sp3::einj::*;
 use core::cell::UnsafeCell;
 use fstart_core::services::timer::Timer;
 use fstart_driver_amd::psp::{

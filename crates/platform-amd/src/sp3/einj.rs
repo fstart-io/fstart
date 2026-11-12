@@ -10,7 +10,7 @@ use fstart_driver_amd::{
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-pub const BASE: u64 = crate::layout::STORE.end() - 0x1_0000;
+pub const BASE: u64 = crate::sp3::layout::STORE.end() - 0x1_0000;
 pub const SCRATCH: u64 = BASE + 0x1000;
 pub const SCRATCH_SIZE: u64 = 0x1000;
 pub const SUPPORTED: u64 = 0;

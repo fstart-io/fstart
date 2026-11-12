@@ -21,7 +21,7 @@
 //! handler (`smm::handle`, bound by the board's `smm_bin!`) into a
 //! position-independent SMM image with one entry stub per CPU the board
 //! allows; the stage unit embeds it through `FSTART_SMM_IMAGE` and its build
-//! script checks that it fits the TSEG ([`crate::smm::TSEG_SIZE`]), as the
+//! script checks that it fits the TSEG ([`crate::sp3::smm::TSEG_SIZE`]), as the
 //! MIT Intel and QEMU q35 plans do.
 
 use std::boxed::Box;
@@ -48,7 +48,7 @@ use fstart_image_build::sp3_flash::{
     FlashPlan, NvramSlot, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey,
 };
 
-use crate::layout::{
+use crate::sp3::layout::{
     self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
     Sp3BoardFacts, Span,
 };
@@ -355,7 +355,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     // runner builds the platform with them, so this checks the board.
     if let Some(g) = B::GENERATIONS.iter().find(|&&g| !layout::compiled(g)) {
         return Err(format!(
-            "board lists {} but does not enable fstart-platform-sp3/{}",
+            "board lists {} but does not enable fstart-platform-amd/{}",
             g.name(),
             feature(*g)
         ));
@@ -391,7 +391,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         linker_script: Some(linker_script()?),
         environment_values: mp_capacity::<B>()
             .into_iter()
-            .chain([(TSEG_SIZE_ENV.into(), crate::smm::TSEG_SIZE.to_string())])
+            .chain([(TSEG_SIZE_ENV.into(), crate::sp3::smm::TSEG_SIZE.to_string())])
             .collect(),
         bindings: vec![ArtifactBinding {
             producer: SMM_UNIT.into(),

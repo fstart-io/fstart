@@ -1,4 +1,4 @@
-//! The S8030's facts ([`fstart_platform_sp3::board::Board`]) and what its
+//! The S8030's facts ([`fstart_platform_amd::sp3::board::Board`]) and what its
 //! stage `main` passes to the phases and does between them:
 //! the AST2500 console path, the GPIO program, the DXIO lane map with the
 //! detected M.2 modes and the BMC's Gen3 cap, and the silicon policy.
@@ -9,8 +9,8 @@ use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::FchHw;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
-use fstart_platform_sp3::smm::SleepNotify;
+use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
+use fstart_platform_amd::sp3::smm::SleepNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
 use fstart_driver_amd::sp3::soc::Generation;

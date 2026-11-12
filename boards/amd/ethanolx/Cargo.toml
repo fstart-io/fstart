@@ -11,7 +11,7 @@ schema = 1
 board = "amd-ethanolx"
 platform = "x86_64"
 target = "x86_64-unknown-none"
-build-profile = { dependency = "fstart-platform-sp3", name = "rust" }
+build-profile = { dependency = "fstart-platform-amd", name = "rust", module = "sp3" }
 
 # The board's APCBs of each generation, as its vendor image has them.
 [package.metadata.fstart.amd.milan]
@@ -28,10 +28,10 @@ apcb = { entries = [
 [features]
 default = []
 # The SMM handler module, enabled only for the SMM image.
-smm = ["fstart-platform-sp3/smm"]
+smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
-fstart-platform-sp3 = { path = "../../../crates/platform-sp3", features = ["acpi", "milan"] }
+fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["acpi", "milan"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["milan"] }
 fstart-core = { path = "../../../crates/core" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }

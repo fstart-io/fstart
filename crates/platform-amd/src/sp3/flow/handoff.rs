@@ -11,7 +11,7 @@ use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
 use fstart_stage::boot::MemoryWindow;
 
 use super::{Ctx, OrHalt};
-use crate::layout::{self, Span};
+use crate::sp3::layout::{self, Span};
 
 /// Publish the load policy (RAM from e820 minus the running image) and
 /// mount + authenticate the FFS at `ctx.ffs` (ROM2 or ROM3, where the flash anchor
@@ -26,7 +26,7 @@ pub(crate) fn mount_boot_media(ctx: &Ctx) {
         start: layout::RESET.destination,
         size: u64::from(layout::RESET.size),
     };
-    if let Err(error) = fstart_platform_amd::media::mount(
+    if let Err(error) = crate::media::mount(
         ctx.e820.entries(),
         &[image, span_window(layout::EARLY_REGION)],
         span_window(ctx.ffs),
@@ -54,8 +54,8 @@ pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
     description.console = Some(console);
     description.acpi = ctx.rsdp.map(AcpiTables::at);
     let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(
-        crate::acpi::fixed::PM_BASE + 4,
-        crate::acpi::fixed::S5_SLEEP_TYPE,
+        crate::sp3::acpi::fixed::PM_BASE + 4,
+        crate::sp3::acpi::fixed::S5_SLEEP_TYPE,
     )];
     description.acpi_s5 = &acpi_s5;
     description.smbios = ctx.smbios;
@@ -76,17 +76,17 @@ pub(crate) fn boot(ctx: Ctx, pci: fstart_pci::PciEcam, console: &Ns16550) -> ! {
     fstart_payload::boot(handoff, ())
 }
 
-/// Build and place the ACPI tables (ACPI_SMM, `crate::acpi`); returns the
+/// Build and place the ACPI tables (ACPI_SMM, `crate::sp3::acpi`); returns the
 /// RSDP address. The tables live in the stage heap, inside the reserved
 /// early region.
 #[cfg(feature = "acpi")]
-pub(crate) fn acpi<B: crate::board::Board, S: fstart_driver_amd::sp3::soc::Steps>(
+pub(crate) fn acpi<B: crate::sp3::board::Board, S: fstart_driver_amd::sp3::soc::Steps>(
     ctx: &Ctx,
     si: &S,
     pci: &fstart_pci::PciEcam,
-    board_acpi: &crate::acpi::Board<'_>,
+    board_acpi: &crate::sp3::acpi::Board<'_>,
 ) -> u64 {
-    use crate::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
+    use crate::sp3::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::sp3::ccx::power;
@@ -213,7 +213,9 @@ pub(crate) fn acpi<B: crate::board::Board, S: fstart_driver_amd::sp3::soc::Steps
             // the live Rome/ECC map. Only the boot flow reads this flag;
             // SMM authorization lives in SMRAM, not in this shared page.
             unsafe {
-                ((crate::einj::BASE + crate::einj::SUPPORTED) as *const u64).read_volatile() == 8
+                ((crate::sp3::einj::BASE + crate::sp3::einj::SUPPORTED) as *const u64)
+                    .read_volatile()
+                    == 8
             }
         },
         fch: &fch,
@@ -228,14 +230,14 @@ pub(crate) fn acpi<B: crate::board::Board, S: fstart_driver_amd::sp3::soc::Steps
             .iter()
             .copied()
             .find(|&t| t != 0)
-            .unwrap_or(crate::einj::SCRATCH);
+            .unwrap_or(crate::sp3::einj::SCRATCH);
         let trigger = acpi::einj::trigger(first);
         // SAFETY: the fixed communication page is in reserved early RAM,
         // disjoint from the heap and scratch page; no concurrent OS yet.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 trigger.as_ptr(),
-                (crate::einj::BASE + crate::einj::TRIGGER) as *mut u8,
+                (crate::sp3::einj::BASE + crate::sp3::einj::TRIGGER) as *mut u8,
                 trigger.len(),
             );
         }

@@ -13,7 +13,7 @@ extern crate alloc;
 
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 
-use crate::layout::Sp3BoardFacts;
+use crate::sp3::layout::Sp3BoardFacts;
 
 pub use fstart_driver_amd::sp3::soc::Policy;
 
@@ -72,7 +72,7 @@ pub trait Board: Sp3BoardFacts + 'static {
     const DISCRETE_TPM: bool = false;
 
     /// BMC sleep-state notification through SMM (ACPI and the handler).
-    const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
+    const BMC_SX_NOTIFY: Option<crate::sp3::smm::SleepNotify> = None;
 
     /// The silicon policy knobs the user may override (`fstart_options`).
     /// The flow applies them when it has the console, after the FCH reset

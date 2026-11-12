@@ -11,7 +11,7 @@ use fstart_core::services::{Timer, TimerDelay};
 use fstart_driver_amd::sp3::fch::smbus::{I2C_TIMING, i2c_base};
 use fstart_driver_i2c::designware::DesignWare;
 use fstart_driver_redriver::ds125br401a::{Ds125Br401a, Settings};
-use fstart_platform_sp3::board::BoardError;
+use fstart_platform_amd::sp3::board::BoardError;
 use pca9535::{Expander, GPIOBank, Pca9535Immediate, Register, StandardExpanderInterface};
 use xca9548a::{SlaveAddr as MuxAddress, Xca9545a};
 

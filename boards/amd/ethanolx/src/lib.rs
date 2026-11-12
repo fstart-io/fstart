@@ -29,9 +29,9 @@ use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
 use fstart_driver_amd::sp3::fch::{FchHw, irq, uart};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_sp3::acpi::Board as AcpiBoard;
-use fstart_platform_sp3::board::{self, BoardError, Gpio, Policy};
-use fstart_platform_sp3::layout::Sp3BoardFacts;
+use fstart_platform_amd::sp3::acpi::Board as AcpiBoard;
+use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
+use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
 
 pub struct Board;
 
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn every_offered_knob_has_its_own_key() {
-        use fstart_platform_sp3::board::Board as _;
+        use fstart_platform_amd::sp3::board::Board as _;
         let metas = fstart_log::option::KNOBS
             .iter()
             .map(|k| &k.meta)

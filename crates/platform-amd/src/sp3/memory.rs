@@ -23,7 +23,7 @@ use fstart_driver_amd::apob::sysmap::{Region, RegionKind};
 use fstart_driver_amd::sp3::soc::Generation;
 use heapless::Vec;
 
-use crate::layout::{CACHE_WINDOW, Span};
+use crate::sp3::layout::{CACHE_WINDOW, Span};
 
 /// 4 GiB.
 pub const FOUR_GIB: u64 = 1 << 32;

@@ -31,8 +31,8 @@
 //! entry::set_ap_route(entry::ApRoute::PARK);
 //! ```
 //!
-//! [`layout::CACHE_WINDOW`]: crate::layout::CACHE_WINDOW
-//! [`layout::PAGE_TABLES`]: crate::layout::PAGE_TABLES
+//! [`layout::CACHE_WINDOW`]: crate::sp3::layout::CACHE_WINDOW
+//! [`layout::PAGE_TABLES`]: crate::sp3::layout::PAGE_TABLES
 
 // The stage bundle links the stage runtime (allocator, anchor, the
 // arch entry `_start_ram` jumps into) even before the flow calls into it.
@@ -41,10 +41,10 @@ use fstart_stage as _;
 
 #[cfg(all(target_os = "none", feature = "bundle-stage"))]
 core::arch::global_asm!(
-    include_str!("../../arch/asm/amd_psp_reset.S"),
-    cache_base = const crate::layout::CACHE_WINDOW.base,
-    cache_mask = const !(crate::layout::CACHE_WINDOW.size - 1) & 0xffff_ffff,
-    pdpts = const crate::layout::PDPT_COUNT,
+    include_str!("../../../arch/asm/amd_psp_reset.S"),
+    cache_base = const crate::sp3::layout::CACHE_WINDOW.base,
+    cache_mask = const !(crate::sp3::layout::CACHE_WINDOW.size - 1) & 0xffff_ffff,
+    pdpts = const crate::sp3::layout::PDPT_COUNT,
     options(att_syntax),
 );
 

@@ -108,7 +108,7 @@ pub fn ivrs(iommus: &[IommuAcpi], windows: &[GsiWindow]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acpi::fixed::gsi_windows;
+    use crate::sp3::acpi::fixed::gsi_windows;
     use fstart_driver_amd::sp3::nbio::ioapic::IoapicInfo;
 
     fn iommu(index: u8, bus: u8, fch: bool) -> IommuAcpi {

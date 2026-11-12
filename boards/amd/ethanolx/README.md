@@ -11,7 +11,7 @@ map, GPIO, SATA policy, the FCH UART1 console and the BMC's IPMI KCS.
 
 | Module | What |
 |---|---|
-| `lib.rs` | the `fstart_platform_sp3::board::Board` implementation: policy, console, GPIO, ACPI |
+| `lib.rs` | the `fstart_platform_amd::sp3::board::Board` implementation: policy, console, GPIO, ACPI |
 | `i2c` | board ID EEPROM, PCIe strap/routing expanders, redriver programming |
 | `dxio` | revision `0x30` lane map from the PCIe straps |
 | `smm` | the SMM image's handler binding (SMM unit only) |
