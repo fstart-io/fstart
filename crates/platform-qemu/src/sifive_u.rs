@@ -3,8 +3,6 @@
 //! QEMU enters the stage in live DRAM through `-bios`; unlike physical FU740
 //! hardware this flow must not program PRCI or train DDR.
 
-use serde::{Deserialize, Serialize};
-
 pub const QEMU_SIFIVE_U_FFS_BASE: u64 = 0x8000_0000;
 // Reservation for the memory-mapped boot image. This is a policy window,
 // not the image size (mount uses the anchor's actual size). It must cover
@@ -23,8 +21,7 @@ pub const QEMU_SIFIVE_U_FIRMWARE_ADDR: u64 = 0x8300_0000;
 pub const QEMU_SIFIVE_U_BOOTARGS: &str = "console=ttySIF0 earlycon=sbi";
 
 /// Closed QEMU `sifive_u` policy consumed by its direct flow.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct QemuSifiveUConfig {
     pub firmware_base: u64,
     pub firmware_size: u64,

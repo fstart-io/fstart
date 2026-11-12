@@ -1,7 +1,6 @@
 //! Board configuration — the top-level Rust board metadata type.
 
 use heapless::String as HString;
-use serde::{Deserialize, Serialize};
 
 use crate::memory::MemoryMap;
 use crate::security::SecurityConfig;
@@ -14,7 +13,8 @@ use crate::platform::{FirmwareKind, Platform, QemuMachine};
 /// Board crates never construct this: the platform's host plan fills it from
 /// typed board facts and shared geometry, and the assembler and linker read
 /// it. Firmware links no part of it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize))]
 pub struct BoardConfig {
     /// Human-readable board name (e.g., "qemu-riscv64")
     pub name: HString<64>,
@@ -33,7 +33,7 @@ pub struct BoardConfig {
     /// x86 stages can use this blob twice: very early BSP assembly reads the
     /// anchor-patched location before Rust starts, and MP init reloads the
     /// matching patch on BSP/APs during CPU bring-up.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub microcode: Option<MicrocodeConfig>,
 
     /// Board-shipped files packaged verbatim into the FFS as verified
@@ -43,11 +43,14 @@ pub struct BoardConfig {
     /// firmware looks the asset up by at runtime
     /// (`services::ffs_context::read_verified_asset`), so a board's runtime
     /// request and its packaging cannot disagree.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub data_assets: heapless::Vec<HString<64>, 8>,
     /// Files outside the board directory (vendor blobs such as a video
     /// BIOS) packaged as verified `FileType::Data` assets under `name`.
-    #[serde(default, skip_serializing_if = "heapless::Vec::is_empty")]
+    #[cfg_attr(
+        feature = "host",
+        serde(default, skip_serializing_if = "heapless::Vec::is_empty")
+    )]
     pub file_assets: heapless::Vec<FileAsset, 8>,
     /// SoC-specific binary image format required by the boot ROM.
     ///
@@ -58,7 +61,7 @@ pub struct BoardConfig {
     ///
     /// This is intentionally NOT a generic abstraction — each variant
     /// carries the exact semantics of one SoC family's boot ROM.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub soc_image_format: SocImageFormat,
 
     /// Also emit a complete flash image padded/laid out to the firmware window size.
@@ -68,11 +71,11 @@ pub struct BoardConfig {
     /// at their linked physical flash addresses and unused bytes filled with
     /// `0xff`. When true, `fbuild assemble` writes
     /// `target/ffs/<board>-<size>m.pflash` in addition to `<board>.ffs`.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub full_flash_image: bool,
 
     /// Host build policy that belongs to the board/platform, not to driver metadata.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub build: BoardBuildPolicy,
 
     /// ACPI table generation configuration.
@@ -83,7 +86,7 @@ pub struct BoardConfig {
     ///
     /// Per-driver ACPI fields (e.g., `acpi_name`, `acpi_gsiv`) live in each
     /// driver's own `Config` struct, not here.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub acpi: Option<crate::acpi::AcpiConfig>,
 
     /// SMBIOS table generation configuration.
@@ -91,7 +94,7 @@ pub struct BoardConfig {
     /// Used by fixed platform flows that emit SMBIOS tables. Contains system
     /// identity strings, processor descriptions, and memory device declarations
     /// for SMBIOS Type 0/1/2/3/4/16/17/19.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub smbios: Option<crate::smbios::SmbiosConfig>,
 
     /// System Management Mode handler/image configuration.
@@ -99,7 +102,7 @@ pub struct BoardConfig {
     /// Required when an x86 stage build enables SMM. The normal stage embeds
     /// the separately built SMM image and asks the platform adapter selected
     /// here to copy its precompiled PIC entry stubs into SMRAM.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub smm: Option<crate::smm::SmmConfig>,
 
     /// Boot hart ID for multi-hart platforms.
@@ -113,7 +116,7 @@ pub struct BoardConfig {
     /// platforms and for QEMU `virt` (which starts only hart 0 by default).
     /// Set to `1` for the SiFive FU740 (hart 0 is the S7 monitor core
     /// without S-mode; hart 1 is the first U74 application core).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub boot_hart_id: u32,
 }
 
@@ -132,8 +135,9 @@ pub enum UefiBuildProfile {
 }
 
 /// A platform-owned mutable region before the read-only FFS container.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct MutableFlashRegion {
     pub name: HString<32>,
     pub size: u32,
@@ -228,37 +232,42 @@ mod mutable_region_tests {
 }
 
 /// Board/platform-owned host build policy.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct BoardBuildPolicy {
     /// Named, aligned mutable regions, disjoint from the RO/reset container.
-    #[serde(default, skip_serializing_if = "heapless::Vec::is_empty")]
+    #[cfg_attr(
+        feature = "host",
+        serde(default, skip_serializing_if = "heapless::Vec::is_empty")
+    )]
     pub mutable_regions: MutableFlashRegions,
     /// QEMU machine selection for boards with non-default emulation.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub qemu_machine: Option<QemuMachine>,
     /// How host tooling should map the runtime firmware filesystem.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub firmware_image: FirmwareImagePolicy,
     /// Complete flash aperture for composite XIP firmware images.
     ///
     /// This is distinct from `firmware_image` when the stage and FFS
     /// occupy separate windows, as on QEMU virt.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub flash_image: Option<FirmwareImagePolicy>,
     /// Optional stage feature for the board/platform PCI root implementation.
     ///
     /// When absent, `PciInit` uses the generic ECAM implementation.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub pci_root_feature: Option<HString<32>>,
     /// Optional stage feature for board/platform CPU initialization.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub cpu_feature: Option<HString<32>>,
 }
 
 /// Board/platform-owned firmware-image mapping policy for host tooling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub enum FirmwareImagePolicy {
     /// Derive from board memory metadata, such as an explicit flash layout or a
     /// contiguous ROM window.
@@ -279,8 +288,9 @@ impl FirmwareImagePolicy {
 
 /// A file packaged into the verified FFS under `name`, the name the
 /// firmware looks it up by.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct FileAsset {
     pub name: HString<64>,
     /// Relative to the workspace root unless absolute.
@@ -290,7 +300,8 @@ pub struct FileAsset {
 /// CPU microcode packaging configuration.
 // Build-time board configuration, not hot data; no_std has no Box.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum MicrocodeConfig {
     /// Intel concatenated microcode update files.
     Intel(IntelMicrocodeConfig),
@@ -301,22 +312,24 @@ pub enum MicrocodeConfig {
 /// AMD flat patches to concatenate into the FFS file `cpu_microcode.bin`,
 /// which the CPU driver loads during MP init
 /// (`fstart_amdfw_format::microcode`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct AmdMicrocodeConfig {
     /// Patch files, resolved relative to the workspace root unless absolute.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub files: heapless::Vec<HString<128>, 16>,
     /// Vendor flash images (or halves of one) whose BIOS directory
     /// microcode entries (type 0x66) are packed too, found the way the PSP
     /// finds that directory. A patch two of them carry is packed once.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub vendor_images: heapless::Vec<AmdVendorMicrocode, 4>,
 }
 
 /// The microcode of a vendor AMD flash image.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct AmdVendorMicrocode {
     /// The vendor flash image, relative to the workspace root unless
     /// absolute.
@@ -325,21 +338,22 @@ pub struct AmdVendorMicrocode {
     pub bios_directory: fstart_amdfw_format::efs::BiosDirectorySlot,
     /// Flash offset of the half that carries this directory (0, or 16 MiB
     /// for the upper half of a dual image).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub origin: u32,
 }
 
 /// Intel microcode files to concatenate into `cpu_microcode_blob.bin`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct IntelMicrocodeConfig {
     /// Source files, resolved relative to the board directory unless absolute.
     pub files: heapless::Vec<HString<128>, 16>,
     /// Patch the blob location into the FFS anchor for pre-Rust BSP update.
-    #[serde(default = "default_true")]
+    #[cfg_attr(feature = "host", serde(default = "default_true"))]
     pub early: bool,
     /// Use the blob again during MP init for BSP/AP updates.
-    #[serde(default = "default_true")]
+    #[cfg_attr(feature = "host", serde(default = "default_true"))]
     pub mp: bool,
 }
 
@@ -352,7 +366,8 @@ const fn default_true() -> bool {
 /// Different SoC families have incompatible boot ROM requirements:
 /// Allwinner uses eGON.BT0, TI uses MLO/CH, Mediatek uses BRLYT, etc.
 /// Each variant here describes exactly one SoC family's format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum SocImageFormat {
     /// No SoC-specific image format — binary starts with `.text.entry`.
     #[default]
@@ -385,8 +400,9 @@ pub enum SocImageFormat {
 }
 
 /// Payload configuration: what to boot after firmware init.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct PayloadConfig {
     /// Kind of payload
     pub kind: PayloadKind,
@@ -395,7 +411,10 @@ pub struct PayloadConfig {
     /// Load address for the kernel in RAM
     pub kernel_load_addr: Option<u64>,
     /// Physical address of the x86 Linux boot-parameter zero page.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "host",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub x86_zero_page_addr: Option<u64>,
     /// FDT source.
     pub fdt: FdtSource,
@@ -410,15 +429,15 @@ pub struct PayloadConfig {
     /// (e.g., `0x40000000` for QEMU AArch64 virt).
     ///
     /// When `None`, platform payload code uses its default DTB address.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub src_dtb_addr: Option<u64>,
     /// Kernel command line (set in /chosen/bootargs)
     pub bootargs: Option<HString<256>>,
     /// Print BSP x86 MTRR/control-register state immediately before Linux handoff.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub print_x86_mtrrs: bool,
     /// Compression to use for raw kernel payload segments stored in FFS.
-    #[serde(default = "default_payload_compression")]
+    #[cfg_attr(feature = "host", serde(default = "default_payload_compression"))]
     pub compression: crate::ffs::Compression,
     /// SBI / ATF firmware blob configuration
     pub firmware: Option<FirmwareConfig>,
@@ -426,17 +445,17 @@ pub struct PayloadConfig {
     ///
     /// Used when `kind` is `FitImage`. The FIT bundles kernel, ramdisk,
     /// and optionally FDT into a single DTB-format blob.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub fit_file: Option<HString<128>>,
     /// FIT configuration name to use (e.g., "conf-1").
     ///
     /// When `None`, the FIT's `default` configuration is used.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub fit_config: Option<HString<64>>,
     /// Whether to parse the FIT at buildtime or runtime.
     ///
     /// Defaults to `None` (same as `Buildtime` when `kind` is `FitImage`).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub fit_parse: Option<FitParseMode>,
 }
 
@@ -445,7 +464,8 @@ fn default_payload_compression() -> crate::ffs::Compression {
 }
 
 /// What kind of payload to boot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum PayloadKind {
     /// Boot Linux kernel via platform boot protocol
     LinuxBoot,
@@ -476,7 +496,8 @@ pub enum PayloadKind {
 ///
 /// Both modes use the same parser code (`fstart-boot::fit`); this controls
 /// whether extraction happens at buildtime (fbuild) or runtime (firmware).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum FitParseMode {
     /// Parse at buildtime: fbuild reads the .itb, extracts kernel/ramdisk/fdt
     /// components, and embeds them as separate FFS entries. The firmware
@@ -493,7 +514,8 @@ pub enum FitParseMode {
 /// A platform always supplies the blob; only where it comes from is a build
 /// choice. There is no generator to name, so the variants that promised one
 /// are gone rather than left to fail at assembly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum FdtSource {
     /// Use the DTB passed by QEMU/firmware at reset
     Platform,
@@ -503,8 +525,9 @@ pub enum FdtSource {
 
 /// Configuration for the SBI firmware (RISC-V) or ATF BL31 (AArch64)
 /// binary that is loaded before jumping to the OS.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct FirmwareConfig {
     /// Kind of firmware
     pub kind: FirmwareKind,

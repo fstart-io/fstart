@@ -68,8 +68,7 @@ register_structs! {
 ///
 /// Contains exactly the fields this driver needs — no optional grab-bag.
 /// Serializable for build-time validation and runtime config from FFS.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct Pl011Config {
     /// MMIO base address of the register block.
     pub base_addr: u64,

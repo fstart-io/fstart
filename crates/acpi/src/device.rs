@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 /// # Design
 ///
 /// The associated `Config` type is the driver's existing config struct
-/// (e.g., `Pl011Config`), extended with `#[serde(default)]` ACPI fields.
+/// (e.g., `Pl011Config`), extended with `` ACPI fields.
 /// ACPI data that is board-specific (ACPI name, interrupt number) lives
 /// in these config fields; data that is driver-intrinsic (`_HID`, MMIO
 /// size, register semantics) is hardcoded in the implementation.

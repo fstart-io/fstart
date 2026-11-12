@@ -11,5 +11,4 @@ pio = []
 
 [dependencies]
 fstart-core = { workspace = true }
-serde = { workspace = true }
 tock-registers = { workspace = true }

@@ -36,7 +36,7 @@ const AHB_GATE_SATA: u32 = 1 << 25;
 const APB1_GATE_UART0: u32 = 1 << 16;
 
 /// A20 UART whose APB1 clock gate the board uses for its console.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum A20Uart {
     Uart0 = 0,
@@ -55,8 +55,7 @@ const TIMER0_RELOAD: u32 = 1 << 1;
 const TIMER0_CLK_SRC_OSC24M: u32 = 1 << 2;
 
 /// A20 early-clock policy.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct A20CcuConfig {
     pub console: A20Uart,
 }

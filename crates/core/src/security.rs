@@ -5,13 +5,12 @@
 //! key given by `--signing-key` (or an ephemeral one) and writes its public
 //! half into the trust block.
 
-use serde::{Deserialize, Serialize};
-
 /// Security configuration for a board.
 ///
 /// Declares which signature algorithm and digest algorithms are used.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct SecurityConfig {
     /// Signature algorithm for manifest signing.
     pub signing_algorithm: SignatureAlgorithm,
@@ -22,14 +21,16 @@ pub struct SecurityConfig {
 }
 
 /// Supported signature algorithms (algorithm agility).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum SignatureAlgorithm {
     Ed25519,
     EcdsaP256,
 }
 
 /// Supported digest (hash) algorithms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum DigestAlgorithm {
     Sha256,
     Sha3_256,

@@ -32,8 +32,7 @@ register_bitfields! [u32,
 ];
 
 /// Static SiFive UART wiring and precomputed baud divisor.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct SifiveUartConfig {
     pub base: MmioAddr<Mmio32>,
     pub divisor: u32,

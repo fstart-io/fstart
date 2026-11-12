@@ -8,7 +8,6 @@
 //! The actual table generation lives in `fstart-acpi::smbios`.
 
 use heapless::String as HString;
-use serde::{Deserialize, Serialize};
 
 /// Physical system-slot description (SMBIOS Type 9), independent of chipset
 /// and of whether a card happened to be present during boot.
@@ -67,8 +66,9 @@ pub enum SlotUsage {
 }
 
 /// Top-level SMBIOS configuration, from the board metadata `smbios` field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct SmbiosConfig {
     // -- Type 0: BIOS Information --
     /// BIOS vendor string (e.g., "fstart").
@@ -76,7 +76,7 @@ pub struct SmbiosConfig {
     /// BIOS version string (e.g., "0.1.0").
     pub bios_version: HString<64>,
     /// BIOS release date in MM/DD/YYYY format (e.g., "03/10/2026").
-    #[serde(default = "default_bios_date")]
+    #[cfg_attr(feature = "host", serde(default = "default_bios_date"))]
     pub bios_release_date: HString<16>,
 
     // -- Type 1: System Information --
@@ -85,41 +85,42 @@ pub struct SmbiosConfig {
     /// System product name (e.g., "SBSA Reference").
     pub system_product: HString<64>,
     /// System version string.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub system_version: HString<64>,
     /// System serial number (optional).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub system_serial: HString<64>,
 
     // -- Type 2: Baseboard Information --
     /// Baseboard manufacturer.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub baseboard_manufacturer: HString<64>,
     /// Baseboard product name.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub baseboard_product: HString<64>,
 
     // -- Type 3: System Enclosure --
     /// Chassis / enclosure type.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub chassis_type: ChassisType,
     /// Chassis manufacturer.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub chassis_manufacturer: HString<64>,
 
     // -- Type 4: Processor Information --
     /// Processor descriptions (one per socket).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub processors: heapless::Vec<SmbiosProcessor, 8>,
 
     // -- Type 16/17/19: Memory --
     /// Memory device descriptions (one per DIMM / memory region).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub memory_devices: heapless::Vec<SmbiosMemoryDevice, 16>,
 }
 
 /// Chassis / enclosure type (SMBIOS Type 3).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum ChassisType {
     /// Other / unknown.
     #[default]
@@ -157,7 +158,8 @@ impl ChassisType {
 ///
 /// Maps to the SMBIOS specification processor family identifiers.
 /// Used by table builders to emit the correct value for each platform.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum ProcessorFamily {
     /// Unknown processor family (0x02).
     #[default]
@@ -190,8 +192,9 @@ impl ProcessorFamily {
 /// Board metadata carries board-fixed identity (socket, manufacturer, family)
 /// and any board-authored CPU details. Optional fields are emitted as SMBIOS
 /// unknown/zero values rather than guessed by tooling.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct SmbiosProcessor {
     /// Socket designation string (e.g., "CPU0").
     pub socket: HString<32>,
@@ -200,22 +203,22 @@ pub struct SmbiosProcessor {
     /// Processor family for the SMBIOS "Processor Family 2" field.
     ///
     /// Defaults to `Unknown` if omitted.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub processor_family: ProcessorFamily,
     /// Maximum speed in MHz.
     ///
     /// `None` emits SMBIOS value 0 (unknown).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub max_speed_mhz: Option<u16>,
     /// Number of physical cores.
     ///
     /// `None` emits SMBIOS value 0 (unknown).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub core_count: Option<u16>,
     /// Number of threads (logical processors).
     ///
     /// `None` emits SMBIOS value 0 (unknown).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub thread_count: Option<u16>,
     /// Cache hierarchy for this processor (Type 7 entries).
     ///
@@ -223,13 +226,14 @@ pub struct SmbiosProcessor {
     /// The first three entries are linked as L1/L2/L3 cache handles
     /// in the Type 4 processor entry. Empty means no Type 7 cache entries are
     /// emitted for this processor.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub caches: heapless::Vec<SmbiosCache, 6>,
 }
 
 /// Cache description for SMBIOS Type 7.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct SmbiosCache {
     /// Cache socket designation string (e.g., "L1 Data Cache").
     pub designation: HString<32>,
@@ -238,15 +242,16 @@ pub struct SmbiosCache {
     /// Cache size in KiB.
     pub size_kb: u32,
     /// Cache associativity.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub associativity: CacheAssociativity,
     /// Cache type (data, instruction, or unified).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub cache_type: CacheType,
 }
 
 /// Cache associativity for SMBIOS Type 7.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum CacheAssociativity {
     /// Unknown associativity.
     #[default]
@@ -313,7 +318,8 @@ impl CacheAssociativity {
 }
 
 /// Cache type for SMBIOS Type 7 "System Cache Type" field.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum CacheType {
     /// Unified cache.
     #[default]
@@ -339,8 +345,9 @@ impl CacheType {
 ///
 /// Size, speed, and type are `Option<T>` so boards can omit unknown DIMM
 /// details. Omitted values are emitted as SMBIOS unknown/zero values.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "host", serde(deny_unknown_fields))]
 pub struct SmbiosMemoryDevice {
     /// Device locator string (e.g., "DIMM0", "Bank 0").
     pub locator: HString<32>,
@@ -348,22 +355,23 @@ pub struct SmbiosMemoryDevice {
     ///
     /// `None` emits SMBIOS value 0xffff (present, capacity unknown).
     /// `Some(0)` explicitly describes an empty slot.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub size_mb: Option<u32>,
     /// Memory speed in MHz (e.g., 2400, 3200).
     ///
     /// `None` emits SMBIOS value 0 (unknown).
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub speed_mhz: Option<u16>,
     /// Memory type.
     ///
     /// `None` emits SMBIOS value `Unknown`.
-    #[serde(default)]
+    #[cfg_attr(feature = "host", serde(default))]
     pub memory_type: Option<MemoryDeviceType>,
 }
 
 /// Memory device type (SMBIOS Type 17 field 0x12).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum MemoryDeviceType {
     /// Unknown memory type.
     #[default]
@@ -397,6 +405,7 @@ impl MemoryDeviceType {
     }
 }
 
+#[cfg(feature = "host")]
 fn default_bios_date() -> HString<16> {
     HString::try_from("01/01/2026").unwrap_or_default()
 }

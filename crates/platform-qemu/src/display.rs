@@ -22,7 +22,6 @@ use fstart_core::mmio::{read16, write8, write16};
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
 use fstart_pci::{EcamDevice, PCI_BAR0, PCI_BAR2, PciAddress, PciEcam};
-use serde::{Deserialize, Serialize};
 
 // -----------------------------------------------------------------------
 // VBE DISPI register indices
@@ -60,8 +59,7 @@ const MMIO_DISPI_OFFSET: usize = 0x500;
 // -----------------------------------------------------------------------
 
 /// Typed configuration for the Bochs display driver.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy)]
 pub struct BochsDisplayConfig {
     /// Horizontal resolution in pixels.
     pub width: u16,
