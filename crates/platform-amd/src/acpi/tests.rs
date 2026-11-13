@@ -573,7 +573,6 @@ fn dsdt_disassembles() {
             uid: 0,
             spec_revision: 0x0200,
         }),
-        sb_aml: fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
         ..Default::default()
     };
     let soc_aml = [
@@ -591,6 +590,11 @@ fn dsdt_disassembles() {
     .concat();
     let (dies, cpus) = (dies(false), cpus(&[0, 1, 8, 9, 2, 3], false));
     let tables = build(&Inputs {
+        bmc_sx_notify: Some(fstart_driver_ipmi::SleepNotify {
+            kcs_port: 0xca2,
+            kcs_spacing: 1,
+            sw_smi_base: 0xc0,
+        }),
         sb_aml: &soc_aml,
         ..inputs(&ACPI, &cpus, &dies, &board)
     })
@@ -764,7 +768,12 @@ fn mj11_ec1_tables_are_pinned() {
             spec_revision: 0x0200,
         }),
         tables: vec![spcr],
-        sb_aml: fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
+        sb_aml: fstart_driver_ipmi::SleepNotify {
+            kcs_port: 0xca2,
+            kcs_spacing: 1,
+            sw_smi_base: 0xc0,
+        }
+        .aml(0xb2),
         ..Default::default()
     };
     let cpus = cpus(&[0, 1, 2, 3, 8, 9, 10, 11], false);
