@@ -436,7 +436,7 @@ pub fn prepare_smbios(
                 fstart_core::smbios::Attached::Onboard(_) => 1,
             };
             Some((
-                fstart_pci::PciAddress::new(0, 0, 0x1c, port),
+                Some(fstart_pci::PciAddress::new(0, 0, 0x1c, port)),
                 lanes,
                 attached,
             ))

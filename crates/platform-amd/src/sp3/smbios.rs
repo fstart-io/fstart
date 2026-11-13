@@ -55,9 +55,7 @@ pub(crate) fn install(
             cpus,
             pci,
             bridges: crate::sp3::acpi::of(soc.generation).bridges,
-            // What the boards attach to their DXIO engines is not wired
-            // yet.
-            ports: &[],
+            ports: &soc.ports,
         },
         |apic_id| (layout.decode(apic_id).socket, apic_id >> u32::from(smt)),
         |socket, die| {

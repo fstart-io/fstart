@@ -56,9 +56,9 @@ mod stage {
         /// The bridges of a root bus (`SocAcpi::bridges`): the SoC's own
         /// controllers behind the internal ones are onboard devices.
         pub bridges: &'a [crate::acpi::prt::Bridge],
-        /// What the board attaches to its PCIe ports, `(bridge, lanes,
-        /// attached)`.
-        pub ports: &'a [(PciAddress, u8, &'a Attached<'a>)],
+        /// What the board attaches to its DXIO engines, `(bridge, lanes,
+        /// attached)`, without a bridge if the engine is not PCIe.
+        pub ports: &'a [(Option<PciAddress>, u8, &'a Attached<'a>)],
     }
 
     /// The functions behind the internal bridges of every root bus.

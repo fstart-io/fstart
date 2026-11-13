@@ -15,7 +15,7 @@ use fstart_pci::PciAddress;
 pub fn ports(
     descriptors: &[&'static [Descriptor]],
     roots: &[(u16, u8)],
-) -> Vec<(PciAddress, u8, &'static Attached<'static>)> {
+) -> Vec<(Option<PciAddress>, u8, &'static Attached<'static>)> {
     descriptors
         .iter()
         .zip(roots)
@@ -25,7 +25,7 @@ pub fn ports(
                     .attached
                     .filter(|_| engine.engine == EngineType::Pcie)?;
                 let bridge = PciAddress::new(segment, bus, engine.device, engine.function);
-                Some((bridge, engine.width(), attached))
+                Some((Some(bridge), engine.width(), attached))
             })
         })
         .collect()
@@ -118,7 +118,10 @@ mod tests {
         let ports = ports(&[&DIE0, &DIE1], &[(0, 0), (0, 0x40)]);
         let found: Vec<(u8, u8, u8, u8)> = ports
             .iter()
-            .map(|(a, lanes, _)| (a.bus(), a.device(), a.function(), *lanes))
+            .map(|(a, lanes, _)| {
+                let a = a.unwrap();
+                (a.bus(), a.device(), a.function(), *lanes)
+            })
             .collect();
         assert_eq!(found, [(0, 1, 3, 4), (0, 3, 1, 8), (0, 3, 3, 8)]);
         assert!(core::ptr::eq(ports[1].2, &SLOT) && core::ptr::eq(ports[0].2, &M2));

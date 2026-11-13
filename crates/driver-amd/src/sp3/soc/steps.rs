@@ -134,6 +134,9 @@ pub struct Ctx {
     pub cppc: Vec<Cppc>,
     /// An SMM handler is installed and locked.
     pub smm_installed: bool,
+    /// What the board attaches to its engines, with the bridge DXIO mapped
+    /// each PCIe link to ([`crate::sp3::dxio::ports::attached`]).
+    pub ports: heapless::Vec<crate::sp3::dxio::ports::AttachedPort, MAX_ENGINES>,
 }
 
 impl Ctx {
@@ -183,6 +186,7 @@ impl Ctx {
             #[cfg(any(feature = "rome", feature = "milan"))]
             cppc: Vec::new(),
             smm_installed: false,
+            ports: heapless::Vec::new(),
         }
     }
 }

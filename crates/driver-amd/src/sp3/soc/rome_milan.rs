@@ -575,6 +575,8 @@ impl Steps for Silicon {
                 p.trained as u8
             );
         }
+        ctx.ports =
+            dxio::ports::attached(&ctx.topology, ctx.pci_root.segment, engines, setup.ports());
         hotplug(ctx, &setup, &dxio_smus, &policy.hotplug)?;
         // 2P xGMI (`dxio::ports::xgmi_init`) needs F1x330 and the CCD mask of
         // each socket; not wired until a 2P board exists.

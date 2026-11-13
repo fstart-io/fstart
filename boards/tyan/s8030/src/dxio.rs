@@ -32,6 +32,13 @@
 //! and none carries a slot number. All engines are socket 0; `$A27` is a
 //! single unused placeholder.
 //!
+//! What is on the links ([`fstart_core::smbios::Attached`]), for the SMBIOS
+//! tables: the five x16 slots as the vendor's own SMBIOS data names them
+//! (`PCIE1`..`PCIE5`, Slot IDs 0-4, long), the two SlimSAS connectors
+//! (two x4 links each), the two M.2 sockets, the BMC's display and the
+//! i210s. The X550 is left out: nothing tells the GM4NE-2T, which has it,
+//! from the GM2NE.
+//!
 //! [`engines`] applies the OEM runtime patches in vendor order
 //! (AmdCpmTyanInitPeim `ffe45af4` bifurcation, `ffe44882` speed, `ffe449af`
 //! compliance, `ffe456da` LAN, `ffe4611f` VGA, `ffe45e98` M.2, `ffe45ff1`
@@ -40,6 +47,7 @@
 
 mod tuning;
 
+use fstart_core::smbios::{Attached, OnboardDevice, OnboardType, SystemSlot};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
@@ -47,6 +55,75 @@ use fstart_driver_amd::sp3::dxio::lanes::{
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_options::{Knob, Meta};
 use heapless::Vec;
+
+/// A x16 slot `PCIEn`: Gen4 on Rome and Milan and as wide electrically as
+/// physically (type B8h with the x16 data bus width; the vendor's A5h is
+/// Gen1), long, 3.3 V, split by its bifurcation knob.
+const fn x16_slot(designation: &'static str, id: u16) -> Attached<'static> {
+    Attached::Slot(SystemSlot {
+        designation,
+        slot_type: 0xb8,
+        data_bus_width: 0x0d,
+        length: 0x04,
+        id,
+        characteristics: [0x04, 0x08],
+    })
+}
+
+/// `PCIE1`..`PCIE5`.
+static SLOTS: [Attached<'static>; 5] = [
+    x16_slot("PCIE1", 0),
+    x16_slot("PCIE2", 1),
+    x16_slot("PCIE3", 2),
+    x16_slot("PCIE4", 3),
+    x16_slot("PCIE5", 4),
+];
+
+/// A SlimSAS x8 connector, two x4 links: a cable goes in it, and SMBIOS
+/// has no slot type of its own for it.
+const fn slimsas(designation: &'static str) -> Attached<'static> {
+    Attached::Slot(SystemSlot {
+        designation,
+        slot_type: 0x01,
+        data_bus_width: 0x0b,
+        length: 0x01,
+        id: 0,
+        characteristics: [0x04, 0],
+    })
+}
+
+static CN2: Attached<'static> = slimsas("CN2");
+static CN4: Attached<'static> = slimsas("CN4");
+
+/// An M.2 socket, M key (Socket 3): PCIe x4 or SATA.
+const fn m2(designation: &'static str) -> Attached<'static> {
+    Attached::Slot(SystemSlot {
+        designation,
+        slot_type: 0x17,
+        data_bus_width: 0x0a,
+        length: 0x02,
+        id: 0,
+        characteristics: [0x04, 0],
+    })
+}
+
+static CN1: Attached<'static> = m2("CN1");
+static CN3: Attached<'static> = m2("CN3");
+
+static BMC_VGA: Attached<'static> = Attached::Onboard(OnboardDevice {
+    designation: "BMC VGA",
+    kind: OnboardType::Video,
+});
+static LAN: [Attached<'static>; 2] = [
+    Attached::Onboard(OnboardDevice {
+        designation: "LAN1",
+        kind: OnboardType::Ethernet,
+    }),
+    Attached::Onboard(OnboardDevice {
+        designation: "LAN2",
+        kind: OnboardType::Ethernet,
+    }),
+];
 
 /// The five x16 slots, in Setup order (`PCIE#1..5`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +175,7 @@ impl Slot {
 
     const fn engine(self) -> Engine<'static> {
         Engine::pcie(0, self.lanes(), PcieEngine::new().turn_off_unused())
+            .attached(&SLOTS[self.index()])
     }
 }
 
@@ -343,10 +421,6 @@ const fn sata(group: Group, first: u8, count: u8, tuning: &'static [(u8, u8)]) -
     Engine::sata(0, Lanes::sp3(group, first, count), SataEngine::new(0)).tuning(tuning)
 }
 
-const fn fixed_pcie(role: Role, group: Group, first: u8, count: u8, dev: u8, func: u8) -> Row {
-    Row::Fixed(role, pcie(group, first, count, port(dev, func)))
-}
-
 /// The i210/X550 rows: MiscControls `0x82` (safe mode, turn off unused
 /// lanes), no early training.
 const fn lan(
@@ -358,9 +432,24 @@ const fn lan(
     func: u8,
     speed: Speed,
 ) -> Row {
+    let engine = pcie(group, first, count, port(dev, func).max_speed(speed));
+    match role {
+        Role::Lan(i) => Row::Fixed(role, engine.attached(&LAN[i])),
+        _ => Row::Fixed(role, engine),
+    }
+}
+
+/// An x4 link of the SlimSAS connector `connector`.
+const fn slimsas_link(
+    group: Group,
+    first: u8,
+    dev: u8,
+    func: u8,
+    connector: &'static Attached<'static>,
+) -> Row {
     Row::Fixed(
-        role,
-        pcie(group, first, count, port(dev, func).max_speed(speed)),
+        Role::Storage,
+        pcie(group, first, 4, port(dev, func)).attached(connector),
     )
 }
 
@@ -368,19 +457,19 @@ const fn lan(
 /// bytes, identical engines).
 static TEMPLATE: [Row; 17] = [
     Row::Fixed(Role::Storage, sata(Group::P0, 0, 6, tuning::SATA_0_5)),
-    fixed_pcie(Role::Storage, Group::P0, 8, 4, 3, 1),
-    fixed_pcie(Role::Storage, Group::P0, 12, 4, 3, 2),
+    slimsas_link(Group::P0, 8, 3, 1, &CN2),
+    slimsas_link(Group::P0, 12, 3, 2, &CN2),
     Row::Slot(Slot::Pcie3),
     Row::Fixed(Role::Storage, sata(Group::P1, 0, 8, tuning::SATA_32_39)),
-    fixed_pcie(Role::Storage, Group::P1, 8, 4, 1, 1),
-    fixed_pcie(Role::Storage, Group::P1, 12, 4, 1, 2),
+    slimsas_link(Group::P1, 8, 1, 1, &CN4),
+    slimsas_link(Group::P1, 12, 1, 2, &CN4),
     Row::Slot(Slot::Pcie5),
     Row::Slot(Slot::Pcie2),
     Row::M2(M2Socket::Cn1),
     Row::M2(M2Socket::Cn3),
     Row::Fixed(
         Role::Bmc,
-        pcie(Group::G2, 8, 1, port(3, 1).max_speed(Speed::Gen2)),
+        pcie(Group::G2, 8, 1, port(3, 1).max_speed(Speed::Gen2)).attached(&BMC_VGA),
     ),
     lan(Role::Lan(0), Group::G2, 10, 1, 3, 5, Speed::Gen1),
     lan(Role::Lan(1), Group::G2, 11, 1, 3, 6, Speed::Gen1),
@@ -390,12 +479,14 @@ static TEMPLATE: [Row; 17] = [
 ];
 
 impl M2Socket {
+    /// In SATA mode the detect pin saw a SATA module: the socket is in use
+    /// without a PCIe link.
     const fn engine(self, mode: M2Mode) -> Engine<'static> {
         match (self, mode) {
-            (Self::Cn1, M2Mode::Pcie) => pcie(Group::G2, 0, 4, port(3, 2)),
-            (Self::Cn3, M2Mode::Pcie) => pcie(Group::G2, 4, 4, port(3, 3)),
-            (Self::Cn1, M2Mode::Sata) => sata(Group::G2, 0, 1, tuning::SATA_64),
-            (Self::Cn3, M2Mode::Sata) => sata(Group::G2, 4, 1, tuning::SATA_68),
+            (Self::Cn1, M2Mode::Pcie) => pcie(Group::G2, 0, 4, port(3, 2)).attached(&CN1),
+            (Self::Cn3, M2Mode::Pcie) => pcie(Group::G2, 4, 4, port(3, 3)).attached(&CN3),
+            (Self::Cn1, M2Mode::Sata) => sata(Group::G2, 0, 1, tuning::SATA_64).attached(&CN1),
+            (Self::Cn3, M2Mode::Sata) => sata(Group::G2, 4, 1, tuning::SATA_68).attached(&CN3),
         }
     }
 }
@@ -554,6 +645,39 @@ mod tests {
             Options::DEFAULT.with_bifurcation("12111").slots[1].bifurcation,
             X8x8
         );
+    }
+
+    /// What the links carry: every link of a split slot its slot, both
+    /// x4 links of a SlimSAS connector theirs, an M.2 socket in either
+    /// mode, the BMC's display and the i210s; the X550 nothing.
+    #[test]
+    fn attached_links() {
+        let mut options = Options::default();
+        options.slots[Slot::Pcie3.index()].bifurcation = Bifurcation::X4x4x4x4;
+        let detected = Detected {
+            m2: [M2Mode::Pcie, M2Mode::Sata],
+            m2_gen3: false,
+        };
+        let e = engines(Generation::Rome, &options, &detected);
+        let on = |attached: &'static Attached<'static>| {
+            e.iter()
+                .filter(|e| e.attached.is_some_and(|a| core::ptr::eq(a, attached)))
+                .count()
+        };
+        assert_eq!(on(&SLOTS[Slot::Pcie3.index()]), 4);
+        assert_eq!(on(&SLOTS[Slot::Pcie1.index()]), 1);
+        assert_eq!((on(&CN2), on(&CN4)), (2, 2));
+        assert_eq!((on(&CN1), on(&CN3), on(&BMC_VGA)), (1, 1, 1));
+        assert_eq!((on(&LAN[0]), on(&LAN[1])), (1, 1));
+        let sata_m2 = e
+            .iter()
+            .find(|e| e.attached.is_some_and(|a| core::ptr::eq(a, &CN3)))
+            .unwrap();
+        assert!(sata_m2.pcie_config().is_none());
+        // The X550 at 3.4 carries nothing.
+        assert!(e.iter().all(|e| {
+            e.pcie_config().and_then(|p| p.devfn) != Some(3 << 3 | 4) || e.attached.is_none()
+        }));
     }
 
     #[test]
