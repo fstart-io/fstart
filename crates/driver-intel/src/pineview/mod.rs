@@ -121,11 +121,8 @@ pub struct IntelPineviewConfig {
     /// Optional integrated graphics configuration.
     pub igd: PineviewIgdConfig,
     /// SPD EEPROM SMBus addresses for DIMM slots A/B. Zero means absent.
+    /// The board's wiring; `new()` wires none.
     pub spd_addresses: [u8; 4],
-}
-
-const fn default_spd_addresses() -> [u8; 4] {
-    [0x50, 0x51, 0, 0]
 }
 
 const fn default_ecam_base() -> u64 {
@@ -160,7 +157,7 @@ impl IntelPineviewConfig {
             epbar: 0xFED1_9000,
             ecam_base: hostbridge::DEFAULT_ECAM_BASE as u64,
             igd: PineviewIgdConfig::new(),
-            spd_addresses: [0x50, 0x51, 0, 0],
+            spd_addresses: [0; 4],
         }
     }
 }

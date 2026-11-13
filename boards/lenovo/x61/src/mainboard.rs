@@ -9,10 +9,12 @@
 
 #![allow(clippy::result_unit_err)]
 
+use crate::dock;
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
-use fstart_driver_lenovo::x6::dock as x6_dock;
+use fstart_driver_lenovo::h8::H8;
+use fstart_driver_lenovo::pmh7::Pmh7;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
 /// The dock's COM1.
@@ -39,8 +41,8 @@ pub struct Pins {
 impl Pins {
     pub const fn of(gpio: IchGpio) -> Self {
         Self {
-            dock_present: gpio.pin(x6_dock::DOCK_PRESENT_GPIO),
-            bluetooth_card: gpio.pin(fstart_driver_lenovo::x6::BDC_PRESENCE_GPIO),
+            dock_present: gpio.pin(crate::config::DOCK_PRESENT_GPIO),
+            bluetooth_card: gpio.pin(crate::config::BDC_PRESENCE_GPIO),
             smbus_mux: gpio.pin(crate::config::X61_SMBUS_MUX.pin),
         }
     }
@@ -48,7 +50,7 @@ impl Pins {
 
 /// Route the console through the dock before the UART is probed.
 pub fn setup_dock_console(dock_present: &mut impl InputPin) {
-    x6_dock::setup_console(dock_present, os_ec());
+    dock::setup_console(dock_present, os_ec());
 }
 
 /// The firmware's legacy EC channel (the OS owns it once ACPI is enabled).
@@ -75,7 +77,7 @@ pub fn select_smbus(mux: &mut impl OutputPin, branch: SmbusBranch) -> Result<(),
 /// Whether the UltraBay holds a disk the primary IDE channel can reach. An
 /// absent or disconnected dock cannot supply one.
 pub fn ultrabay_populated(dock_present: &mut impl InputPin) -> bool {
-    x6_dock::dock_present(dock_present) && x6_dock::ultrabay_present()
+    dock::dock_present(dock_present) && dock::ultrabay_present()
 }
 
 /// What the board read from its own hardware for the tables.
@@ -110,18 +112,16 @@ pub fn init_devices(
     smbus: &mut impl SmBus,
     ec: &fstart_driver_lenovo::options::Options,
     resume: bool,
-) -> Identity {
+) -> (Identity, Acpi) {
     let mut identity = Identity::default();
-    if !fstart_driver_lenovo::x6::ec_init(bluetooth_card, &crate::config::X61_H8, ec, resume) {
-        fstart_log::error!("lenovo-x61: H8 EC initialization incomplete");
-    }
+    let bluetooth = init_ec(bluetooth_card, ec, resume);
     if !resume {
-        identity.ec_oem_string = fstart_driver_lenovo::x6::ec_oem_string(&crate::config::X61_H8);
+        identity.ec_oem_string = H8::new(os_ec()).smbios_oem_string();
         if identity.ec_oem_string.is_none() {
             fstart_log::error!("lenovo-x61: H8 EC firmware id unavailable");
         }
     }
-    x6_dock::mainstage_power_policy(os_ec());
+    dock::mainstage_power_policy(os_ec());
     if !resume {
         // Read-only identity access must not modify EEPROM/RFID protection
         // registers.
@@ -139,7 +139,26 @@ pub fn init_devices(
     if ricoh_sd_write_protect().is_err() {
         fstart_log::error!("lenovo-x61: Ricoh SD policy programming failed");
     }
-    identity
+    (identity, Acpi { bluetooth })
+}
+
+/// coreboot `h8_enable()` and the PMH7 `enable_dev()` with the devicetree's
+/// registers, then the EC's latch for a dock the stages connected. Returns
+/// whether the Bluetooth card is fitted.
+fn init_ec(
+    bluetooth_card: &mut impl InputPin,
+    options: &fstart_driver_lenovo::options::Options,
+    resume: bool,
+) -> bool {
+    let config = &crate::config::X61_H8;
+    let bluetooth = config.bdc_installed(bluetooth_card);
+    Pmh7::new(config.resources.pmh7_base.raw()).enable(&crate::config::X61_PMH7, options);
+    let initialized = H8::new(os_ec()).enable(config, bluetooth, options, resume);
+    let latched = dock::latch_connected_dock(os_ec());
+    if !(initialized && latched) {
+        fstart_log::error!("lenovo-x61: H8 EC initialization incomplete");
+    }
+    bluetooth
 }
 
 /// Hand EC event routing to its owner. The shared SMM installer sets SCI_EN
@@ -190,9 +209,12 @@ fn ricoh_sd_write_protect() -> Result<(), ServiceError> {
     fstart_driver_ricoh::r5c822::configure_sd_write_protect(EcamDevice::new(bus, 0, 2), true)
 }
 
-/// The board's ACPI: TCO dock commands, sleep/wake hooks, dock, GPE routing
-/// and the complete H8 EC surface from the Lenovo driver.
-pub struct Acpi;
+/// The board's ACPI: sleep/wake hooks, the UltraBase dock, the EC wake GPE
+/// and the H8 EC surface.
+pub struct Acpi {
+    /// The Bluetooth card is fitted.
+    pub bluetooth: bool,
+}
 
 #[cfg(test)]
 mod tests {

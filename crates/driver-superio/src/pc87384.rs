@@ -5,7 +5,7 @@
 //! Register/pin meanings below follow coreboot's PC87384 header and T60 dock
 //! driver. The available 2006 product brief is not a register specification.
 
-pub use crate::nsc::GpioPort0;
+pub use crate::nsc::{GpioDirection, GpioDrive, GpioPort0};
 use crate::{SuperIo, SuperIoChip};
 use fstart_core::services::device::DeviceError;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -86,17 +86,6 @@ impl SuperIoChip for Pc87384Chip {
     }
 }
 pub type Pc87384 = SuperIo<Pc87384Chip>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpioDirection {
-    Input,
-    Output,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpioDrive {
-    OpenDrain,
-    PushPull,
-}
 
 /// Physical GP00–GP07 only. Unlisted pins and event-trigger policy are retained.
 #[derive(Debug, Clone, Copy)]

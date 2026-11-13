@@ -25,8 +25,8 @@ an i7 M620 and 8 GiB of RAM now boots Linux through CrabEFI and passes a
 | `bd82x6x/acpi/*.asl` as used by Ibex Peak, PCIe hot-plug SSDT | `crates/driver-intel/src/ibexpeak/acpi.rs` |
 | `smihandler.c` (sleep, DRAM reset gate, S5) | `crates/driver-intel/src/southbridge/smi.rs` (shared ICH/PCH) |
 | Chipset policy builder and stage binding | `crates/platform-intel/src/ironlake.rs` |
-| `ec/lenovo/h8` + `mainboard/lenovo/x201/{dock.c,smihandler.c,acpi}` | `crates/driver-lenovo/src/x201/`, `thinkpad.rs` |
-| `mainboard/lenovo/x201` devicetree, GPIO, HDA, romstage | `boards/lenovo/x201/` |
+| `ec/lenovo/h8`, `ec/lenovo/pmh7` | `crates/driver-lenovo/src/{h8,h8_acpi,pmh7}.rs` |
+| `mainboard/lenovo/x201` devicetree, GPIO, HDA, romstage, `dock.c`, `smihandler.c`, `acpi/` | `boards/lenovo/x201/` (`config.rs`, `ec.rs`, `smm.rs`, `acpi.rs`) |
 
 Generic pieces this port added to the shared crates: `IntelSouthbridgeDriver`
 `pre_raminit_init`/`chip_init`/`program_subsystem_id` hooks, the ICH/PCH

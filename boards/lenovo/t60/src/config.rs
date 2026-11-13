@@ -7,7 +7,6 @@ use fstart_driver_intel::{
         pirq::{PciPin as P, PinRoute as R, Pirq as L, SlotPins},
     },
 };
-use fstart_driver_lenovo::t6::Model;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port, framebuffer::FramebufferConfig};
 use fstart_platform_intel::{
     i945::{
@@ -21,6 +20,14 @@ use fstart_platform_intel::{
 pub type Hardware = fstart_platform_intel::i945::I945Ich7<
     fstart_platform_intel::legacy_cpu::SocketM<0xfef0_0000, 0x80000>,
 >;
+/// The T60's variants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Model {
+    T60,
+    R60,
+    Z61t,
+}
+
 pub const MODEL: Model = if cfg!(feature = "z61t") {
     Model::Z61t
 } else if cfg!(feature = "r60") {
@@ -60,8 +67,53 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
             .with_protected_mode();
 }
 pub const EC_SCI_GPIO: u8 = 12;
-pub const T6_H8: fstart_driver_lenovo::h8::H8Config =
-    fstart_driver_lenovo::t6::h8_config(EC_SCI_GPIO + 16);
+
+/// ICH GPIO7 reads low with the Bluetooth daughter card fitted (the T60
+/// overridetree's `bdc_gpio_num`).
+pub const BDC_PRESENCE_GPIO: u8 = 7;
+
+/// The devicetree's PMH7.
+pub const T6_PMH7: fstart_driver_lenovo::pmh7::Pmh7Config =
+    fstart_driver_lenovo::pmh7::Pmh7Config {
+        backlight_enable: true,
+        dock_event_enable: true,
+    };
+
+/// The devicetree's H8, and one source for EC transport, LPC windows and
+/// AML resources/capabilities.
+pub const T6_H8: fstart_driver_lenovo::h8::H8Config = {
+    use embedded_hal::digital::PinState;
+    use fstart_driver_lenovo::{
+        ec::EcPorts,
+        h8::{H8Config, H8Resources},
+    };
+    H8Config {
+        config: [0xa6, 0x05, 0xa0, 0x01],
+        beep_masks: [0xfe, 0x96],
+        has_power_management_beeps: true,
+        // event2..d; unlike the X60's, event5 is 3f and eventc 3c.
+        event_masks: [
+            0x00, 0x00, 0xff, 0xff, 0xf4, 0x3f, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0x3c, 0xff,
+            0x00, 0x00,
+        ],
+        // The Z61t cannot detect its Bluetooth card; it is assumed.
+        bdc_gpio_level: match MODEL {
+            Model::Z61t => None,
+            Model::T60 | Model::R60 => Some(PinState::Low),
+        },
+        has_bluetooth: true,
+        has_wwan: true,
+        has_thinklight: true,
+        second_thermal_zone: true,
+        critical_temp_celsius: 100,
+        passive_temp_celsius: 90,
+        ..H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            EC_SCI_GPIO + 16,
+            "IBM0068",
+        )
+    }
+};
 const DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
     outputs: &[
         OutputConfig {

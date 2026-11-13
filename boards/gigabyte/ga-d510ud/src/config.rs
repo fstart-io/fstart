@@ -22,6 +22,8 @@ pub const FLASH_SIZE: u32 = 0x8_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
 
 pub static GA_D510UD_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
+    // early_init.c `get_mb_spd_addrmap()`.
+    .spd_addresses([0x50, 0x51, 0, 0])
     .max_cpus(4)
     .igd(PineviewIgdConfig {
         use_crt: true,

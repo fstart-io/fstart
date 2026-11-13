@@ -17,7 +17,7 @@ fn main() -> ! {
     let mut legacy_pin = bb
         .southbridge()
         .gpio()
-        .pin(fstart_driver_lenovo::t6::dock::LEGACY_MODULE_GPIO);
+        .pin(fstart_board_lenovo_t60::dock::LEGACY_MODULE_GPIO);
     let _ = mainboard::setup_console(&mut legacy_pin);
     let bb = bb.console(&CONSOLE, mainboard::console());
     if bb.boot_path() == fstart_platform_intel::BootPath::S3Resume {

@@ -441,8 +441,10 @@ mod tests {
     #[test]
     fn board_binding_drives_host_identity_and_population() {
         struct Board;
-        static CONFIG: crate::i945::I945Ich7Platform =
-            crate::i945::I945Ich7Config::new().max_cpus(4).build();
+        static CONFIG: crate::i945::I945Ich7Platform = crate::i945::I945Ich7Config::new()
+            .spd_addresses([0x50, 0, 0, 0])
+            .max_cpus(4)
+            .build();
         impl IntelBoardFacts for Board {
             type Platform = I945;
             const CONFIG: &'static crate::i945::I945Ich7Platform = &CONFIG;
@@ -664,6 +666,7 @@ mod tests {
     fn i945_payload_ecam_matches_the_config_used_by_pciexbar_setup() {
         use fstart_driver_intel::IntelEcamConfig;
         let mut config = crate::i945::I945Ich7Config::new()
+            .spd_addresses([0x50, 0, 0, 0])
             .variant(crate::i945::I945Variant::DesktopGc)
             .build()
             .northbridge;

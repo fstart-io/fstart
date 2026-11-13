@@ -1,9 +1,10 @@
 //! T6 EC ownership and dock TCO mailbox. ATI/legacy brightness is unsupported.
+use crate::dock;
 use fstart_driver_intel::southbridge::{
     gpio_ich::IchGpio,
     smi::{APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchSmi, IchSmmConfig, PendingSmi},
 };
-use fstart_driver_lenovo::{ec::Ec, t6::dock};
+use fstart_driver_lenovo::ec::Ec;
 use fstart_platform_intel::smm::SmmContext;
 fn smi() -> IchSmi {
     IchSmi::new(fstart_platform_intel::i945::ICH7_PMBASE as u16, ICH7_GPE0)

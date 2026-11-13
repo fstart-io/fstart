@@ -94,11 +94,22 @@ pub const CLOCKGEN_FSB_FREQUENCY: u16 = 62879;
 /// H8 EC: transport, LPC windows and the AML surface. The EC SCI is GPIO1,
 /// i.e. GPE 0x11 (devicetree `THINKPAD_EC_GPE 17`).
 pub const X201_H8: fstart_driver_lenovo::h8::H8Config = {
+    use embedded_hal::digital::PinState;
     use fstart_driver_lenovo::{
         ec::EcPorts,
         h8::{H8BatteryThresholdBackend, H8Config, H8Resources},
     };
     H8Config {
+        config: [0xa6, 0x05, 0xa0, 0x01],
+        beep_masks: [0xfe, 0x96],
+        has_power_management_beeps: true,
+        // event2..d; event 0/1 and e/f stay off.
+        event_masks: [
+            0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0x00, 0x00,
+        ],
+        // `bdc_gpio_num` 48, see [`crate::ec::BDC_PRESENCE_GPIO`].
+        bdc_gpio_level: Some(PinState::Low),
         has_bluetooth: true,
         has_wwan: true,
         has_thinklight: true,
@@ -117,6 +128,13 @@ pub const X201_H8: fstart_driver_lenovo::h8::H8Config = {
         )
     }
 };
+
+/// The devicetree's PMH7.
+pub const X201_PMH7: fstart_driver_lenovo::pmh7::Pmh7Config =
+    fstart_driver_lenovo::pmh7::Pmh7Config {
+        backlight_enable: true,
+        dock_event_enable: true,
+    };
 
 /// coreboot `DRAM_RESET_GATE_GPIO`.
 pub const DRAM_RESET_GATE_GPIO: u8 = 10;

@@ -4,8 +4,6 @@ use fstart_core::{Platform, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
-use fstart_driver_superio::pc87382;
-use fstart_driver_superio::pc87392;
 use fstart_intel_gma::framebuffer::FramebufferConfig;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::gm965::{
@@ -110,9 +108,54 @@ pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
     reset: gpio::GpioReset::Pwrok,
 };
 
-/// One source for EC transport, LPC windows, and AML resources/capabilities.
+/// ICH GPIO7 reads low with the Bluetooth daughter card fitted
+/// (devicetree `bdc_gpio_num`).
+pub const BDC_PRESENCE_GPIO: u8 = 7;
+
+/// ICH GPIO13 is the UltraBase's `SLICE_ON_3M#`, low with the dock attached.
+pub const DOCK_PRESENT_GPIO: u8 = 13;
+
+/// The devicetree's PMH7.
+pub const X61_PMH7: fstart_driver_lenovo::pmh7::Pmh7Config =
+    fstart_driver_lenovo::pmh7::Pmh7Config {
+        backlight_enable: true,
+        dock_event_enable: true,
+    };
+
+/// The devicetree's H8, and one source for EC transport, LPC windows and
+/// AML resources/capabilities.
 /// The EC SCI is ICH8 GPIO2, i.e. GPE 0x12.
-pub const X61_H8: fstart_driver_lenovo::h8::H8Config = fstart_driver_lenovo::x6::h8_config(0x12);
+pub const X61_H8: fstart_driver_lenovo::h8::H8Config = {
+    use embedded_hal::digital::PinState;
+    use fstart_driver_lenovo::{
+        ec::EcPorts,
+        h8::{H8Config, H8Resources},
+    };
+    H8Config {
+        config: [0xa6, 0x05, 0xa0, 0x01],
+        beep_masks: [0xfe, 0x96],
+        has_power_management_beeps: true,
+        // event2..d; event 0/1 and e/f stay off.
+        event_masks: [
+            0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0x00, 0x00,
+        ],
+        bdc_gpio_level: Some(PinState::Low),
+        has_bluetooth: true,
+        // No WWAN detection GPIO: coreboot assumes the card is installed.
+        has_wwan: true,
+        has_thinklight: true,
+        second_thermal_zone: true,
+        // coreboot `mainboard_fill_gnvs()`.
+        critical_temp_celsius: 100,
+        passive_temp_celsius: 90,
+        ..H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            0x12,
+            "IBM0068",
+        )
+    }
+};
 
 /// ICH8-M routing plus the devices behind the PCI bridge: the Ricoh
 /// multifunction device and the UltraBase dock slots (coreboot
@@ -135,6 +178,8 @@ pub const X61_PIRQ: fstart_platform_intel::gm965::PirqRouting = {
 };
 
 pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
+    // early_init.c `mainboard_get_spd_map()`: one DIMM per channel.
+    .spd_addresses([0x50, 0, 0x51, 0])
     .max_cpus(2)
     .pirq(X61_PIRQ)
     .igd(x61_igd_config())
@@ -616,38 +661,6 @@ pub const fn x61_gpio_pins() -> [gpio::GpioPin; 35] {
             reset: gpio::GpioReset::Pwrok,
         },
     ]
-}
-
-pub fn x61_dlpc_superio_config() -> pc87382::Pc87382Config {
-    pc87382::Pc87382Config(pc87382::SuperIoConfig {
-        com2: Some(pc87382::ComPortConfig {
-            io_base: 0x2f8,
-            irq: 0,
-            baud_rate: 115200,
-        }),
-        cir: Some(pc87382::CirConfig {
-            io_base: 0x200,
-            irq: 5,
-        }),
-        gpio: Some(pc87382::GpioConfig { io_base: 0x1680 }),
-        ..Default::default()
-    })
-}
-
-pub fn x61_dock_superio_config() -> pc87392::Pc87392Config {
-    pc87392::Pc87392Config(pc87392::SuperIoConfig {
-        com1: Some(pc87392::ComPortConfig {
-            io_base: 0x3f8,
-            irq: 4,
-            baud_rate: 115200,
-        }),
-        parallel: Some(pc87392::ParallelConfig {
-            io_base: 0x3bc,
-            irq: 7,
-        }),
-        gpio: Some(pc87392::GpioConfig { io_base: 0x1620 }),
-        ..Default::default()
-    })
 }
 
 pub fn x61_ck505_config() -> I2cCk505Config {

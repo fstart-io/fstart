@@ -281,6 +281,7 @@ impl I945Ich7Config {
         if self.max_cpus == 0 {
             panic!("i945 max_cpus must be non-zero");
         }
+        crate::require_spd_addresses(self.spd_addresses);
         I945Ich7Platform {
             northbridge: self.northbridge_config(),
             southbridge: self.southbridge_config(),
@@ -317,12 +318,14 @@ mod tests {
     #[test]
     fn named_gpe_events_replace_raw_policy_and_encode_physical_gpio() {
         let config = I945Ich7Config::new()
+            .spd_addresses([0x50, 0, 0, 0])
             .gpe0_en(u32::MAX)
             .gpe_events([Ich7Gpe::TcoSci, Ich7Gpe::Gpio(13)])
             .build();
         assert_eq!(config.southbridge.gpe0_en, 0x2000_0040);
         assert_eq!(
             I945Ich7Config::new()
+                .spd_addresses([0x50, 0, 0, 0])
                 .gpe0_en(0x441)
                 .gpe_events([])
                 .build()

@@ -76,7 +76,7 @@ pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Option
 pub fn init_devices(
     pins: &mut Pins,
     smbus: &mut impl SmBus,
-    ec: &fstart_driver_lenovo::options::Options,
+    options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (Identity, Acpi) {
     let mut identity = Identity::default();
@@ -84,8 +84,7 @@ pub fn init_devices(
         &mut pins.bluetooth_card,
         &mut pins.dock_id,
         &mut pins.dock_connect,
-        &crate::config::X200_H8,
-        ec,
+        options,
         resume,
     );
     if !acknowledged {

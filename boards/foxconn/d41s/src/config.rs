@@ -66,6 +66,8 @@ pub const D41S_PIRQ: fstart_driver_intel::southbridge::pirq::PirqRouting = {
 };
 
 pub static D41S_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
+    // early_init.c `get_mb_spd_addrmap()`.
+    .spd_addresses([0x50, 0x51, 0, 0])
     .max_cpus(4)
     .igd(d41s_igd_config())
     .pcie_port(0, true)

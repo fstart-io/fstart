@@ -289,6 +289,7 @@ impl IronlakeIbexPeakConfig {
 
     #[must_use]
     pub const fn build(self) -> IronlakeIbexPeakPlatform {
+        crate::require_spd_addresses(self.northbridge.spd_addresses);
         let mut southbridge = self.southbridge;
         southbridge.rcba = IBEXPEAK_RCBA;
         southbridge.dmibar = self.northbridge.dmibar;

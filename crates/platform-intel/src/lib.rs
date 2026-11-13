@@ -67,6 +67,21 @@ macro_rules! entry {
     };
 }
 
+/// A builder's check that the board wired its DIMMs: where the SPDs sit is
+/// the board's fact, and a platform that cannot train DRAM cannot boot.
+#[cfg(any(
+    feature = "gm45-ich9",
+    feature = "gm965-ich8",
+    feature = "i945-ich7",
+    feature = "ironlake-ibexpeak",
+    feature = "pineview-ich7"
+))]
+const fn require_spd_addresses(addresses: [u8; 4]) {
+    if matches!(addresses, [0, 0, 0, 0]) {
+        panic!("the board must wire its DIMMs: spd_addresses()");
+    }
+}
+
 #[cfg(feature = "gm45-ich9")]
 pub mod gm45;
 #[cfg(feature = "gm965-ich8")]
