@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Family 17h Raven/Picasso/Pollock register geometry, not Intel-compatible IP.
-use super::Soc;
+use crate::soc::Soc;
 use fstart_driver_amd::{
     dxio::Descriptor,
     fch::{
@@ -11,10 +11,7 @@ use fstart_driver_amd::{
     nbio::rv as nbio,
 };
 
-mod init;
-#[cfg(test)]
-mod tests;
-pub use init::{Chipset, FchUp, Runtime, State, Trained};
+pub use super::init::{Chipset, FchUp, Runtime, State, Trained};
 
 /// The Raven/Picasso SoC, one die: [`fstart_driver_amd::ccx::rv`],
 /// [`fstart_driver_amd::df::rv`], [`fstart_driver_amd::nbio::rv`], [`fstart_driver_amd::dxio::rv`],

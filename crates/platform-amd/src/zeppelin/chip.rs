@@ -6,11 +6,9 @@
 //! APOB; everything x86 does after that is native: Data Fabric, NBIO, SMU,
 //! DXIO (PCIe), CCX and the Taishan FCH. Every die has its own DF, NBIO, SMU
 //! and FCH; SP4r2 has one die, SP4 two.
-mod init;
-pub mod silicon;
-pub use init::{FchUp, Up};
+pub use super::init::{FchUp, Up};
 
-use super::Soc;
+use crate::soc::Soc;
 use fstart_driver_amd::{
     dxio::Descriptor,
     fch::{

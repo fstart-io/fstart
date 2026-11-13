@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The SoCs. A SoC is a list of IP versions and the constants its IP
-//! blocks differ in; the IP blocks themselves are the crate's modules, each
-//! with its common code and the versions where the code differs:
+//! What makes a SoC. A SoC is a list of IP versions of the driver's IP
+//! blocks and the constants they differ in, which the SoC's module of this
+//! crate names ([`fstart_driver_amd::soc::Soc`] is what the blocks need of
+//! it):
 //!
-//! | IP | [`picasso`] | [`zeppelin`] |
-//! |----|-------------|--------------|
-//! | [`fstart_driver_amd::ccx`] | `ccx::rv` (AmdCcxZenRv) | `ccx::zp` (AmdCcxZenZp) |
-//! | [`fstart_driver_amd::df`] | `df::rv` (AmdFabricRv) | `df::zp` (AmdFabricZp) |
-//! | [`fstart_driver_amd::nbio`] | `nbio::rv` (AmdNbioBaseRV) | `nbio::zp` (AmdNbioBaseZP) |
-//! | [`fstart_driver_amd::dxio`] | `dxio::rv` | `dxio::zp` |
-//! | [`fstart_driver_amd::smu`] | `smu::v10` (AmdNbioSmuV10) | `smu::v9` (AmdNbioSmuV9) |
-//! | [`fstart_driver_amd::fch`] | `fch::sandstone` (FchSandstone) | `fch::taishan` (FchTaishan) |
-//! | [`fstart_driver_amd::psp`], [`fstart_driver_amd::apob`] | common | common |
-//! | [`fstart_driver_amd::acp`] | ACP 3.x | - |
+//! | IP | [`crate::picasso`] | [`crate::zeppelin`] | [`crate::sp3`] Naples | Rome | Milan |
+//! |----|----|----|----|----|----|
+//! | CCX | `ccx::rv` | `ccx::zp` | `ccx::init`, `tables::zp` | `tables::ssp` | `tables::gn` |
+//! | DF | `df::rv` | `df::zp` | `df::zp` | `df::ssp` | `df::gn` |
+//! | NBIO | `nbio::rv` | `nbio::zp` | `nbio::zp` | `nbio::ssp` | `nbio::ssp` |
+//! | DXIO | `dxio::rv` | `dxio::zp` | `dxio::zp::sequence` | `dxio::ssp` | `dxio::ssp` |
+//! | SMU | `smu::v10` | `smu::v9` | `smu::v9` | `smu::v11` | `smu::v11` |
+//! | FCH | `fch::sandstone` | `fch::taishan` | `fch::taishan`, `fch::hw` | `fch::huashan` | `fch::huashan` |
 //!
-//! The names in parentheses are the AGESA modules of the version.
+//! PSP and APOB are common; Picasso adds the ACP.
 //!
 //! A SoC also says in which order its blocks are brought up, and what of
 //! that a platform's boot flow has to wait for: [`Init`], the steps the flow
@@ -35,10 +34,8 @@ use fstart_driver_amd::{
 };
 use fstart_pci::{MAX_PCI_ROOTS, PciEcam, PciRoot, ecam::GlobalEcam};
 
-pub mod picasso;
 #[cfg(test)]
 mod silicon_tests;
-pub mod zeppelin;
 
 pub use fstart_driver_amd::soc::Soc;
 

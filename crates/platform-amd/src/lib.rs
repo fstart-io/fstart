@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! AMD family flows: the PSP-booted ("noncar") SoCs from Family 17h on
-//! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. A SoC composes
-//! the driver's IP blocks into its silicon init ([`soc::Init`]), which
-//! the phases of the flow ([`flow`]) call. What the flow needs of a SoC
-//! beyond that is [`flow::Soc`]: the die SoCs share theirs ([`noncar`]),
-//! SP3 has its own ([`sp3`]).
+//! The AMD SoCs and their boot flow. Every SoC from Family 17h on is
+//! PSP-booted: it starts in PSP-trained DRAM, never Intel CAR. A SoC
+//! composes the driver's IP blocks into its silicon init ([`soc::Init`]),
+//! which the phases of the flow ([`flow`]) call. What the flow needs of a
+//! SoC beyond that is [`flow::Soc`]: the SoCs made of dies share theirs
+//! ([`noncar`]; [`picasso`], [`zeppelin`]), the SP3 socket has its own
+//! ([`sp3`]: Naples, Rome, Milan).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 extern crate alloc;
 /// The ACPI tables, for every SoC.

@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD Picasso on the noncar flow: the reset image's layout, the host
 //! plan, the display and the tables of the SoC whose silicon init is
-//! `crate::soc::picasso`.
+//! `crate::picasso`.
 //!
 //! One PSP-loaded stage runs the native silicon init, MP/SMM, PCI and
 //! ACPI before handing off to the selected payload.
 pub mod acpi;
+mod chip;
+#[cfg(test)]
+mod chip_tests;
+mod init;
+
 use crate::noncar::{
     self, Ctx, Devices, Silicon,
     layout::{Layout, Region},
 };
-pub use crate::soc::picasso::{Config, FchConfig, GpioInterrupt, I2cBus, I2cDevice, Runtime};
-use crate::soc::picasso::{Picasso, State, UART_BASES};
+pub use chip::*;
 use fstart_driver_amd::ccx::rv as cpu;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 

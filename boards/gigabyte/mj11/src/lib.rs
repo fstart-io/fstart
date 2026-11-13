@@ -34,7 +34,7 @@ use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig}
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_pci::ConfigRegionAccess;
 use fstart_pci::ecam::GlobalEcam;
-use fstart_platform_amd::soc::zeppelin::{self as soc, Die, Zeppelin};
+use fstart_platform_amd::zeppelin::{self as soc, Die, Zeppelin};
 use fstart_platform_amd::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},

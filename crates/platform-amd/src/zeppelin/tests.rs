@@ -5,7 +5,7 @@
 //! stood in by the SMU's AP release.
 extern crate std;
 use super::{Config, DxioConfig, FchConfig};
-use crate::soc::zeppelin::{
+use crate::zeppelin::{
     Die, NONPCI_MMIO_SIZE,
     silicon::{self, Identity, SmuPages, SmuPolicy, State},
 };

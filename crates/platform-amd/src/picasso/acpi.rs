@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso interrupt routing, matching the native NBIO bridge table.
 use crate::acpi::{S5_SLEEP_TYPE, SocAcpi, prt};
-use crate::soc::picasso::Picasso;
+use crate::picasso::Picasso;
 use alloc::{format, vec::Vec};
 use fstart_acpi::AmlError;
 use fstart_acpi::{

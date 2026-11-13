@@ -11,7 +11,7 @@ use std::vec::Vec;
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod zeppelin {
     use super::*;
-    use crate::soc::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Zeppelin};
+    use crate::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Zeppelin};
     use fstart_driver_amd::{
         df::{self, map},
         dxio::{self, Descriptor, SataChannel},
@@ -242,7 +242,7 @@ mod zeppelin {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod picasso {
     use super::*;
-    use crate::soc::picasso::Die;
+    use crate::picasso::Die;
     use fstart_driver_amd::{
         df::{self, rv as fabric},
         dxio::{
