@@ -1,6 +1,6 @@
 //! Rome (SSP, Zen 2) MSR table (CCX_SP3 §3.3), generated: do not edit.
 //!
-//! `.venv/bin/python -m tools.gen_ccx` from `reports/ccx-contracts.json`;
+//! From the SP3 analysis's CCX contracts (`reports/ccx-contracts.json`):
 //! donor `rome-s8030-v404`, AmdCcxVhPei / AmdCcxVhDxe
 //! (993e9acb-288c-4788-87ea-09f7a15fd765 / fc8cfd34-4d25-478c-83f0-0309c93ffba4). Every record is
 //! `observed-bytes` in the PEI and the DXE copy; comments give both VAs.
@@ -8,10 +8,10 @@
 //! Dropped (no SP3 CPU can match):
 //! - ssp.table.s1.ffdc8c68 CH_L2_CFG1 clear 0x100000000 set 0x100000000: cpu family 0x4 (Matisse (17h M7xh))
 
-use crate::sp3::ccx::logical::ssp::*;
-use crate::sp3::ccx::table::plat::ssp as plat;
-use crate::sp3::ccx::table::{Platform, Record};
-use crate::sp3::ccx::topology::Scope;
+use crate::ccx::logical::ssp::*;
+use crate::ccx::table::plat::ssp as plat;
+use crate::ccx::table::{Platform, Record};
+use crate::ccx::topology::Scope;
 
 /// Phase-1 (cold boot) records in dispatch order; phase 3 (S3) is empty.
 #[rustfmt::skip]

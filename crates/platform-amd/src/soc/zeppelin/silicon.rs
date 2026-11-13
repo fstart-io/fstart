@@ -54,8 +54,8 @@ pub struct State {
 }
 impl State {
     /// What every CPU's CCX init needs.
-    pub fn cpu_policy(&self) -> ccx::zeppelin::CpuPolicy {
-        ccx::zeppelin::CpuPolicy {
+    pub fn cpu_policy(&self) -> ccx::zp::CpuPolicy {
+        ccx::zp::CpuPolicy {
             revision: self.identity.revision,
             psp_bars: core::array::from_fn(|die| self.psp_bars.get(die).copied().unwrap_or(0)),
             ecam: (super::ECAM, super::ECAM_BUSES),
@@ -181,7 +181,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
             );
         }
     }
-    ccx::zeppelin::bsp_init(msr, revision, Thread::current());
+    ccx::zp::bsp_init(msr, revision, Thread::current());
     let name = smu::name(&dies[0], clock);
     for die in dies {
         iohc::dram_map(die, top_mem as u32, top_mem2);

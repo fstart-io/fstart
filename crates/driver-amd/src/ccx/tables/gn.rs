@@ -1,6 +1,6 @@
 //! Milan (GN, Zen 3) MSR table (CCX_SP3 §3.3), generated: do not edit.
 //!
-//! `.venv/bin/python -m tools.gen_ccx` from `reports/ccx-contracts.json`;
+//! From the SP3 analysis's CCX contracts (`reports/ccx-contracts.json`):
 //! donor `milan-s8030-v404`, AmdCcxZen3Pei / AmdCcxZen3Dxe
 //! (e947cbdb-858a-423e-95f6-019d1814de2a / b342bebb-41c3-40ab-aa70-e9f3742d1835). Every record is
 //! `observed-bytes` in the PEI and the DXE copy; comments give both VAs.
@@ -14,10 +14,10 @@
 //! - gn.table.s1.ffd00d0a BP_CFG clear 0x20 set 0x20: cpu family 0x200 (Cezanne (19h M5xh))
 //! - gn.table.s1.ffd00dd8 CH_L2_AA_CFG clear 0xff0 set 0xff0: cpu family 0x100 (Vermeer (19h M2xh))
 
-use crate::sp3::ccx::logical::gn::*;
-use crate::sp3::ccx::table::plat::gn as plat;
-use crate::sp3::ccx::table::{Platform, Record};
-use crate::sp3::ccx::topology::Scope;
+use crate::ccx::logical::gn::*;
+use crate::ccx::table::plat::gn as plat;
+use crate::ccx::table::{Platform, Record};
+use crate::ccx::topology::Scope;
 
 /// Phase-1 (cold boot) records in dispatch order; phase 3 (S3) is empty.
 #[rustfmt::skip]

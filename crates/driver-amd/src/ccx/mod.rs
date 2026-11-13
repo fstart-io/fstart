@@ -2,21 +2,40 @@
 //! The CCX init every Family 17h CPU runs after its microcode update: the
 //! SoC's reset MSR table, MMCONFIG, the PSP base, TOM2 write-back, MCA, the DPM weights,
 //! C-states and the P0 rewrite. What the SoCs do differently is a [`Ccx`]
-//! parameter; their MSR tables stay theirs: [`picasso`] (AGESA
-//! AmdCcxZenRv) and [`zeppelin`] (AmdCcxZenZp).
+//! parameter; their MSR tables stay theirs: [`rv`] (AGESA AmdCcxZenRv)
+//! and [`zp`] (AmdCcxZenZp, the [`tables::zp`] records).
+//!
+//! The vendor sequence of the SP3 donors is [`init`]: the [`table`] engine
+//! over [`tables`] with the [`logical`] IDs, the [`topology`] and
+//! [`x2apic`] mode, [`downcore`], the AP [`release`], [`mca`], power
+//! management ([`pm`]), [`security`] (SME/SNP), [`errata`] and the [`ras`]
+//! observer in SMM.
 //!
 //! The MSRs, the DRAM-first cache plan, the microcode loader and the TSC
 //! are [`msr`], [`cache`], [`microcode`] and [`tsc`]; the name string is
 //! [`brand`], what the OS gets of the P- and C-states [`power`].
 pub mod brand;
 pub mod cache;
+pub mod downcore;
+pub mod errata;
+pub mod init;
+pub mod logical;
+pub mod mca;
 pub mod microcode;
 pub mod mp;
 pub mod msr;
-pub mod picasso;
+pub mod pm;
 pub mod power;
+pub mod ras;
+pub mod release;
+pub mod rv;
+pub mod security;
+pub mod table;
+pub mod tables;
+pub mod topology;
 pub mod tsc;
-pub mod zeppelin;
+pub mod x2apic;
+pub mod zp;
 
 use self::{
     cache::CacheControl,

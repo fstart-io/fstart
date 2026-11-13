@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::apob::Apob;
+use fstart_driver_amd::ccx;
 use fstart_driver_amd::df::plan::{self, Plan, RootBridgePlan, Window};
 use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::topology::{self, Topology};
@@ -18,7 +19,6 @@ use fstart_driver_amd::df::{self as sp3_df, Fabric};
 use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::nbio::iohc::DramTops;
-use fstart_driver_amd::sp3::ccx;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch;
@@ -37,7 +37,7 @@ pub struct Policy {
     pub nbio: NbioPolicy,
     /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
     pub power: fstart_driver_amd::smu::v11::pptable::PowerPolicy,
-    pub ccx: ccx::Policy,
+    pub ccx: ccx::init::Policy,
     /// FCH env: power-failure state after AC loss.
     pub fch_env: EnvPolicy,
     /// Per-socket AHCI policy, used consistently at reset, env and late.

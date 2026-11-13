@@ -25,10 +25,10 @@
 //!
 //! Slot, LAN, VGA and compliance knobs are [`crate::dxio::Options`].
 
+use fstart_driver_amd::ccx::init as ccx;
 use fstart_driver_amd::df::plan::Policy as DfPolicy;
 use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::smu::v11::pptable::PowerPolicy;
-use fstart_driver_amd::sp3::ccx;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::fch::common::env::{EnvPolicy, PowerFailState};
 use fstart_driver_amd::sp3::nbio::NbioPolicy;

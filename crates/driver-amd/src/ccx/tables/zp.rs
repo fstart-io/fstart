@@ -1,6 +1,8 @@
-//! Naples (ZP, Zen) MSR table (CCX_SP3 §3.3), generated: do not edit.
+//! The ZP (Zen) MSR table of AmdCcxZenZp, Zeppelin's and Naples' (CCX_SP3
+//! §3.3; the SP4r2 CCX_ZP table is the same, record for record),
+//! generated: do not edit.
 //!
-//! `.venv/bin/python -m tools.gen_ccx` from `reports/ccx-contracts.json`;
+//! From the SP3 analysis's CCX contracts (`reports/ccx-contracts.json`):
 //! donor `naples-s8026-v202`, AmdCcxZenZpPei / AmdCcxZenZpDxe
 //! (69000fc4-15e6-45cf-a6d4-73337a9b5958 / 4a1a67d0-e77a-4f0a-af1d-cc412be93dc9). Every record is
 //! `observed-bytes` in the PEI and the DXE copy; comments give both VAs.
@@ -8,9 +10,9 @@
 //! Dropped (no SP3 CPU can match):
 //! - zp.table.s1.ffdc4756 TW_CFG clear 0x200000000000 set 0x200000000000: platform bit 0 (AM4 package)
 
-use crate::sp3::ccx::logical::zp::*;
-use crate::sp3::ccx::table::Record;
-use crate::sp3::ccx::topology::Scope;
+use crate::ccx::logical::zp::*;
+use crate::ccx::table::Record;
+use crate::ccx::topology::Scope;
 
 /// Phase-1 (cold boot) records in dispatch order; phase 3 (S3) is empty.
 #[rustfmt::skip]

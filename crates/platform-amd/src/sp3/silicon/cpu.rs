@@ -18,11 +18,14 @@ use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlo
 use fstart_arch::x86::mtrr::{MsrEntry, SipiMsrs};
 use fstart_driver_amd::ccx::microcode::Patch;
 use fstart_driver_amd::ccx::msr::PSP_ADDRESS;
+use fstart_driver_amd::ccx::pm::{CacWeights, Wdt};
+use fstart_driver_amd::ccx::release::{Launch, ReleaseError};
+use fstart_driver_amd::ccx::topology::Thread;
+use fstart_driver_amd::ccx::{
+    self,
+    init::{ApInputs, Ccx},
+};
 use fstart_driver_amd::cpu::Silicon;
-use fstart_driver_amd::sp3::ccx::power::{CacWeights, Wdt};
-use fstart_driver_amd::sp3::ccx::release::{Launch, ReleaseError};
-use fstart_driver_amd::sp3::ccx::topology::Thread;
-use fstart_driver_amd::sp3::ccx::{self, ApInputs, Ccx};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::hw::msr;
@@ -44,7 +47,7 @@ pub fn apic_id() -> u32 {
 /// The SP3 CPU driver handed to `mp_init_with_launcher`.
 pub struct Sp3Cpu {
     pub ccx: Ccx,
-    pub policy: ccx::Policy,
+    pub policy: ccx::init::Policy,
     /// The patch the BSP loaded, for every other thread.
     pub microcode: Option<Patch<'static>>,
     /// From [`ccx::power::wdt_setting`].
@@ -60,7 +63,7 @@ pub struct Sp3Cpu {
 impl Sp3Cpu {
     pub fn new(
         ccx: Ccx,
-        policy: ccx::Policy,
+        policy: ccx::init::Policy,
         microcode: Option<Patch<'static>>,
         wdt: Option<Wdt>,
         wdt_severity: Option<u8>,

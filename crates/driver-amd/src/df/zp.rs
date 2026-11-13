@@ -501,7 +501,10 @@ mod tests {
 
     /// Four dies of one socket (an SP3 Naples), through the system's
     /// fabric.
-    fn naples() -> (crate::df::model::DfModel, std::vec::Vec<crate::df::topology::Node>) {
+    fn naples() -> (
+        crate::df::model::DfModel,
+        std::vec::Vec<crate::df::topology::Node>,
+    ) {
         let nodes = (0..4)
             .map(|die| crate::df::topology::Node {
                 socket: 0,

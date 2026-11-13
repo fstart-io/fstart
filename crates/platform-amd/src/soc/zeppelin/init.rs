@@ -64,7 +64,7 @@ impl Init for Zeppelin {
     type FchUp = FchUp;
     type Trained = Trained;
     type Chipset = State;
-    type Cpu = Fam17hCpu<Self, ccx::zeppelin::CpuPolicy>;
+    type Cpu = Fam17hCpu<Self, ccx::zp::CpuPolicy>;
     type State = Up;
 
     fn enter(_: &Config, msr: &NativeMsr) -> Entered<Self> {
@@ -185,7 +185,7 @@ impl Init for Zeppelin {
             "AMD Zeppelin",
             microcode,
             state.cpu_policy(),
-            |policy, msr, thread| ccx::zeppelin::cpu_init(msr, policy, thread).is_ok(),
+            |policy, msr, thread| ccx::zp::cpu_init(msr, policy, thread).is_ok(),
         ))
     }
 

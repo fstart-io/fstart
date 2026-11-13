@@ -21,7 +21,7 @@ use fstart_driver_amd::{
 };
 use fstart_driver_i2c::designware::{Speed, Timing};
 
-/// The Zeppelin SoC: [`fstart_driver_amd::ccx::zeppelin`], [`fstart_driver_amd::df::zp`],
+/// The Zeppelin SoC: [`fstart_driver_amd::ccx::zp`], [`fstart_driver_amd::df::zp`],
 /// [`fstart_driver_amd::nbio::zeppelin`], [`fstart_driver_amd::dxio::zeppelin`], [`fstart_driver_amd::smu::v9`]
 /// and the Taishan FCH [`fstart_driver_amd::fch::taishan`].
 pub enum Zeppelin {}

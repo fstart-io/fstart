@@ -5,7 +5,7 @@
 //!
 //! | IP | [`picasso`] | [`zeppelin`] |
 //! |----|-------------|--------------|
-//! | [`fstart_driver_amd::ccx`] | `ccx::picasso` (AmdCcxZenRv) | `ccx::zeppelin` (AmdCcxZenZp) |
+//! | [`fstart_driver_amd::ccx`] | `ccx::rv` (AmdCcxZenRv) | `ccx::zp` (AmdCcxZenZp) |
 //! | [`fstart_driver_amd::df`] | `df::rv` (AmdFabricRv) | `df::zp` (AmdFabricZp) |
 //! | [`fstart_driver_amd::nbio`] | `nbio::picasso` (AmdNbioBaseRV) | `nbio::zeppelin` (AmdNbioBaseZP) |
 //! | [`fstart_driver_amd::dxio`] | `dxio::picasso` | `dxio::zeppelin` |

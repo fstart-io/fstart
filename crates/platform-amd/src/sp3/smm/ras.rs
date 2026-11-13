@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use crate::sp3::silicon::Generation;
 use fstart_arch::x86::cpu::amd::msr::SMM_BASE;
 use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_driver_amd::sp3::ccx::ras::{self, LocalSmiStatus, Record};
+use fstart_driver_amd::ccx::ras::{self, LocalSmiStatus, Record};
 use fstart_driver_amd::window::{Mmio, Window};
 use fstart_driver_ipmi::SelRecord;
 use tock_registers::interfaces::Readable;

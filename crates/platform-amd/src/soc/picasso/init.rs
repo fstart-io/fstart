@@ -18,7 +18,7 @@ use fstart_driver_amd::{
     ccx::{
         Thread,
         mp::Fam17hCpu,
-        picasso::{self as cpu, Identity},
+        rv::{self as cpu, Identity},
         tsc::Tsc,
     },
     df::rv as fabric,

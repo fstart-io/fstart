@@ -31,7 +31,7 @@ pub(crate) fn install(
 ) -> u64 {
     use crate::sp3::flow::OrHalt;
     use fstart_driver_amd::apob::{smbios::dram_ranges, sysmap};
-    use fstart_driver_amd::sp3::ccx::topology::ApicLayout;
+    use fstart_driver_amd::ccx::topology::ApicLayout;
 
     let soc = ctx.soc;
     let smt = crate::sp3::silicon::cpu::this_thread(soc.generation).smt();

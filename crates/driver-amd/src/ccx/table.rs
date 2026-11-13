@@ -199,17 +199,6 @@ impl Record {
 }
 
 /// The phase-1 table of `generation`, if its feature is built.
-pub fn records(generation: Silicon) -> Option<&'static [Record]> {
-    match generation {
-        Silicon::Zp => Some(super::zen1::tables::RECORDS),
-        Silicon::Ssp => Some(super::zen2::tables::RECORDS),
-        Silicon::Gn => Some(super::zen3::tables::RECORDS),
-        #[allow(unreachable_patterns)]
-        _ => None,
-    }
-}
-
-/// Run `table` on the executing thread.
 pub fn apply<M: MsrAccess + ?Sized>(
     cpu: &M,
     table: &[Record],
@@ -227,8 +216,8 @@ pub fn apply<M: MsrAccess + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ccx::logical::{gn, ssp};
     use crate::cpu::Revision;
-    use crate::sp3::ccx::logical::{gn, ssp};
     use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 
     const TABLE: &[Record] = &[
@@ -281,12 +270,12 @@ mod tests {
     #[test]
     fn generated_tables_are_well_formed() {
         let gens = [
-            (Silicon::Zp, crate::sp3::ccx::logical::zp::CPU, 0),
+            (Silicon::Zp, crate::ccx::logical::zp::CPU, 0),
             (Silicon::Ssp, ssp::CPU, ssp::CORE),
             (Silicon::Gn, gn::CPU, gn::CORE),
         ];
         for (g, cpu_family, core_family) in gens {
-            let Some(t) = records(g) else { continue };
+            let t = crate::ccx::tables::records(g);
             assert!(t.windows(2).all(|w| w[0].scope <= w[1].scope), "{g:?}");
             assert!(t.iter().all(|r| r.set & !r.clear == 0 && r.clear != 0));
             assert!(
@@ -312,7 +301,7 @@ mod tests {
         ];
         for (rev, apic, count, msr, clear) in cases {
             let g = rev.silicon();
-            let Some(t) = records(g) else { continue };
+            let t = crate::ccx::tables::records(g);
             let (ids, flags) = (LogicalId::of(rev), PlatformFlags::sp3(g, apic, p));
             let applied: Vec<_> = t.iter().filter(|r| r.applies(&ids, flags)).collect();
             assert_eq!(applied.len(), count, "{rev:?}");

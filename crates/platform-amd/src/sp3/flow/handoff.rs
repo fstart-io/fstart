@@ -20,8 +20,8 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
     use crate::acpi::{self, Cpu, Inputs, Ioapic, Iommu, Power, RootBridgeAcpi};
     use crate::sp3::acpi::{FchAcpi, einj};
     use fstart_core::acpi::AcpiSmiConfig;
+    use fstart_driver_amd::ccx::pm as power;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
-    use fstart_driver_amd::sp3::ccx::power;
     use fstart_driver_amd::sp3::fch::smi;
     use fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id;
 

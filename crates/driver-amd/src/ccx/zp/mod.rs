@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! CCX initialization of the vendor AmdCcxZenZpPei/Dxe (sp4r2 report CCX_ZP).
+//! CCX initialization of the vendor AmdCcxZenZpPei/Dxe (sp4r2 report
+//! CCX_ZP), with the ZP reset MSR table ([`crate::ccx::tables::zp`]).
 //!
 //! The BSP applies the reset register table before MP
 //! init ([`bsp_init`]); every CPU, BSP included, runs [`cpu_init`] during MP
@@ -13,9 +14,6 @@ use super::{
 };
 use crate::cpu::Revision;
 use fstart_arch::x86::cpu::msr::MsrAccess;
-
-mod tables;
-use tables::MSR_TABLE;
 
 /// The Zeppelin parameters of the Family 17h CCX init.
 const CCX: Ccx = Ccx {
@@ -36,35 +34,23 @@ const CCX: Ccx = Ccx {
     tail: &[],
 };
 
-/// Which threads apply a reset table record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
-    /// Every thread.
-    Thread,
-    /// The primary thread of each core.
-    Core,
-    /// The first thread of each core complex.
-    Complex,
-}
-
-/// One record of the vendor CCX reset register table: the threads that
-/// apply it and the [`Revision::mask`] bits it applies to (0: all).
-pub type MsrRecord = MsrUpdate<(Scope, u8)>;
-
-/// The reset register table of the vendor CCX code, for this thread.
+/// The reset register table of the vendor CCX code, for this thread: the
+/// ZP records whose scope and logical revision guard it passes.
 pub fn msr_table(revision: Revision, thread: Thread) -> impl Iterator<Item = MsrUpdate> {
-    let applies = move |&(scope, revisions): &(Scope, u8)| {
-        (revisions == 0 || revisions & revision.zp_mask() != 0)
-            && match scope {
-                Scope::Thread => true,
-                Scope::Core => thread.core_primary(),
-                Scope::Complex => thread.complex_primary(),
-            }
-    };
-    MSR_TABLE
+    use crate::ccx::{logical::LogicalId, table::PlatformFlags, topology::Scope};
+    let ids = LogicalId::of(revision);
+    crate::ccx::tables::zp::RECORDS
         .iter()
-        .filter(move |r| applies(&r.when))
-        .map(|r| r.unconditional())
+        .filter(move |r| {
+            r.applies(&ids, PlatformFlags(0))
+                && match r.scope {
+                    Scope::Thread => true,
+                    Scope::Core => thread.core_primary(),
+                    Scope::Complex => thread.complex_primary(),
+                    Scope::Die | Scope::Socket | Scope::Bsp => false,
+                }
+        })
+        .map(|r| msr::update(r.msr, r.clear, r.set))
 }
 
 /// The BSP, before MP init.
@@ -164,9 +150,10 @@ mod tests {
         let thread = Thread::from_cpuid(0x18 << 24, 1 << 8);
         assert!(thread.complex_primary() && thread.core_primary() && thread.die() == 1);
         bsp_init(&cpu, Revision::ZpB2, thread);
-        let applicable = MSR_TABLE
+        let ids = crate::ccx::logical::LogicalId::of(Revision::ZpB2);
+        let applicable = crate::ccx::tables::zp::RECORDS
             .iter()
-            .filter(|r| r.when.1 == 0 || r.when.1 & Revision::ZpB2.zp_mask() != 0)
+            .filter(|r| r.applies(&ids, crate::ccx::table::PlatformFlags(0)))
             .count();
         assert_eq!(cpu.borrow().writes.len(), applicable);
         assert_eq!(get(&cpu, 0xc0011093), 0x480060); // the B1/B2 variant

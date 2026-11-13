@@ -8,8 +8,8 @@
 //! 0x3000, SOC_DF §3.4). AMI's request-path combination search (§3.4.2) is
 //! deliberately not reproduced.
 //!
-//! The DF3 numbers are pinned against `df3_plan()` in
-//! `sp3/tools/build_soc_df.py` (tests below).
+//! The DF3 numbers are pinned against `df3_plan()` of the
+//! SP3 analysis's SOC_DF plan (tests below).
 //!
 //! # Zeppelin and Naples
 //!
@@ -811,7 +811,7 @@ mod tests {
     }
 
     /// The windows of SP4r2's executable model of the AGESA ZP split
-    /// (`tools/build_soc_dispatch.py`, `df_plan`), one socket.
+    /// (the SOC_DISPATCH `df_plan`), one socket.
     #[test]
     fn df2_matches_the_agesa_zp_model() {
         let zp = |tom, tom2, ecam_size, dies: u8| {

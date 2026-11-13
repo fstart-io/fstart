@@ -29,23 +29,7 @@
 //! The scope of the steps (BSP, every thread, primary threads) is handled
 //! inside the functions from the [`topology::Thread`].
 
-pub mod brand;
-pub mod downcore;
-pub mod errata;
-pub mod logical;
-pub mod mca;
-pub mod power;
-pub mod ras;
-pub mod release;
-pub mod security;
-pub mod table;
-pub mod topology;
-pub mod x2apic;
-
-pub mod zen1;
-pub mod zen2;
-pub mod zen3;
-
+use super::{downcore, errata, logical, mca, pm as power, security, table, topology, x2apic};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
 use crate::ccx::microcode::{self, Load, Patch};
@@ -133,7 +117,7 @@ pub struct ApInputs<'a> {
 impl Ccx {
     pub fn new(identity: Identity, apic: ApicMode, policy: TablePolicy) -> Result<Self, CcxError> {
         let generation = identity.silicon();
-        let table = table::records(generation).ok_or(CcxError::NotBuilt(generation))?;
+        let table = super::tables::records(generation);
         Ok(Self {
             revision: identity.revision,
             signature: identity.signature,

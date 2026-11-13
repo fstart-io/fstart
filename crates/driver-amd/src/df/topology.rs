@@ -264,6 +264,16 @@ pub fn bus_range(rb: &RootBridge) -> BusRange {
     }
 }
 
+/// One DF node: a ZP die (Naples) or an IOD (Rome, Milan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Node {
+    pub socket: u8,
+    /// Die within the socket (always 0 on Rome/Milan).
+    pub die: u8,
+    /// PCI device of the node's DF functions on bus 0 (`0x18 + node`).
+    pub device: u8,
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     #[allow(unused_imports)]
@@ -382,14 +392,4 @@ pub(crate) mod tests {
         let order: std::vec::Vec<u8> = t.logical().iter().map(|r| r.index).collect();
         assert_eq!(order, [3, 0, 1, 2]);
     }
-}
-
-/// One DF node: a ZP die (Naples) or an IOD (Rome, Milan).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Node {
-    pub socket: u8,
-    /// Die within the socket (always 0 on Rome/Milan).
-    pub die: u8,
-    /// PCI device of the node's DF functions on bus 0 (`0x18 + node`).
-    pub device: u8,
 }

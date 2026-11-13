@@ -7,7 +7,7 @@
 //! Zeppelin call order: [`name`] early; [`init`] and [`cac_weights`]
 //! before MP init; [`crate::smu::threads::launch`] to release the APs;
 //! [`aps_ready`] then [`ccx_done_all`] after every CPU ran
-//! [`crate::ccx::zeppelin::cpu_init`].
+//! [`crate::ccx::zp::cpu_init`].
 use crate::smn::SmnReg;
 use crate::smu::{Error, Mailbox, SmuMessages, send1};
 use zerocopy::little_endian::{U16, U32};

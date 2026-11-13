@@ -12,7 +12,7 @@ use crate::noncar::{
 };
 pub use crate::soc::picasso::{Config, FchConfig, GpioInterrupt, I2cBus, I2cDevice, Runtime};
 use crate::soc::picasso::{Picasso, State, UART_BASES};
-use fstart_driver_amd::ccx::picasso as cpu;
+use fstart_driver_amd::ccx::rv as cpu;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
 /// The console on FCH UART `uart`.
