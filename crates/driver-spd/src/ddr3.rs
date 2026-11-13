@@ -93,7 +93,7 @@ pub const SPD_DDR3_SERIAL_LEN: usize = 4;
 pub const SPD_DDR3_PART_LEN: usize = 18;
 
 /// DDR3 module type from SPD byte 3 bits [3:0].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum Ddr3ModuleType {
     /// Raw card with no module type specified.
     Undefined,
@@ -142,7 +142,7 @@ impl Ddr3ModuleType {
 }
 
 /// Validation error from DDR3 SPD decoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum Ddr3SpdError {
     /// The SPD EEPROM was absent or returned all zeroes.
     NotPopulated,
@@ -234,12 +234,23 @@ pub struct Ddr3DimmInfo {
     pub tfaw_256ns: u32,
     /// Capacity of one rank in MiB.
     pub rank_capacity_mb: u32,
+    /// The module asks for mirrored address lines on odd ranks
+    /// (module-specific SPD byte 63 bit 0, as coreboot's MRC reads it).
+    pub mirrored: bool,
     /// Module manufacturer ID bytes as a little-endian u16.
     pub module_manufacturer_id: u16,
     /// Module serial number bytes.
     pub serial: [u8; SPD_DDR3_SERIAL_LEN],
     /// Module part number bytes, ASCII padded with spaces by SPD convention.
     pub part_number: [u8; SPD_DDR3_PART_LEN],
+}
+
+impl Ddr3DimmInfo {
+    /// Capacity of the whole module in MiB.
+    #[must_use]
+    pub const fn size_mb(&self) -> u32 {
+        self.rank_capacity_mb * self.ranks as u32
+    }
 }
 
 /// The SMBIOS Type 17 record of a decoded DIMM (coreboot
@@ -581,6 +592,7 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Result<Ddr3DimmInfo, Ddr3SpdError> {
         trtp_256ns,
         tfaw_256ns,
         rank_capacity_mb: rank_capacity_mb as u32,
+        mirrored: spd_data[63] & 1 != 0,
         module_manufacturer_id,
         serial,
         part_number,
