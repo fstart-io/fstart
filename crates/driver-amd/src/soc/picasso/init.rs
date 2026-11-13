@@ -23,7 +23,7 @@ use crate::{
     nbio::picasso as nbio,
     psp::{self, boot::Psp},
     smu::v10::power,
-    soc::{Ctx, Entered, Hw, Init, Roots, Soc as _},
+    soc::{Ctx, DieInit, Entered, Hw, Init, Roots, Soc as _},
 };
 use fstart_arch::x86::{
     cpu::{
@@ -93,7 +93,6 @@ impl Init for Picasso {
     type Trained = Trained;
     type Chipset = Chipset;
     type Cpu = Fam17hCpu<Self, cpu::thread::Policy>;
-    type Smi = FchSmi;
     type State = State;
 
     /// The console: ACPI MMIO decode, legacy decode, AOAC power of the
@@ -362,20 +361,6 @@ impl Init for Picasso {
         })
     }
 
-    fn smi(_: &Ctx<'_, Self>, _: &State) -> FchSmi {
-        // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
-        unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) }
-    }
-
-    fn smm_installed(
-        ctx: &Ctx<'_, Self>,
-        state: &mut State,
-        tseg: &InstalledTseg,
-    ) -> Result<(), &'static str> {
-        state.psp = psp::boot::notify_smm(nbio::PSP_MMIO_BASE, psp::Variant::Rv, tseg, &ctx.clock);
-        Ok(())
-    }
-
     fn roots(ctx: &Ctx<'_, Self>, _: &State) -> Option<Roots> {
         ctx.hw.roots(&Self::pci_segment(ctx.hw), |die| {
             if die == 0 {
@@ -386,8 +371,9 @@ impl Init for Picasso {
         })
     }
 
-    fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) {
+    fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
         ctx.hw.fch.acpi_ports(sandstone::ACPI_PORTS);
+        Ok(())
     }
 
     fn ready_to_boot(
@@ -444,4 +430,20 @@ fn fch_init(
     }
     preinit::configure_spi(fch, config.spi).map_err(|_| "SPI setup")?;
     preinit::initialize_smbus(fch).map_err(|_| "SMBus setup")
+}
+
+impl DieInit for Picasso {
+    fn smi(_: &Ctx<'_, Self>, _: &State) -> FchSmi {
+        // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
+        unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) }
+    }
+
+    fn smm_installed(
+        ctx: &Ctx<'_, Self>,
+        state: &mut State,
+        tseg: &InstalledTseg,
+    ) -> Result<(), &'static str> {
+        state.psp = psp::boot::notify_smm(nbio::PSP_MMIO_BASE, psp::Variant::Rv, tseg, &ctx.clock);
+        Ok(())
+    }
 }

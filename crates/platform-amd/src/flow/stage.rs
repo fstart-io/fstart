@@ -50,6 +50,7 @@ pub fn stop<S: Soc>(stop: Stop) -> ! {
             fstart_log::info!("{}: {} checkpoint reached, halting", S::NAME, what)
         }
     }
+    fstart_log::flush();
     halt()
 }
 
@@ -90,6 +91,11 @@ impl<S: Soc> Early<S> {
         &self.entered.hw
     }
 
+    /// Stop the boot: the board's `what` failed. There is no console yet.
+    pub fn fail(&self, what: &'static str) -> ! {
+        fail::<S>(what)
+    }
+
     /// Bring up the console, identify the CPU, then the SoC's memory map
     /// from the APOB, cached, with the verified FFS mounted
     /// ([`Soc::map`]).
@@ -103,7 +109,7 @@ impl<S: Soc> Early<S> {
             msr,
             entered:
                 Entered {
-                    hw,
+                    mut hw,
                     clock,
                     pre_init,
                 },
@@ -140,7 +146,7 @@ impl<S: Soc> Early<S> {
             e820,
             ffs,
             flow,
-        } = S::map(&hw, &mut soc_config, &msr, clock).unwrap_or_else(|what| fail::<S>(what));
+        } = S::map(&mut hw, &mut soc_config, &msr, clock).unwrap_or_else(|what| fail::<S>(what));
         post(0x32);
 
         Stage {
@@ -272,6 +278,12 @@ impl<S: Soc, P> Stage<S, P> {
     /// The calibrated clock, to pace board device transactions.
     pub fn clock(&self) -> Tsc {
         self.machine.clock
+    }
+
+    /// What the SoC's services keep between the phases.
+    #[cfg_attr(not(feature = "sp3"), allow(dead_code))]
+    pub(crate) fn flow_mut(&mut self) -> &mut S::Flow {
+        &mut self.machine.flow
     }
 
     /// Stop the boot with `why`.
@@ -419,7 +431,9 @@ impl<S: Soc> Stage<S, Cpus<S>> {
                 fail::<S>("framebuffer cache policy");
             }
         }
-        S::after_resources(&ctx, &mut silicon.state);
+        if let Err(what) = S::after_resources(&ctx, &mut silicon.state) {
+            fail::<S>(what);
+        }
         Stage {
             machine,
             phase: Enumerated { silicon, pci },
@@ -453,7 +467,7 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
 impl<S: Soc> Stage<S, Ready<S>> {
     /// Finish the SoC's ready-to-boot, then install ACPI with the board's
     /// contribution `acpi` and SMBIOS with its identity `smbios`.
-    pub fn emit_tables(self, smbios: &S::Smbios<'_>, acpi: S::Acpi) -> Stage<S, Published<S>> {
+    pub fn emit_tables(self, smbios: &S::Smbios<'_>, acpi: S::Acpi<'_>) -> Stage<S, Published<S>> {
         let Stage {
             machine,
             phase: Ready { mut silicon, pci },
@@ -528,7 +542,7 @@ impl<S: Soc> Stage<S, Published<S>> {
         {
             handoff.peripherals = peripherals;
         }
-        S::launch(handoff, &ctx, &machine.flow)
+        S::launch(handoff, &ctx, &silicon.state, &machine.flow)
     }
 }
 

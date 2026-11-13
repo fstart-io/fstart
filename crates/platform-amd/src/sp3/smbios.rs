@@ -28,7 +28,7 @@ pub(crate) mod runtime {
     /// `rom_size` is the image extent recorded by the flash anchor, not a
     /// possibly partial EFS mapping or a physical flash-geometry measurement.
     pub(crate) fn prepare(
-        ctx: &Ctx,
+        ctx: &Ctx<'_>,
         mp: &fstart_arch::x86::mp::MpHandle,
         rom_size: u32,
         identity: fstart_acpi::smbios::SmbiosIdentity<'_>,

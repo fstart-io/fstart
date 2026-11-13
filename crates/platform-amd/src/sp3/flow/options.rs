@@ -31,7 +31,7 @@ pub(crate) fn resolve<C: Clone>(
 /// engine reads the FFS as the ROM window shows it.
 #[cfg(feature = "payload-uefi")]
 pub(crate) fn storage(
-    ctx: &Ctx,
+    ctx: &Ctx<'_>,
 ) -> Option<
     fstart_payload::crabefi::settings::FlashStorage<
         fstart_driver_amd::fch::spi::flash::Flash<fstart_driver_amd::sp3::soc::hw::Tsc>,
@@ -59,7 +59,7 @@ pub(crate) fn storage(
 
 /// The options' CFR form for the payload's menu.
 #[cfg(feature = "payload-uefi")]
-pub(crate) fn settings(ctx: &Ctx) -> fstart_payload::crabefi::settings::FirmwareSettings {
+pub(crate) fn settings(ctx: &Ctx<'_>) -> fstart_payload::crabefi::settings::FirmwareSettings {
     fstart_payload::crabefi::settings::FirmwareSettings {
         cfr: fstart_options::cfr::encode(&ctx.options),
         cmos: None,
