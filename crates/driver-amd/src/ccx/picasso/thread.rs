@@ -31,11 +31,13 @@ pub enum Error {
 pub struct Policy {
     routing: [u64; 2],
     psp_base: u64,
+    /// MMCONFIG base and bus count, as the BSP has it.
+    ecam: (u64, u16),
 }
 impl Policy {
     /// BSP before AP release. The platform must have established PAT support,
     /// exclusive access and the locked PSP BAR. Capture does not change MSRs.
-    pub fn capture(cpu: &impl MsrAccess, psp_base: u64) -> Result<Self, Error> {
+    pub fn capture(cpu: &impl MsrAccess, psp_base: u64, ecam: (u64, u16)) -> Result<Self, Error> {
         if psp_base != u64::from(crate::nbio::picasso::PSP_MMIO_BASE) {
             return Err(Error::PspBase);
         }
@@ -50,7 +52,11 @@ impl Policy {
         {
             return Err(Error::CachePolicy);
         }
-        let result = Self { routing, psp_base };
+        let result = Self {
+            routing,
+            psp_base,
+            ecam,
+        };
         result.validate(cpu)?;
         Ok(result)
     }
@@ -94,6 +100,7 @@ impl Policy {
             cac_weights: Some(&super::CAC_WEIGHTS),
             name: None,
             memory_encryption: false,
+            ecam: self.ecam,
         };
         ccx::cpu_init(cpu, &super::CCX, thread, &inputs, table.iter().copied())
             .map_err(|ccx::Error::McaBanks(banks)| Error::Cpu(CpuError::McaBanks(banks)))
@@ -154,7 +161,7 @@ mod tests {
     #[test]
     fn routing_and_mca_rejections_precede_all_writes() {
         let cpu = cpu();
-        let policy = Policy::capture(&cpu, 0xfd100000).unwrap();
+        let policy = Policy::capture(&cpu, 0xfd100000, (0xf800_0000, 64)).unwrap();
         assert!(writes(&cpu).is_empty());
         for index in ROUTING_MSRS {
             let old = cpu.borrow().0.get(index);
@@ -179,7 +186,7 @@ mod tests {
         use fstart_arch::x86::cpu::amd::msr::MMIO_CFG_BASE;
         for primary in [false, true] {
             let cpu = cpu();
-            let policy = Policy::capture(&cpu, 0xfd100000).unwrap();
+            let policy = Policy::capture(&cpu, 0xfd100000, (0xf800_0000, 64)).unwrap();
             policy.initialize(&cpu, false, thread(primary)).unwrap();
             let writes = writes(&cpu);
             assert!(writes.contains(&(MMIO_CFG_BASE.index(), 0xf8000019)));
@@ -195,7 +202,7 @@ mod tests {
             );
         }
         let cpu = cpu();
-        let policy = Policy::capture(&cpu, 0xfd100000).unwrap();
+        let policy = Policy::capture(&cpu, 0xfd100000, (0xf800_0000, 64)).unwrap();
         policy.initialize(&cpu, true, thread(true)).unwrap();
         assert!(!writes(&cpu).iter().any(|(index, _)| *index == 0xc0010074)); // BSP reset was early
     }

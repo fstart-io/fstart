@@ -2,6 +2,7 @@
 //! Die 0's FCH: the vendor FchTaishanPei reset tasks, the FchTaishanDxe env
 //! and late tasks and the pre-console setup. The SATA and USB controllers
 //! are in [`super::sata`] and [`super::usb`].
+use super::acpi_io;
 use super::{ASF_IO, SMBUS_IO, irq};
 use crate::cpu::Revision;
 use crate::{
@@ -15,7 +16,6 @@ use crate::{
         misc, pm, smbus, smi_bank as smi, spi,
     },
     smn::{Smn, SmnReg},
-    soc::zeppelin::acpi_io,
     table::{Record, rmw},
 };
 use tock_registers::{

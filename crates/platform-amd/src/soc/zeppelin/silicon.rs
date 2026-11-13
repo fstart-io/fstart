@@ -3,9 +3,12 @@
 //! transports, so the host model of the dies can log the whole sequence.
 //! It is split where the vendor board PEIMs run, so a board does that work
 //! between the steps ([`super::init`] binds them to [`crate::soc::Init`]).
-use super::{self as soc, Config, Die, MAX_DIES};
-use crate::cpu::{Package, Revision};
-use crate::{
+use super::{self as soc, Config, Die, ECAM, ECAM_BUSES, MAX_DIES, Zeppelin};
+use embedded_hal::delay::DelayNs;
+use fstart_arch::x86::cpu::msr::MsrAccess;
+use fstart_core::services::{Timer, TimerDelay};
+use fstart_driver_amd::cpu::{Package, Revision};
+use fstart_driver_amd::{
     apob::Apob,
     ccx::{self, CacWeights, Thread},
     df, dxio,
@@ -14,9 +17,6 @@ use crate::{
     psp,
     smu::v9 as smu,
 };
-use embedded_hal::delay::DelayNs;
-use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_core::services::{Timer, TimerDelay};
 use fstart_log::Hex;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use zerocopy::IntoBytes;
@@ -46,7 +46,8 @@ impl State {
     pub fn cpu_policy(&self) -> ccx::zeppelin::CpuPolicy {
         ccx::zeppelin::CpuPolicy {
             revision: self.identity.revision,
-            psp_bars: self.psp_bars,
+            psp_bars: core::array::from_fn(|die| self.psp_bars.get(die).copied().unwrap_or(0)),
+            ecam: (super::ECAM, super::ECAM_BUSES),
             cac_weights: self.cac_weights,
             name: Some(self.name),
             memory_encryption: self.memory_encryption,
@@ -88,7 +89,8 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
     let tom2 = top_mem2.unwrap_or(0);
-    let plan = df::zeppelin::route_resources(dies, top_mem, tom2).map_err(|_| "DF MMIO plan")?;
+    let plan = df::zeppelin::route_resources(dies, (ECAM, ECAM_BUSES), top_mem, tom2)
+        .map_err(|_| "DF MMIO plan")?;
     for r in &plan.mmio {
         fstart_log::debug!(
             "DF MMIO pair {}: {}..{} -> {}",
@@ -101,7 +103,7 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     let mut nonpci = [0; MAX_DIES];
     for die in dies {
         nonpci[usize::from(die.index())] =
-            df::zeppelin::nonpci_mmio_base(&dies[0].df(), die.index())
+            df::zeppelin::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index())
                 .ok_or("non-PCI MMIO pool")?;
     }
     for die in dies {
@@ -149,7 +151,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     nonpci: [u32; MAX_DIES],
-    buffers: &'static mut dxio::zeppelin::Buffers,
+    buffers: &'static mut dxio::zeppelin::Buffers<MAX_DIES>,
     timer: &impl Timer,
 ) -> Result<Trained, &'static str> {
     let clock = &mut TimerDelay(timer);
@@ -192,6 +194,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
             dies,
             &config.dxio.descriptors,
             config.subsystem_id,
+            ECAM_BUSES,
             buffers,
             timer,
         )
@@ -244,10 +247,19 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     let table = smu::PolicyTable::new(&smu::Policy::default());
     smu_policy.0[..table.as_bytes().len()].copy_from_slice(table.as_bytes());
     let page = |i: usize| smu_pages.0[i].as_ptr() as u64;
+    let die_page = |offset: usize| {
+        move |die: usize| {
+            if die < MAX_DIES {
+                page(offset + die)
+            } else {
+                0
+            }
+        }
+    };
     let buffers = smu::DmaBuffers {
         policy: smu_policy.0.as_ptr() as u64,
-        agm_log: core::array::from_fn(page),
-        perfmon: core::array::from_fn(|i| page(MAX_DIES + i)),
+        agm_log: core::array::from_fn(die_page(0)),
+        perfmon: core::array::from_fn(die_page(MAX_DIES)),
     };
     // SAFETY: the pages and the policy are reserved DRAM below 4 GiB.
     if unsafe { smu::init(dies, &buffers, clock) }.is_err() {

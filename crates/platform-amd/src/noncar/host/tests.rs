@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
+use crate::soc::{picasso::Picasso, zeppelin::Zeppelin};
 use crate::{picasso, zeppelin};
-use fstart_driver_amd::{
-    fch::sandstone::preinit::{ReadMode, Speed, SpiConfig},
-    soc::{picasso::Picasso, zeppelin::Zeppelin},
-};
+use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
 use fstart_image_build::plan::CompilerFileSelection;
 use sha2::{Digest, Sha256};
 
@@ -48,7 +46,7 @@ impl Board for Mj11 {
         ccx: zeppelin::CcxConfig::DEFAULT,
         fch: zeppelin::FchConfig::DEFAULT,
         dxio: zeppelin::DxioConfig {
-            descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],
+            descriptors: [&[]; crate::soc::zeppelin::MAX_DIES],
         },
     };
 }

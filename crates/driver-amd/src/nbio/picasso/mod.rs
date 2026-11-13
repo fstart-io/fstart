@@ -8,7 +8,7 @@ use super::{
 };
 use crate::smn::{Reg, Smn, SmnReg, copy, rmw, write};
 use crate::smu::v10 as smu;
-use crate::soc::picasso::Die;
+use crate::{df::Die, soc::Soc};
 use embedded_hal::delay::DelayNs;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -148,7 +148,7 @@ pub fn early_init(
 /// TOP_MEM/TOP_MEM2 must be read from AMD MSRs, NOT derived from a guessed
 /// DIMM capacity or the number of populated channels.
 pub fn dram_routes(
-    die: &Die<impl ConfigRegionAccess + Copy>,
+    die: &Die<impl Soc, impl ConfigRegionAccess + Copy>,
     top_mem: u64,
     top_mem2: Option<u64>,
 ) -> Result<(), Error> {

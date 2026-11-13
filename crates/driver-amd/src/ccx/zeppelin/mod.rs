@@ -12,7 +12,6 @@ use super::{
     msr::{self, DpmCfg, MsrUpdate},
 };
 use crate::cpu::Revision;
-use crate::soc::zeppelin::{ECAM, ECAM_BUSES, MAX_DIES};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
 mod tables;
@@ -29,8 +28,6 @@ const CCX: Ccx = Ccx {
         l3_banks: 7..=14,
         l3_owner: L3Owner::DiePrimary,
     },
-    ecam: ECAM,
-    ecam_buses: ECAM_BUSES,
     // ACPI C-state control I/O (vendor DXE PCD 0x14d).
     cstate_io_base: 0x813,
     // Enabled, 2047 * 1.31 ms.
@@ -75,12 +72,18 @@ pub fn bsp_init(cpu: &impl MsrAccess, revision: Revision, thread: Thread) {
     msr::apply(cpu, msr_table(revision, thread));
 }
 
+/// ZP dies in a socket: the die field of the APIC ID.
+pub const DIES_PER_SOCKET: usize = 4;
+
 /// What every CPU needs that only the BSP can read through SMN.
 #[derive(Debug, Clone, Copy)]
 pub struct CpuPolicy {
     pub revision: Revision,
-    /// PSP MMIO base of each die, 0 if not enabled ([`crate::psp::bars`]).
-    pub psp_bars: [u32; MAX_DIES],
+    /// PSP MMIO base of each die of the socket, 0 if not enabled
+    /// ([`crate::psp::bars`]).
+    pub psp_bars: [u32; DIES_PER_SOCKET],
+    /// MMCONFIG base and bus count: the APs start with its reset value.
+    pub ecam: (u64, u16),
     /// From [`crate::smu::v9::cac_weights`]; `None` if reading them failed.
     pub cac_weights: Option<CacWeights>,
     /// From [`crate::smu::v9::name`], for the name MSRs.
@@ -107,6 +110,7 @@ pub fn cpu_init(
         cac_weights: policy.cac_weights.as_ref(),
         name: policy.name.as_ref(),
         memory_encryption: policy.memory_encryption,
+        ecam: policy.ecam,
     };
     ccx::cpu_init(
         cpu,
@@ -180,7 +184,8 @@ mod tests {
         ]);
         let policy = CpuPolicy {
             revision: Revision::ZpB2,
-            psp_bars: [0xe010_0000, 0xd010_0000],
+            psp_bars: [0xe010_0000, 0xd010_0000, 0, 0],
+            ecam: (0xf000_0000, 128),
             cac_weights: Some(core::array::from_fn(|i| i as u64 * 3)),
             name: Some(*b"AMD EPYC 3151 4-Core Processor\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"),
             memory_encryption: true,
@@ -222,7 +227,8 @@ mod tests {
             (SYSCFG.index(), (1 << 21) | (1 << 22)),
         ]);
         let policy = CpuPolicy {
-            psp_bars: [0, 0],
+            psp_bars: [0; DIES_PER_SOCKET],
+            ecam: (0xf000_0000, 128),
             ..policy
         };
         cpu_init(&cpu, &policy, Thread::from_cpuid(0x3 << 24, 1 << 8)).unwrap();
@@ -295,7 +301,8 @@ mod tests {
             );
             let policy = CpuPolicy {
                 revision,
-                psp_bars: [0xe010_0000, 0xd010_0000],
+                psp_bars: [0xe010_0000, 0xd010_0000, 0, 0],
+                ecam: (0xf000_0000, 128),
                 cac_weights: Some(core::array::from_fn(|i| i as u64 * 3 + 1)),
                 name: None,
                 memory_encryption: false,

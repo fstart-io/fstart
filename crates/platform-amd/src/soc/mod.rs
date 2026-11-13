@@ -5,14 +5,14 @@
 //!
 //! | IP | [`picasso`] | [`zeppelin`] |
 //! |----|-------------|--------------|
-//! | [`crate::ccx`] | `ccx::picasso` (AmdCcxZenRv) | `ccx::zeppelin` (AmdCcxZenZp) |
-//! | [`crate::df`] | `df::picasso` (AmdFabricRv) | `df::zeppelin` (AmdFabricZp) |
-//! | [`crate::nbio`] | `nbio::picasso` (AmdNbioBaseRV) | `nbio::zeppelin` (AmdNbioBaseZP) |
-//! | [`crate::dxio`] | `dxio::picasso` | `dxio::zeppelin` |
-//! | [`crate::smu`] | `smu::v10` (AmdNbioSmuV10) | `smu::v9` (AmdNbioSmuV9) |
-//! | [`crate::fch`] | `fch::sandstone` (FchSandstone) | `fch::taishan` (FchTaishan) |
-//! | [`crate::psp`], [`crate::apob`] | common | common |
-//! | [`crate::acp`] | ACP 3.x | - |
+//! | [`fstart_driver_amd::ccx`] | `ccx::picasso` (AmdCcxZenRv) | `ccx::zeppelin` (AmdCcxZenZp) |
+//! | [`fstart_driver_amd::df`] | `df::picasso` (AmdFabricRv) | `df::zeppelin` (AmdFabricZp) |
+//! | [`fstart_driver_amd::nbio`] | `nbio::picasso` (AmdNbioBaseRV) | `nbio::zeppelin` (AmdNbioBaseZP) |
+//! | [`fstart_driver_amd::dxio`] | `dxio::picasso` | `dxio::zeppelin` |
+//! | [`fstart_driver_amd::smu`] | `smu::v10` (AmdNbioSmuV10) | `smu::v9` (AmdNbioSmuV9) |
+//! | [`fstart_driver_amd::fch`] | `fch::sandstone` (FchSandstone) | `fch::taishan` (FchTaishan) |
+//! | [`fstart_driver_amd::psp`], [`fstart_driver_amd::apob`] | common | common |
+//! | [`fstart_driver_amd::acp`] | ACP 3.x | - |
 //!
 //! The names in parentheses are the AGESA modules of the version.
 //!
@@ -20,46 +20,27 @@
 //! that a platform's boot flow has to wait for: [`Init`], the steps the flow
 //! calls. The flow itself (console, memory map, MP, SMM, PCI, tables,
 //! payload) is the platform's and the same for every SoC.
-use crate::{
-    apob::Apob,
-    ccx::tsc::Tsc,
-    df::Die,
-    fch::{
-        Acpimmio, Fch, NativeBus,
-        gpio::{Bank, Gpio},
-    },
-    psp,
-    smu::Mailbox,
-};
 use fstart_arch::x86::{
     cpu::{amd::smm::InstalledTseg, msr::NativeMsr},
     ioapic::IoApic,
     mp::CpuDriver,
 };
 use fstart_core::{description::PciRootInfo, services::memory_detect::E820State};
+use fstart_driver_amd::{
+    apob::Apob,
+    ccx::tsc::Tsc,
+    df::Die,
+    fch::{Acpimmio, Fch, NativeBus, gpio::Gpio},
+    psp,
+};
 use fstart_pci::{MAX_PCI_ROOTS, PciEcam, PciRoot, ecam::GlobalEcam};
 
 pub mod picasso;
-#[cfg(any(test, feature = "testing"))]
-pub mod testing;
+#[cfg(test)]
+mod silicon_tests;
 pub mod zeppelin;
 
-/// What the IP blocks of a SoC differ in.
-pub trait Soc: 'static {
-    /// Dies of the largest package.
-    const MAX_DIES: usize;
-    /// The SMU mailbox of every die.
-    const SMU: Mailbox;
-    /// The SMU message of the DXIO firmware ([`crate::dxio`]).
-    const DXIO_SERVICE: u32;
-    /// The FCH GPIO bank.
-    const GPIO_BANK: &'static Bank;
-    /// MMIO bases of the FCH I2C controllers, numbered like the vendor
-    /// AmdI2CMasterPei instances ([`crate::fch::i2c`]).
-    const I2C: &'static [usize];
-    /// Fabric ID of the IOMS (the PCIe root complex) of `die`.
-    fn ioms_fabric_id(die: u8) -> u8;
-}
+pub use fstart_driver_amd::soc::Soc;
 
 /// DRAM as the PSP left it: the CPU's TOP_MEM/TOM2 and the APOB's map.
 #[derive(Clone, Copy)]
@@ -225,7 +206,7 @@ pub trait Init: Sized + 'static {
 /// die 0's mailbox afterwards.
 pub trait DieInit: Init<Hw = Hw<Self>> + Soc {
     /// The owner of the SMI sources.
-    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> crate::fch::smi::FchSmi;
+    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> fstart_driver_amd::fch::smi::FchSmi;
     /// SMM is installed and locked in `tseg`: the PSP gets its SMM info.
     fn smm_installed(
         ctx: &Ctx<'_, Self>,
@@ -256,16 +237,16 @@ impl<S: Soc> Hw<S> {
         // SAFETY: BSP only, single-threaded cold boot; the ECAM comes up
         // before the first config space access.
         let fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);
-        crate::fch::post(&fch, 0x30);
-        crate::ccx::msr::enable_ecam(msr, ecam, buses);
+        fstart_driver_amd::fch::post(&fch, 0x30);
+        fstart_driver_amd::ccx::msr::enable_ecam(msr, ecam, buses);
         fstart_pci::ecam::init(ecam as usize);
         // SAFETY: exclusive FCH programming before the console.
-        unsafe { crate::fch::enable_acpimmio() };
+        unsafe { fstart_driver_amd::fch::enable_acpimmio() };
         let mhz = fstart_arch::x86::cpu::amd::msr::tsc_mhz(msr).unwrap_or(0);
         let clock = core::num::NonZeroU32::new(mhz).map(Tsc::new);
         let pre_init = pre_init(&fch, clock);
         // SAFETY: BSP-only silicon init serializes all die register accesses.
-        let dies = unsafe { crate::df::dies(GlobalEcam) }.collect();
+        let dies = unsafe { fstart_driver_amd::df::dies(GlobalEcam) }.collect();
         Entered {
             hw: Self { fch, dies },
             clock,
@@ -287,21 +268,24 @@ impl<S: Soc> Hw<S> {
 
     /// The LPC bridge, for decodes and Super I/O routing of a console
     /// behind it.
-    pub fn lpc(&self) -> crate::fch::lpc::Lpc<&NativeBus> {
+    pub fn lpc(&self) -> fstart_driver_amd::fch::lpc::Lpc<&NativeBus> {
         // SAFETY: exclusive LPC decode programming on the BSP.
-        unsafe { crate::fch::lpc::Lpc::new(self.fch.bus()) }
+        unsafe { fstart_driver_amd::fch::lpc::Lpc::new(self.fch.bus()) }
     }
 
     /// The threads the SMU releases, the BSP included.
     pub fn threads(&self) -> Result<u16, &'static str> {
-        crate::smu::threads::thread_count(&self.dies, crate::smu::threads::Policy::DEFAULT)
-            .map(|threads| threads as u16)
-            .map_err(|_| "CPU topology")
+        fstart_driver_amd::smu::threads::thread_count(
+            &self.dies,
+            fstart_driver_amd::smu::threads::Policy::DEFAULT,
+        )
+        .map(|threads| threads as u16)
+        .map_err(|_| "CPU topology")
     }
 
     /// The SMU releases `aps` APs.
     pub fn release_aps(&self, aps: u16, clock: Tsc) -> Result<(), u32> {
-        use crate::smu::threads::{self, Policy};
+        use fstart_driver_amd::smu::threads::{self, Policy};
         // SAFETY: the flow routed the reset vector to the MP engine.
         unsafe {
             threads::launch(&self.dies, Policy::DEFAULT, usize::from(aps), &mut {
@@ -327,8 +311,8 @@ impl<S: Soc> Hw<S> {
         self.dies
             .iter()
             .map(|die| {
-                let routes = crate::df::map::root_complex(die)?;
-                crate::df::root::root(&routes, ecam, non_pci(die.index()))
+                let routes = fstart_driver_amd::df::map::root_complex(die)?;
+                fstart_driver_amd::df::root::root(&routes, ecam, non_pci(die.index()))
             })
             .collect()
     }
@@ -339,7 +323,7 @@ impl<S: Soc> Hw<S> {
     pub fn init_ioapics(&self, bsp_apic: u8, ioapic: impl Fn(u8) -> u32) {
         self.fch.enable_hpet_ioapic();
         // SAFETY: decoded IOAPIC MMIO, BSP only.
-        let fch_ioapic = unsafe { IoApic::new(crate::fch::IOAPIC as usize) };
+        let fch_ioapic = unsafe { IoApic::new(fstart_driver_amd::fch::IOAPIC as usize) };
         fch_ioapic.set_id(0);
         fch_ioapic.mask_all();
         fch_ioapic.route_i8259(bsp_apic);

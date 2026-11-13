@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whole-sequence write logs of the Family 17h silicon init against the
-//! host model of the dies ([`crate::soc::testing`]). The fingerprints pin
+//! host model of the dies ([`fstart_driver_amd::testing`]). The fingerprints pin
 //! the sequences the hardware was tested with.
 extern crate std;
-use crate::cpu::{Package, Revision};
-use crate::soc::testing::*;
+use fstart_driver_amd::cpu::{Package, Revision};
+use fstart_driver_amd::testing::*;
 use fstart_pci::PciAddress;
 use std::vec::Vec;
 
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod zeppelin {
     use super::*;
-    use crate::{
+    use crate::soc::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP, Zeppelin};
+    use fstart_driver_amd::{
         df::{self, map},
         dxio::{self, Descriptor, SataChannel},
         fch::{
@@ -28,7 +29,6 @@ mod zeppelin {
             threads::{self, Policy},
             v9 as smu,
         },
-        soc::zeppelin::{Die, NONPCI_IOAPIC, NONPCI_IOMMU, NONPCI_PSP},
     };
 
     const fn pcie(start: u8, end: u8, device: u8, function: u8) -> Descriptor {
@@ -71,10 +71,10 @@ mod zeppelin {
         hw.set_config(df(0, 1), 0x204, 2);
         hw.set_config(df(0, 0), 0x84, 0);
         hw.set_config(df(1, 0), 0x84, 0x40);
-        hw.set_smn(0, crate::smu::THREAD_CONFIG, 0x013);
-        hw.set_smn(1, crate::smu::THREAD_CONFIG, 0x103);
-        hw.set_smn(0, crate::smu::THREAD_ENABLE, 1);
-        hw.set_smn(1, crate::smu::THREAD_ENABLE, 0);
+        hw.set_smn(0, fstart_driver_amd::smu::THREAD_CONFIG, 0x013);
+        hw.set_smn(1, fstart_driver_amd::smu::THREAD_CONFIG, 0x103);
+        hw.set_smn(0, fstart_driver_amd::smu::THREAD_ENABLE, 1);
+        hw.set_smn(1, fstart_driver_amd::smu::THREAD_ENABLE, 0);
         hw.set_smn(0, 0x13f0_0040_u32, 0x1964_000f);
         // Die 1's internal bridge 8.1 exists.
         hw.set_config(PciAddress::new(0, 0x40, 8, 1), 0, 0x1452_1022);
@@ -89,10 +89,13 @@ mod zeppelin {
         let mut delay = hw.clock();
 
         // Before the PCIe training
-        df::zeppelin::route_resources(&dies, 0xe000_0000, 0x4_2000_0000).unwrap();
+        df::zeppelin::route_resources(&dies, (0xf000_0000, 128), 0xe000_0000, 0x4_2000_0000)
+            .unwrap();
         let nonpci: Vec<u32> = dies
             .iter()
-            .map(|die| df::zeppelin::nonpci_mmio_base(&dies[0].df(), die.index()).unwrap())
+            .map(|die| {
+                df::zeppelin::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index()).unwrap()
+            })
             .collect();
         assert_eq!(
             map::mmio_windows(&dies[0].df(), dies[1].ioms_fabric_id()).len(),
@@ -132,9 +135,16 @@ mod zeppelin {
             .collect();
         assert_eq!(ioapics[0], nonpci[0] + (7 << 20));
         assert_eq!(psp::bars(&dies), [nonpci[0], nonpci[1]]);
-        let buffers = low(0x4000_0000, dxio::zeppelin::Buffers::new());
+        let buffers = low(0x4000_0000, dxio::zeppelin::Buffers::<2>::new());
         let topology = unsafe {
-            dxio::zeppelin::init(&dies, &[DIE0, DIE1], SUBSYSTEM_ID, buffers, &hw.clock())
+            dxio::zeppelin::init(
+                &dies,
+                &[DIE0, DIE1],
+                SUBSYSTEM_ID,
+                128,
+                buffers,
+                &hw.clock(),
+            )
         }
         .unwrap();
         let trained = |die: usize| {
@@ -152,8 +162,8 @@ mod zeppelin {
         taishan::multi::usb(&dies, &DEVICES, Package::Sp4, &mut delay);
         let buffers = smu::DmaBuffers {
             policy: 0x7000_0040,
-            agm_log: [0x7000_1000, 0x7000_2000],
-            perfmon: [0x7000_3000, 0x7000_4000],
+            agm_log: [0x7000_1000, 0x7000_2000, 0, 0, 0, 0, 0, 0],
+            perfmon: [0x7000_3000, 0x7000_4000, 0, 0, 0, 0, 0, 0],
         };
         unsafe { smu::init(&dies, &buffers, &mut delay) }.unwrap();
         smu::cac_weights(&dies[0], &mut delay).unwrap();
@@ -204,7 +214,8 @@ mod zeppelin {
             hw.set_config(df, 0xa0, 0x3f00_0043);
             hw.set_config(df, 0xa4, 0xff40_0243);
         }
-        df::zeppelin::route_resources(&dies, 0xe000_0000, 0x4_2000_0000).unwrap();
+        df::zeppelin::route_resources(&dies, (0xf000_0000, 128), 0xe000_0000, 0x4_2000_0000)
+            .unwrap();
 
         let [die0, die1] = [&dies[0], &dies[1]].map(|die| map::root_complex(die).unwrap());
         let hpet = (0xfed0_0000, 0x1_0000);
@@ -235,7 +246,8 @@ mod zeppelin {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod picasso {
     use super::*;
-    use crate::{
+    use crate::soc::picasso::Die;
+    use fstart_driver_amd::{
         df::{self, picasso as fabric},
         dxio::{
             self, Aspm, ClockRequest, Descriptor,
@@ -250,7 +262,6 @@ mod picasso {
             threads::{self, Downcore, Policy},
             v10 as smu,
         },
-        soc::picasso::Die,
     };
 
     const fn pcie(first: u8, last: u8, function: u8, clock: ClockRequest) -> Descriptor {
@@ -274,7 +285,7 @@ mod picasso {
         hw.set_smn(0, SMU_BAR.low, 0);
         hw.set_smn(0, SMU_BAR.high, 0);
         hw.set_smn(0, PSP_BAR.low, 0);
-        hw.set_smn(0, crate::nbio::pcie::link_status(0), 0);
+        hw.set_smn(0, fstart_driver_amd::nbio::pcie::link_status(0), 0);
         // TOM2[40:32] bit 8 clear: below 1 TiB.
         hw.set_smn(0, 0x13b1_0068_u32, 0x1234_5600);
         let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();

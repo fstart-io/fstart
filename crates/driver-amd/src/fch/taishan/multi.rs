@@ -14,12 +14,13 @@ use super::{
 use crate::cpu::Package;
 use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
 use crate::{
+    df::Die,
     df::{
         regs::IO_BASE,
         v2::{self, IO_LIMIT},
     },
     smn::{Smn, SmnReg},
-    soc::zeppelin::Die,
+    soc::Soc,
     table,
 };
 use embedded_hal::delay::DelayNs;
@@ -35,7 +36,7 @@ const ACPIMMIO_OFFSET: u32 = 1 << 20;
 
 /// The ACPI MMIO of die `die`'s FCH. Die 0's is at 0xfed80000, the others
 /// are moved into the die's non-PCI MMIO pool (DF window top - 8 MiB, see
-/// [`crate::soc::zeppelin::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
+/// [`crate::df::zeppelin::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
 pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> Acpimmio {
     if die == 0 {
         Acpimmio::DIE0
@@ -100,9 +101,9 @@ fn secondary_legacy<B: Bus>(fch: &Fch<B>, package: Package) {
 /// FchMultiFchPei: the legacy part through I/O routed to each other die,
 /// then the SATA reset task of the die. `nonpci_mmio_base` gives a die's
 /// non-PCI MMIO pool (DF code). Runs after [`super::reset_init`].
-pub fn reset<P: ConfigRegionAccess + Copy>(
+pub fn reset<S: Soc, P: ConfigRegionAccess + Copy>(
     bus: &impl Bus,
-    dies: &[Die<P>],
+    dies: &[Die<S, P>],
     package: Package,
     nonpci_mmio_base: impl Fn(u8) -> u32,
     delay: &mut impl DelayNs,
@@ -168,8 +169,8 @@ fn devices(devices: &[Devices], die: u8) -> Devices {
 /// The USB part of FchMultiFchPei for the other dies: odd die pairs (2, 3,
 /// 6, 7) are held in reset, the others brought up if the board enables
 /// their xHCI. Runs after [`usb::init`] of die 0.
-pub fn usb<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
+pub fn usb<S: Soc, P: ConfigRegionAccess + Copy>(
+    dies: &[Die<S, P>],
     board: &[Devices],
     package: Package,
     delay: &mut impl DelayNs,
@@ -194,9 +195,9 @@ const AMD_VENDOR: u32 = 0x1022;
 
 /// FchMultiFchDxe: SATA and xGbE of the other dies whose internal bridge 8.1
 /// exists. Runs after [`super::env_init`] of die 0.
-pub fn env<P: ConfigRegionAccess + Copy>(
+pub fn env<S: Soc, P: ConfigRegionAccess + Copy>(
     bus: &impl Bus,
-    dies: &[Die<P>],
+    dies: &[Die<S, P>],
     board: &[Devices],
     nonpci_mmio_base: impl Fn(u8) -> u32,
     subsystem_id: u32,
@@ -231,8 +232,8 @@ pub fn env<P: ConfigRegionAccess + Copy>(
 /// `sata_function` gives the enumerated SATA function of a die, `None` if
 /// the board disables it or it wasn't found. Runs before
 /// [`super::late_init`].
-pub fn late<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
+pub fn late<S: Soc, P: ConfigRegionAccess + Copy>(
+    dies: &[Die<S, P>],
     sata_function: impl Fn(u8) -> Option<PciAddress>,
 ) {
     for die in dies.iter().skip(1) {

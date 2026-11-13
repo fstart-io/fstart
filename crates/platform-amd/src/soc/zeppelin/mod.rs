@@ -8,60 +8,45 @@
 //! and FCH; SP4r2 has one die, SP4 two.
 mod init;
 pub mod silicon;
-#[cfg(test)]
-pub(crate) mod test_pci;
 pub use init::{FchUp, Up};
 
 use super::Soc;
-use crate::{
+use fstart_driver_amd::{
     dxio::Descriptor,
     fch::{
         early::PowerFailure,
-        gpio::{Bank, FAMILY17H_EVENTS},
+        gpio::Bank,
         taishan::{Devices, irq::Route},
     },
 };
 use fstart_driver_i2c::designware::{Speed, Timing};
 
-/// The Zeppelin SoC: [`crate::ccx::zeppelin`], [`crate::df::zeppelin`],
-/// [`crate::nbio::zeppelin`], [`crate::dxio::zeppelin`], [`crate::smu::v9`]
-/// and the Taishan FCH [`crate::fch::taishan`].
+/// The Zeppelin SoC: [`fstart_driver_amd::ccx::zeppelin`], [`fstart_driver_amd::df::zeppelin`],
+/// [`fstart_driver_amd::nbio::zeppelin`], [`fstart_driver_amd::dxio::zeppelin`], [`fstart_driver_amd::smu::v9`]
+/// and the Taishan FCH [`fstart_driver_amd::fch::taishan`].
 pub enum Zeppelin {}
 impl Soc for Zeppelin {
     /// Two dies on SP4, one on SP4r2.
     const MAX_DIES: usize = 2;
-    const SMU: crate::smu::Mailbox = crate::smu::v9::MAILBOX;
-    const DXIO_SERVICE: u32 = crate::smu::v9::msg::DXIO;
+    const SMU: fstart_driver_amd::smu::Mailbox = fstart_driver_amd::smu::v9::MAILBOX;
+    const DXIO_SERVICE: u32 = fstart_driver_amd::smu::v9::msg::DXIO;
     /// GPIO bank 0: 145 pins, but the vendor board tables also use 149-152. The
     /// Zeppelin IOMUX assignments aren't known, so pads name their functions
     /// by number.
-    const GPIO_BANK: &'static Bank = &Bank {
-        pins: 153,
-        reserved: &[],
-        gpio_function: |_| None,
-        events: FAMILY17H_EVENTS,
-    };
-    /// I2C0-I2C5.
-    const I2C: &'static [usize] = &[
-        0xfedc_2000,
-        0xfedc_3000,
-        0xfedc_4000,
-        0xfedc_5000,
-        0xfedc_6000,
-        0xfedc_b000,
-    ];
+    const GPIO_BANK: &'static Bank = fstart_driver_amd::fch::taishan::GPIO_BANK;
+    const I2C: &'static [usize] = fstart_driver_amd::fch::taishan::I2C;
     fn ioms_fabric_id(die: u8) -> u8 {
         (die << 5) | 4
     }
 }
-impl crate::ccx::microcode::Family for Zeppelin {
+impl fstart_driver_amd::ccx::microcode::Family for Zeppelin {
     /// ZP-A0 is model 0, ZP-B0/B1/B2 are model 1. The vendor ROM's BIOS
     /// directory has a type 0x66 patch per equivalence ID 8000/8010/8011/8012.
     const SIGNATURES: &'static [u32] = &[0x0080_0f00, 0x0080_0f10];
     const MAX_PATCHES: usize = 4;
 }
 pub const MAX_DIES: usize = Zeppelin::MAX_DIES;
-pub type Die<P> = crate::df::Die<Zeppelin, P>;
+pub type Die<P> = fstart_driver_amd::df::Die<Zeppelin, P>;
 
 /// A board's Zeppelin configuration, by IP block.
 #[derive(Debug, Clone, Copy)]
@@ -138,7 +123,7 @@ pub struct DxioConfig {
 /// Non-PCI MMIO pool of a die, the top 8 MiB of its below-4G DF window: the
 /// PSP BAR at +0, the FCH ACPI MMIO of dies >= 1 at +1 MiB, the IOMMU (512
 /// KiB) at +2 MiB, the NBIO IOAPIC at +7 MiB.
-pub const NONPCI_MMIO_SIZE: u32 = 8 << 20;
+pub const NONPCI_MMIO_SIZE: u32 = fstart_driver_amd::df::zeppelin::NONPCI_MMIO_SIZE;
 pub const NONPCI_PSP: u32 = 0;
 pub const NONPCI_IOMMU: u32 = 2 << 20;
 pub const NONPCI_IOAPIC: u32 = 7 << 20;
@@ -164,20 +149,13 @@ pub const I2C_TIMING: Timing = Timing {
 };
 
 /// FCH ACPI fixed I/O, the same layout as the vendor firmware.
-pub mod acpi_io {
-    pub const BASE: u16 = 0x800;
-    pub const PM1_EVT: u16 = BASE;
-    pub const PM1_CNT: u16 = BASE + 0x04;
-    pub const PM_TMR: u16 = BASE + 0x08;
-    pub const CSTATE_CONTROL: u16 = BASE + 0x10;
-    pub const GPE0: u16 = BASE + 0x20;
-}
+pub use fstart_driver_amd::fch::taishan::acpi_io;
 
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::Zeppelin;
-    use crate::ccx::microcode::{Bundle, Error};
+    use fstart_driver_amd::ccx::microcode::{Bundle, Error};
     const PATCH_BYTES: usize = 0xc80;
     use std::vec::Vec;
 

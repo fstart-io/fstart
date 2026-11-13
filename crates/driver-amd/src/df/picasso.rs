@@ -7,7 +7,7 @@ use super::{
     program, regs,
     v2::{DRAM_BASE, Df2, dram_base},
 };
-use crate::soc::picasso::Die;
+use crate::{df::Die, soc::Soc};
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::interfaces::Readable;
@@ -80,7 +80,7 @@ pub fn legacy_routes(
 /// Route peripheral MMIO and I/O to IOMS, preserving PSP-established windows.
 /// Discover and validate BOTH free windows before changing either of them.
 pub fn ensure_legacy_routes(
-    die: &Die<impl ConfigRegionAccess + Copy>,
+    die: &Die<impl Soc, impl ConfigRegionAccess + Copy>,
     low_top: u32,
 ) -> Result<(), Error> {
     let routes = legacy_routes(&die.df(), die.ioms_fabric_id(), low_top)?;

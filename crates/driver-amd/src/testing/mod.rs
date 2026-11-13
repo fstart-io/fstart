@@ -5,6 +5,8 @@
 //! It logs every write and delay in order. Unset registers read as noise,
 //! so a read-modify-write and a plain write differ.
 extern crate std;
+pub mod dies;
+
 use crate::fch::{Bus, Space};
 use embedded_hal::delay::DelayNs;
 use fstart_core::services::Timer;
@@ -420,5 +422,31 @@ pub fn low<T>(address: usize, value: T) -> &'static mut T {
         let pointer = pointer.cast::<T>();
         pointer.write(value);
         &mut *pointer
+    }
+}
+
+/// A SoC of ZP dies (two, as SP4) for the host models.
+pub enum Zp {}
+impl crate::soc::Soc for Zp {
+    const MAX_DIES: usize = 2;
+    const SMU: crate::smu::Mailbox = crate::smu::v9::MAILBOX;
+    const DXIO_SERVICE: u32 = crate::smu::v9::msg::DXIO;
+    const GPIO_BANK: &'static crate::fch::gpio::Bank = crate::fch::taishan::GPIO_BANK;
+    const I2C: &'static [usize] = crate::fch::taishan::I2C;
+    fn ioms_fabric_id(die: u8) -> u8 {
+        (die << 5) | 4
+    }
+}
+
+/// A SoC of one RV die for the host models.
+pub enum Rv {}
+impl crate::soc::Soc for Rv {
+    const MAX_DIES: usize = 1;
+    const SMU: crate::smu::Mailbox = crate::smu::v10::MAILBOX;
+    const DXIO_SERVICE: u32 = crate::smu::v10::DXIO_SERVICE;
+    const GPIO_BANK: &'static crate::fch::gpio::Bank = crate::fch::sandstone::GPIO_BANK;
+    const I2C: &'static [usize] = crate::fch::sandstone::I2C;
+    fn ioms_fabric_id(_: u8) -> u8 {
+        9
     }
 }

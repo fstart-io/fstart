@@ -20,12 +20,13 @@ pub use crate::flow::{
     Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, fail,
 };
 pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
-pub use fstart_driver_amd::soc::Hw;
+pub use crate::soc::Hw;
 
 use crate::acpi::SocAcpi;
 use crate::smbios::SocSmbios;
+use crate::soc::Init;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
-use fstart_driver_amd::{df::Die, soc::Init};
+use fstart_driver_amd::df::Die;
 use fstart_pci::ecam::GlobalEcam;
 use layout::{Layout, Region};
 
@@ -39,7 +40,7 @@ pub const TSEG_SIZE: u32 = 8 << 20;
 /// its silicon init, and what its tables differ in from the other such
 /// SoCs'. The flow's services ([`crate::flow::Soc`]) are the same for all
 /// of them.
-pub trait DieSoc: fstart_driver_amd::soc::DieInit {
+pub trait DieSoc: crate::soc::DieInit {
     const LAYOUT: Layout;
     /// Where the PSP writes the APOB.
     const APOB: Region;

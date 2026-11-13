@@ -13,8 +13,8 @@ use crate::nbio::{
 };
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v10 as smu;
-use crate::soc::{Soc, picasso::Picasso};
-use crate::{acp, soc::picasso::Die};
+use crate::soc::Soc;
+use crate::{acp, df::Die};
 use fstart_core::indexed::Indexed;
 use fstart_core::services::{Timer, TimerDelay};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -239,13 +239,13 @@ fn post_training(smn: &Smn<impl ConfigRegionAccess>, topology: &Topology) {
 
 /// The events of the training: the remap after the mapping, the
 /// equalization presets once configured. Each happens once, in that order.
-struct Training<'a, P> {
-    die: &'a Die<P>,
+struct Training<'a, S, P> {
+    die: &'a Die<S, P>,
     descriptors: &'a [Descriptor],
     mapped: Option<Topology>,
     configured: bool,
 }
-impl<P: ConfigRegionAccess + Copy> Hooks for Training<'_, P> {
+impl<S: Soc, P: ConfigRegionAccess + Copy> Hooks for Training<'_, S, P> {
     type Error = Error;
 
     fn mapped(&mut self, unit: &UnitView<'_>) -> Result<(), Error> {
@@ -294,8 +294,8 @@ const RULES: LoopRules = LoopRules {
 /// any post-submission error. The caller exclusively owns SMN/PHY/PCI access,
 /// supplies a working monotonic microsecond timer, and has released board PERST
 /// and power sequencing before training. Firmware must honor DMA completion.
-pub unsafe fn train(
-    die: &Die<impl ConfigRegionAccess + Copy>,
+pub unsafe fn train<S: Soc>(
+    die: &Die<S, impl ConfigRegionAccess + Copy>,
     buffers: &'static mut DmaArea,
     descriptors: &[Descriptor],
     options: Options,
@@ -320,7 +320,7 @@ pub unsafe fn train(
     pre_training(smn, options);
     acp::power_off(smn, options.acp_enabled, delay).map_err(Error::Acp)?;
     let mailbox = die.mailbox(TimerDelay(timer));
-    let dxio = Dxio::new(&mailbox, Picasso::DXIO_SERVICE);
+    let dxio = Dxio::new(&mailbox, S::DXIO_SERVICE);
     dxio.init()?;
     dxio.version()?;
     for variable in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {

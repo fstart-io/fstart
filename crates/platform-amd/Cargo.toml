@@ -959,6 +959,8 @@ fstart-log = { workspace = true, features = ["alloc"] }
 ufmt.workspace = true
 fstart-pci.workspace = true
 tock-registers.workspace = true
+embedded-hal.workspace = true
+fstart-driver-i2c.workspace = true
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }

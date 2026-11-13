@@ -10,8 +10,9 @@ use super::{
 };
 use crate::cpu::Revision;
 use crate::{
+    df::Die,
     smn::{Reg, Smn, SmnReg, apply, copy, rmw},
-    soc::zeppelin::Die,
+    soc::Soc,
 };
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::{
@@ -102,7 +103,7 @@ const IOMMU_RAS: &[Reg] = &[
 
 /// AmdNbioBaseZPPei for one die: the register tables, bus number, IOAPIC
 /// features, parity/poison handling and IOMMU RAS.
-pub fn early_init<P: ConfigRegionAccess + Copy>(die: &Die<P>, revision: Revision) {
+pub fn early_init<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, revision: Revision) {
     die_init(&die.smn(), die.index(), die.bus(), revision);
 }
 
@@ -135,7 +136,7 @@ fn die_init(smn: &Smn<impl ConfigRegionAccess>, die: u8, bus: u8, revision: Revi
 
 /// AmdNbioBaseZPDxe/AmdNbioPcieZPDxe before PCI enumeration: PCIe core clock
 /// gating, then lock the NBIF hardware init registers (straps, IDs).
-pub fn pre_enumeration_init<P: ConfigRegionAccess + Copy>(die: &Die<P>) {
+pub fn pre_enumeration_init<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) {
     let smn = die.smn();
     // The per-die wrapper features of the vendor topology template enable
     // ClkGating but not LclkGating.

@@ -5,6 +5,10 @@
 //! stood in by the SMU's AP release.
 extern crate std;
 use super::{Config, DxioConfig, FchConfig};
+use crate::soc::zeppelin::{
+    Die, NONPCI_MMIO_SIZE,
+    silicon::{self, Identity, SmuPages, SmuPolicy, State},
+};
 use crate::{
     acpi::{self, Board},
     noncar::acpi::{cpus, root_bridge},
@@ -24,13 +28,7 @@ use fstart_driver_amd::{
         threads::{self, Policy},
         v9,
     },
-    soc::{
-        testing::{Hw, low},
-        zeppelin::{
-            Die, NONPCI_MMIO_SIZE,
-            silicon::{self, Identity, SmuPages, SmuPolicy, State},
-        },
-    },
+    testing::{Hw, low},
 };
 use fstart_pci::{PCI_BAR0, PCI_PRIMARY_BUS, PciAddress, PciEcam, PciWindow, PciWindowKind};
 use std::vec::Vec;

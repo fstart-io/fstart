@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD family flows: the PSP-booted ("noncar") SoCs from Family 17h on
-//! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. The silicon
-//! init of a SoC is its driver's (`fstart_driver_amd::soc::Init`), which
+//! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. A SoC composes
+//! the driver's IP blocks into its silicon init ([`soc::Init`]), which
 //! the phases of the flow ([`flow`]) call. What the flow needs of a SoC
 //! beyond that is [`flow::Soc`]: the die SoCs share theirs ([`noncar`]),
 //! SP3 has its own ([`sp3`]).
@@ -30,6 +30,8 @@ pub mod noncar;
 pub mod picasso;
 /// The SMBIOS tables, for every SoC.
 pub mod smbios;
+/// The SoCs made of dies: their IP blocks and the order they come up in.
+pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
 pub mod zeppelin;

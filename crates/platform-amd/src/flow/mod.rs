@@ -26,7 +26,7 @@
 //!    ([`Init::boot_done`]; SP3 sends it with its locks, before the APs
 //!    are parked) and the payload ([`Soc::launch`]).
 //!
-//! The SoC's driver (`fstart_driver_amd::soc`) owns the silicon. What the
+//! The SoC's driver (`crate::soc`) owns the silicon. What the
 //! flow needs to know of a SoC beyond its silicon is [`Soc`]: where its
 //! memory map and boot media come from, its SMM handler and its tables.
 #[cfg(all(feature = "bundle", target_os = "none"))]
@@ -36,9 +36,10 @@ pub use stage::{
     Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, enter, fail,
 };
 
+use crate::soc::Init;
+pub use crate::soc::{Ctx, Memory};
 use fstart_core::services::memory_detect::E820State;
-pub use fstart_driver_amd::soc::{Ctx, Memory};
-use fstart_driver_amd::{apob::Apob, soc::Init};
+use fstart_driver_amd::apob::Apob;
 
 /// Devices on buses the platform set up, for CrabEFI's drivers.
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]

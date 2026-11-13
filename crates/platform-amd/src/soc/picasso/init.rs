@@ -4,7 +4,16 @@
 //! board's GPIO tables, ROM sharing and the EC; after [`Init::train_dxio`]
 //! the links are trained.
 use super::{Config, EARLY_AOAC, FchConfig, Picasso, UART_AOAC};
-use crate::{
+use crate::soc::{Ctx, DieInit, Entered, Hw, Init, Roots, Soc as _};
+use fstart_arch::x86::{
+    cpu::{
+        amd::smm::InstalledTseg,
+        msr::{APIC_BASE, ApicBase, MCG_CAP, McgCap, MsrAccess, NativeMsr},
+    },
+    mp::MpHandle,
+};
+use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::{
     apob::Hole,
     ccx::{
         Thread,
@@ -23,16 +32,7 @@ use crate::{
     nbio::picasso as nbio,
     psp::{self, boot::Psp},
     smu::v10::power,
-    soc::{Ctx, DieInit, Entered, Hw, Init, Roots, Soc as _},
 };
-use fstart_arch::x86::{
-    cpu::{
-        amd::smm::InstalledTseg,
-        msr::{APIC_BASE, ApicBase, MCG_CAP, McgCap, MsrAccess, NativeMsr},
-    },
-    mp::MpHandle,
-};
-use fstart_core::description::PciRootInfo;
 use fstart_log::Hex;
 use fstart_pci::PciEcam;
 use tock_registers::interfaces::Readable;
@@ -213,7 +213,7 @@ impl Init for Picasso {
         let smn = &die.smn();
         let delay = ctx.clock;
         nbio::ioapic_decode(smn);
-        crate::nbio::iommu::init_bar(die, nbio::IOMMU_MMIO_BASE);
+        fstart_driver_amd::nbio::iommu::init_bar(die, nbio::IOMMU_MMIO_BASE);
         static mut DXIO: dxio::DmaArea = dxio::DmaArea::new();
         // SAFETY: BSP-only, once per boot. The buffers remain in reserved
         // firmware BSS and are never reclaimed, including on failure.
@@ -295,8 +295,12 @@ impl Init for Picasso {
         _: &mut Chipset,
         microcode: Option<&'static [u8]>,
     ) -> Result<Self::Cpu, &'static str> {
-        let policy = cpu::thread::Policy::capture(ctx.msr, nbio::PSP_MMIO_BASE.into())
-            .map_err(|_| "CPU cache policy")?;
+        let policy = cpu::thread::Policy::capture(
+            ctx.msr,
+            nbio::PSP_MMIO_BASE.into(),
+            (super::ECAM, super::ECAM_BUSES.into()),
+        )
+        .map_err(|_| "CPU cache policy")?;
         Ok(Fam17hCpu::new(
             "native-picasso",
             microcode,

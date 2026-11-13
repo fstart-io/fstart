@@ -8,19 +8,19 @@ use super::{
     Config, DxioConfig, MAX_DIES, NONPCI_MMIO_SIZE, Zeppelin,
     silicon::{self, Identity, SmuPages, SmuPolicy, State, Trained},
 };
-use crate::{
-    ccx::{self, mp::Fam17hCpu, tsc::Tsc},
-    cpu::{Package, Revision},
-    dxio,
-    fch::{post, smi::FchSmi, taishan},
-    psp::{self, boot::Psp},
-    soc::{Ctx, DieInit, Entered, Hw, Init, Roots},
-};
+use crate::soc::{Ctx, DieInit, Entered, Hw, Init, Roots};
 use fstart_arch::x86::{
     cpu::{amd::smm::InstalledTseg, msr::NativeMsr},
     mp::MpHandle,
 };
 use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::{
+    ccx::{self, mp::Fam17hCpu, tsc::Tsc},
+    cpu::{Package, Revision},
+    dxio,
+    fch::{post, smi::FchSmi, taishan},
+    psp::{self, boot::Psp},
+};
 use fstart_pci::PciEcam;
 
 /// After the DF and the FCH reset init.
@@ -130,7 +130,7 @@ impl Init for Zeppelin {
         FchUp { nonpci }: FchUp,
         lanes: &DxioConfig,
     ) -> Result<Trained, &'static str> {
-        static mut DXIO_BUFFERS: dxio::zeppelin::Buffers = dxio::zeppelin::Buffers::new();
+        static mut DXIO_BUFFERS: dxio::zeppelin::Buffers<MAX_DIES> = dxio::zeppelin::Buffers::new();
         // SAFETY: firmware BSS in the reserved early region below 4 GiB,
         // handed out once here.
         let buffers = unsafe { &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS) };

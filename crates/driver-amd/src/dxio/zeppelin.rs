@@ -35,6 +35,7 @@ use super::{
     Descriptor, DmaArea, Dxio, DxioError, EngineType, Hooks, Hotplug, LinkSpeed, LoopRules,
     TIMEOUT_US, Unit, UnitView, op, run, var,
 };
+use crate::df::Die;
 use crate::nbio::{
     iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
     pcie::{self, PCIE_PORTS_PER_CORE},
@@ -42,10 +43,7 @@ use crate::nbio::{
 };
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v9 as smu;
-use crate::soc::{
-    Soc,
-    zeppelin::{Die, ECAM_BUSES, MAX_DIES, Zeppelin},
-};
+use crate::soc::Soc;
 use fstart_core::services::{Timer, TimerDelay};
 use fstart_log::{debug, error, info};
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress, devfn, devfn_parts};
@@ -295,25 +293,25 @@ fn training_done(
 }
 
 /// The DMA windows of the dies' DXIO firmware, one per die.
-pub struct Buffers([DmaArea; MAX_DIES]);
-impl Default for Buffers {
+pub struct Buffers<const N: usize>([DmaArea; N]);
+impl<const N: usize> Default for Buffers<N> {
     fn default() -> Self {
         Self::new()
     }
 }
-impl Buffers {
+impl<const N: usize> Buffers<N> {
     pub const fn new() -> Self {
-        Self([const { DmaArea::new() }; MAX_DIES])
+        Self([const { DmaArea::new() }; N])
     }
 }
 
 /// The DXIO training of one die.
-struct Training<'a, P> {
-    die: &'a Die<P>,
+struct Training<'a, S, P> {
+    die: &'a Die<S, P>,
     descriptors: &'a [Descriptor],
     topology: PcieTopology,
 }
-impl<P: ConfigRegionAccess + Copy> Hooks for Training<'_, P> {
+impl<S: Soc, P: ConfigRegionAccess + Copy> Hooks for Training<'_, S, P> {
     type Error = Error;
 
     fn mapped(&mut self, unit: &UnitView<'_>) -> Result<(), Error> {
@@ -387,7 +385,7 @@ const RULES: LoopRules = LoopRules {
     resume_delay_us: 0,
 };
 
-impl<P: ConfigRegionAccess + Copy> Training<'_, P> {
+impl<S: Soc, P: ConfigRegionAccess + Copy> Training<'_, S, P> {
     /// Train the die's engines through `unit` (heaps placed, firmware
     /// initialized by the caller up to the capabilities).
     fn train<M: crate::smu::SmuMessages + ?Sized>(
@@ -510,7 +508,10 @@ fn bridges(smn: &Smn<impl ConfigRegionAccess>, topology: &PcieTopology) {
 }
 
 /// PcieInterfaceAfterDxioDoneSetting of the vendor code.
-fn interface_after_dxio<P: ConfigRegionAccess + Copy>(die: &Die<P>, topology: &PcieTopology) {
+fn interface_after_dxio<S: Soc, P: ConfigRegionAccess + Copy>(
+    die: &Die<S, P>,
+    topology: &PcieTopology,
+) {
     let smn = die.smn();
     let pci = die.pci();
     for core in 0..PCIE_CORE_COUNT {
@@ -602,8 +603,8 @@ fn set_subsystem_ids(smn: &Smn<impl ConfigRegionAccess>, subsystem_id: u32) {
     }
 }
 
-fn post_training<P: ConfigRegionAccess + Copy>(
-    die: &Die<P>,
+fn post_training<S: Soc, P: ConfigRegionAccess + Copy>(
+    die: &Die<S, P>,
     topology: &PcieTopology,
     subsystem_id: u32,
     dxio: &Dxio<'_, impl crate::smu::SmuMessages + ?Sized>,
@@ -617,12 +618,12 @@ fn post_training<P: ConfigRegionAccess + Copy>(
 }
 
 /// Each IOHC learns the bus range of every die: `buses` are the root buses
-/// of all dies in order.
-fn bus_routing(smn: &Smn<impl ConfigRegionAccess>, die: usize, buses: &[u8]) {
+/// of all dies in order, the last one up to `ecam_buses`.
+fn bus_routing(smn: &Smn<impl ConfigRegionAccess>, die: usize, buses: &[u8], ecam_buses: u16) {
     for (rb, &base) in buses.iter().enumerate() {
         let limit = buses
             .get(rb + 1)
-            .map_or(ECAM_BUSES - 1, |&next| u16::from(next) - 1);
+            .map_or(ecam_buses - 1, |&next| u16::from(next) - 1);
         smn.reg(iohc::iohc_rb_bus_route(rb)).write(
             IohcRbBusRoute::BASE.val(base.into())
                 + IohcRbBusRoute::LIMIT.val(limit.into())
@@ -638,28 +639,30 @@ fn bus_routing(smn: &Smn<impl ConfigRegionAccess>, die: usize, buses: &[u8]) {
 /// the PCIe ports around it. `descriptors[die]` are the engines of a die
 /// (a die without an entry has none); `subsystem_id` is the PCI subsystem
 /// ID of the NBIO functions and PCIe ports (vendor ID in bits 15:0, e.g.
-/// 0x1000_1458 on the Gigabyte MJ11). Returns the trained ports per die.
+/// 0x1000_1458 on the Gigabyte MJ11). The dies' root buses split the
+/// `ecam_buses` buses of the ECAM. Returns the trained ports per die.
 ///
 /// # Safety
 /// `buffers` is identity-mapped DRAM below 4 GiB that stays reserved: the
 /// DXIO firmware accesses it with DMA, and a failure does not establish DMA
 /// quiescence. `dies` are all dies in order.
-pub unsafe fn init<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
+pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
+    dies: &[Die<S, P>],
     descriptors: &[&[Descriptor]],
     subsystem_id: u32,
-    buffers: &'static mut Buffers,
+    ecam_buses: u16,
+    buffers: &'static mut Buffers<N>,
     timer: &impl Timer,
-) -> Result<[PcieTopology; MAX_DIES], Error> {
+) -> Result<[PcieTopology; N], Error> {
     let delay = &mut TimerDelay(timer);
-    let mut topologies = [PcieTopology::default(); MAX_DIES];
-    let board = |die: &Die<P>| -> &[Descriptor] {
+    let mut topologies = [PcieTopology::default(); N];
+    let board = |die: &Die<S, P>| -> &[Descriptor] {
         descriptors
             .get(usize::from(die.index()))
             .copied()
             .unwrap_or(&[])
     };
-    if dies.len() > MAX_DIES {
+    if dies.len() > N {
         return Err(Error::Dies);
     }
     // Reject bad descriptors before touching the hardware.
@@ -669,7 +672,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
             let engines = engines(board(die))?;
             Heaps::from_engines(&engines, &[]).ok_or(Error::Descriptors)
         })
-        .collect::<Result<Vec<_, MAX_DIES>, _>>()?;
+        .collect::<Result<Vec<_, N>, _>>()?;
     let Some(first) = dies.first() else {
         return Ok(topologies);
     };
@@ -680,7 +683,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         pre_training(&die.smn());
     }
 
-    let mailboxes: Vec<_, MAX_DIES> = dies
+    let mailboxes: Vec<_, N> = dies
         .iter()
         .map(|die| die.mailbox(TimerDelay(timer)))
         .collect();
@@ -695,7 +698,7 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
         if descriptors.iter().any(|d| d.engine == EngineType::Sata) {
             nbif_sata_enable(&die.smn());
         }
-        let dxio = Dxio::new(mailbox, Zeppelin::DXIO_SERVICE);
+        let dxio = Dxio::new(mailbox, S::DXIO_SERVICE);
         // Vendor PCD 0xcd/0xce/0xcf select die 0 for the early init cleanup.
         if die.index() == 0 {
             dxio.reload_sm(0)?;
@@ -725,12 +728,12 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
     }
 
     for ((die, topology), mailbox) in dies.iter().zip(&topologies).zip(&mailboxes) {
-        let dxio = Dxio::new(mailbox, Zeppelin::DXIO_SERVICE);
+        let dxio = Dxio::new(mailbox, S::DXIO_SERVICE);
         post_training(die, topology, subsystem_id, &dxio);
     }
-    let buses: Vec<u8, MAX_DIES> = dies.iter().map(Die::bus).collect();
+    let buses: Vec<u8, N> = dies.iter().map(Die::bus).collect();
     for (i, die) in dies.iter().enumerate() {
-        bus_routing(&die.smn(), i, &buses);
+        bus_routing(&die.smn(), i, &buses, ecam_buses);
     }
     Ok(topologies)
 }
@@ -878,7 +881,7 @@ mod tests {
     #[test]
     fn port_setup_keeps_the_vendor_masks() {
         const PATTERN: u32 = 0x5a5a_a5a5;
-        let pci = crate::soc::zeppelin::test_pci::Pci::new(&[0], |_| [0; 6]);
+        let pci = crate::testing::dies::Pci::new(&[0], |_| [0; 6]);
         let dies = pci.dies();
         let core = |c: u32, offset: u32| 0x1118_0000 + c * 0x10_0000 + offset;
         let port =
@@ -942,7 +945,7 @@ mod tests {
     #[test]
     fn root_bridges_route_every_die_bus_range() {
         let space = SmnSpace::default();
-        bus_routing(&space.smn(), 1, &[0x00, 0x40]);
+        bus_routing(&space.smn(), 1, &[0x00, 0x40], 128);
         assert_eq!(space.get(iohc::iohc_rb_bus_route(0)), 0x8000_3f00);
         assert_eq!(space.get(iohc::iohc_rb_bus_route(1)), 0x0000_7f40);
         assert_eq!(space.get(iohc::IOHC_FEATURE_CNTL), 1 << 22);

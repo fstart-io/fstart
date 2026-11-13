@@ -40,6 +40,7 @@ extern crate alloc;
 
 use core::marker::PhantomData;
 
+use crate::soc::{Entered, Init, Roots};
 use crate::sp3::silicon::cpu::Sp3Cpu;
 use crate::sp3::silicon::hw::{self, PrimaryFch};
 use crate::sp3::silicon::steps::{self, Steps};
@@ -51,7 +52,6 @@ use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::psp;
-use fstart_driver_amd::soc::{Entered, Init, Roots};
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::fch::{self, FchHw};

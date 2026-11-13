@@ -3,7 +3,8 @@
 //! per-die SMN through D0F0 B8/BC of the die's root bus, and an SMU that
 //! completes every message.
 extern crate std;
-use super::Die;
+/// A ZP die of the model.
+pub type Die<P> = crate::df::Die<super::Zp, P>;
 use crate::df::dies;
 use crate::smu::v9::MAILBOX;
 use fstart_pci::{ConfigRegionAccess, PciAddress};

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use crate::apob::{self, Apob};
-use crate::ccx::tsc::testing::Delay;
-use crate::df::picasso as fabric;
-use crate::df::{Df, DfReg, testing::DfSpace};
-use crate::psp::Variant;
-use crate::smn::{
+use fstart_driver_amd::apob::{self, Apob};
+use fstart_driver_amd::ccx::tsc::testing::Delay;
+use fstart_driver_amd::df::picasso as fabric;
+use fstart_driver_amd::df::{Df, DfReg, testing::DfSpace};
+use fstart_driver_amd::psp::Variant;
+use fstart_driver_amd::smn::{
     Smn, SmnReg,
     testing::{SmnModel, SmnTest},
 };
-use crate::smu::v10 as smu;
+use fstart_driver_amd::smu::v10 as smu;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use std::{cell::RefCell, collections::VecDeque, vec, vec::Vec};
 use tock_registers::interfaces::{Readable, Writeable};
@@ -164,7 +164,7 @@ fn raven2_late_df_clears_bit11_after_setting_power_down_policy() {
 #[test]
 fn fabric_route_validation_is_atomic_and_programming_is_idempotent() {
     let df = DfSpace::default();
-    let die: super::Die<&DfSpace> = unsafe { crate::df::dies(&df) }.next().unwrap();
+    let die: super::Die<&DfSpace> = unsafe { fstart_driver_amd::df::dies(&df) }.next().unwrap();
     for i in 0..8 {
         df.regs.borrow_mut().insert((0, 0xc0 + i * 8, None), 3);
     }

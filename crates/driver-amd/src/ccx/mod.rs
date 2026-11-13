@@ -115,9 +115,6 @@ pub struct Mca {
 #[derive(Debug, Clone)]
 pub struct Ccx {
     pub mca: Mca,
-    /// MMCONFIG: the APs start with its reset value.
-    pub ecam: u64,
-    pub ecam_buses: u16,
     /// CSTATE_BASE_ADDR: the ACPI C-state control I/O.
     pub cstate_io_base: u64,
     /// CPU_WDT_CFG, if the SoC programs the CPU watchdog.
@@ -144,6 +141,8 @@ pub struct Inputs<'a> {
     /// SYSCFG.SMEE: lets the OS use SME and SEV. Set last: the MTRRs are
     /// installed with it clear.
     pub memory_encryption: bool,
+    /// MMCONFIG base and bus count: the APs start with its reset value.
+    pub ecam: (u64, u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +164,7 @@ pub fn cpu_init(
     let cap = mca_cap(cpu, &soc.mca)?;
     msr::apply(cpu, table);
 
-    enable_ecam(cpu, soc.ecam, soc.ecam_buses);
+    enable_ecam(cpu, inputs.ecam.0, inputs.ecam.1);
     if let Some(bar) = inputs.psp_bar {
         cpu.reg(PSP_ADDRESS).set(bar);
     }
@@ -305,8 +304,6 @@ mod tests {
             l3_banks: 7..=14,
             l3_owner: L3Owner::DiePrimary,
         },
-        ecam: 0xf000_0000,
-        ecam_buses: 128,
         cstate_io_base: 0x813,
         watchdog: Some(9),
         dpm_cfg: 1 << 63,
@@ -330,6 +327,7 @@ mod tests {
             cac_weights: Some(&weights),
             name: None,
             memory_encryption: false,
+            ecam: (0xf000_0000, 128),
         };
         let table = [update(0xc001_1020, 0, 1)];
         let primary = cpu();

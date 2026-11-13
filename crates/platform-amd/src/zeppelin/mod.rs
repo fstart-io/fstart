@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD Zeppelin (EPYC Embedded 3000) on the noncar flow: the reset image's
 //! layout, the host plan and the tables of the SoC whose silicon init is
-//! `fstart_driver_amd::soc::zeppelin`.
+//! `crate::soc::zeppelin`.
 pub mod acpi;
 pub mod layout;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
 use crate::noncar::{self, Devices, layout::Region};
-pub use fstart_driver_amd::soc::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
-use fstart_driver_amd::{
-    fch::taishan,
-    soc::zeppelin::{self as soc, Up, Zeppelin},
-};
+use crate::soc::zeppelin::{self as soc, Up, Zeppelin};
+pub use crate::soc::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
+use fstart_driver_amd::fch::taishan;
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Zeppelin {
