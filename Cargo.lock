@@ -610,6 +610,7 @@ dependencies = [
  "clap",
  "fstart-core",
  "fstart-image-build",
+ "fstart-options",
  "fstart-platform-qemu",
  "heapless 0.8.0",
  "object 0.37.3",

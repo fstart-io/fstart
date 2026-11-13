@@ -131,7 +131,10 @@ pub fn assemble(
         options,
     )?;
     if let Some(image) = sp3_flash {
-        return compose_sp3_flash(&workspace_root, &image, &assembled);
+        return compose_sp3_flash(&workspace_root, &image, &assembled, &options.settings);
+    }
+    if !options.settings.is_empty() {
+        return Err("--option: this board's image has no settings store".into());
     }
     match amd {
         Some(image) => crate::amd_image::compose(
@@ -159,6 +162,7 @@ fn compose_sp3_flash(
     workspace_root: &std::path::Path,
     image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
     assembled: &crate::assemble::AssembledImage,
+    settings: &[(String, u32)],
 ) -> Result<std::path::PathBuf, String> {
     use fstart_image_build::sp3_flash::{HALF_SIZE, HalfAction, name};
     let read = |path: &std::path::Path| {
@@ -186,8 +190,29 @@ fn compose_sp3_flash(
         .iter()
         .find(|stage| stage.name == image.stage_unit)
         .ok_or("SP3 stage unit was not built")?;
-    let flash =
-        fstart_image_build::sp3_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
+    // The settings store starts with the build's options, else empty.
+    let store = match (settings.is_empty(), plan.nvram) {
+        (true, _) => Vec::new(),
+        (false, None) => return Err("--option: this board's image has no settings store".into()),
+        (false, Some(nvram)) => {
+            let options: Vec<(&str, u32)> = settings
+                .iter()
+                .map(|(key, value)| (key.as_str(), *value))
+                .collect();
+            for (key, value) in &options {
+                eprintln!("[fstart] SP3 settings store: {key} = {value}");
+            }
+            fstart_options::varstore::store(nvram.size as usize, &options)
+                .ok_or("--option: the options do not fit the settings store")?
+        }
+    };
+    let flash = fstart_image_build::sp3_flash::compose_with_settings(
+        &vendor,
+        plan,
+        &read(&reset.run_path)?,
+        &ffs,
+        &store,
+    )?;
     if !flash.patched.locator || !flash.patched.flash {
         eprintln!(
             "[fstart] warning: the SP3 stage unit links no FFS locator or flash anchor; it cannot read its FFS"

@@ -776,6 +776,34 @@ fn the_settings_store_ends_the_ffs_window_and_starts_erased() {
     let out = compose(&milan, &plan, &linked_reset(), &ffs(0x1_0000)).unwrap();
     assert_eq!(out.survey.ffs, 0x60_0000..0xda_0000);
     assert!(out.image[0xda_0000..0xde_0000].iter().all(|&b| b == 0xff));
+    // A seeded store, the rest of it erased; none bigger than the slot,
+    // or without one.
+    let seeded =
+        compose_with_settings(&milan, &plan, &linked_reset(), &ffs(0x1_0000), &[1, 2, 3]).unwrap();
+    assert_eq!(&seeded.image[0xda_0000..0xda_0004], &[1, 2, 3, 0xff]);
+    assert!(matches!(
+        compose_with_settings(
+            &milan,
+            &plan,
+            &linked_reset(),
+            &ffs(0x1_0000),
+            &[0; 0x4_0001]
+        ),
+        Err(ImageError::Settings(_))
+    ));
+    assert!(matches!(
+        compose_with_settings(
+            &milan,
+            &FlashPlan {
+                nvram: None,
+                ..plan.clone()
+            },
+            &linked_reset(),
+            &ffs(0x1_0000),
+            &[1]
+        ),
+        Err(ImageError::Settings(_))
+    ));
     // An FFS reaching into the store does not fit.
     let large = ffs(0xda_0000 - 0x60_0000 + 0x1000);
     assert!(matches!(

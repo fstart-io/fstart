@@ -203,6 +203,8 @@ pub enum ImageError {
     },
     /// The composed image does not resolve as planned.
     Verify(&'static str),
+    /// Settings to seed, but no settings store or one too small for them.
+    Settings(&'static str),
 }
 
 impl From<DirError> for ImageError {
@@ -623,6 +625,7 @@ fn build(
     survey: &Survey,
     reset: &[u8],
     ffs: &[u8],
+    settings: &[u8],
 ) -> Result<Vec<u8>, ImageError> {
     let mut out = vendor_rom.to_vec();
     for (half, layout) in survey.composed() {
@@ -636,9 +639,20 @@ fn build(
     }
     let start = survey.ffs.start as usize;
     out[start..start + ffs.len()].copy_from_slice(ffs);
-    // A new image starts with an empty settings store.
-    if let Some(nvram) = plan.nvram {
-        out[nvram.flash_offset as usize..nvram.end() as usize].fill(0xff);
+    // A new image starts with an empty settings store, or the seeded one.
+    match plan.nvram {
+        Some(nvram) => {
+            let store = &mut out[nvram.flash_offset as usize..nvram.end() as usize];
+            store.fill(0xff);
+            store
+                .get_mut(..settings.len())
+                .ok_or(ImageError::Settings("larger than the settings store"))?
+                .copy_from_slice(settings);
+        }
+        None if !settings.is_empty() => {
+            return Err(ImageError::Settings("the plan has no settings store"));
+        }
+        None => {}
     }
     Ok(out)
 }
@@ -843,12 +857,25 @@ pub struct Sp3Flash {
 }
 
 /// Compose a build: patch the reset image, then lay out the vendor ROM as
-/// the plan's layout says and verify the result.
+/// the plan's layout says and verify the result. The settings store starts
+/// empty.
 pub fn compose(
     vendor_rom: &[u8],
     plan: &FlashPlan,
     reset_image: &[u8],
     ffs: &[u8],
+) -> Result<Sp3Flash, ImageError> {
+    compose_with_settings(vendor_rom, plan, reset_image, ffs, &[])
+}
+
+/// [`compose`] with the settings store seeded with `settings`, a variable
+/// store image no larger than the plan's store.
+pub fn compose_with_settings(
+    vendor_rom: &[u8],
+    plan: &FlashPlan,
+    reset_image: &[u8],
+    ffs: &[u8],
+    settings: &[u8],
 ) -> Result<Sp3Flash, ImageError> {
     let window = plan.boot_window(vendor_rom)?;
     let survey = plan.survey(window)?;
@@ -864,7 +891,7 @@ pub fn compose(
     // mirrors of a full readout.
     let anchor = FlashAnchor::new(window.len() as u32, survey.ffs.start, ffs.len() as u32);
     let patched = patch_reset_image(&mut reset, ffs, anchor)?;
-    let image = build(window, plan, &survey, &reset, ffs)?;
+    let image = build(window, plan, &survey, &reset, ffs, settings)?;
     verify(&image, plan, &survey)?;
     Ok(Sp3Flash {
         image: plan.expand(vendor_rom, image),
