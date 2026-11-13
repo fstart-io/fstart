@@ -28,7 +28,7 @@ fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
     let levels = stage.read_pads(platform::detect_pads(generation));
     stage.program_gpio(&platform::gpio(generation));
     let detected = platform::detect(&levels, stage.timer());
-    let mut options = dxio::Options::BUILD;
+    let mut options = dxio::Options::DEFAULT;
     stage.resolve_options(&dxio::KNOBS, &mut options, |o| {
         dxio::check(generation, o, &detected)
     });

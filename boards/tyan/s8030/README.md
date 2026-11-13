@@ -23,16 +23,18 @@ With the UEFI payload, CrabEFI's firmware settings menu (`F` in the boot
 menu) offers the vendor Setup knobs fstart implements: Restore on AC power
 loss, the bifurcation of each x16 slot (the vendor's `Setup[0x194..0x198]`),
 PCIe compliance mode, the two i210 links and the onboard VGA link. They are
-stored in the settings store in flash and apply at the next boot; a new
-image starts with an empty store. A bifurcation set that does not give a
-valid DXIO lane map is ignored with a warning in the boot log.
+stored in the settings store in flash and apply at the next boot. A bifurcation
+set that does not give a valid DXIO lane map is ignored with a warning in the
+boot log.
 
-The board default is the vendor's (every slot x16); the
-`tyan-s8030-pcie3-x4x4x4x4` variant defaults PCIE#3 to x4x4x4x4 for an NVMe
-carrier (the test bench), so it boots right before anything is stored.
+The board default is the vendor's (every slot x16). A new image starts with an
+empty store, or with the options `--option KEY=VALUE` gives it; a bifurcation's
+value is the link width (16, 8 or 4). The test bench's NVMe carrier needs
+PCIE#3 x4x4x4x4:
 
 ```sh
-cargo fbuild assemble --board tyan-s8030-pcie3-x4x4x4x4 --release --payload uefi --image-config ...
+cargo fbuild assemble --board tyan-s8030 --release --payload uefi --image-config ... \
+  --option s8030_pcie3_bifurcation=4
 ```
 
 ## Vendor ROM
