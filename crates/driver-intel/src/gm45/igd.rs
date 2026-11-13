@@ -267,7 +267,7 @@ impl IntelGm45 {
             fstart_intel_gma::types::Cpu::Gm45,
             self.config.igd.display.as_ref(),
             &addresses,
-            vbt.as_deref(),
+            vbt,
         );
     }
 }

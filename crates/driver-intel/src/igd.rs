@@ -153,7 +153,7 @@ pub struct IgdAddresses {
 
 impl IgdAddresses {
     #[cfg(feature = "display")]
-    fn to_gma_resources(&self) -> GmaResources {
+    fn to_gma_resources(self) -> GmaResources {
         GmaResources {
             pci_bdf: self.pci_bdf,
             gtt_mmio_base: mmio32(self.gtt_mmio_base),

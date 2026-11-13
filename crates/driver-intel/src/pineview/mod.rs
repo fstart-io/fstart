@@ -686,7 +686,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             opregion,
         );
         if self.config.igd.display.is_some() {
-            self.gma_display_init(vbt.as_deref());
+            self.gma_display_init(vbt);
         }
         Ok(())
     }

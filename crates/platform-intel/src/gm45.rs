@@ -593,10 +593,10 @@ mod tests {
         assert_eq!(CONFIG.northbridge.pmbase, ICH9_PMBASE);
         assert_eq!(CONFIG.southbridge.smbus_base, ICH9_SMBUS_BASE);
         assert_eq!(CONFIG.southbridge.rcba + 0x3800, ICH9_SPIBAR);
-        assert!(CONFIG.southbridge.pcie_ports[0]);
-        assert!(CONFIG.southbridge.c4_on_c3);
-        assert!(CONFIG.southbridge.c5_enable);
-        assert!(CONFIG.southbridge.c6_enable);
+        const { assert!(CONFIG.southbridge.pcie_ports[0]) };
+        const { assert!(CONFIG.southbridge.c4_on_c3) };
+        const { assert!(CONFIG.southbridge.c5_enable) };
+        const { assert!(CONFIG.southbridge.c6_enable) };
         assert_eq!(CONFIG.southbridge.throttle_duty, 2);
         assert!(CONFIG.southbridge.pirq.is_none());
     }

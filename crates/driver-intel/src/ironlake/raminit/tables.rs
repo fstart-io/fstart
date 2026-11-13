@@ -731,6 +731,7 @@ pub(super) const U8_FFFD17E0: [[[[u8; 4]; 4]; 5]; 2] = [
     ],
 ];
 
+#[allow(clippy::type_complexity)]
 pub(super) const U8_FFFD0C78: [[[[[[u8; 4]; 2]; 2]; 4]; 5]; 2] = [
     [
         [

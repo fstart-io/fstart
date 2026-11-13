@@ -203,10 +203,10 @@ impl IronlakeIbexPeakConfig {
     pub const fn usb_ports(mut self, ports: [UsbPort; 14]) -> Self {
         let mut index = 0;
         while index < 14 {
-            if let Some(pin) = ports[index].oc_pin {
-                if pin > 7 {
-                    panic!("USB over-current pins are 0..7");
-                }
+            if let Some(pin) = ports[index].oc_pin
+                && pin > 7
+            {
+                panic!("USB over-current pins are 0..7");
             }
             index += 1;
         }
@@ -256,10 +256,10 @@ impl IronlakeIbexPeakConfig {
     pub const fn disable<const N: usize>(mut self, functions: [PchFunction; N]) -> Self {
         let mut index = 0;
         while index < N {
-            if let PchFunction::PcieRootPort(port) = functions[index] {
-                if port > 7 {
-                    panic!("the PCH has root ports 0..7");
-                }
+            if let PchFunction::PcieRootPort(port) = functions[index]
+                && port > 7
+            {
+                panic!("the PCH has root ports 0..7");
             }
             self.southbridge.disabled = self.southbridge.disabled.push(functions[index]);
             index += 1;
@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(CONFIG.northbridge.rcba, CONFIG.southbridge.rcba);
         assert_eq!(CONFIG.southbridge.dmibar, IRONLAKE_DMIBAR);
         assert_eq!(CONFIG.northbridge.spd_addresses, [0x50, 0, 0x51, 0]);
-        assert!(CONFIG.southbridge.laptop);
+        const { assert!(CONFIG.southbridge.laptop) };
     }
 
     #[test]

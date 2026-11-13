@@ -310,29 +310,6 @@ pub struct I945Ich7Platform {
     pub max_cpus: u16,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn named_gpe_events_replace_raw_policy_and_encode_physical_gpio() {
-        let config = I945Ich7Config::new()
-            .gpe0_en(u32::MAX)
-            .gpe_events([Ich7Gpe::TcoSci, Ich7Gpe::Gpio(13)])
-            .build();
-        assert_eq!(config.southbridge.gpe0_en, 0x2000_0040);
-        assert_eq!(
-            I945Ich7Config::new()
-                .gpe0_en(0x441)
-                .gpe_events([])
-                .build()
-                .southbridge
-                .gpe0_en,
-            0
-        );
-    }
-}
-
 impl Default for I945Ich7Config {
     fn default() -> Self {
         Self::new()
@@ -404,5 +381,28 @@ mod stage {
         fn southbridge(&'static self) -> &'static IntelIch7Config {
             &self.southbridge
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_gpe_events_replace_raw_policy_and_encode_physical_gpio() {
+        let config = I945Ich7Config::new()
+            .gpe0_en(u32::MAX)
+            .gpe_events([Ich7Gpe::TcoSci, Ich7Gpe::Gpio(13)])
+            .build();
+        assert_eq!(config.southbridge.gpe0_en, 0x2000_0040);
+        assert_eq!(
+            I945Ich7Config::new()
+                .gpe0_en(0x441)
+                .gpe_events([])
+                .build()
+                .southbridge
+                .gpe0_en,
+            0
+        );
     }
 }

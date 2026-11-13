@@ -320,6 +320,7 @@ pub(super) fn preflight(
     Ok((kind, clock))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn program(
     mch: &Mchbar,
     hb: &super::super::Gm45HostBridgePciConfig,

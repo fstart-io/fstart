@@ -176,7 +176,7 @@ impl Debug {
             (self.flash_console, "flash-console"),
         ]
         .into_iter()
-        .filter_map(|(selected, feature)| selected.then(|| feature.into()))
+        .filter_map(|(selected, feature)| selected.then_some(feature.into()))
     }
 }
 

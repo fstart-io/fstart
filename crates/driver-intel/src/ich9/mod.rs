@@ -33,6 +33,7 @@ pub use crate::southbridge::hda::{
 };
 
 /// ICH9/ICH9-M PCI config and RCBA constants.
+#[allow(clippy::module_inception)]
 pub mod ich9 {
     // The functions whose ACPI node this chipset emits.
     use fstart_pci::devfn;
@@ -2272,10 +2273,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
             config,
             options: crate::southbridge::options::Options::from_config(
                 config.power_on_after_fail,
-                match config.sata {
-                    Some(sata) => Some(sata.mode),
-                    None => None,
-                },
+                config.sata.map(|sata| sata.mode),
             ),
             smbus: None,
             pm: PmIo::new(ich9::DEFAULT_PMBASE),

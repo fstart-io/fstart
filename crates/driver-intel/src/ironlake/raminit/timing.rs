@@ -23,7 +23,7 @@ impl Raminit<'_> {
         info.uma_enabled = if (capid0[1] >> 11) & 1 != 0 {
             0
         } else {
-            nb.read8(DEVEN as u16) & 8
+            nb.read8(DEVEN) & 8
         };
         info.silicon_revision = 0;
         if capid0[2] & 2 != 0 {
@@ -256,7 +256,7 @@ impl Raminit<'_> {
         };
         let mut floor = some_delay_1_ps / cycle;
         let mut ceil = some_delay_1_ps / cycle;
-        if some_delay_1_ps % cycle != 0 {
+        if !some_delay_1_ps.is_multiple_of(cycle) {
             ceil += 1;
         } else {
             floor = floor.wrapping_sub(1);
@@ -275,8 +275,9 @@ impl Raminit<'_> {
             let halfcycles = (some_delay_3_ps << 6) / halfcycle;
             some_delay_3_ps_rounded = (halfcycle * halfcycles) >> 6;
         }
-        let mut some_delay_2_halfcycles_ceil =
-            ((some_delay_2_ps + halfcycle - 1) / halfcycle).wrapping_sub(2 * ceil.wrapping_sub(1));
+        let mut some_delay_2_halfcycles_ceil = some_delay_2_ps
+            .div_ceil(halfcycle)
+            .wrapping_sub(2 * ceil.wrapping_sub(1));
         if info.revision_flag_1 != 0 && some_delay_3_ps < 150 {
             some_delay_2_halfcycles_ceil = some_delay_2_halfcycles_ceil.wrapping_add(1);
         }
@@ -567,7 +568,7 @@ impl Raminit<'_> {
             .write32(0x120, (1 << (max_slots + 28)) | 0x188e_7f9f);
         self.mch.write8(
             0x124,
-            info.board_lane_delay[4].wrapping_add(((info.frequency_01() + 999) / 1000) as u8),
+            info.board_lane_delay[4].wrapping_add(info.frequency_01().div_ceil(1000) as u8),
         );
         self.mch.write16(0x125, 0x1360);
         self.mch.write8(0x127, 0x40);

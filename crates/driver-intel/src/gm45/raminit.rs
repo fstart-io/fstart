@@ -6,6 +6,10 @@
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
+// The DRAM training loops index several per-channel and per-rank arrays in
+// lockstep, as coreboot's raminit does; the shared index keeps them comparable.
+#![allow(clippy::needless_range_loop)]
+
 use crate::MmioBar;
 use crate::generic::spd::ddr3::read_spd;
 use fstart_core::mmio::MmioReadWrite;
@@ -1476,6 +1480,7 @@ enum RecProbe {
     AnyLow,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn seek_rec<S>(
     mch: &Mchbar,
     ch: usize,
@@ -2073,13 +2078,13 @@ mod tests {
         assert_eq!(dual.bounds[0], dual.bounds[1]);
         assert_eq!(
             dual.bounds[0][0],
-            ((rank_mb * 2 >> 5) << 16) | (rank_mb >> 5)
+            (((rank_mb * 2) >> 5) << 16) | (rank_mb >> 5)
         );
         assert_eq!(dual.ggc, 0x0b50);
-        assert_eq!(dual.tom, (rank_mb * 4 >> 7) as u16);
+        assert_eq!(dual.tom, ((rank_mb * 4) >> 7) as u16);
         assert_eq!(dual.tolud, 2048 << 4);
         assert_eq!(dual.touud, (rank_mb * 4 + 2048) as u16);
-        assert_eq!(dual.remap_base, (rank_mb * 4 >> 6) as u16);
+        assert_eq!(dual.remap_base, ((rank_mb * 4) >> 6) as u16);
         assert_eq!(dual.remap_limit, ((rank_mb * 4 + 2048 - 64) >> 6) as u16);
     }
 

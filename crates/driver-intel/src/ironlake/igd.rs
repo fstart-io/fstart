@@ -210,7 +210,7 @@ impl IntelIronlake {
                 fstart_intel_gma::types::Cpu::Ironlake,
                 self.config.igd.display.as_ref(),
                 &addresses,
-                vbt.as_deref(),
+                vbt,
             );
         }
         self.igd_enable_swsci();

@@ -37,7 +37,7 @@ impl IntelIbexPeak {
         flash.prepare_firmware_writes();
         let lpc = self.lpc_regs();
         lpc.rcba
-            .write(RCBA::BASE.val(u32::from(self.config.rcba as u32 >> 14)) + RCBA::ENABLE::SET);
+            .write(RCBA::BASE.val(self.config.rcba as u32 >> 14) + RCBA::ENABLE::SET);
         let rcba = self.rcba();
         // Port 80h cycles go to LPC.
         rcba.gcs.modify(GCS::RPR::CLEAR);

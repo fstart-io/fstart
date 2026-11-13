@@ -172,14 +172,11 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
     if let Some(fadt) = data
         .get(fadt_off..)
         .and_then(|tail| acpi_table_len(tail).and_then(|len| tail.get(..len)))
+        && let Some(dsdt_addr) = read_le_u64(fadt, FADT_X_DSDT_OFF)
+        && let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize)
+        && dsdt_off < data.len()
     {
-        if let Some(dsdt_addr) = read_le_u64(fadt, FADT_X_DSDT_OFF) {
-            if let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize) {
-                if dsdt_off < data.len() {
-                    print_acpi_table(&data[dsdt_off..]);
-                }
-            }
-        }
+        print_acpi_table(&data[dsdt_off..]);
     }
     for i in 0..entries {
         let off = 36 + i * 8;
@@ -187,10 +184,10 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
             fstart_log::warn!("ACPI dump: truncated XSDT entry");
             return;
         };
-        if let Some(table_off) = addr.checked_sub(base_addr).map(|v| v as usize) {
-            if table_off < data.len() {
-                print_acpi_table(&data[table_off..]);
-            }
+        if let Some(table_off) = addr.checked_sub(base_addr).map(|v| v as usize)
+            && table_off < data.len()
+        {
+            print_acpi_table(&data[table_off..]);
         }
     }
     fstart_log::info!("Done printing ACPI tables in ACPICA compatible format");
