@@ -247,6 +247,23 @@ mod tests {
     }
 
     #[test]
+    fn the_options_store_is_the_flash_plans_settings_store() {
+        use fstart_image_build::options::OptionStore;
+        let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
+        let slot = sp3(&plan).compose.nvram.unwrap();
+        assert_eq!(
+            plan.options.store,
+            Some(OptionStore::Varstore {
+                offset: slot.flash_offset,
+                size: slot.size,
+            })
+        );
+        // It ends where the reset image starts.
+        assert_eq!(slot.end(), sp3(&plan).compose.reset.flash_offset);
+        assert_eq!(plan.options.options[0].key, "debug_level");
+    }
+
+    #[test]
     fn smm_unit_feeds_its_image_to_the_reset_unit() {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         let order: std::vec::Vec<_> = plan

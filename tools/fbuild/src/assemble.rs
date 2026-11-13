@@ -44,6 +44,7 @@ pub fn assemble_with_resolved(
     supplied: &BTreeMap<String, PathBuf>,
     payload_files: &[(String, String)],
     signing_key: Option<&Path>,
+    settings: &[(String, String)],
 ) -> Result<AssembledImage, String> {
     let (stages, outputs) = resolved.assemble(
         workspace_root,
@@ -52,6 +53,7 @@ pub fn assemble_with_resolved(
         supplied,
         payload_files,
         signing_key,
+        settings,
     )?;
     Ok(AssembledImage {
         image: outputs.image,

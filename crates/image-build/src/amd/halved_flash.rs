@@ -204,6 +204,8 @@ pub enum ImageError {
     },
     /// The composed image does not resolve as planned.
     Verify(&'static str),
+    /// Settings to seed, but no settings store or one too small for them.
+    Settings(&'static str),
 }
 
 impl From<DirError> for ImageError {
@@ -624,6 +626,7 @@ fn build(
     survey: &Survey,
     reset: &[u8],
     ffs: &[u8],
+    settings: Option<&[u8]>,
 ) -> Result<Vec<u8>, ImageError> {
     let mut out = vendor_rom.to_vec();
     for (half, layout) in survey.composed() {
@@ -637,9 +640,20 @@ fn build(
     }
     let start = survey.ffs.start as usize;
     out[start..start + ffs.len()].copy_from_slice(ffs);
-    // A new image starts with an empty settings store.
-    if let Some(nvram) = plan.nvram {
-        out[nvram.flash_offset as usize..nvram.end() as usize].fill(0xff);
+    // A new image starts with an empty settings store, or the seeded one.
+    match (plan.nvram, settings) {
+        (Some(nvram), settings) => {
+            let store = &mut out[nvram.flash_offset as usize..nvram.end() as usize];
+            store.fill(0xff);
+            if let Some(settings) = settings {
+                store
+                    .get_mut(..settings.len())
+                    .ok_or(ImageError::Settings("larger than the settings store"))?
+                    .copy_from_slice(settings);
+            }
+        }
+        (None, Some(_)) => return Err(ImageError::Settings("the plan has no settings store")),
+        (None, None) => {}
     }
     Ok(out)
 }
@@ -844,12 +858,25 @@ pub struct AmdHalvedFlash {
 }
 
 /// Compose a build: patch the reset image, then lay out the vendor ROM as
-/// the plan's layout says and verify the result.
+/// the plan's layout says and verify the result. The settings store
+/// starts empty.
 pub fn compose(
     vendor_rom: &[u8],
     plan: &FlashPlan,
     reset_image: &[u8],
     ffs: &[u8],
+) -> Result<AmdHalvedFlash, ImageError> {
+    compose_seeded(vendor_rom, plan, reset_image, ffs, None)
+}
+
+/// [`compose`] with the settings store starting as `settings`, a variable
+/// store image no larger than the plan's store (the rest of it erased).
+pub fn compose_seeded(
+    vendor_rom: &[u8],
+    plan: &FlashPlan,
+    reset_image: &[u8],
+    ffs: &[u8],
+    settings: Option<&[u8]>,
 ) -> Result<AmdHalvedFlash, ImageError> {
     let window = plan.boot_window(vendor_rom)?;
     let survey = plan.survey(window)?;
@@ -865,7 +892,7 @@ pub fn compose(
     // mirrors of a full readout.
     let anchor = FlashAnchor::new(window.len() as u32, survey.ffs.start, ffs.len() as u32);
     let patched = patch_reset_image(&mut reset, ffs, anchor)?;
-    let image = build(window, plan, &survey, &reset, ffs)?;
+    let image = build(window, plan, &survey, &reset, ffs, settings)?;
     verify(&image, plan, &survey)?;
     Ok(AmdHalvedFlash {
         image: plan.expand(vendor_rom, image),

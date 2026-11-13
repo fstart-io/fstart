@@ -141,6 +141,13 @@ pub struct BuildArgs {
     /// signed with an ephemeral key that is discarded after the build.
     #[arg(long)]
     pub signing_key: Option<PathBuf>,
+    /// A firmware option the image's settings store starts with, as
+    /// KEY=VALUE; repeatable. KEY is one of the options the build offers
+    /// (`fbuild options`), VALUE one of its values: a number, `true` or
+    /// `false`, or a choice's label. The board's settings menu changes it
+    /// as any other.
+    #[arg(long = "setting", value_parser = parse_setting)]
+    pub settings: Vec<(String, String)>,
 }
 
 impl Default for BuildArgs {
@@ -160,6 +167,7 @@ impl Default for BuildArgs {
             inputs: Vec::new(),
             payload_files: Vec::new(),
             signing_key: None,
+            settings: Vec::new(),
         }
     }
 }
@@ -242,6 +250,9 @@ impl BuildArgs {
         for (name, path) in &self.payload_files {
             args.extend(["--payload-file".into(), format!("{name}={path}")]);
         }
+        for (key, value) in &self.settings {
+            args.extend(["--setting".into(), format!("{key}={value}")]);
+        }
         if let Some(path) = &self.signing_key {
             args.extend(["--signing-key".into(), path.display().to_string()]);
         }
@@ -313,6 +324,15 @@ fn parse_payload_file(value: &str) -> Result<(String, String), String> {
             Ok((name.to_owned(), path.to_owned()))
         }
         _ => Err("payload file must be NAME=PATH".into()),
+    }
+}
+
+fn parse_setting(value: &str) -> Result<(String, String), String> {
+    match value.split_once('=') {
+        Some((key, value)) if !key.is_empty() && !value.is_empty() => {
+            Ok((key.to_owned(), value.to_owned()))
+        }
+        _ => Err("setting must be KEY=VALUE".into()),
     }
 }
 

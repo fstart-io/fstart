@@ -26,6 +26,9 @@ pub struct ImageContext<'a> {
     /// Named files for a coreboot payload (`--payload-file NAME=PATH`).
     pub payload_files: &'a [(String, String)],
     pub signing_key: Option<&'a Path>,
+    /// Settings the image's store starts with (`--setting KEY=VALUE`),
+    /// checked against the plan's options ([`crate::options::Options::seed`]).
+    pub settings: &'a [(String, String)],
 }
 
 /// The artefacts of the executed steps, by step name, with the final
@@ -91,6 +94,7 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
     if plan.images.is_empty() {
         return Err("plan has no image steps".into());
     }
+    let mut seed = plan.options.seed(ctx.settings)?;
     fs::create_dir_all(ctx.output_dir).map_err(|e| e.to_string())?;
     let mut outputs = ImageOutputs {
         artifacts: BTreeMap::new(),
@@ -141,15 +145,27 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             ImageOperation::AmdEfs(operation) => {
                 amd_efs(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
-            ImageOperation::AmdHalvedFlash(operation) => {
-                amd_halved_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
-            }
+            ImageOperation::AmdHalvedFlash(operation) => amd_halved_flash(
+                ctx,
+                operation,
+                consumed.as_deref(),
+                seed.take(),
+                &mut outputs.notes,
+            )?,
             ImageOperation::X86Flash(operation) => {
                 x86_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
         };
         outputs.image = artifact.clone();
         outputs.artifacts.insert(step.name.clone(), artifact);
+    }
+    if seed.is_some() {
+        return Err("settings: no image step holds the settings store".into());
+    }
+    for (key, value) in ctx.settings {
+        outputs
+            .notes
+            .push(format!("settings store: {key} = {value}"));
     }
     Ok(outputs)
 }
@@ -254,10 +270,23 @@ fn amd_halved_flash(
     ctx: &ImageContext<'_>,
     image: &halved_flash::AmdHalvedFlashAssembly,
     ffs: Option<&Path>,
+    seed: Option<crate::options::Seed>,
     notes: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
     use halved_flash::{HALF_SIZE, HalfAction, name};
     let plan = &image.compose;
+    // The options' store is the flash plan's: seeded where the boot reads.
+    if let Some(seed) = &seed
+        && plan
+            .nvram
+            .map(|slot| (slot.flash_offset, slot.size as usize))
+            != Some((seed.offset, seed.bytes.len()))
+    {
+        return Err(format!(
+            "settings: the options' store at {:#x} is not the flash plan's {:x?}",
+            seed.offset, plan.nvram
+        ));
+    }
     // Relative vendor paths are workspace-relative (`--image-config`
     // replaces the board's vendor ROM).
     let vendor_path = ctx.workspace_root.join(&image.vendor_image);
@@ -278,7 +307,13 @@ fn amd_halved_flash(
     let ffs_path = ffs_artifact(ffs, "AMD halved flash")?;
     let ffs = read(&ffs_path)?;
     let reset = stage(ctx.stages, &image.stage_unit)?;
-    let flash = halved_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
+    let flash = halved_flash::compose_seeded(
+        &vendor,
+        plan,
+        &read(&reset.run_path)?,
+        &ffs,
+        seed.as_ref().map(|seed| seed.bytes.as_slice()),
+    )?;
     if !flash.patched.locator || !flash.patched.flash {
         notes.push(
             "warning: the AMD reset stage unit links no FFS locator or flash anchor; \

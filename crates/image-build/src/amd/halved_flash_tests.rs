@@ -778,6 +778,38 @@ fn the_settings_store_ends_the_ffs_window_and_starts_erased() {
     let out = compose(&milan, &plan, &linked_reset(), &ffs(0x1_0000)).unwrap();
     assert_eq!(out.survey.ffs, 0x60_0000..0xda_0000);
     assert!(out.image[0xda_0000..0xde_0000].iter().all(|&b| b == 0xff));
+    // A seeded store, the rest of it erased; none larger than the slot,
+    // nor without one.
+    let slot = plan.nvram.unwrap();
+    let store = slot.flash_offset as usize..slot.end() as usize;
+    let seeded = |plan: &FlashPlan, settings: &[u8]| {
+        compose_seeded(
+            &milan,
+            plan,
+            &linked_reset(),
+            &ffs(0x1_0000),
+            Some(settings),
+        )
+    };
+    let out = seeded(&plan, &[1, 2, 3]).unwrap();
+    assert_eq!(&out.image[store.start..store.start + 4], &[1, 2, 3, 0xff]);
+    assert!(
+        out.image[store.start + 3..store.end]
+            .iter()
+            .all(|&b| b == 0xff)
+    );
+    assert!(matches!(
+        seeded(&plan, &vec![0; slot.size as usize + 1]),
+        Err(ImageError::Settings(_))
+    ));
+    let storeless = FlashPlan {
+        nvram: None,
+        ..plan.clone()
+    };
+    assert!(matches!(
+        seeded(&storeless, &[1]),
+        Err(ImageError::Settings(_))
+    ));
     // An FFS reaching into the store does not fit.
     let large = ffs(0xda_0000 - 0x60_0000 + 0x1000);
     assert!(matches!(

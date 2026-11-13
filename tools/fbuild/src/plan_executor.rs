@@ -292,6 +292,7 @@ impl Resolved {
         supplied: &BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
+        settings: &[(String, String)],
     ) -> Result<
         (
             Vec<fstart_image_build::StageBinary>,
@@ -300,6 +301,8 @@ impl Resolved {
         String,
     > {
         let inputs = self.validate_inputs(&board.dir, supplied)?;
+        // Bad settings fail before the units build.
+        self.plan.options.seed(settings)?;
         let build = self.build(root, board, release)?;
         let directory = self
             .artifact_dir(root, &board.board, release)?
@@ -315,6 +318,7 @@ impl Resolved {
                 inputs: &inputs,
                 payload_files,
                 signing_key,
+                settings,
             },
         )?;
         for note in &outputs.notes {
