@@ -384,12 +384,7 @@ fn resolve_for<P: IntelPlatform>(
     Ok(plan)
 }
 
-#[cfg(all(
-    test,
-    feature = "gm965-ich8",
-    feature = "i945-ich7",
-    feature = "pineview-ich7"
-))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::legacy_cpu::{Fcbga559, LegacyCpu, Socket441, SocketM};

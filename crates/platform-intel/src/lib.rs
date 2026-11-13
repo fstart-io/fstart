@@ -67,17 +67,12 @@ macro_rules! entry {
     };
 }
 
-#[cfg(feature = "gm45-ich9")]
 pub mod gm45;
-#[cfg(feature = "gm965-ich8")]
 pub mod gm965;
-#[cfg(feature = "i945-ich7")]
 pub mod i945;
-#[cfg(feature = "ironlake-ibexpeak")]
 pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
-#[cfg(feature = "pineview-ich7")]
 pub mod pineview;
 
 /// Shared IGD display bring-up types used by board display policy.

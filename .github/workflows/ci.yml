@@ -119,8 +119,7 @@ jobs:
           done
           cargo test -p fstart-driver-intel --features acpi --lib
           cargo test -p fstart-platform-intel \
-            --features i945-ich7,gm965-ich8,pineview-ich7 \
-            --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi,host --lib
+            --features memory-cache,acpi,host --lib
           cargo test -p fstart-boot --features crabefi-ui --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles

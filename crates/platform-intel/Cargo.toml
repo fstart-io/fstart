@@ -13,12 +13,6 @@ memory-cache = []
 ehci-console = ["fstart-log?/debug-consoles"]
 # The SPI flash log in every stage.
 flash-console = ["dep:fstart-driver-flash-console", "fstart-log?/debug-consoles"]
-# Additive hardware availability; each board enables its chipset pair once.
-gm45-ich9 = ["dep:konst"]
-gm965-ich8 = ["dep:konst"]
-i945-ich7 = ["dep:konst"]
-pineview-ich7 = ["dep:konst"]
-ironlake-ibexpeak = []
 host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
@@ -100,5 +94,5 @@ fstart-payload = { workspace = true, optional = true }
 fstart-coreboot = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 heapless = { workspace = true }
-konst = { workspace = true, optional = true }
+konst = { workspace = true }
 ufmt = { workspace = true, optional = true }
