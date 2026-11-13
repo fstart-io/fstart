@@ -21,10 +21,10 @@ use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
 use crate::cpu::Silicon;
 use crate::dxio::wire::FwEngine;
 use crate::dxio::{Dxio, DxioError, Hooks, UnitView, op, prop};
+use crate::fch::hw::gpio::{self, Pin};
 use crate::nbio::{Nbio, NbioReg, nbif};
 use crate::smn::SmnAddr;
 use crate::smu::SmuMessages;
-use crate::sp3::fch::gpio::{self, Pin};
 use crate::window::Window;
 
 register_bitfields![u32,
@@ -1738,8 +1738,8 @@ mod tests {
             ]
         );
 
+        use crate::fch::hw::acpimmio;
         use crate::smn::Smn;
-        use crate::sp3::fch::acpimmio;
         use crate::window::SmnWindow;
         let window = |m: &Model, bus| unsafe {
             SmnWindow::new(Smn::on_bus(m.clone(), bus), acpimmio::SMN_BASE)
@@ -1787,7 +1787,7 @@ mod tests {
 
         // Milan: socket 0 through its own window (host MMIO on hardware),
         // socket 1 through SMN; each socket once.
-        let mmio = crate::sp3::fch::model::Mem::default();
+        let mmio = crate::fch::hw::model::Mem::default();
         let model = Model::default();
         let socket1 = window(&model, 0x80);
         let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();

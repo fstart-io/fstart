@@ -19,8 +19,6 @@ pub mod psp;
 pub mod smn;
 pub mod smu;
 pub mod soc;
-/// The SP3 server silicon: Naples, Rome and Milan.
-pub mod sp3;
 pub mod table;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

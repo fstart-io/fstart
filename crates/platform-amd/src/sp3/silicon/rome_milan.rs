@@ -29,6 +29,8 @@ use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::fch::huashan::usb::UsbPolicy;
+use fstart_driver_amd::fch::hw as fch;
 use fstart_driver_amd::nbio::fuse::Fuses;
 use fstart_driver_amd::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::nbio::iohc::DramTops;
@@ -37,8 +39,6 @@ use fstart_driver_amd::nbio::{Nbio, ssp as nbio_ssp};
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
-use fstart_driver_amd::sp3::fch;
-use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
 use fstart_driver_amd::window::Window;
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
@@ -422,7 +422,7 @@ impl Steps for Silicon {
     /// Socket 0's USB (needs its SMU) and socket 1's FCH (FCH_SP3 §3.1, §4.2).
     fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) -> Result<(), &'static str> {
         let generation = ctx.generation;
-        fch::huashan::usb::reset(
+        fstart_driver_amd::fch::huashan::usb::reset(
             &ctx.fch,
             generation,
             0,
@@ -582,7 +582,11 @@ impl Steps for Silicon {
 
     /// SATA env per socket (FCH_SP3 §3.1).
     fn fch_env(ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
-        if !fch::huashan::sata::env(&ctx.fch, ctx.generation, &ctx.policy.sata[0]) {
+        if !fstart_driver_amd::fch::huashan::sata::env(
+            &ctx.fch,
+            ctx.generation,
+            &ctx.policy.sata[0],
+        ) {
             // Enclosure messages only drive LEDs; the controller stays usable.
             fstart_log::warn!("sp3: SATA socket 0 SGPIO messages timed out");
         }
@@ -749,13 +753,13 @@ impl Steps for Silicon {
     /// SATA late tasks of both sockets (FCH_SP3 §2.3); Milan asks SMM for the PSP
     /// FCH lock (SW SMI D2) when the handler is installed.
     fn fch_late(ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
-        fch::huashan::sata::late(&ctx.fch, &ctx.policy.sata[0]);
+        fstart_driver_amd::fch::huashan::sata::late(&ctx.fch, &ctx.policy.sata[0]);
         if ctx.topology.sockets > 1 {
             let fch1 = secondary_fch(socket_bus(ctx, 1)?, ctx.timer);
-            fch::huashan::sata::late(&fch1, &ctx.policy.sata[1]);
+            fstart_driver_amd::fch::huashan::sata::late(&fch1, &ctx.policy.sata[1]);
         }
         if ctx.generation == cpu::Silicon::Gn && ctx.smm_installed {
-            fch::huashan::smm::request_fch_lock(&ctx.fch);
+            fstart_driver_amd::fch::huashan::smm::request_fch_lock(&ctx.fch);
         }
         Ok(())
     }

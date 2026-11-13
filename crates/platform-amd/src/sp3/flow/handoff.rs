@@ -21,9 +21,9 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
     use crate::sp3::acpi::{FchAcpi, einj};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::ccx::pm as power;
+    use fstart_driver_amd::fch::hw::smi;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::nbio::ioapic::fch_ioapic_id;
-    use fstart_driver_amd::sp3::fch::smi;
 
     let numa_plan = S::numa(ctx.soc, si);
     // Naples has no CPPC through the SMU.
@@ -108,7 +108,7 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
     }
     // The FCH's UARTs, I2C controllers and GPIO as the FCH tasks left them.
     let fch_aml = {
-        use fstart_driver_amd::sp3::fch::FchHw;
+        use fstart_driver_amd::fch::hw::FchHw;
         FchAcpi::read(ctx.soc.fch.mmio(), ctx.soc.fch.io())
             .sb_aml()
             .or_halt("ACPI tables")
@@ -151,7 +151,7 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
             c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
         }),
         acpi_smi: ctx.smm.map(|_| AcpiSmiConfig {
-            smi_cmd: u32::from(fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16),
+            smi_cmd: u32::from(fstart_driver_amd::fch::hw::acpimmio::SMI_CMD as u16),
             acpi_enable: smi::sw::ACPI_ENABLE,
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),

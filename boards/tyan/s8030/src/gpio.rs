@@ -14,7 +14,7 @@
 
 mod table;
 
-pub use fstart_driver_amd::sp3::fch::gpio::{Direction, Pad, Pin, Pull};
+pub use fstart_driver_amd::fch::hw::gpio::{Direction, Pad, Pin, Pull};
 pub use table::CPM_GPIO;
 
 use fstart_platform_amd::sp3::silicon::Generation;

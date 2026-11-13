@@ -172,7 +172,7 @@ const PSTATES: [Pstate; 2] = [
 /// A Rome FCH with UART0, UART1 as COM1, I2C0 and GPIO (routes FCH_SP3
 /// §3.3).
 fn fch() -> FchAcpi {
-    use fstart_driver_amd::sp3::fch::acpi::{I2c, LegacyCom, Uart};
+    use fstart_driver_amd::fch::hw::acpi::{I2c, LegacyCom, Uart};
     let mut f = FchAcpi {
         gpio_irq: Some(7),
         ..FchAcpi::default()

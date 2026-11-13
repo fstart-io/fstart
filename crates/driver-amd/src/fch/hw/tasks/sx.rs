@@ -157,7 +157,7 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
         Silicon::Zp => {
             if slp_typ == 3 {
                 usb_dies.iter().try_for_each(|&bus| {
-                    super::super::taishan::usb::sx_handshake(hw, bus)
+                    crate::fch::taishan::die_usb::sx_handshake(hw, bus)
                         .then_some(())
                         .ok_or(SxError::UsbHandshake)
                 })?;

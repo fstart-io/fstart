@@ -32,7 +32,7 @@
 //! the APOB at `0x3000_0000` (PSP_APOB §3.5).
 
 use crate::sp3::silicon::Generation;
-use fstart_driver_amd::sp3::fch::rom3;
+use fstart_driver_amd::fch::hw::rom3;
 
 /// A physical address range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

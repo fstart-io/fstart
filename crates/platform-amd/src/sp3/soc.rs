@@ -51,10 +51,10 @@ use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::hw::gpio::Pad;
+use fstart_driver_amd::fch::hw::{self as fch, FchHw};
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::psp;
-use fstart_driver_amd::sp3::fch::gpio::Pad;
-use fstart_driver_amd::sp3::fch::{self, FchHw};
 
 use super::board::{Board, Gpio};
 use super::flow::{self as parts, step};

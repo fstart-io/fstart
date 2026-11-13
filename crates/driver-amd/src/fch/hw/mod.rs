@@ -1,4 +1,7 @@
-//! FCH: Taishan (Naples) and Huashan (Rome, Milan).
+//! Any FCH of a multi-socket SoC (a ZP die's, an IOD's) through windows:
+//! the same code serves the primary FCH and the secondary ones, which the
+//! x86 reaches over SMN. Used by the Taishan of the SP3 ZP dies and by
+//! Huashan (SSP, GN); the die SoCs' FCH 0 is [`crate::fch`]'s [`crate::fch::Bus`].
 //!
 //! Written from the SP3 FCH reports (`FCH_SP3.md`, `fch-contracts.json`) and
 //! the public register names of the family 17h PPRs (55570 for the
@@ -30,9 +33,7 @@
 pub mod acpi;
 pub mod acpimmio;
 pub mod alink;
-pub mod common;
 pub mod gpio;
-pub mod huashan;
 pub mod irq;
 pub mod lpc;
 pub mod multi;
@@ -40,8 +41,8 @@ pub mod rom3;
 pub mod smbus;
 pub mod smi;
 pub mod spi;
-mod tables;
-pub mod taishan;
+pub(crate) mod tables;
+pub mod tasks;
 pub mod uart;
 
 use fstart_core::services::Timer;

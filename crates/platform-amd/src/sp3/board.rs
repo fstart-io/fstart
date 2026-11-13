@@ -11,7 +11,7 @@
 
 extern crate alloc;
 
-use fstart_driver_amd::sp3::fch::gpio::Pad;
+use fstart_driver_amd::fch::hw::gpio::Pad;
 
 use crate::sp3::layout::Sp3BoardFacts;
 
@@ -20,7 +20,7 @@ pub use crate::sp3::silicon::Policy;
 /// Knobs of the silicon [`Policy`] a board can offer in
 /// [`Board::OPTIONS`].
 pub mod knob {
-    use fstart_driver_amd::sp3::fch::common::env::PowerFailState;
+    use fstart_driver_amd::fch::hw::tasks::env::PowerFailState;
     use fstart_options::{Kind, Knob, Meta};
 
     use super::Policy;

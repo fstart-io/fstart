@@ -20,10 +20,10 @@ use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::DxioPolicy;
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::hw as fch;
+use fstart_driver_amd::fch::hw::tasks::env::EnvPolicy;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::{Nbio, NbioPolicy};
-use fstart_driver_amd::sp3::fch;
-use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 
 use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
@@ -43,7 +43,7 @@ pub struct Policy {
     /// Per-socket AHCI policy, used consistently at reset, env and late.
     /// A secondary socket with SATA lanes must not inherit the donor's
     /// all-disabled secondary-controller policy.
-    pub sata: [fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy; 2],
+    pub sata: [fstart_driver_amd::fch::huashan::sata::SataPolicy; 2],
     pub dxio: DxioPolicy,
 }
 
@@ -301,14 +301,16 @@ pub fn fch_reset(
     generation: Silicon,
     policy: &Policy,
 ) -> Result<bool, &'static str> {
-    use fch::common::reset;
+    use fch::tasks::reset;
     reset::prelim(fch, generation);
     reset::ab_bar(fch);
     fch::spi::reset(fch, generation, &fch::spi::SpiPolicy::default());
     reset::hw_acpi(fch, generation);
     match generation {
-        Silicon::Zp => fch::taishan::sata::reset(fch, true),
-        Silicon::Ssp | Silicon::Gn => fch::huashan::sata::reset(fch, generation, &policy.sata[0]),
+        Silicon::Zp => fstart_driver_amd::fch::taishan::die_sata::reset(fch, true),
+        Silicon::Ssp | Silicon::Gn => {
+            fstart_driver_amd::fch::huashan::sata::reset(fch, generation, &policy.sata[0])
+        }
         #[allow(unreachable_patterns)]
         _ => return Err("FCH SATA reset"),
     }
@@ -379,7 +381,7 @@ fn phys_addr_bits(generation: Silicon, smee: bool) -> u8 {
 
 /// FCH env (DXE) tasks on socket 0 (FCH_SP3 §2.2).
 pub fn fch_env(ctx: &Ctx) {
-    use fch::common::env;
+    use fch::tasks::env;
     let (fch, generation) = (&ctx.fch, ctx.generation);
     env::hw_acpi_pre(fch, generation);
     env::hw_acpi(fch, generation, &ctx.policy.fch_env);
@@ -397,7 +399,7 @@ pub fn fch_env(ctx: &Ctx) {
 /// establishment reset, BootDone last.
 pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
     use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
-    fch::common::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
+    fch::tasks::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     S::fch_late(ctx, si)?;
     sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
     let psp = psp(ctx)?;

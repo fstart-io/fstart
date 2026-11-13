@@ -29,9 +29,9 @@ use fstart_driver_amd::ccx::init as ccx;
 use fstart_driver_amd::df::plan::Policy as DfPolicy;
 use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::dxio::DxioPolicy;
+use fstart_driver_amd::fch::hw::tasks::env::{EnvPolicy, PowerFailState};
 use fstart_driver_amd::nbio::NbioPolicy;
 use fstart_driver_amd::smu::v11::pptable::PowerPolicy;
-use fstart_driver_amd::sp3::fch::common::env::{EnvPolicy, PowerFailState};
 use fstart_platform_amd::sp3::silicon::Generation;
 
 /// "Restore AC Power Loss" = Last State (Rome `Setup 0x107` = 3, Milan

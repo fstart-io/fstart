@@ -2,8 +2,8 @@
 //! controllers (FCH_SP3 §3.1 af48). Each socket's list goes to that
 //! socket's SMU.
 
-use super::super::{FchHw, hide_nbif_function};
 use crate::cpu::Silicon;
+use crate::fch::hw::{FchHw, hide_nbif_function};
 use crate::nbio::nbif::func_strap0;
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::window::update;
@@ -44,9 +44,9 @@ impl UsbPolicy {
 
 fn requests(generation: Silicon) -> &'static [(u32, u32, u32, u32)] {
     match generation {
-        Silicon::Ssp => super::super::tables::USB_CONFIG_ROME,
-        Silicon::Gn => super::super::tables::USB_CONFIG_MILAN,
-        g => super::super::common::not_built(g),
+        Silicon::Ssp => crate::fch::hw::tables::USB_CONFIG_ROME,
+        Silicon::Gn => crate::fch::hw::tables::USB_CONFIG_MILAN,
+        g => crate::fch::hw::tasks::not_built(g),
     }
 }
 
@@ -87,8 +87,8 @@ pub fn reset<H: FchHw, S: SmuMessages + ?Sized>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::{Smu, fch, smn};
     use super::*;
+    use crate::fch::hw::model::{Smu, fch, smn};
 
     #[test]
     fn rome_socket1_list() {

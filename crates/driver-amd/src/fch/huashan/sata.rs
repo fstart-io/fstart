@@ -9,9 +9,9 @@
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
-use super::super::gpio::{self, Direction, Pad, Pin, Pull};
-use super::super::{FchHw, irq};
 use crate::cpu::Silicon;
+use crate::fch::hw::gpio::{self, Direction, Pad, Pin, Pull};
+use crate::fch::hw::{FchHw, irq};
 use crate::nbio::nbif::func_strap0;
 use crate::window::{SmnWindow, Window, update};
 
@@ -250,15 +250,17 @@ fn sgpio<H: FchHw>(hw: &H, smn: &SmnWindow<H::Pci>, c: usize, pads: &[Pad]) -> b
     gpio::configure_all(hw.acpi(), pads);
     update::<u32, _>(smn, base(c) + reg::CONTROL, 0x0100_0007, 0x8);
     update::<u32, _>(smn, abar(c) + reg::ESP_FC, 0x0008_0000, 0x0C10_0C02);
-    super::super::tables::SGPIO_MESSAGES.iter().all(|message| {
-        message.iter().for_each(|op| op.at(abar(c)).apply(smn));
-        let em = smn.reg::<u32, ()>(abar(c) + reg::EM_CTL);
-        em.set(em.get() | EM_TM);
-        fstart_core::services::poll_tries(hw.timer(), 1000, 10, || {
-            (em.get() & EM_TM == 0).then_some(())
+    crate::fch::hw::tables::SGPIO_MESSAGES
+        .iter()
+        .all(|message| {
+            message.iter().for_each(|op| op.at(abar(c)).apply(smn));
+            let em = smn.reg::<u32, ()>(abar(c) + reg::EM_CTL);
+            em.set(em.get() | EM_TM);
+            fstart_core::services::poll_tries(hw.timer(), 1000, 10, || {
+                (em.get() & EM_TM == 0).then_some(())
+            })
+            .is_some()
         })
-        .is_some()
-    })
 }
 
 /// DXE af57 on one socket. Returns `false` if an SGPIO message timed out
@@ -303,10 +305,10 @@ pub fn env<H: FchHw>(hw: &H, generation: Silicon, policy: &SataPolicy) -> bool {
         if c == 0 {
             // Controller 0 only: DevSleep pads 5/6 back to GPIO, DevSlp off,
             // and the identity port map (ABAR+0x88C + 0x20n [10:8] = n).
-            hw.acpi().write8(super::super::acpimmio::IOMUX + 5, 0);
+            hw.acpi().write8(crate::fch::hw::acpimmio::IOMUX + 5, 0);
             update::<u32, _>(&smn, a + reg::DEVSLP, 0x100, 0);
             update::<u32, _>(&smn, a + reg::DEVSLP, 0x110, 0);
-            hw.acpi().write8(super::super::acpimmio::IOMUX + 6, 0);
+            hw.acpi().write8(crate::fch::hw::acpimmio::IOMUX + 6, 0);
             update::<u32, _>(&smn, a + reg::DEVSLP, 0x310, 0);
             update::<u32, _>(&smn, a + reg::DEVSLP, 0x310, 0);
             (0..8)
@@ -361,8 +363,8 @@ pub fn late<H: FchHw>(hw: &H, policy: &SataPolicy) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::{fch, smn, smn_writes};
     use super::*;
+    use crate::fch::hw::model::{fch, smn, smn_writes};
 
     #[test]
     fn reset_rome_default() {

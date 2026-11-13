@@ -1,6 +1,6 @@
 //! The per-die ZP SATA controller (SMN `0310_0000h` on the die's bus).
 
-use super::super::{FchHw, hide_nbif_function};
+use crate::fch::hw::{FchHw, hide_nbif_function};
 use crate::nbio::nbif::func_strap0;
 use crate::window::{Window, update};
 
@@ -44,8 +44,8 @@ pub fn is_enabled<H: FchHw>(hw: &H) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::{fch, smn};
     use super::*;
+    use crate::fch::hw::model::{fch, smn};
 
     #[test]
     fn die_enable_and_disable() {

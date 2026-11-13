@@ -2,12 +2,12 @@
 //!
 //! Order on the primary FCH (FCH_SP3 §2.1; the same on all generations):
 //!
-//! 1. PEI reset: [`reset::prelim`], [`reset::ab_bar`], [`crate::sp3::fch::spi::reset`],
-//!    [`reset::hw_acpi`], SATA reset (`taishan::sata` / `huashan::sata`),
-//!    [`crate::sp3::fch::lpc::reset`], [`reset::espi`], USB reset (`taishan::usb` /
+//! 1. PEI reset: [`reset::prelim`], [`reset::ab_bar`], [`crate::fch::hw::spi::reset`],
+//!    [`reset::hw_acpi`], SATA reset (`taishan::die_sata` / `huashan::sata`),
+//!    [`crate::fch::hw::lpc::reset`], [`reset::espi`], USB reset (`taishan::die_usb` /
 //!    `huashan::usb`);
-//! 2. DXE env: [`env::hw_acpi_pre`], [`env::hw_acpi`], [`crate::sp3::fch::lpc::env`],
-//!    [`env::sd`], SATA env, (ZP) xGbE, [`crate::sp3::fch::alink::clock_gating`];
+//! 2. DXE env: [`env::hw_acpi_pre`], [`env::hw_acpi`], [`crate::fch::hw::lpc::env`],
+//!    [`env::sd`], SATA env, (ZP) xGbE, [`crate::fch::hw::alink::clock_gating`];
 //! 3. late (ReadyToBoot): SATA late, [`late::hw_acpi`], (Milan) the D2 SW SMI;
 //! 4. SMM: [`sx`].
 

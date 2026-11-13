@@ -92,7 +92,7 @@ pub struct NaplesDie {
     /// ALTMMIO base if the caller relocates (donor path); `None` uses the
     /// SMN view that `hw.acpi()` already is.
     pub alt_mmio: Option<u32>,
-    pub usb: super::taishan::usb::DieUsb,
+    pub usb: crate::fch::taishan::die_usb::DieUsb,
     pub sata: bool,
 }
 
@@ -102,7 +102,7 @@ impl NaplesDie {
         Self {
             die,
             alt_mmio: None,
-            usb: super::taishan::usb::DieUsb::default_for(die),
+            usb: crate::fch::taishan::die_usb::DieUsb::default_for(die),
             sata: die == 2,
         }
     }
@@ -126,16 +126,16 @@ pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
     acpi.write8(acpimmio::IOMUX + 2, 1);
     crate::window::apply(acpi, super::tables::CLOCK_GEN_NAPLES_SECONDARY);
     sd_off(acpi);
-    super::taishan::usb::reset(hw, policy.usb, resume);
-    super::taishan::sata::reset(hw, policy.sata);
+    crate::fch::taishan::die_usb::reset(hw, policy.usb, resume);
+    crate::fch::taishan::die_sata::reset(hw, policy.sata);
 }
 
 /// FchMultiFchDxe for one Naples die: a die without SATA hides its SATA
 /// and xGbE functions.
 pub fn naples_die_env<H: FchHw>(hw: &H, sata: bool) {
-    super::taishan::sata::env(hw, sata);
+    crate::fch::taishan::die_sata::env(hw, sata);
     if !sata {
-        super::taishan::xgbe::hide(hw, 0xF);
+        crate::fch::taishan::die_xgbe::hide(hw, 0xF);
     }
 }
 
@@ -145,8 +145,8 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
     hw: &H,
     generation: Silicon,
     smu: &S,
-    usb: &super::huashan::usb::UsbPolicy,
-    sata: &super::huashan::sata::SataPolicy,
+    usb: &crate::fch::huashan::usb::UsbPolicy,
+    sata: &crate::fch::huashan::sata::SataPolicy,
     resume: bool,
 ) -> Result<(), crate::smu::Error> {
     with_legacy_io(hw.pci(), route_target(generation, 1), || {
@@ -156,8 +156,8 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
         pmio.write16(PM + pm::AB_REG_BAR, 0);
         sd_off(hw.acpi());
     });
-    super::huashan::usb::reset(hw, generation, 1, smu, usb, resume)?;
-    super::huashan::sata::reset(hw, generation, sata);
+    crate::fch::huashan::usb::reset(hw, generation, 1, smu, usb, resume)?;
+    crate::fch::huashan::sata::reset(hw, generation, sata);
     Ok(())
 }
 
@@ -167,10 +167,10 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
 pub fn huashan_socket1_env<H: FchHw>(
     hw: &H,
     generation: Silicon,
-    sata: &super::huashan::sata::SataPolicy,
+    sata: &crate::fch::huashan::sata::SataPolicy,
 ) -> bool {
     with_legacy_io(hw.pci(), route_target(generation, 1), || {
-        super::huashan::sata::env(hw, generation, sata)
+        crate::fch::huashan::sata::env(hw, generation, sata)
     })
 }
 
@@ -216,8 +216,8 @@ mod tests {
             &hw,
             Silicon::Ssp,
             &smu,
-            &super::super::huashan::usb::UsbPolicy::default_for(Silicon::Ssp, 1),
-            &super::super::huashan::sata::SataPolicy::socket1(),
+            &crate::fch::huashan::usb::UsbPolicy::default_for(Silicon::Ssp, 1),
+            &crate::fch::huashan::sata::SataPolicy::socket1(),
             false,
         )
         .unwrap();

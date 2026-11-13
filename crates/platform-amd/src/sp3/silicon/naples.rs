@@ -21,6 +21,9 @@ use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::fch::hw as fch;
+use fstart_driver_amd::fch::hw::multi::{self, NaplesDie};
+use fstart_driver_amd::fch::taishan::{self, die_usb::DieUsb};
 use fstart_driver_amd::nbio::Nbio;
 use fstart_driver_amd::nbio::fuse::Fuses;
 use fstart_driver_amd::nbio::ioapic::nbio_ioapic_id;
@@ -29,9 +32,6 @@ use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v9;
-use fstart_driver_amd::sp3::fch;
-use fstart_driver_amd::sp3::fch::multi::{self, NaplesDie};
-use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
 use fstart_driver_amd::window::{SmnWindow, Window};
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
@@ -142,7 +142,7 @@ impl Steps for Silicon {
 
     /// USB of die 0 and the secondary FCHs of dies 1..7 (FCH_SP3 §4.1).
     fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) -> Result<(), &'static str> {
-        taishan::usb::reset(&ctx.fch, DieUsb::default_for(0), ctx.resume);
+        taishan::die_usb::reset(&ctx.fch, DieUsb::default_for(0), ctx.resume);
         for (node, n) in si.nbios.iter().enumerate().skip(1) {
             let hw = secondary_fch(n.bus(), ctx.timer);
             multi::naples_die(&hw, &NaplesDie::default_for(node as u8), ctx.resume);
@@ -209,8 +209,8 @@ impl Steps for Silicon {
 
     /// SATA env (die 0) and the xGbE ports off (FCH_SP3 §3.2 af49).
     fn fch_env(ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
-        taishan::sata::env(&ctx.fch, true);
-        taishan::xgbe::disable(&ctx.fch, 0xf);
+        taishan::die_sata::env(&ctx.fch, true);
+        taishan::die_xgbe::disable(&ctx.fch, 0xf);
         for (node, n) in si.nbios.iter().enumerate().skip(1) {
             let hw = secondary_fch(n.bus(), ctx.timer);
             multi::naples_die_env(&hw, NaplesDie::default_for(node as u8).sata);

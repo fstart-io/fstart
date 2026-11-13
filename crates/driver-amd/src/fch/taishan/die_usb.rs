@@ -1,7 +1,7 @@
 //! The per-die ZP USB 3 controller, programmed directly over SMN (FCH_SP3
 //! §3.1 af48, §3.4, §4.1, §5).
 
-use super::super::{FchHw, hide_nbif_function};
+use crate::fch::hw::{FchHw, hide_nbif_function};
 use crate::nbio::nbif::func_strap0;
 use crate::window::{Window, update};
 
@@ -118,7 +118,7 @@ pub fn reset<H: FchHw>(hw: &H, usb: DieUsb, resume: bool) {
 pub fn sx_handshake<H: FchHw>(hw: &H, bus: u8) -> bool {
     // SAFETY: SMM owns the SMN pair while it runs.
     let smn =
-        unsafe { super::super::SmnWindow::new(crate::smn::Smn::on_bus(hw.pci().clone(), bus), 0) };
+        unsafe { crate::window::SmnWindow::new(crate::smn::Smn::on_bus(hw.pci().clone(), bus), 0) };
     let idle = fstart_core::services::poll_tries(hw.timer(), 1000, 1, || {
         (smn.read32(SX_STATUS) & 0x300 == 0x300).then_some(())
     })
@@ -130,8 +130,8 @@ pub fn sx_handshake<H: FchHw>(hw: &H, bus: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::{fch, smn, smn_writes};
     use super::*;
+    use crate::fch::hw::model::{fch, smn, smn_writes};
 
     #[test]
     fn cold_die1() {

@@ -42,6 +42,8 @@ mod espi_tests;
 pub mod gpio;
 #[cfg(test)]
 mod gpio_tests;
+pub mod huashan;
+pub mod hw;
 pub mod i2c;
 pub mod lpc;
 pub mod sandstone;

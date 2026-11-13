@@ -204,7 +204,7 @@ fn name(prefix: &str, last: u8) -> alloc::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::fch::model::Mem;
+    use crate::fch::hw::model::Mem;
 
     fn hw(decode: u16, powered_uarts: &[u8], powered_i2c: &[u8]) -> (Mem, Mem) {
         let mmio = Mem::default();
