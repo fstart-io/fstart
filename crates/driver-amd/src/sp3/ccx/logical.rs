@@ -3,14 +3,13 @@
 //!
 //! AGESA maps CPUID to these with "unknown stepping = first row of its
 //! family" (Naples → B2, Rome → B0, Milan → B2). Here the mapping starts
-//! from a [`Revision`], which [`crate::sp3::soc::identify`] only yields for known
+//! from a [`Revision`], which [`Revision::from_signature`] only yields for known
 //! steppings, so an unknown CPU never gets a logical ID.
 //!
 //! Naples has no core logical ID (its 11-opcode engine has no core guard);
 //! Rome and Milan add one per core microarchitecture (Zen 2, Zen 3).
 
 use crate::cpu::{Revision, Unsupported};
-use crate::sp3::soc::identify;
 
 /// One logical ID: a family bit and a revision bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,11 +93,11 @@ impl LogicalId {
         }
     }
 
-    /// From CPUID Fn0000_0001_EAX and Fn8000_0001_EBX; fails closed on any
-    /// CPU [`identify`] rejects.
-    pub const fn from_cpuid(signature: u32, ext_ebx: u32) -> Result<Self, Unsupported> {
-        match identify(signature, ext_ebx) {
-            Ok(id) => Ok(Self::of(id.revision)),
+    /// From CPUID Fn0000_0001_EAX; fails closed on any CPU
+    /// [`Revision::from_signature`] rejects.
+    pub const fn from_signature(signature: u32) -> Result<Self, Unsupported> {
+        match Revision::from_signature(signature) {
+            Ok(revision) => Ok(Self::of(revision)),
             Err(e) => Err(e),
         }
     }
@@ -121,12 +120,10 @@ impl LogicalId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::soc::PACKAGE_SP3;
 
     #[test]
     fn rows_match_the_maps() {
-        let sp3 = (PACKAGE_SP3 as u32) << 28;
-        let rome_b0 = LogicalId::from_cpuid(0x0083_0F10, sp3).unwrap();
+        let rome_b0 = LogicalId::from_signature(0x0083_0F10).unwrap();
         assert_eq!(
             rome_b0.cpu,
             Id {
@@ -141,7 +138,7 @@ mod tests {
                 revision: 0x10
             })
         );
-        let milan_b1 = LogicalId::from_cpuid(0x00A0_0F11, sp3).unwrap();
+        let milan_b1 = LogicalId::from_signature(0x00A0_0F11).unwrap();
         assert!(milan_b1.cpu_is(gn::CPU, gn::B0 | gn::B1));
         assert!(milan_b1.core_is(gn::CORE, gn::B1));
         assert!(!milan_b1.core_is(ssp::CORE, gn::B1), "Zen 2 core family");
@@ -151,10 +148,9 @@ mod tests {
 
     #[test]
     fn unknown_steppings_have_no_id() {
-        let sp3 = (PACKAGE_SP3 as u32) << 28;
         // AGESA would run these as B2 / B0 / B2.
         for sig in [0x0080_0F13, 0x0083_0F11, 0x00A0_0F13] {
-            assert!(LogicalId::from_cpuid(sig, sp3).is_err(), "{sig:#x}");
+            assert!(LogicalId::from_signature(sig).is_err(), "{sig:#x}");
         }
     }
 }

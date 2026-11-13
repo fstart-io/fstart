@@ -52,8 +52,8 @@ use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_options::{Knob, Meta};
+use fstart_platform_amd::sp3::silicon::Generation;
 use heapless::Vec;
 
 /// A x16 slot `PCIEn`: Gen4 on Rome and Milan and as wide electrically as

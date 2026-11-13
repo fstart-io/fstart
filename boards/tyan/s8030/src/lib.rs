@@ -41,8 +41,8 @@ pub mod policy;
 #[cfg(feature = "smm")]
 mod smm;
 
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
+use fstart_platform_amd::sp3::silicon::Generation;
 
 /// The Tyan S8030 board marker.
 pub struct Board;

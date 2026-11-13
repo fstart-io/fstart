@@ -29,13 +29,13 @@ use std::collections::BTreeMap;
 use std::string::{String, ToString};
 use std::{format, vec};
 
+use crate::sp3::silicon::Generation;
 use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig};
 use fstart_core::layout::{Region, RegionKind};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_image_build::amd::{blobs, reset};
 use fstart_image_build::build_plan::{
     ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, InputFile,

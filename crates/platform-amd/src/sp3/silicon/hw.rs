@@ -6,11 +6,11 @@ use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
 use super::Generation;
-use crate::fch::{Bus, NativeBus};
-use crate::smn::Smn;
-use crate::sp3::fch::{Fch, acpimmio};
-use crate::window::{Mmio, Ports, SmnWindow};
 use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::fch::{Bus, NativeBus};
+use fstart_driver_amd::smn::Smn;
+use fstart_driver_amd::sp3::fch::{Fch, acpimmio};
+use fstart_driver_amd::window::{Mmio, Ports, SmnWindow};
 use tock_registers::interfaces::Writeable;
 
 /// Config space of every function through the global ECAM base.
@@ -29,7 +29,7 @@ pub fn msr() -> NativeMsr {
 }
 
 /// Microsecond timer on the TSC.
-pub type Tsc = crate::ccx::tsc::Tsc;
+pub type Tsc = fstart_driver_amd::ccx::tsc::Tsc;
 
 /// SMU message timing on SP3: 10-us polls, each wait bounded by 1 s
 /// unless a step needs longer.
@@ -48,7 +48,7 @@ pub fn post(code: u8) {
     // SAFETY: an I/O port write only; port 80h is the POST port on every
     // SP3 board.
     unsafe { NativeBus::<false>::without_config() }
-        .reg(crate::fch::POST_CODE)
+        .reg(fstart_driver_amd::fch::POST_CODE)
         .set(code)
 }
 

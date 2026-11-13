@@ -24,20 +24,20 @@ pub enum Generation {
 
 impl Generation {
     /// The silicon of this generation's dies.
-    pub const fn silicon(self) -> crate::cpu::Silicon {
+    pub const fn silicon(self) -> fstart_driver_amd::cpu::Silicon {
         match self {
-            Self::Naples => crate::cpu::Silicon::Zp,
-            Self::Rome => crate::cpu::Silicon::Ssp,
-            Self::Milan => crate::cpu::Silicon::Gn,
+            Self::Naples => fstart_driver_amd::cpu::Silicon::Zp,
+            Self::Rome => fstart_driver_amd::cpu::Silicon::Ssp,
+            Self::Milan => fstart_driver_amd::cpu::Silicon::Gn,
         }
     }
 
     /// The SP3 generation of `silicon`.
-    pub const fn of(silicon: crate::cpu::Silicon) -> Self {
+    pub const fn of(silicon: fstart_driver_amd::cpu::Silicon) -> Self {
         match silicon {
-            crate::cpu::Silicon::Zp => Self::Naples,
-            crate::cpu::Silicon::Ssp => Self::Rome,
-            crate::cpu::Silicon::Gn => Self::Milan,
+            fstart_driver_amd::cpu::Silicon::Zp => Self::Naples,
+            fstart_driver_amd::cpu::Silicon::Ssp => Self::Rome,
+            fstart_driver_amd::cpu::Silicon::Gn => Self::Milan,
         }
     }
 
@@ -104,25 +104,8 @@ impl Generation {
     }
 }
 
-use crate::cpu::{Revision, Unsupported};
-
-/// The identified CPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Identity {
-    pub revision: Revision,
-    /// Raw CPUID Fn0000_0001_EAX.
-    pub signature: u32,
-}
-
-impl Identity {
-    pub const fn generation(&self) -> Generation {
-        Generation::of(self.revision.silicon())
-    }
-
-    pub const fn silicon(&self) -> crate::cpu::Silicon {
-        self.revision.silicon()
-    }
-}
+pub use fstart_driver_amd::cpu::Identity;
+use fstart_driver_amd::cpu::{Revision, Unsupported};
 
 /// Identify the CPU from CPUID Fn0000_0001_EAX and Fn8000_0001_EBX.
 pub const fn identify(signature: u32, ext_ebx: u32) -> Result<Identity, Unsupported> {
@@ -159,7 +142,7 @@ mod tests {
             assert_eq!(identify(sig, SP3).unwrap().revision, rev, "{sig:#x}");
         }
         assert_eq!(
-            identify(0x00A0_0F12, SP3).unwrap().generation(),
+            Generation::of(identify(0x00A0_0F12, SP3).unwrap().silicon()),
             Generation::Milan
         );
     }

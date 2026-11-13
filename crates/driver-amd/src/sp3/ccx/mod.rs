@@ -49,9 +49,9 @@ pub mod zen3;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
 use crate::ccx::microcode::{self, Load, Patch};
+use crate::cpu::Identity;
 use crate::cpu::Revision;
 use crate::cpu::Silicon;
-use crate::sp3::soc::Identity;
 use logical::LogicalId;
 use power::{CstatePolicy, Wdt};
 use security::{RmpPlan, SnpPolicy};
@@ -231,12 +231,11 @@ impl Ccx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::soc::{PACKAGE_SP3, identify};
     use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 
     #[test]
     fn rome_ap_start() {
-        let id = identify(0x0083_0F10, u32::from(PACKAGE_SP3) << 28).unwrap();
+        let id = Identity::from_signature(0x0083_0F10).unwrap();
         let ccx = Ccx::new(id, ApicMode::XApic, TablePolicy::default()).unwrap();
         let cpu = MsrSpace::new([(0x179, 23)]);
         let thread = Thread::new(Silicon::Ssp, 0x10, true, false);

@@ -6,32 +6,32 @@ use super::cpu::{Sp3Cpu, release_all, this_thread};
 use super::hw::{Pci, Tsc, msr, secondary_fch};
 use super::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
 use super::steps::*;
-use crate::ccx::microcode;
-use crate::df::regs;
-use crate::df::v2::Df2;
-use crate::dxio::wire::MAX_ENGINES;
-use crate::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
-use crate::nbio::iohc::DramTops;
-use crate::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
-use crate::smn::Smn;
-use crate::smu::Smu as SmuMailbox;
-use crate::smu::v9;
-use crate::sp3::ccx::release::{self, Launch, SmuPwr};
-use crate::sp3::ccx::x2apic::{self, ApicMode};
-use crate::sp3::ccx::{Ccx, brand, mca, power, security};
-use crate::sp3::dxio;
-use crate::sp3::dxio::lanes::Engine;
-use crate::sp3::dxio::ports::{FchPerst, PortSetup};
-use crate::sp3::fch;
-use crate::sp3::fch::multi::{self, NaplesDie};
-use crate::sp3::fch::taishan::{self, usb::DieUsb};
-use crate::sp3::nbio::fuse::Fuses;
-use crate::sp3::nbio::ioapic::nbio_ioapic_id;
-use crate::sp3::nbio::{Nbio, naples as nbio_naples};
-use crate::sp3::topology::MAX_ROOT_BRIDGES;
-use crate::window::{SmnWindow, Window};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
+use fstart_driver_amd::ccx::microcode;
+use fstart_driver_amd::df::regs;
+use fstart_driver_amd::df::v2::Df2;
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::nbio::iohc::DramTops;
+use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
+use fstart_driver_amd::smn::Smn;
+use fstart_driver_amd::smu::Smu as SmuMailbox;
+use fstart_driver_amd::smu::v9;
+use fstart_driver_amd::sp3::ccx::release::{self, Launch, SmuPwr};
+use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
+use fstart_driver_amd::sp3::ccx::{Ccx, brand, mca, power, security};
+use fstart_driver_amd::sp3::dxio;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
+use fstart_driver_amd::sp3::fch;
+use fstart_driver_amd::sp3::fch::multi::{self, NaplesDie};
+use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
+use fstart_driver_amd::sp3::nbio::fuse::Fuses;
+use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
+use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::window::{SmnWindow, Window};
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
@@ -56,7 +56,7 @@ const IOAPIC_BAR: u64 = 0x1000;
 fn umc_present(ctx: &Ctx) -> [u8; 8] {
     let mut present = [0u8; 8];
     for (node, n) in ctx.topology.nodes.iter().enumerate() {
-        present[node] = crate::apob::mem::spd(&ctx.apob, n.socket, n.die)
+        present[node] = fstart_driver_amd::apob::mem::spd(&ctx.apob, n.socket, n.die)
             .map(|t| {
                 t.dimms()
                     .filter(|(_, _, r)| r.present())
@@ -73,7 +73,7 @@ impl Steps for Silicon {
     /// DF PEI init and, as this flow has no PEI/DXE split, the DXE-entry PIE
     /// power management right after (SOC_DF §3, DF_ZP §3.9).
     fn df_init(ctx: &mut Ctx) -> Result<(), &'static str> {
-        use crate::sp3::df::naples;
+        use fstart_driver_amd::sp3::df::naples;
         let policy = naples::Policy::default();
         let rev = ctx.identity.revision;
         naples::init(&ctx.df, &ctx.topology, rev, &policy, &umc_present(ctx));
@@ -103,7 +103,9 @@ impl Steps for Silicon {
             n.set_psp_bar(ctx.non_pci[i].alloc(BAR_SIZE).step("PSP BAR space")?);
         }
         ctx.psp_bar = nbios[0].psp_bar().step("PSP BAR")?;
-        msr().reg(crate::ccx::msr::PSP_ADDRESS).set(ctx.psp_bar);
+        msr()
+            .reg(fstart_driver_amd::ccx::msr::PSP_ADDRESS)
+            .set(ctx.psp_bar);
         Ok(Silicon {
             nbios,
             smus: heapless::Vec::new(),

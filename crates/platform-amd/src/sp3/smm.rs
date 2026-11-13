@@ -30,8 +30,8 @@
 //! (`smm_bin!`, feature `bundle-smm`); `build.rs` checks that it fits
 //! [`TSEG_SIZE`] for the board's thread count.
 
+use crate::sp3::silicon::Generation;
 use fstart_driver_amd::apob::sysmap::Region;
-use fstart_driver_amd::sp3::soc::Generation;
 
 use crate::sp3::layout::Span;
 use crate::sp3::memory::FOUR_GIB;
@@ -113,7 +113,7 @@ impl SmmConfig {
 /// The FCH side of SMM installation on socket 0's FCH.
 #[cfg(feature = "bundle")]
 pub struct Sp3Smi<'a> {
-    pub fch: &'a fstart_driver_amd::sp3::soc::hw::PrimaryFch,
+    pub fch: &'a crate::sp3::silicon::hw::PrimaryFch,
     pub config: SmmConfig,
 }
 
@@ -149,7 +149,7 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 /// The FCH bits AGESA sets before SmmInfo (PSP_APOB §3.3): SmiStatus1
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
 #[cfg(feature = "bundle")]
-pub fn prepare_psp_smi(fch: &fstart_driver_amd::sp3::soc::hw::PrimaryFch) {
+pub fn prepare_psp_smi(fch: &crate::sp3::silicon::hw::PrimaryFch) {
     use fstart_driver_amd::sp3::fch::{FchHw, acpimmio};
     use fstart_driver_amd::window::{Window, update};
     let acpi = fch.acpi();
@@ -174,6 +174,7 @@ mod einj;
 mod handler {
     use core::cell::UnsafeCell;
 
+    use crate::sp3::silicon::Generation;
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
     use fstart_driver_amd::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
@@ -184,7 +185,6 @@ mod handler {
     use fstart_driver_amd::sp3::fch::smi::Source;
     use fstart_driver_amd::sp3::fch::smi::{self, source};
     use fstart_driver_amd::sp3::fch::{Fch, FchHw, acpimmio};
-    use fstart_driver_amd::sp3::soc::Generation;
     use fstart_driver_amd::window::{Mmio, Ports, Window, update};
     use fstart_pci::{ConfigRegionAccess, EcamDevice, PciAddress};
     use fstart_smm::SmmContext;
@@ -192,7 +192,7 @@ mod handler {
 
     use super::ras::Policy;
     use super::{SmmConfig, sw};
-    use fstart_driver_amd::sp3::soc::hw::{Tsc, msr};
+    use crate::sp3::silicon::hw::{Tsc, msr};
 
     /// Config space in SMM: the global ECAM window (`ecam::init` with the
     /// installer's base on every SMI) without `GlobalEcam`'s panic on an
@@ -293,14 +293,14 @@ mod handler {
         let pci = Ecam;
         // SAFETY: SMM owns the CPU; the index is restored below.
         let saved = unsafe { pci.read(host, fstart_driver_amd::smn::SMN_INDEX) };
-        super::ras::flush(policy, fstart_driver_amd::sp3::soc::hw::tsc());
+        super::ras::flush(policy, crate::sp3::silicon::hw::tsc());
         dispatch(config, policy);
         // SAFETY: as above.
         unsafe { pci.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
     }
 
     fn dispatch(config: &SmmConfig, policy: &Policy) {
-        let timer = fstart_driver_amd::sp3::soc::hw::tsc();
+        let timer = crate::sp3::silicon::hw::tsc();
         let hw = primary_fch(timer);
         let acpi = hw.acpi();
         let generation = config.generation;
@@ -395,8 +395,8 @@ mod handler {
         };
         Some(
             Smu::new(smn, regs, timer, limit)
-                .with_timeout_us(fstart_driver_amd::sp3::soc::hw::SMU_TIMEOUT_US)
-                .with_poll_us(fstart_driver_amd::sp3::soc::hw::SMU_POLL_US),
+                .with_timeout_us(crate::sp3::silicon::hw::SMU_TIMEOUT_US)
+                .with_poll_us(crate::sp3::silicon::hw::SMU_POLL_US),
         )
     }
 

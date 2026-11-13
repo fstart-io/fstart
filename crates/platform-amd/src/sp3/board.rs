@@ -15,7 +15,7 @@ use fstart_driver_amd::sp3::fch::gpio::Pad;
 
 use crate::sp3::layout::Sp3BoardFacts;
 
-pub use fstart_driver_amd::sp3::soc::Policy;
+pub use crate::sp3::silicon::Policy;
 
 /// Knobs of the silicon [`Policy`] a board can offer in
 /// [`Board::OPTIONS`].

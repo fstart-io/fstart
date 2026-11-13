@@ -34,7 +34,7 @@ pub(crate) fn storage(
     ctx: &Ctx<'_>,
 ) -> Option<
     fstart_payload::crabefi::settings::FlashStorage<
-        fstart_driver_amd::fch::spi::flash::Flash<fstart_driver_amd::sp3::soc::hw::Tsc>,
+        fstart_driver_amd::fch::spi::flash::Flash<crate::sp3::silicon::hw::Tsc>,
     >,
 > {
     use fstart_driver_amd::fch::spi::flash::{ERASE_SIZE, Extent, Flash};

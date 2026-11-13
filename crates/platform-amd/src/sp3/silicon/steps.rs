@@ -8,42 +8,42 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::apob::Apob;
-use crate::df::plan::{self, Plan, RootBridgePlan, Window};
-use crate::df::{Version, program};
-use crate::dxio::wire::MAX_ENGINES;
-use crate::nbio::iohc::DramTops;
-use crate::sp3::ccx;
-use crate::sp3::df::topology::{self, Topology};
-use crate::sp3::df::{self as sp3_df, Df};
-use crate::sp3::dxio::DxioPolicy;
-use crate::sp3::dxio::lanes::Engine;
-use crate::sp3::fch;
-use crate::sp3::fch::common::env::EnvPolicy;
-use crate::sp3::nbio::{Nbio, NbioPolicy};
-use crate::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::apob::Apob;
+use fstart_driver_amd::df::plan::{self, Plan, RootBridgePlan, Window};
+use fstart_driver_amd::df::{Version, program};
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::nbio::iohc::DramTops;
+use fstart_driver_amd::sp3::ccx;
+use fstart_driver_amd::sp3::df::topology::{self, Topology};
+use fstart_driver_amd::sp3::df::{self as sp3_df, Df};
+use fstart_driver_amd::sp3::dxio::DxioPolicy;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::fch;
+use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
+use fstart_driver_amd::sp3::nbio::{Nbio, NbioPolicy};
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 
 use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
-use crate::cpu::Silicon;
+use fstart_driver_amd::cpu::Silicon;
 
 /// Silicon policy of a board (NATIVE_PORT_PLAN §4 steps 6–12).
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
     /// DF resource planner: the generation's split plus bus/IO requests.
-    pub df: crate::df::plan::Policy,
+    pub df: fstart_driver_amd::df::plan::Policy,
     pub nbio: NbioPolicy,
     /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
-    pub power: crate::smu::v11::pptable::PowerPolicy,
+    pub power: fstart_driver_amd::smu::v11::pptable::PowerPolicy,
     pub ccx: ccx::Policy,
     /// FCH env: power-failure state after AC loss.
     pub fch_env: EnvPolicy,
     /// Per-socket AHCI policy, used consistently at reset, env and late.
     /// A secondary socket with SATA lanes must not inherit the donor's
     /// all-disabled secondary-controller policy.
-    pub sata: [crate::sp3::fch::huashan::sata::SataPolicy; 2],
+    pub sata: [fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy; 2],
     pub dxio: DxioPolicy,
 }
 
@@ -51,7 +51,7 @@ pub struct Policy {
 pub struct Cppc {
     pub base: u64,
     pub smu_bar: u64,
-    pub info: crate::smu::v11::CppcInfo,
+    pub info: fstart_driver_amd::smu::v11::CppcInfo,
     pub lowest_mhz: u32,
     pub nominal_mhz: u32,
     /// APIC ID of each local PCC slot (this socket's PPTable CPPC map).
@@ -132,8 +132,8 @@ pub struct Ctx {
     /// An SMM handler is installed and locked.
     pub smm_installed: bool,
     /// What the board attaches to its engines, with the bridge DXIO mapped
-    /// each PCIe link to ([`crate::sp3::dxio::ports::attached`]).
-    pub ports: heapless::Vec<crate::sp3::dxio::ports::AttachedPort, MAX_ENGINES>,
+    /// each PCIe link to ([`fstart_driver_amd::sp3::dxio::ports::attached`]).
+    pub ports: heapless::Vec<fstart_driver_amd::sp3::dxio::ports::AttachedPort, MAX_ENGINES>,
 }
 
 impl Ctx {
@@ -249,7 +249,9 @@ impl<T> Step<T> for Option<T> {
 }
 
 /// DXIO training, with the error's details logged.
-pub(super) fn trained(result: Result<(), crate::dxio::DxioError>) -> Result<(), &'static str> {
+pub(super) fn trained(
+    result: Result<(), fstart_driver_amd::dxio::DxioError>,
+) -> Result<(), &'static str> {
     result.map_err(|e| {
         let (what, a, b) = e.parts();
         fstart_log::error!("sp3: DXIO error {} ({:#x}, {:#x})", what, a, b);
@@ -289,7 +291,9 @@ pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'stati
 pub fn set_fch_ioapic_id(generation: Silicon) {
     // SAFETY: the FCH IOAPIC is decoded at its fixed address.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
-    ioapic.set_id(crate::sp3::nbio::ioapic::fch_ioapic_id(generation));
+    ioapic.set_id(fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(
+        generation,
+    ));
 }
 
 /// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns
@@ -394,7 +398,7 @@ pub fn fch_env(ctx: &Ctx) {
 /// tasks, DF extended config off, PSP LockDFReg, Milan DRTM off and TPM
 /// establishment reset, BootDone last.
 pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
-    use crate::psp::command::{BootDone, C2pBuffer, LockDfReg};
+    use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
     fch::common::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     S::fch_late(ctx, si)?;
     sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
@@ -402,7 +406,7 @@ pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
     psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))
         .step("PSP LockDFReg")?;
     if ctx.generation == Silicon::Gn {
-        use crate::psp::command::{DisableDrtm, ResetTpmEstablishment};
+        use fstart_driver_amd::psp::command::{DisableDrtm, ResetTpmEstablishment};
         psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))
             .step("PSP DisableDrtm")?;
         // SAFETY: the TPM locality-0 page; all-ones means no TPM.
@@ -420,8 +424,11 @@ pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
 /// Socket 0's C2P mailbox through its PSP BAR.
 pub fn psp(
     ctx: &Ctx,
-) -> Result<crate::psp::mailbox::Mailbox<crate::psp::mailbox::MmioTransport>, &'static str> {
-    use crate::psp::mailbox::{Mailbox, MmioTransport};
+) -> Result<
+    fstart_driver_amd::psp::mailbox::Mailbox<fstart_driver_amd::psp::mailbox::MmioTransport>,
+    &'static str,
+> {
+    use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
     if ctx.psp_bar == 0 {
         return Err("PSP BAR");
     }

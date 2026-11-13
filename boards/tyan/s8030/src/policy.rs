@@ -31,8 +31,8 @@ use fstart_driver_amd::sp3::ccx;
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::fch::common::env::{EnvPolicy, PowerFailState};
 use fstart_driver_amd::sp3::nbio::NbioPolicy;
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_platform_amd::sp3::silicon::Generation;
 
 /// "Restore AC Power Loss" = Last State (Rome `Setup 0x107` = 3, Milan
 /// `AmdSetup 0x28f` = 3); the FCH driver's donor default is Off.

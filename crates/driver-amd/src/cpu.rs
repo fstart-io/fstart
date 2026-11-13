@@ -141,6 +141,31 @@ impl Revision {
     }
 }
 
+/// An identified CPU: its revision and raw signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub revision: Revision,
+    /// Raw CPUID Fn0000_0001_EAX.
+    pub signature: u32,
+}
+
+impl Identity {
+    /// From CPUID Fn0000_0001_EAX; fails closed on an unknown CPU.
+    pub const fn from_signature(signature: u32) -> Result<Self, Unsupported> {
+        match Revision::from_signature(signature) {
+            Ok(revision) => Ok(Self {
+                revision,
+                signature,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub const fn silicon(&self) -> Silicon {
+        self.revision.silicon()
+    }
+}
+
 /// Why a CPU is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unsupported {

@@ -4,6 +4,8 @@
 
 extern crate alloc;
 
+use crate::sp3::silicon::hw::{PrimaryFch, msr, post};
+use crate::sp3::silicon::{self, Generation};
 use fstart_amdfw_format::anchor::FlashAnchor;
 use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
@@ -12,8 +14,6 @@ use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
 use fstart_driver_amd::sp3::fch::rom3::{self, FlashMap, Rom3};
-use fstart_driver_amd::sp3::soc::hw::{PrimaryFch, msr, post};
-use fstart_driver_amd::sp3::soc::{self, Generation};
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -58,7 +58,7 @@ pub(crate) fn step(code: u8, name: &str) {
 /// What the tables and the handoff read: the silicon steps' state and
 /// the flow's own.
 pub(crate) struct Ctx<'a> {
-    pub soc: &'a soc::Ctx,
+    pub soc: &'a silicon::Ctx,
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     #[cfg(feature = "payload-uefi")]
     pub ffs: Span,
@@ -292,7 +292,7 @@ pub(crate) fn cache_ram(regions: &[Region]) {
 /// flow has to take out of the memory map (`reserved`) before
 /// [`clear_einj_scratch`] and the SMM installation.
 pub(crate) fn plan_einj(
-    ctx: &soc::Ctx,
+    ctx: &silicon::Ctx,
     e820: &E820State,
     reserved: &mut crate::flow::Reserved,
 ) -> Option<crate::sp3::smm::EinjConfig> {

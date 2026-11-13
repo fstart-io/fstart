@@ -4,11 +4,11 @@
 //! restricted correctable-memory injection through the native SMM backend
 //! ([`einj`]). Not built (OS-first): HEST/BERT/ERST, CRAT/CDIT.
 
+use crate::sp3::silicon::Generation;
 use fstart_acpi::fadt::{Flags, PmProfile};
 use fstart_acpi::platform::{X86Fadt, x86::IAPC_LEGACY_DEVICES};
 use fstart_driver_amd::fch::AcpiPorts;
 use fstart_driver_amd::sp3::fch::acpimmio;
-use fstart_driver_amd::sp3::soc::Generation;
 
 use crate::acpi::{S5_SLEEP_TYPE, SocAcpi, Wake, prt};
 

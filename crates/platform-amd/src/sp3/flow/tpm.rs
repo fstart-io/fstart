@@ -9,8 +9,8 @@
 //!
 //! [`Board::DISCRETE_TPM`]: crate::sp3::board::Board::DISCRETE_TPM
 
+use crate::sp3::silicon::Generation;
 use fstart_amdfw_format::directory::bios;
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_tpm::tis::{self, Tis};
 use fstart_tcg::event::EV_S_CRTM_CONTENTS;
 
@@ -44,8 +44,7 @@ pub(crate) fn start(flash: &'static [u8], generation: Generation) {
     );
     // SAFETY: the boot CPU runs this once; the slot is written once.
     let tis = unsafe { (*core::ptr::addr_of_mut!(TIS)).insert(tis) };
-    let log =
-        fstart_driver_amd::sp3::soc::steps::dma_alloc(LOG_SIZE, 0x1000).or_halt("DMA allocation");
+    let log = crate::sp3::silicon::steps::dma_alloc(LOG_SIZE, 0x1000).or_halt("DMA allocation");
     let uefi = fstart_payload::SELECTED == fstart_payload::Selected::Uefi;
     if let Err(error) = fstart_tcg::start(tis, log, fstart_tcg::PlatformClass::Server, uefi) {
         error.report();

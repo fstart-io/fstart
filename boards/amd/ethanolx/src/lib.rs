@@ -27,11 +27,11 @@ use fstart_driver_amd::sp3::fch::gpio::{Pad, Pin};
 use fstart_driver_amd::sp3::fch::huashan::sata::{Controller, SataPolicy};
 use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
 use fstart_driver_amd::sp3::fch::{FchHw, irq, uart};
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_amd::acpi::Board as AcpiBoard;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
+use fstart_platform_amd::sp3::silicon::Generation;
 
 pub struct Board;
 

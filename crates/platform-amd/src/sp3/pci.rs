@@ -67,8 +67,8 @@ pub fn root(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<PciRoot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sp3::silicon::{Generation, NonPci, hw::segment};
     use fstart_driver_amd::df::BusRange;
-    use fstart_driver_amd::sp3::soc::{Generation, NonPci, hw::segment};
     use fstart_pci::PciWindowKind;
 
     fn plan() -> RootBridgePlan {

@@ -8,37 +8,37 @@ use super::cpu::{Sp3Cpu, release_all, this_thread};
 use super::hw::{Pci, Tsc, msr, secondary_fch};
 use super::hw::{SMU_POLL_US, SMU_TIMEOUT_US, primary_fch};
 use super::steps::*;
-use crate::apob::ccx::{CoreMap, core_map};
-use crate::apob::phy::phy_override;
-use crate::ccx::microcode;
-use crate::cpu;
-use crate::df::regs;
-use crate::dxio::wire::MAX_ENGINES;
-use crate::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
-use crate::nbio::iohc::DramTops;
-use crate::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
-use crate::smn::Smn;
-use crate::smu::Smu as SmuMailbox;
-use crate::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
-use crate::sp3::ccx::release::{self, Launch};
-use crate::sp3::ccx::topology::{ApicLayout, Location};
-use crate::sp3::ccx::x2apic::{self, ApicMode};
-use crate::sp3::ccx::{Ccx, brand, mca, power, security};
-use crate::sp3::df::v3::{Df3, SocketMemory};
-use crate::sp3::dxio;
-use crate::sp3::dxio::engine::Ancillary;
-use crate::sp3::dxio::lanes::Engine;
-use crate::sp3::dxio::ports::{FchPerst, PortSetup};
-use crate::sp3::fch;
-use crate::sp3::fch::huashan::usb::UsbPolicy;
-use crate::sp3::nbio::fuse::Fuses;
-use crate::sp3::nbio::ioapic::nbio_ioapic_id;
-use crate::sp3::nbio::{Nbio, sp3 as nbio_sp3};
-use crate::sp3::topology::MAX_ROOT_BRIDGES;
-use crate::window::Window;
 use alloc::vec::Vec;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
+use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
+use fstart_driver_amd::apob::phy::phy_override;
+use fstart_driver_amd::ccx::microcode;
+use fstart_driver_amd::cpu;
+use fstart_driver_amd::df::regs;
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::nbio::iohc::DramTops;
+use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
+use fstart_driver_amd::smn::Smn;
+use fstart_driver_amd::smu::Smu as SmuMailbox;
+use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
+use fstart_driver_amd::sp3::ccx::release::{self, Launch};
+use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
+use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
+use fstart_driver_amd::sp3::ccx::{Ccx, brand, mca, power, security};
+use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
+use fstart_driver_amd::sp3::dxio;
+use fstart_driver_amd::sp3::dxio::engine::Ancillary;
+use fstart_driver_amd::sp3::dxio::lanes::Engine;
+use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
+use fstart_driver_amd::sp3::fch;
+use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
+use fstart_driver_amd::sp3::nbio::fuse::Fuses;
+use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
+use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
+use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::window::Window;
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
 use zerocopy::IntoBytes;
@@ -87,7 +87,7 @@ fn socket_bus(ctx: &Ctx, socket: u8) -> Result<u8, &'static str> {
 /// The UMC channels with DIMMs, from the APOB SPD copy (the AGESA memory
 /// info PPI the scrubber setup reads, SOC_DF §3.6).
 fn socket_memory(ctx: &Ctx, socket: u8) -> SocketMemory {
-    let present = crate::apob::mem::spd(&ctx.apob, socket, 0)
+    let present = fstart_driver_amd::apob::mem::spd(&ctx.apob, socket, 0)
         .map(|t| {
             t.dimms()
                 .filter(|(_, _, r)| r.present())
@@ -135,7 +135,7 @@ fn hotplug(
     smus: &[Smu],
     policy: &dxio::hotplug::HotplugPolicy,
 ) -> Result<(), &'static str> {
-    use crate::sp3::dxio::hotplug;
+    use fstart_driver_amd::sp3::dxio::hotplug;
     let table = match setup.hotplug_table() {
         Ok(table) => table,
         Err(error) => {
@@ -184,10 +184,9 @@ fn hotplug(
 /// region per enabled controller with its own signature, doorbell and local
 /// PPTable slot map. One aligned MTRR extent makes every region uncached
 /// on all threads. A failed controller is not advertised.
-#[cfg(feature = "acpi")]
 fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Result<Vec<Cppc>, &'static str> {
-    use crate::smu::v11::cppc::{REGION_SIZE, signature};
     use fstart_arch::x86::mtrr;
+    use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, signature};
 
     let generation = ctx.generation;
     if !FeaturePolicy::default().cppc {
@@ -281,16 +280,19 @@ impl Steps for Silicon {
             .map(|s| socket_memory(ctx, s))
             .collect();
         match ctx.generation {
-            cpu::Silicon::Ssp => crate::sp3::df::rome::init(
+            cpu::Silicon::Ssp => fstart_driver_amd::sp3::df::rome::init(
                 &ctx.df,
                 &ctx.topology,
                 ctx.identity.revision,
                 &Default::default(),
                 &memory,
             ),
-            cpu::Silicon::Gn => {
-                crate::sp3::df::milan::init(&ctx.df, &ctx.topology, &Default::default(), &memory)
-            }
+            cpu::Silicon::Gn => fstart_driver_amd::sp3::df::milan::init(
+                &ctx.df,
+                &ctx.topology,
+                &Default::default(),
+                &memory,
+            ),
             _ => return Err("DF init"),
         }
         Ok(())
@@ -350,7 +352,7 @@ impl Steps for Silicon {
             let bar = nbios[i].psp_bar().step("PSP BAR")?;
             if rb.socket == 0 {
                 ctx.psp_bar = bar;
-                msr().reg(crate::ccx::msr::PSP_ADDRESS).set(bar);
+                msr().reg(fstart_driver_amd::ccx::msr::PSP_ADDRESS).set(bar);
             }
         }
         if generation == cpu::Silicon::Gn {
@@ -686,7 +688,7 @@ impl Steps for Silicon {
     fn cpus_up(
         ctx: &mut Ctx,
         si: &mut Silicon,
-        #[cfg_attr(not(feature = "acpi"), allow(unused_variables))] mp: &MpHandle,
+        mp: &MpHandle,
         apic_ids: &[u32],
     ) -> Result<(), &'static str> {
         let generation = ctx.generation;
@@ -714,7 +716,6 @@ impl Steps for Silicon {
             })
             .step("SMU CCX done")?;
         }
-        #[cfg(feature = "acpi")]
         {
             ctx.cppc = cppc(ctx, si, mp)?;
         }
@@ -775,15 +776,15 @@ impl Steps for Silicon {
     /// `None` with one domain (AmdAcpiDxe builds no SRAT then) or without
     /// NPS information.
     fn numa(ctx: &Ctx, si: &Silicon) -> Option<NumaPlan> {
-        use crate::apob::nps;
-        use crate::df::Target;
-        use crate::sp3::df::dram::{self, ccd_channel, domain_of, ioms_channel};
-        use crate::sp3::df::v3;
+        use fstart_driver_amd::apob::nps;
+        use fstart_driver_amd::df::Target;
+        use fstart_driver_amd::sp3::df::dram::{self, ccd_channel, domain_of, ioms_channel};
+        use fstart_driver_amd::sp3::df::v3;
 
         let mode = match nps::nps(&ctx.apob) {
             Ok(mode) => mode,
             Err(e) => {
-                use crate::apob::ApobError as E;
+                use fstart_driver_amd::apob::ApobError as E;
                 let (what, value) = match e {
                     E::NotFound { kind, .. } => ("missing", kind),
                     E::TooShort { kind, .. } => ("short", kind),

@@ -5,6 +5,7 @@
 
 use std::vec::Vec;
 
+use crate::sp3::silicon::Generation;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_acpi::ivrs::IommuRegisters;
 use fstart_core::acpi::AcpiSmiConfig;
@@ -12,7 +13,6 @@ use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::power::{CstateInfo, Pstate};
 use fstart_driver_amd::smu::v11::CppcInfo;
 use fstart_driver_amd::sp3::nbio::ioapic::{fch_ioapic_id, nbio_ioapic_id};
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_amd::sp3::topology::RootBridge;
 
 use super::cppc::{self, Channel};
@@ -197,7 +197,7 @@ fn inputs<'a>(
     let generation = s.generation;
     Inputs {
         soc: of(generation),
-        pci: fstart_driver_amd::sp3::soc::hw::segment(generation),
+        pci: crate::sp3::silicon::hw::segment(generation),
         cpus: &s.cpus,
         fch_ioapic_id: fch_ioapic_id(generation.silicon()),
         hpet_block_id: 0x1022_8201,

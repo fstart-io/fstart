@@ -16,8 +16,8 @@ use fstart_driver_amd::sp3::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
     validate,
 };
-use fstart_driver_amd::sp3::soc::Generation;
 use fstart_options::{Availability, Knob};
+use fstart_platform_amd::sp3::silicon::Generation;
 
 use crate::i2c::{Detected, RedriverMode};
 

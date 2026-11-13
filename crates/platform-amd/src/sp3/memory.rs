@@ -18,9 +18,9 @@
 //!   reserves the reset image): page tables, parked APs and the AP route of
 //!   the reset image live there.
 
+use crate::sp3::silicon::Generation;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_amd::apob::sysmap::{Region, RegionKind};
-use fstart_driver_amd::sp3::soc::Generation;
 use heapless::Vec;
 
 use crate::sp3::layout::{CACHE_WINDOW, Span};

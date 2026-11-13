@@ -12,17 +12,17 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::ccx::microcode::Patch;
-use crate::ccx::msr::PSP_ADDRESS;
-use crate::cpu::Silicon;
-use crate::sp3::ccx::power::{CacWeights, Wdt};
-use crate::sp3::ccx::release::{Launch, ReleaseError};
-use crate::sp3::ccx::topology::Thread;
-use crate::sp3::ccx::{self, ApInputs, Ccx};
 use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, SYSCFG, Syscfg, TOP_MEM, TOP_MEM2};
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::{CpuDriver, CpuIdMatch, CpuIdentity, MpError, SipiUnlock};
 use fstart_arch::x86::mtrr::{MsrEntry, SipiMsrs};
+use fstart_driver_amd::ccx::microcode::Patch;
+use fstart_driver_amd::ccx::msr::PSP_ADDRESS;
+use fstart_driver_amd::cpu::Silicon;
+use fstart_driver_amd::sp3::ccx::power::{CacWeights, Wdt};
+use fstart_driver_amd::sp3::ccx::release::{Launch, ReleaseError};
+use fstart_driver_amd::sp3::ccx::topology::Thread;
+use fstart_driver_amd::sp3::ccx::{self, ApInputs, Ccx};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::hw::msr;

@@ -13,7 +13,7 @@ use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::smm::SleepNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
-use fstart_driver_amd::sp3::soc::Generation;
+use fstart_platform_amd::sp3::silicon::Generation;
 
 use crate::{Board, bmc, dxio, gpio, policy};
 
