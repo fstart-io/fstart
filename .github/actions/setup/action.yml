@@ -65,9 +65,10 @@ runs:
         # shellcheck disable=SC2086
         sudo apt-get install -y --no-install-recommends $PACKAGES
 
+    # The path is the toolchain's own, not anything a job's input controls.
     - name: Add llvm-tools to PATH
       if: inputs.llvm-tools == 'true'
       shell: bash
-      run: |
+      run: | # zizmor: ignore[github-env]
         host="$(rustc -vV | sed -n 's/host: //p')"
         echo "$(rustc --print sysroot)/lib/rustlib/$host/bin" >> "$GITHUB_PATH"

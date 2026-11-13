@@ -5,7 +5,8 @@ name: Size report
 # artifact from every run; this runs from the default branch after CI
 # finishes, so it can comment on pull requests from forks too and only runs
 # trusted code on the artifact.
-on:
+# Runs with a write token on artifacts of untrusted builds: only ever as data.
+on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -28,6 +29,8 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Build only the default-branch checkout, never code from the PR artifact.
       - name: Build trusted reporter
@@ -75,7 +78,8 @@ jobs:
             exit 0
           fi
 
-          target/debug/fbuild sizes report base/stage-sizes.json head/stage-sizes.json > report.md
+          target/debug/fbuild sizes report base/stage-sizes.json head/stage-sizes.json \
+            --base-commit "$base" > report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
           comment=$(gh api "repos/$GH_REPO/issues/$pr/comments" --paginate \
             -q '.[] | select(.user.login == "github-actions[bot]")

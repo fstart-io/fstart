@@ -6,13 +6,16 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A newer pull-request push makes the previous run's results worthless;
-# master runs always finish so their caches stay warm.
+# A newer pull-request push makes the previous run's results worthless. A
+# started master run is never cancelled, so its caches are saved; GitHub
+# still drops a master run that is waiting when a newer push queues, and
+# that commit gets no stage sizes (the size report then says so).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions: read-all
+permissions:
+  contents: read
 
 env:
   # Size comparisons must use the same SMBIOS date on master and PRs.
@@ -62,6 +65,8 @@ jobs:
       shards: ${{ steps.list.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup
         with:
           save-cache: "true"
@@ -78,12 +83,30 @@ jobs:
           shards=$(cargo fbuild shards)
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
 
+  # The workflows, and the Nix of the boot assets. The tools come from the
+  # flake's lint shell, pinned by flake.lock like everything else Nix builds.
+  lint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Workflows
+        run: nix develop .#lint --command actionlint
+      - name: Workflow security
+        run: nix develop .#lint --command zizmor --offline .github
+      - name: Nix formatting
+        run: nix develop .#lint --command nixfmt --check flake.nix ci/boot-assets/default.nix
+
   test:
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           submodules: true
       - uses: ./.github/actions/setup
         with:
@@ -124,6 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # Intel board builds read microcode blobs from intel-microcode/
           # (see fstart-platform-intel/src/host.rs).
           submodules: true
@@ -186,6 +210,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # fbuild merges the records; sccache has its units from the boards job.
       - uses: ./.github/actions/setup
 
@@ -242,7 +268,7 @@ jobs:
   # The one status check that says whether the run passed.
   check:
     if: always()
-    needs: [boards, test, boot-assets, firmware, stage-sizes]
+    needs: [boards, lint, test, boot-assets, firmware, stage-sizes]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
