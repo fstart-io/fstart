@@ -537,8 +537,10 @@ pub fn declared_vbt_size(bytes: &[u8]) -> Option<u32> {
 mod tests {
     use super::*;
 
-    const X61_VBT: &[u8] = include_bytes!("../../../../boards/lenovo/x61/data.vbt");
-    const FOXCONN_VBT: &[u8] = include_bytes!("../../../../boards/foxconn/d41s/data.vbt");
+    /// A GM965 VBT for a single 1024x768 LVDS panel.
+    const GM965_VBT: &[u8] = include_bytes!("fixtures/gm965-1024x768.vbt");
+    /// A Pineview VBT for the same panel, with more blocks (VGA/HDMI).
+    const PINEVIEW_VBT: &[u8] = include_bytes!("fixtures/pineview-1024x768.vbt");
 
     #[test]
     fn vbt_uses_the_32bit_bdb_offset_not_the_header_size() {
@@ -592,7 +594,7 @@ mod tests {
 
     #[test]
     fn real_vbts_expose_selected_lfp_panel_metadata() {
-        for bytes in [X61_VBT, FOXCONN_VBT] {
+        for bytes in [GM965_VBT, PINEVIEW_VBT] {
             let vbt = Vbt::parse(bytes).unwrap();
             let metadata = vbt.lfp_panel_metadata().unwrap();
             assert_eq!(metadata.panel_type, 2);
@@ -609,7 +611,7 @@ mod tests {
 
     #[test]
     fn real_vbts_expose_general_definitions_crt_ddc_metadata() {
-        for bytes in [X61_VBT, FOXCONN_VBT] {
+        for bytes in [GM965_VBT, PINEVIEW_VBT] {
             let metadata = Vbt::parse(bytes)
                 .unwrap()
                 .general_definitions_metadata()
@@ -649,7 +651,7 @@ mod tests {
 
     #[test]
     fn selected_lfp_panel_slot_15_is_valid_when_pointer_tables_fit() {
-        let mut bytes = X61_VBT.to_vec();
+        let mut bytes = GM965_VBT.to_vec();
         let options_offset = {
             let vbt = Vbt::parse(&bytes).unwrap();
             let options = vbt.block(BDB_LVDS_OPTIONS).unwrap();
@@ -668,7 +670,7 @@ mod tests {
 
     #[test]
     fn lfp_fp_timing_parses_pfit_registers_from_common_gap() {
-        let mut bytes = X61_VBT.to_vec();
+        let mut bytes = GM965_VBT.to_vec();
         let (_, fp_abs_offset, _, _, _) = selected_lfp_offsets(&bytes);
         bytes[fp_abs_offset + 36..fp_abs_offset + 40].copy_from_slice(&0x61234u32.to_le_bytes());
         bytes[fp_abs_offset + 40..fp_abs_offset + 44]
@@ -682,7 +684,7 @@ mod tests {
 
     #[test]
     fn lfp_fp_timing_does_not_read_pfit_registers_from_dvo_data() {
-        let mut bytes = X61_VBT.to_vec();
+        let mut bytes = GM965_VBT.to_vec();
         let (record_abs, fp_abs, original_dvo_abs, fp_offset, _) = selected_lfp_offsets(&bytes);
         let new_dvo_offset = fp_offset + 36;
         let dtd = bytes[original_dvo_abs..original_dvo_abs + 18].to_vec();
@@ -700,7 +702,7 @@ mod tests {
 
     #[test]
     fn lfp_fp_timing_caps_common_padding_before_dvo() {
-        let mut bytes = X61_VBT.to_vec();
+        let mut bytes = GM965_VBT.to_vec();
         let (record_abs, fp_abs, _, _, _) = selected_lfp_offsets(&bytes);
 
         bytes[record_abs + 2] = 40;
@@ -714,21 +716,21 @@ mod tests {
 
     #[test]
     fn selected_lfp_backlight_uses_panel_slot() {
-        let x61 = Vbt::parse(X61_VBT).unwrap().lfp_panel_metadata().unwrap();
-        let foxconn = Vbt::parse(FOXCONN_VBT)
+        let gm965 = Vbt::parse(GM965_VBT).unwrap().lfp_panel_metadata().unwrap();
+        let pineview = Vbt::parse(PINEVIEW_VBT)
             .unwrap()
             .lfp_panel_metadata()
             .unwrap();
 
-        assert_eq!(x61.backlight.unwrap().pwm_freq_hz, 165);
-        assert_eq!(x61.backlight.unwrap().min_brightness, 0x23);
-        assert_eq!(foxconn.backlight.unwrap().pwm_freq_hz, 200);
-        assert_eq!(foxconn.backlight.unwrap().min_brightness, 0);
+        assert_eq!(gm965.backlight.unwrap().pwm_freq_hz, 165);
+        assert_eq!(gm965.backlight.unwrap().min_brightness, 0x23);
+        assert_eq!(pineview.backlight.unwrap().pwm_freq_hz, 200);
+        assert_eq!(pineview.backlight.unwrap().min_brightness, 0);
     }
 
     #[test]
     fn invalid_lfp_panel_type_is_not_selected() {
-        let mut bytes = X61_VBT.to_vec();
+        let mut bytes = GM965_VBT.to_vec();
         let options_offset = {
             let vbt = Vbt::parse(&bytes).unwrap();
             let options = vbt.block(BDB_LVDS_OPTIONS).unwrap();
