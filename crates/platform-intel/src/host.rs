@@ -3,23 +3,16 @@ extern crate std;
 use crate::facts::{BoardFacts, IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
-    plan::{BuildSelection, IntelPlan, IntelStagePlan, Span},
+    plan::{BuildSelection, HostPlan, IntelPlan, IntelStagePlan, ResolvedPlan, Span},
 };
 
 use std::{format, string::ToString, vec, vec::Vec};
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: IntelBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection: BuildSelection =
-            serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve::<B>(selection).expect("invalid Intel board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&compilation_plan(plan).expect("concrete Intel plan"))
-                .expect("serialize Intel plan")
-        );
+impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, std::string::String> {
+        compilation_plan(resolve::<B>(selection)?)
     }
 }
 

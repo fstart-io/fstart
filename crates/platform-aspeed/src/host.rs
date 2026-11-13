@@ -18,10 +18,11 @@ use fstart_image_build::{
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
 };
 use std::{
     collections::BTreeMap,
+    format,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -39,14 +40,9 @@ pub const MAIN_STACK_SIZE: u32 = 0x1_0000;
 pub const MAIN_HEAP_SIZE: u32 = 0x4_0000;
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: AspeedBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve(B::FACTS, selection).expect("invalid ASPEED board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize ASPEED plan")
-        );
+impl<B: AspeedBoardFacts> HostPlan<B> for Plan<B> {
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+        resolve(B::FACTS, selection)
     }
 }
 

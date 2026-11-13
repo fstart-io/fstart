@@ -51,7 +51,7 @@ macro_rules! entry {
         $crate::__stage::stage_bin!(main: $main);
     };
 }
-/// A die SoC board's host adapter: `Plan::<Board>::emit`. An SP3 board's
+/// A die SoC board's host adapter: the `HostPlan` adapter. An SP3 board's
 /// is [`sp3::Plan`].
 #[cfg(feature = "host")]
 pub use noncar::host::Plan;

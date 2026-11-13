@@ -17,7 +17,7 @@ use fstart_image_build::{
         RunArtifact, RunMedia, RunRecipe, UnitOutput,
     },
     linker::resolved_ram_stage,
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
 };
 use std::{
     collections::BTreeMap,
@@ -44,14 +44,9 @@ pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: SunxiBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve(B::FACTS, selection).expect("invalid sunxi board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize sunxi plan")
-        );
+impl<B: SunxiBoardFacts> HostPlan<B> for Plan<B> {
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+        resolve(B::FACTS, selection)
     }
 }
 

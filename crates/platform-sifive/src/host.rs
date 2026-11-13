@@ -36,18 +36,14 @@ const fn span(base: u64, size: u64) -> Span {
     Span { base, size }
 }
 
-/// The plan runner's entry: `Plan::<Board>::emit(selection)`.
+/// The plan runner's entry: the `HostPlan` adapter.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
-impl<B: Fu740Board> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan =
-            resolve(B::CONFIG, B::DEVICE_TREE, selection).expect("invalid FU740 image policy");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize FU740 plan")
-        );
+impl<B: Fu740Board> fstart_image_build::plan::HostPlan<B> for Plan<B> {
+    fn resolve(
+        selection: BuildSelection,
+    ) -> Result<fstart_image_build::plan::ResolvedPlan, String> {
+        resolve(B::CONFIG, B::DEVICE_TREE, selection)
     }
 }
 

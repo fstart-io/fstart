@@ -46,7 +46,7 @@ use fstart_image_build::build_plan::{
 };
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
-use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
+use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan, Span as PlanSpan};
 
 use crate::sp3::layout::{
     self, CACHE_WINDOW, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK,
@@ -75,15 +75,9 @@ pub const SMM_STACK_SIZE: u32 = 0x2000;
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
-impl<B: Sp3BoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection: BuildSelection =
-            serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve::<B>(&selection).expect("invalid SP3 board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize SP3 plan")
-        );
+impl<B: Sp3BoardFacts> HostPlan<B> for Plan<B> {
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+        resolve::<B>(&selection)
     }
 }
 

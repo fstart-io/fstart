@@ -10,7 +10,7 @@ use fstart_image_build::{
     },
     layout::EncodedLayout,
     linker::Xip,
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
 };
 use std::{
     collections::BTreeMap,
@@ -20,14 +20,9 @@ use std::{
 };
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: VirtBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve(B::MACHINE, selection).expect("invalid QEMU virt image policy");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize QEMU virt plan")
-        );
+impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+        resolve(B::MACHINE, selection)
     }
 }
 

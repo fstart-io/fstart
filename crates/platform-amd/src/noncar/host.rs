@@ -27,7 +27,7 @@ use fstart_image_build::{
         ImageOperation, ImageStep, InputFile, UnitOutput,
     },
     layout::EncodedLayout,
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
 };
 use std::{
     boxed::Box,
@@ -82,18 +82,12 @@ pub trait HostSoc: DieSoc {
 
 /// The board's plan generator: `fstart_platform_amd::Plan::<Board>::emit`.
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: Board> Plan<B>
+impl<B: Board> HostPlan<B> for Plan<B>
 where
     B::Soc: HostSoc,
 {
-    pub fn emit(selection_json: &str) {
-        let selection: BuildSelection =
-            serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve::<B>(selection).expect("invalid noncar build plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize the plan")
-        );
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+        resolve::<B>(selection)
     }
 }
 

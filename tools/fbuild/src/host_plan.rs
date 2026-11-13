@@ -3,7 +3,7 @@
 //! Every external pin must already exist in that source lock; the build then
 //! runs --locked. No manifest or lock in the source workspace is rewritten.
 use crate::profile_source::ProfileSource;
-use fstart_image_build::plan::{BuildSelection, ResolvedPlan};
+use fstart_image_build::plan::{BuildSelection, PlanEnvelope, ResolvedPlan};
 use std::{fs, path::Path, process::Command};
 
 const RUNNER: &str = "fstart-plan-runner";
@@ -83,13 +83,17 @@ pub(crate) fn load(
     let (board_name, board_path) = package(&source.package)?;
     let (platform_name, platform_path) = package(&source.platform)?;
     let quoted = |s: &str| serde_json::to_string(s).unwrap();
+    // The runner names the `HostPlan` trait, so the plan contract crate
+    // is a direct dependency of the generated manifest too.
+    let image_build_path = root.join("crates/image-build").display().to_string();
     let manifest = format!(
-        "[workspace]\n[package]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\n",
+        "[workspace]\n[package]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\nfstart-image-build = {{ path = {} }}\n",
         quoted(&board_name),
         quoted(&board_path),
         serde_json::to_string(&board.variant_features).map_err(|e| e.to_string())?,
         quoted(&platform_name),
-        quoted(&platform_path)
+        quoted(&platform_path),
+        quoted(&image_build_path)
     );
     let module = board
         .build_profile
@@ -98,7 +102,7 @@ pub(crate) fn load(
         .map(|module| format!("{module}::"))
         .unwrap_or_default();
     let main = format!(
-        "fn main() {{ platform::{module}Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n"
+        "fn main() {{ use fstart_image_build::plan::HostPlan as _; platform::{module}Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n"
     );
     for (path, contents) in [
         (runner.join("Cargo.toml"), manifest.as_str()),
@@ -186,7 +190,11 @@ pub(crate) fn load(
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("platform plan transport: {e}"))
+    let envelope: PlanEnvelope = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("platform plan transport: {e}"))?;
+    envelope
+        .into_plan()
+        .map_err(|e| format!("platform plan failed: {e}"))
 }
 
 #[cfg(test)]

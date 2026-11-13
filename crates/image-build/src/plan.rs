@@ -257,6 +257,80 @@ pub struct IntelStagePlan {
 /// A compiled platform export, not a board-authoring schema.
 pub type ResolvedPlan = crate::build_plan::BuildPlan;
 
+/// Version of the transport between fbuild's generated plan runner and
+/// a platform's host adapter. Bump it when [`BuildSelection`] or
+/// [`ResolvedPlan`] change shape incompatibly; the runner and the
+/// adapter are built from the same tree, so this catches stale cached
+/// runners rather than negotiating between releases.
+pub const PLAN_SCHEMA: u32 = 1;
+
+/// What a host adapter prints on stdout: exactly one envelope, so a
+/// platform rejection is a structured error for fbuild to surface, not
+/// a panic backtrace on stderr. Diagnostics belong on stderr.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanEnvelope {
+    pub schema: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<ResolvedPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PlanEnvelope {
+    pub fn into_plan(self) -> Result<ResolvedPlan, String> {
+        if self.schema != PLAN_SCHEMA {
+            return Err(format!(
+                "platform plan schema {} does not match fbuild's {PLAN_SCHEMA}; rebuild the plan runner",
+                self.schema
+            ));
+        }
+        match (self.plan, self.error) {
+            (Some(plan), None) => Ok(plan),
+            (None, Some(error)) => Err(error),
+            _ => Err("platform plan envelope carries neither a plan nor an error".into()),
+        }
+    }
+}
+
+/// Serialize `resolve(selection)` (or the selection's own parse error)
+/// as one [`PlanEnvelope`] JSON document.
+pub fn emit_envelope(
+    selection_json: &str,
+    resolve: impl FnOnce(BuildSelection) -> Result<ResolvedPlan, String>,
+) -> String {
+    let envelope = match serde_json::from_str::<BuildSelection>(selection_json)
+        .map_err(|e| format!("invalid build selection: {e}"))
+        .and_then(resolve)
+    {
+        Ok(plan) => PlanEnvelope {
+            schema: PLAN_SCHEMA,
+            plan: Some(plan),
+            error: None,
+        },
+        Err(error) => PlanEnvelope {
+            schema: PLAN_SCHEMA,
+            plan: None,
+            error: Some(error),
+        },
+    };
+    serde_json::to_string(&envelope).unwrap_or_else(|e| {
+        format!("{{\"schema\":{PLAN_SCHEMA},\"error\":\"serialize platform plan: {e}\"}}")
+    })
+}
+
+/// The contract fbuild's generated runner calls: a platform's
+/// `Plan<B>` implements this for its board-fact type `B`, and the
+/// generated `main` is `<Plan<B> as HostPlan<B>>::emit(argv[1])`.
+/// Implementing `resolve` is the whole obligation — selection parsing,
+/// error transport and serialization are shared.
+pub trait HostPlan<B> {
+    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String>;
+
+    fn emit(selection_json: &str) {
+        std::println!("{}", emit_envelope(selection_json, Self::resolve));
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IntelPlan {
     /// Platform-resolved mutable prefix; this transport does not know its formats.
