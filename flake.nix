@@ -50,6 +50,16 @@
               pkgs.swtpm
             ];
           };
+
+          # What CI's lint job runs.
+          lint = pkgs.mkShell {
+            nativeBuildInputs = [
+              pkgs.actionlint
+              pkgs.nixfmt
+              pkgs.shellcheck
+              pkgs.zizmor
+            ];
+          };
         }
       );
     };
