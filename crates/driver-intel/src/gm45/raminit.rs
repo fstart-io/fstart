@@ -134,10 +134,6 @@ pub fn probe_ddr3<B: SmBus + ?Sized>(
     Ok(Ddr3Channels { dimms, spd: raw })
 }
 
-fn ceil_div(a: u32, b: u32) -> u32 {
-    a / b + u32::from(!a.is_multiple_of(b))
-}
-
 /// Find the common speed and derived cycles from GM45 `raminit.c` lines
 /// 541..723. FSB is 667/800/1067 MHz; the host bridge DDR3 limit is 800 or
 /// 1067 MT/s. Neither of these inputs may be inferred from SPD alone.
@@ -188,7 +184,7 @@ pub fn select_ddr3_timing(
             continue;
         }
         let tck = 256_000 / mhz;
-        let first_cas = ceil_div(taa_min, tck).max(4);
+        let first_cas = taa_min.div_ceil(tck).max(4);
         for cas in first_cas..=18 {
             if mask & (1 << cas) == 0 || cas * tck >= 160 * 32 {
                 continue;
@@ -214,10 +210,10 @@ pub fn select_ddr3_timing(
                 clock,
                 cas: cas as u8,
                 tck_256ns: tck,
-                tras: ceil_div(tras, tck),
-                trp: ceil_div(trp, tck),
-                trcd: ceil_div(trcd, tck),
-                twr: ceil_div(twr, tck),
+                tras: tras.div_ceil(tck),
+                trp: trp.div_ceil(tck),
+                trcd: trcd.div_ceil(tck),
+                twr: twr.div_ceil(tck),
                 trfc: TRFC[index][density],
                 trd,
                 trrd: 2 + page_kib * (1 + u32::from(clock == MemClock::Mhz533)),

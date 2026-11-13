@@ -1063,29 +1063,25 @@ fn choose_tclk(
     Ok(())
 }
 
-fn div_round_up(n: u32, d: u32) -> u32 {
-    n.div_ceil(d)
-}
-
 /// Derive cycle timings (`derive_timings`).
 fn derive_timings(sys: &mut SysInfo, saved: &CommonTimings) -> Result<(), ServiceError> {
-    sys.tras = div_round_up(saved.min_tras, sys.tclk) as u8;
+    sys.tras = saved.min_tras.div_ceil(sys.tclk) as u8;
     if sys.tras > 0x18 {
         return Err(RaminitError::BadTras.into());
     }
-    sys.trp = div_round_up(saved.min_trp, sys.tclk) as u8;
+    sys.trp = saved.min_trp.div_ceil(sys.tclk) as u8;
     if sys.trp > 6 {
         return Err(RaminitError::BadTrp.into());
     }
-    sys.trcd = div_round_up(saved.min_trcd, sys.tclk) as u8;
+    sys.trcd = saved.min_trcd.div_ceil(sys.tclk) as u8;
     if sys.trcd > 6 {
         return Err(RaminitError::BadTrcd.into());
     }
-    sys.twr = div_round_up(saved.min_twr, sys.tclk) as u8;
+    sys.twr = saved.min_twr.div_ceil(sys.tclk) as u8;
     if sys.twr > 5 {
         return Err(RaminitError::BadTwr.into());
     }
-    sys.trfc = div_round_up(saved.min_trfc, sys.tclk);
+    sys.trfc = saved.min_trfc.div_ceil(sys.tclk);
 
     // tRR thresholds in 1/256 ns: 7.8us = 2000000, 15.6us = 4000000.
     if saved.max_trr < 2_000_000 {

@@ -17,10 +17,6 @@ use tock_registers::interfaces::{ReadWriteable, Readable};
 // Helpers
 // ===================================================================
 
-fn div_round_up(a: u32, b: u32) -> u32 {
-    a.div_ceil(b)
-}
-
 /// Select an advertised CAS using the shared decoder's per-CAS tCK/tAC.
 fn select_frequency_and_cas(
     si: &SysInfo,
@@ -222,16 +218,16 @@ pub fn detect_smallest_params(si: &mut SysInfo) -> Result<(), ServiceError> {
         max_trtp = max_trtp.max(((spd[38] as u32) * 1000) >> 2);
     }
 
-    si.selected_timings.tras = 24u8.min(div_round_up(max_tras, m) as u8);
-    si.selected_timings.trp = 10u8.min(div_round_up(max_trp, m) as u8);
-    si.selected_timings.trcd = 10u8.min(div_round_up(max_trcd, m) as u8);
-    si.selected_timings.twr = 15u8.min(div_round_up(max_twr, m) as u8);
+    si.selected_timings.tras = 24u8.min(max_tras.div_ceil(m) as u8);
+    si.selected_timings.trp = 10u8.min(max_trp.div_ceil(m) as u8);
+    si.selected_timings.trcd = 10u8.min(max_trcd.div_ceil(m) as u8);
+    si.selected_timings.twr = 15u8.min(max_twr.div_ceil(m) as u8);
     // tRFC must be even.
-    let trfc = ((78u32.min(div_round_up(max_trfc, m)) + 1) as u8) & 0xFE;
+    let trfc = ((78u32.min(max_trfc.div_ceil(m)) + 1) as u8) & 0xFE;
     si.selected_timings.trfc = trfc;
-    si.selected_timings.twtr = 15u8.min(div_round_up(max_twtr, m) as u8);
-    si.selected_timings.trrd = 15u8.min(div_round_up(max_trrd, m) as u8);
-    si.selected_timings.trtp = 15u8.min(div_round_up(max_trtp, m) as u8);
+    si.selected_timings.twtr = 15u8.min(max_twtr.div_ceil(m) as u8);
+    si.selected_timings.trrd = 15u8.min(max_trrd.div_ceil(m) as u8);
+    si.selected_timings.trtp = 15u8.min(max_trtp.div_ceil(m) as u8);
 
     fstart_log::info!(
         "raminit: tRAS={} tRP={} tRCD={} tWR={} tRFC={} tWTR={} tRRD={} tRTP={}",
