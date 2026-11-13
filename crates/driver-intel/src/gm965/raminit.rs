@@ -513,10 +513,6 @@ impl RaminitInfo {
     }
 }
 
-fn div_round_up(n: u32, d: u32) -> u32 {
-    n.div_ceil(d)
-}
-
 fn populated_dimms(info: &RaminitInfo) -> impl Iterator<Item = &DimmSlot> {
     info.dimms.iter().filter(|d| d.present)
 }
@@ -581,7 +577,7 @@ fn select_frequency_and_cas(
             continue;
         }
 
-        let cas_needed = div_round_up(taa_needed, tck_clock).max(3);
+        let cas_needed = taa_needed.div_ceil(tck_clock).max(3);
         for cas in cas_needed..=6 {
             if (cas_mask & (1 << cas)) != 0 {
                 info.timings.fsb_clock = fsb_clock;
@@ -616,12 +612,12 @@ fn calculate_timings(info: &mut RaminitInfo) -> Result<(), ServiceError> {
     let mut trfc = 0u32;
 
     for dimm in populated_dimms(info) {
-        tras = tras.max(div_round_up(dimm.tras_256ns, tck));
-        trp = trp.max(div_round_up(dimm.trp_256ns, tck));
-        trcd = trcd.max(div_round_up(dimm.trcd_256ns, tck));
-        twr = twr.max(div_round_up(dimm.twr_256ns, tck));
-        trrd = trrd.max(div_round_up(dimm.trrd_256ns, tck).max(2));
-        trtp = trtp.max(div_round_up(dimm.trtp_256ns, tck).max(2));
+        tras = tras.max(dimm.tras_256ns.div_ceil(tck));
+        trp = trp.max(dimm.trp_256ns.div_ceil(tck));
+        trcd = trcd.max(dimm.trcd_256ns.div_ceil(tck));
+        twr = twr.max(dimm.twr_256ns.div_ceil(tck));
+        trrd = trrd.max(dimm.trrd_256ns.div_ceil(tck).max(2));
+        trtp = trtp.max(dimm.trtp_256ns.div_ceil(tck).max(2));
 
         let width_bits = if dimm.x16 { 4 } else { 3 };
         let bank_bits = if dimm.banks == 8 { 3 } else { 2 };

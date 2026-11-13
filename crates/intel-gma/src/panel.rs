@@ -209,7 +209,7 @@ impl PanelPowerDelays {
 
     /// Encode the PP_DIVISOR power-cycle delay field.
     pub const fn encode_divisor_cycle_delay(self) -> u32 {
-        div_round_up(self.power_cycle_us, 100_000) + 1
+        self.power_cycle_us.div_ceil(100_000) + 1
     }
 
     /// Encode Broxton-style PP_CONTROL power-cycle delay bits.
@@ -508,12 +508,8 @@ const fn default_if_zero(value: u32, default: u32) -> u32 {
     if value == 0 { default } else { value }
 }
 
-const fn div_round_up(num: u32, denom: u32) -> u32 {
-    num.div_ceil(denom)
-}
-
 const fn pp_delay_100us(us: u32, shift: u32) -> u32 {
-    div_round_up(us, 100) << shift
+    us.div_ceil(100) << shift
 }
 
 #[cfg(test)]
