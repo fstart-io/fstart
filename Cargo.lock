@@ -817,6 +817,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-arch",
  "fstart-driver-amd",
+ "fstart-driver-aspeed",
  "fstart-driver-ipmi",
  "fstart-driver-superio",
  "fstart-driver-uart",
@@ -1122,6 +1123,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-core",
  "fstart-driver-amd",
+ "fstart-driver-aspeed",
  "fstart-driver-ipmi",
  "fstart-driver-superio",
  "fstart-driver-uart",
@@ -1130,6 +1132,7 @@ dependencies = [
  "fstart-platform-amd",
  "heapless 0.8.0",
  "tock-registers",
+ "ufmt",
 ]
 
 [[package]]

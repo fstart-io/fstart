@@ -56,6 +56,7 @@ fstart-log = { path = "../../../crates/log" }
 fstart-options = { path = "../../../crates/options" }
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["acpi", "rome", "milan"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rome", "milan"] }
+fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-core = { path = "../../../crates/core" }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi", features = ["acpi"] }
@@ -64,6 +65,7 @@ fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] 
 embedded-hal = { version = "1", default-features = false }
 heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
+ufmt = "0.2"
 
 # The only stage, which the PSP copies to DRAM; fbuild builds it with
 # fstart-platform-amd/bundle-stage. Board unit tests (`cargo test`) only

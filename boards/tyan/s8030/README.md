@@ -17,6 +17,23 @@ cargo fbuild assemble --board tyan-s8030 --release \
     --image-config /path/to/flash-backup.bin                # another vendor build
 ```
 
+## BMC console
+
+With onboard VGA enabled, the board initializes its AST2500 natively at
+1024×768, 60 Hz, XRGB8888 after PCI enumeration and publishes the framebuffer
+to the payload. No VGA ROM is executed. The BMC must have initialized its
+shared DRAM; the host driver does not reset the BMC or train its memory.
+Disabling the onboard VGA option skips both its PCIe link and display init.
+The serial console remains available in either case.
+
+Use `--payload uefi-ui` for CrabEFI's graphical boot manager with USB KVM
+keyboard and mouse input:
+
+```sh
+cargo fbuild assemble --board tyan-s8030 --release --payload uefi-ui \
+    --image-config /path/to/flash-backup.bin
+```
+
 ## Settings
 
 With the UEFI payload, CrabEFI's firmware settings menu (`F` in the boot
@@ -48,8 +65,9 @@ repository.
 |---|---|---|
 | Lower half | Rome: vendor EFS, directories to `0x54b000` | Rome: vendor EFS, directories to `0x50b000` |
 | Upper half | Milan: vendor EFS, directories to `0x586000` | zeros, kept |
-| Reset image (`0x220000` bytes, linked at `0x75de0000`) | `0xde0000` in each half | `0xde0000` |
-| FFS | `[0x600000, 0xde0000)`, lower half only | same |
+| Reset image (`0x300000` bytes, linked at `0x75d00000`) | `0xd00000` in each half | `0xd00000` |
+| Settings store | `[0xcc0000, 0xd00000)`, lower half only | same |
+| FFS | `[0x600000, 0xcc0000)`, lower half only | same |
 
 A Rome boot reads the FFS through ROM2; a Milan boot, from the upper half,
 through the FCH ROM3 window above 4 GiB.
