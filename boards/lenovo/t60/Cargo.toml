@@ -21,7 +21,7 @@ features = ["z61t"]
 # --no-default-features and adds `acpi` to the ramstage only.
 default = ["acpi"]
 # The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
-acpi = ["dep:fstart-acpi", "fstart-driver-lenovo/acpi", "fstart-platform-intel/acpi"]
+acpi = ["dep:fstart-acpi", "fstart-driver-lenovo/acpi"]
 r60 = []
 z61t = []
 # The SMM handler module, enabled only for the SMM image.

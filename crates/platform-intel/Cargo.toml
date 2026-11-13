@@ -7,12 +7,11 @@ publish = false
 
 [features]
 default = []
-memory-cache = []
 # `fbuild --debug` facilities (see debug_console); the plan selects them.
 # The board's EHCI debug port console.
-ehci-console = ["fstart-log?/debug-consoles"]
+ehci-console = ["fstart-log/debug-consoles"]
 # The SPI flash log in every stage.
-flash-console = ["dep:fstart-driver-flash-console", "fstart-log?/debug-consoles"]
+flash-console = ["dep:fstart-driver-flash-console", "fstart-log/debug-consoles"]
 host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
@@ -30,43 +29,23 @@ payload-coreboot = ["fstart-payload/coreboot", "dep:fstart-coreboot"]
 # Common bootstrap support must not pull heap-using mainstage services in.
 stage = [
   "dep:fstart-driver-uart",
-  "dep:fstart-log",
   "dep:fstart-stage", "fstart-stage/bootstrap",
   "dep:fstart-resume",
-  "dep:fstart-store",
   "dep:fstart-ffs",
-  "dep:fstart-arch",
-  "dep:ufmt",
   "fstart-core/pci",
 ]
-# An Intel ramstage always builds ACPI, SMBIOS and MP.
+# The DRAM mainstage: payload loading over the FFS directory, with a heap.
 ramstage = [
-  "stage", "acpi", "mp", "smbios", "dep:fstart-payload", "fstart-stage/ffs", "fstart-arch/alloc",
+  "stage", "dep:fstart-payload", "fstart-stage/ffs", "fstart-arch/alloc",
   # The option report; earlier stages resolve without allocating.
   "fstart-log/alloc",
 ]
-# The chipset's ACPI namespace (fstart_acpi::PcNamespace) for board ACPI.
-namespace = ["dep:fstart-acpi"]
-acpi = [
-  "namespace",
-  "dep:fstart-acpi",
-  "dep:fstart-store",
-  "dep:fstart-arch",
-  "dep:fstart-log",
-  "dep:ufmt",
-]
-mp = ["dep:fstart-arch", "dep:fstart-ffs", "dep:fstart-stage", "fstart-stage/ffs"]
-smbios = ["dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-arch"]
 
 [dev-dependencies]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it
 # needs the driver's ACPI builders and the DSDT table writer on the host.
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-driver-intel = { workspace = true }
-
-[[test]]
-name = "southbridge_dsdt"
-required-features = ["acpi"]
 
 [dependencies]
 sha2 = { workspace = true }
@@ -79,12 +58,12 @@ fstart-driver-usbdebug = { workspace = true }
 fstart-driver-flash-console = { workspace = true, optional = true }
 fstart-pci = { workspace = true }
 fstart-resume = { workspace = true, optional = true }
-fstart-store = { workspace = true, optional = true }
+fstart-store = { workspace = true }
 fstart-driver-intel = { workspace = true }
 fstart-driver-uart = { workspace = true, optional = true }
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
-fstart-arch = { workspace = true, optional = true, features = ["x86_64", "x86-identity-paging"] }
-fstart-log = { workspace = true, optional = true }
+fstart-acpi = { workspace = true, features = ["x86", "pci"] }
+fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
+fstart-log = { workspace = true }
 fstart-options = { workspace = true }
 fstart-driver-rtc = { workspace = true }
 fstart-timestamp = { workspace = true }
@@ -94,4 +73,4 @@ fstart-coreboot = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 heapless = { workspace = true }
 konst = { workspace = true }
-ufmt = { workspace = true, optional = true }
+ufmt = { workspace = true }

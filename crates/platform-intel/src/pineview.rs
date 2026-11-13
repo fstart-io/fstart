@@ -244,7 +244,6 @@ impl Default for PineviewIch7Config {
 pub struct PineviewIch7<C>(core::marker::PhantomData<C>);
 
 /// The Pineview/ICH7 devices boards attach to, from the names the drivers give them.
-#[cfg(feature = "namespace")]
 impl<C> fstart_acpi::PcNamespace for PineviewIch7<C> {
     const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
         fstart_driver_intel::pineview::IntelPineview,
@@ -276,19 +275,17 @@ mod stage {
     use fstart_driver_intel::pineview::IntelPineview;
 
     impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for PineviewIch7<C> {
-        #[cfg(feature = "memory-cache")]
         fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
             static WORKSPACE: crate::memory_cache::TrainingWorkspace<768> =
                 crate::memory_cache::TrainingWorkspace::new();
             WORKSPACE.take()
         }
-        #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelPineview;
         type Southbridge = IntelIch7;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         type Cpu = C::Driver;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         fn cpu_driver(
             microcode: Option<&'static [u8]>,
             _northbridge: &Self::Northbridge,

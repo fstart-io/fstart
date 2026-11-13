@@ -49,7 +49,6 @@ pub struct Dram;
 
 /// Memory-cache state carried from training to the store. The captured
 /// record itself stays in CAR, out of the moving phase state.
-#[cfg(feature = "memory-cache")]
 struct Training {
     key: Option<[u8; 32]>,
     captured: Option<&'static [u8]>,
@@ -61,7 +60,6 @@ pub struct Bootblock<B: IntelBoard, S = Early> {
     southbridge: Sb<B>,
     geometry: crate::layout::IntelBootLayout<'static>,
     boot_path: BootPath,
-    #[cfg(feature = "memory-cache")]
     training: Training,
     _state: PhantomData<(B, S)>,
 }
@@ -73,7 +71,6 @@ impl<B: IntelBoard, S> Bootblock<B, S> {
             southbridge: self.southbridge,
             geometry: self.geometry,
             boot_path: self.boot_path,
-            #[cfg(feature = "memory-cache")]
             training: self.training,
             _state: PhantomData,
         }
@@ -159,7 +156,6 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             southbridge,
             geometry,
             boot_path: BootPath::Normal,
-            #[cfg(feature = "memory-cache")]
             training: Training {
                 key: None,
                 captured: None,
@@ -243,7 +239,6 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         self.into()
     }
 
-    #[cfg(feature = "memory-cache")]
     fn dram_init(&mut self) -> Result<(), ServiceError> {
         use crate::memory_cache::{BANK_SIZE, EXTENT_SIZE, Journal, MappedRead, TrainingBuffers};
         if !B::FACTS.memory_cache {
@@ -276,11 +271,6 @@ impl<B: IntelBoard> Bootblock<B, Console> {
             None => None,
         };
         Ok(())
-    }
-
-    #[cfg(not(feature = "memory-cache"))]
-    fn dram_init(&mut self) -> Result<(), ServiceError> {
-        self.train_uncached()
     }
 
     /// Train without a cache; a resume needs one.
@@ -354,8 +344,10 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
             crate::store::bootblock(geometry, ram_end, boot_path == BootPath::S3Resume)?;
         crate::store::move_timestamps(&mut store, TIMESTAMP_CAPACITY);
         crate::memory_info::publish(&mut store, self.northbridge.memory_info().as_ref())?;
-        #[cfg(feature = "memory-cache")]
-        if let (Some(key), Some(payload)) = (self.training.key, self.training.captured) {
+        // A constant test, so boards without the cache link none of this.
+        if B::FACTS.memory_cache
+            && let (Some(key), Some(payload)) = (self.training.key, self.training.captured)
+        {
             let size = crate::memory_cache::Record::new(key, payload)?.encoded_size();
             let entry = store
                 .add(fstart_store::tag::TRAINING, size, 3)
@@ -398,8 +390,8 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
         fstart_timestamp::add(fstart_timestamp::id::VERIFY_BOOT_ROOT);
         let root = fstart_stage::root::authenticate_boot_root(&locator_bytes, &media)
             .map_err(|_| ServiceError::HardwareError)?;
-        #[cfg(feature = "memory-cache")]
-        if let Some(key) = self.training.key
+        if B::FACTS.memory_cache
+            && let Some(key) = self.training.key
             && crate::memory_cache::runtime_key::<B>(
                 &self.northbridge,
                 &self.southbridge,

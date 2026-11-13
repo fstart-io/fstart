@@ -349,7 +349,6 @@ pub struct IronlakeIbexPeakPlatform {
 /// The Arrandale/Clarkdale + 5 Series pairing.
 pub struct IronlakeIbexPeak;
 
-#[cfg(feature = "namespace")]
 impl fstart_acpi::PcNamespace for IronlakeIbexPeak {
     const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
         fstart_driver_intel::ironlake::IntelIronlake,
@@ -392,7 +391,6 @@ mod stage {
     use fstart_driver_intel::ironlake::IntelIronlake;
 
     impl IntelEarlyPlatform for IronlakeIbexPeak {
-        #[cfg(feature = "memory-cache")]
         fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
             static WORKSPACE: crate::memory_cache::TrainingWorkspace<2048> =
                 crate::memory_cache::TrainingWorkspace::new();
@@ -400,13 +398,12 @@ mod stage {
         }
         /// The OS display driver restores the screen; resume skips the
         /// modeset like coreboot (`gma_func0_init()` on S3).
-        #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelIronlake;
         type Southbridge = IntelIbexPeak;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         type Cpu = fstart_arch::x86::cpu::intel::model_2065x::Model2065xCpuDriver;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         fn cpu_driver(
             microcode: Option<&'static [u8]>,
             northbridge: &Self::Northbridge,

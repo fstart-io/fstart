@@ -17,7 +17,7 @@ build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 # --no-default-features and adds `acpi` to the ramstage only.
 default = ["acpi"]
 # The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
-acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-superio/acpi", "fstart-platform-intel/acpi"]
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-superio/acpi"]
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-intel/bundle-smm"]
 

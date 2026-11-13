@@ -251,7 +251,6 @@ impl Default for Gm965Ich8Config {
 pub struct Gm965Ich8<C>(core::marker::PhantomData<C>);
 
 /// The GM965/ICH8 devices boards attach to, from the names the drivers give them.
-#[cfg(feature = "namespace")]
 impl<C> fstart_acpi::PcNamespace for Gm965Ich8<C> {
     const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
         fstart_driver_intel::gm965::IntelGm965,
@@ -283,19 +282,17 @@ mod stage {
     use fstart_driver_intel::ich8::IntelIch8;
 
     impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for Gm965Ich8<C> {
-        #[cfg(feature = "memory-cache")]
         fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
             static WORKSPACE: crate::memory_cache::TrainingWorkspace<768> =
                 crate::memory_cache::TrainingWorkspace::new();
             WORKSPACE.take()
         }
-        #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelGm965;
         type Southbridge = IntelIch8;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         type Cpu = C::Driver;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         fn cpu_driver(
             microcode: Option<&'static [u8]>,
             _northbridge: &Self::Northbridge,

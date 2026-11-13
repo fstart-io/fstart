@@ -320,7 +320,6 @@ impl Default for I945Ich7Config {
 pub struct I945Ich7<C>(core::marker::PhantomData<C>);
 
 /// The i945/ICH7 devices boards attach to, from the names the drivers give them.
-#[cfg(feature = "namespace")]
 impl<C> fstart_acpi::PcNamespace for I945Ich7<C> {
     const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
         fstart_driver_intel::i945::IntelI945,
@@ -352,13 +351,12 @@ mod stage {
     use fstart_driver_intel::ich7::IntelIch7;
 
     impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for I945Ich7<C> {
-        #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelI945;
         type Southbridge = IntelIch7;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         type Cpu = C::Driver;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         fn cpu_driver(
             microcode: Option<&'static [u8]>,
             _northbridge: &Self::Northbridge,
