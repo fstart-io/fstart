@@ -4,12 +4,12 @@
 //! (BIOS directory entry 0x62) the PSP copies to DRAM, and the FFS with the
 //! payload, if the image has one. The PSP firmware either comes from a vendor
 //! flash image, whose prefix stays byte for byte except for the [`PspOptions`]
-//! fields, or is packed from blobs ([`super::PicassoImage`],
+//! fields, or is packed from blobs ([`super::SingleLevelImage`],
 //! [`super::levels::TwoLevelImage`]) into a native image fstart lays out
 //! completely. Paths are explicit build inputs, never
 //! discovered.
 use super::{
-    Blob, FlashRegion, Key, PicassoImage,
+    Blob, FlashRegion, Key, SingleLevelImage,
     levels::{self, Level, TwoLevelImage},
 };
 use crate::build_plan::{FfsAssembly, FileBinding};
@@ -418,7 +418,7 @@ impl AmdAssembly {
                         || files.spi_speed.is_none_or(|speed| speed > 3)
                         || files.soft_fuse.is_none()
                         || !files.fixed.is_empty()
-                        || self.bios_directory != PicassoImage::BIOS_DIRECTORY
+                        || self.bios_directory != SingleLevelImage::BIOS_DIRECTORY
                     {
                         return Err("invalid Picasso PSP image settings".into());
                     }
@@ -740,7 +740,7 @@ impl AmdAssembly {
                 });
             }
         }
-        PicassoImage {
+        SingleLevelImage {
             flash_size: files.flash_size,
             efs_offset: files.efs_offset,
             partition_end: files.partition_end,

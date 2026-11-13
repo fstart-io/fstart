@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD PSP flash images, in the format of `fstart_amdfw_format`: [`assembly`]
 //! composes a stage's image from a vendor image or packed blobs.
-//! [`PicassoImage`] packs Picasso's single-level PSP partition,
+//! [`SingleLevelImage`] packs Picasso's single-level PSP partition,
 //! [`levels::TwoLevelImage`] the two-level partitions of Zeppelin, Naples,
 //! Rome and Milan.
 //!
@@ -10,6 +10,7 @@
 //! never re-signed.
 pub mod apcb;
 pub mod assembly;
+pub mod halved_flash;
 pub mod blobs;
 pub mod config;
 pub mod levels;
@@ -73,7 +74,7 @@ pub struct FlashRegion {
 }
 
 #[derive(Debug, Clone)]
-pub struct PicassoImage {
+pub struct SingleLevelImage {
     pub flash_size: u32,
     pub efs_offset: u32,
     /// Exclusive end of the firmware partition, not necessarily the chip end.
@@ -261,7 +262,7 @@ fn validate_blobs(blobs: &[Blob], bios: bool) -> Result<()> {
     Ok(())
 }
 
-impl PicassoImage {
+impl SingleLevelImage {
     /// The EFS field Picasso's PSP takes the BIOS directory from.
     pub const BIOS_DIRECTORY: BiosDirectorySlot = BiosDirectorySlot::Family17hModel10;
 
@@ -462,7 +463,7 @@ impl PicassoImage {
             pointer.set(0);
         }
         efs.new_psp_directory.set(physical(psp_start) as u32);
-        efs.bios_directory_mut(PicassoImage::BIOS_DIRECTORY)
+        efs.bios_directory_mut(SingleLevelImage::BIOS_DIRECTORY)
             .set(physical(bios_start) as u32);
         efs.spi_read_mode = self.spi_read_mode;
         efs.spi_speed = self.spi_speed;

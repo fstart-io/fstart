@@ -22,9 +22,9 @@ pub enum Assembly {
     /// An AMD image: PSP firmware, the stage the PSP loads and an
     /// optional FFS.
     Amd(Box<crate::amd::assembly::AmdAssembly>),
-    /// An AMD SP3 flash half (and 32 MiB dual image): vendor PSP prefix,
+    /// An AMD halved flash (one or two 16 MiB halves) (and 32 MiB dual image): vendor PSP prefix,
     /// FFS and the PSP-copied stage unit.
-    Sp3Flash(Box<crate::sp3_flash::Sp3FlashAssembly>),
+    AmdHalvedFlash(Box<crate::amd::halved_flash::AmdHalvedFlashAssembly>),
     /// Compiler/check/editor support only. No image/flash/run contract supplied.
     Unassembled {
         platform: fstart_core::Platform,
@@ -35,7 +35,7 @@ impl Assembly {
         match self {
             Self::Ffs(image) => image.platform,
             Self::Amd(_) => fstart_core::Platform::X86_64,
-            Self::Sp3Flash(image) => image.ffs.platform,
+            Self::AmdHalvedFlash(image) => image.ffs.platform,
             Self::Unassembled { platform } => *platform,
         }
     }
@@ -46,7 +46,7 @@ impl Assembly {
                 .ffs
                 .as_ref()
                 .map_or(&[], |ffs| &ffs.assembly.bootstrap),
-            Self::Sp3Flash(image) => &image.ffs.bootstrap,
+            Self::AmdHalvedFlash(image) => &image.ffs.bootstrap,
             Self::Unassembled { .. } => &[],
         }
     }
@@ -56,7 +56,7 @@ impl Assembly {
             Self::Amd(image) => image.ffs.as_ref().map(|ffs| &ffs.assembly).ok_or_else(|| {
                 "PSP partition fragment has no runtime config/run/flash contract".into()
             }),
-            Self::Sp3Flash(image) => Ok(&image.ffs),
+            Self::AmdHalvedFlash(image) => Ok(&image.ffs),
             Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
         }
     }
@@ -70,7 +70,7 @@ impl Assembly {
             Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
                 ffs.assembly.resolve_workspace_inputs(root, board)
             }),
-            Self::Sp3Flash(image) => image.ffs.resolve_workspace_inputs(root, board),
+            Self::AmdHalvedFlash(image) => image.ffs.resolve_workspace_inputs(root, board),
             Self::Unassembled { .. } => Ok(()),
         }
     }
@@ -354,8 +354,8 @@ impl BuildPlan {
             {
                 Ok(())
             }
-            (Some(path), Assembly::Sp3Flash(image)) if *path == image.vendor_image => Ok(()),
-            (None, Assembly::Ffs(_) | Assembly::Sp3Flash(_) | Assembly::Unassembled { .. }) => {
+            (Some(path), Assembly::AmdHalvedFlash(image)) if *path == image.vendor_image => Ok(()),
+            (None, Assembly::Ffs(_) | Assembly::AmdHalvedFlash(_) | Assembly::Unassembled { .. }) => {
                 Ok(())
             }
             _ => Err("image configuration was not bound unchanged by the platform".into()),
@@ -522,7 +522,7 @@ impl BuildPlan {
                 return Err("PSP reset producer differs from image operation".into());
             }
         }
-        if let Assembly::Sp3Flash(image) = &self.assembly {
+        if let Assembly::AmdHalvedFlash(image) = &self.assembly {
             image.validate(self)?;
         }
         for (name, _) in self.assembly.bootstrap() {

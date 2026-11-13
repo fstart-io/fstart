@@ -72,7 +72,7 @@ pub(crate) struct Ctx<'a> {
 }
 
 /// The SP3 flash anchor patch site: FFS flash offset and size and the
-/// part size, filled by the image builder (`sp3_flash::patch_reset_image`).
+/// part size, filled by the image builder (`halved_flash::patch_reset_image`).
 #[repr(transparent)]
 struct AnchorSite(core::cell::UnsafeCell<FlashAnchor>);
 

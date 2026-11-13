@@ -6,8 +6,8 @@
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) through the shared AMD
 //! reset entry ([`reset::Layout`]), and an
-//! [`Assembly::Sp3Flash`] that `fbuild assemble` composes into the vendor
-//! ROM with [`fstart_image_build::sp3_flash`]: one vendor EFS per half,
+//! [`Assembly::AmdHalvedFlash`] that `fbuild assemble` composes into the vendor
+//! ROM with [`fstart_image_build::amd::halved_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
 //! (`--image-config` composes into another vendor ROM, e.g. the target
 //! board's flash backup).
@@ -44,8 +44,8 @@ use fstart_image_build::build_plan::{
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::sp3_flash::{
-    FlashPlan, NvramSlot, PackedHalf, ResetSlot, Sp3FlashAssembly, Survey,
+use fstart_image_build::amd::halved_flash::{
+    FlashPlan, NvramSlot, PackedHalf, ResetSlot, AmdHalvedFlashAssembly, Survey,
 };
 
 use crate::sp3::layout::{
@@ -433,7 +433,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         payload: payload.name().into(),
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],
-        assembly: Assembly::Sp3Flash(Box::new(Sp3FlashAssembly {
+        assembly: Assembly::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
             ffs: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
             vendor_image,
             packed,
@@ -547,7 +547,7 @@ pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_image_build::sp3_flash::{self, FlashHalf, HalfAction};
+    use fstart_image_build::amd::halved_flash::{self, FlashHalf, HalfAction};
 
     struct S8030;
     impl Sp3BoardFacts for S8030 {
@@ -557,8 +557,8 @@ mod tests {
         const MAX_CPUS: u16 = 256;
     }
 
-    fn sp3(plan: &BuildPlan) -> &Sp3FlashAssembly {
-        let Assembly::Sp3Flash(image) = &plan.assembly else {
+    fn sp3(plan: &BuildPlan) -> &AmdHalvedFlashAssembly {
+        let Assembly::AmdHalvedFlash(image) = &plan.assembly else {
             panic!("not an SP3 flash assembly")
         };
         image
@@ -640,7 +640,7 @@ mod tests {
                 .iter()
                 .map(|h| h.generation)
                 .collect::<std::vec::Vec<_>>(),
-            [sp3_flash::ROME, sp3_flash::MILAN]
+            [halved_flash::ROME, halved_flash::MILAN]
         );
         assert_eq!(
             image.packed[1].files.bios[0].path.rsplit('/').next(),
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(
             image.compose,
             FlashPlan {
-                generations: vec![sp3_flash::ROME, sp3_flash::MILAN],
+                generations: vec![halved_flash::ROME, halved_flash::MILAN],
                 reset: ResetSlot {
                     flash_offset: 0xd0_0000,
                     size: 0x30_0000,
@@ -825,8 +825,8 @@ mod tests {
         assert_eq!(
             composed,
             [
-                (FlashHalf::Lower, sp3_flash::ROME),
-                (FlashHalf::Upper, sp3_flash::MILAN)
+                (FlashHalf::Lower, halved_flash::ROME),
+                (FlashHalf::Upper, halved_flash::MILAN)
             ]
         );
         struct Naples;

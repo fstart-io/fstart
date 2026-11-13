@@ -111,8 +111,8 @@ pub fn assemble(
         );
     }
     let config = resolved.assembler_config(&manifest.board)?;
-    let sp3_flash = match &resolved.build.plan.assembly {
-        fstart_image_build::build_plan::Assembly::Sp3Flash(image) => Some(image.clone()),
+    let halved_flash = match &resolved.build.plan.assembly {
+        fstart_image_build::build_plan::Assembly::AmdHalvedFlash(image) => Some(image.clone()),
         _ => None,
     };
     let parsed = ParsedBoard {
@@ -130,8 +130,8 @@ pub fn assemble(
         fit,
         options,
     )?;
-    if let Some(image) = sp3_flash {
-        return compose_sp3_flash(&workspace_root, &image, &assembled);
+    if let Some(image) = halved_flash {
+        return compose_halved_flash(&workspace_root, &image, &assembled);
     }
     match amd {
         Some(image) => crate::amd_image::compose(
@@ -149,32 +149,32 @@ pub fn assemble(
     }
 }
 
-/// Compose the assembled FFS and the stage unit into the SP3 vendor ROM
-/// (`fstart_image_build::sp3_flash`); relative vendor paths are
+/// Compose the assembled FFS and the stage unit into the AMD vendor ROM
+/// (`fstart_image_build::amd::halved_flash`); relative vendor paths are
 /// workspace-relative (`--image-config` replaces the board's vendor ROM).
 /// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
 /// dual-half vendor ROM, the full readout for a board with bank mirrors,
 /// then also `<board>.bank.rom`).
-fn compose_sp3_flash(
+fn compose_halved_flash(
     workspace_root: &std::path::Path,
-    image: &fstart_image_build::sp3_flash::Sp3FlashAssembly,
+    image: &fstart_image_build::amd::halved_flash::AmdHalvedFlashAssembly,
     assembled: &crate::assemble::AssembledImage,
 ) -> Result<std::path::PathBuf, String> {
-    use fstart_image_build::sp3_flash::{HALF_SIZE, HalfAction, name};
+    use fstart_image_build::amd::halved_flash::{HALF_SIZE, HalfAction, name};
     let read = |path: &std::path::Path| {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
     };
     let plan = &image.compose;
     let vendor_path = workspace_root.join(&image.vendor_image);
     let vendor = if image.packed.is_empty() {
-        eprintln!("[fstart] SP3 vendor ROM {}", vendor_path.display());
+        eprintln!("[fstart] AMD vendor ROM {}", vendor_path.display());
         read(&vendor_path)?
     } else {
         let read = |path: &str| read(std::path::Path::new(path));
-        let rom = fstart_image_build::sp3_flash::packed_rom(&image.packed, plan, &read)?;
+        let rom = fstart_image_build::amd::halved_flash::packed_rom(&image.packed, plan, &read)?;
         for half in &image.packed {
             eprintln!(
-                "[fstart] SP3 {} PSP firmware packed from its files",
+                "[fstart] AMD {} PSP firmware packed from its files",
                 name(half.generation)
             );
         }
@@ -185,24 +185,24 @@ fn compose_sp3_flash(
         .stages
         .iter()
         .find(|stage| stage.name == image.stage_unit)
-        .ok_or("SP3 stage unit was not built")?;
+        .ok_or("AMD reset stage unit was not built")?;
     let flash =
-        fstart_image_build::sp3_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
+        fstart_image_build::amd::halved_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
     if !flash.patched.locator || !flash.patched.flash {
         eprintln!(
-            "[fstart] warning: the SP3 stage unit links no FFS locator or flash anchor; it cannot read its FFS"
+            "[fstart] warning: the AMD reset stage unit links no FFS locator or flash anchor; it cannot read its FFS"
         );
     }
     let survey = &flash.survey;
     for (half, action) in &survey.halves {
         match action {
             HalfAction::Compose(layout) => eprintln!(
-                "[fstart] SP3 {half:?} half ({}): EFS and directories to {:#x}",
+                "[fstart] AMD {half:?} half ({}): EFS and directories to {:#x}",
                 name(layout.generation),
                 layout.prefix_end,
             ),
             HalfAction::Keep(generation) => eprintln!(
-                "[fstart] warning: SP3 {half:?} half kept from {} ({}: not supported by the board)",
+                "[fstart] warning: AMD {half:?} half kept from {} ({}: not supported by the board)",
                 vendor_path.display(),
                 generation.map_or("no EFS", name),
             ),
@@ -222,13 +222,13 @@ fn compose_sp3_flash(
         std::fs::write(&bank, &flash.image[..HALF_SIZE])
             .map_err(|e| format!("{}: {e}", bank.display()))?;
         eprintln!(
-            "[fstart] SP3 boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
+            "[fstart] AMD boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
             plan.mirrors,
             bank.display()
         );
     }
     eprintln!(
-        "[fstart] SP3 image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
+        "[fstart] AMD halved flash image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
         out.display(),
         flash.image.len() >> 20,
         ffs.len(),
