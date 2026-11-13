@@ -66,7 +66,9 @@ pub const PC87392_FDC_LDN: u8 = 0x00;
 /// PC87392 watchdog logical-device number from coreboot's `pc87392.h`.
 pub const PC87392_WDT_LDN: u8 = 0x0a;
 
+use fstart_core::pio::PioRegister;
 use fstart_core::services::device::DeviceError;
+use tock_registers::RegisterLongName;
 use tock_registers::interfaces::Writeable;
 
 /// Complete GPIO mode images used by the reference LPC dock configuration.
@@ -114,14 +116,11 @@ tock_registers::register_bitfields![u8,
     GPIO_INTERRUPT [SMI OFFSET(1) NUMBITS(1) []]
 ];
 
-fn validate_gpio(base: u16, pins: &[GpioPinConfig]) -> Result<(), DeviceError> {
-    if base < 0x100
-        || base & 15 != 0
-        || pins.iter().enumerate().any(|(i, p)| {
-            !matches!(p.pin, 0..=7 | 10..=17 | 20..=27 | 30..=37)
-                || pins.iter().take(i).any(|other| other.pin == p.pin)
-        })
-    {
+fn validate_gpio_pins(pins: &[GpioPinConfig]) -> Result<(), DeviceError> {
+    if pins.iter().enumerate().any(|(i, p)| {
+        !matches!(p.pin, 0..=7 | 10..=17 | 20..=27 | 30..=37)
+            || pins.iter().take(i).any(|other| other.pin == p.pin)
+    }) {
         return Err(DeviceError::ConfigError);
     }
     Ok(())
@@ -156,13 +155,12 @@ impl SuperIo<Pc87392Chip> {
             .write(INTERRUPT_ROUTING::IMAGE.val(mux.register28));
     }
 
-    /// Program board-selected pin modes before activating the GPIO window.
-    /// The caller owns LPC decode, pin wiring and reset/power sequencing.
-    pub fn enable_gpio(&self, base: u16, pins: &[GpioPinConfig]) -> Result<(), DeviceError> {
-        validate_gpio(base, pins)?;
-        if base <= self.idx_port().saturating_add(1) && self.idx_port() <= base + 15 {
-            return Err(DeviceError::ConfigError);
-        }
+    /// Program board-selected pin modes before activating the GPIO window,
+    /// and return its runtime registers. The caller owns LPC decode, pin
+    /// wiring and reset/power sequencing.
+    pub fn enable_gpio(&self, base: u16, pins: &[GpioPinConfig]) -> Result<Gpio, DeviceError> {
+        validate_gpio_pins(pins)?;
+        let runtime = self.gpio(base)?;
         let mut gpio = self.logical_device(7);
         gpio.set_io_base(crate::IoResource::Primary(base));
         for pin in pins {
@@ -174,11 +172,57 @@ impl SuperIo<Pc87392Chip> {
                 .write(GPIO_INTERRUPT::SMI.val(u8::from(pin.smi)));
         }
         gpio.set_enabled(true);
-        Ok(())
+        Ok(runtime)
+    }
+
+    /// Bind the GPIO runtime registers without I/O. The caller must ensure
+    /// the GPIO LDN is active at `base` before accessing the registers.
+    pub fn gpio(&self, base: u16) -> Result<Gpio, DeviceError> {
+        if base < 0x100
+            || base & 15 != 0
+            || (base <= self.idx_port().saturating_add(1) && self.idx_port() <= base + 15)
+        {
+            return Err(DeviceError::ConfigError);
+        }
+        Ok(Gpio { base })
     }
 
     pub fn disable_watchdog(&self) {
         self.logical_device(PC87392_WDT_LDN).set_enabled(false);
+    }
+}
+
+/// GPIO runtime registers used by coreboot's X61 dock code. The caller
+/// selects the bitfields for its board wiring and serializes register access.
+#[derive(Debug, Clone, Copy)]
+pub struct Gpio {
+    base: u16,
+}
+
+impl Gpio {
+    /// Port 0 data input, +0x01 (8-bit).
+    pub const fn port0_data_in<R: RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base + 0x01)
+    }
+
+    /// Port 0 event enable, +0x02 (8-bit).
+    pub const fn port0_event_enable<R: RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base + 0x02)
+    }
+
+    /// Port 0 event status, +0x03 (8-bit).
+    pub const fn port0_event_status<R: RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base + 0x03)
+    }
+
+    /// Port 1 data output, +0x04 (8-bit).
+    pub const fn port1_data_out<R: RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base + 0x04)
+    }
+
+    /// Port 2 data output, +0x08 (8-bit).
+    pub const fn port2_data_out<R: RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base + 0x08)
     }
 }
 
@@ -192,9 +236,29 @@ mod tests {
             mode: GpioMode::InputPullUp,
             smi: false,
         };
-        assert!(validate_gpio(0x1620, &[pin]).is_ok());
-        assert!(validate_gpio(0x1621, &[pin]).is_err());
-        assert!(validate_gpio(0x1620, &[pin, pin]).is_err());
-        assert!(validate_gpio(0x1620, &[GpioPinConfig { pin: 8, ..pin }]).is_err());
+        assert!(validate_gpio_pins(&[pin]).is_ok());
+        let dock = Pc87392::new_at_base(SuperIoConfig::default(), 0x2e).unwrap();
+        assert!(dock.enable_gpio(0x1621, &[pin]).is_err());
+        assert!(dock.enable_gpio(0x1620, &[pin, pin]).is_err());
+        assert!(
+            dock.enable_gpio(0x1620, &[GpioPinConfig { pin: 8, ..pin }])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_registers_follow_the_port_layout() {
+        let dock = Pc87392::new_at_base(SuperIoConfig::default(), 0x2e).unwrap();
+        let gpio = dock.gpio(0x1620).unwrap();
+        assert_eq!(gpio.port0_data_in::<()>().port(), 0x1621);
+        assert_eq!(gpio.port0_event_enable::<()>().port(), 0x1622);
+        assert_eq!(gpio.port0_event_status::<()>().port(), 0x1623);
+        assert_eq!(gpio.port1_data_out::<()>().port(), 0x1624);
+        assert_eq!(gpio.port2_data_out::<()>().port(), 0x1628);
+        assert!(dock.gpio(0x1621).is_err());
+        assert!(dock.gpio(0x20).is_err());
+        assert!(dock.gpio(u16::MAX).is_err());
+        let overlapping = Pc87392::new_at_base(SuperIoConfig::default(), 0x162e).unwrap();
+        assert!(overlapping.gpio(0x1620).is_err());
     }
 }
