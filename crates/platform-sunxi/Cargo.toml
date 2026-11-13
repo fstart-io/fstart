@@ -29,7 +29,7 @@ aarch64 = [
   "fstart-stage?/aarch64",
 ]
 riscv64 = [
-  "fstart-arch?/riscv64",
+  "fstart-arch?/riscv64", "fstart-arch?/platform-entry",
   "fstart-stage?/riscv64",
 ]
 a20 = []
@@ -65,11 +65,11 @@ bundle-h5-main = [
 ]
 bundle-d1-bootblock = [
   "stage", "d1", "riscv64",
-  "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry",
+  "fstart-stage?/riscv64",
 ]
 bundle-d1-main = [
   "stage", "d1", "riscv64",
-  "fstart-stage?/riscv64", "fstart-stage?/riscv64-sunxi-entry",
+  "fstart-stage?/riscv64",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
   "fstart-stage?/fdt",

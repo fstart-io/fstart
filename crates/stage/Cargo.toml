@@ -15,7 +15,6 @@ armv5te = ["fstart-arch/armv5te"]
 aarch64 = ["fstart-arch/aarch64"]
 aarch64-el2-relocate-entry = ["fstart-arch/aarch64-el2-relocate-entry"]
 platform-entry = ["fstart-arch/platform-entry"]
-riscv64-sunxi-entry = ["fstart-arch/riscv64-sunxi-entry"]
 riscv64 = ["fstart-arch/riscv64"]
 x86_64 = ["fstart-arch/x86_64"]
 
