@@ -23,9 +23,6 @@
 //!   then calls [`crate::fch::Fch::acpi_ports`].
 //! - ReadyToBoot: [`sata::late`] of die 0 if it was enumerated,
 //!   [`multi::late`], [`late_init`].
-pub mod die_sata;
-pub mod die_usb;
-pub mod die_xgbe;
 mod init;
 pub mod irq;
 pub mod multi;

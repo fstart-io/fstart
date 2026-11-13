@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use fstart_driver_amd::fch::hw::FchHw;
 
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
@@ -307,7 +308,10 @@ pub fn fch_reset(
     fch::spi::reset(fch, generation, &fch::spi::SpiPolicy::default());
     reset::hw_acpi(fch, generation);
     match generation {
-        Silicon::Zp => fstart_driver_amd::fch::taishan::die_sata::reset(fch, true),
+        Silicon::Zp => fstart_driver_amd::fch::taishan::sata::reset(
+            &fch.smn(),
+            &mut fstart_core::services::TimerDelay(fch.timer()),
+        ),
         Silicon::Ssp | Silicon::Gn => {
             fstart_driver_amd::fch::huashan::sata::reset(fch, generation, &policy.sata[0])
         }

@@ -159,6 +159,25 @@ pub fn xgbe_init(smn: &Smn<impl ConfigRegionAccess>) {
     }
 }
 
+/// Hide xGbE ports `ports` (bit n = port n): clear their NBIF strap, all
+/// a secondary die's env does (FchMultiFchDxe).
+pub fn xgbe_hide(smn: &Smn<impl ConfigRegionAccess>, ports: u8) {
+    (0..4)
+        .filter(|port| ports & (1 << port) != 0)
+        .for_each(|port| strap_off(smn, nbif_xgbe_strap(port)));
+}
+
+/// af49's disable path: hide `ports`, then switch them off.
+pub fn xgbe_disable(smn: &Smn<impl ConfigRegionAccess>, ports: u8) {
+    xgbe_hide(smn, ports);
+    (0..4)
+        .filter(|port| ports & (1 << port) != 0)
+        .for_each(|port| {
+            smn.reg(xgbe_port_control(port))
+                .modify(XgbePort::DISABLE::SET)
+        });
+}
+
 fn devices(devices: &[Devices], die: u8) -> Devices {
     devices.get(usize::from(die)).copied().unwrap_or(Devices {
         xhci: false,

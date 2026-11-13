@@ -643,7 +643,10 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
                 .install(mp, IMAGE, flow.tseg.base, flow.tseg.size as u32)
                 .map_err(|_| "SMM install")?;
             super::smm::prepare_psp_smi(&soc.fch);
-            fstart_driver_amd::fch::hw::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+            fstart_driver_amd::fch::hw::smi::software_smi(
+                soc.fch.io(),
+                super::smm::sw::PSP_SMM_INFO,
+            );
             state.smm = Some(config);
             state.soc.smm_installed = true;
         }

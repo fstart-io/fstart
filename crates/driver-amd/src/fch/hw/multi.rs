@@ -92,7 +92,7 @@ pub struct NaplesDie {
     /// ALTMMIO base if the caller relocates (donor path); `None` uses the
     /// SMN view that `hw.acpi()` already is.
     pub alt_mmio: Option<u32>,
-    pub usb: crate::fch::taishan::die_usb::DieUsb,
+    pub usb: crate::fch::taishan::usb::DieUsb,
     pub sata: bool,
 }
 
@@ -102,7 +102,7 @@ impl NaplesDie {
         Self {
             die,
             alt_mmio: None,
-            usb: crate::fch::taishan::die_usb::DieUsb::default_for(die),
+            usb: crate::fch::taishan::usb::DieUsb::default_for(die),
             sata: die == 2,
         }
     }
@@ -126,16 +126,25 @@ pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
     acpi.write8(acpimmio::IOMUX + 2, 1);
     crate::window::apply(acpi, super::tables::CLOCK_GEN_NAPLES_SECONDARY);
     sd_off(acpi);
-    crate::fch::taishan::die_usb::reset(hw, policy.usb, resume);
-    crate::fch::taishan::die_sata::reset(hw, policy.sata);
+    let smn = hw.smn();
+    let delay = &mut fstart_core::services::TimerDelay(hw.timer());
+    // S3 resume is not supported: the cold path.
+    let _ = resume;
+    let package = crate::cpu::Package::Sp3;
+    crate::fch::taishan::usb::reset(&smn, policy.die, policy.usb, package, delay);
+    if policy.sata {
+        crate::fch::taishan::sata::reset(&smn, delay);
+    } else {
+        crate::fch::taishan::sata::hold(&smn);
+    }
 }
 
 /// FchMultiFchDxe for one Naples die: a die without SATA hides its SATA
 /// and xGbE functions.
 pub fn naples_die_env<H: FchHw>(hw: &H, sata: bool) {
-    crate::fch::taishan::die_sata::env(hw, sata);
     if !sata {
-        crate::fch::taishan::die_xgbe::hide(hw, 0xF);
+        crate::fch::taishan::sata::hide(&hw.smn());
+        crate::fch::taishan::multi::xgbe_hide(&hw.smn(), 0xF);
     }
 }
 

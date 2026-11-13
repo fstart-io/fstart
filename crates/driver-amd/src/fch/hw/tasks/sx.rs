@@ -157,7 +157,10 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
         Silicon::Zp => {
             if slp_typ == 3 {
                 usb_dies.iter().try_for_each(|&bus| {
-                    crate::fch::taishan::die_usb::sx_handshake(hw, bus)
+                    // SAFETY: SMM owns the SMN pair while it runs.
+                    let smn = unsafe { crate::smn::Smn::on_bus(hw.pci().clone(), bus) };
+                    let delay = &mut fstart_core::services::TimerDelay(hw.timer());
+                    crate::fch::taishan::usb::sx_handshake(&smn, delay)
                         .then_some(())
                         .ok_or(SxError::UsbHandshake)
                 })?;
