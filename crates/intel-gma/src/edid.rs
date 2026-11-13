@@ -326,7 +326,7 @@ fn descriptor(raw: &[u8; EDID_BLOCK_LEN], index: usize) -> &[u8] {
 }
 
 fn checksum(raw: &[u8; EDID_BLOCK_LEN]) -> u8 {
-    raw.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+    fstart_core::checksum::sum8(raw)
 }
 
 fn detailed_timing_present(dtd: &[u8]) -> bool {

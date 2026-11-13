@@ -236,10 +236,6 @@ fn exact_size(bytes: &[u8], expected: usize) -> Result<(), ImageError> {
     }
 }
 
-const fn align_up(v: usize, a: usize) -> usize {
-    v.div_ceil(a) * a
-}
-
 /// A parsed vendor half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VendorLayout {
@@ -566,7 +562,7 @@ impl FlashPlan {
         if composed.len() == 2 && composed[0] == composed[1] {
             return Err(ImageError::Layout("both halves carry the same generation"));
         }
-        let start = (self.ffs_offset as usize).max(align_up(lower.prefix_end, 0x1000));
+        let start = (self.ffs_offset as usize).max(lower.prefix_end.next_multiple_of(0x1000));
         let limit = self.ffs_limit() as usize;
         if start >= limit {
             return Err(ImageError::PrefixOverlap {

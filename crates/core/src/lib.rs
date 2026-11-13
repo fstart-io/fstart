@@ -12,6 +12,7 @@ pub mod acpi;
 pub mod board;
 #[cfg(feature = "host")]
 pub mod builder;
+pub mod checksum;
 pub mod const_vec;
 pub mod description;
 pub mod device;

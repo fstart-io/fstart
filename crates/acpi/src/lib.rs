@@ -696,12 +696,6 @@ pub const OEM_TABLE_ID: [u8; 8] = *b"FSTARTFW";
 /// OEM revision for fstart ACPI tables.
 pub const OEM_REVISION: u32 = 1;
 
-/// Align a value up to the given power-of-two alignment.
-#[inline]
-pub const fn align_up(value: usize, align: usize) -> usize {
-    (value + align - 1) & !(align - 1)
-}
-
 /// Write a `#[repr(C, packed)]` struct into an [`Sdt`] at the given byte
 /// offset.
 ///
