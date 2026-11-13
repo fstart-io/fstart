@@ -150,7 +150,7 @@ fn flush_cache(start: u32, size: u32) {
     for addr in (start..end).step_by(64) {
         // SAFETY: the tested range is mapped; CLFLUSH only evicts lines.
         unsafe {
-            core::arch::asm!("clflush [{}]", in(reg) addr as usize, options(nostack, preserves_flags));
+            fstart_arch::x86::flush_cache_line(addr as *const u8);
         }
     }
 }

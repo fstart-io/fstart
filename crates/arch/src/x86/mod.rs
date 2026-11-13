@@ -349,6 +349,23 @@ pub fn physical_address_limit() -> u64 {
     physical_address_mask().saturating_add(0x1000)
 }
 
+/// Flush the cache line containing `addr` (CLFLUSH; no fence — callers
+/// that publish the range to another CPU want `writeback_cache_range`).
+///
+/// # Safety
+/// `addr` must be readable; CLFLUSH accepts any byte address in the line.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub unsafe fn flush_cache_line(addr: *const u8) {
+    // SAFETY: firmware runs at CPL0; contract above.
+    unsafe {
+        core::arch::asm!(
+            "clflush [{addr}]",
+            addr = in(reg) addr,
+            options(nostack, preserves_flags)
+        )
+    };
+}
+
 /// Write every cache line intersecting `addr..addr + len` back to memory.
 ///
 /// APs leave INIT with normal caching disabled, so startup code and page tables
