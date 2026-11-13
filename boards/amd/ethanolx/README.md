@@ -45,7 +45,10 @@ readbacks. The board declares that mirror (`FLASH_MIRRORS`), so with the
 
 With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
 The bank layout: vendor EFS and directories to `0x893000`, FFS from
-`0x893000`, reset image at `0xde0000`.
+`0x893000`, settings store at `0xcc0000`, 3 MiB reset image at `0xd00000`.
+This larger reset-image budget accommodates the current graphical CrabEFI.
+The settings store moved from `0xda0000`; a newly assembled image starts
+with an empty store rather than migrating old settings.
 
 There is no on-flash vendor fallback after an update: both banks hold the
 new image. Keep verified external readouts for recovery, verify the

@@ -16,7 +16,7 @@ varstore = ["dep:crabefi-efi-types"]
 
 [dependencies.crabefi-efi-types]
 git = "https://github.com/ArthurHeymans/CrabEFI.git"
-rev = "1eccb286ffd0677c5f3c0f0bf50939db47caf224"
+rev = "2502c0c65935cf0ae967de62e0d893a9382ca9ed"
 optional = true
 
 # The tests use the report.
