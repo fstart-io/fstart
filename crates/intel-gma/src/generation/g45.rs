@@ -594,21 +594,18 @@ fn vga_disable_legacy_decode() {
     const VGA_MISC_COLOR_IO: u8 = 1 << 0;
     const VGA_MISC_MEMORY_ACCESS: u8 = 1 << 1;
 
-    let sequencer: u8;
-    let misc: u8;
     // SAFETY: these are the architectural legacy VGA I/O registers. Blank the
     // sequencer, disable VGA memory decode and select monochrome I/O decode
     // before disabling the MMIO VGA plane, following Linux's Gen3 teardown.
     unsafe {
-        core::arch::asm!("out dx, al", in("dx") VGA_SEQ_INDEX, in("al") VGA_SEQ_CLOCKING_MODE);
-        core::arch::asm!("in al, dx", in("dx") VGA_SEQ_DATA, out("al") sequencer);
-        core::arch::asm!("out dx, al", in("dx") VGA_SEQ_INDEX, in("al") VGA_SEQ_CLOCKING_MODE);
-        core::arch::asm!("out dx, al", in("dx") VGA_SEQ_DATA, in("al") sequencer | VGA_SEQ_SCREEN_OFF);
-        core::arch::asm!("in al, dx", in("dx") VGA_MISC_READ, out("al") misc);
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") VGA_MISC_WRITE,
-            in("al") misc & !(VGA_MISC_COLOR_IO | VGA_MISC_MEMORY_ACCESS)
+        fstart_core::pio::outb(VGA_SEQ_INDEX, VGA_SEQ_CLOCKING_MODE);
+        let sequencer = fstart_core::pio::inb(VGA_SEQ_DATA);
+        fstart_core::pio::outb(VGA_SEQ_INDEX, VGA_SEQ_CLOCKING_MODE);
+        fstart_core::pio::outb(VGA_SEQ_DATA, sequencer | VGA_SEQ_SCREEN_OFF);
+        let misc = fstart_core::pio::inb(VGA_MISC_READ);
+        fstart_core::pio::outb(
+            VGA_MISC_WRITE,
+            misc & !(VGA_MISC_COLOR_IO | VGA_MISC_MEMORY_ACCESS),
         );
     }
 }
