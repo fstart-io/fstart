@@ -286,9 +286,8 @@ fn calibrate_hw_pll(si: &mut SysInfo, mch: &MchBar) {
     mch.setbits32(mchbar::CSHRPDCTL, 1 << 7);
 
     // Wait until calibration is done.
-    while mch.read8(mchbar::CSHRPDCTL) & (1 << 2) == 0 {
-        core::hint::spin_loop();
-    }
+    // Bounded at 1 s: on timeout, programming proceeds as it does once the bit sets.
+    let _ = fstart_arch::wait_us(1_000_000, || mch.read8(mchbar::CSHRPDCTL) & (1 << 2) != 0);
 
     // Check if calibration failed.
     if mch.read8(mchbar::CSHRPDCTL) & (1 << 3) != 0 {
@@ -590,9 +589,7 @@ pub fn rcomp(si: &SysInfo, mch: &MchBar) -> Result<(), ServiceError> {
     // Start RCOMP and wait.
     if mch.read32(mchbar::COMPCTRL1) & (1 << 30) == 0 {
         mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
-        while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
-            core::hint::spin_loop();
-        }
+        let _ = fstart_arch::wait_us(1_000_000, || mch.read8(mchbar::COMPCTRL1) & 1 == 0);
 
         // Read back RCOMP results and program slew base + LUTs.
         let xcomp = LocalRegisterCopy::<u32, rcomp_regs::XCOMP_REG::Register>::new(
@@ -824,9 +821,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
     for _ in 0..3 {
         mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
         HPET.delay_us(1000);
-        while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
-            core::hint::spin_loop();
-        }
+        let _ = fstart_arch::wait_us(1_000_000, || mch.read8(mchbar::COMPCTRL1) & 1 == 0);
         ok |= check_rcomp_override(mch);
     }
 
@@ -838,9 +833,7 @@ pub fn rcomp_update(_si: &SysInfo, mch: &MchBar) {
 
     mch.setbits32(mchbar::COMPCTRL1, 1 << 0);
     HPET.delay_us(1000);
-    while mch.read8(mchbar::COMPCTRL1) & 1 != 0 {
-        core::hint::spin_loop();
-    }
+    let _ = fstart_arch::wait_us(1_000_000, || mch.read8(mchbar::COMPCTRL1) & 1 == 0);
 
     fstart_log::info!("raminit: RCOMP update done");
 }
@@ -1869,9 +1862,7 @@ pub fn sdram_periodic_rcomp(si: &SysInfo, mch: &MchBar) {
     if si.boot_path != crate::BootPath::WarmReset {
         let v = mch.read8(mchbar::COMPCTRL1);
         mch.write8(mchbar::COMPCTRL1, v & !(1 << 1));
-        while mch.read32(mchbar::COMPCTRL1) & (1 << 31) != 0 {
-            core::hint::spin_loop();
-        }
+        let _ = fstart_arch::wait_us(1_000_000, || mch.read32(mchbar::COMPCTRL1) & (1 << 31) == 0);
 
         let v = mch.read16(mchbar::CSHRMISCCTL);
         mch.write16(mchbar::CSHRMISCCTL, v & !(3 << 12));

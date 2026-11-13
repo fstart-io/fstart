@@ -197,7 +197,13 @@ impl H3Ccu {
         // 4. Enable PLL6 (PERIPH0) at 600 MHz and wait for lock.
         //    Only after lock is it safe to select PLL6 as AHB1 source.
         self.ccu.pll6_cfg.set(PLL6_DEFAULT);
-        while (self.ccu.pll6_cfg.get() & PLL6_LOCK_BIT) == 0 {
+        // Bounded like the DRAMC polls in this crate: if PLL6 never
+        // locks, proceed as the code below does once lock sets, rather
+        // than hang before any console exists.
+        for _ in 0..1_000_000 {
+            if (self.ccu.pll6_cfg.get() & PLL6_LOCK_BIT) != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 

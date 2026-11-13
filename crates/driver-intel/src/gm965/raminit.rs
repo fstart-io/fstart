@@ -831,9 +831,12 @@ fn me_pll_handshake(d3bar: usize) {
         let mut v = core::ptr::read_volatile(h_csr);
         v = (v & !ME_CSR_RDY) | ME_CSR_RST | ME_CSR_IG;
         core::ptr::write_volatile(h_csr, v);
-        while (core::ptr::read_volatile(me_csr) & ME_CSR_RDY) == 0 {
-            core::hint::spin_loop();
-        }
+        // Bounded at 1 s like the other ME/HECI waits in this driver: a
+        // stuck ME must not hang raminit. On timeout the handshake below
+        // proceeds exactly as it does once ME_CSR_RDY sets.
+        let _ = fstart_arch::wait_us(1_000_000, || {
+            (core::ptr::read_volatile(me_csr) & ME_CSR_RDY) != 0
+        });
         v = core::ptr::read_volatile(h_csr);
         if (v & ME_CSR_RDY) == 0 {
             core::ptr::write_volatile(h_csr, (v & !ME_CSR_RST) | ME_CSR_RDY | ME_CSR_IG);
