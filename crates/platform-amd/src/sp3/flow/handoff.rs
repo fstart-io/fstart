@@ -26,7 +26,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
     use fstart_driver_amd::sp3::fch::smi;
     use fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id;
 
-    let numa_plan = S::numa(&ctx.soc, si);
+    let numa_plan = S::numa(ctx.soc, si);
     // Naples has no CPPC through the SMU.
     #[cfg(any(feature = "rome", feature = "milan"))]
     let cppc: Vec<_> = ctx

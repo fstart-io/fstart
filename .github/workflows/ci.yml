@@ -131,6 +131,14 @@ jobs:
           for soc in picasso zeppelin naples rome milan; do
             cargo clippy -p fstart-driver-amd --no-default-features --features "$soc"
           done
+          # And the stage of each SP3 generation on its own: an SP3 board
+          # enables the generations it supports, and none is Naples or Rome
+          # only.
+          for soc in naples rome milan; do
+            cargo clippy -p fstart-platform-amd \
+              --target x86_64-unknown-none -Zbuild-std=core,alloc \
+              --no-default-features --features "$soc,bundle-stage"
+          done
 
       # fstart linked as a library by a foreign firmware (the AST2700
       # BootMCU, riscv32imc) and the ARMv5TE BMC cores: neither has
