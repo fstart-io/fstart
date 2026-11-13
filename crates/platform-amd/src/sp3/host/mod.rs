@@ -34,15 +34,15 @@ use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig
 use fstart_core::layout::{Region, RegionKind};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
-    PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
+    PayloadConfig, StageBuildConfig, StageLayout, hstr,
 };
 use fstart_image_build::amd::halved_flash::{
     AmdHalvedFlashAssembly, FlashPlan, NvramSlot, PackedHalf, ResetSlot, Survey,
 };
 use fstart_image_build::amd::{blobs, reset};
 use fstart_image_build::build_plan::{
-    ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, ImageOperation,
-    ImageStep, InputFile, UnitOutput,
+    ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
+    ImageOperation, ImageStep, InputFile, UnitOutput,
 };
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
@@ -337,7 +337,7 @@ fn ffs_assembly(
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: false,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(ffs.base, ffs.size),

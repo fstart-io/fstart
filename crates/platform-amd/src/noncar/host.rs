@@ -13,7 +13,7 @@ use super::{
 };
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
-    PayloadConfig, Platform, SocImageFormat, StageBuildConfig, StageLayout,
+    PayloadConfig, Platform, StageBuildConfig, StageLayout,
     board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig},
     layout::RegionKind,
 };
@@ -23,8 +23,8 @@ use fstart_image_build::{
         blobs, reset,
     },
     build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, FileBinding,
-        ImageOperation, ImageStep, InputFile, UnitOutput,
+        ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
+        FileBinding, ImageOperation, ImageStep, InputFile, UnitOutput,
     },
     layout::EncodedLayout,
     plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
@@ -274,7 +274,7 @@ fn ffs(
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: false,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(ffs.base, ffs.size),

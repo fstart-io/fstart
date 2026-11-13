@@ -127,6 +127,7 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
                     input("fit")?.as_deref(),
                     ctx.payload_files,
                     Some(&image.bootstrap),
+                    image.boot_image_format,
                     ctx.signing_key,
                 )?;
                 outputs.ffs = Some(path.clone());

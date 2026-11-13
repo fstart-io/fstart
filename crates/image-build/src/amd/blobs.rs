@@ -589,13 +589,19 @@ pub fn extract_tables(
         .to_string();
     let (mut found, mut missing) = (Vec::new(), Vec::new());
     for board_blobs in board_tables(&board_table["amd"])? {
-        let soc: SocBlobs =
-            serde_json::from_value(platform_table["amd"][&board_blobs.soc].clone()).map_err(
-                |e| format!("platform [package.metadata.fstart.amd.{}]: {e}", board_blobs.soc),
-            )?;
+        let soc: SocBlobs = serde_json::from_value(platform_table["amd"][&board_blobs.soc].clone())
+            .map_err(|e| {
+                format!(
+                    "platform [package.metadata.fstart.amd.{}]: {e}",
+                    board_blobs.soc
+                )
+            })?;
         let Some(donor) = donor_image(rom, &soc) else {
             if !allow_missing {
-                return Err(format!("the vendor image has no {} firmware", board_blobs.soc));
+                return Err(format!(
+                    "the vendor image has no {} firmware",
+                    board_blobs.soc
+                ));
             }
             missing.push(format!("{} firmware", board_blobs.soc));
             continue;

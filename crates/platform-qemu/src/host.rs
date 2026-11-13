@@ -5,8 +5,8 @@ use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly,
-        InputFile, RunArtifact, RunDisk, RunMedia, RunRecipe, UnitOutput,
+        ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
+        FfsAssembly as Assembly, InputFile, RunArtifact, RunDisk, RunMedia, RunRecipe, UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
@@ -307,7 +307,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     }
     let layout = Xip {
         platform: policy.platform,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
         image,
         execution,
@@ -389,7 +389,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: true,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(firmware.base, firmware.size),
@@ -844,7 +844,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             }
             let layout = Xip {
                 platform: policy.platform,
-                soc_image_format: SocImageFormat::None,
+                boot_image_format: BootImageFormat::None,
                 boot_hart_id: policy.boot_hart_id,
                 image,
                 execution,
@@ -998,7 +998,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: policy.full_flash_image,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: policy.boot_hart_id,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(

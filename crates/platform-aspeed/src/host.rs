@@ -13,8 +13,8 @@ use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
-        RunArtifact, RunMedia, RunRecipe, UnitOutput,
+        BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
+        FfsAssembly as Assembly, InputFile, RunArtifact, RunMedia, RunRecipe, UnitOutput,
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
@@ -78,7 +78,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
     };
     let layout = Xip {
         platform: Platform::Armv5te,
-        soc_image_format: SocImageFormat::AspeedSpi,
+        boot_image_format: BootImageFormat::AspeedSpi,
         boot_hart_id: 0,
         image,
         execution: None,
@@ -154,7 +154,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: true,
-        soc_image_format: SocImageFormat::AspeedSpi,
+        boot_image_format: BootImageFormat::AspeedSpi,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(image.base, image.size),
@@ -260,7 +260,6 @@ fn main_stage(
         microcode: None,
         data_assets: Default::default(),
         file_assets: Default::default(),
-        soc_image_format: SocImageFormat::AspeedSpi,
         full_flash_image: true,
         boot_hart_id: 0,
         build: BoardBuildPolicy::default(),
@@ -285,7 +284,7 @@ fn main_stage(
         ],
     )
     .map_err(|e| e.to_string())?;
-    resolved_ram_stage(&config, "main", &descriptor)
+    resolved_ram_stage(&config, "main", &descriptor, BootImageFormat::AspeedSpi)
 }
 
 fn unit(

@@ -8,13 +8,13 @@ use crate::facts::{BoardFacts, SunxiBoardFacts, SunxiSoc};
 use fstart_core::layout::RegionKind as LayoutKind;
 use fstart_core::{
     BoardBuildPolicy, BoardConfig, Compression, FdtSource, FirmwareConfig, MemoryMap, MemoryRegion,
-    PayloadConfig, PayloadKind, Platform, RegionKind, RunsFrom, SocImageFormat, StageBuildConfig,
-    StageConfig, StageLayout, default_security_config, hstr, hvec,
+    PayloadConfig, PayloadKind, Platform, RegionKind, RunsFrom, StageBuildConfig, StageConfig,
+    StageLayout, default_security_config, hstr, hvec,
 };
 use fstart_image_build::{
     build_plan::{
-        BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
-        RunArtifact, RunMedia, RunRecipe, UnitOutput,
+        BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
+        FfsAssembly as Assembly, InputFile, RunArtifact, RunMedia, RunRecipe, UnitOutput,
     },
     linker::resolved_ram_stage,
     plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
@@ -151,7 +151,6 @@ fn board_config(
         microcode: None,
         data_assets: Default::default(),
         file_assets: Default::default(),
-        soc_image_format: SocImageFormat::AllwinnerEgon,
         full_flash_image: false,
         build: BoardBuildPolicy::default(),
         acpi: None,
@@ -248,7 +247,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         ],
     )
     .map_err(|e| e.to_string())?;
-    let bootblock = resolved_ram_stage(&config, "bootblock", &boot_descriptor)?;
+    let bootblock = resolved_ram_stage(
+        &config,
+        "bootblock",
+        &boot_descriptor,
+        BootImageFormat::AllwinnerEgon,
+    )?;
 
     let main_window = Span {
         base: MAINSTAGE_LOAD_ADDR,
@@ -269,7 +273,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         ],
     )
     .map_err(|e| e.to_string())?;
-    let main = resolved_ram_stage(&config, "main", &main_descriptor)?;
+    let main = resolved_ram_stage(
+        &config,
+        "main",
+        &main_descriptor,
+        BootImageFormat::AllwinnerEgon,
+    )?;
 
     let StageLayout::MultiStage(stages) = config.stages.clone() else {
         return Err("sunxi plans always carry both stages".into());
@@ -301,7 +310,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: false,
-        soc_image_format: SocImageFormat::AllwinnerEgon,
+        boot_image_format: BootImageFormat::AllwinnerEgon,
         boot_hart_id: 0,
         build: BoardBuildPolicy::default(),
     };
@@ -455,7 +464,7 @@ mod tests {
         );
         let assembly = plan.ffs_assembly().unwrap();
         assert_eq!(assembly.platform, Platform::Armv7);
-        assert_eq!(assembly.soc_image_format, SocImageFormat::AllwinnerEgon);
+        assert_eq!(assembly.boot_image_format, BootImageFormat::AllwinnerEgon);
         assert!(!assembly.full_flash_image);
         assert!(matches!(
             assembly.bootstrap.as_slice(),

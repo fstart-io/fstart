@@ -44,7 +44,7 @@ pub use acpi::{
 #[cfg(feature = "host")]
 pub use board::{
     BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FitParseMode,
-    PayloadConfig, PayloadKind, SocImageFormat,
+    PayloadConfig, PayloadKind,
 };
 #[cfg(feature = "host")]
 pub use builder::{

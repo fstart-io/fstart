@@ -8,7 +8,8 @@ extern crate std;
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::build_plan::{
-    BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile, UnitOutput,
+    BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
+    UnitOutput,
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
@@ -196,7 +197,7 @@ pub fn resolve(
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: false,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(

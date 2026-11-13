@@ -51,7 +51,6 @@
     },
     "smbios": null,
     "smm": null,
-    "soc_image_format": "None",
     "stages": {
       "Monolithic": {
         "build": {

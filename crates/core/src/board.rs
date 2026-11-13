@@ -52,17 +52,6 @@ pub struct BoardConfig {
         serde(default, skip_serializing_if = "heapless::Vec::is_empty")
     )]
     pub file_assets: heapless::Vec<FileAsset, 8>,
-    /// SoC-specific binary image format required by the boot ROM.
-    ///
-    /// Each SoC family has its own boot ROM that expects a particular
-    /// binary layout on the boot medium (SD card, SPI flash, eMMC).
-    /// When set, the stage/linker emits the required header/structure in
-    /// dedicated sections and fbuild patches length/checksum fields post-build.
-    ///
-    /// This is intentionally NOT a generic abstraction — each variant
-    /// carries the exact semantics of one SoC family's boot ROM.
-    #[cfg_attr(feature = "host", serde(default))]
-    pub soc_image_format: SocImageFormat,
 
     /// Also emit a complete flash image padded/laid out to the firmware window size.
     ///
@@ -299,44 +288,6 @@ pub struct IntelMicrocodeConfig {
 
 const fn default_true() -> bool {
     true
-}
-
-/// SoC-specific binary image format required by the boot ROM.
-///
-/// Different SoC families have incompatible boot ROM requirements:
-/// Allwinner uses eGON.BT0, TI uses MLO/CH, Mediatek uses BRLYT, etc.
-/// Each variant here describes exactly one SoC family's format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
-pub enum SocImageFormat {
-    /// No SoC-specific image format — binary starts with `.text.entry`.
-    #[default]
-    None,
-    /// Allwinner eGON.BT0 header (sun4i/sun5i/sun7i/sun8i/sun50i/sun20i).
-    ///
-    /// Required by the boot ROM on ALL Allwinner SoCs
-    /// (A10/A13/A20/A31/A64/H3/H5/H6/D1/…).
-    ///
-    /// The BROM scans the boot medium for the `"eGON.BT0"` magic and
-    /// validates the checksum, then loads `length` bytes into SRAM.
-    /// Format:
-    /// - Offset 0x00: ARM/RISC-V branch instruction (jumps over header)
-    /// - Offset 0x04: `"eGON.BT0"` magic (8 bytes)
-    /// - Offset 0x0C: checksum (word-add over entire image)
-    /// - Offset 0x10: total image length (512-byte aligned)
-    ///
-    /// The length field is set to a placeholder at compile time. Xtask
-    /// computes the actual binary size (rounded up to 512-byte alignment),
-    /// pads the binary, and patches both the length and checksum fields
-    /// post-build — just like U-Boot's `mksunxiboot` tool.
-    ///
-    /// See oreboot's D1 implementation for the reference Rust approach.
-    AllwinnerEgon,
-    /// ASPEED AST2400/AST2500 SPI boot: the ARM core executes FMC CE0 flash
-    /// in place from address 0. The image starts with the ARM vector table
-    /// and, at offset 0x40, the strap block the SoC loads from flash before
-    /// releasing the CPU (both in `.head.aspeed`).
-    AspeedSpi,
 }
 
 /// Payload configuration: what to boot after firmware init.

@@ -1,5 +1,5 @@
 //! Intel format projection, never a source of compiler policy.
-use crate::{intel_plan::IntelStage, plan::IntelPlan};
+use crate::{build_plan::BootImageFormat, intel_plan::IntelStage, plan::IntelPlan};
 use fstart_core::board::{IntelMicrocodeConfig, MicrocodeConfig};
 use fstart_core::*;
 
@@ -86,7 +86,7 @@ impl IntelPlan {
             data_assets: self.data_assets.clone(),
             file_assets: vec![],
             full_flash_image: true,
-            soc_image_format: SocImageFormat::None,
+            boot_image_format: BootImageFormat::None,
             boot_hart_id: 0,
             build: BoardBuildPolicy {
                 mutable_regions: self.mutable_regions.clone(),

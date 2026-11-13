@@ -265,6 +265,28 @@ impl BuildPlan {
     }
 }
 
+/// Boot-ROM image format the first stage must carry, if the SoC's boot
+/// ROM requires one. Host-side only: the linker emits the header
+/// sections and the FFS assembler patches their length/checksum fields;
+/// firmware never reads this value, which is why it lives in the image
+/// builder and not in `fstart-core`'s runtime board config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BootImageFormat {
+    /// No boot-ROM header — the binary starts with `.text.entry`.
+    #[default]
+    None,
+    /// Allwinner eGON.BT0: branch over the header at 0x00, `"eGON.BT0"`
+    /// magic at 0x04, word-add checksum at 0x0C and total length
+    /// (512-byte aligned) at 0x10, patched post-build like U-Boot's
+    /// `mksunxiboot`. Required by every Allwinner BROM (sun4i..sun20i).
+    AllwinnerEgon,
+    /// ASPEED AST2400/AST2500 SPI boot: execute in place from FMC CE0
+    /// address 0; the image starts with the ARM vector table and, at
+    /// 0x40, the strap block loaded before the CPU is released
+    /// (both in `.head.aspeed`).
+    AspeedSpi,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FfsAssembly {
     pub platform: fstart_core::Platform,
@@ -285,7 +307,7 @@ pub struct FfsAssembly {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_assets: Vec<fstart_core::board::FileAsset>,
     pub full_flash_image: bool,
-    pub soc_image_format: fstart_core::SocImageFormat,
+    pub boot_image_format: BootImageFormat,
     pub boot_hart_id: u32,
     pub build: fstart_core::BoardBuildPolicy,
 }
@@ -376,7 +398,6 @@ impl FfsAssembly {
             microcode: self.microcode.clone(),
             data_assets,
             file_assets,
-            soc_image_format: self.soc_image_format,
             full_flash_image: self.full_flash_image,
             // Tables, live CAR and SMM runtime settings are not assembler inputs.
             build: self.build.clone(),
@@ -897,7 +918,7 @@ mod tests {
                     data_assets: vec![],
                     file_assets: vec![],
                     full_flash_image: false,
-                    soc_image_format: SocImageFormat::None,
+                    boot_image_format: BootImageFormat::None,
                     boot_hart_id: 0,
                     build: BoardBuildPolicy::default(),
                 }
@@ -1072,7 +1093,7 @@ mod tests {
             data_assets: vec![],
             file_assets: vec![],
             full_flash_image: false,
-            soc_image_format: SocImageFormat::None,
+            boot_image_format: BootImageFormat::None,
             boot_hart_id: 0,
             build: BoardBuildPolicy::default(),
         };
