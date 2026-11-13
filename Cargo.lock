@@ -712,6 +712,7 @@ dependencies = [
  "fstart-acpi",
  "fstart-core",
  "fstart-driver-amd",
+ "fstart-driver-aspeed",
  "fstart-driver-i2c",
  "fstart-driver-ipmi",
  "fstart-driver-redriver",
@@ -1194,6 +1195,17 @@ dependencies = [
  "tock-registers",
  "ufmt",
  "zerocopy",
+]
+
+[[package]]
+name = "fstart-driver-aspeed"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-log",
+ "fstart-pci",
+ "tock-registers",
+ "ufmt",
 ]
 
 [[package]]

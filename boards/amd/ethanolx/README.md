@@ -21,7 +21,17 @@ map, GPIO, SATA policy, the FCH UART1 console and the BMC's IPMI KCS.
 ```sh
 cargo fbuild assemble --board amd-ethanolx --release
 cargo fbuild assemble --board amd-ethanolx --release --payload uefi
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi-ui
 ```
+
+The board initializes its AST2500 natively at 1024×768, 60 Hz, XRGB8888
+and publishes the framebuffer to the payload. `uefi` provides the text
+menu; `uefi-ui` enables CrabEFI's graphical boot manager for BMC KVM.
+The serial console remains available. No VGA ROM is
+executed or needed. The host driver requires BMC-initialized shared DRAM;
+it never resets the BMC or trains its memory. USB supplies KVM input.
+The UI image has been boot-tested through native modesetting, GOP setup
+and boot-menu entry; virtual USB keyboard/mouse enumeration was observed.
 
 The vendor ROM is the board's own flash (`vendor/README.md`). The BMC
 exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased bytes at

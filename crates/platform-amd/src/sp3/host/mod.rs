@@ -212,6 +212,8 @@ pub enum Payload {
     Linux,
     /// CrabEFI linked into the stage unit.
     Uefi,
+    /// CrabEFI's graphical boot manager.
+    UefiUi,
 }
 
 impl Payload {
@@ -220,9 +222,10 @@ impl Payload {
             None | Some("halt") => Self::Halt,
             Some("linux") => Self::Linux,
             Some("uefi") => Self::Uefi,
+            Some("uefi-ui") => Self::UefiUi,
             Some(other) => {
                 return Err(format!(
-                    "SP3 supports the halt, linux and uefi payloads, not {other}"
+                    "SP3 supports the halt, linux, uefi and uefi-ui payloads, not {other}"
                 ));
             }
         };
@@ -237,6 +240,7 @@ impl Payload {
             Self::Halt => "halt",
             Self::Linux => "linux",
             Self::Uefi => "uefi",
+            Self::UefiUi => "uefi-ui",
         }
     }
 
@@ -246,6 +250,7 @@ impl Payload {
             Self::Halt => &[],
             Self::Linux => &["payload-linux"],
             Self::Uefi => &["payload-uefi"],
+            Self::UefiUi => &["payload-uefi-ui-core"],
         }
     }
 
@@ -255,7 +260,9 @@ impl Payload {
         };
         Ok(match self {
             Self::Halt => None,
-            Self::Uefi => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
+            Self::Uefi | Self::UefiUi => {
+                Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD))
+            }
             Self::Linux => Some(fstart_core::x86_linux_payload(
                 selection
                     .x86_linux_kernel_load_addr
@@ -414,7 +421,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             default: None,
             capacity: FFS_WINDOW.size,
         }],
-        Payload::Halt | Payload::Uefi => vec![],
+        Payload::Halt | Payload::Uefi | Payload::UefiUi => vec![],
     };
     // The PSP firmware: packed from the blob directory (`--blobs`,
     // `--donor`), or the board's vendor ROM, which `--image-config`
@@ -769,6 +776,14 @@ mod tests {
             uefi.unit(STAGE_UNIT).unwrap().features.last().unwrap(),
             "payload-uefi"
         );
+        let ui = resolve::<S8030>(&select("uefi-ui")).unwrap();
+        assert_eq!(ui.payload, "uefi-ui");
+        assert_eq!(
+            ui.unit(STAGE_UNIT).unwrap().features.last().unwrap(),
+            "payload-uefi-ui-core"
+        );
+        assert!(sp3(&ui).ffs.payload.is_some());
+        assert!(ui.inputs.is_empty());
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
             resolve::<S8030>(&BuildSelection {

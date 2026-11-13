@@ -1,0 +1,13 @@
+[package]
+name = "fstart-driver-aspeed"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+description = "Host-side ASPEED graphics initialization"
+
+[dependencies]
+fstart-core.workspace = true
+fstart-pci.workspace = true
+fstart-log.workspace = true
+tock-registers.workspace = true
+ufmt.workspace = true

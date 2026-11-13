@@ -78,7 +78,10 @@ payload-linux = ["fstart-payload?/linux"]
 # On SP3 the UEFI payload also keeps the settings store: CrabEFI's variable
 # store in flash, written through the FCH SPI100 command engine.
 payload-uefi = ["payload-uefi-basic", "fstart-payload?/crabefi", "fstart-driver-amd/spi-flash"]
-payload-uefi-ui = ["payload-uefi", "fstart-payload?/crabefi-ui", "fstart-payload?/crabefi-elan-i2c", "fstart-payload?/crabefi-hid-i2c"]
+# The graphical boot manager without laptop-specific I2C input drivers.
+# SP3 uses this profile; those drivers do not fit its reset-image budget.
+payload-uefi-ui-core = ["payload-uefi", "fstart-payload?/crabefi-ui"]
+payload-uefi-ui = ["payload-uefi-ui-core", "fstart-payload?/crabefi-elan-i2c", "fstart-payload?/crabefi-hid-i2c"]
 payload-uefi-basic = ["fstart-payload?/crabefi-basic", "dep:embedded-hal-bus"]
 
 # Picasso's AMD firmware (docs/amd-image-format.md, "Firmware blobs"):
