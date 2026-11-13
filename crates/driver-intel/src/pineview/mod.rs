@@ -21,13 +21,13 @@ use core::ptr;
 
 use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
 use crate::MmioBar;
+use crate::gma::types::{Cpu, PciAddress, Port};
 use crate::ich7::ich7;
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
-use fstart_intel_gma::types::{Cpu, PciAddress, Port};
 use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
@@ -1096,7 +1096,7 @@ impl IntelPineview {
         } else {
             Cpu::Pineview
         };
-        let programmed = self.display.initialize::<fstart_intel_gma::I945>(
+        let programmed = self.display.initialize::<crate::gma::I945>(
             cpu,
             self.config.igd.display.as_ref(),
             &addresses,

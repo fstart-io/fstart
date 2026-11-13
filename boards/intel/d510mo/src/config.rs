@@ -1,11 +1,11 @@
 //! Wiring from coreboot mainboard/intel/d510mo (GPIO, PIRQ, HDA and CK505).
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as L};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_driver_superio::*;
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::pineview::*;
 

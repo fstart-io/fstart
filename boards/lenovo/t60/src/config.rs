@@ -1,5 +1,6 @@
 //! T60/R60/Z61t wiring from coreboot mainboard/lenovo/t60, including variants.
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hvec};
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port, framebuffer::FramebufferConfig};
 use fstart_driver_intel::{
     generic::ck505::I2cCk505Config,
     southbridge::{
@@ -8,7 +9,6 @@ use fstart_driver_intel::{
     },
 };
 use fstart_driver_lenovo::t6::Model;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port, framebuffer::FramebufferConfig};
 use fstart_platform_intel::{
     i945::{
         GpiRoute, HdaConfig, HdaVerbTable, I945Ich7Config, I945Ich7Platform, I945IgdConfig,
@@ -74,7 +74,7 @@ const DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         },
     ],
     framebuffer: FramebufferConfig {
-        scaling: fstart_intel_gma::scaler::ScalingPolicy::PreserveAspect,
+        scaling: fstart_driver_intel::gma::scaler::ScalingPolicy::PreserveAspect,
         ..FramebufferConfig::edid(FallbackMode {
             width: 1024,
             height: 768,

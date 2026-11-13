@@ -12,6 +12,7 @@ pub mod namespace;
 pub mod generic;
 pub mod gm45;
 pub mod gm965;
+pub mod gma;
 pub mod gmch;
 mod host_bridge;
 pub mod i945;

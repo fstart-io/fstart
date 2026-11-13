@@ -6,11 +6,11 @@
 
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
 use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as L, SlotPins};
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::{
     GpiRoute, HdaConfig, HdaVerbTable, I945Ich7Config, I945Ich7Platform, I945IgdConfig,
     I945Variant, IdeConfig, LpcFixedIoDecode, LpcGenericIoDecode, LpcParallelDecode,
@@ -68,7 +68,7 @@ const X60_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         },
     ],
     framebuffer: FramebufferConfig {
-        scaling: fstart_intel_gma::scaler::ScalingPolicy::PreserveAspect,
+        scaling: fstart_driver_intel::gma::scaler::ScalingPolicy::PreserveAspect,
         ..FramebufferConfig::edid(FallbackMode {
             width: 1024,
             height: 768,

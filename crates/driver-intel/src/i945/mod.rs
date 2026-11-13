@@ -24,13 +24,13 @@ pub mod raminit;
 use self::fields::*;
 
 use crate::MmioBar;
+use crate::gma::types::{Cpu, PciAddress};
 use crate::ich7::Rcba;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use tock_registers::interfaces::{Readable, Writeable};
@@ -1097,7 +1097,7 @@ impl IntelI945 {
 
     /// Core display clock in Hz, from the chipset `GCFGC` value.
     fn cdclk_hz(&self) -> u32 {
-        fstart_intel_gma::gen3_display_clock_hz(
+        crate::gma::gen3_display_clock_hz(
             self.display_cpu(),
             Some(self.igd().read16(hostbridge::IGD_GCFC)),
         )
@@ -1230,7 +1230,7 @@ impl IntelI945 {
             gtt_size: I945_GTT_SIZE,
             gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
         };
-        self.display.initialize::<fstart_intel_gma::I945>(
+        self.display.initialize::<crate::gma::I945>(
             self.display_cpu(),
             self.config.igd.display.as_ref(),
             &addresses,

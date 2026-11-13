@@ -120,19 +120,19 @@ impl IntelGm45 {
 
     /// Coreboot `gm45/gma.c get_cdclk()`.
     fn cdclk(&self) -> u32 {
-        fstart_intel_gma::gm45_display_clock_hz(self.mch_vco(), self.igd().read16(IGD_GCFGC))
+        crate::gma::gm45_display_clock_hz(self.mch_vco(), self.igd().read16(IGD_GCFGC))
     }
 
     /// LVDS EDID ASCII string through GMBUS, as coreboot reads it before
     /// the modeset to pick the backlight PWM frequency.
     fn panel_pwm_hz(&self, gtt_mmio: u64) -> Option<u16> {
-        use fstart_intel_gma::gmbus::{HardwareGmbus, read_base_edid};
+        use crate::gma::gmbus::{HardwareGmbus, read_base_edid};
         let mut raw = [0; 128];
         // SAFETY: GTTMMADR was assigned by enumeration and decodes memory.
         let mut bus = unsafe {
             HardwareGmbus::gmch(
                 fstart_core::typed::mmio32(gtt_mmio),
-                fstart_intel_gma::GmbusPin::Panel,
+                crate::gma::GmbusPin::Panel,
             )
         };
         let edid = read_base_edid(&mut bus, &mut raw).ok()?;
@@ -245,7 +245,7 @@ impl IntelGm45 {
         };
         let stolen_base = igd.read32(IGD_BSM) & 0xfff0_0000;
         let addresses = crate::igd::IgdAddresses {
-            pci_bdf: fstart_intel_gma::types::PciAddress::new(0, 0, IGD_DEV, 0),
+            pci_bdf: crate::gma::types::PciAddress::new(0, 0, IGD_DEV, 0),
             gtt_mmio_base: bars.gtt_mmio,
             gtt_mmio_size: GTTMMADR_SIZE,
             gtt_pte_base: None,
@@ -256,8 +256,8 @@ impl IntelGm45 {
             gtt_size: GTT_SIZE,
             gcfgc: Some(igd.read16(IGD_GCFGC)),
         };
-        self.display.initialize::<fstart_intel_gma::G45>(
-            fstart_intel_gma::types::Cpu::Gm45,
+        self.display.initialize::<crate::gma::G45>(
+            crate::gma::types::Cpu::Gm45,
             self.config.igd.display.as_ref(),
             &addresses,
             vbt,

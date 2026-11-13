@@ -2,12 +2,12 @@
 
 use fstart_core::{Platform, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
 use fstart_driver_superio::pc87382;
 use fstart_driver_superio::pc87392;
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::gm965::{
     Gm965Ich8Config, Gm965Ich8Platform, Gm965IgdConfig, IdeConfig, LpcFixedIoDecode,
     LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode, SataConfig, SataMode, UsbConfig,
@@ -28,7 +28,7 @@ const X61_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
         },
     ],
     framebuffer: FramebufferConfig {
-        scaling: fstart_intel_gma::scaler::ScalingPolicy::PreserveAspect,
+        scaling: fstart_driver_intel::gma::scaler::ScalingPolicy::PreserveAspect,
         ..FramebufferConfig::edid(FallbackMode {
             width: 1024,
             height: 768,

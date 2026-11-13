@@ -1,12 +1,12 @@
 //! ASUS P5GC-MX wiring from coreboot GPIO, PIRQ, devicetree and HDA policy.
 use fstart_arch::x86::cpu::intel::core2_cpu::FsbBusSelect;
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr};
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::pirq::{PciPin as P, PinRoute as R, Pirq as L};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_driver_superio::w83627dhg::GpioPinConfig;
 use fstart_driver_superio::{ComPortConfig, KbcConfig, MouseConfig, ParallelConfig, SuperIoConfig};
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::*;
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 

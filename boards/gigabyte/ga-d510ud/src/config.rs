@@ -1,10 +1,10 @@
 //! Board wiring, not Super I/O or RCBA register encodings.
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr};
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_driver_superio::ite8720f::{BusSelect, GpioDirection, GpioPinConfig, PullUp};
 use fstart_driver_superio::*;
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::pineview::*;
 

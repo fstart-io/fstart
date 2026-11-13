@@ -20,12 +20,12 @@ use self::fields::*;
 use crate::MmioBar;
 use core::ptr;
 
+use crate::gma::types::{Cpu, PciAddress};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
@@ -1092,7 +1092,7 @@ impl IntelGm965 {
             gtt_size: GM965_GTT_PAGE_TABLE_SIZE as u32,
             gcfgc: Some(igd.read16(hostbridge::GCFGC)),
         };
-        self.display.initialize::<fstart_intel_gma::G45>(
+        self.display.initialize::<crate::gma::G45>(
             Cpu::Gm965,
             self.config.igd.display.as_ref(),
             &addresses,

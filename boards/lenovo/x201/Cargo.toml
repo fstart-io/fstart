@@ -21,7 +21,6 @@ fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
 fstart-pci = { path = "../../../crates/pci" }
 embedded-hal = { workspace = true }
-fstart-intel-gma = { path = "../../../crates/intel-gma" }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
 fstart-options = { path = "../../../crates/options" }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }

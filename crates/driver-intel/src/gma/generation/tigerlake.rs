@@ -1,0 +1,356 @@
+//! Tigerlake/Alderlake Intel GMA generation support.
+//!
+//! This module is currently a scaffold, not parity. libgfxinit's Tigerlake
+//! backend is fully implemented: it allocates Combo/Dekel PHY PLLs
+//! (`common/tigerlake/hw-gfx-gma-plls.adb` `Alloc`), initializes power domains,
+//! CDCLK and raw clock (`hw-gfx-gma-power_and_clocks.adb` `Initialize`), maps
+//! the PLL to the DDI port, enables the pipe clock and transcoder, programs
+//! Type-C mode and runs DP training in `Pre_On`, and reads combo/Type-C
+//! hotplug state in `port_detect.adb`. The Rust plans below model that shape
+//! but `init_display` does not execute them yet (see the parity-audit report).
+//! Do not read this file as evidence that upstream Tigerlake is skeletal.
+
+#![allow(dead_code)]
+
+use crate::gma::error::GmaError;
+use crate::gma::generation::{GenerationOps, sealed};
+use crate::gma::gtt;
+use crate::gma::regs::{TGL_DPLL_SELECT, TGL_HOTPLUG_STATUS, TGL_TYPEC_ORIENTATION};
+use crate::gma::types::{Cpu, Generation, Pipe, Port};
+
+/// Tigerlake generation marker.
+pub struct Tigerlake;
+
+impl sealed::Sealed for Tigerlake {}
+
+impl GenerationOps for Tigerlake {
+    const GENERATION: Generation = Generation::Tigerlake;
+}
+
+fn selected_port(ctx: &crate::gma::GmaContext<'_>) -> Result<Port, GmaError> {
+    crate::gma::selected_enabled_port(ctx.config.outputs)
+}
+
+fn ddi_pipe_for_port(port: Port) -> Pipe {
+    match port {
+        Port::Edp | Port::DpA | Port::HdmiA => Pipe::A,
+        Port::DpB | Port::HdmiB => Pipe::B,
+        _ => Pipe::C,
+    }
+}
+
+fn map_gtt(ctx: &crate::gma::GmaContext<'_>) -> Result<(), GmaError> {
+    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
+    gtt::flush_gfx(&ctx.mmio());
+    Ok(())
+}
+
+/// Tigerlake PLL selector order from libgfxinit's `PLLs.T`.
+///
+/// Most variants are plan/test-only until the Tigerlake live DPLL allocator is
+/// wired beyond the current libgfxinit-compatible no-op allocation stub.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TglPll {
+    /// No PLL selected.
+    Invalid,
+    /// DPLL0.
+    Dpll0,
+    /// DPLL1.
+    Dpll1,
+    /// DPLL4, ordered before DPLL2 in libgfxinit.
+    Dpll4,
+    /// DPLL2.
+    Dpll2,
+}
+
+/// Configurable Tigerlake DPLL set modeled by libgfxinit.
+///
+/// Retained for plan parity tests until the live Tigerlake allocator consumes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const TGL_CONFIGURABLE_PLLS: &[TglPll] = &[TglPll::Dpll0, TglPll::Dpll1, TglPll::Dpll4];
+
+/// Data-only result of libgfxinit Tigerlake PLL allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TglPllAllocPlan {
+    /// PLL returned by `Alloc`.
+    pub pll: TglPll,
+    /// Success flag returned by `Alloc`.
+    pub success: bool,
+    /// Register hint returned by `Register_Value`.
+    pub register_value: u32,
+}
+
+/// Return libgfxinit's current Tigerlake PLL allocation result.
+pub(crate) const fn tgl_alloc_pll_plan(_port: Port) -> TglPllAllocPlan {
+    TglPllAllocPlan {
+        pll: TglPll::Invalid,
+        success: true,
+        register_value: tgl_pll_register_value(TglPll::Invalid),
+    }
+}
+
+/// Return libgfxinit's current Tigerlake PLL register hint.
+pub(crate) const fn tgl_pll_register_value(_pll: TglPll) -> u32 {
+    TGL_DPLL_SELECT::REGISTER_VALUE.val(0).value
+}
+
+/// Tigerlake power/CDCLK operations matching libgfxinit routine names.
+///
+/// Only `Initialize` is reached by today's live skeleton; the remaining variants
+/// are covered by tests as staged libgfxinit parity markers.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TglPowerClockStep {
+    /// `Pre_All_Off`.
+    PreAllOff,
+    /// `Post_All_Off`.
+    PostAllOff,
+    /// `Initialize`.
+    Initialize,
+    /// `Limit_Dotclocks`.
+    LimitDotclocks,
+    /// `Update_CDClk`.
+    UpdateCdclk,
+    /// `Power_Set_To`.
+    PowerSetTo,
+    /// `Power_Up`.
+    PowerUp,
+    /// `Power_Down`.
+    PowerDown,
+}
+
+/// Data-only Tigerlake power/CDCLK plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TglPowerClockPlan {
+    /// Operation being modeled.
+    pub step: TglPowerClockStep,
+    /// Whether libgfxinit requests a CDCLK switch from `Limit_Dotclocks`.
+    pub cdclk_switch: bool,
+    /// Number of register writes in the current libgfxinit implementation.
+    pub register_writes: u8,
+}
+
+/// Return a libgfxinit-compatible Tigerlake power/CDCLK no-op plan.
+pub(crate) const fn tgl_power_clock_plan(step: TglPowerClockStep) -> TglPowerClockPlan {
+    TglPowerClockPlan {
+        step,
+        cdclk_switch: false,
+        register_writes: 0,
+    }
+}
+
+/// Type-C/DDI orientation for future Tigerlake Type-C routing.
+///
+/// The live path currently passes `None`; concrete orientations are test/staged
+/// coverage for the future Type-C routing implementation.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TglTypeCOrientation {
+    /// Native/no Type-C retimer orientation selected.
+    None,
+    /// Normal Type-C lane orientation.
+    Normal,
+    /// Reversed Type-C lane orientation.
+    Reversed,
+}
+
+/// Data-only Tigerlake DDI/Type-C connector pre-on plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TglDdiPreOnPlan {
+    /// CPU/platform family.
+    pub cpu: Cpu,
+    /// Logical output port.
+    pub port: Port,
+    /// Pipe selected for the connector.
+    pub pipe: Pipe,
+    /// PLL hint passed into libgfxinit connector `Pre_On`.
+    pub pll_hint: u32,
+    /// Type-C orientation metadata; current libgfxinit does not consume it.
+    pub type_c_orientation: TglTypeCOrientation,
+    /// Typed register encoding for the Type-C orientation metadata.
+    pub type_c_orientation_value: u32,
+    /// Success flag returned by libgfxinit `Pre_On`.
+    pub success: bool,
+    /// Number of register writes in current libgfxinit `Pre_On`.
+    pub register_writes: u8,
+}
+
+/// Data-only Tigerlake connector post-on plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TglDdiPostOnPlan {
+    /// Logical output port.
+    pub port: Port,
+    /// Pipe selected for the connector.
+    pub pipe: Pipe,
+    /// PLL hint passed into libgfxinit connector `Post_On`.
+    pub pll_hint: u32,
+    /// Panel backlight is enabled by current libgfxinit `Post_On`.
+    pub panel_backlight_on: bool,
+    /// Success flag returned by libgfxinit `Post_On`.
+    pub success: bool,
+}
+
+/// Build a Tigerlake DDI/Type-C pre-on plan matching current libgfxinit.
+pub(crate) const fn tgl_ddi_pre_on_plan(
+    cpu: Cpu,
+    port: Port,
+    pipe: Pipe,
+    pll_hint: u32,
+    type_c_orientation: TglTypeCOrientation,
+) -> Result<TglDdiPreOnPlan, GmaError> {
+    if !matches!(cpu, Cpu::Tigerlake | Cpu::Alderlake) {
+        return Err(GmaError::UnsupportedPlatform);
+    }
+    if !is_tgl_ddi_port(port) {
+        return Err(GmaError::UnsupportedPort);
+    }
+    Ok(TglDdiPreOnPlan {
+        cpu,
+        port,
+        pipe,
+        pll_hint,
+        type_c_orientation,
+        type_c_orientation_value: tgl_typec_orientation_value(type_c_orientation),
+        success: true,
+        register_writes: 0,
+    })
+}
+
+/// Build a Tigerlake DDI/Type-C post-on plan matching current libgfxinit.
+pub(crate) const fn tgl_ddi_post_on_plan(
+    port: Port,
+    pipe: Pipe,
+    pll_hint: u32,
+) -> Result<TglDdiPostOnPlan, GmaError> {
+    if !is_tgl_ddi_port(port) {
+        return Err(GmaError::UnsupportedPort);
+    }
+    Ok(TglDdiPostOnPlan {
+        port,
+        pipe,
+        pll_hint,
+        panel_backlight_on: true,
+        success: true,
+    })
+}
+
+/// Tigerlake connector off operation modeled from libgfxinit.
+///
+/// Currently used by parity tests; live Tigerlake off sequencing is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TglDdiOffPlan {
+    /// Logical output port.
+    pub port: Port,
+    /// Whether panel backlight is disabled in `Pre_Off`/`Pre_All_Off`.
+    pub panel_backlight_off: bool,
+    /// Whether panel power is disabled in `Pre_Off`/`Pre_All_Off`.
+    pub panel_off: bool,
+    /// Number of register writes in current connector off path.
+    pub register_writes: u8,
+}
+
+/// Build a Tigerlake DDI connector off plan matching current libgfxinit.
+///
+/// Currently used by parity tests; live Tigerlake off sequencing is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const fn tgl_ddi_pre_off_plan(port: Port) -> Result<TglDdiOffPlan, GmaError> {
+    if !is_tgl_ddi_port(port) {
+        return Err(GmaError::UnsupportedPort);
+    }
+    Ok(TglDdiOffPlan {
+        port,
+        panel_backlight_off: true,
+        panel_off: true,
+        register_writes: 0,
+    })
+}
+
+/// Data-only Tigerlake hotplug result matching current libgfxinit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TglHotplugPlan {
+    /// Logical output port.
+    pub port: Port,
+    /// Detection state returned by `Hotplug_Detect`.
+    pub detected: bool,
+    /// Typed hotplug status bits observed by the current stub.
+    pub status_bits: u32,
+    /// Whether `Clear_Hotplug_Detect` writes any registers today.
+    pub clear_register_writes: u8,
+}
+
+/// Return current Tigerlake hotplug behavior from libgfxinit.
+pub(crate) const fn tgl_hotplug_detect_plan(port: Port) -> Result<TglHotplugPlan, GmaError> {
+    if !is_tgl_ddi_port(port) {
+        return Err(GmaError::UnsupportedPort);
+    }
+    let status_bits = TGL_HOTPLUG_STATUS::DETECTED::CLEAR.value;
+    Ok(TglHotplugPlan {
+        port,
+        detected: tgl_hotplug_detected(status_bits),
+        status_bits,
+        clear_register_writes: 0,
+    })
+}
+
+const TGL_HOTPLUG_DETECTED: u32 = TGL_HOTPLUG_STATUS::DETECTED::SET.value;
+
+const fn tgl_hotplug_detected(status_bits: u32) -> bool {
+    (status_bits & TGL_HOTPLUG_DETECTED) != 0
+}
+
+const fn tgl_typec_orientation_value(orientation: TglTypeCOrientation) -> u32 {
+    match orientation {
+        TglTypeCOrientation::None => TGL_TYPEC_ORIENTATION::VALUE::None.value,
+        TglTypeCOrientation::Normal => TGL_TYPEC_ORIENTATION::VALUE::Normal.value,
+        TglTypeCOrientation::Reversed => TGL_TYPEC_ORIENTATION::VALUE::Reversed.value,
+    }
+}
+
+const fn is_tgl_ddi_port(port: Port) -> bool {
+    matches!(
+        port,
+        Port::Edp
+            | Port::HdmiA
+            | Port::HdmiB
+            | Port::HdmiC
+            | Port::DpA
+            | Port::DpB
+            | Port::DpC
+            | Port::DpD
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tigerlake_plans_reject_non_tgl_platforms_and_non_ddi_ports() {
+        assert_eq!(
+            tgl_ddi_pre_on_plan(
+                Cpu::Skylake,
+                Port::DpA,
+                Pipe::A,
+                0,
+                TglTypeCOrientation::None,
+            ),
+            Err(GmaError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            tgl_ddi_pre_on_plan(
+                Cpu::Tigerlake,
+                Port::Vga,
+                Pipe::A,
+                0,
+                TglTypeCOrientation::Normal,
+            ),
+            Err(GmaError::UnsupportedPort)
+        );
+        assert_eq!(
+            tgl_hotplug_detect_plan(Port::Lvds),
+            Err(GmaError::UnsupportedPort)
+        );
+    }
+}
