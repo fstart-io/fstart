@@ -45,6 +45,7 @@ mod gpio_tests;
 pub mod huashan;
 pub mod hw;
 pub mod i2c;
+pub mod irq;
 pub mod lpc;
 pub mod sandstone;
 pub mod smi;

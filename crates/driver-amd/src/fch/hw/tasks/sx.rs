@@ -4,12 +4,13 @@
 
 use tock_registers::interfaces::Writeable;
 
+use super::super::FchHw;
 use super::super::acpimmio::{
     AOAC_94, AOAC_94_SX, GPE0_EN, GPE0_STS, MISC, PM, PM1_CNT, PM1_STS, pm,
 };
 use super::super::smi::{self, CONTROL0, source};
-use super::super::{FchHw, irq};
 use crate::cpu::Silicon;
+use crate::fch::irq;
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::window::{Window, update};
 

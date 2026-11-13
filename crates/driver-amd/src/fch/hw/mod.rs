@@ -33,7 +33,6 @@
 pub mod acpi;
 pub mod acpimmio;
 pub mod alink;
-pub mod irq;
 pub mod lpc;
 pub mod multi;
 pub mod rom3;

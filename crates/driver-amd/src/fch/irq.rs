@@ -1,7 +1,9 @@
-//! Legacy interrupt routing: the PCI_INTR index/data pair at `C00h/C01h`.
+//! Legacy interrupt routing: the PCI_INTR index/data pair at `C00h/C01h`
+//! of every FCH, reached through its I/O window (a [`crate::fch::Bus`]'s
+//! I/O space or the ports).
 //!
 //! Indices 0x00–0x7F route to the PIC, 0x80–0xFF to the IOAPIC (FCH_SP3
-//! §3.3). The late task writes the generation's table ([`routes`]); the
+//! §3.3): [`index`] of a source and a [`Mode`]. The late task writes the generation's table ([`routes`]); the
 //! S3 resume path writes all 256 bytes back (§3.4, SW SMI b3).
 //!
 //! The Naples table differs from the SP4 (sp4r2) one at F2–F5/F8/F9: the
@@ -25,6 +27,32 @@ pub const INTR_09: u8 = 0x09;
 pub const SCI_PIC: u8 = 0x10;
 pub const SCI_IOAPIC: u8 = 0x90;
 
+tock_registers::register_bitfields![u8,
+    Index [
+        SOURCE OFFSET(0) NUMBITS(7) [],
+        MODE OFFSET(7) NUMBITS(1) [
+            Pic = 0,
+            Apic = 1
+        ]
+    ]
+];
+
+/// Which of the two values of a source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Pic,
+    Apic,
+}
+
+/// The PCI_INTR index of `source`'s `mode` value.
+pub fn index(source: u8, mode: Mode) -> u8 {
+    let mode = match mode {
+        Mode::Pic => Index::MODE::Pic,
+        Mode::Apic => Index::MODE::Apic,
+    };
+    (Index::SOURCE.val(source) + mode).value
+}
+
 fn entry<I: Window>(io: &I, index: u8) -> Indexed<Reg<&I, u8>, Reg<&I, u8>> {
     indexed(io, INDEX, DATA, index)
 }
@@ -45,9 +73,9 @@ pub fn update<I: Window>(io: &I, index: u8, clear: u8, set: u8) {
 /// The late-task routes of `generation`, `(index, irq)` in donor order.
 pub const fn routes(generation: Silicon) -> &'static [(u8, u8)] {
     match generation {
-        Silicon::Zp => super::tables::PCI_INTR_NAPLES,
-        Silicon::Ssp => super::tables::PCI_INTR_ROME,
-        Silicon::Gn => super::tables::PCI_INTR_MILAN,
+        Silicon::Zp => crate::fch::hw::tables::PCI_INTR_NAPLES,
+        Silicon::Ssp => crate::fch::hw::tables::PCI_INTR_ROME,
+        Silicon::Gn => crate::fch::hw::tables::PCI_INTR_MILAN,
         #[allow(unreachable_patterns)]
         _ => &[],
     }

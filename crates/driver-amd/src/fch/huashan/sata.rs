@@ -11,7 +11,7 @@ use tock_registers::register_bitfields;
 
 use crate::cpu::Silicon;
 use crate::fch::gpio::{self, Pad, Pin, Pull};
-use crate::fch::hw::{FchHw, irq};
+use crate::fch::{hw::FchHw, irq};
 use crate::nbio::nbif::func_strap0;
 use crate::window::{SmnWindow, Window, update};
 

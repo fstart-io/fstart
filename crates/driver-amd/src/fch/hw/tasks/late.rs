@@ -3,8 +3,9 @@
 
 use super::super::acpimmio::{PM, pm};
 use super::super::smi::{self, Route, source};
-use super::super::{FchHw, irq, uart};
+use super::super::{FchHw, uart};
 use crate::cpu::Silicon;
+use crate::fch::irq;
 use crate::window::update;
 
 /// af70. `extra_routes` are board PCI_INTR overrides written after the

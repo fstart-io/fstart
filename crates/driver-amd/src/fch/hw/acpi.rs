@@ -22,7 +22,8 @@ use fstart_acpi::aml_linker::device_vec;
 use fstart_acpi::{AmlError, BoundAmlFragment, acpi_dsl};
 use heapless::Vec as HVec;
 
-use super::{irq, uart};
+use super::uart;
+use crate::fch::irq;
 use crate::window::Window;
 
 /// DesignWare component type register (`*_COMP_TYPE`, offset 0xFC); the

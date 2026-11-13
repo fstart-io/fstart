@@ -8,11 +8,11 @@ use super::super::acpimmio::{
     self, AOAC_94, AOAC_94_SX, ASF, AoacDevice, IOMUX, ISA_CONTROL, MISC, PM, PM1_STS, PmIo,
     SERIAL_IRQ, pm,
 };
-use super::super::irq;
 use super::super::lpc::{IO_MEM_DECODE, WIDE_IO_0_1};
 use super::super::smbus::{ASF_IO, SMBUS_IO};
 use super::acpi_mmio_table;
 use crate::cpu::Silicon;
+use crate::fch::irq;
 use crate::window::{Reg, Window, apply, indexed, update};
 
 /// Milan IOMUX pins set to function 0 in the prelim task (FCH_SP3 §3.1
