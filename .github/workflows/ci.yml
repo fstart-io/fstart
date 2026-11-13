@@ -44,13 +44,17 @@ env:
   # reply cannot be written). The daemon inherits this on auto-start.
   SCCACHE_MAX_FRAME_LENGTH: "4294967295"
 
+# Every job names its runner image: the packages a job installs are the
+# image's, and ubuntu-latest moves between releases job by job while GitHub
+# rolls a new one out. (Ubuntu 26.04 ships qemu-system-riscv64 in
+# qemu-system-riscv, 24.04 in qemu-system-misc.)
 jobs:
   # The cheap gate every firmware job waits for: formatting, and the job
   # matrix. fbuild resolves the boards from boards/<vendor>/<board>/Cargo.toml
   # package.metadata.fstart, the same discovery every other fbuild command
   # uses; ci/shards.py groups them into jobs.
   boards:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     outputs:
       shards: ${{ steps.list.outputs.shards }}
@@ -76,7 +80,7 @@ jobs:
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -147,7 +151,7 @@ jobs:
     name: firmware (${{ matrix.shard }})
     needs: [boards, qemu-boot-assets]
     if: ${{ !cancelled() && needs.boards.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -213,7 +217,7 @@ jobs:
   # are only comparable from the same checkout path, which CI always uses.
   stage-sizes:
     needs: firmware
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,7 +246,7 @@ jobs:
   check:
     if: always()
     needs: [test, firmware, stage-sizes]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Require tests and firmware jobs to pass
@@ -256,7 +260,7 @@ jobs:
           test "$SIZES_RESULT" = success
 
   qemu-boot-assets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -314,7 +318,7 @@ jobs:
 
   tpm-boot-tests:
     needs: qemu-boot-assets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -358,7 +362,7 @@ jobs:
   qemu-boot-tests:
     if: always()
     needs: [qemu-boot-assets, firmware, tpm-boot-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Require all QEMU jobs to pass

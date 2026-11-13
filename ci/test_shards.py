@@ -38,7 +38,7 @@ class Shards(unittest.TestCase):
                     "shard": "riscv64",
                     "boards": "qemu-riscv64 unmatched",
                     "boots": "qemu-riscv64",
-                    "qemu": "qemu-system-misc ipxe-qemu",
+                    "qemu": "qemu-system-riscv ipxe-qemu",
                     "assets": "payloads",
                 },
                 {
