@@ -93,6 +93,14 @@ jobs:
           shared-key: test
           save-cache: "true"
 
+      # What `cargo test` builds: the host libraries and tools with their
+      # default features, tests included. A warning fails the step
+      # (CARGO_BUILD_WARNINGS). Of the feature selections below, the ones
+      # that are only checked are linted there; the Intel ones and code
+      # behind a firmware target are not linted yet.
+      - name: Clippy
+        run: cargo clippy --all-targets
+
       - name: Tests
         env:
           RUST_MIN_STACK: 8388608
@@ -106,7 +114,7 @@ jobs:
           # loader, also without a TPM. Check the selections before boot-asset
           # jobs run.
           for features in coreboot coreboot,tcg elf; do
-            cargo check -p fstart-payload \
+            cargo clippy -p fstart-payload \
               --features "$features,fstart-stage/x86_64" --lib
           done
           cargo test -p fstart-driver-intel \
@@ -121,7 +129,7 @@ jobs:
           cargo test -p fstart-log --features debug-consoles
           # Each AMD SoC on its own: the boards select one, the tests all.
           for soc in picasso zeppelin naples rome milan; do
-            cargo check -p fstart-driver-amd --no-default-features --features "$soc"
+            cargo clippy -p fstart-driver-amd --no-default-features --features "$soc"
           done
 
       # fstart linked as a library by a foreign firmware (the AST2700
