@@ -64,7 +64,6 @@ pub mod pci_root;
 pub mod pirq;
 pub mod platform;
 pub mod processor;
-pub mod sbsa;
 pub mod slit;
 pub mod smbios;
 pub mod spcr;
