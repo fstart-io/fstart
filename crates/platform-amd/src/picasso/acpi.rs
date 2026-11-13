@@ -144,6 +144,23 @@ pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
     })
 }
 
+/// Picasso assigns the ACPI-only eMMC the synthetic requester ID 00:13.1.
+/// It is not an enumerated PCI function.
+pub fn emmc_requester() -> fstart_acpi::ivrs::DeviceEntry {
+    use fstart_acpi::ivrs::{DeviceEntry, Dte};
+    DeviceEntry::AcpiHid {
+        device: fstart_pci::bdf(0, 0x13, 1),
+        hid: *b"AMDI0040",
+        dte: (Dte::LINT1_PASS::SET
+            + Dte::LINT0_PASS::SET
+            + Dte::SYS_MGT::Translate
+            + Dte::NMI_PASS::SET
+            + Dte::EXT_INT_PASS::SET
+            + Dte::INIT_PASS::SET)
+            .value,
+    }
+}
+
 fn emmc_card() -> Result<Vec<u8>, Error> {
     use fstart_acpi::aml_linker::scope_vec;
     use fstart_acpi_macros::acpi_dsl;
@@ -177,6 +194,18 @@ mod tests {
         assert!(aml.windows(8).any(|w| w == b"AMDI0040"));
         assert!(aml.windows(4).any(|w| w == b"CARD"));
         assert!(aml.windows(4).any(|w| w == b"_RMV"));
+    }
+
+    #[test]
+    fn emmc_requester_matches_the_picasso_iommu_contract() {
+        assert_eq!(
+            emmc_requester(),
+            fstart_acpi::ivrs::DeviceEntry::AcpiHid {
+                device: 0x0099,
+                hid: *b"AMDI0040",
+                dte: 0xf7,
+            }
+        );
     }
 
     #[test]

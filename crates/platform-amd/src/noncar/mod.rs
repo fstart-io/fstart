@@ -82,6 +82,11 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
     ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
         Ok((Devices::new(), alloc::vec::Vec::new()))
     }
+    /// Non-enumerable requesters for the first die's IOMMU, supplied by the
+    /// SoC that enabled the devices.
+    fn ivrs_devices(_state: &Self::State) -> alloc::vec::Vec<fstart_acpi::ivrs::DeviceEntry> {
+        alloc::vec::Vec::new()
+    }
     /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
     /// nodes: several and not interleaved.
     fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
@@ -219,6 +224,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
         board.tables.append(&mut silicon.tables);
         board.devices.extend(silicon.devices.iter().cloned());
         board.sb_aml.extend_from_slice(&silicon.aml);
+        board.ivrs_devices.extend(S::ivrs_devices(&silicon.state));
         let ioapics: [u32; MAX_DIES] =
             core::array::from_fn(|die| S::ioapic(&silicon.state, die as u8));
         let rsdp = acpi::install::<S>(

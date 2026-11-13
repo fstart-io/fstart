@@ -63,6 +63,9 @@ pub struct BoardAcpi {
     /// Further device AML for `\_SB`: FCH controllers and the devices
     /// behind them.
     pub sb_aml: Vec<u8>,
+    /// Additional requester entries for the first die's IOMMU. The device
+    /// owner supplies ACPI-only requester IDs; they cannot be discovered on PCI.
+    pub ivrs_devices: Vec<DeviceEntry>,
 }
 
 /// FCH `_S5` type, also handed to boot-lifetime payload reset handlers.
@@ -420,9 +423,9 @@ fn ivrs(inputs: &Inputs) -> Option<Vec<u8>> {
         iommus: &iommus,
         acpi_hid: inputs
             .board
-            .devices
+            .ivrs_devices
             .iter()
-            .any(|d| d.hid.as_str() == "AMDI0040"),
+            .any(|entry| matches!(entry, DeviceEntry::AcpiHid { .. })),
     })
 }
 
@@ -466,28 +469,16 @@ fn ivrs_devices(index: usize, inputs: &Inputs) -> Vec<DeviceEntry> {
             dte: fch_ioapic_dte.value,
         },
     ];
-    // The reference assigns the ACPI-only eMMC a synthetic requester ID
-    // 00:13.1. It is not an enumerated PCI function.
-    let emmc = (index == 0
-        && inputs
-            .board
-            .devices
-            .iter()
-            .any(|d| d.hid.as_str() == "AMDI0040"))
-    .then_some(DeviceEntry::AcpiHid {
-        device: fstart_pci::bdf(0, 0x13, 1),
-        hid: *b"AMDI0040",
-        dte: (Dte::LINT1_PASS::SET
-            + Dte::LINT0_PASS::SET
-            + Dte::SYS_MGT::Translate
-            + Dte::NMI_PASS::SET
-            + Dte::EXT_INT_PASS::SET
-            + Dte::INIT_PASS::SET)
-            .value,
-    });
     own.into_iter()
         .chain(fch.into_iter().filter(|_| index == 0))
-        .chain(emmc)
+        .chain(
+            inputs
+                .board
+                .ivrs_devices
+                .iter()
+                .copied()
+                .filter(|_| index == 0),
+        )
         .collect()
 }
 
@@ -1205,6 +1196,26 @@ mod tests {
                 .any(|table| table[..4] == *b"IVRS")
         );
 
+        // Device owners can contribute arbitrary ACPI-only requesters; the
+        // common builder does not recognize their HID or infer a PCI address.
+        let requester = DeviceEntry::AcpiHid {
+            device: 0x1234,
+            hid: *b"TEST0001",
+            dte: 0xf7,
+        };
+        let with_requester = BoardAcpi {
+            ivrs_devices: vec![requester],
+            ..Default::default()
+        };
+        let contributed = Inputs {
+            board: &with_requester,
+            ..inputs
+        };
+        assert_eq!(ivrs_devices(0, &contributed).last(), Some(&requester));
+        assert!(!ivrs_devices(1, &contributed).contains(&requester));
+        let table = ivrs(&contributed).unwrap();
+        assert!(table.windows(8).any(|w| w == b"TEST0001"));
+
         // Die 0's IOMMU owns the FCH IOAPIC: no IVRS without it.
         let mut without = dies.clone();
         without[0].iommu = None;
@@ -1311,6 +1322,7 @@ mod tests {
                 .aml(0xb2),
             ]
             .concat(),
+            ..Default::default()
         };
         let mut board = board;
         board.sb_aml.extend(
@@ -1552,6 +1564,7 @@ mod tests {
                 sw_smi_base: 0xc0,
             }
             .aml(0xb2),
+            ..Default::default()
         };
         let tables = build(&Inputs {
             soc: &ACPI,

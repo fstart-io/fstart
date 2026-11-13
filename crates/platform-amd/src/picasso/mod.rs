@@ -106,6 +106,14 @@ impl noncar::DieSoc for Picasso {
         Ok((devices, aml))
     }
 
+    fn ivrs_devices(state: &State) -> alloc::vec::Vec<fstart_acpi::ivrs::DeviceEntry> {
+        state
+            .emmc
+            .into_iter()
+            .map(|_| acpi::emmc_requester())
+            .collect()
+    }
+
     /// The GPU's video ROM, if this part has a GPU: its framebuffer for the
     /// payload, and VFCT and `_ROM` for the OS.
     fn init_display(
