@@ -263,6 +263,8 @@ impl SuperIo<Pc87382Chip> {
     ) -> Result<(), fstart_core::services::device::DeviceError> {
         crate::nsc::start_external_14mhz_clock(
             &self.register::<crate::nsc::CLOCK_CONTROL::Register>(0x29),
+            0xa0,
+            crate::nsc::CLOCK_CONTROL::READY,
             timeout_ms,
             delay_us,
         )

@@ -973,6 +973,7 @@ dependencies = [
  "fstart-driver-intel",
  "fstart-driver-lenovo",
  "fstart-driver-ricoh",
+ "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-intel-gma",
  "fstart-log",

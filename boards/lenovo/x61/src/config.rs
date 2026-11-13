@@ -112,7 +112,7 @@ pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
 
 /// One source for EC transport, LPC windows, and AML resources/capabilities.
 /// The EC SCI is ICH8 GPIO2, i.e. GPE 0x12.
-pub const X61_H8: fstart_driver_lenovo::h8::H8Config = fstart_driver_lenovo::x6::h8_config(0x12);
+pub const X61_H8: fstart_driver_lenovo::h8::H8Config = crate::x6::h8_config(0x12);
 
 /// ICH8-M routing plus the devices behind the PCI bridge: the Ricoh
 /// multifunction device and the UltraBase dock slots (coreboot

@@ -53,8 +53,7 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
 pub const EC_SCI_GPIO: u8 = 12;
 
 /// One source for EC transport, LPC windows, and AML resources/capabilities.
-pub const X60_H8: fstart_driver_lenovo::h8::H8Config =
-    fstart_driver_lenovo::x6::h8_config(EC_SCI_GPIO + 16);
+pub const X60_H8: fstart_driver_lenovo::h8::H8Config = crate::x6::h8_config(EC_SCI_GPIO + 16);
 
 /// Probe VGA and the internal LVDS panel, mirroring one shared framebuffer.
 const X60_DISPLAY: IgdDisplayPolicy = IgdDisplayPolicy {
