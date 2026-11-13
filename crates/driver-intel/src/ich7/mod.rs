@@ -272,6 +272,27 @@ impl Rcba {
 // The boards and the platform name them `ich7::ich7::*`.
 #[allow(clippy::module_inception)]
 pub mod ich7 {
+    // The functions whose ACPI node this chipset emits.
+    use fstart_pci::devfn;
+    pub const HDA: u8 = devfn(HDA_DEV, HDA_FUNC);
+    pub const LPC: u8 = devfn(LPC_DEV, LPC_FUNC);
+    pub const SATA: u8 = devfn(SATA_DEV, SATA_FUNC);
+    pub const SMBUS: u8 = devfn(SMBUS_DEV, SMBUS_FUNC);
+
+    /// The functions whose ACPI node this chipset emits: the address comes
+    /// from the pair above, so `_ADR` needs no number of its own.
+    /// EHCI is function 7 on this generation, function 0 on the 5 Series
+    /// PCH and Bay Trail.
+    pub const EHCI: u8 = fstart_pci::devfn(EHCI_DEV, EHCI_FUNC);
+    pub const USB1: u8 = fstart_pci::devfn(0x1d, 0);
+    pub const USB2: u8 = fstart_pci::devfn(0x1d, 1);
+    pub const USB3: u8 = fstart_pci::devfn(0x1d, 2);
+
+    /// Root port `port` (1-based, as the firmware names them).
+    pub const fn root_port(port: u8) -> u8 {
+        fstart_pci::devfn(0x1c, port - 1)
+    }
+
     /// LPC bridge: bus 0, dev 0x1f, func 0.
     pub use crate::southbridge::lpc::{LPC_DEV, LPC_FUNC};
     /// RCBA register in LPC config.
@@ -1205,8 +1226,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         // raminit-era southbridge work.
 
         // ---- 1. Enable SMBus (must be first — raminit reads SPD) ----
-        let smbus =
-            I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
+        let smbus = I801SmBus::enable_on_i801(ich7::SMBUS, self.config.smbus_base);
         self.smbus = Some(smbus);
 
         let rcba = Rcba::new((self.config.rcba & 0xFFFF_C000) as usize);
@@ -1503,8 +1523,7 @@ impl IntelIch7 {
         // gating can still clear its decode, so re-arm it here before the
         // board hook programs the CK505 through it, matching coreboot's SMBus
         // device init ordering.
-        let _ =
-            I801SmBus::enable_on_i801(0, ich7::SMBUS_DEV, ich7::SMBUS_FUNC, self.config.smbus_base);
+        let _ = I801SmBus::enable_on_i801(ich7::SMBUS, self.config.smbus_base);
         fstart_log::info!(
             "intel-ich7: SMBus HST_STS after re-arm = {:#x}",
             self.smbus_status_probe()
@@ -2164,6 +2183,7 @@ mod acpi_impl {
     use crate::southbridge::acpi as acpi_fragments;
     use alloc::vec::Vec;
     use fstart_acpi::AcpiPath;
+    use fstart_acpi::pci_root::adr;
     use fstart_acpi::platform::{
         HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
     };
@@ -2330,7 +2350,7 @@ mod acpi_impl {
             // links every ICH shares (see `southbridge::acpi`).
             let mut lpcb: Vec<u8> = acpi_dsl! {
 
-                    Name("_ADR", 0x001F0000u32);
+                    Name("_ADR", #{dword adr(ich7::LPC)});
                     Name("_HID", EisaId("PNP0A05"));
 
                     // LPC PCI config OpRegion for PIRQ routing registers.
@@ -2390,23 +2410,30 @@ mod acpi_impl {
 
             // HDEF — HD Audio controller  0:1B.0
             // _PRW: GPE bit 5, can wake from S4.
-            pci0_aml.extend_from_slice(&acpi_fragments::hda_node());
+            pci0_aml.extend_from_slice(&acpi_fragments::hda_node(ich7::HDA));
 
             // USB UHCI controllers  0:1D.0–3
             // _PRW: GPE bit 3, can wake from S4.
             // _S3D/_S4D: highest D-state in S3/S4 (D2 — USB stays
             //   partially powered for wake-on-USB).
             // Coreboot: usb.asl USB1–USB4
-            for (index, name) in ["USB1", "USB2", "USB3", "USB4"].iter().enumerate() {
-                let adr = 0x001D_0000u32 | index as u32;
-                pci0_aml.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
+            for (function, name) in [
+                ich7::USB1,
+                ich7::USB2,
+                ich7::USB3,
+                fstart_pci::devfn(0x1d, 3),
+            ]
+            .into_iter()
+            .zip(["USB1", "USB2", "USB3", "USB4"])
+            {
+                pci0_aml.extend_from_slice(&acpi_fragments::uhci_node(name, function, 3));
             }
 
             // EHC1 — EHCI USB 2.0 controller  0:1D.7
             // Includes root hub (HUB7) with 6 port child devices.
             // _PRW: GPE bit 13, can wake from S4.
             // Coreboot: usb.asl EHC1 + HUB7
-            pci0_aml.extend_from_slice(&acpi_fragments::ehci_node("EHC1", 0x001D_0007, 13, 6));
+            pci0_aml.extend_from_slice(&acpi_fragments::ehci_node("EHC1", ich7::EHCI, 13, 6));
 
             // ---------------------------------------------------------------
             // PCIe root ports  0:1C.0–5 with APIC-mode _PRT routing.
@@ -2423,66 +2450,108 @@ mod acpi_impl {
             // devices) since the kernel uses IOAPIC when available.
             // ---------------------------------------------------------------
 
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP01", 0x001C0000, 1, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP02", 0x001C0001, 2, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP03", 0x001C0002, 3, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP04", 0x001C0003, 4, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP05", 0x001C0004, 5, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP06", 0x001C0005, 6, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP07", 0x001C0006, 7, true));
-            pci0_aml
-                .extend_from_slice(&acpi_fragments::pcie_root_port("RP08", 0x001C0007, 8, true));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP01",
+                ich7::root_port(1),
+                1,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP02",
+                ich7::root_port(2),
+                2,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP03",
+                ich7::root_port(3),
+                3,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP04",
+                ich7::root_port(4),
+                4,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP05",
+                ich7::root_port(5),
+                5,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP06",
+                ich7::root_port(6),
+                6,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP07",
+                ich7::root_port(7),
+                7,
+                true,
+            ));
+            pci0_aml.extend_from_slice(&acpi_fragments::pcie_root_port(
+                "RP08",
+                ich7::root_port(8),
+                8,
+                true,
+            ));
 
             // PCIB — PCI-to-PCI bridge  0:1E.0, with the board's `_PRT`
             // for the devices behind it.
-            pci0_aml.extend_from_slice(&acpi_fragments::pci_bridge_node(&config.pirq));
+            pci0_aml.extend_from_slice(&acpi_fragments::pci_bridge_node(
+                fstart_pci::devfn(0x1e, 0),
+                &config.pirq,
+            ));
 
             // AC’97 — audio (0:1E.2) and modem (0:1E.3).
             // Legacy audio/modem on ICH7 — behind the PCI bridge.
             // Most boards use HDA instead, but ICH7 variants still
             // have these functions.  Modem can wake from S4.
             // Coreboot: ac97.asl
-            pci0_aml.extend_from_slice(&acpi_dsl! {
+            // 0:1e.2 and 0:1e.3 are the bridges the AC'97 and modem codecs
+            // sit behind.
+            let (audio_adr, modem_adr) = (
+                adr(fstart_pci::devfn(0x1e, 2)),
+                adr(fstart_pci::devfn(0x1e, 3)),
+            );
+            pci0_aml.extend(Vec::<u8>::from(acpi_dsl! {
                 Device("AUD0") {
-                    Name("_ADR", 0x001E0002u32);
+                    Name("_ADR", #{dword audio_adr});
                 }
-            });
-            pci0_aml.extend_from_slice(&acpi_dsl! {
+            }));
+            pci0_aml.extend(Vec::<u8>::from(acpi_dsl! {
                 Device("MODM") {
-                    Name("_ADR", 0x001E0003u32);
+                    Name("_ADR", #{dword modem_adr});
                     Name("_PRW", Package(5u32, 4u32));
                 }
-            });
+            }));
 
             // SATA — SATA controller  0:1F.2
             // Primary channel (PRID) with two disk children.
             // _GTM/_STM timing methods omitted (need CreateDwordField;
             // Linux libata doesn’t use them in AHCI mode).
             // Coreboot: sata.asl
-            pci0_aml.extend_from_slice(&acpi_fragments::sata_node());
+            pci0_aml.extend_from_slice(&acpi_fragments::sata_node(ich7::SATA));
 
             // PATA — IDE / PATA controller  0:1F.1
             // Coreboot: pata.asl
-            pci0_aml.extend_from_slice(&acpi_dsl! {
+            let pata_adr = adr(fstart_pci::devfn(0x1f, 1));
+            pci0_aml.extend(Vec::<u8>::from(acpi_dsl! {
                 Device("PATA") {
-                    Name("_ADR", 0x001F0001u32);
+                    Name("_ADR", #{dword pata_adr});
                     Device("PRID") {
                         Name("_ADR", 0u32);
                         Device("DSK0") { Name("_ADR", 0u32); }
                         Device("DSK1") { Name("_ADR", 1u32); }
                     }
                 }
-            });
+            }));
 
             // SBUS — SMBus controller  0:1F.3
-            pci0_aml.extend_from_slice(&acpi_fragments::smbus_node());
+            pci0_aml.extend_from_slice(&acpi_fragments::smbus_node(ich7::SMBUS));
 
             aml.extend_from_slice(&pci0_scope_aml(pci_root, &pci0_aml));
 

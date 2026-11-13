@@ -11,6 +11,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use fstart_acpi::pci_root::adr;
 use fstart_acpi_macros::acpi_dsl;
 
 /// Legacy ISA devices behind the LPC bridge (coreboot `i82801gx/acpi/lpc.asl`).
@@ -276,12 +277,13 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
     links
 }
 
-/// HD Audio controller node (`0:1b.0`).
+/// HD Audio controller node.
 #[must_use]
-pub fn hda_node() -> Vec<u8> {
+pub fn hda_node(devfn: u8) -> Vec<u8> {
+    let adr = adr(devfn);
     acpi_dsl! {
         Device("HDEF") {
-            Name("_ADR", 0x001B0000u32);
+            Name("_ADR", #{dword adr});
             Name("_PRW", Package(5u32, 4u32));
         }
     }
@@ -293,7 +295,8 @@ pub fn hda_node() -> Vec<u8> {
 /// The address, wake GPE and device name are the chipset's own layout, so the
 /// caller supplies them; what is shared is the wake and D-state policy.
 #[must_use]
-pub fn uhci_node(name: &str, adr: u32, wake_gpe: u32) -> Vec<u8> {
+pub fn uhci_node(name: &str, devfn: u8, wake_gpe: u32) -> Vec<u8> {
+    let adr = adr(devfn);
     let body: Vec<u8> = acpi_dsl! {
         Name("_ADR", #{dword adr});
         Name("_PRW", Package(#{dword wake_gpe}, 4u32));
@@ -306,7 +309,8 @@ pub fn uhci_node(name: &str, adr: u32, wake_gpe: u32) -> Vec<u8> {
 
 /// One EHCI controller node, optionally with its root hub port children.
 #[must_use]
-pub fn ehci_node(name: &str, adr: u32, wake_gpe: u32, root_ports: u8) -> Vec<u8> {
+pub fn ehci_node(name: &str, devfn: u8, wake_gpe: u32, root_ports: u8) -> Vec<u8> {
+    let adr = adr(devfn);
     let mut body: Vec<u8> = acpi_dsl! {
         Name("_ADR", #{dword adr});
         Name("_PRW", Package(#{dword wake_gpe}, 4u32));
@@ -385,12 +389,13 @@ fn ps2_keyboard_node(hid: u32) -> Vec<u8> {
     .into()
 }
 
-/// SATA controller node (`0:1f.2`) with its port children.
+/// SATA controller node with its port children.
 #[must_use]
-pub fn sata_node() -> Vec<u8> {
+pub fn sata_node(devfn: u8) -> Vec<u8> {
+    let adr = adr(devfn);
     acpi_dsl! {
         Device("SATA") {
-            Name("_ADR", 0x001F0002u32);
+            Name("_ADR", #{dword adr});
             Device("PRID") {
                 Name("_ADR", 0u32);
                 Device("DSK0") { Name("_ADR", 0u32); }
@@ -401,22 +406,25 @@ pub fn sata_node() -> Vec<u8> {
     .into()
 }
 
-/// SMBus controller node (`0:1f.3`).
+/// SMBus controller node.
 #[must_use]
-pub fn smbus_node() -> Vec<u8> {
+pub fn smbus_node(devfn: u8) -> Vec<u8> {
+    let adr = adr(devfn);
     acpi_dsl! {
         Device("SBUS") {
-            Name("_ADR", 0x001F0003u32);
+            Name("_ADR", #{dword adr});
         }
     }
     .into()
 }
 
-/// The 0:1e.0 PCI bridge with an APIC-mode `_PRT` for the board's devices
-/// behind it (coreboot `pci.asl` plus the mainboard `ich*_pci_irqs.asl`).
+/// The PCI bridge to the board's downstream slots, with an APIC-mode `_PRT`
+/// for the devices behind it (coreboot `pci.asl` plus the mainboard
+/// `ich*_pci_irqs.asl`).
 #[must_use]
-pub fn pci_bridge_node(routing: &super::pirq::PirqRouting) -> Vec<u8> {
-    let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", 0x001E0000u32); }.into();
+pub fn pci_bridge_node(devfn: u8, routing: &super::pirq::PirqRouting) -> Vec<u8> {
+    let adr = adr(devfn);
+    let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", #{dword adr}); }.into();
     body.extend(fstart_acpi::pirq::prt_name_aml(
         routing
             .bridge_bus_routes()
@@ -431,7 +439,8 @@ pub fn pci_bridge_node(routing: &super::pirq::PirqRouting) -> Vec<u8> {
 /// maps: ports 1 and 5 start at GSI 16, ports 2 and 6 at 17, and so on.
 /// `hotplug` adds the config-space `RPCS` region the hotplug fields live in.
 #[must_use]
-pub fn pcie_root_port(name: &str, adr: u32, port: u8, hotplug: bool) -> Vec<u8> {
+pub fn pcie_root_port(name: &str, devfn: u8, port: u8, hotplug: bool) -> Vec<u8> {
+    let adr = adr(devfn);
     let base = u32::from((port - 1) % 4);
     let gsi = |offset: u32| 16 + (base + offset) % 4;
     let (a, b, c, d) = (gsi(0), gsi(1), gsi(2), gsi(3));

@@ -31,6 +31,35 @@ pub use crate::southbridge::hda::{
 // The boards and the platform name them `ich8::ich8::*`.
 #[allow(clippy::module_inception)]
 pub mod ich8 {
+    // The functions whose ACPI node this chipset emits.
+    use fstart_pci::devfn;
+    pub const LAN: u8 = devfn(LAN_DEV, LAN_FUNC);
+    pub const HDA: u8 = devfn(HDA_DEV, HDA_FUNC);
+    pub const PCI_BRIDGE: u8 = devfn(PCI_BRIDGE_DEV, PCI_BRIDGE_FUNC);
+    pub const LPC: u8 = devfn(LPC_DEV, LPC_FUNC);
+    pub const SATA: u8 = devfn(SATA_DEV, SATA_FUNC);
+    pub const SATA2: u8 = devfn(SATA2_DEV, SATA2_FUNC);
+    pub const SMBUS: u8 = devfn(SMBUS_DEV, SMBUS_FUNC);
+    pub const THERMAL: u8 = devfn(THERMAL_DEV, THERMAL_FUNC);
+
+    /// The functions whose ACPI node this chipset emits: the address comes
+    /// from the pair above, so `_ADR` needs no number of its own.
+    /// EHCI is function 7 on this generation, function 0 on the 5 Series
+    /// PCH and Bay Trail.
+    pub const EHCI1: u8 = fstart_pci::devfn(EHCI1_DEV, EHCI1_FUNC);
+    pub const EHCI2: u8 = fstart_pci::devfn(EHCI2_DEV, EHCI2_FUNC);
+    pub const USB1: u8 = fstart_pci::devfn(0x1d, 0);
+    pub const USB2: u8 = fstart_pci::devfn(0x1d, 1);
+    pub const USB3: u8 = fstart_pci::devfn(0x1d, 2);
+    pub const USB4: u8 = fstart_pci::devfn(0x1a, 0);
+    pub const USB5: u8 = fstart_pci::devfn(0x1a, 1);
+    pub const USB6: u8 = fstart_pci::devfn(0x1a, 2);
+
+    /// Root port `port` (1-based, as the firmware names them).
+    pub const fn root_port(port: u8) -> u8 {
+        fstart_pci::devfn(PCIE_DEV, port - 1)
+    }
+
     pub const LAN_DEV: u8 = 0x19;
     pub const LAN_FUNC: u8 = 0;
     pub const HDA_DEV: u8 = 0x1b;
@@ -1176,8 +1205,7 @@ impl IntelIch8 {
     fn enable_smbus(&mut self) {
         let smbus_pci = ecam::EcamDevice::new(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC);
         smbus_pci.and16(0x80, !((1 << 8) | (1 << 10) | (1 << 12) | (1 << 14)));
-        let smbus =
-            I801SmBus::enable_on_i801(0, ich8::SMBUS_DEV, ich8::SMBUS_FUNC, self.config.smbus_base);
+        let smbus = I801SmBus::enable_on_i801(ich8::SMBUS, self.config.smbus_base);
         self.smbus = Some(smbus);
     }
 
@@ -2309,6 +2337,7 @@ mod acpi_impl {
         HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
     };
 
+    use fstart_acpi::pci_root::adr;
     use fstart_acpi_macros::acpi_dsl;
 
     use super::*;
@@ -2439,34 +2468,46 @@ mod acpi_impl {
                     .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
             ));
 
-            body.extend_from_slice(&acpi_fragments::hda_node());
+            body.extend_from_slice(&acpi_fragments::hda_node(ich8::HDA));
             // UHCI controllers 1-3 live on device 0x1D, 4-6 on device 0x1A
             // (coreboot i82801ix usb.asl): device 0x1D has no function 3.
-            for (function, name) in ["USB1", "USB2", "USB3"].iter().enumerate() {
-                let adr = 0x001D_0000u32 | function as u32;
-                body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
+            for (function, name) in [
+                ich8::USB1,
+                ich8::USB2,
+                ich8::USB3,
+                ich8::USB4,
+                ich8::USB5,
+                ich8::USB6,
+            ]
+            .into_iter()
+            .zip(["USB1", "USB2", "USB3", "USB4", "USB5", "USB6"])
+            {
+                body.extend_from_slice(&acpi_fragments::uhci_node(name, function, 3));
             }
-            for (function, name) in ["USB4", "USB5", "USB6"].iter().enumerate() {
-                let adr = 0x001A_0000u32 | function as u32;
-                body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
-            }
-            body.extend_from_slice(&acpi_fragments::ehci_node("EHC1", 0x001D_0007, 13, 6));
-            body.extend_from_slice(&acpi_fragments::ehci_node("EHC2", 0x001A_0007, 13, 6));
+            body.extend_from_slice(&acpi_fragments::ehci_node("EHC1", ich8::EHCI1, 13, 6));
+            body.extend_from_slice(&acpi_fragments::ehci_node("EHC2", ich8::EHCI2, 13, 6));
             for port in 1..=6u8 {
-                let adr = 0x001C_0000u32 + u32::from(port - 1);
                 let name = alloc::format!("RP0{port}");
-                body.extend_from_slice(&acpi_fragments::pcie_root_port(&name, adr, port, false));
+                body.extend_from_slice(&acpi_fragments::pcie_root_port(
+                    &name,
+                    ich8::root_port(port),
+                    port,
+                    false,
+                ));
             }
-            body.extend_from_slice(&acpi_fragments::sata_node());
-            body.extend_from_slice(&acpi_fragments::smbus_node());
+            body.extend_from_slice(&acpi_fragments::sata_node(ich8::SATA));
+            body.extend_from_slice(&acpi_fragments::smbus_node(ich8::SMBUS));
 
             // The downstream PCI bridge carries the board's own slot layout.
-            body.extend_from_slice(&acpi_fragments::pci_bridge_node(&config.pirq));
+            body.extend_from_slice(&acpi_fragments::pci_bridge_node(
+                ich8::PCI_BRIDGE,
+                &config.pirq,
+            ));
 
             // The LPC bridge: its own register window, the shared ISA children
             // and PIRQ links, then this board's PS/2 nodes.
             let mut lpcb: Vec<u8> = acpi_dsl! {
-                Name("_ADR", 0x001F0000u32);
+                Name("_ADR", #{dword adr(ich8::LPC)});
                 OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
                 Field("LPC0", AnyAcc, NoLock, Preserve) {
                     Offset(0x40),

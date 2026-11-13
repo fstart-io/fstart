@@ -137,21 +137,24 @@ impl I801SmBus {
     /// This covers ICH7/NM10, ICH8/ICH8-M, ICH9, and later PCH parts that
     /// keep the SMBus function at a board/chipset-supplied BDF with the
     /// standard `SMB_BASE` (0x20), `HOSTC` (0x40) and PCI command registers.
-    pub fn enable_on_i801(bus: u8, dev: u8, func: u8, smbus_base: u16) -> Self {
+    pub fn enable_on_i801(devfn: u8, smbus_base: u16) -> Self {
         const SMB_BASE: u16 = 0x20;
         const HOSTC: u16 = 0x40;
         const HST_EN: u8 = 1;
         const PCI_COMMAND: u16 = 0x04;
         const PCI_CMD_IO: u16 = 0x0001;
 
-        let smbus_pci = ecam::EcamDevice::new(bus, dev, func);
+        let smbus_pci = ecam::EcamDevice::from_devfn(0, devfn);
         smbus_pci.write32(SMB_BASE, (smbus_base as u32) | 1);
         smbus_pci.write8(HOSTC, HST_EN);
         let cmd = smbus_pci.read16(PCI_COMMAND);
         smbus_pci.write16(PCI_COMMAND, cmd | PCI_CMD_IO);
         let s = Self {
             base: smbus_base,
-            bdf: Some((bus, dev, func)),
+            bdf: {
+                let (device, function) = fstart_pci::devfn_parts(devfn);
+                Some((0, device, function))
+            },
         };
         s.host_reset();
         fstart_log::info!("i801-smbus: enabled at I/O base {:#x}", smbus_base);

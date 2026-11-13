@@ -72,6 +72,14 @@ impl EcamDevice {
         Self::new_address(PciAddress::new(0, bus, device, function))
     }
 
+    /// Create a segment-zero handle for the 8-bit `devfn` a chipset table
+    /// holds ([`crate::devfn`]).
+    #[inline]
+    pub fn from_devfn(bus: u8, devfn: u8) -> Self {
+        let (device, function) = crate::devfn_parts(devfn);
+        Self::new(bus, device, function)
+    }
+
     /// Return the PCI function address.
     #[inline]
     pub fn address(&self) -> PciAddress {

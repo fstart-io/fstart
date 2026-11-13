@@ -32,12 +32,13 @@ static IOAPICS: [IoApicConfig; 1] = [IoApicConfig {
 /// not a fixed A-D to GSI16-19 assumption.
 fn root_port_aml(
     name: &str,
-    adr: u32,
+    devfn: u8,
     port: u8,
     hotplug: bool,
     routing: &crate::southbridge::pirq::PirqRouting,
 ) -> Vec<u8> {
     use crate::southbridge::pirq::PciPin;
+    let adr = fstart_acpi::pci_root::adr(devfn);
     let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", #{dword adr}); }.into();
     if hotplug {
         let region: Vec<u8> = acpi_dsl! {
@@ -248,43 +249,49 @@ impl SouthbridgeAcpi for IntelIch9 {
                 .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
         ));
 
-        body.extend_from_slice(&acpi_fragments::hda_node());
+        body.extend_from_slice(&acpi_fragments::hda_node(ich9::HDA));
         // ICH9 USB1-3 are on 0x1D, USB4-6 on 0x1A; 0x1D has no function 3.
-        for (function, name) in ["USB1", "USB2", "USB3"].iter().enumerate() {
-            let adr = 0x001D_0000u32 | function as u32;
-            body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
+        for (function, name) in [
+            ich9::USB1,
+            ich9::USB2,
+            ich9::USB3,
+            ich9::USB4,
+            ich9::USB5,
+            ich9::USB6,
+        ]
+        .into_iter()
+        .zip(["USB1", "USB2", "USB3", "USB4", "USB5", "USB6"])
+        {
+            body.extend_from_slice(&acpi_fragments::uhci_node(name, function, 3));
         }
-        for (function, name) in ["USB4", "USB5", "USB6"].iter().enumerate() {
-            let adr = 0x001A_0000u32 | function as u32;
-            body.extend_from_slice(&acpi_fragments::uhci_node(name, adr, 3));
-        }
-        body.extend_from_slice(&acpi_fragments::ehci_node("EHC1", 0x001D_0007, 13, 6));
-        body.extend_from_slice(&acpi_fragments::ehci_node("EHC2", 0x001A_0007, 13, 6));
+        body.extend_from_slice(&acpi_fragments::ehci_node("EHC1", ich9::EHCI1, 13, 6));
+        body.extend_from_slice(&acpi_fragments::ehci_node("EHC2", ich9::EHCI2, 13, 6));
         for port in 1..=6u8 {
-            let adr = 0x001C_0000u32 + u32::from(port - 1);
             let name = alloc::format!("RP0{port}");
             body.extend_from_slice(&root_port_aml(
                 &name,
-                adr,
+                ich9::root_port(port),
                 port,
                 config.pcie_hotplug[(port - 1) as usize],
                 routing,
             ));
         }
-        body.extend_from_slice(&acpi_fragments::sata_node());
-        body.extend_from_slice(&acpi_fragments::smbus_node());
+        body.extend_from_slice(&acpi_fragments::sata_node(ich9::SATA));
+        body.extend_from_slice(&acpi_fragments::smbus_node(ich9::SMBUS));
 
         // Downstream slot wiring belongs to the board, not the ICH9.
+        let pci_bridge_adr = fstart_acpi::pci_root::adr(ich9::PCI_BRIDGE);
         let pcib: Vec<u8> = acpi_dsl! {
             Device("PCIB") {
-                Name("_ADR", 0x001E0000u32);
+                Name("_ADR", #{dword pci_bridge_adr});
             }
         }
         .into();
         body.extend_from_slice(&pcib);
 
+        let lpc_adr = fstart_acpi::pci_root::adr(ich9::LPC);
         let mut lpcb: Vec<u8> = acpi_dsl! {
-            Name("_ADR", 0x001F0000u32);
+            Name("_ADR", #{dword lpc_adr});
             OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
             Field("LPC0", AnyAcc, NoLock, Preserve) {
                 Offset(0x40),
@@ -335,7 +342,13 @@ mod tests {
 
     #[test]
     fn pcie_prt_follows_the_programmed_ich9_d28ir() {
-        let aml = root_port_aml("RP01", 0x001c_0000, 1, false, &super::super::tests::ROUTING);
+        let aml = root_port_aml(
+            "RP01",
+            ich9::root_port(1),
+            1,
+            false,
+            &super::super::tests::ROUTING,
+        );
         assert!(aml.windows(5).any(|bytes| bytes == [0x0c, 22, 0, 0, 0]));
     }
 

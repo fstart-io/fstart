@@ -14,7 +14,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 /// HECI/MEI #1.
-const HECI: (u8, u8) = (0x16, 0);
+const HECI: u8 = fstart_pci::devfn(0x16, 0);
 /// coreboot `ME_RETRY` × `ME_DELAY`: one second.
 const ME_RETRY: u32 = 100_000;
 const ME_DELAY_US: u32 = 10;
@@ -236,7 +236,7 @@ impl Mei {
 }
 
 fn heci() -> EcamDevice {
-    EcamDevice::new(0, HECI.0, HECI.1)
+    EcamDevice::from_devfn(0, HECI)
 }
 
 /// The register state the raminit UMA handshake touches on both DMI ends.
