@@ -182,6 +182,7 @@ pub fn d945gclf_superio_config() -> smsc_lpc47m15x::SmscLpc47m15xConfig {
             io_base: 0x60,
             io_ext: 0x64,
             irq: 1,
+            enable_keyboard_irq: true,
         }),
         // The LPC47M15x KBC LDN covers keyboard only; coreboot runs
         // `pc_keyboard_init(NO_AUX_DEVICE)` on this board.

@@ -261,6 +261,9 @@ pub fn d41s_superio_config() -> ite8721f::Ite8721fConfig {
             io_base: 0x60,
             io_ext: 0x64,
             irq: 1,
+            // Enabling KBC IRQs leaves a pending/stuck SERIRQ at Linux entry.
+            // Linux unmasks IRQ1/IRQ12 after installing its own handlers.
+            enable_keyboard_irq: false,
         }),
         mouse: Some(ite8721f::MouseConfig { irq: 12 }),
         cir: Some(ite8721f::CirConfig {

@@ -272,6 +272,7 @@ pub fn mb899_superio_config() -> SuperIoConfig {
             io_base: 0x60,
             io_ext: 0x64,
             irq: 1,
+            enable_keyboard_irq: true,
         }),
         mouse: Some(MouseConfig { irq: 12 }),
         acpi_name: Some(hstr("SIO1")),
