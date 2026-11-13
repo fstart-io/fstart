@@ -29,9 +29,9 @@
 //! The SoC's driver (`fstart_driver_amd::soc`) owns the silicon. What the
 //! flow needs to know of a SoC beyond its silicon is [`Soc`]: where its
 //! memory map and boot media come from, its SMM handler and its tables.
-#[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+#[cfg(all(feature = "bundle", target_os = "none"))]
 mod stage;
-#[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+#[cfg(all(feature = "bundle", target_os = "none"))]
 pub use stage::{
     Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, enter, fail,
 };
@@ -41,11 +41,7 @@ pub use fstart_driver_amd::soc::{Ctx, Memory};
 use fstart_driver_amd::{apob::Apob, soc::Init};
 
 /// Devices on buses the platform set up, for CrabEFI's drivers.
-#[cfg(all(
-    any(feature = "bundle", feature = "bundle-stage"),
-    target_os = "none",
-    feature = "payload-uefi-basic"
-))]
+#[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
 pub type Peripherals = alloc::vec::Vec<fstart_payload::crabefi::peripheral::Peripheral>;
 
 /// The fixed-address devices a SoC reports, shared by ACPI and payload
@@ -78,7 +74,7 @@ pub trait Soc: Init {
 
     /// The most CPUs of a board with `config`.
     fn max_cpus(config: &Self::Config) -> u16;
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     /// With the console: the APOB, the memory map with TSEG, the cache
     /// plan and the verified FFS, mounted before the silicon init (MP init
     /// loads the CPUs' microcode from it). The SoC may adjust `config`
@@ -89,7 +85,7 @@ pub trait Soc: Init {
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         clock: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<Mapped<Self>, &'static str>;
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     /// RAM the SMM handler needs kept from the OS, known once the CPUs are
     /// up. The flow takes it out of the memory map before
     /// [`Soc::install_smm`].
@@ -99,7 +95,7 @@ pub trait Soc: Init {
     ) -> Result<Reserved, &'static str> {
         Ok(Reserved::new())
     }
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     /// Install the board's SMM handler on every CPU `mp` brought up and
     /// give the PSP its SMM info.
     fn install_smm(
@@ -127,7 +123,7 @@ pub trait Soc: Init {
     ) -> Result<(), &'static str> {
         Ok(())
     }
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     /// Install ACPI with the board's `acpi` and SMBIOS with its `smbios`,
     /// from what the silicon reports and `pci` enumerated.
     fn tables(
@@ -138,7 +134,7 @@ pub trait Soc: Init {
         smbios: &crate::acpi::SmbiosIdentity<'_>,
         acpi: crate::acpi::Board,
     ) -> Tables;
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     /// Page tables for what the payload reaches beyond the reset entry's
     /// identity map.
     fn map_payload_ram(
@@ -149,16 +145,12 @@ pub trait Soc: Init {
     }
 
     /// The board's devices for CrabEFI to drive, after the buses are set up.
-    #[cfg(all(
-        any(feature = "bundle", feature = "bundle-stage"),
-        target_os = "none",
-        feature = "payload-uefi-basic"
-    ))]
+    #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
     fn peripherals(_ctx: &Ctx<'_, Self>, _config: &Self::Config) -> Peripherals {
         Peripherals::new()
     }
     /// Start the payload with `handoff`.
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     fn launch(
         handoff: fstart_payload::Handoff<'_>,
         _ctx: &Ctx<'_, Self>,

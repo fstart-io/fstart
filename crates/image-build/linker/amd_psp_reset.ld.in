@@ -24,6 +24,11 @@ MEMORY {
     STACK (rw)  : ORIGIN = @STACK_BASE@, LENGTH = @STACK_SIZE@
 }
 
+/* The reset entry's write-back MTRR window and page-table count. */
+_amd_reset_cache_base = @CACHE_BASE@;
+_amd_reset_cache_mask = @CACHE_MASK@;
+_amd_reset_pdpts = @PDPTS@;
+
 SECTIONS {
     .text ORIGIN(IMAGE) : {
         _text_start = .;

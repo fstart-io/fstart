@@ -239,16 +239,6 @@ pub trait Sp3BoardFacts {
     const FLASH_MIRRORS: &'static [u32] = &[];
 }
 
-/// Whether this build carries `generation`'s silicon code (its platform
-/// feature).
-pub const fn compiled(generation: Generation) -> bool {
-    match generation {
-        Generation::Naples => cfg!(feature = "naples"),
-        Generation::Rome => cfg!(feature = "rome"),
-        Generation::Milan => cfg!(feature = "milan"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

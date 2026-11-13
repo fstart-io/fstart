@@ -12,7 +12,6 @@ use fstart_driver_amd::sp3::soc::Generation;
 
 use crate::acpi::{S5_SLEEP_TYPE, SocAcpi, Wake, prt};
 
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod cppc;
 pub mod einj;
 

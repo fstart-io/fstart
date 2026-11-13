@@ -17,7 +17,7 @@ use fstart_driver_amd::{
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Zeppelin {
     const POLICY: noncar::host::Policy = noncar::host::Policy {
-        feature: "bundle-zeppelin",
+        feature: "bundle",
         payloads: true,
         smm: true,
         release_only: false,

@@ -21,7 +21,7 @@ pub const fn of(generation: Generation) -> SocSmbios {
 /// their entry point's address. `rom_size` is the image extent recorded by
 /// the flash anchor, not a possibly partial EFS mapping or a physical
 /// flash-geometry measurement.
-#[cfg(all(feature = "bundle-stage", target_os = "none"))]
+#[cfg(all(feature = "bundle", target_os = "none"))]
 pub(crate) fn install(
     ctx: &crate::sp3::flow::Ctx<'_>,
     cpus: &crate::mp::Cpus,

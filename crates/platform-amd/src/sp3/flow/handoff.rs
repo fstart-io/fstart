@@ -10,7 +10,6 @@ use super::{Ctx, OrHalt};
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi` with what SP3
 /// adds, `crate::sp3::acpi`); returns the RSDP address. The tables live in
 /// the stage heap, inside the reserved early region.
-#[cfg(feature = "acpi")]
 pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
     ctx: &Ctx<'_>,
     si: &S,
@@ -28,7 +27,6 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
 
     let numa_plan = S::numa(ctx.soc, si);
     // Naples has no CPPC through the SMU.
-    #[cfg(any(feature = "rome", feature = "milan"))]
     let cppc: Vec<_> = ctx
         .soc
         .cppc
@@ -53,10 +51,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
                 .as_ref()
                 .and_then(|n| n.cpus.get(i).copied())
                 .unwrap_or(0),
-            #[cfg(any(feature = "rome", feature = "milan"))]
             aml: crate::sp3::acpi::cppc::cpc(&cppc, apic_id).or_halt("ACPI tables"),
-            #[cfg(not(any(feature = "rome", feature = "milan")))]
-            aml: Vec::new(),
         })
         .collect();
     let root_bridges: Vec<RootBridgeAcpi<'_>> = ctx
@@ -131,10 +126,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
         }
     };
     // EINJ, then the PCCT of the SMU-served CPPC.
-    #[cfg(any(feature = "rome", feature = "milan"))]
     let pcct = crate::sp3::acpi::cppc::pcct(&cppc);
-    #[cfg(not(any(feature = "rome", feature = "milan")))]
-    let pcct = None;
     let tables: Vec<Vec<u8>> = einj_supported
         .then(einj::table)
         .into_iter()
@@ -206,7 +198,6 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
 }
 
 /// The IOMMU capability and MMIO registers IVRS copies (ACPI_SMM §3.6).
-#[cfg(feature = "acpi")]
 fn iommu_registers(
     info: &fstart_driver_amd::sp3::nbio::iommu::IommuInfo,
 ) -> fstart_acpi::ivrs::IommuRegisters {

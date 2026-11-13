@@ -64,10 +64,8 @@ use crate::flow::{Ctx, Early, Mapped, Reserved, Silicon as Up, Stage, Tables};
 /// An SP3 family `F` (its silicon steps) on the flow.
 pub struct Sp3<F>(PhantomData<F>);
 /// Naples: DF2, an NBIO and SMU V9 per die.
-#[cfg(feature = "naples")]
 pub type Naples = Sp3<soc::naples::Silicon>;
 /// Rome and Milan: DF3, SMU V11 per IOD.
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub type RomeMilan = Sp3<soc::rome_milan::Silicon>;
 
 /// The silicon steps of one family, which a board's flow is generic over:
@@ -128,14 +126,12 @@ pub struct Flow {
     rom_size: u32,
 }
 
-/// The running CPU's family: what [`start`] returns. A board matches the
-/// families it carries and calls its flow with each; a build carries only
-/// the families its features enable.
+/// The running CPU's family: what [`start`] returns. A board calls its
+/// flow with each family it carries and [`Identified::unsupported`] for the
+/// others; only the flows it calls are linked.
 pub enum Start<B> {
-    #[cfg(feature = "naples")]
     Naples(Identified<B, soc::naples::Silicon>),
     /// Rome and Milan share their steps (Milan deltas inline).
-    #[cfg(any(feature = "rome", feature = "milan"))]
     RomeMilan(Identified<B, soc::rome_milan::Silicon>),
 }
 
@@ -154,18 +150,15 @@ fn unsupported_cpu() -> ! {
     fstart_arch::x86::boot::halt()
 }
 
-/// Identify the CPU.
+/// Identify the CPU. A generation the board does not list halts at POST 13.
 pub fn start<B: Board>() -> Start<B> {
     let generation = identify().generation();
+    if !B::GENERATIONS.contains(&generation) {
+        unsupported_cpu()
+    }
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => Start::Naples(Identified::new(generation)),
-        #[cfg(feature = "rome")]
-        Generation::Rome => Start::RomeMilan(Identified::new(generation)),
-        #[cfg(feature = "milan")]
-        Generation::Milan => Start::RomeMilan(Identified::new(generation)),
-        #[allow(unreachable_patterns)]
-        _ => unsupported_cpu(),
+        Generation::Rome | Generation::Milan => Start::RomeMilan(Identified::new(generation)),
     }
 }
 
@@ -187,6 +180,12 @@ impl<B: Board, F: Silicon> Identified<B, F> {
     /// The running CPU's generation.
     pub fn generation(&self) -> Generation {
         self.generation
+    }
+
+    /// A family the board does not carry: halt at POST 13, before the
+    /// console (its FCH code is not linked).
+    pub fn unsupported(self) -> ! {
+        unsupported_cpu()
     }
 
     /// ECAM, then socket 0's FCH reset tasks with the board's silicon

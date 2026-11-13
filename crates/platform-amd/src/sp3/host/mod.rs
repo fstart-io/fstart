@@ -49,15 +49,15 @@ use fstart_image_build::sp3_flash::{
 };
 
 use crate::sp3::layout::{
-    self, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK, STORE,
-    Sp3BoardFacts, Span,
+    self, CACHE_WINDOW, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK,
+    STORE, Sp3BoardFacts, Span,
 };
 
 /// The firmware unit (and FFS file) name of the stage, which the PSP
 /// copies to DRAM as the BIOS reset image.
 pub const STAGE_UNIT: &str = "stage";
 /// Platform feature that bundles the stage runtime.
-pub const STAGE_FEATURE: &str = "bundle-stage";
+pub const STAGE_FEATURE: &str = "bundle";
 /// The SMM image unit; the stage unit is its only consumer.
 pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
@@ -87,8 +87,8 @@ impl<B: Sp3BoardFacts> Plan<B> {
     }
 }
 
-/// The platform feature of a generation.
-pub const fn feature(generation: Generation) -> &'static str {
+/// The name of a generation's firmware tables (`[package.metadata.fstart.amd.<name>]`).
+pub const fn soc_name(generation: Generation) -> &'static str {
     match generation {
         Generation::Naples => "naples",
         Generation::Rome => "rome",
@@ -121,6 +121,7 @@ fn reset_layout() -> reset::Layout {
         data: plan_span(DATA),
         heap: plan_span(HEAP),
         stack: plan_span(STACK),
+        cache: plan_span(CACHE_WINDOW),
     }
 }
 
@@ -160,11 +161,7 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
         name: SMM_UNIT.into(),
         cargo_target: CargoTarget::BoardLibrary,
         target: "x86_64-unknown-none".into(),
-        features: SMM_FEATURES
-            .into_iter()
-            .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
-            .map(String::from)
-            .collect(),
+        features: SMM_FEATURES.into_iter().map(String::from).collect(),
         build_std: None,
         release_only: true,
         linker_script: None,
@@ -358,15 +355,6 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     if B::GENERATIONS.is_empty() {
         return Err("the board lists no SP3 generation".into());
     }
-    // The board crate enables the generation features it lists; the host
-    // runner builds the platform with them, so this checks the board.
-    if let Some(g) = B::GENERATIONS.iter().find(|&&g| !layout::compiled(g)) {
-        return Err(format!(
-            "board lists {} but does not enable fstart-platform-amd/{}",
-            g.name(),
-            feature(*g)
-        ));
-    }
     let payload = Payload::select(selection)?;
     if !selection.compiler_files.is_empty() {
         return Err("SP3 takes no compiler file inputs".into());
@@ -380,7 +368,6 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         cargo_target: CargoTarget::BoardBinary,
         target: "x86_64-unknown-none".into(),
         features: core::iter::once(STAGE_FEATURE)
-            .chain(B::GENERATIONS.iter().map(|&g| feature(g)))
             .chain(payload.features().iter().copied())
             .map(String::from)
             .collect(),
@@ -478,7 +465,7 @@ fn packed<B: Sp3BoardFacts>(
     let mut halves = vec![];
     let mut files = heapless::Vec::new();
     for generation in generations {
-        let soc_name = feature(generation);
+        let soc_name = soc_name(generation);
         let board = boards
             .iter()
             .find(|board| board.soc == soc_name)
@@ -582,7 +569,7 @@ mod tests {
         let plan = resolve::<S8030>(&BuildSelection::default()).unwrap();
         assert_eq!(plan.stages, [STAGE_UNIT]);
         let unit = plan.unit(STAGE_UNIT).unwrap();
-        assert_eq!(unit.features, [STAGE_FEATURE, "rome", "milan"]);
+        assert_eq!(unit.features, [STAGE_FEATURE]);
         assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::Executable {
             expectations,
@@ -689,7 +676,7 @@ mod tests {
         assert_eq!(order, [SMM_UNIT, STAGE_UNIT]);
         let smm = plan.unit(SMM_UNIT).unwrap();
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
-        assert_eq!(smm.features, ["smm", "bundle-smm", "rome", "milan"]);
+        assert_eq!(smm.features, ["smm", "bundle-smm"]);
         assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));
         assert_eq!(smm.environment_values["FSTART_MP_MAX_CPUS"], "256");
         let UnitOutput::SmmImage {

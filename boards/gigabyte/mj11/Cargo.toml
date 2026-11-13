@@ -34,7 +34,7 @@ ec0 = []
 smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
-fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["zeppelin"] }
+fstart-platform-amd = { path = "../../../crates/platform-amd" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-driver-amd = { path = "../../../crates/driver-amd" }
 fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }

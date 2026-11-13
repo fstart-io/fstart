@@ -98,7 +98,6 @@ pub(crate) fn measure_smm(image: &'static [u8]) {
 
 /// The ACPI description of the TPM measured boot started on. A TPM that
 /// could not start, also an owner-disabled TPM 1.2, is not described.
-#[cfg(feature = "acpi")]
 pub(crate) fn acpi() -> Option<fstart_acpi::devices::tpm::TpmTisAcpi> {
     use fstart_acpi::devices::tpm::{LogArea, TpmFamily, TpmTisAcpi};
     let log = fstart_tcg::log()?;

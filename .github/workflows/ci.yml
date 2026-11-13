@@ -127,19 +127,11 @@ jobs:
           cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles
-          # The AMD drivers as firmware links them: every IP block, no
-          # optional parts.
-          cargo clippy -p fstart-driver-amd \
+          # The AMD drivers and the AMD stage as firmware links them: every
+          # IP block and every SoC; a board links what its SoCs reach.
+          cargo clippy -p fstart-driver-amd -p fstart-platform-amd \
             --target x86_64-unknown-none -Zbuild-std=core,alloc \
-            --no-default-features
-          # And the stage of each SP3 generation on its own: an SP3 board
-          # enables the generations it supports, and none is Naples or Rome
-          # only.
-          for soc in naples rome milan; do
-            cargo clippy -p fstart-platform-amd \
-              --target x86_64-unknown-none -Zbuild-std=core,alloc \
-              --no-default-features --features "$soc,bundle-stage"
-          done
+            --features fstart-platform-amd/bundle
 
       # fstart linked as a library by a foreign firmware (the AST2700
       # BootMCU, riscv32imc) and the ARMv5TE BMC cores: neither has

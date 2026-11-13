@@ -52,7 +52,7 @@ pub const LAYOUT: Layout = Layout {
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Picasso {
     const POLICY: noncar::host::Policy = noncar::host::Policy {
-        feature: "bundle-picasso",
+        feature: "bundle",
         payloads: true,
         smm: true,
         release_only: true,

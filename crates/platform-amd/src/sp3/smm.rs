@@ -111,13 +111,13 @@ impl SmmConfig {
 }
 
 /// The FCH side of SMM installation on socket 0's FCH.
-#[cfg(feature = "bundle-stage")]
+#[cfg(feature = "bundle")]
 pub struct Sp3Smi<'a> {
     pub fch: &'a fstart_driver_amd::sp3::soc::hw::PrimaryFch,
     pub config: SmmConfig,
 }
 
-#[cfg(feature = "bundle-stage")]
+#[cfg(feature = "bundle")]
 impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
     type HandlerConfig = SmmConfig;
 
@@ -140,7 +140,6 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
     fn enable_smi(&self) {
         use fstart_driver_amd::sp3::fch::FchHw;
         fstart_driver_amd::sp3::fch::smi::enable_boot_sources(self.fch.acpi());
-        #[cfg(any(feature = "rome", feature = "milan"))]
         if self.config.generation == Generation::Rome {
             fstart_driver_amd::sp3::fch::huashan::smm::arm_cf9_trap(self.fch);
         }
@@ -149,7 +148,7 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 
 /// The FCH bits AGESA sets before SmmInfo (PSP_APOB §3.3): SmiStatus1
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
-#[cfg(feature = "bundle-stage")]
+#[cfg(feature = "bundle")]
 pub fn prepare_psp_smi(fch: &fstart_driver_amd::sp3::soc::hw::PrimaryFch) {
     use fstart_driver_amd::sp3::fch::{FchHw, acpimmio};
     use fstart_driver_amd::window::{Window, update};
@@ -337,7 +336,6 @@ mod handler {
                 // The local SMI status, not this forgeable command, authorizes
                 // MCA capture and native #MC handoff in `enter_cpu`.
                 super::ras::MCE_SMI_COMMAND | super::ras::DIAG_COMMAND => {}
-                #[cfg(feature = "milan")]
                 smi::sw::FCH_LOCK if generation == Generation::Milan => fch_lock(config, &timer),
                 command => {
                     if let Some(bmc) = config.bmc {
@@ -369,7 +367,6 @@ mod handler {
             update::<u32, _>(acpi, smi::TRIG0, PSP_TRIGGER, 0);
             smi::clear(acpi, PSP_SMI);
         }
-        #[cfg(any(feature = "rome", feature = "milan"))]
         if generation == Generation::Rome
             && fstart_driver_amd::sp3::fch::huashan::smm::take_cf9_trap(&hw)
         {
@@ -385,12 +382,10 @@ mod handler {
         // SAFETY: the handler owns this bus's SMN index/data pair while it runs.
         let smn = unsafe { Smn::on_bus(Ecam, 0) };
         let (regs, limit) = match generation {
-            #[cfg(feature = "naples")]
             Generation::Naples => (
                 fstart_driver_amd::smu::v9::MAILBOX,
                 fstart_driver_amd::smu::v9::ID_LIMIT,
             ),
-            #[cfg(any(feature = "rome", feature = "milan"))]
             Generation::Rome | Generation::Milan => {
                 use fstart_driver_amd::smu::v11;
                 (v11::MAILBOX, v11::id_limit(generation))
@@ -479,7 +474,6 @@ mod handler {
         config: &SmmConfig,
         address: u64,
     ) -> Option<fstart_driver_amd::psp::ras::MemoryTarget> {
-        #[cfg(feature = "rome")]
         if config.generation == Generation::Rome {
             use fstart_driver_amd::df::{FICAA, FICAD_LO, Ficaa, ficaa};
             use fstart_pci::ConfigRegister;
@@ -583,7 +577,6 @@ mod handler {
     }
 
     /// SW SMI D2 (Milan ReadyToBoot): LockFCHReg through the C2P page.
-    #[cfg(feature = "milan")]
     fn fch_lock(config: &SmmConfig, timer: &Tsc) {
         use fstart_driver_amd::psp::command::LockFchReg;
         let page = C2P.0.get().cast::<u8>();

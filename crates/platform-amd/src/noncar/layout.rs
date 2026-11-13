@@ -83,7 +83,7 @@ impl Layout {
     }
 }
 
-#[cfg(all(test, feature = "picasso", feature = "zeppelin"))]
+#[cfg(test)]
 mod tests {
     #[test]
     fn cache_windows_cover_the_early_regions() {

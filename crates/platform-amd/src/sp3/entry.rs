@@ -3,9 +3,9 @@
 //! The PSP copies BIOS directory entry `0x62` to DRAM and releases the BSP
 //! at its last 16 bytes (`0x75ff_fff0`, 16-bit, CS base `0x75ff_0000`); the
 //! SMU later releases each AP into the same vector. The arch crate's
-//! shared `asm/amd_psp_reset.S` (compiled here when the build unit selects
-//! `feature = "bundle-stage"`, which also compiles out the arch crate's own
-//! reset vector):
+//! shared `asm/amd_psp_reset.S` (its `amd-psp-reset` feature, which the
+//! stage bundle selects; the linker script gives it the window and the
+//! page-table count):
 //!
 //! 1. splits BSP and APs on `APIC_BAR.BSP`, as the vendor SEC does;
 //! 2. BSP: saves the BIST (`EAX`), loads its GDT, enters protected mode,
@@ -36,18 +36,9 @@
 
 // The stage bundle links the stage runtime (allocator, anchor, the
 // arch entry `_start_ram` jumps into) even before the flow calls into it.
-#[cfg(feature = "bundle-stage")]
+#[cfg(feature = "bundle")]
 use fstart_stage as _;
 
-#[cfg(all(target_os = "none", feature = "bundle-stage"))]
-core::arch::global_asm!(
-    include_str!("../../../arch/asm/amd_psp_reset.S"),
-    cache_base = const crate::sp3::layout::CACHE_WINDOW.base,
-    cache_mask = const !(crate::sp3::layout::CACHE_WINDOW.size - 1) & 0xffff_ffff,
-    pdpts = const crate::sp3::layout::PDPT_COUNT,
-    options(att_syntax),
-);
-
 pub use fstart_arch::x86::psp_reset::{ApRoute, RouteError};
-#[cfg(all(target_os = "none", feature = "bundle-stage"))]
+#[cfg(all(target_os = "none", feature = "bundle"))]
 pub use fstart_arch::x86::psp_reset::{bsp_bist, set_ap_route};

@@ -31,7 +31,7 @@ default = []
 smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
-fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["acpi", "milan"] }
+fstart-platform-amd = { path = "../../../crates/platform-amd" }
 fstart-driver-amd = { path = "../../../crates/driver-amd" }
 fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
 fstart-core = { path = "../../../crates/core" }

@@ -24,9 +24,6 @@ pub(crate) mod handoff;
 pub(crate) mod options;
 pub(crate) mod tpm;
 
-#[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
-compile_error!("a stage build enables at least one of naples, rome, milan");
-
 /// Halt after logging a failed step; the POST code of the step stays on
 /// port 80h.
 pub(crate) fn fail(step: &str) -> ! {
@@ -293,13 +290,11 @@ pub(crate) fn cache_ram(regions: &[Region]) {
 /// Select scratch pages using the live routing map, and name those the
 /// flow has to take out of the memory map (`reserved`) before
 /// [`clear_einj_scratch`] and the SMM installation.
-#[cfg_attr(not(feature = "rome"), allow(unused_variables))]
 pub(crate) fn plan_einj(
     ctx: &soc::Ctx,
     e820: &E820State,
     reserved: &mut crate::flow::Reserved,
 ) -> Option<crate::sp3::smm::EinjConfig> {
-    #[cfg(feature = "rome")]
     if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
         use fstart_driver_amd::{
             df::Target,

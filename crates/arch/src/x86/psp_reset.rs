@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The AP side of the shared AMD PSP-copied reset entry
-//! (`asm/amd_psp_reset.S`), which platforms include with their own cache
-//! window and page-table count.
+//! The shared AMD PSP-copied reset entry (`asm/amd_psp_reset.S`), built
+//! with the `amd-psp-reset` feature, and its AP side. The image's linker
+//! script gives the entry its write-back window and page-table count
+//! (`_amd_reset_cache_base`, `_amd_reset_cache_mask`, `_amd_reset_pdpts`),
+//! so one entry serves every AMD SoC's layout.
 //!
 //! The SMU releases the APs into the reset vector the BSP came through.
 //! They park there until the MP code arms a route to the SIPI trampoline,
@@ -53,6 +55,12 @@ impl ApRoute {
         (self.segment as u32) << 16 | self.offset as u32
     }
 }
+
+#[cfg(all(target_os = "none", feature = "amd-psp-reset"))]
+core::arch::global_asm!(
+    include_str!("../../asm/amd_psp_reset.S"),
+    options(att_syntax)
+);
 
 #[cfg(all(target_os = "none", feature = "amd-psp-reset"))]
 mod runtime {

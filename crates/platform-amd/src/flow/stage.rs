@@ -273,7 +273,6 @@ impl<S: Soc, P> Stage<S, P> {
     }
 
     /// What the SoC's services keep between the phases.
-    #[cfg_attr(not(feature = "sp3"), allow(dead_code))]
     pub(crate) fn flow_mut(&mut self) -> &mut S::Flow {
         &mut self.machine.flow
     }
