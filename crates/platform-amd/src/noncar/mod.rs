@@ -10,8 +10,8 @@ pub mod boot;
 pub mod host;
 pub mod layout;
 pub mod memory;
-#[cfg(all(feature = "bundle", target_os = "none"))]
-mod smbios;
+#[cfg(feature = "acpi")]
+pub mod smbios;
 pub mod smm;
 
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
@@ -24,6 +24,7 @@ pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
 pub use fstart_driver_amd::soc::Hw;
 
 use crate::acpi::SocAcpi;
+use crate::smbios::SocSmbios;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_driver_amd::{df::Die, soc::Init};
 use fstart_pci::ecam::GlobalEcam;
@@ -67,12 +68,17 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
     /// The most CPUs of the SoC's packages.
     const MAX_CPUS: u16;
     /// What the SMBIOS tables say of the package and its memory.
-    const SMBIOS: SmbiosFacts;
+    const SMBIOS: SocSmbios;
     /// What the SoC's ACPI tables differ in.
     const ACPI: &'static SocAcpi;
 
     /// The NBIO IOAPIC of `die`.
     fn ioapic(state: &Self::State, die: u8) -> u32;
+    /// The DXIO engines of each die, in die order: what the board
+    /// attaches to the PCIe ports.
+    fn descriptors(_config: &Self::Config) -> &[&'static [fstart_driver_amd::dxio::Descriptor]] {
+        &[]
+    }
     /// The SoC's own controllers for the tables, once the silicon init is
     /// done: the enabled fixed-address devices and further `\_SB` AML (FCH
     /// controllers and the devices behind them).
@@ -84,7 +90,7 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
     }
     /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
     /// nodes: several and not interleaved.
-    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
+    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<DieMemory> {
         None
     }
     /// The display, at ready to boot ([`crate::flow::Soc::init_display`]).
@@ -105,8 +111,6 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
 impl<S: DieSoc> crate::flow::Soc for S {
     const TSEG_SIZE: u32 = TSEG_SIZE;
     type Flow = ();
-    type Smbios<'a> = crate::acpi::SmbiosIdentity<'a>;
-    type Acpi<'a> = crate::acpi::BoardAcpi;
 
     fn max_cpus(_: &S::Config) -> u16 {
         S::MAX_CPUS
@@ -209,33 +213,19 @@ impl<S: DieSoc> crate::flow::Soc for S {
         pci: &fstart_pci::PciEcam,
         (): &(),
         identity: &crate::acpi::SmbiosIdentity<'_>,
-        mut board: crate::acpi::BoardAcpi,
+        board: crate::acpi::Board,
     ) -> Tables {
-        let hosts: heapless::Vec<acpi::HostBridge, MAX_DIES> = pci
-            .roots()
-            .iter()
-            .map(|root| acpi::HostBridge::new(root, pci))
-            .collect();
-        board.tables.append(&mut silicon.tables);
-        board.devices.extend(silicon.devices.iter().cloned());
-        board.sb_aml.extend_from_slice(&silicon.aml);
         let ioapics: [u32; MAX_DIES] =
             core::array::from_fn(|die| S::ioapic(&silicon.state, die as u8));
         let rsdp = acpi::install::<S>(
-            S::ACPI,
             &ctx.hw.dies,
-            &hosts,
+            pci.roots(),
             &ioapics,
             S::pci_segment(ctx.hw),
-            &silicon.cpus.apic_ids,
+            silicon,
             &board,
         );
-        let smbios = smbios::install::<S>(
-            identity,
-            ctx.memory.apob,
-            S::psp(ctx.hw),
-            &silicon.cpus.apic_ids,
-        );
+        let smbios = smbios::install::<S>(identity, ctx, &silicon.cpus, pci);
         Tables {
             rsdp,
             smbios,
@@ -277,13 +267,5 @@ where
     crate::flow::enter(B::CONFIG.clone())
 }
 
-/// The SMBIOS facts of a SoC.
-#[derive(Debug, Clone, Copy)]
-pub struct SmbiosFacts {
-    /// Processor upgrade (socket) code, 0x06 (none) for a BGA package.
-    pub socket_upgrade: u8,
-    /// The largest DIMM a position takes, MiB.
-    pub max_dimm_mib: u32,
-    /// Memory channels per die: how the APOB numbers its DIMM seeds.
-    pub channels_per_die: u8,
-}
+/// The DRAM ranges of the dies, the domain being the die.
+pub type DieMemory = heapless::Vec<fstart_acpi::numa::MemoryAffinity, 48>;

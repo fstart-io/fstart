@@ -192,12 +192,16 @@ impl noncar::DieSoc for Picasso {
     }
 
     /// FP5 is a BGA package with two channels.
-    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+    const SMBIOS: crate::smbios::SocSmbios = crate::smbios::SocSmbios {
         socket_upgrade: 0x06,
         max_dimm_mib: 32 * 1024,
         channels_per_die: 2,
     };
     const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
+
+    fn descriptors(config: &Config) -> &[&'static [fstart_driver_amd::dxio::Descriptor]] {
+        core::slice::from_ref(&config.pcie)
+    }
 
     fn ioapic(_: &State, _: u8) -> u32 {
         Picasso::IOAPIC

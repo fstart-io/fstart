@@ -293,7 +293,7 @@ pub fn hand_dimm_smbus_to_bmc(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
 }
 
 /// What the board adds to the ACPI tables.
-pub fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
+pub fn acpi() -> fstart_platform_amd::acpi::Board {
     acpi::tables()
 }
 

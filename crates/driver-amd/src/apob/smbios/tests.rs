@@ -1,5 +1,6 @@
 use super::*;
 use alloc::vec;
+use fstart_acpi::smbios::{self, SmbiosIdentity, WriteError};
 use fstart_arch::x86::boot::cpuid::CacheInfo;
 use fstart_core::memory_info::{
     FORM_FACTOR_DIMM, MEMORY_TYPE_DDR4, TYPE_DETAIL_REGISTERED, TYPE_DETAIL_SYNCHRONOUS,
@@ -77,6 +78,32 @@ fn dimms() -> Vec<Dimm> {
         })
         .collect()
 }
+/// What a platform gathers.
+struct Inputs<'a> {
+    identity: SmbiosIdentity<'a>,
+    processors: &'a [Processor<'a>],
+    dimms: &'a [Dimm],
+    regions: &'a [DramRange],
+    max_dimm_mib: u32,
+    socket_upgrade: u8,
+    ecc: bool,
+    rom_size: u32,
+    uefi: bool,
+}
+
+fn build_into(bytes: &mut [u8], address: u64, input: &Inputs<'_>) -> Result<usize, WriteError> {
+    let mut tables = Builder::new(&input.identity, input.rom_size, input.uefi);
+    add_packages(&mut tables, input.processors, input.socket_upgrade);
+    add_memory(
+        &mut tables,
+        input.dimms,
+        input.regions,
+        input.max_dimm_mib,
+        input.ecc,
+    );
+    tables.assemble_into(bytes, address)
+}
+
 fn records(bytes: &[u8]) -> Vec<&[u8]> {
     let mut result = Vec::new();
     let mut offset = 24;
@@ -239,4 +266,67 @@ fn present_unknown_is_not_empty_and_small_buffers_do_not_publish() {
         Err(WriteError::TableTooLarge)
     );
     assert_eq!(&tiny[..5], &[0; 5]);
+}
+
+/// Two packages, one with the board's socket label, 32 positions and two
+/// DRAM ranges, byte for byte.
+#[test]
+fn tables_are_pinned() {
+    let ids0 = ids(0);
+    let ids1 = ids(1);
+    let processors = [
+        Processor {
+            socket: 0,
+            snapshot: snapshot(),
+            apic_ids: &ids0,
+            enabled_cores: 48,
+        },
+        Processor {
+            socket: 1,
+            snapshot: snapshot(),
+            apic_ids: &ids1,
+            enabled_cores: 47,
+        },
+    ];
+    let dimms = dimms();
+    let regions = [
+        DramRange {
+            base: 0,
+            end: 3 << 30,
+        },
+        DramRange {
+            base: 4 << 30,
+            end: 4 << 30,
+        },
+        DramRange {
+            base: 4 << 30,
+            end: 257 << 30,
+        },
+    ];
+    let mut identity = SmbiosIdentity::new("Test Vendor", "Test Board");
+    identity.processor_sockets = &["CPU0"];
+    identity.oem_string = Some("EC 1.0");
+    let mut bytes = vec![0; smbios::BUFFER_SIZE];
+    let used = build_into(
+        &mut bytes,
+        0x7500_0000,
+        &Inputs {
+            identity,
+            processors: &processors,
+            dimms: &dimms,
+            regions: &regions,
+            max_dimm_mib: 256 * 1024,
+            socket_upgrade: 0x37,
+            ecc: true,
+            rom_size: 16 << 20,
+            uefi: true,
+        },
+    )
+    .unwrap();
+    let hash = bytes[..used]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    assert_eq!((used, hash), (5407, 0xe56c_ef97_f210_11ef));
 }

@@ -534,6 +534,10 @@ pub struct Engine<'a> {
     pub kind: EngineKind,
     /// PHY parameter `{id, value}` list (ancillary type 3; S8030 SATA).
     pub tuning: &'a [(u8, u8)],
+    /// What the board attaches to the engine's link, for the tables that
+    /// describe the board; DXIO does not read it. The links of a split slot
+    /// keep it ([`Self::split`]).
+    pub attached: Option<&'static fstart_core::smbios::Attached<'static>>,
 }
 
 impl<'a> Engine<'a> {
@@ -545,6 +549,7 @@ impl<'a> Engine<'a> {
             gpio_group: 1,
             kind: EngineKind::Pcie(pcie),
             tuning: &[],
+            attached: None,
         }
     }
 
@@ -556,6 +561,7 @@ impl<'a> Engine<'a> {
             gpio_group: 1,
             kind: EngineKind::Sata(sata),
             tuning: &[],
+            attached: None,
         }
     }
 
@@ -567,11 +573,20 @@ impl<'a> Engine<'a> {
             gpio_group: 1,
             kind: EngineKind::Ethernet,
             tuning: &[],
+            attached: None,
         }
     }
 
     pub const fn tuning(self, tuning: &'a [(u8, u8)]) -> Self {
         Self { tuning, ..self }
+    }
+
+    /// The engine with `attached` on its link.
+    pub const fn attached(self, attached: &'static fstart_core::smbios::Attached<'static>) -> Self {
+        Self {
+            attached: Some(attached),
+            ..self
+        }
     }
 
     pub fn pcie_config(&self) -> Option<&PcieEngine> {

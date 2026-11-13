@@ -197,6 +197,8 @@ impl Steps for Silicon {
         ))?;
         setup.finish();
         setup.clear_early_buses();
+        ctx.ports =
+            dxio::ports::attached(&ctx.topology, ctx.pci_root.segment, engines, setup.ports());
         Ok(())
     }
 

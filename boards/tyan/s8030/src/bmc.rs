@@ -18,8 +18,6 @@
 //! S8030 (unlike MJ11), and BmcSync (DXE, NetFn 32h cmd 3Dh, up to 120 ×
 //! 2 s) is a vendor-tool handshake fstart does not need.
 
-use alloc::vec::Vec;
-
 use embedded_hal::delay::DelayNs;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_core::services::device::{BusDevice, DeviceError};
@@ -30,7 +28,7 @@ use fstart_driver_ipmi::kcs::{self, Kcs, Status};
 use fstart_driver_superio::aspeed_ast2400::{Ast2400, CONFIG_PORT};
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_amd::sp3::acpi::Board as AcpiBoard;
+use fstart_platform_amd::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::{Readable, Writeable};
 
 /// COM1 = SUART1.
@@ -110,20 +108,15 @@ pub unsafe fn kcs<D: DelayNs>(delay: D) -> Kcs<D> {
 /// The KCS interface as ACPI sees it (`IPI0001` and SPMI).
 pub const IPMI_ACPI: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 
-/// AML for `\_SB.PCI0.LPCB`: the COM1 device.
-pub fn lpc_aml() -> Vec<u8> {
-    superio_dsdt_aml(&sio_config())
-}
-
-/// The board part of the SP3 ACPI inputs; `lpc_aml` is [`lpc_aml`]'s
-/// output. The 8042 flag follows the donors' FADT (they set it though the
-/// board has no PS/2 port).
-pub fn acpi_board(lpc_aml: &[u8]) -> AcpiBoard<'_> {
+/// The board part of the ACPI inputs: the KCS interface and COM1 behind
+/// the LPC bridge. The 8042 flag follows the donors' FADT (they set it
+/// though the board has no PS/2 port).
+pub fn acpi_board() -> AcpiBoard {
     AcpiBoard {
         ipmi: Some(IPMI_ACPI),
         i8042: true,
-        lpc_aml,
-        sb_aml: &[],
+        lpc_aml: superio_dsdt_aml(&sio_config()),
+        ..AcpiBoard::default()
     }
 }
 
@@ -207,13 +200,14 @@ mod tests {
 
     #[test]
     fn acpi_inputs() {
-        let aml = lpc_aml();
+        let board = acpi_board();
         // COM1 claims 0x3f8, 8 ports.
         assert!(
-            aml.windows(8)
+            board
+                .lpc_aml
+                .windows(8)
                 .any(|w| w == [0x47, 1, 0xf8, 3, 0xf8, 3, 1, 8])
         );
-        let board = acpi_board(&aml);
         assert_eq!(board.ipmi.map(|k| (k.port, k.spacing)), Some((0xca2, 1)));
         // The KCS ports sit in a decoded window; the mailbox too.
         let decoded = |port: u16| {

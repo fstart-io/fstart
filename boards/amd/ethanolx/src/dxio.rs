@@ -7,6 +7,7 @@
 //! override the bifurcation of a PCIe card's group ([`KNOBS`]), which keeps
 //! the card's redriver setting and splits its x16 link.
 
+use fstart_core::smbios::{Attached, OnboardDevice, OnboardType, SystemSlot};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::sp3::dxio::hotplug::{
     Expander, Hotplug, HotplugFunction, HotplugI2c, HotplugKind, format,
@@ -54,6 +55,38 @@ pub struct Plan {
     /// Requested Ethernet descriptors omitted by the vendor's Milan policy.
     pub disabled_xgbe: u8,
 }
+
+/// Socket 0's x16 slot with physical slot number `slot`, as the vendor's
+/// SMBIOS data names it (`PCIE<slot>`, long, 3.3 V): Gen4 and as wide
+/// electrically as physically (B8h; the vendor's A5h means Gen1), split by
+/// its bifurcation knob. The Slot ID is the physical slot number the
+/// port's Slot Capabilities report (the vendor has 0-3). Slot 4 is the
+/// ExpressModule hotplug slot ([`SLOT4`]).
+const fn x16_slot(designation: &'static str, slot: u16) -> Attached<'static> {
+    Attached::Slot(SystemSlot {
+        designation,
+        slot_type: 0xb8,
+        data_bus_width: 0x0d,
+        length: 0x04,
+        id: slot,
+        characteristics: [0x04, if slot == 4 { 0x08 | 0x02 } else { 0x08 }],
+    })
+}
+
+/// `PCIE1`..`PCIE4`, by physical slot number. A card in one is there
+/// whatever its straps select: its SATA lanes too are the slot's.
+static SLOTS: [Attached<'static>; 4] = [
+    x16_slot("PCIE1", 1),
+    x16_slot("PCIE2", 2),
+    x16_slot("PCIE3", 3),
+    x16_slot("PCIE4", 4),
+];
+
+/// The BMC's display, on its WAFL link.
+static BMC_VGA: Attached<'static> = Attached::Onboard(OnboardDevice {
+    designation: "BMC VGA",
+    kind: OnboardType::Video,
+});
 
 /// Group, input-word shift, unbifurcated device number, physical slot.
 const GROUPS: [(Group, u16, u8, u16); 4] = [
@@ -255,17 +288,21 @@ pub fn plan(layout: &Layout) -> Result<Plan, Error> {
             if matches!(engine.kind, EngineKind::Ethernet) {
                 disabled_xgbe += 1;
             } else {
+                let engine = engine.attached(&SLOTS[usize::from(slot) - 1]);
                 engines.push(engine).map_err(|_| Error::Capacity)?;
             }
         }
     }
     // The bench BMC's dedicated WAFL link; its devfn is silicon-defined.
     engines
-        .push(Engine::pcie(
-            0,
-            Lanes::sp3(Group::Wafl, 1, 1),
-            PcieEngine::new().max_speed(Speed::Gen1).turn_off_unused(),
-        ))
+        .push(
+            Engine::pcie(
+                0,
+                Lanes::sp3(Group::Wafl, 1, 1),
+                PcieEngine::new().max_speed(Speed::Gen1).turn_off_unused(),
+            )
+            .attached(&BMC_VGA),
+        )
         .map_err(|_| Error::Capacity)?;
     engines
         .push(Engine::sata(1, Lanes::sp3(Group::P1, 0, 8), SataEngine::new(0)).tuning(SATA_TUNING))
@@ -307,6 +344,47 @@ mod tests {
 
     fn plan_of(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
         Layout::new(detected, limited_io).and_then(|layout| plan(&layout))
+    }
+
+    /// Socket 0's engines are their physical slot's, the BMC link the
+    /// display's; socket 1's ports carry nothing.
+    #[test]
+    fn attached_slots_by_physical_slot() {
+        let p = plan_of(
+            Detected {
+                board_id: 0x30,
+                straps: 0,
+            },
+            false,
+        )
+        .unwrap();
+        let named = |e: &Engine<'_>| match e.attached {
+            Some(Attached::Slot(slot)) => Some((slot.designation, slot.id)),
+            Some(Attached::Onboard(device)) => Some((device.designation, 0)),
+            None => None,
+        };
+        let socket0: std::vec::Vec<_> = p
+            .engines
+            .iter()
+            .filter(|e| e.socket == 0)
+            .map(named)
+            .collect();
+        assert_eq!(
+            socket0,
+            [
+                Some(("PCIE1", 1)),
+                Some(("PCIE3", 3)),
+                Some(("PCIE4", 4)),
+                Some(("PCIE2", 2)),
+                Some(("BMC VGA", 0)),
+            ]
+        );
+        assert!(
+            p.engines
+                .iter()
+                .filter(|e| e.socket == 1)
+                .all(|e| e.attached.is_none())
+        );
     }
 
     #[test]

@@ -1,150 +1,71 @@
-//! SP3 inventory: the shared AMD SMBIOS builder
-//! (`fstart_driver_amd::apob::smbios`) filled from the SP3 APOB and CPUs.
+//! The SMBIOS tables of SP3 ([`crate::smbios`]): a package per socket, the
+//! dies the fabric found, the DRAM ranges of the APOB's memory map, built
+//! in the reserved firmware heap.
 
-extern crate alloc;
+use crate::smbios::SocSmbios;
+use fstart_driver_amd::sp3::soc::Generation;
 
-#[cfg(feature = "bundle-stage")]
-use fstart_acpi::smbios;
-#[cfg(feature = "bundle-stage")]
-use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
-pub use fstart_driver_amd::apob::smbios::{Dimm, DramRange, Inputs, Processor, build_into};
-
-#[cfg(feature = "bundle-stage")]
-pub(crate) mod runtime {
-    use super::*;
-    use crate::sp3::flow::{Ctx, OrHalt};
-    use alloc::vec::Vec;
-    use fstart_driver_amd::{
-        apob::{
-            mem,
-            smbios::{dimms as smbios_dimms, dram_ranges},
-            sysmap,
-        },
-        sp3::{ccx::topology::ApicLayout, soc::Generation},
-    };
-
-    /// Capture package-local CPUID before APs are parked for the payload and
-    /// publish immutable tables in the existing reserved firmware heap.
-    /// `rom_size` is the image extent recorded by the flash anchor, not a
-    /// possibly partial EFS mapping or a physical flash-geometry measurement.
-    pub(crate) fn prepare(
-        ctx: &Ctx<'_>,
-        mp: &fstart_arch::x86::mp::MpHandle,
-        rom_size: u32,
-        identity: fstart_acpi::smbios::SmbiosIdentity<'_>,
-    ) -> u64 {
-        let smt = fstart_driver_amd::sp3::soc::cpu::this_thread(ctx.soc.generation).smt();
-        let layout = ApicLayout::new(ctx.soc.generation, smt);
-        let ids: Vec<Vec<u32>> = (0..ctx.soc.topology.sockets)
-            .map(|socket| {
-                ctx.soc
-                    .apic_ids
-                    .iter()
-                    .copied()
-                    .filter(|id| layout.decode(*id).socket == socket)
-                    .collect()
-            })
-            .collect();
-        let mut processors = Vec::new();
-        for (socket, apic_ids) in ids.iter().enumerate() {
-            let Some(&leader) = apic_ids.first() else {
-                continue;
-            };
-            let index = ctx
-                .soc
-                .apic_ids
-                .iter()
-                .position(|&id| id == leader)
-                .or_halt("SMBIOS CPU leader");
-            let snapshot = if index == 0 {
-                ProcessorSnapshot::read()
-            } else {
-                // Existing bounded MPMC queue transfers an owned value from a
-                // selected AP; no custom unsafe shared result slot or locks.
-                let queue = heapless::mpmc::MpMcQueue::<ProcessorSnapshot, 2>::new();
-                mp.scope(|scope| {
-                    scope.run_on(index as u16, &|| {
-                        let _ = queue.enqueue(ProcessorSnapshot::read());
-                    })
-                });
-                queue.dequeue().or_halt("SMBIOS package CPUID")
-            };
-            let cores = apic_ids
-                .iter()
-                .enumerate()
-                .filter(|(i, id)| {
-                    let core = **id >> u32::from(smt);
-                    !apic_ids[..*i]
-                        .iter()
-                        .any(|prior| *prior >> u32::from(smt) == core)
-                })
-                .count() as u16;
-            processors.push(Processor {
-                socket: socket as u8,
-                snapshot,
-                apic_ids,
-                enabled_cores: cores,
-            });
-        }
-        let seeds = mem::smbios_info(&ctx.soc.apob).ok();
-        let dimms = smbios_dimms(
-            &ctx.soc.apob,
-            match ctx.soc.generation {
-                Generation::Naples => 2,
-                Generation::Rome | Generation::Milan => 8,
-            },
-            |socket, die| {
-                socket < ctx.soc.topology.sockets
-                    && ctx
-                        .soc
-                        .topology
-                        .nodes
-                        .iter()
-                        .any(|node| node.socket == socket && node.die == die)
-            },
-        );
-        let map = sysmap::system_memory_map(&ctx.soc.apob).or_halt("SMBIOS memory map");
-        let regions: Vec<DramRange> = dram_ranges(
-            &sysmap::memory_map(ctx.soc.generation.into(), map.top, map.holes())
-                .or_halt("SMBIOS DRAM ranges"),
-        );
-        let bytes = fstart_driver_amd::sp3::soc::steps::dma_alloc(smbios::BUFFER_SIZE, 16)
-            .or_halt("DMA allocation");
-        let address = bytes.as_ptr() as u64;
-        let used = build_into(
-            bytes,
-            address,
-            &Inputs {
-                identity,
-                processors: &processors,
-                dimms: &dimms,
-                regions: &regions,
-                // EPYC 7001: up to 128 GiB per DIMM; 7002/7003: up to
-                // 256 GiB. Position count comes from the board's ABL seeds,
-                // not eight/32 assumed slots or the installed DIMM sizes.
-                socket_upgrade: 0x37, // Socket SP3
-                max_dimm_mib: match ctx.soc.generation {
-                    Generation::Naples => 128 * 1024,
-                    _ => 256 * 1024,
-                },
-                ecc: seeds.as_ref().is_some_and(|seeds| seeds.ecc()),
-                rom_size,
-                uefi: fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
-            },
-        )
-        .or_halt("SMBIOS tables");
-        // For Linux without UEFI.
-        // SAFETY: `cache_ram` routed C0000-FFFFF to DRAM and the e820
-        // reserves it (`memory::LEGACY_HOLE`); nothing else lives there.
-        unsafe { smbios::publish_legacy_entry_point(bytes) };
-        fstart_log::info!(
-            "smbios: {} packages, {} positions, {} installed, {} bytes at {:#x}",
-            processors.len() as u32,
-            dimms.len() as u32,
-            dimms.iter().filter(|d| d.device.is_populated()).count() as u32,
-            used as u32,
-            address
-        );
-        address
+/// What the tables of `generation` differ in: socket SP3, 2 channels per
+/// Naples die and 8 per Rome/Milan socket, and DIMMs up to 128 GiB on EPYC
+/// 7001 and 256 GiB on 7002/7003.
+pub const fn of(generation: Generation) -> SocSmbios {
+    let naples = matches!(generation, Generation::Naples);
+    SocSmbios {
+        socket_upgrade: 0x37,
+        max_dimm_mib: if naples { 128 * 1024 } else { 256 * 1024 },
+        channels_per_die: if naples { 2 } else { 8 },
     }
+}
+
+/// Build the tables before the APs are parked for the payload; returns
+/// their entry point's address. `rom_size` is the image extent recorded by
+/// the flash anchor, not a possibly partial EFS mapping or a physical
+/// flash-geometry measurement.
+#[cfg(all(feature = "bundle-stage", target_os = "none"))]
+pub(crate) fn install(
+    ctx: &crate::sp3::flow::Ctx<'_>,
+    cpus: &crate::mp::Cpus,
+    rom_size: u32,
+    identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
+    pci: &fstart_pci::PciEcam,
+) -> u64 {
+    use crate::sp3::flow::OrHalt;
+    use fstart_driver_amd::apob::{smbios::dram_ranges, sysmap};
+    use fstart_driver_amd::sp3::ccx::topology::ApicLayout;
+
+    let soc = ctx.soc;
+    let smt = fstart_driver_amd::sp3::soc::cpu::this_thread(soc.generation).smt();
+    let layout = ApicLayout::new(soc.generation, smt);
+    let map = sysmap::system_memory_map(&soc.apob).or_halt("SMBIOS memory map");
+    let regions = dram_ranges(
+        &sysmap::memory_map(soc.generation.into(), map.top, map.holes())
+            .or_halt("SMBIOS DRAM ranges"),
+    );
+    let bytes = fstart_driver_amd::sp3::soc::steps::dma_alloc(fstart_acpi::smbios::BUFFER_SIZE, 16)
+        .or_halt("DMA allocation");
+    let address = bytes.as_ptr() as u64;
+    crate::smbios::build_into(
+        bytes,
+        &crate::smbios::System {
+            soc: &of(soc.generation),
+            identity,
+            rom_size,
+            apob: Some(&soc.apob),
+            regions: &regions,
+            cpus,
+            pci,
+            bridges: crate::sp3::acpi::of(soc.generation).bridges,
+            ports: &soc.ports,
+        },
+        |apic_id| (layout.decode(apic_id).socket, apic_id >> u32::from(smt)),
+        |socket, die| {
+            let nodes = &soc.topology.nodes;
+            socket < soc.topology.sockets
+                && nodes
+                    .iter()
+                    .any(|node| node.socket == socket && node.die == die)
+        },
+    )
+    .or_halt("SMBIOS tables");
+    address
 }

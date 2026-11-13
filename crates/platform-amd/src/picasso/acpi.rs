@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso interrupt routing, matching the native NBIO bridge table.
-use crate::acpi::{ABCD, CDAB, Error, Route, SocAcpi};
+use crate::acpi::{S5_SLEEP_TYPE, SocAcpi, prt};
 use alloc::{format, vec::Vec};
 use fstart_acpi::AmlError;
 use fstart_acpi::{
@@ -28,30 +28,30 @@ pub const ACPI: SocAcpi = SocAcpi {
         duty_width: 0,
         pm2_cnt_offset: None,
     },
-    bridge_routes: &[
-        Route::new(1, 1, 0, ABCD, 0x10),
-        Route::new(1, 2, 1, ABCD, 0x11),
-        Route::new(1, 3, 2, ABCD, 0x12),
-        Route::new(1, 4, 3, ABCD, 0x13),
-        Route::new(1, 5, 4, ABCD, 0x10),
-        Route::new(1, 6, 5, ABCD, 0x11),
-        Route::new(1, 7, 6, ABCD, 0x12),
-        Route::new(8, 1, 7, ABCD, 0x13),
-        Route::new(8, 2, 7, CDAB, 0x0c),
-    ],
-    fch_intx_gsi: [16, 17, 18, 19],
+    bridges: &prt::BRIDGES_RV,
+    fch_intx_gsi: Some([16, 17, 18, 19]),
     wake: None,
+    xhci: None,
+    // Without ACPI resume there is no S3.
+    sleep_states: &[(0, 0), (1, 1), (4, 4), (5, S5_SLEEP_TYPE)],
+    // One die: no SLIT.
+    socket_distance: 10,
 };
+
+/// NameSeg of FCH I2C controller `index`.
+pub fn fch_i2c_name(index: u8) -> alloc::string::String {
+    format!("I2C{index:X}")
+}
 
 /// The FCH GPIO controller and the board's I2C controllers with the
 /// devices behind them, for `\_SB`.
-pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, Error> {
+pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, AmlError> {
     use fstart_acpi::devices::i2c::{self, DesignWareSpeed, GpioInterrupt, I2cDevice};
     use fstart_driver_amd::{
         fch::{self, i2c::Speed, sandstone::legacy},
         soc::Soc,
     };
-    let irq = |source| legacy::internal_irq(source).ok_or(Error::Aml(AmlError::InvalidPath));
+    let irq = |source| legacy::internal_irq(source).ok_or(AmlError::InvalidPath);
     // Picasso's four GPIO banks (coreboot's mmio.asl).
     let mut aml = fch::aml::gpio(irq(legacy::source::GPIO)?, 0x400)?;
     if emmc_enabled {
@@ -62,10 +62,10 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, E
         let (Some(&base), Some(&source)) =
             (Picasso::I2C.get(index), legacy::source::I2C.get(index))
         else {
-            return Err(Error::Aml(AmlError::InvalidPath));
+            return Err(AmlError::InvalidPath);
         };
         let index = index as u8;
-        let path = format!("\\_SB.{}", crate::acpi::fch_i2c_name(index));
+        let path = format!("\\_SB.{}", fch_i2c_name(index));
         let timing = &bus.timing;
         let (speed, speed_hz) = match timing.speed {
             Speed::Standard => (DesignWareSpeed::Standard, 100_000),
@@ -107,7 +107,7 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, E
             );
         }
         aml.extend(fch::aml::i2c(
-            &crate::acpi::fch_i2c_name(index),
+            &fch_i2c_name(index),
             index,
             base as u32,
             irq(source)?,
@@ -120,7 +120,7 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, E
 /// The same fixed-address host inventory is consumed by ACPI and CrabEFI.
 /// Its IRQ is level-low, unlike the generic device's level-high default.
 /// Losing this inventory when fixing AML would also lose UEFI eMMC boot.
-pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
+pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, AmlError> {
     use fstart_core::acpi::{AcpiGenericDevice, AcpiInterruptFlags, AcpiResource};
     use fstart_driver_amd::fch::sandstone::legacy;
     Ok(AcpiGenericDevice {
@@ -134,7 +134,7 @@ pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
         .collect(),
         gsiv: Some(
             legacy::internal_irq(legacy::source::EMMC)
-                .ok_or(Error::Aml(AmlError::InvalidPath))?
+                .ok_or(AmlError::InvalidPath)?
                 .into(),
         ),
         interrupt_flags: AcpiInterruptFlags {
@@ -144,7 +144,7 @@ pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, Error> {
     })
 }
 
-fn emmc_card() -> Result<Vec<u8>, Error> {
+fn emmc_card() -> Result<Vec<u8>, AmlError> {
     use fstart_acpi::aml_linker::scope_vec;
     use fstart_acpi_macros::acpi_dsl;
     let body = acpi_dsl! {
@@ -153,7 +153,7 @@ fn emmc_card() -> Result<Vec<u8>, Error> {
             Method("_RMV", 0, NotSerialized) { Return(0u32); }
         }
     };
-    Ok(scope_vec("\\_SB.MMC0", &Vec::<u8>::from(body))?)
+    scope_vec("\\_SB.MMC0", &Vec::<u8>::from(body))
 }
 
 #[cfg(test)]

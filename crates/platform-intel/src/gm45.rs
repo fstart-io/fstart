@@ -67,6 +67,8 @@ pub struct Gm45Ich9Config {
     pub gpio: gpio::GpioConfig,
     /// Maximum logical CPU count (BSP + APs) populated by the board.
     pub max_cpus: u16,
+    /// What the board attaches to PCIe root port `n` (00:1c.n).
+    pub pcie_attached: [Option<&'static fstart_core::smbios::Attached<'static>>; 6],
     pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
@@ -104,6 +106,7 @@ impl Gm45Ich9Config {
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
             max_cpus: 1,
+            pcie_attached: [None; 6],
             pci_subsystem_ids: &[],
         }
     }
@@ -415,8 +418,24 @@ impl Gm45Ich9Config {
             northbridge: self.northbridge_config(),
             southbridge: self.southbridge_config(),
             max_cpus: self.max_cpus,
+            pcie_attached: self.pcie_attached,
             pci_subsystem_ids: self.pci_subsystem_ids,
         }
+    }
+
+    /// The slot or onboard device the board attaches to PCIe root port
+    /// `index` (00:1c.`index`).
+    #[must_use]
+    pub const fn pcie_attached(
+        mut self,
+        index: usize,
+        attached: &'static fstart_core::smbios::Attached<'static>,
+    ) -> Self {
+        if index >= self.pcie_attached.len() {
+            panic!("ICH9 PCIe port index out of range");
+        }
+        self.pcie_attached[index] = Some(attached);
+        self
     }
 
     #[must_use]
@@ -456,6 +475,8 @@ pub struct Gm45Ich9Platform {
     pub northbridge: IntelGm45Config,
     pub southbridge: IntelIch9Config,
     pub max_cpus: u16,
+    /// What the board attaches to PCIe root port `n` (00:1c.n).
+    pub pcie_attached: [Option<&'static fstart_core::smbios::Attached<'static>>; 6],
     pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
@@ -490,6 +511,9 @@ impl<C: crate::legacy_cpu::LegacyCpu> crate::IntelPlatform for Gm45Ich9<C> {
 impl crate::IntelPlatformConfig for Gm45Ich9Platform {
     fn max_cpus(&self) -> u16 {
         self.max_cpus
+    }
+    fn pcie_attached(&self) -> &[Option<&'static fstart_core::smbios::Attached<'static>>] {
+        &self.pcie_attached
     }
     fn pci_subsystem_ids(&self) -> &'static [crate::facts::PciSubsystemId] {
         self.pci_subsystem_ids

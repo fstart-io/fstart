@@ -33,13 +33,12 @@ fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
         dxio::check(generation, o, &detected)
     });
     let engines = platform::dxio_engines(generation, &options, &detected);
-    let lpc_aml = bmc::lpc_aml();
     stage
         .train_dxio(&engines)
         .init_chipset(())
         .start_cpus()
         .scan_bus()
         .ready_to_boot()
-        .emit_tables(&platform::smbios_identity(), bmc::acpi_board(&lpc_aml))
+        .emit_tables(&platform::smbios_identity(), bmc::acpi_board())
         .boot()
 }

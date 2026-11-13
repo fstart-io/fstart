@@ -263,8 +263,8 @@ pub struct SmbiosRuntime<'a> {
     pub memory: Option<&'a fstart_core::memory_info::MemoryInfo>,
     /// Enumerated PCI hierarchy; root-bus functions are onboard devices.
     pub pci: Option<&'a fstart_pci::PciEcam>,
-    /// Board-owned physical slots, associated with upstream PCI bridges.
-    pub slots: &'a [fstart_core::smbios::PciSlot<'a>],
+    /// What the board attaches to the root ports, port `n` being 00:1c.n.
+    pub ports: &'a [Option<&'static fstart_core::smbios::Attached<'static>>],
 }
 
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
@@ -298,16 +298,16 @@ fn processor_family(brand: &str) -> u16 {
         .map_or(0x02, |(_, family)| *family)
 }
 
-/// Type 4 for the executing CPU package, with its Type 7 caches.
+/// The executing CPU package: Type 4 with its Type 7 caches.
 #[cfg(feature = "smbios")]
-fn add_processor(w: &mut fstart_acpi::smbios::SmbiosWriter, socket: &str) {
-    let cpu = fstart_arch::x86::boot::cpuid::ProcessorSnapshot::read();
+fn package(
+    cpu: &fstart_arch::x86::boot::cpuid::ProcessorSnapshot,
+) -> fstart_acpi::smbios::Package<'_> {
     let (cores, enabled_cores, threads) = runtime_processor_counts();
     let clock = fstart_arch::x86::bus_clock();
     let max_speed_mhz = clock.map_or(0, |clock| clock.max_core_mhz() as u16);
-    w.add_package(&fstart_acpi::smbios::Package {
-        socket,
-        cpu: &cpu,
+    fstart_acpi::smbios::Package {
+        cpu,
         // The cache sizes of one core.
         apic_ids: &[],
         cores,
@@ -318,7 +318,7 @@ fn add_processor(w: &mut fstart_acpi::smbios::SmbiosWriter, socket: &str) {
         external_clock_mhz: clock.map_or(0, |clock| clock.fsb_mhz as u16),
         max_speed_mhz,
         current_speed_mhz: max_speed_mhz,
-    });
+    }
 }
 
 /// Physical ranges occupied by `total` bytes of DRAM: below TOLUD, plus the
@@ -335,21 +335,17 @@ fn dram_ranges(total: u64, high_end: u64) -> impl Iterator<Item = (u64, u64)> {
 /// Types 16, 17 and 19 from raminit's slot inventory.
 #[cfg(feature = "smbios")]
 fn add_memory(
-    w: &mut fstart_acpi::smbios::SmbiosWriter,
+    tables: &mut fstart_acpi::smbios::Builder,
     memory: &fstart_core::memory_info::MemoryInfo,
     e820: &[fstart_core::services::memory_detect::E820Entry],
 ) {
     use alloc::format;
     let devices = memory.devices();
-    w.add_physical_memory_array(
-        u64::from(memory.max_capacity_mib.get()) * 1024,
-        devices.len() as u16,
-        memory.ecc,
-    );
+    tables.memory_array(u64::from(memory.max_capacity_mib.get()) * 1024, memory.ecc);
     for device in devices {
         let locator = format!("Channel-{}-DIMM-{}", device.channel, device.slot);
         let bank_locator = format!("BANK {}", device.channel);
-        w.add_dimm(device, &locator, &bank_locator);
+        tables.dimm(device, &locator, &bank_locator);
     }
 
     // A present/unknown DIMM must not turn the sentinel into petabytes of
@@ -375,54 +371,7 @@ fn add_memory(
         .filter(|device| device.is_populated())
         .count() as u8;
     for (start, end) in dram_ranges(total, high_end) {
-        w.add_memory_array_mapped_address(start, end - 1, modules);
-    }
-}
-
-/// SMBIOS onboard device type and label for a PCI class, as coreboot's
-/// devicetree walk reports them.
-#[cfg(any(feature = "smbios", feature = "host"))]
-fn onboard_device(class: u16) -> Option<(u8, &'static str)> {
-    Some(match class {
-        0x0300 | 0x0302 => (0x03, "Onboard Video"),
-        0x0100 => (0x04, "Onboard SCSI"),
-        0x0200 => (0x05, "Onboard LAN"),
-        0x0401 | 0x0403 => (0x07, "Onboard Audio"),
-        0x0101 => (0x08, "Onboard IDE"),
-        0x0106 => (0x09, "Onboard SATA"),
-        0x0107 => (0x0a, "Onboard SAS"),
-        _ => return None,
-    })
-}
-
-/// Type 41 for each root-bus function: chipset devices are on the mainboard,
-/// add-in cards sit behind bridges.
-#[cfg(feature = "smbios")]
-fn add_onboard_devices(w: &mut fstart_acpi::smbios::SmbiosWriter, pci: &fstart_pci::PciEcam) {
-    let mut instances = [0u8; 16];
-    for address in pci
-        .devices()
-        .filter(|address| address.bus() == pci.bus_start())
-    {
-        let Some(class) = pci
-            .device(address)
-            .map(|device| (device.read32(0x08) >> 16) as u16)
-        else {
-            continue;
-        };
-        let Some((device_type, designation)) = onboard_device(class) else {
-            continue;
-        };
-        let instance = &mut instances[usize::from(device_type)];
-        *instance += 1;
-        w.add_onboard_device(
-            designation,
-            device_type,
-            *instance,
-            address.segment(),
-            address.bus(),
-            address.device() << 3 | address.function(),
-        );
+        tables.mapped_range(start, end, modules);
     }
 }
 
@@ -459,33 +408,48 @@ pub fn prepare_smbios(
 
     let total_ram = e820.total_ram();
     let entries = e820.entries();
-    let smbios_len = fstart_acpi::smbios::assemble_into(bytes, smbios_addr, |w| {
-        w.add_identity(desc, runtime.rom_size, cfg!(feature = "payload-uefi-basic"));
-        for socket in desc.processor_sockets {
-            add_processor(&mut *w, socket);
+    let cpu = fstart_arch::x86::boot::cpuid::ProcessorSnapshot::read();
+    let mut tables = fstart_acpi::smbios::Builder::new(
+        desc,
+        runtime.rom_size,
+        cfg!(feature = "payload-uefi-basic"),
+    );
+    for socket in 0..desc.processor_sockets.len() {
+        tables.package(socket as u8, package(&cpu));
+    }
+    match runtime.memory {
+        Some(memory) => add_memory(&mut tables, memory, entries),
+        // Without an inventory only the capacity is known; e820 holes make
+        // `0..total_ram` no address map, so Types 17/19 are omitted.
+        None if total_ram != 0 => {
+            tables.memory_array(total_ram / 1024, 0x02);
         }
-        match runtime.memory {
-            Some(memory) => add_memory(&mut *w, memory, entries),
-            // Without an inventory only the capacity is known; e820 holes make
-            // `0..total_ram` no address map, so Types 17/19 are omitted.
-            None if total_ram != 0 => {
-                w.add_physical_memory_array(total_ram / 1024, 0, 0x02);
-            }
-            None => {}
-        }
-        for slot in runtime.slots {
-            let (device, function) = fstart_pci::devfn_parts(slot.bridge_devfn);
-            let bridge =
-                fstart_pci::PciAddress::new(slot.bridge_segment, slot.bridge_bus, device, function);
-            w.add_pci_slot(&slot.slot, bridge, runtime.pci);
-        }
-        if let Some(pci) = runtime.pci {
-            add_onboard_devices(&mut *w, pci);
-        }
-        w.add_system_boot_info();
-        w.add_end_of_table();
-    })
-    .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
+        None => {}
+    }
+    // The root ports' links are as wide as their slots.
+    let ports: alloc::vec::Vec<_> = (0u8..)
+        .zip(runtime.ports)
+        .filter_map(|(port, attached)| {
+            let attached = (*attached)?;
+            let lanes = match attached {
+                fstart_core::smbios::Attached::Slot(slot) => slot.lanes(),
+                fstart_core::smbios::Attached::Onboard(_) => 1,
+            };
+            Some((
+                Some(fstart_pci::PciAddress::new(0, 0, 0x1c, port)),
+                lanes,
+                attached,
+            ))
+        })
+        .collect();
+    tables.pci_ports(&ports, runtime.pci);
+    // Chipset devices are on the root bus; add-in cards sit behind bridges.
+    if let Some(pci) = runtime.pci {
+        tables.pci_onboard_devices(pci, |address| address.bus() == pci.bus_start());
+    }
+    let smbios_len = tables
+        .assemble_into(bytes, smbios_addr)
+        .map_err(|_| fstart_core::services::ServiceError::InvalidParam)?;
 
     // For Linux without UEFI, which only scans the F segment.
     // SAFETY: every Intel northbridge routes C0000-FFFFF to DRAM (PAM or
@@ -530,13 +494,5 @@ mod tests {
         assert_eq!(ranges(2 * GIB, 2 * GIB), [(0, 2 * GIB)]);
         // 4 GiB with TOLUD at 3 GiB, 1 GiB remapped above 4 GiB.
         assert_eq!(ranges(4 * GIB, 5 * GIB), [(0, 3 * GIB), (4 * GIB, 5 * GIB)]);
-    }
-
-    #[test]
-    fn onboard_devices_cover_coreboot_classes() {
-        assert_eq!(onboard_device(0x0200), Some((0x05, "Onboard LAN")));
-        assert_eq!(onboard_device(0x0403), Some((0x07, "Onboard Audio")));
-        assert_eq!(onboard_device(0x0380), None);
-        assert_eq!(onboard_device(0x0c03), None);
     }
 }

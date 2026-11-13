@@ -61,12 +61,16 @@ impl noncar::DieSoc for Zeppelin {
 
     /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
     /// LRDIMMs up to 64 GiB.
-    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+    const SMBIOS: crate::smbios::SocSmbios = crate::smbios::SocSmbios {
         socket_upgrade: 0x06,
         max_dimm_mib: 64 * 1024,
         channels_per_die: 2,
     };
     const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
+
+    fn descriptors(config: &Self::Config) -> &[&'static [fstart_driver_amd::dxio::Descriptor]] {
+        &config.dxio.descriptors
+    }
 
     fn ioapic(up: &Up, die: u8) -> u32 {
         Zeppelin::ioapic(&up.silicon, die)
@@ -75,7 +79,7 @@ impl noncar::DieSoc for Zeppelin {
     /// The dies of an SP4 as AmdFabricZpDxe reports them for SRAT.
     fn die_memory(
         dies: &[fstart_driver_amd::df::Die<Self, fstart_pci::ecam::GlobalEcam>],
-    ) -> Option<crate::acpi::DieMemory> {
+    ) -> Option<noncar::DieMemory> {
         if dies.len() < 2 {
             return None;
         }

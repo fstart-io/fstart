@@ -250,3 +250,21 @@ pub(super) const IOHC_LATE: &[(u32, u32, u32)] = &[
     (0x13b10344, 0x00008000, 0x00008000),
     (0x15b00040, 0x00008000, 0x00008000),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::BASE;
+    use crate::nbio::ioapic::{ROUTES_RV, br_interrupt_routing};
+
+    /// The routes the `_PRT`s describe are the ones the base table programs.
+    #[test]
+    fn base_programs_the_ioapic_routes() {
+        for (bridge, route) in ROUTES_RV.iter().enumerate() {
+            let address = br_interrupt_routing(bridge).address();
+            let record = BASE.iter().find(|record| record.0 == address);
+            assert_eq!(record, Some(&(address, 0x001f_0037, route.value())));
+        }
+        let next = br_interrupt_routing(ROUTES_RV.len()).address();
+        assert!(!BASE.iter().any(|record| record.0 == next));
+    }
+}

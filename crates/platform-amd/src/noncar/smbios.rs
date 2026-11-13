@@ -1,83 +1,129 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The SMBIOS tables of the flow ([`fstart_driver_amd::apob::smbios`]):
-//! the board's identity, one processor package, the DIMM positions of the
-//! APOB's SMBIOS seeds with their SPD copies, and the APOB's DRAM ranges.
+//! The SMBIOS tables of the die SoCs ([`crate::smbios`]): one socket, the
+//! DRAM ranges of the APOB's memory map, what the board attaches to the
+//! DXIO engines, built into reserved firmware memory.
 extern crate alloc;
 
-use super::DieSoc;
 use alloc::vec::Vec;
-use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
-use fstart_driver_amd::apob::{
-    Apob, mem,
-    smbios::{DramRange, Inputs, Processor, build_into, dimms, dram_ranges},
-    sysmap::{self, MemoryMap},
-};
-use fstart_log::Hex;
+use fstart_acpi::smbios::Attached;
+use fstart_driver_amd::dxio::{Descriptor, EngineType};
+use fstart_pci::PciAddress;
 
-/// Build the tables into reserved firmware memory; returns their entry
-/// point's address.
-pub fn install<S: DieSoc>(
-    identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
-    apob: Option<&Apob>,
-    psp: fstart_driver_amd::psp::Variant,
-    apic_ids: &[u32],
-) -> Option<u64> {
-    #[repr(C, align(4096))]
-    struct Tables([u8; fstart_acpi::smbios::BUFFER_SIZE]);
-    static mut TABLES: Tables = Tables([0; fstart_acpi::smbios::BUFFER_SIZE]);
-
-    let thread = fstart_driver_amd::ccx::Thread::current();
-    let cores = apic_ids
+/// The PCIe ports of `descriptors[die]` the board attached something to:
+/// each with its bridge on the root bus `roots[die]`, `(segment, bus)`,
+/// and its lanes.
+pub fn ports(
+    descriptors: &[&'static [Descriptor]],
+    roots: &[(u16, u8)],
+) -> Vec<(Option<PciAddress>, u8, &'static Attached<'static>)> {
+    descriptors
         .iter()
-        .filter(|&&id| thread.with_apic_id(id as u8).core_primary())
-        .count() as u16;
-    let processors = [Processor {
-        socket: 0,
-        snapshot: ProcessorSnapshot::read(),
-        apic_ids,
-        enabled_cores: cores,
-    }];
-    let dimms = apob
-        .map(|apob| dimms(apob, S::SMBIOS.channels_per_die, |socket, _| socket == 0))
-        .unwrap_or_default();
-    let map: Option<MemoryMap> =
-        apob.and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok());
-    let regions: Vec<DramRange> = map
-        .and_then(|map| sysmap::memory_map(psp, map.top, map.holes().iter().copied()).ok())
-        .map(|regions| dram_ranges(&regions))
-        .unwrap_or_default();
-    let ecc = apob
-        .and_then(|apob| mem::smbios_info(apob).ok())
-        .is_some_and(|seeds| seeds.ecc());
-    // SAFETY: firmware BSS in the reserved early region, written once.
-    let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
-    let address = storage.as_ptr() as u64;
-    let used = build_into(
-        storage,
-        address,
-        &Inputs {
-            identity: *identity,
-            processors: &processors,
-            dimms: &dimms,
-            regions: &regions,
-            max_dimm_mib: S::SMBIOS.max_dimm_mib,
-            socket_upgrade: S::SMBIOS.socket_upgrade,
-            ecc,
-            rom_size: S::LAYOUT.flash.size as u32,
-            uefi: fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
-        },
-    )
-    .ok()?;
-    // For Linux without UEFI.
-    // SAFETY: the fixed MTRRs route C0000-FFFFF to DRAM; the e820 reserves
-    // it for the firmware.
-    unsafe { fstart_acpi::smbios::publish_legacy_entry_point(storage) };
-    fstart_log::info!(
-        "smbios: {} DIMM positions, {} installed, {} bytes at {}",
-        dimms.len() as u32,
-        dimms.iter().filter(|d| d.device.is_populated()).count() as u32,
-        used as u32,
-        Hex(address)
-    );
-    Some(address)
+        .zip(roots)
+        .flat_map(|(engines, &(segment, bus))| {
+            engines.iter().filter_map(move |engine| {
+                let attached = engine
+                    .attached
+                    .filter(|_| engine.engine == EngineType::Pcie)?;
+                let bridge = PciAddress::new(segment, bus, engine.device, engine.function);
+                Some((Some(bridge), engine.width(), attached))
+            })
+        })
+        .collect()
+}
+
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub use stage::install;
+
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod stage {
+    use super::super::{Ctx, DieSoc};
+    use alloc::vec::Vec;
+    use fstart_driver_amd::apob::{
+        smbios::{DramRange, dram_ranges},
+        sysmap,
+    };
+
+    /// Build the tables; returns their entry point's address.
+    pub fn install<S: DieSoc>(
+        identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
+        ctx: &Ctx<'_, S>,
+        cpus: &crate::mp::Cpus,
+        pci: &fstart_pci::PciEcam,
+    ) -> Option<u64> {
+        #[repr(C, align(4096))]
+        struct Tables([u8; fstart_acpi::smbios::BUFFER_SIZE]);
+        static mut TABLES: Tables = Tables([0; fstart_acpi::smbios::BUFFER_SIZE]);
+
+        let apob = ctx.memory.apob;
+        let regions: Vec<DramRange> = apob
+            .and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok())
+            .and_then(|map| {
+                sysmap::memory_map(S::psp(ctx.hw), map.top, map.holes().iter().copied()).ok()
+            })
+            .map(|regions| dram_ranges(&regions))
+            .unwrap_or_default();
+        let roots: Vec<(u16, u8)> = pci
+            .roots()
+            .iter()
+            .map(|root| (root.info().segment, *root.buses().start()))
+            .collect();
+        let ports = super::ports(S::descriptors(ctx.config), &roots);
+        let threads_per_core = fstart_driver_amd::ccx::Thread::current().threads_per_core();
+        // SAFETY: firmware BSS in the reserved early region, written once.
+        let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
+        let address = storage.as_ptr() as u64;
+        crate::smbios::build_into(
+            storage,
+            &crate::smbios::System {
+                soc: &S::SMBIOS,
+                identity,
+                rom_size: S::LAYOUT.flash.size as u32,
+                apob,
+                regions: &regions,
+                cpus,
+                pci,
+                bridges: S::ACPI.bridges,
+                ports: &ports,
+            },
+            // One socket; the SMT threads of a core are adjacent APIC IDs.
+            |apic_id| (0, apic_id / u32::from(threads_per_core)),
+            |socket, _| socket == 0,
+        )
+        .inspect_err(|what| fstart_log::error!("smbios: {}", *what))
+        .ok()
+        .map(|_| address)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fstart_acpi::smbios::SystemSlot;
+
+    static SLOT: Attached<'static> = Attached::Slot(SystemSlot::new("PCIE_1"));
+    static M2: Attached<'static> = Attached::Slot(SystemSlot::new("M.2"));
+
+    /// MJ11-EC1-like engines: SATA lanes, an M.2 x4, an untagged port and
+    /// a slot split x8/x8; a second die with nothing attached.
+    #[test]
+    fn the_attached_ports_with_their_bridges_and_lanes() {
+        static DIE0: [Descriptor; 5] = [
+            Descriptor::sata(0, 3, fstart_driver_amd::dxio::SataChannel::Other),
+            Descriptor::pcie(8, 11, 1, 3).attached(&M2),
+            Descriptor::pcie(15, 15, 1, 1),
+            Descriptor::pcie(31, 24, 3, 1).attached(&SLOT),
+            Descriptor::pcie(23, 16, 3, 3).attached(&SLOT),
+        ];
+        static DIE1: [Descriptor; 1] = [Descriptor::pcie(0, 15, 3, 1)];
+        let ports = ports(&[&DIE0, &DIE1], &[(0, 0), (0, 0x40)]);
+        let found: Vec<(u8, u8, u8, u8)> = ports
+            .iter()
+            .map(|(a, lanes, _)| {
+                let a = a.unwrap();
+                (a.bus(), a.device(), a.function(), *lanes)
+            })
+            .collect();
+        assert_eq!(found, [(0, 1, 3, 4), (0, 3, 1, 8), (0, 3, 3, 8)]);
+        assert!(core::ptr::eq(ports[1].2, &SLOT) && core::ptr::eq(ports[0].2, &M2));
+    }
 }

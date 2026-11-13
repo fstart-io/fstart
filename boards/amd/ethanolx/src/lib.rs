@@ -29,7 +29,7 @@ use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
 use fstart_driver_amd::sp3::fch::{FchHw, irq, uart};
 use fstart_driver_amd::sp3::soc::Generation;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_amd::sp3::acpi::Board as AcpiBoard;
+use fstart_platform_amd::acpi::Board as AcpiBoard;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
 
@@ -123,7 +123,7 @@ pub fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
 
 /// The board's ACPI: the BMC's KCS. The shared FCH ACPI inventory already
 /// describes the powered MMIO UART, so there is no LPC AML.
-pub fn acpi_board() -> AcpiBoard<'static> {
+pub fn acpi_board() -> AcpiBoard {
     AcpiBoard {
         ipmi: Some(fstart_driver_ipmi::kcs::DEFAULT_ACPI),
         ..AcpiBoard::default()

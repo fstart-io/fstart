@@ -8,9 +8,8 @@ use fstart_arch::x86::boot::cpuid::{CacheInfo, ProcessorSnapshot};
 use fstart_core::smbios::CacheAssociativity;
 
 /// One processor package.
+#[derive(Clone, Copy)]
 pub struct Package<'a> {
-    /// Type 4's socket designation; the type 7 designations start with it.
-    pub socket: &'a str,
     /// CPUID of a thread of this package, not copied from the BSP's.
     pub cpu: &'a ProcessorSnapshot,
     /// The package's enabled threads. A cache counts once per sharing
@@ -69,8 +68,10 @@ impl Package<'_> {
 }
 
 impl SmbiosWriter<'_> {
-    /// Type 7 for every cache of `package`, then its type 4.
-    pub fn add_package(&mut self, package: &Package) {
+    /// Type 7 for every cache of `package`, then its type 4, in the
+    /// socket the board calls `socket`; the type 7 designations start with
+    /// it.
+    pub fn add_package(&mut self, socket: &str, package: &Package) {
         let mut caches = [0xffff; 3];
         for cache in package.caches() {
             let instances = cache.instance_count(package.apic_ids).max(1);
@@ -88,7 +89,7 @@ impl SmbiosWriter<'_> {
                 _ => (0x02, "Other"),
             };
             caches[usize::from(cache.level - 1)] = self.add_cache_info(
-                &format!("{} L{} {}", package.socket, cache.level, name),
+                &format!("{} L{} {}", socket, cache.level, name),
                 cache.level,
                 size_kib,
                 CacheAssociativity::from_ways(cache.associativity, cache.fully_associative)
@@ -98,7 +99,7 @@ impl SmbiosWriter<'_> {
         }
         let cpu = package.cpu;
         self.add_processor(&ProcessorInfo {
-            socket: package.socket,
+            socket,
             manufacturer: cpu.manufacturer(),
             version: cpu.brand(),
             family: package.family,
@@ -176,7 +177,6 @@ mod tests {
 
     fn package<'a>(cpu: &'a ProcessorSnapshot, apic_ids: &'a [u32]) -> Package<'a> {
         Package {
-            socket: "Socket0",
             cpu,
             apic_ids,
             cores: 4,
@@ -215,11 +215,17 @@ mod tests {
         let cpu = snapshot();
         let mut bytes = [0u8; 2048];
         let ids: [u32; 8] = core::array::from_fn(|i| i as u32);
-        assemble_into(&mut bytes, 0x1000, |w| w.add_package(&package(&cpu, &ids))).unwrap();
+        assemble_into(&mut bytes, 0x1000, |w| {
+            w.add_package("Socket0", &package(&cpu, &ids))
+        })
+        .unwrap();
         // 4 L1D and L2 instances, one L3.
         assert_eq!(cache_sizes(&bytes), [128, 2048, 8192]);
         // Without the threads: one of each.
-        assemble_into(&mut bytes, 0x1000, |w| w.add_package(&package(&cpu, &[]))).unwrap();
+        assemble_into(&mut bytes, 0x1000, |w| {
+            w.add_package("Socket0", &package(&cpu, &[]))
+        })
+        .unwrap();
         assert_eq!(cache_sizes(&bytes), [32, 512, 8192]);
     }
 

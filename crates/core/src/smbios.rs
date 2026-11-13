@@ -38,19 +38,64 @@ impl<'a> SystemSlot<'a> {
             characteristics: [1, 0],
         }
     }
+    /// The lanes of [`Self::data_bus_width`]'s serial widths (DSP0134
+    /// Table 46: 08h x1 to 0Eh x32), 0 for the others.
+    pub const fn lanes(&self) -> u8 {
+        match self.data_bus_width {
+            0x08 => 1,
+            0x09 => 2,
+            0x0a => 4,
+            0x0b => 8,
+            0x0c => 12,
+            0x0d => 16,
+            0x0e => 32,
+            _ => 0,
+        }
+    }
 }
 
-/// Board-fixed association of a physical slot with its upstream PCI bridge.
-/// These are enumeration lookup coordinates, not the PCI address emitted in
-/// Type 9. The split fields allow const board metadata without replacing the
-/// canonical PCI address/access APIs used at runtime.
+/// What a board attaches to a PCIe port: the fact a port's existing
+/// description (a DXIO engine, a root port of the chipset) carries for the
+/// tables that describe the board. The platform knows the port's bridge
+/// and lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PciSlot<'a> {
-    pub slot: SystemSlot<'a>,
-    pub bridge_segment: u16,
-    pub bridge_bus: u8,
-    /// Device/function encoded as in a PCI config address.
-    pub bridge_devfn: u8,
+pub enum Attached<'a> {
+    /// A physical slot, a connector a card or a cable goes into (SMBIOS
+    /// Type 9): PCIe, M.2 and Mini PCIe sockets, U.2, OCP. Several ports
+    /// with the same slot are its links when it is split (bifurcated).
+    Slot(SystemSlot<'a>),
+    /// A device soldered to the board (SMBIOS Type 41).
+    Onboard(OnboardDevice<'a>),
+}
+
+/// A device soldered to the board, as SMBIOS Type 41 names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnboardDevice<'a> {
+    /// The board's reference designation, e.g. its silkscreen label.
+    pub designation: &'a str,
+    pub kind: OnboardType,
+}
+
+/// SMBIOS onboard device types (DSP0134 7.42.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OnboardType {
+    Other = 0x01,
+    Unknown = 0x02,
+    Video = 0x03,
+    ScsiController = 0x04,
+    Ethernet = 0x05,
+    TokenRing = 0x06,
+    Sound = 0x07,
+    PataController = 0x08,
+    SataController = 0x09,
+    SasController = 0x0a,
+    WirelessLan = 0x0b,
+    Bluetooth = 0x0c,
+    Wwan = 0x0d,
+    Emmc = 0x0e,
+    NvmeController = 0x0f,
+    UfsController = 0x10,
 }
 
 /// Boot-time slot usage (SMBIOS Type 9). A present root port alone does not

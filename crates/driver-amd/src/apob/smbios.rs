@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The SMBIOS inventory of an AMD system from its APOB: the DIMM positions
 //! the ABL reports with the modules of the APOB's SPD copies, and the
-//! processor packages, written with the shared SMBIOS writer. SP3 and the
-//! noncar SoCs supply the packages, the DRAM ranges and the board identity.
+//! processor packages, added to the shared SMBIOS builder. The platform
+//! supplies the packages' CPUID, the DRAM ranges and the board identity.
 extern crate alloc;
 
 use super::{Apob, mem};
 use alloc::{format, vec::Vec};
-use fstart_acpi::smbios::{self, Package, SmbiosIdentity, WriteError};
+use fstart_acpi::smbios::{Builder, Package};
 use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
 use fstart_core::memory_info::MemoryDevice;
 
@@ -135,76 +135,63 @@ pub fn dram_ranges<'a>(
         .collect()
 }
 
-pub struct Inputs<'a> {
-    pub identity: SmbiosIdentity<'a>,
-    pub processors: &'a [Processor<'a>],
-    pub dimms: &'a [Dimm],
-    /// The ABL's DRAM ranges before firmware allocations, not `0..total_RAM`.
-    pub regions: &'a [DramRange],
-    /// Supported maximum per physical DIMM position, not installed capacity.
-    pub max_dimm_mib: u32,
-    /// SMBIOS processor upgrade (socket) code: 0x37 SP3, 0x06 none for the
-    /// BGA packages.
-    pub socket_upgrade: u8,
-    /// APOB 8/8's active ECC mode; SPD ECC width alone proves no active mode.
-    pub ecc: bool,
-    pub rom_size: u32,
-    pub uefi: bool,
-}
-
-/// Pure, bounded table construction, also usable by host tests.
-pub fn build_into(bytes: &mut [u8], address: u64, input: &Inputs<'_>) -> Result<usize, WriteError> {
-    smbios::assemble_into(bytes, address, |writer| {
-        writer.add_identity(&input.identity, input.rom_size, input.uefi);
-        for processor in input.processors {
-            let logical_label = format!("Socket{}", processor.socket);
-            let socket = input
-                .identity
-                .processor_sockets
-                .get(usize::from(processor.socket))
-                .copied()
-                .unwrap_or(&logical_label);
-            let threads = u16::try_from(processor.apic_ids.len()).unwrap_or(0);
-            writer.add_package(&Package {
-                socket,
+/// Add a package per processor: Zen, in the socket of SMBIOS upgrade code
+/// `upgrade` (0x37 SP3, 0x06 none for the BGA packages).
+pub fn add_packages<'a>(tables: &mut Builder<'a>, processors: &'a [Processor<'a>], upgrade: u8) {
+    for processor in processors {
+        tables.package(
+            processor.socket,
+            Package {
                 cpu: &processor.snapshot,
                 apic_ids: processor.apic_ids,
                 cores: processor.snapshot.core_count.max(processor.enabled_cores),
                 enabled_cores: processor.enabled_cores,
-                threads,
+                threads: u16::try_from(processor.apic_ids.len()).unwrap_or(0),
                 family: FAMILY_ZEN,
-                upgrade: input.socket_upgrade,
+                upgrade,
                 // No guessed BCLK, boost clock, or instantaneous frequency.
                 external_clock_mhz: 0,
                 max_speed_mhz: 0,
                 current_speed_mhz: 0,
-            });
-        }
-        if !input.dimms.is_empty() && input.max_dimm_mib != 0 {
-            writer.add_physical_memory_array(
-                u64::from(input.max_dimm_mib) * 1024 * input.dimms.len() as u64,
-                input.dimms.len() as u16,
-                if input.ecc { 6 } else { 3 },
-            );
-            for dimm in input.dimms {
-                // These are explicit topology labels, not unverified silkscreen
-                // names or DIMM-to-error/SEL mappings.
-                let bank = format!(
-                    "Socket{} Die{} Channel{}",
-                    dimm.socket, dimm.die, dimm.device.channel
-                );
-                let locator = format!("{} DIMM{}", bank, dimm.device.slot);
-                writer.add_dimm(&dimm.device, &locator, &bank);
-            }
-            for region in input.regions.iter().filter(|r| r.end > r.base) {
-                // Channel/rank interleave width is not known from an address
-                // range. SMBIOS uses zero for an unknown partition width.
-                writer.add_memory_array_mapped_address(region.base, region.end - 1, 0);
-            }
-        }
-        writer.add_system_boot_info();
-        writer.add_end_of_table();
-    })
+            },
+        );
+    }
+}
+
+/// Add the memory array of the DIMM positions `dimms`, each taking up to
+/// `max_dimm_mib` (the supported maximum, not the installed capacity), and
+/// its DRAM `regions` (the ABL's, before firmware allocations, not
+/// `0..total_RAM`). `ecc` is APOB 8/8's active ECC mode; an SPD's ECC width
+/// alone proves no active mode. Nothing without positions.
+pub fn add_memory(
+    tables: &mut Builder<'_>,
+    dimms: &[Dimm],
+    regions: &[DramRange],
+    max_dimm_mib: u32,
+    ecc: bool,
+) {
+    if dimms.is_empty() || max_dimm_mib == 0 {
+        return;
+    }
+    tables.memory_array(
+        u64::from(max_dimm_mib) * 1024 * dimms.len() as u64,
+        if ecc { 6 } else { 3 },
+    );
+    for dimm in dimms {
+        // These are explicit topology labels, not unverified silkscreen
+        // names or DIMM-to-error/SEL mappings.
+        let bank = format!(
+            "Socket{} Die{} Channel{}",
+            dimm.socket, dimm.die, dimm.device.channel
+        );
+        let locator = format!("{} DIMM{}", bank, dimm.device.slot);
+        tables.dimm(&dimm.device, &locator, &bank);
+    }
+    for region in regions {
+        // Channel/rank interleave width is not known from an address
+        // range. SMBIOS uses zero for an unknown partition width.
+        tables.mapped_range(region.base, region.end, 0);
+    }
 }
 
 #[cfg(test)]

@@ -353,6 +353,48 @@ impl<'n, P: ConfigRegionAccess + Clone> PcieCore<'n, P> {
     }
 }
 
+/// An engine the board attached something to: the bridge of its PCIe
+/// link (none for a SATA engine), its lanes and what is attached.
+pub type AttachedPort = (
+    Option<fstart_pci::PciAddress>,
+    u8,
+    &'static fstart_core::smbios::Attached<'static>,
+);
+
+/// The engines of `engines` the board attached something to, as `ports`
+/// mapped them: each PCIe link at its assigned devfn on the bus of its
+/// NBIO's root bridge in `topology`, a SATA engine without a bridge. A
+/// PCIe engine without a port (a knob took it out) is left out.
+pub fn attached(
+    topology: &crate::sp3::df::topology::Topology,
+    segment: u16,
+    engines: &[Engine<'static>],
+    ports: &[MappedPort],
+) -> Vec<AttachedPort, { crate::dxio::wire::MAX_ENGINES }> {
+    engines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, engine)| {
+            let attached = engine.attached?;
+            let lanes = engine.lanes.count();
+            let bridge = match engine.kind {
+                EngineKind::Pcie(_) => {
+                    let port = ports.iter().find(|p| p.engine == index)?;
+                    let bus = topology
+                        .root_bridges
+                        .iter()
+                        .find(|rb| (rb.socket, rb.index) == (port.socket, port.nbio))?
+                        .bus_base;
+                    let (device, function) = fstart_pci::devfn_parts(port.devfn);
+                    Some(fstart_pci::PciAddress::new(segment, bus, device, function))
+                }
+                EngineKind::Sata(_) | EngineKind::Ethernet => None,
+            };
+            Some((bridge, lanes, attached))
+        })
+        .collect()
+}
+
 /// One PCIe engine mapped to a hardware port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MappedPort {
@@ -1273,6 +1315,72 @@ mod tests {
     use crate::sp3::dxio::lanes::{Group, Lanes, SataEngine, Speed};
     use crate::sp3::dxio::tables::SP3_DEFAULT_DEVFN;
     use crate::sp3::nbio::tests::nbio;
+
+    /// The attached engines at the bridges DXIO mapped them to, on the bus
+    /// of their NBIO's root bridge; a SATA engine without a bridge, an
+    /// engine without attachment or without a port left out.
+    #[test]
+    fn attached_engines_at_their_mapped_bridges() {
+        use crate::df::RootBridge;
+        use crate::sp3::df::topology::Topology;
+        use fstart_core::smbios::{Attached, SystemSlot};
+        static SLOT: Attached<'static> = Attached::Slot(SystemSlot::new("PCIE3"));
+        static M2: Attached<'static> = Attached::Slot(SystemSlot::new("CN1"));
+        let lanes = |first, count| Lanes::sp3(Group::G0, first, count);
+        let engines = [
+            Engine::pcie(0, lanes(0, 4), PcieEngine::new()).attached(&SLOT),
+            Engine::pcie(0, lanes(4, 4), PcieEngine::new()).attached(&SLOT),
+            Engine::pcie(0, lanes(8, 4), PcieEngine::new()),
+            Engine::sata(0, lanes(12, 1), SataEngine::new(0)).attached(&M2),
+            Engine::pcie(0, lanes(13, 1), PcieEngine::new()).attached(&M2),
+        ];
+        let mapped = |engine, nbio, devfn| MappedPort {
+            engine,
+            socket: 0,
+            nbio,
+            core: 0,
+            port: 0,
+            devfn,
+            bridge: 0,
+            trained: true,
+        };
+        let ports = [mapped(0, 0, 0x09), mapped(1, 0, 0x0b), mapped(2, 1, 0x09)];
+        let mut topology = Topology {
+            generation: Generation::Rome,
+            sockets: 1,
+            nodes: Vec::new(),
+            root_bridges: Vec::new(),
+        };
+        for (index, bus_base) in [(0, 0xc0), (1, 0x80)] {
+            let _ = topology.root_bridges.push(RootBridge {
+                socket: 0,
+                index,
+                fabric_id: 0,
+                bus_base,
+                bus_limit: bus_base + 0x3f,
+                primary: false,
+            });
+        }
+        let found = attached(&topology, 0, &engines, &ports);
+        let found: std::vec::Vec<_> = found
+            .iter()
+            .map(|&(bridge, lanes, attached)| {
+                (
+                    bridge.map(|a| (a.bus(), a.device(), a.function())),
+                    lanes,
+                    core::ptr::eq(attached, &SLOT),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (Some((0xc0, 1, 1)), 4, true),
+                (Some((0xc0, 1, 3)), 4, true),
+                (None, 1, false),
+            ]
+        );
+    }
 
     #[test]
     fn remap_fill() {
