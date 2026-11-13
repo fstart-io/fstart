@@ -1669,15 +1669,7 @@ pub(super) fn prepare_ddr3(
     validate_register_timings(timing)?;
     let commands = ddr3_jedec_commands(timing)?;
     let bases = jedec_rank_bases(dimms)?;
-    // Coreboot get_gmch_info() uses CPUID leaf 4 EAX[31:26] for core count.
-    // Never guess whether the quad-core post-JEDEC register applies.
-    if core::arch::x86_64::__cpuid(0).eax < 4 {
-        return Err(ServiceError::HardwareError);
-    }
-    let cores = ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1;
-    if !matches!(cores, 1 | 2 | 4) {
-        return Err(ServiceError::HardwareError);
-    }
+    let cores = super::cpu_cores().ok_or(ServiceError::HardwareError)?;
     // Check all derived values before beginning irreversible MMIO writes.
     crossing_values(fsb_mhz, timing.clock)?;
     let igd_enabled = graphics != crate::gm45::Gm45GraphicsPolicy::Discrete;

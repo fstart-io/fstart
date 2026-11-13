@@ -25,6 +25,17 @@ pub use igd::{BacklightPwm, Gm45IgdConfig};
 
 register_bitfields![u8, TpmAccess [VALID OFFSET(7) NUMBITS(1) []]];
 
+/// Cores per package, as coreboot's `get_gmch_info()` reads them from CPUID
+/// leaf 4 EAX[31:26]. `None` when the leaf is missing or the count is not one
+/// GM45 supports: never guess which quad-core settings apply.
+fn cpu_cores() -> Option<u32> {
+    if fstart_arch::x86::cpuid(0).0 < 4 {
+        return None;
+    }
+    let cores = ((fstart_arch::x86::cpuid_count(4, 0).0 >> 26) & 0x3f) + 1;
+    matches!(cores, 1 | 2 | 4).then_some(cores)
+}
+
 const DEVEN_HOST: u32 = 1;
 const DEVEN_PEG: u32 = 1 << 1;
 const DEVEN_IGD: u32 = 1 << 3;
