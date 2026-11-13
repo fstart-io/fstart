@@ -7,80 +7,95 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
     pub payload: String,
+    /// The ISA every stage in this plan targets, stated once by the
+    /// platform resolver (board manifests do not restate it for the plan).
+    pub platform: fstart_core::Platform,
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
     pub stages: Vec<String>,
-    /// Image operation or explicit lack of one. Never infer compiler selections
-    /// or artifact dependencies from the image projection.
-    pub assembly: Assembly,
+    /// Image composition steps, executed in order after the compilation
+    /// units: each step consumes stage binaries and the artefacts of the
+    /// steps before it. Empty means compiler/check/editor support only:
+    /// no image, flash or run contract. Never infer compiler selections
+    /// or artifact dependencies from the image steps.
+    pub images: Vec<ImageStep>,
     pub inputs: Vec<InputFile>,
 }
 
+/// One image-format operation in a plan. The format's config type and its
+/// execution live with the format in this crate (`crate::image_steps`
+/// dispatches); tools executing a plan never match on formats themselves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Assembly {
-    Ffs(Box<FfsAssembly>),
-    /// An AMD image: PSP firmware, the stage the PSP loads and an
-    /// optional FFS.
-    Amd(Box<crate::amd::assembly::AmdAssembly>),
-    /// An AMD halved flash (one or two 16 MiB halves) (and 32 MiB dual image): vendor PSP prefix,
-    /// FFS and the PSP-copied stage unit.
-    AmdHalvedFlash(Box<crate::amd::halved_flash::AmdHalvedFlashAssembly>),
-    /// Compiler/check/editor support only. No image/flash/run contract supplied.
-    Unassembled {
-        platform: fstart_core::Platform,
-    },
+pub struct ImageStep {
+    pub name: String,
+    pub operation: ImageOperation,
 }
-impl Assembly {
-    pub fn platform(&self) -> fstart_core::Platform {
-        match self {
-            Self::Ffs(image) => image.platform,
-            Self::Amd(_) => fstart_core::Platform::X86_64,
-            Self::AmdHalvedFlash(image) => image.ffs.platform,
-            Self::Unassembled { platform } => *platform,
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ImageOperation {
+    /// The signed fstart firmware filesystem over the stage binaries.
+    Ffs(Box<FfsAssembly>),
+    /// An AMD EFS flash image: PSP firmware, the stage the PSP loads and
+    /// the artefact of a preceding FFS step in its window, if any.
+    AmdEfs(Box<crate::amd::assembly::AmdAssembly>),
+    /// An AMD halved flash: the artefact of a preceding FFS step and the
+    /// PSP-copied stage unit composed per repeated 16 MiB boot half.
+    AmdHalvedFlash(Box<crate::amd::halved_flash::AmdHalvedFlashAssembly>),
+}
+
+impl ImageStep {
+    pub fn new(name: impl Into<String>, operation: ImageOperation) -> Self {
+        Self {
+            name: name.into(),
+            operation,
         }
     }
+
+    pub fn ffs(assembly: FfsAssembly) -> Self {
+        Self::new("ffs", ImageOperation::Ffs(Box::new(assembly)))
+    }
+}
+
+impl From<FfsAssembly> for ImageStep {
+    fn from(image: FfsAssembly) -> Self {
+        Self::ffs(image)
+    }
+}
+
+impl BuildPlan {
+    /// The plan's FFS step configuration, if it has one.
+    pub fn ffs_assembly(&self) -> Result<&FfsAssembly, String> {
+        self.images
+            .iter()
+            .find_map(|step| match &step.operation {
+                ImageOperation::Ffs(image) => Some(image.as_ref()),
+                _ => None,
+            })
+            .ok_or_else(|| "plan has no image assembly/run/flash contract".into())
+    }
+
     pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
-        match self {
-            Self::Ffs(image) => &image.bootstrap,
-            Self::Amd(image) => image
-                .ffs
-                .as_ref()
-                .map_or(&[], |ffs| &ffs.assembly.bootstrap),
-            Self::AmdHalvedFlash(image) => &image.ffs.bootstrap,
-            Self::Unassembled { .. } => &[],
+        match self.ffs_assembly() {
+            Ok(image) => &image.bootstrap,
+            Err(_) => &[],
         }
     }
-    pub fn ffs(&self) -> Result<&FfsAssembly, String> {
-        match self {
-            Self::Ffs(image) => Ok(image),
-            Self::Amd(image) => image.ffs.as_ref().map(|ffs| &ffs.assembly).ok_or_else(|| {
-                "PSP partition fragment has no runtime config/run/flash contract".into()
-            }),
-            Self::AmdHalvedFlash(image) => Ok(&image.ffs),
-            Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
-        }
-    }
+
     pub fn resolve_workspace_inputs(
         &mut self,
         root: &std::path::Path,
         board: &std::path::Path,
     ) -> Result<(), String> {
-        match self {
-            Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
-            Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
-                ffs.assembly.resolve_workspace_inputs(root, board)
-            }),
-            Self::AmdHalvedFlash(image) => image.ffs.resolve_workspace_inputs(root, board),
-            Self::Unassembled { .. } => Ok(()),
+        for step in &mut self.images {
+            if let ImageOperation::Ffs(image) = &mut step.operation {
+                image.resolve_workspace_inputs(root, board)?;
+            }
         }
+        Ok(())
     }
+
     pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.ffs()?.config(name)
-    }
-}
-impl From<FfsAssembly> for Assembly {
-    fn from(image: FfsAssembly) -> Self {
-        Self::Ffs(Box::new(image))
+        self.ffs_assembly()?.config(name)
     }
 }
 
@@ -342,23 +357,43 @@ impl BuildPlan {
         &self,
         selection: &crate::plan::BuildSelection,
     ) -> Result<(), String> {
-        match (&selection.image_config, &self.assembly) {
-            (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
-                Ok(())
+        // An explicit `--image-config` must be bound unchanged by the one
+        // image step that consumes a vendor image; a packed image and
+        // plans without such a step bind no image configuration.
+        let requested = selection.image_config.as_deref();
+        for step in &self.images {
+            let bound = match &step.operation {
+                ImageOperation::AmdEfs(image) => match &image.firmware {
+                    crate::amd::assembly::Firmware::Vendor { image, .. } => {
+                        Some(Some(image.path.as_str()))
+                    }
+                    crate::amd::assembly::Firmware::Packed { .. } => Some(None),
+                },
+                // A halved flash may fall back to the board's own vendor
+                // ROM, so only an explicit request must match it.
+                ImageOperation::AmdHalvedFlash(image) => {
+                    return match requested {
+                        None => Ok(()),
+                        Some(path) if path == image.vendor_image => Ok(()),
+                        Some(_) => Err(
+                            "image configuration was not bound unchanged by the platform".into(),
+                        ),
+                    };
+                }
+                ImageOperation::Ffs(_) => None,
+            };
+            if let Some(bound) = bound {
+                return if requested == bound {
+                    Ok(())
+                } else {
+                    Err("image configuration was not bound unchanged by the platform".into())
+                };
             }
-            (None, Assembly::Amd(image))
-                if matches!(
-                    image.firmware,
-                    crate::amd::assembly::Firmware::Packed { .. }
-                ) =>
-            {
-                Ok(())
-            }
-            (Some(path), Assembly::AmdHalvedFlash(image)) if *path == image.vendor_image => Ok(()),
-            (None, Assembly::Ffs(_) | Assembly::AmdHalvedFlash(_) | Assembly::Unassembled { .. }) => {
-                Ok(())
-            }
-            _ => Err("image configuration was not bound unchanged by the platform".into()),
+        }
+        if requested.is_none() {
+            Ok(())
+        } else {
+            Err("image configuration was not bound unchanged by the platform".into())
         }
     }
 
@@ -408,7 +443,10 @@ impl BuildPlan {
                     ));
                 }
             }
-            if matches!(&self.assembly, Assembly::Ffs(_))
+            if self
+                .images
+                .iter()
+                .any(|step| matches!(step.operation, ImageOperation::Ffs(_)))
                 && matches!(&unit.output,
                 UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
             {
@@ -489,10 +527,37 @@ impl BuildPlan {
                 return Err(format!("duplicate or non-executable image stage {stage}"));
             }
         }
+        // Image steps: bounded, uniquely named, and a step that consumes
+        // an FFS artefact comes after the FFS step that produces it.
+        if self.images.len() > 8 {
+            return Err("plan has too many image steps".into());
+        }
+        let mut image_names = BTreeSet::new();
+        let mut seen_ffs = false;
+        for step in &self.images {
+            if !identifier(&step.name) || !image_names.insert(step.name.as_str()) {
+                return Err(format!("invalid or duplicate image step {}", step.name));
+            }
+            match &step.operation {
+                ImageOperation::Ffs(_) => seen_ffs = true,
+                ImageOperation::AmdEfs(image) if image.ffs.is_some() && !seen_ffs => {
+                    return Err("AMD EFS step consumes an FFS no earlier step produces".into());
+                }
+                ImageOperation::AmdHalvedFlash(_) if !seen_ffs => {
+                    return Err(
+                        "AMD halved-flash step consumes an FFS no earlier step produces".into(),
+                    );
+                }
+                _ => {}
+            }
+        }
         let mut bootstrap = BTreeSet::new();
         // The stage unit's stored bytes are the image the PSP copies; its
         // `.data` may run from a copy elsewhere, as in every noncar image.
-        if let Assembly::Amd(image) = &self.assembly {
+        for step in &self.images {
+            let ImageOperation::AmdEfs(image) = &step.operation else {
+                continue;
+            };
             image.validate()?;
             let unit = self.unit(&image.stage_unit)?;
             let UnitOutput::Executable {
@@ -522,10 +587,12 @@ impl BuildPlan {
                 return Err("PSP reset producer differs from image operation".into());
             }
         }
-        if let Assembly::AmdHalvedFlash(image) = &self.assembly {
-            image.validate(self)?;
+        for step in &self.images {
+            if let ImageOperation::AmdHalvedFlash(image) = &step.operation {
+                image.validate(self)?;
+            }
         }
-        for (name, _) in self.assembly.bootstrap() {
+        for (name, _) in self.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
             }
@@ -534,13 +601,12 @@ impl BuildPlan {
         Ok(ordered)
     }
 
-    /// The current assembler/CLI only exposes these three payload slots.
+    /// External files a caller may bind by name (`--input NAME=PATH`);
+    /// the names are the platform's, not a fixed slot list.
     pub fn validate_input_bindings(&self) -> Result<(), String> {
         let mut inputs = BTreeSet::new();
         for input in &self.inputs {
-            if !matches!(input.name.as_str(), "kernel" | "firmware" | "fit")
-                || !inputs.insert(input.name.as_str())
-            {
+            if !identifier(&input.name) || !inputs.insert(input.name.as_str()) {
                 return Err(format!(
                     "unknown or duplicate payload input binding {}",
                     input.name
@@ -642,6 +708,7 @@ mod tests {
         };
         BuildPlan {
             payload: "halt".into(),
+            platform: Platform::Aarch64,
             units: vec![
                 launch,
                 unit("render-cache", &["seed"]),
@@ -650,23 +717,25 @@ mod tests {
             ],
             stages: vec!["launch".into()],
             inputs: vec![],
-            assembly: FfsAssembly {
-                platform: Platform::Aarch64,
-                memory: vec![],
-                flash: None,
-                bootstrap: vec![],
-                stages: StageLayout::MultiStage(hvec([])),
-                security: default_security_config(),
-                payload: None,
-                microcode: None,
-                data_assets: vec![],
-                file_assets: vec![],
-                full_flash_image: false,
-                soc_image_format: SocImageFormat::None,
-                boot_hart_id: 0,
-                build: BoardBuildPolicy::default(),
-            }
-            .into(),
+            images: vec![
+                FfsAssembly {
+                    platform: Platform::Aarch64,
+                    memory: vec![],
+                    flash: None,
+                    bootstrap: vec![],
+                    stages: StageLayout::MultiStage(hvec([])),
+                    security: default_security_config(),
+                    payload: None,
+                    microcode: None,
+                    data_assets: vec![],
+                    file_assets: vec![],
+                    full_flash_image: false,
+                    soc_image_format: SocImageFormat::None,
+                    boot_hart_id: 0,
+                    build: BoardBuildPolicy::default(),
+                }
+                .into(),
+            ],
         }
     }
 
@@ -682,12 +751,10 @@ mod tests {
                 .unwrap_err()
                 .contains("runtime layout descriptor")
         );
-        plan.assembly = super::Assembly::Unassembled {
-            platform: fstart_core::Platform::Aarch64,
-        };
+        plan.images = vec![];
         plan.order().unwrap();
-        assert!(plan.assembly.config("test").is_err());
-        assert!(plan.assembly.bootstrap().is_empty());
+        assert!(plan.config("test").is_err());
+        assert!(plan.bootstrap().is_empty());
     }
 
     #[test]
@@ -844,9 +911,10 @@ mod tests {
         };
         let plan = |units| BuildPlan {
             payload: "halt".into(),
+            platform: Platform::X86_64,
             units,
             stages: vec![],
-            assembly: assembly.clone().into(),
+            images: vec![assembly.clone().into()],
             inputs: vec![],
         };
         assert!(

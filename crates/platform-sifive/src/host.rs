@@ -255,7 +255,8 @@ pub fn resolve(
         payload,
         units: vec![unit],
         stages: vec!["stage".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
         inputs,
     };
     plan.order()?;
@@ -384,7 +385,7 @@ mod tests {
             ..Default::default()
         };
         let plan = resolve(&CONFIG, "board.dtb", selection).unwrap();
-        plan.assembly.ffs().unwrap().payload.clone()
+        plan.ffs_assembly().unwrap().payload.clone()
     }
 
     #[test]

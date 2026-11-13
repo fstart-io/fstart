@@ -52,7 +52,7 @@ impl Resolved {
         if board
             .platform
             .as_deref()
-            .is_some_and(|platform| platform != plan.assembly.platform().as_str())
+            .is_some_and(|platform| platform != plan.platform.as_str())
             || board
                 .target
                 .as_deref()
@@ -60,11 +60,11 @@ impl Resolved {
         {
             return Err("board identity target/platform conflicts with resolved image".into());
         }
-        plan.assembly.resolve_workspace_inputs(root, &board.dir)?;
+        plan.resolve_workspace_inputs(root, &board.dir)?;
         Ok(Self { plan })
     }
     pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.plan.assembly.config(board)
+        self.plan.config(board)
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
@@ -251,35 +251,82 @@ impl Resolved {
             .collect::<Result<_, String>>()?;
         Ok(crate::build_board::BuildResult { stages })
     }
+    /// Bind the caller's named external files to the inputs the plan
+    /// declares, applying board-relative defaults. Returns the complete
+    /// binding the image steps consume; undeclared names are rejected.
     pub fn validate_inputs(
         &self,
         board: &Path,
-        kernel: Option<&str>,
-        firmware: Option<&str>,
-        fit: Option<&str>,
-    ) -> Result<(), String> {
+        supplied: &BTreeMap<String, PathBuf>,
+    ) -> Result<BTreeMap<String, PathBuf>, String> {
         self.plan.validate_input_bindings()?;
-        for (name, supplied) in [("kernel", kernel), ("firmware", firmware), ("fit", fit)] {
-            let input = self.plan.inputs.iter().find(|i| i.name == name);
-            let path = supplied.map(PathBuf::from).or_else(|| {
-                input
-                    .and_then(|i| i.default.as_ref())
-                    .map(|p| board.join(p))
-            });
-            match (input, path) {
-                (None, None) => {}
-                (Some(input), Some(path)) => {
-                    let size = fs::metadata(&path)
-                        .map_err(|e| format!("{name} {}: {e}", path.display()))?
-                        .len();
-                    if size == 0 || size > input.capacity {
-                        return Err(format!("{name} input is empty or exceeds its reservation"));
-                    }
-                }
-                _ => return Err(format!("{name} input does not match selected plan")),
+        for name in supplied.keys() {
+            if !self.plan.inputs.iter().any(|input| &input.name == name) {
+                return Err(format!("input {name} is not declared by the selected plan"));
             }
         }
-        Ok(())
+        let mut bound = BTreeMap::new();
+        for input in &self.plan.inputs {
+            let name = &input.name;
+            let path = supplied
+                .get(name)
+                .cloned()
+                .or_else(|| input.default.as_ref().map(|default| board.join(default)));
+            let Some(path) = path else {
+                return Err(format!("{name} input does not match selected plan"));
+            };
+            let size = fs::metadata(&path)
+                .map_err(|e| format!("{name} {}: {e}", path.display()))?
+                .len();
+            if size == 0 || size > input.capacity {
+                return Err(format!("{name} input is empty or exceeds its reservation"));
+            }
+            bound.insert(name.clone(), path);
+        }
+        Ok(bound)
+    }
+
+    /// Build the units and execute the plan's image steps. Image formats
+    /// are dispatched inside `fstart-image-build`; no format identity is
+    /// matched here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble(
+        &self,
+        root: &Path,
+        board: &BoardManifest,
+        release: bool,
+        supplied: &BTreeMap<String, PathBuf>,
+        payload_files: &[(String, String)],
+        signing_key: Option<&Path>,
+    ) -> Result<
+        (
+            Vec<fstart_image_build::StageBinary>,
+            fstart_image_build::image_steps::ImageOutputs,
+        ),
+        String,
+    > {
+        let inputs = self.validate_inputs(&board.dir, supplied)?;
+        let build = self.build(root, board, release)?;
+        let directory = self
+            .artifact_dir(root, &board.board, release)?
+            .join("image");
+        let outputs = fstart_image_build::image_steps::execute(
+            &self.plan,
+            &fstart_image_build::image_steps::ImageContext {
+                workspace_root: root,
+                board_dir: &board.dir,
+                board_name: &board.board,
+                stages: &build.stages,
+                output_dir: &directory,
+                inputs: &inputs,
+                payload_files,
+                signing_key,
+            },
+        )?;
+        for note in &outputs.notes {
+            eprintln!("[fstart] {note}");
+        }
+        Ok((build.stages, outputs))
     }
 }
 

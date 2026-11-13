@@ -418,28 +418,8 @@ fn ffs_and_stage(reset_size: usize) -> (Vec<u8>, Vec<u8>) {
     (ffs, stage)
 }
 
-fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
-    use fstart_core::*;
-    assembly::FfsWindow {
-        assembly: crate::build_plan::FfsAssembly {
-            platform: Platform::X86_64,
-            memory: vec![],
-            flash: None,
-            bootstrap: vec![],
-            stages: StageLayout::MultiStage(heapless::Vec::new()),
-            security: default_security_config(),
-            payload: None,
-            microcode: None,
-            data_assets: vec![],
-            file_assets: vec![],
-            full_flash_image: false,
-            soc_image_format: SocImageFormat::None,
-            boot_hart_id: 0,
-            build: BoardBuildPolicy::default(),
-        },
-        offset,
-        size,
-    }
+const fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
+    assembly::FfsWindow { offset, size }
 }
 
 /// MJ11's layout with its vendor image.

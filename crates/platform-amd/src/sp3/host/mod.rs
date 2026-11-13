@@ -6,7 +6,7 @@
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) through the shared AMD
 //! reset entry ([`reset::Layout`]), and an
-//! [`Assembly::AmdHalvedFlash`] that `fbuild assemble` composes into the vendor
+//! an `AmdHalvedFlash` image step that `fbuild assemble` composes into the vendor
 //! ROM with [`fstart_image_build::amd::halved_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
 //! (`--image-config` composes into another vendor ROM, e.g. the target
@@ -36,17 +36,17 @@ use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, SocImageFormat, StageBuildConfig, StageLayout, hstr,
 };
+use fstart_image_build::amd::halved_flash::{
+    AmdHalvedFlashAssembly, FlashPlan, NvramSlot, PackedHalf, ResetSlot, Survey,
+};
 use fstart_image_build::amd::{blobs, reset};
 use fstart_image_build::build_plan::{
-    ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, InputFile,
-    UnitOutput,
+    ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, ImageOperation,
+    ImageStep, InputFile, UnitOutput,
 };
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, Span as PlanSpan};
-use fstart_image_build::amd::halved_flash::{
-    FlashPlan, NvramSlot, PackedHalf, ResetSlot, AmdHalvedFlashAssembly, Survey,
-};
 
 use crate::sp3::layout::{
     self, CACHE_WINDOW, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK,
@@ -431,15 +431,21 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     };
     let plan = BuildPlan {
         payload: payload.name().into(),
+        platform: fstart_core::Platform::X86_64,
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],
-        assembly: Assembly::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
-            ffs: ffs_assembly(payload, payload.config(selection)?, Some(microcode)),
-            vendor_image,
-            packed,
-            stage_unit: STAGE_UNIT.into(),
-            compose: flash_plan::<B>(),
-        })),
+        images: vec![
+            ffs_assembly(payload, payload.config(selection)?, Some(microcode)).into(),
+            ImageStep::new(
+                "flash",
+                ImageOperation::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
+                    vendor_image,
+                    packed,
+                    stage_unit: STAGE_UNIT.into(),
+                    compose: flash_plan::<B>(),
+                })),
+            ),
+        ],
         inputs,
     };
     plan.order()?;
@@ -558,10 +564,13 @@ mod tests {
     }
 
     fn sp3(plan: &BuildPlan) -> &AmdHalvedFlashAssembly {
-        let Assembly::AmdHalvedFlash(image) = &plan.assembly else {
-            panic!("not an SP3 flash assembly")
-        };
-        image
+        plan.images
+            .iter()
+            .find_map(|step| match &step.operation {
+                ImageOperation::AmdHalvedFlash(image) => Some(image.as_ref()),
+                _ => None,
+            })
+            .expect("not an SP3 flash assembly")
     }
 
     #[test]
@@ -646,7 +655,7 @@ mod tests {
             image.packed[1].files.bios[0].path.rsplit('/').next(),
             Some("apcb.bin")
         );
-        let Some(MicrocodeConfig::Amd(microcode)) = &image.ffs.microcode else {
+        let Some(MicrocodeConfig::Amd(microcode)) = &plan.ffs_assembly().unwrap().microcode else {
             panic!("no microcode")
         };
         assert_eq!(microcode.files.len(), 2);
@@ -732,7 +741,7 @@ mod tests {
                 }),
             }
         );
-        let config = plan.assembly.config("tyan-s8030").unwrap();
+        let config = plan.config("tyan-s8030").unwrap();
         assert_eq!(
             config.build.firmware_image,
             FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x6c_0000)
@@ -756,7 +765,7 @@ mod tests {
         let unit = linux.unit(STAGE_UNIT).unwrap();
         assert_eq!(unit.features.last().unwrap(), "payload-linux");
         assert_eq!(linux.inputs[0].name, "kernel");
-        let payload = sp3(&linux).ffs.payload.as_ref().unwrap();
+        let payload = linux.ffs_assembly().unwrap().payload.as_ref().unwrap();
         assert_eq!(payload.bootargs.as_deref(), Some("console=ttyS0,115200"));
         let uefi = resolve::<S8030>(&select("uefi")).unwrap();
         assert_eq!(
@@ -769,7 +778,7 @@ mod tests {
             ui.unit(STAGE_UNIT).unwrap().features.last().unwrap(),
             "payload-uefi-ui-core"
         );
-        assert!(sp3(&ui).ffs.payload.is_some());
+        assert!(ui.ffs_assembly().unwrap().payload.is_some());
         assert!(ui.inputs.is_empty());
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(

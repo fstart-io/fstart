@@ -367,7 +367,8 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
         ],
         stages: vec!["bootblock".into(), "main".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
         inputs,
     };
     plan.order()?;
@@ -444,7 +445,7 @@ mod tests {
             (*load_address, *flat_capacity),
             (MAINSTAGE_LOAD_ADDR, 0x8000_0000 - MAINSTAGE_LOAD_ADDR)
         );
-        let assembly = plan.assembly.ffs().unwrap();
+        let assembly = plan.ffs_assembly().unwrap();
         assert_eq!(assembly.platform, Platform::Armv7);
         assert_eq!(assembly.soc_image_format, SocImageFormat::AllwinnerEgon);
         assert!(!assembly.full_flash_image);
@@ -472,7 +473,7 @@ mod tests {
     #[test]
     fn halt_has_no_payload_or_inputs_and_d1_rejects_linux() {
         let plan = resolve(BANANAPI, select("halt")).unwrap();
-        assert!(plan.assembly.ffs().unwrap().payload.is_none());
+        assert!(plan.ffs_assembly().unwrap().payload.is_none());
         assert!(plan.inputs.is_empty());
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-a20-main"]);
         let dock = BoardFacts {
@@ -510,7 +511,7 @@ mod tests {
             plan.unit("main").unwrap().features,
             ["bundle-h5-main", "linux"]
         );
-        let payload = plan.assembly.ffs().unwrap().payload.as_ref().unwrap();
+        let payload = plan.ffs_assembly().unwrap().payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();
         assert_eq!(firmware.load_addr, 0x0004_4000);
         assert_eq!(firmware.file.as_str(), "bl31-sun50i-a64.bin");
@@ -526,7 +527,7 @@ mod tests {
         };
         let plan = resolve(r1, select("halt")).unwrap();
         assert_eq!(
-            plan.assembly.ffs().unwrap().build.qemu_machine,
+            plan.ffs_assembly().unwrap().build.qemu_machine,
             Some(QemuMachine::OrangePiPc)
         );
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h3-main"]);

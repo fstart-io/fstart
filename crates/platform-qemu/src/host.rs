@@ -325,7 +325,8 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             },
         }],
         stages: vec!["stage".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
         inputs,
     };
     plan.order()?;
@@ -1020,7 +1021,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         payload: payload.clone(),
         units,
         stages: vec!["stage".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
         inputs,
     };
     plan.order()?;
@@ -1096,7 +1098,7 @@ mod tests {
                 );
                 if payload == "halt" {
                     assert!(plan.inputs.is_empty());
-                    assert!(plan.assembly.ffs().unwrap().payload.is_none());
+                    assert!(plan.ffs_assembly().unwrap().payload.is_none());
                     assert!(layout.region(Kind::DeviceTree).is_none());
                     continue;
                 }
@@ -1116,8 +1118,7 @@ mod tests {
                     external_runtime
                 );
                 assert_eq!(
-                    plan.assembly
-                        .ffs()
+                    plan.ffs_assembly()
                         .unwrap()
                         .payload
                         .as_ref()
@@ -1184,7 +1185,7 @@ mod tests {
             assert_eq!(layout.region(Kind::Heap).unwrap().size, heap_size);
             let window = layout.region(Kind::Firmware).unwrap();
             assert_eq!((window.base, window.size), firmware);
-            assert!(plan.assembly.ffs().unwrap().payload.is_none());
+            assert!(plan.ffs_assembly().unwrap().payload.is_none());
             assert!(plan.inputs.is_empty());
             // Stack and heap stay inside the writable reservation with the
             // heap directly below the stack at its top.
@@ -1268,7 +1269,7 @@ mod tests {
         .unwrap();
         let uefi_stage = uefi.units.iter().find(|u| u.name == "stage").unwrap();
         assert!(uefi_stage.features.contains(&"crabefi".to_string()));
-        let payload = uefi.assembly.ffs().unwrap().payload.as_ref().unwrap();
+        let payload = uefi.ffs_assembly().unwrap().payload.as_ref().unwrap();
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));
         assert!(payload.firmware.is_none());
         assert!(uefi.inputs.is_empty());
@@ -1284,7 +1285,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(linux.payload, "linux");
-            let payload = linux.assembly.ffs().unwrap().payload.clone().unwrap();
+            let payload = linux.ffs_assembly().unwrap().payload.clone().unwrap();
             assert!(matches!(payload.kind, PayloadKind::LinuxBoot));
             assert_eq!(payload.kernel_file.unwrap().as_str(), "Image-riscv64");
             assert_eq!(payload.kernel_load_addr, Some(0x8400_0000));
@@ -1313,8 +1314,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                uefi.assembly
-                    .ffs()
+                uefi.ffs_assembly()
                     .unwrap()
                     .payload
                     .as_ref()

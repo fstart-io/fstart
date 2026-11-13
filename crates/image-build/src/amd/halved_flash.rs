@@ -71,7 +71,7 @@ pub const NAPLES: Generation = BiosDirectorySlot::Family17hModel00;
 pub const ROME: Generation = BiosDirectorySlot::Family17hModel30;
 pub const MILAN: Generation = BiosDirectorySlot::Family19h;
 
-use crate::build_plan::{BuildPlan, FfsAssembly, UnitOutput};
+use crate::build_plan::{BuildPlan, UnitOutput};
 
 /// The generation of a vendor EFS word: exactly the word whose bits a
 /// generation's boot ROM requires clear (FIRMWARE_IMAGE §1.1).
@@ -949,11 +949,11 @@ pub fn packed_rom(
     Ok(rom)
 }
 
-/// The halved-flash image operation: an FFS (the payload and the stage unit's
-/// trust-finalized copy) plus the stage unit, composed into the vendor ROM.
+/// The halved-flash image operation: the artefact of a preceding FFS step
+/// (the payload and the stage unit's trust-finalized copy) plus the stage
+/// unit, composed into the vendor ROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmdHalvedFlashAssembly {
-    pub ffs: FfsAssembly,
     /// Vendor ROM: one 16 MiB half, the 32 MiB dual image or a full
     /// readout with [`FlashPlan::mirrors`], workspace relative or absolute. Its directories and blobs are kept in place.
     /// Empty with packed halves.

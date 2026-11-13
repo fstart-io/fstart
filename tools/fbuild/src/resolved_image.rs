@@ -48,7 +48,7 @@ impl ResolvedImage {
     pub fn bootstrap_bindings(
         &self,
     ) -> Option<&[(String, fstart_image_build::build_plan::BootstrapRole)]> {
-        Some(self.build.plan.assembly.bootstrap())
+        Some(self.build.plan.bootstrap())
     }
     pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
         self.build.assembler_config(board)
@@ -56,11 +56,28 @@ impl ResolvedImage {
     pub fn validate_inputs(
         &self,
         board: &Path,
-        kernel: Option<&str>,
-        firmware: Option<&str>,
-        fit: Option<&str>,
-    ) -> Result<(), String> {
-        self.build.validate_inputs(board, kernel, firmware, fit)
+        supplied: &std::collections::BTreeMap<String, PathBuf>,
+    ) -> Result<std::collections::BTreeMap<String, PathBuf>, String> {
+        self.build.validate_inputs(board, supplied)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble(
+        &self,
+        root: &Path,
+        board: &BoardManifest,
+        release: bool,
+        supplied: &std::collections::BTreeMap<String, PathBuf>,
+        payload_files: &[(String, String)],
+        signing_key: Option<&Path>,
+    ) -> Result<
+        (
+            Vec<fstart_image_build::StageBinary>,
+            fstart_image_build::image_steps::ImageOutputs,
+        ),
+        String,
+    > {
+        self.build
+            .assemble(root, board, release, supplied, payload_files, signing_key)
     }
     pub fn compile_selected(
         &self,

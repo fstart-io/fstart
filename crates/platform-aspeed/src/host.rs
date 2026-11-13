@@ -204,7 +204,8 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
         ],
         stages: vec!["bootblock".into(), "main".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
         inputs,
     };
     plan.order()?;

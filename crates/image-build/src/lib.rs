@@ -7,6 +7,7 @@ pub mod elf;
 mod elf_flat;
 mod elf_payload;
 pub mod image;
+pub mod image_steps;
 pub mod inspect;
 mod intel_assembly;
 pub mod intel_plan;

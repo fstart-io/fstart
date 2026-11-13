@@ -135,7 +135,8 @@ pub fn compilation_plan(
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),
-        assembly: plan.assembly()?,
+        platform: plan.platform,
+        images: vec![plan.assembly()?.into()],
         inputs,
     };
     resolved.order()?;

@@ -121,6 +121,11 @@ pub struct BuildArgs {
     /// default: release images carry none of them.
     #[arg(long = "debug", value_enum)]
     pub debug: Vec<DebugOption>,
+    /// External file for an input the board's plan declares, as
+    /// NAME=PATH; repeatable. `--kernel`, `--firmware` and `--fit` are
+    /// aliases for the inputs of those names.
+    #[arg(long = "input", value_parser = parse_payload_file)]
+    pub inputs: Vec<(String, String)>,
     /// File handed to a coreboot payload, as NAME=PATH; repeatable. The
     /// payload finds it by NAME, e.g. `vgaroms/seavgabios.bin` for SeaBIOS.
     #[arg(long = "payload-file", value_parser = parse_payload_file)]
@@ -145,6 +150,7 @@ impl Default for BuildArgs {
             linux_print_mtrrs: false,
             log_level: None,
             debug: Vec::new(),
+            inputs: Vec::new(),
             payload_files: Vec::new(),
             signing_key: None,
         }
@@ -204,6 +210,9 @@ impl BuildArgs {
         }
         for option in &self.debug {
             args.extend(["--debug".into(), option.as_str().into()]);
+        }
+        for (name, path) in &self.inputs {
+            args.extend(["--input".into(), format!("{name}={path}")]);
         }
         for (name, path) in &self.payload_files {
             args.extend(["--payload-file".into(), format!("{name}={path}")]);

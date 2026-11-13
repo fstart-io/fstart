@@ -82,174 +82,25 @@ pub fn assemble(
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = crate::resolved_image::ResolvedImage::load(
+    let (manifest, parsed) = load(manifest, payload, options)?;
+    let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
+    Ok(assemble_loaded(
         &workspace_root,
         manifest,
-        options.selection(payload),
-    )?;
-    let amd = match &resolved.build.plan.assembly {
-        fstart_image_build::build_plan::Assembly::Amd(image) => Some(image.clone()),
-        _ => None,
-    };
-    // A PSP partition without an FFS: just the stages.
-    if let Some(image) = amd.as_ref().filter(|image| image.ffs.is_none()) {
-        if kernel.is_some() || firmware.is_some() || fit.is_some() {
-            return Err("PSP image operation does not consume payload-file overrides".into());
-        }
-        let build = resolved.build(&workspace_root, manifest, release)?;
-        let directory = resolved
-            .artifact_dir(&workspace_root, &manifest.board, release)?
-            .join("image");
-        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        return crate::amd_image::compose(
-            &workspace_root,
-            &manifest.board,
-            &directory,
-            image,
-            &build.stages,
-            None,
-        );
-    }
-    let config = resolved.assembler_config(&manifest.board)?;
-    let halved_flash = match &resolved.build.plan.assembly {
-        fstart_image_build::build_plan::Assembly::AmdHalvedFlash(image) => Some(image.clone()),
-        _ => None,
-    };
-    let parsed = ParsedBoard {
-        config,
-        acpi_only_devices: Vec::new(),
-        resolved: Some(resolved),
-    };
-    let assembled = assemble_loaded(
-        &workspace_root,
-        manifest.clone(),
         parsed,
         release,
-        kernel,
-        firmware,
-        fit,
+        &supplied,
         options,
-    )?;
-    if let Some(image) = halved_flash {
-        return compose_halved_flash(&workspace_root, &image, &assembled);
-    }
-    match amd {
-        Some(image) => crate::amd_image::compose(
-            &workspace_root,
-            &manifest.board,
-            assembled
-                .image
-                .parent()
-                .ok_or("FFS image has no directory")?,
-            &image,
-            &assembled.stages,
-            Some(&assembled.image),
-        ),
-        None => Ok(assembled.image),
-    }
+    )?
+    .image)
 }
 
-/// Compose the assembled FFS and the stage unit into the AMD vendor ROM
-/// (`fstart_image_build::amd::halved_flash`); relative vendor paths are
-/// workspace-relative (`--image-config` replaces the board's vendor ROM).
-/// Writes and returns `<board>.rom`, the vendor ROM's size (32 MiB for a
-/// dual-half vendor ROM, the full readout for a board with bank mirrors,
-/// then also `<board>.bank.rom`).
-fn compose_halved_flash(
-    workspace_root: &std::path::Path,
-    image: &fstart_image_build::amd::halved_flash::AmdHalvedFlashAssembly,
-    assembled: &crate::assemble::AssembledImage,
-) -> Result<std::path::PathBuf, String> {
-    use fstart_image_build::amd::halved_flash::{HALF_SIZE, HalfAction, name};
-    let read = |path: &std::path::Path| {
-        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-    };
-    let plan = &image.compose;
-    let vendor_path = workspace_root.join(&image.vendor_image);
-    let vendor = if image.packed.is_empty() {
-        eprintln!("[fstart] AMD vendor ROM {}", vendor_path.display());
-        read(&vendor_path)?
-    } else {
-        let read = |path: &str| read(std::path::Path::new(path));
-        let rom = fstart_image_build::amd::halved_flash::packed_rom(&image.packed, plan, &read)?;
-        for half in &image.packed {
-            eprintln!(
-                "[fstart] AMD {} PSP firmware packed from its files",
-                name(half.generation)
-            );
-        }
-        rom
-    };
-    let ffs = read(&assembled.image)?;
-    let reset = assembled
-        .stages
-        .iter()
-        .find(|stage| stage.name == image.stage_unit)
-        .ok_or("AMD reset stage unit was not built")?;
-    let flash =
-        fstart_image_build::amd::halved_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
-    if !flash.patched.locator || !flash.patched.flash {
-        eprintln!(
-            "[fstart] warning: the AMD reset stage unit links no FFS locator or flash anchor; it cannot read its FFS"
-        );
-    }
-    let survey = &flash.survey;
-    for (half, action) in &survey.halves {
-        match action {
-            HalfAction::Compose(layout) => eprintln!(
-                "[fstart] AMD {half:?} half ({}): EFS and directories to {:#x}",
-                name(layout.generation),
-                layout.prefix_end,
-            ),
-            HalfAction::Keep(generation) => eprintln!(
-                "[fstart] warning: AMD {half:?} half kept from {} ({}: not supported by the board)",
-                vendor_path.display(),
-                generation.map_or("no EFS", name),
-            ),
-        }
-    }
-    let reset_copies = if survey.composed().count() == 1 || flash.image.len() == HALF_SIZE {
-        "one composed half"
-    } else {
-        "each half"
-    };
-    let out = assembled.image.with_extension("rom");
-    std::fs::write(&out, &flash.image).map_err(|e| format!("{}: {e}", out.display()))?;
-    if flash.image.len() != plan.boot_window(&flash.image)?.len() {
-        // Programmers that mirror the bank themselves (a BMC BIOS update)
-        // take the 16 MiB boot bank, not the full readout.
-        let bank = out.with_extension("bank.rom");
-        std::fs::write(&bank, &flash.image[..HALF_SIZE])
-            .map_err(|e| format!("{}: {e}", bank.display()))?;
-        eprintln!(
-            "[fstart] AMD boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
-            plan.mirrors,
-            bank.display()
-        );
-    }
-    eprintln!(
-        "[fstart] AMD halved flash image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; reset image {:#x} bytes at {:#x} ({reset_copies})",
-        out.display(),
-        flash.image.len() >> 20,
-        ffs.len(),
-        survey.ffs_capacity(),
-        survey.ffs.start,
-        survey.ffs.end,
-        plan.reset.size,
-        plan.reset.flash_offset,
-    );
-    Ok(out)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn assemble_loaded(
     workspace_root: &std::path::Path,
     manifest: crate::board_manifest::BoardManifest,
     parsed: ParsedBoard,
     release: bool,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    fit: Option<&str>,
+    supplied: &std::collections::BTreeMap<String, std::path::PathBuf>,
     options: &BuildArgs,
 ) -> Result<crate::assemble::AssembledImage, String> {
     crate::assemble::assemble_with_parsed(
@@ -257,9 +108,7 @@ fn assemble_loaded(
         manifest,
         parsed,
         release,
-        kernel,
-        firmware,
-        fit,
+        supplied,
         &options.payload_files,
         options.signing_key.as_deref(),
     )
@@ -301,17 +150,16 @@ pub fn flash(
                 .to_string()
         })?;
         eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
-        let ffs_path = assemble_loaded(
+        let supplied = crate::assemble::supplied_inputs(None, None, None, &options.inputs)?;
+        let assembled = assemble_loaded(
             &workspace_root,
             manifest.clone(),
             parsed.clone(),
             release,
-            None,
-            None,
-            None,
+            &supplied,
             options,
-        )?
-        .image;
+        )?;
+        let ffs_path = assembled.ffs.unwrap_or(assembled.image);
 
         let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
         eprintln!(
@@ -420,16 +268,21 @@ pub fn run(
         });
 
     if is_multi_stage || has_payload_blobs || needs_x86_pflash || needs_firmware_image {
+        let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
         let assembled = assemble_loaded(
             &workspace_root,
             manifest,
             parsed,
             release,
-            kernel,
-            firmware,
-            fit,
+            &supplied,
             options,
         )?;
+        // The QEMU runner composes its machine flash from the FFS
+        // artefact, not from a composed final flash image.
+        let run_image = assembled
+            .ffs
+            .clone()
+            .unwrap_or_else(|| assembled.image.clone());
         // The x86 pflash combines the assembled FFS with the linked stage
         // ELF (reset vector, anchor). The plan layout hashes unit dirs, so
         // the ELF travels with the build result instead of a guessed path.
@@ -439,7 +292,7 @@ pub fn run(
         crate::qemu::run(
             &build_policy,
             platform,
-            &assembled.image,
+            &run_image,
             disk,
             memory,
             secure_firmware,

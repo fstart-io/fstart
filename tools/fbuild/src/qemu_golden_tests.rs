@@ -53,7 +53,7 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
             "descriptor_hex": expectations.descriptor.as_ref().unwrap().bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "linker_sha256": format!("{:x}", Sha256::digest(unit.linker_script.as_ref().unwrap().as_bytes())),
             "elf": expectations,
-            "assembly": plan.assembly.config("fixture").unwrap(),
+            "assembly": plan.config("fixture").unwrap(),
             "target": unit.target,
         });
         // The exact wire bytes are recorded once, in descriptor_hex.

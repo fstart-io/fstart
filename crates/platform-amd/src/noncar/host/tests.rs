@@ -51,6 +51,16 @@ impl Board for Mj11 {
     };
 }
 
+fn amd(plan: &BuildPlan) -> &AmdAssembly {
+    plan.images
+        .iter()
+        .find_map(|step| match &step.operation {
+            ImageOperation::AmdEfs(image) => Some(image.as_ref()),
+            _ => None,
+        })
+        .unwrap()
+}
+
 fn units_hash(plan: &BuildPlan) -> String {
     format!(
         "{:x}",
@@ -77,7 +87,7 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
         unreachable!()
     };
     assert_eq!(expectations.entry, Some(picasso::LAYOUT.reset_vector()));
-    assert!(plan.assembly.ffs().is_ok());
+    assert!(plan.ffs_assembly().is_ok());
     let mut invalid = selected;
     invalid
         .compiler_files
@@ -141,9 +151,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     }}});
     let plan = resolve::<Vilboz>(selection.clone()).unwrap();
     plan.validate_image_selection(&selection).unwrap();
-    let Assembly::Amd(image) = &plan.assembly else {
-        unreachable!()
-    };
+    let image = amd(&plan);
     let Firmware::Packed {
         files,
         reset_offset,
@@ -163,7 +171,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
         files.bios[0].path,
         blobs.join("test-board/apcb/0.bin").to_str().unwrap()
     );
-    let ffs = &image.ffs.as_ref().unwrap().assembly;
+    let ffs = plan.ffs_assembly().unwrap();
     assert_eq!(ffs.file_assets[0].name.as_str(), "pci1002,15dd.rom");
     assert!(matches!(&ffs.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
     // The tables are for another SoC.
@@ -223,9 +231,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     }}});
     let plan = resolve::<Mj11>(selection.clone()).unwrap();
     plan.validate_image_selection(&selection).unwrap();
-    let Assembly::Amd(image) = &plan.assembly else {
-        unreachable!()
-    };
+    let image = amd(&plan);
     let Firmware::Packed {
         files,
         reset_offset,
@@ -246,7 +252,9 @@ fn zeppelin_packs_a_two_level_native_image() {
         (ffs.offset, ffs.size, image.reset_size),
         (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
     );
-    assert!(matches!(&ffs.assembly.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
+    assert!(
+        matches!(&plan.ffs_assembly().unwrap().microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1)
+    );
     // A vendor image instead of the blobs.
     let mut vendor = selection;
     vendor.blobs = None;

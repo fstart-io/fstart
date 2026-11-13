@@ -10,9 +10,9 @@
 //! never re-signed.
 pub mod apcb;
 pub mod assembly;
-pub mod halved_flash;
 pub mod blobs;
 pub mod config;
+pub mod halved_flash;
 pub mod levels;
 pub mod psp_app;
 pub mod reset;

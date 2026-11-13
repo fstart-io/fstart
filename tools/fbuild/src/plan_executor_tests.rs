@@ -237,8 +237,8 @@ fn unsupported_required_input_is_rejected_by_input_validation_itself() {
     let resolved = Resolved { plan };
     assert!(
         resolved
-            .validate_inputs(Path::new("."), None, None, None)
+            .validate_inputs(Path::new("."), &std::collections::BTreeMap::new())
             .unwrap_err()
-            .contains("unknown or duplicate payload input")
+            .contains("calibration")
     );
 }

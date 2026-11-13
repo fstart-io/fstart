@@ -5,7 +5,7 @@ use fstart_core::*;
 
 impl IntelPlan {
     /// Compatibility projection for image assembly only; never a compiler plan.
-    pub fn assembly(&self) -> Result<crate::build_plan::Assembly, String> {
+    pub fn assembly(&self) -> Result<crate::build_plan::FfsAssembly, String> {
         let mut stages = hvec([]);
         for row in &self.stages {
             let reservation = self.reservations.stage(row.role);
@@ -96,7 +96,6 @@ impl IntelPlan {
                 ),
                 ..Default::default()
             },
-        }
-        .into())
+        })
     }
 }

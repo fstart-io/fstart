@@ -23,8 +23,8 @@ use fstart_image_build::{
         blobs, reset,
     },
     build_plan::{
-        ArtifactBinding, Assembly, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
-        FileBinding, InputFile, UnitOutput,
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, FileBinding,
+        ImageOperation, ImageStep, InputFile, UnitOutput,
     },
     layout::EncodedLayout,
     plan::{BuildSelection, Span},
@@ -371,11 +371,11 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
     blobs::resolve(&soc, &board, name, &dir, S::LAYOUT.flash.size as u32).map(Some)
 }
 
-fn assembly<S: HostSoc>(
+fn images<S: HostSoc>(
     selection: &BuildSelection,
     packed: Option<blobs::Resolved>,
     ffs: Option<FfsAssembly>,
-) -> Result<Assembly, String> {
+) -> Result<Vec<ImageStep>, String> {
     let layout = &S::LAYOUT;
     let flash_size = layout.flash.size as u32;
     let (firmware, psp) = match (S::POLICY.image_config, &selection.image_config, packed) {
@@ -397,19 +397,11 @@ fn assembly<S: HostSoc>(
             },
             psp,
         ),
-        _ => {
-            return Ok(match ffs {
-                Some(ffs) => Assembly::Ffs(Box::new(ffs)),
-                None => Assembly::Unassembled {
-                    platform: Platform::X86_64,
-                },
-            });
-        }
+        _ => return Ok(ffs.map(ImageStep::from).into_iter().collect()),
     };
     let assembly = AmdAssembly {
         firmware,
-        ffs: ffs.zip(layout.ffs).map(|(assembly, window)| FfsWindow {
-            assembly,
+        ffs: ffs.as_ref().zip(layout.ffs).map(|(_, window)| FfsWindow {
             offset: (window.base - layout.flash.base) as u32,
             size: window.size as u32,
         }),
@@ -433,7 +425,12 @@ fn assembly<S: HostSoc>(
             .check_vendor(&vendor)
             .map_err(|e| format!("vendor image {path}: {e}"))?;
     }
-    Ok(Assembly::Amd(Box::new(assembly)))
+    let mut steps: Vec<ImageStep> = ffs.map(ImageStep::from).into_iter().collect();
+    steps.push(ImageStep::new(
+        "flash",
+        ImageOperation::AmdEfs(Box::new(assembly)),
+    ));
+    Ok(steps)
 }
 
 /// The build plan of board `B`.
@@ -470,7 +467,7 @@ where
     if let (Some(ffs), Some(packed)) = (&mut ffs, &packed) {
         ffs.file_assets = packed.files.assets.clone();
     }
-    let assembly = assembly::<B::Soc>(&selection, packed, ffs)?;
+    let images = images::<B::Soc>(&selection, packed, ffs)?;
     let stage = CompilationUnit {
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,
@@ -512,9 +509,10 @@ where
     };
     let plan = BuildPlan {
         payload: payload.into(),
+        platform: Platform::X86_64,
         stages: vec![UNIT.into()],
         inputs,
-        assembly,
+        images,
         units: policy
             .smm
             .then(smm_unit::<B::Soc>)

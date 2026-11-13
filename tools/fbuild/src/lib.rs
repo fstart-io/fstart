@@ -1,4 +1,3 @@
-mod amd_image;
 pub mod assemble;
 pub mod blobs;
 pub mod board_manifest;

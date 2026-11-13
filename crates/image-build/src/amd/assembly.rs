@@ -12,7 +12,7 @@ use super::{
     Blob, FlashRegion, Key, SingleLevelImage,
     levels::{self, Level, TwoLevelImage},
 };
-use crate::build_plan::{FfsAssembly, FileBinding};
+use crate::build_plan::FileBinding;
 use fstart_amdfw_format::{
     Flash, Profile,
     directory::{BiosEntry, bios, modify_entries},
@@ -145,10 +145,9 @@ pub enum Firmware {
         reset_offset: Option<u32>,
     },
 }
-/// The FFS and its flash window.
+/// The flash window the artefact of a preceding FFS image step occupies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FfsWindow {
-    pub assembly: FfsAssembly,
     pub offset: u32,
     pub size: u32,
 }
