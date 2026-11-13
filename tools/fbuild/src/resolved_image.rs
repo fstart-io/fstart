@@ -51,14 +51,6 @@ impl ResolvedImage {
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         self.build.artifact_dir(root, board, release)
     }
-    pub fn bootstrap_bindings(
-        &self,
-    ) -> Option<&[(String, fstart_image_build::build_plan::BootstrapRole)]> {
-        Some(self.build.plan.bootstrap())
-    }
-    pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.build.assembler_config(board)
-    }
     pub fn validate_inputs(
         &self,
         board: &Path,

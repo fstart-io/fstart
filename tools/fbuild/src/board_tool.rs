@@ -1,23 +1,13 @@
-use crate::build_plan::ParsedBoard;
 use crate::payload::{BuildArgs, PayloadChoice};
+use crate::resolved_image::ResolvedImage;
 
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
     payload: Option<PayloadChoice>,
     options: &BuildArgs,
-) -> Result<(crate::board_manifest::BoardManifest, ParsedBoard), String> {
+) -> Result<ResolvedImage, String> {
     let root = crate::build_board::workspace_root_pub()?;
-    let resolved =
-        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
-    let config = resolved.assembler_config(&manifest.board)?;
-    Ok((
-        manifest.clone(),
-        ParsedBoard {
-            config,
-            acpi_only_devices: Vec::new(),
-            resolved: Some(resolved),
-        },
-    ))
+    ResolvedImage::load(&root, manifest, options.selection(payload))
 }
 
 /// Run board policy and protocol tests with the board's default and the
@@ -81,12 +71,12 @@ pub fn assemble(
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
+    let resolved = load(manifest, payload, options)?;
     let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
     Ok(assemble_loaded(
         &workspace_root,
-        manifest,
-        parsed,
+        manifest.clone(),
+        &resolved,
         release,
         &supplied,
         options,
@@ -97,15 +87,15 @@ pub fn assemble(
 fn assemble_loaded(
     workspace_root: &std::path::Path,
     manifest: crate::board_manifest::BoardManifest,
-    parsed: ParsedBoard,
+    resolved: &ResolvedImage,
     release: bool,
     supplied: &std::collections::BTreeMap<String, std::path::PathBuf>,
     options: &BuildArgs,
 ) -> Result<crate::assemble::AssembledImage, String> {
-    crate::assemble::assemble_with_parsed(
+    crate::assemble::assemble_with_resolved(
         workspace_root,
-        manifest,
-        parsed,
+        &manifest,
+        resolved,
         release,
         supplied,
         &options.payload_files,
@@ -123,7 +113,8 @@ pub fn flash(
     base_address: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, None, options)?;
+    let resolved = load(manifest, None, options)?;
+    let manifest = manifest.clone();
     let chip_name = chip.unwrap_or("auto");
     let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
 
@@ -153,7 +144,7 @@ pub fn flash(
         let assembled = assemble_loaded(
             &workspace_root,
             manifest.clone(),
-            parsed.clone(),
+            &resolved,
             release,
             &supplied,
             options,
@@ -186,7 +177,7 @@ pub fn flash(
     }
 
     eprintln!("[fstart] step 2/2: loading stage via probe-rs...");
-    let res = crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
+    let res = resolved.build(&workspace_root, &manifest, release)?;
     let elf_path = &res.primary_binary().path;
     eprintln!("[fstart] ELF: {}", elf_path.display());
 
@@ -244,11 +235,8 @@ pub fn run(
     options: &BuildArgs,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let (manifest, parsed) = load(manifest, payload, options)?;
-    let resolved = parsed
-        .resolved
-        .as_ref()
-        .ok_or("board has no resolved platform plan")?;
+    let resolved = load(manifest, payload, options)?;
+    let manifest = manifest.clone();
     // The plan states how (and whether) this board runs under QEMU; there
     // is no per-architecture fallback launch to guess.
     let recipe = resolved.build.plan.run.clone().ok_or_else(|| {
@@ -266,8 +254,7 @@ pub fn run(
         })
         .unwrap_or_default();
     if resolved.build.plan.images.is_empty() {
-        let res =
-            crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
+        let res = resolved.build(&workspace_root, &manifest, release)?;
         let primary = res.primary_binary();
         return crate::qemu::run(
             &recipe,
@@ -286,7 +273,7 @@ pub fn run(
     let assembled = assemble_loaded(
         &workspace_root,
         manifest,
-        parsed,
+        &resolved,
         release,
         &supplied,
         options,

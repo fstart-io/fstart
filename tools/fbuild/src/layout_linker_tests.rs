@@ -65,7 +65,7 @@ fn layout_survives_gc_and_flat_extraction_on_both_endiannesses() {
              SECTIONS {{\n\
              .text : {{ _start = .; BYTE(0x13); BYTE(0); BYTE(0); BYTE(0); }} > ROM\n\
              {}\n}}\n",
-                crate::linker::layout_section(&encoded, "ROM"),
+                fstart_image_build::linker::layout_section(&encoded, "ROM"),
             ),
         )
         .unwrap();

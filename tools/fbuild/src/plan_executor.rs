@@ -63,9 +63,6 @@ impl Resolved {
         plan.resolve_workspace_inputs(root, &board.dir)?;
         Ok(Self { plan })
     }
-    pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.plan.config(board)
-    }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }

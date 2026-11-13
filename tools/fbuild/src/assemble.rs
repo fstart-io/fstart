@@ -42,22 +42,18 @@ pub fn supplied_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn assemble_with_parsed(
+pub fn assemble_with_resolved(
     workspace_root: &Path,
-    board_manifest: crate::board_manifest::BoardManifest,
-    parsed: crate::build_plan::ParsedBoard,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    resolved: &crate::resolved_image::ResolvedImage,
     release: bool,
     supplied: &BTreeMap<String, PathBuf>,
     payload_files: &[(String, String)],
     signing_key: Option<&Path>,
 ) -> Result<AssembledImage, String> {
-    let resolved = parsed
-        .resolved
-        .as_ref()
-        .ok_or("board has no resolved platform plan")?;
     let (stages, outputs) = resolved.assemble(
         workspace_root,
-        &board_manifest,
+        board_manifest,
         release,
         supplied,
         payload_files,

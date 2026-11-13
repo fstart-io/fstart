@@ -20,7 +20,6 @@ pub struct BoardManifest {
     pub variant_features: Vec<String>,
     /// Declared variants: variant id -> cargo features.
     pub variants: Vec<(String, Vec<String>)>,
-    pub acpi_only_devices: bool,
     pub build_profile: Option<ProfileRef>,
 }
 
@@ -64,8 +63,6 @@ struct BoardMetadata {
     target: Option<String>,
     #[serde(default)]
     variants: BTreeMap<String, VariantMetadata>,
-    #[serde(default)]
-    acpi_only_devices: bool,
     build_profile: Option<ProfileRef>,
     /// The board's AMD firmware table, read by the AMD platform
     /// (`fstart_image_build::amd::blobs::BoardBlobs`), not by fbuild.
@@ -238,7 +235,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             .into_iter()
             .map(|(id, v)| (id, v.features))
             .collect(),
-        acpi_only_devices: metadata.acpi_only_devices,
         build_profile: metadata.build_profile,
     })
 }
@@ -303,7 +299,6 @@ mod tests {
         board = 'test-board'
         platform = 'riscv64'
         target = 'riscv64gc-unknown-none-elf'
-        acpi-only-devices = true
         [package.metadata.fstart.variants."test-variant"]
         features = [
             'variant-test', # comment
@@ -343,7 +338,6 @@ mod tests {
         assert_eq!(board.rel_dir, Path::new("vendor/test"));
         assert_eq!(board.platform.as_deref(), Some("riscv64"));
         assert_eq!(board.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
-        assert!(board.acpi_only_devices);
         assert_eq!(
             board.variants,
             [("test-variant".into(), vec!["variant-test".into()])]
@@ -370,11 +364,11 @@ mod tests {
                 "missing field `board`",
             ),
             (
-                MANIFEST.replace("acpi-only-devices = true", "acpi-only-devices = 'true'"),
+                MANIFEST.replace("schema = 1", "schema = 'one'"),
                 "invalid type",
             ),
             (
-                MANIFEST.replace("acpi-only-devices = true", "acpi-only-device = true"),
+                MANIFEST.replace("board = 'test-board'", "baord = 'test-board'"),
                 "unknown field",
             ),
             (

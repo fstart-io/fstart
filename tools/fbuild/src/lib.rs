@@ -3,17 +3,13 @@ pub mod blobs;
 pub mod board_manifest;
 pub mod board_tool;
 pub mod build_board;
-pub mod build_plan;
 mod cargo_features;
 mod compiler_inputs;
 mod host_plan;
 pub mod ide;
 mod ide_graph;
-pub mod intel_layout;
 #[cfg(test)]
 mod intel_linker_tests;
-#[cfg(test)]
-pub mod linker;
 pub mod payload;
 mod plan_executor;
 mod profile_source;
@@ -25,5 +21,4 @@ mod selection;
 pub mod shards;
 pub mod size_report;
 pub mod sizes;
-pub mod toolchain;
 pub mod tpm_log;
