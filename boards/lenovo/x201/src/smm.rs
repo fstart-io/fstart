@@ -2,12 +2,12 @@
 //! the EC's dock events before OSPM owns them, the EC channel and SCI
 //! routing across ACPI ownership changes, and the EC wake on S3.
 
+use crate::ec::{self as x201, DockAction};
 use fstart_driver_intel::southbridge::smi::{
     APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH8_GPE0, IchSmi, IchSmmConfig, PendingSmi,
 };
 use fstart_driver_lenovo::ec::Ec;
 use fstart_driver_lenovo::h8::H8;
-use fstart_driver_lenovo::x201::{self, DockAction};
 use fstart_platform_intel::ironlake::{IBEXPEAK_GPIOBASE, IBEXPEAK_PMBASE};
 use fstart_platform_intel::smm::SmmContext;
 

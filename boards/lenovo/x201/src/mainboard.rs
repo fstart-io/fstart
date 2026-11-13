@@ -2,9 +2,9 @@
 //! debug console, the clock generator, H8/PMH7 policy, the dock
 //! connection, the identity EEPROM and the X201T digitizer.
 
+use crate::ec as x201;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
-use fstart_driver_lenovo::x201;
 
 /// The EHCI debug port of EHCI2 (00:1a.0): coreboot's X201
 /// `USBDEBUG_HCD_INDEX=2`.

@@ -2,11 +2,11 @@
 
 extern crate alloc;
 
+use crate::ec as x201;
 use crate::mainboard::{Acpi, Identity};
 use alloc::vec::Vec;
 use fstart_acpi::PcNamespace;
 use fstart_acpi::devices::tpm::{TpmFamily, TpmTisAcpi};
-use fstart_driver_lenovo::x201;
 use fstart_driver_tpm::Family;
 use fstart_platform_intel::ironlake::IronlakeIbexPeak;
 
