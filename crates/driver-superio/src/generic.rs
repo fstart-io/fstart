@@ -256,6 +256,9 @@ pub struct KbcConfig {
     pub io_ext: u16,
     /// IRQ number (typically 1).
     pub irq: u8,
+    /// Enable keyboard scanning and interrupts after a successful probe.
+    /// Boards requiring a quiet controller at OS handoff set this to false.
+    pub enable_keyboard_irq: bool,
 }
 
 /// PS/2 mouse settings.
@@ -431,20 +434,30 @@ impl<C: SuperIoChip> SuperIo<C> {
         device.set_io_base(IoResource::Secondary(cfg.io_ext));
         device.set_irq(IrqResource::Primary(cfg.irq));
         device.set_enabled(true);
-        self.init_kbc_coreboot(cfg.io_base, cfg.io_ext, self.config.mouse.is_some());
-        // Whatever the probe found, hand the OS a quiet controller.
-        quiesce_i8042_for_os_at(cfg.io_base, cfg.io_ext);
+        self.init_kbc_coreboot(
+            cfg.io_base,
+            cfg.io_ext,
+            self.config.mouse.is_some(),
+            cfg.enable_keyboard_irq,
+        );
+        if !cfg.enable_keyboard_irq {
+            quiesce_i8042_for_os_at(cfg.io_base, cfg.io_ext);
+        }
     }
 
-    fn init_kbc_coreboot(&self, data_port: u16, command_port: u16, enable_aux: bool) {
+    fn init_kbc_coreboot(
+        &self,
+        data_port: u16,
+        command_port: u16,
+        enable_aux: bool,
+        enable_irq: bool,
+    ) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             // Port the essential parts of coreboot pc_keyboard_init(): drain
             // stale bytes, self-test the 8042, then enable IRQs only after the
             // keyboard (and optional AUX mouse) have been reset/programmed.
-            // D41S exposes a real IT8721F KBCM LDN, so unlike the previous
-            // NO_AUX_DEVICE-only path we must not leave the AUX clock disabled
-            // while ACPI advertises a PNP0F13 mouse on IRQ12.
+            // Probe AUX only when the board advertises a mouse.
             if !Self::kbc_flush(data_port, command_port) {
                 return;
             }
@@ -511,15 +524,15 @@ impl<C: SuperIoChip> SuperIo<C> {
             if Self::kbc_send_keyboard(data_port, command_port, 0xF0) != Some(0xFA) {
                 return;
             }
-            // The caller quiesces the controller whether this is acknowledged
-            // or not.
-            let _ = Self::kbc_send_keyboard(data_port, command_port, 0x02);
-
-            // Coreboot enables IRQ1 here for many boards, but D41S reaches
-            // Linux with a pending/stuck i8042 SERIRQ when firmware has
-            // enabled KBC IRQs. The caller quiesces the controller instead;
-            // Linux's i8042 driver unmasks IRQ1/IRQ12 after installing its
-            // handlers.
+            if Self::kbc_send_keyboard(data_port, command_port, 0x02) != Some(0xFA) {
+                return;
+            }
+            // Never enable a floating interrupt or start scanning before the
+            // keyboard has acknowledged reset and scan-set programming.
+            if enable_irq && Self::kbc_send_keyboard(data_port, command_port, 0xF4) == Some(0xFA) {
+                // Translation, system flag, keyboard IRQ; AUX remains disabled.
+                let _ = Self::kbc_write_command_byte(data_port, command_port, 0x65);
+            }
         }
     }
 
