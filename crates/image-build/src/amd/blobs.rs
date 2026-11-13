@@ -570,6 +570,43 @@ fn find_vbios(rom: &[u8], vendor: u16, device: u16) -> Result<Option<(String, &[
     }
 }
 
+/// Every file the board's and its platform's `fstart` manifest tables
+/// name, extracted from the vendor flash image `rom`: one table per
+/// SoC the board has, each from the donor's image of that SoC. This is
+/// the donor extraction behind `fbuild blobs`/`--donor` for AMD
+/// boards; other formats plug their own extraction behind the same
+/// verb. Returns the board name, what was found and what was not;
+/// missing files are an error unless `allow_missing`.
+pub fn extract_tables(
+    board_table: &serde_json::Value,
+    platform_table: &serde_json::Value,
+    rom: &[u8],
+    allow_missing: bool,
+) -> Result<(String, Vec<Extracted>, Vec<String>), String> {
+    let name = board_table["board"]
+        .as_str()
+        .ok_or("the board has no name")?
+        .to_string();
+    let (mut found, mut missing) = (Vec::new(), Vec::new());
+    for board_blobs in board_tables(&board_table["amd"])? {
+        let soc: SocBlobs =
+            serde_json::from_value(platform_table["amd"][&board_blobs.soc].clone()).map_err(
+                |e| format!("platform [package.metadata.fstart.amd.{}]: {e}", board_blobs.soc),
+            )?;
+        let Some(donor) = donor_image(rom, &soc) else {
+            if !allow_missing {
+                return Err(format!("the vendor image has no {} firmware", board_blobs.soc));
+            }
+            missing.push(format!("{} firmware", board_blobs.soc));
+            continue;
+        };
+        let (f, m) = extract(&soc, &board_blobs, &name, donor)?;
+        found.extend(f);
+        missing.extend(m);
+    }
+    Ok((name, found, missing))
+}
+
 #[cfg(test)]
 #[path = "blobs_tests.rs"]
 mod tests;
