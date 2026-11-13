@@ -18,9 +18,9 @@ pub mod smm;
 pub use crate::flow::Peripherals;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub use crate::flow::{
-    Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, stop,
+    Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, fail,
 };
-pub use crate::flow::{Ctx, Devices, Memory, Silicon, Stop, Tables};
+pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
 pub use fstart_driver_amd::soc::Hw;
 
 use crate::acpi::SocAcpi;
@@ -92,7 +92,7 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
         _silicon: &mut Silicon<Self>,
         _ctx: &Ctx<'_, Self>,
         _pci: &fstart_pci::PciEcam,
-    ) -> Result<(), Stop> {
+    ) -> Result<(), &'static str> {
         Ok(())
     }
     /// The board's devices for CrabEFI to drive, after the buses are set up.
@@ -180,10 +180,9 @@ impl<S: DieSoc> crate::flow::Soc for S {
         state: &mut S::State,
         mp: &fstart_arch::x86::mp::MpHandle,
         (): &(),
-    ) -> Result<crate::flow::Reserved, &'static str> {
+    ) -> Result<(), &'static str> {
         let tseg = smm::install(S::NAME, mp, &S::smi(ctx, state), ctx.memory.tseg, TSEG_SIZE)?;
-        S::smm_installed(ctx, state, &tseg)?;
-        Ok(crate::flow::Reserved::new())
+        S::smm_installed(ctx, state, &tseg)
     }
 
     fn acpi_devices(
@@ -197,7 +196,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
         silicon: &mut Silicon<S>,
         ctx: &Ctx<'_, S>,
         pci: &fstart_pci::PciEcam,
-    ) -> Result<(), Stop> {
+    ) -> Result<(), &'static str> {
         <S as DieSoc>::init_display(silicon, ctx, pci)
     }
 

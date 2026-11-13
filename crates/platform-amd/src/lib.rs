@@ -2,8 +2,9 @@
 //! AMD family flows: the PSP-booted ("noncar") SoCs from Family 17h on
 //! ([`noncar`]) start in PSP-trained DRAM, never Intel CAR. The silicon
 //! init of a SoC is its driver's (`fstart_driver_amd::soc::Init`), which
-//! the flow's phases call; a SoC module here adds the reset image's layout,
-//! the host plan and the SoC's tables ([`noncar::Soc`]).
+//! the phases of the flow ([`flow`]) call. What the flow needs of a SoC
+//! beyond that is [`flow::Soc`]: the die SoCs share theirs ([`noncar`]),
+//! SP3 has its own ([`sp3`]).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 extern crate alloc;
 #[cfg(feature = "noncar")]

@@ -11,8 +11,9 @@
 //!    APOB, the cache plan and the FFS ([`Soc::map`]).
 //! 2. The silicon phases, each a step of the SoC's driver ([`Init`]):
 //!    `init_fch`, `train_dxio`, `init_chipset` and `start_cpus`, which
-//!    runs MP init ([`crate::mp::start`]) with the SoC's CPU driver and
-//!    installs SMM ([`Soc::install_smm`]).
+//!    runs MP init ([`crate::mp::start`]) with the SoC's CPU driver,
+//!    reserves what the SMM handler needs of the RAM ([`Soc::smm_memory`])
+//!    and installs SMM ([`Soc::install_smm`]).
 //! 3. [`Stage::scan_bus`]: PCI enumeration and resource allocation below
 //!    the root bridges the SoC reports ([`Init::roots`]), then
 //!    [`Init::after_resources`].
@@ -22,7 +23,8 @@
 //!    and SMBIOS tables with the board's part ([`Soc::tables`]).
 //! 6. [`Stage::boot`]: the SoC's locks ([`Init::finalize`], a failure
 //!    halts), the payload's page tables, the PSP's BootDone
-//!    ([`Init::boot_done`]) and the payload ([`Soc::launch`]).
+//!    ([`Init::boot_done`]; SP3 sends it with its locks, before the APs
+//!    are parked) and the payload ([`Soc::launch`]).
 //!
 //! The SoC's driver (`fstart_driver_amd::soc`) owns the silicon. What the
 //! flow needs to know of a SoC beyond its silicon is [`Soc`]: where its
@@ -31,7 +33,7 @@
 mod stage;
 #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
 pub use stage::{
-    Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, enter, stop,
+    Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, enter, fail,
 };
 
 use fstart_core::services::memory_detect::E820State;
@@ -45,20 +47,6 @@ use fstart_driver_amd::{apob::Apob, soc::Init};
     feature = "payload-uefi-basic"
 ))]
 pub type Peripherals = alloc::vec::Vec<fstart_payload::crabefi::peripheral::Peripheral>;
-
-/// Why the flow stops before the payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stop {
-    /// A step failed.
-    Failed(&'static str),
-    /// The SoC's flow ends here: its later phases aren't ported yet.
-    Checkpoint(&'static str),
-}
-impl From<&'static str> for Stop {
-    fn from(what: &'static str) -> Self {
-        Self::Failed(what)
-    }
-}
 
 /// The fixed-address devices a SoC reports, shared by ACPI and payload
 /// discovery.
@@ -105,6 +93,16 @@ pub trait Soc: Init {
         clock: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<Mapped<Self>, &'static str>;
     #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    /// RAM the SMM handler needs kept from the OS, known once the CPUs are
+    /// up. The flow takes it out of the memory map before
+    /// [`Soc::install_smm`].
+    fn smm_memory(
+        _ctx: &Ctx<'_, Self>,
+        _state: &mut Self::State,
+    ) -> Result<Reserved, &'static str> {
+        Ok(Reserved::new())
+    }
+    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
     /// Install the board's SMM handler on every CPU `mp` brought up and
     /// give the PSP its SMM info.
     fn install_smm(
@@ -112,7 +110,7 @@ pub trait Soc: Init {
         state: &mut Self::State,
         mp: &fstart_arch::x86::mp::MpHandle,
         flow: &Self::Flow,
-    ) -> Result<Reserved, &'static str>;
+    ) -> Result<(), &'static str>;
     /// The SoC's own controllers for the tables, once the silicon init is
     /// done: the enabled fixed-address devices and further `\_SB` AML (FCH
     /// controllers and the devices behind them).
@@ -129,7 +127,7 @@ pub trait Soc: Init {
         _silicon: &mut Silicon<Self>,
         _ctx: &Ctx<'_, Self>,
         _pci: &fstart_pci::PciEcam,
-    ) -> Result<(), Stop> {
+    ) -> Result<(), &'static str> {
         Ok(())
     }
     #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]

@@ -290,8 +290,9 @@ pub(crate) fn cache_ram(regions: &[Region]) {
     msr().reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
 }
 
-/// Select and reserve scratch pages using the live routing map. This runs
-/// before payload loading and before the immutable SMM config is installed.
+/// Select scratch pages using the live routing map, and name those the
+/// flow has to take out of the memory map (`reserved`) before
+/// [`clear_einj_scratch`] and the SMM installation.
 #[cfg_attr(not(feature = "rome"), allow(unused_variables))]
 pub(crate) fn plan_einj(
     ctx: &soc::Ctx,
@@ -343,28 +344,39 @@ pub(crate) fn plan_einj(
                     },
                 )
             });
-        for (i, &target) in config.targets.iter().enumerate().filter(|(_, t)| **t != 0) {
-            let page = target & !(crate::sp3::einj::SCRATCH_SIZE - 1);
-            if config.targets[..i]
-                .iter()
-                .any(|&t| t != 0 && t & !(crate::sp3::einj::SCRATCH_SIZE - 1) == page)
-            {
-                continue;
-            }
-            if page != crate::sp3::einj::SCRATCH {
-                reserved
-                    .push(page..page + crate::sp3::einj::SCRATCH_SIZE)
-                    .ok()
-                    .or_halt("EINJ scratch reservation");
-            }
-            // SAFETY: legacy reserved scratch or a fresh page just removed
-            // from usable RAM; all DRAM is identity mapped by the reset image.
-            unsafe {
-                core::ptr::write_bytes(page as *mut u8, 0, crate::sp3::einj::SCRATCH_SIZE as usize)
-            };
+        for page in scratch_pages(&config).filter(|&page| page != crate::sp3::einj::SCRATCH) {
+            reserved
+                .push(page..page + crate::sp3::einj::SCRATCH_SIZE)
+                .ok()
+                .or_halt("EINJ scratch reservation");
         }
         return Some(config);
     }
     let _ = ctx;
     None
+}
+
+/// The distinct scratch pages of `config`'s targets.
+fn scratch_pages(config: &crate::sp3::smm::EinjConfig) -> impl Iterator<Item = u64> + '_ {
+    let page = |target: u64| target & !(crate::sp3::einj::SCRATCH_SIZE - 1);
+    (config.targets.iter().enumerate())
+        .filter(|(_, target)| **target != 0)
+        .filter(move |&(i, &target)| {
+            !config.targets[..i]
+                .iter()
+                .any(|&earlier| earlier != 0 && page(earlier) == page(target))
+        })
+        .map(move |(_, &target)| page(target))
+}
+
+/// Clear the scratch pages of `config`, once they are out of the memory
+/// map ([`plan_einj`]) and before the SMM handler gets them.
+pub(crate) fn clear_einj_scratch(config: &crate::sp3::smm::EinjConfig) {
+    for page in scratch_pages(config) {
+        // SAFETY: the legacy reserved scratch or a page the flow removed
+        // from usable RAM; all DRAM is identity mapped by the reset image.
+        unsafe {
+            core::ptr::write_bytes(page as *mut u8, 0, crate::sp3::einj::SCRATCH_SIZE as usize)
+        };
+    }
 }

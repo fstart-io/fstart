@@ -7,7 +7,7 @@
 //! ACPI before handing off to the selected payload.
 pub mod acpi;
 use crate::noncar::{
-    self, Ctx, Devices, Silicon, Stop,
+    self, Ctx, Devices, Silicon,
     layout::{Layout, Region},
 };
 pub use fstart_driver_amd::soc::picasso::{
@@ -112,7 +112,7 @@ impl noncar::DieSoc for Picasso {
         silicon: &mut Silicon<Self>,
         ctx: &Ctx<'_, Self>,
         pci: &fstart_pci::PciEcam,
-    ) -> Result<(), Stop> {
+    ) -> Result<(), &'static str> {
         if let Some((uma, kind)) = silicon.state.uma {
             extern crate alloc;
             let address = pci
