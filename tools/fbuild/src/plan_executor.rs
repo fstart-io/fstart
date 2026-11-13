@@ -398,51 +398,30 @@ fn execute(
             coreboot_module_args,
             coreboot_header,
         } => {
-            let rlibs = selection.directory.join("selected-rlibs");
-            if rlibs.exists() {
-                fs::remove_dir_all(&rlibs).map_err(|e| e.to_string())?;
-            }
-            fs::create_dir_all(&rlibs).map_err(|e| e.to_string())?;
-            let target = selection.target_dir(root).join(&unit.target);
-            for path in messages
+            // The compiler's reported filenames are the executor's;
+            // selecting, linking and imaging the SMM module is the
+            // format's (fstart_image_build::smm_image).
+            let filenames: Vec<&Path> = messages
                 .iter()
                 .filter(|v| v["reason"] == "compiler-artifact")
                 .flat_map(|v| v["filenames"].as_array().into_iter().flatten())
                 .filter_map(|v| v.as_str())
                 .map(Path::new)
-                .filter(|p| p.starts_with(&target) && p.extension().is_some_and(|e| e == "rlib"))
-            {
-                fs::copy(
-                    path,
-                    rlibs.join(path.file_name().ok_or("artifact has no filename")?),
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            let handler = fstart_image_build::smm_image::handler_from_rlibs(
-                &rlibs,
-                &selection.directory.join("link"),
-                fstart_image_build::smm_image::SmmArch::from_target(&unit.target),
-            )
-            .map_err(|e| e.to_string())?;
-            let image = selection.directory.join("image.bin");
-            let header = coreboot_header.then(|| selection.directory.join("offsets.h"));
-            fstart_image_build::smm_image::write_image(
+                .collect();
+            let artifacts = fstart_image_build::smm_image::produce(
+                filenames.into_iter(),
+                &selection.target_dir(root).join(&unit.target),
+                &unit.target,
+                &selection.directory,
                 fstart_image_build::smm_image::ImageOptions {
                     entry_count: *entry_count,
                     stack_size: *stack_size,
                     coreboot_module_args: *coreboot_module_args,
                     coreboot_header: *coreboot_header,
                 },
-                &handler,
-                &image,
-                header.as_deref(),
             )
             .map_err(|e| e.to_string())?;
-            let mut artifacts = BTreeMap::from([("image".into(), image)]);
-            if let Some(header) = header {
-                artifacts.insert("header".into(), header);
-            }
-            Ok(artifacts)
+            Ok(artifacts.into_iter().collect())
         }
     }
 }
