@@ -1733,10 +1733,9 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
 // ACPI device implementation — GM965 host bridge / PCI0
 // ---------------------------------------------------------------------------
 
-#[cfg(all(test, feature = "acpi"))]
+#[cfg(test)]
 mod acpi_tests;
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
 

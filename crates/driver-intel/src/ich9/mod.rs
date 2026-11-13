@@ -522,7 +522,6 @@ const SPI_FREG_BASE_MASK: u32 = 0x1fff;
 const SPI_FREG_LIMIT_MASK: u32 = 0x1fff;
 const SPI_FREG_LIMIT_SHIFT: u32 = 16;
 const SPI_FREG_SHIFT: u32 = 12;
-#[cfg(feature = "acpi")]
 const GPE0_STS_ICH9: u16 = 0x20;
 const GPE0_EN_ICH9: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
@@ -2282,7 +2281,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         })
     }
 
-    #[cfg(feature = "acpi")]
     fn config(&self) -> &'static Self::Config {
         self.config
     }
@@ -2681,5 +2679,4 @@ mod tests {
 // ACPI device implementation — ICH9-M southbridge devices
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi;

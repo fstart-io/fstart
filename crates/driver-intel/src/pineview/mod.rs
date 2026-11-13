@@ -1224,7 +1224,6 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelPineview {
 // ACPI device implementation — Host bridge (MCHC)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
     use crate::IntelNorthbridgeDriver;

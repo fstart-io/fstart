@@ -67,7 +67,6 @@ pub mod smram {
 }
 
 /// DSDT nodes the GMCH northbridges contribute under `\_SB.PCI0`.
-#[cfg(feature = "acpi")]
 pub mod acpi {
     extern crate alloc;
 
@@ -119,7 +118,7 @@ pub mod acpi {
     }
 }
 
-#[cfg(all(test, feature = "acpi"))]
+#[cfg(test)]
 mod acpi_tests;
 
 #[cfg(test)]

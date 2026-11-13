@@ -6,7 +6,6 @@
 //! QuickPath uncore functions on the top ECAM bus own PCIEXBAR, PAM, SMRAM
 //! and the DRAM rules.
 
-#[cfg(feature = "acpi")]
 mod acpi;
 mod igd;
 mod raminit;

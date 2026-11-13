@@ -12,7 +12,6 @@
 //! Board wiring (GPIOs, USB port currents, decodes, codec verbs, the
 //! disabled functions) is configuration; nothing here is board-specific.
 
-#[cfg(feature = "acpi")]
 mod acpi;
 mod early;
 pub mod me;
@@ -494,7 +493,6 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
         })
     }
 
-    #[cfg(feature = "acpi")]
     fn config(&self) -> &'static Self::Config {
         self.config
     }

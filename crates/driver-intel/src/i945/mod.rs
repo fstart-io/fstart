@@ -1486,7 +1486,6 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelI945 {
 // ACPI device implementation — i945 host bridge / PCI0
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
 

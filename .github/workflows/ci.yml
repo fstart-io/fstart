@@ -117,7 +117,7 @@ jobs:
             cargo clippy -p fstart-payload \
               --features "$features,fstart-stage/x86_64" --lib
           done
-          cargo test -p fstart-driver-intel --features acpi --lib
+          cargo test -p fstart-driver-intel --lib
           cargo test -p fstart-platform-intel \
             --features memory-cache,acpi,host --lib
           cargo test -p fstart-boot --features crabefi-ui --lib

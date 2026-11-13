@@ -2,11 +2,9 @@
 #![recursion_limit = "256"]
 #![allow(clippy::modulo_one)]
 
-#[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 
 pub mod cpu;
-#[cfg(feature = "acpi")]
 pub mod namespace;
 
 pub mod generic;
@@ -333,7 +331,6 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn new_from_config(
         config: &'static Self::Config,
     ) -> Result<Self, fstart_core::services::ServiceError>;
-    #[cfg(feature = "acpi")]
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;

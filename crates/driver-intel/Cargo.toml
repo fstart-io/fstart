@@ -6,17 +6,6 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-default = []
-# ACPI table and AML builders. They allocate, so only stages with a heap can
-# link them; every chipset is otherwise always built and the linker keeps what
-# the board's platform calls.
-acpi = [
-  "dep:fstart-acpi",
-  "fstart-acpi/pci",
-  "dep:fstart-acpi-macros",
-]
-
 [dependencies]
 sha2 = { workspace = true }
 fstart-driver-usbdebug = { workspace = true }
@@ -26,8 +15,8 @@ fstart-driver-spd = { workspace = true }
 rflasher-internal = { workspace = true }
 bitflags = { workspace = true }
 embedded-hal = { workspace = true }
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
-fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-acpi = { workspace = true, features = ["x86", "pci"] }
+fstart-acpi-macros = { path = "../acpi-macros" }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-log = { workspace = true }
 fstart-options = { workspace = true }

@@ -641,7 +641,6 @@ impl Framebuffer for IgdDisplay {
 }
 
 /// Where the backlight duty (`BCLV`) and PWM period (`BCLM`) live.
-#[cfg(feature = "acpi")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GfxBacklight {
     /// GMCH: both halves of `BLC_PWM_CTL` (0x61254).
@@ -653,7 +652,6 @@ pub enum GfxBacklight {
 }
 
 /// The GMCH layout of [`gfx0_acpi_node_with`].
-#[cfg(feature = "acpi")]
 #[must_use]
 pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc::vec::Vec<u8> {
     gfx0_acpi_node_with::<NB>(gttmmio, GfxBacklight::Gmch)
@@ -664,7 +662,6 @@ pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc:
 /// `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
 /// `INCB`/`DECB` hooks ThinkPad hotkeys call. `gttmmio` is the assigned
 /// GTTMMADR; zero while the IGD is absent.
-#[cfg(feature = "acpi")]
 #[must_use]
 pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
     gttmmio: u64,

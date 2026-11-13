@@ -1159,7 +1159,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
         })
     }
 
-    #[cfg(feature = "acpi")]
     fn config(&self) -> &'static Self::Config {
         self.config
     }
@@ -2175,7 +2174,6 @@ impl IntelIch7 {
 // ACPI device implementation — LPC bridge
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
     use crate::IntelSouthbridgeDriver;

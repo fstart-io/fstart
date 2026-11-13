@@ -46,7 +46,7 @@ ramstage = [
   "fstart-log/alloc",
 ]
 # The chipset's ACPI namespace (fstart_acpi::PcNamespace) for board ACPI.
-namespace = ["dep:fstart-acpi", "fstart-driver-intel/acpi"]
+namespace = ["dep:fstart-acpi"]
 acpi = [
   "namespace",
   "dep:fstart-acpi",
@@ -54,7 +54,6 @@ acpi = [
   "dep:fstart-arch",
   "dep:fstart-log",
   "dep:ufmt",
-  "fstart-driver-intel/acpi",
 ]
 mp = ["dep:fstart-arch", "dep:fstart-ffs", "dep:fstart-stage", "fstart-stage/ffs"]
 smbios = ["dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-arch"]
@@ -63,7 +62,7 @@ smbios = ["dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-arch"]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it
 # needs the driver's ACPI builders and the DSDT table writer on the host.
 fstart-acpi = { workspace = true, features = ["x86"] }
-fstart-driver-intel = { workspace = true, features = ["acpi"] }
+fstart-driver-intel = { workspace = true }
 
 [[test]]
 name = "southbridge_dsdt"

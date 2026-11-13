@@ -802,7 +802,6 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm45 {
     }
 }
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     use super::*;
     use crate::IntelNorthbridgeDriver;
@@ -911,7 +910,7 @@ mod acpi_impl {
     }
 }
 
-#[cfg(all(test, feature = "acpi"))]
+#[cfg(test)]
 mod acpi_tests;
 
 #[cfg(test)]
