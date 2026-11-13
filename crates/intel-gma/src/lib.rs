@@ -806,8 +806,8 @@ mod tests {
     #[test]
     fn parses_real_board_vbts() {
         for bytes in [
-            include_bytes!("../../../boards/lenovo/x61/data.vbt").as_slice(),
-            include_bytes!("../../../boards/foxconn/d41s/data.vbt").as_slice(),
+            include_bytes!("../fixtures/gm965-1024x768.vbt").as_slice(),
+            include_bytes!("../fixtures/g41-1024x768.vbt").as_slice(),
         ] {
             let vbt = vbt::Vbt::parse(bytes).unwrap();
             assert_eq!(vbt::declared_vbt_size(bytes), Some(bytes.len() as u32));
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn malformed_bdb_header_size_is_rejected() {
-        let mut bytes = *include_bytes!("../../../boards/lenovo/x61/data.vbt");
+        let mut bytes = *include_bytes!("../fixtures/gm965-1024x768.vbt");
         let bdb_offset = u32::from_le_bytes(bytes[0x1c..0x20].try_into().unwrap()) as usize;
         bytes[bdb_offset + 0x12] = 0xff;
         bytes[bdb_offset + 0x13] = 0xff;
@@ -1083,7 +1083,7 @@ mod tests {
                 fallback_mode: None,
                 scaling: ScalingPolicy::None,
             },
-            vbt: Some(include_bytes!("../../../boards/lenovo/x61/data.vbt")),
+            vbt: Some(include_bytes!("../fixtures/gm965-1024x768.vbt")),
         };
         assert_eq!(
             ddc_pin_for_config(Port::Vga, &config),

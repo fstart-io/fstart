@@ -537,8 +537,10 @@ pub fn declared_vbt_size(bytes: &[u8]) -> Option<u32> {
 mod tests {
     use super::*;
 
-    const X61_VBT: &[u8] = include_bytes!("../../../boards/lenovo/x61/data.vbt");
-    const FOXCONN_VBT: &[u8] = include_bytes!("../../../boards/foxconn/d41s/data.vbt");
+    /// A GM965 board's VBT (single 1024x768 LVDS panel).
+    const X61_VBT: &[u8] = include_bytes!("../fixtures/gm965-1024x768.vbt");
+    /// A G41 board's VBT: the same panel, more blocks (VGA/HDMI).
+    const FOXCONN_VBT: &[u8] = include_bytes!("../fixtures/g41-1024x768.vbt");
 
     #[test]
     fn vbt_uses_the_32bit_bdb_offset_not_the_header_size() {
