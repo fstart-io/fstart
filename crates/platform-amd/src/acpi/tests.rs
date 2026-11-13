@@ -378,6 +378,9 @@ fn picasso_routes_its_internal_bridges() {
     );
     // Neither a wake GPE nor the server's second PCIe core.
     assert!(!aml.windows(4).any(|w| w == b"_PRW" || w == b"RP31"));
+    // S0, S4 and S5.
+    assert!(aml.windows(4).any(|w| w == b"_S4_"));
+    assert!(!aml.windows(4).any(|w| w == b"_S1_" || w == b"_S3_"));
 }
 
 #[test]

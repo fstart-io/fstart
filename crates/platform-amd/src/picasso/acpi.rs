@@ -32,8 +32,9 @@ pub const ACPI: SocAcpi = SocAcpi {
     fch_intx_gsi: Some([16, 17, 18, 19]),
     wake: None,
     xhci: None,
-    // Without ACPI resume there is no S3.
-    sleep_states: &[(0, 0), (1, 1), (4, 4), (5, S5_SLEEP_TYPE)],
+    // Without ACPI resume there is no S3. No S1 either, as on coreboot's
+    // Picasso: nothing is known to resume from it.
+    sleep_states: &[(0, 0), (4, 4), (5, S5_SLEEP_TYPE)],
     // One die: no SLIT.
     socket_distance: 10,
 };
