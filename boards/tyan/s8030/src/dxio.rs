@@ -239,16 +239,6 @@ impl Options {
         onboard_vga: true,
     };
 
-    /// The options of this build: the Setup defaults, or the
-    /// `pcie3-x4x4x4x4` variant's PCIE#3 x4x4x4x4 (the bench's NVMe carrier; its vendor
-    /// NVRAM has `Setup[0x194..]` = `01 01 04 01 01`). The settings menu
-    /// overrides them per machine ([`KNOBS`]).
-    pub const BUILD: Self = if cfg!(feature = "pcie3-x4x4x4x4") {
-        Self::DEFAULT.with_bifurcation("11411")
-    } else {
-        Self::DEFAULT
-    };
-
     /// Slot bifurcation from five Setup values (`1`, `2` or `4`, in
     /// `PCIE#1..5` order); anything else panics (fails const evaluation).
     pub const fn with_bifurcation(self, setup: &str) -> Self {
@@ -348,10 +338,10 @@ pub static KNOBS: [Knob<Options>; 9] = [
     ),
 ];
 
-/// The Setup knobs over the options of this build.
+/// The Setup knobs over the vendor's Setup defaults.
 pub static SETUP: fstart_options::OptionSet<Options> = fstart_options::OptionSet {
     knobs: &KNOBS,
-    board: Options::BUILD,
+    board: Options::DEFAULT,
 };
 
 /// Whether `options` give the SoC a valid engine list with `detected`.
@@ -687,17 +677,6 @@ mod tests {
         assert!(e.iter().all(|e| {
             e.pcie_config().and_then(|p| p.devfn) != Some(3 << 3 | 4) || e.attached.is_none()
         }));
-    }
-
-    #[test]
-    fn build_options() {
-        let pcie3 = Options::BUILD.slots[Slot::Pcie3.index()].bifurcation;
-        let want = if cfg!(feature = "pcie3-x4x4x4x4") {
-            Bifurcation::X4x4x4x4
-        } else {
-            Bifurcation::X16
-        };
-        assert_eq!(pcie3, want);
     }
 
     #[test]
