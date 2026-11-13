@@ -6,7 +6,7 @@ use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
 use tock_registers::interfaces::Readable;
 
-use super::{Df, DfReg, DramRule, Target, Version};
+use super::{DfReg, DramRule, Fabric, Target, Version};
 pub use crate::apob::nps::Nps;
 use crate::df::regs::{self, DRAM_HOLE};
 
@@ -40,7 +40,7 @@ impl DramMap {
 /// Read the DRAM map of `node` through `target` (AGESA: PIE instance 0x1E
 /// on DF3, instance 5 on ZP; §3.6, DF_ZP §3.8).
 pub fn read<V: Version, P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     node: u8,
     target: Target,
 ) -> DramMap {
@@ -215,7 +215,7 @@ mod tests {
         m.set(0, Some(PIE), 0, 0x110, 0x3);
         m.set(0, Some(PIE), 0, 0x114, (66 * 4 - 1) << 12);
         m.set(0, Some(PIE), 0, 0x104, 0x8000_0001);
-        let map = read::<Df3, _>(&Df::new(m), 0, Target::Instance(PIE));
+        let map = read::<Df3, _>(&Fabric::new(m), 0, Target::Instance(PIE));
         assert_eq!(map.rules.len(), 1);
         let r: std::vec::Vec<_> = map.ranges().collect();
         assert_eq!(r, [(0, 0x8000_0000, 0), (1 << 32, 66 << 30, 0)]);

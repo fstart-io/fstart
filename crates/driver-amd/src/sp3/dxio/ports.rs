@@ -366,7 +366,7 @@ pub type AttachedPort = (
 /// NBIO's root bridge in `topology`, a SATA engine without a bridge. A
 /// PCIe engine without a port (a knob took it out) is left out.
 pub fn attached(
-    topology: &crate::sp3::df::topology::Topology,
+    topology: &crate::df::topology::Topology,
     segment: u16,
     engines: &[Engine<'static>],
     ports: &[MappedPort],
@@ -1322,7 +1322,7 @@ mod tests {
     #[test]
     fn attached_engines_at_their_mapped_bridges() {
         use crate::df::RootBridge;
-        use crate::sp3::df::topology::Topology;
+        use crate::df::topology::Topology;
         use fstart_core::smbios::{Attached, SystemSlot};
         static SLOT: Attached<'static> = Attached::Slot(SystemSlot::new("PCIE3"));
         static M2: Attached<'static> = Attached::Slot(SystemSlot::new("CN1"));

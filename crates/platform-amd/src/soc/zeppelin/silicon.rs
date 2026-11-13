@@ -21,6 +21,17 @@ use fstart_log::Hex;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use zerocopy::IntoBytes;
 
+/// The vendor fabric policy.
+const FABRIC: df::zp::FabricPolicy = df::zp::FabricPolicy {
+    scrub_hours: 24,
+    scrub_redirect: true,
+    ras_a: None,
+    ras_b: None,
+    sync_flood_disable: false,
+    lint_erratum_1158: true,
+    global_cstate: true,
+};
+
 /// What the CPU identification found.
 #[derive(Debug, Clone, Copy)]
 pub struct Identity {
@@ -89,7 +100,7 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     let count = dies.len() as u8;
     // DF MMIO/IO distribution, then the per-die DF init.
     let tom2 = top_mem2.unwrap_or(0);
-    let plan = df::zeppelin::route_resources(dies, (ECAM, ECAM_BUSES), top_mem, tom2)
+    let plan = df::zp::route_resources(dies, (ECAM, ECAM_BUSES), top_mem, tom2)
         .map_err(|_| "DF MMIO plan")?;
     for r in &plan.mmio {
         fstart_log::debug!(
@@ -103,15 +114,17 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     let mut nonpci = [0; MAX_DIES];
     for die in dies {
         nonpci[usize::from(die.index())] =
-            df::zeppelin::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index())
+            df::zp::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index())
                 .ok_or("non-PCI MMIO pool")?;
     }
     for die in dies {
-        df::zeppelin::early_init(&die.df(), count, revision);
+        df::zp::early_init(&die.df(), count, revision, &FABRIC);
     }
     if let Some(apob) = apob {
         for die in dies {
-            if let Some((rate, size)) = df::zeppelin::scrub_init(&die.df(), die.index(), apob) {
+            let present = df::zp::populated_channels(apob, 0, die.index());
+            let scrub = df::zp::scrub_init(&die.df(), (0, die.index()), present, &FABRIC);
+            if let Some((rate, size)) = scrub {
                 fstart_log::debug!("DF {}: scrub rate {} for {}", die.index(), rate, Hex(size));
             }
         }
@@ -266,13 +279,19 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
         fstart_log::error!("zeppelin: SMU initialization failed");
     }
     let cac_weights = smu::cac_weights(&dies[0], clock).ok();
-    let sockets = df::zeppelin::sockets(&dies[0].df());
+    let sockets = df::zp::sockets(&dies[0].df());
     for die in dies {
         if let Some(apob) = apob {
-            df::zeppelin::late_init(&die.df(), count, sockets, revision, apob);
+            df::zp::late_init(
+                &die.df(),
+                (count, sockets),
+                (revision, package),
+                df::zp::pie_power_flag(apob),
+                &FABRIC,
+            );
         }
     }
-    df::zeppelin::route_vga(dies);
+    df::zp::route_vga(dies);
     for die in dies {
         nbio::zeppelin::pre_enumeration_init(die);
     }
@@ -346,6 +365,6 @@ pub fn ready_to_boot<P: ConfigRegionAccess + Copy>(
 /// The end of the vendor ReadyToBoot: the DF extended config off.
 pub fn end_of_post<P: ConfigRegionAccess + Copy>(dies: &[Die<P>]) {
     for die in dies {
-        df::zeppelin::disable_ext_cfg(&die.df());
+        df::zp::disable_ext_cfg(&die.df());
     }
 }

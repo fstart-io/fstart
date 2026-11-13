@@ -2,7 +2,7 @@
 extern crate std;
 use fstart_driver_amd::apob::{self, Apob};
 use fstart_driver_amd::ccx::tsc::testing::Delay;
-use fstart_driver_amd::df::picasso as fabric;
+use fstart_driver_amd::df::rv as fabric;
 use fstart_driver_amd::df::{Df, DfReg, testing::DfSpace};
 use fstart_driver_amd::psp::Variant;
 use fstart_driver_amd::smn::{

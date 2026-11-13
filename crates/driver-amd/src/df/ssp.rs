@@ -5,7 +5,7 @@
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 
-use super::Df;
+use super::Fabric;
 use super::topology::Topology;
 use super::v3::{self, CCM_F4XC8, ChannelCtl, RasFields, SCRUB_BASE, SCRUB_LIMIT, SocketMemory};
 use crate::cpu::Revision;
@@ -40,7 +40,7 @@ impl Default for Policy {
 
 /// PEI fabric init on every socket. `memory[socket]` from the APOB.
 pub fn init<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     topology: &Topology,
     revision: Revision,
     policy: &Policy,
@@ -62,7 +62,7 @@ pub fn init<P: ConfigRegionAccess + Clone>(
 
 /// Scrubber of one socket (`ffdc9eec`).
 fn scrub<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     socket: u8,
     revision: Revision,
     policy: &Policy,
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn init_rome_1p() {
         let m = df3_system(1, 0b1111);
-        let df = Df::new(m.clone());
+        let df = Fabric::new(m.clone());
         let t = discover(&df, Silicon::Ssp).unwrap();
         // 256 GiB behind the scrubber, no hole rule.
         m.set(0, None, 6, 0x44, ((256 << 10) - 1) << 4);

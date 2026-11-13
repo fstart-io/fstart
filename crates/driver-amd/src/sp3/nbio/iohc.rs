@@ -8,6 +8,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::Nbio;
 use crate::cpu::Silicon;
+use crate::df::topology::RootBridge;
 use crate::nbio::iohc::{
     BarHigh, CFG_IOHC_PCI, CfgIohcPci, IOAPIC_BAR, IoapicBar, IohcRbBusRoute, NB_BUS_NUM_CNTL,
     NB_TOP_OF_DRAM_SLOT1, NbBusNumCntl, PSP_BAR, PspBar, SMU_BAR, SmuBar, TopStyle,
@@ -15,7 +16,6 @@ use crate::nbio::iohc::{
 };
 use crate::nbio::iohc::{DramTops, PSP_BAR_SIZE, SMU_BAR_SIZE};
 use crate::smn::SmnAccess;
-use crate::sp3::topology::RootBridge;
 
 impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// Program TOM, TOM2 and TOM3 (and Naples' MMIO base/limit) on this NBIO

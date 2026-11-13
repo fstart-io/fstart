@@ -15,7 +15,7 @@
 //!
 //! The secondary's [`FchHw`] is built by the caller: `acpi` = its window,
 //! `io` = the host ports (routed while needed), `bus` = its root bus. Bus
-//! discovery is the DF's (`crate::sp3::df`): D(18+n)F0x84 on Naples, the IOMS3
+//! discovery is the DF's (`crate::df`): D(18+n)F0x84 on Naples, the IOMS3
 //! FICAA read (`D19F4x5C = 001B0085h`) on Rome/Milan (§4.2).
 
 use fstart_pci::{ConfigRegionAccess, PciAddress};

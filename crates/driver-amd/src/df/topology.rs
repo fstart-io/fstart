@@ -19,11 +19,11 @@ use heapless::Vec;
 use tock_registers::interfaces::Readable;
 
 use super::Version;
-use super::{BusRange, Df};
+use super::{BusRange, Fabric};
+pub use super::{MAX_ROOT_BRIDGES, RootBridge};
 use crate::cpu::Silicon;
 use crate::df::MAX_NODES;
 use crate::df::regs;
-use crate::sp3::topology::{MAX_ROOT_BRIDGES, Node, RootBridge};
 
 /// Milan IOMS fuse: SMN 0x5D148 bit `11 + i` set = IOMS `i` absent
 /// (SOC_DF §3.9, AmdSocSp3GnPei entry, IC).
@@ -101,7 +101,7 @@ impl Topology {
 /// Read the topology. The DF config space on bus 0 must be reachable (ECAM
 /// set up); Milan also reads its IOMS fuse through SMN on bus 0.
 pub fn discover<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     generation: Silicon,
 ) -> Result<Topology, TopologyError> {
     match generation {
@@ -136,7 +136,7 @@ fn bus_limit<V: Version>(maps: &[u32], fabric_id: u16) -> Result<u8, TopologyErr
 }
 
 fn read_maps<P: ConfigRegionAccess + Clone, V: Version>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     target: super::Target,
 ) -> Vec<u32, 8> {
     (0..V::CFG_MAPS)
@@ -145,7 +145,7 @@ fn read_maps<P: ConfigRegionAccess + Clone, V: Version>(
         .collect()
 }
 
-fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, TopologyError> {
+fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Fabric<P>) -> Result<Topology, TopologyError> {
     use crate::df::v2::Df2;
     use crate::df::v2::{self, SYSTEM_CFG};
 
@@ -199,7 +199,7 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, T
 
 /// `present`: bit `i` = IOMS `i` present (Milan fuse, all four on Rome).
 fn discover_df3<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     generation: Silicon,
     present: u8,
 ) -> Result<Topology, TopologyError> {
@@ -298,7 +298,7 @@ pub(crate) mod tests {
 
     #[test]
     fn rome_2p() {
-        let df = Df::new(df3_system(2, 0b1111));
+        let df = Fabric::new(df3_system(2, 0b1111));
         let t = discover(&df, Silicon::Ssp).unwrap();
         assert_eq!(
             (t.sockets, t.root_bridges.len(), t.root_bridges_per_socket()),
@@ -322,12 +322,12 @@ pub(crate) mod tests {
         // IOMS 1 fused off: SMN 0x5D148 bit 12.
         let m = df3_system(1, 0b1101);
         m.smn.0.borrow_mut().smn.insert((0, IOMS_FUSE_SMN), 1 << 12);
-        let t = discover(&Df::new(m.clone()), Silicon::Gn).unwrap();
+        let t = discover(&Fabric::new(m.clone()), Silicon::Gn).unwrap();
         let ids: std::vec::Vec<u16> = t.root_bridges.iter().map(|r| r.fabric_id).collect();
         assert_eq!(ids, [0x18, 0x1A, 0x1B]);
         // A count mismatch with F1x204 fails closed.
         m.smn.0.borrow_mut().smn.insert((0, IOMS_FUSE_SMN), 0);
-        assert!(discover(&Df::new(m), Silicon::Gn).is_err());
+        assert!(discover(&Fabric::new(m), Silicon::Gn).is_err());
     }
 
     #[test]
@@ -350,7 +350,7 @@ pub(crate) mod tests {
             }
         }
         m.set(0, None, 1, 0x204, 8);
-        let t = discover(&Df::new(m), Silicon::Zp).unwrap();
+        let t = discover(&Fabric::new(m), Silicon::Zp).unwrap();
         assert_eq!(t.nodes.len(), 8);
         let rb = t.root_bridges[6];
         assert_eq!(
@@ -382,4 +382,14 @@ pub(crate) mod tests {
         let order: std::vec::Vec<u8> = t.logical().iter().map(|r| r.index).collect();
         assert_eq!(order, [3, 0, 1, 2]);
     }
+}
+
+/// One DF node: a ZP die (Naples) or an IOD (Rome, Milan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Node {
+    pub socket: u8,
+    /// Die within the socket (always 0 on Rome/Milan).
+    pub die: u8,
+    /// PCI device of the node's DF functions on bus 0 (`0x18 + node`).
+    pub device: u8,
 }

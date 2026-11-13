@@ -17,7 +17,7 @@ mod tests;
 pub use init::{Chipset, FchUp, Runtime, State, Trained};
 
 /// The Raven/Picasso SoC, one die: [`fstart_driver_amd::ccx::picasso`],
-/// [`fstart_driver_amd::df::picasso`], [`fstart_driver_amd::nbio::picasso`], [`fstart_driver_amd::dxio::picasso`],
+/// [`fstart_driver_amd::df::rv`], [`fstart_driver_amd::nbio::picasso`], [`fstart_driver_amd::dxio::picasso`],
 /// [`fstart_driver_amd::smu::v10`], the Sandstone FCH [`fstart_driver_amd::fch::sandstone`] and the
 /// ACP 3.x [`fstart_driver_amd::acp`].
 pub enum Picasso {}

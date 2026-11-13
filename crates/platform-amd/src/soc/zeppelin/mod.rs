@@ -21,7 +21,7 @@ use fstart_driver_amd::{
 };
 use fstart_driver_i2c::designware::{Speed, Timing};
 
-/// The Zeppelin SoC: [`fstart_driver_amd::ccx::zeppelin`], [`fstart_driver_amd::df::zeppelin`],
+/// The Zeppelin SoC: [`fstart_driver_amd::ccx::zeppelin`], [`fstart_driver_amd::df::zp`],
 /// [`fstart_driver_amd::nbio::zeppelin`], [`fstart_driver_amd::dxio::zeppelin`], [`fstart_driver_amd::smu::v9`]
 /// and the Taishan FCH [`fstart_driver_amd::fch::taishan`].
 pub enum Zeppelin {}
@@ -123,7 +123,7 @@ pub struct DxioConfig {
 /// Non-PCI MMIO pool of a die, the top 8 MiB of its below-4G DF window: the
 /// PSP BAR at +0, the FCH ACPI MMIO of dies >= 1 at +1 MiB, the IOMMU (512
 /// KiB) at +2 MiB, the NBIO IOAPIC at +7 MiB.
-pub const NONPCI_MMIO_SIZE: u32 = fstart_driver_amd::df::zeppelin::NONPCI_MMIO_SIZE;
+pub const NONPCI_MMIO_SIZE: u32 = fstart_driver_amd::df::zp::NONPCI_MMIO_SIZE;
 pub const NONPCI_PSP: u32 = 0;
 pub const NONPCI_IOMMU: u32 = 2 << 20;
 pub const NONPCI_IOAPIC: u32 = 7 << 20;

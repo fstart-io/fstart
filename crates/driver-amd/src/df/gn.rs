@@ -21,7 +21,7 @@ use super::v3::{
     self, ChannelCtl, Df3, PIE, RasFields, SCRUB_ADDR_HI, SCRUB_ADDR_LO, SCRUB_BASE, SCRUB_LIMIT,
     SocketMemory,
 };
-use super::{Df, DfReg, DramRule, Target, dram, or_bits};
+use super::{DfReg, DramRule, Fabric, Target, dram, or_bits};
 
 /// Scrubber regions per socket (GN SoC table `ffd06ab4`: PIE 0x1E, CS
 /// base 0, 4 regions; OB).
@@ -71,7 +71,7 @@ impl Default for Policy {
 
 /// PEI fabric init on every socket. `memory[socket]` from the APOB.
 pub fn init<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     topology: &Topology,
     policy: &Policy,
     memory: &[SocketMemory],
@@ -239,7 +239,7 @@ fn at<R: tock_registers::RegisterLongName>(k: usize, reg: DfReg<R>) -> DfReg<R> 
 }
 
 fn scrub<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     socket: u8,
     policy: &Policy,
     mem: &SocketMemory,
@@ -316,7 +316,7 @@ mod tests {
     use super::super::model::DfModel;
     use super::*;
     use crate::cpu::Silicon;
-    use crate::sp3::topology::Node;
+    use crate::df::topology::Node;
 
     const GIB: u64 = 1 << 30;
 
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn init_programs_regions() {
         let m = DfModel::default();
-        let df = Df::new(m.clone());
+        let df = Fabric::new(m.clone());
         // NPS1: one COD1_8 rule [0, 66 GiB) with the 2 GiB hole.
         m.set(0, Some(PIE), 0, 0x110, 0xE << 2 | 3);
         m.set(0, Some(PIE), 0, 0x114, (66 * 4 - 1) << 12);

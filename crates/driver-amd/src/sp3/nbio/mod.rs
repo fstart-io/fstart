@@ -19,8 +19,8 @@ use tock_registers::RegisterLongName;
 use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::cpu::Silicon;
+use crate::df::topology::RootBridge;
 use crate::smn::{Smn, SmnAddr, SmnRegister};
-use crate::sp3::topology::RootBridge;
 
 pub mod fuse;
 pub mod ioapic;

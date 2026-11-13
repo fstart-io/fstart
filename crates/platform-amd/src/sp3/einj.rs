@@ -5,8 +5,8 @@
 
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_driver_amd::{
+    df::DramRule,
     psp::ras::{MAX_SOCKETS, MemoryTarget},
-    sp3::df::DramRule,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

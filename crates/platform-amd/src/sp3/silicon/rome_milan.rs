@@ -16,6 +16,8 @@ use fstart_driver_amd::apob::phy::phy_override;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::cpu;
 use fstart_driver_amd::df::regs;
+use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::df::v3::{Df3, SocketMemory};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
 use fstart_driver_amd::nbio::iohc::DramTops;
@@ -27,7 +29,6 @@ use fstart_driver_amd::sp3::ccx::release::{self, Launch};
 use fstart_driver_amd::sp3::ccx::topology::{ApicLayout, Location};
 use fstart_driver_amd::sp3::ccx::x2apic::{self, ApicMode};
 use fstart_driver_amd::sp3::ccx::{Ccx, brand, mca, power, security};
-use fstart_driver_amd::sp3::df::v3::{Df3, SocketMemory};
 use fstart_driver_amd::sp3::dxio;
 use fstart_driver_amd::sp3::dxio::engine::Ancillary;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
@@ -37,7 +38,6 @@ use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
-use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::window::Window;
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
@@ -280,14 +280,14 @@ impl Steps for Silicon {
             .map(|s| socket_memory(ctx, s))
             .collect();
         match ctx.generation {
-            cpu::Silicon::Ssp => fstart_driver_amd::sp3::df::rome::init(
+            cpu::Silicon::Ssp => fstart_driver_amd::df::ssp::init(
                 &ctx.df,
                 &ctx.topology,
                 ctx.identity.revision,
                 &Default::default(),
                 &memory,
             ),
-            cpu::Silicon::Gn => fstart_driver_amd::sp3::df::milan::init(
+            cpu::Silicon::Gn => fstart_driver_amd::df::gn::init(
                 &ctx.df,
                 &ctx.topology,
                 &Default::default(),
@@ -778,8 +778,8 @@ impl Steps for Silicon {
     fn numa(ctx: &Ctx, si: &Silicon) -> Option<NumaPlan> {
         use fstart_driver_amd::apob::nps;
         use fstart_driver_amd::df::Target;
-        use fstart_driver_amd::sp3::df::dram::{self, ccd_channel, domain_of, ioms_channel};
-        use fstart_driver_amd::sp3::df::v3;
+        use fstart_driver_amd::df::dram::{self, ccd_channel, domain_of, ioms_channel};
+        use fstart_driver_amd::df::v3;
 
         let mode = match nps::nps(&ctx.apob) {
             Ok(mode) => mode,

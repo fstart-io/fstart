@@ -12,18 +12,18 @@ use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::apob::Apob;
 use fstart_driver_amd::df::plan::{self, Plan, RootBridgePlan, Window};
+use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
+use fstart_driver_amd::df::topology::{self, Topology};
+use fstart_driver_amd::df::{self as sp3_df, Fabric};
 use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::sp3::ccx;
-use fstart_driver_amd::sp3::df::topology::{self, Topology};
-use fstart_driver_amd::sp3::df::{self as sp3_df, Df};
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 use fstart_driver_amd::sp3::nbio::{Nbio, NbioPolicy};
-use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 
 use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
@@ -117,7 +117,7 @@ pub struct Ctx {
     pub policy: Policy,
     pub apob: Apob<'static>,
     pub tops: DramTops,
-    pub df: Df<Pci>,
+    pub df: Fabric<Pci>,
     pub topology: Topology,
     pub plan: Plan,
     /// Non-PCI MMIO of each root bridge, physical order.
@@ -161,7 +161,7 @@ impl Ctx {
             policy,
             apob,
             tops,
-            df: Df::new(Pci::default()),
+            df: Fabric::new(Pci::default()),
             topology: Topology {
                 generation,
                 sockets: 0,

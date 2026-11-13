@@ -21,7 +21,7 @@ use fstart_driver_amd::{
         picasso::{self as cpu, Identity},
         tsc::Tsc,
     },
-    df::picasso as fabric,
+    df::rv as fabric,
     dxio,
     fch::{
         Fch, NativeBus, emmc, espi,

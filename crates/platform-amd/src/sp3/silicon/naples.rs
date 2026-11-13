@@ -10,6 +10,7 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::df::regs;
+use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::v2::Df2;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
@@ -30,7 +31,6 @@ use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
 use fstart_driver_amd::sp3::nbio::fuse::Fuses;
 use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
-use fstart_driver_amd::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::window::{SmnWindow, Window};
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
@@ -52,32 +52,28 @@ pub struct Silicon {
 const IOMMU_BAR: u64 = 512 << 10;
 const IOAPIC_BAR: u64 = 0x1000;
 
-/// Populated UMCs per node from the APOB SPD copy (bit = UMC).
-fn umc_present(ctx: &Ctx) -> [u8; 8] {
-    let mut present = [0u8; 8];
-    for (node, n) in ctx.topology.nodes.iter().enumerate() {
-        present[node] = fstart_driver_amd::apob::mem::spd(&ctx.apob, n.socket, n.die)
-            .map(|t| {
-                t.dimms()
-                    .filter(|(_, _, r)| r.present())
-                    .fold(0u8, |m, (c, _, _)| m | 1 << (c & 7))
-            })
-            .unwrap_or(0);
-    }
-    present
-}
-
 impl Steps for Silicon {
     type DfLayout = DfVersion;
 
     /// DF PEI init and, as this flow has no PEI/DXE split, the DXE-entry PIE
     /// power management right after (SOC_DF §3, DF_ZP §3.9).
     fn df_init(ctx: &mut Ctx) -> Result<(), &'static str> {
-        use fstart_driver_amd::sp3::df::naples;
-        let policy = naples::Policy::default();
+        use fstart_driver_amd::{cpu::Package, df::zp};
+        let policy = zp::FabricPolicy::default();
         let rev = ctx.identity.revision;
-        naples::init(&ctx.df, &ctx.topology, rev, &policy, &umc_present(ctx));
-        naples::late_init(&ctx.df, &ctx.topology, rev, &policy, false);
+        let dies = ctx.topology.nodes.len() as u8;
+        let sockets = ctx.topology.sockets;
+        let apob_flag = zp::pie_power_flag(&ctx.apob);
+        // SAFETY: the BSP owns every node's DF during the silicon init.
+        let nodes = unsafe { ctx.df.each(&ctx.topology.nodes) };
+        for (df, n) in nodes.iter().zip(&ctx.topology.nodes) {
+            zp::early_init(df, dies, rev, &policy);
+            let present = zp::populated_channels(&ctx.apob, n.socket, n.die);
+            zp::scrub_init(df, (n.socket, n.die), present, &policy);
+        }
+        for df in &nodes {
+            zp::late_init(df, (dies, sockets), (rev, Package::Sp3), apob_flag, &policy);
+        }
         Ok(())
     }
 

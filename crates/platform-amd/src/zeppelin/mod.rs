@@ -81,7 +81,7 @@ impl noncar::DieSoc for Zeppelin {
         if dies.len() < 2 {
             return None;
         }
-        let memory = fstart_driver_amd::df::zeppelin::die_memory(&dies[0].df())?;
+        let memory = fstart_driver_amd::df::zp::die_memory(&dies[0].df())?;
         Some(
             memory
                 .iter()

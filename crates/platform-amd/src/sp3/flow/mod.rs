@@ -301,9 +301,9 @@ pub(crate) fn plan_einj(
     {
         use fstart_driver_amd::{
             df::Target,
+            df::{self, v3},
             psp::ras,
             smn::Smn,
-            sp3::df::{self, v3},
         };
         let mut config = crate::sp3::smm::EinjConfig {
             sockets: ctx.topology.sockets,

@@ -5,13 +5,23 @@
 //! instance's through the FICAA/FICAD pair, which the BSP owns exclusively
 //! during silicon init.
 //!
-//! Every die has its own Data Fabric PCI device 0x18 + node on bus 0
-//! ([`Die`]). Single-die parts (Raven/Picasso) use node 0. The MMIO, I/O
+//! Every DF node (a ZP or RV die, an SSP or GN IOD) has its own Data
+//! Fabric PCI device 0x18 + node on bus 0: a die SoC reaches it with its
+//! [`Die`], a multi-socket one every node through its [`Fabric`] and the
+//! sockets, nodes and root bridges it found ([`topology`]). The MMIO, I/O
 //! and bus split over the root bridges is [`plan`], its writers
 //! [`program`], and the per-version layout of those rules [`Version`]
-//! ([`v2::Df2`]; DF3 is SP3's). [`map`] reads back what is routed; the init
-//! sequences of the SoCs' fabrics are [`picasso`] (AGESA AmdFabricRv) and
-//! [`zeppelin`] (AmdFabricZp).
+//! ([`v2::Df2`], [`v3::Df3`]). [`map`] and [`dram`] read back what is
+//! routed.
+//!
+//! The init sequences, by IP version and die:
+//!
+//! | DF | Die | Module | AGESA |
+//! |---|---|---|---|
+//! | DF2 ([`v2`]) | RV | [`rv`] | AmdFabricRv |
+//! | DF2 ([`v2`]) | ZP | [`zp`] | AmdFabricZp |
+//! | DF3 ([`v3`]) | SSP | [`ssp`] | AmdFabricSsp |
+//! | DF3 ([`v3`]) | GN | [`gn`] | AmdFabricSsp, GN deltas |
 //!
 //! ```ignore
 //! df.instance(F3_CCM_108, INST_CCM0).modify(Ccm108::BIT6::SET);
@@ -27,16 +37,26 @@ use tock_registers::{
 };
 
 mod die;
+pub mod dram;
+mod fabric;
+pub mod gn;
 pub mod map;
-pub mod picasso;
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod model;
 pub mod plan;
 pub mod program;
 pub mod regs;
 pub mod root;
+pub mod rv;
+pub mod ssp;
+pub mod topology;
 pub mod v2;
-pub mod zeppelin;
+pub mod v3;
+pub mod zp;
 
 pub use die::{Die, die_count, dies, root_bridges};
+pub use fabric::{Fabric, or_bits};
 
 /// Most root bridges a system has: 2 sockets × 4 (Naples dies, Rome/Milan
 /// NBIO quadrants).

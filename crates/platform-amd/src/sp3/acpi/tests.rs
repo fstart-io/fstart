@@ -11,9 +11,9 @@ use fstart_acpi::ivrs::IommuRegisters;
 use fstart_core::acpi::AcpiSmiConfig;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::power::{CstateInfo, Pstate};
+use fstart_driver_amd::df::topology::RootBridge;
 use fstart_driver_amd::smu::v11::CppcInfo;
 use fstart_driver_amd::sp3::nbio::ioapic::{fch_ioapic_id, nbio_ioapic_id};
-use fstart_driver_amd::sp3::topology::RootBridge;
 
 use super::cppc::{self, Channel};
 use super::{FchAcpi, einj, fadt_flags, of};
@@ -659,8 +659,8 @@ const CPUS: [Cpu; 2] = [
 
 #[test]
 fn memory_covers_both_sockets_without_replicated_ranges() {
-    use fstart_driver_amd::sp3::df::DramRule;
-    use fstart_driver_amd::sp3::df::dram::{DramMap, Nps, memory_from_maps, numa_domains};
+    use fstart_driver_amd::df::DramRule;
+    use fstart_driver_amd::df::dram::{DramMap, Nps, memory_from_maps, numa_domains};
     let map = |base, end, dst, hole| DramMap {
         rules: core::iter::once(DramRule {
             base,

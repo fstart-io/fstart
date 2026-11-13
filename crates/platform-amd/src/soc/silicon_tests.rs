@@ -89,20 +89,17 @@ mod zeppelin {
         let mut delay = hw.clock();
 
         // Before the PCIe training
-        df::zeppelin::route_resources(&dies, (0xf000_0000, 128), 0xe000_0000, 0x4_2000_0000)
-            .unwrap();
+        df::zp::route_resources(&dies, (0xf000_0000, 128), 0xe000_0000, 0x4_2000_0000).unwrap();
         let nonpci: Vec<u32> = dies
             .iter()
-            .map(|die| {
-                df::zeppelin::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index()).unwrap()
-            })
+            .map(|die| df::zp::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index()).unwrap())
             .collect();
         assert_eq!(
             map::mmio_windows(&dies[0].df(), dies[1].ioms_fabric_id()).len(),
             2
         );
         for die in &dies {
-            df::zeppelin::early_init(&die.df(), 2, Revision::ZpB2);
+            df::zp::early_init(&die.df(), 2, Revision::ZpB2, &Default::default());
         }
         let fch0 = Fch::new(pci, Acpimmio::DIE0);
         taishan::reset_init(&fch0, Revision::ZpB2);
@@ -167,8 +164,8 @@ mod zeppelin {
         };
         unsafe { smu::init(&dies, &buffers, &mut delay) }.unwrap();
         smu::cac_weights(&dies[0], &mut delay).unwrap();
-        assert_eq!(df::zeppelin::sockets(&dies[0].df()), 2);
-        df::zeppelin::route_vga(&dies);
+        assert_eq!(df::zp::sockets(&dies[0].df()), 2);
+        df::zp::route_vga(&dies);
         for die in &dies {
             nbio::zeppelin::pre_enumeration_init(die);
         }
@@ -197,7 +194,7 @@ mod zeppelin {
         });
         taishan::late_init(&fch0);
         for die in &dies {
-            df::zeppelin::disable_ext_cfg(&die.df());
+            df::zp::disable_ext_cfg(&die.df());
         }
         assert_eq!(hw.fingerprint(), (16908, 0xbfbe_9d6a_7f7f_e1ee));
         assert_eq!(hw.state(), 0x3506_59c7_b072_0a64);
@@ -214,8 +211,7 @@ mod zeppelin {
             hw.set_config(df, 0xa0, 0x3f00_0043);
             hw.set_config(df, 0xa4, 0xff40_0243);
         }
-        df::zeppelin::route_resources(&dies, (0xf000_0000, 128), 0xe000_0000, 0x4_2000_0000)
-            .unwrap();
+        df::zp::route_resources(&dies, (0xf000_0000, 128), 0xe000_0000, 0x4_2000_0000).unwrap();
 
         let [die0, die1] = [&dies[0], &dies[1]].map(|die| map::root_complex(die).unwrap());
         let hpet = (0xfed0_0000, 0x1_0000);
@@ -248,7 +244,7 @@ mod picasso {
     use super::*;
     use crate::soc::picasso::Die;
     use fstart_driver_amd::{
-        df::{self, picasso as fabric},
+        df::{self, rv as fabric},
         dxio::{
             self, Aspm, ClockRequest, Descriptor,
             picasso::{Options, PowerPolicy},

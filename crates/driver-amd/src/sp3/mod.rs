@@ -18,8 +18,6 @@
 //! Unknown CPUs fail closed in [`soc::identify`].
 
 pub mod ccx;
-pub mod df;
 pub mod dxio;
 pub mod fch;
 pub mod nbio;
-pub mod topology;

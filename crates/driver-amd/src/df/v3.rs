@@ -8,7 +8,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 use tock_registers::registers::InMemoryRegister;
 
-use super::{BusRange, Df, DfReg, DramRule, Version, or_bits};
+use super::{BusRange, DfReg, DramRule, Fabric, Version, or_bits};
 use crate::df::regs::{self, GLOBAL_CTRL};
 
 /// IOMS fabric components 0..3 (component type 5, SOC_DF §3.1).
@@ -252,7 +252,7 @@ impl Default for RasFields {
 }
 
 /// Clock gating: F0x3F0 = `value` on every node (§3.6, IC).
-pub fn clock_gating<P: ConfigRegionAccess + Clone>(df: &Df<P>, sockets: u8, value: u32) {
+pub fn clock_gating<P: ConfigRegionAccess + Clone>(df: &Fabric<P>, sockets: u8, value: u32) {
     for s in 0..sockets {
         // SAFETY: node `s` exists (topology), F0x3F0 is a node register.
         unsafe { df.node(s, regs::CLOCK_GATING) }.set(value);
@@ -261,7 +261,7 @@ pub fn clock_gating<P: ConfigRegionAccess + Clone>(df: &Df<P>, sockets: u8, valu
 
 /// CS init (§3.6, IC; Rome `ffdca302`, Milan `ffd03497`). The F2x48 value
 /// for CS 0x0A is the broadcast value with bit 17 added, as AGESA writes it.
-pub fn cs_init<P: ConfigRegionAccess + Clone>(df: &Df<P>, sockets: u8) {
+pub fn cs_init<P: ConfigRegionAccess + Clone>(df: &Fabric<P>, sockets: u8) {
     for s in 0..sockets {
         // SAFETY: node registers of an existing node.
         unsafe {
@@ -279,7 +279,7 @@ pub fn cs_init<P: ConfigRegionAccess + Clone>(df: &Df<P>, sockets: u8) {
 /// components (Rome; Milan only logs them), then program F0x3F8 on the data
 /// PPI's instances.
 pub fn pie_ras<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     sockets: u8,
     ras: RasFields,
     clear_status: bool,
@@ -373,7 +373,7 @@ impl ChannelCtl {
 /// Program F6xB8 of channels `0..channels`; populated channels get the
 /// controls, the others have bits 1:0 cleared (Rome `ffdc9eec`).
 pub fn scrub_channels<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     socket: u8,
     channels: u8,
     present: u16,
@@ -398,7 +398,7 @@ pub fn scrub_channels<P: ConfigRegionAccess + Clone>(
 /// F2x228 of channels `0..channels` (§3.6): bit 24 set, \[29:25\] =
 /// `capped ? 0 : 8 − min(rate, 8)`.
 pub fn cs_f2x228<P: ConfigRegionAccess + Clone>(
-    df: &Df<P>,
+    df: &Fabric<P>,
     socket: u8,
     channels: u8,
     rate: u8,
@@ -419,7 +419,7 @@ pub fn cs_f2x228<P: ConfigRegionAccess + Clone>(
 /// DRAM behind `socket`'s scrubber (Rome `ffdca236`): the F6x40/44 range
 /// minus the MMIO hole when one of DRAM rules 0/1 (PIE copy) targets this
 /// socket with the hole enabled.
-pub fn rome_scrub_bytes<P: ConfigRegionAccess + Clone>(df: &Df<P>, socket: u8) -> u64 {
+pub fn rome_scrub_bytes<P: ConfigRegionAccess + Clone>(df: &Fabric<P>, socket: u8) -> u64 {
     // SAFETY: node and PIE registers of an existing node.
     unsafe {
         let base = df.node(socket, SCRUB_BASE).read(SCRUB_BASE::BASE);
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn cs_and_ras() {
         let m = DfModel::default();
-        let df = Df::new(m.clone());
+        let df = Fabric::new(m.clone());
         m.set(0, None, 2, 0x48, 0x1);
         m.set(0, None, 0, 0x40, 2);
         m.set(0, Some(1), 6, 0x1F0, 0x55);

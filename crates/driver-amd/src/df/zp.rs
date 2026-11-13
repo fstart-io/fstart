@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Zeppelin Data Fabric initialization. The sequences follow the vendor
+//! The Data Fabric init of the ZP die (Zeppelin, Naples): the vendor
 //! AmdFabricZpPei/Dxe and the MMIO/IO distribution of AmdSocSp4ZpPei (sp4r2
-//! reports DF_ZP and SOC_DISPATCH). Each die has its own DF; what AGESA calls a
-//! broadcast access is a direct access repeated on every die. The MMIO/IO
-//! distribution is the [`super::plan`] ZP split ([`route_resources`]).
+//! reports DF_ZP and SOC_DISPATCH; the SP3 SOC_DF §3.6 "= SP4"). Each die
+//! has its own DF node; what AGESA calls a broadcast access is a direct
+//! access repeated on every die. The single-socket MMIO/IO distribution is
+//! the [`super::plan`] ZP split ([`route_resources`]).
+//!
+//! Per die, in order: [`early_init`] (clock gating, CS, CCM, IOMS, PIE
+//! RAS), [`scrub_init`], then at DXE entry [`late_init`] (PIE power
+//! management); ReadyToBoot is [`disable_ext_cfg`].
 use super::{
     Df, DfReg, Die, Version, map,
     plan::{self, Input, Plan, PlanError, Policy},
@@ -11,7 +16,7 @@ use super::{
     regs::{self, CFG_ACCESS_CTRL, CLOCK_GATING, DRAM_HOLE, GLOBAL_CTRL},
     v2::{self, DRAM_BASE, DRAM_LIMIT, Df2, SYSTEM_CFG},
 };
-use crate::cpu::Revision;
+use crate::cpu::{Package, Revision};
 use crate::{
     apob::{Apob, mem},
     soc::Soc,
@@ -74,6 +79,44 @@ const INST_IOMS: u8 = 4;
 const INST_CS_DRAM_MAP: u8 = 5;
 
 const GIB: u64 = 1 << 30;
+
+/// The fabric policy of AmdFabricZp (vendor PCDs); `Default` is the
+/// vendors' default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FabricPolicy {
+    /// Scrub period in hours, 0: the scrubber stays off (PCD 0x8e / SP3
+    /// 0x65: 24).
+    pub scrub_hours: u8,
+    /// Redirect scrubbing to the populated channels (PCD 0x8f / SP3 0x66).
+    pub scrub_redirect: bool,
+    /// GLOBAL_CTRL\[5:4\] (SP3 PCD 0x67; `None`: keep).
+    pub ras_a: Option<u8>,
+    /// GLOBAL_CTRL's 3-bit RAS fields (SP3 PCD 0x68; `None`: keep).
+    pub ras_b: Option<u8>,
+    /// Sync flood on a fatal error stays off (IDS option 0x43: CBS
+    /// default).
+    pub sync_flood_disable: bool,
+    /// Erratum 1158 (LINT0/LINT1 while the APIC is software disabled), from
+    /// the revision guide; the vendor code doesn't set it.
+    pub lint_erratum_1158: bool,
+    /// "Global C-state Control" auto/enabled (SP3 PCD 0x10, SP4 0x13): the
+    /// PIE keeps power-management bit 5 clear.
+    pub global_cstate: bool,
+}
+
+impl Default for FabricPolicy {
+    fn default() -> Self {
+        Self {
+            scrub_hours: 24,
+            scrub_redirect: true,
+            ras_a: None,
+            ras_b: None,
+            sync_flood_disable: false,
+            lint_erratum_1158: true,
+            global_cstate: true,
+        }
+    }
+}
 
 /// The vendor's non-PCI MMIO pool at the top of each die's window below
 /// 4 GiB (AmdSocSp4ZpPei).
@@ -174,28 +217,41 @@ fn ccm_ioms_init(df: &Df<impl ConfigRegionAccess>, rev_a0: bool) {
         .modify(Cfg0c0::B17_12.val(if rev_a0 { 0x1e } else { 0 }));
 }
 
-fn pie_ras_init(df: &Df<impl ConfigRegionAccess>) {
-    // Sync flood propagation stays enabled (vendor default). The erratum
-    // 1158 workaround is from the revision guide; the vendor code doesn't
-    // set it.
-    df.reg(F5_PIE_CFG)
-        .modify(PieCfg::DIS_SYNC_FLOOD_PROP::CLEAR + PieCfg::LINT_ERRATUM_1158::SET);
+fn pie_ras_init(df: &Df<impl ConfigRegionAccess>, policy: &FabricPolicy) {
+    df.reg(F5_PIE_CFG).modify(
+        PieCfg::DIS_SYNC_FLOOD_PROP.val(policy.sync_flood_disable.into())
+            + PieCfg::LINT_ERRATUM_1158.val(policy.lint_erratum_1158.into()),
+    );
     map::clear_errors(df);
     for instance in 0..12 {
-        df.instance(regs::GLOBAL_CTRL, instance)
-            .modify(GLOBAL_CTRL::BIT3::CLEAR);
+        let mut ras = GLOBAL_CTRL::BIT3::CLEAR;
+        if let Some(a) = policy.ras_a.filter(|&a| a < 4) {
+            ras += GLOBAL_CTRL::RAS_A.val(a.into());
+        }
+        if let Some(b) = policy.ras_b.filter(|&b| b < 8).map(u32::from) {
+            ras += GLOBAL_CTRL::RAS_B0.val(b)
+                + GLOBAL_CTRL::RAS_B1.val(b)
+                + GLOBAL_CTRL::RAS_B2.val(b);
+        }
+        df.instance(regs::GLOBAL_CTRL, instance).modify(ras);
     }
 }
 
-/// AmdFabricZpPei, per die.
-pub fn early_init(df: &Df<impl ConfigRegionAccess>, dies: u8, revision: Revision) {
+/// AmdFabricZpPei, per die: `dies` is the system's.
+pub fn early_init(
+    df: &Df<impl ConfigRegionAccess>,
+    dies: u8,
+    revision: Revision,
+    policy: &FabricPolicy,
+) {
     clock_gating(df, dies == 1);
     ccm_ioms_init(df, revision == Revision::ZpA0);
-    pie_ras_init(df);
+    pie_ras_init(df, policy);
 }
 
-/// DRAM behind this die's scrubber, minus the MMIO hole if it is in range.
-fn scrub_dram_size(df: &Df<impl ConfigRegionAccess>, die: u8) -> u64 {
+/// DRAM behind this die's scrubber, minus the MMIO hole if DRAM rule 0 or 1
+/// (the PIE's copy) targets the die with the hole on (DF_ZP §3.8).
+fn scrub_dram_size(df: &Df<impl ConfigRegionAccess>, socket: u8, die: u8) -> u64 {
     let base = df.reg(F6_SCRUB_BASE).read(ScrubBase::BASE);
     let limit = df.reg(F6_SCRUB_LIMIT).extract();
     if limit.get() == 0 {
@@ -206,9 +262,9 @@ fn scrub_dram_size(df: &Df<impl ConfigRegionAccess>, die: u8) -> u64 {
     for i in 0..2 {
         let dram_base = df.instance(v2::dram_base(i), INST_CS_DRAM_MAP).extract();
         let dram_limit = df.instance(v2::dram_limit(i), INST_CS_DRAM_MAP).extract();
-        // Socket 0: the destination is the die number.
+        // The destination is the socket's die.
         if !dram_base.matches_all(DRAM_BASE::VALID::SET + DRAM_BASE::HOLE_EN::SET)
-            || dram_limit.read(DRAM_LIMIT::DST_DIE) != u32::from(die)
+            || dram_limit.read(DRAM_LIMIT::DST_DIE) != u32::from(socket << 2 | die)
         {
             continue;
         }
@@ -296,52 +352,74 @@ pub fn scrub_rate(size: u64, hours: u64) -> u8 {
         .saturating_sub(1) as u8
 }
 
-/// The DRAM scrubber of the vendor AmdFabricZpPei with its defaults: scrub
-/// redirection on (PCD 0x8f) and one pass every 24 hours (PCD 0x8e). The ABL
-/// sets the scrub base and limit.
-pub fn scrub_init(df: &Df<impl ConfigRegionAccess>, die: u8, apob: &Apob) -> Option<(u8, u64)> {
-    let size = scrub_dram_size(df, die);
-    if size == 0 {
+/// The populated UMC channels of a die, bit per channel, as the APOB's
+/// memory configuration has them (inferred: a non-zero channel byte).
+pub fn populated_channels(apob: &Apob, socket: u8, die: u8) -> u8 {
+    mem::mem_config(apob, socket, die)
+        .map(|config| {
+            (0..2).fold(0, |present, channel| {
+                present | u8::from(config.channel_byte(channel).is_ok_and(|b| b != 0)) << channel
+            })
+        })
+        .unwrap_or(0)
+}
+
+/// The DRAM scrubber of the vendor AmdFabricZpPei over the `present`
+/// channels ([`populated_channels`]); the ABL sets the scrub base and limit.
+/// Returns the rate and the size, if the die has DRAM to scrub.
+pub fn scrub_init(
+    df: &Df<impl ConfigRegionAccess>,
+    (socket, die): (u8, u8),
+    present: u8,
+    policy: &FabricPolicy,
+) -> Option<(u8, u64)> {
+    let size = scrub_dram_size(df, socket, die);
+    if size == 0 || present & 3 == 0 {
         return None;
     }
-    // Inferred meaning: the two UMC channels are populated.
-    let config = mem::mem_config(apob, 0, die).ok()?;
-    let [Ok(a), Ok(b)] = [0, 1].map(|channel| config.channel_byte(channel)) else {
-        return None;
-    };
-    if a == 0 && b == 0 {
+    if policy.scrub_redirect {
+        for instance in 0..2 {
+            df.instance(F6_REDIR_SCRUB, instance)
+                .set(u32::from(present >> instance & 1));
+        }
+    }
+    if policy.scrub_hours == 0 {
         return None;
     }
-    for (instance, populated) in [a, b].into_iter().enumerate() {
-        df.instance(F6_REDIR_SCRUB, instance as u8)
-            .set(u32::from(populated != 0));
-    }
-    let rate = scrub_rate(size, 24);
+    let rate = scrub_rate(size, policy.scrub_hours.into());
     df.reg(F6_SCRUB_LIMIT)
         .modify(ScrubLimit::RATE.val(rate.into()));
     df.reg(F6_SCRUB_BASE).modify(ScrubBase::ENABLE::SET);
     Some((rate, size))
 }
 
-/// AmdFabricZpDxe: PIE power management, per die.
-/// The PIE power values are the vendor's; their meaning isn't known.
+/// The APOB's PIE power flag AmdFabricZpDxe tests from APOB version 9 on.
+pub fn pie_power_flag(apob: &Apob) -> bool {
+    apob.version() >= 9 && mem::pie_power(apob).is_ok_and(|pie| pie.flag() == Ok(true))
+}
+
+/// AmdFabricZpDxe: PIE power management, per die; `dies` and `sockets`
+/// are the system's, `apob_flag` is [`pie_power_flag`]. The PIE power values
+/// are the vendor's; their meaning isn't known.
 pub fn late_init(
     df: &Df<impl ConfigRegionAccess>,
-    dies: u8,
-    sockets: u8,
-    revision: Revision,
-    apob: &Apob,
+    (dies, sockets): (u8, u8),
+    (revision, package): (Revision, Package),
+    apob_flag: bool,
+    policy: &FabricPolicy,
 ) {
     let multi_die = dies / sockets > 1;
-    let apob_flag =
-        apob.version() >= 9 && mem::pie_power(apob).is_ok_and(|pie| pie.flag() == Ok(true));
     let bit = |cond: bool, mask: u32| if cond { mask } else { 0 };
 
-    // Bit 5 stays clear with C6 enabled (vendor PCD 0x13 = 1).
+    // Bit 5 stays clear with C-states enabled, unless the APOB asks for it
+    // (or on an SP3 ZP-A0).
+    let bit5 = !policy.global_cstate
+        || apob_flag
+        || (revision == Revision::ZpA0 && package == Package::Sp3);
     let pwr_300 = df.reg(F5_PIE_PWR_300);
     let mut v = pwr_300.get();
     v &= !((1 << 5) | (1 << 12) | (1 << 14) | (1 << 15));
-    v |= bit(apob_flag, 1 << 5) | (1 << 13);
+    v |= bit(bit5, 1 << 5) | (1 << 13);
     let early_rev = matches!(revision, Revision::ZpA0 | Revision::ZpB0 | Revision::ZpB1);
     v |= bit(!(dies > 1 && early_rev), 1 << 12);
     v |= bit(multi_die, 1 << 14) | bit(sockets > 1, 1 << 15);
@@ -419,6 +497,68 @@ mod tests {
         set(0x170, (40 * 4) << 12 | 1);
         set(0x174, (41 * 4 - 1) << 12 | 1 << 10);
         assert_eq!(die_memory(&space.df()), None);
+    }
+
+    /// Four dies of one socket (an SP3 Naples), through the system's
+    /// fabric.
+    fn naples() -> (crate::df::model::DfModel, std::vec::Vec<crate::df::topology::Node>) {
+        let nodes = (0..4)
+            .map(|die| crate::df::topology::Node {
+                socket: 0,
+                die,
+                device: 0x18 + die,
+            })
+            .collect();
+        (crate::df::model::DfModel::default(), nodes)
+    }
+
+    #[test]
+    fn four_dies_init_and_scrub() {
+        let (m, nodes) = naples();
+        let fabric = crate::df::Fabric::new(m.clone());
+        m.set(1, None, 0, 0x40, 2);
+        m.set(1, Some(1), 6, 0x1F4, 7);
+        // Die 1: 64 GiB at [0, 66 GiB) with the 2 GiB hole, rule 1.
+        m.set(1, None, 6, 0x48, 0);
+        m.set(1, None, 6, 0x4C, ((66 << 10) - 1) << 4);
+        m.set(1, Some(5), 0, 0x118, 0x3);
+        m.set(1, Some(5), 0, 0x11C, 0x20);
+        m.set(1, Some(5), 0, 0x104, 0x8000_0001);
+        let policy = FabricPolicy::default();
+        let dfs = unsafe { fabric.each(&nodes) };
+        for (df, n) in dfs.iter().zip(&nodes) {
+            early_init(df, 4, Revision::ZpB2, &policy);
+            let present = if n.die == 1 { 0b10 } else { 0 };
+            scrub_init(df, (n.socket, n.die), present, &policy);
+        }
+        // 4 dies: per-instance clock gating including IOMS (gate clear).
+        assert_eq!(m.get(3, Some(18), 0, 0x3F0), 1);
+        assert_eq!(m.get(2, Some(4), 0, 0x3F0), 1);
+        assert_eq!(m.get(0, Some(2), 3, 0x104), 0x1000_0000);
+        assert_eq!(m.get(1, Some(1), 6, 0x1F4), 0);
+        // Die 1: redirect only on UMC1, rate for 64 GiB at 24 h (q = 88512 -> 7).
+        assert_eq!(m.get(1, Some(0), 6, 0x58), 0);
+        assert_eq!(m.get(1, Some(1), 6, 0x58), 1);
+        assert_eq!(m.get(1, None, 6, 0x4C) & 0xF, 7);
+        assert_eq!(m.get(1, None, 6, 0x48), 1);
+        // Die 0 has no DRAM: scrubber untouched.
+        assert_eq!(m.get(0, None, 6, 0x48), 0);
+    }
+
+    #[test]
+    fn four_dies_pie_power_management() {
+        let (m, nodes) = naples();
+        let fabric = crate::df::Fabric::new(m.clone());
+        let dfs = unsafe { fabric.each(&nodes) };
+        for df in &dfs {
+            let policy = FabricPolicy::default();
+            late_init(df, (4, 1), (Revision::ZpB1, Package::Sp3), false, &policy);
+        }
+        // B1 with 4 dies: bit 12 clear, 13 and 14 set.
+        assert_eq!(m.get(2, None, 5, 0x300), 0x6000);
+        assert_eq!(m.get(2, None, 5, 0x358), 0x80E0_E0E0);
+        assert_eq!(m.get(2, None, 5, 0x304), 0x7C0);
+        assert_eq!(m.get(2, None, 5, 0x354), 0x46);
     }
 
     #[test]
