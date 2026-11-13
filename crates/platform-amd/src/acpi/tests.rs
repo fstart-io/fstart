@@ -318,6 +318,43 @@ fn bridge_prts_route_through_the_nbio_ioapic_of_their_die() {
     );
 }
 
+/// The I/O an eSPI EC owns is its own devices', not the FCH's: SYSR
+/// leaves out the ranges it forwards there (Vilboz: the ACPI EC ports and
+/// the memory map at 0x900), and keeps the rest.
+#[test]
+fn the_fch_reserves_no_io_a_board_peripheral_owns() {
+    let root = [root_bridge(
+        0,
+        pci_root(0..=255, &IO, &MMIO),
+        0xfec0_1000,
+        None,
+        false,
+    )];
+    let cpus = cpus(&[0, 1], false);
+    let io = |board: &Board| {
+        let aml = build(&inputs(&crate::picasso::acpi::ACPI, &cpus, &root, board))
+            .unwrap()
+            .dsdt;
+        let sysr = device(&aml, b"SYSR");
+        // IO descriptors: 0x47, decode, min, max, alignment, length.
+        aml[sysr..]
+            .windows(8)
+            .filter(|w| w[0] == 0x47 && w[1] == 1 && w[2..4] == w[4..6])
+            .map(|w| u16::from_le_bytes([w[2], w[3]]))
+            .collect::<Vec<_>>()
+    };
+    let all = io(&Board::default());
+    let vilboz = io(&Board {
+        peripheral_io: vec![(0x62, 5), (0x800, 0x100), (0x900, 0xff), (0x200, 8)],
+        ..Default::default()
+    });
+    for port in [0x63, 0x65, 0x900, 0x910] {
+        assert!(all.contains(&port) && !vilboz.contains(&port), "{port:#x}");
+    }
+    assert_eq!(all.len() - vilboz.len(), 4);
+    assert!(vilboz.contains(&0x67) && vilboz.contains(&0x80));
+}
+
 /// Picasso has one root bridge with the bridges of its routing table.
 #[test]
 fn picasso_routes_its_internal_bridges() {

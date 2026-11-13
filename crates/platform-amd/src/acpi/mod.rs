@@ -152,6 +152,10 @@ pub struct Board {
     pub i8042: bool,
     /// AML inside `\_SB.PCI0.LPCB` (Super I/O devices, ...).
     pub lpc_aml: Vec<u8>,
+    /// I/O the FCH forwards to the board's LPC/eSPI peripherals, `(base,
+    /// length)`: their devices claim it, so the FCH's motherboard device
+    /// leaves out its ranges there.
+    pub peripheral_io: Vec<(u16, u16)>,
     /// AML inside `\_SB`.
     pub sb_aml: Vec<u8>,
     /// Standalone tables (SPCR, ...).
