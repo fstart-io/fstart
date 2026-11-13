@@ -10,7 +10,7 @@ publish = false
 schema = 1
 board = "gigabyte-mj11-ec1-bmc"
 arch = "armv5te"
-build-profile = { dependency = "fstart-platform-aspeed", name = "rust" }
+build-profile = { dependency = "fstart-platform-aspeed" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }

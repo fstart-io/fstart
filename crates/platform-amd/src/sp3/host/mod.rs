@@ -602,7 +602,7 @@ mod tests {
         let script = unit.linker_script.as_deref().unwrap();
         for needle in [
             "ORIGIN = 0x75d00000, LENGTH = 0x300000",
-            ".sp3.entry16 (0x76000000 - 0x1000)",
+            ".amd.entry16 (0x76000000 - 0x1000)",
             "ORIGIN = 0x75000000, LENGTH = 0x101000",
             "_fstart_layout_start = .;",
             "QUAD(0x400000)",

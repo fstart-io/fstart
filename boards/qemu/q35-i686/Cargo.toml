@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "qemu-q35-i686"
 arch = "x86"
-build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+build-profile = { dependency = "fstart-platform-qemu" }
 
 [features]
 default = []

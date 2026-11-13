@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "licheerv-dock"
 arch = "riscv64"
-build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }
+build-profile = { dependency = "fstart-platform-sunxi" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }

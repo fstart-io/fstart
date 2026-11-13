@@ -16,7 +16,7 @@ publish = false
 schema = 1
 board = "tyan-s8030"
 arch = "x86_64"
-build-profile = { dependency = "fstart-platform-amd", name = "rust", module = "sp3" }
+build-profile = { dependency = "fstart-platform-amd", module = "sp3" }
 
 # The board's APCBs of each generation, as its vendor image has them.
 [package.metadata.fstart.amd.rome]

@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 
 /// NOLOAD reservations the linker scripts size from the stage layout.
-const RESERVATIONS: &[&str] = &[".fstart.heap", ".stack", ".page_tables", ".sp3.page_tables"];
+const RESERVATIONS: &[&str] = &[".fstart.heap", ".stack", ".page_tables", ".amd.page_tables"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageSizes {

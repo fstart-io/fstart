@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "sifive-unmatched"
 arch = "riscv64"
-build-profile = { dependency = "fstart-platform-sifive", name = "rust" }
+build-profile = { dependency = "fstart-platform-sifive" }
 
 [dependencies]
 embedded-hal = { workspace = true }

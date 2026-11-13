@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "lenovo-x61"
 arch = "x86_64"
-build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+build-profile = { dependency = "fstart-platform-intel" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }

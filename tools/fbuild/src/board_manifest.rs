@@ -31,12 +31,11 @@ pub struct BoardManifest {
     pub build_profile: Option<ProfileRef>,
 }
 
-/// Direct Cargo dependency exposing the Rust Plan<board::Board> host contract.
+/// Direct Cargo dependency exposing the `HostPlan` host contract.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileRef {
     pub dependency: String,
-    pub name: String,
     /// The module of the dependency that has the board's `Plan`, if it is
     /// not the crate root: a platform with more than one kind of board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,16 +197,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             "unsupported fstart schema {} in {} (expected 1)",
             metadata.schema,
             manifest.display(),
-        ));
-    }
-    if metadata
-        .build_profile
-        .as_ref()
-        .is_some_and(|profile| profile.name != "rust")
-    {
-        return Err(format!(
-            "build-profile must name 'rust' in {}",
-            manifest.display()
         ));
     }
     if let Some(module) = metadata
@@ -408,9 +397,9 @@ mod tests {
             (
                 MANIFEST.replace(
                     "schema = 1",
-                    "schema = 1\nbuild-profile = { dependency = 'platform', name = 'unknown' }",
+                    "schema = 1\nbuild-profile = { dependency = 'platform', name = 'rust' }",
                 ),
-                "build-profile must name 'rust'",
+                "unknown field `name`",
             ),
             (
                 MANIFEST.replace("board = 'test-board'", ""),

@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "qemu-aarch64"
 arch = "aarch64"
-build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+build-profile = { dependency = "fstart-platform-qemu" }
 
 [dependencies]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }

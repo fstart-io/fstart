@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "bananapi-m1"
 arch = "armv7"
-build-profile = { dependency = "fstart-platform-sunxi", name = "rust" }
+build-profile = { dependency = "fstart-platform-sunxi" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }

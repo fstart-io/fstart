@@ -70,10 +70,10 @@ SECTIONS {
 
     /* Real-mode segment base = IMAGE end - 64 KiB; reset.S assumes the
      * 16-bit entry at segment offset 0xf000. */
-    .sp3.entry16 (@IMAGE_END@ - 0x1000) : { KEEP(*(.sp3.entry16)) } > IMAGE
-    .sp3.reset_vector (@IMAGE_END@ - 0x10) : { KEEP(*(.sp3.reset_vector)) } > IMAGE
+    .amd.entry16 (@IMAGE_END@ - 0x1000) : { KEEP(*(.amd.entry16)) } > IMAGE
+    .amd.reset_vector (@IMAGE_END@ - 0x10) : { KEEP(*(.amd.reset_vector)) } > IMAGE
 
-    .sp3.page_tables (NOLOAD) : {
+    .amd.page_tables (NOLOAD) : {
         _sp3_page_tables = .;
         . = . + @PT_SIZE@;
         _sp3_page_tables_end = .;
@@ -111,7 +111,7 @@ SECTIONS {
 
     ASSERT(_sp3_page_tables == @PT_BASE@, "page tables moved")
     ASSERT(_data_end - ORIGIN(IMAGE) <= @IMAGE_SIZE@ - 0x1000, "reset image code/data exceed the common @IMAGE_SIZE@ image (below its 16-bit entry)")
-    ASSERT(SIZEOF(.sp3.entry16) <= 0x1000 - 0x10, "16-bit entry overlaps the reset vector")
-    ASSERT(SIZEOF(.sp3.reset_vector) == 0x10, "reset vector is not 16 bytes")
+    ASSERT(SIZEOF(.amd.entry16) <= 0x1000 - 0x10, "16-bit entry overlaps the reset vector")
+    ASSERT(SIZEOF(.amd.reset_vector) == 0x10, "reset vector is not 16 bytes")
     ASSERT(_stack_top <= ORIGIN(STACK) + LENGTH(STACK), "insufficient stack space")
 }

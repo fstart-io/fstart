@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "ibase-mb899"
 arch = "x86"
-build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+build-profile = { dependency = "fstart-platform-intel" }
 
 [features]
 # Host tests and tools see the whole board. fbuild builds every stage with

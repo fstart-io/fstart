@@ -9,7 +9,7 @@ publish = false
 schema = 1
 board = "qemu-sifive-u"
 arch = "riscv64"
-build-profile = { dependency = "fstart-platform-qemu", name = "rust" }
+build-profile = { dependency = "fstart-platform-qemu" }
 
 [dependencies]
 fstart-core = { path = "../../../crates/core" }

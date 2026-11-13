@@ -10,7 +10,7 @@ publish = false
 schema = 1
 board = "google-vilboz"
 arch = "x86_64"
-build-profile = { dependency = "fstart-platform-amd", name = "rust" }
+build-profile = { dependency = "fstart-platform-amd" }
 
 # The board's AMD firmware next to its SoC's (docs/amd-image-format.md,
 # "Firmware blobs"): the APCB instances, one per RAM ID, as the vendor ROM

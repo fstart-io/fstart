@@ -181,7 +181,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 
 /// The compilation units, hence the stage binaries, stay as they are.
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
-/// entry cfg, and again without the payload cfg.)
+/// entry cfg, again without the payload cfg, and for the AMD reset
+/// sections' rename from `.sp3.*` to `.amd.*` in the linker script.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -196,9 +197,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "b428b1a4dfa72f91a8034a17bff7c6f7631246733c580fabf97c6ddd6d34fe2e",
-            "ec10504edada10232a92f54f45c76d3da9910f07ff5a221ed669311d94954ea5",
-            "6b2e353790a9849e32fa30bbf594451b037ee844c9cbe27ba767ce074949732a",
+            "c5b90b32975734232bc361fae95f2c4bd900bb23b2939ab44fdbb59462283290",
+            "876f8b32a701c1beb0daca965fd3efc5b4da421c5a48ec0b908bc4d8936e59f1",
+            "f232bc1824292f926f1bc6f3c086c1d2d7515b763a63d660c0df1846a9e0ddf2",
         ]
     );
 }
