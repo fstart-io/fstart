@@ -8,7 +8,8 @@ license.workspace = true
 default = []
 armv7 = []
 armv5te = []
-sunxi-fel = ["armv7"]
+# The platform supplies fstart_pre_stack_entry (e.g. to preserve boot-ROM state).
+platform-pre-stack = ["armv7"]
 aarch64 = []
 aarch64-el2-relocate-entry = []
 # The platform supplies its own reset entry instead of the generic one.

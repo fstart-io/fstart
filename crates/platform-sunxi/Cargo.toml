@@ -20,7 +20,7 @@ stage = [
 ]
 armv7 = [
   "fstart-arch?/armv7",
-  "fstart-arch?/sunxi-fel",
+  "fstart-arch?/platform-pre-stack",
   "fstart-driver-sunxi/armv7",
   "fstart-stage?/armv7",
 ]
