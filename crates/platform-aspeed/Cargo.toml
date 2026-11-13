@@ -8,10 +8,11 @@ publish = false
 
 [features]
 default = []
-host = ["dep:fstart-image-build", "dep:serde_json"]
+host = ["dep:fstart-core", "dep:fstart-image-build", "dep:serde_json"]
 # Both stages read the signed FFS through the CE0 window: the bootblock
 # authenticates the root to load the main stage, the main stage the payload.
 stage = [
+  "dep:fstart-core",
   "dep:fstart-driver-uart",
   "dep:fstart-ffs",
   "dep:fstart-log",
@@ -37,7 +38,7 @@ elf = ["fstart-payload?/elf"]
 [dependencies]
 aspeed-hal = { workspace = true, optional = true }
 aspeed-pac = { workspace = true, optional = true }
-fstart-core = { workspace = true }
+fstart-core = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-image-build = { workspace = true, optional = true }

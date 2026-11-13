@@ -6,7 +6,7 @@ use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
         ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly,
-        InputFile, UnitOutput,
+        InputFile, RunArtifact, RunDisk, RunMedia, RunRecipe, UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
@@ -126,6 +126,124 @@ impl VirtMachine {
                 dtb: span(0x4010_0000, 0x0001_0000),
             },
         })
+    }
+}
+
+/// One backend-free PCI function on the virt-class machines, so every
+/// normal boot exercises ECAM enumeration and BAR assignment.
+const PCI_TEST_DEVICE: &str = "virtio-scsi-pci,id=fstart-pci-test";
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
+/// The launch recipe of a virt preset.
+fn virt_recipe(machine: VirtMachine) -> RunRecipe {
+    let base = RunRecipe {
+        qemu: String::new(),
+        machine: String::new(),
+        cpu: None,
+        accel_kvm: false,
+        memory: None,
+        smp: None,
+        nographic: true,
+        media: vec![],
+        devices: strings(&[PCI_TEST_DEVICE]),
+        args: strings(&["-no-reboot"]),
+        disk: Some(RunDisk::Nvme),
+    };
+    match machine {
+        VirtMachine::Riscv64 => RunRecipe {
+            qemu: "qemu-system-riscv64".into(),
+            machine: "virt".into(),
+            media: vec![RunMedia::Pflash {
+                artifact: RunArtifact::Ffs,
+                unit: 0,
+                size: 32 * 1024 * 1024,
+                readonly: false,
+            }],
+            args: strings(&["-bios", "none", "-no-reboot"]),
+            ..base
+        },
+        VirtMachine::Aarch64 => RunRecipe {
+            qemu: "qemu-system-aarch64".into(),
+            machine: "virt,secure=on,virtualization=on,gic-version=3".into(),
+            cpu: Some("cortex-a72".into()),
+            media: vec![RunMedia::SplitPflash {
+                artifact: RunArtifact::Ffs,
+                bank_size: 64 * 1024 * 1024,
+            }],
+            ..base
+        },
+        VirtMachine::Armv7 => RunRecipe {
+            qemu: "qemu-system-arm".into(),
+            machine: "virt,highmem-ecam=off".into(),
+            cpu: Some("cortex-a15".into()),
+            media: vec![RunMedia::SplitPflash {
+                artifact: RunArtifact::Ffs,
+                bank_size: 64 * 1024 * 1024,
+            }],
+            ..base
+        },
+        _ => unreachable!("not a virt preset"),
+    }
+}
+
+/// The launch recipe of a non-virt machine model.
+fn qemu_recipe(machine: VirtMachine, policy: &QemuPolicy) -> RunRecipe {
+    match machine {
+        VirtMachine::Q35 | VirtMachine::Q35ProtectedMode => {
+            let QemuLink::X86 { flash, .. } = policy.link else {
+                unreachable!("q35 links as x86")
+            };
+            RunRecipe::q35(
+                "stage",
+                flash.size,
+                policy.firmware_image.base - flash.base,
+                matches!(machine, VirtMachine::Q35ProtectedMode),
+            )
+        }
+        VirtMachine::Sbsa => RunRecipe {
+            qemu: "qemu-system-aarch64".into(),
+            machine: "sbsa-ref".into(),
+            cpu: Some("max".into()),
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![
+                RunMedia::ExternalPflash {
+                    name: "secure-firmware".into(),
+                    unit: 0,
+                    size: 256 * 1024 * 1024,
+                },
+                RunMedia::Pflash {
+                    artifact: RunArtifact::Ffs,
+                    unit: 1,
+                    size: 256 * 1024 * 1024,
+                    readonly: false,
+                },
+            ],
+            devices: strings(&[PCI_TEST_DEVICE]),
+            args: vec![],
+            disk: Some(RunDisk::Nvme),
+        },
+        VirtMachine::SifiveU => RunRecipe {
+            qemu: "qemu-system-riscv64".into(),
+            machine: "sifive_u".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: Some("1G".into()),
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::Bios {
+                artifact: RunArtifact::Ffs,
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: Some(RunDisk::Nvme),
+        },
+        _ => unreachable!("not a machine-model preset"),
     }
 }
 
@@ -326,6 +444,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         platform: assembly.platform,
         images: vec![assembly.into()],
         inputs,
+        run: Some(virt_recipe(machine)),
     };
     plan.order()?;
     Ok(plan)
@@ -382,7 +501,6 @@ struct QemuPolicy {
     firmware_image: Span,
     flash_image: Option<Span>,
     full_flash_image: bool,
-    qemu_machine: Option<QemuMachine>,
     default_security: bool,
     pci: bool,
     fdt: bool,
@@ -450,7 +568,6 @@ impl VirtMachine {
                 firmware_image: span(0xff10_0000, 0x00ef_f000),
                 flash_image: None,
                 full_flash_image: false,
-                qemu_machine: None,
                 default_security: true,
                 pci: true,
                 fdt: false,
@@ -487,7 +604,6 @@ impl VirtMachine {
                 firmware_image: span(0x1010_0000, 0x0ff0_0000),
                 flash_image: Some(span(0x1000_0000, 0x1000_0000)),
                 full_flash_image: true,
-                qemu_machine: Some(QemuMachine::SbsaRef),
                 default_security: false,
                 pci: true,
                 fdt: false,
@@ -519,7 +635,6 @@ impl VirtMachine {
                 firmware_image: span(0x8000_0000, 0x0100_0000),
                 flash_image: None,
                 full_flash_image: false,
-                qemu_machine: Some(QemuMachine::SifiveU),
                 default_security: false,
                 pci: false,
                 fdt: true,
@@ -661,6 +776,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     use fstart_core::layout::RegionKind as Kind;
     use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
     let policy = machine.qemu_policy()?;
+    let run = qemu_recipe(machine, &policy);
     let payload = selection
         .payload
         .unwrap_or_else(|| policy.default_payload.into());
@@ -890,7 +1006,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         soc_image_format: SocImageFormat::None,
         boot_hart_id: policy.boot_hart_id,
         build: BoardBuildPolicy {
-            qemu_machine: policy.qemu_machine,
             firmware_image: FirmwareImagePolicy::memory_mapped(
                 policy.firmware_image.base,
                 policy.firmware_image.size,
@@ -1022,6 +1137,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         platform: assembly.platform,
         images: vec![assembly.into()],
         inputs,
+        run: Some(run),
     };
     plan.order()?;
     Ok(plan)

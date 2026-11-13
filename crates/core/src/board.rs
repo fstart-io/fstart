@@ -6,7 +6,7 @@ use crate::memory::MemoryMap;
 use crate::security::SecurityConfig;
 use crate::stage::StageLayout;
 
-use crate::platform::{FirmwareKind, Platform, QemuMachine};
+use crate::platform::{FirmwareKind, Platform};
 
 /// Host-side projection of a resolved board assembly.
 ///
@@ -185,9 +185,6 @@ pub struct BoardBuildPolicy {
         serde(default, skip_serializing_if = "heapless::Vec::is_empty")
     )]
     pub mutable_regions: MutableFlashRegions,
-    /// QEMU machine selection for boards with non-default emulation.
-    #[cfg_attr(feature = "host", serde(default))]
-    pub qemu_machine: Option<QemuMachine>,
     /// How host tooling should map the runtime firmware filesystem.
     #[cfg_attr(feature = "host", serde(default))]
     pub firmware_image: FirmwareImagePolicy,

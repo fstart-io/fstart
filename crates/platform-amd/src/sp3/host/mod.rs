@@ -460,6 +460,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
                 })),
             ),
         ],
+        run: None,
         inputs,
     };
     plan.order()?;

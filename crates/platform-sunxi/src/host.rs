@@ -14,7 +14,7 @@ use fstart_core::{
 use fstart_image_build::{
     build_plan::{
         BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
-        UnitOutput,
+        RunArtifact, RunMedia, RunRecipe, UnitOutput,
     },
     linker::resolved_ram_stage,
     plan::{BuildSelection, Span},
@@ -158,10 +158,7 @@ fn board_config(
         file_assets: Default::default(),
         soc_image_format: SocImageFormat::AllwinnerEgon,
         full_flash_image: false,
-        build: BoardBuildPolicy {
-            qemu_machine: facts.qemu_machine,
-            ..Default::default()
-        },
+        build: BoardBuildPolicy::default(),
         acpi: None,
         smbios: None,
         smm: None,
@@ -219,6 +216,9 @@ fn unit(
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
     selection.reject_unknown_options(&[])?;
+    if facts.qemu_orangepi_pc && facts.soc != crate::facts::SunxiSoc::H3 {
+        return Err("QEMU's orangepi-pc machine is an H3 board".into());
+    }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     // The D1 mainstage is halt-only: no D1 Linux launcher exists. Sunxi has
     // no UEFI/FIT/Shell/ELF flow either.
@@ -308,10 +308,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         full_flash_image: false,
         soc_image_format: SocImageFormat::AllwinnerEgon,
         boot_hart_id: 0,
-        build: BoardBuildPolicy {
-            qemu_machine: facts.qemu_machine,
-            ..Default::default()
-        },
+        build: BoardBuildPolicy::default(),
     };
     let mut inputs = Vec::new();
     if linux {
@@ -367,6 +364,24 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         stages: vec!["bootblock".into(), "main".into()],
         platform: assembly.platform,
         images: vec![assembly.into()],
+        // QEMU's H3 BROM reads the eGON image from SD byte 0x2000.
+        run: facts.qemu_orangepi_pc.then(|| RunRecipe {
+            qemu: "qemu-system-arm".into(),
+            machine: "orangepi-pc".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::SdCard {
+                artifact: RunArtifact::Ffs,
+                offset: 8 * 1024,
+                size: 32 * 1024 * 1024,
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: None,
+        }),
         inputs,
     };
     plan.order()?;
@@ -377,7 +392,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
 mod tests {
     use super::*;
     use crate::facts::SunxiFirmware;
-    use fstart_core::{FirmwareKind, QemuMachine};
+    use fstart_core::FirmwareKind;
 
     const BANANAPI: BoardFacts = BoardFacts {
         soc: SunxiSoc::A20,
@@ -389,7 +404,7 @@ mod tests {
         dtb_addr: 0x4300_0000,
         bootargs: "earlycon console=ttyS0,115200",
         firmware: None,
-        qemu_machine: None,
+        qemu_orangepi_pc: false,
     };
     const ORANGEPI_PC2: BoardFacts = BoardFacts {
         soc: SunxiSoc::H5,
@@ -405,7 +420,7 @@ mod tests {
             file: "bl31-sun50i-a64.bin",
             load_addr: 0x0004_4000,
         }),
-        qemu_machine: None,
+        qemu_orangepi_pc: false,
     };
 
     fn select(payload: &str) -> BuildSelection {
@@ -520,14 +535,11 @@ mod tests {
         let r1 = BoardFacts {
             soc: SunxiSoc::H3,
             dram_size: 0x1000_0000,
-            qemu_machine: Some(QemuMachine::OrangePiPc),
+            qemu_orangepi_pc: true,
             ..BANANAPI
         };
         let plan = resolve(r1, select("halt")).unwrap();
-        assert_eq!(
-            plan.ffs_assembly().unwrap().build.qemu_machine,
-            Some(QemuMachine::OrangePiPc)
-        );
+        assert_eq!(plan.run.as_ref().unwrap().machine, "orangepi-pc");
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h3-main"]);
         let UnitOutput::Executable { flat_capacity, .. } = &plan.unit("main").unwrap().output
         else {

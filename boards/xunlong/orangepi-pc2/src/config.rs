@@ -38,6 +38,6 @@ impl SunxiBoardFacts for crate::Board {
             file: "bl31-sun50i-a64.bin",
             load_addr: 0x0004_4000,
         }),
-        qemu_machine: None,
+        qemu_orangepi_pc: false,
     };
 }

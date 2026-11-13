@@ -20,6 +20,172 @@ pub struct BuildPlan {
     /// or artifact dependencies from the image steps.
     pub images: Vec<ImageStep>,
     pub inputs: Vec<InputFile>,
+    /// How to run the built image under QEMU, if the platform offers an
+    /// emulator equivalent. Host-only data: it never reaches firmware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunRecipe>,
+}
+
+/// A QEMU launch description owned by the platform/board: the machine,
+/// CPU and memory defaults, how the firmware artefact attaches, and the
+/// devices a normal boot carries. The runner renders argv from this
+/// data alone — it has no per-machine branches. Machine, CPU and device
+/// strings are QEMU's own namespace, passed through verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRecipe {
+    /// QEMU binary, e.g. `qemu-system-aarch64`.
+    pub qemu: String,
+    /// `-machine` value, properties included.
+    pub machine: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<String>,
+    /// Prefer KVM when the host offers it (`FSTART_QEMU_ACCEL` still
+    /// overrides); a missing `cpu` then means `host` under KVM, `max`
+    /// under TCG.
+    #[serde(default)]
+    pub accel_kvm: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// vCPU count default (`-smp`); `FSTART_QEMU_SMP` overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smp: Option<String>,
+    #[serde(default)]
+    pub nographic: bool,
+    pub media: Vec<RunMedia>,
+    /// Verbatim `-device` values.
+    #[serde(default)]
+    pub devices: Vec<String>,
+    /// Verbatim extra argv (console/display setup, `-no-reboot`, …).
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// How a caller-supplied `--disk` attaches, if at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<RunDisk>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum RunDisk {
+    Ide,
+    Nvme,
+}
+
+/// Which built artefact a medium carries.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum RunArtifact {
+    /// The FFS step's artefact.
+    Ffs,
+    /// The final image step's artefact.
+    Image,
+    /// The first stage's flat binary (plans without image steps).
+    Stage,
+}
+
+/// One firmware medium of a run. The transforms are QEMU-attachment
+/// mechanics (padding to a flash bank, splitting banks, placing the
+/// image on a card at the boot ROM's offset, composing an x86
+/// top-mapped flash from the FFS and the linked stage), performed by
+/// the runner from these parameters — the sizes and offsets are the
+/// platform's data, not runner constants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RunMedia {
+    Bios {
+        artifact: RunArtifact,
+    },
+    Pflash {
+        artifact: RunArtifact,
+        unit: u32,
+        size: u64,
+        #[serde(default)]
+        readonly: bool,
+    },
+    /// A caller-supplied complete pflash image, bound by input `name`
+    /// (e.g. TF-A for a secure bank), checked to be exactly `size`.
+    ExternalPflash {
+        name: String,
+        unit: u32,
+        size: u64,
+    },
+    /// Two pflash banks of `bank_size`: `-bios` when the artefact fits
+    /// the first bank, otherwise split across units 0 and 1.
+    SplitPflash {
+        artifact: RunArtifact,
+        bank_size: u64,
+    },
+    /// A zero-filled SD card of `size` with the artefact at `offset`
+    /// (the Allwinner BROM's eGON offset).
+    SdCard {
+        artifact: RunArtifact,
+        offset: u64,
+        size: u64,
+    },
+    Mtd {
+        artifact: RunArtifact,
+    },
+    /// An x86 flash of `size` mapped below 4 GiB: the FFS artefact at
+    /// `ffs_offset`, overlaid with `stage_unit`'s ELF flash segments,
+    /// its anchor and trust patched from the FFS; attached as `-bios`.
+    X86Flash {
+        stage_unit: String,
+        size: u64,
+        ffs_offset: u64,
+    },
+}
+
+impl RunRecipe {
+    /// QEMU's q35 machine with the x86 top-mapped flash composed from
+    /// the FFS and `stage_unit`'s linked ELF: the launch shared by the
+    /// Intel boards and the q35 machine-model boards. A protected-mode
+    /// build runs on a CPU without long mode, like the Core Duo it
+    /// exists for.
+    pub fn q35(stage_unit: &str, flash_size: u64, ffs_offset: u64, protected_mode: bool) -> Self {
+        let strings = |items: &[&str]| items.iter().map(ToString::to_string).collect();
+        Self {
+            qemu: "qemu-system-x86_64".into(),
+            machine: "q35".into(),
+            cpu: protected_mode.then(|| "coreduo".into()),
+            accel_kvm: true,
+            memory: Some("1G".into()),
+            smp: Some("1".into()),
+            nographic: false,
+            media: vec![RunMedia::X86Flash {
+                stage_unit: stage_unit.into(),
+                size: flash_size,
+                ffs_offset,
+            }],
+            devices: strings(&["bochs-display"]),
+            args: strings(&[
+                "-no-reboot",
+                "-display",
+                "none",
+                "-chardev",
+                "stdio,id=char0,mux=on,signal=off",
+                "-serial",
+                "chardev:char0",
+                "-mon",
+                "chardev=char0,mode=readline",
+                "-vga",
+                "none",
+            ]),
+            disk: Some(RunDisk::Ide),
+        }
+    }
+
+    /// Whether running needs the image steps (any medium but a bare
+    /// stage) rather than just the compiled stage binary.
+    #[must_use]
+    pub fn needs_assembly(&self) -> bool {
+        self.media.iter().any(|media| {
+            !matches!(
+                media,
+                RunMedia::Bios {
+                    artifact: RunArtifact::Stage
+                } | RunMedia::Pflash {
+                    artifact: RunArtifact::Stage,
+                    ..
+                }
+            )
+        })
+    }
 }
 
 /// One image-format operation in a plan. The format's config type and its
@@ -717,6 +883,7 @@ mod tests {
             ],
             stages: vec!["launch".into()],
             inputs: vec![],
+            run: None,
             images: vec![
                 FfsAssembly {
                     platform: Platform::Aarch64,
@@ -915,6 +1082,7 @@ mod tests {
             units,
             stages: vec![],
             images: vec![assembly.clone().into()],
+            run: None,
             inputs: vec![],
         };
         assert!(

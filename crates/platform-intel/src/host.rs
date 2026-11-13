@@ -27,7 +27,7 @@ pub fn compilation_plan(
     plan: IntelPlan,
 ) -> Result<fstart_image_build::build_plan::BuildPlan, std::string::String> {
     use fstart_image_build::build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, UnitOutput,
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, RunRecipe, UnitOutput,
     };
     plan.validate()?;
     let flags = |value: &str| {
@@ -137,6 +137,12 @@ pub fn compilation_plan(
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),
         platform: plan.platform,
         images: vec![plan.assembly()?.into()],
+        run: Some(RunRecipe::q35(
+            "bootblock",
+            plan.reservations.flash.size,
+            plan.reservations.firmware.base - plan.reservations.flash.base,
+            plan.platform == fstart_core::Platform::X86,
+        )),
         inputs,
     };
     resolved.order()?;

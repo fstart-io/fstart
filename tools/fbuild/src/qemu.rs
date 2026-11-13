@@ -1,4 +1,4 @@
-use fstart_core::{BoardBuildPolicy, Platform, QemuMachine};
+use fstart_image_build::build_plan::{RunArtifact, RunDisk, RunMedia, RunRecipe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,220 +24,165 @@ fn find_qemu(name: &str) -> String {
     name.to_string()
 }
 
+/// The built artefacts a recipe's media may carry.
+pub struct RunArtifacts<'a> {
+    pub ffs: Option<&'a Path>,
+    pub image: Option<&'a Path>,
+    pub stage_flat: &'a Path,
+    pub stages: &'a [fstart_image_build::StageBinary],
+}
+
+fn artifact<'a>(artifacts: &RunArtifacts<'a>, artifact: RunArtifact) -> Result<&'a Path, String> {
+    match artifact {
+        RunArtifact::Ffs => artifacts.ffs.ok_or("run recipe needs an FFS artefact"),
+        RunArtifact::Image => artifacts
+            .image
+            .ok_or("run recipe needs a final image artefact"),
+        RunArtifact::Stage => Ok(artifacts.stage_flat),
+    }
+    .map_err(str::to_string)
+}
+
+/// Launch QEMU exactly as `recipe` describes: machine, CPU and devices
+/// are the platform's data; this function only renders argv and performs
+/// the media attachment transforms (padding, bank splits, card and
+/// x86-flash composition) the recipe parameterises.
 pub fn run(
-    build_policy: &BoardBuildPolicy,
-    platform: Platform,
-    binary: &Path,
+    recipe: &RunRecipe,
+    artifacts: &RunArtifacts<'_>,
+    external: &std::collections::BTreeMap<String, std::path::PathBuf>,
     disk: Option<&str>,
     memory: Option<&str>,
-    secure_firmware: Option<&str>,
-    x86_stage_elf: Option<&Path>,
 ) -> Result<(), String> {
-    let use_sbsa_ref = build_policy.qemu_machine == Some(QemuMachine::SbsaRef);
-    let use_sifive_u = build_policy.qemu_machine == Some(QemuMachine::SifiveU);
-    let use_orangepi_pc = build_policy.qemu_machine == Some(QemuMachine::OrangePiPc);
-    let use_ast2500_evb = build_policy.qemu_machine == Some(QemuMachine::Ast2500Evb);
-    let (qemu_bin, mut args) = if use_sbsa_ref {
-        if platform != Platform::Aarch64 {
-            return Err("QEMU sbsa-ref requires the aarch64 platform".to_string());
-        }
-        let secure = secure_firmware.ok_or_else(|| {
-            "QEMU sbsa-ref requires --secure-firmware (a complete 256 MiB TF-A pflash image)"
-                .to_string()
-        })?;
-        let secure_size = std::fs::metadata(secure)
-            .map_err(|e| format!("failed to read SBSA secure firmware: {e}"))?
-            .len();
-        const SBSA_PFLASH_SIZE: u64 = 256 * 1024 * 1024;
-        if secure_size != SBSA_PFLASH_SIZE {
-            return Err(format!(
-                "SBSA secure firmware is {secure_size} bytes; expected {SBSA_PFLASH_SIZE}"
-            ));
-        }
-        let non_secure = create_pflash_image(binary, SBSA_PFLASH_SIZE as usize)?;
-        (
-            find_qemu("qemu-system-aarch64"),
-            vec![
-                "-M".to_string(),
-                "sbsa-ref".to_string(),
-                "-cpu".to_string(),
-                "max".to_string(),
-                "-nographic".to_string(),
-                "-drive".to_string(),
-                format!("if=pflash,file={secure},format=raw,unit=0,readonly=on"),
-                "-drive".to_string(),
-                format!("if=pflash,file={},format=raw,unit=1", non_secure.display()),
-            ],
-        )
-    } else if use_orangepi_pc {
-        if platform != Platform::Armv7 {
-            return Err("QEMU orangepi-pc requires armv7".to_string());
-        }
-        let sd = create_sunxi_sd_image(binary)?;
-        (
-            find_qemu("qemu-system-arm"),
-            vec![
-                "-M".to_string(),
-                "orangepi-pc".to_string(),
-                "-nographic".to_string(),
-                "-sd".to_string(),
-                sd.display().to_string(),
-            ],
-        )
-    } else if use_ast2500_evb {
-        if platform != Platform::Armv5te {
-            return Err("QEMU ast2500-evb requires the armv5te platform".to_string());
-        }
-        (
-            find_qemu("qemu-system-arm"),
-            vec![
-                "-M".to_string(),
-                "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab".to_string(),
-                "-nographic".to_string(),
-                "-drive".to_string(),
-                format!("file={},format=raw,if=mtd", binary.display()),
-            ],
-        )
-    } else if use_sifive_u {
-        if platform != Platform::Riscv64 {
-            return Err("QEMU sifive_u requires the riscv64 platform".to_string());
-        }
-        (
-            find_qemu("qemu-system-riscv64"),
-            vec![
-                "-M".to_string(),
-                "sifive_u".to_string(),
-                "-m".to_string(),
-                "1G".to_string(),
-                "-nographic".to_string(),
-                "-bios".to_string(),
-                binary.display().to_string(),
-            ],
-        )
-    } else {
-        match platform {
-            Platform::Riscv64 => {
-                let pflash_size = 32 * 1024 * 1024;
-                let pflash_path = create_pflash_image(binary, pflash_size)?;
-                let args = vec![
-                    "-machine".to_string(),
-                    "virt".to_string(),
-                    "-nographic".to_string(),
-                    "-bios".to_string(),
-                    "none".to_string(),
-                    "-drive".to_string(),
-                    format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
-                ];
-                (find_qemu("qemu-system-riscv64"), args)
-            }
-            Platform::Aarch64 => {
-                let mut args = vec![
-                    "-machine".to_string(),
-                    "virt,secure=on,virtualization=on,gic-version=3".to_string(),
-                    "-cpu".to_string(),
-                    "cortex-a72".to_string(),
-                    "-nographic".to_string(),
-                ];
-                args.extend(virt_flash_args(binary)?);
-                (find_qemu("qemu-system-aarch64"), args)
-            }
-            Platform::Armv7 => {
-                let mut args = vec![
-                    "-machine".to_string(),
-                    "virt,highmem-ecam=off".to_string(),
-                    "-cpu".to_string(),
-                    "cortex-a15".to_string(),
-                    "-nographic".to_string(),
-                ];
-                args.extend(virt_flash_args(binary)?);
-                (find_qemu("qemu-system-arm"), args)
-            }
-            Platform::Armv5te => {
-                return Err("ARMv5TE has no QEMU virt machine; the board must name one".to_string());
-            }
-            Platform::X86_64 | Platform::X86 => {
-                let pflash_size = 16 * 1024 * 1024;
-                // The plan build always hands over the linked stage ELF;
-                // without it there is no reset vector or anchor source.
-                let pflash_path = match x86_stage_elf {
-                    Some(elf) => create_x86_pflash_from_elf(binary, elf, pflash_size)?,
-                    None => {
-                        return Err("x86 pflash requires the linked stage ELF".to_string());
-                    }
-                };
-
-                let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
-                // `FSTART_QEMU_SMP` selects the vCPU count so the MP/SMM
-                // flight plan can be exercised with APs.
-                let smp = std::env::var("FSTART_QEMU_SMP").unwrap_or_else(|_| "1".to_string());
-                let use_kvm = match accel.as_deref() {
-                    Some("kvm") => true,
-                    Some("tcg") => false,
-                    _ => std::fs::File::open("/dev/kvm").is_ok(),
-                };
-                let args = vec![
-                    "-M".to_string(),
-                    "q35".to_string(),
-                    "-accel".to_string(),
-                    if use_kvm { "kvm" } else { "tcg" }.to_string(),
-                    "-cpu".to_string(),
-                    // A protected-mode build must run on a CPU without long
-                    // mode, like the Core Duo it exists for.
-                    match (platform, use_kvm) {
-                        (Platform::X86, _) => "coreduo",
-                        (_, true) => "host",
-                        (_, false) => "max",
-                    }
-                    .to_string(),
-                    "-m".to_string(),
-                    "1G".to_string(),
-                    "-smp".to_string(),
-                    smp,
-                    "-no-reboot".to_string(),
-                    "-display".to_string(),
-                    "none".to_string(),
-                    "-chardev".to_string(),
-                    "stdio,id=char0,mux=on,signal=off".to_string(),
-                    "-serial".to_string(),
-                    "chardev:char0".to_string(),
-                    "-mon".to_string(),
-                    "chardev=char0,mode=readline".to_string(),
-                    "-bios".to_string(),
-                    pflash_path.display().to_string(),
-                    "-vga".to_string(),
-                    "none".to_string(),
-                    "-device".to_string(),
-                    "bochs-display".to_string(),
-                ];
-                (find_qemu("qemu-system-x86_64"), args)
-            }
-        }
-    };
-
-    if !use_sbsa_ref
-        && !use_sifive_u
-        && !use_orangepi_pc
-        && !args.iter().any(|arg| arg == "-no-reboot")
-    {
-        args.push("-no-reboot".to_string());
-    }
-
-    if !use_sbsa_ref
-        && !use_sifive_u
-        && !use_orangepi_pc
-        && let Some(mem) = memory
-    {
-        args.extend(["-m".to_string(), mem.to_string()]);
-    }
-
-    // Keep one backend-free PCI function present on architecture QEMU machines
-    // so every normal boot exercises ECAM enumeration and BAR assignment.
-    if !platform.is_x86() && !use_sifive_u && !use_orangepi_pc && !use_ast2500_evb {
+    let mut args: Vec<String> = vec!["-machine".into(), recipe.machine.clone()];
+    if recipe.accel_kvm {
+        let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
+        let use_kvm = match accel.as_deref() {
+            Some("kvm") => true,
+            Some("tcg") => false,
+            _ => std::fs::File::open("/dev/kvm").is_ok(),
+        };
         args.extend([
-            "-device".to_string(),
-            "virtio-scsi-pci,id=fstart-pci-test".to_string(),
+            "-accel".into(),
+            if use_kvm { "kvm" } else { "tcg" }.into(),
+            "-cpu".into(),
+            recipe
+                .cpu
+                .clone()
+                .unwrap_or_else(|| if use_kvm { "host" } else { "max" }.into()),
         ]);
+    } else if let Some(cpu) = &recipe.cpu {
+        args.extend(["-cpu".into(), cpu.clone()]);
     }
+    if let Some(memory) = memory.or(recipe.memory.as_deref()) {
+        args.extend(["-m".into(), memory.to_string()]);
+    }
+    if let Some(smp) = &recipe.smp {
+        // `FSTART_QEMU_SMP` selects the vCPU count so MP/SMM flight
+        // plans can be exercised with APs.
+        let smp = std::env::var("FSTART_QEMU_SMP").unwrap_or_else(|_| smp.clone());
+        args.extend(["-smp".into(), smp]);
+    }
+    if recipe.nographic {
+        args.push("-nographic".into());
+    }
+    for media in &recipe.media {
+        match media {
+            RunMedia::Bios { artifact: kind } => {
+                args.extend([
+                    "-bios".into(),
+                    artifact(artifacts, *kind)?.display().to_string(),
+                ]);
+            }
+            RunMedia::Pflash {
+                artifact: kind,
+                unit,
+                size,
+                readonly,
+            } => {
+                let path = create_pflash_image(artifact(artifacts, *kind)?, *size as usize)?;
+                args.extend([
+                    "-drive".into(),
+                    format!(
+                        "if=pflash,file={},format=raw,unit={unit}{}",
+                        path.display(),
+                        if *readonly { ",readonly=on" } else { "" }
+                    ),
+                ]);
+            }
+            RunMedia::ExternalPflash { name, unit, size } => {
+                let path = external.get(name).ok_or_else(|| {
+                    format!("this machine requires --{name} (a complete {size}-byte pflash image)")
+                })?;
+                let actual = std::fs::metadata(path)
+                    .map_err(|e| format!("failed to read {name}: {e}"))?
+                    .len();
+                if actual != *size {
+                    return Err(format!("{name} is {actual} bytes; expected {size}"));
+                }
+                args.extend([
+                    "-drive".into(),
+                    format!(
+                        "if=pflash,file={},format=raw,unit={unit},readonly=on",
+                        path.display()
+                    ),
+                ]);
+            }
+            RunMedia::SplitPflash {
+                artifact: kind,
+                bank_size,
+            } => {
+                args.extend(split_pflash_args(
+                    artifact(artifacts, *kind)?,
+                    *bank_size as usize,
+                )?);
+            }
+            RunMedia::SdCard {
+                artifact: kind,
+                offset,
+                size,
+            } => {
+                let sd = create_sd_image(
+                    artifact(artifacts, *kind)?,
+                    *offset as usize,
+                    *size as usize,
+                )?;
+                args.extend(["-sd".into(), sd.display().to_string()]);
+            }
+            RunMedia::Mtd { artifact: kind } => {
+                args.extend([
+                    "-drive".into(),
+                    format!(
+                        "file={},format=raw,if=mtd",
+                        artifact(artifacts, *kind)?.display()
+                    ),
+                ]);
+            }
+            RunMedia::X86Flash {
+                stage_unit,
+                size,
+                ffs_offset,
+            } => {
+                let ffs = artifact(artifacts, RunArtifact::Ffs)?;
+                let stage = artifacts
+                    .stages
+                    .iter()
+                    .find(|stage| &stage.name == stage_unit)
+                    .ok_or_else(|| format!("run recipe stage unit {stage_unit} was not built"))?;
+                let path = create_x86_pflash_from_elf(
+                    ffs,
+                    &stage.path,
+                    *size as usize,
+                    *ffs_offset as usize,
+                )?;
+                args.extend(["-bios".into(), path.display().to_string()]);
+            }
+        }
+    }
+    for device in &recipe.devices {
+        args.extend(["-device".into(), device.clone()]);
+    }
+    args.extend(recipe.args.iter().cloned());
 
     if let Some(disk_path) = disk {
         let fmt = if disk_path.ends_with(".qcow2") {
@@ -245,27 +190,31 @@ pub fn run(
         } else {
             "raw"
         };
-        if platform.is_x86() {
-            let is_iso = disk_path.ends_with(".iso");
-            let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
-            args.extend([
-                "-drive".to_string(),
-                format!(
-                    "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
-                    if is_iso { "on" } else { "off" }
-                ),
-                "-device".to_string(),
-                format!("{device_type},drive=hd0"),
-            ]);
-            eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
-        } else {
-            args.extend([
-                "-drive".to_string(),
-                format!("file={disk_path},id=hd0,if=none,format={fmt}"),
-                "-device".to_string(),
-                "nvme,serial=fstartdisk0,drive=hd0".to_string(),
-            ]);
-            eprintln!("[fstart] disk: {disk_path} (NVMe, format={fmt})");
+        match recipe.disk {
+            Some(RunDisk::Ide) => {
+                let is_iso = disk_path.ends_with(".iso");
+                let device_type = if is_iso { "ide-cd" } else { "ide-hd" };
+                args.extend([
+                    "-drive".into(),
+                    format!(
+                        "file={disk_path},id=hd0,if=none,format={fmt},readonly={}",
+                        if is_iso { "on" } else { "off" }
+                    ),
+                    "-device".into(),
+                    format!("{device_type},drive=hd0"),
+                ]);
+                eprintln!("[fstart] disk: {disk_path} (AHCI/{device_type}, format={fmt})");
+            }
+            Some(RunDisk::Nvme) => {
+                args.extend([
+                    "-drive".into(),
+                    format!("file={disk_path},id=hd0,if=none,format={fmt}"),
+                    "-device".into(),
+                    "nvme,serial=fstartdisk0,drive=hd0".into(),
+                ]);
+                eprintln!("[fstart] disk: {disk_path} (NVMe, format={fmt})");
+            }
+            None => return Err("this board's run recipe has no disk attachment".into()),
         }
     }
 
@@ -275,6 +224,7 @@ pub fn run(
         args.extend(extra.split_whitespace().map(str::to_string));
     }
 
+    let qemu_bin = find_qemu(&recipe.qemu);
     eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));
 
     let status = Command::new(qemu_bin)
@@ -289,28 +239,26 @@ pub fn run(
     Ok(())
 }
 
-/// ARM `virt` machines have two 64 MiB pflash banks (0x0 and 0x0400_0000).
-/// `-bios` only fills bank 0, so images that place the FFS in bank 1 (XIP
-/// assemble output) must be split into two pflash drives.
-const VIRT_FLASH_BANK_SIZE: usize = 64 * 1024 * 1024;
-
-fn virt_flash_args(binary: &Path) -> Result<Vec<String>, String> {
+/// Machines with two pflash banks (ARM `virt`: 64 MiB at 0x0 and
+/// 0x0400_0000) only fill bank 0 from `-bios`, so images that place the
+/// FFS in bank 1 (XIP assemble output) must be split into two drives.
+fn split_pflash_args(binary: &Path, bank_size: usize) -> Result<Vec<String>, String> {
     let data = std::fs::read(binary).map_err(|e| format!("failed to read firmware image: {e}"))?;
-    if data.len() <= VIRT_FLASH_BANK_SIZE {
+    if data.len() <= bank_size {
         return Ok(vec!["-bios".to_string(), binary.display().to_string()]);
     }
-    if data.len() > 2 * VIRT_FLASH_BANK_SIZE {
+    if data.len() > 2 * bank_size {
         return Err(format!(
             "firmware image ({} bytes) exceeds both virt pflash banks ({} bytes)",
             data.len(),
-            2 * VIRT_FLASH_BANK_SIZE
+            2 * bank_size
         ));
     }
 
-    let mut bank0 = vec![0xFFu8; VIRT_FLASH_BANK_SIZE];
-    bank0.copy_from_slice(&data[..VIRT_FLASH_BANK_SIZE]);
-    let mut bank1 = vec![0xFFu8; VIRT_FLASH_BANK_SIZE];
-    bank1[..data.len() - VIRT_FLASH_BANK_SIZE].copy_from_slice(&data[VIRT_FLASH_BANK_SIZE..]);
+    let mut bank0 = vec![0xFFu8; bank_size];
+    bank0.copy_from_slice(&data[..bank_size]);
+    let mut bank1 = vec![0xFFu8; bank_size];
+    bank1[..data.len() - bank_size].copy_from_slice(&data[bank_size..]);
 
     let bank0_path = binary.with_extension("bank0.pflash");
     let bank1_path = binary.with_extension("bank1.pflash");
@@ -492,6 +440,7 @@ fn create_x86_pflash_from_elf(
     ffs_image: &Path,
     stage_elf: &Path,
     flash_size: usize,
+    ffs_offset: usize,
 ) -> Result<PathBuf, String> {
     let mut pflash = vec![0xFFu8; flash_size];
     let flash_base = x86_flash_base(flash_size)?;
@@ -499,7 +448,7 @@ fn create_x86_pflash_from_elf(
     let ffs_data =
         std::fs::read(ffs_image).map_err(|e| format!("failed to read FFS image: {e}"))?;
     finish_x86_pflash(
-        pflash, ffs_image, &ffs_data, stage_elf, flash_base, flash_size,
+        pflash, ffs_image, &ffs_data, stage_elf, flash_base, flash_size, ffs_offset,
     )
 }
 
@@ -549,6 +498,7 @@ fn finish_x86_pflash(
     stage_elf: &Path,
     flash_base: u64,
     flash_size: usize,
+    ffs_flash_offset: usize,
 ) -> Result<PathBuf, String> {
     if ffs_data.len() > flash_size {
         return Err(format!(
@@ -558,20 +508,20 @@ fn finish_x86_pflash(
         ));
     }
 
-    const FFS_FLASH_OFFSET: usize = 0x100000;
-    let ffs_end = FFS_FLASH_OFFSET + ffs_data.len();
+    let ffs_offset = ffs_flash_offset;
+    let ffs_end = ffs_offset + ffs_data.len();
     let bootblock_start = flash_size - 0x1000; // last 4K
 
     if ffs_end > bootblock_start {
         return Err(format!(
             "FFS image ({} bytes) at offset {:#x} overlaps boot block at {:#x}",
             ffs_data.len(),
-            FFS_FLASH_OFFSET,
+            ffs_offset,
             bootblock_start,
         ));
     }
 
-    pflash[FFS_FLASH_OFFSET..ffs_end].copy_from_slice(ffs_data);
+    pflash[ffs_offset..ffs_end].copy_from_slice(ffs_data);
 
     let anchor_magic = b"FSTART01";
     let ffs_anchor_off =
@@ -636,10 +586,10 @@ fn finish_x86_pflash(
     // overlap the FFS window it was just copied beside.
     let trust_dst = patch_x86_stage_trust(&mut pflash, ffs_data)?;
     let trust_end = trust_dst + fstart_core::ffs::trust::TRUST_SIZE;
-    if trust_dst < ffs_end && trust_end > FFS_FLASH_OFFSET {
+    if trust_dst < ffs_end && trust_end > ffs_offset {
         return Err(format!(
             "stage trust at flash offset {trust_dst:#x} overlaps the FFS window \
-             [{FFS_FLASH_OFFSET:#x}..{ffs_end:#x})",
+             [{ffs_offset:#x}..{ffs_end:#x})",
         ));
     }
 
@@ -652,24 +602,23 @@ fn finish_x86_pflash(
         pflash_path.display(),
         flash_size,
         ffs_data.len(),
-        FFS_FLASH_OFFSET,
+        ffs_offset,
     );
 
     Ok(pflash_path)
 }
 
-/// QEMU's H3 BROM reads eGON from SD byte 0x2000; provide a real-sized SD image.
-fn create_sunxi_sd_image(binary: &Path) -> Result<PathBuf, String> {
-    const SIZE: usize = 32 * 1024 * 1024;
-    const EGON_OFFSET: usize = 8 * 1024;
-    let image = std::fs::read(binary).map_err(|e| format!("failed to read eGON image: {e}"))?;
-    if image.len() > SIZE - EGON_OFFSET {
-        return Err("eGON image exceeds QEMU SD image".to_string());
+/// An SD card image carrying the boot image at the boot ROM's offset
+/// (the Allwinner BROM reads eGON from byte 0x2000), real-sized.
+fn create_sd_image(binary: &Path, offset: usize, size: usize) -> Result<PathBuf, String> {
+    let image = std::fs::read(binary).map_err(|e| format!("failed to read boot image: {e}"))?;
+    if offset.checked_add(image.len()).is_none_or(|end| end > size) {
+        return Err("boot image exceeds QEMU SD image".to_string());
     }
-    let path = binary.with_extension("sunxi-sd.img");
-    let mut sd = vec![0u8; SIZE];
-    sd[EGON_OFFSET..EGON_OFFSET + image.len()].copy_from_slice(&image);
-    std::fs::write(&path, sd).map_err(|e| format!("failed to create Sunxi SD image: {e}"))?;
+    let path = binary.with_extension("sd.img");
+    let mut sd = vec![0u8; size];
+    sd[offset..offset + image.len()].copy_from_slice(&image);
+    std::fs::write(&path, sd).map_err(|e| format!("failed to create SD image: {e}"))?;
     Ok(path)
 }
 

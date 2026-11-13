@@ -203,7 +203,6 @@ pub fn resolve(
         soc_image_format: SocImageFormat::None,
         boot_hart_id,
         build: BoardBuildPolicy {
-            qemu_machine: None,
             firmware_image: FirmwareImagePolicy::memory_mapped(
                 firmware_image.base,
                 firmware_image.size,
@@ -258,6 +257,7 @@ pub fn resolve(
         stages: vec!["stage".into()],
         platform: assembly.platform,
         images: vec![assembly.into()],
+        run: None,
         inputs,
     };
     plan.order()?;

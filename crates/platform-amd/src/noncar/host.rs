@@ -521,6 +521,7 @@ where
         platform: Platform::X86_64,
         stages: vec![UNIT.into()],
         inputs,
+        run: None,
         images,
         units: policy
             .smm

@@ -1,6 +1,5 @@
 use crate::build_plan::ParsedBoard;
 use crate::payload::{BuildArgs, PayloadChoice};
-use fstart_core::StageLayout;
 
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
@@ -246,69 +245,62 @@ pub fn run(
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let (manifest, parsed) = load(manifest, payload, options)?;
-    let config = &parsed.config;
-    let build_policy = config.build.clone();
-    let platform = config.platform;
-    let is_multi_stage = matches!(config.stages, StageLayout::MultiStage(_));
-    let needs_x86_pflash = config.platform.is_x86();
-    // Even a halt-only monolithic stage must receive its signed root and
-    // directory when its fixed flow verifies boot media. Running the bare ELF
-    // would leave its build-patched anchor and firmware window empty.
-    let needs_firmware_image = config.build.qemu_machine.is_some()
-        || matches!(&config.stages, StageLayout::Monolithic(stage)
-            if stage.build.firmware_image.is_some() || stage.build.verify_firmware);
-    let has_payload_blobs = kernel.is_some()
-        || firmware.is_some()
-        || fit.is_some()
-        || config.payload.as_ref().is_some_and(|p| {
-            p.firmware.is_some()
-                || p.kernel_file.is_some()
-                || p.fit_file.is_some()
-                || p.kind == fstart_core::PayloadKind::FitImage
-        });
-
-    if is_multi_stage || has_payload_blobs || needs_x86_pflash || needs_firmware_image {
-        let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
-        let assembled = assemble_loaded(
-            &workspace_root,
-            manifest,
-            parsed,
-            release,
-            &supplied,
-            options,
-        )?;
-        // The QEMU runner composes its machine flash from the FFS
-        // artefact, not from a composed final flash image.
-        let run_image = assembled
-            .ffs
-            .clone()
-            .unwrap_or_else(|| assembled.image.clone());
-        // The x86 pflash combines the assembled FFS with the linked stage
-        // ELF (reset vector, anchor). The plan layout hashes unit dirs, so
-        // the ELF travels with the build result instead of a guessed path.
-        let x86_stage_elf = needs_x86_pflash
-            .then(|| assembled.stages.first().map(|stage| stage.path.as_path()))
-            .flatten();
-        crate::qemu::run(
-            &build_policy,
-            platform,
-            &run_image,
-            disk,
-            memory,
-            secure_firmware,
-            x86_stage_elf,
+    let resolved = parsed
+        .resolved
+        .as_ref()
+        .ok_or("board has no resolved platform plan")?;
+    // The plan states how (and whether) this board runs under QEMU; there
+    // is no per-architecture fallback launch to guess.
+    let recipe = resolved.build.plan.run.clone().ok_or_else(|| {
+        format!(
+            "board '{}' has no QEMU run recipe in its plan",
+            manifest.board
         )
-    } else {
+    })?;
+    let external = secure_firmware
+        .map(|path| {
+            std::collections::BTreeMap::from([(
+                "secure-firmware".to_string(),
+                std::path::PathBuf::from(path),
+            )])
+        })
+        .unwrap_or_default();
+    if resolved.build.plan.images.is_empty() {
         let res =
             crate::build_board::build_with_parsed(&workspace_root, &manifest, &parsed, release)?;
-        crate::qemu::run(
-            &build_policy,
-            platform,
-            &res.primary_binary().run_path,
+        let primary = res.primary_binary();
+        return crate::qemu::run(
+            &recipe,
+            &crate::qemu::RunArtifacts {
+                ffs: None,
+                image: None,
+                stage_flat: &primary.run_path,
+                stages: &res.stages,
+            },
+            &external,
             disk,
             memory,
-            secure_firmware,
-            None,
-        )
+        );
     }
+    let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
+    let assembled = assemble_loaded(
+        &workspace_root,
+        manifest,
+        parsed,
+        release,
+        &supplied,
+        options,
+    )?;
+    crate::qemu::run(
+        &recipe,
+        &crate::qemu::RunArtifacts {
+            ffs: assembled.ffs.as_deref(),
+            image: Some(&assembled.image),
+            stage_flat: &assembled.stages[0].run_path,
+            stages: &assembled.stages,
+        },
+        &external,
+        disk,
+        memory,
+    )
 }

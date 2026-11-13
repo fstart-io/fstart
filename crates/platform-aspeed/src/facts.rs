@@ -4,8 +4,6 @@
 //! and the emulator equivalent. SRAM placement, the 3-byte addressable
 //! firmware window and stage geometry are platform constants.
 
-use fstart_core::QemuMachine;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AspeedSoc {
     Ast2500,
@@ -16,7 +14,8 @@ pub struct BoardFacts {
     pub soc: AspeedSoc,
     /// Size of the SPI flash on FMC CE0; the composite image is padded to it.
     pub flash_size: u64,
-    pub qemu_machine: Option<QemuMachine>,
+    /// The board runs on QEMU's `ast2500-evb` machine.
+    pub qemu_evb: bool,
 }
 
 pub trait AspeedBoardFacts {

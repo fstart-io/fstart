@@ -14,7 +14,7 @@ use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
         BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
-        UnitOutput,
+        RunArtifact, RunMedia, RunRecipe, UnitOutput,
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
@@ -161,7 +161,6 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         soc_image_format: SocImageFormat::AspeedSpi,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
-            qemu_machine: facts.qemu_machine,
             firmware_image: FirmwareImagePolicy::memory_mapped(image.base, image.size),
             flash_image: Some(FirmwareImagePolicy::memory_mapped(flash.base, flash.size)),
             ..Default::default()
@@ -204,6 +203,31 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         stages: vec!["bootblock".into(), "main".into()],
         platform: assembly.platform,
         images: vec![assembly.into()],
+        // The EVB machine executes the composite SPI image in place
+        // with the board's CE0 flash part as its FMC model.
+        run: match (facts.qemu_evb, facts.flash_size) {
+            (true, size) if size == 64 * 1024 * 1024 => Some(RunRecipe {
+                qemu: "qemu-system-arm".into(),
+                machine: "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab".into(),
+                cpu: None,
+                accel_kvm: false,
+                memory: None,
+                smp: None,
+                nographic: true,
+                media: vec![RunMedia::Mtd {
+                    artifact: RunArtifact::Ffs,
+                }],
+                devices: vec![],
+                args: vec!["-no-reboot".into()],
+                disk: None,
+            }),
+            (true, size) => {
+                return Err(format!(
+                    "no QEMU ast2500-evb flash model for a {size:#x}-byte CE0 flash"
+                ));
+            }
+            (false, _) => None,
+        },
         inputs,
     };
     plan.order()?;
@@ -301,7 +325,7 @@ mod tests {
     const MJ11: BoardFacts = BoardFacts {
         soc: AspeedSoc::Ast2500,
         flash_size: 64 * 1024 * 1024,
-        qemu_machine: Some(QemuMachine::Ast2500Evb),
+        qemu_evb: true,
     };
 
     #[test]
