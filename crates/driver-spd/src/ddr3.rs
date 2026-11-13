@@ -29,6 +29,15 @@ pub const SPD_MODULE_ORGANIZATION: u8 = 7;
 /// SPD byte 8: module bus width.
 pub const SPD_MODULE_BUS_WIDTH: u8 = 8;
 /// SPD byte 10: medium timebase dividend. GM45/coreboot requires 1.
+/// Fine Timebase (FTB) dividend (bits 7:4) and divisor (bits 3:0), in ps.
+pub const SPD_FTB: u8 = 9;
+/// Fine offsets for tCKmin, tAAmin, tRCDmin, tRPmin and tRCmin, in FTB
+/// units, signed. Absent before SPD revision 1.1.
+pub const SPD_TCK_MIN_FINE: u8 = 34;
+pub const SPD_TAA_MIN_FINE: u8 = 35;
+pub const SPD_TRCD_MIN_FINE: u8 = 36;
+pub const SPD_TRP_MIN_FINE: u8 = 37;
+pub const SPD_TRC_MIN_FINE: u8 = 38;
 pub const SPD_MTB_DIVIDEND: u8 = 10;
 /// SPD byte 11: medium timebase divisor. GM45/coreboot requires 8.
 pub const SPD_MTB_DIVISOR: u8 = 11;
@@ -82,8 +91,6 @@ pub const SPD_PART_NUMBER: u8 = 128;
 pub const SPD_DDR3_SERIAL_LEN: usize = 4;
 /// DDR3 part number length in bytes.
 pub const SPD_DDR3_PART_LEN: usize = 18;
-
-const MTB_1_8_NS_TO_256NS: u32 = 32;
 
 /// DDR3 module type from SPD byte 3 bits [3:0].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,8 +320,12 @@ pub const fn decode_cas_mask(spd_data: &[u8; 256]) -> u32 {
 ///
 /// GM45/coreboot accepts only MTB = 1/8 ns (SPD bytes 10/11 = 1/8), so each
 /// MTB unit is exactly 32 units of 1/256 ns.
-pub const fn mtb_to_256ns(value: u8) -> u32 {
-    (value as u32) * MTB_1_8_NS_TO_256NS
+/// A timing byte in the module's own medium-timebase units, in 1/256 ns.
+///
+/// The SPD gives the MTB as dividend/divisor ns: 1/8 ns (32 here) is the
+/// common case, not the only one.
+pub const fn mtb_to_256ns(value: u8, mtb_256ns: u32) -> u32 {
+    (value as u32) * mtb_256ns
 }
 
 fn decode_capacity(code: u8) -> Option<ChipCapacity> {
@@ -366,9 +377,21 @@ fn decode_banks(code: u8) -> Option<u8> {
     }
 }
 
-fn decode_extended_mtb(low: u8, ext: u8, shift: u8) -> u32 {
+fn decode_extended_mtb(low: u8, ext: u8, shift: u8, mtb_256ns: u32) -> u32 {
     let upper = ((ext >> shift) as u16) & 0x0f;
-    ((upper << 8) | low as u16) as u32 * MTB_1_8_NS_TO_256NS
+    ((upper << 8) | low as u16) as u32 * mtb_256ns
+}
+
+/// The fine-timebase correction of one timing byte, in 1/256 ns.
+///
+/// The FTB (SPD byte 9) is dividend/divisor in ps and the offset byte is a
+/// signed count of those units. The result is rounded *up*, so a corrected
+/// minimum time is never shorter than the module's: underestimating one
+/// would program a timing the module does not meet.
+fn fine_correction(raw: u8, ftb_dividend: u32, ftb_divisor: u32) -> i32 {
+    let units = i32::from(raw as i8) * ftb_dividend as i32 * 256;
+    let denominator = ftb_divisor as i32 * 1000;
+    (units + denominator - 1).div_euclid(denominator)
 }
 
 /// Decode raw DDR3 SPD data into [`Ddr3DimmInfo`].
@@ -422,9 +445,28 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Result<Ddr3DimmInfo, Ddr3SpdError> {
 
     let dividend = spd_data[SPD_MTB_DIVIDEND as usize];
     let divisor = spd_data[SPD_MTB_DIVISOR as usize];
-    if dividend != 1 || divisor != 8 {
+    // MTB is dividend/divisor ns, in 1/256 ns. Every JEDEC timing is a
+    // whole number of MTB units, so a timebase that rounds to nothing is
+    // unusable rather than merely unusual.
+    let mtb_256ns = (u32::from(dividend) * 256).div_ceil(u32::from(divisor).max(1));
+    if dividend == 0 || divisor == 0 || mtb_256ns == 0 {
         return Err(Ddr3SpdError::UnsupportedTimebase { dividend, divisor });
     }
+    // Fine offsets exist from SPD revision 1.1 and need an FTB divisor.
+    let ftb_dividend = u32::from(spd_data[SPD_FTB as usize] >> 4);
+    let ftb_divisor = u32::from(spd_data[SPD_FTB as usize] & 0x0f);
+    let fine = |byte: u8| {
+        if spd_data[SPD_REVISION as usize] >= 0x11 && ftb_divisor != 0 {
+            fine_correction(spd_data[usize::from(byte)], ftb_dividend, ftb_divisor)
+        } else {
+            0
+        }
+    };
+    let corrected = |value: u32, byte: u8| {
+        i64::from(value)
+            .saturating_add(i64::from(fine(byte)))
+            .clamp(0, i64::from(u32::MAX)) as u32
+    };
 
     let raw_card = spd_data[SPD_REFERENCE_RAW_CARD as usize] & 0x1f;
     let raw_card_with_extension = spd_data[SPD_REFERENCE_RAW_CARD as usize] & 0x9f;
@@ -441,31 +483,49 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Result<Ddr3DimmInfo, Ddr3SpdError> {
         / 1024
         / 1024;
 
-    let tck_min_256ns = mtb_to_256ns(spd_data[SPD_TCK_MIN as usize]);
-    let taa_min_256ns = mtb_to_256ns(spd_data[SPD_TAA_MIN as usize]);
-    let twr_256ns = mtb_to_256ns(spd_data[SPD_TWR_MIN as usize]);
-    let trcd_256ns = mtb_to_256ns(spd_data[SPD_TRCD_MIN as usize]);
-    let trrd_256ns = mtb_to_256ns(spd_data[SPD_TRRD_MIN as usize]);
-    let trp_256ns = mtb_to_256ns(spd_data[SPD_TRP_MIN as usize]);
+    let tck_min_256ns = corrected(
+        mtb_to_256ns(spd_data[SPD_TCK_MIN as usize], mtb_256ns),
+        SPD_TCK_MIN_FINE,
+    );
+    let taa_min_256ns = corrected(
+        mtb_to_256ns(spd_data[SPD_TAA_MIN as usize], mtb_256ns),
+        SPD_TAA_MIN_FINE,
+    );
+    let twr_256ns = mtb_to_256ns(spd_data[SPD_TWR_MIN as usize], mtb_256ns);
+    let trcd_256ns = corrected(
+        mtb_to_256ns(spd_data[SPD_TRCD_MIN as usize], mtb_256ns),
+        SPD_TRCD_MIN_FINE,
+    );
+    let trrd_256ns = mtb_to_256ns(spd_data[SPD_TRRD_MIN as usize], mtb_256ns);
+    let trp_256ns = corrected(
+        mtb_to_256ns(spd_data[SPD_TRP_MIN as usize], mtb_256ns),
+        SPD_TRP_MIN_FINE,
+    );
     let tras_256ns = decode_extended_mtb(
         spd_data[SPD_TRAS_MIN_LSB as usize],
         spd_data[SPD_TRAS_TRC_EXT as usize],
         0,
+        mtb_256ns,
     );
-    let trc_256ns = decode_extended_mtb(
-        spd_data[SPD_TRC_MIN_LSB as usize],
-        spd_data[SPD_TRAS_TRC_EXT as usize],
-        4,
+    let trc_256ns = corrected(
+        decode_extended_mtb(
+            spd_data[SPD_TRC_MIN_LSB as usize],
+            spd_data[SPD_TRAS_TRC_EXT as usize],
+            4,
+            mtb_256ns,
+        ),
+        SPD_TRC_MIN_FINE,
     );
     let trfc_256ns = (u32::from(spd_data[SPD_TRFC_MIN_LSB as usize])
         | (u32::from(spd_data[SPD_TRFC_MIN_MSB as usize]) << 8))
-        * MTB_1_8_NS_TO_256NS;
-    let twtr_256ns = mtb_to_256ns(spd_data[SPD_TWTR_MIN as usize]);
-    let trtp_256ns = mtb_to_256ns(spd_data[SPD_TRTP_MIN as usize]);
+        * mtb_256ns;
+    let twtr_256ns = mtb_to_256ns(spd_data[SPD_TWTR_MIN as usize], mtb_256ns);
+    let trtp_256ns = mtb_to_256ns(spd_data[SPD_TRTP_MIN as usize], mtb_256ns);
     let tfaw_256ns = decode_extended_mtb(
         spd_data[SPD_TFAW_MIN_LSB as usize],
         spd_data[SPD_TFAW_EXT as usize],
         0,
+        mtb_256ns,
     );
 
     if tck_min_256ns == 0
@@ -613,6 +673,69 @@ mod tests {
         assert_eq!(info.raw_card, 2);
         assert_eq!(info.serial, [1, 2, 3, 4]);
         assert_eq!(&info.part_number, b"FSTART-DDR3-TEST  ");
+    }
+
+    #[test]
+    fn a_non_default_timebase_decodes_the_same_times() {
+        // 2/16 ns is the same timebase as the usual 1/8 ns.
+        let mut spd = synthetic_ddr3_spd();
+        spd[SPD_MTB_DIVIDEND as usize] = 2;
+        spd[SPD_MTB_DIVISOR as usize] = 16;
+        let scaled = decode_dimm(&spd).expect("2/16 ns is a valid timebase");
+        let plain = decode_dimm(&synthetic_ddr3_spd()).expect("1/8 ns");
+        assert_eq!(scaled.tck_min_256ns, plain.tck_min_256ns);
+        assert_eq!(scaled.taa_min_256ns, plain.taa_min_256ns);
+        assert_eq!(scaled.tras_256ns, plain.tras_256ns);
+        assert_eq!(scaled.tfaw_256ns, plain.tfaw_256ns);
+    }
+
+    #[test]
+    fn fine_offsets_shift_the_minimum_times() {
+        // FTB 1/1 = 1 ps per unit; the offsets are signed counts of those.
+        let mut spd = synthetic_ddr3_spd();
+        spd[SPD_FTB as usize] = 0x11;
+        spd[SPD_TCK_MIN_FINE as usize] = 8; // +8 ps, rounded up to 3/256 ns
+        spd[SPD_TAA_MIN_FINE as usize] = 0xf8; // -8 ps, rounded up to -2
+        let dimm = decode_dimm(&spd).expect("fine offsets are valid");
+        let plain = decode_dimm(&synthetic_ddr3_spd()).expect("no offsets");
+        assert_eq!(dimm.tck_min_256ns, plain.tck_min_256ns + 3);
+        assert_eq!(dimm.taa_min_256ns, plain.taa_min_256ns - 2);
+        // Timings without a fine offset are untouched.
+        assert_eq!(dimm.trcd_256ns, plain.trcd_256ns);
+        assert_eq!(dimm.trp_256ns, plain.trp_256ns);
+    }
+
+    #[test]
+    fn fine_offsets_need_revision_1_1_and_a_divisor() {
+        let mut spd = synthetic_ddr3_spd();
+        spd[SPD_FTB as usize] = 0x11;
+        spd[SPD_TCK_MIN_FINE as usize] = 8;
+        spd[SPD_REVISION as usize] = 0x10;
+        let dimm = decode_dimm(&spd).expect("revision 1.0 ignores the offsets");
+        assert_eq!(
+            dimm.tck_min_256ns,
+            decode_dimm(&synthetic_ddr3_spd()).unwrap().tck_min_256ns
+        );
+        spd[SPD_REVISION as usize] = 0x11;
+        spd[SPD_FTB as usize] = 0x10; // divisor 0
+        let dimm = decode_dimm(&spd).expect("a zero FTB divisor means no offsets");
+        assert_eq!(
+            dimm.tck_min_256ns,
+            decode_dimm(&synthetic_ddr3_spd()).unwrap().tck_min_256ns
+        );
+    }
+
+    #[test]
+    fn an_unusable_timebase_is_refused() {
+        let mut spd = synthetic_ddr3_spd();
+        spd[SPD_MTB_DIVISOR as usize] = 0;
+        assert_eq!(
+            decode_dimm(&spd),
+            Err(Ddr3SpdError::UnsupportedTimebase {
+                dividend: 1,
+                divisor: 0
+            })
+        );
     }
 
     #[test]
