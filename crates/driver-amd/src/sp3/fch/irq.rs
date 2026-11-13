@@ -10,7 +10,7 @@
 use fstart_core::indexed::Indexed;
 use tock_registers::interfaces::{Readable, Writeable};
 
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::{Reg, Window, indexed};
 
 pub const INDEX: u32 = 0xC00;
@@ -43,11 +43,11 @@ pub fn update<I: Window>(io: &I, index: u8, clear: u8, set: u8) {
 }
 
 /// The late-task routes of `generation`, `(index, irq)` in donor order.
-pub const fn routes(generation: Generation) -> &'static [(u8, u8)] {
+pub const fn routes(generation: Silicon) -> &'static [(u8, u8)] {
     match generation {
-        Generation::Naples => super::tables::PCI_INTR_NAPLES,
-        Generation::Rome => super::tables::PCI_INTR_ROME,
-        Generation::Milan => super::tables::PCI_INTR_MILAN,
+        Silicon::Zp => super::tables::PCI_INTR_NAPLES,
+        Silicon::Ssp => super::tables::PCI_INTR_ROME,
+        Silicon::Gn => super::tables::PCI_INTR_MILAN,
         #[allow(unreachable_patterns)]
         _ => &[],
     }
@@ -83,9 +83,9 @@ mod tests {
         let get = |g, i| routes(g).iter().find(|r| r.0 == i).unwrap().1;
         // FCH_SP3 §3.3 table.
         let f = [0xf2, 0xf3, 0xf4, 0xf5, 0xf8, 0xf9];
-        let naples: Vec<_> = f.iter().map(|&i| get(Generation::Naples, i)).collect();
-        let rome: Vec<_> = f.iter().map(|&i| get(Generation::Rome, i)).collect();
-        let milan: Vec<_> = f.iter().map(|&i| get(Generation::Milan, i)).collect();
+        let naples: Vec<_> = f.iter().map(|&i| get(Silicon::Zp, i)).collect();
+        let rome: Vec<_> = f.iter().map(|&i| get(Silicon::Ssp, i)).collect();
+        let milan: Vec<_> = f.iter().map(|&i| get(Silicon::Gn, i)).collect();
         assert_eq!(naples, [0x0c, 0x0d, 0x04, 0x03, 0x04, 0x03]);
         assert_eq!(rome, [0x04, 0x06, 0x03, 0x04, 0x05, 0x0c]);
         assert_eq!(milan, [0x04, 0x06, 0x03, 0x04, 0x03, 0x04]);

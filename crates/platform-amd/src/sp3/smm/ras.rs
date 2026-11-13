@@ -177,7 +177,7 @@ fn enter_enabled(logical_cpu: u32, generation: Generation) {
         let armed = saved.revision().is_ok()
             && ras::arm(
                 &cpu,
-                generation,
+                generation.silicon(),
                 stepping,
                 fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16,
                 MCE_SMI_COMMAND,

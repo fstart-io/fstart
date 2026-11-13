@@ -101,13 +101,13 @@ fn scrub<P: ConfigRegionAccess + Clone>(
 mod tests {
     use super::super::topology::{discover, tests::df3_system};
     use super::*;
-    use crate::sp3::soc::Generation;
+    use crate::cpu::Silicon;
 
     #[test]
     fn init_rome_1p() {
         let m = df3_system(1, 0b1111);
         let df = Df::new(m.clone());
-        let t = discover(&df, Generation::Rome).unwrap();
+        let t = discover(&df, Silicon::Ssp).unwrap();
         // 256 GiB behind the scrubber, no hole rule.
         m.set(0, None, 6, 0x44, ((256 << 10) - 1) << 4);
         m.set(0, Some(3), 6, 0xB8, 0xF);

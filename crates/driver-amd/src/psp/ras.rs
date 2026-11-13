@@ -30,7 +30,7 @@ register_bitfields![u32,
     ]
 ];
 
-pub const MAX_SOCKETS: usize = 2;
+pub use crate::df::MAX_SOCKETS;
 /// Instance selector for a node-broadcast indirect read (TARGET_INST=0).
 pub const BROADCAST: u8 = 0xff;
 

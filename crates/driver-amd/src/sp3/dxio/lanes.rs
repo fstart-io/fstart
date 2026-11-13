@@ -17,7 +17,7 @@ use fstart_pci::devfn;
 
 use super::hotplug::Hotplug;
 use super::tables::{NAPLES_DEFAULT_DEVFN, SP3_DEFAULT_DEVFN, SP3_LANE_MAP};
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 /// SP3 lane groups (Rome/Milan). PHY lane base in the doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -703,8 +703,8 @@ pub enum LaneError {
 /// Resolve an engine's lanes for `generation` (lane translation
 /// `ffe02666`: the start lane picks the core; here the end lane is checked
 /// too).
-pub fn place(generation: Generation, engine: &Engine<'_>) -> Result<Placement, LaneError> {
-    if engine.socket as usize >= Generation::MAX_SOCKETS {
+pub fn place(generation: Silicon, engine: &Engine<'_>) -> Result<Placement, LaneError> {
+    if engine.socket as usize >= crate::df::MAX_SOCKETS {
         return Err(LaneError::Location);
     }
     let (first, count, reversed) = (
@@ -718,7 +718,7 @@ pub fn place(generation: Generation, engine: &Engine<'_>) -> Result<Placement, L
     let last = first.checked_add(count - 1).ok_or(LaneError::Range)?;
     let board = |lo: u8, hi: u8| if reversed { (hi, lo) } else { (lo, hi) };
     match (generation, engine.lanes) {
-        (Generation::Rome | Generation::Milan, Lanes::Sp3 { group, .. }) => {
+        (Silicon::Ssp | Silicon::Gn, Lanes::Sp3 { group, .. }) => {
             let core = CoreLanes::of(group);
             if last >= core.width() {
                 return Err(LaneError::Range);
@@ -736,8 +736,8 @@ pub fn place(generation: Generation, engine: &Engine<'_>) -> Result<Placement, L
                 },
             })
         }
-        (Generation::Naples, Lanes::Naples { die, .. }) => {
-            if die as usize >= Generation::Naples.dies_per_socket() {
+        (Silicon::Zp, Lanes::Naples { die, .. }) => {
+            if die as usize >= 4 {
                 return Err(LaneError::Location);
             }
             if last >= 32 {
@@ -765,22 +765,22 @@ pub fn place(generation: Generation, engine: &Engine<'_>) -> Result<Placement, L
 
 /// The DXIO instance an engine belongs to: the socket on Rome/Milan,
 /// `(socket, die)` on Naples.
-pub fn unit_of(generation: Generation, engine: &Engine<'_>) -> (u8, u8) {
+pub fn unit_of(generation: Silicon, engine: &Engine<'_>) -> (u8, u8) {
     match (generation, engine.lanes) {
-        (Generation::Naples, Lanes::Naples { die, .. }) => (engine.socket, die),
+        (Silicon::Zp, Lanes::Naples { die, .. }) => (engine.socket, die),
         _ => (engine.socket, 0),
     }
 }
 
 /// NB_PROG_DEVICE_REMAP defaults of one NBIO.
-pub fn default_devfns(generation: Generation) -> &'static [u8] {
+pub fn default_devfns(generation: Silicon) -> &'static [u8] {
     match generation {
-        Generation::Naples => &NAPLES_DEFAULT_DEVFN,
-        Generation::Rome | Generation::Milan => &SP3_DEFAULT_DEVFN,
+        Silicon::Zp => &NAPLES_DEFAULT_DEVFN,
+        Silicon::Ssp | Silicon::Gn => &SP3_DEFAULT_DEVFN,
     }
 }
 
-fn check_engine(generation: Generation, e: &Engine<'_>) -> Result<(), LaneError> {
+fn check_engine(generation: Silicon, e: &Engine<'_>) -> Result<(), LaneError> {
     let count = e.lanes.count();
     let wafl = matches!(
         e.lanes,
@@ -817,7 +817,7 @@ fn check_engine(generation: Generation, e: &Engine<'_>) -> Result<(), LaneError>
                 && x.eq_search_mode.is_none_or(|m| m <= 3)
                 && x.deemphasis.is_none_or(|d| d <= 3)
                 && x.target_speed <= 7
-                && !(generation == Generation::Naples && pcie.max_speed > Speed::Gen3);
+                && !(generation == Silicon::Zp && pcie.max_speed > Speed::Gen3);
             if !fields_ok {
                 return Err(LaneError::Field);
             }
@@ -831,11 +831,7 @@ fn check_engine(generation: Generation, e: &Engine<'_>) -> Result<(), LaneError>
             }
         }
         EngineKind::Sata(s) => {
-            let max_channel = if generation == Generation::Naples {
-                3
-            } else {
-                7
-            };
+            let max_channel = if generation == Silicon::Zp { 3 } else { 7 };
             if wafl || s.channel > max_channel {
                 return Err(LaneError::Sata);
             }
@@ -851,7 +847,7 @@ fn check_engine(generation: Generation, e: &Engine<'_>) -> Result<(), LaneError>
 /// alignment, fields) and against the others (overlaps, ports per core,
 /// devfn use per NBIO, engines per DXIO instance). The error carries the
 /// index of the offending engine.
-pub fn validate(generation: Generation, engines: &[Engine<'_>]) -> Result<(), (usize, LaneError)> {
+pub fn validate(generation: Silicon, engines: &[Engine<'_>]) -> Result<(), (usize, LaneError)> {
     let placed = |i: usize| place(generation, &engines[i]).map_err(|e| (i, e));
     for (i, e) in engines.iter().enumerate() {
         let p = placed(i)?;
@@ -991,7 +987,7 @@ mod tests {
     fn wire(g: Group, first: u8, count: u8, rev: bool) -> (Placement, (u8, u8)) {
         let l = Lanes::sp3(g, first, count);
         let l = if rev { l.reversed() } else { l };
-        let p = place(Generation::Rome, &Engine::pcie(0, l, PcieEngine::new())).unwrap();
+        let p = place(Silicon::Ssp, &Engine::pcie(0, l, PcieEngine::new())).unwrap();
         (p, (p.wire.start, p.wire.end))
     }
 
@@ -1115,15 +1111,15 @@ mod tests {
         for m2 in [[true, true], [false, true], [false, false]] {
             for split in [1, 2, 4] {
                 assert_eq!(
-                    validate(Generation::Rome, &s8030(m2, split)),
+                    validate(Silicon::Ssp, &s8030(m2, split)),
                     Ok(()),
                     "{m2:?} x{split}"
                 );
-                assert_eq!(validate(Generation::Milan, &s8030(m2, split)), Ok(()));
+                assert_eq!(validate(Silicon::Gn, &s8030(m2, split)), Ok(()));
             }
         }
         let b = s8030([true, false], 1);
-        let phy = |i: usize| place(Generation::Rome, &b[i]).unwrap().phy;
+        let phy = |i: usize| place(Silicon::Ssp, &b[i]).unwrap().phy;
         assert_eq!(
             [phy(1), phy(3), phy(8), phy(9), phy(11), phy(13)],
             [(8, 11), (31, 16), (72, 72), (74, 74), (76, 79), (111, 96)]
@@ -1136,7 +1132,7 @@ mod tests {
     fn naples_die_lanes() {
         let p = |first, count| {
             place(
-                Generation::Naples,
+                Silicon::Zp,
                 &Engine::pcie(0, Lanes::naples(2, first, count), PcieEngine::new()),
             )
         };
@@ -1147,10 +1143,7 @@ mod tests {
         assert_eq!(p(12, 8), Err(LaneError::CrossesCore));
         assert_eq!(naples_socket_lane(2, 5), 64 + 5);
         let sp3 = Engine::pcie(0, Lanes::sp3(Group::P0, 0, 4), PcieEngine::new());
-        assert_eq!(
-            place(Generation::Naples, &sp3),
-            Err(LaneError::WrongGeneration)
-        );
+        assert_eq!(place(Silicon::Zp, &sp3), Err(LaneError::WrongGeneration));
     }
 
     #[test]
@@ -1162,13 +1155,13 @@ mod tests {
         );
         let x8: Vec<_> = slot
             .split(8)
-            .map(|e| place(Generation::Rome, &e).unwrap().phy)
+            .map(|e| place(Silicon::Ssp, &e).unwrap().phy)
             .collect();
         assert_eq!(x8, [(31, 24), (23, 16)], "OEM rows x8a 31, x8b 23");
         let x4: Vec<_> = slot.split(4).collect();
         assert_eq!(x4.len(), 4);
         assert!(x4.iter().all(|e| e.pcie_config().unwrap().slot.is_none()));
-        assert_eq!(validate(Generation::Rome, &x4), Ok(()));
+        assert_eq!(validate(Silicon::Ssp, &x4), Ok(()));
         let gen3 = slot.with_max_speed(Speed::Gen3);
         assert_eq!(gen3.pcie_config().unwrap().max_speed, Speed::Gen3);
     }
@@ -1176,7 +1169,7 @@ mod tests {
     #[test]
     fn validation_rules() {
         let pcie = |g, f, c| Engine::pcie(0, Lanes::sp3(g, f, c), PcieEngine::new());
-        let v = |e: &[Engine<'_>]| validate(Generation::Milan, e);
+        let v = |e: &[Engine<'_>]| validate(Silicon::Gn, e);
         assert_eq!(v(&[pcie(Group::P0, 0, 3)]), Err((0, LaneError::Width)));
         assert_eq!(v(&[pcie(Group::P0, 2, 4)]), Err((0, LaneError::Alignment)));
         assert_eq!(v(&[pcie(Group::P0, 8, 16)]), Err((0, LaneError::Range)));
@@ -1211,9 +1204,6 @@ mod tests {
             Lanes::naples(0, 0, 4),
             PcieEngine::new().max_speed(Speed::Gen4),
         );
-        assert_eq!(
-            validate(Generation::Naples, &[g4]),
-            Err((0, LaneError::Field))
-        );
+        assert_eq!(validate(Silicon::Zp, &[g4]), Err((0, LaneError::Field)));
     }
 }

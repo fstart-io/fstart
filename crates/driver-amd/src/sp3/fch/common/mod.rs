@@ -16,30 +16,30 @@ pub mod late;
 pub mod reset;
 pub mod sx;
 
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::Op;
 
 /// A generation whose support is not built in: fail closed.
 #[cold]
-pub(crate) fn not_built(generation: Generation) -> ! {
+pub(crate) fn not_built(generation: Silicon) -> ! {
     panic!("FCH: {} support not built", generation.name())
 }
 
-pub(crate) fn acpi_mmio_table(generation: Generation) -> &'static [Op] {
+pub(crate) fn acpi_mmio_table(generation: Silicon) -> &'static [Op] {
     match generation {
-        Generation::Naples => super::tables::ACPI_MMIO_NAPLES,
-        Generation::Rome => super::tables::ACPI_MMIO_ROME,
-        Generation::Milan => super::tables::ACPI_MMIO_MILAN,
+        Silicon::Zp => super::tables::ACPI_MMIO_NAPLES,
+        Silicon::Ssp => super::tables::ACPI_MMIO_ROME,
+        Silicon::Gn => super::tables::ACPI_MMIO_MILAN,
         #[allow(unreachable_patterns)]
         g => not_built(g),
     }
 }
 
-pub(crate) fn sci_map(generation: Generation) -> &'static [Op] {
+pub(crate) fn sci_map(generation: Silicon) -> &'static [Op] {
     match generation {
-        Generation::Naples => super::tables::SCI_MAP_NAPLES,
-        Generation::Rome => super::tables::SCI_MAP_ROME,
-        Generation::Milan => super::tables::SCI_MAP_MILAN,
+        Silicon::Zp => super::tables::SCI_MAP_NAPLES,
+        Silicon::Ssp => super::tables::SCI_MAP_ROME,
+        Silicon::Gn => super::tables::SCI_MAP_MILAN,
         #[allow(unreachable_patterns)]
         g => not_built(g),
     }

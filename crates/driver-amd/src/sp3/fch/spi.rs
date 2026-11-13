@@ -10,7 +10,7 @@ use tock_registers::register_bitfields;
 
 use super::FchHw;
 use super::lpc::{self, SPI_BASE};
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::{Window, update};
 
 /// Physical base of the SPI controller (D14F3xA0 reset value).
@@ -116,7 +116,7 @@ impl Default for SpiPolicy {
 }
 
 /// PEI reset task af43: SPI BAR, SPI100, speeds, prefetch, read mode.
-pub fn reset<H: FchHw>(hw: &H, generation: Generation, policy: &SpiPolicy) {
+pub fn reset<H: FchHw>(hw: &H, generation: Silicon, policy: &SpiPolicy) {
     let lpc = hw.lpc();
     // SPI BAR at its reset value, keeping the enables (FCH_SP3 §3.1 af43).
     update::<u32, _>(&lpc, SPI_BASE, 0x013e_ffe0, BASE);
@@ -151,8 +151,8 @@ pub fn reset<H: FchHw>(hw: &H, generation: Generation, policy: &SpiPolicy) {
     );
     // D14F3xBA: ZP sets bit 7, Huashan bits 8 then 7 (unnamed).
     match generation {
-        Generation::Naples => update::<u16, _>(&lpc, lpc::LPC_BA, 0, 0x0080),
-        Generation::Rome | Generation::Milan => {
+        Silicon::Zp => update::<u16, _>(&lpc, lpc::LPC_BA, 0, 0x0080),
+        Silicon::Ssp | Silicon::Gn => {
             update::<u16, _>(&lpc, lpc::LPC_BA, 0, 0x0100);
             update::<u16, _>(&lpc, lpc::LPC_BA, 0, 0x0180);
         }
@@ -209,7 +209,7 @@ mod tests {
         spi.put(BASE + 0x0c, 4, 0x0022_0000);
         spi.put(BASE + 0x22, 2, 0xd1d3);
         spi.put(BASE + 0x2c, 2, 0x8000);
-        reset(&hw, Generation::Rome, &SpiPolicy::default());
+        reset(&hw, Silicon::Ssp, &SpiPolicy::default());
         // FCH_SP3 §3.1 af43: SPIx00 |= 670C0000 (BUSY not written back).
         assert_eq!(spi.get(BASE, 4), 0x670c_0000);
         assert_eq!(spi.get(BASE + 0x0c, 4), 0);

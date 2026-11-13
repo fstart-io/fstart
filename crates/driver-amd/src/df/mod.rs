@@ -163,6 +163,9 @@ pub const NODE0_DEVICE: u8 = 0x18;
 /// Most DF nodes: 2 sockets of 4 ZP dies.
 pub const MAX_NODES: u8 = 8;
 
+/// Most sockets a fabric connects.
+pub const MAX_SOCKETS: usize = 2;
+
 /// Function `function` of DF `node`: bus 0, device `0x18 + node`.
 pub fn node_address(node: u8, function: u8) -> PciAddress {
     PciAddress::new(0, 0, NODE0_DEVICE + node, function)

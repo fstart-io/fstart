@@ -9,26 +9,26 @@ use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::Nbio;
+use crate::cpu::Silicon;
 use crate::nbio::ioapic::{
     BridgeRouting, IOAPIC_FEATURES_ENABLE, IOAPIC_ID, IoapicFeatures, IoapicId, ROUTES_SP3,
     ROUTES_ZP, Route, br_interrupt_routing,
 };
 use crate::smn::SmnAccess;
-use crate::sp3::soc::Generation;
 
 /// The bridge routes of `generation`.
-pub const fn routes_for(generation: Generation) -> &'static [Route] {
+pub const fn routes_for(generation: Silicon) -> &'static [Route] {
     match generation {
-        Generation::Naples => &ROUTES_ZP,
-        Generation::Rome | Generation::Milan => &ROUTES_SP3,
+        Silicon::Zp => &ROUTES_ZP,
+        Silicon::Ssp | Silicon::Gn => &ROUTES_SP3,
     }
 }
 
 /// Default FCH IOAPIC ID (Naples PCD 0x191 = 0x80, Rome PCD 0x26B = 0xF0).
-pub const fn fch_ioapic_id(generation: Generation) -> u8 {
+pub const fn fch_ioapic_id(generation: Silicon) -> u8 {
     match generation {
-        Generation::Naples => 0x80,
-        Generation::Rome | Generation::Milan => 0xF0,
+        Silicon::Zp => 0x80,
+        Silicon::Ssp | Silicon::Gn => 0xF0,
     }
 }
 
@@ -37,7 +37,7 @@ pub const fn fch_ioapic_id(generation: Generation) -> u8 {
 /// ROOTBRIDGE_2P §1). Sorting by ID then gives the donor GSI bases
 /// 24/56/88/120 (socket 0) and 152/184/216/248 (socket 1), which the
 /// `_PRT` windows use.
-pub const fn nbio_ioapic_id(generation: Generation, n: u8) -> u8 {
+pub const fn nbio_ioapic_id(generation: Silicon, n: u8) -> u8 {
     fch_ioapic_id(generation) + 1 + n
 }
 
@@ -145,9 +145,9 @@ mod tests {
 
     #[test]
     fn features_and_id() {
-        let (m, n0) = nbio(Generation::Rome, 0, 0);
+        let (m, n0) = nbio(Silicon::Ssp, 0, 0);
         n0.ioapic_features();
-        let (_, n1) = nbio(Generation::Rome, 1, 0x20);
+        let (_, n1) = nbio(Silicon::Ssp, 1, 0x20);
         n1.ioapic_features();
         n1.set_ioapic_id(0xF2);
         let s = m.0.borrow();

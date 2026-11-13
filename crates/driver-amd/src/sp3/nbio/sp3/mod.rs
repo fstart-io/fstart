@@ -21,7 +21,7 @@ use fstart_pci::ConfigRegionAccess;
 
 use super::table::Entry;
 use super::{Nbio, NbioPolicy};
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 struct Tables {
     socket: &'static [Entry],
@@ -32,15 +32,15 @@ struct Tables {
 
 /// The table set of `generation`; the SP3 package always selects the
 /// socket table (AM4's `SOCKET_AM4` is never taken).
-fn tables(generation: Generation) -> Tables {
+fn tables(generation: Silicon) -> Tables {
     match generation {
-        Generation::Rome => Tables {
+        Silicon::Ssp => Tables {
             socket: tables::rome::SOCKET,
             nbio: tables::rome::NBIO,
             sdpmux: &[],
             iommu: tables::rome::IOMMU,
         },
-        Generation::Milan => Tables {
+        Silicon::Gn => Tables {
             socket: tables::milan::SOCKET,
             nbio: tables::milan::NBIO,
             sdpmux: tables::milan::SDPMUX,
@@ -90,7 +90,7 @@ pub fn base_init<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>, policy: &NbioPol
     nbio.ioapic_features();
     nbio.set_bus_number();
     nbio.set_nbif_bus_numbers(policy);
-    if nbio.generation == Generation::Milan {
+    if nbio.generation == Silicon::Gn {
         milan_nbif_extras(nbio, policy);
         nbio.run_table(t.sdpmux, nbio.index, policy);
     }
@@ -139,12 +139,12 @@ mod tests {
 
     #[test]
     fn sb_location_fch_and_others() {
-        let (m, fch) = nbio(Generation::Rome, 0, 0);
+        let (m, fch) = nbio(Silicon::Ssp, 0, 0);
         m.0.borrow_mut()
             .smn
             .insert((0, crate::nbio::iohc::SB_LOCATION.address()), 0x0003_0004);
         sb_location(&fch);
-        let (m2, other) = nbio(Generation::Rome, 2, 0x40);
+        let (m2, other) = nbio(Silicon::Ssp, 2, 0x40);
         m2.0.borrow_mut().smn.insert((0x40, 0x13D1_007C), 5);
         sb_location(&other);
         assert_eq!(m.0.borrow().smn[&(0, 0x1530_0024)], 0x0003_0004);
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn rome_socket_table_exposure() {
-        let (m, n) = nbio(Generation::Rome, 0, 0);
+        let (m, n) = nbio(Silicon::Ssp, 0, 0);
         socket_table(&n, &NbioPolicy::default());
         let s = m.0.borrow();
         let exist = |a: u32| s.smn.get(&(0, a)).copied().unwrap_or(0) & (1 << 28) != 0;
@@ -185,7 +185,7 @@ mod tests {
             word: [0x1000_0000, 0],
         };
         // SAFETY: model.
-        let n = unsafe { Nbio::new(model.clone(), Generation::Milan, &rb, fuses) };
+        let n = unsafe { Nbio::new(model.clone(), Silicon::Gn, &rb, fuses) };
         base_init(&n, &NbioPolicy::default());
         let s = model.0.borrow();
         assert!(s.log.iter().all(|&(_, a, _)| a >> 20 != 0x10A));

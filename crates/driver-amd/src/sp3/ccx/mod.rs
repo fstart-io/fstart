@@ -50,7 +50,8 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 
 use crate::ccx::microcode::{self, Load, Patch};
 use crate::cpu::Revision;
-use crate::sp3::soc::{Generation, Identity};
+use crate::cpu::Silicon;
+use crate::sp3::soc::Identity;
 use logical::LogicalId;
 use power::{CstatePolicy, Wdt};
 use security::{RmpPlan, SnpPolicy};
@@ -100,7 +101,7 @@ impl Default for Policy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CcxError {
     /// The generation's feature is not built.
-    NotBuilt(Generation),
+    NotBuilt(Silicon),
 }
 
 /// The per-boot CCX state every thread uses: the identified CPU, its
@@ -131,7 +132,7 @@ pub struct ApInputs<'a> {
 
 impl Ccx {
     pub fn new(identity: Identity, apic: ApicMode, policy: TablePolicy) -> Result<Self, CcxError> {
-        let generation = identity.generation();
+        let generation = identity.silicon();
         let table = table::records(generation).ok_or(CcxError::NotBuilt(generation))?;
         Ok(Self {
             revision: identity.revision,
@@ -143,8 +144,8 @@ impl Ccx {
         })
     }
 
-    pub const fn generation(&self) -> Generation {
-        self.revision.generation()
+    pub const fn silicon(&self) -> Silicon {
+        self.revision.silicon()
     }
 
     /// Phase-1 tables on the executing thread (BSP early, APs at start).
@@ -191,7 +192,7 @@ impl Ccx {
         inputs: &ApInputs<'_>,
     ) -> Result<(), microcode::Error> {
         let primary = thread.primary();
-        if primary && self.generation() != Generation::Milan {
+        if primary && self.silicon() != Silicon::Gn {
             power::init_wdt(cpu, inputs.wdt, inputs.wdt_severity);
         }
         self.run_tables(cpu, thread);
@@ -238,7 +239,7 @@ mod tests {
         let id = identify(0x0083_0F10, u32::from(PACKAGE_SP3) << 28).unwrap();
         let ccx = Ccx::new(id, ApicMode::XApic, TablePolicy::default()).unwrap();
         let cpu = MsrSpace::new([(0x179, 23)]);
-        let thread = Thread::new(Generation::Rome, 0x10, true, false);
+        let thread = Thread::new(Silicon::Ssp, 0x10, true, false);
         let inputs = ApInputs {
             microcode: None,
             wdt: Some(Wdt::DEFAULT),

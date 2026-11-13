@@ -13,7 +13,7 @@ use fstart_arch::x86::cpu::msr::{MCG_CAP, MCG_STATUS, McgCap, Msr, MsrAccess};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 register_bitfields![u64,
     pub MceRedirect [
@@ -72,12 +72,12 @@ pub enum ArmError {
 /// The caller must arrange to inspect this CPU's local status on *every* SMI.
 pub fn arm<M: MsrAccess>(
     cpu: &M,
-    generation: Generation,
+    generation: Silicon,
     stepping: u8,
     port: u16,
     command: u8,
 ) -> Result<(), ArmError> {
-    if generation == Generation::Naples && stepping < 2 {
+    if generation == Silicon::Zp && stepping < 2 {
         return Err(ArmError::UnsupportedCpu);
     }
     let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT);
@@ -284,7 +284,7 @@ mod tests {
             (SMI_IO_CYCLE.index(), 1 << 40),
             (PFEH_CONFIG.index(), 1 << 40),
         ]);
-        arm(&cpu, Generation::Rome, 0, 0xb2, 0x80).unwrap();
+        arm(&cpu, Silicon::Ssp, 0, 0xb2, 0x80).unwrap();
         assert_eq!(cpu.read(SMI_IO_CYCLE.index()), (1 << 40) | 0x0280_00b2);
         assert_eq!(cpu.read(MCE_REDIRECT.index()), 1 << 9);
         assert_eq!(cpu.read(PFEH_CONFIG.index()), (1 << 40) | 1);
@@ -297,22 +297,22 @@ mod tests {
     #[test]
     fn rejects_old_naples_capacity_and_other_owners_without_writes() {
         for (generation, step, extra, error) in [
-            (Generation::Naples, 1, (0, 0), ArmError::UnsupportedCpu),
-            (Generation::Rome, 0, (0x179, 65), ArmError::UnsupportedBanks),
+            (Silicon::Zp, 1, (0, 0), ArmError::UnsupportedCpu),
+            (Silicon::Ssp, 0, (0x179, 65), ArmError::UnsupportedBanks),
             (
-                Generation::Milan,
+                Silicon::Gn,
                 0,
                 (PFEH_CLOAK.index(), 1),
                 ArmError::AlreadyOwned,
             ),
             (
-                Generation::Milan,
+                Silicon::Gn,
                 0,
                 (MCE_REDIRECT.index(), 1 << 8),
                 ArmError::AlreadyOwned,
             ),
             (
-                Generation::Milan,
+                Silicon::Gn,
                 0,
                 (SMI_IO_CYCLE.index(), 1 << 25),
                 ArmError::AlreadyOwned,
@@ -401,7 +401,7 @@ mod tests {
             MsrSpace::new([(0x179, 1), (0xc0002004, 1)]).into_inner(),
         ));
         assert_eq!(
-            arm(&cpu, Generation::Rome, 0, 0xb2, 0x80),
+            arm(&cpu, Silicon::Ssp, 0, 0xb2, 0x80),
             Err(ArmError::Readback)
         );
         let space = cpu.into_inner().0;

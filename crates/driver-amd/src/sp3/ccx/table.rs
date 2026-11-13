@@ -21,7 +21,7 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use super::logical::LogicalId;
 use super::topology::{Scope, Thread};
 use super::x2apic::ApicMode;
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 /// A logical-ID guard: passes if the family and the revision bits overlap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,21 +103,21 @@ impl PlatformFlags {
     /// The flags an SP3 platform passes to the engine of `generation` with
     /// the resolved APIC mode (CCX_SP3 §3.1: ZP 0; SSP 0x4/0x2; GN
     /// 0x68/0x58 with the donor defaults).
-    pub const fn sp3(generation: Generation, apic: ApicMode, policy: TablePolicy) -> Self {
+    pub const fn sp3(generation: Silicon, apic: ApicMode, policy: TablePolicy) -> Self {
         const fn bit(on: bool, b: u32) -> u32 {
             if on { b } else { 0 }
         }
         let x2 = matches!(apic, ApicMode::X2Apic);
         let xapic = matches!(apic, ApicMode::XApic);
         Self(match generation {
-            Generation::Naples => 0,
-            Generation::Rome => {
+            Silicon::Zp => 0,
+            Silicon::Ssp => {
                 // A boolean PCD: anything but x2APIC counts as xAPIC.
                 bit(x2, plat::ssp::X2APIC)
                     | bit(!x2, plat::ssp::XAPIC)
                     | bit(policy.ibs_31, plat::ssp::IBS_31)
             }
-            Generation::Milan => {
+            Silicon::Gn => {
                 plat::gn::SP3
                     | plat::gn::PCD_48_FALSE
                     | bit(x2, plat::gn::X2APIC)
@@ -199,11 +199,11 @@ impl Record {
 }
 
 /// The phase-1 table of `generation`, if its feature is built.
-pub fn records(generation: Generation) -> Option<&'static [Record]> {
+pub fn records(generation: Silicon) -> Option<&'static [Record]> {
     match generation {
-        Generation::Naples => Some(super::zen1::tables::RECORDS),
-        Generation::Rome => Some(super::zen2::tables::RECORDS),
-        Generation::Milan => Some(super::zen3::tables::RECORDS),
+        Silicon::Zp => Some(super::zen1::tables::RECORDS),
+        Silicon::Ssp => Some(super::zen2::tables::RECORDS),
+        Silicon::Gn => Some(super::zen3::tables::RECORDS),
         #[allow(unreachable_patterns)]
         _ => None,
     }
@@ -241,8 +241,8 @@ mod tests {
 
     fn run(rev: Revision, apic_id: u32, apic: ApicMode) -> MsrSpace {
         let cpu = MsrSpace::new([(0x10, 0xffff), (0x20, 0xff)]);
-        let flags = PlatformFlags::sp3(Generation::Milan, apic, TablePolicy::default());
-        let thread = Thread::new(Generation::Milan, apic_id, true, false);
+        let flags = PlatformFlags::sp3(Silicon::Gn, apic, TablePolicy::default());
+        let thread = Thread::new(Silicon::Gn, apic_id, true, false);
         apply(&cpu, TABLE, &thread, &LogicalId::of(rev), flags);
         cpu.into_inner()
     }
@@ -267,26 +267,11 @@ mod tests {
     #[test]
     fn sp3_flags() {
         let p = TablePolicy::default();
-        assert_eq!(
-            PlatformFlags::sp3(Generation::Naples, ApicMode::XApic, p).0,
-            0
-        );
-        assert_eq!(
-            PlatformFlags::sp3(Generation::Rome, ApicMode::XApic, p).0,
-            0x4
-        );
-        assert_eq!(
-            PlatformFlags::sp3(Generation::Rome, ApicMode::X2Apic, p).0,
-            0x2
-        );
-        assert_eq!(
-            PlatformFlags::sp3(Generation::Milan, ApicMode::XApic, p).0,
-            0x68
-        );
-        assert_eq!(
-            PlatformFlags::sp3(Generation::Milan, ApicMode::X2Apic, p).0,
-            0x58
-        );
+        assert_eq!(PlatformFlags::sp3(Silicon::Zp, ApicMode::XApic, p).0, 0);
+        assert_eq!(PlatformFlags::sp3(Silicon::Ssp, ApicMode::XApic, p).0, 0x4);
+        assert_eq!(PlatformFlags::sp3(Silicon::Ssp, ApicMode::X2Apic, p).0, 0x2);
+        assert_eq!(PlatformFlags::sp3(Silicon::Gn, ApicMode::XApic, p).0, 0x68);
+        assert_eq!(PlatformFlags::sp3(Silicon::Gn, ApicMode::X2Apic, p).0, 0x58);
         assert!(Platform::All(0x6).matches(PlatformFlags(0x7)));
         assert!(!Platform::All(0x6).matches(PlatformFlags(0x4)));
     }
@@ -296,9 +281,9 @@ mod tests {
     #[test]
     fn generated_tables_are_well_formed() {
         let gens = [
-            (Generation::Naples, crate::sp3::ccx::logical::zp::CPU, 0),
-            (Generation::Rome, ssp::CPU, ssp::CORE),
-            (Generation::Milan, gn::CPU, gn::CORE),
+            (Silicon::Zp, crate::sp3::ccx::logical::zp::CPU, 0),
+            (Silicon::Ssp, ssp::CPU, ssp::CORE),
+            (Silicon::Gn, gn::CPU, gn::CORE),
         ];
         for (g, cpu_family, core_family) in gens {
             let Some(t) = records(g) else { continue };
@@ -326,7 +311,7 @@ mod tests {
             (Revision::GnB2, ApicMode::XApic, 36, 0xc001_1004, 1 << 53),
         ];
         for (rev, apic, count, msr, clear) in cases {
-            let g = rev.generation();
+            let g = rev.silicon();
             let Some(t) = records(g) else { continue };
             let (ids, flags) = (LogicalId::of(rev), PlatformFlags::sp3(g, apic, p));
             let applied: Vec<_> = t.iter().filter(|r| r.applies(&ids, flags)).collect();

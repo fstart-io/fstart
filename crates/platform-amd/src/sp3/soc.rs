@@ -290,7 +290,7 @@ impl<F: Silicon> Init for Sp3<F> {
         let fch = hw::primary_fch(timer);
         step(0x11, "FCH reset tasks");
         // There is no console yet; the POST code shows where.
-        let resume = steps::fch_reset(&fch, generation, &config.policy)
+        let resume = steps::fch_reset(&fch, generation.silicon(), &config.policy)
             .unwrap_or_else(|what| parts::fail(what));
         Entered {
             hw: Hw {
@@ -337,7 +337,7 @@ impl<F: Silicon> Init for Sp3<F> {
     }
 
     fn psp(hw: &Hw) -> psp::Variant {
-        hw.identity.generation().into()
+        hw.identity.silicon().into()
     }
 
     /// The fabric, NBIO, the SMU and the secondary FCHs: everything up to
@@ -618,7 +618,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         parts::clear_einj_scratch(&einj);
         let soc = &state.soc;
         let config = super::smm::SmmConfig {
-            generation: soc.generation,
+            generation: Generation::of(soc.generation),
             ecam_base: soc.pci_root.ecam_base,
             psp_bar: soc.psp_bar as u32,
             einj,
@@ -675,7 +675,9 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             rsdp: Some(rsdp),
             smbios: Some(smbios),
             s5: fstart_core::description::AcpiSleepControl::new(
-                super::acpi::of(state.soc.generation).ports.control,
+                super::acpi::of(Generation::of(state.soc.generation))
+                    .ports
+                    .control,
                 crate::acpi::S5_SLEEP_TYPE,
             ),
         }

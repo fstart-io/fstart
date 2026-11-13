@@ -14,7 +14,7 @@ use crate::ccx::msr::{
     MCA_INTR_CFG, McaConfig, McaIpid, McaMisc, mca_config, mca_ctl_mask, mca_ipid, mca_misc0,
     mca_misc1,
 };
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 /// MCA_CTL_MASK of the eight L3 banks (7..=14).
 const L3_BANKS: core::ops::RangeInclusive<u32> = 7..=14;
@@ -53,8 +53,8 @@ pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
     let clear_blk_ptr = |v| McaMisc::BLK_PTR.val(0).modify(v);
     // The first thread of a Naples die / Rome CCD owns the L3 masks.
     let l3_owner = thread.in_scope(Scope::Die);
-    match thread.generation() {
-        Generation::Naples => {
+    match thread.silicon() {
+        Silicon::Zp => {
             // Erratum 931: MISC0[BlkPtr] = 0 except on the UMC banks,
             // whose MISC1 BlkPtr is cleared instead.
             (0..banks)
@@ -70,13 +70,13 @@ pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
                 L3_BANKS.for_each(|b| modify(cpu, mca_ctl_mask(b), |v| v | 0x80));
             }
         }
-        Generation::Rome => {
+        Silicon::Ssp => {
             if l3_owner {
                 L3_BANKS.for_each(|b| modify(cpu, mca_ctl_mask(b), |v| v | 0x80));
                 modify(cpu, mca_ctl_mask(0x19), |v| v | 0x3c0);
             }
         }
-        Generation::Milan => (0..banks).for_each(|b| {
+        Silicon::Gn => (0..banks).for_each(|b| {
             let id = cpu.reg(mca_ipid(b)).extract();
             let set = match (id.read(McaIpid::HARDWARE_ID), id.read(McaIpid::MCA_TYPE)) {
                 // CS (coherent slave) v2.
@@ -110,7 +110,7 @@ mod tests {
             (mca_ipid(1).index(), 0x0007_00b0 << 32),
             (mca_ipid(2).index(), 0x0002_002e << 32),
         ]);
-        init(&cpu, &Thread::new(Generation::Milan, 1, true, false));
+        init(&cpu, &Thread::new(Silicon::Gn, 1, true, false));
         let cpu = cpu.into_inner();
         assert!(!cpu.written(mca_ctl_mask(0).index()));
         assert_eq!(cpu.get(mca_ctl_mask(1).index()), 0x80);
@@ -125,7 +125,7 @@ mod tests {
             (mca_misc0(15).index(), 0xff00_0000),
             (mca_misc0(3).index(), 0xff00_0000),
         ]);
-        init(&cpu, &Thread::new(Generation::Naples, 0x10, true, false));
+        init(&cpu, &Thread::new(Silicon::Zp, 0x10, true, false));
         let cpu = cpu.into_inner();
         assert_eq!(cpu.get(mca_misc0(3).index()), 0);
         assert_eq!(
@@ -137,10 +137,10 @@ mod tests {
         assert_eq!(cpu.get(mca_ctl_mask(0).index()), 0x600);
         // Rome: L3 masks and C001_0419 only on the first thread of a CCD.
         let cpu = MsrSpace::new([(0x179, 23)]);
-        init(&cpu, &Thread::new(Generation::Rome, 0x08, true, false));
+        init(&cpu, &Thread::new(Silicon::Ssp, 0x08, true, false));
         assert!(!cpu.into_inner().written(mca_ctl_mask(0x19).index()));
         let cpu = MsrSpace::new([(0x179, 23)]);
-        init(&cpu, &Thread::new(Generation::Rome, 0x10, true, false));
+        init(&cpu, &Thread::new(Silicon::Ssp, 0x10, true, false));
         assert_eq!(cpu.into_inner().get(0xc001_0419), 0x3c0);
     }
 }

@@ -47,14 +47,14 @@ pub(crate) fn install(
     crate::smbios::build_into(
         bytes,
         &crate::smbios::System {
-            soc: &of(soc.generation),
+            soc: &of(Generation::of(soc.generation)),
             identity,
             rom_size,
             apob: Some(&soc.apob),
             regions: &regions,
             cpus,
             pci,
-            bridges: crate::sp3::acpi::of(soc.generation).bridges,
+            bridges: crate::sp3::acpi::of(Generation::of(soc.generation)).bridges,
             ports: &soc.ports,
         },
         |apic_id| (layout.decode(apic_id).socket, apic_id >> u32::from(smt)),

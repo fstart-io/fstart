@@ -12,9 +12,9 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use super::Generation;
 use crate::ccx::microcode::Patch;
 use crate::ccx::msr::PSP_ADDRESS;
+use crate::cpu::Silicon;
 use crate::sp3::ccx::power::{CacWeights, Wdt};
 use crate::sp3::ccx::release::{Launch, ReleaseError};
 use crate::sp3::ccx::topology::Thread;
@@ -28,7 +28,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use super::hw::msr;
 
 /// The executing thread as the CCX code sees it.
-pub fn this_thread(generation: Generation) -> Thread {
+pub fn this_thread(generation: Silicon) -> Thread {
     let (eax, ebx, _, _) = fstart_arch::x86::cpuid(0x8000_001e);
     let bsp = msr()
         .reg(fstart_arch::x86::cpu::msr::APIC_BASE)
@@ -102,7 +102,7 @@ impl CpuDriver for Sp3Cpu {
 
     fn init_cpu(&self) {
         let cpu = msr();
-        let thread = this_thread(self.ccx.generation());
+        let thread = this_thread(self.ccx.silicon());
         let bsp = thread.in_scope(ccx::topology::Scope::Bsp);
         // APs only (PSP_APOB §3.2, threads ≠ 0): the BSP wrote its PSP_ADDR
         // with the BAR, and a second write raises #GP.

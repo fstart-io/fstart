@@ -11,8 +11,8 @@ use tock_registers::interfaces::{ReadWriteable, Readable};
 use tock_registers::register_bitfields;
 
 use super::{Nbio, NbioPolicy};
+use crate::cpu::Silicon;
 use crate::smn::SmnAddr;
-use crate::sp3::soc::Generation;
 
 /// NBIFs per NBIO.
 pub const NBIFS: u8 = 3;
@@ -68,8 +68,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
         debug_assert!(k < NBIFS);
         let k = k as u32;
         match self.generation {
-            Generation::Naples => 0x1010_0000 + (k << 20),
-            Generation::Rome | Generation::Milan => self.at(0x1010_0000 + (k << 22)),
+            Silicon::Zp => 0x1010_0000 + (k << 20),
+            Silicon::Ssp | Silicon::Gn => self.at(0x1010_0000 + (k << 22)),
         }
     }
 
@@ -86,12 +86,12 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     pub fn set_nbif_bus_numbers(&self, policy: &NbioPolicy) {
         let bus = self.bus() as u32;
         match self.generation {
-            Generation::Naples => (0..NBIFS).for_each(|k| {
+            Silicon::Zp => (0..NBIFS).for_each(|k| {
                 self.reg_at::<ZP_BUS::Register>(self.nbif(k) + ZP_BUS_STRAP)
                     .modify(ZP_BUS::BUS.val(bus))
             }),
-            Generation::Rome | Generation::Milan => {
-                let nbifs: &[u8] = if self.generation == Generation::Rome {
+            Silicon::Ssp | Silicon::Gn => {
+                let nbifs: &[u8] = if self.generation == Silicon::Ssp {
                     &[1]
                 } else {
                     &[0, 1, 2]
@@ -119,7 +119,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
             self.reg_at::<LOCK::Register>(self.nbif(k) + HW_INIT_LOCK)
                 .modify(LOCK::LOCK::SET)
         });
-        if self.generation == Generation::Milan {
+        if self.generation == Silicon::Gn {
             [0x3_13AC, 0x3_15AC].iter().for_each(|&r| {
                 self.reg_at::<LOCK::Register>(self.nbif(1) + r)
                     .modify(LOCK::LOCK::SET)
@@ -135,18 +135,18 @@ mod tests {
 
     #[test]
     fn nbif_addresses() {
-        let (_, r) = nbio(Generation::Rome, 1, 0);
+        let (_, r) = nbio(Silicon::Ssp, 1, 0);
         assert_eq!(r.nbif(0), 0x1020_0000);
         assert_eq!(r.nbif(1), 0x1060_0000);
         assert_eq!(r.nbif(2), 0x10A0_0000);
-        let (_, z) = nbio(Generation::Naples, 1, 0);
+        let (_, z) = nbio(Silicon::Zp, 1, 0);
         assert_eq!(z.nbif(2), 0x1030_0000);
         assert_eq!(func_strap0(1, 0), 0x3_5000);
     }
 
     #[test]
     fn bus_numbers_per_generation() {
-        let (m, n) = nbio(Generation::Milan, 2, 0x60);
+        let (m, n) = nbio(Silicon::Gn, 2, 0x60);
         let ntb = NbioPolicy {
             milan: crate::sp3::nbio::MilanPolicy {
                 nbif2_ntb: true,
@@ -161,14 +161,14 @@ mod tests {
         assert!(!s.smn.contains_key(&(0x60, 0x10B3_101C)), "NTB skip");
         drop(s);
 
-        let (m, n) = nbio(Generation::Rome, 0, 0x20);
+        let (m, n) = nbio(Silicon::Ssp, 0, 0x20);
         n.set_nbif_bus_numbers(&NbioPolicy::default());
         assert_eq!(m.0.borrow().log.len(), 3, "NBIF1 only");
     }
 
     #[test]
     fn hw_init_lock_milan() {
-        let (m, n) = nbio(Generation::Milan, 0, 0);
+        let (m, n) = nbio(Silicon::Gn, 0, 0);
         n.nbif_hw_init_lock();
         let s = m.0.borrow();
         for a in [

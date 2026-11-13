@@ -6,7 +6,7 @@ use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;
 
 use super::FchHw;
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::{Window, update};
 
 /// The LPC bridge function.
@@ -108,11 +108,11 @@ pub fn enable_super_io<H: FchHw>(hw: &H, port_2e: bool, port_4e: bool) {
 }
 
 /// PEI reset task af42.
-pub fn reset<H: FchHw>(hw: &H, generation: Generation) {
+pub fn reset<H: FchHw>(hw: &H, generation: Silicon) {
     let lpc = hw.lpc();
     update::<u32, _>(&lpc, ROM_RANGE2, 0xff, 0);
     lpc.write8(IO_MEM_DECODE, 0x07);
-    if generation == Generation::Naples {
+    if generation == Silicon::Zp {
         lpc.write8(TPM, 0x05);
         update::<u8, _>(&lpc, LPC_BA, 0, 0xe0);
     }
@@ -127,11 +127,11 @@ pub fn reset<H: FchHw>(hw: &H, generation: Generation) {
 /// DXE env task af52 (LPC part). The ZP JEDEC-ID read and EFS rewrite of
 /// af53 (FCH_SP3 §3.2) are not ported: they serve AGESA's flash-part
 /// override, not the FCH.
-pub fn env<H: FchHw>(hw: &H, generation: Generation) {
+pub fn env<H: FchHw>(hw: &H, generation: Silicon) {
     let lpc = hw.lpc();
     // D14F3x40[LegacyDmaEnable].
     update::<u8, _>(&lpc, PCI_CONTROL, 0, 0x04);
-    if generation == Generation::Naples {
+    if generation == Silicon::Zp {
         lpc.write8(IO_MEM_DECODE, 0x07);
     }
     // D14F3x78[1:0]: NoHog off.
@@ -165,7 +165,7 @@ mod tests {
             .borrow_mut()
             .config
             .insert((0, 0x14, 3, 0x48), 0x0000_ff04);
-        reset(&hw, Generation::Rome);
+        reset(&hw, Silicon::Ssp);
         assert_eq!(cfg(&hw.pci, 0x6c), 0xffff_ff00);
         assert_eq!(cfg(&hw.pci, 0x48), 0x0000_ff07);
         assert_eq!(cfg(&hw.pci, 0x44), RESET_PORT_DECODE);

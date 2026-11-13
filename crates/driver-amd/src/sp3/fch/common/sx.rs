@@ -9,8 +9,8 @@ use super::super::acpimmio::{
 };
 use super::super::smi::{self, CONTROL0, source};
 use super::super::{FchHw, irq};
+use crate::cpu::Silicon;
 use crate::smu::{Error as SmuError, SmuMessages};
-use crate::sp3::soc::Generation;
 use crate::window::{Window, update};
 
 /// FCH IOAPIC (index/data/pin assertion at `FEC0_0000h` + 0/10h/20h).
@@ -66,10 +66,10 @@ pub fn acpi_disable<H: FchHw>(hw: &H) {
 /// USB SMI (SmiStat1\[21\]): acknowledge in the IOHC of the USB
 /// controllers. `buses` are the root buses of every die (Naples) or socket 0
 /// (Rome/Milan, both controllers in the IOD).
-pub fn usb_smi<H: FchHw>(hw: &H, generation: Generation, buses: &[u8]) {
+pub fn usb_smi<H: FchHw>(hw: &H, generation: Silicon, buses: &[u8]) {
     let acks: &[(u32, u32)] = match generation {
-        Generation::Naples => &[(0x13B1_0120, 1), (0x13B2_0020, 0x100)],
-        Generation::Rome | Generation::Milan => &[
+        Silicon::Zp => &[(0x13B1_0120, 1), (0x13B2_0020, 0x100)],
+        Silicon::Ssp | Silicon::Gn => &[
             (0x13D1_0120, 1),
             (0x13D2_0020, 0x100),
             (0x13E1_0120, 1),
@@ -114,14 +114,14 @@ fn arm_sleep<H: FchHw>(hw: &H, slp_typ: u8) {
 /// path, which has no SMU message, writes it, FCH_SP3 §5).
 fn sleep<H: FchHw, S: SmuMessages + ?Sized>(
     hw: &H,
-    generation: Generation,
+    generation: Silicon,
     smu: &S,
     slp_typ: u8,
 ) -> Result<(), SxError> {
     match generation {
-        Generation::Naples => smu.send(msg::V9_SLEEP_ENTRY, &mut [0; 6])?,
-        Generation::Rome | Generation::Milan => {
-            if generation == Generation::Milan {
+        Silicon::Zp => smu.send(msg::V9_SLEEP_ENTRY, &mut [0; 6])?,
+        Silicon::Ssp | Silicon::Gn => {
+            if generation == Silicon::Gn {
                 smu.send(msg::V11_DXIO, &mut msg::MILAN_DXIO_SX_ARGS.clone())?;
             }
             smu.send(msg::V11_SLEEP_ENTRY, &mut [0; 6])?;
@@ -138,7 +138,7 @@ fn sleep<H: FchHw, S: SmuMessages + ?Sized>(
 /// a running controller, die 0 first); Rome/Milan ignore it.
 pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
     hw: &H,
-    generation: Generation,
+    generation: Silicon,
     slp_typ: u8,
     smu: &S,
     usb_dies: &[u8],
@@ -154,7 +154,7 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
     update::<u32, _>(acpi, AOAC_94, 0, AOAC_94_SX);
     mask_ioapic(hw);
     match generation {
-        Generation::Naples => {
+        Silicon::Zp => {
             if slp_typ == 3 {
                 usb_dies.iter().try_for_each(|&bus| {
                     super::super::taishan::usb::sx_handshake(hw, bus)
@@ -163,7 +163,7 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
                 })?;
             }
         }
-        Generation::Rome | Generation::Milan => {
+        Silicon::Ssp | Silicon::Gn => {
             smu.send(msg::V11_USB_SX_ENTRY, &mut [0; 6])?;
             if s3_or_s4 {
                 let smn = hw.smn_window();
@@ -184,7 +184,7 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
 /// Power button SMI (SmiStat1\[19\]): go to S5 (FCH_SP3 §5).
 pub fn power_button<H: FchHw, S: SmuMessages + ?Sized>(
     hw: &H,
-    generation: Generation,
+    generation: Silicon,
     smu: &S,
 ) -> Result<(), SxError> {
     let acpi = hw.acpi();
@@ -196,11 +196,11 @@ pub fn power_button<H: FchHw, S: SmuMessages + ?Sized>(
     hw.io().write16(PM1_STS, 0x0100);
     hw.io().write16(PM1_CNT, 5 << 10);
     match generation {
-        Generation::Naples => {
+        Silicon::Zp => {
             hw.io().write16(PM1_CNT, 5 << 10 | 1 << 13);
             Ok(())
         }
-        Generation::Rome | Generation::Milan => sleep(hw, generation, smu, 5),
+        Silicon::Ssp | Silicon::Gn => sleep(hw, generation, smu, 5),
     }
 }
 
@@ -213,7 +213,7 @@ mod tests {
     fn milan_s3_entry() {
         let hw = fch();
         let smu = Smu::default();
-        enter(&hw, Generation::Milan, 3, &smu, &[]).unwrap();
+        enter(&hw, Silicon::Gn, 3, &smu, &[]).unwrap();
         assert_eq!(smu.ids(), vec![0x14, 0x08, 0x0b]);
         assert_eq!(smu.0.borrow()[1].1[..3], [0x3a, 1, 5]);
         assert_eq!(hw.acpi.get(PM + 0xee, 1), 3);
@@ -230,11 +230,11 @@ mod tests {
     fn rome_s5_skips_ee_and_usb_lock() {
         let hw = fch();
         let smu = Smu::default();
-        enter(&hw, Generation::Rome, 5, &smu, &[]).unwrap();
+        enter(&hw, Silicon::Ssp, 5, &smu, &[]).unwrap();
         assert_eq!(smu.ids(), vec![0x14, 0x0b]);
         assert!(hw.acpi.writes_to(PM + 0xee).is_empty());
         assert!(super::super::super::model::smn_writes(&hw.pci, 0).is_empty());
-        enter(&hw, Generation::Rome, 1, &smu, &[]).unwrap();
+        enter(&hw, Silicon::Ssp, 1, &smu, &[]).unwrap();
         assert_eq!(smu.ids().len(), 2, "S1 does nothing");
     }
 

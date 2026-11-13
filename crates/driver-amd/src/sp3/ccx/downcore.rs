@@ -22,9 +22,9 @@ use heapless::Vec;
 use tock_registers::LocalRegisterCopy;
 
 use super::release::{APPLY_KEY, MSG_APPLY, SmuPwr, ThreadCfg};
+use crate::cpu::Silicon;
 use crate::smn::{Smn, SmnAddr};
 use crate::smu::{Error as SmuError, SmuMessages, send1};
-use crate::sp3::soc::Generation;
 
 /// Enabled cores per complex (Milan has one 8-core complex: `ccx1 == 0`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,24 +83,24 @@ pub enum DowncoreError {
 
 impl CoreMode {
     /// The SOFT_DOWNCORE value: disabled-core bits.
-    pub fn discore(self, generation: Generation) -> Result<u8, DowncoreError> {
+    pub fn discore(self, generation: Silicon) -> Result<u8, DowncoreError> {
         let ok = match generation {
             // ZP PCD 0xa modes 1..7.
-            Generation::Naples => matches!(
+            Silicon::Zp => matches!(
                 (self.ccx0, self.ccx1),
                 (1, 0) | (1, 1) | (2, 0) | (3, 0) | (2, 2) | (4, 0) | (3, 3)
             ),
             // SSP PCD 0xb: 2+0, 3+0, 4+0 are rejected for SP3 (PkgType 4).
-            Generation::Rome => matches!((self.ccx0, self.ccx1), (1, 1) | (2, 2) | (3, 3)),
+            Silicon::Ssp => matches!((self.ccx0, self.ccx1), (1, 1) | (2, 2) | (3, 3)),
             // GN PCD 0x167: 1..7 of 8 cores (modes 1, 3, 4, 6, 8, 9, 10).
-            Generation::Milan => self.ccx1 == 0 && (1..=7).contains(&self.ccx0),
+            Silicon::Gn => self.ccx1 == 0 && (1..=7).contains(&self.ccx0),
         };
         if !ok {
             return Err(DowncoreError::CoreMode(self));
         }
         let enabled = |n: u8| (1u16 << n) - 1;
         let on = match generation {
-            Generation::Milan => enabled(self.ccx0),
+            Silicon::Gn => enabled(self.ccx0),
             _ => enabled(self.ccx0) | enabled(self.ccx1) << 4,
         };
         Ok(!(on as u8))
@@ -123,9 +123,9 @@ pub struct Unit {
 }
 
 impl Unit {
-    pub const fn regs(&self, generation: Generation) -> SmuPwr {
+    pub const fn regs(&self, generation: Silicon) -> SmuPwr {
         match generation {
-            Generation::Naples => SmuPwr::NAPLES,
+            Silicon::Zp => SmuPwr::NAPLES,
             _ => SmuPwr::ccd(self.ccd),
         }
     }
@@ -146,11 +146,11 @@ pub const MAX_UNITS: usize = 16;
 
 /// The register writes for `policy`; empty if nothing changes.
 pub fn plan(
-    generation: Generation,
+    generation: Silicon,
     policy: &DowncorePolicy,
     units: &[Unit],
 ) -> Result<Vec<Write, { 2 * MAX_UNITS }>, DowncoreError> {
-    if policy.ccds.is_some() && generation == Generation::Naples {
+    if policy.ccds.is_some() && generation == Silicon::Zp {
         return Err(DowncoreError::CcdMode);
     }
     if units.len() > MAX_UNITS {
@@ -175,7 +175,7 @@ pub fn plan(
             ccx1: if complexes > 1 { cores } else { 0 },
         };
         let full = complexes * cores >= 8;
-        let ccd_off = off & (1 << u.ccd) != 0 && generation != Generation::Naples;
+        let ccd_off = off & (1 << u.ccd) != 0 && generation != Silicon::Zp;
         let downcore = if ccd_off {
             Some(write(regs.soft_downcore, 0xff, 0xff))
         } else {
@@ -211,21 +211,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Generation::*;
+    use Silicon::*;
 
     #[test]
     fn core_masks() {
         let m = |a, b| CoreMode { ccx0: a, ccx1: b };
         let naples: std::vec::Vec<_> = [(1, 0), (1, 1), (2, 0), (3, 0), (2, 2), (4, 0), (3, 3)]
             .into_iter()
-            .map(|(a, b)| m(a, b).discore(Naples).unwrap())
+            .map(|(a, b)| m(a, b).discore(Zp).unwrap())
             .collect();
         assert_eq!(naples, [0xfe, 0xee, 0xfc, 0xf8, 0xcc, 0xf0, 0x88]);
-        assert!(m(2, 0).discore(Rome).is_err(), "not on SP3");
-        assert_eq!(m(3, 3).discore(Rome), Ok(0x88));
-        assert_eq!(CoreMode::SEVEN_PER_CCD.discore(Milan), Ok(0x80));
-        assert_eq!(m(5, 0).discore(Milan), Ok(0xe0));
-        assert!(m(8, 0).discore(Milan).is_err());
+        assert!(m(2, 0).discore(Ssp).is_err(), "not on SP3");
+        assert_eq!(m(3, 3).discore(Ssp), Ok(0x88));
+        assert_eq!(CoreMode::SEVEN_PER_CCD.discore(Gn), Ok(0x80));
+        assert_eq!(m(5, 0).discore(Gn), Ok(0xe0));
+        assert!(m(8, 0).discore(Gn).is_err());
     }
 
     #[test]
@@ -250,14 +250,14 @@ mod tests {
             smt: false,
             ccds: None,
         };
-        let w = plan(Milan, &policy, &units).unwrap();
+        let w = plan(Gn, &policy, &units).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!((w[0].addr, w[0].set), (0x3008_1020, 0x80));
         assert_eq!((w[1].addr, w[1].set), (0x3008_101c, 0x200));
         assert_eq!(w[2].addr, 0x3008_101c + 2 * 0x0200_0000);
         // Nothing to do by default or when the request is the topology.
         assert!(
-            plan(Milan, &DowncorePolicy::default(), &units)
+            plan(Gn, &DowncorePolicy::default(), &units)
                 .unwrap()
                 .is_empty()
         );
@@ -271,13 +271,13 @@ mod tests {
             ccd: 3,
             thread_cfg: 0x13,
         }];
-        assert!(plan(Rome, &same, &rome).is_err(), "4+4 is not a mode");
+        assert!(plan(Ssp, &same, &rome).is_err(), "4+4 is not a mode");
         let two = DowncorePolicy {
             ccds: Some(CcdMode::Two),
             ..Default::default()
         };
-        let w = plan(Rome, &two, &rome).unwrap();
+        let w = plan(Ssp, &two, &rome).unwrap();
         assert_eq!((w[0].addr, w[0].set), (0x3008_1020 + 3 * 0x0200_0000, 0xff));
-        assert_eq!(plan(Naples, &two, &[]), Err(DowncoreError::CcdMode));
+        assert_eq!(plan(Zp, &two, &[]), Err(DowncoreError::CcdMode));
     }
 }

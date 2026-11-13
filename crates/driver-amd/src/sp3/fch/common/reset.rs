@@ -12,7 +12,7 @@ use super::super::irq;
 use super::super::lpc::{IO_MEM_DECODE, WIDE_IO_0_1};
 use super::super::smbus::{ASF_IO, SMBUS_IO};
 use super::acpi_mmio_table;
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::{Reg, Window, apply, indexed, update};
 
 /// Milan IOMUX pins set to function 0 in the prelim task (FCH_SP3 §3.1
@@ -25,9 +25,9 @@ const MILAN_EMMC_BB: u32 = 0xFEDD_58BB;
 
 /// af4f: ACPI-MMIO decode on, clear the Sx AOAC bits and the S5 status.
 /// Runs through PMIO because ACPI-MMIO decode may still be off.
-pub fn prelim<H: FchHw>(hw: &H, generation: Generation) {
+pub fn prelim<H: FchHw>(hw: &H, generation: Silicon) {
     let pmio = PmIo(hw.io());
-    if generation == Generation::Naples {
+    if generation == Silicon::Zp {
         update::<u8, _>(&pmio, PM + pm::PM_0A, 0, 0x08);
     }
     pmio.reg::<u32, ISA_CONTROL::Register>(PM + pm::ISA_CONTROL)
@@ -36,7 +36,7 @@ pub fn prelim<H: FchHw>(hw: &H, generation: Generation) {
     update::<u8, _>(&pmio, PM + pm::PM_0A, 0, 0x10);
     update::<u8, _>(&pmio, PM + pm::MISC, 0x10, 0);
     update::<u8, _>(&pmio, PM + pm::PM_D2, 0x40, 0);
-    if generation == Generation::Milan {
+    if generation == Silicon::Gn {
         MILAN_IOMUX_FN0
             .iter()
             .for_each(|&pin| hw.acpi().write8(IOMUX + u32::from(pin), 0));
@@ -44,7 +44,7 @@ pub fn prelim<H: FchHw>(hw: &H, generation: Generation) {
     }
     // PMxC0 byte: write-1-to-clear FourSecondPwrBtn.
     pmio.write8(PM + pm::S5_RESET_STATUS, 0x02);
-    if generation == Generation::Milan {
+    if generation == Silicon::Gn {
         // MISCx50 bit 20 pulse (unnamed).
         update::<u32, _>(hw.acpi(), MISC + 0x50, 0, 1 << 20);
         update::<u32, _>(hw.acpi(), MISC + 0x50, 1 << 20, 0);
@@ -78,11 +78,11 @@ fn rtc<I: Window>(io: &I, index: u8) -> Indexed<Reg<&I, u8>, Reg<&I, u8>> {
 
 /// af40: SMBus/ASF and ACPI I/O decode, the ACPI-MMIO table, RTC, PCI_INTR
 /// 8/9, ASF, wake status and serial IRQ.
-pub fn hw_acpi<H: FchHw>(hw: &H, generation: Generation) {
+pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon) {
     let (acpi, io, lpc) = (hw.acpi(), hw.io(), hw.lpc());
     // Wide I/O 0 at E00h (enabled on Huashan here, on ZP by the LPC task).
     lpc.reg::<u16, ()>(WIDE_IO_0_1).set(0x0E00);
-    if generation != Generation::Naples {
+    if generation != Silicon::Zp {
         lpc.write8(IO_MEM_DECODE, 0x04);
     }
     // PmDecodeEn: SMBus/ASF I/O at B00h, enabled.
@@ -100,7 +100,7 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Generation) {
     a.set(a.get() & !0x10);
     irq::update(io, irq::INTR_08, 0, 0x0A);
     irq::update(io, irq::INTR_09, 0x66, 0x10);
-    if generation == Generation::Naples {
+    if generation == Silicon::Zp {
         io.write8(ASF_IO + 0x0E, 0x70);
     }
     io.write8(ASF_IO + 0x0A, 0x2F);
@@ -111,7 +111,7 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Generation) {
     let serirq = acpi.reg::<u8, SERIAL_IRQ::Register>(PM + pm::SERIAL_IRQ);
     serirq.write(SERIAL_IRQ::NUM_SER_IRQ_BITS.val(4));
     serirq.write(SERIAL_IRQ::NUM_SER_IRQ_BITS.val(4) + SERIAL_IRQ::ENABLE::SET);
-    if generation != Generation::Naples {
+    if generation != Silicon::Zp {
         // ASF+15h bit 4 (Huashan only; unnamed).
         update::<u8, _>(acpi, ASF + 0x15, 0, 0x10);
     }
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn prelim_rome_through_pmio() {
         let hw = fch();
-        prelim(&hw, Generation::Rome);
+        prelim(&hw, Silicon::Ssp);
         let pm = |r: u32| hw.io.at(0xcd7, r);
         assert_eq!(pm(0x04) & 2, 2);
         assert_eq!(pm(0x0a), 0x10);
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn prelim_milan_iomux_and_pulse() {
         let hw = fch();
-        prelim(&hw, Generation::Milan);
+        prelim(&hw, Silicon::Gn);
         assert_eq!(hw.acpi.writes_to(0xd6d), vec![0]);
         assert_eq!(hw.mmio.writes(), vec![(MILAN_EMMC_BB, 1, 0x88)]);
         assert_eq!(hw.acpi.writes_to(0xe50), vec![1 << 20, 0]);
@@ -194,7 +194,7 @@ mod tests {
             .borrow_mut()
             .reads
             .insert(PM + 0x5f, vec![0xff, 0]);
-        hw_acpi(&hw, Generation::Rome);
+        hw_acpi(&hw, Silicon::Ssp);
         assert_eq!(hw.acpi.get(PM + 0x6a, 2), 0xb2);
         assert_eq!(hw.acpi.get(PM + 0x60, 2), 0x800);
         assert_eq!(hw.acpi.get(PM, 4) & 0xff00, 0x0b00);

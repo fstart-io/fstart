@@ -18,10 +18,8 @@ fn node_ids(nodes: &[Node]) -> impl Iterator<Item = u8> + '_ {
 /// DF2.
 pub fn bus_map_targets(topology: &Topology) -> heapless::Vec<Target, 16> {
     match topology.generation {
-        crate::sp3::soc::Generation::Naples => {
-            heapless::Vec::from_slice(&[Target::Node]).unwrap_or_default()
-        }
-        crate::sp3::soc::Generation::Rome | crate::sp3::soc::Generation::Milan => {
+        crate::cpu::Silicon::Zp => heapless::Vec::from_slice(&[Target::Node]).unwrap_or_default(),
+        crate::cpu::Silicon::Ssp | crate::cpu::Silicon::Gn => {
             let ioms = topology
                 .root_bridges
                 .iter()
@@ -70,7 +68,7 @@ pub fn bus_maps<V: Version, P: ConfigRegionAccess + Clone>(
             }
         }
         let own = match topology.generation {
-            crate::sp3::soc::Generation::Naples => Target::Node,
+            crate::cpu::Silicon::Zp => Target::Node,
             _ => Target::Instance(0x18 + rb.index),
         };
         // SAFETY: the root bridge's own CfgAddressCntl.
@@ -95,15 +93,15 @@ mod tests {
     use super::super::topology::{discover, tests::df3_system};
     use super::super::v3::Df3;
     use super::*;
+    use crate::cpu::Silicon;
     use crate::df::plan::{IoRoute, MmioRoute, Window};
     use crate::df::program::{io, mmio, vga};
-    use crate::sp3::soc::Generation;
 
     #[test]
     fn mmio_and_io_on_every_node() {
         let m = df3_system(2, 0b1111);
         let df = Df::new(m.clone());
-        let t = discover(&df, Generation::Rome).unwrap();
+        let t = discover(&df, Silicon::Ssp).unwrap();
         m.clear_log();
         let mmio_routes = [MmioRoute {
             pair: 6,
@@ -146,7 +144,7 @@ mod tests {
     fn bus_map_rewrite_primary_first() {
         let m = df3_system(1, 0b1111);
         let df = Df::new(m.clone());
-        let mut t = discover(&df, Generation::Rome).unwrap();
+        let mut t = discover(&df, Silicon::Ssp).unwrap();
         let ranges = [(0x40, 0x7F), (0x80, 0xBF), (0xC0, 0xFF), (0, 0x3F)]
             .map(|(base, limit)| BusRange { base, limit });
         bus_maps::<Df3, _>(&df, &mut t, &ranges);
@@ -159,7 +157,7 @@ mod tests {
         // Unused maps were cleared.
         assert_eq!(m.get(0, Some(0x17), 0, 0xB0), 0);
         // The rewritten map reads back as the same topology.
-        assert_eq!(discover(&df, Generation::Rome).unwrap(), t);
+        assert_eq!(discover(&df, Silicon::Ssp).unwrap(), t);
     }
 
     #[test]

@@ -16,7 +16,7 @@
 //! exceeds 0xff: a 2P 64-core part uses 0xff, the xAPIC broadcast ID, which
 //! is why it needs x2APIC.
 
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 /// The table scopes of the AGESA engine. Only `Thread`, `Core` and
 /// `Complex` carry records on SP3; the dispatcher stops at the first scope
@@ -52,7 +52,7 @@ pub struct Location {
 /// The APIC ID layout of a generation with or without SMT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApicLayout {
-    pub generation: Generation,
+    pub generation: Silicon,
     pub smt: bool,
 }
 
@@ -67,28 +67,28 @@ struct Widths {
 }
 
 impl ApicLayout {
-    pub const fn new(generation: Generation, smt: bool) -> Self {
+    pub const fn new(generation: Silicon, smt: bool) -> Self {
         Self { generation, smt }
     }
 
     const fn widths(self) -> Widths {
         let thread = self.smt as u32;
         match self.generation {
-            Generation::Naples => Widths {
+            Silicon::Zp => Widths {
                 thread,
                 core: 2,
                 pad: 1 - thread,
                 ccx: 1,
                 die: 2,
             },
-            Generation::Rome => Widths {
+            Silicon::Ssp => Widths {
                 thread,
                 core: 2,
                 pad: 0,
                 ccx: 1,
                 die: 3,
             },
-            Generation::Milan => Widths {
+            Silicon::Gn => Widths {
                 thread,
                 core: 3,
                 pad: 0,
@@ -148,13 +148,13 @@ impl ApicLayout {
         let (smt, single) = match (self.generation, scope) {
             (_, Scope::Thread | Scope::Bsp) => return None,
             (_, Scope::Core) => (1, 0),
-            (Generation::Naples, Scope::Complex) => (0x7, 0x7),
-            (Generation::Naples, Scope::Die) => (0xf, 0xf),
-            (Generation::Naples, Scope::Socket) => (0x3f, 0x3f),
-            (Generation::Rome, Scope::Complex) => (0x7, 0x3),
-            (Generation::Rome, Scope::Die) => (0xf, 0x7),
-            (Generation::Milan, Scope::Complex) => (0xf, 0x7),
-            (Generation::Rome | Generation::Milan, _) => (0x7f, 0x3f),
+            (Silicon::Zp, Scope::Complex) => (0x7, 0x7),
+            (Silicon::Zp, Scope::Die) => (0xf, 0xf),
+            (Silicon::Zp, Scope::Socket) => (0x3f, 0x3f),
+            (Silicon::Ssp, Scope::Complex) => (0x7, 0x3),
+            (Silicon::Ssp, Scope::Die) => (0xf, 0x7),
+            (Silicon::Gn, Scope::Complex) => (0xf, 0x7),
+            (Silicon::Ssp | Silicon::Gn, _) => (0x7f, 0x3f),
         };
         Some(if self.smt { smt } else { single })
     }
@@ -170,7 +170,7 @@ pub struct Thread {
 }
 
 impl Thread {
-    pub const fn new(generation: Generation, apic_id: u32, smt: bool, bsp: bool) -> Self {
+    pub const fn new(generation: Silicon, apic_id: u32, smt: bool, bsp: bool) -> Self {
         Self {
             layout: ApicLayout::new(generation, smt),
             apic_id,
@@ -180,11 +180,11 @@ impl Thread {
 
     /// From CPUID Fn8000_001E EAX (ExtendedApicId; valid with the APIC
     /// enabled) and EBX (ThreadsPerCore in \[15:8\]) and APIC_BAR.BSP.
-    pub const fn from_cpuid(generation: Generation, ext_eax: u32, ext_ebx: u32, bsp: bool) -> Self {
+    pub const fn from_cpuid(generation: Silicon, ext_eax: u32, ext_ebx: u32, bsp: bool) -> Self {
         Self::new(generation, ext_eax, (ext_ebx >> 8) & 0xff != 0, bsp)
     }
 
-    pub const fn generation(&self) -> Generation {
+    pub const fn silicon(&self) -> Silicon {
         self.layout.generation
     }
 
@@ -216,7 +216,7 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Generation::*;
+    use Silicon::*;
 
     #[test]
     fn layouts_round_trip() {
@@ -227,10 +227,10 @@ mod tests {
             core: 2,
             thread: 1,
         };
-        let rome = ApicLayout::new(Rome, true);
+        let rome = ApicLayout::new(Ssp, true);
         assert_eq!(rome.encode(l), 0x80 | 5 << 4 | 1 << 3 | 2 << 1 | 1);
         assert_eq!(rome.decode(rome.encode(l)), l);
-        let milan = ApicLayout::new(Milan, false);
+        let milan = ApicLayout::new(Gn, false);
         let m = Location {
             socket: 1,
             die: 7,
@@ -241,17 +241,17 @@ mod tests {
         assert_eq!(milan.encode(m), 0x40 | 7 << 3 | 7);
         assert_eq!(milan.decode(0x7f), m);
         // Naples without SMT keeps the CCX at bit 3 (PPR 54945 ApicId[2:0]).
-        let naples = ApicLayout::new(Naples, false);
+        let naples = ApicLayout::new(Zp, false);
         assert_eq!(naples.decode(0x4b).ccx, 1);
         assert_eq!(naples.decode(0x4b).core, 3);
         assert_eq!(naples.socket_shift(), 6);
-        assert_eq!(ApicLayout::new(Milan, true).socket_shift(), 7);
+        assert_eq!(ApicLayout::new(Gn, true).socket_shift(), 7);
     }
 
     #[test]
     fn complex_scope_is_the_first_thread_of_the_l3() {
         // The engine's literal masks agree with the layouts.
-        for (g, smt) in [Naples, Rome, Milan]
+        for (g, smt) in [Zp, Ssp, Gn]
             .into_iter()
             .flat_map(|g| [(g, true), (g, false)])
         {
@@ -261,7 +261,7 @@ mod tests {
                 ccx: 1,
                 ..Location::default()
             });
-            let below = if g == Milan {
+            let below = if g == Gn {
                 layout.encode(Location {
                     die: 1,
                     ..Location::default()
@@ -276,17 +276,17 @@ mod tests {
     #[test]
     fn scope_predicates() {
         let t = |g, id, smt| Thread::new(g, id, smt, false);
-        assert!(t(Rome, 0x08, true).in_scope(Scope::Complex));
-        assert!(!t(Rome, 0x08, true).in_scope(Scope::Die), "CCX 1 of CCD 0");
-        assert!(t(Milan, 0x10, true).in_scope(Scope::Complex));
+        assert!(t(Ssp, 0x08, true).in_scope(Scope::Complex));
+        assert!(!t(Ssp, 0x08, true).in_scope(Scope::Die), "CCX 1 of CCD 0");
+        assert!(t(Gn, 0x10, true).in_scope(Scope::Complex));
         assert!(
-            !t(Milan, 0x10, true).in_scope(Scope::Die),
+            !t(Gn, 0x10, true).in_scope(Scope::Die),
             "GN scope 3 is the socket"
         );
-        assert!(!t(Naples, 0x01, true).primary());
-        assert!(t(Naples, 0x01, false).primary());
-        assert!(Thread::new(Milan, 0x81, true, true).in_scope(Scope::Bsp));
-        let ap = Thread::from_cpuid(Milan, 0xff, 0x0100, false);
+        assert!(!t(Zp, 0x01, true).primary());
+        assert!(t(Zp, 0x01, false).primary());
+        assert!(Thread::new(Gn, 0x81, true, true).in_scope(Scope::Bsp));
+        let ap = Thread::from_cpuid(Gn, 0xff, 0x0100, false);
         assert!(ap.smt() && ap.location().socket == 1 && !ap.primary());
     }
 }

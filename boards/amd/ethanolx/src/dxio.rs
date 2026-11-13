@@ -189,7 +189,8 @@ pub static KNOBS: [Knob<Layout>; 4] = [
 /// Whether the layout's engines are valid on the SoC.
 pub fn check(layout: &Layout) -> Result<(), &'static str> {
     let plan = plan(layout).map_err(|_| "too many DXIO engines")?;
-    validate(Generation::Milan, &plan.engines).map_err(|_| "the lane map does not validate")
+    validate(Generation::Milan.silicon(), &plan.engines)
+        .map_err(|_| "the lane map does not validate")
 }
 
 fn group_ports(
@@ -397,14 +398,16 @@ mod tests {
             false,
         )
         .unwrap();
-        validate(Generation::Milan, &p.engines).unwrap();
+        validate(Generation::Milan.silicon(), &p.engines).unwrap();
         assert_eq!(p.engines.iter().filter(|e| e.socket == 0).count(), 5);
         assert_eq!(p.engines.iter().filter(|e| e.socket == 1).count(), 6);
         assert_eq!(
-            place(Generation::Milan, &p.engines[0]).unwrap().phy,
+            place(Generation::Milan.silicon(), &p.engines[0])
+                .unwrap()
+                .phy,
             (15, 0)
         );
-        let bmc = place(Generation::Milan, &p.engines[4]).unwrap();
+        let bmc = place(Generation::Milan.silicon(), &p.engines[4]).unwrap();
         assert_eq!((bmc.nbio, bmc.phy), (0, (129, 129)));
         // Socket 1's four NVMe ports and slot 4.
         assert_eq!(
@@ -438,7 +441,7 @@ mod tests {
                 false,
             );
             let p = result.unwrap();
-            validate(Generation::Milan, &p.engines).unwrap();
+            validate(Generation::Milan.silicon(), &p.engines).unwrap();
             let profile = match selector {
                 8 => RedriverMode::SataEthernet,
                 0xa => RedriverMode::Pcie,
@@ -467,7 +470,7 @@ mod tests {
         for (group, shift) in [(Group::P0, 0), (Group::P1, 8)] {
             for selector in [8, 9] {
                 let raw = group_ports(group, selector, 3, 1, None);
-                validate(Generation::Milan, &raw).unwrap();
+                validate(Generation::Milan.silicon(), &raw).unwrap();
                 assert!(matches!(raw[0].kind, EngineKind::Sata(_)));
                 assert_eq!((raw[0].lanes.first(), raw[0].lanes.count()), (0, 4));
                 assert_eq!(raw[0].tuning, SATA_TUNING);
@@ -475,7 +478,7 @@ mod tests {
                     let mut out = [0; 1024];
                     fstart_driver_amd::sp3::dxio::engine::encode_tuning(
                         raw[0].tuning,
-                        place(Generation::Milan, &raw[0]).unwrap().wire,
+                        place(Generation::Milan.silicon(), &raw[0]).unwrap().wire,
                         absolute,
                         &mut out,
                     )
@@ -501,7 +504,7 @@ mod tests {
                     false,
                 )
                 .unwrap();
-                validate(Generation::Milan, &p.engines).unwrap();
+                validate(Generation::Milan.silicon(), &p.engines).unwrap();
                 assert_eq!(p.disabled_xgbe, 4);
                 let bank = if group == Group::P0 { 0 } else { 1 };
                 assert_eq!(
@@ -548,7 +551,7 @@ mod tests {
                 .unwrap();
                 assert_eq!(p.disabled_xgbe, 0);
                 assert_eq!(p.redrivers, [RedriverMode::Off; 4]);
-                validate(Generation::Milan, &p.engines).unwrap();
+                validate(Generation::Milan.silicon(), &p.engines).unwrap();
             }
         }
     }
@@ -563,7 +566,7 @@ mod tests {
             true,
         )
         .unwrap();
-        validate(Generation::Milan, &p.engines).unwrap();
+        validate(Generation::Milan.silicon(), &p.engines).unwrap();
         assert_eq!(p.engines.len(), 6);
         // Only slot 4 keeps hotplug: socket 1's NVMe ports are fused off.
         assert!(p.engines.iter().all(|e| {
@@ -665,7 +668,7 @@ mod tests {
         .unwrap();
         layout.bifurcation[2] = Some(Bifurcation::X4x4x4x4);
         let p = plan(&layout).unwrap();
-        validate(Generation::Milan, &p.engines).unwrap();
+        validate(Generation::Milan.silicon(), &p.engines).unwrap();
         let p2: std::vec::Vec<_> = p
             .engines
             .iter()

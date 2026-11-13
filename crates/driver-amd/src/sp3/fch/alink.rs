@@ -10,7 +10,7 @@ use tock_registers::interfaces::{Readable, Writeable};
 
 use super::FchHw;
 use super::acpimmio::{MISC, PM, pm};
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::{Reg, Window, indexed, update};
 
 /// AB index/data ports (PMxE0 = `CD8h`, FCH_SP3 §3.1 af41).
@@ -50,16 +50,16 @@ pub struct AbPolicy {
 }
 
 impl AbPolicy {
-    pub const fn default_for(generation: Generation) -> Self {
+    pub const fn default_for(generation: Silicon) -> Self {
         Self {
-            reset_cpu_on_sync_flood: !matches!(generation, Generation::Milan),
+            reset_cpu_on_sync_flood: !matches!(generation, Silicon::Gn),
         }
     }
 }
 
 /// Program the A-Link table and the clock gating of the primary FCH
 /// (af51). `hw.io()` must reach this FCH's AB ports.
-pub fn clock_gating<H: FchHw>(hw: &H, generation: Generation, policy: &AbPolicy) {
+pub fn clock_gating<H: FchHw>(hw: &H, generation: Silicon, policy: &AbPolicy) {
     program(hw, generation, Some(policy));
 }
 
@@ -67,14 +67,14 @@ pub fn clock_gating<H: FchHw>(hw: &H, generation: Generation, policy: &AbPolicy)
 /// FCH_SP3 §4.2): no MISCx40 write, no ABCFG 0x94 row, and sync-flood
 /// reset left off (10050\[2\] cleared at the end). `hw.io()` must be routed
 /// to socket 1 ([`super::multi::with_legacy_io`]).
-pub fn clock_gating_secondary<H: FchHw>(hw: &H, generation: Generation) {
+pub fn clock_gating_secondary<H: FchHw>(hw: &H, generation: Silicon) {
     program(hw, generation, None);
     modify(hw.io(), MISC_CTL, RESET_CPU_ON_SYNC_FLOOD, 0);
 }
 
-fn program<H: FchHw>(hw: &H, generation: Generation, primary: Option<&AbPolicy>) {
+fn program<H: FchHw>(hw: &H, generation: Silicon, primary: Option<&AbPolicy>) {
     let (io, acpi) = (hw.io(), hw.acpi());
-    let huashan = generation != Generation::Naples;
+    let huashan = generation != Silicon::Zp;
     if primary.is_some() {
         update::<u8, _>(acpi, MISC + 0x40, 0x02, 0);
     }
@@ -154,11 +154,7 @@ mod tests {
     #[test]
     fn rome_results_match_the_contract() {
         let hw = fch();
-        clock_gating(
-            &hw,
-            Generation::Rome,
-            &AbPolicy::default_for(Generation::Rome),
-        );
+        clock_gating(&hw, Silicon::Ssp, &AbPolicy::default_for(Silicon::Ssp));
         // FCH_SP3 §3.2 af51 results at the Rome default.
         assert_eq!(ab(&hw.io, 0x208), 0x43_8280);
         assert_eq!(ab(&hw.io, 0x238), 0x400);
@@ -175,11 +171,7 @@ mod tests {
     #[test]
     fn naples_results_match_the_contract() {
         let naples = fch();
-        clock_gating(
-            &naples,
-            Generation::Naples,
-            &AbPolicy::default_for(Generation::Naples),
-        );
+        clock_gating(&naples, Silicon::Zp, &AbPolicy::default_for(Silicon::Zp));
         // ZP: 208 = 408290, 10054 = 31007FF, 54 = 1100014 (FCH_SP3 §3.2).
         assert_eq!(ab(&naples.io, 0x208), 0x40_8290);
         assert_eq!(ab(&naples.io, 0x10054), 0x0310_07ff);

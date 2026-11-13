@@ -7,6 +7,7 @@ use fstart_pci::{ConfigRegionAccess, ConfigRegister};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::Nbio;
+use crate::cpu::Silicon;
 use crate::nbio::iohc::{
     BarHigh, CFG_IOHC_PCI, CfgIohcPci, IOAPIC_BAR, IoapicBar, IohcRbBusRoute, NB_BUS_NUM_CNTL,
     NB_TOP_OF_DRAM_SLOT1, NbBusNumCntl, PSP_BAR, PspBar, SMU_BAR, SmuBar, TopStyle,
@@ -14,7 +15,6 @@ use crate::nbio::iohc::{
 };
 use crate::nbio::iohc::{DramTops, PSP_BAR_SIZE, SMU_BAR_SIZE};
 use crate::smn::SmnAccess;
-use crate::sp3::soc::Generation;
 use crate::sp3::topology::RootBridge;
 
 impl<P: ConfigRegionAccess + Clone> Nbio<P> {
@@ -26,8 +26,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
         let slot1 =
             unsafe { ConfigRegister::new(self.pci(), self.function(0, 0), NB_TOP_OF_DRAM_SLOT1) };
         let style = match self.generation {
-            Generation::Naples => TopStyle::MmioWindow,
-            Generation::Rome | Generation::Milan => TopStyle::Tom3,
+            Silicon::Zp => TopStyle::MmioWindow,
+            Silicon::Ssp | Silicon::Gn => TopStyle::Tom3,
         };
         crate::nbio::iohc::set_tom(self, &slot1, tops, style);
     }
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn tom_sp3_below_and_above_1t() {
-        let (m, n) = nbio(Generation::Milan, 1, 0x20);
+        let (m, n) = nbio(Silicon::Gn, 1, 0x20);
         n.set_tom(DramTops {
             tom: 0x8000_0000,
             tom2: Some(0x80_5000_0000),
@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(smn(&m, 0x20, NB_TOP_OF_DRAM3, 1), 0);
         assert_eq!(smn(&m, 0x20, NB_PCI_CTRL, 1), 1 << 23);
 
-        let (m, n) = nbio(Generation::Rome, 0, 0);
+        let (m, n) = nbio(Silicon::Ssp, 0, 0);
         m.0.borrow_mut().config.insert((0, 0, 0, 0x90), 0);
         n.set_tom(DramTops {
             tom: 1 << 32,
@@ -182,7 +182,7 @@ mod tests {
             bus_limit: 0xFF - 0x40 * i as u8,
             primary: i == 3,
         });
-        let (m, n) = nbio(Generation::Rome, 1, 0x80);
+        let (m, n) = nbio(Silicon::Ssp, 1, 0x80);
         n.set_bus_routes(&rbs);
         assert_eq!(smn(&m, 0x80, iohc_rb_bus_route(0), 1), 1 << 31 | 0xFFC0);
         assert_eq!(smn(&m, 0x80, iohc_rb_bus_route(1), 1), 0xBF80, "own entry");
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn tom_naples() {
-        let (m, n) = nbio(Generation::Naples, 2, 0x30);
+        let (m, n) = nbio(Silicon::Zp, 2, 0x30);
         m.0.borrow_mut().config.insert((0x30, 0, 0, 0x90), 0);
         n.set_tom(DramTops {
             tom: 0xC000_0000,
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn bars() {
-        let (m, n) = nbio(Generation::Rome, 2, 0x40);
+        let (m, n) = nbio(Silicon::Ssp, 2, 0x40);
         assert!(n.set_smu_bar(0x1_2340_0000));
         assert!(!n.set_smu_bar(0x1_2350_0000), "kept when set");
         assert_eq!(smn(&m, 0x40, SMU_BAR.low, 2), 0x2340_0003);

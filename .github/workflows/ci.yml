@@ -129,9 +129,10 @@ jobs:
           cargo test -p fstart-log --features debug-consoles
           # The AMD drivers and the AMD stage as firmware links them: every
           # IP block and every SoC; a board links what its SoCs reach.
-          cargo clippy -p fstart-driver-amd -p fstart-platform-amd \
-            --target x86_64-unknown-none -Zbuild-std=core,alloc \
-            --features fstart-platform-amd/bundle
+          for crate in fstart-driver-amd "fstart-platform-amd --features bundle"; do
+            cargo clippy -p $crate \
+              --target x86_64-unknown-none -Zbuild-std=core,alloc
+          done
 
       # fstart linked as a library by a foreign firmware (the AST2700
       # BootMCU, riscv32imc) and the ARMv5TE BMC cores: neither has

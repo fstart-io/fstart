@@ -78,10 +78,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::Silicon;
     use crate::dxio::{Dxio, op};
     use crate::sp3::dxio::lanes::{Engine, Lanes, PcieEngine};
     use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
-    use crate::sp3::soc::Generation;
     use fstart_core::services::ManualTimer;
 
     #[test]
@@ -100,10 +100,10 @@ mod tests {
             .script(&sm)
         };
         let (d0, d1) = (fake(&mut w0), fake(&mut w1));
-        let policy = DxioPolicy::new(Generation::Naples);
+        let policy = DxioPolicy::new(Silicon::Zp);
         let mk = |smu, die, w: &mut Window| {
             Unit::new(
-                Generation::Naples,
+                Silicon::Zp,
                 (0, die),
                 Dxio::new(smu, DXIO_MSG),
                 w.dma(),

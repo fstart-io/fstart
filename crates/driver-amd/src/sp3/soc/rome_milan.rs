@@ -1,6 +1,6 @@
 //! Rome and Milan silicon steps: DF3, the SSP/GN NBIO quadrants, SMU V11,
 //! two-pass DXIO, Huashan FCHs and the per-CCD SMU thread release
-//! (INTEGRATION_NOTES §3–§9). Milan deltas are inline (`Generation::Milan`
+//! (INTEGRATION_NOTES §3–§9). Milan deltas are inline (`cpu::Silicon::Gn`
 //! branches): fused NBIO quadrants, the IOMMU BAR in PEI, SMEE-dependent
 //! address bits and the PSP FCH lock.
 extern crate alloc;
@@ -11,6 +11,7 @@ use super::steps::*;
 use crate::apob::ccx::{CoreMap, core_map};
 use crate::apob::phy::phy_override;
 use crate::ccx::microcode;
+use crate::cpu;
 use crate::df::regs;
 use crate::dxio::wire::MAX_ENGINES;
 use crate::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
@@ -33,7 +34,6 @@ use crate::sp3::fch::huashan::usb::UsbPolicy;
 use crate::sp3::nbio::fuse::Fuses;
 use crate::sp3::nbio::ioapic::nbio_ioapic_id;
 use crate::sp3::nbio::{Nbio, sp3 as nbio_sp3};
-use crate::sp3::soc::Generation;
 use crate::sp3::topology::MAX_ROOT_BRIDGES;
 use crate::window::Window;
 use alloc::vec::Vec;
@@ -102,7 +102,7 @@ fn socket_memory(ctx: &Ctx, socket: u8) -> SocketMemory {
 
 /// The APIC IDs of a socket's threads from its core map (logical CCD /
 /// complex / core positions, CCX §3.7), for the PPTable CPPC map.
-fn apic_ids(generation: Generation, socket: u8, map: &CoreMap) -> impl Iterator<Item = u16> + '_ {
+fn apic_ids(generation: cpu::Silicon, socket: u8, map: &CoreMap) -> impl Iterator<Item = u16> + '_ {
     let smt = map.cores().next().is_some_and(|(_, _, c)| c.threads[1]);
     let layout = ApicLayout::new(generation, smt);
     map.ccds.iter().enumerate().flat_map(move |(d, ccd)| {
@@ -281,14 +281,14 @@ impl Steps for Silicon {
             .map(|s| socket_memory(ctx, s))
             .collect();
         match ctx.generation {
-            Generation::Rome => crate::sp3::df::rome::init(
+            cpu::Silicon::Ssp => crate::sp3::df::rome::init(
                 &ctx.df,
                 &ctx.topology,
                 ctx.identity.revision,
                 &Default::default(),
                 &memory,
             ),
-            Generation::Milan => {
+            cpu::Silicon::Gn => {
                 crate::sp3::df::milan::init(&ctx.df, &ctx.topology, &Default::default(), &memory)
             }
             _ => return Err("DF init"),
@@ -303,13 +303,13 @@ impl Steps for Silicon {
         let generation = ctx.generation;
         let policy = ctx.policy.nbio;
         let buses = match generation {
-            Generation::Milan => socket_buses(ctx)?,
+            cpu::Silicon::Gn => socket_buses(ctx)?,
             _ => [0; 2],
         };
         let fuses: heapless::Vec<Fuses, 2> = (0..ctx.topology.sockets)
             .map(|s| match generation {
                 // SAFETY: read-only fuse words through the socket's SMN.
-                Generation::Milan => unsafe {
+                cpu::Silicon::Gn => unsafe {
                     Fuses::read(&Smn::on_bus(ctx.pci, buses[usize::from(s)]))
                 },
                 _ => Fuses::NONE,
@@ -353,7 +353,7 @@ impl Steps for Silicon {
                 msr().reg(crate::ccx::msr::PSP_ADDRESS).set(bar);
             }
         }
-        if generation == Generation::Milan {
+        if generation == cpu::Silicon::Gn {
             for (i, n) in nbios.iter().enumerate() {
                 n.set_iommu_bar(ctx.non_pci[i].alloc(IOMMU_BAR).step("IOMMU BAR space")?);
             }
@@ -393,11 +393,11 @@ impl Steps for Silicon {
         for (s, smu) in si.smus.iter().enumerate() {
             let ids: Vec<u16> = apic_ids(generation, s as u8, &si.maps[s]).collect();
             let table: &[u8] = match generation {
-                Generation::Rome => {
+                cpu::Silicon::Ssp => {
                     let t = v11::pptable::RomePpTable::new(&power, &ids);
                     alloc::boxed::Box::leak(alloc::boxed::Box::new(t)).as_bytes()
                 }
-                Generation::Milan => {
+                cpu::Silicon::Gn => {
                     let t = v11::pptable::MilanPpTable::new(&power, &ids);
                     alloc::boxed::Box::leak(alloc::boxed::Box::new(t)).as_bytes()
                 }
@@ -406,11 +406,7 @@ impl Steps for Silicon {
             let dma = dma_alloc(table.len(), 0x1000)?;
             dma.copy_from_slice(table);
             v11::transfer_pptable(smu, dma.as_ptr() as u64, dma.len() as u32).step("PPTable")?;
-            let pages = if generation == Generation::Milan {
-                4
-            } else {
-                1
-            };
+            let pages = if generation == cpu::Silicon::Gn { 4 } else { 1 };
             let tools = dma_alloc(pages * 0x1000, 0x1000)?;
             v11::set_tools_dram(smu, tools.as_ptr() as u64).step("SMU tools DRAM")?;
             v11::sp3_workarounds(smu, generation, &Sp3Workarounds::default())
@@ -481,7 +477,7 @@ impl Steps for Silicon {
             })
             .collect();
         let _ = &si.smus;
-        let phy = if generation == Generation::Milan {
+        let phy = if generation == cpu::Silicon::Gn {
             phy_override(&ctx.apob).step("APOB PHY override")?
         } else {
             None
@@ -732,7 +728,7 @@ impl Steps for Silicon {
             let rb = ctx.topology.root_bridges[i];
             n.set_ioapic_bar(ctx.non_pci[i].alloc(IOAPIC_BAR).step("IOAPIC BAR space")?);
             n.set_ioapic_id(nbio_ioapic_id(generation, 4 * rb.socket + rb.index));
-            if generation == Generation::Rome {
+            if generation == cpu::Silicon::Ssp {
                 n.set_iommu_bar(ctx.non_pci[i].alloc(IOMMU_BAR).step("IOMMU BAR space")?);
             }
         }
@@ -756,7 +752,7 @@ impl Steps for Silicon {
             let fch1 = secondary_fch(socket_bus(ctx, 1)?, ctx.timer);
             fch::huashan::sata::late(&fch1, &ctx.policy.sata[1]);
         }
-        if ctx.generation == Generation::Milan && ctx.smm_installed {
+        if ctx.generation == cpu::Silicon::Gn && ctx.smm_installed {
             fch::huashan::smm::request_fch_lock(&ctx.fch);
         }
         Ok(())

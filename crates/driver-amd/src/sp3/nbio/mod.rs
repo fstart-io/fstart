@@ -18,8 +18,8 @@ use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::RegisterLongName;
 use tock_registers::interfaces::{Readable, Writeable};
 
+use crate::cpu::Silicon;
 use crate::smn::{Smn, SmnAddr, SmnRegister};
-use crate::sp3::soc::Generation;
 use crate::sp3::topology::RootBridge;
 
 pub mod fuse;
@@ -41,7 +41,7 @@ pub struct Nbio<P> {
     pci: P,
     smn: Smn<P>,
     fuses: Fuses,
-    pub generation: Generation,
+    pub generation: Silicon,
     pub socket: u8,
     /// Die (Naples) or quadrant (Rome, Milan) within the socket.
     pub index: u8,
@@ -57,7 +57,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// `rb` is a live root bridge of `generation`, its bus is routed, and
     /// the caller owns the SMN index/data pair of that bus while this value
     /// is used.
-    pub unsafe fn new(pci: P, generation: Generation, rb: &RootBridge, fuses: Fuses) -> Self {
+    pub unsafe fn new(pci: P, generation: Silicon, rb: &RootBridge, fuses: Fuses) -> Self {
         Self {
             // SAFETY: the constructor's contract.
             smn: unsafe { Smn::on_bus(pci.clone(), rb.bus_base) },
@@ -94,8 +94,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// die has its own SMN at the same addresses).
     pub fn offset(&self) -> u32 {
         match self.generation {
-            Generation::Naples => 0,
-            Generation::Rome | Generation::Milan => (self.index as u32) << 20,
+            Silicon::Zp => 0,
+            Silicon::Ssp | Silicon::Gn => (self.index as u32) << 20,
         }
     }
 
@@ -319,7 +319,7 @@ impl Default for MilanPolicy {
 
 impl NbioPolicy {
     /// The value the PCD behind `knob` holds on `generation`.
-    pub fn knob(&self, generation: Generation, knob: Knob) -> u32 {
+    pub fn knob(&self, generation: Silicon, knob: Knob) -> u32 {
         let b = |v: bool| v as u32;
         match knob {
             Knob::IohcClockGating => b(self.iohc_clock_gating),
@@ -339,8 +339,8 @@ impl NbioPolicy {
             // Rome PCD 0xE enables with 1; Milan PCD 0x2C enables with
             // anything but 1 (default 0xFF).
             Knob::IommuXtGa => match (generation, self.iommu_xt_ga) {
-                (Generation::Milan, Some(false)) => 1,
-                (Generation::Milan, _) => 0xFF,
+                (Silicon::Gn, Some(false)) => 1,
+                (Silicon::Gn, _) => 0xFF,
                 (_, Some(true)) => 1,
                 _ => 0,
             },
@@ -348,8 +348,8 @@ impl NbioPolicy {
     }
 
     /// Whether the IOMMU EFR shadow bits are set on `generation`.
-    pub fn iommu_xt_ga(&self, generation: Generation) -> bool {
-        self.iommu_xt_ga.unwrap_or(generation == Generation::Milan)
+    pub fn iommu_xt_ga(&self, generation: Silicon) -> bool {
+        self.iommu_xt_ga.unwrap_or(generation == Silicon::Gn)
     }
 }
 
@@ -359,7 +359,7 @@ pub(crate) mod tests {
     use crate::smn::model::Model;
 
     /// An NBIO of socket 0 on `bus`; index 0 has the FCH.
-    pub fn nbio(generation: Generation, index: u8, bus: u8) -> (Model, Nbio<Model>) {
+    pub fn nbio(generation: Silicon, index: u8, bus: u8) -> (Model, Nbio<Model>) {
         let model = Model::default();
         let rb = RootBridge {
             socket: 0,
@@ -376,17 +376,17 @@ pub(crate) mod tests {
 
     #[test]
     fn quadrant_offsets() {
-        let (_, n) = nbio(Generation::Rome, 3, 0);
+        let (_, n) = nbio(Silicon::Ssp, 3, 0);
         assert_eq!(n.at(0x13b1_0044), 0x13e1_0044);
-        let (_, z) = nbio(Generation::Naples, 3, 0);
+        let (_, z) = nbio(Silicon::Zp, 3, 0);
         assert_eq!(z.at(0x13b1_0044), 0x13b1_0044);
     }
 
     #[test]
     fn xt_ga_knob_per_generation() {
         let p = NbioPolicy::default();
-        assert_eq!(p.knob(Generation::Rome, Knob::IommuXtGa), 0);
-        assert_eq!(p.knob(Generation::Milan, Knob::IommuXtGa), 0xFF);
-        assert!(!p.iommu_xt_ga(Generation::Rome) && p.iommu_xt_ga(Generation::Milan));
+        assert_eq!(p.knob(Silicon::Ssp, Knob::IommuXtGa), 0);
+        assert_eq!(p.knob(Silicon::Gn, Knob::IommuXtGa), 0xFF);
+        assert!(!p.iommu_xt_ga(Silicon::Ssp) && p.iommu_xt_ga(Silicon::Gn));
     }
 }

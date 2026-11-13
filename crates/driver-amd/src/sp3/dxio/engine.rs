@@ -17,12 +17,12 @@ use zerocopy::IntoBytes;
 use zerocopy::little_endian::U16;
 
 use super::lanes::{Engine, EngineKind, Speed, WireLanes};
+use crate::cpu::Silicon;
 use crate::dxio::DxioError;
 use crate::dxio::wire::{
     ANCILLARY_MAX, CAPS, CAPS_HI, ENGINE_HEAP_MAX, EngineHeader, FwEngine, GROUPS, Heaps,
     MAX_ENGINES, kind,
 };
-use crate::sp3::soc::Generation;
 
 register_bitfields![u32,
     /// Header dword of the ancillary heap and of each of its sub-records.
@@ -62,7 +62,7 @@ pub struct EncodePolicy {
 /// Encode one board engine. `phy` is the board-order PHY lane pair
 /// (start > end when reversed), `wire` the translated DXIO lanes.
 pub fn encode(
-    generation: Generation,
+    generation: Silicon,
     engine: &Engine<'_>,
     phy: (u8, u8),
     wire: WireLanes,
@@ -77,9 +77,9 @@ pub fn encode(
     let gpio_group = engine.gpio_group;
     let reset_group = match generation {
         // Rome never writes +5.
-        Generation::Rome => 0,
-        Generation::Milan if policy.milan_reset_group_one => 1,
-        Generation::Milan | Generation::Naples => gpio_group,
+        Silicon::Ssp => 0,
+        Silicon::Gn if policy.milan_reset_group_one => 1,
+        Silicon::Gn | Silicon::Zp => gpio_group,
     };
     let mut groups = LocalRegisterCopy::<u32, GROUPS::Register>::new(0);
     // +4 is always 1, whatever the board's group (all builders).
@@ -94,7 +94,7 @@ pub fn encode(
             let early = p.early_train;
             // Early train or PSPP policy 2 force Gen1; ESM then forces Gen3
             // (Rome `ffe02b19`, Milan same order).
-            let speed = if early || (generation != Generation::Naples && policy.pspp_policy == 2) {
+            let speed = if early || (generation != Silicon::Zp && policy.pspp_policy == 2) {
                 Speed::Gen1
             } else {
                 p.max_speed
@@ -114,10 +114,10 @@ pub fn encode(
                     + CAPS::PRIMARY_PLL.val(x.primary_pll as u32),
             );
             e.bdf_num.set(match generation {
-                Generation::Rome => (phy.0 as u32) << 8 | phy.1 as u32,
-                Generation::Naples | Generation::Milan => p.devfn.unwrap_or(0) as u32,
+                Silicon::Ssp => (phy.0 as u32) << 8 | phy.1 as u32,
+                Silicon::Zp | Silicon::Gn => p.devfn.unwrap_or(0) as u32,
             });
-            if generation != Generation::Naples {
+            if generation != Silicon::Zp {
                 // The SP3 Naples build has no EQ/vetting fields (§3.3).
                 if let Some(mode) = x.eq_search_mode {
                     hi.modify(CAPS_HI::EQ_OVERRIDE::SET + CAPS_HI::EQ_MODE.val(mode as u32));
@@ -134,7 +134,7 @@ pub fn encode(
                         + CAPS_HI::RX_VETTING.val(x.rx_vetting as u32),
                 );
             }
-            if generation == Generation::Milan {
+            if generation == Silicon::Gn {
                 hi.modify(
                     CAPS_HI::TARGET_SPEED.val(x.target_speed as u32)
                         + CAPS_HI::SKIP_EQ_GEN3.val(x.skip_eq_gen3 as u32)
@@ -152,7 +152,7 @@ pub fn encode(
         EngineKind::Sata(s) => {
             e.kind = kind::SATA;
             e.channel_type = s.channel;
-            if generation != Generation::Naples {
+            if generation != Silicon::Zp {
                 hi.modify(
                     CAPS_HI::RX_POLARITY.val(s.rx_polarity as u32)
                         + CAPS_HI::TX_POLARITY.val(s.tx_polarity as u32),
@@ -273,7 +273,7 @@ pub struct Ancillary<'a> {
 impl Heaps {
     /// Build heap 3 and heap 6 from `(engine, tuning, wire lanes)` triples.
     pub fn build<'t>(
-        generation: Generation,
+        generation: Silicon,
         engines: impl Iterator<Item = (FwEngine, &'t [(u8, u8)], WireLanes)> + Clone,
         anc: &Ancillary<'_>,
         policy: &EncodePolicy,
@@ -291,8 +291,8 @@ impl Heaps {
         }
         // Rome emits the PHY record only without PSPP; Milan emits both
         // (`ffe027e4` / `ffd1509d`).
-        let emit_phy = phy.filter(|_| generation == Generation::Milan || !pspp);
-        let absolute = generation == Generation::Milan && policy.milan_tuning_absolute;
+        let emit_phy = phy.filter(|_| generation == Silicon::Gn || !pspp);
+        let absolute = generation == Silicon::Gn && policy.milan_tuning_absolute;
 
         // The heap LEN field is only 8 bits (total dwords - 1), even if
         // the DMA allocation is larger. Reserve a tail dword as well.
@@ -344,11 +344,7 @@ impl Heaps {
         if at > 4 {
             let total = at + 4;
             let mut r = LocalRegisterCopy::<u32, ANC::Register>::new(0);
-            let ty = if generation == Generation::Milan {
-                6
-            } else {
-                0
-            };
+            let ty = if generation == Silicon::Gn { 6 } else { 0 };
             r.modify(ANC::TYPE.val(ty) + ANC::LEN.val((total / 4 - 1) as u32));
             h.ancillary[..4].copy_from_slice(&r.get().to_le_bytes());
             h.ancillary_len = total;
@@ -384,7 +380,7 @@ mod tests {
         );
         // P0 is NBIO0 core 1, normal: PHY 8 → DXIO 0x2A + 8.
         let fw = encode(
-            Generation::Rome,
+            Silicon::Ssp,
             &e,
             (8, 11),
             wire(0x32, 0x35, false),
@@ -399,7 +395,7 @@ mod tests {
         assert_eq!(fw.caps_hi.get(), 0);
 
         let m = encode(
-            Generation::Milan,
+            Silicon::Gn,
             &e,
             (8, 11),
             wire(0x32, 0x35, false),
@@ -412,10 +408,10 @@ mod tests {
     #[test]
     fn ethernet_is_not_a_pcie_port() {
         let e = Engine::ethernet(0, Lanes::sp3(Group::P0, 4, 1));
-        super::super::lanes::validate(Generation::Milan, &[e]).unwrap();
+        super::super::lanes::validate(Silicon::Gn, &[e]).unwrap();
         assert!(e.pcie_config().is_none());
         let fw = encode(
-            Generation::Milan,
+            Silicon::Gn,
             &e,
             (4, 4),
             wire(0x2e, 0x2e, false),
@@ -430,7 +426,7 @@ mod tests {
         );
         let wide = Engine::ethernet(0, Lanes::sp3(Group::P0, 4, 2));
         assert!(matches!(
-            super::super::lanes::validate(Generation::Milan, &[wide]),
+            super::super::lanes::validate(Silicon::Gn, &[wide]),
             Err((0, super::super::lanes::LaneError::Width))
         ));
     }
@@ -443,7 +439,7 @@ mod tests {
             .early_train();
         let e = Engine::pcie(0, Lanes::sp3(Group::G0, 0, 16).reversed(), p);
         let fw = encode(
-            Generation::Milan,
+            Silicon::Gn,
             &e,
             (31, 16),
             wire(16, 31, false),
@@ -459,7 +455,7 @@ mod tests {
             ..e
         };
         let fw = encode(
-            Generation::Milan,
+            Silicon::Gn,
             &firmware_managed,
             (31, 16),
             wire(16, 31, false),
@@ -469,7 +465,7 @@ mod tests {
         assert_eq!(fw.caps().read(CAPS::HOTPLUG), 5);
         // Naples maps EntSSD to ExpressModule and takes the devfn.
         let z = encode(
-            Generation::Naples,
+            Silicon::Zp,
             &e,
             (31, 16),
             wire(16, 31, false),
@@ -483,7 +479,7 @@ mod tests {
             ..Default::default()
         };
         let fw = encode(
-            Generation::Rome,
+            Silicon::Ssp,
             &esm,
             (32, 35),
             wire(0x3A, 0x3D, false),
@@ -523,11 +519,11 @@ mod tests {
         let sata =
             Engine::sata(0, Lanes::sp3(Group::P0, 0, 6), SataEngine::new(0)).tuning(S8030_SATA);
         let w = wire(0x2A, 0x2F, false);
-        let fw = encode(Generation::Rome, &sata, (0, 5), w, &EncodePolicy::default());
+        let fw = encode(Silicon::Ssp, &sata, (0, 5), w, &EncodePolicy::default());
         assert_eq!((fw.kind, fw.caps.get()), (kind::SATA, 0));
 
         let h = Heaps::build(
-            Generation::Rome,
+            Silicon::Ssp,
             [(fw, S8030_SATA, w)].into_iter(),
             &Ancillary::default(),
             &EncodePolicy::default(),
@@ -554,7 +550,7 @@ mod tests {
         assert_eq!(dw(20) & 0x7F, 0x14);
 
         let m = Heaps::build(
-            Generation::Milan,
+            Silicon::Gn,
             [(fw, S8030_SATA, w)].into_iter(),
             &Ancillary {
                 pspp: [1, 2, 3, 4],
@@ -586,7 +582,7 @@ mod tests {
         let payload = vec![0x5a; 0x400 - 20];
         let build = |bytes: &[u8]| {
             Heaps::build(
-                Generation::Milan,
+                Silicon::Gn,
                 core::iter::empty(),
                 &Ancillary {
                     phy_override: Some(bytes),
@@ -605,7 +601,7 @@ mod tests {
         assert!(
             matches!(
                 Heaps::build(
-                    Generation::Milan,
+                    Silicon::Gn,
                     [(fw, &[(0xc1, 1)][..], wire(0, 1, false))].into_iter(),
                     &Ancillary {
                         phy_override: Some(&payload),

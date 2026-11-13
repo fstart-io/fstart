@@ -138,7 +138,7 @@ fn root_bridges(s: &System) -> Vec<RootBridgeAcpi<'static>> {
                 fch: bridge.primary,
                 domain: None,
                 ioapic: Some(Ioapic {
-                    id: nbio_ioapic_id(s.generation, n),
+                    id: nbio_ioapic_id(s.generation.silicon(), n),
                     base: 0xA000_0000 + (u64::from(n) << 20),
                 }),
                 ioapic_features: 0x1430_0000 + (u32::from(bridge.index) << 20),
@@ -199,7 +199,7 @@ fn inputs<'a>(
         soc: of(generation),
         pci: fstart_driver_amd::sp3::soc::hw::segment(generation),
         cpus: &s.cpus,
-        fch_ioapic_id: fch_ioapic_id(generation),
+        fch_ioapic_id: fch_ioapic_id(generation.silicon()),
         hpet_block_id: 0x1022_8201,
         root_bridges: bridges,
         numa,

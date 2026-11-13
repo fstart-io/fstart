@@ -9,8 +9,8 @@
 use fstart_pci::ConfigRegionAccess;
 
 use super::{Nbio, NbioPolicy};
+use crate::cpu::Silicon;
 use crate::smn::SmnAddr;
-use crate::sp3::soc::Generation;
 
 /// One register operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +140,7 @@ impl Entry {
     }
 
     /// Whether the record applies on `generation` under `policy`.
-    pub fn applies(&self, generation: Generation, policy: &NbioPolicy) -> bool {
+    pub fn applies(&self, generation: Silicon, policy: &NbioPolicy) -> bool {
         match self.gate {
             Gate::Always => true,
             Gate::Knob { knob, cmp, value } => {
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn legacy_property_and_copy() {
-        let (model, n) = nbio(Generation::Naples, 0, 0x20);
+        let (model, n) = nbio(Silicon::Zp, 0, 0x20);
         model.0.borrow_mut().smn.insert((0x20, 0x13b1_007c), 0xabcd);
         let table = [
             LegacyEntry::rmw(0x100, 0xff, 0x12).property(0x40),
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn modern_scope_and_gate() {
-        let (model, n) = nbio(Generation::Milan, 2, 0x40);
+        let (model, n) = nbio(Silicon::Gn, 2, 0x40);
         let off = NbioPolicy {
             ptdma: false,
             ..NbioPolicy::default()

@@ -7,7 +7,7 @@
 //! hide CPUID x2APIC (C001_1004\[53\]); see [`super::table::PlatformFlags`].
 //! Decide before the BSP runs its table and before any AP is released.
 
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 /// Most threads xAPIC can address individually.
 pub const XAPIC_MAX_THREADS: usize = 254;
@@ -44,11 +44,7 @@ pub struct ApicDecision {
 }
 
 /// Resolve the APIC mode for `threads` enabled threads in the system.
-pub const fn decide(
-    generation: Generation,
-    policy: ApicModePolicy,
-    threads: usize,
-) -> ApicDecision {
+pub const fn decide(generation: Silicon, policy: ApicModePolicy, threads: usize) -> ApicDecision {
     let many = threads > XAPIC_MAX_THREADS;
     const fn mode(mode: ApicMode) -> ApicDecision {
         ApicDecision {
@@ -58,21 +54,21 @@ pub const fn decide(
     }
     match (generation, policy) {
         // At most 2 × 32 cores × 2 threads.
-        (Generation::Naples, _) => mode(ApicMode::XApic),
+        (Silicon::Zp, _) => mode(ApicMode::XApic),
         // SSP PEI: x2APIC PCD forced TRUE above 254 threads.
-        (Generation::Rome, ApicModePolicy::X2Apic) => mode(ApicMode::X2Apic),
-        (Generation::Rome, _) if many => mode(ApicMode::X2Apic),
-        (Generation::Rome, _) => mode(ApicMode::XApic),
+        (Silicon::Ssp, ApicModePolicy::X2Apic) => mode(ApicMode::X2Apic),
+        (Silicon::Ssp, _) if many => mode(ApicMode::X2Apic),
+        (Silicon::Ssp, _) => mode(ApicMode::XApic),
         // GN PEI `ffcfbacd` (instruction-checked).
-        (Generation::Milan, ApicModePolicy::X2Apic) => mode(ApicMode::X2Apic),
-        (Generation::Milan, ApicModePolicy::XApic) => ApicDecision {
+        (Silicon::Gn, ApicModePolicy::X2Apic) => mode(ApicMode::X2Apic),
+        (Silicon::Gn, ApicModePolicy::XApic) => ApicDecision {
             mode: ApicMode::XApic,
             downcore_to_7: many,
         },
-        (Generation::Milan, ApicModePolicy::Compatibility) if many => mode(ApicMode::Compatibility),
-        (Generation::Milan, ApicModePolicy::Compatibility) => mode(ApicMode::XApic),
-        (Generation::Milan, ApicModePolicy::Auto) if many => mode(ApicMode::X2Apic),
-        (Generation::Milan, ApicModePolicy::Auto) => mode(ApicMode::XApic),
+        (Silicon::Gn, ApicModePolicy::Compatibility) if many => mode(ApicMode::Compatibility),
+        (Silicon::Gn, ApicModePolicy::Compatibility) => mode(ApicMode::XApic),
+        (Silicon::Gn, ApicModePolicy::Auto) if many => mode(ApicMode::X2Apic),
+        (Silicon::Gn, ApicModePolicy::Auto) => mode(ApicMode::XApic),
     }
 }
 
@@ -80,28 +76,25 @@ pub const fn decide(
 mod tests {
     use super::*;
     use ApicModePolicy::*;
-    use Generation::*;
+    use Silicon::*;
 
     #[test]
     fn rome_forces_x2apic_above_254() {
-        assert_eq!(decide(Rome, Auto, 254).mode, ApicMode::XApic);
-        assert_eq!(decide(Rome, Auto, 256).mode, ApicMode::X2Apic);
-        assert_eq!(decide(Rome, X2Apic, 16).mode, ApicMode::X2Apic);
-        assert_eq!(decide(Naples, X2Apic, 128).mode, ApicMode::XApic);
+        assert_eq!(decide(Ssp, Auto, 254).mode, ApicMode::XApic);
+        assert_eq!(decide(Ssp, Auto, 256).mode, ApicMode::X2Apic);
+        assert_eq!(decide(Ssp, X2Apic, 16).mode, ApicMode::X2Apic);
+        assert_eq!(decide(Zp, X2Apic, 128).mode, ApicMode::XApic);
     }
 
     #[test]
     fn milan_policy() {
-        assert_eq!(decide(Milan, Auto, 128).mode, ApicMode::XApic);
-        assert_eq!(decide(Milan, Auto, 256).mode, ApicMode::X2Apic);
-        assert_eq!(decide(Milan, Compatibility, 128).mode, ApicMode::XApic);
-        assert_eq!(
-            decide(Milan, Compatibility, 256).mode,
-            ApicMode::Compatibility
-        );
-        let forced = decide(Milan, XApic, 256);
+        assert_eq!(decide(Gn, Auto, 128).mode, ApicMode::XApic);
+        assert_eq!(decide(Gn, Auto, 256).mode, ApicMode::X2Apic);
+        assert_eq!(decide(Gn, Compatibility, 128).mode, ApicMode::XApic);
+        assert_eq!(decide(Gn, Compatibility, 256).mode, ApicMode::Compatibility);
+        let forced = decide(Gn, XApic, 256);
         assert_eq!(forced.mode, ApicMode::XApic);
         assert!(forced.downcore_to_7);
-        assert!(!decide(Milan, XApic, 254).downcore_to_7);
+        assert!(!decide(Gn, XApic, 254).downcore_to_7);
     }
 }

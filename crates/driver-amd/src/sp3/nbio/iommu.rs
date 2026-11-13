@@ -9,6 +9,7 @@ use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 
 use super::{Nbio, NbioPolicy};
+use crate::cpu::Silicon;
 use crate::nbio::iohc::{BarHigh, IOMMU_BAR, IommuBar};
 use crate::nbio::iommu::MMIO_SIZE;
 use crate::nbio::iommu::{
@@ -16,7 +17,6 @@ use crate::nbio::iommu::{
     L2A_EFR_SHADOW0, L2A_EFR_SHADOW1,
 };
 use crate::smn::{SmnAccess, SmnAddr};
-use crate::sp3::soc::Generation;
 
 /// L1 offset whose bit 4 Milan's SNP policy clears (unnamed).
 const L1_0DC: SmnAddr = 0xdc;
@@ -41,8 +41,8 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// The L1 instances of this NBIO.
     pub fn iommu_l1s(&self) -> [SmnAddr; 4] {
         let l1 = match self.generation {
-            Generation::Naples => L1_ZP,
-            Generation::Rome | Generation::Milan => L1_SSP,
+            Silicon::Zp => L1_ZP,
+            Silicon::Ssp | Silicon::Gn => L1_SSP,
         };
         l1.map(|a| self.at(a))
     }
@@ -81,10 +81,10 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     /// `gn.iommu_enable_pcds`).
     pub fn iommu_post_table(&self, policy: &NbioPolicy) {
         let shadow0 = self.reg(EFR_SHADOW0);
-        if self.generation != Generation::Naples && policy.iommu_xt_ga(self.generation) {
+        if self.generation != Silicon::Zp && policy.iommu_xt_ga(self.generation) {
             shadow0.modify(EfrShadow0::XT::SET + EfrShadow0::GA::SET);
         }
-        if self.generation != Generation::Milan {
+        if self.generation != Silicon::Gn {
             return;
         }
         let m = &policy.milan;
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn bar_and_enable() {
-        let (m, n) = nbio(Generation::Rome, 3, 0x60);
+        let (m, n) = nbio(Silicon::Ssp, 3, 0x60);
         assert!(!n.iommu_enable());
         n.set_iommu_bar(0xB008_0000);
         assert!(n.iommu_enable());
@@ -151,14 +151,14 @@ mod tests {
 
     #[test]
     fn efr_shadow_defaults() {
-        let (m, r) = nbio(Generation::Rome, 0, 0);
+        let (m, r) = nbio(Silicon::Ssp, 0, 0);
         r.iommu_post_table(&NbioPolicy::default());
         assert!(
             !m.0.borrow().smn.contains_key(&(0, EFR_SHADOW0.address())),
             "Rome: off"
         );
 
-        let (m, g) = nbio(Generation::Milan, 0, 0);
+        let (m, g) = nbio(Silicon::Gn, 0, 0);
         m.0.borrow_mut()
             .smn
             .insert((0, EFR_SHADOW1.address()), 0x8000_0000);

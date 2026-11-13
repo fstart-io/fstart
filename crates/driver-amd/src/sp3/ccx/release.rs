@@ -23,9 +23,9 @@ use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use crate::apob::ccx::CoreMap;
+use crate::cpu::Silicon;
 use crate::smn::{Smn, SmnAddr};
 use crate::smu::{Error as SmuError, SmuMessages, send1};
-use crate::sp3::soc::Generation;
 
 /// SMU message 1 ("test"/apply, the same ID on V9 and V11) and its key.
 pub const MSG_APPLY: u32 = 0x01;
@@ -128,7 +128,7 @@ const fn bit(complex: usize, core: usize, threads: usize, thread: usize) -> u8 {
 /// the BSP (socket 0, die 0, first thread). `dies[s][d]` is the die's
 /// THREAD_CONFIGURATION, `None` if the die is absent.
 pub fn naples_order(dies: &[[Option<u32>; 4]]) -> Result<Vec<Launch, MAX_THREADS>, ReleaseError> {
-    if dies.len() > Generation::MAX_SOCKETS {
+    if dies.len() > crate::df::MAX_SOCKETS {
         return Err(ReleaseError::BadTopology {
             socket: dies.len() as u8,
             die: 0,
@@ -232,7 +232,7 @@ pub fn launch<P, M>(
     smn: &Smn<P>,
     smu: &M,
     l: &Launch,
-    generation: Generation,
+    generation: Silicon,
 ) -> Result<(), ReleaseError>
 where
     P: ConfigRegionAccess + Clone,
@@ -241,7 +241,7 @@ where
     let reg = smn.reg(crate::smn::SmnReg::<()>::new(l.thread_enable));
     // Rome/Milan use the low 16 bits only (SmuV11 `0x32fc`).
     let width: u32 = match generation {
-        Generation::Naples => u32::MAX,
+        Silicon::Zp => u32::MAX,
         _ => 0xffff,
     };
     let mask = (1u32 << l.bit) & width;
@@ -353,11 +353,11 @@ mod tests {
             bit: 3,
         };
         model.0.borrow_mut().smn.insert((0, 0x3008_1018), 0x1);
-        launch(&smn, &smu, &l, Generation::Rome).unwrap();
+        launch(&smn, &smu, &l, Silicon::Ssp).unwrap();
         assert_eq!(model.0.borrow().smn[&(0, 0x3008_1018)], 0x9);
         assert_eq!(*smu.0.borrow(), [(1, 0xAA55_AA55)]);
         assert_eq!(
-            launch(&smn, &smu, &l, Generation::Rome),
+            launch(&smn, &smu, &l, Silicon::Ssp),
             Err(ReleaseError::AlreadyRunning)
         );
         assert_eq!(smu.0.borrow().len(), 1);

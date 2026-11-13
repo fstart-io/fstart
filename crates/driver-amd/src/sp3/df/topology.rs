@@ -20,9 +20,9 @@ use tock_registers::interfaces::Readable;
 
 use super::Version;
 use super::{BusRange, Df};
+use crate::cpu::Silicon;
 use crate::df::MAX_NODES;
 use crate::df::regs;
-use crate::sp3::soc::Generation;
 use crate::sp3::topology::{MAX_ROOT_BRIDGES, Node, RootBridge};
 
 /// Milan IOMS fuse: SMN 0x5D148 bit `11 + i` set = IOMS `i` absent
@@ -38,7 +38,7 @@ tock_registers::register_bitfields![u32,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopologyError {
     /// This build has no support for the generation.
-    Unsupported(Generation),
+    Unsupported(Silicon),
     /// A socket reports no present die (DF2).
     NoDies { socket: u8 },
     /// The node or root-bridge total in F1x204 disagrees with the per-socket
@@ -53,7 +53,7 @@ pub enum TopologyError {
 /// What [`discover`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Topology {
-    pub generation: Generation,
+    pub generation: Silicon,
     pub sockets: u8,
     /// DF nodes, socket-major.
     pub nodes: Vec<Node, { MAX_NODES as usize }>,
@@ -87,8 +87,8 @@ impl Topology {
     /// IOD on Rome/Milan).
     pub fn node_of(&self, rb: &RootBridge) -> u8 {
         match self.generation {
-            Generation::Naples => rb.socket * 4 + rb.index,
-            Generation::Rome | Generation::Milan => rb.socket,
+            Silicon::Zp => rb.socket * 4 + rb.index,
+            Silicon::Ssp | Silicon::Gn => rb.socket,
         }
     }
 
@@ -102,12 +102,12 @@ impl Topology {
 /// set up); Milan also reads its IOMS fuse through SMN on bus 0.
 pub fn discover<P: ConfigRegionAccess + Clone>(
     df: &Df<P>,
-    generation: Generation,
+    generation: Silicon,
 ) -> Result<Topology, TopologyError> {
     match generation {
-        Generation::Naples => discover_df2(df),
-        Generation::Rome => discover_df3(df, generation, 0b1111),
-        Generation::Milan => {
+        Silicon::Zp => discover_df2(df),
+        Silicon::Ssp => discover_df3(df, generation, 0b1111),
+        Silicon::Gn => {
             // SAFETY: the BSP owns this bus's SMN index/data pair during init.
             let smn = unsafe { crate::smn::Smn::on_bus(df.pci().clone(), 0) };
             // A read-only fuse register.
@@ -190,7 +190,7 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, T
         });
     }
     Ok(Topology {
-        generation: crate::sp3::soc::Generation::Naples,
+        generation: crate::cpu::Silicon::Zp,
         sockets,
         nodes,
         root_bridges: rbs,
@@ -200,7 +200,7 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, T
 /// `present`: bit `i` = IOMS `i` present (Milan fuse, all four on Rome).
 fn discover_df3<P: ConfigRegionAccess + Clone>(
     df: &Df<P>,
-    generation: Generation,
+    generation: Silicon,
     present: u8,
 ) -> Result<Topology, TopologyError> {
     use super::v3::{self, Df3, SYSTEM_CFG};
@@ -299,7 +299,7 @@ pub(crate) mod tests {
     #[test]
     fn rome_2p() {
         let df = Df::new(df3_system(2, 0b1111));
-        let t = discover(&df, Generation::Rome).unwrap();
+        let t = discover(&df, Silicon::Ssp).unwrap();
         assert_eq!(
             (t.sockets, t.root_bridges.len(), t.root_bridges_per_socket()),
             (2, 8, 4)
@@ -322,12 +322,12 @@ pub(crate) mod tests {
         // IOMS 1 fused off: SMN 0x5D148 bit 12.
         let m = df3_system(1, 0b1101);
         m.smn.0.borrow_mut().smn.insert((0, IOMS_FUSE_SMN), 1 << 12);
-        let t = discover(&Df::new(m.clone()), Generation::Milan).unwrap();
+        let t = discover(&Df::new(m.clone()), Silicon::Gn).unwrap();
         let ids: std::vec::Vec<u16> = t.root_bridges.iter().map(|r| r.fabric_id).collect();
         assert_eq!(ids, [0x18, 0x1A, 0x1B]);
         // A count mismatch with F1x204 fails closed.
         m.smn.0.borrow_mut().smn.insert((0, IOMS_FUSE_SMN), 0);
-        assert!(discover(&Df::new(m), Generation::Milan).is_err());
+        assert!(discover(&Df::new(m), Silicon::Gn).is_err());
     }
 
     #[test]
@@ -350,7 +350,7 @@ pub(crate) mod tests {
             }
         }
         m.set(0, None, 1, 0x204, 8);
-        let t = discover(&Df::new(m), Generation::Naples).unwrap();
+        let t = discover(&Df::new(m), Silicon::Zp).unwrap();
         assert_eq!(t.nodes.len(), 8);
         let rb = t.root_bridges[6];
         assert_eq!(
@@ -364,7 +364,7 @@ pub(crate) mod tests {
     #[test]
     fn logical_order() {
         let t = Topology {
-            generation: Generation::Rome,
+            generation: Silicon::Ssp,
             sockets: 1,
             nodes: Vec::new(),
             root_bridges: [(0u8, 0x40u8), (1, 0x80), (2, 0xC0), (3, 0)]

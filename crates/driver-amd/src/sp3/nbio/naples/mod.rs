@@ -96,12 +96,12 @@ pub fn base_init<P: ConfigRegionAccess + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::Silicon;
     use crate::sp3::nbio::tests::nbio;
-    use crate::sp3::soc::Generation;
 
     #[test]
     fn base_init_die1() {
-        let (m, n) = nbio(Generation::Naples, 1, 0x20);
+        let (m, n) = nbio(Silicon::Zp, 1, 0x20);
         m.0.borrow_mut().smn.insert((0x20, NBRASCFG_0400), 0x1900);
         base_init(
             &n,

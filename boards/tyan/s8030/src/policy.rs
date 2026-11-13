@@ -105,5 +105,5 @@ pub fn ccx() -> ccx::Policy {
 
 /// DXIO policy: the generation's donor defaults; the S8030 changes none.
 pub const fn dxio(generation: Generation) -> DxioPolicy {
-    DxioPolicy::new(generation)
+    DxioPolicy::new(generation.silicon())
 }

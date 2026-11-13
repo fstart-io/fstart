@@ -3,11 +3,9 @@
 //! Discovery lives in [`crate::sp3::df`]; these types are what the other blocks
 //! (NBIO, DXIO, ACPI, PCI) consume.
 
-use crate::sp3::soc::Generation;
-
 pub use crate::df::{MAX_ROOT_BRIDGES, RootBridge};
 
-const _: () = assert!(MAX_ROOT_BRIDGES == Generation::MAX_SOCKETS * 4);
+const _: () = assert!(MAX_ROOT_BRIDGES == crate::df::MAX_SOCKETS * 4);
 
 /// One DF node: a ZP die (Naples) or an IOD (Rome, Milan).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

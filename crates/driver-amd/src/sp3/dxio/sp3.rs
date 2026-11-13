@@ -14,9 +14,9 @@ use fstart_core::services::Timer;
 
 use super::lanes::{Engine, EngineKind, Speed};
 use super::{DxioPolicy, PerstPolicy};
+use crate::cpu::Silicon;
 use crate::dxio::{DxioError, Hooks, LoopRules, Unit, finish_unit, prop, run, state, var};
 use crate::smu::SmuMessages;
-use crate::sp3::soc::Generation;
 
 /// The DXIO SMU message on Rome and Milan (`smu::v11::msg::DXIO`).
 pub const DXIO_MSG: u32 = 0x08;
@@ -52,13 +52,13 @@ pub fn speed_fixup(engine: &mut Engine<'_>, fuse: Option<u32>) {
 
 /// Everything up to and including SM_START for one socket.
 pub fn setup<M: SmuMessages + ?Sized>(
-    generation: Generation,
+    generation: Silicon,
     unit: &mut Unit<'_, M>,
     policy: &DxioPolicy,
 ) -> Result<(), DxioError> {
     let d = &unit.dxio;
     let p = &policy.sp3;
-    let milan = generation == Generation::Milan;
+    let milan = generation == Silicon::Gn;
     if policy.early_train_unit == Some((unit.socket, 0)) {
         d.reload_sm(policy.reload_sm_arg as u32)?;
     }
@@ -144,7 +144,7 @@ pub const fn rules(policy: &DxioPolicy) -> LoopRules {
 
 /// Two-pass training of every socket.
 pub fn train<M, H, T>(
-    generation: Generation,
+    generation: Silicon,
     units: &mut [Unit<'_, M>],
     hooks: &mut H,
     timer: &T,
@@ -228,10 +228,10 @@ mod tests {
             FakeSmu::default().script(&SM[..3]),
         );
         let (mut w0, mut w1) = (Window::new(), Window::new());
-        let policy = DxioPolicy::new(Generation::Rome);
+        let policy = DxioPolicy::new(Silicon::Ssp);
         let mk = |smu, socket, w: &mut Window| {
             Unit::new(
-                Generation::Rome,
+                Silicon::Ssp,
                 (socket, 0),
                 Dxio::new(smu, DXIO_MSG),
                 w.dma(),
@@ -245,7 +245,7 @@ mod tests {
         let mut units = [mk(&s0, 0, &mut w0), mk(&s1, 1, &mut w1)];
         let mut hooks = Recorder::default();
         train(
-            Generation::Rome,
+            Silicon::Ssp,
             &mut units,
             &mut hooks,
             &ManualTimer::ticking(),
@@ -341,10 +341,10 @@ mod tests {
             ..FakeSmu::default()
         }
         .script(&SM[..3]);
-        let policy = DxioPolicy::new(Generation::Rome);
+        let policy = DxioPolicy::new(Silicon::Ssp);
         let b = board();
         let mut units = [Unit::new(
-            Generation::Rome,
+            Silicon::Ssp,
             (0, 0),
             Dxio::new(&smu, DXIO_MSG),
             w.dma(),
@@ -354,11 +354,11 @@ mod tests {
         )
         .unwrap()
         .unwrap()];
-        let (m, n) = crate::sp3::nbio::tests::nbio(Generation::Rome, 0, 0);
+        let (m, n) = crate::sp3::nbio::tests::nbio(Silicon::Ssp, 0, 0);
         let nbios = [n];
-        let mut setup = PortSetup::new(Generation::Rome, &nbios, &b, Count(0));
+        let mut setup = PortSetup::new(Silicon::Ssp, &nbios, &b, Count(0));
         train(
-            Generation::Rome,
+            Silicon::Ssp,
             &mut units,
             &mut setup,
             &ManualTimer::ticking(),
@@ -385,10 +385,10 @@ mod tests {
             [3, 2, state::VETTING],
         ]);
         let mut w = Window::new();
-        let mut policy = DxioPolicy::new(Generation::Milan);
+        let mut policy = DxioPolicy::new(Silicon::Gn);
         policy.perst = PerstPolicy::Deferred;
         let mut units = [Unit::new(
-            Generation::Milan,
+            Silicon::Gn,
             (0, 0),
             Dxio::new(&smu, DXIO_MSG),
             w.dma(),
@@ -400,7 +400,7 @@ mod tests {
         .unwrap()];
         let mut hooks = Recorder::default();
         train(
-            Generation::Milan,
+            Silicon::Gn,
             &mut units,
             &mut hooks,
             &ManualTimer::ticking(),

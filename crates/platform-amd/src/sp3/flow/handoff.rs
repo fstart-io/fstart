@@ -133,7 +133,9 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
         .chain(pcct)
         .collect();
     let inputs = Inputs {
-        soc: crate::sp3::acpi::of(ctx.soc.generation),
+        soc: crate::sp3::acpi::of(fstart_driver_amd::sp3::soc::Generation::of(
+            ctx.soc.generation,
+        )),
         pci: ctx.soc.pci_root,
         cpus: &cpus,
         fch_ioapic_id: fch_ioapic_id(ctx.soc.generation),

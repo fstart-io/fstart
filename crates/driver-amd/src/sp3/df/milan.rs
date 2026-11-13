@@ -315,7 +315,7 @@ fn scrub<P: ConfigRegionAccess + Clone>(
 mod tests {
     use super::super::model::DfModel;
     use super::*;
-    use crate::sp3::soc::Generation;
+    use crate::cpu::Silicon;
     use crate::sp3::topology::Node;
 
     const GIB: u64 = 1 << 30;
@@ -403,7 +403,7 @@ mod tests {
         m.set(0, Some(PIE), 0, 0x104, 0x8000_0001);
         m.set(0, None, 6, 0x44, 0x1);
         let t = Topology {
-            generation: Generation::Milan,
+            generation: Silicon::Gn,
             sockets: 1,
             nodes: [Node {
                 socket: 0,

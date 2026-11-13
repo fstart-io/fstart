@@ -351,12 +351,12 @@ pub fn late_init<P: ConfigRegionAccess + Clone>(
 mod tests {
     use super::super::model::DfModel;
     use super::*;
-    use crate::sp3::soc::Generation;
+    use crate::cpu::Silicon;
     use crate::sp3::topology::Node;
 
     fn one_socket(dies: u8) -> Topology {
         Topology {
-            generation: Generation::Naples,
+            generation: Silicon::Zp,
             sockets: 1,
             nodes: (0..dies)
                 .map(|d| Node {

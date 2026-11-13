@@ -349,14 +349,14 @@ mod handler {
             let slp_typ = (hw.io().read16(acpimmio::PM1_CNT) >> 10 & 7) as u8;
             // Returns only for S1/S2 or on an SMU error; the OS sees the
             // wake (or the failed sleep) either way.
-            let _ = sx::enter(&hw, generation, slp_typ, &smu, config.usb_buses());
+            let _ = sx::enter(&hw, generation.silicon(), slp_typ, &smu, config.usb_buses());
             smi::clear(acpi, source::SLP_TYP);
         }
         if smi::is_pending(acpi, source::PWR_BTN) {
-            let _ = sx::power_button(&hw, generation, &smu);
+            let _ = sx::power_button(&hw, generation.silicon(), &smu);
         }
         if smi::is_pending(acpi, source::USB_NBIO) {
-            sx::usb_smi(&hw, generation, config.usb_buses());
+            sx::usb_smi(&hw, generation.silicon(), config.usb_buses());
             smi::clear(acpi, source::USB_NBIO);
         }
         if smi::is_pending(acpi, PSP_SMI) {
@@ -388,7 +388,7 @@ mod handler {
             ),
             Generation::Rome | Generation::Milan => {
                 use fstart_driver_amd::smu::v11;
-                (v11::MAILBOX, v11::id_limit(generation))
+                (v11::MAILBOX, v11::id_limit(generation.silicon()))
             }
             #[allow(unreachable_patterns)]
             _ => return None,
@@ -404,7 +404,7 @@ mod handler {
         // SAFETY: the PSP BAR the boot flow programmed and left mapped.
         Mailbox::new(
             unsafe { MmioTransport::new(u64::from(config.psp_bar)) },
-            config.generation.into(),
+            config.generation.silicon().into(),
         )
     }
 

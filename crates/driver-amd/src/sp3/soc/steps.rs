@@ -25,8 +25,9 @@ use crate::sp3::topology::MAX_ROOT_BRIDGES;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 
+use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
-use super::{Generation, Identity};
+use crate::cpu::Silicon;
 
 /// Silicon policy of a board (NATIVE_PORT_PLAN §4 steps 6–12).
 #[derive(Debug, Clone, Copy)]
@@ -105,7 +106,7 @@ impl NonPci {
 
 /// What the steps work on and hand on.
 pub struct Ctx {
-    pub generation: Generation,
+    pub generation: Silicon,
     pub identity: Identity,
     pub timer: Tsc,
     pub pci: Pci,
@@ -148,7 +149,7 @@ impl Ctx {
         apob: Apob<'static>,
         tops: DramTops,
     ) -> Self {
-        let generation = identity.generation();
+        let generation = identity.silicon();
         Self {
             generation,
             identity,
@@ -285,7 +286,7 @@ pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'stati
 }
 
 /// The FCH IOAPIC (`FEC0_0000h`) gets the generation's ID (ACPI_SMM §3.2).
-pub fn set_fch_ioapic_id(generation: Generation) {
+pub fn set_fch_ioapic_id(generation: Silicon) {
     // SAFETY: the FCH IOAPIC is decoded at its fixed address.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
     ioapic.set_id(crate::sp3::nbio::ioapic::fch_ioapic_id(generation));
@@ -295,7 +296,7 @@ pub fn set_fch_ioapic_id(generation: Generation) {
 /// whether this is an S3 resume.
 pub fn fch_reset(
     fch: &PrimaryFch,
-    generation: Generation,
+    generation: Silicon,
     policy: &Policy,
 ) -> Result<bool, &'static str> {
     use fch::common::reset;
@@ -304,10 +305,8 @@ pub fn fch_reset(
     fch::spi::reset(fch, generation, &fch::spi::SpiPolicy::default());
     reset::hw_acpi(fch, generation);
     match generation {
-        Generation::Naples => fch::taishan::sata::reset(fch, true),
-        Generation::Rome | Generation::Milan => {
-            fch::huashan::sata::reset(fch, generation, &policy.sata[0])
-        }
+        Silicon::Zp => fch::taishan::sata::reset(fch, true),
+        Silicon::Ssp | Silicon::Gn => fch::huashan::sata::reset(fch, generation, &policy.sata[0]),
         #[allow(unreachable_patterns)]
         _ => return Err("FCH SATA reset"),
     }
@@ -365,13 +364,13 @@ pub fn data_fabric<S: Steps>(ctx: &mut Ctx) -> Result<(), &'static str> {
 /// CPUID 8000_0008 EAX\[7:0\], minus the memory-encryption reduction
 /// (8000_001F EBX\[11:6\]) where it applies: Rome always, Milan with SMEE
 /// (SOC_DF §3.4).
-fn phys_addr_bits(generation: Generation, smee: bool) -> u8 {
+fn phys_addr_bits(generation: Silicon, smee: bool) -> u8 {
     let bits = fstart_arch::x86::cpuid(0x8000_0008).0 & 0xff;
     let reduced = (fstart_arch::x86::cpuid(0x8000_001f).1 >> 6) & 0x3f;
     let reduce = match generation {
-        Generation::Naples => false,
-        Generation::Rome => true,
-        Generation::Milan => smee,
+        Silicon::Zp => false,
+        Silicon::Ssp => true,
+        Silicon::Gn => smee,
     };
     (bits - if reduce { reduced } else { 0 }) as u8
 }
@@ -402,7 +401,7 @@ pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
     let psp = psp(ctx)?;
     psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))
         .step("PSP LockDFReg")?;
-    if ctx.generation == Generation::Milan {
+    if ctx.generation == Silicon::Gn {
         use crate::psp::command::{DisableDrtm, ResetTpmEstablishment};
         psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))
             .step("PSP DisableDrtm")?;

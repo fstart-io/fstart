@@ -30,10 +30,10 @@ pub mod tables;
 use fstart_core::services::Timer;
 use heapless::Vec;
 
+use crate::cpu::Silicon;
 use crate::dxio::wire::{Heaps, MAX_ENGINES};
 use crate::dxio::{DmaBuffer, Dxio, DxioError, Hooks, TIMEOUT_US, Unit};
 use crate::smu::SmuMessages;
-use crate::sp3::soc::Generation;
 use engine::EncodePolicy;
 use lanes::Engine;
 
@@ -84,8 +84,8 @@ pub struct Sp3Policy {
 }
 
 impl Sp3Policy {
-    pub const fn new(generation: Generation) -> Self {
-        let milan = matches!(generation, Generation::Milan);
+    pub const fn new(generation: Silicon) -> Self {
+        let milan = matches!(generation, Silicon::Gn);
         let mut set_conf = [None; 12];
         set_conf[9] = Some(1);
         Self {
@@ -132,12 +132,12 @@ pub struct DxioPolicy {
 }
 
 impl DxioPolicy {
-    pub const fn new(generation: Generation) -> Self {
+    pub const fn new(generation: Silicon) -> Self {
         Self {
             perst: PerstPolicy::OnRequest,
             perst_deassert_delay_ms: 0,
             early_train_unit: Some((0, 0)),
-            reload_sm_arg: matches!(generation, Generation::Rome),
+            reload_sm_arg: matches!(generation, Silicon::Ssp),
             naples_concurrent: false,
             encode: EncodePolicy {
                 pspp_policy: 0,
@@ -175,7 +175,7 @@ impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
     /// optional APOB PHY override) next to the board tuning. `None` when the
     /// unit has no engines (AGESA skips it).
     pub fn new(
-        generation: Generation,
+        generation: Silicon,
         (socket, die): (u8, u8),
         dxio: Dxio<'s, M>,
         dma: DmaBuffer,
@@ -221,7 +221,7 @@ impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
 /// Train every unit of `generation` (Naples: dies, sequential or two-pass;
 /// Rome/Milan: sockets, two-pass).
 pub fn train<M, H, T>(
-    generation: Generation,
+    generation: Silicon,
     units: &mut [Unit<'_, M>],
     hooks: &mut H,
     timer: &T,
@@ -233,8 +233,8 @@ where
     T: Timer + ?Sized,
 {
     match generation {
-        Generation::Naples => naples::train(units, hooks, timer, policy),
-        Generation::Rome | Generation::Milan => sp3::train(generation, units, hooks, timer, policy),
+        Silicon::Zp => naples::train(units, hooks, timer, policy),
+        Silicon::Ssp | Silicon::Gn => sp3::train(generation, units, hooks, timer, policy),
         // Fail closed on a generation this build does not carry.
         #[allow(unreachable_patterns)]
         _ => {
@@ -425,12 +425,12 @@ pub(crate) mod tests {
             let smu = FakeSmu::default();
             let mut window = Window::new();
             let u = Unit::new(
-                Generation::Milan,
+                Silicon::Gn,
                 (socket, 0),
                 Dxio::new(&smu, 8),
                 window.dma(),
                 &board,
-                &DxioPolicy::new(Generation::Milan),
+                &DxioPolicy::new(Silicon::Gn),
                 &anc,
             )
             .unwrap()
@@ -468,12 +468,12 @@ pub(crate) mod tests {
             let smu = FakeSmu::default();
             let mut window = Window::new();
             let u = Unit::new(
-                Generation::Milan,
+                Silicon::Gn,
                 (0, 0),
                 Dxio::new(&smu, 8),
                 window.dma(),
                 &board,
-                &DxioPolicy::new(Generation::Milan),
+                &DxioPolicy::new(Silicon::Gn),
                 &engine::Ancillary {
                     phy_override: phy,
                     ..Default::default()
@@ -525,7 +525,7 @@ pub(crate) mod tests {
             resume_delay_us: 0,
         };
         let heaps = Heaps::build(
-            Generation::Rome,
+            Silicon::Ssp,
             core::iter::empty(),
             &Default::default(),
             &Default::default(),

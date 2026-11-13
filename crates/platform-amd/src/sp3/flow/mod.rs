@@ -200,7 +200,8 @@ pub(crate) fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'
         .or_halt("APOB directory entry");
     // SAFETY: the PSP wrote the APOB there before releasing x86; it is
     // reserved in e820 and only read.
-    let apob = unsafe { Apob::from_address(address, generation.into()) }.or_halt("APOB header");
+    let apob =
+        unsafe { Apob::from_address(address, generation.silicon().into()) }.or_halt("APOB header");
     for event in apob::event::all_events(&apob).flatten() {
         let (instance, e) = event;
         fstart_log::info!(
@@ -240,7 +241,7 @@ pub(crate) fn memory_regions(
     generation: Generation,
 ) -> heapless::Vec<Region, { sysmap::MAX_REGIONS }> {
     let map = sysmap::system_memory_map(apob).or_halt("APOB memory map");
-    sysmap::memory_map(generation.into(), map.top, map.holes()).or_halt("memory map")
+    sysmap::memory_map(generation.silicon().into(), map.top, map.holes()).or_halt("memory map")
 }
 
 pub(crate) fn build_e820(
@@ -295,7 +296,9 @@ pub(crate) fn plan_einj(
     e820: &E820State,
     reserved: &mut crate::flow::Reserved,
 ) -> Option<crate::sp3::smm::EinjConfig> {
-    if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
+    if ctx.generation == fstart_driver_amd::cpu::Silicon::Ssp
+        && (1..=2).contains(&ctx.topology.sockets)
+    {
         use fstart_driver_amd::{
             df::Target,
             psp::ras,

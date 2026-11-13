@@ -20,8 +20,8 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use super::lanes::Engine;
 use super::ports::MappedPort;
+use crate::cpu::Silicon;
 use crate::smu::{Error as SmuError, SmuMessages, send_addr, send1};
-use crate::sp3::soc::Generation;
 
 /// PCIe hotplug type (board LinkHotplug; wire caps bits 10:8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,9 +38,9 @@ pub enum HotplugKind {
 impl HotplugKind {
     /// The wire value: Naples has no EntSSD type and sends ExpressModule
     /// (sp4r2 `ffde833a`, `5 → 2`).
-    pub const fn wire(self, generation: Generation) -> u8 {
+    pub const fn wire(self, generation: Silicon) -> u8 {
         match (generation, self) {
-            (Generation::Naples, Self::EnterpriseSsd) => Self::ExpressModule as u8,
+            (Silicon::Zp, Self::EnterpriseSsd) => Self::ExpressModule as u8,
             _ => self as u8,
         }
     }
@@ -477,7 +477,7 @@ fn i2c_switch<M: SmuMessages + ?Sized>(smu: &M, id: u32, base: u8) -> Result<(),
 /// the per-port hotplug setup ([`super::ports`]) and the settle wait, and
 /// calls [`enable_v11`]. `sockets[0]` is socket 0.
 pub fn load_v11<M: SmuMessages + ?Sized>(
-    generation: Generation,
+    generation: Silicon,
     sockets: &[&M],
     table_phys: u64,
     policy: &HotplugPolicy,
@@ -486,7 +486,7 @@ pub fn load_v11<M: SmuMessages + ?Sized>(
     let first = sockets.first().ok_or(SmuError::Rejected(0))?;
     i2c_switch(*first, SET_I2C_SWITCH_BASE, policy.i2c_switch_base)?;
     let addr_msg = match generation {
-        Generation::Milan => MILAN_SET_HOTPLUG_TABLE_ADDR,
+        Silicon::Gn => MILAN_SET_HOTPLUG_TABLE_ADDR,
         _ => ROME_SET_HOTPLUG_TABLE_ADDR,
     };
     sockets.iter().try_for_each(|smu| {
@@ -661,7 +661,7 @@ mod tests {
             ..Default::default()
         };
         let (s0, s1) = (FakeSmu::default(), FakeSmu::default());
-        load_v11(Generation::Milan, &[&s0, &s1], 0x1_2345_6000, &policy).unwrap();
+        load_v11(Silicon::Gn, &[&s0, &s1], 0x1_2345_6000, &policy).unwrap();
         enable_v11(&s0, &policy).unwrap();
         assert_eq!(
             s0.sent(),
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(s1.sent(), [(0x47, 0x2345_6000), (0x12, 0)]);
 
         let rome = FakeSmu::default();
-        load_v11(Generation::Rome, &[&rome], 0x1000, &policy).unwrap();
+        load_v11(Silicon::Ssp, &[&rome], 0x1000, &policy).unwrap();
         assert_eq!(rome.sent()[4], (0x3C, 0x1000));
 
         let (d0, d1) = (FakeSmu::default(), FakeSmu::default());

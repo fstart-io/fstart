@@ -11,8 +11,8 @@ use tock_registers::register_bitfields;
 
 use super::super::gpio::{self, Direction, Pad, Pin, Pull};
 use super::super::{FchHw, irq};
+use crate::cpu::Silicon;
 use crate::sp3::nbio::nbif::func_strap0;
-use crate::sp3::soc::Generation;
 use crate::window::{SmnWindow, Window, update};
 
 pub const CONTROLLERS: usize = 4;
@@ -182,18 +182,18 @@ impl SataPolicy {
 /// on the disabled branch, and `ffd3f17a` ungates controller 3 when enabled.
 /// Rome retains the donor's enabled-only reset and three-gate sequence.
 /// This startup step does not enable NBIF functions; env applies policy.
-pub fn reset<H: FchHw>(hw: &H, generation: Generation, policy: &SataPolicy) {
+pub fn reset<H: FchHw>(hw: &H, generation: Silicon, policy: &SataPolicy) {
     let smn = hw.smn_window();
     UNUSED_PHY.iter().for_each(|&r| {
         smn.reg::<u32, PHY_POWER::Register>(r)
             .modify(PHY_POWER::POWER_DOWN.val(7));
     });
     for (c, controller) in policy.controllers.iter().enumerate() {
-        if controller.enabled || generation == Generation::Milan {
+        if controller.enabled || generation == Silicon::Gn {
             smn.reg::<u32, RESET_CONTROL::Register>(base(c) + reg::CONTROL)
                 .modify(RESET_CONTROL::RESET::CLEAR);
         }
-        if controller.enabled && (c < 3 || generation == Generation::Milan) {
+        if controller.enabled && (c < 3 || generation == Silicon::Gn) {
             smn.reg::<u32, PHY_POWER::Register>(PHY_GATE[c])
                 .modify(PHY_POWER::POWER_DOWN.val(0));
         }
@@ -201,9 +201,9 @@ pub fn reset<H: FchHw>(hw: &H, generation: Generation, policy: &SataPolicy) {
 }
 
 /// Put controller `c` in reset and power its PHY down.
-pub fn disable<H: FchHw>(hw: &H, generation: Generation, c: usize) {
+pub fn disable<H: FchHw>(hw: &H, generation: Silicon, c: usize) {
     let smn = hw.smn_window();
-    let clear = if generation == Generation::Milan {
+    let clear = if generation == Silicon::Gn {
         0x0100_000E
     } else {
         0
@@ -219,11 +219,11 @@ fn clear_port_control<W: Window>(smn: &W, c: usize) {
 }
 
 /// Program the ESP (external port) masks.
-fn esp<W: Window>(smn: &W, generation: Generation, c: usize, ports: u8) {
+fn esp<W: Window>(smn: &W, generation: Silicon, c: usize, ports: u8) {
     let a = abar(c);
     let esp = u32::from(ports);
     let r810 = match generation {
-        Generation::Milan => (0x4300, 0x0200_8004),
+        Silicon::Gn => (0x4300, 0x0200_8004),
         _ => (0, 0x0200_C304),
     };
     if esp != 0 {
@@ -263,7 +263,7 @@ fn sgpio<H: FchHw>(hw: &H, smn: &SmnWindow<H::Pci>, c: usize, pads: &[Pad]) -> b
 
 /// DXE af57 on one socket. Returns `false` if an SGPIO message timed out
 /// (the controller is still usable).
-pub fn env<H: FchHw>(hw: &H, generation: Generation, policy: &SataPolicy) -> bool {
+pub fn env<H: FchHw>(hw: &H, generation: Silicon, policy: &SataPolicy) -> bool {
     let smn = hw.smn_window();
     let mut sgpio_ok = true;
     for (c, ctl) in policy.controllers.iter().enumerate() {
@@ -281,7 +281,7 @@ pub fn env<H: FchHw>(hw: &H, generation: Generation, policy: &SataPolicy) -> boo
         update::<u32, _>(&smn, a + reg::ESP_F8, 0, 0xFF00_0000);
         update::<u32, _>(&smn, a + reg::GHC_24, 1, 0);
         match generation {
-            Generation::Milan => update::<u32, _>(&smn, a + reg::MISC_810, 0x4300, 0x0200_8004),
+            Silicon::Gn => update::<u32, _>(&smn, a + reg::MISC_810, 0x4300, 0x0200_8004),
             _ => update::<u32, _>(&smn, a + reg::MISC_810, 0, 0x0200_C304),
         }
         update::<u32, _>(&smn, a + reg::MISC_814, 0, 0x4000_01E0);
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn reset_rome_default() {
         let hw = fch();
-        reset(&hw, Generation::Rome, &SataPolicy::socket0());
+        reset(&hw, Silicon::Ssp, &SataPolicy::socket0());
         let w = smn_writes(&hw.pci, 0);
         let addrs: Vec<u32> = w.iter().map(|w| w.0).collect();
         // FCH_SP3 §3.1 af47 SSP order (gate writes may repeat).
@@ -386,7 +386,7 @@ mod tests {
             hw.pci.0.borrow_mut().smn.insert((0, base(c)), 0xa5a5_0001);
             hw.pci.0.borrow_mut().smn.insert((0, gate), 0x5a5a_0007);
         }
-        reset(&hw, Generation::Milan, &policy);
+        reset(&hw, Silicon::Gn, &policy);
         for (c, &gate) in PHY_GATE.iter().enumerate() {
             assert_eq!(smn(&hw.pci, 0, base(c)), 0xa5a5_0000);
             assert_eq!(
@@ -394,7 +394,7 @@ mod tests {
                 if c == 3 { 0x5a5a_0000 } else { 0x5a5a_0007 }
             );
         }
-        assert!(env(&hw, Generation::Milan, &policy));
+        assert!(env(&hw, Silicon::Gn, &policy));
         for (c, &gate) in PHY_GATE.iter().enumerate().take(3) {
             assert_eq!(smn(&hw.pci, 0, base(c)) & 0x801, 0x801);
             assert_eq!(smn(&hw.pci, 0, gate) & 7, 7);
@@ -425,7 +425,7 @@ mod tests {
         let mut policy = SataPolicy::socket0();
         policy.controllers[0].enabled = false;
         policy.controllers[1].enabled = false;
-        assert!(env(&hw, Generation::Rome, &policy));
+        assert!(env(&hw, Silicon::Ssp, &policy));
         assert_eq!(smn(&hw.pci, 0, nbif(2) + 0x34), 0x10601);
         assert_eq!(smn(&hw.pci, 0, abar(2) + reg::ESP_F8), 0xff00_0000);
         assert_eq!(smn(&hw.pci, 0, base(3)), 0x801);
@@ -446,7 +446,7 @@ mod tests {
             keep_ports: 0xff,
             sgpio: None,
         };
-        assert!(env(&hw, Generation::Milan, &policy));
+        assert!(env(&hw, Silicon::Gn, &policy));
         late(&hw, &policy);
         assert_eq!(smn(&hw.pci, 0, abar(1) + reg::PI), 0xff);
         assert_eq!(smn(&hw.pci, 0, abar(1) + reg::CAP) & 0x1f, 7);
@@ -463,7 +463,7 @@ mod tests {
         policy.controllers[1].enabled = false;
         policy.controllers[2].enabled = false;
         // EM_CTL never clears TM in the model: the first message times out.
-        assert!(!env(&hw, Generation::Milan, &policy));
+        assert!(!env(&hw, Silicon::Gn, &policy));
         assert_eq!(hw.acpi.get(0xd0a, 1), 2);
         assert_eq!(smn(&hw.pci, 0, abar(0) + 0x50c), 0x20);
         assert_eq!(smn(&hw.pci, 0, abar(0) + reg::MISC_810), 0x2200_8004);

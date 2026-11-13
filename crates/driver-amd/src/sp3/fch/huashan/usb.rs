@@ -3,9 +3,9 @@
 //! socket's SMU.
 
 use super::super::{FchHw, hide_nbif_function};
+use crate::cpu::Silicon;
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::sp3::nbio::nbif::func_strap0;
-use crate::sp3::soc::Generation;
 use crate::window::update;
 
 /// SMU V11 messages (`smu::v11::msg`).
@@ -32,20 +32,20 @@ pub struct UsbPolicy {
 
 impl UsbPolicy {
     /// Donor defaults per generation and socket (FCH_SP3 §3.1, §4.2, §8).
-    pub const fn default_for(generation: Generation, socket: u8) -> Self {
+    pub const fn default_for(generation: Silicon, socket: u8) -> Self {
         let oc_map = match (generation, socket) {
-            (Generation::Rome, 0) => [0xFFFF, 0x3232],
-            (Generation::Rome, _) => [0x1010, 0x3F3F],
+            (Silicon::Ssp, 0) => [0xFFFF, 0x3232],
+            (Silicon::Ssp, _) => [0x1010, 0x3F3F],
             _ => [0xFFFF, 0xFFFF],
         };
         Self { oc_map }
     }
 }
 
-fn requests(generation: Generation) -> &'static [(u32, u32, u32, u32)] {
+fn requests(generation: Silicon) -> &'static [(u32, u32, u32, u32)] {
     match generation {
-        Generation::Rome => super::super::tables::USB_CONFIG_ROME,
-        Generation::Milan => super::super::tables::USB_CONFIG_MILAN,
+        Silicon::Ssp => super::super::tables::USB_CONFIG_ROME,
+        Silicon::Gn => super::super::tables::USB_CONFIG_MILAN,
         g => super::super::common::not_built(g),
     }
 }
@@ -55,7 +55,7 @@ fn requests(generation: Generation) -> &'static [(u32, u32, u32, u32)] {
 /// `16D8014C[31]` first (FCH_SP3 §4.2).
 pub fn reset<H: FchHw, S: SmuMessages + ?Sized>(
     hw: &H,
-    generation: Generation,
+    generation: Silicon,
     socket: u8,
     smu: &S,
     policy: &UsbPolicy,
@@ -96,10 +96,10 @@ mod tests {
         let smu = Smu::default();
         reset(
             &hw,
-            Generation::Rome,
+            Silicon::Ssp,
             1,
             &smu,
-            &UsbPolicy::default_for(Generation::Rome, 1),
+            &UsbPolicy::default_for(Silicon::Ssp, 1),
             false,
         )
         .unwrap();
@@ -118,10 +118,10 @@ mod tests {
         let smu = Smu::default();
         reset(
             &hw,
-            Generation::Milan,
+            Silicon::Gn,
             0,
             &smu,
-            &UsbPolicy::default_for(Generation::Milan, 0),
+            &UsbPolicy::default_for(Silicon::Gn, 0),
             true,
         )
         .unwrap();

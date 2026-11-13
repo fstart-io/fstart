@@ -22,17 +22,25 @@ pub enum Generation {
     Milan,
 }
 
-impl From<Generation> for crate::psp::Variant {
-    fn from(generation: Generation) -> Self {
-        match generation {
-            Generation::Naples => Self::Zp,
-            Generation::Rome => Self::Ssp,
-            Generation::Milan => Self::Gn,
+impl Generation {
+    /// The silicon of this generation's dies.
+    pub const fn silicon(self) -> crate::cpu::Silicon {
+        match self {
+            Self::Naples => crate::cpu::Silicon::Zp,
+            Self::Rome => crate::cpu::Silicon::Ssp,
+            Self::Milan => crate::cpu::Silicon::Gn,
         }
     }
-}
 
-impl Generation {
+    /// The SP3 generation of `silicon`.
+    pub const fn of(silicon: crate::cpu::Silicon) -> Self {
+        match silicon {
+            crate::cpu::Silicon::Zp => Self::Naples,
+            crate::cpu::Silicon::Ssp => Self::Rome,
+            crate::cpu::Silicon::Gn => Self::Milan,
+        }
+    }
+
     /// The flash format of this generation's boot ROM and BIOS directory
     /// (EFS generation word, PSP ID, BIOS directory pointer).
     pub const fn profile(self) -> Profile {
@@ -108,7 +116,11 @@ pub struct Identity {
 
 impl Identity {
     pub const fn generation(&self) -> Generation {
-        self.revision.generation()
+        Generation::of(self.revision.silicon())
+    }
+
+    pub const fn silicon(&self) -> crate::cpu::Silicon {
+        self.revision.silicon()
     }
 }
 

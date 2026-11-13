@@ -21,7 +21,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use super::logical::{LogicalId, gn, ssp, zp};
 use super::topology::Thread;
 use crate::ccx::msr::{C001_10DD, IC_CFG, LS_CFG, LS_CFG3, MCODE_CTL, TW_CFG, TwCfg, mca_ctl_mask};
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 
 /// MCA_CTL_MASK of the DE bank.
 const MCA_CTL_MASK_DE: Msr = mca_ctl_mask(3);
@@ -38,14 +38,14 @@ fn set<M: MsrAccess + ?Sized, R: RegisterLongName>(cpu: &M, msr: Msr<R>, mask: u
 /// The BSP-early step (BSP and every AP, before the tables run on APs).
 pub fn early<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread, ids: &LogicalId) {
     let primary = thread.primary();
-    match thread.generation() {
-        Generation::Naples => {
+    match thread.silicon() {
+        Silicon::Zp => {
             // ZP A0–B1 (and packages other than SP3/SP4/AM4).
             if primary && ids.cpu_is(zp::CPU, zp::A0 | zp::B0 | zp::B1) {
                 set(cpu, MCA_CTL_MASK_DE, 1 << 3, true);
             }
         }
-        Generation::Rome | Generation::Milan => {
+        Silicon::Ssp | Silicon::Gn => {
             if !thread.smt() || !primary {
                 cpu.reg(TW_CFG).modify(TwCfg::COMBINE_CR0_CD::SET);
             }
@@ -98,7 +98,7 @@ pub fn all_threads<M: MsrAccess + ?Sized>(
     if thread.primary() {
         cpu.reg(TW_CFG).modify(TwCfg::COMBINE_CR0_CD::SET);
     }
-    if thread.generation() != Generation::Milan {
+    if thread.silicon() != Silicon::Gn {
         return;
     }
     if zen3.ic_cfg_60 {
@@ -127,7 +127,7 @@ mod tests {
     fn early_per_revision() {
         let run = |rev: Revision, apic, smt| {
             let cpu = MsrSpace::new([]);
-            let t = Thread::new(rev.generation(), apic, smt, false);
+            let t = Thread::new(rev.silicon(), apic, smt, false);
             early(&cpu, &t, &LogicalId::of(rev));
             cpu.into_inner()
         };
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn milan_all_threads() {
         let cpu = MsrSpace::new([(LS_CFG3.index(), 1 << 26), (IC_CFG.index(), 1 << 59)]);
-        let t = Thread::new(Generation::Milan, 0, true, true);
+        let t = Thread::new(Silicon::Gn, 0, true, true);
         all_threads(
             &cpu,
             &t,

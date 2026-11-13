@@ -12,8 +12,8 @@ use crate::ccx::msr::{
     CPU_WDT_CFG, CSTATE_BASE_ADDR, CSTATE_CONFIG, CpuWdtCfg, CstateBaseAddr, CstateConfig, DPM_CFG,
     DPM_WAC_ACC_INDEX, DPM_WAC_DATA, DpmCfg,
 };
+use crate::cpu::Silicon;
 use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
-use crate::sp3::soc::Generation;
 
 // --- C-states -------------------------------------------------------------
 
@@ -156,11 +156,11 @@ pub fn df_wdt_ns(df_global_ctrl: u32) -> Option<u64> {
 /// *shorter* (lowered). `None` = leave the CPU WDT off, as the donors do
 /// when no setting satisfies the rule (DXE ZP `0x1884`, SSP `0x1c0c`, GN
 /// `0x211c`).
-pub fn wdt_setting(generation: Generation, requested: Wdt, df_global_ctrl: u32) -> Option<Wdt> {
+pub fn wdt_setting(generation: Silicon, requested: Wdt, df_global_ctrl: u32) -> Option<Wdt> {
     let Some(df) = df_wdt_ns(df_global_ctrl) else {
         return Some(requested);
     };
-    let longer = generation == Generation::Naples;
+    let longer = generation == Silicon::Zp;
     let ok = |w: Wdt| {
         w.period_ns()
             .is_some_and(|p| if longer { p >= df } else { p < df })
@@ -197,10 +197,10 @@ pub fn init_wdt<M: MsrAccess + ?Sized>(cpu: &M, setting: Option<Wdt>, severity: 
 // --- CAC weights -------------------------------------------------------------
 
 /// Weight chains: 21 on Zen/Zen 2, 23 on Zen 3.
-pub const fn cac_weight_count(generation: Generation) -> usize {
+pub const fn cac_weight_count(generation: Silicon) -> usize {
     match generation {
-        Generation::Naples | Generation::Rome => 21,
-        Generation::Milan => 23,
+        Silicon::Zp | Silicon::Ssp => 21,
+        Silicon::Gn => 23,
     }
 }
 
@@ -211,11 +211,11 @@ pub type CacWeights = Vec<u64, 23>;
 /// (AmdNbioSmuV9Dxe `0x1066`), V11 0x09 with `resp1 << 32 | resp0`
 /// (SmuV11Dxe `0x37b8`).
 pub fn read_cac_weights<M: SmuMessages + ?Sized>(
-    generation: Generation,
+    generation: Silicon,
     smu: &M,
 ) -> Result<CacWeights, SmuError> {
     let id = match generation {
-        Generation::Naples => 0x10,
+        Silicon::Zp => 0x10,
         _ => 0x09,
     };
     (0..cac_weight_count(generation) as u32)
@@ -225,7 +225,7 @@ pub fn read_cac_weights<M: SmuMessages + ?Sized>(
             smu.send(id, &mut args)?;
             let (lo, hi) = (u64::from(args[0]), u64::from(args[1]));
             Ok(match generation {
-                Generation::Naples => lo << 32 | hi,
+                Silicon::Zp => lo << 32 | hi,
                 _ => hi << 32 | lo,
             })
         })
@@ -257,10 +257,10 @@ pub enum Cppc {
 }
 
 /// CPPC availability. `smu_cppc` is the SMU's CPPC feature bit as enabled.
-pub fn cppc(generation: Generation, cpuid_8000_0008_ebx: u32, smu_cppc: bool) -> Cppc {
+pub fn cppc(generation: Silicon, cpuid_8000_0008_ebx: u32, smu_cppc: bool) -> Cppc {
     match generation {
-        Generation::Naples => Cppc::None,
-        Generation::Milan if cpuid_8000_0008_ebx & 1 << 27 != 0 => Cppc::Msr,
+        Silicon::Zp => Cppc::None,
+        Silicon::Gn if cpuid_8000_0008_ebx & 1 << 27 != 0 => Cppc::Msr,
         _ if smu_cppc => Cppc::SharedMemory,
         _ => Cppc::None,
     }
@@ -278,7 +278,7 @@ mod tests {
         let cpu = MsrSpace::new([]);
         init_cstates(
             &cpu,
-            &Thread::new(Generation::Milan, 1, true, false),
+            &Thread::new(Silicon::Gn, 1, true, false),
             &CstatePolicy::default(),
         );
         let cpu = cpu.into_inner();
@@ -292,30 +292,30 @@ mod tests {
         let df = 6 << 16;
         // Default 2047 × 1.31 ms = 2.68 s: already shorter on Rome.
         assert_eq!(
-            wdt_setting(Generation::Rome, Wdt::DEFAULT, df),
+            wdt_setting(Silicon::Ssp, Wdt::DEFAULT, df),
             Some(Wdt::DEFAULT)
         );
         // Naples raises it to the first setting not shorter than the DF's.
         assert_eq!(
-            wdt_setting(Generation::Naples, Wdt::DEFAULT, df),
+            wdt_setting(Silicon::Zp, Wdt::DEFAULT, df),
             Some(Wdt {
                 count_sel: 0,
                 time_base: 0
             })
         );
         // DF 31 × 10 ns: nothing on the CPU is shorter, the WDT stays off.
-        assert_eq!(wdt_setting(Generation::Milan, Wdt::DEFAULT, 2 << 4), None);
+        assert_eq!(wdt_setting(Silicon::Gn, Wdt::DEFAULT, 2 << 4), None);
         // DF 127 × 1.28 µs: Rome walks down through the 1.31 ms counts,
         // switches to 1.28 µs and stops at 63 × 1.28 µs.
         assert_eq!(
-            wdt_setting(Generation::Rome, Wdt::DEFAULT, 1 << 16 | 1 << 4),
+            wdt_setting(Silicon::Ssp, Wdt::DEFAULT, 1 << 16 | 1 << 4),
             Some(Wdt {
                 count_sel: 6,
                 time_base: 1
             })
         );
         assert_eq!(
-            wdt_setting(Generation::Rome, Wdt::DEFAULT, 3 << 4),
+            wdt_setting(Silicon::Ssp, Wdt::DEFAULT, 3 << 4),
             Some(Wdt::DEFAULT)
         );
 
@@ -334,7 +334,7 @@ mod tests {
                 Ok(())
             }
         }
-        let w = read_cac_weights(Generation::Milan, &Smu).unwrap();
+        let w = read_cac_weights(Silicon::Gn, &Smu).unwrap();
         assert_eq!(w.len(), 23);
         assert_eq!(w[2], 0xa_0000_0102);
         let cpu = MsrSpace::new([(0xc001_1074, 0x1000)]);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn cppc_availability() {
-        assert_eq!(cppc(Generation::Milan, 1 << 27, false), Cppc::Msr);
-        assert_eq!(cppc(Generation::Rome, 0, true), Cppc::SharedMemory);
+        assert_eq!(cppc(Silicon::Gn, 1 << 27, false), Cppc::Msr);
+        assert_eq!(cppc(Silicon::Ssp, 0, true), Cppc::SharedMemory);
     }
 }

@@ -26,7 +26,7 @@ use super::{
     acpimmio::{AoacDevice, PM, pm},
     alink,
 };
-use crate::sp3::soc::Generation;
+use crate::cpu::Silicon;
 use crate::window::Window;
 use crate::window::update;
 
@@ -39,10 +39,10 @@ fn df_f0() -> PciAddress {
 
 /// The D18F0xC4 value routing legacy I/O to Naples die `die` (1..7) or to
 /// the Rome/Milan socket-1 IOMS3 (FCH_SP3 §4, §9).
-pub const fn route_target(generation: Generation, die: u8) -> u32 {
+pub const fn route_target(generation: Silicon, die: u8) -> u32 {
     match generation {
-        Generation::Naples => 0x24 + 0x20 * (die as u32 - 1),
-        Generation::Rome | Generation::Milan => 0x3B,
+        Silicon::Zp => 0x24 + 0x20 * (die as u32 - 1),
+        Silicon::Ssp | Silicon::Gn => 0x3B,
     }
 }
 
@@ -112,19 +112,15 @@ impl NaplesDie {
 /// FCH (`acpi` = SMN view or relocated window, `bus` = the die's bus).
 pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
     debug_assert!((1..8).contains(&policy.die));
-    with_legacy_io(
-        hw.pci(),
-        route_target(Generation::Naples, policy.die),
-        || {
-            if let Some(base) = policy.alt_mmio {
-                relocate(hw.io(), base);
-            }
-            let pmio = PmIo(hw.io());
-            pmio.write16(PM + pm::AB_REG_BAR, alink::INDEX as u16);
-            alink::modify(hw.io(), alink::MISC_CTL, alink::RESET_CPU_ON_SYNC_FLOOD, 0);
-            pmio.write16(PM + pm::AB_REG_BAR, 0);
-        },
-    );
+    with_legacy_io(hw.pci(), route_target(Silicon::Zp, policy.die), || {
+        if let Some(base) = policy.alt_mmio {
+            relocate(hw.io(), base);
+        }
+        let pmio = PmIo(hw.io());
+        pmio.write16(PM + pm::AB_REG_BAR, alink::INDEX as u16);
+        alink::modify(hw.io(), alink::MISC_CTL, alink::RESET_CPU_ON_SYNC_FLOOD, 0);
+        pmio.write16(PM + pm::AB_REG_BAR, 0);
+    });
     let acpi = hw.acpi();
     // IOMUX 02h = 1 (byte-only: see the SMN caveat in `gpio`).
     acpi.write8(acpimmio::IOMUX + 2, 1);
@@ -147,7 +143,7 @@ pub fn naples_die_env<H: FchHw>(hw: &H, sata: bool) {
 /// FCH (`acpi` = SMN view, `bus` = socket 1's bus), `smu` socket 1's SMU.
 pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
     hw: &H,
-    generation: Generation,
+    generation: Silicon,
     smu: &S,
     usb: &super::huashan::usb::UsbPolicy,
     sata: &super::huashan::sata::SataPolicy,
@@ -170,7 +166,7 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
 /// the legacy I/O is routed there meanwhile.
 pub fn huashan_socket1_env<H: FchHw>(
     hw: &H,
-    generation: Generation,
+    generation: Silicon,
     sata: &super::huashan::sata::SataPolicy,
 ) -> bool {
     with_legacy_io(hw.pci(), route_target(generation, 1), || {
@@ -186,9 +182,9 @@ mod tests {
 
     #[test]
     fn route_targets() {
-        assert_eq!(route_target(Generation::Naples, 1), 0x24);
-        assert_eq!(route_target(Generation::Naples, 7), 0xE4);
-        assert_eq!(route_target(Generation::Milan, 1), 0x3B);
+        assert_eq!(route_target(Silicon::Zp, 1), 0x24);
+        assert_eq!(route_target(Silicon::Zp, 7), 0xE4);
+        assert_eq!(route_target(Silicon::Gn, 1), 0x3B);
     }
 
     #[test]
@@ -218,9 +214,9 @@ mod tests {
         let smu = super::super::model::Smu::default();
         huashan_socket1(
             &hw,
-            Generation::Rome,
+            Silicon::Ssp,
             &smu,
-            &super::super::huashan::usb::UsbPolicy::default_for(Generation::Rome, 1),
+            &super::super::huashan::usb::UsbPolicy::default_for(Silicon::Ssp, 1),
             &super::super::huashan::sata::SataPolicy::socket1(),
             false,
         )

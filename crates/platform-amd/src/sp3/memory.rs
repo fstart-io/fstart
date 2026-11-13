@@ -249,7 +249,7 @@ mod tests {
                 kind: 2,
             },
         ];
-        memory_map(Generation::Rome.into(), 1536 * GIB, holes)
+        memory_map(Generation::Rome.silicon().into(), 1536 * GIB, holes)
             .unwrap()
             .to_vec()
     }
