@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::StageBinary;
 
+#[allow(clippy::too_many_arguments)] // fbuild's flat assemble options
 pub fn assemble(
     workspace_root: &Path,
     board_dir: &Path,

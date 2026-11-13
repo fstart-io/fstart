@@ -725,12 +725,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             if let Some(p) = linux {
                 regions.push(span(p.kernel_addr, p.kernel_capacity).region(Kind::Payload));
             }
-            if keep_firmware {
-                if let Some(p) = &policy.linux {
-                    regions.push(
-                        span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware),
-                    );
-                }
+            if keep_firmware && let Some(p) = &policy.linux {
+                regions
+                    .push(span(p.firmware_addr, p.firmware_capacity).region(Kind::PayloadFirmware));
             }
             if let Some(dtb) = dtb {
                 regions.push(dtb.region(Kind::DeviceTree));
@@ -1238,6 +1235,8 @@ mod tests {
     }
 
     #[test]
+    // The machines with the legacy Linux defaults are a list of one.
+    #[allow(clippy::single_element_loop)]
     fn new_machine_payload_selection_matches_legacy_contract() {
         use fstart_core::layout::{Layout, RegionKind as Kind};
         // SBSA is halt-only; q35 rejects direct Linux like the legacy plan.

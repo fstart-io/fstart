@@ -211,7 +211,7 @@ impl Init for Picasso {
     fn train_dxio(ctx: &Ctx<'_, Self>, found: FchUp, (): ()) -> Result<Trained, &'static str> {
         let die = &ctx.hw.dies[0];
         let smn = &die.smn();
-        let mut delay = ctx.clock;
+        let delay = ctx.clock;
         nbio::ioapic_decode(smn);
         crate::nbio::iommu::init_bar(die, nbio::IOMMU_MMIO_BASE);
         static mut DXIO: dxio::DmaArea = dxio::DmaArea::new();
@@ -230,7 +230,7 @@ impl Init for Picasso {
                     hda_enabled: true,
                     acp_enabled: true,
                 },
-                &mut delay,
+                &delay,
             )
         }
         .map_err(|_| "DXIO training")?;

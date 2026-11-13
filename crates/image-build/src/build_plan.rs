@@ -262,6 +262,8 @@ pub struct ArtifactBinding {
 }
 
 /// Bounded format operations, not platform identities or arbitrary commands.
+// A plan has a handful of units: the size of the variants does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UnitOutput {
     Executable {

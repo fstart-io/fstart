@@ -400,7 +400,7 @@ pub(crate) unsafe fn publish_pending(
         || HEADER_SIZE
             .checked_add(payload.len())
             .is_none_or(|size| region.size < size as u64)
-        || region.base % 4 != 0
+        || !region.base.is_multiple_of(4)
     {
         return Err(ServiceError::InvalidParam);
     }

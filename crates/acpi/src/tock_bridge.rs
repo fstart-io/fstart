@@ -467,7 +467,7 @@ mod tests {
         // Expected: UARTEN(1), Reserved(7), TXE(1), RXE(1), Reserved(22)
         assert_eq!(entries.len(), 5);
 
-        assert_eq!(entries[0], FieldEntry::Named([b'U', b'A', b'R', b'T'], 1));
+        assert_eq!(entries[0], FieldEntry::Named(*b"UART", 1));
         assert_eq!(entries[1], FieldEntry::Reserved(7));
         assert_eq!(entries[2], FieldEntry::Named(*b"TXE_", 1));
         assert_eq!(entries[3], FieldEntry::Named(*b"RXE_", 1));

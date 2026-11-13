@@ -261,6 +261,8 @@ pub struct A20DramcConfig {
 impl A20DramcConfig {
     /// Construct static A20 DDR3 policy.
     #[must_use]
+    // The parameters of a board's DRAM, in the order of the vendor's table.
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         clock: u32,
         mbus_clock: u32,
