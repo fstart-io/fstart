@@ -220,10 +220,7 @@ fn rank_density_mb(spd_data: &[u8; 256]) -> u32 {
 }
 
 fn checksum_valid(spd_data: &[u8; 256]) -> bool {
-    spd_data[..SPD_CHECKSUM as usize]
-        .iter()
-        .copied()
-        .fold(0u8, u8::wrapping_add)
+    fstart_core::checksum::sum8(&spd_data[..SPD_CHECKSUM as usize])
         == spd_data[SPD_CHECKSUM as usize]
 }
 

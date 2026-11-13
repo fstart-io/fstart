@@ -78,8 +78,14 @@ pub fn compute_common_base(layout: &SmramLayout) -> Result<u64, LayoutError> {
         .smram_base
         .checked_add(layout.smram_size)
         .ok_or(LayoutError::Overflow)?;
-    let top_reserved = align_up(layout.handler_mem_size as u64, SMM_HANDLER_ALIGNMENT)?
-        .checked_add(align_up(layout.page_table_size as u64, 4096)?)
+    let top_reserved = (layout.handler_mem_size as u64)
+        .checked_next_multiple_of(SMM_HANDLER_ALIGNMENT)
+        .ok_or(LayoutError::Overflow)?
+        .checked_add(
+            (layout.page_table_size as u64)
+                .checked_next_multiple_of(4096)
+                .ok_or(LayoutError::Overflow)?,
+        )
         .ok_or(LayoutError::Overflow)?;
     let base = smram_top
         .checked_sub(top_reserved)
@@ -194,21 +200,14 @@ pub fn compute_cpu_layout<'a>(
     Ok(&out[..count])
 }
 
-fn align_up(value: u64, align: u64) -> Result<u64, LayoutError> {
-    debug_assert!(align.is_power_of_two());
-    value
-        .checked_add(align - 1)
-        .map(|v| v & !(align - 1))
-        .ok_or(LayoutError::Overflow)
-}
-
 /// Return the page-table base reserved immediately above the handler image.
 pub fn compute_page_table_base(layout: &SmramLayout) -> Result<u64, LayoutError> {
     compute_common_base(layout)?
-        .checked_add(align_up(
-            layout.handler_mem_size as u64,
-            SMM_HANDLER_ALIGNMENT,
-        )?)
+        .checked_add(
+            (layout.handler_mem_size as u64)
+                .checked_next_multiple_of(SMM_HANDLER_ALIGNMENT)
+                .ok_or(LayoutError::Overflow)?,
+        )
         .ok_or(LayoutError::Overflow)
 }
 

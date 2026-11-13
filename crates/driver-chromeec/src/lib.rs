@@ -58,7 +58,7 @@ pub enum Error {
     Rejected(u16),
 }
 fn checksum(bytes: &[u8]) -> u8 {
-    bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+    fstart_core::checksum::sum8(bytes)
 }
 fn wait(io: &mut impl Io, timer: &impl Timer) -> Result<(), Error> {
     let start = timer.timestamp_us();

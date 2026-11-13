@@ -68,7 +68,7 @@ const _: () = assert!(core::mem::size_of::<FadtPrefix>() == 140);
 const _: () = assert!(core::mem::size_of::<FacsPrefix>() == 16);
 
 fn checksum_ok(bytes: &[u8]) -> bool {
-    bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) == 0
+    fstart_core::checksum::sum8(bytes) == 0
 }
 
 fn parse_rsdp(bytes: &[u8]) -> Option<Rsdp> {

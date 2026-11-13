@@ -140,18 +140,16 @@ pub fn build_image(
     let header_size = size_of::<SmmImageHeader>();
     let desc_size = size_of::<EntryDescriptor>();
     let entries_offset = header_size;
-    let handler_offset = align_up(
-        entries_offset
-            .checked_add(desc_size * options.entry_count as usize)
-            .ok_or(BuildError::Overflow)?,
-        16,
-    )?;
-    let stubs_offset = align_up(
-        handler_offset
-            .checked_add(handler.initialized.len())
-            .ok_or(BuildError::Overflow)?,
-        16,
-    )?;
+    let handler_offset = entries_offset
+        .checked_add(desc_size * options.entry_count as usize)
+        .ok_or(BuildError::Overflow)?
+        .checked_next_multiple_of(16)
+        .ok_or(BuildError::Overflow)?;
+    let stubs_offset = handler_offset
+        .checked_add(handler.initialized.len())
+        .ok_or(BuildError::Overflow)?
+        .checked_next_multiple_of(16)
+        .ok_or(BuildError::Overflow)?;
     let stub_size = stub.len();
     let fixups_offset = stubs_offset
         .checked_add(stub_size * options.entry_count as usize)
@@ -160,23 +158,24 @@ pub fn build_image(
         .checked_add(4 * handler.fixups.len())
         .ok_or(BuildError::Overflow)?;
 
-    let runtime_offset = align_up(
-        handler.memory_size,
-        align_of::<SmmRuntime>().max(HANDLER_CONFIG_ALIGNMENT),
-    )?;
+    let runtime_offset = handler
+        .memory_size
+        .checked_next_multiple_of(align_of::<SmmRuntime>().max(HANDLER_CONFIG_ALIGNMENT))
+        .ok_or(BuildError::Overflow)?;
     let runtime_size = size_of::<SmmRuntime>();
-    let handler_config_offset = align_up(
-        runtime_offset
-            .checked_add(runtime_size)
-            .ok_or(BuildError::Overflow)?,
-        HANDLER_CONFIG_ALIGNMENT,
-    )?;
+    let handler_config_offset = runtime_offset
+        .checked_add(runtime_size)
+        .ok_or(BuildError::Overflow)?
+        .checked_next_multiple_of(HANDLER_CONFIG_ALIGNMENT)
+        .ok_or(BuildError::Overflow)?;
     let handler_config_capacity = HANDLER_CONFIG_CAPACITY;
     let mut handler_mem_size = handler_config_offset
         .checked_add(handler_config_capacity)
         .ok_or(BuildError::Overflow)?;
     let module_args_offset = if options.coreboot_module_args {
-        let offset = align_up(handler_mem_size, align_of::<CorebootModuleArgs>())?;
+        let offset = handler_mem_size
+            .checked_next_multiple_of(align_of::<CorebootModuleArgs>())
+            .ok_or(BuildError::Overflow)?;
         handler_mem_size = offset
             .checked_add(
                 size_of::<CorebootModuleArgs>()
@@ -916,12 +915,6 @@ fn validate_options(options: ImageOptions) -> Result<(), BuildError> {
         return Err(BuildError::BadStackSize);
     }
     Ok(())
-}
-fn align_up(value: usize, align: usize) -> Result<usize, BuildError> {
-    value
-        .checked_add(align - 1)
-        .map(|v| v & !(align - 1))
-        .ok_or(BuildError::Overflow)
 }
 fn as_u32(value: usize) -> Result<u32, BuildError> {
     u32::try_from(value).map_err(|_| BuildError::Overflow)

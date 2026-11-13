@@ -1304,7 +1304,7 @@ impl<'a> SmbiosWriter<'a> {
 /// Compute a checksum byte such that the sum of all bytes in the structure
 /// (including the checksum field) wraps to zero.
 fn compute_checksum(data: &[u8]) -> u8 {
-    0u8.wrapping_sub(data.iter().fold(0u8, |acc, &b| acc.wrapping_add(b)))
+    0u8.wrapping_sub(fstart_core::checksum::sum8(data))
 }
 
 /// Assemble into exclusive storage, publishing its entry point only on success.

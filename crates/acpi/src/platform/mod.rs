@@ -250,36 +250,36 @@ pub fn assemble(
     let mut offset: usize = 0;
 
     let rsdp_off = offset;
-    offset += crate::align_up(rsdp_size, 16);
+    offset += rsdp_size.next_multiple_of(16);
 
     let xsdt_off = offset;
-    offset += crate::align_up(xsdt_estimate, 16);
+    offset += xsdt_estimate.next_multiple_of(16);
 
     let dsdt_off = offset;
-    offset += crate::align_up(dsdt_bytes.len(), 16);
+    offset += dsdt_bytes.len().next_multiple_of(16);
 
     let fadt_off = offset;
-    offset += crate::align_up(fadt_size, 16);
+    offset += fadt_size.next_multiple_of(16);
 
     // FACS requires absolute 64-byte alignment, unlike ordinary SDTs.
     if facs_size != 0 {
         offset += ((64 - ((base_addr + offset as u64) & 63)) & 63) as usize;
     }
     let facs_off = offset;
-    offset += crate::align_up(facs_size, 64);
+    offset += facs_size.next_multiple_of(64);
 
     // Platform tables (MADT, GTDT, etc.)
     let mut platform_offsets = Vec::new();
     for pt in platform_tables {
         platform_offsets.push(offset);
-        offset += crate::align_up(pt.len(), 16);
+        offset += pt.len().next_multiple_of(16);
     }
 
     // Device extra tables (SPCR, MCFG, etc.)
     let mut extra_offsets = Vec::new();
     for et in device_extra_tables {
         extra_offsets.push(offset);
-        offset += crate::align_up(et.len(), 16);
+        offset += et.len().next_multiple_of(16);
     }
 
     let total_size = offset;
