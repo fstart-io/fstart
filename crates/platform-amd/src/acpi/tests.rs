@@ -676,8 +676,14 @@ fn dsdt_disassembles() {
             r"execute \_SB.PCI0.RP81.D000._ADR;execute \_SB.PCI0.RP81.D000._ROM 0 8",
             "dsdt.aml",
         ])
-        .output()
-        .unwrap();
+        .output();
+    let output = match output {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::eprintln!("acpiexec not found, skipping the DSDT execution");
+            return;
+        }
+        output => output.unwrap(),
+    };
     let log = std::string::String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && !log.contains("AE_") && log.contains("55 AA 01 CB 00 00 00 00"),

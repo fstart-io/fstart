@@ -130,9 +130,10 @@ pub fn after_fch(
 pub const SMBIOS: fstart_platform_amd::acpi::SmbiosIdentity<'static> =
     fstart_platform_amd::acpi::SmbiosIdentity::new("Google", "Vilboz");
 
-/// The keyboard behind the EC.
+/// The keyboard behind the EC, which is an 8042 to the OS.
 pub fn acpi() -> fstart_platform_amd::acpi::Board {
     fstart_platform_amd::acpi::Board {
+        i8042: true,
         lpc_aml: fstart_driver_chromeec::acpi::keyboard_aml(),
         ..Default::default()
     }
