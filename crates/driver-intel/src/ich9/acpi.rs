@@ -271,7 +271,7 @@ impl SouthbridgeAcpi for IntelIch9 {
                 routing,
             ));
         }
-        body.extend_from_slice(&acpi_fragments::sata_node());
+        body.extend_from_slice(&acpi_fragments::sata_node(0x001f_0002));
         body.extend_from_slice(&acpi_fragments::smbus_node());
 
         // Downstream slot wiring belongs to the board, not the ICH9.
