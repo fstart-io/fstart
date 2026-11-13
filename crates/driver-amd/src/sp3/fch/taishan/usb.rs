@@ -3,7 +3,7 @@
 
 use super::super::{FchHw, hide_nbif_function};
 use crate::sp3::nbio::nbif::func_strap0;
-use crate::window::{Window, poll, update};
+use crate::window::{Window, update};
 
 /// Controller control/status block.
 const CTL_0014: u32 = 0x16D8_0014;
@@ -63,10 +63,11 @@ fn post_reset<W: Window>(smn: &W) {
 /// donor; a timeout continues like the donor does).
 fn handshake<H: FchHw, W: Window>(hw: &H, smn: &W, request: u32, want: u32) -> bool {
     smn.write32(SMU_REQ, request);
-    poll(hw.timer(), 1000, 1, || {
+    fstart_core::services::poll_tries(hw.timer(), 1000, 1, || {
         smn.write32(SMU_REQ, 0x107);
-        smn.read32(SMU_ACK) & 3 == want
+        (smn.read32(SMU_ACK) & 3 == want).then_some(())
     })
+    .is_some()
 }
 
 /// PEI af48 for the die of `hw`. `resume` is the S3 path.
@@ -118,9 +119,10 @@ pub fn sx_handshake<H: FchHw>(hw: &H, bus: u8) -> bool {
     // SAFETY: SMM owns the SMN pair while it runs.
     let smn =
         unsafe { super::super::SmnWindow::new(crate::smn::Smn::on_bus(hw.pci().clone(), bus), 0) };
-    let idle = poll(hw.timer(), 1000, 1, || {
-        smn.read32(SX_STATUS) & 0x300 == 0x300
-    });
+    let idle = fstart_core::services::poll_tries(hw.timer(), 1000, 1, || {
+        (smn.read32(SX_STATUS) & 0x300 == 0x300).then_some(())
+    })
+    .is_some();
     let acked = handshake(hw, &smn, 0x101, 2);
     smn.write32(SX_CTL, 200);
     idle && acked
