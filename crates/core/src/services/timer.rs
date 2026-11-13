@@ -6,12 +6,19 @@
 //!
 //! [`DelayNs`]: embedded_hal::delay::DelayNs
 
-/// An embedded-hal delay backed by a firmware timer.
-/// Nanosecond requests round up to the timer's microsecond granularity.
-#[derive(Clone, Copy)]
-pub struct TimerDelay<'a>(pub &'a dyn Timer);
+/// An embedded-hal delay backed by a firmware timer, any `T` or a
+/// `dyn Timer`. Nanosecond requests round up to the timer's microsecond
+/// granularity.
+pub struct TimerDelay<'a, T: Timer + ?Sized + 'a = dyn Timer + 'a>(pub &'a T);
 
-impl embedded_hal::delay::DelayNs for TimerDelay<'_> {
+impl<T: Timer + ?Sized> Clone for TimerDelay<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: Timer + ?Sized> Copy for TimerDelay<'_, T> {}
+
+impl<T: Timer + ?Sized> embedded_hal::delay::DelayNs for TimerDelay<'_, T> {
     fn delay_ns(&mut self, ns: u32) {
         self.0.delay_us(u64::from(ns.div_ceil(1000)));
     }
