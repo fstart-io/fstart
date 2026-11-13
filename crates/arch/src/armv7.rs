@@ -3,7 +3,7 @@
 #[cfg(target_arch = "arm")]
 use core::arch::global_asm;
 
-#[cfg(all(target_arch = "arm", not(feature = "sunxi-fel")))]
+#[cfg(all(target_arch = "arm", not(feature = "platform-pre-stack")))]
 global_asm!(
     ".section .text.pre_stack\n\
      .weak fstart_pre_stack_entry\n\

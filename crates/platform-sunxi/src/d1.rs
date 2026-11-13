@@ -2,7 +2,7 @@
 //!
 //! The D1 BROM loads the eGON bootblock into SRAM at `0x0002_0000` and enters
 //! it in RISC-V M-mode (the C906 vendor-CSR setup lives in the
-//! `riscv64-sunxi-entry` arch entry). The bootblock brings up clocks, UART0,
+//! platform's `entry_riscv64.S`). The bootblock brings up clocks, UART0,
 //! DDR3, and MMC0, loads the DRAM mainstage from the FFS image, and jumps to
 //! it with a serialized handoff.
 

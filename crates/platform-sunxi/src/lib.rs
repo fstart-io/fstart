@@ -11,6 +11,12 @@ extern crate ufmt;
 #[cfg(feature = "stage")]
 mod boot;
 
+// The BROM contract and its MMIO addresses belong to this platform, not arch.
+#[cfg(all(feature = "stage", feature = "aarch64", target_arch = "aarch64"))]
+core::arch::global_asm!(include_str!("entry_aarch64.S"));
+#[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
+core::arch::global_asm!(include_str!("entry_riscv64.S"));
+
 /// How the FFS stores what this platform's stages load. The host plan
 /// compresses each image with its constant and the stage loading it passes
 /// `codec` of the same constant, so a stage links only the decoders it uses.
