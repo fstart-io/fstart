@@ -32,7 +32,7 @@ fstart-driver-tpm = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 # Upstream split into a workspace; package `crabefi-core` keeps lib name `crabefi`.
-crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "1eccb286ffd0677c5f3c0f0bf50939db47caf224", default-features = false, features = ["bundled-runtime-image", "variable-store"], optional = true }
+crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "935c8e0bf09262de318459b1621f41840f647877", default-features = false, features = ["bundled-runtime-image", "variable-store"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fstart-arch = { workspace = true, features = ["x86_64"], optional = true }

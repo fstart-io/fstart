@@ -212,6 +212,8 @@ pub enum Payload {
     Linux,
     /// CrabEFI linked into the stage unit.
     Uefi,
+    /// CrabEFI's graphical boot manager.
+    UefiUi,
 }
 
 impl Payload {
@@ -220,9 +222,10 @@ impl Payload {
             None | Some("halt") => Self::Halt,
             Some("linux") => Self::Linux,
             Some("uefi") => Self::Uefi,
+            Some("uefi-ui") => Self::UefiUi,
             Some(other) => {
                 return Err(format!(
-                    "SP3 supports the halt, linux and uefi payloads, not {other}"
+                    "SP3 supports the halt, linux, uefi and uefi-ui payloads, not {other}"
                 ));
             }
         };
@@ -237,6 +240,7 @@ impl Payload {
             Self::Halt => "halt",
             Self::Linux => "linux",
             Self::Uefi => "uefi",
+            Self::UefiUi => "uefi-ui",
         }
     }
 
@@ -246,6 +250,7 @@ impl Payload {
             Self::Halt => &[],
             Self::Linux => &["payload-linux"],
             Self::Uefi => &["payload-uefi"],
+            Self::UefiUi => &["payload-uefi-ui-core"],
         }
     }
 
@@ -255,7 +260,9 @@ impl Payload {
         };
         Ok(match self {
             Self::Halt => None,
-            Self::Uefi => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
+            Self::Uefi | Self::UefiUi => {
+                Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD))
+            }
             Self::Linux => Some(fstart_core::x86_linux_payload(
                 selection
                     .x86_linux_kernel_load_addr
@@ -414,7 +421,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             default: None,
             capacity: FFS_WINDOW.size,
         }],
-        Payload::Halt | Payload::Uefi => vec![],
+        Payload::Halt | Payload::Uefi | Payload::UefiUi => vec![],
     };
     // The PSP firmware: packed from the blob directory (`--blobs`,
     // `--donor`), or the board's vendor ROM, which `--image-config`
@@ -585,16 +592,16 @@ mod tests {
         else {
             panic!("not executable")
         };
-        assert_eq!((*load_address, *flat_capacity), (0x75de_0000, 0x22_0000));
+        assert_eq!((*load_address, *flat_capacity), (0x75d0_0000, 0x30_0000));
         assert_eq!(expectations.entry, Some(0x75ff_fff0));
         let script = unit.linker_script.as_deref().unwrap();
         for needle in [
-            "ORIGIN = 0x75de0000, LENGTH = 0x220000",
+            "ORIGIN = 0x75d00000, LENGTH = 0x300000",
             ".sp3.entry16 (0x76000000 - 0x1000)",
             "ORIGIN = 0x75000000, LENGTH = 0x101000",
             "_fstart_layout_start = .;",
             "QUAD(0x400000)",
-            "the common 0x220000 image",
+            "the common 0x300000 image",
         ] {
             assert!(script.contains(needle), "{needle}");
         }
@@ -725,15 +732,15 @@ mod tests {
             FlashPlan {
                 generations: vec![sp3_flash::ROME, sp3_flash::MILAN],
                 reset: ResetSlot {
-                    flash_offset: 0xde_0000,
-                    size: 0x22_0000,
-                    destination: 0x75de_0000
+                    flash_offset: 0xd0_0000,
+                    size: 0x30_0000,
+                    destination: 0x75d0_0000
                 },
                 ffs_offset: 0x60_0000,
                 dram_floor: 0x75c0_0000,
                 mirrors: Vec::new(),
                 nvram: Some(NvramSlot {
-                    flash_offset: 0xda_0000,
+                    flash_offset: 0xcc_0000,
                     size: 0x4_0000
                 }),
             }
@@ -741,12 +748,12 @@ mod tests {
         let config = plan.assembly.config("tyan-s8030").unwrap();
         assert_eq!(
             config.build.firmware_image,
-            FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x7a_0000)
+            FirmwareImagePolicy::memory_mapped(0xfd_0060_0000, 0x6c_0000)
         );
         let StageLayout::Monolithic(stage) = &config.stages else {
             panic!("not monolithic")
         };
-        assert!(!stage.external && stage.load_addr == 0x75de_0000);
+        assert!(!stage.external && stage.load_addr == 0x75d0_0000);
         assert!(config.payload.is_none() && plan.inputs.is_empty());
 
         // Payloads, the vendor ROM override and what is refused.
@@ -769,6 +776,14 @@ mod tests {
             uefi.unit(STAGE_UNIT).unwrap().features.last().unwrap(),
             "payload-uefi"
         );
+        let ui = resolve::<S8030>(&select("uefi-ui")).unwrap();
+        assert_eq!(ui.payload, "uefi-ui");
+        assert_eq!(
+            ui.unit(STAGE_UNIT).unwrap().features.last().unwrap(),
+            "payload-uefi-ui-core"
+        );
+        assert!(sp3(&ui).ffs.payload.is_some());
+        assert!(ui.inputs.is_empty());
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
             resolve::<S8030>(&BuildSelection {
@@ -796,9 +811,9 @@ mod tests {
         let bytes = descriptor().unwrap();
         let layout = fstart_core::layout::Layout::parse(bytes.as_bytes()).unwrap();
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
-        assert_eq!(find(RegionKind::Image).base, 0x75de_0000);
+        assert_eq!(find(RegionKind::Image).base, 0x75d0_0000);
         assert_eq!(find(RegionKind::Firmware).base, 0xfd_0060_0000);
-        assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00da_0000));
+        assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00cc_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
         assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
     }
@@ -811,7 +826,7 @@ mod tests {
             return;
         }
         let survey = check_vendor::<S8030>(&root).unwrap();
-        assert_eq!(survey.ffs, 0x60_0000..0xda_0000);
+        assert_eq!(survey.ffs, 0x60_0000..0xcc_0000);
         let composed: std::vec::Vec<_> = survey
             .halves
             .iter()

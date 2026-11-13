@@ -10,6 +10,7 @@ members = [
   "tools/ffmt",
   "crates/amdfw-format",
   "crates/driver-amd",
+  "crates/driver-aspeed",
   "crates/driver-chromeec",
   "crates/platform-amd",
   "crates/core",

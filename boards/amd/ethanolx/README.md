@@ -21,7 +21,15 @@ map, GPIO, SATA policy, the FCH UART1 console and the BMC's IPMI KCS.
 ```sh
 cargo fbuild assemble --board amd-ethanolx --release
 cargo fbuild assemble --board amd-ethanolx --release --payload uefi
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi-ui
 ```
+
+The board initializes its AST2500 natively at 1024×768, 60 Hz, XRGB8888
+and publishes the framebuffer to the payload. `uefi` provides the text
+menu; `uefi-ui` enables CrabEFI's graphical boot manager for BMC KVM.
+The serial console remains available. No VGA ROM is executed or needed.
+The host driver requires BMC-initialized shared DRAM; it never resets the
+BMC or trains its memory. USB supplies KVM input.
 
 The vendor ROM is the board's own flash (`vendor/README.md`). The BMC
 exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased bytes at
@@ -37,7 +45,10 @@ readbacks. The board declares that mirror (`FLASH_MIRRORS`), so with the
 
 With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
 The bank layout: vendor EFS and directories to `0x893000`, FFS from
-`0x893000`, reset image at `0xde0000`.
+`0x893000`, settings store at `0xcc0000`, 3 MiB reset image at `0xd00000`.
+This larger reset-image budget accommodates the current graphical CrabEFI.
+The settings store moved from `0xda0000`; a newly assembled image starts
+with an empty store rather than migrating old settings.
 
 There is no on-flash vendor fallback after an update: both banks hold the
 new image. Keep verified external readouts for recovery, verify the

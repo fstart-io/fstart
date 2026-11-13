@@ -13,8 +13,8 @@
 //! | Milan S8030 v4.04, Milan S8253 v2.03 | `0xce0000` | `0x320000` | `0x75ce0000` |
 //! | Milan S8030 v4.00 | `0xd00000` | `0x300000` | `0x75d00000` |
 //!
-//! fstart links one reset image for every generation at the smallest
-//! geometry ([`RESET`]) and the image builder points every `0x62` entry of
+//! fstart links one 3 MiB reset image for every generation ([`RESET`]),
+//! keeping the common image end, and the builder points every `0x62` entry of
 //! every composed generation at it: one copy at the top of the lower half
 //! (unified layout), or one per half (dual layout), see
 //! `fstart_image_build::sp3_flash`. The FFS is in the lower half only; the
@@ -130,13 +130,14 @@ impl ResetGeometry {
     }
 }
 
-/// The reset image of every build, at the smallest donor geometry (Naples
-/// KNPP-D32 1801, FIRMWARE_IMAGE §2.1); every `0x62` entry is rewritten to
-/// it. A release Naples+Rome+Milan image uses about `0x57000`.
+/// The common 3 MiB reset-image budget, including the graphical UEFI
+/// payload. Every composed `0x62` entry is rewritten to this geometry.
+/// The reset vector and the firmware's early-RAM reservations stay fixed;
+/// the settings store and FFS limit follow the lower flash start.
 pub const RESET: ResetGeometry = ResetGeometry {
-    flash_offset: 0xde_0000,
-    size: 0x22_0000,
-    destination: 0x75de_0000,
+    flash_offset: 0xd0_0000,
+    size: 0x30_0000,
+    destination: 0x75d0_0000,
 };
 
 const _: () = assert!(RESET.check().is_ok());
@@ -258,7 +259,7 @@ mod tests {
         assert!(CACHE_WINDOW.contains(&RESET.dram()));
         assert_eq!(FFS_WINDOW.base, 0xfd_0060_0000);
         assert_eq!(FFS_WINDOW.end(), ROM3.base + u64::from(NVRAM.offset));
-        assert_eq!(NVRAM.offset, 0xda_0000);
+        assert_eq!(NVRAM.offset, 0xcc_0000);
         let low = ResetGeometry {
             flash_offset: 0xb0_0000,
             size: 0x50_0000,

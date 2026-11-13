@@ -440,6 +440,16 @@ impl<S: Soc> Stage<S, Cpus<S>> {
 }
 
 impl<S: Soc> Stage<S, Enumerated<S>> {
+    /// The allocated PCI devices, for board-owned device initialization.
+    pub fn pci(&self) -> &fstart_pci::PciEcam {
+        &self.phase.pci
+    }
+
+    /// Publish the framebuffer a board's display driver initialized.
+    pub fn set_framebuffer(&mut self, framebuffer: fstart_core::services::FramebufferInfo) {
+        self.phase.silicon.framebuffer = Some(framebuffer);
+    }
+
     /// The SoC's ready-to-boot, then the display ([`Soc::init_display`]).
     /// Graphics POST may patch the ROM and contribute its ACPI; everything
     /// the tables describe is ready afterwards.
