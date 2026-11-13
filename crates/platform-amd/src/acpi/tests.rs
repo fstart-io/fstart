@@ -461,7 +461,8 @@ fn an_acpi_only_emmc_has_its_ivhd_entry() {
         false,
     )];
     let (cpus, board) = (cpus(&[0, 1], false), Board::default());
-    let emmc = [crate::picasso::acpi::emmc().unwrap()];
+    let routes = fstart_driver_amd::fch::sandstone::legacy::Routes::new([0], []).unwrap();
+    let emmc = [crate::picasso::acpi::emmc(&routes).unwrap()];
     let soc = &crate::picasso::acpi::ACPI;
     let with = Inputs {
         devices: &emmc,

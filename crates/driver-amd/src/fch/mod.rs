@@ -55,6 +55,17 @@ pub mod taishan;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+/// The MMIO and DMA blocks of FCH UART `n` (Picasso, Zeppelin and SP3).
+pub const UART_MMIO: [(u32, u32); 4] = [
+    (0xFEDC_9000, 0xFEDC_7000),
+    (0xFEDC_A000, 0xFEDC_8000),
+    (0xFEDC_E000, 0xFEDC_C000),
+    (0xFEDC_F000, 0xFEDC_D000),
+];
+
+/// The 48-MHz input clock of an FCH UART in its MMIO mode.
+pub const UART_CLOCK_HZ: u32 = 48_000_000;
+
 /// FCH ACPI MMIO window of die 0 (PM, SMI, GPIO, IOMUX, MISC, AOAC).
 pub const ACPI_MMIO: u32 = 0xfed8_0000;
 /// SPI controller/eSPI aperture of every Family 17h FCH.

@@ -32,7 +32,7 @@ pub const MISC_30: u32 = 0xFEDC_0030;
 const UART: [(u8, u16); 2] = [(11, 135), (12, 140)];
 
 /// Input clock after [`prepare_mmio`] selects the native UART clock.
-pub const MMIO_CLOCK_HZ: u32 = 48_000_000;
+pub const MMIO_CLOCK_HZ: u32 = crate::fch::UART_CLOCK_HZ;
 const CLOCK_CONFIG: u32 = acpimmio::SMBUS_PCI + 0xFC;
 const SOFTWARE_RESET: u32 = 0x88;
 

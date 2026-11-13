@@ -7,7 +7,7 @@ use fstart_acpi::{
     fadt::{Flags, PmProfile},
     platform::{X86Fadt, x86::IAPC_LEGACY_DEVICES},
 };
-use fstart_driver_amd::soc::picasso::Picasso;
+use fstart_driver_amd::{fch::sandstone::legacy, soc::picasso::Picasso};
 
 pub const ACPI: SocAcpi = SocAcpi {
     ports: fstart_driver_amd::fch::sandstone::ACPI_PORTS,
@@ -43,17 +43,27 @@ pub fn fch_i2c_name(index: u8) -> alloc::string::String {
     format!("I2C{index:X}")
 }
 
-/// The FCH GPIO controller and the board's I2C controllers with the
-/// devices behind them, for `\_SB`.
-pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, AmlError> {
+/// The FCH GPIO controller, the console UART and the board's I2C
+/// controllers with the devices behind them, for `\_SB`, on the FCH IRQs
+/// `routes` gives them.
+pub fn devices(
+    console_uart: u8,
+    buses: &[super::I2cBus],
+    routes: &legacy::Routes,
+    emmc_enabled: bool,
+) -> Result<Vec<u8>, AmlError> {
     use fstart_acpi::devices::i2c::{self, DesignWareSpeed, GpioInterrupt, I2cDevice};
     use fstart_driver_amd::{
-        fch::{self, i2c::Speed, sandstone::legacy},
+        fch::{self, i2c::Speed},
         soc::Soc,
     };
-    let irq = |source| legacy::internal_irq(source).ok_or(AmlError::InvalidPath);
+    let irq = |source| routes.irq(source).ok_or(AmlError::InvalidPath);
     // Picasso's four GPIO banks (coreboot's mmio.asl).
     let mut aml = fch::aml::gpio(irq(legacy::source::GPIO)?, 0x400)?;
+    let uart = legacy::source::UART
+        .get(usize::from(console_uart))
+        .ok_or(AmlError::InvalidOperand)?;
+    aml.extend(fch::aml::uart(console_uart, irq(*uart)?)?);
     if emmc_enabled {
         aml.extend(emmc_card()?);
     }
@@ -120,9 +130,8 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, A
 /// The same fixed-address host inventory is consumed by ACPI and CrabEFI.
 /// Its IRQ is level-low, unlike the generic device's level-high default.
 /// Losing this inventory when fixing AML would also lose UEFI eMMC boot.
-pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, AmlError> {
+pub fn emmc(routes: &legacy::Routes) -> Result<fstart_core::acpi::AcpiGenericDevice, AmlError> {
     use fstart_core::acpi::{AcpiGenericDevice, AcpiInterruptFlags, AcpiResource};
-    use fstart_driver_amd::fch::sandstone::legacy;
     Ok(AcpiGenericDevice {
         name: fstart_core::hstr("MMC0"),
         hid: fstart_core::hstr("AMDI0040"),
@@ -133,7 +142,8 @@ pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, AmlError> {
         .into_iter()
         .collect(),
         gsiv: Some(
-            legacy::internal_irq(legacy::source::EMMC)
+            routes
+                .irq(legacy::source::EMMC)
                 .ok_or(AmlError::InvalidPath)?
                 .into(),
         ),
@@ -160,9 +170,22 @@ fn emmc_card() -> Result<Vec<u8>, AmlError> {
 mod tests {
     use super::*;
 
+    fn routes() -> legacy::Routes {
+        legacy::Routes::new([0], [2, 3]).unwrap()
+    }
+
+    #[test]
+    fn the_console_uart_is_described_on_its_own_irq() {
+        let aml = devices(0, &[], &routes(), false).unwrap();
+        assert!(aml.windows(4).any(|w| w == b"FUR0"));
+        assert!(aml.windows(8).any(|w| w == b"AMDI0020"));
+        // Extended Interrupt: consumer, edge, active-high, exclusive, IRQ 4.
+        assert!(aml.windows(9).any(|w| w == [0x89, 6, 0, 3, 1, 4, 0, 0, 0]));
+    }
+
     #[test]
     fn emmc_has_the_routed_level_low_irq_and_a_nonremovable_card() {
-        let device = emmc().unwrap();
+        let device = emmc(&routes()).unwrap();
         let mut aml = fstart_acpi::devices::GenericAcpi {
             name: device.name.as_str(),
             hid: device.hid.as_str(),
@@ -181,8 +204,8 @@ mod tests {
 
     #[test]
     fn disabled_emmc_is_not_described() {
-        let disabled = devices(&[], false).unwrap();
-        let enabled = devices(&[], true).unwrap();
+        let disabled = devices(0, &[], &routes(), false).unwrap();
+        let enabled = devices(0, &[], &routes(), true).unwrap();
         assert!(!disabled.windows(4).any(|w| w == b"MMC0"));
         assert!(enabled.windows(4).any(|w| w == b"MMC0"));
     }
