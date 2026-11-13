@@ -39,6 +39,8 @@ pub const MAIN_STACK_SIZE: u32 = 0x1_0000;
 pub const MAIN_HEAP_SIZE: u32 = 0x4_0000;
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
+/// No machine of this platform boots in QEMU.
+impl<B> fstart_image_build::boot_test::BootTests for Plan<B> {}
 impl<B: AspeedBoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {
         let selection = serde_json::from_str(selection_json).expect("invalid build selection");

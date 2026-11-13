@@ -172,8 +172,9 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         // first OS SMI. Nothing outside SMRAM can observe more than the return.
         mp.scope(|scope| scope.scatter(&|_| send_smi_self()));
         fstart_log::info!(
-            "{} SMM: permanent SMI returned on all {} CPUs",
+            "{} {} {} CPUs",
             self.name,
+            crate::messages::SMI_RETURNED,
             num_cpus
         );
         Ok(())
@@ -282,11 +283,12 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         }
 
         fstart_log::info!(
-            "{} SMM: selected {} revision {:#010x}; {} CPUs relocated",
+            "{} SMM: selected {} revision {:#010x}; {} {}",
             self.name,
             format.name(),
             relocation.revision.load(Ordering::Acquire),
-            relocation.done.load(Ordering::Acquire)
+            relocation.done.load(Ordering::Acquire),
+            crate::messages::SMM_RELOCATED
         );
         let programmed = smrr_programmed.load(Ordering::Acquire);
         if model_pair.is_some() && programmed != u32::from(num_cpus) {
@@ -318,8 +320,8 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         if !self.smi.lock_permanent_smi() {
             return Err(IntelSmmError::SmiLockFailed);
         }
-        fstart_log::info!("{} SMM: permanent SMI enabled and SMRAM locked", self.name);
-        fstart_log::info!("{} SMM: global SMI enable locked and verified", self.name);
+        fstart_log::info!("{} {}", self.name, crate::messages::SMRAM_LOCKED);
+        fstart_log::info!("{} {}", self.name, crate::messages::SMI_ENABLE_LOCKED);
         Ok(())
     }
 }

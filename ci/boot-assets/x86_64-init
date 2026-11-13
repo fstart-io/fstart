@@ -1,0 +1,29 @@
+#!/bin/sh
+# The init of the x86_64 boot-test guest (busybox). It proves the kernel
+# reached userspace, prints the TPM's PCRs and event log for the
+# measured-boot tests when there is a TPM, and powers off.
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+exec </dev/console >/dev/console 2>&1
+echo FSTART_CI_BOOT_SUCCESS
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+t=/sys/class/tpm/tpm0
+if [ -d $t ]; then
+	mount -t securityfs securityfs /sys/kernel/security
+	echo TPMTEST_BEGIN
+	echo "TPMTEST version $(cat $t/tpm_version_major 2>/dev/null)"
+	for bank in sha1 sha256 sha384 sha512; do
+		[ -d $t/pcr-$bank ] || continue
+		for i in 0 1 2 3 4 5 6 7 8 9; do
+			echo "TPMTEST pcr $bank $i $(cat $t/pcr-$bank/$i)"
+		done
+	done
+	[ -f $t/pcrs ] && sed 's/^/TPMTEST pcrs /' $t/pcrs
+	[ -f $t/device/pcrs ] && sed 's/^/TPMTEST pcrs /' $t/device/pcrs
+	echo TPMTEST_LOG_BEGIN
+	base64 /sys/kernel/security/tpm0/binary_bios_measurements
+	echo TPMTEST_LOG_END
+	dmesg | grep -i -E 'tpm|pnp|MSFT|AE_|acpi.*error' | sed 's/^/TPMTEST dmesg /'
+	echo TPMTEST_END
+fi
+poweroff -f

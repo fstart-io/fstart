@@ -59,12 +59,12 @@ fn prepare_lock(root: &Path, manifest: &Path) -> Result<String, String> {
     Ok(locked)
 }
 
-pub(crate) fn load(
+/// Build the board's plan runner; returns its executable.
+fn runner(
     root: &Path,
     source: &ProfileSource,
     board: &crate::board_manifest::BoardManifest,
-    selection: &BuildSelection,
-) -> Result<ResolvedPlan, String> {
+) -> Result<String, String> {
     let runner = root
         .join("target/fstart-host")
         .join(&board.board)
@@ -83,13 +83,15 @@ pub(crate) fn load(
     let (board_name, board_path) = package(&source.package)?;
     let (platform_name, platform_path) = package(&source.platform)?;
     let quoted = |s: &str| serde_json::to_string(s).unwrap();
+    let image_build = root.join("crates/image-build").display().to_string();
     let manifest = format!(
-        "[workspace]\n[package]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\n",
+        "[workspace]\n[package]\nname = \"{RUNNER}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\nfstart-image-build = {{ path = {} }}\n",
         quoted(&board_name),
         quoted(&board_path),
         serde_json::to_string(&board.variant_features).map_err(|e| e.to_string())?,
         quoted(&platform_name),
-        quoted(&platform_path)
+        quoted(&platform_path),
+        quoted(&image_build)
     );
     let module = board
         .build_profile
@@ -97,8 +99,9 @@ pub(crate) fn load(
         .and_then(|profile| profile.module.as_deref())
         .map(|module| format!("{module}::"))
         .unwrap_or_default();
+    // The argument is a build selection, or `--boot-tests`.
     let main = format!(
-        "fn main() {{ platform::{module}Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n"
+        "fn main() {{\n    let arg = std::env::args().nth(1).expect(\"missing build selection\");\n    if arg == \"--boot-tests\" {{\n        fstart_image_build::boot_test::emit::<platform::{module}Plan<board::Board>>();\n    }} else {{\n        platform::{module}Plan::<board::Board>::emit(&arg);\n    }}\n}}\n"
     );
     for (path, contents) in [
         (runner.join("Cargo.toml"), manifest.as_str()),
@@ -166,16 +169,26 @@ pub(crate) fn load(
             executables.push(file.to_owned());
         }
     }
-    if executables.len() != 1 {
-        return Err("Cargo did not report exactly one current host runner executable".into());
+    match <[String; 1]>::try_from(executables) {
+        Ok([executable]) => Ok(executable),
+        Err(_) => Err("Cargo did not report exactly one current host runner executable".into()),
     }
+}
+
+pub(crate) fn load(
+    root: &Path,
+    source: &ProfileSource,
+    board: &crate::board_manifest::BoardManifest,
+    selection: &BuildSelection,
+) -> Result<ResolvedPlan, String> {
+    let executable = runner(root, source, board)?;
     // The platform reads its own and the board's firmware tables.
     let mut selection = selection.clone();
     selection.manifests = fstart_image_build::plan::PackageTables {
         board: source.package["metadata"]["fstart"].clone(),
         platform: source.platform["metadata"]["fstart"].clone(),
     };
-    let output = Command::new(&executables[0])
+    let output = Command::new(&executable)
         .arg(serde_json::to_string(&selection).map_err(|e| e.to_string())?)
         .current_dir(root)
         .output()
@@ -187,6 +200,26 @@ pub(crate) fn load(
         ));
     }
     serde_json::from_slice(&output.stdout).map_err(|e| format!("platform plan transport: {e}"))
+}
+
+/// The boot tests the board's platform plan declares for it.
+pub(crate) fn boot_tests(
+    root: &Path,
+    source: &ProfileSource,
+    board: &crate::board_manifest::BoardManifest,
+) -> Result<Vec<fstart_image_build::boot_test::BootTest>, String> {
+    let output = Command::new(runner(root, source, board)?)
+        .arg("--boot-tests")
+        .current_dir(root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "platform boot tests failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("boot test transport: {e}"))
 }
 
 #[cfg(test)]

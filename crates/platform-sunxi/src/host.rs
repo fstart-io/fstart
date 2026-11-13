@@ -43,6 +43,8 @@ pub const MAINSTAGE_STACK_SIZE: u32 = 0x10000;
 pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 
 /// Conventional platform export consumed by the generic fbuild runner.
+mod boot_tests;
+
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: SunxiBoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {

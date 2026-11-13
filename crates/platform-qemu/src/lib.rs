@@ -33,6 +33,15 @@ pub mod compression {
     pub const PAYLOAD: Compression = Compression::Lz4;
 }
 
+/// Lines every stage of this platform logs, which its boot tests
+/// (`host::boot_tests`) wait for.
+pub mod messages {
+    /// `<machine> ramstage: ready for payload`, just before the payload.
+    pub const READY: &str = "ramstage: ready for payload";
+    /// `<machine>: PCI root ready (N devices)`.
+    pub const PCI_ROOT_READY: &str = "PCI root ready";
+}
+
 pub mod facts;
 #[cfg(feature = "host")]
 pub mod host;
@@ -281,7 +290,8 @@ mod stage {
         fn init_pci(&mut self) -> Result<(), ServiceError> {
             self.hostbridge.init_with_e820(self.e820.entries())?;
             fstart_log::info!(
-                "qemu-q35: PCI root ready ({} devices)",
+                "qemu-q35: {} ({} devices)",
+                crate::messages::PCI_ROOT_READY,
                 self.hostbridge.device_count(),
             );
             Ok(())
@@ -612,7 +622,7 @@ mod stage {
         #[cfg(target_arch = "x86_64")]
         step("page_tables", || mainstage.map_memory());
         step("mp_smm", || mainstage.init_mp_smm());
-        fstart_log::info!("qemu-q35 ramstage: ready for payload");
+        fstart_log::info!("qemu-q35 {}", crate::messages::READY);
         mainstage.hand_off()
     }
 }

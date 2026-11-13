@@ -849,7 +849,11 @@ fn mp_init_inner(
 
     post_mp_cpu_drivers(config.cpu_drivers);
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
-    fstart_log::info!("mp: initialization complete ({} CPUs)", final_count + 1);
+    fstart_log::info!(
+        "{} ({} CPUs)",
+        crate::messages::MP_COMPLETE,
+        final_count + 1
+    );
 
     Ok(MpHandle {
         num_aps: final_count,

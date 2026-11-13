@@ -10,6 +10,8 @@ use std::{format, string::ToString, vec, vec::Vec};
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
+/// No machine of this platform boots in QEMU.
+impl<B> fstart_image_build::boot_test::BootTests for Plan<B> {}
 impl<B: IntelBoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {
         let selection: BuildSelection =

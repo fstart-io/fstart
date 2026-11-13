@@ -1,5 +1,6 @@
 pub mod amd;
 pub mod assemble;
+pub mod boot_test;
 pub mod build_plan;
 
 mod coreboot_payload;

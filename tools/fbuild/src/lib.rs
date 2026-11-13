@@ -3,6 +3,7 @@ pub mod assemble;
 pub mod blobs;
 pub mod board_manifest;
 pub mod board_tool;
+pub mod boot_test;
 pub mod build_board;
 pub mod build_plan;
 mod cargo_features;
