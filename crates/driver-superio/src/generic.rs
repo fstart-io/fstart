@@ -382,7 +382,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Read an 8-bit value inside the caller-owned configuration session.
-    fn read_reg(&self, reg: u8) -> u8 {
+    pub(crate) fn read_reg(&self, reg: u8) -> u8 {
         use tock_registers::interfaces::Readable;
         self.register::<()>(reg).get()
     }

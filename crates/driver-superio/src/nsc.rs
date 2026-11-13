@@ -1,4 +1,6 @@
-//! Common PC87382/PC87384 external-clock request used by ThinkPad docks.
+//! What the NSC PC8738x/PC87392 parts used by ThinkPad docks share: the
+//! PC87382/PC87384 external-clock request, the bank-0 GPIO data latch and
+//! the GPIO pin direction and drive.
 //!
 //! Register 29h is chip-specific: PC87392 uses a different request/status.
 //! The complete A0h request and ready bit are established by coreboot's
@@ -12,13 +14,29 @@ use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
 };
 
+/// A GPIO pin's direction (pin configuration bit 0, output enable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioDirection {
+    Input,
+    Output,
+}
+
+/// A GPIO output's drive (pin configuration bit 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioDrive {
+    OpenDrain,
+    PushPull,
+}
+
 /// Bank-0 data latch shared by PC87382 and PC87384. Caller owns decode,
 /// direction, mux and serialization; this handle does not allocate resources.
 pub struct GpioPort0 {
     base: u16,
 }
 
-fn level_fields(levels: &[(u8, bool)]) -> Result<Option<FieldValue<u8, ()>>, DeviceError> {
+pub(crate) fn level_fields(
+    levels: &[(u8, bool)],
+) -> Result<Option<FieldValue<u8, ()>>, DeviceError> {
     if levels
         .iter()
         .enumerate()
@@ -51,6 +69,11 @@ impl GpioPort0 {
 
     pub fn set_level(&self, pin: u8, high: bool) -> Result<(), DeviceError> {
         self.set_levels(&[(pin, high)])
+    }
+
+    /// The data latch, typed with the board's bitfields for its wiring.
+    pub const fn register<R: tock_registers::RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base)
     }
 }
 

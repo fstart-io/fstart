@@ -4,8 +4,6 @@ use fstart_core::{Platform, hvec};
 use fstart_driver_intel::generic::ck505::I2cCk505Config;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_intel::southbridge::hda;
-use fstart_driver_superio::pc87382;
-use fstart_driver_superio::pc87392;
 use fstart_intel_gma::framebuffer::FramebufferConfig;
 use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::gm965::{
@@ -663,38 +661,6 @@ pub const fn x61_gpio_pins() -> [gpio::GpioPin; 35] {
             reset: gpio::GpioReset::Pwrok,
         },
     ]
-}
-
-pub fn x61_dlpc_superio_config() -> pc87382::Pc87382Config {
-    pc87382::Pc87382Config(pc87382::SuperIoConfig {
-        com2: Some(pc87382::ComPortConfig {
-            io_base: 0x2f8,
-            irq: 0,
-            baud_rate: 115200,
-        }),
-        cir: Some(pc87382::CirConfig {
-            io_base: 0x200,
-            irq: 5,
-        }),
-        gpio: Some(pc87382::GpioConfig { io_base: 0x1680 }),
-        ..Default::default()
-    })
-}
-
-pub fn x61_dock_superio_config() -> pc87392::Pc87392Config {
-    pc87392::Pc87392Config(pc87392::SuperIoConfig {
-        com1: Some(pc87392::ComPortConfig {
-            io_base: 0x3f8,
-            irq: 4,
-            baud_rate: 115200,
-        }),
-        parallel: Some(pc87392::ParallelConfig {
-            io_base: 0x3bc,
-            irq: 7,
-        }),
-        gpio: Some(pc87392::GpioConfig { io_base: 0x1620 }),
-        ..Default::default()
-    })
 }
 
 pub fn x61_ck505_config() -> I2cCk505Config {
