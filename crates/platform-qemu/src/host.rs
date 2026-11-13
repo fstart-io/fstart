@@ -1,6 +1,7 @@
 //! Concrete QEMU virt plans. Machine policy composes one shared image projection.
 //! Hardware flows and the AArch64 reset copier are unchanged.
 extern crate std;
+pub mod launch;
 use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
@@ -159,20 +160,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let execution = policy.execution;
     let code = execution.unwrap_or(image);
     let writable = policy.writable;
-    let stack = span(
-        writable
-            .end()?
-            .checked_sub(policy.stack_size)
-            .ok_or("stack capacity")?,
-        policy.stack_size,
-    );
-    let heap = span(
-        stack
-            .base
-            .checked_sub(policy.heap_size)
-            .ok_or("heap capacity")?,
-        policy.heap_size,
-    );
+    let (stack, heap) = qemu_stack_heap(writable, policy.stack_size, policy.heap_size)?;
     let kernel = (payload == "linux").then_some(policy.kernel);
     let runtime = policy.runtime.filter(|_| payload != "halt");
     let dtb = (payload != "halt").then_some(policy.dtb);
