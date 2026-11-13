@@ -9,5 +9,5 @@ pub mod pirq;
 pub mod pmio_ich;
 pub mod smbus;
 pub mod smi;
-#[cfg(all(feature = "spi", any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod spi;

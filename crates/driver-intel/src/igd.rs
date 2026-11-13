@@ -12,15 +12,12 @@
 //! page-table entries themselves are written by the shared GMA library.
 
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
-#[cfg(feature = "display")]
 use fstart_core::typed::mmio32;
 use fstart_intel_gma::GenerationOps;
 use fstart_intel_gma::config::OutputConfig;
 use fstart_intel_gma::framebuffer::FramebufferConfig;
-#[cfg(feature = "display")]
 use fstart_intel_gma::pci::GmaResources;
 use fstart_intel_gma::types::{Cpu, PciAddress};
-#[cfg(feature = "display")]
 use fstart_intel_gma::{GmaInitConfig, GmaInitResult};
 use tock_registers::interfaces::Writeable;
 use tock_registers::registers::ReadWrite as MmioReadWrite;
@@ -153,7 +150,6 @@ pub struct IgdAddresses {
 }
 
 impl IgdAddresses {
-    #[cfg(feature = "display")]
     fn to_gma_resources(self) -> GmaResources {
         GmaResources {
             pci_bdf: self.pci_bdf,
@@ -595,7 +591,6 @@ impl IgdDisplay {
         addresses: &IgdAddresses,
         vbt: Option<&[u8]>,
     ) -> bool {
-        #[cfg(feature = "display")]
         match self.modeset::<G>(cpu, policy, addresses, vbt) {
             Ok(programmed) => programmed,
             Err(err) => {
@@ -603,14 +598,8 @@ impl IgdDisplay {
                 false
             }
         }
-        #[cfg(not(feature = "display"))]
-        {
-            let _ = (cpu, policy, addresses, vbt);
-            false
-        }
     }
 
-    #[cfg(feature = "display")]
     fn modeset<G: GenerationOps>(
         &mut self,
         cpu: Cpu,

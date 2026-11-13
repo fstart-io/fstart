@@ -93,7 +93,6 @@ fn blc_pwm_ctl(cdclk: u32, pwm_hz: u16, duty: u8) -> u32 {
     (modulation << 16) | (modulation * u32::from(duty.min(100)) / 100)
 }
 
-#[cfg(any(feature = "display", test))]
 fn lookup_pwm(table: &[BacklightPwm], panel: &[u8]) -> Option<u16> {
     table
         .iter()
@@ -126,7 +125,6 @@ impl IntelGm45 {
 
     /// LVDS EDID ASCII string through GMBUS, as coreboot reads it before
     /// the modeset to pick the backlight PWM frequency.
-    #[cfg(feature = "display")]
     fn panel_pwm_hz(&self, gtt_mmio: u64) -> Option<u16> {
         use fstart_intel_gma::gmbus::{HardwareGmbus, read_base_edid};
         let mut raw = [0; 128];
@@ -145,11 +143,6 @@ impl IntelGm45 {
             fstart_log::info!("gm45: panel EDID string not in the backlight PWM table");
         }
         hz
-    }
-
-    #[cfg(not(feature = "display"))]
-    fn panel_pwm_hz(&self, _gtt_mmio: u64) -> Option<u16> {
-        None
     }
 
     /// Coreboot `gma_pm_init_post_vbios()`.

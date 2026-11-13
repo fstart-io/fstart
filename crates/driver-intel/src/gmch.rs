@@ -119,11 +119,7 @@ pub mod acpi {
     }
 }
 
-#[cfg(all(
-    test,
-    feature = "acpi",
-    any(feature = "i945", feature = "gm965", feature = "pineview")
-))]
+#[cfg(all(test, feature = "acpi"))]
 mod acpi_tests;
 
 #[cfg(test)]

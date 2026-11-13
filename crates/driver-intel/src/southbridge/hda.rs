@@ -85,7 +85,6 @@ register_structs! {
 
 /// Common ICH7/ICH8 ESD/link/virtual-channel programming, before codec reset.
 /// Clock detection and generation-specific R/WO writes stay in the chipset.
-#[cfg(any(feature = "ich7", feature = "ich8"))]
 pub(crate) fn setup_ich_link(device: fstart_pci::ecam::EcamDevice) {
     const ESD: u16 = 0x134;
     const LINK1_DESCRIPTION: u16 = 0x140;

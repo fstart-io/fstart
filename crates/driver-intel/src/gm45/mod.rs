@@ -220,7 +220,7 @@ impl IntelGm45 {
     }
 
     fn enable_ecam(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let length = match self.config.ecam_buses {
                 256 => 0,
@@ -911,7 +911,7 @@ mod acpi_impl {
     }
 }
 
-#[cfg(all(test, feature = "acpi", feature = "ich9"))]
+#[cfg(all(test, feature = "acpi"))]
 mod acpi_tests;
 
 #[cfg(test)]

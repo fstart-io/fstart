@@ -3,10 +3,8 @@ extern crate std;
 
 use crate::IntelNorthbridgeDriver;
 use fstart_acpi::device::AcpiDevice;
-#[cfg(any(feature = "i945", feature = "gm965"))]
 use fstart_core::services::memory_detect::{E820State, build_pc_compatible_e820};
 use fstart_pci::PciRootInfo;
-#[cfg(any(feature = "i945", feature = "gm965"))]
 use fstart_pci::PciWindowKind;
 use std::{format, fs, process::Command, string::String};
 
@@ -69,7 +67,6 @@ where
     aml
 }
 
-#[cfg(any(feature = "i945", feature = "gm965"))]
 fn check_low_memory_root<N>(label: &str, mut north: N)
 where
     N: IntelNorthbridgeDriver + AcpiDevice<Config = <N as IntelNorthbridgeDriver>::Config>,
@@ -145,7 +142,6 @@ where
     }
 }
 
-#[cfg(feature = "i945")]
 #[test]
 fn i945_root_covers_low_ram_bars_and_describes_pcie_config_space() {
     use crate::i945::{IntelI945, IntelI945Config};
@@ -157,7 +153,6 @@ fn i945_root_covers_low_ram_bars_and_describes_pcie_config_space() {
     check_low_memory_root("i945", IntelI945::new_from_config(&CONFIG).unwrap());
 }
 
-#[cfg(feature = "gm965")]
 #[test]
 fn gm965_root_covers_low_ram_bars_and_matches_ecam_topology() {
     use crate::gm965::{IntelGm965, IntelGm965Config};
@@ -168,7 +163,6 @@ fn gm965_root_covers_low_ram_bars_and_matches_ecam_topology() {
     check_low_memory_root("gm965", IntelGm965::new_from_config(&CONFIG).unwrap());
 }
 
-#[cfg(feature = "pineview")]
 #[test]
 fn pineview_root_includes_the_aperture_above_4g() {
     use crate::pineview::{IntelPineview, IntelPineviewConfig};

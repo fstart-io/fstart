@@ -117,9 +117,7 @@ jobs:
             cargo clippy -p fstart-payload \
               --features "$features,fstart-stage/x86_64" --lib
           done
-          cargo test -p fstart-driver-intel \
-            --features acpi,i945,gm965,ich8,pineview \
-            --features gm45,ich9,ironlake,spi,display --lib
+          cargo test -p fstart-driver-intel --features acpi --lib
           cargo test -p fstart-platform-intel \
             --features i945-ich7,gm965-ich8,pineview-ich7 \
             --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi,host --lib

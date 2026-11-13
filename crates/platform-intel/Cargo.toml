@@ -7,25 +7,25 @@ publish = false
 
 [features]
 default = []
-memory-cache = ["fstart-driver-intel/spi"]
+memory-cache = []
 # `fbuild --debug` facilities (see debug_console); the plan selects them.
 # The board's EHCI debug port console.
 ehci-console = ["fstart-log?/debug-consoles"]
 # The SPI flash log in every stage.
-flash-console = ["fstart-driver-intel/spi", "dep:fstart-driver-flash-console", "fstart-log?/debug-consoles"]
+flash-console = ["dep:fstart-driver-flash-console", "fstart-log?/debug-consoles"]
 # Additive hardware availability; each board enables its chipset pair once.
-gm45-ich9 = ["dep:konst", "fstart-driver-intel/gm45", "fstart-driver-intel/ich9"]
-gm965-ich8 = ["dep:konst", "fstart-driver-intel/gm965", "fstart-driver-intel/ich8"]
-i945-ich7 = ["dep:konst", "fstart-driver-intel/i945", "fstart-driver-intel/ich7"]
-pineview-ich7 = ["dep:konst", "fstart-driver-intel/pineview", "fstart-driver-intel/ich7"]
-ironlake-ibexpeak = ["fstart-driver-intel/ironlake", "fstart-driver-intel/ibexpeak"]
+gm45-ich9 = ["dep:konst"]
+gm965-ich8 = ["dep:konst"]
+i945-ich7 = ["dep:konst"]
+pineview-ich7 = ["dep:konst"]
+ironlake-ibexpeak = []
 host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
 # The union still builds, so one selection type-checks every binary.
 bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest"]
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap"]
-bundle-ramstage = ["ramstage", "fstart-driver-intel/display", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/acpi"]
+bundle-ramstage = ["ramstage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/acpi"]
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 payload-uefi = ["payload-uefi-basic", "fstart-payload/crabefi"]
 payload-uefi-ui = ["payload-uefi", "fstart-payload/crabefi-ui"]
@@ -69,7 +69,7 @@ smbios = ["dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-arch"]
 # The DSDT render test disassembles both Intel southbridges' namespaces, so it
 # needs the driver's ACPI builders and the DSDT table writer on the host.
 fstart-acpi = { workspace = true, features = ["x86"] }
-fstart-driver-intel = { workspace = true, features = ["acpi", "ich7", "ich8"] }
+fstart-driver-intel = { workspace = true, features = ["acpi"] }
 
 [[test]]
 name = "southbridge_dsdt"

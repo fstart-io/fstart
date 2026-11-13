@@ -1180,7 +1180,7 @@ impl IntelIch9 {
             .modify(PMIR_REG::USB_TRANSIENT_DISCONNECT.val(3));
         self.lpc().or32(ich9::PMIR, 1 << 30);
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             // Coreboot early_init only acknowledges watchdog status; the TCO
             // timer keeps running and ramstage reloads it.
@@ -1627,7 +1627,7 @@ impl IntelIch9 {
         let pcs = (sata.read16(ich9::SATA_PCS) & !0x3f) | (1 << 15) | pcs_ports as u16;
         sata.write16(ich9::SATA_PCS, pcs);
         let mut sclkcg = (((!config.ports as u32) & 0x3f) << 24) | 0x193;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if config.clock_request {
             // SAFETY: GPIOBASE is programmed before SATA init; GPIO35 is in the second bank.
             if unsafe { fstart_core::pio::inb(ich9::DEFAULT_GPIOBASE + 0x30) } & (1 << (35 - 32))
@@ -1870,12 +1870,12 @@ impl IntelIch9 {
     }
 
     fn isa_dma_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         fstart_arch::x86::legacy_pc::initialize_isa_dma();
     }
 
     fn i8259_init(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
             fstart_core::pio::outb(0x21, 0xff);
@@ -2392,7 +2392,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         self.write_interrupt_lines();
         self.configure_io_traps();
         // Coreboot i82801ix_init(): reload the running TCO watchdog.
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         self.pm().tco().write16(pmio::TCO_RLD, 0);
         fstart_log::info!("intel-ich9: ramstage init complete");
         Ok(())

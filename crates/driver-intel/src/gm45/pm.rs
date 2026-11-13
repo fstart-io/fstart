@@ -191,9 +191,9 @@ impl IntelGm45 {
             update32(&r.r40, 0, 1 << 12);
             update32(&r.r94, 0, 3 << 22);
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let super_lfm = unsafe { fstart_arch::x86::msr::rdmsr(0xee) } & (1 << 27) != 0;
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         let super_lfm = false;
         let clock = self.mch_clock();
         if super_lfm {

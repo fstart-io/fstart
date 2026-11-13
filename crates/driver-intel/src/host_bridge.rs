@@ -7,7 +7,6 @@
 //! and the three readers of a [`fstart_pci::PciRoot`] do the rest: the
 //! allocator, PCI0's `_CRS` and the motherboard device `PDRC`.
 
-#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_pci::PciResource;
 use fstart_pci::PciRole::{Forwarded, Kept, Window};
@@ -46,7 +45,6 @@ pub(crate) fn forwarded(
 
 /// Where PCI MMIO can start below 4 GiB: above low DRAM and the reserved
 /// memory on top of it (stolen graphics memory, TSEG), rounded to 1 MiB.
-#[cfg(any(feature = "gm45", feature = "gm965", feature = "i945"))]
 pub(crate) fn low_dram_end(memory: &E820State) -> Option<u64> {
     const FOUR_GIB: u64 = 1 << 32;
     if memory.count() == 0 {

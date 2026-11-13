@@ -5,45 +5,22 @@
 #[cfg(any(feature = "acpi", test))]
 extern crate alloc;
 
-#[cfg(any(
-    feature = "gm45",
-    feature = "gm965",
-    feature = "i945",
-    feature = "pineview",
-    feature = "ironlake"
-))]
 pub mod cpu;
 #[cfg(feature = "acpi")]
 pub mod namespace;
 
 pub mod generic;
-#[cfg(feature = "gm45")]
 pub mod gm45;
-#[cfg(feature = "gm965")]
 pub mod gm965;
 pub mod gmch;
-#[cfg(any(
-    feature = "gm45",
-    feature = "gm965",
-    feature = "i945",
-    feature = "pineview",
-    feature = "ironlake"
-))]
 mod host_bridge;
-#[cfg(feature = "i945")]
 pub mod i945;
-#[cfg(feature = "ibexpeak")]
 pub mod ibexpeak;
-#[cfg(feature = "ich7")]
 pub mod ich7;
-#[cfg(feature = "ich8")]
 pub mod ich8;
-#[cfg(feature = "ich9")]
 pub mod ich9;
 pub mod igd;
-#[cfg(feature = "ironlake")]
 pub mod ironlake;
-#[cfg(feature = "pineview")]
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
 pub mod southbridge;
@@ -453,16 +430,7 @@ mod mmio_tests {
     }
 }
 
-#[cfg(all(
-    test,
-    feature = "ich7",
-    feature = "ich8",
-    feature = "ich9",
-    feature = "i945",
-    feature = "pineview",
-    feature = "gm965",
-    feature = "gm45"
-))]
+#[cfg(test)]
 mod option_tests {
     use super::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 
@@ -484,7 +452,6 @@ mod option_tests {
         pair::<crate::gm45::IntelGm45, crate::ich9::IntelIch9>();
     }
 
-    #[cfg(feature = "ironlake")]
     #[test]
     fn ironlake_and_ibex_peak_have_distinct_option_keys() {
         pair::<crate::ironlake::IntelIronlake, crate::ibexpeak::IntelIbexPeak>();
