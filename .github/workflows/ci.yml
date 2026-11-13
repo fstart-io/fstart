@@ -124,7 +124,7 @@ jobs:
             --features i945-ich7,gm965-ich8,pineview-ich7 \
             --features gm45-ich9,ironlake-ibexpeak,memory-cache,acpi,host --lib
           cargo test -p fstart-boot --features crabefi-ui --lib
-          cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
+          cargo test -p fstart-intel-gma --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles
           # Each AMD SoC on its own: the boards select one, the tests all.

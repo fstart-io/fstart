@@ -29,7 +29,7 @@ fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = tr
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-superio = { path = "../../../crates/driver-superio" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
-fstart-intel-gma = { path = "../../../crates/intel-gma", default-features = false }
+fstart-intel-gma = { path = "../../../crates/intel-gma" }
 fstart-log = { path = "../../../crates/log" }
 ufmt = { workspace = true }
 

@@ -206,7 +206,7 @@ impl IntelIronlake {
                 gtt_size: GTT_SIZE,
                 gcfgc: None,
             };
-            self.display.initialize(
+            self.display.initialize::<fstart_intel_gma::Ironlake>(
                 fstart_intel_gma::types::Cpu::Ironlake,
                 self.config.igd.display.as_ref(),
                 &addresses,

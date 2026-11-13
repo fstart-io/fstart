@@ -1096,9 +1096,12 @@ impl IntelPineview {
         } else {
             Cpu::Pineview
         };
-        let programmed =
-            self.display
-                .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt);
+        let programmed = self.display.initialize::<fstart_intel_gma::I945>(
+            cpu,
+            self.config.igd.display.as_ref(),
+            &addresses,
+            vbt,
+        );
 
         // A modeset can report success while a pipe, plane, PLL or output port
         // is left disabled. Read the state back so that is visible: coreboot

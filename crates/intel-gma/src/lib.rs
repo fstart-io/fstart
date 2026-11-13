@@ -57,6 +57,8 @@ use fstart_core::services::FramebufferInfo;
 pub use config::{OutputConfig, PreferredMode};
 pub use error::GmaError;
 pub use framebuffer::{FramebufferConfig, PixelFormat, SurfaceConfig};
+pub use generation::GenerationOps;
+pub use generation::{g45::G45, i945::I945, ironlake::Ironlake};
 pub use gmbus::GmbusPin;
 pub use mode::{FallbackMode, Mode, ModeFlags};
 pub use panel::{
@@ -68,8 +70,6 @@ pub use scaler::{DestinationKind, DestinationRect, ScalerKind, ScalingAspect, Sc
 pub use state::{GmaDisplayState, PipeOutputConfig, UpdateOutputsResult};
 pub use types::{Cpu, Generation, PciAddress, Pipe, Plane, Port};
 pub use vbt::GeneralDefinitionsMetadata;
-
-use crate::generation::GenerationOps;
 
 /// Capabilities for one supported CPU/platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,9 +309,9 @@ pub struct GmaInitResult {
     pub framebuffer: FramebufferInfo,
 }
 
-/// Internal init context shared by generation-specific code.
+/// Init context shared by generation-specific code; opaque outside the crate.
 #[allow(dead_code)]
-pub(crate) struct GmaContext<'a> {
+pub struct GmaContext<'a> {
     resources: &'a GmaResources,
     config: &'a GmaInitConfig<'a>,
     surface: SurfaceConfig,
@@ -353,8 +353,9 @@ impl<'a, G: GenerationOps> GmaController<'a, G> {
     }
 }
 
-/// Initialize Intel GMA display hardware and return framebuffer handoff state.
-pub fn init(
+/// Initialize Intel GMA display hardware of generation `G` and return
+/// framebuffer handoff state.
+pub fn init<G: GenerationOps>(
     resources: &GmaResources,
     config: &GmaInitConfig<'_>,
 ) -> Result<GmaInitResult, GmaError> {
@@ -362,12 +363,12 @@ pub fn init(
     validate_outputs(config.cpu, config.outputs)?;
     let mut state = GmaDisplayState::new();
     state
-        .update_outputs(resources, config)?
+        .update_outputs::<G>(resources, config)?
         .primary
         .ok_or(GmaError::UnsupportedPort)
 }
 
-pub(crate) fn init_candidate(
+pub(crate) fn init_candidate<G: GenerationOps>(
     resources: &GmaResources,
     config: &GmaInitConfig<'_>,
     pipe: Pipe,
@@ -385,18 +386,7 @@ pub(crate) fn init_candidate(
         pipe,
     };
 
-    match caps_for(config.cpu).generation {
-        Generation::I945 if cfg!(feature = "i945") => {
-            GmaController::<generation::i945::I945>::new(ctx).init(mode)
-        }
-        Generation::G45 if cfg!(feature = "g45") => {
-            GmaController::<generation::g45::G45>::new(ctx).init(mode)
-        }
-        Generation::Ironlake if cfg!(feature = "ironlake") => {
-            GmaController::<generation::ironlake::Ironlake>::new(ctx).init(mode)
-        }
-        _ => Err(GmaError::UnsupportedPlatform),
-    }
+    GmaController::<G>::new(ctx).init(mode)
 }
 
 /// Map and clear the mirrored surface once, before enabling any pipe. Keeping
@@ -429,25 +419,14 @@ pub(crate) fn prepare_framebuffer(
 /// This is the per-pipe half of libgfxinit's `Update_Outputs`, which disables
 /// only the outputs whose configuration changed instead of tearing down every
 /// pipe. Enabling a second output must not disturb the first.
-pub(crate) fn disable_generation_output(
+pub(crate) fn disable_generation_output<G: GenerationOps>(
     resources: &GmaResources,
     cpu: Cpu,
     pipe: Pipe,
     port: Port,
 ) {
     let mmio = mmio_from_validated_resources(resources);
-    let _ = match caps_for(cpu).generation {
-        Generation::I945 if cfg!(feature = "i945") => {
-            generation::i945::I945::disable_output(&mmio, cpu, pipe, port)
-        }
-        Generation::G45 if cfg!(feature = "g45") => {
-            generation::g45::G45::disable_output(&mmio, cpu, pipe, port)
-        }
-        Generation::Ironlake if cfg!(feature = "ironlake") => {
-            generation::ironlake::Ironlake::disable_output(&mmio, cpu, pipe, port)
-        }
-        _ => Ok(()),
-    };
+    let _ = G::disable_output(&mmio, cpu, pipe, port);
 }
 
 /// Return all pipes, ports and PLLs to libgfxinit's `Clean_State`.
@@ -455,16 +434,9 @@ pub(crate) fn disable_generation_output(
 /// Runs once before the first modeset, so unknown firmware state cannot leak
 /// into the display output. It is deliberately not part of the per-output
 /// enable path.
-pub(crate) fn clean_generation_state(resources: &GmaResources, cpu: Cpu) {
+pub(crate) fn clean_generation_state<G: GenerationOps>(resources: &GmaResources, cpu: Cpu) {
     let mmio = mmio_from_validated_resources(resources);
-    match caps_for(cpu).generation {
-        Generation::I945 if cfg!(feature = "i945") => generation::i945::I945::clean(&mmio, cpu),
-        Generation::G45 if cfg!(feature = "g45") => generation::g45::G45::clean(&mmio, cpu),
-        Generation::Ironlake if cfg!(feature = "ironlake") => {
-            generation::ironlake::Ironlake::clean(&mmio, cpu)
-        }
-        _ => {}
-    }
+    G::clean(&mmio, cpu);
 }
 
 /// Return an MMIO view for resources that have already passed validation.
@@ -479,17 +451,16 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
     unsafe { mmio::Mmio::new(resources.gtt_mmio_base) }
 }
 
-/// Reject an omitted modeset executor before touching display registers.
-pub(crate) fn validate_generation(cpu: Cpu) -> Result<(), GmaError> {
-    // With no executor built in, every arm is false.
-    #[allow(clippy::match_like_matches_macro)]
-    let enabled = match caps_for(cpu).generation {
-        Generation::I945 => cfg!(feature = "i945"),
-        Generation::G45 => cfg!(feature = "g45"),
-        Generation::Ironlake => cfg!(feature = "ironlake"),
-        _ => false,
-    };
-    enabled.then_some(()).ok_or(GmaError::UnsupportedPlatform)
+/// Reject a CPU from another generation than the executor `G`, or a
+/// generation without an executor, before touching display registers.
+pub(crate) fn validate_generation<G: GenerationOps>(cpu: Cpu) -> Result<(), GmaError> {
+    let executable = matches!(
+        G::GENERATION,
+        Generation::I945 | Generation::G45 | Generation::Ironlake
+    );
+    (executable && caps_for(cpu).generation == G::GENERATION)
+        .then_some(())
+        .ok_or(GmaError::UnsupportedPlatform)
 }
 
 pub(crate) fn validate_outputs(cpu: Cpu, outputs: &[OutputConfig]) -> Result<(), GmaError> {
@@ -707,15 +678,13 @@ mod tests {
     }
 
     #[test]
-    fn modeset_availability_follows_selected_generations() {
-        for (cpu, enabled) in [
-            (Cpu::Pineview, cfg!(feature = "i945")),
-            (Cpu::Gm965, cfg!(feature = "g45")),
-            (Cpu::Ironlake, cfg!(feature = "ironlake")),
-            (Cpu::Haswell, false),
-        ] {
-            assert_eq!(validate_generation(cpu).is_ok(), enabled);
-        }
+    fn modeset_requires_the_cpus_own_executor() {
+        assert!(validate_generation::<I945>(Cpu::Pineview).is_ok());
+        assert!(validate_generation::<G45>(Cpu::Gm965).is_ok());
+        assert!(validate_generation::<Ironlake>(Cpu::Ironlake).is_ok());
+        assert!(validate_generation::<G45>(Cpu::Pineview).is_err());
+        assert!(validate_generation::<Ironlake>(Cpu::Gm45).is_err());
+        assert!(validate_generation::<generation::haswell::Haswell>(Cpu::Haswell).is_err());
     }
 
     #[test]

@@ -14,6 +14,7 @@
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
 #[cfg(feature = "display")]
 use fstart_core::typed::mmio32;
+use fstart_intel_gma::GenerationOps;
 use fstart_intel_gma::config::OutputConfig;
 use fstart_intel_gma::framebuffer::FramebufferConfig;
 #[cfg(feature = "display")]
@@ -587,7 +588,7 @@ impl IgdDisplay {
     /// policy, or one whose panel or monitor cannot be brought up, still boots.
     /// Returns whether a framebuffer was programmed. The chipset prerequisites
     /// (BAR programming, GDRST reset, OpRegion, GTT base) are the caller's job.
-    pub fn initialize(
+    pub fn initialize<G: GenerationOps>(
         &mut self,
         cpu: Cpu,
         policy: Option<&IgdDisplayPolicy>,
@@ -595,7 +596,7 @@ impl IgdDisplay {
         vbt: Option<&[u8]>,
     ) -> bool {
         #[cfg(feature = "display")]
-        match self.modeset(cpu, policy, addresses, vbt) {
+        match self.modeset::<G>(cpu, policy, addresses, vbt) {
             Ok(programmed) => programmed,
             Err(err) => {
                 fstart_log::error!("intel-igd: display initialization failed: {}", err.as_str());
@@ -610,7 +611,7 @@ impl IgdDisplay {
     }
 
     #[cfg(feature = "display")]
-    fn modeset(
+    fn modeset<G: GenerationOps>(
         &mut self,
         cpu: Cpu,
         policy: Option<&IgdDisplayPolicy>,
@@ -628,7 +629,7 @@ impl IgdDisplay {
         };
         // The shared controller probes each connector once, after preparing
         // panel power and DDC clocks; a pre-modeset read gives false failures.
-        match fstart_intel_gma::init(&addresses.to_gma_resources(), &config) {
+        match fstart_intel_gma::init::<G>(&addresses.to_gma_resources(), &config) {
             Ok(GmaInitResult { framebuffer }) => {
                 fstart_log::info!(
                     "intel-igd: {}x{} framebuffer at {:#x}",

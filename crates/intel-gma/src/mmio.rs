@@ -5,9 +5,9 @@ use tock_registers::interfaces::{Readable, Writeable};
 
 use fstart_core::typed::{Mmio32, MmioAddr};
 
-/// Volatile 32-bit MMIO register window.
+/// Volatile 32-bit MMIO register window; opaque outside the crate.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Mmio {
+pub struct Mmio {
     base: *mut u8,
 }
 

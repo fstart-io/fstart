@@ -263,7 +263,7 @@ impl IntelGm45 {
             gtt_size: GTT_SIZE,
             gcfgc: Some(igd.read16(IGD_GCFGC)),
         };
-        self.display.initialize(
+        self.display.initialize::<fstart_intel_gma::G45>(
             fstart_intel_gma::types::Cpu::Gm45,
             self.config.igd.display.as_ref(),
             &addresses,

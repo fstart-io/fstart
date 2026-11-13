@@ -1230,7 +1230,7 @@ impl IntelI945 {
             gtt_size: I945_GTT_SIZE,
             gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
         };
-        self.display.initialize(
+        self.display.initialize::<fstart_intel_gma::I945>(
             self.display_cpu(),
             self.config.igd.display.as_ref(),
             &addresses,

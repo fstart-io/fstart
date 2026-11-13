@@ -9,6 +9,7 @@
 use crate::config::OutputConfig;
 use crate::error::GmaError;
 use crate::framebuffer::SurfaceConfig;
+use crate::generation::GenerationOps;
 use crate::mmio::Mmio;
 use crate::mode::Mode;
 use crate::pci::GmaResources;
@@ -125,12 +126,12 @@ impl GmaDisplayState {
     /// This compatibility entry point probes any pending HPD wait immediately.
     /// Use [`Self::update_outputs_at`] when the caller has a firmware timer and
     /// wants libgfxinit-style 333ms hotplug polling cadence.
-    pub fn update_outputs(
+    pub fn update_outputs<G: GenerationOps>(
         &mut self,
         resources: &GmaResources,
         config: &GmaInitConfig<'_>,
     ) -> Result<UpdateOutputsResult, GmaError> {
-        self.update_outputs_at(resources, config, u64::MAX)
+        self.update_outputs_at::<G>(resources, config, u64::MAX)
     }
 
     /// Update outputs using `now_us` as the current monotonic time in microseconds.
@@ -139,21 +140,21 @@ impl GmaDisplayState {
     /// testable. Callers on hardware supply `Timer::timestamp_us()` from
     /// `fstart_core::services::timer`; `update_outputs` passes `u64::MAX` to
     /// disable hot-plug rechecking.
-    pub fn update_outputs_at(
+    pub fn update_outputs_at<G: GenerationOps>(
         &mut self,
         resources: &GmaResources,
         config: &GmaInitConfig<'_>,
         now_us: u64,
     ) -> Result<UpdateOutputsResult, GmaError> {
-        crate::validate_generation(config.cpu)?;
+        crate::validate_generation::<G>(config.cpu)?;
         resources.validate()?;
         crate::validate_outputs(config.cpu, config.outputs)?;
-        let mmio = legacy_mmio(resources, config.cpu);
+        let mmio = legacy_mmio::<G>(resources);
         let old_configs = self.current;
         // Clean before probing: cleaning after Panel.On would undo the power
         // state used for EDID. Never clean again when adding another output.
         if !self.clean {
-            clean_generation_state(resources, config.cpu);
+            clean_generation_state::<G>(resources, config.cpu);
             self.clean = true;
         }
         let detect = crate::initialize_port_detect(resources, config.cpu);
@@ -165,7 +166,7 @@ impl GmaDisplayState {
         if wants_lvds && let Some(mmio) = &mmio {
             crate::generation::g45::prepare_panel_probe(mmio, config.vbt);
         }
-        let resolved = self.resolve_requested_configs(
+        let resolved = self.resolve_requested_configs::<G>(
             resources,
             config,
             detect.as_ref(),
@@ -207,7 +208,7 @@ impl GmaDisplayState {
             self.apply_hpd_filter(mmio, &mut new_configs, now_us);
         }
 
-        self.disable_changed_outputs(
+        self.disable_changed_outputs::<G>(
             resources,
             config.cpu,
             &old_configs,
@@ -255,7 +256,7 @@ impl GmaDisplayState {
                     if let Some(mmio) = &mmio {
                         let _ = crate::port_detect::clear_hotplug_detect(mmio, new_config.port);
                     }
-                    match init_candidate(
+                    match init_candidate::<G>(
                         resources,
                         &candidate_config,
                         new_config.pipe,
@@ -282,7 +283,7 @@ impl GmaDisplayState {
                             // Only the failed pipe's output is torn down; other
                             // outputs must survive.
                             if let Ok(pipe) = pipe_from_index(pipe_index) {
-                                disable_generation_output(
+                                disable_generation_output::<G>(
                                     resources,
                                     config.cpu,
                                     pipe,
@@ -305,7 +306,7 @@ impl GmaDisplayState {
         }
     }
 
-    fn resolve_requested_configs(
+    fn resolve_requested_configs<G: GenerationOps>(
         &self,
         resources: &GmaResources,
         config: &GmaInitConfig<'_>,
@@ -358,7 +359,7 @@ impl GmaDisplayState {
                     .copied()
                     .filter(|pipe| modes[PipeOutputConfig::pipe_index(*pipe)].is_none())
                     .collect();
-                crate::generation::output_pipe(config.cpu, output.port, mode, &available)
+                crate::generation::output_pipe::<G>(config.cpu, output.port, mode, &available)
                     .map(|pipe| (pipe, mode))
             }) {
                 Ok((pipe, mode)) => {
@@ -459,7 +460,7 @@ impl GmaDisplayState {
             if plan.requires_scaling && scaler::caps_for(config.cpu).single_global_scaler {
                 // Gen3's fitter is physically wired to B; i965 can select its
                 // owner, but cannot scale both pipes simultaneously.
-                if (matches!(caps_for(config.cpu).generation, Generation::I945) && pipe != Pipe::B)
+                if (G::GENERATION == Generation::I945 && pipe != Pipe::B)
                     || !plan.can_reserve_global(fitter_owner)
                 {
                     fstart_log::warn!(
@@ -510,7 +511,7 @@ impl GmaDisplayState {
         }
     }
 
-    fn disable_changed_outputs(
+    fn disable_changed_outputs<G: GenerationOps>(
         &mut self,
         resources: &GmaResources,
         cpu: Cpu,
@@ -531,7 +532,7 @@ impl GmaDisplayState {
                     .unwrap_or(true)
             {
                 if let Ok(pipe) = pipe_from_index(pipe_index) {
-                    disable_generation_output(resources, cpu, pipe, current.port);
+                    disable_generation_output::<G>(resources, cpu, pipe, current.port);
                 }
                 self.current[pipe_index] = None;
                 if unplug_detected {
@@ -633,8 +634,8 @@ fn full_update(current: PipeOutputConfig, new_config: PipeOutputConfig) -> bool 
         || current.surface != new_config.surface
 }
 
-fn legacy_mmio(resources: &GmaResources, cpu: Cpu) -> Option<Mmio> {
-    if matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45) {
+fn legacy_mmio<G: GenerationOps>(resources: &GmaResources) -> Option<Mmio> {
+    if matches!(G::GENERATION, Generation::I945 | Generation::G45) {
         Some(crate::mmio_from_validated_resources(resources))
     } else {
         None
@@ -656,11 +657,38 @@ mod tests {
     use super::*;
     use crate::PreferredMode;
     use crate::framebuffer::{FramebufferConfig, PixelFormat};
+    use crate::generation::{
+        broxton::Broxton, g45::G45, haswell::Haswell, i945::I945, ironlake::Ironlake,
+        skylake::Skylake, tigerlake::Tigerlake,
+    };
     use crate::mode::FallbackMode;
     use crate::pci::GmaResources;
     use crate::scaler::ScalingPolicy;
     use crate::types::PciAddress;
     use fstart_core::typed::mmio32;
+
+    impl GmaDisplayState {
+        /// Plan with the executor of `config.cpu`'s own generation.
+        fn resolve_for_cpu(
+            &self,
+            resources: &GmaResources,
+            config: &GmaInitConfig<'_>,
+            detect: Option<&crate::port_detect::LegacyPortDetectState>,
+            probe: impl FnMut(Port) -> Result<Mode, GmaError>,
+            has_edid: impl FnMut(Port) -> bool,
+        ) -> Result<[Option<PipeOutputConfig>; PIPE_COUNT], GmaError> {
+            let (r, c, d, p, h) = (resources, config, detect, probe, has_edid);
+            match caps_for(config.cpu).generation {
+                Generation::I945 => self.resolve_requested_configs::<I945>(r, c, d, p, h),
+                Generation::G45 => self.resolve_requested_configs::<G45>(r, c, d, p, h),
+                Generation::Ironlake => self.resolve_requested_configs::<Ironlake>(r, c, d, p, h),
+                Generation::Haswell => self.resolve_requested_configs::<Haswell>(r, c, d, p, h),
+                Generation::Broxton => self.resolve_requested_configs::<Broxton>(r, c, d, p, h),
+                Generation::Skylake => self.resolve_requested_configs::<Skylake>(r, c, d, p, h),
+                Generation::Tigerlake => self.resolve_requested_configs::<Tigerlake>(r, c, d, p, h),
+            }
+        }
+    }
 
     fn resources() -> GmaResources {
         GmaResources {
@@ -721,7 +749,7 @@ mod tests {
                 vbt: None,
             };
             let configs = GmaDisplayState::new()
-                .resolve_requested_configs(
+                .resolve_for_cpu(
                     &resources(),
                     &config,
                     None,
@@ -753,7 +781,7 @@ mod tests {
             vbt: None,
         };
         let configs = GmaDisplayState::new()
-            .resolve_requested_configs(
+            .resolve_for_cpu(
                 &resources(),
                 &config,
                 None,
@@ -792,7 +820,7 @@ mod tests {
         };
         let resolve = |sibling_edid: bool| {
             GmaDisplayState::new()
-                .resolve_requested_configs(
+                .resolve_for_cpu(
                     &resources(),
                     &config,
                     None,
@@ -879,7 +907,7 @@ mod tests {
             let outputs = if legacy_cpu { &legacy[..] } else { &ddi[..] };
             let config = edid_config(cpu, outputs);
             let planned = GmaDisplayState::new()
-                .resolve_requested_configs(
+                .resolve_for_cpu(
                     &resources(),
                     &config,
                     None,
@@ -933,7 +961,7 @@ mod tests {
         let config = edid_config(Cpu::Gm965, &outputs);
         for absent in [Port::Lvds, Port::Vga] {
             let planned = GmaDisplayState::new()
-                .resolve_requested_configs(
+                .resolve_for_cpu(
                     &resources(),
                     &config,
                     None,
@@ -953,7 +981,7 @@ mod tests {
             assert_eq!((output.surface.width, output.surface.height), (1280, 720));
         }
         assert_eq!(
-            GmaDisplayState::new().resolve_requested_configs(
+            GmaDisplayState::new().resolve_for_cpu(
                 &resources(),
                 &config,
                 None,
@@ -987,7 +1015,7 @@ mod tests {
             vbt: None,
         };
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(
+            .resolve_for_cpu(
                 &resources(),
                 &config,
                 None,
@@ -1018,7 +1046,7 @@ mod tests {
         ];
         let config = edid_config(Cpu::Gm965, &outputs);
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(
+            .resolve_for_cpu(
                 &resources(),
                 &config,
                 None,
@@ -1052,7 +1080,7 @@ mod tests {
         ];
         let config = edid_config(Cpu::I945GM, &outputs);
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(
+            .resolve_for_cpu(
                 &resources(),
                 &config,
                 None,
@@ -1091,7 +1119,7 @@ mod tests {
         ];
         let config = edid_config(Cpu::I945GM, &outputs);
         let planned = GmaDisplayState::new()
-            .resolve_requested_configs(
+            .resolve_for_cpu(
                 &resources(),
                 &config,
                 None,

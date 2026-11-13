@@ -8,13 +8,13 @@ use crate::types::{Cpu, Generation, Pipe, Plane, Port};
 /// DDI generations can allocate free pipes; implemented GMCH/FDI paths retain
 /// their concrete routing. Connector probing and framebuffer sizing do not
 /// need to know these hardware restrictions.
-pub(crate) fn output_pipe(
+pub(crate) fn output_pipe<G: GenerationOps>(
     cpu: Cpu,
     port: Port,
     mode: Mode,
     available: &[Pipe],
 ) -> Result<Pipe, GmaError> {
-    let pipe = match crate::caps_for(cpu).generation {
+    let pipe = match G::GENERATION {
         // Pre-i965 LVDS needs pipe B; libgfxinit swaps it there.
         Generation::I945 => crate::port::pipe_for_legacy_gmch_port(port)?,
         // libgfxinit `Scan_Ports`: probed outputs take the pipes in order.
@@ -32,9 +32,13 @@ pub(crate) fn output_pipe(
     }
 }
 
-/// Internal generation operation table.
+/// A display generation's modeset executor.
+///
+/// The chipset driver names its generation as a type ([`I945`](i945::I945),
+/// [`G45`](g45::G45), [`Ironlake`](ironlake::Ironlake)), so a stage links only
+/// that generation's executor; the [`Cpu`] then only picks a variant within it.
 #[allow(dead_code)]
-pub(crate) trait GenerationOps: sealed::Sealed {
+pub trait GenerationOps: sealed::Sealed {
     /// Display generation implemented by this marker.
     const GENERATION: Generation;
 

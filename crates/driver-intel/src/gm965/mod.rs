@@ -1092,7 +1092,7 @@ impl IntelGm965 {
             gtt_size: GM965_GTT_PAGE_TABLE_SIZE as u32,
             gcfgc: Some(igd.read16(hostbridge::GCFGC)),
         };
-        self.display.initialize(
+        self.display.initialize::<fstart_intel_gma::G45>(
             Cpu::Gm965,
             self.config.igd.display.as_ref(),
             &addresses,
