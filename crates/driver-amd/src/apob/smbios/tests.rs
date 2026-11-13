@@ -1,5 +1,6 @@
 use super::*;
 use alloc::vec;
+use fstart_acpi::smbios::{self, SmbiosIdentity, WriteError};
 use fstart_arch::x86::boot::cpuid::CacheInfo;
 use fstart_core::memory_info::{
     FORM_FACTOR_DIMM, MEMORY_TYPE_DDR4, TYPE_DETAIL_REGISTERED, TYPE_DETAIL_SYNCHRONOUS,
@@ -77,6 +78,32 @@ fn dimms() -> Vec<Dimm> {
         })
         .collect()
 }
+/// What a platform gathers.
+struct Inputs<'a> {
+    identity: SmbiosIdentity<'a>,
+    processors: &'a [Processor<'a>],
+    dimms: &'a [Dimm],
+    regions: &'a [DramRange],
+    max_dimm_mib: u32,
+    socket_upgrade: u8,
+    ecc: bool,
+    rom_size: u32,
+    uefi: bool,
+}
+
+fn build_into(bytes: &mut [u8], address: u64, input: &Inputs<'_>) -> Result<usize, WriteError> {
+    let mut tables = Builder::new(&input.identity, input.rom_size, input.uefi);
+    add_packages(&mut tables, input.processors, input.socket_upgrade);
+    add_memory(
+        &mut tables,
+        input.dimms,
+        input.regions,
+        input.max_dimm_mib,
+        input.ecc,
+    );
+    tables.assemble_into(bytes, address)
+}
+
 fn records(bytes: &[u8]) -> Vec<&[u8]> {
     let mut result = Vec::new();
     let mut offset = 24;

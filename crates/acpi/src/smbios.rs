@@ -25,6 +25,9 @@
 //!
 //! # Usage
 //!
+//! A platform gathers its inventory with a [`Builder`], which writes the
+//! structures in a fixed order. The writer is for one-off tables:
+//!
 //! ```ignore
 //! let total = fstart_acpi::smbios::assemble_into(&mut storage, 0x10000090000, |w| {
 //!     w.add_bios_info(&BiosInfo {
@@ -43,6 +46,9 @@ pub use fstart_core::smbios::{SlotUsage, SystemSlot};
 
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{Immutable, IntoBytes};
+
+mod builder;
+pub use builder::Builder;
 
 #[cfg(feature = "pci")]
 mod pci;

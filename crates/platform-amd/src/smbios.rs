@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The SMBIOS tables of every AMD SoC of the flow, from the shared builder
-//! of the driver (`fstart_driver_amd::apob::smbios`): the board's identity,
-//! a processor package per socket with the CPUID of one of its own
-//! threads, the DIMM positions of the APOB's SMBIOS seeds with their SPD
-//! copies, and the DRAM ranges of the flow's memory map.
+//! The SMBIOS tables of every AMD SoC of the flow, gathered with the
+//! shared builder (`fstart_acpi::smbios::Builder`): the board's identity, a
+//! processor package per socket with the CPUID of one of its own threads,
+//! and from the driver (`fstart_driver_amd::apob::smbios`) the DIMM
+//! positions of the APOB's SMBIOS seeds with their SPD copies and the DRAM
+//! ranges of the flow's memory map.
 //!
 //! A SoC says what its tables differ in ([`SocSmbios`]); its flow says
 //! where a thread is and which dies there are, and where the tables go.
@@ -32,7 +33,7 @@ mod stage {
     use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
     use fstart_driver_amd::apob::{
         Apob, mem,
-        smbios::{DramRange, Inputs, Processor, dimms},
+        smbios::{self as apob_smbios, DramRange, Processor, dimms},
     };
 
     /// What a flow knows of the system.
@@ -111,25 +112,19 @@ mod stage {
             .apob
             .and_then(|apob| mem::smbios_info(apob).ok())
             .is_some_and(|seeds| seeds.ecc());
+        let mut tables = smbios::Builder::new(
+            system.identity,
+            system.rom_size,
+            fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
+        );
+        apob_smbios::add_packages(&mut tables, &processors, soc.socket_upgrade);
+        // The positions come from the board's ABL seeds, not from assumed
+        // slots or the installed DIMMs.
+        apob_smbios::add_memory(&mut tables, &dimms, system.regions, soc.max_dimm_mib, ecc);
         let address = storage.as_ptr() as u64;
-        let used = fstart_driver_amd::apob::smbios::build_into(
-            storage,
-            address,
-            &Inputs {
-                identity: *system.identity,
-                processors: &processors,
-                dimms: &dimms,
-                regions: system.regions,
-                // The positions come from the board's ABL seeds, not from
-                // assumed slots or the installed DIMMs.
-                max_dimm_mib: soc.max_dimm_mib,
-                socket_upgrade: soc.socket_upgrade,
-                ecc,
-                rom_size: system.rom_size,
-                uefi: fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
-            },
-        )
-        .map_err(|_| "SMBIOS tables")?;
+        let used = tables
+            .assemble_into(storage, address)
+            .map_err(|_| "SMBIOS tables")?;
         // For Linux without UEFI.
         // SAFETY: both flows route C0000-FFFFF to DRAM and reserve it in
         // the e820; nothing else lives there.
