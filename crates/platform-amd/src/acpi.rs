@@ -1303,7 +1303,12 @@ mod tests {
             devices: vec![],
             sb_aml: [
                 fch_devices(),
-                fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
+                fstart_driver_ipmi::SleepNotify {
+                    kcs_port: 0xca2,
+                    kcs_spacing: 1,
+                    sw_smi_base: 0xc0,
+                }
+                .aml(0xb2),
             ]
             .concat(),
         };
@@ -1541,7 +1546,12 @@ mod tests {
             lpc_aml: kcs.dsdt_aml(),
             tables: vec![kcs.spmi(), spcr],
             devices: vec![],
-            sb_aml: fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(0xb2, 0xc0),
+            sb_aml: fstart_driver_ipmi::SleepNotify {
+                kcs_port: 0xca2,
+                kcs_spacing: 1,
+                sw_smi_base: 0xc0,
+            }
+            .aml(0xb2),
         };
         let tables = build(&Inputs {
             soc: &ACPI,
