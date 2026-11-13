@@ -26,11 +26,12 @@ MAX_BUILDS = 7
 
 # CI installs no recommended packages, but the network cards of the virt
 # machines need the option ROMs of ipxe-qemu and sbsa-ref's display the
-# VGA BIOS of seabios, which only qemu-system-x86 depends on.
+# VGA BIOS of seabios, which only qemu-system-x86 depends on. The names
+# are those of the runner image the workflow pins (Ubuntu 26.04).
 QEMU_PACKAGES = {
     "aarch64": "qemu-system-arm ipxe-qemu seabios",
     "armv7": "qemu-system-arm ipxe-qemu",
-    "riscv64": "qemu-system-misc ipxe-qemu",
+    "riscv64": "qemu-system-riscv ipxe-qemu",
     "x86": "qemu-system-x86",
     "x86_64": "qemu-system-x86",
 }
