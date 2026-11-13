@@ -83,6 +83,11 @@ impl<B: IntelBoard, S> Bootblock<B, S> {
         &self.northbridge
     }
 
+    /// The northbridge, for board input to memory init (memory-down SPD).
+    pub fn northbridge_mut(&mut self) -> &mut Nb<B> {
+        &mut self.northbridge
+    }
+
     pub fn southbridge(&self) -> &Sb<B> {
         &self.southbridge
     }

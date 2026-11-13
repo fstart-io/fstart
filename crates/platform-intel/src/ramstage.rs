@@ -430,6 +430,8 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
         &mut self,
         resources: &[fstart_core::acpi::AcpiResource],
     ) -> Result<(), ServiceError> {
+        self.northbridge.pre_bus_scan()?;
+        self.southbridge.pre_bus_scan()?;
         // The root bridge is described once: the allocator is built from
         // it and keeps it, for the tables and for the payload.
         let mut pci = (self.northbridge.pci_root())

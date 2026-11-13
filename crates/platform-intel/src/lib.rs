@@ -67,6 +67,8 @@ macro_rules! entry {
     };
 }
 
+#[cfg(feature = "baytrail")]
+pub mod baytrail;
 #[cfg(feature = "gm45-ich9")]
 pub mod gm45;
 #[cfg(feature = "gm965-ich8")]
