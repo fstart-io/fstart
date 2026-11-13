@@ -44,9 +44,7 @@ impl UsbPolicy {
 
 fn requests(generation: Generation) -> &'static [(u32, u32, u32, u32)] {
     match generation {
-        #[cfg(feature = "rome")]
         Generation::Rome => super::super::tables::USB_CONFIG_ROME,
-        #[cfg(feature = "milan")]
         Generation::Milan => super::super::tables::USB_CONFIG_MILAN,
         g => super::super::common::not_built(g),
     }
@@ -92,7 +90,6 @@ mod tests {
     use super::super::super::model::{Smu, fch, smn};
     use super::*;
 
-    #[cfg(feature = "rome")]
     #[test]
     fn rome_socket1_list() {
         let hw = fch();
@@ -115,7 +112,6 @@ mod tests {
         assert_eq!(smn(&hw.pci, 0, 0x16d8_014c), 1 << 31);
     }
 
-    #[cfg(feature = "milan")]
     #[test]
     fn milan_s3_resume() {
         let hw = fch();

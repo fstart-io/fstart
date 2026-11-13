@@ -29,9 +29,7 @@ pub mod iommu;
 pub mod nbif;
 pub mod table;
 
-#[cfg(feature = "naples")]
 pub mod naples;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod sp3;
 
 pub use fuse::Fuses;

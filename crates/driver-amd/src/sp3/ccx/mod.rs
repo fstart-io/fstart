@@ -42,11 +42,8 @@ pub mod table;
 pub mod topology;
 pub mod x2apic;
 
-#[cfg(feature = "naples")]
 pub mod zen1;
-#[cfg(feature = "rome")]
 pub mod zen2;
-#[cfg(feature = "milan")]
 pub mod zen3;
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
@@ -230,7 +227,7 @@ impl Ccx {
     }
 }
 
-#[cfg(all(test, feature = "rome"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::sp3::soc::{PACKAGE_SP3, identify};

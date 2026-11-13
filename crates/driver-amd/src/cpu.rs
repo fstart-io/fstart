@@ -73,7 +73,6 @@ pub enum Revision {
 
 impl Revision {
     /// The SP3 generation of this revision.
-    #[cfg(feature = "sp3")]
     pub const fn generation(self) -> crate::sp3::soc::Generation {
         use crate::sp3::soc::Generation;
         match self {

@@ -281,7 +281,6 @@ impl Steps for Silicon {
             .map(|s| socket_memory(ctx, s))
             .collect();
         match ctx.generation {
-            #[cfg(feature = "rome")]
             Generation::Rome => crate::sp3::df::rome::init(
                 &ctx.df,
                 &ctx.topology,
@@ -289,7 +288,6 @@ impl Steps for Silicon {
                 &Default::default(),
                 &memory,
             ),
-            #[cfg(feature = "milan")]
             Generation::Milan => {
                 crate::sp3::df::milan::init(&ctx.df, &ctx.topology, &Default::default(), &memory)
             }
@@ -391,17 +389,14 @@ impl Steps for Silicon {
             let map = core_map(&ctx.apob, s).step("APOB core map")?;
             let _ = si.maps.push(map);
         }
-        #[cfg(any(feature = "rome", feature = "milan"))]
         let power = ctx.policy.power;
         for (s, smu) in si.smus.iter().enumerate() {
             let ids: Vec<u16> = apic_ids(generation, s as u8, &si.maps[s]).collect();
             let table: &[u8] = match generation {
-                #[cfg(feature = "rome")]
                 Generation::Rome => {
                     let t = v11::pptable::RomePpTable::new(&power, &ids);
                     alloc::boxed::Box::leak(alloc::boxed::Box::new(t)).as_bytes()
                 }
-                #[cfg(feature = "milan")]
                 Generation::Milan => {
                     let t = v11::pptable::MilanPpTable::new(&power, &ids);
                     alloc::boxed::Box::leak(alloc::boxed::Box::new(t)).as_bytes()

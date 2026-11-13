@@ -6,19 +6,17 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
+picasso = ["noncar", "dep:fstart-driver-vbios"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2", "fstart-core/host"]
-zeppelin = ["noncar", "fstart-driver-amd/zeppelin"]
+zeppelin = ["noncar"]
 # The SP3 socket's generations. They are additive: a board enables every
 # generation it supports and one reset image serves them all (the CPU
 # picks at run time).
-naples = ["sp3", "fstart-driver-amd/naples"]
-rome = ["sp3", "fstart-driver-amd/rome"]
-milan = ["sp3", "fstart-driver-amd/milan"]
+naples = ["sp3"]
+rome = ["sp3"]
+milan = ["sp3"]
 sp3 = [
-  # Naples is the Zeppelin die.
-  "fstart-driver-amd/zeppelin",
   "dep:fstart-amdfw-format",
   "dep:fstart-arch", "fstart-arch/x86-identity-paging",
   "dep:fstart-driver-ipmi",
@@ -47,7 +45,6 @@ bundle-stage = [
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
   "acpi",
-  "fstart-driver-amd/smi",
   "dep:fstart-amdfw-format",
   "dep:fstart-arch",
   "dep:heapless",

@@ -196,7 +196,7 @@ pub mod acpi {
     }
 }
 
-#[cfg(all(test, any(feature = "zeppelin", feature = "naples")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::nbio::zp::tables::BASE;

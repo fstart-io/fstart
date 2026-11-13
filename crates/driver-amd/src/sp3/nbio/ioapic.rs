@@ -108,7 +108,6 @@ mod tests {
     use super::*;
     use crate::sp3::nbio::tests::nbio;
 
-    #[cfg(any(feature = "rome", feature = "milan"))]
     fn route_values(
         entries: impl Iterator<Item = (crate::smn::SmnAddr, crate::sp3::nbio::table::Op)>,
     ) -> Vec<u32> {
@@ -126,7 +125,6 @@ mod tests {
 
     #[test]
     fn routes_match_tables() {
-        #[cfg(feature = "rome")]
         assert_eq!(
             route_values(
                 crate::sp3::nbio::sp3::tables::rome::NBIO
@@ -135,7 +133,6 @@ mod tests {
             ),
             ROUTES_SP3.map(|r| r.value())
         );
-        #[cfg(feature = "milan")]
         assert_eq!(
             route_values(
                 crate::sp3::nbio::sp3::tables::milan::NBIO

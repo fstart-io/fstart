@@ -55,7 +55,7 @@ pcie3-x4x4x4x4 = []
 fstart-log = { path = "../../../crates/log" }
 fstart-options = { path = "../../../crates/options" }
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["acpi", "rome", "milan"] }
-fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["rome", "milan"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd" }
 fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-core = { path = "../../../crates/core" }

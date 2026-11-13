@@ -21,7 +21,6 @@
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 
 use super::acpimmio::{self, PmIo};
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use super::{
     FchHw,
     acpimmio::{AoacDevice, PM, pm},
@@ -29,7 +28,6 @@ use super::{
 };
 use crate::sp3::soc::Generation;
 use crate::window::Window;
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use crate::window::update;
 
 /// DF IO base/limit pair 0 (D18F0xC0/xC4) used for the temporary route.
@@ -80,7 +78,6 @@ pub fn relocate<I: Window>(io: &I, base: u32) {
 
 /// Legacy SD off on a secondary (the env af55 subset the multi-FCH PEIMs
 /// run).
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 fn sd_off<W: Window>(acpi: &W) {
     update::<u8, _>(acpi, PM + pm::MANUAL_RESET, 0x40, 0);
     update::<u8, _>(acpi, PM + pm::PM_E8, 0x01, 0);
@@ -95,12 +92,10 @@ pub struct NaplesDie {
     /// ALTMMIO base if the caller relocates (donor path); `None` uses the
     /// SMN view that `hw.acpi()` already is.
     pub alt_mmio: Option<u32>,
-    #[cfg(feature = "naples")]
     pub usb: super::taishan::usb::DieUsb,
     pub sata: bool,
 }
 
-#[cfg(feature = "naples")]
 impl NaplesDie {
     /// Donor defaults (FCH_SP3 §4.1): USB per die, SATA on die 2 only.
     pub const fn default_for(die: u8) -> Self {
@@ -115,7 +110,6 @@ impl NaplesDie {
 
 /// FchMultiFchPei for one Naples die (FCH_SP3 §4.1). `hw` is that die's
 /// FCH (`acpi` = SMN view or relocated window, `bus` = the die's bus).
-#[cfg(feature = "naples")]
 pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
     debug_assert!((1..8).contains(&policy.die));
     with_legacy_io(
@@ -142,7 +136,6 @@ pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
 
 /// FchMultiFchDxe for one Naples die: a die without SATA hides its SATA
 /// and xGbE functions.
-#[cfg(feature = "naples")]
 pub fn naples_die_env<H: FchHw>(hw: &H, sata: bool) {
     super::taishan::sata::env(hw, sata);
     if !sata {
@@ -152,7 +145,6 @@ pub fn naples_die_env<H: FchHw>(hw: &H, sata: bool) {
 
 /// FchHuashanMultiFchPei for socket 1 (FCH_SP3 §4.2). `hw` is the socket-1
 /// FCH (`acpi` = SMN view, `bus` = socket 1's bus), `smu` socket 1's SMU.
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
     hw: &H,
     generation: Generation,
@@ -176,7 +168,6 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
 /// FchHuashanMultiFchDxe: socket 1's SATA env (all four controllers off at
 /// the donor default). Its PCI_INTR write goes to socket 1's ports, so
 /// the legacy I/O is routed there meanwhile.
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub fn huashan_socket1_env<H: FchHw>(
     hw: &H,
     generation: Generation,
@@ -190,7 +181,6 @@ pub fn huashan_socket1_env<H: FchHw>(
 #[cfg(test)]
 mod tests {
     use super::super::model::fch;
-    #[cfg(any(feature = "naples", feature = "rome"))]
     use super::super::model::smn;
     use super::*;
 
@@ -221,7 +211,6 @@ mod tests {
         assert_eq!(hw.pci.0.borrow().config[&(0, 0x18, 0, 0xc0)], 0x1003);
     }
 
-    #[cfg(feature = "rome")]
     #[test]
     fn rome_socket1() {
         let mut hw = fch();
@@ -245,7 +234,6 @@ mod tests {
         assert_eq!(hw.io.at(0xcd7, 0xe0), 0);
     }
 
-    #[cfg(feature = "naples")]
     #[test]
     fn naples_die2() {
         let mut hw = fch();

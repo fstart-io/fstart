@@ -10,12 +10,9 @@
 //! sequence and in the work at the events ([`Hooks`]): [`picasso`],
 //! [`zeppelin`] and [`crate::sp3::dxio`].
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 mod descriptor;
-#[cfg(feature = "picasso")]
 pub mod picasso;
 pub mod wire;
-#[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
 use core::ptr::NonNull;
@@ -26,7 +23,6 @@ use heapless::Vec;
 use zerocopy::FromBytes;
 
 use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub use descriptor::*;
 use wire::{ANCILLARY_MAX, ENGINE_HEAP_MAX, FwEngine, Heaps, MAX_ENGINES};
 
@@ -144,7 +140,6 @@ pub enum DxioError {
     },
     Timeout,
     /// Board engine `.0` rejected.
-    #[cfg(feature = "sp3")]
     Lanes(usize, crate::sp3::dxio::lanes::LaneError),
     TooManyEngines,
     /// Unsupported tuning ID.
@@ -257,7 +252,6 @@ impl DxioError {
             Self::NoReturn(r) => ("GetSmState no return", r, 0),
             Self::StateMachine { state } => ("state machine error", state, 0),
             Self::Timeout => ("state machine timeout", 0, 0),
-            #[cfg(feature = "sp3")]
             Self::Lanes(engine, _) => ("board engine rejected", engine as u32, 0),
             Self::TooManyEngines => ("too many engines", 0, 0),
             Self::Tuning(id) => ("unsupported tuning", id as u32, 0),

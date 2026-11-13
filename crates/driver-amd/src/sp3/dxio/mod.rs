@@ -21,10 +21,8 @@
 pub mod engine;
 pub mod hotplug;
 pub mod lanes;
-#[cfg(feature = "naples")]
 pub mod naples;
 pub mod ports;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod sp3;
 #[rustfmt::skip]
 pub mod tables;
@@ -235,9 +233,7 @@ where
     T: Timer + ?Sized,
 {
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => naples::train(units, hooks, timer, policy),
-        #[cfg(any(feature = "rome", feature = "milan"))]
         Generation::Rome | Generation::Milan => sp3::train(generation, units, hooks, timer, policy),
         // Fail closed on a generation this build does not carry.
         #[allow(unreachable_patterns)]

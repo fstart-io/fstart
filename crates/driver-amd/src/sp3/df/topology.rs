@@ -16,10 +16,8 @@
 
 use fstart_pci::ConfigRegionAccess;
 use heapless::Vec;
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use tock_registers::interfaces::Readable;
 
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 use super::Version;
 use super::{BusRange, Df};
 use crate::df::MAX_NODES;
@@ -107,11 +105,8 @@ pub fn discover<P: ConfigRegionAccess + Clone>(
     generation: Generation,
 ) -> Result<Topology, TopologyError> {
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => discover_df2(df),
-        #[cfg(feature = "rome")]
         Generation::Rome => discover_df3(df, generation, 0b1111),
-        #[cfg(feature = "milan")]
         Generation::Milan => {
             // SAFETY: the BSP owns this bus's SMN index/data pair during init.
             let smn = unsafe { crate::smn::Smn::on_bus(df.pci().clone(), 0) };
@@ -131,7 +126,6 @@ pub fn discover<P: ConfigRegionAccess + Clone>(
     }
 }
 
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 /// The bus limit of the CfgAddressMap that routes `bus_base` to `dst`.
 fn bus_limit<V: Version>(maps: &[u32], fabric_id: u16) -> Result<u8, TopologyError> {
     maps.iter()
@@ -141,7 +135,6 @@ fn bus_limit<V: Version>(maps: &[u32], fabric_id: u16) -> Result<u8, TopologyErr
         .ok_or(TopologyError::NoBusMap { fabric_id })
 }
 
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 fn read_maps<P: ConfigRegionAccess + Clone, V: Version>(
     df: &Df<P>,
     target: super::Target,
@@ -152,7 +145,6 @@ fn read_maps<P: ConfigRegionAccess + Clone, V: Version>(
         .collect()
 }
 
-#[cfg(feature = "naples")]
 fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, TopologyError> {
     use crate::df::v2::Df2;
     use crate::df::v2::{self, SYSTEM_CFG};
@@ -206,7 +198,6 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Df<P>) -> Result<Topology, T
 }
 
 /// `present`: bit `i` = IOMS `i` present (Milan fuse, all four on Rome).
-#[cfg(any(feature = "rome", feature = "milan"))]
 fn discover_df3<P: ConfigRegionAccess + Clone>(
     df: &Df<P>,
     generation: Generation,
@@ -279,7 +270,6 @@ pub(crate) mod tests {
     use super::super::model::DfModel;
     use super::*;
 
-    #[cfg(any(feature = "rome", feature = "milan"))]
     /// A DF3 system with `sockets` × the `present` IOMS and 64 buses each in
     /// IOMS order (or 32 on 2P).
     pub fn df3_system(sockets: u8, present: u8) -> DfModel {
@@ -306,7 +296,6 @@ pub(crate) mod tests {
         m
     }
 
-    #[cfg(feature = "rome")]
     #[test]
     fn rome_2p() {
         let df = Df::new(df3_system(2, 0b1111));
@@ -328,7 +317,6 @@ pub(crate) mod tests {
         assert_eq!(t.node_of(&s1), 1);
     }
 
-    #[cfg(feature = "milan")]
     #[test]
     fn milan_fused_ioms() {
         // IOMS 1 fused off: SMN 0x5D148 bit 12.
@@ -342,7 +330,6 @@ pub(crate) mod tests {
         assert!(discover(&Df::new(m), Generation::Milan).is_err());
     }
 
-    #[cfg(feature = "naples")]
     #[test]
     fn naples_2p() {
         let m = DfModel::default();

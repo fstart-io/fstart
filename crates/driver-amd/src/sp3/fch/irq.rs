@@ -45,11 +45,8 @@ pub fn update<I: Window>(io: &I, index: u8, clear: u8, set: u8) {
 /// The late-task routes of `generation`, `(index, irq)` in donor order.
 pub const fn routes(generation: Generation) -> &'static [(u8, u8)] {
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => super::tables::PCI_INTR_NAPLES,
-        #[cfg(feature = "rome")]
         Generation::Rome => super::tables::PCI_INTR_ROME,
-        #[cfg(feature = "milan")]
         Generation::Milan => super::tables::PCI_INTR_MILAN,
         #[allow(unreachable_patterns)]
         _ => &[],
@@ -77,7 +74,7 @@ pub fn restore<I: Window>(io: &I, saved: &[u8; 256]) {
         .for_each(|(i, &irq)| write(io, i as u8, irq));
 }
 
-#[cfg(all(test, feature = "naples", feature = "rome", feature = "milan"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

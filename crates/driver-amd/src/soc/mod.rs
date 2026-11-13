@@ -39,11 +39,9 @@ use fstart_arch::x86::{
 use fstart_core::{description::PciRootInfo, services::memory_detect::E820State};
 use fstart_pci::{MAX_PCI_ROOTS, PciEcam, PciRoot, ecam::GlobalEcam};
 
-#[cfg(feature = "picasso")]
 pub mod picasso;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-#[cfg(feature = "zeppelin")]
 pub mod zeppelin;
 
 /// What the IP blocks of a SoC differ in.

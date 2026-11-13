@@ -92,7 +92,6 @@ pub struct MemoryTarget {
     pub chip_select: u8,
 }
 
-#[cfg(feature = "rome")]
 fn channel_bits(base: u32) -> Option<u32> {
     use crate::sp3::df::v3::DRAM_BASE;
     match DRAM_BASE::ILV_CHAN.read(base) {
@@ -116,7 +115,6 @@ fn channel_bits(base: u32) -> Option<u32> {
 ///
 /// Evidence: S8253 2P AmdRasSspSmm ee8175ef… 3a70 (selection), 4160
 /// (normalization), 32e0 (CS); corresponding S8030 3a90/4180/3300.
-#[cfg(feature = "rome")]
 pub fn memory_target(
     address: u64,
     sockets: u8,
@@ -252,7 +250,6 @@ pub fn memory_target(
     })
 }
 
-#[cfg(feature = "rome")]
 fn rule_contains(address: u64, base: u32, limit: u32) -> bool {
     use crate::sp3::df::v3::{DRAM_BASE, DRAM_LIMIT};
     DRAM_BASE::VALID.is_set(base)
@@ -260,7 +257,6 @@ fn rule_contains(address: u64, base: u32, limit: u32) -> bool {
         && address < (u64::from(DRAM_LIMIT::LIMIT.read(limit)) + 1) << 28
 }
 
-#[cfg(feature = "rome")]
 fn normalize(address: u64, base: u32, hole: u32, offset: u64) -> Option<u64> {
     use crate::sp3::df::v3::DRAM_BASE;
     let address = if DRAM_BASE::HOLE_EN.is_set(base) {
@@ -371,7 +367,6 @@ mod tests {
         assert_eq!(*actions.borrow(), [1, 2, 4, 3]);
     }
 
-    #[cfg(feature = "rome")]
     mod mapping {
         use super::*;
         use crate::{df::DfReg, sp3::df::v3::CCM0};

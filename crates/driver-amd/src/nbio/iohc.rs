@@ -12,7 +12,6 @@ use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 use {
     crate::{df::Die, soc::Soc},
     fstart_pci::ConfigRegionAccess,
@@ -281,7 +280,6 @@ pub fn set_tom(
 /// Tell the IOHC of a die about the DRAM map and the MMIO above 4 GiB.
 /// `top_mem` is TOP_MEM (MSR C001_001A), `top_mem2` TOP_MEM2 if SYSCFG
 /// enables it.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub fn dram_map<S: Soc, P: ConfigRegionAccess + Copy>(
     die: &Die<S, P>,
     top_mem: u32,

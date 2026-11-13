@@ -22,17 +22,12 @@ pub fn bus_map_targets(topology: &Topology) -> heapless::Vec<Target, 16> {
             heapless::Vec::from_slice(&[Target::Node]).unwrap_or_default()
         }
         crate::sp3::soc::Generation::Rome | crate::sp3::soc::Generation::Milan => {
-            #[cfg(any(feature = "rome", feature = "milan"))]
-            {
-                let ioms = topology
-                    .root_bridges
-                    .iter()
-                    .filter(|r| r.socket == 0)
-                    .map(|r| Target::Instance(super::v3::IOMS[usize::from(r.index)]));
-                super::v3::CCMS.map(Target::Instance).chain(ioms).collect()
-            }
-            #[cfg(not(any(feature = "rome", feature = "milan")))]
-            heapless::Vec::new()
+            let ioms = topology
+                .root_bridges
+                .iter()
+                .filter(|r| r.socket == 0)
+                .map(|r| Target::Instance(super::v3::IOMS[usize::from(r.index)]));
+            super::v3::CCMS.map(Target::Instance).chain(ioms).collect()
         }
     }
 }
@@ -94,7 +89,7 @@ pub fn ready_to_boot<P: ConfigRegionAccess + Clone>(df: &Df<P>, nodes: &[Node]) 
     }
 }
 
-#[cfg(all(test, feature = "rome"))]
+#[cfg(test)]
 mod tests {
     use super::super::model::DfModel;
     use super::super::topology::{discover, tests::df3_system};

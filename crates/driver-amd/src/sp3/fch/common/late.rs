@@ -34,7 +34,7 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Generation, extra_routes: &[(u8, u8
     }
 }
 
-#[cfg(all(test, feature = "rome"))]
+#[cfg(test)]
 mod tests {
     use super::super::super::model::fch;
     use super::*;

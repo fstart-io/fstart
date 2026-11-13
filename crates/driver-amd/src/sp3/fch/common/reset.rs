@@ -185,7 +185,6 @@ mod tests {
         assert_eq!(hw.acpi.writes_to(0xe50), vec![1 << 20, 0]);
     }
 
-    #[cfg(feature = "rome")]
     #[test]
     fn hw_acpi_rome_io_map_and_battery_loss() {
         let hw = fch();

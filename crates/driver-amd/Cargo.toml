@@ -6,50 +6,41 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["smi", "dep:fstart-amdfw-format", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-arch", "dep:embedded-hal", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c"]
-zeppelin = ["smi", "dep:fstart-amdfw-format", "dep:fstart-arch", "dep:zerocopy", "dep:fstart-pci", "dep:heapless", "dep:fstart-log", "dep:ufmt", "dep:fstart-driver-i2c", "dep:embedded-hal"]
-# The SP3 server silicon.
-naples = ["sp3"]
-rome = ["sp3"]
-milan = ["sp3"]
-sp3 = ["dep:fstart-options", "dep:embedded-hal", "dep:fstart-amdfw-format", "dep:fstart-pci", "dep:fstart-log", "dep:heapless", "dep:zerocopy", "dep:ufmt", "dep:fstart-arch", "dep:fstart-driver-i2c"]
-# ACPI descriptions of the SP3 FCH devices.
+# ACPI descriptions of the FCH devices.
 acpi = ["dep:fstart-acpi"]
 # The SMBIOS inventory from the APOB.
 smbios = ["acpi", "dep:fstart-driver-spd"]
-# FCH SMI control for the AMD SMM owner of fstart-arch.
-smi = ["dep:fstart-arch"]
 # The FCH SMM handler, for SMM image builds.
-smm = ["smi", "dep:fstart-smm"]
+smm = ["dep:fstart-smm"]
 # A reserved boot-flash region through the FCH SPI100 command engine.
-spi-flash = ["dep:rflasher-core", "dep:rflasher-internal", "dep:fstart-log", "dep:embedded-hal"]
+spi-flash = ["dep:rflasher-core", "dep:rflasher-internal"]
 # Host models of the register spaces, for the tests of dependent crates.
 testing = ["dep:libc", "fstart-core/testing"]
 
 [dependencies]
 tock-registers.workspace = true
 fstart-core.workspace = true
-zerocopy = { workspace = true, optional = true }
-fstart-pci = { workspace = true, optional = true }
-heapless = { workspace = true, optional = true }
-fstart-log = { workspace = true, optional = true }
-ufmt = { workspace = true, optional = true }
-fstart-driver-i2c = { workspace = true, optional = true }
-embedded-hal = { workspace = true, optional = true }
-fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
+zerocopy.workspace = true
+fstart-pci.workspace = true
+heapless.workspace = true
+fstart-log.workspace = true
+ufmt.workspace = true
+fstart-driver-i2c.workspace = true
+embedded-hal.workspace = true
+fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-smm = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
-fstart-amdfw-format = { workspace = true, optional = true }
+fstart-amdfw-format.workspace = true
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
 fstart-driver-spd = { workspace = true, optional = true }
-fstart-options = { workspace = true, optional = true }
+fstart-options.workspace = true
 rflasher-core = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
 
 [dev-dependencies]
 fstart-core = { workspace = true, features = ["testing"] }
-# The unit tests cover every SoC, also in `cargo test --workspace`.
-fstart-driver-amd = { path = ".", features = ["picasso", "zeppelin", "smm", "naples", "rome", "milan", "acpi", "smbios", "spi-flash"] }
+# The unit tests cover the optional parts too, also in `cargo test --workspace`.
+fstart-driver-amd = { path = ".", features = ["smm", "acpi", "smbios", "spi-flash"] }
 fstart-pci = { workspace = true }
 libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

@@ -434,13 +434,11 @@ impl<B: Bus> Gpio<B> {
 
 /// One pad of a bank as an embedded-hal output, borrowed from the bank so a
 /// board can drive several pads of it.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub struct Output<'a, B> {
     gpio: &'a Gpio<B>,
     pin: u8,
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl<B: Bus> Gpio<B> {
     /// Drive `pin` through embedded-hal. Its pad must already be configured
     /// as an output.
@@ -452,12 +450,10 @@ impl<B: Bus> Gpio<B> {
     }
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl<B> embedded_hal::digital::ErrorType for Output<'_, B> {
     type Error = Error;
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl<B: Bus> embedded_hal::digital::OutputPin for Output<'_, B> {
     fn set_low(&mut self) -> Result<(), Error> {
         self.gpio.set(self.pin, false)
@@ -469,13 +465,11 @@ impl<B: Bus> embedded_hal::digital::OutputPin for Output<'_, B> {
 }
 
 /// One pad of a bank as an embedded-hal input.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub struct Input<B> {
     gpio: Gpio<B>,
     pin: u8,
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl<B: Bus> Gpio<B> {
     /// Read `pin` through embedded-hal. Its pad must already be configured.
     pub fn input(self, pin: u8) -> Result<Input<B>, Error> {
@@ -486,19 +480,16 @@ impl<B: Bus> Gpio<B> {
     }
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl embedded_hal::digital::Error for Error {
     fn kind(&self) -> embedded_hal::digital::ErrorKind {
         embedded_hal::digital::ErrorKind::Other
     }
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl<B> embedded_hal::digital::ErrorType for Input<B> {
     type Error = Error;
 }
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 impl<B: Bus> embedded_hal::digital::InputPin for Input<B> {
     fn is_high(&mut self) -> Result<bool, Error> {
         self.gpio.get(self.pin)

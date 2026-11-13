@@ -53,22 +53,14 @@ impl Fuses {
         if self.word == [0; 2] {
             return true;
         }
-        #[cfg(feature = "milan")]
-        {
-            let aperture = addr & 0xFFF0_0000;
-            !super::sp3::tables::milan::FUSE_APERTURES
-                .iter()
-                .any(|&(w, mask, a)| a == aperture && self.word[w as usize] & mask != 0)
-        }
-        #[cfg(not(feature = "milan"))]
-        {
-            let _ = addr;
-            true
-        }
+        let aperture = addr & 0xFFF0_0000;
+        !super::sp3::tables::milan::FUSE_APERTURES
+            .iter()
+            .any(|&(w, mask, a)| a == aperture && self.word[w as usize] & mask != 0)
     }
 }
 
-#[cfg(all(test, feature = "milan"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

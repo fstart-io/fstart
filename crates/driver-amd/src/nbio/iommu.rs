@@ -11,7 +11,6 @@
 use super::iohc::IOMMU_BAR;
 use crate::smn::{SmnAddr, SmnReg};
 use tock_registers::register_bitfields;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 use {
     crate::{df::Die, soc::Soc},
     fstart_core::mmio::MmioReadOnly,
@@ -65,7 +64,6 @@ const _: () = assert!(IOMMU_BAR.low.address() == CAP_HEADER.address() + 0x04);
 pub const RANGE: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x0c);
 pub const MISC: SmnReg = SmnReg::new(CAP_HEADER.address() + 0x10);
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 register_structs! {
     Mmio {
         (0x0000 => _reserved0),
@@ -83,7 +81,6 @@ register_structs! {
 /// Map the 512 KiB of IOMMU registers of `die` at `base` (512 KiB aligned,
 /// outside the PCI windows so nothing moves it) and return it, `None`
 /// without an IOMMU.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub fn init_bar<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, base: u32) -> Option<u32> {
     let smn = die.smn();
     if smn.reg(CAP_HEADER).read(CapHeader::ID) != CAPABILITY_ID {
@@ -98,7 +95,6 @@ pub fn init_bar<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>, base: u32
 /// What the IVRS describes of an IOMMU: the capability header, range and
 /// miscellaneous information 0 registers and MMIO 0x18 (control), 0x30
 /// (EFR), 0x1a0 (EFR2) and 0x4000 (counter configuration).
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Iommu {
     pub base: u64,
@@ -116,7 +112,6 @@ pub struct Iommu {
 ///
 /// # Safety
 /// The IOMMU MMIO is identity mapped and uncached.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub unsafe fn read<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Option<Iommu> {
     let smn = die.smn();
     let base = IOMMU_BAR.base(&smn)?;
@@ -145,7 +140,7 @@ pub unsafe fn read<S: Soc, P: ConfigRegionAccess + Copy>(die: &Die<S, P>) -> Opt
     Some(iommu)
 }
 
-#[cfg(all(test, feature = "zeppelin"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::soc::zeppelin::test_pci::Pci;

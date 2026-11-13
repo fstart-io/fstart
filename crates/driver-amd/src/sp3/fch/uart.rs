@@ -82,7 +82,7 @@ pub fn prepare_mmio<H: FchHw>(hw: &H, n: u8) {
     hw.mmio()
         .reg::<u8, SoftwareReset::Register>(base(n) as u32 + SOFTWARE_RESET)
         .write(SoftwareReset::UART::SET);
-    hw.timer().delay_us(100);
+    fstart_core::services::Timer::delay_us(hw.timer(), 100);
 }
 
 /// Set the legacy decode register (0 turns all legacy UART ranges off).

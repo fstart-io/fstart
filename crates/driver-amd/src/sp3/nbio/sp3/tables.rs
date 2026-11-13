@@ -4,7 +4,6 @@
 
 #![allow(dead_code)] // *_AM4: package class 4, kept for its predicate
 
-#[cfg(feature = "rome")]
 pub mod rome {
     use crate::sp3::nbio::table::{Cmp, Entry, Knob};
 
@@ -543,7 +542,6 @@ pub mod rome {
     ];
 }
 
-#[cfg(feature = "milan")]
 pub mod milan {
     use crate::sp3::nbio::table::{Cmp, Entry, Knob};
 

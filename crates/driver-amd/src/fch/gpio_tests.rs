@@ -75,7 +75,6 @@ fn validate_before_first_hardware_write() {
     }
     assert!(world.writes().is_empty());
 }
-#[cfg(feature = "zeppelin")]
 #[test]
 fn banks_without_a_gpio_function_need_native_pads() {
     let world = World::default();

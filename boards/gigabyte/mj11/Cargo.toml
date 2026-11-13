@@ -36,7 +36,7 @@ smm = ["fstart-platform-amd/smm"]
 [dependencies]
 fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["zeppelin"] }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["zeppelin"] }
+fstart-driver-amd = { path = "../../../crates/driver-amd" }
 fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
 fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }

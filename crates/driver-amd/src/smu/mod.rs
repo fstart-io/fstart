@@ -15,13 +15,9 @@ use tock_registers::{
     register_bitfields,
 };
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod threads;
-#[cfg(feature = "picasso")]
 pub mod v10;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod v11;
-#[cfg(any(feature = "zeppelin", feature = "naples"))]
 pub mod v9;
 
 register_bitfields![u32,

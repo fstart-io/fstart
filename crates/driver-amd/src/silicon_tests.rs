@@ -8,7 +8,7 @@ use crate::soc::testing::*;
 use fstart_pci::PciAddress;
 use std::vec::Vec;
 
-#[cfg(all(feature = "zeppelin", target_arch = "x86_64", target_os = "linux"))]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod zeppelin {
     use super::*;
     use crate::{
@@ -232,7 +232,7 @@ mod zeppelin {
     }
 }
 
-#[cfg(all(feature = "picasso", target_arch = "x86_64", target_os = "linux"))]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod picasso {
     use super::*;
     use crate::{

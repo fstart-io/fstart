@@ -23,14 +23,10 @@ use tock_registers::interfaces::{Readable, Writeable};
 pub mod dram;
 pub mod program;
 pub mod topology;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod v3;
 
-#[cfg(feature = "milan")]
 pub mod milan;
-#[cfg(feature = "naples")]
 pub mod naples;
-#[cfg(feature = "rome")]
 pub mod rome;
 
 #[cfg(test)]
@@ -115,7 +111,6 @@ impl<P: ConfigRegionAccess + Clone> Df<P> {
 }
 
 /// OR `bits` into a register without named fields.
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 pub(crate) fn or_bits<P: ConfigRegionAccess + Clone>(reg: &DfRegister<P>, bits: u32) {
     reg.set(reg.get() | bits)
 }

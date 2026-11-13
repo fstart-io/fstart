@@ -32,7 +32,6 @@ pub mod acpimmio;
 pub mod alink;
 pub mod common;
 pub mod gpio;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod huashan;
 pub mod irq;
 pub mod lpc;
@@ -42,7 +41,6 @@ pub mod smbus;
 pub mod smi;
 pub mod spi;
 mod tables;
-#[cfg(feature = "naples")]
 pub mod taishan;
 pub mod uart;
 
@@ -54,7 +52,6 @@ use crate::window::{ConfigWindow, SmnWindow, Window};
 
 /// Clear an NBIF function's EXIST strap (`nbio::nbif::FUNC_STRAP0`): the
 /// FCH tasks hide the SATA, USB and xGbE functions they turn off.
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
 pub(crate) fn hide_nbif_function<W: Window>(smn: &W, strap: u32) {
     use crate::sp3::nbio::nbif::FUNC_STRAP0;
     use tock_registers::interfaces::ReadWriteable;
@@ -75,6 +72,7 @@ pub trait FchHw {
     type Mmio: Window;
     type Io: Window;
     type Pci: ConfigRegionAccess + Clone;
+    type Timer: Timer;
 
     fn acpi(&self) -> &Self::Acpi;
     fn mmio(&self) -> &Self::Mmio;
@@ -82,7 +80,7 @@ pub trait FchHw {
     fn pci(&self) -> &Self::Pci;
     /// Root bus whose host bridge reaches this FCH's die/socket over SMN.
     fn bus(&self) -> u8;
-    fn timer(&self) -> &dyn Timer;
+    fn timer(&self) -> &Self::Timer;
 
     fn smn(&self) -> Smn<Self::Pci> {
         // SAFETY: the BSP owns this bus's SMN index/data pair during init.
@@ -125,6 +123,7 @@ where
     type Mmio = M;
     type Io = I;
     type Pci = P;
+    type Timer = T;
 
     fn acpi(&self) -> &A {
         &self.acpi
@@ -141,7 +140,7 @@ where
     fn bus(&self) -> u8 {
         self.bus
     }
-    fn timer(&self) -> &dyn Timer {
+    fn timer(&self) -> &T {
         &self.timer
     }
 }

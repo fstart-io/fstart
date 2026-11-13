@@ -24,10 +24,8 @@ pub enum Op {
 }
 
 /// The records of the ZP tables Naples runs ([`crate::nbio::zp`]).
-#[cfg(feature = "naples")]
 pub use crate::nbio::zp::LegacyEntry;
 
-#[cfg(feature = "naples")]
 impl From<crate::table::Op<SmnAddr, u32>> for Op {
     fn from(op: crate::table::Op<SmnAddr, u32>) -> Self {
         use crate::table::Op as Shared;
@@ -180,7 +178,6 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
     }
 
     /// Run a Naples table on this die under the live `property`.
-    #[cfg(feature = "naples")]
     pub fn run_legacy(&self, table: &[LegacyEntry], property: u32) {
         table
             .iter()
@@ -204,7 +201,6 @@ mod tests {
     use super::*;
     use crate::sp3::nbio::tests::nbio;
 
-    #[cfg(feature = "naples")]
     #[test]
     fn legacy_property_and_copy() {
         let (model, n) = nbio(Generation::Naples, 0, 0x20);

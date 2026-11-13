@@ -206,7 +206,6 @@ mod tests {
         assert_eq!(df3_channel(0x0A), None);
     }
 
-    #[cfg(any(feature = "rome", feature = "milan"))]
     #[test]
     fn read_back_splits_the_hole() {
         use super::super::model::DfModel;

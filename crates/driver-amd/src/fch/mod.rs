@@ -37,20 +37,16 @@ pub mod aml;
 pub mod early;
 pub mod emmc;
 pub mod espi;
-#[cfg(all(test, feature = "picasso"))]
+#[cfg(test)]
 mod espi_tests;
 pub mod gpio;
-#[cfg(all(test, feature = "picasso"))]
+#[cfg(test)]
 mod gpio_tests;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod i2c;
 pub mod lpc;
-#[cfg(feature = "picasso")]
 pub mod sandstone;
-#[cfg(feature = "smi")]
 pub mod smi;
 pub mod spi;
-#[cfg(feature = "zeppelin")]
 pub mod taishan;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

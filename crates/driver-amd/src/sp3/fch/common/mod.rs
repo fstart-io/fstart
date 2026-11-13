@@ -27,11 +27,8 @@ pub(crate) fn not_built(generation: Generation) -> ! {
 
 pub(crate) fn acpi_mmio_table(generation: Generation) -> &'static [Op] {
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => super::tables::ACPI_MMIO_NAPLES,
-        #[cfg(feature = "rome")]
         Generation::Rome => super::tables::ACPI_MMIO_ROME,
-        #[cfg(feature = "milan")]
         Generation::Milan => super::tables::ACPI_MMIO_MILAN,
         #[allow(unreachable_patterns)]
         g => not_built(g),
@@ -40,11 +37,8 @@ pub(crate) fn acpi_mmio_table(generation: Generation) -> &'static [Op] {
 
 pub(crate) fn sci_map(generation: Generation) -> &'static [Op] {
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => super::tables::SCI_MAP_NAPLES,
-        #[cfg(feature = "rome")]
         Generation::Rome => super::tables::SCI_MAP_ROME,
-        #[cfg(feature = "milan")]
         Generation::Milan => super::tables::SCI_MAP_MILAN,
         #[allow(unreachable_patterns)]
         g => not_built(g),

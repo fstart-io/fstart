@@ -11,7 +11,6 @@
 use crate::window::Op;
 
 /// ZP ResetHwAcpi ACPI-MMIO table (FCH_SP3 §3.1 af40; naples-s8026-v202 FchTaishanPei 27b1960a VA 0xffdcfe68).
-#[cfg(feature = "naples")]
 pub const ACPI_MMIO_NAPLES: &[Op] = &[
     Op::rmw(0x035d, 1, 0x1, 0x2),
     Op::rmw(0x03d2, 1, 0x70, 0x0),
@@ -37,7 +36,6 @@ pub const ACPI_MMIO_NAPLES: &[Op] = &[
 ];
 
 /// SSP ResetHwAcpi ACPI-MMIO table (FCH_SP3 §3.1 af40; rome-s8030-v404 FchHuashanPei 21073ef1 VA 0xffdd4048).
-#[cfg(feature = "rome")]
 pub const ACPI_MMIO_ROME: &[Op] = &[
     Op::rmw(0x03d2, 1, 0x70, 0x0),
     Op::rmw(0x0300, 1, 0x8, 0x77),
@@ -57,7 +55,6 @@ pub const ACPI_MMIO_ROME: &[Op] = &[
 ];
 
 /// GN ResetHwAcpi ACPI-MMIO table (FCH_SP3 §3.1 af40; milan-s8030-v404 FchHuashanPei 21073ef1 VA 0xffd290e8).
-#[cfg(feature = "milan")]
 pub const ACPI_MMIO_MILAN: &[Op] = &[
     Op::rmw(0x0302, 1, 0x18, 0x4),
     Op::rmw(0x03d2, 1, 0x70, 0x0),
@@ -78,7 +75,6 @@ pub const ACPI_MMIO_MILAN: &[Op] = &[
 ];
 
 /// ZP GEVENT/SCI map and SCI trigger bits (FCH_SP3 §3.2 af5f; naples-s8026-v202 FchTaishanDxe e05799e5 VA 0x2a0).
-#[cfg(feature = "naples")]
 pub const SCI_MAP_NAPLES: &[Op] = &[
     Op::store(0x0241, 1, 0x1),
     Op::store(0x0243, 1, 0x3),
@@ -99,7 +95,6 @@ pub const SCI_MAP_NAPLES: &[Op] = &[
 ];
 
 /// SSP GEVENT/SCI map and SCI trigger bits (FCH_SP3 §3.2 af5f; rome-s8030-v404 FchHuashanDxe 4735ec40 VA 0x2a0).
-#[cfg(feature = "rome")]
 pub const SCI_MAP_ROME: &[Op] = &[
     Op::store(0x0241, 1, 0x1),
     Op::store(0x0243, 1, 0x3),
@@ -118,7 +113,6 @@ pub const SCI_MAP_ROME: &[Op] = &[
 ];
 
 /// GN GEVENT/SCI map and SCI trigger bits (FCH_SP3 §3.2 af5f; milan-s8030-v404 FchHuashanDxe 4735ec40 VA 0x4a0).
-#[cfg(feature = "milan")]
 pub const SCI_MAP_MILAN: &[Op] = &[
     Op::store(0x0241, 1, 0x1),
     Op::store(0x0243, 1, 0x3),
@@ -136,7 +130,6 @@ pub const SCI_MAP_MILAN: &[Op] = &[
 ];
 
 /// ZP MISC clock generator program, primary FCH (FCH_SP3 §3.2 af5f; naples-s8026-v202 FchTaishanDxe e05799e5 VA 0x2a0).
-#[cfg(feature = "naples")]
 pub const CLOCK_GEN_NAPLES: &[Op] = &[
     Op::rmw(0x0e10, 4, 0x3, 0x0),
     Op::rmw(0x0e10, 4, 0x1ff3, 0x0),
@@ -155,7 +148,6 @@ pub const CLOCK_GEN_NAPLES: &[Op] = &[
 ];
 
 /// ZP MISC clock generator program of a secondary die's FCH (FCH_SP3 §4.1; naples-s8026-v202 FchMultiFchPei 738ecae2 VA 0xffdce3c0, die 1).
-#[cfg(feature = "naples")]
 pub const CLOCK_GEN_NAPLES_SECONDARY: &[Op] = &[
     Op::rmw(0x0e10, 4, 0x2, 0x1),
     Op::rmw(0x0e10, 4, 0x1fb2, 0x41),
@@ -172,7 +164,6 @@ pub const CLOCK_GEN_NAPLES_SECONDARY: &[Op] = &[
 
 /// ZP late PCI_INTR routes `(index, irq)`, written in this order
 /// (FCH_SP3 §3.3 af70; naples-s8026-v202 FchTaishanDxe e05799e5 VA 0x2a0).
-#[cfg(feature = "naples")]
 pub const PCI_INTR_NAPLES: &[(u8, u8)] = &[
     (0x80, 0x10),
     (0x81, 0x11),
@@ -196,7 +187,6 @@ pub const PCI_INTR_NAPLES: &[(u8, u8)] = &[
 
 /// SSP late PCI_INTR routes `(index, irq)`, written in this order
 /// (FCH_SP3 §3.3 af70; rome-s8030-v404 FchHuashanDxe 4735ec40 VA 0x2a0).
-#[cfg(feature = "rome")]
 pub const PCI_INTR_ROME: &[(u8, u8)] = &[
     (0x80, 0x10),
     (0x81, 0x11),
@@ -220,7 +210,6 @@ pub const PCI_INTR_ROME: &[(u8, u8)] = &[
 
 /// GN late PCI_INTR routes `(index, irq)`, written in this order
 /// (FCH_SP3 §3.3 af70; milan-s8030-v404 FchHuashanDxe 4735ec40 VA 0x4a0).
-#[cfg(feature = "milan")]
 pub const PCI_INTR_MILAN: &[(u8, u8)] = &[
     (0x80, 0x10),
     (0x81, 0x11),
@@ -246,7 +235,6 @@ pub const PCI_INTR_MILAN: &[(u8, u8)] = &[
 /// UsbInitDone/S3ResumeDone (FCH_SP3 §3.1 af48; rome-s8030-v404 FchHuashanPei 21073ef1 VA 0xffdd4048).
 /// The over-current maps (`0x16x8_0120`) are board policy and replaced
 /// by [`super::huashan::usb::UsbPolicy`].
-#[cfg(feature = "rome")]
 pub const USB_CONFIG_ROME: &[(u32, u32, u32, u32)] = &[
     (0x16d80128, 0x30003, 0x0, 0x1000001),
     (0x16f80128, 0x30003, 0x0, 0x1000001),
@@ -264,7 +252,6 @@ pub const USB_CONFIG_ROME: &[(u32, u32, u32, u32)] = &[
 /// UsbInitDone/S3ResumeDone (FCH_SP3 §3.1 af48; milan-s8030-v404 FchHuashanPei 21073ef1 VA 0xffd290e8).
 /// The over-current maps (`0x16x8_0120`) are board policy and replaced
 /// by [`super::huashan::usb::UsbPolicy`].
-#[cfg(feature = "milan")]
 pub const USB_CONFIG_MILAN: &[(u32, u32, u32, u32)] = &[
     (0x16d80128, 0x30003, 0x0, 0x1000001),
     (0x16f80128, 0x30003, 0x0, 0x1000001),
@@ -289,7 +276,6 @@ pub const USB_CONFIG_MILAN: &[(u32, u32, u32, u32)] = &[
 /// SGPIO setup messages sent through the AHCI enclosure-management buffer,
 /// as `(ABAR offset, width, clear, set)` writes; each message is followed by
 /// EM_CTL.TM and a wait (FCH_SP3 §3.2 af57; rome-s8030-v404 FchHuashanDxe 4735ec40 VA 0x2a0; same on GN).
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub const SGPIO_MESSAGES: &[&[Op]] = &[
     &[
         Op::rmw(0x0504, 4, 0x3f0000, 0xc00000),

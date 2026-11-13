@@ -35,7 +35,6 @@ pub struct Policy {
     pub df: crate::df::plan::Policy,
     pub nbio: NbioPolicy,
     /// SMU PPTable inputs (Rome/Milan; Naples has no PPTable).
-    #[cfg(any(feature = "rome", feature = "milan"))]
     pub power: crate::smu::v11::pptable::PowerPolicy,
     pub ccx: ccx::Policy,
     /// FCH env: power-failure state after AC loss.
@@ -43,13 +42,11 @@ pub struct Policy {
     /// Per-socket AHCI policy, used consistently at reset, env and late.
     /// A secondary socket with SATA lanes must not inherit the donor's
     /// all-disabled secondary-controller policy.
-    #[cfg(any(feature = "rome", feature = "milan"))]
     pub sata: [crate::sp3::fch::huashan::sata::SataPolicy; 2],
     pub dxio: DxioPolicy,
 }
 
 /// The SMU-served CPPC PCC region (`smu::v11::cppc`).
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub struct Cppc {
     pub base: u64,
     pub smu_bar: u64,
@@ -130,7 +127,6 @@ pub struct Ctx {
     /// APIC IDs of every enabled thread, BSP first (MADT order).
     pub apic_ids: Vec<u32>,
     /// CPPC through the SMU, when the SMU reports it enabled.
-    #[cfg(any(feature = "rome", feature = "milan"))]
     pub cppc: Vec<Cppc>,
     /// An SMM handler is installed and locked.
     pub smm_installed: bool,
@@ -183,7 +179,6 @@ impl Ctx {
             phys_addr_bits: 0,
             psp_bar: 0,
             apic_ids: Vec::new(),
-            #[cfg(any(feature = "rome", feature = "milan"))]
             cppc: Vec::new(),
             smm_installed: false,
             ports: heapless::Vec::new(),
@@ -298,7 +293,6 @@ pub fn set_fch_ioapic_id(generation: Generation) {
 
 /// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns
 /// whether this is an S3 resume.
-#[cfg_attr(not(any(feature = "rome", feature = "milan")), allow(unused_variables))]
 pub fn fch_reset(
     fch: &PrimaryFch,
     generation: Generation,
@@ -310,9 +304,7 @@ pub fn fch_reset(
     fch::spi::reset(fch, generation, &fch::spi::SpiPolicy::default());
     reset::hw_acpi(fch, generation);
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => fch::taishan::sata::reset(fch, true),
-        #[cfg(any(feature = "rome", feature = "milan"))]
         Generation::Rome | Generation::Milan => {
             fch::huashan::sata::reset(fch, generation, &policy.sata[0])
         }
@@ -410,7 +402,6 @@ pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
     let psp = psp(ctx)?;
     psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))
         .step("PSP LockDFReg")?;
-    #[cfg(feature = "milan")]
     if ctx.generation == Generation::Milan {
         use crate::psp::command::{DisableDrtm, ResetTpmEstablishment};
         psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))

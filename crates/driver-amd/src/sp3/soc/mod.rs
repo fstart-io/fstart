@@ -178,11 +178,8 @@ mod tests {
 
 pub mod cpu;
 pub mod hw;
-#[cfg(feature = "naples")]
 pub mod naples;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub mod rome_milan;
 pub mod steps;
-#[cfg(any(feature = "rome", feature = "milan"))]
 pub use steps::Cppc;
 pub use steps::{Ctx, NonPci, NumaPlan, Policy, Steps};

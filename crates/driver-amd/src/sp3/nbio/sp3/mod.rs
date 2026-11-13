@@ -34,14 +34,12 @@ struct Tables {
 /// socket table (AM4's `SOCKET_AM4` is never taken).
 fn tables(generation: Generation) -> Tables {
     match generation {
-        #[cfg(feature = "rome")]
         Generation::Rome => Tables {
             socket: tables::rome::SOCKET,
             nbio: tables::rome::NBIO,
             sdpmux: &[],
             iommu: tables::rome::IOMMU,
         },
-        #[cfg(feature = "milan")]
         Generation::Milan => Tables {
             socket: tables::milan::SOCKET,
             nbio: tables::milan::NBIO,
@@ -154,7 +152,6 @@ mod tests {
         assert_eq!(m2.0.borrow().smn[&(0x40, 0x13D1_007C)], 0);
     }
 
-    #[cfg(feature = "rome")]
     #[test]
     fn rome_socket_table_exposure() {
         let (m, n) = nbio(Generation::Rome, 0, 0);
@@ -169,7 +166,6 @@ mod tests {
         assert!(!exist(0x1093_4200) && !exist(0x1073_4800));
     }
 
-    #[cfg(feature = "milan")]
     #[test]
     fn milan_base_init_respects_fuses() {
         use crate::smn::model::Model;

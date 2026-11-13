@@ -154,7 +154,6 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
     update::<u32, _>(acpi, AOAC_94, 0, AOAC_94_SX);
     mask_ioapic(hw);
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => {
             if slp_typ == 3 {
                 usb_dies.iter().try_for_each(|&bus| {

@@ -10,9 +10,6 @@ pub mod ioapic;
 pub mod iohc;
 pub mod iommu;
 pub mod pcie;
-#[cfg(feature = "picasso")]
 pub mod picasso;
-#[cfg(feature = "zeppelin")]
 pub mod zeppelin;
-#[cfg(any(feature = "zeppelin", feature = "naples"))]
 pub mod zp;

@@ -10,13 +10,11 @@
 use core::marker::PhantomData;
 
 use fstart_core::indexed::Indexed;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::RegisterLongName;
 use tock_registers::UIntLike;
 use tock_registers::interfaces::{Readable, Writeable};
 
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 use crate::smn::{Smn, SmnAddr};
 
 /// A byte-addressed register space.

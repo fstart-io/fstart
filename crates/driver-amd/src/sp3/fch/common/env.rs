@@ -71,7 +71,6 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Generation) {
     update::<u8, _>(acpi, PM + 0xBC, 0, 0x02);
     apply(acpi, sci_map(generation));
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => apply(acpi, super::super::tables::CLOCK_GEN_NAPLES),
         Generation::Rome | Generation::Milan => {
             // PMxC0 byte: write-1-to-clear ThermalTrip.
@@ -179,7 +178,6 @@ mod tests {
     use super::super::super::model::fch;
     use super::*;
 
-    #[cfg(feature = "milan")]
     #[test]
     fn milan_env() {
         let hw = fch();

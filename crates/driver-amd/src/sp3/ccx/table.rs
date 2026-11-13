@@ -201,11 +201,8 @@ impl Record {
 /// The phase-1 table of `generation`, if its feature is built.
 pub fn records(generation: Generation) -> Option<&'static [Record]> {
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => Some(super::zen1::tables::RECORDS),
-        #[cfg(feature = "rome")]
         Generation::Rome => Some(super::zen2::tables::RECORDS),
-        #[cfg(feature = "milan")]
         Generation::Milan => Some(super::zen3::tables::RECORDS),
         #[allow(unreachable_patterns)]
         _ => None,

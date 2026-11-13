@@ -127,10 +127,11 @@ jobs:
           cargo test -p fstart-intel-gma --features i945,g45,ironlake --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles
-          # Each AMD SoC on its own: the boards select one, the tests all.
-          for soc in picasso zeppelin naples rome milan; do
-            cargo clippy -p fstart-driver-amd --no-default-features --features "$soc"
-          done
+          # The AMD drivers as firmware links them: every IP block, no
+          # optional parts.
+          cargo clippy -p fstart-driver-amd \
+            --target x86_64-unknown-none -Zbuild-std=core,alloc \
+            --no-default-features
           # And the stage of each SP3 generation on its own: an SP3 board
           # enables the generations it supports, and none is Naples or Rome
           # only.
