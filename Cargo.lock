@@ -1519,6 +1519,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",
+ "fstart-driver-chromeec",
  "fstart-driver-ipmi",
  "fstart-driver-tpm",
  "fstart-driver-uart",

@@ -655,7 +655,8 @@ fn dsdt_disassembles() {
         0x37eeu16.to_le_bytes()
     );
 
-    let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt)) else {
+    let Ok(dsl) = iasl_disassemble("zeppelin", &fstart_acpi::platform::build_dsdt(&tables.dsdt))
+    else {
         std::eprintln!("iasl not found, skipping the DSDT disassembly");
         return;
     };
@@ -728,6 +729,84 @@ fn dsdt_disassembles() {
     let log = std::string::String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && !log.contains("AE_") && log.contains("55 AA 01 CB 00 00 00 00"),
+        "{log}"
+    );
+}
+
+/// Vilboz's DSDT: the ChromeEC under the LPC bridge, the console UART and
+/// I2C on their own FCH IRQs, and the EC's I/O not in SYSR. It
+/// disassembles, and the EC's methods run in the real namespace.
+#[test]
+fn vilboz_dsdt_loads() {
+    use fstart_driver_amd::fch::sandstone::legacy::Routes;
+    let root = [root_bridge(
+        0,
+        pci_root(0..=255, &IO, &MMIO),
+        0xfec0_1000,
+        None,
+        false,
+    )];
+    let cpus = cpus(&[0, 1], false);
+    let ec = fstart_driver_chromeec::acpi::Ec {
+        sci_gpe: 3,
+        wake_gpe: Some(15),
+        pd: true,
+        tablet_mode: true,
+        keyboard_backlight: true,
+    };
+    let mut lpc_aml = fstart_driver_chromeec::acpi::keyboard_aml();
+    lpc_aml.extend(ec.lpc_aml().unwrap());
+    let board = Board {
+        i8042: true,
+        lpc_aml,
+        peripheral_io: vec![(0x62, 5), (0x800, 0x100), (0x900, 0xff), (0x200, 8)],
+        ..Default::default()
+    };
+    let routes = Routes::new([0], [2, 3]).unwrap();
+    let soc_aml = crate::picasso::acpi::devices(0, &[], &routes, false).unwrap();
+    let tables = build(&Inputs {
+        sb_aml: &soc_aml,
+        ..inputs(&crate::picasso::acpi::ACPI, &cpus, &root, &board)
+    })
+    .unwrap();
+    let Ok(dsl) = iasl_disassemble("vilboz", &fstart_acpi::platform::build_dsdt(&tables.dsdt))
+    else {
+        std::eprintln!("iasl not found, skipping the DSDT disassembly");
+        return;
+    };
+    for object in [
+        "Device (EC0)",
+        "Device (CREC)",
+        "Device (PS2K)",
+        "Device (FUR0)",
+        "Name (_HID, \"AMDI0020\")",
+    ] {
+        assert!(dsl.contains(object), "{object} missing:\n{dsl}");
+    }
+    let dir = std::env::temp_dir().join(std::format!("fstart-vilboz-dsdt-{}", std::process::id()));
+    let batch = [
+        "BAT0._BST",
+        "LID0._LID",
+        "AC._PSR",
+        "CREC.TBMC._STA",
+        "_Q1D",
+    ]
+    .map(|method| std::format!(r"execute \_SB.PCI0.LPCB.EC0.{method}"))
+    .join(";");
+    let output = match std::process::Command::new("acpiexec")
+        .current_dir(dir)
+        .args(["-dt", "-fv", "0", "-b", &batch, "dsdt.aml"])
+        .output()
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::eprintln!("acpiexec not found, skipping the DSDT execution");
+            return;
+        }
+        output => output.unwrap(),
+    };
+    let log = std::string::String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && !log.contains("AE_") && log.matches("Evaluating ").count() == 5,
         "{log}"
     );
 }
@@ -834,9 +913,8 @@ fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
         .unwrap()
 }
 
-fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {
-    let dir =
-        std::env::temp_dir().join(std::format!("fstart-zeppelin-dsdt-{}", std::process::id()));
+fn iasl_disassemble(board: &str, dsdt: &[u8]) -> std::io::Result<std::string::String> {
+    let dir = std::env::temp_dir().join(std::format!("fstart-{board}-dsdt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("dsdt.aml"), dsdt)?;

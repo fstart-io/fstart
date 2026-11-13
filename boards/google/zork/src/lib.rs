@@ -130,11 +130,35 @@ pub fn after_fch(
 pub const SMBIOS: fstart_platform_amd::acpi::SmbiosIdentity<'static> =
     fstart_platform_amd::acpi::SmbiosIdentity::new("Google", "Vilboz");
 
-/// The keyboard behind the EC, which is an 8042 to the OS.
+/// The EC as coreboot's Zork describes it: its SCI on GEVENT 3 (GPIO 22),
+/// waking on GEVENT 15 (GPIO 24), with a USB-PD controller, tablet mode on
+/// the convertibles and a keyboard backlight where fitted.
+pub const EC: fstart_driver_chromeec::acpi::Ec = fstart_driver_chromeec::acpi::Ec {
+    sci_gpe: 3,
+    wake_gpe: Some(15),
+    pd: true,
+    tablet_mode: true,
+    keyboard_backlight: true,
+};
+
+/// The EC: an 8042 keyboard to the OS, an ACPI EC with the lid, AC and
+/// battery, and ChromeEC's command device. It owns the I/O the FCH
+/// forwards to it over eSPI.
 pub fn acpi() -> fstart_platform_amd::acpi::Board {
+    let mut lpc_aml = fstart_driver_chromeec::acpi::keyboard_aml();
+    match EC.lpc_aml() {
+        Ok(ec) => lpc_aml.extend(ec),
+        Err(_) => fstart_log::error!("vilboz: EC ACPI"),
+    }
     fstart_platform_amd::acpi::Board {
         i8042: true,
-        lpc_aml: fstart_driver_chromeec::acpi::keyboard_aml(),
+        lpc_aml,
+        peripheral_io: policy::ESPI
+            .io
+            .iter()
+            .flatten()
+            .map(|range| (range.base, range.size))
+            .collect(),
         ..Default::default()
     }
 }
@@ -154,19 +178,29 @@ mod mainboard {
     ) -> Cbi {
         // SAFETY: the eSPI windows for the EC ports are up; the BSP owns them.
         let cbi = match Ec::discover(unsafe { NativeIo::new() }) {
-            Ok(mut ec) => ec::read_cbi(&mut ec, timer, &mut |tag, error| {
-                if matches!(
-                    (tag, error),
-                    (
-                        fstart_driver_chromeec::CbiTag::Ssfc,
-                        fstart_driver_chromeec::Error::Rejected(3)
-                    )
-                ) {
-                    fstart_log::debug!("vilboz: optional SSFC absent");
-                } else {
-                    fstart_log::warn!("vilboz: CBI read failed");
+            Ok(mut ec) => {
+                let cbi = ec::read_cbi(&mut ec, timer, &mut |tag, error| {
+                    if matches!(
+                        (tag, error),
+                        (
+                            fstart_driver_chromeec::CbiTag::Ssfc,
+                            fstart_driver_chromeec::Error::Rejected(3)
+                        )
+                    ) {
+                        fstart_log::debug!("vilboz: optional SSFC absent");
+                    } else {
+                        fstart_log::warn!("vilboz: CBI read failed");
+                    }
+                });
+                // The events the EC's ACPI code handles raise its SCI; none
+                // wakes the system before the OS asks.
+                if ec.set_sci_mask(super::EC.sci_events(), timer).is_err()
+                    || ec.set_wake_mask(0, timer).is_err()
+                {
+                    fstart_log::warn!("vilboz: EC event masks failed");
                 }
-            }),
+                cbi
+            }
             Err(_) => {
                 fstart_log::error!("vilboz: EC not found");
                 Cbi::new(None, None)
