@@ -9,8 +9,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "gigabyte-mj11-ec1-bmc"
-platform = "armv5te"
-target = "armv5te-none-eabi"
+arch = "armv5te"
 build-profile = { dependency = "fstart-platform-aspeed", name = "rust" }
 
 [dependencies]

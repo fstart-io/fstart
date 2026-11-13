@@ -13,13 +13,21 @@ pub struct BoardManifest {
     pub dir: PathBuf,
     /// Board directory relative to `boards/`, e.g. `lenovo/x61`.
     pub rel_dir: PathBuf,
-    pub platform: Option<String>,
-    pub target: Option<String>,
+    /// Discovery index only: the board's ISA (`fstart_core::Platform`
+    /// spelling), used to group boards without resolving their plans
+    /// (CI shards). The resolved plan states the authoritative arch and
+    /// target; fbuild checks this against it, never builds from it.
+    pub arch: Option<String>,
+    /// The board-facts type in the board crate the plan runner
+    /// instantiates: `Board`, or the selected variant's `board-type`
+    /// (a type path relative to the crate root, e.g. `variants::R60`
+    /// for a board family that shares one crate).
+    pub board_type: String,
     /// Cargo features contributed by the selected variant, merged into unit
     /// feature sets by the plan executor.
     pub variant_features: Vec<String>,
-    /// Declared variants: variant id -> cargo features.
-    pub variants: Vec<(String, Vec<String>)>,
+    /// Declared variants: variant id -> (cargo features, board type).
+    pub variants: Vec<(String, Vec<String>, Option<String>)>,
     pub build_profile: Option<ProfileRef>,
 }
 
@@ -59,8 +67,7 @@ struct PackageMetadata {
 struct BoardMetadata {
     schema: u32,
     board: String,
-    platform: Option<String>,
-    target: Option<String>,
+    arch: Option<String>,
     #[serde(default)]
     variants: BTreeMap<String, VariantMetadata>,
     build_profile: Option<ProfileRef>,
@@ -72,10 +79,15 @@ struct BoardMetadata {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct VariantMetadata {
     #[serde(default)]
     features: Vec<String>,
+    /// The variant's own board-facts type in the same crate, instead
+    /// of the base board's `Board`: board families that differ in
+    /// facts, not just features, stay one crate.
+    #[serde(default)]
+    board_type: Option<String>,
 }
 
 /// Boards live at `boards/<vendor>/<board>/Cargo.toml`.
@@ -123,7 +135,7 @@ pub fn discover(workspace_root: &Path) -> Result<Vec<BoardManifest>, String> {
 fn validate_identities(boards: &[BoardManifest]) -> Result<(), String> {
     let mut owners = BTreeMap::new();
     for board in boards {
-        for id in std::iter::once(&board.board).chain(board.variants.iter().map(|(id, _)| id)) {
+        for id in std::iter::once(&board.board).chain(board.variants.iter().map(|(id, ..)| id)) {
             if let Some(previous) = owners.insert(id, &board.dir) {
                 return Err(format!(
                     "duplicate board/variant id '{id}' in {} and {}",
@@ -139,21 +151,28 @@ fn validate_identities(boards: &[BoardManifest]) -> Result<(), String> {
 /// Resolve a board or variant id to its manifest.
 ///
 /// A variant id resolves to its board's manifest with `board` set to the
-/// variant id and the variant's cargo features merged in.
+/// variant id and the variant's cargo features and board type merged in.
 pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, String> {
-    let boards = discover(workspace_root)?;
+    find_in(&discover(workspace_root)?, board_name)
+}
 
+/// [`find`] over an already-discovered inventory, for callers resolving
+/// many boards in one process.
+pub fn find_in(boards: &[BoardManifest], board_name: &str) -> Result<BoardManifest, String> {
     if let Some(board) = boards.iter().find(|b| b.board == board_name) {
         return Ok(board.clone());
     }
 
-    for board in &boards {
-        if let Some((variant, variant_features)) =
-            board.variants.iter().find(|(name, _)| name == board_name)
+    for board in boards {
+        if let Some((variant, variant_features, board_type)) =
+            board.variants.iter().find(|(name, ..)| name == board_name)
         {
             let mut resolved = board.clone();
             resolved.board = variant.clone();
             resolved.variant_features = variant_features.clone();
+            if let Some(board_type) = board_type {
+                resolved.board_type = board_type.clone();
+            }
             return Ok(resolved);
         }
     }
@@ -202,6 +221,16 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
             manifest.display()
         ));
     }
+    for variant in metadata.variants.values() {
+        if let Some(board_type) = &variant.board_type
+            && !is_board_type_path(board_type)
+        {
+            return Err(format!(
+                "variant board-type '{board_type}' is not a type path in {}",
+                manifest.display()
+            ));
+        }
+    }
     for id in std::iter::once(&metadata.board).chain(metadata.variants.keys()) {
         // Identity becomes an artifact/workspace path component. Do not accept
         // path traversal, separators, whitespace or non-portable spellings.
@@ -227,13 +256,13 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         package: parsed.package.name,
         dir,
         rel_dir,
-        platform: metadata.platform,
-        target: metadata.target,
+        arch: metadata.arch,
+        board_type: "Board".into(),
         variant_features: Vec::new(),
         variants: metadata
             .variants
             .into_iter()
-            .map(|(id, v)| (id, v.features))
+            .map(|(id, v)| (id, v.features, v.board_type))
             .collect(),
         build_profile: metadata.build_profile,
     })
@@ -250,6 +279,26 @@ fn rel_dir_under_boards(dir: &Path) -> PathBuf {
         components.push(component);
     }
     dir.file_name().map(PathBuf::from).unwrap_or_default()
+}
+
+/// Whether `path` can be the board-facts type in the code the plan
+/// runner writes: lower-case module segments, then an UpperCamelCase
+/// type name (which may contain digits, e.g. `S8030`).
+fn is_board_type_path(path: &str) -> bool {
+    let mut segments = path.split("::").peekable();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_some() {
+            if !is_module_name(segment) {
+                return false;
+            }
+        } else {
+            return segment.starts_with(|c: char| c.is_ascii_uppercase())
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        }
+    }
+    false
 }
 
 /// Whether `name` can be a module in the path the plan runner writes: a
@@ -297,9 +346,9 @@ mod tests {
         [package.metadata.fstart] # inline comments are ordinary TOML
         schema = 1
         board = 'test-board'
-        platform = 'riscv64'
-        target = 'riscv64gc-unknown-none-elf'
+        arch = 'riscv64'
         [package.metadata.fstart.variants."test-variant"]
+        board-type = 'variants::TestVariant'
         features = [
             'variant-test', # comment
         ]
@@ -336,11 +385,15 @@ mod tests {
         assert_eq!(board.board, "test-board");
         assert_eq!(board.package, "fstart-board-test");
         assert_eq!(board.rel_dir, Path::new("vendor/test"));
-        assert_eq!(board.platform.as_deref(), Some("riscv64"));
-        assert_eq!(board.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
+        assert_eq!(board.arch.as_deref(), Some("riscv64"));
+        assert_eq!(board.board_type, "Board");
         assert_eq!(
             board.variants,
-            [("test-variant".into(), vec!["variant-test".into()])]
+            [(
+                "test-variant".into(),
+                vec!["variant-test".into()],
+                Some("variants::TestVariant".into())
+            )]
         );
     }
 
@@ -417,6 +470,8 @@ mod tests {
         assert_eq!(variant.package, base.package);
         assert_eq!(variant.rel_dir, Path::new("vendor/test"));
         assert_eq!(variant.variant_features, ["variant-test"]);
+        assert_eq!(variant.board_type, "variants::TestVariant");
+        assert_eq!(base.board_type, "Board");
         assert!(find(&inventory.0, "missing").is_err());
     }
 
@@ -460,7 +515,7 @@ mod tests {
         assert!(boards.windows(2).all(|pair| pair[0].board < pair[1].board));
         for board in &boards {
             assert_eq!(find(&root, &board.board).unwrap().package, board.package);
-            for (variant, _) in &board.variants {
+            for (variant, ..) in &board.variants {
                 assert_eq!(find(&root, variant).unwrap().package, board.package);
             }
         }

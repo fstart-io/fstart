@@ -57,8 +57,8 @@ pub struct Matrix {
 #[derive(Debug, Clone)]
 pub struct Board<'a> {
     pub board: &'a str,
-    /// The platform shard; boards that declare none share `other`.
-    pub platform: &'a str,
+    /// The architecture shard; boards that declare none share `other`.
+    pub arch: &'a str,
     /// The platform crate, empty when the board declares no profile.
     pub dependency: &'a str,
     /// The board and its variants.
@@ -69,13 +69,13 @@ impl<'a> From<&'a BoardManifest> for Board<'a> {
     fn from(board: &'a BoardManifest) -> Self {
         Self {
             board: &board.board,
-            platform: board.platform.as_deref().unwrap_or("other"),
+            arch: board.arch.as_deref().unwrap_or("other"),
             dependency: board
                 .build_profile
                 .as_ref()
                 .map_or("", |profile| &profile.dependency),
             builds: std::iter::once(board.board.as_str())
-                .chain(board.variants.iter().map(|(id, _)| id.as_str()))
+                .chain(board.variants.iter().map(|(id, ..)| id.as_str()))
                 .collect(),
         }
     }
@@ -108,16 +108,13 @@ pub fn matrix(boards: &[Board<'_>], boot_boards: &BTreeSet<&str>) -> Result<Matr
         ));
     }
 
-    let mut platforms: BTreeMap<&str, Vec<Board<'_>>> = BTreeMap::new();
+    let mut arches: BTreeMap<&str, Vec<Board<'_>>> = BTreeMap::new();
     for board in boards {
-        platforms
-            .entry(board.platform)
-            .or_default()
-            .push(board.clone());
+        arches.entry(board.arch).or_default().push(board.clone());
     }
 
     let mut include = Vec::new();
-    for (platform, mut group) in platforms {
+    for (arch, mut group) in arches {
         // Boards of one platform crate share the most code: keep them together.
         group.sort_by_key(|b| (b.dependency, b.board));
         let shards = split(&group);
@@ -131,13 +128,13 @@ pub fn matrix(boards: &[Board<'_>], boot_boards: &BTreeSet<&str>) -> Result<Matr
             let (qemu, assets) = if boots.is_empty() {
                 ("", "")
             } else {
-                let qemu = qemu_packages(platform).ok_or_else(|| {
+                let qemu = qemu_packages(arch).ok_or_else(|| {
                     format!(
-                        "no QEMU package known for platform {platform}, which {} boot on",
+                        "no QEMU package known for arch {arch}, which {} boot on",
                         boots.join(", ")
                     )
                 })?;
-                let assets = if matches!(platform, "x86" | "x86_64") {
+                let assets = if matches!(arch, "x86" | "x86_64") {
                     "x86_64"
                 } else {
                     "payloads"
@@ -146,9 +143,9 @@ pub fn matrix(boards: &[Board<'_>], boot_boards: &BTreeSet<&str>) -> Result<Matr
             };
             include.push(Shard {
                 shard: if shards.len() == 1 {
-                    platform.to_string()
+                    arch.to_string()
                 } else {
-                    format!("{platform}-{}", index + 1)
+                    format!("{arch}-{}", index + 1)
                 },
                 boards: shard
                     .iter()
@@ -186,10 +183,10 @@ pub fn run(boot_list: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn board<'a>(name: &'a str, platform: &'a str, dependency: &'a str) -> Board<'a> {
+    fn board<'a>(name: &'a str, arch: &'a str, dependency: &'a str) -> Board<'a> {
         Board {
             board: name,
-            platform,
+            arch,
             dependency,
             builds: vec![name],
         }

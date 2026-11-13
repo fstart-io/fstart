@@ -8,8 +8,7 @@ publish = false
 [package.metadata.fstart]
 schema = 1
 board = "gigabyte-ga-945gcm-s2l"
-platform = "x86_64"
-target = "x86_64-unknown-none"
+arch = "x86_64"
 build-profile = { dependency = "fstart-platform-intel", name = "rust" }
 
 [package.metadata.fstart.variants.gigabyte-ga-945gcm-s2c]

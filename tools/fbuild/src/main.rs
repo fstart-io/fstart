@@ -252,10 +252,11 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
         return fbuild::board_tool::test_library(&manifest_for(board)?);
     }
     let root = build_board::workspace_root_pub()?;
-    for board in board_manifest::discover(&root)? {
-        fbuild::board_tool::test_library(&board)?;
-        for (variant, _) in &board.variants {
-            fbuild::board_tool::test_library(&board_manifest::find(&root, variant)?)?;
+    let boards = board_manifest::discover(&root)?;
+    for board in &boards {
+        fbuild::board_tool::test_library(board)?;
+        for (variant, ..) in &board.variants {
+            fbuild::board_tool::test_library(&board_manifest::find_in(&boards, variant)?)?;
         }
     }
     Ok(())
@@ -267,8 +268,7 @@ struct BoardEntry<'a> {
     board: &'a str,
     package: &'a str,
     dir: String,
-    platform: Option<&'a str>,
-    target: Option<&'a str>,
+    arch: Option<&'a str>,
     build_profile: Option<&'a board_manifest::ProfileRef>,
     variants: Vec<&'a str>,
 }
@@ -283,10 +283,9 @@ fn boards(json: bool) -> Result<(), String> {
                 board: &board.board,
                 package: &board.package,
                 dir: board.rel_dir.display().to_string(),
-                platform: board.platform.as_deref(),
-                target: board.target.as_deref(),
+                arch: board.arch.as_deref(),
                 build_profile: board.build_profile.as_ref(),
-                variants: board.variants.iter().map(|(id, _)| id.as_str()).collect(),
+                variants: board.variants.iter().map(|(id, ..)| id.as_str()).collect(),
             })
             .collect();
         println!(

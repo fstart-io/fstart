@@ -48,17 +48,14 @@ impl Resolved {
             )?;
         }
         plan.order()?;
-        let image_target = &plan.unit(&plan.stages[0])?.target;
+        // The manifest arch is a discovery index; the plan is the
+        // authority. Only their disagreement is an error.
         if board
-            .platform
+            .arch
             .as_deref()
-            .is_some_and(|platform| platform != plan.platform.as_str())
-            || board
-                .target
-                .as_deref()
-                .is_some_and(|target| target != image_target)
+            .is_some_and(|arch| arch != plan.platform.as_str())
         {
-            return Err("board identity target/platform conflicts with resolved image".into());
+            return Err("board manifest arch conflicts with resolved image".into());
         }
         plan.resolve_workspace_inputs(root, &board.dir)?;
         Ok(Self { plan })
