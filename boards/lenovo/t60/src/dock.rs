@@ -3,18 +3,19 @@
 //! Parallel/IR are deliberately disabled: the reference's LPT 3bch conflicts
 //! with its PnP 8-byte resource mask and is not established by a full manual.
 
-use crate::{
+use fstart_core::{services::ServiceError, services::device::DeviceError};
+use fstart_driver_lenovo::{
     ec::Ec,
     h8::{H8, H8Config, H8Led, H8LedMode},
     pmh7::Pmh7,
 };
-use fstart_core::{services::ServiceError, services::device::DeviceError};
 use fstart_driver_superio::{
     ComPortConfig, GpioConfig, SuperIoConfig,
     pc87382::{self, GpioPort0, Pc87382},
     pc87384::{self, Pc87384},
 };
 
+/// ICH GPIO6 reads low with the legacy I/O module in the Ultrabay.
 pub const LEGACY_MODULE_GPIO: u8 = 6;
 pub const SMI_DOCK_CONNECT: u8 = 1;
 pub const SMI_DOCK_DISCONNECT: u8 = 2;
@@ -77,6 +78,14 @@ pub const FIRMWARE_RESOURCES: [fstart_core::acpi::AcpiResource; 5] = [
         size: 16,
     },
 ];
+
+/// Complete non-PCI firmware footprint: EC/PMH7 plus dock interfaces.
+pub fn firmware_resources(h8: &H8Config) -> impl Iterator<Item = fstart_core::acpi::AcpiResource> {
+    h8.resources
+        .io_resources()
+        .into_iter()
+        .chain(FIRMWARE_RESOURCES.iter().cloned())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsoleRoute {
@@ -328,7 +337,7 @@ mod tests {
     use super::*;
     #[test]
     fn dock_indicator_commands_match_the_t60_ec_bytes() {
-        use crate::h8::LED_CONTROL;
+        use fstart_driver_lenovo::h8::LED_CONTROL;
         fn encoded(commands: [(H8Led, H8LedMode); 2]) -> [u8; 2] {
             commands.map(|(led, mode)| {
                 (LED_CONTROL::SELECTOR.val(led as u8) + LED_CONTROL::MODE.val(mode as u8)).value
@@ -339,7 +348,7 @@ mod tests {
         assert_eq!(encoded(IDLE_LEDS), [0x08, 0x09]);
         assert_eq!(encoded(DISCONNECTED_LEDS), [0x09, 0x08]);
         // A legacy module suppresses external-dock status without EC/PnP I/O.
-        let ec = Ec::new(crate::ec::EcPorts::new(0x62, 0x66));
+        let ec = Ec::new(fstart_driver_lenovo::ec::EcPorts::new(0x62, 0x66));
         assert_eq!(smm_dock_command(ec, SMI_DOCK_STATUS, true), Some(0));
     }
 

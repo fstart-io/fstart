@@ -9,13 +9,13 @@
 //!   trackpoint and ultrabay power switching, plus its PNP0C02 resource
 //!   device.
 //! - [`wacom`]: tablet digitizer detection and its ACPI device.
-//! - [`thinkpad`]: what the H8-era ThinkPads share across chipsets: the
-//!   PC87382 tablet digitizer and the DSDT glue (ThinkLight, sleep hooks,
-//!   EC wake GPE, hotkey brightness).
-//! - [`x201`]: ThinkPad X201 policy: EC/PMH7 setup, the dock connection
-//!   and the dock DSDT and SMM event handling.
-//! - [`x6`]: X60/X61 family policy: EC/PMH7 setup, DSDT glue and the X6
-//!   UltraBase dock (DLPC LPC switch and dock-side PC87392 SuperIO).
+//! - [`ec`], [`eeprom`], [`options`]: the EC channel, the AT24RF08C identity
+//!   EEPROM and the user's EC options.
+//!
+//! These are devices. What a board programs into them is its devicetree:
+//! [`h8::H8Config`] and [`pmh7::Pmh7Config`] carry coreboot's `chip.h`
+//! registers, and the board crate holds the values, its GPIO wiring and its
+//! DSDT glue (sleep hooks, wake GPEs) and its dock.
 //!
 //! Both EC drivers are chipset-independent: they only need the LPC decode of
 //! their IO ranges, which the board's southbridge config already programs.
@@ -29,11 +29,7 @@ pub mod eeprom;
 pub mod h8;
 pub mod options;
 pub mod pmh7;
-pub mod t6;
-pub mod thinkpad;
 pub mod wacom;
-pub mod x201;
-pub mod x6;
 
 #[cfg(feature = "acpi")]
 pub mod h8_acpi;

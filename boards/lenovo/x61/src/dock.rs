@@ -1,15 +1,22 @@
-//! ThinkPad X6 UltraBase dock of the X60 and X61.
+//! ThinkPad X6 UltraBase, the dock of the X60 and X61.
 //!
 //! The laptop side carries an NSC PC87382 "DLPC" LPC switch (config ports
 //! 0x164e/0x164f) with its GPIO block at 0x1680; the dock carries a PC87392
 //! SuperIO on the switched LPC segment (0x2e/0x2f) with the dock UART, the
-//! parallel port and the dock GPIO block at 0x1620. ICH GPIO13 reads low with
-//! a dock attached on both boards.
+//! parallel port and the dock GPIO block at 0x1620. The dock signals its
+//! presence on `SLICE_ON_3M#`, active low; which GPIO carries it is the
+//! board's.
+//!
+//! The X60 carries the same code for the same dock.
 //!
 //! Ported from coreboot `mainboard/lenovo/x61/dock.c`, which keeps the vendor
 //! reset/power order and preserves unrelated DLPC and dock GPIO bits. The
 //! older X60 port wrote whole bytes and disconnected the LPC segment before
 //! asserting the dock reset; both boards share the vendor sequence here.
+//!
+//! The OS docks and undocks through the dock's ACPI device (`acpi.rs`),
+//! whose `_DCK` asks the board's SMI handler through the ICH TCO mailbox;
+//! the handler answers with [`smm_dock_command`].
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_core::pio::{PioRegister, inb, outb};
@@ -18,20 +25,16 @@ use fstart_driver_superio::{IoResource, IrqResource, LogicalDevice};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
-use crate::ec::Ec;
-use crate::h8::{H8, H8DockEvent, H8Led, H8LedMode};
+use fstart_driver_lenovo::ec::Ec;
+use fstart_driver_lenovo::h8::{H8, H8DockEvent, H8Led, H8LedMode};
 
 /// Dock commands the board SMM handler accepts through the TCO mailbox.
 pub const SMI_DOCK_CONNECT: u8 = 0x01;
 pub const SMI_DOCK_DISCONNECT: u8 = 0x02;
 
-/// ICH GPIO sampling dock presence (`SLICE_ON_3M#`, active low). The X60
-/// and X61 wire it the same; boards hand [`dock_present`] that pin.
-pub const DOCK_PRESENT_GPIO: u8 = 13;
-
 const DLPC_INDEX: u16 = 0x164e;
 const DLPC_DATA: u16 = 0x164f;
-const DLPC_SWITCH: u16 = 0x164c;
+pub const DLPC_SWITCH: u16 = 0x164c;
 const DLPC_GPIO: u16 = 0x1680;
 const DOCK_INDEX: u16 = 0x002e;
 const DOCK_DATA: u16 = 0x002f;
@@ -185,8 +188,8 @@ pub fn dlpc_init() -> Result<(), Timeout> {
     Ok(())
 }
 
-/// Return whether an X6 UltraBase dock is attached, from the active-low
-/// [`DOCK_PRESENT_GPIO`] pin. A pin that cannot be read means no dock.
+/// Return whether an X6 UltraBase dock is attached, from the board's
+/// `SLICE_ON_3M#` pin. A pin that cannot be read means no dock.
 pub fn dock_present(pin: &mut impl embedded_hal::digital::InputPin) -> bool {
     pin.is_low().unwrap_or(false)
 }
@@ -303,7 +306,16 @@ fn set_ultrabay_power(power: &impl ReadWriteable<T = u8, R = DOCK_POWER::Registe
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn set_usb_power(ec: Ec, on: bool) -> bool {
     DOCK_POWER.modify(DOCK_POWER::USB_ENABLE.val(on.into()));
-    ec.modify_register(crate::h8::CONFIG2::DOCK_USB_POWER.val(on.into()))
+    ec.modify_register(fstart_driver_lenovo::h8::CONFIG2::DOCK_USB_POWER.val(on.into()))
+}
+
+/// The EC's dock latch after its configuration reset: released, then set
+/// again with the dock LED for a dock the stages connected. Returns whether
+/// the EC acknowledged it.
+pub fn latch_connected_dock(ec: Ec) -> bool {
+    let h8 = H8::new(ec);
+    h8.dock_latch(false)
+        && (!connected() || (h8.dock_latch(true) && h8.set_led(H8Led::Dock1, H8LedMode::On)))
 }
 
 /// UltraBay power and LED policy after the H8 configuration reset.
@@ -367,7 +379,7 @@ fn disable_dock_watchdog() {
 
 /// Route the dock UART before the console probes 0x3f8. Failures are
 /// non-fatal: an undocked laptop simply has no serial console.
-/// `dock_present_pin` is the [`DOCK_PRESENT_GPIO`] pin.
+/// `dock_present_pin` is the board's `SLICE_ON_3M#` pin.
 pub fn setup_console(dock_present_pin: &mut impl embedded_hal::digital::InputPin, ec: Ec) {
     let _ = dlpc_init();
     if dock_present(dock_present_pin) {

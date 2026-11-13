@@ -8,6 +8,7 @@ extern crate std;
 #[cfg(feature = "acpi")]
 pub mod acpi;
 pub mod config;
+pub mod dock;
 pub mod mainboard;
 #[cfg(feature = "smm")]
 pub mod smm;

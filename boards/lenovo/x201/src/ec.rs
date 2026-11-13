@@ -1,25 +1,14 @@
-//! ThinkPad X201 policy around the H8 EC and PMH7 (coreboot
+//! X201 policy around the H8 EC and PMH7 (coreboot
 //! `mainboard/lenovo/x201`): EC bring-up, the Mini Dock connection
 //! (`dock.c`), the SMM EC event and ACPI-ownership handling
-//! (`smihandler.c`) and the DSDT glue.
-
-#[cfg(feature = "acpi")]
-pub mod acpi;
+//! (`smihandler.c`) and the X201T tablet digitizer behind the PC87382.
 
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
 use tock_registers::register_bitfields;
 
-use crate::ec::{Ec, EcRegister};
-use crate::h8::{CONFIG2, CONFIG3, H8, H8Config, H8DockEvent, H8Led, H8LedMode};
-use crate::pmh7::Pmh7;
-
-/// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
-const EVENT_MASKS: [u8; 16] = [
-    0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
-];
-
-/// devicetree `config1`.
-const CONFIG1: u8 = 0x05;
+use fstart_driver_lenovo::ec::{Ec, EcRegister};
+use fstart_driver_lenovo::h8::{CONFIG2, CONFIG3, H8, H8Config, H8DockEvent, H8Led, H8LedMode};
+use fstart_driver_lenovo::pmh7::Pmh7;
 
 /// PCH GPIO reading low when the Bluetooth daughter card is fitted
 /// (devicetree `bdc_gpio_num` 48, `bdc_gpio_lvl` 0).
@@ -97,30 +86,25 @@ pub fn dock_present(id: &mut [impl InputPin; 3]) -> bool {
     value != 7
 }
 
-/// Runtime EC/PMH7 bring-up with the user's `options` (coreboot
-/// `h8_enable()` and the PMH7 `enable_dev()`), then `h8_mb_init()`:
-/// connect a present dock. On S3 resume the suspend LED blinks (coreboot
-/// `mainboard_enable()`). Returns whether the Bluetooth card is fitted and
-/// every EC write was acknowledged.
-pub fn ec_init(
+/// Runtime EC/PMH7 bring-up with the devicetree's registers and the
+/// user's `options` (coreboot `h8_enable()` and the PMH7 `enable_dev()`),
+/// then `h8_mb_init()`: connect a present dock. On S3 resume the suspend
+/// LED blinks (coreboot `mainboard_enable()`). Returns whether the
+/// Bluetooth card is fitted and every EC write was acknowledged.
+pub fn init(
     bdc_presence: &mut impl InputPin,
     dock_id: &mut [impl InputPin; 3],
     dock_connect_pin: &mut impl OutputPin,
-    h8_config: &H8Config,
-    options: &crate::options::Options,
+    options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (bool, bool) {
-    let bluetooth = bdc_presence.is_low().unwrap_or(false);
-    let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
-    pmh7.backlight_enable(true);
-    pmh7.dock_event_enable(true);
-    pmh7.trackpoint_enable(options.trackpoint);
-    pmh7.touchpad_enable(options.touchpad);
+    let h8_config = &crate::config::X201_H8;
+    let bluetooth = h8_config.bdc_installed(bdc_presence);
+    Pmh7::new(h8_config.resources.pmh7_base.raw()).enable(&crate::config::X201_PMH7, options);
 
     let ec = Ec::new(h8_config.resources.os);
     let h8 = H8::new(ec);
-    let mut acknowledged =
-        h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, false, options, resume);
+    let mut acknowledged = h8.enable(h8_config, bluetooth, options, resume);
     if dock_present(dock_id) {
         fstart_log::info!("x201: dock is connected");
         acknowledged &= dock_connect(ec, dock_connect_pin);
@@ -169,4 +153,40 @@ pub fn smm_dock_connected(ec: Ec, connect: &mut impl OutputPin) {
 pub fn smm_wake_from_ec(ec: Ec) -> bool {
     ec.read_register::<WAKE_CONTROL::Register>()
         .is_some_and(|wake| wake.is_set(WAKE_CONTROL::EVENTS) || wake.is_set(WAKE_CONTROL::LID))
+}
+
+/// The PC87382 config port. Only its LDN 3 serial port is wired, to the
+/// X201T digitizer.
+pub const PC87382_BASE: u16 = 0x164e;
+
+/// The devicetree's PC87382: the digitizer on LDN 3 at 0x200/IRQ 5; IR
+/// (2), GPIO (7) and DLPC (0x19) are not connected.
+pub const PC87382_DEVICES: &[fstart_driver_superio::pc87382::PnpDevice] = {
+    use fstart_driver_superio::pc87382::PnpDevice;
+    const fn off(ldn: u8) -> PnpDevice {
+        PnpDevice {
+            ldn,
+            enabled: false,
+            io: None,
+            registers: &[],
+        }
+    }
+    &[
+        PnpDevice {
+            ldn: 3,
+            enabled: true,
+            io: Some(0x200),
+            registers: &[(0x29, 0xb0), (0x70, 0x05), (0xf0, 0x82)],
+        },
+        off(2),
+        off(7),
+        off(0x19),
+    ]
+};
+
+/// The X201T digitizer: program the PC87382 like the devicetree and report
+/// a tablet ([`fstart_driver_lenovo::wacom::is_present`]).
+pub fn digitizer_init(part_number: Option<&str>) -> bool {
+    fstart_driver_superio::pc87382::configure(PC87382_BASE, PC87382_DEVICES);
+    fstart_driver_lenovo::wacom::is_present(PC87382_BASE, part_number)
 }

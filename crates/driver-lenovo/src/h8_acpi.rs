@@ -76,6 +76,38 @@ pub fn dsdt_aml_with_brightness<N: PcNamespace>(
     out
 }
 
+/// Brightness hooks for [`dsdt_aml_with_brightness`] that step the
+/// platform IGD's backlight (`INCB`/`DECB`, which the IGD AML provides).
+#[must_use]
+pub fn igd_brightness<N: PcNamespace>() -> Vec<u8> {
+    acpi_dsl! {
+        Scope("\\") {
+            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
+            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
+        }
+    }
+    .into()
+}
+
+/// `\UCMS`, through which `thinkpad_acpi` switches the ThinkLight (coreboot
+/// `ec/lenovo/h8/acpi/thinklight.asl`, which a board's DSDT includes).
+#[must_use]
+pub fn thinklight<N: PcNamespace>() -> Vec<u8> {
+    acpi_dsl! {
+        Scope("\\") {
+            Method("UCMS", 1, Serialized) {
+                If (Arg0 == 0x0Cu32) {
+                    #{const path 5 ec::<N>().child("LGHT")}(1u32);
+                }
+                If (Arg0 == 0x0Du32) {
+                    #{const path 5 ec::<N>().child("LGHT")}(0u32);
+                }
+            }
+        }
+    }
+    .into()
+}
+
 /// Root-scope names and fallback methods referenced across the H8 surface.
 fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
     let tcrt = cfg.critical_temp_celsius;

@@ -900,9 +900,6 @@ mod acpi_impl {
     }
 }
 
-#[cfg(all(test, feature = "acpi", feature = "ich9"))]
-mod acpi_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;

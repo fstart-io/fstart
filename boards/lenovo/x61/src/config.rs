@@ -110,9 +110,54 @@ pub const X61_SMBUS_MUX: gpio::GpioPin = gpio::GpioPin {
     reset: gpio::GpioReset::Pwrok,
 };
 
-/// One source for EC transport, LPC windows, and AML resources/capabilities.
+/// ICH GPIO7 reads low with the Bluetooth daughter card fitted
+/// (devicetree `bdc_gpio_num`).
+pub const BDC_PRESENCE_GPIO: u8 = 7;
+
+/// ICH GPIO13 is the UltraBase's `SLICE_ON_3M#`, low with the dock attached.
+pub const DOCK_PRESENT_GPIO: u8 = 13;
+
+/// The devicetree's PMH7.
+pub const X61_PMH7: fstart_driver_lenovo::pmh7::Pmh7Config =
+    fstart_driver_lenovo::pmh7::Pmh7Config {
+        backlight_enable: true,
+        dock_event_enable: true,
+    };
+
+/// The devicetree's H8, and one source for EC transport, LPC windows and
+/// AML resources/capabilities.
 /// The EC SCI is ICH8 GPIO2, i.e. GPE 0x12.
-pub const X61_H8: fstart_driver_lenovo::h8::H8Config = fstart_driver_lenovo::x6::h8_config(0x12);
+pub const X61_H8: fstart_driver_lenovo::h8::H8Config = {
+    use embedded_hal::digital::PinState;
+    use fstart_driver_lenovo::{
+        ec::EcPorts,
+        h8::{H8Config, H8Resources},
+    };
+    H8Config {
+        config: [0xa6, 0x05, 0xa0, 0x01],
+        beep_masks: [0xfe, 0x96],
+        has_power_management_beeps: true,
+        // event2..d; event 0/1 and e/f stay off.
+        event_masks: [
+            0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0x00, 0x00,
+        ],
+        bdc_gpio_level: Some(PinState::Low),
+        has_bluetooth: true,
+        // No WWAN detection GPIO: coreboot assumes the card is installed.
+        has_wwan: true,
+        has_thinklight: true,
+        second_thermal_zone: true,
+        // coreboot `mainboard_fill_gnvs()`.
+        critical_temp_celsius: 100,
+        passive_temp_celsius: 90,
+        ..H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            0x12,
+            "IBM0068",
+        )
+    }
+};
 
 /// ICH8-M routing plus the devices behind the PCI bridge: the Ricoh
 /// multifunction device and the UltraBase dock slots (coreboot
