@@ -14,14 +14,15 @@ use crate::cpu::Silicon;
 use crate::window::{Window, update};
 
 /// Physical base of the SPI controller (D14F3xA0 reset value).
-pub const BASE: u32 = 0xFEC1_0000;
+pub const BASE: u32 = crate::fch::SPI_BASE;
+use crate::fch::spi;
 
-pub const CNTRL0: u32 = 0x00;
-pub const CNTRL1: u32 = 0x0C;
+pub const CNTRL0: u32 = spi::CNTRL0.address - BASE;
+pub const CNTRL1: u32 = spi::RESTRICTED_CMD2.address - BASE;
 pub const ALT_SPI_CS: u32 = 0x1D;
-pub const SPI100_ENABLE: u32 = 0x20;
-pub const SPI100_SPEED: u32 = 0x22;
-pub const SPI100_HOST_PREFETCH: u32 = 0x2C;
+pub const SPI100_ENABLE: u32 = spi::SPI100_ENABLE.address - BASE;
+pub const SPI100_SPEED: u32 = spi::SPI100_SPEED.address - BASE;
+pub const SPI100_HOST_PREFETCH: u32 = spi::SPI100_HOST_PREFETCH.address - BASE;
 
 register_bitfields![u32,
     /// SPIx00 FCH::ITF::SPI::SPICntrl0.

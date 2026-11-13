@@ -14,8 +14,8 @@ use crate::cpu::Silicon;
 use crate::window::{Reg, Window, indexed, update};
 
 /// AB index/data ports (PMxE0 = `CD8h`, FCH_SP3 §3.1 af41).
-pub const INDEX: u32 = 0xCD8;
-pub const DATA: u32 = 0xCDC;
+pub const INDEX: u32 = crate::fch::alink::INDEX as u32;
+pub const DATA: u32 = crate::fch::alink::DATA as u32;
 /// Access type of the ABCFG space in the index.
 const ABCFG: u32 = 6 << 29;
 

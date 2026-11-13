@@ -13,7 +13,7 @@ use crate::window::{Window, indexed};
 use fstart_core::indexed::Indexed;
 
 /// Host physical base of the primary FCH's block.
-pub const BASE: u64 = 0xFED8_0000;
+pub const BASE: u64 = crate::fch::ACPI_MMIO as u64;
 /// The same block over SMN (`+ offset`), per die (Naples) or socket.
 pub const SMN_BASE: u32 = 0x02D0_1000;
 /// Size of the block (and of an ALTMMIO relocation).
@@ -21,23 +21,23 @@ pub const SIZE: u32 = 0x2000;
 
 /// Block offsets.
 pub const SMBUS_PCI: u32 = 0x000;
-pub const SMI: u32 = 0x200;
-pub const PM: u32 = 0x300;
+pub const SMI: u32 = crate::fch::smi_bank::BASE;
+pub const PM: u32 = crate::fch::pm::BASE;
 pub const PM2: u32 = 0x400;
 pub const BIOS_RAM: u32 = 0x500;
 pub const CMOS_RAM: u32 = 0x600;
 pub const CMOS: u32 = 0x700;
-pub const ACPI: u32 = 0x800;
-pub const ASF: u32 = 0x900;
-pub const SMBUS: u32 = 0xA00;
+pub const ACPI: u32 = crate::fch::acpi::BASE;
+pub const ASF: u32 = crate::fch::asf::BASE;
+pub const SMBUS: u32 = crate::fch::smbus::BASE;
 pub const WDT: u32 = 0xB00;
 pub const HPET: u32 = 0xC00;
-pub const IOMUX: u32 = 0xD00;
-pub const MISC: u32 = 0xE00;
+pub const IOMUX: u32 = crate::fch::iomux::BASE;
+pub const MISC: u32 = crate::fch::misc::BASE;
 pub const REMOTE_GPIO: u32 = 0x1200;
-pub const GPIO: u32 = 0x1500;
+pub const GPIO: u32 = crate::fch::gpio_bank::BASE;
 pub const WAKE: u32 = 0x1D00;
-pub const AOAC: u32 = 0x1E00;
+pub const AOAC: u32 = crate::fch::aoac::BASE;
 
 /// PM register offsets (PMxNN, relative to [`PM`]).
 pub mod pm {
