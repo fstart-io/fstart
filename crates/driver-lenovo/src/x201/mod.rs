@@ -7,9 +7,8 @@
 pub mod acpi;
 
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
-use tock_registers::register_bitfields;
-
-use crate::ec::{Ec, EcRegister};
+use crate::ec::Ec;
+pub use crate::h8::{DOCK_LINK2, DOCK_LINK3, WAKE_CONTROL};
 use crate::h8::{CONFIG2, CONFIG3, H8, H8Config, H8DockEvent, H8Led, H8LedMode};
 use crate::pmh7::Pmh7;
 
@@ -32,28 +31,6 @@ pub const DOCK_CONNECT_GPIO: u8 = 28;
 /// (`GPE_EC_WAKE`).
 pub const EC_SCI_GPI: u8 = 1;
 pub const EC_WAKE_GPI: u8 = 13;
-
-register_bitfields![u8,
-    /// EC RAM 0x1a: the second dock link enable (ACPI `DKR2`).
-    pub DOCK_LINK2 [CONNECT OFFSET(0) NUMBITS(1) []],
-    /// EC RAM 0x32: the wake sources the OS armed.
-    pub WAKE_CONTROL [
-        EVENTS OFFSET(2) NUMBITS(1) [],
-        LID OFFSET(4) NUMBITS(1) []
-    ],
-    /// EC RAM 0xfe: the third dock link enable (ACPI `DKR3`).
-    pub DOCK_LINK3 [CONNECT OFFSET(4) NUMBITS(1) []]
-];
-
-impl EcRegister for DOCK_LINK2::Register {
-    const INDEX: u8 = 0x1a;
-}
-impl EcRegister for WAKE_CONTROL::Register {
-    const INDEX: u8 = 0x32;
-}
-impl EcRegister for DOCK_LINK3::Register {
-    const INDEX: u8 = 0xfe;
-}
 
 /// coreboot `bootblock_mainboard_early_init()`: EC USB power before the
 /// EHCI debug console needs the port.
