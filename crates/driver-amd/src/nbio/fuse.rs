@@ -54,7 +54,7 @@ impl Fuses {
             return true;
         }
         let aperture = addr & 0xFFF0_0000;
-        !super::sp3::tables::milan::FUSE_APERTURES
+        !super::ssp::tables::milan::FUSE_APERTURES
             .iter()
             .any(|&(w, mask, a)| a == aperture && self.word[w as usize] & mask != 0)
     }

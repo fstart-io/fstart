@@ -39,7 +39,7 @@ use crate::df::Die;
 use crate::nbio::{
     iohc::{self, IohcBridgeCntl, IohcFeatureCntl, IohcRbBusRoute, NbProgDeviceRemap},
     pcie::{self, PCIE_PORTS_PER_CORE},
-    zeppelin::{NBIF_COUNT, PCIE_CORE_COUNT, PCIE_PORT_COUNT, nbif_reg, strap},
+    zp::{NBIF_COUNT, PCIE_CORE_COUNT, PCIE_PORT_COUNT, nbif_reg, strap},
 };
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v9 as smu;

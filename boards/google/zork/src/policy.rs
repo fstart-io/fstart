@@ -235,7 +235,7 @@ pub const EMMC: emmc::Config = emmc::Config {
     sdr104_hs400_drive: emmc::Drive::A,
     ddr50_drive: emmc::Drive::B,
 };
-pub use fstart_driver_amd::nbio::picasso::gfx::{Connector, Display};
+pub use fstart_driver_amd::nbio::rv::gfx::{Connector, Display};
 pub const DISPLAYS: &[Display] = &[
     Display {
         connector: Connector::Edp,

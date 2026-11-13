@@ -38,7 +38,7 @@ impl Policy {
     /// BSP before AP release. The platform must have established PAT support,
     /// exclusive access and the locked PSP BAR. Capture does not change MSRs.
     pub fn capture(cpu: &impl MsrAccess, psp_base: u64, ecam: (u64, u16)) -> Result<Self, Error> {
-        if psp_base != u64::from(crate::nbio::picasso::PSP_MMIO_BASE) {
+        if psp_base != u64::from(crate::nbio::rv::PSP_MMIO_BASE) {
             return Err(Error::PspBase);
         }
         super::memory_limits(cpu).map_err(Error::Cpu)?;

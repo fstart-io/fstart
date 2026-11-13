@@ -112,7 +112,7 @@ mod zeppelin {
             &mut delay,
         );
         for die in &dies {
-            nbio::zeppelin::early_init(die, Revision::ZpB2);
+            nbio::zp::early_init(die, Revision::ZpB2);
             let _ = iohc::map_psp(&die.smn(), nonpci[usize::from(die.index())] + NONPCI_PSP);
         }
         smu::name(&dies[0], &mut delay);
@@ -167,7 +167,7 @@ mod zeppelin {
         assert_eq!(df::zp::sockets(&dies[0].df()), 2);
         df::zp::route_vga(&dies);
         for die in &dies {
-            nbio::zeppelin::pre_enumeration_init(die);
+            nbio::zp::pre_enumeration_init(die);
         }
         taishan::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID, true);
         taishan::sata::init(&fch0, 0, &dies[0].smn(), SUBSYSTEM_ID, &mut delay);
@@ -251,7 +251,7 @@ mod picasso {
         },
         nbio::{
             iohc::{PSP_BAR, SMU_BAR},
-            picasso as nbio,
+            rv as nbio,
         },
         smu::{
             THREAD_CONFIG, THREAD_ENABLE,

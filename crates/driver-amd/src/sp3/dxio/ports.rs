@@ -21,10 +21,10 @@ use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
 use crate::cpu::Silicon;
 use crate::dxio::wire::FwEngine;
 use crate::dxio::{Dxio, DxioError, Hooks, UnitView, op, prop};
+use crate::nbio::{Nbio, NbioReg, nbif};
 use crate::smn::SmnAddr;
 use crate::smu::SmuMessages;
 use crate::sp3::fch::gpio::{self, Pin};
-use crate::sp3::nbio::{Nbio, NbioReg, nbif};
 use crate::window::Window;
 
 register_bitfields![u32,
@@ -1311,10 +1311,10 @@ pub fn early_trained(engines: &[FwEngine]) -> impl Iterator<Item = &FwEngine> {
 mod tests {
     use super::*;
     use crate::dxio::wire::{FwEngine, kind};
+    use crate::nbio::nbio_tests::nbio;
     use crate::smn::model::Model;
     use crate::sp3::dxio::lanes::{Group, Lanes, SataEngine, Speed};
     use crate::sp3::dxio::tables::SP3_DEFAULT_DEVFN;
-    use crate::sp3::nbio::tests::nbio;
 
     /// The attached engines at the bridges DXIO mapped them to, on the bus
     /// of their NBIO's root bridge; a SATA engine without a bridge, an

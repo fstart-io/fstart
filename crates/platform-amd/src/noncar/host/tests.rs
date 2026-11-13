@@ -31,7 +31,7 @@ impl Board for Vilboz {
         },
         emmc: None,
         i2c: &[],
-        graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+        graphics: fstart_driver_amd::nbio::rv::gfx::Config {
             displays: &[],
             hdmi2_disable: 0,
         },

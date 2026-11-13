@@ -83,7 +83,7 @@ pub static CONFIG: Config = Config {
             }],
         },
     ],
-    graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+    graphics: fstart_driver_amd::nbio::rv::gfx::Config {
         displays: policy::DISPLAYS,
         hdmi2_disable: 2,
     },

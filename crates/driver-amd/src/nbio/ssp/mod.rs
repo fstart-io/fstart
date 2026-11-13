@@ -135,7 +135,7 @@ pub fn smu_syshub_bit11<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::nbio::tests::nbio;
+    use crate::nbio::nbio_tests::nbio;
 
     #[test]
     fn sb_location_fch_and_others() {
@@ -169,8 +169,8 @@ mod tests {
     #[test]
     fn milan_base_init_respects_fuses() {
         use crate::df::topology::RootBridge;
+        use crate::nbio::Fuses;
         use crate::smn::model::Model;
-        use crate::sp3::nbio::Fuses;
         let model = Model::default();
         let rb = RootBridge {
             socket: 0,

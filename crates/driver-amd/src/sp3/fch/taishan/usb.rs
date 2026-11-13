@@ -2,7 +2,7 @@
 //! §3.1 af48, §3.4, §4.1, §5).
 
 use super::super::{FchHw, hide_nbif_function};
-use crate::sp3::nbio::nbif::func_strap0;
+use crate::nbio::nbif::func_strap0;
 use crate::window::{Window, update};
 
 /// Controller control/status block.

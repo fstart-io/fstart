@@ -170,7 +170,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     let clock = &mut TimerDelay(timer);
     let Identity { revision, .. } = identity;
     for die in dies {
-        nbio::zeppelin::early_init(die, revision);
+        nbio::zp::early_init(die, revision);
         // A locked BAR gets reported as a fixed resource by the root complex.
         let psp = nonpci[usize::from(die.index())] + soc::NONPCI_PSP;
         if let Err(bar) = iohc::map_psp(&die.smn(), psp) {
@@ -293,7 +293,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     }
     df::zp::route_vga(dies);
     for die in dies {
-        nbio::zeppelin::pre_enumeration_init(die);
+        nbio::zp::pre_enumeration_init(die);
     }
     fch.acpi_decode(taishan::ACPI_PORTS);
     taishan::env_init(

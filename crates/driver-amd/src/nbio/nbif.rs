@@ -131,7 +131,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::nbio::tests::nbio;
+    use crate::nbio::nbio_tests::nbio;
 
     #[test]
     fn nbif_addresses() {
@@ -148,7 +148,7 @@ mod tests {
     fn bus_numbers_per_generation() {
         let (m, n) = nbio(Silicon::Gn, 2, 0x60);
         let ntb = NbioPolicy {
-            milan: crate::sp3::nbio::MilanPolicy {
+            milan: crate::nbio::MilanPolicy {
                 nbif2_ntb: true,
                 ..Default::default()
             },

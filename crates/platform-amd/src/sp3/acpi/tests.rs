@@ -12,8 +12,8 @@ use fstart_core::acpi::AcpiSmiConfig;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::power::{CstateInfo, Pstate};
 use fstart_driver_amd::df::topology::RootBridge;
+use fstart_driver_amd::nbio::ioapic::{fch_ioapic_id, nbio_ioapic_id};
 use fstart_driver_amd::smu::v11::CppcInfo;
-use fstart_driver_amd::sp3::nbio::ioapic::{fch_ioapic_id, nbio_ioapic_id};
 
 use super::cppc::{self, Channel};
 use super::{FchAcpi, einj, fadt_flags, of};

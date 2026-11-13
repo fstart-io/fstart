@@ -22,8 +22,8 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::ccx::pm as power;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
+    use fstart_driver_amd::nbio::ioapic::fch_ioapic_id;
     use fstart_driver_amd::sp3::fch::smi;
-    use fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id;
 
     let numa_plan = S::numa(ctx.soc, si);
     // Naples has no CPPC through the SMU.
@@ -198,7 +198,7 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
 
 /// The IOMMU capability and MMIO registers IVRS copies (ACPI_SMM §3.6).
 fn iommu_registers(
-    info: &fstart_driver_amd::sp3::nbio::iommu::IommuInfo,
+    info: &fstart_driver_amd::nbio::iommu::IommuInfo,
 ) -> fstart_acpi::ivrs::IommuRegisters {
     use fstart_pci::{ConfigRegionAccess, PciAddress};
     let pci = crate::sp3::silicon::hw::Pci::default();

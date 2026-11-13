@@ -53,7 +53,7 @@ use crate::window::{ConfigWindow, SmnWindow, Window};
 /// Clear an NBIF function's EXIST strap (`nbio::nbif::FUNC_STRAP0`): the
 /// FCH tasks hide the SATA, USB and xGbE functions they turn off.
 pub(crate) fn hide_nbif_function<W: Window>(smn: &W, strap: u32) {
-    use crate::sp3::nbio::nbif::FUNC_STRAP0;
+    use crate::nbio::nbif::FUNC_STRAP0;
     use tock_registers::interfaces::ReadWriteable;
     smn.reg::<u32, FUNC_STRAP0::Register>(strap)
         .modify(FUNC_STRAP0::EXIST::CLEAR);

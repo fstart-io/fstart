@@ -199,7 +199,7 @@ impl<P: ConfigRegionAccess + Clone> Nbio<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::nbio::tests::nbio;
+    use crate::nbio::nbio_tests::nbio;
 
     #[test]
     fn legacy_property_and_copy() {

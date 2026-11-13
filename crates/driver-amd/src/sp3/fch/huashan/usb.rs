@@ -4,8 +4,8 @@
 
 use super::super::{FchHw, hide_nbif_function};
 use crate::cpu::Silicon;
+use crate::nbio::nbif::func_strap0;
 use crate::smu::{Error as SmuError, SmuMessages};
-use crate::sp3::nbio::nbif::func_strap0;
 use crate::window::update;
 
 /// SMU V11 messages (`smu::v11::msg`).

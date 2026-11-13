@@ -12,7 +12,7 @@ use tock_registers::register_bitfields;
 use super::super::gpio::{self, Direction, Pad, Pin, Pull};
 use super::super::{FchHw, irq};
 use crate::cpu::Silicon;
-use crate::sp3::nbio::nbif::func_strap0;
+use crate::nbio::nbif::func_strap0;
 use crate::window::{SmnWindow, Window, update};
 
 pub const CONTROLLERS: usize = 4;

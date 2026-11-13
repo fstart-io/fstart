@@ -25,8 +25,11 @@ use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::v3::{Df3, SocketMemory};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::nbio::fuse::Fuses;
+use fstart_driver_amd::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
+use fstart_driver_amd::nbio::{Nbio, ssp as nbio_ssp};
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
@@ -36,9 +39,6 @@ use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
-use fstart_driver_amd::sp3::nbio::fuse::Fuses;
-use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
-use fstart_driver_amd::sp3::nbio::{Nbio, sp3 as nbio_sp3};
 use fstart_driver_amd::window::Window;
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
@@ -332,14 +332,14 @@ impl Steps for Silicon {
                 .iter()
                 .any(|r| r.socket == rb.socket)
         };
-        nbios.iter().for_each(nbio_sp3::sb_location);
+        nbios.iter().for_each(nbio_ssp::sb_location);
         nbios
             .iter()
             .enumerate()
             .filter(|(i, _)| first_of_socket(*i))
-            .for_each(|(_, n)| nbio_sp3::socket_table(n, &policy));
+            .for_each(|(_, n)| nbio_ssp::socket_table(n, &policy));
         for (i, n) in nbios.iter().enumerate() {
-            nbio_sp3::base_init(n, &policy);
+            nbio_ssp::base_init(n, &policy);
             let bar = ctx.non_pci[i].alloc(NBIO_SMU_BAR).step("SMU BAR space")?;
             n.set_smu_bar(bar);
         }
@@ -361,7 +361,7 @@ impl Steps for Silicon {
                 n.set_iommu_bar(ctx.non_pci[i].alloc(IOMMU_BAR).step("IOMMU BAR space")?);
             }
         }
-        nbios.iter().for_each(|n| nbio_sp3::iommu_init(n, &policy));
+        nbios.iter().for_each(|n| nbio_ssp::iommu_init(n, &policy));
         let tops = DramTops {
             tom: ctx.tops.tom,
             tom2: ctx.tops.tom2,
@@ -415,7 +415,7 @@ impl Steps for Silicon {
             v11::sp3_workarounds(smu, generation, &Sp3Workarounds::default())
                 .step("SMU workarounds")?;
         }
-        si.nbios.iter().for_each(nbio_sp3::smu_syshub_bit11);
+        si.nbios.iter().for_each(nbio_ssp::smu_syshub_bit11);
         Ok(())
     }
 

@@ -354,7 +354,7 @@ mod tests {
         )
         .unwrap()
         .unwrap()];
-        let (m, n) = crate::sp3::nbio::tests::nbio(Silicon::Ssp, 0, 0);
+        let (m, n) = crate::nbio::nbio_tests::nbio(Silicon::Ssp, 0, 0);
         let nbios = [n];
         let mut setup = PortSetup::new(Silicon::Ssp, &nbios, &b, Count(0));
         train(

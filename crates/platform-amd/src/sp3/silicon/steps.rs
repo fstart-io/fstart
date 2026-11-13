@@ -19,11 +19,11 @@ use fstart_driver_amd::df::{self as sp3_df, Fabric};
 use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::nbio::iohc::DramTops;
+use fstart_driver_amd::nbio::{Nbio, NbioPolicy};
 use fstart_driver_amd::sp3::dxio::DxioPolicy;
 use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
-use fstart_driver_amd::sp3::nbio::{Nbio, NbioPolicy};
 
 use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
@@ -291,9 +291,7 @@ pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'stati
 pub fn set_fch_ioapic_id(generation: Silicon) {
     // SAFETY: the FCH IOAPIC is decoded at its fixed address.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
-    ioapic.set_id(fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id(
-        generation,
-    ));
+    ioapic.set_id(fstart_driver_amd::nbio::ioapic::fch_ioapic_id(generation));
 }
 
 /// The eight PEI reset tasks on socket 0's FCH (FCH_SP3 §2.1). Returns

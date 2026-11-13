@@ -29,7 +29,7 @@ use fstart_driver_amd::{
         sandstone::{self, legacy, preinit, usb},
         smi::FchSmi,
     },
-    nbio::picasso as nbio,
+    nbio::rv as nbio,
     psp::{self, boot::Psp},
     smu::v10::power,
 };

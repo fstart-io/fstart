@@ -18,6 +18,9 @@ use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::v2::Df2;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::nbio::Nbio;
+use fstart_driver_amd::nbio::fuse::Fuses;
+use fstart_driver_amd::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::iohc::PSP_BAR_SIZE as BAR_SIZE;
 use fstart_driver_amd::smn::Smn;
@@ -29,9 +32,6 @@ use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::multi::{self, NaplesDie};
 use fstart_driver_amd::sp3::fch::taishan::{self, usb::DieUsb};
-use fstart_driver_amd::sp3::nbio::fuse::Fuses;
-use fstart_driver_amd::sp3::nbio::ioapic::nbio_ioapic_id;
-use fstart_driver_amd::sp3::nbio::{Nbio, naples as nbio_naples};
 use fstart_driver_amd::window::{SmnWindow, Window};
 use tock_registers::interfaces::Readable;
 use tock_registers::interfaces::Writeable;
@@ -95,7 +95,13 @@ impl Steps for Silicon {
             tom2: ctx.tops.tom2,
         };
         for (i, n) in nbios.iter().enumerate() {
-            nbio_naples::base_init(n, &policy, rev, None);
+            fstart_driver_amd::nbio::zp::base_init(
+                &n.smn(),
+                n.fch && n.socket == 0,
+                n.bus(),
+                rev,
+                &policy.zp(),
+            );
             n.set_tom(tops);
             n.set_psp_bar(ctx.non_pci[i].alloc(BAR_SIZE).step("PSP BAR space")?);
         }
