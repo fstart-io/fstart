@@ -520,3 +520,71 @@ fn cppc_builds_the_pcct() {
     assert_eq!(pcct.len(), 110);
     assert_eq!(&pcct[56..64], &0x7FF0_0000u64.to_le_bytes());
 }
+
+/// The assembled table set of a 1P system and of a 2P system with a
+/// domain per socket and EINJ, byte for byte.
+#[test]
+fn tables_are_pinned() {
+    let fnv = |bytes: &[u8]| {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    };
+    let pin = |tables: &Tables| {
+        let mut buf = std::vec![0u8; 1 << 20];
+        let len = tables.assemble_into(&mut buf, TABLE_ADDR).unwrap();
+        (len, fnv(&buf[..len]))
+    };
+    let got: Vec<_> = [Generation::Naples, Generation::Rome, Generation::Milan]
+        .into_iter()
+        .map(|g| {
+            let s = system(g, 1, 64);
+            let rb = root_bridges(&s);
+            let one = pin(&build(&inputs(g, &s, &rb, None)).unwrap());
+
+            let mut s = system(g, 2, 128);
+            s.cpus.iter_mut().for_each(|c| c.domain = c.apic_id % 2);
+            let mut rb = root_bridges(&s);
+            rb.iter_mut()
+                .for_each(|rb| rb.domain = Some(rb.bridge.socket.into()));
+            let domains = [Domain { socket: 0 }, Domain { socket: 1 }];
+            let memory = [
+                MemoryAffinity {
+                    base: 0,
+                    end: 0x8000_0000,
+                    domain: 0,
+                },
+                MemoryAffinity {
+                    base: 0x1_0000_0000,
+                    end: 0x10_0000_0000,
+                    domain: 1,
+                },
+            ];
+            let numa = Numa {
+                domains: &domains,
+                memory: &memory,
+                phys_addr_bits: 48,
+            };
+            let mut i = inputs(g, &s, &rb, Some(numa));
+            i.einj = true;
+            (one, pin(&build(&i).unwrap()))
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                (0xc360, 0x2d1a_f2e0_2bf5_49dd),
+                (0x1_8700, 0x2ed6_3a70_0da3_2d1b)
+            ),
+            (
+                (0xc920, 0xda56_331a_8cb9_fa85),
+                (0x1_9300, 0x39a3_40d2_6976_dd4d)
+            ),
+            (
+                (0xc920, 0x940a_6597_4f7a_0ecb),
+                (0x1_9300, 0x66dc_12ee_7357_08d5)
+            ),
+        ]
+    );
+}
