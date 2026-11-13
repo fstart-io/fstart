@@ -25,7 +25,7 @@ armv7 = [
   "fstart-stage?/armv7",
 ]
 aarch64 = [
-  "fstart-arch?/aarch64",
+  "fstart-arch?/aarch64", "fstart-arch?/platform-entry",
   "fstart-stage?/aarch64",
 ]
 riscv64 = [
@@ -54,11 +54,11 @@ bundle-h3-main = [
 ]
 bundle-h5-bootblock = [
   "stage", "h3", "aarch64",
-  "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry",
+  "fstart-stage?/aarch64",
 ]
 bundle-h5-main = [
   "stage", "h3", "aarch64",
-  "fstart-stage?/aarch64", "fstart-stage?/aarch64-sunxi-rmr-entry",
+  "fstart-stage?/aarch64",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
   "fstart-stage?/fdt",
