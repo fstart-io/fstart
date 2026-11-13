@@ -170,6 +170,9 @@ enum Command {
         chip: Option<String>,
         #[arg(long)]
         probe: Option<String>,
+        /// probe-rs debug protocol.
+        #[arg(long, default_value = "jtag")]
+        protocol: String,
         #[arg(long)]
         base_address: Option<String>,
     },
@@ -444,6 +447,7 @@ fn main() {
             probe_run,
             chip,
             probe,
+            protocol,
             base_address,
         } => manifest_for(&board).and_then(|manifest| {
             fbuild::board_tool::flash(
@@ -453,6 +457,7 @@ fn main() {
                 probe_run,
                 chip.as_deref(),
                 probe.as_deref(),
+                &protocol,
                 base_address.as_deref(),
             )
         }),
@@ -470,7 +475,7 @@ mod tests {
 
     #[test]
     fn library_tests_do_not_accept_firmware_selection_options() {
-        assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "lenovo-x61"]).is_ok());
+        assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "test-board"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library", "--payload", "uefi"]).is_err());
     }

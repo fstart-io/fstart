@@ -103,6 +103,7 @@ fn assemble_loaded(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // the CLI's flat flash options
 pub fn flash(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
@@ -110,6 +111,7 @@ pub fn flash(
     probe_run: bool,
     chip: Option<&str>,
     probe_selector: Option<&str>,
+    protocol: &str,
     base_address: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
@@ -127,7 +129,7 @@ pub fn flash(
             .arg("--chip")
             .arg(chip_name)
             .arg("--protocol")
-            .arg("jtag");
+            .arg(protocol);
         if let Some(sel) = probe_selector {
             cmd.arg("--probe").arg(sel);
         }
@@ -135,10 +137,28 @@ pub fn flash(
     };
 
     if !probe_run {
-        let base_address = base_address.ok_or_else(|| {
-            "flash requires --base-address because fbuild has no board flash programmer defaults"
-                .to_string()
-        })?;
+        // Default to the firmware window the board's plan states; an
+        // explicit --base-address wins.
+        let base_address = match base_address {
+            Some(base) => base.to_string(),
+            None => match resolved
+                .build
+                .plan
+                .ffs_assembly()
+                .map(|ffs| ffs.build.firmware_image)
+            {
+                Ok(fstart_core::FirmwareImagePolicy::MemoryMapped { cpu_base, .. }) => {
+                    format!("{cpu_base:#x}")
+                }
+                _ => {
+                    return Err(
+                        "flash requires --base-address: the board's plan states no                          memory-mapped firmware window"
+                            .into(),
+                    );
+                }
+            },
+        };
+        let base_address = base_address.as_str();
         eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
         let supplied = crate::assemble::supplied_inputs(None, None, None, &options.inputs)?;
         let assembled = assemble_loaded(
@@ -195,19 +215,7 @@ pub fn flash(
 }
 
 fn find_probe_rs() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let local_paths = [
-        format!("{home}/src/probe-rs/target/release/probe-rs"),
-        format!("{home}/src/probe-rs/target/debug/probe-rs"),
-    ];
-    for p in &local_paths {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    which_in_path("probe-rs").ok_or_else(|| "not in PATH or ~/src/probe-rs/target".to_string())
+    which_in_path("probe-rs").ok_or_else(|| "not in PATH".to_string())
 }
 
 fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
