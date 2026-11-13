@@ -1769,8 +1769,9 @@ fn dram_power_mgmt(mch: &MchBar) {
 ///
 /// `spd_addresses` follows coreboot's GM965 slot mapping: index 0/1 are
 /// channel 0, index 2/3 are channel 1. A zero address means the slot is not
-/// wired. Lenovo X61 uses `[0x50, 0, 0x51, 0]`. `cached` is the training
-/// record, whose SPD copy spares rereading a DIMM that has not changed.
+/// wired; one DIMM per channel is `[0x50, 0, 0x51, 0]`. `cached` is the
+/// training record, whose SPD copy spares rereading a DIMM that has not
+/// changed.
 pub fn probe_dimms<B: SmBus + ?Sized>(
     bus: &mut B,
     spd_addresses: &[u8; 4],

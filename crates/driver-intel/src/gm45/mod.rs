@@ -98,7 +98,8 @@ pub struct IntelGm45Config {
     pub pmbase: u16,
     /// Default graphics policy; the board selects the actual runtime policy.
     pub graphics: Gm45GraphicsPolicy,
-    /// SPD slot order: channel 0 slot 0/1, channel 1 slot 0/1.
+    /// SPD slot order: channel 0 slot 0/1, channel 1 slot 0/1. The board's
+    /// wiring; `new()` wires none.
     pub spd_addresses: [u8; 4],
     /// ICH RCBA, reserved with the host bridge's MMIO (coreboot gm45.asl).
     pub rcba: u64,
@@ -123,7 +124,7 @@ impl IntelGm45Config {
             ecam_buses: 64,
             pmbase: 0x500,
             graphics: Gm45GraphicsPolicy::Integrated,
-            spd_addresses: [0x50, 0, 0x51, 0],
+            spd_addresses: [0; 4],
             rcba: 0xfed1_c000,
             slfm: false,
             igd: Gm45IgdConfig::new(),

@@ -31,6 +31,8 @@ pub struct Gm965Ich8Config {
     pub igd: gm965::Gm965IgdConfig,
     pub enable_peg: bool,
     southbridge: IntelIch8Config,
+    /// Channel 0 slot 0/1, then channel 1 slot 0/1; zero means absent.
+    pub spd_addresses: [u8; 4],
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
 }
@@ -42,6 +44,7 @@ impl Gm965Ich8Config {
             igd: gm965::Gm965IgdConfig::new(),
             enable_peg: false,
             southbridge: IntelIch8Config::new(),
+            spd_addresses: [0; 4],
             max_cpus: 1,
         }
     }
@@ -49,6 +52,13 @@ impl Gm965Ich8Config {
     #[must_use]
     pub const fn pirq(mut self, routing: PirqRouting) -> Self {
         self.southbridge.pirq = routing;
+        self
+    }
+
+    /// coreboot `mainboard_get_spd_map()`.
+    #[must_use]
+    pub const fn spd_addresses(mut self, addresses: [u8; 4]) -> Self {
+        self.spd_addresses = addresses;
         self
     }
 
@@ -68,6 +78,7 @@ impl Gm965Ich8Config {
         config.ecam_buses = GM965_ECAM_BUSES;
         config.enable_peg = self.enable_peg;
         config.igd = self.igd;
+        config.spd_addresses = self.spd_addresses;
         config
     }
 
@@ -212,6 +223,7 @@ impl Gm965Ich8Config {
             panic!("GM965 max_cpus must be non-zero");
         }
 
+        crate::require_spd_addresses(self.spd_addresses);
         Gm965Ich8Platform {
             northbridge: self.northbridge_config(),
             southbridge: self.southbridge_config(),

@@ -140,6 +140,7 @@ pub struct IntelIronlakeConfig {
     pub hecibar: u32,
     /// SPD addresses: channel 0 slot 0/1, channel 1 slot 0/1; 0 = absent.
     /// Raminit supports one DIMM per channel: entries 1 and 3 must be zero.
+    /// The board's wiring; `new()` wires none.
     pub spd_addresses: [u8; 4],
     /// IGD stolen memory selector (coreboot `gfx_uma_size`): 0 = 32 MiB,
     /// 1 = 48, 2 = 64, 3 = 128, 4 = 256, 5 = 96, 6 = 160, 7 = 224, 8 = 352.
@@ -170,7 +171,7 @@ impl IntelIronlakeConfig {
             pmbase: crate::ibexpeak::DEFAULT_PMBASE,
             gpiobase: crate::ibexpeak::DEFAULT_GPIOBASE,
             hecibar: crate::ibexpeak::DEFAULT_HECIBAR,
-            spd_addresses: [0x50, 0, 0x51, 0],
+            spd_addresses: [0; 4],
             gfx_uma_size: 0,
             peg: false,
             igd_enabled: true,

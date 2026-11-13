@@ -411,6 +411,7 @@ impl Gm45Ich9Config {
         if self.max_cpus == 0 {
             panic!("GM45 max_cpus must be non-zero");
         }
+        crate::require_spd_addresses(self.spd_addresses);
         Gm45Ich9Platform {
             northbridge: self.northbridge_config(),
             southbridge: self.southbridge_config(),
@@ -575,6 +576,12 @@ mod tests {
         assert!(CONFIG.southbridge.c6_enable);
         assert_eq!(CONFIG.southbridge.throttle_duty, 2);
         assert!(CONFIG.southbridge.pirq.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "the board must wire its DIMMs")]
+    fn a_board_wires_its_dimms() {
+        let _ = Gm45Ich9Config::new().build();
     }
 
     #[test]

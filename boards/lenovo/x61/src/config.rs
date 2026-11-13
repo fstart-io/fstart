@@ -180,6 +180,8 @@ pub const X61_PIRQ: fstart_platform_intel::gm965::PirqRouting = {
 };
 
 pub static X61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
+    // early_init.c `mainboard_get_spd_map()`: one DIMM per channel.
+    .spd_addresses([0x50, 0, 0x51, 0])
     .max_cpus(2)
     .pirq(X61_PIRQ)
     .igd(x61_igd_config())
