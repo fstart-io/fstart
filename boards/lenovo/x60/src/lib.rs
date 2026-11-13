@@ -11,6 +11,7 @@ pub mod config;
 pub mod mainboard;
 #[cfg(feature = "smm")]
 pub mod smm;
+pub mod x6;
 
 /// Lenovo ThinkPad X60 board marker.
 pub struct Board;

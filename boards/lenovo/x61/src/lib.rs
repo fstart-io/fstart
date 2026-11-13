@@ -17,6 +17,7 @@ pub mod mainboard;
 /// The SMM handler, built into the separate SMM image.
 #[cfg(feature = "smm")]
 pub mod smm;
+pub mod x6;
 
 /// Lenovo ThinkPad X61 board marker: its facts are [`config`].
 pub struct Board;

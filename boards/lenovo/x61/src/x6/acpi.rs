@@ -1,4 +1,4 @@
-//! X6 board DSDT glue: sleep/wake hooks, the UltraBase dock device driven
+//! X61 board DSDT glue: sleep/wake hooks, the UltraBase dock device driven
 //! through the TCO mailbox of the board SMM handler, the EC wake GPE (GPIO8,
 //! GPE 0x18 on ICH7 and ICH8 alike) and the complete H8 EC surface.
 //!
@@ -9,10 +9,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fstart_acpi::PcNamespace;
-use fstart_acpi_macros::acpi_dsl;
+use fstart_acpi::acpi_dsl;
 
-use crate::h8::H8Config;
-use crate::h8_acpi::ec;
+use fstart_driver_lenovo::h8::H8Config;
+use fstart_driver_lenovo::h8_acpi::ec;
 
 /// Board DSDT fragments. The platform's IGD must provide `INCB`/`DECB`.
 pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config) -> Vec<u8> {
@@ -105,10 +105,7 @@ pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config) -> Vec<u8> {
             Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
         }
     };
-    out.extend(crate::h8_acpi::dsdt_aml_with_brightness::<N>(
-        &h8,
-        &brightness,
-    ));
+    out.extend(fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness::<N>(&h8, &brightness));
 
     // Open the EC scope only after its Device declaration. This also
     // allows standalone ACPICA disassembly/recompilation without externals.

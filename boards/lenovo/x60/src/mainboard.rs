@@ -1,9 +1,9 @@
 //! Lenovo ThinkPad X60 mainboard work called by the stage mains.
 
+use crate::x6::dock;
 use embedded_hal::digital::InputPin;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
-use fstart_driver_lenovo::x6::dock;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
 /// The dock's COM1.
@@ -29,7 +29,7 @@ impl Pins {
     pub const fn of(gpio: IchGpio) -> Self {
         Self {
             dock_present: gpio.pin(dock::DOCK_PRESENT_GPIO),
-            bluetooth_card: gpio.pin(fstart_driver_lenovo::x6::BDC_PRESENCE_GPIO),
+            bluetooth_card: gpio.pin(crate::x6::BDC_PRESENCE_GPIO),
         }
     }
 }
@@ -78,11 +78,11 @@ pub fn init_devices(
     resume: bool,
 ) -> Identity {
     let mut identity = Identity::default();
-    if !fstart_driver_lenovo::x6::ec_init(bluetooth_card, &crate::config::X60_H8, ec, resume) {
+    if !crate::x6::ec_init(bluetooth_card, &crate::config::X60_H8, ec, resume) {
         fstart_log::error!("lenovo-x60: H8 EC initialization incomplete");
     }
     if !resume {
-        identity.ec_oem_string = fstart_driver_lenovo::x6::ec_oem_string(&crate::config::X60_H8);
+        identity.ec_oem_string = crate::x6::ec_oem_string(&crate::config::X60_H8);
         if identity.ec_oem_string.is_none() {
             fstart_log::error!("lenovo-x60: H8 EC firmware id unavailable");
         }

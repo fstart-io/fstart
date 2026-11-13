@@ -14,8 +14,6 @@
 //!   EC wake GPE, hotkey brightness).
 //! - [`x201`]: ThinkPad X201 policy: EC/PMH7 setup, the dock connection
 //!   and the dock DSDT and SMM event handling.
-//! - [`x6`]: X60/X61 family policy: EC/PMH7 setup, DSDT glue and the X6
-//!   UltraBase dock (DLPC LPC switch and dock-side PC87392 SuperIO).
 //!
 //! Both EC drivers are chipset-independent: they only need the LPC decode of
 //! their IO ranges, which the board's southbridge config already programs.
@@ -33,7 +31,6 @@ pub mod t6;
 pub mod thinkpad;
 pub mod wacom;
 pub mod x201;
-pub mod x6;
 
 #[cfg(feature = "acpi")]
 pub mod h8_acpi;

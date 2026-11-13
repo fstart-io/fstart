@@ -39,6 +39,15 @@ pub fn compilation_plan(
     let mp_capacity = || {
         std::collections::BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), plan.max_cpus.to_string())])
     };
+    // Long-mode SMM images are copied without absolute-address fixups;
+    // their data references must be RIP-relative. The 32-bit loader rebases
+    // its audited absolute references instead. PLT-style call relocations
+    // resolve locally at link time, avoiding GOT-indirect calls in either mode.
+    let smm_relocation = if plan.platform == fstart_core::Platform::X86 {
+        "static"
+    } else {
+        "pie"
+    };
     let mut units = vec![CompilationUnit {
         name: "smm".into(),
         cargo_target: CargoTarget::BoardLibrary,
@@ -48,11 +57,9 @@ pub fn compilation_plan(
         build_std: (plan.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
         release_only: true,
         linker_script: None,
-        rustflags: flags(
-            // Static-small emits direct relative calls; the retained-relocation
-            // audit rejects any load-base-dependent cross-section reference.
-            "-Cpanic=abort -Copt-level=s -Crelocation-model=static -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
-        ),
+        rustflags: flags(&format!(
+            "-Cpanic=abort -Copt-level=s -Crelocation-model={smm_relocation} -Zplt=yes -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
+        )),
         environment_values: mp_capacity(),
         bindings: vec![],
         file_bindings: vec![],
@@ -515,6 +522,26 @@ mod tests {
     #[test]
     fn stage_code_models_match_xip_and_dram_placement() {
         let plan = compilation_plan(resolve(FACTS, BuildSelection::default()).unwrap()).unwrap();
+        let smm = plan.unit("smm").unwrap();
+        assert!(smm.rustflags.contains(&"-Crelocation-model=pie".into()));
+        assert!(smm.rustflags.contains(&"-Zplt=yes".into()));
+        let protected = compilation_plan(
+            resolve_for::<I945>(
+                FACTS.with_protected_mode(),
+                2,
+                false,
+                BuildSelection::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let smm32 = protected.unit("smm").unwrap();
+        assert!(
+            smm32
+                .rustflags
+                .contains(&"-Crelocation-model=static".into())
+        );
+        assert!(smm32.rustflags.contains(&"-Zplt=yes".into()));
         for name in ["bootblock", "postcar", "ramstage"] {
             let unit = plan.unit(name).unwrap();
             // Board ACPI, and the heap it needs, belong to the ramstage only.

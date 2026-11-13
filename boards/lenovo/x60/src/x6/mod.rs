@@ -1,10 +1,6 @@
-//! ThinkPad X60/X61 ("X6") family policy shared by both mainboards.
+//! X60 mainboard policy for the H8 EC, PMH7 and X6 UltraBase dock.
 //!
-//! The two boards differ in chipset (i945GM/ICH7-M vs GM965/ICH8-M) but carry
-//! the same H8 EC and PMH7 setup (identical coreboot devicetree entries), the
-//! same X6 UltraBase dock and the same board DSDT glue around them. Only the
-//! chipset-specific facts (EC SCI GPIO/GPE, PCI topology) stay in the boards.
-
+//! Configuration, wiring and sleep/dock policy belong to this board.
 pub mod dock;
 
 #[cfg(feature = "acpi")]
@@ -13,9 +9,9 @@ pub mod acpi;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_hal::digital::InputPin;
 
-use crate::ec::{Ec, EcPorts};
-use crate::h8::{H8, H8Config, H8Led, H8LedMode, H8Resources};
-use crate::pmh7::Pmh7;
+use fstart_driver_lenovo::ec::{Ec, EcPorts};
+use fstart_driver_lenovo::h8::{H8, H8Config, H8Led, H8LedMode, H8Resources};
+use fstart_driver_lenovo::pmh7::Pmh7;
 
 /// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
 const EVENT_MASKS: [u8; 16] = [
@@ -26,7 +22,7 @@ const EVENT_MASKS: [u8; 16] = [
 /// Boards hand [`ec_init`] that pin.
 pub const BDC_PRESENCE_GPIO: u8 = 7;
 
-/// H8 EC configuration of the X6 family for a chipset-specific EC SCI GPE.
+/// This board's H8 EC configuration and chipset-specific EC SCI GPE.
 #[must_use]
 pub const fn h8_config(ec_gpe: u8) -> H8Config {
     H8Config {
@@ -66,7 +62,7 @@ fn detect_bluetooth(bdc_presence: &mut impl InputPin) -> bool {
 pub fn ec_init(
     bdc_presence: &mut impl InputPin,
     h8: &H8Config,
-    options: &crate::options::Options,
+    options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> bool {
     let bluetooth = detect_bluetooth(bdc_presence);
@@ -86,14 +82,28 @@ pub fn ec_init(
 }
 
 /// EC firmware id for the SMBIOS OEM string Linux `thinkpad_acpi` reads.
-pub fn ec_oem_string(h8: &H8Config) -> Option<crate::h8::EcOemString> {
+pub fn ec_oem_string(h8: &H8Config) -> Option<fstart_driver_lenovo::h8::EcOemString> {
     H8::new(Ec::new(h8.resources.os)).smbios_oem_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_pin::Pin;
+    struct Pin(Result<bool, ()>);
+
+    impl embedded_hal::digital::ErrorType for Pin {
+        type Error = embedded_hal::digital::ErrorKind;
+    }
+
+    impl InputPin for Pin {
+        fn is_high(&mut self) -> Result<bool, Self::Error> {
+            self.0.map_err(|()| embedded_hal::digital::ErrorKind::Other)
+        }
+
+        fn is_low(&mut self) -> Result<bool, Self::Error> {
+            self.is_high().map(|high| !high)
+        }
+    }
 
     #[test]
     fn bluetooth_daughter_card_detection_is_active_low() {
