@@ -845,11 +845,13 @@ name = "fstart-board-google-vilboz"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "fstart-acpi",
  "fstart-core",
  "fstart-driver-amd",
  "fstart-driver-chromeec",
  "fstart-driver-uart",
  "fstart-log",
+ "fstart-pci",
  "fstart-platform-amd",
  "ufmt",
 ]

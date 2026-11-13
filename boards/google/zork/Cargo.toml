@@ -38,5 +38,8 @@ embedded-hal = { workspace = true }
 
 [dev-dependencies]
 fstart-core = { path = "../../../crates/core", features = ["testing"] }
+# The DSDT test (src/acpi_tests.rs).
+fstart-acpi = { path = "../../../crates/acpi" }
+fstart-pci = { path = "../../../crates/pci" }
 
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.
