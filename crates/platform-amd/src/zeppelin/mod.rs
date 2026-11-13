@@ -7,7 +7,7 @@ pub mod layout;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
-use crate::noncar::{self, Ctx, Devices, Silicon, Tables, layout::Region};
+use crate::noncar::{self, Devices, layout::Region};
 pub use fstart_driver_amd::soc::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
 use fstart_driver_amd::{
     fch::taishan,
@@ -36,18 +36,13 @@ impl noncar::host::HostSoc for Zeppelin {
     };
 }
 
-impl noncar::Soc for Zeppelin {
+impl noncar::DieSoc for Zeppelin {
     const LAYOUT: noncar::layout::Layout = layout::LAYOUT;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;
-    /// 8 MiB of TSEG.
-    const TSEG_SIZE: u32 = 8 << 20;
     /// Two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
-    type Smbios<'a> = crate::acpi::SmbiosIdentity<'a>;
-    type Acpi = crate::acpi::BoardAcpi;
-
     /// The FCH GPIO controller (AMDI0030) on the IRQ the board routes it
     /// to, as the vendor DSDT has it: three banks.
     fn acpi_devices(
@@ -64,29 +59,6 @@ impl noncar::Soc for Zeppelin {
         Ok((Devices::new(), aml))
     }
 
-    #[cfg(all(feature = "bundle", target_os = "none"))]
-    fn tables(
-        ctx: &Ctx<'_, Self>,
-        silicon: &mut Silicon<Self>,
-        pci: &fstart_pci::PciEcam,
-        smbios: &crate::acpi::SmbiosIdentity<'_>,
-        acpi: crate::acpi::BoardAcpi,
-    ) -> Tables {
-        noncar::tables(ctx, silicon, pci, smbios, acpi)
-    }
-    #[cfg(not(all(feature = "bundle", target_os = "none")))]
-    fn tables(
-        _: &Ctx<'_, Self>,
-        _: &mut Silicon<Self>,
-        _: &fstart_pci::PciEcam,
-        _: &crate::acpi::SmbiosIdentity<'_>,
-        _: crate::acpi::BoardAcpi,
-    ) -> Tables {
-        unreachable!("the tables are the stage's")
-    }
-}
-
-impl noncar::DieSoc for Zeppelin {
     /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
     /// LRDIMMs up to 64 GiB.
     const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
