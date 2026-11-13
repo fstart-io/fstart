@@ -1689,10 +1689,6 @@ impl IronlakeMmioSink for Mmio {
     fn update32(&mut self, register: usize, mask_unset: u32, mask_set: u32) {
         Mmio::update32(self, register, mask_unset, mask_set);
     }
-
-    fn set_bits32(&mut self, register: usize, mask: u32) {
-        Mmio::set_bits32(self, register, mask);
-    }
 }
 
 /// Execute currently-live register writes from an Ironlake init plan.

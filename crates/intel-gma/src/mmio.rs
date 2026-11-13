@@ -5,8 +5,6 @@ use tock_registers::interfaces::{Readable, Writeable};
 
 use fstart_core::typed::{Mmio32, MmioAddr};
 
-use crate::error::GmaError;
-
 /// Volatile 32-bit MMIO register window.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Mmio {
@@ -60,11 +58,6 @@ impl Mmio {
         let _ = self.read32(offset);
     }
 
-    /// Set selected bits in a 32-bit register.
-    pub(crate) fn set_bits32(&self, offset: usize, mask: u32) {
-        self.write32(offset, self.read32(offset) | mask);
-    }
-
     /// Clear selected bits in a 32-bit register.
     pub(crate) fn clear_bits32(&self, offset: usize, mask: u32) {
         self.write32(offset, self.read32(offset) & !mask);
@@ -73,42 +66,6 @@ impl Mmio {
     /// Clear and set selected bits in a 32-bit register.
     pub(crate) fn update32(&self, offset: usize, clear: u32, set: u32) {
         self.write32(offset, (self.read32(offset) & !clear) | set);
-    }
-
-    /// Wait until all bits in `mask` are set.
-    #[allow(dead_code)]
-    pub(crate) fn wait_set32(
-        &self,
-        offset: usize,
-        mask: u32,
-        mut timeout: u32,
-    ) -> Result<(), GmaError> {
-        while timeout != 0 {
-            if (self.read32(offset) & mask) == mask {
-                return Ok(());
-            }
-            timeout -= 1;
-            core::hint::spin_loop();
-        }
-        Err(GmaError::Timeout)
-    }
-
-    /// Wait until all bits in `mask` are clear.
-    #[allow(dead_code)]
-    pub(crate) fn wait_clear32(
-        &self,
-        offset: usize,
-        mask: u32,
-        mut timeout: u32,
-    ) -> Result<(), GmaError> {
-        while timeout != 0 {
-            if (self.read32(offset) & mask) == 0 {
-                return Ok(());
-            }
-            timeout -= 1;
-            core::hint::spin_loop();
-        }
-        Err(GmaError::Timeout)
     }
 }
 
