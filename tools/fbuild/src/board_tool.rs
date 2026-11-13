@@ -383,6 +383,7 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+#[allow(clippy::too_many_arguments)] // the CLI's flat run options
 pub fn run(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,

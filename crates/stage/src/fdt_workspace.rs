@@ -209,7 +209,7 @@ fn prepare_in(
     patches: Option<(&str, u64, u64)>,
 ) -> Result<usize, ServiceError> {
     if destination != config.destination.start
-        || source % 4 != 0
+        || !source.is_multiple_of(4)
         || !(contains(config.source, source, 40) || contains(config.destination, source, 40))
     {
         return Err(ServiceError::InvalidParam);

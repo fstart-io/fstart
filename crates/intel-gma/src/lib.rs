@@ -481,6 +481,8 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
 
 /// Reject an omitted modeset executor before touching display registers.
 pub(crate) fn validate_generation(cpu: Cpu) -> Result<(), GmaError> {
+    // With no executor built in, every arm is false.
+    #[allow(clippy::match_like_matches_macro)]
     let enabled = match caps_for(cpu).generation {
         Generation::I945 => cfg!(feature = "i945"),
         Generation::G45 => cfg!(feature = "g45"),

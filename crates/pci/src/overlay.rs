@@ -85,30 +85,6 @@ register_structs! {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-    #[test]
-    fn memory_limit_extension_preserves_base_reserved_bits_and_neighbors() {
-        #[repr(C, align(4))]
-        struct Image([u8; 64]);
-        let mut image = Image([0; 64]);
-        image.0[6..8].copy_from_slice(&0xa55au16.to_le_bytes());
-        let registers = unsafe { &*(image.0.as_ptr().cast::<PciType1Config>()) };
-        registers.memory_base.set(0xb001);
-        registers.memory_limit.set(0xb00a);
-        registers.prefetchable_memory_base.set(0x1234);
-        registers
-            .memory_limit
-            .modify(PCI_BRIDGE_MEMORY_BOUND::ADDRESS.val(0xb0f));
-        assert_eq!(registers.memory_base.get(), 0xb001);
-        assert_eq!(registers.memory_limit.get(), 0xb0fa);
-        assert_eq!(registers.prefetchable_memory_base.get(), 0x1234);
-        assert_eq!(registers.status_raw.get(), 0xa55a);
-    }
-}
-
 /// Define a flat Type 0 config-space overlay with standard header fields plus
 /// driver-specific fields at offsets `0x40..`.
 #[macro_export]
@@ -144,4 +120,28 @@ macro_rules! pci_type0_config {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+    #[test]
+    fn memory_limit_extension_preserves_base_reserved_bits_and_neighbors() {
+        #[repr(C, align(4))]
+        struct Image([u8; 64]);
+        let mut image = Image([0; 64]);
+        image.0[6..8].copy_from_slice(&0xa55au16.to_le_bytes());
+        let registers = unsafe { &*(image.0.as_ptr().cast::<PciType1Config>()) };
+        registers.memory_base.set(0xb001);
+        registers.memory_limit.set(0xb00a);
+        registers.prefetchable_memory_base.set(0x1234);
+        registers
+            .memory_limit
+            .modify(PCI_BRIDGE_MEMORY_BOUND::ADDRESS.val(0xb0f));
+        assert_eq!(registers.memory_base.get(), 0xb001);
+        assert_eq!(registers.memory_limit.get(), 0xb0fa);
+        assert_eq!(registers.prefetchable_memory_base.get(), 0x1234);
+        assert_eq!(registers.status_raw.get(), 0xa55a);
+    }
 }

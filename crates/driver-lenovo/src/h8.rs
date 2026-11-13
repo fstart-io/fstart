@@ -252,11 +252,12 @@ impl H8 {
 
     /// Program all event-enable mask registers from board policy.
     pub fn program_event_masks(&self, masks: &[u8; EVENT_ENABLE_REGISTERS]) -> bool {
-        masks
-            .iter()
-            .enumerate()
-            .map(|(index, mask)| self.channel.write(EVENT_ENABLE_BASE + index as u8, *mask))
-            .fold(true, |ok, written| written && ok)
+        // Every register is written, also after a failed write.
+        let mut ok = true;
+        for (index, mask) in masks.iter().enumerate() {
+            ok &= self.channel.write(EVENT_ENABLE_BASE + index as u8, *mask);
+        }
+        ok
     }
 
     /// Turn the hotkey/event reporting on and enable thermal management,
@@ -554,40 +555,6 @@ impl H8Illumination {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn illumination_preserves_unrelated_config1_bits() {
-        assert_eq!(H8Illumination::Thinklight.config1(0x05), 0x09);
-        assert_eq!(H8Illumination::Keyboard.config1(0xf3), 0xf7);
-        assert_eq!(H8Illumination::None.config1(0x05), 0x0d);
-    }
-
-    #[test]
-    fn invalid_volume_and_sound_commands_do_not_touch_the_channel() {
-        // Undecoded ports must never be accessed for an invalid command.
-        let h8 = H8::new(Ec::new(EcPorts::new(0, 0)));
-        for volume in [0x0f, 0x10, 0x4f, 0x80, 0xff] {
-            assert!(!h8.volume(volume));
-        }
-        assert!(!h8.beep(18));
-        assert!(!h8.beep(u8::MAX));
-    }
-
-    #[test]
-    fn oem_string_matches_coreboot_padding() {
-        let string = EcOemString::new(*b"7MHT24WW", 1, 101).unwrap();
-        assert_eq!(
-            string.as_str(),
-            "IBM ThinkPad Embedded Controller -[7MHT24WW-1.101   ]-"
-        );
-        assert!(EcOemString::new(*b"7MHT 4WW", 1, 1).is_none());
-        assert!(EcOemString::new([0xff; 8], 1, 1).is_none());
-    }
-}
-
 // -----------------------------------------------------------------------
 // Board configuration
 // -----------------------------------------------------------------------
@@ -738,5 +705,39 @@ impl H8Config {
             critical_temp_celsius: 0,
             passive_temp_celsius: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn illumination_preserves_unrelated_config1_bits() {
+        assert_eq!(H8Illumination::Thinklight.config1(0x05), 0x09);
+        assert_eq!(H8Illumination::Keyboard.config1(0xf3), 0xf7);
+        assert_eq!(H8Illumination::None.config1(0x05), 0x0d);
+    }
+
+    #[test]
+    fn invalid_volume_and_sound_commands_do_not_touch_the_channel() {
+        // Undecoded ports must never be accessed for an invalid command.
+        let h8 = H8::new(Ec::new(EcPorts::new(0, 0)));
+        for volume in [0x0f, 0x10, 0x4f, 0x80, 0xff] {
+            assert!(!h8.volume(volume));
+        }
+        assert!(!h8.beep(18));
+        assert!(!h8.beep(u8::MAX));
+    }
+
+    #[test]
+    fn oem_string_matches_coreboot_padding() {
+        let string = EcOemString::new(*b"7MHT24WW", 1, 101).unwrap();
+        assert_eq!(
+            string.as_str(),
+            "IBM ThinkPad Embedded Controller -[7MHT24WW-1.101   ]-"
+        );
+        assert!(EcOemString::new(*b"7MHT 4WW", 1, 1).is_none());
+        assert!(EcOemString::new([0xff; 8], 1, 1).is_none());
     }
 }

@@ -45,6 +45,11 @@ pub fn initial_stage() {
     LOCATOR.store(FSTART_ANCHOR.0.get().cast(), Ordering::Release);
 }
 
+/// A locator is already published, or the carried one does not fit the
+/// platform's bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocatorRejected;
+
 /// Install location-only metadata received through the protected predecessor
 /// chain. It cannot supply keys/family/version-floor or enlarge platform bounds.
 /// Fails once a locator is published, including an initial stage's own.
@@ -53,9 +58,9 @@ pub fn initial_stage() {
 /// Call once during single-threaded stage entry before media services/APs start.
 /// `capacity` must be the independently established platform/device limit, not
 /// a value taken from the carried locator. The caller establishes provenance.
-pub unsafe fn install_locator(locator: LocatorBlock, capacity: u64) -> Result<(), ()> {
+pub unsafe fn install_locator(locator: LocatorBlock, capacity: u64) -> Result<(), LocatorRejected> {
     if !LOCATOR.load(Ordering::Acquire).is_null() || !locator.media().validate(capacity) {
-        return Err(());
+        return Err(LocatorRejected);
     }
     let mut bytes = [0; LOCATOR_SIZE];
     locator.write_to(&mut bytes);

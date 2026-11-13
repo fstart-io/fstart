@@ -151,7 +151,7 @@ mod tests {
         };
         let last = root_of(&last);
         assert_eq!(last.motherboard().len(), 2);
-        assert!(last.io().eq([0xd000..=0xffff]));
+        assert!(last.io().eq(core::iter::once(0xd000..=0xffff)));
     }
 
     fn root_of(plan: &RootBridgePlan) -> PciRoot {

@@ -85,7 +85,7 @@ fn cbi_short_integer_zero_and_wire_checksum_trigger_order() {
         assert_eq!(request[8], if i == 0 { 0 } else { 6 });
         assert!(request[9..].iter().all(|&byte| byte == 0));
     }
-    for transaction in ec.io.writes.chunks_exact(17) {
+    for transaction in ec.io.writes.as_chunks::<17>().0 {
         assert_eq!(
             transaction
                 .iter()

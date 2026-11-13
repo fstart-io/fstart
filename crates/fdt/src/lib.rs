@@ -388,7 +388,11 @@ pub unsafe fn fdt_set_bootargs(
         let str_dest = new_off_strings + size_strings;
         // SAFETY: within [dtb .. dtb+max_size).
         unsafe {
-            ptr::copy_nonoverlapping(b"bootargs\0".as_ptr(), dtb.add(str_dest), string_add_len);
+            ptr::copy_nonoverlapping(
+                c"bootargs".as_ptr().cast(),
+                dtb.add(str_dest),
+                string_add_len,
+            );
         }
     }
 
@@ -655,7 +659,7 @@ pub unsafe fn fdt_set_memory(
     node_buf[p..p + dt_value_len].copy_from_slice(dt_value);
     p += dt_value_len;
     // Pad to 4-byte alignment
-    while p % 4 != 0 {
+    while !p.is_multiple_of(4) {
         node_buf[p] = 0;
         p += 1;
     }
@@ -747,12 +751,12 @@ fn write_hex_to_buf(buf: &mut [u8], val: u64) -> usize {
     }
 
     // Count the number of hex digits needed (1-16).
-    let digits = ((64 - val.leading_zeros() + 3) / 4) as usize;
+    let digits = (64 - val.leading_zeros()).div_ceil(4) as usize;
 
-    for i in 0..digits {
+    for (i, digit) in buf[..digits].iter_mut().enumerate() {
         let shift = (digits - 1 - i) * 4;
         let nibble = ((val >> shift) & 0xF) as u8;
-        buf[i] = if nibble < 10 {
+        *digit = if nibble < 10 {
             b'0' + nibble
         } else {
             b'a' + nibble - 10
@@ -895,7 +899,7 @@ unsafe fn set_reg_in_existing_memory_node(
         p += 4;
         prop_buf[p..p + dt_value_len].copy_from_slice(dt_value);
         p += dt_value_len;
-        while p % 4 != 0 {
+        while !p.is_multiple_of(4) {
             prop_buf[p] = 0;
             p += 1;
         }
@@ -970,8 +974,6 @@ unsafe fn set_reg_in_existing_memory_node(
 
     Ok(current_totalsize)
 }
-
-/// FDT magic number (big-endian `0xD00DFEED`).
 
 /// Read an FDT (Flattened Device Tree) blob from a raw memory address.
 ///

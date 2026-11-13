@@ -28,6 +28,8 @@ pub use crate::southbridge::hda::{
 };
 
 /// ICH8/ICH8-M PCI config and RCBA constants.
+// The boards and the platform name them `ich8::ich8::*`.
+#[allow(clippy::module_inception)]
 pub mod ich8 {
     pub const LAN_DEV: u8 = 0x19;
     pub const LAN_FUNC: u8 = 0;
@@ -2064,10 +2066,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
             config,
             options: crate::southbridge::options::Options::from_config(
                 config.power_on_after_fail,
-                match config.sata {
-                    Some(sata) => Some(sata.mode),
-                    None => None,
-                },
+                config.sata.map(|sata| sata.mode),
             ),
             smbus: None,
             pm: PmIo::new(ich8::DEFAULT_PMBASE),

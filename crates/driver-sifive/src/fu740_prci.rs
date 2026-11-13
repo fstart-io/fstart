@@ -239,6 +239,32 @@ impl Fu740Prci {
     }
 }
 
+/// Static FU740 PRCI policy.
+#[derive(Debug, Clone, Copy)]
+pub struct Fu740PrciConfig {
+    /// The PLL settings are explicitly selected for this reference, not scaled.
+    pub reference_clock_hz: u32,
+    pub plls: PllConfig,
+}
+
+impl Fu740PrciConfig {
+    #[must_use]
+    pub const fn new(reference_clock_hz: u32, plls: PllConfig) -> Self {
+        Self {
+            reference_clock_hz,
+            plls,
+        }
+    }
+
+    #[must_use]
+    pub const fn build(self) -> Self {
+        if self.reference_clock_hz == 0 {
+            panic!("FU740 reference clock must not be zero");
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,31 +308,5 @@ mod tests {
     #[should_panic]
     fn rejects_divisors_outside_the_register_fields() {
         let _ = PllSettings::new(64, 0, 0, 0);
-    }
-}
-
-/// Static FU740 PRCI policy.
-#[derive(Debug, Clone, Copy)]
-pub struct Fu740PrciConfig {
-    /// The PLL settings are explicitly selected for this reference, not scaled.
-    pub reference_clock_hz: u32,
-    pub plls: PllConfig,
-}
-
-impl Fu740PrciConfig {
-    #[must_use]
-    pub const fn new(reference_clock_hz: u32, plls: PllConfig) -> Self {
-        Self {
-            reference_clock_hz,
-            plls,
-        }
-    }
-
-    #[must_use]
-    pub const fn build(self) -> Self {
-        if self.reference_clock_hz == 0 {
-            panic!("FU740 reference clock must not be zero");
-        }
-        self
     }
 }

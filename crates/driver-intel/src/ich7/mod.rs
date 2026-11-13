@@ -269,6 +269,8 @@ impl Rcba {
 }
 
 /// ICH7 / NM10 PCI config and RCBA register constants.
+// The boards and the platform name them `ich7::ich7::*`.
+#[allow(clippy::module_inception)]
 pub mod ich7 {
     /// LPC bridge: bus 0, dev 0x1f, func 0.
     pub use crate::southbridge::lpc::{LPC_DEV, LPC_FUNC};
@@ -1126,10 +1128,7 @@ impl crate::IntelSouthbridgeDriver for IntelIch7 {
             config,
             options: crate::southbridge::options::Options::from_config(
                 config.power_on_after_fail,
-                match config.sata {
-                    Some(sata) => Some(sata.mode),
-                    None => None,
-                },
+                config.sata.map(|sata| sata.mode),
             ),
             smbus: None,
             s3_enabled: false,
@@ -2540,6 +2539,8 @@ mod acpi_impl {
 }
 
 /// Software-sequencing cycle type of one SPI opcode menu entry.
+// The datasheet's names of the four types.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy)]
 enum SpiOpType {
     ReadNoAddr = 0,

@@ -160,6 +160,8 @@ mod tests {
     }
 
     #[test]
+    // One window, not its ports.
+    #[allow(clippy::single_range_in_vec_init)]
     fn config_ports_are_cut_out_of_the_io_windows() {
         let parts = |window| around_config_ports(window).collect::<Vec<_>>();
         assert_eq!(parts(0..=0xfff), [0..=0xcf7, 0xd00..=0xfff]);

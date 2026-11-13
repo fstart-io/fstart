@@ -160,14 +160,18 @@ fn dlpc_gpio_init() {
     }
 }
 
+/// A clock or the LPC switch did not come up within its second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout;
+
 /// Initialize the laptop-side DLPC switch and its GPIO block. Required even
 /// when undocked: the switch is what isolates the dock LPC segment.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn dlpc_init() -> Result<(), ()> {
+pub fn dlpc_init() -> Result<(), Timeout> {
     // Enable the 14.318 MHz clock on CLKIN.
     dlpc_write(0x29, 0xa0);
     if !wait_ms(1000, || dlpc_read(0x29) & 0x10 != 0) {
-        return Err(());
+        return Err(Timeout);
     }
     let mut switch = LogicalDevice::select(0x19, dlpc_read, dlpc_write);
     switch.set_io_base(IoResource::Primary(DLPC_SWITCH));
@@ -177,7 +181,7 @@ pub fn dlpc_init() -> Result<(), ()> {
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub fn dlpc_init() -> Result<(), ()> {
+pub fn dlpc_init() -> Result<(), Timeout> {
     Ok(())
 }
 
@@ -201,7 +205,7 @@ pub fn connected() -> bool {
 
 /// Connect the dock-side LPC bus and initialize dock GPIO, power and LDNs.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn connect(ec: Ec) -> Result<(), ()> {
+pub fn connect(ec: Ec) -> Result<(), Timeout> {
     // Start from the vendor state: dock reset asserted and DLPC powered down,
     // preserving unrelated DLPC GPIO outputs. The dock UART sits behind this
     // switch, so marginal sequencing shows up later as serial corruption.
@@ -213,7 +217,7 @@ pub fn connect(ec: Ec) -> Result<(), ()> {
         // SAFETY: disable the DLPC switch again on failure.
         unsafe { outb(DLPC_SWITCH, 0x00) };
         LogicalDevice::select(0x19, dlpc_read, dlpc_write).set_enabled(false);
-        return Err(());
+        return Err(Timeout);
     }
 
     // Power up DLPC while keeping D_PLTRST# asserted, then deassert it.
@@ -225,7 +229,7 @@ pub fn connect(ec: Ec) -> Result<(), ()> {
     // Start the dock 14.318 MHz clock and wait for it to settle.
     dock_write(0x29, 0x06);
     if !wait_ms(1000, || dock_read(0x29) & 0x08 != 0) {
-        return Err(());
+        return Err(Timeout);
     }
 
     // CLKRUN/#DR1/#SMI/#MTR pin functions, PNF active high, FDC off,
@@ -264,7 +268,7 @@ pub fn connect(ec: Ec) -> Result<(), ()> {
         outb(DOCK_GPIO_BASE + 0x04, inb(DOCK_GPIO_BASE + 0x04) | 0x40);
     }
     if !set_usb_power(ec, true) {
-        return Err(());
+        return Err(Timeout);
     }
     let mut parallel = LogicalDevice::select(0x01, dock_read, dock_write);
     parallel.set_io_base(IoResource::Primary(0x3bc));
@@ -276,7 +280,7 @@ pub fn connect(ec: Ec) -> Result<(), ()> {
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub fn connect(_ec: Ec) -> Result<(), ()> {
+pub fn connect(_ec: Ec) -> Result<(), Timeout> {
     Ok(())
 }
 

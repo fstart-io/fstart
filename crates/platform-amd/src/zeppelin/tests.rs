@@ -133,8 +133,7 @@ fn flow(
 
     // Silicon init
     let config = &{ *config };
-    let nonpci =
-        silicon::pre_mp_reset(&dies, &fch, identity, top, Some(&apob), &mut clock).unwrap();
+    let nonpci = silicon::pre_mp_reset(&dies, &fch, identity, top, Some(&apob), &clock).unwrap();
     marker(hw, 2); // the board's FCH-reset work
     let trained = silicon::pre_mp_dxio(
         &dies,
@@ -145,7 +144,7 @@ fn flow(
         top,
         nonpci,
         low(dma + 0x2_0000, dxio::zeppelin::Buffers::new()),
-        &mut clock,
+        &clock,
     )
     .unwrap();
     marker(hw, 3); // the board's link-trained work
@@ -158,7 +157,7 @@ fn flow(
         trained,
         low(dma, SmuPages([[0; 4096]; 4])),
         low(dma + 0x1_0000, SmuPolicy([0; 0x80])),
-        &mut clock,
+        &clock,
     );
     assert_eq!(state.ioapics[0], state.nonpci[0] + (7 << 20));
     let threads = threads::thread_count(&dies, Policy::DEFAULT).unwrap();

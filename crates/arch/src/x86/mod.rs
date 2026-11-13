@@ -38,6 +38,9 @@ pub fn udelay_tsc(us: u32, tsc_hz: u64) {
 /// Issue a 32-bit physical memory read without constructing a fabricated
 /// Rust pointer. Pineview uses this as a DRAM command/read-training strobe
 /// while memory is only partially initialized.
+///
+/// # Safety
+/// `addr` is readable physical memory, identity mapped.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn read_phys32(addr: usize) {

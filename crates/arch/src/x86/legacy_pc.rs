@@ -49,24 +49,6 @@ pub fn enter_acpi_s5(controls: &[AcpiSleepControl]) -> ! {
     }
 }
 
-#[cfg(test)]
-mod sleep_tests {
-    use super::*;
-
-    #[test]
-    fn platform_sleep_types_preserve_unrelated_control_bits() {
-        for (port, sleep_type, expected) in [(0x604, 0, 0), (0x504, 7, 0x1c00), (0x804, 5, 0x1400)]
-        {
-            let control = AcpiSleepControl::new(port, sleep_type);
-            assert_eq!(control.port(), port);
-            let current = 0xc3ff | 0x3c00;
-            let prepared = sleep_control(current, control.sleep_type(), false);
-            assert_eq!(prepared, 0xc3ff | expected);
-            assert_eq!(sleep_control(prepared, sleep_type, true), prepared | 0x2000);
-        }
-    }
-}
-
 pub const PIC_MASTER_MASK: u16 = 0x21;
 pub const PIC_SLAVE_MASK: u16 = 0xa1;
 const PIC_MASTER_COMMAND: u16 = 0x20;
@@ -115,5 +97,23 @@ pub fn initialize_isa_dma() {
         outb(DMA1_ALL_MASK, 0x0f);
         // Retain the existing POST-port read delay, not a dummy write.
         let _ = inb(0x80);
+    }
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+
+    #[test]
+    fn platform_sleep_types_preserve_unrelated_control_bits() {
+        for (port, sleep_type, expected) in [(0x604, 0, 0), (0x504, 7, 0x1c00), (0x804, 5, 0x1400)]
+        {
+            let control = AcpiSleepControl::new(port, sleep_type);
+            assert_eq!(control.port(), port);
+            let current = 0xc3ff | 0x3c00;
+            let prepared = sleep_control(current, control.sleep_type(), false);
+            assert_eq!(prepared, 0xc3ff | expected);
+            assert_eq!(sleep_control(prepared, sleep_type, true), prepared | 0x2000);
+        }
     }
 }

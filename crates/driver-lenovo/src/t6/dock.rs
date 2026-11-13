@@ -39,10 +39,12 @@ const DISCONNECTED_LEDS: [(H8Led, H8LedMode); 2] = [
 ];
 
 fn set_dock_leds(h8: &H8, commands: [(H8Led, H8LedMode); 2]) -> bool {
-    commands
-        .into_iter()
-        .map(|(led, mode)| h8.set_led(led, mode))
-        .fold(true, |ok, acknowledged| acknowledged && ok)
+    // Both LEDs are set, also if the first command isn't acknowledged.
+    let mut ok = true;
+    for (led, mode) in commands {
+        ok &= h8.set_led(led, mode);
+    }
+    ok
 }
 const DLPC_INDEX: u16 = 0x164e;
 const DLPC_SWITCH: u16 = 0x164c;

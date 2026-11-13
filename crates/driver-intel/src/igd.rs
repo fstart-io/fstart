@@ -451,7 +451,7 @@ pub fn publish_opregion(
     };
     match memory(opregion_size(vbt.len())) {
         Some(opregion) => {
-            build_opregion(opregion, &vbt);
+            build_opregion(opregion, vbt);
             register_opregion(igd, sci, opregion.as_ptr() as u32);
             fstart_log::info!(
                 "intel-igd: OpRegion at {:#x}, VBT {} bytes",

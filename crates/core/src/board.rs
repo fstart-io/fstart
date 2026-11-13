@@ -162,7 +162,7 @@ pub fn mutable_prefix_size(regions: &[MutableFlashRegion], base: u32) -> Result<
         }
         if !region.alignment.is_power_of_two()
             || region.size == 0
-            || end % region.alignment != 0
+            || !end.is_multiple_of(region.alignment)
             || region.size % region.alignment != 0
         {
             return Err("mutable flash region violates its declared alignment");
@@ -172,63 +172,6 @@ pub fn mutable_prefix_size(regions: &[MutableFlashRegion], base: u32) -> Result<
             .ok_or("mutable flash prefix overflows")?;
     }
     Ok(end - base)
-}
-
-#[cfg(test)]
-mod mutable_region_tests {
-    use super::*;
-
-    fn region(name: &str, size: u32, alignment: u32) -> MutableFlashRegion {
-        MutableFlashRegion {
-            name: crate::hstr(name),
-            size,
-            alignment,
-        }
-    }
-
-    #[test]
-    fn accepts_platform_owned_names_sizes_and_erase_geometry() {
-        let regions = [
-            region("calibration", 0x1800, 0x800),
-            region("variables", 0x2000, 0x800),
-        ];
-        assert_eq!(mutable_prefix_size(&regions, 0x4000), Ok(0x3800));
-        let intel = [
-            region("mrc-cache", 0x20000, 0x10000),
-            region("console", 0x40000, 0x10000),
-        ];
-        assert_eq!(mutable_prefix_size(&intel, 0x500000), Ok(0x60000));
-        assert_eq!(mutable_prefix_size(&[], u32::MAX), Ok(0));
-    }
-
-    #[test]
-    fn rejects_misalignment_empty_regions_and_overflow() {
-        for bad in [
-            region("x", 0, 4096),
-            region("x", 4096, 0),
-            region("x", 4096, 3),
-            region("x", 4097, 4096),
-        ] {
-            assert!(mutable_prefix_size(&[bad], 0).is_err());
-        }
-        assert!(mutable_prefix_size(&[region("x", 4096, 4096)], 1).is_err());
-        assert!(mutable_prefix_size(&[region("x", 8192, 4096)], 0xfffff000).is_err());
-        // A following region must also start on its own declared boundary.
-        assert!(
-            mutable_prefix_size(&[region("a", 2048, 2048), region("b", 4096, 4096)], 0).is_err()
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_empty_and_reserved_region_names() {
-        for name in ["", "ro", "RO"] {
-            assert!(mutable_prefix_size(&[region(name, 4096, 4096)], 0).is_err());
-        }
-        assert!(
-            mutable_prefix_size(&[region("data", 4096, 4096), region("DATA", 4096, 4096)], 0)
-                .is_err()
-        );
-    }
 }
 
 /// Board/platform-owned host build policy.
@@ -535,4 +478,61 @@ pub struct FirmwareConfig {
     pub file: HString<128>,
     /// Address in RAM where the firmware blob is loaded
     pub load_addr: u64,
+}
+
+#[cfg(test)]
+mod mutable_region_tests {
+    use super::*;
+
+    fn region(name: &str, size: u32, alignment: u32) -> MutableFlashRegion {
+        MutableFlashRegion {
+            name: crate::hstr(name),
+            size,
+            alignment,
+        }
+    }
+
+    #[test]
+    fn accepts_platform_owned_names_sizes_and_erase_geometry() {
+        let regions = [
+            region("calibration", 0x1800, 0x800),
+            region("variables", 0x2000, 0x800),
+        ];
+        assert_eq!(mutable_prefix_size(&regions, 0x4000), Ok(0x3800));
+        let intel = [
+            region("mrc-cache", 0x20000, 0x10000),
+            region("console", 0x40000, 0x10000),
+        ];
+        assert_eq!(mutable_prefix_size(&intel, 0x500000), Ok(0x60000));
+        assert_eq!(mutable_prefix_size(&[], u32::MAX), Ok(0));
+    }
+
+    #[test]
+    fn rejects_misalignment_empty_regions_and_overflow() {
+        for bad in [
+            region("x", 0, 4096),
+            region("x", 4096, 0),
+            region("x", 4096, 3),
+            region("x", 4097, 4096),
+        ] {
+            assert!(mutable_prefix_size(&[bad], 0).is_err());
+        }
+        assert!(mutable_prefix_size(&[region("x", 4096, 4096)], 1).is_err());
+        assert!(mutable_prefix_size(&[region("x", 8192, 4096)], 0xfffff000).is_err());
+        // A following region must also start on its own declared boundary.
+        assert!(
+            mutable_prefix_size(&[region("a", 2048, 2048), region("b", 4096, 4096)], 0).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_empty_and_reserved_region_names() {
+        for name in ["", "ro", "RO"] {
+            assert!(mutable_prefix_size(&[region(name, 4096, 4096)], 0).is_err());
+        }
+        assert!(
+            mutable_prefix_size(&[region("data", 4096, 4096), region("DATA", 4096, 4096)], 0)
+                .is_err()
+        );
+    }
 }

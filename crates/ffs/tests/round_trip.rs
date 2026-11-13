@@ -46,7 +46,7 @@ fn anchored_microcode_remains_16_byte_aligned_after_arbitrary_stage_sizes() {
     let microcode = vec![0x5a; 2048];
     for tail in 0..16 {
         let config = FfsImageConfig {
-            keys: vec![vk.clone()],
+            keys: vec![vk],
             regions: vec![InputRegion::Container {
                 name: "ro".into(),
                 files: vec![
@@ -187,7 +187,7 @@ fn test_ro_only_round_trip() {
 fn test_multi_segment_file() {
     let (signing_key, vk) = dev_keypair();
 
-    let text_data = stage_data_with_anchor(&vec![0x01; 64]); // code with anchor
+    let text_data = stage_data_with_anchor(&[0x01; 64]); // code with anchor
     let rodata = vec![0x02; 32]; // read-only data
     let data = vec![0x03; 16]; // read-write data
 

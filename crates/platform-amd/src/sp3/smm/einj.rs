@@ -126,23 +126,23 @@ unsafe fn end(
     state.active = false;
     let result = unsafe { send(mailbox, timer, page, Control::END) };
     write(BACKEND_STATUS + 24, result.map_or_else(status, |_| 0));
-    if result.is_ok() {
-        if let Some((socket, [control, low, high])) = state.saved_nbio.take() {
-            let Some(smn) = smns.get(usize::from(socket)) else {
-                return Err(PspError::Status {
-                    command: 0x22,
-                    status: 2,
-                });
-            };
-            // Restore the target socket, not the socket executing SMM.
-            // Exact donor ordering; preserve this endpoint's OS index.
-            smn.with_saved_index(|s| {
-                s.write32(0x1d840, 0);
-                s.write32(0x1d848, low);
-                s.write32(0x1d84c, high);
-                s.write32(0x1d840, control);
+    if result.is_ok()
+        && let Some((socket, [control, low, high])) = state.saved_nbio.take()
+    {
+        let Some(smn) = smns.get(usize::from(socket)) else {
+            return Err(PspError::Status {
+                command: 0x22,
+                status: 2,
             });
-        }
+        };
+        // Restore the target socket, not the socket executing SMM.
+        // Exact donor ordering; preserve this endpoint's OS index.
+        smn.with_saved_index(|s| {
+            s.write32(0x1d840, 0);
+            s.write32(0x1d848, low);
+            s.write32(0x1d84c, high);
+            s.write32(0x1d840, control);
+        });
     }
     result
 }
