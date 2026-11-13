@@ -41,7 +41,7 @@ pub use smbus::SmBus;
 pub use spi::SpiBus;
 #[cfg(any(test, feature = "testing"))]
 pub use timer::ManualTimer;
-pub use timer::{Timer, TimerDelay};
+pub use timer::{Timer, TimerDelay, poll_tries, poll_until};
 
 /// Common error type for service operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]

@@ -10,7 +10,6 @@
 use core::marker::PhantomData;
 
 use fstart_core::indexed::Indexed;
-use fstart_core::services::Timer;
 #[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::RegisterLongName;
@@ -374,17 +373,4 @@ impl<P: ConfigRegionAccess> Window for ConfigWindow<P> {
         // SAFETY: `new`'s contract.
         unsafe { self.pci.write(self.function, off as u16, value) }
     }
-}
-
-/// Poll `done` up to `tries` times with `delay_us` between tries. AGESA
-/// polls several FCH status bits forever; every poll here is bounded and the
-/// caller decides what a timeout means.
-pub fn poll(timer: &dyn Timer, tries: u32, delay_us: u64, mut done: impl FnMut() -> bool) -> bool {
-    (0..tries).any(|_| {
-        if done() {
-            return true;
-        }
-        timer.delay_us(delay_us);
-        false
-    }) || done()
 }

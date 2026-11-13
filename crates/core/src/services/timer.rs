@@ -39,6 +39,52 @@ pub trait Timer: Send + Sync {
     }
 }
 
+/// Poll `f` until it returns `Some` or `timeout_us` elapses on `timer`.
+///
+/// `f` is checked once before the deadline is examined and once more
+/// after it, so a condition met right at the end is not reported as a
+/// timeout. Elapsed time uses wrapping subtraction, so a wrapping
+/// timestamp source is fine. For contexts without a clock (only a
+/// delay), use [`poll_tries`]. Pre-service x86 code that cannot hold a
+/// `Timer` at all uses `fstart_arch::wait_us` instead.
+pub fn poll_until<T>(
+    timer: &dyn Timer,
+    timeout_us: u64,
+    mut f: impl FnMut() -> Option<T>,
+) -> Option<T> {
+    let start = timer.timestamp_us();
+    loop {
+        if let Some(value) = f() {
+            return Some(value);
+        }
+        if timer.timestamp_us().wrapping_sub(start) >= timeout_us {
+            return f();
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Poll `f` up to `tries` times, waiting `interval_us` between tries,
+/// then check `f` one final time.
+///
+/// This is a try count, not a timeout: use it where no usable clock
+/// exists yet (pre-DRAM, SMM) but a delay does. Where a clock exists,
+/// prefer [`poll_until`] so slow device reads do not stretch the wait.
+pub fn poll_tries<T>(
+    timer: &dyn Timer,
+    tries: u32,
+    interval_us: u64,
+    mut f: impl FnMut() -> Option<T>,
+) -> Option<T> {
+    for _ in 0..tries {
+        if let Some(value) = f() {
+            return Some(value);
+        }
+        timer.delay_us(interval_us);
+    }
+    f()
+}
+
 /// A timer for tests: time only moves when the code waits, and, if
 /// [`ticking`](ManualTimer::ticking), by one microsecond per read, so that
 /// a poll loop without waits still reaches its deadline.
@@ -87,6 +133,7 @@ impl Timer for ManualTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
     use core::sync::atomic::{AtomicU32, Ordering};
     use embedded_hal::delay::DelayNs;
 
@@ -116,5 +163,80 @@ mod tests {
             TimerDelay(&timer).delay_ns(ns);
             assert_eq!(timer.timestamp_us(), us);
         }
+    }
+    #[test]
+    fn poll_until_immediate() {
+        let timer = ManualTimer::new();
+        assert_eq!(poll_until(&timer as &dyn Timer, 10, || Some(42)), Some(42));
+    }
+
+    #[test]
+    fn poll_until_timeout() {
+        let timer = ManualTimer::ticking();
+        let calls = Cell::new(0);
+        assert_eq!(
+            poll_until(&timer as &dyn Timer, 10, || {
+                calls.set(calls.get() + 1);
+                None::<()>
+            }),
+            None
+        );
+        assert!(calls.get() >= 2);
+    }
+
+    #[test]
+    fn poll_until_zero_timeout_still_checks() {
+        let timer = ManualTimer::ticking();
+        let calls = Cell::new(0);
+        assert_eq!(
+            poll_until(&timer as &dyn Timer, 0, || {
+                calls.set(calls.get() + 1);
+                (calls.get() == 2).then_some(7)
+            }),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn poll_tries_third_call() {
+        let timer = ManualTimer::new();
+        let calls = Cell::new(0);
+        assert_eq!(
+            poll_tries(&timer as &dyn Timer, 5, 7, || {
+                calls.set(calls.get() + 1);
+                (calls.get() == 3).then_some(())
+            }),
+            Some(())
+        );
+        assert_eq!(timer.now(), 14);
+    }
+
+    #[test]
+    fn poll_tries_final_check() {
+        let timer = ManualTimer::new();
+        let calls = Cell::new(0);
+        assert_eq!(
+            poll_tries(&timer as &dyn Timer, 2, 5, || {
+                calls.set(calls.get() + 1);
+                (calls.get() == 3).then_some(())
+            }),
+            Some(())
+        );
+        assert_eq!(timer.now(), 10);
+    }
+
+    #[test]
+    fn poll_tries_exhaustion() {
+        let timer = ManualTimer::new();
+        let calls = Cell::new(0);
+        assert_eq!(
+            poll_tries(&timer as &dyn Timer, 3, 5, || {
+                calls.set(calls.get() + 1);
+                None::<()>
+            }),
+            None
+        );
+        assert_eq!(calls.get(), 4);
+        assert_eq!(timer.now(), 15);
     }
 }

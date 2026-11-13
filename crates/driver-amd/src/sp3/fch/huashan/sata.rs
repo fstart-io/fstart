@@ -13,7 +13,7 @@ use super::super::gpio::{self, Direction, Pad, Pin, Pull};
 use super::super::{FchHw, irq};
 use crate::sp3::nbio::nbif::func_strap0;
 use crate::sp3::soc::Generation;
-use crate::window::{SmnWindow, Window, poll, update};
+use crate::window::{SmnWindow, Window, update};
 
 pub const CONTROLLERS: usize = 4;
 
@@ -254,7 +254,10 @@ fn sgpio<H: FchHw>(hw: &H, smn: &SmnWindow<H::Pci>, c: usize, pads: &[Pad]) -> b
         message.iter().for_each(|op| op.at(abar(c)).apply(smn));
         let em = smn.reg::<u32, ()>(abar(c) + reg::EM_CTL);
         em.set(em.get() | EM_TM);
-        poll(hw.timer(), 1000, 10, || em.get() & EM_TM == 0)
+        fstart_core::services::poll_tries(hw.timer(), 1000, 10, || {
+            (em.get() & EM_TM == 0).then_some(())
+        })
+        .is_some()
     })
 }
 
