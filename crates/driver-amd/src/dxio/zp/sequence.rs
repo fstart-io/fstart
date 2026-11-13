@@ -9,7 +9,7 @@
 
 use fstart_core::services::Timer;
 
-use super::DxioPolicy;
+use crate::dxio::DxioPolicy;
 use crate::dxio::{DxioError, Hooks, LoopRules, Unit, finish_unit, run, state, var};
 use crate::smu::SmuMessages;
 
@@ -79,9 +79,9 @@ where
 mod tests {
     use super::*;
     use crate::cpu::Silicon;
+    use crate::dxio::lanes::{Engine, Lanes, PcieEngine};
+    use crate::dxio::sp3_tests::{FakeSmu, Recorder, Window};
     use crate::dxio::{Dxio, op};
-    use crate::sp3::dxio::lanes::{Engine, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
     use fstart_core::services::ManualTimer;
 
     #[test]

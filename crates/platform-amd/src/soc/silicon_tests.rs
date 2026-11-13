@@ -132,9 +132,9 @@ mod zeppelin {
             .collect();
         assert_eq!(ioapics[0], nonpci[0] + (7 << 20));
         assert_eq!(psp::bars(&dies), [nonpci[0], nonpci[1]]);
-        let buffers = low(0x4000_0000, dxio::zeppelin::Buffers::<2>::new());
+        let buffers = low(0x4000_0000, dxio::zp::Buffers::<2>::new());
         let topology = unsafe {
-            dxio::zeppelin::init(
+            dxio::zp::init(
                 &dies,
                 &[DIE0, DIE1],
                 SUBSYSTEM_ID,
@@ -247,7 +247,7 @@ mod picasso {
         df::{self, rv as fabric},
         dxio::{
             self, Aspm, ClockRequest, Descriptor,
-            picasso::{Options, PowerPolicy},
+            rv::{Options, PowerPolicy},
         },
         nbio::{
             iohc::{PSP_BAR, SMU_BAR},
@@ -316,7 +316,7 @@ mod picasso {
         };
         let buffers = low(0x4800_0000, dxio::DmaArea::new());
         let ports =
-            unsafe { dxio::picasso::train(&die, buffers, DALBOZ, options, &hw.clock()) }.unwrap();
+            unsafe { dxio::rv::train(&die, buffers, DALBOZ, options, &hw.clock()) }.unwrap();
         assert_eq!(
             ports
                 .ports

@@ -8,7 +8,7 @@
 //! | [`fstart_driver_amd::ccx`] | `ccx::rv` (AmdCcxZenRv) | `ccx::zp` (AmdCcxZenZp) |
 //! | [`fstart_driver_amd::df`] | `df::rv` (AmdFabricRv) | `df::zp` (AmdFabricZp) |
 //! | [`fstart_driver_amd::nbio`] | `nbio::rv` (AmdNbioBaseRV) | `nbio::zp` (AmdNbioBaseZP) |
-//! | [`fstart_driver_amd::dxio`] | `dxio::picasso` | `dxio::zeppelin` |
+//! | [`fstart_driver_amd::dxio`] | `dxio::rv` | `dxio::zp` |
 //! | [`fstart_driver_amd::smu`] | `smu::v10` (AmdNbioSmuV10) | `smu::v9` (AmdNbioSmuV9) |
 //! | [`fstart_driver_amd::fch`] | `fch::sandstone` (FchSandstone) | `fch::taishan` (FchTaishan) |
 //! | [`fstart_driver_amd::psp`], [`fstart_driver_amd::apob`] | common | common |

@@ -8,14 +8,14 @@
 //! the card's redriver setting and splits its x16 link.
 
 use fstart_core::smbios::{Attached, OnboardDevice, OnboardType, SystemSlot};
-use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::hotplug::{
+use fstart_driver_amd::dxio::hotplug::{
     Expander, Hotplug, HotplugFunction, HotplugI2c, HotplugKind, format,
 };
-use fstart_driver_amd::sp3::dxio::lanes::{
+use fstart_driver_amd::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, EngineKind, Group, Lanes, PcieEngine, SataEngine, Speed,
     validate,
 };
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_options::{Availability, Knob};
 use fstart_platform_amd::sp3::silicon::Generation;
 
@@ -341,7 +341,7 @@ pub fn plan(layout: &Layout) -> Result<Plan, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::dxio::lanes::place;
+    use fstart_driver_amd::dxio::lanes::place;
 
     fn plan_of(detected: Detected, limited_io: bool) -> Result<Plan, Error> {
         Layout::new(detected, limited_io).and_then(|layout| plan(&layout))
@@ -476,7 +476,7 @@ mod tests {
                 assert_eq!(raw[0].tuning, SATA_TUNING);
                 for absolute in [false, true] {
                     let mut out = [0; 1024];
-                    fstart_driver_amd::sp3::dxio::engine::encode_tuning(
+                    fstart_driver_amd::dxio::encode::encode_tuning(
                         raw[0].tuning,
                         place(Generation::Milan.silicon(), &raw[0]).unwrap().wire,
                         absolute,

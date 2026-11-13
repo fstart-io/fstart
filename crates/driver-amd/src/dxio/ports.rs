@@ -1310,11 +1310,11 @@ pub fn early_trained(engines: &[FwEngine]) -> impl Iterator<Item = &FwEngine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dxio::lanes::{Group, Lanes, SataEngine, Speed};
+    use crate::dxio::tables::SP3_DEFAULT_DEVFN;
     use crate::dxio::wire::{FwEngine, kind};
     use crate::nbio::nbio_tests::nbio;
     use crate::smn::model::Model;
-    use crate::sp3::dxio::lanes::{Group, Lanes, SataEngine, Speed};
-    use crate::sp3::dxio::tables::SP3_DEFAULT_DEVFN;
 
     /// The attached engines at the bridges DXIO mapped them to, on the bus
     /// of their NBIO's root bridge; a SATA engine without a bridge, an
@@ -1722,7 +1722,7 @@ mod tests {
 
     #[test]
     fn xgmi_and_perst() {
-        use crate::sp3::dxio::tests::FakeSmu;
+        use crate::dxio::sp3_tests::FakeSmu;
         let smu = FakeSmu::default();
         xgmi_init(Silicon::Gn, &Dxio::new(&smu, 8), 0x23, 0b1111, true).unwrap();
         assert_eq!(smu.args()[0][0], op::XGMI_BER_ADAPT);

@@ -141,7 +141,7 @@ fn flow(
         identity,
         top,
         nonpci,
-        low(dma + 0x2_0000, dxio::zeppelin::Buffers::new()),
+        low(dma + 0x2_0000, dxio::zp::Buffers::new()),
         &clock,
     )
     .unwrap();

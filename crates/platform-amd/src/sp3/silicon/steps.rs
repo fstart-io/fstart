@@ -17,11 +17,11 @@ use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::topology::{self, Topology};
 use fstart_driver_amd::df::{self as sp3_df, Fabric};
 use fstart_driver_amd::df::{Version, program};
+use fstart_driver_amd::dxio::DxioPolicy;
+use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::nbio::{Nbio, NbioPolicy};
-use fstart_driver_amd::sp3::dxio::DxioPolicy;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::common::env::EnvPolicy;
 
@@ -132,8 +132,8 @@ pub struct Ctx {
     /// An SMM handler is installed and locked.
     pub smm_installed: bool,
     /// What the board attaches to its engines, with the bridge DXIO mapped
-    /// each PCIe link to ([`fstart_driver_amd::sp3::dxio::ports::attached`]).
-    pub ports: heapless::Vec<fstart_driver_amd::sp3::dxio::ports::AttachedPort, MAX_ENGINES>,
+    /// each PCIe link to ([`fstart_driver_amd::dxio::ports::attached`]).
+    pub ports: heapless::Vec<fstart_driver_amd::dxio::ports::AttachedPort, MAX_ENGINES>,
 }
 
 impl Ctx {

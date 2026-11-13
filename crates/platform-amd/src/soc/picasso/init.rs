@@ -48,7 +48,7 @@ pub struct FchUp {
 /// After DXIO link training.
 pub struct Trained {
     found: FchUp,
-    topology: dxio::picasso::Topology,
+    topology: dxio::rv::Topology,
 }
 
 /// After the SMU power policy, legacy/LPC, clocks, USB, the late DF and
@@ -218,12 +218,12 @@ impl Init for Picasso {
         // SAFETY: BSP-only, once per boot. The buffers remain in reserved
         // firmware BSS and are never reclaimed, including on failure.
         let topology = unsafe {
-            dxio::picasso::train(
+            dxio::rv::train(
                 die,
                 &mut *core::ptr::addr_of_mut!(DXIO),
                 ctx.config.pcie,
-                dxio::picasso::Options {
-                    power: dxio::picasso::PowerPolicy::Balanced,
+                dxio::rv::Options {
+                    power: dxio::rv::PowerPolicy::Balanced,
                     am4: found.identity.am4,
                     silicon_id: found.capabilities.silicon_id,
                     graphics: found.capabilities.graphics,

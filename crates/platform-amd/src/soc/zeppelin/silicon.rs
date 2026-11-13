@@ -164,7 +164,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     nonpci: [u32; MAX_DIES],
-    buffers: &'static mut dxio::zeppelin::Buffers<MAX_DIES>,
+    buffers: &'static mut dxio::zp::Buffers<MAX_DIES>,
     timer: &impl Timer,
 ) -> Result<Trained, &'static str> {
     let clock = &mut TimerDelay(timer);
@@ -203,7 +203,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
 
     // SAFETY: BSP-only; the DMA buffer is reserved below 4 GiB.
     let topology = unsafe {
-        dxio::zeppelin::init(
+        dxio::zp::init(
             dies,
             &config.dxio.descriptors,
             config.subsystem_id,

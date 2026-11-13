@@ -356,8 +356,8 @@ impl Heaps {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::dxio::hotplug::{Hotplug, HotplugKind};
-    use crate::sp3::dxio::lanes::{Group, Lanes, PcieEngine, SataEngine};
+    use crate::dxio::hotplug::{Hotplug, HotplugKind};
+    use crate::dxio::lanes::{Group, Lanes, PcieEngine, SataEngine};
 
     fn wire(start: u8, end: u8, reverse: bool) -> WireLanes {
         WireLanes {

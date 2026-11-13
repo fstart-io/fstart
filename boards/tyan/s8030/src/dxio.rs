@@ -48,10 +48,10 @@
 mod tuning;
 
 use fstart_core::smbios::{Attached, OnboardDevice, OnboardType, SystemSlot};
-use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::lanes::{
+use fstart_driver_amd::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_options::{Knob, Meta};
 use fstart_platform_amd::sp3::silicon::Generation;
 use heapless::Vec;
@@ -553,7 +553,7 @@ pub fn engines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::dxio::lanes::{EngineKind, place};
+    use fstart_driver_amd::dxio::lanes::{EngineKind, place};
 
     const PCIE: Detected = Detected {
         m2: [M2Mode::Pcie; 2],

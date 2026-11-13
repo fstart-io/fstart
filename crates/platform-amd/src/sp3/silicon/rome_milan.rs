@@ -23,6 +23,10 @@ use fstart_driver_amd::cpu;
 use fstart_driver_amd::df::regs;
 use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::v3::{Df3, SocketMemory};
+use fstart_driver_amd::dxio;
+use fstart_driver_amd::dxio::encode::Ancillary;
+use fstart_driver_amd::dxio::lanes::Engine;
+use fstart_driver_amd::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
 use fstart_driver_amd::nbio::fuse::Fuses;
@@ -33,10 +37,6 @@ use fstart_driver_amd::nbio::{Nbio, ssp as nbio_ssp};
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::smu::Smu as SmuMailbox;
 use fstart_driver_amd::smu::v11::{self, CcxDonePolicy, FeaturePolicy, Sp3Workarounds};
-use fstart_driver_amd::sp3::dxio;
-use fstart_driver_amd::sp3::dxio::engine::Ancillary;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
-use fstart_driver_amd::sp3::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::sp3::fch;
 use fstart_driver_amd::sp3::fch::huashan::usb::UsbPolicy;
 use fstart_driver_amd::window::Window;
@@ -136,7 +136,7 @@ fn hotplug(
     smus: &[Smu],
     policy: &dxio::hotplug::HotplugPolicy,
 ) -> Result<(), &'static str> {
-    use fstart_driver_amd::sp3::dxio::hotplug;
+    use fstart_driver_amd::dxio::hotplug;
     let table = match setup.hotplug_table() {
         Ok(table) => table,
         Err(error) => {
@@ -460,12 +460,12 @@ impl Steps for Silicon {
         // comes from is not decoded, so Milan takes the test too.
         // SAFETY: a read-only SMN register of socket 0.
         let fuse =
-            unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, 0)?).read32(dxio::sp3::SPEED_FUSE) };
+            unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, 0)?).read32(dxio::ssp::SPEED_FUSE) };
         fstart_log::info!("dxio: speed fuse {:#x}", fuse);
         let mut engines = engines.clone();
         engines
             .iter_mut()
-            .for_each(|e| dxio::sp3::speed_fixup(e, Some(fuse)));
+            .for_each(|e| dxio::ssp::speed_fixup(e, Some(fuse)));
         let engines = &engines;
         // DXIO requests (ReloadSm, the state machine) can take long; AGESA
         // polls without a bound. Own mailboxes with a 30 s bound.

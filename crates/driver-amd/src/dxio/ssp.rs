@@ -171,9 +171,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dxio::lanes::{Engine, Group, Lanes, PcieEngine};
+    use crate::dxio::sp3_tests::{FakeSmu, Recorder, Window};
     use crate::dxio::{Dxio, op};
-    use crate::sp3::dxio::lanes::{Engine, Group, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::{FakeSmu, Recorder, Window};
     use fstart_core::services::ManualTimer;
 
     fn board() -> [Engine<'static>; 2] {
@@ -326,8 +326,8 @@ mod tests {
     /// Firmware readback → port map → remap on the NBIO, end to end.
     #[test]
     fn mapped_ports_reach_the_remap() {
-        use crate::sp3::dxio::PcieReset;
-        use crate::sp3::dxio::ports::PortSetup;
+        use crate::dxio::PcieReset;
+        use crate::dxio::ports::PortSetup;
         struct Count(u32);
         impl PcieReset for Count {
             fn release(&mut self, _: u8, _: u8) {

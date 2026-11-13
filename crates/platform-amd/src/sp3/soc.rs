@@ -49,10 +49,10 @@ use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::tsc::Tsc;
+use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::psp;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
 use fstart_driver_amd::sp3::fch::gpio::Pad;
 use fstart_driver_amd::sp3::fch::{self, FchHw};
 

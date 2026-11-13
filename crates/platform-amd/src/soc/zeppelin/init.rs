@@ -130,7 +130,7 @@ impl Init for Zeppelin {
         FchUp { nonpci }: FchUp,
         lanes: &DxioConfig,
     ) -> Result<Trained, &'static str> {
-        static mut DXIO_BUFFERS: dxio::zeppelin::Buffers<MAX_DIES> = dxio::zeppelin::Buffers::new();
+        static mut DXIO_BUFFERS: dxio::zp::Buffers<MAX_DIES> = dxio::zp::Buffers::new();
         // SAFETY: firmware BSS in the reserved early region below 4 GiB,
         // handed out once here.
         let buffers = unsafe { &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS) };

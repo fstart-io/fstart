@@ -41,6 +41,8 @@ use crate::nbio::{
     pcie::{self, PCIE_PORTS_PER_CORE},
     zp::{NBIF_COUNT, PCIE_CORE_COUNT, PCIE_PORT_COUNT, nbif_reg, strap},
 };
+pub mod sequence;
+
 use crate::smn::{Reg, Smn, SmnReg, apply, rmw};
 use crate::smu::v9 as smu;
 use crate::soc::Soc;

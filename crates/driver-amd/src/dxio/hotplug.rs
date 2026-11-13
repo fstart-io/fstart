@@ -541,8 +541,8 @@ pub fn enable_v9<M: SmuMessages + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sp3::dxio::lanes::{Group, Lanes, PcieEngine};
-    use crate::sp3::dxio::tests::FakeSmu;
+    use crate::dxio::lanes::{Group, Lanes, PcieEngine};
+    use crate::dxio::sp3_tests::FakeSmu;
 
     fn engines() -> [Engine<'static>; 2] {
         let hp = Hotplug {
