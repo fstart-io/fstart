@@ -38,6 +38,20 @@ impl<'a> SystemSlot<'a> {
             characteristics: [1, 0],
         }
     }
+    /// The lanes of [`Self::data_bus_width`]'s serial widths (DSP0134
+    /// Table 46: 08h x1 to 0Eh x32), 0 for the others.
+    pub const fn lanes(&self) -> u8 {
+        match self.data_bus_width {
+            0x08 => 1,
+            0x09 => 2,
+            0x0a => 4,
+            0x0b => 8,
+            0x0c => 12,
+            0x0d => 16,
+            0x0e => 32,
+            _ => 0,
+        }
+    }
 }
 
 /// Board-fixed association of a physical slot with its upstream PCI bridge.

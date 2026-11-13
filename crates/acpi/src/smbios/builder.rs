@@ -11,7 +11,7 @@
 
 extern crate alloc;
 
-use super::{SlotUsage, SmbiosIdentity, SmbiosWriter, SystemSlot, WriteError};
+use super::{SlotFunction, SlotUsage, SmbiosIdentity, SmbiosWriter, SystemSlot, WriteError};
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use fstart_core::memory_info::MemoryDevice;
 
@@ -39,9 +39,8 @@ struct MappedRange {
 struct Slot<'a> {
     slot: SystemSlot<'a>,
     usage: SlotUsage,
-    segment: u16,
-    bus: u8,
-    devfn: u8,
+    base: SlotFunction,
+    peers: Vec<SlotFunction>,
 }
 
 /// A type 41.
@@ -137,22 +136,21 @@ impl<'a> Builder<'a> {
         self
     }
 
-    /// A physical slot (type 9) and the address of the card in it, all ones
-    /// if none or unknown.
+    /// A physical slot (type 9): the lowest-ordered function in it, and
+    /// the others of a slot split into several links (see
+    /// [`SmbiosWriter::add_system_slot`]).
     pub fn system_slot(
         &mut self,
         slot: &SystemSlot<'a>,
         usage: SlotUsage,
-        segment: u16,
-        bus: u8,
-        devfn: u8,
+        base: SlotFunction,
+        peers: &[SlotFunction],
     ) -> &mut Self {
         self.slots.push(Slot {
             slot: *slot,
             usage,
-            segment,
-            bus,
-            devfn,
+            base,
+            peers: peers.to_vec(),
         });
         self
     }
@@ -210,7 +208,7 @@ impl<'a> Builder<'a> {
             }
         }
         for slot in &self.slots {
-            w.add_system_slot(&slot.slot, slot.usage, slot.segment, slot.bus, slot.devfn);
+            w.add_system_slot(&slot.slot, slot.usage, slot.base, &slot.peers);
         }
         for device in &self.onboard {
             w.add_onboard_device(
@@ -239,7 +237,12 @@ mod tests {
         w.add_dimm(&MemoryDevice::unknown(0, 0), "A0", "A");
         w.add_dimm(&MemoryDevice::empty(0, 1), "A1", "A");
         w.add_memory_array_mapped_address(0, (3 << 30) - 1, 0);
-        w.add_system_slot(&SystemSlot::new("PCIE1"), SlotUsage::Available, !0, !0, !0);
+        w.add_system_slot(
+            &SystemSlot::new("PCIE1"),
+            SlotUsage::Available,
+            SlotFunction::none(16),
+            &[],
+        );
         w.add_onboard_device("Onboard LAN", 5, 1, 0, 2, 0);
         w.add_onboard_device("Onboard LAN", 5, 2, 0, 3, 0);
         w.add_system_boot_info();
@@ -255,7 +258,12 @@ mod tests {
         let mut builder = Builder::new(&identity, 8 << 20, true);
         builder
             .onboard_device("Onboard LAN", 5, 0, 2, 0)
-            .system_slot(&SystemSlot::new("PCIE1"), SlotUsage::Available, !0, !0, !0)
+            .system_slot(
+                &SystemSlot::new("PCIE1"),
+                SlotUsage::Available,
+                SlotFunction::none(16),
+                &[],
+            )
             .mapped_range(0, 3 << 30, 0)
             .mapped_range(4 << 30, 4 << 30, 0)
             .dimm(&MemoryDevice::unknown(0, 0), "A0", "A")

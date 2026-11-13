@@ -430,7 +430,7 @@ pub fn prepare_smbios(
         let (device, function) = fstart_pci::devfn_parts(slot.bridge_devfn);
         let bridge =
             fstart_pci::PciAddress::new(slot.bridge_segment, slot.bridge_bus, device, function);
-        tables.pci_slot(&slot.slot, bridge, runtime.pci);
+        tables.pci_slot(&slot.slot, &[(bridge, slot.slot.lanes())], runtime.pci);
     }
     // Chipset devices are on the root bus; add-in cards sit behind bridges.
     if let Some(pci) = runtime.pci {

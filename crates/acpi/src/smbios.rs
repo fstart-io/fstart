@@ -174,6 +174,34 @@ impl<'a> SmbiosIdentity<'a> {
     }
 }
 
+/// A PCI function in a slot and the electrical width of its link: one of
+/// SMBIOS 3.2's segment/bus/device/function/width groups (DSP0134 7.10.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotFunction {
+    pub segment: u16,
+    pub bus: u8,
+    pub devfn: u8,
+    /// Lanes. The width fields are a count, not the enumeration of the
+    /// slot's data bus width (Table 46): DSP0134 gives them as "Varies",
+    /// not "ENUM", and dmidecode prints them as numbers.
+    pub width: u8,
+}
+
+impl SlotFunction {
+    /// No PCI function, on a link `width` lanes wide (7.10.8: all ones).
+    pub const fn none(width: u8) -> Self {
+        Self {
+            segment: u16::MAX,
+            bus: u8::MAX,
+            devfn: u8::MAX,
+            width,
+        }
+    }
+}
+
+/// The most peer groups a Type 9 holds: its length is a byte, 13h + 5n.
+pub const MAX_SLOT_PEERS: usize = (u8::MAX as usize - 0x13) / 5;
+
 /// Type 0 contents.
 pub struct BiosInfo<'a> {
     pub vendor: &'a str,
@@ -441,8 +469,21 @@ struct RawType9 {
     segment: U16,
     bus: u8,
     devfn: u8,
+    base_width: u8,
+    peer_count: u8,
 }
-const _: () = assert!(size_of::<RawType9>() == 0x11);
+const _: () = assert!(size_of::<RawType9>() == 0x13);
+
+/// A Type 9 peer group (SMBIOS 3.2, 5 bytes).
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RawSlotPeer {
+    segment: U16,
+    bus: u8,
+    devfn: u8,
+    width: u8,
+}
+const _: () = assert!(size_of::<RawSlotPeer>() == 5);
 
 /// Type 11: OEM Strings (5 bytes).
 #[repr(C)]
@@ -1033,20 +1074,25 @@ impl<'a> SmbiosWriter<'a> {
     /// Add a Type 9 (System Slots) structure, including empty slots.
     ///
     /// The descriptor is board-fixed wiring; `usage` is a boot-time snapshot.
-    /// Use `Unknown` when the platform cannot establish occupancy. The address
-    /// identifies the card in the slot, not its upstream PCIe bridge (DSP0134
-    /// section 7.10.8). Pass all-ones address fields when unknown/non-PCI.
-    /// This writer performs no PCI access and also supports non-PCI slots.
+    /// Use `Unknown` when the platform cannot establish occupancy. `base` is
+    /// the lowest-ordered function in the slot and `peers` the others a
+    /// slot split into several links has (SMBIOS 3.2, DSP0134 7.10.9), each
+    /// with the width of its link. Addresses identify the card in the slot,
+    /// not its upstream PCIe bridge (7.10.8); [`SlotFunction::none`] for an
+    /// empty or non-PCI slot. This writer performs no PCI access and also
+    /// supports non-PCI slots.
     pub fn add_system_slot(
         &mut self,
         slot: &SystemSlot<'_>,
         usage: SlotUsage,
-        segment: u16,
-        bus: u8,
-        devfn: u8,
+        base: SlotFunction,
+        peers: &[SlotFunction],
     ) {
+        // The structure's length byte bounds the groups.
+        let peers = &peers[..peers.len().min(MAX_SLOT_PEERS)];
         let [designation] = string_indices([slot.designation]);
-        let (header, _) = self.begin::<RawType9>(TYPE_SYSTEM_SLOT);
+        let (mut header, _) = self.begin::<RawType9>(TYPE_SYSTEM_SLOT);
+        header.len += (5 * peers.len()) as u8;
         self.emplace(&RawType9 {
             header,
             designation,
@@ -1056,10 +1102,20 @@ impl<'a> SmbiosWriter<'a> {
             length: slot.length,
             id: U16::new(slot.id),
             characteristics: slot.characteristics,
-            segment: U16::new(segment),
-            bus,
-            devfn,
+            segment: U16::new(base.segment),
+            bus: base.bus,
+            devfn: base.devfn,
+            base_width: base.width,
+            peer_count: peers.len() as u8,
         });
+        for peer in peers {
+            self.emplace(&RawSlotPeer {
+                segment: U16::new(peer.segment),
+                bus: peer.bus,
+                devfn: peer.devfn,
+                width: peer.width,
+            });
+        }
         self.write_strings(&[slot.designation]);
     }
 
@@ -1459,15 +1515,21 @@ mod tests {
         };
         for usage in [SlotUsage::Available, SlotUsage::InUse, SlotUsage::Unknown] {
             let (buf, total) = write_to_buffer(|w| {
-                w.add_system_slot(&slot, usage, 0x1234, 0x42, 0xab);
+                let base = SlotFunction {
+                    segment: 0x1234,
+                    bus: 0x42,
+                    devfn: 0xab,
+                    width: 8,
+                };
+                w.add_system_slot(&slot, usage, base, &[]);
                 w.add_end_of_table();
             });
             let table = &buf[ENTRY_POINT_SIZE..total];
             assert_eq!(
-                &table[..0x11],
+                &table[..0x13],
                 &[
                     9,
-                    0x11,
+                    0x13,
                     1,
                     0,
                     1,
@@ -1483,11 +1545,104 @@ mod tests {
                     0x12,
                     0x42,
                     0xab,
+                    8,
+                    0,
                 ]
             );
             assert_eq!(strings(table), ["PCIe Slot 2"]);
-            let next = 0x11 + slot.designation.len() + 2;
+            let next = 0x13 + slot.designation.len() + 2;
             assert_eq!(&table[next..next + 4], &[127, 4, 2, 0]);
+        }
+    }
+
+    /// An x16 slot split x8/x8 with a card on each link: the lower
+    /// function is the base, the other its one peer group.
+    #[test]
+    fn a_split_slot_lists_its_peers_after_the_base() {
+        let function = |bus, width| SlotFunction {
+            segment: 0,
+            bus,
+            devfn: 0,
+            width,
+        };
+        let (buf, total) = write_to_buffer(|w| {
+            w.add_system_slot(
+                &SystemSlot::new("PCIE_1"),
+                SlotUsage::InUse,
+                function(0x41, 8),
+                &[function(0x42, 8)],
+            );
+            w.add_end_of_table();
+        });
+        let table = &buf[ENTRY_POINT_SIZE..total];
+        assert_eq!(table[1], 0x18);
+        assert_eq!(&table[0x0d..0x13], &[0, 0, 0x41, 0, 8, 1]);
+        assert_eq!(&table[0x13..0x18], &[0, 0, 0x42, 0, 8]);
+        assert_eq!(strings(table), ["PCIE_1"]);
+    }
+
+    /// dmidecode reads the slot as SMBIOS 3.2 lays it out.
+    #[test]
+    fn dmidecode_reads_the_peer_groups() {
+        let function = |bus, width| SlotFunction {
+            segment: 0,
+            bus,
+            devfn: 1 << 3 | 1,
+            width,
+        };
+        // A dump file: the entry point at 0, the table at 20h.
+        let mut buf = vec![0u8; ENTRY_POINT_SIZE + MAX_TABLE_AREA];
+        let total = assemble_into(&mut buf, 0x20 - ENTRY_POINT_SIZE as u64, |w| {
+            w.add_system_slot(
+                &SystemSlot {
+                    designation: "PCIE_1",
+                    slot_type: 0xb1,
+                    data_bus_width: 0x0d,
+                    length: 0x02,
+                    id: 1,
+                    characteristics: [0x04, 0x08],
+                },
+                SlotUsage::InUse,
+                function(0x41, 4),
+                &[function(0x42, 4), function(0x43, 8)],
+            );
+            w.add_end_of_table();
+        })
+        .unwrap();
+        let mut dump = buf[..ENTRY_POINT_SIZE].to_vec();
+        dump.resize(0x20, 0);
+        dump.extend_from_slice(&buf[ENTRY_POINT_SIZE..total]);
+        let path = std::env::temp_dir().join(std::format!(
+            "fstart-smbios-peers-{}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, dump).unwrap();
+        let output = match std::process::Command::new("dmidecode")
+            .args(["-t", "9", "--from-dump"])
+            .arg(&path)
+            .output()
+        {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::eprintln!("dmidecode not found, skipping");
+                return;
+            }
+            output => output.unwrap(),
+        };
+        std::fs::remove_file(path).unwrap();
+        let text = std::string::String::from_utf8_lossy(&output.stdout);
+        for line in [
+            "Designation: PCIE_1",
+            "Type: PCI Express 3",
+            "Data Bus Width: 16x or x16",
+            "Current Usage: In Use",
+            "PCIe slot bifurcation is supported",
+            "Bus Address: 0000:41:01.1",
+            "Data Bus Width (Base): 4",
+            "Peer Devices: 2",
+            "Peer Device 1: 0000:42:01.1 (Width 4)",
+            "Peer Device 2: 0000:43:01.1 (Width 8)",
+        ] {
+            assert!(text.contains(line), "{line} missing:\n{text}");
         }
     }
 
@@ -1497,17 +1652,16 @@ mod tests {
             w.add_system_slot(
                 &SystemSlot::new(""),
                 SlotUsage::Unknown,
-                u16::MAX,
-                u8::MAX,
-                u8::MAX,
+                SlotFunction::none(1),
+                &[],
             );
             w.add_end_of_table();
         });
         let table = &buf[ENTRY_POINT_SIZE..total];
         assert_eq!(table[4], 0);
-        assert_eq!(&table[13..17], &[0xff; 4]);
-        assert_eq!(&table[17..19], &[0, 0]);
-        assert_eq!(&table[19..23], &[127, 4, 2, 0]);
+        assert_eq!(&table[13..19], &[0xff, 0xff, 0xff, 0xff, 1, 0]);
+        assert_eq!(&table[19..21], &[0, 0]);
+        assert_eq!(&table[21..25], &[127, 4, 2, 0]);
     }
 
     #[test]
@@ -1517,9 +1671,8 @@ mod tests {
             w.add_system_slot(
                 &SystemSlot::new("long slot designation"),
                 SlotUsage::Unknown,
-                u16::MAX,
-                u8::MAX,
-                u8::MAX,
+                SlotFunction::none(1),
+                &[],
             );
             w.add_end_of_table();
         });
