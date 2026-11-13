@@ -29,7 +29,7 @@
 //! What the silicon needs in each phase is the SoC driver's
 //! ([`fstart_driver_amd::soc::Init`]); the phases are the same for every
 //! SoC.
-use super::{Ctx, Mapped, Memory, Silicon, Soc, Stop, Tables};
+use super::{Ctx, Mapped, Memory, Silicon, Soc, Tables};
 use crate::mp;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
@@ -42,20 +42,11 @@ fn halt() -> ! {
     fstart_arch::x86::boot::halt()
 }
 
-/// Stop the boot: log why and halt.
-pub fn stop<S: Soc>(stop: Stop) -> ! {
-    match stop {
-        Stop::Failed(what) => fstart_log::error!("{}: {} failed, halting", S::NAME, what),
-        Stop::Checkpoint(what) => {
-            fstart_log::info!("{}: {} checkpoint reached, halting", S::NAME, what)
-        }
-    }
+/// Stop the boot: log that `what` failed, flush the log and halt.
+pub fn fail<S: Soc>(what: &'static str) -> ! {
+    fstart_log::error!("{}: {} failed, halting", S::NAME, what);
     fstart_log::flush();
     halt()
-}
-
-fn fail<S: Soc>(what: &'static str) -> ! {
-    stop::<S>(Stop::Failed(what))
 }
 
 /// The first phase: ECAM and the SoC's FCH setup before the console, from
@@ -115,11 +106,12 @@ impl<S: Soc> Early<S> {
                 },
         } = self;
         post(0x31);
+        // Nothing can be logged yet; the POST code shows where.
         let Ok(mut console) = Ns16550::new(config) else {
-            halt()
+            fail::<S>("console")
         };
         if console.init().is_err() {
-            halt()
+            fail::<S>("console")
         }
         let console = slot.install(console);
         if let Err(what) = pre_init {
@@ -286,11 +278,6 @@ impl<S: Soc, P> Stage<S, P> {
         &mut self.machine.flow
     }
 
-    /// Stop the boot with `why`.
-    pub fn stop(&self, why: Stop) -> ! {
-        stop::<S>(why)
-    }
-
     /// Stop the boot after logging that the board's `what` failed.
     pub fn fail(&self, what: &'static str) -> ! {
         fail::<S>(what)
@@ -351,8 +338,12 @@ impl<S: Soc> Stage<S, Chipset<S>> {
             mut machine,
             phase: Chipset(chipset),
         } = self;
-        let (silicon, reserved) =
-            start_cpus(&machine, chipset).unwrap_or_else(|what| fail::<S>(what));
+        let (cpus, mut state) =
+            bring_up_cpus(&machine, chipset).unwrap_or_else(|what| fail::<S>(what));
+        // What the SMM handler needs of the RAM leaves the memory map
+        // before the handler is installed and locked.
+        let reserved =
+            S::smm_memory(&machine.ctx(), &mut state).unwrap_or_else(|what| fail::<S>(what));
         for range in reserved {
             if machine
                 .e820
@@ -362,6 +353,7 @@ impl<S: Soc> Stage<S, Chipset<S>> {
                 fail::<S>("memory map");
             }
         }
+        let silicon = install_smm(&machine, cpus, state).unwrap_or_else(|what| fail::<S>(what));
         Stage {
             machine,
             phase: Cpus(silicon),
@@ -369,10 +361,10 @@ impl<S: Soc> Stage<S, Chipset<S>> {
     }
 }
 
-fn start_cpus<S: Soc>(
+fn bring_up_cpus<S: Soc>(
     machine: &Machine<S>,
     mut chipset: S::Chipset,
-) -> Result<(Silicon<S>, super::Reserved), &'static str> {
+) -> Result<(mp::Cpus, S::State), &'static str> {
     let ctx = machine.ctx();
     let cpu = S::cpu_driver(&ctx, &mut chipset, fstart_stage::microcode_blob())?;
     let threads = S::threads(&ctx, &chipset)?;
@@ -384,21 +376,27 @@ fn start_cpus<S: Soc>(
         S::max_cpus(ctx.config),
         |aps| S::release_aps(&ctx, &chipset, aps),
     )?;
-    let mut state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
-    let reserved = S::install_smm(&ctx, &mut state, &cpus.mp, &machine.flow)?;
+    let state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
+    Ok((cpus, state))
+}
+
+fn install_smm<S: Soc>(
+    machine: &Machine<S>,
+    cpus: mp::Cpus,
+    mut state: S::State,
+) -> Result<Silicon<S>, &'static str> {
+    let ctx = machine.ctx();
+    S::install_smm(&ctx, &mut state, &cpus.mp, &machine.flow)?;
     S::before_enumeration(&ctx, &mut state)?;
     let (devices, aml) = S::acpi_devices(ctx.config, &state)?;
-    Ok((
-        Silicon {
-            cpus,
-            devices,
-            aml,
-            tables: alloc::vec::Vec::new(),
-            framebuffer: None,
-            state,
-        },
-        reserved,
-    ))
+    Ok(Silicon {
+        cpus,
+        devices,
+        aml,
+        tables: alloc::vec::Vec::new(),
+        framebuffer: None,
+        state,
+    })
 }
 
 impl<S: Soc> Stage<S, Cpus<S>> {
@@ -454,8 +452,8 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
         if let Err(what) = S::ready_to_boot(&ctx, &mut silicon.state, &pci) {
             fail::<S>(what);
         }
-        if let Err(why) = S::init_display(&mut silicon, &ctx, &pci) {
-            stop::<S>(why);
+        if let Err(what) = S::init_display(&mut silicon, &ctx, &pci) {
+            fail::<S>(what);
         }
         Stage {
             machine,
@@ -492,7 +490,9 @@ impl<S: Soc> Stage<S, Ready<S>> {
 
 impl<S: Soc> Stage<S, Published<S>> {
     /// The SoC's locks after its last fabric write, RAM mapped for the
-    /// payload, the APs parked, the PSP's BootDone, then the payload.
+    /// payload, the APs parked, the PSP's BootDone, then the payload. (A
+    /// SoC whose PSP wants BootDone before the APs are parked sends it with
+    /// its locks.)
     pub fn boot(self) -> ! {
         let Stage {
             machine,

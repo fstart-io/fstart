@@ -18,13 +18,15 @@
 //! |---|---|
 //! | 10 | ECAM |
 //! | 11 | FCH reset tasks, board LPC/SIO |
+//! | 31 | console (the flow's) |
 //! | 13 | CPU identity |
 //! | 14 | APOB |
 //! | 15 | memory map, MTRRs |
 //! | 16 | TPM: measured boot starts (`Board::DISCRETE_TPM`) |
 //! | 48 | boot media (the FFS, with the microcode MP loads) |
+//! | 32 | the memory map is done (the flow's) |
 //! | 20/21 | DF plan + maps / DF init |
-//! | 30/31/32 | NBIO / SMU / FCH secondaries and USB |
+//! | 30/31/32 | NBIO / SMU / FCH secondaries and USB; board pads and GPIO |
 //! | 38 | DXIO |
 //! | 40 | FCH env |
 //! | 50 | MP + CCX |
@@ -32,12 +34,12 @@
 //! | 60 | PCI enumeration |
 //! | 70 | ACPI |
 //! | 80 | ReadyToBoot |
+//! | 43/44 | locked / the APs are parked (the flow's) |
 //! | 90 | payload |
 extern crate alloc;
 
 use core::marker::PhantomData;
 
-use fstart_arch::x86::cpu::amd::smm::InstalledTseg;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
@@ -103,6 +105,8 @@ pub struct Hw {
 pub struct State<F> {
     pub soc: soc::Ctx,
     pub si: F,
+    /// EINJ's targets, once their scratch pages are planned.
+    einj: Option<super::smm::EinjConfig>,
     smm: Option<super::smm::SmmConfig>,
 }
 
@@ -286,17 +290,19 @@ impl<F: Silicon> Init for Sp3<F> {
         let timer = hw::tsc();
         let fch = hw::primary_fch(timer);
         step(0x11, "FCH reset tasks");
-        let reset = steps::fch_reset(&fch, generation, &config.policy);
+        // There is no console yet; the POST code shows where.
+        let resume = steps::fch_reset(&fch, generation, &config.policy)
+            .unwrap_or_else(|what| parts::fail(what));
         Entered {
             hw: Hw {
                 identity,
                 pci_root,
                 timer,
                 fch,
-                resume: reset.unwrap_or(false),
+                resume,
             },
             clock: Some(timer),
-            pre_init: reset.map(|_| ()),
+            pre_init: Ok(()),
         }
     }
 
@@ -362,7 +368,12 @@ impl<F: Silicon> Init for Sp3<F> {
         F::smu_init(&mut soc, &mut si)?;
         step(0x32, "FCH secondaries, USB");
         F::fch_secondaries(&mut soc, &si)?;
-        Ok(State { soc, si, smm: None })
+        Ok(State {
+            soc,
+            si,
+            einj: None,
+            smm: None,
+        })
     }
 
     fn train_dxio(
@@ -580,6 +591,14 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         })
     }
 
+    /// EINJ's scratch pages, selected with the live routing map.
+    fn smm_memory(ctx: &Ctx<'_, Self>, state: &mut State<F>) -> Result<Reserved, &'static str> {
+        step(0x58, "SMM");
+        let mut reserved = Reserved::new();
+        state.einj = parts::plan_einj(&state.soc, ctx.memory.e820, &mut reserved);
+        Ok(reserved)
+    }
+
     /// TSEG, SMBASE and lock on every thread with the FCH handler image, then
     /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3). Without an SMM
     /// image in this build SMM stays unlocked; that is logged, not hidden.
@@ -597,15 +616,15 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         state: &mut State<F>,
         mp: &MpHandle,
         flow: &Flow,
-    ) -> Result<Reserved, &'static str> {
-        step(0x58, "SMM");
-        let mut reserved = Reserved::new();
+    ) -> Result<(), &'static str> {
+        let einj = state.einj.unwrap_or_default();
+        parts::clear_einj_scratch(&einj);
         let soc = &state.soc;
         let config = super::smm::SmmConfig {
             generation: soc.generation,
             ecam_base: soc.pci_root.ecam_base,
             psp_bar: soc.psp_bar as u32,
-            einj: parts::plan_einj(soc, ctx.memory.e820, &mut reserved).unwrap_or_default(),
+            einj,
             usb_buses: F::usb_buses(soc, &state.si)?,
             usb_bus_count: F::usb_bus_count(soc),
             bmc: ctx.config.bmc_sx_notify,
@@ -623,7 +642,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
                 fch: &soc.fch,
                 config,
             };
-            let _: InstalledTseg = fstart_arch::x86::cpu::amd::smm::AmdSmm::new("sp3", &smi)
+            fstart_arch::x86::cpu::amd::smm::AmdSmm::new("sp3", &smi)
                 .install(mp, IMAGE, flow.tseg.base, flow.tseg.size as u32)
                 .map_err(|_| "SMM install")?;
             super::smm::prepare_psp_smi(&soc.fch);
@@ -633,13 +652,13 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         }
         #[cfg(not(fstart_sp3_has_smm_image))]
         {
-            let _ = (mp, config, flow);
+            let _ = (mp, config);
             fstart_log::warn!(
                 "sp3: no SMM image in this build; TSEG {:#x} unused, SMM stays unlocked",
                 flow.tseg.base
             );
         }
-        Ok(reserved)
+        Ok(())
     }
 
     fn tables(
@@ -681,12 +700,18 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         let view = state.view(flow);
         #[cfg(feature = "payload-uefi")]
         {
+            type Storage = fstart_payload::crabefi::settings::FlashStorage<
+                fstart_driver_amd::fch::spi::flash::Flash<hw::Tsc>,
+            >;
+            static mut STORAGE: Option<Storage> = None;
+            // SAFETY: firmware BSS, written once here on the BSP; the
+            // payload keeps the store for as long as it runs.
+            let storage = unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) };
+            *storage = parts::options::storage(&view);
             handoff.settings = Some(parts::options::settings(&view));
-            // The payload keeps the store for as long as it runs.
-            handoff.variable_storage = parts::options::storage(&view).map(|storage| {
-                alloc::boxed::Box::leak(alloc::boxed::Box::new(storage))
-                    as &mut dyn fstart_payload::crabefi::StorageBackend
-            });
+            handoff.variable_storage = storage
+                .as_mut()
+                .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
         }
         fstart_payload::boot(handoff, ())
     }
