@@ -1,6 +1,6 @@
 //! Lenovo ThinkPad X60 mainboard SMM policy.
 
-use crate::x6::dock as x6_dock;
+use crate::dock;
 use fstart_driver_intel::southbridge::smi::{
     APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchSmi, IchSmmConfig, PendingSmi,
 };
@@ -24,7 +24,7 @@ fn ec_channel() -> Ec {
 }
 
 fn dock_command(command: u8) -> Option<u8> {
-    x6_dock::smm_dock_command(ec_channel(), command)
+    dock::smm_dock_command(ec_channel(), command)
 }
 
 fn handle_ec_event() {
@@ -33,7 +33,7 @@ fn handle_ec_event() {
         return;
     }
     if let Some(event) = Ec::new(crate::config::X60_H8.resources.os).query_event()
-        && let Some(command) = x6_dock::smm_event_command(event)
+        && let Some(command) = dock::smm_event_command(event)
     {
         let _ = dock_command(command);
     }

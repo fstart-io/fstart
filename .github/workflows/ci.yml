@@ -115,6 +115,7 @@ jobs:
           done
           cargo test -p fstart-driver-intel --lib
           cargo test -p fstart-platform-intel --features host --lib
+          cargo test -p fstart-driver-lenovo --features acpi,x86_64 --lib
           cargo test -p fstart-boot --features crabefi-ui --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles

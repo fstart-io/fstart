@@ -2,9 +2,9 @@
 //! debug console, the clock generator, H8/PMH7 policy, the dock
 //! connection, the identity EEPROM and the X201T digitizer.
 
+use crate::ec;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
-use fstart_driver_lenovo::x201;
 
 /// The EHCI debug port of EHCI2 (00:1a.0): coreboot's X201
 /// `USBDEBUG_HCD_INDEX=2`.
@@ -17,7 +17,7 @@ pub const fn console() -> fstart_driver_usbdebug::Config {
 pub fn early_usb_power() {
     // No console yet to report a failure; the console init reports a dead
     // port instead.
-    let _ = x201::early_usb_power(&crate::config::X201_H8);
+    let _ = ec::early_usb_power(&crate::config::X201_H8);
 }
 
 /// coreboot `set_fsb_frequency()` from `mainboard_pre_raminit()`: the
@@ -45,11 +45,11 @@ pub struct Pins {
 
 impl Pins {
     pub const fn of(gpio: IchGpio) -> Self {
-        let [a, b, c] = x201::DOCK_ID_GPIOS;
+        let [a, b, c] = ec::DOCK_ID_GPIOS;
         Self {
-            bluetooth_card: gpio.pin(x201::BDC_PRESENCE_GPIO),
+            bluetooth_card: gpio.pin(ec::BDC_PRESENCE_GPIO),
             dock_id: [gpio.pin(a), gpio.pin(b), gpio.pin(c)],
-            dock_connect: gpio.pin(x201::DOCK_CONNECT_GPIO),
+            dock_connect: gpio.pin(ec::DOCK_CONNECT_GPIO),
         }
     }
 }
@@ -81,22 +81,21 @@ pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Option
     ]
 };
 
-/// EC/PMH7 with the user's `ec` options, the dock, the identity EEPROM and
+/// EC/PMH7 with the user's `options`, the dock, the identity EEPROM and
 /// the digitizer, once the chipset devices are up. Restores the optional
 /// TPM on S3 before returning the identity and the board ACPI device.
 pub fn init_devices(
     pins: &mut Pins,
     smbus: &mut impl SmBus,
-    ec: &fstart_driver_lenovo::options::Options,
+    options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> Result<(Identity, Acpi), fstart_driver_tpm::Error> {
     let mut identity = Identity::default();
-    let (bluetooth, acknowledged) = x201::ec_init(
+    let (bluetooth, acknowledged) = ec::init(
         &mut pins.bluetooth_card,
         &mut pins.dock_id,
         &mut pins.dock_connect,
-        &crate::config::X201_H8,
-        ec,
+        options,
         resume,
     );
     if !acknowledged {
@@ -123,9 +122,7 @@ pub fn init_devices(
     }
     // The digitizer's SuperIO is programmed on every boot; whether it is a
     // tablet only matters for the tables a cold boot builds.
-    let digitizer = fstart_driver_lenovo::thinkpad::digitizer_init(
-        identity.eeprom.as_ref().map(|e| e.part_number()),
-    );
+    let digitizer = ec::digitizer_init(identity.eeprom.as_ref().map(|e| e.part_number()));
     Ok((
         identity,
         Acpi {
@@ -164,7 +161,7 @@ pub fn legacy_ec_events() {
     use fstart_driver_intel::southbridge::smi::{ICH8_GPE0, IchSmi};
     let smi = IchSmi::new(fstart_platform_intel::ironlake::IBEXPEAK_PMBASE, ICH8_GPE0);
     // SAFETY: the BSP owns PCI config after MP/SMM installation completes.
-    unsafe { smi.route_gpi(x201::EC_SCI_GPI, false) };
+    unsafe { smi.route_gpi(ec::EC_SCI_GPI, false) };
 }
 
 /// The board's ACPI: H8 EC surface, sleep hooks, ThinkLight, dock, the
