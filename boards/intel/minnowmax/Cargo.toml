@@ -1,0 +1,33 @@
+[package]
+name = "fstart-board-intel-minnowmax"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+schema = 1
+board = "intel-minnowmax"
+platform = "x86_64"
+target = "x86_64-unknown-none"
+build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+
+[features]
+# Host tests and tools see the whole board. fbuild builds every stage with
+# --no-default-features and adds `acpi` to the ramstage only.
+default = ["acpi"]
+# The board's ACPI device, which needs the ramstage heap.
+acpi = ["dep:fstart-acpi", "fstart-platform-intel/acpi"]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel", features = ["baytrail"] }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-log = { path = "../../../crates/log" }
+ufmt = { workspace = true }
+
+# One binary per stage, named after the stage: src/bin/<stage>.rs.
