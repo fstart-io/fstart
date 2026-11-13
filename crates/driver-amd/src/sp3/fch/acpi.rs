@@ -1,8 +1,8 @@
 //! ACPI description of the FCH devices fstart leaves running: the AMBA
 //! UARTs (`AMDI0020`) or their legacy COM aliases (`PNP0501`), the I2C
-//! controllers (`AMDI0010`), the GPIO controller (`AMDI0030`) and the ISA
-//! legacy devices under the LPC bridge. Shared by Taishan (Naples) and
-//! Huashan (Rome, Milan).
+//! controllers (`AMDI0010`) and the GPIO controller (`AMDI0030`). Shared by
+//! Taishan (Naples) and Huashan (Rome, Milan). The ISA legacy devices under
+//! the LPC bridge are every FCH's (`crate::fch::aml`).
 //!
 //! Everything is read back from the hardware ([`FchAcpi::read`]) instead of
 //! being restated: a controller is described when its DesignWare component
@@ -23,7 +23,6 @@ use fstart_acpi::{AmlError, BoundAmlFragment, acpi_dsl};
 use heapless::Vec as HVec;
 
 use super::{irq, uart};
-use crate::fch::aml::GPIO_BASE;
 use crate::window::Window;
 
 /// DesignWare component type register (`*_COMP_TYPE`, offset 0xFC); the
@@ -202,102 +201,6 @@ fn name(prefix: &str, last: u8) -> alloc::string::String {
     s
 }
 
-/// FCH I/O ports that no device object claims, `(port, length)`: the
-/// legacy ranges, PCI_INTR, PMIO/SMBus index pairs, SMBus and ASF (donor
-/// `S900`, which lists the same set; 0x60/0x64 have length 0 there).
-pub const SYSTEM_IO: &[(u16, u8)] = &[
-    (0x10, 0x10),
-    (0x22, 0x1E),
-    (0x63, 1),
-    (0x65, 1),
-    (0x67, 9),
-    (0x72, 0x0E),
-    (0x80, 1),
-    (0x84, 3),
-    (0x88, 1),
-    (0x8C, 3),
-    (0x90, 0x10),
-    (0xA2, 0x1E),
-    (0xB1, 1),
-    (0xE0, 0x10),
-    (0x40B, 1),
-    (0x4D6, 1),
-    (0x900, 0x10),
-    (0x910, 0x10),
-    (irq::INDEX as u16, 2),
-    (0xC14, 1),
-    (0xC50, 3),
-    (0xC6C, 1),
-    (0xC6F, 1),
-    (0xCD0, 0x10),
-    (super::smbus::SMBUS_IO as u16, 0x10),
-    (super::smbus::ASF_IO as u16, 0x20),
-];
-
-/// FCH MMIO that no device object claims, `(base, length)`: the ACPI MMIO
-/// block around the GPIO bank the `GPIO` device owns, the `FEDC_0000h`
-/// block, the SPI controller and the flash window (donor `S900`).
-pub const SYSTEM_MMIO: &[(u32, u32)] = &[
-    (0xFED8_0000, GPIO_BASE - 0xFED8_0000),
-    (GPIO_BASE + 0x400, 0xFED9_0000 - (GPIO_BASE + 0x400)),
-    (0xFEDC_0000, 0x1000),
-    (super::spi::BASE, 0x1000),
-    (0xFF00_0000, 0x0100_0000),
-];
-
-/// ISA legacy devices for the LPC bridge scope: PIC, DMA, PIT, RTC (no
-/// IRQ 8: the HPET's legacy replacement owns it), speaker and the HPET.
-pub fn lpc_aml(hpet_base: u32) -> Result<Vec<u8>, AmlError> {
-    emit(acpi_dsl! {
-        Device("PIC") {
-            Name("_HID", EisaId("PNP0000"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x20u16, 0x20u16, 0u8, 2u8);
-                IO(0xA0u16, 0xA0u16, 0u8, 2u8);
-                IO(0x4D0u16, 0x4D0u16, 0u8, 2u8);
-                IRQNoFlags(2u8);
-            });
-        }
-        Device("DMAC") {
-            Name("_HID", EisaId("PNP0200"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x00u16, 0x00u16, 0u8, 0x10u8);
-                IO(0x81u16, 0x81u16, 0u8, 3u8);
-                IO(0x87u16, 0x87u16, 0u8, 1u8);
-                IO(0x89u16, 0x89u16, 0u8, 3u8);
-                IO(0x8Fu16, 0x8Fu16, 0u8, 1u8);
-                IO(0xC0u16, 0xC0u16, 0u8, 0x20u8);
-            });
-        }
-        Device("TIMR") {
-            Name("_HID", EisaId("PNP0100"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x40u16, 0x40u16, 0u8, 4u8);
-                IRQNoFlags(0u8);
-            });
-        }
-        Device("RTC") {
-            Name("_HID", EisaId("PNP0B00"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x70u16, 0x70u16, 0u8, 2u8);
-            });
-        }
-        Device("SPKR") {
-            Name("_HID", EisaId("PNP0800"));
-            Name("_CRS", ResourceTemplate {
-                IO(0x61u16, 0x61u16, 0u8, 1u8);
-            });
-        }
-        Device("HPET") {
-            Name("_HID", EisaId("PNP0103"));
-            Name("_UID", 0u8);
-            Name("_CRS", ResourceTemplate {
-                Memory32Fixed(ReadOnly, #{dword hpet_base}, 0x400u32);
-            });
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,19 +290,5 @@ mod tests {
         let (mmio, io) = hw(0, &[], &[]);
         let f = FchAcpi::read(&mmio, &io);
         assert!(f.uarts.is_empty() && f.i2c.is_empty() && f.legacy.is_empty());
-        assert!(lpc_aml(0xFED0_0000).is_ok());
-    }
-
-    #[test]
-    fn system_mmio_leaves_the_gpio_bank_out() {
-        let gpio = u64::from(GPIO_BASE)..u64::from(GPIO_BASE + GPIO_LENGTH);
-        assert!(SYSTEM_MMIO.iter().all(|&(b, l)| {
-            let (b, l) = (u64::from(b), u64::from(l));
-            b + l <= gpio.start || b >= gpio.end
-        }));
-        assert_eq!(
-            SYSTEM_MMIO[..2],
-            [(0xFED8_0000, 0x1500), (0xFED8_1900, 0xE700)]
-        );
     }
 }

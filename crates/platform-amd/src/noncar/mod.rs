@@ -84,7 +84,7 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
     }
     /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
     /// nodes: several and not interleaved.
-    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<crate::acpi::DieMemory> {
+    fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<DieMemory> {
         None
     }
     /// The display, at ready to boot ([`crate::flow::Soc::init_display`]).
@@ -105,8 +105,6 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
 impl<S: DieSoc> crate::flow::Soc for S {
     const TSEG_SIZE: u32 = TSEG_SIZE;
     type Flow = ();
-    type Smbios<'a> = crate::acpi::SmbiosIdentity<'a>;
-    type Acpi<'a> = crate::acpi::BoardAcpi;
 
     fn max_cpus(_: &S::Config) -> u16 {
         S::MAX_CPUS
@@ -209,25 +207,16 @@ impl<S: DieSoc> crate::flow::Soc for S {
         pci: &fstart_pci::PciEcam,
         (): &(),
         identity: &crate::acpi::SmbiosIdentity<'_>,
-        mut board: crate::acpi::BoardAcpi,
+        board: crate::acpi::Board,
     ) -> Tables {
-        let hosts: heapless::Vec<acpi::HostBridge, MAX_DIES> = pci
-            .roots()
-            .iter()
-            .map(|root| acpi::HostBridge::new(root, pci))
-            .collect();
-        board.tables.append(&mut silicon.tables);
-        board.devices.extend(silicon.devices.iter().cloned());
-        board.sb_aml.extend_from_slice(&silicon.aml);
         let ioapics: [u32; MAX_DIES] =
             core::array::from_fn(|die| S::ioapic(&silicon.state, die as u8));
         let rsdp = acpi::install::<S>(
-            S::ACPI,
             &ctx.hw.dies,
-            &hosts,
+            pci.roots(),
             &ioapics,
             S::pci_segment(ctx.hw),
-            &silicon.cpus.apic_ids,
+            silicon,
             &board,
         );
         let smbios = smbios::install::<S>(
@@ -276,6 +265,9 @@ where
 {
     crate::flow::enter(B::CONFIG.clone())
 }
+
+/// The DRAM ranges of the dies, the domain being the die.
+pub type DieMemory = heapless::Vec<fstart_acpi::numa::MemoryAffinity, 48>;
 
 /// The SMBIOS facts of a SoC.
 #[derive(Debug, Clone, Copy)]

@@ -6,8 +6,8 @@
 extern crate std;
 use super::{Config, DxioConfig, FchConfig};
 use crate::{
-    acpi::{self, BoardAcpi, DieAcpi, Inputs},
-    noncar::acpi::HostBridge,
+    acpi::{self, Board},
+    noncar::acpi::{cpus, root_bridge},
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
 use fstart_driver_amd::cpu::{Package, Revision};
@@ -412,34 +412,22 @@ fn sp4_pci_roots_and_host_bridges() {
         assert!(root.mmio().any(|window| window.contains(&bar)), "{bar:#x}");
     }
 
-    let hosts: Vec<HostBridge> = roots
+    let dies: Vec<_> = roots
         .iter()
-        .map(|root| HostBridge::new(root, &pci))
+        .zip(0..)
+        .map(|(root, die)| root_bridge(die, root, state.ioapics[usize::from(die)], None, false))
         .collect();
-    let dies: Vec<DieAcpi> = hosts
-        .iter()
-        .enumerate()
-        .map(|(die, host)| host.acpi(die as u8, state.ioapics[die], None))
-        .collect();
-    let board = BoardAcpi::default();
-    let tables = acpi::build(&Inputs {
-        soc: &super::acpi::ACPI,
-        apic_ids: &[0, 1, 8, 9],
-        dies: &dies,
-        pci: fstart_core::description::PciRootInfo {
-            segment: 0,
-            ecam_base: 0xf000_0000,
-            bus_start: 0,
-            bus_end: 127,
-        },
-        hpet_id: 0,
-        power: None,
-        numa: None,
-        board: &board,
-    })
+    let (cpus, board) = (cpus(&[0, 1, 8, 9], false), Board::default());
+    let tables = acpi::build(&acpi::tests::inputs(
+        &super::acpi::ACPI,
+        &cpus,
+        &dies,
+        &board,
+    ))
     .unwrap();
-    let aml = &tables.dsdt_aml;
-    let pci1 = aml.windows(4).position(|name| name == b"PCI1").unwrap();
+    let aml = &tables.dsdt;
+    // The device, after the paths that name it.
+    let pci1 = aml.windows(4).rposition(|name| name == b"PCI1").unwrap();
     let vga = (0, 0xa_0000, 0xb_ffff);
     assert_eq!(
         address_spaces(&aml[..pci1]),

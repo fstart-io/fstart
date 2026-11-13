@@ -131,8 +131,8 @@ pub const SMBIOS: fstart_platform_amd::acpi::SmbiosIdentity<'static> =
     fstart_platform_amd::acpi::SmbiosIdentity::new("Google", "Vilboz");
 
 /// The keyboard behind the EC.
-pub fn acpi() -> fstart_platform_amd::acpi::BoardAcpi {
-    fstart_platform_amd::acpi::BoardAcpi {
+pub fn acpi() -> fstart_platform_amd::acpi::Board {
+    fstart_platform_amd::acpi::Board {
         lpc_aml: fstart_driver_chromeec::acpi::keyboard_aml(),
         ..Default::default()
     }

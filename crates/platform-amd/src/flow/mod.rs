@@ -75,9 +75,6 @@ pub trait Soc: Init {
     const TSEG_SIZE: u32;
     /// What the SoC's services here keep between the phases.
     type Flow;
-    /// The board's part of the tables: its SMBIOS identity and its ACPI.
-    type Smbios<'a>;
-    type Acpi<'a>;
 
     /// The most CPUs of a board with `config`.
     fn max_cpus(config: &Self::Config) -> u16;
@@ -138,8 +135,8 @@ pub trait Soc: Init {
         silicon: &mut Silicon<Self>,
         pci: &fstart_pci::PciEcam,
         flow: &Self::Flow,
-        smbios: &Self::Smbios<'_>,
-        acpi: Self::Acpi<'_>,
+        smbios: &crate::acpi::SmbiosIdentity<'_>,
+        acpi: crate::acpi::Board,
     ) -> Tables;
     #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
     /// Page tables for what the payload reaches beyond the reset entry's

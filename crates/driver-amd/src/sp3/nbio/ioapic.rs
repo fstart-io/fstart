@@ -2,113 +2,24 @@
 //! data ACPI needs (NBIO_SMU §3.6, ACPI_SMM §3.2).
 //!
 //! The routing registers are programmed by the generated NBIO tables; the
-//! same routes are exposed here as data for `_PRT` and checked against the
-//! tables in the tests.
+//! same routes are data for `_PRT` (`crate::nbio::ioapic::Route`) and
+//! checked against the tables in the tests.
 
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::Nbio;
 use crate::nbio::ioapic::{
-    BridgeRouting, IOAPIC_FEATURES_ENABLE, IOAPIC_ID, IoapicFeatures, IoapicId,
-    br_interrupt_routing,
+    BridgeRouting, IOAPIC_FEATURES_ENABLE, IOAPIC_ID, IoapicFeatures, IoapicId, ROUTES_SP3,
+    ROUTES_ZP, Route, br_interrupt_routing,
 };
 use crate::smn::SmnAccess;
 use crate::sp3::soc::Generation;
 
-/// Redirection entries of an NBIO IOAPIC (GSI windows of 32, ACPI_SMM
-/// §3.2).
-pub const NBIO_IOAPIC_PINS: u32 = 32;
-/// Redirection entries of the FCH IOAPIC (GSI 0..23).
-pub const FCH_IOAPIC_PINS: u32 = 24;
-
-/// One bridge's legacy INTx route into the NBIO IOAPIC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Route {
-    /// Interrupt group.
-    pub group: u8,
-    /// INTA..D rotation (0 = ABCD, 1 = BCDA, 2 = CDAB, 3 = DABC).
-    pub swizzle: u8,
-    /// First IOAPIC pin of the group (pins `map..map+3`, INF from the
-    /// field name BRIDGE_MAP).
-    pub map: u8,
-}
-
-impl Route {
-    /// The register value (mask 0x001F0037).
-    pub const fn value(&self) -> u32 {
-        self.group as u32 | (self.swizzle as u32) << 4 | (self.map as u32) << 16
-    }
-}
-
-const fn route(i: usize, tail: &[Route]) -> Route {
-    match i {
-        0..8 => Route {
-            group: i as u8,
-            swizzle: 0,
-            map: 0x10 + (i % 4) as u8,
-        },
-        8..16 => Route {
-            group: (15 - i) as u8,
-            swizzle: 2,
-            map: 0x0C + (i % 4) as u8,
-        },
-        _ => tail[i - 16],
-    }
-}
-
-const SP3_TAIL: [Route; 6] = {
-    let mut t = [Route {
-        group: 0,
-        swizzle: 3,
-        map: 0,
-    }; 6];
-    let mut i = 0;
-    while i < 6 {
-        t[i].group = i as u8;
-        t[i].map = 0x08 + (i % 4) as u8;
-        i += 1;
-    }
-    t
-};
-
-const ZP_TAIL: [Route; 2] = [
-    Route {
-        group: 3,
-        swizzle: 1,
-        map: 0x14,
-    },
-    Route {
-        group: 4,
-        swizzle: 3,
-        map: 0x08,
-    },
-];
-
-const fn routes<const N: usize>(tail: &[Route]) -> [Route; N] {
-    let mut r = [Route {
-        group: 0,
-        swizzle: 0,
-        map: 0,
-    }; N];
-    let mut i = 0;
-    while i < N {
-        r[i] = route(i, tail);
-        i += 1;
-    }
-    r
-}
-
-/// Rome/Milan: 22 bridges (identical in ssp.nbio and gn.nbio; Oxide
-/// `milan_ioapic_routes` agrees).
-pub const ROUTES_SP3: [Route; 22] = routes(&SP3_TAIL);
-/// Naples: 18 bridges (../sp4r2 NBIO_BASE_ZP §3.4).
-pub const ROUTES_NAPLES: [Route; 18] = routes(&ZP_TAIL);
-
 /// The bridge routes of `generation`.
 pub const fn routes_for(generation: Generation) -> &'static [Route] {
     match generation {
-        Generation::Naples => &ROUTES_NAPLES,
+        Generation::Naples => &ROUTES_ZP,
         Generation::Rome | Generation::Milan => &ROUTES_SP3,
     }
 }
@@ -130,7 +41,7 @@ pub const fn nbio_ioapic_id(generation: Generation, n: u8) -> u8 {
     fch_ioapic_id(generation) + 1 + n
 }
 
-/// What the MADT/IVRS need about one NBIO IOAPIC.
+/// What the MADT and the IVRS need of one NBIO IOAPIC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoapicInfo {
     pub socket: u8,
@@ -139,19 +50,6 @@ pub struct IoapicInfo {
     pub base: u64,
     /// IVRS special-device source: `bus:00.1`.
     pub bus: u8,
-}
-
-/// Assign GSI bases the way the donor MADT does: FCH IOAPIC first at 0,
-/// then the NBIO IOAPICs sorted by ID, each `NBIO_IOAPIC_PINS` wide
-/// (ACPI_SMM §3.2). Returns `(info, gsi_base)` in that order.
-pub fn gsi_layout<const N: usize>(ioapics: &[IoapicInfo]) -> heapless::Vec<(IoapicInfo, u32), N> {
-    let mut sorted: heapless::Vec<IoapicInfo, N> = ioapics.iter().copied().collect();
-    sorted.sort_unstable_by_key(|i| i.id);
-    sorted
-        .iter()
-        .enumerate()
-        .map(|(k, &i)| (i, FCH_IOAPIC_PINS + NBIO_IOAPIC_PINS * k as u32))
-        .collect()
 }
 
 impl<P: ConfigRegionAccess + Clone> Nbio<P> {
@@ -210,7 +108,7 @@ mod tests {
     use super::*;
     use crate::sp3::nbio::tests::nbio;
 
-    #[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
+    #[cfg(any(feature = "rome", feature = "milan"))]
     fn route_values(
         entries: impl Iterator<Item = (crate::smn::SmnAddr, crate::sp3::nbio::table::Op)>,
     ) -> Vec<u32> {
@@ -228,15 +126,6 @@ mod tests {
 
     #[test]
     fn routes_match_tables() {
-        #[cfg(feature = "naples")]
-        assert_eq!(
-            route_values(
-                crate::sp3::nbio::naples::tables::BASE
-                    .iter()
-                    .map(|e| (e.addr, e.op.into()))
-            ),
-            ROUTES_NAPLES.map(|r| r.value())
-        );
         #[cfg(feature = "rome")]
         assert_eq!(
             route_values(
@@ -268,19 +157,5 @@ mod tests {
         assert_eq!(s.smn[&(0, 0x1430_0000)], 0x14);
         drop(s);
         assert_eq!(n1.ioapic_id(), 0xF2);
-    }
-
-    #[test]
-    fn gsi_order_by_id() {
-        let io = |id, index| IoapicInfo {
-            socket: 0,
-            index,
-            id,
-            base: 0,
-            bus: 0,
-        };
-        let l = gsi_layout::<8>(&[io(0xF3, 0), io(0xF1, 3)]);
-        assert_eq!((l[0].0.index, l[0].1), (3, 24));
-        assert_eq!((l[1].0.index, l[1].1), (0, 56));
     }
 }

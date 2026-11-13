@@ -7,12 +7,12 @@ use alloc::vec;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_driver_ipmi::kcs;
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
-use fstart_platform_amd::acpi::BoardAcpi;
+use fstart_platform_amd::acpi::Board;
 
 // The AST2500 firmware implements IPMI 2.0.
 const KCS: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 
-pub fn tables() -> BoardAcpi {
+pub fn tables() -> Board {
     let com1 = SuperIoConfig {
         com1: Some(ComPortConfig {
             io_base: super::COM1,
@@ -21,21 +21,18 @@ pub fn tables() -> BoardAcpi {
         }),
         ..SuperIoConfig::default()
     };
-    let mut lpc_aml = superio_dsdt_aml(&com1);
-    lpc_aml.extend(KCS.dsdt_aml());
-    BoardAcpi {
-        lpc_aml,
+    let mut spcr = alloc::vec::Vec::new();
+    fstart_acpi::Aml::to_aml_bytes(
+        &fstart_acpi::spcr::build_spcr_16550_io(super::COM1, super::COM1_IRQ),
+        &mut spcr,
+    );
+    Board {
+        ipmi: Some(KCS),
+        lpc_aml: superio_dsdt_aml(&com1),
         // The console: SOL over COM1.
-        tables: vec![KCS.spmi(), {
-            let mut spcr = alloc::vec::Vec::new();
-            fstart_acpi::Aml::to_aml_bytes(
-                &fstart_acpi::spcr::build_spcr_16550_io(super::COM1, super::COM1_IRQ),
-                &mut spcr,
-            );
-            spcr
-        }],
-        devices: vec![],
+        tables: vec![spcr],
         // `_PTS`/`_WAK` tell the BMC the sleep state through the SMM handler.
         sb_aml: super::BMC_SLEEP_NOTIFY.aml(fstart_driver_amd::fch::smi::APM_CNT),
+        ..Board::default()
     }
 }

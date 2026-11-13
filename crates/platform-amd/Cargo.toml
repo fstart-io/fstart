@@ -27,8 +27,12 @@ sp3 = [
   "dep:zerocopy",
   "fstart-log/alloc",
 ]
-# The SP3 tables.
-acpi = ["dep:fstart-acpi", "fstart-acpi/pci", "fstart-driver-amd/acpi", "fstart-driver-amd/smbios", "fstart-driver-ipmi?/acpi"]
+# The ACPI and SMBIOS tables of a SoC.
+acpi = [
+  "dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-acpi-macros",
+  "fstart-driver-amd/acpi", "fstart-driver-amd/smbios",
+  "dep:fstart-driver-ipmi", "fstart-driver-ipmi/acpi",
+]
 # The SP3 stage: its entry (the arch crate's asm/amd_psp_reset.S, which
 # enters `_start_ram`), the stage runtime, the FFS the payload comes from,
 # whose root the signature features authenticate, ACPI and the TPM.
@@ -42,13 +46,10 @@ bundle-stage = [
 ]
 # The shared flow of the PSP-booted SoCs, with their ACPI tables.
 noncar = [
+  "acpi",
   "fstart-driver-amd/smi",
-  "fstart-driver-amd/acpi",
-  "fstart-driver-amd/smbios",
   "dep:fstart-amdfw-format",
   "dep:fstart-arch",
-  "dep:fstart-acpi",
-  "dep:fstart-acpi-macros",
   "dep:heapless",
 ]
 # The boot media mount of a PSP-booted stage.

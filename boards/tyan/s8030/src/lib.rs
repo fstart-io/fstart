@@ -27,7 +27,7 @@
 //! | 8 NBIO / 12 MP | [`policy::nbio`], [`policy::ccx`] |
 //! | 9 SMU | [`policy::power`] |
 //! | 10 DXIO | [`dxio::engines`] with [`dxio::Options`] and [`dxio::Detected`] (M.2 levels, [`bmc::m2_gen3_cap`]), [`policy::dxio`] |
-//! | 14 ACPI | [`bmc::acpi_board`] over [`bmc::lpc_aml`] |
+//! | 14 ACPI | [`bmc::acpi_board`] |
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;

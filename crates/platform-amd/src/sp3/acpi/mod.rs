@@ -1,229 +1,102 @@
-//! ACPI tables of the SP3 platform (ACPI_SMM).
-//!
-//! The builders take plain [`Inputs`] that the flow fills from the silicon
-//! drivers (`nbio::ioapic::IoapicInfo`, `nbio::iommu::IommuInfo`, the DF
-//! root bridges and DRAM map, `ccx::power`), so they stay host-testable.
-//!
-//! | Table | Source | Module |
-//! |---|---|---|
-//! | FADT, MADT, HPET | donor values per generation | [`fixed`] |
-//! | MCFG | `fstart_driver_amd::sp3::soc::hw::segment` | `fstart_acpi::build_mcfg` |
-//! | SRAT, MSCT, SLIT | only with more than one domain | [`numa`] |
-//! | IVRS | per IOMMU, types 10h/11h | [`ivrs`] |
-//! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
-//! | PCCT, `_CPC` | SMU-served CPPC ([`Inputs::cppc`]) | `smu::v11::cppc` |
-//! | TPM2 / TCPA | discrete TPM and its event log ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
-//! | WSMT | with SMM ([`Inputs::acpi_smi`]) | `fstart_acpi::wsmt` |
-//! | DSDT | root bridges, `_PRT`, FCH, CPUs, `_PIC`, `_S5`, board hook | [`dsdt`] |
-//!
-//! Restricted correctable-memory EINJ is available with the native SMM
-//! backend. Not built (OS-first): HEST/BERT/ERST, CRAT/CDIT.
+//! What the ACPI tables of the SP3 generations differ in from the other
+//! AMD SoCs' ([`crate::acpi`]), and the tables only SP3 has: the PCCT with
+//! `_CPC` for the SMU-served CPPC of Rome and Milan ([`cppc`]) and EINJ,
+//! restricted correctable-memory injection through the native SMM backend
+//! ([`einj`]). Not built (OS-first): HEST/BERT/ERST, CRAT/CDIT.
 
-extern crate alloc;
-
-use alloc::vec::Vec;
-
-use fstart_acpi::AmlError;
-use fstart_acpi::devices::IpmiKcsAcpi;
-use fstart_acpi::platform::PlatformConfig;
-use fstart_core::acpi::AcpiSmiConfig;
-use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::smu::v11::CppcInfo;
-use fstart_driver_amd::smu::v11::cppc;
-pub use fstart_driver_amd::sp3::fch::acpi::FchAcpi;
-use fstart_driver_amd::sp3::nbio::ioapic::IoapicInfo;
+use fstart_acpi::fadt::{Flags, PmProfile};
+use fstart_acpi::platform::{X86Fadt, x86::IAPC_LEGACY_DEVICES};
+use fstart_driver_amd::fch::AcpiPorts;
+use fstart_driver_amd::sp3::fch::acpimmio;
 use fstart_driver_amd::sp3::soc::Generation;
-use fstart_driver_amd::sp3::topology::RootBridge;
 
-pub mod dsdt;
+use crate::acpi::{S5_SLEEP_TYPE, SocAcpi, Wake, prt};
+
+#[cfg(any(feature = "rome", feature = "milan"))]
+pub mod cppc;
 pub mod einj;
-pub mod fixed;
-pub mod ivrs;
-pub mod numa;
-pub mod prt;
 
-pub use ivrs::IommuAcpi;
-pub use numa::{Domain, MemoryAffinity, Numa};
+/// The FCH's UARTs, I2C controllers and GPIO as the FCH tasks left them.
+pub use fstart_driver_amd::sp3::fch::acpi::FchAcpi;
 
-/// An enabled thread. The slice order is the ACPI processor UID (MADT and
-/// processor-device `_UID`); put the BSP first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cpu {
-    pub apic_id: u32,
-    /// Proximity domain (0 with one domain).
-    pub domain: u32,
-}
-
-/// A root bridge with the resources it was enumerated with.
-#[derive(Debug, Clone, Copy)]
-pub struct RootBridgeAcpi<'a> {
-    pub bridge: RootBridge,
-    /// The root bridge the allocator enumerated: `_CRS` reports its buses and
-    /// windows.
-    pub root: &'a fstart_pci::PciRoot,
-    /// `_PXM` when SRAT is built.
-    pub domain: Option<u32>,
-    /// SMN address of this NBIO's `IOAPIC::FEATURES_ENABLE` through its own
-    /// root bus: `Nbio::at(nbio::ioapic::FEATURES_ENABLE)`.
-    pub ioapic_features: u32,
-}
-
-/// Processor power data for `_PSS`/`_PCT`/`_PSD`/`_CST` (BSP's view;
-/// every thread runs the same table).
-pub use fstart_driver_amd::ccx::power::Power;
-
-/// Board contributions.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Board<'a> {
-    /// BMC KCS interface: `IPI0001` under the LPC bridge and the SPMI.
-    pub ipmi: Option<IpmiKcsAcpi>,
-    /// An 8042 is present (IAPC_BOOT_ARCH bit 1; the donors set it).
-    pub i8042: bool,
-    /// AML inside `\_SB.PCI0.LPCB` (Super I/O devices, ...).
-    pub lpc_aml: &'a [u8],
-    /// AML inside `\_SB`.
-    pub sb_aml: &'a [u8],
-}
-
-/// Everything the SP3 tables are built from.
-#[derive(Debug, Clone, Copy)]
-pub struct Inputs<'a> {
-    pub generation: Generation,
-    /// The PCI segment (`fstart_driver_amd::sp3::soc::hw::segment`), as the payload gets it.
-    pub pci: PciRootInfo,
-    pub cpus: &'a [Cpu],
-    /// FCH IOAPIC ID (`nbio::ioapic::fch_ioapic_id` unless reprogrammed).
-    pub fch_ioapic_id: u8,
-    /// NBIO IOAPICs with a placed BAR (`Nbio::ioapic_info`).
-    pub ioapics: &'a [IoapicInfo],
-    /// HPET general capabilities (dword at 0xFED00000).
-    pub hpet_block_id: u32,
-    pub root_bridges: &'a [RootBridgeAcpi<'a>],
-    /// Enabled IOMMUs; IVRS is skipped when empty.
-    pub iommus: &'a [IommuAcpi],
-    pub numa: Option<Numa<'a>>,
-    pub power: Option<Power<'a>>,
-    /// The SMI command port and ACPI enable/disable values the SMM handler
-    /// implements; `None` when firmware hands over with SCI_EN already set.
-    pub acpi_smi: Option<AcpiSmiConfig>,
-    /// The native SMM PSP backend enabled restricted memory injection.
-    pub einj: bool,
-    /// FCH devices as the FCH tasks left them.
-    pub fch: &'a FchAcpi,
-    /// The BMC sleep-state notification; needs [`Inputs::acpi_smi`].
-    pub bmc_sx_notify: Option<fstart_driver_ipmi::SleepNotify>,
-    /// The discrete TPM measured boot started on
-    /// (`crate::sp3::board::Board::DISCRETE_TPM`), with its event log.
-    pub tpm: Option<fstart_acpi::devices::tpm::TpmTisAcpi>,
-    /// SMU-served CPPC: `_CPC` per processor and the PCCT.
-    pub cppc: &'a [CppcAcpi<'a>],
-    pub board: Board<'a>,
-}
-
-/// CPPC inputs (`smu::v11::cppc`).
-#[derive(Debug, Clone, Copy)]
-pub struct CppcAcpi<'a> {
-    pub info: CppcInfo,
-    /// PCC region.
-    pub base: u64,
-    pub smu_bar: u64,
-    pub lowest_mhz: u32,
-    pub nominal_mhz: u32,
-    /// APIC ID of each PCC slot.
-    pub slots: &'a [u32],
-}
-
-/// The built table set, ready for `fstart_acpi::platform::assemble_into`.
-pub struct Tables {
-    /// FADT, MADT and HPET parameters.
-    pub platform: PlatformConfig,
-    /// DSDT body (placed in `\_SB`).
-    pub dsdt: Vec<u8>,
-    /// MCFG, [SRAT, MSCT, SLIT], [IVRS], [SPMI].
-    pub extra: Vec<Vec<u8>>,
-}
-
-impl Tables {
-    /// Lay the tables out at `table_addr` in `bytes`; returns the length.
-    /// The RSDP is at the start.
-    pub fn assemble_into(&self, bytes: &mut [u8], table_addr: u64) -> Result<usize, AmlError> {
-        fstart_acpi::platform::assemble_into(
-            bytes,
-            table_addr,
-            &self.platform,
-            &self.dsdt,
-            &self.extra,
-        )
+/// The donor FADT flags (pins `fadt-flags-*`): 0x305AD on Naples and Rome,
+/// 0x2052D on Milan, which drops RTC_S4 and S4_RTC_STS_VALID. Bits 16/17
+/// are S4_RTC_STS_VALID and REMOTE_POWER_ON_CAPABLE (ACPI_SMM §3.1 corrects
+/// the earlier PCI_EXP_WAK/USE_PLATFORM_CLOCK reading). RESET_REG_SUP is
+/// added by the builder from the CF9 reset register.
+pub const fn fadt_flags(generation: Generation) -> u32 {
+    let common = Flags::Wbinvd as u32
+        | Flags::ProcC1 as u32
+        | Flags::PLvl2Up as u32
+        | Flags::SlpButton as u32
+        | Flags::TmrValExt as u32
+        | Flags::RemotePowerOnCapable as u32;
+    match generation {
+        Generation::Naples | Generation::Rome => {
+            common | Flags::RtcS4 as u32 | Flags::S4RtcStsValid as u32
+        }
+        Generation::Milan => common,
     }
 }
 
-/// Build every SP3 table from `inputs`.
-pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
-    if inputs.cpus.is_empty()
-        || inputs.cppc.len() > 256
-        || inputs.cppc.iter().any(|c| c.slots.len() > 256)
-        || inputs.cpus.iter().any(|cpu| {
-            inputs
-                .cppc
-                .iter()
-                .filter(|c| c.slots.contains(&cpu.apic_id))
-                .count()
-                > 1
-        })
-    {
-        return Err(AmlError::InvalidOperand);
-    }
-    let windows = fixed::gsi_windows(inputs.fch_ioapic_id, inputs.ioapics);
-    let lpc_aml: Vec<u8> = inputs
-        .board
-        .ipmi
-        .map(|k| k.dsdt_aml())
-        .into_iter()
-        .flatten()
-        .chain(inputs.board.lpc_aml.iter().copied())
-        .collect();
-    let dsdt = dsdt::build(
-        &Inputs {
-            board: Board {
-                lpc_aml: &lpc_aml,
-                ..inputs.board
-            },
-            ..*inputs
+const fn soc(generation: Generation) -> SocAcpi {
+    let naples = matches!(generation, Generation::Naples);
+    SocAcpi {
+        // PM1a_EVT 0x800, PM1a_CNT 0x804, PM_TMR 0x808, GPE0 0x820 (8
+        // bytes), SCI on IRQ 9 (ACPI_SMM §3.1, FCH §3.2 SCI map).
+        ports: AcpiPorts {
+            event: acpimmio::PM1_STS as u16,
+            control: acpimmio::PM1_CNT as u16,
+            timer: acpimmio::PM_TMR as u16,
+            gpe: acpimmio::GPE0_STS as u16,
         },
-        &windows,
-    )?;
-    let extra = core::iter::once(fstart_acpi::build_mcfg(&[inputs.pci]))
-        .chain(
-            inputs
-                .numa
-                .as_ref()
-                .map(|n| numa::tables(inputs.generation, n, inputs.cpus))
-                .unwrap_or_default(),
-        )
-        .chain(ivrs::ivrs(inputs.iommus, &windows))
-        .chain(inputs.board.ipmi.map(|k| k.spmi()))
-        .chain((inputs.einj && inputs.acpi_smi.is_some()).then(einj::table))
-        .chain((!inputs.cppc.is_empty()).then(|| {
-            let subspaces: Vec<_> = inputs
-                .cppc
-                .iter()
-                .map(|c| cppc::pcct_subspace(c.base, c.smu_bar))
-                .collect();
-            fstart_acpi::pcct::build_pcct(&subspaces)
-        }))
-        .chain(inputs.tpm.map(|tpm| tpm.tables()).unwrap_or_default())
-        // EINJ uses a fixed, validated communication page and follows no
-        // input pointers. The system-resource lock audit remains open.
-        .chain(inputs.acpi_smi.map(|_| {
-            use fstart_acpi::wsmt;
-            wsmt::build_wsmt(wsmt::FIXED_COMM_BUFFERS | wsmt::COMM_BUFFER_NESTED_PTR_PROTECTION)
-        }))
-        .collect();
-    Ok(Tables {
-        platform: PlatformConfig::X86(fixed::x86_config(inputs, &windows)),
-        dsdt,
-        extra,
-    })
+        fadt: X86Fadt {
+            pm_profile: PmProfile::EnterpriseServer,
+            iapc_boot_arch: IAPC_LEGACY_DEVICES,
+            flags: fadt_flags(generation),
+            // Donor latencies: C2 100 µs, C3 > 1000 (not supported).
+            p_lvl2_lat: 100,
+            p_lvl3_lat: 1001,
+            duty_offset: 0,
+            duty_width: 0,
+            pm2_cnt_offset: None,
+        },
+        bridges: if naples {
+            &prt::BRIDGES_ZP
+        } else {
+            &prt::BRIDGES_SP3
+        },
+        // The donors' `_PRT`s have no entries for them.
+        fch_intx_gsi: None,
+        // PME of the internal bridges 7.1 and 8.1 of every NBIO (donor
+        // `GPRW(0x0B, 4)`, notified by `\_GPE._L0B`) on Rome and Milan. The
+        // Naples donor ASL notifies other objects (CRB names); not modelled
+        // there.
+        wake: if naples {
+            None
+        } else {
+            Some(Wake {
+                gpe: 0x0B,
+                bridges: &[(7, 1), (8, 1)],
+            })
+        },
+        // The xHCI behind 8.1 (function 3, donor `XHC0`) on Rome/Milan.
+        xhci: if naples { None } else { Some(((8, 1), 3)) },
+        sleep_states: &[(0, 0), (5, S5_SLEEP_TYPE)],
+        // The donors' SLIT defaults: Naples PCD 0x112 = 0xFF → other die
+        // 16; Rome/Milan "auto" (PCD 0x179 ≠ 0) with PCD 0x17A TRUE → same
+        // socket 12.
+        socket_distance: if naples { 16 } else { 12 },
+    }
+}
+
+/// What the tables of `generation` differ in.
+pub const fn of(generation: Generation) -> &'static SocAcpi {
+    match generation {
+        Generation::Naples => &const { soc(Generation::Naples) },
+        Generation::Rome => &const { soc(Generation::Rome) },
+        Generation::Milan => &const { soc(Generation::Milan) },
+    }
 }
 
 #[cfg(test)]

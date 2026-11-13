@@ -75,7 +75,7 @@ impl noncar::DieSoc for Zeppelin {
     /// The dies of an SP4 as AmdFabricZpDxe reports them for SRAT.
     fn die_memory(
         dies: &[fstart_driver_amd::df::Die<Self, fstart_pci::ecam::GlobalEcam>],
-    ) -> Option<crate::acpi::DieMemory> {
+    ) -> Option<noncar::DieMemory> {
         if dies.len() < 2 {
             return None;
         }

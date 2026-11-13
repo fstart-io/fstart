@@ -465,7 +465,11 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
 impl<S: Soc> Stage<S, Ready<S>> {
     /// Finish the SoC's ready-to-boot, then install ACPI with the board's
     /// contribution `acpi` and SMBIOS with its identity `smbios`.
-    pub fn emit_tables(self, smbios: &S::Smbios<'_>, acpi: S::Acpi<'_>) -> Stage<S, Published<S>> {
+    pub fn emit_tables(
+        self,
+        smbios: &crate::acpi::SmbiosIdentity<'_>,
+        acpi: crate::acpi::Board,
+    ) -> Stage<S, Published<S>> {
         let Stage {
             machine,
             phase: Ready { mut silicon, pci },

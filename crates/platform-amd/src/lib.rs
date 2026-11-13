@@ -7,7 +7,8 @@
 //! SP3 has its own ([`sp3`]).
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 extern crate alloc;
-#[cfg(feature = "noncar")]
+/// The ACPI tables, for every SoC.
+#[cfg(all(feature = "acpi", any(feature = "noncar", feature = "sp3")))]
 pub mod acpi;
 
 /// How the FFS stores what this platform's stages load. The host plan

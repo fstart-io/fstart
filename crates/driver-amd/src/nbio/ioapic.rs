@@ -38,6 +38,100 @@ pub const fn br_interrupt_routing(i: usize) -> SmnReg<BridgeRouting::Register> {
 /// The SMN alias of the IOAPIC's ID register (IOAPIC index 0).
 pub const IOAPIC_ID: SmnReg<IoapicId::Register> = SmnReg::new(0x0280_1000);
 
+/// Redirection entries of an NBIO IOAPIC: its GSI window.
+pub const NBIO_IOAPIC_PINS: u32 = 32;
+/// Redirection entries of the FCH IOAPIC (GSI 0..23).
+pub const FCH_IOAPIC_PINS: u32 = 24;
+
+/// One bridge's legacy INTx route into the NBIO IOAPIC: what its
+/// [`br_interrupt_routing`] register holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    /// Interrupt group.
+    pub group: u8,
+    /// INTA..D rotation (0 = ABCD, 1 = BCDA, 2 = CDAB, 3 = DABC).
+    pub swizzle: u8,
+    /// First IOAPIC pin of the group (pins `map..map+3`, INF from the
+    /// field name BRIDGE_MAP).
+    pub map: u8,
+}
+
+impl Route {
+    /// The register value (mask 0x001F0037).
+    pub const fn value(&self) -> u32 {
+        self.group as u32 | (self.swizzle as u32) << 4 | (self.map as u32) << 16
+    }
+}
+
+/// Every NBIO routes its first sixteen bridges alike; the internal
+/// bridges after them are `tail`.
+const fn route(i: usize, tail: &[Route]) -> Route {
+    match i {
+        0..8 => Route {
+            group: i as u8,
+            swizzle: 0,
+            map: 0x10 + (i % 4) as u8,
+        },
+        8..16 => Route {
+            group: (15 - i) as u8,
+            swizzle: 2,
+            map: 0x0C + (i % 4) as u8,
+        },
+        _ => tail[i - 16],
+    }
+}
+
+const SP3_TAIL: [Route; 6] = {
+    let mut t = [Route {
+        group: 0,
+        swizzle: 3,
+        map: 0,
+    }; 6];
+    let mut i = 0;
+    while i < 6 {
+        t[i].group = i as u8;
+        t[i].map = 0x08 + (i % 4) as u8;
+        i += 1;
+    }
+    t
+};
+
+const ZP_TAIL: [Route; 2] = [
+    Route {
+        group: 3,
+        swizzle: 1,
+        map: 0x14,
+    },
+    Route {
+        group: 4,
+        swizzle: 3,
+        map: 0x08,
+    },
+];
+
+const fn routes<const N: usize>(tail: &[Route]) -> [Route; N] {
+    let mut r = [Route {
+        group: 0,
+        swizzle: 0,
+        map: 0,
+    }; N];
+    let mut i = 0;
+    while i < N {
+        r[i] = route(i, tail);
+        i += 1;
+    }
+    r
+}
+
+/// Raven/Picasso: 9 bridges.
+pub const ROUTES_RV: [Route; 9] = routes(&[]);
+/// The ZP die, Zeppelin's and Naples': 18 bridges (../sp4r2 NBIO_BASE_ZP
+/// §3.4).
+pub const ROUTES_ZP: [Route; 18] = routes(&ZP_TAIL);
+/// Rome/Milan: 22 bridges (identical in ssp.nbio and gn.nbio; Oxide
+/// `milan_ioapic_routes` agrees).
+pub const ROUTES_SP3: [Route; 22] = routes(&SP3_TAIL);
+
 /// The OS's switch to APIC mode in ACPI (`_PIC(1)`): AGESA's `NAPE` clears
 /// [`IOAPIC_FEATURES_ENABLE`]`.FCH` on every NBIO, so the bridges'
 /// interrupts reach their NBIO IOAPIC only.
@@ -99,5 +193,30 @@ pub mod acpi {
         Method::new(Path::new("_PIC"), 1, false, alloc::vec![&store, &nape]).to_aml_bytes(&mut pic);
         let picm: Vec<u8> = acpi_dsl! { Name("PICM", 0u8); }.into();
         scope_vec("\\", &[picm, pic].concat())
+    }
+}
+
+#[cfg(all(test, any(feature = "zeppelin", feature = "naples")))]
+mod tests {
+    use super::*;
+    use crate::nbio::zp::tables::BASE;
+    use crate::table::Op;
+
+    /// The routes the `_PRT`s describe are the ones the ZP base table
+    /// programs on Zeppelin and Naples.
+    #[test]
+    fn zp_base_programs_the_ioapic_routes() {
+        let programmed: Vec<u32> = BASE
+            .iter()
+            .filter(|entry| (0x1430_0040..0x1430_00a0).contains(&entry.addr))
+            .map(|entry| match entry.op {
+                Op::Update {
+                    clear: 0x001f_0037,
+                    set,
+                } => set,
+                op => panic!("{op:?}"),
+            })
+            .collect();
+        assert_eq!(programmed, ROUTES_ZP.map(|route| route.value()));
     }
 }

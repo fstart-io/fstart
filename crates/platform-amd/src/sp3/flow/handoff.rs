@@ -7,25 +7,41 @@ use alloc::vec::Vec;
 
 use super::{Ctx, OrHalt};
 
-/// Build and place the ACPI tables (ACPI_SMM, `crate::sp3::acpi`); returns the
-/// RSDP address. The tables live in the stage heap, inside the reserved
-/// early region.
+/// Build and place the ACPI tables (ACPI_SMM, `crate::acpi` with what SP3
+/// adds, `crate::sp3::acpi`); returns the RSDP address. The tables live in
+/// the stage heap, inside the reserved early region.
 #[cfg(feature = "acpi")]
 pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
     ctx: &Ctx<'_>,
     si: &S,
     pci: &fstart_pci::PciEcam,
-    board_acpi: &crate::sp3::acpi::Board<'_>,
+    board: &crate::acpi::Board,
     bmc_sx_notify: Option<crate::sp3::smm::SleepNotify>,
 ) -> u64 {
-    use crate::sp3::acpi::{self, Cpu, Inputs, IommuAcpi, Power, RootBridgeAcpi};
+    use crate::acpi::{self, Cpu, Inputs, Ioapic, Iommu, Power, RootBridgeAcpi};
+    use crate::sp3::acpi::{FchAcpi, einj};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::sp3::ccx::power;
     use fstart_driver_amd::sp3::fch::smi;
-    use fstart_driver_amd::sp3::nbio::ioapic::{IoapicInfo, fch_ioapic_id};
+    use fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id;
 
     let numa_plan = S::numa(&ctx.soc, si);
+    // Naples has no CPPC through the SMU.
+    #[cfg(any(feature = "rome", feature = "milan"))]
+    let cppc: Vec<_> = ctx
+        .soc
+        .cppc
+        .iter()
+        .map(|c| crate::sp3::acpi::cppc::Channel {
+            info: c.info,
+            base: c.base,
+            smu_bar: c.smu_bar,
+            lowest_mhz: c.lowest_mhz,
+            nominal_mhz: c.nominal_mhz,
+            slots: &c.slots,
+        })
+        .collect();
     let cpus: Vec<Cpu> = ctx
         .soc
         .apic_ids
@@ -37,19 +53,10 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
                 .as_ref()
                 .and_then(|n| n.cpus.get(i).copied())
                 .unwrap_or(0),
-        })
-        .collect();
-    let ioapics: Vec<IoapicInfo> = si.nbios().iter().filter_map(|n| n.ioapic_info()).collect();
-    let iommus: Vec<IommuAcpi> = si
-        .nbios()
-        .iter()
-        .zip(&ctx.soc.topology.root_bridges)
-        .filter_map(|(n, rb)| {
-            n.iommu_info().map(|info| IommuAcpi {
-                info,
-                registers: iommu_registers(&info),
-                bus_limit: rb.bus_limit,
-            })
+            #[cfg(any(feature = "rome", feature = "milan"))]
+            aml: crate::sp3::acpi::cppc::cpc(&cppc, apic_id).or_halt("ACPI tables"),
+            #[cfg(not(any(feature = "rome", feature = "milan")))]
+            aml: Vec::new(),
         })
         .collect();
     let root_bridges: Vec<RootBridgeAcpi<'_>> = ctx
@@ -61,13 +68,21 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
         .zip(pci.roots())
         .zip(si.nbios())
         .enumerate()
-        .map(|(i, ((&bridge, root), n))| RootBridgeAcpi {
-            bridge,
+        .map(|(i, ((bridge, root), n))| RootBridgeAcpi {
             root,
+            fch: bridge.primary,
             domain: numa_plan
                 .as_ref()
                 .and_then(|p| p.root_bridges.get(i).copied()),
+            ioapic: n.ioapic_info().map(|ioapic| Ioapic {
+                id: ioapic.id,
+                base: ioapic.base,
+            }),
             ioapic_features: n.at(IOAPIC_FEATURES_ENABLE.address()),
+            iommu: n.iommu_info().map(|info| Iommu {
+                base: info.base,
+                registers: iommu_registers(&info),
+            }),
         })
         .collect();
     let cpu = fstart_driver_amd::sp3::soc::hw::msr();
@@ -96,38 +111,42 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
             p.memory.len() as u32
         );
     }
-    let fch = {
+    // The FCH's UARTs, I2C controllers and GPIO as the FCH tasks left them.
+    let fch_aml = {
         use fstart_driver_amd::sp3::fch::FchHw;
-        acpi::FchAcpi::read(ctx.soc.fch.mmio(), ctx.soc.fch.io())
+        FchAcpi::read(ctx.soc.fch.mmio(), ctx.soc.fch.io())
+            .sb_aml()
+            .or_halt("ACPI tables")
     };
     // SAFETY: the HPET general capabilities register, read only.
     let hpet_block_id = unsafe { fstart_core::mmio::read32(0xfed0_0000 as *const u32) };
-    // Naples has no CPPC through the SMU.
+    // The initialization SMI enabled the PSP backend and checked the live
+    // Rome/ECC map. Only the boot flow reads this flag; SMM authorization
+    // lives in SMRAM, not in this shared page.
+    let einj_supported = ctx.smm.is_some() && {
+        // SAFETY: the fixed communication page in reserved early RAM.
+        unsafe {
+            ((crate::sp3::einj::BASE + crate::sp3::einj::SUPPORTED) as *const u64).read_volatile()
+                == 8
+        }
+    };
+    // EINJ, then the PCCT of the SMU-served CPPC.
     #[cfg(any(feature = "rome", feature = "milan"))]
-    let cppc: Vec<_> = ctx
-        .soc
-        .cppc
-        .iter()
-        .map(|c| acpi::CppcAcpi {
-            info: c.info,
-            base: c.base,
-            smu_bar: c.smu_bar,
-            lowest_mhz: c.lowest_mhz,
-            nominal_mhz: c.nominal_mhz,
-            slots: &c.slots,
-        })
-        .collect();
+    let pcct = crate::sp3::acpi::cppc::pcct(&cppc);
     #[cfg(not(any(feature = "rome", feature = "milan")))]
-    let cppc: Vec<acpi::CppcAcpi> = Vec::new();
+    let pcct = None;
+    let tables: Vec<Vec<u8>> = einj_supported
+        .then(einj::table)
+        .into_iter()
+        .chain(pcct)
+        .collect();
     let inputs = Inputs {
-        generation: ctx.soc.generation,
+        soc: crate::sp3::acpi::of(ctx.soc.generation),
         pci: ctx.soc.pci_root,
         cpus: &cpus,
         fch_ioapic_id: fch_ioapic_id(ctx.soc.generation),
-        ioapics: &ioapics,
         hpet_block_id,
         root_bridges: &root_bridges,
-        iommus: &iommus,
         numa: numa_plan.as_ref().map(|_| acpi::Numa {
             domains: &domains,
             memory: &memory,
@@ -144,30 +163,21 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
             acpi_enable: smi::sw::ACPI_ENABLE,
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
-        einj: ctx.smm.is_some() && {
-            // The initialization SMI enabled the PSP backend and checked
-            // the live Rome/ECC map. Only the boot flow reads this flag;
-            // SMM authorization lives in SMRAM, not in this shared page.
-            unsafe {
-                ((crate::sp3::einj::BASE + crate::sp3::einj::SUPPORTED) as *const u64)
-                    .read_volatile()
-                    == 8
-            }
-        },
-        fch: &fch,
-        tpm: super::tpm::acpi(),
         bmc_sx_notify,
-        cppc: &cppc,
-        board: *board_acpi,
+        tpm: super::tpm::acpi(),
+        devices: &[],
+        sb_aml: &fch_aml,
+        tables: &tables,
+        board,
     };
-    if inputs.einj {
+    if einj_supported {
         let targets = ctx.smm.map(|s| s.einj.targets).unwrap_or([0; 2]);
         let first = targets
             .iter()
             .copied()
             .find(|&t| t != 0)
             .unwrap_or(crate::sp3::einj::SCRATCH);
-        let trigger = acpi::einj::trigger(first);
+        let trigger = einj::trigger(first);
         // SAFETY: the fixed communication page is in reserved early RAM,
         // disjoint from the heap and scratch page; no concurrent OS yet.
         unsafe {

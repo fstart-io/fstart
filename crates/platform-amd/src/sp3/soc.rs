@@ -483,8 +483,6 @@ impl<F: Silicon> State<F> {
 impl<F: Silicon> crate::flow::Soc for Sp3<F> {
     const TSEG_SIZE: u32 = super::smm::TSEG_SIZE as u32;
     type Flow = Flow;
-    type Smbios<'a> = fstart_acpi::smbios::SmbiosIdentity<'a>;
-    type Acpi<'a> = super::acpi::Board<'a>;
 
     fn max_cpus(config: &Config) -> u16 {
         config.max_cpus
@@ -667,7 +665,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         pci: &fstart_pci::PciEcam,
         flow: &Flow,
         smbios: &fstart_acpi::smbios::SmbiosIdentity<'_>,
-        acpi: super::acpi::Board<'_>,
+        acpi: crate::acpi::Board,
     ) -> Tables {
         step(0x70, "ACPI");
         let state = &silicon.state;
@@ -679,8 +677,8 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             rsdp: Some(rsdp),
             smbios: Some(smbios),
             s5: fstart_core::description::AcpiSleepControl::new(
-                super::acpi::fixed::PM_BASE + 4,
-                super::acpi::fixed::S5_SLEEP_TYPE,
+                super::acpi::of(state.soc.generation).ports.control,
+                crate::acpi::S5_SLEEP_TYPE,
             ),
         }
     }
