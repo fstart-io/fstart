@@ -21,6 +21,11 @@ use fstart_pci::{PCI_COMMAND_BITS, PciAddress, PciEcam, PciType0Config};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{RegisterLongName, register_bitfields};
 
+/// ASPEED's PCI vendor ID.
+pub const ASPEED_VENDOR_ID: u16 = 0x1a03;
+/// PCI device ID shared by the AST VGA family; revision selects AST2500.
+pub const AST_VGA_DEVICE_ID: u16 = 0x2000;
+
 const WIDTH: u32 = 1024;
 const HEIGHT: u32 = 768;
 const SIZE: u64 = (WIDTH * HEIGHT * 4) as u64;
@@ -248,7 +253,10 @@ pub unsafe fn initialize(
     timer: &dyn Timer,
 ) -> Result<FramebufferInfo, Error> {
     let device = pci.device(address).ok_or(Error::Device)?;
-    if device.read32(0) != 0x2000_1a03 || device.read8(8) & 0xf0 != 0x40 || device.read8(0x0b) != 3
+    if device.vendor_id() != ASPEED_VENDOR_ID
+        || device.device_id() != AST_VGA_DEVICE_ID
+        || device.read8(8) & 0xf0 != 0x40
+        || device.read8(0x0b) != 3
     {
         return Err(Error::Device);
     }

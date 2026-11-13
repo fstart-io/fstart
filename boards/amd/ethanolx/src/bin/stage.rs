@@ -5,6 +5,7 @@
 #![no_main]
 
 use fstart_board_amd_ethanolx::{self as ethanolx, Board};
+use fstart_driver_aspeed::gfx;
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
 use fstart_platform_amd::sp3::{Identified, Silicon, Start};
@@ -41,24 +42,27 @@ fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
     let pci = stage.pci();
     let address = pci
         .devices()
-        .find(|&a| pci.device(a).is_some_and(|d| d.read32(0) == 0x2000_1a03))
+        .find(|&a| {
+            pci.device(a).is_some_and(|d| {
+                d.vendor_id() == gfx::ASPEED_VENDOR_ID && d.device_id() == gfx::AST_VGA_DEVICE_ID
+            })
+        })
         .unwrap_or_else(|| stage.fail("ASPEED VGA device"));
     // SAFETY: BSP owns this board's enumerated GPU and its identity-mapped
     // allocated BARs; no payload display driver is running yet.
     let framebuffer =
-        unsafe { fstart_driver_aspeed::gfx::initialize(pci, address, &stage.clock()) }
-            .unwrap_or_else(|error| {
-                use fstart_driver_aspeed::gfx::Error;
-                fstart_log::error!(
-                    "ethanolx: ASPEED display error {}",
-                    match error {
-                        Error::Device => "device",
-                        Error::Resources => "resources",
-                        Error::BmcDramNotReady => "BMC DRAM not ready",
-                    }
-                );
-                stage.fail("ASPEED display")
-            });
+        unsafe { gfx::initialize(pci, address, &stage.clock()) }.unwrap_or_else(|error| {
+            use fstart_driver_aspeed::gfx::Error;
+            fstart_log::error!(
+                "ethanolx: ASPEED display error {}",
+                match error {
+                    Error::Device => "device",
+                    Error::Resources => "resources",
+                    Error::BmcDramNotReady => "BMC DRAM not ready",
+                }
+            );
+            stage.fail("ASPEED display")
+        });
     stage.set_framebuffer(framebuffer);
     stage
         .ready_to_boot()
