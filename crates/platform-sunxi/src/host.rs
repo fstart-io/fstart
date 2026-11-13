@@ -218,9 +218,7 @@ fn unit(
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    if selection.has_x86_linux_overrides() {
-        return Err("x86 Linux options are supported only by Intel platforms".into());
-    }
+    selection.reject_unknown_options(&[])?;
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     // The D1 mainstage is halt-only: no D1 Linux launcher exists. Sunxi has
     // no UEFI/FIT/Shell/ELF flow either.

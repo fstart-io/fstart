@@ -121,6 +121,11 @@ pub struct BuildArgs {
     /// default: release images carry none of them.
     #[arg(long = "debug", value_enum)]
     pub debug: Vec<DebugOption>,
+    /// Platform-owned build option, as NAME=VALUE; repeatable. The names
+    /// are the selected platform's (see `fbuild explain`); the dedicated
+    /// flags above feed the well-known ones.
+    #[arg(long = "option", value_parser = parse_payload_file)]
+    pub plan_options: Vec<(String, String)>,
     /// External file for an input the board's plan declares, as
     /// NAME=PATH; repeatable. `--kernel`, `--firmware` and `--fit` are
     /// aliases for the inputs of those names.
@@ -150,6 +155,7 @@ impl Default for BuildArgs {
             linux_print_mtrrs: false,
             log_level: None,
             debug: Vec::new(),
+            plan_options: Vec::new(),
             inputs: Vec::new(),
             payload_files: Vec::new(),
             signing_key: None,
@@ -159,24 +165,39 @@ impl Default for BuildArgs {
 
 impl BuildArgs {
     pub fn selection(&self, payload: Option<PayloadChoice>) -> BuildSelection {
-        BuildSelection {
+        use fstart_image_build::plan::options as opt;
+        let mut selection = BuildSelection {
             payload: payload.map(|choice| choice.as_str().to_owned()),
             compiler_files: self.compiler_inputs.clone(),
-            image_config: self.image_config.clone(),
-            blobs: self.blobs.clone(),
-            donor: self.donor.clone(),
+            options: self.plan_options.iter().cloned().collect(),
             manifests: Default::default(),
             smbios_release_date: Some(self.smbios_date.clone()),
-            x86_linux_kernel_load_addr: self.linux_kernel_load_addr,
-            x86_linux_bootargs: self.linux_bootargs.clone(),
-            x86_linux_print_mtrrs: self.linux_print_mtrrs,
             log_level: self.log_level.map(|level| level.as_str().to_owned()),
             debug: self
                 .debug
                 .iter()
                 .map(|option| option.as_str().to_owned())
                 .collect(),
+        };
+        // The dedicated flags feed their well-known option names; they
+        // win over a generic `--option` of the same name.
+        for (name, value) in [
+            (opt::IMAGE_CONFIG, &self.image_config),
+            (opt::BLOBS, &self.blobs),
+            (opt::DONOR, &self.donor),
+            (opt::X86_LINUX_BOOTARGS, &self.linux_bootargs),
+        ] {
+            if let Some(value) = value {
+                selection.set_option(name, value.clone());
+            }
         }
+        if let Some(value) = self.linux_kernel_load_addr {
+            selection.set_option(opt::X86_LINUX_KERNEL_LOAD_ADDR, format!("{value:#x}"));
+        }
+        if self.linux_print_mtrrs {
+            selection.set_option(opt::X86_LINUX_PRINT_MTRRS, "true");
+        }
+        selection
     }
 
     pub fn append_cli_args(&self, args: &mut Vec<String>) {
@@ -210,6 +231,9 @@ impl BuildArgs {
         }
         for option in &self.debug {
             args.extend(["--debug".into(), option.as_str().into()]);
+        }
+        for (name, value) in &self.plan_options {
+            args.extend(["--option".into(), format!("{name}={value}")]);
         }
         for (name, path) in &self.inputs {
             args.extend(["--input".into(), format!("{name}={path}")]);
@@ -330,10 +354,7 @@ mod tests {
         let selected = cli.options.selection(None);
         selected.validate_compiler_files().unwrap();
         assert_eq!(selected.compiler_files[0].path, "a path/file=1.bin");
-        assert_eq!(
-            selected.image_config.as_deref(),
-            Some("a path/image=2.json")
-        );
+        assert_eq!(selected.image_config(), Some("a path/image=2.json"));
         let mut forwarded = vec!["inputs".into()];
         cli.options.append_cli_args(&mut forwarded);
         let forwarded = InputCli::try_parse_from(forwarded)
@@ -344,8 +365,11 @@ mod tests {
             forwarded.compiler_files[0].path,
             selected.compiler_files[0].path
         );
-        assert_eq!(forwarded.image_config, selected.image_config);
-        assert_eq!(forwarded.donor.as_deref(), Some("vendor.rom"));
+        assert_eq!(forwarded.image_config(), selected.image_config());
+        assert_eq!(
+            forwarded.option(fstart_image_build::plan::options::DONOR),
+            Some("vendor.rom")
+        );
         let duplicates = InputCli::try_parse_from([
             "inputs",
             "--compiler-input",

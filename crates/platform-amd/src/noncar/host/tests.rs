@@ -133,7 +133,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     let blobs = std::env::temp_dir();
     let mut selection = BuildSelection {
         payload: Some("uefi".into()),
-        blobs: Some(blobs.to_str().unwrap().into()),
+        options: [("blobs".into(), blobs.to_str().unwrap().into())].into(),
         ..Default::default()
     };
     selection.manifests.board = serde_json::json!({
@@ -208,7 +208,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     let blobs = std::env::temp_dir();
     let mut selection = BuildSelection {
         payload: Some("linux".into()),
-        blobs: Some(blobs.to_str().unwrap().into()),
+        options: [("blobs".into(), blobs.to_str().unwrap().into())].into(),
         ..Default::default()
     };
     selection.manifests.board = serde_json::json!({
@@ -257,7 +257,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     );
     // A vendor image instead of the blobs.
     let mut vendor = selection;
-    vendor.blobs = None;
-    vendor.image_config = Some("vendor.rom".into());
+    vendor.options.remove("blobs");
+    vendor.set_option("image-config", "vendor.rom");
     assert!(resolve::<Mj11>(vendor).is_err());
 }

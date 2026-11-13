@@ -248,12 +248,13 @@ fn resolve_for<P: IntelPlatform>(
     selection: BuildSelection,
 ) -> Result<IntelPlan, std::string::String> {
     let debug = Debug::select(ehci_debug, &selection.debug)?;
-    let has_x86_linux_overrides = selection.has_x86_linux_overrides();
+    selection.reject_unknown_options(fstart_image_build::plan::options::X86_LINUX)?;
+    let x86_linux = selection.x86_linux()?;
     let requested_payload = selection.payload.clone().unwrap_or_else(|| "halt".into());
-    if has_x86_linux_overrides && requested_payload != "linux" {
+    if x86_linux.any() && requested_payload != "linux" {
         return Err("x86 Linux options require '--payload linux'".into());
     }
-    let x86_linux_bootargs = selection.x86_linux_bootargs.unwrap_or_default();
+    let x86_linux_bootargs = x86_linux.bootargs.clone().unwrap_or_default();
     if !matches!(
         requested_payload.as_str(),
         "halt" | "linux" | "uefi" | "uefi-ui" | "uefi-basic" | "coreboot"
@@ -317,12 +318,12 @@ fn resolve_for<P: IntelPlatform>(
         // the caller passes `--linux-bootargs` explicitly.
         "linux" => Some(
             fstart_core::x86_linux_payload(
-                selection
-                    .x86_linux_kernel_load_addr
+                x86_linux
+                    .kernel_load_addr
                     .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
                 fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 &x86_linux_bootargs,
-                selection.x86_linux_print_mtrrs,
+                x86_linux.print_mtrrs,
                 crate::compression::PAYLOAD,
             )
             .map_err(ToString::to_string)?,
@@ -494,9 +495,12 @@ mod tests {
             FACTS,
             BuildSelection {
                 payload: Some("linux".into()),
-                x86_linux_kernel_load_addr: Some(0x0200_0000),
-                x86_linux_bootargs: Some("console=ttyS0".into()),
-                x86_linux_print_mtrrs: true,
+                options: [
+                    ("x86-linux-kernel-load-addr".into(), "0x2000000".into()),
+                    ("x86-linux-bootargs".into(), "console=ttyS0".into()),
+                    ("x86-linux-print-mtrrs".into(), "true".into()),
+                ]
+                .into(),
                 ..Default::default()
             },
         )
@@ -562,7 +566,7 @@ mod tests {
     #[test]
     fn x86_linux_options_require_the_linux_payload() {
         let selection = BuildSelection {
-            x86_linux_bootargs: Some("console=ttyS0".into()),
+            options: [("x86-linux-bootargs".into(), "console=ttyS0".into())].into(),
             ..Default::default()
         };
         assert_eq!(

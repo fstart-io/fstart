@@ -77,17 +77,13 @@ pub struct BuildSelection {
     /// A selected platform must bind every request, unchanged, to compiler units.
     #[serde(default)]
     pub compiler_files: Vec<CompilerFileSelection>,
-    /// Explicit platform-owned image configuration, not a compiler environment.
+    /// Platform-owned options by name (`fbuild --option NAME=VALUE`, plus
+    /// the dedicated CLI flags that feed the well-known names below).
+    /// A platform declares the names it consumes and rejects the rest
+    /// ([`Self::reject_unknown_options`]); there is deliberately no typed
+    /// field per platform knob in this shared transport.
     #[serde(default)]
-    pub image_config: Option<String>,
-    /// The directory of the vendor firmware blobs the platform's tables
-    /// name (e.g. AMD's PSP firmware).
-    #[serde(default)]
-    pub blobs: Option<String>,
-    /// A vendor flash image fbuild extracts the blob directory from
-    /// (`fbuild blobs`); it then sets `blobs`.
-    #[serde(default)]
-    pub donor: Option<String>,
+    pub options: std::collections::BTreeMap<String, String>,
     /// The `package.metadata.fstart` tables of the board and of its platform
     /// crate, filled in by fbuild, for platform-owned firmware tables.
     #[serde(default)]
@@ -95,12 +91,6 @@ pub struct BuildSelection {
     /// SMBIOS Type 0 release date selected by fbuild, in MM/DD/YYYY form.
     #[serde(default)]
     pub smbios_release_date: Option<String>,
-    #[serde(default)]
-    pub x86_linux_kernel_load_addr: Option<u64>,
-    #[serde(default)]
-    pub x86_linux_bootargs: Option<String>,
-    #[serde(default)]
-    pub x86_linux_print_mtrrs: bool,
     /// Build-time log verbosity (`FSTART_LOG_LEVEL`) for every unit.
     #[serde(default)]
     pub log_level: Option<String>,
@@ -117,13 +107,57 @@ pub struct PackageTables {
     pub platform: serde_json::Value,
 }
 
+/// Well-known option names with dedicated fbuild flags. Path-valued:
+/// `image-config` (explicit platform image configuration, e.g. a vendor
+/// ROM), `blobs` (directory of the vendor firmware blobs the platform's
+/// tables name) and `donor` (a vendor flash image fbuild extracts the
+/// blob directory from; fbuild then sets `blobs`).
+pub mod options {
+    pub const IMAGE_CONFIG: &str = "image-config";
+    pub const BLOBS: &str = "blobs";
+    pub const DONOR: &str = "donor";
+    pub const X86_LINUX_KERNEL_LOAD_ADDR: &str = "x86-linux-kernel-load-addr";
+    pub const X86_LINUX_BOOTARGS: &str = "x86-linux-bootargs";
+    pub const X86_LINUX_PRINT_MTRRS: &str = "x86-linux-print-mtrrs";
+    /// The x86 Linux payload options, for `reject_unknown_options` lists.
+    pub const X86_LINUX: &[&str] = &[
+        X86_LINUX_KERNEL_LOAD_ADDR,
+        X86_LINUX_BOOTARGS,
+        X86_LINUX_PRINT_MTRRS,
+    ];
+    /// The vendor-image inputs an image format may bind.
+    pub const VENDOR_IMAGE: &[&str] = &[IMAGE_CONFIG, BLOBS, DONOR];
+}
+
+/// The direct x86 Linux launcher options an x86 platform may offer.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct X86LinuxOptions {
+    pub kernel_load_addr: Option<u64>,
+    pub bootargs: Option<String>,
+    pub print_mtrrs: bool,
+}
+
+impl X86LinuxOptions {
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.kernel_load_addr.is_some() || self.bootargs.is_some() || self.print_mtrrs
+    }
+}
+
 impl BuildSelection {
     pub fn validate_compiler_files(&self) -> Result<(), String> {
-        for path in [&self.image_config, &self.blobs, &self.donor]
-            .into_iter()
-            .flatten()
-        {
-            if path.is_empty() || path.contains('\0') {
+        for (name, value) in &self.options {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                || value.contains('\0')
+            {
+                return Err(format!("invalid selection option {name:?}"));
+            }
+            if [options::IMAGE_CONFIG, options::BLOBS, options::DONOR].contains(&name.as_str())
+                && value.is_empty()
+            {
                 return Err("invalid image configuration or blob directory path".into());
             }
         }
@@ -137,19 +171,77 @@ impl BuildSelection {
         Ok(())
     }
 
+    pub fn option(&self, name: &str) -> Option<&str> {
+        self.options.get(name).map(String::as_str)
+    }
+
+    pub fn option_u64(&self, name: &str) -> Result<Option<u64>, String> {
+        let Some(value) = self.option(name) else {
+            return Ok(None);
+        };
+        let value = value.replace('_', "");
+        let parsed = match value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            Some(hex) => u64::from_str_radix(hex, 16),
+            None => value.parse(),
+        };
+        parsed.map(Some).map_err(|e| format!("option {name}: {e}"))
+    }
+
+    pub fn option_bool(&self, name: &str) -> Result<bool, String> {
+        match self.option(name) {
+            None => Ok(false),
+            Some("true") => Ok(true),
+            Some("false") => Ok(false),
+            Some(other) => Err(format!(
+                "option {name}: expected true or false, got {other:?}"
+            )),
+        }
+    }
+
+    pub fn set_option(&mut self, name: &str, value: impl Into<String>) {
+        self.options.insert(name.to_string(), value.into());
+    }
+
+    /// The vendor-image path of `--image-config`, if bound.
+    pub fn image_config(&self) -> Option<&str> {
+        self.option(options::IMAGE_CONFIG)
+    }
+
+    /// The vendor blob directory of `--blobs`, if bound.
+    pub fn blobs(&self) -> Option<&str> {
+        self.option(options::BLOBS)
+    }
+
+    /// The parsed x86 Linux options (all absent by default).
+    pub fn x86_linux(&self) -> Result<X86LinuxOptions, String> {
+        Ok(X86LinuxOptions {
+            kernel_load_addr: self.option_u64(options::X86_LINUX_KERNEL_LOAD_ADDR)?,
+            bootargs: self.option(options::X86_LINUX_BOOTARGS).map(str::to_owned),
+            print_mtrrs: self.option_bool(options::X86_LINUX_PRINT_MTRRS)?,
+        })
+    }
+
+    /// Reject every option this platform does not declare. Platforms call
+    /// this with their option names so a typo or a foreign platform's knob
+    /// can never be silently dropped.
+    pub fn reject_unknown_options(&self, allowed: &[&str]) -> Result<(), String> {
+        for name in self.options.keys() {
+            if !allowed.contains(&name.as_str()) {
+                return Err(format!("this platform has no option '{name}'"));
+            }
+        }
+        Ok(())
+    }
+
     /// For platforms that offer no `--debug` facilities.
     pub fn reject_debug(&self) -> Result<(), String> {
         match self.debug.first() {
             Some(option) => Err(format!("this platform has no debug option '{option}'")),
             None => Ok(()),
         }
-    }
-
-    #[must_use]
-    pub fn has_x86_linux_overrides(&self) -> bool {
-        self.x86_linux_kernel_load_addr.is_some()
-            || self.x86_linux_bootargs.is_some()
-            || self.x86_linux_print_mtrrs
     }
 }
 

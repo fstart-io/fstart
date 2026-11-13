@@ -185,7 +185,8 @@ type Payload = (&'static str, Option<&'static str>, Option<PayloadConfig>);
 
 fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, String> {
     let requested = selection.payload.as_deref().unwrap_or("halt");
-    if selection.has_x86_linux_overrides() && requested != "linux" {
+    let x86_linux = selection.x86_linux()?;
+    if x86_linux.any() && requested != "linux" {
         return Err("x86 Linux options require '--payload linux'".into());
     }
     if !policy.payloads && requested != "halt" {
@@ -198,12 +199,12 @@ fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, Strin
             Some("payload-linux"),
             Some(
                 fstart_core::x86_linux_payload(
-                    selection.x86_linux_kernel_load_addr.unwrap_or(
+                    x86_linux.kernel_load_addr.unwrap_or(
                         fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR,
                     ),
                     fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
-                    selection.x86_linux_bootargs.as_deref().unwrap_or(""),
-                    selection.x86_linux_print_mtrrs,
+                    x86_linux.bootargs.as_deref().unwrap_or(""),
+                    x86_linux.print_mtrrs,
                     crate::compression::PAYLOAD,
                 )
                 .map_err(ToString::to_string)?,
@@ -300,7 +301,7 @@ fn microcode<S: HostSoc>(
     selection: &BuildSelection,
     packed: Option<&blobs::Resolved>,
 ) -> Result<Option<MicrocodeConfig>, String> {
-    let config = match (&S::POLICY.image_config, &selection.image_config, packed) {
+    let config = match (&S::POLICY.image_config, selection.image_config(), packed) {
         (ImageConfig::Vendor { .. }, Some(path), _) => {
             let image =
                 std::fs::canonicalize(path).map_err(|e| format!("vendor image {path}: {e}"))?;
@@ -336,11 +337,11 @@ fn microcode<S: HostSoc>(
 /// (`[package.metadata.fstart.amd]`) in the selected blob directory. None
 /// without a blob directory.
 fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolved>, String> {
-    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, &selection.blobs)
+    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, selection.blobs())
     else {
         return Ok(None);
     };
-    if selection.image_config.is_some() {
+    if selection.image_config().is_some() {
         return Err(format!(
             "{} images are packed from --blobs, not --image-config",
             S::NAME
@@ -378,12 +379,12 @@ fn images<S: HostSoc>(
 ) -> Result<Vec<ImageStep>, String> {
     let layout = &S::LAYOUT;
     let flash_size = layout.flash.size as u32;
-    let (firmware, psp) = match (S::POLICY.image_config, &selection.image_config, packed) {
+    let (firmware, psp) = match (S::POLICY.image_config, selection.image_config(), packed) {
         (ImageConfig::Vendor { prefix, psp }, Some(path), _) => (
             Firmware::Vendor {
                 image: FileBinding {
                     environment: "VENDOR_FLASH".into(),
-                    path: path.clone(),
+                    path: path.to_string(),
                     capacity: u64::from(flash_size),
                 },
                 prefix_size: prefix,
@@ -441,6 +442,14 @@ where
     let policy = &<B::Soc as HostSoc>::POLICY;
     let layout = &<B::Soc as DieSoc>::LAYOUT;
     selection.reject_debug()?;
+    selection.reject_unknown_options(&[
+        fstart_image_build::plan::options::IMAGE_CONFIG,
+        fstart_image_build::plan::options::BLOBS,
+        fstart_image_build::plan::options::DONOR,
+        fstart_image_build::plan::options::X86_LINUX_KERNEL_LOAD_ADDR,
+        fstart_image_build::plan::options::X86_LINUX_BOOTARGS,
+        fstart_image_build::plan::options::X86_LINUX_PRINT_MTRRS,
+    ])?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
         return Err("noncar SoCs take no compiler inputs".into());

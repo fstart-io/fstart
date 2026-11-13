@@ -52,9 +52,7 @@ impl<B: AspeedBoardFacts> Plan<B> {
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    if selection.has_x86_linux_overrides() {
-        return Err("x86 Linux options are supported only by Intel platforms".into());
-    }
+    selection.reject_unknown_options(&[])?;
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     let elf = match payload.as_str() {
         "halt" => false,

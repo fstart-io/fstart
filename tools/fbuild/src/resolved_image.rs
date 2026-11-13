@@ -17,9 +17,15 @@ impl ResolvedImage {
         selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
         let mut selection = selection;
-        if let Some(donor) = selection.donor.take() {
+        if let Some(donor) = selection
+            .options
+            .remove(fstart_image_build::plan::options::DONOR)
+        {
             let blobs = crate::blobs::from_donor(root, &source, std::path::Path::new(&donor))?;
-            selection.blobs = Some(blobs.to_string_lossy().into_owned());
+            selection.set_option(
+                fstart_image_build::plan::options::BLOBS,
+                blobs.to_string_lossy().into_owned(),
+            );
         }
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;

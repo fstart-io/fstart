@@ -226,7 +226,7 @@ impl Payload {
                 ));
             }
         };
-        if selection.has_x86_linux_overrides() && payload != Self::Linux {
+        if selection.x86_linux()?.any() && payload != Self::Linux {
             return Err("x86 Linux options require '--payload linux'".into());
         }
         Ok(payload)
@@ -260,15 +260,18 @@ impl Payload {
             Self::Uefi | Self::UefiUi => {
                 Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD))
             }
-            Self::Linux => Some(fstart_core::x86_linux_payload(
-                selection
-                    .x86_linux_kernel_load_addr
-                    .unwrap_or(X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
-                X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
-                selection.x86_linux_bootargs.as_deref().unwrap_or_default(),
-                selection.x86_linux_print_mtrrs,
-                crate::compression::PAYLOAD,
-            )?),
+            Self::Linux => {
+                let linux = selection.x86_linux()?;
+                Some(fstart_core::x86_linux_payload(
+                    linux
+                        .kernel_load_addr
+                        .unwrap_or(X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
+                    X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
+                    linux.bootargs.as_deref().unwrap_or_default(),
+                    linux.print_mtrrs,
+                    crate::compression::PAYLOAD,
+                )?)
+            }
         })
     }
 }
@@ -352,6 +355,15 @@ fn ffs_assembly(
 /// Resolve the board's plan: one build for every generation it supports.
 pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
+    selection.reject_unknown_options(&[
+        fstart_image_build::plan::options::IMAGE_CONFIG,
+        fstart_image_build::plan::options::BLOBS,
+        fstart_image_build::plan::options::DONOR,
+        fstart_image_build::plan::options::X86_LINUX_KERNEL_LOAD_ADDR,
+        fstart_image_build::plan::options::X86_LINUX_BOOTARGS,
+        fstart_image_build::plan::options::X86_LINUX_PRINT_MTRRS,
+    ])?;
+
     if B::GENERATIONS.is_empty() {
         return Err("the board lists no SP3 generation".into());
     }
@@ -413,7 +425,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     // The PSP firmware: packed from the blob directory (`--blobs`,
     // `--donor`), or the board's vendor ROM, which `--image-config`
     // replaces (same workspace-relative or absolute path rules).
-    let (vendor_image, packed, microcode) = match (&selection.blobs, &selection.image_config) {
+    let (vendor_image, packed, microcode) = match (selection.blobs(), selection.image_config()) {
         (Some(_), Some(_)) => {
             return Err(
                 "SP3 images are packed from --blobs or composed into --image-config".into(),
@@ -424,7 +436,9 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             (String::new(), halves, microcode)
         }
         (None, image) => {
-            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
+            let vendor_image = image
+                .map(str::to_owned)
+                .unwrap_or_else(|| B::VENDOR_IMAGE.into());
             let microcode = microcode::<B>(&vendor_image)?;
             (vendor_image, vec![], microcode)
         }
@@ -613,7 +627,11 @@ mod tests {
     #[test]
     fn packs_one_half_per_generation_from_the_blob_tables() {
         let mut selection = BuildSelection {
-            blobs: Some(std::env::temp_dir().to_str().unwrap().into()),
+            options: [(
+                "blobs".into(),
+                std::env::temp_dir().to_str().unwrap().into(),
+            )]
+            .into(),
             ..Default::default()
         };
         let apcb = |soc: &str| {
@@ -663,7 +681,7 @@ mod tests {
         // Not both a vendor image and blobs; every listed generation needs
         // a board table.
         let mut both = selection.clone();
-        both.image_config = Some("vendor.rom".into());
+        both.set_option("image-config", "vendor.rom");
         assert!(resolve::<S8030>(&both).is_err());
         let mut rome_only = selection;
         rome_only.manifests.board["amd"]
@@ -758,7 +776,7 @@ mod tests {
             ..Default::default()
         };
         let linux = resolve::<S8030>(&BuildSelection {
-            x86_linux_bootargs: Some("console=ttyS0,115200".into()),
+            options: [("x86-linux-bootargs".into(), "console=ttyS0,115200".into())].into(),
             ..select("linux")
         })
         .unwrap();
@@ -783,13 +801,13 @@ mod tests {
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
             resolve::<S8030>(&BuildSelection {
-                x86_linux_print_mtrrs: true,
+                options: [("x86-linux-print-mtrrs".into(), "true".into())].into(),
                 ..Default::default()
             })
             .is_err()
         );
         let custom = BuildSelection {
-            image_config: Some("/tmp/dump.rom".into()),
+            options: [("image-config".into(), "/tmp/dump.rom".into())].into(),
             ..Default::default()
         };
         let plan = resolve::<S8030>(&custom).unwrap();

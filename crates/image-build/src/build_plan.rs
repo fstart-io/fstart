@@ -360,7 +360,7 @@ impl BuildPlan {
         // An explicit `--image-config` must be bound unchanged by the one
         // image step that consumes a vendor image; a packed image and
         // plans without such a step bind no image configuration.
-        let requested = selection.image_config.as_deref();
+        let requested = selection.image_config();
         for step in &self.images {
             let bound = match &step.operation {
                 ImageOperation::AmdEfs(image) => match &image.firmware {
