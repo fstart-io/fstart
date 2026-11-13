@@ -33,6 +33,9 @@ pub mod mp;
 pub mod noncar;
 #[cfg(feature = "picasso")]
 pub mod picasso;
+/// The SMBIOS tables, for every SoC.
+#[cfg(all(feature = "acpi", any(feature = "noncar", feature = "sp3")))]
+pub mod smbios;
 /// The SP3 socket: Naples, Rome and Milan.
 #[cfg(feature = "sp3")]
 pub mod sp3;

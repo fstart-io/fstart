@@ -61,7 +61,7 @@ impl noncar::DieSoc for Zeppelin {
 
     /// SP4 and SP4r2 are BGA packages; 2 channels per die, RDIMMs and
     /// LRDIMMs up to 64 GiB.
-    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+    const SMBIOS: crate::smbios::SocSmbios = crate::smbios::SocSmbios {
         socket_upgrade: 0x06,
         max_dimm_mib: 64 * 1024,
         channels_per_die: 2,

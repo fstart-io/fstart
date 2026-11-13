@@ -671,8 +671,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         let state = &silicon.state;
         let view = state.view(flow);
         let rsdp = parts::handoff::acpi(&view, &state.si, pci, &acpi, ctx.config.bmc_sx_notify);
-        let smbios =
-            super::smbios::runtime::prepare(&view, &silicon.cpus.mp, flow.rom_size, *smbios);
+        let smbios = super::smbios::install(&view, &silicon.cpus, flow.rom_size, smbios);
         Tables {
             rsdp: Some(rsdp),
             smbios: Some(smbios),

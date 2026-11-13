@@ -192,7 +192,7 @@ impl noncar::DieSoc for Picasso {
     }
 
     /// FP5 is a BGA package with two channels.
-    const SMBIOS: noncar::SmbiosFacts = noncar::SmbiosFacts {
+    const SMBIOS: crate::smbios::SocSmbios = crate::smbios::SocSmbios {
         socket_upgrade: 0x06,
         max_dimm_mib: 32 * 1024,
         channels_per_die: 2,

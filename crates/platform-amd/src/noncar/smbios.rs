@@ -1,83 +1,53 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The SMBIOS tables of the flow ([`fstart_driver_amd::apob::smbios`]):
-//! the board's identity, one processor package, the DIMM positions of the
-//! APOB's SMBIOS seeds with their SPD copies, and the APOB's DRAM ranges.
+//! The SMBIOS tables of the die SoCs ([`crate::smbios`]): one socket, the
+//! DRAM ranges of the APOB's memory map, built into reserved firmware
+//! memory.
 extern crate alloc;
 
-use super::DieSoc;
+use super::{Ctx, DieSoc};
 use alloc::vec::Vec;
-use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
 use fstart_driver_amd::apob::{
-    Apob, mem,
-    smbios::{DramRange, Inputs, Processor, build_into, dimms, dram_ranges},
-    sysmap::{self, MemoryMap},
+    smbios::{DramRange, dram_ranges},
+    sysmap,
 };
-use fstart_log::Hex;
 
-/// Build the tables into reserved firmware memory; returns their entry
-/// point's address.
+/// Build the tables; returns their entry point's address.
 pub fn install<S: DieSoc>(
     identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
-    apob: Option<&Apob>,
-    psp: fstart_driver_amd::psp::Variant,
-    apic_ids: &[u32],
+    ctx: &Ctx<'_, S>,
+    cpus: &crate::mp::Cpus,
 ) -> Option<u64> {
     #[repr(C, align(4096))]
     struct Tables([u8; fstart_acpi::smbios::BUFFER_SIZE]);
     static mut TABLES: Tables = Tables([0; fstart_acpi::smbios::BUFFER_SIZE]);
 
-    let thread = fstart_driver_amd::ccx::Thread::current();
-    let cores = apic_ids
-        .iter()
-        .filter(|&&id| thread.with_apic_id(id as u8).core_primary())
-        .count() as u16;
-    let processors = [Processor {
-        socket: 0,
-        snapshot: ProcessorSnapshot::read(),
-        apic_ids,
-        enabled_cores: cores,
-    }];
-    let dimms = apob
-        .map(|apob| dimms(apob, S::SMBIOS.channels_per_die, |socket, _| socket == 0))
-        .unwrap_or_default();
-    let map: Option<MemoryMap> =
-        apob.and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok());
-    let regions: Vec<DramRange> = map
-        .and_then(|map| sysmap::memory_map(psp, map.top, map.holes().iter().copied()).ok())
+    let apob = ctx.memory.apob;
+    let regions: Vec<DramRange> = apob
+        .and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok())
+        .and_then(|map| {
+            sysmap::memory_map(S::psp(ctx.hw), map.top, map.holes().iter().copied()).ok()
+        })
         .map(|regions| dram_ranges(&regions))
         .unwrap_or_default();
-    let ecc = apob
-        .and_then(|apob| mem::smbios_info(apob).ok())
-        .is_some_and(|seeds| seeds.ecc());
+    let threads_per_core = fstart_driver_amd::ccx::Thread::current().threads_per_core();
     // SAFETY: firmware BSS in the reserved early region, written once.
     let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
     let address = storage.as_ptr() as u64;
-    let used = build_into(
+    crate::smbios::build_into(
         storage,
-        address,
-        &Inputs {
-            identity: *identity,
-            processors: &processors,
-            dimms: &dimms,
-            regions: &regions,
-            max_dimm_mib: S::SMBIOS.max_dimm_mib,
-            socket_upgrade: S::SMBIOS.socket_upgrade,
-            ecc,
+        &crate::smbios::System {
+            soc: &S::SMBIOS,
+            identity,
             rom_size: S::LAYOUT.flash.size as u32,
-            uefi: fstart_payload::SELECTED == fstart_payload::Selected::Uefi,
+            apob,
+            regions: &regions,
+            cpus,
         },
+        // One socket; the SMT threads of a core are adjacent APIC IDs.
+        |apic_id| (0, apic_id / u32::from(threads_per_core)),
+        |socket, _| socket == 0,
     )
-    .ok()?;
-    // For Linux without UEFI.
-    // SAFETY: the fixed MTRRs route C0000-FFFFF to DRAM; the e820 reserves
-    // it for the firmware.
-    unsafe { fstart_acpi::smbios::publish_legacy_entry_point(storage) };
-    fstart_log::info!(
-        "smbios: {} DIMM positions, {} installed, {} bytes at {}",
-        dimms.len() as u32,
-        dimms.iter().filter(|d| d.device.is_populated()).count() as u32,
-        used as u32,
-        Hex(address)
-    );
-    Some(address)
+    .inspect_err(|what| fstart_log::error!("smbios: {}", *what))
+    .ok()
+    .map(|_| address)
 }

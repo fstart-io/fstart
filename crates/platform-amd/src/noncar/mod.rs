@@ -24,6 +24,7 @@ pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
 pub use fstart_driver_amd::soc::Hw;
 
 use crate::acpi::SocAcpi;
+use crate::smbios::SocSmbios;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_driver_amd::{df::Die, soc::Init};
 use fstart_pci::ecam::GlobalEcam;
@@ -67,7 +68,7 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
     /// The most CPUs of the SoC's packages.
     const MAX_CPUS: u16;
     /// What the SMBIOS tables say of the package and its memory.
-    const SMBIOS: SmbiosFacts;
+    const SMBIOS: SocSmbios;
     /// What the SoC's ACPI tables differ in.
     const ACPI: &'static SocAcpi;
 
@@ -219,12 +220,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
             silicon,
             &board,
         );
-        let smbios = smbios::install::<S>(
-            identity,
-            ctx.memory.apob,
-            S::psp(ctx.hw),
-            &silicon.cpus.apic_ids,
-        );
+        let smbios = smbios::install::<S>(identity, ctx, &silicon.cpus);
         Tables {
             rsdp,
             smbios,
@@ -268,14 +264,3 @@ where
 
 /// The DRAM ranges of the dies, the domain being the die.
 pub type DieMemory = heapless::Vec<fstart_acpi::numa::MemoryAffinity, 48>;
-
-/// The SMBIOS facts of a SoC.
-#[derive(Debug, Clone, Copy)]
-pub struct SmbiosFacts {
-    /// Processor upgrade (socket) code, 0x06 (none) for a BGA package.
-    pub socket_upgrade: u8,
-    /// The largest DIMM a position takes, MiB.
-    pub max_dimm_mib: u32,
-    /// Memory channels per die: how the APOB numbers its DIMM seeds.
-    pub channels_per_die: u8,
-}
