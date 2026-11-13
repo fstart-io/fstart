@@ -16,13 +16,16 @@ use crate::smu::SmuMessages;
 /// The DXIO SMU message on Naples (`smu::v9::msg::DXIO`).
 pub const DXIO_MSG: u32 = 0x0F;
 
-/// Everything up to and including SM_START for one die.
+/// Everything up to and including SM_START for one die: AmdNbioPcieZPPei's
+/// request sequence, for the units of a multi-socket SoC and Zeppelin's
+/// dies alike. `reload` first reloads the state machine (the vendor's
+/// early-train unit).
 pub fn setup<M: SmuMessages + ?Sized>(
     unit: &mut Unit<'_, M>,
-    policy: &DxioPolicy,
+    reload: bool,
 ) -> Result<(), DxioError> {
     let d = &unit.dxio;
-    if policy.early_train_unit == Some((unit.socket, unit.die)) {
+    if reload {
         d.reload_sm(0)?;
     }
     // Init first; GetVersion and the variables only after it succeeds.
@@ -34,6 +37,10 @@ pub fn setup<M: SmuMessages + ?Sized>(
     d.load_caps()?;
     unit.load_heaps()?;
     d.sm_start()
+}
+
+fn reload<M: ?Sized>(unit: &Unit<'_, M>, policy: &DxioPolicy) -> bool {
+    policy.early_train_unit == Some((unit.socket, unit.die))
 }
 
 /// Sequential (state 5 resumes, no pause) or concurrent (pause at
@@ -60,13 +67,15 @@ where
 {
     let rules = rules(policy.naples_concurrent);
     if policy.naples_concurrent {
-        units.iter_mut().try_for_each(|u| setup(u, policy))?;
+        units
+            .iter_mut()
+            .try_for_each(|u| setup(u, reload(u, policy)))?;
         units
             .iter_mut()
             .try_for_each(|u| run(u, hooks, timer, &rules, policy.timeout_us).map(|_| ()))?;
     } else {
         units.iter_mut().try_for_each(|u| {
-            setup(u, policy)?;
+            setup(u, reload(u, policy))?;
             run(u, hooks, timer, &rules, policy.timeout_us).map(|_| ())
         })?;
     }

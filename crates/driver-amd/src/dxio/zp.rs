@@ -33,7 +33,7 @@
 use super::wire::{FwEngine, Heaps};
 use super::{
     Descriptor, DmaArea, Dxio, DxioError, EngineType, Hooks, Hotplug, LinkSpeed, LoopRules,
-    TIMEOUT_US, Unit, UnitView, op, run, var,
+    TIMEOUT_US, Unit, UnitView, op, run,
 };
 use crate::df::Die;
 use crate::nbio::{
@@ -380,25 +380,17 @@ impl<S: Soc, P: ConfigRegionAccess + Copy> Hooks for Training<'_, S, P> {
 }
 
 /// Every event is answered at once; PERST requests reach the hooks.
-const RULES: LoopRules = LoopRules {
-    pause_at: &[],
-    perst: true,
-    perst_deassert_delay_ms: 0,
-    resume_delay_us: 0,
-};
+const RULES: LoopRules = sequence::rules(false);
 
 impl<S: Soc, P: ConfigRegionAccess + Copy> Training<'_, S, P> {
-    /// Train the die's engines through `unit` (heaps placed, firmware
-    /// initialized by the caller up to the capabilities).
+    /// Train the die's engines through `unit`, which [`sequence::setup`]
+    /// started.
     fn train<M: crate::smu::SmuMessages + ?Sized>(
         &mut self,
         unit: &mut Unit<'_, M>,
         timer: &impl Timer,
     ) -> Result<(), Error> {
         let die = self.die;
-        // No ancillary data: the descriptors have no tuning records.
-        unit.load_heaps()?;
-        unit.dxio.sm_start()?;
         run(unit, self, timer, &RULES, TIMEOUT_US)?;
         unit.read_back()?;
         training_done(&die.smn(), unit.engines(), &mut self.topology)?;
@@ -709,17 +701,13 @@ pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
             continue;
         }
         debug!("DXIO {}: {} engines", die.index(), descriptors.len());
-        dxio.init()?;
-        dxio.version()?;
-        for variable in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
-            dxio.set_var(variable, 1, 0)?;
-        }
-        dxio.load_caps()?;
         // SAFETY: the caller's contract.
         let dma = unsafe { buffer.buffer() }?;
         let board_engines = 0..descriptors.len() as u8;
         let mut unit = Unit::with_heaps(0, die.index(), dxio, dma, heaps, board_engines)?
             .ok_or(DxioError::Buffer)?;
+        // No ancillary data: the descriptors have no tuning records.
+        sequence::setup(&mut unit, false)?;
         let mut training = Training {
             die,
             descriptors,
