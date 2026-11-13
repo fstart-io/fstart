@@ -34,37 +34,19 @@ pub fn compilation_plan(
     };
     // Long-mode SMM images are copied without absolute-address fixups;
     // their data references must be RIP-relative. The 32-bit loader rebases
-    // its audited absolute references instead. PLT-style call relocations
-    // resolve locally at link time, avoiding GOT-indirect calls in either mode.
-    let smm_relocation = if plan.platform == fstart_core::Platform::X86 {
-        "static"
-    } else {
-        "pie"
-    };
-    let mut units = vec![CompilationUnit {
-        name: "smm".into(),
-        cargo_target: CargoTarget::BoardLibrary,
-        target: plan.target(),
-        features: plan.smm_features.clone(),
-        // rustc ships no library for the 32-bit JSON target.
-        build_std: (plan.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
-        release_only: true,
-        linker_script: None,
-        rustflags: flags(&format!(
-            "-Cpanic=abort -Copt-level=s -Crelocation-model={smm_relocation} -Zplt=yes -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
-        )),
-        environment_values: mp_capacity(),
-        bindings: vec![],
-        file_bindings: vec![],
-        // The board's SMM handler module, outside every stage `main`.
-        board_features: vec!["smm".into()],
-        output: UnitOutput::SmmImage {
-            entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
-            stack_size: plan.smm.stack_size,
-            coreboot_module_args: plan.smm.coreboot.module_args,
-            coreboot_header: plan.smm.coreboot.emit_header,
-        },
-    }];
+    // its audited absolute references instead.
+    let smm_pie = plan.platform != fstart_core::Platform::X86;
+    let mut units = vec![CompilationUnit::smm(
+        "smm",
+        plan.target(),
+        plan.smm_features.clone(),
+        smm_pie,
+        mp_capacity(),
+        plan.smm.entry_points.unwrap_or(plan.max_cpus),
+        plan.smm.stack_size,
+        plan.smm.coreboot.module_args,
+        plan.smm.coreboot.emit_header,
+    )];
     for row in &plan.stages {
         let ram = row.role == IntelStage::Ramstage;
         let boot = row.role == IntelStage::Bootblock;

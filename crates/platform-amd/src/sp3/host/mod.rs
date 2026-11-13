@@ -151,48 +151,28 @@ fn mp_capacity<B: Sp3BoardFacts>() -> BTreeMap<String, String> {
 /// (the installer copies it to the top of TSEG) with one entry stub per
 /// CPU the board allows.
 fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
-    CompilationUnit {
-        name: SMM_UNIT.into(),
-        cargo_target: CargoTarget::BoardLibrary,
-        target: "x86_64-unknown-none".into(),
-        features: SMM_FEATURES.into_iter().map(String::from).collect(),
-        build_std: None,
-        release_only: true,
-        linker_script: None,
-        // The Intel/q35 SMM flags, but PIE instead of static: the handler
-        // takes the address of its SMRAM statics (P2C/C2P pages) and the
-        // drivers use jump tables, which static code addresses absolutely
-        // (`R_X86_64_32S`); PIE code reaches them RIP-relative, and PLT
-        // calls (`-Zplt=yes`, also for `memcpy`) link to direct ones. The
-        // image builder still rejects any load-base-dependent reference.
-        rustflags: [
-            "-Cpanic=abort",
-            "-Copt-level=s",
-            "-Crelocation-model=pie",
-            "-Zplt=yes",
-            "-Cno-redzone=yes",
-            "-Clinker-plugin-lto=no",
-            "-Cembed-bitcode=no",
-            "-Zfunction-sections=yes",
-        ]
-        .map(String::from)
-        .to_vec(),
+    // PIE, not static: the handler takes the address of its SMRAM
+    // statics (P2C/C2P pages) and the drivers use jump tables, which
+    // static code addresses absolutely (`R_X86_64_32S`); PIE code
+    // reaches them RIP-relative, and PLT calls (`-Zplt=yes`, also for
+    // `memcpy`) link to direct ones. The image builder still rejects
+    // any load-base-dependent reference.
+    CompilationUnit::smm(
+        SMM_UNIT,
+        "x86_64-unknown-none".into(),
+        SMM_FEATURES.into_iter().map(String::from).collect(),
+        true,
         // No console in SMM: the log macros compile out (and with them
         // their formatting panics, which the image builder rejects).
-        environment_values: mp_capacity::<B>()
+        mp_capacity::<B>()
             .into_iter()
             .chain([("FSTART_LOG_LEVEL".into(), "off".into())])
             .collect(),
-        bindings: vec![],
-        file_bindings: vec![],
-        board_features: vec!["smm".into()],
-        output: UnitOutput::SmmImage {
-            entry_count: B::MAX_CPUS,
-            stack_size: SMM_STACK_SIZE,
-            coreboot_module_args: false,
-            coreboot_header: false,
-        },
-    }
+        B::MAX_CPUS,
+        SMM_STACK_SIZE,
+        false,
+        false,
+    )
 }
 
 /// The payload a build selects (`--payload`, default halt).

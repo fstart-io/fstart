@@ -132,46 +132,20 @@ pub fn descriptor(layout: &Layout) -> Result<EncodedLayout, String> {
 /// The board's SMM handler as a standalone image, one entry per CPU, which
 /// the stage embeds (`FSTART_SMM_IMAGE`).
 fn smm_unit<S: HostSoc>() -> CompilationUnit {
-    CompilationUnit {
-        name: SMM_UNIT.into(),
-        cargo_target: CargoTarget::BoardLibrary,
-        target: "x86_64-unknown-none".into(),
-        features: vec!["smm".into(), "bundle-smm".into()],
-        build_std: None,
-        release_only: true,
-        linker_script: None,
-        rustflags: [
-            "-Cpanic=abort",
-            "-Copt-level=s",
-            // Position independent, as SP3's: lookup tables and the
-            // addresses of constants are RIP-relative, calls direct
-            // (`-Zplt=yes`); the image builder still rejects any
-            // load-base-dependent reference.
-            "-Crelocation-model=pie",
-            "-Zplt=yes",
-            "-Cno-redzone=yes",
-            "-Clinker-plugin-lto=no",
-            "-Cembed-bitcode=no",
-            "-Zfunction-sections=yes",
-        ]
-        .into_iter()
-        .map(Into::into)
-        .collect(),
-        environment_values: BTreeMap::from([(
-            "FSTART_MP_MAX_CPUS".into(),
-            S::MAX_CPUS.to_string(),
-        )]),
-        bindings: vec![],
-        file_bindings: vec![],
-        // The board's SMM handler module, outside the stage `main`.
-        board_features: vec!["smm".into()],
-        output: UnitOutput::SmmImage {
-            entry_count: S::MAX_CPUS,
-            stack_size: 0x800,
-            coreboot_module_args: false,
-            coreboot_header: false,
-        },
-    }
+    // Position independent, as SP3's: lookup tables and the addresses
+    // of constants are RIP-relative, calls direct (`-Zplt=yes`); the
+    // image builder still rejects any load-base-dependent reference.
+    CompilationUnit::smm(
+        SMM_UNIT,
+        "x86_64-unknown-none".into(),
+        vec!["smm".into(), "bundle-smm".into()],
+        true,
+        BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), S::MAX_CPUS.to_string())]),
+        S::MAX_CPUS,
+        0x800,
+        false,
+        false,
+    )
 }
 
 /// The payload: its name, the stage feature and its configuration.

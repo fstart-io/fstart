@@ -1059,39 +1059,17 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let mp_capacity =
         || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
     if machine.is_q35() {
-        units.push(CompilationUnit {
-            name: "smm".into(),
-            cargo_target: CargoTarget::BoardLibrary,
-            target: policy.target.into(),
-            features: vec!["smm".into(), "bundle-smm".into()],
-            // Custom targets have no prebuilt core.
-            build_std: (policy.platform == Platform::X86).then(|| "core,alloc".into()),
-            release_only: true,
-            linker_script: None,
-            rustflags: [
-                "-Cpanic=abort",
-                "-Copt-level=s",
-                // Direct relative calls; absolute cross-section references are audited.
-                "-Crelocation-model=static",
-                "-Cno-redzone=yes",
-                "-Clinker-plugin-lto=no",
-                "-Cembed-bitcode=no",
-                "-Zfunction-sections=yes",
-            ]
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-            environment_values: mp_capacity(),
-            bindings: vec![],
-            file_bindings: vec![],
-            board_features: vec!["smm".into()],
-            output: UnitOutput::SmmImage {
-                entry_count: 8,
-                stack_size: 0x400,
-                coreboot_module_args: false,
-                coreboot_header: false,
-            },
-        });
+        units.push(CompilationUnit::smm(
+            "smm",
+            policy.target.into(),
+            vec!["smm".into(), "bundle-smm".into()],
+            false,
+            mp_capacity(),
+            8,
+            0x400,
+            false,
+            false,
+        ));
     }
     let stage_bindings = if machine.is_q35() {
         vec![ArtifactBinding {

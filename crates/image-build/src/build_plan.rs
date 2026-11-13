@@ -450,6 +450,69 @@ pub struct CompilationUnit {
     pub output: UnitOutput,
 }
 
+impl CompilationUnit {
+    /// The board-library SMM handler unit every x86 platform builds:
+    /// release-only, no linker script (the SMM image producer links
+    /// the handler itself), the board's `smm` library feature, and the
+    /// flag set the retained-relocation audit expects. `pie` selects
+    /// the relocation model: handlers that take the address of their
+    /// SMRAM statics need PIE with PLT calls resolved direct; the
+    /// others link static. The 32-bit JSON target has no prebuilt
+    /// core, so it builds `core,alloc`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn smm(
+        name: &str,
+        target: String,
+        features: Vec<String>,
+        pie: bool,
+        environment_values: BTreeMap<String, String>,
+        entry_count: u16,
+        stack_size: u32,
+        coreboot_module_args: bool,
+        coreboot_header: bool,
+    ) -> Self {
+        // PLT-style call relocations resolve locally at link time in
+        // either model, avoiding GOT-indirect calls the audited image
+        // cannot carry.
+        let relocation: &[&str] = if pie {
+            &["-Crelocation-model=pie", "-Zplt=yes"]
+        } else {
+            &["-Crelocation-model=static", "-Zplt=yes"]
+        };
+        Self {
+            name: name.into(),
+            cargo_target: CargoTarget::BoardLibrary,
+            build_std: (target == "i686-unknown-none").then(|| "core,alloc".into()),
+            target,
+            features,
+            release_only: true,
+            linker_script: None,
+            rustflags: ["-Cpanic=abort", "-Copt-level=s"]
+                .into_iter()
+                .chain(relocation.iter().copied())
+                .chain([
+                    "-Cno-redzone=yes",
+                    "-Clinker-plugin-lto=no",
+                    "-Cembed-bitcode=no",
+                    "-Zfunction-sections=yes",
+                ])
+                .map(String::from)
+                .collect(),
+            environment_values,
+            bindings: vec![],
+            file_bindings: vec![],
+            // The board's SMM handler module, outside every stage `main`.
+            board_features: vec!["smm".into()],
+            output: UnitOutput::SmmImage {
+                entry_count,
+                stack_size,
+                coreboot_module_args,
+                coreboot_header,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CargoTarget {
     BoardBinary,
