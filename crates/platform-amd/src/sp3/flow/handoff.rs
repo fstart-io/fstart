@@ -168,6 +168,7 @@ pub(crate) fn acpi(
             cstates: power::cstate_info(&ctx.soc.policy.ccx.cstates),
             threads_per_core,
             devices: &[],
+            ivrs_devices: &[],
             sb_aml: &fch_aml,
             tables: &tables,
         },

@@ -13,7 +13,7 @@
 //! | FADT, MADT, HPET | [`SocAcpi`], the NBIO IOAPICs | [`fixed`] |
 //! | MCFG | the PCI segment | `fstart_acpi::build_mcfg` |
 //! | SRAT, MSCT, SLIT | only with more than one domain | [`numa`] |
-//! | IVRS | per IOMMU, types 10h/11h (40h for an ACPI-only eMMC) | [`ivrs`] |
+//! | IVRS | per IOMMU, types 10h/11h (40h for ACPI-only requesters) | [`ivrs`] |
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
 //! | TPM2 / TCPA | discrete TPM and its event log ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
 //! | WSMT | with SMM ([`Inputs::acpi_smi`]) | `fstart_acpi::wsmt` |
@@ -182,6 +182,10 @@ pub struct Inputs<'a> {
     pub tpm: Option<fstart_acpi::devices::tpm::TpmTisAcpi>,
     /// The SoC's enabled fixed-address devices, for `\_SB`.
     pub devices: &'a [AcpiGenericDevice],
+    /// The IOMMU requesters of the SoC's devices that are not PCI functions
+    /// (an ACPI-only controller's synthetic ID), behind the FCH; only their
+    /// owner knows them.
+    pub ivrs_devices: &'a [fstart_acpi::ivrs::DeviceEntry],
     /// The SoC's own AML for `\_SB`, after its [`Inputs::devices`]: FCH
     /// controllers and the devices behind them, a posted video ROM.
     pub sb_aml: &'a [u8],
@@ -205,6 +209,7 @@ pub struct Soc<'a> {
     pub cstates: Option<fstart_driver_amd::ccx::power::CstateInfo>,
     pub threads_per_core: u8,
     pub devices: &'a [AcpiGenericDevice],
+    pub ivrs_devices: &'a [fstart_acpi::ivrs::DeviceEntry],
     pub sb_aml: &'a [u8],
     pub tables: &'a [Vec<u8>],
 }
@@ -254,6 +259,7 @@ pub fn install(
         bmc_sx_notify: facts.bmc_sx_notify,
         tpm: crate::tpm::acpi(),
         devices: soc.devices,
+        ivrs_devices: soc.ivrs_devices,
         sb_aml: soc.sb_aml,
         tables: soc.tables,
         board,

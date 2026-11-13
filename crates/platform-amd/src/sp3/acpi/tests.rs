@@ -235,6 +235,7 @@ fn inputs<'a>(
             }),
         }),
         devices: &[],
+        ivrs_devices: &[],
         sb_aml: &s.sb_aml,
         tables: &s.tables,
         board: &s.board,

@@ -121,6 +121,7 @@ mod tests {
             bmc_sx_notify: crate::Board::BMC_SX_NOTIFY,
             tpm: None,
             devices: &[],
+            ivrs_devices: &[],
             sb_aml: &[],
             tables: &[],
             board: &board,
