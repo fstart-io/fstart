@@ -9,7 +9,7 @@ use fstart_driver_i2c::designware::{Speed, Timing};
 
 use super::FchHw;
 use super::acpimmio::{self, AoacDevice};
-use super::gpio::{self, Direction, Pad, Pin};
+use crate::fch::gpio::{self, Pad, Pin};
 
 /// RXM100CB AmdI2CMasterPei standard timing: 100 kHz at 150 MHz.
 pub const I2C_TIMING: Timing = Timing {
@@ -65,18 +65,8 @@ const I2C: [(u8, [u16; 2], u8, u32); 6] = [
 /// Power I2C controller `n` and route its pads.
 pub fn enable_i2c<H: FchHw>(hw: &H, n: u8) {
     let (dev, pins, function, _) = I2C[usize::from(n)];
-    pins.iter().for_each(|&pin| {
-        gpio::configure(
-            hw.acpi(),
-            &Pad {
-                pin: Pin(pin),
-                function: Some(function),
-                pull: None,
-                cpm_bit19: None,
-                direction: Direction::Keep,
-            },
-        )
-    });
+    pins.iter()
+        .for_each(|&pin| gpio::configure(hw.acpi(), &Pad::mux(Pin(pin), function)));
     acpimmio::aoac_power(hw.acpi(), AoacDevice(dev), true);
 }
 

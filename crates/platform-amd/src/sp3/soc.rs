@@ -51,8 +51,8 @@ use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::fch::hw::gpio::Pad;
-use fstart_driver_amd::fch::hw::{self as fch, FchHw};
+use fstart_driver_amd::fch::gpio::Pad;
+use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::psp;
 
@@ -233,8 +233,8 @@ impl<F: Silicon, P> Stage<Sp3<F>, P> {
         let acpi = self.fch().acpi();
         pads.iter()
             .map(|pad| {
-                fch::gpio::configure(acpi, pad);
-                fch::gpio::read(acpi, pad.pin)
+                fstart_driver_amd::fch::gpio::configure(acpi, pad);
+                fstart_driver_amd::fch::gpio::read(acpi, pad.pin)
             })
             .collect()
     }
@@ -245,8 +245,8 @@ impl<F: Silicon, P> Stage<Sp3<F>, P> {
     /// when the links train.
     pub fn program_gpio(&self, gpio: &Gpio) {
         let acpi = self.fch().acpi();
-        fch::gpio::configure_all(acpi, gpio.early);
-        fch::gpio::configure_all(acpi, gpio.table);
+        fstart_driver_amd::fch::gpio::configure_all(acpi, gpio.early);
+        fstart_driver_amd::fch::gpio::configure_all(acpi, gpio.table);
     }
 
     /// Apply the stored overrides of `knobs` to the board's `config`
@@ -643,7 +643,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
                 .install(mp, IMAGE, flow.tseg.base, flow.tseg.size as u32)
                 .map_err(|_| "SMM install")?;
             super::smm::prepare_psp_smi(&soc.fch);
-            fch::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+            fstart_driver_amd::fch::hw::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
             state.smm = Some(config);
             state.soc.smm_installed = true;
         }

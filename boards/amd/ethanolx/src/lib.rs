@@ -23,8 +23,8 @@ use fstart_driver_amd::dxio::DxioPolicy;
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::ports::PcieFeatures;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::gpio::{Pad, Pin};
 use fstart_driver_amd::fch::huashan::sata::{Controller, SataPolicy};
-use fstart_driver_amd::fch::hw::gpio::{Pad, Pin};
 use fstart_driver_amd::fch::hw::lpc::{self, WideIo};
 use fstart_driver_amd::fch::hw::{FchHw, irq, uart};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
@@ -211,11 +211,6 @@ mod tests {
                 data_link_feature: true,
                 data_link_exchange: true,
             })
-        );
-        assert_eq!(GPIO[0].cpm_bit19, Some(false));
-        assert_eq!(
-            GPIO[0].direction,
-            fstart_driver_amd::fch::hw::gpio::Direction::Keep
         );
     }
 

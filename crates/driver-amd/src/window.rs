@@ -322,7 +322,7 @@ impl Window for Ports {
 /// SMN data accesses are dwords; narrow writes are dword read-modify-writes,
 /// so a narrow write next to write-1-to-clear bytes clears them. The FCH
 /// byte-only blocks (IOMUX) may not take dword writes (PPR 55570 §9.1.10):
-/// see `fch::hw::gpio` for how IOMUX is reached on remote FCHs.
+/// see `fch::gpio` for how IOMUX is reached on remote FCHs.
 #[derive(Clone, Copy)]
 pub struct SmnWindow<P> {
     smn: Smn<P>,

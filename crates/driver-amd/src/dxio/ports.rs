@@ -21,7 +21,7 @@ use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
 use crate::cpu::Silicon;
 use crate::dxio::wire::FwEngine;
 use crate::dxio::{Dxio, DxioError, Hooks, UnitView, op, prop};
-use crate::fch::hw::gpio::{self, Pin};
+use crate::fch::gpio::{self, Pin};
 use crate::nbio::{Nbio, NbioReg, nbif};
 use crate::smn::SmnAddr;
 use crate::smu::SmuMessages;
@@ -925,22 +925,22 @@ impl<'w> FchPerst<'w> {
 
     fn drive(&self, acpi: &dyn Window) {
         // `&dyn Window` is itself a (sized) window.
-        let control = |pin: Pin| Window::reg::<u32, gpio::CONTROL::Register>(&acpi, pin.control());
+        let control = |pin: Pin| Window::reg::<u32, gpio::Control::Register>(&acpi, pin.control());
         match self.generation {
             Silicon::Zp => {
                 control(PERST_PINS[0]).write(
-                    gpio::CONTROL::OUTPUT_ENABLE::SET
-                        + gpio::CONTROL::OUTPUT_VALUE::SET
-                        + gpio::CONTROL::PULL_UP::SET
-                        + gpio::CONTROL::DRIVE_STRENGTH.val(1),
+                    gpio::Control::OUTPUT_ENABLE::SET
+                        + gpio::Control::OUTPUT::SET
+                        + gpio::Control::PULL_UP::SET
+                        + gpio::Control::DRIVE_STRENGTH.val(1),
                 );
                 Window::reg::<u8, ()>(&acpi, PERST_PINS[0].iomux()).set(0);
             }
             Silicon::Ssp | Silicon::Gn => PERST_PINS.iter().for_each(|&pin| {
                 control(pin).write(
-                    gpio::CONTROL::OUTPUT_ENABLE::SET
-                        + gpio::CONTROL::OUTPUT_VALUE::SET
-                        + gpio::CONTROL::DRIVE_STRENGTH.val(2),
+                    gpio::Control::OUTPUT_ENABLE::SET
+                        + gpio::Control::OUTPUT::SET
+                        + gpio::Control::DRIVE_STRENGTH.val(2),
                 )
             }),
         }

@@ -11,7 +11,7 @@
 
 extern crate alloc;
 
-use fstart_driver_amd::fch::hw::gpio::Pad;
+use fstart_driver_amd::fch::gpio::Pad;
 
 use crate::sp3::layout::Sp3BoardFacts;
 

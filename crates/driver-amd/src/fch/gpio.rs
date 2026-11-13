@@ -5,8 +5,8 @@
 use crate::fch::{
     AcpiReg, Bus, BusRegister, Fch, SMI_TRIGGER0, SmiMode, gpio_bank, iomux, smi_bank, smi_route,
 };
+use crate::window::Window;
 use tock_registers::{
-    LocalRegisterCopy,
     fields::{Field, FieldValue},
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
@@ -31,6 +31,9 @@ register_bitfields![u32,
         WAKE_S4_S5 OFFSET(15) NUMBITS(1) [],
         PIN OFFSET(16) NUMBITS(1) [],
         DRIVE_STRENGTH OFFSET(17) NUMBITS(2) [],
+        /// Reserved in public PPR 55570; CPM setting bit 2 controls it
+        /// when the pull field is enabled (RXM100CB `ffd79a92`).
+        CPM_BIT19 OFFSET(19) NUMBITS(1) [],
         PULL_UP OFFSET(20) NUMBITS(1) [],
         PULL_DOWN OFFSET(21) NUMBITS(1) [],
         OUTPUT OFFSET(22) NUMBITS(1) [],
@@ -48,6 +51,47 @@ register_bitfields![u32,
 ];
 /// The W1C status bits of a pad.
 pub const STATUS_MASK: u32 = (1 << 28) | (1 << 29);
+
+/// First pin of the remote bank (Huashan's pins 256 and up).
+pub const REMOTE_FIRST: u16 = 256;
+/// Pins in the remote bank (`0x1200..0x12C0` holds 48 control dwords).
+pub const REMOTE_PINS: u16 = 48;
+
+/// An FCH GPIO pin: bank 0 (0-255) or, on Huashan, the remote bank
+/// (256-303): control at `0x1200 + 4(n - 256)`, IOMUX at
+/// `0x12C0 + (n - 256)` (FCH_SP3 §3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pin(pub u16);
+impl Pin {
+    /// Offset of the control dword in the ACPI-MMIO block.
+    pub const fn control(self) -> u32 {
+        match self.0 {
+            n if n < REMOTE_FIRST => gpio_bank::BASE + 4 * n as u32,
+            n => REMOTE_GPIO + 4 * (n - REMOTE_FIRST) as u32,
+        }
+    }
+    /// Offset of the IOMUX byte in the ACPI-MMIO block.
+    pub const fn iomux(self) -> u32 {
+        match self.0 {
+            n if n < REMOTE_FIRST => iomux::BASE + n as u32,
+            n => REMOTE_GPIO + 0xC0 + (n - REMOTE_FIRST) as u32,
+        }
+    }
+    pub const fn is_valid(self) -> bool {
+        self.0 < REMOTE_FIRST + REMOTE_PINS
+    }
+    /// The pin of bank 0, if it is one.
+    const fn local(self) -> Option<u8> {
+        if self.0 < REMOTE_FIRST {
+            Some(self.0 as u8)
+        } else {
+            None
+        }
+    }
+}
+
+/// The remote GPIO bank of the ACPI-MMIO block (Huashan).
+const REMOTE_GPIO: u32 = 0x1200;
 /// The pad configuration a [`Pad`] sets: everything but the pin state, the
 /// drive strength and the reserved bits.
 pub const CONFIG_MASK: u32 =
@@ -80,7 +124,7 @@ const fn fields(values: &[FieldValue<u32, Control::Register>]) -> u32 {
     value
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pull {
     None,
     Up,
@@ -126,7 +170,7 @@ pub enum Delivery {
     Status,
     StatusAndDelivery,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     None,
     Sci(Trigger),
@@ -140,21 +184,109 @@ pub enum Function {
     /// An IOMUX function by number, as the vendor tables name them.
     Native(u8),
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pad {
-    pub pin: u8,
-    pub function: Function,
-    pub control: LocalRegisterCopy<u32, Control::Register>,
+    pub pin: Pin,
+    /// The IOMUX function, `None` to leave it.
+    pub function: Option<Function>,
+    /// The [`Control`] bits the pad sets, within [`Self::mask`].
+    pub control: u32,
+    /// The control bits the pad replaces; the others stay.
+    pub mask: u32,
     pub event: Event,
 }
 impl Pad {
+    /// A pad whose configuration replaces the whole control register but
+    /// its status bits ([`CONFIG_MASK`]).
     const fn with(pin: u8, function: Function, control: u32, event: Event) -> Self {
         Self {
-            pin,
-            function,
-            control: LocalRegisterCopy::new(control),
+            pin: Pin(pin as u16),
+            function: Some(function),
+            control,
+            mask: CONFIG_MASK,
             event,
         }
+    }
+
+    /// Only IOMUX `function` for `pin`; the control register stays.
+    pub const fn mux(pin: Pin, function: u8) -> Self {
+        Self {
+            pin,
+            function: Some(Function::Native(function)),
+            control: 0,
+            mask: 0,
+            event: Event::None,
+        }
+    }
+
+    /// Also set the pull to `pull`.
+    pub const fn pull(self, pull: Pull) -> Self {
+        let bits = Control::PULL_UP::SET.value | Control::PULL_DOWN::SET.value;
+        let value = match pull {
+            Pull::None => 0,
+            Pull::Up => Control::PULL_UP::SET.value,
+            Pull::Down => Control::PULL_DOWN::SET.value,
+        };
+        self.set(bits, value)
+    }
+
+    /// Also make the pad an input.
+    pub const fn as_input(self) -> Self {
+        self.set(Control::OUTPUT_ENABLE::SET.value, 0)
+    }
+
+    /// Also drive the pad `high` or low.
+    pub const fn driving(self, high: bool) -> Self {
+        let bits = Control::OUTPUT_ENABLE::SET.value | Control::OUTPUT::SET.value;
+        self.set(bits, Self::output_fields(high))
+    }
+
+    /// Replace the control `bits` with `value`.
+    const fn set(self, bits: u32, value: u32) -> Self {
+        Self {
+            control: (self.control & !bits) | (value & bits),
+            mask: self.mask | bits,
+            ..self
+        }
+    }
+
+    /// Decode an AMD CPM `$A10` setting word for `pin` (BOARD_S8030 §3.4):
+    /// IOMUX = bits 10:8 when bit 11 is set; bit 7 enables the pull field
+    /// (bit 5 up, bit 6 down, bit 2 control bit 19); with bit 3 clear, bit
+    /// 1 selects input, else output = bit 0; bit 3 set keeps the direction.
+    pub const fn from_cpm(pin: Pin, setting: u16) -> Self {
+        let mut pad = Self {
+            function: None,
+            ..Self::mux(pin, 0)
+        };
+        if setting & 0x800 != 0 {
+            pad.function = Some(Function::Native(((setting >> 8) & 7) as u8));
+        }
+        if setting & 0x80 != 0 {
+            pad = pad.pull(if setting & 0x20 != 0 {
+                Pull::Up
+            } else if setting & 0x40 != 0 {
+                Pull::Down
+            } else {
+                Pull::None
+            });
+            pad = pad.set(
+                Control::CPM_BIT19::SET.value,
+                if setting & 4 != 0 {
+                    Control::CPM_BIT19::SET.value
+                } else {
+                    0
+                },
+            );
+        }
+        if setting & 0x8 == 0 {
+            pad = if setting & 0x2 != 0 {
+                pad.as_input()
+            } else {
+                pad.driving(setting & 1 != 0)
+            };
+        }
+        pad
     }
     const fn output_fields(high: bool) -> u32 {
         fields(&[
@@ -269,10 +401,16 @@ impl Bank {
     fn exists(&self, pin: u8) -> bool {
         pin < self.pins && !self.reserved.contains(&pin)
     }
-    fn function(&self, pad: &Pad) -> Option<u8> {
+    fn has(&self, pin: Pin) -> bool {
+        pin.local().is_some_and(|pin| self.exists(pin))
+    }
+    /// The IOMUX value of `pad`: `Some(None)` leaves the IOMUX, `None` if
+    /// the bank doesn't know the pad's GPIO function.
+    fn function(&self, pad: &Pad) -> Option<Option<u8>> {
         match pad.function {
-            Function::Gpio => (self.gpio_function)(pad.pin),
-            Function::Native(function) => Some(function),
+            None => Some(None),
+            Some(Function::Gpio) => pad.pin.local().and_then(self.gpio_function).map(Some),
+            Some(Function::Native(function)) => Some(Some(function)),
         }
     }
 }
@@ -302,9 +440,10 @@ impl<B: Bus> Gpio<B> {
 
     fn validate(&self, table: &[Pad]) -> Result<(), Error> {
         for (index, pad) in table.iter().enumerate() {
-            if !self.bank.exists(pad.pin)
-                || matches!(pad.function, Function::Native(function) if function > 3)
-                || pad.control.get() & !CONFIG_MASK != 0
+            if !self.bank.has(pad.pin)
+                || matches!(pad.function, Some(Function::Native(function)) if function > 3)
+                || pad.control & !pad.mask != 0
+                || pad.mask & !CONFIG_MASK != 0
             {
                 return Err(Error::InvalidPad);
             }
@@ -315,7 +454,11 @@ impl<B: Bus> Gpio<B> {
                 return Err(Error::DuplicatePad);
             }
             if !matches!(pad.event, Event::None)
-                && !self.bank.events.iter().any(|(p, _)| *p == pad.pin)
+                && !self
+                    .bank
+                    .events
+                    .iter()
+                    .any(|(p, _)| Pin((*p).into()) == pad.pin)
             {
                 return Err(Error::MissingEvent);
             }
@@ -343,14 +486,17 @@ impl<B: Bus> Gpio<B> {
             .iter()
             .map(|pad| overrides.iter().find(|p| p.pin == pad.pin).unwrap_or(pad))
         {
-            let mux = self.fch.reg(iomux::at::<u8, ()>(pad.pin.into()));
-            mux.set(self.bank.function(pad).unwrap_or(0) & 3);
-            mux.get(); // flush posted write
-            let control = self.fch.reg(control(pad.pin));
-            control.set((control.get() & !CONFIG_MASK) | pad.control.get());
+            let pin = pad.pin.0 as u8;
+            if let Some(function) = self.bank.function(pad).unwrap_or(Some(0)) {
+                let mux = self.fch.reg(iomux::at::<u8, ()>(pin.into()));
+                mux.set(function & 3);
+                mux.get(); // flush posted write
+            }
+            let control = self.fch.reg(control(pin));
+            control.set((control.get() & !pad.mask) | pad.control);
             // Clear the W1C status bits in a separate write.
             control.modify(Control::INTERRUPT_STATUS::SET + Control::WAKE_STATUS::SET);
-            if let Some((_, event)) = self.bank.events.iter().find(|(p, _)| *p == pad.pin) {
+            if let Some((_, event)) = self.bank.events.iter().find(|(p, _)| *p == pin) {
                 self.route(*event, pad.event);
             }
         }
@@ -498,4 +644,41 @@ impl<B: Bus> embedded_hal::digital::InputPin for Input<B> {
     fn is_low(&mut self) -> Result<bool, Error> {
         self.is_high().map(|high| !high)
     }
+}
+
+// ---- Any FCH's pads through its ACPI-MMIO window ----
+
+/// Apply `pad` to the FCH whose ACPI-MMIO block is `acpi`: the control
+/// bits of the pad in one read-modify-write, then the IOMUX (the order of
+/// AMD CPM). A pad for this path names its function
+/// ([`Function::Native`]); [`Function::Gpio`] needs the bank. IOMUX is
+/// byte-only on MMIO (PPR 55570 §9.1.10); over SMN the window writes the
+/// containing dword, so neighbouring pins' IOMUX bytes are rewritten with
+/// their read values.
+pub fn configure<W: Window>(acpi: &W, pad: &Pad) {
+    debug_assert!(pad.pin.is_valid());
+    if pad.mask != 0 {
+        let ctl = acpi.reg::<u32, Control::Register>(pad.pin.control());
+        ctl.set((ctl.get() & !pad.mask) | pad.control);
+    }
+    if let Some(Function::Native(function)) = pad.function {
+        acpi.reg::<u8, ()>(pad.pin.iomux()).set(function);
+    }
+}
+
+/// Apply a pad table in order.
+pub fn configure_all<W: Window>(acpi: &W, pads: &[Pad]) {
+    pads.iter().for_each(|pad| configure(acpi, pad));
+}
+
+/// The level of `pin` (`PinSts`).
+pub fn read<W: Window>(acpi: &W, pin: Pin) -> bool {
+    acpi.reg::<u32, Control::Register>(pin.control())
+        .is_set(Control::PIN)
+}
+
+/// Drive output `pin`.
+pub fn write<W: Window>(acpi: &W, pin: Pin, high: bool) {
+    acpi.reg::<u32, Control::Register>(pin.control())
+        .modify(Control::OUTPUT.val(high.into()));
 }

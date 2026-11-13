@@ -10,7 +10,7 @@ use tock_registers::register_bitfields;
 
 use super::FchHw;
 use super::acpimmio::{self, AoacDevice};
-use super::gpio::{self, Direction, Pad, Pin};
+use crate::fch::gpio::{self, Pad, Pin};
 use crate::window::{Window, update};
 
 /// MMIO base of UART `n` (sp4r2 ACPI `FUR0`/`FUR1`).
@@ -49,18 +49,7 @@ register_bitfields![u8,
 /// Power UART `n` and route its pads to the UART (CTS/RXD/RTS/TXD).
 pub fn enable<H: FchHw>(hw: &H, n: u8) {
     let (dev, first) = UART[usize::from(n)];
-    (first..first + 4).for_each(|pin| {
-        gpio::configure(
-            hw.acpi(),
-            &Pad {
-                pin: Pin(pin),
-                function: Some(0),
-                pull: None,
-                cpm_bit19: None,
-                direction: Direction::Keep,
-            },
-        )
-    });
+    (first..first + 4).for_each(|pin| gpio::configure(hw.acpi(), &Pad::mux(Pin(pin), 0)));
     acpimmio::aoac_power(hw.acpi(), AoacDevice(dev), true);
 }
 

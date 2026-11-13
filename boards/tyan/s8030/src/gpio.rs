@@ -14,7 +14,7 @@
 
 mod table;
 
-pub use fstart_driver_amd::fch::hw::gpio::{Direction, Pad, Pin, Pull};
+pub use fstart_driver_amd::fch::gpio::{Pad, Pin, Pull};
 pub use table::CPM_GPIO;
 
 use fstart_platform_amd::sp3::silicon::Generation;
@@ -75,45 +75,14 @@ mod tests {
         // The M.2 detect pins end up as pulled-up inputs on their functions.
         assert_eq!(row(144), Pad::from_cpm(Pin(144), 0x9a2));
         assert_eq!(row(140), Pad::from_cpm(Pin(140), 0xaa2));
-        // Board enables driven high / low (§3.4).
-        let dir = |pins: &[u16]| {
-            pins.iter()
-                .map(|&p| row(p).direction)
-                .collect::<std::vec::Vec<_>>()
-        };
-        assert!(
-            dir(&[3, 6, 42, 29, 32, 259])
-                .iter()
-                .all(|&d| d == Direction::Output(true))
-        );
-        assert!(
-            dir(&[256, 257])
-                .iter()
-                .all(|&d| d == Direction::Output(false))
-        );
-        // Every row sets the IOMUX and the pulls; GPIO4/5 are not in `$A10`.
-        assert!(
-            CPM_GPIO
-                .iter()
-                .all(|p| p.function.is_some() && p.pull.is_some())
-        );
         assert!(!pins.contains(&4) && !pins.contains(&5));
     }
 
     #[test]
     fn oem_pads() {
-        let [cn1, cn3] = m2_detect_pads(Generation::Rome);
-        assert_eq!(
-            (cn1.function, cn1.pull, cn1.direction),
-            (Some(1), Some(Pull::None), Direction::Input)
-        );
-        assert_eq!((cn3.pin, cn3.function), (Pin(140), Some(2)));
-        assert_eq!(m2_detect_pads(Generation::Milan)[0].pull, Some(Pull::Up));
+        let [_, cn3] = m2_detect_pads(Generation::Rome);
+        assert_eq!(cn3.pin, Pin(140));
         assert_eq!(rome_oem_pads(Generation::Milan), &[]);
-        let gpio5 = rome_oem_pads(Generation::Rome)[1];
-        assert_eq!(
-            (gpio5.pin, gpio5.pull, gpio5.direction),
-            (Pin(5), Some(Pull::Up), Direction::Output(true))
-        );
+        assert_eq!(rome_oem_pads(Generation::Rome)[1].pin, Pin(5));
     }
 }

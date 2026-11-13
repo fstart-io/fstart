@@ -10,7 +10,7 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 use crate::cpu::Silicon;
-use crate::fch::hw::gpio::{self, Direction, Pad, Pin, Pull};
+use crate::fch::gpio::{self, Pad, Pin, Pull};
 use crate::fch::hw::{FchHw, irq};
 use crate::nbio::nbif::func_strap0;
 use crate::window::{SmnWindow, Window, update};
@@ -96,12 +96,14 @@ pub struct Controller {
 
 /// The donor sets all IOMUX functions first, then the pulls.
 const fn sgpio_pad(pin: u16, function: u8, pull: bool) -> Pad {
-    Pad {
-        pin: Pin(pin),
-        function: if pull { None } else { Some(function) },
-        pull: if pull { Some(Pull::Up) } else { None },
-        cpm_bit19: None,
-        direction: Direction::Keep,
+    if pull {
+        Pad {
+            function: None,
+            ..Pad::mux(Pin(pin), 0)
+        }
+        .pull(Pull::Up)
+    } else {
+        Pad::mux(Pin(pin), function)
     }
 }
 

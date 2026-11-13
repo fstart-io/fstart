@@ -6,8 +6,8 @@
 use fstart_core::services::{Timer, TimerDelay};
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::gpio::Pad;
 use fstart_driver_amd::fch::hw::FchHw;
-use fstart_driver_amd::fch::hw::gpio::Pad;
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::smm::SleepNotify;
