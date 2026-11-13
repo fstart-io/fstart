@@ -7,10 +7,9 @@
 pub mod acpi;
 
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
-use crate::ec::Ec;
-pub use crate::h8::{DOCK_LINK2, DOCK_LINK3, WAKE_CONTROL};
-use crate::h8::{CONFIG2, CONFIG3, H8, H8Config, H8DockEvent, H8Led, H8LedMode};
-use crate::pmh7::Pmh7;
+use fstart_driver_lenovo::ec::Ec;
+use fstart_driver_lenovo::h8::{CONFIG2, DOCK_LINK2, DOCK_LINK3, H8, H8Config, H8Led, H8LedMode};
+use fstart_driver_lenovo::pmh7::Pmh7;
 
 /// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
 const EVENT_MASKS: [u8; 16] = [
@@ -30,6 +29,7 @@ pub const DOCK_CONNECT_GPIO: u8 = 28;
 /// The EC's SCI on GPI 1 (`GPE_EC_SCI`) and its wake on GPI 13
 /// (`GPE_EC_WAKE`).
 pub const EC_SCI_GPI: u8 = 1;
+#[cfg(feature = "smm")]
 pub const EC_WAKE_GPI: u8 = 13;
 
 /// coreboot `bootblock_mainboard_early_init()`: EC USB power before the
@@ -51,6 +51,7 @@ pub fn dock_connect(ec: Ec, connect: &mut impl OutputPin) -> bool {
 }
 
 /// coreboot `dock_disconnect()`.
+#[cfg(feature = "smm")]
 pub fn dock_disconnect(ec: Ec, connect: &mut impl OutputPin) -> bool {
     let unlinked = [
         ec.modify_register(CONFIG2::DOCK_USB_POWER::CLEAR),
@@ -84,7 +85,7 @@ pub fn ec_init(
     dock_id: &mut [impl InputPin; 3],
     dock_connect_pin: &mut impl OutputPin,
     h8_config: &H8Config,
-    options: &crate::options::Options,
+    options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (bool, bool) {
     let bluetooth = bdc_presence.is_low().unwrap_or(false);
@@ -109,6 +110,7 @@ pub fn ec_init(
 }
 
 /// What the board's SMI handler must change after an EC event.
+#[cfg(feature = "smm")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockAction {
     Disconnect,
@@ -117,7 +119,9 @@ pub enum DockAction {
 
 /// coreboot `mainboard_smi_handle_ec_sci()`: the dock latch and links for
 /// the EC's dock events before OSPM owns them.
+#[cfg(feature = "smm")]
 pub fn smm_ec_event(ec: Ec, event: u8) -> Option<DockAction> {
+    use fstart_driver_lenovo::h8::{CONFIG3, H8DockEvent};
     match H8DockEvent::from_query(event)? {
         H8DockEvent::FnF9 | H8DockEvent::AcLost | H8DockEvent::DockDisconnected => {
             ec.modify_register(CONFIG3::DOCK_LATCH::CLEAR);
@@ -132,7 +136,9 @@ pub fn smm_ec_event(ec: Ec, event: u8) -> Option<DockAction> {
 
 /// The rest of a dock connect after [`smm_ec_event`]: wait for the dock,
 /// connect it, latch it and light its LED.
+#[cfg(feature = "smm")]
 pub fn smm_dock_connected(ec: Ec, connect: &mut impl OutputPin) {
+    use fstart_driver_lenovo::h8::CONFIG3;
     fstart_arch::udelay(250_000);
     dock_connect(ec, connect);
     ec.modify_register(CONFIG3::DOCK_LATCH::SET);
@@ -143,7 +149,9 @@ pub fn smm_dock_connected(ec: Ec, connect: &mut impl OutputPin) {
 
 /// coreboot `mainboard_smi_sleep()`: whether S3 should arm the EC wake GPE
 /// as an SCI, which the OS asked for through EC RAM 0x32.
+#[cfg(feature = "smm")]
 pub fn smm_wake_from_ec(ec: Ec) -> bool {
+    use fstart_driver_lenovo::h8::WAKE_CONTROL;
     ec.read_register::<WAKE_CONTROL::Register>()
         .is_some_and(|wake| wake.is_set(WAKE_CONTROL::EVENTS) || wake.is_set(WAKE_CONTROL::LID))
 }

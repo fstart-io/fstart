@@ -4,22 +4,25 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use fstart_acpi_macros::acpi_dsl;
+use fstart_acpi::acpi_dsl;
 
-use crate::h8::H8Config;
-use crate::h8_acpi::ec;
 use fstart_acpi::PcNamespace;
+use fstart_driver_lenovo::h8::H8Config;
+use fstart_driver_lenovo::h8_acpi::ec;
 
 /// Board DSDT. `\_SB.PCI0.GFX0` provides `INCB`/`DECB` and the processor
 /// AML `\CNOT`; `gpio_base` is the PCH GPIOBASE.
 #[must_use]
 pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) -> Vec<u8> {
-    let mut aml = crate::thinkpad::h8_dsdt_aml::<N>(h8);
+    let mut aml = fstart_driver_lenovo::thinkpad::h8_dsdt_aml::<N>(h8);
     aml.extend(dock_aml::<N>(gpio_base));
     if digitizer {
         aml.extend(
-            fstart_acpi::aml_linker::scope_vec(N::LPC.as_str(), &crate::wacom::digitizer_aml())
-                .expect("X201 digitizer emission"),
+            fstart_acpi::aml_linker::scope_vec(
+                N::LPC.as_str(),
+                &fstart_driver_lenovo::wacom::digitizer_aml(),
+            )
+            .expect("X201 digitizer emission"),
         );
     }
     aml
@@ -84,7 +87,7 @@ fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ec::EcPorts, h8::H8Resources};
+    use fstart_driver_lenovo::{ec::EcPorts, h8::H8Resources};
 
     #[test]
     fn dock_and_glue_are_emitted() {
@@ -93,7 +96,7 @@ mod tests {
             0x11,
             "IBM0068",
         );
-        let aml = dsdt_aml::<crate::h8_acpi::TestNamespace>(&h8, 0x480, false);
+        let aml = dsdt_aml::<fstart_platform_intel::ironlake::IronlakeIbexPeak>(&h8, 0x480, false);
         let count = |name: &[u8]| aml.windows(name.len()).filter(|w| *w == name).count();
         assert_eq!(count(b"_DCK"), 1);
         assert_eq!(count(b"_Q37"), 1);
