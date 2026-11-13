@@ -61,6 +61,14 @@ macro_rules! entry {
     };
 }
 
+/// A builder's check that the board wired its DIMMs: where the SPDs sit is
+/// the board's fact, and a platform that cannot train DRAM cannot boot.
+const fn require_spd_addresses(addresses: [u8; 4]) {
+    if matches!(addresses, [0, 0, 0, 0]) {
+        panic!("the board must wire its DIMMs: spd_addresses()");
+    }
+}
+
 pub mod gm45;
 pub mod gm965;
 pub mod i945;

@@ -39,6 +39,8 @@ pub struct PineviewIch7Config {
     pub usb: Option<UsbConfig>,
     pub hda: Option<HdaConfig>,
     pub gpio: gpio::GpioConfig,
+    /// SPD addresses of DIMM slots A/B; zero means absent.
+    pub spd_addresses: [u8; 4],
     /// Maximum logical CPU count (BSP + APs) the board populates.
     pub max_cpus: u16,
 }
@@ -59,6 +61,7 @@ impl PineviewIch7Config {
             usb: None,
             hda: None,
             gpio: gpio::GpioConfig::new(),
+            spd_addresses: [0; 4],
             max_cpus: 1,
         }
     }
@@ -71,6 +74,7 @@ impl PineviewIch7Config {
         config.epbar = PINEVIEW_EPBAR;
         config.ecam_base = PINEVIEW_ECAM_BASE;
         config.igd = self.igd;
+        config.spd_addresses = self.spd_addresses;
         config
     }
 
@@ -95,6 +99,13 @@ impl PineviewIch7Config {
 
     /// Date the RTC is reset to after a power loss; pass the board's SMBIOS
     /// build date so both come from one constant.
+    /// coreboot `get_mb_spd_addrmap()`.
+    #[must_use]
+    pub const fn spd_addresses(mut self, addresses: [u8; 4]) -> Self {
+        self.spd_addresses = addresses;
+        self
+    }
+
     #[must_use]
     pub const fn max_cpus(mut self, max_cpus: u16) -> Self {
         self.max_cpus = max_cpus;
@@ -205,6 +216,7 @@ impl PineviewIch7Config {
         if self.max_cpus == 0 {
             panic!("Pineview max_cpus must be non-zero");
         }
+        crate::require_spd_addresses(self.spd_addresses);
         PineviewIch7Platform {
             northbridge: self.northbridge_config(),
             southbridge: self.southbridge_config(),

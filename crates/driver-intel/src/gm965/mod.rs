@@ -494,6 +494,7 @@ pub struct IntelGm965Config {
     /// Optional integrated graphics function enables.
     pub igd: Gm965IgdConfig,
     /// SPD EEPROM addresses in GM965 slot order: ch0 slot0/1, ch1 slot0/1.
+    /// The board's wiring; `new()` wires none.
     pub spd_addresses: [u8; 4],
 }
 
@@ -508,7 +509,7 @@ impl IntelGm965Config {
             ecam_buses: 64,
             enable_peg: false,
             igd: Gm965IgdConfig::new(),
-            spd_addresses: [0x50, 0, 0x51, 0],
+            spd_addresses: [0; 4],
         }
     }
 }
