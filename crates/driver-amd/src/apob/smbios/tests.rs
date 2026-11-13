@@ -240,3 +240,66 @@ fn present_unknown_is_not_empty_and_small_buffers_do_not_publish() {
     );
     assert_eq!(&tiny[..5], &[0; 5]);
 }
+
+/// Two packages, one with the board's socket label, 32 positions and two
+/// DRAM ranges, byte for byte.
+#[test]
+fn tables_are_pinned() {
+    let ids0 = ids(0);
+    let ids1 = ids(1);
+    let processors = [
+        Processor {
+            socket: 0,
+            snapshot: snapshot(),
+            apic_ids: &ids0,
+            enabled_cores: 48,
+        },
+        Processor {
+            socket: 1,
+            snapshot: snapshot(),
+            apic_ids: &ids1,
+            enabled_cores: 47,
+        },
+    ];
+    let dimms = dimms();
+    let regions = [
+        DramRange {
+            base: 0,
+            end: 3 << 30,
+        },
+        DramRange {
+            base: 4 << 30,
+            end: 4 << 30,
+        },
+        DramRange {
+            base: 4 << 30,
+            end: 257 << 30,
+        },
+    ];
+    let mut identity = SmbiosIdentity::new("Test Vendor", "Test Board");
+    identity.processor_sockets = &["CPU0"];
+    identity.oem_string = Some("EC 1.0");
+    let mut bytes = vec![0; smbios::BUFFER_SIZE];
+    let used = build_into(
+        &mut bytes,
+        0x7500_0000,
+        &Inputs {
+            identity,
+            processors: &processors,
+            dimms: &dimms,
+            regions: &regions,
+            max_dimm_mib: 256 * 1024,
+            socket_upgrade: 0x37,
+            ecc: true,
+            rom_size: 16 << 20,
+            uefi: true,
+        },
+    )
+    .unwrap();
+    let hash = bytes[..used]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    assert_eq!((used, hash), (5407, 0xe56c_ef97_f210_11ef));
+}
