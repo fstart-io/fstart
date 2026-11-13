@@ -708,11 +708,11 @@ impl crabefi::Timer for TscTimer {
 }
 
 // ---------------------------------------------------------------------------
-// x86 Keyboard Controller Reset → CrabEFI ResetHandler
+// x86 platform reset mechanisms → CrabEFI ResetHandler
 // ---------------------------------------------------------------------------
 
 /// Boot-lifetime reset adapter: platform-owned ACPI shutdown controls and
-/// keyboard-controller reboot with triple-fault fallback.
+/// the shared x86 CF9 reboot mechanism (also advertised by runtime and FADT).
 #[cfg(target_arch = "x86_64")]
 pub struct X86Reset<'a> {
     controls: &'a [fstart_core::description::AcpiSleepControl],
@@ -725,30 +725,7 @@ impl crabefi::ResetHandler for X86Reset<'_> {
             crabefi::ResetType::Shutdown => {
                 fstart_arch::x86::legacy_pc::enter_acpi_s5(self.controls);
             }
-            _ => {
-                // Keyboard controller reset: pulse CPU reset line
-                unsafe {
-                    // Wait for input buffer empty
-                    for _ in 0..10000 {
-                        if fstart_core::pio::inb(0x64) & 0x02 == 0 {
-                            break;
-                        }
-                        core::hint::spin_loop();
-                    }
-                    fstart_core::pio::outb(0x64, 0xFE); // reset command
-                }
-            }
-        }
-
-        // Fallback: triple fault
-        unsafe {
-            // Load null IDT and trigger INT3
-            core::arch::asm!(
-                "lidt [{null_idt}]",
-                "int3",
-                null_idt = in(reg) &[0u16; 5] as *const _,
-                options(noreturn),
-            );
+            _ => fstart_arch::x86::boot::system_reset(true),
         }
     }
 }
