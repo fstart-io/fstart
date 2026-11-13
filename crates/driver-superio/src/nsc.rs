@@ -51,6 +51,12 @@ impl GpioPort0 {
     pub fn set_level(&self, pin: u8, high: bool) -> Result<(), DeviceError> {
         self.set_levels(&[(pin, high)])
     }
+
+    /// The data latch, typed with the board's bitfields for its wiring.
+    #[must_use]
+    pub const fn register<R: tock_registers::RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base)
+    }
 }
 
 tock_registers::register_bitfields![u8,
