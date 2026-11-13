@@ -11,22 +11,27 @@ use tock_registers::{register_bitfields, register_structs};
 
 /// Fixed PCH functions on bus 0.
 pub mod dev {
-    pub const XHCI: (u8, u8) = (0x14, 0);
-    pub const MEI1: (u8, u8) = (0x16, 0);
-    pub const MEI2: (u8, u8) = (0x16, 1);
-    pub const IDER: (u8, u8) = (0x16, 2);
-    pub const KT: (u8, u8) = (0x16, 3);
-    pub const GBE: (u8, u8) = (0x19, 0);
-    pub const EHCI2: (u8, u8) = (0x1a, 0);
-    pub const HDA: (u8, u8) = (0x1b, 0);
+    // Every entry is a `devfn`, the 8-bit device/function. The 5 Series PCH
+    // writes its own: this table is where a generation's addresses live, and
+    // EHCI alone differs from ICH7 to ICH9.
+    use fstart_pci::devfn;
+    pub const XHCI: u8 = devfn(0x14, 0);
+    pub const MEI1: u8 = devfn(0x16, 0);
+    pub const MEI2: u8 = devfn(0x16, 1);
+    pub const IDER: u8 = devfn(0x16, 2);
+    pub const KT: u8 = devfn(0x16, 3);
+    pub const GBE: u8 = devfn(0x19, 0);
+    pub const EHCI2: u8 = devfn(0x1a, 0);
+    pub const HDA: u8 = devfn(0x1b, 0);
     pub const PCIE: u8 = 0x1c;
-    pub const EHCI1: (u8, u8) = (0x1d, 0);
-    pub const PCI_BRIDGE: (u8, u8) = (0x1e, 0);
-    pub const LPC: (u8, u8) = (0x1f, 0);
-    pub const SATA1: (u8, u8) = (0x1f, 2);
-    pub const SMBUS: (u8, u8) = (0x1f, 3);
-    pub const SATA2: (u8, u8) = (0x1f, 5);
-    pub const THERMAL: (u8, u8) = (0x1f, 6);
+    /// EHCI is function 0 on this PCH (function 7 on ICH7 to ICH9).
+    pub const EHCI1: u8 = devfn(0x1d, 0);
+    pub const PCI_BRIDGE: u8 = devfn(0x1e, 0);
+    pub const LPC: u8 = devfn(0x1f, 0);
+    pub const SATA1: u8 = devfn(0x1f, 2);
+    pub const SMBUS: u8 = devfn(0x1f, 3);
+    pub const SATA2: u8 = devfn(0x1f, 5);
+    pub const THERMAL: u8 = devfn(0x1f, 6);
 }
 
 register_bitfields![u8,

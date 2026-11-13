@@ -34,6 +34,35 @@ pub use crate::southbridge::hda::{
 
 /// ICH9/ICH9-M PCI config and RCBA constants.
 pub mod ich9 {
+    // The functions whose ACPI node this chipset emits.
+    use fstart_pci::devfn;
+    pub const LAN: u8 = devfn(LAN_DEV, LAN_FUNC);
+    pub const HDA: u8 = devfn(HDA_DEV, HDA_FUNC);
+    pub const PCI_BRIDGE: u8 = devfn(PCI_BRIDGE_DEV, PCI_BRIDGE_FUNC);
+    pub const LPC: u8 = devfn(LPC_DEV, LPC_FUNC);
+    pub const SATA: u8 = devfn(SATA_DEV, SATA_FUNC);
+    pub const SATA2: u8 = devfn(SATA2_DEV, SATA2_FUNC);
+    pub const SMBUS: u8 = devfn(SMBUS_DEV, SMBUS_FUNC);
+    pub const THERMAL: u8 = devfn(THERMAL_DEV, THERMAL_FUNC);
+
+    /// The functions whose ACPI node this chipset emits: the address comes
+    /// from the pair above, so `_ADR` needs no number of its own.
+    /// EHCI is function 7 on this generation, function 0 on the 5 Series
+    /// PCH and Bay Trail.
+    pub const EHCI1: u8 = fstart_pci::devfn(EHCI1_DEV, EHCI1_FUNC);
+    pub const EHCI2: u8 = fstart_pci::devfn(EHCI2_DEV, EHCI2_FUNC);
+    pub const USB1: u8 = fstart_pci::devfn(0x1d, 0);
+    pub const USB2: u8 = fstart_pci::devfn(0x1d, 1);
+    pub const USB3: u8 = fstart_pci::devfn(0x1d, 2);
+    pub const USB4: u8 = fstart_pci::devfn(0x1a, 0);
+    pub const USB5: u8 = fstart_pci::devfn(0x1a, 1);
+    pub const USB6: u8 = fstart_pci::devfn(0x1a, 2);
+
+    /// Root port `port` (1-based, as the firmware names them).
+    pub const fn root_port(port: u8) -> u8 {
+        fstart_pci::devfn(PCIE_DEV, port - 1)
+    }
+
     pub const LAN_DEV: u8 = 0x19;
     pub const LAN_FUNC: u8 = 0;
     pub const HDA_DEV: u8 = 0x1b;
@@ -1168,8 +1197,7 @@ impl IntelIch9 {
     fn enable_smbus(&mut self) {
         let smbus_pci = ecam::EcamDevice::new(0, ich9::SMBUS_DEV, ich9::SMBUS_FUNC);
         smbus_pci.and16(0x80, !((1 << 8) | (1 << 10) | (1 << 12) | (1 << 14)));
-        let smbus =
-            I801SmBus::enable_on_i801(0, ich9::SMBUS_DEV, ich9::SMBUS_FUNC, self.config.smbus_base);
+        let smbus = I801SmBus::enable_on_i801(ich9::SMBUS, self.config.smbus_base);
         self.smbus = Some(smbus);
     }
 

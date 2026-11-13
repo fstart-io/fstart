@@ -49,6 +49,15 @@ fn memory(range: &RangeInclusive<u64>, out: &mut Vec<u8>) {
     }
 }
 
+/// ACPI `_ADR` of the bus-0 function `devfn`: the device number in [31:16] and
+/// the function in [7:0], the form every device node on a root bridge reports
+/// (ACPI 6.5 §6.1.1). The bus is implied by the enclosing device.
+#[must_use]
+pub const fn adr(devfn: u8) -> u32 {
+    let (device, function) = fstart_pci::devfn_parts(devfn);
+    (device as u32) << 16 | function as u32
+}
+
 /// `Name(_CRS, ...)` of the host bridge of `root`: its buses, then the I/O
 /// and the memory it forwards, in the order of description. A bridge that
 /// forwards the I/O around the configuration ports is the one they are

@@ -146,7 +146,7 @@ pub enum PchFunction {
 impl PchFunction {
     /// Bus-0 device and function.
     #[must_use]
-    pub const fn devfn(self) -> (u8, u8) {
+    pub const fn devfn(self) -> u8 {
         use regs::dev;
         match self {
             Self::Mei1 => dev::MEI1,
@@ -157,7 +157,7 @@ impl PchFunction {
             Self::Ehci1 => dev::EHCI1,
             Self::Ehci2 => dev::EHCI2,
             Self::Hda => dev::HDA,
-            Self::PcieRootPort(port) => (dev::PCIE, port),
+            Self::PcieRootPort(port) => fstart_pci::devfn(dev::PCIE, port),
             Self::Lpc => dev::LPC,
             Self::Sata1 => dev::SATA1,
             Self::Smbus => dev::SMBUS,
@@ -276,7 +276,7 @@ unsafe impl Sync for IntelIbexPeak {}
 
 impl IntelIbexPeak {
     pub(crate) fn lpc(&self) -> ecam::EcamDevice {
-        ecam::EcamDevice::new(0, regs::dev::LPC.0, regs::dev::LPC.1)
+        ecam::EcamDevice::from_devfn(0, regs::dev::LPC)
     }
 
     pub(crate) fn lpc_regs(&self) -> &'static IbexPeakLpcConfig {
@@ -513,9 +513,7 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
     /// SMBus for the SPDs and board devices, in both stages.
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.smbus = Some(I801SmBus::enable_on_i801(
-            0,
-            regs::dev::SMBUS.0,
-            regs::dev::SMBUS.1,
+            regs::dev::SMBUS,
             self.config.smbus_base,
         ));
         Ok(())
@@ -556,7 +554,10 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
     fn fixed_pci_bars(&self) -> PciFixedBars {
         let mut bars = PciFixedBars::new();
         bars.push(PciFixedBar {
-            address: PciAddress::new(0, 0, regs::dev::SMBUS.0, regs::dev::SMBUS.1),
+            address: {
+                let (dev, func) = fstart_pci::devfn_parts(regs::dev::SMBUS);
+                PciAddress::new(0, 0, dev, func)
+            },
             register: 0x20,
             kind: PciFixedBarType::Io,
             base: u64::from(self.config.smbus_base),
@@ -613,9 +614,8 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
 
     fn program_subsystem_id(&self, device: ecam::EcamDevice, id: u32) -> bool {
         // EHCI subsystem IDs are write-protected behind ACCESS_CNTL.
-        if (device.dev(), device.func()) == regs::dev::EHCI1
-            || (device.dev(), device.func()) == regs::dev::EHCI2
-        {
+        let devfn = fstart_pci::devfn(device.dev(), device.func());
+        if devfn == regs::dev::EHCI1 || devfn == regs::dev::EHCI2 {
             return ramstage::with_ehci_unlocked(device, || device.set_subsystem(id));
         }
         device.set_subsystem(id)

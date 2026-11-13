@@ -307,8 +307,8 @@ impl IntelIbexPeak {
     }
 
     /// coreboot `usb_ehci_init()`.
-    pub(super) fn ehci_init(&self, (dev, func): (u8, u8)) {
-        let ehci = EcamDevice::new(0, dev, func);
+    pub(super) fn ehci_init(&self, devfn: u8) {
+        let ehci = EcamDevice::from_devfn(0, devfn);
         if !ehci.is_present() {
             return;
         }
@@ -335,7 +335,7 @@ impl IntelIbexPeak {
 
     /// coreboot `azalia_init()`.
     pub(super) fn hda_init(&self, config: &HdaConfig) {
-        let (dev, func) = super::regs::dev::HDA;
+        let (dev, func) = fstart_pci::devfn_parts(super::regs::dev::HDA);
         let hda = EcamDevice::new(0, dev, func);
         if !hda.is_present() {
             return;
@@ -389,7 +389,7 @@ impl IntelIbexPeak {
 
     /// coreboot `pci_init()` of the PCI-to-PCI bridge (00:1e.0).
     pub(super) fn pci_bridge_init(&self) {
-        let (dev, func) = super::regs::dev::PCI_BRIDGE;
+        let (dev, func) = fstart_pci::devfn_parts(super::regs::dev::PCI_BRIDGE);
         let bridge = EcamDevice::new(0, dev, func);
         if !bridge.is_present() {
             return;
@@ -414,7 +414,7 @@ impl IntelIbexPeak {
     /// coreboot `sata_enable()`: the controller mode before allocation, so
     /// the BARs the mode exposes are sized.
     pub(super) fn sata_enable(&self, config: &SataConfig) {
-        let (dev, func) = super::regs::dev::SATA1;
+        let (dev, func) = fstart_pci::devfn_parts(super::regs::dev::SATA1);
         let sata = EcamDevice::new(0, dev, func);
         if !sata.is_present() {
             return;
@@ -425,7 +425,7 @@ impl IntelIbexPeak {
     /// coreboot `sata_init()`.
     pub(super) fn sata_init(&self, config: &SataConfig) {
         const IDE_DECODE_ENABLE: u16 = 1 << 15;
-        let (dev, func) = super::regs::dev::SATA1;
+        let (dev, func) = fstart_pci::devfn_parts(super::regs::dev::SATA1);
         let sata = EcamDevice::new(0, dev, func);
         if !sata.is_present() {
             return;
@@ -492,7 +492,7 @@ impl IntelIbexPeak {
 
     /// coreboot `pch_smbus_init()`.
     pub(super) fn smbus_init(&self) {
-        let (dev, func) = super::regs::dev::SMBUS;
+        let (dev, func) = fstart_pci::devfn_parts(super::regs::dev::SMBUS);
         let smbus = EcamDevice::new(0, dev, func);
         if !smbus.is_present() {
             return;
@@ -506,7 +506,7 @@ impl IntelIbexPeak {
 
     /// coreboot `thermal_init()`.
     pub(super) fn thermal_init(&self) {
-        let (dev, func) = super::regs::dev::THERMAL;
+        let (dev, func) = fstart_pci::devfn_parts(super::regs::dev::THERMAL);
         let thermal = EcamDevice::new(0, dev, func);
         let Some(base) = thermal.memory_bar(0x10) else {
             return;

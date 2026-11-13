@@ -9,14 +9,17 @@
 extern crate alloc;
 
 use super::{IntelIbexPeak, PchFunction};
+use crate::ibexpeak::regs::dev;
 use crate::{IntelSouthbridgeDriver, namespace::SouthbridgeAcpi};
 use alloc::vec::Vec;
 use fstart_acpi::AcpiPath;
 use fstart_acpi::fadt::{Flags, PmProfile};
+use fstart_acpi::pci_root::adr;
 use fstart_acpi::platform::{
     HpetConfig, IoApicConfig, IsoConfig, X86Config, X86Fadt, X86PlatformProvider,
 };
 use fstart_acpi_macros::acpi_dsl;
+
 use fstart_pci::ecam::EcamDevice;
 
 const LAPIC_BASE: u64 = 0xfee0_0000;
@@ -231,7 +234,8 @@ fn pcie_hotplug_aml(hotplug: &[bool; 8], pci_root: &AcpiPath) -> Vec<u8> {
 
 /// An EHCI controller behind its rate-matching hub (coreboot
 /// `bd82x6x/acpi/usb.asl`): `HUB7.URMH.PRTn`, the hub itself not visible.
-fn ehci_rmh_node(name: &str, adr: u32, ports: u8) -> Vec<u8> {
+fn ehci_rmh_node(name: &str, devfn: u8, ports: u8) -> Vec<u8> {
+    let adr = adr(devfn);
     let mut rmh: Vec<u8> = acpi_dsl! {
         Name("_ADR", 1u32);
         Name("_UPC", Package(0xFFu32, 0xFFu32, 0u32, 0u32));
@@ -332,33 +336,36 @@ impl SouthbridgeAcpi for IntelIbexPeak {
             self.root_bus_routes().into_iter(),
         ));
         // HDEF: wakes on GPE 13 from S4 (bd82x6x audio.asl).
-        body.extend_from_slice(&acpi_dsl! {
+        let hda_adr = adr(dev::HDA);
+        body.extend(Vec::<u8>::from(acpi_dsl! {
             Device("HDEF") {
-                Name("_ADR", 0x001B0000u32);
+                Name("_ADR", #{dword hda_adr});
                 Name("_PRW", Package(13u32, 4u32));
             }
-        });
+        }));
         for port in 0..8u8 {
             if !config.enabled(PchFunction::PcieRootPort(port)) {
                 continue;
             }
             body.extend(crate::southbridge::acpi::pcie_root_port(
                 &alloc::format!("RP0{}", port + 1),
-                0x001c_0000 | u32::from(port),
+                fstart_pci::devfn(crate::ibexpeak::regs::dev::PCIE, port),
                 port + 1,
                 true,
             ));
         }
-        body.extend(ehci_rmh_node("EHC1", 0x001d_0000, 8));
-        body.extend(ehci_rmh_node("EHC2", 0x001a_0000, 6));
-        body.extend_from_slice(&acpi_dsl! {
-            Device("SATA") { Name("_ADR", 0x001F0002u32); }
-            Device("SBUS") { Name("_ADR", 0x001F0003u32); }
-        });
+        body.extend(ehci_rmh_node("EHC1", dev::EHCI1, 8));
+        body.extend(ehci_rmh_node("EHC2", dev::EHCI2, 6));
+        let (sata_adr, smbus_adr) = (adr(dev::SATA1), adr(dev::SMBUS));
+        body.extend(Vec::<u8>::from(acpi_dsl! {
+            Device("SATA") { Name("_ADR", #{dword sata_adr}); }
+            Device("SBUS") { Name("_ADR", #{dword smbus_adr}); }
+        }));
 
         // lpc.asl.
+        let lpc_adr = adr(dev::LPC);
         let mut lpcb: Vec<u8> = acpi_dsl! {
-            Name("_ADR", 0x001F0000u32);
+            Name("_ADR", #{dword lpc_adr});
             OperationRegion("LPC0", PciConfig, 0x00u32, 0x100u32);
             Field("LPC0", AnyAcc, NoLock, Preserve) {
                 Offset(0x40),
@@ -436,7 +443,7 @@ mod tests {
 
     #[test]
     fn ehci_hides_the_rate_matching_hub() {
-        let aml = ehci_rmh_node("EHC2", 0x001a_0000, 6);
+        let aml = ehci_rmh_node("EHC2", dev::EHCI2, 6);
         assert_eq!(count(&aml, b"URMH"), 1);
         assert_eq!(count(&aml, b"PRT5"), 1);
         assert_eq!(count(&aml, b"PRT6"), 0);
