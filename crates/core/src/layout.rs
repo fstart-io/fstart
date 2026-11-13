@@ -3,7 +3,7 @@
 //! This describes pre-link physical reservations, not actual ELF section sizes,
 //! an image directory, a memory-discovery result or an authentication authority.
 //! The host encoder lives in `fstart-image-build`; firmware borrows these bytes
-//! directly from initialized read-only storage. No native struct is a wire ABI.
+//! directly from initialized read-only storage. `Header`/`RegionRecord` below are zerocopy mirrors of the wire bytes; the public [`Region`] is not a wire ABI.
 //!
 //! Version 1 uses little-endian scalars:
 //! - 16-byte header: magic `[u8; 4]`, version `u16`, encoded length `u16`,
@@ -17,12 +17,38 @@
 //! are the host resolver's responsibility. Actual RAM availability is checked
 //! after memory discovery. The wire parser checks structure, not those policies.
 
+use zerocopy::byteorder::{LE, U16, U64};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+
 pub const MAGIC: [u8; 4] = *b"FSLY";
 pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 16;
 pub const REGION_LEN: usize = 24;
 pub const MAX_REGIONS: usize = 32;
 pub const MAX_ENCODED_LEN: usize = HEADER_LEN + MAX_REGIONS * REGION_LEN;
+
+#[derive(Debug, FromBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct Header {
+    magic: [u8; 4],
+    version: U16<LE>,
+    len: U16<LE>,
+    stage: U16<LE>,
+    count: U16<LE>,
+    reserved: [u8; 4],
+}
+
+#[derive(Debug, FromBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct RegionRecord {
+    kind: U16<LE>,
+    reserved: [u8; 6],
+    base: U64<LE>,
+    size: U64<LE>,
+}
+
+const _: () = assert!(core::mem::size_of::<Header>() == HEADER_LEN);
+const _: () = assert!(core::mem::size_of::<RegionRecord>() == REGION_LEN);
 
 /// Roles refer to reserved physical capacity, never predicted file extents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +144,8 @@ impl core::fmt::Display for Error {
 #[derive(Debug, Clone, Copy)]
 pub struct Layout<'a> {
     bytes: &'a [u8],
+    header: &'a Header,
+    records: &'a [RegionRecord],
 }
 
 impl<'a> Layout<'a> {
@@ -127,33 +155,40 @@ impl<'a> Layout<'a> {
         if !(HEADER_LEN..=MAX_ENCODED_LEN).contains(&bytes.len()) {
             return Err(Error::InvalidLength);
         }
-        if bytes[..4] != MAGIC {
+        let (header, rest) = Header::ref_from_prefix(bytes).map_err(|_| Error::InvalidLength)?;
+        if header.magic != MAGIC {
             return Err(Error::BadMagic);
         }
-        if u16_at(bytes, 4) != VERSION {
+        if header.version.get() != VERSION {
             return Err(Error::UnsupportedVersion);
         }
-        if usize::from(u16_at(bytes, 6)) != bytes.len() {
+        if usize::from(header.len.get()) != bytes.len() {
             return Err(Error::InvalidLength);
         }
-        let count = usize::from(u16_at(bytes, 10));
+        let count = usize::from(header.count.get());
         if !(1..=MAX_REGIONS).contains(&count) {
             return Err(Error::InvalidCount);
         }
         if bytes.len() != HEADER_LEN + count * REGION_LEN {
             return Err(Error::InvalidLength);
         }
-        if bytes[12..HEADER_LEN].iter().any(|&b| b != 0) {
+        if header.reserved != [0; 4] {
             return Err(Error::ReservedBits);
         }
 
+        let records = <[RegionRecord]>::ref_from_bytes_with_elems(rest, count)
+            .map_err(|_| Error::InvalidLength)?;
         let mut seen = 0u32;
-        for record in bytes[HEADER_LEN..].as_chunks::<REGION_LEN>().0 {
-            let kind = RegionKind::decode(u16_at(record, 0))?;
-            if record[2..8].iter().any(|&b| b != 0) {
+        for record in records {
+            let kind = RegionKind::decode(record.kind.get())?;
+            if record.reserved != [0; 6] {
                 return Err(Error::ReservedBits);
             }
-            let region = decode_region(record, kind);
+            let region = Region {
+                kind,
+                base: record.base.get(),
+                size: record.size.get(),
+            };
             if region.size == 0 || region.end().is_none() {
                 return Err(Error::InvalidRange);
             }
@@ -166,12 +201,16 @@ impl<'a> Layout<'a> {
                 seen |= bit;
             }
         }
-        Ok(Self { bytes })
+        Ok(Self {
+            bytes,
+            header,
+            records,
+        })
     }
 
     /// Zero-based identity within the resolved build's stage list.
     pub fn stage_index(self) -> u16 {
-        u16_at(self.bytes, 8)
+        self.header.stage.get()
     }
 
     pub fn as_bytes(self) -> &'a [u8] {
@@ -179,15 +218,15 @@ impl<'a> Layout<'a> {
     }
 
     pub fn regions(self) -> impl ExactSizeIterator<Item = Region> + 'a {
-        self.bytes[HEADER_LEN..]
-            .as_chunks::<REGION_LEN>()
-            .0
-            .iter()
-            .map(|record| {
-                // parse() validated every record; the borrowed bytes are immutable.
-                let kind = RegionKind::decode(u16_at(record, 0)).unwrap();
-                decode_region(record, kind)
-            })
+        self.records.iter().map(|record| {
+            // parse() validated every record; the borrowed bytes are immutable.
+            let kind = RegionKind::decode(record.kind.get()).unwrap();
+            Region {
+                kind,
+                base: record.base.get(),
+                size: record.size.get(),
+            }
+        })
     }
 
     /// Find a singleton role, or the first `Reserved` entry. Use `regions()`
@@ -195,22 +234,6 @@ impl<'a> Layout<'a> {
     pub fn region(self, kind: RegionKind) -> Option<Region> {
         self.regions().find(|region| region.kind == kind)
     }
-}
-
-fn decode_region(record: &[u8], kind: RegionKind) -> Region {
-    Region {
-        kind,
-        base: u64_at(record, 8),
-        size: u64_at(record, 16),
-    }
-}
-
-fn u16_at(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
-}
-
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
 
 #[cfg(test)]
