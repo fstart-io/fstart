@@ -8,10 +8,13 @@
 //! `thinkpad.asl`) using the [`fstart_acpi_macros::acpi_dsl!`] macro.
 
 use super::ec::{Ec, EcPorts, EcRegister};
+use embedded_hal::digital::{InputPin, PinState};
 use fstart_core::typed::{Io8, IoAddr};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u8,
+    /// CONFIG0, EC RAM 0x00, 8 bits: event and hotkey reporting, thermal
+    /// control.
     pub CONFIG0 [
         EVENTS_ENABLE OFFSET(1) NUMBITS(1) [],
         HOTKEY_ENABLE OFFSET(2) NUMBITS(1) [],
@@ -20,6 +23,7 @@ register_bitfields![u8,
         SMM_ENABLE OFFSET(5) NUMBITS(1) [],
         THERMAL_CONTROL OFFSET(7) NUMBITS(1) []
     ],
+    /// CONFIG1, EC RAM 0x01, 8 bits.
     pub CONFIG1 [
         BACKLIGHT_LID_CONTROL OFFSET(0) NUMBITS(1) [],
         ILLUMINATION OFFSET(2) NUMBITS(2) [
@@ -30,20 +34,23 @@ register_bitfields![u8,
         ],
         ULTRABAY_POWER OFFSET(5) NUMBITS(1) []
     ],
+    /// CONFIG2, EC RAM 0x02, 8 bits: the dock's USB power and speaker.
     pub CONFIG2 [
         DOCK_USB_POWER OFFSET(0) NUMBITS(1) [],
         DOCK_SPEAKER_MUTE OFFSET(1) NUMBITS(1) [],
         DOCK_SPEAKER_MUTE_POLARITY OFFSET(2) NUMBITS(1) []
     ],
+    /// CONFIG3, EC RAM 0x03, 8 bits.
     pub CONFIG3 [
         DOCK_LATCH OFFSET(2) NUMBITS(1) [],
         STICKY_FNLOCK_LED OFFSET(4) NUMBITS(1) []
     ],
-    // Stock BIOS uses bits 2-3 in 0x09 for F1-F12 primary mode.
+    /// CONFIG9, EC RAM 0x09, 8 bits: F1-F12 primary mode.
     pub CONFIG9 [
         F1_TO_F12_PRIMARY OFFSET(2) NUMBITS(1) [],
         F1_TO_F12_MEDIA OFFSET(3) NUMBITS(1) []
     ],
+    /// LED control, EC RAM 0x0c, 8 bits: one LED and its mode per write.
     pub LED_CONTROL [
         SELECTOR OFFSET(0) NUMBITS(4) [
             Power = 0,
@@ -65,6 +72,7 @@ register_bitfields![u8,
             Blink = 6
         ]
     ],
+    /// TrackPoint control, EC RAM 0x0b, 8 bits.
     pub TRACKPOINT_CONTROL [
         MODE OFFSET(0) NUMBITS(2) [
             Auto = 1,
@@ -73,6 +81,7 @@ register_bitfields![u8,
         ]
     ],
     // Speed levels and disengaged/automatic modes match Linux thinkpad_acpi.
+    /// Fan control, EC RAM 0x2f, 8 bits.
     pub FAN_CONTROL [
         LEVEL OFFSET(0) NUMBITS(3) [
             Stop = 0,
@@ -87,33 +96,45 @@ register_bitfields![u8,
         DISENGAGED OFFSET(6) NUMBITS(1) [],
         AUTO OFFSET(7) NUMBITS(1) []
     ],
+    /// Volume control, EC RAM 0x30, 8 bits.
     pub VOLUME_CONTROL [
         LEVEL OFFSET(0) NUMBITS(4) [],
         MUTE OFFSET(6) NUMBITS(1) []
     ],
     // Beep-enable bytes are board policy; only the low-battery event is
     // documented by coreboot. Do not invent names for the other enable bits.
+    /// Beep enable 0, EC RAM 0x04, 8 bits.
     pub SOUND_ENABLE0 [
         EVENTS OFFSET(0) NUMBITS(8) [],
         LOW_BATTERY OFFSET(1) NUMBITS(1) []
     ],
+    /// Beep enable 1, EC RAM 0x05, 8 bits.
     pub SOUND_ENABLE1 [EVENTS OFFSET(0) NUMBITS(8) []],
+    /// Beep command, EC RAM 0x06, 8 bits.
     pub SOUND_COMMAND [TONE OFFSET(0) NUMBITS(8) [Silence = 0]],
+    /// Beep repeat, EC RAM 0x07, 8 bits.
     pub SOUND_REPEAT [COUNT OFFSET(0) NUMBITS(8) []],
+    /// Event attention, EC RAM 0x80, 8 bits.
     pub EVENT_ATTENTION [COMMAND OFFSET(0) NUMBITS(8) [DiscardAndEnable = 1]],
+    /// Keyboard backlight status, EC RAM 0x34, 8 bits.
     pub KB_BACKLIGHT_STATUS [SUPPORTED OFFSET(6) NUMBITS(1) []],
+    /// Radio control, EC RAM 0x3a, 8 bits.
     pub RADIO_CONTROL [
         AUDIO_MUTE OFFSET(0) NUMBITS(1) [],
         BLUETOOTH_ENABLE OFFSET(4) NUMBITS(1) [],
         WLAN_ENABLE OFFSET(5) NUMBITS(1) [],
         WWAN_ENABLE OFFSET(6) NUMBITS(1) []
     ],
+    /// UWB control, EC RAM 0x31, 8 bits.
     pub UWB_CONTROL [ENABLE OFFSET(2) NUMBITS(1) []],
+    /// USB control, EC RAM 0x3b, 8 bits: USB power and the ThinkLight.
     pub USB_CONTROL [
         THINKLIGHT OFFSET(1) NUMBITS(1) [],
         POWER_ENABLE OFFSET(4) NUMBITS(1) []
     ],
+    /// Fn control, EC RAM 0xce, 8 bits.
     pub FN_CONTROL [SWAP_CTRL OFFSET(4) NUMBITS(1) []],
+    /// Always-on USB, EC RAM 0x0d, 8 bits.
     pub ALWAYS_ON_CONTROL [
         ENABLE OFFSET(0) NUMBITS(1) [],
         AC_ONLY OFFSET(2) NUMBITS(2) [
@@ -126,13 +147,26 @@ register_bitfields![u8,
             High = 2
         ]
     ],
+    /// Status 1, EC RAM 0x47, 8 bits.
     pub STATUS1 [
         ULTRABAY_ABSENT OFFSET(0) NUMBITS(1) [],
         ULTRABAY_OFF OFFSET(2) NUMBITS(1) []
     ],
-    // Lenovo EC firmware function specification version.
+    /// Function specification minor version, EC RAM 0xeb, 8 bits.
     pub FUNC_SPEC_MINOR [VERSION OFFSET(0) NUMBITS(8) []],
-    pub FUNC_SPEC_MAJOR [VERSION OFFSET(0) NUMBITS(8) []]
+    /// Function specification major version, EC RAM 0xef, 8 bits.
+    pub FUNC_SPEC_MAJOR [VERSION OFFSET(0) NUMBITS(8) []],
+    /// Dock link 2, EC RAM 0x1a, 8 bits: the second dock link (ACPI
+    /// `DKR2`).
+    pub DOCK_LINK2 [CONNECT OFFSET(0) NUMBITS(1) []],
+    /// Wake control, EC RAM 0x32, 8 bits: the wake sources the OS armed.
+    pub WAKE_CONTROL [
+        EVENTS OFFSET(2) NUMBITS(1) [],
+        LID OFFSET(4) NUMBITS(1) []
+    ],
+    /// Dock link 3, EC RAM 0xfe, 8 bits: the third dock link (ACPI
+    /// `DKR3`).
+    pub DOCK_LINK3 [CONNECT OFFSET(4) NUMBITS(1) []]
 ];
 
 // -----------------------------------------------------------------------
@@ -162,9 +196,11 @@ ec_registers! {
     TRACKPOINT_CONTROL => 0x0b,
     LED_CONTROL => 0x0c,
     ALWAYS_ON_CONTROL => 0x0d,
+    DOCK_LINK2 => 0x1a,
     FAN_CONTROL => 0x2f,
     VOLUME_CONTROL => 0x30,
     UWB_CONTROL => 0x31,
+    WAKE_CONTROL => 0x32,
     KB_BACKLIGHT_STATUS => 0x34,
     RADIO_CONTROL => 0x3a,
     USB_CONTROL => 0x3b,
@@ -173,6 +209,7 @@ ec_registers! {
     FN_CONTROL => 0xce,
     FUNC_SPEC_MINOR => 0xeb,
     FUNC_SPEC_MAJOR => 0xef,
+    DOCK_LINK3 => 0xfe,
 }
 
 /// Eight ASCII bytes of EC firmware build id, e.g. "7MHT24WW".
@@ -268,31 +305,31 @@ impl H8 {
         ok
     }
 
-    /// Turn the hotkey/event reporting on and enable thermal management,
-    /// mirroring coreboot's `h8_enable()` CONFIG0 programming.
-    pub fn init_config0(&self, board_config0: u8) -> bool {
-        let reg8 = board_config0 | H8_CONFIG0_SMM_H8_ENABLE | H8_CONFIG0_TC_ENABLE;
-        self.channel.write_register::<CONFIG0::Register>(reg8) && self.enable_hotkey(true)
+    fn program_config0(&self, config0: u8) -> bool {
+        // The SMM window and thermal management are always on.
+        self.channel.write_register::<CONFIG0::Register>(
+            config0 | H8_CONFIG0_SMM_H8_ENABLE | H8_CONFIG0_TC_ENABLE,
+        )
     }
 
-    /// Program CONFIG1 illumination, CONFIG2/3, reset power LED and beeper,
-    /// and return the fan to EC automatic control (coreboot `h8_enable`).
-    pub fn init_controls(
-        &self,
-        config: [u8; 3],
-        illumination: Option<H8Illumination>,
-        beep_masks: [u8; 2],
-    ) -> bool {
-        let config1 = illumination.map_or(config[0], |mode| mode.config1(config[0]));
+    fn program_controls(&self, [config1, config2, config3]: [u8; 3]) -> bool {
         [
             self.channel.write_register::<CONFIG1::Register>(config1),
-            self.channel.write_register::<CONFIG2::Register>(config[1]),
-            self.channel.write_register::<CONFIG3::Register>(config[2]),
+            self.channel.write_register::<CONFIG2::Register>(config2),
+            self.channel.write_register::<CONFIG3::Register>(config3),
+            // Without this a warm reboot leaves the LEDs off.
             self.set_led(H8Led::Power, H8LedMode::On),
+        ]
+        .into_iter()
+        .all(core::convert::identity)
+    }
+
+    fn program_beeper_and_fan(&self, [beep0, beep1]: [u8; 2]) -> bool {
+        [
             self.channel
-                .write_register::<SOUND_ENABLE0::Register>(beep_masks[0]),
+                .write_register::<SOUND_ENABLE0::Register>(beep0),
             self.channel
-                .write_register::<SOUND_ENABLE1::Register>(beep_masks[1]),
+                .write_register::<SOUND_ENABLE1::Register>(beep1),
             self.channel
                 .write_register::<SOUND_REPEAT::Register>(SOUND_REPEAT::COUNT.val(0).value),
             self.channel
@@ -304,72 +341,45 @@ impl H8 {
         .all(core::convert::identity)
     }
 
-    /// Shared X6/T6 startup policy. Families supply their event masks and
-    /// Bluetooth presence; dock latches/LEDs remain family-specific. Execute
-    /// every operation even if an earlier EC transaction was not acknowledged.
+    /// coreboot `h8_enable()`: the board's devicetree registers
+    /// ([`H8Config::config`], beeper and event masks), then the radios the
+    /// board has, USB power, the Fn keys, charging and audio from the user's
+    /// `options`. `bluetooth` is whether the Bluetooth card is fitted
+    /// ([`H8Config::bdc_installed`]). The OS restores its own volume on
+    /// resume.
     ///
-    /// The H8 is also the PC/AT keyboard controller; it is left quiet for
-    /// the OS.
-    pub fn init_legacy_thinkpad(
+    /// Every write is attempted, also after one is not acknowledged; returns
+    /// whether all were. The H8 is also the PC/AT keyboard controller; it is
+    /// left quiet for the OS.
+    pub fn enable(
         &self,
-        events: &[u8; 16],
+        config: &H8Config,
         bluetooth: bool,
         options: &crate::options::Options,
         resume: bool,
     ) -> bool {
-        self.init_thinkpad(0x05, events, bluetooth, false, options, resume)
-    }
-
-    /// coreboot `h8_enable()` for a ThinkPad: CONFIG0-3 with the ThinkLight,
-    /// event masks, radios (Bluetooth if the card is fitted, UWB where the
-    /// board has the switch), USB power, Fn keys, charging and audio from the
-    /// user's `options`. `config1` is the devicetree `config1`. The OS
-    /// restores its own volume on resume.
-    pub fn init_thinkpad(
-        &self,
-        config1: u8,
-        events: &[u8; 16],
-        bluetooth: bool,
-        uwb: bool,
-        options: &crate::options::Options,
-        resume: bool,
-    ) -> bool {
-        self.init_thinkpad_controls(
-            [config1, 0xa0, 0x01],
-            events,
-            bluetooth,
-            uwb,
-            options,
-            resume,
-        )
-    }
-
-    /// Like [`Self::init_thinkpad`], with explicit `[config1, config2, config3]`
-    /// control bytes (e.g. ThinkPad R500 uses `[0x05, 0xa0, 0x40]`).
-    pub fn init_thinkpad_controls(
-        &self,
-        controls: [u8; 3],
-        events: &[u8; 16],
-        bluetooth: bool,
-        uwb: bool,
-        options: &crate::options::Options,
-        resume: bool,
-    ) -> bool {
+        let [config0, config1, config2, config3] = config.config;
+        let config1 = config
+            .illumination()
+            .map_or(config1, |mode| mode.config1(config1));
+        let beep_masks = if config.has_power_management_beeps {
+            options.beep_masks(config.beep_masks)
+        } else {
+            config.beep_masks
+        };
         self.clear_out_queue();
         let acknowledged = [
-            self.init_config0(H8_CONFIG0_EVENTS_ENABLE),
-            self.init_controls(
-                controls,
-                Some(H8Illumination::Thinklight),
-                options.beep_masks([0xfe, 0x96]),
-            ),
-            self.program_event_masks(events),
+            self.program_config0(config0),
+            self.program_controls([config1, config2, config3]),
+            !config.has_led_logo || self.set_led(H8Led::Logo, H8LedMode::On),
+            self.program_beeper_and_fan(beep_masks),
+            self.program_event_masks(&config.event_masks),
             self.trackpoint_enable(true),
             self.usb_power_enable(true),
             self.wlan_enable(options.wlan),
             self.bluetooth_enable(bluetooth && options.bluetooth),
-            self.wwan_enable(options.wwan),
-            !uwb || self.uwb_enable(options.uwb),
+            self.wwan_enable(config.has_wwan && options.wwan),
+            !config.has_uwb || self.uwb_enable(options.uwb),
             self.usb_always_on(options.usb_always_on),
             self.fn_ctrl_swap(options.fn_ctrl_swap),
             self.sticky_fn(options.sticky_fn),
@@ -387,14 +397,9 @@ impl H8 {
     /// explicit CONFIG0..3, board beep masks (without legacy power-management
     /// beep overrides), optional lid-logo LED, runtime keyboard-backlight
     /// probing, Fn-lock LED, and F1-F12 primary mode.
-    #[allow(clippy::too_many_arguments)]
     pub fn init_modern_thinkpad(
         &self,
         cfg: &H8Config,
-        config0: u8,
-        controls: [u8; 3],
-        beep_masks: [u8; 2],
-        events: &[u8; 16],
         options: &crate::options::Options,
     ) -> (bool, bool) {
         self.clear_out_queue();
@@ -407,11 +412,14 @@ impl H8 {
                 (cfg.has_thinklight || cfg.has_keyboard_backlight).then_some(H8Illumination::None)
             }
         };
+        let [config0, config1, config2, config3] = cfg.config;
+        let config1 = illumination.map_or(config1, |mode| mode.config1(config1));
         let acknowledged = [
-            self.init_config0(config0),
-            self.init_controls(controls, illumination, beep_masks),
+            self.program_config0(config0) && self.enable_hotkey(true),
+            self.program_controls([config1, config2, config3]),
+            self.program_beeper_and_fan(cfg.beep_masks),
             !cfg.has_led_logo || self.set_led(H8Led::Logo, H8LedMode::On),
-            self.program_event_masks(events),
+            self.program_event_masks(&cfg.event_masks),
             self.usb_always_on(options.usb_always_on),
             self.wlan_enable(options.wlan),
             self.trackpoint_enable(options.trackpoint),
@@ -754,11 +762,26 @@ pub enum H8BatteryThresholdBackend {
     Registers24 { bit7: bool },
 }
 
-/// Board-declared H8 capabilities and ACPI knobs (coreboot `chip.h` +
-/// Kconfig selections).
+/// Board-declared H8 registers, capabilities and ACPI knobs (coreboot
+/// `chip.h` + Kconfig selections).
 #[derive(Debug, Clone, Copy)]
 pub struct H8Config {
     pub resources: H8Resources,
+    /// devicetree `config0`..`config3`. [`H8::enable`] always adds the SMM
+    /// window and thermal management to CONFIG0, and the board's lights
+    /// ([`Self::illumination`]) to CONFIG1.
+    pub config: [u8; 4],
+    /// devicetree `beepmask0`/`beepmask1`.
+    pub beep_masks: [u8; 2],
+    /// devicetree `event0_enable`..`eventf_enable`.
+    pub event_masks: [u8; EVENT_ENABLE_REGISTERS],
+    /// `has_power_management_beeps`: the user's beeper options apply over
+    /// [`Self::beep_masks`].
+    pub has_power_management_beeps: bool,
+    /// devicetree `bdc_gpio_lvl`: what the board's Bluetooth-detect GPIO
+    /// reads with the daughter card fitted. `None`: the board cannot detect
+    /// the card and it is assumed (no `H8_HAS_BDC_GPIO_DETECTION`).
+    pub bdc_gpio_level: Option<PinState>,
     /// EC query GPE used for `Name(_GPE)` (X61: 0x12).
     pub ec_gpe: u8,
     pub has_bluetooth: bool,
@@ -805,6 +828,11 @@ impl H8Config {
     pub const fn new(resources: H8Resources, ec_gpe: u8, hkey_eisaid: &'static str) -> Self {
         Self {
             resources,
+            config: [0; 4],
+            beep_masks: [0; 2],
+            event_masks: [0; EVENT_ENABLE_REGISTERS],
+            has_power_management_beeps: false,
+            bdc_gpio_level: None,
             ec_gpe,
             has_bluetooth: false,
             has_wwan: false,
@@ -827,6 +855,28 @@ impl H8Config {
             passive_temp_celsius: 0,
         }
     }
+
+    /// coreboot `h8_has_bdc()`: whether the Bluetooth daughter card is
+    /// fitted, from the board's detect pin. A pin that cannot be read means
+    /// no card.
+    pub fn bdc_installed(&self, pin: &mut impl InputPin) -> bool {
+        match self.bdc_gpio_level {
+            None => true,
+            Some(PinState::High) => pin.is_high().unwrap_or(false),
+            Some(PinState::Low) => pin.is_low().unwrap_or(false),
+        }
+    }
+
+    /// The CONFIG1 illumination the board's lights select, if it has any.
+    #[must_use]
+    pub const fn illumination(&self) -> Option<H8Illumination> {
+        match (self.has_thinklight, self.has_keyboard_backlight) {
+            (false, false) => None,
+            (true, false) => Some(H8Illumination::Thinklight),
+            (false, true) => Some(H8Illumination::Keyboard),
+            (true, true) => Some(H8Illumination::Both),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -838,6 +888,34 @@ mod tests {
         assert_eq!(H8Illumination::Thinklight.config1(0x05), 0x09);
         assert_eq!(H8Illumination::Keyboard.config1(0xf3), 0xf7);
         assert_eq!(H8Illumination::None.config1(0x05), 0x0d);
+    }
+
+    #[test]
+    fn illumination_follows_the_lights_the_board_has() {
+        let config = H8Config::new(H8Resources::new(EcPorts::new(0, 0), 0, 0), 0, "");
+        assert!(config.illumination().is_none());
+        let thinklight = H8Config {
+            has_thinklight: true,
+            ..config
+        };
+        assert!(matches!(
+            thinklight.illumination(),
+            Some(H8Illumination::Thinklight)
+        ));
+    }
+
+    #[test]
+    fn bluetooth_card_detection_follows_the_devicetree_level() {
+        use crate::test_pin::Pin;
+        let assumed = H8Config::new(H8Resources::new(EcPorts::new(0, 0), 0, 0), 0, "");
+        assert!(assumed.bdc_installed(&mut Pin(Err(()))));
+        let active_low = H8Config {
+            bdc_gpio_level: Some(PinState::Low),
+            ..assumed
+        };
+        assert!(active_low.bdc_installed(&mut Pin(Ok(false))));
+        assert!(!active_low.bdc_installed(&mut Pin(Ok(true))));
+        assert!(!active_low.bdc_installed(&mut Pin(Err(()))));
     }
 
     #[test]

@@ -47,6 +47,13 @@ const PMH7_DATA: u16 = 0x0e;
 const REG_ID: u8 = 0xc2;
 const REG_REV: u8 = 0xc3;
 
+/// coreboot `ec_lenovo_pmh7_config`: the devicetree switches.
+#[derive(Debug, Clone, Copy)]
+pub struct Pmh7Config {
+    pub backlight_enable: bool,
+    pub dock_event_enable: bool,
+}
+
 /// An initialized PMH7 hub handle.
 #[derive(Debug, Clone, Copy)]
 pub struct Pmh7 {
@@ -91,6 +98,16 @@ impl Pmh7 {
             return None;
         }
         Some((id, self.read_register(REG_REV)))
+    }
+
+    /// coreboot `enable_dev()`: the board's switches, then the pointing
+    /// devices from the user's `options`.
+    pub fn enable(&self, config: &Pmh7Config, options: &crate::options::Options) {
+        self.backlight_enable(config.backlight_enable);
+        self.dock_event_enable(config.dock_event_enable);
+        self.touchpad_enable(options.touchpad);
+        self.trackpoint_enable(options.trackpoint);
+        self.log_identity();
     }
 
     pub fn backlight_enable(&self, on: bool) {

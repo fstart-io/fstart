@@ -163,6 +163,10 @@ pub const T400_H8: fstart_driver_lenovo::h8::H8Config = {
         h8::{H8BatteryThresholdBackend, H8Config, H8Resources},
     };
     H8Config {
+        config: crate::ec::CONTROLS,
+        beep_masks: [0xfe, 0x96],
+        event_masks: crate::ec::EVENT_MASKS,
+        has_power_management_beeps: true,
         has_bluetooth: true,
         has_wwan: true,
         has_uwb: true,

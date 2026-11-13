@@ -1113,6 +1113,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
@@ -1123,6 +1124,7 @@ dependencies = [
  "fstart-options",
  "fstart-pci",
  "fstart-platform-intel",
+ "tock-registers",
  "ufmt",
 ]
 
@@ -1132,6 +1134,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
@@ -1153,6 +1156,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",

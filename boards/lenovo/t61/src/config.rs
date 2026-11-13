@@ -62,7 +62,12 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
         .with_memory_cache();
 }
 
-pub const T61_H8: fstart_driver_lenovo::h8::H8Config = fstart_driver_lenovo::t6::h8_config(0x12);
+pub const T61_H8: fstart_driver_lenovo::h8::H8Config = {
+    let mut h8 = fstart_driver_lenovo::t6::h8_config(0x12);
+    h8.event_masks[5] = 0x3c;
+    h8.event_masks[12] = 0xff;
+    h8
+};
 
 pub const T61_PIRQ: PirqRouting = {
     const SLOTS: [pirq::SlotPins; 7] = {

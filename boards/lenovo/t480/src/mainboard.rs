@@ -18,6 +18,14 @@ pub const PMH7_BASE: u16 = 0x15e0;
 /// `sklkbl_thinkpad/{Kconfig,devicetree.cb,acpi/ec.asl}`.
 pub const H8_CONFIG: H8Config = H8Config {
     resources: H8Resources::new(EcPorts::new(0x0062, 0x0066), 0x1600, PMH7_BASE),
+    config: [0xa6, 0x0d, 0xa8, 0xc4],
+    beep_masks: [0x00, 0x86],
+    event_masks: [
+        0x00, 0x00, 0xff, 0xff, 0xd0, 0x3c, 0x00, 0x01, 0x7b, 0xff, 0x00, 0x00, 0xff, 0xff, 0x9d,
+        0x00,
+    ],
+    has_power_management_beeps: false,
+    bdc_gpio_level: None,
     ec_gpe: 22,
     has_bluetooth: true,
     has_wwan: true,
@@ -39,13 +47,6 @@ pub const H8_CONFIG: H8Config = H8Config {
     critical_temp_celsius: 100,
     passive_temp_celsius: 90,
 };
-
-const H8_CONFIG0: u8 = 0xa6;
-const H8_CONTROLS: [u8; 3] = [0x0d, 0xa8, 0xc4];
-const H8_BEEP_MASKS: [u8; 2] = [0x00, 0x86];
-const H8_EVENTS: [u8; 16] = [
-    0x00, 0x00, 0xff, 0xff, 0xd0, 0x3c, 0x00, 0x01, 0x7b, 0xff, 0x00, 0x00, 0xff, 0xff, 0x9d, 0x00,
-];
 
 /// EC options exposed by ThinkPad T480.
 pub static EC: fstart_options::OptionSet<Options> = {
@@ -99,14 +100,7 @@ pub fn init_devices(
     pmh7.trackpoint_enable(options.trackpoint);
 
     let h8 = H8::new(Ec::new(H8_CONFIG.resources.os));
-    let (keyboard_backlight, acknowledged) = h8.init_modern_thinkpad(
-        &H8_CONFIG,
-        H8_CONFIG0,
-        H8_CONTROLS,
-        H8_BEEP_MASKS,
-        &H8_EVENTS,
-        options,
-    );
+    let (keyboard_backlight, acknowledged) = h8.init_modern_thinkpad(&H8_CONFIG, options);
     if !acknowledged {
         fstart_log::error!("lenovo-t480: H8 EC initialization incomplete");
     }
