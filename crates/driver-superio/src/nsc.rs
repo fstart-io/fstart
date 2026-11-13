@@ -1,9 +1,8 @@
-//! Common PC87382/PC87384 external-clock request used by ThinkPad docks.
+//! Shared NSC GPIO access and bounded external-clock polling.
 //!
-//! Register 29h is chip-specific: PC87392 uses a different request/status.
-//! The complete A0h request and ready bit are established by coreboot's
-//! X60/X61/T60 dock paths. This is not a decoded general clock configuration
-//! API, and deliberately does not infer support for other NSC controllers.
+//! Each chip supplies its complete register 29h request image and ready field:
+//! PC87382/PC87384 use A0h/bit 4, PC87392 uses 06h/bit 3. The polling
+//! mechanism does not choose a chip's clock configuration.
 
 use fstart_core::pio::PioRegister;
 use fstart_core::services::device::DeviceError;
@@ -55,26 +54,26 @@ impl GpioPort0 {
 }
 
 tock_registers::register_bitfields![u8,
+    /// PC87382/PC87384 global register 29h (8-bit): clock ready status.
     pub(crate) CLOCK_CONTROL [READY OFFSET(4) NUMBITS(1) []]
 ];
 
-pub(crate) fn start_external_14mhz_clock(
-    control: &(
-         impl Readable<T = u8, R = CLOCK_CONTROL::Register>
-         + Writeable<T = u8, R = CLOCK_CONTROL::Register>
-     ),
+pub(crate) fn start_external_14mhz_clock<R: tock_registers::RegisterLongName>(
+    control: &(impl Readable<T = u8, R = R> + Writeable<T = u8, R = R>),
+    request: u8,
+    ready: Field<u8, R>,
     timeout_ms: u32,
     mut delay_us: impl FnMut(u32),
 ) -> Result<(), DeviceError> {
     // Full reference clock-controller request, not a field-preserving update.
-    control.set(0xa0);
+    control.set(request);
     for _ in 0..timeout_ms {
-        if control.is_set(CLOCK_CONTROL::READY) {
+        if control.is_set(ready) {
             return Ok(());
         }
         delay_us(1000);
     }
-    if control.is_set(CLOCK_CONTROL::READY) {
+    if control.is_set(ready) {
         Ok(())
     } else {
         Err(DeviceError::InitFailed)
@@ -112,17 +111,24 @@ mod tests {
 
     #[test]
     fn clock_polling_has_a_bounded_deadline_and_final_ready_sample() {
-        let control = InMemoryRegister::<u8, CLOCK_CONTROL::Register>::new(0);
-        let waits = Cell::new(0);
-        let result = start_external_14mhz_clock(&control, 2, |us| {
-            assert_eq!(us, 1000);
-            waits.set(waits.get() + 1);
-            if waits.get() == 2 {
-                control.set(0x10);
-            }
-        });
-        assert!(result.is_ok());
-        assert_eq!(waits.get(), 2);
-        assert!(start_external_14mhz_clock(&InMemoryRegister::new(0), 0, |_| panic!()).is_err());
+        // Both NSC clock encodings use the same deadline and final sample.
+        for (request, ready_bit) in [(0xa0, 4), (0x06, 3)] {
+            let ready = Field::<u8, ()>::new(1, ready_bit);
+            let control = InMemoryRegister::<u8>::new(0xff);
+            let waits = Cell::new(0);
+            let result = start_external_14mhz_clock(&control, request, ready, 2, |us| {
+                assert_eq!(us, 1000);
+                assert_eq!(control.get(), request);
+                waits.set(waits.get() + 1);
+                if waits.get() == 2 {
+                    control.set(request | (1 << ready_bit));
+                }
+            });
+            assert!(result.is_ok());
+            assert_eq!(waits.get(), 2);
+            // The request replaces stale status; zero budget never delays.
+            assert!(start_external_14mhz_clock(&control, request, ready, 0, |_| panic!()).is_err());
+            assert_eq!(control.get(), request);
+        }
     }
 }

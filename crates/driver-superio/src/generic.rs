@@ -697,13 +697,14 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
 
         // Program each enabled function.  If the board requests a
         // function that the chip doesn't support (LDN is None), fail
-        // so the misconfiguration is caught at boot, not later.
+        // so the misconfiguration is caught at boot, not later. Return these
+        // errors without formatted logging: fixed-resource SMM callers must
+        // not pull the formatter's panic paths into their handler.
         if let Some(cfg) = self.config.com1 {
             if let Some(ldn) = C::COM1_LDN {
                 self.program_com(ldn, &cfg);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: com1 requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -712,7 +713,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_com(ldn, &cfg);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: com2 requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -721,7 +721,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_kbc(ldn, &cfg);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: keyboard requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -730,7 +729,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_mouse(ldn, &cfg);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: mouse requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -739,7 +737,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_ec(ldn, &cfg);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: env_controller requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -748,7 +745,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_simple(ldn, cfg.io_base, cfg.irq);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: parallel requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -757,7 +753,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_simple(ldn, cfg.io_base, cfg.irq);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: cir requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -766,7 +761,6 @@ impl<C: SuperIoChip> BusDevice for SuperIo<C> {
                 self.program_gpio(ldn, cfg);
             } else {
                 self.exit_config();
-                fstart_log::error!("superio: gpio requested but chip has no LDN");
                 return Err(DeviceError::MissingResource("unsupported LDN"));
             }
         }
@@ -829,7 +823,9 @@ const UART_SINGLE_CHAR_TIMEOUT: u32 = 50_000;
 /// console byte is possible.
 fn uart_init(io_base: u16, baud_rate: u32) {
     let baud = if baud_rate == 0 { 115_200 } else { baud_rate };
-    let divisor = (ISA_UART_CLOCK + baud * 8) / (baud * 16);
+    // Divide before rounding to avoid overflowing baud * 16 to zero. This
+    // is equivalent to (clock + baud * 8) / (baud * 16) without overflow.
+    let divisor = (ISA_UART_CLOCK / baud + 8) / 16;
 
     // SAFETY: io_base comes from the board metadata config.
     unsafe {
