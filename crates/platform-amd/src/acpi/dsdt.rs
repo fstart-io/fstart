@@ -189,7 +189,7 @@ fn lpc(board_aml: &[u8]) -> Result<Vec<u8>, AmlError> {
 /// the root bridges decode themselves (the ECAM window, the NBIO IOAPICs
 /// and IOMMUs in the non-PCI pools) is in the motherboard device of each
 /// root bridge.
-fn system_resources(soc: &SocAcpi) -> Result<Vec<u8>, AmlError> {
+fn system_resources(soc: &SocAcpi, peripheral_io: &[(u16, u16)]) -> Result<Vec<u8>, AmlError> {
     let mut d = Vec::new();
     [(FCH_IOAPIC_BASE, 0x1000), (LAPIC_BASE, 0x1000)]
         .iter()
@@ -202,8 +202,15 @@ fn system_resources(soc: &SocAcpi) -> Result<Vec<u8>, AmlError> {
         .for_each(|(b, l)| Memory32Fixed::new(true, b as u32, l as u32).to_aml_bytes(&mut d));
     // The FCH's legacy and index ports (the SMI command port is in
     // 0xA2..0xBF) and the ACPI PM blocks.
+    let peripheral = |&&(port, len): &&(u16, u8)| {
+        let (start, end) = (u32::from(port), u32::from(port) + u32::from(len));
+        peripheral_io.iter().any(|&(base, length)| {
+            start < u32::from(base) + u32::from(length) && u32::from(base) < end
+        })
+    };
     fch_aml::SYSTEM_IO
         .iter()
+        .filter(|range| !peripheral(range))
         .chain(&[(soc.ports.event, 0x30)])
         .for_each(|&(port, len)| IO::new(port, port, 1, len).to_aml_bytes(&mut d));
     let body = [
@@ -239,7 +246,7 @@ fn root_bridge(
     .concat();
     if rb.fch {
         body.extend(lpc(lpc_aml)?);
-        body.extend(system_resources(soc)?);
+        body.extend(system_resources(soc, &inputs.board.peripheral_io)?);
     }
     // Next to the bridge: what it decodes itself, which `_CRS` leaves out.
     let mut aml = device_vec(as_str(&pci_name(uid)), &body)?;
