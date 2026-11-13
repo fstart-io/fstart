@@ -79,7 +79,7 @@ pub(crate) fn write_back(store: &Store) {
     unsafe {
         core::arch::asm!("mfence", options(nostack, preserves_flags));
         for address in (store.base()..store.base() + store.used()).step_by(64) {
-            core::arch::asm!("clflush [{}]", in(reg) address as usize, options(nostack, preserves_flags));
+            fstart_arch::x86::flush_cache_line(address as *const u8);
         }
         core::arch::asm!("mfence", options(nostack, preserves_flags));
     }

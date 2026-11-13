@@ -1093,7 +1093,7 @@ fn vref_flush(addr: usize) {
     for offset in (0..0x2000usize).step_by(64) {
         // SAFETY: the address is in the temporary 8 KiB Vref test range.
         unsafe {
-            core::arch::asm!("clflush [{}]", in(reg) (addr + offset), options(nostack, preserves_flags));
+            fstart_arch::x86::flush_cache_line((addr + offset) as *const u8);
         }
     }
 }
