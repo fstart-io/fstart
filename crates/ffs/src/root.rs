@@ -3,11 +3,54 @@
 //! Parsing proves wire invariants only. Authentication additionally checks trusted
 //! family/version/key policy. Neither grants memory-write or executable authority.
 use fstart_core::ffs::{Compression, Signature, SignatureKind, VerificationKey};
+use zerocopy::byteorder::{LE, U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub const ROOT_SIZE: usize = 512;
 pub const SIGNED_SIZE: usize = 448;
 pub const ROOT_MAGIC: [u8; 8] = *b"FSTARTBR";
 pub const DIRECTORY_REVISION: u32 = 2;
+
+#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct BootstrapWire {
+    role: U16<LE>,
+    compression: u8,
+    reserved_3: [u8; 5],
+    offset: U64<LE>,
+    stored_size: U64<LE>,
+    loaded_size: U64<LE>,
+    load_addr: U64<LE>,
+    entry_offset: U64<LE>,
+    scratch_size: U64<LE>,
+    stored_digest: [u8; 32],
+    loaded_digest: [u8; 32],
+    reserved_120: [u8; 40],
+}
+#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct DirectoryWire {
+    offset: U64<LE>,
+    size: U64<LE>,
+    digest: [u8; 32],
+    revision: U32<LE>,
+    reserved: [u8; 12],
+}
+#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+struct RootWire {
+    magic: [u8; 8],
+    version: U16<LE>,
+    header_len: U16<LE>,
+    root_size: U32<LE>,
+    security_version: U64<LE>,
+    image_family: [u8; 16],
+    key_id: U32<LE>,
+    reserved: [u8; 20],
+}
+const _: () = assert!(core::mem::size_of::<BootstrapWire>() == 160);
+const _: () = assert!(core::mem::size_of::<DirectoryWire>() == 64);
+const _: () = assert!(core::mem::size_of::<RootWire>() == 64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootError {
@@ -71,53 +114,52 @@ impl BootstrapDescriptor {
     }
 
     pub fn encode(&self) -> [u8; 160] {
-        let mut b = [0; 160];
-        b[..2].copy_from_slice(&(self.role as u16).to_le_bytes());
-        b[2] = match self.compression {
-            Compression::None => 0,
-            Compression::Lz4 => 1,
+        let wire = BootstrapWire {
+            role: U16::new(self.role as u16),
+            compression: match self.compression {
+                Compression::None => 0,
+                Compression::Lz4 => 1,
+            },
+            reserved_3: [0; 5],
+            offset: U64::new(self.offset),
+            stored_size: U64::new(self.stored_size),
+            loaded_size: U64::new(self.loaded_size),
+            load_addr: U64::new(self.load_addr),
+            entry_offset: U64::new(self.entry_offset),
+            scratch_size: U64::new(self.scratch_size),
+            stored_digest: self.stored_digest,
+            loaded_digest: self.loaded_digest,
+            reserved_120: [0; 40],
         };
-        for (i, n) in [
-            self.offset,
-            self.stored_size,
-            self.loaded_size,
-            self.load_addr,
-            self.entry_offset,
-            self.scratch_size,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            b[8 + i * 8..16 + i * 8].copy_from_slice(&n.to_le_bytes());
-        }
-        b[56..88].copy_from_slice(&self.stored_digest);
-        b[88..120].copy_from_slice(&self.loaded_digest);
+        let mut b = [0; 160];
+        b.copy_from_slice(wire.as_bytes());
         b
     }
 
     pub fn parse(b: &[u8]) -> Result<Self, RootError> {
-        if b.len() != 160 || b[3..8] != [0; 5] || b[120..] != [0; 40] {
+        let wire = BootstrapWire::read_from_bytes(b).map_err(|_| RootError::InvalidFormat)?;
+        if wire.reserved_3 != [0; 5] || wire.reserved_120 != [0; 40] {
             return Err(RootError::InvalidFormat);
         }
         let d = Self {
-            role: match u16::from_le_bytes(b[..2].try_into().unwrap()) {
+            role: match wire.role.get() {
                 1 => BootstrapRole::Postcar,
                 2 => BootstrapRole::Mainstage,
                 _ => return Err(RootError::InvalidFormat),
             },
-            compression: match b[2] {
+            compression: match wire.compression {
                 0 => Compression::None,
                 1 => Compression::Lz4,
                 _ => return Err(RootError::UnsupportedAlgorithm),
             },
-            offset: le64(b, 8),
-            stored_size: le64(b, 16),
-            loaded_size: le64(b, 24),
-            load_addr: le64(b, 32),
-            entry_offset: le64(b, 40),
-            scratch_size: le64(b, 48),
-            stored_digest: b[56..88].try_into().unwrap(),
-            loaded_digest: b[88..120].try_into().unwrap(),
+            offset: wire.offset.get(),
+            stored_size: wire.stored_size.get(),
+            loaded_size: wire.loaded_size.get(),
+            load_addr: wire.load_addr.get(),
+            entry_offset: wire.entry_offset.get(),
+            scratch_size: wire.scratch_size.get(),
+            stored_digest: wire.stored_digest,
+            loaded_digest: wire.loaded_digest,
         };
         d.validate(u64::MAX)?;
         Ok(d)
@@ -138,24 +180,29 @@ impl DirectoryRef {
         range(self.offset, self.size, image_size)
     }
     pub fn encode(&self) -> [u8; 64] {
+        let wire = DirectoryWire {
+            offset: U64::new(self.offset),
+            size: U64::new(self.size),
+            digest: self.digest,
+            revision: U32::new(DIRECTORY_REVISION),
+            reserved: [0; 12],
+        };
         let mut b = [0; 64];
-        b[..8].copy_from_slice(&self.offset.to_le_bytes());
-        b[8..16].copy_from_slice(&self.size.to_le_bytes());
-        b[16..48].copy_from_slice(&self.digest);
-        b[48..52].copy_from_slice(&DIRECTORY_REVISION.to_le_bytes());
+        b.copy_from_slice(wire.as_bytes());
         b
     }
     pub fn parse(b: &[u8]) -> Result<Self, RootError> {
-        if b.len() != 64 || b[52..] != [0; 12] {
+        let wire = DirectoryWire::read_from_bytes(b).map_err(|_| RootError::InvalidFormat)?;
+        if wire.reserved != [0; 12] {
             return Err(RootError::InvalidFormat);
         }
-        if le32(b, 48) != DIRECTORY_REVISION {
+        if wire.revision.get() != DIRECTORY_REVISION {
             return Err(RootError::UnsupportedVersion);
         }
         let r = Self {
-            offset: le64(b, 0),
-            size: le64(b, 8),
-            digest: b[16..48].try_into().unwrap(),
+            offset: wire.offset.get(),
+            size: wire.size.get(),
+            digest: wire.digest,
         };
         r.validate(u64::MAX, u64::MAX)?;
         Ok(r)
@@ -182,13 +229,17 @@ pub struct Root {
 impl Root {
     pub fn encode(&self) -> [u8; ROOT_SIZE] {
         let mut b = [0; ROOT_SIZE];
-        b[..8].copy_from_slice(&ROOT_MAGIC);
-        b[8..10].copy_from_slice(&1u16.to_le_bytes());
-        b[10..12].copy_from_slice(&64u16.to_le_bytes());
-        b[12..16].copy_from_slice(&(ROOT_SIZE as u32).to_le_bytes());
-        b[16..24].copy_from_slice(&self.security_version.to_le_bytes());
-        b[24..40].copy_from_slice(&self.image_family);
-        b[40..44].copy_from_slice(&self.key_id.to_le_bytes());
+        let header = RootWire {
+            magic: ROOT_MAGIC,
+            version: U16::new(1),
+            header_len: U16::new(64),
+            root_size: U32::new(ROOT_SIZE as u32),
+            security_version: U64::new(self.security_version),
+            image_family: self.image_family,
+            key_id: U32::new(self.key_id),
+            reserved: [0; 20],
+        };
+        b[..64].copy_from_slice(header.as_bytes());
         for (i, d) in self.descriptors.iter().enumerate() {
             if let Some(d) = d {
                 b[64 + i * 160..224 + i * 160].copy_from_slice(&d.encode());
@@ -199,15 +250,18 @@ impl Root {
         b
     }
     pub fn parse(b: &[u8]) -> Result<Self, RootError> {
-        if b.len() != ROOT_SIZE
-            || b[..8] != ROOT_MAGIC
-            || b[10..12] != 64u16.to_le_bytes()
-            || le32(b, 12) != ROOT_SIZE as u32
-            || b[44..64] != [0; 20]
+        if b.len() != ROOT_SIZE {
+            return Err(RootError::InvalidFormat);
+        }
+        let (wire, _) = RootWire::ref_from_prefix(b).map_err(|_| RootError::InvalidFormat)?;
+        if wire.magic != ROOT_MAGIC
+            || wire.header_len.get() != 64
+            || wire.root_size.get() != ROOT_SIZE as u32
+            || wire.reserved != [0; 20]
         {
             return Err(RootError::InvalidFormat);
         }
-        if b[8..10] != 1u16.to_le_bytes() {
+        if wire.version.get() != 1 {
             return Err(RootError::UnsupportedVersion);
         }
         let mut descriptors = [None; 2];
@@ -221,9 +275,9 @@ impl Root {
             return Err(RootError::InvalidFormat);
         }
         Ok(Self {
-            security_version: le64(b, 16),
-            image_family: b[24..40].try_into().unwrap(),
-            key_id: le32(b, 40),
+            security_version: wire.security_version.get(),
+            image_family: wire.image_family,
+            key_id: wire.key_id.get(),
             descriptors,
             directory: DirectoryRef::parse(&b[384..448])?,
             signature: b[448..].try_into().unwrap(),
@@ -312,10 +366,4 @@ fn range(offset: u64, size: u64, limit: u64) -> Result<(), RootError> {
     } else {
         Err(RootError::OutOfBounds)
     }
-}
-fn le64(b: &[u8], n: usize) -> u64 {
-    u64::from_le_bytes(b[n..n + 8].try_into().unwrap())
-}
-fn le32(b: &[u8], n: usize) -> u32 {
-    u32::from_le_bytes(b[n..n + 4].try_into().unwrap())
 }
