@@ -10,8 +10,8 @@ pub mod boot;
 pub mod host;
 pub mod layout;
 pub mod memory;
-#[cfg(all(feature = "bundle", target_os = "none"))]
-mod smbios;
+#[cfg(feature = "acpi")]
+pub mod smbios;
 pub mod smm;
 
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
@@ -74,6 +74,11 @@ pub trait DieSoc: fstart_driver_amd::soc::DieInit {
 
     /// The NBIO IOAPIC of `die`.
     fn ioapic(state: &Self::State, die: u8) -> u32;
+    /// The DXIO engines of each die, in die order: what the board
+    /// attaches to the PCIe ports.
+    fn descriptors(_config: &Self::Config) -> &[&'static [fstart_driver_amd::dxio::Descriptor]] {
+        &[]
+    }
     /// The SoC's own controllers for the tables, once the silicon init is
     /// done: the enabled fixed-address devices and further `\_SB` AML (FCH
     /// controllers and the devices behind them).
@@ -220,7 +225,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
             silicon,
             &board,
         );
-        let smbios = smbios::install::<S>(identity, ctx, &silicon.cpus);
+        let smbios = smbios::install::<S>(identity, ctx, &silicon.cpus, pci);
         Tables {
             rsdp,
             smbios,

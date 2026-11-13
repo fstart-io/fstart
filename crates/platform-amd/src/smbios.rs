@@ -6,8 +6,12 @@
 //! positions of the APOB's SMBIOS seeds with their SPD copies and the DRAM
 //! ranges of the flow's memory map.
 //!
+//! The slots and onboard devices are what the board attaches to its PCIe
+//! ports, and the controllers behind the SoC's internal bridges.
+//!
 //! A SoC says what its tables differ in ([`SocSmbios`]); its flow says
-//! where a thread is and which dies there are, and where the tables go.
+//! where a thread is, which dies there are, what is on the ports and where
+//! the tables go.
 
 /// What a SoC's SMBIOS tables differ in.
 #[derive(Debug, Clone, Copy)]
@@ -29,12 +33,13 @@ mod stage {
 
     use super::SocSmbios;
     use alloc::vec::Vec;
-    use fstart_acpi::smbios::{self, SmbiosIdentity};
+    use fstart_acpi::smbios::{self, Attached, SmbiosIdentity};
     use fstart_arch::x86::boot::cpuid::ProcessorSnapshot;
     use fstart_driver_amd::apob::{
         Apob, mem,
         smbios::{self as apob_smbios, DramRange, Processor, dimms},
     };
+    use fstart_pci::{PciAddress, PciEcam};
 
     /// What a flow knows of the system.
     pub struct System<'a> {
@@ -46,6 +51,30 @@ mod stage {
         /// The RAM of the flow's memory map, before firmware allocations.
         pub regions: &'a [DramRange],
         pub cpus: &'a crate::mp::Cpus,
+        /// The enumeration: the cards in the slots and the onboard devices.
+        pub pci: &'a PciEcam,
+        /// The bridges of a root bus (`SocAcpi::bridges`): the SoC's own
+        /// controllers behind the internal ones are onboard devices.
+        pub bridges: &'a [crate::acpi::prt::Bridge],
+        /// What the board attaches to its PCIe ports, `(bridge, lanes,
+        /// attached)`.
+        pub ports: &'a [(PciAddress, u8, &'a Attached<'a>)],
+    }
+
+    /// The functions behind the internal bridges of every root bus.
+    fn internal_functions(pci: &PciEcam, bridges: &[crate::acpi::prt::Bridge]) -> Vec<PciAddress> {
+        pci.roots()
+            .iter()
+            .flat_map(|root| {
+                let (segment, bus) = (root.info().segment, *root.buses().start());
+                bridges
+                    .iter()
+                    .filter(|bridge| bridge.internal)
+                    .map(move |b| PciAddress::new(segment, bus, b.device, b.function))
+            })
+            .filter_map(|bridge| pci.bridge_devices(bridge))
+            .flatten()
+            .collect()
     }
 
     /// The CPUID of the thread `index` of the MP start: its package's.
@@ -121,6 +150,9 @@ mod stage {
         // The positions come from the board's ABL seeds, not from assumed
         // slots or the installed DIMMs.
         apob_smbios::add_memory(&mut tables, &dimms, system.regions, soc.max_dimm_mib, ecc);
+        tables.pci_ports(system.ports, Some(system.pci));
+        let internal = internal_functions(system.pci, system.bridges);
+        tables.pci_onboard_devices(system.pci, |address| internal.contains(&address));
         let address = storage.as_ptr() as u64;
         let used = tables
             .assemble_into(storage, address)

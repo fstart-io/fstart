@@ -71,27 +71,21 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FlashLayout::IntelIfd(FLASH), 0x800000)
             .with_data_assets(&[LED_VBT, CCFL_VBT])
-            .with_smbios_slots(X200_SLOTS)
             .with_memory_cache();
 }
 
 /// Coreboot `variants/x200/overridetree.cb`: root port 4 (00:1c.3)
 /// carries `smbios_slot_desc "7" "3" "ExpressCard Slot" "8"`.
 /// PC Card/ExpressCard, short, PCIe x1; PME and hot-plug are supported.
-pub const X200_SLOTS: &[fstart_core::smbios::PciSlot<'static>] = &[fstart_core::smbios::PciSlot {
-    bridge_segment: 0,
-    bridge_bus: 0,
-    bridge_devfn: fstart_pci::devfn(0x1c, 3),
-    slot: fstart_core::smbios::SystemSlot {
+pub const EXPRESSCARD: fstart_core::smbios::Attached<'static> =
+    fstart_core::smbios::Attached::Slot(fstart_core::smbios::SystemSlot {
         designation: "ExpressCard Slot",
         slot_type: 0x07,
         data_bus_width: 0x08,
         length: 0x03,
         id: 0,
         characteristics: [0, 0x03],
-    },
-}];
-
+    });
 /// SMBus mux (GPIO42): high reaches the SPDs, low the identity EEPROM. The
 /// GPIO table starts on the SPDs; coreboot's `mb_post_raminit_setup()`
 /// switches to the EEPROM after raminit.
@@ -147,6 +141,7 @@ pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
     .pcie_slot(1, MINI_PCIE_POWER, false)
     .pcie_slot(2, MINI_PCIE_POWER, false)
     .pcie_slot(3, MINI_PCIE_POWER, true)
+    .pcie_attached(3, &EXPRESSCARD)
     .gpe0_en(0x0100_0000)
     .gpi_routing([
         GpiRoute::Disabled,
@@ -540,27 +535,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expresscard_slot_matches_coreboot_and_the_hotplug_port() {
-        use fstart_platform_intel::facts::IntelBoardFacts;
-        let slots = <crate::Board as IntelBoardFacts>::FACTS.smbios_slots;
-        assert_eq!(slots.len(), 1);
-        let binding = &slots[0];
-        assert_eq!(
-            (
-                binding.bridge_segment,
-                binding.bridge_bus,
-                binding.bridge_devfn
-            ),
-            (0, 0, 0xe3),
-        );
-        let slot = &binding.slot;
-        assert_eq!(slot.designation, "ExpressCard Slot");
-        assert_eq!(
-            (slot.slot_type, slot.length, slot.data_bus_width),
-            (7, 3, 8)
-        );
-        assert_eq!(slot.id, 0);
-        assert_eq!(slot.characteristics, [0, 3]);
+    fn expresscard_slot_is_the_hotplug_port() {
+        use fstart_platform_intel::IntelPlatformConfig;
+        assert_eq!(X200_PLATFORM.pcie_attached()[3], Some(&EXPRESSCARD));
         assert!(X200_PLATFORM.southbridge.pcie_slots[3]);
         assert!(X200_PLATFORM.southbridge.pcie_hotplug[3]);
     }

@@ -42,7 +42,7 @@
 //! })?;
 //! ```
 
-pub use fstart_core::smbios::{SlotUsage, SystemSlot};
+pub use fstart_core::smbios::{Attached, OnboardDevice, OnboardType, SlotUsage, SystemSlot};
 
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{Immutable, IntoBytes};
@@ -1301,30 +1301,32 @@ impl<'a> SmbiosWriter<'a> {
     // Type 41: Onboard Devices Extended Information
     // -----------------------------------------------------------------------
 
-    /// Add a Type 41 (Onboard Device) structure for an enabled PCI function.
+    /// Add a Type 41 (Onboard Device) structure for a PCI function, all
+    /// ones if the device is not one or was not found.
     ///
-    /// `instance` is 1-based and unique per `device_type`.
+    /// `instance` is 1-based and unique per device type.
     pub fn add_onboard_device(
         &mut self,
-        designation: &str,
-        device_type: u8,
+        device: &OnboardDevice<'_>,
+        enabled: bool,
         instance: u8,
         segment: u16,
         bus: u8,
         devfn: u8,
     ) {
-        let [reference] = string_indices([designation]);
+        let [reference] = string_indices([device.designation]);
         let (header, _) = self.begin::<RawType41>(TYPE_ONBOARD_DEVICE);
         self.emplace(&RawType41 {
             header,
             reference,
-            device_type: device_type | 0x80, // enabled
+            // Bit 7: the device is enabled.
+            device_type: device.kind as u8 | u8::from(enabled) << 7,
             instance,
             segment: U16::new(segment),
             bus,
             devfn,
         });
-        self.write_strings(&[designation]);
+        self.write_strings(&[device.designation]);
     }
 
     // -----------------------------------------------------------------------
@@ -1939,7 +1941,11 @@ mod tests {
     fn oem_strings_and_onboard_devices() {
         let (buf, _) = write_to_buffer(|w| {
             w.add_oem_strings(&["IBM ThinkPad Embedded Controller -[7MHT24WW-1.01]-"]);
-            w.add_onboard_device("Onboard LAN", 0x05, 1, 0, 0, 0xc8);
+            let lan = OnboardDevice {
+                designation: "Onboard LAN",
+                kind: OnboardType::Ethernet,
+            };
+            w.add_onboard_device(&lan, true, 1, 0, 0, 0xc8);
             w.add_end_of_table();
         });
         let table = &buf[ENTRY_POINT_SIZE..];

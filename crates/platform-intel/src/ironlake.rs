@@ -27,6 +27,8 @@ pub struct IronlakeIbexPeakConfig {
     northbridge: IntelIronlakeConfig,
     southbridge: IntelIbexPeakConfig,
     max_cpus: u16,
+    /// What the board attaches to PCIe root port `n` (00:1c.n).
+    pcie_attached: [Option<&'static fstart_core::smbios::Attached<'static>>; 8],
     pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
@@ -37,6 +39,7 @@ impl IronlakeIbexPeakConfig {
             northbridge: IntelIronlakeConfig::new(),
             southbridge: IntelIbexPeakConfig::new(),
             max_cpus: 4,
+            pcie_attached: [None; 8],
             pci_subsystem_ids: &[],
         }
     }
@@ -108,6 +111,21 @@ impl IronlakeIbexPeakConfig {
             panic!("max_cpus must be non-zero");
         }
         self.max_cpus = max_cpus;
+        self
+    }
+
+    /// The slot or onboard device the board attaches to PCIe root port
+    /// `index` (00:1c.`index`).
+    #[must_use]
+    pub const fn pcie_attached(
+        mut self,
+        index: usize,
+        attached: &'static fstart_core::smbios::Attached<'static>,
+    ) -> Self {
+        if index >= self.pcie_attached.len() {
+            panic!("Ibex Peak PCIe port index out of range");
+        }
+        self.pcie_attached[index] = Some(attached);
         self
     }
 
@@ -305,6 +323,7 @@ impl IronlakeIbexPeakConfig {
             northbridge,
             southbridge,
             max_cpus: self.max_cpus,
+            pcie_attached: self.pcie_attached,
             pci_subsystem_ids: self.pci_subsystem_ids,
         }
     }
@@ -322,6 +341,8 @@ pub struct IronlakeIbexPeakPlatform {
     pub northbridge: IntelIronlakeConfig,
     pub southbridge: IntelIbexPeakConfig,
     pub max_cpus: u16,
+    /// What the board attaches to PCIe root port `n` (00:1c.n).
+    pub pcie_attached: [Option<&'static fstart_core::smbios::Attached<'static>>; 8],
     pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
 }
 
@@ -351,6 +372,9 @@ impl crate::IntelPlatform for IronlakeIbexPeak {
 impl crate::IntelPlatformConfig for IronlakeIbexPeakPlatform {
     fn max_cpus(&self) -> u16 {
         self.max_cpus
+    }
+    fn pcie_attached(&self) -> &[Option<&'static fstart_core::smbios::Attached<'static>>] {
+        &self.pcie_attached
     }
     fn pci_subsystem_ids(&self) -> &'static [crate::facts::PciSubsystemId] {
         self.pci_subsystem_ids

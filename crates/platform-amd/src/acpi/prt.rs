@@ -29,6 +29,9 @@ pub struct Bridge {
     pub device: u8,
     pub function: u8,
     pub route: Route,
+    /// An internal bridge (devices 7 and 8): the SoC's own controllers
+    /// are behind it, not a port the board wires.
+    pub internal: bool,
 }
 
 impl Bridge {
@@ -50,6 +53,7 @@ const fn bridges<const N: usize>(at: [(u8, u8); N], routes: [Route; N]) -> [Brid
         device: 0,
         function: 0,
         route: routes[0],
+        internal: false,
     }; N];
     let mut i = 0;
     while i < N {
@@ -57,6 +61,9 @@ const fn bridges<const N: usize>(at: [(u8, u8); N], routes: [Route; N]) -> [Brid
             device: at[i].0,
             function: at[i].1,
             route: routes[i],
+            // The GPP bridges of the PCIe cores are devices 1-5; the
+            // internal ones 7 and 8.
+            internal: at[i].0 >= 7,
         };
         i += 1;
     }
@@ -227,6 +234,21 @@ mod tests {
         assert_eq!(behind(b, 24, 3, 1), [54, 55, 52, 53]);
         assert_eq!(behind(b, 24, 7, 1)[..3], [39, 36, 37]);
         assert_eq!(behind(b, 24, 8, 1)[..3], [41, 42, 43]);
+    }
+
+    /// The internal bridges are devices 7 and 8: two on Picasso and
+    /// Zeppelin, four on a Rome/Milan NBIO.
+    #[test]
+    fn internal_bridges() {
+        let internal = |b: &[Bridge]| {
+            b.iter()
+                .filter(|b| b.internal)
+                .map(|b| (b.device, b.function))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(internal(&BRIDGES_RV), [(8, 1), (8, 2)]);
+        assert_eq!(internal(&BRIDGES_ZP), [(7, 1), (8, 1)]);
+        assert_eq!(internal(&BRIDGES_SP3), [(7, 1), (8, 1), (8, 2), (8, 3)]);
     }
 
     /// Picasso's internal bridges: 8.1 on group 7 as the last PCIe port's

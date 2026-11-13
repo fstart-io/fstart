@@ -68,6 +68,10 @@ impl noncar::DieSoc for Zeppelin {
     };
     const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
 
+    fn descriptors(config: &Self::Config) -> &[&'static [fstart_driver_amd::dxio::Descriptor]] {
+        &config.dxio.descriptors
+    }
+
     fn ioapic(up: &Up, die: u8) -> u32 {
         Zeppelin::ioapic(&up.silicon, die)
     }

@@ -199,6 +199,10 @@ impl noncar::DieSoc for Picasso {
     };
     const ACPI: &'static crate::acpi::SocAcpi = &acpi::ACPI;
 
+    fn descriptors(config: &Config) -> &[&'static [fstart_driver_amd::dxio::Descriptor]] {
+        core::slice::from_ref(&config.pcie)
+    }
+
     fn ioapic(_: &State, _: u8) -> u32 {
         Picasso::IOAPIC
     }

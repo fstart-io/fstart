@@ -11,7 +11,9 @@
 
 extern crate alloc;
 
-use super::{SlotFunction, SlotUsage, SmbiosIdentity, SmbiosWriter, SystemSlot, WriteError};
+use super::{
+    OnboardDevice, SlotFunction, SlotUsage, SmbiosIdentity, SmbiosWriter, SystemSlot, WriteError,
+};
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use fstart_core::memory_info::MemoryDevice;
 
@@ -44,9 +46,9 @@ struct Slot<'a> {
 }
 
 /// A type 41.
-struct OnboardDevice<'a> {
-    designation: &'a str,
-    device_type: u8,
+struct Onboard<'a> {
+    device: OnboardDevice<'a>,
+    enabled: bool,
     instance: u8,
     segment: u16,
     bus: u8,
@@ -65,7 +67,7 @@ pub struct Builder<'a> {
     dimms: Vec<Dimm>,
     ranges: Vec<MappedRange>,
     slots: Vec<Slot<'a>>,
-    onboard: Vec<OnboardDevice<'a>>,
+    onboard: Vec<Onboard<'a>>,
 }
 
 impl<'a> Builder<'a> {
@@ -155,12 +157,12 @@ impl<'a> Builder<'a> {
         self
     }
 
-    /// An enabled onboard device (type 41) of SMBIOS `device_type`; its
-    /// instance counts the devices of that type added before it.
+    /// An onboard device (type 41) at a PCI function, all ones if none;
+    /// its instance counts the devices of its type added before it.
     pub fn onboard_device(
         &mut self,
-        designation: &'a str,
-        device_type: u8,
+        device: &OnboardDevice<'a>,
+        enabled: bool,
         segment: u16,
         bus: u8,
         devfn: u8,
@@ -168,12 +170,12 @@ impl<'a> Builder<'a> {
         let instance = self
             .onboard
             .iter()
-            .filter(|device| device.device_type == device_type)
+            .filter(|other| other.device.kind == device.kind)
             .count() as u8
             + 1;
-        self.onboard.push(OnboardDevice {
-            designation,
-            device_type,
+        self.onboard.push(Onboard {
+            device: *device,
+            enabled,
             instance,
             segment,
             bus,
@@ -212,8 +214,8 @@ impl<'a> Builder<'a> {
         }
         for device in &self.onboard {
             w.add_onboard_device(
-                device.designation,
-                device.device_type,
+                &device.device,
+                device.enabled,
                 device.instance,
                 device.segment,
                 device.bus,
@@ -231,6 +233,13 @@ mod tests {
     use crate::smbios::{BUFFER_SIZE, assemble_into};
     use std::vec;
 
+    use crate::smbios::OnboardType;
+
+    const LAN: OnboardDevice<'static> = OnboardDevice {
+        designation: "Onboard LAN",
+        kind: OnboardType::Ethernet,
+    };
+
     fn by_hand(identity: &SmbiosIdentity<'_>, w: &mut SmbiosWriter<'_>) {
         w.add_identity(identity, 8 << 20, true);
         w.add_physical_memory_array(64 << 20, 2, 6);
@@ -243,8 +252,8 @@ mod tests {
             SlotFunction::none(16),
             &[],
         );
-        w.add_onboard_device("Onboard LAN", 5, 1, 0, 2, 0);
-        w.add_onboard_device("Onboard LAN", 5, 2, 0, 3, 0);
+        w.add_onboard_device(&LAN, true, 1, 0, 2, 0);
+        w.add_onboard_device(&LAN, true, 2, 0, 3, 0);
         w.add_system_boot_info();
         w.add_end_of_table();
     }
@@ -257,7 +266,7 @@ mod tests {
 
         let mut builder = Builder::new(&identity, 8 << 20, true);
         builder
-            .onboard_device("Onboard LAN", 5, 0, 2, 0)
+            .onboard_device(&LAN, true, 0, 2, 0)
             .system_slot(
                 &SystemSlot::new("PCIE1"),
                 SlotUsage::Available,
@@ -269,7 +278,7 @@ mod tests {
             .dimm(&MemoryDevice::unknown(0, 0), "A0", "A")
             .memory_array(64 << 20, 6)
             .dimm(&MemoryDevice::empty(0, 1), "A1", "A")
-            .onboard_device("Onboard LAN", 5, 0, 3, 0);
+            .onboard_device(&LAN, true, 0, 3, 0);
         let mut bytes = vec![0; BUFFER_SIZE];
         assert_eq!(builder.assemble_into(&mut bytes, 0x1000), Ok(len));
         assert_eq!(bytes[..len], expected[..len]);

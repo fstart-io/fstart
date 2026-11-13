@@ -263,8 +263,8 @@ pub struct SmbiosRuntime<'a> {
     pub memory: Option<&'a fstart_core::memory_info::MemoryInfo>,
     /// Enumerated PCI hierarchy; root-bus functions are onboard devices.
     pub pci: Option<&'a fstart_pci::PciEcam>,
-    /// Board-owned physical slots, associated with upstream PCI bridges.
-    pub slots: &'a [fstart_core::smbios::PciSlot<'a>],
+    /// What the board attaches to the root ports, port `n` being 00:1c.n.
+    pub ports: &'a [Option<&'static fstart_core::smbios::Attached<'static>>],
 }
 
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
@@ -426,12 +426,23 @@ pub fn prepare_smbios(
         }
         None => {}
     }
-    for slot in runtime.slots {
-        let (device, function) = fstart_pci::devfn_parts(slot.bridge_devfn);
-        let bridge =
-            fstart_pci::PciAddress::new(slot.bridge_segment, slot.bridge_bus, device, function);
-        tables.pci_slot(&slot.slot, &[(bridge, slot.slot.lanes())], runtime.pci);
-    }
+    // The root ports' links are as wide as their slots.
+    let ports: alloc::vec::Vec<_> = (0u8..)
+        .zip(runtime.ports)
+        .filter_map(|(port, attached)| {
+            let attached = (*attached)?;
+            let lanes = match attached {
+                fstart_core::smbios::Attached::Slot(slot) => slot.lanes(),
+                fstart_core::smbios::Attached::Onboard(_) => 1,
+            };
+            Some((
+                fstart_pci::PciAddress::new(0, 0, 0x1c, port),
+                lanes,
+                attached,
+            ))
+        })
+        .collect();
+    tables.pci_ports(&ports, runtime.pci);
     // Chipset devices are on the root bus; add-in cards sit behind bridges.
     if let Some(pci) = runtime.pci {
         tables.pci_onboard_devices(pci, |address| address.bus() == pci.bus_start());

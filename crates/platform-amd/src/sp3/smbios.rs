@@ -27,6 +27,7 @@ pub(crate) fn install(
     cpus: &crate::mp::Cpus,
     rom_size: u32,
     identity: &fstart_acpi::smbios::SmbiosIdentity<'_>,
+    pci: &fstart_pci::PciEcam,
 ) -> u64 {
     use crate::sp3::flow::OrHalt;
     use fstart_driver_amd::apob::{smbios::dram_ranges, sysmap};
@@ -52,6 +53,11 @@ pub(crate) fn install(
             apob: Some(&soc.apob),
             regions: &regions,
             cpus,
+            pci,
+            bridges: crate::sp3::acpi::of(soc.generation).bridges,
+            // What the boards attach to their DXIO engines is not wired
+            // yet.
+            ports: &[],
         },
         |apic_id| (layout.decode(apic_id).socket, apic_id >> u32::from(smt)),
         |socket, die| {

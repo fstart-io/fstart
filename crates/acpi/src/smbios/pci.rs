@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use super::{Builder, SlotFunction, SlotUsage, SystemSlot};
+use super::{Attached, Builder, OnboardDevice, OnboardType, SlotFunction, SlotUsage, SystemSlot};
 use alloc::vec::Vec;
 use fstart_pci::{PciAddress, PciEcam};
 
@@ -23,19 +23,37 @@ fn lowest_function(devices: impl Iterator<Item = PciAddress>) -> Option<PciAddre
     devices.min_by_key(|&a| order(a))
 }
 
-/// SMBIOS onboard device type and label of a PCI class, as coreboot's
-/// devicetree walk reports them.
-fn onboard_device(class: u16) -> Option<(u8, &'static str)> {
-    Some(match class {
-        0x0300 | 0x0302 => (0x03, "Onboard Video"),
-        0x0100 => (0x04, "Onboard SCSI"),
-        0x0200 => (0x05, "Onboard LAN"),
-        0x0401 | 0x0403 => (0x07, "Onboard Audio"),
-        0x0101 => (0x08, "Onboard IDE"),
-        0x0106 => (0x09, "Onboard SATA"),
-        0x0107 => (0x0a, "Onboard SAS"),
+/// The SMBIOS onboard device type (DSP0134 7.42.2) and label of a PCI
+/// class, as coreboot's devicetree walk reports them, and NVMe. Other
+/// classes have no type of their own: a wireless controller's class is
+/// that of any other network controller.
+fn onboard_device(class: u16) -> Option<OnboardDevice<'static>> {
+    let (kind, designation) = match class {
+        0x0300 | 0x0302 => (OnboardType::Video, "Onboard Video"),
+        0x0100 => (OnboardType::ScsiController, "Onboard SCSI"),
+        0x0200 => (OnboardType::Ethernet, "Onboard LAN"),
+        0x0401 | 0x0403 => (OnboardType::Sound, "Onboard Audio"),
+        0x0101 => (OnboardType::PataController, "Onboard IDE"),
+        0x0106 => (OnboardType::SataController, "Onboard SATA"),
+        0x0107 => (OnboardType::SasController, "Onboard SAS"),
+        0x0108 => (OnboardType::NvmeController, "Onboard NVMe"),
         _ => return None,
-    })
+    };
+    Some(OnboardDevice { designation, kind })
+}
+
+/// The first function behind `bridge` that is not itself a bridge, in
+/// segment/bus/device/function order, looking behind the bridges on the
+/// way: the device of a port, also behind a chip's own PCI bridge.
+fn first_endpoint(pci: &PciEcam, bridge: PciAddress) -> Option<PciAddress> {
+    let mut children: Vec<PciAddress> = pci.bridge_devices(bridge)?.collect();
+    children.sort_unstable_by_key(|&a| order(a));
+    children
+        .into_iter()
+        .find_map(|child| match pci.bridge_devices(child) {
+            Some(_) => first_endpoint(pci, child),
+            None => Some(child),
+        })
 }
 
 impl<'a> Builder<'a> {
@@ -102,9 +120,64 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The slots and onboard devices a board attaches to its ports, each
+    /// port `(bridge, lanes, attached)`: a type 9 per slot, whose ports are
+    /// its links ([`Self::pci_slot`]), and a type 41 per onboard device
+    /// ([`Self::pci_onboard_device`]), in the order of the ports.
+    pub fn pci_ports(
+        &mut self,
+        ports: &[(PciAddress, u8, &Attached<'a>)],
+        pci: Option<&PciEcam>,
+    ) -> &mut Self {
+        for (index, &(bridge, _, attached)) in ports.iter().enumerate() {
+            match attached {
+                Attached::Slot(slot) => {
+                    if ports[..index]
+                        .iter()
+                        .any(|&(_, _, other)| other == attached)
+                    {
+                        continue;
+                    }
+                    let links: Vec<(PciAddress, u8)> = ports[index..]
+                        .iter()
+                        .filter(|&&(_, _, other)| other == attached)
+                        .map(|&(bridge, lanes, _)| (bridge, lanes))
+                        .collect();
+                    self.pci_slot(slot, &links, pci);
+                }
+                Attached::Onboard(device) => {
+                    self.pci_onboard_device(device, bridge, pci);
+                }
+            }
+        }
+        self
+    }
+
+    /// A device soldered to the board behind the port `bridge` (type 41):
+    /// the first function there that is not a bridge, disabled and without
+    /// an address if there is none.
+    pub fn pci_onboard_device(
+        &mut self,
+        device: &OnboardDevice<'a>,
+        bridge: PciAddress,
+        pci: Option<&PciEcam>,
+    ) -> &mut Self {
+        match pci.and_then(|pci| first_endpoint(pci, bridge)) {
+            Some(a) => self.onboard_device(
+                device,
+                true,
+                a.segment(),
+                a.bus(),
+                fstart_pci::devfn(a.device(), a.function()),
+            ),
+            None => self.onboard_device(device, false, u16::MAX, u8::MAX, u8::MAX),
+        }
+    }
+
     /// A type 41 for each function of `pci` that `onboard` selects and whose
     /// class SMBIOS has an onboard device type for (video, storage, LAN,
-    /// audio). Which functions are on the mainboard is the platform's call.
+    /// audio). Which functions are on the mainboard is the platform's call:
+    /// the controllers built into the chipset or SoC.
     pub fn pci_onboard_devices(
         &mut self,
         pci: &PciEcam,
@@ -117,12 +190,12 @@ impl<'a> Builder<'a> {
             else {
                 continue;
             };
-            let Some((device_type, designation)) = onboard_device(class) else {
+            let Some(device) = onboard_device(class) else {
                 continue;
             };
             self.onboard_device(
-                designation,
-                device_type,
+                &device,
+                true,
                 address.segment(),
                 address.bus(),
                 fstart_pci::devfn(address.device(), address.function()),
@@ -196,10 +269,77 @@ mod tests {
         assert_eq!(slot(&bytes, len)[0x0c], BIFURCATION);
     }
 
+    /// The structures of `bytes` after types 0 and 1, `(type, bytes)`.
+    fn structures(bytes: &[u8], len: usize) -> Vec<(u8, &[u8])> {
+        let mut at = super::super::ENTRY_POINT_SIZE;
+        let mut out = Vec::new();
+        while at < len {
+            let start = at;
+            at += usize::from(bytes[at + 1]);
+            while bytes[at..at + 2] != [0, 0] {
+                at += 1;
+            }
+            at += 2;
+            out.push((bytes[start], &bytes[start..at]));
+        }
+        out
+    }
+
+    /// A slot's ports are its links: one type 9 for the two of PCIE_1, in
+    /// the place of its first; an onboard device per port.
+    #[test]
+    fn ports_group_a_slots_links() {
+        const SLOT: Attached<'static> = Attached::Slot(SystemSlot::new("PCIE_1"));
+        const M2: Attached<'static> = Attached::Slot(SystemSlot::new("M.2"));
+        const LAN: Attached<'static> = Attached::Onboard(OnboardDevice {
+            designation: "LAN",
+            kind: OnboardType::Ethernet,
+        });
+        let port = |device, function| PciAddress::new(0, 0, device, function);
+        let identity = crate::smbios::SmbiosIdentity::new("", "");
+        let mut builder = Builder::new(&identity, 0, false);
+        builder.pci_ports(
+            &[
+                (port(3, 1), 8, &SLOT),
+                (port(1, 3), 4, &M2),
+                (port(1, 4), 2, &LAN),
+                (port(3, 3), 8, &SLOT),
+                (port(1, 5), 1, &LAN),
+            ],
+            None,
+        );
+        let mut bytes = [0u8; 1024];
+        let len = builder.assemble_into(&mut bytes, 0x1000).unwrap();
+        let slots: Vec<&[u8]> = structures(&bytes, len)
+            .into_iter()
+            .filter(|&(ty, _)| ty == 9)
+            .map(|(_, s)| s)
+            .collect();
+        assert_eq!(slots.len(), 2);
+        // PCIE_1: unknown usage without an enumeration, x8 base, the
+        // bifurcation bit; then the M.2.
+        assert_eq!((slots[0][7], slots[0][0x0c], slots[0][0x11]), (2, 8, 8));
+        assert!(slots[0].windows(6).any(|w| w == b"PCIE_1"));
+        assert_eq!((slots[1][0x0c], slots[1][0x11]), (0, 4));
+        let lans: Vec<&[u8]> = structures(&bytes, len)
+            .into_iter()
+            .filter(|&(ty, _)| ty == 41)
+            .map(|(_, s)| s)
+            .collect();
+        // Not found: disabled, instances 1 and 2, no address.
+        assert_eq!(&lans[0][5..11], &[5, 1, 0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(&lans[1][5..7], &[5, 2]);
+    }
+
     #[test]
     fn onboard_devices_cover_coreboot_classes() {
-        assert_eq!(onboard_device(0x0200), Some((0x05, "Onboard LAN")));
-        assert_eq!(onboard_device(0x0403), Some((0x07, "Onboard Audio")));
+        let kind = |class| onboard_device(class).map(|d| (d.kind, d.designation));
+        assert_eq!(kind(0x0200), Some((OnboardType::Ethernet, "Onboard LAN")));
+        assert_eq!(kind(0x0403), Some((OnboardType::Sound, "Onboard Audio")));
+        assert_eq!(
+            kind(0x0108),
+            Some((OnboardType::NvmeController, "Onboard NVMe"))
+        );
         assert_eq!(onboard_device(0x0380), None);
         assert_eq!(onboard_device(0x0c03), None);
     }

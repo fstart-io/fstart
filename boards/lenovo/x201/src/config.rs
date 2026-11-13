@@ -63,29 +63,22 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FlashLayout::IntelIfd(FLASH), 0x800000)
             .with_data_assets(&[VBT])
-            .with_smbios_slots(X201_SLOTS)
             .with_memory_cache();
 }
 
 /// devicetree.cb: `smbios_slot_desc "7" "3" "ExpressCard Slot" "8"`
 /// on PCIe root port 4 (00:1c.3): PCMCIA/ExpressCard, short, PCIe x1.
 /// PME and hot-plug are supported; no voltage capabilities are inferred from
-/// the PCMCIA type. This is the board-fixed bridge association; the shared
-/// emitter resolves the card's actual bus/device/function at boot.
-pub const X201_SLOTS: &[fstart_core::smbios::PciSlot<'static>] = &[fstart_core::smbios::PciSlot {
-    bridge_segment: 0,
-    bridge_bus: 0,
-    bridge_devfn: fstart_pci::devfn(0x1c, 3),
-    slot: fstart_core::smbios::SystemSlot {
+/// the PCMCIA type.
+pub const EXPRESSCARD: fstart_core::smbios::Attached<'static> =
+    fstart_core::smbios::Attached::Slot(fstart_core::smbios::SystemSlot {
         designation: "ExpressCard Slot",
         slot_type: 0x07,
         data_bus_width: 0x08,
         length: 0x03,
         id: 0,
         characteristics: [0, 0x03],
-    },
-}];
-
+    });
 /// The FSB/BCLK word of the clock generator at SMBus 0x69 (coreboot
 /// romstage `set_fsb_frequency()`).
 pub const CLOCKGEN_ADDRESS: u8 = 0x69;
@@ -171,6 +164,7 @@ pub static X201_PLATFORM: IronlakeIbexPeakPlatform = IronlakeIbexPeakConfig::new
     .hda_verb(0x8086_2804, 0x17aa_21b5, x201_hdmi_pins(), [0u32; 0])
     // The ExpressCard slot on root port 4.
     .pcie_hotplug(3)
+    .pcie_attached(3, &EXPRESSCARD)
     .disable([
         PchFunction::Mei2,
         PchFunction::Ider,
@@ -468,26 +462,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expresscard_slot_matches_coreboot_and_the_hotplug_port() {
-        use fstart_platform_intel::facts::IntelBoardFacts;
-        let slots = <crate::Board as IntelBoardFacts>::FACTS.smbios_slots;
-        assert_eq!(slots.len(), 1);
-        let binding = &slots[0];
-        let slot = &binding.slot;
-        assert_eq!(slot.designation, "ExpressCard Slot");
-        assert_eq!(
-            (slot.slot_type, slot.length, slot.data_bus_width),
-            (7, 3, 8)
-        );
-        assert_eq!(
-            (
-                binding.bridge_segment,
-                binding.bridge_bus,
-                binding.bridge_devfn
-            ),
-            (0, 0, 0xe3)
-        );
-        assert_eq!(slot.characteristics, [0, 3]);
+    fn expresscard_slot_is_the_hotplug_port() {
+        use fstart_platform_intel::IntelPlatformConfig;
+        assert_eq!(X201_PLATFORM.pcie_attached()[3], Some(&EXPRESSCARD));
         assert!(X201_PLATFORM.southbridge.pcie_hotplug[3]);
     }
 

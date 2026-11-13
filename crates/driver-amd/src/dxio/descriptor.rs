@@ -81,6 +81,9 @@ pub struct Descriptor {
     pub l1_2: bool,
     pub turn_off_unused_lanes: bool,
     pub sata_channel: SataChannel,
+    /// What the board attaches to the port, for the tables that describe
+    /// the board; DXIO does not read it.
+    pub attached: Option<&'static fstart_core::smbios::Attached<'static>>,
 }
 impl Descriptor {
     /// A present PCIe port at maximum speed without hotplug or ASPM.
@@ -101,6 +104,7 @@ impl Descriptor {
             l1_2: false,
             turn_off_unused_lanes: false,
             sata_channel: SataChannel::Other,
+            attached: None,
         }
     }
     pub const fn sata(start_lane: u8, end_lane: u8, channel: SataChannel) -> Self {
@@ -112,6 +116,18 @@ impl Descriptor {
             sata_channel: channel,
             ..Self::pcie(start_lane, end_lane, 0, 0)
         }
+    }
+    /// The port with `attached` on it.
+    pub const fn attached(self, attached: &'static fstart_core::smbios::Attached<'static>) -> Self {
+        Self {
+            attached: Some(attached),
+            ..self
+        }
+    }
+    /// The number of lanes.
+    pub const fn width(&self) -> u8 {
+        let (low, high) = self.lanes();
+        high - low + 1
     }
     /// (lowest, highest) lane.
     pub const fn lanes(&self) -> (u8, u8) {
