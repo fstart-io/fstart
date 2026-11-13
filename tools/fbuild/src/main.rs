@@ -60,6 +60,13 @@ enum Command {
     },
     /// Print the CI firmware job matrix.
     Shards,
+    /// Build, lint or test the feature selections and targets CI checks
+    /// beyond the defaults (tools/fbuild/src/checks.rs).
+    Checks {
+        /// Print the Cargo commands instead of running them.
+        #[arg(long)]
+        list: bool,
+    },
     /// Build boards in release and run their library tests, one after the
     /// other. A failing board never stops the ones after it.
     BuildBoards {
@@ -525,6 +532,7 @@ fn main() {
             &settings,
         ),
         Command::Shards => fbuild::shards::run(),
+        Command::Checks { list } => fbuild::checks::run(list),
         Command::BuildBoards { size_dir, boards } => build_boards(&boards, size_dir),
         Command::BootTest {
             boards,

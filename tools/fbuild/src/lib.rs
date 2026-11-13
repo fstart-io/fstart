@@ -6,6 +6,7 @@ pub mod boot_test;
 pub mod build_board;
 pub mod bundle;
 mod cargo_features;
+pub mod checks;
 mod compiler_inputs;
 mod host_plan;
 pub mod ide;
