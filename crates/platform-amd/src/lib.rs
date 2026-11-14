@@ -51,6 +51,22 @@ macro_rules! entry {
         $crate::__stage::stage_bin!(main: $main);
     };
 }
+/// The `--option`s of every AMD board's host plan: where the PSP
+/// firmware comes from and the direct x86 Linux launcher's settings.
+#[cfg(feature = "host")]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct HostOptions {
+    /// The vendor flash image the PSP firmware is taken from or composed
+    /// into (`--image-config`).
+    pub image_config: Option<String>,
+    /// The directory the PSP firmware is packed from (`--blobs`, or
+    /// extracted by fbuild from `--donor`).
+    pub blobs: Option<String>,
+    #[serde(flatten)]
+    pub x86_linux: fstart_image_build::plan::X86LinuxOptions,
+}
+
 /// A die SoC board's host adapter: the `HostPlan` adapter. An SP3 board's
 /// is [`sp3::Plan`].
 #[cfg(feature = "host")]

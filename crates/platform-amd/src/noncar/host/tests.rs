@@ -6,6 +6,16 @@ use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
 use fstart_image_build::plan::CompilerFileSelection;
 use sha2::{Digest, Sha256};
 
+/// The plan of `B` with the selection's options parsed as the plan
+/// runner parses them.
+fn resolve<B: Board>(selection: BuildSelection) -> Result<BuildPlan, String>
+where
+    B::Soc: HostSoc,
+{
+    let options = selection.options()?;
+    super::resolve::<B>(selection, &options)
+}
+
 struct Vilboz;
 impl Board for Vilboz {
     type Soc = Picasso;

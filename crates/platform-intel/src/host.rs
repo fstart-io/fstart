@@ -3,7 +3,9 @@ extern crate std;
 use crate::facts::{BoardFacts, IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
-    plan::{BuildSelection, HostPlan, IntelPlan, IntelStagePlan, ResolvedPlan, Span},
+    plan::{
+        BuildSelection, HostPlan, IntelPlan, IntelStagePlan, ResolvedPlan, Span, X86LinuxOptions,
+    },
 };
 
 use std::{format, string::ToString, vec, vec::Vec};
@@ -11,8 +13,13 @@ use std::{format, string::ToString, vec, vec::Vec};
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
-    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, std::string::String> {
-        compilation_plan(resolve::<B>(selection)?)
+    type Options = X86LinuxOptions;
+
+    fn resolve(
+        selection: BuildSelection,
+        options: X86LinuxOptions,
+    ) -> Result<ResolvedPlan, std::string::String> {
+        compilation_plan(resolve::<B>(selection, options)?)
     }
 }
 
@@ -222,12 +229,14 @@ pub fn reservations<P: IntelPlatform>(
 
 pub fn resolve<B: IntelBoardFacts>(
     selection: BuildSelection,
+    x86_linux: X86LinuxOptions,
 ) -> Result<IntelPlan, std::string::String> {
     resolve_for::<B::Platform>(
         B::FACTS,
         B::CONFIG.max_cpus(),
         B::CONFIG.ehci_debug().is_some(),
         selection,
+        x86_linux,
     )
 }
 
@@ -236,10 +245,9 @@ fn resolve_for<P: IntelPlatform>(
     max_cpus: u16,
     ehci_debug: bool,
     selection: BuildSelection,
+    x86_linux: X86LinuxOptions,
 ) -> Result<IntelPlan, std::string::String> {
     let debug = Debug::select(ehci_debug, &selection.debug)?;
-    selection.reject_unknown_options(fstart_image_build::plan::options::X86_LINUX)?;
-    let x86_linux = selection.x86_linux()?;
     let requested_payload = selection.payload.clone().unwrap_or_else(|| "halt".into());
     if x86_linux.any() && requested_payload != "linux" {
         return Err("x86 Linux options require '--payload linux'".into());
@@ -398,11 +406,13 @@ mod tests {
         }));
     const FACTS: BoardFacts = BoardFacts::new(fstart_core::FlashLayout::IntelIfd(FLASH), 0x400000);
 
+    /// Through the selection's options, as the plan runner parses them.
     fn resolve(
         facts: BoardFacts,
         selection: BuildSelection,
     ) -> Result<IntelPlan, std::string::String> {
-        resolve_for::<Gm965>(facts, 2, false, selection)
+        let options = selection.options()?;
+        resolve_for::<Gm965>(facts, 2, false, selection, options)
     }
 
     #[test]
@@ -439,7 +449,7 @@ mod tests {
             const CONFIG: &'static crate::i945::I945Ich7Platform = &CONFIG;
             const FACTS: BoardFacts = FACTS;
         }
-        let plan = super::resolve::<Board>(BuildSelection::default()).unwrap();
+        let plan = super::resolve::<Board>(BuildSelection::default(), Default::default()).unwrap();
         assert_eq!(plan.max_cpus, 4);
         assert_eq!(plan.smm.entry_points, Some(4));
         assert_eq!(
@@ -447,7 +457,16 @@ mod tests {
             <Socket441 as LegacyCpu>::CAR_BASE
         );
         assert_eq!(plan.microcode.len(), 2);
-        assert!(resolve_for::<I945>(FACTS, 0, false, BuildSelection::default()).is_err());
+        assert!(
+            resolve_for::<I945>(
+                FACTS,
+                0,
+                false,
+                BuildSelection::default(),
+                Default::default()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
@@ -518,6 +537,7 @@ mod tests {
                 2,
                 false,
                 BuildSelection::default(),
+                Default::default(),
             )
             .unwrap(),
         )
@@ -631,9 +651,30 @@ mod tests {
     fn legacy_cpu_packages_are_independent_of_the_chipset() {
         type MobileI945 = crate::i945::I945Ich7<SocketM>;
         type MobileGm965 = crate::gm965::Gm965Ich8<SocketM>;
-        let atom = resolve_for::<I945>(FACTS, 2, false, BuildSelection::default()).unwrap();
-        let mobile = resolve_for::<MobileI945>(FACTS, 2, false, BuildSelection::default()).unwrap();
-        let gm = resolve_for::<MobileGm965>(FACTS, 2, false, BuildSelection::default()).unwrap();
+        let atom = resolve_for::<I945>(
+            FACTS,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let mobile = resolve_for::<MobileI945>(
+            FACTS,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let gm = resolve_for::<MobileGm965>(
+            FACTS,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
         assert!(atom.microcode.iter().all(|file| file.contains("06-1c-")));
         assert!(mobile.microcode.iter().any(|file| file.contains("06-0e-")));
         assert!(mobile.microcode.iter().any(|file| file.contains("06-0f-")));
@@ -711,7 +752,14 @@ mod tests {
             }),
             0x1000000,
         );
-        let plan = resolve_for::<Pineview>(facts, 4, false, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<Pineview>(
+            facts,
+            4,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
         let pineview = &plan.reservations;
         assert_eq!(
             pineview.flash,
@@ -763,7 +811,14 @@ mod tests {
             }),
             0x80000,
         );
-        let plan = resolve_for::<I945>(facts, 2, false, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<I945>(
+            facts,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
         let i945 = &plan.reservations;
         assert_eq!(
             i945.flash,

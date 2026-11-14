@@ -11,6 +11,7 @@ use super::{
     Board, DieSoc,
     layout::{Layout, Region},
 };
+use crate::HostOptions;
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, Platform, StageBuildConfig, StageLayout,
@@ -27,7 +28,7 @@ use fstart_image_build::{
         FileBinding, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
     },
     layout::EncodedLayout,
-    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, ResolvedPlan, Span, X86LinuxOptions},
     smm_image::ImageOptions,
 };
 use std::{
@@ -87,8 +88,10 @@ impl<B: Board> HostPlan<B> for Plan<B>
 where
     B::Soc: HostSoc,
 {
-    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
-        resolve::<B>(selection)
+    type Options = crate::HostOptions;
+
+    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String> {
+        resolve::<B>(selection, &options)
     }
 }
 
@@ -158,9 +161,12 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
 /// The payload: its name, the stage feature and its configuration.
 type Payload = (&'static str, Option<&'static str>, Option<PayloadConfig>);
 
-fn payload(policy: &Policy, selection: &BuildSelection) -> Result<Payload, String> {
+fn payload(
+    policy: &Policy,
+    selection: &BuildSelection,
+    x86_linux: &X86LinuxOptions,
+) -> Result<Payload, String> {
     let requested = selection.payload.as_deref().unwrap_or("halt");
-    let x86_linux = selection.x86_linux()?;
     if x86_linux.any() && requested != "linux" {
         return Err("x86 Linux options require '--payload linux'".into());
     }
@@ -273,10 +279,10 @@ fn bounded<const N: usize>(path: &str) -> Result<heapless::String<N>, String> {
 /// directory microcode of a vendor image, or the microcode files of the
 /// SoC's blob table. None without an image configuration or blobs.
 fn microcode<S: HostSoc>(
-    selection: &BuildSelection,
+    options: &HostOptions,
     packed: Option<&blobs::Resolved>,
 ) -> Result<Option<MicrocodeConfig>, String> {
-    let config = match (&S::POLICY.image_config, selection.image_config(), packed) {
+    let config = match (&S::POLICY.image_config, &options.image_config, packed) {
         (ImageConfig::Vendor { .. }, Some(path), _) => {
             let image =
                 std::fs::canonicalize(path).map_err(|e| format!("vendor image {path}: {e}"))?;
@@ -311,12 +317,14 @@ fn microcode<S: HostSoc>(
 /// (`[package.metadata.fstart.amd.<soc>]` of this crate) and the board's
 /// (`[package.metadata.fstart.amd]`) in the selected blob directory. None
 /// without a blob directory.
-fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolved>, String> {
-    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, selection.blobs())
-    else {
+fn packed<S: HostSoc>(
+    selection: &BuildSelection,
+    options: &HostOptions,
+) -> Result<Option<blobs::Resolved>, String> {
+    let (ImageConfig::Packed { .. }, Some(dir)) = (&S::POLICY.image_config, &options.blobs) else {
         return Ok(None);
     };
-    if selection.image_config().is_some() {
+    if options.image_config.is_some() {
         return Err(format!(
             "{} images are packed from --blobs, not --image-config",
             S::NAME
@@ -348,18 +356,18 @@ fn packed<S: HostSoc>(selection: &BuildSelection) -> Result<Option<blobs::Resolv
 }
 
 fn images<S: HostSoc>(
-    selection: &BuildSelection,
+    options: &HostOptions,
     packed: Option<blobs::Resolved>,
     ffs: Option<FfsAssembly>,
 ) -> Result<Vec<ImageStep>, String> {
     let layout = &S::LAYOUT;
     let flash_size = layout.flash.size as u32;
-    let (firmware, psp) = match (S::POLICY.image_config, selection.image_config(), packed) {
+    let (firmware, psp) = match (S::POLICY.image_config, &options.image_config, packed) {
         (ImageConfig::Vendor { prefix, psp }, Some(path), _) => (
             Firmware::Vendor {
                 image: FileBinding {
                     environment: "VENDOR_FLASH".into(),
-                    path: path.to_string(),
+                    path: path.clone(),
                     capacity: u64::from(flash_size),
                 },
                 prefix_size: prefix,
@@ -410,27 +418,22 @@ fn images<S: HostSoc>(
 }
 
 /// The build plan of board `B`.
-pub fn resolve<B: Board>(selection: BuildSelection) -> Result<BuildPlan, String>
+pub fn resolve<B: Board>(
+    selection: BuildSelection,
+    options: &HostOptions,
+) -> Result<BuildPlan, String>
 where
     B::Soc: HostSoc,
 {
     let policy = &<B::Soc as HostSoc>::POLICY;
     let layout = &<B::Soc as DieSoc>::LAYOUT;
     selection.reject_debug()?;
-    selection.reject_unknown_options(&[
-        fstart_image_build::plan::options::IMAGE_CONFIG,
-        fstart_image_build::plan::options::BLOBS,
-        fstart_image_build::plan::options::DONOR,
-        fstart_image_build::plan::options::X86_LINUX_KERNEL_LOAD_ADDR,
-        fstart_image_build::plan::options::X86_LINUX_BOOTARGS,
-        fstart_image_build::plan::options::X86_LINUX_PRINT_MTRRS,
-    ])?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
         return Err("noncar SoCs take no compiler inputs".into());
     }
     <B::Soc as HostSoc>::check(B::CONFIG)?;
-    let (payload, feature, payload_config) = payload(policy, &selection)?;
+    let (payload, feature, payload_config) = payload(policy, &selection, &options.x86_linux)?;
     let descriptor = descriptor(layout)?;
     let expectations = reset_layout(layout).expectations(&descriptor)?;
     expectations.validate()?;
@@ -444,14 +447,14 @@ where
         }],
         _ => vec![],
     };
-    let packed = packed::<B::Soc>(&selection)?;
-    let microcode = microcode::<B::Soc>(&selection, packed.as_ref())?;
+    let packed = packed::<B::Soc>(&selection, options)?;
+    let microcode = microcode::<B::Soc>(options, packed.as_ref())?;
     let mut ffs = ffs_window.map(|window| ffs(layout, window, payload_config, microcode));
     // The video BIOSes of the SoC's blob table go into the FFS.
     if let (Some(ffs), Some(packed)) = (&mut ffs, &packed) {
         ffs.file_assets = packed.files.assets.clone();
     }
-    let images = images::<B::Soc>(&selection, packed, ffs)?;
+    let images = images::<B::Soc>(options, packed, ffs)?;
     let stage = CompilationUnit {
         name: UNIT.into(),
         cargo_target: CargoTarget::BoardBinary,

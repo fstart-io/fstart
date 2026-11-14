@@ -1538,6 +1538,7 @@ dependencies = [
  "fstart-stage",
  "fstart-tcg",
  "heapless 0.8.0",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tock-registers",

@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::string::{String, ToString};
 use std::{format, vec};
 
+use crate::HostOptions;
 use crate::sp3::silicon::Generation;
 use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig};
 use fstart_core::layout::{Region, RegionKind};
@@ -46,7 +47,9 @@ use fstart_image_build::build_plan::{
 };
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
-use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan, Span as PlanSpan};
+use fstart_image_build::plan::{
+    BuildSelection, HostPlan, ResolvedPlan, Span as PlanSpan, X86LinuxOptions,
+};
 use fstart_image_build::smm_image::ImageOptions;
 
 use crate::sp3::layout::{
@@ -77,8 +80,10 @@ pub const SMM_STACK_SIZE: u32 = 0x2000;
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
 impl<B: Sp3BoardFacts> HostPlan<B> for Plan<B> {
-    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
-        resolve::<B>(&selection)
+    type Options = crate::HostOptions;
+
+    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String> {
+        resolve::<B>(&selection, &options)
     }
 }
 
@@ -192,7 +197,7 @@ pub enum Payload {
 }
 
 impl Payload {
-    pub fn select(selection: &BuildSelection) -> Result<Self, String> {
+    pub fn select(selection: &BuildSelection, linux: &X86LinuxOptions) -> Result<Self, String> {
         let payload = match selection.payload.as_deref() {
             None | Some("halt") => Self::Halt,
             Some("linux") => Self::Linux,
@@ -204,7 +209,7 @@ impl Payload {
                 ));
             }
         };
-        if selection.x86_linux()?.any() && payload != Self::Linux {
+        if linux.any() && payload != Self::Linux {
             return Err("x86 Linux options require '--payload linux'".into());
         }
         Ok(payload)
@@ -229,7 +234,7 @@ impl Payload {
         }
     }
 
-    fn config(self, selection: &BuildSelection) -> Result<Option<PayloadConfig>, String> {
+    fn config(self, linux: &X86LinuxOptions) -> Result<Option<PayloadConfig>, String> {
         use fstart_core::payload_manifest::{
             X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR, X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
         };
@@ -238,18 +243,15 @@ impl Payload {
             Self::Uefi | Self::UefiUi => {
                 Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD))
             }
-            Self::Linux => {
-                let linux = selection.x86_linux()?;
-                Some(fstart_core::x86_linux_payload(
-                    linux
-                        .kernel_load_addr
-                        .unwrap_or(X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
-                    X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
-                    linux.bootargs.as_deref().unwrap_or_default(),
-                    linux.print_mtrrs,
-                    crate::compression::PAYLOAD,
-                )?)
-            }
+            Self::Linux => Some(fstart_core::x86_linux_payload(
+                linux
+                    .kernel_load_addr
+                    .unwrap_or(X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
+                X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
+                linux.bootargs.as_deref().unwrap_or_default(),
+                linux.print_mtrrs,
+                crate::compression::PAYLOAD,
+            )?),
         })
     }
 }
@@ -331,21 +333,16 @@ fn ffs_assembly(
 }
 
 /// Resolve the board's plan: one build for every generation it supports.
-pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan, String> {
+pub fn resolve<B: Sp3BoardFacts>(
+    selection: &BuildSelection,
+    options: &HostOptions,
+) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    selection.reject_unknown_options(&[
-        fstart_image_build::plan::options::IMAGE_CONFIG,
-        fstart_image_build::plan::options::BLOBS,
-        fstart_image_build::plan::options::DONOR,
-        fstart_image_build::plan::options::X86_LINUX_KERNEL_LOAD_ADDR,
-        fstart_image_build::plan::options::X86_LINUX_BOOTARGS,
-        fstart_image_build::plan::options::X86_LINUX_PRINT_MTRRS,
-    ])?;
 
     if B::GENERATIONS.is_empty() {
         return Err("the board lists no SP3 generation".into());
     }
-    let payload = Payload::select(selection)?;
+    let payload = Payload::select(selection, &options.x86_linux)?;
     if !selection.compiler_files.is_empty() {
         return Err("SP3 takes no compiler file inputs".into());
     }
@@ -403,7 +400,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
     // The PSP firmware: packed from the blob directory (`--blobs`,
     // `--donor`), or the board's vendor ROM, which `--image-config`
     // replaces (same workspace-relative or absolute path rules).
-    let (vendor_image, packed, microcode) = match (selection.blobs(), selection.image_config()) {
+    let (vendor_image, packed, microcode) = match (&options.blobs, &options.image_config) {
         (Some(_), Some(_)) => {
             return Err(
                 "SP3 images are packed from --blobs or composed into --image-config".into(),
@@ -414,9 +411,7 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
             (String::new(), halves, microcode)
         }
         (None, image) => {
-            let vendor_image = image
-                .map(str::to_owned)
-                .unwrap_or_else(|| B::VENDOR_IMAGE.into());
+            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
             let microcode = microcode::<B>(&vendor_image)?;
             (vendor_image, vec![], microcode)
         }
@@ -427,7 +422,12 @@ pub fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan
         units: vec![smm_unit::<B>(), unit],
         stages: vec![STAGE_UNIT.into()],
         images: vec![
-            ffs_assembly(payload, payload.config(selection)?, Some(microcode)).into(),
+            ffs_assembly(
+                payload,
+                payload.config(&options.x86_linux)?,
+                Some(microcode),
+            )
+            .into(),
             ImageStep::new(
                 "flash",
                 ImageOperation::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
@@ -547,6 +547,12 @@ pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, 
 mod tests {
     use super::*;
     use fstart_image_build::amd::halved_flash::{self, FlashHalf, HalfAction};
+
+    /// The plan of `B` with the selection's options parsed as the plan
+    /// runner parses them.
+    fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan, String> {
+        super::resolve::<B>(selection, &selection.options()?)
+    }
 
     struct S8030;
     impl Sp3BoardFacts for S8030 {

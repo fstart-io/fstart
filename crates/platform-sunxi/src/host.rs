@@ -17,7 +17,7 @@ use fstart_image_build::{
         FfsAssembly as Assembly, InputFile, RunArtifact, RunMedia, RunRecipe, UnitOutput,
     },
     linker::resolved_ram_stage,
-    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
 };
 use std::{
     collections::BTreeMap,
@@ -45,7 +45,9 @@ pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: SunxiBoardFacts> HostPlan<B> for Plan<B> {
-    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+    type Options = NoOptions;
+
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
         resolve(B::FACTS, selection)
     }
 }
@@ -209,7 +211,6 @@ fn unit(
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    selection.reject_unknown_options(&[])?;
     if facts.qemu_orangepi_pc && facts.soc != crate::facts::SunxiSoc::H3 {
         return Err("QEMU's orangepi-pc machine is an H3 board".into());
     }

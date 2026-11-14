@@ -11,7 +11,7 @@ use fstart_image_build::{
     },
     layout::EncodedLayout,
     linker::Xip,
-    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
 };
 use std::{
     collections::BTreeMap,
@@ -22,7 +22,9 @@ use std::{
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
-    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+    type Options = NoOptions;
+
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
         resolve(B::MACHINE, selection)
     }
 }
@@ -245,7 +247,6 @@ fn qemu_recipe(machine: VirtMachine, policy: &QemuPolicy) -> RunRecipe {
 
 pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    selection.reject_unknown_options(&[])?;
     match machine {
         VirtMachine::Riscv64 | VirtMachine::Armv7 | VirtMachine::Aarch64 => {
             resolve_virt(machine, selection)

@@ -18,7 +18,7 @@ use fstart_image_build::{
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
-    plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
 };
 use std::{
     collections::BTreeMap,
@@ -41,14 +41,15 @@ pub const MAIN_HEAP_SIZE: u32 = 0x4_0000;
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: AspeedBoardFacts> HostPlan<B> for Plan<B> {
-    fn resolve(selection: BuildSelection) -> Result<ResolvedPlan, String> {
+    type Options = NoOptions;
+
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
         resolve(B::FACTS, selection)
     }
 }
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    selection.reject_unknown_options(&[])?;
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     let elf = match payload.as_str() {
         "halt" => false,

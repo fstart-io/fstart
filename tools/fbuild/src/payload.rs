@@ -122,8 +122,9 @@ pub struct BuildArgs {
     #[arg(long = "debug", value_enum)]
     pub debug: Vec<DebugOption>,
     /// Platform-owned build option, as NAME=VALUE; repeatable. The names
-    /// are the selected platform's (see `fbuild explain`); the dedicated
-    /// flags above feed the well-known ones.
+    /// are the selected platform's: an unknown one is rejected with the
+    /// list the platform takes. The dedicated flags above feed the
+    /// well-known ones.
     #[arg(long = "option", value_parser = parse_payload_file)]
     pub plan_options: Vec<(String, String)>,
     /// External file for an input the board's plan declares, as

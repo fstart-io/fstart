@@ -41,8 +41,11 @@ const fn span(base: u64, size: u64) -> Span {
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
 impl<B: Fu740Board> fstart_image_build::plan::HostPlan<B> for Plan<B> {
+    type Options = fstart_image_build::plan::NoOptions;
+
     fn resolve(
         selection: BuildSelection,
+        _: Self::Options,
     ) -> Result<fstart_image_build::plan::ResolvedPlan, String> {
         resolve(B::CONFIG, B::DEVICE_TREE, selection)
     }
@@ -55,7 +58,6 @@ pub fn resolve(
     selection: BuildSelection,
 ) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    selection.reject_unknown_options(&[])?;
     let payload = selection.payload.unwrap_or_else(|| "linux".into());
     if !matches!(payload.as_str(), "halt" | "linux" | "uefi") {
         return Err("FU740 supports halt, Linux and UEFI".into());
