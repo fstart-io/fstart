@@ -22,6 +22,9 @@ pub mod compression {
 
 /// The boot flow, for every SoC.
 pub mod flow;
+/// The host build plan, for every board.
+#[cfg(feature = "host")]
+pub mod host;
 /// The reset image's DRAM layout and boot flash, for every SoC.
 pub mod layout;
 /// The boot media mount every AMD flow shares.
