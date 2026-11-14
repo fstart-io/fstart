@@ -45,12 +45,6 @@ pub struct Board;
 
 /// The BMC's diagnostic interrupt button.
 const NMI_BUTTON_GEVENT: u8 = 11;
-/// SW SMIs 0xC0 + Sx report the sleep state to the BMC (AMI BmcAcpi).
-const BMC_SLEEP_NOTIFY: fstart_driver_ipmi::SleepNotify = fstart_driver_ipmi::SleepNotify {
-    kcs_port: fstart_driver_ipmi::kcs::DEFAULT_PORT,
-    kcs_spacing: fstart_driver_ipmi::kcs::DEFAULT_SPACING as u8,
-    sw_smi_base: 0xc0,
-};
 
 const COM1: u16 = 0x3f8;
 const COM1_IRQ: u8 = 4;
@@ -156,7 +150,13 @@ impl fstart_platform_amd::board::Board for Board {
         &[fstart_platform_amd::board::SocId::Zeppelin];
     /// The package's ceiling: two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
-    const BMC_SX_NOTIFY: Option<fstart_driver_ipmi::SleepNotify> = Some(BMC_SLEEP_NOTIFY);
+    /// SW SMIs 0xC0 + Sx report the sleep state to the BMC (AMI BmcAcpi).
+    const BMC_SX_NOTIFY: Option<fstart_driver_ipmi::SleepNotify> =
+        Some(fstart_driver_ipmi::SleepNotify {
+            kcs_port: fstart_driver_ipmi::kcs::DEFAULT_PORT,
+            kcs_spacing: fstart_driver_ipmi::kcs::DEFAULT_SPACING as u8,
+            sw_smi_base: 0xc0,
+        });
 }
 
 /// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.

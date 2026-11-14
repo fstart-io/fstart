@@ -442,7 +442,7 @@ pub(crate) fn tables<S: crate::flow::Soc<State = State<F>>, F>(
     step(0x70, "ACPI");
     let state = &silicon.state;
     let view = state.view(flow);
-    let rsdp = parts::handoff::acpi(&view, numa, nbios, pci, &acpi, board.bmc_sx_notify);
+    let rsdp = parts::handoff::acpi(&view, numa, nbios, pci, &acpi, board);
     let smbios = super::smbios::install(&view, &silicon.cpus, flow.rom_size, smbios, pci);
     Tables {
         rsdp: Some(rsdp),

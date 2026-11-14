@@ -190,6 +190,80 @@ pub struct Inputs<'a> {
     pub board: &'a Board,
 }
 
+/// What a SoC's flow gathers for the tables: its fabric's root bridges,
+/// its CPUs, NUMA and power, its own devices, AML and tables. `install`
+/// adds what every SoC has.
+#[derive(Debug, Clone, Copy)]
+pub struct Soc<'a> {
+    pub soc: &'a SocAcpi,
+    pub pci: PciRootInfo,
+    pub cpus: &'a [Cpu],
+    pub fch_ioapic_id: u8,
+    pub root_bridges: &'a [RootBridgeAcpi<'a>],
+    pub numa: Option<Numa<'a>>,
+    /// The C-states every core runs.
+    pub cstates: Option<fstart_driver_amd::ccx::power::CstateInfo>,
+    pub threads_per_core: u8,
+    pub devices: &'a [AcpiGenericDevice],
+    pub sb_aml: &'a [u8],
+    pub tables: &'a [Vec<u8>],
+}
+
+/// Build the tables of `soc` with what every SoC adds: the HPET, the BSP's
+/// P-states (every core runs its table), the SMI command and ACPI mode
+/// values of its SMM handler (`smi`), the board's BMC sleep notification
+/// and contributions, and the TPM measured boot started on; lay them out
+/// in `storage`, which is where they stay. Returns the RSDP.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub fn install(
+    soc: &Soc,
+    smi: Option<&fstart_driver_amd::fch::smi::Config>,
+    facts: &crate::board::Facts,
+    board: &Board,
+    storage: &mut [u8],
+) -> Result<u64, AmlError> {
+    // SAFETY: the HPET general capabilities register, decoded by the FCH;
+    // read only.
+    let hpet_block_id =
+        unsafe { fstart_core::mmio::read32(fstart_driver_amd::fch::HPET as usize as *const u32) };
+    // SAFETY: the BSP, reading the architectural P-state MSRs.
+    let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
+    let pstates = fstart_driver_amd::ccx::power::pstates(&msr);
+    let tables = build(&Inputs {
+        soc: soc.soc,
+        pci: soc.pci,
+        cpus: soc.cpus,
+        fch_ioapic_id: soc.fch_ioapic_id,
+        hpet_block_id,
+        root_bridges: soc.root_bridges,
+        numa: soc.numa,
+        power: Some(Power {
+            pstates: &pstates,
+            cstates: soc.cstates,
+            threads_per_core: soc.threads_per_core,
+            c2_latency_us: fstart_driver_amd::ccx::power::c2_latency_us(
+                fstart_arch::x86::mp::CpuIdentity::current(),
+            ),
+        }),
+        // The OS enables SCI_EN through the SMM handler.
+        acpi_smi: smi.map(|smi| AcpiSmiConfig {
+            smi_cmd: fstart_driver_amd::fch::smi::APM_CNT.into(),
+            acpi_enable: smi.acpi_enable,
+            acpi_disable: smi.acpi_disable,
+        }),
+        bmc_sx_notify: facts.bmc_sx_notify,
+        tpm: crate::tpm::acpi(),
+        devices: soc.devices,
+        sb_aml: soc.sb_aml,
+        tables: soc.tables,
+        board,
+    })?;
+    let address = storage.as_ptr() as u64;
+    let length = tables.assemble_into(storage, address)?;
+    fstart_log::info!("acpi: {} bytes at {:#x}", length as u32, address);
+    Ok(address)
+}
+
 /// The built table set, ready for `fstart_acpi::platform::assemble_into`.
 pub struct Tables {
     /// FADT, MADT and HPET parameters.
