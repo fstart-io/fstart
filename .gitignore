@@ -35,8 +35,9 @@ __pycache__/
 # Linux kernel build artifacts
 bzImage
 
-# CI payload/boot-test assets (built via `nix run .#ci-build-payloads`)
-boot-assets/
+# Boot-test assets (`nix build .#boot-assets`, or CI's copy)
+/boot-assets/
+/result
 
 # Board crates are not workspace members; their lockfiles are rust-analyzer/cargo-check artifacts.
 # Real builds lock inside the fbuild temp workspace under target/.

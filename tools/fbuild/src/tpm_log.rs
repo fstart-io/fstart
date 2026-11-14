@@ -179,20 +179,20 @@ fn describe(kind: u32, data: &[u8]) -> (String, String) {
         EV_S_CRTM_CONTENTS => "EV_S_CRTM_CONTENTS",
         EV_S_CRTM_VERSION => "EV_S_CRTM_VERSION",
         EV_PLATFORM_CONFIG_FLAGS => "EV_PLATFORM_CONFIG_FLAGS",
-        0x0d => "EV_IPL",
-        0x0e => "EV_IPL_PARTITION_DATA",
+        EV_IPL => "EV_IPL",
+        EV_IPL_PARTITION_DATA => "EV_IPL_PARTITION_DATA",
         EV_POST_CODE2 => "EV_POST_CODE2",
-        0x80000001 => "EV_EFI_VARIABLE_DRIVER_CONFIG",
-        0x80000002 => "EV_EFI_VARIABLE_BOOT",
-        0x80000003 => "EV_EFI_BOOT_SERVICES_APPLICATION",
-        0x80000006 => "EV_EFI_GPT_EVENT",
+        EV_EFI_VARIABLE_DRIVER_CONFIG => "EV_EFI_VARIABLE_DRIVER_CONFIG",
+        EV_EFI_VARIABLE_BOOT => "EV_EFI_VARIABLE_BOOT",
+        EV_EFI_BOOT_SERVICES_APPLICATION => "EV_EFI_BOOT_SERVICES_APPLICATION",
+        EV_EFI_GPT_EVENT => "EV_EFI_GPT_EVENT",
         EV_EFI_ACTION => "EV_EFI_ACTION",
         EV_EFI_PLATFORM_FIRMWARE_BLOB => "EV_EFI_PLATFORM_FIRMWARE_BLOB",
-        0x80000009 => "EV_EFI_HANDOFF_TABLES",
+        EV_EFI_HANDOFF_TABLES => "EV_EFI_HANDOFF_TABLES",
         EV_EFI_PLATFORM_FIRMWARE_BLOB2 => "EV_EFI_PLATFORM_FIRMWARE_BLOB2",
         EV_EFI_HANDOFF_TABLES2 => "EV_EFI_HANDOFF_TABLES2",
-        0x8000000c => "EV_EFI_VARIABLE_BOOT2",
-        0x800000e0 => "EV_EFI_VARIABLE_AUTHORITY",
+        EV_EFI_VARIABLE_BOOT2 => "EV_EFI_VARIABLE_BOOT2",
+        EV_EFI_VARIABLE_AUTHORITY => "EV_EFI_VARIABLE_AUTHORITY",
         _ => return (format!("{kind:#x}"), String::new()),
     };
     let text = match kind {
@@ -232,9 +232,10 @@ fn digest(alg: u16, parts: &[&[u8]]) -> Vec<u8> {
     out[..size].to_vec()
 }
 
-/// A successful report is returned only when all required measurements replay.
-/// On failure the caller prints the error to the same verification log.
-pub fn verify(serial: &str, expects: &[String], banks: Option<&[String]>) -> Result<String> {
+/// A successful report is returned only when all required measurements replay
+/// and the log holds every `(measure::kind, PCR)` of `expects`. `banks` (TPM
+/// algorithm ids) must be exactly those logged and read; any by default.
+pub fn verify(serial: &str, expects: &[(u32, u32)], banks: Option<&[u16]>) -> Result<String> {
     let (readings, log) = parse_serial(serial)?;
     let events = parse_log(&log)?;
     let logged: BTreeSet<_> = events[0]
@@ -242,9 +243,10 @@ pub fn verify(serial: &str, expects: &[String], banks: Option<&[String]>) -> Res
         .keys()
         .map(|alg| bank(*alg))
         .collect::<Result<_>>()?;
-    let expected: BTreeSet<_> = banks
-        .map(|b| b.iter().map(String::as_str).collect())
-        .unwrap_or_else(|| logged.clone());
+    let expected: BTreeSet<_> = match banks {
+        Some(banks) => banks.iter().map(|alg| bank(*alg)).collect::<Result<_>>()?,
+        None => logged.clone(),
+    };
     if expected != logged
         || readings.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected
     {
@@ -261,7 +263,7 @@ pub fn verify(serial: &str, expects: &[String], banks: Option<&[String]>) -> Res
     let mut failures = Vec::new();
     for event in events {
         let (name, text) = describe(event.kind, event.data);
-        seen.insert(format!("{name}@{}", event.pcr));
+        seen.insert((event.kind, event.pcr));
         writeln!(output, "  PCR{:<2} {name:34} {text}", event.pcr)?;
         if event.kind == EV_NO_ACTION {
             continue;
@@ -322,9 +324,9 @@ pub fn verify(serial: &str, expects: &[String], banks: Option<&[String]>) -> Res
     if !(0..8).all(|pcr| separators.contains(&pcr)) {
         failures.push("missing PCR 0-7 separators".into());
     }
-    for expect in expects {
-        if !seen.contains(expect) {
-            failures.push(format!("no {expect} in the log"));
+    for &(kind, pcr) in expects {
+        if !seen.contains(&(kind, pcr)) {
+            failures.push(format!("no {}@{pcr} in the log", describe(kind, &[]).0));
         }
     }
     if !failures.is_empty() {

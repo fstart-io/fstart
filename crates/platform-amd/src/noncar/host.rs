@@ -82,6 +82,8 @@ pub trait HostSoc: DieSoc {
 
 /// The board's plan generator: `fstart_platform_amd::Plan::<Board>::emit`.
 pub struct Plan<B>(core::marker::PhantomData<B>);
+/// No machine of this platform boots in QEMU.
+impl<B> fstart_image_build::boot_test::BootTests for Plan<B> {}
 impl<B: Board> Plan<B>
 where
     B::Soc: HostSoc,

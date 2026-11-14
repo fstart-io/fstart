@@ -87,8 +87,9 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
     pub fn scan_pci(self) -> Self {
         let pci = step("PCI", || enumerate_pci(&self.config.pci));
         fstart_log::info!(
-            "{}: PCI root ready ({} devices)",
+            "{}: {} ({} devices)",
             self.config.name,
+            crate::messages::PCI_ROOT_READY,
             pci.device_count()
         );
         self
@@ -101,7 +102,7 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
         step("device tree", || {
             fstart_stage::copy_fdt_to_workspace(self.dtb, self.region(RegionKind::DeviceTree).base)
         });
-        fstart_log::info!("{} ramstage: ready for payload", self.config.name);
+        fstart_log::info!("{} {}", self.config.name, crate::messages::READY);
         self.hand_off(|handoff| fstart_payload::boot(handoff, ()))
     }
 

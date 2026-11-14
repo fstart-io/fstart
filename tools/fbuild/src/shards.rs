@@ -7,18 +7,15 @@
 //! shard also boots its own boards in QEMU, reusing the target directory that
 //! just built them.
 //!
-//! ```sh
-//! ci/qemu-boot-tests.sh --list | cargo fbuild shards
-//! ```
-//!
-//! prints the job matrix `{"include": [{"shard", "boards", "boots", "qemu",
-//! "assets"}, ...]}`. `boards` and `boots` are space separated board ids;
-//! `qemu` is the apt packages emulating the shard's architecture and `assets`
-//! the boot-assets artifact its boots read, both empty without boots.
+//! `fbuild shards` prints the job matrix `{"include": [{"shard", "boards",
+//! "packages"}, ...]}`. `boards` is space separated board ids, `packages` the
+//! apt packages that emulate the shard's architecture for whichever of its
+//! boards have boot tests (their platforms' plans say which), empty where
+//! QEMU has no machine for it.
 
 use crate::board_manifest::BoardManifest;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Builds per job: a board and each of its variants count as one build each.
 pub const MAX_BUILDS: usize = 7;
@@ -26,16 +23,17 @@ pub const MAX_BUILDS: usize = 7;
 /// The apt packages emulating a platform. CI installs no recommended
 /// packages, but the network cards of the virt machines need the option ROMs
 /// of ipxe-qemu and sbsa-ref's display the VGA BIOS of seabios, which only
-/// qemu-system-x86 depends on. The names are those of the runner image the
-/// workflow pins (Ubuntu 26.04).
-fn qemu_packages(platform: &str) -> Option<&'static str> {
-    Some(match platform {
+/// qemu-system-x86 depends on; the q35 measured-boot tests need swtpm. The
+/// names are those of the runner image the workflow pins (Ubuntu 26.04).
+fn qemu_packages(platform: &str) -> &'static str {
+    match platform {
         "aarch64" => "qemu-system-arm ipxe-qemu seabios",
         "armv7" => "qemu-system-arm ipxe-qemu",
         "riscv64" => "qemu-system-riscv ipxe-qemu",
-        "x86" | "x86_64" => "qemu-system-x86",
-        _ => return None,
-    })
+        "x86" => "qemu-system-x86",
+        "x86_64" => "qemu-system-x86 swtpm swtpm-tools",
+        _ => "",
+    }
 }
 
 /// One firmware job.
@@ -43,9 +41,7 @@ fn qemu_packages(platform: &str) -> Option<&'static str> {
 pub struct Shard {
     pub shard: String,
     pub boards: String,
-    pub boots: String,
-    pub qemu: String,
-    pub assets: String,
+    pub packages: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -98,16 +94,8 @@ fn split<'a, 'b>(boards: &'b [Board<'a>]) -> Vec<&'b [Board<'a>]> {
     shards
 }
 
-pub fn matrix(boards: &[Board<'_>], boot_boards: &BTreeSet<&str>) -> Result<Matrix, String> {
-    let known: BTreeSet<_> = boards.iter().map(|b| b.board).collect();
-    let unknown: Vec<_> = boot_boards.difference(&known).copied().collect();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "boot tests name unknown boards: {}",
-            unknown.join(", ")
-        ));
-    }
-
+#[must_use]
+pub fn matrix(boards: &[Board<'_>]) -> Matrix {
     let mut platforms: BTreeMap<&str, Vec<Board<'_>>> = BTreeMap::new();
     for board in boards {
         platforms
@@ -122,28 +110,6 @@ pub fn matrix(boards: &[Board<'_>], boot_boards: &BTreeSet<&str>) -> Result<Matr
         group.sort_by_key(|b| (b.dependency, b.board));
         let shards = split(&group);
         for (index, shard) in shards.iter().enumerate() {
-            let boots: Vec<_> = shard
-                .iter()
-                .map(|b| b.board)
-                .filter(|b| boot_boards.contains(b))
-                .collect();
-            // Every board is built; only one that boots needs an emulator.
-            let (qemu, assets) = if boots.is_empty() {
-                ("", "")
-            } else {
-                let qemu = qemu_packages(platform).ok_or_else(|| {
-                    format!(
-                        "no QEMU package known for platform {platform}, which {} boot on",
-                        boots.join(", ")
-                    )
-                })?;
-                let assets = if matches!(platform, "x86" | "x86_64") {
-                    "x86_64"
-                } else {
-                    "payloads"
-                };
-                (qemu, assets)
-            };
             include.push(Shard {
                 shard: if shards.len() == 1 {
                     platform.to_string()
@@ -155,26 +121,19 @@ pub fn matrix(boards: &[Board<'_>], boot_boards: &BTreeSet<&str>) -> Result<Matr
                     .flat_map(|b| b.builds.iter().copied())
                     .collect::<Vec<_>>()
                     .join(" "),
-                boots: boots.join(" "),
-                qemu: qemu.into(),
-                assets: assets.into(),
+                packages: qemu_packages(platform).into(),
             });
         }
     }
-    Ok(Matrix { include })
+    Matrix { include }
 }
 
-/// `fbuild shards`: the matrix of every discovered board, with the boots
-/// `qemu-boot-tests.sh --list` writes to `boot_list` ("board payload" lines).
-pub fn run(boot_list: &str) -> Result<(), String> {
+/// `fbuild shards`: the matrix of every discovered board.
+pub fn run() -> Result<(), String> {
     let root = crate::build_board::workspace_root_pub()?;
     let manifests = crate::board_manifest::discover(&root)?;
     let boards: Vec<Board<'_>> = manifests.iter().map(Board::from).collect();
-    let boots = boot_list
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .collect();
-    let matrix = matrix(&boards, &boots)?;
+    let matrix = matrix(&boards);
     println!(
         "{}",
         serde_json::to_string(&matrix).map_err(|e| e.to_string())?
@@ -195,51 +154,38 @@ mod tests {
         }
     }
 
-    fn shard(shard: &str, boards: &str, boots: &str, qemu: &str, assets: &str) -> Shard {
+    fn shard(shard: &str, boards: &str, packages: &str) -> Shard {
         Shard {
             shard: shard.into(),
             boards: boards.into(),
-            boots: boots.into(),
-            qemu: qemu.into(),
-            assets: assets.into(),
+            packages: packages.into(),
         }
     }
 
     #[test]
-    fn one_shard_per_platform_with_its_boots() {
+    fn one_shard_per_platform_with_its_emulator() {
         let boards = [
             board("qemu-riscv64", "riscv64", "fstart-platform-qemu"),
             board("qemu-q35", "x86_64", "fstart-platform-qemu"),
             board("unmatched", "riscv64", "fstart-platform-sifive"),
         ];
-        let boots = BTreeSet::from(["qemu-q35", "qemu-riscv64"]);
         assert_eq!(
-            matrix(&boards, &boots).unwrap().include,
+            matrix(&boards).include,
             [
                 shard(
                     "riscv64",
                     "qemu-riscv64 unmatched",
-                    "qemu-riscv64",
                     "qemu-system-riscv ipxe-qemu",
-                    "payloads"
                 ),
-                shard(
-                    "x86_64",
-                    "qemu-q35",
-                    "qemu-q35",
-                    "qemu-system-x86",
-                    "x86_64"
-                ),
+                shard("x86_64", "qemu-q35", "qemu-system-x86 swtpm swtpm-tools"),
             ]
         );
     }
 
     #[test]
-    fn shard_without_boots_installs_no_qemu() {
-        let include = matrix(&[board("pc2", "aarch64", "")], &BTreeSet::new())
-            .unwrap()
-            .include;
-        assert_eq!(include, [shard("aarch64", "pc2", "", "", "")]);
+    fn a_platform_qemu_cannot_emulate_installs_nothing() {
+        let include = matrix(&[board("bmc", "armv5te", "")]).include;
+        assert_eq!(include, [shard("armv5te", "bmc", "")]);
     }
 
     #[test]
@@ -253,7 +199,7 @@ mod tests {
             builds: vec!["amd", "amd-b", "amd-c"],
             ..board("amd", "x86_64", "fstart-platform-amd")
         });
-        let include = matrix(&boards, &BTreeSet::new()).unwrap().include;
+        let include = matrix(&boards).include;
         let shards: Vec<_> = include.iter().map(|s| s.shard.as_str()).collect();
         assert_eq!(shards, ["x86_64-1", "x86_64-2"]);
         // The AMD board sorts first; its variants count against the limit
@@ -287,7 +233,7 @@ mod tests {
                 ..board(name, platform, "")
             })
             .collect();
-        let include = matrix(&boards, &BTreeSet::new()).unwrap().include;
+        let include = matrix(&boards).include;
         let mut built: Vec<_> = include.iter().flat_map(|s| s.boards.split(' ')).collect();
         let mut expected: Vec<_> = boards.iter().flat_map(|b| b.builds.clone()).collect();
         built.sort_unstable();
@@ -302,7 +248,7 @@ mod tests {
             board("novel", "ppc64", "fstart-platform-qemu"),
             board("qemu-q35", "x86_64", "fstart-platform-qemu"),
         ];
-        let include = matrix(&boards, &BTreeSet::new()).unwrap().include;
+        let include = matrix(&boards).include;
         let shards: Vec<_> = include
             .iter()
             .map(|s| (s.shard.as_str(), s.boards.as_str()))
@@ -315,20 +261,5 @@ mod tests {
                 ("x86_64", "qemu-q35")
             ]
         );
-    }
-
-    #[test]
-    fn boot_on_a_platform_without_qemu_packages_is_an_error() {
-        let error = matrix(&[board("novel", "ppc64", "")], &BTreeSet::from(["novel"]));
-        assert!(error.unwrap_err().contains("ppc64, which novel boot"));
-    }
-
-    #[test]
-    fn boot_test_of_an_unknown_board_is_an_error() {
-        let error = matrix(
-            &[board("qemu-q35", "x86_64", "")],
-            &BTreeSet::from(["gone"]),
-        );
-        assert!(error.unwrap_err().contains("gone"));
     }
 }

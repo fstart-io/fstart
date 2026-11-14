@@ -616,6 +616,7 @@ dependencies = [
  "fstart-platform-qemu",
  "heapless 0.8.0",
  "object 0.37.3",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -112,7 +112,7 @@ mod stage {
                 config.firmware_size,
             )
         });
-        fstart_log::info!("sifive-u ramstage: ready for payload");
+        fstart_log::info!("sifive-u {}", crate::messages::READY);
         let mainstage = QemuSifiveUMainstage {
             #[cfg(any(feature = "linux", feature = "crabefi"))]
             config,

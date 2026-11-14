@@ -153,8 +153,24 @@ pub fn assemble(
         .payload
         .as_ref()
         .is_some_and(|payload| payload.kind == fstart_core::PayloadKind::Coreboot);
-    if !payload_files.is_empty() && !coreboot {
-        return Err("--payload-file is only for coreboot payloads".into());
+    // A coreboot payload reads any file from the coreboot table; another
+    // payload takes only its device tree, by the name the board gives it.
+    let dtb_name = config
+        .payload
+        .as_ref()
+        .and_then(|payload| match &payload.fdt {
+            FdtSource::Override(name) => Some(name.as_str()),
+            _ => None,
+        });
+    if !coreboot
+        && let Some((name, _)) = payload_files
+            .iter()
+            .find(|(name, _)| Some(name.as_str()) != dtb_name)
+    {
+        return Err(format!(
+            "--payload-file {name}: only coreboot payloads take files; others take only their device tree{}",
+            dtb_name.map(|dtb| format!(" ({dtb})")).unwrap_or_default()
+        ));
     }
     if let Some(ref payload) = config.payload {
         if payload.kind == fstart_core::PayloadKind::FitImage {
@@ -180,10 +196,16 @@ pub fn assemble(
         }
 
         if let FdtSource::Override(ref dtb_name) = payload.fdt {
-            let dtb_path = board_dir.join(dtb_name.as_str());
+            let dtb_path = payload_files
+                .iter()
+                .find(|(name, _)| name == dtb_name.as_str())
+                .map_or_else(
+                    || board_dir.join(dtb_name.as_str()),
+                    |(_, path)| path.into(),
+                );
             if dtb_path.exists() {
-                let dtb_data =
-                    fs::read(&dtb_path).map_err(|e| format!("failed to read DTB: {e}"))?;
+                let dtb_data = fs::read(&dtb_path)
+                    .map_err(|e| format!("failed to read DTB {}: {e}", dtb_path.display()))?;
                 let dtb_load_addr = payload.dtb_addr.unwrap_or(0);
 
                 ro_files.push(InputFile {

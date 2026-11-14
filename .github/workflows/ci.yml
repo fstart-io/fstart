@@ -43,6 +43,8 @@ env:
   # ships without the 8 MiB default (and closes the connection when a
   # reply cannot be written). The daemon inherits this on auto-start.
   SCCACHE_MAX_FRAME_LENGTH: "4294967295"
+  # Some host tests need more than libtest's 2 MiB thread stack.
+  RUST_MIN_STACK: 8388608
 
 # Every job names its runner image: the packages a job installs are the
 # image's, and ubuntu-latest moves between releases job by job while GitHub
@@ -73,8 +75,7 @@ jobs:
       - name: List firmware shards
         id: list
         run: |
-          set -o pipefail
-          shards=$(ci/qemu-boot-tests.sh --list | cargo fbuild shards)
+          shards=$(cargo fbuild shards)
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
 
   test:
@@ -100,8 +101,6 @@ jobs:
         run: cargo clippy --all-targets
 
       - name: Tests
-        env:
-          RUST_MIN_STACK: 8388608
         run: |
           cargo test
           cargo test -p fstart-stage \
@@ -141,16 +140,16 @@ jobs:
               --features fstart-stage/ffs,fstart-stage/ed25519,fstart-stage/fdt,fstart-stage/handoff,fstart-stage/alloc
           done
 
-  # Every discovered board and variant must link in release, and the QEMU
-  # boards must boot. Runners are the scarce resource, so a job builds a
-  # whole shard of boards in one target directory (host tools and shared
-  # units compile once) and then boots the shard's QEMU boards from it. A
+  # Every discovered board and variant must link in release, and boot the
+  # tests its platform declares for it. Runners are the scarce resource, so a
+  # job builds a whole shard of boards in one target directory (host tools
+  # and shared units compile once) and then boots them from it. A
   # failing board or boot never stops the ones after it, nor other shards.
   # Nor do failed boot assets stop the builds: the job waits for the assets
-  # but runs without them, and only the boots that need them are lost.
+  # but runs without them, and only the boots are lost.
   firmware:
     name: firmware (${{ matrix.shard }})
-    needs: [boards, qemu-boot-assets]
+    needs: [boards, boot-assets]
     if: ${{ !cancelled() && needs.boards.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
@@ -166,15 +165,17 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           llvm-tools: "true"
-          packages: acpica-tools ${{ matrix.qemu }}
+          packages: acpica-tools ${{ matrix.packages }}
 
+      # NOTE: FSTART_EXTRA_RUSTFLAGS must NOT be set here. Resolved builds
+      # fail closed on unrecorded ambient inputs (tools/fbuild/src/selection.rs).
       - name: Build and test boards
         env:
           BOARDS: ${{ matrix.boards }}
-          RUST_MIN_STACK: 8388608
         run: |
-          read -ra boards <<< "$BOARDS"
-          ci/build-boards.sh stage-sizes "${boards[@]}"
+          # The board list is space separated.
+          # shellcheck disable=SC2086
+          cargo fbuild build-boards --size-dir stage-sizes $BOARDS
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -183,34 +184,32 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # Missing assets must fail CI, not silently skip optional boots:
-      # download-artifact errors when the producer uploaded nothing.
+      # Missing assets must fail CI, not silently skip boots: download-artifact
+      # errors when the producer uploaded nothing. Only shards QEMU can
+      # emulate (with packages to install) boot.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: boot-assets
-        if: ${{ !cancelled() && matrix.assets != '' }}
+        if: ${{ !cancelled() && matrix.packages != '' }}
         with:
-          name: boot-assets-${{ matrix.assets }}
-          path: boot-assets/${{ matrix.assets }}
+          name: boot-assets
+          path: boot-assets
 
       # Boots still run when another board of the shard failed to build.
-      - name: Run QEMU boot tests
+      - name: Boot tests
         if: >-
-          ${{ !cancelled() && matrix.boots != '' &&
+          ${{ !cancelled() && matrix.packages != '' &&
               steps.boot-assets.outcome == 'success' }}
         env:
-          BOOTS: ${{ matrix.boots }}
+          BOARDS: ${{ matrix.boards }}
         run: |
-          filters=()
-          for board in $BOOTS; do
-            filters+=(--board "$board")
-          done
-          ci/qemu-boot-tests.sh boot-assets/payloads "${filters[@]}"
+          # shellcheck disable=SC2086
+          cargo fbuild boot-test --assets boot-assets $BOARDS
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: qemu-boot-logs-${{ matrix.shard }}
-          path: target/qemu-boot-tests/
+          name: boot-test-logs-${{ matrix.shard }}
+          path: target/boot-tests/
           if-no-files-found: ignore
 
   # Stage sizes of every board, kept as an artifact of each run. The
@@ -245,135 +244,44 @@ jobs:
           path: stage-sizes.json
           retention-days: 90
 
-  # Keep a single stable status check for everything the old check job ran.
-  check:
-    if: always()
-    needs: [test, firmware, stage-sizes]
+  # What the boot tests boot besides fstart, built by Nix from inputs pinned
+  # by flake.lock and ci/boot-assets. The cache carries the assets across
+  # runs; within a run they travel as an artifact, so a cache eviction
+  # cannot fail a boot.
+  boot-assets:
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - name: Require tests and firmware jobs to pass
-        env:
-          TEST_RESULT: ${{ needs.test.result }}
-          BUILD_RESULT: ${{ needs.firmware.result }}
-          SIZES_RESULT: ${{ needs.stage-sizes.result }}
-        run: >-
-          test "$TEST_RESULT" = success &&
-          test "$BUILD_RESULT" = success &&
-          test "$SIZES_RESULT" = success
-
-  qemu-boot-assets:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        assets: [payloads, x86_64]
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # The cache carries the assets across runs; within a run they travel
-      # as artifacts (uploaded below) so a boot job cannot be failed by a
-      # cache eviction between this job and its consumers.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: matrix.assets == 'payloads'
-        id: payload-cache
         with:
-          path: boot-assets/payloads
-          key: ${{ runner.os }}-qemu-payloads-${{ hashFiles('ci/build-payloads.sh', 'ci/kernel-*.config') }}
-
+          persist-credentials: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: matrix.assets == 'x86_64'
-        id: x86-boot-assets-cache
+        id: cache
         with:
-          path: boot-assets/x86_64
-          key: ${{ runner.os }}-x86-boot-assets-${{ hashFiles('ci/build-boot-assets.sh', 'ci/create-grub-linux-disk.sh') }}
-
-      - name: Install payload build dependencies
-        if: >-
-          (matrix.assets == 'payloads' && steps.payload-cache.outputs.cache-hit != 'true') ||
-          (matrix.assets == 'x86_64' && steps.x86-boot-assets-cache.outputs.cache-hit != 'true')
+          path: boot-assets
+          key: boot-assets-${{ hashFiles('flake.nix', 'flake.lock', 'ci/boot-assets/**') }}
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Build boot assets
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bison bc build-essential cpio curl flex libelf-dev libssl-dev \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-riscv64-linux-gnu \
-            golang-go grub-efi-amd64-bin grub-common mtools gdisk dosfstools
-
-      - name: Build QEMU payload assets
-        if: matrix.assets == 'payloads' && steps.payload-cache.outputs.cache-hit != 'true'
-        run: ci/build-payloads.sh boot-assets/payloads
-
-      - name: Build x86_64 GRUB/Linux boot assets
-        if: matrix.assets == 'x86_64' && steps.x86-boot-assets-cache.outputs.cache-hit != 'true'
-        run: |
-          ci/build-boot-assets.sh boot-assets/x86_64
-          ci/create-grub-linux-disk.sh boot-assets/x86_64/disk.img \
-            boot-assets/x86_64/grubx64.efi boot-assets/x86_64/vmlinuz \
-            boot-assets/x86_64/initramfs.cpio boot-assets/x86_64/grub.cfg
-
+          nix build -L .#boot-assets
+          cp -rL result boot-assets
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: boot-assets-${{ matrix.assets }}
-          path: boot-assets/${{ matrix.assets }}
+          name: boot-assets
+          path: boot-assets
           if-no-files-found: error
           retention-days: 1
 
-  tpm-boot-tests:
-    needs: qemu-boot-assets
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
-        with:
-          packages: >-
-            qemu-system-x86 swtpm swtpm-tools busybox-static
-            grub-pc-bin grub-efi-amd64-bin grub-common xorriso
-            mtools gdisk dosfstools cpio
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: boot-assets-x86_64
-          path: boot-assets/x86_64
-
-      # This revision continues fstart's ACPI event log and locks the TPM.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: fstart-io/seabios
-          ref: 44ed85f85fac03107009242c067fdcc01ce55546
-          path: target/seabios-src
-          persist-credentials: false
-
-      - name: Build measured-boot guests and SeaBIOS
-        run: |
-          ci/tpm/build-guest.sh target/tpm-guest boot-assets/x86_64/vmlinuz \
-            /bin/busybox grub-mkstandalone
-          ci/payloads/seabios/build.sh target/seabios-src target/seabios
-
-      - name: Test TPM 1.2 and 2.0 through SeaBIOS and CrabEFI
-        run: ci/tpm/run-tests.sh target/tpm-guest target/seabios
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with:
-          name: tpm-boot-logs
-          path: target/tpm-tests/
-          if-no-files-found: ignore
-
-  # Keep a single stable status check for branch protection.
-  qemu-boot-tests:
+  # The one status check that says whether the run passed.
+  check:
     if: always()
-    needs: [qemu-boot-assets, firmware, tpm-boot-tests]
+    needs: [boards, test, boot-assets, firmware, stage-sizes]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
-      - name: Require all QEMU jobs to pass
+      - name: Require every job to pass
         env:
-          ASSETS_RESULT: ${{ needs.qemu-boot-assets.result }}
-          BOOT_RESULT: ${{ needs.firmware.result }}
-          TPM_RESULT: ${{ needs.tpm-boot-tests.result }}
-        run: >-
-          test "$ASSETS_RESULT" = success &&
-          test "$BOOT_RESULT" = success &&
-          test "$TPM_RESULT" = success
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: jq -e 'all(. == "success")' <<< "$RESULTS"

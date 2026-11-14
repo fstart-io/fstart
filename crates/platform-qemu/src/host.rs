@@ -19,6 +19,8 @@ use std::{
     vec::Vec,
 };
 
+mod boot_tests;
+
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: VirtBoardFacts> Plan<B> {
     pub fn emit(selection_json: &str) {

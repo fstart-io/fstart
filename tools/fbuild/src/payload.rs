@@ -121,8 +121,10 @@ pub struct BuildArgs {
     /// default: release images carry none of them.
     #[arg(long = "debug", value_enum)]
     pub debug: Vec<DebugOption>,
-    /// File handed to a coreboot payload, as NAME=PATH; repeatable. The
+    /// File handed to the payload, as NAME=PATH; repeatable. A coreboot
     /// payload finds it by NAME, e.g. `vgaroms/seavgabios.bin` for SeaBIOS.
+    /// Another payload takes only its device tree this way, by the name the
+    /// board gives it, instead of from the board directory.
     #[arg(long = "payload-file", value_parser = parse_payload_file)]
     pub payload_files: Vec<(String, String)>,
     /// Ed25519 PKCS#8 private key (PEM or DER) that signs the image, e.g.

@@ -123,7 +123,12 @@ impl<M: BlockDevice> DramStage<M> {
             fstart_arch::halt();
         }
         let dram = Range::new(dram_base, handoff.dram_size.get());
-        fstart_log::info!("{} mainstage: {} MiB DRAM", soc, dram.size >> 20);
+        fstart_log::info!(
+            "{} mainstage: {} {}",
+            soc,
+            dram.size >> 20,
+            crate::messages::MIB_DRAM
+        );
         Self {
             console,
             media,
@@ -144,7 +149,7 @@ impl<M: BlockDevice> DramStage<M> {
         )
         .is_err()
         {
-            fstart_log::error!("sunxi: invalid mainstage memory policy");
+            fstart_log::error!("sunxi: {}", crate::messages::INVALID_MEMORY_POLICY);
             fstart_arch::halt();
         }
         #[cfg(not(feature = "linux"))]
@@ -187,7 +192,7 @@ impl<M: BlockDevice> fstart_payload::MainstagePayload<DramStage<M>> for LinuxPay
         let placement = handoff.placement;
         let media = &stage.media;
         let mut boot = fstart_stage::fixed_helpers::BlockDeviceLinuxBoot::new(stage.media_base, 0);
-        step("FFS mount", || {
+        step(crate::messages::LINUX_FIRST_STEP, || {
             boot.mount(
                 media,
                 fstart_stage::anchor::image_size(),
