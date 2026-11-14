@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-addressed register spaces ("windows") and tock-registers on them:
-//! host MMIO, x86 ports, the SMN of a die or socket, a PCI function's
-//! config space, or an FCH register space a [`crate::fch::Bus`] carries.
-//! Code that programs a block takes the window it lives in, so the same
-//! code runs on any FCH of any socket or die, and on a host model.
+//! host MMIO, x86 ports, the SMN of a die or socket, or a PCI function's
+//! config space. Code that programs a block takes the window it lives in,
+//! so the same code runs on any FCH of any socket or die, and on a host
+//! model.
 //!
-//! [`Op`] tables replay recovered fixed register programs.
+//! A register is defined once as an [`At`]: its offset in the window, its
+//! width and its bitfields. [`Op`] tables replay recovered fixed register
+//! programs.
 
 use core::marker::PhantomData;
 
@@ -51,6 +53,46 @@ pub trait Window {
         Self: Sized,
     {
         Reg::new(self, off)
+    }
+
+    /// The register `at` defines.
+    fn at<T: Width, R: RegisterLongName>(&self, at: At<T, R>) -> Reg<&Self, T, R>
+    where
+        Self: Sized,
+    {
+        Reg::new(self, at.offset)
+    }
+}
+
+/// A register of width `T` with the bitfields `R` at `offset` in its
+/// window, for [`Window::at`].
+pub struct At<T, R = ()> {
+    pub offset: u32,
+    _type: PhantomData<fn() -> (T, R)>,
+}
+impl<T, R> Clone for At<T, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T, R> Copy for At<T, R> {}
+impl<T, R> core::fmt::Debug for At<T, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "At({:#x})", self.offset)
+    }
+}
+impl<T, R> PartialEq for At<T, R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset
+    }
+}
+impl<T, R> Eq for At<T, R> {}
+impl<T: Width, R: RegisterLongName> At<T, R> {
+    pub const fn new(offset: u32) -> Self {
+        Self {
+            offset,
+            _type: PhantomData,
+        }
     }
 }
 
@@ -149,6 +191,39 @@ impl<W: Window, T: Width, R: RegisterLongName> Writeable for Reg<W, T, R> {
     #[inline(always)]
     fn set(&self, value: T) {
         T::write(&self.window, self.off, value)
+    }
+}
+
+/// The part of `window` from `base` on: a block inside a larger window
+/// (an FCH's relocated ACPI-MMIO block in physical MMIO).
+#[derive(Clone, Copy)]
+pub struct Offset<W> {
+    window: W,
+    base: u32,
+}
+impl<W: Window> Offset<W> {
+    pub const fn new(window: W, base: u32) -> Self {
+        Self { window, base }
+    }
+}
+impl<W: Window> Window for Offset<W> {
+    fn read32(&self, off: u32) -> u32 {
+        self.window.read32(self.base + off)
+    }
+    fn write32(&self, off: u32, value: u32) {
+        self.window.write32(self.base + off, value)
+    }
+    fn read16(&self, off: u32) -> u16 {
+        self.window.read16(self.base + off)
+    }
+    fn write16(&self, off: u32, value: u16) {
+        self.window.write16(self.base + off, value)
+    }
+    fn read8(&self, off: u32) -> u8 {
+        self.window.read8(self.base + off)
+    }
+    fn write8(&self, off: u32, value: u8) {
+        self.window.write8(self.base + off, value)
     }
 }
 
@@ -344,6 +419,29 @@ impl<P: ConfigRegionAccess> Window for SmnWindow<P> {
     }
     fn write32(&self, off: u32, value: u32) {
         self.smn.write32(self.base + off, value)
+    }
+}
+
+/// One function's config space through ECAM, with exact-width accesses
+/// (byte and word registers next to status bits take no read-modify-write).
+impl Window for fstart_pci::EcamDevice {
+    fn read32(&self, off: u32) -> u32 {
+        fstart_pci::EcamDevice::read32(self, off as u16)
+    }
+    fn write32(&self, off: u32, value: u32) {
+        fstart_pci::EcamDevice::write32(self, off as u16, value)
+    }
+    fn read16(&self, off: u32) -> u16 {
+        fstart_pci::EcamDevice::read16(self, off as u16)
+    }
+    fn write16(&self, off: u32, value: u16) {
+        fstart_pci::EcamDevice::write16(self, off as u16, value)
+    }
+    fn read8(&self, off: u32) -> u8 {
+        fstart_pci::EcamDevice::read8(self, off as u16)
+    }
+    fn write8(&self, off: u32, value: u8) {
+        fstart_pci::EcamDevice::write8(self, off as u16, value)
     }
 }
 

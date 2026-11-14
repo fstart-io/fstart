@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The SPI controller registers of the FCH at [`super::SPI_BASE`], and a
 //! reserved flash region through its command engine ([`flash`]).
-use super::{Reg, SPI_BASE};
+use super::SPI_BASE;
+use crate::window::At;
 #[cfg(feature = "spi-flash")]
 pub mod flash;
 
@@ -36,12 +37,12 @@ register_bitfields![u16,
     ]
 ];
 
-pub const CNTRL0: Reg<u32, Cntrl0::Register> = Reg::mmio(SPI_BASE);
-pub const RESTRICTED_CMD2: Reg<u32, RestrictedCmd2::Register> = Reg::mmio(SPI_BASE + 0x0c);
-pub const ALT_SPI_CS: Reg<u32, AltSpiCs::Register> = Reg::mmio(SPI_BASE + 0x1c);
-pub const SPI100_ENABLE: Reg<u16, Spi100Enable::Register> = Reg::mmio(SPI_BASE + 0x20);
+pub const CNTRL0: At<u32, Cntrl0::Register> = At::new(SPI_BASE);
+pub const RESTRICTED_CMD2: At<u32, RestrictedCmd2::Register> = At::new(SPI_BASE + 0x0c);
+pub const ALT_SPI_CS: At<u32, AltSpiCs::Register> = At::new(SPI_BASE + 0x1c);
+pub const SPI100_ENABLE: At<u16, Spi100Enable::Register> = At::new(SPI_BASE + 0x20);
 /// The same register as a byte, as the Zeppelin vendor code accesses it.
-pub const SPI100_ENABLE_BYTE: Reg<u8, Spi100EnableByte::Register> = Reg::mmio(SPI_BASE + 0x20);
-pub const SPI100_SPEED: Reg<u16, Spi100Speed::Register> = Reg::mmio(SPI_BASE + 0x22);
-pub const SPI100_HOST_PREFETCH: Reg<u16, Spi100HostPrefetch::Register> = Reg::mmio(SPI_BASE + 0x2c);
-pub const STATUS: Reg<u32, Status::Register> = Reg::mmio(SPI_BASE + 0x4c);
+pub const SPI100_ENABLE_BYTE: At<u8, Spi100EnableByte::Register> = At::new(SPI_BASE + 0x20);
+pub const SPI100_SPEED: At<u16, Spi100Speed::Register> = At::new(SPI_BASE + 0x22);
+pub const SPI100_HOST_PREFETCH: At<u16, Spi100HostPrefetch::Register> = At::new(SPI_BASE + 0x2c);
+pub const STATUS: At<u32, Status::Register> = At::new(SPI_BASE + 0x4c);

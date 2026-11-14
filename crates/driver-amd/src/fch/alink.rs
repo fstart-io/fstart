@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A-Link (AB) configuration through the index/data pair at 0xcd8/0xcdc.
 //! The PMxE0 decode of the pair is the caller's.
-use super::{Bus, Reg};
 use crate::table::{self, Record};
+use crate::window::{At, Reg, Window};
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields,
@@ -26,30 +26,31 @@ pub type Rmw = Record<u32, u32>;
 
 /// ABCFG register `register`. Every access selects it and clears the index
 /// afterwards (RPR 4.2: required for the 0x100NN registers).
-pub struct Abcfg<'a, B> {
-    bus: &'a B,
+pub struct Abcfg<'a, W> {
+    io: &'a W,
     register: u32,
 }
-pub fn abcfg<B: Bus>(bus: &B, register: u32) -> Abcfg<'_, B> {
-    Abcfg { bus, register }
+/// ABCFG register `register` through the I/O window `io`.
+pub fn abcfg<W: Window>(io: &W, register: u32) -> Abcfg<'_, W> {
+    Abcfg { io, register }
 }
-impl<B: Bus> Abcfg<'_, B> {
-    fn access<T>(&self, f: impl FnOnce(&super::BusRegister<'_, B, u32, ()>) -> T) -> T {
-        let index = self.bus.reg(Reg::<u32, AbIndex::Register>::io(INDEX));
+impl<W: Window> Abcfg<'_, W> {
+    fn access<T>(&self, f: impl FnOnce(&Reg<&W, u32>) -> T) -> T {
+        let index = self.io.at(At::<u32, AbIndex::Register>::new(INDEX.into()));
         index.write(AbIndex::SPACE::Abcfg + AbIndex::ADDRESS.val(self.register));
-        let value = f(&self.bus.reg(Reg::<u32>::io(DATA)));
+        let value = f(&self.io.at(At::new(DATA.into())));
         index.set(0);
         value
     }
 }
-impl<B: Bus> Readable for Abcfg<'_, B> {
+impl<W: Window> Readable for Abcfg<'_, W> {
     type T = u32;
     type R = ();
     fn get(&self) -> u32 {
         self.access(|data| data.get())
     }
 }
-impl<B: Bus> Writeable for Abcfg<'_, B> {
+impl<W: Window> Writeable for Abcfg<'_, W> {
     type T = u32;
     type R = ();
     fn set(&self, value: u32) {
@@ -58,6 +59,6 @@ impl<B: Bus> Writeable for Abcfg<'_, B> {
 }
 
 /// Apply an ABCFG table in order.
-pub fn apply(bus: &impl Bus, records: &[Rmw]) {
-    table::apply(records.iter().copied(), |register| abcfg(bus, register));
+pub fn apply(io: &impl Window, records: &[Rmw]) {
+    table::apply(records.iter().copied(), |register| abcfg(io, register));
 }

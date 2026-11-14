@@ -19,6 +19,21 @@ impl Tsc {
     pub const fn mhz(&self) -> u32 {
         self.mhz.get()
     }
+
+    /// The TSC at the frequency of its P-state, `None` if the P-state is
+    /// disabled.
+    pub fn measured(msr: &impl fstart_arch::x86::cpu::msr::MsrAccess) -> Option<Self> {
+        fstart_arch::x86::cpu::amd::msr::tsc_mhz(msr)
+            .and_then(NonZeroU32::new)
+            .map(Self::new)
+    }
+
+    /// The TSC at the frequency of its P-state, 1 GHz if the P-state is
+    /// disabled.
+    pub fn native(msr: &impl fstart_arch::x86::cpu::msr::MsrAccess) -> Self {
+        const GHZ: NonZeroU32 = NonZeroU32::new(1000).unwrap();
+        Self::measured(msr).unwrap_or(Self::new(GHZ))
+    }
 }
 #[cfg(target_arch = "x86_64")]
 impl Tsc {

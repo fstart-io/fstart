@@ -70,7 +70,7 @@ impl noncar::host::HostSoc for Picasso {
 #[cfg(all(feature = "bundle", target_os = "none"))]
 impl noncar::Stage<Picasso, noncar::FchUp<Picasso>> {
     pub fn disable_rom_sharing(&self) {
-        fstart_driver_amd::fch::sandstone::legacy::disable_rom_sharing(self.hw().fch.bus());
+        fstart_driver_amd::fch::sandstone::legacy::disable_rom_sharing(&self.hw().fch);
     }
 }
 
@@ -213,7 +213,7 @@ mod uefi {
 
     /// A pad's latched interrupt status.
     struct Latch(
-        fstart_driver_amd::fch::gpio::Gpio<fstart_driver_amd::fch::NativeBus>,
+        fstart_driver_amd::fch::gpio::Gpio<fstart_driver_amd::window::Mmio>,
         u8,
     );
 

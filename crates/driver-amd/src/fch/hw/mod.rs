@@ -1,7 +1,7 @@
 //! Any FCH of a multi-socket SoC (a ZP die's, an IOD's) through windows:
 //! the same code serves the primary FCH and the secondary ones, which the
 //! x86 reaches over SMN. Used by the Taishan of the SP3 ZP dies and by
-//! Huashan (SSP, GN); the die SoCs' FCH 0 is [`crate::fch`]'s [`crate::fch::Bus`].
+//! Huashan (SSP, GN), and FCH 0 of every SoC ([`Native`]).
 //!
 //! Written from the SP3 FCH reports (`FCH_SP3.md`, `fch-contracts.json`) and
 //! the public register names of the family 17h PPRs (55570 for the
@@ -44,10 +44,11 @@ pub mod tasks;
 pub mod uart;
 
 use fstart_core::services::Timer;
-use fstart_pci::ConfigRegionAccess;
+use fstart_pci::ecam::GlobalEcam;
+use fstart_pci::{ConfigRegionAccess, PciAddress};
 
 use crate::smn::Smn;
-use crate::window::{ConfigWindow, SmnWindow, Window};
+use crate::window::{ConfigWindow, Mmio, Ports, SmnWindow, Window};
 
 /// Clear an NBIF function's EXIST strap (`nbio::nbif::FUNC_STRAP0`): the
 /// FCH tasks hide the SATA, USB and xGbE functions they turn off.
@@ -65,17 +66,22 @@ pub(crate) fn hide_nbif_function<W: Window>(smn: &W, strap: u32) {
 ///   [`acpimmio::SMN_BASE`] or the relocated MMIO on a secondary;
 /// - `mmio`: absolute physical MMIO (SPI `FEC1_0000h`, IOAPIC, `FEDCxxxxh`);
 /// - `io`: x86 ports (PM1/GPE blocks, SMI command, PCI_INTR, A-Link, RTC);
+/// - `config`: the config space of one of its functions, the LPC bridge
+///   ([`FchHw::lpc`]) or the SMBus function ([`FchHw::smbus`]);
 /// - `pci`: config space; [`FchHw::smn`] uses the FCH's root bus.
 pub trait FchHw {
     type Acpi: Window;
     type Mmio: Window;
     type Io: Window;
+    type Config: Window;
     type Pci: ConfigRegionAccess + Clone;
     type Timer: Timer;
 
     fn acpi(&self) -> &Self::Acpi;
     fn mmio(&self) -> &Self::Mmio;
     fn io(&self) -> &Self::Io;
+    /// The config space of `function`.
+    fn config(&self, function: PciAddress) -> Self::Config;
     fn pci(&self) -> &Self::Pci;
     /// Root bus whose host bridge reaches this FCH's die/socket over SMN.
     fn bus(&self) -> u8;
@@ -94,13 +100,17 @@ pub trait FchHw {
     }
 
     /// The LPC bridge (D14F3) config space.
-    fn lpc(&self) -> ConfigWindow<Self::Pci> {
-        // SAFETY: tasks own the LPC bridge.
-        unsafe { ConfigWindow::new(self.pci().clone(), lpc::lpc()) }
+    fn lpc(&self) -> Self::Config {
+        self.config(lpc::lpc())
+    }
+
+    /// The SMBus function (D14F0) config space.
+    fn smbus(&self) -> Self::Config {
+        self.config(smbus::function())
     }
 }
 
-/// The plain [`FchHw`] implementation.
+/// The plain [`FchHw`] implementation, with dword config accesses.
 pub struct Fch<A, M, I, P, T> {
     pub acpi: A,
     pub mmio: M,
@@ -121,6 +131,7 @@ where
     type Acpi = A;
     type Mmio = M;
     type Io = I;
+    type Config = ConfigWindow<P>;
     type Pci = P;
     type Timer = T;
 
@@ -133,11 +144,74 @@ where
     fn io(&self) -> &I {
         &self.io
     }
+    fn config(&self, function: PciAddress) -> ConfigWindow<P> {
+        // SAFETY: tasks own the FCH's functions.
+        unsafe { ConfigWindow::new(self.pci.clone(), function) }
+    }
     fn pci(&self) -> &P {
         &self.pci
     }
     fn bus(&self) -> u8 {
         self.bus
+    }
+    fn timer(&self) -> &T {
+        &self.timer
+    }
+}
+
+/// FCH 0 of any SoC as the host sees it: its ACPI-MMIO block at
+/// `FED8_0000h`, the physical MMIO, the ports and its functions through
+/// ECAM with exact-width accesses.
+pub struct Native<T> {
+    acpi: Mmio,
+    mmio: Mmio,
+    io: Ports,
+    timer: T,
+}
+
+impl<T: Timer> Native<T> {
+    /// # Safety
+    /// The caller owns the FCH's ACPI-MMIO block, the MMIO and ports it
+    /// decodes and its config space, all decoded (ECAM published through
+    /// `fstart_pci::ecam::init`) and mapped UC.
+    pub const unsafe fn new(timer: T) -> Self {
+        // SAFETY: the caller's contract.
+        unsafe {
+            Self {
+                acpi: Mmio::new(acpimmio::BASE as usize),
+                mmio: Mmio::new(0),
+                io: Ports::new(),
+                timer,
+            }
+        }
+    }
+}
+
+impl<T: Timer> FchHw for Native<T> {
+    type Acpi = Mmio;
+    type Mmio = Mmio;
+    type Io = Ports;
+    type Config = fstart_pci::EcamDevice;
+    type Pci = GlobalEcam;
+    type Timer = T;
+
+    fn acpi(&self) -> &Mmio {
+        &self.acpi
+    }
+    fn mmio(&self) -> &Mmio {
+        &self.mmio
+    }
+    fn io(&self) -> &Ports {
+        &self.io
+    }
+    fn config(&self, function: PciAddress) -> fstart_pci::EcamDevice {
+        fstart_pci::EcamDevice::new_address(function)
+    }
+    fn pci(&self) -> &GlobalEcam {
+        &GlobalEcam
+    }
+    fn bus(&self) -> u8 {
+        0
     }
     fn timer(&self) -> &T {
         &self.timer

@@ -22,7 +22,12 @@ use fstart_driver_amd::{
         root::{Root, root},
     },
     dxio::{self, Descriptor, SataChannel},
-    fch::{self, Acpimmio, Bus, Fch, Space, taishan::irq},
+    fch::{
+        self,
+        hw::FchHw,
+        taishan::irq,
+        testing::{Space, Spaces},
+    },
     smu::{
         self,
         threads::{self, Policy},
@@ -101,7 +106,7 @@ fn apob(dies: u32) -> Vec<u8> {
 
 /// A board hook's marker in the log.
 fn marker(hw: &Hw, code: u8) {
-    hw.write(Space::Io, 0xe0, 1, code.into());
+    Spaces::write(hw, Space::Io, 0xe0, 1, code.into());
 }
 
 /// The register writes from the FCH pre-init to the ReadyToBoot of the
@@ -115,7 +120,7 @@ fn flow(
     dma: usize,
 ) -> State {
     let dies: Vec<Die<&Hw>> = unsafe { df::dies(hw) }.collect();
-    let fch = Fch::new(hw, Acpimmio::DIE0);
+    let fch = hw.fch();
     let msr = MsrSpace::new([]);
     let mut clock = hw.clock();
     let apob = apob(dies.len() as u32);
@@ -167,7 +172,7 @@ fn flow(
     // After resource allocation
     silicon::after_resources(&fch);
     marker(hw, 4); // mainboard_final
-    fch.enable_hpet_ioapic();
+    fch::enable_hpet_ioapic(fch.acpi());
 
     // Ready to boot
     let sata = PciAddress::new(0, 1, 0, 0);

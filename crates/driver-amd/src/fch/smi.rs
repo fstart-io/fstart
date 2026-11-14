@@ -4,10 +4,10 @@
 //!
 //! The sources used here have the same bits on both.
 use super::{
-    AcpiConfigHigh, AcpiPorts, AcpiReg, Acpimmio, Bus, Fch, NativeBus, PM_ACPI_CONFIG_HIGH,
-    PM_ACPI_SMI_CMD, PM_PCI_CONTROL, PM_RESET_CONTROL1, PciControl, Reg, ResetControl1,
-    smi_bank as smi,
+    ACPI_MMIO, AcpiConfigHigh, AcpiPorts, PM_ACPI_CONFIG_HIGH, PM_ACPI_SMI_CMD, PM_PCI_CONTROL,
+    PM_RESET_CONTROL1, PciControl, ResetControl1, smi_bank as smi,
 };
+use crate::window::{At, Mmio, Ports, Reg, Window};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
@@ -44,13 +44,13 @@ register_bitfields![u16,
     ]
 ];
 
-pub const SCI_STATUS: AcpiReg<u32> = smi::at(0x10);
+pub const SCI_STATUS: At<u32> = smi::at(0x10);
 /// SMIx80 + 4 * n, n < 5.
-pub const fn status(n: usize) -> AcpiReg<u32> {
+pub const fn status(n: usize) -> At<u32> {
     smi::at(0x80 + 4 * n as u32)
 }
 const STATUS_COUNT: usize = 5;
-pub const POINTER: AcpiReg<u16, SmiPointer::Register> = smi::at(0x94);
+pub const POINTER: At<u16, SmiPointer::Register> = smi::at(0x94);
 
 /// Byte offset of SMIxA0 + n and the bit shift of `source` in it.
 #[cfg(test)]
@@ -60,42 +60,50 @@ const fn control_slot(source: u8) -> (usize, u32) {
 
 /// One FCH's SMI registers, PM registers and ACPI blocks: the shared
 /// operations of normal mode and the SMM handler.
-struct Smi<B> {
-    fch: Fch<B>,
+struct Smi {
+    acpi: Mmio,
+    io: Ports,
     ports: FchSmmConfig,
 }
 
-impl<B: Bus> Smi<B> {
-    fn new(bus: B, config: &FchSmmConfig) -> Self {
-        Self {
-            fch: Fch::new(bus, Acpimmio::DIE0),
-            ports: *config,
+impl Smi {
+    /// # Safety
+    /// The caller owns die 0's FCH SMI and PM registers and the ACPI blocks
+    /// of `config`, decoded.
+    unsafe fn new(config: &FchSmmConfig) -> Self {
+        // SAFETY: the caller's contract.
+        unsafe {
+            Self {
+                acpi: Mmio::new(ACPI_MMIO as usize),
+                io: Ports::new(),
+                ports: *config,
+            }
         }
     }
 
-    fn pm1_status(&self) -> super::BusRegister<'_, B, u16, Pm1Status::Register> {
-        self.fch.bus().reg(Reg::io(self.ports.pm1_event))
+    fn pm1_status(&self) -> Reg<&Ports, u16, Pm1Status::Register> {
+        self.io.at(At::new(self.ports.pm1_event.into()))
     }
-    fn pm1_enable(&self) -> super::BusRegister<'_, B, u16, Pm1Enable::Register> {
-        self.fch.bus().reg(Reg::io(self.ports.pm1_event + 2))
+    fn pm1_enable(&self) -> Reg<&Ports, u16, Pm1Enable::Register> {
+        self.io.at(At::new(u32::from(self.ports.pm1_event) + 2))
     }
-    fn pm1_control(&self) -> super::BusRegister<'_, B, u16, Pm1Control::Register> {
-        self.fch.bus().reg(Reg::io(self.ports.pm1_control))
+    fn pm1_control(&self) -> Reg<&Ports, u16, Pm1Control::Register> {
+        self.io.at(At::new(self.ports.pm1_control.into()))
     }
-    fn gpe0_status(&self) -> super::BusRegister<'_, B, u32, ()> {
-        self.fch.bus().reg(Reg::io(self.ports.gpe0))
+    fn gpe0_status(&self) -> Reg<&Ports, u32> {
+        self.io.at(At::new(self.ports.gpe0.into()))
     }
 
     fn configure(&self, source: u8, mode: Mode) {
-        super::smi_route(&self.fch, source, mode);
+        super::smi_route(&self.acpi, source, mode);
     }
 
     /// Clear every SMI status (no event status: GEVENT SCIs stay).
     fn clear_all_status(&self) {
-        let sci = self.fch.reg(SCI_STATUS);
+        let sci = self.acpi.at(SCI_STATUS);
         sci.set(sci.get());
         for n in 0..STATUS_COUNT {
-            let status = self.fch.reg(status(n));
+            let status = self.acpi.at(status(n));
             status.set(status.get());
         }
     }
@@ -125,8 +133,8 @@ impl<B: Bus> Smi<B> {
     fn enable_power_button_smi(&self) {
         self.pm1_status().write(Pm1Status::PWRBTN::SET);
         self.pm1_enable().modify(Pm1Enable::PWRBTN::SET);
-        self.fch
-            .reg(PM_ACPI_CONFIG_HIGH)
+        self.acpi
+            .at(PM_ACPI_CONFIG_HIGH)
             .modify(AcpiConfigHigh::PWRBTN_EN::SET);
         self.configure(source::POWER_BUTTON_UP, Mode::Smi);
     }
@@ -161,9 +169,9 @@ impl FchSmi {
         }
     }
 
-    fn smi(&self) -> Smi<NativeBus> {
+    fn smi(&self) -> Smi {
         // SAFETY: the constructor's contract.
-        Smi::new(unsafe { NativeBus::new() }, &self.config)
+        unsafe { Smi::new(&self.config) }
     }
 }
 
@@ -176,8 +184,8 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
 
     fn disable_smi(&self) {
         self.smi()
-            .fch
-            .reg(TRIGGER0)
+            .acpi
+            .at(TRIGGER0)
             .modify(SmiTrigger0::SMI_DISABLE::SET);
     }
 
@@ -185,15 +193,15 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
     /// GEVENT SMIs, then SMIs on.
     fn enable_smi(&self) {
         let smi = self.smi();
-        smi.fch.reg(PM_ACPI_SMI_CMD).set(APM_CNT);
+        smi.acpi.at(PM_ACPI_SMI_CMD).set(APM_CNT);
         smi.configure(source::SMI_COMMAND, Mode::Smi);
         // SMI on SlpTyp requires sending SMI before completion response of
         // the I/O write; the SMM handler takes over the sleep entry.
-        smi.fch
-            .reg(PM_PCI_CONTROL)
+        smi.acpi
+            .at(PM_PCI_CONTROL)
             .modify(PciControl::FORCE_SLPSTATE_RETRY::SET);
-        smi.fch
-            .reg(PM_RESET_CONTROL1)
+        smi.acpi
+            .at(PM_RESET_CONTROL1)
             .modify(ResetControl1::SLP_TYPE_EN::CLEAR);
         smi.configure(source::SLP_TYP, Mode::Smi);
         (0..source::GEVENTS)
@@ -205,8 +213,8 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for FchSmi {
         smi.set_sci(false);
         smi.enable_power_button_smi();
         smi.clear_all_status();
-        smi.fch
-            .reg(TRIGGER0)
+        smi.acpi
+            .at(TRIGGER0)
             .modify(SmiTrigger0::SMI_DISABLE::CLEAR + SmiTrigger0::EOS::SET);
     }
 }
@@ -227,14 +235,13 @@ pub use handler::{PendingSmi, Sleep, handle};
 #[cfg(feature = "smm")]
 mod handler {
     use super::*;
-    use crate::fch::SmmBus;
     use fstart_smm::SmmContext;
 
     /// The sources of one SMI on the FCH, read once by [`PendingSmi::take`];
     /// the board's SMI handler acts on the ones it owns and ends the SMI
     /// with [`PendingSmi::finish`], or puts the system to sleep.
     pub struct PendingSmi {
-        fch: Smi<SmmBus>,
+        fch: Smi,
         /// Status registers that reported a source, as read.
         status: [u32; STATUS_COUNT],
         /// GEVENT SMIs, bit n = GEVENTn.
@@ -255,18 +262,18 @@ mod handler {
         /// Called only by the SMI handler that owns the SMM rendezvous.
         #[inline(always)]
         pub unsafe fn take(config: &FchSmmConfig) -> Self {
-            // SAFETY: SMM owns the FCH; it decodes no config spaces.
-            let fch = Smi::new(unsafe { SmmBus::without_config() }, config);
-            let pointer = fch.fch.reg(POINTER).extract();
+            // SAFETY: SMM owns the FCH.
+            let fch = unsafe { Smi::new(config) };
+            let pointer = fch.acpi.at(POINTER).extract();
             if pointer.is_set(SmiPointer::SCI) {
-                let sci = fch.fch.reg(SCI_STATUS);
+                let sci = fch.acpi.at(SCI_STATUS);
                 sci.set(sci.get());
             }
             let pending = pointer.read(SmiPointer::STATUS);
             let mut status = [0; STATUS_COUNT];
             for (index, status) in status.iter_mut().enumerate() {
                 if pending & 1 << index != 0 {
-                    *status = fch.fch.reg(super::status(index)).get();
+                    *status = fch.acpi.at(super::status(index)).get();
                 }
             }
             let is_pending = |source: u8| {
@@ -329,16 +336,16 @@ mod handler {
         pub fn finish(self) {
             for (index, status) in self.status.iter().enumerate() {
                 if *status != 0 {
-                    self.fch.fch.reg(super::status(index)).set(*status);
+                    self.fch.acpi.at(super::status(index)).set(*status);
                 }
             }
-            self.fch.fch.reg(TRIGGER0).modify(SmiTrigger0::EOS::SET);
+            self.fch.acpi.at(TRIGGER0).modify(SmiTrigger0::EOS::SET);
         }
     }
 
     /// A sleep transition after [`PendingSmi::prepare_sleep`].
     pub struct Sleep {
-        fch: Smi<SmmBus>,
+        fch: Smi,
         slp_typ: u8,
     }
 
@@ -350,12 +357,12 @@ mod handler {
         #[inline(always)]
         pub fn arm(self) -> Armed {
             let fch = &self.fch;
-            fch.fch.reg(PM_PCI_CONTROL).modify(
+            fch.acpi.at(PM_PCI_CONTROL).modify(
                 PciControl::FORCE_STPCLK_RETRY::SET + PciControl::FORCE_SLPSTATE_RETRY::CLEAR,
             );
             fch.configure(source::SLP_TYP, Mode::Disable);
-            fch.fch
-                .reg(PM_RESET_CONTROL1)
+            fch.acpi
+                .at(PM_RESET_CONTROL1)
                 .modify(ResetControl1::SLP_TYPE_EN::SET);
             fch.pm1_control()
                 .modify(Pm1Control::SLP_TYP.val(self.slp_typ.into()) + Pm1Control::SLP_EN::CLEAR);
@@ -371,7 +378,7 @@ mod handler {
 
     /// A sleep state armed by [`Sleep::arm`].
     pub struct Armed {
-        fch: Smi<SmmBus>,
+        fch: Smi,
     }
 
     impl Armed {
@@ -416,14 +423,14 @@ mod tests {
     #[test]
     fn the_psp_smm_info_names_these_smi_registers() {
         let info = crate::psp::command::SmmInfo::new(0, 0, 0, 0);
-        let trigger0 = u64::from(Acpimmio::DIE0.0 + TRIGGER0.offset());
+        let trigger0 = u64::from(ACPI_MMIO + TRIGGER0.offset);
         let psp = SmiTrigger0::PSP::SET.value;
         assert_eq!((info.trigger.address, info.trigger.mask), (trigger0, !psp));
         assert_eq!(info.trigger.value, psp);
         assert_eq!(info.smi_enable.mask, SmiTrigger0::SMI_DISABLE::SET.value);
         assert_eq!(info.eos.value, SmiTrigger0::EOS::SET.value);
         let (index, shift) = control_slot(source::PSP);
-        let control = u64::from(Acpimmio::DIE0.0 + control(index).offset());
+        let control = u64::from(ACPI_MMIO + control(index).offset);
         assert_eq!(info.psp_smi_control.address, control);
         assert_eq!(
             (info.psp_smi_control.mask, info.psp_smi_control.value),

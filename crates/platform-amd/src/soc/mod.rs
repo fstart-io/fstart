@@ -29,8 +29,12 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::tsc::Tsc,
     df::Die,
-    fch::{Acpimmio, Fch, NativeBus, gpio::Gpio},
+    fch::{
+        gpio::Gpio,
+        hw::{FchHw, Native},
+    },
     psp,
+    window::Mmio,
 };
 use fstart_pci::{MAX_PCI_ROOTS, PciEcam, PciRoot, ecam::GlobalEcam};
 
@@ -218,7 +222,7 @@ pub trait DieInit: Init<Hw = Hw<Self>> + Soc {
 /// with one root complex ([`Die`]): Picasso, Zeppelin.
 pub struct Hw<S: Soc> {
     /// Die 0's FCH.
-    pub fch: Fch<NativeBus>,
+    pub fch: Native<Tsc>,
     /// The dies, die 0 first.
     pub dies: heapless::Vec<Die<S, GlobalEcam>, 8>,
 }
@@ -231,18 +235,17 @@ impl<S: Soc> Hw<S> {
         msr: &NativeMsr,
         ecam: u64,
         buses: u16,
-        pre_init: impl FnOnce(&Fch<NativeBus>, Option<Tsc>) -> Result<(), &'static str>,
+        pre_init: impl FnOnce(&Native<Tsc>, Option<Tsc>) -> Result<(), &'static str>,
     ) -> Entered<I> {
-        // SAFETY: BSP only, single-threaded cold boot; the ECAM comes up
-        // before the first config space access.
-        let fch = Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0);
-        fstart_driver_amd::fch::post(&fch, 0x30);
+        fstart_driver_amd::fch::post_native(0x30);
         fstart_driver_amd::ccx::msr::enable_ecam(msr, ecam, buses);
         fstart_pci::ecam::init(ecam as usize);
         // SAFETY: exclusive FCH programming before the console.
         unsafe { fstart_driver_amd::fch::enable_acpimmio() };
-        let mhz = fstart_arch::x86::cpu::amd::msr::tsc_mhz(msr).unwrap_or(0);
-        let clock = core::num::NonZeroU32::new(mhz).map(Tsc::new);
+        let clock = Tsc::measured(msr);
+        // SAFETY: BSP only, single-threaded cold boot; the ACPI MMIO and the
+        // ECAM are decoded.
+        let fch = unsafe { Native::new(Tsc::native(msr)) };
         let pre_init = pre_init(&fch, clock);
         // SAFETY: BSP-only silicon init serializes all die register accesses.
         let dies = unsafe { fstart_driver_amd::df::dies(GlobalEcam) }.collect();
@@ -253,23 +256,9 @@ impl<S: Soc> Hw<S> {
         }
     }
 
-    /// The FCH of die 0, for pad routing and the like.
-    pub fn fch(&self) -> Fch<NativeBus> {
-        // SAFETY: board work runs on the BSP between the flow's own FCH
-        // accesses, with the ACPI MMIO and ECAM decoded.
-        Fch::new(unsafe { NativeBus::new() }, Acpimmio::DIE0)
-    }
-
     /// The GPIO pads of die 0.
-    pub fn gpio(&self) -> Gpio<NativeBus> {
-        Gpio::new(self.fch(), S::GPIO_BANK)
-    }
-
-    /// The LPC bridge, for decodes and Super I/O routing of a console
-    /// behind it.
-    pub fn lpc(&self) -> fstart_driver_amd::fch::lpc::Lpc<&NativeBus> {
-        // SAFETY: exclusive LPC decode programming on the BSP.
-        unsafe { fstart_driver_amd::fch::lpc::Lpc::new(self.fch.bus()) }
+    pub fn gpio(&self) -> Gpio<Mmio> {
+        Gpio::new(*self.fch.acpi(), S::GPIO_BANK)
     }
 
     /// The threads the SMU releases, the BSP included.
@@ -320,7 +309,7 @@ impl<S: Soc> Hw<S> {
     /// `bsp_apic`, then one per die's NBIO at `ioapic(die)` (ID 1 + die),
     /// all masked.
     pub fn init_ioapics(&self, bsp_apic: u8, ioapic: impl Fn(u8) -> u32) {
-        self.fch.enable_hpet_ioapic();
+        fstart_driver_amd::fch::enable_hpet_ioapic(self.fch.acpi());
         // SAFETY: decoded IOAPIC MMIO, BSP only.
         let fch_ioapic = unsafe { IoApic::new(fstart_driver_amd::fch::IOAPIC as usize) };
         fch_ioapic.set_id(0);

@@ -3,8 +3,8 @@
 //! of POST.
 use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_amd::fch::{
-    Bus, Fch,
     early::{self, PowerFailure},
+    hw::FchHw,
 };
 use fstart_driver_ipmi::kcs::{self, Kcs};
 use fstart_driver_ipmi::{RestorePolicy, SelRecord};
@@ -16,7 +16,7 @@ const SET_ERP: u8 = 0x20;
 /// ErP off, the Setup default.
 const ERP_OFF: [u8; 5] = [0x0a, 0x3c, 0x00, 0x0d, 0x1c];
 
-pub fn post_done(fch: &Fch<impl Bus>, clock: Tsc) {
+pub fn post_done(fch: &impl FchHw, clock: Tsc) {
     // SAFETY: the KCS ports the board decodes in early_init; only used here.
     let mut kcs = unsafe { Kcs::new(kcs::DEFAULT_PORT, kcs::DEFAULT_SPACING, clock) };
 

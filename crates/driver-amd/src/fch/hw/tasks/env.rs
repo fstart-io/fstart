@@ -7,7 +7,7 @@ use super::super::alink;
 use super::super::{FchHw, uart};
 use super::sci_map;
 use crate::cpu::Silicon;
-use crate::window::{ConfigWindow, Window, apply, update};
+use crate::window::{Window, apply, update};
 
 /// What the platform does when AC power returns (PMx5B, FCH_SP3 §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -95,9 +95,7 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
 pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) {
     let acpi = hw.acpi();
     // D14F0x10/x11 (SMBus function; ZP leaves them 0). Unnamed.
-    // SAFETY: tasks own the SMBus function.
-    let smbus =
-        unsafe { ConfigWindow::new(hw.pci().clone(), fstart_pci::PciAddress::new(0, 0, 0x14, 0)) };
+    let smbus = hw.smbus();
     let (b10, b11) = match generation {
         Silicon::Zp => (0, 0),
         Silicon::Ssp | Silicon::Gn => (1, 6),

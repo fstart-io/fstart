@@ -14,10 +14,10 @@ use crate::window::Window;
 
 pub const SCI_TRIG: u32 = SMI + 0x08;
 pub const SCI_LEVEL: u32 = SMI + 0x0C;
-pub const SCI_STATUS: u32 = crate::fch::smi::SCI_STATUS.offset();
+pub const SCI_STATUS: u32 = crate::fch::smi::SCI_STATUS.offset;
 /// SCI map: one byte per GEVENT/source at `0x40 + n` (FCH::SMI::SciMap).
 pub const SCI_MAP: u32 = SMI + 0x40;
-pub const STATUS0: u32 = crate::fch::smi::status(0).offset();
+pub const STATUS0: u32 = crate::fch::smi::status(0).offset;
 pub const TRIG0: u32 = SMI + 0x98;
 pub const CONTROL0: u32 = SMI + 0xA0;
 

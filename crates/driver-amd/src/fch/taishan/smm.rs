@@ -3,9 +3,10 @@
 //! from SMM.
 use super::init::{AOAC_94, Aoac94};
 use crate::fch::smi::{FchSmmConfig, PendingSmi};
-use crate::fch::{AcpiReg, Acpimmio, Bus, Fch, IOAPIC, Reg, SmmBus, pm};
+use crate::fch::{ACPI_MMIO, IOAPIC, pm};
 use crate::smn::{SmnAccess, SmnReg};
 use crate::smu::v9;
+use crate::window::{At, Mmio, Ports, Window};
 use fstart_core::{
     indexed::Indexed,
     pio::{self, PioRegister},
@@ -22,7 +23,7 @@ use tock_registers::{
 pub fn sleep(pending: PendingSmi, slp_typ: u8) -> ! {
     let sleep = pending.prepare_sleep(slp_typ);
     // SAFETY: SMM owns the FCH while it puts the system to sleep.
-    unsafe { sleep_entry(&Fch::new(SmmBus::without_config(), Acpimmio::DIE0), slp_typ) };
+    unsafe { sleep_entry(&Mmio::new(ACPI_MMIO as usize), &Ports::new(), slp_typ) };
     let armed = sleep.arm();
     // The vendor FchTaishanSmmInit's last step: SMU message SleepEntry,
     // which the SMU answers by completing the transition. The vendor halts
@@ -50,7 +51,7 @@ register_bitfields![u8,
     /// PMxEE.
     PmEe [SLEEP OFFSET(0) NUMBITS(2) []]
 ];
-const PM_EE: AcpiReg<u8, PmEe::Register> = pm::at(0xee);
+const PM_EE: At<u8, PmEe::Register> = pm::at(0xee);
 
 /// The Sx entry callbacks of the vendor FchTaishanSmmInit: PMxEE[1:0] = 3 at
 /// S3/S4 entry; at S3, S4 and S5 entry AOAC 0x94[15:14] (cleared by the reset
@@ -59,14 +60,14 @@ const PM_EE: AcpiReg<u8, PmEe::Register> = pm::at(0xee);
 /// What AOAC 0x94 and the pin 0x17 assertion do isn't known. The S3 IRQ table
 /// save and USB handshake aren't needed without S3.
 #[inline(always)]
-unsafe fn sleep_entry(fch: &Fch<impl Bus>, slp_typ: u8) {
+unsafe fn sleep_entry(acpi: &impl Window, io: &impl Window, slp_typ: u8) {
     const S3: u8 = 3;
     const S4: u8 = 4;
-    let delay = fch.bus().reg(Reg::<u8>::io(0xed));
+    let delay = io.at(At::<u8>::new(0xed));
     if matches!(slp_typ, S3 | S4) {
-        fch.reg(PM_EE).modify(PmEe::SLEEP.val(3));
+        acpi.at(PM_EE).modify(PmEe::SLEEP.val(3));
     }
-    fch.reg(AOAC_94).modify(Aoac94::BITS.val(3));
+    acpi.at(AOAC_94).modify(Aoac94::BITS.val(3));
     // SAFETY: the FCH IOAPIC is decoded; the OS that owned it is going away.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(IOAPIC as usize) };
     delay.get();

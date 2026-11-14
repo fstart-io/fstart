@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
-use super::{testing::World, *};
+use super::{
+    hw::FchHw,
+    testing::{Space, World},
+    *,
+};
 use crate::ccx::tsc::testing::{Delay, none};
 use std::{vec, vec::Vec};
 
@@ -14,8 +18,8 @@ fn world() -> World {
     }
     world
 }
-fn fch(world: &World) -> Fch<&World> {
-    Fch::new(world, Acpimmio::DIE0)
+fn acpi(world: &World) -> testing::View<'_, World> {
+    *world.fch().acpi()
 }
 fn control_writes(world: &World) -> Vec<(u32, u32)> {
     world
@@ -36,13 +40,13 @@ fn state_reads(world: &World) -> Vec<u32> {
 #[test]
 fn aoac_all_devices_started_before_wait_with_whole_preflight() {
     let world = world();
-    fch(&world)
-        .power_devices(
-            &[17, 7, 8, 9, 27],
-            0,
-            &mut Delay(|_| panic!("already ready")),
-        )
-        .unwrap();
+    power_devices(
+        &acpi(&world),
+        &[17, 7, 8, 9, 27],
+        0,
+        &mut Delay(|_| panic!("already ready")),
+    )
+    .unwrap();
     assert_eq!(
         control_writes(&world),
         vec![(17, 0xcd), (7, 0xcd), (8, 0xcd), (9, 0xcd), (27, 0xcd)]
@@ -50,13 +54,13 @@ fn aoac_all_devices_started_before_wait_with_whole_preflight() {
     assert_eq!(state_reads(&world), [17, 7, 8, 9, 27]);
     let world = self::world();
     assert_eq!(
-        fch(&world).power_devices(&[17, 6], 1, &mut none()),
+        power_devices(&acpi(&world), &[17, 6], 1, &mut none()),
         Err(Error::InvalidDevice)
     );
     assert!(world.writes().is_empty());
     world.set(Space::Mmio, AOAC + 0x40 + 2 * 7, 1, 0xff);
     assert_eq!(
-        fch(&world).power_devices(&[17, 7], 1, &mut none()),
+        power_devices(&acpi(&world), &[17, 7], 1, &mut none()),
         Err(Error::Unavailable(7))
     );
     assert!(world.writes().is_empty());
@@ -66,7 +70,12 @@ fn aoac_all_ones_is_not_ready_and_failed_programming_never_continues_waiting() {
     let world = world();
     world.set(Space::Mmio, AOAC + 0x41 + 2 * 17, 1, 0xff);
     assert_eq!(
-        fch(&world).power_devices(&[17, 7], 1, &mut Delay(|_| panic!("unavailable"))),
+        power_devices(
+            &acpi(&world),
+            &[17, 7],
+            1,
+            &mut Delay(|_| panic!("unavailable"))
+        ),
         Err(Error::Unavailable(17))
     );
     assert_eq!(world.writes().len(), 2);
@@ -75,7 +84,7 @@ fn aoac_all_ones_is_not_ready_and_failed_programming_never_continues_waiting() {
     world.set(Space::Mmio, AOAC + 0x41 + 2 * 17, 1, 0);
     let mut delays = 0;
     assert_eq!(
-        fch(&world).power_devices(&[17, 7], 2, &mut Delay(|_| delays += 1)),
+        power_devices(&acpi(&world), &[17, 7], 2, &mut Delay(|_| delays += 1)),
         Err(Error::PowerTimeout(17))
     );
     assert_eq!(delays, 2);
@@ -89,7 +98,7 @@ fn early_lpc_aperture_retains_flags_and_exact_decode_widths_and_order() {
     world.set(Space::Mmio, ACPI_MMIO + 0x3ec, 1, 0x30);
     world.set(Space::Lpc, 0x48, 4, 0xdeadffef);
     world.set(Space::Lpc, 0xa0, 4, 0x123456f7);
-    early::prepare_lpc(&fch(&world)).unwrap();
+    early::prepare_lpc(&world.fch()).unwrap();
     assert_eq!(
         world.writes(),
         vec![
@@ -109,8 +118,8 @@ fn early_lpc_aperture_retains_flags_and_exact_decode_widths_and_order() {
 fn early_smbus_and_power_failure_state() {
     let world = World::default();
     world.set(Space::Mmio, ACPI_MMIO + 0x300, 4, 0x1234_5678);
-    early::initialize_smbus(&fch(&world)).unwrap();
-    early::set_power_failure_state(&fch(&world), early::PowerFailure::Previous);
+    early::initialize_smbus(&world.fch()).unwrap();
+    early::set_power_failure_state(&world.fch(), early::PowerFailure::Previous);
     assert_eq!(
         world.writes(),
         vec![
@@ -129,7 +138,7 @@ fn early_smbus_and_power_failure_state() {
 fn abcfg_transactions_reset_index_after_read_and_write() {
     let world = World::default();
     world.set_indexed(alink::INDEX, 0xc000_0054, 0x1234_5678);
-    alink::apply(&world, &[crate::table::rmw(0x54, 0xff, 0x11)]);
+    alink::apply(world.fch().io(), &[crate::table::rmw(0x54, 0xff, 0x11)]);
     let index = 0xc000_0054;
     assert_eq!(
         world.0.borrow().log,
