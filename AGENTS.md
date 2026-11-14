@@ -4,6 +4,7 @@
 - I don't like you reinventing helpers to access for example u32 in a .rs file. There is usually a helper for MMIO already
 - Quick solutions in the wrong dir. So we have drivers, platforms and mainboards. Think deeply about the reusability of the scope. See what is already out there as example first
 - Reinventing the wheel. I saw agents reinvent PCI ECAM in like 5 different locations or stupid traits that wrap around the original ECAM functions. If you need these boilerplate wrappers your code is wrong!
+- Cargo features per SoC or per IP version in drivers. Drivers build every block; the platform and the board pick what is linked. AMD: see `docs/amd-structure.md` (IP blocks in driver-amd, SoCs in platform-amd).
 
 ## Register formatting
 Formatting a `register_bitfields!` block is not a hand job: run `cargo ffmt --fix` (`tools/ffmt`), which puts one field and one enum variant per line. CI runs `cargo ffmt --check`.

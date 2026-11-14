@@ -27,13 +27,14 @@
 //! ```
 //!
 //! What the silicon needs in each phase is the SoC driver's
-//! ([`fstart_driver_amd::soc::Init`]); the phases are the same for every
+//! ([`crate::soc::Init`]); the phases are the same for every
 //! SoC.
 use super::{Ctx, Mapped, Memory, Silicon, Soc, Tables};
 use crate::mp;
+use crate::soc::Entered;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_core::services::memory_detect::E820State;
-use fstart_driver_amd::{apob::Apob, ccx::tsc::Tsc, fch::post_native as post, soc::Entered};
+use fstart_driver_amd::{apob::Apob, ccx::tsc::Tsc, fch::post_native as post};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::{Hex, StaticConsole};
 use fstart_pci::PciEcam;
@@ -190,7 +191,7 @@ pub struct Stage<S: Soc, P> {
 /// The console is up, DRAM is mapped and cached, the FFS is mounted.
 pub struct Console;
 
-/// The FCH's buses are up ([`fstart_driver_amd::soc::Init::init_fch`]).
+/// The FCH's buses are up ([`crate::soc::Init::init_fch`]).
 pub struct FchUp<S: Soc>(S::FchUp);
 
 /// The links are trained.
@@ -273,7 +274,6 @@ impl<S: Soc, P> Stage<S, P> {
     }
 
     /// What the SoC's services keep between the phases.
-    #[cfg_attr(not(feature = "sp3"), allow(dead_code))]
     pub(crate) fn flow_mut(&mut self) -> &mut S::Flow {
         &mut self.machine.flow
     }

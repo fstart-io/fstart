@@ -4,6 +4,8 @@
 
 extern crate alloc;
 
+use crate::sp3::silicon::hw::{PrimaryFch, msr, post};
+use crate::sp3::silicon::{self, Generation};
 use fstart_amdfw_format::anchor::FlashAnchor;
 use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
@@ -11,9 +13,7 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_core::services::memory_detect::{E820Kind, E820State};
 use fstart_driver_amd::apob::sysmap::{self, Region};
 use fstart_driver_amd::apob::{self, Apob};
-use fstart_driver_amd::sp3::fch::rom3::{self, FlashMap, Rom3};
-use fstart_driver_amd::sp3::soc::hw::{PrimaryFch, msr, post};
-use fstart_driver_amd::sp3::soc::{self, Generation};
+use fstart_driver_amd::fch::hw::rom3::{self, FlashMap, Rom3};
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
@@ -23,9 +23,6 @@ use crate::sp3::memory::{self, TopOfMemory};
 pub(crate) mod handoff;
 pub(crate) mod options;
 pub(crate) mod tpm;
-
-#[cfg(not(any(feature = "naples", feature = "rome", feature = "milan")))]
-compile_error!("a stage build enables at least one of naples, rome, milan");
 
 /// Halt after logging a failed step; the POST code of the step stays on
 /// port 80h.
@@ -61,7 +58,7 @@ pub(crate) fn step(code: u8, name: &str) {
 /// What the tables and the handoff read: the silicon steps' state and
 /// the flow's own.
 pub(crate) struct Ctx<'a> {
-    pub soc: &'a soc::Ctx,
+    pub soc: &'a silicon::Ctx,
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     #[cfg(feature = "payload-uefi")]
     pub ffs: Span,
@@ -203,7 +200,8 @@ pub(crate) fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'
         .or_halt("APOB directory entry");
     // SAFETY: the PSP wrote the APOB there before releasing x86; it is
     // reserved in e820 and only read.
-    let apob = unsafe { Apob::from_address(address, generation.into()) }.or_halt("APOB header");
+    let apob =
+        unsafe { Apob::from_address(address, generation.silicon().into()) }.or_halt("APOB header");
     for event in apob::event::all_events(&apob).flatten() {
         let (instance, e) = event;
         fstart_log::info!(
@@ -243,7 +241,7 @@ pub(crate) fn memory_regions(
     generation: Generation,
 ) -> heapless::Vec<Region, { sysmap::MAX_REGIONS }> {
     let map = sysmap::system_memory_map(apob).or_halt("APOB memory map");
-    sysmap::memory_map(generation.into(), map.top, map.holes()).or_halt("memory map")
+    sysmap::memory_map(generation.silicon().into(), map.top, map.holes()).or_halt("memory map")
 }
 
 pub(crate) fn build_e820(
@@ -293,19 +291,19 @@ pub(crate) fn cache_ram(regions: &[Region]) {
 /// Select scratch pages using the live routing map, and name those the
 /// flow has to take out of the memory map (`reserved`) before
 /// [`clear_einj_scratch`] and the SMM installation.
-#[cfg_attr(not(feature = "rome"), allow(unused_variables))]
 pub(crate) fn plan_einj(
-    ctx: &soc::Ctx,
+    ctx: &silicon::Ctx,
     e820: &E820State,
     reserved: &mut crate::flow::Reserved,
 ) -> Option<crate::sp3::smm::EinjConfig> {
-    #[cfg(feature = "rome")]
-    if ctx.generation == Generation::Rome && (1..=2).contains(&ctx.topology.sockets) {
+    if ctx.generation == fstart_driver_amd::cpu::Silicon::Ssp
+        && (1..=2).contains(&ctx.topology.sockets)
+    {
         use fstart_driver_amd::{
             df::Target,
+            df::{self, v3},
             psp::ras,
             smn::Smn,
-            sp3::df::{self, v3},
         };
         let mut config = crate::sp3::smm::EinjConfig {
             sockets: ctx.topology.sockets,

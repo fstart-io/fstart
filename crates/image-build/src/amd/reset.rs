@@ -28,6 +28,9 @@ pub struct Layout {
     pub data: Span,
     pub heap: Span,
     pub stack: Span,
+    /// The write-back MTRR the entry opens over the firmware RAM and the
+    /// image before it writes anything: a naturally aligned power of two.
+    pub cache: Span,
 }
 
 impl Layout {
@@ -62,6 +65,19 @@ impl Layout {
         }
         if self.data.end()? > self.heap.base || self.heap.end()? > self.stack.base {
             return Err("AMD reset data/heap/stack order".into());
+        }
+        let cache = self.cache;
+        if !cache.size.is_power_of_two()
+            || cache.base & (cache.size - 1) != 0
+            || cache.end()? > 1 << 32
+            || !cache.contains(self.early.base, end - self.early.base)
+        {
+            return Err(
+                "AMD reset cache window must be an aligned power of two below 4 GiB over the firmware RAM and the image".into(),
+            );
+        }
+        if self.pages.size < 0x2000 {
+            return Err("AMD reset page tables need a PML4 and a PDPT".into());
         }
         Ok(())
     }
@@ -110,6 +126,9 @@ impl Layout {
                 ("HEAP_SIZE", self.heap.size),
                 ("STACK_BASE", self.stack.base),
                 ("STACK_SIZE", self.stack.size),
+                ("CACHE_BASE", self.cache.base),
+                ("CACHE_MASK", !(self.cache.size - 1) & 0xffff_ffff),
+                ("PDPTS", self.pages.size / 0x1000 - 1),
             ],
             descriptor,
             "IMAGE",
@@ -166,6 +185,7 @@ mod tests {
             data: span(0x7601_0000, 0xf_0000),
             heap: span(0x7610_0000, 0x60_0000),
             stack: span(0x7670_0000, 0x10_0000),
+            cache: span(0x7600_0000, 0x100_0000),
         }
     }
 

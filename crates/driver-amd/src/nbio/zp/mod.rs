@@ -7,8 +7,11 @@
 use crate::smn::{self, Reg, SmnAddr};
 use crate::table::Op;
 
+mod init;
 #[rustfmt::skip]
 pub mod tables;
+
+pub use init::*;
 
 /// Property bits of the tables (sp4r2 NBIO_BASE_ZP §3.2).
 pub mod property {

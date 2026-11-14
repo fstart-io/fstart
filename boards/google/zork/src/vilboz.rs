@@ -131,7 +131,7 @@ mod tests {
         result.unwrap();
         assert_eq!(steps, [Step::Delay(50), Step::Set(29, false)]);
         assert_eq!(
-            WLAN_PADS.iter().map(|p| p.pin).collect::<Vec<_>>(),
+            WLAN_PADS.iter().map(|p| p.pin.0 as u8).collect::<Vec<_>>(),
             [WLAN_RESET_GPIO, WLAN_POWER_GPIO]
         );
     }
@@ -142,9 +142,9 @@ mod tests {
     #[test]
     fn proximity_sensor_is_input_on_non_chromeos() {
         let table = overrides(Cbi::new(Some(2), None), false);
-        assert_eq!(table[0].pin, 40);
-        assert_eq!(table[0].control.get() & (3 << 22), 0);
-        assert_eq!(overrides(Cbi::new(None, None), false)[0].pin, 32);
+        assert_eq!(table[0].pin.0, 40);
+        assert_eq!(table[0].control & (3 << 22), 0);
+        assert_eq!(overrides(Cbi::new(None, None), false)[0].pin.0, 32);
     }
 }
 

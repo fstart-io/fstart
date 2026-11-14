@@ -250,7 +250,7 @@ impl<T: C2pTransport> Mailbox<T> {
         self
     }
 
-    pub const fn generation(&self) -> Variant {
+    pub const fn silicon(&self) -> Variant {
         self.generation
     }
 

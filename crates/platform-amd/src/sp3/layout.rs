@@ -31,8 +31,8 @@
 //! from its first instructions, and the only PSP-written x86-visible range is
 //! the APOB at `0x3000_0000` (PSP_APOB §3.5).
 
-use fstart_driver_amd::sp3::fch::rom3;
-use fstart_driver_amd::sp3::soc::Generation;
+use crate::sp3::silicon::Generation;
+use fstart_driver_amd::fch::hw::rom3;
 
 /// A physical address range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,16 +237,6 @@ pub trait Sp3BoardFacts {
     /// readout, and the build is a full flash image with the bank at 0 and
     /// at every mirror.
     const FLASH_MIRRORS: &'static [u32] = &[];
-}
-
-/// Whether this build carries `generation`'s silicon code (its platform
-/// feature).
-pub const fn compiled(generation: Generation) -> bool {
-    match generation {
-        Generation::Naples => cfg!(feature = "naples"),
-        Generation::Rome => cfg!(feature = "rome"),
-        Generation::Milan => cfg!(feature = "milan"),
-    }
 }
 
 #[cfg(test)]

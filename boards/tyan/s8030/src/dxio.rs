@@ -48,12 +48,12 @@
 mod tuning;
 
 use fstart_core::smbios::{Attached, OnboardDevice, OnboardType, SystemSlot};
-use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::lanes::{
+use fstart_driver_amd::dxio::lanes::{
     Bifurcation, Bifurcations, Engine, Group, Lanes, PcieEngine, SataEngine, Speed, validate,
 };
-use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_options::{Knob, Meta};
+use fstart_platform_amd::sp3::silicon::Generation;
 use heapless::Vec;
 
 /// A x16 slot `PCIEn`: Gen4 on Rome and Milan and as wide electrically as
@@ -354,8 +354,11 @@ pub fn check(
     options: &Options,
     detected: &Detected,
 ) -> Result<(), &'static str> {
-    validate(generation, &engines(generation, options, detected))
-        .map_err(|_| "the lane map does not validate")
+    validate(
+        generation.silicon(),
+        &engines(generation, options, detected),
+    )
+    .map_err(|_| "the lane map does not validate")
 }
 
 /// The M.2 sockets.
@@ -550,7 +553,7 @@ pub fn engines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_driver_amd::sp3::dxio::lanes::{EngineKind, place};
+    use fstart_driver_amd::dxio::lanes::{EngineKind, place};
 
     const PCIE: Detected = Detected {
         m2: [M2Mode::Pcie; 2],
@@ -559,7 +562,7 @@ mod tests {
 
     fn phys(generation: Generation, e: &[Engine<'_>]) -> std::vec::Vec<(u8, u8)> {
         e.iter()
-            .map(|e| place(generation, e).unwrap().phy)
+            .map(|e| place(generation.silicon(), e).unwrap().phy)
             .collect()
     }
 
@@ -571,7 +574,7 @@ mod tests {
     fn default_lane_map() {
         for g in [Generation::Rome, Generation::Milan] {
             let e = engines(g, &Options::default(), &PCIE);
-            assert_eq!(validate(g, &e), Ok(()));
+            assert_eq!(validate(g.silicon(), &e), Ok(()));
             assert_eq!(
                 phys(g, &e),
                 [
@@ -629,7 +632,7 @@ mod tests {
                 };
                 for m2 in m2s.iter().flat_map(|&a| m2s.map(|b| [a, b])) {
                     let e = engines(g, &options, &Detected { m2, m2_gen3: true });
-                    assert_eq!(validate(g, &e), Ok(()), "{g:?} {b:?} {m2:?}");
+                    assert_eq!(validate(g.silicon(), &e), Ok(()), "{g:?} {b:?} {m2:?}");
                 }
             }
         }
@@ -735,7 +738,10 @@ mod tests {
         };
         let e = engines(Generation::Milan, &Options::default(), &detected);
         assert!(matches!(e[9].kind, EngineKind::Sata(_)));
-        assert_eq!(place(Generation::Milan, &e[9]).unwrap().phy, (64, 64));
+        assert_eq!(
+            place(Generation::Milan.silicon(), &e[9]).unwrap().phy,
+            (64, 64)
+        );
         assert_eq!(e[9].tuning, tuning::SATA_64);
         assert_eq!(pcie_of(&e[10]).max_speed, Speed::Gen3);
         assert_eq!(pcie_of(&e[10]).devfn, Some(devfn(3, 3)));

@@ -10,8 +10,7 @@ use super::{Ctx, OrHalt};
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi` with what SP3
 /// adds, `crate::sp3::acpi`); returns the RSDP address. The tables live in
 /// the stage heap, inside the reserved early region.
-#[cfg(feature = "acpi")]
-pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
+pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
     ctx: &Ctx<'_>,
     si: &S,
     pci: &fstart_pci::PciEcam,
@@ -21,14 +20,13 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
     use crate::acpi::{self, Cpu, Inputs, Ioapic, Iommu, Power, RootBridgeAcpi};
     use crate::sp3::acpi::{FchAcpi, einj};
     use fstart_core::acpi::AcpiSmiConfig;
+    use fstart_driver_amd::ccx::pm as power;
+    use fstart_driver_amd::fch::hw::smi;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
-    use fstart_driver_amd::sp3::ccx::power;
-    use fstart_driver_amd::sp3::fch::smi;
-    use fstart_driver_amd::sp3::nbio::ioapic::fch_ioapic_id;
+    use fstart_driver_amd::nbio::ioapic::fch_ioapic_id;
 
     let numa_plan = S::numa(ctx.soc, si);
     // Naples has no CPPC through the SMU.
-    #[cfg(any(feature = "rome", feature = "milan"))]
     let cppc: Vec<_> = ctx
         .soc
         .cppc
@@ -53,10 +51,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
                 .as_ref()
                 .and_then(|n| n.cpus.get(i).copied())
                 .unwrap_or(0),
-            #[cfg(any(feature = "rome", feature = "milan"))]
             aml: crate::sp3::acpi::cppc::cpc(&cppc, apic_id).or_halt("ACPI tables"),
-            #[cfg(not(any(feature = "rome", feature = "milan")))]
-            aml: Vec::new(),
         })
         .collect();
     let root_bridges: Vec<RootBridgeAcpi<'_>> = ctx
@@ -85,10 +80,10 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
             }),
         })
         .collect();
-    let cpu = fstart_driver_amd::sp3::soc::hw::msr();
+    let cpu = crate::sp3::silicon::hw::msr();
     let pstates = power::pstates(&cpu);
     let threads_per_core =
-        1 + fstart_driver_amd::sp3::soc::cpu::this_thread(ctx.soc.generation).smt() as u8;
+        1 + crate::sp3::silicon::cpu::this_thread(ctx.soc.generation).smt() as u8;
     let (domains, memory): (Vec<acpi::Domain>, Vec<acpi::MemoryAffinity>) = numa_plan
         .as_ref()
         .map(|p| {
@@ -113,7 +108,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
     }
     // The FCH's UARTs, I2C controllers and GPIO as the FCH tasks left them.
     let fch_aml = {
-        use fstart_driver_amd::sp3::fch::FchHw;
+        use fstart_driver_amd::fch::hw::FchHw;
         FchAcpi::read(ctx.soc.fch.mmio(), ctx.soc.fch.io())
             .sb_aml()
             .or_halt("ACPI tables")
@@ -131,17 +126,14 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
         }
     };
     // EINJ, then the PCCT of the SMU-served CPPC.
-    #[cfg(any(feature = "rome", feature = "milan"))]
     let pcct = crate::sp3::acpi::cppc::pcct(&cppc);
-    #[cfg(not(any(feature = "rome", feature = "milan")))]
-    let pcct = None;
     let tables: Vec<Vec<u8>> = einj_supported
         .then(einj::table)
         .into_iter()
         .chain(pcct)
         .collect();
     let inputs = Inputs {
-        soc: crate::sp3::acpi::of(ctx.soc.generation),
+        soc: crate::sp3::acpi::of(crate::sp3::silicon::Generation::of(ctx.soc.generation)),
         pci: ctx.soc.pci_root,
         cpus: &cpus,
         fch_ioapic_id: fch_ioapic_id(ctx.soc.generation),
@@ -159,7 +151,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
             c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
         }),
         acpi_smi: ctx.smm.map(|_| AcpiSmiConfig {
-            smi_cmd: u32::from(fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16),
+            smi_cmd: u32::from(fstart_driver_amd::fch::hw::acpimmio::SMI_CMD as u16),
             acpi_enable: smi::sw::ACPI_ENABLE,
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
@@ -197,8 +189,7 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
     }
     let tables = acpi::build(&inputs).or_halt("ACPI tables");
     const ACPI_SIZE: usize = 0x4_0000;
-    let bytes =
-        fstart_driver_amd::sp3::soc::steps::dma_alloc(ACPI_SIZE, 0x1000).or_halt("DMA allocation");
+    let bytes = crate::sp3::silicon::steps::dma_alloc(ACPI_SIZE, 0x1000).or_halt("DMA allocation");
     let base = bytes.as_ptr() as u64;
     let len = tables.assemble_into(bytes, base).or_halt("ACPI layout");
     fstart_log::info!("acpi: {} bytes at {:#x}", len as u32, base);
@@ -206,12 +197,11 @@ pub(crate) fn acpi<S: fstart_driver_amd::sp3::soc::Steps>(
 }
 
 /// The IOMMU capability and MMIO registers IVRS copies (ACPI_SMM §3.6).
-#[cfg(feature = "acpi")]
 fn iommu_registers(
-    info: &fstart_driver_amd::sp3::nbio::iommu::IommuInfo,
+    info: &fstart_driver_amd::nbio::iommu::IommuInfo,
 ) -> fstart_acpi::ivrs::IommuRegisters {
     use fstart_pci::{ConfigRegionAccess, PciAddress};
-    let pci = fstart_driver_amd::sp3::soc::hw::Pci::default();
+    let pci = crate::sp3::silicon::hw::Pci::default();
     let function = PciAddress::new(0, info.bus, info.devfn >> 3, info.devfn & 7);
     let cap = u16::from(info.cap_offset);
     // SAFETY: the IOMMU function and its enabled MMIO block, read only.

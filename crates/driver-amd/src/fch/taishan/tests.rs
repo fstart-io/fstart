@@ -8,7 +8,7 @@ use crate::{
     fch::{Acpimmio, Bus, Fch, Space},
     smn::testing::{SmnModel, SmnTest},
     soc::Soc,
-    soc::zeppelin::{Die, Zeppelin},
+    testing::Zp as Zeppelin,
 };
 use core::cell::RefCell;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -164,7 +164,7 @@ fn sp4() -> RefCell<World> {
         .insert((PciAddress::new(0, 0, 0x19, 0), 0x84), u32::from(DIE1_BUS));
     RefCell::new(world)
 }
-fn dies(world: &RefCell<World>) -> Vec<Die<Hw<'_>>> {
+fn dies(world: &RefCell<World>) -> Vec<crate::df::Die<Zeppelin, Hw<'_>>> {
     // SAFETY: the mock has no concurrent users.
     unsafe { df::dies(Hw(world)) }.collect()
 }

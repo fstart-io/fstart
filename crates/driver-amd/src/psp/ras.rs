@@ -30,7 +30,7 @@ register_bitfields![u32,
     ]
 ];
 
-pub const MAX_SOCKETS: usize = 2;
+pub use crate::df::MAX_SOCKETS;
 /// Instance selector for a node-broadcast indirect read (TARGET_INST=0).
 pub const BROADCAST: u8 = 0xff;
 
@@ -92,9 +92,8 @@ pub struct MemoryTarget {
     pub chip_select: u8,
 }
 
-#[cfg(feature = "rome")]
 fn channel_bits(base: u32) -> Option<u32> {
-    use crate::sp3::df::v3::DRAM_BASE;
+    use crate::df::v3::DRAM_BASE;
     match DRAM_BASE::ILV_CHAN.read(base) {
         0 => Some(0),
         1 | 0xc => Some(1),
@@ -116,7 +115,6 @@ fn channel_bits(base: u32) -> Option<u32> {
 ///
 /// Evidence: S8253 2P AmdRasSspSmm ee8175ef… 3a70 (selection), 4160
 /// (normalization), 32e0 (CS); corresponding S8030 3a90/4180/3300.
-#[cfg(feature = "rome")]
 pub fn memory_target(
     address: u64,
     sockets: u8,
@@ -125,7 +123,7 @@ pub fn memory_target(
 ) -> Option<MemoryTarget> {
     use crate::{
         df::DfReg,
-        sp3::df::v3::{CCM0, DRAM_BASE, DRAM_LIMIT},
+        df::v3::{CCM0, DRAM_BASE, DRAM_LIMIT},
     };
     if sockets == 0 || usize::from(sockets) > MAX_SOCKETS || address >= 1 << 48 {
         return None;
@@ -252,17 +250,15 @@ pub fn memory_target(
     })
 }
 
-#[cfg(feature = "rome")]
 fn rule_contains(address: u64, base: u32, limit: u32) -> bool {
-    use crate::sp3::df::v3::{DRAM_BASE, DRAM_LIMIT};
+    use crate::df::v3::{DRAM_BASE, DRAM_LIMIT};
     DRAM_BASE::VALID.is_set(base)
         && address >= u64::from(DRAM_BASE::BASE.read(base)) << 28
         && address < (u64::from(DRAM_LIMIT::LIMIT.read(limit)) + 1) << 28
 }
 
-#[cfg(feature = "rome")]
 fn normalize(address: u64, base: u32, hole: u32, offset: u64) -> Option<u64> {
-    use crate::sp3::df::v3::DRAM_BASE;
+    use crate::df::v3::DRAM_BASE;
     let address = if DRAM_BASE::HOLE_EN.is_set(base) {
         let hole_base = u64::from(hole & 0xff00_0000);
         if hole & 1 == 0 || (hole_base..1 << 32).contains(&address) {
@@ -371,10 +367,9 @@ mod tests {
         assert_eq!(*actions.borrow(), [1, 2, 4, 3]);
     }
 
-    #[cfg(feature = "rome")]
     mod mapping {
         use super::*;
-        use crate::{df::DfReg, sp3::df::v3::CCM0};
+        use crate::{df::DfReg, df::v3::CCM0};
         fn smn(_: u8, off: u32) -> u32 {
             match off & 0xfffff {
                 0x5014c => 0x673,

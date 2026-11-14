@@ -1,0 +1,1808 @@
+//! PCIe port setup around DXIO training (PCIE_DXIO §3.8, §3.9, §3.10,
+//! §3.13): port mapping and devfn remap, bridge hiding, straps, the
+//! state-5 and post-training register writes, hotplug port setup, SATA
+//! function enable, xGMI requests and the PERST pins.
+//!
+//! [`PortSetup`] implements [`Hooks`] for [`super::train`]; call
+//! [`PortSetup::finish`] after it.
+//!
+//! PCD-gated writes take the donor build defaults (§6); each site names
+//! the Rome / Milan PCD. Register names follow Oxide `milan/pcie.h`; bits
+//! without a public name are named by the report's description.
+
+use fstart_pci::ConfigRegionAccess;
+use heapless::Vec;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::{RegisterLongName, register_bitfields};
+
+use super::PcieReset;
+use super::hotplug::HotplugKind;
+use super::lanes::{self, Engine, EngineKind, EqPresets, PcieEngine, Speed};
+use crate::cpu::Silicon;
+use crate::dxio::wire::FwEngine;
+use crate::dxio::{Dxio, DxioError, Hooks, UnitView, op, prop};
+use crate::fch::gpio::{self, Pin};
+use crate::nbio::{Nbio, NbioReg, nbif};
+use crate::smn::SmnAddr;
+use crate::smu::SmuMessages;
+use crate::window::Window;
+
+register_bitfields![u32,
+    /// IOHC `IOHC_BRIDGE_CNTL` (`0x13B31004 + bridge * 0x400`).
+    pub BRIDGE_CNTL [
+        BRIDGE_DIS OFFSET(0) NUMBITS(1) [],
+        CFG_DIS OFFSET(2) NUMBITS(1) [],
+        CRS_ENABLE OFFSET(18) NUMBITS(1) []
+    ],
+    /// IOHC `NB_PROG_DEVICE_REMAP`.
+    pub DEVICE_REMAP [
+        DEVFN OFFSET(0) NUMBITS(8) []
+    ],
+    pub PORT_HW_DBG [
+        BIT15 OFFSET(15) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_TX_CTL`.
+    pub TX_CTL [
+        /// Cleared before hotplug/after reconfig (unnamed).
+        BIT15 OFFSET(15) NUMBITS(1) [],
+        /// Rome PCD 0x154 (1).
+        BIT20 OFFSET(20) NUMBITS(1) []
+    ],
+    pub TX_ID [
+        DEVFN OFFSET(0) NUMBITS(8) [],
+        BUS OFFSET(8) NUMBITS(8) []
+    ],
+    pub LC_CTL [
+        BIT23 OFFSET(23) NUMBITS(1) []
+    ],
+    pub LC_TRAIN_CTL [
+        BIT13 OFFSET(13) NUMBITS(1) []
+    ],
+    pub LC_WIDTH_CTL [
+        BIT19 OFFSET(19) NUMBITS(1) []
+    ],
+    pub LC_CTL2 [
+        F15_14 OFFSET(14) NUMBITS(2) [],
+        F24_23 OFFSET(23) NUMBITS(2) []
+    ],
+    /// `PCIE_PORT_LC_STATE0`: current LTSSM state.
+    pub LC_STATE0 [
+        CURRENT OFFSET(0) NUMBITS(6) []
+    ],
+    pub LC_CTL6 [
+        BIT0 OFFSET(0) NUMBITS(1) [],
+        BIT2 OFFSET(2) NUMBITS(1) []
+    ],
+    pub LC_CTL11 [
+        /// Rome PCD 0x129 / Milan 0x182 (1).
+        BIT13 OFFSET(13) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL4`.
+    pub LC_CTL4 [
+        /// Gen3 EQ search mode (3 = preset).
+        EQ_8GT_MODE OFFSET(8) NUMBITS(2) [],
+        BIT11 OFFSET(11) NUMBITS(1) [],
+        BIT16 OFFSET(16) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL8`.
+    pub LC_CTL8 [
+        /// Gen4 EQ search mode.
+        EQ_16GT_MODE OFFSET(0) NUMBITS(2) [],
+        BIT8 OFFSET(8) NUMBITS(1) [],
+        BIT11 OFFSET(11) NUMBITS(1) []
+    ],
+    pub STRAP_MISC [
+        F2_1 OFFSET(1) NUMBITS(2) []
+    ],
+    pub CORE_PCIE_CTL [
+        BIT17 OFFSET(17) NUMBITS(1) [],
+        BIT21 OFFSET(21) NUMBITS(1) []
+    ],
+    pub CORE_PCIE_CTL2 [
+        F14_13 OFFSET(13) NUMBITS(2) []
+    ],
+    pub CORE_CI_CTL [
+        BIT29 OFFSET(29) NUMBITS(1) [],
+        BIT31 OFFSET(31) NUMBITS(1) []
+    ],
+    pub CORE_P_CTL [
+        BIT6 OFFSET(6) NUMBITS(1) [],
+        BIT14 OFFSET(14) NUMBITS(1) [],
+        F15_14 OFFSET(14) NUMBITS(2) []
+    ],
+    pub CORE_STRAP_F0 [
+        F14_13 OFFSET(13) NUMBITS(2) [],
+        BIT18 OFFSET(18) NUMBITS(1) [],
+        BIT20 OFFSET(20) NUMBITS(1) []
+    ],
+    pub CORE_SDP_CTL [
+        PORT_ID OFFSET(0) NUMBITS(4) []
+    ],
+    pub RX_MARGIN_CTL_CAP [
+        BIT2 OFFSET(2) NUMBITS(1) []
+    ],
+    pub RX_MARGIN1 [
+        F19_7 OFFSET(7) NUMBITS(13) []
+    ],
+    pub RX_MARGIN2 [
+        F23_19 OFFSET(19) NUMBITS(5) []
+    ],
+    /// Root port config `0x58`: PCIe capabilities (dword 0).
+    pub CFG_PCIE_CAP [
+        SLOT_IMPLEMENTED OFFSET(24) NUMBITS(1) []
+    ],
+    /// Root port config `0x6C`: slot capabilities.
+    pub CFG_SLOT_CAP [
+        ATTENTION_BUTTON OFFSET(0) NUMBITS(1) [],
+        POWER_CONTROLLER OFFSET(1) NUMBITS(1) [],
+        MRL_SENSOR OFFSET(2) NUMBITS(1) [],
+        ATTENTION_INDICATOR OFFSET(3) NUMBITS(1) [],
+        POWER_INDICATOR OFFSET(4) NUMBITS(1) [],
+        HOTPLUG_SURPRISE OFFSET(5) NUMBITS(1) [],
+        HOTPLUG_CAPABLE OFFSET(6) NUMBITS(1) [],
+        ELECTROMECHANICAL_LOCK OFFSET(17) NUMBITS(1) [],
+        NO_COMMAND_COMPLETED OFFSET(18) NUMBITS(1) [],
+        PHYSICAL_SLOT OFFSET(19) NUMBITS(13) []
+    ],
+    /// Root port config `0x70`: slot control (15:0) and slot status
+    /// (31:16, write 1 to clear).
+    pub CFG_SLOT_CTL [
+        ATTENTION_BUTTON_EN OFFSET(0) NUMBITS(1) [],
+        POWER_FAULT_EN OFFSET(1) NUMBITS(1) [],
+        PRESENCE_CHANGE_EN OFFSET(3) NUMBITS(1) [],
+        HOTPLUG_INTERRUPT_EN OFFSET(5) NUMBITS(1) [],
+        /// Slot power off when set.
+        POWER_OFF OFFSET(10) NUMBITS(1) [],
+        /// Status: the W1C change bits.
+        STATUS_CHANGES OFFSET(16) NUMBITS(5) [],
+        PRESENCE_DETECTED OFFSET(22) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_PCTL`.
+    pub PCTL [
+        POWER_FAULT_EN OFFSET(4) NUMBITS(1) []
+    ],
+    /// `PCIE_LC_CNTL5`.
+    pub LC_CTL5 [
+        /// Hold the LTSSM in Detect (cleared for hotplug slots).
+        WAIT_DETECT OFFSET(28) NUMBITS(1) []
+    ],
+    /// `PCIE_PORT_HP_CTL`: the slot the SMU hotplug firmware drives.
+    pub HP_CTL [
+        SLOT OFFSET(0) NUMBITS(13) [],
+        ACTIVE OFFSET(31) NUMBITS(1) []
+    ],
+    /// `PCIECORE::PCIE_PRESENCE_DETECT_SELECT`.
+    pub CORE_PRES [
+        /// 0: in-band OR out-of-band presence.
+        MODE OFFSET(24) NUMBITS(1) [
+            Or = 0,
+            And = 1
+        ]
+    ],
+    /// Root port config `0x80`: device control 2.
+    pub CFG_DEV_CTL2 [
+        COMPLETION_TIMEOUT OFFSET(0) NUMBITS(4) []
+    ],
+    /// Bridge config `0x18`: bus numbers.
+    pub CFG_BUSES [
+        SECONDARY OFFSET(8) NUMBITS(8) [],
+        SUBORDINATE OFFSET(16) NUMBITS(8) []
+    ],
+];
+
+/// Port register offsets (`PCIE_PORT_*`).
+pub mod port {
+    pub const HW_DBG: u32 = 0x008;
+    pub const PCTL: u32 = 0x040;
+    pub const TX_CTL: u32 = 0x080;
+    pub const TX_ID: u32 = 0x084;
+    pub const LC_CTL: u32 = 0x280;
+    pub const LC_TRAIN_CTL: u32 = 0x284;
+    pub const LC_WIDTH_CTL: u32 = 0x288;
+    pub const LC_STATE0: u32 = 0x294;
+    pub const LC_CTL2: u32 = 0x2C4;
+    pub const LC_CTL6: u32 = 0x2EC;
+    pub const LC_CTL4: u32 = 0x2D8;
+    pub const LC_CTL5: u32 = 0x2DC;
+    pub const STRAP_MISC: u32 = 0x304;
+    pub const HP_CTL: u32 = 0x36C;
+    pub const LC_CTL8: u32 = 0x374;
+    pub const LC_CTL11: u32 = 0x390;
+}
+
+/// Core register offsets (`PCIE_CORE_*`).
+pub mod core_reg {
+    pub const PCIE_CTL: u32 = 0x040;
+    pub const PCIE_CTL2: u32 = 0x070;
+    pub const CI_CTL: u32 = 0x080;
+    pub const P_CTL: u32 = 0x100;
+    pub const SDP_CTL: u32 = 0x18C;
+    pub const STRAP_F0: u32 = 0x2C0;
+    /// `SWRST_CONTROL_6`: per-port HOLD_TRAINING (bit = port).
+    pub const SWRST_CTL6: u32 = 0x428;
+    pub const RSMU_TIMER: u32 = 0x488;
+    pub const RX_MARGIN_CTL_CAP: u32 = 0x4D4;
+    pub const RX_MARGIN1: u32 = 0x4D8;
+    pub const RX_MARGIN2: u32 = 0x4DC;
+    pub const PRES: u32 = 0x4E0;
+}
+
+/// Root-port config offsets reached through the SMN config aperture.
+pub mod cfg {
+    pub const BUSES: u32 = 0x18;
+    pub const PCIE_CAP: u32 = 0x58;
+    pub const SLOT_CAP: u32 = 0x6C;
+    pub const SLOT_CTL: u32 = 0x70;
+    pub const DEV_CTL2: u32 = 0x80;
+    pub const DPC_STATUS: u32 = 0x388;
+}
+
+/// RSMU PCIe straps (Oxide `pcie_rsmu.h` numbering).
+pub mod strap {
+    pub const DLF_EN: u16 = 0x10;
+    pub const GEN3_DIS: u16 = 0x7A;
+    pub const GEN4_DIS: u16 = 0x84;
+    pub const EQ_DS_RX_PRESET_HINT: u16 = 0x9F;
+    pub const EQ_US_RX_PRESET_HINT: u16 = 0xA0;
+    pub const EQ_DS_TX_PRESET: u16 = 0xA1;
+    pub const EQ_US_TX_PRESET: u16 = 0xA2;
+    pub const EQ_16GT_DS_TX_PRESET: u16 = 0xA3;
+    pub const EQ_16GT_US_TX_PRESET: u16 = 0xA4;
+    /// Per-port straps start here, `PER_PORT` apart.
+    pub const PORT_BASE: u16 = 0xD2;
+    pub const PER_PORT: u16 = 0x61;
+    pub const P_SPC_MODE_8GT: u16 = 0xF9;
+    pub const P_10B_TAG_CMPL_SUP: u16 = 0x110;
+    pub const P_10B_TAG_REQ_SUP: u16 = 0x111;
+    pub const P_DLF_SUP: u16 = 0x12E;
+    pub const P_DLF_EXCHANGE_EN: u16 = 0x12F;
+    pub const P_DLF_HDR_SCALE_MODE: u16 = 0x130;
+
+    /// A per-port strap of `port`.
+    pub const fn port(strap: u16, port: u8) -> u16 {
+        strap + PER_PORT * port as u16
+    }
+}
+
+/// IOHC bridge controls and the devfn remap.
+pub const IOHC_BRIDGE_CNTL: SmnAddr = 0x13B3_1004;
+pub const SP3_DEVICE_REMAP: SmnAddr = 0x13B1_00B8;
+pub const NAPLES_DEVICE_REMAP: SmnAddr = 0x13B1_00C0;
+/// Rome/Milan RSMU strap index/data (`+ nbio << 12 + core << 14`, not
+/// the quadrant offset).
+pub const RSMU_STRAP_INDEX: SmnAddr = 0x0904_67AC;
+
+/// Ports (bridges) per NBIO: 18 on Rome/Milan (WAFL 16/17), 16 on Naples.
+pub const fn ports_per_nbio(generation: Silicon) -> usize {
+    match generation {
+        Silicon::Zp => 16,
+        Silicon::Ssp | Silicon::Gn => 18,
+    }
+}
+
+/// One PCIe core of an NBIO: the port, core and root-port config
+/// apertures.
+pub struct PcieCore<'n, P> {
+    pub nbio: &'n Nbio<P>,
+    pub core: u8,
+}
+
+impl<'n, P: ConfigRegionAccess + Clone> PcieCore<'n, P> {
+    pub fn new(nbio: &'n Nbio<P>, core: u8) -> Self {
+        Self { nbio, core }
+    }
+
+    /// `base + core stride`: `core << 22` on Rome/Milan (plus the quadrant
+    /// `nbio << 20`), `core << 20` on Naples (one die per SMN).
+    fn at(&self, base: SmnAddr) -> SmnAddr {
+        match self.nbio.generation {
+            Silicon::Zp => base + ((self.core as u32) << 20),
+            Silicon::Ssp | Silicon::Gn => self.nbio.at(base + ((self.core as u32) << 22)),
+        }
+    }
+
+    pub fn port_addr(&self, port: u8, offset: u32) -> SmnAddr {
+        self.at(0x1114_0000) + ((port as u32) << 12) + offset
+    }
+
+    pub fn core_addr(&self, offset: u32) -> SmnAddr {
+        self.at(0x1118_0000) + offset
+    }
+
+    pub fn cfg_addr(&self, port: u8, offset: u32) -> SmnAddr {
+        self.at(0x1110_0000) + ((port as u32) << 12) + offset
+    }
+
+    pub fn port_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<'_, P, R> {
+        self.nbio.reg_at(self.port_addr(port, offset))
+    }
+
+    pub fn core_reg<R: RegisterLongName>(&self, offset: u32) -> NbioReg<'_, P, R> {
+        self.nbio.reg_at(self.core_addr(offset))
+    }
+
+    pub fn cfg_reg<R: RegisterLongName>(&self, port: u8, offset: u32) -> NbioReg<'_, P, R> {
+        self.nbio.reg_at(self.cfg_addr(port, offset))
+    }
+
+    /// Write strap `strap` of this core: RSMU index/data on Rome/Milan
+    /// (`ffe00720`), the per-core index pair on Naples; index
+    /// `0xFFFE0000 | strap`.
+    pub fn write_strap(&self, strap: u16, value: u32) {
+        let index = match self.nbio.generation {
+            Silicon::Zp => crate::nbio::pcie::strap_index(self.core as usize & 1).address(),
+            Silicon::Ssp | Silicon::Gn => {
+                RSMU_STRAP_INDEX + ((self.nbio.index as u32) << 12) + ((self.core as u32) << 14)
+            }
+        };
+        fstart_core::indexed::Indexed::<_, _, ()>::new(
+            self.nbio.reg_at::<()>(index),
+            self.nbio.reg_at::<()>(index + 4),
+            0xFFFE_0000 | strap as u32,
+        )
+        .set(value);
+    }
+
+    /// The port's link has trained: LTSSM in L0 states `[0x10, 0x1C)`
+    /// (Rome `DxioCleanUpEarlyInitSP3` predicate).
+    pub fn trained(&self, port: u8) -> bool {
+        let s = self
+            .port_reg::<LC_STATE0::Register>(port, port::LC_STATE0)
+            .read(LC_STATE0::CURRENT);
+        (0x10..0x1C).contains(&s)
+    }
+}
+
+/// An engine the board attached something to: the bridge of its PCIe
+/// link (none for a SATA engine), its lanes and what is attached.
+pub type AttachedPort = (
+    Option<fstart_pci::PciAddress>,
+    u8,
+    &'static fstart_core::smbios::Attached<'static>,
+);
+
+/// The engines of `engines` the board attached something to, as `ports`
+/// mapped them: each PCIe link at its assigned devfn on the bus of its
+/// NBIO's root bridge in `topology`, a SATA engine without a bridge. A
+/// PCIe engine without a port (a knob took it out) is left out.
+pub fn attached(
+    topology: &crate::df::topology::Topology,
+    segment: u16,
+    engines: &[Engine<'static>],
+    ports: &[MappedPort],
+) -> Vec<AttachedPort, { crate::dxio::wire::MAX_ENGINES }> {
+    engines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, engine)| {
+            let attached = engine.attached?;
+            let lanes = engine.lanes.count();
+            let bridge = match engine.kind {
+                EngineKind::Pcie(_) => {
+                    let port = ports.iter().find(|p| p.engine == index)?;
+                    let bus = topology
+                        .root_bridges
+                        .iter()
+                        .find(|rb| (rb.socket, rb.index) == (port.socket, port.nbio))?
+                        .bus_base;
+                    let (device, function) = fstart_pci::devfn_parts(port.devfn);
+                    Some(fstart_pci::PciAddress::new(segment, bus, device, function))
+                }
+                EngineKind::Sata(_) | EngineKind::Ethernet => None,
+            };
+            Some((bridge, lanes, attached))
+        })
+        .collect()
+}
+
+/// One PCIe engine mapped to a hardware port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappedPort {
+    /// Board engine index.
+    pub engine: usize,
+    pub socket: u8,
+    /// NBIO quadrant (Rome/Milan) or die (Naples).
+    pub nbio: u8,
+    pub core: u8,
+    /// Hardware port within the core (`mac_port_id`).
+    pub port: u8,
+    /// Assigned devfn after the remap.
+    pub devfn: u8,
+    /// Logical bridge: the slot of `devfn` in the default devfn table
+    /// (Rome `ffe04e2c` template `+0x33`). IOHC_BRIDGE_CNTL and the SMU
+    /// hotplug map are indexed by it, not by the physical port.
+    pub bridge: u8,
+    pub trained: bool,
+}
+
+impl MappedPort {
+    /// NB_PROG_DEVICE_REMAP index (physical port): `core * 8 + port`.
+    pub const fn remap_index(&self) -> usize {
+        self.core as usize * 8 + self.port as usize
+    }
+}
+
+/// The logical bridge answering at `devfn`: its slot in the default
+/// devfn table (`ffe04e2c`).
+pub fn logical_bridge(generation: Silicon, devfn: u8) -> Option<u8> {
+    lanes::default_devfns(generation)
+        .iter()
+        .position(|&d| d == devfn)
+        .map(|i| i as u8)
+}
+
+/// Map the returned PCIe engines to ports (`ffe0333d`): each wire engine
+/// is its board engine (same order, start lane checked), the hardware port
+/// is `mac_port_id`. Engines whose lanes moved or whose port is out of the
+/// core's range are dropped.
+pub fn map_ports<'u>(
+    generation: Silicon,
+    board: &'u [Engine<'_>],
+    unit: &'u UnitView<'_>,
+) -> impl Iterator<Item = MappedPort> + 'u {
+    unit.engines
+        .iter()
+        .zip(unit.board)
+        .filter(|(e, _)| e.is_pcie())
+        .filter_map(move |(e, &b)| {
+            let p = lanes::place(generation, board.get(b as usize)?).ok()?;
+            let ports = if p.core == 2 { 2 } else { 8 };
+            (p.wire.start == e.start_lane && e.mac_port_id < ports).then_some(MappedPort {
+                engine: b as usize,
+                socket: unit.socket,
+                nbio: p.nbio,
+                core: p.core,
+                port: e.mac_port_id,
+                devfn: 0,
+                bridge: 0,
+                trained: false,
+            })
+        })
+}
+
+/// The remap list (`ffe04fa8`): requested devfns per port (0 = none) keep
+/// their value; the defaults not requested anywhere fill the others in
+/// order.
+pub fn remap_devfns<const N: usize>(requested: &[u8; N], defaults: &[u8]) -> [u8; N] {
+    let mut free = defaults.iter().copied().filter(|d| !requested.contains(d));
+    requested.map(|r| if r != 0 { r } else { free.next().unwrap_or(0) })
+}
+
+/// Hide every bridge of the NBIO (`ffdfd20e`: mask `0xFFFBFFFA`, value
+/// `0x40005`).
+pub fn hide_bridges<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
+    (0..ports_per_nbio(nbio.generation)).for_each(|b| {
+        bridge(nbio, b).modify(
+            BRIDGE_CNTL::BRIDGE_DIS::SET + BRIDGE_CNTL::CFG_DIS::SET + BRIDGE_CNTL::CRS_ENABLE::SET,
+        )
+    });
+}
+
+/// Show one bridge (`ffdfd299`: value `0x40000`).
+pub fn show_bridge<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>, index: usize) {
+    bridge(nbio, index).modify(
+        BRIDGE_CNTL::BRIDGE_DIS::CLEAR + BRIDGE_CNTL::CFG_DIS::CLEAR + BRIDGE_CNTL::CRS_ENABLE::SET,
+    );
+}
+
+fn bridge<P: ConfigRegionAccess + Clone>(
+    nbio: &Nbio<P>,
+    index: usize,
+) -> NbioReg<'_, P, BRIDGE_CNTL::Register> {
+    nbio.reg_at(nbio.at(IOHC_BRIDGE_CNTL + 0x400 * index as u32))
+}
+
+/// Write NB_PROG_DEVICE_REMAP byte 0 of every port.
+pub fn write_remap<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>, list: &[u8]) {
+    let base = match nbio.generation {
+        Silicon::Zp => NAPLES_DEVICE_REMAP,
+        Silicon::Ssp | Silicon::Gn => SP3_DEVICE_REMAP,
+    };
+    list.iter().enumerate().for_each(|(i, &d)| {
+        nbio.reg_at::<DEVICE_REMAP::Register>(nbio.at(base + 4 * i as u32))
+            .modify(DEVICE_REMAP::DEVFN.val(d as u32))
+    });
+}
+
+/// State 0xF, per mapped port (Rome `ffdfd4e4`, Milan `ffd0f76b`;
+/// Naples: the pre-training TX_CTL write, sp4r2 `ffde433f`).
+pub fn before_reconfig<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    port: u8,
+    pcie: &PcieEngine,
+    width: u8,
+) {
+    let tx = c.port_reg::<TX_CTL::Register>(port, port::TX_CTL);
+    if c.nbio.generation == Silicon::Zp {
+        tx.modify(TX_CTL::BIT15::CLEAR);
+        return;
+    }
+    // EQ straps from the port template, which defaults to
+    // `EqPresets::DONOR` (Rome `ffdfb789`, `ffdfd53c..d5c3`).
+    let q = pcie.eq.unwrap_or(EqPresets::DONOR);
+    [
+        (strap::EQ_DS_RX_PRESET_HINT, q.ds_rx_hint),
+        (strap::EQ_US_RX_PRESET_HINT, q.us_rx_hint),
+        (strap::EQ_DS_TX_PRESET, q.ds_tx),
+        (strap::EQ_US_TX_PRESET, q.us_tx),
+        (strap::EQ_16GT_DS_TX_PRESET, q.ds_tx_16gt),
+        (strap::EQ_16GT_US_TX_PRESET, q.us_tx_16gt),
+    ]
+    .iter()
+    .for_each(|&(s, v)| c.write_strap(s, v as u32));
+    // EQ search modes and the template fields that are zero on board rows
+    // without vetting/override bits (Rome `ffdfd803..d9ff`, Milan
+    // `ffd0f8af..fb91`). The 8 GT mode is preset after `speed_fixup`.
+    c.port_reg::<LC_CTL4::Register>(port, port::LC_CTL4).modify(
+        LC_CTL4::BIT16::CLEAR
+            + LC_CTL4::BIT11::CLEAR
+            + LC_CTL4::EQ_8GT_MODE.val(pcie.extra.eq_search_mode.unwrap_or(0) as u32),
+    );
+    c.port_reg::<LC_CTL8::Register>(port, port::LC_CTL8)
+        .modify(LC_CTL8::BIT11::CLEAR + LC_CTL8::BIT8::CLEAR + LC_CTL8::EQ_16GT_MODE.val(0));
+    // Rome PCD 0x13D (1): 8 GT/s SKP mode 2 on x1 and x4 links.
+    if width == 1 || width == 4 {
+        c.write_strap(strap::port(strap::P_SPC_MODE_8GT, port), 2);
+    }
+    c.port_reg::<LC_CTL11::Register>(port, port::LC_CTL11)
+        .modify(LC_CTL11::BIT13::SET);
+    tx.modify(TX_CTL::BIT20::SET);
+}
+
+/// Optional Milan pre-training capabilities. Values are board policy,
+/// not inferred from the presence or absence of endpoints. Strap names
+/// match the public Milan RSMU register definitions; sequences/conditions
+/// below are recovered from RXM100CB, not a register-dump replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PcieFeatures {
+    /// RXM100CB PCD 0x1C2: when true, advertise requester and completer
+    /// 10-bit tags on all eight ports of each used wrapper; false keeps
+    /// the hardware's defaults rather than forcing both straps to zero.
+    pub ten_bit_tags: bool,
+    /// PCD 0x16D: DLF capability, gated off on WAFL and by port policy.
+    pub data_link_feature: bool,
+    /// PCD 0x16E: DLF exchange and header scale 1, unless overridden by
+    /// port policy. False writes zero on eligible ports.
+    pub data_link_exchange: bool,
+}
+
+/// RXM100CB `ffd21412..de`: DLF straps only on Auto/Gen4 ports. The
+/// descriptor default initializer `ffd24583` clears both disable flags;
+/// board flags are copied by `ffd2786b` / `ffd278dc`.
+fn before_reconfig_features<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    port: u8,
+    pcie: &PcieEngine,
+    policy: PcieFeatures,
+) {
+    if !matches!(pcie.max_speed, Speed::Auto | Speed::Gen4) {
+        return;
+    }
+    let support = policy.data_link_feature && c.core != 2 && !pcie.extra.disable_dlf;
+    let exchange = policy.data_link_exchange && !pcie.extra.disable_dlf_exchange;
+    for (s, value) in [
+        (strap::P_DLF_SUP, support),
+        (strap::P_DLF_EXCHANGE_EN, exchange),
+        (strap::P_DLF_HDR_SCALE_MODE, exchange),
+    ] {
+        c.write_strap(strap::port(s, port), value.into());
+    }
+}
+
+/// RXM100CB `ffd214e8..215fb`: wrapper-wide work follows per-port
+/// programming. Include unpopulated physical ports, not just descriptors.
+fn before_reconfig_features_core<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    policy: PcieFeatures,
+) {
+    if policy.ten_bit_tags {
+        for port in 0..8 {
+            c.write_strap(strap::port(strap::P_10B_TAG_CMPL_SUP, port), 1);
+            c.write_strap(strap::port(strap::P_10B_TAG_REQ_SUP, port), 1);
+        }
+    }
+    if c.core != 2 {
+        if policy.data_link_feature {
+            c.write_strap(strap::DLF_EN, 1);
+        }
+        // Do not accidentally cap the core itself at Gen2/Gen3. Individual
+        // board/fuse speed limits remain in the engine configuration.
+        c.write_strap(strap::GEN3_DIS, 0);
+        c.write_strap(strap::GEN4_DIS, 0);
+    }
+}
+
+/// State 5, per mapped port: clear DPC status (W1C) and TX_CTL bit 15
+/// (Rome `ffdfe33b`); Naples (sp4r2 `ffdeb04b`): LC_CTL6 bit 0 = 0
+/// (PCD 0xE0), bit 2 = 1 (0xE1), LC_TRAIN_CTL bit 13 on present ports.
+pub fn after_reconfig<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8, present: bool) {
+    if c.nbio.generation == Silicon::Zp {
+        c.port_reg::<LC_CTL6::Register>(port, port::LC_CTL6)
+            .modify(LC_CTL6::BIT0::CLEAR + LC_CTL6::BIT2::SET);
+        if present {
+            c.port_reg::<LC_TRAIN_CTL::Register>(port, port::LC_TRAIN_CTL)
+                .modify(LC_TRAIN_CTL::BIT13::SET);
+        }
+        return;
+    }
+    let dpc = c.cfg_reg::<()>(port, cfg::DPC_STATUS);
+    dpc.set(dpc.get());
+    c.port_reg::<TX_CTL::Register>(port, port::TX_CTL)
+        .modify(TX_CTL::BIT15::CLEAR);
+}
+
+/// State 5, per used core (Rome `ffdfe33b`, Milan `ffd10ace`): lane
+/// margining (Rome 0x12D / Milan 0x19B = 1), CI_CTL bit 29 (Rome 0x12E =
+/// 1, Milan 0x87 = 0) and bit 31 (0x134 / 0x86 = 1), SDP port ID.
+pub fn after_reconfig_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
+    let generation = c.nbio.generation;
+    if generation == Silicon::Zp {
+        return;
+    }
+    c.core_reg::<RX_MARGIN_CTL_CAP::Register>(core_reg::RX_MARGIN_CTL_CAP)
+        .modify(RX_MARGIN_CTL_CAP::BIT2::SET);
+    c.core_reg::<RX_MARGIN1::Register>(core_reg::RX_MARGIN1)
+        .modify(RX_MARGIN1::F19_7.val(0xC97));
+    c.core_reg::<RX_MARGIN2::Register>(core_reg::RX_MARGIN2)
+        .modify(RX_MARGIN2::F23_19.val(0xF));
+    let ci = c.core_reg::<CORE_CI_CTL::Register>(core_reg::CI_CTL);
+    ci.modify(CORE_CI_CTL::BIT31::SET);
+    if generation == Silicon::Ssp {
+        ci.modify(CORE_CI_CTL::BIT29::SET);
+    }
+    // SDP_CTL[3:0] = core + 2; the WAFL core gets the raw pattern
+    // `& 0xF7FFFFF4 | 0x14000004` (Rome `ffdfe69c..e715`, Milan too).
+    let sdp = c.core_reg::<CORE_SDP_CTL::Register>(core_reg::SDP_CTL);
+    if c.core == 2 {
+        sdp.set(sdp.get() & 0xF7FF_FFF4 | 0x1400_0004);
+    } else {
+        sdp.modify(CORE_SDP_CTL::PORT_ID.val(c.core as u32 + 2));
+    }
+}
+
+/// After training, per trained or hotplug port (Rome `ffdff1e6`, Milan
+/// `ffd1177a`, Naples sp4r2 `ffde4a88`).
+pub fn post_training<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    p: &MappedPort,
+    pcie: &PcieEngine,
+) {
+    let port = p.port;
+    let sp3 = c.nbio.generation != Silicon::Zp;
+    if sp3 {
+        c.port_reg::<TX_ID::Register>(port, port::TX_ID)
+            .modify(TX_ID::BUS.val(c.nbio.bus() as u32) + TX_ID::DEVFN.val(p.devfn as u32));
+        if pcie.slot.is_some() || pcie.hotplug.is_some() {
+            c.cfg_reg::<CFG_PCIE_CAP::Register>(port, cfg::PCIE_CAP)
+                .modify(CFG_PCIE_CAP::SLOT_IMPLEMENTED::SET);
+        }
+        if let Some(slot) = pcie.slot {
+            c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+                .modify(CFG_SLOT_CAP::PHYSICAL_SLOT.val(slot as u32));
+        }
+        if let Some(h) = pcie
+            .hotplug
+            .filter(|h| h.i2c.is_none() && h.kind.keeps_bridge())
+        {
+            let cap = c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP);
+            let before = cap.get();
+            cap.modify(CFG_SLOT_CAP::HOTPLUG_CAPABLE::SET);
+            if h.kind == HotplugKind::EnterpriseSsd {
+                // Vendor EntSSD slot policy (0x40020), without inventing
+                // a power controller or attention/indicator wiring.
+                cap.modify(
+                    CFG_SLOT_CAP::HOTPLUG_SURPRISE::SET + CFG_SLOT_CAP::NO_COMMAND_COMPLETED::SET,
+                );
+            }
+            fstart_log::info!(
+                "dxio: native hotplug {}.{} port {} PCIe cap {:#x}, slot cap {:#x}->{:#x}",
+                p.socket,
+                p.nbio,
+                port,
+                c.cfg_reg::<CFG_PCIE_CAP::Register>(port, cfg::PCIE_CAP)
+                    .get(),
+                before,
+                cap.get()
+            );
+        }
+    } else {
+        c.port_reg::<STRAP_MISC::Register>(port, port::STRAP_MISC)
+            .modify(STRAP_MISC::F2_1.val(3));
+    }
+    c.cfg_reg::<CFG_DEV_CTL2::Register>(port, cfg::DEV_CTL2)
+        .modify(CFG_DEV_CTL2::COMPLETION_TIMEOUT.val(6));
+    c.port_reg::<LC_CTL::Register>(port, port::LC_CTL)
+        .modify(LC_CTL::BIT23::SET);
+    c.port_reg::<LC_WIDTH_CTL::Register>(port, port::LC_WIDTH_CTL)
+        .modify(LC_WIDTH_CTL::BIT19::SET);
+    let lc2 = c.port_reg::<LC_CTL2::Register>(port, port::LC_CTL2);
+    lc2.modify(LC_CTL2::F15_14.val(1));
+    if sp3 {
+        lc2.modify(LC_CTL2::F24_23.val(2));
+    }
+    c.port_reg::<PORT_HW_DBG::Register>(port, port::HW_DBG)
+        .modify(PORT_HW_DBG::BIT15::SET);
+}
+
+/// After training, per used core (Milan `ffd11664`; Naples sp4r2
+/// `ffde4a88`): STRAP_F0 bits 18/20 (Milan 0x9F/0x9E = 1), PCIE_CTL,
+/// PCIE_CTL2, P_CTL bit 6 = !PCD 0x18E (0).
+pub fn post_training_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
+    let f0 = c.core_reg::<CORE_STRAP_F0::Register>(core_reg::STRAP_F0);
+    let pctl = c.core_reg::<CORE_P_CTL::Register>(core_reg::P_CTL);
+    let ctl = c.core_reg::<CORE_PCIE_CTL::Register>(core_reg::PCIE_CTL);
+    if c.nbio.generation == Silicon::Zp {
+        f0.modify(CORE_STRAP_F0::BIT18::SET + CORE_STRAP_F0::F14_13.val(3));
+        ctl.modify(CORE_PCIE_CTL::BIT17::CLEAR);
+        pctl.modify(CORE_P_CTL::BIT6::SET + CORE_P_CTL::F15_14.val(1));
+        return;
+    }
+    f0.modify(CORE_STRAP_F0::BIT18::SET + CORE_STRAP_F0::BIT20::SET);
+    ctl.modify(CORE_PCIE_CTL::BIT21::SET + CORE_PCIE_CTL::BIT17::CLEAR);
+    c.core_reg::<CORE_PCIE_CTL2::Register>(core_reg::PCIE_CTL2)
+        .modify(CORE_PCIE_CTL2::F14_13.val(2));
+    pctl.modify(CORE_P_CTL::BIT14::SET + CORE_P_CTL::BIT6::SET);
+}
+
+/// PEI hotplug port setup (Rome `ffdffa58`), the parts without RAS
+/// policy: TX_CTL bit 15 = 0, LC_TRAIN_CTL bit 13. The per-type slot
+/// capability writes (ExpressModule `0x2003B`, EntSSD `0x40020`), HP_CTL,
+/// DPC masks and the firmware-first IOHC bits are open items.
+pub fn hotplug_port<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) {
+    c.port_reg::<TX_CTL::Register>(port, port::TX_CTL)
+        .modify(TX_CTL::BIT15::CLEAR);
+    c.port_reg::<LC_TRAIN_CTL::Register>(port, port::LC_TRAIN_CTL)
+        .modify(LC_TRAIN_CTL::BIT13::SET);
+}
+
+/// A slot the SMU hotplug firmware drives over I2C, before hotplug starts
+/// (Oxide `milan_fabric_hotplug_port_init`, `..._init_pcie_hotplug_slot_caps`):
+/// the slot number for the SMU, no LTSSM hold in Detect, power faults,
+/// and the slot capabilities its expander wiring provides.
+pub fn hotplug_slot<P: ConfigRegionAccess + Clone>(
+    c: &PcieCore<'_, P>,
+    port: u8,
+    slot: u16,
+    features: &super::hotplug::SlotFeatures,
+) {
+    c.port_reg::<HP_CTL::Register>(port, port::HP_CTL)
+        .modify(HP_CTL::SLOT.val(slot as u32) + HP_CTL::ACTIVE::SET);
+    c.port_reg::<LC_CTL5::Register>(port, port::LC_CTL5)
+        .modify(LC_CTL5::WAIT_DETECT::CLEAR);
+    c.port_reg::<PCTL::Register>(port, port::PCTL)
+        .modify(PCTL::POWER_FAULT_EN::SET);
+    let flag = |on: bool| on as u32;
+    c.cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+        .modify(
+            CFG_SLOT_CAP::HOTPLUG_SURPRISE::SET
+                + CFG_SLOT_CAP::HOTPLUG_CAPABLE::SET
+                + CFG_SLOT_CAP::MRL_SENSOR::CLEAR
+                + CFG_SLOT_CAP::ATTENTION_BUTTON.val(flag(features.attention_button))
+                + CFG_SLOT_CAP::POWER_CONTROLLER.val(flag(features.power_controller))
+                + CFG_SLOT_CAP::ATTENTION_INDICATOR.val(flag(features.attention_indicator))
+                + CFG_SLOT_CAP::POWER_INDICATOR.val(flag(features.power_indicator))
+                + CFG_SLOT_CAP::ELECTROMECHANICAL_LOCK.val(flag(features.electromechanical_lock))
+                + CFG_SLOT_CAP::NO_COMMAND_COMPLETED.val(flag(features.no_command_completed)),
+        );
+}
+
+/// Presence of a core's hotplug slots: in-band OR out-of-band (Oxide
+/// `milan_fabric_hotplug_core_init`).
+pub fn hotplug_core<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>) {
+    c.core_reg::<CORE_PRES::Register>(core_reg::PRES)
+        .modify(CORE_PRES::MODE::Or);
+}
+
+/// Let a hotplug port train: DXIO holds hotplug ports in
+/// `SWRST_CONTROL_6` (Oxide `milan_fabric_hotplug_port_unblock_training`).
+pub fn release_training<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) {
+    let hold = c.core_reg::<()>(core_reg::SWRST_CTL6);
+    hold.set(hold.get() & !(1 << port));
+}
+
+/// After the SMU started hotplug: enable the slot's events and set its
+/// power from presence. Without a slot control write the SMU leaves the
+/// expander outputs at their reset state (Oxide
+/// `zen_hotplug_bridge_post_start`). Returns the slot control/status.
+pub fn hotplug_started<P: ConfigRegionAccess + Clone>(c: &PcieCore<'_, P>, port: u8) -> u32 {
+    let cap = c
+        .cfg_reg::<CFG_SLOT_CAP::Register>(port, cfg::SLOT_CAP)
+        .extract();
+    let ctl = c.cfg_reg::<CFG_SLOT_CTL::Register>(port, cfg::SLOT_CTL);
+    let now = ctl.extract();
+    let mut next = now;
+    // Leave the status change bits alone (write 1 clears).
+    next.modify(CFG_SLOT_CTL::STATUS_CHANGES.val(0));
+    next.modify(
+        CFG_SLOT_CTL::POWER_FAULT_EN::SET
+            + CFG_SLOT_CTL::PRESENCE_CHANGE_EN::SET
+            + CFG_SLOT_CTL::HOTPLUG_INTERRUPT_EN::SET,
+    );
+    if cap.is_set(CFG_SLOT_CAP::ATTENTION_BUTTON) {
+        next.modify(CFG_SLOT_CTL::ATTENTION_BUTTON_EN::SET);
+    }
+    if cap.is_set(CFG_SLOT_CAP::POWER_CONTROLLER) {
+        let present = now.is_set(CFG_SLOT_CTL::PRESENCE_DETECTED);
+        next.modify(CFG_SLOT_CTL::POWER_OFF.val(!present as u32));
+    }
+    ctl.set(next.get());
+    ctl.get()
+}
+
+/// Wait for the SMU hotplug firmware to settle: 100 000 ticks of the core
+/// RSMU timer, at most 1000 reads (SmuV11Dxe `0x3FE8` bounds it the same
+/// way; Naples does not).
+pub fn hotplug_settle<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
+    let c = PcieCore::new(nbio, 0);
+    let timer = c.core_reg::<()>(core_reg::RSMU_TIMER);
+    let start = timer.get();
+    let _ = (0..1000).find(|_| timer.get().wrapping_sub(start) >= 100_000);
+}
+
+/// Enable the SATA functions of a socket with SATA lanes. Rome/Milan:
+/// NBIF1 of the socket's first NBIO, functions 1.0/2.0 and their interrupt
+/// lines (`ffe04d75`: `0x1053A008` bits 8/16, `0x10535000/0x10536000`
+/// bit 28; Milan assumed the same). Naples: the die's NBIF1 function 0.2
+/// strap (`0x10234400` bit 28, sp4r2 `ffde6712`).
+pub fn enable_sata<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
+    let strap = |dev, func| {
+        nbio.reg_at::<nbif::FUNC_STRAP0::Register>(nbio.nbif(1) + nbif::func_strap0(dev, func))
+            .modify(nbif::FUNC_STRAP0::EXIST::SET)
+    };
+    match nbio.generation {
+        Silicon::Zp => strap(0, 2),
+        Silicon::Ssp | Silicon::Gn => {
+            nbio.modify32(nbio.nbif(1) + nbif::INTR_LINE_EN, 0, 1 << 8 | 1 << 16);
+            strap(1, 0);
+            strap(2, 0);
+        }
+    }
+}
+
+/// xGMI requests, once per socket (§3.13): Milan 2P first sends 0x40
+/// (PCD 0x1A3 = 1), then ClearBer `{0x22, 0, (F1x330[4:0] << 8 | ccds)
+/// << 8 | ccds, 1}` (Rome `ffdfefa5`; Milan when PCD32 0xAF ≠ 0x40).
+/// `f1x330` is D18F1x330 of socket 0's node 0 (the donor reads that fixed
+/// ECAM address for both sockets), `ccd_mask` the socket's present CCDs.
+pub fn xgmi_init<M: SmuMessages + ?Sized>(
+    generation: Silicon,
+    dxio: &Dxio<'_, M>,
+    f1x330: u32,
+    ccd_mask: u8,
+    two_socket: bool,
+) -> Result<(), DxioError> {
+    if generation == Silicon::Zp {
+        return Ok(());
+    }
+    if generation == Silicon::Gn && two_socket {
+        dxio.rpc(op::XGMI_BER_ADAPT, [0; 5])?;
+    }
+    let ccds = ccd_mask as u32;
+    let arg = ((f1x330 & 0x1F) << 8 | ccds) << 8 | ccds;
+    dxio.rpc(op::SET_RUNTIME_PROP, [prop::XGMI, 0, arg, 1, 0])
+        .map(|_| ())
+}
+
+/// GPIO26 PCIE_RST0_L, GPIO27 PCIE_RST3_L, RMT GPIO10/11 PCIE_RST1/2_L
+/// (Oxide `milan/iomux.h` names).
+pub const PERST_PINS: [Pin; 4] = [Pin(26), Pin(27), Pin(266), Pin(267)];
+
+/// PERST release through the FCH reset pins (§3.4). Rome/Milan drive all
+/// four PCIE_RST pins high (`0xC40000`: output enable, high, drive
+/// strength 2); Naples sets GPIO26 to `0xD20000` (adds the pull-up) and
+/// IOMUX 26 to the native PCIE_RST0_L function, on the die's FCH and on
+/// `naples_also` (the donor hard-codes bus 0x40). Each unit is released
+/// once.
+///
+/// `fchs` are the ACPI-MMIO windows of the FCHs. The SSP and GN donors
+/// write socket 0 through host MMIO (`0xFED80000`); SMN writes to socket
+/// 0's FCH GPIOs do not reach the pins on Milan (Ethanol-X: the reset pins
+/// kept their power-on value and no slot trained).
+pub struct FchPerst<'w> {
+    pub generation: Silicon,
+    /// `((socket, die), that FCH's ACPI-MMIO window)`.
+    pub fchs: Vec<((u8, u8), &'w dyn Window), 8>,
+    pub naples_also: Option<&'w dyn Window>,
+    released: u16,
+}
+
+impl<'w> FchPerst<'w> {
+    /// # Safety
+    /// Every window reaches a live FCH and the caller owns its GPIO
+    /// registers for PERST.
+    pub unsafe fn new(
+        generation: Silicon,
+        fchs: Vec<((u8, u8), &'w dyn Window), 8>,
+        naples_also: Option<&'w dyn Window>,
+    ) -> Self {
+        Self {
+            generation,
+            fchs,
+            naples_also,
+            released: 0,
+        }
+    }
+
+    fn drive(&self, acpi: &dyn Window) {
+        // `&dyn Window` is itself a (sized) window.
+        let control = |pin: Pin| Window::reg::<u32, gpio::Control::Register>(&acpi, pin.control());
+        match self.generation {
+            Silicon::Zp => {
+                control(PERST_PINS[0]).write(
+                    gpio::Control::OUTPUT_ENABLE::SET
+                        + gpio::Control::OUTPUT::SET
+                        + gpio::Control::PULL_UP::SET
+                        + gpio::Control::DRIVE_STRENGTH.val(1),
+                );
+                Window::reg::<u8, ()>(&acpi, PERST_PINS[0].iomux()).set(0);
+            }
+            Silicon::Ssp | Silicon::Gn => PERST_PINS.iter().for_each(|&pin| {
+                control(pin).write(
+                    gpio::Control::OUTPUT_ENABLE::SET
+                        + gpio::Control::OUTPUT::SET
+                        + gpio::Control::DRIVE_STRENGTH.val(2),
+                )
+            }),
+        }
+    }
+}
+
+impl PcieReset for FchPerst<'_> {
+    fn release(&mut self, socket: u8, die: u8) {
+        let bit = 1u16 << (socket * 4 + die);
+        if self.released & bit != 0 {
+            return;
+        }
+        self.released |= bit;
+        let key = match self.generation {
+            Silicon::Zp => (socket, die),
+            Silicon::Ssp | Silicon::Gn => (socket, 0),
+        };
+        if let Some(&(_, acpi)) = self.fchs.iter().find(|(k, _)| *k == key) {
+            self.drive(acpi);
+            fstart_log::info!(
+                "dxio: PERST released on socket {} die {}: {:#x}",
+                socket,
+                die,
+                acpi.read32(PERST_PINS[0].control())
+            );
+        }
+        if self.generation == Silicon::Zp
+            && let Some(acpi) = self.naples_also
+        {
+            self.drive(acpi);
+        }
+    }
+}
+
+/// Most mapped ports: 2 sockets × 4 NBIOs × 18.
+pub const MAX_PORTS: usize = 144;
+
+/// The standard [`Hooks`]: port mapping and remap at MAPPED, reconfig
+/// writes at CONFIGURED, PERST through `reset`; [`finish`](Self::finish)
+/// does the bridges and post-training setup.
+pub struct PortSetup<'a, 'e, P, R> {
+    generation: Silicon,
+    nbios: &'a [Nbio<P>],
+    board: &'a [Engine<'e>],
+    pub reset: R,
+    ports: Vec<MappedPort, MAX_PORTS>,
+    features: Option<PcieFeatures>,
+}
+
+impl<'a, 'e, P: ConfigRegionAccess + Clone, R: PcieReset> PortSetup<'a, 'e, P, R> {
+    /// `nbios`: every NBIO of the system (Milan: the unfused ones).
+    pub fn new(
+        generation: Silicon,
+        nbios: &'a [Nbio<P>],
+        board: &'a [Engine<'e>],
+        reset: R,
+    ) -> Self {
+        Self {
+            generation,
+            nbios,
+            board,
+            reset,
+            ports: Vec::new(),
+            features: None,
+        }
+    }
+
+    /// Enable the board's recovered Milan capability policy. Other
+    /// generations retain their existing sequence even if supplied here.
+    pub fn with_features(mut self, features: Option<PcieFeatures>) -> Self {
+        self.features = features.filter(|_| self.generation == Silicon::Gn);
+        self
+    }
+
+    /// The mapped ports (for the hotplug table and PCI enumeration).
+    pub fn ports(&self) -> &[MappedPort] {
+        &self.ports
+    }
+
+    fn nbio(&self, socket: u8, index: u8) -> Option<&'a Nbio<P>> {
+        self.nbios
+            .iter()
+            .find(|n| n.socket == socket && n.index == index)
+    }
+
+    fn pcie(&self, p: &MappedPort) -> Option<&PcieEngine> {
+        self.board.get(p.engine).and_then(Engine::pcie_config)
+    }
+
+    /// NBIOs a unit drives: the die (Naples) or the socket's quadrants.
+    fn unit_nbios(&self, socket: u8, die: u8) -> impl Iterator<Item = &'a Nbio<P>> + 'a {
+        let naples = self.generation == Silicon::Zp;
+        self.nbios
+            .iter()
+            .filter(move |n| n.socket == socket && (!naples || n.index == die))
+    }
+
+    fn in_unit(&self, p: &MappedPort, socket: u8, die: u8) -> bool {
+        p.socket == socket && (self.generation != Silicon::Zp || p.nbio == die)
+    }
+
+    /// The used (NBIO, core) pairs of a unit.
+    fn cores_of(&self, socket: u8, die: u8) -> Vec<(u8, u8), 16> {
+        let mut cores: Vec<(u8, u8), 16> = Vec::new();
+        self.ports
+            .iter()
+            .filter(|p| self.in_unit(p, socket, die))
+            .for_each(|p| {
+                if !cores.contains(&(p.nbio, p.core)) {
+                    let _ = cores.push((p.nbio, p.core));
+                }
+            });
+        cores
+    }
+
+    /// Bridges, post-training config and SATA after [`super::train`]
+    /// (§2 step 3–4, §3.8–§3.10, §3.13).
+    pub fn finish(&mut self) {
+        let generation = self.generation;
+        // Training status from the LTSSM.
+        for i in 0..self.ports.len() {
+            let p = self.ports[i];
+            if let Some(n) = self.nbio(p.socket, p.nbio) {
+                let core = PcieCore::new(n, p.core);
+                self.ports[i].trained = core.trained(p.port);
+                fstart_log::info!(
+                    "dxio: engine {} -> {}.{} core {} port {} devfn {:#x} bridge {} LC_STATE0 {:#x} LC_CNTL4 {:#x} trained {}",
+                    p.engine as u32,
+                    p.socket,
+                    p.nbio,
+                    p.core,
+                    p.port,
+                    p.devfn,
+                    p.bridge,
+                    core.port_reg::<LC_STATE0::Register>(p.port, port::LC_STATE0)
+                        .get(),
+                    core.port_reg::<LC_CTL4::Register>(p.port, port::LC_CTL4)
+                        .get(),
+                    self.ports[i].trained as u8
+                );
+            }
+        }
+        self.nbios.iter().for_each(hide_bridges);
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let hotplug = pcie.hotplug.map(|h| h.kind);
+            let keep = p.trained || hotplug.is_some_and(HotplugKind::keeps_bridge);
+            if !keep {
+                continue;
+            }
+            show_bridge(n, p.bridge as usize);
+            let c = PcieCore::new(n, p.core);
+            post_training(&c, p, pcie);
+            if hotplug.is_some() {
+                hotplug_port(&c, p.port);
+            }
+        }
+        let mut done: Vec<(u8, u8, u8), 32> = Vec::new();
+        for p in &self.ports {
+            let key = (p.socket, p.nbio, p.core);
+            if done.contains(&key) {
+                continue;
+            }
+            let _ = done.push(key);
+            if let Some(n) = self.nbio(p.socket, p.nbio) {
+                post_training_core(&PcieCore::new(n, p.core));
+            }
+        }
+        // SATA: Rome/Milan on the socket's first NBIO, Naples per die.
+        let mut sata: Vec<(u8, u8), 8> = Vec::new();
+        self.board
+            .iter()
+            .filter(|e| matches!(e.kind, EngineKind::Sata(_)))
+            .filter_map(|e| lanes::place(generation, e).ok().map(|p| (e.socket, p.nbio)))
+            .map(|(s, n)| {
+                if generation == Silicon::Zp {
+                    (s, n)
+                } else {
+                    (s, 0)
+                }
+            })
+            .for_each(|k| {
+                if !sata.contains(&k) {
+                    let _ = sata.push(k);
+                }
+            });
+        sata.iter().for_each(|&(s, n)| {
+            let first = self.nbios.iter().filter(|x| x.socket == s);
+            let target = if generation == Silicon::Zp {
+                first.into_iter().find(|x| x.index == n)
+            } else {
+                first.min_by_key(|x| x.index)
+            };
+            if let Some(nbio) = target {
+                enable_sata(nbio);
+            }
+        });
+    }
+
+    /// The SMU hotplug table of the I2C-signaled hotplug slots, `None`
+    /// without any (slot numbers are the table indices).
+    pub fn hotplug_table(
+        &self,
+    ) -> Result<Option<super::hotplug::HotplugTableV11>, super::hotplug::HotplugError> {
+        super::hotplug::HotplugTableV11::build(self.board, &self.ports, 0)
+    }
+
+    /// Hotplug port setup before the SMU starts hotplug: the I2C slots'
+    /// slot setup and their cores' presence mode, then every hotplug port
+    /// released to train. Returns the number of hotplug ports.
+    pub fn hotplug_prepare(&self) -> usize {
+        let mut cores: Vec<(u8, u8, u8), 32> = Vec::new();
+        let mut count = 0;
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let Some(hotplug) = pcie.hotplug else {
+                continue;
+            };
+            let c = PcieCore::new(n, p.core);
+            if let Some(i2c) = hotplug.i2c {
+                hotplug_slot(&c, p.port, i2c.slot.into(), &i2c.features());
+                let key = (p.socket, p.nbio, p.core);
+                if !cores.contains(&key) {
+                    let _ = cores.push(key);
+                    hotplug_core(&c);
+                }
+            }
+            release_training(&c, p.port);
+            count += 1;
+        }
+        count
+    }
+
+    /// After the SMU started hotplug: show the I2C slots' bridges again
+    /// (the SMU may hide them) and put their power into a defined state.
+    pub fn hotplug_started(&self) {
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            let Some(i2c) = pcie.hotplug.and_then(|h| h.i2c) else {
+                continue;
+            };
+            show_bridge(n, p.bridge as usize);
+            let slot = hotplug_started(&PcieCore::new(n, p.core), p.port);
+            fstart_log::info!(
+                "dxio: hotplug slot {} at {}.{} port {}: slot control/status {:#x}",
+                i2c.slot as u32,
+                p.socket,
+                p.nbio,
+                p.port,
+                slot
+            );
+        }
+    }
+
+    /// Clear the bus numbers early training left on the bridges of early
+    /// trained engines (`& 0xFF0000FF`, state 7 / DxioCleanUpEarlyInit).
+    pub fn clear_early_buses(&self) {
+        for p in &self.ports {
+            let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) else {
+                continue;
+            };
+            if pcie.early_train {
+                PcieCore::new(n, p.core)
+                    .cfg_reg::<CFG_BUSES::Register>(p.port, cfg::BUSES)
+                    .modify(CFG_BUSES::SECONDARY.val(0) + CFG_BUSES::SUBORDINATE.val(0));
+            }
+        }
+    }
+}
+
+impl<P: ConfigRegionAccess + Clone, R: PcieReset> Hooks for PortSetup<'_, '_, P, R> {
+    type Error = DxioError;
+
+    fn mapped(&mut self, unit: &UnitView<'_>) -> Result<(), DxioError> {
+        let (socket, die) = (unit.socket, unit.die);
+        let generation = self.generation;
+        let naples = generation == Silicon::Zp;
+        let fresh: Vec<MappedPort, MAX_PORTS> = map_ports(generation, self.board, unit).collect();
+        self.ports
+            .retain(|p| !(p.socket == socket && (!naples || p.nbio == die)));
+        for nbio in self.unit_nbios(socket, die) {
+            let mut requested = [0u8; 18];
+            fresh.iter().filter(|p| p.nbio == nbio.index).for_each(|p| {
+                requested[p.remap_index()] = self.pcie(p).and_then(|e| e.devfn).unwrap_or(0);
+            });
+            let defaults = lanes::default_devfns(generation);
+            let n = ports_per_nbio(generation);
+            let list = remap_devfns(&requested, defaults);
+            write_remap(nbio, &list[..n]);
+            for p in fresh.iter().filter(|p| p.nbio == nbio.index) {
+                let devfn = list[p.remap_index()];
+                let p = MappedPort {
+                    devfn,
+                    bridge: logical_bridge(generation, devfn).ok_or(DxioError::BadDevfn(devfn))?,
+                    ..*p
+                };
+                if let Some(pcie) = self.pcie(&p) {
+                    let width = self.board[p.engine].lanes.count();
+                    let core = PcieCore::new(nbio, p.core);
+                    before_reconfig(&core, p.port, pcie, width);
+                    if let Some(features) = self.features {
+                        before_reconfig_features(&core, p.port, pcie, features);
+                    }
+                }
+                self.ports.push(p).map_err(|_| DxioError::TooManyEngines)?;
+            }
+        }
+        if let Some(features) = self.features {
+            for (index, core) in self.cores_of(socket, die) {
+                if let Some(nbio) = self.nbio(socket, index) {
+                    before_reconfig_features_core(&PcieCore::new(nbio, core), features);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn configured(&mut self, unit: &UnitView<'_>) -> Result<(), DxioError> {
+        let (socket, die) = (unit.socket, unit.die);
+        for p in self.ports.iter().filter(|p| self.in_unit(p, socket, die)) {
+            if let (Some(n), Some(pcie)) = (self.nbio(p.socket, p.nbio), self.pcie(p)) {
+                after_reconfig(&PcieCore::new(n, p.core), p.port, pcie.present);
+            }
+        }
+        for (nbio, core) in self.cores_of(socket, die) {
+            if let Some(n) = self.nbio(socket, nbio) {
+                after_reconfig_core(&PcieCore::new(n, core));
+            }
+        }
+        Ok(())
+    }
+
+    fn perst(&mut self, unit: &UnitView<'_>, _reply: &[u32; crate::smu::ARGUMENT_COUNT]) {
+        self.reset.release(unit.socket, unit.die);
+    }
+
+    fn release_all(&mut self) {
+        let mut seen = 0u16;
+        for n in self.nbios {
+            let die = if self.generation == Silicon::Zp {
+                n.index
+            } else {
+                0
+            };
+            let bit = 1 << (n.socket * 4 + die);
+            if seen & bit == 0 {
+                seen |= bit;
+                self.reset.release(n.socket, die);
+            }
+        }
+    }
+}
+
+/// The engines of a unit that early-trained (wire caps bit 1), for logs.
+pub fn early_trained(engines: &[FwEngine]) -> impl Iterator<Item = &FwEngine> {
+    engines
+        .iter()
+        .filter(|e| e.caps().is_set(crate::dxio::wire::CAPS::EARLY_TRAIN))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dxio::lanes::{Group, Lanes, SataEngine, Speed};
+    use crate::dxio::tables::SP3_DEFAULT_DEVFN;
+    use crate::dxio::wire::{FwEngine, kind};
+    use crate::nbio::nbio_tests::nbio;
+    use crate::smn::model::Model;
+
+    /// The attached engines at the bridges DXIO mapped them to, on the bus
+    /// of their NBIO's root bridge; a SATA engine without a bridge, an
+    /// engine without attachment or without a port left out.
+    #[test]
+    fn attached_engines_at_their_mapped_bridges() {
+        use crate::df::RootBridge;
+        use crate::df::topology::Topology;
+        use fstart_core::smbios::{Attached, SystemSlot};
+        static SLOT: Attached<'static> = Attached::Slot(SystemSlot::new("PCIE3"));
+        static M2: Attached<'static> = Attached::Slot(SystemSlot::new("CN1"));
+        let lanes = |first, count| Lanes::sp3(Group::G0, first, count);
+        let engines = [
+            Engine::pcie(0, lanes(0, 4), PcieEngine::new()).attached(&SLOT),
+            Engine::pcie(0, lanes(4, 4), PcieEngine::new()).attached(&SLOT),
+            Engine::pcie(0, lanes(8, 4), PcieEngine::new()),
+            Engine::sata(0, lanes(12, 1), SataEngine::new(0)).attached(&M2),
+            Engine::pcie(0, lanes(13, 1), PcieEngine::new()).attached(&M2),
+        ];
+        let mapped = |engine, nbio, devfn| MappedPort {
+            engine,
+            socket: 0,
+            nbio,
+            core: 0,
+            port: 0,
+            devfn,
+            bridge: 0,
+            trained: true,
+        };
+        let ports = [mapped(0, 0, 0x09), mapped(1, 0, 0x0b), mapped(2, 1, 0x09)];
+        let mut topology = Topology {
+            generation: Silicon::Ssp,
+            sockets: 1,
+            nodes: Vec::new(),
+            root_bridges: Vec::new(),
+        };
+        for (index, bus_base) in [(0, 0xc0), (1, 0x80)] {
+            let _ = topology.root_bridges.push(RootBridge {
+                socket: 0,
+                index,
+                fabric_id: 0,
+                bus_base,
+                bus_limit: bus_base + 0x3f,
+                primary: false,
+            });
+        }
+        let found = attached(&topology, 0, &engines, &ports);
+        let found: std::vec::Vec<_> = found
+            .iter()
+            .map(|&(bridge, lanes, attached)| {
+                (
+                    bridge.map(|a| (a.bus(), a.device(), a.function())),
+                    lanes,
+                    core::ptr::eq(attached, &SLOT),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (Some((0xc0, 1, 1)), 4, true),
+                (Some((0xc0, 1, 3)), 4, true),
+                (None, 1, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn remap_fill() {
+        // Ports 0 and 9 request 3.1 and 1.1; the rest take the remaining
+        // defaults in order (`ffe04fa8`).
+        let mut req = [0u8; 18];
+        req[0] = 0x19;
+        req[9] = 0x09;
+        let l = remap_devfns(&req, &SP3_DEFAULT_DEVFN);
+        assert_eq!(l[0], 0x19);
+        assert_eq!(l[1], 0x0A, "1.1 is taken: 1.2 is next");
+        assert_eq!(l[9], 0x09);
+        assert_eq!(l[8], 0x1A, "1.2..2.1 went to ports 1..7, 3.1 is taken: 3.2");
+        let mut all = l.to_vec();
+        all.sort();
+        let mut d = SP3_DEFAULT_DEVFN.to_vec();
+        d.sort();
+        assert_eq!(all, d, "a permutation of the defaults");
+    }
+
+    fn view<'u>(engines: &'u [FwEngine], board: &'u [u8]) -> UnitView<'u> {
+        UnitView {
+            socket: 0,
+            die: 0,
+            engines,
+            board,
+        }
+    }
+
+    struct NoReset(u32);
+    impl PcieReset for NoReset {
+        fn release(&mut self, _: u8, _: u8) {
+            self.0 += 1;
+        }
+    }
+
+    #[test]
+    fn mapped_writes_remap_and_straps() {
+        let (m, n) = nbio(Silicon::Ssp, 0, 0);
+        let board = [
+            Engine::pcie(
+                0,
+                Lanes::sp3(Group::P0, 8, 4),
+                PcieEngine::new().devfn(3, 1).max_speed(Speed::Gen3),
+            ),
+            Engine::pcie(
+                0,
+                Lanes::sp3(Group::G0, 0, 16).reversed(),
+                PcieEngine::new().slot(3),
+            ),
+            Engine::sata(0, Lanes::sp3(Group::P0, 0, 6), SataEngine::new(0)),
+        ];
+        let fw = |start, port| FwEngine {
+            kind: kind::PCIE,
+            start_lane: start,
+            mac_port_id: port,
+            ..Default::default()
+        };
+        let engines = [
+            fw(0x32, 2),
+            fw(0x10, 0),
+            FwEngine {
+                kind: kind::SATA,
+                start_lane: 0x2A,
+                ..Default::default()
+            },
+        ];
+        let nbios = [n];
+        let mut s = PortSetup::new(Silicon::Ssp, &nbios, &board, NoReset(0));
+        s.mapped(&view(&engines, &[0, 1, 2])).unwrap();
+        let ports = s.ports().to_vec();
+        assert_eq!(ports.len(), 2);
+        // P0 = NBIO0 core 1: remap index 8 + 2.
+        assert_eq!(
+            (ports[0].core, ports[0].remap_index(), ports[0].devfn),
+            (1, 10, 0x19)
+        );
+        assert_eq!(
+            (ports[1].core, ports[1].remap_index(), ports[1].devfn),
+            (0, 0, 0x09)
+        );
+        // 3.1 is default slot 8: the logical bridge, not physical 10.
+        assert_eq!((ports[0].bridge, ports[1].bridge), (8, 0));
+        {
+            let st = m.0.borrow();
+            assert_eq!(st.smn[&(0, 0x13B1_00B8 + 4 * 10)], 0x19);
+            assert_eq!(st.smn[&(0, 0x13B1_00B8)], 0x09);
+            // The x4 port's SPC strap through RSMU (core 1: + 1 << 14).
+            let rsmu = RSMU_STRAP_INDEX + (1 << 14);
+            assert!(
+                st.log
+                    .windows(2)
+                    .any(|w| w[0] == (0, rsmu, 0xFFFE_0000 | (0xF9 + 0x61 * 2))
+                        && w[1] == (0, rsmu + 4, 2))
+            );
+            // LC_CTL11 bit 13 on NBIO0 core 1 port 2.
+            assert_eq!(st.smn[&(0, 0x1154_2390)], 1 << 13);
+            // Default EQ straps without board presets: 0xA4 = 5 last.
+            assert!(
+                st.log
+                    .windows(2)
+                    .any(|w| w[0] == (0, rsmu, 0xFFFE_00A4) && w[1] == (0, rsmu + 4, 5))
+            );
+        }
+        // Port 0 (core 1 port 2) in L0, port 1 not: only logical bridge 8
+        // (devfn 3.1) is shown; SATA enables NBIF1 functions.
+        m.0.borrow_mut().smn.insert((0, 0x1154_2294), 0x10);
+        s.finish();
+        let st = m.0.borrow();
+        assert_eq!(st.smn[&(0, 0x13B3_1004)], 0x40005);
+        assert_eq!(st.smn[&(0, 0x13B3_1004 + 0x400 * 8)], 0x40000);
+        assert_eq!(st.smn[&(0, 0x13B3_1004 + 0x400 * 10)], 0x40005);
+        assert_eq!(st.smn[&(0, 0x1053_5000)], 1 << 28);
+        assert_eq!(st.smn[&(0, 0x1053_6000)], 1 << 28);
+        assert_eq!(st.smn[&(0, 0x1053_A008)], 1 << 8 | 1 << 16);
+    }
+
+    const FEATURES: PcieFeatures = PcieFeatures {
+        ten_bit_tags: true,
+        data_link_feature: true,
+        data_link_exchange: true,
+    };
+
+    #[test]
+    fn milan_features_are_applied_at_mapped_only_when_selected() {
+        for (generation, selected, expected) in [
+            (Silicon::Gn, Some(FEATURES), true),
+            (Silicon::Gn, None, false),
+            (Silicon::Ssp, Some(FEATURES), false),
+        ] {
+            let (m, n) = nbio(generation, 0, 0);
+            let board = [Engine::pcie(
+                0,
+                Lanes::sp3(Group::P0, 0, 4),
+                PcieEngine::new(),
+            )];
+            let engines = [FwEngine {
+                kind: kind::PCIE,
+                start_lane: 0x2a,
+                mac_port_id: 2,
+                ..Default::default()
+            }];
+            let nbios = [n];
+            let mut setup =
+                PortSetup::new(generation, &nbios, &board, NoReset(0)).with_features(selected);
+            setup.mapped(&view(&engines, &[0])).unwrap();
+            let index = RSMU_STRAP_INDEX + (1 << 14);
+            let pairs: std::vec::Vec<_> =
+                m.0.borrow()
+                    .log
+                    .windows(2)
+                    .filter(|w| w[0].1 == index && w[1].1 == index + 4)
+                    .map(|w| (w[0].2 as u16, w[1].2))
+                    .collect();
+            for port in 0..8 {
+                for strap in [strap::P_10B_TAG_CMPL_SUP, strap::P_10B_TAG_REQ_SUP] {
+                    assert_eq!(
+                        pairs
+                            .iter()
+                            .filter(|&&(s, v)| s == strap::port(strap, port) && v == 1)
+                            .count(),
+                        usize::from(expected),
+                        "include empty ports, once per wrapper"
+                    );
+                }
+            }
+            if expected {
+                assert!(pairs.contains(&(strap::port(strap::P_DLF_SUP, 2), 1)));
+                assert!(pairs.ends_with(&[
+                    (strap::DLF_EN, 1),
+                    (strap::GEN3_DIS, 0),
+                    (strap::GEN4_DIS, 0)
+                ]));
+            } else {
+                assert!(!pairs.iter().any(|(s, _)| *s == strap::DLF_EN
+                    || *s == strap::GEN3_DIS
+                    || *s == strap::GEN4_DIS));
+            }
+        }
+    }
+
+    #[test]
+    fn dlf_respects_speed_wafl_and_independent_port_overrides() {
+        let (m, n) = nbio(Silicon::Gn, 1, 0x40);
+        for (core, speed, disable_support, disable_exchange, policy, expected) in [
+            (1, Speed::Auto, false, false, FEATURES, Some((1, 1))),
+            (1, Speed::Gen4, false, false, FEATURES, Some((1, 1))),
+            (1, Speed::Gen3, false, false, FEATURES, None),
+            (1, Speed::Gen2, false, false, FEATURES, None),
+            (1, Speed::Gen1, false, false, FEATURES, None),
+            (2, Speed::Auto, false, false, FEATURES, Some((0, 1))),
+            (1, Speed::Auto, true, false, FEATURES, Some((0, 1))),
+            (1, Speed::Auto, false, true, FEATURES, Some((1, 0))),
+            (
+                1,
+                Speed::Auto,
+                false,
+                false,
+                PcieFeatures {
+                    data_link_feature: false,
+                    data_link_exchange: false,
+                    ..FEATURES
+                },
+                Some((0, 0)),
+            ),
+        ] {
+            m.0.borrow_mut().log.clear();
+            let c = PcieCore::new(&n, core);
+            let index = RSMU_STRAP_INDEX + (1 << 12) + (u32::from(core) << 14);
+            let mut pcie = PcieEngine::new().max_speed(speed);
+            pcie.extra.disable_dlf = disable_support;
+            pcie.extra.disable_dlf_exchange = disable_exchange;
+            before_reconfig_features(&c, 1, &pcie, policy);
+            let pairs: std::vec::Vec<_> =
+                m.0.borrow()
+                    .log
+                    .windows(2)
+                    .filter(|w| w[0].0 == 0x40 && w[0].1 == index && w[1].1 == index + 4)
+                    .map(|w| (w[0].2 as u16, w[1].2))
+                    .collect();
+            match expected {
+                Some((support, exchange)) => assert_eq!(
+                    pairs,
+                    [
+                        (strap::port(strap::P_DLF_SUP, 1), support),
+                        (strap::port(strap::P_DLF_EXCHANGE_EN, 1), exchange),
+                        (strap::port(strap::P_DLF_HDR_SCALE_MODE, 1), exchange),
+                    ]
+                ),
+                None => assert!(pairs.is_empty()),
+            }
+        }
+        // WAFL receives the tag writes but not core DLF/Gen3/Gen4 policy.
+        m.0.borrow_mut().log.clear();
+        let c = PcieCore::new(&n, 2);
+        before_reconfig_features_core(&c, FEATURES);
+        assert_eq!(m.0.borrow().log.len(), 32);
+        m.0.borrow_mut().log.clear();
+        before_reconfig_features_core(
+            &c,
+            PcieFeatures {
+                ten_bit_tags: false,
+                ..FEATURES
+            },
+        );
+        assert!(m.0.borrow().log.is_empty());
+    }
+
+    #[test]
+    fn native_hotplug_advertises_a_slot_without_inventing_its_number() {
+        let (_, n) = nbio(Silicon::Gn, 1, 0x40);
+        let c = PcieCore::new(&n, 0);
+        let port = MappedPort {
+            engine: 0,
+            socket: 0,
+            nbio: 1,
+            core: 0,
+            port: 0,
+            devfn: 9,
+            bridge: 0,
+            trained: false,
+        };
+        let pcie = PcieEngine::new().with_hotplug(super::super::hotplug::Hotplug::new(
+            HotplugKind::EnterpriseSsd,
+        ));
+        post_training(&c, &port, &pcie);
+        assert!(
+            c.cfg_reg::<CFG_PCIE_CAP::Register>(0, cfg::PCIE_CAP)
+                .is_set(CFG_PCIE_CAP::SLOT_IMPLEMENTED)
+        );
+        let cap = c.cfg_reg::<CFG_SLOT_CAP::Register>(0, cfg::SLOT_CAP);
+        assert_eq!(cap.read(CFG_SLOT_CAP::PHYSICAL_SLOT), 0);
+        assert!(cap.is_set(CFG_SLOT_CAP::HOTPLUG_CAPABLE));
+        assert!(cap.is_set(CFG_SLOT_CAP::HOTPLUG_SURPRISE));
+        assert!(cap.is_set(CFG_SLOT_CAP::NO_COMMAND_COMPLETED));
+    }
+
+    #[test]
+    fn trained_port_post_training() {
+        let (m, n) = nbio(Silicon::Gn, 1, 0x40);
+        // P1 = NBIO1 core 0; port 0 LC_STATE0 = 0x10 (L0).
+        let lc = 0x1114_0000 + (1 << 20) + 0x294;
+        m.0.borrow_mut().smn.insert((0x40, lc), 0x10);
+        let board = [Engine::pcie(
+            0,
+            Lanes::sp3(Group::P1, 0, 16),
+            PcieEngine::new().slot(5),
+        )];
+        let engines = [FwEngine {
+            kind: kind::PCIE,
+            start_lane: 0x3A,
+            mac_port_id: 0,
+            ..Default::default()
+        }];
+        let nbios = [n];
+        let mut s = PortSetup::new(Silicon::Gn, &nbios, &board, NoReset(0));
+        s.mapped(&view(&engines, &[0])).unwrap();
+        s.configured(&view(&engines, &[0])).unwrap();
+        s.finish();
+        assert!(s.ports()[0].trained);
+        let st = m.0.borrow();
+        let q = 1 << 20;
+        assert_eq!(st.smn[&(0x40, 0x13B3_1004 + q)], 0x40000, "bridge 0 shown");
+        assert_eq!(st.smn[&(0x40, 0x13B3_1404 + q)], 0x40005, "bridge 1 hidden");
+        assert_eq!(
+            st.smn[&(0x40, 0x1114_0084 + q)],
+            0x40 << 8 | 0x09,
+            "TX_ID bus/devfn"
+        );
+        assert_eq!(st.smn[&(0x40, 0x1110_006C + q)], 5 << 19, "slot number");
+        assert_eq!(
+            st.smn[&(0x40, 0x1118_018C + q)],
+            2,
+            "Milan SDP port id = core + 2"
+        );
+        assert_eq!(
+            st.smn[&(0x40, 0x1118_0080 + q)],
+            1 << 31,
+            "Milan CI_CTL: bit 31 only"
+        );
+    }
+
+    #[test]
+    fn naples_apertures_and_straps() {
+        let (m, n) = nbio(Silicon::Zp, 2, 0x20);
+        let c = PcieCore::new(&n, 1);
+        assert_eq!(c.port_addr(3, port::TX_CTL), 0x1124_3080);
+        assert_eq!(c.core_addr(0), 0x1128_0000);
+        c.write_strap(0x68, 1);
+        assert_eq!(m.0.borrow().smn[&(0x20, 0x4A3C8)], 0xFFFE_0068);
+        let (_, r) = nbio(Silicon::Ssp, 3, 0);
+        let c = PcieCore::new(&r, 2);
+        assert_eq!(
+            c.port_addr(1, port::LC_STATE0),
+            0x11C4_1294,
+            "WAFL core of NBIO3"
+        );
+    }
+
+    #[test]
+    fn xgmi_and_perst() {
+        use crate::dxio::sp3_tests::FakeSmu;
+        let smu = FakeSmu::default();
+        xgmi_init(Silicon::Gn, &Dxio::new(&smu, 8), 0x23, 0b1111, true).unwrap();
+        assert_eq!(smu.args()[0][0], op::XGMI_BER_ADAPT);
+        assert_eq!(
+            smu.args()[1],
+            [
+                op::SET_RUNTIME_PROP,
+                0x22,
+                0,
+                (0x03 << 8 | 0xF) << 8 | 0xF,
+                1,
+                0
+            ]
+        );
+
+        use crate::fch::hw::acpimmio;
+        use crate::smn::Smn;
+        use crate::window::SmnWindow;
+        let window = |m: &Model, bus| unsafe {
+            SmnWindow::new(Smn::on_bus(m.clone(), bus), acpimmio::SMN_BASE)
+        };
+
+        let model = Model::default();
+        let socket1 = window(&model, 0x80);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((1, 0), &socket1));
+        // SAFETY: model.
+        let mut p = unsafe { FchPerst::new(Silicon::Ssp, fchs, None) };
+        p.release(1, 0);
+        p.release(1, 0);
+        let st = model.0.borrow();
+        assert_eq!(st.log.len(), 4, "four pins, once");
+        assert_eq!(st.smn[&(0x80, 0x02D0_2568)], 0xC4_0000);
+        assert_eq!(st.smn[&(0x80, 0x02D0_222C)], 0xC4_0000);
+        drop(st);
+
+        let model = Model::default();
+        model
+            .0
+            .borrow_mut()
+            .smn
+            .insert((0, 0x02D0_1D18), 0x0102_0304);
+        let die1 = window(&model, 0);
+        let also = window(&model, 0x40);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((0, 1), &die1));
+        // SAFETY: model.
+        let mut z = unsafe { FchPerst::new(Silicon::Zp, fchs, Some(&also)) };
+        z.release(0, 1);
+        let st = model.0.borrow();
+        assert_eq!(st.smn[&(0, 0x02D0_2568)], 0xD2_0000);
+        assert_eq!(
+            st.smn[&(0, 0x02D0_1D18)],
+            0x0100_0304,
+            "IOMUX26 = 0 (native PCIE_RST0_L)"
+        );
+        assert_eq!(
+            st.smn[&(0x40, 0x02D0_2568)],
+            0xD2_0000,
+            "and the hard-coded socket-1 bus"
+        );
+
+        // Milan: socket 0 through its own window (host MMIO on hardware),
+        // socket 1 through SMN; each socket once.
+        let mmio = crate::fch::hw::model::Mem::default();
+        let model = Model::default();
+        let socket1 = window(&model, 0x80);
+        let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();
+        let _ = fchs.push(((0, 0), &mmio));
+        let _ = fchs.push(((1, 0), &socket1));
+        // SAFETY: models.
+        let mut m = unsafe { FchPerst::new(Silicon::Gn, fchs, None) };
+        m.release(0, 0);
+        m.release(0, 0);
+        for pin in [0x1568, 0x156C, 0x1228, 0x122C] {
+            assert_eq!(mmio.get(pin, 4), 0xC4_0000);
+        }
+        assert_eq!(mmio.0.borrow().log.len(), 4, "socket 0 once");
+        assert!(model.0.borrow().log.is_empty(), "not socket 1's");
+        m.release(1, 0);
+        assert_eq!(model.0.borrow().smn[&(0x80, 0x02D0_2228)], 0xC4_0000);
+    }
+}

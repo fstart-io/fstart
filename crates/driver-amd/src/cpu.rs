@@ -71,15 +71,43 @@ pub enum Revision {
     GnB2,
 }
 
-impl Revision {
-    /// The SP3 generation of this revision.
-    #[cfg(feature = "sp3")]
-    pub const fn generation(self) -> crate::sp3::soc::Generation {
-        use crate::sp3::soc::Generation;
+/// The silicon the IP blocks are versions of, by the die's code name:
+/// ZP (Zeppelin, Naples), SSP (the Rome IOD) and GN (the Milan IOD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Silicon {
+    Zp,
+    Ssp,
+    Gn,
+}
+
+impl Silicon {
+    /// Name as in the revision guides.
+    pub const fn name(self) -> &'static str {
         match self {
-            Self::ZpA0 | Self::ZpB0 | Self::ZpB1 | Self::ZpB2 => Generation::Naples,
-            Self::SspA0 | Self::SspB0 => Generation::Rome,
-            Self::GnA0 | Self::GnB0 | Self::GnB1 | Self::GnB2 => Generation::Milan,
+            Self::Zp => "ZP",
+            Self::Ssp => "SSP",
+            Self::Gn => "GN",
+        }
+    }
+}
+
+impl From<Silicon> for crate::psp::Variant {
+    fn from(silicon: Silicon) -> Self {
+        match silicon {
+            Silicon::Zp => Self::Zp,
+            Silicon::Ssp => Self::Ssp,
+            Silicon::Gn => Self::Gn,
+        }
+    }
+}
+
+impl Revision {
+    /// The silicon of this revision.
+    pub const fn silicon(self) -> Silicon {
+        match self {
+            Self::ZpA0 | Self::ZpB0 | Self::ZpB1 | Self::ZpB2 => Silicon::Zp,
+            Self::SspA0 | Self::SspB0 => Silicon::Ssp,
+            Self::GnA0 | Self::GnB0 | Self::GnB1 | Self::GnB2 => Silicon::Gn,
         }
     }
     /// A ZP die: Zeppelin or Naples.
@@ -110,6 +138,31 @@ impl Revision {
             Self::GnB1 => "GN-B1",
             Self::GnB2 => "GN-B2",
         }
+    }
+}
+
+/// An identified CPU: its revision and raw signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub revision: Revision,
+    /// Raw CPUID Fn0000_0001_EAX.
+    pub signature: u32,
+}
+
+impl Identity {
+    /// From CPUID Fn0000_0001_EAX; fails closed on an unknown CPU.
+    pub const fn from_signature(signature: u32) -> Result<Self, Unsupported> {
+        match Revision::from_signature(signature) {
+            Ok(revision) => Ok(Self {
+                revision,
+                signature,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub const fn silicon(&self) -> Silicon {
+        self.revision.silicon()
     }
 }
 

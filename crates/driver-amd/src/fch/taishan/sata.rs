@@ -245,3 +245,15 @@ pub fn late<P: ConfigRegionAccess>(
     );
     implemented
 }
+
+/// A die without SATA: the controller held in reset (af47).
+pub fn hold(smn: &Smn<impl ConfigRegionAccess>) {
+    let control = smn.reg(CONTROL);
+    control.modify(Control::BIT0::SET);
+    control.modify(Control::BIT0::SET + Control::BIT11::SET);
+}
+
+/// A die without SATA: its NBIF function hidden (af57).
+pub fn hide(smn: &Smn<impl ConfigRegionAccess>) {
+    smn.reg(NBIF_STRAP).modify(NbifStrap::ENABLE::CLEAR);
+}

@@ -29,8 +29,8 @@ default = []
 smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
-fstart-platform-amd = { path = "../../../crates/platform-amd", features = ["picasso"] }
-fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["picasso"] }
+fstart-platform-amd = { path = "../../../crates/platform-amd" }
+fstart-driver-amd = { path = "../../../crates/driver-amd" }
 fstart-driver-chromeec = { path = "../../../crates/driver-chromeec", features = ["acpi"] }
 fstart-core = { path = "../../../crates/core" }
 fstart-driver-uart = { path = "../../../crates/driver-uart" }

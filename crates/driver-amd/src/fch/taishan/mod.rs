@@ -34,7 +34,34 @@ pub mod usb;
 pub use init::{env_init, late_init, pre_init, reset_init};
 pub use multi::{acpimmio_base, xgbe_init};
 
-use crate::soc::zeppelin::acpi_io;
+/// The GPIO pads of the Taishan FCH.
+pub const GPIO_BANK: &crate::fch::gpio::Bank = &crate::fch::gpio::Bank {
+    pins: 153,
+    reserved: &[],
+    gpio_function: |_| None,
+    events: crate::fch::gpio::FAMILY17H_EVENTS,
+};
+
+/// MMIO bases of the I2C controllers, numbered like the vendor
+/// AmdI2CMasterPei instances.
+pub const I2C: &[usize] = &[
+    0xfedc_2000,
+    0xfedc_3000,
+    0xfedc_4000,
+    0xfedc_5000,
+    0xfedc_6000,
+    0xfedc_b000,
+];
+
+/// The ACPI I/O blocks the FCH decodes (the vendor's PM base 0x800).
+pub mod acpi_io {
+    pub const BASE: u16 = 0x800;
+    pub const PM1_EVT: u16 = BASE;
+    pub const PM1_CNT: u16 = BASE + 0x04;
+    pub const PM_TMR: u16 = BASE + 0x08;
+    pub const CSTATE_CONTROL: u16 = BASE + 0x10;
+    pub const GPE0: u16 = BASE + 0x20;
+}
 
 /// The ACPI I/O blocks of [`acpi_io`] for [`crate::fch::Fch`].
 pub const ACPI_PORTS: crate::fch::AcpiPorts = crate::fch::AcpiPorts {

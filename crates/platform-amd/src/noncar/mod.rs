@@ -10,7 +10,6 @@ pub mod boot;
 pub mod host;
 pub mod layout;
 pub mod memory;
-#[cfg(feature = "acpi")]
 pub mod smbios;
 pub mod smm;
 
@@ -21,33 +20,15 @@ pub use crate::flow::{
     Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, fail,
 };
 pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
-pub use fstart_driver_amd::soc::Hw;
+pub use crate::soc::Hw;
 
 use crate::acpi::SocAcpi;
 use crate::smbios::SocSmbios;
+use crate::soc::Init;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
-use fstart_driver_amd::{df::Die, soc::Init};
+use fstart_driver_amd::df::Die;
 use fstart_pci::ecam::GlobalEcam;
 use layout::{Layout, Region};
-
-/// The shared AMD PSP reset entry with the selected SoC's geometry; a
-/// reset image is for one SoC.
-#[cfg(all(feature = "bundle", target_os = "none"))]
-mod entry {
-    #[cfg(all(feature = "picasso", feature = "zeppelin"))]
-    compile_error!("a noncar reset image is for one SoC: enable picasso or zeppelin, not both");
-    #[cfg(feature = "picasso")]
-    use crate::picasso::LAYOUT;
-    #[cfg(feature = "zeppelin")]
-    use crate::zeppelin::layout::LAYOUT;
-    core::arch::global_asm!(
-        include_str!("../../../arch/asm/amd_psp_reset.S"),
-        cache_base = const LAYOUT.cache_window().base,
-        cache_mask = const !(LAYOUT.cache_window().size - 1) & 0xffff_ffff,
-        pdpts = const crate::noncar::layout::PDPT_COUNT,
-        options(att_syntax),
-    );
-}
 
 /// The most dies the flow handles: two sockets of four.
 pub const MAX_DIES: usize = 8;
@@ -59,7 +40,7 @@ pub const TSEG_SIZE: u32 = 8 << 20;
 /// its silicon init, and what its tables differ in from the other such
 /// SoCs'. The flow's services ([`crate::flow::Soc`]) are the same for all
 /// of them.
-pub trait DieSoc: fstart_driver_amd::soc::DieInit {
+pub trait DieSoc: crate::soc::DieInit {
     const LAYOUT: Layout;
     /// Where the PSP writes the APOB.
     const APOB: Region;

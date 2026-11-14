@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD Zeppelin (EPYC Embedded 3000) on the noncar flow: the reset image's
 //! layout, the host plan and the tables of the SoC whose silicon init is
-//! `fstart_driver_amd::soc::zeppelin`.
+//! `crate::zeppelin`.
 pub mod acpi;
+mod chip;
+mod init;
 pub mod layout;
+pub mod silicon;
+
+pub use chip::*;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
 use crate::noncar::{self, Devices, layout::Region};
-pub use fstart_driver_amd::soc::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
-use fstart_driver_amd::{
-    fch::taishan,
-    soc::zeppelin::{self as soc, Up, Zeppelin},
-};
+use crate::zeppelin as soc;
+use fstart_driver_amd::fch::taishan;
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Zeppelin {
     const POLICY: noncar::host::Policy = noncar::host::Policy {
-        feature: "bundle-zeppelin",
+        feature: "bundle",
         payloads: true,
         smm: true,
         release_only: false,
@@ -83,7 +85,7 @@ impl noncar::DieSoc for Zeppelin {
         if dies.len() < 2 {
             return None;
         }
-        let memory = fstart_driver_amd::df::zeppelin::die_memory(&dies[0].df())?;
+        let memory = fstart_driver_amd::df::zp::die_memory(&dies[0].df())?;
         Some(
             memory
                 .iter()

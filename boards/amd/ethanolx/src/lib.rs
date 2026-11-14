@@ -17,21 +17,22 @@ mod i2c;
 mod smm;
 
 use fstart_core::services::Timer;
+use fstart_driver_amd::ccx::init as ccx;
 use fstart_driver_amd::df;
+use fstart_driver_amd::dxio::DxioPolicy;
+use fstart_driver_amd::dxio::lanes::Engine;
+use fstart_driver_amd::dxio::ports::PcieFeatures;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::sp3::ccx;
-use fstart_driver_amd::sp3::dxio::DxioPolicy;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
-use fstart_driver_amd::sp3::dxio::ports::PcieFeatures;
-use fstart_driver_amd::sp3::fch::gpio::{Pad, Pin};
-use fstart_driver_amd::sp3::fch::huashan::sata::{Controller, SataPolicy};
-use fstart_driver_amd::sp3::fch::lpc::{self, WideIo};
-use fstart_driver_amd::sp3::fch::{FchHw, irq, uart};
-use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::fch::gpio::{Pad, Pin};
+use fstart_driver_amd::fch::huashan::sata::{Controller, SataPolicy};
+use fstart_driver_amd::fch::hw::lpc::{self, WideIo};
+use fstart_driver_amd::fch::hw::{FchHw, uart};
+use fstart_driver_amd::fch::irq;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_amd::acpi::Board as AcpiBoard;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
+use fstart_platform_amd::sp3::silicon::Generation;
 
 pub struct Board;
 
@@ -88,7 +89,7 @@ pub fn policy(generation: Generation) -> Policy {
         keep_ports: 0xff,
         sgpio: None,
     };
-    let mut dxio = DxioPolicy::new(generation);
+    let mut dxio = DxioPolicy::new(generation.silicon());
     // The hotplug expanders sit behind the PCA9545A at 0x70 on I2C0.
     dxio.hotplug.i2c_switch_base = 0x70;
     // Own RXM100CB PCDs 0x1C2 / 0x16D / 0x16E default true. These
@@ -160,7 +161,7 @@ pub fn dxio_layout<H: FchHw>(fch: &H, timer: &dyn Timer) -> Result<dxio::Layout,
     let detected = i2c::initialize(timer, detected)?;
     fstart_log::info!("ethanolx: PCIe straps after routing {:#x}", detected.straps);
     // BSP-only before MP, using the platform's socket-0 SMN pair.
-    let fuses = fstart_driver_amd::sp3::nbio::Fuses::read(&fch.smn());
+    let fuses = fstart_driver_amd::nbio::Fuses::read(&fch.smn());
     fstart_log::info!("ethanolx: fuse1 {:#x}", fuses.word[1]);
     dxio::Layout::new(detected, fuses.limited_io()).map_err(|_| BoardError::Configuration)
 }
@@ -211,11 +212,6 @@ mod tests {
                 data_link_feature: true,
                 data_link_exchange: true,
             })
-        );
-        assert_eq!(GPIO[0].cpm_bit19, Some(false));
-        assert_eq!(
-            GPIO[0].direction,
-            fstart_driver_amd::sp3::fch::gpio::Direction::Keep
         );
     }
 

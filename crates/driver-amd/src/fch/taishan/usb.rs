@@ -63,8 +63,8 @@ const fn phy<R: tock_registers::RegisterLongName>(phy: u32, register: u32) -> Sm
 const fn usb2_phy(phy: u32) -> SmnReg {
     SmnReg::new(0x16d0_c000 + phy * 0x400)
 }
-/// USB2 PHY parameter of the vendor template, per die.
-const USB2_PHY_PARAMETER: [u32; crate::soc::zeppelin::MAX_DIES] = [0x01b3_c953, 0x01b3_cd56];
+/// USB2 PHY parameter of the vendor template, per die of a socket.
+const USB2_PHY_PARAMETER: [u32; 2] = [0x01b3_c953, 0x01b3_cd56];
 
 /// Polls of the 0x108 busy wait, 1 us apart; the vendor code continues
 /// after 1 ms.
@@ -82,7 +82,7 @@ fn phy_init(smn: &Smn<impl ConfigRegionAccess>, die: u8) {
     for n in 0..PHYS {
         smn.reg(phy::<()>(n, 0x200)).set(0x39);
         smn.reg(usb2_phy(n))
-            .set(USB2_PHY_PARAMETER[usize::from(die)]);
+            .set(USB2_PHY_PARAMETER[usize::from(die & 1)]);
         smn.reg(phy(n, 0x8)).modify(Usb3Swing::VBOOST.val(2));
     }
     smn.reg(R118).modify(R118::PCD_97::CLEAR);
@@ -135,8 +135,9 @@ pub fn init(
     reset.modify(ResetControl::BIT1::SET + ResetControl::BIT2::SET);
     delay.delay_us(100);
 
-    // SP4 has only two of the four ports; SP4r2 keeps the reset values.
-    if package == Package::Sp4 {
+    // SP4 and SP3 have only two of the four ports; SP4r2 keeps the reset
+    // values.
+    if matches!(package, Package::Sp4 | Package::Sp3) {
         smn.reg(PORT_130).set(0x22);
         smn.reg(PORT_DISABLE).set(0x000c_000c);
     }
@@ -149,4 +150,90 @@ pub fn init(
     reset.modify(ResetControl::BIT1::CLEAR);
 
     post_reset(smn);
+}
+
+/// What a die's xHCI does (the FchMultiFchPei defaults).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DieUsb {
+    /// Function strapped off only (2P dies 4/5 at the SP3 donor default).
+    Off,
+    /// Strapped off and held in reset (odd die pairs: 2, 3, 6, 7).
+    HeldInReset,
+    /// Brought up ([`init`]).
+    Enabled,
+}
+
+impl DieUsb {
+    /// The SP3 donor default of die `die` (0..7, socket 1 = 4..7).
+    pub const fn default_for(die: u8) -> Self {
+        match die {
+            0 | 1 => Self::Enabled,
+            4 | 5 => Self::Off,
+            _ => Self::HeldInReset,
+        }
+    }
+}
+
+/// FchTaishanPei af48 for die `die` of the system: [`init`] or switched off
+/// as `usb` says. `smn` is the die's.
+pub fn reset(
+    smn: &Smn<impl ConfigRegionAccess>,
+    die: u8,
+    usb: DieUsb,
+    package: Package,
+    delay: &mut impl DelayNs,
+) {
+    smn.reg(R14C).modify(R14c::BIT31::SET);
+    match usb {
+        DieUsb::Off => smn.reg(NBIF_STRAP).modify(super::NbifStrap::ENABLE::CLEAR),
+        DieUsb::HeldInReset => {
+            smn.reg(NBIF_STRAP).modify(super::NbifStrap::ENABLE::CLEAR);
+            smn.reg(RESET_CONTROL).modify(
+                ResetControl::BIT0::SET + ResetControl::BIT1::SET + ResetControl::BIT2::SET,
+            );
+        }
+        DieUsb::Enabled => init(smn, die, package, delay),
+    }
+}
+
+/// Handshake with the SMU around S3 (unnamed SMN `0004D520`/`0004D528`).
+const SMU_REQ: SmnReg = SmnReg::new(0x0004_d520);
+const SMU_ACK: SmnReg = SmnReg::new(0x0004_d528);
+const SX_CTL: SmnReg = SmnReg::new(CONTROLLER + 0x104);
+
+/// One request/acknowledge step of the SMU handshake: write `request`,
+/// then repeatedly post 107h and wait for `ack & 3 == want` (1000 × 1 µs,
+/// as the vendor code; a timeout continues like it does).
+fn handshake(
+    smn: &Smn<impl ConfigRegionAccess>,
+    request: u32,
+    want: u32,
+    delay: &mut impl DelayNs,
+) -> bool {
+    smn.reg(SMU_REQ).set(request);
+    (0..STATUS_POLLS).any(|_| {
+        smn.reg(SMU_REQ).set(0x107);
+        let done = smn.reg(SMU_ACK).get() & 3 == want;
+        if !done {
+            delay.delay_us(1);
+        }
+        done
+    })
+}
+
+/// The S3 entry handshake of a die's controller (FchTaishanSmmInit Sx
+/// path): wait for 0x108\[9:8\] = 3, request 101h, wait for the SMU, then
+/// 0x104 = C8h. Returns whether both waits completed; the vendor code
+/// continues either way.
+pub fn sx_handshake(smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) -> bool {
+    let idle = (0..STATUS_POLLS).any(|_| {
+        let done = smn.reg(STATUS_108).read(Status108::BUSY) == 3;
+        if !done {
+            delay.delay_us(1);
+        }
+        done
+    });
+    let acked = handshake(smn, 0x101, 2, delay);
+    smn.reg(SX_CTL).set(200);
+    idle && acked
 }

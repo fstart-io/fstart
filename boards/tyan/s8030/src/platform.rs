@@ -4,16 +4,16 @@
 //! detected M.2 modes and the BMC's Gen3 cap, and the silicon policy.
 
 use fstart_core::services::{Timer, TimerDelay};
+use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
-use fstart_driver_amd::sp3::fch::FchHw;
-use fstart_driver_amd::sp3::fch::gpio::Pad;
+use fstart_driver_amd::fch::gpio::Pad;
+use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::smm::SleepNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
-use fstart_driver_amd::sp3::soc::Generation;
+use fstart_platform_amd::sp3::silicon::Generation;
 
 use crate::{Board, bmc, dxio, gpio, policy};
 
@@ -49,8 +49,8 @@ pub fn policy(generation: Generation) -> Policy {
         ccx: policy::ccx(),
         fch_env: policy::fch_env(),
         sata: [
-            fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy::socket0(),
-            fstart_driver_amd::sp3::fch::huashan::sata::SataPolicy::socket1(),
+            fstart_driver_amd::fch::huashan::sata::SataPolicy::socket0(),
+            fstart_driver_amd::fch::huashan::sata::SataPolicy::socket1(),
         ],
         dxio: policy::dxio(generation),
     }

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
 use crate::{picasso, zeppelin};
-use fstart_driver_amd::{
-    fch::sandstone::preinit::{ReadMode, Speed, SpiConfig},
-    soc::{picasso::Picasso, zeppelin::Zeppelin},
-};
+use crate::{picasso::Picasso, zeppelin::Zeppelin};
+use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
 use fstart_image_build::plan::CompilerFileSelection;
 use sha2::{Digest, Sha256};
 
@@ -33,7 +31,7 @@ impl Board for Vilboz {
         },
         emmc: None,
         i2c: &[],
-        graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+        graphics: fstart_driver_amd::nbio::rv::gfx::Config {
             displays: &[],
             hdmi2_disable: 0,
         },
@@ -48,7 +46,7 @@ impl Board for Mj11 {
         ccx: zeppelin::CcxConfig::DEFAULT,
         fch: zeppelin::FchConfig::DEFAULT,
         dxio: zeppelin::DxioConfig {
-            descriptors: [&[]; fstart_driver_amd::soc::zeppelin::MAX_DIES],
+            descriptors: [&[]; crate::zeppelin::MAX_DIES],
         },
     };
 }
@@ -73,7 +71,7 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
     let unit = &plan.units[1];
     assert_eq!(unit.name, "stage");
     assert!(unit.release_only);
-    assert_eq!(unit.features, ["bundle-picasso", "payload-uefi"]);
+    assert_eq!(unit.features, ["bundle", "payload-uefi"]);
     assert_eq!(unit.bindings[0].producer, "smm");
     let UnitOutput::Executable { expectations, .. } = &unit.output else {
         unreachable!()
@@ -95,7 +93,7 @@ fn picasso_ui_reserves_the_larger_reset_image_and_entry() {
     })
     .unwrap();
     let unit = plan.units.iter().find(|unit| unit.name == "stage").unwrap();
-    assert_eq!(unit.features, ["bundle-picasso", "payload-uefi-ui"]);
+    assert_eq!(unit.features, ["bundle", "payload-uefi-ui"]);
     let UnitOutput::Executable {
         expectations,
         load_address,
@@ -190,9 +188,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "64303b27ad5537c57659c9350c92e2f58cc7398461f534dff434747088a8b10d",
-            "9e80c84abf1f7f0c40e7371c799ee4dade1aeef7e0a941285c5dbab1d36620c7",
-            "41806ae882e43782ca1cafd23b16f1bc28371936d4dced5c2f7a7b86f5a3dec8",
+            "b428b1a4dfa72f91a8034a17bff7c6f7631246733c580fabf97c6ddd6d34fe2e",
+            "ec10504edada10232a92f54f45c76d3da9910f07ff5a221ed669311d94954ea5",
+            "6b2e353790a9849e32fa30bbf594451b037ee844c9cbe27ba767ce074949732a",
         ]
     );
 }

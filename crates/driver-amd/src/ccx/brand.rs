@@ -52,6 +52,15 @@ pub fn write<M: MsrAccess + ?Sized>(cpu: &M, name: &Name) {
         .for_each(|(c, i)| cpu.reg(NAME_STRING.offset(i)).set(u64::from_le_bytes(*c)));
 }
 
+/// The SMU message that reads name dword `i`: V9 GetNameString 0x28, V11
+/// GetBrandString 0x0D (NBIO_SMU §3.8).
+pub const fn message(silicon: crate::cpu::Silicon) -> u32 {
+    match silicon {
+        crate::cpu::Silicon::Zp => 0x28,
+        _ => 0x0d,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

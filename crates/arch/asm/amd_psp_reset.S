@@ -185,11 +185,11 @@ _sp3_entry32:
 	shll	%cl, %edx
 	decl	%edx
 	movl	$MSR_MTRR_MASK7, %ecx
-	movl	${cache_mask}, %eax
+	movl	$_amd_reset_cache_mask, %eax
 	orl	$MTRR_MASK_VALID, %eax
 	wrmsr
 	movl	$MSR_MTRR_BASE7, %ecx
-	movl	$({cache_base} | MTRR_TYPE_WB), %eax
+	movl	$(_amd_reset_cache_base + MTRR_TYPE_WB), %eax
 	xorl	%edx, %edx
 	wrmsr
 	movl	$MSR_MTRR_DEF_TYPE, %ecx
@@ -209,7 +209,7 @@ _sp3_entry32:
 	/* Identity map the 47-bit space with 1 GiB pages: PML4 at
 	 * _sp3_page_tables, then the PDPTs (_fstart_identity_tables). */
 	movl	$_sp3_page_tables, %edi
-	movl	${pdpts}, %ecx
+	movl	$_amd_reset_pdpts, %ecx
 	movl	$1f, %ebp
 	jmp	_fstart_identity_tables
 1:

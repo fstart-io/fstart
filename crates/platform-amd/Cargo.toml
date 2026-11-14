@@ -6,70 +6,23 @@ license.workspace = true
 
 [features]
 default = []
-picasso = ["noncar", "fstart-driver-amd/picasso", "dep:fstart-driver-vbios"]
 # Host policy only; never enabled by the emitted firmware unit.
 host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2", "fstart-core/host"]
-zeppelin = ["noncar", "fstart-driver-amd/zeppelin"]
-# The SP3 socket's generations. They are additive: a board enables every
-# generation it supports and one reset image serves them all (the CPU
-# picks at run time).
-naples = ["sp3", "fstart-driver-amd/naples"]
-rome = ["sp3", "fstart-driver-amd/rome"]
-milan = ["sp3", "fstart-driver-amd/milan"]
-sp3 = [
-  # Naples is the Zeppelin die.
-  "fstart-driver-amd/zeppelin",
-  "dep:fstart-amdfw-format",
-  "dep:fstart-arch", "fstart-arch/x86-identity-paging",
-  "dep:fstart-driver-ipmi",
-  "dep:fstart-options",
-  "dep:heapless",
-  "dep:zerocopy",
-  "fstart-log/alloc",
-]
-# The ACPI and SMBIOS tables of a SoC.
-acpi = [
-  "dep:fstart-acpi", "fstart-acpi/pci", "dep:fstart-acpi-macros",
-  "fstart-driver-amd/acpi", "fstart-driver-amd/smbios",
-  "dep:fstart-driver-ipmi", "fstart-driver-ipmi/acpi",
-]
-# The SP3 stage: its entry (the arch crate's asm/amd_psp_reset.S, which
-# enters `_start_ram`), the stage runtime, the FFS the payload comes from,
-# whose root the signature features authenticate, ACPI and the TPM.
-bundle-stage = [
-  "media",
-  "dep:fstart-stage", "dep:fstart-payload", "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
-  "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
-  "acpi", "fstart-stage/tcg", "fstart-payload/tcg",
-  "dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-driver-uart/pio",
-  "fstart-arch/amd-psp-reset",
-]
-# The shared flow of the PSP-booted SoCs, with their ACPI tables.
-noncar = [
-  "acpi",
-  "fstart-driver-amd/smi",
-  "dep:fstart-amdfw-format",
-  "dep:fstart-arch",
-  "dep:heapless",
-]
 # The boot media mount of a PSP-booted stage.
 media = ["dep:fstart-stage", "fstart-stage/ffs"]
-# A noncar reset image: one DRAM stage from reset vector to payload.
+# A reset image: one DRAM stage from the PSP's release of the BSP to the
+# payload, entered through the arch crate's asm/amd_psp_reset.S: the stage
+# runtime, the FFS the payload comes from, whose root the signature
+# features authenticate, and the TPM.
 bundle = [
-  "noncar",
   "media",
   "dep:fstart-stage", "dep:fstart-payload",
-  "fstart-arch/x86-identity-paging",
   "fstart-arch/amd-psp-reset",
-  "fstart-stage/x86_64",
-  "fstart-stage/ffs",
-  "fstart-stage/ffs-signature",
-  "fstart-stage/ed25519",
-  "fstart-stage/sha2-digest",
-  ]
-bundle-zeppelin = ["zeppelin", "bundle"]
-# The Picasso reset image, from PSP entry through payload handoff.
-bundle-picasso = ["picasso", "bundle"]
+  "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
+  "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
+  "fstart-stage/tcg", "fstart-payload/tcg",
+  "dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-driver-uart/pio",
+]
 # The SMM handler and `smm_bin!` for a board's SMM unit; the stage embeds
 # the image fbuild built from it (FSTART_SMM_IMAGE).
 smm = ["fstart-driver-amd/smm", "dep:fstart-smm"]
@@ -997,36 +950,38 @@ file = "milan/UcodePatch_GN_a082.bin"
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
-fstart-driver-amd.workspace = true
-fstart-amdfw-format = { workspace = true, optional = true }
-fstart-driver-vbios = { workspace = true, optional = true }
+fstart-driver-amd = { workspace = true, features = ["acpi", "smbios"] }
+fstart-amdfw-format.workspace = true
+fstart-driver-vbios.workspace = true
 fstart-core.workspace = true
 fstart-driver-uart.workspace = true
-fstart-log.workspace = true
+fstart-log = { workspace = true, features = ["alloc"] }
 ufmt.workspace = true
 fstart-pci.workspace = true
 tock-registers.workspace = true
-fstart-arch = { workspace = true, optional = true, features = ["x86_64"] }
+embedded-hal.workspace = true
+fstart-driver-i2c.workspace = true
+fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
-heapless = { workspace = true, optional = true }
-fstart-acpi = { workspace = true, features = ["x86", "pci"], optional = true }
+heapless.workspace = true
+fstart-acpi = { workspace = true, features = ["x86", "pci"] }
 # Devices sharing an I2C controller handed to CrabEFI.
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
-fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-acpi-macros = { path = "../acpi-macros" }
 fstart-smm = { workspace = true, optional = true }
-fstart-driver-ipmi = { path = "../driver-ipmi", optional = true }
-fstart-options = { workspace = true, features = ["alloc", "varstore"], optional = true }
+fstart-driver-ipmi = { path = "../driver-ipmi", features = ["acpi"] }
+fstart-options = { workspace = true, features = ["alloc", "varstore"] }
 fstart-driver-tpm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
-zerocopy = { workspace = true, optional = true }
+zerocopy.workspace = true
 
 # build.rs lays the SMM image out as the installer will (TSEG fit check).
 [build-dependencies]
 fstart-smm = { workspace = true }
 
 [dev-dependencies]
-# The unit tests cover every SoC, also in `cargo test --workspace`.
-fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "naples", "rome", "milan", "acpi", "host", "smm"] }
+# The unit tests cover the host plans and SMM too, also in `cargo test --workspace`.
+fstart-platform-amd = { path = ".", features = ["host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

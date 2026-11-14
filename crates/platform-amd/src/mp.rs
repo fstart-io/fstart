@@ -11,9 +11,9 @@ use fstart_arch::x86::{
 /// Arm (or park) the AP path of the shared reset entry, which the SoC
 /// releases the APs into.
 fn route_aps(route: ApRoute) {
-    #[cfg(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none"))]
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     fstart_arch::x86::psp_reset::set_ap_route(route);
-    #[cfg(not(all(any(feature = "bundle", feature = "bundle-stage"), target_os = "none")))]
+    #[cfg(not(all(feature = "bundle", target_os = "none")))]
     let _ = route;
 }
 

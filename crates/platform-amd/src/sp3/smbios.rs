@@ -3,7 +3,7 @@
 //! in the reserved firmware heap.
 
 use crate::smbios::SocSmbios;
-use fstart_driver_amd::sp3::soc::Generation;
+use crate::sp3::silicon::Generation;
 
 /// What the tables of `generation` differ in: socket SP3, 2 channels per
 /// Naples die and 8 per Rome/Milan socket, and DIMMs up to 128 GiB on EPYC
@@ -21,7 +21,7 @@ pub const fn of(generation: Generation) -> SocSmbios {
 /// their entry point's address. `rom_size` is the image extent recorded by
 /// the flash anchor, not a possibly partial EFS mapping or a physical
 /// flash-geometry measurement.
-#[cfg(all(feature = "bundle-stage", target_os = "none"))]
+#[cfg(all(feature = "bundle", target_os = "none"))]
 pub(crate) fn install(
     ctx: &crate::sp3::flow::Ctx<'_>,
     cpus: &crate::mp::Cpus,
@@ -31,30 +31,30 @@ pub(crate) fn install(
 ) -> u64 {
     use crate::sp3::flow::OrHalt;
     use fstart_driver_amd::apob::{smbios::dram_ranges, sysmap};
-    use fstart_driver_amd::sp3::ccx::topology::ApicLayout;
+    use fstart_driver_amd::ccx::topology::ApicLayout;
 
     let soc = ctx.soc;
-    let smt = fstart_driver_amd::sp3::soc::cpu::this_thread(soc.generation).smt();
+    let smt = crate::sp3::silicon::cpu::this_thread(soc.generation).smt();
     let layout = ApicLayout::new(soc.generation, smt);
     let map = sysmap::system_memory_map(&soc.apob).or_halt("SMBIOS memory map");
     let regions = dram_ranges(
         &sysmap::memory_map(soc.generation.into(), map.top, map.holes())
             .or_halt("SMBIOS DRAM ranges"),
     );
-    let bytes = fstart_driver_amd::sp3::soc::steps::dma_alloc(fstart_acpi::smbios::BUFFER_SIZE, 16)
+    let bytes = crate::sp3::silicon::steps::dma_alloc(fstart_acpi::smbios::BUFFER_SIZE, 16)
         .or_halt("DMA allocation");
     let address = bytes.as_ptr() as u64;
     crate::smbios::build_into(
         bytes,
         &crate::smbios::System {
-            soc: &of(soc.generation),
+            soc: &of(Generation::of(soc.generation)),
             identity,
             rom_size,
             apob: Some(&soc.apob),
             regions: &regions,
             cpus,
             pci,
-            bridges: crate::sp3::acpi::of(soc.generation).bridges,
+            bridges: crate::sp3::acpi::of(Generation::of(soc.generation)).bridges,
             ports: &soc.ports,
         },
         |apic_id| (layout.decode(apic_id).socket, apic_id >> u32::from(smt)),

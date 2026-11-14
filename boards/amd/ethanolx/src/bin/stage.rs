@@ -15,8 +15,10 @@ static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
-    let Start::RomeMilan(id) = fstart_platform_amd::sp3::start::<Board>();
-    flow(id)
+    match fstart_platform_amd::sp3::start::<Board>() {
+        Start::RomeMilan(id) => flow(id),
+        Start::Naples(id) => id.unsupported(),
+    }
 }
 
 fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {

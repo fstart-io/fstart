@@ -118,17 +118,11 @@ jobs:
           cargo test -p fstart-boot --features crabefi-ui --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles
-          # Each AMD SoC on its own: the boards select one, the tests all.
-          for soc in picasso zeppelin naples rome milan; do
-            cargo clippy -p fstart-driver-amd --no-default-features --features "$soc"
-          done
-          # And the stage of each SP3 generation on its own: an SP3 board
-          # enables the generations it supports, and none is Naples or Rome
-          # only.
-          for soc in naples rome milan; do
-            cargo clippy -p fstart-platform-amd \
-              --target x86_64-unknown-none -Zbuild-std=core,alloc \
-              --no-default-features --features "$soc,bundle-stage"
+          # The AMD drivers and the AMD stage as firmware links them: every
+          # IP block and every SoC; a board links what its SoCs reach.
+          for crate in fstart-driver-amd "fstart-platform-amd --features bundle"; do
+            cargo clippy -p $crate \
+              --target x86_64-unknown-none -Zbuild-std=core,alloc
           done
 
       # fstart linked as a library by a foreign firmware (the AST2700

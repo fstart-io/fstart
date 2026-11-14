@@ -13,9 +13,9 @@ pub mod pptable;
 use fstart_core::services::Timer;
 
 use crate::cpu::Revision;
+use crate::cpu::Silicon;
 use crate::smn::SmnReg;
 use crate::smu::{ARGUMENT_COUNT, Error as SmuError, Mailbox, SmuMessages, send_addr, send1};
-use crate::sp3::soc::Generation;
 
 /// V11 mailbox (`smu.v11.mailbox`; Oxide `milan/smu.h` agrees).
 pub const MAILBOX: Mailbox = Mailbox {
@@ -26,9 +26,9 @@ pub const MAILBOX: Mailbox = Mailbox {
 };
 
 /// AGESA's V11 service rejects IDs at or above this.
-pub const fn id_limit(generation: Generation) -> u32 {
+pub const fn id_limit(generation: Silicon) -> u32 {
     match generation {
-        Generation::Milan => 0x4A,
+        Silicon::Gn => 0x4A,
         _ => 0x3E,
     }
 }
@@ -278,11 +278,11 @@ pub fn set_lclk_dpm_level<M: SmuMessages + ?Sized>(smu: &M, nbio: u8) -> Result<
 /// NBIOs whose NBIF2 F1 does not exist; Milan only with PCD 0x70).
 pub fn nbif2_power_gate<M: SmuMessages + ?Sized>(
     smu: &M,
-    generation: Generation,
+    generation: Silicon,
     nbio: u8,
 ) -> Result<(), SmuError> {
     let mut args: [u32; ARGUMENT_COUNT] = match generation {
-        Generation::Milan => [nbio as u32 | 0x120, 0, 0, 0, 0, 0],
+        Silicon::Gn => [nbio as u32 | 0x120, 0, 0, 0, 0, 0],
         _ => [nbio as u32, 2, 1, 0, 0, 0],
     };
     smu.send(msg::SET_POWER_GATE, &mut args)
@@ -330,10 +330,10 @@ pub fn cppc_set_table<M: SmuMessages + ?Sized>(smu: &M, base: u64) -> Result<(),
 /// `0x2130`: 0x3B, 0x3A; Milan: 0x3A, 0x39).
 pub fn cppc_frequencies<M: SmuMessages + ?Sized>(
     smu: &M,
-    generation: Generation,
+    generation: Silicon,
 ) -> Result<(u32, u32), SmuError> {
     let (lowest, nominal) = match generation {
-        Generation::Milan => (0x3A, 0x39),
+        Silicon::Gn => (0x3A, 0x39),
         _ => (0x3B, 0x3A),
     };
     Ok((send1(smu, lowest, 0)?, send1(smu, nominal, 0)?))
@@ -394,12 +394,12 @@ impl CcxDonePolicy {
 /// follow, and the AC BTC callback is the CCX track's.
 pub fn ccx_done<M: SmuMessages + ?Sized, T: Timer + ?Sized>(
     smu: &M,
-    generation: Generation,
+    generation: Silicon,
     mask: u32,
     p: &CcxDonePolicy,
     timer: &T,
 ) -> Result<(), SmuError> {
-    let milan = generation == Generation::Milan;
+    let milan = generation == Silicon::Gn;
     let calibrate = p.dc_btc.is_some() || (milan && p.fll_btc);
     if calibrate {
         enable_features(smu, mask & !features::CC6, 0)?;
@@ -462,10 +462,10 @@ pub struct Sp3Workarounds {
 /// (`nbio::sp3::smu_syshub_bit11`) are per NBIO.
 pub fn sp3_workarounds<M: SmuMessages + ?Sized>(
     smu: &M,
-    generation: Generation,
+    generation: Silicon,
     w: &Sp3Workarounds,
 ) -> Result<(), SmuError> {
-    let milan = generation == Generation::Milan;
+    let milan = generation == Silicon::Gn;
     [
         (msg::SET_L3_CREDIT_MODE, w.l3_credit_mode),
         (
@@ -505,7 +505,7 @@ mod tests {
     use crate::smu::response;
     use fstart_core::services::ManualTimer;
 
-    fn mailbox(m: &SmuModel, generation: Generation) -> crate::smu::Smu<SmuModel, NoDelay> {
+    fn mailbox(m: &SmuModel, generation: Silicon) -> crate::smu::Smu<SmuModel, NoDelay> {
         m.smu(id_limit(generation))
     }
 
@@ -521,10 +521,10 @@ mod tests {
     #[test]
     fn ccx_done_milan() {
         let m = SmuModel::new(MAILBOX, response::OK);
-        let mb = mailbox(&m, Generation::Milan);
+        let mb = mailbox(&m, Silicon::Gn);
         let mask = feature_mask(Revision::GnB1, &FeaturePolicy::default());
         let p = CcxDonePolicy::donor(Revision::GnB1);
-        ccx_done(&mb, Generation::Milan, mask, &p, &ManualTimer::ticking()).unwrap();
+        ccx_done(&mb, Silicon::Gn, mask, &p, &ManualTimer::ticking()).unwrap();
         let sent = m.sent.borrow();
         let ids: Vec<_> = sent.iter().map(|s| s.0).collect();
         assert_eq!(ids, [0x03, 0x0C, 0x38, 0x37, 0x43, 0x03, 0x42]);
@@ -537,10 +537,10 @@ mod tests {
     #[test]
     fn ccx_done_rome_waits_and_rejects_milan_ids() {
         let m = SmuModel::new(MAILBOX, response::OK);
-        let mb = mailbox(&m, Generation::Rome);
+        let mb = mailbox(&m, Silicon::Ssp);
         let timer = ManualTimer::ticking();
         let p = CcxDonePolicy::donor(Revision::SspB0);
-        ccx_done(&mb, Generation::Rome, features::ROME_SP3, &p, &timer).unwrap();
+        ccx_done(&mb, Silicon::Ssp, features::ROME_SP3, &p, &timer).unwrap();
         assert_eq!(m.ids(), [0x03, 0x0C, 0x03]);
         assert_eq!(m.sent.borrow()[1].1[0], 0x86);
         assert!(timer.now() >= 10_000);
@@ -553,10 +553,10 @@ mod tests {
     #[test]
     fn table_transfers() {
         let m = SmuModel::new(MAILBOX, response::OK);
-        let mb = mailbox(&m, Generation::Rome);
+        let mb = mailbox(&m, Silicon::Ssp);
         transfer_pptable(&mb, 0x1_2345_6000, 0x27C).unwrap();
         set_lclk_dpm_level(&mb, 3).unwrap();
-        nbif2_power_gate(&mb, Generation::Rome, 1).unwrap();
+        nbif2_power_gate(&mb, Silicon::Ssp, 1).unwrap();
         let sent = m.sent.borrow();
         assert_eq!(sent[0], (0x05, [0x2345_6000, 1, 0, 0, 0, 0]));
         assert_eq!(sent[1], (0x10, [0x27C, 0, 0, 0, 0, 0]));

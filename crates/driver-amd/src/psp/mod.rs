@@ -9,11 +9,9 @@
 //! sender in AGESA is gated by a PCD and the boot does not depend on them.
 //! Every die has a PSP; the native flows only use die 0's mailbox.
 
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod boot;
 pub mod command;
 pub mod mailbox;
-#[cfg(feature = "sp3")]
 pub mod ras;
 
 pub use command::{C2pBuffer, Command};
@@ -35,7 +33,6 @@ pub enum Variant {
 /// The PSP MMIO bases of all dies, 0 where the BAR isn't enabled, for the
 /// per-CPU init (Zeppelin's `CpuPolicy::psp_bars`).
 /// The APs can't use SMN in parallel, so the BSP reads them before MP init.
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub fn bars<S: crate::soc::Soc, P: fstart_pci::ConfigRegionAccess + Copy, const N: usize>(
     dies: &[crate::df::Die<S, P>],
 ) -> [u32; N] {

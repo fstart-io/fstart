@@ -13,8 +13,8 @@ pub mod policy;
 #[cfg(feature = "smm")]
 pub mod smm;
 pub mod vilboz;
-use fstart_driver_amd::soc::picasso::Picasso;
 use fstart_driver_uart::ns16550::Ns16550Config;
+use fstart_platform_amd::picasso::Picasso;
 use fstart_platform_amd::picasso::{self, Config, FchConfig};
 
 /// How Vilboz wires the Picasso blocks.
@@ -83,7 +83,7 @@ pub static CONFIG: Config = Config {
             }],
         },
     ],
-    graphics: fstart_driver_amd::nbio::picasso::gfx::Config {
+    graphics: fstart_driver_amd::nbio::rv::gfx::Config {
         displays: policy::DISPLAYS,
         hdmi2_disable: 2,
     },

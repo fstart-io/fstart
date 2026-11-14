@@ -5,15 +5,15 @@
 
 use std::vec::Vec;
 
+use crate::sp3::silicon::Generation;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_acpi::ivrs::IommuRegisters;
 use fstart_core::acpi::AcpiSmiConfig;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::power::{CstateInfo, Pstate};
+use fstart_driver_amd::df::topology::RootBridge;
+use fstart_driver_amd::nbio::ioapic::{fch_ioapic_id, nbio_ioapic_id};
 use fstart_driver_amd::smu::v11::CppcInfo;
-use fstart_driver_amd::sp3::nbio::ioapic::{fch_ioapic_id, nbio_ioapic_id};
-use fstart_driver_amd::sp3::soc::Generation;
-use fstart_driver_amd::sp3::topology::RootBridge;
 
 use super::cppc::{self, Channel};
 use super::{FchAcpi, einj, fadt_flags, of};
@@ -138,7 +138,7 @@ fn root_bridges(s: &System) -> Vec<RootBridgeAcpi<'static>> {
                 fch: bridge.primary,
                 domain: None,
                 ioapic: Some(Ioapic {
-                    id: nbio_ioapic_id(s.generation, n),
+                    id: nbio_ioapic_id(s.generation.silicon(), n),
                     base: 0xA000_0000 + (u64::from(n) << 20),
                 }),
                 ioapic_features: 0x1430_0000 + (u32::from(bridge.index) << 20),
@@ -172,7 +172,7 @@ const PSTATES: [Pstate; 2] = [
 /// A Rome FCH with UART0, UART1 as COM1, I2C0 and GPIO (routes FCH_SP3
 /// §3.3).
 fn fch() -> FchAcpi {
-    use fstart_driver_amd::sp3::fch::acpi::{I2c, LegacyCom, Uart};
+    use fstart_driver_amd::fch::hw::acpi::{I2c, LegacyCom, Uart};
     let mut f = FchAcpi {
         gpio_irq: Some(7),
         ..FchAcpi::default()
@@ -197,9 +197,9 @@ fn inputs<'a>(
     let generation = s.generation;
     Inputs {
         soc: of(generation),
-        pci: fstart_driver_amd::sp3::soc::hw::segment(generation),
+        pci: crate::sp3::silicon::hw::segment(generation),
         cpus: &s.cpus,
-        fch_ioapic_id: fch_ioapic_id(generation),
+        fch_ioapic_id: fch_ioapic_id(generation.silicon()),
         hpet_block_id: 0x1022_8201,
         root_bridges: bridges,
         numa,
@@ -659,8 +659,8 @@ const CPUS: [Cpu; 2] = [
 
 #[test]
 fn memory_covers_both_sockets_without_replicated_ranges() {
-    use fstart_driver_amd::sp3::df::DramRule;
-    use fstart_driver_amd::sp3::df::dram::{DramMap, Nps, memory_from_maps, numa_domains};
+    use fstart_driver_amd::df::DramRule;
+    use fstart_driver_amd::df::dram::{DramMap, Nps, memory_from_maps, numa_domains};
     let map = |base, end, dst, hole| DramMap {
         rules: core::iter::once(DramRule {
             base,

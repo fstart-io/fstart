@@ -7,10 +7,10 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
+use crate::sp3::silicon::Generation;
 use fstart_arch::x86::cpu::amd::msr::SMM_BASE;
 use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_driver_amd::sp3::ccx::ras::{self, LocalSmiStatus, Record};
-use fstart_driver_amd::sp3::soc::Generation;
+use fstart_driver_amd::ccx::ras::{self, LocalSmiStatus, Record};
 use fstart_driver_amd::window::{Mmio, Window};
 use fstart_driver_ipmi::SelRecord;
 use tock_registers::interfaces::Readable;
@@ -163,7 +163,7 @@ fn enter_enabled(logical_cpu: u32, generation: Generation) {
     let Some(state) = CPU_STATE.get(logical_cpu as usize) else {
         return;
     };
-    let cpu = fstart_driver_amd::sp3::soc::hw::msr();
+    let cpu = crate::sp3::silicon::hw::msr();
     let smbase = cpu.reg(SMM_BASE).get() as usize;
     // SAFETY: this thread's locked SMBASE window, entirely identity-mapped.
     let saved = unsafe {
@@ -177,9 +177,9 @@ fn enter_enabled(logical_cpu: u32, generation: Generation) {
         let armed = saved.revision().is_ok()
             && ras::arm(
                 &cpu,
-                generation,
+                generation.silicon(),
                 stepping,
-                fstart_driver_amd::sp3::fch::acpimmio::SMI_CMD as u16,
+                fstart_driver_amd::fch::hw::acpimmio::SMI_CMD as u16,
                 MCE_SMI_COMMAND,
             )
             .is_ok();
@@ -290,7 +290,7 @@ fn sel(record: &Record) -> SelRecord {
 /// first failure trips a circuit breaker. There is no retry, abort recovery,
 /// SEL-info query or wait for BMC readiness. A late entrant's queued record
 /// may wait until a later SMI; OS handoff never depends on this delivery.
-pub(super) fn flush(policy: &Policy, timer: fstart_driver_amd::sp3::soc::hw::Tsc) {
+pub(super) fn flush(policy: &Policy, timer: crate::sp3::silicon::hw::Tsc) {
     let Some(transport) = policy.sel.filter(|_| policy.observe_mce) else {
         return;
     };
@@ -298,7 +298,7 @@ pub(super) fn flush(policy: &Policy, timer: fstart_driver_amd::sp3::soc::hw::Tsc
 }
 
 #[inline(never)]
-fn flush_enabled(transport: SelTransport, timer: fstart_driver_amd::sp3::soc::hw::Tsc) {
+fn flush_enabled(transport: SelTransport, timer: crate::sp3::silicon::hw::Tsc) {
     if SEL_FAILED.load(Ordering::Relaxed) {
         if PROBE.load(Ordering::Acquire) == 1 {
             PROBE.store(3, Ordering::Release);

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The FCH PCI interrupt router: the PCI_INTR index/data table at I/O
 //! 0xc00/0xc01 with a PIC and an IOAPIC value per source.
-use crate::fch::{Bus, IndexedIo, indexed_io};
-use tock_registers::{
-    interfaces::{Readable, Writeable},
-    register_bitfields,
-};
+use crate::fch::Bus;
 
 /// Not connected.
 pub const NC: u8 = 0x1f;
@@ -104,43 +100,16 @@ pub const SOURCES: &[(u8, &str)] = &[
     (UART3, "UART3"),
 ];
 
-/// PCI_INTR index/data (data at 0xc01).
-const PCI_INTR_INDEX: u16 = 0xc00;
+pub use crate::fch::irq::Mode;
+use crate::fch::{Space, irq};
 
-register_bitfields![u8,
-    Index [
-        SOURCE OFFSET(0) NUMBITS(7) [],
-        MODE OFFSET(7) NUMBITS(1) [
-            Pic = 0,
-            Apic = 1
-        ]
-    ]
-];
-
-/// Which of the two values of a source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Pic,
-    Apic,
-}
-fn entry<B: Bus>(bus: &B, source: u8, mode: Mode) -> IndexedIo<'_, B> {
-    let mode = match mode {
-        Mode::Pic => Index::MODE::Pic,
-        Mode::Apic => Index::MODE::Apic,
-    };
-    indexed_io(
-        bus,
-        PCI_INTR_INDEX,
-        (Index::SOURCE.val(source) + mode).value,
-    )
-}
 /// read_pci_int_idx.
 pub fn read(bus: &impl Bus, source: u8, mode: Mode) -> u8 {
-    entry(bus, source, mode).get()
+    irq::read(&bus.space(Space::Io), irq::index(source, mode))
 }
 /// write_pci_int_idx.
 pub fn write(bus: &impl Bus, source: u8, mode: Mode, value: u8) {
-    entry(bus, source, mode).set(value);
+    irq::write(&bus.space(Space::Io), irq::index(source, mode), value);
 }
 
 /// One board routing entry.

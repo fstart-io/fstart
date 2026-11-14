@@ -1515,6 +1515,7 @@ dependencies = [
 name = "fstart-platform-amd"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal",
  "embedded-hal-bus",
  "fstart-acpi",
  "fstart-acpi-macros",
@@ -1522,6 +1523,7 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-amd",
+ "fstart-driver-i2c",
  "fstart-driver-ipmi",
  "fstart-driver-tpm",
  "fstart-driver-uart",

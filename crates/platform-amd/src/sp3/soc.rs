@@ -5,7 +5,7 @@
 //! halts at POST 13 before the console (its FCH bring-up is not compiled
 //! in); one the board does not list halts after logging.
 //!
-//! A family's silicon steps are the driver's (`fstart_driver_amd::sp3::soc`).
+//! A family's silicon steps are the driver's (`crate::sp3::silicon`).
 //! [`Sp3`] puts them at the flow's phases ([`Init`]) and adds the flow's
 //! services for the socket ([`crate::flow::Soc`]): the flash windows and
 //! the APOB behind them, the options, the memory map, the TPM, SMM with
@@ -40,21 +40,21 @@ extern crate alloc;
 
 use core::marker::PhantomData;
 
+use crate::soc::{Entered, Init, Roots};
+use crate::sp3::silicon::cpu::Sp3Cpu;
+use crate::sp3::silicon::hw::{self, PrimaryFch};
+use crate::sp3::silicon::steps::{self, Steps};
+use crate::sp3::silicon::{self, Generation, Identity, Policy};
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::tsc::Tsc;
+use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::gpio::Pad;
+use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_amd::nbio::iohc::DramTops;
 use fstart_driver_amd::psp;
-use fstart_driver_amd::soc::{Entered, Init, Roots};
-use fstart_driver_amd::sp3::dxio::lanes::Engine;
-use fstart_driver_amd::sp3::fch::gpio::Pad;
-use fstart_driver_amd::sp3::fch::{self, FchHw};
-use fstart_driver_amd::sp3::soc::cpu::Sp3Cpu;
-use fstart_driver_amd::sp3::soc::hw::{self, PrimaryFch};
-use fstart_driver_amd::sp3::soc::steps::{self, Steps};
-use fstart_driver_amd::sp3::soc::{self, Generation, Identity, Policy};
 
 use super::board::{Board, Gpio};
 use super::flow::{self as parts, step};
@@ -64,11 +64,9 @@ use crate::flow::{Ctx, Early, Mapped, Reserved, Silicon as Up, Stage, Tables};
 /// An SP3 family `F` (its silicon steps) on the flow.
 pub struct Sp3<F>(PhantomData<F>);
 /// Naples: DF2, an NBIO and SMU V9 per die.
-#[cfg(feature = "naples")]
-pub type Naples = Sp3<soc::naples::Silicon>;
+pub type Naples = Sp3<silicon::naples::Silicon>;
 /// Rome and Milan: DF3, SMU V11 per IOD.
-#[cfg(any(feature = "rome", feature = "milan"))]
-pub type RomeMilan = Sp3<soc::rome_milan::Silicon>;
+pub type RomeMilan = Sp3<silicon::rome_milan::Silicon>;
 
 /// The silicon steps of one family, which a board's flow is generic over:
 /// `fn flow<F: Silicon>(id: Identified<Board, F>) -> !`.
@@ -103,7 +101,7 @@ pub struct Hw {
 /// What the silicon steps hand on, and the SMM handler's configuration
 /// once it is installed.
 pub struct State<F> {
-    pub soc: soc::Ctx,
+    pub soc: silicon::Ctx,
     pub si: F,
     /// EINJ's targets, once their scratch pages are planned.
     einj: Option<super::smm::EinjConfig>,
@@ -128,15 +126,13 @@ pub struct Flow {
     rom_size: u32,
 }
 
-/// The running CPU's family: what [`start`] returns. A board matches the
-/// families it carries and calls its flow with each; a build carries only
-/// the families its features enable.
+/// The running CPU's family: what [`start`] returns. A board calls its
+/// flow with each family it carries and [`Identified::unsupported`] for the
+/// others; only the flows it calls are linked.
 pub enum Start<B> {
-    #[cfg(feature = "naples")]
-    Naples(Identified<B, soc::naples::Silicon>),
+    Naples(Identified<B, silicon::naples::Silicon>),
     /// Rome and Milan share their steps (Milan deltas inline).
-    #[cfg(any(feature = "rome", feature = "milan"))]
-    RomeMilan(Identified<B, soc::rome_milan::Silicon>),
+    RomeMilan(Identified<B, silicon::rome_milan::Silicon>),
 }
 
 /// CPUID → revision before anything else: the generation picks the silicon
@@ -146,7 +142,7 @@ pub enum Start<B> {
 fn identify() -> Identity {
     let signature = fstart_arch::x86::cpuid(1).0;
     let ext_ebx = fstart_arch::x86::cpuid(0x8000_0001).1;
-    soc::identify(signature, ext_ebx).unwrap_or_else(|_| unsupported_cpu())
+    silicon::identify(signature, ext_ebx).unwrap_or_else(|_| unsupported_cpu())
 }
 
 fn unsupported_cpu() -> ! {
@@ -154,18 +150,15 @@ fn unsupported_cpu() -> ! {
     fstart_arch::x86::boot::halt()
 }
 
-/// Identify the CPU.
+/// Identify the CPU. A generation the board does not list halts at POST 13.
 pub fn start<B: Board>() -> Start<B> {
-    let generation = identify().generation();
+    let generation = Generation::of(identify().silicon());
+    if !B::GENERATIONS.contains(&generation) {
+        unsupported_cpu()
+    }
     match generation {
-        #[cfg(feature = "naples")]
         Generation::Naples => Start::Naples(Identified::new(generation)),
-        #[cfg(feature = "rome")]
-        Generation::Rome => Start::RomeMilan(Identified::new(generation)),
-        #[cfg(feature = "milan")]
-        Generation::Milan => Start::RomeMilan(Identified::new(generation)),
-        #[allow(unreachable_patterns)]
-        _ => unsupported_cpu(),
+        Generation::Rome | Generation::Milan => Start::RomeMilan(Identified::new(generation)),
     }
 }
 
@@ -187,6 +180,12 @@ impl<B: Board, F: Silicon> Identified<B, F> {
     /// The running CPU's generation.
     pub fn generation(&self) -> Generation {
         self.generation
+    }
+
+    /// A family the board does not carry: halt at POST 13, before the
+    /// console (its FCH code is not linked).
+    pub fn unsupported(self) -> ! {
+        unsupported_cpu()
     }
 
     /// ECAM, then socket 0's FCH reset tasks with the board's silicon
@@ -215,7 +214,7 @@ impl<F: Silicon> Early<Sp3<F>> {
 impl<F: Silicon, P> Stage<Sp3<F>, P> {
     /// The running CPU's generation.
     pub fn generation(&self) -> Generation {
-        self.hw().identity.generation()
+        Generation::of(self.hw().identity.silicon())
     }
 
     /// Socket 0's FCH.
@@ -234,8 +233,8 @@ impl<F: Silicon, P> Stage<Sp3<F>, P> {
         let acpi = self.fch().acpi();
         pads.iter()
             .map(|pad| {
-                fch::gpio::configure(acpi, pad);
-                fch::gpio::read(acpi, pad.pin)
+                fstart_driver_amd::fch::gpio::configure(acpi, pad);
+                fstart_driver_amd::fch::gpio::read(acpi, pad.pin)
             })
             .collect()
     }
@@ -246,8 +245,8 @@ impl<F: Silicon, P> Stage<Sp3<F>, P> {
     /// when the links train.
     pub fn program_gpio(&self, gpio: &Gpio) {
         let acpi = self.fch().acpi();
-        fch::gpio::configure_all(acpi, gpio.early);
-        fch::gpio::configure_all(acpi, gpio.table);
+        fstart_driver_amd::fch::gpio::configure_all(acpi, gpio.early);
+        fstart_driver_amd::fch::gpio::configure_all(acpi, gpio.table);
     }
 
     /// Apply the stored overrides of `knobs` to the board's `config`
@@ -284,14 +283,14 @@ impl<F: Silicon> Init for Sp3<F> {
     /// ECAM, then the reset tasks of socket 0's FCH.
     fn enter(config: &Config, _: &NativeMsr) -> Entered<Self> {
         let identity = identify();
-        let generation = identity.generation();
+        let generation = Generation::of(identity.silicon());
         step(0x10, "ECAM");
         let pci_root = hw::enable_ecam(generation);
         let timer = hw::tsc();
         let fch = hw::primary_fch(timer);
         step(0x11, "FCH reset tasks");
         // There is no console yet; the POST code shows where.
-        let resume = steps::fch_reset(&fch, generation, &config.policy)
+        let resume = steps::fch_reset(&fch, generation.silicon(), &config.policy)
             .unwrap_or_else(|what| parts::fail(what));
         Entered {
             hw: Hw {
@@ -309,7 +308,7 @@ impl<F: Silicon> Init for Sp3<F> {
     /// Whether the board supports the CPU's generation (the build may
     /// carry more generations than a board lists).
     fn identify(hw: &Hw, config: &Config, _: Option<Tsc>) -> Result<Identity, &'static str> {
-        let generation = hw.identity.generation();
+        let generation = Generation::of(hw.identity.silicon());
         fstart_log::info!("sp3: {} ({}) console ready", config.name, generation.name());
         if hw.resume {
             // S3 needs the resume path (boot scripts, wake vector); not built.
@@ -338,7 +337,7 @@ impl<F: Silicon> Init for Sp3<F> {
     }
 
     fn psp(hw: &Hw) -> psp::Variant {
-        hw.identity.generation().into()
+        hw.identity.silicon().into()
     }
 
     /// The fabric, NBIO, the SMU and the secondary FCHs: everything up to
@@ -346,7 +345,7 @@ impl<F: Silicon> Init for Sp3<F> {
     /// next.
     fn init_fch(ctx: &Ctx<'_, Self>) -> Result<State<F>, &'static str> {
         let apob = *ctx.memory.apob.ok_or("APOB")?;
-        let mut soc = soc::Ctx::new(
+        let mut soc = silicon::Ctx::new(
             ctx.hw.identity,
             ctx.hw.timer,
             ctx.hw.pci_root,
@@ -497,7 +496,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         _: &NativeMsr,
         _: Tsc,
     ) -> Result<Mapped<Self>, &'static str> {
-        let generation = hw.identity.generation();
+        let generation = Generation::of(hw.identity.silicon());
         step(0x14, "APOB");
         let parts::Flash {
             efs: flash,
@@ -619,7 +618,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         parts::clear_einj_scratch(&einj);
         let soc = &state.soc;
         let config = super::smm::SmmConfig {
-            generation: soc.generation,
+            generation: Generation::of(soc.generation),
             ecam_base: soc.pci_root.ecam_base,
             psp_bar: soc.psp_bar as u32,
             einj,
@@ -644,7 +643,10 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
                 .install(mp, IMAGE, flow.tseg.base, flow.tseg.size as u32)
                 .map_err(|_| "SMM install")?;
             super::smm::prepare_psp_smi(&soc.fch);
-            fch::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+            fstart_driver_amd::fch::hw::smi::software_smi(
+                soc.fch.io(),
+                super::smm::sw::PSP_SMM_INFO,
+            );
             state.smm = Some(config);
             state.soc.smm_installed = true;
         }
@@ -676,7 +678,9 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             rsdp: Some(rsdp),
             smbios: Some(smbios),
             s5: fstart_core::description::AcpiSleepControl::new(
-                super::acpi::of(state.soc.generation).ports.control,
+                super::acpi::of(Generation::of(state.soc.generation))
+                    .ports
+                    .control,
                 crate::acpi::S5_SLEEP_TYPE,
             ),
         }

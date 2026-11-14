@@ -10,13 +10,11 @@
 use core::marker::PhantomData;
 
 use fstart_core::indexed::Indexed;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 use tock_registers::RegisterLongName;
 use tock_registers::UIntLike;
 use tock_registers::interfaces::{Readable, Writeable};
 
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 use crate::smn::{Smn, SmnAddr};
 
 /// A byte-addressed register space.
@@ -324,7 +322,7 @@ impl Window for Ports {
 /// SMN data accesses are dwords; narrow writes are dword read-modify-writes,
 /// so a narrow write next to write-1-to-clear bytes clears them. The FCH
 /// byte-only blocks (IOMUX) may not take dword writes (PPR 55570 §9.1.10):
-/// see `sp3::fch::gpio` for how IOMUX is reached on remote FCHs.
+/// see `fch::gpio` for how IOMUX is reached on remote FCHs.
 #[derive(Clone, Copy)]
 pub struct SmnWindow<P> {
     smn: Smn<P>,

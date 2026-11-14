@@ -2,24 +2,40 @@
 //! The CCX init every Family 17h CPU runs after its microcode update: the
 //! SoC's reset MSR table, MMCONFIG, the PSP base, TOM2 write-back, MCA, the DPM weights,
 //! C-states and the P0 rewrite. What the SoCs do differently is a [`Ccx`]
-//! parameter; their MSR tables stay theirs: [`picasso`] (AGESA
-//! AmdCcxZenRv) and [`zeppelin`] (AmdCcxZenZp).
+//! parameter; their MSR tables stay theirs: [`rv`] (AGESA AmdCcxZenRv)
+//! and [`zp`] (AmdCcxZenZp, the [`tables::zp`] records).
+//!
+//! The vendor sequence of the SP3 donors is [`init`]: the [`table`] engine
+//! over [`tables`] with the [`logical`] IDs, the [`topology`] and
+//! [`x2apic`] mode, [`downcore`], the AP [`release`], [`mca`], power
+//! management ([`pm`]), [`security`] (SME/SNP), [`errata`] and the [`ras`]
+//! observer in SMM.
 //!
 //! The MSRs, the DRAM-first cache plan, the microcode loader and the TSC
 //! are [`msr`], [`cache`], [`microcode`] and [`tsc`]; the name string is
 //! [`brand`], what the OS gets of the P- and C-states [`power`].
 pub mod brand;
 pub mod cache;
+pub mod downcore;
+pub mod errata;
+pub mod init;
+pub mod logical;
+pub mod mca;
 pub mod microcode;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod mp;
 pub mod msr;
-#[cfg(feature = "picasso")]
-pub mod picasso;
+pub mod pm;
 pub mod power;
+pub mod ras;
+pub mod release;
+pub mod rv;
+pub mod security;
+pub mod table;
+pub mod tables;
+pub mod topology;
 pub mod tsc;
-#[cfg(feature = "zeppelin")]
-pub mod zeppelin;
+pub mod x2apic;
+pub mod zp;
 
 use self::{
     cache::CacheControl,
@@ -118,9 +134,6 @@ pub struct Mca {
 #[derive(Debug, Clone)]
 pub struct Ccx {
     pub mca: Mca,
-    /// MMCONFIG: the APs start with its reset value.
-    pub ecam: u64,
-    pub ecam_buses: u16,
     /// CSTATE_BASE_ADDR: the ACPI C-state control I/O.
     pub cstate_io_base: u64,
     /// CPU_WDT_CFG, if the SoC programs the CPU watchdog.
@@ -147,6 +160,8 @@ pub struct Inputs<'a> {
     /// SYSCFG.SMEE: lets the OS use SME and SEV. Set last: the MTRRs are
     /// installed with it clear.
     pub memory_encryption: bool,
+    /// MMCONFIG base and bus count: the APs start with its reset value.
+    pub ecam: (u64, u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +183,7 @@ pub fn cpu_init(
     let cap = mca_cap(cpu, &soc.mca)?;
     msr::apply(cpu, table);
 
-    enable_ecam(cpu, soc.ecam, soc.ecam_buses);
+    enable_ecam(cpu, inputs.ecam.0, inputs.ecam.1);
     if let Some(bar) = inputs.psp_bar {
         cpu.reg(PSP_ADDRESS).set(bar);
     }
@@ -308,8 +323,6 @@ mod tests {
             l3_banks: 7..=14,
             l3_owner: L3Owner::DiePrimary,
         },
-        ecam: 0xf000_0000,
-        ecam_buses: 128,
         cstate_io_base: 0x813,
         watchdog: Some(9),
         dpm_cfg: 1 << 63,
@@ -333,6 +346,7 @@ mod tests {
             cac_weights: Some(&weights),
             name: None,
             memory_encryption: false,
+            ecam: (0xf000_0000, 128),
         };
         let table = [update(0xc001_1020, 0, 1)];
         let primary = cpu();

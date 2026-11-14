@@ -14,7 +14,7 @@ use fstart_log::Hex;
 use fstart_pci::{PciRoot, ecam::GlobalEcam};
 use heapless::Vec;
 
-/// The ID [`fstart_driver_amd::soc::Hw::init_ioapics`] gives the FCH
+/// The ID [`crate::soc::Hw::init_ioapics`] gives the FCH
 /// IOAPIC; the NBIO IOAPIC of die n has 1 + n.
 pub const FCH_IOAPIC_ID: u8 = 0;
 

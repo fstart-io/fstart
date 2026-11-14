@@ -122,6 +122,7 @@ pub fn reset_layout(layout: &Layout) -> reset::Layout {
         data: span(layout.data),
         heap: span(layout.heap),
         stack: span(layout.stack),
+        cache: span(layout.cache_window()),
     }
 }
 

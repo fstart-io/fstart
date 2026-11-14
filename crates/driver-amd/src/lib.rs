@@ -2,39 +2,24 @@
 //! AMD hardware mechanisms. No board discovery, stage loading or FSP calls.
 //!
 //! The modules are IP blocks, each with its common code and a submodule
-//! per IP version where the code differs; [`soc`] says which versions a SoC
-//! is made of. The register transports are [`smn`] and [`df`].
+//! per IP version where the code differs. Which versions a SoC is made of
+//! and in which order they come up is the platform's; [`soc::Soc`] is what
+//! the blocks need to know of it. The register transports are [`smn`] and
+//! [`df`].
 #![cfg_attr(not(test), no_std)]
-#[cfg(feature = "picasso")]
 pub mod acp;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod apob;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod ccx;
-#[cfg(any(feature = "zeppelin", feature = "sp3"))]
 pub mod cpu;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod df;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod dxio;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod fch;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod nbio;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod psp;
-#[cfg(all(test, any(feature = "picasso", feature = "zeppelin")))]
-mod silicon_tests;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod smn;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod smu;
-#[cfg(any(feature = "picasso", feature = "zeppelin"))]
 pub mod soc;
-/// The SP3 server silicon: Naples, Rome and Milan.
-#[cfg(any(feature = "naples", feature = "rome", feature = "milan"))]
-pub mod sp3;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
 pub mod table;
-#[cfg(any(feature = "picasso", feature = "zeppelin", feature = "sp3"))]
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod window;

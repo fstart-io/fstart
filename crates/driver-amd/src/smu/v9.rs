@@ -7,16 +7,16 @@
 //! Zeppelin call order: [`name`] early; [`init`] and [`cac_weights`]
 //! before MP init; [`crate::smu::threads::launch`] to release the APs;
 //! [`aps_ready`] then [`ccx_done_all`] after every CPU ran
-//! [`crate::ccx::zeppelin::cpu_init`].
+//! [`crate::ccx::zp::cpu_init`].
 use crate::smn::SmnReg;
 use crate::smu::{Error, Mailbox, SmuMessages, send1};
 use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Unaligned};
-#[cfg(feature = "zeppelin")]
 use {
     crate::ccx::{CAC_WEIGHT_COUNT, CacWeights},
+    crate::df::Die,
     crate::smu::ARGUMENT_COUNT,
-    crate::soc::zeppelin::{Die, MAX_DIES},
+    crate::soc::Soc,
     embedded_hal::delay::DelayNs,
     fstart_pci::ConfigRegionAccess,
 };
@@ -289,7 +289,6 @@ pub fn after_ap_launch<M: SmuMessages + ?Sized>(smu: &M, die0: bool) -> Result<(
 }
 
 /// A failed SMU interaction of the Zeppelin flow.
-#[cfg(feature = "zeppelin")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     /// A message to a die's SMU didn't complete successfully.
@@ -299,15 +298,13 @@ pub enum Failure {
 }
 
 /// The SMU of a Zeppelin die, logging the message that failed.
-#[cfg(feature = "zeppelin")]
-struct DieSmu<'a, P, D> {
-    die: &'a Die<P>,
+struct DieSmu<'a, S, P, D> {
+    die: &'a Die<S, P>,
     delay: core::cell::RefCell<&'a mut D>,
     failed: core::cell::Cell<u32>,
 }
-#[cfg(feature = "zeppelin")]
-impl<'a, P: ConfigRegionAccess + Copy, D: DelayNs> DieSmu<'a, P, D> {
-    fn new(die: &'a Die<P>, delay: &'a mut D) -> Self {
+impl<'a, S: Soc, P: ConfigRegionAccess + Copy, D: DelayNs> DieSmu<'a, S, P, D> {
+    fn new(die: &'a Die<S, P>, delay: &'a mut D) -> Self {
         Self {
             die,
             delay: core::cell::RefCell::new(delay),
@@ -322,8 +319,7 @@ impl<'a, P: ConfigRegionAccess + Copy, D: DelayNs> DieSmu<'a, P, D> {
         }
     }
 }
-#[cfg(feature = "zeppelin")]
-impl<P: ConfigRegionAccess + Copy, D: DelayNs> SmuMessages for DieSmu<'_, P, D> {
+impl<S: Soc, P: ConfigRegionAccess + Copy, D: DelayNs> SmuMessages for DieSmu<'_, S, P, D> {
     fn send(&self, id: u32, args: &mut [u32; ARGUMENT_COUNT]) -> Result<(), Error> {
         let reply = self.die.smu(id, *args, &mut **self.delay.borrow_mut());
         *args = reply.inspect_err(|_| {
@@ -340,9 +336,8 @@ impl<P: ConfigRegionAccess + Copy, D: DelayNs> SmuMessages for DieSmu<'_, P, D> 
 
 /// The CPU name string from die `die`'s SMU (the fallback if it has none),
 /// logged.
-#[cfg(feature = "zeppelin")]
-pub fn name<P: ConfigRegionAccess + Copy>(
-    die: &Die<P>,
+pub fn name<S: Soc, P: ConfigRegionAccess + Copy>(
+    die: &Die<S, P>,
     delay: &mut impl DelayNs,
 ) -> crate::ccx::brand::Name {
     let name = crate::ccx::brand::read(&DieSmu::new(die, delay), msg::GET_NAME_STRING);
@@ -350,9 +345,11 @@ pub fn name<P: ConfigRegionAccess + Copy>(
     name
 }
 
+/// The most ZP dies a system has: four per socket, two sockets.
+pub const MAX_DIES: usize = crate::df::MAX_NODES as usize;
+
 /// Physical addresses of the DRAM the SMU firmware reads its policy from
 /// and writes its AGM log and performance monitor data to.
-#[cfg(feature = "zeppelin")]
 #[derive(Debug, Clone, Copy)]
 pub struct DmaBuffers {
     /// A [`PolicyTable`], 64-byte aligned.
@@ -362,7 +359,6 @@ pub struct DmaBuffers {
     /// One zeroed 4-KiB page per die.
     pub perfmon: [u64; MAX_DIES],
 }
-#[cfg(feature = "zeppelin")]
 impl DmaBuffers {
     fn valid(&self, dies: usize) -> bool {
         let page = |address: u64| address != 0 && address & 0xfff == 0;
@@ -382,9 +378,8 @@ impl DmaBuffers {
 /// [`PolicyTable`] and the AGM log and perfmon pages are zeroed. All of
 /// them are DRAM the platform reserves from the OS until reset: the SMU
 /// keeps using them.
-#[cfg(feature = "zeppelin")]
-pub unsafe fn init<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
+pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy>(
+    dies: &[Die<S, P>],
     buffers: &DmaBuffers,
     delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
@@ -405,9 +400,8 @@ pub unsafe fn init<P: ConfigRegionAccess + Copy>(
 
 /// The CAC weights the CCX code loads into the DPM weight MSRs, from die 0.
 /// Before MP init: the APs can't talk to the SMU in parallel.
-#[cfg(feature = "zeppelin")]
-pub fn cac_weights<P: ConfigRegionAccess + Copy>(
-    die: &Die<P>,
+pub fn cac_weights<S: Soc, P: ConfigRegionAccess + Copy>(
+    die: &Die<S, P>,
     delay: &mut impl DelayNs,
 ) -> Result<CacWeights, Failure> {
     let smu = DieSmu::new(die, delay);
@@ -426,9 +420,8 @@ pub fn cac_weights<P: ConfigRegionAccess + Copy>(
 /// workload on every AP with messages 0x23/0x24/0x25, is off (vendor PCD
 /// 0x1bf = 0); DC BTC is on for SP4 and SP4r2 (the SMU driver sets PCD
 /// 0x1be).
-#[cfg(feature = "zeppelin")]
-pub fn aps_ready<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
+pub fn aps_ready<S: Soc, P: ConfigRegionAccess + Copy>(
+    dies: &[Die<S, P>],
     delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
     dies.iter().enumerate().try_for_each(|(n, die)| {
@@ -439,9 +432,8 @@ pub fn aps_ready<P: ConfigRegionAccess + Copy>(
 
 /// CallbackAfterCcxDxeDone of the vendor SMU driver: [`ccx_done`] on every
 /// die with the SP4 features. After [`aps_ready`].
-#[cfg(feature = "zeppelin")]
-pub fn ccx_done_all<P: ConfigRegionAccess + Copy>(
-    dies: &[Die<P>],
+pub fn ccx_done_all<S: Soc, P: ConfigRegionAccess + Copy>(
+    dies: &[Die<S, P>],
     delay: &mut impl DelayNs,
 ) -> Result<(), Failure> {
     dies.iter().try_for_each(|die| {
@@ -450,12 +442,12 @@ pub fn ccx_done_all<P: ConfigRegionAccess + Copy>(
     })
 }
 
-#[cfg(all(test, feature = "zeppelin"))]
+#[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
     use crate::ccx::tsc::testing::Delay;
-    use crate::soc::zeppelin::test_pci::{Message, Pci};
+    use crate::testing::dies::{Message, Pci};
     use std::vec::Vec;
 
     fn sent(pci: &Pci) -> Vec<(u8, u32, u32)> {
@@ -514,8 +506,8 @@ mod tests {
         let dies = pci.dies();
         let mut buffers = DmaBuffers {
             policy: 0x1_2345_6740,
-            agm_log: [0x7000_0000, 0x7000_1000],
-            perfmon: [0x7000_2000, 0],
+            agm_log: [0x7000_0000, 0x7000_1000, 0, 0, 0, 0, 0, 0],
+            perfmon: [0x7000_2000, 0, 0, 0, 0, 0, 0, 0],
         };
         assert_eq!(
             unsafe { init(&dies, &buffers, &mut Delay(|_| {})) },
@@ -585,7 +577,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "naples"))]
+#[cfg(test)]
 mod naples_tests {
     use super::*;
     use crate::smu::model::SmuModel;
