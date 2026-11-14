@@ -8,7 +8,7 @@ use super::{
     Config, DxioConfig, MAX_DIES, Zeppelin,
     silicon::{self, Identity, SmuPages, SmuPolicy, State, Trained},
 };
-use crate::soc::{Ctx, DieInit, Entered, Hw, Init, Roots};
+use crate::soc::{Ctx, DieInit, Entered, Fabric, Hw, Init};
 use fstart_arch::x86::{
     cpu::{amd::smm::InstalledTseg, msr::NativeMsr},
     mp::MpHandle,
@@ -216,11 +216,11 @@ impl Init for Zeppelin {
 
     /// Each die's root complex from the DF plan the silicon init
     /// programmed.
-    fn roots(ctx: &Ctx<'_, Self>, up: &Up) -> Option<Roots> {
-        let segment = Self::pci_segment(ctx.hw);
-        (up.silicon.bridges.iter().take(ctx.hw.dies.len()))
-            .map(|rb| fstart_driver_amd::df::root::planned(rb.as_ref()?, &segment))
-            .collect()
+    fn fabric<'a>(ctx: &Ctx<'_, Self>, up: &'a Up) -> Fabric<'a> {
+        Fabric {
+            segment: Self::pci_segment(ctx.hw),
+            bridges: &up.silicon.bridges,
+        }
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut Up) -> Result<(), &'static str> {

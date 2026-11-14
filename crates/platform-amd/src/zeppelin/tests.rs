@@ -14,12 +14,13 @@ use crate::{
     noncar::acpi::{cpus, root_bridge},
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
+use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::{self, Apob},
     df::{
-        self, map,
-        root::{Root, root},
+        self,
+        root::{Root, planned},
     },
     dxio::{self, Descriptor, SataChannel},
     fch::{
@@ -244,19 +245,25 @@ fn mj11_ec1_flow() {
     assert_eq!(hw.state(), 0xa9dd_6d88_a609_f199);
 }
 
-/// The single die's PCI root is the whole ECAM with the DF's windows below
-/// 4 GiB, without the ECAM and the non-PCI pool: what the hardware was
-/// tested with.
+/// The ECAM segment of the tests: 128 buses at `base`.
+fn segment(base: u64) -> PciRootInfo {
+    PciRootInfo {
+        segment: 0,
+        ecam_base: base,
+        bus_start: 0,
+        bus_end: 127,
+    }
+}
+
+/// The single die's PCI root from the DF plan: the whole ECAM with the DF's
+/// windows below 4 GiB, without the ECAM and the non-PCI pool.
 #[test]
 fn mj11_ec1_pci_root() {
     let hw = model(1);
     // The PSP's bus map: every bus to die 0.
     hw.set_config(PciAddress::new(0, 0, 0x18, 0), 0xa0, 0xff00_0043);
     let state = mj11_ec1_flow_on(&hw, 0x6800_0000);
-    let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();
-    let ecam = (0xf000_0000, 128 << 20);
-    let reserved = (state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
-    let root = root(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
+    let root = planned(&state.bridges[0], &segment(0xf000_0000)).unwrap();
     assert_eq!(root.buses(), 0..=127);
     // `_CRS`: what the DF routes to the die, without what the die decodes
     // itself: the ECAM window and the non-PCI pool.
@@ -276,13 +283,13 @@ fn mj11_ec1_pci_root() {
         ranges.iter().map(|r| (r.kind, r.base, r.end())).collect()
     };
     use PciWindowKind::{Io, Mmio};
-    // The allocator: the same without the legacy ports.
+    // The allocator: the plan's pools, without the legacy ports; the
+    // leftover below the ECAM, the plan's second window, is forwarded only.
     assert_eq!(
         spans(root.allocatable()),
         [
             (Io, 0x1000, 0x1_0000),
             (Mmio, 0xf800_0000, 0xfe40_0000),
-            (Mmio, 0x8000_0000, 0xf000_0000),
             (Mmio, 0x100_0000_0000, 0xfffd_0000_0000),
         ]
     );
@@ -397,9 +404,11 @@ fn sp4_pci_roots_and_host_bridges() {
     let roots: Vec<Root> = dies
         .iter()
         .map(|die| {
-            let pool = state.nonpci[usize::from(die.index())];
-            let reserved = (pool.into(), NONPCI_MMIO_SIZE.into());
-            root(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
+            planned(
+                &state.bridges[usize::from(die.index())],
+                &segment(ecam_region.0),
+            )
+            .unwrap()
         })
         .collect();
     let mut pci = PciEcam::new(roots.clone()).unwrap();

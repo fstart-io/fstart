@@ -4,7 +4,7 @@
 use super::silicon::Silicon;
 use super::{Iod, State, Variant};
 use crate::flow::{Ctx, Mapped, Reserved, Silicon as Up, Tables};
-use crate::soc::{Entered, Init, Roots};
+use crate::soc::{Entered, Fabric, Init};
 use crate::sp3::flow::step;
 use crate::sp3::silicon::{Identity, steps};
 use crate::sp3::soc as sp3;
@@ -123,8 +123,8 @@ impl<V: Variant> Init for Iod<V> {
         Silicon::pci_pre::<V>(&mut state.soc, &mut state.si)
     }
 
-    fn roots(_: &Ctx<'_, Self>, state: &State) -> Option<Roots> {
-        sp3::roots(state)
+    fn fabric<'a>(_: &Ctx<'_, Self>, state: &'a State) -> Fabric<'a> {
+        state.fabric()
     }
 
     fn after_resources(_: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {
