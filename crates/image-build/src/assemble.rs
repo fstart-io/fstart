@@ -3,9 +3,7 @@ use fstart_core::ffs::{
     Compression, FileType, SegmentFlags, SegmentKind, Signature, VerificationKey,
 };
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout};
-use fstart_core::{
-    BoardConfig, FdtSource, FirmwareImagePolicy, RunsFrom, SocImageFormat, StageLayout,
-};
+use fstart_core::{BoardConfig, FdtSource, FirmwareImagePolicy, RunsFrom, StageLayout};
 use fstart_ffs::builder::{
     BootRootConfig, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
     build_image_with_root, finalize_initial_stage,
@@ -29,6 +27,7 @@ pub fn assemble(
     fit_path: Option<&str>,
     payload_files: &[(String, String)],
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
+    boot_format: crate::build_plan::BootImageFormat,
     signing_key: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let (signing_key, verification_key) = load_signing_key(signing_key, config)?;
@@ -63,7 +62,7 @@ pub fn assemble(
                     let mut bin_data = fs::read(&stage_bin.run_path).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
                     })?;
-                    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+                    if boot_format == crate::build_plan::BootImageFormat::AllwinnerEgon {
                         crate::image::egon::prepare_image(&mut bin_data)?;
                     }
                     ro_files.push(InputFile {
@@ -238,7 +237,7 @@ pub fn assemble(
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
     let mut ffs_image = build_image_with_root(&image_config, &root_config, &sign)?;
 
-    if config.soc_image_format == SocImageFormat::AllwinnerEgon {
+    if boot_format == crate::build_plan::BootImageFormat::AllwinnerEgon {
         let total_size = u32::try_from(ffs_image.image.len()).map_err(|_| "image exceeds u32")?;
         let initial_name = stage_binaries
             .first()
@@ -1436,14 +1435,20 @@ fn add_firmware_blob(
     Ok(())
 }
 
+/// A `PT_LOAD` segment: its file offset, its physical (load) address and
+/// its file-backed size. XIP `.data` has a RAM virtual address but a
+/// flash load address.
 #[derive(Debug, Clone, Copy)]
-struct ElfLoadSegment {
-    offset: u64,
-    paddr: u64,
-    filesz: u64,
+pub(crate) struct ElfLoadSegment {
+    pub(crate) offset: u64,
+    pub(crate) paddr: u64,
+    pub(crate) filesz: u64,
 }
 
-fn elf_load_segments(elf_data: &[u8], elf_path: &Path) -> Result<Vec<ElfLoadSegment>, String> {
+pub(crate) fn elf_load_segments(
+    elf_data: &[u8],
+    elf_path: &Path,
+) -> Result<Vec<ElfLoadSegment>, String> {
     if elf_data.len() < 16 {
         return Err(format!("ELF {} is too short", elf_path.display()));
     }

@@ -8,7 +8,8 @@ extern crate std;
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::build_plan::{
-    BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile, UnitOutput,
+    BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
+    UnitOutput,
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
@@ -36,18 +37,17 @@ const fn span(base: u64, size: u64) -> Span {
     Span { base, size }
 }
 
-/// The plan runner's entry: `Plan::<Board>::emit(selection)`.
+/// The plan runner's entry: the `HostPlan` adapter.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 
-impl<B: Fu740Board> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan =
-            resolve(B::CONFIG, B::DEVICE_TREE, selection).expect("invalid FU740 image policy");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize FU740 plan")
-        );
+impl<B: Fu740Board> fstart_image_build::plan::HostPlan<B> for Plan<B> {
+    type Options = fstart_image_build::plan::NoOptions;
+
+    fn resolve(
+        selection: BuildSelection,
+        _: Self::Options,
+    ) -> Result<fstart_image_build::plan::ResolvedPlan, String> {
+        resolve(B::CONFIG, B::DEVICE_TREE, selection)
     }
 }
 
@@ -199,10 +199,9 @@ pub fn resolve(
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: false,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id,
         build: BoardBuildPolicy {
-            qemu_machine: None,
             firmware_image: FirmwareImagePolicy::memory_mapped(
                 firmware_image.base,
                 firmware_image.size,
@@ -255,7 +254,9 @@ pub fn resolve(
         payload,
         units: vec![unit],
         stages: vec!["stage".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
+        run: None,
         inputs,
     };
     plan.order()?;
@@ -384,7 +385,7 @@ mod tests {
             ..Default::default()
         };
         let plan = resolve(&CONFIG, "board.dtb", selection).unwrap();
-        plan.assembly.ffs().unwrap().payload.clone()
+        plan.ffs_assembly().unwrap().payload.clone()
     }
 
     #[test]

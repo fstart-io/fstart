@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! AMD SP3 (Naples, Rome, Milan) flash image: one build composed into the
-//! vendor ROM (FIRMWARE_IMAGE §1.1–§2.1, §4, §7 of the SP3 analysis).
-//!
-//! Written from the SP3 reverse engineering and AMD #55758 rev 1.13 (facts
-//! only). It is to be folded into the shared AMD assembly ([`crate::amd`]).
+//! AMD halved EFS flash image: one build composed into a flash made of
+//! repeated 16 MiB boot halves, as used by the Naples, Rome and Milan
+//! generations (FIRMWARE_IMAGE §1.1–§2.1, §4, §7 of the SP3 analysis;
+//! AMD #55758 rev 1.13, facts only). The mechanism is named for the
+//! repeated-halves layout, not for a socket: the generations a board
+//! supports are configuration ([`FlashPlan::generations`]).
 //!
 //! Every supported vendor half keeps its vendor EFS and its PSP/BIOS
 //! directories and blobs in place (`[0, prefix)` of the half, the vendor's
@@ -41,7 +42,7 @@
 //! Every `0x62` entry (L1 and L2, every generation) describes the reset
 //! image as linked: `[0x75de0000, 0x76000000)`, `0x220000` bytes,
 //! reset + copy, uncompressed. The reset image carries the stage's trust
-//! policy, the FFS locator and the SP3 flash anchor (FFS flash offset and
+//! policy, the FFS locator and the flash anchor (FFS flash offset and
 //! size) as patch sites, which [`patch_reset_image`] fills from the
 //! assembled FFS. A composed image is re-read with `fstart-amdfw-format` (as
 //! the reset image reads it) and the boot ROM's EFS rule before it is
@@ -62,7 +63,7 @@ use zerocopy::IntoBytes;
 
 pub use fstart_amdfw_format::HALF_SIZE;
 
-/// An SP3 generation as the image knows it: the BIOS directory slot its
+/// An AMD generation as the image knows it: the BIOS directory slot its
 /// boot ROM reads. The silicon's generation maps to it through its
 /// profile (`fstart_driver_amd::sp3::soc::Generation::profile`).
 pub type Generation = BiosDirectorySlot;
@@ -70,7 +71,7 @@ pub const NAPLES: Generation = BiosDirectorySlot::Family17hModel00;
 pub const ROME: Generation = BiosDirectorySlot::Family17hModel30;
 pub const MILAN: Generation = BiosDirectorySlot::Family19h;
 
-use crate::build_plan::{BuildPlan, FfsAssembly, UnitOutput};
+use crate::build_plan::{BuildPlan, UnitOutput};
 
 /// The generation of a vendor EFS word: exactly the word whose bits a
 /// generation's boot ROM requires clear (FIRMWARE_IMAGE §1.1).
@@ -109,7 +110,7 @@ const fn flash(generation: Generation, bytes: &[u8]) -> Flash<'_> {
     Flash::region(bytes, 0, MMIO_BASE, Profile::for_slot(generation))
 }
 
-/// Where the SP3 halves have their EFS.
+/// Where the halved-flash halves have their EFS.
 const EFS_OFFSET: usize = 0x2_0000;
 
 /// One 16 MiB half of a 32 MiB flash (a 16 MiB flash is its lower half).
@@ -213,7 +214,7 @@ impl From<DirError> for ImageError {
 
 impl fmt::Display for ImageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SP3 flash image: {self:x?}")
+        write!(f, "AMD halved flash image: {self:x?}")
     }
 }
 
@@ -735,7 +736,7 @@ pub struct Patched {
     pub trust: bool,
     /// The FFS locator (image-relative offsets, size).
     pub locator: bool,
-    /// The SP3 flash anchor (FFS flash offset and size); without it the
+    /// The flash anchor (FFS flash offset and size); without it the
     /// reset image cannot find its FFS.
     pub flash: bool,
 }
@@ -834,7 +835,7 @@ pub fn patch_reset_image(
 
 /// The flash image of one build.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sp3Flash {
+pub struct AmdHalvedFlash {
     /// The composed ROM, the vendor ROM's size (16 or 32 MiB, or a full
     /// readout with mirrored boot banks).
     pub image: Vec<u8>,
@@ -849,7 +850,7 @@ pub fn compose(
     plan: &FlashPlan,
     reset_image: &[u8],
     ffs: &[u8],
-) -> Result<Sp3Flash, ImageError> {
+) -> Result<AmdHalvedFlash, ImageError> {
     let window = plan.boot_window(vendor_rom)?;
     let survey = plan.survey(window)?;
     if ffs.len() > survey.ffs_capacity() {
@@ -866,7 +867,7 @@ pub fn compose(
     let patched = patch_reset_image(&mut reset, ffs, anchor)?;
     let image = build(window, plan, &survey, &reset, ffs)?;
     verify(&image, plan, &survey)?;
-    Ok(Sp3Flash {
+    Ok(AmdHalvedFlash {
         image: plan.expand(vendor_rom, image),
         survey,
         patched,
@@ -897,7 +898,7 @@ impl PackedHalf {
             || files.partition_end > plan.ffs_offset
         {
             return Err(format!(
-                "{}: the SP3 halves are partitions from the EFS to below the FFS",
+                "{}: the halved flash halves are partitions from the EFS to below the FFS",
                 name(self.generation)
             ));
         }
@@ -929,7 +930,7 @@ pub fn packed_rom(
     read: &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
     if halves.is_empty() || halves.len() > 2 {
-        return Err("an SP3 flash has one or two halves".into());
+        return Err("a halved AMD flash has one or two halves".into());
     }
     let mut rom = Vec::with_capacity(halves.len() * HALF_SIZE);
     for half in halves {
@@ -948,11 +949,13 @@ pub fn packed_rom(
     Ok(rom)
 }
 
-/// The SP3 image operation: an FFS (the payload and the stage unit's
-/// trust-finalized copy) plus the stage unit, composed into the vendor ROM.
+/// The halved-flash image operation: the artefact of an earlier FFS step
+/// (the payload and the stage unit's trust-finalized copy) plus the stage
+/// unit, composed into the vendor ROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Sp3FlashAssembly {
-    pub ffs: FfsAssembly,
+pub struct AmdHalvedFlashAssembly {
+    /// The FFS image step whose artefact the flash carries.
+    pub ffs: String,
     /// Vendor ROM: one 16 MiB half, the 32 MiB dual image or a full
     /// readout with [`FlashPlan::mirrors`], workspace relative or absolute. Its directories and blobs are kept in place.
     /// Empty with packed halves.
@@ -965,7 +968,7 @@ pub struct Sp3FlashAssembly {
     pub compose: FlashPlan,
 }
 
-impl Sp3FlashAssembly {
+impl AmdHalvedFlashAssembly {
     /// The stage unit is the plan's first stage and is linked for exactly
     /// the plan's image: stored and run at its destination, entered at its
     /// last 16 bytes.
@@ -975,10 +978,10 @@ impl Sp3FlashAssembly {
         if self.vendor_image.is_empty() == self.packed.is_empty()
             || self.vendor_image.contains('\0')
         {
-            return Err("an SP3 image takes a vendor ROM or packed halves".into());
+            return Err("a halved-flash image takes a vendor ROM or packed halves".into());
         }
         if plan.stages.first() != Some(&self.stage_unit) {
-            return Err("SP3 stage unit must be the first image stage".into());
+            return Err("halved-flash stage unit must be the first image stage".into());
         }
         let UnitOutput::Executable {
             expectations,
@@ -986,7 +989,7 @@ impl Sp3FlashAssembly {
             flat_capacity,
         } = &plan.unit(&self.stage_unit)?.output
         else {
-            return Err("SP3 reset producer is not executable".into());
+            return Err("halved-flash reset producer is not executable".into());
         };
         let size = u64::from(slot.size);
         if *load_address != slot.destination
@@ -996,7 +999,7 @@ impl Sp3FlashAssembly {
                 != Some((slot.destination, size))
             || expectations.entry != Some(slot.destination + size - 16)
         {
-            return Err("SP3 reset producer differs from the reset image geometry".into());
+            return Err("halved-flash reset producer differs from the reset image geometry".into());
         }
         Ok(())
     }
@@ -1016,7 +1019,7 @@ mod generation_name {
         super::GENERATIONS
             .into_iter()
             .find(|&g| super::name(g).eq_ignore_ascii_case(&name))
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown SP3 generation {name}")))
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown AMD generation {name}")))
     }
 }
 
@@ -1036,12 +1039,12 @@ mod generation_names {
                 GENERATIONS
                     .into_iter()
                     .find(|&g| super::name(g).eq_ignore_ascii_case(name))
-                    .ok_or_else(|| D::Error::custom(format!("unknown SP3 generation {name}")))
+                    .ok_or_else(|| D::Error::custom(format!("unknown AMD generation {name}")))
             })
             .collect()
     }
 }
 
 #[cfg(test)]
-#[path = "sp3_flash_tests.rs"]
+#[path = "halved_flash_tests.rs"]
 mod tests;

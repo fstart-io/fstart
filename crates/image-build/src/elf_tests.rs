@@ -5,7 +5,7 @@ use fstart_core::{Platform, layout::RegionKind};
 fn xip(payload: Span) -> Xip {
     Xip {
         platform: Platform::Armv7,
-        soc_image_format: fstart_core::SocImageFormat::None,
+        boot_image_format: crate::build_plan::BootImageFormat::None,
         boot_hart_id: 0,
         image: Span {
             base: 0,

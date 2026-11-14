@@ -77,17 +77,13 @@ pub struct BuildSelection {
     /// A selected platform must bind every request, unchanged, to compiler units.
     #[serde(default)]
     pub compiler_files: Vec<CompilerFileSelection>,
-    /// Explicit platform-owned image configuration, not a compiler environment.
+    /// Platform-owned options by name (`fbuild --option NAME=VALUE`, plus
+    /// the dedicated CLI flags that feed the well-known names in
+    /// [`options`]). This transport carries strings only: each platform
+    /// declares its options as a type ([`HostPlan::Options`]) and
+    /// [`Self::options`] parses them into it, rejecting every other name.
     #[serde(default)]
-    pub image_config: Option<String>,
-    /// The directory of the vendor firmware blobs the platform's tables
-    /// name (e.g. AMD's PSP firmware).
-    #[serde(default)]
-    pub blobs: Option<String>,
-    /// A vendor flash image fbuild extracts the blob directory from
-    /// (`fbuild blobs`); it then sets `blobs`.
-    #[serde(default)]
-    pub donor: Option<String>,
+    pub options: std::collections::BTreeMap<String, String>,
     /// The `package.metadata.fstart` tables of the board and of its platform
     /// crate, filled in by fbuild, for platform-owned firmware tables.
     #[serde(default)]
@@ -95,12 +91,6 @@ pub struct BuildSelection {
     /// SMBIOS Type 0 release date selected by fbuild, in MM/DD/YYYY form.
     #[serde(default)]
     pub smbios_release_date: Option<String>,
-    #[serde(default)]
-    pub x86_linux_kernel_load_addr: Option<u64>,
-    #[serde(default)]
-    pub x86_linux_bootargs: Option<String>,
-    #[serde(default)]
-    pub x86_linux_print_mtrrs: bool,
     /// Build-time log verbosity (`FSTART_LOG_LEVEL`) for every unit.
     #[serde(default)]
     pub log_level: Option<String>,
@@ -117,13 +107,114 @@ pub struct PackageTables {
     pub platform: serde_json::Value,
 }
 
+/// Well-known option names with dedicated fbuild flags. Path-valued:
+/// `image-config` (explicit platform image configuration, e.g. a vendor
+/// ROM), `blobs` (directory of the vendor firmware blobs the platform's
+/// tables name) and `donor` (a vendor flash image fbuild extracts the
+/// blob directory from; fbuild then sets `blobs`). The platforms that
+/// take them declare them in their [`HostPlan::Options`]; these are only
+/// the names the CLI flags write.
+pub mod options {
+    pub const IMAGE_CONFIG: &str = "image-config";
+    pub const BLOBS: &str = "blobs";
+    pub const DONOR: &str = "donor";
+    pub const X86_LINUX_KERNEL_LOAD_ADDR: &str = "x86-linux-kernel-load-addr";
+    pub const X86_LINUX_BOOTARGS: &str = "x86-linux-bootargs";
+    pub const X86_LINUX_PRINT_MTRRS: &str = "x86-linux-print-mtrrs";
+}
+
+/// Deserializers for typed option fields: option values travel as
+/// strings (`--option NAME=VALUE`).
+pub mod option_value {
+    use serde::{Deserialize, Deserializer, de::Error};
+
+    /// An integer, decimal or `0x` hexadecimal, `_` separators allowed.
+    pub fn integer<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let digits = value.replace('_', "");
+        match digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+        {
+            Some(hex) => u64::from_str_radix(hex, 16),
+            None => digits.parse(),
+        }
+        .map(Some)
+        .map_err(|_| D::Error::custom(format!("{value:?} is not an integer")))
+    }
+
+    /// `true` or `false`.
+    pub fn flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(D::Error::custom(format!(
+                "expected true or false, got {other:?}"
+            ))),
+        }
+    }
+}
+
+/// A platform's typed `--option`s. Its serialized field names (all of
+/// them, also when absent) are the option names it accepts, so a type
+/// declares its names and their parsing in one place. String values are
+/// parsed by the field types; [`option_value`] has the integer and flag
+/// parsers.
+pub trait PlatformOptions: Serialize + serde::de::DeserializeOwned + Default {}
+impl<T: Serialize + serde::de::DeserializeOwned + Default> PlatformOptions for T {}
+
+/// The option names `T` accepts.
+pub fn option_names<T: PlatformOptions>() -> Vec<String> {
+    match serde_json::to_value(T::default()) {
+        Ok(serde_json::Value::Object(fields)) => fields.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The options of a platform that takes none.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoOptions {}
+
+/// The direct x86 Linux launcher options an x86 platform may offer;
+/// a platform with more options flattens these into its own type.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct X86LinuxOptions {
+    #[serde(
+        rename = "x86-linux-kernel-load-addr",
+        deserialize_with = "option_value::integer"
+    )]
+    pub kernel_load_addr: Option<u64>,
+    #[serde(rename = "x86-linux-bootargs")]
+    pub bootargs: Option<String>,
+    #[serde(
+        rename = "x86-linux-print-mtrrs",
+        deserialize_with = "option_value::flag"
+    )]
+    pub print_mtrrs: bool,
+}
+
+impl X86LinuxOptions {
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.kernel_load_addr.is_some() || self.bootargs.is_some() || self.print_mtrrs
+    }
+}
+
 impl BuildSelection {
     pub fn validate_compiler_files(&self) -> Result<(), String> {
-        for path in [&self.image_config, &self.blobs, &self.donor]
-            .into_iter()
-            .flatten()
-        {
-            if path.is_empty() || path.contains('\0') {
+        for (name, value) in &self.options {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                || value.contains('\0')
+            {
+                return Err(format!("invalid selection option {name:?}"));
+            }
+            if [options::IMAGE_CONFIG, options::BLOBS, options::DONOR].contains(&name.as_str())
+                && value.is_empty()
+            {
                 return Err("invalid image configuration or blob directory path".into());
             }
         }
@@ -137,19 +228,49 @@ impl BuildSelection {
         Ok(())
     }
 
+    pub fn option(&self, name: &str) -> Option<&str> {
+        self.options.get(name).map(String::as_str)
+    }
+
+    pub fn set_option(&mut self, name: &str, value: impl Into<String>) {
+        self.options.insert(name.to_string(), value.into());
+    }
+
+    /// The vendor-image path of `--image-config`, if bound.
+    pub fn image_config(&self) -> Option<&str> {
+        self.option(options::IMAGE_CONFIG)
+    }
+
+    /// Parse the options as the platform's typed options `T`. A name `T`
+    /// does not declare is an error listing the names it does, so a typo
+    /// or another platform's option is never silently dropped.
+    pub fn options<T: PlatformOptions>(&self) -> Result<T, String> {
+        let names = option_names::<T>();
+        if let Some(unknown) = self.options.keys().find(|name| !names.contains(name)) {
+            return Err(if names.is_empty() {
+                format!("this platform takes no options, not '{unknown}'")
+            } else {
+                format!(
+                    "this platform has no option '{unknown}'; it takes {}",
+                    names.join(", ")
+                )
+            });
+        }
+        let options = self
+            .options
+            .iter()
+            .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+            .collect();
+        serde_json::from_value(serde_json::Value::Object(options))
+            .map_err(|e| format!("invalid platform option: {e}"))
+    }
+
     /// For platforms that offer no `--debug` facilities.
     pub fn reject_debug(&self) -> Result<(), String> {
         match self.debug.first() {
             Some(option) => Err(format!("this platform has no debug option '{option}'")),
             None => Ok(()),
         }
-    }
-
-    #[must_use]
-    pub fn has_x86_linux_overrides(&self) -> bool {
-        self.x86_linux_kernel_load_addr.is_some()
-            || self.x86_linux_bootargs.is_some()
-            || self.x86_linux_print_mtrrs
     }
 }
 
@@ -164,6 +285,90 @@ pub struct IntelStagePlan {
 
 /// A compiled platform export, not a board-authoring schema.
 pub type ResolvedPlan = crate::build_plan::BuildPlan;
+
+/// Version of the transport between fbuild's generated plan runner and
+/// a platform's host adapter. Bump it when [`BuildSelection`] or
+/// [`ResolvedPlan`] change shape incompatibly; the runner and the
+/// adapter are built from the same tree, so this catches stale cached
+/// runners rather than negotiating between releases.
+pub const PLAN_SCHEMA: u32 = 1;
+
+/// What a host adapter prints on stdout: exactly one envelope, so a
+/// platform rejection is a structured error for fbuild to surface, not
+/// a panic backtrace on stderr. Diagnostics belong on stderr.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanEnvelope {
+    pub schema: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<ResolvedPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PlanEnvelope {
+    pub fn into_plan(self) -> Result<ResolvedPlan, String> {
+        if self.schema != PLAN_SCHEMA {
+            return Err(format!(
+                "platform plan schema {} does not match fbuild's {PLAN_SCHEMA}; rebuild the plan runner",
+                self.schema
+            ));
+        }
+        match (self.plan, self.error) {
+            (Some(plan), None) => Ok(plan),
+            (None, Some(error)) => Err(error),
+            _ => Err("platform plan envelope carries neither a plan nor an error".into()),
+        }
+    }
+}
+
+/// Serialize `resolve(selection)` (or the selection's own parse error)
+/// as one [`PlanEnvelope`] JSON document.
+pub fn emit_envelope(
+    selection_json: &str,
+    resolve: impl FnOnce(BuildSelection) -> Result<ResolvedPlan, String>,
+) -> String {
+    let envelope = match serde_json::from_str::<BuildSelection>(selection_json)
+        .map_err(|e| format!("invalid build selection: {e}"))
+        .and_then(resolve)
+    {
+        Ok(plan) => PlanEnvelope {
+            schema: PLAN_SCHEMA,
+            plan: Some(plan),
+            error: None,
+        },
+        Err(error) => PlanEnvelope {
+            schema: PLAN_SCHEMA,
+            plan: None,
+            error: Some(error),
+        },
+    };
+    serde_json::to_string(&envelope).unwrap_or_else(|e| {
+        format!("{{\"schema\":{PLAN_SCHEMA},\"error\":\"serialize platform plan: {e}\"}}")
+    })
+}
+
+/// The contract fbuild's generated runner calls: a platform's
+/// `Plan<B>` implements this for its board-fact type `B`, and the
+/// generated `main` is `<Plan<B> as HostPlan<B>>::emit(argv[1])`.
+/// Implementing `resolve` and naming the options is the whole
+/// obligation — selection parsing, option checking, error transport and
+/// serialization are shared.
+pub trait HostPlan<B> {
+    /// The `--option`s this platform takes ([`NoOptions`] for none).
+    type Options: PlatformOptions;
+
+    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String>;
+
+    fn emit(selection_json: &str) {
+        std::println!(
+            "{}",
+            emit_envelope(selection_json, |selection| {
+                let options = selection.options::<Self::Options>()?;
+                Self::resolve(selection, options)
+            })
+        );
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IntelPlan {
@@ -327,6 +532,78 @@ impl IntelPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A platform type composing the shared x86 Linux options.
+    #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(default, rename_all = "kebab-case")]
+    struct Composite {
+        image_config: Option<String>,
+        #[serde(flatten)]
+        x86_linux: X86LinuxOptions,
+    }
+
+    fn selection(options: &[(&str, &str)]) -> BuildSelection {
+        BuildSelection {
+            options: options
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn typed_options_declare_their_names_and_parse_their_values() {
+        assert_eq!(
+            option_names::<X86LinuxOptions>(),
+            // Sorted, as the error message lists them.
+            [
+                options::X86_LINUX_BOOTARGS,
+                options::X86_LINUX_KERNEL_LOAD_ADDR,
+                options::X86_LINUX_PRINT_MTRRS
+            ]
+        );
+        assert!(option_names::<NoOptions>().is_empty());
+        let parsed: Composite = selection(&[
+            (options::IMAGE_CONFIG, "vendor.rom"),
+            (options::X86_LINUX_KERNEL_LOAD_ADDR, "0x200_0000"),
+            (options::X86_LINUX_PRINT_MTRRS, "true"),
+        ])
+        .options()
+        .unwrap();
+        assert_eq!(
+            parsed,
+            Composite {
+                image_config: Some("vendor.rom".into()),
+                x86_linux: X86LinuxOptions {
+                    kernel_load_addr: Some(0x200_0000),
+                    bootargs: None,
+                    print_mtrrs: true,
+                },
+            }
+        );
+        assert_eq!(
+            selection(&[]).options::<Composite>().unwrap(),
+            Composite::default()
+        );
+        let unknown = selection(&[("blobs", "dir")])
+            .options::<Composite>()
+            .unwrap_err();
+        assert!(unknown.contains("no option 'blobs'") && unknown.contains("image-config"));
+        assert!(
+            selection(&[("blobs", "dir")])
+                .options::<NoOptions>()
+                .unwrap_err()
+                .contains("takes no options")
+        );
+        for bad in [
+            (options::X86_LINUX_PRINT_MTRRS, "yes"),
+            (options::X86_LINUX_KERNEL_LOAD_ADDR, "0xg"),
+        ] {
+            assert!(selection(&[bad]).options::<Composite>().is_err());
+        }
+    }
+
     #[test]
     fn explicit_compiler_selections_preserve_paths_and_reject_duplicates() {
         let file = CompilerFileSelection::parse("FSTART_BYTES=/a path/bytes=1.bin").unwrap();

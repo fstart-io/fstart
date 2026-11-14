@@ -16,8 +16,7 @@
           "size": 33554432
         }
       },
-      "pci_root_feature": null,
-      "qemu_machine": null
+      "pci_root_feature": null
     },
     "data_assets": [],
     "full_flash_image": true,
@@ -52,7 +51,6 @@
     },
     "smbios": null,
     "smm": null,
-    "soc_image_format": "None",
     "stages": {
       "Monolithic": {
         "build": {

@@ -17,9 +17,15 @@ impl ResolvedImage {
         selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
         let mut selection = selection;
-        if let Some(donor) = selection.donor.take() {
+        if let Some(donor) = selection
+            .options
+            .remove(fstart_image_build::plan::options::DONOR)
+        {
             let blobs = crate::blobs::from_donor(root, &source, std::path::Path::new(&donor))?;
-            selection.blobs = Some(blobs.to_string_lossy().into_owned());
+            selection.set_option(
+                fstart_image_build::plan::options::BLOBS,
+                blobs.to_string_lossy().into_owned(),
+            );
         }
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
@@ -45,22 +51,31 @@ impl ResolvedImage {
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         self.build.artifact_dir(root, board, release)
     }
-    pub fn bootstrap_bindings(
-        &self,
-    ) -> Option<&[(String, fstart_image_build::build_plan::BootstrapRole)]> {
-        Some(self.build.plan.assembly.bootstrap())
-    }
-    pub fn assembler_config(&self, board: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.build.assembler_config(board)
-    }
     pub fn validate_inputs(
         &self,
         board: &Path,
-        kernel: Option<&str>,
-        firmware: Option<&str>,
-        fit: Option<&str>,
-    ) -> Result<(), String> {
-        self.build.validate_inputs(board, kernel, firmware, fit)
+        supplied: &std::collections::BTreeMap<String, PathBuf>,
+    ) -> Result<std::collections::BTreeMap<String, PathBuf>, String> {
+        self.build.validate_inputs(board, supplied)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble(
+        &self,
+        root: &Path,
+        board: &BoardManifest,
+        release: bool,
+        supplied: &std::collections::BTreeMap<String, PathBuf>,
+        payload_files: &[(String, String)],
+        signing_key: Option<&Path>,
+    ) -> Result<
+        (
+            Vec<fstart_image_build::StageBinary>,
+            fstart_image_build::image_steps::ImageOutputs,
+        ),
+        String,
+    > {
+        self.build
+            .assemble(root, board, release, supplied, payload_files, signing_key)
     }
     pub fn compile_selected(
         &self,

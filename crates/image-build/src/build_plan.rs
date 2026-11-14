@@ -7,81 +7,153 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
     pub payload: String,
+    /// The ISA every stage in this plan targets, stated once by the
+    /// platform resolver (board manifests do not restate it for the plan).
+    pub platform: fstart_core::Platform,
     pub units: Vec<CompilationUnit>,
     /// Units contributing stage binaries, in image-directory order.
     pub stages: Vec<String>,
-    /// Image operation or explicit lack of one. Never infer compiler selections
-    /// or artifact dependencies from the image projection.
-    pub assembly: Assembly,
+    /// Image composition steps, executed in order after the compilation
+    /// units: each step consumes stage binaries and the artefacts of the
+    /// earlier steps it names. Empty means compiler/check/editor support
+    /// only: no image, flash or run contract. Never infer compiler
+    /// selections or artifact dependencies from the image steps.
+    pub images: Vec<ImageStep>,
     pub inputs: Vec<InputFile>,
+    /// How to run the built image under QEMU, if the platform offers an
+    /// emulator equivalent. Host-only data: it never reaches firmware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::run::RunRecipe>,
+}
+
+/// One image-format operation in a plan. The format's config type and its
+/// execution live with the format in this crate (`crate::image_steps`
+/// dispatches); tools executing a plan never match on formats themselves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageStep {
+    pub name: String,
+    pub operation: ImageOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Assembly {
+pub enum ImageOperation {
+    /// The signed fstart firmware filesystem over the stage binaries.
     Ffs(Box<FfsAssembly>),
-    /// An AMD image: PSP firmware, the stage the PSP loads and an
-    /// optional FFS.
-    Amd(Box<crate::amd::assembly::AmdAssembly>),
-    /// An AMD SP3 flash half (and 32 MiB dual image): vendor PSP prefix,
-    /// FFS and the PSP-copied stage unit.
-    Sp3Flash(Box<crate::sp3_flash::Sp3FlashAssembly>),
-    /// Compiler/check/editor support only. No image/flash/run contract supplied.
-    Unassembled {
-        platform: fstart_core::Platform,
-    },
+    /// An AMD EFS flash image: PSP firmware, the stage the PSP loads and
+    /// the artefact of the FFS step it names in its window, if any.
+    AmdEfs(Box<crate::amd::assembly::AmdAssembly>),
+    /// An AMD halved flash: the artefact of the FFS step it names and
+    /// the PSP-copied stage unit composed per repeated 16 MiB boot half.
+    AmdHalvedFlash(Box<crate::amd::halved_flash::AmdHalvedFlashAssembly>),
+    /// An x86 flash mapped below 4 GiB: the artefact of the FFS step it
+    /// names at its offset and the linked stage's flash segments.
+    X86Flash(Box<crate::x86_flash::X86FlashAssembly>),
 }
-impl Assembly {
-    pub fn platform(&self) -> fstart_core::Platform {
+
+impl ImageOperation {
+    /// The earlier FFS step whose artefact the operation consumes.
+    pub fn consumes(&self) -> Option<&str> {
         match self {
-            Self::Ffs(image) => image.platform,
-            Self::Amd(_) => fstart_core::Platform::X86_64,
-            Self::Sp3Flash(image) => image.ffs.platform,
-            Self::Unassembled { platform } => *platform,
+            Self::Ffs(_) => None,
+            Self::AmdEfs(image) => image.ffs.as_ref().map(|window| window.step.as_str()),
+            Self::AmdHalvedFlash(image) => Some(&image.ffs),
+            Self::X86Flash(image) => Some(&image.ffs),
         }
     }
+
+    /// The names of the plan inputs (`--input NAME=PATH`) the operation
+    /// can consume.
+    pub fn inputs(&self) -> &'static [&'static str] {
+        match self {
+            Self::Ffs(_) => FfsAssembly::INPUTS,
+            Self::AmdEfs(_) | Self::AmdHalvedFlash(_) | Self::X86Flash(_) => &[],
+        }
+    }
+}
+
+impl ImageStep {
+    pub fn new(name: impl Into<String>, operation: ImageOperation) -> Self {
+        Self {
+            name: name.into(),
+            operation,
+        }
+    }
+
+    /// The name of a plan's FFS step.
+    pub const FFS: &'static str = "ffs";
+
+    pub fn ffs(assembly: FfsAssembly) -> Self {
+        Self::new(Self::FFS, ImageOperation::Ffs(Box::new(assembly)))
+    }
+}
+
+impl From<FfsAssembly> for ImageStep {
+    fn from(image: FfsAssembly) -> Self {
+        Self::ffs(image)
+    }
+}
+
+impl BuildPlan {
+    /// The plan's FFS step (a plan has at most one), if it has one.
+    pub fn ffs_step(&self) -> Option<(&str, &FfsAssembly)> {
+        self.images.iter().find_map(|step| match &step.operation {
+            ImageOperation::Ffs(image) => Some((step.name.as_str(), image.as_ref())),
+            _ => None,
+        })
+    }
+
+    /// The plan's FFS step configuration, if it has one.
+    pub fn ffs_assembly(&self) -> Result<&FfsAssembly, String> {
+        self.ffs_step()
+            .map(|(_, image)| image)
+            .ok_or_else(|| "plan has no image assembly/run/flash contract".into())
+    }
+
     pub fn bootstrap(&self) -> &[(String, BootstrapRole)] {
-        match self {
-            Self::Ffs(image) => &image.bootstrap,
-            Self::Amd(image) => image
-                .ffs
-                .as_ref()
-                .map_or(&[], |ffs| &ffs.assembly.bootstrap),
-            Self::Sp3Flash(image) => &image.ffs.bootstrap,
-            Self::Unassembled { .. } => &[],
+        match self.ffs_assembly() {
+            Ok(image) => &image.bootstrap,
+            Err(_) => &[],
         }
     }
-    pub fn ffs(&self) -> Result<&FfsAssembly, String> {
-        match self {
-            Self::Ffs(image) => Ok(image),
-            Self::Amd(image) => image.ffs.as_ref().map(|ffs| &ffs.assembly).ok_or_else(|| {
-                "PSP partition fragment has no runtime config/run/flash contract".into()
-            }),
-            Self::Sp3Flash(image) => Ok(&image.ffs),
-            Self::Unassembled { .. } => Err("plan has no image assembly/run/flash contract".into()),
-        }
-    }
+
     pub fn resolve_workspace_inputs(
         &mut self,
         root: &std::path::Path,
         board: &std::path::Path,
     ) -> Result<(), String> {
-        match self {
-            Self::Ffs(image) => image.resolve_workspace_inputs(root, board),
-            Self::Amd(image) => image.ffs.as_mut().map_or(Ok(()), |ffs| {
-                ffs.assembly.resolve_workspace_inputs(root, board)
-            }),
-            Self::Sp3Flash(image) => image.ffs.resolve_workspace_inputs(root, board),
-            Self::Unassembled { .. } => Ok(()),
+        for step in &mut self.images {
+            if let ImageOperation::Ffs(image) = &mut step.operation {
+                image.resolve_workspace_inputs(root, board)?;
+            }
         }
+        Ok(())
     }
+
     pub fn config(&self, name: &str) -> Result<fstart_core::BoardConfig, String> {
-        self.ffs()?.config(name)
+        self.ffs_assembly()?.config(name)
     }
 }
-impl From<FfsAssembly> for Assembly {
-    fn from(image: FfsAssembly) -> Self {
-        Self::Ffs(Box::new(image))
-    }
+
+/// Boot-ROM image format the first stage must carry, if the SoC's boot
+/// ROM requires one. Host-side only: the linker emits the header
+/// sections and the FFS assembler patches their length/checksum fields;
+/// firmware never reads this value, which is why it lives in the image
+/// builder and not in `fstart-core`'s runtime board config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BootImageFormat {
+    /// No boot-ROM header — the binary starts with `.text.entry`.
+    #[default]
+    None,
+    /// Allwinner eGON.BT0: branch over the header at 0x00, `"eGON.BT0"`
+    /// magic at 0x04, word-add checksum at 0x0C and total length
+    /// (512-byte aligned) at 0x10, patched post-build like U-Boot's
+    /// `mksunxiboot`. Required by every Allwinner BROM (sun4i..sun20i).
+    AllwinnerEgon,
+    /// ASPEED AST2400/AST2500 SPI boot: execute in place from FMC CE0
+    /// address 0; the image starts with the ARM vector table and, at
+    /// 0x40, the strap block loaded before the CPU is released
+    /// (both in `.head.aspeed`).
+    AspeedSpi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +176,7 @@ pub struct FfsAssembly {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_assets: Vec<fstart_core::board::FileAsset>,
     pub full_flash_image: bool,
-    pub soc_image_format: fstart_core::SocImageFormat,
+    pub boot_image_format: BootImageFormat,
     pub boot_hart_id: u32,
     pub build: fstart_core::BoardBuildPolicy,
 }
@@ -124,6 +196,12 @@ impl BootstrapRole {
 }
 
 impl FfsAssembly {
+    /// The plan inputs the FFS packs as its payload's files.
+    pub const KERNEL: &'static str = "kernel";
+    pub const FIRMWARE: &'static str = "firmware";
+    pub const FIT: &'static str = "fit";
+    pub const INPUTS: &'static [&'static str] = &[Self::KERNEL, Self::FIRMWARE, Self::FIT];
+
     /// Blob paths emitted by platform Rust are workspace-relative. Convert only
     /// for the legacy assembler's board-relative file API, without inferring policy.
     pub fn resolve_workspace_inputs(
@@ -195,7 +273,6 @@ impl FfsAssembly {
             microcode: self.microcode.clone(),
             data_assets,
             file_assets,
-            soc_image_format: self.soc_image_format,
             full_flash_image: self.full_flash_image,
             // Tables, live CAR and SMM runtime settings are not assembler inputs.
             build: self.build.clone(),
@@ -246,6 +323,82 @@ pub struct CompilationUnit {
     #[serde(default)]
     pub board_features: Vec<String>,
     pub output: UnitOutput,
+}
+
+/// How an SMM handler reaches its own statics, which selects its
+/// relocation model. The SMM image is copied to SMRAM without
+/// absolute-address fixups, so the image builder rejects every
+/// load-base-dependent reference either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmmRelocation {
+    /// Position independent: lookup tables, jump tables and the
+    /// addresses of statics are RIP-relative. For handlers that take
+    /// the address of their SMRAM statics in long mode.
+    Pie,
+    /// Static: only direct relative calls and audited absolute
+    /// references, which the 32-bit loader rebases.
+    Static,
+}
+
+/// The board-library SMM handler unit every x86 platform builds:
+/// release-only, no linker script (the SMM image producer links the
+/// handler itself), the board's `smm` library feature, and the flag set
+/// the retained-relocation audit expects. PLT-style calls
+/// (`-Zplt=yes`, also for `memcpy`) resolve to direct ones at link time
+/// in either relocation model, so the image never has GOT-indirect
+/// calls.
+#[derive(Debug, Clone)]
+pub struct SmmUnit {
+    pub name: String,
+    /// The handler's ISA; it selects the target, and the 32-bit target,
+    /// which has no prebuilt core, builds `core,alloc`.
+    pub platform: fstart_core::Platform,
+    /// Features of the platform dependency.
+    pub features: Vec<String>,
+    pub relocation: SmmRelocation,
+    pub environment_values: BTreeMap<String, String>,
+    pub image: crate::smm_image::ImageOptions,
+}
+
+impl From<SmmUnit> for CompilationUnit {
+    fn from(unit: SmmUnit) -> Self {
+        let relocation = match unit.relocation {
+            SmmRelocation::Pie => "-Crelocation-model=pie",
+            SmmRelocation::Static => "-Crelocation-model=static",
+        };
+        Self {
+            name: unit.name,
+            cargo_target: CargoTarget::BoardLibrary,
+            target: unit.platform.target_triple().into(),
+            build_std: (unit.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
+            features: unit.features,
+            release_only: true,
+            linker_script: None,
+            rustflags: [
+                "-Cpanic=abort",
+                "-Copt-level=s",
+                relocation,
+                "-Zplt=yes",
+                "-Cno-redzone=yes",
+                "-Clinker-plugin-lto=no",
+                "-Cembed-bitcode=no",
+                "-Zfunction-sections=yes",
+            ]
+            .map(String::from)
+            .to_vec(),
+            environment_values: unit.environment_values,
+            bindings: vec![],
+            file_bindings: vec![],
+            // The board's SMM handler module, outside every stage `main`.
+            board_features: vec!["smm".into()],
+            output: UnitOutput::SmmImage {
+                entry_count: unit.image.entry_count,
+                stack_size: unit.image.stack_size,
+                coreboot_module_args: unit.image.coreboot_module_args,
+                coreboot_header: unit.image.coreboot_header,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,23 +495,43 @@ impl BuildPlan {
         &self,
         selection: &crate::plan::BuildSelection,
     ) -> Result<(), String> {
-        match (&selection.image_config, &self.assembly) {
-            (Some(path), Assembly::Amd(image)) if matches!(&image.firmware, crate::amd::assembly::Firmware::Vendor { image, .. } if image.path == *path) => {
-                Ok(())
+        // An explicit `--image-config` must be bound unchanged by the one
+        // image step that consumes a vendor image; a packed image and
+        // plans without such a step bind no image configuration.
+        let requested = selection.image_config();
+        for step in &self.images {
+            let bound = match &step.operation {
+                ImageOperation::AmdEfs(image) => match &image.firmware {
+                    crate::amd::assembly::Firmware::Vendor { image, .. } => {
+                        Some(Some(image.path.as_str()))
+                    }
+                    crate::amd::assembly::Firmware::Packed { .. } => Some(None),
+                },
+                // A halved flash may fall back to the board's own vendor
+                // ROM, so only an explicit request must match it.
+                ImageOperation::AmdHalvedFlash(image) => {
+                    return match requested {
+                        None => Ok(()),
+                        Some(path) if path == image.vendor_image => Ok(()),
+                        Some(_) => Err(
+                            "image configuration was not bound unchanged by the platform".into(),
+                        ),
+                    };
+                }
+                ImageOperation::Ffs(_) | ImageOperation::X86Flash(_) => None,
+            };
+            if let Some(bound) = bound {
+                return if requested == bound {
+                    Ok(())
+                } else {
+                    Err("image configuration was not bound unchanged by the platform".into())
+                };
             }
-            (None, Assembly::Amd(image))
-                if matches!(
-                    image.firmware,
-                    crate::amd::assembly::Firmware::Packed { .. }
-                ) =>
-            {
-                Ok(())
-            }
-            (Some(path), Assembly::Sp3Flash(image)) if *path == image.vendor_image => Ok(()),
-            (None, Assembly::Ffs(_) | Assembly::Sp3Flash(_) | Assembly::Unassembled { .. }) => {
-                Ok(())
-            }
-            _ => Err("image configuration was not bound unchanged by the platform".into()),
+        }
+        if requested.is_none() {
+            Ok(())
+        } else {
+            Err("image configuration was not bound unchanged by the platform".into())
         }
     }
 
@@ -408,7 +581,10 @@ impl BuildPlan {
                     ));
                 }
             }
-            if matches!(&self.assembly, Assembly::Ffs(_))
+            if self
+                .images
+                .iter()
+                .any(|step| matches!(step.operation, ImageOperation::Ffs(_)))
                 && matches!(&unit.output,
                 UnitOutput::Executable { expectations, .. } if expectations.descriptor.is_none())
             {
@@ -489,10 +665,65 @@ impl BuildPlan {
                 return Err(format!("duplicate or non-executable image stage {stage}"));
             }
         }
+        // Image steps: bounded and uniquely named, one FFS at most (the
+        // runtime configuration, bootstrap and flash contract are its),
+        // and a step consumes an FFS step it names that comes before it.
+        if self.images.len() > 8 {
+            return Err("plan has too many image steps".into());
+        }
+        let mut image_names = BTreeSet::new();
+        let mut ffs_steps = BTreeSet::new();
+        for step in &self.images {
+            if !identifier(&step.name) || !image_names.insert(step.name.as_str()) {
+                return Err(format!("invalid or duplicate image step {}", step.name));
+            }
+            if let Some(ffs) = step.operation.consumes()
+                && !ffs_steps.contains(ffs)
+            {
+                return Err(format!(
+                    "image step {} consumes {ffs}, which is no earlier FFS step",
+                    step.name
+                ));
+            }
+            match &step.operation {
+                ImageOperation::Ffs(image) if image.platform != self.platform => {
+                    return Err(format!(
+                        "FFS step {} is for {}, the plan for {}",
+                        step.name, image.platform, self.platform
+                    ));
+                }
+                ImageOperation::Ffs(_) if !ffs_steps.is_empty() => {
+                    return Err("plan has more than one FFS step".into());
+                }
+                ImageOperation::Ffs(_) => {
+                    ffs_steps.insert(step.name.as_str());
+                }
+                ImageOperation::X86Flash(image) => image.validate(self)?,
+                _ => {}
+            }
+        }
+        if let Some(run) = &self.run {
+            for artifact in run.media.iter().filter_map(|media| media.artifact()) {
+                match artifact {
+                    crate::run::RunArtifact::Step(step) if !image_names.contains(step.as_str()) => {
+                        return Err(format!("run recipe attaches unknown image step {step}"));
+                    }
+                    _ => {}
+                }
+            }
+            for name in run.external_inputs() {
+                if !identifier(name) || self.inputs.iter().any(|input| input.name == name) {
+                    return Err(format!("invalid or duplicate run input {name}"));
+                }
+            }
+        }
         let mut bootstrap = BTreeSet::new();
         // The stage unit's stored bytes are the image the PSP copies; its
         // `.data` may run from a copy elsewhere, as in every noncar image.
-        if let Assembly::Amd(image) = &self.assembly {
+        for step in &self.images {
+            let ImageOperation::AmdEfs(image) = &step.operation else {
+                continue;
+            };
             image.validate()?;
             let unit = self.unit(&image.stage_unit)?;
             let UnitOutput::Executable {
@@ -522,10 +753,12 @@ impl BuildPlan {
                 return Err("PSP reset producer differs from image operation".into());
             }
         }
-        if let Assembly::Sp3Flash(image) = &self.assembly {
-            image.validate(self)?;
+        for step in &self.images {
+            if let ImageOperation::AmdHalvedFlash(image) = &step.operation {
+                image.validate(self)?;
+            }
         }
-        for (name, _) in self.assembly.bootstrap() {
+        for (name, _) in self.bootstrap() {
             if !self.stages.iter().skip(1).any(|s| s == name) || !bootstrap.insert(name) {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
             }
@@ -534,17 +767,23 @@ impl BuildPlan {
         Ok(ordered)
     }
 
-    /// The current assembler/CLI only exposes these three payload slots.
+    /// External files a caller may bind by name (`--input NAME=PATH`):
+    /// each one an input of an image step the plan has.
     pub fn validate_input_bindings(&self) -> Result<(), String> {
         let mut inputs = BTreeSet::new();
         for input in &self.inputs {
-            if !matches!(input.name.as_str(), "kernel" | "firmware" | "fit")
-                || !inputs.insert(input.name.as_str())
-            {
+            if !identifier(&input.name) || !inputs.insert(input.name.as_str()) {
                 return Err(format!(
                     "unknown or duplicate payload input binding {}",
                     input.name
                 ));
+            }
+            if !self
+                .images
+                .iter()
+                .any(|step| step.operation.inputs().contains(&input.name.as_str()))
+            {
+                return Err(format!("no image step consumes input {}", input.name));
             }
             Span {
                 base: 0,
@@ -642,6 +881,7 @@ mod tests {
         };
         BuildPlan {
             payload: "halt".into(),
+            platform: Platform::Aarch64,
             units: vec![
                 launch,
                 unit("render-cache", &["seed"]),
@@ -650,24 +890,104 @@ mod tests {
             ],
             stages: vec!["launch".into()],
             inputs: vec![],
-            assembly: FfsAssembly {
-                platform: Platform::Aarch64,
-                memory: vec![],
-                flash: None,
-                bootstrap: vec![],
-                stages: StageLayout::MultiStage(hvec([])),
-                security: default_security_config(),
-                payload: None,
-                microcode: None,
-                data_assets: vec![],
-                file_assets: vec![],
-                full_flash_image: false,
-                soc_image_format: SocImageFormat::None,
-                boot_hart_id: 0,
-                build: BoardBuildPolicy::default(),
-            }
-            .into(),
+            run: None,
+            images: vec![
+                FfsAssembly {
+                    platform: Platform::Aarch64,
+                    memory: vec![],
+                    flash: None,
+                    bootstrap: vec![],
+                    stages: StageLayout::MultiStage(hvec([])),
+                    security: default_security_config(),
+                    payload: None,
+                    microcode: None,
+                    data_assets: vec![],
+                    file_assets: vec![],
+                    full_flash_image: false,
+                    boot_image_format: BootImageFormat::None,
+                    boot_hart_id: 0,
+                    build: BoardBuildPolicy::default(),
+                }
+                .into(),
+            ],
         }
+    }
+
+    #[test]
+    fn image_steps_name_an_earlier_ffs_and_inputs_have_a_consumer() {
+        use crate::run::{RunArtifact, RunMedia, RunRecipe};
+        let mut plan = fixture();
+        plan.order().unwrap();
+        let ffs = plan.images[0].clone();
+        // A second FFS would make the runtime configuration ambiguous.
+        plan.images.push(ImageStep {
+            name: "other".into(),
+            ..ffs.clone()
+        });
+        assert!(plan.order().unwrap_err().contains("more than one FFS"));
+        plan.images.truncate(1);
+        plan.platform = fstart_core::Platform::Riscv64;
+        assert!(plan.order().unwrap_err().contains("is for"));
+        plan.platform = fstart_core::Platform::Aarch64;
+
+        plan.inputs.push(InputFile {
+            name: "calibration".into(),
+            default: None,
+            capacity: 0x1000,
+        });
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("no image step consumes input calibration")
+        );
+        plan.inputs[0].name = FfsAssembly::KERNEL.into();
+        plan.order().unwrap();
+
+        let mut run = RunRecipe {
+            qemu: "qemu-system-aarch64".into(),
+            machine: "virt".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::Bios {
+                artifact: RunArtifact::Step("flash".into()),
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: None,
+        };
+        plan.run = Some(run.clone());
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("unknown image step flash")
+        );
+        run.media = vec![RunMedia::ExternalPflash {
+            name: FfsAssembly::KERNEL.into(),
+            unit: 0,
+            size: 0x1000,
+        }];
+        plan.run = Some(run);
+        assert!(plan.order().unwrap_err().contains("duplicate run input"));
+        plan.run = None;
+
+        // A consumer names the FFS step it reads, which must come first.
+        let flash = ImageStep::new(
+            "flash",
+            ImageOperation::X86Flash(Box::new(crate::x86_flash::X86FlashAssembly {
+                ffs: ImageStep::FFS.into(),
+                stage_unit: "launch".into(),
+                size: 0x100_0000,
+                ffs_offset: 0x10_0000,
+            })),
+        );
+        plan.images = vec![flash.clone(), ffs];
+        assert!(plan.order().unwrap_err().contains("no earlier FFS step"));
+        plan.images.reverse();
+        // An x86 flash needs an x86 plan, and so does its FFS.
+        assert!(plan.order().unwrap_err().contains("x86 plan"));
     }
 
     #[test]
@@ -682,12 +1002,10 @@ mod tests {
                 .unwrap_err()
                 .contains("runtime layout descriptor")
         );
-        plan.assembly = super::Assembly::Unassembled {
-            platform: fstart_core::Platform::Aarch64,
-        };
+        plan.images = vec![];
         plan.order().unwrap();
-        assert!(plan.assembly.config("test").is_err());
-        assert!(plan.assembly.bootstrap().is_empty());
+        assert!(plan.config("test").is_err());
+        assert!(plan.bootstrap().is_empty());
     }
 
     #[test]
@@ -838,15 +1156,17 @@ mod tests {
             data_assets: vec![],
             file_assets: vec![],
             full_flash_image: false,
-            soc_image_format: SocImageFormat::None,
+            boot_image_format: BootImageFormat::None,
             boot_hart_id: 0,
             build: BoardBuildPolicy::default(),
         };
         let plan = |units| BuildPlan {
             payload: "halt".into(),
+            platform: Platform::X86_64,
             units,
             stages: vec![],
-            assembly: assembly.clone().into(),
+            images: vec![assembly.clone().into()],
+            run: None,
             inputs: vec![],
         };
         assert!(

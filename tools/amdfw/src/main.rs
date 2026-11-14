@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use clap::Parser;
-use fstart_image_build::amd::{self, Blob, FlashRegion, Key, PicassoImage};
+use fstart_image_build::amd::{self, Blob, FlashRegion, Key, SingleLevelImage};
 use std::path::PathBuf;
 
 /// AMD firmware inspection/validation and Picasso partition assembly.
@@ -187,7 +187,7 @@ fn pack(a: PackArgs) -> amd::Result<()> {
             .zip(size)
             .map(|(offset, size)| FlashRegion { offset, size })
     };
-    let packed = PicassoImage {
+    let packed = SingleLevelImage {
         flash_size: a.flash_size,
         efs_offset: a.efs_offset,
         partition_end: a.partition_end,

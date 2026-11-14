@@ -61,7 +61,7 @@ fn mock_cargo() {
                 println!("ramstage: ready for payload");
             }
         }
-        "run" => {
+        "qemu" => {
             if !ready.exists() {
                 delay("MOCK_BUILD_DELAY");
                 fs::write(&ready, "").unwrap();
@@ -179,7 +179,7 @@ fn commands(calls: &[Value]) -> Vec<&str> {
 fn cold_build_does_not_consume_boot_timeout() {
     let (out, calls) = Matrix::new().run("qemu-q35-i686", "halt", &[("MOCK_BUILD_DELAY", "2")]);
     passed(&out);
-    assert_eq!(commands(&calls), ["build", "run"]);
+    assert_eq!(commands(&calls), ["build", "qemu"]);
 }
 #[test]
 fn build_failure_does_not_run_or_reuse_stale_boot_log() {
@@ -220,7 +220,7 @@ fn boot_deadline_rejects_missing_markers() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("(exit 124;"));
     assert!(!stdout.contains("build (exit"));
-    assert_eq!(commands(&calls), ["build", "run"]);
+    assert_eq!(commands(&calls), ["build", "qemu"]);
 }
 #[test]
 fn halt_marker_passes_when_qemu_is_stopped_by_timeout() {
@@ -261,7 +261,7 @@ fn variant_uses_payload_kind_and_preserves_smp() {
     assert_eq!(calls[1]["smp"], "4,maxcpus=8");
 }
 #[test]
-fn image_and_runtime_inputs_remain_on_run_command() {
+fn image_and_runtime_inputs_remain_on_qemu_command() {
     for (board, payload, extra) in [
         (
             "qemu-riscv64",
@@ -315,7 +315,7 @@ fn image_and_runtime_inputs_remain_on_run_command() {
             .collect();
         assert_eq!(
             calls[1]["args"],
-            json!([vec!["run".into()], expected, extra].concat())
+            json!([vec!["qemu".into()], expected, extra].concat())
         );
     }
 }

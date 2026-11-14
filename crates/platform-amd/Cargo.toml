@@ -7,7 +7,13 @@ license.workspace = true
 [features]
 default = []
 # Host policy only; never enabled by the emitted firmware unit.
-host = ["dep:fstart-image-build", "dep:serde_json", "dep:sha2", "fstart-core/host"]
+host = [
+  "dep:fstart-image-build",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:sha2",
+  "fstart-core/host",
+]
 # The boot media mount of a PSP-booted stage.
 media = ["dep:fstart-stage", "fstart-stage/ffs"]
 # A reset image: one DRAM stage from the PSP's release of the BSP to the
@@ -948,6 +954,7 @@ file = "milan/UcodePatch_GN_a082.bin"
 
 [dependencies]
 fstart-image-build = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["std"] }
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 fstart-driver-amd = { workspace = true, features = ["acpi", "smbios"] }

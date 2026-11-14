@@ -1,55 +1,61 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Assembled firmware image plus the stage binaries it was built from. The
-/// binaries travel with the build result so `run` can place the linked stage
-/// (reset vector, anchor) without guessing build-tree paths.
+/// binaries travel with the build result so `run` can attach a stage
+/// without guessing build-tree paths.
 pub struct AssembledImage {
+    /// The final image step's artefact.
     pub image: PathBuf,
+    /// Every image step's artefact, by step name.
+    pub artifacts: BTreeMap<String, PathBuf>,
     pub stages: Vec<fstart_image_build::StageBinary>,
 }
 
+/// The named external inputs a caller bound (`--input NAME=PATH`), keyed
+/// by input name. `aliases` are the dedicated flags (`--kernel`,
+/// `--secure-firmware`, …) with the input names they bind.
+pub fn supplied_inputs(
+    aliases: &[(&str, Option<&str>)],
+    named: &[(String, String)],
+) -> Result<BTreeMap<String, PathBuf>, String> {
+    let mut supplied = BTreeMap::new();
+    for (name, path) in aliases
+        .iter()
+        .filter_map(|(name, path)| path.map(|path| (name.to_string(), path.to_string())))
+        .chain(named.iter().cloned())
+    {
+        if supplied
+            .insert(name.clone(), PathBuf::from(&path))
+            .is_some()
+        {
+            return Err(format!("input {name} was bound twice"));
+        }
+    }
+    Ok(supplied)
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn assemble_with_parsed(
+pub fn assemble_with_resolved(
     workspace_root: &Path,
-    board_manifest: crate::board_manifest::BoardManifest,
-    parsed: crate::build_plan::ParsedBoard,
+    board_manifest: &crate::board_manifest::BoardManifest,
+    resolved: &crate::resolved_image::ResolvedImage,
     release: bool,
-    kernel_path: Option<&str>,
-    firmware_path: Option<&str>,
-    fit_path: Option<&str>,
+    supplied: &BTreeMap<String, PathBuf>,
     payload_files: &[(String, String)],
     signing_key: Option<&Path>,
 ) -> Result<AssembledImage, String> {
-    let output_dir = if let Some(resolved) = &parsed.resolved {
-        resolved.validate_inputs(&board_manifest.dir, kernel_path, firmware_path, fit_path)?;
-        Some(
-            resolved
-                .artifact_dir(workspace_root, &board_manifest.board, release)?
-                .join("image"),
-        )
-    } else {
-        None
-    };
-    let build_result =
-        crate::build_board::build_with_parsed(workspace_root, &board_manifest, &parsed, release)?;
-    let image = fstart_image_build::assemble::assemble(
+    let (stages, outputs) = resolved.assemble(
         workspace_root,
-        &board_manifest.dir,
-        &parsed.config,
-        &build_result.stages,
-        output_dir.as_deref(),
-        kernel_path,
-        firmware_path,
-        fit_path,
+        board_manifest,
+        release,
+        supplied,
         payload_files,
-        parsed
-            .resolved
-            .as_ref()
-            .and_then(|plan| plan.bootstrap_bindings()),
         signing_key,
     )?;
     Ok(AssembledImage {
-        image,
-        stages: build_result.stages,
+        image: outputs.image,
+        artifacts: outputs.artifacts,
+        stages,
     })
 }

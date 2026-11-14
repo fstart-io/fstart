@@ -2,9 +2,8 @@
 
 #![no_std]
 
-use fstart_core::QemuMachine;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_platform_aspeed::facts::{AspeedBoardFacts, AspeedSoc, BoardFacts};
+use fstart_platform_aspeed::facts::{AspeedBoardFacts, AspeedEmulator, AspeedSoc, BoardFacts};
 use fstart_platform_aspeed::head::StrapWrite;
 
 /// MJ11-EC1 BMC marker.
@@ -15,7 +14,7 @@ impl AspeedBoardFacts for Board {
         soc: AspeedSoc::Ast2500,
         // Micron MT25QL512ABB on CE0.
         flash_size: 64 * 1024 * 1024,
-        qemu_machine: Some(QemuMachine::Ast2500Evb),
+        emulator: Some(AspeedEmulator::Ast2500Evb),
     };
 }
 

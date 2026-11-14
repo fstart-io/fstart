@@ -1,9 +1,8 @@
 //! Orange Pi R1 static platform policy and board facts.
 
-use fstart_core::QemuMachine;
 use fstart_driver_sunxi::h3_ccu::H3CcuConfig;
 use fstart_driver_sunxi::h3_dramc::H3DramcConfig;
-use fstart_platform_sunxi::facts::{BoardFacts, SunxiBoardFacts, SunxiSoc};
+use fstart_platform_sunxi::facts::{BoardFacts, SunxiBoardFacts, SunxiEmulator, SunxiSoc};
 use fstart_platform_sunxi::h3::H3Config;
 
 const MAINSTAGE_LOAD_ADDR: u64 = 0x4100_0000;
@@ -31,6 +30,6 @@ impl SunxiBoardFacts for crate::Board {
         dtb_addr: 0x4300_0000,
         bootargs: "earlycon=uart8250,mmio32,0x01c28000 console=ttyS0,115200",
         firmware: None,
-        qemu_machine: Some(QemuMachine::OrangePiPc),
+        emulator: Some(SunxiEmulator::OrangePiPc),
     };
 }

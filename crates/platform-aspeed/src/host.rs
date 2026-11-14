@@ -7,21 +7,23 @@
 //! address mode reaches; the composite image is padded to the whole flash
 //! part.
 extern crate std;
-use crate::facts::{AspeedBoardFacts, AspeedSoc, BoardFacts};
+use crate::facts::{AspeedBoardFacts, AspeedEmulator, AspeedSoc, BoardFacts};
 use crate::layout::*;
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
-        UnitOutput,
+        BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
+        FfsAssembly as Assembly, ImageStep, InputFile, UnitOutput,
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    run::{RunArtifact, RunMedia, RunRecipe},
 };
 use std::{
     collections::BTreeMap,
+    format,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -39,22 +41,16 @@ pub const MAIN_STACK_SIZE: u32 = 0x1_0000;
 pub const MAIN_HEAP_SIZE: u32 = 0x4_0000;
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: AspeedBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve(B::FACTS, selection).expect("invalid ASPEED board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize ASPEED plan")
-        );
+impl<B: AspeedBoardFacts> HostPlan<B> for Plan<B> {
+    type Options = NoOptions;
+
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
+        resolve(B::FACTS, selection)
     }
 }
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    if selection.has_x86_linux_overrides() {
-        return Err("x86 Linux options are supported only by Intel platforms".into());
-    }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     let elf = match payload.as_str() {
         "halt" => false,
@@ -84,7 +80,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
     };
     let layout = Xip {
         platform: Platform::Armv5te,
-        soc_image_format: SocImageFormat::AspeedSpi,
+        boot_image_format: BootImageFormat::AspeedSpi,
         boot_hart_id: 0,
         image,
         execution: None,
@@ -160,10 +156,9 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: true,
-        soc_image_format: SocImageFormat::AspeedSpi,
+        boot_image_format: BootImageFormat::AspeedSpi,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
-            qemu_machine: facts.qemu_machine,
             firmware_image: FirmwareImagePolicy::memory_mapped(image.base, image.size),
             flash_image: Some(FirmwareImagePolicy::memory_mapped(flash.base, flash.size)),
             ..Default::default()
@@ -204,7 +199,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
         ],
         stages: vec!["bootblock".into(), "main".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
+        run: facts
+            .emulator
+            .map(|emulator| run(emulator, &facts))
+            .transpose()?,
         inputs,
     };
     plan.order()?;
@@ -241,7 +241,6 @@ fn main_stage(
         microcode: None,
         data_assets: Default::default(),
         file_assets: Default::default(),
-        soc_image_format: SocImageFormat::AspeedSpi,
         full_flash_image: true,
         boot_hart_id: 0,
         build: BoardBuildPolicy::default(),
@@ -266,7 +265,40 @@ fn main_stage(
         ],
     )
     .map_err(|e| e.to_string())?;
-    resolved_ram_stage(&config, "main", &descriptor)
+    resolved_ram_stage(&config, "main", &descriptor, BootImageFormat::AspeedSpi)
+}
+
+/// How `emulator` runs the image.
+fn run(emulator: AspeedEmulator, facts: &BoardFacts) -> Result<RunRecipe, String> {
+    match emulator {
+        // The EVB machine executes the composite SPI image in place with
+        // the board's CE0 flash part as its FMC model.
+        AspeedEmulator::Ast2500Evb => {
+            let model = match facts.flash_size {
+                0x400_0000 => "mt25ql512ab",
+                size => {
+                    return Err(format!(
+                        "no QEMU ast2500-evb flash model for a {size:#x}-byte CE0 flash"
+                    ));
+                }
+            };
+            Ok(RunRecipe {
+                qemu: "qemu-system-arm".into(),
+                machine: format!("ast2500-evb,execute-in-place=on,fmc-model={model}"),
+                cpu: None,
+                accel_kvm: false,
+                memory: None,
+                smp: None,
+                nographic: true,
+                media: vec![RunMedia::Mtd {
+                    artifact: RunArtifact::Step(ImageStep::FFS.into()),
+                }],
+                devices: vec![],
+                args: vec!["-no-reboot".into()],
+                disk: None,
+            })
+        }
+    }
 }
 
 fn unit(
@@ -302,7 +334,7 @@ mod tests {
     const MJ11: BoardFacts = BoardFacts {
         soc: AspeedSoc::Ast2500,
         flash_size: 64 * 1024 * 1024,
-        qemu_machine: Some(QemuMachine::Ast2500Evb),
+        emulator: Some(AspeedEmulator::Ast2500Evb),
     };
 
     #[test]

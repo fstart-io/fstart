@@ -6,7 +6,7 @@
 //! handoff addresses, stacks, stage structure) are platform constants owned
 //! by the host resolver. No stage budgets, linker addresses or Cargo relays.
 
-use fstart_core::{FirmwareKind, QemuMachine};
+use fstart_core::FirmwareKind;
 
 /// Real sunxi SoC differences; common SRAM/DRAM placement belongs to the family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,8 +40,16 @@ pub struct BoardFacts {
     /// Kernel command line patched into the FDT chosen node for Linux boot.
     pub bootargs: &'static str,
     pub firmware: Option<SunxiFirmware>,
-    /// Emulator equivalent used by host tooling, if any.
-    pub qemu_machine: Option<QemuMachine>,
+    /// The QEMU machine the board runs on, if any.
+    pub emulator: Option<SunxiEmulator>,
+}
+
+/// A QEMU machine that runs the board's image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SunxiEmulator {
+    /// `orangepi-pc`: an H3 whose BROM reads the eGON image from SD
+    /// byte 0x2000.
+    OrangePiPc,
 }
 
 pub trait SunxiBoardFacts {

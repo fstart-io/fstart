@@ -13,23 +13,24 @@ pub struct BoardManifest {
     pub dir: PathBuf,
     /// Board directory relative to `boards/`, e.g. `lenovo/x61`.
     pub rel_dir: PathBuf,
-    pub platform: Option<String>,
-    pub target: Option<String>,
+    /// Discovery index only: the board's ISA (`fstart_core::Platform`
+    /// spelling), used to group boards without resolving their plans
+    /// (CI shards). The resolved plan states the authoritative arch and
+    /// target; fbuild checks this against it, never builds from it.
+    pub arch: Option<String>,
     /// Cargo features contributed by the selected variant, merged into unit
     /// feature sets by the plan executor.
     pub variant_features: Vec<String>,
     /// Declared variants: variant id -> cargo features.
     pub variants: Vec<(String, Vec<String>)>,
-    pub acpi_only_devices: bool,
     pub build_profile: Option<ProfileRef>,
 }
 
-/// Direct Cargo dependency exposing the Rust Plan<board::Board> host contract.
+/// Direct Cargo dependency exposing the `HostPlan` host contract.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileRef {
     pub dependency: String,
-    pub name: String,
     /// The module of the dependency that has the board's `Plan`, if it is
     /// not the crate root: a platform with more than one kind of board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,14 +59,10 @@ struct PackageMetadata {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct BoardMetadata {
-    schema: u32,
     board: String,
-    platform: Option<String>,
-    target: Option<String>,
+    arch: Option<String>,
     #[serde(default)]
     variants: BTreeMap<String, VariantMetadata>,
-    #[serde(default)]
-    acpi_only_devices: bool,
     build_profile: Option<ProfileRef>,
     /// The board's AMD firmware table, read by the AMD platform
     /// (`fstart_image_build::amd::blobs::BoardBlobs`), not by fbuild.
@@ -144,13 +141,17 @@ fn validate_identities(boards: &[BoardManifest]) -> Result<(), String> {
 /// A variant id resolves to its board's manifest with `board` set to the
 /// variant id and the variant's cargo features merged in.
 pub fn find(workspace_root: &Path, board_name: &str) -> Result<BoardManifest, String> {
-    let boards = discover(workspace_root)?;
+    find_in(&discover(workspace_root)?, board_name)
+}
 
+/// [`find`] over an already-discovered inventory, for callers resolving
+/// many boards in one process.
+pub fn find_in(boards: &[BoardManifest], board_name: &str) -> Result<BoardManifest, String> {
     if let Some(board) = boards.iter().find(|b| b.board == board_name) {
         return Ok(board.clone());
     }
 
-    for board in &boards {
+    for board in boards {
         if let Some((variant, variant_features)) =
             board.variants.iter().find(|(name, _)| name == board_name)
         {
@@ -177,23 +178,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
     let parsed: CargoManifest = toml::from_str(text)
         .map_err(|e| format!("invalid board manifest {}: {e}", manifest.display()))?;
     let metadata = parsed.package.metadata.fstart;
-    if metadata.schema != 1 {
-        return Err(format!(
-            "unsupported fstart schema {} in {} (expected 1)",
-            metadata.schema,
-            manifest.display(),
-        ));
-    }
-    if metadata
-        .build_profile
-        .as_ref()
-        .is_some_and(|profile| profile.name != "rust")
-    {
-        return Err(format!(
-            "build-profile must name 'rust' in {}",
-            manifest.display()
-        ));
-    }
     if let Some(module) = metadata
         .build_profile
         .as_ref()
@@ -230,15 +214,13 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         package: parsed.package.name,
         dir,
         rel_dir,
-        platform: metadata.platform,
-        target: metadata.target,
+        arch: metadata.arch,
         variant_features: Vec::new(),
         variants: metadata
             .variants
             .into_iter()
             .map(|(id, v)| (id, v.features))
             .collect(),
-        acpi_only_devices: metadata.acpi_only_devices,
         build_profile: metadata.build_profile,
     })
 }
@@ -299,11 +281,8 @@ mod tests {
         [package.metadata.other-tool]
         anything = true
         [package.metadata.fstart] # inline comments are ordinary TOML
-        schema = 1
         board = 'test-board'
-        platform = 'riscv64'
-        target = 'riscv64gc-unknown-none-elf'
-        acpi-only-devices = true
+        arch = 'riscv64'
         [package.metadata.fstart.variants."test-variant"]
         features = [
             'variant-test', # comment
@@ -341,9 +320,7 @@ mod tests {
         assert_eq!(board.board, "test-board");
         assert_eq!(board.package, "fstart-board-test");
         assert_eq!(board.rel_dir, Path::new("vendor/test"));
-        assert_eq!(board.platform.as_deref(), Some("riscv64"));
-        assert_eq!(board.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
-        assert!(board.acpi_only_devices);
+        assert_eq!(board.arch.as_deref(), Some("riscv64"));
         assert_eq!(
             board.variants,
             [("test-variant".into(), vec!["variant-test".into()])]
@@ -353,28 +330,24 @@ mod tests {
     #[test]
     fn rejects_invalid_metadata_with_manifest_context() {
         for (text, diagnostic) in [
+            // A key the manifest format no longer has is rejected, not ignored.
             (
-                MANIFEST.replace("schema = 1", "schema = 2"),
-                "unsupported fstart schema 2",
+                MANIFEST.replace("arch = 'riscv64'", "arch = 'riscv64'\nschema = 1"),
+                "unknown field `schema`",
             ),
-            (MANIFEST.replace("schema = 1", ""), "missing field `schema`"),
             (
                 MANIFEST.replace(
-                    "schema = 1",
-                    "schema = 1\nbuild-profile = { dependency = 'platform', name = 'unknown' }",
+                    "arch = 'riscv64'",
+                    "arch = 'riscv64'\nbuild-profile = { dependency = 'platform', name = 'rust' }",
                 ),
-                "build-profile must name 'rust'",
+                "unknown field `name`",
             ),
             (
                 MANIFEST.replace("board = 'test-board'", ""),
                 "missing field `board`",
             ),
             (
-                MANIFEST.replace("acpi-only-devices = true", "acpi-only-devices = 'true'"),
-                "invalid type",
-            ),
-            (
-                MANIFEST.replace("acpi-only-devices = true", "acpi-only-device = true"),
+                MANIFEST.replace("board = 'test-board'", "baord = 'test-board'"),
                 "unknown field",
             ),
             (

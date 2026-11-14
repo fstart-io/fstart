@@ -17,19 +17,6 @@ impl BuildResult {
     }
 }
 
-pub fn build_with_parsed(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    parsed: &crate::build_plan::ParsedBoard,
-    release: bool,
-) -> Result<BuildResult, String> {
-    let resolved = parsed
-        .resolved
-        .as_ref()
-        .ok_or_else(|| "board has no resolved platform plan".to_string())?;
-    resolved.build(workspace_root, board_manifest, release)
-}
-
 pub fn workspace_root_pub() -> Result<PathBuf, String> {
     workspace_root()
 }

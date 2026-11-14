@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run `cargo fbuild run` for a QEMU board with a swtpm-backed TPM.
+# Run `cargo fbuild qemu` for a QEMU board with a swtpm-backed TPM.
 #
-#   ci/tpm/qemu-tpm.sh 1.2|2.0 [--banks sha1,sha256] -- <fbuild run arguments>
+#   ci/tpm/qemu-tpm.sh 1.2|2.0 [--banks sha1,sha256] -- <fbuild qemu arguments>
 #
 # swtpm and swtpm_setup must be on PATH. The TPM state is fresh for every run
 # and removed afterwards; QEMU sees a tpm-tis device.
@@ -40,4 +40,4 @@ swtpm socket "${tpm2[@]}" --tpmstate dir="$state" \
 
 export FSTART_QEMU_EXTRA_ARGS="-chardev socket,id=chrtpm,path=$state/sock \
 -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"
-cargo fbuild run "$@"
+cargo fbuild qemu "$@"

@@ -6,6 +6,16 @@ use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
 use fstart_image_build::plan::CompilerFileSelection;
 use sha2::{Digest, Sha256};
 
+/// The plan of `B` with the selection's options parsed as the plan
+/// runner parses them.
+fn resolve<B: Board>(selection: BuildSelection) -> Result<BuildPlan, String>
+where
+    B::Soc: HostSoc,
+{
+    let options = selection.options()?;
+    super::resolve::<B>(selection, &options)
+}
+
 struct Vilboz;
 impl Board for Vilboz {
     type Soc = Picasso;
@@ -51,6 +61,16 @@ impl Board for Mj11 {
     };
 }
 
+fn amd(plan: &BuildPlan) -> &AmdAssembly {
+    plan.images
+        .iter()
+        .find_map(|step| match &step.operation {
+            ImageOperation::AmdEfs(image) => Some(image.as_ref()),
+            _ => None,
+        })
+        .unwrap()
+}
+
 fn units_hash(plan: &BuildPlan) -> String {
     format!(
         "{:x}",
@@ -77,7 +97,7 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
         unreachable!()
     };
     assert_eq!(expectations.entry, Some(picasso::LAYOUT.reset_vector()));
-    assert!(plan.assembly.ffs().is_ok());
+    assert!(plan.ffs_assembly().is_ok());
     let mut invalid = selected;
     invalid
         .compiler_files
@@ -123,7 +143,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     let blobs = std::env::temp_dir();
     let mut selection = BuildSelection {
         payload: Some("uefi".into()),
-        blobs: Some(blobs.to_str().unwrap().into()),
+        options: [("blobs".into(), blobs.to_str().unwrap().into())].into(),
         ..Default::default()
     };
     selection.manifests.board = serde_json::json!({
@@ -141,9 +161,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     }}});
     let plan = resolve::<Vilboz>(selection.clone()).unwrap();
     plan.validate_image_selection(&selection).unwrap();
-    let Assembly::Amd(image) = &plan.assembly else {
-        unreachable!()
-    };
+    let image = amd(&plan);
     let Firmware::Packed {
         files,
         reset_offset,
@@ -163,7 +181,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
         files.bios[0].path,
         blobs.join("test-board/apcb/0.bin").to_str().unwrap()
     );
-    let ffs = &image.ffs.as_ref().unwrap().assembly;
+    let ffs = plan.ffs_assembly().unwrap();
     assert_eq!(ffs.file_assets[0].name.as_str(), "pci1002,15dd.rom");
     assert!(matches!(&ffs.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
     // The tables are for another SoC.
@@ -173,7 +191,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 
 /// The compilation units, hence the stage binaries, stay as they are.
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
-/// entry cfg, and again without the payload cfg.)
+/// entry cfg, again without the payload cfg, and for the AMD reset
+/// sections' rename from `.sp3.*` to `.amd.*` in the linker script.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -188,9 +207,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "b428b1a4dfa72f91a8034a17bff7c6f7631246733c580fabf97c6ddd6d34fe2e",
-            "ec10504edada10232a92f54f45c76d3da9910f07ff5a221ed669311d94954ea5",
-            "6b2e353790a9849e32fa30bbf594451b037ee844c9cbe27ba767ce074949732a",
+            "c5b90b32975734232bc361fae95f2c4bd900bb23b2939ab44fdbb59462283290",
+            "876f8b32a701c1beb0daca965fd3efc5b4da421c5a48ec0b908bc4d8936e59f1",
+            "f232bc1824292f926f1bc6f3c086c1d2d7515b763a63d660c0df1846a9e0ddf2",
         ]
     );
 }
@@ -200,7 +219,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     let blobs = std::env::temp_dir();
     let mut selection = BuildSelection {
         payload: Some("linux".into()),
-        blobs: Some(blobs.to_str().unwrap().into()),
+        options: [("blobs".into(), blobs.to_str().unwrap().into())].into(),
         ..Default::default()
     };
     selection.manifests.board = serde_json::json!({
@@ -223,9 +242,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     }}});
     let plan = resolve::<Mj11>(selection.clone()).unwrap();
     plan.validate_image_selection(&selection).unwrap();
-    let Assembly::Amd(image) = &plan.assembly else {
-        unreachable!()
-    };
+    let image = amd(&plan);
     let Firmware::Packed {
         files,
         reset_offset,
@@ -246,10 +263,12 @@ fn zeppelin_packs_a_two_level_native_image() {
         (ffs.offset, ffs.size, image.reset_size),
         (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
     );
-    assert!(matches!(&ffs.assembly.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
+    assert!(
+        matches!(&plan.ffs_assembly().unwrap().microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1)
+    );
     // A vendor image instead of the blobs.
     let mut vendor = selection;
-    vendor.blobs = None;
-    vendor.image_config = Some("vendor.rom".into());
+    vendor.options.remove("blobs");
+    vendor.set_option("image-config", "vendor.rom");
     assert!(resolve::<Mj11>(vendor).is_err());
 }

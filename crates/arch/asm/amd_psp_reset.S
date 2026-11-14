@@ -45,8 +45,8 @@
  * crate's 64-bit RAM entry `_start_ram` (BSS, IDT, fstart_main(0)).
  *
  * Section placement (linker/amd_psp_reset.ld.in):
- *   .sp3.entry16       at END - 0x1000 = segment offset 0xf000
- *   .sp3.reset_vector  at END - 0x10   = segment offset 0xfff0
+ *   .amd.entry16       at END - 0x1000 = segment offset 0xf000
+ *   .amd.reset_vector  at END - 0x10   = segment offset 0xfff0
  */
 
 .set SEG_ENTRY16, 0xf000          /* offset of _sp3_entry16 in CS */
@@ -83,7 +83,7 @@
 /* ------------------------------------------------------------------------
  * Reset vector: the last 16 bytes of the image.
  * ------------------------------------------------------------------------ */
-.section .sp3.reset_vector, "ax"
+.section .amd.reset_vector, "ax"
 .code16
 .global _sp3_reset_vector
 _sp3_reset_vector:
@@ -94,7 +94,7 @@ _sp3_reset_vector:
 /* ------------------------------------------------------------------------
  * 16-bit entry, GDT and the AP route, all within the real-mode segment.
  * ------------------------------------------------------------------------ */
-.section .sp3.entry16, "awx"
+.section .amd.entry16, "awx"
 .code16
 .global _sp3_entry16
 _sp3_entry16:

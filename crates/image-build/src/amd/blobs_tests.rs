@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-use crate::amd::{Blob, PicassoImage};
+use crate::amd::{Blob, SingleLevelImage};
 
 /// `[package.metadata.fstart]` of a workspace Cargo.toml.
 fn fstart_table(manifest: &str) -> serde_json::Value {
@@ -113,7 +113,7 @@ fn sp3_generation_and_board_tables_resolve() {
 /// A vendor image with directories, a microcode patch and a video BIOS
 /// outside them.
 fn vendor_image() -> Vec<u8> {
-    let packed = PicassoImage {
+    let packed = SingleLevelImage {
         flash_size: 0x100_0000,
         efs_offset: 0xe2_0000,
         partition_end: 0x100_0000,

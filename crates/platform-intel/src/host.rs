@@ -3,23 +3,23 @@ extern crate std;
 use crate::facts::{BoardFacts, IntelBoardFacts, IntelPlatform, IntelPlatformConfig};
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
-    plan::{BuildSelection, IntelPlan, IntelStagePlan, Span},
+    plan::{
+        BuildSelection, HostPlan, IntelPlan, IntelStagePlan, ResolvedPlan, Span, X86LinuxOptions,
+    },
 };
 
 use std::{format, string::ToString, vec, vec::Vec};
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: IntelBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection: BuildSelection =
-            serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve::<B>(selection).expect("invalid Intel board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&compilation_plan(plan).expect("concrete Intel plan"))
-                .expect("serialize Intel plan")
-        );
+impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
+    type Options = X86LinuxOptions;
+
+    fn resolve(
+        selection: BuildSelection,
+        options: X86LinuxOptions,
+    ) -> Result<ResolvedPlan, std::string::String> {
+        compilation_plan(resolve::<B>(selection, options)?)
     }
 }
 
@@ -27,7 +27,8 @@ pub fn compilation_plan(
     plan: IntelPlan,
 ) -> Result<fstart_image_build::build_plan::BuildPlan, std::string::String> {
     use fstart_image_build::build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, UnitOutput,
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, SmmRelocation,
+        SmmUnit, UnitOutput,
     };
     plan.validate()?;
     let flags = |value: &str| {
@@ -41,37 +42,27 @@ pub fn compilation_plan(
     };
     // Long-mode SMM images are copied without absolute-address fixups;
     // their data references must be RIP-relative. The 32-bit loader rebases
-    // its audited absolute references instead. PLT-style call relocations
-    // resolve locally at link time, avoiding GOT-indirect calls in either mode.
-    let smm_relocation = if plan.platform == fstart_core::Platform::X86 {
-        "static"
-    } else {
-        "pie"
-    };
-    let mut units = vec![CompilationUnit {
-        name: "smm".into(),
-        cargo_target: CargoTarget::BoardLibrary,
-        target: plan.target(),
-        features: plan.smm_features.clone(),
-        // rustc ships no library for the 32-bit JSON target.
-        build_std: (plan.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
-        release_only: true,
-        linker_script: None,
-        rustflags: flags(&format!(
-            "-Cpanic=abort -Copt-level=s -Crelocation-model={smm_relocation} -Zplt=yes -Cno-redzone=yes -Clinker-plugin-lto=no -Cembed-bitcode=no -Zfunction-sections=yes",
-        )),
-        environment_values: mp_capacity(),
-        bindings: vec![],
-        file_bindings: vec![],
-        // The board's SMM handler module, outside every stage `main`.
-        board_features: vec!["smm".into()],
-        output: UnitOutput::SmmImage {
-            entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
-            stack_size: plan.smm.stack_size,
-            coreboot_module_args: plan.smm.coreboot.module_args,
-            coreboot_header: plan.smm.coreboot.emit_header,
-        },
-    }];
+    // its audited absolute references instead.
+    let mut units = vec![
+        SmmUnit {
+            name: "smm".into(),
+            platform: plan.platform,
+            features: plan.smm_features.clone(),
+            relocation: if plan.platform == fstart_core::Platform::X86 {
+                SmmRelocation::Static
+            } else {
+                SmmRelocation::Pie
+            },
+            environment_values: mp_capacity(),
+            image: fstart_image_build::smm_image::ImageOptions {
+                entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
+                stack_size: plan.smm.stack_size,
+                coreboot_module_args: plan.smm.coreboot.module_args,
+                coreboot_header: plan.smm.coreboot.emit_header,
+            },
+        }
+        .into(),
+    ];
     for row in &plan.stages {
         let ram = row.role == IntelStage::Ramstage;
         let boot = row.role == IntelStage::Bootblock;
@@ -135,7 +126,11 @@ pub fn compilation_plan(
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),
-        assembly: plan.assembly()?,
+        platform: plan.platform,
+        images: vec![plan.assembly()?.into()],
+        // QEMU emulates none of these chipsets: q35 is not an i945, and
+        // its own boards (fstart-platform-qemu) carry its run recipe.
+        run: None,
         inputs,
     };
     resolved.order()?;
@@ -231,12 +226,14 @@ pub fn reservations<P: IntelPlatform>(
 
 pub fn resolve<B: IntelBoardFacts>(
     selection: BuildSelection,
+    x86_linux: X86LinuxOptions,
 ) -> Result<IntelPlan, std::string::String> {
     resolve_for::<B::Platform>(
         B::FACTS,
         B::CONFIG.max_cpus(),
         B::CONFIG.ehci_debug().is_some(),
         selection,
+        x86_linux,
     )
 }
 
@@ -245,14 +242,14 @@ fn resolve_for<P: IntelPlatform>(
     max_cpus: u16,
     ehci_debug: bool,
     selection: BuildSelection,
+    x86_linux: X86LinuxOptions,
 ) -> Result<IntelPlan, std::string::String> {
     let debug = Debug::select(ehci_debug, &selection.debug)?;
-    let has_x86_linux_overrides = selection.has_x86_linux_overrides();
     let requested_payload = selection.payload.clone().unwrap_or_else(|| "halt".into());
-    if has_x86_linux_overrides && requested_payload != "linux" {
+    if x86_linux.any() && requested_payload != "linux" {
         return Err("x86 Linux options require '--payload linux'".into());
     }
-    let x86_linux_bootargs = selection.x86_linux_bootargs.unwrap_or_default();
+    let x86_linux_bootargs = x86_linux.bootargs.clone().unwrap_or_default();
     if !matches!(
         requested_payload.as_str(),
         "halt" | "linux" | "uefi" | "uefi-ui" | "uefi-basic" | "coreboot"
@@ -316,12 +313,12 @@ fn resolve_for<P: IntelPlatform>(
         // the caller passes `--linux-bootargs` explicitly.
         "linux" => Some(
             fstart_core::x86_linux_payload(
-                selection
-                    .x86_linux_kernel_load_addr
+                x86_linux
+                    .kernel_load_addr
                     .unwrap_or(fstart_core::payload_manifest::X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
                 fstart_core::payload_manifest::X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
                 &x86_linux_bootargs,
-                selection.x86_linux_print_mtrrs,
+                x86_linux.print_mtrrs,
                 crate::compression::PAYLOAD,
             )
             .map_err(ToString::to_string)?,
@@ -406,11 +403,13 @@ mod tests {
         }));
     const FACTS: BoardFacts = BoardFacts::new(fstart_core::FlashLayout::IntelIfd(FLASH), 0x400000);
 
+    /// Through the selection's options, as the plan runner parses them.
     fn resolve(
         facts: BoardFacts,
         selection: BuildSelection,
     ) -> Result<IntelPlan, std::string::String> {
-        resolve_for::<Gm965>(facts, 2, false, selection)
+        let options = selection.options()?;
+        resolve_for::<Gm965>(facts, 2, false, selection, options)
     }
 
     #[test]
@@ -447,7 +446,7 @@ mod tests {
             const CONFIG: &'static crate::i945::I945Ich7Platform = &CONFIG;
             const FACTS: BoardFacts = FACTS;
         }
-        let plan = super::resolve::<Board>(BuildSelection::default()).unwrap();
+        let plan = super::resolve::<Board>(BuildSelection::default(), Default::default()).unwrap();
         assert_eq!(plan.max_cpus, 4);
         assert_eq!(plan.smm.entry_points, Some(4));
         assert_eq!(
@@ -455,7 +454,16 @@ mod tests {
             <Socket441 as LegacyCpu>::CAR_BASE
         );
         assert_eq!(plan.microcode.len(), 2);
-        assert!(resolve_for::<I945>(FACTS, 0, false, BuildSelection::default()).is_err());
+        assert!(
+            resolve_for::<I945>(
+                FACTS,
+                0,
+                false,
+                BuildSelection::default(),
+                Default::default()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn platform_selects_target_payload_stage_bundles_and_smm() {
@@ -493,9 +501,12 @@ mod tests {
             FACTS,
             BuildSelection {
                 payload: Some("linux".into()),
-                x86_linux_kernel_load_addr: Some(0x0200_0000),
-                x86_linux_bootargs: Some("console=ttyS0".into()),
-                x86_linux_print_mtrrs: true,
+                options: [
+                    ("x86-linux-kernel-load-addr".into(), "0x2000000".into()),
+                    ("x86-linux-bootargs".into(), "console=ttyS0".into()),
+                    ("x86-linux-print-mtrrs".into(), "true".into()),
+                ]
+                .into(),
                 ..Default::default()
             },
         )
@@ -523,6 +534,7 @@ mod tests {
                 2,
                 false,
                 BuildSelection::default(),
+                Default::default(),
             )
             .unwrap(),
         )
@@ -561,7 +573,7 @@ mod tests {
     #[test]
     fn x86_linux_options_require_the_linux_payload() {
         let selection = BuildSelection {
-            x86_linux_bootargs: Some("console=ttyS0".into()),
+            options: [("x86-linux-bootargs".into(), "console=ttyS0".into())].into(),
             ..Default::default()
         };
         assert_eq!(
@@ -636,9 +648,30 @@ mod tests {
     fn legacy_cpu_packages_are_independent_of_the_chipset() {
         type MobileI945 = crate::i945::I945Ich7<SocketM>;
         type MobileGm965 = crate::gm965::Gm965Ich8<SocketM>;
-        let atom = resolve_for::<I945>(FACTS, 2, false, BuildSelection::default()).unwrap();
-        let mobile = resolve_for::<MobileI945>(FACTS, 2, false, BuildSelection::default()).unwrap();
-        let gm = resolve_for::<MobileGm965>(FACTS, 2, false, BuildSelection::default()).unwrap();
+        let atom = resolve_for::<I945>(
+            FACTS,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let mobile = resolve_for::<MobileI945>(
+            FACTS,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let gm = resolve_for::<MobileGm965>(
+            FACTS,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
         assert!(atom.microcode.iter().all(|file| file.contains("06-1c-")));
         assert!(mobile.microcode.iter().any(|file| file.contains("06-0e-")));
         assert!(mobile.microcode.iter().any(|file| file.contains("06-0f-")));
@@ -716,7 +749,14 @@ mod tests {
             }),
             0x1000000,
         );
-        let plan = resolve_for::<Pineview>(facts, 4, false, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<Pineview>(
+            facts,
+            4,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
         let pineview = &plan.reservations;
         assert_eq!(
             pineview.flash,
@@ -768,7 +808,14 @@ mod tests {
             }),
             0x80000,
         );
-        let plan = resolve_for::<I945>(facts, 2, false, BuildSelection::default()).unwrap();
+        let plan = resolve_for::<I945>(
+            facts,
+            2,
+            false,
+            BuildSelection::default(),
+            Default::default(),
+        )
+        .unwrap();
         let i945 = &plan.reservations;
         assert_eq!(
             i945.flash,

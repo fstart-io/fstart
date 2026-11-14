@@ -296,6 +296,45 @@ pub fn write_image(
     Ok(built)
 }
 
+/// Produce the SMM image (and the coreboot offsets header, if
+/// requested) from the rlibs a Cargo build of the handler library
+/// reported: select this unit's rlibs out of `artifact_filenames`
+/// (those under `target_dir`), link the handler from them and write
+/// the image into `out_dir`. Returns the named artefacts produced
+/// (`image`, plus `header` when requested). This is the whole
+/// SMM-module format production; plan executors only feed it the
+/// compiler's reported filenames.
+pub fn produce<'a>(
+    artifact_filenames: impl Iterator<Item = &'a Path>,
+    target_dir: &Path,
+    target: &str,
+    out_dir: &Path,
+    options: ImageOptions,
+) -> Result<Vec<(String, PathBuf)>, BuildError> {
+    let rlibs = out_dir.join("selected-rlibs");
+    if rlibs.exists() {
+        std::fs::remove_dir_all(&rlibs)?;
+    }
+    std::fs::create_dir_all(&rlibs)?;
+    for path in artifact_filenames
+        .filter(|p| p.starts_with(target_dir) && p.extension().is_some_and(|e| e == "rlib"))
+    {
+        let name = path
+            .file_name()
+            .ok_or_else(|| BuildError::Tool("artifact has no filename".into()))?;
+        std::fs::copy(path, rlibs.join(name))?;
+    }
+    let handler = handler_from_rlibs(&rlibs, &out_dir.join("link"), SmmArch::from_target(target))?;
+    let image = out_dir.join("image.bin");
+    let header = options.coreboot_header.then(|| out_dir.join("offsets.h"));
+    write_image(options, &handler, &image, header.as_deref())?;
+    let mut artifacts = vec![("image".to_string(), image)];
+    if let Some(header) = header {
+        artifacts.push(("header".to_string(), header));
+    }
+    Ok(artifacts)
+}
+
 /// Consumers track the image by mtime (`rerun-if-changed`); rewriting
 /// identical bytes would rebuild them on every build.
 fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<()> {

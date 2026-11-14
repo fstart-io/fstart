@@ -6,11 +6,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [package.metadata.fstart]
-schema = 1
 board = "ibase-mb899"
-platform = "x86"
-target = "i686-unknown-none"
-build-profile = { dependency = "fstart-platform-intel", name = "rust" }
+arch = "x86"
+build-profile = { dependency = "fstart-platform-intel" }
 
 [features]
 # Host tests and tools see the whole board. fbuild builds every stage with

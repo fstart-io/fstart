@@ -53,7 +53,9 @@ enum Command {
         #[command(flatten)]
         options: BuildArgs,
     },
-    Run {
+    /// Boot the board's image under QEMU, as its plan's run recipe
+    /// describes.
+    Qemu {
         #[arg(short, long)]
         board: String,
         #[arg(short, long, default_value_t = false)]
@@ -72,7 +74,8 @@ enum Command {
         disk: Option<String>,
         #[arg(short, long)]
         memory: Option<String>,
-        /// Complete secure pflash image used only by QEMU SBSA-ref.
+        /// Complete secure pflash image for the run recipe input of that
+        /// name (QEMU sbsa-ref); the same as `--input secure-firmware=PATH`.
         #[arg(long)]
         secure_firmware: Option<String>,
     },
@@ -170,6 +173,9 @@ enum Command {
         chip: Option<String>,
         #[arg(long)]
         probe: Option<String>,
+        /// probe-rs debug protocol.
+        #[arg(long, default_value = "jtag")]
+        protocol: String,
         #[arg(long)]
         base_address: Option<String>,
     },
@@ -252,10 +258,11 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
         return fbuild::board_tool::test_library(&manifest_for(board)?);
     }
     let root = build_board::workspace_root_pub()?;
-    for board in board_manifest::discover(&root)? {
-        fbuild::board_tool::test_library(&board)?;
+    let boards = board_manifest::discover(&root)?;
+    for board in &boards {
+        fbuild::board_tool::test_library(board)?;
         for (variant, _) in &board.variants {
-            fbuild::board_tool::test_library(&board_manifest::find(&root, variant)?)?;
+            fbuild::board_tool::test_library(&board_manifest::find_in(&boards, variant)?)?;
         }
     }
     Ok(())
@@ -267,8 +274,7 @@ struct BoardEntry<'a> {
     board: &'a str,
     package: &'a str,
     dir: String,
-    platform: Option<&'a str>,
-    target: Option<&'a str>,
+    arch: Option<&'a str>,
     build_profile: Option<&'a board_manifest::ProfileRef>,
     variants: Vec<&'a str>,
 }
@@ -283,8 +289,7 @@ fn boards(json: bool) -> Result<(), String> {
                 board: &board.board,
                 package: &board.package,
                 dir: board.rel_dir.display().to_string(),
-                platform: board.platform.as_deref(),
-                target: board.target.as_deref(),
+                arch: board.arch.as_deref(),
                 build_profile: board.build_profile.as_ref(),
                 variants: board.variants.iter().map(|(id, _)| id.as_str()).collect(),
             })
@@ -352,7 +357,7 @@ fn main() {
                 }
             }),
         },
-        Command::Run {
+        Command::Qemu {
             board,
             release,
             payload,
@@ -364,7 +369,7 @@ fn main() {
             memory,
             secure_firmware,
         } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::run(
+            fbuild::board_tool::qemu(
                 &manifest,
                 release,
                 payload,
@@ -378,7 +383,7 @@ fn main() {
             )
         }),
         Command::Test { board, options } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::run(
+            fbuild::board_tool::qemu(
                 &manifest, true, None, None, None, None, None, None, None, &options,
             )
         }),
@@ -445,6 +450,7 @@ fn main() {
             probe_run,
             chip,
             probe,
+            protocol,
             base_address,
         } => manifest_for(&board).and_then(|manifest| {
             fbuild::board_tool::flash(
@@ -454,6 +460,7 @@ fn main() {
                 probe_run,
                 chip.as_deref(),
                 probe.as_deref(),
+                &protocol,
                 base_address.as_deref(),
             )
         }),
@@ -471,7 +478,7 @@ mod tests {
 
     #[test]
     fn library_tests_do_not_accept_firmware_selection_options() {
-        assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "lenovo-x61"]).is_ok());
+        assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "test-board"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library", "--payload", "uefi"]).is_err());
     }

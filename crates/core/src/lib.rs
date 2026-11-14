@@ -44,7 +44,7 @@ pub use acpi::{
 #[cfg(feature = "host")]
 pub use board::{
     BoardBuildPolicy, BoardConfig, FdtSource, FirmwareConfig, FirmwareImagePolicy, FitParseMode,
-    PayloadConfig, PayloadKind, SocImageFormat,
+    PayloadConfig, PayloadKind,
 };
 #[cfg(feature = "host")]
 pub use builder::{
@@ -62,7 +62,7 @@ pub use memory::{
     MemoryMapError, MemoryRegion, RegionKind, X86LegacyFlashLayout,
 };
 pub use meta::{hstr, hvec};
-pub use platform::{FirmwareKind, Platform, QemuMachine};
+pub use platform::{FirmwareKind, Platform};
 pub use security::{DigestAlgorithm, SecurityConfig, SignatureAlgorithm};
 pub use smbios::SmbiosConfig;
 pub use smm::{CorebootSmmCompat, SmmConfig};

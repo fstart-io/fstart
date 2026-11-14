@@ -79,21 +79,6 @@ impl core::fmt::Display for Platform {
     }
 }
 
-/// QEMU machine selected by a board's host build policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
-pub enum QemuMachine {
-    /// SiFive FU740-compatible `sifive_u` machine, booted through `-bios`.
-    SifiveU,
-    /// Allwinner H3 `orangepi-pc` machine, booted from SD eGON at 8 KiB.
-    OrangePiPc,
-    /// Arm SBSA reference platform, booted TF-A-first from two pflash banks.
-    SbsaRef,
-    /// ASPEED AST2500 EVB executing the composite SPI image in place from
-    /// FMC CE0, with the MJ11-EC1's 64 MiB MT25QL512 flash model.
-    Ast2500Evb,
-}
-
 /// Kind of runtime firmware loaded before the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]

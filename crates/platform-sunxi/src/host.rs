@@ -4,20 +4,21 @@
 //! builders; only the build-policy boundary moved into shared platform code.
 //! Hardware flows and the eGON finalizer contract are unchanged.
 extern crate std;
-use crate::facts::{BoardFacts, SunxiBoardFacts, SunxiSoc};
+use crate::facts::{BoardFacts, SunxiBoardFacts, SunxiEmulator, SunxiSoc};
 use fstart_core::layout::RegionKind as LayoutKind;
 use fstart_core::{
     BoardBuildPolicy, BoardConfig, Compression, FdtSource, FirmwareConfig, MemoryMap, MemoryRegion,
-    PayloadConfig, PayloadKind, Platform, RegionKind, RunsFrom, SocImageFormat, StageBuildConfig,
-    StageConfig, StageLayout, default_security_config, hstr, hvec,
+    PayloadConfig, PayloadKind, Platform, RegionKind, RunsFrom, StageBuildConfig, StageConfig,
+    StageLayout, default_security_config, hstr, hvec,
 };
 use fstart_image_build::{
     build_plan::{
-        BootstrapRole, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly, InputFile,
-        UnitOutput,
+        BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
+        FfsAssembly as Assembly, ImageStep, InputFile, UnitOutput,
     },
     linker::resolved_ram_stage,
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    run::{RunArtifact, RunMedia, RunRecipe},
 };
 use std::{
     collections::BTreeMap,
@@ -44,14 +45,11 @@ pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: SunxiBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve(B::FACTS, selection).expect("invalid sunxi board plan");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize sunxi plan")
-        );
+impl<B: SunxiBoardFacts> HostPlan<B> for Plan<B> {
+    type Options = NoOptions;
+
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
+        resolve(B::FACTS, selection)
     }
 }
 
@@ -156,12 +154,8 @@ fn board_config(
         microcode: None,
         data_assets: Default::default(),
         file_assets: Default::default(),
-        soc_image_format: SocImageFormat::AllwinnerEgon,
         full_flash_image: false,
-        build: BoardBuildPolicy {
-            qemu_machine: facts.qemu_machine,
-            ..Default::default()
-        },
+        build: BoardBuildPolicy::default(),
         acpi: None,
         smbios: None,
         smm: None,
@@ -216,11 +210,35 @@ fn unit(
     }
 }
 
+/// How `emulator` runs the image.
+fn run(emulator: SunxiEmulator, facts: &BoardFacts) -> Result<RunRecipe, String> {
+    match emulator {
+        SunxiEmulator::OrangePiPc if facts.soc != SunxiSoc::H3 => {
+            Err("QEMU's orangepi-pc machine is an H3 board".into())
+        }
+        // The H3 BROM reads the eGON image from SD byte 0x2000.
+        SunxiEmulator::OrangePiPc => Ok(RunRecipe {
+            qemu: "qemu-system-arm".into(),
+            machine: "orangepi-pc".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::SdCard {
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
+                offset: 8 * 1024,
+                size: 32 * 1024 * 1024,
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: None,
+        }),
+    }
+}
+
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    if selection.has_x86_linux_overrides() {
-        return Err("x86 Linux options are supported only by Intel platforms".into());
-    }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     // The D1 mainstage is halt-only: no D1 Linux launcher exists. Sunxi has
     // no UEFI/FIT/Shell/ELF flow either.
@@ -255,7 +273,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         ],
     )
     .map_err(|e| e.to_string())?;
-    let bootblock = resolved_ram_stage(&config, "bootblock", &boot_descriptor)?;
+    let bootblock = resolved_ram_stage(
+        &config,
+        "bootblock",
+        &boot_descriptor,
+        BootImageFormat::AllwinnerEgon,
+    )?;
 
     let main_window = Span {
         base: MAINSTAGE_LOAD_ADDR,
@@ -276,7 +299,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         ],
     )
     .map_err(|e| e.to_string())?;
-    let main = resolved_ram_stage(&config, "main", &main_descriptor)?;
+    let main = resolved_ram_stage(
+        &config,
+        "main",
+        &main_descriptor,
+        BootImageFormat::AllwinnerEgon,
+    )?;
 
     let StageLayout::MultiStage(stages) = config.stages.clone() else {
         return Err("sunxi plans always carry both stages".into());
@@ -308,12 +336,9 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: false,
-        soc_image_format: SocImageFormat::AllwinnerEgon,
+        boot_image_format: BootImageFormat::AllwinnerEgon,
         boot_hart_id: 0,
-        build: BoardBuildPolicy {
-            qemu_machine: facts.qemu_machine,
-            ..Default::default()
-        },
+        build: BoardBuildPolicy::default(),
     };
     let mut inputs = Vec::new();
     if linux {
@@ -367,7 +392,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
         ],
         stages: vec!["bootblock".into(), "main".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
+        run: facts
+            .emulator
+            .map(|emulator| run(emulator, &facts))
+            .transpose()?,
         inputs,
     };
     plan.order()?;
@@ -378,7 +408,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
 mod tests {
     use super::*;
     use crate::facts::SunxiFirmware;
-    use fstart_core::{FirmwareKind, QemuMachine};
+    use fstart_core::FirmwareKind;
 
     const BANANAPI: BoardFacts = BoardFacts {
         soc: SunxiSoc::A20,
@@ -390,7 +420,7 @@ mod tests {
         dtb_addr: 0x4300_0000,
         bootargs: "earlycon console=ttyS0,115200",
         firmware: None,
-        qemu_machine: None,
+        emulator: None,
     };
     const ORANGEPI_PC2: BoardFacts = BoardFacts {
         soc: SunxiSoc::H5,
@@ -406,7 +436,7 @@ mod tests {
             file: "bl31-sun50i-a64.bin",
             load_addr: 0x0004_4000,
         }),
-        qemu_machine: None,
+        emulator: None,
     };
 
     fn select(payload: &str) -> BuildSelection {
@@ -444,9 +474,9 @@ mod tests {
             (*load_address, *flat_capacity),
             (MAINSTAGE_LOAD_ADDR, 0x8000_0000 - MAINSTAGE_LOAD_ADDR)
         );
-        let assembly = plan.assembly.ffs().unwrap();
+        let assembly = plan.ffs_assembly().unwrap();
         assert_eq!(assembly.platform, Platform::Armv7);
-        assert_eq!(assembly.soc_image_format, SocImageFormat::AllwinnerEgon);
+        assert_eq!(assembly.boot_image_format, BootImageFormat::AllwinnerEgon);
         assert!(!assembly.full_flash_image);
         assert!(matches!(
             assembly.bootstrap.as_slice(),
@@ -472,7 +502,7 @@ mod tests {
     #[test]
     fn halt_has_no_payload_or_inputs_and_d1_rejects_linux() {
         let plan = resolve(BANANAPI, select("halt")).unwrap();
-        assert!(plan.assembly.ffs().unwrap().payload.is_none());
+        assert!(plan.ffs_assembly().unwrap().payload.is_none());
         assert!(plan.inputs.is_empty());
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-a20-main"]);
         let dock = BoardFacts {
@@ -510,7 +540,7 @@ mod tests {
             plan.unit("main").unwrap().features,
             ["bundle-h5-main", "linux"]
         );
-        let payload = plan.assembly.ffs().unwrap().payload.as_ref().unwrap();
+        let payload = plan.ffs_assembly().unwrap().payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();
         assert_eq!(firmware.load_addr, 0x0004_4000);
         assert_eq!(firmware.file.as_str(), "bl31-sun50i-a64.bin");
@@ -521,14 +551,11 @@ mod tests {
         let r1 = BoardFacts {
             soc: SunxiSoc::H3,
             dram_size: 0x1000_0000,
-            qemu_machine: Some(QemuMachine::OrangePiPc),
+            emulator: Some(SunxiEmulator::OrangePiPc),
             ..BANANAPI
         };
         let plan = resolve(r1, select("halt")).unwrap();
-        assert_eq!(
-            plan.assembly.ffs().unwrap().build.qemu_machine,
-            Some(QemuMachine::OrangePiPc)
-        );
+        assert_eq!(plan.run.as_ref().unwrap().machine, "orangepi-pc");
         assert_eq!(plan.unit("main").unwrap().features, ["bundle-h3-main"]);
         let UnitOutput::Executable { flat_capacity, .. } = &plan.unit("main").unwrap().output
         else {

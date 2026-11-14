@@ -1,11 +1,13 @@
 use std::fmt::Write;
 
+use crate::build_plan::BootImageFormat;
+
 use fstart_core::board::MicrocodeConfig;
 use fstart_core::memory::FlashLayout;
 use fstart_core::stage::POSTCAR_STAGE_NAME;
 use fstart_core::{
-    BoardConfig, FirmwareImagePolicy, Platform, RegionKind, SocImageFormat, StageBuildConfig,
-    StageLayout, effective_stage_load_addr,
+    BoardConfig, FirmwareImagePolicy, Platform, RegionKind, StageBuildConfig, StageLayout,
+    effective_stage_load_addr,
 };
 
 /// RAM-loaded stage resolved for the common executor: linker text with the
@@ -30,6 +32,7 @@ pub fn resolved_ram_stage(
     config: &BoardConfig,
     stage_name: &str,
     descriptor: &crate::layout::EncodedLayout,
+    boot_format: crate::build_plan::BootImageFormat,
 ) -> Result<ResolvedRamStage, String> {
     if config.platform.is_x86() {
         return Err("x86 stages keep their family resolver".into());
@@ -48,7 +51,7 @@ pub fn resolved_ram_stage(
         return Err("unknown stage".into());
     }
     let linker_script =
-        generate_linker_script_with_layout(config, Some(stage_name), Some(descriptor));
+        generate_linker_script_with_layout(config, Some(stage_name), Some(descriptor), boot_format);
     let (load_addr, _, _) = stage_memory_params(config, Some(stage_name));
     let (region_base, region_size) = ram_region_base_size(config, load_addr);
     let region_end = region_base
@@ -101,7 +104,7 @@ pub fn resolved_ram_stage(
 /// Platforms supply the already-validated reservations and descriptor bytes.
 pub struct Xip {
     pub platform: Platform,
-    pub soc_image_format: fstart_core::SocImageFormat,
+    pub boot_image_format: BootImageFormat,
     pub boot_hart_id: u32,
     pub image: crate::plan::Span,
     pub execution: Option<crate::plan::Span>,
@@ -268,7 +271,7 @@ pub fn resolved_xip(layout: &Xip) -> Result<String, String> {
         "ROM"
     };
     out.push_str("}\nSECTIONS {\n");
-    if layout.soc_image_format == fstart_core::SocImageFormat::AspeedSpi {
+    if layout.boot_image_format == crate::build_plan::BootImageFormat::AspeedSpi {
         if layout.execution.is_some() {
             return Err("ASPEED SPI images execute in place".into());
         }
@@ -490,8 +493,12 @@ fn ram_region_base_size(config: &BoardConfig, load_addr: u64) -> (u64, u64) {
         .unwrap_or((0x8000_0000, 0x0800_0000))
 }
 
-pub fn generate_linker_script(config: &BoardConfig, stage_name: Option<&str>) -> String {
-    generate_linker_script_with_layout(config, stage_name, None)
+pub fn generate_linker_script(
+    config: &BoardConfig,
+    stage_name: Option<&str>,
+    boot_format: crate::build_plan::BootImageFormat,
+) -> String {
+    generate_linker_script_with_layout(config, stage_name, None, boot_format)
 }
 
 /// Legacy RAM layout plus an optional embedded layout descriptor selected
@@ -501,6 +508,7 @@ pub fn generate_linker_script_with_layout(
     config: &BoardConfig,
     stage_name: Option<&str>,
     layout: Option<&crate::layout::EncodedLayout>,
+    boot_format: crate::build_plan::BootImageFormat,
 ) -> String {
     let mut out = String::new();
 
@@ -540,8 +548,11 @@ pub fn generate_linker_script_with_layout(
         }
         (StageLayout::MultiStage(_), None) => true,
     };
-    let needs_egon_header =
-        is_first_stage && matches!(config.soc_image_format, SocImageFormat::AllwinnerEgon);
+    let needs_egon_header = is_first_stage
+        && matches!(
+            boot_format,
+            crate::build_plan::BootImageFormat::AllwinnerEgon
+        );
 
     let has_x86_car = config.platform.is_x86() && config.memory.car.is_some() && is_first_stage;
 
@@ -1132,7 +1143,7 @@ mod tests {
         let span = |base, size| crate::plan::Span { base, size };
         super::Xip {
             platform: Platform::Armv5te,
-            soc_image_format: fstart_core::SocImageFormat::AspeedSpi,
+            boot_image_format: crate::build_plan::BootImageFormat::AspeedSpi,
             boot_hart_id: 0,
             image: span(0, 0x1_0000),
             execution,
@@ -1231,7 +1242,6 @@ mod tests {
             microcode: None,
             data_assets: heapless::Vec::new(),
             file_assets: heapless::Vec::new(),
-            soc_image_format: fstart_core::SocImageFormat::AllwinnerEgon,
             full_flash_image: false,
             build: BoardBuildPolicy::default(),
             acpi: None,
@@ -1256,7 +1266,11 @@ mod tests {
                     unreachable!()
                 };
                 stages[0].heap_size = heap;
-                let script = generate_linker_script(&config, Some("bootblock"));
+                let script = generate_linker_script(
+                    &config,
+                    Some("bootblock"),
+                    crate::build_plan::BootImageFormat::AllwinnerEgon,
+                );
                 let has_heap = heap.unwrap_or(0) != 0;
                 assert_eq!(script.contains("_FSTART_HEAP ="), has_heap);
                 assert_eq!(script.contains("_FSTART_HEAP_SIZE ="), has_heap);
@@ -1280,7 +1294,13 @@ mod tests {
             ],
         )
         .unwrap();
-        let bootblock = resolved_ram_stage(&config, "bootblock", &boot_descriptor).unwrap();
+        let bootblock = resolved_ram_stage(
+            &config,
+            "bootblock",
+            &boot_descriptor,
+            crate::build_plan::BootImageFormat::AllwinnerEgon,
+        )
+        .unwrap();
         assert!(bootblock.linker_script.contains("ENTRY(_head_jump)"));
         assert!(bootblock.linker_script.contains("KEEP(*(.head.egon))"));
         assert!(
@@ -1304,14 +1324,27 @@ mod tests {
             ],
         )
         .unwrap();
-        let main = resolved_ram_stage(&config, "main", &main_descriptor).unwrap();
+        let main = resolved_ram_stage(
+            &config,
+            "main",
+            &main_descriptor,
+            crate::build_plan::BootImageFormat::AllwinnerEgon,
+        )
+        .unwrap();
         assert!(main.linker_script.contains("ENTRY(_start)"));
         assert!(!main.linker_script.contains("KEEP(*(.head.egon))"));
         assert_eq!(main.memory, main_window);
         main.expectations.validate().unwrap();
 
         // The descriptor is opt-in: legacy output has no layout section.
-        assert!(!generate_linker_script(&config, Some("bootblock")).contains(".fstart.layout"));
+        assert!(
+            !generate_linker_script(
+                &config,
+                Some("bootblock"),
+                crate::build_plan::BootImageFormat::AllwinnerEgon
+            )
+            .contains(".fstart.layout")
+        );
     }
 
     #[test]
@@ -1327,9 +1360,14 @@ mod tests {
         )
         .unwrap();
         assert!(
-            resolved_ram_stage(&config, "postcar", &descriptor)
-                .unwrap_err()
-                .contains("unknown stage")
+            resolved_ram_stage(
+                &config,
+                "postcar",
+                &descriptor,
+                crate::build_plan::BootImageFormat::AllwinnerEgon,
+            )
+            .unwrap_err()
+            .contains("unknown stage")
         );
         let mut xip = sunxi_like_config();
         xip.memory
@@ -1344,16 +1382,26 @@ mod tests {
         // The bootblock load address stays in SRAM, but any flash storage
         // reservation keeps the XIP resolver authoritative.
         assert!(
-            resolved_ram_stage(&xip, "bootblock", &descriptor)
-                .unwrap_err()
-                .contains("XIP")
+            resolved_ram_stage(
+                &xip,
+                "bootblock",
+                &descriptor,
+                crate::build_plan::BootImageFormat::AllwinnerEgon
+            )
+            .unwrap_err()
+            .contains("XIP")
         );
         let mut x86 = sunxi_like_config();
         x86.platform = Platform::X86_64;
         assert!(
-            resolved_ram_stage(&x86, "bootblock", &descriptor)
-                .unwrap_err()
-                .contains("x86")
+            resolved_ram_stage(
+                &x86,
+                "bootblock",
+                &descriptor,
+                crate::build_plan::BootImageFormat::AllwinnerEgon
+            )
+            .unwrap_err()
+            .contains("x86")
         );
     }
 
@@ -1393,7 +1441,6 @@ mod tests {
             microcode: None,
             data_assets: heapless::Vec::new(),
             file_assets: heapless::Vec::new(),
-            soc_image_format: Default::default(),
             full_flash_image: false,
             build: BoardBuildPolicy {
                 firmware_image: fstart_core::FirmwareImagePolicy::memory_mapped(
@@ -1408,7 +1455,8 @@ mod tests {
             boot_hart_id: 0,
         };
 
-        let script = generate_linker_script(&config, None);
+        let script =
+            generate_linker_script(&config, None, crate::build_plan::BootImageFormat::None);
         assert!(script.contains("RWDATA (rwx) : ORIGIN = 0x90000000"));
         assert!(script.contains(".bss (NOLOAD) : ALIGN(8) {"));
     }

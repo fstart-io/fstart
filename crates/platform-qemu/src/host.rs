@@ -5,14 +5,18 @@ use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly,
-        InputFile, UnitOutput,
+        ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
+        FfsAssembly as Assembly, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit,
+        UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
-    plan::{BuildSelection, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    run::{RunArtifact, RunDisk, RunMedia, RunRecipe},
+    x86_flash::X86FlashAssembly,
 };
 use std::{
+    boxed::Box,
     collections::BTreeMap,
     string::{String, ToString},
     vec,
@@ -20,14 +24,11 @@ use std::{
 };
 
 pub struct Plan<B>(core::marker::PhantomData<B>);
-impl<B: VirtBoardFacts> Plan<B> {
-    pub fn emit(selection_json: &str) {
-        let selection = serde_json::from_str(selection_json).expect("invalid build selection");
-        let plan = resolve(B::MACHINE, selection).expect("invalid QEMU virt image policy");
-        std::println!(
-            "{}",
-            serde_json::to_string(&plan).expect("serialize QEMU virt plan")
-        );
+impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
+    type Options = NoOptions;
+
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
+        resolve(B::MACHINE, selection)
     }
 }
 
@@ -129,11 +130,171 @@ impl VirtMachine {
     }
 }
 
+/// One backend-free PCI function on the virt-class machines, so every
+/// normal boot exercises ECAM enumeration and BAR assignment.
+const PCI_TEST_DEVICE: &str = "virtio-scsi-pci,id=fstart-pci-test";
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
+/// The launch recipe of a virt preset.
+fn virt_recipe(machine: VirtMachine) -> RunRecipe {
+    let base = RunRecipe {
+        qemu: String::new(),
+        machine: String::new(),
+        cpu: None,
+        accel_kvm: false,
+        memory: None,
+        smp: None,
+        nographic: true,
+        media: vec![],
+        devices: strings(&[PCI_TEST_DEVICE]),
+        args: strings(&["-no-reboot"]),
+        disk: Some(RunDisk::Nvme),
+    };
+    match machine {
+        VirtMachine::Riscv64 => RunRecipe {
+            qemu: "qemu-system-riscv64".into(),
+            machine: "virt".into(),
+            media: vec![RunMedia::Pflash {
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
+                unit: 0,
+                size: 32 * 1024 * 1024,
+                readonly: false,
+            }],
+            args: strings(&["-bios", "none", "-no-reboot"]),
+            ..base
+        },
+        VirtMachine::Aarch64 => RunRecipe {
+            qemu: "qemu-system-aarch64".into(),
+            machine: "virt,secure=on,virtualization=on,gic-version=3".into(),
+            cpu: Some("cortex-a72".into()),
+            media: vec![RunMedia::SplitPflash {
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
+                bank_size: 64 * 1024 * 1024,
+            }],
+            ..base
+        },
+        VirtMachine::Armv7 => RunRecipe {
+            qemu: "qemu-system-arm".into(),
+            machine: "virt,highmem-ecam=off".into(),
+            cpu: Some("cortex-a15".into()),
+            media: vec![RunMedia::SplitPflash {
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
+                bank_size: 64 * 1024 * 1024,
+            }],
+            ..base
+        },
+        _ => unreachable!("not a virt preset"),
+    }
+}
+
+/// The name of q35's x86 flash image step.
+const X86_FLASH: &str = "flash";
+
+/// The image steps of a machine model after its FFS: q35 boots the
+/// top-mapped x86 flash composed from the FFS and the linked stage.
+fn flash_steps(machine: VirtMachine, policy: &QemuPolicy) -> Vec<ImageStep> {
+    match (machine.is_q35(), &policy.link) {
+        (true, QemuLink::X86 { flash, .. }) => vec![ImageStep::new(
+            X86_FLASH,
+            ImageOperation::X86Flash(Box::new(X86FlashAssembly {
+                ffs: ImageStep::FFS.into(),
+                stage_unit: "stage".into(),
+                size: flash.size,
+                ffs_offset: policy.firmware_image.base - flash.base,
+            })),
+        )],
+        _ => vec![],
+    }
+}
+
+/// q35 booting the top-mapped x86 flash image step. A protected-mode
+/// build runs on a CPU without long mode, like the Core Duo it exists
+/// for.
+fn q35_recipe(protected_mode: bool) -> RunRecipe {
+    RunRecipe {
+        qemu: "qemu-system-x86_64".into(),
+        machine: "q35".into(),
+        cpu: protected_mode.then(|| "coreduo".into()),
+        accel_kvm: true,
+        memory: Some("1G".into()),
+        smp: Some("1".into()),
+        nographic: false,
+        media: vec![RunMedia::Bios {
+            artifact: RunArtifact::Step(X86_FLASH.into()),
+        }],
+        devices: strings(&["bochs-display"]),
+        args: strings(&[
+            "-no-reboot",
+            "-display",
+            "none",
+            "-chardev",
+            "stdio,id=char0,mux=on,signal=off",
+            "-serial",
+            "chardev:char0",
+            "-mon",
+            "chardev=char0,mode=readline",
+            "-vga",
+            "none",
+        ]),
+        disk: Some(RunDisk::Ide),
+    }
+}
+
+/// The launch recipe of a non-virt machine model.
+fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
+    match machine {
+        VirtMachine::Q35 | VirtMachine::Q35ProtectedMode => {
+            q35_recipe(matches!(machine, VirtMachine::Q35ProtectedMode))
+        }
+        VirtMachine::Sbsa => RunRecipe {
+            qemu: "qemu-system-aarch64".into(),
+            machine: "sbsa-ref".into(),
+            cpu: Some("max".into()),
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![
+                RunMedia::ExternalPflash {
+                    name: "secure-firmware".into(),
+                    unit: 0,
+                    size: 256 * 1024 * 1024,
+                },
+                RunMedia::Pflash {
+                    artifact: RunArtifact::Step(ImageStep::FFS.into()),
+                    unit: 1,
+                    size: 256 * 1024 * 1024,
+                    readonly: false,
+                },
+            ],
+            devices: strings(&[PCI_TEST_DEVICE]),
+            args: vec![],
+            disk: Some(RunDisk::Nvme),
+        },
+        VirtMachine::SifiveU => RunRecipe {
+            qemu: "qemu-system-riscv64".into(),
+            machine: "sifive_u".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: Some("1G".into()),
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::Bios {
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: Some(RunDisk::Nvme),
+        },
+        _ => unreachable!("not a machine-model preset"),
+    }
+}
+
 pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    if selection.has_x86_linux_overrides() {
-        return Err("x86 Linux options are supported only by Intel platforms".into());
-    }
     match machine {
         VirtMachine::Riscv64 | VirtMachine::Armv7 | VirtMachine::Aarch64 => {
             resolve_virt(machine, selection)
@@ -196,7 +357,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     }
     let layout = Xip {
         platform: policy.platform,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
         image,
         execution,
@@ -278,7 +439,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: true,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
         build: BoardBuildPolicy {
             firmware_image: FirmwareImagePolicy::memory_mapped(firmware.base, firmware.size),
@@ -325,8 +486,10 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             },
         }],
         stages: vec!["stage".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: vec![assembly.into()],
         inputs,
+        run: Some(virt_recipe(machine)),
     };
     plan.order()?;
     Ok(plan)
@@ -383,7 +546,6 @@ struct QemuPolicy {
     firmware_image: Span,
     flash_image: Option<Span>,
     full_flash_image: bool,
-    qemu_machine: Option<QemuMachine>,
     default_security: bool,
     pci: bool,
     fdt: bool,
@@ -451,7 +613,6 @@ impl VirtMachine {
                 firmware_image: span(0xff10_0000, 0x00ef_f000),
                 flash_image: None,
                 full_flash_image: false,
-                qemu_machine: None,
                 default_security: true,
                 pci: true,
                 fdt: false,
@@ -488,7 +649,6 @@ impl VirtMachine {
                 firmware_image: span(0x1010_0000, 0x0ff0_0000),
                 flash_image: Some(span(0x1000_0000, 0x1000_0000)),
                 full_flash_image: true,
-                qemu_machine: Some(QemuMachine::SbsaRef),
                 default_security: false,
                 pci: true,
                 fdt: false,
@@ -520,7 +680,6 @@ impl VirtMachine {
                 firmware_image: span(0x8000_0000, 0x0100_0000),
                 flash_image: None,
                 full_flash_image: false,
-                qemu_machine: Some(QemuMachine::SifiveU),
                 default_security: false,
                 pci: false,
                 fdt: true,
@@ -662,6 +821,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     use fstart_core::layout::RegionKind as Kind;
     use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
     let policy = machine.qemu_policy()?;
+    let run = qemu_recipe(machine);
+    let flash_steps = flash_steps(machine, &policy);
     let payload = selection
         .payload
         .unwrap_or_else(|| policy.default_payload.into());
@@ -734,7 +895,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             }
             let layout = Xip {
                 platform: policy.platform,
-                soc_image_format: SocImageFormat::None,
+                boot_image_format: BootImageFormat::None,
                 boot_hart_id: policy.boot_hart_id,
                 image,
                 execution,
@@ -888,10 +1049,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         data_assets: vec![],
         file_assets: vec![],
         full_flash_image: policy.full_flash_image,
-        soc_image_format: SocImageFormat::None,
+        boot_image_format: BootImageFormat::None,
         boot_hart_id: policy.boot_hart_id,
         build: BoardBuildPolicy {
-            qemu_machine: policy.qemu_machine,
             firmware_image: FirmwareImagePolicy::memory_mapped(
                 policy.firmware_image.base,
                 policy.firmware_image.size,
@@ -950,39 +1110,24 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let mp_capacity =
         || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
     if machine.is_q35() {
-        units.push(CompilationUnit {
-            name: "smm".into(),
-            cargo_target: CargoTarget::BoardLibrary,
-            target: policy.target.into(),
-            features: vec!["smm".into(), "bundle-smm".into()],
-            // Custom targets have no prebuilt core.
-            build_std: (policy.platform == Platform::X86).then(|| "core,alloc".into()),
-            release_only: true,
-            linker_script: None,
-            rustflags: [
-                "-Cpanic=abort",
-                "-Copt-level=s",
-                // Direct relative calls; absolute cross-section references are audited.
-                "-Crelocation-model=static",
-                "-Cno-redzone=yes",
-                "-Clinker-plugin-lto=no",
-                "-Cembed-bitcode=no",
-                "-Zfunction-sections=yes",
-            ]
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-            environment_values: mp_capacity(),
-            bindings: vec![],
-            file_bindings: vec![],
-            board_features: vec!["smm".into()],
-            output: UnitOutput::SmmImage {
-                entry_count: 8,
-                stack_size: 0x400,
-                coreboot_module_args: false,
-                coreboot_header: false,
-            },
-        });
+        units.push(
+            SmmUnit {
+                name: "smm".into(),
+                platform: policy.platform,
+                features: vec!["smm".into(), "bundle-smm".into()],
+                // Direct relative calls; absolute cross-section references
+                // are audited.
+                relocation: SmmRelocation::Static,
+                environment_values: mp_capacity(),
+                image: fstart_image_build::smm_image::ImageOptions {
+                    entry_count: 8,
+                    stack_size: 0x400,
+                    coreboot_module_args: false,
+                    coreboot_header: false,
+                },
+            }
+            .into(),
+        );
     }
     let stage_bindings = if machine.is_q35() {
         vec![ArtifactBinding {
@@ -1020,8 +1165,12 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         payload: payload.clone(),
         units,
         stages: vec!["stage".into()],
-        assembly: assembly.into(),
+        platform: assembly.platform,
+        images: core::iter::once(assembly.into())
+            .chain(flash_steps)
+            .collect(),
         inputs,
+        run: Some(run),
     };
     plan.order()?;
     Ok(plan)
@@ -1096,7 +1245,7 @@ mod tests {
                 );
                 if payload == "halt" {
                     assert!(plan.inputs.is_empty());
-                    assert!(plan.assembly.ffs().unwrap().payload.is_none());
+                    assert!(plan.ffs_assembly().unwrap().payload.is_none());
                     assert!(layout.region(Kind::DeviceTree).is_none());
                     continue;
                 }
@@ -1116,8 +1265,7 @@ mod tests {
                     external_runtime
                 );
                 assert_eq!(
-                    plan.assembly
-                        .ffs()
+                    plan.ffs_assembly()
                         .unwrap()
                         .payload
                         .as_ref()
@@ -1184,7 +1332,7 @@ mod tests {
             assert_eq!(layout.region(Kind::Heap).unwrap().size, heap_size);
             let window = layout.region(Kind::Firmware).unwrap();
             assert_eq!((window.base, window.size), firmware);
-            assert!(plan.assembly.ffs().unwrap().payload.is_none());
+            assert!(plan.ffs_assembly().unwrap().payload.is_none());
             assert!(plan.inputs.is_empty());
             // Stack and heap stay inside the writable reservation with the
             // heap directly below the stack at its top.
@@ -1268,7 +1416,7 @@ mod tests {
         .unwrap();
         let uefi_stage = uefi.units.iter().find(|u| u.name == "stage").unwrap();
         assert!(uefi_stage.features.contains(&"crabefi".to_string()));
-        let payload = uefi.assembly.ffs().unwrap().payload.as_ref().unwrap();
+        let payload = uefi.ffs_assembly().unwrap().payload.as_ref().unwrap();
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));
         assert!(payload.firmware.is_none());
         assert!(uefi.inputs.is_empty());
@@ -1284,7 +1432,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(linux.payload, "linux");
-            let payload = linux.assembly.ffs().unwrap().payload.clone().unwrap();
+            let payload = linux.ffs_assembly().unwrap().payload.clone().unwrap();
             assert!(matches!(payload.kind, PayloadKind::LinuxBoot));
             assert_eq!(payload.kernel_file.unwrap().as_str(), "Image-riscv64");
             assert_eq!(payload.kernel_load_addr, Some(0x8400_0000));
@@ -1313,8 +1461,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                uefi.assembly
-                    .ffs()
+                uefi.ffs_assembly()
                     .unwrap()
                     .payload
                     .as_ref()
