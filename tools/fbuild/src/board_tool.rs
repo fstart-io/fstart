@@ -244,8 +244,8 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-#[allow(clippy::too_many_arguments)] // the CLI's flat run options
-pub fn run(
+#[allow(clippy::too_many_arguments)] // the CLI's flat qemu options
+pub fn qemu(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,

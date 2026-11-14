@@ -150,7 +150,7 @@ run_boot() {
 
 	# Compile the payload-selected firmware before starting the boot deadline.
 	# Kernel, firmware and disk arguments below are image/run inputs, not a
-	# different compiler selection. fbuild run still checks the cached build.
+	# different compiler selection. fbuild qemu still checks the cached build.
 	: >"$log"
 	set +e
 	timeout --kill-after=10s "$BUILD_TIMEOUT" \
@@ -169,7 +169,7 @@ run_boot() {
 	local -a command=(
 		env "FSTART_QEMU_SMP=$smp"
 		timeout --kill-after=10s "$BOOT_TIMEOUT"
-		"${fbuild[@]}" run --board "$board" --release --payload "$payload_arg"
+		"${fbuild[@]}" qemu --board "$board" --release --payload "$payload_arg"
 	)
 	command+=("$@")
 

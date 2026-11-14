@@ -19,8 +19,8 @@ file format may change drastically without notice.
 
 ```bash
 # Run a pre-defined board in QEMU
-cargo fbuild run --board qemu-riscv64
-cargo fbuild run --board qemu-aarch64
+cargo fbuild qemu --board qemu-riscv64
+cargo fbuild qemu --board qemu-aarch64
 
 # Build without running
 cargo fbuild build --board qemu-riscv64

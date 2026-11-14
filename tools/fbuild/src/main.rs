@@ -53,7 +53,9 @@ enum Command {
         #[command(flatten)]
         options: BuildArgs,
     },
-    Run {
+    /// Boot the board's image under QEMU, as its plan's run recipe
+    /// describes.
+    Qemu {
         #[arg(short, long)]
         board: String,
         #[arg(short, long, default_value_t = false)]
@@ -355,7 +357,7 @@ fn main() {
                 }
             }),
         },
-        Command::Run {
+        Command::Qemu {
             board,
             release,
             payload,
@@ -367,7 +369,7 @@ fn main() {
             memory,
             secure_firmware,
         } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::run(
+            fbuild::board_tool::qemu(
                 &manifest,
                 release,
                 payload,
@@ -381,7 +383,7 @@ fn main() {
             )
         }),
         Command::Test { board, options } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::run(
+            fbuild::board_tool::qemu(
                 &manifest, true, None, None, None, None, None, None, None, &options,
             )
         }),
