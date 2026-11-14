@@ -99,6 +99,11 @@ pub struct Policy {
     pub above_region_share: bool,
     /// Fixed window routed to the primary root bridge (0xFED0_0000, 64 KiB).
     pub spare: Option<Window>,
+    /// The primary's below-4G pools cover its routed window with the
+    /// 0xC0_0000 extension, so its non-PCI pool ends at 0xFEC0_0000
+    /// (AGESA ZP: the NBIO BARs at 0xFE40_0000–0xFEBF_FFFF). DF3 keeps the
+    /// pools below the extension.
+    pub pools_cover_extension: bool,
     /// PCI buses per root bridge, logical order (0 = keep).
     pub bus_counts: Option<[u16; MAX_ROOT_BRIDGES]>,
     /// I/O bytes per root bridge, logical order; root bridges with 0 get no
@@ -118,6 +123,7 @@ impl Policy {
             above_last_end: None,
             above_region_share: true,
             spare: Some(Window::new(0xFED0_0000, 0x1_0000)),
+            pools_cover_extension: false,
             bus_counts: None,
             io_sizes: None,
         }
@@ -134,6 +140,7 @@ impl Policy {
             above_last_end: Some(1 << 48),
             above_region_share: false,
             spare: Some(Window::new(0xFED0_0000, 0x1_0000)),
+            pools_cover_extension: true,
             bus_counts: None,
             io_sizes: None,
         }
@@ -190,8 +197,9 @@ pub struct RootBridgePlan {
     /// The routed below-4G window (the primary's includes the 0xC0_0000
     /// extension when it sits above the ECAM).
     pub below: Window,
-    /// Pools of `below` without the primary's extension (fixed FCH
-    /// decodes live in 0xFE00_0000–0xFEBF_FFFF; the pool split itself is DC).
+    /// Pools of `below`, without the primary's extension unless the policy
+    /// covers it ([`Policy::pools_cover_extension`]; the pool split itself
+    /// is DC).
     pub below_pools: Pools,
     /// Primary only: the leftover of the other region.
     pub second_below: Option<Window>,
@@ -599,7 +607,14 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
                     limit: rb.bus_limit,
                 },
                 below: routed(i),
-                below_pools: below_pools(below_w[i], policy.nonpci_below),
+                below_pools: below_pools(
+                    if policy.pools_cover_extension {
+                        routed(i)
+                    } else {
+                        below_w[i]
+                    },
+                    policy.nonpci_below,
+                ),
                 second_below: (i == p).then_some(second.map(|(_, w)| w)).flatten(),
                 above: above_w[i],
                 above_pools: above_w[i].map(|w| above_pools(w, policy.nonpci_above)),

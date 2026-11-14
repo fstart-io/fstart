@@ -24,7 +24,6 @@ pub use host::Plan;
 pub mod einj;
 pub mod layout;
 pub mod memory;
-pub mod pci;
 pub mod silicon;
 pub mod smbios;
 pub mod smm;

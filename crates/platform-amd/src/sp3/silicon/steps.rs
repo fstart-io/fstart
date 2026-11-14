@@ -445,10 +445,49 @@ pub fn psp(
 
 #[cfg(test)]
 mod tests {
+    use fstart_driver_amd::df::plan::Window;
+
     #[test]
     fn dma_alloc_rejects_an_empty_or_misaligned_request() {
         assert_eq!(super::dma_alloc(0, 0x1000).err(), Some("DMA layout"));
         assert_eq!(super::dma_alloc(0x1000, 3).err(), Some("DMA layout"));
         assert_eq!(super::dma_alloc(0x20, 0x10).unwrap().len(), 0x20);
+    }
+
+    #[test]
+    fn mcfg_per_generation() {
+        let m =
+            fstart_acpi::build_mcfg(&[super::super::hw::segment(super::super::Generation::Naples)]);
+        assert_eq!(&m[..4], b"MCFG");
+        assert_eq!(
+            u64::from_le_bytes(m[44..52].try_into().unwrap()),
+            0xF000_0000
+        );
+        assert_eq!(m[55], 127);
+        let m =
+            fstart_acpi::build_mcfg(&[super::super::hw::segment(super::super::Generation::Milan)]);
+        assert_eq!(
+            u64::from_le_bytes(m[44..52].try_into().unwrap()),
+            0xE000_0000
+        );
+        assert_eq!(m[55], 255);
+    }
+
+    #[test]
+    fn non_pci_bars_are_aligned_and_fit() {
+        let mut pool = super::NonPci::new(Window::new(0xaf00_0000, 0x0100_0000));
+        let smu = pool.alloc(1 << 20).unwrap();
+        let psp = pool.alloc(1 << 20).unwrap();
+        let ioapic = pool.alloc(0x1000).unwrap();
+        let iommu = pool.alloc(512 << 10).unwrap();
+        assert_eq!(smu, 0xaff0_0000);
+        assert_eq!(psp, 0xafe0_0000);
+        assert_eq!(ioapic, 0xafdf_f000);
+        assert_eq!(iommu, 0xafd0_0000, "aligned below the IOAPIC page");
+        assert_eq!(
+            super::NonPci::new(Window::new(0x1000, 0x1000)).alloc(0x2000),
+            None
+        );
+        assert_eq!(pool.alloc(0), None);
     }
 }
