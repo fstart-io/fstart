@@ -8,7 +8,6 @@ pub mod acpi;
 pub mod boot;
 #[cfg(feature = "host")]
 pub mod host;
-pub mod layout;
 pub mod memory;
 pub mod smbios;
 pub mod smm;
@@ -23,12 +22,12 @@ pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
 pub use crate::soc::Hw;
 
 use crate::acpi::SocAcpi;
+use crate::layout::{Layout, Region};
 use crate::smbios::SocSmbios;
 use crate::soc::Init;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_driver_amd::df::Die;
 use fstart_pci::ecam::GlobalEcam;
-use layout::{Layout, Region};
 
 /// The most dies the flow handles: two sockets of four.
 pub const MAX_DIES: usize = 8;
@@ -145,7 +144,8 @@ impl<S: DieSoc> crate::flow::Soc for S {
             .map_err(|_| "MTRR setup")?;
 
         let ffs = S::LAYOUT.ffs.ok_or("boot media")?;
-        boot::mount(&e820, S::LAYOUT.early, ffs).map_err(|_| "boot media")?;
+        fstart_arch::x86::boot::enable_boot_media_rom_cache();
+        crate::media::mount(e820.entries(), &S::LAYOUT, ffs).map_err(|error| error.step())?;
         Ok(crate::flow::Mapped {
             top_mem,
             top_mem2,

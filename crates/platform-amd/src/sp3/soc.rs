@@ -58,8 +58,9 @@ use fstart_driver_amd::psp;
 
 use super::board::{Board, Gpio};
 use super::flow::{self as parts, step};
-use super::layout::{self, Span};
+use super::layout;
 use crate::flow::{Ctx, Early, Mapped, Reserved, Silicon as Up, Stage, Tables};
+use crate::layout::Region;
 
 /// An SP3 family `F` (its silicon steps) on the flow.
 pub struct Sp3<F>(PhantomData<F>);
@@ -112,7 +113,7 @@ pub struct State<F> {
 pub struct Flow {
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     #[cfg(feature = "payload-uefi")]
-    ffs: Span,
+    ffs: Region,
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
     ffs_offset: u32,
@@ -121,7 +122,7 @@ pub struct Flow {
     nvram: Option<&'static [u8]>,
     /// The outcome of every option knob resolved so far.
     options: fstart_options::Report,
-    tseg: Span,
+    tseg: Region,
     /// The size of the flash part.
     rom_size: u32,
 }
@@ -536,7 +537,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             &regions,
             tops.tom,
             super::smm::TSEG_SIZE,
-            &[layout::CACHE_WINDOW, apob_span],
+            &[layout::LAYOUT.early, apob_span],
         )
         .ok_or("TSEG placement")?;
         let e820 = parts::build_e820(generation, &regions, tops, apob_span, tseg);
@@ -548,25 +549,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         }
 
         step(0x48, "boot media");
-        // The running image (text, in-place data: `layout::RESET`) and its
-        // BSS, heap and stacks (`layout::EARLY_REGION`) are reserved by
-        // span: `running_stage_windows` assumes data and BSS are
-        // contiguous, which this layout does not keep.
-        let window = |span: Span| fstart_stage::boot::MemoryWindow {
-            start: span.base,
-            size: span.size,
-        };
-        let image = fstart_stage::boot::MemoryWindow {
-            start: layout::RESET.destination,
-            size: u64::from(layout::RESET.size),
-        };
-        crate::media::mount(
-            e820.entries(),
-            &[image, window(layout::EARLY_REGION)],
-            window(ffs),
-            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
-        )
-        .map_err(|error| error.step())?;
+        crate::media::mount(e820.entries(), &layout::LAYOUT, ffs).map_err(|error| error.step())?;
 
         Ok(Mapped {
             top_mem: tops.tom,

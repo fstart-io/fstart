@@ -20,18 +20,19 @@
 
 use crate::sp3::silicon::Generation;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
-use fstart_driver_amd::apob::sysmap::{Region, RegionKind};
+use fstart_driver_amd::apob::sysmap::{self, RegionKind};
 use heapless::Vec;
 
-use crate::sp3::layout::{CACHE_WINDOW, Span};
+use crate::layout::Region;
+use crate::sp3::layout::LAYOUT;
 
 /// 4 GiB.
 pub const FOUR_GIB: u64 = 1 << 32;
 /// Legacy VGA/option ROM/BIOS area, reserved like AMI's MemDetect.
-pub const LEGACY_HOLE: Span = Span::new(0xa_0000, 0x6_0000);
+pub const LEGACY_HOLE: Region = Region::new(0xa_0000, 0x6_0000);
 /// Page zero and the x86 low scratch (the arch crate's SIPI trampoline page
 /// `0x8000` and S3/postcar stash): `[0, LOW_SCRATCH_END)`.
-pub const LOW_RESERVED: Span = Span::new(0, 0xf000);
+pub const LOW_RESERVED: Region = Region::new(0, 0xf000);
 
 /// Most reservations [`e820`] takes.
 pub const MAX_RESERVATIONS: usize = 16;
@@ -40,7 +41,7 @@ const MAX_POINTS: usize = 2 * (fstart_driver_amd::apob::sysmap::MAX_REGIONS + MA
 /// A range firmware keeps from the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reservation {
-    pub span: Span,
+    pub span: Region,
     pub kind: E820Kind,
 }
 
@@ -54,7 +55,7 @@ pub struct TopOfMemory {
 }
 
 impl TopOfMemory {
-    fn decodes(&self, span: Span) -> bool {
+    fn decodes(&self, span: Region) -> bool {
         span.end() <= self.tom
             || self
                 .tom2
@@ -65,11 +66,11 @@ impl TopOfMemory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
     /// APOB RAM outside what TOM/TOM2 decode as DRAM.
-    NotDecoded(Span),
+    NotDecoded(Region),
     /// TOM above 4 GiB, or TOM2 at or below 4 GiB.
     Limits(TopOfMemory),
     /// A reservation over an MMIO hole or outside the APOB map.
-    ReservationOutsideDram(Span),
+    ReservationOutsideDram(Region),
     TooManyEntries,
 }
 
@@ -78,14 +79,14 @@ pub enum MemoryError {
 /// with the reset image, and TSEG when SMM is set up.
 pub fn standard_reservations(
     generation: Generation,
-    apob: Span,
-    tseg: Option<Span>,
+    apob: Region,
+    tseg: Option<Region>,
 ) -> Vec<Reservation, MAX_RESERVATIONS> {
     let apob_kind = match generation {
         Generation::Naples => E820Kind::Reserved,
         Generation::Rome | Generation::Milan => E820Kind::Nvs,
     };
-    let apob = Span::new(apob.base, apob.size.next_multiple_of(0x1000));
+    let apob = Region::new(apob.base, apob.size.next_multiple_of(0x1000));
     let reserved = |span| Reservation {
         span,
         kind: E820Kind::Reserved,
@@ -97,7 +98,7 @@ pub fn standard_reservations(
             span: apob,
             kind: apob_kind,
         },
-        reserved(CACHE_WINDOW),
+        reserved(LAYOUT.early),
     ]
     .into_iter()
     .chain(tseg.map(reserved))
@@ -131,8 +132,8 @@ impl Use {
     }
 }
 
-fn span(region: &Region) -> Span {
-    Span::new(region.base, region.size)
+fn span(region: &sysmap::Region) -> Region {
+    Region::new(region.base, region.size)
 }
 
 /// Build the e820 map into `out`; returns the number of entries.
@@ -142,7 +143,7 @@ fn span(region: &Region) -> Span {
 /// reservation must lie in DRAM (RAM or a reserved DRAM hole), never in an
 /// MMIO hole or above the APOB top.
 pub fn e820(
-    regions: &[Region],
+    regions: &[sysmap::Region],
     limits: TopOfMemory,
     reservations: &[Reservation],
     out: &mut [E820Entry],
@@ -156,8 +157,8 @@ pub fn e820(
     {
         return Err(MemoryError::NotDecoded(span(r)));
     }
-    let is_mmio = |r: &Region| matches!(r.kind, RegionKind::Mmio);
-    let top = regions.iter().map(Region::end).max().unwrap_or(0);
+    let is_mmio = |r: &sysmap::Region| matches!(r.kind, RegionKind::Mmio);
+    let top = regions.iter().map(sysmap::Region::end).max().unwrap_or(0);
     if let Some(r) = reservations.iter().find(|res| {
         res.span.end() > top
             || regions
@@ -179,7 +180,7 @@ pub fn e820(
     let overlay = reservations
         .iter()
         .map(|r| (r.span, Use::of_reservation(r.kind)));
-    let layers: Vec<(Span, Use), MAX_POINTS> = base
+    let layers: Vec<(Region, Use), MAX_POINTS> = base
         .chain(overlay)
         .filter(|(s, _)| s.size != 0)
         .try_fold(Vec::new(), |mut v, l| v.push(l).map(|_| v))
@@ -199,7 +200,7 @@ pub fn e820(
         .windows(2)
         .filter(|w| w[0] < w[1])
         .filter_map(|w| {
-            let piece = Span::new(w[0], w[1] - w[0]);
+            let piece = Region::new(w[0], w[1] - w[0]);
             layers
                 .iter()
                 .filter(|(s, _)| s.contains(&piece))
@@ -236,7 +237,7 @@ mod tests {
 
     /// A 1P Rome-like map: 2 GiB MMIO below 4 GiB, DRAM to 1.5 TiB with the
     /// HyperTransport hole, a reserved type-2 hole above 4 GiB.
-    fn rome_map() -> std::vec::Vec<Region> {
+    fn rome_map() -> std::vec::Vec<sysmap::Region> {
         let holes = [
             Hole {
                 base: 0x8000_0000,
@@ -261,10 +262,10 @@ mod tests {
             tom: 0x8000_0000,
             tom2: Some(1536 * GIB),
         };
-        let tseg = Span::new(0x7c00_0000, 0x400_0000);
+        let tseg = Region::new(0x7c00_0000, 0x400_0000);
         let res = standard_reservations(
             Generation::Rome,
-            Span::new(0x3000_0000, 0x1_2345),
+            Region::new(0x3000_0000, 0x1_2345),
             Some(tseg),
         );
         let mut out = [E820Entry::zeroed(); 32];
@@ -332,7 +333,7 @@ mod tests {
             tom2: Some(1536 * GIB),
         };
         let in_mmio = [Reservation {
-            span: Span::new(0xfe00_0000, 0x1000),
+            span: Region::new(0xfe00_0000, 0x1000),
             kind: E820Kind::Reserved,
         }];
         assert!(matches!(
@@ -348,9 +349,9 @@ mod tests {
 
     #[test]
     fn naples_apob_is_reserved_not_nvs() {
-        let res = standard_reservations(Generation::Naples, Span::new(0x3000_0000, 0x1000), None);
+        let res = standard_reservations(Generation::Naples, Region::new(0x3000_0000, 0x1000), None);
         assert_eq!(res.len(), 4);
         assert_eq!(res[2].kind, E820Kind::Reserved);
-        assert_eq!(res[3].span, CACHE_WINDOW);
+        assert_eq!(res[3].span, LAYOUT.early);
     }
 }

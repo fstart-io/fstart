@@ -22,6 +22,8 @@ pub mod compression {
 
 /// The boot flow, for every SoC.
 pub mod flow;
+/// The reset image's DRAM layout and boot flash, for every SoC.
+pub mod layout;
 /// The boot media mount every AMD flow shares.
 #[cfg(feature = "media")]
 pub mod media;

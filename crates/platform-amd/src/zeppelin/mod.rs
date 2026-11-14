@@ -12,7 +12,8 @@ pub use chip::*;
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 mod tests;
 
-use crate::noncar::{self, Devices, layout::Region};
+use crate::layout::Region;
+use crate::noncar::{self, Devices};
 use crate::zeppelin as soc;
 use fstart_driver_amd::fch::taishan;
 
@@ -39,7 +40,7 @@ impl noncar::host::HostSoc for Zeppelin {
 }
 
 impl noncar::DieSoc for Zeppelin {
-    const LAYOUT: noncar::layout::Layout = layout::LAYOUT;
+    const LAYOUT: crate::layout::Layout = layout::LAYOUT;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;

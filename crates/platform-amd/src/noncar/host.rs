@@ -7,27 +7,23 @@
 //! With `--image-config` the plan also composes the flash image with the PSP
 //! firmware ([`ImageConfig`]).
 extern crate std;
-use super::{
-    Board, DieSoc,
-    layout::{Layout, Region},
-};
+use super::{Board, DieSoc};
 use crate::HostOptions;
+use crate::layout::{Layout, span};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, Platform, StageBuildConfig, StageLayout,
     board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig},
-    layout::RegionKind,
 };
 use fstart_image_build::{
     amd::{
         assembly::{AmdAssembly, FfsWindow, Firmware, PspOptions},
-        blobs, reset,
+        blobs,
     },
     build_plan::{
         ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
         FileBinding, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
     },
-    layout::EncodedLayout,
     plan::{BuildSelection, HostPlan, ResolvedPlan, Span, X86LinuxOptions},
     smm_image::ImageOptions,
 };
@@ -93,44 +89,6 @@ where
     fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String> {
         resolve::<B>(selection, &options)
     }
-}
-
-fn span(region: Region) -> Span {
-    Span {
-        base: region.base,
-        size: region.size,
-    }
-}
-
-/// The PSP-loaded image.
-pub fn image(layout: &Layout) -> Span {
-    span(layout.image)
-}
-
-/// The reset image's link contract through the shared AMD reset entry: the
-/// image, the firmware RAM below it and what lives there.
-pub fn reset_layout(layout: &Layout) -> reset::Layout {
-    reset::Layout {
-        image: span(layout.image),
-        early: span(Region::new(
-            layout.early.base,
-            layout.image.base - layout.early.base,
-        )),
-        pages: span(layout.pages()),
-        data: span(layout.data),
-        heap: span(layout.heap),
-        stack: span(layout.stack),
-        cache: span(layout.cache_window()),
-    }
-}
-
-/// The runtime layout descriptor the stage reads: the shared entry's
-/// regions, the flash and the FFS.
-pub fn descriptor(layout: &Layout) -> Result<EncodedLayout, String> {
-    let media: std::vec::Vec<_> = core::iter::once(span(layout.flash).region(RegionKind::Flash))
-        .chain(layout.ffs.map(|ffs| span(ffs).region(RegionKind::Firmware)))
-        .collect();
-    reset_layout(layout).descriptor(&media)
 }
 
 /// The board's SMM handler as a standalone image, one entry per CPU, which
@@ -435,10 +393,8 @@ where
     }
     <B::Soc as HostSoc>::check(B::CONFIG)?;
     let (payload, feature, payload_config) = payload(policy, &selection, &options.x86_linux)?;
-    let descriptor = descriptor(layout)?;
-    let expectations = reset_layout(layout).expectations(&descriptor)?;
-    expectations.validate()?;
-    let image = image(layout);
+    let expectations = layout.expectations()?;
+    let image = span(layout.image);
     let ffs_window = layout.ffs.map(span);
     let inputs = match ffs_window {
         Some(window) if payload == "linux" => vec![InputFile {
@@ -473,7 +429,7 @@ where
             "curve25519_dalek_backend=\"serial\"".into(),
         ],
         release_only: policy.release_only,
-        linker_script: Some(reset_layout(layout).linker_script(&descriptor)?),
+        linker_script: Some(layout.linker_script()?),
         environment_values: BTreeMap::from([(
             "FSTART_MP_MAX_CPUS".into(),
             <B::Soc as DieSoc>::MAX_CPUS.to_string(),

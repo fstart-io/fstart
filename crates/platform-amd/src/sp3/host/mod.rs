@@ -5,7 +5,7 @@
 //! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
 //! `reset`, built with every generation the board supports, linked at the
 //! common reset image address ([`layout::RESET`]) through the shared AMD
-//! reset entry ([`reset::Layout`]), and an
+//! reset entry ([`layout::LAYOUT`]), and an
 //! an `AmdHalvedFlash` image step that `fbuild assemble` composes into the vendor
 //! ROM with [`fstart_image_build::amd::halved_flash`]: one vendor EFS per half,
 //! a reset image copy per composed half, one FFS in the lower half
@@ -32,30 +32,23 @@ use std::{format, vec};
 use crate::HostOptions;
 use crate::sp3::silicon::Generation;
 use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig};
-use fstart_core::layout::{Region, RegionKind};
 use fstart_core::{
     BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
     PayloadConfig, StageBuildConfig, StageLayout, hstr,
 };
+use fstart_image_build::amd::blobs;
 use fstart_image_build::amd::halved_flash::{
     AmdHalvedFlashAssembly, FlashPlan, NvramSlot, PackedHalf, ResetSlot, Survey,
 };
-use fstart_image_build::amd::{blobs, reset};
 use fstart_image_build::build_plan::{
     ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
     ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
 };
-use fstart_image_build::elf::Expectations;
-use fstart_image_build::layout::EncodedLayout;
-use fstart_image_build::plan::{
-    BuildSelection, HostPlan, ResolvedPlan, Span as PlanSpan, X86LinuxOptions,
-};
+use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan, X86LinuxOptions};
 use fstart_image_build::smm_image::ImageOptions;
 
-use crate::sp3::layout::{
-    self, CACHE_WINDOW, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK,
-    STORE, Sp3BoardFacts, Span,
-};
+use crate::layout::Region;
+use crate::sp3::layout::{self, EARLY_REGION, FFS_WINDOW, LAYOUT, RESET, ROM3, Sp3BoardFacts};
 
 /// The firmware unit (and FFS file) name of the stage, which the PSP
 /// copies to DRAM as the BIOS reset image.
@@ -94,56 +87,6 @@ pub const fn soc_name(generation: Generation) -> &'static str {
         Generation::Rome => "rome",
         Generation::Milan => "milan",
     }
-}
-
-fn plan_span(span: Span) -> PlanSpan {
-    PlanSpan {
-        base: span.base,
-        size: span.size,
-    }
-}
-
-fn region(kind: RegionKind, span: Span) -> Region {
-    Region {
-        kind,
-        base: span.base,
-        size: span.size,
-    }
-}
-
-/// The reset image's link contract: the common reset image, the early
-/// region below it, the page tables, BSS, heap and stack.
-fn reset_layout() -> reset::Layout {
-    reset::Layout {
-        image: plan_span(RESET.dram()),
-        early: plan_span(EARLY_REGION),
-        pages: plan_span(PAGE_TABLES),
-        data: plan_span(DATA),
-        heap: plan_span(HEAP),
-        stack: plan_span(STACK),
-        cache: plan_span(CACHE_WINDOW),
-    }
-}
-
-/// Runtime layout descriptor of the reset image (read by
-/// `fstart_stage::layout::current()`): the shared entry's regions plus the
-/// flash (ROM3), the FFS window within it and the store.
-pub fn descriptor() -> Result<EncodedLayout, String> {
-    reset_layout().descriptor(&[
-        region(RegionKind::Flash, ROM3),
-        region(RegionKind::Firmware, FFS_WINDOW),
-        region(RegionKind::FirmwareStore, STORE),
-    ])
-}
-
-/// The reset image linker script (one for every generation).
-pub fn linker_script() -> Result<String, String> {
-    reset_layout().linker_script(&descriptor()?)
-}
-
-/// What the linked reset image must look like.
-pub fn expectations() -> Result<Expectations, String> {
-    reset_layout().expectations(&descriptor()?)
 }
 
 /// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
@@ -288,7 +231,7 @@ fn ffs_assembly(
     microcode: Option<MicrocodeConfig>,
 ) -> FfsAssembly {
     let (reset, ffs) = (RESET, FFS_WINDOW);
-    let region = |name: &str, span: Span, kind| MemoryRegion {
+    let region = |name: &str, span: Region, kind| MemoryRegion {
         name: hstr(name),
         base: span.base,
         size: span.size,
@@ -312,9 +255,9 @@ fn ffs_assembly(
                 ..Default::default()
             },
             load_addr: reset.destination,
-            stack_size: STACK.size as u32,
-            heap_size: Some(HEAP.size as u32),
-            data_addr: Some(DATA.base),
+            stack_size: LAYOUT.stack.size as u32,
+            heap_size: Some(LAYOUT.heap.size as u32),
+            data_addr: Some(LAYOUT.data.base),
             external: false,
         }),
         security: fstart_core::default_security_config(),
@@ -369,7 +312,7 @@ pub fn resolve<B: Sp3BoardFacts>(
         ]
         .map(String::from)
         .to_vec(),
-        linker_script: Some(linker_script()?),
+        linker_script: Some(LAYOUT.linker_script()?),
         environment_values: mp_capacity::<B>()
             .into_iter()
             .chain([(TSEG_SIZE_ENV.into(), crate::sp3::smm::TSEG_SIZE.to_string())])
@@ -382,7 +325,7 @@ pub fn resolve<B: Sp3BoardFacts>(
         file_bindings: vec![],
         board_features: vec![],
         output: UnitOutput::Executable {
-            expectations: expectations()?,
+            expectations: LAYOUT.expectations()?,
             load_address: reset.destination,
             flat_capacity: u64::from(reset.size),
         },
@@ -808,14 +751,15 @@ mod tests {
 
     #[test]
     fn descriptor_decodes_with_the_layout_regions() {
-        let bytes = descriptor().unwrap();
+        use fstart_core::layout::RegionKind;
+        let bytes = LAYOUT.descriptor().unwrap();
         let layout = fstart_core::layout::Layout::parse(bytes.as_bytes()).unwrap();
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
         assert_eq!(find(RegionKind::Image).base, 0x75d0_0000);
         assert_eq!(find(RegionKind::Firmware).base, 0xfd_0060_0000);
         assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00cc_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
-        assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
+        assert_eq!(find(RegionKind::Stack).end(), Some(LAYOUT.stack.end()));
     }
 
     #[test]

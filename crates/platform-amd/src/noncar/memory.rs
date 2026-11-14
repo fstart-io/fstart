@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The memory map of a noncar SoC: the PSP's APOB and TOP_MEM/TOM2 replace
 //! FSP HOBs.
-use super::layout::Region;
+use crate::layout::Region;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, E820State, build_pc_compatible_e820,
 };
