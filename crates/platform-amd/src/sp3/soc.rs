@@ -583,8 +583,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
     }
 
     /// TSEG, SMBASE and lock on every thread with the FCH handler image, then
-    /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3). Without an SMM
-    /// image in this build SMM stays unlocked; that is logged, not hidden.
+    /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3).
     ///
     /// Order (AMD PPR 55803 §2.1.12.1, MSRC001_0111..0113, C001_0015): FCH
     /// SMIs off; TValid/AValid cleared so TSEG is plain DRAM while the BSP
@@ -612,38 +611,23 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             usb_bus_count: F::usb_bus_count(soc),
             bmc: ctx.config.bmc_sx_notify,
         };
-        #[cfg(fstart_sp3_has_smm_image)]
-        {
-            const IMAGE: &[u8] = include_bytes!(env!("FSTART_SMM_IMAGE"));
-            parts::tpm::measure_smm(IMAGE);
-            // The handler's page tables map the low 4 GiB only; a PSP BAR
-            // above would fault in SMM at SmmInfo, after the lock.
-            if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
-                return Err("PSP BAR for SMM");
-            }
-            let smi = super::smm::Sp3Smi {
-                fch: &soc.fch,
-                config,
-            };
-            fstart_arch::x86::cpu::amd::smm::AmdSmm::new("sp3", &smi)
-                .install(mp, IMAGE, flow.tseg.base, flow.tseg.size as u32)
-                .map_err(|_| "SMM install")?;
-            super::smm::prepare_psp_smi(&soc.fch);
-            fstart_driver_amd::fch::hw::smi::software_smi(
-                soc.fch.io(),
-                super::smm::sw::PSP_SMM_INFO,
-            );
-            state.smm = Some(config);
-            state.soc.smm_installed = true;
+        if let Some(image) = crate::tseg::IMAGE {
+            parts::tpm::measure_smm(image);
         }
-        #[cfg(not(fstart_sp3_has_smm_image))]
-        {
-            let _ = (mp, config);
-            fstart_log::warn!(
-                "sp3: no SMM image in this build; TSEG {:#x} unused, SMM stays unlocked",
-                flow.tseg.base
-            );
+        // The handler's page tables map the low 4 GiB only; a PSP BAR
+        // above would fault in SMM at SmmInfo, after the lock.
+        if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
+            return Err("PSP BAR for SMM");
         }
+        let smi = super::smm::Sp3Smi {
+            fch: &soc.fch,
+            config,
+        };
+        crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
+        super::smm::prepare_psp_smi(&soc.fch);
+        fstart_driver_amd::fch::hw::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+        state.smm = Some(config);
+        state.soc.smm_installed = true;
         Ok(())
     }
 
