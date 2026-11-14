@@ -3,6 +3,7 @@ pub mod assemble;
 pub mod build_plan;
 
 mod coreboot_payload;
+pub mod donor;
 pub mod elf;
 mod elf_flat;
 mod elf_payload;

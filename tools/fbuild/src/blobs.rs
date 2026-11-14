@@ -1,11 +1,10 @@
 //! `fbuild blobs`: fill a blob directory from a vendor flash image with
 //! the files the board's firmware tables name, at the paths `--blobs`
-//! builds read them from. The extraction itself belongs to the image
-//! format whose table namespace the board declares (today: AMD's
-//! `amd` tables, extracted by `fstart_image_build::amd::blobs`); this
-//! module only dispatches on that namespace and writes the receipt.
+//! builds read them from. The extraction belongs to the image format
+//! whose table namespace the board declares
+//! ([`fstart_image_build::donor`]); this module writes the files and
+//! their receipt.
 use crate::{board_manifest::BoardManifest, profile_source::ProfileSource};
-use fstart_image_build::amd::blobs as amd_blobs;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -78,19 +77,17 @@ fn extract_from(
 ) -> Result<(), String> {
     let table = &source.package["metadata"]["fstart"];
     let image = fs::read(rom).map_err(|e| format!("{}: {e}", rom.display()))?;
-    // The one namespace dispatch: which format's firmware tables the
-    // board declares decides who extracts them.
-    let (name, found, missing) = if !table["amd"].is_null() {
-        amd_blobs::extract_tables(
-            table,
-            &source.platform["metadata"]["fstart"],
-            &image,
-            allow_missing,
-        )
-        .map_err(|e| format!("{}: {e}", rom.display()))?
-    } else {
-        return Err("the board declares no donor-extractable firmware tables".into());
-    };
+    let fstart_image_build::donor::Extraction {
+        board: name,
+        found,
+        missing,
+    } = fstart_image_build::donor::extract(
+        table,
+        &source.platform["metadata"]["fstart"],
+        &image,
+        allow_missing,
+    )
+    .map_err(|e| format!("{}: {e}", rom.display()))?;
     let name = name.as_str();
     if !missing.is_empty() && !allow_missing {
         return Err(format!(
