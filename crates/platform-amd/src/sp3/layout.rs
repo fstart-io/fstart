@@ -31,41 +31,17 @@
 //! from its first instructions, and the only PSP-written x86-visible range is
 //! the APOB at `0x3000_0000` (PSP_APOB §3.5).
 
+use crate::layout::{Layout, Region};
 use crate::sp3::silicon::Generation;
 use fstart_driver_amd::fch::hw::rom3;
-
-/// A physical address range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub base: u64,
-    pub size: u64,
-}
-
-impl Span {
-    pub const fn new(base: u64, size: u64) -> Self {
-        Self { base, size }
-    }
-
-    pub const fn end(&self) -> u64 {
-        self.base + self.size
-    }
-
-    pub const fn contains(&self, other: &Span) -> bool {
-        other.base >= self.base && other.end() <= self.end()
-    }
-
-    pub const fn overlaps(&self, other: &Span) -> bool {
-        self.base < other.end() && other.base < self.end()
-    }
-}
 
 /// One flash half (16 MiB), the unit an EFS describes in the dual layout.
 pub const HALF_SIZE: u64 = 16 << 20;
 /// ROM2: the 16 MiB flash page `SPIx5C` selects, below 4 GiB.
-pub const ROM2: Span = Span::new(fstart_amdfw_format::ROM2_BASE, HALF_SIZE);
+pub const ROM2: Region = Region::new(fstart_amdfw_format::ROM2_BASE, HALF_SIZE);
 /// ROM3: the whole flash (up to 64 MiB) above 4 GiB, in the 12 GiB hole
 /// below 1 TiB; identity-mapped by the reset image's page tables.
-pub const ROM3: Span = Span::new(rom3::BASE, rom3::SIZE);
+pub const ROM3: Region = Region::new(rom3::BASE, rom3::SIZE);
 /// End of every SP3 reset image in DRAM (exclusive).
 pub const IMAGE_END: u64 = 0x7600_0000;
 /// Real-mode segment the PSP releases x86 in: CS base = image end − 64 KiB,
@@ -103,8 +79,8 @@ pub enum GeometryError {
 }
 
 impl ResetGeometry {
-    pub const fn dram(&self) -> Span {
-        Span::new(self.destination, self.size as u64)
+    pub const fn dram(&self) -> Region {
+        Region::new(self.destination, self.size as u64)
     }
 
     /// Where the PSP releases the BSP (and the SMU the APs).
@@ -177,36 +153,42 @@ const NVRAM_SIZE: u32 = 0x4_0000;
 /// Upper bound of the FFS in the ROM3 view, the window the FFS is built
 /// for: `[FFS_OFFSET, NVRAM.offset)` of the lower half. The runtime reads
 /// only what the flash anchor and FFS locator describe.
-pub const FFS_WINDOW: Span = Span::new(
+pub const FFS_WINDOW: Region = Region::new(
     ROM3.base + FFS_OFFSET as u64,
     (NVRAM.offset - FFS_OFFSET) as u64,
 );
 
 const _: () = assert!(NVRAM.end() == RESET.flash_offset && NVRAM.offset.is_multiple_of(0x1000));
 
-/// The 16 MiB write-back window opened before anything is written (the
-/// vendor's MTRR 7 window): early region plus reset image.
-pub const CACHE_WINDOW: Span = Span::new(0x7500_0000, 0x100_0000);
-/// Firmware-owned DRAM below the reset image.
-pub const EARLY_REGION: Span = Span::new(0x7500_0000, 0xc0_0000);
+/// Firmware-owned DRAM below the reset image: the page tables, BSS,
+/// heap, stack and store of [`LAYOUT`].
+pub const EARLY_REGION: Region = Region::new(0x7500_0000, 0xc0_0000);
 
-/// Number of page-directory-pointer tables: each maps 512 GiB with 1 GiB
-/// pages (every Zen core has `PDPE1GB`). 256 cover the whole lower
-/// canonical half (128 TiB), so DRAM of a full 2P system and the DF's
-/// 64-bit MMIO windows are mapped without later table growth.
-pub const PDPT_COUNT: u64 = 256;
-/// PML4 followed by [`PDPT_COUNT`] PDPTs, built by the reset entry (`amd_psp_reset.S`).
-pub const PAGE_TABLES: Span = Span::new(0x7500_0000, 0x1000 * (1 + PDPT_COUNT));
-/// `.data` stays in the image (it is already in DRAM); this is BSS and
-/// the arch crate's per-AP stacks (4 KiB × CPUs).
-pub const DATA: Span = Span::new(0x7520_0000, 0x40_0000);
-/// Stage heap (`_FSTART_HEAP`).
-pub const HEAP: Span = Span::new(0x7560_0000, 0x40_0000);
-/// BSP stack.
-pub const STACK: Span = Span::new(0x75a0_0000, 0x4_0000);
-/// Firmware store window (ACPI/SMBIOS tables, records); only its used part
-/// needs to stay reserved, but [`EARLY_REGION`] is reserved as a whole.
-pub const STORE: Span = Span::new(0x75b0_0000, 0x10_0000);
+/// The reset image in DRAM and everything it needs besides its own bytes,
+/// in the vendor's 16 MiB write-back window (its MTRR 7 window, the
+/// layout's cache window). 256 PDPTs of 1 GiB pages (every Zen core has
+/// `PDPE1GB`) cover the whole lower canonical half (128 TiB), so DRAM of a
+/// full 2P system and the DF's 64-bit MMIO windows are mapped without
+/// later table growth. `.data` stays in the image (it is already in
+/// DRAM); `data` is BSS and the arch crate's per-AP stacks (4 KiB × CPUs).
+/// The store holds the ACPI/SMBIOS tables and records; only its used part
+/// needs to stay reserved, but the early region is reserved as a whole.
+/// The FFS is read through ROM3, the whole flash above 4 GiB.
+pub const LAYOUT: Layout = Layout {
+    early: Region::new(EARLY_REGION.base, IMAGE_END - EARLY_REGION.base),
+    page_tables: EARLY_REGION.base,
+    pdpts: 256,
+    data: Region::new(0x7520_0000, 0x40_0000),
+    heap: Region::new(0x7560_0000, 0x40_0000),
+    stack: Region::new(0x75a0_0000, 0x4_0000),
+    store: Some(Region::new(0x75b0_0000, 0x10_0000)),
+    image: RESET.dram(),
+    flash: ROM3,
+    ffs: Some(FFS_WINDOW),
+}
+.check();
+
+const _: () = assert!(EARLY_REGION.contains(&LAYOUT.store.unwrap()));
 
 /// Board facts the SP3 build plan and flash image need. A board crate
 /// implements this for its `Board` type, e.g. for the Tyan S8030:
@@ -246,7 +228,7 @@ mod tests {
     #[test]
     fn reset_image_and_ffs_window() {
         assert_eq!(RESET.reset_vector(), 0x75ff_fff0);
-        assert!(CACHE_WINDOW.contains(&RESET.dram()));
+        assert!(LAYOUT.cache_window().contains(&RESET.dram()));
         assert_eq!(FFS_WINDOW.base, 0xfd_0060_0000);
         assert_eq!(FFS_WINDOW.end(), ROM3.base + u64::from(NVRAM.offset));
         assert_eq!(NVRAM.offset, 0xcc_0000);
@@ -264,26 +246,14 @@ mod tests {
         assert_eq!(unaligned.check(), Err(GeometryError::Alignment));
         // ROM3 lies in the hole below 1 TiB, inside the identity map.
         assert!(ROM3.base >= 0xfd_0000_0000 && ROM3.end() <= 1 << 40);
-        assert!(ROM3.end() <= (PDPT_COUNT * 512) << 30);
+        assert!(ROM3.end() <= (LAYOUT.pdpts * 512) << 30);
     }
 
     #[test]
-    fn early_regions_are_disjoint_inside_the_early_region_and_cache_window() {
-        let parts = [PAGE_TABLES, DATA, HEAP, STACK, STORE];
-        assert!(CACHE_WINDOW.contains(&EARLY_REGION));
-        // One variable MTRR: naturally aligned power of two.
-        assert!(
-            CACHE_WINDOW.size.is_power_of_two()
-                && CACHE_WINDOW.base.is_multiple_of(CACHE_WINDOW.size)
-        );
-        for (i, a) in parts.iter().enumerate() {
-            assert!(EARLY_REGION.contains(a), "{a:x?}");
-            assert_eq!(a.base % 0x1000, 0);
-            for b in &parts[i + 1..] {
-                assert!(!a.overlaps(b), "{a:x?} {b:x?}");
-            }
-        }
+    fn the_layout_is_the_vendor_window() {
+        assert_eq!(LAYOUT.cache_window(), Region::new(0x7500_0000, 0x100_0000));
+        assert!(EARLY_REGION.end() <= RESET.destination);
         // The page tables cover the canonical lower half with 1 GiB pages.
-        assert_eq!((PDPT_COUNT * 512) << 30, 1 << 47);
+        assert_eq!((LAYOUT.pdpts * 512) << 30, 1 << 47);
     }
 }

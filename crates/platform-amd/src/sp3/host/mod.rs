@@ -1,80 +1,20 @@
-//! Host build plan and the SP3 flash image (FIRMWARE_IMAGE §7).
-//!
-//! fbuild's plan runner calls [`Plan::emit`] with the board's `Board` type
-//! (which implements [`Sp3BoardFacts`]) and the JSON [`BuildSelection`];
-//! the platform answers with the concrete [`BuildPlan`]: one firmware unit,
-//! `reset`, built with every generation the board supports, linked at the
-//! common reset image address ([`layout::RESET`]) through the shared AMD
-//! reset entry ([`reset::Layout`]), and an
-//! an `AmdHalvedFlash` image step that `fbuild assemble` composes into the vendor
-//! ROM with [`fstart_image_build::amd::halved_flash`]: one vendor EFS per half,
-//! a reset image copy per composed half, one FFS in the lower half
-//! (`--image-config` composes into another vendor ROM, e.g. the target
-//! board's flash backup).
-//!
-//! The FFS holds the payload and a copy of the stage unit: the FFS builder
-//! finalizes the unit's trust policy only in FFS-resident files, and the
-//! composer copies it, the FFS locator and the flash anchor (FFS flash
-//! offset and size) into the PSP-copied `0x62` image.
-//!
-//! A second unit, `smm`, builds the board crate's library with the FCH SMI
-//! handler (`smm::handle`, bound by the board's `smm_bin!`) into a
-//! position-independent SMM image with one entry stub per CPU the board
-//! allows; the stage unit embeds it through `FSTART_SMM_IMAGE` and its build
-//! script checks that it fits the TSEG ([`crate::sp3::smm::TSEG_SIZE`]), as the
-//! MIT Intel and QEMU q35 plans do.
+//! The host build of an SP3 board: its [`crate::host::Host`] data, from
+//! the board's facts ([`Sp3BoardFacts`]), the SP3 layout and the SP3 flash
+//! ([`crate::host::dual`]): one reset image for every generation the board
+//! supports, linked at the common reset image address ([`layout::RESET`]),
+//! which every composed half's `0x62` entry names.
 
-use std::boxed::Box;
-use std::collections::BTreeMap;
-use std::string::{String, ToString};
-use std::{format, vec};
+use std::string::String;
+use std::vec::Vec;
 
-use crate::HostOptions;
+use crate::host::{self, Host, dual};
+use crate::sp3::layout::{self, EARLY_REGION, LAYOUT, RESET, Sp3BoardFacts};
 use crate::sp3::silicon::Generation;
-use fstart_core::board::{AmdMicrocodeConfig, AmdVendorMicrocode, MicrocodeConfig};
-use fstart_core::layout::{Region, RegionKind};
-use fstart_core::{
-    BoardBuildPolicy, FirmwareImageConfig, FirmwareImagePolicy, MemoryRegion, MonolithicConfig,
-    PayloadConfig, StageBuildConfig, StageLayout, hstr,
-};
-use fstart_image_build::amd::halved_flash::{
-    AmdHalvedFlashAssembly, FlashPlan, NvramSlot, PackedHalf, ResetSlot, Survey,
-};
-use fstart_image_build::amd::{blobs, reset};
-use fstart_image_build::build_plan::{
-    ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
-    ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
-};
-use fstart_image_build::elf::Expectations;
-use fstart_image_build::layout::EncodedLayout;
-use fstart_image_build::plan::{
-    BuildSelection, HostPlan, ResolvedPlan, Span as PlanSpan, X86LinuxOptions,
-};
-use fstart_image_build::smm_image::ImageOptions;
+use fstart_image_build::amd::halved_flash::{FlashPlan, NvramSlot, ResetSlot, Survey};
+use fstart_image_build::build_plan::BuildPlan;
+use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan};
 
-use crate::sp3::layout::{
-    self, CACHE_WINDOW, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK,
-    STORE, Sp3BoardFacts, Span,
-};
-
-/// The firmware unit (and FFS file) name of the stage, which the PSP
-/// copies to DRAM as the BIOS reset image.
-pub const STAGE_UNIT: &str = "stage";
-/// Platform feature that bundles the stage runtime.
-pub const STAGE_FEATURE: &str = "bundle";
-/// The SMM image unit; the stage unit is its only consumer.
-pub const SMM_UNIT: &str = "smm";
-/// Platform features of the SMM unit: the handler and its binding macro
-/// with the SMM panic handler.
-pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
-/// Stage-unit environment carrying the SMM image path (`build.rs`).
-pub const SMM_IMAGE_ENV: &str = "FSTART_SMM_IMAGE";
-/// Stage-unit environment carrying the TSEG size the image must fit.
-pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
-/// Per-thread SMM stack: the linked handler's deepest static call path
-/// (it has no indirect calls) needs about 1 KiB; 128 threads take 1 MiB of
-/// the 8 MiB TSEG.
-pub const SMM_STACK_SIZE: u32 = 0x2000;
+pub use crate::host::{SMM_STACK_SIZE, SMM_UNIT, STAGE_FEATURE, STAGE_UNIT, TSEG_SIZE_ENV};
 
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
@@ -96,163 +36,34 @@ pub const fn soc_name(generation: Generation) -> &'static str {
     }
 }
 
-fn plan_span(span: Span) -> PlanSpan {
-    PlanSpan {
-        base: span.base,
-        size: span.size,
-    }
-}
-
-fn region(kind: RegionKind, span: Span) -> Region {
-    Region {
-        kind,
-        base: span.base,
-        size: span.size,
-    }
-}
-
-/// The reset image's link contract: the common reset image, the early
-/// region below it, the page tables, BSS, heap and stack.
-fn reset_layout() -> reset::Layout {
-    reset::Layout {
-        image: plan_span(RESET.dram()),
-        early: plan_span(EARLY_REGION),
-        pages: plan_span(PAGE_TABLES),
-        data: plan_span(DATA),
-        heap: plan_span(HEAP),
-        stack: plan_span(STACK),
-        cache: plan_span(CACHE_WINDOW),
-    }
-}
-
-/// Runtime layout descriptor of the reset image (read by
-/// `fstart_stage::layout::current()`): the shared entry's regions plus the
-/// flash (ROM3), the FFS window within it and the store.
-pub fn descriptor() -> Result<EncodedLayout, String> {
-    reset_layout().descriptor(&[
-        region(RegionKind::Flash, ROM3),
-        region(RegionKind::Firmware, FFS_WINDOW),
-        region(RegionKind::FirmwareStore, STORE),
-    ])
-}
-
-/// The reset image linker script (one for every generation).
-pub fn linker_script() -> Result<String, String> {
-    reset_layout().linker_script(&descriptor()?)
-}
-
-/// What the linked reset image must look like.
-pub fn expectations() -> Result<Expectations, String> {
-    reset_layout().expectations(&descriptor()?)
-}
-
-/// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
-/// image's entry count agree.
-fn mp_capacity<B: Sp3BoardFacts>() -> BTreeMap<String, String> {
-    BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), B::MAX_CPUS.to_string())])
-}
-
-/// The SMM image unit: the board library with the platform's FCH handler,
-/// built for every generation the board lists, linked position independent
-/// (the installer copies it to the top of TSEG) with one entry stub per
-/// CPU the board allows.
-fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
-    // PIE, not static: the handler takes the address of its SMRAM
-    // statics (P2C/C2P pages) and the drivers use jump tables, which
-    // static code addresses absolutely (`R_X86_64_32S`); PIE code
-    // reaches them RIP-relative, and PLT calls (`-Zplt=yes`, also for
-    // `memcpy`) link to direct ones. The image builder still rejects
-    // any load-base-dependent reference.
-    SmmUnit {
-        name: SMM_UNIT.into(),
-        platform: fstart_core::Platform::X86_64,
-        features: SMM_FEATURES.into_iter().map(String::from).collect(),
-        relocation: SmmRelocation::Pie,
-        // No console in SMM: the log macros compile out (and with them
-        // their formatting panics, which the image builder rejects).
-        environment_values: mp_capacity::<B>()
-            .into_iter()
-            .chain([("FSTART_LOG_LEVEL".into(), "off".into())])
-            .collect(),
-        image: ImageOptions {
-            entry_count: B::MAX_CPUS,
-            stack_size: SMM_STACK_SIZE,
-            coreboot_module_args: false,
-            coreboot_header: false,
-        },
-    }
-    .into()
-}
-
-/// The payload a build selects (`--payload`, default halt).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Payload {
-    Halt,
-    /// Direct x86 Linux (bzImage from `--kernel`, stored in the FFS).
-    Linux,
-    /// CrabEFI linked into the stage unit.
-    Uefi,
-    /// CrabEFI's graphical boot manager.
-    UefiUi,
-}
-
-impl Payload {
-    pub fn select(selection: &BuildSelection, linux: &X86LinuxOptions) -> Result<Self, String> {
-        let payload = match selection.payload.as_deref() {
-            None | Some("halt") => Self::Halt,
-            Some("linux") => Self::Linux,
-            Some("uefi") => Self::Uefi,
-            Some("uefi-ui") => Self::UefiUi,
-            Some(other) => {
-                return Err(format!(
-                    "SP3 supports the halt, linux, uefi and uefi-ui payloads, not {other}"
-                ));
-            }
-        };
-        if linux.any() && payload != Self::Linux {
-            return Err("x86 Linux options require '--payload linux'".into());
-        }
-        Ok(payload)
-    }
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Halt => "halt",
-            Self::Linux => "linux",
-            Self::Uefi => "uefi",
-            Self::UefiUi => "uefi-ui",
-        }
-    }
-
-    /// Platform features the stage unit needs for this payload.
-    pub const fn features(self) -> &'static [&'static str] {
-        match self {
-            Self::Halt => &[],
-            Self::Linux => &["payload-linux"],
-            Self::Uefi => &["payload-uefi"],
-            Self::UefiUi => &["payload-uefi-ui-core"],
-        }
-    }
-
-    fn config(self, linux: &X86LinuxOptions) -> Result<Option<PayloadConfig>, String> {
-        use fstart_core::payload_manifest::{
-            X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR, X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
-        };
-        Ok(match self {
-            Self::Halt => None,
-            Self::Uefi | Self::UefiUi => {
-                Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD))
-            }
-            Self::Linux => Some(fstart_core::x86_linux_payload(
-                linux
-                    .kernel_load_addr
-                    .unwrap_or(X86_LINUX_DEFAULT_KERNEL_LOAD_ADDR),
-                X86_LINUX_DEFAULT_ZERO_PAGE_ADDR,
-                linux.bootargs.as_deref().unwrap_or_default(),
-                linux.print_mtrrs,
-                crate::compression::PAYLOAD,
-            )?),
+/// The generations of board `B` in boot ROM order (Naples below Rome
+/// below Milan).
+fn halves<B: Sp3BoardFacts>() -> Vec<dual::Half> {
+    let mut generations = B::GENERATIONS.to_vec();
+    generations.sort();
+    generations
+        .into_iter()
+        .map(|generation| dual::Half {
+            name: soc_name(generation),
+            bios_directory: generation.profile().bios,
         })
+        .collect()
+}
+
+/// The host data of board `B`.
+fn host<B: Sp3BoardFacts>(halves: &[dual::Half]) -> Host<'_> {
+    Host {
+        name: "sp3",
+        layout: LAYOUT,
+        max_cpus: B::MAX_CPUS,
+        tseg_size: crate::sp3::smm::TSEG_SIZE,
+        release_only: false,
+        i2c_input: false,
+        image: host::Image::Dual(dual::Image {
+            halves,
+            vendor_image: B::VENDOR_IMAGE,
+            plan: flash_plan::<B>(),
+        }),
     }
 }
 
@@ -278,276 +89,35 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
     }
 }
 
-/// The assembler's view of the stage unit and its FFS: the FFS lives in
-/// the ROM3 firmware window ([`FFS_WINDOW`], an upper bound; the composer
-/// enforces the vendor ROM's real one), the unit is monolithic and stored
-/// in the FFS (see the module docs) besides its `0x62` copy.
-fn ffs_assembly(
-    payload: Payload,
-    config: Option<PayloadConfig>,
-    microcode: Option<MicrocodeConfig>,
-) -> FfsAssembly {
-    let (reset, ffs) = (RESET, FFS_WINDOW);
-    let region = |name: &str, span: Span, kind| MemoryRegion {
-        name: hstr(name),
-        base: span.base,
-        size: span.size,
-        kind,
-    };
-    FfsAssembly {
-        platform: fstart_core::Platform::X86_64,
-        memory: vec![
-            region("flash", ROM3, fstart_core::memory::RegionKind::Rom),
-            region("early", EARLY_REGION, fstart_core::memory::RegionKind::Ram),
-        ],
-        flash: None,
-        bootstrap: vec![],
-        stages: StageLayout::Monolithic(MonolithicConfig {
-            build: StageBuildConfig {
-                firmware_image: Some(FirmwareImageConfig::default()),
-                verify_firmware: true,
-                payload: payload != Payload::Halt,
-                pci: true,
-                acpi: true,
-                ..Default::default()
-            },
-            load_addr: reset.destination,
-            stack_size: STACK.size as u32,
-            heap_size: Some(HEAP.size as u32),
-            data_addr: Some(DATA.base),
-            external: false,
-        }),
-        security: fstart_core::default_security_config(),
-        payload: config,
-        microcode,
-        data_assets: vec![],
-        file_assets: vec![],
-        full_flash_image: false,
-        boot_image_format: BootImageFormat::None,
-        boot_hart_id: 0,
-        build: BoardBuildPolicy {
-            firmware_image: FirmwareImagePolicy::memory_mapped(ffs.base, ffs.size),
-            ..Default::default()
-        },
-    }
-}
-
 /// Resolve the board's plan: one build for every generation it supports.
 pub fn resolve<B: Sp3BoardFacts>(
     selection: &BuildSelection,
-    options: &HostOptions,
+    options: &crate::HostOptions,
 ) -> Result<BuildPlan, String> {
-    selection.reject_debug()?;
-
-    if B::GENERATIONS.is_empty() {
-        return Err("the board lists no SP3 generation".into());
-    }
-    let payload = Payload::select(selection, &options.x86_linux)?;
-    if !selection.compiler_files.is_empty() {
-        return Err("SP3 takes no compiler file inputs".into());
-    }
-    if B::MAX_CPUS == 0 {
-        return Err("CPU population must be nonzero".into());
-    }
-    let reset = RESET;
-    let unit = CompilationUnit {
-        name: STAGE_UNIT.into(),
-        cargo_target: CargoTarget::BoardBinary,
-        target: "x86_64-unknown-none".into(),
-        features: core::iter::once(STAGE_FEATURE)
-            .chain(payload.features().iter().copied())
-            .map(String::from)
-            .collect(),
-        build_std: Some("core,alloc".into()),
-        release_only: false,
-        // DRAM below 4 GiB: small code model, static relocations.
-        rustflags: [
-            "-Zub-checks=no",
-            "-Crelocation-model=static",
-            "-Ccode-model=small",
-            "-Clink-arg=-no-pie",
-        ]
-        .map(String::from)
-        .to_vec(),
-        linker_script: Some(linker_script()?),
-        environment_values: mp_capacity::<B>()
-            .into_iter()
-            .chain([(TSEG_SIZE_ENV.into(), crate::sp3::smm::TSEG_SIZE.to_string())])
-            .collect(),
-        bindings: vec![ArtifactBinding {
-            producer: SMM_UNIT.into(),
-            artifact: "image".into(),
-            environment: SMM_IMAGE_ENV.into(),
-        }],
-        file_bindings: vec![],
-        board_features: vec![],
-        output: UnitOutput::Executable {
-            expectations: expectations()?,
-            load_address: reset.destination,
-            flat_capacity: u64::from(reset.size),
-        },
-    };
-    // The kernel is the one file a caller supplies (`--kernel`); the
-    // assembler enforces what actually fits next to the stage unit copy.
-    let inputs = match payload {
-        Payload::Linux => vec![InputFile {
-            name: "kernel".into(),
-            default: None,
-            capacity: FFS_WINDOW.size,
-        }],
-        Payload::Halt | Payload::Uefi | Payload::UefiUi => vec![],
-    };
-    // The PSP firmware: packed from the blob directory (`--blobs`,
-    // `--donor`), or the board's vendor ROM, which `--image-config`
-    // replaces (same workspace-relative or absolute path rules).
-    let (vendor_image, packed, microcode) = match (&options.blobs, &options.image_config) {
-        (Some(_), Some(_)) => {
-            return Err(
-                "SP3 images are packed from --blobs or composed into --image-config".into(),
-            );
-        }
-        (Some(dir), None) => {
-            let (halves, microcode) = packed::<B>(selection, dir)?;
-            (String::new(), halves, microcode)
-        }
-        (None, image) => {
-            let vendor_image = image.clone().unwrap_or_else(|| B::VENDOR_IMAGE.into());
-            let microcode = microcode::<B>(&vendor_image)?;
-            (vendor_image, vec![], microcode)
-        }
-    };
-    let plan = BuildPlan {
-        payload: payload.name().into(),
-        platform: fstart_core::Platform::X86_64,
-        units: vec![smm_unit::<B>(), unit],
-        stages: vec![STAGE_UNIT.into()],
-        images: vec![
-            ffs_assembly(
-                payload,
-                payload.config(&options.x86_linux)?,
-                Some(microcode),
-            )
-            .into(),
-            ImageStep::new(
-                "flash",
-                ImageOperation::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
-                    ffs: ImageStep::FFS.into(),
-                    vendor_image,
-                    packed,
-                    stage_unit: STAGE_UNIT.into(),
-                    compose: flash_plan::<B>(),
-                })),
-            ),
-        ],
-        run: None,
-        inputs,
-    };
-    plan.order()?;
-    Ok(plan)
-}
-
-/// The halves packed from the blob directory `dir`: one per generation the
-/// board lists, in boot ROM order (Naples below Rome below Milan), from the
-/// platform's `[package.metadata.fstart.amd.<generation>]` table and the
-/// board's; and the microcode files of all of them for the FFS.
-fn packed<B: Sp3BoardFacts>(
-    selection: &BuildSelection,
-    dir: &str,
-) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
-    let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
-    let tables = &selection.manifests;
-    let boards = blobs::board_tables(&tables.board["amd"])?;
-    let name = tables.board["board"]
-        .as_str()
-        .ok_or("the board table has no board name")?;
-    let mut generations = B::GENERATIONS.to_vec();
-    generations.sort();
-    let mut halves = vec![];
-    let mut files = heapless::Vec::new();
-    for generation in generations {
-        let soc_name = soc_name(generation);
-        let board = boards
-            .iter()
-            .find(|board| board.soc == soc_name)
-            .ok_or_else(|| format!("the board has no {soc_name} firmware table"))?;
-        let soc: blobs::SocBlobs = serde_json::from_value(tables.platform["amd"][soc_name].clone())
-            .map_err(|e| format!("platform [package.metadata.fstart.amd.{soc_name}]: {e}"))?;
-        if soc.bios_directory != generation.profile().bios {
-            return Err(format!("the {soc_name} table names another BIOS directory"));
-        }
-        let resolved = blobs::resolve(
-            &soc,
-            board,
-            name,
-            &dir,
-            fstart_amdfw_format::HALF_SIZE as u32,
-        )?;
-        for file in &resolved.microcode {
-            files
-                .push(
-                    file.as_str()
-                        .try_into()
-                        .map_err(|_| format!("microcode path {file} is too long"))?,
-                )
-                .map_err(|_| "too many microcode files")?;
-        }
-        halves.push(PackedHalf {
-            generation: generation.profile().bios,
-            files: resolved.files,
-            apob_destination: board
-                .apob_destination
-                .or(soc.apob_destination)
-                .ok_or_else(|| format!("the {soc_name} table has no APOB destination"))?,
-        });
-    }
-    if halves.len() > 2 {
-        return Err("an SP3 flash has two halves, not one per generation".into());
-    }
-    Ok((
-        halves,
-        MicrocodeConfig::Amd(AmdMicrocodeConfig {
-            files,
-            vendor_images: heapless::Vec::new(),
-        }),
-    ))
-}
-
-/// The microcode the FFS carries for MP init: the BIOS directory patches of
-/// every generation the board supports, from either half of the vendor ROM
-/// (the composer decides which half boots which generation).
-fn microcode<B: Sp3BoardFacts>(vendor_image: &str) -> Result<MicrocodeConfig, String> {
-    let mut vendor_images = heapless::Vec::new();
-    for generation in B::GENERATIONS {
-        for origin in [0, fstart_amdfw_format::HALF_SIZE as u32] {
-            vendor_images
-                .push(AmdVendorMicrocode {
-                    image: vendor_image
-                        .try_into()
-                        .map_err(|_| format!("vendor image path {vendor_image} is too long"))?,
-                    bios_directory: generation.profile().bios,
-                    origin,
-                })
-                .map_err(|_| "too many microcode sources")?;
-        }
-    }
-    Ok(MicrocodeConfig::Amd(AmdMicrocodeConfig {
-        files: heapless::Vec::new(),
-        vendor_images,
-    }))
+    host::resolve(&host::<B>(&halves::<B>()), selection, options)
 }
 
 /// Check the board's vendor ROM against the build without composing: the
-/// halves it would compose and keep and the FFS window. `root` is the workspace root.
+/// halves it would compose and keep and the FFS window. `root` is the
+/// workspace root.
 pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
-    let path = root.join(B::VENDOR_IMAGE);
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(flash_plan::<B>().survey(&bytes)?)
+    let halves = halves::<B>();
+    let host = host::<B>(&halves);
+    let host::Image::Dual(image) = &host.image else {
+        unreachable!("SP3 is a dual-half image")
+    };
+    image.check_vendor(root)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fstart_core::board::MicrocodeConfig;
+    use fstart_core::layout::RegionKind;
+    use fstart_core::{FirmwareImagePolicy, StageLayout};
+    use fstart_image_build::amd::halved_flash::AmdHalvedFlashAssembly;
     use fstart_image_build::amd::halved_flash::{self, FlashHalf, HalfAction};
+    use fstart_image_build::build_plan::{CargoTarget, ImageOperation, UnitOutput};
 
     /// The plan of `B` with the selection's options parsed as the plan
     /// runner parses them.
@@ -808,14 +378,14 @@ mod tests {
 
     #[test]
     fn descriptor_decodes_with_the_layout_regions() {
-        let bytes = descriptor().unwrap();
+        let bytes = LAYOUT.descriptor().unwrap();
         let layout = fstart_core::layout::Layout::parse(bytes.as_bytes()).unwrap();
         let find = |kind| layout.regions().find(|r| r.kind == kind).unwrap();
         assert_eq!(find(RegionKind::Image).base, 0x75d0_0000);
         assert_eq!(find(RegionKind::Firmware).base, 0xfd_0060_0000);
         assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00cc_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
-        assert_eq!(find(RegionKind::Stack).end(), Some(STACK.end()));
+        assert_eq!(find(RegionKind::Stack).end(), Some(LAYOUT.stack.end()));
     }
 
     #[test]

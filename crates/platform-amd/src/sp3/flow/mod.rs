@@ -8,17 +8,18 @@ use crate::sp3::silicon::hw::{PrimaryFch, msr, post};
 use crate::sp3::silicon::{self, Generation};
 use fstart_amdfw_format::anchor::FlashAnchor;
 use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
-use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg, TOP_MEM, TOP_MEM2, TopMem, TopMem2};
+use fstart_arch::x86::cpu::amd::msr::SYSCFG;
 use fstart_arch::x86::cpu::msr::MsrAccess;
-use fstart_core::services::memory_detect::{E820Kind, E820State};
-use fstart_driver_amd::apob::sysmap::{self, Region};
+use fstart_core::services::memory_detect::E820State;
+use fstart_driver_amd::apob::sysmap;
 use fstart_driver_amd::apob::{self, Apob};
 use fstart_driver_amd::fch::hw::rom3::{self, FlashMap, Rom3};
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 
-use crate::sp3::layout::{self, Span};
-use crate::sp3::memory::{self, TopOfMemory};
+use crate::layout::Region;
+use crate::memory;
+use crate::sp3::layout;
 
 pub(crate) mod handoff;
 pub(crate) mod options;
@@ -61,7 +62,7 @@ pub(crate) struct Ctx<'a> {
     pub soc: &'a silicon::Ctx,
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     #[cfg(feature = "payload-uefi")]
-    pub ffs: Span,
+    pub ffs: Region,
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
     pub ffs_offset: u32,
@@ -104,7 +105,7 @@ pub(crate) struct Flash {
     /// The booted half (from its EFS).
     pub efs: &'static [u8],
     /// The FFS in the CPU view, and its flash offset.
-    pub ffs: Span,
+    pub ffs: Region,
     #[cfg(feature = "payload-uefi")]
     pub ffs_offset: u32,
     /// The size of the part.
@@ -171,7 +172,7 @@ pub(crate) fn flash(fch: &PrimaryFch, generation: Generation) -> Flash {
         .map(|address| flash_slice(address, layout::NVRAM.size));
     Flash {
         efs,
-        ffs: Span::new(ffs, u64::from(size)),
+        ffs: Region::new(ffs, u64::from(size)),
         #[cfg(feature = "payload-uefi")]
         ffs_offset: offset,
         size: anchor.flash_size.get(),
@@ -192,7 +193,7 @@ fn bios_directories(
 
 /// The APOB from BIOS directory entry 0x61 (PSP_APOB §3.5); logs the ABL
 /// event log and the APCB recovery flag.
-pub(crate) fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'static>, Span) {
+pub(crate) fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'static>, Region) {
     let address = bios_directories(flash, generation)
         .and_then(|dirs| dirs.find(bios::APOB, None, None))
         .map(|(_, entry)| entry.destination())
@@ -219,60 +220,22 @@ pub(crate) fn read_apob(flash: &'static [u8], generation: Generation) -> (Apob<'
     {
         fstart_log::warn!("apob: APCB recovery boot");
     }
-    let span = Span::new(address, apob.reserved_size());
+    let span = Region::new(address, apob.reserved_size());
     (apob, span)
-}
-
-/// TOP_MEM / TOM2 as the PSP/ABL left them (PSP_APOB §3.6).
-pub(crate) fn top_of_memory() -> TopOfMemory {
-    let cpu = msr();
-    let tom2 = cpu
-        .reg(SYSCFG)
-        .is_set(Syscfg::TOM2_EN)
-        .then(|| cpu.reg(TOP_MEM2).read(TopMem2::ADDRESS) << 22);
-    TopOfMemory {
-        tom: cpu.reg(TOP_MEM).read(TopMem::ADDRESS) << 23,
-        tom2,
-    }
 }
 
 pub(crate) fn memory_regions(
     apob: &Apob<'_>,
     generation: Generation,
-) -> heapless::Vec<Region, { sysmap::MAX_REGIONS }> {
+) -> heapless::Vec<sysmap::Region, { sysmap::MAX_REGIONS }> {
     let map = sysmap::system_memory_map(apob).or_halt("APOB memory map");
     sysmap::memory_map(generation.silicon().into(), map.top, map.holes()).or_halt("memory map")
-}
-
-pub(crate) fn build_e820(
-    generation: Generation,
-    regions: &[Region],
-    tops: TopOfMemory,
-    apob: Span,
-    tseg: Span,
-) -> E820State {
-    let mut e820 = E820State::new();
-    let reservations = memory::standard_reservations(generation, apob, Some(tseg));
-    let count = memory::e820(regions, tops, &reservations, e820.entries_mut())
-        .unwrap_or_else(|_| fail("e820"));
-    let ram: u64 = e820.entries_mut()[..count]
-        .iter()
-        .filter(|e| e.kind == E820Kind::Ram as u32)
-        .map(|e| e.size)
-        .sum();
-    e820.set_detected(count, ram).or_halt("e820");
-    for e in e820.entries() {
-        let (addr, size, kind) = (e.addr, e.size, e.kind);
-        fstart_log::info!("e820: {:#x}+{:#x} type {}", addr, size, kind);
-    }
-    fstart_log::info!("sp3: {} MiB RAM", ram >> 20);
-    e820
 }
 
 /// MTRRs: RAM below 4 GiB write-back by variable MTRRs; above 4 GiB
 /// through SYSCFG.Tom2ForceMemTypeWB (the AMD way: the variable MTRRs
 /// cannot cover TiBs of DRAM). The reset image's 16 MiB window is RAM too.
-pub(crate) fn cache_ram(regions: &[Region]) {
+pub(crate) fn cache_ram(regions: &[sysmap::Region]) {
     use fstart_arch::x86::cpu::amd::msr::Syscfg;
     use tock_registers::interfaces::ReadWriteable;
     let low = regions

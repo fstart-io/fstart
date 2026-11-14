@@ -11,10 +11,8 @@ mod chip;
 mod chip_tests;
 mod init;
 
-use crate::noncar::{
-    self, Ctx, Devices, Silicon,
-    layout::{Layout, Region},
-};
+use crate::layout::{Layout, Region};
+use crate::noncar::{self, Ctx, Devices, Silicon};
 pub use chip::*;
 use fstart_driver_amd::ccx::rv as cpu;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
@@ -38,9 +36,11 @@ pub const fn console(uart: u8) -> Ns16550Config {
 pub const LAYOUT: Layout = Layout {
     early: Region::new(0x0200_0000, 0x140_0000),
     page_tables: 0x0202_0000,
+    pdpts: 1,
     data: Region::new(0x0203_0000, 0x1d_0000),
     heap: Region::new(0x0220_0000, 0x80_0000),
     stack: Region::new(0x02f0_0000, 0x10_0000),
+    store: None,
     // Leave room for the Rust interpreter and graphical UEFI, plus the
     // reserved 16-bit entry at the image's end.
     image: Region::new(0x0300_0000, 0x40_0000),
@@ -51,20 +51,15 @@ pub const LAYOUT: Layout = Layout {
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Picasso {
-    const POLICY: noncar::host::Policy = noncar::host::Policy {
-        feature: "bundle",
-        payloads: true,
-        smm: true,
-        release_only: true,
-        image_config: noncar::host::ImageConfig::Packed {
-            // Reserve the full uncompressed size before the fixed FFS window.
-            reset_offset: Some(
-                (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
-            ),
-            psp: fstart_image_build::amd::assembly::PspOptions {
-                compress_reset: true,
-                spi: None,
-            },
+    const RELEASE_ONLY: bool = true;
+    const SOURCE: crate::host::single::Source = crate::host::single::Source::Packed {
+        // Reserve the full uncompressed size before the fixed FFS window.
+        reset_offset: Some(
+            (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
+        ),
+        psp: fstart_image_build::amd::assembly::PspOptions {
+            compress_reset: true,
+            spi: None,
         },
     };
     fn check(config: &Config) -> Result<(), &'static str> {

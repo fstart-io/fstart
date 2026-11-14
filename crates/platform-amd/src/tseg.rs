@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! SMM: the board's FCH SMM handler in
-//! TSEG at the top of the DRAM below 4 GiB, every CPU's SMBASE in it and SMM
-//! locked, then the FCH's SMI sources enabled.
+//! The board's SMM handler in TSEG, for every SoC: every CPU's SMBASE in
+//! it and SMM locked, then the SoC's SMI sources enabled
+//! ([`fstart_arch::x86::cpu::amd::smm::SmiControl`]).
 use fstart_arch::x86::{
     cpu::amd::smm::{AmdSmm, InstalledTseg},
     mp::MpHandle,
 };
 
-/// The board's SMM image that fbuild built from its `smm.rs`.
+/// The board's SMM image that fbuild built from its `smm.rs` (the host
+/// plan's `smm` unit; `build.rs` checked that it fits TSEG).
 #[cfg(fstart_amd_has_smm_image)]
-const IMAGE: Option<&[u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
+pub const IMAGE: Option<&[u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
 #[cfg(not(fstart_amd_has_smm_image))]
-const IMAGE: Option<&[u8]> = None;
+pub const IMAGE: Option<&[u8]> = None;
 
-/// Install the board's SMM handler in the TSEG at `base`; `name` is the
-/// log prefix.
+/// Install the board's SMM handler in the TSEG at `base`, with `smi` as
+/// the owner of the SMI sources; `name` is the log prefix.
 pub fn install(
     name: &'static str,
     mp: &MpHandle,

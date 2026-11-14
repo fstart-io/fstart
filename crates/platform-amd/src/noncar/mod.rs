@@ -8,10 +8,7 @@ pub mod acpi;
 pub mod boot;
 #[cfg(feature = "host")]
 pub mod host;
-pub mod layout;
-pub mod memory;
 pub mod smbios;
-pub mod smm;
 
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
 pub use crate::flow::Peripherals;
@@ -23,12 +20,12 @@ pub use crate::flow::{Ctx, Devices, Memory, Silicon, Tables};
 pub use crate::soc::Hw;
 
 use crate::acpi::SocAcpi;
+use crate::layout::{Layout, Region};
 use crate::smbios::SocSmbios;
 use crate::soc::Init;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_driver_amd::df::Die;
 use fstart_pci::ecam::GlobalEcam;
-use layout::{Layout, Region};
 
 /// The most dies the flow handles: two sockets of four.
 pub const MAX_DIES: usize = 8;
@@ -107,7 +104,11 @@ impl<S: DieSoc> crate::flow::Soc for S {
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         _: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<crate::flow::Mapped<S>, &'static str> {
-        use fstart_driver_amd::{apob::Apob, ccx::cache};
+        use crate::memory::{self, Reservation, TopOfMemory};
+        use fstart_driver_amd::{
+            apob::{Apob, sysmap},
+            ccx::cache,
+        };
         use fstart_log::Hex;
         let (top_mem, top_mem2) =
             fstart_driver_amd::ccx::msr::memory_limits(msr).map_err(|_| "TOP_MEM from the PSP")?;
@@ -119,10 +120,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
         let apob = Apob::new(bytes, S::psp(hw)).ok();
         let map = apob
             .as_ref()
-            .and_then(|apob| {
-                let map = fstart_driver_amd::apob::sysmap::first_system_memory_map(apob).ok()?;
-                map.sorted().ok()
-            })
+            .and_then(|apob| sysmap::first_system_memory_map(apob).ok()?.sorted().ok())
             .ok_or("APOB")?;
         fstart_log::info!(
             "{}: TOM {}, TOM2 {}, APOB top {}",
@@ -131,26 +129,61 @@ impl<S: DieSoc> crate::flow::Soc for S {
             Hex(top_mem2.unwrap_or(0)),
             Hex(map.top)
         );
-        let tseg_size = u64::from(TSEG_SIZE);
-        let tseg = memory::tseg_base(&map, top_mem, tseg_size);
-        let e820 = memory::e820(&map, top_mem, tseg_size, &[S::LAYOUT.early, S::APOB])
+        let mut regions = sysmap::memory_map(S::psp(hw), map.top, map.holes().iter().copied())
             .map_err(|_| "memory map")?;
+        // The IOMMU's window in the old HyperTransport range below 1 TiB
+        // stays reserved, also when DRAM ends below it.
+        if map.top <= sysmap::HT_HOLE_BASE {
+            regions
+                .push(sysmap::Region {
+                    base: sysmap::HT_HOLE_BASE,
+                    size: 4 << 30,
+                    kind: sysmap::RegionKind::HyperTransport,
+                })
+                .map_err(|_| "memory map")?;
+        }
+        let tseg = memory::place_tseg(
+            &regions,
+            top_mem,
+            u64::from(TSEG_SIZE),
+            &[S::LAYOUT.early, S::APOB],
+        )
+        .ok_or("TSEG placement")?;
+        // Page zero, the AP bootstrap page, the EBDA page and the legacy
+        // area; the APOB, the firmware's DRAM and TSEG.
+        let reservations = [
+            Region::new(0, 0x1000),
+            Region::new(fstart_arch::x86::mp::AP_BOOTSTRAP_ADDRESS, 0x1000),
+            Region::new(0x9_f000, 0x6_1000),
+            S::APOB,
+            S::LAYOUT.early,
+            tseg,
+        ]
+        .map(Reservation::reserved);
+        let limits = TopOfMemory {
+            tom: top_mem,
+            tom2: top_mem2,
+        };
+        let e820 =
+            memory::build(S::NAME, &regions, limits, &reservations).map_err(|_| "memory map")?;
 
         // The early cache plan: WB DRAM, WP flash.
         let address_bits = fstart_arch::x86::physical_address_bits() as u8;
         // SAFETY: CPUID reported MTRRs; the cache plan rejects CPUs without.
         let mtrrs = unsafe { fstart_arch::x86::mtrr::variable_count() } as usize;
-        cache::Plan::new(memory::low_top(&map, top_mem), address_bits, mtrrs)
+        let low_top = map.low_top_above(1 << 30).min(top_mem);
+        cache::Plan::new(low_top, address_bits, mtrrs)
             .and_then(|plan| cache::install(msr, &plan))
             .map_err(|_| "MTRR setup")?;
 
         let ffs = S::LAYOUT.ffs.ok_or("boot media")?;
-        boot::mount(&e820, S::LAYOUT.early, ffs).map_err(|_| "boot media")?;
+        fstart_arch::x86::boot::enable_boot_media_rom_cache();
+        crate::media::mount(e820.entries(), &S::LAYOUT, ffs).map_err(|error| error.step())?;
         Ok(crate::flow::Mapped {
             top_mem,
             top_mem2,
             apob,
-            tseg,
+            tseg: tseg.base,
             e820,
             ffs: ffs.base..ffs.end(),
             flow: (),
@@ -166,7 +199,8 @@ impl<S: DieSoc> crate::flow::Soc for S {
         mp: &fstart_arch::x86::mp::MpHandle,
         (): &(),
     ) -> Result<(), &'static str> {
-        let tseg = smm::install(S::NAME, mp, &S::smi(ctx, state), ctx.memory.tseg, TSEG_SIZE)?;
+        let tseg =
+            crate::tseg::install(S::NAME, mp, &S::smi(ctx, state), ctx.memory.tseg, TSEG_SIZE)?;
         S::smm_installed(ctx, state, &tseg)
     }
 

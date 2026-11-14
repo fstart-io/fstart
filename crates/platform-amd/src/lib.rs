@@ -22,9 +22,16 @@ pub mod compression {
 
 /// The boot flow, for every SoC.
 pub mod flow;
+/// The host build plan, for every board.
+#[cfg(feature = "host")]
+pub mod host;
+/// The reset image's DRAM layout and boot flash, for every SoC.
+pub mod layout;
 /// The boot media mount every AMD flow shares.
 #[cfg(feature = "media")]
 pub mod media;
+/// The memory map, for every SoC.
+pub mod memory;
 /// MP init, for every flow.
 pub mod mp;
 pub mod noncar;
@@ -35,6 +42,9 @@ pub mod smbios;
 pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
+/// The SMM handler's installation in TSEG, for every SoC.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub mod tseg;
 pub mod zeppelin;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
 /// with `fstart_platform_amd::smm::smm_bin!`.

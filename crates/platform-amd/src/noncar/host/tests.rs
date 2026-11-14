@@ -2,7 +2,10 @@
 use super::*;
 use crate::{picasso, zeppelin};
 use crate::{picasso::Picasso, zeppelin::Zeppelin};
+use fstart_core::board::MicrocodeConfig;
 use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
+use fstart_image_build::amd::assembly::{AmdAssembly, Firmware};
+use fstart_image_build::build_plan::{ImageOperation, UnitOutput};
 use fstart_image_build::plan::CompilerFileSelection;
 use sha2::{Digest, Sha256};
 
@@ -191,8 +194,9 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 
 /// The compilation units, hence the stage binaries, stay as they are.
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
-/// entry cfg, again without the payload cfg, and for the AMD reset
-/// sections' rename from `.sp3.*` to `.amd.*` in the linker script.)
+/// entry cfg, again without the payload cfg, for the AMD reset sections'
+/// rename from `.sp3.*` to `.amd.*` in the linker script, and for the one
+/// AMD host plan.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -207,9 +211,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "c5b90b32975734232bc361fae95f2c4bd900bb23b2939ab44fdbb59462283290",
-            "876f8b32a701c1beb0daca965fd3efc5b4da421c5a48ec0b908bc4d8936e59f1",
-            "f232bc1824292f926f1bc6f3c086c1d2d7515b763a63d660c0df1846a9e0ddf2",
+            "67b1ae6e2cc05579964901b84ffd0ea13f44185f58d789ca17ef6dc109e35991",
+            "ba9c9f59ac19a502f0054fe5dec782d5140b1b366ba0e4d6e8895bb1df9edeed",
+            "7e1f4cbfddea250e2857dcb36eb50f3ec2aacc6a4d790ec068f2a99083384b8a",
         ]
     );
 }

@@ -58,8 +58,9 @@ use fstart_driver_amd::psp;
 
 use super::board::{Board, Gpio};
 use super::flow::{self as parts, step};
-use super::layout::{self, Span};
+use super::layout;
 use crate::flow::{Ctx, Early, Mapped, Reserved, Silicon as Up, Stage, Tables};
+use crate::layout::Region;
 
 /// An SP3 family `F` (its silicon steps) on the flow.
 pub struct Sp3<F>(PhantomData<F>);
@@ -112,7 +113,7 @@ pub struct State<F> {
 pub struct Flow {
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     #[cfg(feature = "payload-uefi")]
-    ffs: Span,
+    ffs: Region,
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
     ffs_offset: u32,
@@ -121,7 +122,7 @@ pub struct Flow {
     nvram: Option<&'static [u8]>,
     /// The outcome of every option knob resolved so far.
     options: fstart_options::Report,
-    tseg: Span,
+    tseg: Region,
     /// The size of the flash part.
     rom_size: u32,
 }
@@ -432,7 +433,7 @@ impl<F: Silicon> Init for Sp3<F> {
     /// windows, from the plan the fabric step programmed.
     fn roots(_: &Ctx<'_, Self>, state: &State<F>) -> Option<Roots> {
         (state.soc.plan.root_bridges.iter())
-            .map(|rb| super::pci::root(rb, &state.soc.pci_root))
+            .map(|rb| fstart_driver_amd::df::root::planned(rb, &state.soc.pci_root))
             .collect()
     }
 
@@ -493,7 +494,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
     fn map(
         hw: &mut Hw,
         config: &mut Config,
-        _: &NativeMsr,
+        msr: &NativeMsr,
         _: Tsc,
     ) -> Result<Mapped<Self>, &'static str> {
         let generation = Generation::of(hw.identity.silicon());
@@ -530,16 +531,19 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         );
 
         step(0x15, "memory map");
-        let tops = parts::top_of_memory();
+        let (tom, tom2) = fstart_driver_amd::ccx::msr::memory_limits(msr).map_err(|_| "TOP_MEM")?;
+        let tops = crate::memory::TopOfMemory { tom, tom2 };
         let regions = parts::memory_regions(&apob, generation);
-        let tseg = super::smm::place_tseg(
+        let tseg = crate::memory::place_tseg(
             &regions,
             tops.tom,
             super::smm::TSEG_SIZE,
-            &[layout::CACHE_WINDOW, apob_span],
+            &[layout::LAYOUT.early, apob_span],
         )
         .ok_or("TSEG placement")?;
-        let e820 = parts::build_e820(generation, &regions, tops, apob_span, tseg);
+        let reservations = super::memory::reservations(generation, apob_span, Some(tseg));
+        let e820 =
+            crate::memory::build("sp3", &regions, tops, &reservations).map_err(|_| "e820")?;
         parts::cache_ram(&regions);
 
         if config.discrete_tpm {
@@ -548,25 +552,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         }
 
         step(0x48, "boot media");
-        // The running image (text, in-place data: `layout::RESET`) and its
-        // BSS, heap and stacks (`layout::EARLY_REGION`) are reserved by
-        // span: `running_stage_windows` assumes data and BSS are
-        // contiguous, which this layout does not keep.
-        let window = |span: Span| fstart_stage::boot::MemoryWindow {
-            start: span.base,
-            size: span.size,
-        };
-        let image = fstart_stage::boot::MemoryWindow {
-            start: layout::RESET.destination,
-            size: u64::from(layout::RESET.size),
-        };
-        crate::media::mount(
-            e820.entries(),
-            &[image, window(layout::EARLY_REGION)],
-            window(ffs),
-            const { fstart_stage::boot::codec(crate::compression::PAYLOAD) },
-        )
-        .map_err(|error| error.step())?;
+        crate::media::mount(e820.entries(), &layout::LAYOUT, ffs).map_err(|error| error.step())?;
 
         Ok(Mapped {
             top_mem: tops.tom,
@@ -597,8 +583,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
     }
 
     /// TSEG, SMBASE and lock on every thread with the FCH handler image, then
-    /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3). Without an SMM
-    /// image in this build SMM stays unlocked; that is logged, not hidden.
+    /// the PSP SmmInfo registration from SMM (PSP_APOB §3.3).
     ///
     /// Order (AMD PPR 55803 §2.1.12.1, MSRC001_0111..0113, C001_0015): FCH
     /// SMIs off; TValid/AValid cleared so TSEG is plain DRAM while the BSP
@@ -626,38 +611,23 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             usb_bus_count: F::usb_bus_count(soc),
             bmc: ctx.config.bmc_sx_notify,
         };
-        #[cfg(fstart_sp3_has_smm_image)]
-        {
-            const IMAGE: &[u8] = include_bytes!(env!("FSTART_SMM_IMAGE"));
-            parts::tpm::measure_smm(IMAGE);
-            // The handler's page tables map the low 4 GiB only; a PSP BAR
-            // above would fault in SMM at SmmInfo, after the lock.
-            if soc.psp_bar == 0 || soc.psp_bar >= super::memory::FOUR_GIB {
-                return Err("PSP BAR for SMM");
-            }
-            let smi = super::smm::Sp3Smi {
-                fch: &soc.fch,
-                config,
-            };
-            fstart_arch::x86::cpu::amd::smm::AmdSmm::new("sp3", &smi)
-                .install(mp, IMAGE, flow.tseg.base, flow.tseg.size as u32)
-                .map_err(|_| "SMM install")?;
-            super::smm::prepare_psp_smi(&soc.fch);
-            fstart_driver_amd::fch::hw::smi::software_smi(
-                soc.fch.io(),
-                super::smm::sw::PSP_SMM_INFO,
-            );
-            state.smm = Some(config);
-            state.soc.smm_installed = true;
+        if let Some(image) = crate::tseg::IMAGE {
+            parts::tpm::measure_smm(image);
         }
-        #[cfg(not(fstart_sp3_has_smm_image))]
-        {
-            let _ = (mp, config);
-            fstart_log::warn!(
-                "sp3: no SMM image in this build; TSEG {:#x} unused, SMM stays unlocked",
-                flow.tseg.base
-            );
+        // The handler's page tables map the low 4 GiB only; a PSP BAR
+        // above would fault in SMM at SmmInfo, after the lock.
+        if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
+            return Err("PSP BAR for SMM");
         }
+        let smi = super::smm::Sp3Smi {
+            fch: &soc.fch,
+            config,
+        };
+        crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
+        super::smm::prepare_psp_smi(&soc.fch);
+        fstart_driver_amd::fch::hw::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+        state.smm = Some(config);
+        state.soc.smm_installed = true;
         Ok(())
     }
 

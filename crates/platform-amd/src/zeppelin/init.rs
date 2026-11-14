@@ -5,7 +5,7 @@
 //! (VRs, redrivers), after [`Init::train_dxio`] the links are trained (PHY
 //! presets, the BMC).
 use super::{
-    Config, DxioConfig, MAX_DIES, NONPCI_MMIO_SIZE, Zeppelin,
+    Config, DxioConfig, MAX_DIES, Zeppelin,
     silicon::{self, Identity, SmuPages, SmuPolicy, State, Trained},
 };
 use crate::soc::{Ctx, DieInit, Entered, Hw, Init, Roots};
@@ -25,6 +25,7 @@ use fstart_pci::PciEcam;
 
 /// After the DF and the FCH reset init.
 pub struct FchUp {
+    bridges: silicon::Bridges,
     nonpci: [u32; MAX_DIES],
 }
 
@@ -40,14 +41,6 @@ impl Zeppelin {
     /// The NBIO IOAPIC of `die`.
     pub fn ioapic(state: &State, die: u8) -> u32 {
         state.ioapics.get(usize::from(die)).copied().unwrap_or(0)
-    }
-
-    /// The non-PCI MMIO pool of `die`, base and size.
-    fn nonpci_mmio(state: &State, die: u8) -> (u64, u64) {
-        state
-            .nonpci
-            .get(usize::from(die))
-            .map_or((0, 0), |&base| (base.into(), NONPCI_MMIO_SIZE.into()))
     }
 }
 
@@ -112,7 +105,7 @@ impl Init for Zeppelin {
 
     /// The DF MMIO/IO map and init, then the FCH reset init.
     fn init_fch(ctx: &Ctx<'_, Self>) -> Result<FchUp, &'static str> {
-        let nonpci = silicon::pre_mp_reset(
+        let (bridges, nonpci) = silicon::pre_mp_reset(
             &ctx.hw.dies,
             &ctx.hw.fch,
             ctx.identity,
@@ -120,14 +113,14 @@ impl Init for Zeppelin {
             ctx.memory.apob,
             &ctx.clock,
         )?;
-        Ok(FchUp { nonpci })
+        Ok(FchUp { bridges, nonpci })
     }
 
     /// NBIO and the BSP, the DRAM map, the IOAPIC and IOMMU BARs, then DXIO
     /// link training of the board's engines `lanes`.
     fn train_dxio(
         ctx: &Ctx<'_, Self>,
-        FchUp { nonpci }: FchUp,
+        FchUp { bridges, nonpci }: FchUp,
         lanes: &DxioConfig,
     ) -> Result<Trained, &'static str> {
         static mut DXIO_BUFFERS: dxio::zp::Buffers<MAX_DIES> = dxio::zp::Buffers::new();
@@ -144,7 +137,7 @@ impl Init for Zeppelin {
             },
             ctx.identity,
             (ctx.memory.top_mem, ctx.memory.top_mem2),
-            nonpci,
+            (bridges, nonpci),
             buffers,
             &ctx.clock,
         )
@@ -221,10 +214,13 @@ impl Init for Zeppelin {
         silicon::route_interrupts(&ctx.hw.fch, ctx.config)
     }
 
+    /// Each die's root complex from the DF plan the silicon init
+    /// programmed.
     fn roots(ctx: &Ctx<'_, Self>, up: &Up) -> Option<Roots> {
-        ctx.hw.roots(&Self::pci_segment(ctx.hw), |die| {
-            Self::nonpci_mmio(&up.silicon, die)
-        })
+        let segment = Self::pci_segment(ctx.hw);
+        (up.silicon.bridges.iter().take(ctx.hw.dies.len()))
+            .map(|rb| fstart_driver_amd::df::root::planned(rb.as_ref()?, &segment))
+            .collect()
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut Up) -> Result<(), &'static str> {
