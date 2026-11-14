@@ -1,4 +1,4 @@
-//! The S8030's facts ([`fstart_platform_amd::sp3::board::Board`]) and what its
+//! The S8030's facts ([`fstart_platform_amd::board::Board`]) and what its
 //! stage `main` passes to the phases and does between them:
 //! the AST2500 console path, the GPIO program, the DXIO lane map with the
 //! detected M.2 modes and the BMC's Gen3 cap, and the silicon policy.
@@ -9,6 +9,7 @@ use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::fch::gpio::Pad;
 use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_uart::ns16550::Ns16550Config;
+use fstart_platform_amd::board::SocId;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 use fstart_platform_amd::sp3::smm::SleepNotify;
 
@@ -21,8 +22,16 @@ use crate::{Board, bmc, dxio, gpio, policy};
 static DETECT_ROME: [Pad; 2] = gpio::m2_detect_pads(Generation::Rome);
 static DETECT_MILAN: [Pad; 2] = gpio::m2_detect_pads(Generation::Milan);
 
-impl board::Board for Board {
+/// Rome and Milan; the PSP boots the vendor ROM's Rome (lower) or Milan
+/// (upper) half and both carry this build.
+impl fstart_platform_amd::board::Board for Board {
     const NAME: &'static str = "Tyan S8030";
+    const SOCS: &'static [SocId] = &[SocId::Rome, SocId::Milan];
+    /// 1P, 64 cores with SMT (Rome and Milan alike).
+    const MAX_CPUS: u16 = 128;
+    /// The vendor 32 MiB dual image (Rome lower half, Milan upper half);
+    /// the user supplies it (see `vendor/README.md`).
+    const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
     /// J40 takes an LPC TPM module (Tyan lists TM-TPM2-I-3353, SLB9665).
     /// Unlike the vendor's Setup default it is used when fitted: without a
     /// module the probe finds nothing.
@@ -33,8 +42,18 @@ impl board::Board for Board {
         kcs_spacing: bmc::KCS_SPACING as u8,
         sw_smi_base: 0xC0,
     });
-    /// "Restore AC Power Loss", as the vendor Setup offers it.
-    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+}
+
+/// The policy knobs the user may override: "Restore AC Power Loss", as the
+/// vendor Setup offers it.
+pub static OPTIONS: [fstart_options::Knob<Policy>; 1] = [board::knob::POWER_FAIL];
+
+/// The board's configuration of its SoC for `generation`.
+pub fn config(generation: Generation) -> fstart_platform_amd::sp3::board::Config {
+    fstart_platform_amd::sp3::board::Config {
+        policy: policy(generation),
+        options: &OPTIONS,
+    }
 }
 
 /// The board's console: the AST2500's Super I/O UART.
@@ -112,11 +131,10 @@ mod tests {
 
     #[test]
     fn every_offered_knob_has_its_own_key() {
-        use board::Board as _;
         let metas = fstart_log::option::KNOBS
             .iter()
             .map(|k| &k.meta)
-            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
+            .chain(OPTIONS.iter().map(|k| &k.meta))
             .chain(dxio::KNOBS.iter().map(|k| &k.meta));
         assert_eq!(fstart_options::duplicate_key(metas), None);
     }

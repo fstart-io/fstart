@@ -30,30 +30,37 @@ use fstart_driver_amd::fch::hw::{FchHw, uart};
 use fstart_driver_amd::fch::irq;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_amd::acpi::Board as AcpiBoard;
+use fstart_platform_amd::board::SocId;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
-use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
 use fstart_platform_amd::sp3::silicon::Generation;
 
 pub struct Board;
-
-impl Sp3BoardFacts for Board {
-    const GENERATIONS: &'static [Generation] = &[Generation::Milan];
-    /// The BMC's 64 MiB readout (or just its lower 16 MiB boot bank).
-    const VENDOR_IMAGE: &'static str = "boards/amd/ethanolx/vendor/RXM100CB.bin";
-    const MAX_CPUS: u16 = 256;
-    /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
-    /// 64 MiB export and leaves [16, 48) MiB alone.
-    const FLASH_MIRRORS: &'static [u32] = &[0x300_0000];
-}
 
 // RXM100CB AmdCpmOemInitPeim, $A10 at 0xffd6e3e4: one pad then 0x00ff.
 const GPIO: [Pad; 1] = [Pad::from_cpm(Pin(89), 0x0988)];
 const CONSOLE_UART: u8 = 1;
 const BAUD: u32 = 115_200;
 
-impl board::Board for Board {
+impl fstart_platform_amd::board::Board for Board {
     const NAME: &'static str = "AMD Ethanol-X";
-    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[board::knob::POWER_FAIL];
+    const SOCS: &'static [SocId] = &[SocId::Milan];
+    const MAX_CPUS: u16 = 256;
+    /// The BMC's 64 MiB readout (or just its lower 16 MiB boot bank).
+    const VENDOR_IMAGE: &'static str = "boards/amd/ethanolx/vendor/RXM100CB.bin";
+    /// The BMC BIOS update writes the 16 MiB bank at 0 and at 48 MiB of its
+    /// 64 MiB export and leaves [16, 48) MiB alone.
+    const FLASH_MIRRORS: &'static [u32] = &[0x300_0000];
+}
+
+/// The policy knobs the user may override.
+pub static OPTIONS: [fstart_options::Knob<Policy>; 1] = [board::knob::POWER_FAIL];
+
+/// The board's configuration of its SoC for `generation`.
+pub fn config(generation: Generation) -> fstart_platform_amd::sp3::board::Config {
+    fstart_platform_amd::sp3::board::Config {
+        policy: policy(generation),
+        options: &OPTIONS,
+    }
 }
 
 /// The board's console: the FCH's MMIO UART 1.
@@ -193,11 +200,10 @@ mod tests {
 
     #[test]
     fn every_offered_knob_has_its_own_key() {
-        use fstart_platform_amd::sp3::board::Board as _;
         let metas = fstart_log::option::KNOBS
             .iter()
             .map(|k| &k.meta)
-            .chain(Board::OPTIONS.iter().map(|k| &k.meta))
+            .chain(OPTIONS.iter().map(|k| &k.meta))
             .chain(dxio::KNOBS.iter().map(|k| &k.meta));
         assert_eq!(fstart_options::duplicate_key(metas), None);
     }

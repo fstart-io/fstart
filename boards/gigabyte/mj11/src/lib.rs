@@ -148,9 +148,12 @@ pub static CONFIG: Config = Config {
     },
 };
 
-impl fstart_platform_amd::noncar::Board for Board {
-    type Soc = Zeppelin;
-    const CONFIG: &'static Config = &CONFIG;
+impl fstart_platform_amd::board::Board for Board {
+    const NAME: &'static str = "Gigabyte MJ11-EC1";
+    const SOCS: &'static [fstart_platform_amd::board::SocId] =
+        &[fstart_platform_amd::board::SocId::Zeppelin];
+    /// The package's ceiling: two dies of eight SMT cores.
+    const MAX_CPUS: u16 = 32;
 }
 
 /// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.

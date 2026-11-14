@@ -37,12 +37,8 @@ impl Init for Naples {
         sp3::enter(config)
     }
 
-    fn identify(
-        hw: &sp3::Hw,
-        config: &sp3::Config,
-        _: Option<Tsc>,
-    ) -> Result<Identity, &'static str> {
-        sp3::check_identity(hw, config)
+    fn identify(hw: &sp3::Hw, _: &sp3::Config, _: Option<Tsc>) -> Result<Identity, &'static str> {
+        sp3::check_identity(hw)
     }
 
     fn pci_segment(hw: &sp3::Hw) -> PciRootInfo {
@@ -157,17 +153,14 @@ impl crate::flow::Soc for Naples {
     const TSEG_SIZE: u32 = crate::sp3::smm::TSEG_SIZE as u32;
     type Flow = sp3::Flow;
 
-    fn max_cpus(config: &sp3::Config) -> u16 {
-        config.max_cpus
-    }
-
     fn map(
         hw: &mut sp3::Hw,
         config: &mut sp3::Config,
+        board: &crate::board::Facts,
         msr: &NativeMsr,
         _: Tsc,
     ) -> Result<Mapped<Self>, &'static str> {
-        sp3::map(hw, config, msr)
+        sp3::map(hw, config, board, msr)
     }
 
     /// EINJ's scratch pages, selected with the live routing map.
@@ -185,7 +178,7 @@ impl crate::flow::Soc for Naples {
             Silicon::usb_buses(&state.soc, &state.si)?,
             Silicon::usb_bus_count(&state.soc),
         );
-        sp3::install_smm(ctx.config, state, mp, flow, usb)
+        sp3::install_smm(ctx.board, state, mp, flow, usb)
     }
 
     fn tables(
@@ -198,7 +191,7 @@ impl crate::flow::Soc for Naples {
     ) -> Tables {
         let numa = Silicon::numa(&silicon.state.soc, &silicon.state.si);
         let nbios = silicon.state.si.nbios.clone();
-        sp3::tables(ctx.config, silicon, (numa, &nbios), pci, flow, smbios, acpi)
+        sp3::tables(ctx.board, silicon, (numa, &nbios), pci, flow, smbios, acpi)
     }
 
     fn launch(

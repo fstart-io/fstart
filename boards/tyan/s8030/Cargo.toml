@@ -8,14 +8,14 @@ publish = false
 
 # One firmware build for Rome and Milan, composed into both 16 MiB halves
 # of the 32 MiB flash (docs/amd-sp3.md); the board lists the generations
-# (Board::GENERATIONS). GM2NE and GM4NE-2T run the same image (README.md), so they are not
+# (Board::SOCS). GM2NE and GM4NE-2T run the same image (README.md), so they are not
 # variants. `tyan-s8030-pcie3-x4x4x4x4` bifurcates PCIE#3 x4x4x4x4 by
 # default, for an NVMe carrier (the test bench); the settings menu
 # overrides either default.
 [package.metadata.fstart]
 board = "tyan-s8030"
 arch = "x86_64"
-build-profile = { dependency = "fstart-platform-amd", module = "sp3" }
+build-profile = { dependency = "fstart-platform-amd" }
 
 # The board's APCBs of each generation, as its vendor image has them.
 [package.metadata.fstart.amd.rome]

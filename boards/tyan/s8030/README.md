@@ -4,9 +4,8 @@ AMD SP3, one socket, EPYC 7002 (Rome) or 7003 (Milan). Status: boots
 Linux with an EPYC 7502P (Rome) on the S8030GM2NE test bench.
 
 One board id, `tyan-s8030`, and one build for both generations: the
-board lists Rome and Milan (`Board::GENERATIONS`), its stage calls the
-Rome/Milan flow, and the reset image picks the generation from the CPU
-at runtime. Each half
+board lists Rome and Milan (`Board::SOCS`), its stage calls the flow
+of each, and the reset image runs the one of the CPU it finds. Each half
 keeps the vendor's EFS and directories; its `0x62` entries name a copy of
 the one reset image, and the FFS exists once, in the lower half
 (docs/amd-sp3.md, "Flash image").

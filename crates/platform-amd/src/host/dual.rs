@@ -33,9 +33,9 @@ pub struct Half {
 }
 
 /// The SP3 flash of a board.
-pub struct Image<'a> {
+pub struct Image {
     /// The generations the board lists, in boot ROM order.
-    pub halves: &'a [Half],
+    pub halves: Vec<Half>,
     /// Workspace-relative vendor ROM: the 32 MiB dual image, one 16 MiB
     /// half, or a full readout with the plan's mirrors.
     pub vendor_image: &'static str,
@@ -43,12 +43,12 @@ pub struct Image<'a> {
     pub plan: FlashPlan,
 }
 
-impl Image<'_> {
+impl Image {
     /// The composed flash: the FFS (with a copy of the stage unit) in the
     /// lower half and the halves from the vendor ROM or the blob directory.
     pub(super) fn images(
         &self,
-        host: &Host<'_>,
+        host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
         ffs: impl FnOnce(Option<MicrocodeConfig>, bool) -> Option<FfsAssembly>,
@@ -108,7 +108,7 @@ impl Image<'_> {
             .ok_or("the board table has no board name")?;
         let mut halves = vec![];
         let mut files = heapless::Vec::new();
-        for half in self.halves {
+        for half in &self.halves {
             let board = boards
                 .iter()
                 .find(|board| board.soc == half.name)
@@ -162,7 +162,7 @@ impl Image<'_> {
     /// generation).
     fn microcode(&self, vendor_image: &str) -> Result<MicrocodeConfig, String> {
         let mut vendor_images = heapless::Vec::new();
-        for half in self.halves {
+        for half in &self.halves {
             for origin in [0, fstart_amdfw_format::HALF_SIZE as u32] {
                 vendor_images
                     .push(AmdVendorMicrocode {

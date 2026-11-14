@@ -57,6 +57,8 @@ pub struct Memory<'a> {
 /// the clock and the memory map.
 pub struct Ctx<'a, S: Init> {
     pub config: &'a S::Config,
+    /// What the flow's services read of the board.
+    pub board: &'a crate::board::Facts,
     pub identity: S::Identity,
     pub hw: &'a S::Hw,
     pub msr: &'a NativeMsr,

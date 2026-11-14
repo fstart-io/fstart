@@ -35,6 +35,10 @@ mod stage;
 pub use stage::{
     Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, enter, fail,
 };
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod start;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub use start::{Cpu, Identified, start};
 
 use crate::soc::Init;
 pub use crate::soc::{Ctx, Memory};
@@ -73,8 +77,6 @@ pub trait Soc: Init {
     /// What the SoC's services here keep between the phases.
     type Flow;
 
-    /// The most CPUs of a board with `config`.
-    fn max_cpus(config: &Self::Config) -> u16;
     #[cfg(all(feature = "bundle", target_os = "none"))]
     /// With the console: the APOB, the memory map with TSEG, the cache
     /// plan and the verified FFS, mounted before the silicon init (MP init
@@ -83,6 +85,7 @@ pub trait Soc: Init {
     fn map(
         hw: &mut Self::Hw,
         config: &mut Self::Config,
+        board: &crate::board::Facts,
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         clock: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<Mapped<Self>, &'static str>;

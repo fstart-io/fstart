@@ -32,7 +32,6 @@
 //! the APOB at `0x3000_0000` (PSP_APOB §3.5).
 
 use crate::layout::{Layout, Region};
-use crate::sp3::silicon::Generation;
 use fstart_driver_amd::fch::hw::rom3;
 
 /// One flash half (16 MiB), the unit an EFS describes in the dual layout.
@@ -189,37 +188,6 @@ pub const LAYOUT: Layout = Layout {
 .check();
 
 const _: () = assert!(EARLY_REGION.contains(&LAYOUT.store.unwrap()));
-
-/// Board facts the SP3 build plan and flash image need. A board crate
-/// implements this for its `Board` type, e.g. for the Tyan S8030:
-///
-/// ```ignore
-/// impl Sp3BoardFacts for Board {
-///     const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
-///     const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
-///     const MAX_CPUS: u16 = 128;
-/// }
-/// ```
-///
-/// It is a plain trait (not behind the `host` feature) because the host
-/// plan runner builds the board crate without its own `host` feature.
-pub trait Sp3BoardFacts {
-    /// Generations the board supports. The platform must be built with
-    /// each one's feature; one firmware build serves all of them.
-    const GENERATIONS: &'static [Generation];
-    /// Workspace-relative vendor ROM: the 32 MiB dual image, one 16 MiB
-    /// half, or a full readout with [`Self::FLASH_MIRRORS`]. Its PSP/BIOS
-    /// directories, blobs and APCB stay in place.
-    const VENDOR_IMAGE: &'static str;
-    /// Logical CPU ceiling over every supported generation (all sockets);
-    /// sizes the AP stacks and SMM.
-    const MAX_CPUS: u16;
-    /// Flash offsets past the 16 MiB boot bank where the board's flash
-    /// export mirrors it. [`Self::VENDOR_IMAGE`] may then be the full
-    /// readout, and the build is a full flash image with the bank at 0 and
-    /// at every mirror.
-    const FLASH_MIRRORS: &'static [u32] = &[];
-}
 
 #[cfg(test)]
 mod tests {

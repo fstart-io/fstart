@@ -52,7 +52,7 @@ impl Image {
     /// Without a vendor image or blobs, just the FFS.
     pub(super) fn images(
         &self,
-        host: &Host<'_>,
+        host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
         ffs: impl FnOnce(Option<MicrocodeConfig>, bool) -> Option<FfsAssembly>,
@@ -167,7 +167,7 @@ impl Image {
     /// without a blob directory.
     fn packed(
         &self,
-        host: &Host<'_>,
+        host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
     ) -> Result<Option<blobs::Resolved>, String> {
