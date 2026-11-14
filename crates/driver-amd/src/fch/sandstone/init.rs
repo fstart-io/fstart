@@ -2,8 +2,9 @@
 //! Native Picasso FCH A-Link and clock sequencing. The index-zero writes are hardware requirements.
 use crate::smn::{Smn, apply, rmw};
 use crate::{
-    fch::{AbRegBar, Bus, Fch, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink},
+    fch::{AbRegBar, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink, hw::FchHw},
     table,
+    window::Window,
 };
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 
@@ -38,13 +39,14 @@ const ABCFG: &[alink::Rmw] = &[
     table::rmw(0x00228, 0x0000000a, 0x0000000a),
 ];
 /// The A-Link decode at 0xcd8 just for the ABCFG table.
-pub fn alink_init(fch: &Fch<impl Bus>) {
-    fch.reg(PM_AB_REG_BAR)
+pub fn alink_init(fch: &impl FchHw) {
+    let acpi = fch.acpi();
+    acpi.at(PM_AB_REG_BAR)
         .write(AbRegBar::PORT.val(alink::INDEX.into()));
-    fch.reg(MISC_CLK_CNTL1)
+    acpi.at(MISC_CLK_CNTL1)
         .modify(MiscClkCntl1::ALINK_GATE::CLEAR);
-    alink::apply(fch.bus(), ABCFG);
-    fch.reg(PM_AB_REG_BAR).write(AbRegBar::PORT.val(0));
+    alink::apply(fch.io(), ABCFG);
+    acpi.at(PM_AB_REG_BAR).write(AbRegBar::PORT.val(0));
 }
 /// The FCH clock generator through the SMN alias of the MISC bank: vendor
 /// values.
@@ -77,14 +79,14 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::fch::{
-        ACPI_MMIO, Acpimmio, Space,
-        testing::{Access, World},
+        ACPI_MMIO,
+        testing::{Access, Space, World},
     };
     #[test]
     fn abcfg_transactions_reset_index_after_read_and_write_and_remove_decode() {
         let world = World::default();
         world.set(Space::Mmio, ACPI_MMIO + 0xe40, 4, u32::MAX);
-        alink_init(&Fch::new(&world, Acpimmio::DIE0));
+        alink_init(&world.fch());
         let log = world.0.borrow().log.clone();
         assert_eq!(
             log[..3],

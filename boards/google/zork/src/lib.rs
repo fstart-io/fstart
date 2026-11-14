@@ -14,7 +14,6 @@ pub mod policy;
 pub mod smm;
 pub mod vilboz;
 use fstart_driver_uart::ns16550::Ns16550Config;
-use fstart_platform_amd::picasso::Picasso;
 use fstart_platform_amd::picasso::{self, Config, FchConfig};
 
 /// How Vilboz wires the Picasso blocks.
@@ -105,7 +104,7 @@ pub fn console() -> Ns16550Config {
 /// The board's pads once the FCH is up. Without a PSP verstage the early
 /// and TPM tables are programmed first, then the PCIe and memory init ones.
 pub fn early_gpios(
-    gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+    gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::window::Window>,
 ) -> Result<(), fstart_driver_amd::fch::gpio::Error> {
     for table in [
         dalboz::EARLY_GPIO_TABLE,
@@ -123,7 +122,7 @@ pub fn early_gpios(
 /// and program the remaining GPIOs. The CBI decides the SMU power policy
 /// and whether eMMC is fitted.
 pub fn after_fch(
-    gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+    gpio: &fstart_driver_amd::fch::gpio::Gpio<impl fstart_driver_amd::window::Window>,
     timer: &impl fstart_core::services::Timer,
 ) -> policy::Cbi {
     mainboard::init(gpio, timer)
@@ -152,7 +151,7 @@ mod mainboard {
     use fstart_log::Hex;
 
     pub(super) fn init(
-        gpio: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+        gpio: &gpio::Gpio<impl fstart_driver_amd::window::Window>,
         timer: &impl Timer,
     ) -> Cbi {
         // SAFETY: the eSPI windows for the EC ports are up; the BSP owns them.
@@ -203,7 +202,7 @@ mod mainboard {
     use fstart_core::services::Timer;
     use fstart_driver_amd::fch::gpio;
     pub(super) fn init(
-        _: &gpio::Gpio<impl fstart_driver_amd::fch::Bus>,
+        _: &gpio::Gpio<impl fstart_driver_amd::window::Window>,
         _: &impl Timer,
     ) -> crate::policy::Cbi {
         crate::policy::Cbi::new(None, None)

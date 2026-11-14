@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! FCH LPC bridge (D14F3) registers and I/O decode. Common to every Family 17h FCH.
-use crate::fch::{Bus, BusRegister, Reg};
+use crate::fch::hw::FchHw;
+use crate::window::{At, Window};
 use tock_registers::{
-    RegisterLongName,
     interfaces::{ReadWriteable, Readable},
     register_bitfields,
 };
@@ -90,27 +90,27 @@ register_bitfields![u8,
     ]
 ];
 
-pub const ID: Reg<u32, Id::Register> = Reg::lpc(0x00);
-pub const PCI_CONTROL: Reg<u8, PciControl::Register> = Reg::lpc(0x40);
-pub const IO_PORT_DECODE: Reg<u32, IoPortDecode::Register> = Reg::lpc(0x44);
-pub const IO_MEM_DECODE: Reg<u32, IoMemDecode::Register> = Reg::lpc(0x48);
-pub const MEM_PORT1: Reg<u32> = Reg::lpc(0x4c);
-pub const MEM_PORT0: Reg<u32> = Reg::lpc(0x60);
-pub const WIDEIO_GENERIC_PORT: Reg<u32, WideIo::Register> = Reg::lpc(0x64);
-pub const R6C: Reg<u8> = Reg::lpc(0x6c);
-pub const ALT_WIDEIO: Reg<u32, AltWideIo::Register> = Reg::lpc(0x74);
-pub const MISC_CONTROL: Reg<u8, Bits::Register> = Reg::lpc(0x78);
-pub const R7C: Reg<u8, Bits::Register> = Reg::lpc(0x7c);
-pub const WIDEIO2_GENERIC_PORT: Reg<u32, WideIo::Register> = Reg::lpc(0x90);
-pub const SPI_BASE_ADDRESS: Reg<u32, SpiBase::Register> = Reg::lpc(0xa0);
-pub const RA4: Reg<u32, LpcA4::Register> = Reg::lpc(0xa4);
-pub const RA4_BYTE: Reg<u8, Bits::Register> = Reg::lpc(0xa4);
-pub const ROM_DMA_EC_HOST_CONTROL: Reg<u32, RomDmaEcHostControl::Register> = Reg::lpc(0xb8);
-pub const ROM_DMA_CONTROL: Reg<u16, RomDmaControl::Register> = Reg::lpc(0xba);
-pub const ROM_DMA_CONTROL_BYTE: Reg<u8, Bits::Register> = Reg::lpc(0xba);
-pub const ROM_DMA_CONTROL_HIGH: Reg<u8, Bits::Register> = Reg::lpc(0xbb);
-pub const CLOCK_CONTROL: Reg<u32, ClockControl::Register> = Reg::lpc(0xd0);
-pub const CLOCK_CONTROL_BYTE1: Reg<u8, Bits::Register> = Reg::lpc(0xd1);
+pub const ID: At<u32, Id::Register> = At::new(0x00);
+pub const PCI_CONTROL: At<u8, PciControl::Register> = At::new(0x40);
+pub const IO_PORT_DECODE: At<u32, IoPortDecode::Register> = At::new(0x44);
+pub const IO_MEM_DECODE: At<u32, IoMemDecode::Register> = At::new(0x48);
+pub const MEM_PORT1: At<u32> = At::new(0x4c);
+pub const MEM_PORT0: At<u32> = At::new(0x60);
+pub const WIDEIO_GENERIC_PORT: At<u32, WideIo::Register> = At::new(0x64);
+pub const R6C: At<u8> = At::new(0x6c);
+pub const ALT_WIDEIO: At<u32, AltWideIo::Register> = At::new(0x74);
+pub const MISC_CONTROL: At<u8, Bits::Register> = At::new(0x78);
+pub const R7C: At<u8, Bits::Register> = At::new(0x7c);
+pub const WIDEIO2_GENERIC_PORT: At<u32, WideIo::Register> = At::new(0x90);
+pub const SPI_BASE_ADDRESS: At<u32, SpiBase::Register> = At::new(0xa0);
+pub const RA4: At<u32, LpcA4::Register> = At::new(0xa4);
+pub const RA4_BYTE: At<u8, Bits::Register> = At::new(0xa4);
+pub const ROM_DMA_EC_HOST_CONTROL: At<u32, RomDmaEcHostControl::Register> = At::new(0xb8);
+pub const ROM_DMA_CONTROL: At<u16, RomDmaControl::Register> = At::new(0xba);
+pub const ROM_DMA_CONTROL_BYTE: At<u8, Bits::Register> = At::new(0xba);
+pub const ROM_DMA_CONTROL_HIGH: At<u8, Bits::Register> = At::new(0xbb);
+pub const CLOCK_CONTROL: At<u32, ClockControl::Register> = At::new(0xd0);
+pub const CLOCK_CONTROL_BYTE1: At<u8, Bits::Register> = At::new(0xd1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -118,84 +118,68 @@ pub enum Error {
     NoWideIo,
 }
 
-/// The LPC bridge function.
-pub struct Lpc<B> {
-    bus: B,
+/// Decode the Super I/O config ports 0x2e/0x2f.
+pub fn enable_sio_2e(fch: &impl FchHw) {
+    fch.lpc().at(IO_MEM_DECODE).modify(IoMemDecode::SIO_2E::SET);
 }
-impl<B: Bus> Lpc<B> {
-    /// # Safety
-    /// Exclusive access to the LPC bridge decode registers.
-    pub unsafe fn new(bus: B) -> Self {
-        Self { bus }
-    }
-    pub fn reg<T: crate::window::Width, R: RegisterLongName>(
-        &self,
-        reg: Reg<T, R>,
-    ) -> BusRegister<'_, B, T, R> {
-        self.bus.reg(reg)
-    }
-    /// Decode the Super I/O config ports 0x2e/0x2f.
-    pub fn enable_sio_2e(&self) {
-        self.reg(IO_MEM_DECODE).modify(IoMemDecode::SIO_2E::SET);
-    }
-    /// Decode POST codes on port 0x80 to LPC.
-    pub fn enable_port80(&self) {
-        self.reg(IO_MEM_DECODE).modify(IoMemDecode::PORT80::SET);
-    }
-    /// Add fixed legacy decodes (COM ports, KBC, ...).
-    pub fn enable_io_decode(
-        &self,
-        field: tock_registers::fields::FieldValue<u32, IoPortDecode::Register>,
-    ) {
-        self.reg(IO_PORT_DECODE).modify(field);
-    }
-    /// Decode `size` (16 or 512) bytes at `start` through a free wide I/O range.
-    pub fn set_wideio_range(&self, start: u16, size: u16) -> Result<(), Error> {
-        let decode = self.reg(IO_MEM_DECODE).extract();
-        let ranges = [
-            (
-                IoMemDecode::WIDEIO0,
-                WIDEIO_GENERIC_PORT,
-                WideIo::LOW,
-                AltWideIo::WIDEIO0,
-            ),
-            (
-                IoMemDecode::WIDEIO1,
-                WIDEIO_GENERIC_PORT,
-                WideIo::HIGH,
-                AltWideIo::WIDEIO1,
-            ),
-            (
-                IoMemDecode::WIDEIO2,
-                WIDEIO2_GENERIC_PORT,
-                WideIo::LOW,
-                AltWideIo::WIDEIO2,
-            ),
-        ];
-        let &(enable, base, half, alt) = ranges
-            .iter()
-            .find(|(enable, ..)| !decode.is_set(*enable))
-            .ok_or(Error::NoWideIo)?;
-        self.reg(base).modify(half.val(start.into()));
-        self.reg(IO_MEM_DECODE).modify(enable.val(1));
-        self.reg(ALT_WIDEIO).modify(alt.val((size <= 16).into()));
-        Ok(())
-    }
+/// Decode POST codes on port 0x80 to LPC.
+pub fn enable_port80(fch: &impl FchHw) {
+    fch.lpc().at(IO_MEM_DECODE).modify(IoMemDecode::PORT80::SET);
+}
+/// Add fixed legacy decodes (COM ports, KBC, ...).
+pub fn enable_io_decode(
+    fch: &impl FchHw,
+    field: tock_registers::fields::FieldValue<u32, IoPortDecode::Register>,
+) {
+    fch.lpc().at(IO_PORT_DECODE).modify(field);
+}
+/// Decode `size` (16 or 512) bytes at `start` through a free wide I/O range.
+pub fn set_wideio_range(fch: &impl FchHw, start: u16, size: u16) -> Result<(), Error> {
+    let lpc = fch.lpc();
+    let decode = lpc.at(IO_MEM_DECODE).extract();
+    let ranges = [
+        (
+            IoMemDecode::WIDEIO0,
+            WIDEIO_GENERIC_PORT,
+            WideIo::LOW,
+            AltWideIo::WIDEIO0,
+        ),
+        (
+            IoMemDecode::WIDEIO1,
+            WIDEIO_GENERIC_PORT,
+            WideIo::HIGH,
+            AltWideIo::WIDEIO1,
+        ),
+        (
+            IoMemDecode::WIDEIO2,
+            WIDEIO2_GENERIC_PORT,
+            WideIo::LOW,
+            AltWideIo::WIDEIO2,
+        ),
+    ];
+    let &(enable, base, half, alt) = ranges
+        .iter()
+        .find(|(enable, ..)| !decode.is_set(*enable))
+        .ok_or(Error::NoWideIo)?;
+    lpc.at(base).modify(half.val(start.into()));
+    lpc.at(IO_MEM_DECODE).modify(enable.val(1));
+    lpc.at(ALT_WIDEIO).modify(alt.val((size <= 16).into()));
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fch::{Space, testing::World};
+    use crate::fch::testing::{Space, World};
 
     #[test]
     fn wide_io_ranges_fill_in_order() {
         let world = World::default();
-        let lpc = unsafe { Lpc::new(&world) };
-        lpc.set_wideio_range(0xa00, 512).unwrap();
-        lpc.set_wideio_range(0xca0, 16).unwrap();
-        lpc.set_wideio_range(0x600, 16).unwrap();
-        assert_eq!(lpc.set_wideio_range(0x700, 16), Err(Error::NoWideIo));
+        let fch = world.fch();
+        set_wideio_range(&fch, 0xa00, 512).unwrap();
+        set_wideio_range(&fch, 0xca0, 16).unwrap();
+        set_wideio_range(&fch, 0x600, 16).unwrap();
+        assert_eq!(set_wideio_range(&fch, 0x700, 16), Err(Error::NoWideIo));
         let reg = |offset| world.get(Space::Lpc, offset, 4);
         assert_eq!(reg(0x64), 0x0ca0_0a00);
         assert_eq!(reg(0x90), 0x600);

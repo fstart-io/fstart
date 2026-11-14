@@ -1,6 +1,6 @@
 //! Legacy interrupt routing: the PCI_INTR index/data pair at `C00h/C01h`
-//! of every FCH, reached through its I/O window (a [`crate::fch::Bus`]'s
-//! I/O space or the ports).
+//! of every FCH, reached through its I/O window
+//! ([`crate::fch::hw::FchHw::io`]).
 //!
 //! Indices 0x00–0x7F route to the PIC, 0x80–0xFF to the IOAPIC (FCH_SP3
 //! §3.3): [`index`] of a source and a [`Mode`]. The late task writes the generation's table ([`routes`]); the

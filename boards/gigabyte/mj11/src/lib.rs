@@ -19,13 +19,14 @@ mod riser;
 pub mod smm;
 mod variant;
 
-use fstart_driver_amd::{ccx::tsc::Tsc, fch::gpio::Gpio};
+use fstart_driver_amd::{ccx::tsc::Tsc, fch::gpio::Gpio, window::Window};
 use fstart_driver_amd::{
     fch::{
-        self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Bus, Fch, Pm1Enable, Pm1Status,
+        self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Pm1Enable, Pm1Status,
         gpio::Control,
+        hw::FchHw,
         iomux,
-        lpc::{IoPortDecode, Lpc},
+        lpc::{self, IoPortDecode},
         taishan::irq::{self, Route},
     },
     smn::{apply, write},
@@ -94,10 +95,12 @@ const IRQ_ROUTES: &[Route] = &[
 /// The PM1 write of the vendor AmdCpmOemInitPeim and SMBusSwitch: write back
 /// the pending PM1 status plus bits 15:14 (all W1C) and clear
 /// PCIEXP_WAKE_DIS.
-pub fn clear_pm1(fch: &Fch<impl Bus>) {
-    fch.reg(ACPI_PM1_STATUS)
+pub fn clear_pm1(fch: &impl FchHw) {
+    fch.acpi()
+        .at(ACPI_PM1_STATUS)
         .modify(Pm1Status::WAK::SET + Pm1Status::PCIEXP_WAKE::SET);
-    fch.reg(ACPI_PM1_ENABLE)
+    fch.acpi()
+        .at(ACPI_PM1_ENABLE)
         .modify(Pm1Enable::PCIEXP_WAKE_DIS::CLEAR);
 }
 
@@ -157,12 +160,12 @@ impl fstart_platform_amd::board::Board for Board {
 }
 
 /// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.
-pub fn early_init(lpc: &Lpc<impl Bus>) {
-    lpc.enable_sio_2e();
-    lpc.enable_io_decode(IoPortDecode::SERIAL0::SET);
+pub fn early_init(fch: &impl FchHw) {
+    lpc::enable_sio_2e(fch);
+    lpc::enable_io_decode(fch, IoPortDecode::SERIAL0::SET);
     // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.
-    let _ = lpc.set_wideio_range(0xa00, 512);
-    let _ = lpc.set_wideio_range(0xca0, 16);
+    let _ = lpc::set_wideio_range(fch, 0xa00, 512);
+    let _ = lpc::set_wideio_range(fch, 0xca0, 16);
     let Ok(sio) = Ast2400::new_at_base(SuperIoConfig::default(), ast::CONFIG_PORT) else {
         return;
     };
@@ -192,7 +195,7 @@ pub const fn console() -> Ns16550Config {
 /// The VRs and PCIe redrivers on I2C3 (the vendor board PEIMs, once the
 /// FCH's SMBus is up): route the I2C3 pads, then program both. Returns the
 /// PCIE_1 riser's ID: from its EEPROM on the same bus, else from the straps.
-pub fn program_i2c_devices(gpio: &Gpio<impl Bus>, clock: Tsc) -> Option<u8> {
+pub fn program_i2c_devices(gpio: &Gpio<impl Window>, clock: Tsc) -> Option<u8> {
     if i2c::PADS
         .iter()
         .any(|&pad| gpio.set_function(pad, i2c::FUNCTION).is_err())
@@ -252,12 +255,12 @@ pub fn apply_phy_tuning(die0: &Die<GlobalEcam>) {
 }
 
 /// Wait for the BMC before its VGA is used.
-pub fn wait_for_bmc(gpio: &Gpio<impl Bus>, clock: Tsc) {
+pub fn wait_for_bmc(gpio: &Gpio<impl Window>, clock: Tsc) {
     gpio::wait_for_bmc(gpio, &mut { clock });
 }
 
 /// The vendor GPIO table, after PCI enumeration.
-pub fn program_vendor_gpios(gpio: &Gpio<impl Bus>) {
+pub fn program_vendor_gpios(gpio: &Gpio<impl Window>) {
     if gpio.configure(gpio::VENDOR, &[]).is_err() {
         fstart_log::error!("Vendor GPIO table rejected");
     }
@@ -275,9 +278,10 @@ pub fn set_vga_ssid(die0: &Die<GlobalEcam>) {
 /// lists DDR4 DIMMs, so `ee1004 ... error -5` is expected on this board.
 /// The vendor writes the IOMUX of pins 136-139 through SMN; it is the same
 /// register as the ACPI MMIO one.
-pub fn hand_dimm_smbus_to_bmc(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
+pub fn hand_dimm_smbus_to_bmc(gpio: &Gpio<impl Window>, fch: &impl FchHw) {
     // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
-    fch.reg(iomux::at::<u32, Iomux136::Register>(136))
+    fch.acpi()
+        .at(iomux::at::<u32, Iomux136::Register>(136))
         .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));
     // GPIO137 driven low, keeping the drive strength and STS_EN bits.
     if let Ok(control) = gpio.control(GPIO137) {
@@ -291,8 +295,8 @@ pub fn hand_dimm_smbus_to_bmc(gpio: &Gpio<impl Bus>, fch: &Fch<impl Bus>) {
     clear_pm1(fch);
     // Pins 113-117 back to function 0 (SMBus0): two unaligned dword
     // writes, as in the vendor code.
-    fch.reg(iomux::at::<u32, ()>(113)).set(0);
-    fch.reg(iomux::at::<u32, ()>(114)).set(0);
+    fch.acpi().at(iomux::at::<u32, ()>(113)).set(0);
+    fch.acpi().at(iomux::at::<u32, ()>(114)).set(0);
 }
 
 /// What the board adds to the ACPI tables.

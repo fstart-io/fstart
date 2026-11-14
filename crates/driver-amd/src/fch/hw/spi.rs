@@ -17,12 +17,12 @@ use crate::window::{Window, update};
 pub const BASE: u32 = crate::fch::SPI_BASE;
 use crate::fch::spi;
 
-pub const CNTRL0: u32 = spi::CNTRL0.address - BASE;
-pub const CNTRL1: u32 = spi::RESTRICTED_CMD2.address - BASE;
+pub const CNTRL0: u32 = spi::CNTRL0.offset - BASE;
+pub const CNTRL1: u32 = spi::RESTRICTED_CMD2.offset - BASE;
 pub const ALT_SPI_CS: u32 = 0x1D;
-pub const SPI100_ENABLE: u32 = spi::SPI100_ENABLE.address - BASE;
-pub const SPI100_SPEED: u32 = spi::SPI100_SPEED.address - BASE;
-pub const SPI100_HOST_PREFETCH: u32 = spi::SPI100_HOST_PREFETCH.address - BASE;
+pub const SPI100_ENABLE: u32 = spi::SPI100_ENABLE.offset - BASE;
+pub const SPI100_SPEED: u32 = spi::SPI100_SPEED.offset - BASE;
+pub const SPI100_HOST_PREFETCH: u32 = spi::SPI100_HOST_PREFETCH.offset - BASE;
 
 register_bitfields![u32,
     /// SPIx00 FCH::ITF::SPI::SPICntrl0.

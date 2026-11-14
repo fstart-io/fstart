@@ -1,14 +1,12 @@
 //! The hardware handles of the SP3 silicon steps: config space, the TSC
 //! timer, POST codes, the ECAM MSR and the FCH views.
 
-use core::num::NonZeroU32;
 use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, MmioCfgBase};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
 use super::Generation;
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::fch::hw::{Fch, acpimmio};
-use fstart_driver_amd::fch::{Bus, NativeBus};
+use fstart_driver_amd::fch::hw::{Fch, Native, acpimmio};
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::window::{Mmio, Ports, SmnWindow};
 use tock_registers::interfaces::Writeable;
@@ -17,7 +15,7 @@ use tock_registers::interfaces::Writeable;
 pub type Pci = fstart_pci::ecam::GlobalEcam;
 
 /// The primary FCH: host ACPI-MMIO at `0xFED8_0000`, host MMIO and ports.
-pub type PrimaryFch = Fch<Mmio, Mmio, Ports, Pci, Tsc>;
+pub type PrimaryFch = Native<Tsc>;
 /// A secondary FCH (Naples die 1..7, Rome/Milan socket 1) through its SMN.
 pub type SecondaryFch = Fch<SmnWindow<Pci>, Mmio, Ports, Pci, Tsc>;
 
@@ -38,18 +36,12 @@ pub const SMU_TIMEOUT_US: u32 = 1_000_000;
 
 /// The TSC, at 1 GHz if its P-state is disabled.
 pub fn tsc() -> Tsc {
-    const GHZ: NonZeroU32 = NonZeroU32::new(1000).unwrap();
-    let mhz = fstart_arch::x86::cpu::amd::msr::tsc_mhz(&msr()).and_then(NonZeroU32::new);
-    Tsc::new(mhz.unwrap_or(GHZ))
+    Tsc::native(&msr())
 }
 
 /// Write a POST code to port 80h (the BMC shows it).
 pub fn post(code: u8) {
-    // SAFETY: an I/O port write only; port 80h is the POST port on every
-    // SP3 board.
-    unsafe { NativeBus::<false>::without_config() }
-        .reg(fstart_driver_amd::fch::POST_CODE)
-        .set(code)
+    fstart_driver_amd::fch::post_native(code)
 }
 
 /// Program `MMIO_CFG_BASE` (C001_0058) for the generation's ECAM (SOC_DF
@@ -70,17 +62,8 @@ pub fn enable_ecam(generation: Generation) -> PciRootInfo {
 /// Socket 0's FCH as the host sees it.
 pub fn primary_fch(timer: Tsc) -> PrimaryFch {
     // SAFETY: the boot flow owns the FCH's ACPI-MMIO block, MMIO, ports and
-    // config space until the payload starts.
-    unsafe {
-        Fch {
-            acpi: Mmio::new(acpimmio::BASE as usize),
-            mmio: Mmio::new(0),
-            io: Ports::new(),
-            pci: Pci::default(),
-            bus: 0,
-            timer,
-        }
-    }
+    // config space until the payload starts; the ECAM is up.
+    unsafe { Native::new(timer) }
 }
 
 /// The FCH of the die/socket whose root bus is `bus`, through its SMN.

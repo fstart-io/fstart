@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The FCH PCI interrupt router: the PCI_INTR index/data table at I/O
 //! 0xc00/0xc01 with a PIC and an IOAPIC value per source.
-use crate::fch::Bus;
+use crate::window::Window;
 
 /// Not connected.
 pub const NC: u8 = 0x1f;
@@ -100,16 +100,16 @@ pub const SOURCES: &[(u8, &str)] = &[
     (UART3, "UART3"),
 ];
 
+use crate::fch::irq;
 pub use crate::fch::irq::Mode;
-use crate::fch::{Space, irq};
 
 /// read_pci_int_idx.
-pub fn read(bus: &impl Bus, source: u8, mode: Mode) -> u8 {
-    irq::read(&bus.space(Space::Io), irq::index(source, mode))
+pub fn read(io: &impl Window, source: u8, mode: Mode) -> u8 {
+    irq::read(io, irq::index(source, mode))
 }
 /// write_pci_int_idx.
-pub fn write(bus: &impl Bus, source: u8, mode: Mode, value: u8) {
-    irq::write(&bus.space(Space::Io), irq::index(source, mode), value);
+pub fn write(io: &impl Window, source: u8, mode: Mode, value: u8) {
+    irq::write(io, irq::index(source, mode), value);
 }
 
 /// One board routing entry.
@@ -131,7 +131,7 @@ pub enum Error {
 /// entries are control bitfields set up by the native init (the legacy timer
 /// interrupt depends on them), so they keep their current values whatever
 /// the board lists; this is the fix tested on the MJ11.
-pub fn write_routing(bus: &impl Bus, routes: &[Route]) -> Result<(), Error> {
+pub fn write_routing(io: &impl Window, routes: &[Route]) -> Result<(), Error> {
     if let Some(bad) = routes.iter().position(|r| r.source >= ENTRIES) {
         return Err(Error::InvalidSource(bad));
     }
@@ -140,15 +140,15 @@ pub fn write_routing(bus: &impl Bus, routes: &[Route]) -> Result<(), Error> {
         table[usize::from(route.source)] = (route.pic, route.apic);
     }
     for source in MISC..=MISC2 {
-        table[usize::from(source)] = (read(bus, source, Mode::Pic), read(bus, source, Mode::Apic));
+        table[usize::from(source)] = (read(io, source, Mode::Pic), read(io, source, Mode::Apic));
     }
     fstart_log::debug!("PCI_INTR: index name PIC APIC");
     for &(source, name) in SOURCES {
         let (pic, apic) = table[usize::from(source)];
-        write(bus, source, Mode::Pic, pic);
-        let pic = read(bus, source, Mode::Pic);
-        write(bus, source, Mode::Apic, apic);
-        let apic = read(bus, source, Mode::Apic);
+        write(io, source, Mode::Pic, pic);
+        let pic = read(io, source, Mode::Pic);
+        write(io, source, Mode::Apic, apic);
+        let apic = read(io, source, Mode::Apic);
         fstart_log::debug!(
             "{} {} {} {}",
             fstart_log::Hex(source.into()),
@@ -162,7 +162,7 @@ pub fn write_routing(bus: &impl Bus, routes: &[Route]) -> Result<(), Error> {
 
 /// The PIC IRQ a PCI device on `source` gets in its interrupt line register,
 /// `None` if the source isn't connected (write_pci_cfg_irqs).
-pub fn pci_int_line(bus: &impl Bus, source: u8) -> Option<u8> {
-    let line = read(bus, source, Mode::Pic);
+pub fn pci_int_line(io: &impl Window, source: u8) -> Option<u8> {
+    let line = read(io, source, Mode::Pic);
     (line != NC).then_some(line)
 }

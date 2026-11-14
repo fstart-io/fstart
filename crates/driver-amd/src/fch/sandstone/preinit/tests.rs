@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::*;
-use crate::fch::{ACPI_MMIO, Acpimmio, Space, testing::World};
+use crate::fch::{
+    ACPI_MMIO,
+    testing::{Space, World},
+};
 use std::vec;
 
 /// Device and vendor IDs of the LPC bridge.
@@ -9,9 +12,6 @@ fn world() -> World {
     let world = World::default();
     world.set(Space::Lpc, 0, 4, 0x1022);
     world
-}
-fn fch(world: &World) -> Fch<&World> {
-    Fch::new(world, Acpimmio::DIE0)
 }
 const PM: u32 = ACPI_MMIO + 0x300;
 fn spi(offset: u32) -> u32 {
@@ -33,7 +33,7 @@ fn spi_modes_and_speed_override_preserve_unrelated_register_bits() {
     world.set(Space::Mmio, spi(0x2c), 2, 0x9234);
     world.set(Space::Mmio, spi(0x20), 2, 0x0040);
     world.set(Space::Mmio, spi(0), 4, 0x52045566);
-    configure_spi(&fch(&world), CONFIG).unwrap();
+    configure_spi(&world.fch(), CONFIG).unwrap();
     assert_eq!(
         world.writes(),
         vec![
@@ -88,7 +88,7 @@ fn spi_modes_and_speed_override_preserve_unrelated_register_bits() {
 fn smbus_w1c_decode_and_preflight_failures() {
     let world = world();
     world.set(Space::Mmio, PM, 4, 0x20001265);
-    initialize_smbus(&fch(&world)).unwrap();
+    initialize_smbus(&world.fch()).unwrap();
     assert_eq!(
         world.writes(),
         vec![
@@ -102,27 +102,27 @@ fn smbus_w1c_decode_and_preflight_failures() {
     );
     let world = World::default();
     world.set(Space::Lpc, 0, 4, u32::MAX);
-    assert_eq!(prepare_lpc(&fch(&world)), Err(Error::Unavailable));
+    assert_eq!(prepare_lpc(&world.fch()), Err(Error::Unavailable));
     assert!(world.writes().is_empty());
     let world = self::world();
     assert_eq!(
-        configure_spi(&fch(&world), CONFIG),
+        configure_spi(&world.fch(), CONFIG),
         Err(Error::WrongSpiBase)
     );
     assert!(world.writes().is_empty());
     world.set(Space::Lpc, 0xa0, 4, SPI_BASE);
     // Status-only busy/absent with CNTRL0 idle must not configure anything.
     world.set(Space::Mmio, spi(0x4c), 4, 0x8000_0000);
-    assert_eq!(configure_spi(&fch(&world), CONFIG), Err(Error::SpiBusy));
+    assert_eq!(configure_spi(&world.fch(), CONFIG), Err(Error::SpiBusy));
     assert!(world.writes().is_empty());
     world.set(Space::Mmio, spi(0x4c), 4, u32::MAX);
-    assert_eq!(configure_spi(&fch(&world), CONFIG), Err(Error::Unavailable));
+    assert_eq!(configure_spi(&world.fch(), CONFIG), Err(Error::Unavailable));
     assert!(world.writes().is_empty());
     world.set(Space::Mmio, spi(0x4c), 4, 0);
     world.set(Space::Mmio, spi(0), 4, u32::MAX);
-    assert_eq!(configure_spi(&fch(&world), CONFIG), Err(Error::Unavailable));
+    assert_eq!(configure_spi(&world.fch(), CONFIG), Err(Error::Unavailable));
     assert!(world.writes().is_empty());
     world.set(Space::Mmio, PM, 4, u32::MAX);
-    assert_eq!(initialize_smbus(&fch(&world)), Err(Error::Unavailable));
+    assert_eq!(initialize_smbus(&world.fch()), Err(Error::Unavailable));
     assert!(world.writes().is_empty());
 }

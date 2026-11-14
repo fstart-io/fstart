@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso LPC/SPI/SMBus pre-console mechanisms.
 //! This is not a flash transaction driver or a complete FCH boot flow.
-use crate::fch::{
-    Bus, Fch,
-    early::lpc_present,
-    lpc::{self, RomDmaEcHostControl, SpiBase},
-    spi,
-};
 pub use crate::fch::{
     SPI_BASE,
     early::{Error, initialize_smbus, prepare_lpc},
 };
+use crate::fch::{
+    early::lpc_present,
+    hw::FchHw,
+    lpc::{self, RomDmaEcHostControl, SpiBase},
+    spi,
+};
+use crate::window::Window;
 use tock_registers::interfaces::{Readable, Writeable};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -97,10 +98,10 @@ impl SpiConfig {
 /// Native ROM CS/prefetch/4DW/mode/SPI100 sequence. Caller must own SPI against
 /// PSP/AP/SMM/EC and establish that ROM Armor does not prohibit host access.
 /// An active transaction is rejected before any write, never aborted/retried.
-pub fn configure_spi(fch: &Fch<impl Bus>, config: SpiConfig) -> Result<(), Error> {
+pub fn configure_spi(fch: &impl FchHw, config: SpiConfig) -> Result<(), Error> {
     lpc_present(fch)?;
-    let bus = fch.bus();
-    let mut bar = bus.reg(lpc::SPI_BASE_ADDRESS).extract();
+    let (lpc, mmio) = (fch.lpc(), fch.mmio());
+    let mut bar = lpc.at(lpc::SPI_BASE_ADDRESS).extract();
     if bar.get() == u32::MAX {
         return Err(Error::Unavailable);
     }
@@ -109,17 +110,17 @@ pub fn configure_spi(fch: &Fch<impl Bus>, config: SpiConfig) -> Result<(), Error
     }
     // Picasso's compiled controller polls SPI_STATUS, not CNTRL0. The
     // shared header's placement of SPI_BUSY under CNTRL0 is misleading.
-    let status = bus.reg(spi::STATUS).extract();
+    let status = mmio.at(spi::STATUS).extract();
     if status.get() == u32::MAX {
         return Err(Error::Unavailable);
     }
     if status.is_set(spi::Status::BUSY) {
         return Err(Error::SpiBusy);
     }
-    let mut control = bus.reg(spi::CNTRL0).extract();
-    let mut prefetch = bus.reg(lpc::ROM_DMA_EC_HOST_CONTROL).extract();
-    let mut burst = bus.reg(spi::SPI100_HOST_PREFETCH).extract();
-    let mut enable = bus.reg(spi::SPI100_ENABLE).extract();
+    let mut control = mmio.at(spi::CNTRL0).extract();
+    let mut prefetch = lpc.at(lpc::ROM_DMA_EC_HOST_CONTROL).extract();
+    let mut burst = mmio.at(spi::SPI100_HOST_PREFETCH).extract();
+    let mut enable = mmio.at(spi::SPI100_ENABLE).extract();
     if control.get() == u32::MAX
         || prefetch.get() == u32::MAX
         || burst.get() == u16::MAX
@@ -128,22 +129,22 @@ pub fn configure_spi(fch: &Fch<impl Bus>, config: SpiConfig) -> Result<(), Error
         return Err(Error::Unavailable);
     }
     bar.modify(SpiBase::ROM_ALT_ENABLE::CLEAR + SpiBase::ROM_ENABLE::SET);
-    bus.reg(lpc::SPI_BASE_ADDRESS).set(bar.get());
+    lpc.at(lpc::SPI_BASE_ADDRESS).set(bar.get());
     prefetch.modify(
         RomDmaEcHostControl::SPI_FROM_HOST_PREFETCH_EN::SET
             + RomDmaEcHostControl::SPI_FROM_USB_PREFETCH_EN::SET,
     );
-    bus.reg(lpc::ROM_DMA_EC_HOST_CONTROL).set(prefetch.get());
+    lpc.at(lpc::ROM_DMA_EC_HOST_CONTROL).set(prefetch.get());
     burst.modify(spi::Spi100HostPrefetch::RD4DW_EN_HOST.val(config.burst_4dw.into()));
-    bus.reg(spi::SPI100_HOST_PREFETCH).set(burst.get());
+    mmio.at(spi::SPI100_HOST_PREFETCH).set(burst.get());
     let mode = config.mode as u32;
     control.modify(
         spi::Cntrl0::READ_MODE_HIGH.val(mode >> 1) + spi::Cntrl0::READ_MODE_LOW.val(mode & 1),
     );
-    bus.reg(spi::CNTRL0).set(control.get());
-    bus.reg(spi::SPI100_SPEED).set(config.speed_word());
+    mmio.at(spi::CNTRL0).set(control.get());
+    mmio.at(spi::SPI100_SPEED).set(config.speed_word());
     enable.modify(spi::Spi100Enable::ENABLE::SET);
-    bus.reg(spi::SPI100_ENABLE).set(enable.get());
+    mmio.at(spi::SPI100_ENABLE).set(enable.get());
     Ok(())
 }
 #[cfg(test)]

@@ -7,9 +7,16 @@
 
 use fstart_driver_i2c::designware::{Speed, Timing};
 
+use fstart_pci::PciAddress;
+
 use super::FchHw;
 use super::acpimmio::{self, AoacDevice};
 use crate::fch::gpio::{self, Pad, Pin};
+
+/// The SMBus function.
+pub fn function() -> PciAddress {
+    PciAddress::new(0, 0, 0x14, 0)
+}
 
 /// RXM100CB AmdI2CMasterPei standard timing: 100 kHz at 150 MHz.
 pub const I2C_TIMING: Timing = Timing {

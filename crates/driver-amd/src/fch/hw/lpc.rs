@@ -16,20 +16,20 @@ pub fn lpc() -> PciAddress {
 
 use crate::fch::lpc;
 
-pub const PCI_CONTROL: u32 = lpc::PCI_CONTROL.address;
-pub const IO_PORT_DECODE: u32 = lpc::IO_PORT_DECODE.address;
-pub const IO_MEM_DECODE: u32 = lpc::IO_MEM_DECODE.address;
-pub const WIDE_IO_0_1: u32 = lpc::WIDEIO_GENERIC_PORT.address;
-pub const ROM_RANGE2: u32 = lpc::R6C.address;
-pub const ALT_WIDE_IO: u32 = lpc::ALT_WIDEIO.address;
-pub const MISC_CONTROL: u32 = lpc::MISC_CONTROL.address;
-pub const TPM: u32 = lpc::R7C.address;
-pub const WIDE_IO_2: u32 = lpc::WIDEIO2_GENERIC_PORT.address;
-pub const SPI_BASE: u32 = lpc::SPI_BASE_ADDRESS.address;
-pub const LPC_A4: u32 = lpc::RA4.address;
-pub const LPC_BA: u32 = lpc::ROM_DMA_CONTROL_BYTE.address;
-pub const LPC_BB: u32 = lpc::ROM_DMA_CONTROL_HIGH.address;
-pub const CLK_CONTROL: u32 = lpc::CLOCK_CONTROL.address;
+pub const PCI_CONTROL: u32 = lpc::PCI_CONTROL.offset;
+pub const IO_PORT_DECODE: u32 = lpc::IO_PORT_DECODE.offset;
+pub const IO_MEM_DECODE: u32 = lpc::IO_MEM_DECODE.offset;
+pub const WIDE_IO_0_1: u32 = lpc::WIDEIO_GENERIC_PORT.offset;
+pub const ROM_RANGE2: u32 = lpc::R6C.offset;
+pub const ALT_WIDE_IO: u32 = lpc::ALT_WIDEIO.offset;
+pub const MISC_CONTROL: u32 = lpc::MISC_CONTROL.offset;
+pub const TPM: u32 = lpc::R7C.offset;
+pub const WIDE_IO_2: u32 = lpc::WIDEIO2_GENERIC_PORT.offset;
+pub const SPI_BASE: u32 = lpc::SPI_BASE_ADDRESS.offset;
+pub const LPC_A4: u32 = lpc::RA4.offset;
+pub const LPC_BA: u32 = lpc::ROM_DMA_CONTROL_BYTE.offset;
+pub const LPC_BB: u32 = lpc::ROM_DMA_CONTROL_HIGH.offset;
+pub const CLK_CONTROL: u32 = lpc::CLOCK_CONTROL.offset;
 
 register_bitfields![u32,
     /// D14F3x48 FCH::ITF::LPC::IOMemPortDecodeEn.

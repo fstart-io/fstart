@@ -2,10 +2,8 @@
 //! Banked FCH GPIO. Configuration
 //! preserves reserved/drive-strength bits and clears W1C interrupt/wake
 //! status deliberately, not via an accidental RMW.
-use crate::fch::{
-    AcpiReg, Bus, BusRegister, Fch, SMI_TRIGGER0, SmiMode, gpio_bank, iomux, smi_bank, smi_route,
-};
-use crate::window::Window;
+use crate::fch::{SMI_TRIGGER0, SmiMode, gpio_bank, iomux, smi_bank, smi_route};
+use crate::window::{At, Reg, Window};
 use tock_registers::{
     fields::{Field, FieldValue},
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -97,14 +95,14 @@ const REMOTE_GPIO: u32 = 0x1200;
 pub const CONFIG_MASK: u32 =
     0xff | (7 << 8) | (3 << 11) | (7 << 13) | (3 << 20) | (3 << 22) | STATUS_MASK;
 
-const fn control(pin: u8) -> AcpiReg<u32, Control::Register> {
+const fn control(pin: u8) -> At<u32, Control::Register> {
     gpio_bank::at(4 * pin as u32)
 }
-const MASTER: AcpiReg<u32, Master::Register> = gpio_bank::at(0xfc);
-const SCI_TRIGGER: AcpiReg<u32, SciTrigger::Register> = smi_bank::at(0x08);
-const SCI_LEVEL: AcpiReg<u32, SciLevel::Register> = smi_bank::at(0x0c);
+const MASTER: At<u32, Master::Register> = gpio_bank::at(0xfc);
+const SCI_TRIGGER: At<u32, SciTrigger::Register> = smi_bank::at(0x08);
+const SCI_LEVEL: At<u32, SciLevel::Register> = smi_bank::at(0x0c);
 /// SMIx40 + n: the SCI a GEVENT raises.
-const fn sci_map(event: u8) -> AcpiReg<u8> {
+const fn sci_map(event: u8) -> At<u8> {
     smi_bank::at(0x40 + event as u32)
 }
 
@@ -426,16 +424,16 @@ pub enum Error {
     DuplicatePad,
 }
 
-/// A GPIO bank of one FCH.
-pub struct Gpio<B> {
-    fch: Fch<B>,
+/// A GPIO bank of one FCH, in its ACPI-MMIO block `acpi`.
+pub struct Gpio<W> {
+    acpi: W,
     bank: &'static Bank,
 }
-impl<B: Bus> Gpio<B> {
+impl<W: Window> Gpio<W> {
     /// The caller serializes all accesses to the GPIO, IOMUX and SMI banks
-    /// of `fch` (including SMM and other processors).
-    pub const fn new(fch: Fch<B>, bank: &'static Bank) -> Self {
-        Self { fch, bank }
+    /// of `acpi` (including SMM and other processors).
+    pub const fn new(acpi: W, bank: &'static Bank) -> Self {
+        Self { acpi, bank }
     }
 
     fn validate(&self, table: &[Pad]) -> Result<(), Error> {
@@ -480,7 +478,7 @@ impl<B: Bus> Gpio<B> {
         if base.is_empty() {
             return Ok(());
         }
-        let master = self.fch.reg(MASTER);
+        let master = self.acpi.at(MASTER);
         master.modify(Master::MASK_STATUS::CLEAR + Master::INTERRUPTS::CLEAR);
         for pad in base
             .iter()
@@ -488,11 +486,11 @@ impl<B: Bus> Gpio<B> {
         {
             let pin = pad.pin.0 as u8;
             if let Some(function) = self.bank.function(pad).unwrap_or(Some(0)) {
-                let mux = self.fch.reg(iomux::at::<u8, ()>(pin.into()));
+                let mux = self.acpi.at(iomux::at::<u8, ()>(pin.into()));
                 mux.set(function & 3);
                 mux.get(); // flush posted write
             }
-            let control = self.fch.reg(control(pin));
+            let control = self.acpi.at(control(pin));
             control.set((control.get() & !pad.mask) | pad.control);
             // Clear the W1C status bits in a separate write.
             control.modify(Control::INTERRUPT_STATUS::SET + Control::WAKE_STATUS::SET);
@@ -509,18 +507,18 @@ impl<B: Bus> Gpio<B> {
         match config {
             Event::None => {}
             Event::Sci(trigger) => {
-                self.fch.reg(sci_map(event)).set(event);
-                self.fch
-                    .reg(SCI_TRIGGER)
+                self.acpi.at(sci_map(event)).set(event);
+                self.acpi
+                    .at(SCI_TRIGGER)
                     .modify(gevent_bit(event, trigger.high()));
-                self.fch
-                    .reg(SCI_LEVEL)
+                self.acpi
+                    .at(SCI_LEVEL)
                     .modify(gevent_bit(event, trigger.level()));
             }
             Event::Smi(trigger) => {
-                smi_route(&self.fch, event, SmiMode::Smi);
-                self.fch
-                    .reg(SMI_TRIGGER0)
+                smi_route(&self.acpi, event, SmiMode::Smi);
+                self.acpi
+                    .at(SMI_TRIGGER0)
                     .modify(gevent_bit(event, trigger.high()));
             }
         }
@@ -531,23 +529,23 @@ impl<B: Bus> Gpio<B> {
         if !self.bank.exists(pin) || function > 3 {
             return Err(Error::InvalidPad);
         }
-        self.fch.reg(iomux::at::<u8, ()>(pin.into())).set(function);
+        self.acpi.at(iomux::at::<u8, ()>(pin.into())).set(function);
         Ok(())
     }
     /// The control register of `pin`, for vendor sequences that program it
     /// field by field.
-    pub fn control(&self, pin: u8) -> Result<BusRegister<'_, B, u32, Control::Register>, Error> {
+    pub fn control(&self, pin: u8) -> Result<Reg<&W, u32, Control::Register>, Error> {
         if !self.bank.exists(pin) {
             return Err(Error::InvalidPad);
         }
-        Ok(self.fch.reg(control(pin)))
+        Ok(self.acpi.at(control(pin)))
     }
     /// The level of `pin`.
     pub fn get(&self, pin: u8) -> Result<bool, Error> {
         if !self.bank.exists(pin) {
             return Err(Error::InvalidPad);
         }
-        Ok(self.fch.reg(control(pin)).is_set(Control::PIN))
+        Ok(self.acpi.at(control(pin)).is_set(Control::PIN))
     }
     /// Whether `pin` latched an interrupt, clearing the latch. A pending
     /// wake status stays.
@@ -555,7 +553,7 @@ impl<B: Bus> Gpio<B> {
         if !self.bank.exists(pin) {
             return Err(Error::InvalidPad);
         }
-        let control = self.fch.reg(control(pin));
+        let control = self.acpi.at(control(pin));
         let value = control.extract();
         if !value.is_set(Control::INTERRUPT_STATUS) {
             return Ok(false);
@@ -569,7 +567,7 @@ impl<B: Bus> Gpio<B> {
         if !self.bank.exists(pin) {
             return Err(Error::InvalidPad);
         }
-        self.fch.reg(control(pin)).modify(
+        self.acpi.at(control(pin)).modify(
             Control::OUTPUT.val(high.into())
                 + Control::INTERRUPT_STATUS::CLEAR
                 + Control::WAKE_STATUS::CLEAR,
@@ -580,15 +578,15 @@ impl<B: Bus> Gpio<B> {
 
 /// One pad of a bank as an embedded-hal output, borrowed from the bank so a
 /// board can drive several pads of it.
-pub struct Output<'a, B> {
-    gpio: &'a Gpio<B>,
+pub struct Output<'a, W> {
+    gpio: &'a Gpio<W>,
     pin: u8,
 }
 
-impl<B: Bus> Gpio<B> {
+impl<W: Window> Gpio<W> {
     /// Drive `pin` through embedded-hal. Its pad must already be configured
     /// as an output.
-    pub fn output(&self, pin: u8) -> Result<Output<'_, B>, Error> {
+    pub fn output(&self, pin: u8) -> Result<Output<'_, W>, Error> {
         if !self.bank.exists(pin) {
             return Err(Error::InvalidPad);
         }
@@ -596,11 +594,11 @@ impl<B: Bus> Gpio<B> {
     }
 }
 
-impl<B> embedded_hal::digital::ErrorType for Output<'_, B> {
+impl<W> embedded_hal::digital::ErrorType for Output<'_, W> {
     type Error = Error;
 }
 
-impl<B: Bus> embedded_hal::digital::OutputPin for Output<'_, B> {
+impl<W: Window> embedded_hal::digital::OutputPin for Output<'_, W> {
     fn set_low(&mut self) -> Result<(), Error> {
         self.gpio.set(self.pin, false)
     }
@@ -611,14 +609,14 @@ impl<B: Bus> embedded_hal::digital::OutputPin for Output<'_, B> {
 }
 
 /// One pad of a bank as an embedded-hal input.
-pub struct Input<B> {
-    gpio: Gpio<B>,
+pub struct Input<W> {
+    gpio: Gpio<W>,
     pin: u8,
 }
 
-impl<B: Bus> Gpio<B> {
+impl<W: Window> Gpio<W> {
     /// Read `pin` through embedded-hal. Its pad must already be configured.
-    pub fn input(self, pin: u8) -> Result<Input<B>, Error> {
+    pub fn input(self, pin: u8) -> Result<Input<W>, Error> {
         if !self.bank.exists(pin) {
             return Err(Error::InvalidPad);
         }
@@ -632,11 +630,11 @@ impl embedded_hal::digital::Error for Error {
     }
 }
 
-impl<B> embedded_hal::digital::ErrorType for Input<B> {
+impl<W> embedded_hal::digital::ErrorType for Input<W> {
     type Error = Error;
 }
 
-impl<B: Bus> embedded_hal::digital::InputPin for Input<B> {
+impl<W: Window> embedded_hal::digital::InputPin for Input<W> {
     fn is_high(&mut self) -> Result<bool, Error> {
         self.gpio.get(self.pin)
     }

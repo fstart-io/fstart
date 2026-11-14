@@ -16,7 +16,7 @@ mod zeppelin {
         df::{self, map},
         dxio::{self, Descriptor, SataChannel},
         fch::{
-            Acpimmio, Fch,
+            hw::FchHw,
             taishan::{self, Devices},
         },
         nbio::{
@@ -101,11 +101,11 @@ mod zeppelin {
         for die in &dies {
             df::zp::early_init(&die.df(), 2, Revision::ZpB2, &Default::default());
         }
-        let fch0 = Fch::new(pci, Acpimmio::DIE0);
+        let fch0 = pci.fch();
         taishan::reset_init(&fch0, Revision::ZpB2);
         taishan::sata::reset(&dies[0].smn(), &mut delay);
         taishan::multi::reset(
-            pci,
+            &fch0,
             &dies,
             Package::Sp4,
             |d| nonpci[usize::from(d)],
@@ -170,10 +170,17 @@ mod zeppelin {
             nbio::zp::pre_enumeration_init(die);
         }
         taishan::env_init(&fch0, &dies[0].smn(), SUBSYSTEM_ID, true);
-        taishan::sata::init(&fch0, 0, &dies[0].smn(), SUBSYSTEM_ID, &mut delay);
+        taishan::sata::init(
+            fch0.acpi(),
+            fch0.io(),
+            0,
+            &dies[0].smn(),
+            SUBSYSTEM_ID,
+            &mut delay,
+        );
         taishan::multi::xgbe_init(&dies[0].smn());
         taishan::multi::env(
-            pci,
+            &fch0,
             &dies,
             &DEVICES,
             |d| nonpci[usize::from(d)],
