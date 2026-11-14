@@ -494,7 +494,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
     fn map(
         hw: &mut Hw,
         config: &mut Config,
-        _: &NativeMsr,
+        msr: &NativeMsr,
         _: Tsc,
     ) -> Result<Mapped<Self>, &'static str> {
         let generation = Generation::of(hw.identity.silicon());
@@ -531,16 +531,19 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
         );
 
         step(0x15, "memory map");
-        let tops = parts::top_of_memory();
+        let (tom, tom2) = fstart_driver_amd::ccx::msr::memory_limits(msr).map_err(|_| "TOP_MEM")?;
+        let tops = crate::memory::TopOfMemory { tom, tom2 };
         let regions = parts::memory_regions(&apob, generation);
-        let tseg = super::smm::place_tseg(
+        let tseg = crate::memory::place_tseg(
             &regions,
             tops.tom,
             super::smm::TSEG_SIZE,
             &[layout::LAYOUT.early, apob_span],
         )
         .ok_or("TSEG placement")?;
-        let e820 = parts::build_e820(generation, &regions, tops, apob_span, tseg);
+        let reservations = super::memory::reservations(generation, apob_span, Some(tseg));
+        let e820 =
+            crate::memory::build("sp3", &regions, tops, &reservations).map_err(|_| "e820")?;
         parts::cache_ram(&regions);
 
         if config.discrete_tpm {
@@ -615,7 +618,7 @@ impl<F: Silicon> crate::flow::Soc for Sp3<F> {
             parts::tpm::measure_smm(IMAGE);
             // The handler's page tables map the low 4 GiB only; a PSP BAR
             // above would fault in SMM at SmmInfo, after the lock.
-            if soc.psp_bar == 0 || soc.psp_bar >= super::memory::FOUR_GIB {
+            if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
                 return Err("PSP BAR for SMM");
             }
             let smi = super::smm::Sp3Smi {

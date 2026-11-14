@@ -27,6 +27,8 @@ pub mod layout;
 /// The boot media mount every AMD flow shares.
 #[cfg(feature = "media")]
 pub mod media;
+/// The memory map, for every SoC.
+pub mod memory;
 /// MP init, for every flow.
 pub mod mp;
 pub mod noncar;
