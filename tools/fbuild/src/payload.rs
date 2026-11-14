@@ -130,6 +130,11 @@ pub struct BuildArgs {
     /// signed with an ephemeral key that is discarded after the build.
     #[arg(long)]
     pub signing_key: Option<PathBuf>,
+    /// A firmware option the image's settings store starts with, as
+    /// KEY=VALUE with its numeric value (an enum option's choice value);
+    /// repeatable. The board's settings menu changes it as any other.
+    #[arg(long = "option", value_parser = parse_option)]
+    pub settings: Vec<(String, u32)>,
 }
 
 impl Default for BuildArgs {
@@ -147,6 +152,7 @@ impl Default for BuildArgs {
             debug: Vec::new(),
             payload_files: Vec::new(),
             signing_key: None,
+            settings: Vec::new(),
         }
     }
 }
@@ -210,6 +216,9 @@ impl BuildArgs {
         }
         if let Some(path) = &self.signing_key {
             args.extend(["--signing-key".into(), path.display().to_string()]);
+        }
+        for (key, value) in &self.settings {
+            args.extend(["--option".into(), format!("{key}={value}")]);
         }
     }
 }
@@ -280,6 +289,17 @@ fn parse_payload_file(value: &str) -> Result<(String, String), String> {
         }
         _ => Err("payload file must be NAME=PATH".into()),
     }
+}
+
+fn parse_option(value: &str) -> Result<(String, u32), String> {
+    let Some((key, value)) = value.split_once('=') else {
+        return Err("option must be KEY=VALUE".into());
+    };
+    if key.is_empty() || !key.is_ascii() {
+        return Err("option key must be ASCII".into());
+    }
+    let value = u32::try_from(parse_u64(value)?).map_err(|error| error.to_string())?;
+    Ok((key.to_owned(), value))
 }
 
 fn parse_u64(value: &str) -> Result<u64, String> {

@@ -11,9 +11,8 @@ publish = false
 # the platform dependency below, so every build of this crate (the reset
 # unit and fbuild's host plan runner, which never sees bundle-stage) has
 # them. GM2NE and GM4NE-2T run the same image (README.md), so they are not
-# variants. `tyan-s8030-pcie3-x4x4x4x4` bifurcates PCIE#3 x4x4x4x4 by
-# default, for an NVMe carrier (the test bench); the settings menu
-# overrides either default.
+# variants. A machine's slot bifurcation is an option: the settings
+# menu changes it, and `fbuild assemble --option` seeds it into an image.
 [package.metadata.fstart]
 schema = 1
 board = "tyan-s8030"
@@ -40,13 +39,9 @@ apcb = { entries = [
   { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "s8030/milan/apcb-60-1.bin" },
 ] }
 
-[package.metadata.fstart.variants.tyan-s8030-pcie3-x4x4x4x4]
-features = ["pcie3-x4x4x4x4"]
-
 [features]
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-amd/smm"]
-pcie3-x4x4x4x4 = []
 
 # Versions are spelled out instead of inherited: boards are outside the
 # workspace (fbuild adds them to a generated one) and this crate also
