@@ -1,4 +1,4 @@
-use fstart_core::{BoardBuildPolicy, Platform, QemuMachine};
+use fstart_core::{BoardBuildPolicy, Platform};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -33,198 +33,76 @@ pub fn run(
     secure_firmware: Option<&str>,
     x86_stage_elf: Option<&Path>,
 ) -> Result<(), String> {
-    let use_sbsa_ref = build_policy.qemu_machine == Some(QemuMachine::SbsaRef);
-    let use_sifive_u = build_policy.qemu_machine == Some(QemuMachine::SifiveU);
-    let use_orangepi_pc = build_policy.qemu_machine == Some(QemuMachine::OrangePiPc);
-    let use_ast2500_evb = build_policy.qemu_machine == Some(QemuMachine::Ast2500Evb);
-    let (qemu_bin, mut args) = if use_sbsa_ref {
-        if platform != Platform::Aarch64 {
-            return Err("QEMU sbsa-ref requires the aarch64 platform".to_string());
+    let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
+    let kvm = match accel.as_deref() {
+        Some("kvm") => true,
+        Some("tcg") => false,
+        _ => std::fs::File::open("/dev/kvm").is_ok(),
+    };
+    let smp = std::env::var("FSTART_QEMU_SMP").unwrap_or_else(|_| "1".into());
+    let launch = fstart_platform_qemu::host::launch::resolve(
+        platform,
+        build_policy.qemu_machine,
+        kvm,
+        &smp,
+    )?;
+    let qemu_bin = find_qemu(launch.program);
+    let mut args = launch.args;
+    use fstart_platform_qemu::host::launch::BootMedia;
+    match launch.media {
+        BootMedia::Bios => args.extend(["-bios".into(), binary.display().to_string()]),
+        BootMedia::Mtd => args.extend([
+            "-drive".into(),
+            format!("file={},format=raw,if=mtd", binary.display()),
+        ]),
+        BootMedia::SunxiSd => {
+            let sd = create_sunxi_sd_image(binary)?;
+            args.extend(["-sd".into(), sd.display().to_string()]);
         }
-        let secure = secure_firmware.ok_or_else(|| {
-            "QEMU sbsa-ref requires --secure-firmware (a complete 256 MiB TF-A pflash image)"
-                .to_string()
-        })?;
-        let secure_size = std::fs::metadata(secure)
-            .map_err(|e| format!("failed to read SBSA secure firmware: {e}"))?
-            .len();
-        const SBSA_PFLASH_SIZE: u64 = 256 * 1024 * 1024;
-        if secure_size != SBSA_PFLASH_SIZE {
-            return Err(format!(
-                "SBSA secure firmware is {secure_size} bytes; expected {SBSA_PFLASH_SIZE}"
-            ));
+        BootMedia::ArmVirt { bank_size } => {
+            args.extend(virt_flash_args(binary, bank_size as usize)?)
         }
-        let non_secure = create_pflash_image(binary, SBSA_PFLASH_SIZE as usize)?;
-        (
-            find_qemu("qemu-system-aarch64"),
-            vec![
-                "-M".to_string(),
-                "sbsa-ref".to_string(),
-                "-cpu".to_string(),
-                "max".to_string(),
-                "-nographic".to_string(),
-                "-drive".to_string(),
-                format!("if=pflash,file={secure},format=raw,unit=0,readonly=on"),
-                "-drive".to_string(),
-                format!("if=pflash,file={},format=raw,unit=1", non_secure.display()),
-            ],
-        )
-    } else if use_orangepi_pc {
-        if platform != Platform::Armv7 {
-            return Err("QEMU orangepi-pc requires armv7".to_string());
+        BootMedia::X86Pflash { bank_size } => {
+            let elf = x86_stage_elf.ok_or("x86 pflash requires the linked stage ELF")?;
+            let image = create_x86_pflash_from_elf(binary, elf, bank_size as usize)?;
+            args.extend(["-bios".into(), image.display().to_string()]);
         }
-        let sd = create_sunxi_sd_image(binary)?;
-        (
-            find_qemu("qemu-system-arm"),
-            vec![
-                "-M".to_string(),
-                "orangepi-pc".to_string(),
-                "-nographic".to_string(),
-                "-sd".to_string(),
-                sd.display().to_string(),
-            ],
-        )
-    } else if use_ast2500_evb {
-        if platform != Platform::Armv5te {
-            return Err("QEMU ast2500-evb requires the armv5te platform".to_string());
-        }
-        (
-            find_qemu("qemu-system-arm"),
-            vec![
-                "-M".to_string(),
-                "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab".to_string(),
-                "-nographic".to_string(),
-                "-drive".to_string(),
-                format!("file={},format=raw,if=mtd", binary.display()),
-            ],
-        )
-    } else if use_sifive_u {
-        if platform != Platform::Riscv64 {
-            return Err("QEMU sifive_u requires the riscv64 platform".to_string());
-        }
-        (
-            find_qemu("qemu-system-riscv64"),
-            vec![
-                "-M".to_string(),
-                "sifive_u".to_string(),
-                "-m".to_string(),
-                "1G".to_string(),
-                "-nographic".to_string(),
-                "-bios".to_string(),
-                binary.display().to_string(),
-            ],
-        )
-    } else {
-        match platform {
-            Platform::Riscv64 => {
-                let pflash_size = 32 * 1024 * 1024;
-                let pflash_path = create_pflash_image(binary, pflash_size)?;
-                let args = vec![
-                    "-machine".to_string(),
-                    "virt".to_string(),
-                    "-nographic".to_string(),
-                    "-bios".to_string(),
-                    "none".to_string(),
-                    "-drive".to_string(),
-                    format!("if=pflash,file={},format=raw,unit=0", pflash_path.display()),
-                ];
-                (find_qemu("qemu-system-riscv64"), args)
-            }
-            Platform::Aarch64 => {
-                let mut args = vec![
-                    "-machine".to_string(),
-                    "virt,secure=on,virtualization=on,gic-version=3".to_string(),
-                    "-cpu".to_string(),
-                    "cortex-a72".to_string(),
-                    "-nographic".to_string(),
-                ];
-                args.extend(virt_flash_args(binary)?);
-                (find_qemu("qemu-system-aarch64"), args)
-            }
-            Platform::Armv7 => {
-                let mut args = vec![
-                    "-machine".to_string(),
-                    "virt,highmem-ecam=off".to_string(),
-                    "-cpu".to_string(),
-                    "cortex-a15".to_string(),
-                    "-nographic".to_string(),
-                ];
-                args.extend(virt_flash_args(binary)?);
-                (find_qemu("qemu-system-arm"), args)
-            }
-            Platform::Armv5te => {
-                return Err("ARMv5TE has no QEMU virt machine; the board must name one".to_string());
-            }
-            Platform::X86_64 | Platform::X86 => {
-                let pflash_size = 16 * 1024 * 1024;
-                // The plan build always hands over the linked stage ELF;
-                // without it there is no reset vector or anchor source.
-                let pflash_path = match x86_stage_elf {
-                    Some(elf) => create_x86_pflash_from_elf(binary, elf, pflash_size)?,
-                    None => {
-                        return Err("x86 pflash requires the linked stage ELF".to_string());
-                    }
-                };
-
-                let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
-                // `FSTART_QEMU_SMP` selects the vCPU count so the MP/SMM
-                // flight plan can be exercised with APs.
-                let smp = std::env::var("FSTART_QEMU_SMP").unwrap_or_else(|_| "1".to_string());
-                let use_kvm = match accel.as_deref() {
-                    Some("kvm") => true,
-                    Some("tcg") => false,
-                    _ => std::fs::File::open("/dev/kvm").is_ok(),
-                };
-                let args = vec![
-                    "-M".to_string(),
-                    "q35".to_string(),
-                    "-accel".to_string(),
-                    if use_kvm { "kvm" } else { "tcg" }.to_string(),
-                    "-cpu".to_string(),
-                    // A protected-mode build must run on a CPU without long
-                    // mode, like the Core Duo it exists for.
-                    match (platform, use_kvm) {
-                        (Platform::X86, _) => "coreduo",
-                        (_, true) => "host",
-                        (_, false) => "max",
-                    }
-                    .to_string(),
-                    "-m".to_string(),
-                    "1G".to_string(),
-                    "-smp".to_string(),
-                    smp,
-                    "-no-reboot".to_string(),
-                    "-display".to_string(),
-                    "none".to_string(),
-                    "-chardev".to_string(),
-                    "stdio,id=char0,mux=on,signal=off".to_string(),
-                    "-serial".to_string(),
-                    "chardev:char0".to_string(),
-                    "-mon".to_string(),
-                    "chardev=char0,mode=readline".to_string(),
-                    "-bios".to_string(),
-                    pflash_path.display().to_string(),
-                    "-vga".to_string(),
-                    "none".to_string(),
-                    "-device".to_string(),
-                    "bochs-display".to_string(),
-                ];
-                (find_qemu("qemu-system-x86_64"), args)
-            }
+        BootMedia::Pflash {
+            bank_size,
+            secure_bank,
+        } => {
+            let unit = if secure_bank {
+                let secure = secure_firmware
+                    .ok_or("QEMU requires --secure-firmware for its secure pflash bank")?;
+                let size = std::fs::metadata(secure)
+                    .map_err(|e| format!("failed to read secure firmware: {e}"))?
+                    .len();
+                if size != bank_size {
+                    return Err(format!(
+                        "secure firmware is {size} bytes; expected {bank_size}"
+                    ));
+                }
+                args.extend([
+                    "-drive".into(),
+                    format!("if=pflash,file={secure},format=raw,unit=0,readonly=on"),
+                ]);
+                1
+            } else {
+                0
+            };
+            let image = create_pflash_image(binary, bank_size as usize)?;
+            args.extend([
+                "-drive".into(),
+                format!("if=pflash,file={},format=raw,unit={unit}", image.display()),
+            ]);
         }
     };
 
-    if !use_sbsa_ref
-        && !use_sifive_u
-        && !use_orangepi_pc
-        && !args.iter().any(|arg| arg == "-no-reboot")
-    {
+    if launch.no_reboot {
         args.push("-no-reboot".to_string());
     }
 
-    if !use_sbsa_ref
-        && !use_sifive_u
-        && !use_orangepi_pc
+    if launch.allow_memory_override
         && let Some(mem) = memory
     {
         args.extend(["-m".to_string(), mem.to_string()]);
@@ -232,7 +110,7 @@ pub fn run(
 
     // Keep one backend-free PCI function present on architecture QEMU machines
     // so every normal boot exercises ECAM enumeration and BAR assignment.
-    if !platform.is_x86() && !use_sifive_u && !use_orangepi_pc && !use_ast2500_evb {
+    if launch.pci_test {
         args.extend([
             "-device".to_string(),
             "virtio-scsi-pci,id=fstart-pci-test".to_string(),
@@ -289,28 +167,28 @@ pub fn run(
     Ok(())
 }
 
-/// ARM `virt` machines have two 64 MiB pflash banks (0x0 and 0x0400_0000).
-/// `-bios` only fills bank 0, so images that place the FFS in bank 1 (XIP
-/// assemble output) must be split into two pflash drives.
-const VIRT_FLASH_BANK_SIZE: usize = 64 * 1024 * 1024;
-
-fn virt_flash_args(binary: &Path) -> Result<Vec<String>, String> {
+/// Split an image across the two pflash banks declared by platform policy.
+/// `-bios` only fills bank 0, so a larger image needs two explicit drives.
+fn virt_flash_args(binary: &Path, bank_size: usize) -> Result<Vec<String>, String> {
     let data = std::fs::read(binary).map_err(|e| format!("failed to read firmware image: {e}"))?;
-    if data.len() <= VIRT_FLASH_BANK_SIZE {
+    if bank_size == 0 || bank_size.checked_mul(2).is_none() {
+        return Err("invalid pflash bank size".into());
+    }
+    if data.len() <= bank_size {
         return Ok(vec!["-bios".to_string(), binary.display().to_string()]);
     }
-    if data.len() > 2 * VIRT_FLASH_BANK_SIZE {
+    if data.len() > 2 * bank_size {
         return Err(format!(
             "firmware image ({} bytes) exceeds both virt pflash banks ({} bytes)",
             data.len(),
-            2 * VIRT_FLASH_BANK_SIZE
+            2 * bank_size
         ));
     }
 
-    let mut bank0 = vec![0xFFu8; VIRT_FLASH_BANK_SIZE];
-    bank0.copy_from_slice(&data[..VIRT_FLASH_BANK_SIZE]);
-    let mut bank1 = vec![0xFFu8; VIRT_FLASH_BANK_SIZE];
-    bank1[..data.len() - VIRT_FLASH_BANK_SIZE].copy_from_slice(&data[VIRT_FLASH_BANK_SIZE..]);
+    let mut bank0 = vec![0xFFu8; bank_size];
+    bank0.copy_from_slice(&data[..bank_size]);
+    let mut bank1 = vec![0xFFu8; bank_size];
+    bank1[..data.len() - bank_size].copy_from_slice(&data[bank_size..]);
 
     let bank0_path = binary.with_extension("bank0.pflash");
     let bank1_path = binary.with_extension("bank1.pflash");
@@ -676,6 +554,33 @@ fn create_sunxi_sd_image(binary: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pflash_split_uses_the_declared_bank_size_and_erased_tail() {
+        let path =
+            std::env::temp_dir().join(format!("fstart-qemu-banks-{}.bin", std::process::id()));
+        std::fs::write(&path, [1, 2, 3, 4, 5, 6]).unwrap();
+        let args = virt_flash_args(&path, 4).unwrap();
+        assert_eq!(args.len(), 4);
+        assert_eq!(
+            std::fs::read(path.with_extension("bank0.pflash")).unwrap(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(
+            std::fs::read(path.with_extension("bank1.pflash")).unwrap(),
+            [5, 6, 0xff, 0xff]
+        );
+        assert!(virt_flash_args(&path, 2).is_err());
+        assert!(virt_flash_args(&path, 0).is_err());
+        assert_eq!(virt_flash_args(&path, 8).unwrap()[0], "-bios");
+        for file in [
+            path.with_extension("bank0.pflash"),
+            path.with_extension("bank1.pflash"),
+            path,
+        ] {
+            std::fs::remove_file(file).unwrap();
+        }
+    }
 
     #[test]
     fn x86_pflash_overlay_uses_physical_load_address() {
