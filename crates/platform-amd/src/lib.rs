@@ -25,6 +25,7 @@ pub mod flow;
 /// The host build plan, for every board.
 #[cfg(feature = "host")]
 pub mod host;
+pub mod iod;
 /// The reset image's DRAM layout and boot flash, for every SoC.
 pub mod layout;
 /// The boot media mount every AMD flow shares.
@@ -32,10 +33,13 @@ pub mod layout;
 pub mod media;
 /// The memory map, for every SoC.
 pub mod memory;
+pub mod milan;
 /// MP init, for every flow.
 pub mod mp;
+pub mod naples;
 pub mod noncar;
 pub mod picasso;
+pub mod rome;
 /// The SMBIOS tables, for every SoC.
 pub mod smbios;
 /// The SoCs made of dies: their IP blocks and the order they come up in.

@@ -16,7 +16,7 @@ pub mod board;
 
 pub mod entry;
 #[cfg(all(feature = "bundle", target_os = "none"))]
-mod flow;
+pub(crate) mod flow;
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(feature = "host")]
@@ -34,4 +34,4 @@ pub use fstart_smm as smm_runtime;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod soc;
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use soc::{Identified, Silicon, Start, start};
+pub use soc::{Engines, Identified, Socket, Start, start};

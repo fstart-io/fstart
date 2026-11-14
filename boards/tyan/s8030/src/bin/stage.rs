@@ -1,5 +1,5 @@
 //! The S8030 stage: from the PSP's release of the BSP to the payload.
-//! Rome and Milan run the same flow with the SP3 silicon steps.
+//! Rome and Milan run the same flow, each with its own SoC.
 
 #![no_std]
 #![no_main]
@@ -8,7 +8,7 @@ use fstart_board_tyan_s8030::{Board, bmc, dxio, platform};
 use fstart_driver_aspeed::gfx;
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_amd::sp3::{Identified, Silicon, Start};
+use fstart_platform_amd::sp3::{Identified, Socket, Start};
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
@@ -16,12 +16,13 @@ fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
     match fstart_platform_amd::sp3::start::<Board>() {
-        Start::RomeMilan(id) => flow(id),
+        Start::Rome(id) => flow(id),
+        Start::Milan(id) => flow(id),
         Start::Naples(id) => id.unsupported(),
     }
 }
 
-fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
+fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     let generation = id.generation();
     let stage = id.init_fch(platform::policy(generation));
     if platform::early_init(stage.fch()).is_err() {
