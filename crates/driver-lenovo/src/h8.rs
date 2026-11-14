@@ -12,6 +12,28 @@ use fstart_core::typed::{Io8, IoAddr};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 register_bitfields![u8,
+    /// EC RAM 0x1a (8-bit): second dock link enable (ACPI `DKR2`).
+    pub DOCK_LINK2 [CONNECT OFFSET(0) NUMBITS(1) []],
+    /// EC RAM 0x32 (8-bit): wake sources armed by the OS.
+    pub WAKE_CONTROL [
+        EVENTS OFFSET(2) NUMBITS(1) [],
+        LID OFFSET(4) NUMBITS(1) []
+    ],
+    /// EC RAM 0xfe (8-bit): third dock link enable (ACPI `DKR3`).
+    pub DOCK_LINK3 [CONNECT OFFSET(4) NUMBITS(1) []]
+];
+
+impl EcRegister for DOCK_LINK2::Register {
+    const INDEX: u8 = 0x1a;
+}
+impl EcRegister for WAKE_CONTROL::Register {
+    const INDEX: u8 = 0x32;
+}
+impl EcRegister for DOCK_LINK3::Register {
+    const INDEX: u8 = 0xfe;
+}
+
+register_bitfields![u8,
     pub CONFIG0 [
         EVENTS_ENABLE OFFSET(1) NUMBITS(1) [],
         HOTKEY_ENABLE OFFSET(2) NUMBITS(1) [],
