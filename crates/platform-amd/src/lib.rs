@@ -42,6 +42,9 @@ pub mod smbios;
 pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
+/// The SMM handler's installation in TSEG, for every SoC.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub mod tseg;
 pub mod zeppelin;
 /// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
 /// with `fstart_platform_amd::smm::smm_bin!`.

@@ -9,7 +9,6 @@ pub mod boot;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod smbios;
-pub mod smm;
 
 #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
 pub use crate::flow::Peripherals;
@@ -200,7 +199,8 @@ impl<S: DieSoc> crate::flow::Soc for S {
         mp: &fstart_arch::x86::mp::MpHandle,
         (): &(),
     ) -> Result<(), &'static str> {
-        let tseg = smm::install(S::NAME, mp, &S::smi(ctx, state), ctx.memory.tseg, TSEG_SIZE)?;
+        let tseg =
+            crate::tseg::install(S::NAME, mp, &S::smi(ctx, state), ctx.memory.tseg, TSEG_SIZE)?;
         S::smm_installed(ctx, state, &tseg)
     }
 

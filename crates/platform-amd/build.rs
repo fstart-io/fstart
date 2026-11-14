@@ -8,7 +8,6 @@ use fstart_smm::{CpuSmmLayout, SMM_IDENTITY_TABLE_SIZE, SmmImageHeader, SmramLay
 const AMD_SAVE_STATE_SIZE: u32 = 0x400;
 
 fn main() {
-    println!("cargo:rustc-check-cfg=cfg(fstart_sp3_has_smm_image)");
     println!("cargo:rustc-check-cfg=cfg(fstart_amd_has_smm_image)");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_TSEG_SIZE");
@@ -22,7 +21,6 @@ fn main() {
             panic!("SMM image {image}: {e}");
         }
         println!("cargo:rustc-env=FSTART_SMM_IMAGE={image}");
-        println!("cargo:rustc-cfg=fstart_sp3_has_smm_image");
         println!("cargo:rustc-cfg=fstart_amd_has_smm_image");
     }
 }

@@ -83,7 +83,6 @@ pub(crate) fn start(flash: &'static [u8], generation: Generation) {
 }
 
 /// The SMM handler, before it is installed.
-#[cfg(fstart_sp3_has_smm_image)]
 pub(crate) fn measure_smm(image: &'static [u8]) {
     use fstart_tcg::event::{EV_POST_CODE2, post_code};
     fstart_tcg::measure_blob(
