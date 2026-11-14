@@ -45,6 +45,8 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         micron: raw.micron,
         soft_fuse: Some(raw.soft_fuse),
         two_level: false,
+        generation_mask: None,
+        espi: None,
         psp: vec![FileBlob {
             key: raw.psp[0].key,
             path: "explicit/psp.bin".into(),
@@ -516,6 +518,8 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         micron: false,
         soft_fuse: Some(0x3000_0000),
         two_level: false,
+        generation_mask: None,
+        espi: None,
         psp: vec![FileBlob {
             key: Key::new(1, 0, 0),
             path: "psp.bin".into(),
@@ -701,4 +705,87 @@ fn the_psp_inflates_the_reset_image() {
         );
     }
     assert_eq!(raw[0xdb_0000..], plain[0xdb_0000..]);
+}
+
+/// A Siena-like native image: two levels addressed by flash offset, the
+/// SoC's generation word, a 64 MiB part and the reset image after the
+/// partition, without an FFS.
+fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
+    use super::{Key, levels::Level};
+    let file = |kind, level, path: &str| assembly::FileBlob {
+        key: Key::new(kind, 0, 0),
+        path: path.into(),
+        level,
+    };
+    AmdAssembly {
+        firmware: Firmware::Packed {
+            files: assembly::PspFiles {
+                flash_size,
+                efs_offset: 0x2_0000,
+                partition_end: 0xa0_0000,
+                spi_read_mode: None,
+                spi_speed: None,
+                micron: false,
+                soft_fuse: None,
+                two_level: true,
+                generation_mask: Some(1),
+                espi: Some([0x0e, 0xff, 0xff, 0xff]),
+                psp: vec![file(0, Level::One, "key"), file(1, Level::Both, "boot")],
+                bios: vec![file(bios::APCB_BACKUP, Level::Both, "apcb")],
+                fixed: vec![assembly::FixedEntry {
+                    psp: false,
+                    key: Key::new(0x63, 0, 0),
+                    level: Level::Two,
+                    content: assembly::Fixed::Erased(0xb_0000),
+                }],
+                apob_nv: None,
+                psp_nv: None,
+                apcb: None,
+                assets: vec![],
+                psp_app: false,
+            },
+            reset_offset: Some(0xa0_0000),
+        },
+        ffs: None,
+        stage_unit: "stage".into(),
+        flash_size,
+        bios_directory: slot,
+        reset_size: 0x60_0000,
+        reset_destination: 0x75a0_0000,
+        apob_destination: 0x7590_0000,
+        shared_memory: None,
+        psp: Default::default(),
+    }
+}
+
+#[test]
+fn offset_addressed_images_span_large_parts_with_the_socs_generation_word() {
+    let plan = offset_addressed(0x400_0000, BiosDirectorySlot::Family19h);
+    let sources: Vec<Vec<u8>> = plan
+        .bindings()
+        .unwrap()
+        .iter()
+        .map(|b| vec![b.path.len() as u8; 0x800 + b.path.len()])
+        .collect();
+    let sources: Vec<&[u8]> = sources.iter().map(Vec::as_slice).collect();
+    let stage = vec![0xa5; 0x60_0000];
+    let image = plan.assemble(&sources, &stage, None).unwrap();
+    assert!(image.is_whole_flash(0x400_0000));
+    assert_eq!(
+        image.bytes[0x2_0024..0x2_0028],
+        0xffff_fffeu32.to_le_bytes()
+    );
+    assert_eq!(image.facts.reset_offset, 0xa0_0000);
+    assert_eq!(image.facts.apob_destination, 0x7590_0000);
+    assert_eq!(image.bytes[0xa0_0000..0x100_0000], stage);
+    assert!(image.bytes[0x100_0000..].iter().all(|&b| b == 0xff));
+    // The boot ROMs that read physical addresses map 16 MiB at most.
+    assert!(
+        offset_addressed(0x200_0000, BiosDirectorySlot::Family17hModel10)
+            .validate()
+            .is_err()
+    );
+    let mut picasso = mj11();
+    picasso.flash_size = 0x200_0000;
+    assert!(picasso.validate().is_err());
 }
