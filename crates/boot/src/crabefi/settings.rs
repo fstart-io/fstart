@@ -123,18 +123,30 @@ impl crabefi::cfr::OptionStore for CmosStore {
         option: &crabefi::cfr::CfrOption,
         value: &crabefi::cfr::CfrValue,
     ) -> Result<(), &'static str> {
-        use crabefi::cfr::CfrValue;
+        use crabefi::cfr::{CfrOptionType, CfrValue};
         let value = match *value {
             CfrValue::Bool(b) => u32::from(b),
             CfrValue::Number(n) => n,
             CfrValue::Varchar(_) => return Err("CMOS keeps numbers only"),
         };
-        self.0
-            .write(&option.opt_name, value)
-            .map_err(|error| match error {
-                fstart_options::cmos::WriteError::Full => "CMOS option space full",
-                fstart_options::cmos::WriteError::Readback => "CMOS write failed",
-            })
+        // The form's default is the board's value: CMOS only has room for
+        // what differs from it.
+        let board = match option.option_type {
+            CfrOptionType::Bool { default } => Some(u32::from(default)),
+            CfrOptionType::Number { default, .. } | CfrOptionType::Enum { default, .. } => {
+                Some(default)
+            }
+            _ => None,
+        };
+        let stored = if board == Some(value) {
+            self.0.remove(&option.opt_name)
+        } else {
+            self.0.write(&option.opt_name, value)
+        };
+        stored.map_err(|error| match error {
+            fstart_options::cmos::WriteError::Full => "CMOS option space full",
+            fstart_options::cmos::WriteError::Readback => "CMOS write failed",
+        })
     }
 }
 
