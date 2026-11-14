@@ -2,15 +2,15 @@
 //! USB SMI (FCH_SP3 §5). These are the steps an SMM handler calls; source
 //! decoding and dispatch belong to the handler (see [`super::super::smi`]).
 
-use tock_registers::interfaces::Writeable;
+use tock_registers::interfaces::{ReadWriteable, Writeable};
 
-use super::super::FchHw;
-use super::super::acpimmio::{
-    AOAC_94, AOAC_94_SX, GPE0_EN, GPE0_STS, MISC, PM, PM1_CNT, PM1_STS, pm,
-};
-use super::super::smi::{self, CONTROL0, source};
 use crate::cpu::Silicon;
+use crate::fch::FchHw;
+use crate::fch::acpimmio::{
+    AOAC_94, Aoac94, GPE0_EN, GPE0_STS, MISC, PM_0B, PM_EE, PM_RESET_CONTROL1, PM1_CNT, PM1_STS,
+};
 use crate::fch::irq;
+use crate::fch::smi::{self, source};
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::window::{Window, update};
 
@@ -51,11 +51,11 @@ impl From<SmuError> for SxError {
 /// SMIxAC byte 0), GPE0 cleared, SCI on IRQ 9, SCI_EN.
 pub fn acpi_enable<H: FchHw>(hw: &H) {
     let (acpi, io) = (hw.acpi(), hw.io());
-    acpi.write8(CONTROL0 + 0x0C, 0);
+    acpi.write8(smi::control(3).offset, 0);
     io.write32(GPE0_EN, 0);
     io.write32(GPE0_STS, 0);
-    irq::write(io, irq::SCI_PIC, 9);
-    irq::write(io, irq::SCI_IOAPIC, 9);
+    irq::write(io, irq::index(irq::SCI, irq::Mode::Pic), 9);
+    irq::write(io, irq::index(irq::SCI, irq::Mode::Apic), 9);
     io.write32(PM1_CNT, 1);
 }
 
@@ -103,10 +103,10 @@ fn mask_ioapic<H: FchHw>(hw: &H) {
 /// PMx0B\[1:0\] = 1, only the SMI command port left routed, PM1_CNT.SLP_TYP.
 fn arm_sleep<H: FchHw>(hw: &H, slp_typ: u8) {
     let acpi = hw.acpi();
-    update::<u8, _>(acpi, PM + pm::RESET_CONTROL1, 0, 0x20);
-    update::<u8, _>(acpi, PM + pm::PM_0B, 0x03, 0);
-    update::<u8, _>(acpi, PM + pm::PM_0B, 0, 0x01);
-    acpi.reg::<u32, ()>(CONTROL0 + 0x10).set(0x0040_0000);
+    update::<u8, _>(acpi, PM_RESET_CONTROL1.offset, 0, 0x20);
+    update::<u8, _>(acpi, PM_0B.offset, 0x03, 0);
+    update::<u8, _>(acpi, PM_0B.offset, 0, 0x01);
+    acpi.at(smi::control(4)).set(0x0040_0000);
     hw.io().write16(PM1_CNT, u16::from(slp_typ) << 10);
 }
 
@@ -150,9 +150,9 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
     let acpi = hw.acpi();
     let s3_or_s4 = slp_typ != 5;
     if s3_or_s4 {
-        update::<u8, _>(acpi, PM + pm::PM_EE, 0, 0x03);
+        update::<u8, _>(acpi, PM_EE.offset, 0, 0x03);
     }
-    update::<u32, _>(acpi, AOAC_94, 0, AOAC_94_SX);
+    acpi.at(AOAC_94).modify(Aoac94::SX.val(3));
     mask_ioapic(hw);
     match generation {
         Silicon::Zp => {
@@ -194,9 +194,9 @@ pub fn power_button<H: FchHw, S: SmuMessages + ?Sized>(
     let acpi = hw.acpi();
     smi::clear(acpi, source::PWR_BTN);
     acpi.write32(MISC + 0x50, 0);
-    update::<u8, _>(acpi, PM + pm::RESET_CONTROL1, 0, 0x20);
-    update::<u8, _>(acpi, PM + pm::PM_0B, 0x03, 0x01);
-    acpi.reg::<u32, ()>(CONTROL0 + 0x10).set(0x0040_0000);
+    update::<u8, _>(acpi, PM_RESET_CONTROL1.offset, 0, 0x20);
+    update::<u8, _>(acpi, PM_0B.offset, 0x03, 0x01);
+    acpi.at(smi::control(4)).set(0x0040_0000);
     hw.io().write16(PM1_STS, 0x0100);
     hw.io().write16(PM1_CNT, 5 << 10);
     match generation {
@@ -210,8 +210,9 @@ pub fn power_button<H: FchHw, S: SmuMessages + ?Sized>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::{Smu, fch};
     use super::*;
+    use crate::fch::acpimmio::PM;
+    use crate::fch::model::{Smu, fch};
 
     #[test]
     fn milan_s3_entry() {
@@ -227,7 +228,7 @@ mod tests {
         assert_eq!(hw.io.writes_to(PM1_CNT), vec![0xc00, 0x2c00]);
         // 24 RTE writes + the flush.
         assert_eq!(hw.mmio.writes_to(IOAPIC + 0x10).len(), 25);
-        assert!(super::super::super::model::smn_writes(&hw.pci, 0).contains(&(0x13e0_004c, 0)));
+        assert!(crate::fch::model::smn_writes(&hw.pci, 0).contains(&(0x13e0_004c, 0)));
     }
 
     #[test]
@@ -237,7 +238,7 @@ mod tests {
         enter(&hw, Silicon::Ssp, 5, &smu, &[]).unwrap();
         assert_eq!(smu.ids(), vec![0x14, 0x0b]);
         assert!(hw.acpi.writes_to(PM + 0xee).is_empty());
-        assert!(super::super::super::model::smn_writes(&hw.pci, 0).is_empty());
+        assert!(crate::fch::model::smn_writes(&hw.pci, 0).is_empty());
         enter(&hw, Silicon::Ssp, 1, &smu, &[]).unwrap();
         assert_eq!(smu.ids().len(), 2, "S1 does nothing");
     }

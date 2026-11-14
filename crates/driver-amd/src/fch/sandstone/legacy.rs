@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native FCH legacy/RTC/internal IRQ/LPC policy; no PCI enumeration or SMM.
+use crate::fch::acpimmio::{
+    PM_0A, PM_S5_RESET_STATUS, Pm0a, Pm1StatusHigh, PmIo, S5ResetStatus, legacy_sd_off, pm,
+    smi_bank,
+};
+use crate::fch::irq;
+use crate::fch::smbus::SMBUS_IO;
 use crate::fch::{
-    PM_0A, PM_C0, PM_INDEX, Pm0a, PmC0, RTC_INDEX, SMBUS_ASF_IO_BASE,
-    hw::FchHw,
-    indexed_io, legacy_sd_off,
+    FchHw,
     lpc::{self, ClockControl, LpcA4, PciControl},
-    pm, smi_bank,
+    rtc,
 };
 use crate::window::{At, Window};
 use tock_registers::{
@@ -21,8 +25,6 @@ register_bitfields![u32,
     ]
 ];
 register_bitfields![u8,
-    RtcB [DST_EN OFFSET(0) NUMBITS(1) []],
-    RtcA [BIT4 OFFSET(4) NUMBITS(1) []],
     /// PCI_INTR index 8: the source of the IOAPIC inputs shared with legacy
     /// devices. IRQ14/15 come from the legacy IDE unless routed: then the
     /// internal sources [`initialize`] maps to them reach the IOAPIC.
@@ -38,30 +40,10 @@ register_bitfields![u8,
             Routed = 3
         ]
     ],
-    /// The PM1 status bits 8 (power button) and 10 (RTC) of the high byte.
-    Pm1StatusHigh [
-        PWRBTN OFFSET(0) NUMBITS(1) [],
-        RTC OFFSET(2) NUMBITS(1) [],
-        WAKE OFFSET(6) NUMBITS(1) []
-    ]
 ];
 const PM_ESPI_INTR_MASK: crate::window::At<u32, EspiInterruptMask::Register> = pm::at(0x40);
-/// The PCI_INTR index/data pair.
-const PCI_INTR_INDEX: u16 = 0xc00;
 /// The PM1 status high byte of Picasso's ACPI block at 0x400.
 const PM1_STATUS_HIGH: u16 = 0x401;
-
-/// PCI_INTR indexes of the FCH's internal interrupt sources.
-pub mod source {
-    /// ACPI fixed-event and GPE system-control interrupt.
-    pub const SCI: u8 = 0x10;
-    /// Fixed-address eMMC SDHCI host.
-    pub const EMMC: u8 = 0x43;
-    /// The GPIO controller.
-    pub const GPIO: u8 = 0x62;
-    /// I2C controllers 0-5.
-    pub const I2C: [u8; 6] = [0x70, 0x71, 0x72, 0x73, 0x76, 0x77];
-}
 
 /// The IOAPIC input (ISA IRQ) [`initialize`] routes the internal source
 /// with PCI_INTR index `index` to.
@@ -77,11 +59,11 @@ const INTERNAL_IRQS: [(u8, u8); 19] = [
     (1, 0x11),
     (2, 0x12),
     (3, 0x13),
-    (source::SCI, crate::fch::SCI_IRQ),
+    (irq::SCI, crate::fch::SCI_IRQ),
     (0x17, 0x10),
     (0x1a, 0x10),
-    (source::EMMC, 5),
-    (0x62, 7),
+    (irq::EMMC, 5),
+    (irq::GPIO, 7),
     (0x76, 3),
     (0x77, 4),
     (0x78, 15),
@@ -115,38 +97,42 @@ pub fn initialize<H: FchHw>(fch: &H, espi: bool, legacy_sd: bool) {
         acpi.at(PM_ESPI_INTR_MASK)
             .modify(EspiInterruptMask::BIT1::CLEAR + EspiInterruptMask::BIT12::CLEAR);
     }
-    let pm0a = indexed_io::<_, Pm0a::Register>(io, PM_INDEX, PM_0A);
+    let pm = PmIo(io);
+    let pm0a = pm.at(PM_0A);
     pm0a.modify(Pm0a::BIT3::SET);
     pm0a.modify(Pm0a::BIT4::SET);
-    indexed_io::<_, PmC0::Register>(io, PM_INDEX, PM_C0).modify(PmC0::CLEAR_RESET_STATUS::SET);
-    io.at(At::<u8>::new((SMBUS_ASF_IO_BASE + 0x14).into()))
-        .set(0); // SMBus autopoll off
-    indexed_io::<_, RtcB::Register>(io, RTC_INDEX, 0x0b).modify(RtcB::DST_EN::CLEAR);
-    indexed_io::<_, RtcA::Register>(io, RTC_INDEX, 0x0a).modify(RtcA::BIT4::CLEAR);
-    let irq = |index| indexed_io::<_, ()>(io, PCI_INTR_INDEX, index);
-    indexed_io::<_, IntrMiscMap::Register>(io, PCI_INTR_INDEX, 8).modify(
-        IntrMiscMap::IRQ1_ROUTED::SET
-            + IntrMiscMap::IRQ12_ROUTED::SET
-            + IntrMiscMap::IRQ14::Routed
-            + IntrMiscMap::IRQ15::Routed,
-    );
-    let misc0 = irq(9).get();
-    irq(9).set((misc0 & 0x99) | 0x10);
-    io.at(At::<u8>::new((SMBUS_ASF_IO_BASE + 0x2a).into()))
-        .set(0x2f); // ASF W1C status
+    // Clears the 4-second power button status (write 1 to clear).
+    pm.at(PM_S5_RESET_STATUS)
+        .modify(S5ResetStatus::FOUR_SECOND_PWR_BTN::SET);
+    io.at(At::<u8>::new((SMBUS_IO + 0x14).into())).set(0); // SMBus autopoll off
+    rtc::register::<_, rtc::Control::Register>(io, rtc::CONTROL)
+        .modify(rtc::Control::DST_EN::CLEAR);
+    rtc::register::<_, rtc::FreqSelect::Register>(io, rtc::FREQ_SELECT)
+        .modify(rtc::FreqSelect::BIT4::CLEAR);
+    let route = |index| irq::entry(io, index);
+    crate::window::indexed::<_, u8, IntrMiscMap::Register>(io, irq::INDEX, irq::DATA, irq::MISC)
+        .modify(
+            IntrMiscMap::IRQ1_ROUTED::SET
+                + IntrMiscMap::IRQ12_ROUTED::SET
+                + IntrMiscMap::IRQ14::Routed
+                + IntrMiscMap::IRQ15::Routed,
+        );
+    let misc0 = route(irq::MISC0).get();
+    route(irq::MISC0).set((misc0 & 0x99) | 0x10);
+    io.at(At::<u8>::new((SMBUS_IO + 0x2a).into())).set(0x2f); // ASF W1C status
     let smi_enable = acpi.at(smi_bank::at::<u32, ()>(4)).get();
     let wake = io.at(At::<u8, Pm1StatusHigh::Register>::new(
         PM1_STATUS_HIGH.into(),
     ));
     if smi_enable & acpi.at(smi_bank::at::<u32, ()>(0)).get() != 0 {
-        wake.write(Pm1StatusHigh::WAKE::SET);
+        wake.write(Pm1StatusHigh::PCIEXP_WAKE::SET);
     }
     let status = wake.extract();
     if status.is_set(Pm1StatusHigh::PWRBTN) || status.is_set(Pm1StatusHigh::RTC) {
-        wake.write(Pm1StatusHigh::WAKE::SET);
+        wake.write(Pm1StatusHigh::PCIEXP_WAKE::SET);
     }
     for (index, apic) in INTERNAL_IRQS {
-        irq(index | 0x80).set(apic);
+        route(irq::index(index, irq::Mode::Apic)).set(apic);
     }
     if !legacy_sd {
         legacy_sd_off(acpi);

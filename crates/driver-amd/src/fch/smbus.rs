@@ -46,9 +46,9 @@ pub unsafe fn i2c_for_smu<D: embedded_hal::delay::DelayNs>(
 }
 
 /// SMBus host I/O base after ResetHwAcpi (PMx00\[15:8\] = `0Bh`).
-pub const SMBUS_IO: u32 = 0xB00;
+pub const SMBUS_IO: u16 = 0xB00;
 /// ASF I/O base.
-pub const ASF_IO: u32 = SMBUS_IO + 0x20;
+pub const ASF_IO: u16 = SMBUS_IO + 0x20;
 /// DesignWare I2C MMIO base of controller `n` (sp4r2 ACPI `I2CA..I2CF`).
 pub const fn i2c_base(n: u8) -> u64 {
     I2C[n as usize].3 as u64
@@ -79,8 +79,8 @@ pub fn enable_i2c<H: FchHw>(hw: &H, n: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::fch;
     use super::*;
+    use crate::fch::model::fch;
 
     #[test]
     fn i2c5_is_not_a_linear_offset() {

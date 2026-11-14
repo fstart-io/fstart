@@ -112,15 +112,21 @@ fn irq14_and_15_take_the_routed_internal_sources() {
     world.set_indexed(0xc00, 8, 0);
     initialize(&world.fch(), true, false);
     assert_eq!(world.indexed(0xc00, 8), 0xfa);
-    assert_eq!(internal_irq(source::I2C[2]), Some(14));
-    assert_eq!(internal_irq(source::GPIO), Some(7));
-    assert_eq!(internal_irq(source::SCI), Some(crate::fch::SCI_IRQ));
+    assert_eq!(internal_irq(crate::fch::irq::I2C[2]), Some(14));
+    assert_eq!(internal_irq(crate::fch::irq::GPIO), Some(7));
+    assert_eq!(
+        internal_irq(crate::fch::irq::SCI),
+        Some(crate::fch::SCI_IRQ)
+    );
 }
 
 #[test]
 fn sci_is_routed_even_if_previous_firmware_disabled_it() {
     let world = world();
-    world.set_indexed(0xc00, u32::from(source::SCI | 0x80), 0x1f);
+    world.set_indexed(0xc00, u32::from(crate::fch::irq::SCI | 0x80), 0x1f);
     initialize(&world.fch(), true, false);
-    assert_eq!(world.indexed(0xc00, u32::from(source::SCI | 0x80)), 9);
+    assert_eq!(
+        world.indexed(0xc00, u32::from(crate::fch::irq::SCI | 0x80)),
+        9
+    );
 }

@@ -7,8 +7,8 @@
 use crate::sp3::silicon::Generation;
 use fstart_acpi::fadt::{Flags, PmProfile};
 use fstart_acpi::platform::{X86Fadt, x86::IAPC_LEGACY_DEVICES};
-use fstart_driver_amd::fch::AcpiPorts;
-use fstart_driver_amd::fch::hw::acpimmio;
+use fstart_driver_amd::fch::acpimmio;
+use fstart_driver_amd::fch::acpimmio::AcpiPorts;
 
 use crate::acpi::{S5_SLEEP_TYPE, SocAcpi, Wake, prt};
 
@@ -16,7 +16,7 @@ pub mod cppc;
 pub mod einj;
 
 /// The FCH's UARTs, I2C controllers and GPIO as the FCH tasks left them.
-pub use fstart_driver_amd::fch::hw::acpi::FchAcpi;
+pub use fstart_driver_amd::fch::aml::FchAcpi;
 
 /// The donor FADT flags (pins `fadt-flags-*`): 0x305AD on Naples and Rome,
 /// 0x2052D on Milan, which drops RTC_S4 and S4_RTC_STS_VALID. Bits 16/17

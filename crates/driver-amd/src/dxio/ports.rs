@@ -1738,7 +1738,7 @@ mod tests {
             ]
         );
 
-        use crate::fch::hw::acpimmio;
+        use crate::fch::acpimmio;
         use crate::smn::Smn;
         use crate::window::SmnWindow;
         let window = |m: &Model, bus| unsafe {
@@ -1787,7 +1787,7 @@ mod tests {
 
         // Milan: socket 0 through its own window (host MMIO on hardware),
         // socket 1 through SMN; each socket once.
-        let mmio = crate::fch::hw::model::Mem::default();
+        let mmio = crate::fch::model::Mem::default();
         let model = Model::default();
         let socket1 = window(&model, 0x80);
         let mut fchs: Vec<((u8, u8), &dyn Window), 8> = Vec::new();

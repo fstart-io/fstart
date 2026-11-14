@@ -8,7 +8,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use fstart_driver_amd::fch::hw::FchHw;
+use fstart_driver_amd::fch::FchHw;
 
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::apob::Apob;
@@ -20,8 +20,8 @@ use fstart_driver_amd::df::{self as sp3_df, Fabric};
 use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::DxioPolicy;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
-use fstart_driver_amd::fch::hw as fch;
-use fstart_driver_amd::fch::hw::tasks::env::EnvPolicy;
+use fstart_driver_amd::fch;
+use fstart_driver_amd::fch::tasks::env::EnvPolicy;
 use fstart_driver_amd::nbio::NbioPolicy;
 use fstart_driver_amd::nbio::iohc::DramTops;
 

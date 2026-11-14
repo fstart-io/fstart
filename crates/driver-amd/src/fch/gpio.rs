@@ -2,7 +2,8 @@
 //! Banked FCH GPIO. Configuration
 //! preserves reserved/drive-strength bits and clears W1C interrupt/wake
 //! status deliberately, not via an accidental RMW.
-use crate::fch::{SMI_TRIGGER0, SmiMode, gpio_bank, iomux, smi_bank, smi_route};
+use crate::fch::acpimmio::{gpio_bank, iomux};
+use crate::fch::smi::{self, Route, SCI_LEVEL, SCI_TRIGGER, TRIGGER0, sci_map};
 use crate::window::{At, Reg, Window};
 use tock_registers::{
     fields::{Field, FieldValue},
@@ -42,10 +43,7 @@ register_bitfields![u32,
     pub Master [
         MASK_STATUS OFFSET(28) NUMBITS(1) [],
         INTERRUPTS OFFSET(30) NUMBITS(1) []
-    ],
-    /// SMIx08 and SMIx0C: SCI trigger polarity and level, bit per GEVENT.
-    pub SciTrigger [GEVENTS OFFSET(0) NUMBITS(24) []],
-    pub SciLevel [GEVENTS OFFSET(0) NUMBITS(24) []]
+    ]
 ];
 /// The W1C status bits of a pad.
 pub const STATUS_MASK: u32 = (1 << 28) | (1 << 29);
@@ -99,12 +97,6 @@ const fn control(pin: u8) -> At<u32, Control::Register> {
     gpio_bank::at(4 * pin as u32)
 }
 const MASTER: At<u32, Master::Register> = gpio_bank::at(0xfc);
-const SCI_TRIGGER: At<u32, SciTrigger::Register> = smi_bank::at(0x08);
-const SCI_LEVEL: At<u32, SciLevel::Register> = smi_bank::at(0x0c);
-/// SMIx40 + n: the SCI a GEVENT raises.
-const fn sci_map(event: u8) -> At<u8> {
-    smi_bank::at(0x40 + event as u32)
-}
 
 /// The bit of GEVENT `event` in a per-GEVENT register.
 fn gevent_bit<R: tock_registers::RegisterLongName>(event: u8, set: bool) -> FieldValue<u32, R> {
@@ -516,9 +508,9 @@ impl<W: Window> Gpio<W> {
                     .modify(gevent_bit(event, trigger.level()));
             }
             Event::Smi(trigger) => {
-                smi_route(&self.acpi, event, SmiMode::Smi);
+                smi::set_route(&self.acpi, smi::source::gevent(event), Route::Smi);
                 self.acpi
-                    .at(SMI_TRIGGER0)
+                    .at(TRIGGER0)
                     .modify(gevent_bit(event, trigger.high()));
             }
         }

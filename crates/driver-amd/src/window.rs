@@ -470,3 +470,57 @@ impl<P: ConfigRegionAccess> Window for ConfigWindow<P> {
         unsafe { self.pci.write(self.function, off as u16, value) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fch::model::Mem;
+    use tock_registers::interfaces::ReadWriteable;
+    use tock_registers::register_bitfields;
+
+    register_bitfields![u8,
+        T8 [
+            A OFFSET(1) NUMBITS(2) [],
+            B OFFSET(7) NUMBITS(1) []
+        ]
+    ];
+
+    #[test]
+    fn ops_and_typed_registers() {
+        let m = Mem::default();
+        m.put(0x10, 4, 0xffff_0000);
+        apply(
+            &m,
+            &[
+                Op::rmw(0x10, 4, 0xff00_0000, 0x12),
+                Op::store(0x20, 1, 0xaa),
+            ],
+        );
+        assert_eq!(m.get(0x10, 4), 0x00ff_0012);
+        assert_eq!(m.writes(), vec![(0x10, 4, 0x00ff_0012), (0x20, 1, 0xaa)]);
+        let r = m.reg::<u8, T8::Register>(0x20);
+        r.modify(T8::A.val(1) + T8::B::CLEAR);
+        assert_eq!(m.get(0x20, 1), 0x2a);
+    }
+
+    #[test]
+    fn narrow_access_over_a_dword_space() {
+        struct Dwords(Mem);
+        impl Window for Dwords {
+            fn read32(&self, off: u32) -> u32 {
+                assert_eq!(off & 3, 0);
+                self.0.read32(off)
+            }
+            fn write32(&self, off: u32, value: u32) {
+                assert_eq!(off & 3, 0);
+                self.0.write32(off, value)
+            }
+        }
+        let d = Dwords(Mem::default());
+        d.0.put(0x100, 4, 0x4433_2211);
+        d.write8(0x102, 0xee);
+        d.write16(0x100, 0xbeef);
+        assert_eq!(d.0.get(0x100, 4), 0x44ee_beef);
+        assert_eq!(d.read8(0x103), 0x44);
+    }
+}

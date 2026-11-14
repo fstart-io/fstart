@@ -179,7 +179,7 @@ fn enter_enabled(logical_cpu: u32, generation: Generation) {
                 &cpu,
                 generation.silicon(),
                 stepping,
-                fstart_driver_amd::fch::hw::acpimmio::SMI_CMD as u16,
+                fstart_driver_amd::fch::smi::APM_CNT,
                 MCE_SMI_COMMAND,
             )
             .is_ok();

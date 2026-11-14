@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Zeppelin parts of the FCH SMM handler, and SMN access
 //! from SMM.
-use super::init::{AOAC_94, Aoac94};
+use crate::fch::acpimmio::{AOAC_94, Aoac94, pm};
 use crate::fch::smi::{FchSmmConfig, PendingSmi};
-use crate::fch::{ACPI_MMIO, IOAPIC, pm};
+use crate::fch::{ACPI_MMIO, IOAPIC};
 use crate::smn::{SmnAccess, SmnReg};
 use crate::smu::v9;
 use crate::window::{At, Mmio, Ports, Window};
@@ -67,7 +67,7 @@ unsafe fn sleep_entry(acpi: &impl Window, io: &impl Window, slp_typ: u8) {
     if matches!(slp_typ, S3 | S4) {
         acpi.at(PM_EE).modify(PmEe::SLEEP.val(3));
     }
-    acpi.at(AOAC_94).modify(Aoac94::BITS.val(3));
+    acpi.at(AOAC_94).modify(Aoac94::SX.val(3));
     // SAFETY: the FCH IOAPIC is decoded; the OS that owned it is going away.
     let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(IOAPIC as usize) };
     delay.get();

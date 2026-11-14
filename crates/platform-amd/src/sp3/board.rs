@@ -17,7 +17,7 @@ pub use crate::sp3::silicon::Policy;
 /// Knobs of the silicon [`Policy`] a board can offer in
 /// [`Config::options`].
 pub mod knob {
-    use fstart_driver_amd::fch::hw::tasks::env::PowerFailState;
+    use fstart_driver_amd::fch::tasks::env::PowerFailState;
     use fstart_options::{Kind, Knob, Meta};
 
     use super::Policy;

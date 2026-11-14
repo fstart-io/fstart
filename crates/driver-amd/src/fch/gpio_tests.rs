@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use crate::fch::hw::FchHw;
+use crate::fch::FchHw;
 use crate::fch::testing::{Space, View, World};
 use crate::fch::{ACPI_MMIO, gpio::*};
 

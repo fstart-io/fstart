@@ -2,10 +2,10 @@
 //! Family 17h FCH pre-console mechanisms shared by Picasso and Zeppelin:
 //! LPC decodes and SPI BAR, SMBus, legacy/CF9 decode and the power-failure
 //! state.
-use super::{
-    Decode, LpcGating, PM_DECODE, PM_LPC_GATING, PM_RTC_SHADOW, RtcShadow, SPI_BASE, asf,
-    hw::FchHw, smbus,
+use super::acpimmio::{
+    Decode, LpcGating, PM_DECODE, PM_LPC_GATING, PM_RTC_SHADOW, RtcShadow, asf, smbus,
 };
+use super::{FchHw, SPI_BASE};
 use crate::fch::lpc::{self, Id, IoMemDecode, SpiBase};
 use crate::window::Window;
 use tock_registers::{
@@ -67,7 +67,7 @@ const SMB_TIMING: u32 = 0x0e;
 /// Native nominal 400-kHz divider 41 (66MHz/(400kHz*4), integer truncation).
 const SMB_SPEED_400KHZ: u8 = 41;
 
-/// The SMBus/ASF decode at [`super::SMBUS_ASF_IO_BASE`], the nominal 400 kHz
+/// The SMBus/ASF decode at [`super::smbus::SMBUS_IO`], the nominal 400 kHz
 /// and the status cleared. This preserves native timing; it does not attest a
 /// measured 400-kHz ceiling.
 pub fn initialize_smbus(fch: &impl FchHw) -> Result<(), Error> {
@@ -76,7 +76,7 @@ pub fn initialize_smbus(fch: &impl FchHw) -> Result<(), Error> {
         return Err(Error::Unavailable);
     }
     decode.modify(
-        Decode::SMBUS_ASF_IO_BASE.val(u32::from(super::SMBUS_ASF_IO_BASE >> 8))
+        Decode::SMBUS_ASF_IO_BASE.val(u32::from(super::smbus::SMBUS_IO >> 8))
             + Decode::SMBUS_ASF_IO::SET,
     );
     fch.acpi().at(PM_DECODE).set(decode.get());

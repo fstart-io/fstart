@@ -16,7 +16,7 @@ mod zeppelin {
         df::{self, map},
         dxio::{self, Descriptor, SataChannel},
         fch::{
-            hw::FchHw,
+            FchHw,
             taishan::{self, Devices},
         },
         nbio::{
@@ -203,8 +203,8 @@ mod zeppelin {
         for die in &dies {
             df::zp::disable_ext_cfg(&die.df());
         }
-        assert_eq!(hw.fingerprint(), (16908, 0xbfbe_9d6a_7f7f_e1ee));
-        assert_eq!(hw.state(), 0x3506_59c7_b072_0a64);
+        assert_eq!(hw.fingerprint(), (16908, 0x0c7c_065b_d9a9_f9fb));
+        assert_eq!(hw.state(), 0x4da7_ea77_8e39_4fe8);
     }
 
     /// The DF routes disjoint buses and windows to the two root complexes.
