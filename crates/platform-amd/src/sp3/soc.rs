@@ -433,7 +433,7 @@ impl<F: Silicon> Init for Sp3<F> {
     /// windows, from the plan the fabric step programmed.
     fn roots(_: &Ctx<'_, Self>, state: &State<F>) -> Option<Roots> {
         (state.soc.plan.root_bridges.iter())
-            .map(|rb| super::pci::root(rb, &state.soc.pci_root))
+            .map(|rb| fstart_driver_amd::df::root::planned(rb, &state.soc.pci_root))
             .collect()
     }
 

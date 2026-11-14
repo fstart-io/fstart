@@ -3,7 +3,7 @@
 //! transports, so the host model of the dies can log the whole sequence.
 //! It is split where the vendor board PEIMs run, so a board does that work
 //! between the steps ([`super::init`] binds them to [`crate::soc::Init`]).
-use super::{self as soc, Config, Die, ECAM, ECAM_BUSES, MAX_DIES, Zeppelin};
+use super::{self as soc, Config, Die, ECAM, ECAM_BUSES, MAX_DIES, NONPCI_MMIO_SIZE};
 use embedded_hal::delay::DelayNs;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_core::services::{Timer, TimerDelay};
@@ -39,10 +39,15 @@ pub struct Identity {
     pub package: Package,
 }
 
+/// The DF plan's root bridge of each die, in die order.
+pub type Bridges = [Option<df::plan::RootBridgePlan>; MAX_DIES];
+
 /// The silicon state the later phases need.
 #[derive(Debug, Clone, Copy)]
 pub struct State {
     pub identity: Identity,
+    /// What the DF routes to each die's root complex.
+    pub bridges: Bridges,
     /// The non-PCI MMIO pool of each die.
     pub nonpci: [u32; MAX_DIES],
     /// The NBIO IOAPIC of each die.
@@ -94,7 +99,7 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     (top_mem, top_mem2): (u64, Option<u64>),
     apob: Option<&Apob>,
     timer: &impl Timer,
-) -> Result<[u32; MAX_DIES], &'static str> {
+) -> Result<(Bridges, [u32; MAX_DIES]), &'static str> {
     let clock = &mut TimerDelay(timer);
     let Identity { revision, package } = identity;
     let count = dies.len() as u8;
@@ -111,11 +116,17 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
             Hex(r.fabric_id.into())
         );
     }
+    // Each die's root complex in die order, with its NBIO's own MMIO at
+    // the top of its window below 4 GiB.
+    let mut bridges = [None; MAX_DIES];
     let mut nonpci = [0; MAX_DIES];
-    for die in dies {
-        nonpci[usize::from(die.index())] =
-            df::zp::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index())
-                .ok_or("non-PCI MMIO pool")?;
+    for (i, rb) in plan.root_bridges.iter().enumerate().take(MAX_DIES) {
+        let pool = rb.below_pools.non_pci;
+        if pool.size != u64::from(NONPCI_MMIO_SIZE) || pool.end() > 1 << 32 {
+            return Err("non-PCI MMIO pool");
+        }
+        bridges[i] = Some(*rb);
+        nonpci[i] = pool.base as u32;
     }
     for die in dies {
         df::zp::early_init(&die.df(), count, revision, &FABRIC);
@@ -140,11 +151,12 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
         |die| nonpci[usize::from(die)],
         clock,
     );
-    Ok(nonpci)
+    Ok((bridges, nonpci))
 }
 
 /// What [`pre_mp_dxio`] leaves for [`pre_mp_finish`].
 pub struct Trained {
+    bridges: Bridges,
     nonpci: [u32; MAX_DIES],
     ioapics: [u32; MAX_DIES],
     psp_bars: [u32; MAX_DIES],
@@ -163,7 +175,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     config: &Config,
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
-    nonpci: [u32; MAX_DIES],
+    (bridges, nonpci): (Bridges, [u32; MAX_DIES]),
     buffers: &'static mut dxio::zp::Buffers<MAX_DIES>,
     timer: &impl Timer,
 ) -> Result<Trained, &'static str> {
@@ -224,6 +236,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
         );
     }
     Ok(Trained {
+        bridges,
         nonpci,
         ioapics,
         psp_bars,
@@ -248,6 +261,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     let clock = &mut TimerDelay(timer);
     let Identity { revision, package } = identity;
     let Trained {
+        bridges,
         nonpci,
         ioapics,
         psp_bars,
@@ -317,6 +331,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     post(fch, 0x41);
     State {
         identity,
+        bridges,
         nonpci,
         ioapics,
         psp_bars,
