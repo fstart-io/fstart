@@ -18,7 +18,7 @@ use fstart_driver_amd::{
     ccx::{self, mp::Fam17hCpu, tsc::Tsc},
     cpu::{Package, Revision},
     dxio,
-    fch::{post, smi::FchSmi, taishan},
+    fch::{post, smi, sx, taishan},
     psp::{self, boot::Psp},
 };
 use fstart_pci::PciEcam;
@@ -259,10 +259,14 @@ impl Init for Zeppelin {
 }
 
 impl DieInit for Zeppelin {
-    fn smi(ctx: &Ctx<'_, Self>, _: &Up) -> FchSmi {
-        // SAFETY: BSP only after MP init; ACPI MMIO and the ACPI blocks are
-        // decoded since the FCH init.
-        unsafe { FchSmi::new(taishan::ACPI_PORTS, ctx.config.fch.smi_gevents) }
+    fn smi(ctx: &Ctx<'_, Self>, _: &Up) -> smi::Config {
+        smi::Config {
+            ports: taishan::ACPI_PORTS,
+            acpi_enable: smi::ACPI_ENABLE,
+            acpi_disable: smi::ACPI_DISABLE,
+            gevents: ctx.config.fch.smi_gevents,
+            version: sx::Version::Taishan,
+        }
     }
 
     /// The PSP gets the SMM info now, LockDFReg after the last DF write and

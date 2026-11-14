@@ -58,7 +58,7 @@ pub trait Board: 'static {
     /// it and its event log in ACPI. Off leaves a TPM untouched and hidden.
     const DISCRETE_TPM: bool = false;
     /// BMC sleep-state notification through SMM (ACPI and the handler).
-    const BMC_SX_NOTIFY: Option<crate::sp3::smm::SleepNotify> = None;
+    const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
     /// Workspace-relative vendor ROM an SP3 image is composed into when the
     /// build names none: the 32 MiB dual image, one 16 MiB half, or a full
     /// readout with [`Board::FLASH_MIRRORS`].
@@ -76,7 +76,7 @@ pub struct Facts {
     pub name: &'static str,
     pub max_cpus: u16,
     pub discrete_tpm: bool,
-    pub bmc_sx_notify: Option<crate::sp3::smm::SleepNotify>,
+    pub bmc_sx_notify: Option<crate::smm::SleepNotify>,
 }
 
 impl Facts {

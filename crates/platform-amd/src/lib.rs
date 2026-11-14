@@ -48,6 +48,10 @@ pub mod picasso;
 pub mod rome;
 /// The SMBIOS tables, for every SoC.
 pub mod smbios;
+/// SMM for every SoC: the SMRAM configuration, the FCH as the SMI owner
+/// and the handler; a board's `smm.rs` binds its handler with
+/// `fstart_platform_amd::smm::smm_bin!`.
+pub mod smm;
 /// The SoCs made of dies: their IP blocks and the order they come up in.
 pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
@@ -59,10 +63,6 @@ pub mod tpm;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod tseg;
 pub mod zeppelin;
-/// SMM image ABI and handler binding: a board's `smm.rs` binds its handler
-/// with `fstart_platform_amd::smm::smm_bin!`.
-#[cfg(feature = "smm")]
-pub use fstart_smm as smm;
 #[cfg(feature = "bundle")]
 #[doc(hidden)]
 pub use fstart_stage as __stage;

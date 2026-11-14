@@ -25,9 +25,6 @@ pub mod silicon;
 pub mod smbios;
 pub mod smm;
 
-#[cfg(feature = "smm")]
-pub use fstart_smm as smm_runtime;
-
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod soc;
 #[cfg(all(feature = "bundle", target_os = "none"))]

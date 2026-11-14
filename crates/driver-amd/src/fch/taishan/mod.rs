@@ -9,25 +9,23 @@
 //! made through a moved ACPI MMIO block ([`multi`]).
 //!
 //! The platform calls, in order:
-//! - before the console: [`crate::fch::enable_acpimmio`], [`pre_init`], then after
+//! - before the console: [`crate::fch::acpimmio::enable_acpimmio`], [`pre_init`], then after
 //!   the console [`crate::fch::early::set_power_failure_state`].
 //! - after the DF init: [`reset_init`], [`sata::reset`] of die 0,
 //!   [`multi::reset`].
 //! - after DXIO training: [`usb::init`] of die 0, [`multi::usb`];
 //!   after the SMU and NBIO pre-enumeration init:
-//!   [`crate::fch::acpi_decode`] with [`ACPI_PORTS`], [`env_init`],
+//!   [`crate::fch::acpimmio::acpi_decode`] with [`ACPI_PORTS`], [`env_init`],
 //!   [`sata::init`] of die 0 if the board enables it, [`xgbe_init`] of die 0,
 //!   [`multi::env`].
-//! - after MP init, SMM: [`crate::fch::smi::FchSmi`] routes the SMI sources.
+//! - after MP init, SMM: [`crate::fch::smi::enable`] routes the SMI sources.
 //! - before PCI devices get their IRQs: [`crate::fch::irq::write_routing`]; the chip init
-//!   then calls [`crate::fch::acpi_ports`].
+//!   then calls [`crate::fch::acpimmio::acpi_ports`].
 //! - ReadyToBoot: [`sata::late`] of die 0 if it was enumerated,
 //!   [`multi::late`], [`late_init`].
 mod init;
 pub mod multi;
 pub mod sata;
-#[cfg(feature = "smm")]
-pub mod smm;
 pub mod usb;
 
 pub use init::{env_init, late_init, pre_init, reset_init};
@@ -62,7 +60,7 @@ pub mod acpi_io {
     pub const GPE0: u16 = BASE + 0x20;
 }
 
-/// The ACPI I/O blocks of [`acpi_io`] for [`crate::fch::acpi_ports`].
+/// The ACPI I/O blocks of [`acpi_io`] for [`crate::fch::acpimmio::acpi_ports`].
 pub const ACPI_PORTS: crate::fch::acpimmio::AcpiPorts = crate::fch::acpimmio::AcpiPorts {
     event: acpi_io::PM1_EVT,
     control: acpi_io::PM1_CNT,
