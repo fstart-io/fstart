@@ -38,7 +38,7 @@
 //! | 90 | payload |
 extern crate alloc;
 
-use crate::soc::{Entered, Init, Roots};
+use crate::soc::{Entered, Init};
 use crate::sp3::silicon::hw::{self, PrimaryFch};
 use crate::sp3::silicon::steps;
 use crate::sp3::silicon::{self, Generation, Identity, NumaPlan};
@@ -258,15 +258,15 @@ pub(crate) fn fabric<V: Version, S: Init<Hw = Hw, Config = Config>>(
     Ok(soc)
 }
 
-/// Every root bridge the DF routes, each within its own buses and windows,
-/// from the plan the fabric step programmed.
-pub(crate) fn roots<F>(state: &State<F>) -> Option<Roots> {
-    (state.soc.plan.root_bridges.iter())
-        .map(|rb| fstart_driver_amd::df::root::planned(rb, &state.soc.pci_root))
-        .collect()
-}
-
 impl<F> State<F> {
+    /// The fabric, from the plan the DF step programmed.
+    pub fn fabric(&self) -> crate::soc::Fabric<'_> {
+        crate::soc::Fabric {
+            segment: self.soc.pci_root,
+            bridges: &self.soc.plan.root_bridges,
+        }
+    }
+
     /// What the tables and the handoff read.
     #[cfg_attr(not(feature = "payload-uefi"), allow(unused_variables))]
     fn view<'a>(&'a self, flow: &'a Flow) -> parts::Ctx<'a> {
@@ -442,7 +442,7 @@ pub(crate) fn tables<S: crate::flow::Soc<State = State<F>>, F>(
     step(0x70, "ACPI");
     let state = &silicon.state;
     let view = state.view(flow);
-    let rsdp = parts::handoff::acpi(&view, numa, nbios, pci, &acpi, board.bmc_sx_notify);
+    let rsdp = parts::handoff::acpi(&view, numa, nbios, pci, &acpi, board);
     let smbios = super::smbios::install(&view, &silicon.cpus, flow.rom_size, smbios, pci);
     Tables {
         rsdp: Some(rsdp),

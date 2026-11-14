@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A PCI root bridge of the fabric (a die's root complex, an IOMS
 //! quadrant) as a PCI root: what the DF routes to it and what that is for.
-//! The allocator and the ACPI host bridge both take it from here: from the
-//! DF plan the silicon init programmed ([`planned`], SOC_DF §3.4, NBIO_SMU
-//! §3.2), or from the routes as the DF has them ([`root`]).
+//! The allocator and the ACPI host bridge both take it from here
+//! ([`planned`]), from the DF plan the silicon init programmed (SOC_DF
+//! §3.4, NBIO_SMU §3.2), or from the plan of the routes another agent
+//! programmed ([`routed`]).
 use super::map::RootComplex;
 use super::plan::{Pools, RootBridgePlan, Window as PlanWindow};
-use fstart_pci::PciRole::{self, Forwarded, Own, Window};
+use fstart_pci::PciRole::{self, Forwarded, Own};
 use fstart_pci::{PciRoot, PciRootInfo};
 
 /// Where the legacy LPC/FCH I/O ends: forwarded like the rest, not for PCI
@@ -18,70 +19,72 @@ const FIXED_MMIO: u64 = 0xfec0_0000;
 /// cannot hold MMIO (coreboot `DF_RESERVED_TOP_12GB_MMIO_SIZE`).
 const FABRIC_RESERVED: u64 = (1 << 48) - (12 << 30);
 
-/// A die's root complex as a PCI root bridge.
+/// A root bridge of the fabric as a PCI root.
 pub type Root = PciRoot;
 
-/// The root bridge of the root complex `routes`, with its buses in the ECAM
-/// `ecam`.
+/// The plan of a root complex whose routes another agent programmed
+/// (Picasso's ABL), `routes` as the DF has them: one I/O window and one
+/// MMIO window below and above 4 GiB each, all for PCI devices but
+/// `non_pci`, the NBIO's own MMIO. The window below 4 GiB ends at the fixed
+/// MMIO, the one above below the fabric's reserved top.
 ///
-/// What the DF routes to the die is forwarded: its I/O, the legacy ports
-/// to the FCH's fixed devices and the rest to PCI, and its MMIO, below the
-/// fixed MMIO and below the fabric's reserved top; on the die with bus 0
-/// the legacy VGA memory too. Two ranges of that are the die's own and not
-/// forwarded: `non_pci`, the pool of the NBIO's own MMIO, and, on the die
-/// with bus 0, the ECAM window.
-///
-/// `None` if the buses are outside the ECAM or the DF routes more than a
-/// root bridge holds.
-pub fn root(
+/// `None` if the buses are outside the segment `pci` or the DF routes more
+/// than that.
+pub fn routed(
     routes: &RootComplex,
-    (ecam_base, ecam_size): (u64, u64),
-    (non_pci_base, non_pci_size): (u64, u64),
-) -> Option<Root> {
-    let last_bus = u8::try_from((ecam_size >> 20).checked_sub(1)?).ok()?;
-    let buses = *routes.buses.start()..=(*routes.buses.end()).min(last_bus);
-    if buses.is_empty() {
-        return None;
-    }
-    let io = routes.io.iter().flat_map(|&(base, size)| {
-        let end = (base + size).min(0x1_0000);
-        let pci = base.max(LEGACY_IO);
-        [
-            Forwarded.io(base, end.saturating_sub(base)),
-            Window.io(pci, end.saturating_sub(pci)),
-        ]
-    });
-    // The windows below 4 GiB first: the allocator fills them in this order.
-    let below = |&&(base, size): &&(u64, u64)| base + size <= 1 << 32;
-    let mmio = |limit: u64| {
-        move |&(base, size): &(u64, u64)| {
-            Window.mmio(base, (base + size).min(limit).saturating_sub(base))
+    index: u8,
+    pci: &PciRootInfo,
+    non_pci: PlanWindow,
+) -> Option<RootBridgePlan> {
+    fn one<'a>(
+        mut windows: impl Iterator<Item = &'a (u64, u64)>,
+    ) -> Result<Option<&'a (u64, u64)>, ()> {
+        match (windows.next(), windows.next()) {
+            (window, None) => Ok(window),
+            _ => Err(()),
         }
+    }
+    let below_4g = |&(base, size): &(u64, u64)| base + size <= 1 << 32;
+    let (below, above) = (
+        one(routes.mmio.iter().filter(|route| below_4g(route))).ok()?,
+        one(routes.mmio.iter().filter(|route| !below_4g(route))).ok()?,
+    );
+    let window = |&(base, size): &(u64, u64), limit: u64| {
+        PlanWindow::new(base, (base + size).min(limit).saturating_sub(base))
     };
-    let low = routes.mmio.iter().filter(below).map(mmio(FIXED_MMIO));
-    let high = routes
-        .mmio
-        .iter()
-        .filter(|route| !below(route))
-        .map(mmio(FABRIC_RESERVED));
-    // The die with bus 0 has the legacy VGA memory routed to it and owns
-    // the ECAM window.
-    let primary = |size: u64| if *buses.start() == 0 { size } else { 0 };
-    let vga = [Forwarded.mmio(0xa_0000, primary(0x2_0000))];
-    let own = [
-        Own.mmio(non_pci_base, non_pci_size),
-        Own.mmio(ecam_base, primary(ecam_size)),
-    ];
-    PciRoot::new(
-        PciRootInfo {
-            segment: 0,
-            ecam_base,
-            bus_start: *buses.start(),
-            bus_end: *buses.end(),
-        },
-        io.chain(vga).chain(low).chain(high).chain(own),
-    )
-    .ok()
+    let pools = |window: PlanWindow, non_pci: PlanWindow| Pools {
+        prefetch: PlanWindow::new(window.base, 0),
+        non_prefetch: window,
+        non_pci,
+    };
+    let below = window(below?, FIXED_MMIO);
+    let above = above.map(|route| window(route, FABRIC_RESERVED));
+    let io = match routes.io.as_slice() {
+        [] => None,
+        [(base, size)] => Some(PlanWindow::new(*base, *size)),
+        _ => return None,
+    };
+    let bus = super::BusRange {
+        base: *routes.buses.start(),
+        limit: (*routes.buses.end()).min(pci.bus_end),
+    };
+    (bus.base <= bus.limit).then_some(RootBridgePlan {
+        socket: 0,
+        index,
+        fabric_id: 0,
+        primary: bus.base == 0,
+        bus,
+        below,
+        below_pools: pools(below, non_pci),
+        second_below: None,
+        above,
+        above_pools: above.map(|above| pools(above, PlanWindow::new(above.base, 0))),
+        io,
+        io_pool: io.map(|io| {
+            let base = io.base.max(LEGACY_IO);
+            PlanWindow::new(base, io.end().min(0x1_0000).saturating_sub(base))
+        }),
+    })
 }
 
 /// The span of the PCI pools (prefetch then non-prefetch, contiguous by
@@ -247,5 +250,62 @@ mod tests {
 
     fn root_of(plan: &RootBridgePlan) -> PciRoot {
         planned(plan, &segment()).unwrap()
+    }
+
+    /// Picasso: the ABL routes one window below the fixed MMIO, the ECAM
+    /// and the SMU's MMIO inside it; the root is that window without them.
+    #[test]
+    fn routed_window_without_ecam_and_non_pci() {
+        use crate::df::map::RootComplex;
+        let routes = RootComplex {
+            buses: 0..=255,
+            mmio: [(0xd000_0000, 0x2ec0_0000)].into_iter().collect(),
+            io: [(0, 0x1_0000)].into_iter().collect(),
+        };
+        let pci = PciRootInfo {
+            segment: 0,
+            ecam_base: 0xf800_0000,
+            bus_start: 0,
+            bus_end: 63,
+        };
+        let smu = Window::new(0xfd00_0000, 0x28_0000);
+        let plan = routed(&routes, 0, &pci, smu).unwrap();
+        assert!(plan.primary);
+        let root = planned(&plan, &pci).unwrap();
+        assert_eq!(root.buses(), 0..=63);
+        let spans = |ranges: &[fstart_pci::PciWindow]| -> std::vec::Vec<_> {
+            ranges.iter().map(|r| (r.kind, r.base, r.end())).collect()
+        };
+        use PciWindowKind::{Io, Mmio};
+        assert!(root.io().eq(core::iter::once(0..=0xffff)));
+        assert_eq!(
+            root.mmio().collect::<std::vec::Vec<_>>(),
+            [
+                0xa_0000..=0xb_ffff,
+                0xd000_0000..=0xf7ff_ffff,
+                0xfc00_0000..=0xfcff_ffff,
+                0xfd28_0000..=0xfebf_ffff
+            ]
+        );
+        assert_eq!(
+            spans(root.allocatable()),
+            [
+                (Io, 0x1000, 0x1_0000),
+                (Mmio, 0xd000_0000, 0xf800_0000),
+                (Mmio, 0xfc00_0000, 0xfd00_0000),
+                (Mmio, 0xfd28_0000, 0xfec0_0000),
+            ]
+        );
+        assert_eq!(
+            spans(root.motherboard()),
+            [
+                (Mmio, 0xfd00_0000, 0xfd28_0000),
+                (Mmio, 0xf800_0000, 0xfc00_0000)
+            ]
+        );
+        // Two windows below 4 GiB are more than a plan holds.
+        let mut two = routes.clone();
+        two.mmio.push((0x8000_0000, 0x1000_0000)).unwrap();
+        assert_eq!(routed(&two, 0, &pci, smu), None);
     }
 }

@@ -31,8 +31,6 @@ pub fn tables() -> Board {
         lpc_aml: superio_dsdt_aml(&com1),
         // The console: SOL over COM1.
         tables: vec![spcr],
-        // `_PTS`/`_WAK` tell the BMC the sleep state through the SMM handler.
-        sb_aml: super::BMC_SLEEP_NOTIFY.aml(fstart_driver_amd::fch::smi::APM_CNT),
         ..Board::default()
     }
 }
