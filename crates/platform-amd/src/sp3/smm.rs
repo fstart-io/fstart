@@ -31,10 +31,6 @@
 //! [`TSEG_SIZE`] for the board's thread count.
 
 use crate::sp3::silicon::Generation;
-use fstart_driver_amd::apob::sysmap;
-
-use crate::layout::Region;
-use crate::sp3::memory::FOUR_GIB;
 
 /// TSEG size: 8 MiB, as the donors' SMM_MASK (PSP_APOB §3.3 example
 /// `0xffff_ff80_0000`-style masks); a power of two the MSR pair describes.
@@ -45,33 +41,6 @@ pub const TSEG_SIZE: u64 = 8 << 20;
 pub mod sw {
     /// Register the handler's PSP buffers with the PSP (SmmInfo, C2P 0x02).
     pub const PSP_SMM_INFO: u8 = 0xD0;
-}
-
-/// The highest `size`-aligned window of `size` bytes inside one RAM region
-/// below `tom` (and 4 GiB) that overlaps none of `avoid`.
-pub fn place_tseg(
-    regions: &[sysmap::Region],
-    tom: u64,
-    size: u64,
-    avoid: &[Region],
-) -> Option<Region> {
-    let limit = tom.min(FOUR_GIB);
-    let fit = |r: &sysmap::Region| {
-        let mut top = r.end().min(limit) & !(size - 1);
-        while top >= r.base + size {
-            let candidate = Region::new(top - size, size);
-            match avoid.iter().find(|a| a.overlaps(&candidate)) {
-                Some(a) => top = a.base & !(size - 1),
-                None => return Some(candidate),
-            }
-        }
-        None
-    };
-    regions
-        .iter()
-        .filter(|r| r.kind.is_ram() && r.base < limit)
-        .filter_map(fit)
-        .max_by_key(|s| s.base)
 }
 
 /// What the normal-mode installer writes into SMRAM for the handler.
@@ -597,39 +566,5 @@ mod handler {
                 page.add(fstart_driver_amd::psp::command::SMM_FLAG_OFFSET as usize),
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fstart_driver_amd::apob::sysmap::RegionKind;
-
-    fn ram(base: u64, size: u64) -> sysmap::Region {
-        sysmap::Region {
-            base,
-            size,
-            kind: RegionKind::Ram,
-        }
-    }
-
-    #[test]
-    fn tseg_goes_to_the_top_of_low_ram_around_firmware() {
-        let regions = [
-            ram(0, 0x8000_0000),
-            sysmap::Region {
-                base: 0x8000_0000,
-                size: 0x8000_0000,
-                kind: RegionKind::Mmio,
-            },
-            ram(FOUR_GIB, 0x1_0000_0000),
-        ];
-        let early = crate::sp3::layout::LAYOUT.early;
-        let t = place_tseg(&regions, 0x8000_0000, TSEG_SIZE, &[early]).unwrap();
-        assert_eq!(t, Region::new(0x7f80_0000, TSEG_SIZE));
-        // TOM inside the firmware window: step below it.
-        let t = place_tseg(&regions, 0x7600_0000, TSEG_SIZE, &[early]).unwrap();
-        assert_eq!(t, Region::new(0x7480_0000, TSEG_SIZE));
-        assert_eq!(place_tseg(&regions[1..], 0x8000_0000, TSEG_SIZE, &[]), None);
     }
 }
