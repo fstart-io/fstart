@@ -80,41 +80,7 @@ pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
 /// AML provides `\CNOT`; `gpio_base` is the ICH GPIOBASE.
 #[must_use]
 pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) -> Vec<u8> {
-    // Coreboot x200 dsdt.asl: hotkey brightness goes through GFX0.
-    let brightness = acpi_dsl! {
-        Scope("\\") {
-            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
-            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
-        }
-    };
-    let mut aml = fstart_driver_lenovo::h8_acpi::dsdt_aml_with_brightness::<N>(h8, &brightness);
-    aml.extend_from_slice(&acpi_dsl! {
-        Scope("\\") {
-            // ec/lenovo/h8/acpi/thinklight.asl, for thinkpad_acpi.
-            Method("UCMS", 1, Serialized) {
-                If (Arg0 == 0x0Cu32) {
-                    #{const path 5 ec::<N>().child("LGHT")}(1u32);
-                }
-                If (Arg0 == 0x0Du32) {
-                    #{const path 5 ec::<N>().child("LGHT")}(0u32);
-                }
-            }
-            Method("_PTS", 1, NotSerialized) {
-                #{const path 5 ec::<N>().child("MUTE")}(1u32);
-                #{const path 5 ec::<N>().child("USBP")}(0u32);
-                #{const path 5 ec::<N>().child("RADI")}(0u32);
-            }
-            Method("_WAK", 1, NotSerialized) {
-                #{const path 6 ec::<N>().child("HKEY").child("WAKE")}(Arg0);
-                Return(Package(0u32, 0u32));
-            }
-        }
-        Scope("\\_GPE") {
-            Method("_L18", 0, NotSerialized) {
-                Local0 = #{const path 5 ec::<N>().child("WAKE")};
-            }
-        }
-    });
+    let mut aml = fstart_driver_lenovo::thinkpad::h8_dsdt_aml::<N>(h8);
     aml.extend(dock_aml::<N>(gpio_base));
     if digitizer {
         aml.extend(
