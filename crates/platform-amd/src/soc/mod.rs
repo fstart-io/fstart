@@ -4,7 +4,7 @@
 //! crate names ([`fstart_driver_amd::soc::Soc`] is what the blocks need of
 //! it):
 //!
-//! | IP | [`crate::picasso`] | [`crate::zeppelin`] | [`crate::sp3`] Naples | Rome | Milan |
+//! | IP | [`crate::picasso`] | [`crate::zeppelin`] | [`crate::naples`] | [`crate::rome`] | [`crate::milan`] |
 //! |----|----|----|----|----|----|
 //! | CCX | `ccx::rv` | `ccx::zp` | `ccx::init`, `tables::zp` | `tables::ssp` | `tables::gn` |
 //! | DF | `df::rv` | `df::zp` | `df::zp` | `df::ssp` | `df::gn` |
