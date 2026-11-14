@@ -19,12 +19,11 @@
 //!   [`sata::init`] of die 0 if the board enables it, [`xgbe_init`] of die 0,
 //!   [`multi::env`].
 //! - after MP init, SMM: [`crate::fch::smi::FchSmi`] routes the SMI sources.
-//! - before PCI devices get their IRQs: [`irq::write_routing`]; the chip init
+//! - before PCI devices get their IRQs: [`crate::fch::irq::write_routing`]; the chip init
 //!   then calls [`crate::fch::acpi_ports`].
 //! - ReadyToBoot: [`sata::late`] of die 0 if it was enumerated,
 //!   [`multi::late`], [`late_init`].
 mod init;
-pub mod irq;
 pub mod multi;
 pub mod sata;
 #[cfg(feature = "smm")]
@@ -64,7 +63,7 @@ pub mod acpi_io {
 }
 
 /// The ACPI I/O blocks of [`acpi_io`] for [`crate::fch::acpi_ports`].
-pub const ACPI_PORTS: crate::fch::AcpiPorts = crate::fch::AcpiPorts {
+pub const ACPI_PORTS: crate::fch::acpimmio::AcpiPorts = crate::fch::acpimmio::AcpiPorts {
     event: acpi_io::PM1_EVT,
     control: acpi_io::PM1_CNT,
     timer: acpi_io::PM_TMR,
@@ -78,10 +77,6 @@ pub struct Devices {
     pub xhci: bool,
     pub sata: bool,
 }
-
-/// SMBus/ASF I/O (PMx00[15:8]).
-const SMBUS_IO: u16 = crate::fch::SMBUS_ASF_IO_BASE;
-const ASF_IO: u16 = SMBUS_IO + 0x20;
 
 tock_registers::register_bitfields![u32,
     /// NBIF function strap: [15:0] device ID, bit 28 enable.

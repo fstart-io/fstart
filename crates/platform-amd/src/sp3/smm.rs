@@ -100,20 +100,20 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
     }
 
     fn disable_smi(&self) {
-        use fstart_driver_amd::fch::hw::FchHw;
-        use fstart_driver_amd::fch::hw::smi::TRIG0;
+        use fstart_driver_amd::fch::FchHw;
+        use fstart_driver_amd::fch::smi::{TRIGGER0, Trigger0};
         use fstart_driver_amd::window::Window;
         use tock_registers::interfaces::ReadWriteable;
         // SmiEnB: the FCH generates no SMI until `enable_smi`.
         self.fch
             .acpi()
-            .reg::<u32, TRIG0::Register>(fstart_driver_amd::fch::hw::smi::TRIG0)
-            .modify(TRIG0::SMI_EN_B::SET);
+            .at(TRIGGER0)
+            .modify(Trigger0::SMI_DISABLE::SET);
     }
 
     fn enable_smi(&self) {
-        use fstart_driver_amd::fch::hw::FchHw;
-        fstart_driver_amd::fch::hw::smi::enable_boot_sources(self.fch.acpi());
+        use fstart_driver_amd::fch::FchHw;
+        fstart_driver_amd::fch::smi::enable_boot_sources(self.fch.acpi());
         if self.config.generation == Generation::Rome {
             fstart_driver_amd::fch::huashan::smm::arm_cf9_trap(self.fch);
         }
@@ -124,7 +124,7 @@ impl fstart_arch::x86::cpu::amd::smm::SmiControl for Sp3Smi<'_> {
 /// bit 1 cleared, SmiTrig0 bit 25 cleared, PSP SMI control = SMI.
 #[cfg(feature = "bundle")]
 pub fn prepare_psp_smi(fch: &crate::sp3::silicon::hw::PrimaryFch) {
-    use fstart_driver_amd::fch::hw::{FchHw, acpimmio};
+    use fstart_driver_amd::fch::{FchHw, acpimmio};
     use fstart_driver_amd::window::{Window, update};
     let acpi = fch.acpi();
     update::<u32, _>(acpi, acpimmio::SMI + 0x84, 0, 1 << 1);
@@ -151,10 +151,10 @@ mod handler {
     use crate::sp3::silicon::Generation;
     use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
     use fstart_arch::x86::cpu::msr::MsrAccess;
-    use fstart_driver_amd::fch::hw::smi::Source;
-    use fstart_driver_amd::fch::hw::smi::{self, source};
-    use fstart_driver_amd::fch::hw::tasks::sx;
-    use fstart_driver_amd::fch::hw::{Fch, FchHw, acpimmio};
+    use fstart_driver_amd::fch::smi::Source;
+    use fstart_driver_amd::fch::smi::{self, source};
+    use fstart_driver_amd::fch::tasks::sx;
+    use fstart_driver_amd::fch::{Fch, FchHw, acpimmio};
     use fstart_driver_amd::psp::command::{C2pBuffer, P2C_BUFFER_SIZE, SmmInfo};
     use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
     use fstart_driver_amd::smn::Smn;
@@ -285,7 +285,7 @@ mod handler {
         };
 
         if smi::is_pending(acpi, source::SMI_CMD) {
-            let command = hw.io().read8(acpimmio::SMI_CMD);
+            let command = hw.io().read8(smi::APM_CNT.into());
             smi::clear(acpi, source::SMI_CMD);
             match command {
                 smi::sw::ACPI_ENABLE => sx::acpi_enable(&hw),
@@ -338,7 +338,7 @@ mod handler {
             // AmdPspP2CmboxV2Ssp `0x944` (instruction-checked): answer,
             // then drop SmiTrig0[25]; its dispatcher then clears the status.
             // A trigger left set keeps the source asserted.
-            update::<u32, _>(acpi, smi::TRIG0, PSP_TRIGGER, 0);
+            update::<u32, _>(acpi, smi::TRIGGER0.offset, PSP_TRIGGER, 0);
             smi::clear(acpi, PSP_SMI);
         }
         if generation == Generation::Rome

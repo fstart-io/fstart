@@ -13,7 +13,7 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::apob::sysmap;
 use fstart_driver_amd::apob::{self, Apob};
-use fstart_driver_amd::fch::hw::rom3::{self, FlashMap, Rom3};
+use fstart_driver_amd::fch::rom3::{self, FlashMap, Rom3};
 use tock_registers::interfaces::Readable;
 use zerocopy::IntoBytes;
 

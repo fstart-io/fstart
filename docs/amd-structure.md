@@ -22,7 +22,7 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 | `smu` | mailbox, thread release | `v9`, `v10`, `v11` |
 | `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp` |
 | `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`) | `rv`, `zp`; `tables::{zp, ssp, gn}` |
-| `fch` | registers over a `Bus` (an SoC's FCH 0), over windows for any FCH (`hw`), the shared tasks (`hw::tasks`) | `sandstone`, `taishan`, `huashan` |
+| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan` |
 | `psp`, `apob` | mailbox and commands, the APOB | |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a

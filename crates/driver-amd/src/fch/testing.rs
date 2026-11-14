@@ -5,7 +5,7 @@
 //! spaces log in one order, so a test sees the accesses of all windows
 //! as the hardware would.
 extern crate std;
-use super::hw::{FchHw, acpimmio};
+use super::{FchHw, acpimmio};
 use crate::window::Window;
 use core::cell::RefCell;
 use fstart_core::services::{ManualTimer, Timer};
@@ -67,7 +67,7 @@ impl<S: Spaces> Window for View<'_, S> {
     }
 }
 
-/// FCH 0 of a model, as [`super::hw::Native`] reaches it.
+/// FCH 0 of a model, as [`super::Native`] reaches it.
 pub struct Fch<'a, S, T> {
     acpi: View<'a, S>,
     mmio: View<'a, S>,

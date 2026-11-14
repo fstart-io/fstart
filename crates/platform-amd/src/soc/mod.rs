@@ -11,7 +11,7 @@
 //! | NBIO | `nbio::rv` | `nbio::zp` | `nbio::zp` | `nbio::ssp` | `nbio::ssp` |
 //! | DXIO | `dxio::rv` | `dxio::zp` | `dxio::zp::sequence` | `dxio::ssp` | `dxio::ssp` |
 //! | SMU | `smu::v10` | `smu::v9` | `smu::v9` | `smu::v11` | `smu::v11` |
-//! | FCH | `fch::sandstone` | `fch::taishan` | `fch::taishan`, `fch::hw` | `fch::huashan` | `fch::huashan` |
+//! | FCH | `fch::sandstone` | `fch::taishan` | `fch::taishan`, `fch::tasks` | `fch::huashan` | `fch::huashan` |
 //!
 //! PSP and APOB are common; Picasso adds the ACP.
 //!
@@ -29,10 +29,7 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::tsc::Tsc,
     df::Die,
-    fch::{
-        gpio::Gpio,
-        hw::{FchHw, Native},
-    },
+    fch::{FchHw, Native, gpio::Gpio},
     psp,
     window::Mmio,
 };
@@ -241,7 +238,7 @@ impl<S: Soc> Hw<S> {
         fstart_driver_amd::ccx::msr::enable_ecam(msr, ecam, buses);
         fstart_pci::ecam::init(ecam as usize);
         // SAFETY: exclusive FCH programming before the console.
-        unsafe { fstart_driver_amd::fch::enable_acpimmio() };
+        unsafe { fstart_driver_amd::fch::acpimmio::enable_acpimmio() };
         let clock = Tsc::measured(msr);
         // SAFETY: BSP only, single-threaded cold boot; the ACPI MMIO and the
         // ECAM are decoded.
@@ -309,7 +306,7 @@ impl<S: Soc> Hw<S> {
     /// `bsp_apic`, then one per die's NBIO at `ioapic(die)` (ID 1 + die),
     /// all masked.
     pub fn init_ioapics(&self, bsp_apic: u8, ioapic: impl Fn(u8) -> u32) {
-        fstart_driver_amd::fch::enable_hpet_ioapic(self.fch.acpi());
+        fstart_driver_amd::fch::acpimmio::enable_hpet_ioapic(self.fch.acpi());
         // SAFETY: decoded IOAPIC MMIO, BSP only.
         let fch_ioapic = unsafe { IoApic::new(fstart_driver_amd::fch::IOAPIC as usize) };
         fch_ioapic.set_id(0);

@@ -2,7 +2,11 @@
 //! Native Picasso FCH A-Link and clock sequencing. The index-zero writes are hardware requirements.
 use crate::smn::{Smn, apply, rmw};
 use crate::{
-    fch::{AbRegBar, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR, alink, hw::FchHw},
+    fch::{
+        FchHw,
+        acpimmio::{AbRegBar, MISC_CLK_CNTL1, MiscClkCntl1, PM_AB_REG_BAR},
+        alink,
+    },
     table,
     window::Window,
 };

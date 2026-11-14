@@ -3,9 +3,10 @@ extern crate std;
 use super::*;
 use crate::ccx::tsc::testing::Delay;
 use crate::cpu::{Package, Revision};
+use crate::fch::irq;
 use crate::{
     df,
-    fch::hw::FchHw,
+    fch::FchHw,
     fch::testing::{Fch, Space, Spaces},
     smn::testing::{SmnModel, SmnTest},
     soc::Soc,
@@ -177,11 +178,11 @@ fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
     let fch = hw.fch();
     let bus = fch.io();
     for source in irq::MISC..=irq::MISC2 {
-        irq::write(bus, source, irq::Mode::Pic, 0xa0 | source);
-        irq::write(bus, source, irq::Mode::Apic, 0xb0 | source);
+        irq::write(bus, irq::index(source, irq::Mode::Pic), 0xa0 | source);
+        irq::write(bus, irq::index(source, irq::Mode::Apic), 0xb0 | source);
     }
-    irq::write(bus, irq::SIRQA, irq::Mode::Apic, 7);
-    irq::write(bus, 0x13, irq::Mode::Pic, 0x42); // reserved index
+    irq::write(bus, irq::index(irq::SIRQA, irq::Mode::Apic), 7);
+    irq::write(bus, irq::index(0x13, irq::Mode::Pic), 0x42); // reserved index
     // As the MJ11 lists them: the MISC entries come with zeros.
     let routes = [
         irq::Route {

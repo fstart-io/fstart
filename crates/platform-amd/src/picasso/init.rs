@@ -24,9 +24,8 @@ use fstart_driver_amd::{
     df::rv as fabric,
     dxio,
     fch::{
-        emmc, espi,
+        FchHw, Native, early, emmc, espi,
         gpio::{Gpio, Pad, Pull},
-        hw::{FchHw, Native},
         sandstone::{self, legacy, preinit, usb},
         smi::FchSmi,
     },
@@ -102,15 +101,20 @@ impl Init for Picasso {
         Hw::enter(msr, super::ECAM, super::ECAM_BUSES.into(), |fch, clock| {
             let mut delay = clock.ok_or("TSC frequency")?;
             let uart = config.fch.console_uart;
-            fstart_driver_amd::fch::enable_legacy_decode(fch.acpi());
+            fstart_driver_amd::fch::acpimmio::enable_legacy_decode(fch.acpi());
             // Power all common early devices before waiting, then the UART.
-            fstart_driver_amd::fch::power_devices(fch.acpi(), EARLY_AOAC, 10000, &mut delay)
-                .map_err(|_| "AOAC power")?;
+            fstart_driver_amd::fch::acpimmio::power_devices(
+                fch.acpi(),
+                EARLY_AOAC,
+                10000,
+                &mut delay,
+            )
+            .map_err(|_| "AOAC power")?;
             let aoac = *UART_AOAC.get(usize::from(uart)).ok_or("console UART")?;
-            fstart_driver_amd::fch::power_devices(fch.acpi(), &[aoac], 10000, &mut delay)
+            fstart_driver_amd::fch::acpimmio::power_devices(fch.acpi(), &[aoac], 10000, &mut delay)
                 .map_err(|_| "AOAC power")?;
             // Range_0 comes out of reset enabled; clear legacy UART aliases.
-            fstart_driver_amd::fch::clear_legacy_uart_decode(fch.mmio());
+            fstart_driver_amd::fch::uart::set_legacy_decode(fch, 0);
             let pins = match uart {
                 0 => [
                     Pad::native(138, 0, Pull::None),
@@ -265,7 +269,7 @@ impl Init for Picasso {
         }
         .map_err(|_| "SMU power policy")?;
         sandstone::alink_init(&ctx.hw.fch);
-        fstart_driver_amd::fch::acpi_decode(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
+        fstart_driver_amd::fch::acpimmio::acpi_decode(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         legacy::initialize(&ctx.hw.fch, config.fch.espi.is_some(), false);
         legacy::lpc_init(&ctx.hw.fch);
         sandstone::clock_init(smn);
@@ -357,7 +361,7 @@ impl Init for Picasso {
             None
         };
         nbio::late::post_silicon(smn, identity, &mut delay).map_err(|_| "NBIO final init")?;
-        fstart_driver_amd::fch::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
+        fstart_driver_amd::fch::acpimmio::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         Ok(State {
             uma: uma.map(|region| (region, identity.silicon)),
             emmc,
@@ -377,7 +381,7 @@ impl Init for Picasso {
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
-        fstart_driver_amd::fch::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
+        fstart_driver_amd::fch::acpimmio::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         Ok(())
     }
 
@@ -420,17 +424,18 @@ fn fch_init(
     config: &FchConfig,
     timer: &impl fstart_core::services::Timer,
 ) -> Result<(), &'static str> {
-    preinit::prepare_lpc(fch).map_err(|_| "LPC setup")?;
+    early::prepare_lpc(fch).map_err(|_| "LPC setup")?;
     let gpio = Gpio::new(fch.acpi(), Picasso::GPIO_BANK);
     if let Some((espi, pads)) = &config.espi {
         gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
         // SAFETY: the SPI/eSPI BAR prepare_lpc set up; BSP only.
-        let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
+        let mut controller =
+            unsafe { espi::Native::new(fstart_driver_amd::fch::SPI_BASE as usize) };
         espi::initialize(&mut controller, timer, espi).map_err(|_| "eSPI link")?;
         fstart_log::info!("picasso: eSPI link up");
     }
     preinit::configure_spi(fch, config.spi).map_err(|_| "SPI setup")?;
-    preinit::initialize_smbus(fch).map_err(|_| "SMBus setup")
+    early::initialize_smbus(fch).map_err(|_| "SMBus setup")
 }
 
 impl DieInit for Picasso {

@@ -48,8 +48,8 @@ use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::df::Version;
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::gpio::Pad;
-use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_amd::nbio::Nbio;
 use fstart_driver_amd::nbio::iohc::DramTops;
 
@@ -418,7 +418,7 @@ pub(crate) fn install_smm<F>(
     };
     crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
     super::smm::prepare_psp_smi(&soc.fch);
-    fstart_driver_amd::fch::hw::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+    fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
     state.smm = Some(config);
     state.soc.smm_installed = true;
     Ok(())

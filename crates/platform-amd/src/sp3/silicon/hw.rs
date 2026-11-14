@@ -6,7 +6,7 @@ use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 
 use super::Generation;
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::fch::hw::{Fch, Native, acpimmio};
+use fstart_driver_amd::fch::{Fch, Native, acpimmio};
 use fstart_driver_amd::smn::Smn;
 use fstart_driver_amd::window::{Mmio, Ports, SmnWindow};
 use tock_registers::interfaces::Writeable;

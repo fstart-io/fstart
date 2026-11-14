@@ -1,11 +1,11 @@
 //! The late (ReadyToBoot) HW ACPI task af70 (FCH_SP3 §3.3); also rerun by
 //! SW SMI b4 after S3.
 
-use super::super::acpimmio::{PM, pm};
-use super::super::smi::{self, Route, source};
-use super::super::{FchHw, uart};
 use crate::cpu::Silicon;
+use crate::fch::acpimmio::{PM, PM_0B, PM_RESET_CONTROL1};
 use crate::fch::irq;
+use crate::fch::smi::{self, Route, source};
+use crate::fch::{FchHw, uart};
 use crate::window::update;
 
 /// af70. `extra_routes` are board PCI_INTR overrides written after the
@@ -19,9 +19,9 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, extra_routes: &[(u8, u8)])
     smi::set_route(acpi, source::SLP_TYP, Route::Disabled);
     smi::set_route(acpi, source::SLP_TYP, Route::Smi);
     // ResetCtl1[SlpTypeControl] off until Sx entry; PMx0B[1:0] = 2.
-    update::<u8, _>(acpi, PM + pm::RESET_CONTROL1, 0x20, 0);
-    update::<u8, _>(acpi, PM + pm::PM_0B, 0x03, 0);
-    update::<u8, _>(acpi, PM + pm::PM_0B, 0x01, 0x02);
+    update::<u8, _>(acpi, PM_RESET_CONTROL1.offset, 0x20, 0);
+    update::<u8, _>(acpi, PM_0B.offset, 0x03, 0);
+    update::<u8, _>(acpi, PM_0B.offset, 0x01, 0x02);
     irq::program(hw.io(), irq::routes(generation));
     irq::program(hw.io(), extra_routes);
     // SCI level for GEVENTs 11 (ZP, SSP) and 19.
@@ -29,7 +29,7 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, extra_routes: &[(u8, u8)])
         Silicon::Gn => 0x0008_0000,
         Silicon::Zp | Silicon::Ssp => 0x0008_0800,
     };
-    update::<u32, _>(acpi, smi::SCI_LEVEL, 0, level);
+    update::<u32, _>(acpi, smi::SCI_LEVEL.offset, 0, level);
     if generation != Silicon::Zp {
         uart::set_legacy_decode(hw, 0);
     }
@@ -37,8 +37,8 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, extra_routes: &[(u8, u8)])
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::fch;
     use super::*;
+    use crate::fch::model::fch;
 
     #[test]
     fn rome_late() {

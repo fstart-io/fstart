@@ -12,7 +12,7 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::{self, CacWeights, Thread},
     df, dxio,
-    fch::{early, hw::FchHw, post, taishan},
+    fch::{FchHw, early, irq, post, taishan},
     nbio::{self, iohc, iommu},
     psp,
     smu::v9 as smu,
@@ -303,7 +303,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     for die in dies {
         nbio::zp::pre_enumeration_init(die);
     }
-    fstart_driver_amd::fch::acpi_decode(fch.acpi(), taishan::ACPI_PORTS);
+    fstart_driver_amd::fch::acpimmio::acpi_decode(fch.acpi(), taishan::ACPI_PORTS);
     taishan::env_init(
         fch,
         &dies[0].smn(),
@@ -354,13 +354,12 @@ pub fn cpus_up<P: ConfigRegionAccess + Copy>(dies: &[Die<P>], delay: &mut impl D
 
 /// The PCI interrupt router, before enumeration.
 pub fn route_interrupts(fch: &impl FchHw, config: &Config) -> Result<(), &'static str> {
-    taishan::irq::write_routing(fch.io(), config.fch.irq_routes)
-        .map_err(|_| "PCI interrupt routing")
+    irq::write_routing(fch.io(), config.fch.irq_routes).map_err(|_| "PCI interrupt routing")
 }
 
 /// After the resource allocation, before the board's final hook.
 pub fn after_resources(fch: &impl FchHw) {
-    fstart_driver_amd::fch::acpi_ports(fch.acpi(), taishan::ACPI_PORTS);
+    fstart_driver_amd::fch::acpimmio::acpi_ports(fch.acpi(), taishan::ACPI_PORTS);
 }
 
 /// The ReadyToBoot of the vendor firmware: the SATA controller of die 0 at

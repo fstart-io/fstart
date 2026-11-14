@@ -22,12 +22,11 @@ mod variant;
 use fstart_driver_amd::{ccx::tsc::Tsc, fch::gpio::Gpio, window::Window};
 use fstart_driver_amd::{
     fch::{
-        self, ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Pm1Enable, Pm1Status,
+        self, FchHw,
+        acpimmio::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Pm1Enable, Pm1Status, iomux},
         gpio::Control,
-        hw::FchHw,
-        iomux,
+        irq::{self, Route},
         lpc::{self, IoPortDecode},
-        taishan::irq::{self, Route},
     },
     smn::{apply, write},
 };
@@ -161,7 +160,7 @@ impl fstart_platform_amd::board::Board for Board {
 
 /// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.
 pub fn early_init(fch: &impl FchHw) {
-    lpc::enable_sio_2e(fch);
+    lpc::enable_super_io(fch, true, false);
     lpc::enable_io_decode(fch, IoPortDecode::SERIAL0::SET);
     // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.
     let _ = lpc::set_wideio_range(fch, 0xa00, 512);

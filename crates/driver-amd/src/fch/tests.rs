@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::{
-    hw::FchHw,
+    FchHw,
+    acpimmio::{Error, power_devices},
     testing::{Space, World},
     *,
 };

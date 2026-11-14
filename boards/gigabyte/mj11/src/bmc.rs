@@ -3,8 +3,8 @@
 //! of POST.
 use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_amd::fch::{
+    FchHw,
     early::{self, PowerFailure},
-    hw::FchHw,
 };
 use fstart_driver_ipmi::kcs::{self, Kcs};
 use fstart_driver_ipmi::{RestorePolicy, SelRecord};

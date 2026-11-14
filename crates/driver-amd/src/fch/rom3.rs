@@ -44,7 +44,7 @@ use fstart_amdfw_format::ROM2_BASE;
 use tock_registers::interfaces::Readable;
 use tock_registers::register_bitfields;
 
-use super::{FchHw, spi};
+use super::FchHw;
 use crate::window::Window;
 
 /// ROM3 window base and size (PPR 55570 §9.1.13).
@@ -68,7 +68,7 @@ register_bitfields![u32,
 /// The SPI ROM page ROM2 currently shows.
 pub fn rom_page<H: FchHw>(hw: &H) -> u8 {
     hw.mmio()
-        .reg::<u32, ADDR32_CTRL3::Register>(spi::BASE + ADDR32_CTRL3)
+        .reg::<u32, ADDR32_CTRL3::Register>(super::SPI_BASE + ADDR32_CTRL3)
         .read(ADDR32_CTRL3::SPI_ROM_PAGE) as u8
 }
 
@@ -159,8 +159,8 @@ impl FlashMap {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::fch;
     use super::*;
+    use crate::fch::model::fch;
 
     const HALF: u32 = PAGE_SIZE;
 
@@ -264,7 +264,8 @@ mod tests {
     #[test]
     fn rom_page_reads_spix5c() {
         let hw = fch();
-        hw.mmio.put(spi::BASE + ADDR32_CTRL3, 4, 0xffff_fffd);
+        hw.mmio
+            .put(crate::fch::SPI_BASE + ADDR32_CTRL3, 4, 0xffff_fffd);
         assert_eq!(rom_page(&hw), 1);
     }
 }

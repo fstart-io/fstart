@@ -11,11 +11,7 @@ pub use super::init::{FchUp, Up};
 use crate::soc::Soc;
 use fstart_driver_amd::{
     dxio::Descriptor,
-    fch::{
-        early::PowerFailure,
-        gpio::Bank,
-        taishan::{Devices, irq::Route},
-    },
+    fch::{early::PowerFailure, gpio::Bank, irq::Route, taishan::Devices},
 };
 use fstart_driver_i2c::designware::{Speed, Timing};
 

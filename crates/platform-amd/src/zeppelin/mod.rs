@@ -15,7 +15,7 @@ mod tests;
 use crate::layout::Region;
 use crate::noncar::{self, Devices};
 use crate::zeppelin as soc;
-use fstart_driver_amd::fch::taishan;
+use fstart_driver_amd::fch::irq;
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Zeppelin {
@@ -50,7 +50,7 @@ impl noncar::DieSoc for Zeppelin {
             .fch
             .irq_routes
             .iter()
-            .find(|route| route.source == taishan::irq::GPIO)
+            .find(|route| route.source == irq::GPIO)
             .and_then(|route| fstart_driver_amd::fch::aml::gpio(route.apic, 0x300).ok())
             .unwrap_or_default();
         Ok((Devices::new(), aml))

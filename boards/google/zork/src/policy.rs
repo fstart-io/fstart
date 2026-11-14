@@ -142,7 +142,8 @@ use fstart_driver_amd::{
 /// Zork's non-EM100 SPI defaults. A validated runtime EFS may
 /// override fast speed/read mode via SpiConfig::with_fast_override().
 pub const SPI: fstart_driver_amd::fch::sandstone::preinit::SpiConfig = {
-    use fstart_driver_amd::fch::sandstone::preinit::{ReadMode, Speed, SpiConfig};
+    use fstart_driver_amd::fch::sandstone::preinit::SpiConfig;
+    use fstart_driver_amd::fch::spi::{ReadMode, Speed};
     SpiConfig {
         mode: ReadMode::Dual122,
         normal: Speed::Mhz33,

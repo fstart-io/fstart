@@ -1,58 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso LPC/SPI/SMBus pre-console mechanisms.
 //! This is not a flash transaction driver or a complete FCH boot flow.
+use crate::fch::{
+    FchHw,
+    early::lpc_present,
+    lpc::{self, RomDmaEcHostControl, SpiBase},
+    spi::{self, ReadMode, Speed},
+};
 pub use crate::fch::{
     SPI_BASE,
     early::{Error, initialize_smbus, prepare_lpc},
 };
-use crate::fch::{
-    early::lpc_present,
-    hw::FchHw,
-    lpc::{self, RomDmaEcHostControl, SpiBase},
-    spi,
-};
 use crate::window::Window;
 use tock_registers::interfaces::{Readable, Writeable};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Speed {
-    Mhz66 = 0,
-    Mhz33 = 1,
-    Mhz22 = 2,
-    Mhz16 = 3,
-    Mhz100 = 4,
-    Khz800 = 5,
-}
-impl Speed {
-    const fn rank(self) -> u8 {
-        match self {
-            Self::Khz800 => 0,
-            Self::Mhz16 => 1,
-            Self::Mhz22 => 2,
-            Self::Mhz33 => 3,
-            Self::Mhz66 => 4,
-            Self::Mhz100 => 5,
-        }
-    }
-    pub const fn slower(self, other: Self) -> Self {
-        if self.rank() <= other.rank() {
-            self
-        } else {
-            other
-        }
-    }
-}
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum ReadMode {
-    Normal33 = 0,
-    Dual112 = 2,
-    Quad114 = 3,
-    Dual122 = 4,
-    Quad144 = 5,
-    Normal66 = 6,
-    Fast = 7,
-}
 #[derive(Debug, Clone, Copy)]
 pub struct SpiConfig {
     pub mode: ReadMode,

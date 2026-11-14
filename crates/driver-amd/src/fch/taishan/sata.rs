@@ -4,8 +4,9 @@
 //! it through its SMN aperture at 0x03100000, with the AHCI registers at
 //! 0x03101000 (sp4r2 report FCH_TAISHAN, tasks af47, af57 and af77, with the
 //! vendor policy defaults).
-use super::{NbifStrap, irq};
-use crate::fch::iomux;
+use super::NbifStrap;
+use crate::fch::acpimmio::iomux;
+use crate::fch::irq;
 use crate::smn::{Smn, SmnReg};
 use crate::window::Window;
 use embedded_hal::delay::DelayNs;
@@ -198,8 +199,12 @@ pub fn init(
     smn.reg(NBIF_SSID).set(subsystem_id);
 
     if die == 0 {
-        let misc = irq::read(io, irq::MISC, irq::Mode::Pic);
-        irq::write(io, irq::MISC, irq::Mode::Pic, (misc & 0xf) | 0xf0);
+        let misc = irq::read(io, irq::index(irq::MISC, irq::Mode::Pic));
+        irq::write(
+            io,
+            irq::index(irq::MISC, irq::Mode::Pic),
+            (misc & 0xf) | 0xf0,
+        );
     }
 
     misc.modify(Misc::UNLOCK::CLEAR);

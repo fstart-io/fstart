@@ -12,7 +12,8 @@ use super::{
     usb::{self, ResetControl},
 };
 use crate::cpu::Package;
-use crate::fch::{ACPI_MMIO, PM_INDEX, alink, hw::FchHw, indexed_io, iomux, misc};
+use crate::fch::acpimmio::{self, PM_AB_REG_BAR, PmIo, iomux, misc};
+use crate::fch::{ACPI_MMIO, FchHw, alink};
 use crate::window::{Offset, Window};
 use crate::{
     df::Die,
@@ -46,30 +47,13 @@ pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> u32 {
     }
 }
 
-register_bitfields![u8,
-    /// PMxD5: decode the ACPI MMIO base in PMxD6.
-    AcpimmioSelect [SELECT OFFSET(0) NUMBITS(2) [Base = 1]]
-];
-/// Through the PM index/data pair: PMxD5, PMxD6..D7 (base >> 16) and the
-/// A-Link I/O base PMxE0..E1.
-const PM_ACPIMMIO_SELECT: u8 = 0xd5;
-const PM_ACPIMMIO_BASE: u8 = 0xd6;
-const PM_AB_REG_BAR: u8 = 0xe0;
-
 /// Vendor ffdcb7de, run while die 0's DF sends I/O 0-0xfff to the die: move
 /// the die's ACPI MMIO block, then IOMUX, A-Link, clock generator and legacy
 /// SD through it. Nothing may print here; the console is on die 0's LPC bus.
 /// `acpi` is the die's ACPI MMIO at `base`, `io` the ports routed to it.
 fn secondary_legacy(acpi: &impl Window, base: u32, io: &impl Window, package: Package) {
-    let pm = |register| indexed_io::<_, ()>(io, PM_INDEX, register);
-    let pm_word = |register, value: u16| {
-        let [low, high] = value.to_le_bytes();
-        pm(register).set(low);
-        pm(register + 1).set(high);
-    };
-    pm_word(PM_ACPIMMIO_BASE, (base >> 16) as u16);
-    indexed_io::<_, AcpimmioSelect::Register>(io, PM_INDEX, PM_ACPIMMIO_SELECT)
-        .modify(AcpimmioSelect::SELECT::Base);
+    let pm = PmIo(io);
+    acpimmio::relocate(&pm, base);
 
     // SP4: IOMUX pin 2 function 1
     if package == Package::Sp4 {
@@ -77,12 +61,12 @@ fn secondary_legacy(acpi: &impl Window, base: u32, io: &impl Window, package: Pa
     }
 
     // A-Link index at 0xcd8 just for this write (low PMxE0 word only).
-    pm_word(PM_AB_REG_BAR, alink::INDEX);
+    pm.write16(PM_AB_REG_BAR.offset, alink::INDEX);
     alink::apply(io, &[table::rmw(0x10050, 1 << 2, 0)]);
-    pm_word(PM_AB_REG_BAR, 0);
+    pm.write16(PM_AB_REG_BAR.offset, 0);
 
     // Clock generator; these differ from die 0's values.
-    crate::fch::apply::<u32>(
+    acpimmio::apply::<u32>(
         acpi,
         [
             table::rmw(misc::at(0x10), 0x3, 0x1),
@@ -99,7 +83,7 @@ fn secondary_legacy(acpi: &impl Window, base: u32, io: &impl Window, package: Pa
         ],
     );
 
-    crate::fch::legacy_sd_off(acpi);
+    crate::fch::acpimmio::legacy_sd_off(acpi);
 }
 
 /// FchMultiFchPei: the legacy part through I/O routed to each other die,

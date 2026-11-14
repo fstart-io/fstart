@@ -87,8 +87,8 @@ pub(crate) fn env<H: FchHw>(hw: &H) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::fch;
     use super::*;
+    use crate::fch::model::fch;
     use fstart_core::services::Timer;
 
     #[test]
