@@ -75,7 +75,7 @@ impl<'a> From<&'a BoardManifest> for Board<'a> {
                 .as_ref()
                 .map_or("", |profile| &profile.dependency),
             builds: std::iter::once(board.board.as_str())
-                .chain(board.variants.iter().map(|(id, ..)| id.as_str()))
+                .chain(board.variants.iter().map(|(id, _)| id.as_str()))
                 .collect(),
         }
     }

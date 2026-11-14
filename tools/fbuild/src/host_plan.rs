@@ -102,8 +102,7 @@ pub(crate) fn load(
         .map(|module| format!("{module}::"))
         .unwrap_or_default();
     let main = format!(
-        "fn main() {{ use fstart_image_build::plan::HostPlan as _; platform::{module}Plan::<board::{}>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n",
-        board.board_type
+        "fn main() {{ use fstart_image_build::plan::HostPlan as _; platform::{module}Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n"
     );
     for (path, contents) in [
         (runner.join("Cargo.toml"), manifest.as_str()),

@@ -258,7 +258,7 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
     let boards = board_manifest::discover(&root)?;
     for board in &boards {
         fbuild::board_tool::test_library(board)?;
-        for (variant, ..) in &board.variants {
+        for (variant, _) in &board.variants {
             fbuild::board_tool::test_library(&board_manifest::find_in(&boards, variant)?)?;
         }
     }
@@ -288,7 +288,7 @@ fn boards(json: bool) -> Result<(), String> {
                 dir: board.rel_dir.display().to_string(),
                 arch: board.arch.as_deref(),
                 build_profile: board.build_profile.as_ref(),
-                variants: board.variants.iter().map(|(id, ..)| id.as_str()).collect(),
+                variants: board.variants.iter().map(|(id, _)| id.as_str()).collect(),
             })
             .collect();
         println!(
