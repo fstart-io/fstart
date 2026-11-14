@@ -9,13 +9,21 @@ pub enum AspeedSoc {
     Ast2500,
 }
 
+/// A QEMU machine that runs the board's image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AspeedEmulator {
+    /// `ast2500-evb`, executing the composite SPI image in place from
+    /// FMC CE0.
+    Ast2500Evb,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BoardFacts {
     pub soc: AspeedSoc,
     /// Size of the SPI flash on FMC CE0; the composite image is padded to it.
     pub flash_size: u64,
-    /// The board runs on QEMU's `ast2500-evb` machine.
-    pub qemu_evb: bool,
+    /// The QEMU machine the board runs on, if any.
+    pub emulator: Option<AspeedEmulator>,
 }
 
 pub trait AspeedBoardFacts {

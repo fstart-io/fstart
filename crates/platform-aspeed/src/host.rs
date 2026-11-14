@@ -7,7 +7,7 @@
 //! address mode reaches; the composite image is padded to the whole flash
 //! part.
 extern crate std;
-use crate::facts::{AspeedBoardFacts, AspeedSoc, BoardFacts};
+use crate::facts::{AspeedBoardFacts, AspeedEmulator, AspeedSoc, BoardFacts};
 use crate::layout::*;
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
@@ -200,31 +200,10 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         stages: vec!["bootblock".into(), "main".into()],
         platform: assembly.platform,
         images: vec![assembly.into()],
-        // The EVB machine executes the composite SPI image in place
-        // with the board's CE0 flash part as its FMC model.
-        run: match (facts.qemu_evb, facts.flash_size) {
-            (true, size) if size == 64 * 1024 * 1024 => Some(RunRecipe {
-                qemu: "qemu-system-arm".into(),
-                machine: "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab".into(),
-                cpu: None,
-                accel_kvm: false,
-                memory: None,
-                smp: None,
-                nographic: true,
-                media: vec![RunMedia::Mtd {
-                    artifact: RunArtifact::Ffs,
-                }],
-                devices: vec![],
-                args: vec!["-no-reboot".into()],
-                disk: None,
-            }),
-            (true, size) => {
-                return Err(format!(
-                    "no QEMU ast2500-evb flash model for a {size:#x}-byte CE0 flash"
-                ));
-            }
-            (false, _) => None,
-        },
+        run: facts
+            .emulator
+            .map(|emulator| run(emulator, &facts))
+            .transpose()?,
         inputs,
     };
     plan.order()?;
@@ -288,6 +267,39 @@ fn main_stage(
     resolved_ram_stage(&config, "main", &descriptor, BootImageFormat::AspeedSpi)
 }
 
+/// How `emulator` runs the image.
+fn run(emulator: AspeedEmulator, facts: &BoardFacts) -> Result<RunRecipe, String> {
+    match emulator {
+        // The EVB machine executes the composite SPI image in place with
+        // the board's CE0 flash part as its FMC model.
+        AspeedEmulator::Ast2500Evb => {
+            let model = match facts.flash_size {
+                0x400_0000 => "mt25ql512ab",
+                size => {
+                    return Err(format!(
+                        "no QEMU ast2500-evb flash model for a {size:#x}-byte CE0 flash"
+                    ));
+                }
+            };
+            Ok(RunRecipe {
+                qemu: "qemu-system-arm".into(),
+                machine: format!("ast2500-evb,execute-in-place=on,fmc-model={model}"),
+                cpu: None,
+                accel_kvm: false,
+                memory: None,
+                smp: None,
+                nographic: true,
+                media: vec![RunMedia::Mtd {
+                    artifact: RunArtifact::Ffs,
+                }],
+                devices: vec![],
+                args: vec!["-no-reboot".into()],
+                disk: None,
+            })
+        }
+    }
+}
+
 fn unit(
     name: &str,
     features: &[&str],
@@ -321,7 +333,7 @@ mod tests {
     const MJ11: BoardFacts = BoardFacts {
         soc: AspeedSoc::Ast2500,
         flash_size: 64 * 1024 * 1024,
-        qemu_evb: true,
+        emulator: Some(AspeedEmulator::Ast2500Evb),
     };
 
     #[test]

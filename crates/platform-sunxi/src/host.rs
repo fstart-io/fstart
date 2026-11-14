@@ -4,7 +4,7 @@
 //! builders; only the build-policy boundary moved into shared platform code.
 //! Hardware flows and the eGON finalizer contract are unchanged.
 extern crate std;
-use crate::facts::{BoardFacts, SunxiBoardFacts, SunxiSoc};
+use crate::facts::{BoardFacts, SunxiBoardFacts, SunxiEmulator, SunxiSoc};
 use fstart_core::layout::RegionKind as LayoutKind;
 use fstart_core::{
     BoardBuildPolicy, BoardConfig, Compression, FdtSource, FirmwareConfig, MemoryMap, MemoryRegion,
@@ -209,11 +209,35 @@ fn unit(
     }
 }
 
+/// How `emulator` runs the image.
+fn run(emulator: SunxiEmulator, facts: &BoardFacts) -> Result<RunRecipe, String> {
+    match emulator {
+        SunxiEmulator::OrangePiPc if facts.soc != SunxiSoc::H3 => {
+            Err("QEMU's orangepi-pc machine is an H3 board".into())
+        }
+        // The H3 BROM reads the eGON image from SD byte 0x2000.
+        SunxiEmulator::OrangePiPc => Ok(RunRecipe {
+            qemu: "qemu-system-arm".into(),
+            machine: "orangepi-pc".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::SdCard {
+                artifact: RunArtifact::Ffs,
+                offset: 8 * 1024,
+                size: 32 * 1024 * 1024,
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: None,
+        }),
+    }
+}
+
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
     selection.reject_debug()?;
-    if facts.qemu_orangepi_pc && facts.soc != crate::facts::SunxiSoc::H3 {
-        return Err("QEMU's orangepi-pc machine is an H3 board".into());
-    }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     // The D1 mainstage is halt-only: no D1 Linux launcher exists. Sunxi has
     // no UEFI/FIT/Shell/ELF flow either.
@@ -369,24 +393,10 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         stages: vec!["bootblock".into(), "main".into()],
         platform: assembly.platform,
         images: vec![assembly.into()],
-        // QEMU's H3 BROM reads the eGON image from SD byte 0x2000.
-        run: facts.qemu_orangepi_pc.then(|| RunRecipe {
-            qemu: "qemu-system-arm".into(),
-            machine: "orangepi-pc".into(),
-            cpu: None,
-            accel_kvm: false,
-            memory: None,
-            smp: None,
-            nographic: true,
-            media: vec![RunMedia::SdCard {
-                artifact: RunArtifact::Ffs,
-                offset: 8 * 1024,
-                size: 32 * 1024 * 1024,
-            }],
-            devices: vec![],
-            args: vec![],
-            disk: None,
-        }),
+        run: facts
+            .emulator
+            .map(|emulator| run(emulator, &facts))
+            .transpose()?,
         inputs,
     };
     plan.order()?;
@@ -409,7 +419,7 @@ mod tests {
         dtb_addr: 0x4300_0000,
         bootargs: "earlycon console=ttyS0,115200",
         firmware: None,
-        qemu_orangepi_pc: false,
+        emulator: None,
     };
     const ORANGEPI_PC2: BoardFacts = BoardFacts {
         soc: SunxiSoc::H5,
@@ -425,7 +435,7 @@ mod tests {
             file: "bl31-sun50i-a64.bin",
             load_addr: 0x0004_4000,
         }),
-        qemu_orangepi_pc: false,
+        emulator: None,
     };
 
     fn select(payload: &str) -> BuildSelection {
@@ -540,7 +550,7 @@ mod tests {
         let r1 = BoardFacts {
             soc: SunxiSoc::H3,
             dram_size: 0x1000_0000,
-            qemu_orangepi_pc: true,
+            emulator: Some(SunxiEmulator::OrangePiPc),
             ..BANANAPI
         };
         let plan = resolve(r1, select("halt")).unwrap();

@@ -41,6 +41,6 @@ impl SunxiBoardFacts for crate::Board {
         dtb_addr: 0x47f0_0000,
         bootargs: "console=ttyS0,115200 earlycon=sbi loglevel=8 rootwait",
         firmware: None,
-        qemu_orangepi_pc: false,
+        emulator: None,
     };
 }
