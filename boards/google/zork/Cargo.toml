@@ -7,7 +7,6 @@ publish = false
 
 # Build/check/editor support only: the native boot/image contract is incomplete.
 [package.metadata.fstart]
-schema = 1
 board = "google-vilboz"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-amd" }

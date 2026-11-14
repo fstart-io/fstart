@@ -7,7 +7,6 @@ publish = false
 
 # The AST2500 BMC of the MJ11-EC1; the EPYC host is gigabyte-mj11-ec1.
 [package.metadata.fstart]
-schema = 1
 board = "gigabyte-mj11-ec1-bmc"
 arch = "armv5te"
 build-profile = { dependency = "fstart-platform-aspeed" }

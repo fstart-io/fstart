@@ -6,7 +6,6 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [package.metadata.fstart]
-schema = 1
 board = "sifive-unmatched"
 arch = "riscv64"
 build-profile = { dependency = "fstart-platform-sifive" }

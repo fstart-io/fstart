@@ -59,7 +59,6 @@ struct PackageMetadata {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct BoardMetadata {
-    schema: u32,
     board: String,
     arch: Option<String>,
     #[serde(default)]
@@ -179,13 +178,6 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
     let parsed: CargoManifest = toml::from_str(text)
         .map_err(|e| format!("invalid board manifest {}: {e}", manifest.display()))?;
     let metadata = parsed.package.metadata.fstart;
-    if metadata.schema != 1 {
-        return Err(format!(
-            "unsupported fstart schema {} in {} (expected 1)",
-            metadata.schema,
-            manifest.display(),
-        ));
-    }
     if let Some(module) = metadata
         .build_profile
         .as_ref()
@@ -289,7 +281,6 @@ mod tests {
         [package.metadata.other-tool]
         anything = true
         [package.metadata.fstart] # inline comments are ordinary TOML
-        schema = 1
         board = 'test-board'
         arch = 'riscv64'
         [package.metadata.fstart.variants."test-variant"]
@@ -339,25 +330,21 @@ mod tests {
     #[test]
     fn rejects_invalid_metadata_with_manifest_context() {
         for (text, diagnostic) in [
+            // A key the manifest format no longer has is rejected, not ignored.
             (
-                MANIFEST.replace("schema = 1", "schema = 2"),
-                "unsupported fstart schema 2",
+                MANIFEST.replace("arch = 'riscv64'", "arch = 'riscv64'\nschema = 1"),
+                "unknown field `schema`",
             ),
-            (MANIFEST.replace("schema = 1", ""), "missing field `schema`"),
             (
                 MANIFEST.replace(
-                    "schema = 1",
-                    "schema = 1\nbuild-profile = { dependency = 'platform', name = 'rust' }",
+                    "arch = 'riscv64'",
+                    "arch = 'riscv64'\nbuild-profile = { dependency = 'platform', name = 'rust' }",
                 ),
                 "unknown field `name`",
             ),
             (
                 MANIFEST.replace("board = 'test-board'", ""),
                 "missing field `board`",
-            ),
-            (
-                MANIFEST.replace("schema = 1", "schema = 'one'"),
-                "invalid type",
             ),
             (
                 MANIFEST.replace("board = 'test-board'", "baord = 'test-board'"),
