@@ -279,13 +279,13 @@ mod handler {
         fn power_button(&self) {
             let fch = &self.config.fch;
             if !sx::sci_enabled(self.fch.io(), &fch.ports) {
-                let _ = sx::power_button(self.fch, &fch.ports, fch.version, self.smu);
+                sx::power_button(self.fch, &fch.ports, fch.version, self.smu);
             }
         }
 
         fn sleep(&self, slp_typ: u8) {
             let (fch, soc) = (&self.config.fch, &self.config.soc);
-            let _ = sx::enter(
+            sx::enter(
                 self.fch,
                 &fch.ports,
                 fch.version,

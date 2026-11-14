@@ -7,6 +7,13 @@
 //! (FCH_SP3 §5, sp4r2 FCH_TAISHAN): the Sx callbacks, the USB entry, the
 //! FCH armed for the OS's SLP_TYP, the SMU's SleepEntry, then SLP_EN.
 //! Sandstone (Picasso) has no Sx callbacks and no SMU message.
+//!
+//! A sleep request is committed once the handler takes it: the OS has put
+//! its devices to sleep and the callbacks mask its interrupts, so the
+//! handler never returns to it. A USB or SMU step that fails is recorded
+//! ([`Armed::preparation`]) and the entry goes on; a transition the FCH
+//! does not take within a second of SLP_EN ends in a full reset
+//! (`fstart_arch::x86::boot::full_reset`).
 
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -147,18 +154,21 @@ fn mask_ioapic<H: FchHw>(hw: &H) {
 }
 
 /// A sleep state the FCH is armed for ([`arm`]).
-pub struct Armed<'a, I> {
-    control: Reg<&'a I, u16, Pm1Control::Register>,
+pub struct Armed<'a, H: FchHw> {
+    hw: &'a H,
+    ports: AcpiPorts,
+    /// How the USB and SMU steps went; the entry goes on either way.
+    pub preparation: Result<(), SxError>,
 }
 
-impl<I: Window> Armed<'_, I> {
-    /// Set SLP_EN: the FCH enters the armed state.
+impl<H: FchHw> Armed<'_, H> {
+    /// Set SLP_EN: the FCH enters the armed state. If it is still running a
+    /// second later, a full reset, whose power cycle also clears the
+    /// half-entered sleep state.
     pub fn enter(self) -> ! {
-        self.control.modify(Pm1Control::SLP_EN::SET);
-        loop {
-            // SAFETY: halting is all that is left before the sleep.
-            unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
-        }
+        pm1_control(self.hw.io(), &self.ports).modify(Pm1Control::SLP_EN::SET);
+        fstart_core::services::Timer::delay_us(self.hw.timer(), 1_000_000);
+        fstart_arch::x86::boot::full_reset()
     }
 }
 
@@ -177,10 +187,21 @@ pub fn arm<'a, H: FchHw, S: SmuMessages + ?Sized>(
     slp_typ: u8,
     smu: Option<&S>,
     usb_dies: &[u8],
-) -> Result<Option<Armed<'a, H::Io>>, SxError> {
-    if !(3..=5).contains(&slp_typ) {
-        return Ok(None);
-    }
+) -> Option<Armed<'a, H>> {
+    (3..=5)
+        .contains(&slp_typ)
+        .then(|| arm_state(hw, ports, version, slp_typ, smu, usb_dies))
+}
+
+/// [`arm`] for a state that needs SMM.
+fn arm_state<'a, H: FchHw, S: SmuMessages + ?Sized>(
+    hw: &'a H,
+    ports: &AcpiPorts,
+    version: Version,
+    slp_typ: u8,
+    smu: Option<&S>,
+    usb_dies: &[u8],
+) -> Armed<'a, H> {
     let (acpi, io) = (hw.acpi(), hw.io());
     // SAFETY: SMM owns the CPU; nothing else runs. (Host models have no
     // caches to write back.)
@@ -196,7 +217,7 @@ pub fn arm<'a, H: FchHw, S: SmuMessages + ?Sized>(
         acpi.at(AOAC_94).modify(Aoac94::SX.val(3));
         mask_ioapic(hw);
     }
-    match (version, smu) {
+    let mut preparation = match (version, smu) {
         (Version::Taishan, _) if slp_typ == 3 => usb_dies.iter().try_for_each(|&bus| {
             // SAFETY: SMM owns the SMN pair while it runs.
             let smn = unsafe { crate::smn::Smn::on_bus(hw.pci().clone(), bus) };
@@ -204,17 +225,18 @@ pub fn arm<'a, H: FchHw, S: SmuMessages + ?Sized>(
             crate::fch::taishan::usb::sx_handshake(&smn, delay)
                 .then_some(())
                 .ok_or(SxError::UsbHandshake)
-        })?,
+        }),
         (Version::Huashan | Version::Milan, Some(smu)) => {
-            smu.send(v11::msg::USB_SX_ENTRY, &mut [0; 6])?;
+            let usb = smu.send(v11::msg::USB_SX_ENTRY, &mut [0; 6]);
             if slp_typ != 5 {
                 let smn = hw.smn_window();
                 smn.write32(0x13D0_004C, 0);
                 smn.write32(0x13E0_004C, 0);
             }
+            usb.map_err(SxError::from)
         }
-        _ => {}
-    }
+        _ => Ok(()),
+    };
     smi::clear_all(acpi);
     // The FCH sleeps on the OS's SLP_TYP once SlpTypeEn is set and the
     // SLP_TYP SMI is off.
@@ -226,8 +248,8 @@ pub fn arm<'a, H: FchHw, S: SmuMessages + ?Sized>(
     if version != Version::Sandstone {
         update::<u8, _>(acpi, PM_0B.offset, 0x03, 0x01);
     }
-    let control = pm1_control(io, ports);
-    control.modify(Pm1Control::SLP_TYP.val(slp_typ.into()) + Pm1Control::SLP_EN::CLEAR);
+    pm1_control(io, ports)
+        .modify(Pm1Control::SLP_TYP.val(slp_typ.into()) + Pm1Control::SLP_EN::CLEAR);
     // The SoC's last word to its SMU, which completes the transition; the
     // vendor code halts there. This waits 100 ms for it.
     let sleep_entry = match version {
@@ -237,16 +259,22 @@ pub fn arm<'a, H: FchHw, S: SmuMessages + ?Sized>(
     };
     if let (Some(smu), Some(message)) = (smu, sleep_entry) {
         if version == Version::Milan {
-            let _ = smu.send(v11::msg::DXIO, &mut MILAN_DXIO_SX_ARGS.clone());
+            let dxio = smu.send(v11::msg::DXIO, &mut MILAN_DXIO_SX_ARGS.clone());
+            preparation = preparation.and(dxio.map_err(SxError::from));
         }
-        let _ = smu.send(message, &mut [0; 6]);
+        let sleep = smu.send(message, &mut [0; 6]);
+        preparation = preparation.and(sleep.map_err(SxError::from));
         fstart_core::services::Timer::delay_us(hw.timer(), 100_000);
     }
-    Ok(Some(Armed { control }))
+    Armed {
+        hw,
+        ports: *ports,
+        preparation,
+    }
 }
 
-/// Enter sleep state `slp_typ` ([`arm`], then SLP_EN). Returns only for
-/// S1/S2 or when the USB entry failed.
+/// Enter sleep state `slp_typ` ([`arm`], then [`Armed::enter`]). Returns
+/// only for the types the OS enters without SMM (S1, S2).
 pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
     hw: &H,
     ports: &AcpiPorts,
@@ -254,11 +282,10 @@ pub fn enter<H: FchHw, S: SmuMessages + ?Sized>(
     slp_typ: u8,
     smu: Option<&S>,
     usb_dies: &[u8],
-) -> Result<(), SxError> {
-    if let Some(armed) = arm(hw, ports, version, slp_typ, smu, usb_dies)? {
+) {
+    if let Some(armed) = arm(hw, ports, version, slp_typ, smu, usb_dies) {
         armed.enter();
     }
-    Ok(())
 }
 
 /// Power button SMI (SmiStat1\[19\]) while the OS does not own ACPI: S5
@@ -268,14 +295,14 @@ pub fn power_button<H: FchHw, S: SmuMessages + ?Sized>(
     ports: &AcpiPorts,
     version: Version,
     smu: Option<&S>,
-) -> Result<(), SxError> {
+) -> ! {
     let (acpi, io) = (hw.acpi(), hw.io());
     smi::clear(acpi, source::PWR_BTN);
     if version != Version::Sandstone {
         acpi.write32(MISC + 0x50, 0);
     }
     clear_pm_gpe_status(io, ports);
-    enter(hw, ports, version, 5, smu, &[])
+    arm_state(hw, ports, version, 5, smu, &[]).enter()
 }
 
 #[cfg(test)]
@@ -305,11 +332,8 @@ mod tests {
     fn milan_s3_entry() {
         let hw = fch();
         let smu = Smu::default();
-        assert!(
-            arm(&hw, &PORTS, Version::Milan, 3, Some(&smu), &[])
-                .unwrap()
-                .is_some()
-        );
+        let armed = arm(&hw, &PORTS, Version::Milan, 3, Some(&smu), &[]).unwrap();
+        assert_eq!(armed.preparation, Ok(()));
         assert_eq!(smu.ids(), vec![0x14, 0x08, 0x0b]);
         assert_eq!(smu.0.borrow()[1].1[..3], [0x3a, 1, 5]);
         assert_eq!(hw.acpi.get(PM + 0xee, 1), 3);
@@ -325,32 +349,53 @@ mod tests {
     fn rome_s5_skips_ee_and_usb_lock() {
         let hw = fch();
         let smu = Smu::default();
-        assert!(
-            arm(&hw, &PORTS, Version::Huashan, 5, Some(&smu), &[])
-                .unwrap()
-                .is_some()
-        );
+        assert!(arm(&hw, &PORTS, Version::Huashan, 5, Some(&smu), &[]).is_some());
         assert_eq!(smu.ids(), vec![0x14, 0x0b]);
         assert!(hw.acpi.writes_to(PM + 0xee).is_empty());
         assert!(crate::fch::model::smn_writes(&hw.pci, 0).is_empty());
-        assert!(
-            arm(&hw, &PORTS, Version::Huashan, 1, Some(&smu), &[])
-                .unwrap()
-                .is_none()
-        );
+        assert!(arm(&hw, &PORTS, Version::Huashan, 1, Some(&smu), &[]).is_none());
         assert_eq!(smu.ids().len(), 2, "S1 does nothing");
     }
 
     #[test]
     fn sandstone_sleeps_without_callbacks_or_smu() {
         let hw = fch();
-        assert!(
-            arm::<_, Smu>(&hw, &PORTS, Version::Sandstone, 5, None, &[])
-                .unwrap()
-                .is_some()
-        );
+        assert!(arm::<_, Smu>(&hw, &PORTS, Version::Sandstone, 5, None, &[]).is_some());
         assert!(hw.acpi.writes_to(PM + 0xee).is_empty());
         assert!(hw.mmio.writes().is_empty());
         assert_eq!(hw.io.writes_to(0x804), vec![0x1400]);
+    }
+
+    /// An SMU that rejects every message.
+    struct Failing;
+    impl SmuMessages for Failing {
+        fn send(&self, _: u32, _: &mut [u32; 6]) -> Result<(), SmuError> {
+            Err(SmuError::Unavailable)
+        }
+    }
+
+    /// A failed USB or SMU step does not leave the OS running with its
+    /// interrupts masked: the entry goes on, the failure recorded.
+    #[test]
+    fn a_failed_smu_still_arms_the_sleep_state() {
+        let hw = fch();
+        let armed = arm(&hw, &PORTS, Version::Milan, 5, Some(&Failing), &[]).unwrap();
+        assert_eq!(armed.preparation, Err(SxError::Smu(SmuError::Unavailable)));
+        // IOAPIC masked, SLP_TYP armed and its SMI off, SlpTypeEn set.
+        assert_eq!(hw.mmio.writes_to(IOAPIC + 0x10).len(), 25);
+        assert_eq!(hw.io.writes_to(0x804), vec![0x1400]);
+        assert_eq!(hw.acpi.get(PM + 0xbe, 1) & 0x20, 0x20);
+        assert_eq!(hw.acpi.get(0x2b0, 4) & 0xc, 0);
+    }
+
+    /// The Naples S3 USB handshake that times out is recorded the same way.
+    #[test]
+    fn a_failed_usb_handshake_still_arms_the_sleep_state() {
+        let hw = fch();
+        let smu = Smu::default();
+        let armed = arm(&hw, &PORTS, Version::Taishan, 3, Some(&smu), &[0]).unwrap();
+        assert_eq!(armed.preparation, Err(SxError::UsbHandshake));
+        assert_eq!(smu.ids(), vec![v9::msg::SLEEP_ENTRY]);
+        assert_eq!(hw.io.writes_to(0x804), vec![0xc00]);
     }
 }
