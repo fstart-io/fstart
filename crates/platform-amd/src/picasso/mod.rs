@@ -51,20 +51,15 @@ pub const LAYOUT: Layout = Layout {
 
 #[cfg(feature = "host")]
 impl noncar::host::HostSoc for Picasso {
-    const POLICY: noncar::host::Policy = noncar::host::Policy {
-        feature: "bundle",
-        payloads: true,
-        smm: true,
-        release_only: true,
-        image_config: noncar::host::ImageConfig::Packed {
-            // Reserve the full uncompressed size before the fixed FFS window.
-            reset_offset: Some(
-                (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
-            ),
-            psp: fstart_image_build::amd::assembly::PspOptions {
-                compress_reset: true,
-                spi: None,
-            },
+    const RELEASE_ONLY: bool = true;
+    const SOURCE: crate::host::single::Source = crate::host::single::Source::Packed {
+        // Reserve the full uncompressed size before the fixed FFS window.
+        reset_offset: Some(
+            (LAYOUT.ffs.unwrap().base - LAYOUT.flash.base - LAYOUT.image.size) as u32,
+        ),
+        psp: fstart_image_build::amd::assembly::PspOptions {
+            compress_reset: true,
+            spi: None,
         },
     };
     fn check(config: &Config) -> Result<(), &'static str> {
