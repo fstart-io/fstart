@@ -9,12 +9,11 @@
 //! 2. DXE env: [`env::hw_acpi_pre`], [`env::hw_acpi`], [`crate::fch::lpc::env`],
 //!    [`env::sd`], SATA env, (ZP) xGbE, [`crate::fch::alink::clock_gating`];
 //! 3. late (ReadyToBoot): SATA late, [`late::hw_acpi`], (Milan) the D2 SW SMI;
-//! 4. SMM: [`sx`].
+//! 4. SMM: [`crate::fch::sx`].
 
 pub mod env;
 pub mod late;
 pub mod reset;
-pub mod sx;
 
 use crate::cpu::Silicon;
 use crate::window::Op;

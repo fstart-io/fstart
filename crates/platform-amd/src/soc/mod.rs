@@ -202,11 +202,11 @@ pub trait Init: Sized + 'static {
 }
 
 /// What the SMM installation of a SoC made of dies ([`Hw`]) needs: the
-/// FCH as the owner of the SMI sources, and the PSP's SMM info through
-/// die 0's mailbox afterwards.
+/// FCH's SMI setup, and the PSP's SMM info through die 0's mailbox
+/// afterwards.
 pub trait DieInit: Init<Hw = Hw<Self>> + Soc {
-    /// The owner of the SMI sources.
-    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> fstart_driver_amd::fch::smi::FchSmi;
+    /// The FCH's SMI setup.
+    fn smi(ctx: &Ctx<'_, Self>, state: &Self::State) -> fstart_driver_amd::fch::smi::Config;
     /// SMM is installed and locked in `tseg`: the PSP gets its SMM info.
     fn smm_installed(
         ctx: &Ctx<'_, Self>,

@@ -156,6 +156,7 @@ impl fstart_platform_amd::board::Board for Board {
         &[fstart_platform_amd::board::SocId::Zeppelin];
     /// The package's ceiling: two dies of eight SMT cores.
     const MAX_CPUS: u16 = 32;
+    const BMC_SX_NOTIFY: Option<fstart_driver_ipmi::SleepNotify> = Some(BMC_SLEEP_NOTIFY);
 }
 
 /// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.

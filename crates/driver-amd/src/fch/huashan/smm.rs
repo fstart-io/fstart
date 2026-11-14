@@ -2,7 +2,7 @@
 //! the PSP (SW SMI D2) and Rome's CF9 I/O trap.
 //!
 //! The Sx entry with the V11 USB/sleep messages is in
-//! [`crate::fch::tasks::sx`].
+//! [`crate::fch::sx`].
 
 use fstart_core::services::Timer;
 

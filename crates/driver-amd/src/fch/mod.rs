@@ -69,6 +69,7 @@ pub mod sandstone;
 pub mod smbus;
 pub mod smi;
 pub mod spi;
+pub mod sx;
 pub(crate) mod tables;
 pub mod taishan;
 pub mod tasks;

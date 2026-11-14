@@ -512,7 +512,7 @@ pub fn acpi_decode(acpi: &impl Window, ports: AcpiPorts) {
     acpi.at(PM_ACPI_CONFIG).modify(AcpiConfig::DECODE_STD::SET);
 }
 /// fch_init_acpi_ports: the ACPI blocks and the standard features. The SMI
-/// command port belongs to [`super::smi::FchSmi`].
+/// command port belongs to [`super::smi::enable`].
 pub fn acpi_ports(acpi: &impl Window, ports: AcpiPorts) {
     acpi_decode(acpi, ports);
     acpi.at(PM_ACPI_CONFIG).write(

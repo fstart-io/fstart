@@ -65,7 +65,7 @@ pub(crate) struct Ctx<'a> {
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
     pub ffs_offset: u32,
-    pub smm: Option<crate::sp3::smm::SmmConfig>,
+    pub smm: Option<crate::smm::SmmConfig<crate::sp3::smm::Sp3>>,
 }
 
 /// The SP3 flash anchor patch site: FFS flash offset and size and the

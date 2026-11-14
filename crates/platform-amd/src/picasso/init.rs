@@ -27,7 +27,7 @@ use fstart_driver_amd::{
         FchHw, Native, early, emmc, espi,
         gpio::{Gpio, Pad, Pull},
         sandstone::{self, legacy, preinit, usb},
-        smi::FchSmi,
+        smi, sx,
     },
     nbio::rv as nbio,
     psp::{self, boot::Psp},
@@ -439,9 +439,14 @@ fn fch_init(
 }
 
 impl DieInit for Picasso {
-    fn smi(_: &Ctx<'_, Self>, _: &State) -> FchSmi {
-        // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
-        unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) }
+    fn smi(_: &Ctx<'_, Self>, _: &State) -> smi::Config {
+        smi::Config {
+            ports: sandstone::ACPI_PORTS,
+            acpi_enable: smi::ACPI_ENABLE,
+            acpi_disable: smi::ACPI_DISABLE,
+            gevents: 0,
+            version: sx::Version::Sandstone,
+        }
     }
 
     fn smm_installed(

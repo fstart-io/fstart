@@ -16,13 +16,12 @@ pub(crate) fn acpi(
     nbios: &[fstart_driver_amd::nbio::Nbio<crate::sp3::silicon::hw::Pci>],
     pci: &fstart_pci::PciEcam,
     board: &crate::acpi::Board,
-    bmc_sx_notify: Option<crate::sp3::smm::SleepNotify>,
+    bmc_sx_notify: Option<crate::smm::SleepNotify>,
 ) -> u64 {
     use crate::acpi::{self, Cpu, Inputs, Ioapic, Iommu, Power, RootBridgeAcpi};
     use crate::sp3::acpi::{FchAcpi, einj};
     use fstart_core::acpi::AcpiSmiConfig;
     use fstart_driver_amd::ccx::pm as power;
-    use fstart_driver_amd::fch::smi;
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::nbio::ioapic::fch_ioapic_id;
 
@@ -150,10 +149,10 @@ pub(crate) fn acpi(
             threads_per_core,
             c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
         }),
-        acpi_smi: ctx.smm.map(|_| AcpiSmiConfig {
+        acpi_smi: ctx.smm.map(|smm| AcpiSmiConfig {
             smi_cmd: u32::from(fstart_driver_amd::fch::smi::APM_CNT),
-            acpi_enable: smi::sw::ACPI_ENABLE,
-            acpi_disable: smi::sw::ACPI_DISABLE,
+            acpi_enable: smm.fch.acpi_enable,
+            acpi_disable: smm.fch.acpi_disable,
         }),
         bmc_sx_notify,
         tpm: crate::tpm::acpi(),
@@ -163,7 +162,7 @@ pub(crate) fn acpi(
         board,
     };
     if einj_supported {
-        let targets = ctx.smm.map(|s| s.einj.targets).unwrap_or([0; 2]);
+        let targets = ctx.smm.map(|s| s.soc.einj.targets).unwrap_or([0; 2]);
         let first = targets
             .iter()
             .copied()
