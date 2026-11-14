@@ -20,12 +20,12 @@ use self::fields::*;
 use crate::MmioBar;
 use core::ptr;
 
+use crate::gma::types::{Cpu, PciAddress};
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
@@ -1092,7 +1092,7 @@ impl IntelGm965 {
             gtt_size: GM965_GTT_PAGE_TABLE_SIZE as u32,
             gcfgc: Some(igd.read16(hostbridge::GCFGC)),
         };
-        self.display.initialize(
+        self.display.initialize::<crate::gma::G45>(
             Cpu::Gm965,
             self.config.igd.display.as_ref(),
             &addresses,
@@ -1514,7 +1514,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             opregion,
         );
         if self.config.igd.display.is_some() {
-            self.gma_display_init(vbt.as_deref());
+            self.gma_display_init(vbt);
         }
         Ok(())
     }
@@ -1733,10 +1733,9 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
 // ACPI device implementation — GM965 host bridge / PCI0
 // ---------------------------------------------------------------------------
 
-#[cfg(all(test, feature = "acpi"))]
+#[cfg(test)]
 mod acpi_tests;
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
 

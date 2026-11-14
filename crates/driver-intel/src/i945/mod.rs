@@ -24,13 +24,13 @@ pub mod raminit;
 use self::fields::*;
 
 use crate::MmioBar;
+use crate::gma::types::{Cpu, PciAddress};
 use crate::ich7::Rcba;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
     E820Entry, E820Kind, MemoryDetector, build_pc_compatible_e820,
 };
-use fstart_intel_gma::types::{Cpu, PciAddress};
 use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use tock_registers::interfaces::{Readable, Writeable};
@@ -314,6 +314,12 @@ pub struct IntelI945Config {
     pub spd_addresses: [u8; 4],
     /// Integrated graphics configuration.
     pub igd: I945IgdConfig,
+}
+
+impl Default for IntelI945Config {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IntelI945Config {
@@ -683,7 +689,7 @@ impl IntelI945 {
             ep.read32(epbar::EPVC1RCTL) | EPVC1RCTL_REG::ARB_LOAD::SET.value,
         );
 
-        let mut timeout = 0x7fff_ffu32;
+        let mut timeout = 0x007f_ffff_u32;
         while ep.read16(epbar::EPVC1RSTS) & 1 != 0 && timeout != 0 {
             timeout -= 1;
         }
@@ -807,7 +813,7 @@ impl IntelI945 {
             }
         }
 
-        timeout = 0x7fff_ff;
+        timeout = 0x007f_ffff;
         while dmi.read8(dmibar::DMI_MISC_32) & (1 << 1) != 0 && timeout != 0 {
             timeout -= 1;
         }
@@ -897,7 +903,7 @@ impl IntelI945 {
         let width = (p2peg.read16(0xb2) >> 4) & 0x3f;
         fstart_log::info!("i945: PCIe x{} link training succeeded", width);
 
-        if peg_plugin.read32(0x08) >> 8 == 0x0300_00 {
+        if peg_plugin.read32(0x08) >> 8 == 0x03_0000 {
             fstart_log::info!("i945: PCIe device is VGA; disabling IGD");
             Self::hb().write16(hostbridge::GGC, 1 << 1);
             Self::hb().and16(
@@ -962,7 +968,7 @@ impl IntelI945 {
         p2peg.or32(0x224, 1 << 8);
         p2peg.and8_or8(0x3e, !(1 << 6), 0);
 
-        let mut timeout = 0x7fff_ffu32;
+        let mut timeout = 0x007f_ffff_u32;
         while p2peg.read32(PEGSTS) & 0x000f_0000 != 0 && timeout != 0 {
             timeout -= 1;
         }
@@ -1091,7 +1097,7 @@ impl IntelI945 {
 
     /// Core display clock in Hz, from the chipset `GCFGC` value.
     fn cdclk_hz(&self) -> u32 {
-        fstart_intel_gma::gen3_display_clock_hz(
+        crate::gma::gen3_display_clock_hz(
             self.display_cpu(),
             Some(self.igd().read16(hostbridge::IGD_GCFC)),
         )
@@ -1224,7 +1230,7 @@ impl IntelI945 {
             gtt_size: I945_GTT_SIZE,
             gcfgc: Some(igd.read16(hostbridge::IGD_GCFC)),
         };
-        self.display.initialize(
+        self.display.initialize::<crate::gma::I945>(
             self.display_cpu(),
             self.config.igd.display.as_ref(),
             &addresses,
@@ -1443,7 +1449,7 @@ impl crate::IntelNorthbridgeDriver for IntelI945 {
             opregion,
         );
         if self.config.igd.display.is_some() {
-            self.gma_display_init(vbt.as_deref());
+            self.gma_display_init(vbt);
         }
         self.igd_func1_init();
         Ok(())
@@ -1480,7 +1486,6 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelI945 {
 // ACPI device implementation — i945 host bridge / PCI0
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
 

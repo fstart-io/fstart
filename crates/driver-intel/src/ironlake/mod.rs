@@ -6,7 +6,6 @@
 //! QuickPath uncore functions on the top ECAM bus own PCIEXBAR, PAM, SMRAM
 //! and the DRAM rules.
 
-#[cfg(feature = "acpi")]
 mod acpi;
 mod igd;
 mod raminit;
@@ -250,7 +249,7 @@ impl IntelIronlake {
     /// legacy config ports, on bus 255 where the reset default of 256 buses
     /// puts the uncore.
     fn enable_ecam(&self) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             let length = match self.config.ecam_buses {
                 256 => 0,

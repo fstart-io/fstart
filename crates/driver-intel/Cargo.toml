@@ -6,45 +6,18 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-default = []
-# Enables the shared GMA display bring-up. Only the mainstage has room for it:
-# the postcar image is capped at 64 KiB and must not link the GMA library.
-display = []
-acpi = [
-  "dep:fstart-acpi",
-  "fstart-acpi/pci",
-  "dep:fstart-acpi-macros",
-]
-gm45 = ["fstart-intel-gma/g45"]
-ich9 = ["dep:fstart-driver-usbdebug"]
-# Intel 5 Series / 3400 Series PCH.
-ibexpeak = ["dep:fstart-driver-usbdebug"]
-# Arrandale/Clarkdale uncore with its 5 Series PCH.
-ironlake = ["ibexpeak", "fstart-intel-gma/ironlake"]
-gm965 = ["fstart-intel-gma/g45"]
-i945 = ["ich7", "fstart-intel-gma/i945"]
-ich8 = []
-pineview = ["ich7", "fstart-intel-gma/i945"]
-ich7 = []
-spi = ["dep:rflasher-core", "dep:rflasher-internal", "dep:fstart-driver-flash-console"]
-
 [dependencies]
 sha2 = { workspace = true }
-fstart-driver-usbdebug = { workspace = true, optional = true }
-rflasher-core = { workspace = true, optional = true }
-fstart-driver-flash-console = { workspace = true, optional = true }
+fstart-driver-usbdebug = { workspace = true }
+rflasher-core = { workspace = true }
+fstart-driver-flash-console = { workspace = true }
 fstart-driver-spd = { workspace = true }
-rflasher-internal = { workspace = true, optional = true }
+rflasher-internal = { workspace = true }
 bitflags = { workspace = true }
 embedded-hal = { workspace = true }
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
-fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-acpi = { workspace = true, features = ["x86", "pci"] }
+fstart-acpi-macros = { path = "../acpi-macros" }
 fstart-arch = { workspace = true, features = ["x86_64"] }
-
-
-fstart-intel-gma = { workspace = true }
-
 fstart-log = { workspace = true }
 fstart-options = { workspace = true }
 fstart-driver-rtc = { workspace = true }

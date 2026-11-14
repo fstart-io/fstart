@@ -2,25 +2,23 @@
 //!
 //! This covers the parts of coreboot's `src/northbridge/intel/{i945,pineview,
 //! gm965}/gma.c` that are identical across the three chipsets: assembling the
-//! [`GmaResources`] the shared GMA library expects, programming the hardware
-//! GTT page-table base, and handing the result to `fstart-intel-gma` for the
-//! actual modeset. Register values that differ per chipset (GTT base source,
+//! [`GmaResources`] the modeset expects, programming the hardware GTT
+//! page-table base, and handing the result to [`crate::gma`] for the actual
+//! modeset. Register values that differ per chipset (GTT base source,
 //! GTT size encoding, panel power sequence) stay in the individual drivers.
 //!
 //! The GTTMMADR BAR must already be programmed and enabled before any of this
 //! runs; `PGETBL_CTL` points the display engine at the page table, while the
-//! page-table entries themselves are written by the shared GMA library.
+//! page-table entries themselves are written by the modeset.
 
+use crate::gma::GenerationOps;
+use crate::gma::config::OutputConfig;
+use crate::gma::framebuffer::FramebufferConfig;
+use crate::gma::pci::GmaResources;
+use crate::gma::types::{Cpu, PciAddress};
+use crate::gma::{GmaInitConfig, GmaInitResult};
 use fstart_core::services::framebuffer::{Framebuffer, FramebufferInfo};
-#[cfg(feature = "display")]
 use fstart_core::typed::mmio32;
-use fstart_intel_gma::config::OutputConfig;
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-#[cfg(feature = "display")]
-use fstart_intel_gma::pci::GmaResources;
-use fstart_intel_gma::types::{Cpu, PciAddress};
-#[cfg(feature = "display")]
-use fstart_intel_gma::{GmaInitConfig, GmaInitResult};
 use tock_registers::interfaces::Writeable;
 use tock_registers::registers::ReadWrite as MmioReadWrite;
 use tock_registers::{register_bitfields, register_structs};
@@ -152,8 +150,7 @@ pub struct IgdAddresses {
 }
 
 impl IgdAddresses {
-    #[cfg(feature = "display")]
-    fn to_gma_resources(&self) -> GmaResources {
+    fn to_gma_resources(self) -> GmaResources {
         GmaResources {
             pci_bdf: self.pci_bdf,
             gtt_mmio_base: mmio32(self.gtt_mmio_base),
@@ -587,36 +584,29 @@ impl IgdDisplay {
     /// policy, or one whose panel or monitor cannot be brought up, still boots.
     /// Returns whether a framebuffer was programmed. The chipset prerequisites
     /// (BAR programming, GDRST reset, OpRegion, GTT base) are the caller's job.
-    pub fn initialize(
+    pub(crate) fn initialize<G: GenerationOps>(
         &mut self,
         cpu: Cpu,
         policy: Option<&IgdDisplayPolicy>,
         addresses: &IgdAddresses,
         vbt: Option<&[u8]>,
     ) -> bool {
-        #[cfg(feature = "display")]
-        match self.modeset(cpu, policy, addresses, vbt) {
+        match self.modeset::<G>(cpu, policy, addresses, vbt) {
             Ok(programmed) => programmed,
             Err(err) => {
                 fstart_log::error!("intel-igd: display initialization failed: {}", err.as_str());
                 false
             }
         }
-        #[cfg(not(feature = "display"))]
-        {
-            let _ = (cpu, policy, addresses, vbt);
-            false
-        }
     }
 
-    #[cfg(feature = "display")]
-    fn modeset(
+    fn modeset<G: GenerationOps>(
         &mut self,
         cpu: Cpu,
         policy: Option<&IgdDisplayPolicy>,
         addresses: &IgdAddresses,
         vbt: Option<&[u8]>,
-    ) -> Result<bool, fstart_intel_gma::GmaError> {
+    ) -> Result<bool, crate::gma::GmaError> {
         let Some(policy) = policy else {
             return Ok(false);
         };
@@ -628,7 +618,7 @@ impl IgdDisplay {
         };
         // The shared controller probes each connector once, after preparing
         // panel power and DDC clocks; a pre-modeset read gives false failures.
-        match fstart_intel_gma::init(&addresses.to_gma_resources(), &config) {
+        match crate::gma::init::<G>(&addresses.to_gma_resources(), &config) {
             Ok(GmaInitResult { framebuffer }) => {
                 fstart_log::info!(
                     "intel-igd: {}x{} framebuffer at {:#x}",
@@ -651,7 +641,6 @@ impl Framebuffer for IgdDisplay {
 }
 
 /// Where the backlight duty (`BCLV`) and PWM period (`BCLM`) live.
-#[cfg(feature = "acpi")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GfxBacklight {
     /// GMCH: both halves of `BLC_PWM_CTL` (0x61254).
@@ -663,7 +652,6 @@ pub enum GfxBacklight {
 }
 
 /// The GMCH layout of [`gfx0_acpi_node_with`].
-#[cfg(feature = "acpi")]
 #[must_use]
 pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc::vec::Vec<u8> {
     gfx0_acpi_node_with::<NB>(gttmmio, GfxBacklight::Gmch)
@@ -674,7 +662,6 @@ pub fn gfx0_acpi_node<NB: crate::IntelNorthbridgeDriver>(gttmmio: u64) -> alloc:
 /// `_BCL`/`_BCM`/`_BQC` on `LCD0`, and the
 /// `INCB`/`DECB` hooks ThinkPad hotkeys call. `gttmmio` is the assigned
 /// GTTMMADR; zero while the IGD is absent.
-#[cfg(feature = "acpi")]
 #[must_use]
 pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
     gttmmio: u64,

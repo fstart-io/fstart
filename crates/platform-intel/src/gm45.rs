@@ -490,7 +490,6 @@ impl Default for Gm45Ich9Config {
 pub struct Gm45Ich9<C = crate::legacy_cpu::Bga956>(core::marker::PhantomData<C>);
 
 /// The GM45/ICH9 devices boards attach to, from the names the drivers give them.
-#[cfg(feature = "namespace")]
 impl<C> fstart_acpi::PcNamespace for Gm45Ich9<C> {
     const LPC: fstart_acpi::AcpiPath = fstart_driver_intel::namespace::lpc::<
         fstart_driver_intel::gm45::IntelGm45,
@@ -527,25 +526,23 @@ impl crate::IntelPlatformConfig for Gm45Ich9Platform {
 mod stage {
     use super::*;
     use crate::{IntelChipsetConfig, IntelEarlyPlatform};
-    #[cfg(feature = "mp")]
+    #[cfg(feature = "stage")]
     use crate::{IntelNorthbridgeDriver, IntelSouthbridgeDriver};
     use fstart_driver_intel::gm45::IntelGm45;
     use fstart_driver_intel::ich9::IntelIch9;
 
     impl<C: crate::legacy_cpu::LegacyCpu> IntelEarlyPlatform for Gm45Ich9<C> {
-        #[cfg(feature = "memory-cache")]
         fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
             static WORKSPACE: crate::memory_cache::TrainingWorkspace<768> =
                 crate::memory_cache::TrainingWorkspace::new();
             WORKSPACE.take()
         }
-        #[cfg(feature = "acpi")]
         const RESUME_DISPLAY_INIT: bool = false;
         type Northbridge = IntelGm45;
         type Southbridge = IntelIch9;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         type Cpu = C::Driver;
-        #[cfg(feature = "mp")]
+        #[cfg(feature = "stage")]
         fn cpu_driver(
             microcode: Option<&'static [u8]>,
             northbridge: &Self::Northbridge,
@@ -593,10 +590,10 @@ mod tests {
         assert_eq!(CONFIG.northbridge.pmbase, ICH9_PMBASE);
         assert_eq!(CONFIG.southbridge.smbus_base, ICH9_SMBUS_BASE);
         assert_eq!(CONFIG.southbridge.rcba + 0x3800, ICH9_SPIBAR);
-        assert!(CONFIG.southbridge.pcie_ports[0]);
-        assert!(CONFIG.southbridge.c4_on_c3);
-        assert!(CONFIG.southbridge.c5_enable);
-        assert!(CONFIG.southbridge.c6_enable);
+        const { assert!(CONFIG.southbridge.pcie_ports[0]) };
+        const { assert!(CONFIG.southbridge.c4_on_c3) };
+        const { assert!(CONFIG.southbridge.c5_enable) };
+        const { assert!(CONFIG.southbridge.c6_enable) };
         assert_eq!(CONFIG.southbridge.throttle_duty, 2);
         assert!(CONFIG.southbridge.pirq.is_none());
     }

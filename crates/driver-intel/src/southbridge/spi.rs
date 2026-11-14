@@ -172,8 +172,8 @@ impl CacheSpi {
     pub unsafe fn new(extent: FlashExtent) -> Result<Self, ServiceError> {
         extent.address(0, extent.size as usize)?;
         if extent.chip_size > 0x1000000
-            || extent.offset % 0x10000 != 0
-            || extent.size % 0x10000 != 0
+            || !extent.offset.is_multiple_of(0x10000)
+            || !extent.size.is_multiple_of(0x10000)
         {
             return Err(ServiceError::InvalidParam);
         }
@@ -371,7 +371,7 @@ impl FlashRegion for CacheSpi {
     fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
         const SECTOR: u32 = 0x1000;
         let address = self.extent.address(offset, length as usize)?;
-        if address % 0x10000 != 0 || length % 0x10000 != 0 {
+        if address % 0x10000 != 0 || !length.is_multiple_of(0x10000) {
             return Err(ServiceError::InvalidParam);
         }
         self.with_write(|this| {

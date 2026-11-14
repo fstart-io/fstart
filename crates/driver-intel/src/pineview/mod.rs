@@ -21,13 +21,13 @@ use core::ptr;
 
 use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
 use crate::MmioBar;
+use crate::gma::types::{Cpu, PciAddress, Port};
 use crate::ich7::ich7;
 use fstart_arch::x86::mtrr;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind, MemoryDetector};
-use fstart_intel_gma::types::{Cpu, PciAddress, Port};
 use fstart_pci::PciRootInfo;
 use fstart_pci::ecam;
 use fstart_pci::pci_type0_config;
@@ -686,7 +686,7 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
             opregion,
         );
         if self.config.igd.display.is_some() {
-            self.gma_display_init(vbt.as_deref());
+            self.gma_display_init(vbt);
         }
         Ok(())
     }
@@ -1096,9 +1096,12 @@ impl IntelPineview {
         } else {
             Cpu::Pineview
         };
-        let programmed =
-            self.display
-                .initialize(cpu, self.config.igd.display.as_ref(), &addresses, vbt);
+        let programmed = self.display.initialize::<crate::gma::I945>(
+            cpu,
+            self.config.igd.display.as_ref(),
+            &addresses,
+            vbt,
+        );
 
         // A modeset can report success while a pipe, plane, PLL or output port
         // is left disabled. Read the state back so that is visible: coreboot
@@ -1221,7 +1224,6 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelPineview {
 // ACPI device implementation — Host bridge (MCHC)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
     use crate::IntelNorthbridgeDriver;

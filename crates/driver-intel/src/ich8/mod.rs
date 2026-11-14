@@ -2103,7 +2103,6 @@ impl crate::IntelSouthbridgeDriver for IntelIch8 {
         })
     }
 
-    #[cfg(feature = "acpi")]
     fn config(&self) -> &'static Self::Config {
         self.config
     }
@@ -2325,7 +2324,6 @@ impl SmBus for IntelIch8 {
 // ACPI device implementation — ICH8-M southbridge devices
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "acpi")]
 mod acpi_impl {
     extern crate alloc;
 

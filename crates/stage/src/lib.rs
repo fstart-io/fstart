@@ -18,6 +18,9 @@ mod alloc;
 ))]
 use {linked_list_allocator as _, spin as _};
 
+// A heapless stage's allocator: linking fails if it can allocate.
+#[cfg(all(feature = "runtime", not(feature = "alloc"), target_os = "none"))]
+mod no_heap;
 #[cfg(feature = "runtime")]
 mod runtime;
 

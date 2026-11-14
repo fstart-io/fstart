@@ -11,6 +11,10 @@
 //! (`0x1d0`). Each section is N ≤ 32 bits: N − 2 data bits, a mask bit and a
 //! halt bit.
 
+// The DRAM training loops index several per-channel and per-rank arrays in
+// lockstep, as coreboot's raminit does; the shared index keeps them comparable.
+#![allow(clippy::needless_range_loop)]
+
 mod quickpath;
 mod tables;
 mod timing;
@@ -785,14 +789,12 @@ fn find_highest_bit_set(val: u16) -> i32 {
     (0..16)
         .rev()
         .find(|bit| val & (1 << bit) != 0)
-        .map_or(-1, |bit| bit as i32)
+        .unwrap_or(-1)
 }
 
 /// coreboot `find_lowest_bit_set32()`.
 fn find_lowest_bit_set32(val: u32) -> i32 {
-    (0..32)
-        .find(|bit| val & (1 << bit) != 0)
-        .map_or(-1, |bit| bit as i32)
+    (0..32).find(|bit| val & (1 << bit) != 0).unwrap_or(-1)
 }
 
 /// coreboot `get_bits_420()`.
@@ -1308,10 +1310,10 @@ impl Raminit<'_> {
             self.jedec_init();
         }
 
-        let mut totalrank = 0;
-        for (channel, slot, rank) in populated_ranks(self.info).collect::<heapless::Vec<_, 8>>() {
+        for (totalrank, (channel, slot, rank)) in
+            (0..).zip(populated_ranks(self.info).collect::<heapless::Vec<_, 8>>())
+        {
             self.jedec_read(channel, slot, rank, totalrank, 0xa, 0x400);
-            totalrank += 1;
         }
 
         self.mch.write8(0x12c, 0x9f);
@@ -1373,9 +1375,9 @@ impl Raminit<'_> {
 
         self.post_training();
 
-        let heci_uma_addr = (((u64::from(northbridge().read16(TOM)) << 6)
+        let heci_uma_addr = ((u64::from(northbridge().read16(TOM)) << 6)
             - u64::from(self.info.memory_reserved_for_heci_mb))
-            << 20) as u64;
+            << 20;
         crate::ibexpeak::me::setup_uma(
             &crate::ibexpeak::me::UmaChannels {
                 dmibar: self.dmi.0,

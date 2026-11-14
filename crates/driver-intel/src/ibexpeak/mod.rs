@@ -12,7 +12,6 @@
 //! Board wiring (GPIOs, USB port currents, decodes, codec verbs, the
 //! disabled functions) is configuration; nothing here is board-specific.
 
-#[cfg(feature = "acpi")]
 mod acpi;
 mod early;
 pub mod me;
@@ -387,8 +386,9 @@ impl crate::southbridge::smi::SmiControl for IntelIbexPeak {
 
 /// Reject board policy the PCH cannot express before touching hardware.
 fn validate(config: &IntelIbexPeakConfig) -> Result<(), ServiceError> {
-    let aligned =
-        |base: u64, size: u64| base != 0 && base <= u64::from(u32::MAX) && base % size == 0;
+    let aligned = |base: u64, size: u64| {
+        base != 0 && base <= u64::from(u32::MAX) && base.is_multiple_of(size)
+    };
     if !aligned(config.rcba, 0x4000)
         || !aligned(config.dmibar, 0x1000)
         || config.pmbase == 0
@@ -493,7 +493,6 @@ impl crate::IntelSouthbridgeDriver for IntelIbexPeak {
         })
     }
 
-    #[cfg(feature = "acpi")]
     fn config(&self) -> &'static Self::Config {
         self.config
     }

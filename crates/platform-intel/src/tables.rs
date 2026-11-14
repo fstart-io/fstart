@@ -8,50 +8,36 @@
 
 extern crate alloc;
 
-#[cfg(feature = "acpi")]
 use alloc::vec::Vec;
 
-#[cfg(feature = "smbios")]
 pub use fstart_acpi::smbios::SmbiosIdentity;
 
-#[cfg(feature = "acpi")]
 const RSDP_LEN: usize = 36;
-#[cfg(feature = "acpi")]
 const XSDT_OFF: usize = 48;
-#[cfg(feature = "acpi")]
 const FADT_X_DSDT_OFF: usize = 140;
-#[cfg(feature = "acpi")]
 const BDA_EBDA_SEG_PTR: *mut u16 = 0x040e as *mut u16;
-#[cfg(feature = "acpi")]
 const BDA_CONVENTIONAL_MEM_KB: *mut u16 = 0x0413 as *mut u16;
-#[cfg(feature = "acpi")]
 const EBDA_BASE: usize = 0x0009_f000;
-#[cfg(feature = "acpi")]
 const EBDA_SIZE: usize = 0x1000;
-#[cfg(feature = "acpi")]
 const EBDA_RSDP_OFFSET: usize = 0;
 
-#[cfg(feature = "acpi")]
 fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
     let raw = bytes.get(offset..offset.checked_add(8)?)?;
     Some(u64::from_le_bytes(raw.try_into().ok()?))
 }
 
-#[cfg(feature = "acpi")]
 fn acpi_table_len(table: &[u8]) -> Option<usize> {
     let raw = table.get(4..8)?;
     let len = u32::from_le_bytes(raw.try_into().ok()?) as usize;
     (len >= 36 && len <= table.len()).then_some(len)
 }
 
-#[cfg(feature = "acpi")]
 fn print_hex_byte(byte: u8) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     fstart_log::raw_write_byte(HEX[(byte >> 4) as usize]);
     fstart_log::raw_write_byte(HEX[(byte & 0x0f) as usize]);
 }
 
-#[cfg(feature = "acpi")]
 fn print_acpixtract_hexdump(data: &[u8]) {
     for (offset, line) in data.chunks(16).enumerate() {
         let byte_offset = offset * 16;
@@ -79,7 +65,6 @@ fn print_acpixtract_hexdump(data: &[u8]) {
     }
 }
 
-#[cfg(feature = "acpi")]
 fn print_acpi_table(data: &[u8]) {
     let Some(len) = acpi_table_len(data) else {
         return;
@@ -97,7 +82,6 @@ fn print_acpi_table(data: &[u8]) {
     fstart_log::raw_write_byte(b'\n');
 }
 
-#[cfg(feature = "acpi")]
 fn install_rsdp_in_ebda(rsdp: &[u8]) {
     if rsdp.len() < RSDP_LEN {
         return;
@@ -125,7 +109,6 @@ fn install_rsdp_in_ebda(rsdp: &[u8]) {
     );
 }
 
-#[cfg(feature = "acpi")]
 fn print_acpi_tables_acpixtract(data: &[u8]) {
     fstart_log::info!("Printing ACPI tables in ACPICA compatible format");
     // Layout from fstart_acpi::platform::assemble(): RSDP, XSDT, DSDT, FADT,
@@ -172,14 +155,11 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
     if let Some(fadt) = data
         .get(fadt_off..)
         .and_then(|tail| acpi_table_len(tail).and_then(|len| tail.get(..len)))
+        && let Some(dsdt_addr) = read_le_u64(fadt, FADT_X_DSDT_OFF)
+        && let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize)
+        && dsdt_off < data.len()
     {
-        if let Some(dsdt_addr) = read_le_u64(fadt, FADT_X_DSDT_OFF) {
-            if let Some(dsdt_off) = dsdt_addr.checked_sub(base_addr).map(|v| v as usize) {
-                if dsdt_off < data.len() {
-                    print_acpi_table(&data[dsdt_off..]);
-                }
-            }
-        }
+        print_acpi_table(&data[dsdt_off..]);
     }
     for i in 0..entries {
         let off = 36 + i * 8;
@@ -187,10 +167,10 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
             fstart_log::warn!("ACPI dump: truncated XSDT entry");
             return;
         };
-        if let Some(table_off) = addr.checked_sub(base_addr).map(|v| v as usize) {
-            if table_off < data.len() {
-                print_acpi_table(&data[table_off..]);
-            }
+        if let Some(table_off) = addr.checked_sub(base_addr).map(|v| v as usize)
+            && table_off < data.len()
+        {
+            print_acpi_table(&data[table_off..]);
         }
     }
     fstart_log::info!("Done printing ACPI tables in ACPICA compatible format");
@@ -204,7 +184,6 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
 /// assembled size, installs a legacy RSDP copy in the EBDA, and hex-dumps
 /// the tables. Returns the RSDP address only after bounded assembly
 /// succeeds. Errors must abort required-table handoff.
-#[cfg(feature = "acpi")]
 pub fn prepare_acpi(
     store: &mut fstart_store::Store,
     platform: &fstart_acpi::platform::PlatformConfig,
@@ -255,7 +234,6 @@ pub fn prepare_acpi(
 }
 
 /// Facts the SMBIOS writer cannot derive from the board descriptor.
-#[cfg(feature = "smbios")]
 pub struct SmbiosRuntime<'a> {
     /// Flash chip capacity in bytes.
     pub rom_size: u32,
@@ -268,7 +246,6 @@ pub struct SmbiosRuntime<'a> {
 }
 
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
-#[cfg(feature = "smbios")]
 fn runtime_processor_counts() -> (u16, u16, u16) {
     let (cores, threads) = fstart_arch::x86::boot::cpuid::cpu_core_thread_counts();
     let online = fstart_arch::x86::mp::online_cpus();
@@ -277,7 +254,6 @@ fn runtime_processor_counts() -> (u16, u16, u16) {
 }
 
 /// SMBIOS processor family from the CPUID brand string; 0x02 is "Unknown".
-#[cfg(any(feature = "smbios", feature = "host"))]
 fn processor_family(brand: &str) -> u16 {
     const FAMILIES: [(&str, u16); 11] = [
         ("Core(TM)2 Duo", 0xBF),
@@ -299,7 +275,6 @@ fn processor_family(brand: &str) -> u16 {
 }
 
 /// The executing CPU package: Type 4 with its Type 7 caches.
-#[cfg(feature = "smbios")]
 fn package(
     cpu: &fstart_arch::x86::boot::cpuid::ProcessorSnapshot,
 ) -> fstart_acpi::smbios::Package<'_> {
@@ -323,7 +298,6 @@ fn package(
 
 /// Physical ranges occupied by `total` bytes of DRAM: below TOLUD, plus the
 /// part the chipset remapped above 4 GiB (up to `high_end`).
-#[cfg(any(feature = "smbios", feature = "host"))]
 fn dram_ranges(total: u64, high_end: u64) -> impl Iterator<Item = (u64, u64)> {
     const FOUR_GIB: u64 = 1 << 32;
     let high = high_end.saturating_sub(FOUR_GIB).min(total);
@@ -333,7 +307,6 @@ fn dram_ranges(total: u64, high_end: u64) -> impl Iterator<Item = (u64, u64)> {
 }
 
 /// Types 16, 17 and 19 from raminit's slot inventory.
-#[cfg(feature = "smbios")]
 fn add_memory(
     tables: &mut fstart_acpi::smbios::Builder,
     memory: &fstart_core::memory_info::MemoryInfo,
@@ -388,7 +361,6 @@ fn add_memory(
 /// - Type 16/17/19 from raminit's inventory, else Type 16 from e820 alone
 /// - Type 41 (Onboard Devices) for root-bus PCI functions
 /// - Type 32 (System Boot) and Type 127 (End of Table)
-#[cfg(feature = "smbios")]
 pub fn prepare_smbios(
     store: &mut fstart_store::Store,
     e820: &fstart_core::services::memory_detect::E820State,

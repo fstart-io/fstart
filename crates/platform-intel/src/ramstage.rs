@@ -379,14 +379,12 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             fstart_timestamp::id::LOAD_MEMORY_POLICY,
             Self::refresh_load_policy,
         );
-        #[cfg(feature = "memory-cache")]
         if B::FACTS.memory_cache && !self.resume {
             self.commit_memory_cache();
         }
         self.into()
     }
 
-    #[cfg(feature = "memory-cache")]
     fn commit_memory_cache(&mut self) {
         fstart_timestamp::add(fstart_timestamp::id::COMMIT_MEMORY_CACHE);
         let store = self.store.as_ref().unwrap_or_else(|| unreachable!());
@@ -819,7 +817,6 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             .map(|root| root.info());
         description.framebuffer = self.northbridge.framebuffer_info();
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
-        #[cfg(feature = "acpi")]
         let acpi_s5 = {
             use fstart_acpi::platform::X86PlatformProvider;
             use fstart_driver_intel::southbridge::pmio_ich;
@@ -828,7 +825,6 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
                 pmio_ich::S5_SLEEP_TYPE,
             )]
         };
-        #[cfg(feature = "acpi")]
         {
             description.acpi_s5 = &acpi_s5;
         }
@@ -955,12 +951,10 @@ impl MainstageCtx {
         (self.firmware_base, self.firmware_size)
     }
 
-    #[cfg(feature = "acpi")]
     pub(crate) fn set_acpi_rsdp(&mut self, rsdp: Option<u64>) {
         self.acpi_rsdp = rsdp;
     }
 
-    #[cfg(feature = "smbios")]
     pub(crate) fn set_smbios(&mut self, smbios: Option<u64>) {
         self.smbios = smbios;
     }

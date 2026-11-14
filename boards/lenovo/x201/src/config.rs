@@ -4,9 +4,9 @@ use fstart_core::{
     ConstVec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion as Kind,
     IntelIfdRegionConfig as Region,
 };
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::facts::PciSubsystemId;
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::ironlake::{
@@ -216,7 +216,7 @@ const X201_IGD: IronlakeIgdConfig = IronlakeIgdConfig {
             },
         ],
         framebuffer: FramebufferConfig {
-            scaling: fstart_intel_gma::scaler::ScalingPolicy::PreserveAspect,
+            scaling: fstart_driver_intel::gma::scaler::ScalingPolicy::PreserveAspect,
             ..FramebufferConfig::edid(FallbackMode {
                 width: 1280,
                 height: 800,

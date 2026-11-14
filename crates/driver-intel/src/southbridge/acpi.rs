@@ -6,8 +6,6 @@
 //! that disagreed with the programmed routing, a missing EHCI root hub. Each
 //! chipset adds only what is genuinely its own.
 
-#![cfg(feature = "acpi")]
-
 extern crate alloc;
 
 use alloc::vec::Vec;

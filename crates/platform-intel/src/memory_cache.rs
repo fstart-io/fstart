@@ -299,12 +299,12 @@ impl Journal {
 }
 /// Volatile reads from linked flash or reserved RAM. This never provides a
 /// programming interface and never trusts a directory as an address authority.
-#[cfg(all(feature = "stage", feature = "memory-cache"))]
+#[cfg(feature = "stage")]
 pub(crate) struct MappedRead {
     base: usize,
     size: usize,
 }
-#[cfg(all(feature = "stage", feature = "memory-cache"))]
+#[cfg(feature = "stage")]
 impl MappedRead {
     /// # Safety
     /// The entire window must be mapped/readable and have a trusted extent.
@@ -312,7 +312,7 @@ impl MappedRead {
         Self { base, size }
     }
 }
-#[cfg(all(feature = "stage", feature = "memory-cache"))]
+#[cfg(feature = "stage")]
 impl FlashRegion for MappedRead {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
         let offset = offset as usize;
@@ -339,7 +339,7 @@ impl FlashRegion for MappedRead {
 pub const BANK_SIZE: u32 = 0x10000;
 pub const EXTENT_SIZE: u32 = 2 * BANK_SIZE;
 
-#[cfg(all(feature = "stage", feature = "memory-cache"))]
+#[cfg(feature = "stage")]
 pub(crate) fn runtime_key<B: crate::IntelBoard>(
     northbridge: &<B::Platform as crate::IntelEarlyPlatform>::Northbridge,
     southbridge: &<B::Platform as crate::IntelEarlyPlatform>::Southbridge,
@@ -389,7 +389,7 @@ pub(crate) fn runtime_key<B: crate::IntelBoard>(
 /// `region` must be exclusively owned, mapped RAM, disjoint from `payload`.
 /// The caller must write the store back before a transition that could discard
 /// dirty cache lines.
-#[cfg(any(all(feature = "stage", feature = "memory-cache"), test))]
+#[cfg(any(feature = "stage", test))]
 pub(crate) unsafe fn publish_pending(
     region: fstart_core::layout::Region,
     key: [u8; 32],
@@ -438,7 +438,7 @@ pub(crate) unsafe fn publish_pending(
     Ok(())
 }
 
-#[cfg(all(feature = "ramstage", feature = "memory-cache"))]
+#[cfg(feature = "ramstage")]
 pub(crate) fn commit_pending<B: crate::IntelBoard>(
     northbridge: &<B::Platform as crate::IntelEarlyPlatform>::Northbridge,
     southbridge: &<B::Platform as crate::IntelEarlyPlatform>::Southbridge,

@@ -6,10 +6,10 @@
 //! `Kconfig` (512 KiB flash, Atom 230).
 
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr};
+use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
+use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 use fstart_driver_superio::smsc_lpc47m15x;
-use fstart_intel_gma::framebuffer::FramebufferConfig;
-use fstart_intel_gma::{FallbackMode, OutputConfig, Port};
 use fstart_platform_intel::i945::I945IgdConfig;
 use fstart_platform_intel::i945::{
     GpiRoute, I945Ich7Config, I945Ich7Platform, I945Variant, LpcFixedIoDecode, LpcGenericIoDecode,

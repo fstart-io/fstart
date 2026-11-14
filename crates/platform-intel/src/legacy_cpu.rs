@@ -5,7 +5,7 @@
 //! Package profiles choose microcode coverage and CAR geometry; the existing
 //! model driver still rejects CPUIDs it cannot initialize.
 
-#[cfg(all(feature = "stage", feature = "mp"))]
+#[cfg(feature = "stage")]
 pub use fstart_arch::x86::cpu::intel::penryn::PowerPolicy as CpuPowerPolicy;
 
 /// Host-clean CPU-package policy, with model operations available in firmware.
@@ -14,9 +14,9 @@ pub trait LegacyCpu: 'static {
     const CAR_SIZE: u64;
     const MICROCODE_SIGNATURES: &'static [&'static str];
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     type Driver: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         pmbase: u32,
         microcode: Option<&'static [u8]>,
@@ -32,9 +32,9 @@ impl LegacyCpu for Bga956 {
     const CAR_SIZE: u64 = 0x10000;
     const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-17-06", "06-17-0a"];
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     type Driver = fstart_arch::x86::cpu::intel::penryn::PenrynCpuDriver;
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         pmbase: u32,
         microcode: Option<&'static [u8]>,
@@ -54,9 +54,9 @@ impl LegacyCpu for Socket441 {
     const CAR_SIZE: u64 = 0x8000;
     const MICROCODE_SIGNATURES: &'static [&'static str] = ATOM_MICROCODE;
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     type Driver = fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         pmbase: u32,
         microcode: Option<&'static [u8]>,
@@ -74,9 +74,9 @@ impl LegacyCpu for Fcbga559 {
     const CAR_SIZE: u64 = 0x8000;
     const MICROCODE_SIGNATURES: &'static [&'static str] = ATOM_MICROCODE;
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     type Driver = fstart_arch::x86::cpu::intel::pineview::PineviewCpuDriver;
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         pmbase: u32,
         microcode: Option<&'static [u8]>,
@@ -101,9 +101,9 @@ impl<const BASE: u64, const SIZE: u64> LegacyCpu for Lga775Core2<BASE, SIZE> {
         "06-0f-02", "06-0f-06", "06-0f-07", "06-0f-0a", "06-0f-0b", "06-0f-0d", "06-16-01",
     ];
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         pmbase: u32,
         microcode: Option<&'static [u8]>,
@@ -129,9 +129,9 @@ impl<const BASE: u64, const SIZE: u64> LegacyCpu for SocketM<BASE, SIZE> {
         "06-0f-0d", "06-16-01",
     ];
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     type Driver = fstart_arch::x86::cpu::intel::core2_cpu::Core2CpuDriver;
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         pmbase: u32,
         microcode: Option<&'static [u8]>,

@@ -11,14 +11,8 @@
 /// SMBIOS Type 0 release date selected by fbuild, defaulting to the build date.
 pub const SMBIOS_RELEASE_DATE: &str = env!("FSTART_SMBIOS_DATE");
 
-#[cfg(any(feature = "stage", feature = "acpi", feature = "smbios"))]
 extern crate ufmt;
 
-#[cfg(any(feature = "host", feature = "acpi", feature = "smbios"))]
-#[cfg_attr(
-    all(feature = "host", not(any(feature = "acpi", feature = "smbios"))),
-    allow(dead_code)
-)]
 pub mod tables;
 
 pub mod debug_console;
@@ -67,17 +61,12 @@ macro_rules! entry {
     };
 }
 
-#[cfg(feature = "gm45-ich9")]
 pub mod gm45;
-#[cfg(feature = "gm965-ich8")]
 pub mod gm965;
-#[cfg(feature = "i945-ich7")]
 pub mod i945;
-#[cfg(feature = "ironlake-ibexpeak")]
 pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
-#[cfg(feature = "pineview-ich7")]
 pub mod pineview;
 
 /// Shared IGD display bring-up types used by board display policy.
@@ -133,12 +122,10 @@ pub trait IntelEarlyPlatform:
     /// Re-run native display init (modeset + OpRegion) on the S3 resume path.
     /// Chipsets whose OS display driver restores the screen leave this false
     /// so resume skips the modeset flicker.
-    #[cfg(feature = "acpi")]
     const RESUME_DISPLAY_INIT: bool;
     /// Take platform-owned CAR scratch once for cached input and new training.
     /// A cache-capable platform supplies its own workspace; the common flow
     /// only borrows slices and never selects or allocates a payload size.
-    #[cfg(feature = "memory-cache")]
     fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
         None
     }
@@ -151,9 +138,9 @@ pub trait IntelEarlyPlatform:
         + SouthbridgeAcpi<Self::Southbridge>;
     /// CPU family driver for MP bring-up; also supplies the CPU-model facts
     /// the shared SMM installer needs.
-    #[cfg(feature = "mp")]
+    #[cfg(feature = "stage")]
     type Cpu: fstart_arch::x86::mp::CpuDriver + fstart_arch::x86::cpu::intel::smm::SmmCpu;
-    #[cfg(feature = "mp")]
+    #[cfg(feature = "stage")]
     fn cpu_driver(
         microcode: Option<&'static [u8]>,
         northbridge: &Self::Northbridge,
@@ -161,41 +148,33 @@ pub trait IntelEarlyPlatform:
     ) -> Self::Cpu;
 }
 
-/// ACPI contribution required of a northbridge driver; vacuous without ACPI.
-#[cfg(all(feature = "stage", feature = "acpi"))]
+/// ACPI contribution required of a northbridge driver.
+#[cfg(feature = "stage")]
 pub trait NorthbridgeAcpi<NB: IntelNorthbridgeDriver>:
     fstart_acpi::device::AcpiDevice<Config = NB::Config>
 {
 }
-#[cfg(all(feature = "stage", feature = "acpi"))]
+#[cfg(feature = "stage")]
 impl<NB, T> NorthbridgeAcpi<NB> for T
 where
     NB: IntelNorthbridgeDriver,
     T: fstart_acpi::device::AcpiDevice<Config = NB::Config>,
 {
 }
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-pub trait NorthbridgeAcpi<NB> {}
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-impl<NB, T> NorthbridgeAcpi<NB> for T {}
 
-/// ACPI contribution required of a southbridge driver; vacuous without ACPI.
-#[cfg(all(feature = "stage", feature = "acpi"))]
+/// ACPI contribution required of a southbridge driver.
+#[cfg(feature = "stage")]
 pub trait SouthbridgeAcpi<SB: IntelSouthbridgeDriver>:
     fstart_driver_intel::namespace::SouthbridgeAcpi + fstart_acpi::platform::X86PlatformProvider
 {
 }
-#[cfg(all(feature = "stage", feature = "acpi"))]
+#[cfg(feature = "stage")]
 impl<SB, T> SouthbridgeAcpi<SB> for T
 where
     SB: IntelSouthbridgeDriver,
     T: fstart_driver_intel::namespace::SouthbridgeAcpi + fstart_acpi::platform::X86PlatformProvider,
 {
 }
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-pub trait SouthbridgeAcpi<SB> {}
-#[cfg(all(feature = "stage", not(feature = "acpi")))]
-impl<SB, T> SouthbridgeAcpi<SB> for T {}
 
 /// Built chipset policy: the derived driver configs and the CPU population.
 #[cfg(feature = "stage")]

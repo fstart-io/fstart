@@ -17,7 +17,6 @@ use fstart_acpi::processor::{
     Coordination, Dependency, PerformanceState, PowerObjects, PowerState, ProcessorName, cst_aml,
     cst_method_aml, processor_device,
 };
-#[cfg(any(feature = "i945", feature = "gm965", feature = "gm45", test))]
 use fstart_arch::x86::cpu::intel::speedstep::model_id;
 use fstart_arch::x86::cpu::intel::speedstep::{current_pstates, fsb_x3};
 
@@ -26,7 +25,6 @@ use fstart_arch::x86::cpu::intel::speedstep::{current_pstates, fsb_x3};
 ///
 /// Uses the same generic SpeedStep MSR probing as coreboot's
 /// `cpu/intel/speedstep` code. Penryn coordinates P-states in hardware.
-#[cfg(any(feature = "i945", feature = "gm965", feature = "gm45", test))]
 pub fn cpu_devices_aml(logical_cpus: usize, cstates: &Core2Cstates) -> Vec<u8> {
     let coordination = if model_id() == 0x1067 {
         Coordination::HwAll
@@ -37,7 +35,6 @@ pub fn cpu_devices_aml(logical_cpus: usize, cstates: &Core2Cstates) -> Vec<u8> {
 }
 
 /// Generate the Pineview CPU namespace (SpeedStep without board C-states).
-#[cfg(any(feature = "pineview", test))]
 pub(crate) fn pineview_cpu_devices_aml(logical_cpus: usize) -> Vec<u8> {
     build_cpu_devices_aml(logical_cpus, None, Coordination::SwAny)
 }

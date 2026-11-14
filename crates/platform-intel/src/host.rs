@@ -176,7 +176,7 @@ impl Debug {
             (self.flash_console, "flash-console"),
         ]
         .into_iter()
-        .filter_map(|(selected, feature)| selected.then(|| feature.into()))
+        .filter_map(|(selected, feature)| selected.then_some(feature.into()))
     }
 }
 
@@ -276,9 +276,6 @@ fn resolve_for<P: IntelPlatform>(
             "halt"
         };
         let mut features = vec![bundle.into()];
-        if facts.memory_cache && role != IntelStage::Postcar {
-            features.push("memory-cache".into());
-        }
         features.extend(debug.features());
         if selected_payload == "uefi" {
             features.push(
@@ -384,12 +381,7 @@ fn resolve_for<P: IntelPlatform>(
     Ok(plan)
 }
 
-#[cfg(all(
-    test,
-    feature = "gm965-ich8",
-    feature = "i945-ich7",
-    feature = "pineview-ich7"
-))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::legacy_cpu::{Fcbga559, LegacyCpu, Socket441, SocketM};
@@ -673,18 +665,17 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "stage", feature = "mp"))]
+    #[cfg(feature = "stage")]
     #[test]
     fn i945_runtime_cpu_driver_follows_the_package() {
         use crate::IntelEarlyPlatform;
         use fstart_arch::x86::cpu::intel::{
             core2_cpu::Core2CpuDriver, pineview::PineviewCpuDriver,
         };
-        // Type-check both runtime factories without executing MSR/I/O operations.
-        let _: fn(Option<&'static [u8]>) -> Core2CpuDriver =
-            <crate::i945::I945Ich7<SocketM> as IntelEarlyPlatform>::cpu_driver;
-        let _: fn(Option<&'static [u8]>) -> PineviewCpuDriver =
-            <I945 as IntelEarlyPlatform>::cpu_driver;
+        // Type-check both runtime CPU drivers without executing MSR/I/O operations.
+        fn cpu<P: IntelEarlyPlatform<Cpu = C>, C>() {}
+        cpu::<crate::i945::I945Ich7<SocketM>, Core2CpuDriver>();
+        cpu::<I945, PineviewCpuDriver>();
     }
 
     #[test]

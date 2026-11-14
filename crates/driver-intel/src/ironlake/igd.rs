@@ -195,7 +195,7 @@ impl IntelIronlake {
         {
             let stolen_base = self.hostbridge().igd_base.get() & 0xfff0_0000;
             let addresses = crate::igd::IgdAddresses {
-                pci_bdf: fstart_intel_gma::types::PciAddress::new(0, 0, IGD_DEV, 0),
+                pci_bdf: crate::gma::types::PciAddress::new(0, 0, IGD_DEV, 0),
                 gtt_mmio_base: bars.gtt_mmio,
                 gtt_mmio_size: GTTMMADR_SIZE,
                 gtt_pte_base: None,
@@ -206,11 +206,11 @@ impl IntelIronlake {
                 gtt_size: GTT_SIZE,
                 gcfgc: None,
             };
-            self.display.initialize(
-                fstart_intel_gma::types::Cpu::Ironlake,
+            self.display.initialize::<crate::gma::Ironlake>(
+                crate::gma::types::Cpu::Ironlake,
                 self.config.igd.display.as_ref(),
                 &addresses,
-                vbt.as_deref(),
+                vbt,
             );
         }
         self.igd_enable_swsci();

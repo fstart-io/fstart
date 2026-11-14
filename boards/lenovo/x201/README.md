@@ -112,8 +112,8 @@ Host validation:
 
 ```sh
 cargo test -p fstart-arch --features x86_64
-cargo test -p fstart-driver-intel --features ironlake,acpi,display --lib
-cargo test -p fstart-platform-intel --features ironlake-ibexpeak,acpi
+cargo test -p fstart-driver-intel --lib
+cargo test -p fstart-platform-intel
 cargo test -p fstart-driver-lenovo --features fstart-arch/x86_64,acpi
 ```
 

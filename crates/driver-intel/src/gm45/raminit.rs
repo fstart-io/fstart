@@ -6,6 +6,10 @@
 //! Register sequences follow coreboot gm45/raminit.c
 //! and raminit_rcomp_calibration.c (DDR3, non-SFF, cold boot only).
 
+// The DRAM training loops index several per-channel and per-rank arrays in
+// lockstep, as coreboot's raminit does; the shared index keeps them comparable.
+#![allow(clippy::needless_range_loop)]
+
 use crate::MmioBar;
 use crate::generic::spd::ddr3::read_spd;
 use fstart_core::mmio::MmioReadWrite;
@@ -1476,6 +1480,7 @@ enum RecProbe {
     AnyLow,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn seek_rec<S>(
     mch: &Mchbar,
     ch: usize,
@@ -1669,15 +1674,7 @@ pub(super) fn prepare_ddr3(
     validate_register_timings(timing)?;
     let commands = ddr3_jedec_commands(timing)?;
     let bases = jedec_rank_bases(dimms)?;
-    // Coreboot get_gmch_info() uses CPUID leaf 4 EAX[31:26] for core count.
-    // Never guess whether the quad-core post-JEDEC register applies.
-    if core::arch::x86_64::__cpuid(0).eax < 4 {
-        return Err(ServiceError::HardwareError);
-    }
-    let cores = ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1;
-    if !matches!(cores, 1 | 2 | 4) {
-        return Err(ServiceError::HardwareError);
-    }
+    let cores = super::cpu_cores().ok_or(ServiceError::HardwareError)?;
     // Check all derived values before beginning irreversible MMIO writes.
     crossing_values(fsb_mhz, timing.clock)?;
     let igd_enabled = graphics != crate::gm45::Gm45GraphicsPolicy::Discrete;
@@ -2081,13 +2078,13 @@ mod tests {
         assert_eq!(dual.bounds[0], dual.bounds[1]);
         assert_eq!(
             dual.bounds[0][0],
-            ((rank_mb * 2 >> 5) << 16) | (rank_mb >> 5)
+            (((rank_mb * 2) >> 5) << 16) | (rank_mb >> 5)
         );
         assert_eq!(dual.ggc, 0x0b50);
-        assert_eq!(dual.tom, (rank_mb * 4 >> 7) as u16);
+        assert_eq!(dual.tom, ((rank_mb * 4) >> 7) as u16);
         assert_eq!(dual.tolud, 2048 << 4);
         assert_eq!(dual.touud, (rank_mb * 4 + 2048) as u16);
-        assert_eq!(dual.remap_base, (rank_mb * 4 >> 6) as u16);
+        assert_eq!(dual.remap_base, ((rank_mb * 4) >> 6) as u16);
         assert_eq!(dual.remap_limit, ((rank_mb * 4 + 2048 - 64) >> 6) as u16);
     }
 

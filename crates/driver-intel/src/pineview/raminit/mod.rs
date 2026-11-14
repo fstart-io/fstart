@@ -16,6 +16,10 @@
 //! [`sdram_initialize`] is called from `IntelPineview::init()` with the
 //! MCHBAR accessor, ECAM handle, and SPD addresses.
 
+// The DRAM training loops index several per-channel and per-rank arrays in
+// lockstep, as coreboot's raminit does; the shared index keeps them comparable.
+#![allow(clippy::needless_range_loop)]
+
 mod jedec;
 mod mmap;
 mod phy;

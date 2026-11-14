@@ -94,18 +94,7 @@ impl IntelGm45 {
         if !matches!(revision, 5 | 6 | 7 | 9) || !matches!(mem_mhz, 333 | 400 | 533) {
             return Err(ServiceError::HardwareError);
         }
-        #[cfg(target_arch = "x86_64")]
-        let cores = {
-            if core::arch::x86_64::__cpuid(0).eax < 4 {
-                return Err(ServiceError::HardwareError);
-            }
-            ((core::arch::x86_64::__cpuid_count(4, 0).eax >> 26) & 0x3f) + 1
-        };
-        #[cfg(not(target_arch = "x86_64"))]
-        let cores = return Err(ServiceError::HardwareError);
-        if !matches!(cores, 1 | 2 | 4) {
-            return Err(ServiceError::HardwareError);
-        }
+        let cores = super::cpu_cores().ok_or(ServiceError::HardwareError)?;
         // SAFETY: MCHBAR is enabled by setup_early_decode and validated at construction.
         let r = unsafe { &*(self.config.mchbar as *const PmRegs) };
         r.rc14.set(0);
@@ -202,9 +191,9 @@ impl IntelGm45 {
             update32(&r.r40, 0, 1 << 12);
             update32(&r.r94, 0, 3 << 22);
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let super_lfm = unsafe { fstart_arch::x86::msr::rdmsr(0xee) } & (1 << 27) != 0;
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         let super_lfm = false;
         let clock = self.mch_clock();
         if super_lfm {

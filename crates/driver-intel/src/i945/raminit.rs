@@ -21,6 +21,10 @@
 //!   MRC cache, so the CMOS receive-enable save/restore pair is omitted
 //!   (same policy as the GM965 port).
 
+// The DRAM training loops index several per-channel and per-rank arrays in
+// lockstep, as coreboot's raminit does; the shared index keeps them comparable.
+#![allow(clippy::needless_range_loop)]
+
 use super::fields::*;
 use super::{I945Variant, IntelI945, MchBar, hostbridge, mchbar};
 use crate::MmioBar;
