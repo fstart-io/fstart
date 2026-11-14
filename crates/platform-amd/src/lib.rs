@@ -2,10 +2,12 @@
 //! The AMD SoCs and their boot flow. Every SoC from Family 17h on is
 //! PSP-booted: it starts in PSP-trained DRAM, never Intel CAR. A SoC
 //! composes the driver's IP blocks into its silicon init ([`soc::Init`]),
-//! which the phases of the flow ([`flow`]) call. What the flow needs of a
-//! SoC beyond that is [`flow::Soc`]: the SoCs made of dies share theirs
-//! ([`noncar`]; [`picasso`], [`zeppelin`]), the SP3 socket has its own
-//! ([`sp3`]: Naples, Rome, Milan).
+//! which the phases of the flow ([`flow`]) call, and says what the flow's
+//! services need of it ([`flow::Soc`]): [`picasso`], [`zeppelin`],
+//! [`naples`], [`rome`] and [`milan`]. The SoCs made of dies share their
+//! part of that ([`noncar`]), and so do the SoCs of the SP3 socket
+//! ([`sp3`]). A board is [`board::Board`]; docs/amd-structure.md says
+//! where AMD code goes.
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 extern crate alloc;
 /// The ACPI tables, for every SoC.
