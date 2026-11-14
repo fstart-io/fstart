@@ -1030,3 +1030,4 @@ fstart-smm = { workspace = true }
 fstart-platform-amd = { path = ".", features = ["picasso", "zeppelin", "naples", "rome", "milan", "acpi", "host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
+fstart-driver-chromeec = { path = "../driver-chromeec", features = ["acpi"] }

@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use fstart_acpi::aml_linker::device_vec;
 use fstart_acpi::{AmlError, acpi_dsl};
 
-use super::{ACPI_MMIO, HPET, SMBUS_ASF_IO_BASE, SPI_BASE};
+use super::{ACPI_MMIO, HPET, SMBUS_ASF_IO_BASE, SPI_BASE, UART_CLOCK_HZ, UART_MMIO};
 
 /// The GPIO banks in the ACPI MMIO.
 pub const GPIO_BASE: u32 = ACPI_MMIO + 0x1500;
@@ -51,6 +51,45 @@ pub fn i2c(name: &str, uid: u8, base: u32, irq: u8, body: &[u8]) -> Result<Vec<u
     .emit(&mut device)?;
     device.extend_from_slice(body);
     device_vec(name, &device)
+}
+
+/// FCH UART `index` (`AMDI0020`), `FUR0`-`FUR3`: its MMIO and DMA blocks
+/// ([`UART_MMIO`]), interrupting on the edge-high FCH IRQ `irq`, with the
+/// 8250 properties of its MMIO mode.
+pub fn uart(index: u8, irq: u8) -> Result<Vec<u8>, AmlError> {
+    let &(mmio, dma) = UART_MMIO
+        .get(usize::from(index))
+        .ok_or(AmlError::InvalidOperand)?;
+    let (uid, irq, mmio, dma) = (
+        u64::from(index),
+        u64::from(irq),
+        u64::from(mmio),
+        u64::from(dma),
+    );
+    let mut body = Vec::new();
+    acpi_dsl! {
+        Name("_HID", "AMDI0020");
+        Name("_UID", #{byte uid});
+        Name("_DSD", Package(
+            ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+            Package(
+                Package("clock-frequency", #{const dword UART_CLOCK_HZ}),
+                Package("reg-shift", 2u8),
+                Package("reg-io-width", 1u8),
+            )
+        ));
+        Name("_CRS", ResourceTemplate {
+            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword irq});
+            Memory32Fixed(ReadWrite, #{dword mmio}, 0x1000u32);
+            Memory32Fixed(ReadWrite, #{dword dma}, 0x1000u32);
+        });
+    }
+    .emit(&mut body)?;
+    let name = [b'F', b'U', b'R', b'0' + index];
+    device_vec(
+        core::str::from_utf8(&name).map_err(|_| AmlError::InvalidPath)?,
+        &body,
+    )
 }
 
 /// FCH I/O ports that no device object claims, `(port, length)`: the

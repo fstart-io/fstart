@@ -184,3 +184,18 @@ fn valid_header_result_is_not_ignored_when_legacy_status_claims_success() {
     );
     assert!(!ec.is_poisoned());
 }
+
+#[test]
+fn event_masks_are_their_own_commands_with_a_32_bit_mask() {
+    let mut ec = Ec::discover(Ports::new(&[&[], &[]])).unwrap();
+    let timer = ManualTimer::new();
+    let mask = HostEvent::LidClosed.mask() | HostEvent::ModeChange.mask();
+    assert_eq!(mask, 1 | 1 << 28);
+    ec.set_sci_mask(mask, &timer).unwrap();
+    ec.set_wake_mask(0, &timer).unwrap();
+    let requests = &ec.io.requests;
+    assert_eq!(&requests[0][2..4], &0x8bu16.to_le_bytes());
+    assert_eq!(&requests[0][6..], &[4, 0, 1, 0, 0, 0x10]);
+    assert_eq!(&requests[1][2..4], &0x8eu16.to_le_bytes());
+    assert_eq!(&requests[1][8..], &[0; 4]);
+}

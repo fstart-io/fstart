@@ -267,7 +267,8 @@ impl Init for Picasso {
         .map_err(|_| "SMU power policy")?;
         sandstone::alink_init(&ctx.hw.fch);
         ctx.hw.fch.acpi_decode(sandstone::ACPI_PORTS);
-        legacy::initialize(&ctx.hw.fch, config.fch.espi.is_some(), false);
+        let routes = config.routes().map_err(|_| "FCH interrupt routes")?;
+        legacy::initialize(&ctx.hw.fch, config.fch.espi.is_some(), false, &routes);
         legacy::lpc_init(ctx.hw.fch.bus());
         sandstone::clock_init(smn);
         // SAFETY: BSP owns the decoded fixed USB PHY registers.

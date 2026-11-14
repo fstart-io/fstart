@@ -6,7 +6,7 @@ use crate::{
     fch::{
         emmc, espi,
         gpio::{Bank, FAMILY17H_EVENTS, Pad},
-        sandstone::{preinit::SpiConfig, usb},
+        sandstone::{legacy, preinit::SpiConfig, usb},
     },
     nbio::picasso as nbio,
 };
@@ -68,6 +68,17 @@ pub struct Config {
     /// FCH I2C controllers and their devices, for the UEFI payload to
     /// drive and the OS to find in ACPI.
     pub i2c: &'static [I2cBus],
+}
+
+impl Config {
+    /// The IOAPIC inputs of the FCH's internal sources: one of its own for
+    /// the console UART and each I2C controller.
+    pub fn routes(&self) -> Result<legacy::Routes, legacy::TooManyControllers> {
+        legacy::Routes::new(
+            [self.fch.console_uart],
+            self.i2c.iter().map(|bus| bus.controller as u8),
+        )
+    }
 }
 
 /// An FCH I2C controller and the devices on it.

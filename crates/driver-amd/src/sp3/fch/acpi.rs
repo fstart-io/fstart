@@ -35,13 +35,7 @@ const UART_INTR: [u8; 4] = [0xF4, 0xF5, 0xF8, 0xF9];
 const I2C_INTR: [u8; 6] = [0xF0, 0xF1, 0xF2, 0xF3, 0xF6, 0xF7];
 const GPIO_INTR: u8 = 0xE2;
 
-/// UART `n`: MMIO block and its DMA block.
-const UART_MMIO: [(u32, u32); 4] = [
-    (0xFEDC_9000, 0xFEDC_7000),
-    (0xFEDC_A000, 0xFEDC_8000),
-    (0xFEDC_E000, 0xFEDC_C000),
-    (0xFEDC_F000, 0xFEDC_D000),
-];
+use crate::fch::UART_MMIO;
 const I2C_MMIO: [u32; 6] = [
     0xFEDC_2000,
     0xFEDC_3000,
@@ -147,25 +141,7 @@ impl FchAcpi {
     pub fn sb_aml(&self) -> Result<Vec<u8>, AmlError> {
         let mut out = Vec::new();
         for u in &self.uarts {
-            let (mmio, dma) = UART_MMIO[usize::from(u.index)];
-            let body = emit(acpi_dsl! {
-                Name("_HID", "AMDI0020");
-                Name("_UID", #{byte u.index});
-                Name("_DSD", Package(
-                    ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                    Package(
-                        Package("clock-frequency", #{const dword uart::MMIO_CLOCK_HZ}),
-                        Package("reg-shift", 2u8),
-                        Package("reg-io-width", 1u8),
-                    )
-                ));
-                Name("_CRS", ResourceTemplate {
-                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword u.irq});
-                    Memory32Fixed(ReadWrite, #{dword mmio}, 0x1000u32);
-                    Memory32Fixed(ReadWrite, #{dword dma}, 0x1000u32);
-                });
-            })?;
-            out.extend(device_vec(&name("FUR", b'0' + u.index), &body)?);
+            out.extend(crate::fch::aml::uart(u.index, u.irq)?);
         }
         for c in &self.legacy {
             let body = emit(acpi_dsl! {

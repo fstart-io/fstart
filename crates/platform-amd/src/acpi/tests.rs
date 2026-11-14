@@ -318,6 +318,43 @@ fn bridge_prts_route_through_the_nbio_ioapic_of_their_die() {
     );
 }
 
+/// The I/O an eSPI EC owns is its own devices', not the FCH's: SYSR
+/// leaves out the ranges it forwards there (Vilboz: the ACPI EC ports and
+/// the memory map at 0x900), and keeps the rest.
+#[test]
+fn the_fch_reserves_no_io_a_board_peripheral_owns() {
+    let root = [root_bridge(
+        0,
+        pci_root(0..=255, &IO, &MMIO),
+        0xfec0_1000,
+        None,
+        false,
+    )];
+    let cpus = cpus(&[0, 1], false);
+    let io = |board: &Board| {
+        let aml = build(&inputs(&crate::picasso::acpi::ACPI, &cpus, &root, board))
+            .unwrap()
+            .dsdt;
+        let sysr = device(&aml, b"SYSR");
+        // IO descriptors: 0x47, decode, min, max, alignment, length.
+        aml[sysr..]
+            .windows(8)
+            .filter(|w| w[0] == 0x47 && w[1] == 1 && w[2..4] == w[4..6])
+            .map(|w| u16::from_le_bytes([w[2], w[3]]))
+            .collect::<Vec<_>>()
+    };
+    let all = io(&Board::default());
+    let vilboz = io(&Board {
+        peripheral_io: vec![(0x62, 5), (0x800, 0x100), (0x900, 0xff), (0x200, 8)],
+        ..Default::default()
+    });
+    for port in [0x63, 0x65, 0x900, 0x910] {
+        assert!(all.contains(&port) && !vilboz.contains(&port), "{port:#x}");
+    }
+    assert_eq!(all.len() - vilboz.len(), 4);
+    assert!(vilboz.contains(&0x67) && vilboz.contains(&0x80));
+}
+
 /// Picasso has one root bridge with the bridges of its routing table.
 #[test]
 fn picasso_routes_its_internal_bridges() {
@@ -341,6 +378,9 @@ fn picasso_routes_its_internal_bridges() {
     );
     // Neither a wake GPE nor the server's second PCIe core.
     assert!(!aml.windows(4).any(|w| w == b"_PRW" || w == b"RP31"));
+    // S0, S4 and S5.
+    assert!(aml.windows(4).any(|w| w == b"_S4_"));
+    assert!(!aml.windows(4).any(|w| w == b"_S1_" || w == b"_S3_"));
 }
 
 #[test]
@@ -461,7 +501,8 @@ fn an_acpi_only_emmc_has_its_ivhd_entry() {
         false,
     )];
     let (cpus, board) = (cpus(&[0, 1], false), Board::default());
-    let emmc = [crate::picasso::acpi::emmc().unwrap()];
+    let routes = fstart_driver_amd::fch::sandstone::legacy::Routes::new([0], []).unwrap();
+    let emmc = [crate::picasso::acpi::emmc(&routes).unwrap()];
     let soc = &crate::picasso::acpi::ACPI;
     let with = Inputs {
         devices: &emmc,
@@ -614,7 +655,8 @@ fn dsdt_disassembles() {
         0x37eeu16.to_le_bytes()
     );
 
-    let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt)) else {
+    let Ok(dsl) = iasl_disassemble("zeppelin", &fstart_acpi::platform::build_dsdt(&tables.dsdt))
+    else {
         std::eprintln!("iasl not found, skipping the DSDT disassembly");
         return;
     };
@@ -687,6 +729,84 @@ fn dsdt_disassembles() {
     let log = std::string::String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && !log.contains("AE_") && log.contains("55 AA 01 CB 00 00 00 00"),
+        "{log}"
+    );
+}
+
+/// Vilboz's DSDT: the ChromeEC under the LPC bridge, the console UART and
+/// I2C on their own FCH IRQs, and the EC's I/O not in SYSR. It
+/// disassembles, and the EC's methods run in the real namespace.
+#[test]
+fn vilboz_dsdt_loads() {
+    use fstart_driver_amd::fch::sandstone::legacy::Routes;
+    let root = [root_bridge(
+        0,
+        pci_root(0..=255, &IO, &MMIO),
+        0xfec0_1000,
+        None,
+        false,
+    )];
+    let cpus = cpus(&[0, 1], false);
+    let ec = fstart_driver_chromeec::acpi::Ec {
+        sci_gpe: 3,
+        wake_gpe: Some(15),
+        pd: true,
+        tablet_mode: true,
+        keyboard_backlight: true,
+    };
+    let mut lpc_aml = fstart_driver_chromeec::acpi::keyboard_aml();
+    lpc_aml.extend(ec.lpc_aml().unwrap());
+    let board = Board {
+        i8042: true,
+        lpc_aml,
+        peripheral_io: vec![(0x62, 5), (0x800, 0x100), (0x900, 0xff), (0x200, 8)],
+        ..Default::default()
+    };
+    let routes = Routes::new([0], [2, 3]).unwrap();
+    let soc_aml = crate::picasso::acpi::devices(0, &[], &routes, false).unwrap();
+    let tables = build(&Inputs {
+        sb_aml: &soc_aml,
+        ..inputs(&crate::picasso::acpi::ACPI, &cpus, &root, &board)
+    })
+    .unwrap();
+    let Ok(dsl) = iasl_disassemble("vilboz", &fstart_acpi::platform::build_dsdt(&tables.dsdt))
+    else {
+        std::eprintln!("iasl not found, skipping the DSDT disassembly");
+        return;
+    };
+    for object in [
+        "Device (EC0)",
+        "Device (CREC)",
+        "Device (PS2K)",
+        "Device (FUR0)",
+        "Name (_HID, \"AMDI0020\")",
+    ] {
+        assert!(dsl.contains(object), "{object} missing:\n{dsl}");
+    }
+    let dir = std::env::temp_dir().join(std::format!("fstart-vilboz-dsdt-{}", std::process::id()));
+    let batch = [
+        "BAT0._BST",
+        "LID0._LID",
+        "AC._PSR",
+        "CREC.TBMC._STA",
+        "_Q1D",
+    ]
+    .map(|method| std::format!(r"execute \_SB.PCI0.LPCB.EC0.{method}"))
+    .join(";");
+    let output = match std::process::Command::new("acpiexec")
+        .current_dir(dir)
+        .args(["-dt", "-fv", "0", "-b", &batch, "dsdt.aml"])
+        .output()
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::eprintln!("acpiexec not found, skipping the DSDT execution");
+            return;
+        }
+        output => output.unwrap(),
+    };
+    let log = std::string::String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && !log.contains("AE_") && log.matches("Evaluating ").count() == 5,
         "{log}"
     );
 }
@@ -793,9 +913,8 @@ fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
         .unwrap()
 }
 
-fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {
-    let dir =
-        std::env::temp_dir().join(std::format!("fstart-zeppelin-dsdt-{}", std::process::id()));
+fn iasl_disassemble(board: &str, dsdt: &[u8]) -> std::io::Result<std::string::String> {
+    let dir = std::env::temp_dir().join(std::format!("fstart-{board}-dsdt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("dsdt.aml"), dsdt)?;
