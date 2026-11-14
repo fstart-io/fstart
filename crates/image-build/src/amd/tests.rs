@@ -418,8 +418,12 @@ fn ffs_and_stage(reset_size: usize) -> (Vec<u8>, Vec<u8>) {
     (ffs, stage)
 }
 
-const fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
-    assembly::FfsWindow { offset, size }
+fn ffs_window(offset: u32, size: u32) -> assembly::FfsWindow {
+    assembly::FfsWindow {
+        step: "ffs".into(),
+        offset,
+        size,
+    }
 }
 
 /// MJ11's layout with its vendor image.

@@ -14,10 +14,11 @@ use fstart_core::{
 use fstart_image_build::{
     build_plan::{
         BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
-        FfsAssembly as Assembly, InputFile, RunArtifact, RunMedia, RunRecipe, UnitOutput,
+        FfsAssembly as Assembly, ImageStep, InputFile, UnitOutput,
     },
     linker::resolved_ram_stage,
     plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    run::{RunArtifact, RunMedia, RunRecipe},
 };
 use std::{
     collections::BTreeMap,
@@ -225,7 +226,7 @@ fn run(emulator: SunxiEmulator, facts: &BoardFacts) -> Result<RunRecipe, String>
             smp: None,
             nographic: true,
             media: vec![RunMedia::SdCard {
-                artifact: RunArtifact::Ffs,
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
                 offset: 8 * 1024,
                 size: 32 * 1024 * 1024,
             }],

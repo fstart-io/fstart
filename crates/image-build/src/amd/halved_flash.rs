@@ -949,11 +949,13 @@ pub fn packed_rom(
     Ok(rom)
 }
 
-/// The halved-flash image operation: the artefact of a preceding FFS step
+/// The halved-flash image operation: the artefact of an earlier FFS step
 /// (the payload and the stage unit's trust-finalized copy) plus the stage
 /// unit, composed into the vendor ROM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmdHalvedFlashAssembly {
+    /// The FFS image step whose artefact the flash carries.
+    pub ffs: String,
     /// Vendor ROM: one 16 MiB half, the 32 MiB dual image or a full
     /// readout with [`FlashPlan::mirrors`], workspace relative or absolute. Its directories and blobs are kept in place.
     /// Empty with packed halves.

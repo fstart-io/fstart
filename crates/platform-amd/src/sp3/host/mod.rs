@@ -431,6 +431,7 @@ pub fn resolve<B: Sp3BoardFacts>(
             ImageStep::new(
                 "flash",
                 ImageOperation::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
+                    ffs: ImageStep::FFS.into(),
                     vendor_image,
                     packed,
                     stage_unit: STAGE_UNIT.into(),

@@ -6,14 +6,17 @@ use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
         ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
-        FfsAssembly as Assembly, InputFile, RunArtifact, RunDisk, RunMedia, RunRecipe,
-        SmmRelocation, SmmUnit, UnitOutput,
+        FfsAssembly as Assembly, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit,
+        UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
     plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    run::{RunArtifact, RunDisk, RunMedia, RunRecipe},
+    x86_flash::X86FlashAssembly,
 };
 use std::{
+    boxed::Box,
     collections::BTreeMap,
     string::{String, ToString},
     vec,
@@ -155,7 +158,7 @@ fn virt_recipe(machine: VirtMachine) -> RunRecipe {
             qemu: "qemu-system-riscv64".into(),
             machine: "virt".into(),
             media: vec![RunMedia::Pflash {
-                artifact: RunArtifact::Ffs,
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
                 unit: 0,
                 size: 32 * 1024 * 1024,
                 readonly: false,
@@ -168,7 +171,7 @@ fn virt_recipe(machine: VirtMachine) -> RunRecipe {
             machine: "virt,secure=on,virtualization=on,gic-version=3".into(),
             cpu: Some("cortex-a72".into()),
             media: vec![RunMedia::SplitPflash {
-                artifact: RunArtifact::Ffs,
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
                 bank_size: 64 * 1024 * 1024,
             }],
             ..base
@@ -178,7 +181,7 @@ fn virt_recipe(machine: VirtMachine) -> RunRecipe {
             machine: "virt,highmem-ecam=off".into(),
             cpu: Some("cortex-a15".into()),
             media: vec![RunMedia::SplitPflash {
-                artifact: RunArtifact::Ffs,
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
                 bank_size: 64 * 1024 * 1024,
             }],
             ..base
@@ -187,19 +190,64 @@ fn virt_recipe(machine: VirtMachine) -> RunRecipe {
     }
 }
 
+/// The name of q35's x86 flash image step.
+const X86_FLASH: &str = "flash";
+
+/// The image steps of a machine model after its FFS: q35 boots the
+/// top-mapped x86 flash composed from the FFS and the linked stage.
+fn flash_steps(machine: VirtMachine, policy: &QemuPolicy) -> Vec<ImageStep> {
+    match (machine.is_q35(), &policy.link) {
+        (true, QemuLink::X86 { flash, .. }) => vec![ImageStep::new(
+            X86_FLASH,
+            ImageOperation::X86Flash(Box::new(X86FlashAssembly {
+                ffs: ImageStep::FFS.into(),
+                stage_unit: "stage".into(),
+                size: flash.size,
+                ffs_offset: policy.firmware_image.base - flash.base,
+            })),
+        )],
+        _ => vec![],
+    }
+}
+
+/// q35 booting the top-mapped x86 flash image step. A protected-mode
+/// build runs on a CPU without long mode, like the Core Duo it exists
+/// for.
+fn q35_recipe(protected_mode: bool) -> RunRecipe {
+    RunRecipe {
+        qemu: "qemu-system-x86_64".into(),
+        machine: "q35".into(),
+        cpu: protected_mode.then(|| "coreduo".into()),
+        accel_kvm: true,
+        memory: Some("1G".into()),
+        smp: Some("1".into()),
+        nographic: false,
+        media: vec![RunMedia::Bios {
+            artifact: RunArtifact::Step(X86_FLASH.into()),
+        }],
+        devices: strings(&["bochs-display"]),
+        args: strings(&[
+            "-no-reboot",
+            "-display",
+            "none",
+            "-chardev",
+            "stdio,id=char0,mux=on,signal=off",
+            "-serial",
+            "chardev:char0",
+            "-mon",
+            "chardev=char0,mode=readline",
+            "-vga",
+            "none",
+        ]),
+        disk: Some(RunDisk::Ide),
+    }
+}
+
 /// The launch recipe of a non-virt machine model.
-fn qemu_recipe(machine: VirtMachine, policy: &QemuPolicy) -> RunRecipe {
+fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
     match machine {
         VirtMachine::Q35 | VirtMachine::Q35ProtectedMode => {
-            let QemuLink::X86 { flash, .. } = policy.link else {
-                unreachable!("q35 links as x86")
-            };
-            RunRecipe::q35(
-                "stage",
-                flash.size,
-                policy.firmware_image.base - flash.base,
-                matches!(machine, VirtMachine::Q35ProtectedMode),
-            )
+            q35_recipe(matches!(machine, VirtMachine::Q35ProtectedMode))
         }
         VirtMachine::Sbsa => RunRecipe {
             qemu: "qemu-system-aarch64".into(),
@@ -216,7 +264,7 @@ fn qemu_recipe(machine: VirtMachine, policy: &QemuPolicy) -> RunRecipe {
                     size: 256 * 1024 * 1024,
                 },
                 RunMedia::Pflash {
-                    artifact: RunArtifact::Ffs,
+                    artifact: RunArtifact::Step(ImageStep::FFS.into()),
                     unit: 1,
                     size: 256 * 1024 * 1024,
                     readonly: false,
@@ -235,7 +283,7 @@ fn qemu_recipe(machine: VirtMachine, policy: &QemuPolicy) -> RunRecipe {
             smp: None,
             nographic: true,
             media: vec![RunMedia::Bios {
-                artifact: RunArtifact::Ffs,
+                artifact: RunArtifact::Step(ImageStep::FFS.into()),
             }],
             devices: vec![],
             args: vec![],
@@ -773,7 +821,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     use fstart_core::layout::RegionKind as Kind;
     use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
     let policy = machine.qemu_policy()?;
-    let run = qemu_recipe(machine, &policy);
+    let run = qemu_recipe(machine);
+    let flash_steps = flash_steps(machine, &policy);
     let payload = selection
         .payload
         .unwrap_or_else(|| policy.default_payload.into());
@@ -1117,7 +1166,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         units,
         stages: vec!["stage".into()],
         platform: assembly.platform,
-        images: vec![assembly.into()],
+        images: core::iter::once(assembly.into())
+            .chain(flash_steps)
+            .collect(),
         inputs,
         run: Some(run),
     };

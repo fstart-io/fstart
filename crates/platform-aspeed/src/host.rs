@@ -14,11 +14,12 @@ use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
         BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
-        FfsAssembly as Assembly, InputFile, RunArtifact, RunMedia, RunRecipe, UnitOutput,
+        FfsAssembly as Assembly, ImageStep, InputFile, UnitOutput,
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
     plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    run::{RunArtifact, RunMedia, RunRecipe},
 };
 use std::{
     collections::BTreeMap,
@@ -290,7 +291,7 @@ fn run(emulator: AspeedEmulator, facts: &BoardFacts) -> Result<RunRecipe, String
                 smp: None,
                 nographic: true,
                 media: vec![RunMedia::Mtd {
-                    artifact: RunArtifact::Ffs,
+                    artifact: RunArtifact::Step(ImageStep::FFS.into()),
                 }],
                 devices: vec![],
                 args: vec!["-no-reboot".into()],

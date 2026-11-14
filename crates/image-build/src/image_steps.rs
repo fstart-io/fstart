@@ -5,7 +5,7 @@
 //! [`execute`]; it never matches on [`ImageOperation`] itself. Adding a
 //! format means adding its operation and its arm here, next to the
 //! format's own code — not teaching every tool a new special case.
-use crate::build_plan::{BuildPlan, FileBinding, ImageOperation};
+use crate::build_plan::{BuildPlan, FfsAssembly, FileBinding, ImageOperation};
 use crate::{StageBinary, amd::halved_flash};
 use std::{
     collections::BTreeMap,
@@ -35,10 +35,6 @@ pub struct ImageOutputs {
     pub artifacts: BTreeMap<String, PathBuf>,
     /// The last step's artefact: the image `assemble` reports.
     pub image: PathBuf,
-    /// The FFS step's artefact, if a step produced one. Runners that
-    /// attach the firmware filesystem itself (rather than a composed
-    /// flash image) consume this.
-    pub ffs: Option<PathBuf>,
     pub notes: Vec<String>,
 }
 
@@ -99,7 +95,6 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
     let mut outputs = ImageOutputs {
         artifacts: BTreeMap::new(),
         image: ctx.output_dir.to_path_buf(),
-        ffs: None,
         notes: Vec::new(),
     };
     let input = |name: &str| -> Result<Option<String>, String> {
@@ -113,31 +108,44 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             .transpose()
     };
     for step in &plan.images {
+        // order() checked that a consumed step comes earlier.
+        let consumed = step
+            .operation
+            .consumes()
+            .map(|name| {
+                outputs
+                    .artifacts
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("image step {name} produced no artefact"))
+            })
+            .transpose()?;
         let artifact = match &step.operation {
             ImageOperation::Ffs(image) => {
                 let config = image.config(ctx.board_name)?;
-                let path = crate::assemble::assemble(
+                crate::assemble::assemble(
                     ctx.workspace_root,
                     ctx.board_dir,
                     &config,
                     ctx.stages,
                     Some(ctx.output_dir),
-                    input("kernel")?.as_deref(),
-                    input("firmware")?.as_deref(),
-                    input("fit")?.as_deref(),
+                    input(FfsAssembly::KERNEL)?.as_deref(),
+                    input(FfsAssembly::FIRMWARE)?.as_deref(),
+                    input(FfsAssembly::FIT)?.as_deref(),
                     ctx.payload_files,
                     Some(&image.bootstrap),
                     image.boot_image_format,
                     ctx.signing_key,
-                )?;
-                outputs.ffs = Some(path.clone());
-                path
+                )?
             }
             ImageOperation::AmdEfs(operation) => {
-                amd_efs(ctx, operation, outputs.ffs.as_deref(), &mut outputs.notes)?
+                amd_efs(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
             ImageOperation::AmdHalvedFlash(operation) => {
-                amd_halved_flash(ctx, operation, outputs.ffs.as_deref(), &mut outputs.notes)?
+                amd_halved_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
+            }
+            ImageOperation::X86Flash(operation) => {
+                x86_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
         };
         outputs.image = artifact.clone();
@@ -148,11 +156,35 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
 
 fn ffs_artifact(ffs: Option<&Path>, format: &str) -> Result<PathBuf, String> {
     ffs.map(Path::to_path_buf)
-        .ok_or_else(|| format!("{format} step has no preceding FFS step"))
+        .ok_or_else(|| format!("{format} step names no FFS step"))
+}
+
+/// Compose the consumed FFS artefact and the linked stage into an x86
+/// flash image, written next to the FFS as `<ffs>.rom`.
+fn x86_flash(
+    ctx: &ImageContext<'_>,
+    operation: &crate::x86_flash::X86FlashAssembly,
+    ffs: Option<&Path>,
+    notes: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    let ffs_path = ffs_artifact(ffs, "x86 flash")?;
+    let stage = stage(ctx.stages, &operation.stage_unit)?;
+    let (image, composed) =
+        operation.compose(&read(&ffs_path)?, &read(&stage.path)?, &stage.path)?;
+    notes.extend(composed);
+    let out = ffs_path.with_extension("rom");
+    write(&out, &image)?;
+    notes.push(format!(
+        "x86 flash image: {} ({} MiB, FFS at {:#x})",
+        out.display(),
+        image.len() >> 20,
+        operation.ffs_offset
+    ));
+    Ok(out)
 }
 
 /// Compose an AMD EFS image from its PSP firmware sources, the reset
-/// stage and the preceding FFS artefact if the image has a window for
+/// stage and the consumed FFS artefact if the image has a window for
 /// it, with a receipt of its inputs.
 fn amd_efs(
     ctx: &ImageContext<'_>,
@@ -215,7 +247,7 @@ fn amd_efs(
     Ok(output)
 }
 
-/// Compose the preceding FFS artefact and the reset stage into the
+/// Compose the consumed FFS artefact and the reset stage into the
 /// halved vendor ROM (or its packed halves). Writes `<ffs>.rom`, and
 /// `<ffs>.bank.rom` when the readout carries mirrored boot banks.
 fn amd_halved_flash(

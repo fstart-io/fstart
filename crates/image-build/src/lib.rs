@@ -15,8 +15,10 @@ pub mod intel_plan;
 pub mod layout;
 pub mod linker;
 pub mod plan;
+pub mod run;
 pub mod smm_image;
 mod summary;
+pub mod x86_flash;
 
 use std::path::PathBuf;
 

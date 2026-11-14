@@ -1,5 +1,19 @@
 use crate::payload::{BuildArgs, PayloadChoice};
 use crate::resolved_image::ResolvedImage;
+use fstart_image_build::build_plan::FfsAssembly;
+
+/// The FFS payload inputs' dedicated flags.
+fn payload_aliases<'a>(
+    kernel: Option<&'a str>,
+    firmware: Option<&'a str>,
+    fit: Option<&'a str>,
+) -> [(&'static str, Option<&'a str>); 3] {
+    [
+        (FfsAssembly::KERNEL, kernel),
+        (FfsAssembly::FIRMWARE, firmware),
+        (FfsAssembly::FIT, fit),
+    ]
+}
 
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
@@ -72,7 +86,8 @@ pub fn assemble(
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
     let resolved = load(manifest, payload, options)?;
-    let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
+    let supplied =
+        crate::assemble::supplied_inputs(&payload_aliases(kernel, firmware, fit), &options.inputs)?;
     Ok(assemble_loaded(
         &workspace_root,
         manifest.clone(),
@@ -139,14 +154,10 @@ pub fn flash(
     if !probe_run {
         // Default to the firmware window the board's plan states; an
         // explicit --base-address wins.
+        let plan = &resolved.build.plan;
         let base_address = match base_address {
             Some(base) => base.to_string(),
-            None => match resolved
-                .build
-                .plan
-                .ffs_assembly()
-                .map(|ffs| ffs.build.firmware_image)
-            {
+            None => match plan.ffs_assembly().map(|ffs| ffs.build.firmware_image) {
                 Ok(fstart_core::FirmwareImagePolicy::MemoryMapped { cpu_base, .. }) => {
                     format!("{cpu_base:#x}")
                 }
@@ -159,8 +170,8 @@ pub fn flash(
         };
         let base_address = base_address.as_str();
         eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
-        let supplied = crate::assemble::supplied_inputs(None, None, None, &options.inputs)?;
-        let assembled = assemble_loaded(
+        let supplied = crate::assemble::supplied_inputs(&[], &options.inputs)?;
+        let mut assembled = assemble_loaded(
             &workspace_root,
             manifest.clone(),
             &resolved,
@@ -168,7 +179,12 @@ pub fn flash(
             &supplied,
             options,
         )?;
-        let ffs_path = assembled.ffs.unwrap_or(assembled.image);
+        // The FFS goes to the firmware window; a plan without one flashes
+        // its final image there.
+        let ffs_path = plan
+            .ffs_step()
+            .and_then(|(step, _)| assembled.artifacts.remove(step))
+            .unwrap_or(assembled.image);
 
         let ffs_size = std::fs::metadata(&ffs_path).map(|m| m.len()).unwrap_or(0);
         eprintln!(
@@ -252,49 +268,39 @@ pub fn run(
             manifest.board
         )
     })?;
-    let external = secure_firmware
-        .map(|path| {
-            std::collections::BTreeMap::from([(
-                "secure-firmware".to_string(),
-                std::path::PathBuf::from(path),
-            )])
-        })
-        .unwrap_or_default();
-    if resolved.build.plan.images.is_empty() {
-        let res = resolved.build(&workspace_root, &manifest, release)?;
-        let primary = res.primary_binary();
-        return crate::qemu::run(
-            &recipe,
-            &crate::qemu::RunArtifacts {
-                ffs: None,
-                image: None,
-                stage_flat: &primary.run_path,
-                stages: &res.stages,
-            },
-            &external,
-            disk,
-            memory,
-        );
-    }
-    let supplied = crate::assemble::supplied_inputs(kernel, firmware, fit, &options.inputs)?;
-    let assembled = assemble_loaded(
-        &workspace_root,
-        manifest,
-        &resolved,
-        release,
-        &supplied,
-        options,
+    // `--secure-firmware` and `--input` bind the run recipe's external
+    // media and the plan's inputs from one namespace.
+    let mut supplied = crate::assemble::supplied_inputs(
+        &[
+            payload_aliases(kernel, firmware, fit).as_slice(),
+            &[("secure-firmware", secure_firmware)],
+        ]
+        .concat(),
+        &options.inputs,
     )?;
-    crate::qemu::run(
-        &recipe,
-        &crate::qemu::RunArtifacts {
-            ffs: assembled.ffs.as_deref(),
-            image: Some(&assembled.image),
-            stage_flat: &assembled.stages[0].run_path,
-            stages: &assembled.stages,
-        },
-        &external,
-        disk,
-        memory,
-    )
+    let external: std::collections::BTreeMap<_, _> = recipe
+        .external_inputs()
+        .filter_map(|name| supplied.remove_entry(name))
+        .collect();
+    let assembled = if resolved.build.plan.images.is_empty() {
+        if let Some(name) = supplied.keys().next() {
+            return Err(format!("input {name} is not declared by the selected plan"));
+        }
+        let build = resolved.build(&workspace_root, &manifest, release)?;
+        crate::assemble::AssembledImage {
+            image: build.primary_binary().run_path.clone(),
+            artifacts: Default::default(),
+            stages: build.stages,
+        }
+    } else {
+        assemble_loaded(
+            &workspace_root,
+            manifest,
+            &resolved,
+            release,
+            &supplied,
+            options,
+        )?
+    };
+    crate::qemu::run(&recipe, &assembled, &external, disk, memory)
 }

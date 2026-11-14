@@ -386,6 +386,7 @@ fn images<S: HostSoc>(
     let assembly = AmdAssembly {
         firmware,
         ffs: ffs.as_ref().zip(layout.ffs).map(|(_, window)| FfsWindow {
+            step: ImageStep::FFS.into(),
             offset: (window.base - layout.flash.base) as u32,
             size: window.size as u32,
         }),

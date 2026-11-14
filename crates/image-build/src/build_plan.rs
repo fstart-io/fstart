@@ -15,160 +15,15 @@ pub struct BuildPlan {
     pub stages: Vec<String>,
     /// Image composition steps, executed in order after the compilation
     /// units: each step consumes stage binaries and the artefacts of the
-    /// steps before it. Empty means compiler/check/editor support only:
-    /// no image, flash or run contract. Never infer compiler selections
-    /// or artifact dependencies from the image steps.
+    /// earlier steps it names. Empty means compiler/check/editor support
+    /// only: no image, flash or run contract. Never infer compiler
+    /// selections or artifact dependencies from the image steps.
     pub images: Vec<ImageStep>,
     pub inputs: Vec<InputFile>,
     /// How to run the built image under QEMU, if the platform offers an
     /// emulator equivalent. Host-only data: it never reaches firmware.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<RunRecipe>,
-}
-
-/// A QEMU launch description owned by the platform/board: the machine,
-/// CPU and memory defaults, how the firmware artefact attaches, and the
-/// devices a normal boot carries. The runner renders argv from this
-/// data alone — it has no per-machine branches. Machine, CPU and device
-/// strings are QEMU's own namespace, passed through verbatim.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunRecipe {
-    /// QEMU binary, e.g. `qemu-system-aarch64`.
-    pub qemu: String,
-    /// `-machine` value, properties included.
-    pub machine: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu: Option<String>,
-    /// Prefer KVM when the host offers it (`FSTART_QEMU_ACCEL` still
-    /// overrides); a missing `cpu` then means `host` under KVM, `max`
-    /// under TCG.
-    #[serde(default)]
-    pub accel_kvm: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory: Option<String>,
-    /// vCPU count default (`-smp`); `FSTART_QEMU_SMP` overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub smp: Option<String>,
-    #[serde(default)]
-    pub nographic: bool,
-    pub media: Vec<RunMedia>,
-    /// Verbatim `-device` values.
-    #[serde(default)]
-    pub devices: Vec<String>,
-    /// Verbatim extra argv (console/display setup, `-no-reboot`, …).
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// How a caller-supplied `--disk` attaches, if at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disk: Option<RunDisk>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum RunDisk {
-    Ide,
-    Nvme,
-}
-
-/// Which built artefact a medium carries.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum RunArtifact {
-    /// The FFS step's artefact.
-    Ffs,
-    /// The final image step's artefact.
-    Image,
-    /// The first stage's flat binary (plans without image steps).
-    Stage,
-}
-
-/// One firmware medium of a run. The transforms are QEMU-attachment
-/// mechanics (padding to a flash bank, splitting banks, placing the
-/// image on a card at the boot ROM's offset, composing an x86
-/// top-mapped flash from the FFS and the linked stage), performed by
-/// the runner from these parameters — the sizes and offsets are the
-/// platform's data, not runner constants.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RunMedia {
-    Bios {
-        artifact: RunArtifact,
-    },
-    Pflash {
-        artifact: RunArtifact,
-        unit: u32,
-        size: u64,
-        #[serde(default)]
-        readonly: bool,
-    },
-    /// A caller-supplied complete pflash image, bound by input `name`
-    /// (e.g. TF-A for a secure bank), checked to be exactly `size`.
-    ExternalPflash {
-        name: String,
-        unit: u32,
-        size: u64,
-    },
-    /// Two pflash banks of `bank_size`: `-bios` when the artefact fits
-    /// the first bank, otherwise split across units 0 and 1.
-    SplitPflash {
-        artifact: RunArtifact,
-        bank_size: u64,
-    },
-    /// A zero-filled SD card of `size` with the artefact at `offset`
-    /// (the Allwinner BROM's eGON offset).
-    SdCard {
-        artifact: RunArtifact,
-        offset: u64,
-        size: u64,
-    },
-    Mtd {
-        artifact: RunArtifact,
-    },
-    /// An x86 flash of `size` mapped below 4 GiB: the FFS artefact at
-    /// `ffs_offset`, overlaid with `stage_unit`'s ELF flash segments,
-    /// its anchor and trust patched from the FFS; attached as `-bios`.
-    X86Flash {
-        stage_unit: String,
-        size: u64,
-        ffs_offset: u64,
-    },
-}
-
-impl RunRecipe {
-    /// QEMU's q35 machine with the x86 top-mapped flash composed from
-    /// the FFS and `stage_unit`'s linked ELF: the launch shared by the
-    /// Intel boards and the q35 machine-model boards. A protected-mode
-    /// build runs on a CPU without long mode, like the Core Duo it
-    /// exists for.
-    pub fn q35(stage_unit: &str, flash_size: u64, ffs_offset: u64, protected_mode: bool) -> Self {
-        let strings = |items: &[&str]| items.iter().map(ToString::to_string).collect();
-        Self {
-            qemu: "qemu-system-x86_64".into(),
-            machine: "q35".into(),
-            cpu: protected_mode.then(|| "coreduo".into()),
-            accel_kvm: true,
-            memory: Some("1G".into()),
-            smp: Some("1".into()),
-            nographic: false,
-            media: vec![RunMedia::X86Flash {
-                stage_unit: stage_unit.into(),
-                size: flash_size,
-                ffs_offset,
-            }],
-            devices: strings(&["bochs-display"]),
-            args: strings(&[
-                "-no-reboot",
-                "-display",
-                "none",
-                "-chardev",
-                "stdio,id=char0,mux=on,signal=off",
-                "-serial",
-                "chardev:char0",
-                "-mon",
-                "chardev=char0,mode=readline",
-                "-vga",
-                "none",
-            ]),
-            disk: Some(RunDisk::Ide),
-        }
-    }
+    pub run: Option<crate::run::RunRecipe>,
 }
 
 /// One image-format operation in a plan. The format's config type and its
@@ -185,11 +40,35 @@ pub enum ImageOperation {
     /// The signed fstart firmware filesystem over the stage binaries.
     Ffs(Box<FfsAssembly>),
     /// An AMD EFS flash image: PSP firmware, the stage the PSP loads and
-    /// the artefact of a preceding FFS step in its window, if any.
+    /// the artefact of the FFS step it names in its window, if any.
     AmdEfs(Box<crate::amd::assembly::AmdAssembly>),
-    /// An AMD halved flash: the artefact of a preceding FFS step and the
-    /// PSP-copied stage unit composed per repeated 16 MiB boot half.
+    /// An AMD halved flash: the artefact of the FFS step it names and
+    /// the PSP-copied stage unit composed per repeated 16 MiB boot half.
     AmdHalvedFlash(Box<crate::amd::halved_flash::AmdHalvedFlashAssembly>),
+    /// An x86 flash mapped below 4 GiB: the artefact of the FFS step it
+    /// names at its offset and the linked stage's flash segments.
+    X86Flash(Box<crate::x86_flash::X86FlashAssembly>),
+}
+
+impl ImageOperation {
+    /// The earlier FFS step whose artefact the operation consumes.
+    pub fn consumes(&self) -> Option<&str> {
+        match self {
+            Self::Ffs(_) => None,
+            Self::AmdEfs(image) => image.ffs.as_ref().map(|window| window.step.as_str()),
+            Self::AmdHalvedFlash(image) => Some(&image.ffs),
+            Self::X86Flash(image) => Some(&image.ffs),
+        }
+    }
+
+    /// The names of the plan inputs (`--input NAME=PATH`) the operation
+    /// can consume.
+    pub fn inputs(&self) -> &'static [&'static str] {
+        match self {
+            Self::Ffs(_) => FfsAssembly::INPUTS,
+            Self::AmdEfs(_) | Self::AmdHalvedFlash(_) | Self::X86Flash(_) => &[],
+        }
+    }
 }
 
 impl ImageStep {
@@ -200,8 +79,11 @@ impl ImageStep {
         }
     }
 
+    /// The name of a plan's FFS step.
+    pub const FFS: &'static str = "ffs";
+
     pub fn ffs(assembly: FfsAssembly) -> Self {
-        Self::new("ffs", ImageOperation::Ffs(Box::new(assembly)))
+        Self::new(Self::FFS, ImageOperation::Ffs(Box::new(assembly)))
     }
 }
 
@@ -212,14 +94,18 @@ impl From<FfsAssembly> for ImageStep {
 }
 
 impl BuildPlan {
+    /// The plan's FFS step (a plan has at most one), if it has one.
+    pub fn ffs_step(&self) -> Option<(&str, &FfsAssembly)> {
+        self.images.iter().find_map(|step| match &step.operation {
+            ImageOperation::Ffs(image) => Some((step.name.as_str(), image.as_ref())),
+            _ => None,
+        })
+    }
+
     /// The plan's FFS step configuration, if it has one.
     pub fn ffs_assembly(&self) -> Result<&FfsAssembly, String> {
-        self.images
-            .iter()
-            .find_map(|step| match &step.operation {
-                ImageOperation::Ffs(image) => Some(image.as_ref()),
-                _ => None,
-            })
+        self.ffs_step()
+            .map(|(_, image)| image)
             .ok_or_else(|| "plan has no image assembly/run/flash contract".into())
     }
 
@@ -310,6 +196,12 @@ impl BootstrapRole {
 }
 
 impl FfsAssembly {
+    /// The plan inputs the FFS packs as its payload's files.
+    pub const KERNEL: &'static str = "kernel";
+    pub const FIRMWARE: &'static str = "firmware";
+    pub const FIT: &'static str = "fit";
+    pub const INPUTS: &'static [&'static str] = &[Self::KERNEL, Self::FIRMWARE, Self::FIT];
+
     /// Blob paths emitted by platform Rust are workspace-relative. Convert only
     /// for the legacy assembler's board-relative file API, without inferring policy.
     pub fn resolve_workspace_inputs(
@@ -626,7 +518,7 @@ impl BuildPlan {
                         ),
                     };
                 }
-                ImageOperation::Ffs(_) => None,
+                ImageOperation::Ffs(_) | ImageOperation::X86Flash(_) => None,
             };
             if let Some(bound) = bound {
                 return if requested == bound {
@@ -773,16 +665,25 @@ impl BuildPlan {
                 return Err(format!("duplicate or non-executable image stage {stage}"));
             }
         }
-        // Image steps: bounded, uniquely named, and a step that consumes
-        // an FFS artefact comes after the FFS step that produces it.
+        // Image steps: bounded and uniquely named, one FFS at most (the
+        // runtime configuration, bootstrap and flash contract are its),
+        // and a step consumes an FFS step it names that comes before it.
         if self.images.len() > 8 {
             return Err("plan has too many image steps".into());
         }
         let mut image_names = BTreeSet::new();
-        let mut seen_ffs = false;
+        let mut ffs_steps = BTreeSet::new();
         for step in &self.images {
             if !identifier(&step.name) || !image_names.insert(step.name.as_str()) {
                 return Err(format!("invalid or duplicate image step {}", step.name));
+            }
+            if let Some(ffs) = step.operation.consumes()
+                && !ffs_steps.contains(ffs)
+            {
+                return Err(format!(
+                    "image step {} consumes {ffs}, which is no earlier FFS step",
+                    step.name
+                ));
             }
             match &step.operation {
                 ImageOperation::Ffs(image) if image.platform != self.platform => {
@@ -791,16 +692,29 @@ impl BuildPlan {
                         step.name, image.platform, self.platform
                     ));
                 }
-                ImageOperation::Ffs(_) => seen_ffs = true,
-                ImageOperation::AmdEfs(image) if image.ffs.is_some() && !seen_ffs => {
-                    return Err("AMD EFS step consumes an FFS no earlier step produces".into());
+                ImageOperation::Ffs(_) if !ffs_steps.is_empty() => {
+                    return Err("plan has more than one FFS step".into());
                 }
-                ImageOperation::AmdHalvedFlash(_) if !seen_ffs => {
-                    return Err(
-                        "AMD halved-flash step consumes an FFS no earlier step produces".into(),
-                    );
+                ImageOperation::Ffs(_) => {
+                    ffs_steps.insert(step.name.as_str());
                 }
+                ImageOperation::X86Flash(image) => image.validate(self)?,
                 _ => {}
+            }
+        }
+        if let Some(run) = &self.run {
+            for artifact in run.media.iter().filter_map(|media| media.artifact()) {
+                match artifact {
+                    crate::run::RunArtifact::Step(step) if !image_names.contains(step.as_str()) => {
+                        return Err(format!("run recipe attaches unknown image step {step}"));
+                    }
+                    _ => {}
+                }
+            }
+            for name in run.external_inputs() {
+                if !identifier(name) || self.inputs.iter().any(|input| input.name == name) {
+                    return Err(format!("invalid or duplicate run input {name}"));
+                }
             }
         }
         let mut bootstrap = BTreeSet::new();
@@ -853,8 +767,8 @@ impl BuildPlan {
         Ok(ordered)
     }
 
-    /// External files a caller may bind by name (`--input NAME=PATH`);
-    /// the names are the platform's, not a fixed slot list.
+    /// External files a caller may bind by name (`--input NAME=PATH`):
+    /// each one an input of an image step the plan has.
     pub fn validate_input_bindings(&self) -> Result<(), String> {
         let mut inputs = BTreeSet::new();
         for input in &self.inputs {
@@ -863,6 +777,13 @@ impl BuildPlan {
                     "unknown or duplicate payload input binding {}",
                     input.name
                 ));
+            }
+            if !self
+                .images
+                .iter()
+                .any(|step| step.operation.inputs().contains(&input.name.as_str()))
+            {
+                return Err(format!("no image step consumes input {}", input.name));
             }
             Span {
                 base: 0,
@@ -990,6 +911,83 @@ mod tests {
                 .into(),
             ],
         }
+    }
+
+    #[test]
+    fn image_steps_name_an_earlier_ffs_and_inputs_have_a_consumer() {
+        use crate::run::{RunArtifact, RunMedia, RunRecipe};
+        let mut plan = fixture();
+        plan.order().unwrap();
+        let ffs = plan.images[0].clone();
+        // A second FFS would make the runtime configuration ambiguous.
+        plan.images.push(ImageStep {
+            name: "other".into(),
+            ..ffs.clone()
+        });
+        assert!(plan.order().unwrap_err().contains("more than one FFS"));
+        plan.images.truncate(1);
+        plan.platform = fstart_core::Platform::Riscv64;
+        assert!(plan.order().unwrap_err().contains("is for"));
+        plan.platform = fstart_core::Platform::Aarch64;
+
+        plan.inputs.push(InputFile {
+            name: "calibration".into(),
+            default: None,
+            capacity: 0x1000,
+        });
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("no image step consumes input calibration")
+        );
+        plan.inputs[0].name = FfsAssembly::KERNEL.into();
+        plan.order().unwrap();
+
+        let mut run = RunRecipe {
+            qemu: "qemu-system-aarch64".into(),
+            machine: "virt".into(),
+            cpu: None,
+            accel_kvm: false,
+            memory: None,
+            smp: None,
+            nographic: true,
+            media: vec![RunMedia::Bios {
+                artifact: RunArtifact::Step("flash".into()),
+            }],
+            devices: vec![],
+            args: vec![],
+            disk: None,
+        };
+        plan.run = Some(run.clone());
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("unknown image step flash")
+        );
+        run.media = vec![RunMedia::ExternalPflash {
+            name: FfsAssembly::KERNEL.into(),
+            unit: 0,
+            size: 0x1000,
+        }];
+        plan.run = Some(run);
+        assert!(plan.order().unwrap_err().contains("duplicate run input"));
+        plan.run = None;
+
+        // A consumer names the FFS step it reads, which must come first.
+        let flash = ImageStep::new(
+            "flash",
+            ImageOperation::X86Flash(Box::new(crate::x86_flash::X86FlashAssembly {
+                ffs: ImageStep::FFS.into(),
+                stage_unit: "launch".into(),
+                size: 0x100_0000,
+                ffs_offset: 0x10_0000,
+            })),
+        );
+        plan.images = vec![flash.clone(), ffs];
+        assert!(plan.order().unwrap_err().contains("no earlier FFS step"));
+        plan.images.reverse();
+        // An x86 flash needs an x86 plan, and so does its FFS.
+        assert!(plan.order().unwrap_err().contains("x86 plan"));
     }
 
     #[test]

@@ -1435,14 +1435,20 @@ fn add_firmware_blob(
     Ok(())
 }
 
+/// A `PT_LOAD` segment: its file offset, its physical (load) address and
+/// its file-backed size. XIP `.data` has a RAM virtual address but a
+/// flash load address.
 #[derive(Debug, Clone, Copy)]
-struct ElfLoadSegment {
-    offset: u64,
-    paddr: u64,
-    filesz: u64,
+pub(crate) struct ElfLoadSegment {
+    pub(crate) offset: u64,
+    pub(crate) paddr: u64,
+    pub(crate) filesz: u64,
 }
 
-fn elf_load_segments(elf_data: &[u8], elf_path: &Path) -> Result<Vec<ElfLoadSegment>, String> {
+pub(crate) fn elf_load_segments(
+    elf_data: &[u8],
+    elf_path: &Path,
+) -> Result<Vec<ElfLoadSegment>, String> {
     if elf_data.len() < 16 {
         return Err(format!("ELF {} is too short", elf_path.display()));
     }

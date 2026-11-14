@@ -2,34 +2,28 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Assembled firmware image plus the stage binaries it was built from. The
-/// binaries travel with the build result so `run` can place the linked stage
-/// (reset vector, anchor) without guessing build-tree paths.
+/// binaries travel with the build result so `run` can attach a stage
+/// without guessing build-tree paths.
 pub struct AssembledImage {
     /// The final image step's artefact.
     pub image: PathBuf,
-    /// The FFS step's artefact, when the plan has one: what the current
-    /// QEMU runner attaches (it composes its own machine flash from it).
-    pub ffs: Option<PathBuf>,
+    /// Every image step's artefact, by step name.
+    pub artifacts: BTreeMap<String, PathBuf>,
     pub stages: Vec<fstart_image_build::StageBinary>,
 }
 
-/// The named external inputs a caller bound, keyed by the plan's input
-/// names. The `kernel`/`firmware`/`fit` flags are aliases for those names.
+/// The named external inputs a caller bound (`--input NAME=PATH`), keyed
+/// by input name. `aliases` are the dedicated flags (`--kernel`,
+/// `--secure-firmware`, …) with the input names they bind.
 pub fn supplied_inputs(
-    kernel_path: Option<&str>,
-    firmware_path: Option<&str>,
-    fit_path: Option<&str>,
+    aliases: &[(&str, Option<&str>)],
     named: &[(String, String)],
 ) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut supplied = BTreeMap::new();
-    for (name, path) in [
-        ("kernel", kernel_path),
-        ("firmware", firmware_path),
-        ("fit", fit_path),
-    ]
-    .into_iter()
-    .filter_map(|(name, path)| path.map(|path| (name.to_string(), path.to_string())))
-    .chain(named.iter().cloned())
+    for (name, path) in aliases
+        .iter()
+        .filter_map(|(name, path)| path.map(|path| (name.to_string(), path.to_string())))
+        .chain(named.iter().cloned())
     {
         if supplied
             .insert(name.clone(), PathBuf::from(&path))
@@ -61,7 +55,7 @@ pub fn assemble_with_resolved(
     )?;
     Ok(AssembledImage {
         image: outputs.image,
-        ffs: outputs.ffs,
+        artifacts: outputs.artifacts,
         stages,
     })
 }

@@ -72,7 +72,8 @@ enum Command {
         disk: Option<String>,
         #[arg(short, long)]
         memory: Option<String>,
-        /// Complete secure pflash image used only by QEMU SBSA-ref.
+        /// Complete secure pflash image for the run recipe input of that
+        /// name (QEMU sbsa-ref); the same as `--input secure-firmware=PATH`.
         #[arg(long)]
         secure_firmware: Option<String>,
     },

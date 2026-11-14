@@ -145,9 +145,11 @@ pub enum Firmware {
         reset_offset: Option<u32>,
     },
 }
-/// The flash window the artefact of a preceding FFS image step occupies.
+/// The flash window the artefact of an earlier FFS image step occupies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FfsWindow {
+    /// The FFS image step whose artefact fills the window.
+    pub step: String,
     pub offset: u32,
     pub size: u32,
 }
