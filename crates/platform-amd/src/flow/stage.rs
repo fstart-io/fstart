@@ -144,6 +144,8 @@ impl<S: Soc> Early<S> {
             tseg,
             e820,
             ffs,
+            nvram,
+            options,
             flow,
         } = S::map(&mut hw, &mut soc_config, &board, &msr, clock)
             .unwrap_or_else(|what| fail::<S>(what));
@@ -164,6 +166,8 @@ impl<S: Soc> Early<S> {
                 tseg,
                 e820,
                 ffs,
+                nvram,
+                options,
                 flow,
             },
             phase: Console,
@@ -187,6 +191,10 @@ struct Machine<S: Soc> {
     e820: E820State,
     /// The FFS with the payload.
     ffs: core::ops::Range<u64>,
+    /// The settings store, if the SoC has one.
+    nvram: Option<&'static [u8]>,
+    /// The outcome of every option knob resolved so far.
+    options: fstart_options::Report,
     /// What the SoC's flow services keep between the phases.
     flow: S::Flow,
 }
@@ -283,14 +291,25 @@ impl<S: Soc, P> Stage<S, P> {
         self.machine.clock
     }
 
-    /// What the SoC's services keep between the phases.
-    pub(crate) fn flow_mut(&mut self) -> &mut S::Flow {
-        &mut self.machine.flow
-    }
-
     /// Stop the boot after logging that the board's `what` failed.
     pub fn fail(&self, what: &'static str) -> ! {
         fail::<S>(what)
+    }
+
+    /// Apply the stored overrides of `knobs` to the board's `config`
+    /// (`fstart_options`), before the board uses it. `check` is the
+    /// whole-set validation of the consumer: if the overridden
+    /// configuration fails it, `config` keeps the board's values and the
+    /// overrides are reported as rejected. The knobs are shown in the
+    /// payload's settings menu.
+    pub fn resolve_options<C: Clone>(
+        &mut self,
+        knobs: &'static [fstart_options::Knob<C>],
+        config: &mut C,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let machine = &mut self.machine;
+        crate::options::resolve(machine.nvram, knobs, config, &mut machine.options, check);
     }
 }
 
@@ -566,7 +585,13 @@ impl<S: Soc> Stage<S, Published<S>> {
         {
             handoff.peripherals = peripherals;
         }
-        S::launch(handoff, &ctx, &silicon.state, &machine.flow)
+        S::launch(
+            handoff,
+            &ctx,
+            &silicon.state,
+            &machine.flow,
+            &machine.options,
+        )
     }
 }
 

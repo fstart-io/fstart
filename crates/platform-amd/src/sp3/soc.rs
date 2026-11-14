@@ -117,11 +117,6 @@ pub struct Flow {
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
     ffs_offset: u32,
-    /// The settings store ([`layout::NVRAM`]) in the CPU view, if a ROM
-    /// window shows it.
-    nvram: Option<&'static [u8]>,
-    /// The outcome of every option knob resolved so far.
-    options: fstart_options::Report,
     tseg: Region,
     /// The size of the flash part.
     rom_size: u32,
@@ -191,21 +186,6 @@ impl<S: Socket, P> Stage<S, P> {
         let acpi = self.fch().acpi();
         fstart_driver_amd::fch::gpio::configure_all(acpi, gpio.early);
         fstart_driver_amd::fch::gpio::configure_all(acpi, gpio.table);
-    }
-
-    /// Apply the stored overrides of `knobs` to the board's `config`
-    /// (`fstart_options`), before the board uses it. `check` is the whole-set
-    /// validation of the consumer: if the overridden configuration fails
-    /// it, `config` keeps the board's values and the overrides are reported
-    /// as rejected. The knobs are shown in the payload's settings menu.
-    pub fn resolve_options<C: Clone>(
-        &mut self,
-        knobs: &'static [fstart_options::Knob<C>],
-        config: &mut C,
-        check: impl FnOnce(&C) -> Result<(), &'static str>,
-    ) {
-        let flow = self.flow_mut();
-        parts::options::resolve(flow.nvram, knobs, config, &mut flow.options, check);
     }
 }
 
@@ -296,8 +276,6 @@ impl<F> State<F> {
             ffs: flow.ffs,
             #[cfg(feature = "payload-uefi")]
             ffs_offset: flow.ffs_offset,
-            #[cfg(feature = "payload-uefi")]
-            options: &flow.options,
             smm: self.smm,
         }
     }
@@ -328,7 +306,7 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     // DF plan).
     let mut options = fstart_options::Report::new();
     let mut level = fstart_log::max_level();
-    parts::options::resolve(
+    crate::options::resolve(
         nvram,
         &fstart_log::option::KNOBS,
         &mut level,
@@ -337,7 +315,7 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     );
     // SAFETY: BSP only, before MP.
     unsafe { fstart_log::set_max_level(level) };
-    parts::options::resolve(
+    crate::options::resolve(
         nvram,
         config.options,
         &mut config.policy,
@@ -362,7 +340,7 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
 
     if board.discrete_tpm {
         step(0x16, "TPM");
-        parts::tpm::start(flash, generation);
+        crate::tpm::start(parts::reset_image(flash, generation), true)?;
     }
 
     step(0x48, "boot media");
@@ -375,13 +353,13 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
         tseg: tseg.base,
         e820,
         ffs: ffs.base..ffs.end(),
+        nvram,
+        options,
         flow: Flow {
             #[cfg(feature = "payload-uefi")]
             ffs,
             #[cfg(feature = "payload-uefi")]
             ffs_offset,
-            nvram,
-            options,
             tseg,
             rom_size,
         },
@@ -429,9 +407,6 @@ pub(crate) fn install_smm<F>(
         usb_bus_count,
         bmc: board.bmc_sx_notify,
     };
-    if let Some(image) = crate::tseg::IMAGE {
-        parts::tpm::measure_smm(image);
-    }
     // The handler's page tables map the low 4 GiB only; a PSP BAR
     // above would fault in SMM at SmmInfo, after the lock.
     if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
@@ -483,6 +458,7 @@ pub(crate) fn launch<F>(
     mut handoff: fstart_payload::Handoff<'_>,
     state: &State<F>,
     flow: &Flow,
+    options: &fstart_options::Report,
 ) -> ! {
     step(0x90, "payload");
     fstart_log::flush();
@@ -498,7 +474,7 @@ pub(crate) fn launch<F>(
         // payload keeps the store for as long as it runs.
         let storage = unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) };
         *storage = parts::options::storage(&view);
-        handoff.settings = Some(parts::options::settings(&view));
+        handoff.settings = Some(parts::options::settings(options));
         handoff.variable_storage = storage
             .as_mut()
             .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);

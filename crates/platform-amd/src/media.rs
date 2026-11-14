@@ -8,6 +8,22 @@ use alloc::vec::Vec;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_stage::boot::{Codec, MemoryPolicy, MemoryWindow};
 
+/// The flash copy of the reset image the PSP loaded (BIOS directory entry
+/// 0x62) in `flash`, the boot ROM's view of the booted 16 MiB, found
+/// through the BIOS directory of `slot`.
+pub fn reset_image(
+    flash: &'static [u8],
+    slot: fstart_amdfw_format::efs::BiosDirectorySlot,
+) -> Option<&'static [u8]> {
+    use fstart_amdfw_format::{Flash, Profile, ROM2_BASE, directory::bios};
+    let profile = Profile::for_slot(slot);
+    Flash::region(flash, 0, ROM2_BASE, profile)
+        .bios_directories_checked(profile.bios)
+        .ok()?
+        .find(bios::RESET_IMAGE, None, None)
+        .and_then(|(dir, entry)| dir.data(entry).ok())
+}
+
 /// The step of [`mount`] that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountError {

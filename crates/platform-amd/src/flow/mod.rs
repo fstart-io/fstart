@@ -66,6 +66,11 @@ pub struct Mapped<S: Soc> {
     pub e820: E820State,
     /// The mounted FFS with the payload.
     pub ffs: core::ops::Range<u64>,
+    /// The settings store in the CPU view, if the SoC has one and a ROM
+    /// window shows it ([`crate::options`]).
+    pub nvram: Option<&'static [u8]>,
+    /// The outcome of every option knob the SoC resolved.
+    pub options: fstart_options::Report,
     pub flow: S::Flow,
 }
 
@@ -160,6 +165,7 @@ pub trait Soc: Init {
         _ctx: &Ctx<'_, Self>,
         _state: &Self::State,
         _flow: &Self::Flow,
+        _options: &fstart_options::Report,
     ) -> ! {
         fstart_payload::boot(handoff, ())
     }

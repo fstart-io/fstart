@@ -40,6 +40,8 @@ pub mod milan;
 pub mod mp;
 pub mod naples;
 pub mod noncar;
+/// The user's option overrides, for every SoC.
+pub mod options;
 pub mod picasso;
 pub mod rome;
 /// The SMBIOS tables, for every SoC.
@@ -48,6 +50,9 @@ pub mod smbios;
 pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
+/// Measured boot on a discrete TPM, for every SoC.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub mod tpm;
 /// The SMM handler's installation in TSEG, for every SoC.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod tseg;
