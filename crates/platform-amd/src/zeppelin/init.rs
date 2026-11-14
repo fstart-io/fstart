@@ -178,7 +178,7 @@ impl Init for Zeppelin {
             "AMD Zeppelin",
             microcode,
             state.cpu_policy(),
-            |policy, msr, thread| ccx::zp::cpu_init(msr, policy, thread).is_ok(),
+            |policy, msr| ccx::zp::cpu_init(msr, policy, ccx::Thread::current()).is_ok(),
         ))
     }
 

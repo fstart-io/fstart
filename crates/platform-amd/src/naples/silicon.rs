@@ -2,13 +2,14 @@
 //! DXIO, Taishan FCHs on every die and the per-die SMU thread release
 //! (INTEGRATION_NOTES §3–§9, the Naples paragraphs).
 extern crate alloc;
-use crate::sp3::silicon::cpu::{Sp3Cpu, release_all, this_thread};
+use crate::sp3::silicon::cpu::{release_all, this_thread};
 use crate::sp3::silicon::hw::{Pci, Tsc, msr, secondary_fch};
 use crate::sp3::silicon::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
 use crate::sp3::silicon::steps::*;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_driver_amd::ccx::init::Ccx;
+use fstart_driver_amd::ccx::init::Threads;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::ccx::release::{self, Launch, SmuPwr};
 use fstart_driver_amd::ccx::x2apic::{self, ApicMode};
@@ -226,7 +227,7 @@ impl Silicon {
         ctx: &mut Ctx,
         si: &mut Silicon,
         microcode: Option<&'static [u8]>,
-    ) -> Result<Sp3Cpu, &'static str> {
+    ) -> Result<Threads, &'static str> {
         let generation = ctx.generation;
         let policy = ctx.policy.ccx;
         let mut dies = [[None; 4]; 2];
@@ -261,15 +262,15 @@ impl Silicon {
             .wdt
             .and_then(|w| power::wdt_setting(generation, w, df_global));
         let cac = power::read_cac_weights(generation, &si.smus[0]).step("CAC weights")?;
-        let driver = Sp3Cpu::new(
+        let driver = Threads {
             ccx,
             policy,
-            patch,
+            microcode: patch,
             wdt,
-            policy.wdt_severity,
-            cac.clone(),
-            [Some(ctx.psp_bar), None],
-        );
+            wdt_severity: policy.wdt_severity,
+            cac: cac.clone(),
+            psp_addr: [Some(ctx.psp_bar), None],
+        };
         si.threads = threads as u16;
         si.order = order;
         si.cac = cac;
