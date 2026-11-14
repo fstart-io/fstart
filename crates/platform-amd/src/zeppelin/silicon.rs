@@ -40,10 +40,10 @@ pub struct Identity {
 }
 
 /// The DF plan's root bridge of each die, in die order.
-pub type Bridges = [Option<df::plan::RootBridgePlan>; MAX_DIES];
+pub type Bridges = heapless::Vec<df::plan::RootBridgePlan, MAX_DIES>;
 
 /// The silicon state the later phases need.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct State {
     pub identity: Identity,
     /// What the DF routes to each die's root complex.
@@ -118,15 +118,18 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     }
     // Each die's root complex in die order, with its NBIO's own MMIO at
     // the top of its window below 4 GiB.
-    let mut bridges = [None; MAX_DIES];
+    let mut bridges = Bridges::new();
     let mut nonpci = [0; MAX_DIES];
     for (i, rb) in plan.root_bridges.iter().enumerate().take(MAX_DIES) {
         let pool = rb.below_pools.non_pci;
         if pool.size != u64::from(NONPCI_MMIO_SIZE) || pool.end() > 1 << 32 {
             return Err("non-PCI MMIO pool");
         }
-        bridges[i] = Some(*rb);
+        let _ = bridges.push(*rb);
         nonpci[i] = pool.base as u32;
+    }
+    if bridges.len() != dies.len() {
+        return Err("DF plan root bridges");
     }
     for die in dies {
         df::zp::early_init(&die.df(), count, revision, &FABRIC);

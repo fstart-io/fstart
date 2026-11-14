@@ -85,6 +85,26 @@ pub struct Entered<S: Init> {
 /// The root bridges of a SoC, for one PCI allocator.
 pub type Roots = heapless::Vec<PciRoot, MAX_PCI_ROOTS>;
 
+/// The fabric as the flow's services see it, for every SoC: the PCI
+/// segment and the root bridges of the DF plan, the one the silicon init
+/// programmed or, on Picasso, the one of the routes its ABL programmed.
+#[derive(Debug, Clone, Copy)]
+pub struct Fabric<'a> {
+    pub segment: PciRootInfo,
+    pub bridges: &'a [fstart_driver_amd::df::plan::RootBridgePlan],
+}
+
+impl Fabric<'_> {
+    /// The root bridges as PCI roots: what the fabric routes to each and
+    /// what that is for. The allocator and the tables both take them from
+    /// here.
+    pub fn roots(&self) -> Option<Roots> {
+        (self.bridges.iter())
+            .map(|rb| fstart_driver_amd::df::root::planned(rb, &self.segment))
+            .collect()
+    }
+}
+
 /// The cold init of a SoC's silicon: the steps a platform's boot flow
 /// calls on the BSP, each once and in the order they are declared in. The
 /// flow owns the console, the memory map, the MP engine, the SMM
@@ -178,9 +198,8 @@ pub trait Init: Sized + 'static {
     ) -> Result<(), &'static str> {
         Ok(())
     }
-    /// The root bridges: what the fabric routes to each and what that is
-    /// for. The allocator and the tables both take them from here.
-    fn roots(ctx: &Ctx<'_, Self>, state: &Self::State) -> Option<Roots>;
+    /// The fabric once the silicon init is done.
+    fn fabric<'a>(ctx: &Ctx<'_, Self>, state: &'a Self::State) -> Fabric<'a>;
     /// After the PCI resource allocation.
     fn after_resources(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
     /// Ready to boot, before the tables: the devices `pci` enumerated are
@@ -283,23 +302,6 @@ impl<S: Soc> Hw<S> {
             }
             1
         })
-    }
-
-    /// Each die's root complex as a PCI root bridge in `segment`, with the
-    /// die's own MMIO `non_pci` (base, size).
-    pub fn roots(
-        &self,
-        segment: &PciRootInfo,
-        non_pci: impl Fn(u8) -> (u64, u64),
-    ) -> Option<Roots> {
-        let ecam = (segment.ecam_base, segment.ecam_size());
-        self.dies
-            .iter()
-            .map(|die| {
-                let routes = fstart_driver_amd::df::map::root_complex(die)?;
-                fstart_driver_amd::df::root::root(&routes, ecam, non_pci(die.index()))
-            })
-            .collect()
     }
 
     /// The FCH's IOAPIC (GSI 0-23, ID 0) in virtual-wire mode to the BSP

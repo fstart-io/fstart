@@ -4,7 +4,7 @@
 //! board's GPIO tables, ROM sharing and the EC; after [`Init::train_dxio`]
 //! the links are trained.
 use super::{Config, EARLY_AOAC, FchConfig, Picasso, UART_AOAC};
-use crate::soc::{Ctx, DieInit, Entered, Hw, Init, Roots, Soc as _};
+use crate::soc::{Ctx, DieInit, Entered, Fabric, Hw, Init, Soc as _};
 use fstart_arch::x86::{
     cpu::{
         amd::smm::InstalledTseg,
@@ -13,6 +13,7 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::df::plan::RootBridgePlan;
 use fstart_driver_amd::{
     apob::Hole,
     ccx::{
@@ -67,6 +68,8 @@ pub struct Runtime {
 
 /// What the silicon init leaves for the steps after MP.
 pub struct State {
+    /// The root complex as the ABL routed it.
+    bridge: RootBridgePlan,
     /// The reserved UMA and the part, when it has a GPU.
     pub uma: Option<(Hole, cpu::Silicon)>,
     /// The eMMC controller, if it is fitted and set up.
@@ -77,6 +80,14 @@ pub struct State {
 }
 
 impl Picasso {
+    /// The root complex as the ABL routed it, the SMU's MMIO its own.
+    fn bridge(ctx: &Ctx<'_, Self>) -> Option<RootBridgePlan> {
+        use fstart_driver_amd::df::{map, plan::Window, root};
+        let smu = Window::new(nbio::SMU_MMIO_BASE.into(), 0x28_0000);
+        let routes = map::root_complex(ctx.hw.dies.first()?)?;
+        root::routed(&routes, 0, &Self::pci_segment(ctx.hw), smu)
+    }
+
     /// The NBIO IOAPIC.
     pub const IOAPIC: u32 = 0xfec0_1000;
 }
@@ -363,6 +374,7 @@ impl Init for Picasso {
         nbio::late::post_silicon(smn, identity, &mut delay).map_err(|_| "NBIO final init")?;
         fstart_driver_amd::fch::acpimmio::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         Ok(State {
+            bridge: Self::bridge(ctx).ok_or("DF routes")?,
             uma: uma.map(|region| (region, identity.silicon)),
             emmc,
             bsp_apic: apic_ids.first().copied().unwrap_or(0) as u8,
@@ -370,14 +382,11 @@ impl Init for Picasso {
         })
     }
 
-    fn roots(ctx: &Ctx<'_, Self>, _: &State) -> Option<Roots> {
-        ctx.hw.roots(&Self::pci_segment(ctx.hw), |die| {
-            if die == 0 {
-                (nbio::SMU_MMIO_BASE.into(), 0x28_0000)
-            } else {
-                (0, 0)
-            }
-        })
+    fn fabric<'a>(ctx: &Ctx<'_, Self>, state: &'a State) -> Fabric<'a> {
+        Fabric {
+            segment: Self::pci_segment(ctx.hw),
+            bridges: core::slice::from_ref(&state.bridge),
+        }
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {

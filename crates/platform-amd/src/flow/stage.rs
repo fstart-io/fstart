@@ -598,7 +598,7 @@ impl<S: Soc> Stage<S, Published<S>> {
 /// PCI enumeration and resource allocation below every root bridge of the
 /// SoC, each from what the fabric routes to it.
 fn enumerate<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) -> PciEcam {
-    let Some(roots) = S::roots(ctx, &silicon.state) else {
+    let Some(roots) = S::fabric(ctx, &silicon.state).roots() else {
         fail::<S>("PCI root")
     };
     let mut ecam = match PciEcam::new(roots) {
