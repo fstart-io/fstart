@@ -10,9 +10,10 @@ use super::{Ctx, OrHalt};
 /// Build and place the ACPI tables (ACPI_SMM, `crate::acpi` with what SP3
 /// adds, `crate::sp3::acpi`); returns the RSDP address. The tables live in
 /// the stage heap, inside the reserved early region.
-pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
+pub(crate) fn acpi(
     ctx: &Ctx<'_>,
-    si: &S,
+    numa_plan: Option<crate::sp3::silicon::steps::NumaPlan>,
+    nbios: &[fstart_driver_amd::nbio::Nbio<crate::sp3::silicon::hw::Pci>],
     pci: &fstart_pci::PciEcam,
     board: &crate::acpi::Board,
     bmc_sx_notify: Option<crate::sp3::smm::SleepNotify>,
@@ -25,7 +26,6 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
     use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
     use fstart_driver_amd::nbio::ioapic::fch_ioapic_id;
 
-    let numa_plan = S::numa(ctx.soc, si);
     // Naples has no CPPC through the SMU.
     let cppc: Vec<_> = ctx
         .soc
@@ -61,7 +61,7 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
         .iter()
         // The root bridges the allocator was built from.
         .zip(pci.roots())
-        .zip(si.nbios())
+        .zip(nbios)
         .enumerate()
         .map(|(i, ((bridge, root), n))| RootBridgeAcpi {
             root,
@@ -156,7 +156,7 @@ pub(crate) fn acpi<S: crate::sp3::silicon::Steps>(
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
         bmc_sx_notify,
-        tpm: super::tpm::acpi(),
+        tpm: crate::tpm::acpi(),
         devices: &[],
         sb_aml: &fch_aml,
         tables: &tables,

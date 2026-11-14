@@ -1,19 +1,22 @@
-//! Rome and Milan silicon steps: DF3, the SSP/GN NBIO quadrants, SMU V11,
-//! two-pass DXIO, Huashan FCHs and the per-CCD SMU thread release
-//! (INTEGRATION_NOTES §3–§9). Milan deltas are inline (`cpu::Silicon::Gn`
-//! branches): fused NBIO quadrants, the IOMMU BAR in PEI, SMEE-dependent
-//! address bits and the PSP FCH lock.
+//! The silicon steps of the IOD SoCs: DF3, the SSP/GN NBIO quadrants, SMU
+//! V11, two-pass DXIO, Huashan FCHs and the per-CCD SMU thread release
+//! (INTEGRATION_NOTES §3–§9). A step takes the SoC's die as `V`: what
+//! Milan does differently (fused NBIO quadrants, the IOMMU BAR in PEI,
+//! SMEE-dependent address bits, the PSP FCH lock) is a branch on
+//! `V::SILICON`, which a board that carries one of the two SoCs links
+//! only one side of.
 extern crate alloc;
-use super::cpu::{Sp3Cpu, release_all, this_thread};
-use super::hw::{Pci, Tsc, msr, secondary_fch};
-use super::hw::{SMU_POLL_US, SMU_TIMEOUT_US, primary_fch};
-use super::steps::*;
+use crate::sp3::silicon::cpu::{release_all, this_thread};
+use crate::sp3::silicon::hw::{Pci, Tsc, msr, secondary_fch};
+use crate::sp3::silicon::hw::{SMU_POLL_US, SMU_TIMEOUT_US, primary_fch};
+use crate::sp3::silicon::steps::*;
 use alloc::vec::Vec;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::apob::phy::phy_override;
 use fstart_driver_amd::ccx::init::Ccx;
+use fstart_driver_amd::ccx::init::Threads;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::ccx::release::{self, Launch};
 use fstart_driver_amd::ccx::topology::{ApicLayout, Location};
@@ -130,7 +133,7 @@ fn apic_ids(generation: cpu::Silicon, socket: u8, map: &CoreMap) -> impl Iterato
 /// the vendor's `SmuV11DxeGN` hotplug path): the switch base, the table on
 /// every socket, the slots, the I2C master for the SMU, the flags and the
 /// start on socket 0, then each slot's power from its presence.
-fn hotplug(
+fn hotplug<V: super::Variant>(
     ctx: &Ctx,
     setup: &PortSetup<'_, '_, Pci, FchPerst<'_>>,
     smus: &[Smu],
@@ -156,8 +159,7 @@ fn hotplug(
     let buffer = dma_alloc(bytes.len(), 0x1000)?;
     buffer.copy_from_slice(bytes);
     let sockets: heapless::Vec<&Smu, 2> = smus.iter().collect();
-    if let Err(error) = hotplug::load_v11(ctx.generation, &sockets, buffer.as_ptr() as u64, policy)
-    {
+    if let Err(error) = hotplug::load_v11(V::SILICON, &sockets, buffer.as_ptr() as u64, policy) {
         let detail = alloc::format!("{error:?}");
         fstart_log::error!("dxio: hotplug table load: {}", detail.as_str());
         return Ok(());
@@ -185,11 +187,15 @@ fn hotplug(
 /// region per enabled controller with its own signature, doorbell and local
 /// PPTable slot map. One aligned MTRR extent makes every region uncached
 /// on all threads. A failed controller is not advertised.
-fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Result<Vec<Cppc>, &'static str> {
+fn cppc<V: super::Variant>(
+    ctx: &Ctx,
+    si: &Silicon,
+    mp: &MpHandle,
+) -> Result<Vec<Cppc>, &'static str> {
     use fstart_arch::x86::mtrr;
     use fstart_driver_amd::smu::v11::cppc::{REGION_SIZE, signature};
 
-    let generation = ctx.generation;
+    let generation = V::SILICON;
     if !FeaturePolicy::default().cppc {
         return Ok(Vec::new());
     }
@@ -273,14 +279,12 @@ fn cppc(ctx: &Ctx, si: &Silicon, mp: &MpHandle) -> Result<Vec<Cppc>, &'static st
     Ok(channels)
 }
 
-impl Steps for Silicon {
-    type DfLayout = DfVersion;
-
-    fn df_init(ctx: &mut Ctx) -> Result<(), &'static str> {
+impl Silicon {
+    pub fn df_init<V: super::Variant>(ctx: &mut Ctx) -> Result<(), &'static str> {
         let memory: heapless::Vec<SocketMemory, 2> = (0..ctx.topology.sockets)
             .map(|s| socket_memory(ctx, s))
             .collect();
-        match ctx.generation {
+        match V::SILICON {
             cpu::Silicon::Ssp => fstart_driver_amd::df::ssp::init(
                 &ctx.df,
                 &ctx.topology,
@@ -302,8 +306,8 @@ impl Steps for Silicon {
     /// NBIO PEI (NBIO_SMU §3.2–3.5; `nbio::sp3` module order): SB location,
     /// socket table, base init with the SMU BAR, the PSP BAR per socket, the
     /// IOMMU, TOM.
-    fn nbio_early(ctx: &mut Ctx) -> Result<Silicon, &'static str> {
-        let generation = ctx.generation;
+    pub fn nbio_early<V: super::Variant>(ctx: &mut Ctx) -> Result<Silicon, &'static str> {
+        let generation = V::SILICON;
         let policy = ctx.policy.nbio;
         let buses = match generation {
             cpu::Silicon::Gn => socket_buses(ctx)?,
@@ -380,8 +384,11 @@ impl Steps for Silicon {
 
     /// SMU per socket (NBIO_SMU §3.8): mailbox, PPTable with the board's power
     /// policy, tools DRAM, SP3 workarounds, SYSHUB bit 11 per NBIO.
-    fn smu_init(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
-        let generation = ctx.generation;
+    pub fn smu_init<V: super::Variant>(
+        ctx: &mut Ctx,
+        si: &mut Silicon,
+    ) -> Result<(), &'static str> {
+        let generation = V::SILICON;
         for s in 0..ctx.topology.sockets {
             // SAFETY: the BSP owns this bus's SMN index/data pair during init.
             let smn = unsafe { Smn::on_bus(ctx.pci, socket_bus(ctx, s)?) };
@@ -420,8 +427,11 @@ impl Steps for Silicon {
     }
 
     /// Socket 0's USB (needs its SMU) and socket 1's FCH (FCH_SP3 §3.1, §4.2).
-    fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) -> Result<(), &'static str> {
-        let generation = ctx.generation;
+    pub fn fch_secondaries<V: super::Variant>(
+        ctx: &mut Ctx,
+        si: &Silicon,
+    ) -> Result<(), &'static str> {
+        let generation = V::SILICON;
         fstart_driver_amd::fch::huashan::usb::reset(
             &ctx.fch,
             generation,
@@ -448,12 +458,12 @@ impl Steps for Silicon {
 
     /// Two-pass DXIO training of every socket with the board's engines, then
     /// the port setup (PCIE_DXIO §3.3–3.9).
-    fn dxio(
+    pub fn dxio<V: super::Variant>(
         ctx: &mut Ctx,
         si: &Silicon,
         engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
     ) -> Result<(), &'static str> {
-        let generation = ctx.generation;
+        let generation = V::SILICON;
         let policy = ctx.policy.dxio;
         // The vendor PCIe speed workaround reads its fuse on socket 0 (bus 0).
         // Milan skips the fuse test when PCD 0xAF is 0x40; where that PCD
@@ -571,7 +581,7 @@ impl Steps for Silicon {
         }
         ctx.ports =
             dxio::ports::attached(&ctx.topology, ctx.pci_root.segment, engines, setup.ports());
-        hotplug(ctx, &setup, &dxio_smus, &policy.hotplug)?;
+        hotplug::<V>(ctx, &setup, &dxio_smus, &policy.hotplug)?;
         // 2P xGMI (`dxio::ports::xgmi_init`) needs F1x330 and the CCD mask of
         // each socket; not wired until a 2P board exists.
         if ctx.topology.sockets > 1 {
@@ -581,18 +591,14 @@ impl Steps for Silicon {
     }
 
     /// SATA env per socket (FCH_SP3 §3.1).
-    fn fch_env(ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
-        if !fstart_driver_amd::fch::huashan::sata::env(
-            &ctx.fch,
-            ctx.generation,
-            &ctx.policy.sata[0],
-        ) {
+    pub fn fch_env<V: super::Variant>(ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
+        if !fstart_driver_amd::fch::huashan::sata::env(&ctx.fch, V::SILICON, &ctx.policy.sata[0]) {
             // Enclosure messages only drive LEDs; the controller stays usable.
             fstart_log::warn!("sp3: SATA socket 0 SGPIO messages timed out");
         }
         if ctx.topology.sockets > 1 {
             let fch1 = secondary_fch(socket_bus(ctx, 1)?, ctx.timer);
-            if !fch::multi::huashan_socket1_env(&fch1, ctx.generation, &ctx.policy.sata[1]) {
+            if !fch::multi::huashan_socket1_env(&fch1, V::SILICON, &ctx.policy.sata[1]) {
                 fstart_log::warn!("sp3: SATA socket 1 SGPIO messages timed out");
             }
         }
@@ -604,12 +610,12 @@ impl Steps for Silicon {
     /// (CCX_SP3 §2, NBIO_SMU §3.8).
     /// CCX on the BSP and the driver every thread runs, with the patches
     /// of `microcode`; the order the threads are released in.
-    fn cpu_driver(
+    pub fn cpu_driver<V: super::Variant>(
         ctx: &mut Ctx,
         si: &mut Silicon,
         microcode: Option<&'static [u8]>,
-    ) -> Result<Sp3Cpu, &'static str> {
-        let generation = ctx.generation;
+    ) -> Result<Threads, &'static str> {
+        let generation = V::SILICON;
         let policy = ctx.policy.ccx;
         let threads: usize = si.maps.iter().map(CoreMap::threads).sum();
         let decision = x2apic::decide(generation, policy.apic, threads);
@@ -649,15 +655,15 @@ impl Steps for Silicon {
                 psp_addr[usize::from(rb.socket & 1)] = si.nbios[i].psp_bar();
             }
         }
-        let driver = Sp3Cpu::new(
+        let driver = Threads {
             ccx,
             policy,
-            patch,
+            microcode: patch,
             wdt,
-            policy.wdt_severity,
-            cac.clone(),
+            wdt_severity: policy.wdt_severity,
+            cac: cac.clone(),
             psp_addr,
-        );
+        };
         let buses = socket_buses(ctx)?;
         let smns: heapless::Vec<Smn<Pci>, 2> = (0..ctx.topology.sockets)
             // SAFETY: the BSP owns this bus's SMN index/data pair during init.
@@ -673,12 +679,12 @@ impl Steps for Silicon {
         Ok(driver)
     }
 
-    fn threads(si: &Silicon) -> u16 {
+    pub fn threads(si: &Silicon) -> u16 {
         si.threads
     }
 
-    fn release_aps(ctx: &Ctx, si: &Silicon, aps: u16) -> Result<(), u32> {
-        let generation = ctx.generation;
+    pub fn release_aps<V: super::Variant>(_ctx: &Ctx, si: &Silicon, aps: u16) -> Result<(), u32> {
+        let generation = V::SILICON;
         if usize::from(aps) != si.order.len() {
             return Err(0);
         }
@@ -690,13 +696,13 @@ impl Steps for Silicon {
 
     /// Every thread ran its CCX steps: the BSP's last ones, then the SMU's
     /// CCX-done.
-    fn cpus_up(
+    pub fn cpus_up<V: super::Variant>(
         ctx: &mut Ctx,
         si: &mut Silicon,
         mp: &MpHandle,
         apic_ids: &[u32],
     ) -> Result<(), &'static str> {
-        let generation = ctx.generation;
+        let generation = V::SILICON;
         let cpu = msr();
         let bsp = this_thread(generation);
         let cac = si.cac.clone();
@@ -722,13 +728,13 @@ impl Steps for Silicon {
             .step("SMU CCX done")?;
         }
         {
-            ctx.cppc = cppc(ctx, si, mp)?;
+            ctx.cppc = cppc::<V>(ctx, si, mp)?;
         }
         Ok(())
     }
 
-    fn pci_pre(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
-        let generation = ctx.generation;
+    pub fn pci_pre<V: super::Variant>(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
+        let generation = V::SILICON;
         set_fch_ioapic_id(generation);
         for (i, n) in si.nbios.iter().enumerate() {
             let rb = ctx.topology.root_bridges[i];
@@ -742,7 +748,7 @@ impl Steps for Silicon {
     }
 
     /// After enumeration: NBIF HW-init lock, IOMMU enable.
-    fn pci_post(_ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
+    pub fn pci_post(_ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
         for n in &si.nbios {
             n.nbif_hw_init_lock();
             n.iommu_enable();
@@ -752,26 +758,26 @@ impl Steps for Silicon {
 
     /// SATA late tasks of both sockets (FCH_SP3 §2.3); Milan asks SMM for the PSP
     /// FCH lock (SW SMI D2) when the handler is installed.
-    fn fch_late(ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
+    pub fn fch_late<V: super::Variant>(ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
         fstart_driver_amd::fch::huashan::sata::late(&ctx.fch, &ctx.policy.sata[0]);
         if ctx.topology.sockets > 1 {
             let fch1 = secondary_fch(socket_bus(ctx, 1)?, ctx.timer);
             fstart_driver_amd::fch::huashan::sata::late(&fch1, &ctx.policy.sata[1]);
         }
-        if ctx.generation == cpu::Silicon::Gn && ctx.smm_installed {
+        if V::SILICON == cpu::Silicon::Gn && ctx.smm_installed {
             fstart_driver_amd::fch::huashan::smm::request_fch_lock(&ctx.fch);
         }
         Ok(())
     }
 
     /// The USB SMI acknowledges go to socket 0's IOD (both controllers there).
-    fn usb_buses(ctx: &Ctx, _si: &Silicon) -> Result<[u8; 8], &'static str> {
+    pub fn usb_buses(ctx: &Ctx, _si: &Silicon) -> Result<[u8; 8], &'static str> {
         let mut buses = [0; 8];
         buses[0] = socket_bus(ctx, 0)?;
         Ok(buses)
     }
 
-    fn usb_bus_count(_ctx: &Ctx) -> u8 {
+    pub fn usb_bus_count(_ctx: &Ctx) -> u8 {
         1
     }
 
@@ -780,7 +786,7 @@ impl Steps for Silicon {
     /// present CCDs in logical order), root bridges by their IOMS quadrant.
     /// `None` with one domain (AmdAcpiDxe builds no SRAT then) or without
     /// NPS information.
-    fn numa(ctx: &Ctx, si: &Silicon) -> Option<NumaPlan> {
+    pub fn numa<V: super::Variant>(ctx: &Ctx, si: &Silicon) -> Option<NumaPlan> {
         use fstart_driver_amd::apob::nps;
         use fstart_driver_amd::df::Target;
         use fstart_driver_amd::df::dram::{self, ccd_channel, domain_of, ioms_channel};
@@ -811,8 +817,8 @@ impl Steps for Silicon {
                 .map(|node| dram::read::<Df3, _>(&ctx.df, node, Target::Instance(v3::PIE))),
             &domains,
         );
-        let smt = this_thread(ctx.generation).smt();
-        let layout = ApicLayout::new(ctx.generation, smt);
+        let smt = this_thread(V::SILICON).smt();
+        let layout = ApicLayout::new(V::SILICON, smt);
         let cpus = ctx
             .apic_ids
             .iter()
@@ -841,7 +847,7 @@ impl Steps for Silicon {
         })
     }
 
-    fn nbios(&self) -> &[Nbio<Pci>] {
+    pub fn nbios(&self) -> &[Nbio<Pci>] {
         &self.nbios
     }
 }

@@ -1,5 +1,5 @@
 //! The Ethanol-X stage: from the PSP's release of the BSP to the
-//! payload, on Milan with the SP3 silicon steps.
+//! payload, on Milan.
 
 #![no_std]
 #![no_main]
@@ -8,22 +8,23 @@ use fstart_board_amd_ethanolx::{self as ethanolx, Board};
 use fstart_driver_aspeed::gfx;
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
-use fstart_platform_amd::sp3::{Identified, Silicon, Start};
+use fstart_platform_amd::flow::{Cpu, Identified};
+use fstart_platform_amd::sp3::Socket;
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
 fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
-    match fstart_platform_amd::sp3::start::<Board>() {
-        Start::RomeMilan(id) => flow(id),
-        Start::Naples(id) => id.unsupported(),
+    match fstart_platform_amd::flow::start::<Board>() {
+        Cpu::Milan(id) => flow(id),
+        cpu => cpu.unsupported(),
     }
 }
 
-fn flow<F: Silicon>(id: Identified<Board, F>) -> ! {
+fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     let generation = id.generation();
-    let stage = id.init_fch(ethanolx::policy(generation));
+    let stage = id.enter(ethanolx::config(generation));
     if ethanolx::early_init(stage.fch()).is_err() {
         stage.fail("board early init");
     }

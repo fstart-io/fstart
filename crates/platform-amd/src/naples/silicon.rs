@@ -2,13 +2,14 @@
 //! DXIO, Taishan FCHs on every die and the per-die SMU thread release
 //! (INTEGRATION_NOTES §3–§9, the Naples paragraphs).
 extern crate alloc;
-use super::cpu::{Sp3Cpu, release_all, this_thread};
-use super::hw::{Pci, Tsc, msr, secondary_fch};
-use super::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
-use super::steps::*;
+use crate::sp3::silicon::cpu::{release_all, this_thread};
+use crate::sp3::silicon::hw::{Pci, Tsc, msr, secondary_fch};
+use crate::sp3::silicon::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
+use crate::sp3::silicon::steps::*;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_driver_amd::ccx::init::Ccx;
+use fstart_driver_amd::ccx::init::Threads;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::ccx::release::{self, Launch, SmuPwr};
 use fstart_driver_amd::ccx::x2apic::{self, ApicMode};
@@ -54,12 +55,10 @@ pub struct Silicon {
 const IOMMU_BAR: u64 = 512 << 10;
 const IOAPIC_BAR: u64 = 0x1000;
 
-impl Steps for Silicon {
-    type DfLayout = DfVersion;
-
+impl Silicon {
     /// DF PEI init and, as this flow has no PEI/DXE split, the DXE-entry PIE
     /// power management right after (SOC_DF §3, DF_ZP §3.9).
-    fn df_init(ctx: &mut Ctx) -> Result<(), &'static str> {
+    pub fn df_init(ctx: &mut Ctx) -> Result<(), &'static str> {
         use fstart_driver_amd::{cpu::Package, df::zp};
         let policy = zp::FabricPolicy::default();
         let rev = ctx.identity.revision;
@@ -81,7 +80,7 @@ impl Steps for Silicon {
 
     /// NBIO base init per die, TOM, PSP BAR on every die (PSP_APOB §3.2:
     /// AGESA only die 0; a superset).
-    fn nbio_early(ctx: &mut Ctx) -> Result<Silicon, &'static str> {
+    pub fn nbio_early(ctx: &mut Ctx) -> Result<Silicon, &'static str> {
         let policy = ctx.policy.nbio;
         let rev = ctx.identity.revision;
         let nbios: heapless::Vec<Nbio<Pci>, MAX_ROOT_BRIDGES> = ctx
@@ -120,7 +119,7 @@ impl Steps for Silicon {
     }
 
     /// SMU V9 DXE entry per die: policy table, AGM log, perfmon pages.
-    fn smu_init(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
+    pub fn smu_init(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
         for n in &si.nbios {
             let smu = Smu::new(n.smn(), v9::MAILBOX, ctx.timer, v9::ID_LIMIT)
                 .with_timeout_us(SMU_TIMEOUT_US)
@@ -142,7 +141,7 @@ impl Steps for Silicon {
     }
 
     /// USB of die 0 and the secondary FCHs of dies 1..7 (FCH_SP3 §4.1).
-    fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) -> Result<(), &'static str> {
+    pub fn fch_secondaries(ctx: &mut Ctx, si: &Silicon) -> Result<(), &'static str> {
         let delay = &mut fstart_core::services::TimerDelay(&ctx.timer);
         let package = fstart_driver_amd::cpu::Package::Sp3;
         taishan::usb::reset(&ctx.fch.smn(), 0, DieUsb::default_for(0), package, delay);
@@ -154,7 +153,7 @@ impl Steps for Silicon {
     }
 
     /// DXIO per die, each run to completion (PCD 0x1E = 0, PCIE_DXIO §3.3).
-    fn dxio(
+    pub fn dxio(
         ctx: &mut Ctx,
         si: &Silicon,
         engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
@@ -211,7 +210,7 @@ impl Steps for Silicon {
     }
 
     /// SATA env (die 0) and the xGbE ports off (FCH_SP3 §3.2 af49).
-    fn fch_env(ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
+    pub fn fch_env(ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
         taishan::multi::xgbe_disable(&ctx.fch.smn(), 0xf);
         for (node, n) in si.nbios.iter().enumerate().skip(1) {
             let hw = secondary_fch(n.bus(), ctx.timer);
@@ -224,11 +223,11 @@ impl Steps for Silicon {
     /// die (CCX_SP3 §2, NBIO_SMU §3.8 V9).
     /// CCX on the BSP and the driver every thread runs, with the patches
     /// of `microcode`; the order the threads are released in.
-    fn cpu_driver(
+    pub fn cpu_driver(
         ctx: &mut Ctx,
         si: &mut Silicon,
         microcode: Option<&'static [u8]>,
-    ) -> Result<Sp3Cpu, &'static str> {
+    ) -> Result<Threads, &'static str> {
         let generation = ctx.generation;
         let policy = ctx.policy.ccx;
         let mut dies = [[None; 4]; 2];
@@ -263,26 +262,26 @@ impl Steps for Silicon {
             .wdt
             .and_then(|w| power::wdt_setting(generation, w, df_global));
         let cac = power::read_cac_weights(generation, &si.smus[0]).step("CAC weights")?;
-        let driver = Sp3Cpu::new(
+        let driver = Threads {
             ccx,
             policy,
-            patch,
+            microcode: patch,
             wdt,
-            policy.wdt_severity,
-            cac.clone(),
-            [Some(ctx.psp_bar), None],
-        );
+            wdt_severity: policy.wdt_severity,
+            cac: cac.clone(),
+            psp_addr: [Some(ctx.psp_bar), None],
+        };
         si.threads = threads as u16;
         si.order = order;
         si.cac = cac;
         Ok(driver)
     }
 
-    fn threads(si: &Silicon) -> u16 {
+    pub fn threads(si: &Silicon) -> u16 {
         si.threads
     }
 
-    fn release_aps(ctx: &Ctx, si: &Silicon, aps: u16) -> Result<(), u32> {
+    pub fn release_aps(ctx: &Ctx, si: &Silicon, aps: u16) -> Result<(), u32> {
         let generation = ctx.generation;
         if usize::from(aps) != si.order.len() {
             return Err(0);
@@ -304,7 +303,7 @@ impl Steps for Silicon {
 
     /// Every thread ran its CCX steps: the BSP's last ones, then the SMU's
     /// CCX-done.
-    fn cpus_up(
+    pub fn cpus_up(
         ctx: &mut Ctx,
         si: &mut Silicon,
         _: &MpHandle,
@@ -329,7 +328,7 @@ impl Steps for Silicon {
         Ok(())
     }
 
-    fn pci_pre(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
+    pub fn pci_pre(ctx: &mut Ctx, si: &mut Silicon) -> Result<(), &'static str> {
         let generation = ctx.generation;
         set_fch_ioapic_id(generation);
         for (i, n) in si.nbios.iter().enumerate() {
@@ -340,7 +339,7 @@ impl Steps for Silicon {
         Ok(())
     }
 
-    fn pci_post(_ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
+    pub fn pci_post(_ctx: &Ctx, si: &Silicon) -> Result<(), &'static str> {
         for n in &si.nbios {
             n.nbif_hw_init_lock();
             n.iommu_enable();
@@ -349,12 +348,12 @@ impl Steps for Silicon {
     }
 
     /// Taishan has no late task beyond the shared `common::late` one.
-    fn fch_late(_ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
+    pub fn fch_late(_ctx: &Ctx, _si: &Silicon) -> Result<(), &'static str> {
         Ok(())
     }
 
     /// Every die's root bus: each die has its USB controllers.
-    fn usb_buses(ctx: &Ctx, si: &Silicon) -> Result<[u8; 8], &'static str> {
+    pub fn usb_buses(ctx: &Ctx, si: &Silicon) -> Result<[u8; 8], &'static str> {
         let mut buses = [0; 8];
         si.nbios
             .iter()
@@ -364,17 +363,17 @@ impl Steps for Silicon {
         Ok(buses)
     }
 
-    fn usb_bus_count(ctx: &Ctx) -> u8 {
+    pub fn usb_bus_count(ctx: &Ctx) -> u8 {
         ctx.topology.root_bridges.len() as u8
     }
 
     /// Naples domains (one per die unless interleaved, ACPI_SMM §3.5) are not
     /// wired: one domain.
-    fn numa(_ctx: &Ctx, _si: &Silicon) -> Option<NumaPlan> {
+    pub fn numa(_ctx: &Ctx, _si: &Silicon) -> Option<NumaPlan> {
         None
     }
 
-    fn nbios(&self) -> &[Nbio<Pci>] {
+    pub fn nbios(&self) -> &[Nbio<Pci>] {
         &self.nbios
     }
 }

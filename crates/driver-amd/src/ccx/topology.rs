@@ -184,6 +184,22 @@ impl Thread {
         Self::new(generation, ext_eax, (ext_ebx >> 8) & 0xff != 0, bsp)
     }
 
+    /// The executing thread on `generation`'s die.
+    pub fn current<M: fstart_arch::x86::cpu::msr::MsrAccess + ?Sized>(
+        generation: Silicon,
+        cpu: &M,
+    ) -> Self {
+        use fstart_arch::x86::cpu::msr::{APIC_BASE, ApicBase};
+        use tock_registers::interfaces::Readable;
+        let (eax, ebx, _, _) = fstart_arch::x86::cpuid(0x8000_001e);
+        Self::from_cpuid(
+            generation,
+            eax,
+            ebx,
+            cpu.reg(APIC_BASE).is_set(ApicBase::BSP),
+        )
+    }
+
     pub const fn silicon(&self) -> Silicon {
         self.layout.generation
     }

@@ -21,6 +21,7 @@ pub mod dual;
 pub mod single;
 
 use crate::HostOptions;
+use crate::board::Board;
 use crate::layout::{Layout, Region};
 use fstart_core::board::MicrocodeConfig;
 use fstart_core::{
@@ -31,7 +32,7 @@ use fstart_image_build::build_plan::{
     ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
     InputFile, SmmRelocation, SmmUnit, UnitOutput,
 };
-use fstart_image_build::plan::{BuildSelection, X86LinuxOptions};
+use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan, X86LinuxOptions};
 use fstart_image_build::smm_image::ImageOptions;
 use std::collections::BTreeMap;
 use std::string::{String, ToString};
@@ -57,7 +58,7 @@ pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
 pub const SMM_STACK_SIZE: u32 = 0x2000;
 
 /// What a board's host build is made of.
-pub struct Host<'a> {
+pub struct Host {
     /// Shown in errors.
     pub name: &'static str,
     pub layout: Layout,
@@ -70,16 +71,16 @@ pub struct Host<'a> {
     /// The graphical UEFI payload drives the board's I2C input devices
     /// (touchpads, keyboards of a laptop).
     pub i2c_input: bool,
-    pub image: Image<'a>,
+    pub image: Image,
 }
 
 /// What the flash image is made of.
-pub enum Image<'a> {
+pub enum Image {
     /// One 16 MiB image with the PSP firmware of one SoC.
     Single(single::Image),
     /// The SP3 flash: a 16 MiB half per generation, composed into a vendor
     /// ROM or packed from blobs.
-    Dual(dual::Image<'a>),
+    Dual(dual::Image),
 }
 
 /// The payload a build selects (`--payload`, default halt).
@@ -165,14 +166,14 @@ impl Payload {
 
 /// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
 /// image's entry count agree.
-fn mp_capacity(host: &Host<'_>) -> BTreeMap<String, String> {
+fn mp_capacity(host: &Host) -> BTreeMap<String, String> {
     BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), host.max_cpus.to_string())])
 }
 
 /// The SMM image unit: the board library with its handler, linked position
 /// independent (the installer copies it to the top of TSEG) with one entry
 /// stub per CPU the board allows.
-fn smm_unit(host: &Host<'_>) -> CompilationUnit {
+fn smm_unit(host: &Host) -> CompilationUnit {
     // PIE, not static: the handler takes the address of its SMRAM statics
     // (P2C/C2P pages) and the drivers use jump tables, which static code
     // addresses absolutely (`R_X86_64_32S`); PIE code reaches them
@@ -202,7 +203,7 @@ fn smm_unit(host: &Host<'_>) -> CompilationUnit {
 
 /// The reset image: linked at the layout's image in DRAM below 4 GiB
 /// (small code model, static relocations).
-fn stage_unit(host: &Host<'_>, payload: Payload) -> Result<CompilationUnit, String> {
+fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> {
     let layout = &host.layout;
     Ok(CompilationUnit {
         name: STAGE_UNIT.into(),
@@ -303,7 +304,7 @@ fn ffs(
 /// The build plan of the board `host` describes, with the build's
 /// `options`.
 pub fn resolve(
-    host: &Host<'_>,
+    host: &Host,
     selection: &BuildSelection,
     options: &HostOptions,
 ) -> Result<BuildPlan, String> {
@@ -350,6 +351,45 @@ pub fn resolve(
     plan.validate_compiler_selections(selection)?;
     plan.validate_image_selection(selection)?;
     Ok(plan)
+}
+
+/// The host data of board `B`: its SoC's image, or the SP3 flash with a
+/// half per SoC it lists.
+pub fn host<B: Board>() -> Result<Host, String> {
+    use crate::board::SocId;
+    Ok(match B::SOCS {
+        [SocId::Picasso] => crate::noncar::host::host::<crate::picasso::Picasso>(B::MAX_CPUS),
+        [SocId::Zeppelin] => crate::noncar::host::host::<crate::zeppelin::Zeppelin>(B::MAX_CPUS),
+        socs if !socs.is_empty() && socs.iter().all(|soc| soc.sp3()) => {
+            crate::sp3::host::host::<B>()
+        }
+        _ => {
+            return Err(format!(
+                "{} carries SoCs one image cannot: one of Picasso and Zeppelin, or the SP3 SoCs",
+                B::NAME
+            ));
+        }
+    })
+}
+
+/// The build plan of board `B` with the build's `options`.
+pub fn resolve_board<B: Board>(
+    selection: &BuildSelection,
+    options: &HostOptions,
+) -> Result<BuildPlan, String> {
+    resolve(&host::<B>()?, selection, options)
+}
+
+/// Every board's plan generator, which fbuild's plan runner calls: the
+/// board's SoCs pick the image kind ([`host`]).
+pub struct Plan<B>(core::marker::PhantomData<B>);
+
+impl<B: Board> HostPlan<B> for Plan<B> {
+    type Options = HostOptions;
+
+    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String> {
+        resolve_board::<B>(&selection, &options)
+    }
 }
 
 /// `path` as a microcode path of the FFS's microcode table.

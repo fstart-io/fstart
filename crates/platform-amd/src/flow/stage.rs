@@ -10,7 +10,10 @@
 //! they run once and in order:
 //!
 //! ```ignore
-//! let stage = noncar::start::<Board>();           // ECAM, FCH pre-init
+//! let stage = match start::<Board>() {            // ECAM, FCH pre-init
+//!     Cpu::Zeppelin(id) => id.enter(CONFIG),
+//!     cpu => cpu.unsupported(),
+//! };
 //! // board: LPC decodes for its console (stage.hw())
 //! let stage = stage.console(&CONSOLE, console)    // memory map, FFS
 //!     .init_fch();                                // DF, FCH
@@ -52,25 +55,27 @@ pub fn fail<S: Soc>(what: &'static str) -> ! {
 
 /// The first phase: ECAM and the SoC's FCH setup before the console, from
 /// the board's configuration `config` of the SoC.
-pub fn enter<S: Soc>(config: S::Config) -> Early<S> {
-    Early::enter(config)
+pub fn enter<S: Soc>(board: crate::board::Facts, config: S::Config) -> Early<S> {
+    Early::enter(board, config)
 }
 
 /// Right after the reset vector: ECAM and the FCH decode the console needs.
 pub struct Early<S: Soc> {
+    board: crate::board::Facts,
     config: S::Config,
     msr: NativeMsr,
     entered: Entered<S>,
 }
 
 impl<S: Soc> Early<S> {
-    fn enter(config: S::Config) -> Self {
+    fn enter(board: crate::board::Facts, config: S::Config) -> Self {
         fstart_stage::anchor::initial_stage();
         // SAFETY: BSP only, single-threaded cold boot.
         let msr = unsafe { NativeMsr::new() };
         // A failure is reported once there is a console.
         let entered = S::enter(&config, &msr);
         Self {
+            board,
             config,
             msr,
             entered,
@@ -97,6 +102,7 @@ impl<S: Soc> Early<S> {
         config: fstart_driver_uart::ns16550::Ns16550Config,
     ) -> Stage<S, Console> {
         let Self {
+            board,
             config: mut soc_config,
             msr,
             entered:
@@ -138,12 +144,16 @@ impl<S: Soc> Early<S> {
             tseg,
             e820,
             ffs,
+            nvram,
+            options,
             flow,
-        } = S::map(&mut hw, &mut soc_config, &msr, clock).unwrap_or_else(|what| fail::<S>(what));
+        } = S::map(&mut hw, &mut soc_config, &board, &msr, clock)
+            .unwrap_or_else(|what| fail::<S>(what));
         post(0x32);
 
         Stage {
             machine: Machine {
+                board,
                 config: soc_config,
                 console,
                 hw,
@@ -156,6 +166,8 @@ impl<S: Soc> Early<S> {
                 tseg,
                 e820,
                 ffs,
+                nvram,
+                options,
                 flow,
             },
             phase: Console,
@@ -165,6 +177,7 @@ impl<S: Soc> Early<S> {
 
 /// What every phase after the console works on.
 struct Machine<S: Soc> {
+    board: crate::board::Facts,
     config: S::Config,
     console: &'static Ns16550,
     hw: S::Hw,
@@ -178,6 +191,10 @@ struct Machine<S: Soc> {
     e820: E820State,
     /// The FFS with the payload.
     ffs: core::ops::Range<u64>,
+    /// The settings store, if the SoC has one.
+    nvram: Option<&'static [u8]>,
+    /// The outcome of every option knob resolved so far.
+    options: fstart_options::Report,
     /// What the SoC's flow services keep between the phases.
     flow: S::Flow,
 }
@@ -231,6 +248,7 @@ impl<S: Soc> Machine<S> {
     fn ctx(&self) -> Ctx<'_, S> {
         Ctx {
             config: &self.config,
+            board: &self.board,
             identity: self.identity,
             hw: &self.hw,
             msr: &self.msr,
@@ -273,14 +291,25 @@ impl<S: Soc, P> Stage<S, P> {
         self.machine.clock
     }
 
-    /// What the SoC's services keep between the phases.
-    pub(crate) fn flow_mut(&mut self) -> &mut S::Flow {
-        &mut self.machine.flow
-    }
-
     /// Stop the boot after logging that the board's `what` failed.
     pub fn fail(&self, what: &'static str) -> ! {
         fail::<S>(what)
+    }
+
+    /// Apply the stored overrides of `knobs` to the board's `config`
+    /// (`fstart_options`), before the board uses it. `check` is the
+    /// whole-set validation of the consumer: if the overridden
+    /// configuration fails it, `config` keeps the board's values and the
+    /// overrides are reported as rejected. The knobs are shown in the
+    /// payload's settings menu.
+    pub fn resolve_options<C: Clone>(
+        &mut self,
+        knobs: &'static [fstart_options::Knob<C>],
+        config: &mut C,
+        check: impl FnOnce(&C) -> Result<(), &'static str>,
+    ) {
+        let machine = &mut self.machine;
+        crate::options::resolve(machine.nvram, knobs, config, &mut machine.options, check);
     }
 }
 
@@ -373,7 +402,7 @@ fn bring_up_cpus<S: Soc>(
         &cpu,
         || S::cpu_errors(&cpu),
         threads,
-        S::max_cpus(ctx.config),
+        ctx.board.max_cpus,
         |aps| S::release_aps(&ctx, &chipset, aps),
     )?;
     let state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
@@ -556,7 +585,13 @@ impl<S: Soc> Stage<S, Published<S>> {
         {
             handoff.peripherals = peripherals;
         }
-        S::launch(handoff, &ctx, &silicon.state, &machine.flow)
+        S::launch(
+            handoff,
+            &ctx,
+            &silicon.state,
+            &machine.flow,
+            &machine.options,
+        )
     }
 }
 

@@ -38,16 +38,27 @@ dependencies only (`acpi`, `smbios`, `smm`, `spi-flash`, `testing`).
 
 ## platform-amd: SoCs
 
-One module per SoC or SoC family: `picasso`, `zeppelin`, `sp3` (Naples,
-Rome, Milan). A SoC module says which IP versions it runs, in which order
+One module per SoC: `picasso`, `zeppelin`, `naples`, `rome`, `milan`.
+A SoC module says which IP versions it runs, in which order
 (`soc::Init`), with which constants (ECAM, layout, APOB, packages), and
-what the flow needs of it beyond the silicon (`flow::Soc`). `flow` is the
-boot flow every SoC shares; `noncar` the services the SoCs made of dies
-share.
+what the flow needs of it beyond the silicon (`flow::Soc`). SoCs that share
+their steps share a module: `iod` holds the steps of Rome and Milan, which
+take their die as a type (`iod::Variant`); `noncar` what the SoCs made of
+dies share; `sp3` what the SoCs of the SP3 socket share (its flash halves,
+its memory reservations, the flow's services for the socket).
 
-platform-amd has no SoC features either. A board's stage calls the flow of
-the SoCs it carries, so only those are linked; an SP3 board matches
-`sp3::start()` and halts on the families it does not list.
+The flow (`flow`) is the same for every SoC, and so are its services, each
+of which takes the SoC's data: the reset layout (`layout`), the memory map
+(`memory`), the boot media (`media`), MP (`mp` with the driver's
+`ccx::mp::Fam17hCpu`), SMM installation (`tseg`), options (`options`),
+measured boot (`tpm`), the ACPI and SMBIOS builders and the host build
+plan (`host`, with the image kinds `host::single` and `host::dual`).
+
+A board implements `board::Board`: its name, the SoCs it carries, its CPU
+ceiling, its TPM and BMC hooks. Its stage `main` matches the SoC
+`flow::start` returns and enters that SoC's flow with its configuration
+of it; the SoCs it does not handle halt, and only the flows it calls are
+linked. platform-amd has no SoC features either.
 
 ## Adding a SoC
 
@@ -55,8 +66,9 @@ the SoCs it carries, so only those are linked; an SP3 board matches
    `nbio::rs`, ...), next to the existing ones. Existing versions do not
    change.
 2. In platform-amd, add the SoC's module: its `Soc` and `Init`, its layout
-   and its `flow::Soc`.
-3. In the board, call the SoC's flow from the stage `main`.
+   and its `flow::Soc`, and its `board::SocId`.
+3. In the board, list the SoC in `Board::SOCS` and call its flow from the
+   stage `main`.
 
 ## Rules
 

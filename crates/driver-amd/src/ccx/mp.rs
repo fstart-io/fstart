@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The Family 17h CPU driver of the architectural MP engine: on every CPU
-//! the microcode patch from the FFS, then the SoC's CCX init, one CPU at a
-//! time; and the MTRRs and PAT the APs replay from the BSP.
+//! The Family 17h/19h CPU driver of the architectural MP engine, for every
+//! SoC: on every CPU the microcode patch from the FFS, then the SoC's CCX
+//! init (its hook); and the MSRs the APs replay from the BSP. The SoCs
+//! made of dies run the native CCX init one CPU at a time
+//! ([`Fam17hCpu::new`]); the multi-socket SoCs run the vendor sequence
+//! ([`super::init::thread_init`]) on every thread at once, with the
+//! microcode in it and the BSP's DRAM routing replayed
+//! ([`Fam17hCpu::multi_socket`]).
 use core::{
     marker::PhantomData,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
@@ -17,7 +22,7 @@ use fstart_arch::x86::{
 use tock_registers::interfaces::ReadWriteable;
 
 use crate::ccx::{
-    Thread, cache,
+    cache,
     microcode::{Bundle, Family, Load, Patch},
 };
 
@@ -28,9 +33,14 @@ pub struct Fam17hCpu<M, P> {
     /// The staged patch and its revision.
     patch: Option<(&'static [u8], u32)>,
     policy: P,
-    init: fn(&P, &NativeMsr, Thread) -> bool,
+    init: fn(&P, &NativeMsr) -> bool,
     /// The SMT siblings share MSRs, and so do the CPUs of a complex for some
     /// of the SoC tables: one CPU at a time.
+    serial: bool,
+    /// The APs take the BSP's DRAM routing (TOP_MEM, TOM2, MMIO_CFG_BASE,
+    /// SYSCFG) besides its MTRRs: the multi-socket SoCs' PSP/ABL leave the
+    /// APs' copies to the BIOS (CCX §3.7).
+    routing: bool,
     lock: AtomicBool,
     errors: AtomicU32,
     family: PhantomData<M>,
@@ -44,7 +54,7 @@ impl<M: Family, P> Fam17hCpu<M, P> {
         name: &'static str,
         microcode: Option<&'static [u8]>,
         policy: P,
-        init: fn(&P, &NativeMsr, Thread) -> bool,
+        init: fn(&P, &NativeMsr) -> bool,
     ) -> Self {
         let signature = fstart_arch::x86::cpuid(1).0;
         let patch = microcode
@@ -65,6 +75,25 @@ impl<M: Family, P> Fam17hCpu<M, P> {
             patch,
             policy,
             init,
+            serial: true,
+            routing: false,
+            lock: AtomicBool::new(false),
+            errors: AtomicU32::new(0),
+            family: PhantomData,
+        }
+    }
+
+    /// The driver of a multi-socket SoC: `init` (its vendor CCX sequence,
+    /// which loads the microcode itself) with `policy` on every thread at
+    /// once, the BSP's DRAM routing replayed.
+    pub fn multi_socket(name: &'static str, policy: P, init: fn(&P, &NativeMsr) -> bool) -> Self {
+        Self {
+            name,
+            patch: None,
+            policy,
+            init,
+            serial: false,
+            routing: true,
             lock: AtomicBool::new(false),
             errors: AtomicU32::new(0),
             family: PhantomData,
@@ -77,6 +106,12 @@ impl<M: Family, P> Fam17hCpu<M, P> {
     }
 
     fn locked(&self, work: impl FnOnce() -> bool) {
+        if !self.serial {
+            if !work() {
+                self.errors.fetch_add(1, Ordering::AcqRel);
+            }
+            return;
+        }
         while self
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -126,14 +161,18 @@ where
         self.locked(|| {
             // SAFETY: serialized MSR access on a CPU the driver matched.
             let msr = unsafe { NativeMsr::new() };
-            let ok = (self.init)(&self.policy, &msr, Thread::current());
+            let ok = (self.init)(&self.policy, &msr);
             hide_fixed_dram_routing(&msr);
             ok
         });
     }
     fn sipi_msrs(&self) -> Result<SipiMsrs, MpError> {
         // SAFETY: BSP only, before any AP starts.
-        sipi_msrs(&unsafe { NativeMsr::new() }).map_err(|_| MpError::CacheabilitySetupFailed)
+        let cpu = unsafe { NativeMsr::new() };
+        if self.routing {
+            return sipi_msrs_with_routing(&cpu);
+        }
+        sipi_msrs(&cpu).map_err(|_| MpError::CacheabilitySetupFailed)
     }
     fn sipi_unlock(&self) -> Option<SipiUnlock> {
         Some(SIPI_UNLOCK)
@@ -161,6 +200,43 @@ pub fn sipi_msrs(cpu: &impl MsrAccess) -> Result<SipiMsrs, Error> {
     cache::fixed_dram_view(cpu, |cpu| mtrr::snapshot_with(|index| cpu.read(index)))
         .map_err(Error::AmdCache)?
         .map_err(|_| Error::Capacity)
+}
+
+/// BSP only, before AP release: the BSP's memory routing (TOP_MEM/TOM2,
+/// SYSCFG, MMIO_CFG_BASE: the multi-socket SoCs' PSP/ABL leave the APs'
+/// copies to the BIOS, CCX §3.7) and its final MTRRs, the fixed ones with
+/// their RdDram/WrDram bits (read with SYSCFG MtrrFixDramModEn set).
+fn sipi_msrs_with_routing(cpu: &NativeMsr) -> Result<SipiMsrs, MpError> {
+    use fstart_arch::x86::cpu::amd::msr::{MMIO_CFG_BASE, TOP_MEM, TOP_MEM2};
+    use fstart_arch::x86::mtrr::MsrEntry;
+    use tock_registers::interfaces::Readable;
+    // SAFETY: BSP, before any AP starts; caching state is final.
+    unsafe { mtrr::install_final_solution(&[]) }.map_err(|_| MpError::CacheabilitySetupFailed)?;
+    let syscfg = cpu.reg(SYSCFG);
+    syscfg.modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::SET);
+    // Replayed with MtrrFixDramModEn still set: the fixed MTRRs that follow
+    // carry RdDram/WrDram bits, and writing those with the bit clear raises
+    // #GP (a triple fault this early). The trampoline clears it after the
+    // replay (`sipi_unlock`).
+    let syscfg_unlocked = syscfg.get();
+    let mtrrs = mtrr::snapshot_with(|i| cpu.read(i));
+    syscfg.modify(Syscfg::MTRR_FIX_DRAM_MOD_EN::CLEAR);
+    let mtrrs = mtrrs.map_err(|_| MpError::CacheabilitySetupFailed)?;
+    // Order matters on the AP: SYSCFG (MtrrFixDramEn) only after the fixed
+    // MTRRs hold their RdDram/WrDram bits, else the trampoline's own
+    // fetches below 1 MiB go to MMIO; IA32_MTRR_DEF_TYPE stays last.
+    let (def_type, mtrrs) = mtrrs.split_last().ok_or(MpError::CacheabilitySetupFailed)?;
+    let routing = [
+        MsrEntry::new(TOP_MEM.index(), cpu.reg(TOP_MEM).get()),
+        MsrEntry::new(TOP_MEM2.index(), cpu.reg(TOP_MEM2).get()),
+        MsrEntry::new(MMIO_CFG_BASE.index(), cpu.reg(MMIO_CFG_BASE).get()),
+    ];
+    routing
+        .into_iter()
+        .chain(mtrrs.iter().copied())
+        .chain([MsrEntry::new(SYSCFG.index(), syscfg_unlocked), *def_type])
+        .try_fold(SipiMsrs::new(), |mut v, e| v.push(e).map(|_| v))
+        .map_err(|_| MpError::CacheabilitySetupFailed)
 }
 
 /// Hide the fixed MTRRs' RdDram/WrDram bits again, on every CPU after its

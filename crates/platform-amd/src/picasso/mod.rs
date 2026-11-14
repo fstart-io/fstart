@@ -62,11 +62,6 @@ impl noncar::host::HostSoc for Picasso {
             spi: None,
         },
     };
-    fn check(config: &Config) -> Result<(), &'static str> {
-        (config.fch.console_uart < UART_BASES.len() as u8)
-            .then_some(())
-            .ok_or("Picasso console UART index exceeds hardware table")
-    }
 }
 
 /// `DISABLE_SPI_FLASH_ROM_SHARING`: stop sharing the SPI ROM with the EC.
@@ -83,8 +78,7 @@ impl noncar::DieSoc for Picasso {
     const APOB: Region = Region::new(0x0200_1000, 0x1_0000);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
-    /// The topology decoder's envelope: 2 CCXs, 4 cores, 2 threads.
-    const MAX_CPUS: u16 = 16;
+    const SERVER: bool = false;
     /// The eMMC controller if it is set up, the FCH GPIO controller and the
     /// board's I2C controllers with the devices behind them.
     fn acpi_devices(

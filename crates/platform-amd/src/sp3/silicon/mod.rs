@@ -173,8 +173,6 @@ mod tests {
 
 pub mod cpu;
 pub mod hw;
-pub mod naples;
-pub mod rome_milan;
 pub mod steps;
 pub use steps::Cppc;
-pub use steps::{Ctx, NonPci, NumaPlan, Policy, Steps};
+pub use steps::{Ctx, NonPci, NumaPlan, Policy};

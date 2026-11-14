@@ -26,6 +26,7 @@ pub fn install(
     IMAGE
         .ok_or("no SMM image")
         .and_then(|image| {
+            crate::tpm::measure_smm(image);
             AmdSmm::new(name, smi)
                 .install(mp, image, base, size)
                 .map_err(|error| error.name())

@@ -1,5 +1,6 @@
-//! The SP3 silicon steps (Naples in [`super::naples`], Rome and Milan in
-//! [`super::rome_milan`]) and what they hand on: the board's silicon
+//! What the SP3 SoCs' silicon steps share (Naples in
+//! [`crate::naples::silicon`], Rome and Milan in [`crate::iod::silicon`])
+//! and what they hand on: the board's silicon
 //! policy, the fabric's topology and plan, the handles and the BARs.
 //!
 //! A boot flow runs the steps in the order they are declared in, on the
@@ -9,7 +10,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 use fstart_driver_amd::fch::hw::FchHw;
 
-use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::apob::Apob;
 use fstart_driver_amd::ccx;
@@ -19,12 +19,11 @@ use fstart_driver_amd::df::topology::{self, Topology};
 use fstart_driver_amd::df::{self as sp3_df, Fabric};
 use fstart_driver_amd::df::{Version, program};
 use fstart_driver_amd::dxio::DxioPolicy;
-use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::fch::hw as fch;
 use fstart_driver_amd::fch::hw::tasks::env::EnvPolicy;
+use fstart_driver_amd::nbio::NbioPolicy;
 use fstart_driver_amd::nbio::iohc::DramTops;
-use fstart_driver_amd::nbio::{Nbio, NbioPolicy};
 
 use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
@@ -188,54 +187,8 @@ impl Ctx {
     }
 }
 
-/// The silicon steps of one family, in flow order: [`super::naples`] (DF2,
-/// an NBIO and SMU V9 per die) and [`super::rome_milan`] (DF3, SMU V11 per
-/// IOD).
-pub trait Steps: Sized {
-    /// The DF version's rule layout.
-    type DfLayout: Version;
-    fn df_init(ctx: &mut Ctx) -> Result<(), &'static str>;
-    fn nbio_early(ctx: &mut Ctx) -> Result<Self, &'static str>;
-    fn smu_init(ctx: &mut Ctx, si: &mut Self) -> Result<(), &'static str>;
-    fn fch_secondaries(ctx: &mut Ctx, si: &Self) -> Result<(), &'static str>;
-    fn dxio(
-        ctx: &mut Ctx,
-        si: &Self,
-        engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
-    ) -> Result<(), &'static str>;
-    fn fch_env(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
-    /// CCX on the BSP and the driver every thread runs, with the patches
-    /// of `microcode`.
-    fn cpu_driver(
-        ctx: &mut Ctx,
-        si: &mut Self,
-        microcode: Option<&'static [u8]>,
-    ) -> Result<super::cpu::Sp3Cpu, &'static str>;
-    /// The threads MP brings up, the BSP included.
-    fn threads(si: &Self) -> u16;
-    /// Release `aps` APs into the reset vector, which the flow routed to
-    /// the MP engine.
-    fn release_aps(ctx: &Ctx, si: &Self, aps: u16) -> Result<(), u32>;
-    /// Every thread ran the driver; `apic_ids` are theirs, the BSP's first.
-    fn cpus_up(
-        ctx: &mut Ctx,
-        si: &mut Self,
-        mp: &MpHandle,
-        apic_ids: &[u32],
-    ) -> Result<(), &'static str>;
-    fn pci_pre(ctx: &mut Ctx, si: &mut Self) -> Result<(), &'static str>;
-    fn pci_post(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
-    fn fch_late(ctx: &Ctx, si: &Self) -> Result<(), &'static str>;
-    fn usb_buses(ctx: &Ctx, si: &Self) -> Result<[u8; 8], &'static str>;
-    fn usb_bus_count(ctx: &Ctx) -> u8;
-    /// NUMA domains for SRAT/SLIT/MSCT and `_PXM`; `None` with one domain.
-    fn numa(ctx: &Ctx, si: &Self) -> Option<NumaPlan>;
-    /// Every present NBIO, physical order.
-    fn nbios(&self) -> &[Nbio<Pci>];
-}
-
 /// A step's result with the step's name as its error.
-pub(super) trait Step<T> {
+pub(crate) trait Step<T> {
     fn step(self, name: &'static str) -> Result<T, &'static str>;
 }
 impl<T, E> Step<T> for Result<T, E> {
@@ -250,7 +203,7 @@ impl<T> Step<T> for Option<T> {
 }
 
 /// DXIO training, with the error's details logged.
-pub(super) fn trained(
+pub(crate) fn trained(
     result: Result<(), fstart_driver_amd::dxio::DxioError>,
 ) -> Result<(), &'static str> {
     result.map_err(|e| {
@@ -262,7 +215,7 @@ pub(super) fn trained(
 
 /// The microcode patches of `blob`, the verified FFS's copy (the patch
 /// loader reads them at their address).
-pub(super) fn microcode_candidates(blob: Option<&'static [u8]>) -> Vec<&'static [u8]> {
+pub(crate) fn microcode_candidates(blob: Option<&'static [u8]>) -> Vec<&'static [u8]> {
     blob.map(|blob| {
         fstart_amdfw_format::microcode::patches(blob)
             .map_while(Result::ok)
@@ -326,12 +279,12 @@ pub fn fch_reset(
 /// DF topology, board bus counts, the MMIO/IO planner and its maps
 /// (SOC_DF §3.3–3.4). Runs before NBIO: every NBIO access goes through a
 /// root bus the DF routes.
-pub fn data_fabric<S: Steps>(ctx: &mut Ctx) -> Result<(), &'static str> {
+pub fn data_fabric<V: Version>(ctx: &mut Ctx) -> Result<(), &'static str> {
     let mut topology = topology::discover(&ctx.df, ctx.generation).step("DF topology")?;
     if let Some(ranges) =
         plan::plan_buses(&topology.root_bridges, &ctx.policy.df).step("DF bus plan")?
     {
-        sp3_df::program::bus_maps::<S::DfLayout, _>(&ctx.df, &mut topology, &ranges);
+        sp3_df::program::bus_maps::<V, _>(&ctx.df, &mut topology, &ranges);
     }
     ctx.phys_addr_bits = phys_addr_bits(ctx.generation, ctx.policy.ccx.smee);
     let plan = plan::plan(
@@ -342,16 +295,16 @@ pub fn data_fabric<S: Steps>(ctx: &mut Ctx) -> Result<(), &'static str> {
             ecam_size: ctx.pci_root.ecam_size(),
             phys_addr_bits: ctx.phys_addr_bits,
             root_bridges: &topology.root_bridges,
-            mmio_pairs: <S::DfLayout as Version>::MMIO_PAIRS,
+            mmio_pairs: V::MMIO_PAIRS,
         },
         &ctx.policy.df,
     )
     .step("DF plan")?;
     // SAFETY: the BSP owns every node's DF during the silicon init.
     let nodes = unsafe { ctx.df.each(&topology.nodes) };
-    program::mmio::<S::DfLayout, _>(&nodes, &plan.mmio);
-    program::io::<S::DfLayout, _>(&nodes, &plan.io);
-    program::vga::<S::DfLayout, _>(&nodes, topology.primary().fabric_id);
+    program::mmio::<V, _>(&nodes, &plan.mmio);
+    program::io::<V, _>(&nodes, &plan.io);
+    program::vga::<V, _>(&nodes, topology.primary().fabric_id);
     for rb in &plan.root_bridges {
         fstart_log::info!(
             "df: rb {}.{} buses {:#x}-{:#x} mmio {:#x}+{:#x}",
@@ -399,12 +352,16 @@ pub fn fch_env(ctx: &Ctx) {
 }
 
 /// ReadyToBoot (SOC_DF §3.7, PSP_APOB §3.4, FCH_SP3 §2.3): FCH late
-/// tasks, DF extended config off, PSP LockDFReg, Milan DRTM off and TPM
-/// establishment reset, BootDone last.
-pub fn ready_to_boot<S: Steps>(ctx: &Ctx, si: &S) -> Result<(), &'static str> {
+/// tasks (the SoC's `fch_late` after the common ones), DF extended config
+/// off, PSP LockDFReg, Milan DRTM off and TPM establishment reset, BootDone
+/// last.
+pub fn ready_to_boot(
+    ctx: &Ctx,
+    fch_late: impl FnOnce() -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
     use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
     fch::tasks::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
-    S::fch_late(ctx, si)?;
+    fch_late()?;
     sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
     let psp = psp(ctx)?;
     psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))

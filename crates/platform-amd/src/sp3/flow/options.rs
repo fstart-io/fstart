@@ -1,30 +1,9 @@
-//! The settings store ([`crate::sp3::layout::NVRAM`]): option overrides read at
-//! boot, and the store and the options' form handed to the UEFI payload.
-//!
-//! The store is CrabEFI's EFI variable store, which its menu writes. Every
-//! payload's boot reads it; only the UEFI payload can change it.
-
-use fstart_options::varstore::VarstoreOptions;
-use fstart_options::{Knob, Report, Source};
+//! The SP3 settings store ([`crate::sp3::layout::NVRAM`]) and the options'
+//! form handed to the UEFI payload ([`crate::options`] reads the store at
+//! boot).
 
 #[cfg(feature = "payload-uefi")]
 use super::Ctx;
-
-/// The overrides stored in `nvram`, the ROM view of the settings store.
-pub(crate) fn source(nvram: Option<&'static [u8]>) -> impl Source {
-    nvram.map(VarstoreOptions::new)
-}
-
-/// [`fstart_options::resolve_checked`] from the settings store, logged.
-pub(crate) fn resolve<C: Clone>(
-    nvram: Option<&'static [u8]>,
-    knobs: &'static [Knob<C>],
-    config: &mut C,
-    report: &mut Report,
-    check: impl FnOnce(&C) -> Result<(), &'static str>,
-) {
-    fstart_log::option::resolve_into(knobs, &source(nvram), config, report, check);
-}
 
 /// The settings store as the payload's variable storage, and the options'
 /// form for its menu. The store is writable only if the SPI100 command
@@ -59,9 +38,11 @@ pub(crate) fn storage(
 
 /// The options' CFR form for the payload's menu.
 #[cfg(feature = "payload-uefi")]
-pub(crate) fn settings(ctx: &Ctx<'_>) -> fstart_payload::crabefi::settings::FirmwareSettings {
+pub(crate) fn settings(
+    options: &fstart_options::Report,
+) -> fstart_payload::crabefi::settings::FirmwareSettings {
     fstart_payload::crabefi::settings::FirmwareSettings {
-        cfr: fstart_options::cfr::encode(&ctx.options),
+        cfr: fstart_options::cfr::encode(options),
         cmos: None,
     }
 }

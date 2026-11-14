@@ -39,8 +39,7 @@ impl noncar::DieSoc for Zeppelin {
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;
-    /// Two dies of eight SMT cores.
-    const MAX_CPUS: u16 = 32;
+    const SERVER: bool = true;
     /// The FCH GPIO controller (AMDI0030) on the IRQ the board routes it
     /// to, as the vendor DSDT has it: three banks.
     fn acpi_devices(

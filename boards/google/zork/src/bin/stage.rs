@@ -8,6 +8,7 @@
 use fstart_board_google_vilboz::{self as vilboz, Board};
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
+use fstart_platform_amd::flow::Cpu;
 use fstart_platform_amd::picasso::Runtime;
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
@@ -15,9 +16,11 @@ static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
-    let stage = fstart_platform_amd::noncar::start::<Board>()
-        .console(&CONSOLE, vilboz::console())
-        .init_fch();
+    let stage = match fstart_platform_amd::flow::start::<Board>() {
+        Cpu::Picasso(id) => id.enter(vilboz::CONFIG),
+        cpu => cpu.unsupported(),
+    };
+    let stage = stage.console(&CONSOLE, vilboz::console()).init_fch();
     let gpio = stage.hw().gpio();
     if vilboz::early_gpios(&gpio).is_err() {
         stage.fail("board GPIOs");

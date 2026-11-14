@@ -4,7 +4,7 @@
 //! crate names ([`fstart_driver_amd::soc::Soc`] is what the blocks need of
 //! it):
 //!
-//! | IP | [`crate::picasso`] | [`crate::zeppelin`] | [`crate::sp3`] Naples | Rome | Milan |
+//! | IP | [`crate::picasso`] | [`crate::zeppelin`] | [`crate::naples`] | [`crate::rome`] | [`crate::milan`] |
 //! |----|----|----|----|----|----|
 //! | CCX | `ccx::rv` | `ccx::zp` | `ccx::init`, `tables::zp` | `tables::ssp` | `tables::gn` |
 //! | DF | `df::rv` | `df::zp` | `df::zp` | `df::ssp` | `df::gn` |
@@ -57,6 +57,8 @@ pub struct Memory<'a> {
 /// the clock and the memory map.
 pub struct Ctx<'a, S: Init> {
     pub config: &'a S::Config,
+    /// What the flow's services read of the board.
+    pub board: &'a crate::board::Facts,
     pub identity: S::Identity,
     pub hw: &'a S::Hw,
     pub msr: &'a NativeMsr,
