@@ -38,6 +38,8 @@ pub use log::{Format, PlatformClass};
 struct State {
     tpm: &'static mut dyn Transport,
     family: Family,
+    /// The platform class the log was started for.
+    class: PlatformClass,
     /// `(algorithm, allocated PCR mask)` of each bank.
     banks: [(u16, u32); MAX_BANKS],
     bank_count: usize,
@@ -313,6 +315,7 @@ pub fn start(
     let state = State {
         tpm,
         family,
+        class,
         banks,
         bank_count,
         log,
@@ -540,6 +543,8 @@ pub fn lock() -> Result<(), TpmError> {
 pub struct LogInfo {
     /// The TPM that measured boot started, also after a failure.
     pub family: Family,
+    /// The platform class the log was started for.
+    pub class: PlatformClass,
     pub format: Format,
     /// Physical address and size of the whole log area.
     pub base: u64,
@@ -554,6 +559,7 @@ pub struct LogInfo {
 pub fn log() -> Option<LogInfo> {
     with(|state| LogInfo {
         family: state.family,
+        class: state.class,
         format: state.log.format(),
         base: state.log.base(),
         capacity: state.log.capacity(),
@@ -849,6 +855,7 @@ mod tests {
         // into the log, caps successfully and still locks before handoff.
         let mock = tpm(&[], false);
         start(mock, log_area(), PlatformClass::Client, false).unwrap();
+        assert_eq!(log().unwrap().class, PlatformClass::Client);
         let before = log().unwrap().used;
         measurement_error();
         let after = log().unwrap().used;

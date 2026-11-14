@@ -243,6 +243,23 @@ pub fn e820(
     Ok(count)
 }
 
+/// Physically contiguous, identity-mapped DRAM from the stage heap (inside
+/// the reserved early region, so it stays the firmware's after handoff):
+/// DMA buffers and tables the SMU/PSP keep using.
+pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'static str> {
+    if size == 0 {
+        return Err("DMA layout");
+    }
+    let layout = core::alloc::Layout::from_size_align(size, align).map_err(|_| "DMA layout")?;
+    // SAFETY: the size is not zero; never freed; zeroed before use.
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return Err("DMA allocation");
+    }
+    // SAFETY: fresh allocation of `size` bytes.
+    Ok(unsafe { core::slice::from_raw_parts_mut(ptr, size) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +411,12 @@ mod tests {
         let t = place_tseg(&regions, 0x7600_0000, TSEG_SIZE, &[early]).unwrap();
         assert_eq!(t, Region::new(0x7480_0000, TSEG_SIZE));
         assert_eq!(place_tseg(&regions[1..], 0x8000_0000, 8 << 20, &[]), None);
+    }
+
+    #[test]
+    fn dma_alloc_rejects_an_empty_or_misaligned_request() {
+        assert_eq!(super::dma_alloc(0, 0x1000).err(), Some("DMA layout"));
+        assert_eq!(super::dma_alloc(0x1000, 3).err(), Some("DMA layout"));
+        assert_eq!(super::dma_alloc(0x20, 0x10).unwrap().len(), 0x20);
     }
 }

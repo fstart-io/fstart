@@ -41,8 +41,8 @@ pub(crate) fn install(
         &sysmap::memory_map(soc.generation.into(), map.top, map.holes())
             .or_halt("SMBIOS DRAM ranges"),
     );
-    let bytes = crate::sp3::silicon::steps::dma_alloc(fstart_acpi::smbios::BUFFER_SIZE, 16)
-        .or_halt("DMA allocation");
+    let bytes =
+        crate::memory::dma_alloc(fstart_acpi::smbios::BUFFER_SIZE, 16).or_halt("DMA allocation");
     let address = bytes.as_ptr() as u64;
     crate::smbios::build_into(
         bytes,

@@ -224,23 +224,6 @@ pub(crate) fn microcode_candidates(blob: Option<&'static [u8]>) -> Vec<&'static 
     .unwrap_or_default()
 }
 
-/// Physically contiguous, identity-mapped DRAM from the stage heap (inside
-/// the reserved early region, so it stays the firmware's after handoff):
-/// DMA buffers and tables the SMU/PSP keep using.
-pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'static str> {
-    if size == 0 {
-        return Err("DMA layout");
-    }
-    let layout = core::alloc::Layout::from_size_align(size, align).step("DMA layout")?;
-    // SAFETY: the size is not zero; never freed; zeroed before use.
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if ptr.is_null() {
-        return Err("DMA allocation");
-    }
-    // SAFETY: fresh allocation of `size` bytes.
-    Ok(unsafe { core::slice::from_raw_parts_mut(ptr, size) })
-}
-
 /// The FCH IOAPIC (`FEC0_0000h`) gets the generation's ID (ACPI_SMM §3.2).
 pub fn set_fch_ioapic_id(generation: Silicon) {
     // SAFETY: the FCH IOAPIC is decoded at its fixed address.
@@ -403,13 +386,6 @@ pub fn psp(
 #[cfg(test)]
 mod tests {
     use fstart_driver_amd::df::plan::Window;
-
-    #[test]
-    fn dma_alloc_rejects_an_empty_or_misaligned_request() {
-        assert_eq!(super::dma_alloc(0, 0x1000).err(), Some("DMA layout"));
-        assert_eq!(super::dma_alloc(0x1000, 3).err(), Some("DMA layout"));
-        assert_eq!(super::dma_alloc(0x20, 0x10).unwrap().len(), 0x20);
-    }
 
     #[test]
     fn mcfg_per_generation() {

@@ -152,8 +152,7 @@ pub(crate) fn acpi(
         }
     }
     const ACPI_SIZE: usize = 0x4_0000;
-    let storage =
-        crate::sp3::silicon::steps::dma_alloc(ACPI_SIZE, 0x1000).or_halt("DMA allocation");
+    let storage = crate::memory::dma_alloc(ACPI_SIZE, 0x1000).or_halt("DMA allocation");
     acpi::install(
         &acpi::Soc {
             soc: crate::sp3::acpi::of(crate::sp3::silicon::Generation::of(ctx.soc.generation)),

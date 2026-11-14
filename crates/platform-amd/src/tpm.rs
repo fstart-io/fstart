@@ -42,7 +42,7 @@ pub fn start(image: Option<&'static [u8]>, server: bool) -> Result<(), &'static 
     );
     // SAFETY: the boot CPU runs this once; the slot is written once.
     let tis = unsafe { (*core::ptr::addr_of_mut!(TIS)).insert(tis) };
-    let log = crate::sp3::silicon::steps::dma_alloc(LOG_SIZE, 0x1000)?;
+    let log = crate::memory::dma_alloc(LOG_SIZE, 0x1000)?;
     let uefi = fstart_payload::SELECTED == fstart_payload::Selected::Uefi;
     let class = if server {
         fstart_tcg::PlatformClass::Server
@@ -106,7 +106,7 @@ pub fn acpi() -> Option<fstart_acpi::devices::tpm::TpmTisAcpi> {
             fstart_tcg::Family::Tpm12 => TpmFamily::Tpm12,
             fstart_tcg::Family::Tpm20 => TpmFamily::Tpm20,
         },
-        server: true,
+        server: log.class == fstart_tcg::PlatformClass::Server,
         log: Some(LogArea {
             base: log.base,
             size: log.capacity as u32,

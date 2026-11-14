@@ -2,6 +2,7 @@
 //! DXIO, Taishan FCHs on every die and the per-die SMU thread release
 //! (INTEGRATION_NOTES §3–§9, the Naples paragraphs).
 extern crate alloc;
+use crate::memory::dma_alloc;
 use crate::sp3::silicon::cpu::{release_all, this_thread};
 use crate::sp3::silicon::hw::{Pci, Tsc, msr, secondary_fch};
 use crate::sp3::silicon::hw::{SMU_POLL_US, SMU_TIMEOUT_US};
