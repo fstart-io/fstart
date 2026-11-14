@@ -369,18 +369,13 @@ impl<S: Soc> Stage<S, Chipset<S>> {
         } = self;
         let (cpus, mut state) =
             bring_up_cpus(&machine, chipset).unwrap_or_else(|what| fail::<S>(what));
-        // What the SMM handler needs of the RAM leaves the memory map
-        // before the handler is installed and locked.
+        // What the SMM handler needs of the RAM leaves the memory map and
+        // the payload's reach before the handler is installed and locked.
         let reserved =
             S::smm_memory(&machine.ctx(), &mut state).unwrap_or_else(|what| fail::<S>(what));
         for range in reserved {
-            if machine
-                .e820
-                .reserve_range(range.start, range.end - range.start)
-                .is_err()
-            {
-                fail::<S>("memory map");
-            }
+            crate::media::reserve(&mut machine.e820, range.start, range.end - range.start)
+                .unwrap_or_else(|what| fail::<S>(what));
         }
         let silicon = install_smm(&machine, cpus, state).unwrap_or_else(|what| fail::<S>(what));
         Stage {

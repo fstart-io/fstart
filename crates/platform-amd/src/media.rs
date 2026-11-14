@@ -113,6 +113,19 @@ pub fn mount(e820: &[E820Entry], layout: &Layout, ffs: Region) -> Result<(), Mou
     ffs.verify().map_err(|_| MountError::Verify)
 }
 
+/// Reserve `start..start + size` of RAM after [`mount`] installed the load
+/// policy: in the memory map the OS gets and for payload loads alike, so the
+/// two agree on what the firmware keeps.
+pub fn reserve(
+    e820: &mut fstart_core::services::memory_detect::E820State,
+    start: u64,
+    size: u64,
+) -> Result<(), &'static str> {
+    e820.reserve_range(start, size).map_err(|_| "memory map")?;
+    fstart_stage::directory::reserve_load_window(MemoryWindow { start, size })
+        .map_err(|_| "load policy")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

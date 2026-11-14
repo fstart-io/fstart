@@ -181,6 +181,17 @@ struct OwnedPolicy {
 }
 static POLICY: AtomicPtr<OwnedPolicy> = AtomicPtr::new(core::ptr::null_mut());
 
+/// Held by every test that uses the process-wide load policy or the loaded
+/// ledger ([`crate::loaded`]), which installing a policy resets, for its
+/// whole setup and checks.
+#[cfg(test)]
+pub(crate) fn lock_load_state() -> std::sync::MutexGuard<'static, ()> {
+    static LOAD_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOAD_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Copy a platform memory policy into retained mainstage ownership, with the
 /// codec directory-backed loads decompress with ([`crate::boot::Stored`]
 /// links no decoder). Can be installed after memory discovery independently
@@ -281,6 +292,33 @@ pub unsafe fn grant_load_window(window: MemoryWindow) -> Result<(), LoadError> {
         set_load_policy(
             &MemoryPolicy {
                 writable: &writable,
+                reserved: &reserved,
+                entry_alignment: policy.entry_alignment,
+            },
+            codec,
+        )
+    }
+}
+
+/// Take `window` out of the installed load policy: a load that overlaps it
+/// fails. For memory the platform reserves after it installed the policy
+/// (SMM data, error-injection pages), which loads must then avoid as the
+/// memory map handed to the OS does.
+pub fn reserve_load_window(window: MemoryWindow) -> Result<(), LoadError> {
+    let policy = load_policy().ok_or(LoadError::MemoryPolicy)?;
+    let codec = codec().ok_or(LoadError::MemoryPolicy)?;
+    let mut reserved = Vec::new();
+    reserved
+        .try_reserve_exact(policy.reserved.len() + 1)
+        .map_err(|_| LoadError::MemoryPolicy)?;
+    reserved.extend_from_slice(policy.reserved);
+    reserved.push(window);
+    // SAFETY: the installed policy with one more reservation permits a
+    // subset of what it permitted.
+    unsafe {
+        set_load_policy(
+            &MemoryPolicy {
+                writable: policy.writable,
                 reserved: &reserved,
                 entry_alignment: policy.entry_alignment,
             },

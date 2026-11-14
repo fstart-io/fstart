@@ -205,6 +205,7 @@ mod tests {
 
     #[test]
     fn policy_refresh_preserves_successful_destinations() {
+        let _load_state = crate::directory::lock_load_state();
         let buffer = Box::into_raw(Box::new([0u8; 128]));
         let writable = [window(buffer as u64, 128)];
         let policy = crate::boot::MemoryPolicy {
