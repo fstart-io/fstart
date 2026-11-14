@@ -23,7 +23,6 @@ use crate::sp3::layout;
 
 pub(crate) mod handoff;
 pub(crate) mod options;
-pub(crate) mod tpm;
 
 /// Halt after logging a failed step; the POST code of the step stays on
 /// port 80h.
@@ -66,9 +65,6 @@ pub(crate) struct Ctx<'a> {
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
     pub ffs_offset: u32,
-    /// The outcome of every option knob resolved so far.
-    #[cfg(feature = "payload-uefi")]
-    pub options: &'a fstart_options::Report,
     pub smm: Option<crate::sp3::smm::SmmConfig>,
 }
 
@@ -189,6 +185,12 @@ fn bios_directories(
         .flash(flash)
         .bios_directories_checked(generation.profile().bios)
         .ok()
+}
+
+/// The flash copy of the reset image the PSP loaded (BIOS directory entry
+/// 0x62) in `generation`'s booted half `flash`.
+pub(crate) fn reset_image(flash: &'static [u8], generation: Generation) -> Option<&'static [u8]> {
+    crate::media::reset_image(flash, generation.profile().bios)
 }
 
 /// The APOB from BIOS directory entry 0x61 (PSP_APOB §3.5); logs the ABL

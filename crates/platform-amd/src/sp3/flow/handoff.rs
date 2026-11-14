@@ -156,7 +156,7 @@ pub(crate) fn acpi(
             acpi_disable: smi::sw::ACPI_DISABLE,
         }),
         bmc_sx_notify,
-        tpm: super::tpm::acpi(),
+        tpm: crate::tpm::acpi(),
         devices: &[],
         sb_aml: &fch_aml,
         tables: &tables,

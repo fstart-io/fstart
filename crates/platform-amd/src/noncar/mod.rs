@@ -42,6 +42,8 @@ pub trait DieSoc: crate::soc::DieInit {
     const APOB: Region;
     /// Where the PSP finds the BIOS directory.
     const BIOS_DIRECTORY: BiosDirectorySlot;
+    /// A server SoC: the TCG platform class of its measured boot.
+    const SERVER: bool;
     /// What the SMBIOS tables say of the package and its memory.
     const SMBIOS: SocSmbios;
     /// What the SoC's ACPI tables differ in.
@@ -94,7 +96,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     fn map(
         hw: &mut Hw<S>,
         _: &mut S::Config,
-        _: &crate::board::Facts,
+        board: &crate::board::Facts,
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         _: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<crate::flow::Mapped<S>, &'static str> {
@@ -170,6 +172,20 @@ impl<S: DieSoc> crate::flow::Soc for S {
             .and_then(|plan| cache::install(msr, &plan))
             .map_err(|_| "MTRR setup")?;
 
+        if board.discrete_tpm {
+            // SAFETY: the boot flash below 4 GiB, read only.
+            let flash = unsafe {
+                core::slice::from_raw_parts(
+                    S::LAYOUT.flash.base as *const u8,
+                    S::LAYOUT.flash.size as usize,
+                )
+            };
+            crate::tpm::start(
+                crate::media::reset_image(flash, S::BIOS_DIRECTORY),
+                S::SERVER,
+            )?;
+        }
+
         let ffs = S::LAYOUT.ffs.ok_or("boot media")?;
         fstart_arch::x86::boot::enable_boot_media_rom_cache();
         crate::media::mount(e820.entries(), &S::LAYOUT, ffs).map_err(|error| error.step())?;
@@ -180,6 +196,8 @@ impl<S: DieSoc> crate::flow::Soc for S {
             tseg: tseg.base,
             e820,
             ffs: ffs.base..ffs.end(),
+            nvram: None,
+            options: fstart_options::Report::new(),
             flow: (),
         })
     }

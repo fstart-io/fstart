@@ -78,6 +78,7 @@ impl noncar::DieSoc for Picasso {
     const APOB: Region = Region::new(0x0200_1000, 0x1_0000);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
+    const SERVER: bool = false;
     /// The eMMC controller if it is set up, the FCH GPIO controller and the
     /// board's I2C controllers with the devices behind them.
     fn acpi_devices(

@@ -141,6 +141,9 @@ pub fn install<S: DieSoc>(
             acpi_disable: fch::smi::ACPI_DISABLE,
         }),
         bmc_sx_notify: None,
+        #[cfg(all(feature = "bundle", target_os = "none"))]
+        tpm: crate::tpm::acpi(),
+        #[cfg(not(all(feature = "bundle", target_os = "none")))]
         tpm: None,
         devices: &silicon.devices,
         sb_aml: &silicon.aml,
