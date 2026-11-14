@@ -52,7 +52,7 @@ jobs:
   # The cheap gate every firmware job waits for: formatting, and the job
   # matrix. fbuild resolves the boards from boards/<vendor>/<board>/Cargo.toml
   # package.metadata.fstart, the same discovery every other fbuild command
-  # uses; ci/shards.py groups them into jobs.
+  # uses, and groups them into jobs (tools/fbuild/src/shards.rs).
   boards:
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -74,9 +74,7 @@ jobs:
         id: list
         run: |
           set -o pipefail
-          cargo fbuild boards --json > "$RUNNER_TEMP/boards.json"
-          shards=$(ci/qemu-boot-tests.sh --list |
-            ci/shards.py "$RUNNER_TEMP/boards.json")
+          shards=$(ci/qemu-boot-tests.sh --list | cargo fbuild shards)
           echo "shards=$shards" >> "$GITHUB_OUTPUT"
 
   test:
@@ -105,8 +103,6 @@ jobs:
         env:
           RUST_MIN_STACK: 8388608
         run: |
-          python3 -m unittest discover -s ci -p 'test_*.py'
-          python3 -m unittest discover -s ci/tpm -p 'test_*.py'
           cargo test
           cargo test -p fstart-stage \
             --features ffs,ffs-signature,fdt,fit,x86_64 --lib
@@ -232,6 +228,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # fbuild merges the records; sccache has its units from the boards job.
+      - uses: ./.github/actions/setup
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -243,7 +241,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           cat stage-sizes/*.jsonl > "$RUNNER_TEMP/stage-sizes.jsonl"
-          python3 ci/stage_sizes.py merge "$RUNNER_TEMP/stage-sizes.jsonl" stage-sizes.json \
+          cargo fbuild sizes merge "$RUNNER_TEMP/stage-sizes.jsonl" stage-sizes.json \
             --commit "$GITHUB_SHA" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" ${PR:+--pr "$PR"}
 

@@ -31,7 +31,7 @@ run() {
 	timeout --kill-after=10s "${TPM_TEST_TIMEOUT:-300s}" \
 		"$here/qemu-tpm.sh" "$family" --banks "$banks" -- \
 		--board qemu-q35 --release "$@" >"$log" 2>&1 || true
-	if python3 "$here/verify-log.py" "$log" "${verify_args[@]}" >"$log.verify"; then
+	if cargo run -q -p fbuild -- verify-tpm-log "$log" "${verify_args[@]}" >"$log.verify"; then
 		printf 'PASS %s\n' "$name"
 	else
 		printf 'FAIL %s (%s)\n' "$name" "$log.verify"

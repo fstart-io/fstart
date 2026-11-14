@@ -607,8 +607,11 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "fbuild"
 version = "0.1.0"
 dependencies = [
+ "base64ct",
+ "byteorder",
  "clap",
  "fstart-core",
+ "fstart-crypto",
  "fstart-image-build",
  "fstart-platform-qemu",
  "heapless 0.8.0",
@@ -616,6 +619,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "toml",
 ]
 
