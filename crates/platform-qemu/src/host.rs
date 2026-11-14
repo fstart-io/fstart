@@ -6,7 +6,8 @@ use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
         ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
-        FfsAssembly as Assembly, InputFile, RunArtifact, RunDisk, RunMedia, RunRecipe, UnitOutput,
+        FfsAssembly as Assembly, InputFile, RunArtifact, RunDisk, RunMedia, RunRecipe,
+        SmmRelocation, SmmUnit, UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
@@ -1059,17 +1060,24 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let mp_capacity =
         || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
     if machine.is_q35() {
-        units.push(CompilationUnit::smm(
-            "smm",
-            policy.target.into(),
-            vec!["smm".into(), "bundle-smm".into()],
-            false,
-            mp_capacity(),
-            8,
-            0x400,
-            false,
-            false,
-        ));
+        units.push(
+            SmmUnit {
+                name: "smm".into(),
+                platform: policy.platform,
+                features: vec!["smm".into(), "bundle-smm".into()],
+                // Direct relative calls; absolute cross-section references
+                // are audited.
+                relocation: SmmRelocation::Static,
+                environment_values: mp_capacity(),
+                image: fstart_image_build::smm_image::ImageOptions {
+                    entry_count: 8,
+                    stack_size: 0x400,
+                    coreboot_module_args: false,
+                    coreboot_header: false,
+                },
+            }
+            .into(),
+        );
     }
     let stage_bindings = if machine.is_q35() {
         vec![ArtifactBinding {

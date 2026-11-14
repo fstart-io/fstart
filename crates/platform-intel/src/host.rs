@@ -20,7 +20,8 @@ pub fn compilation_plan(
     plan: IntelPlan,
 ) -> Result<fstart_image_build::build_plan::BuildPlan, std::string::String> {
     use fstart_image_build::build_plan::{
-        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, RunRecipe, UnitOutput,
+        ArtifactBinding, BuildPlan, CargoTarget, CompilationUnit, InputFile, RunRecipe,
+        SmmRelocation, SmmUnit, UnitOutput,
     };
     plan.validate()?;
     let flags = |value: &str| {
@@ -35,18 +36,26 @@ pub fn compilation_plan(
     // Long-mode SMM images are copied without absolute-address fixups;
     // their data references must be RIP-relative. The 32-bit loader rebases
     // its audited absolute references instead.
-    let smm_pie = plan.platform != fstart_core::Platform::X86;
-    let mut units = vec![CompilationUnit::smm(
-        "smm",
-        plan.target(),
-        plan.smm_features.clone(),
-        smm_pie,
-        mp_capacity(),
-        plan.smm.entry_points.unwrap_or(plan.max_cpus),
-        plan.smm.stack_size,
-        plan.smm.coreboot.module_args,
-        plan.smm.coreboot.emit_header,
-    )];
+    let mut units = vec![
+        SmmUnit {
+            name: "smm".into(),
+            platform: plan.platform,
+            features: plan.smm_features.clone(),
+            relocation: if plan.platform == fstart_core::Platform::X86 {
+                SmmRelocation::Static
+            } else {
+                SmmRelocation::Pie
+            },
+            environment_values: mp_capacity(),
+            image: fstart_image_build::smm_image::ImageOptions {
+                entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
+                stack_size: plan.smm.stack_size,
+                coreboot_module_args: plan.smm.coreboot.module_args,
+                coreboot_header: plan.smm.coreboot.emit_header,
+            },
+        }
+        .into(),
+    ];
     for row in &plan.stages {
         let ram = row.role == IntelStage::Ramstage;
         let boot = row.role == IntelStage::Bootblock;

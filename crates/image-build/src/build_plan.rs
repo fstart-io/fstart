@@ -433,64 +433,77 @@ pub struct CompilationUnit {
     pub output: UnitOutput,
 }
 
-impl CompilationUnit {
-    /// The board-library SMM handler unit every x86 platform builds:
-    /// release-only, no linker script (the SMM image producer links
-    /// the handler itself), the board's `smm` library feature, and the
-    /// flag set the retained-relocation audit expects. `pie` selects
-    /// the relocation model: handlers that take the address of their
-    /// SMRAM statics need PIE with PLT calls resolved direct; the
-    /// others link static. The 32-bit JSON target has no prebuilt
-    /// core, so it builds `core,alloc`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn smm(
-        name: &str,
-        target: String,
-        features: Vec<String>,
-        pie: bool,
-        environment_values: BTreeMap<String, String>,
-        entry_count: u16,
-        stack_size: u32,
-        coreboot_module_args: bool,
-        coreboot_header: bool,
-    ) -> Self {
-        // PLT-style call relocations resolve locally at link time in
-        // either model, avoiding GOT-indirect calls the audited image
-        // cannot carry.
-        let relocation: &[&str] = if pie {
-            &["-Crelocation-model=pie", "-Zplt=yes"]
-        } else {
-            &["-Crelocation-model=static", "-Zplt=yes"]
+/// How an SMM handler reaches its own statics, which selects its
+/// relocation model. The SMM image is copied to SMRAM without
+/// absolute-address fixups, so the image builder rejects every
+/// load-base-dependent reference either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmmRelocation {
+    /// Position independent: lookup tables, jump tables and the
+    /// addresses of statics are RIP-relative. For handlers that take
+    /// the address of their SMRAM statics in long mode.
+    Pie,
+    /// Static: only direct relative calls and audited absolute
+    /// references, which the 32-bit loader rebases.
+    Static,
+}
+
+/// The board-library SMM handler unit every x86 platform builds:
+/// release-only, no linker script (the SMM image producer links the
+/// handler itself), the board's `smm` library feature, and the flag set
+/// the retained-relocation audit expects. PLT-style calls
+/// (`-Zplt=yes`, also for `memcpy`) resolve to direct ones at link time
+/// in either relocation model, so the image never has GOT-indirect
+/// calls.
+#[derive(Debug, Clone)]
+pub struct SmmUnit {
+    pub name: String,
+    /// The handler's ISA; it selects the target, and the 32-bit target,
+    /// which has no prebuilt core, builds `core,alloc`.
+    pub platform: fstart_core::Platform,
+    /// Features of the platform dependency.
+    pub features: Vec<String>,
+    pub relocation: SmmRelocation,
+    pub environment_values: BTreeMap<String, String>,
+    pub image: crate::smm_image::ImageOptions,
+}
+
+impl From<SmmUnit> for CompilationUnit {
+    fn from(unit: SmmUnit) -> Self {
+        let relocation = match unit.relocation {
+            SmmRelocation::Pie => "-Crelocation-model=pie",
+            SmmRelocation::Static => "-Crelocation-model=static",
         };
         Self {
-            name: name.into(),
+            name: unit.name,
             cargo_target: CargoTarget::BoardLibrary,
-            build_std: (target == "i686-unknown-none").then(|| "core,alloc".into()),
-            target,
-            features,
+            target: unit.platform.target_triple().into(),
+            build_std: (unit.platform == fstart_core::Platform::X86).then(|| "core,alloc".into()),
+            features: unit.features,
             release_only: true,
             linker_script: None,
-            rustflags: ["-Cpanic=abort", "-Copt-level=s"]
-                .into_iter()
-                .chain(relocation.iter().copied())
-                .chain([
-                    "-Cno-redzone=yes",
-                    "-Clinker-plugin-lto=no",
-                    "-Cembed-bitcode=no",
-                    "-Zfunction-sections=yes",
-                ])
-                .map(String::from)
-                .collect(),
-            environment_values,
+            rustflags: [
+                "-Cpanic=abort",
+                "-Copt-level=s",
+                relocation,
+                "-Zplt=yes",
+                "-Cno-redzone=yes",
+                "-Clinker-plugin-lto=no",
+                "-Cembed-bitcode=no",
+                "-Zfunction-sections=yes",
+            ]
+            .map(String::from)
+            .to_vec(),
+            environment_values: unit.environment_values,
             bindings: vec![],
             file_bindings: vec![],
             // The board's SMM handler module, outside every stage `main`.
             board_features: vec!["smm".into()],
             output: UnitOutput::SmmImage {
-                entry_count,
-                stack_size,
-                coreboot_module_args,
-                coreboot_header,
+                entry_count: unit.image.entry_count,
+                stack_size: unit.image.stack_size,
+                coreboot_module_args: unit.image.coreboot_module_args,
+                coreboot_header: unit.image.coreboot_header,
             },
         }
     }

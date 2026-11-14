@@ -24,10 +24,11 @@ use fstart_image_build::{
     },
     build_plan::{
         ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
-        FileBinding, ImageOperation, ImageStep, InputFile, UnitOutput,
+        FileBinding, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
     },
     layout::EncodedLayout,
     plan::{BuildSelection, HostPlan, ResolvedPlan, Span},
+    smm_image::ImageOptions,
 };
 use std::{
     boxed::Box,
@@ -135,17 +136,23 @@ fn smm_unit<S: HostSoc>() -> CompilationUnit {
     // Position independent, as SP3's: lookup tables and the addresses
     // of constants are RIP-relative, calls direct (`-Zplt=yes`); the
     // image builder still rejects any load-base-dependent reference.
-    CompilationUnit::smm(
-        SMM_UNIT,
-        "x86_64-unknown-none".into(),
-        vec!["smm".into(), "bundle-smm".into()],
-        true,
-        BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), S::MAX_CPUS.to_string())]),
-        S::MAX_CPUS,
-        0x800,
-        false,
-        false,
-    )
+    SmmUnit {
+        name: SMM_UNIT.into(),
+        platform: Platform::X86_64,
+        features: vec!["smm".into(), "bundle-smm".into()],
+        relocation: SmmRelocation::Pie,
+        environment_values: BTreeMap::from([(
+            "FSTART_MP_MAX_CPUS".into(),
+            S::MAX_CPUS.to_string(),
+        )]),
+        image: ImageOptions {
+            entry_count: S::MAX_CPUS,
+            stack_size: 0x800,
+            coreboot_module_args: false,
+            coreboot_header: false,
+        },
+    }
+    .into()
 }
 
 /// The payload: its name, the stage feature and its configuration.

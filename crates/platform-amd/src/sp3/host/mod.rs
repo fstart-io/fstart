@@ -42,11 +42,12 @@ use fstart_image_build::amd::halved_flash::{
 use fstart_image_build::amd::{blobs, reset};
 use fstart_image_build::build_plan::{
     ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
-    ImageOperation, ImageStep, InputFile, UnitOutput,
+    ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
 };
 use fstart_image_build::elf::Expectations;
 use fstart_image_build::layout::EncodedLayout;
 use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan, Span as PlanSpan};
+use fstart_image_build::smm_image::ImageOptions;
 
 use crate::sp3::layout::{
     self, CACHE_WINDOW, DATA, EARLY_REGION, FFS_WINDOW, HEAP, PAGE_TABLES, RESET, ROM3, STACK,
@@ -157,22 +158,25 @@ fn smm_unit<B: Sp3BoardFacts>() -> CompilationUnit {
     // reaches them RIP-relative, and PLT calls (`-Zplt=yes`, also for
     // `memcpy`) link to direct ones. The image builder still rejects
     // any load-base-dependent reference.
-    CompilationUnit::smm(
-        SMM_UNIT,
-        "x86_64-unknown-none".into(),
-        SMM_FEATURES.into_iter().map(String::from).collect(),
-        true,
+    SmmUnit {
+        name: SMM_UNIT.into(),
+        platform: fstart_core::Platform::X86_64,
+        features: SMM_FEATURES.into_iter().map(String::from).collect(),
+        relocation: SmmRelocation::Pie,
         // No console in SMM: the log macros compile out (and with them
         // their formatting panics, which the image builder rejects).
-        mp_capacity::<B>()
+        environment_values: mp_capacity::<B>()
             .into_iter()
             .chain([("FSTART_LOG_LEVEL".into(), "off".into())])
             .collect(),
-        B::MAX_CPUS,
-        SMM_STACK_SIZE,
-        false,
-        false,
-    )
+        image: ImageOptions {
+            entry_count: B::MAX_CPUS,
+            stack_size: SMM_STACK_SIZE,
+            coreboot_module_args: false,
+            coreboot_header: false,
+        },
+    }
+    .into()
 }
 
 /// The payload a build selects (`--payload`, default halt).
