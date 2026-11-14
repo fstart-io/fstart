@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The ACPI tables of the die SoCs: what the dies and the enumeration
 //! report, built by [`crate::acpi`] into reserved firmware memory.
-use super::{DieSoc, MAX_DIES, Silicon};
-use crate::acpi::{self, Board, Cpu, Domain, Inputs, Ioapic, Iommu, RootBridgeAcpi};
+
+use crate::acpi::{Cpu, Ioapic, Iommu, RootBridgeAcpi};
 use fstart_acpi::ivrs::IommuRegisters;
 use fstart_driver_amd::{
-    ccx::{Thread, power},
-    df::Die,
-    fch,
+    ccx::Thread,
     nbio::{ioapic::IOAPIC_FEATURES_ENABLE, iommu},
 };
-use fstart_log::Hex;
-use fstart_pci::{PciRoot, ecam::GlobalEcam};
-use heapless::Vec;
+use fstart_pci::PciRoot;
 
 /// The ID [`crate::soc::Hw::init_ioapics`] gives the FCH
 /// IOAPIC; the NBIO IOAPIC of die n has 1 + n.
@@ -72,23 +68,30 @@ pub fn cpus(apic_ids: &[u32], numa: bool) -> alloc::vec::Vec<Cpu> {
         .collect()
 }
 
-/// Build the tables for `dies` with the root bridges `roots` the allocator
-/// enumerated, their NBIO IOAPICs at `ioapics` (by die) and what the
-/// silicon init left; returns the RSDP.
-pub fn install<S: DieSoc>(
-    dies: &[Die<S, GlobalEcam>],
+/// Build the tables for the dies with the root bridges `roots` the
+/// allocator enumerated, their NBIO IOAPICs at `ioapics` (by die) and what
+/// the silicon init left; returns the RSDP.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub fn install<S: super::DieSoc>(
+    ctx: &super::Ctx<'_, S>,
     roots: &[PciRoot],
     ioapics: &[u32],
-    pci: fstart_core::description::PciRootInfo,
-    silicon: &Silicon<S>,
-    board: &Board,
+    silicon: &super::Silicon<S>,
+    board: &crate::acpi::Board,
 ) -> Option<u64> {
+    use super::MAX_DIES;
+    use crate::acpi::{self, Domain};
+    use fstart_driver_amd::{ccx::power, df::Die};
+    use fstart_pci::ecam::GlobalEcam;
+    use heapless::Vec;
+
     // Room for a full 128-KiB ROM in both _ROM and VFCT plus platform tables.
     const TABLE_CAPACITY: usize = 0x8_0000;
     #[repr(C, align(4096))]
     struct Tables([u8; TABLE_CAPACITY]);
     static mut TABLES: Tables = Tables([0; TABLE_CAPACITY]);
 
+    let dies: &[Die<S, GlobalEcam>] = &ctx.hw.dies;
     // The dies are the domains if they are NUMA nodes.
     let memory = S::die_memory(dies);
     let root_bridges: Vec<RootBridgeAcpi<'_>, MAX_DIES> = dies
@@ -110,58 +113,34 @@ pub fn install<S: DieSoc>(
     let cpus = cpus(&silicon.cpus.apic_ids, memory.is_some());
     // One socket.
     let domains: Vec<Domain, MAX_DIES> = dies.iter().map(|_| Domain { socket: 0 }).collect();
-    // SAFETY: HPET general capabilities, decoded by the FCH.
-    let hpet_block_id = unsafe { fstart_core::mmio::read32(fch::HPET as usize as *const u32) };
-    // Every core runs the BSP's P-state table and C-state setup.
-    // SAFETY: the BSP, reading the architectural P-state and C-state MSRs.
+    // SAFETY: the BSP, reading the architectural C-state MSRs; every core
+    // runs the BSP's setup.
     let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
-    let pstates = power::pstates(&msr);
-    let tables = acpi::build(&Inputs {
-        soc: S::ACPI,
-        pci,
-        cpus: &cpus,
-        fch_ioapic_id: FCH_IOAPIC_ID,
-        hpet_block_id,
-        root_bridges: &root_bridges,
-        numa: memory.as_ref().map(|memory| acpi::Numa {
-            domains: &domains,
-            memory,
-            phys_addr_bits: fstart_arch::x86::physical_address_bits() as u8,
-        }),
-        power: Some(power::Power {
-            pstates: &pstates,
-            cstates: power::cstate_info(&msr),
-            threads_per_core: Thread::current().threads_per_core(),
-            c2_latency_us: power::c2_latency_us(fstart_arch::x86::mp::CpuIdentity::current()),
-        }),
-        // The OS enables SCI_EN through the FCH SMM handler.
-        acpi_smi: Some(fstart_core::acpi::AcpiSmiConfig {
-            smi_cmd: fch::smi::APM_CNT.into(),
-            acpi_enable: fch::smi::ACPI_ENABLE,
-            acpi_disable: fch::smi::ACPI_DISABLE,
-        }),
-        bmc_sx_notify: None,
-        #[cfg(all(feature = "bundle", target_os = "none"))]
-        tpm: crate::tpm::acpi(),
-        #[cfg(not(all(feature = "bundle", target_os = "none")))]
-        tpm: None,
-        devices: &silicon.devices,
-        sb_aml: &silicon.aml,
-        tables: &silicon.tables,
-        board,
-    })
-    .ok()?;
     // SAFETY: firmware BSS in the reserved early region, written once.
     let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
-    let address = storage.as_ptr() as u64;
-    match tables.assemble_into(storage, address) {
-        Ok(length) => {
-            fstart_log::info!("ACPI: {} bytes at {}", length as u32, Hex(address));
-            Some(address)
-        }
-        Err(_) => {
-            fstart_log::error!("ACPI: tables don't fit");
-            None
-        }
-    }
+    acpi::install(
+        &acpi::Soc {
+            soc: S::ACPI,
+            pci: S::pci_segment(ctx.hw),
+            cpus: &cpus,
+            fch_ioapic_id: FCH_IOAPIC_ID,
+            root_bridges: &root_bridges,
+            numa: memory.as_ref().map(|memory| acpi::Numa {
+                domains: &domains,
+                memory,
+                phys_addr_bits: fstart_arch::x86::physical_address_bits() as u8,
+            }),
+            cstates: power::cstate_info(&msr),
+            threads_per_core: Thread::current().threads_per_core(),
+            devices: &silicon.devices,
+            sb_aml: &silicon.aml,
+            tables: &silicon.tables,
+        },
+        Some(&S::smi(ctx, &silicon.state)),
+        ctx.board,
+        board,
+        storage,
+    )
+    .inspect_err(|_| fstart_log::error!("ACPI: tables don't fit"))
+    .ok()
 }

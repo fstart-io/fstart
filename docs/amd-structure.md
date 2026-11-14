@@ -22,7 +22,7 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 | `smu` | mailbox, thread release | `v9`, `v10`, `v11` |
 | `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp` |
 | `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`) | `rv`, `zp`; `tables::{zp, ssp, gn}` |
-| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan` |
+| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan` |
 | `psp`, `apob` | mailbox and commands, the APOB | |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a
@@ -50,9 +50,14 @@ its memory reservations, the flow's services for the socket).
 The flow (`flow`) is the same for every SoC, and so are its services, each
 of which takes the SoC's data: the reset layout (`layout`), the memory map
 (`memory`), the boot media (`media`), MP (`mp` with the driver's
-`ccx::mp::Fam17hCpu`), SMM installation (`tseg`), options (`options`),
-measured boot (`tpm`), the ACPI and SMBIOS builders and the host build
-plan (`host`, with the image kinds `host::single` and `host::dual`).
+`ccx::mp::Fam17hCpu`), the fabric (`soc::Fabric`: the PCI segment and the
+DF plan's root bridges, the PCI roots), SMM installation (`tseg`) and its
+handler (`smm`: one SMRAM configuration and installer, the handler on the
+driver's SMI dispatcher, which a SoC with SMM work of its own extends, as
+`sp3::smm` does), options (`options`), measured boot (`tpm`), the ACPI
+tables (`acpi::install`, from what the SoC gathers) and the SMBIOS
+builder, and the host build plan (`host`, with the image kinds
+`host::single` and `host::dual`).
 
 A board implements `board::Board`: its name, the SoCs it carries, its CPU
 ceiling, its TPM and BMC hooks. Its stage `main` matches the SoC

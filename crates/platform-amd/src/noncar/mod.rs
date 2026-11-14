@@ -253,14 +253,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     ) -> Tables {
         let ioapics: [u32; MAX_DIES] =
             core::array::from_fn(|die| S::ioapic(&silicon.state, die as u8));
-        let rsdp = acpi::install::<S>(
-            &ctx.hw.dies,
-            pci.roots(),
-            &ioapics,
-            S::pci_segment(ctx.hw),
-            silicon,
-            &board,
-        );
+        let rsdp = acpi::install::<S>(ctx, pci.roots(), &ioapics, silicon, &board);
         let smbios = smbios::install::<S>(identity, ctx, &silicon.cpus, pci);
         Tables {
             rsdp,
