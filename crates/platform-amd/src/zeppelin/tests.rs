@@ -22,7 +22,10 @@ use fstart_driver_amd::{
         root::{Root, root},
     },
     dxio::{self, Descriptor, SataChannel},
-    fch::{self, Acpimmio, Bus, Fch, Space, taishan::irq},
+    fch::{
+        self, FchHw, irq,
+        testing::{Space, Spaces},
+    },
     smu::{
         self,
         threads::{self, Policy},
@@ -101,7 +104,7 @@ fn apob(dies: u32) -> Vec<u8> {
 
 /// A board hook's marker in the log.
 fn marker(hw: &Hw, code: u8) {
-    hw.write(Space::Io, 0xe0, 1, code.into());
+    Spaces::write(hw, Space::Io, 0xe0, 1, code.into());
 }
 
 /// The register writes from the FCH pre-init to the ReadyToBoot of the
@@ -115,7 +118,7 @@ fn flow(
     dma: usize,
 ) -> State {
     let dies: Vec<Die<&Hw>> = unsafe { df::dies(hw) }.collect();
-    let fch = Fch::new(hw, Acpimmio::DIE0);
+    let fch = hw.fch();
     let msr = MsrSpace::new([]);
     let mut clock = hw.clock();
     let apob = apob(dies.len() as u32);
@@ -167,7 +170,7 @@ fn flow(
     // After resource allocation
     silicon::after_resources(&fch);
     marker(hw, 4); // mainboard_final
-    fch.enable_hpet_ioapic();
+    fch::acpimmio::enable_hpet_ioapic(fch.acpi());
 
     // Ready to boot
     let sata = PciAddress::new(0, 1, 0, 0);
@@ -237,8 +240,8 @@ fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
 fn mj11_ec1_flow() {
     let hw = model(1);
     mj11_ec1_flow_on(&hw, 0x5000_0000);
-    assert_eq!(hw.fingerprint(), (9688, 0x48e9_6a80_2957_cca9));
-    assert_eq!(hw.state(), 0x8ae8_8e10_1593_66fd);
+    assert_eq!(hw.fingerprint(), (9688, 0xe231_c1eb_e5af_3e78));
+    assert_eq!(hw.state(), 0xa9dd_6d88_a609_f199);
 }
 
 /// The single die's PCI root is the whole ECAM with the DF's windows below
@@ -327,8 +330,8 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
 fn sp4_flow() {
     let hw = model(2);
     sp4_flow_on(&hw, 0x5800_0000);
-    assert_eq!(hw.fingerprint(), (17245, 0x9ed3_3f58_cd33_bc23));
-    assert_eq!(hw.state(), 0x54f9_9ac2_74b4_a913);
+    assert_eq!(hw.fingerprint(), (17245, 0x45eb_303c_dbdb_0866));
+    assert_eq!(hw.state(), 0x41e3_ce1e_ba2b_c4ef);
 }
 
 /// The address space descriptors (type, min, max) in `aml`: buses (2), I/O

@@ -20,7 +20,7 @@ fn main() -> ! {
         Cpu::Zeppelin(id) => id.enter(mj11::CONFIG),
         cpu => cpu.unsupported(),
     };
-    mj11::early_init(&stage.hw().lpc());
+    mj11::early_init(&stage.hw().fch);
     let stage = stage.console(&CONSOLE, mj11::console()).init_fch();
     let riser = mj11::program_i2c_devices(&stage.hw().gpio(), stage.clock());
     mj11::clear_pm1(&stage.hw().fch);

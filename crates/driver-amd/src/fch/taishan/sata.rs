@@ -4,9 +4,11 @@
 //! it through its SMN aperture at 0x03100000, with the AHCI registers at
 //! 0x03101000 (sp4r2 report FCH_TAISHAN, tasks af47, af57 and af77, with the
 //! vendor policy defaults).
-use super::{NbifStrap, irq};
-use crate::fch::{Bus, Fch, iomux};
+use super::NbifStrap;
+use crate::fch::acpimmio::iomux;
+use crate::fch::irq;
 use crate::smn::{Smn, SmnReg};
+use crate::window::Window;
 use embedded_hal::delay::DelayNs;
 use fstart_pci::{ConfigRegionAccess, ConfigRegister, PciAddress};
 use tock_registers::{
@@ -134,11 +136,13 @@ pub fn reset(smn: &Smn<impl ConfigRegionAccess>, delay: &mut impl DelayNs) {
 }
 
 /// Env task: enable the ports and set the controller up as AHCI. `die`
-/// selects the die (the PCI IRQ router belongs to die 0's FCH), `smn` is its
-/// SMN and `fch` its FCH ([`super::acpimmio_base`]). `subsystem_id` is the
+/// selects the die (the PCI IRQ router belongs to die 0's FCH, behind the
+/// ports `io`), `smn` is its SMN and `acpi` its FCH's ACPI MMIO
+/// ([`super::acpimmio_base`]). `subsystem_id` is the
 /// board's (vendor PCD 0x15f).
 pub fn init(
-    fch: &Fch<impl Bus>,
+    acpi: &impl Window,
+    io: &impl Window,
     die: u8,
     smn: &Smn<impl ConfigRegionAccess>,
     subsystem_id: u32,
@@ -172,8 +176,8 @@ pub fn init(
 
     // No eSATA ports, no SGPIO: its pins (IOMUX 5 and 6 of the die's FCH)
     // are GPIOs.
-    fch.reg(iomux::at::<u8, ()>(5)).set(0);
-    fch.reg(iomux::at::<u8, ()>(6)).set(0);
+    acpi.at(iomux::at::<u8, ()>(5)).set(0);
+    acpi.at(iomux::at::<u8, ()>(6)).set(0);
     smn.reg(R10F8)
         .modify(Sgpio10f8::BYTE0.val(0) + Sgpio10f8::BYTE2.val(0));
     // The vendor code clears bit 20 again.
@@ -195,8 +199,12 @@ pub fn init(
     smn.reg(NBIF_SSID).set(subsystem_id);
 
     if die == 0 {
-        let misc = irq::read(fch.bus(), irq::MISC, irq::Mode::Pic);
-        irq::write(fch.bus(), irq::MISC, irq::Mode::Pic, (misc & 0xf) | 0xf0);
+        let misc = irq::read(io, irq::index(irq::MISC, irq::Mode::Pic));
+        irq::write(
+            io,
+            irq::index(irq::MISC, irq::Mode::Pic),
+            (misc & 0xf) | 0xf0,
+        );
     }
 
     misc.modify(Misc::UNLOCK::CLEAR);

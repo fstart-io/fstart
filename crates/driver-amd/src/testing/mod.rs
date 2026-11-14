@@ -7,7 +7,7 @@
 extern crate std;
 pub mod dies;
 
-use crate::fch::{Bus, Space};
+use crate::fch::testing::{Fch, Space, Spaces};
 use embedded_hal::delay::DelayNs;
 use fstart_core::services::Timer;
 use fstart_pci::{ConfigRegionAccess, PciAddress};
@@ -147,6 +147,10 @@ impl Hw {
     /// The clock: delays are logged, time moves a microsecond per read.
     pub fn clock(&self) -> Time<'_> {
         Time(self)
+    }
+    /// Die 0's FCH, on the clock.
+    pub fn fch(&self) -> Fch<'_, Self, Time<'_>> {
+        Fch::new(self, self.clock())
     }
     /// (writes and delays, order-sensitive digest).
     pub fn fingerprint(&self) -> (usize, u64) {
@@ -359,7 +363,7 @@ impl ConfigRegionAccess for Hw {
     }
 }
 
-impl Bus for Hw {
+impl Spaces for Hw {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32 {
         let state = self.state.lock().unwrap();
         (0..u32::from(bytes)).rev().fold(0, |value, i| {

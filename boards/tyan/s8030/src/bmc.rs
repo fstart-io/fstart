@@ -21,8 +21,8 @@
 use embedded_hal::delay::DelayNs;
 use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_core::services::device::{BusDevice, DeviceError};
-use fstart_driver_amd::fch::hw::FchHw;
-use fstart_driver_amd::fch::hw::lpc::{self, WideIo};
+use fstart_driver_amd::fch::FchHw;
+use fstart_driver_amd::fch::lpc::{self, WideIo};
 use fstart_driver_ipmi::Error as IpmiError;
 use fstart_driver_ipmi::kcs::{self, Kcs, Status};
 use fstart_driver_superio::aspeed_ast2400::{Ast2400, CONFIG_PORT};

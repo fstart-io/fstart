@@ -32,7 +32,7 @@
 //! the APOB at `0x3000_0000` (PSP_APOB §3.5).
 
 use crate::layout::{Layout, Region};
-use fstart_driver_amd::fch::hw::rom3;
+use fstart_driver_amd::fch::rom3;
 
 /// One flash half (16 MiB), the unit an EFS describes in the dual layout.
 pub const HALF_SIZE: u64 = 16 << 20;

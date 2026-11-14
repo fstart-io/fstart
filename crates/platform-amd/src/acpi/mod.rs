@@ -41,7 +41,7 @@ use fstart_acpi::platform::{PlatformConfig, X86Fadt};
 pub use fstart_acpi::smbios::SmbiosIdentity;
 use fstart_core::acpi::{AcpiGenericDevice, AcpiSmiConfig};
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::fch::AcpiPorts;
+use fstart_driver_amd::fch::acpimmio::AcpiPorts;
 
 pub mod dsdt;
 pub mod fixed;

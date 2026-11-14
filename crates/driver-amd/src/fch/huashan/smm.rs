@@ -2,12 +2,12 @@
 //! the PSP (SW SMI D2) and Rome's CF9 I/O trap.
 //!
 //! The Sx entry with the V11 USB/sleep messages is in
-//! [`crate::fch::hw::tasks::sx`].
+//! [`crate::fch::sx`].
 
 use fstart_core::services::Timer;
 
-use crate::fch::hw::FchHw;
-use crate::fch::hw::smi::{self, Route, source};
+use crate::fch::FchHw;
+use crate::fch::smi::{self, Route, source};
 use crate::psp::command::{C2pBuffer, LockFchReg};
 use crate::psp::mailbox::{C2pTransport, Mailbox, PspError};
 
@@ -62,7 +62,7 @@ pub fn disarm_cf9_trap<H: FchHw>(hw: &H) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fch::hw::model::fch;
+    use crate::fch::model::fch;
 
     #[test]
     fn cf9_trap_round_trip() {

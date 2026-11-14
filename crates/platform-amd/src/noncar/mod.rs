@@ -211,8 +211,17 @@ impl<S: DieSoc> crate::flow::Soc for S {
         mp: &fstart_arch::x86::mp::MpHandle,
         (): &(),
     ) -> Result<(), &'static str> {
-        let tseg =
-            crate::tseg::install(S::NAME, mp, &S::smi(ctx, state), ctx.memory.tseg, TSEG_SIZE)?;
+        let smi = crate::smm::Smi {
+            fch: &ctx.hw.fch,
+            config: crate::smm::SmmConfig {
+                fch: S::smi(ctx, state),
+                ecam_base: S::pci_segment(ctx.hw).ecam_base,
+                bmc: ctx.board.bmc_sx_notify,
+                soc: (),
+            },
+            sources: |_, _| {},
+        };
+        let tseg = crate::tseg::install(S::NAME, mp, &smi, ctx.memory.tseg, TSEG_SIZE)?;
         S::smm_installed(ctx, state, &tseg)
     }
 

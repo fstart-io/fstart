@@ -6,12 +6,12 @@
 use fstart_core::services::{Timer, TimerDelay};
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::gpio::Pad;
-use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_platform_amd::board::SocId;
+use fstart_platform_amd::smm::SleepNotify;
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
-use fstart_platform_amd::sp3::smm::SleepNotify;
 
 use crate::dxio::{Detected, M2Mode, Options};
 use fstart_platform_amd::sp3::silicon::Generation;

@@ -48,8 +48,8 @@ use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::df::Version;
 use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
+use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::gpio::Pad;
-use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_amd::nbio::Nbio;
 use fstart_driver_amd::nbio::iohc::DramTops;
 
@@ -95,7 +95,7 @@ pub struct State<F> {
     pub si: F,
     /// EINJ's targets, once their scratch pages are planned.
     einj: Option<super::smm::EinjConfig>,
-    smm: Option<super::smm::SmmConfig>,
+    smm: Option<crate::smm::SmmConfig<super::smm::Sp3>>,
 }
 
 impl<F> State<F> {
@@ -398,27 +398,32 @@ pub(crate) fn install_smm<F>(
     let einj = state.einj.unwrap_or_default();
     parts::clear_einj_scratch(&einj);
     let soc = &state.soc;
-    let config = super::smm::SmmConfig {
-        generation: Generation::of(soc.generation),
+    let generation = Generation::of(soc.generation);
+    let config = crate::smm::SmmConfig {
+        fch: super::smm::fch_smi(generation),
         ecam_base: soc.pci_root.ecam_base,
-        psp_bar: soc.psp_bar as u32,
-        einj,
-        usb_buses,
-        usb_bus_count,
         bmc: board.bmc_sx_notify,
+        soc: super::smm::Sp3 {
+            psp_bar: soc.psp_bar as u32,
+            einj,
+            usb_buses,
+            usb_bus_count,
+            generation,
+        },
     };
     // The handler's page tables map the low 4 GiB only; a PSP BAR
     // above would fault in SMM at SmmInfo, after the lock.
     if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
         return Err("PSP BAR for SMM");
     }
-    let smi = super::smm::Sp3Smi {
+    let smi = crate::smm::Smi {
         fch: &soc.fch,
         config,
+        sources: super::smm::sources,
     };
     crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
     super::smm::prepare_psp_smi(&soc.fch);
-    fstart_driver_amd::fch::hw::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+    fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
     state.smm = Some(config);
     state.soc.smm_installed = true;
     Ok(())

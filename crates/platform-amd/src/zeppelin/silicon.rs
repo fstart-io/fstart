@@ -12,7 +12,7 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::{self, CacWeights, Thread},
     df, dxio,
-    fch::{Bus, Fch, early, post, taishan},
+    fch::{FchHw, early, irq, post, taishan},
     nbio::{self, iohc, iommu},
     psp,
     smu::v9 as smu,
@@ -79,12 +79,12 @@ pub struct SmuPages(pub [[u8; 4096]; 2 * MAX_DIES]);
 pub struct SmuPolicy(pub [u8; 0x80]);
 
 /// FCH setup before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
-pub fn fch_pre_init(fch: &Fch<impl Bus>) -> Result<(), early::Error> {
+pub fn fch_pre_init(fch: &impl FchHw) -> Result<(), early::Error> {
     taishan::pre_init(fch, true)
 }
 
 /// Right after the console: the AC power-loss policy.
-pub fn fch_early_init(fch: &Fch<impl Bus>, config: &Config) {
+pub fn fch_early_init(fch: &impl FchHw, config: &Config) {
     early::set_power_failure_state(fch, config.fch.power_failure);
 }
 
@@ -94,7 +94,7 @@ pub fn fch_early_init(fch: &Fch<impl Bus>, config: &Config) {
 /// the FCH's SMBus run after this.
 pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     apob: Option<&Apob>,
@@ -144,13 +144,7 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     // FchTaishanPei.
     taishan::reset_init(fch, revision);
     taishan::sata::reset(&dies[0].smn(), clock);
-    taishan::multi::reset(
-        fch.bus(),
-        dies,
-        package,
-        |die| nonpci[usize::from(die)],
-        clock,
-    );
+    taishan::multi::reset(fch, dies, package, |die| nonpci[usize::from(die)], clock);
     Ok((bridges, nonpci))
 }
 
@@ -170,7 +164,7 @@ pub struct Trained {
 #[allow(clippy::too_many_arguments)]
 pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     msr: &impl MsrAccess,
     config: &Config,
     identity: Identity,
@@ -249,7 +243,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
 #[allow(clippy::too_many_arguments)]
 pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     config: &Config,
     identity: Identity,
     apob: Option<&Apob>,
@@ -309,7 +303,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     for die in dies {
         nbio::zp::pre_enumeration_init(die);
     }
-    fch.acpi_decode(taishan::ACPI_PORTS);
+    fstart_driver_amd::fch::acpimmio::acpi_decode(fch.acpi(), taishan::ACPI_PORTS);
     taishan::env_init(
         fch,
         &dies[0].smn(),
@@ -317,11 +311,18 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
         config.fch.spread_spectrum,
     );
     if devices[0].sata {
-        taishan::sata::init(fch, 0, &dies[0].smn(), config.subsystem_id, clock);
+        taishan::sata::init(
+            fch.acpi(),
+            fch.io(),
+            0,
+            &dies[0].smn(),
+            config.subsystem_id,
+            clock,
+        );
     }
     taishan::multi::xgbe_init(&dies[0].smn());
     taishan::multi::env(
-        fch.bus(),
+        fch,
         dies,
         devices,
         |die| nonpci[usize::from(die)],
@@ -352,14 +353,13 @@ pub fn cpus_up<P: ConfigRegionAccess + Copy>(dies: &[Die<P>], delay: &mut impl D
 }
 
 /// The PCI interrupt router, before enumeration.
-pub fn route_interrupts(fch: &Fch<impl Bus>, config: &Config) -> Result<(), &'static str> {
-    taishan::irq::write_routing(fch.bus(), config.fch.irq_routes)
-        .map_err(|_| "PCI interrupt routing")
+pub fn route_interrupts(fch: &impl FchHw, config: &Config) -> Result<(), &'static str> {
+    irq::write_routing(fch.io(), config.fch.irq_routes).map_err(|_| "PCI interrupt routing")
 }
 
 /// After the resource allocation, before the board's final hook.
-pub fn after_resources(fch: &Fch<impl Bus>) {
-    fch.acpi_ports(taishan::ACPI_PORTS);
+pub fn after_resources(fch: &impl FchHw) {
+    fstart_driver_amd::fch::acpimmio::acpi_ports(fch.acpi(), taishan::ACPI_PORTS);
 }
 
 /// The ReadyToBoot of the vendor firmware: the SATA controller of die 0 at
@@ -367,7 +367,7 @@ pub fn after_resources(fch: &Fch<impl Bus>) {
 /// ready-to-boot work runs after this, then [`end_of_post`].
 pub fn ready_to_boot<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     sata: Option<PciAddress>,
 ) {
     if let Some(sata) = sata {

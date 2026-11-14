@@ -32,8 +32,9 @@ use fstart_driver_amd::dxio::lanes::Engine;
 use fstart_driver_amd::dxio::ports::{FchPerst, PortSetup};
 use fstart_driver_amd::dxio::wire::MAX_ENGINES;
 use fstart_driver_amd::dxio::{DMA_SIZE, DmaBuffer, Dxio, Unit};
+use fstart_driver_amd::fch;
+use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::huashan::usb::UsbPolicy;
-use fstart_driver_amd::fch::hw as fch;
 use fstart_driver_amd::nbio::fuse::Fuses;
 use fstart_driver_amd::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::nbio::iohc::DramTops;
@@ -537,9 +538,9 @@ impl Silicon {
             None
         };
         let mut fchs: heapless::Vec<((u8, u8), &dyn Window), 8> = heapless::Vec::new();
-        let _ = fchs.push(((0, 0), &fch0.acpi));
+        let _ = fchs.push(((0, 0), fch0.acpi()));
         if let Some(fch1) = &fch1 {
-            let _ = fchs.push(((1, 0), &fch1.acpi));
+            let _ = fchs.push(((1, 0), fch1.acpi()));
         }
         // SAFETY: every socket's FCH is live; DXIO owns their PERST GPIOs.
         let perst = unsafe { FchPerst::new(generation, fchs, None) };

@@ -18,14 +18,11 @@
 //! discovery is the DF's (`crate::df`): D(18+n)F0x84 on Naples, the IOMS3
 //! FICAA read (`D19F4x5C = 001B0085h`) on Rome/Milan (§4.2).
 
+use crate::fch::acpimmio::{PM_AB_REG_BAR, PM_SD_CONTROL, PM_SD_ENABLE};
 use fstart_pci::{ConfigRegionAccess, PciAddress};
 
 use super::acpimmio::{self, PmIo};
-use super::{
-    FchHw,
-    acpimmio::{AoacDevice, PM, pm},
-    alink,
-};
+use super::{FchHw, acpimmio::AoacDevice, alink};
 use crate::cpu::Silicon;
 use crate::window::Window;
 use crate::window::update;
@@ -79,8 +76,8 @@ pub fn relocate<I: Window>(io: &I, base: u32) {
 /// Legacy SD off on a secondary (the env af55 subset the multi-FCH PEIMs
 /// run).
 fn sd_off<W: Window>(acpi: &W) {
-    update::<u8, _>(acpi, PM + pm::MANUAL_RESET, 0x40, 0);
-    update::<u8, _>(acpi, PM + pm::PM_E8, 0x01, 0);
+    update::<u8, _>(acpi, PM_SD_CONTROL.offset, 0x40, 0);
+    update::<u8, _>(acpi, PM_SD_ENABLE.offset, 0x01, 0);
     acpimmio::aoac_power(acpi, AoacDevice::SD, false);
 }
 
@@ -117,9 +114,9 @@ pub fn naples_die<H: FchHw>(hw: &H, policy: &NaplesDie, resume: bool) {
             relocate(hw.io(), base);
         }
         let pmio = PmIo(hw.io());
-        pmio.write16(PM + pm::AB_REG_BAR, alink::INDEX as u16);
+        pmio.write16(PM_AB_REG_BAR.offset, alink::INDEX);
         alink::modify(hw.io(), alink::MISC_CTL, alink::RESET_CPU_ON_SYNC_FLOOD, 0);
-        pmio.write16(PM + pm::AB_REG_BAR, 0);
+        pmio.write16(PM_AB_REG_BAR.offset, 0);
     });
     let acpi = hw.acpi();
     // IOMUX 02h = 1 (byte-only: see the SMN caveat in `gpio`).
@@ -160,9 +157,9 @@ pub fn huashan_socket1<H: FchHw, S: crate::smu::SmuMessages + ?Sized>(
 ) -> Result<(), crate::smu::Error> {
     with_legacy_io(hw.pci(), route_target(generation, 1), || {
         let pmio = PmIo(hw.io());
-        pmio.write16(PM + pm::AB_REG_BAR, alink::INDEX as u16);
+        pmio.write16(PM_AB_REG_BAR.offset, alink::INDEX);
         alink::clock_gating_secondary(hw, generation);
-        pmio.write16(PM + pm::AB_REG_BAR, 0);
+        pmio.write16(PM_AB_REG_BAR.offset, 0);
         sd_off(hw.acpi());
     });
     crate::fch::huashan::usb::reset(hw, generation, 1, smu, usb, resume)?;
@@ -185,9 +182,9 @@ pub fn huashan_socket1_env<H: FchHw>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::fch;
-    use super::super::model::smn;
     use super::*;
+    use crate::fch::model::fch;
+    use crate::fch::model::smn;
 
     #[test]
     fn route_targets() {
@@ -220,7 +217,7 @@ mod tests {
     fn rome_socket1() {
         let mut hw = fch();
         hw.bus = 0x80;
-        let smu = super::super::model::Smu::default();
+        let smu = crate::fch::model::Smu::default();
         huashan_socket1(
             &hw,
             Silicon::Ssp,

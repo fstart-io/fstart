@@ -3,20 +3,28 @@
 //! and late tasks and the pre-console setup. The SATA and USB controllers
 //! are in [`super::sata`] and [`super::usb`].
 use super::acpi_io;
-use super::{ASF_IO, SMBUS_IO, irq};
 use crate::cpu::Revision;
+use crate::fch::irq;
 use crate::{
     fch::{
-        AL2AHB, AbRegBar, AcpiReg, Bus, CgPllConfig1, CgPllConfig3, Decode, Fch,
-        LEGACY_UART_DECODE, MISC_CGPLL_CONFIG1, MISC_CGPLL_CONFIG3, MISC_CLK_CNTL1, MiscClkCntl1,
-        PM_0A, PM_AB_REG_BAR, PM_ACPI_CPU_CNT, PM_ACPI_GPE0, PM_ACPI_PM_TMR, PM_ACPI_PM1_CNT,
-        PM_ACPI_PM1_EVT, PM_ACPI_PM2_CNT, PM_ACPI_PMA_CNT, PM_ACPI_SMI_CMD, PM_C0, PM_DECODE, Pm0a,
-        PmC0, RTC_INDEX, Reg, SPI_BASE, alink, aoac, early, indexed_io,
+        AL2AHB, FchHw, SPI_BASE,
+        acpimmio::{
+            self, AOAC_94, AbRegBar, Aoac94, CgPllConfig1, CgPllConfig3, Decode,
+            MISC_CGPLL_CONFIG1, MISC_CGPLL_CONFIG3, MISC_CLK_CNTL1, MiscClkCntl1, PM_0A,
+            PM_AB_REG_BAR, PM_ACPI_CPU_CNT, PM_ACPI_GPE0, PM_ACPI_PM_TMR, PM_ACPI_PM1_CNT,
+            PM_ACPI_PM1_EVT, PM_ACPI_PM2_CNT, PM_ACPI_PMA_CNT, PM_ACPI_SMI_CMD, PM_DECODE,
+            PM_S5_RESET_STATUS, PM_SERIAL_IRQ, Pm0a, Pm1StatusHigh, S5ResetStatus, SerialIrq, misc,
+            pm, smbus, smi_bank,
+        },
+        alink, early,
         lpc::{self, Bits, PciControl, RomDmaControl, SpiBase},
-        misc, pm, smbus, smi_bank as smi, spi,
+        rtc,
+        smbus::{ASF_IO, SMBUS_IO},
+        spi, uart,
     },
     smn::{Smn, SmnReg},
     table::{Record, rmw},
+    window::{At, Window},
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -24,14 +32,14 @@ use tock_registers::{
 };
 
 /// Pre-console FCH setup, after
-/// [`crate::fch::enable_acpimmio`]: LPC decodes off and the SPI BAR, port 80
+/// [`crate::fch::acpimmio::enable_acpimmio`]: LPC decodes off and the SPI BAR, port 80
 /// if the board posts there, SMBus, CF9 and legacy I/O. The SPI read mode and
 /// speeds stay as the PSP left them; the vendor firmware keeps them too.
-pub fn pre_init(fch: &Fch<impl Bus>, port80: bool) -> Result<(), early::Error> {
+pub fn pre_init(fch: &impl FchHw, port80: bool) -> Result<(), early::Error> {
     early::prepare_lpc(fch)?;
     if port80 {
         // SAFETY: the caller owns the FCH, LPC decodes included.
-        unsafe { lpc::Lpc::new(fch.bus()) }.enable_port80();
+        lpc::enable_port80(fch);
     }
     early::initialize_smbus(fch)?;
     early::enable_cf9_io(fch);
@@ -41,7 +49,7 @@ pub fn pre_init(fch: &Fch<impl Bus>, port80: bool) -> Result<(), early::Error> {
 
 /// A byte read-clear-set of an ACPI MMIO register: the vendor tables,
 /// whose bits mostly have no known meaning.
-type Rmw = Record<AcpiReg<u8>, u8>;
+type Rmw = Record<At<u8>, u8>;
 const fn pm(register: u8, clear: u8, set: u8) -> Rmw {
     rmw(pm::at(register as u32), clear, set)
 }
@@ -49,7 +57,7 @@ const fn misc(register: u8, clear: u8, set: u8) -> Rmw {
     rmw(misc::at(register as u32), clear, set)
 }
 const fn smi(register: u8, clear: u8, set: u8) -> Rmw {
-    rmw(smi::at(register as u32), clear, set)
+    rmw(smi_bank::at(register as u32), clear, set)
 }
 
 // ---- PEI reset tasks ----
@@ -78,18 +86,6 @@ const PEI_ACPIMMIO_MAIN: &[Rmw] = &[
 ];
 
 register_bitfields![u8,
-    RtcB [DST_EN OFFSET(0) NUMBITS(1) []],
-    RtcA [BIT4 OFFSET(4) NUMBITS(1) []],
-    RtcD [
-        VALID OFFSET(0) NUMBITS(6) [],
-        BIT6 OFFSET(6) NUMBITS(1) [],
-        VRT OFFSET(7) NUMBITS(1) []
-    ],
-    /// PMx54.
-    SerialIrq [
-        MODE OFFSET(6) NUMBITS(1) [],
-        ENABLE OFFSET(7) NUMBITS(1) []
-    ],
     /// PMx08: the A0 workaround.
     Pm08 [A0 OFFSET(5) NUMBITS(2) []],
     Pm0c8 [BIT4 OFFSET(4) NUMBITS(1) []],
@@ -107,30 +103,16 @@ register_bitfields![u8,
     ],
     /// SMBus host and ASF controller registers.
     SmbusAutopoll [ENABLE OFFSET(0) NUMBITS(8) []],
-    /// The PM1 status bits 8 (power button) and 10 (RTC) of the high byte.
-    Pm1StatusHigh [
-        PWRBTN OFFSET(0) NUMBITS(1) [],
-        RTC OFFSET(2) NUMBITS(1) [],
-        WAKE OFFSET(6) NUMBITS(1) []
-    ]
 ];
 register_bitfields![u32,
-    /// AOACx94.
-    pub(super) Aoac94 [BITS OFFSET(14) NUMBITS(2) []],
     /// PMx00 bits 19 and 20.
     Pm00High [BITS OFFSET(19) NUMBITS(2) []]
 ];
-const RTC_FREQ_SELECT: u8 = 0x0a;
-const RTC_CONTROL: u8 = 0x0b;
-const RTC_VALID: u8 = 0x0d;
-pub(super) const AOAC_94: crate::fch::AcpiReg<u32, Aoac94::Register> = aoac::at(0x94);
 /// PM2 control at 0xba; the PMA block isn't used.
 const PM2_CNT: u16 = 0x00ba;
 const PMA_CNT: u16 = 0xffff;
-const SMI_CMD: u16 = 0xb2;
 
-fn hwacpi_reset(fch: &Fch<impl Bus>) {
-    let bus = fch.bus();
+fn hwacpi_reset(fch: &impl FchHw) {
     // ACPI PM blocks, the SMI command port, PM2 control at 0xba.
     for (reg, port) in [
         (PM_ACPI_PM1_EVT, acpi_io::PM1_EVT),
@@ -138,51 +120,66 @@ fn hwacpi_reset(fch: &Fch<impl Bus>) {
         (PM_ACPI_PM_TMR, acpi_io::PM_TMR),
         (PM_ACPI_CPU_CNT, acpi_io::CSTATE_CONTROL),
         (PM_ACPI_GPE0, acpi_io::GPE0),
-        (PM_ACPI_SMI_CMD, SMI_CMD),
+        (PM_ACPI_SMI_CMD, crate::fch::smi::APM_CNT),
         (PM_ACPI_PM2_CNT, PM2_CNT),
         (PM_ACPI_PMA_CNT, PMA_CNT),
     ] {
-        fch.reg(reg).set(port);
+        fch.acpi().at(reg).set(port);
     }
-    fch.reg(pm::at::<u32, Pm00High::Register>(0))
+    fch.acpi()
+        .at(pm::at::<u32, Pm00High::Register>(0))
         .modify(Pm00High::BITS.val(0));
-    bus.reg(Reg::<u8, SmbusAutopoll::Register>::io(SMBUS_IO + 0x14))
+    fch.io()
+        .at(At::<u8, SmbusAutopoll::Register>::new(
+            (SMBUS_IO + 0x14).into(),
+        ))
         .set(0);
     // SMBus offset 0x12 through the ACPI MMIO alias.
-    fch.reg(smbus::at::<u8, ()>(0x12)).set(1);
-    fch.apply(PEI_ACPIMMIO_MAIN.iter().copied());
-    fch.reg(pm::at::<u8, Pm00::Register>(0))
+    fch.acpi().at(smbus::at::<u8, ()>(0x12)).set(1);
+    acpimmio::apply(fch.acpi(), PEI_ACPIMMIO_MAIN.iter().copied());
+    fch.acpi()
+        .at(pm::at::<u8, Pm00::Register>(0))
         .modify(Pm00::PCD_A1::SET);
 
     // RTC: no daylight saving, register A bit 4 clear.
-    indexed_io::<_, RtcB::Register>(bus, RTC_INDEX, RTC_CONTROL).modify(RtcB::DST_EN::CLEAR);
-    indexed_io::<_, RtcA::Register>(bus, RTC_INDEX, RTC_FREQ_SELECT).modify(RtcA::BIT4::CLEAR);
-    let valid = indexed_io::<_, RtcD::Register>(bus, RTC_INDEX, RTC_VALID);
-    if valid.read(RtcD::VALID) == 0x3f {
-        valid.modify(RtcD::VALID.val(0) + RtcD::BIT6::CLEAR);
+    rtc::register::<_, rtc::Control::Register>(fch.io(), rtc::CONTROL)
+        .modify(rtc::Control::DST_EN::CLEAR);
+    rtc::register::<_, rtc::FreqSelect::Register>(fch.io(), rtc::FREQ_SELECT)
+        .modify(rtc::FreqSelect::BIT4::CLEAR);
+    let valid = rtc::register::<_, rtc::Valid::Register>(fch.io(), rtc::VALID);
+    if valid.read(rtc::Valid::VALID) == 0x3f {
+        valid.modify(rtc::Valid::VALID.val(0) + rtc::Valid::BIT6::CLEAR);
     }
 
-    let misc = irq::read(bus, irq::MISC, irq::Mode::Pic);
-    irq::write(bus, irq::MISC, irq::Mode::Pic, misc | 0x0a);
-    let misc0 = irq::read(bus, irq::MISC0, irq::Mode::Pic);
-    irq::write(bus, irq::MISC0, irq::Mode::Pic, (misc0 & 0x99) | 0x10);
+    let misc = irq::read(fch.io(), irq::index(irq::MISC, irq::Mode::Pic));
+    irq::write(fch.io(), irq::index(irq::MISC, irq::Mode::Pic), misc | 0x0a);
+    let misc0 = irq::read(fch.io(), irq::index(irq::MISC0, irq::Mode::Pic));
+    irq::write(
+        fch.io(),
+        irq::index(irq::MISC0, irq::Mode::Pic),
+        (misc0 & 0x99) | 0x10,
+    );
 
-    bus.reg(Reg::<u8>::io(ASF_IO + 0x0e)).set(0x70);
-    bus.reg(Reg::<u8>::io(ASF_IO + 0x0a)).set(0x2f);
+    fch.io().at(At::<u8>::new((ASF_IO + 0x0e).into())).set(0x70);
+    fch.io().at(At::<u8>::new((ASF_IO + 0x0a).into())).set(0x2f);
 
-    let pm1_status_high = bus.reg(Reg::<u8, Pm1StatusHigh::Register>::io(acpi_io::PM1_EVT + 1));
-    let smi_pending = fch.reg(smi::at::<u32, ()>(4)).get() & fch.reg(smi::at::<u32, ()>(0)).get();
+    let pm1_status_high = fch.io().at(At::<u8, Pm1StatusHigh::Register>::new(
+        (acpi_io::PM1_EVT + 1).into(),
+    ));
+    let smi_pending = fch.acpi().at(smi_bank::at::<u32, ()>(4)).get()
+        & fch.acpi().at(smi_bank::at::<u32, ()>(0)).get();
     let wake = || {
         let status = pm1_status_high.extract();
         status.is_set(Pm1StatusHigh::PWRBTN) || status.is_set(Pm1StatusHigh::RTC)
     };
     if smi_pending != 0 || wake() {
-        pm1_status_high.write(Pm1StatusHigh::WAKE::SET);
+        pm1_status_high.write(Pm1StatusHigh::PCIEXP_WAKE::SET);
     }
 
     // Serial IRQ: mode bit cleared (vendor PCD 0x95), then enabled.
-    fch.reg(pm::at::<u8, SerialIrq::Register>(0x54))
-        .modify(SerialIrq::MODE::CLEAR + SerialIrq::ENABLE::SET);
+    fch.acpi()
+        .at(PM_SERIAL_IRQ)
+        .modify(SerialIrq::QUIET_MODE::CLEAR + SerialIrq::ENABLE::SET);
 }
 
 /// The vendor SPI reset task with its defaults: SPI100 on, normal speed
@@ -190,69 +187,81 @@ fn hwacpi_reset(fch: &Fch<impl Bus>) {
 /// 0x98) and no 4-dword host prefetch. The vendor EFS lookup only matters
 /// when the policy read mode is 0, and its Micron dummy-cycle quirk (flash ID
 /// 0x20 stored in CMOS-RAM by the DXE SPI task) isn't ported.
-fn spi_reset(bus: &impl Bus) {
+fn spi_reset(fch: &impl FchHw) {
     const FAST_READ: u32 = 7;
     // The SPI BAR, its reserved bits cleared.
-    bus.reg(lpc::SPI_BASE_ADDRESS)
+    fch.lpc()
+        .at(lpc::SPI_BASE_ADDRESS)
         .modify(SpiBase::BASE.val(SPI_BASE >> 8) + SpiBase::RESERVED.val(0));
-    let cntrl0 = bus.reg(spi::CNTRL0);
-    cntrl0.modify(spi::Cntrl0::BIT19::SET + spi::Cntrl0::BITS24.val(7));
-    bus.reg(spi::RESTRICTED_CMD2)
-        .modify(spi::RestrictedCmd2::BITS.val(0));
-    bus.reg(spi::SPI100_ENABLE_BYTE)
+    let cntrl0 = fch.mmio().at(spi::CNTRL0);
+    cntrl0.modify(spi::Cntrl0::BIT19::SET + spi::Cntrl0::ARB_WAIT_COUNT.val(7));
+    fch.mmio()
+        .at(spi::CNTRL1)
+        .modify(spi::Cntrl1::WAIT_COUNT.val(0));
+    fch.mmio()
+        .at(spi::SPI100_ENABLE_BYTE)
         .modify(spi::Spi100EnableByte::ENABLE::SET);
-    bus.reg(spi::SPI100_SPEED)
+    fch.mmio()
+        .at(spi::SPI100_SPEED)
         .modify(spi::Spi100Speed::NORMAL::Mhz33);
-    bus.reg(spi::ALT_SPI_CS).modify(spi::AltSpiCs::BIT10::CLEAR);
-    bus.reg(spi::SPI100_HOST_PREFETCH).modify(
-        spi::Spi100HostPrefetch::RD4DW_EN_HOST::CLEAR + spi::Spi100HostPrefetch::BIT14::SET,
+    fch.mmio()
+        .at(spi::ALT_SPI_CS)
+        .modify(spi::AltSpiCs::WRITE_BUFFER_EN::CLEAR);
+    fch.mmio().at(spi::SPI100_HOST_PREFETCH).modify(
+        spi::Spi100HostPrefetch::RD4DW_EN_HOST::CLEAR + spi::Spi100HostPrefetch::HOST_BURST_EN::SET,
     );
     cntrl0.modify(
         spi::Cntrl0::READ_MODE_HIGH.val(FAST_READ >> 1)
             + spi::Cntrl0::READ_MODE_LOW.val(FAST_READ & 1),
     );
     // LPC ROM DMA control: two separate word writes, as the vendor code.
-    bus.reg(lpc::ROM_DMA_CONTROL)
+    fch.lpc()
+        .at(lpc::ROM_DMA_CONTROL)
         .modify(RomDmaControl::BIT8::SET);
-    bus.reg(lpc::ROM_DMA_CONTROL)
+    fch.lpc()
+        .at(lpc::ROM_DMA_CONTROL)
         .modify(RomDmaControl::BIT7::SET);
 }
 
 /// The FchTaishanPei reset tasks of die 0's FCH. `revision` selects the A0
 /// workaround of PMx08.
-pub fn reset_init(fch: &Fch<impl Bus>, revision: Revision) {
-    let bus = fch.bus();
+pub fn reset_init(fch: &impl FchHw, revision: Revision) {
     // Prelim
-    fch.reg(pm::at::<u8, Pm0a::Register>(PM_0A.into()))
-        .modify(Pm0a::BIT3::SET);
-    fch.reg(AOAC_94).modify(Aoac94::BITS.val(0));
-    fch.reg(pm::at::<u8, Pm0a::Register>(PM_0A.into()))
-        .modify(Pm0a::BIT4::SET);
-    fch.reg(pm::at::<u8, Pm0c8::Register>(0xc8))
+    fch.acpi().at(PM_0A).modify(Pm0a::BIT3::SET);
+    fch.acpi().at(AOAC_94).modify(Aoac94::SX.val(0));
+    fch.acpi().at(PM_0A).modify(Pm0a::BIT4::SET);
+    fch.acpi()
+        .at(pm::at::<u8, Pm0c8::Register>(0xc8))
         .modify(Pm0c8::BIT4::CLEAR);
     if revision == Revision::ZpA0 {
-        fch.reg(pm::at::<u8, Pm08::Register>(0x08))
+        fch.acpi()
+            .at(pm::at::<u8, Pm08::Register>(0x08))
             .modify(Pm08::A0.val(3));
     }
-    fch.reg(pm::at::<u8, Pm0d2::Register>(0xd2))
+    fch.acpi()
+        .at(pm::at::<u8, Pm0d2::Register>(0xd2))
         .modify(Pm0d2::BIT6::CLEAR);
-    fch.reg(pm::at::<u8, PmC0::Register>(PM_C0.into()))
-        .modify(PmC0::CLEAR_RESET_STATUS::SET);
+    fch.acpi()
+        .at(PM_S5_RESET_STATUS)
+        .modify(S5ResetStatus::FOUR_SECOND_PWR_BTN::SET);
 
     // A-Link index/data at 0xcd8, kept enabled.
-    fch.reg(PM_AB_REG_BAR)
+    fch.acpi()
+        .at(PM_AB_REG_BAR)
         .write(AbRegBar::PORT.val(alink::INDEX.into()));
 
-    spi_reset(bus);
+    spi_reset(fch);
     hwacpi_reset(fch);
 
     // LPC
-    bus.reg(lpc::R6C).set(0);
-    bus.reg(lpc::R7C).modify(Bits::B0::SET + Bits::B2::SET);
-    bus.reg(lpc::ROM_DMA_CONTROL_BYTE)
+    fch.lpc().at(lpc::R6C).set(0);
+    fch.lpc().at(lpc::R7C).modify(Bits::B0::SET + Bits::B2::SET);
+    fch.lpc()
+        .at(lpc::ROM_DMA_CONTROL_BYTE)
         .modify(Bits::B5::SET + Bits::B6::SET);
-    bus.reg(lpc::RA4_BYTE).modify(Bits::B0::SET);
-    bus.reg(lpc::CLOCK_CONTROL_BYTE1)
+    fch.lpc().at(lpc::RA4_BYTE).modify(Bits::B0::SET);
+    fch.lpc()
+        .at(lpc::CLOCK_CONTROL_BYTE1)
         .modify(Bits::B5::SET + Bits::B6::SET);
 }
 
@@ -298,24 +307,29 @@ const ENV_HWACPI: &[Rmw] = &[
 /// in the order of the vendor FchTaishanDxe (VA 0x7a98). The CG1 PLL spreads
 /// the PCIe reference clocks if `spread_spectrum` (vendor PCD 0x120, Setup
 /// "SB Clock Spread Spectrum"); the second update request applies it.
-fn clock_init(fch: &Fch<impl Bus>, spread_spectrum: bool) {
-    fch.apply::<u32>([
-        rmw(misc::at(0x10), 0x0000_1ff3, 0),
-        rmw(misc::at(0x34), 0xff80_0000, 0),
-        rmw(misc::at(0x14), 0x00ff_ff00, 0),
-        rmw(misc::at(0x18), 0xffff_0000, 0),
-        rmw(
-            misc::at(0x1c),
-            0x0c1f_fe00,
-            (4 << 13) | (3 << 17) | (3 << 26) | (1 << 9),
-        ),
-    ]);
-    let cntl1 = fch.reg(MISC_CLK_CNTL1);
+fn clock_init(fch: &impl FchHw, spread_spectrum: bool) {
+    acpimmio::apply::<u32>(
+        fch.acpi(),
+        [
+            rmw(misc::at(0x10), 0x0000_1ff3, 0),
+            rmw(misc::at(0x34), 0xff80_0000, 0),
+            rmw(misc::at(0x14), 0x00ff_ff00, 0),
+            rmw(misc::at(0x18), 0xffff_0000, 0),
+            rmw(
+                misc::at(0x1c),
+                0x0c1f_fe00,
+                (4 << 13) | (3 << 17) | (3 << 26) | (1 << 9),
+            ),
+        ],
+    );
+    let cntl1 = fch.acpi().at(MISC_CLK_CNTL1);
     cntl1.modify(MiscClkCntl1::CG1_FBDIV_LOADEN::SET);
     cntl1.modify(MiscClkCntl1::CG1_CFG_UPDATE_REQ::SET);
-    fch.reg(MISC_CGPLL_CONFIG3)
+    fch.acpi()
+        .at(MISC_CGPLL_CONFIG3)
         .modify(CgPllConfig3::CG1_FRACN_EN_OVERRIDE::SET);
-    fch.reg(MISC_CGPLL_CONFIG1)
+    fch.acpi()
+        .at(MISC_CGPLL_CONFIG1)
         .modify(CgPllConfig1::CG1_SPREAD_SPECTRUM.val(spread_spectrum.into()));
     cntl1.modify(MiscClkCntl1::CG1_CFG_UPDATE_REQ::SET);
 }
@@ -344,17 +358,22 @@ const ABCFG: &[alink::Rmw] = &[
     rmw(0x0022c, 0x0000_4800, 0x0000_0000),
 ];
 
-fn ab_init(fch: &Fch<impl Bus>) {
-    fch.reg(MISC_CLK_CNTL1)
+fn ab_init(fch: &impl FchHw) {
+    fch.acpi()
+        .at(MISC_CLK_CNTL1)
         .modify(MiscClkCntl1::ALINK_GATE::CLEAR);
-    fch.reg(PM_AB_REG_BAR)
+    fch.acpi()
+        .at(PM_AB_REG_BAR)
         .write(AbRegBar::PORT.val(alink::INDEX.into()));
-    alink::apply(fch.bus(), ABCFG);
-    fch.reg(misc::at::<u8, Misc68::Register>(0x68))
+    alink::apply(fch.io(), ABCFG);
+    fch.acpi()
+        .at(misc::at::<u8, Misc68::Register>(0x68))
         .modify(Misc68::BIT1::CLEAR + Misc68::BIT2::CLEAR);
-    fch.reg(misc::at::<u8, Misc2e::Register>(0x2e))
+    fch.acpi()
+        .at(misc::at::<u8, Misc2e::Register>(0x2e))
         .modify(Misc2e::BIT0::SET + Misc2e::BIT1::SET);
-    fch.reg(pm::at::<u8, Pm06::Register>(0x06))
+    fch.acpi()
+        .at(pm::at::<u8, Pm06::Register>(0x06))
         .modify(Pm06::BIT0::SET);
 }
 
@@ -371,37 +390,41 @@ register_bitfields![u8,
 /// board's for the xHCI (vendor PCD 0x163); `spread_spectrum` the board's
 /// CG1 PLL spread-spectrum choice.
 pub fn env_init(
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     smn: &Smn<impl fstart_pci::ConfigRegionAccess>,
     subsystem_id: u32,
     spread_spectrum: bool,
 ) {
-    let bus = fch.bus();
     clock_init(fch, spread_spectrum);
-    fch.apply(ENV_MISC.iter().copied());
+    acpimmio::apply(fch.acpi(), ENV_MISC.iter().copied());
 
     // HwAcpi
-    bus.reg(Reg::<u8>::smbus(0x10)).set(0);
-    bus.reg(Reg::<u8>::smbus(0x11)).set(0);
-    fch.apply(ENV_HWACPI.iter().copied());
-    fch.reg(PM_DECODE)
+    fch.smbus().at(At::<u8>::new(0x10)).set(0);
+    fch.smbus().at(At::<u8>::new(0x11)).set(0);
+    acpimmio::apply(fch.acpi(), ENV_HWACPI.iter().copied());
+    fch.acpi()
+        .at(PM_DECODE)
         .modify(Decode::HPET::SET + Decode::HPET_MSI::CLEAR);
     for offset in [0x10, 0x30] {
-        bus.reg(Reg::<u8, Al2ahbControl::Register>::mmio(AL2AHB + offset))
+        fch.mmio()
+            .at(At::<u8, Al2ahbControl::Register>::new(AL2AHB + offset))
             .modify(Al2ahbControl::BIT1::SET);
     }
     // Legacy UART decode: none enabled.
-    bus.reg(LEGACY_UART_DECODE).set(0xe400);
+    uart::set_legacy_decode(fch, 0xe400);
 
     // LPC
-    bus.reg(lpc::PCI_CONTROL)
+    fch.lpc()
+        .at(lpc::PCI_CONTROL)
         .modify(PciControl::LEGACY_DMA_EN::SET);
-    bus.reg(lpc::MISC_CONTROL)
+    fch.lpc()
+        .at(lpc::MISC_CONTROL)
         .modify(Bits::B0::CLEAR + Bits::B1::CLEAR);
-    bus.reg(lpc::ROM_DMA_CONTROL_HIGH)
+    fch.lpc()
+        .at(lpc::ROM_DMA_CONTROL_HIGH)
         .modify(Bits::B2::SET + Bits::B3::SET);
 
-    fch.legacy_sd_off();
+    acpimmio::legacy_sd_off(fch.acpi());
 
     smn.reg(NBIF_XHCI_SSID).set(subsystem_id);
 
@@ -433,9 +456,9 @@ const INTERNAL_IRQ_ROUTING: &[(u8, u8)] = &[
 ];
 
 /// The FchTaishanDxe late (ReadyToBoot) tasks of die 0's FCH.
-pub fn late_init(fch: &Fch<impl Bus>) {
-    fch.apply::<u32>([rmw(pm::at(0xa0), !0xc07f_00a0, 0)]);
+pub fn late_init(fch: &impl FchHw) {
+    acpimmio::apply::<u32>(fch.acpi(), [rmw(pm::at(0xa0), !0xc07f_00a0, 0)]);
     for &(index, apic) in INTERNAL_IRQ_ROUTING {
-        irq::write(fch.bus(), index, irq::Mode::Apic, apic);
+        irq::write(fch.io(), irq::index(index, irq::Mode::Apic), apic);
     }
 }

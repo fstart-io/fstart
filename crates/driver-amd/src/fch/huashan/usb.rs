@@ -3,7 +3,7 @@
 //! socket's SMU.
 
 use crate::cpu::Silicon;
-use crate::fch::hw::{FchHw, hide_nbif_function};
+use crate::fch::{FchHw, hide_nbif_function};
 use crate::nbio::nbif::func_strap0;
 use crate::smu::{Error as SmuError, SmuMessages};
 use crate::window::update;
@@ -44,9 +44,9 @@ impl UsbPolicy {
 
 fn requests(generation: Silicon) -> &'static [(u32, u32, u32, u32)] {
     match generation {
-        Silicon::Ssp => crate::fch::hw::tables::USB_CONFIG_ROME,
-        Silicon::Gn => crate::fch::hw::tables::USB_CONFIG_MILAN,
-        g => crate::fch::hw::tasks::not_built(g),
+        Silicon::Ssp => crate::fch::tables::USB_CONFIG_ROME,
+        Silicon::Gn => crate::fch::tables::USB_CONFIG_MILAN,
+        g => crate::fch::tasks::not_built(g),
     }
 }
 
@@ -88,7 +88,7 @@ pub fn reset<H: FchHw, S: SmuMessages + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fch::hw::model::{Smu, fch, smn};
+    use crate::fch::model::{Smu, fch, smn};
 
     #[test]
     fn rome_socket1_list() {
