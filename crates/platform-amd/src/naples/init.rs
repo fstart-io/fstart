@@ -6,13 +6,13 @@ use super::{Naples, State};
 use crate::flow::{Ctx, Mapped, Reserved, Silicon as Up, Tables};
 use crate::soc::{Entered, Init, Roots};
 use crate::sp3::flow::step;
-use crate::sp3::silicon::cpu::Sp3Cpu;
 use crate::sp3::silicon::{Identity, steps};
 use crate::sp3::soc as sp3;
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::tsc::Tsc;
+use fstart_driver_amd::ccx::{init::Threads, mp::Fam17hCpu};
 use fstart_driver_amd::df::v2::Df2;
 use fstart_driver_amd::psp;
 use fstart_pci::PciEcam;
@@ -29,7 +29,7 @@ impl Init for Naples {
     type FchUp = State;
     type Trained = State;
     type Chipset = State;
-    type Cpu = Sp3Cpu;
+    type Cpu = Fam17hCpu<Self, Threads>;
     type State = State;
 
     /// ECAM, then the reset tasks of socket 0's FCH.
@@ -90,9 +90,14 @@ impl Init for Naples {
         _: &Ctx<'_, Self>,
         state: &mut State,
         microcode: Option<&'static [u8]>,
-    ) -> Result<Sp3Cpu, &'static str> {
+    ) -> Result<Self::Cpu, &'static str> {
         step(0x50, "MP and CCX");
-        Silicon::cpu_driver(&mut state.soc, &mut state.si, microcode)
+        let threads = Silicon::cpu_driver(&mut state.soc, &mut state.si, microcode)?;
+        Ok(Fam17hCpu::multi_socket(
+            Self::NAME,
+            threads,
+            fstart_driver_amd::ccx::init::thread_init,
+        ))
     }
 
     fn threads(_: &Ctx<'_, Self>, state: &State) -> Result<u16, &'static str> {
@@ -103,8 +108,8 @@ impl Init for Naples {
         Silicon::release_aps(&state.soc, &state.si, aps)
     }
 
-    fn cpu_errors(cpu: &Sp3Cpu) -> u32 {
-        cpu.failures()
+    fn cpu_errors(cpu: &Self::Cpu) -> u32 {
+        cpu.errors()
     }
 
     fn cpus_up(

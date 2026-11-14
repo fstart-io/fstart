@@ -13,3 +13,9 @@ pub struct Naples;
 /// What Naples' silicon steps hand on.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub type State = crate::sp3::soc::State<silicon::Silicon>;
+
+impl fstart_driver_amd::ccx::microcode::Family for Naples {
+    /// ZP-A0 is model 0, ZP-B0/B1/B2 are model 1.
+    const SIGNATURES: &'static [u32] = &[0x0080_0f00, 0x0080_0f10];
+    const MAX_PATCHES: usize = 4;
+}

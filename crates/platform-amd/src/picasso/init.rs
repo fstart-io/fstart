@@ -305,9 +305,11 @@ impl Init for Picasso {
             "native-picasso",
             microcode,
             policy,
-            |policy, msr, thread| {
+            |policy, msr| {
                 let bsp = msr.reg(APIC_BASE).is_set(ApicBase::BSP);
-                policy.initialize(msr, bsp, thread).is_ok()
+                policy
+                    .initialize(msr, bsp, fstart_driver_amd::ccx::Thread::current())
+                    .is_ok()
             },
         ))
     }

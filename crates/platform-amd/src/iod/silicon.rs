@@ -6,7 +6,7 @@
 //! `V::SILICON`, which a board that carries one of the two SoCs links
 //! only one side of.
 extern crate alloc;
-use crate::sp3::silicon::cpu::{Sp3Cpu, release_all, this_thread};
+use crate::sp3::silicon::cpu::{release_all, this_thread};
 use crate::sp3::silicon::hw::{Pci, Tsc, msr, secondary_fch};
 use crate::sp3::silicon::hw::{SMU_POLL_US, SMU_TIMEOUT_US, primary_fch};
 use crate::sp3::silicon::steps::*;
@@ -16,6 +16,7 @@ use fstart_arch::x86::mp::MpHandle;
 use fstart_driver_amd::apob::ccx::{CoreMap, core_map};
 use fstart_driver_amd::apob::phy::phy_override;
 use fstart_driver_amd::ccx::init::Ccx;
+use fstart_driver_amd::ccx::init::Threads;
 use fstart_driver_amd::ccx::microcode;
 use fstart_driver_amd::ccx::release::{self, Launch};
 use fstart_driver_amd::ccx::topology::{ApicLayout, Location};
@@ -613,7 +614,7 @@ impl Silicon {
         ctx: &mut Ctx,
         si: &mut Silicon,
         microcode: Option<&'static [u8]>,
-    ) -> Result<Sp3Cpu, &'static str> {
+    ) -> Result<Threads, &'static str> {
         let generation = V::SILICON;
         let policy = ctx.policy.ccx;
         let threads: usize = si.maps.iter().map(CoreMap::threads).sum();
@@ -654,15 +655,15 @@ impl Silicon {
                 psp_addr[usize::from(rb.socket & 1)] = si.nbios[i].psp_bar();
             }
         }
-        let driver = Sp3Cpu::new(
+        let driver = Threads {
             ccx,
             policy,
-            patch,
+            microcode: patch,
             wdt,
-            policy.wdt_severity,
-            cac.clone(),
+            wdt_severity: policy.wdt_severity,
+            cac: cac.clone(),
             psp_addr,
-        );
+        };
         let buses = socket_buses(ctx)?;
         let smns: heapless::Vec<Smn<Pci>, 2> = (0..ctx.topology.sockets)
             // SAFETY: the BSP owns this bus's SMN index/data pair during init.

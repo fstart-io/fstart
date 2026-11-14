@@ -212,6 +212,55 @@ impl Ccx {
     }
 }
 
+/// What every thread of a SoC with the vendor CCX sequence runs (the CPU
+/// driver's hook, [`super::mp::Fam17hCpu::multi_socket`]), from what the
+/// BSP's CCX init found.
+pub struct Threads {
+    pub ccx: Ccx,
+    pub policy: Policy,
+    /// The patch the BSP loaded, for every other thread.
+    pub microcode: Option<Patch<'static>>,
+    /// From [`power::wdt_setting`].
+    pub wdt: Option<Wdt>,
+    pub wdt_severity: Option<u8>,
+    pub cac: power::CacWeights,
+    /// `PSP_ADDR` per socket: every thread loads its socket's PSP BAR
+    /// (PSP_APOB §3.2; Naples: die 0's, the BAR AGESA uses).
+    pub psp_addr: [Option<u64>; 2],
+}
+
+/// Steps 5 to 7 on the executing thread: an AP takes its socket's PSP BAR,
+/// its errata, microcode and the BSP's settings ([`Ccx::early`],
+/// [`Ccx::ap_init`]); every thread its per-thread state
+/// ([`Ccx::all_threads`]). False if the AP's microcode load failed.
+pub fn thread_init<M: MsrAccess + ?Sized>(threads: &Threads, cpu: &M) -> bool {
+    use tock_registers::interfaces::Writeable;
+    let thread = Thread::current(threads.ccx.silicon(), cpu);
+    let mut ok = true;
+    if !thread.bsp {
+        // APs only (PSP_APOB §3.2, threads ≠ 0): the BSP wrote its PSP_ADDR
+        // with the BAR, and a second write raises #GP.
+        if let Some(bar) = threads.psp_addr[usize::from(thread.location().socket & 1)] {
+            cpu.reg(super::msr::PSP_ADDRESS).set(bar);
+        }
+        threads.ccx.early(cpu, &thread);
+        let inputs = ApInputs {
+            microcode: threads.microcode,
+            wdt: threads.wdt,
+            wdt_severity: threads.wdt_severity,
+            cac_weights: &threads.cac,
+            rmp: None,
+        };
+        // SAFETY: ring 0 with caching enabled; the BSP's patch is identity
+        // mapped and stays reserved.
+        ok = unsafe { threads.ccx.ap_init(cpu, &thread, &inputs) }.is_ok();
+    }
+    threads
+        .ccx
+        .all_threads(cpu, &thread, &threads.policy, threads.wdt);
+    ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

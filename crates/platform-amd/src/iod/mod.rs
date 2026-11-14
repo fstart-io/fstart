@@ -12,10 +12,12 @@ pub mod silicon;
 use core::marker::PhantomData;
 
 /// The die of an IOD SoC: what Rome and Milan differ in.
-pub trait Variant: 'static {
+pub trait Variant: Send + Sync + 'static {
     /// The log prefix.
     const NAME: &'static str;
     const SILICON: fstart_driver_amd::cpu::Silicon;
+    /// CPUID(1).EAX of the die's models, stepping masked off.
+    const SIGNATURES: &'static [u32];
 }
 
 /// An IOD SoC of the SP3 socket: [`crate::rome::Rome`],
@@ -25,3 +27,8 @@ pub struct Iod<V>(PhantomData<V>);
 /// What the IOD SoCs' silicon steps hand on.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub type State = crate::sp3::soc::State<silicon::Silicon>;
+
+impl<V: Variant> fstart_driver_amd::ccx::microcode::Family for Iod<V> {
+    const SIGNATURES: &'static [u32] = V::SIGNATURES;
+    const MAX_PATCHES: usize = 4;
+}
