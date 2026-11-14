@@ -169,23 +169,6 @@ impl RunRecipe {
             disk: Some(RunDisk::Ide),
         }
     }
-
-    /// Whether running needs the image steps (any medium but a bare
-    /// stage) rather than just the compiled stage binary.
-    #[must_use]
-    pub fn needs_assembly(&self) -> bool {
-        self.media.iter().any(|media| {
-            !matches!(
-                media,
-                RunMedia::Bios {
-                    artifact: RunArtifact::Stage
-                } | RunMedia::Pflash {
-                    artifact: RunArtifact::Stage,
-                    ..
-                }
-            )
-        })
-    }
 }
 
 /// One image-format operation in a plan. The format's config type and its
@@ -789,6 +772,12 @@ impl BuildPlan {
                 return Err(format!("invalid or duplicate image step {}", step.name));
             }
             match &step.operation {
+                ImageOperation::Ffs(image) if image.platform != self.platform => {
+                    return Err(format!(
+                        "FFS step {} is for {}, the plan for {}",
+                        step.name, image.platform, self.platform
+                    ));
+                }
                 ImageOperation::Ffs(_) => seen_ffs = true,
                 ImageOperation::AmdEfs(image) if image.ffs.is_some() && !seen_ffs => {
                     return Err("AMD EFS step consumes an FFS no earlier step produces".into());

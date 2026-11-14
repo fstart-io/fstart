@@ -151,10 +151,9 @@ pub fn flash(
                     format!("{cpu_base:#x}")
                 }
                 _ => {
-                    return Err(
-                        "flash requires --base-address: the board's plan states no                          memory-mapped firmware window"
-                            .into(),
-                    );
+                    return Err("flash requires --base-address: the board's plan states no \
+                         memory-mapped firmware window"
+                        .into());
                 }
             },
         };
