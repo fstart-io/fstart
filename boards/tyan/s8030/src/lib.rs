@@ -41,19 +41,5 @@ pub mod policy;
 #[cfg(feature = "smm")]
 mod smm;
 
-use fstart_platform_amd::sp3::layout::Sp3BoardFacts;
-use fstart_platform_amd::sp3::silicon::Generation;
-
 /// The Tyan S8030 board marker.
 pub struct Board;
-
-/// Rome and Milan; the PSP boots the vendor ROM's Rome (lower) or Milan
-/// (upper) half and both carry this build.
-impl Sp3BoardFacts for Board {
-    const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
-    /// The vendor 32 MiB dual image (Rome lower half, Milan upper half);
-    /// the user supplies it (see `vendor/README.md`).
-    const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
-    /// 1P, 64 cores with SMT (Rome and Milan alike).
-    const MAX_CPUS: u16 = 128;
-}

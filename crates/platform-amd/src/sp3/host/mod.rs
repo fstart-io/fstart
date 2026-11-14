@@ -1,30 +1,33 @@
 //! The host build of an SP3 board: its [`crate::host::Host`] data, from
-//! the board's facts ([`Sp3BoardFacts`]), the SP3 layout and the SP3 flash
+//! the board's facts ([`crate::board::Board`]), the SP3 layout and the SP3 flash
 //! ([`crate::host::dual`]): one reset image for every generation the board
 //! supports, linked at the common reset image address ([`layout::RESET`]),
 //! which every composed half's `0x62` entry names.
 
-use std::string::String;
 use std::vec::Vec;
 
-use crate::host::{self, Host, dual};
-use crate::sp3::layout::{self, EARLY_REGION, LAYOUT, RESET, Sp3BoardFacts};
+use crate::board::Board;
+use crate::host::{Host, dual};
+use crate::sp3::layout::{self, EARLY_REGION, LAYOUT, RESET};
 use crate::sp3::silicon::Generation;
 use fstart_image_build::amd::halved_flash::{FlashPlan, NvramSlot, ResetSlot, Survey};
-use fstart_image_build::build_plan::BuildPlan;
-use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan};
 
 pub use crate::host::{SMM_STACK_SIZE, SMM_UNIT, STAGE_FEATURE, STAGE_UNIT, TSEG_SIZE_ENV};
 
-/// Conventional platform export consumed by the generic fbuild runner.
-pub struct Plan<B>(core::marker::PhantomData<B>);
-
-impl<B: Sp3BoardFacts> HostPlan<B> for Plan<B> {
-    type Options = crate::HostOptions;
-
-    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String> {
-        resolve::<B>(&selection, &options)
-    }
+/// The SP3 generations of the SoCs board `B` lists, in boot ROM order
+/// (Naples below Rome below Milan).
+fn generations<B: Board>() -> Vec<Generation> {
+    use crate::board::SocId;
+    let mut generations: Vec<_> = (B::SOCS.iter())
+        .filter_map(|soc| match soc {
+            SocId::Naples => Some(Generation::Naples),
+            SocId::Rome => Some(Generation::Rome),
+            SocId::Milan => Some(Generation::Milan),
+            SocId::Picasso | SocId::Zeppelin => None,
+        })
+        .collect();
+    generations.sort();
+    generations
 }
 
 /// The name of a generation's firmware tables (`[package.metadata.fstart.amd.<name>]`).
@@ -36,22 +39,8 @@ pub const fn soc_name(generation: Generation) -> &'static str {
     }
 }
 
-/// The generations of board `B` in boot ROM order (Naples below Rome
-/// below Milan).
-fn halves<B: Sp3BoardFacts>() -> Vec<dual::Half> {
-    let mut generations = B::GENERATIONS.to_vec();
-    generations.sort();
-    generations
-        .into_iter()
-        .map(|generation| dual::Half {
-            name: soc_name(generation),
-            bios_directory: generation.profile().bios,
-        })
-        .collect()
-}
-
 /// The host data of board `B`.
-fn host<B: Sp3BoardFacts>(halves: &[dual::Half]) -> Host<'_> {
+pub fn host<B: Board>() -> Host {
     Host {
         name: "sp3",
         layout: LAYOUT,
@@ -59,8 +48,13 @@ fn host<B: Sp3BoardFacts>(halves: &[dual::Half]) -> Host<'_> {
         tseg_size: crate::sp3::smm::TSEG_SIZE,
         release_only: false,
         i2c_input: false,
-        image: host::Image::Dual(dual::Image {
-            halves,
+        image: crate::host::Image::Dual(dual::Image {
+            halves: (generations::<B>().into_iter())
+                .map(|generation| dual::Half {
+                    name: soc_name(generation),
+                    bios_directory: generation.profile().bios,
+                })
+                .collect(),
             vendor_image: B::VENDOR_IMAGE,
             plan: flash_plan::<B>(),
         }),
@@ -71,9 +65,12 @@ fn host<B: Sp3BoardFacts>(halves: &[dual::Half]) -> Host<'_> {
 /// entry of a supported generation names the reset image at the top of
 /// the lower half (above the early region), the FFS starts at
 /// [`layout::FFS_OFFSET`] or above.
-pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
+pub fn flash_plan<B: Board>() -> FlashPlan {
     FlashPlan {
-        generations: B::GENERATIONS.iter().map(|g| g.profile().bios).collect(),
+        generations: generations::<B>()
+            .iter()
+            .map(|g| g.profile().bios)
+            .collect(),
         reset: ResetSlot {
             flash_offset: RESET.flash_offset,
             size: RESET.size,
@@ -89,21 +86,11 @@ pub fn flash_plan<B: Sp3BoardFacts>() -> FlashPlan {
     }
 }
 
-/// Resolve the board's plan: one build for every generation it supports.
-pub fn resolve<B: Sp3BoardFacts>(
-    selection: &BuildSelection,
-    options: &crate::HostOptions,
-) -> Result<BuildPlan, String> {
-    host::resolve(&host::<B>(&halves::<B>()), selection, options)
-}
-
 /// Check the board's vendor ROM against the build without composing: the
 /// halves it would compose and keep and the FFS window. `root` is the
 /// workspace root.
-pub fn check_vendor<B: Sp3BoardFacts>(root: &std::path::Path) -> Result<Survey, String> {
-    let halves = halves::<B>();
-    let host = host::<B>(&halves);
-    let host::Image::Dual(image) = &host.image else {
+pub fn check_vendor<B: Board>(root: &std::path::Path) -> Result<Survey, std::string::String> {
+    let crate::host::Image::Dual(image) = host::<B>().image else {
         unreachable!("SP3 is a dual-half image")
     };
     image.check_vendor(root)
@@ -119,18 +106,24 @@ mod tests {
     use fstart_image_build::amd::halved_flash::{self, FlashHalf, HalfAction};
     use fstart_image_build::build_plan::{CargoTarget, ImageOperation, UnitOutput};
 
-    /// The plan of `B` with the selection's options parsed as the plan
-    /// runner parses them.
-    fn resolve<B: Sp3BoardFacts>(selection: &BuildSelection) -> Result<BuildPlan, String> {
-        super::resolve::<B>(selection, &selection.options()?)
-    }
+    use crate::board::{Board, SocId};
+    use fstart_image_build::build_plan::BuildPlan;
+    use fstart_image_build::plan::BuildSelection;
 
     struct S8030;
-    impl Sp3BoardFacts for S8030 {
-        const GENERATIONS: &'static [Generation] = &[Generation::Rome, Generation::Milan];
+    impl Board for S8030 {
+        const NAME: &'static str = "s8030";
+        const SOCS: &'static [SocId] = &[SocId::Rome, SocId::Milan];
         const VENDOR_IMAGE: &'static str =
             "../sp3/firmware/tyan-s8030gm2ne/S8030GM2NE_BIOS_V4.04/8030V404.ROM";
         const MAX_CPUS: u16 = 256;
+    }
+
+    /// The plan of `B` with the selection's options parsed as the plan
+    /// runner parses them.
+    fn resolve<B: Board>(selection: &BuildSelection) -> Result<BuildPlan, std::string::String> {
+        let options = selection.options()?;
+        crate::host::resolve_board::<B>(selection, &options)
     }
 
     fn sp3(plan: &BuildPlan) -> &AmdHalvedFlashAssembly {
@@ -172,8 +165,9 @@ mod tests {
             assert!(script.contains(needle), "{needle}");
         }
         struct Nothing;
-        impl Sp3BoardFacts for Nothing {
-            const GENERATIONS: &'static [Generation] = &[];
+        impl Board for Nothing {
+            const NAME: &'static str = "nothing";
+            const SOCS: &'static [SocId] = &[];
             const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
             const MAX_CPUS: u16 = 1;
         }
@@ -413,8 +407,9 @@ mod tests {
             ]
         );
         struct Naples;
-        impl Sp3BoardFacts for Naples {
-            const GENERATIONS: &'static [Generation] = &[Generation::Naples];
+        impl Board for Naples {
+            const NAME: &'static str = "naples";
+            const SOCS: &'static [SocId] = &[SocId::Naples];
             const VENDOR_IMAGE: &'static str = S8030::VENDOR_IMAGE;
             const MAX_CPUS: u16 = 1;
         }

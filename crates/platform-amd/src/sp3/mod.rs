@@ -1,27 +1,24 @@
-//! AMD SP3 platform: the fixed boot flows of Naples, Rome and Milan, their
-//! memory map, MP, SMM, PCI root bridges, ACPI tables and flash image.
+//! The SP3 socket: what its SoCs (Naples, Rome, Milan) share. Its flash
+//! geometry and layout, its memory reservations, the flow's services for
+//! the socket ([`soc`]: the flash windows, the APOB, options, TPM, SMM with
+//! RAS and EINJ, the tables), the shared silicon steps and context
+//! ([`silicon`]) and its host plan's flash halves ([`host`]).
 //!
-//! One firmware build serves every generation the board supports
-//! ([`layout::Sp3BoardFacts::GENERATIONS`]) with one reset image that every
-//! generation's `0x62` entry names; the CPU picks the flow's silicon steps
-//! at runtime, among the flows the board's stage calls.
-//!
-//! A board crate implements [`board::Board`] (and
-//! [`layout::Sp3BoardFacts`]), its facts, and owns the stage `main`: it
-//! matches the family `start` returns and runs the flow's phases
-//! ([`crate::flow`]) with its own work in between, passing its policy,
-//! console, GPIO, DXIO lanes and tables to them (feature `bundle`).
+//! One firmware build serves every SoC the board lists
+//! ([`crate::board::Board::SOCS`]) with one reset image that every
+//! generation's `0x62` entry names; the board's stage matches the SoC
+//! [`crate::flow::start`] returns and runs the flow's phases with its own
+//! work in between, passing its policy, console, GPIO, DXIO lanes and
+//! tables to them (feature `bundle`).
 pub mod acpi;
 pub mod board;
 
+pub mod einj;
 pub mod entry;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub(crate) mod flow;
 #[cfg(feature = "host")]
 pub mod host;
-#[cfg(feature = "host")]
-pub use host::Plan;
-pub mod einj;
 pub mod layout;
 pub mod memory;
 pub mod silicon;
@@ -34,4 +31,4 @@ pub use fstart_smm as smm_runtime;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod soc;
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use soc::{Engines, Identified, Socket, Start, start};
+pub use soc::{Engines, Socket};

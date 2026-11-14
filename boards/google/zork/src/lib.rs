@@ -89,9 +89,12 @@ pub static CONFIG: Config = Config {
     },
 };
 pub struct Board;
-impl fstart_platform_amd::noncar::Board for Board {
-    type Soc = Picasso;
-    const CONFIG: &'static Config = &CONFIG;
+impl fstart_platform_amd::board::Board for Board {
+    const NAME: &'static str = "Google Vilboz";
+    const SOCS: &'static [fstart_platform_amd::board::SocId] =
+        &[fstart_platform_amd::board::SocId::Picasso];
+    /// The topology decoder's envelope: 2 CCXs, 4 cores, 2 threads.
+    const MAX_CPUS: u16 = 16;
 }
 
 /// The console on FCH UART 0.

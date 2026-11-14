@@ -10,6 +10,8 @@
 extern crate alloc;
 /// The ACPI tables, for every SoC.
 pub mod acpi;
+/// What a board is to the platform.
+pub mod board;
 
 /// How the FFS stores what this platform's stages load. The host plan
 /// compresses each image with its constant and the stage loading it passes
@@ -81,7 +83,6 @@ pub struct HostOptions {
     pub x86_linux: fstart_image_build::plan::X86LinuxOptions,
 }
 
-/// A die SoC board's host adapter: the `HostPlan` adapter. An SP3 board's
-/// is [`sp3::Plan`].
+/// Every board's host adapter, the `HostPlan` fbuild's plan runner calls.
 #[cfg(feature = "host")]
-pub use noncar::host::Plan;
+pub use host::Plan;

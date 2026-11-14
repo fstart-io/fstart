@@ -1,11 +1,10 @@
-//! What a board supplies to the SP3 flow.
-//!
-//! A board is data plus three small hooks: the FCH-side bring-up of its
-//! console path, its GPIO pads and its DXIO lane map given what the board
-//! detected. Everything else the flow derives from the silicon (topology,
-//! APOB, fuses). One build serves every generation the board lists
-//! ([`Sp3BoardFacts::GENERATIONS`]); the generation-dependent hooks get the
-//! generation of the running CPU. The policies are plain driver policy values whose
+//! What a board supplies to the SP3 flow besides its facts
+//! ([`crate::board::Board`]): its silicon policy and the knobs of it
+//! ([`Config`]), its GPIO program and its DXIO lane map
+//! given what the board detected. Everything else the flow derives from
+//! the silicon (topology, APOB, fuses). One build serves every SoC the
+//! board lists; the generation-dependent hooks get the generation of the
+//! running CPU. The policies are plain driver policy values whose
 //! `Default` is the donor default; a board only overrides what its setup
 //! defaults change (e.g. `boards/tyan/s8030/src/policy.rs`).
 
@@ -13,12 +12,10 @@ extern crate alloc;
 
 use fstart_driver_amd::fch::gpio::Pad;
 
-use crate::sp3::layout::Sp3BoardFacts;
-
 pub use crate::sp3::silicon::Policy;
 
 /// Knobs of the silicon [`Policy`] a board can offer in
-/// [`Board::OPTIONS`].
+/// [`Config::options`].
 pub mod knob {
     use fstart_driver_amd::fch::hw::tasks::env::PowerFailState;
     use fstart_options::{Kind, Knob, Meta};
@@ -59,25 +56,13 @@ pub enum BoardError {
     Configuration,
 }
 
-/// The board facts the SP3 phases read. The board's silicon policy,
-/// console, pads, GPIO table and table contributions are arguments to the
-/// phases its `main` calls.
-pub trait Board: Sp3BoardFacts + 'static {
-    /// Shown in the log.
-    const NAME: &'static str;
-
-    /// A discrete TPM may be fitted (FIFO interface at `0xFED4_0000`, on
-    /// LPC or eSPI): probe it, measure the boot (`fstart-tcg`) and describe
-    /// it and its event log in ACPI. Off leaves a TPM untouched and hidden.
-    const DISCRETE_TPM: bool = false;
-
-    /// BMC sleep-state notification through SMM (ACPI and the handler).
-    const BMC_SX_NOTIFY: Option<crate::sp3::smm::SleepNotify> = None;
-
-    /// The silicon policy knobs the user may override (`fstart_options`).
-    /// The flow applies them when it has the console, after the FCH reset
-    /// tasks: a knob may change any policy but [`Policy::sata`], which the
-    /// reset tasks already used. Board knobs outside the policy go through
-    /// `Stage::resolve_options`.
-    const OPTIONS: &'static [fstart_options::Knob<Policy>] = &[];
+/// A board's configuration of the socket's SoCs: its silicon policy, and
+/// the knobs of it the user may override (`fstart_options`). The flow
+/// applies them when it has the console, after the FCH reset tasks: a knob
+/// may change any policy but [`Policy::sata`], which the reset tasks
+/// already used. Board knobs outside the policy go through
+/// `Stage::resolve_options`.
+pub struct Config {
+    pub policy: Policy,
+    pub options: &'static [fstart_options::Knob<Policy>],
 }

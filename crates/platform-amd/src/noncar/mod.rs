@@ -22,7 +22,6 @@ pub use crate::soc::Hw;
 use crate::acpi::SocAcpi;
 use crate::layout::{Layout, Region};
 use crate::smbios::SocSmbios;
-use crate::soc::Init;
 use fstart_amdfw_format::efs::BiosDirectorySlot;
 use fstart_driver_amd::df::Die;
 use fstart_pci::ecam::GlobalEcam;
@@ -43,8 +42,6 @@ pub trait DieSoc: crate::soc::DieInit {
     const APOB: Region;
     /// Where the PSP finds the BIOS directory.
     const BIOS_DIRECTORY: BiosDirectorySlot;
-    /// The most CPUs of the SoC's packages.
-    const MAX_CPUS: u16;
     /// What the SMBIOS tables say of the package and its memory.
     const SMBIOS: SocSmbios;
     /// What the SoC's ACPI tables differ in.
@@ -90,10 +87,6 @@ impl<S: DieSoc> crate::flow::Soc for S {
     const TSEG_SIZE: u32 = TSEG_SIZE;
     type Flow = ();
 
-    fn max_cpus(_: &S::Config) -> u16 {
-        S::MAX_CPUS
-    }
-
     /// The APOB where the PSP's directory puts it, the e820 with the
     /// firmware's DRAM and TSEG reserved, WB DRAM and WP flash, then the
     /// FFS of the layout.
@@ -101,6 +94,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     fn map(
         hw: &mut Hw<S>,
         _: &mut S::Config,
+        _: &crate::board::Facts,
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         _: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<crate::flow::Mapped<S>, &'static str> {
@@ -263,23 +257,6 @@ impl<S: DieSoc> crate::flow::Soc for S {
     fn peripherals(ctx: &Ctx<'_, S>, config: &S::Config) -> Peripherals {
         <S as DieSoc>::peripherals(ctx, config)
     }
-}
-
-/// A board's facts: its SoC and the SoC's configuration. Host planning and
-/// the board's `main` read the same values; the flow is the board's `main`.
-pub trait Board: 'static {
-    type Soc: DieSoc;
-    const CONFIG: &'static <Self::Soc as Init>::Config;
-}
-
-/// The board's first phase ([`crate::flow::enter`]) with its configuration
-/// of the SoC.
-#[cfg(all(feature = "bundle", target_os = "none"))]
-pub fn start<B: Board>() -> Early<B::Soc>
-where
-    <B::Soc as Init>::Config: Clone,
-{
-    crate::flow::enter(B::CONFIG.clone())
 }
 
 /// The DRAM ranges of the dies, the domain being the die.

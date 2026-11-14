@@ -38,12 +38,10 @@
 //! | 90 | payload |
 extern crate alloc;
 
-use core::marker::PhantomData;
-
 use crate::soc::{Entered, Init, Roots};
 use crate::sp3::silicon::hw::{self, PrimaryFch};
 use crate::sp3::silicon::steps;
-use crate::sp3::silicon::{self, Generation, Identity, NumaPlan, Policy};
+use crate::sp3::silicon::{self, Generation, Identity, NumaPlan};
 use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
@@ -55,7 +53,7 @@ use fstart_driver_amd::fch::hw::FchHw;
 use fstart_driver_amd::nbio::Nbio;
 use fstart_driver_amd::nbio::iohc::DramTops;
 
-use super::board::{Board, Gpio};
+use super::board::Gpio;
 use super::flow::{self as parts, step};
 use super::layout;
 use crate::flow::{Ctx, Early, Mapped, Reserved, Silicon as Up, Stage, Tables};
@@ -77,19 +75,7 @@ impl<S> Socket for S where
 {
 }
 
-/// A board's configuration of the socket: its silicon policy, and what
-/// the flow's services read of the board.
-pub struct Config {
-    pub policy: Policy,
-    /// Shown in the log.
-    pub name: &'static str,
-    pub generations: &'static [Generation],
-    pub max_cpus: u16,
-    pub discrete_tpm: bool,
-    pub bmc_sx_notify: Option<super::smm::SleepNotify>,
-    /// The silicon policy knobs the user may override.
-    pub options: &'static [fstart_options::Knob<Policy>],
-}
+pub use super::board::Config;
 
 /// The handles of the socket's flow: the identified CPU, its ECAM segment,
 /// the clock and socket 0's FCH.
@@ -141,82 +127,24 @@ pub struct Flow {
     rom_size: u32,
 }
 
-/// The running CPU's family: what [`start`] returns. A board calls its
-/// flow with each family it carries and [`Identified::unsupported`] for the
-/// others; only the flows it calls are linked.
-pub enum Start<B> {
-    Naples(Identified<B, crate::naples::Naples>),
-    Rome(Identified<B, crate::rome::Rome>),
-    Milan(Identified<B, crate::milan::Milan>),
-}
-
-/// CPUID → revision before anything else: the generation picks the silicon
-/// steps. An unknown CPU or a non-SP3 package halts at POST 13 (SOC_DF
-/// §2.3: no "unknown stepping = first row"); there is no console yet, as
-/// bringing it up already needs the generation's FCH code.
+/// CPUID → revision: the generation picks the silicon steps. An unknown
+/// CPU or a non-SP3 package halts at POST 13 (SOC_DF §2.3: no "unknown
+/// stepping = first row"); there is no console yet, as bringing it up
+/// already needs the generation's FCH code.
 fn identify() -> Identity {
     let signature = fstart_arch::x86::cpuid(1).0;
     let ext_ebx = fstart_arch::x86::cpuid(0x8000_0001).1;
-    silicon::identify(signature, ext_ebx).unwrap_or_else(|_| unsupported_cpu())
+    silicon::identify(signature, ext_ebx).unwrap_or_else(|_| {
+        hw::post(0x13);
+        fstart_arch::x86::boot::halt()
+    })
 }
 
-fn unsupported_cpu() -> ! {
-    hw::post(0x13);
-    fstart_arch::x86::boot::halt()
-}
-
-/// Identify the CPU. A generation the board does not list halts at POST 13.
-pub fn start<B: Board>() -> Start<B> {
-    let generation = Generation::of(identify().silicon());
-    if !B::GENERATIONS.contains(&generation) {
-        unsupported_cpu()
-    }
-    match generation {
-        Generation::Naples => Start::Naples(Identified::new(generation)),
-        Generation::Rome => Start::Rome(Identified::new(generation)),
-        Generation::Milan => Start::Milan(Identified::new(generation)),
-    }
-}
-
-/// The CPU is identified; the board picks its silicon policy for the
-/// generation next.
-pub struct Identified<B, S> {
-    generation: Generation,
-    _flow: PhantomData<(B, S)>,
-}
-
-impl<B: Board, S: Socket> Identified<B, S> {
-    fn new(generation: Generation) -> Self {
-        Self {
-            generation,
-            _flow: PhantomData,
-        }
-    }
-
-    /// The running CPU's generation.
+impl<B, S: Socket> crate::flow::Identified<B, S> {
+    /// The running CPU's generation, for the board's choice of its silicon
+    /// policy.
     pub fn generation(&self) -> Generation {
-        self.generation
-    }
-
-    /// A family the board does not carry: halt at POST 13, before the
-    /// console (its FCH code is not linked).
-    pub fn unsupported(self) -> ! {
-        unsupported_cpu()
-    }
-
-    /// ECAM, then socket 0's FCH reset tasks with the board's silicon
-    /// `policy`. The board opens its LPC decodes and sets up its Super I/O
-    /// or BMC next, then the console.
-    pub fn init_fch(self, policy: Policy) -> Early<S> {
-        crate::flow::enter(Config {
-            policy,
-            name: B::NAME,
-            generations: B::GENERATIONS,
-            max_cpus: B::MAX_CPUS,
-            discrete_tpm: B::DISCRETE_TPM,
-            bmc_sx_notify: B::BMC_SX_NOTIFY,
-            options: B::OPTIONS,
-        })
+        Generation::of(identify().silicon())
     }
 }
 
@@ -307,11 +235,10 @@ pub(crate) fn enter<S: Init<Hw = Hw>>(config: &Config) -> Entered<S> {
     }
 }
 
-/// Whether the board supports the CPU's generation (the build may carry
-/// more generations than a board lists): [`Init::identify`].
-pub(crate) fn check_identity(hw: &Hw, config: &Config) -> Result<Identity, &'static str> {
+/// The identified CPU, logged with the console up: [`Init::identify`].
+pub(crate) fn check_identity(hw: &Hw) -> Result<Identity, &'static str> {
     let generation = Generation::of(hw.identity.silicon());
-    fstart_log::info!("sp3: {} ({}) console ready", config.name, generation.name());
+    fstart_log::info!("sp3: {} console ready", generation.name());
     if hw.resume {
         // S3 needs the resume path (boot scripts, wake vector); not built.
         fstart_log::error!("sp3: S3 resume is not supported, cold booting");
@@ -323,14 +250,6 @@ pub(crate) fn check_identity(hw: &Hw, config: &Config) -> Result<Identity, &'sta
         hw.identity.signature,
         hw.timer.mhz()
     );
-    if !config.generations.contains(&generation) {
-        fstart_log::error!(
-            "sp3: {} does not support {} CPUs",
-            config.name,
-            generation.name()
-        );
-        return Err("CPU identity");
-    }
     Ok(hw.identity)
 }
 
@@ -390,6 +309,7 @@ impl<F> State<F> {
 pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     hw: &mut Hw,
     config: &mut Config,
+    board: &crate::board::Facts,
     msr: &NativeMsr,
 ) -> Result<Mapped<S>, &'static str> {
     let generation = Generation::of(hw.identity.silicon());
@@ -440,7 +360,7 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     let e820 = crate::memory::build("sp3", &regions, tops, &reservations).map_err(|_| "e820")?;
     parts::cache_ram(&regions);
 
-    if config.discrete_tpm {
+    if board.discrete_tpm {
         step(0x16, "TPM");
         parts::tpm::start(flash, generation);
     }
@@ -491,7 +411,7 @@ pub(crate) fn smm_memory<F>(
 /// and HWCR per thread. Then the FCH sources, one self-SMI per thread
 /// through the new entry, the PSP SMI route and SW SMI D0 (SmmInfo).
 pub(crate) fn install_smm<F>(
-    config: &Config,
+    board: &crate::board::Facts,
     state: &mut State<F>,
     mp: &MpHandle,
     flow: &Flow,
@@ -507,7 +427,7 @@ pub(crate) fn install_smm<F>(
         einj,
         usb_buses,
         usb_bus_count,
-        bmc: config.bmc_sx_notify,
+        bmc: board.bmc_sx_notify,
     };
     if let Some(image) = crate::tseg::IMAGE {
         parts::tpm::measure_smm(image);
@@ -531,7 +451,7 @@ pub(crate) fn install_smm<F>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tables<S: crate::flow::Soc<State = State<F>>, F>(
-    config: &Config,
+    board: &crate::board::Facts,
     silicon: &mut Up<S>,
     (numa, nbios): (Option<NumaPlan>, &[Nbio<hw::Pci>]),
     pci: &fstart_pci::PciEcam,
@@ -542,7 +462,7 @@ pub(crate) fn tables<S: crate::flow::Soc<State = State<F>>, F>(
     step(0x70, "ACPI");
     let state = &silicon.state;
     let view = state.view(flow);
-    let rsdp = parts::handoff::acpi(&view, numa, nbios, pci, &acpi, config.bmc_sx_notify);
+    let rsdp = parts::handoff::acpi(&view, numa, nbios, pci, &acpi, board.bmc_sx_notify);
     let smbios = super::smbios::install(&view, &silicon.cpus, flow.rom_size, smbios, pci);
     Tables {
         rsdp: Some(rsdp),
