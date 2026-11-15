@@ -77,7 +77,7 @@ impl VirtMachine {
                 kernel_file: "Image",
                 runtime: Some((
                     span(0x8010_0000, 0x0020_0000),
-                    FirmwareKind::OpenSbi,
+                    FirmwareKind::RiscvDynamicFirmware,
                     "fw_dynamic.bin",
                 )),
                 dtb: span(
@@ -988,7 +988,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             print_x86_mtrrs: false,
             compression: crate::compression::PAYLOAD,
             firmware: Some(FirmwareConfig {
-                kind: FirmwareKind::OpenSbi,
+                kind: FirmwareKind::RiscvDynamicFirmware,
                 file: hstr(p.firmware_file),
                 load_addr: p.firmware_addr,
             }),
@@ -1009,7 +1009,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             print_x86_mtrrs: false,
             compression: crate::compression::PAYLOAD,
             firmware: policy.linux.as_ref().map(|p| FirmwareConfig {
-                kind: FirmwareKind::OpenSbi,
+                kind: FirmwareKind::RiscvDynamicFirmware,
                 file: hstr(p.firmware_file),
                 load_addr: p.firmware_addr,
             }),
@@ -1442,7 +1442,7 @@ mod tests {
                 "console=ttySIF0 earlycon=sbi"
             );
             let firmware = payload.firmware.unwrap();
-            assert!(matches!(firmware.kind, FirmwareKind::OpenSbi));
+            assert!(matches!(firmware.kind, FirmwareKind::RiscvDynamicFirmware));
             assert_eq!(firmware.load_addr, 0x8300_0000);
             assert!(linux.inputs.iter().any(|i| i.name == "kernel"));
             assert!(linux.inputs.iter().any(|i| i.name == "firmware"));

@@ -113,7 +113,7 @@ pub fn resolve(
     expectations.validate().map_err(|e| e.to_string())?;
 
     let opensbi = || FirmwareConfig {
-        kind: FirmwareKind::OpenSbi,
+        kind: FirmwareKind::RiscvDynamicFirmware,
         file: hstr(OPENSBI_FILE),
         load_addr: config.firmware_addr,
     };
