@@ -6,6 +6,7 @@ use super::table::Record;
 use crate::cpu::Silicon;
 
 pub mod gn;
+pub mod rs;
 pub mod ssp;
 pub mod zp;
 

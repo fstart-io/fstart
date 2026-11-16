@@ -18,8 +18,8 @@ use tock_registers::{
 pub mod threads;
 pub mod v10;
 pub mod v11;
+pub mod v13;
 pub mod v9;
-
 register_bitfields![u32,
     pub ThreadConfig [
         /// Cores per complex - 1.

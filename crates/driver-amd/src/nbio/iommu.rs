@@ -325,3 +325,26 @@ mod nbio_tests {
         assert_eq!(s.smn[&(0, EFR_SHADOW1.address())], 0);
     }
 }
+
+/// The IOMMU whose registers are at `base`, with its capability header,
+/// range and misc registers as its configuration space has them; `None`
+/// if its MMIO doesn't decode.
+///
+/// # Safety
+/// `base` is the IOMMU's enabled register window, identity mapped and
+/// uncached.
+pub unsafe fn capture(base: u64, capability: u32, range: u32, misc: u32) -> Option<Iommu> {
+    // SAFETY: the caller's contract.
+    let mmio = unsafe { &*(base as usize as *const Mmio) };
+    let iommu = Iommu {
+        base,
+        capability,
+        range,
+        misc,
+        control: mmio.control.get(),
+        efr: mmio.efr.get(),
+        efr2: mmio.efr2.get(),
+        counter_config: mmio.counter_config.get(),
+    };
+    (iommu.efr != u64::MAX).then_some(iommu)
+}
