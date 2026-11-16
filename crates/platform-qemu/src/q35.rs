@@ -161,8 +161,8 @@ impl Q35HostBridge {
         let pciexbar = (self.config.ecam_base as u32) | length_bits | 1;
         // SAFETY: Q35 MCH is bus 0 device 0 function 0; CF8/CFC are x86 PCI config ports.
         unsafe {
-            fstart_core::pio::pci_cfg_write32(0, 0, 0, PCIEXBAR_HI, 0);
-            fstart_core::pio::pci_cfg_write32(0, 0, 0, PCIEXBAR_LO, pciexbar);
+            fstart_pci::cf8::write32(0, 0, 0, PCIEXBAR_HI, 0);
+            fstart_pci::cf8::write32(0, 0, 0, PCIEXBAR_LO, pciexbar);
         }
         fstart_pci::ecam::init(self.config.ecam_base as usize);
         fstart_log::info!(
@@ -187,7 +187,7 @@ impl Q35HostBridge {
 
     fn verify_machine_type(&self) -> Result<(), ServiceError> {
         // SAFETY: CF8/CFC are standard x86 PCI config I/O ports.
-        let id = unsafe { fstart_core::pio::pci_cfg_read32(0, 0, 0, 0) };
+        let id = unsafe { fstart_pci::cf8::read32(0, 0, 0, 0) };
         let vendor = (id & 0xffff) as u16;
         let device = ((id >> 16) & 0xffff) as u16;
         if vendor != Q35_MCH_VID || device != Q35_MCH_DID {

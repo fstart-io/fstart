@@ -614,8 +614,8 @@ impl IntelGm965 {
         // SAFETY: one-time legacy PCI config write to enable ECAM before the
         // ECAM MMIO accessor can be used.
         unsafe {
-            fstart_core::pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR_HI, 0);
-            fstart_core::pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR_LO, value);
+            fstart_pci::cf8::write32(0, 0, 0, hostbridge::PCIEXBAR_HI, 0);
+            fstart_pci::cf8::write32(0, 0, 0, hostbridge::PCIEXBAR_LO, value);
         }
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("gm965: ECAM enabled at {:#x}", self.config.ecam_base);

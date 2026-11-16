@@ -158,8 +158,8 @@ impl IchSmi {
         self.pm.clrbits16(pmio::ALT_GP_SMI_EN, 1 << gpi);
         self.pm.clrbits32(gpe_enable, 1 << (gpi + 16));
         unsafe {
-            let routing = fstart_core::pio::pci_cfg_read32(0, 0x1f, 0, 0xb8);
-            fstart_core::pio::pci_cfg_write32(0, 0x1f, 0, 0xb8, gpi_routing(routing, gpi, acpi));
+            let routing = fstart_pci::cf8::read32(0, 0x1f, 0, 0xb8);
+            fstart_pci::cf8::write32(0, 0x1f, 0, 0xb8, gpi_routing(routing, gpi, acpi));
         }
         if acpi {
             self.pm.setbits32(gpe_enable, 1 << (gpi + 16));
@@ -240,12 +240,12 @@ impl SmiControl for IchSmi {
         // SAFETY: the installer calls this on the BSP after AP relocation;
         // neither APs nor the permanent handler access PCI config ports.
         let mut value = LocalRegisterCopy::<u16, GEN_PMCON_1_REG::Register>::new(unsafe {
-            fstart_core::pio::pci_cfg_read16(0, 0x1f, 0, GEN_PMCON_1)
+            fstart_pci::cf8::read16(0, 0x1f, 0, GEN_PMCON_1)
         });
         value.modify(GEN_PMCON_1_REG::SMI_LOCK::SET);
-        unsafe { fstart_core::pio::pci_cfg_write16(0, 0x1f, 0, GEN_PMCON_1, value.get()) };
+        unsafe { fstart_pci::cf8::write16(0, 0x1f, 0, GEN_PMCON_1, value.get()) };
         let observed = LocalRegisterCopy::<u16, GEN_PMCON_1_REG::Register>::new(unsafe {
-            fstart_core::pio::pci_cfg_read16(0, 0x1f, 0, GEN_PMCON_1)
+            fstart_pci::cf8::read16(0, 0x1f, 0, GEN_PMCON_1)
         });
         observed.is_set(GEN_PMCON_1_REG::SMI_LOCK)
             && self.pm.read32(pmio::SMI_EN) & pmio::GBL_SMI_EN != 0
@@ -454,13 +454,13 @@ impl PendingSmi {
                 self.gpe0.disable_all(&pm);
                 // SAFETY: the SMM rendezvous owner accesses PCI config.
                 unsafe {
-                    let pmcon3 = fstart_core::pio::pci_cfg_read8(0, 0x1f, 0, 0xa4);
+                    let pmcon3 = fstart_pci::cf8::read8(0, 0x1f, 0, 0xa4);
                     let pmcon3 = if policy.power_on_after_fail {
                         pmcon3 & !1
                     } else {
                         pmcon3 | 1
                     };
-                    fstart_core::pio::pci_cfg_write8(0, 0x1f, 0, 0xa4, pmcon3);
+                    fstart_pci::cf8::write8(0, 0x1f, 0, 0xa4, pmcon3);
                     busmaster_disable_on_bus(0);
                 }
             }
@@ -502,17 +502,15 @@ const fn acpi_sleep_state(pm1_cnt: u32) -> u8 {
 unsafe fn busmaster_disable_on_bus(bus: u8) {
     for slot in 0..32u8 {
         for func in 0..8u8 {
-            let id = unsafe { fstart_core::pio::pci_cfg_read32(bus, slot, func, 0) };
+            let id = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0) };
             if matches!(id, 0xffff_ffff | 0 | 0x0000_ffff | 0xffff_0000) {
                 continue;
             }
-            let command = unsafe { fstart_core::pio::pci_cfg_read16(bus, slot, func, 0x04) };
-            unsafe {
-                fstart_core::pio::pci_cfg_write16(bus, slot, func, 0x04, command & !(1 << 2))
-            };
-            let header = unsafe { fstart_core::pio::pci_cfg_read8(bus, slot, func, 0x0e) } & 0x7f;
+            let command = unsafe { fstart_pci::cf8::read16(bus, slot, func, 0x04) };
+            unsafe { fstart_pci::cf8::write16(bus, slot, func, 0x04, command & !(1 << 2)) };
+            let header = unsafe { fstart_pci::cf8::read8(bus, slot, func, 0x0e) } & 0x7f;
             if header == 1 || header == 2 {
-                let buses = unsafe { fstart_core::pio::pci_cfg_read32(bus, slot, func, 0x18) };
+                let buses = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0x18) };
                 let secondary = ((buses >> 8) & 0xff) as u8;
                 if secondary > bus {
                     unsafe { busmaster_disable_on_bus(secondary) };

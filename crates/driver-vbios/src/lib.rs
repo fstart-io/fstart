@@ -16,7 +16,7 @@ use fstart_core::{
     pio::PioRegister,
     services::{FramebufferInfo, Timer},
 };
-use fstart_pci::{PciAddress, PciEcam, PciWindow};
+use fstart_pci::{PciAddress, PciEcam, PciWindow, cf8};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
@@ -194,8 +194,8 @@ struct Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         ACTIVE.store(core::ptr::null_mut(), Ordering::Release);
-        if let Some(cf8) = self.cf8 {
-            PioRegister::<u32>::new(0xcf8).set(cf8);
+        if let Some(selector) = self.cf8 {
+            PioRegister::<u32>::new(cf8::ADDRESS_PORT).set(selector);
         }
         BUSY.store(false, Ordering::Release);
     }
@@ -626,7 +626,7 @@ pub unsafe fn initialize(
         return Err(Error::Busy);
     }
     let _guard = Guard {
-        cf8: Some(PioRegister::<u32>::new(0xcf8).get()),
+        cf8: Some(PioRegister::<u32>::new(cf8::ADDRESS_PORT).get()),
     };
     let device = pci.device(address).ok_or(Error::Rom)?;
     // The platform may select a silicon-specific compatible ROM alias.

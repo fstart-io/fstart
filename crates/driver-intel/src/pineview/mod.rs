@@ -285,7 +285,7 @@ impl IntelPineview {
         // SAFETY: one-time legacy PCI config write to the host bridge
         // to enable ECAM. After this, ECAM MMIO is live.
         unsafe {
-            fstart_core::pio::pci_cfg_write32(0, 0, 0, hostbridge::PCIEXBAR as u8, pciexbar_val);
+            fstart_pci::cf8::write32(0, 0, 0, hostbridge::PCIEXBAR as u8, pciexbar_val);
         }
         ecam::init(self.config.ecam_base as usize);
         fstart_log::info!("pineview: ECAM enabled at {:#x}", self.config.ecam_base);
