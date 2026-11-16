@@ -1,0 +1,55 @@
+[package]
+name = "fstart-board-tyan-s8040"
+description = "Tyan S8040GM2NE: AMD SP6 1P, EPYC 8004 (Siena)"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# A whole 16 MiB native image packed from blobs (`--blobs`, or `--donor`
+# with a vendor image to extract them from); see README.md.
+[package.metadata.fstart]
+board = "tyan-s8040"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-amd" }
+
+# The board's APCBs, as its vendor image (NFX V2.00) has them; Siena's
+# files are in fstart-platform-amd's table.
+[package.metadata.fstart.amd]
+soc = "siena"
+# The vendor EFS's eSPI0 configuration: the PSP brings up the link to the
+# AST2600 (COM1, KCS) before x86 runs, and the flow keeps it.
+efs-espi = [0x0e, 0xff, 0xff, 0xff]
+apcb = { entries = [
+  { type = 0x60, level = 2, file = "s8040/apcb-60-0.bin" },
+  { type = 0x60, instance = 1, level = 2, file = "s8040/apcb-60-1.bin" },
+  { type = 0x68, file = "s8040/apcb-68-0.bin" },
+  { type = 0x68, instance = 8, file = "s8040/apcb-68-8.bin" },
+  { type = 0x68, instance = 9, file = "s8040/apcb-68-9.bin" },
+] }
+
+[features]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-amd/smm"]
+
+# Versions are spelled out instead of inherited: boards are outside the
+# workspace (fbuild adds them to a generated one) and this crate also
+# builds on its own.
+[dependencies]
+fstart-platform-amd = { path = "../../../crates/platform-amd" }
+fstart-driver-amd = { path = "../../../crates/driver-amd" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
+fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-log = { path = "../../../crates/log" }
+heapless = { version = "0.8", default-features = false }
+tock-registers = "0.10"
+
+# The only stage, which the PSP copies to DRAM; fbuild builds it with
+# fstart-platform-amd/bundle. Board unit tests (`cargo test`) only
+# build the library.
+[[bin]]
+name = "stage"
+path = "src/bin/stage.rs"
+test = false
+bench = false
