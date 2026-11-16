@@ -84,7 +84,9 @@ impl Image {
         selection: &BuildSelection,
         dir: &str,
     ) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
-        let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
+        // Absolute, but not read: a bundle's plan names the directory its
+        // assembly fills from the donor (`fstart_image_build::bundle`).
+        let dir = std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
         let tables = &selection.manifests;
         let boards = blobs::board_tables(&tables.board["amd"])?;
         let name = tables.board["board"]

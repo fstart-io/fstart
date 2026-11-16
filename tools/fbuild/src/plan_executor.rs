@@ -243,7 +243,7 @@ impl Resolved {
                 })
             })
             .collect::<Result<_, String>>()?;
-        Ok(crate::build_board::BuildResult { stages })
+        Ok(crate::build_board::BuildResult { stages, artifacts })
     }
     /// Bind the caller's named external files to the inputs the plan
     /// declares, applying board-relative defaults. Returns the complete
@@ -310,6 +310,7 @@ impl Resolved {
         let outputs = fstart_image_build::image_steps::execute(
             &self.plan,
             &fstart_image_build::image_steps::ImageContext {
+                files: &fstart_image_build::files::HostFiles,
                 workspace_root: root,
                 board_dir: &board.dir,
                 board_name: &board.board,

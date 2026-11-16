@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.fstart]
 board = "sifive-unmatched"
+name = "HiFive Unmatched"
 arch = "riscv64"
 build-profile = { dependency = "fstart-platform-sifive" }
 

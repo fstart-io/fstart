@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.fstart]
 board = "ibase-mb899"
+name = "MB899"
 arch = "x86"
 build-profile = { dependency = "fstart-platform-intel" }
 

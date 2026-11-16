@@ -1,13 +1,14 @@
 //! Package a bare ELF payload: its loadable segments flattened into one FFS
 //! payload segment, plus a verified asset with the entry point.
 
+use crate::files::Files;
 use fstart_core::ffs::{FileType, SegmentFlags, SegmentKind};
 use fstart_core::payload_manifest::{ELF_MANIFEST_ASSET, ElfManifest};
 use fstart_ffs::builder::{InputFile, InputSegment};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn add(
+    files: &dyn Files,
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     elf_path: Option<&str>,
@@ -22,7 +23,8 @@ pub(crate) fn add(
                 .map(|f| board_dir.join(f.as_str()))
         })
         .ok_or("ELF payload needs its ELF (--kernel)")?;
-    let data = fs::read(&elf_path)
+    let data = files
+        .read(&elf_path)
         .map_err(|e| format!("failed to read ELF payload {}: {e}", elf_path.display()))?;
     let image = crate::elf_flat::flatten(&data)
         .map_err(|e| format!("ELF payload {}: {e}", elf_path.display()))?;

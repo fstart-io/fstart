@@ -319,7 +319,7 @@ fn parse_payload_file(value: &str) -> Result<(String, String), String> {
     }
 }
 
-fn parse_setting(value: &str) -> Result<(String, String), String> {
+pub fn parse_setting(value: &str) -> Result<(String, String), String> {
     match value.split_once('=') {
         Some((key, value)) if !key.is_empty() && !value.is_empty() => {
             Ok((key.to_owned(), value.to_owned()))

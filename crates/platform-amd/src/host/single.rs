@@ -125,7 +125,9 @@ impl Image {
         let name = tables.board["board"]
             .as_str()
             .ok_or("the board table has no board name")?;
-        let dir = std::fs::canonicalize(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
+        // Absolute, but not read: a bundle's plan names the directory its
+        // assembly fills from the donor (`fstart_image_build::bundle`).
+        let dir = std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
         blobs::resolve(&soc, &board, name, &dir, host.layout.flash.size as u32).map(Some)
     }
 }

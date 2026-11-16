@@ -608,31 +608,56 @@ pub fn extract_tables(
 ) -> Result<Donated, String> {
     let name = board_table["board"]
         .as_str()
-        .ok_or("the board has no name")?
-        .to_string();
+        .ok_or("the board has no name")?;
+    extract_donor(
+        &tables(board_table, platform_table)?,
+        name,
+        rom,
+        allow_missing,
+    )
+}
+
+/// The blob tables of a board's AMD firmware, from its and its platform's
+/// `fstart` manifest tables: one SoC table and the board's per SoC the
+/// board has (each generation of an SP3 board).
+pub fn tables(
+    board_table: &serde_json::Value,
+    platform_table: &serde_json::Value,
+) -> Result<Vec<(SocBlobs, BoardBlobs)>, String> {
+    let mut tables = Vec::new();
+    for board in board_tables(&board_table["amd"])? {
+        let soc: SocBlobs = serde_json::from_value(platform_table["amd"][&board.soc].clone())
+            .map_err(|e| format!("platform [package.metadata.fstart.amd.{}]: {e}", board.soc))?;
+        tables.push((soc, board));
+    }
+    Ok(tables)
+}
+
+/// The blob directory's files of every pair of `tables` ([`tables`]) from
+/// the donor image `rom` of board `board_name`. A donor may carry only
+/// some of a board's SoCs (an SP3 vendor build of one generation): those
+/// it lacks are absent, and the image packs the others. Missing files of a
+/// SoC it has are an error unless `allow_missing`.
+pub fn extract_donor(
+    tables: &[(SocBlobs, BoardBlobs)],
+    board_name: &str,
+    rom: &[u8],
+    allow_missing: bool,
+) -> Result<Donated, String> {
     let mut donated = Donated {
-        board: name,
+        board: board_name.into(),
         ..Default::default()
     };
-    for board_blobs in board_tables(&board_table["amd"])? {
-        let soc: SocBlobs = serde_json::from_value(platform_table["amd"][&board_blobs.soc].clone())
-            .map_err(|e| {
-                format!(
-                    "platform [package.metadata.fstart.amd.{}]: {e}",
-                    board_blobs.soc
-                )
-            })?;
-        // A donor may carry only some of a board's SoCs (an SP3 vendor
-        // build of one generation): the image then packs those.
-        let Some(donor) = donor_image(rom, &soc) else {
-            donated.absent.push(board_blobs.soc.clone());
+    for (soc, board) in tables {
+        let Some(donor) = donor_image(rom, soc) else {
+            donated.absent.push(board.soc.clone());
             continue;
         };
-        let (found, missing) = extract(&soc, &board_blobs, &donated.board, donor)?;
+        let (found, missing) = extract(soc, board, board_name, donor)?;
         if !missing.is_empty() && !allow_missing {
             return Err(format!(
                 "the vendor image's {} firmware does not have: {}",
-                board_blobs.soc,
+                board.soc,
                 missing.join(", ")
             ));
         }

@@ -13,6 +13,8 @@ out=$(mkdir -p "${2:-$here/../../../target/seabios}" && cd "${2:-$here/../../../
 cp "$here/defconfig" "$out/.config"
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" olddefconfig >/dev/null
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" -j"$(nproc)" >/dev/null
+# The version `fbuild bundle --seabios` shows with the payload.
+git -C "$src" describe --tags --always --dirty >"$out/version" 2>/dev/null || echo unknown >"$out/version"
 # SeaBIOS mirrors its text screen to this port (0x3f8 as a little-endian u64).
 printf '\370\003\000\000\000\000\000\000' >"$out/sercon-port"
 

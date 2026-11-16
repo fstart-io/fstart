@@ -13,10 +13,23 @@ publish = false
 # changes it, and `fbuild assemble --setting` seeds it into an image.
 [package.metadata.fstart]
 board = "tyan-s8030"
+name = "S8030"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-amd" }
 
 # The board's APCBs of each generation, as its vendor image has them.
+# The vendor BIOS update whose PSP firmware and microcode the image takes
+# (the 32 MiB 8030V404.ROM).
+[package.metadata.fstart.donor]
+vendor = "MiTAC (Tyan)"
+name = "S8030GM2NE BIOS V4.04"
+url = "https://www.mitaccomputing.com/api-frontend/Document/DownloadVersionFile/versions/1710/download"
+sha256 = "28ef7d2d35d82675e18a86e870fa862793dcb585be4bb53798f4a5af9c014faf"
+size = 24359479
+terms = "https://www.mitaccomputing.com/terms"
+page = "https://www.mitaccomputing.com/products/detail/S8030GM2NE?tab=downloads"
+note = "MiTAC's download page also asks you to accept AMI's end-user licence for this BIOS. fstart keeps the PSP firmware, APCB and microcode from it and replaces the rest."
+
 [package.metadata.fstart.amd.rome]
 apcb = { entries = [
   { type = 0x68, file = "s8030/rome/apcb-68-0.bin" },

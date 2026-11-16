@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.fstart]
 board = "asus-p5gc-mx"
+name = "P5GC-MX"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-intel" }
 

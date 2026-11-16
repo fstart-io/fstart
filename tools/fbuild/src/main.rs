@@ -21,6 +21,43 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Export what a build compiled, with its plan, as bundles an image is
+    /// assembled from without a compiler (`compose-bundle`, the browser
+    /// assembler), and a catalog.json. Without --board/--payload, every
+    /// board and variant with every payload its platform takes.
+    Bundle {
+        #[arg(long)]
+        board: Option<String>,
+        #[arg(long, value_enum)]
+        payload: Option<PayloadChoice>,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        #[arg(long)]
+        revision: String,
+        /// A SeaBIOS build (ci/payloads/seabios/build.sh output) to ship in
+        /// every coreboot-payload bundle.
+        #[arg(long)]
+        seabios: Option<std::path::PathBuf>,
+    },
+    /// Assemble a bundle without Cargo or a linker.
+    ComposeBundle {
+        #[arg(long)]
+        bundle: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// The vendor image an AMD build takes its PSP firmware from.
+        #[arg(long)]
+        donor: Option<std::path::PathBuf>,
+        /// Named external input, e.g. kernel=bzImage.
+        #[arg(long = "input")]
+        inputs: Vec<String>,
+        #[arg(long)]
+        signing_key: Option<std::path::PathBuf>,
+        /// A firmware option the image's settings store starts with, as
+        /// KEY=VALUE (`fbuild assemble --setting`).
+        #[arg(long = "setting", value_parser = fbuild::payload::parse_setting)]
+        settings: Vec<(String, String)>,
+    },
     /// Print the CI firmware job matrix. Reads the boot tests, one
     /// "board payload" line each (`ci/qemu-boot-tests.sh --list`), on stdin.
     Shards,
@@ -332,6 +369,34 @@ fn main() {
 
     let result: Result<(), String> = match cli.command {
         Command::Boards { json } => boards(json),
+        Command::Bundle {
+            board,
+            payload,
+            out,
+            revision,
+            seabios,
+        } => fbuild::bundle::export(
+            &out,
+            &revision,
+            board.as_deref(),
+            payload,
+            seabios.as_deref(),
+        ),
+        Command::ComposeBundle {
+            bundle,
+            out,
+            donor,
+            inputs,
+            signing_key,
+            settings,
+        } => fbuild::bundle::compose(
+            &bundle,
+            &out,
+            donor.as_deref(),
+            &inputs,
+            signing_key.as_deref(),
+            &settings,
+        ),
         Command::Shards => std::io::read_to_string(std::io::stdin())
             .map_err(|e| e.to_string())
             .and_then(|boots| fbuild::shards::run(&boots)),

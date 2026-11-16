@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.fstart]
 board = "orangepi-r1"
+name = "Orange Pi R1"
 arch = "armv7"
 build-profile = { dependency = "fstart-platform-sunxi" }
 

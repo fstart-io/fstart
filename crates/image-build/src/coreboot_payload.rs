@@ -5,13 +5,14 @@
 //! which the runtime loads like any other verified file. The payload never
 //! reads flash.
 
+use crate::files::Files;
 use fstart_core::ffs::{Compression, FileType, SegmentFlags, SegmentKind};
 use fstart_coreboot::manifest;
 use fstart_ffs::builder::{InputFile, InputSegment};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn add(
+    source: &dyn Files,
     payload: &fstart_core::PayloadConfig,
     board_dir: &Path,
     elf_path: Option<&str>,
@@ -27,7 +28,7 @@ pub(crate) fn add(
                 .map(|f| board_dir.join(f.as_str()))
         })
         .ok_or("coreboot payload needs its ELF (--kernel)")?;
-    let data = fs::read(&elf_path).map_err(|e| {
+    let data = source.read(&elf_path).map_err(|e| {
         format!(
             "failed to read coreboot payload {}: {e}",
             elf_path.display()
@@ -42,7 +43,8 @@ pub(crate) fn add(
     let contents = files
         .iter()
         .map(|(name, path)| {
-            fs::read(path)
+            source
+                .read(Path::new(path))
                 .map(|data| (name.as_str(), data))
                 .map_err(|e| format!("failed to read payload file {path}: {e}"))
         })
