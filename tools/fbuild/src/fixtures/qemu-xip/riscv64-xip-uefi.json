@@ -47,7 +47,7 @@
       "fdt": "Platform",
       "firmware": {
         "file": "fw_dynamic.bin",
-        "kind": "OpenSbi",
+        "kind": "RiscvDynamicFirmware",
         "load_addr": 2148532224
       },
       "fit_config": null,

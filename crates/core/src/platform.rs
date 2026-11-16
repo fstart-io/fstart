@@ -83,9 +83,9 @@ impl core::fmt::Display for Platform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
 pub enum FirmwareKind {
-    /// OpenSBI or RustSBI using the fw_dynamic protocol.
+    /// RISC-V firmware using the fw_dynamic handoff protocol.
     /// Entry: a0=hartid, a1=dtb, a2=&fw_dynamic_info.
-    OpenSbi,
+    RiscvDynamicFirmware,
     /// ARM Trusted Firmware BL31.
     /// Entry: x0=&bl_params.
     ArmTrustedFirmware,
