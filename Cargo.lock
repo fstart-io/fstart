@@ -1214,6 +1214,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-tyan-s8040"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-driver-amd",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-pci",
+ "fstart-platform-amd",
+ "heapless 0.8.0",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-boot"
 version = "0.1.0"
 dependencies = [
