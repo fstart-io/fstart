@@ -12,6 +12,7 @@
 //! | 38 | MPIO |
 //! | 3a | USB |
 //! | 50 | MP |
+//! | 58 | SMM, the PSP's SMM info and EINJ |
 //! | 60 | PCI |
 //! | 70 | ACPI, SMBIOS |
 extern crate alloc;
@@ -69,6 +70,22 @@ pub struct State {
     /// The root port of every board port, MPIO's and the PSP's, by its
     /// first lane, and whether its link is up.
     lanes: Vec<(u8, PciAddress, bool), 32>,
+    /// IOS0's PSP BAR, below 4 GiB: the PSP answers there
+    /// ([`Init::init_fch`]).
+    psp_bar: u32,
+    /// The normal-mode PSP mailbox's one owner, from the PSP BAR on: its
+    /// commands use retained storage, and none follows a failed one.
+    psp: Option<psp::boot::Psp>,
+    /// The PSP's EINJ service, once SMM opened it.
+    einj: Option<Einj>,
+}
+
+/// The PSP's ACPI EINJ service: its RAS mailbox register and its command
+/// buffer ([`psp::einj`]).
+#[derive(Clone, Copy)]
+struct Einj {
+    mailbox: u64,
+    buffer: u64,
 }
 
 impl State {
@@ -243,6 +260,9 @@ impl<V: Variant> Init for Rs<V> {
             launch: Vec::new(),
             ports: Vec::new(),
             lanes: Vec::new(),
+            psp_bar: 0,
+            psp: None,
+            einj: None,
         };
 
         step::<V>(0x30, "NBIO");
@@ -299,6 +319,8 @@ impl<V: Variant> Init for Rs<V> {
         if c2p == u32::MAX {
             return Err("PSP BAR");
         }
+        state.psp_bar = u32::try_from(psp_bar).map_err(|_| "PSP BAR")?;
+        state.psp = Some(psp_session(state.psp_bar)?);
         // Every IOAPIC masked before a device can interrupt; the FCH's has
         // ID 0 and passes the 8259's interrupt through to the BSP.
         fstart_driver_amd::fch::acpimmio::enable_hpet_ioapic(fch.acpi());
@@ -481,14 +503,115 @@ impl<V: Variant> Init for Rs<V> {
     }
 
     /// Direct ACPI mode: the OS gets SCI_EN set and no SMI command port.
-    fn finalize(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
+    /// Then the PSP locks the DF ([`psp::boot::lock_df`]), which the
+    /// vendors send once PCI is enumerated (`AmdPspDxeV2Rs` `2588`/`2754`):
+    /// no DF write follows. It needs the SMM info, which `install_smm`
+    /// made sure of; a refusal halts.
+    fn finalize(ctx: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {
         songshan::acpi_mode(&ctx.hw.fch, &super::acpi::soc(V::PMBASE, false).ports);
+        let psp = state.psp.as_mut().ok_or("PSP")?;
+        psp::boot::lock_df(psp, &ctx.clock).map_err(|(what, error)| {
+            let (why, value) = error.parts();
+            fstart_log::error!("rs: PSP {}: {} {:#x}", what, why, value);
+            "PSP LockDFReg"
+        })?;
+        fstart_log::info!("rs: PSP locked the DF");
         Ok(())
     }
 
-    fn boot_done(_: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
+    /// The PSP's ReadyToBoot, BootDone last ([`psp::boot::ready_to_boot`]);
+    /// before it, what the PSP asked of SMM during the boot. The TPM's
+    /// establishment flag only for a TPM the firmware started: the Onyx's
+    /// PSP never completed it for a TPM nobody had (the vendors send it
+    /// when `0xFED4_0000` answers, which it did there). A refusal halts:
+    /// the OS must not get a PSP that still takes commands from outside
+    /// SMM.
+    fn boot_done(ctx: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {
+        let report = &raw const SMM_REPORT;
+        // SAFETY: firmware data, written only by the SMM handler on a PSP
+        // SMI; a torn read only garbles this line.
+        let answered = unsafe { report.read_volatile() };
+        fstart_log::info!(
+            "rs: PSP SMIs answered: {} (last P2C command {:#x}), report at {:#x}",
+            answered.p2c_requests,
+            answered.p2c_command,
+            report as u64
+        );
+        let psp = state.psp.as_mut().ok_or("PSP")?;
+        // SAFETY: the APs are parked and SMM is locked.
+        unsafe { psp::boot::ready_to_boot(psp, &ctx.clock, ctx.board.discrete_tpm) }.map_err(
+            |(what, error)| {
+                let (why, value) = error.parts();
+                fstart_log::error!("rs: PSP {}: {} {:#x}", what, why, value);
+                "PSP ReadyToBoot"
+            },
+        )?;
+        fstart_log::info!("rs: PSP boot done");
         Ok(())
     }
+}
+
+/// The PSP's EINJ service once SMM opened it: its command buffer, which
+/// must be the ABL's `ReservedRasEinj` hole, laid out as `ApeiEinjInstall`
+/// leaves it for the EINJ table (the trigger action table in place, the
+/// parameters cleared, the vendor types naming DF F0).
+fn einj<V: Variant>(ctx: &Ctx<'_, Rs<V>>, bar: u64) -> Result<Einj, &'static str> {
+    use fstart_driver_amd::apob::rs::HOLE_RAS_EINJ;
+    use psp::einj::{Buffer, ERROR_TYPES, MAILBOX_OFFSET, Mailbox};
+    let map =
+        sysmap::system_memory_map(ctx.memory.apob.ok_or("APOB")?).map_err(|_| "APOB memory map")?;
+    let hole = sysmap::memory_map(psp::Variant::Gn, map.top, map.holes())
+        .map_err(|_| "memory map")?
+        .into_iter()
+        .find(|r| r.kind == sysmap::RegionKind::Unknown(HOLE_RAS_EINJ))
+        .ok_or("no ReservedRasEinj hole")?;
+    // SAFETY: IOS0's PSP BAR, mapped by `init_fch`; the BSP is the only
+    // user of the RAS mailbox until the OS runs.
+    let mailbox = unsafe { Mailbox::mmio(bar) };
+    let base = mailbox
+        .buffer(&ctx.clock, &(hole.base..hole.end()))
+        .map_err(|_| "the PSP's EINJ buffer")?;
+    // SAFETY: the PSP's command buffer in the ABL's hole, identity mapped
+    // and reserved; the PSP serves no request before BEGIN.
+    let buffer = unsafe { Buffer::at(base) };
+    let trigger = fstart_acpi::einj::trigger(&[psp::einj::trigger(base)]);
+    let types = buffer.prepare(&trigger).map_err(|_| "EINJ trigger table")?;
+    if types.is_set(ERROR_TYPES::VENDOR) {
+        let df = fstart_pci::EcamDevice::new(0, 0x18, 0).read32(0);
+        buffer.describe_vendor_device(0x18, 0, df);
+    }
+    // The OS reads the buffer through an uncached mapping; the PSP reads
+    // DRAM.
+    // SAFETY: ring 0, caches on.
+    unsafe { fstart_arch::x86::writeback_invalidate_caches() };
+    fstart_log::info!(
+        "rs: PSP EINJ buffer {:#x}, error types {:#x}",
+        base,
+        types.get()
+    );
+    Ok(Einj {
+        mailbox: bar + MAILBOX_OFFSET,
+        buffer: base,
+    })
+}
+
+/// What the PSP's SMM handler reports ([`super::smm::Report`]), in the
+/// firmware's reserved DRAM.
+static mut SMM_REPORT: super::smm::Report = super::smm::Report::NONE;
+
+/// IOS0's PSP mailbox in normal mode at `bar`, its one owner. Once per
+/// boot: its storage is the session's.
+fn psp_session(bar: u32) -> Result<psp::boot::Psp, &'static str> {
+    static mut STORAGE: psp::Storage = psp::Storage::new();
+    // SAFETY: the BAR `init_fch` mapped, uncached in the identity map; the
+    // BSP is the mailbox's one normal-mode user.
+    let mailbox = psp::Mailbox::new(
+        unsafe { psp::MmioTransport::new(bar.into()) },
+        psp::Variant::Gn,
+    );
+    // SAFETY: firmware BSS, identity mapped and reserved until reset; this
+    // is its only reference (`init_fch` runs once).
+    psp::Session::new(mailbox, unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) }).map_err(|_| "PSP")
 }
 
 /// The SMU, through the FCH's IOS.
@@ -573,15 +696,59 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         })
     }
 
-    /// No SMM handler yet: TSEG stays reserved and unused, and the OS gets
-    /// ACPI directly ([`Init::finalize`]).
+    /// The PSP's SMM ([`super::smm`]) in TSEG on every thread, then SW
+    /// SMI D0: SmmInfo, which the boot needs, and, if the board publishes
+    /// EINJ, RasEinj ENABLE, which it does not.
+    /// The SMI command port is off again afterwards; only the PSP raises
+    /// SMIs, and the OS gets ACPI directly ([`Init::finalize`]).
     fn install_smm(
-        _: &Ctx<'_, Self>,
-        _: &mut State,
-        _: &MpHandle,
+        ctx: &Ctx<'_, Self>,
+        state: &mut State,
+        mp: &MpHandle,
         (): &(),
     ) -> Result<(), &'static str> {
-        fstart_log::warn!("rs: no SMM handler; the PSP's SMM services are unavailable");
+        use super::smm::{Config, Smi};
+        use fstart_driver_amd::fch::smi;
+        step::<V>(0x58, "SMM");
+        let psp_bar = state.psp_bar;
+        let report = &raw mut SMM_REPORT;
+        let fch = &ctx.hw.fch;
+        let smi = Smi {
+            fch,
+            config: Config {
+                ports: super::acpi::soc(V::PMBASE, false).ports,
+                psp_bar,
+                einj: ctx.config.einj,
+                report: report as u64,
+            },
+        };
+        crate::tseg::install(V::NAME, mp, &smi, ctx.memory.tseg, TSEG_SIZE)?;
+        smi::software_smi(fch.io(), crate::smm::sw::PSP_SMM_INFO);
+        smi::disable_command(fch.acpi());
+        // SAFETY: firmware data the handler wrote during the SMI just taken.
+        let report = unsafe { report.read_volatile() };
+        // The PSP's locks and BootDone need the SMM info: without it the
+        // DF lock breaks DMA, and the payload must not get an unlocked DF.
+        match report.smm_info {
+            0 => fstart_log::info!("rs: PSP SmmInfo status 0"),
+            status => {
+                fstart_log::error!("rs: PSP SmmInfo status {:#x}", status);
+                return Err("PSP SmmInfo");
+            }
+        }
+        // EINJ is optional: without it the boot goes on, without the table.
+        if !ctx.config.einj {
+            return Ok(());
+        }
+        match report.einj {
+            0 => {
+                fstart_log::info!("rs: PSP RasEinj ENABLE status 0");
+                state.einj = einj(ctx, psp_bar.into())
+                    .inspect_err(|what| fstart_log::error!("rs: no EINJ: {}", what))
+                    .ok();
+            }
+            status => fstart_log::error!("rs: PSP RasEinj ENABLE status {:#x}", status),
+        }
         Ok(())
     }
 
@@ -594,6 +761,14 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         board: crate::acpi::Board,
     ) -> Tables {
         step::<V>(0x70, "ACPI, SMBIOS");
+        if let Some(einj) = silicon.state.einj {
+            silicon.tables.push(fstart_acpi::einj::table(
+                fstart_acpi::OEM_ID,
+                fstart_acpi::OEM_TABLE_ID,
+                fstart_acpi::OEM_REVISION,
+                &psp::einj::entries(einj.mailbox, einj.buffer),
+            ));
+        }
         let soc = super::acpi::soc(V::PMBASE, ctx.config.legacy_devices);
         let rsdp = super::tables::acpi::<V>(ctx, silicon, pci, &soc, &board);
         let smbios = super::tables::smbios::<V>(ctx, silicon, pci, identity);

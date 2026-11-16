@@ -310,6 +310,23 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
     init(acpi);
 }
 
+/// The SMI command port and the PSP's SMI ([`route_psp`]) only, for a
+/// handler that serves the PSP while the OS owns ACPI: SLP_TYP, the power
+/// button and the GEVENTs stay with it. Then SMIs on.
+pub fn enable_psp<W: Window>(acpi: &W) {
+    acpi.at(PM_ACPI_SMI_CMD).set(APM_CNT);
+    set_route(acpi, source::SMI_CMD, Route::Smi);
+    route_psp(acpi);
+    clear_all(acpi);
+    init(acpi);
+}
+
+/// No SMI for the SMI command port any more (after [`enable_psp`]'s
+/// handler took its software SMIs).
+pub fn disable_command<W: Window>(acpi: &W) {
+    set_route(acpi, source::SMI_CMD, Route::Disabled);
+}
+
 /// The sources of one SMI, read once at its start: the status registers
 /// the SMI pointer names. An SCI status is cleared at once.
 pub struct Pending {
@@ -500,6 +517,21 @@ mod model_tests {
         assert_eq!(acpi.get(0x284, 4), 0x12);
         assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1000_0000);
         assert_eq!(acpi.get(0x2a8, 4), 0xf7);
+    }
+
+    #[test]
+    fn a_psp_only_handler_gets_the_command_port_and_the_psp() {
+        let acpi = Mem::default();
+        acpi.put(TRIGGER0.offset, 4, 0x8000_0000);
+        enable_psp(&acpi);
+        assert_eq!(acpi.get(PM_ACPI_SMI_CMD.offset, 2), u32::from(APM_CNT));
+        // SMI_CMD (SmiStat2[11]) and the PSP (SmiStat1[1]) to SMI only.
+        assert_eq!(acpi.get(0x2b0, 4), 0x0040_0000);
+        assert_eq!(acpi.get(0x2ac, 4), 0);
+        assert_eq!(acpi.get(0x2a8, 4), 0x4);
+        assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1000_0000);
+        disable_command(&acpi);
+        assert_eq!(acpi.get(0x2b0, 4), 0);
     }
 
     #[test]

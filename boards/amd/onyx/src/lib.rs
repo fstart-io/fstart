@@ -97,6 +97,8 @@ pub fn config() -> Config {
         memory_channels: 0xfff,
         // The 9004 reporting ceiling: a 256 GiB RDIMM per slot.
         max_dimm_mib: 256 * 1024,
+        // The PSP's EINJ, for RAS validation on this development board.
+        einj: true,
     }
 }
 

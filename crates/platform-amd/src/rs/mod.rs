@@ -25,6 +25,7 @@ pub mod links;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod mpio;
 pub mod numa;
+pub mod smm;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod tables;
 #[cfg(all(feature = "bundle", target_os = "none"))]
@@ -123,4 +124,8 @@ pub struct Config {
     pub memory_channels: u16,
     /// The largest DIMM a slot takes, MiB.
     pub max_dimm_mib: u32,
+    /// Publish the PSP's ACPI EINJ ([`smm`]): an OS can inject correctable
+    /// and uncorrectable memory, PCIe and CXL errors anywhere, which the
+    /// PSP alone validates. A test interface, off in the vendors' setup.
+    pub einj: bool,
 }

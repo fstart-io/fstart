@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The FCH's SMI handling. The flow hands the OS ACPI directly and
-//! installs no handler yet; this is the image the SMM unit builds.
+//! SMM for the PSP: its SMM info, its P2C requests and its EINJ service
+//! (`fstart_platform_amd::rs::smm`).
 
-fstart_platform_amd::smm::smm_bin!(handler: fstart_platform_amd::smm::handle);
+fstart_platform_amd::smm::smm_bin!(handler: fstart_platform_amd::rs::smm::handle);

@@ -23,7 +23,7 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 | `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp`; `rs` (MPIO: `ask`, `mailbox`, `session`, `ports`) |
 | `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
 | `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
-| `psp`, `apob` | mailbox and commands, the APOB | `apob::rs` (the RS records that differ from Milan's) |
+| `psp`, `apob` | C2P mailbox and commands, the P2C mailbox an SMM handler answers (`p2c`), the APOB | `psp::ras` (Rome's RAS-EINJ commands), `psp::einj` (the RS PSP's own EINJ service), `apob::rs` (the RS records that differ from Milan's) |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a
 sequence depends on the die; everything a SoC decides is an argument or a
@@ -62,7 +62,8 @@ routes the DF's VGA window to its root bridge, `Init::route_legacy_vga`,
 and a video ROM is posted on it), SMM installation (`tseg`) and its
 handler (`smm`: one SMRAM configuration and installer, the handler on the
 driver's SMI dispatcher, which a SoC with SMM work of its own extends, as
-`sp3::smm` does), options (`options`), measured boot (`tpm`), the ACPI
+`sp3::smm` and `rs::smm` do, and what the PSP needs of SMM for the SoCs
+that register with it, `smm::psp`), options (`options`), measured boot (`tpm`), the ACPI
 tables (`acpi::install`, from what the SoC gathers) and the SMBIOS
 builder, and the host build plan (`host`, with the image kinds
 `host::single` and `host::dual`).

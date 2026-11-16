@@ -7,7 +7,8 @@
 //! A SoC with SMM work of its own adds it as its part of the configuration
 //! and a handler around the same dispatcher (SP3: the PSP's SMM info and
 //! mailbox, EINJ, RAS, Rome's CF9 trap and Milan's FCH lock, in
-//! [`crate::sp3::smm`]); Picasso and Zeppelin have none ([`handle`]). What
+//! [`crate::sp3::smm`]; RS: the PSP's SMM info, mailbox and EINJ, in
+//! [`crate::rs::smm`]); Picasso and Zeppelin have none ([`handle`]). What
 //! the PSP needs of SMM is the same for every SoC that registers with it
 //! (`psp`). The board binds the handler in its `smm.rs` with
 //! [`smm_bin!`], and adds its own sources there ([`handle_with`]).

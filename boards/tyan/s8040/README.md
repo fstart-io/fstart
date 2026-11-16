@@ -2,7 +2,8 @@
 
 AMD SP6, one socket, EPYC 8004 (Siena), six DDR5 channels of two slots,
 AST2600 BMC on eSPI. Status: boots to the payload on all 128 threads of a
-64-core part, with native ACPI (NUMA, IOMMU, the NBIO IOAPICs) and SMBIOS.
+64-core part, with native ACPI (NUMA, IOMMU, the NBIO IOAPICs) and SMBIOS,
+and SMM for the PSP with its ACPI EINJ (`fstart_platform_amd::rs::smm`).
 
 ```sh
 cargo fbuild build --board tyan-s8040 --release

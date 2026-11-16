@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The PSP's side of SMM, for every SoC whose handler registers with it
-//! (SP3: [`crate::sp3::smm`]): the P2C buffer and the C2P page in the
-//! handler's SMRAM, SmmInfo with them, the SMM-flagged C2P commands and
-//! the answer to the PSP's SMI.
+//! (SP3: [`crate::sp3::smm`], RS: [`crate::rs::smm`]): the P2C buffer and
+//! the C2P page in the handler's SMRAM, SmmInfo with them, the SMM-flagged
+//! C2P commands and the answer to the PSP's SMI.
 //!
 //! AGESA sends SmmInfo from its SMM driver's entry (AmdPspSmmV2Ssp,
 //! AmdPspSmmV2Rs); sending it from the handler, on

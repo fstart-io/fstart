@@ -1,4 +1,5 @@
-//! Rome PSP RAS-EINJ (C2P 22h), including socket selection.
+//! Rome PSP RAS-EINJ (C2P 22h), including socket selection. The RS PSP
+//! serves ACPI EINJ itself ([`super::einj`]).
 //!
 //! S8030 V4.04 AmdPlatformRasSspSmm f8356c42-4ba6-706f-59e9-a9b1aff2bcd8:
 //! 6e90 message, 1d54 memory setup. S8253 V2.03 (2P), same GUID:

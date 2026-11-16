@@ -98,6 +98,8 @@ pub fn config() -> Config {
         memory_channels: 1 << 1 | 1 << 3 | 1 << 4 | 1 << 7 | 1 << 9 | 1 << 10,
         // The vendor's type 16: 6 TB over twelve slots.
         max_dimm_mib: 512 * 1024,
+        // The PSP's EINJ, for RAS validation on this development board.
+        einj: true,
     }
 }
 
