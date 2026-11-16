@@ -19,15 +19,15 @@ fn main() -> ! {
     let mut legacy_pin = rs
         .southbridge()
         .gpio()
-        .pin(fstart_driver_lenovo::t6::dock::LEGACY_MODULE_GPIO);
+        .pin(fstart_board_lenovo_t60::dock::LEGACY_MODULE_GPIO);
     let mut bdc = rs
         .southbridge()
         .gpio()
-        .pin(fstart_driver_lenovo::t6::BDC_PRESENCE_GPIO);
+        .pin(fstart_board_lenovo_t60::BDC_PRESENCE_GPIO);
     let console_failed = mainboard::setup_console(&mut legacy_pin);
     let rs = rs.console(&CONSOLE, mainboard::console()).memory_map();
     let resources: alloc::vec::Vec<_> =
-        fstart_driver_lenovo::t6::firmware_resources(&T6_H8).collect();
+        fstart_board_lenovo_t60::dock::firmware_resources(&T6_H8).collect();
     let mut rs = rs.scan_bus(&resources);
     if rs.is_resume() {
         rs.fail("S3 resume");
@@ -52,6 +52,7 @@ fn main() -> ! {
             &identity.smbios(),
             &mainboard::Acpi {
                 native_brightness: devices.native_brightness,
+                bluetooth: devices.bluetooth,
             },
         ),
         Path::Resume(rs) => rs.keep_tables(),

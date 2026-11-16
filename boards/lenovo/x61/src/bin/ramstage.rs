@@ -28,10 +28,11 @@ fn main() -> ! {
     let resume = rs.is_resume();
     let mut ec = fstart_driver_lenovo::options::Options::DEFAULT;
     rs.resolve_options(&mainboard::EC_KNOBS, &mut ec, |_| Ok(()));
-    let identity = mainboard::init_devices(&mut pins.bluetooth_card, rs.smbus(), &ec, resume);
+    let (identity, acpi) =
+        mainboard::init_devices(&mut pins.bluetooth_card, rs.smbus(), &ec, resume);
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {
-        Path::Cold(rs) => rs.emit_tables(&identity.smbios(), &mainboard::Acpi),
+        Path::Cold(rs) => rs.emit_tables(&identity.smbios(), &acpi),
         Path::Resume(rs) => rs.keep_tables(),
     };
     // SMM is installed: hand the EC's events to SMM or the OS.

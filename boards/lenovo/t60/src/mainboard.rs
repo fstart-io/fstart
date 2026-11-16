@@ -1,4 +1,4 @@
-//! T6 board work. Reusable drivers own register encodings; the family owns
+//! T6 board work. Reusable drivers own register encodings; the board owns
 //! dock/EC sequencing. No S3, ATI initialization/brightness, TI CardBus vendor
 //! setup, IR, parallel-port or thermal-safety support is claimed.
 
@@ -17,7 +17,7 @@ pub const fn console() -> Ns16550Config {
 }
 
 pub fn setup_console(legacy_module: &mut impl InputPin) -> bool {
-    fstart_driver_lenovo::t6::dock::setup_console(legacy_module, &crate::T6_H8).is_err()
+    crate::dock::setup_console(legacy_module, &crate::T6_H8).is_err()
 }
 
 fn os_ec() -> fstart_driver_lenovo::ec::Ec {
@@ -27,6 +27,8 @@ fn os_ec() -> fstart_driver_lenovo::ec::Ec {
 pub struct Devices {
     pub ide_primary: Option<bool>,
     pub native_brightness: bool,
+    /// The Bluetooth card is fitted.
+    pub bluetooth: bool,
 }
 /// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
 /// them.
@@ -52,11 +54,12 @@ pub fn init_ec_and_bay(
     console_failed: bool,
     ec: &fstart_driver_lenovo::options::Options,
 ) -> Result<Devices, ServiceError> {
-    use fstart_driver_lenovo::{
-        h8::H8,
-        t6::{self, dock},
-    };
-    if !t6::ec_init(crate::MODEL, bdc, &crate::T6_H8, ec, false) {
+    use crate::dock;
+    use fstart_driver_lenovo::{h8::H8, pmh7::Pmh7};
+    let bluetooth = crate::T6_H8.bdc_installed(bdc);
+    Pmh7::new(crate::T6_H8.resources.pmh7_base.raw()).enable(&crate::T6_PMH7, ec);
+    // No S3: always a cold EC configuration.
+    if !H8::new(os_ec()).enable(&crate::T6_H8, bluetooth, ec, false) {
         fstart_log::error!("T6: EC/thermal initialization incomplete");
     }
     let legacy = dock::legacy_io_present(legacy_module)?;
@@ -80,6 +83,7 @@ pub fn init_ec_and_bay(
     Ok(Devices {
         ide_primary,
         native_brightness,
+        bluetooth,
     })
 }
 
@@ -107,4 +111,6 @@ pub fn handoff_ec_events() {
 
 pub struct Acpi {
     pub native_brightness: bool,
+    /// The Bluetooth card is fitted.
+    pub bluetooth: bool,
 }

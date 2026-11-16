@@ -21,6 +21,13 @@ pub fn is_tablet(part_number: &str) -> bool {
         .any(|machine| part_number.get(..4) == Some(*machine))
 }
 
+/// coreboot `drivers_lenovo_is_wacom_present()`: the digitizer's PC87382 at
+/// the board's config port answers and the machine type is a tablet.
+#[must_use]
+pub fn is_present(pc87382_base: u16, part_number: Option<&str>) -> bool {
+    fstart_driver_superio::pc87382::sid(pc87382_base) != 0xff && part_number.is_some_and(is_tablet)
+}
+
 /// `DTR_` digitizer at I/O 0x200, IRQ 5, for the board's LPC scope.
 #[cfg(feature = "acpi")]
 #[must_use]

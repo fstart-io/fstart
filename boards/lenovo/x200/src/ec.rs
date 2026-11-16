@@ -5,16 +5,8 @@
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
 
 use fstart_driver_lenovo::ec::Ec;
-use fstart_driver_lenovo::h8::{self, H8, H8Config};
+use fstart_driver_lenovo::h8::{self, H8};
 use fstart_driver_lenovo::pmh7::Pmh7;
-
-/// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
-const EVENT_MASKS: [u8; 16] = [
-    0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
-];
-
-/// devicetree `config1`; X60/X61 use 0x05.
-const CONFIG1: u8 = 0x04;
 
 /// ICH GPIO reading low when the Bluetooth daughter card is fitted
 /// (devicetree `bdc_gpio_num`/`bdc_gpio_lvl`).
@@ -53,28 +45,23 @@ pub const PC87382_DEVICES: &[fstart_driver_superio::pc87382::PnpDevice] = {
     ]
 };
 
-/// Runtime EC/PMH7 bring-up (coreboot `h8_enable()` and the PMH7
-/// `enable_dev()`), then `h8_mb_init()`: connect a present dock. Returns
-/// whether the Bluetooth card is fitted and every EC write was
-/// acknowledged.
+/// Runtime EC/PMH7 bring-up with the devicetree's registers (coreboot
+/// `h8_enable()` and the PMH7 `enable_dev()`), then `h8_mb_init()`: connect
+/// a present dock. Returns whether the Bluetooth card is fitted and every
+/// EC write was acknowledged.
 pub fn init(
     bdc_presence: &mut impl InputPin,
     dock_id: &mut [impl InputPin; 3],
     dock_connect: &mut impl OutputPin,
-    h8_config: &H8Config,
     options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (bool, bool) {
-    let bluetooth = bdc_presence.is_low().unwrap_or(false);
-    let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
-    pmh7.backlight_enable(true);
-    pmh7.dock_event_enable(true);
-    pmh7.trackpoint_enable(options.trackpoint);
-    pmh7.touchpad_enable(options.touchpad);
+    let h8_config = &crate::config::X200_H8;
+    let bluetooth = h8_config.bdc_installed(bdc_presence);
+    Pmh7::new(h8_config.resources.pmh7_base.raw()).enable(&crate::config::X200_PMH7, options);
 
     let ec = Ec::new(h8_config.resources.os);
-    let h8 = H8::new(ec);
-    let initialized = h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, true, options, resume);
+    let initialized = H8::new(ec).enable(h8_config, bluetooth, options, resume);
     let docked = dock_present(dock_id);
     // `dock_connect()`: dock USB power in the EC, then the connect GPIO.
     let dock = !docked
@@ -96,12 +83,10 @@ pub fn dock_present(id: &mut [impl InputPin; 3]) -> bool {
 }
 
 /// The X200t digitizer: program the PC87382 like the overridetree and
-/// report a tablet (coreboot `drivers/lenovo/wacom.c`): a responding
-/// SuperIO and a tablet machine type.
+/// report a tablet ([`fstart_driver_lenovo::wacom::is_present`]).
 pub fn digitizer_init(part_number: Option<&str>) -> bool {
     fstart_driver_superio::pc87382::configure(PC87382_BASE, PC87382_DEVICES);
-    fstart_driver_superio::pc87382::sid(PC87382_BASE) != 0xff
-        && part_number.is_some_and(fstart_driver_lenovo::wacom::is_tablet)
+    fstart_driver_lenovo::wacom::is_present(PC87382_BASE, part_number)
 }
 
 #[cfg(test)]

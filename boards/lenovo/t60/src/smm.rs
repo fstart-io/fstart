@@ -1,9 +1,10 @@
 //! T6 EC ownership and dock TCO mailbox. ATI/legacy brightness is unsupported.
+use crate::dock;
 use fstart_driver_intel::southbridge::{
     gpio_ich::IchGpio,
     smi::{APM_CNT_ACPI_DISABLE, APM_CNT_ACPI_ENABLE, ICH7_GPE0, IchSmi, IchSmmConfig, PendingSmi},
 };
-use fstart_driver_lenovo::{ec::Ec, t6::dock};
+use fstart_driver_lenovo::ec::Ec;
 use fstart_platform_intel::smm::SmmContext;
 fn smi() -> IchSmi {
     IchSmi::new(fstart_platform_intel::i945::ICH7_PMBASE as u16, ICH7_GPE0)
@@ -17,7 +18,7 @@ fn ec_channel() -> Ec {
 }
 fn dock_command(command: u8) -> Option<u8> {
     let legacy = !IchGpio::new(fstart_driver_intel::ich7::DEFAULT_GPIOBASE as u16)
-        .get(dock::LEGACY_MODULE_GPIO as u8);
+        .get(dock::LEGACY_MODULE_GPIO);
     dock::smm_dock_command(ec_channel(), command, legacy)
 }
 fn handle_event() {
@@ -25,10 +26,10 @@ fn handle_event() {
     if smi().acpi_enabled() {
         return;
     }
-    if let Some(event) = Ec::new(crate::T6_H8.resources.os).query_event() {
-        if let Some(command) = dock::smm_event_command(event) {
-            let _ = dock_command(command);
-        }
+    if let Some(event) = Ec::new(crate::T6_H8.resources.os).query_event()
+        && let Some(command) = dock::smm_event_command(event)
+    {
+        let _ = dock_command(command);
     }
 }
 /// Route the EC's SCI GPI to SMI or SCI as the OS takes or gives up ACPI.

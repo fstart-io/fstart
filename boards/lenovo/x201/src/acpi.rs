@@ -6,7 +6,9 @@ use crate::mainboard::{Acpi, Identity};
 use alloc::vec::Vec;
 use fstart_acpi::PcNamespace;
 use fstart_acpi::devices::tpm::{TpmFamily, TpmTisAcpi};
-use fstart_driver_lenovo::x201;
+use fstart_acpi_macros::acpi_dsl;
+use fstart_driver_lenovo::h8::H8Config;
+use fstart_driver_lenovo::h8_acpi::{self, ec};
 use fstart_driver_tpm::Family;
 use fstart_platform_intel::ironlake::IronlakeIbexPeak;
 
@@ -55,11 +57,11 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
 
 /// Assemble the X201 DSDT.
 pub fn x201_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> Vec<u8> {
-    let h8 = fstart_driver_lenovo::h8::H8Config {
+    let h8 = H8Config {
         has_bluetooth: bluetooth,
         ..crate::config::X201_H8
     };
-    let mut aml = x201::acpi::dsdt_aml::<IronlakeIbexPeak>(
+    let mut aml = dsdt_aml::<IronlakeIbexPeak>(
         &h8,
         fstart_platform_intel::ironlake::IBEXPEAK_GPIOBASE,
         digitizer,
@@ -74,6 +76,104 @@ pub fn x201_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> Vec<u8> {
         )
         .expect("X201 PS/2 emission"),
     );
+    aml
+}
+
+/// Board DSDT (coreboot x201 `dsdt.asl`, `acpi/*.asl`): the H8 surface with
+/// hotkey brightness through the IGD and the ThinkLight, the sleep hooks,
+/// the EC wake GPE, the Mini Dock and the X201T digitizer. The IGD provides
+/// `INCB`/`DECB` and the processor AML `\CNOT`; `gpio_base` is the PCH
+/// GPIOBASE.
+#[must_use]
+pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) -> Vec<u8> {
+    let mut aml = h8_acpi::dsdt_aml_with_brightness::<N>(h8, &h8_acpi::igd_brightness::<N>());
+    aml.extend(h8_acpi::thinklight::<N>());
+    aml.extend_from_slice(&acpi_dsl! {
+        Scope("\\") {
+            // acpi/platform.asl.
+            Method("_PTS", 1, NotSerialized) {
+                #{const path 5 ec::<N>().child("MUTE")}(1u32);
+                #{const path 5 ec::<N>().child("USBP")}(0u32);
+                #{const path 5 ec::<N>().child("RADI")}(0u32);
+            }
+            Method("_WAK", 1, NotSerialized) {
+                #{const path 6 ec::<N>().child("HKEY").child("WAKE")}(Arg0);
+                Return(Package(0u32, 0u32));
+            }
+        }
+        // acpi/gpe.asl: the EC wake.
+        Scope("\\_GPE") {
+            Method("_L18", 0, NotSerialized) {
+                Local0 = #{const path 5 ec::<N>().child("WAKE")};
+            }
+        }
+    });
+    aml.extend(dock_aml::<N>(gpio_base));
+    if digitizer {
+        aml.extend(
+            fstart_acpi::aml_linker::scope_vec(
+                N::LPC.as_str(),
+                &fstart_driver_lenovo::wacom::digitizer_aml(),
+            )
+            .expect("X201 digitizer emission"),
+        );
+    }
+    aml
+}
+
+/// coreboot x201 `acpi/dock.asl`: the dock follows EC `DKR1` and switches
+/// all three EC dock links with the GPIO28 connect line. Only that GPIO
+/// level bit is declared (GPIOBASE + 0x0c, pch.asl's `\GP28`).
+fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
+    let gpio_level = u32::from(gpio_base) + 0x0c;
+    let mut aml: Vec<u8> = acpi_dsl! {
+        Scope("\\") {
+            OperationRegion("GPLV", SystemIO, #{dword gpio_level}, 0x04u32);
+            Field("GPLV", ByteAcc, NoLock, Preserve) {
+                , 28,
+                GP28, 1,
+            }
+        }
+    }
+    .into();
+    aml.extend_from_slice(&acpi_dsl! {
+        Scope(#{const path 4 ec::<N>()}) {
+            Method("DKSE", 1, NotSerialized) {
+                DKR1 = Arg0;
+                DKR2 = Arg0;
+                DKR3 = Arg0;
+            }
+        }
+    });
+    aml.extend_from_slice(&acpi_dsl! {
+        Scope(#{const "\\_SB_"}) {
+            Device("DOCK") {
+                Name("_HID", "ACPI0003");
+                Name("_UID", 0u32);
+                Name("_PCL", Package(#{const "\\_SB_"}));
+                Method("_DCK", 1, NotSerialized) {
+                    GP28 = Arg0;
+                    #{const path 5 ec::<N>().child("DKSE")}(Arg0);
+                    Local1 = #{const path 5 ec::<N>().child("DKR1")};
+                    Local0 = Arg0 ^ Local1;
+                    Return(Local0);
+                }
+                Method("_STA", 0, NotSerialized) {
+                    Local0 = #{const path 5 ec::<N>().child("DKR1")};
+                    Return(Local0);
+                }
+            }
+        }
+    });
+    aml.extend_from_slice(&acpi_dsl! {
+        Scope(#{const path 4 ec::<N>()}) {
+            Method("_Q18", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
+            Method("_Q45", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
+            Method("_Q50", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
+            Method("_Q58", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
+            Method("_Q37", 0, NotSerialized) { Notify(#{const "\\_SB_.DOCK"}, 0u32); }
+        }
+    });
     aml
 }
 
@@ -171,5 +271,19 @@ mod tests {
         fs::rename(dir.join("dsdt.aml"), dir.join("original.aml")).unwrap();
         iasl(&dir, &["-oa", "-tc", "dsdt.dsl"]);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dock_and_glue_are_emitted() {
+        let aml = dsdt_aml::<IronlakeIbexPeak>(
+            &crate::config::X201_H8,
+            fstart_platform_intel::ironlake::IBEXPEAK_GPIOBASE,
+            false,
+        );
+        let count = |name: &[u8]| aml.windows(name.len()).filter(|w| *w == name).count();
+        assert_eq!(count(b"_DCK"), 1);
+        assert_eq!(count(b"_Q37"), 1);
+        assert_eq!(count(b"UCMS"), 1);
+        assert_eq!(count(b"DTR_"), 0);
     }
 }

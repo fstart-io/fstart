@@ -118,6 +118,9 @@ cargo test -p fstart-driver-lenovo --features fstart-arch/x86_64,acpi
 ```
 
 The board crate's own tests (GPIO, HDA and flash facts against coreboot, the
-clock generator and an `iasl` DSDT round trip) run from the workspace fbuild
-generates: `cd target/fstart-workspaces/lenovo-x201 && cargo test -p
-fstart-board-lenovo-x201 --lib`.
+clock generator, the EC/dock policy in `src/ec.rs` and an `iasl` DSDT round
+trip) run per board, the way CI runs them:
+
+```sh
+cargo fbuild test-library --board lenovo-x201
+```

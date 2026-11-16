@@ -1,28 +1,33 @@
-//! ThinkPad X61 mainboard policy for the X6 UltraBase dock.
+//! ThinkPad X6 UltraBase, the dock of the X60 and X61.
 //!
 //! The laptop side carries an NSC PC87382 "DLPC" LPC switch (config ports
 //! 0x164e/0x164f) with its GPIO block at 0x1680; the dock carries a PC87392
 //! SuperIO on the switched LPC segment (0x2e/0x2f) with the dock UART, the
-//! parallel port and the dock GPIO block at 0x1620. ICH GPIO13 reads low with
-//! a dock attached on both boards.
+//! parallel port and the dock GPIO block at 0x1620. The dock signals its
+//! presence on `SLICE_ON_3M#`, active low; which GPIO carries it is the
+//! board's.
+//!
+//! The X60 carries the same code for the same dock.
 //!
 //! Ported from coreboot `mainboard/lenovo/x61/dock.c`, which keeps the vendor
 //! reset/power order and preserves unrelated DLPC and dock GPIO bits. The
 //! older X60 port wrote whole bytes and disconnected the LPC segment before
 //! asserting the dock reset; this board retains the vendor sequence.
+//!
+//! The OS docks and undocks through the dock's ACPI device (`acpi.rs`),
+//! whose `_DCK` asks the board's SMI handler through the ICH TCO mailbox;
+//! the handler answers with [`smm_dock_command`].
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use fstart_core::pio::{PioRegister, inb, outb};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_core::services::device::BusDevice;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_driver_superio::{
     ComPortConfig, ParallelConfig, SuperIoConfig,
     pc87382::{self, Pc87382},
-    pc87392::{self, Pc87392},
+    pc87392::{self, Gpio, Pc87392},
 };
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use tock_registers::interfaces::{ReadWriteable, Readable};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use fstart_driver_lenovo::ec::Ec;
 use fstart_driver_lenovo::h8::{H8, H8DockEvent, H8Led, H8LedMode};
@@ -31,12 +36,8 @@ use fstart_driver_lenovo::h8::{H8, H8DockEvent, H8Led, H8LedMode};
 pub const SMI_DOCK_CONNECT: u8 = 0x01;
 pub const SMI_DOCK_DISCONNECT: u8 = 0x02;
 
-/// ICH GPIO sampling dock presence (`SLICE_ON_3M#`, active low). The X60
-/// and X61 wire it the same; boards hand [`dock_present`] that pin.
-pub const DOCK_PRESENT_GPIO: u8 = 13;
-
 const DLPC_INDEX: u16 = 0x164e;
-const DLPC_SWITCH: u16 = 0x164c;
+pub const DLPC_SWITCH: u16 = 0x164c;
 const DLPC_GPIO: u16 = 0x1680;
 const DOCK_INDEX: u16 = 0x002e;
 const DOCK_GPIO_BASE: u16 = 0x1620;
@@ -44,26 +45,44 @@ const DOCK_GPIO_BASE: u16 = 0x1620;
 // These names describe the X6 wiring, not a universal PC87382/PC87392 pin map.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 tock_registers::register_bitfields![u8,
-    /// Laptop GPIO offset 0x00 (8-bit): X6 dock reset and power outputs.
+    /// Laptop GPIO port 0 data out, +0x00 (8-bit): dock reset and power.
     DLPC_OUTPUT [
         D_PLTRST_N OFFSET(0) NUMBITS(1) [],
         DLPC_POWER_ENABLE OFFSET(1) NUMBITS(1) []
     ],
-    /// Dock GPIO offset 0x01 (8-bit): X6 UltraBay population input.
+    /// Dock GPIO port 0 data in, +0x01 (8-bit): UltraBay population.
     DOCK_INPUT [ULTRABAY_ABSENT OFFSET(1) NUMBITS(1) []],
-    /// Dock GPIO offset 0x08 (8-bit): X6 UltraBay and USB power outputs.
+    /// Dock GPIO port 0 event enable, +0x02 (8-bit): GP01 and GP07, whose
+    /// events assert SMI.
+    DOCK_EVENTS [
+        GP01 OFFSET(1) NUMBITS(1) [],
+        GP07 OFFSET(7) NUMBITS(1) []
+    ],
+    /// Dock GPIO port 1 data out, +0x04 (8-bit).
+    DOCK_OUTPUT [GP16 OFFSET(6) NUMBITS(1) []],
+    /// Dock GPIO port 2 data out, +0x08 (8-bit): UltraBay and USB power.
     DOCK_POWER [
         ULTRABAY_ENABLE OFFSET(0) NUMBITS(1) [],
         USB_ENABLE OFFSET(1) NUMBITS(1) []
     ]
 ];
 
+/// The laptop PC87382's GPIO port 0 data out.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const DLPC_OUTPUT: PioRegister<u8, DLPC_OUTPUT::Register> = PioRegister::new(DLPC_GPIO);
+fn dlpc_output(
+    dlpc: &Pc87382,
+) -> Result<impl ReadWriteable<T = u8, R = DLPC_OUTPUT::Register>, Timeout> {
+    Ok(dlpc
+        .gpio_port0(DLPC_GPIO)
+        .map_err(|_| Timeout)?
+        .register::<DLPC_OUTPUT::Register>())
+}
+
+/// The dock PC87392's active GPIO block.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const DOCK_INPUT: PioRegister<u8, DOCK_INPUT::Register> = PioRegister::new(DOCK_GPIO_BASE + 1);
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const DOCK_POWER: PioRegister<u8, DOCK_POWER::Register> = PioRegister::new(DOCK_GPIO_BASE + 8);
+fn dock_gpio() -> Result<Gpio, Timeout> {
+    dock(false)?.gpio(DOCK_GPIO_BASE).map_err(|_| Timeout)
+}
 
 /// Assert dock reset and remove laptop-side DLPC power, preserving siblings.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -137,8 +156,8 @@ pub fn dlpc_init() -> Result<(), Timeout> {
     Ok(())
 }
 
-/// Return whether an X6 UltraBase dock is attached, from the active-low
-/// [`DOCK_PRESENT_GPIO`] pin. A pin that cannot be read means no dock.
+/// Return whether an X6 UltraBase dock is attached, from the board's
+/// `SLICE_ON_3M#` pin. A pin that cannot be read means no dock.
 pub fn dock_present(pin: &mut impl embedded_hal::digital::InputPin) -> bool {
     pin.is_low().unwrap_or(false)
 }
@@ -160,19 +179,20 @@ pub fn connected() -> bool {
 /// Connect the dock-side LPC bus and initialize dock GPIO, power and LDNs.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn connect(ec: Ec) -> Result<(), Timeout> {
+    let dlpc = laptop()?;
+    let output = dlpc_output(&dlpc)?;
     // Start from the vendor state: dock reset asserted and DLPC powered down,
     // preserving unrelated DLPC GPIO outputs. The dock UART sits behind this
     // switch, so marginal sequencing shows up later as serial corruption.
-    reset_dlpc(&DLPC_OUTPUT);
+    reset_dlpc(&output);
 
-    laptop()?
-        .connect_dlpc(DLPC_SWITCH, 1000, fstart_arch::udelay)
+    dlpc.connect_dlpc(DLPC_SWITCH, 1000, fstart_arch::udelay)
         .map_err(|_| Timeout)?;
 
     // Power up DLPC while keeping D_PLTRST# asserted, then deassert it.
-    DLPC_OUTPUT.modify(DLPC_OUTPUT::D_PLTRST_N::CLEAR + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
+    output.modify(DLPC_OUTPUT::D_PLTRST_N::CLEAR + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
     delay_ms(100);
-    DLPC_OUTPUT.modify(DLPC_OUTPUT::D_PLTRST_N::SET + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
+    output.modify(DLPC_OUTPUT::D_PLTRST_N::SET + DLPC_OUTPUT::DLPC_POWER_ENABLE::SET);
     delay_ms(100);
 
     use pc87392::{GpioMode::*, GpioPinConfig};
@@ -223,17 +243,19 @@ pub fn connect(ec: Ec) -> Result<(), Timeout> {
         (35, OutputPullUp, false),
     ]
     .map(|(pin, mode, smi)| GpioPinConfig { pin, mode, smi });
-    dock.enable_gpio(DOCK_GPIO_BASE, &pins)
+    let gpio = dock
+        .enable_gpio(DOCK_GPIO_BASE, &pins)
         .map_err(|_| Timeout)?;
 
-    set_ultrabay_power(&DOCK_POWER, ultrabay_present());
-    // SAFETY: the dock GPIO block is configured at 0x1620.
-    unsafe {
-        outb(DOCK_GPIO_BASE + 0x03, 0x00);
-        outb(DOCK_GPIO_BASE + 0x02, 0x82);
-        outb(DOCK_GPIO_BASE + 0x04, inb(DOCK_GPIO_BASE + 0x04) | 0x40);
-    }
-    if !set_usb_power(ec, true) {
+    set_ultrabay_power(&dock_power(&gpio)?, ultrabay_present());
+    gpio.event_status::<()>(0).map_err(|_| Timeout)?.set(0x00);
+    gpio.event_enable::<DOCK_EVENTS::Register>(0)
+        .map_err(|_| Timeout)?
+        .write(DOCK_EVENTS::GP01::SET + DOCK_EVENTS::GP07::SET);
+    gpio.data_out::<DOCK_OUTPUT::Register>(1)
+        .map_err(|_| Timeout)?
+        .modify(DOCK_OUTPUT::GP16::SET);
+    if !set_usb_power(&gpio, ec, true)? {
         return Err(Timeout);
     }
     dock.init().map_err(|_| Timeout)?;
@@ -249,7 +271,10 @@ pub fn connect(_ec: Ec) -> Result<(), Timeout> {
 /// UltraBay population; never sample an absent dock.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn ultrabay_present() -> bool {
-    connected() && !DOCK_INPUT.is_set(DOCK_INPUT::ULTRABAY_ABSENT)
+    connected()
+        && dock_gpio()
+            .and_then(|gpio| gpio.data_in::<DOCK_INPUT::Register>(0).map_err(|_| Timeout))
+            .is_ok_and(|input| !input.is_set(DOCK_INPUT::ULTRABAY_ABSENT))
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -262,19 +287,41 @@ fn set_ultrabay_power(power: &impl ReadWriteable<T = u8, R = DOCK_POWER::Registe
     power.modify(DOCK_POWER::ULTRABAY_ENABLE.val(on.into()));
 }
 
+/// The dock's GPIO port 2 data out.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn set_usb_power(ec: Ec, on: bool) -> bool {
-    DOCK_POWER.modify(DOCK_POWER::USB_ENABLE.val(on.into()));
-    ec.modify_register(fstart_driver_lenovo::h8::CONFIG2::DOCK_USB_POWER.val(on.into()))
+fn dock_power(
+    gpio: &Gpio,
+) -> Result<impl ReadWriteable<T = u8, R = DOCK_POWER::Register>, Timeout> {
+    gpio.data_out::<DOCK_POWER::Register>(2)
+        .map_err(|_| Timeout)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn set_usb_power(gpio: &Gpio, ec: Ec, on: bool) -> Result<bool, Timeout> {
+    dock_power(gpio)?.modify(DOCK_POWER::USB_ENABLE.val(on.into()));
+    Ok(ec.modify_register(fstart_driver_lenovo::h8::CONFIG2::DOCK_USB_POWER.val(on.into())))
+}
+
+/// The EC's dock latch after its configuration reset: released, then set
+/// again with the dock LED for a dock the stages connected. Returns whether
+/// the EC acknowledged it.
+pub fn latch_connected_dock(ec: Ec) -> bool {
+    let h8 = H8::new(ec);
+    h8.dock_latch(false)
+        && (!connected() || (h8.dock_latch(true) && h8.set_led(H8Led::Dock1, H8LedMode::On)))
 }
 
 /// UltraBay power and LED policy after the H8 configuration reset.
 pub fn mainstage_power_policy(ec: Ec) {
     let present = ultrabay_present();
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if connected() {
-        set_ultrabay_power(&DOCK_POWER, present);
-        let _ = set_usb_power(ec, true);
+    if connected()
+        && let Ok(gpio) = dock_gpio()
+    {
+        if let Ok(power) = dock_power(&gpio) {
+            set_ultrabay_power(&power, present);
+        }
+        let _ = set_usb_power(&gpio, ec, true);
     }
     let led = if present {
         H8LedMode::On
@@ -287,15 +334,22 @@ pub fn mainstage_power_policy(ec: Ec) {
 /// Disconnect the dock-side LPC bus and power rails, in vendor order.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn disconnect(ec: Ec) {
+    let Ok(dlpc) = laptop() else {
+        return;
+    };
     // Assert D_PLTRST# and DLPCPD before removing power and the LPC segment.
-    reset_dlpc(&DLPC_OUTPUT);
-    delay_ms(10);
-    let _ = set_usb_power(ec, false);
-    set_ultrabay_power(&DOCK_POWER, false);
-    delay_ms(10);
-    if let Ok(dlpc) = laptop() {
-        let _ = dlpc.disconnect_dlpc(DLPC_SWITCH);
+    if let Ok(output) = dlpc_output(&dlpc) {
+        reset_dlpc(&output);
     }
+    delay_ms(10);
+    if let Ok(gpio) = dock_gpio() {
+        let _ = set_usb_power(&gpio, ec, false);
+        if let Ok(power) = dock_power(&gpio) {
+            set_ultrabay_power(&power, false);
+        }
+    }
+    delay_ms(10);
+    let _ = dlpc.disconnect_dlpc(DLPC_SWITCH);
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -316,7 +370,7 @@ pub fn early_superio_config() {}
 
 /// Route the dock UART before the console probes 0x3f8. Failures are
 /// non-fatal: an undocked laptop simply has no serial console.
-/// `dock_present_pin` is the [`DOCK_PRESENT_GPIO`] pin.
+/// `dock_present_pin` is the board's `SLICE_ON_3M#` pin.
 pub fn setup_console(dock_present_pin: &mut impl embedded_hal::digital::InputPin, ec: Ec) {
     let _ = dlpc_init();
     if dock_present(dock_present_pin) {

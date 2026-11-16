@@ -12,6 +12,7 @@ compile_error!("r60 and z61t are distinct board selections");
 #[cfg(feature = "acpi")]
 pub mod acpi;
 pub mod config;
+pub mod dock;
 pub mod mainboard;
 #[cfg(feature = "smm")]
 pub mod smm;

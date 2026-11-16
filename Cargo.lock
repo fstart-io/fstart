@@ -589,9 +589,9 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys",
@@ -906,10 +906,12 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
  "fstart-driver-lenovo",
+ "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-log",
  "fstart-options",
@@ -944,6 +946,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
@@ -955,6 +958,7 @@ dependencies = [
  "fstart-options",
  "fstart-pci",
  "fstart-platform-intel",
+ "tock-registers",
  "ufmt",
 ]
 
@@ -964,6 +968,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
@@ -985,6 +990,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal",
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-driver-intel",
@@ -1250,7 +1256,6 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-flash-console",
- "fstart-driver-lenovo",
  "fstart-driver-rtc",
  "fstart-driver-spd",
  "fstart-driver-usbdebug",
@@ -1263,7 +1268,6 @@ dependencies = [
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
  "sha2 0.10.9",
- "tempfile",
  "tock-registers",
  "ufmt",
  "zerocopy",
