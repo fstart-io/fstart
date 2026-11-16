@@ -436,8 +436,8 @@ pub(crate) fn install_smm<F>(
         sources: super::smm::sources,
     };
     crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
-    super::smm::prepare_psp_smi(&soc.fch);
-    fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+    fstart_driver_amd::fch::smi::route_psp(soc.fch.acpi());
+    fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), crate::smm::sw::PSP_SMM_INFO);
     state.smm = Some(config);
     state.soc.smm_installed = true;
     Ok(())

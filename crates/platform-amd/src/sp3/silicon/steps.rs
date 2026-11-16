@@ -336,50 +336,42 @@ pub fn fch_env(ctx: &Ctx) {
 /// ReadyToBoot (SOC_DF §3.7, PSP_APOB §3.4, FCH_SP3 §2.3): FCH late
 /// tasks (the SoC's `fch_late` after the common ones), DF extended config
 /// off, PSP LockDFReg, Milan DRTM off and TPM establishment reset, BootDone
-/// last.
+/// last, all through the PSP's one [`psp`] session: a command that failed
+/// may leave the PSP owning its buffer, and none follows it.
 pub fn ready_to_boot(
     ctx: &Ctx,
     fch_late: impl FnOnce() -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    use fstart_driver_amd::psp::command::{BootDone, C2pBuffer, LockDfReg};
+    use fstart_driver_amd::psp::boot;
     fch::tasks::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     fch_late()?;
     sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
-    let psp = psp(ctx)?;
-    psp.send(&ctx.timer, &mut C2pBuffer::new(LockDfReg))
-        .step("PSP LockDFReg")?;
-    if ctx.generation == Silicon::Gn {
-        use fstart_driver_amd::psp::command::{DisableDrtm, ResetTpmEstablishment};
-        psp.send(&ctx.timer, &mut C2pBuffer::new(DisableDrtm::new()))
-            .step("PSP DisableDrtm")?;
-        // SAFETY: the TPM locality-0 page; all-ones means no TPM.
-        let tpm = unsafe { fstart_core::mmio::read32(0xfed4_0000 as *const u32) };
-        if tpm != u32::MAX {
-            psp.send(&ctx.timer, &mut C2pBuffer::new(ResetTpmEstablishment))
-                .step("PSP ResetTpmEstablishment")?;
-        }
-    }
-    psp.send(&ctx.timer, &mut C2pBuffer::new(BootDone))
-        .step("PSP BootDone")?;
-    Ok(())
+    let mut psp = psp(ctx)?;
+    boot::lock_df(&mut psp, &ctx.timer).step("PSP LockDFReg")?;
+    // Milan's: a TPM answers in its locality-0 page (all-ones: none).
+    // SAFETY: a read of the TPM's MMIO page.
+    let tpm = ctx.generation == Silicon::Gn
+        && unsafe { fstart_core::mmio::read32(0xfed4_0000 as *const u32) } != u32::MAX;
+    // SAFETY: the last step before the payload; SMM is locked.
+    unsafe { boot::ready_to_boot(&mut psp, &ctx.timer, tpm) }.map_err(|(what, _)| what)
 }
 
-/// Socket 0's C2P mailbox through its PSP BAR.
-pub fn psp(
-    ctx: &Ctx,
-) -> Result<
-    fstart_driver_amd::psp::mailbox::Mailbox<fstart_driver_amd::psp::mailbox::MmioTransport>,
-    &'static str,
-> {
-    use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
+/// Socket 0's C2P mailbox through its PSP BAR, its one normal-mode owner.
+/// Once per boot: the session's commands use its retained storage.
+pub fn psp(ctx: &Ctx) -> Result<fstart_driver_amd::psp::boot::Psp, &'static str> {
+    use fstart_driver_amd::psp::{Mailbox, MmioTransport, Session, Storage};
+    static mut STORAGE: Storage = Storage::new();
     if ctx.psp_bar == 0 {
         return Err("PSP BAR");
     }
     // SAFETY: the BAR NBIO programmed; the flow owns the mailbox.
-    Ok(Mailbox::new(
+    let mailbox = Mailbox::new(
         unsafe { MmioTransport::new(ctx.psp_bar) },
         ctx.generation.into(),
-    ))
+    );
+    // SAFETY: firmware BSS, identity mapped and reserved until reset; the
+    // flow's ReadyToBoot is its one user.
+    Session::new(mailbox, unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) }).step("PSP BAR")
 }
 
 #[cfg(test)]

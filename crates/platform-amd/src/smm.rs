@@ -7,12 +7,20 @@
 //! A SoC with SMM work of its own adds it as its part of the configuration
 //! and a handler around the same dispatcher (SP3: the PSP's SMM info and
 //! mailbox, EINJ, RAS, Rome's CF9 trap and Milan's FCH lock, in
-//! [`crate::sp3::smm`]); Picasso and Zeppelin have none ([`handle`]). The
-//! board binds the handler in its `smm.rs` with [`smm_bin!`], and adds its
-//! own sources there ([`handle_with`]).
+//! [`crate::sp3::smm`]); Picasso and Zeppelin have none ([`handle`]). What
+//! the PSP needs of SMM is the same for every SoC that registers with it
+//! (`psp`). The board binds the handler in its `smm.rs` with
+//! [`smm_bin!`], and adds its own sources there ([`handle_with`]).
 
 use fstart_driver_amd::fch::smi;
 pub use fstart_driver_ipmi::SleepNotify;
+
+/// fstart-private software SMI numbers besides the FCH ones
+/// (`fch::smi::sw`).
+pub mod sw {
+    /// Register the handler's PSP buffers with the PSP (SmmInfo, C2P 0x02).
+    pub const PSP_SMM_INFO: u8 = 0xD0;
+}
 
 /// What the normal-mode installer writes into SMRAM for the handler: the
 /// FCH's SMI setup, the ECAM the handler reaches config space through, the
@@ -65,7 +73,10 @@ pub use fstart_smm::SmmContext;
 #[cfg(feature = "bundle-smm")]
 pub use fstart_smm::smm_bin;
 #[cfg(feature = "smm")]
-pub use handler::{Ecam, SmmFch, handle, handle_with, with};
+pub use handler::{Ecam, SmmFch, handle, handle_with, with, with_fch};
+
+#[cfg(feature = "smm")]
+pub(crate) mod psp;
 
 #[cfg(feature = "smm")]
 mod handler {
@@ -114,7 +125,18 @@ mod handler {
         config: &SmmConfig<S>,
         f: impl FnOnce(&SmmFch, Option<&Smu<Ecam, Tsc>>) -> R,
     ) -> R {
-        fstart_pci::ecam::init(config.ecam_base as usize);
+        with_fch(config.ecam_base, |fch| {
+            let smu = smu(config.fch.version, fch.timer);
+            f(fch, smu.as_ref())
+        })
+    }
+
+    /// [`with`] without the SMU, for a handler that does not take the
+    /// sleep path: config space through the ECAM at `ecam_base` and FCH 0,
+    /// the SMN index of bus 0 saved around `f`.
+    #[inline(always)]
+    pub fn with_fch<R>(ecam_base: u64, f: impl FnOnce(&SmmFch) -> R) -> R {
+        fstart_pci::ecam::init(ecam_base as usize);
         // SAFETY: ring 0 in SMM; the P-state MSRs.
         let timer = Tsc::native(&unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() });
         // SAFETY: SMM owns the CPU; the FCH ACPI-MMIO block, MMIO and ports
@@ -132,8 +154,7 @@ mod handler {
         let host = PciAddress::default();
         // SAFETY: SMM owns the CPU; the index is restored below.
         let saved = unsafe { Ecam.read(host, fstart_driver_amd::smn::SMN_INDEX) };
-        let smu = smu(config.fch.version, timer);
-        let result = f(&fch, smu.as_ref());
+        let result = f(&fch);
         // SAFETY: as above.
         unsafe { Ecam.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
         result
