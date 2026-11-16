@@ -165,7 +165,7 @@ mod zeppelin {
         unsafe { smu::init(&dies, &buffers, &mut delay) }.unwrap();
         smu::cac_weights(&dies[0], &mut delay).unwrap();
         assert_eq!(df::zp::sockets(&dies[0].df()), 2);
-        df::zp::route_vga(&dies);
+        df::zp::route_vga(&dies, dies[0].ioms_fabric_id().into());
         for die in &dies {
             nbio::zp::pre_enumeration_init(die);
         }

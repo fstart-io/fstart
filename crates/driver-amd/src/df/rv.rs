@@ -87,8 +87,12 @@ pub fn ensure_legacy_routes(
     let df = [die.df()];
     program::mmio::<Df2, _>(&df, routes.mmio.as_slice());
     program::io::<Df2, _>(&df, routes.io.as_slice());
-    program::vga::<Df2, _>(&df, die.ioms_fabric_id().into());
     Ok(())
+}
+
+/// Route the legacy VGA ranges to the die's IOMS, its one root complex.
+pub fn route_vga(die: &Die<impl Soc, impl ConfigRegionAccess + Copy>) {
+    program::vga::<Df2, _>(&[die.df()], die.ioms_fabric_id().into());
 }
 
 const F2_048: DfReg = DfReg::new(2, 0x048);

@@ -433,6 +433,7 @@ fn install_smm<S: Soc>(
         aml,
         tables: alloc::vec::Vec::new(),
         framebuffer: None,
+        legacy_vga: None,
         state,
     })
 }
@@ -447,7 +448,8 @@ impl<S: Soc> Stage<S, Cpus<S>> {
             phase: Cpus(mut silicon),
         } = self;
         let ctx = machine.ctx();
-        let pci = enumerate::<S>(&ctx, &silicon);
+        let mut pci = enumerate::<S>(&ctx, &silicon);
+        silicon.legacy_vga = legacy_vga::<S>(&ctx, &silicon.state, &mut pci);
         // PCI resources become known after AMD's required MP and SMU steps.
         // Extend cacheability coherently on all CPUs without replacing AMD's
         // fixed DRAM routing, high-memory TOM2WB or the existing RAM/ROM MTRRs.
@@ -602,6 +604,50 @@ impl<S: Soc> Stage<S, Published<S>> {
             &machine.options,
         )
     }
+}
+
+/// Legacy VGA: the VGA-compatible display behind the port the SoC or the
+/// board names ([`Init::display_port`]), else the first one, gets the
+/// legacy VGA ranges, and no other. The bridges to it forward them (no
+/// other bridge does), the fabric routes them to its root bridge (to the
+/// primary without a display), and that root bridge reports the memory
+/// (`_CRS`). Returns the display: the one choice everything legacy VGA
+/// (a video ROM) uses.
+fn legacy_vga<S: Soc>(
+    ctx: &Ctx<'_, S>,
+    state: &S::State,
+    pci: &mut PciEcam,
+) -> Option<fstart_pci::PciAddress> {
+    let display = S::display_port(ctx, state, pci)
+        .and_then(|port| pci.legacy_vga_display(Some(port)))
+        .or_else(|| pci.legacy_vga_display(None));
+    let fabric = S::fabric(ctx, state);
+    // A display whose path the allocator did not set up gets nothing.
+    let forwarded = display.and_then(|display| Some((display, pci.forward_legacy_vga(display)?)));
+    if forwarded.is_none() {
+        pci.close_legacy_vga();
+    }
+    let display = forwarded.map(|(display, _)| display);
+    let Some(root) = forwarded
+        .map(|(_, root)| root)
+        .or_else(|| fabric.bridges.iter().position(|rb| rb.primary))
+    else {
+        fail::<S>("legacy VGA")
+    };
+    if pci.forward_legacy_vga_memory(root).is_err() {
+        fail::<S>("legacy VGA");
+    }
+    S::route_legacy_vga(ctx, state, &fabric.bridges[root]);
+    if let Some(display) = display {
+        fstart_log::info!(
+            "PCI {}:{}.{}: legacy VGA, root bridge {}",
+            Hex(display.bus().into()),
+            Hex(display.device().into()),
+            display.function(),
+            root
+        );
+    }
+    display
 }
 
 /// PCI enumeration and resource allocation below every root bridge of the

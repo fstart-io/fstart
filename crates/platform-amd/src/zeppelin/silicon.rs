@@ -302,7 +302,6 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
             );
         }
     }
-    df::zp::route_vga(dies);
     for die in dies {
         nbio::zp::pre_enumeration_init(die);
     }

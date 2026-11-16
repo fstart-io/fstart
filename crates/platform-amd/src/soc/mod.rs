@@ -85,6 +85,28 @@ pub struct Entered<S: Init> {
 /// The root bridges of a SoC, for one PCI allocator.
 pub type Roots = heapless::Vec<PciRoot, MAX_PCI_ROOTS>;
 
+/// The bridge of the first PCIe port of `ports` (what a board's lanes
+/// attach, with the bridge of each, [`crate::smbios::System::ports`]) with
+/// an onboard display on it: [`Init::display_port`].
+pub fn display_port(
+    ports: &[(
+        Option<fstart_pci::PciAddress>,
+        u8,
+        &fstart_core::smbios::Attached<'_>,
+    )],
+) -> Option<fstart_pci::PciAddress> {
+    use fstart_core::smbios::{Attached, OnboardDevice, OnboardType};
+    ports
+        .iter()
+        .find_map(|&(bridge, _, attached)| match attached {
+            Attached::Onboard(OnboardDevice {
+                kind: OnboardType::Video,
+                ..
+            }) => bridge,
+            _ => None,
+        })
+}
+
 /// The fabric as the flow's services see it, for every SoC: the PCI
 /// segment and the root bridges of the DF plan, the one the silicon init
 /// programmed or, on Picasso, the one of the routes its ABL programmed.
@@ -200,6 +222,25 @@ pub trait Init: Sized + 'static {
     }
     /// The fabric once the silicon init is done.
     fn fabric<'a>(ctx: &Ctx<'_, Self>, state: &'a Self::State) -> Fabric<'a>;
+    /// The bridge of the SoC's own display (an APU's GPU) or of the port
+    /// the board's lanes attach its onboard display to: the legacy VGA
+    /// display is the one behind it. `None`: the first VGA-compatible
+    /// display `pci` found is ([`crate::flow`]).
+    fn display_port(
+        _ctx: &Ctx<'_, Self>,
+        _state: &Self::State,
+        _pci: &PciEcam,
+    ) -> Option<fstart_pci::PciAddress> {
+        None
+    }
+    /// Route the legacy VGA ranges (0xA0000–0xBFFFF, the VGA ports) to
+    /// `root`, the root bridge of [`Init::fabric`] the legacy VGA display is
+    /// behind (the primary without one).
+    fn route_legacy_vga(
+        ctx: &Ctx<'_, Self>,
+        state: &Self::State,
+        root: &fstart_driver_amd::df::plan::RootBridgePlan,
+    );
     /// After the PCI resource allocation.
     fn after_resources(ctx: &Ctx<'_, Self>, state: &mut Self::State) -> Result<(), &'static str>;
     /// Ready to boot, before the tables: the devices `pci` enumerated are

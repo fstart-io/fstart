@@ -167,6 +167,8 @@ fn flow(
     silicon::cpus_up(&dies, &mut clock);
     fch::post(&fch, 0x42);
     silicon::route_interrupts(&fch, config).unwrap();
+    // The legacy VGA ranges, to the display's die (die 0's).
+    df::zp::route_vga(&dies, dies[0].ioms_fabric_id().into());
 
     // After resource allocation
     silicon::after_resources(&fch);
@@ -241,7 +243,7 @@ fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
 fn mj11_ec1_flow() {
     let hw = model(1);
     mj11_ec1_flow_on(&hw, 0x5000_0000);
-    assert_eq!(hw.fingerprint(), (9688, 0xe231_c1eb_e5af_3e78));
+    assert_eq!(hw.fingerprint(), (9688, 0x4ac0_5ea4_eded_1d68));
     assert_eq!(hw.state(), 0xa9dd_6d88_a609_f199);
 }
 
@@ -271,8 +273,6 @@ fn mj11_ec1_pci_root() {
     assert_eq!(
         root.mmio().collect::<Vec<_>>(),
         [
-            // The legacy VGA memory, routed to the die with bus 0.
-            0xa_0000..=0xb_ffff,
             0xf800_0000..=0xfe3f_ffff,
             0x8000_0000..=0xefff_ffff,
             // Above 4 GiB: from 1 TiB to the fabric's reserved top 12 GiB.
@@ -338,7 +338,7 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
 fn sp4_flow() {
     let hw = model(2);
     sp4_flow_on(&hw, 0x5800_0000);
-    assert_eq!(hw.fingerprint(), (17245, 0x45eb_303c_dbdb_0866));
+    assert_eq!(hw.fingerprint(), (17245, 0xdd93_41c4_a1e9_3f9e));
     assert_eq!(hw.state(), 0x41e3_ce1e_ba2b_c4ef);
 }
 
@@ -412,8 +412,11 @@ fn sp4_pci_roots_and_host_bridges() {
             .unwrap()
         })
         .collect();
-    let mut pci = PciEcam::new(roots.clone()).unwrap();
+    let mut pci = PciEcam::new(roots).unwrap();
     pci.enumerate_and_allocate().unwrap();
+    // The legacy VGA display is on die 0.
+    pci.forward_legacy_vga_memory(0).unwrap();
+    let roots = pci.roots().to_vec();
     let read = |address, offset| pci.device(address).unwrap().read32(offset);
 
     let buses = |bus| read(PciAddress::new(0, bus, 1, 1), PCI_PRIMARY_BUS) & 0xff_ffff;
@@ -447,9 +450,9 @@ fn sp4_pci_roots_and_host_bridges() {
             // The I/O the DF routes to die 0, around the configuration ports.
             (1, 0, 0xcf7),
             (1, 0xd00, 0x7fff),
-            vga,
             (0, 0xe800_0000, 0xef7f_ffff),
             (0, 0xf800_0000, 0xfebf_ffff),
+            vga,
         ]
     );
     assert_eq!(

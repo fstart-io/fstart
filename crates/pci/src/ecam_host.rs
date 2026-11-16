@@ -24,6 +24,7 @@
 extern crate alloc;
 
 use heapless::Vec as HVec;
+use tock_registers::interfaces::ReadWriteable;
 
 use crate::{
     ConfigRegionAccess, PCI_BAR0, PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND,
@@ -2496,6 +2497,140 @@ impl PciEcam {
         }
     }
 
+    /// The first VGA-compatible display function (class code 03_00_00h)
+    /// in scan order, behind (or at) `below` if given: the function the
+    /// legacy VGA ranges go to ([`Self::forward_legacy_vga`]).
+    pub fn legacy_vga_display(&self, below: Option<PciAddress>) -> Option<PciAddress> {
+        self.devices().find(|&address| {
+            self.read32(address, crate::PCI_CLASS_REVISION) >> 8 == 0x03_0000
+                && below.is_none_or(|bridge| {
+                    self.device_path(address)
+                        .is_some_and(|path| path.contains(&bridge))
+                })
+        })
+    }
+
+    /// Forward the legacy VGA ranges (memory 0xA0000–0xBFFFF, the VGA
+    /// ports) from the root bus to `display`, and only there: VGA Enable
+    /// off on every other bridge enumeration found, then memory and I/O
+    /// decode on every function of its [`Self::device_path`] and VGA Enable
+    /// on the bridges of it (PCI-to-PCI Bridge 1.2, 3.2.5.18). What decodes
+    /// them above the root bus is the platform's to route, to the root
+    /// bridge whose index this returns. `None` for a function enumeration
+    /// did not find, or one on the path the allocator did not program
+    /// ([`Self::decodes_only_what_it_placed`]); then nothing changed.
+    pub fn forward_legacy_vga(&self, display: PciAddress) -> Option<usize> {
+        use crate::PCI_BRIDGE_CONTROL_BITS::{DISCARD_TIMER_STATUS, VGA_ENABLE};
+        let root = self.root_of(display)?;
+        let path = self.device_path(display)?;
+        if let Some(&address) = path
+            .iter()
+            .find(|&&address| !self.decodes_only_what_it_placed(address))
+        {
+            PciEcamError::ConfigError.log_bar("legacy VGA path", address, PCI_COMMAND);
+            return None;
+        }
+        self.close_legacy_vga_except(&path);
+        for &address in &path {
+            let device = self.device(address)?;
+            // SAFETY: an enumerated function; the type-0 and type-1 headers
+            // share the command register.
+            let header = unsafe { device.regs::<crate::PciType0Config>() };
+            header.command.modify(
+                crate::PCI_COMMAND_BITS::IO_SPACE::SET + crate::PCI_COMMAND_BITS::MEMORY_SPACE::SET,
+            );
+        }
+        for (_, bridge) in self
+            .type1_bridges()
+            .filter(|(address, _)| path.contains(address))
+        {
+            bridge
+                .bridge_control
+                .modify(VGA_ENABLE::SET + DISCARD_TIMER_STATUS::CLEAR);
+        }
+        Some(root)
+    }
+
+    /// Whether `address`, with I/O and memory decode on, decodes only what
+    /// the allocator placed (and, a bridge, the legacy VGA ranges once
+    /// told to): it programmed its BARs, every movable one placed, and a
+    /// bridge's windows, open or closed.
+    fn decodes_only_what_it_placed(&self, address: PciAddress) -> bool {
+        self.devices.iter().any(|device| {
+            device.addr == address
+                && device.programmed
+                && device
+                    .bars
+                    .iter()
+                    .all(|bar| bar.bar_type == BarType::None || bar.allocated)
+        })
+    }
+
+    /// No bridge enumeration found forwards the legacy VGA ranges: there is
+    /// no display for them.
+    pub fn close_legacy_vga(&self) {
+        self.close_legacy_vga_except(&[]);
+    }
+
+    fn close_legacy_vga_except(&self, path: &[PciAddress]) {
+        use crate::PCI_BRIDGE_CONTROL_BITS::{DISCARD_TIMER_STATUS, VGA_ENABLE};
+        for (_, bridge) in self
+            .type1_bridges()
+            .filter(|(address, _)| !path.contains(address))
+        {
+            // Discard Timer Status is W1C: written as 0, it stays.
+            bridge
+                .bridge_control
+                .modify(VGA_ENABLE::CLEAR + DISCARD_TIMER_STATUS::CLEAR);
+        }
+    }
+
+    /// Whether the legacy VGA ranges go to `display` and nowhere else
+    /// below the root buses ([`Self::forward_legacy_vga`]).
+    pub fn forwards_legacy_vga(&self, display: PciAddress) -> bool {
+        use crate::PCI_BRIDGE_CONTROL_BITS::VGA_ENABLE;
+        use crate::PCI_COMMAND_BITS::{IO_SPACE, MEMORY_SPACE};
+        use tock_registers::interfaces::Readable;
+        let Some(path) = self.device_path(display) else {
+            return false;
+        };
+        path.iter().all(|&address| {
+            self.device(address).is_some_and(|device| {
+                // SAFETY: an enumerated function; read only.
+                let header = unsafe { device.regs::<crate::PciType0Config>() };
+                header.command.is_set(IO_SPACE) && header.command.is_set(MEMORY_SPACE)
+            })
+        }) && self.type1_bridges().all(|(address, bridge)| {
+            bridge.bridge_control.is_set(VGA_ENABLE) == path.contains(&address)
+        })
+    }
+
+    /// The type-1 bridges enumeration found, with their headers.
+    fn type1_bridges(
+        &self,
+    ) -> impl Iterator<Item = (PciAddress, &'static crate::PciType1Config)> + '_ {
+        self.devices
+            .iter()
+            .filter(|device| device.header_type == PCI_HEADER_TYPE_BRIDGE)
+            .filter_map(|device| {
+                let config = self.device(device.addr)?;
+                // SAFETY: an enumerated function with a type-1 header.
+                Some((device.addr, unsafe {
+                    config.regs::<crate::PciType1Config>()
+                }))
+            })
+    }
+
+    /// Root bridge `root` (by its index in [`Self::roots`]) forwards the
+    /// legacy VGA memory, which its description then reports: the platform
+    /// routes the legacy VGA ranges there.
+    pub fn forward_legacy_vga_memory(&mut self, root: usize) -> Result<(), PciEcamError> {
+        self.described
+            .get_mut(root)
+            .ok_or(PciEcamError::ConfigError)?
+            .forward(crate::LEGACY_VGA_MEMORY)
+    }
+
     /// Memory BAR spans actually assigned to discovered devices, including
     /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
     pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
@@ -3176,6 +3311,159 @@ mod tests {
         pci.devices[1].secondary_bus = 2;
         pci.devices[0].addr = PciAddress::new(0, 2, 8, 1); // Cycle: 2 -> 1 -> 2.
         assert!(pci.device_path(gpu).is_none());
+    }
+
+    /// A root port with a bridge to a VGA-compatible display behind it, an
+    /// accelerator (display, not VGA-compatible), a second VGA display on
+    /// the root bus and a second root port that already forwards the legacy
+    /// VGA ranges (a previous owner's choice).
+    #[test]
+    fn legacy_vga_goes_to_the_display_along_its_path() {
+        let (mut pci, mut ram) = test_pci();
+        ram.fill(0);
+        let port = PciAddress::new(0, 0, 1, 1);
+        let bridge = PciAddress::new(0, 1, 0, 0);
+        let bmc = PciAddress::new(0, 2, 0, 0);
+        let accelerator = PciAddress::new(0, 0, 2, 0);
+        let gpu = PciAddress::new(0, 0, 3, 0);
+        let other = PciAddress::new(0, 0, 4, 1);
+        for (address, header, class, secondary, control) in [
+            (accelerator, 0, 0x0380_0000, 0, 0),
+            (port, 1, 0x0604_0000, 1, 0x0400),
+            (bridge, 1, 0x0604_0000, 2, 0x0400),
+            (bmc, 0, 0x0300_0041, 0, 0),
+            (gpu, 0, 0x0300_00c1, 0, 0),
+            // VGA Enable and VGA 16-bit decode on, Discard Timer Status
+            // (W1C) pending.
+            (other, 1, 0x0604_0000, 3, 0x0418),
+        ] {
+            let dev = pci.device(address).unwrap();
+            dev.write8(PCI_HEADER_TYPE, header);
+            dev.write32(crate::PCI_CLASS_REVISION, class);
+            dev.write16(0x3e, control);
+            assert!(
+                pci.devices
+                    .push(PciDev {
+                        header_type: header,
+                        secondary_bus: secondary,
+                        subordinate_bus: secondary.max(2),
+                        programmed: true,
+                        ..endpoint(address, &[])
+                    })
+                    .is_ok()
+            );
+        }
+        // The first VGA-compatible one in scan order, or the one behind
+        // the port the board names.
+        assert_eq!(pci.legacy_vga_display(None), Some(bmc));
+        assert_eq!(pci.legacy_vga_display(Some(port)), Some(bmc));
+        assert_eq!(pci.legacy_vga_display(Some(gpu)), Some(gpu));
+        assert_eq!(pci.legacy_vga_display(Some(accelerator)), None);
+        assert!(!pci.forwards_legacy_vga(bmc));
+        assert_eq!(pci.forward_legacy_vga(bmc), Some(0));
+        assert!(pci.forwards_legacy_vga(bmc));
+        assert!(!pci.forwards_legacy_vga(gpu));
+        for address in [port, bridge, bmc] {
+            assert_eq!(pci.read16(address, PCI_COMMAND) & 3, 3);
+        }
+        // VGA Enable on the bridges; their discard timer status (W1C)
+        // written as 0.
+        for address in [port, bridge] {
+            assert_eq!(pci.read16(address, 0x3e), 1 << 3);
+        }
+        // Off the path: VGA Enable cleared, the 16-bit decode kept, the
+        // W1C status written as 0.
+        assert_eq!(pci.read16(other, 0x3e), 1 << 4);
+        for address in [accelerator, gpu] {
+            assert_eq!(pci.read16(address, PCI_COMMAND), 0);
+        }
+        // Moving the legacy VGA to the root-bus display closes the old path.
+        assert_eq!(pci.forward_legacy_vga(gpu), Some(0));
+        assert!(pci.forwards_legacy_vga(gpu));
+        for address in [port, bridge, other] {
+            assert_eq!(pci.read16(address, 0x3e) & (1 << 3), 0);
+        }
+        assert_eq!(pci.forward_legacy_vga(PciAddress::new(0, 1, 5, 0)), None);
+        assert!(pci.forwards_legacy_vga(gpu));
+        pci.close_legacy_vga();
+        assert!(!pci.forwards_legacy_vga(bmc));
+        pci.write16(other, 0x3e, 0x0408);
+        pci.close_legacy_vga();
+        assert_eq!(pci.read16(other, 0x3e), 0);
+    }
+
+    /// The legacy VGA ports go only through functions whose decode the
+    /// allocator set up: none before allocation, none while a function on
+    /// the path has an I/O BAR it did not place; then nothing changes.
+    #[test]
+    fn legacy_vga_needs_a_path_the_allocator_programmed() {
+        let (mut pci, _config_space) = test_pci();
+        let port = PciAddress::new(0, 0, 1, 0);
+        let display = PciAddress::new(0, 1, 0, 0);
+        pci.write32(display, crate::PCI_CLASS_REVISION, 0x0300_0000);
+        for device in [
+            bridge_at(port, 1, 1),
+            endpoint(
+                display,
+                &[(0, BarType::Memory32, 0x100_0000), (2, BarType::Io, 0x80)],
+            ),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+        let decode = |pci: &PciEcam, address| pci.read16(address, PCI_COMMAND) & 3;
+
+        assert_eq!(pci.forward_legacy_vga(display), None);
+        assert_eq!((decode(&pci, port), decode(&pci, display)), (0, 0));
+        assert_eq!(pci.read16(port, 0x3e), 0);
+
+        pci.allocate_resources().unwrap();
+        pci.write16(display, PCI_COMMAND, 0);
+        pci.devices[1].bars[2].allocated = false;
+        assert_eq!(pci.forward_legacy_vga(display), None);
+        assert_eq!(decode(&pci, display), 0);
+        assert_eq!(pci.read16(port, 0x3e), 0);
+
+        pci.devices[1].bars[2].allocated = true;
+        assert_eq!(pci.forward_legacy_vga(display), Some(0));
+        assert_eq!(decode(&pci, display), 3);
+        assert_eq!(decode(&pci, port), 3);
+        assert!(pci.forwards_legacy_vga(display));
+    }
+
+    /// The root the platform routes the legacy VGA memory to reports it.
+    #[test]
+    fn the_legacy_vga_root_forwards_the_vga_memory() {
+        let info = |bus_start, bus_end| PciRootInfo {
+            segment: 0,
+            ecam_base: 0xe000_0000,
+            bus_start,
+            bus_end,
+        };
+        let root = |bus_start, bus_end, base| {
+            PciRoot::new(
+                info(bus_start, bus_end),
+                [
+                    Window.mmio(base, 0x1000_0000),
+                    Forwarded.mmio(0xc_0000, 0x4_0000),
+                ],
+            )
+            .unwrap()
+        };
+        let mut pci =
+            PciEcam::new([root(0, 0x3f, 0xc000_0000), root(0x40, 0x7f, 0xd000_0000)]).unwrap();
+        pci.forward_legacy_vga_memory(1).unwrap();
+        assert!(
+            pci.roots()[0]
+                .mmio()
+                .all(|range| *range.start() != 0xa_0000)
+        );
+        // Joined with the option ROM range it touches.
+        assert!(
+            pci.roots()[1]
+                .mmio()
+                .any(|range| range == (0xa_0000..=0xf_ffff))
+        );
+        assert!(pci.forward_legacy_vga_memory(2).is_err());
     }
 
     #[test]

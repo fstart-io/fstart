@@ -607,7 +607,10 @@ fn far(pointer: u32) -> usize {
 /// POST a matching VGA ROM and select a supported linear VBE mode.
 ///
 /// # Safety
-/// Ring 0, BSP only, after PCI allocation. The caller exclusively owns the
+/// Ring 0, BSP only, after PCI allocation. `address` is the display the
+/// platform forwards the legacy VGA ranges to
+/// ([`PciEcam::forward_legacy_vga`]), along its path and in its fabric.
+/// The caller exclusively owns the
 /// display, legacy VGA/PCI I/O and the supplied identity-mapped BAR/UMA
 /// windows. Register MMIO must be UC; prefetchable memory may be WC.
 /// The ROM must be a trusted board firmware asset. `rom_device` is
@@ -644,33 +647,16 @@ pub unsafe fn initialize(
     {
         return Err(Error::Bounds);
     }
+    // BAR allocation does not imply forwarding the fixed VGA apertures:
+    // the platform chose this display for them and opened the path.
+    if !pci.forwards_legacy_vga(address) {
+        return Err(Error::Bounds);
+    }
     // SAFETY: a validated, allocated Type-0 VGA function; BSP owns it.
     let config = unsafe { device.regs::<fstart_pci::PciType0Config>() };
-    config.command.modify(
-        fstart_pci::PCI_COMMAND_BITS::IO_SPACE::SET
-            + fstart_pci::PCI_COMMAND_BITS::MEMORY_SPACE::SET
-            + fstart_pci::PCI_COMMAND_BITS::BUS_MASTER::SET,
-    );
-    // BAR allocation does not imply forwarding the fixed VGA apertures.
-    // Enable only the ancestor bridges of the selected display function.
-    for bridge in pci.devices().filter_map(|a| pci.device(a)) {
-        if bridge.read8(0x0e) & 0x7f != 1 {
-            continue;
-        }
-        // SAFETY: the function has a Type-1 header and belongs to this allocator.
-        let regs = unsafe { bridge.regs::<fstart_pci::PciType1Config>() };
-        if regs.secondary_bus.get() != 0
-            && regs.secondary_bus.get() <= address.bus()
-            && address.bus() <= regs.subordinate_bus.get()
-        {
-            regs.command.modify(
-                fstart_pci::PCI_COMMAND_BITS::IO_SPACE::SET
-                    + fstart_pci::PCI_COMMAND_BITS::MEMORY_SPACE::SET,
-            );
-            regs.bridge_control
-                .modify(fstart_pci::PCI_BRIDGE_CONTROL_BITS::VGA_ENABLE::SET);
-        }
-    }
+    config
+        .command
+        .modify(fstart_pci::PCI_COMMAND_BITS::BUS_MASTER::SET);
     fstart_log::info!(
         "VBIOS: IO BAR {} legacy VGA port {}",
         fstart_log::Hex(device.read32(0x20).into()),
