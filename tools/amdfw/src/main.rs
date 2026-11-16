@@ -26,16 +26,21 @@ enum Platform {
     Naples,
     Rome,
     Milan,
+    Siena,
+    Genoa,
 }
 impl Platform {
     fn profile(self) -> fstart_amdfw_format::Profile {
         use fstart_amdfw_format::{Profile, efs::BiosDirectorySlot as Slot};
-        Profile::for_slot(match self {
+        let slot = match self {
             Self::Picasso => Slot::Family17hModel10,
             Self::Zeppelin | Self::Naples => Slot::Family17hModel00,
             Self::Rome => Slot::Family17hModel30,
             Self::Milan => Slot::Family19h,
-        })
+            Self::Siena => return Profile::SIENA,
+            Self::Genoa => return Profile::GENOA,
+        };
+        Profile::for_slot(slot)
     }
 }
 #[derive(clap::Args)]
@@ -228,7 +233,7 @@ fn pack(a: PackArgs) -> amd::Result<()> {
 fn inspect(a: ImageArgs, validate: bool) -> amd::Result<()> {
     use fstart_amdfw_format::{
         Flash,
-        directory::{Directory, Entry},
+        directory::{Directory, Entry, bios},
     };
     let bytes = read(&a.image)?;
     let origin = a.image_origin as usize;
@@ -293,6 +298,19 @@ fn inspect(a: ImageArgs, validate: bool) -> amd::Result<()> {
         .iter()
     {
         table("BIOS", dir)?;
+        for entry in dir
+            .entries
+            .iter()
+            .filter(|e| matches!(e.kind, bios::RESET_IMAGE | bios::APOB))
+        {
+            println!(
+                "  handoff type={:#04x} destination={:#x} size={:#x} flags={:#x}",
+                entry.kind,
+                entry.destination(),
+                entry.size.get(),
+                entry.flags
+            );
+        }
     }
     if validate {
         let reset = a
@@ -352,6 +370,38 @@ mod tests {
                 .unwrap();
         assert!(matches!(command, Command::Inspect(_)));
     }
+    #[test]
+    fn siena_inspection_does_not_inherit_milan_selection() {
+        let Command::Inspect(args) =
+            arguments(["amdfw", "inspect", "vendor.rom", "--profile", "siena"].map(Into::into))
+                .unwrap()
+        else {
+            panic!("not an inspection command")
+        };
+        let profile = args.profile.profile();
+        assert_eq!(profile, fstart_amdfw_format::Profile::SIENA);
+        assert_eq!(0xffff_fffe & profile.generation_mask, 0);
+        assert_ne!(0xffff_fffe & Platform::Milan.profile().generation_mask, 0);
+        assert_eq!((profile.psp_id, profile.chip_id), (None, None));
+    }
+
+    #[test]
+    fn genoa_inspection_uses_observed_slot_without_milan_combo_identity() {
+        let Command::Inspect(args) =
+            arguments(["amdfw", "inspect", "onyx.bin", "--profile", "genoa"].map(Into::into))
+                .unwrap()
+        else {
+            panic!("not an inspection command")
+        };
+        let profile = args.profile.profile();
+        assert_eq!(profile, fstart_amdfw_format::Profile::GENOA);
+        assert_eq!(
+            profile.bios,
+            fstart_amdfw_format::efs::BiosDirectorySlot::Family19h
+        );
+        assert_eq!((profile.psp_id, profile.chip_id), (None, None));
+    }
+
     #[test]
     fn legacy_pack_invocation_is_preserved() {
         let command = arguments(
