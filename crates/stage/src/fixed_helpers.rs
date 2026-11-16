@@ -454,6 +454,14 @@ impl MemoryMappedUefiBoot {
         checked_entry(self.firmware_addr, expected)
     }
 
+    /// Load the board's FDT from FFS to `dtb_addr` and make it the platform
+    /// DTB, for a boot ABI that supplies none.
+    pub fn load_fdt(&mut self, dtb_addr: u64) -> Result<(), ServiceError> {
+        let actual = self.ffs.load_file(FileType::Fdt)?;
+        self.fdt_addr = checked_entry(actual, dtb_addr)?;
+        Ok(())
+    }
+
     /// Borrow the platform FDT as bytes when the bootloader supplied a valid FDT.
     ///
     /// # Safety

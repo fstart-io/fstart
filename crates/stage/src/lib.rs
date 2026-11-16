@@ -135,6 +135,14 @@ macro_rules! stage_bin {
     // RISC-V CrabEFI launch.
     (main: $main:path, sbi_resume: $resume:path) => {
         $crate::stage_bin!(main: $main);
+        $crate::stage_bin!(@sbi_resume $resume);
+    };
+    // The same for a `main` that takes the predecessor's handoff address.
+    (main_handoff: $main:path, sbi_resume: $resume:path) => {
+        $crate::stage_bin!(main_handoff: $main);
+        $crate::stage_bin!(@sbi_resume $resume);
+    };
+    (@sbi_resume $resume:path) => {
         #[cfg(target_arch = "riscv64")]
         #[unsafe(no_mangle)]
         pub extern "C" fn fstart_sbi_resume(hart_id: u64, dtb_addr: u64) -> ! {
