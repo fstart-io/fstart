@@ -133,6 +133,7 @@ pub fn install<S: super::DieSoc>(
             cstates: power::cstate_info(&msr),
             threads_per_core: Thread::current().threads_per_core(),
             devices: &silicon.devices,
+            ivrs_devices: &S::ivrs_devices(&silicon.state),
             sb_aml: &silicon.aml,
             tables: &silicon.tables,
         },

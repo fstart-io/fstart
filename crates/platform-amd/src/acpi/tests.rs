@@ -136,6 +136,7 @@ pub(crate) fn inputs<'a>(
         bmc_sx_notify: None,
         tpm: None,
         devices: &[],
+        ivrs_devices: &[],
         sb_aml: &[],
         tables: &[],
         board,
@@ -462,9 +463,11 @@ fn an_acpi_only_emmc_has_its_ivhd_entry() {
     )];
     let (cpus, board) = (cpus(&[0, 1], false), Board::default());
     let emmc = [crate::picasso::acpi::emmc().unwrap()];
+    let requester = [crate::picasso::acpi::emmc_requester()];
     let soc = &crate::picasso::acpi::ACPI;
     let with = Inputs {
         devices: &emmc,
+        ivrs_devices: &requester,
         ..inputs(soc, &cpus, &root, &board)
     };
     let kinds = |inputs: &Inputs| {
@@ -485,6 +488,27 @@ fn an_acpi_only_emmc_has_its_ivhd_entry() {
     );
     // The device itself is in the DSDT.
     assert!(build(&with).unwrap().dsdt.windows(4).any(|w| w == b"MMC0"));
+}
+
+/// A SoC's ACPI-only requester goes to the IOMMU of the die with the FCH
+/// as it was given: the builder knows no HID and infers no PCI address.
+#[test]
+fn soc_requesters_go_to_the_fch_die() {
+    let requester = DeviceEntry::AcpiHid {
+        device: 0x1234,
+        hid: *b"TEST0001",
+        dte: 0xf7,
+    };
+    let (dies, cpus, board) = (dies(false), cpus(&[0, 1, 8, 9], false), Board::default());
+    let inputs = Inputs {
+        ivrs_devices: &[requester],
+        ..inputs(&ACPI, &cpus, &dies, &board)
+    };
+    let windows = fixed::gsi_windows(FCH_IOAPIC_ID, &dies);
+    assert_eq!(ivrs::devices(&inputs, 0, &windows).last(), Some(&requester));
+    assert!(!ivrs::devices(&inputs, 1, &windows).contains(&requester));
+    let table = ivrs::ivrs(&inputs, &windows).unwrap();
+    assert_eq!(table.windows(8).filter(|w| w == b"TEST0001").count(), 1);
 }
 
 #[test]

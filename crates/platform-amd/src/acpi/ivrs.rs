@@ -5,9 +5,11 @@
 //! buses from `bus:01.0` to its last bus, the NBIO IOAPIC as a special
 //! device sourced from `bus:00.1`, and on the root bridge with the FCH the
 //! FCH IOAPIC and HPET sourced from the FCH at `00:14.0` (the IDs Linux's
-//! AMD IOMMU driver expects for the southbridge IOAPIC/HPET). Types 10h
-//! and 11h on every SoC; type 40h only for an ACPI-only eMMC controller
-//! (Milan's ACPI-HID UART entries are an open item).
+//! AMD IOMMU driver expects for the southbridge IOAPIC/HPET), and the
+//! requesters of the SoC's devices that are not PCI functions
+//! ([`Inputs::ivrs_devices`]). Types 10h and 11h on every SoC; type 40h
+//! only with ACPI-HID requesters (Milan's ACPI-HID UART entries are an
+//! open item).
 
 extern crate alloc;
 
@@ -22,19 +24,9 @@ use super::{Inputs, Iommu, RootBridgeAcpi};
 
 /// FCH device that issues the FCH IOAPIC and HPET requests: 00:14.0.
 const FCH_SOURCE: u16 = bdf(0, 0x14, 0);
-/// The eMMC controller, which is not a PCI function.
-const EMMC_HID: [u8; 8] = *b"AMDI0040";
-
-/// An ACPI-only eMMC controller is among the SoC's devices.
-fn emmc(inputs: &Inputs) -> bool {
-    inputs
-        .devices
-        .iter()
-        .any(|device| device.hid.as_bytes() == EMMC_HID)
-}
 
 /// The device entries of the IOMMU of root bridge `index`.
-fn devices(inputs: &Inputs, index: usize, windows: &[GsiWindow]) -> Vec<DeviceEntry> {
+pub(super) fn devices(inputs: &Inputs, index: usize, windows: &[GsiWindow]) -> Vec<DeviceEntry> {
     let rb = &inputs.root_bridges[index];
     let buses = rb.root.buses();
     // The FCH IOAPIC passes ExtINT, NMI, INIT and LINT0/1 (legacy 8259 and
@@ -80,17 +72,12 @@ fn devices(inputs: &Inputs, index: usize, windows: &[GsiWindow]) -> Vec<DeviceEn
                 },
             ]
         });
-    // The reference assigns the ACPI-only eMMC a synthetic requester ID
-    // 00:13.1. It is not an enumerated PCI function.
-    let emmc = (rb.fch && emmc(inputs)).then(|| DeviceEntry::AcpiHid {
-        device: bdf(0, 0x13, 1),
-        hid: EMMC_HID,
-        dte: (legacy + Dte::SYS_MGT::Translate).value,
-    });
+    // The SoC's devices that are not PCI functions sit behind the FCH.
+    let soc = inputs.ivrs_devices.iter().copied().filter(|_| rb.fch);
     core::iter::once(range)
         .chain(nbio_ioapic)
         .chain(fch)
-        .chain(emmc)
+        .chain(soc)
         .collect()
 }
 
@@ -120,6 +107,9 @@ pub fn ivrs(inputs: &Inputs, windows: &[GsiWindow]) -> Option<Vec<u8>> {
         .collect();
     build_ivrs(&IvrsConfig {
         iommus: &blocks,
-        acpi_hid: emmc(inputs),
+        acpi_hid: inputs
+            .ivrs_devices
+            .iter()
+            .any(|entry| matches!(entry, DeviceEntry::AcpiHid { .. })),
     })
 }

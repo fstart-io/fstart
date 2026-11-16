@@ -65,6 +65,11 @@ pub trait DieSoc: crate::soc::DieInit {
     ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
         Ok((Devices::new(), alloc::vec::Vec::new()))
     }
+    /// The IOMMU requesters of those controllers that are not PCI functions
+    /// ([`crate::acpi::Inputs::ivrs_devices`]).
+    fn ivrs_devices(_state: &Self::State) -> alloc::vec::Vec<fstart_acpi::ivrs::DeviceEntry> {
+        alloc::vec::Vec::new()
+    }
     /// The DRAM of each die, for SRAT (domain = die), if the dies are NUMA
     /// nodes: several and not interleaved.
     fn die_memory(_dies: &[Die<Self, GlobalEcam>]) -> Option<DieMemory> {

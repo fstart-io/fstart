@@ -143,6 +143,23 @@ pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, AmlError> {
     })
 }
 
+/// The eMMC controller's IOMMU requester: not a PCI function, it gets the
+/// reference's synthetic ID 00:13.1 and passes the legacy interrupts.
+pub fn emmc_requester() -> fstart_acpi::ivrs::DeviceEntry {
+    use fstart_acpi::ivrs::{DeviceEntry, Dte};
+    DeviceEntry::AcpiHid {
+        device: fstart_pci::bdf(0, 0x13, 1),
+        hid: *b"AMDI0040",
+        dte: (Dte::INIT_PASS::SET
+            + Dte::EXT_INT_PASS::SET
+            + Dte::NMI_PASS::SET
+            + Dte::SYS_MGT::Translate
+            + Dte::LINT0_PASS::SET
+            + Dte::LINT1_PASS::SET)
+            .value,
+    }
+}
+
 fn emmc_card() -> Result<Vec<u8>, AmlError> {
     use fstart_acpi::aml_linker::scope_vec;
     use fstart_acpi_macros::acpi_dsl;
@@ -176,6 +193,18 @@ mod tests {
         assert!(aml.windows(8).any(|w| w == b"AMDI0040"));
         assert!(aml.windows(4).any(|w| w == b"CARD"));
         assert!(aml.windows(4).any(|w| w == b"_RMV"));
+    }
+
+    #[test]
+    fn emmc_requester_is_the_references() {
+        assert_eq!(
+            emmc_requester(),
+            fstart_acpi::ivrs::DeviceEntry::AcpiHid {
+                device: 0x0099,
+                hid: *b"AMDI0040",
+                dte: 0xf7,
+            }
+        );
     }
 
     #[test]
