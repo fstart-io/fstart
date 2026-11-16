@@ -556,7 +556,7 @@ impl IntelI945 {
         // SAFETY: one-time legacy PCI config write to enable ECAM before the
         // ECAM MMIO accessor can be used.
         unsafe {
-            fstart_core::pio::pci_cfg_write32(
+            fstart_pci::cf8::write32(
                 0,
                 hostbridge::HOST_DEV,
                 hostbridge::HOST_FUNC,

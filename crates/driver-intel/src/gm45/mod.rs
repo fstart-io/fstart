@@ -230,8 +230,8 @@ impl IntelGm45 {
             };
             // SAFETY: the only legacy config accesses, needed to enable ECAM.
             unsafe {
-                fstart_core::pio::pci_cfg_write32(0, 0, 0, 0x64, 0);
-                fstart_core::pio::pci_cfg_write32(
+                fstart_pci::cf8::write32(0, 0, 0, 0x64, 0);
+                fstart_pci::cf8::write32(
                     0,
                     0,
                     0,

@@ -2,10 +2,13 @@
 //!
 //! This crate is deliberately backend-neutral: it re-exports the canonical
 //! `pci_types` address/configuration API and adds fstart's resource windows,
-//! standard register constants, typed overlays, and ECAM allocator.
+//! standard register constants, typed overlays, ECAM allocator and, on x86,
+//! the legacy CF8/CFC configuration mechanism.
 
 #![no_std]
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod cf8;
 pub mod config;
 pub mod ecam;
 pub mod ecam_host;

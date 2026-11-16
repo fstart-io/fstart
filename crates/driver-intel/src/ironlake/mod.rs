@@ -262,8 +262,8 @@ impl IntelIronlake {
                 + PCIEXBAR::ENABLE::SET;
             // SAFETY: the only legacy config cycles, needed to enable ECAM.
             unsafe {
-                fstart_core::pio::pci_cfg_write32(255, 0, 1, 0x54, 0);
-                fstart_core::pio::pci_cfg_write32(255, 0, 1, 0x50, pciexbar.value);
+                fstart_pci::cf8::write32(255, 0, 1, 0x54, 0);
+                fstart_pci::cf8::write32(255, 0, 1, 0x50, pciexbar.value);
             }
         }
         ecam::init(self.config.ecam_base as usize);

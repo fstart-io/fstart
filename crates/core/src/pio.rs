@@ -4,9 +4,9 @@
 //! which access the separate 64 KiB I/O port address space (ports 0x0000
 //! through 0xFFFF).
 //!
-//! Legacy x86 devices (UART at 0x3F8, PCI config at 0xCF8/0xCFC, PIT at
-//! 0x40-0x43, fw_cfg at 0x510/0x511) use port I/O rather than
-//! memory-mapped I/O.
+//! Legacy x86 devices (UART at 0x3F8, PIT at 0x40-0x43, fw_cfg at
+//! 0x510/0x511) use port I/O rather than memory-mapped I/O. PCI
+//! configuration through 0xCF8/0xCFC lives in `fstart_pci::cf8`.
 //!
 //! # Safety
 //!
@@ -69,106 +69,6 @@ pub unsafe fn inl(port: u16) -> u32 {
 #[inline(always)]
 pub unsafe fn outl(port: u16, val: u32) {
     unsafe { x86::io::outl(port, val) }
-}
-
-// -----------------------------------------------------------------------
-// Legacy PCI configuration access via CF8/CFC I/O ports
-// -----------------------------------------------------------------------
-
-/// CF8 address port for legacy PCI config access.
-pub const PCI_CF8: u16 = 0xCF8;
-/// CFC data port for legacy PCI config access.
-pub const PCI_CFC: u16 = 0xCFC;
-
-/// Build a CF8 address for legacy PCI config access.
-///
-/// Format: `(1 << 31) | (bus << 16) | (dev << 11) | (func << 8) | (reg & 0xFC)`
-#[inline]
-pub const fn cf8_addr(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
-    0x8000_0000
-        | ((bus as u32) << 16)
-        | ((dev as u32) << 11)
-        | ((func as u32) << 8)
-        | ((reg as u32) & 0xFC)
-}
-
-/// Read a 32-bit PCI config register via legacy CF8/CFC I/O ports.
-///
-/// # Safety
-/// Must only be called on x86 systems with legacy PCI config access.
-#[inline]
-pub unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
-    unsafe {
-        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
-        inl(PCI_CFC)
-    }
-}
-
-/// Write a 32-bit PCI config register via legacy CF8/CFC I/O ports.
-///
-/// # Safety
-/// Must only be called on x86 systems with legacy PCI config access.
-#[inline]
-pub unsafe fn pci_cfg_write32(bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
-    unsafe {
-        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
-        outl(PCI_CFC, val);
-    }
-}
-
-/// Read an aligned 16-bit PCI config register via legacy CF8/CFC I/O ports.
-///
-/// # Safety
-/// Must only be called on x86 systems with legacy PCI config access; the
-/// caller must serialize CF8/CFC transactions against other CPUs/interrupts.
-#[inline]
-pub unsafe fn pci_cfg_read16(bus: u8, dev: u8, func: u8, reg: u8) -> u16 {
-    assert!(reg & 1 == 0);
-    unsafe {
-        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
-        inw(PCI_CFC + u16::from(reg & 2))
-    }
-}
-
-/// Write an aligned 16-bit PCI config register via legacy CF8/CFC I/O ports.
-/// Unlike a dword RMW, this does not replay adjacent W1C status registers.
-///
-/// # Safety
-/// Must only be called on x86 systems with legacy PCI config access; the
-/// caller must serialize CF8/CFC transactions against other CPUs/interrupts.
-#[inline]
-pub unsafe fn pci_cfg_write16(bus: u8, dev: u8, func: u8, reg: u8, val: u16) {
-    assert!(reg & 1 == 0);
-    unsafe {
-        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
-        outw(PCI_CFC + u16::from(reg & 2), val);
-    }
-}
-
-/// Read an 8-bit PCI config register via legacy CF8/CFC I/O ports.
-///
-/// # Safety
-/// Must only be called on x86 systems with legacy PCI config access; the
-/// caller must serialize CF8/CFC transactions against other CPUs/interrupts.
-#[inline]
-pub unsafe fn pci_cfg_read8(bus: u8, dev: u8, func: u8, reg: u8) -> u8 {
-    unsafe {
-        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
-        inb(PCI_CFC + u16::from(reg & 3))
-    }
-}
-
-/// Write an 8-bit PCI config register via legacy CF8/CFC I/O ports.
-///
-/// # Safety
-/// Must only be called on x86 systems with legacy PCI config access; the
-/// caller must serialize CF8/CFC transactions against other CPUs/interrupts.
-#[inline]
-pub unsafe fn pci_cfg_write8(bus: u8, dev: u8, func: u8, reg: u8, val: u8) {
-    unsafe {
-        outl(PCI_CF8, cf8_addr(bus, dev, func, reg));
-        outb(PCI_CFC + u16::from(reg & 3), val);
-    }
 }
 
 /// Tiny I/O delay via a dummy write to port 0x80 (POST code port).
