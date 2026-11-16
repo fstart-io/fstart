@@ -149,11 +149,9 @@ pub fn route_resources<S: Soc, P: ConfigRegionAccess + Copy>(
     Ok(plan)
 }
 
-/// Route the legacy VGA ranges to die 0's IOMS on every die.
-pub fn route_vga<S: Soc, P: ConfigRegionAccess + Copy>(dies: &[Die<S, P>]) {
-    if let Some(first) = dies.first() {
-        program::vga::<Df2, _>(&nodes(dies), first.ioms_fabric_id().into());
-    }
+/// Route the legacy VGA ranges to the IOMS `fabric_id` on every die.
+pub fn route_vga<S: Soc, P: ConfigRegionAccess + Copy>(dies: &[Die<S, P>], fabric_id: u16) {
+    program::vga::<Df2, _>(&nodes(dies), fabric_id);
 }
 
 fn nodes<S: Soc, P: ConfigRegionAccess + Copy>(

@@ -51,7 +51,10 @@ The flow (`flow`) is the same for every SoC, and so are its services, each
 of which takes the SoC's data: the reset layout (`layout`), the memory map
 (`memory`), the boot media (`media`), MP (`mp` with the driver's
 `ccx::mp::Fam17hCpu`), the fabric (`soc::Fabric`: the PCI segment and the
-DF plan's root bridges, the PCI roots), SMM installation (`tseg`) and its
+DF plan's root bridges, the PCI roots), legacy VGA (the display behind
+the port a board's lanes attach its onboard display to, else the first
+VGA-compatible one; the SoC routes the DF's VGA window to its root
+bridge, `Init::route_legacy_vga`), SMM installation (`tseg`) and its
 handler (`smm`: one SMRAM configuration and installer, the handler on the
 driver's SMI dispatcher, which a SoC with SMM work of its own extends, as
 `sp3::smm` does), options (`options`), measured boot (`tpm`), the ACPI

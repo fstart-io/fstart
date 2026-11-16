@@ -433,7 +433,8 @@ impl<S: Soc> Stage<S, Cpus<S>> {
             phase: Cpus(mut silicon),
         } = self;
         let ctx = machine.ctx();
-        let pci = enumerate::<S>(&ctx, &silicon);
+        let mut pci = enumerate::<S>(&ctx, &silicon);
+        legacy_vga::<S>(&ctx, &silicon.state, &mut pci);
         // PCI resources become known after AMD's required MP and SMU steps.
         // Extend cacheability coherently on all CPUs without replacing AMD's
         // fixed DRAM routing, high-memory TOM2WB or the existing RAM/ROM MTRRs.
@@ -592,6 +593,37 @@ impl<S: Soc> Stage<S, Published<S>> {
 
 /// PCI enumeration and resource allocation below every root bridge of the
 /// SoC, each from what the fabric routes to it.
+/// Legacy VGA: the VGA-compatible display behind the port the board
+/// attaches its onboard display to, else the first one, gets the legacy VGA
+/// ranges. The bridges to it forward them, the fabric routes them to its
+/// root bridge (to the primary without a display), and that root bridge
+/// reports the memory (`_CRS`).
+fn legacy_vga<S: Soc>(ctx: &Ctx<'_, S>, state: &S::State, pci: &mut PciEcam) {
+    let display = S::display_port(ctx, state, pci)
+        .and_then(|port| pci.legacy_vga_display(Some(port)))
+        .or_else(|| pci.legacy_vga_display(None));
+    let fabric = S::fabric(ctx, state);
+    let Some(root) = display
+        .and_then(|display| pci.forward_legacy_vga(display))
+        .or_else(|| fabric.bridges.iter().position(|rb| rb.primary))
+    else {
+        fail::<S>("legacy VGA")
+    };
+    if pci.forward_legacy_vga_memory(root).is_err() {
+        fail::<S>("legacy VGA");
+    }
+    S::route_legacy_vga(ctx, state, &fabric.bridges[root]);
+    if let Some(display) = display {
+        fstart_log::info!(
+            "PCI {}:{}.{}: legacy VGA, root bridge {}",
+            Hex(display.bus().into()),
+            Hex(display.device().into()),
+            display.function(),
+            root
+        );
+    }
+}
+
 fn enumerate<S: Soc>(ctx: &Ctx<'_, S>, silicon: &Silicon<S>) -> PciEcam {
     let Some(roots) = S::fabric(ctx, &silicon.state).roots() else {
         fail::<S>("PCI root")
