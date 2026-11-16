@@ -3,9 +3,11 @@ extern crate std;
 use super::*;
 use crate::ccx::tsc::testing::Delay;
 use crate::cpu::{Package, Revision};
+use crate::fch::irq;
 use crate::{
     df,
-    fch::{Acpimmio, Bus, Fch, Space},
+    fch::FchHw,
+    fch::testing::{Fch, Space, Spaces},
     smn::testing::{SmnModel, SmnTest},
     soc::Soc,
     testing::Zp as Zeppelin,
@@ -59,11 +61,11 @@ impl World {
 #[derive(Clone, Copy)]
 struct Hw<'a>(&'a RefCell<World>);
 impl Hw<'_> {
-    fn fch(&self) -> Fch<Self> {
-        Fch::new(*self, Acpimmio::DIE0)
+    fn fch(&self) -> Fch<'_, Self, fstart_core::services::ManualTimer> {
+        Fch::new(self, fstart_core::services::ManualTimer::new())
     }
 }
-impl Bus for Hw<'_> {
+impl Spaces for Hw<'_> {
     fn read(&self, space: Space, address: u32, bytes: u8) -> u32 {
         let world = self.0.borrow();
         if space == Space::Io
@@ -172,13 +174,15 @@ fn dies(world: &RefCell<World>) -> Vec<crate::df::Die<Zeppelin, Hw<'_>>> {
 #[test]
 fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
     let world = RefCell::new(World::default());
-    let bus = Hw(&world);
+    let hw = Hw(&world);
+    let fch = hw.fch();
+    let bus = fch.io();
     for source in irq::MISC..=irq::MISC2 {
-        irq::write(&bus, source, irq::Mode::Pic, 0xa0 | source);
-        irq::write(&bus, source, irq::Mode::Apic, 0xb0 | source);
+        irq::write(bus, irq::index(source, irq::Mode::Pic), 0xa0 | source);
+        irq::write(bus, irq::index(source, irq::Mode::Apic), 0xb0 | source);
     }
-    irq::write(&bus, irq::SIRQA, irq::Mode::Apic, 7);
-    irq::write(&bus, 0x13, irq::Mode::Pic, 0x42); // reserved index
+    irq::write(bus, irq::index(irq::SIRQA, irq::Mode::Apic), 7);
+    irq::write(bus, irq::index(0x13, irq::Mode::Pic), 0x42); // reserved index
     // As the MJ11 lists them: the MISC entries come with zeros.
     let routes = [
         irq::Route {
@@ -202,7 +206,7 @@ fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
             apic: 0,
         },
     ];
-    irq::write_routing(&bus, &routes).unwrap();
+    irq::write_routing(bus, &routes).unwrap();
 
     let w = world.borrow();
     assert_eq!(
@@ -237,7 +241,7 @@ fn irq_routing_keeps_misc_controls_and_disconnects_the_rest() {
         },
     ];
     assert_eq!(
-        irq::write_routing(&bus, &bad),
+        irq::write_routing(bus, &bad),
         Err(irq::Error::InvalidSource(1))
     );
     assert!(world.borrow().events.is_empty());
@@ -344,7 +348,7 @@ fn multi_reset_moves_acpimmio_while_io_is_routed_to_the_die() {
         world.borrow_mut().smn.insert((DIE1_BUS, ssts(port)), 4);
     });
     multi::reset(
-        &Hw(&world),
+        &Hw(&world).fch(),
         &dies,
         Package::Sp4,
         |_| DIE1_NONPCI,
@@ -409,7 +413,7 @@ fn multi_usb_and_env_follow_the_board_and_the_straps() {
     ];
     multi::usb(&dies, &board, Package::Sp4, &mut Delay(|_| ()));
     multi::env(
-        &Hw(&world),
+        &Hw(&world).fch(),
         &dies,
         &board,
         |_| DIE1_NONPCI,
@@ -440,7 +444,7 @@ fn multi_usb_and_env_follow_the_board_and_the_straps() {
             .insert((DIE1_BUS, register), strap | 5);
     }
     multi::env(
-        &Hw(&world),
+        &Hw(&world).fch(),
         &dies,
         &board,
         |_| DIE1_NONPCI,

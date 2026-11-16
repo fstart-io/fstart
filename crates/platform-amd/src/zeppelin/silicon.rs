@@ -3,7 +3,7 @@
 //! transports, so the host model of the dies can log the whole sequence.
 //! It is split where the vendor board PEIMs run, so a board does that work
 //! between the steps ([`super::init`] binds them to [`crate::soc::Init`]).
-use super::{self as soc, Config, Die, ECAM, ECAM_BUSES, MAX_DIES, Zeppelin};
+use super::{self as soc, Config, Die, ECAM, ECAM_BUSES, MAX_DIES, NONPCI_MMIO_SIZE};
 use embedded_hal::delay::DelayNs;
 use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_core::services::{Timer, TimerDelay};
@@ -12,7 +12,7 @@ use fstart_driver_amd::{
     apob::Apob,
     ccx::{self, CacWeights, Thread},
     df, dxio,
-    fch::{Bus, Fch, early, post, taishan},
+    fch::{FchHw, early, irq, post, taishan},
     nbio::{self, iohc, iommu},
     psp,
     smu::v9 as smu,
@@ -39,10 +39,15 @@ pub struct Identity {
     pub package: Package,
 }
 
+/// The DF plan's root bridge of each die, in die order.
+pub type Bridges = heapless::Vec<df::plan::RootBridgePlan, MAX_DIES>;
+
 /// The silicon state the later phases need.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct State {
     pub identity: Identity,
+    /// What the DF routes to each die's root complex.
+    pub bridges: Bridges,
     /// The non-PCI MMIO pool of each die.
     pub nonpci: [u32; MAX_DIES],
     /// The NBIO IOAPIC of each die.
@@ -74,12 +79,12 @@ pub struct SmuPages(pub [[u8; 4096]; 2 * MAX_DIES]);
 pub struct SmuPolicy(pub [u8; 0x80]);
 
 /// FCH setup before the console: ACPI MMIO, LPC/SPI, SMBus, CF9, legacy I/O.
-pub fn fch_pre_init(fch: &Fch<impl Bus>) -> Result<(), early::Error> {
+pub fn fch_pre_init(fch: &impl FchHw) -> Result<(), early::Error> {
     taishan::pre_init(fch, true)
 }
 
 /// Right after the console: the AC power-loss policy.
-pub fn fch_early_init(fch: &Fch<impl Bus>, config: &Config) {
+pub fn fch_early_init(fch: &impl FchHw, config: &Config) {
     early::set_power_failure_state(fch, config.fch.power_failure);
 }
 
@@ -89,12 +94,12 @@ pub fn fch_early_init(fch: &Fch<impl Bus>, config: &Config) {
 /// the FCH's SMBus run after this.
 pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     apob: Option<&Apob>,
     timer: &impl Timer,
-) -> Result<[u32; MAX_DIES], &'static str> {
+) -> Result<(Bridges, [u32; MAX_DIES]), &'static str> {
     let clock = &mut TimerDelay(timer);
     let Identity { revision, package } = identity;
     let count = dies.len() as u8;
@@ -111,11 +116,20 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
             Hex(r.fabric_id.into())
         );
     }
+    // Each die's root complex in die order, with its NBIO's own MMIO at
+    // the top of its window below 4 GiB.
+    let mut bridges = Bridges::new();
     let mut nonpci = [0; MAX_DIES];
-    for die in dies {
-        nonpci[usize::from(die.index())] =
-            df::zp::nonpci_mmio_base::<Zeppelin>(&dies[0].df(), die.index())
-                .ok_or("non-PCI MMIO pool")?;
+    for (i, rb) in plan.root_bridges.iter().enumerate().take(MAX_DIES) {
+        let pool = rb.below_pools.non_pci;
+        if pool.size != u64::from(NONPCI_MMIO_SIZE) || pool.end() > 1 << 32 {
+            return Err("non-PCI MMIO pool");
+        }
+        let _ = bridges.push(*rb);
+        nonpci[i] = pool.base as u32;
+    }
+    if bridges.len() != dies.len() {
+        return Err("DF plan root bridges");
     }
     for die in dies {
         df::zp::early_init(&die.df(), count, revision, &FABRIC);
@@ -133,18 +147,13 @@ pub fn pre_mp_reset<P: ConfigRegionAccess + Copy>(
     // FchTaishanPei.
     taishan::reset_init(fch, revision);
     taishan::sata::reset(&dies[0].smn(), clock);
-    taishan::multi::reset(
-        fch.bus(),
-        dies,
-        package,
-        |die| nonpci[usize::from(die)],
-        clock,
-    );
-    Ok(nonpci)
+    taishan::multi::reset(fch, dies, package, |die| nonpci[usize::from(die)], clock);
+    Ok((bridges, nonpci))
 }
 
 /// What [`pre_mp_dxio`] leaves for [`pre_mp_finish`].
 pub struct Trained {
+    bridges: Bridges,
     nonpci: [u32; MAX_DIES],
     ioapics: [u32; MAX_DIES],
     psp_bars: [u32; MAX_DIES],
@@ -158,12 +167,12 @@ pub struct Trained {
 #[allow(clippy::too_many_arguments)]
 pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     msr: &impl MsrAccess,
     config: &Config,
     identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
-    nonpci: [u32; MAX_DIES],
+    (bridges, nonpci): (Bridges, [u32; MAX_DIES]),
     buffers: &'static mut dxio::zp::Buffers<MAX_DIES>,
     timer: &impl Timer,
 ) -> Result<Trained, &'static str> {
@@ -224,6 +233,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
         );
     }
     Ok(Trained {
+        bridges,
         nonpci,
         ioapics,
         psp_bars,
@@ -236,7 +246,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
 #[allow(clippy::too_many_arguments)]
 pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     config: &Config,
     identity: Identity,
     apob: Option<&Apob>,
@@ -248,6 +258,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     let clock = &mut TimerDelay(timer);
     let Identity { revision, package } = identity;
     let Trained {
+        bridges,
         nonpci,
         ioapics,
         psp_bars,
@@ -295,7 +306,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     for die in dies {
         nbio::zp::pre_enumeration_init(die);
     }
-    fch.acpi_decode(taishan::ACPI_PORTS);
+    fstart_driver_amd::fch::acpimmio::acpi_decode(fch.acpi(), taishan::ACPI_PORTS);
     taishan::env_init(
         fch,
         &dies[0].smn(),
@@ -303,11 +314,18 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
         config.fch.spread_spectrum,
     );
     if devices[0].sata {
-        taishan::sata::init(fch, 0, &dies[0].smn(), config.subsystem_id, clock);
+        taishan::sata::init(
+            fch.acpi(),
+            fch.io(),
+            0,
+            &dies[0].smn(),
+            config.subsystem_id,
+            clock,
+        );
     }
     taishan::multi::xgbe_init(&dies[0].smn());
     taishan::multi::env(
-        fch.bus(),
+        fch,
         dies,
         devices,
         |die| nonpci[usize::from(die)],
@@ -317,6 +335,7 @@ pub fn pre_mp_finish<P: ConfigRegionAccess + Copy>(
     post(fch, 0x41);
     State {
         identity,
+        bridges,
         nonpci,
         ioapics,
         psp_bars,
@@ -337,14 +356,13 @@ pub fn cpus_up<P: ConfigRegionAccess + Copy>(dies: &[Die<P>], delay: &mut impl D
 }
 
 /// The PCI interrupt router, before enumeration.
-pub fn route_interrupts(fch: &Fch<impl Bus>, config: &Config) -> Result<(), &'static str> {
-    taishan::irq::write_routing(fch.bus(), config.fch.irq_routes)
-        .map_err(|_| "PCI interrupt routing")
+pub fn route_interrupts(fch: &impl FchHw, config: &Config) -> Result<(), &'static str> {
+    irq::write_routing(fch.io(), config.fch.irq_routes).map_err(|_| "PCI interrupt routing")
 }
 
 /// After the resource allocation, before the board's final hook.
-pub fn after_resources(fch: &Fch<impl Bus>) {
-    fch.acpi_ports(taishan::ACPI_PORTS);
+pub fn after_resources(fch: &impl FchHw) {
+    fstart_driver_amd::fch::acpimmio::acpi_ports(fch.acpi(), taishan::ACPI_PORTS);
 }
 
 /// The ReadyToBoot of the vendor firmware: the SATA controller of die 0 at
@@ -352,7 +370,7 @@ pub fn after_resources(fch: &Fch<impl Bus>) {
 /// ready-to-boot work runs after this, then [`end_of_post`].
 pub fn ready_to_boot<P: ConfigRegionAccess + Copy>(
     dies: &[Die<P>],
-    fch: &Fch<impl Bus>,
+    fch: &impl FchHw,
     sata: Option<PciAddress>,
 ) {
     if let Some(sata) = sata {

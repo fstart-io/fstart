@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byte-addressed register spaces ("windows") and tock-registers on them:
-//! host MMIO, x86 ports, the SMN of a die or socket, a PCI function's
-//! config space, or an FCH register space a [`crate::fch::Bus`] carries.
-//! Code that programs a block takes the window it lives in, so the same
-//! code runs on any FCH of any socket or die, and on a host model.
+//! host MMIO, x86 ports, the SMN of a die or socket, or a PCI function's
+//! config space. Code that programs a block takes the window it lives in,
+//! so the same code runs on any FCH of any socket or die, and on a host
+//! model.
 //!
-//! [`Op`] tables replay recovered fixed register programs.
+//! A register is defined once as an [`At`]: its offset in the window, its
+//! width and its bitfields. [`Op`] tables replay recovered fixed register
+//! programs.
 
 use core::marker::PhantomData;
 
@@ -51,6 +53,46 @@ pub trait Window {
         Self: Sized,
     {
         Reg::new(self, off)
+    }
+
+    /// The register `at` defines.
+    fn at<T: Width, R: RegisterLongName>(&self, at: At<T, R>) -> Reg<&Self, T, R>
+    where
+        Self: Sized,
+    {
+        Reg::new(self, at.offset)
+    }
+}
+
+/// A register of width `T` with the bitfields `R` at `offset` in its
+/// window, for [`Window::at`].
+pub struct At<T, R = ()> {
+    pub offset: u32,
+    _type: PhantomData<fn() -> (T, R)>,
+}
+impl<T, R> Clone for At<T, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T, R> Copy for At<T, R> {}
+impl<T, R> core::fmt::Debug for At<T, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "At({:#x})", self.offset)
+    }
+}
+impl<T, R> PartialEq for At<T, R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset
+    }
+}
+impl<T, R> Eq for At<T, R> {}
+impl<T: Width, R: RegisterLongName> At<T, R> {
+    pub const fn new(offset: u32) -> Self {
+        Self {
+            offset,
+            _type: PhantomData,
+        }
     }
 }
 
@@ -149,6 +191,39 @@ impl<W: Window, T: Width, R: RegisterLongName> Writeable for Reg<W, T, R> {
     #[inline(always)]
     fn set(&self, value: T) {
         T::write(&self.window, self.off, value)
+    }
+}
+
+/// The part of `window` from `base` on: a block inside a larger window
+/// (an FCH's relocated ACPI-MMIO block in physical MMIO).
+#[derive(Clone, Copy)]
+pub struct Offset<W> {
+    window: W,
+    base: u32,
+}
+impl<W: Window> Offset<W> {
+    pub const fn new(window: W, base: u32) -> Self {
+        Self { window, base }
+    }
+}
+impl<W: Window> Window for Offset<W> {
+    fn read32(&self, off: u32) -> u32 {
+        self.window.read32(self.base + off)
+    }
+    fn write32(&self, off: u32, value: u32) {
+        self.window.write32(self.base + off, value)
+    }
+    fn read16(&self, off: u32) -> u16 {
+        self.window.read16(self.base + off)
+    }
+    fn write16(&self, off: u32, value: u16) {
+        self.window.write16(self.base + off, value)
+    }
+    fn read8(&self, off: u32) -> u8 {
+        self.window.read8(self.base + off)
+    }
+    fn write8(&self, off: u32, value: u8) {
+        self.window.write8(self.base + off, value)
     }
 }
 
@@ -347,6 +422,29 @@ impl<P: ConfigRegionAccess> Window for SmnWindow<P> {
     }
 }
 
+/// One function's config space through ECAM, with exact-width accesses
+/// (byte and word registers next to status bits take no read-modify-write).
+impl Window for fstart_pci::EcamDevice {
+    fn read32(&self, off: u32) -> u32 {
+        fstart_pci::EcamDevice::read32(self, off as u16)
+    }
+    fn write32(&self, off: u32, value: u32) {
+        fstart_pci::EcamDevice::write32(self, off as u16, value)
+    }
+    fn read16(&self, off: u32) -> u16 {
+        fstart_pci::EcamDevice::read16(self, off as u16)
+    }
+    fn write16(&self, off: u32, value: u16) {
+        fstart_pci::EcamDevice::write16(self, off as u16, value)
+    }
+    fn read8(&self, off: u32) -> u8 {
+        fstart_pci::EcamDevice::read8(self, off as u16)
+    }
+    fn write8(&self, off: u32, value: u8) {
+        fstart_pci::EcamDevice::write8(self, off as u16, value)
+    }
+}
+
 /// The config space of one PCI function (dword accesses).
 #[derive(Clone, Copy)]
 pub struct ConfigWindow<P> {
@@ -370,5 +468,59 @@ impl<P: ConfigRegionAccess> Window for ConfigWindow<P> {
     fn write32(&self, off: u32, value: u32) {
         // SAFETY: `new`'s contract.
         unsafe { self.pci.write(self.function, off as u16, value) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fch::model::Mem;
+    use tock_registers::interfaces::ReadWriteable;
+    use tock_registers::register_bitfields;
+
+    register_bitfields![u8,
+        T8 [
+            A OFFSET(1) NUMBITS(2) [],
+            B OFFSET(7) NUMBITS(1) []
+        ]
+    ];
+
+    #[test]
+    fn ops_and_typed_registers() {
+        let m = Mem::default();
+        m.put(0x10, 4, 0xffff_0000);
+        apply(
+            &m,
+            &[
+                Op::rmw(0x10, 4, 0xff00_0000, 0x12),
+                Op::store(0x20, 1, 0xaa),
+            ],
+        );
+        assert_eq!(m.get(0x10, 4), 0x00ff_0012);
+        assert_eq!(m.writes(), vec![(0x10, 4, 0x00ff_0012), (0x20, 1, 0xaa)]);
+        let r = m.reg::<u8, T8::Register>(0x20);
+        r.modify(T8::A.val(1) + T8::B::CLEAR);
+        assert_eq!(m.get(0x20, 1), 0x2a);
+    }
+
+    #[test]
+    fn narrow_access_over_a_dword_space() {
+        struct Dwords(Mem);
+        impl Window for Dwords {
+            fn read32(&self, off: u32) -> u32 {
+                assert_eq!(off & 3, 0);
+                self.0.read32(off)
+            }
+            fn write32(&self, off: u32, value: u32) {
+                assert_eq!(off & 3, 0);
+                self.0.write32(off, value)
+            }
+        }
+        let d = Dwords(Mem::default());
+        d.0.put(0x100, 4, 0x4433_2211);
+        d.write8(0x102, 0xee);
+        d.write16(0x100, 0xbeef);
+        assert_eq!(d.0.get(0x100, 4), 0x44ee_beef);
+        assert_eq!(d.read8(0x103), 0x44);
     }
 }

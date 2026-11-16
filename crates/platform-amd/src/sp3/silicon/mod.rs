@@ -23,6 +23,16 @@ pub enum Generation {
 }
 
 impl Generation {
+    /// The FCH generation of the sleep path.
+    pub const fn fch(self) -> fstart_driver_amd::fch::sx::Version {
+        use fstart_driver_amd::fch::sx::Version;
+        match self {
+            Self::Naples => Version::Taishan,
+            Self::Rome => Version::Huashan,
+            Self::Milan => Version::Milan,
+        }
+    }
+
     /// The silicon of this generation's dies.
     pub const fn silicon(self) -> fstart_driver_amd::cpu::Silicon {
         match self {
@@ -173,8 +183,6 @@ mod tests {
 
 pub mod cpu;
 pub mod hw;
-pub mod naples;
-pub mod rome_milan;
 pub mod steps;
 pub use steps::Cppc;
-pub use steps::{Ctx, NonPci, NumaPlan, Policy, Steps};
+pub use steps::{Ctx, NonPci, NumaPlan, Policy};

@@ -4,7 +4,7 @@
 //! board's GPIO tables, ROM sharing and the EC; after [`Init::train_dxio`]
 //! the links are trained.
 use super::{Config, EARLY_AOAC, FchConfig, Picasso, UART_AOAC};
-use crate::soc::{Ctx, DieInit, Entered, Hw, Init, Roots, Soc as _};
+use crate::soc::{Ctx, DieInit, Entered, Fabric, Hw, Init, Soc as _};
 use fstart_arch::x86::{
     cpu::{
         amd::smm::InstalledTseg,
@@ -13,6 +13,7 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::df::plan::RootBridgePlan;
 use fstart_driver_amd::{
     apob::Hole,
     ccx::{
@@ -24,10 +25,10 @@ use fstart_driver_amd::{
     df::rv as fabric,
     dxio,
     fch::{
-        Fch, NativeBus, emmc, espi,
+        FchHw, Native, early, emmc, espi,
         gpio::{Gpio, Pad, Pull},
         sandstone::{self, legacy, preinit, usb},
-        smi::FchSmi,
+        smi, sx,
     },
     nbio::rv as nbio,
     psp::{self, boot::Psp},
@@ -67,6 +68,8 @@ pub struct Runtime {
 
 /// What the silicon init leaves for the steps after MP.
 pub struct State {
+    /// The root complex as the ABL routed it.
+    bridge: RootBridgePlan,
     /// The reserved UMA and the part, when it has a GPU.
     pub uma: Option<(Hole, cpu::Silicon)>,
     /// The eMMC controller, if it is fitted and set up.
@@ -77,6 +80,14 @@ pub struct State {
 }
 
 impl Picasso {
+    /// The root complex as the ABL routed it, the SMU's MMIO its own.
+    fn bridge(ctx: &Ctx<'_, Self>) -> Option<RootBridgePlan> {
+        use fstart_driver_amd::df::{map, plan::Window, root};
+        let smu = Window::new(nbio::SMU_MMIO_BASE.into(), 0x28_0000);
+        let routes = map::root_complex(ctx.hw.dies.first()?)?;
+        root::routed(&routes, 0, &Self::pci_segment(ctx.hw), smu)
+    }
+
     /// The NBIO IOAPIC.
     pub const IOAPIC: u32 = 0xfec0_1000;
 }
@@ -101,15 +112,20 @@ impl Init for Picasso {
         Hw::enter(msr, super::ECAM, super::ECAM_BUSES.into(), |fch, clock| {
             let mut delay = clock.ok_or("TSC frequency")?;
             let uart = config.fch.console_uart;
-            fch.enable_legacy_decode();
+            fstart_driver_amd::fch::acpimmio::enable_legacy_decode(fch.acpi());
             // Power all common early devices before waiting, then the UART.
-            fch.power_devices(EARLY_AOAC, 10000, &mut delay)
-                .map_err(|_| "AOAC power")?;
+            fstart_driver_amd::fch::acpimmio::power_devices(
+                fch.acpi(),
+                EARLY_AOAC,
+                10000,
+                &mut delay,
+            )
+            .map_err(|_| "AOAC power")?;
             let aoac = *UART_AOAC.get(usize::from(uart)).ok_or("console UART")?;
-            fch.power_devices(&[aoac], 10000, &mut delay)
+            fstart_driver_amd::fch::acpimmio::power_devices(fch.acpi(), &[aoac], 10000, &mut delay)
                 .map_err(|_| "AOAC power")?;
             // Range_0 comes out of reset enabled; clear legacy UART aliases.
-            fch.clear_legacy_uart_decode();
+            fstart_driver_amd::fch::uart::set_legacy_decode(fch, 0);
             let pins = match uart {
                 0 => [
                     Pad::native(138, 0, Pull::None),
@@ -128,9 +144,7 @@ impl Init for Picasso {
                     Pad::native(142, 1, Pull::None),
                 ],
             };
-            // SAFETY: as the flow's FCH: BSP only, before the console.
-            let fch = Fch::new(unsafe { NativeBus::new() }, fch.acpimmio());
-            Gpio::new(fch, Picasso::GPIO_BANK)
+            Gpio::new(fch.acpi(), Picasso::GPIO_BANK)
                 .configure(&pins, &[])
                 .map_err(|_| "console pads")
         })
@@ -266,9 +280,9 @@ impl Init for Picasso {
         }
         .map_err(|_| "SMU power policy")?;
         sandstone::alink_init(&ctx.hw.fch);
-        ctx.hw.fch.acpi_decode(sandstone::ACPI_PORTS);
+        fstart_driver_amd::fch::acpimmio::acpi_decode(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         legacy::initialize(&ctx.hw.fch, config.fch.espi.is_some(), false);
-        legacy::lpc_init(ctx.hw.fch.bus());
+        legacy::lpc_init(&ctx.hw.fch);
         sandstone::clock_init(smn);
         // SAFETY: BSP owns the decoded fixed USB PHY registers.
         usb::initialize(
@@ -305,9 +319,11 @@ impl Init for Picasso {
             "native-picasso",
             microcode,
             policy,
-            |policy, msr, thread| {
+            |policy, msr| {
                 let bsp = msr.reg(APIC_BASE).is_set(ApicBase::BSP);
-                policy.initialize(msr, bsp, thread).is_ok()
+                policy
+                    .initialize(msr, bsp, fstart_driver_amd::ccx::Thread::current())
+                    .is_ok()
             },
         ))
     }
@@ -356,8 +372,9 @@ impl Init for Picasso {
             None
         };
         nbio::late::post_silicon(smn, identity, &mut delay).map_err(|_| "NBIO final init")?;
-        ctx.hw.fch.acpi_ports(sandstone::ACPI_PORTS);
+        fstart_driver_amd::fch::acpimmio::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         Ok(State {
+            bridge: Self::bridge(ctx).ok_or("DF routes")?,
             uma: uma.map(|region| (region, identity.silicon)),
             emmc,
             bsp_apic: apic_ids.first().copied().unwrap_or(0) as u8,
@@ -365,18 +382,15 @@ impl Init for Picasso {
         })
     }
 
-    fn roots(ctx: &Ctx<'_, Self>, _: &State) -> Option<Roots> {
-        ctx.hw.roots(&Self::pci_segment(ctx.hw), |die| {
-            if die == 0 {
-                (nbio::SMU_MMIO_BASE.into(), 0x28_0000)
-            } else {
-                (0, 0)
-            }
-        })
+    fn fabric<'a>(ctx: &Ctx<'_, Self>, state: &'a State) -> Fabric<'a> {
+        Fabric {
+            segment: Self::pci_segment(ctx.hw),
+            bridges: core::slice::from_ref(&state.bridge),
+        }
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
-        ctx.hw.fch.acpi_ports(sandstone::ACPI_PORTS);
+        fstart_driver_amd::fch::acpimmio::acpi_ports(ctx.hw.fch.acpi(), sandstone::ACPI_PORTS);
         Ok(())
     }
 
@@ -415,31 +429,33 @@ fn smu_notice(message: u32, status: u32) {
 
 /// The early FCH setup: LPC/SPI aperture, eSPI, SPI ROM, SMBus.
 fn fch_init(
-    fch: &Fch<NativeBus>,
+    fch: &Native<Tsc>,
     config: &FchConfig,
     timer: &impl fstart_core::services::Timer,
 ) -> Result<(), &'static str> {
-    preinit::prepare_lpc(fch).map_err(|_| "LPC setup")?;
-    // SAFETY: as the flow's FCH: BSP only.
-    let gpio = Gpio::new(
-        Fch::new(unsafe { NativeBus::new() }, fch.acpimmio()),
-        Picasso::GPIO_BANK,
-    );
+    early::prepare_lpc(fch).map_err(|_| "LPC setup")?;
+    let gpio = Gpio::new(fch.acpi(), Picasso::GPIO_BANK);
     if let Some((espi, pads)) = &config.espi {
         gpio.configure(pads, &[]).map_err(|_| "eSPI GPIOs")?;
         // SAFETY: the SPI/eSPI BAR prepare_lpc set up; BSP only.
-        let mut controller = unsafe { espi::Native::new(preinit::SPI_BASE as usize) };
+        let mut controller =
+            unsafe { espi::Native::new(fstart_driver_amd::fch::SPI_BASE as usize) };
         espi::initialize(&mut controller, timer, espi).map_err(|_| "eSPI link")?;
         fstart_log::info!("picasso: eSPI link up");
     }
     preinit::configure_spi(fch, config.spi).map_err(|_| "SPI setup")?;
-    preinit::initialize_smbus(fch).map_err(|_| "SMBus setup")
+    early::initialize_smbus(fch).map_err(|_| "SMBus setup")
 }
 
 impl DieInit for Picasso {
-    fn smi(_: &Ctx<'_, Self>, _: &State) -> FchSmi {
-        // SAFETY: BSP exclusively owns the decoded ACPI and SMI blocks.
-        unsafe { FchSmi::new(sandstone::ACPI_PORTS, 0) }
+    fn smi(_: &Ctx<'_, Self>, _: &State) -> smi::Config {
+        smi::Config {
+            ports: sandstone::ACPI_PORTS,
+            acpi_enable: smi::ACPI_ENABLE,
+            acpi_disable: smi::ACPI_DISABLE,
+            gevents: 0,
+            version: sx::Version::Sandstone,
+        }
     }
 
     fn smm_installed(

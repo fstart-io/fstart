@@ -2,12 +2,14 @@
 
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 
-use super::super::acpimmio::{self, AoacDevice, GPIO, IOMUX, MISC, PM, RTC_SHADOW, pm};
-use super::super::alink;
-use super::super::{FchHw, uart};
 use super::sci_map;
 use crate::cpu::Silicon;
-use crate::window::{ConfigWindow, Window, apply, update};
+use crate::fch::acpimmio::{
+    self, AoacDevice, GPIO, IOMUX, MISC, PM, PM_ACPI_CONFIG, PM_DECODE, PM_RTC_SHADOW,
+    PM_S5_RESET_STATUS, PM_SD_CONTROL, PM_SD_ENABLE, RtcShadow,
+};
+use crate::fch::{FchHw, alink, uart};
+use crate::window::{Window, apply, update};
 
 /// What the platform does when AC power returns (PMx5B, FCH_SP3 §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,12 +63,12 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
         update::<u8, _>(acpi, PM + 0xCC, 0x04, 0x03);
     }
     // AcpiCfg: DecEnAcpi, GblEnEn, RtcEnEn, TmrEnEn.
-    acpi.write8(PM + pm::ACPI_CONFIG, 0x17);
+    acpi.write8(PM_ACPI_CONFIG.offset, 0x17);
     if generation != Silicon::Zp {
-        acpi.write8(PM + pm::ACPI_CONFIG + 2, 0x06);
+        acpi.write8(PM_ACPI_CONFIG.offset + 2, 0x06);
     }
     // AcpiCfg[29] RtcWakeAlarm off.
-    update::<u8, _>(acpi, PM + pm::ACPI_CONFIG + 3, 0x20, 0);
+    update::<u8, _>(acpi, PM_ACPI_CONFIG.offset + 3, 0x20, 0);
     update::<u8, _>(acpi, PM + 0xBA, 0, 0x08);
     update::<u8, _>(acpi, PM + 0xBC, 0, 0x02);
     apply(acpi, sci_map(generation));
@@ -74,7 +76,7 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
         Silicon::Zp => apply(acpi, super::super::tables::CLOCK_GEN_NAPLES),
         Silicon::Ssp | Silicon::Gn => {
             // PMxC0 byte: write-1-to-clear ThermalTrip.
-            acpi.write8(PM + pm::S5_RESET_STATUS, 0x01);
+            acpi.write8(PM_S5_RESET_STATUS.offset, 0x01);
             if generation == Silicon::Ssp {
                 acpi.reg::<u16, ()>(PM + 0x3C).set(0x0E80);
             }
@@ -95,9 +97,7 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
 pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) {
     let acpi = hw.acpi();
     // D14F0x10/x11 (SMBus function; ZP leaves them 0). Unnamed.
-    // SAFETY: tasks own the SMBus function.
-    let smbus =
-        unsafe { ConfigWindow::new(hw.pci().clone(), fstart_pci::PciAddress::new(0, 0, 0x14, 0)) };
+    let smbus = hw.smbus();
     let (b10, b11) = match generation {
         Silicon::Zp => (0, 0),
         Silicon::Ssp | Silicon::Gn => (1, 6),
@@ -109,8 +109,8 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) {
     // AcpiCfg[31:24]: PcieNative, WakePinAsGevent on; PcieWakMask (ZP also
     // RstUSBS5) off.
     match generation {
-        Silicon::Zp => update::<u8, _>(acpi, PM + pm::ACPI_CONFIG + 3, 0x23, 0x08),
-        Silicon::Ssp | Silicon::Gn => update::<u8, _>(acpi, PM + pm::ACPI_CONFIG + 3, 0x22, 0x09),
+        Silicon::Zp => update::<u8, _>(acpi, PM_ACPI_CONFIG.offset + 3, 0x23, 0x08),
+        Silicon::Ssp | Silicon::Gn => update::<u8, _>(acpi, PM_ACPI_CONFIG.offset + 3, 0x22, 0x09),
     }
     // PMx02 [4:3]/[2] (Milan does this in ResetHwAcpi).
     if generation != Silicon::Gn {
@@ -126,28 +126,27 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) {
         // GPIO 120 pull-up on, pull-down off.
         update::<u32, _>(acpi, GPIO + 4 * 120, 1 << 21, 1 << 20);
     }
-    acpi.reg::<u8, RTC_SHADOW::Register>(PM + pm::RTC_SHADOW)
-        .modify(
-            RTC_SHADOW::PWR_FAIL_BIT3::CLEAR
-                + RTC_SHADOW::PWR_FAIL_SHADOW_EN::SET
-                + match policy.power_fail {
-                    PowerFailState::Off => RTC_SHADOW::PWR_FAIL::Off,
-                    PowerFailState::On => RTC_SHADOW::PWR_FAIL::On,
-                    PowerFailState::Previous => RTC_SHADOW::PWR_FAIL::Previous,
-                },
-        );
+    acpi.at(PM_RTC_SHADOW).modify(
+        RtcShadow::BIT3::CLEAR
+            + RtcShadow::POWER_STATE::SET
+            + match policy.power_fail {
+                PowerFailState::Off => RtcShadow::POWER_FAILURE::Off,
+                PowerFailState::On => RtcShadow::POWER_FAILURE::On,
+                PowerFailState::Previous => RtcShadow::POWER_FAILURE::Previous,
+            },
+    );
     // PmDecodeEn: HPET on (64-bit width off), ASF clock switch, SMBus/ASF
     // base B00h; Rome/Naples HPET MSI on, Milan off. The contract shows the
     // low byte stored as 40h first, which would turn the legacy, CF9,
     // SMBus and IOAPIC decodes off; am4-re records PmDecodeEn = 20040BF7
     // after the same task on Huashan, so the low byte's other bits are kept
     // here (FCH_SP3 §3.2 af50, open item).
-    update::<u8, _>(acpi, PM + pm::DECODE_EN, 0, 0x40);
+    update::<u8, _>(acpi, PM_DECODE.offset, 0, 0x40);
     let (clear, set) = match generation {
         Silicon::Gn => (0x2018_F400, 0x0004_0B40),
         Silicon::Ssp | Silicon::Zp => (0x0018_F400, 0x2004_0B40),
     };
-    update::<u32, _>(acpi, PM + pm::DECODE_EN, clear, set);
+    update::<u32, _>(acpi, PM_DECODE.offset, clear, set);
     uart::env(hw);
     // IOMUX 59h = 1 (pin 89 function 1).
     acpi.write8(IOMUX + 0x59, 1);
@@ -160,8 +159,8 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) {
 /// (the xHCI strap/SSID lock of both USB controllers, am4-re).
 pub fn sd<H: FchHw>(hw: &H, generation: Silicon) {
     let acpi = hw.acpi();
-    update::<u8, _>(acpi, PM + pm::MANUAL_RESET, 0x40, 0);
-    update::<u8, _>(acpi, PM + pm::PM_E8, 0x01, 0);
+    update::<u8, _>(acpi, PM_SD_CONTROL.offset, 0x40, 0);
+    update::<u8, _>(acpi, PM_SD_ENABLE.offset, 0x01, 0);
     acpimmio::aoac_power(acpi, AoacDevice::SD, false);
     if generation != Silicon::Zp {
         let smn = hw.smn_window();
@@ -173,8 +172,8 @@ pub fn sd<H: FchHw>(hw: &H, generation: Silicon) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::model::fch;
     use super::*;
+    use crate::fch::model::fch;
 
     #[test]
     fn milan_env() {
@@ -208,10 +207,7 @@ mod tests {
     fn sd_off_and_xhci_lock() {
         let hw = fch();
         sd(&hw, Silicon::Ssp);
-        assert_eq!(
-            super::super::super::model::smn(&hw.pci, 0, 0x13e0_004c),
-            0x10
-        );
+        assert_eq!(crate::fch::model::smn(&hw.pci, 0, 0x13e0_004c), 0x10);
         assert_eq!(hw.acpi.writes_to(0x1e72), vec![0]);
     }
 }

@@ -1,11 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The boot media of a PSP-booted stage: the FFS in the boot flash, verified
 //! with the policy the image builder patched into the stage. Every AMD flow
-//! mounts it the same way; what differs is where the firmware and the media
-//! are.
+//! mounts it the same way; what differs is where the firmware ([`Layout`])
+//! and the FFS are.
+use crate::layout::{Layout, Region};
 use alloc::vec::Vec;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_stage::boot::{Codec, MemoryPolicy, MemoryWindow};
+
+/// The flash copy of the reset image the PSP loaded (BIOS directory entry
+/// 0x62) in `flash`, the boot ROM's view of the booted 16 MiB, found
+/// through the BIOS directory of `slot`.
+pub fn reset_image(
+    flash: &'static [u8],
+    slot: fstart_amdfw_format::efs::BiosDirectorySlot,
+) -> Option<&'static [u8]> {
+    use fstart_amdfw_format::{Flash, Profile, ROM2_BASE, directory::bios};
+    let profile = Profile::for_slot(slot);
+    Flash::region(flash, 0, ROM2_BASE, profile)
+        .bios_directories_checked(profile.bios)
+        .ok()?
+        .find(bios::RESET_IMAGE, None, None)
+        .and_then(|(dir, entry)| dir.data(entry).ok())
+}
 
 /// The step of [`mount`] that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,36 +77,53 @@ fn windows(
     Some((writable, reserved))
 }
 
-/// Publish the load policy and mount and authenticate the FFS in the
-/// `media` window. Payload files are decoded with `codec`, the one of the
-/// platform's `compression::PAYLOAD`.
-pub fn mount(
-    e820: &[E820Entry],
-    firmware: &[MemoryWindow],
-    media: MemoryWindow,
-    codec: &'static dyn Codec,
-) -> Result<(), MountError> {
-    let (writable, reserved) = windows(e820, firmware, media).ok_or(MountError::LoadPolicy)?;
+/// Publish the load policy and mount and authenticate the FFS at `ffs`:
+/// loads may only go to the RAM of `e820` outside the firmware's DRAM
+/// (`layout.early`: the running image, its page tables, BSS, heap, stack
+/// and store) and the media. Payload files are decoded with the codec of
+/// the platform's `compression::PAYLOAD`.
+pub fn mount(e820: &[E820Entry], layout: &Layout, ffs: Region) -> Result<(), MountError> {
+    let window = |region: Region| MemoryWindow {
+        start: region.base,
+        size: region.size,
+    };
+    let (writable, reserved) =
+        windows(e820, &[window(layout.early)], window(ffs)).ok_or(MountError::LoadPolicy)?;
     let policy = MemoryPolicy {
         writable: &writable,
         reserved: &reserved,
         entry_alignment: 1,
     };
+    let codec: &'static dyn Codec =
+        const { fstart_stage::boot::codec(crate::compression::PAYLOAD) };
     // SAFETY: discovered RAM only, with the firmware's windows (the live
     // stage within them) and the media excluded; no device has DMA buffers
     // outside the firmware's early region.
     unsafe { fstart_stage::directory::set_load_policy(&policy, codec) }
         .map_err(|_| MountError::LoadPolicy)?;
     let locator = fstart_stage::anchor::media_locator().ok_or(MountError::Locator)?;
-    if !locator.validate(media.size) {
+    if !locator.validate(ffs.size) {
         return Err(MountError::Locator);
     }
     let ffs = fstart_stage::fixed_helpers::MemoryMappedFfs::new(
-        media.start,
+        ffs.base,
         usize::try_from(locator.image_size).map_err(|_| MountError::Size)?,
     );
     ffs.mount().map_err(|_| MountError::Mount)?;
     ffs.verify().map_err(|_| MountError::Verify)
+}
+
+/// Reserve `start..start + size` of RAM after [`mount`] installed the load
+/// policy: in the memory map the OS gets and for payload loads alike, so the
+/// two agree on what the firmware keeps.
+pub fn reserve(
+    e820: &mut fstart_core::services::memory_detect::E820State,
+    start: u64,
+    size: u64,
+) -> Result<(), &'static str> {
+    e820.reserve_range(start, size).map_err(|_| "memory map")?;
+    fstart_stage::directory::reserve_load_window(MemoryWindow { start, size })
+        .map_err(|_| "load policy")
 }
 
 #[cfg(test)]

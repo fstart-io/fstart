@@ -26,6 +26,8 @@ mod runtime;
 
 #[cfg(feature = "alloc")]
 extern crate alloc as heap;
+#[cfg(test)]
+extern crate std;
 
 // The arch crate supplies entry code and the early FFS anchor.
 use fstart_arch as _;

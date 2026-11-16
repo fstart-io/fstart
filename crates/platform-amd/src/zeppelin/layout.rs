@@ -5,7 +5,7 @@
 //! `image.size` bytes of the flash) to `image.base`. The vendor firmware
 //! uses 0x76000000-0x76ffffff the same way, which needs at least 2 GiB of
 //! DRAM. The fstart FFS sits between the PSP partition and the reset image.
-use crate::noncar::layout::{Layout, Region};
+use crate::layout::{Layout, Region};
 
 const EARLY: u64 = 0x7600_0000;
 const IMAGE: Region = Region::new(0x76db_0000, 0x25_0000);
@@ -21,9 +21,11 @@ pub const RESET_FLASH_OFFSET: u32 = (FLASH.size - IMAGE.size) as u32;
 pub const LAYOUT: Layout = Layout {
     early: Region::new(EARLY, IMAGE.end() - EARLY),
     page_tables: EARLY,
+    pdpts: 1,
     data: Region::new(0x7601_0000, 0x7620_0000 - 0x7601_0000),
     heap: Region::new(0x7620_0000, 0x80_0000),
     stack: Region::new(0x76d0_0000, IMAGE.base - 0x76d0_0000),
+    store: None,
     image: IMAGE,
     flash: FLASH,
     ffs: Some(Region::new(

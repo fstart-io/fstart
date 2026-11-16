@@ -64,3 +64,38 @@ fn directory_bounds_and_digest_fail_closed() {
         Err(ReaderError::DigestMismatch)
     ));
 }
+
+/// A reservation made after the policy was installed applies to loads, and
+/// only to what it covers.
+#[test]
+fn a_late_reservation_rejects_loads_that_overlap_it() {
+    let _load_state = lock_load_state();
+    let writable = [MemoryWindow {
+        start: 0x1000_0000,
+        size: 0x1000_0000,
+    }];
+    let codec: &'static dyn crate::boot::Codec = &crate::boot::Stored;
+    // SAFETY: a host test; nothing is loaded through the policy.
+    unsafe {
+        set_load_policy(
+            &MemoryPolicy {
+                writable: &writable,
+                reserved: &[],
+                entry_alignment: 1,
+            },
+            codec,
+        )
+    }
+    .unwrap();
+    let page = MemoryWindow {
+        start: 0x1800_0000,
+        size: 0x1000,
+    };
+    assert!(load_policy().unwrap().permits(0x17ff_f000, 0x2000));
+    reserve_load_window(page).unwrap();
+    let policy = load_policy().unwrap();
+    assert!(!policy.permits(0x17ff_f000, 0x2000), "overlaps the page");
+    assert!(!policy.permits(page.start, page.size));
+    assert!(policy.permits(0x1000_0000, 0x1000));
+    assert!(policy.permits(0x1800_1000, 0x1000));
+}

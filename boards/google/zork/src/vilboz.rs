@@ -2,10 +2,7 @@
 //! Vilboz wiring overrides and WiFi sequencing. Board revision is runtime CBI.
 use super::{dalboz, policy::Cbi};
 use embedded_hal::{delay::DelayNs, digital::OutputPin};
-use fstart_driver_amd::fch::{
-    Bus,
-    gpio::{self, Delivery, Gpio, Pad, Pull, Trigger},
-};
+use fstart_driver_amd::fch::gpio::{self, Delivery, Gpio, Pad, Pull, Trigger};
 const OLD: &[Pad] = &[Pad::nc(32), Pad::output(89, true), Pad::output(140, true)];
 const NEW: &[Pad] = &[Pad::input(40, Pull::None), Pad::output(89, true)];
 const NEW_CHROMEOS: &[Pad] = &[
@@ -24,7 +21,11 @@ pub const fn overrides(cbi: Cbi, chromeos: bool) -> &'static [Pad] {
         _ => NEW,
     }
 }
-pub fn configure_ram(gpio: &Gpio<impl Bus>, cbi: Cbi, chromeos: bool) -> Result<(), gpio::Error> {
+pub fn configure_ram(
+    gpio: &Gpio<impl fstart_driver_amd::window::Window>,
+    cbi: Cbi,
+    chromeos: bool,
+) -> Result<(), gpio::Error> {
     // Must disable SPI ROM sharing BEFORE configuring GPIO67 (DMIC_SEL).
     // This function does not guess the prerequisite; the platform owns it.
     gpio.configure(dalboz::GPIO_SET_STAGE_RAM, overrides(cbi, chromeos))

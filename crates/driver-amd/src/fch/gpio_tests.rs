@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use crate::fch::{ACPI_MMIO, Acpimmio, Fch, Space, gpio::*, testing::World};
+use crate::fch::FchHw;
+use crate::fch::testing::{Space, View, World};
+use crate::fch::{ACPI_MMIO, gpio::*};
 
 extern crate std;
 use std::vec::Vec;
@@ -17,8 +19,8 @@ fn world() -> World {
     world.set(Space::Mmio, MASTER, 4, u32::MAX);
     world
 }
-fn gpio<'a>(world: &'a World, bank: &'static Bank) -> Gpio<&'a World> {
-    Gpio::new(Fch::new(world, Acpimmio::DIE0), bank)
+fn gpio<'a>(world: &'a World, bank: &'static Bank) -> Gpio<View<'a, World>> {
+    Gpio::new(*world.fch().acpi(), bank)
 }
 fn writes(world: &World, address: u32) -> Vec<u32> {
     world

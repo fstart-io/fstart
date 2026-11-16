@@ -35,7 +35,7 @@ pub const I2C: &[usize] = &[
 ];
 
 /// Sandstone's ACPI I/O blocks (ACPI_IO_BASE = 0x400).
-pub const ACPI_PORTS: crate::fch::AcpiPorts = crate::fch::AcpiPorts {
+pub const ACPI_PORTS: crate::fch::acpimmio::AcpiPorts = crate::fch::acpimmio::AcpiPorts {
     event: 0x400,
     control: 0x404,
     timer: 0x408,

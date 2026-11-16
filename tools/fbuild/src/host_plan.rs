@@ -95,18 +95,10 @@ pub(crate) fn load(
         quoted(&platform_path),
         quoted(&image_build_path)
     );
-    let module = board
-        .build_profile
-        .as_ref()
-        .and_then(|profile| profile.module.as_deref())
-        .map(|module| format!("{module}::"))
-        .unwrap_or_default();
-    let main = format!(
-        "fn main() {{ use fstart_image_build::plan::HostPlan as _; platform::{module}Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }}\n"
-    );
+    let main = "fn main() { use fstart_image_build::plan::HostPlan as _; platform::Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }\n";
     for (path, contents) in [
         (runner.join("Cargo.toml"), manifest.as_str()),
-        (runner.join("src/main.rs"), main.as_str()),
+        (runner.join("src/main.rs"), main),
     ] {
         if fs::read_to_string(&path).ok().as_deref() != Some(contents) {
             fs::write(path, contents).map_err(|e| e.to_string())?;

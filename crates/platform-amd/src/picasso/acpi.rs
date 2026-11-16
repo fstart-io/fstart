@@ -53,14 +53,13 @@ pub fn devices(buses: &[super::I2cBus], emmc_enabled: bool) -> Result<Vec<u8>, A
     };
     let irq = |source| legacy::internal_irq(source).ok_or(AmlError::InvalidPath);
     // Picasso's four GPIO banks (coreboot's mmio.asl).
-    let mut aml = fch::aml::gpio(irq(legacy::source::GPIO)?, 0x400)?;
+    let mut aml = fch::aml::gpio(irq(fch::irq::GPIO)?, 0x400)?;
     if emmc_enabled {
         aml.extend(emmc_card()?);
     }
     for bus in buses {
         let index = bus.controller;
-        let (Some(&base), Some(&source)) =
-            (Picasso::I2C.get(index), legacy::source::I2C.get(index))
+        let (Some(&base), Some(&source)) = (Picasso::I2C.get(index), fch::irq::I2C.get(index))
         else {
             return Err(AmlError::InvalidPath);
         };
@@ -133,7 +132,7 @@ pub fn emmc() -> Result<fstart_core::acpi::AcpiGenericDevice, AmlError> {
         .into_iter()
         .collect(),
         gsiv: Some(
-            legacy::internal_irq(legacy::source::EMMC)
+            legacy::internal_irq(fstart_driver_amd::fch::irq::EMMC)
                 .ok_or(AmlError::InvalidPath)?
                 .into(),
         ),

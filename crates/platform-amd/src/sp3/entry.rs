@@ -10,10 +10,10 @@
 //! 1. splits BSP and APs on `APIC_BAR.BSP`, as the vendor SEC does;
 //! 2. BSP: saves the BIST (`EAX`), loads its GDT, enters protected mode,
 //!    opens the vendor's 16 MiB write-back MTRR window
-//!    ([`layout::CACHE_WINDOW`]), sets SYSCFG `MtrrFixDramEn|MtrrVarDramEn`
+//!    ([`Layout::cache_window`]), sets SYSCFG `MtrrFixDramEn|MtrrVarDramEn`
 //!    and clears `MtrrFixDramModEn` like the vendor, enables caching, builds
 //!    1 GiB identity page tables over the lower canonical half
-//!    ([`layout::PAGE_TABLES`]) and enters long mode at the arch crate's
+//!    ([`Layout::pages`]) and enters long mode at the arch crate's
 //!    `_start_ram` (stack, BSS, IDT, `fstart_main(0)`, i.e. the board's reset
 //!    `main`);
 //! 3. AP: far-jumps through [`ApRoute`] when the MP code armed it, else
@@ -31,8 +31,8 @@
 //! entry::set_ap_route(entry::ApRoute::PARK);
 //! ```
 //!
-//! [`layout::CACHE_WINDOW`]: crate::sp3::layout::CACHE_WINDOW
-//! [`layout::PAGE_TABLES`]: crate::sp3::layout::PAGE_TABLES
+//! [`Layout::cache_window`]: crate::layout::Layout::cache_window
+//! [`Layout::pages`]: crate::layout::Layout::pages
 
 // The stage bundle links the stage runtime (allocator, anchor, the
 // arch entry `_start_ram` jumps into) even before the flow calls into it.

@@ -14,15 +14,19 @@ use crate::{
     noncar::acpi::{cpus, root_bridge},
 };
 use fstart_arch::x86::cpu::msr::testing::MsrSpace;
+use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::cpu::{Package, Revision};
 use fstart_driver_amd::{
     apob::{self, Apob},
     df::{
-        self, map,
-        root::{Root, root},
+        self,
+        root::{Root, planned},
     },
     dxio::{self, Descriptor, SataChannel},
-    fch::{self, Acpimmio, Bus, Fch, Space, taishan::irq},
+    fch::{
+        self, FchHw, irq,
+        testing::{Space, Spaces},
+    },
     smu::{
         self,
         threads::{self, Policy},
@@ -101,7 +105,7 @@ fn apob(dies: u32) -> Vec<u8> {
 
 /// A board hook's marker in the log.
 fn marker(hw: &Hw, code: u8) {
-    hw.write(Space::Io, 0xe0, 1, code.into());
+    Spaces::write(hw, Space::Io, 0xe0, 1, code.into());
 }
 
 /// The register writes from the FCH pre-init to the ReadyToBoot of the
@@ -115,7 +119,7 @@ fn flow(
     dma: usize,
 ) -> State {
     let dies: Vec<Die<&Hw>> = unsafe { df::dies(hw) }.collect();
-    let fch = Fch::new(hw, Acpimmio::DIE0);
+    let fch = hw.fch();
     let msr = MsrSpace::new([]);
     let mut clock = hw.clock();
     let apob = apob(dies.len() as u32);
@@ -167,7 +171,7 @@ fn flow(
     // After resource allocation
     silicon::after_resources(&fch);
     marker(hw, 4); // mainboard_final
-    fch.enable_hpet_ioapic();
+    fch::acpimmio::enable_hpet_ioapic(fch.acpi());
 
     // Ready to boot
     let sata = PciAddress::new(0, 1, 0, 0);
@@ -237,23 +241,29 @@ fn mj11_ec1_flow_on(hw: &Hw, dma: usize) -> State {
 fn mj11_ec1_flow() {
     let hw = model(1);
     mj11_ec1_flow_on(&hw, 0x5000_0000);
-    assert_eq!(hw.fingerprint(), (9688, 0x48e9_6a80_2957_cca9));
-    assert_eq!(hw.state(), 0x8ae8_8e10_1593_66fd);
+    assert_eq!(hw.fingerprint(), (9688, 0xe231_c1eb_e5af_3e78));
+    assert_eq!(hw.state(), 0xa9dd_6d88_a609_f199);
 }
 
-/// The single die's PCI root is the whole ECAM with the DF's windows below
-/// 4 GiB, without the ECAM and the non-PCI pool: what the hardware was
-/// tested with.
+/// The ECAM segment of the tests: 128 buses at `base`.
+fn segment(base: u64) -> PciRootInfo {
+    PciRootInfo {
+        segment: 0,
+        ecam_base: base,
+        bus_start: 0,
+        bus_end: 127,
+    }
+}
+
+/// The single die's PCI root from the DF plan: the whole ECAM with the DF's
+/// windows below 4 GiB, without the ECAM and the non-PCI pool.
 #[test]
 fn mj11_ec1_pci_root() {
     let hw = model(1);
     // The PSP's bus map: every bus to die 0.
     hw.set_config(PciAddress::new(0, 0, 0x18, 0), 0xa0, 0xff00_0043);
     let state = mj11_ec1_flow_on(&hw, 0x6800_0000);
-    let die: Die<&Hw> = unsafe { df::dies(&hw) }.next().unwrap();
-    let ecam = (0xf000_0000, 128 << 20);
-    let reserved = (state.nonpci[0].into(), NONPCI_MMIO_SIZE.into());
-    let root = root(&map::root_complex(&die).unwrap(), ecam, reserved).unwrap();
+    let root = planned(&state.bridges[0], &segment(0xf000_0000)).unwrap();
     assert_eq!(root.buses(), 0..=127);
     // `_CRS`: what the DF routes to the die, without what the die decodes
     // itself: the ECAM window and the non-PCI pool.
@@ -273,7 +283,8 @@ fn mj11_ec1_pci_root() {
         ranges.iter().map(|r| (r.kind, r.base, r.end())).collect()
     };
     use PciWindowKind::{Io, Mmio};
-    // The allocator: the same without the legacy ports.
+    // The allocator: the plan's pools and its second window, the leftover
+    // below the ECAM, without the legacy ports.
     assert_eq!(
         spans(root.allocatable()),
         [
@@ -327,8 +338,8 @@ fn sp4_flow_on(hw: &Hw, dma: usize) -> State {
 fn sp4_flow() {
     let hw = model(2);
     sp4_flow_on(&hw, 0x5800_0000);
-    assert_eq!(hw.fingerprint(), (17245, 0x9ed3_3f58_cd33_bc23));
-    assert_eq!(hw.state(), 0x54f9_9ac2_74b4_a913);
+    assert_eq!(hw.fingerprint(), (17245, 0x45eb_303c_dbdb_0866));
+    assert_eq!(hw.state(), 0x41e3_ce1e_ba2b_c4ef);
 }
 
 /// The address space descriptors (type, min, max) in `aml`: buses (2), I/O
@@ -394,9 +405,11 @@ fn sp4_pci_roots_and_host_bridges() {
     let roots: Vec<Root> = dies
         .iter()
         .map(|die| {
-            let pool = state.nonpci[usize::from(die.index())];
-            let reserved = (pool.into(), NONPCI_MMIO_SIZE.into());
-            root(&map::root_complex(die).unwrap(), ecam_region, reserved).unwrap()
+            planned(
+                &state.bridges[usize::from(die.index())],
+                &segment(ecam_region.0),
+            )
+            .unwrap()
         })
         .collect();
     let mut pci = PciEcam::new(roots.clone()).unwrap();

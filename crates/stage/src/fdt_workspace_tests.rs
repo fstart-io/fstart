@@ -26,6 +26,8 @@ fn minimal() -> [u8; 72] {
 #[test]
 fn malformed_source_ranges_and_small_capacity_fail_before_copy() {
     #[cfg(feature = "ffs")]
+    let _load_state = crate::directory::lock_load_state();
+    #[cfg(feature = "ffs")]
     crate::loaded::initialize();
     let mut source = Buffer([0; 16 * 1024]);
     let mut destination = Buffer([0x77; 16 * 1024]);
@@ -67,6 +69,8 @@ fn malformed_source_ranges_and_small_capacity_fail_before_copy() {
 #[test]
 fn expanded_dtb_is_accepted_only_in_registered_workspace() {
     #[cfg(feature = "ffs")]
+    let _load_state = crate::directory::lock_load_state();
+    #[cfg(feature = "ffs")]
     crate::loaded::initialize();
     let mut source = Buffer([0; 16 * 1024]);
     let mut destination = Buffer([0; 16 * 1024]);
@@ -100,6 +104,8 @@ fn expanded_dtb_is_accepted_only_in_registered_workspace() {
 #[cfg(feature = "fdt")]
 #[test]
 fn cumulative_patch_growth_is_bounded_before_mutation() {
+    #[cfg(feature = "ffs")]
+    let _load_state = crate::directory::lock_load_state();
     #[cfg(feature = "ffs")]
     crate::loaded::initialize();
     let mut buffer = Buffer([0; 16 * 1024]);

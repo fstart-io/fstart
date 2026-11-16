@@ -31,9 +31,28 @@
 /// CF9 is the architected reset port on every IA-32 platform fstart supports;
 /// the write sequence is the documented one (clear, then request reset).
 pub fn system_reset(hard: bool) -> ! {
+    cf9_reset(if hard { CF9_HARD } else { CF9_SOFT })
+}
+
+/// Reset the system with a power cycle: CF9 FullRst asks the chipset to go
+/// through S5 before the reset (ICH FULL_RST, AMD FCH FullRst), which also
+/// clears the state of the suspend well a hard reset keeps, a half-entered
+/// sleep state among it.
+pub fn full_reset() -> ! {
+    cf9_reset(CF9_FULL)
+}
+
+/// CF9 RST_CPU and SYS_RST: a soft reset, a hard one with both.
+const CF9_SOFT: u8 = 0x02;
+const CF9_HARD: u8 = 0x06;
+/// CF9 FULL_RST on top of a hard reset.
+const CF9_FULL: u8 = 0x0E;
+
+fn cf9_reset(request: u8) -> ! {
+    // SAFETY: see `system_reset`.
     unsafe {
         fstart_core::pio::outb(0xCF9, 0x00);
-        fstart_core::pio::outb(0xCF9, if hard { 0x06 } else { 0x02 });
+        fstart_core::pio::outb(0xCF9, request);
     }
     loop {
         core::hint::spin_loop();

@@ -9,14 +9,18 @@ use fstart_board_gigabyte_mj11::{self as mj11, Board};
 use fstart_driver_aspeed::gfx;
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
+use fstart_platform_amd::flow::Cpu;
 
 static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 
 fstart_platform_amd::entry!(main);
 
 fn main() -> ! {
-    let stage = fstart_platform_amd::noncar::start::<Board>();
-    mj11::early_init(&stage.hw().lpc());
+    let stage = match fstart_platform_amd::flow::start::<Board>() {
+        Cpu::Zeppelin(id) => id.enter(mj11::CONFIG),
+        cpu => cpu.unsupported(),
+    };
+    mj11::early_init(&stage.hw().fch);
     let stage = stage.console(&CONSOLE, mj11::console()).init_fch();
     let riser = mj11::program_i2c_devices(&stage.hw().gpio(), stage.clock());
     mj11::clear_pm1(&stage.hw().fch);

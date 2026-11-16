@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 extern crate std;
 use super::legacy::*;
-use crate::fch::{ACPI_MMIO, Acpimmio, Fch, Space, testing::World};
+use crate::fch::{
+    ACPI_MMIO,
+    testing::{Space, World},
+};
 use std::vec::Vec;
 
 const PM: u32 = ACPI_MMIO + 0x300;
@@ -35,11 +38,11 @@ fn world() -> World {
 #[test]
 fn legacy_preserves_control_bits_and_uses_indexed_byte_w1c_irq_transactions() {
     let world = world();
-    let fch = Fch::new(&world, Acpimmio::DIE0);
-    disable_rom_sharing(&world);
+    let fch = world.fch();
+    disable_rom_sharing(&world.fch());
     assert_eq!(world.get(Space::Lpc, 0x40, 1), 0xe7);
     initialize(&fch, true, false);
-    lpc_init(&world);
+    lpc_init(&world.fch());
     assert_eq!(world.get(Space::Mmio, PM + 0x40, 4), 0x80000001);
     assert_eq!(world.get(Space::Mmio, PM + 0xd3, 1), 0xbf);
     assert_eq!(world.get(Space::Mmio, PM + 0xe8, 1), 0xfe);
@@ -99,7 +102,7 @@ fn legacy_preserves_control_bits_and_uses_indexed_byte_w1c_irq_transactions() {
 #[test]
 fn retained_legacy_sd_and_lpc_only_policy_do_not_power_off_or_mask_espi() {
     let world = world();
-    initialize(&Fch::new(&world, Acpimmio::DIE0), false, true);
+    initialize(&world.fch(), false, true);
     assert!(world.writes().iter().all(|&(space, ..)| space == Space::Io));
 }
 #[test]
@@ -107,17 +110,23 @@ fn irq14_and_15_take_the_routed_internal_sources() {
     let world = world();
     // Reset: IRQ14/15 from the legacy IDE, IRQ1/12 from the IMC.
     world.set_indexed(0xc00, 8, 0);
-    initialize(&Fch::new(&world, Acpimmio::DIE0), true, false);
+    initialize(&world.fch(), true, false);
     assert_eq!(world.indexed(0xc00, 8), 0xfa);
-    assert_eq!(internal_irq(source::I2C[2]), Some(14));
-    assert_eq!(internal_irq(source::GPIO), Some(7));
-    assert_eq!(internal_irq(source::SCI), Some(crate::fch::SCI_IRQ));
+    assert_eq!(internal_irq(crate::fch::irq::I2C[2]), Some(14));
+    assert_eq!(internal_irq(crate::fch::irq::GPIO), Some(7));
+    assert_eq!(
+        internal_irq(crate::fch::irq::SCI),
+        Some(crate::fch::SCI_IRQ)
+    );
 }
 
 #[test]
 fn sci_is_routed_even_if_previous_firmware_disabled_it() {
     let world = world();
-    world.set_indexed(0xc00, u32::from(source::SCI | 0x80), 0x1f);
-    initialize(&Fch::new(&world, Acpimmio::DIE0), true, false);
-    assert_eq!(world.indexed(0xc00, u32::from(source::SCI | 0x80)), 9);
+    world.set_indexed(0xc00, u32::from(crate::fch::irq::SCI | 0x80), 0x1f);
+    initialize(&world.fch(), true, false);
+    assert_eq!(
+        world.indexed(0xc00, u32::from(crate::fch::irq::SCI | 0x80)),
+        9
+    );
 }

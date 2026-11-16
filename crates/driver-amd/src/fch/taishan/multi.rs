@@ -12,7 +12,9 @@ use super::{
     usb::{self, ResetControl},
 };
 use crate::cpu::Package;
-use crate::fch::{Acpimmio, Bus, Fch, PM_INDEX, alink, indexed_io, iomux, misc};
+use crate::fch::acpimmio::{self, PM_AB_REG_BAR, PmIo, iomux, misc};
+use crate::fch::{ACPI_MMIO, FchHw, alink};
+use crate::window::{Offset, Window};
 use crate::{
     df::Die,
     df::{
@@ -37,72 +39,58 @@ const ACPIMMIO_OFFSET: u32 = 1 << 20;
 /// The ACPI MMIO of die `die`'s FCH. Die 0's is at 0xfed80000, the others
 /// are moved into the die's non-PCI MMIO pool (DF window top - 8 MiB, see
 /// [`crate::df::zp::NONPCI_MMIO_SIZE`]), at `nonpci_mmio_base`.
-pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> Acpimmio {
+pub const fn acpimmio_base(die: u8, nonpci_mmio_base: u32) -> u32 {
     if die == 0 {
-        Acpimmio::DIE0
+        ACPI_MMIO
     } else {
-        Acpimmio(nonpci_mmio_base + ACPIMMIO_OFFSET)
+        nonpci_mmio_base + ACPIMMIO_OFFSET
     }
 }
-
-register_bitfields![u8,
-    /// PMxD5: decode the ACPI MMIO base in PMxD6.
-    AcpimmioSelect [SELECT OFFSET(0) NUMBITS(2) [Base = 1]]
-];
-/// Through the PM index/data pair: PMxD5, PMxD6..D7 (base >> 16) and the
-/// A-Link I/O base PMxE0..E1.
-const PM_ACPIMMIO_SELECT: u8 = 0xd5;
-const PM_ACPIMMIO_BASE: u8 = 0xd6;
-const PM_AB_REG_BAR: u8 = 0xe0;
 
 /// Vendor ffdcb7de, run while die 0's DF sends I/O 0-0xfff to the die: move
 /// the die's ACPI MMIO block, then IOMUX, A-Link, clock generator and legacy
 /// SD through it. Nothing may print here; the console is on die 0's LPC bus.
-fn secondary_legacy<B: Bus>(fch: &Fch<B>, package: Package) {
-    let bus = fch.bus();
-    let pm = |register| indexed_io::<B, ()>(bus, PM_INDEX, register);
-    let pm_word = |register, value: u16| {
-        let [low, high] = value.to_le_bytes();
-        pm(register).set(low);
-        pm(register + 1).set(high);
-    };
-    pm_word(PM_ACPIMMIO_BASE, (fch.acpimmio().0 >> 16) as u16);
-    indexed_io::<B, AcpimmioSelect::Register>(bus, PM_INDEX, PM_ACPIMMIO_SELECT)
-        .modify(AcpimmioSelect::SELECT::Base);
+/// `acpi` is the die's ACPI MMIO at `base`, `io` the ports routed to it.
+fn secondary_legacy(acpi: &impl Window, base: u32, io: &impl Window, package: Package) {
+    let pm = PmIo(io);
+    acpimmio::relocate(&pm, base);
 
     // SP4: IOMUX pin 2 function 1
     if package == Package::Sp4 {
-        fch.reg(iomux::at::<u8, ()>(2)).set(1);
+        acpi.at(iomux::at::<u8, ()>(2)).set(1);
     }
 
     // A-Link index at 0xcd8 just for this write (low PMxE0 word only).
-    pm_word(PM_AB_REG_BAR, alink::INDEX);
-    alink::apply(bus, &[table::rmw(0x10050, 1 << 2, 0)]);
-    pm_word(PM_AB_REG_BAR, 0);
+    pm.write16(PM_AB_REG_BAR.offset, alink::INDEX);
+    alink::apply(io, &[table::rmw(0x10050, 1 << 2, 0)]);
+    pm.write16(PM_AB_REG_BAR.offset, 0);
 
     // Clock generator; these differ from die 0's values.
-    fch.apply::<u32>([
-        table::rmw(misc::at(0x10), 0x3, 0x1),
-        table::rmw(misc::at(0x10), 0x1ff0, 0x40),
-        table::rmw(misc::at(0x34), 0xff80_0000, 0x1e00_0000),
-        table::rmw(misc::at(0x14), 0x00ff_ff00, 0x3d700),
-        table::rmw(misc::at(0x18), 0xffff_0000, 0x3e_0000),
-        table::rmw(misc::at(0x1c), 0x1e000, 0x2000),
-        table::rmw(misc::at(0x1c), 0x1e_0000, 0),
-        table::rmw(misc::at(0x1c), 0x0c00_0000, 0x0800_0000),
-        table::rmw(misc::at(0x1c), 0x1e00, 0x400),
-        table::rmw(misc::at(0x40), 1 << 25, 1 << 25),
-        table::rmw(misc::at(0x40), 1 << 30, 1 << 30),
-    ]);
+    acpimmio::apply::<u32>(
+        acpi,
+        [
+            table::rmw(misc::at(0x10), 0x3, 0x1),
+            table::rmw(misc::at(0x10), 0x1ff0, 0x40),
+            table::rmw(misc::at(0x34), 0xff80_0000, 0x1e00_0000),
+            table::rmw(misc::at(0x14), 0x00ff_ff00, 0x3d700),
+            table::rmw(misc::at(0x18), 0xffff_0000, 0x3e_0000),
+            table::rmw(misc::at(0x1c), 0x1e000, 0x2000),
+            table::rmw(misc::at(0x1c), 0x1e_0000, 0),
+            table::rmw(misc::at(0x1c), 0x0c00_0000, 0x0800_0000),
+            table::rmw(misc::at(0x1c), 0x1e00, 0x400),
+            table::rmw(misc::at(0x40), 1 << 25, 1 << 25),
+            table::rmw(misc::at(0x40), 1 << 30, 1 << 30),
+        ],
+    );
 
-    fch.legacy_sd_off();
+    crate::fch::acpimmio::legacy_sd_off(acpi);
 }
 
 /// FchMultiFchPei: the legacy part through I/O routed to each other die,
 /// then the SATA reset task of the die. `nonpci_mmio_base` gives a die's
 /// non-PCI MMIO pool (DF code). Runs after [`super::reset_init`].
 pub fn reset<S: Soc, P: ConfigRegionAccess + Copy>(
-    bus: &impl Bus,
+    fch: &impl FchHw,
     dies: &[Die<S, P>],
     package: Package,
     nonpci_mmio_base: impl Fn(u8) -> u32,
@@ -115,7 +103,7 @@ pub fn reset<S: Soc, P: ConfigRegionAccess + Copy>(
         fstart_log::debug!(
             "FCH {}: ACPI MMIO at {}",
             die.index(),
-            fstart_log::Hex(mmio.0.into())
+            fstart_log::Hex(mmio.into())
         );
 
         // Route I/O 0-0xfff (pair 0) to the die's IOMS.
@@ -123,7 +111,8 @@ pub fn reset<S: Soc, P: ConfigRegionAccess + Copy>(
         let saved = (io_base.get(), io_limit.get());
         io_base.write(IO_BASE::RE::SET + IO_BASE::WE::SET);
         io_limit.write(IO_LIMIT::DST.val(die.ioms_fabric_id().into()));
-        secondary_legacy(&Fch::new(bus, mmio), package);
+        let acpi = Offset::new(fch.mmio(), mmio);
+        secondary_legacy(&acpi, mmio, fch.io(), package);
         io_base.set(saved.0);
         io_limit.set(saved.1);
 
@@ -215,7 +204,7 @@ const AMD_VENDOR: u32 = 0x1022;
 /// FchMultiFchDxe: SATA and xGbE of the other dies whose internal bridge 8.1
 /// exists. Runs after [`super::env_init`] of die 0.
 pub fn env<S: Soc, P: ConfigRegionAccess + Copy>(
-    bus: &impl Bus,
+    fch: &impl FchHw,
     dies: &[Die<S, P>],
     board: &[Devices],
     nonpci_mmio_base: impl Fn(u8) -> u32,
@@ -240,7 +229,8 @@ pub fn env<S: Soc, P: ConfigRegionAccess + Copy>(
             strap_off(smn, sata::NBIF_STRAP);
         } else {
             let mmio = acpimmio_base(die.index(), nonpci_mmio_base(die.index()));
-            sata::init(&Fch::new(bus, mmio), die.index(), smn, subsystem_id, delay);
+            let acpi = Offset::new(fch.mmio(), mmio);
+            sata::init(&acpi, fch.io(), die.index(), smn, subsystem_id, delay);
         }
 
         xgbe_init(smn);
