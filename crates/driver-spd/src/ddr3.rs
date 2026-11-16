@@ -28,16 +28,10 @@ pub const SPD_NOMINAL_VOLTAGE: u8 = 6;
 pub const SPD_MODULE_ORGANIZATION: u8 = 7;
 /// SPD byte 8: module bus width.
 pub const SPD_MODULE_BUS_WIDTH: u8 = 8;
-/// SPD byte 10: medium timebase dividend. GM45/coreboot requires 1.
-/// Fine Timebase (FTB) dividend (bits 7:4) and divisor (bits 3:0), in ps.
+/// SPD byte 9: fine timebase (FTB) dividend (bits 7:4) and divisor
+/// (bits 3:0), in ps.
 pub const SPD_FTB: u8 = 9;
-/// Fine offsets for tCKmin, tAAmin, tRCDmin, tRPmin and tRCmin, in FTB
-/// units, signed. Absent before SPD revision 1.1.
-pub const SPD_TCK_MIN_FINE: u8 = 34;
-pub const SPD_TAA_MIN_FINE: u8 = 35;
-pub const SPD_TRCD_MIN_FINE: u8 = 36;
-pub const SPD_TRP_MIN_FINE: u8 = 37;
-pub const SPD_TRC_MIN_FINE: u8 = 38;
+/// SPD byte 10: medium timebase dividend. GM45/coreboot requires 1.
 pub const SPD_MTB_DIVIDEND: u8 = 10;
 /// SPD byte 11: medium timebase divisor. GM45/coreboot requires 8.
 pub const SPD_MTB_DIVISOR: u8 = 11;
@@ -75,13 +69,24 @@ pub const SPD_TRTP_MIN: u8 = 27;
 pub const SPD_TFAW_EXT: u8 = 28;
 /// SPD byte 29: minimum four activate window (tFAWmin) low byte.
 pub const SPD_TFAW_MIN_LSB: u8 = 29;
+/// SPD byte 34: fine offset of tCKmin, in signed FTB units. The fine
+/// offsets (bytes 34..38) are absent before SPD revision 1.1.
+pub const SPD_TCK_MIN_FINE: u8 = 34;
+/// SPD byte 35: fine offset of tAAmin, in signed FTB units.
+pub const SPD_TAA_MIN_FINE: u8 = 35;
+/// SPD byte 36: fine offset of tRCDmin, in signed FTB units.
+pub const SPD_TRCD_MIN_FINE: u8 = 36;
+/// SPD byte 37: fine offset of tRPmin, in signed FTB units.
+pub const SPD_TRP_MIN_FINE: u8 = 37;
+/// SPD byte 38: fine offset of tRCmin, in signed FTB units.
+pub const SPD_TRC_MIN_FINE: u8 = 38;
 /// SPD byte 60: module height and raw-card extension bits.
 pub const SPD_MODULE_HEIGHT_RAW_CARD_EXT: u8 = 60;
 /// SPD byte 62: reference raw card used by GM45 routing tables.
 pub const SPD_REFERENCE_RAW_CARD: u8 = 62;
-/// SPD bytes 117..118: module manufacturer ID, continuation then bank/code.
+/// SPD byte 117: module manufacturer ID, continuation count and parity.
 pub const SPD_MODULE_MANUFACTURER_ID_LSB: u8 = 117;
-/// SPD bytes 117..118: module manufacturer ID, continuation then bank/code.
+/// SPD byte 118: module manufacturer ID, JEDEC code in that bank.
 pub const SPD_MODULE_MANUFACTURER_ID_MSB: u8 = 118;
 /// SPD bytes 122..125: module serial number.
 pub const SPD_SERIAL_NUMBER: u8 = 122;
