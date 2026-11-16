@@ -8,9 +8,9 @@
 //!
 //! The allocation algorithm follows coreboot's key domain-level rules:
 //! chipset-owned resources are explicit and removed from free space, and
-//! movable BARs are placed largest-alignment-first. Bridge windows are then
-//! derived from the resources assigned below each bridge; this remains a
-//! simpler topology model than coreboot's full recursive allocator.
+//! movable BARs are placed largest-alignment-first. Like coreboot's, it
+//! sizes each bridge's windows from its subtree, bottom up, then places
+//! them top down, everything behind a bridge inside its windows.
 //!
 //! One allocator can own several root bridges (PCI domains):
 //! each has its own bus range and windows, and the devices below it get
@@ -124,6 +124,73 @@ struct PciDev {
     secondary_bus: u8,
     /// For bridges: subordinate bus number.
     subordinate_bus: u8,
+    /// For type-1 bridges: the windows, by [`WindowKind`].
+    windows: [Window; WINDOW_KINDS.len()],
+}
+
+/// The windows a type-1 bridge forwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowKind {
+    Io = 0,
+    /// The 32-bit non-prefetchable memory window.
+    Memory = 1,
+    /// The 64-bit prefetchable memory window.
+    Prefetchable = 2,
+}
+
+const WINDOW_KINDS: [WindowKind; 3] =
+    [WindowKind::Io, WindowKind::Memory, WindowKind::Prefetchable];
+
+impl WindowKind {
+    /// The granularity of the window's base and limit registers.
+    const fn granularity(self) -> u64 {
+        match self {
+            Self::Io => 0x1000,
+            Self::Memory | Self::Prefetchable => 0x10_0000,
+        }
+    }
+
+    /// Its base register, for the log.
+    const fn register(self) -> u16 {
+        match self {
+            Self::Io => PCI_IO_BASE,
+            Self::Memory => PCI_MEMORY_BASE,
+            Self::Prefetchable => PCI_PREF_MEMORY_BASE,
+        }
+    }
+}
+
+/// A bridge window: sized from what is behind the bridge, then placed.
+/// Closed when its size is 0.
+#[derive(Debug, Clone, Copy, Default)]
+struct Window {
+    base: u64,
+    size: u64,
+    align: u64,
+    placed: bool,
+}
+
+/// What a function asks of the window or root pool it is placed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Request {
+    /// BAR `.1` of device `.0`.
+    Bar(usize, usize),
+    /// A window of bridge `.0`.
+    Window(usize, WindowKind),
+}
+
+/// A device's requests with their sizes and alignments: six BARs and a
+/// bridge's windows at most.
+type DeviceRequests = HVec<(Request, u64, u64), { 6 + WINDOW_KINDS.len() }>;
+
+/// The root pools a request may come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    Io,
+    /// Below 4 GiB only.
+    Low,
+    /// Below 4 GiB if it fits, else above.
+    LowOrHigh,
 }
 
 /// The diagnostic path shares the allocator's bounded bus walk, but journals
@@ -230,10 +297,6 @@ fn size_from_moving_bits(moving: u64, address_mask: u64) -> Result<u64, PciEcamE
     Ok(1u64 << address_bits.trailing_zeros())
 }
 
-/// Bus (lowest first), needs the low window, alignment: see
-/// [`PciEcam::bar_allocation_rank`].
-type BarRank = (core::cmp::Reverse<u8>, u8, u64);
-
 impl ResourcePool {
     const fn empty() -> Self {
         Self {
@@ -291,6 +354,7 @@ impl ResourcePool {
         Ok(())
     }
 
+    #[cfg(test)]
     fn free_bytes(&self) -> u64 {
         self.ranges[..self.count]
             .iter()
@@ -800,6 +864,7 @@ impl PciEcam {
             bars,
             secondary_bus: 0,
             subordinate_bus: 0,
+            windows: Default::default(),
         }))
     }
 
@@ -971,144 +1036,234 @@ impl PciEcam {
     }
 
     // -- Resource allocation --
+    //
+    // Two passes over the tree, as coreboot's allocator does. Bottom up,
+    // each bridge's three windows are sized from what is behind it: the
+    // BARs on its secondary bus and the windows of the bridges there, laid
+    // out largest alignment first and rounded to the window's granularity.
+    // Top down, the root bus's BARs and its bridges' windows are placed in
+    // the root's pools, and everything behind a bridge goes inside the
+    // window placed for it. A bridge's window therefore spans its subtree
+    // and nothing else: no sibling's BAR, no root-bus BAR, no fixed BAR.
 
-    /// Not on its root bus.
-    fn behind_bridge(&self, dev_idx: usize) -> bool {
-        let device = &self.devices[dev_idx];
-        device.addr.bus() != self.roots[device.root].bus_start
-    }
-
-    fn device_in_pass(&self, dev_idx: usize, pass: usize) -> bool {
-        // A bridge's own BARs live on its primary bus, just like an endpoint's.
-        let behind_bridge = self.behind_bridge(dev_idx);
-        (pass == 0 && !behind_bridge) || (pass == 1 && behind_bridge)
-    }
-
-    fn bar_allocation_alignment(&self, dev_idx: usize, bar_idx: usize) -> u64 {
-        let bar = self.devices[dev_idx].bars[bar_idx];
-        let behind_bridge = self.behind_bridge(dev_idx);
+    /// The window a BAR behind a bridge goes through. A bridge forwards
+    /// non-prefetchable memory only through its 32-bit window, and a 32-bit
+    /// BAR cannot follow a prefetchable window above 4 GiB; prefetchable
+    /// memory may always be forwarded as non-prefetchable.
+    fn window_of(bar: &BarInfo) -> WindowKind {
         match bar.bar_type {
-            BarType::Memory32 | BarType::Memory64 => {
-                if behind_bridge {
-                    bar.size.max(0x100000)
-                } else {
-                    bar.size
-                }
-            }
-            BarType::Io => {
-                if behind_bridge {
-                    bar.size.max(0x1000)
-                } else {
-                    bar.size
-                }
-            }
-            BarType::None => 0,
+            BarType::Io => WindowKind::Io,
+            BarType::Memory64 if bar.prefetchable => WindowKind::Prefetchable,
+            _ => WindowKind::Memory,
         }
     }
 
-    fn next_bar_to_allocate(&self, pass: usize) -> Option<(usize, usize)> {
-        let mut best: Option<(usize, usize, BarRank)> = None;
-        for dev_idx in 0..self.devices.len() {
-            if !self.device_in_pass(dev_idx, pass) {
-                continue;
+    /// What device `dev_idx` asks of its parent, each with its size and
+    /// alignment: its movable BARs and, for a bridge, its open windows; only
+    /// those of `kind` when given.
+    fn requests_of(&self, dev_idx: usize, kind: Option<WindowKind>) -> DeviceRequests {
+        let device = &self.devices[dev_idx];
+        let bars = device
+            .bars
+            .iter()
+            .enumerate()
+            .filter(|(_, bar)| bar.bar_type != BarType::None && !bar.fixed)
+            .filter(|(_, bar)| kind.is_none_or(|kind| Self::window_of(bar) == kind))
+            .map(|(bar_idx, bar)| (Request::Bar(dev_idx, bar_idx), bar.size, bar.size));
+        let windows = WINDOW_KINDS
+            .into_iter()
+            .filter(|_| device.header_type == PCI_HEADER_TYPE_BRIDGE)
+            .filter(|&window| kind.is_none_or(|kind| kind == window))
+            .map(|kind| (kind, device.windows[kind as usize]))
+            .filter(|(_, window)| window.size != 0)
+            .map(|(kind, window)| (Request::Window(dev_idx, kind), window.size, window.align));
+        bars.chain(windows).collect()
+    }
+
+    fn placed(&self, request: Request) -> bool {
+        match request {
+            Request::Bar(dev_idx, bar_idx) => self.devices[dev_idx].bars[bar_idx].allocated,
+            Request::Window(dev_idx, kind) => self.devices[dev_idx].windows[kind as usize].placed,
+        }
+    }
+
+    /// Put `request` at `base`: program the BAR, or note the window's base
+    /// for what goes behind it.
+    fn assign(&mut self, request: Request, base: u64) {
+        match request {
+            Request::Bar(dev_idx, bar_idx) => self.program_bar(dev_idx, bar_idx, base),
+            Request::Window(dev_idx, kind) => {
+                let window = &mut self.devices[dev_idx].windows[kind as usize];
+                window.base = base;
+                window.placed = true;
             }
-            for bar_idx in 0..6 {
-                let bar = self.devices[dev_idx].bars[bar_idx];
-                if bar.bar_type == BarType::None || bar.fixed || bar.allocated {
+        }
+    }
+
+    fn on_bus(&self, dev_idx: usize, root: usize, bus: u8) -> bool {
+        let device = &self.devices[dev_idx];
+        device.root == root && device.addr.bus() == bus
+    }
+
+    /// Lay out the requests on bus `bus` of root `root` for window `kind`
+    /// from `base`, largest alignment first, each at the next multiple of
+    /// its alignment, and place them when `place` is set. Returns the bytes
+    /// used.
+    ///
+    /// A window's base is a multiple of every alignment behind it, so the
+    /// layout sized from 0 is the one placed from the window's base.
+    fn lay_out(
+        &mut self,
+        root: usize,
+        bus: u8,
+        kind: WindowKind,
+        base: u64,
+        place: bool,
+    ) -> Result<u64, PciEcamError> {
+        let mut alignments = 0u64;
+        for dev_idx in 0..self.devices.len() {
+            if self.on_bus(dev_idx, root, bus) {
+                for (_, _, align) in self.requests_of(dev_idx, Some(kind)) {
+                    alignments |= align;
+                }
+            }
+        }
+        let mut cursor = base;
+        while alignments != 0 {
+            let largest = 1u64 << (63 - alignments.leading_zeros());
+            alignments &= !largest;
+            for dev_idx in 0..self.devices.len() {
+                if !self.on_bus(dev_idx, root, bus) {
                     continue;
                 }
-                let rank = self.bar_allocation_rank(dev_idx, bar_idx);
-                if best.is_none_or(|(_, _, best_rank)| rank > best_rank) {
-                    best = Some((dev_idx, bar_idx, rank));
+                for (request, size, align) in self.requests_of(dev_idx, Some(kind)) {
+                    if align != largest {
+                        continue;
+                    }
+                    let start = cursor
+                        .checked_next_multiple_of(align)
+                        .ok_or(PciEcamError::ResourceExhausted)?;
+                    cursor = start
+                        .checked_add(size)
+                        .ok_or(PciEcamError::ResourceExhausted)?;
+                    if place {
+                        self.assign(request, start);
+                    }
                 }
             }
         }
-        best.map(|(dev_idx, bar_idx, _)| (dev_idx, bar_idx))
+        Ok(cursor - base)
     }
 
-    /// Allocation rank, highest first.
-    ///
-    /// Bus by bus: bus numbers are assigned depth first, so every bridge's
-    /// subtree ends up in one contiguous span and the windows derived from
-    /// those spans can't overlap a sibling's. On a bus, BARs that only fit
-    /// below 4 GiB go first, then the largest alignment.
-    fn bar_allocation_rank(&self, dev_idx: usize, bar_idx: usize) -> BarRank {
-        let needs_low_window = self.devices[dev_idx].bars[bar_idx].bar_type == BarType::Memory32;
-        (
-            core::cmp::Reverse(self.devices[dev_idx].addr.bus()),
-            u8::from(needs_low_window),
-            self.bar_allocation_alignment(dev_idx, bar_idx),
-        )
-    }
-
-    /// Below-4-GiB bytes the unallocated 32-bit memory BARs of root `root`
-    /// still need.
-    fn pending_low_bytes(&self, root: usize) -> u64 {
-        (0..self.devices.len())
-            .filter(|&dev_idx| self.devices[dev_idx].root == root)
-            .flat_map(|dev_idx| (0..6).map(move |bar_idx| (dev_idx, bar_idx)))
-            .filter(|&(dev_idx, bar_idx)| {
-                let bar = self.devices[dev_idx].bars[bar_idx];
-                bar.bar_type == BarType::Memory32 && !bar.fixed && !bar.allocated
-            })
-            .map(|(dev_idx, bar_idx)| self.bar_allocation_alignment(dev_idx, bar_idx))
-            .sum()
-    }
-
-    fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) -> Result<(), PciEcamError> {
-        let addr = self.devices[dev_idx].addr;
-        let root = self.devices[dev_idx].root;
-        let bar = self.devices[dev_idx].bars[bar_idx];
-        let align = self.bar_allocation_alignment(dev_idx, bar_idx);
-        let behind_bridge = self.behind_bridge(dev_idx);
-        let pending = self.pending_low_bytes(root);
-        // A type-1 bridge has only a 32-bit non-prefetchable memory window.
-        // A 64-bit BAR does not by itself make high placement forwardable.
-        let can_use_high = bar.prefetchable || !self.behind_bridge(dev_idx);
-        let pools = &mut self.roots[root];
-        let base = match bar.bar_type {
-            BarType::Memory32 => pools.mmio32.allocate_aligned(bar.size, align),
-            // The below-4-GiB window comes first: firmware drivers reach a BAR
-            // through a mapping that does not cover above 4 GiB, and some
-            // devices that declare a 64-bit BAR still do not decode that high.
-            // The above-4-GiB window takes what does not fit, and what would
-            // strand a 32-bit BAR that has no other home.
-            // A bridge forwards non-prefetchable memory only through its
-            // 32-bit window: behind one, such a BAR has no home above 4 GiB.
-            BarType::Memory64 if !bar.prefetchable && behind_bridge => {
-                pools.mmio32.allocate_aligned(bar.size, align)
-            }
-            BarType::Memory64 => {
-                let mut low = pools.mmio32;
-                low.allocate_aligned(bar.size, align)
-                    .filter(|_| low.free_bytes() >= pending)
-                    .inspect(|_| pools.mmio32 = low)
-                    .or_else(|| {
-                        can_use_high
-                            .then(|| pools.mmio64.allocate_aligned(bar.size, align))
-                            .flatten()
-                    })
-            }
-            BarType::Io => pools.io_pool.allocate_aligned(bar.size, align),
-            BarType::None => None,
-        };
-
-        let base = base
-            .ok_or(PciEcamError::ResourceExhausted)
-            .inspect_err(|error| {
-                error.log_bar("BAR allocation", addr, bar.reg);
-                fstart_log::error!(
-                    "pci: requested BAR size={:#x} alignment={:#x} type={}",
-                    bar.size,
-                    align,
-                    match bar.bar_type {
-                        BarType::Memory32 => "memory32",
-                        BarType::Memory64 => "memory64",
-                        BarType::Io => "I/O",
-                        BarType::None => "none",
+    /// Size the windows of every bridge, the deepest first: a bridge's
+    /// buses come after its parent's, so its windows are sized before the
+    /// parent's layout needs them.
+    fn size_windows(&mut self, bridges: &[usize]) -> Result<(), PciEcamError> {
+        for &bridge in bridges.iter().rev() {
+            let (root, secondary) = (
+                self.devices[bridge].root,
+                self.devices[bridge].secondary_bus,
+            );
+            for kind in WINDOW_KINDS {
+                let used = self.lay_out(root, secondary, kind, 0, false)?;
+                let mut align = kind.granularity();
+                for dev_idx in 0..self.devices.len() {
+                    if self.on_bus(dev_idx, root, secondary) {
+                        for (_, _, child) in self.requests_of(dev_idx, Some(kind)) {
+                            align = align.max(child);
+                        }
                     }
-                );
-            })?;
+                }
+                let size = used
+                    .checked_next_multiple_of(kind.granularity())
+                    .ok_or(PciEcamError::ResourceExhausted)?;
+                self.devices[bridge].windows[kind as usize] = Window {
+                    base: 0,
+                    size,
+                    align,
+                    placed: false,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// Place the root bus of root `root`: its BARs and its bridges'
+    /// windows, from the root's pools.
+    ///
+    /// What only fits below 4 GiB goes first, then the largest alignment:
+    /// a small BAR does not take the front of a constrained 32-bit aperture
+    /// and strand a large one aligned above it. What may go either way
+    /// takes the below-4-GiB window first: firmware drivers reach a BAR
+    /// through a mapping that does not cover above 4 GiB, and some devices
+    /// that declare a 64-bit BAR still do not decode that high. The
+    /// above-4-GiB window takes what does not fit.
+    fn place_root(&mut self, root: usize) -> Result<(), PciEcamError> {
+        let bus = self.roots[root].bus_start;
+        loop {
+            let mut best: Option<(Request, u64, u64, (bool, u64))> = None;
+            for dev_idx in 0..self.devices.len() {
+                if !self.on_bus(dev_idx, root, bus) {
+                    continue;
+                }
+                for (request, size, align) in self.requests_of(dev_idx, None) {
+                    if self.placed(request) {
+                        continue;
+                    }
+                    let rank = (self.placement(request) == Placement::Low, align);
+                    if best.is_none_or(|(.., best)| rank > best) {
+                        best = Some((request, size, align, rank));
+                    }
+                }
+            }
+            let Some((request, size, align, _)) = best else {
+                return Ok(());
+            };
+            let placement = self.placement(request);
+            let pools = &mut self.roots[root];
+            let base = match placement {
+                Placement::Io => pools.io_pool.allocate_aligned(size, align),
+                Placement::Low => pools.mmio32.allocate_aligned(size, align),
+                Placement::LowOrHigh => pools
+                    .mmio32
+                    .allocate_aligned(size, align)
+                    .or_else(|| pools.mmio64.allocate_aligned(size, align)),
+            };
+            let Some(base) = base else {
+                let (address, register) = match request {
+                    Request::Bar(dev_idx, bar_idx) => (
+                        self.devices[dev_idx].addr,
+                        self.devices[dev_idx].bars[bar_idx].reg,
+                    ),
+                    Request::Window(dev_idx, kind) => (self.devices[dev_idx].addr, kind.register()),
+                };
+                PciEcamError::ResourceExhausted.log_bar("resource allocation", address, register);
+                fstart_log::error!("pci: requested size={:#x} alignment={:#x}", size, align);
+                return Err(PciEcamError::ResourceExhausted);
+            };
+            self.assign(request, base);
+        }
+    }
+
+    /// Which of the root's pools `request` may come from.
+    fn placement(&self, request: Request) -> Placement {
+        match request {
+            Request::Bar(dev_idx, bar_idx) => match self.devices[dev_idx].bars[bar_idx].bar_type {
+                BarType::Io => Placement::Io,
+                BarType::Memory64 => Placement::LowOrHigh,
+                BarType::Memory32 | BarType::None => Placement::Low,
+            },
+            Request::Window(_, WindowKind::Io) => Placement::Io,
+            Request::Window(_, WindowKind::Memory) => Placement::Low,
+            Request::Window(_, WindowKind::Prefetchable) => Placement::LowOrHigh,
+        }
+    }
+
+    /// Program BAR `bar_idx` of `dev_idx` to `base`, with decode off while
+    /// it moves.
+    fn program_bar(&mut self, dev_idx: usize, bar_idx: usize, base: u64) {
+        let addr = self.devices[dev_idx].addr;
+        let bar = self.devices[dev_idx].bars[bar_idx];
         self.write16(
             addr,
             PCI_COMMAND,
@@ -1132,20 +1287,62 @@ impl PciEcam {
         self.write16(addr, PCI_COMMAND, self.devices[dev_idx].original_command);
 
         self.devices[dev_idx].bars[bar_idx].allocated = true;
-        Ok(())
     }
 
-    /// Allocate and program function BARs, including bridges' own BARs, then
-    /// program bridge forwarding windows.
+    /// Allocate and program function BARs, including bridges' own BARs, and
+    /// bridge forwarding windows.
     fn allocate_resources(&mut self) -> Result<(), PciEcamError> {
-        // Phase 1: allocate function BARs. Within each topology pass, allocate
-        // largest-alignment BARs first. This avoids consuming the front of a
-        // constrained 32-bit aperture with a small BAR, then aligning a large
-        // framebuffer BAR up and stranding the remaining space below it.
-        for pass in 0..2 {
-            while let Some((dev_idx, bar_idx)) = self.next_bar_to_allocate(pass) {
-                self.allocate_one_bar(dev_idx, bar_idx)?;
+        // A fixed BAR behind a bridge would need the bridge's window placed
+        // around it; the chipset functions that have them are on the root bus.
+        for device in &self.devices {
+            if let Some(bar) = device.bars.iter().find(|bar| bar.fixed)
+                && device.addr.bus() != self.roots[device.root].bus_start
+            {
+                PciEcamError::FixedBarInvalid.log_bar(
+                    "fixed BAR behind a bridge",
+                    device.addr,
+                    bar.reg,
+                );
+                return Err(PciEcamError::FixedBarInvalid);
             }
+        }
+
+        // The bridges, parents first: bus numbers are assigned depth first.
+        let mut bridges: HVec<usize, MAX_PCI_DEVICES> = (0..self.devices.len())
+            .filter(|&dev_idx| self.devices[dev_idx].header_type == PCI_HEADER_TYPE_BRIDGE)
+            .collect();
+        bridges.sort_unstable_by_key(|&dev_idx| {
+            (
+                self.devices[dev_idx].root,
+                self.devices[dev_idx].secondary_bus,
+            )
+        });
+
+        self.size_windows(&bridges)?;
+        for root in 0..self.roots.len() {
+            self.place_root(root)?;
+        }
+        for &bridge in &bridges {
+            let (root, secondary) = (
+                self.devices[bridge].root,
+                self.devices[bridge].secondary_bus,
+            );
+            for kind in WINDOW_KINDS {
+                let window = self.devices[bridge].windows[kind as usize];
+                if window.placed {
+                    self.lay_out(root, secondary, kind, window.base, true)?;
+                }
+            }
+        }
+        // A function on a bus no discovered bridge leads to has no window.
+        if let Some(device) = self.devices.iter().find(|device| {
+            device
+                .bars
+                .iter()
+                .any(|bar| bar.bar_type != BarType::None && !bar.allocated)
+        }) {
+            PciEcamError::ConfigError.log_bar("BAR without a parent window", device.addr, PCI_BAR0);
+            return Err(PciEcamError::ConfigError);
         }
 
         for dev in &self.devices {
@@ -1177,122 +1374,49 @@ impl PciEcam {
             self.write16(dev.addr, PCI_COMMAND, new_cmd);
         }
 
-        // Phase 2: program bridge forwarding windows.
-        for i in 0..self.devices.len() {
-            if self.devices[i].header_type != PCI_HEADER_TYPE_BRIDGE {
-                continue;
-            }
-
-            let baddr = self.devices[i].addr;
-            let root = self.devices[i].root;
-            let sec = self.devices[i].secondary_bus;
-            let sub = self.devices[i].subordinate_bus;
-
-            // Compute the span of addresses used by children behind this bridge.
-            // The prefetchable window is 64-bit, the other one 32-bit only:
-            // when any prefetchable BAR behind the bridge lies above 4 GiB, the
-            // prefetchable window covers exactly those, and prefetchable BARs
-            // below 4 GiB go through the non-prefetchable window (prefetchable
-            // memory may always be forwarded as non-prefetchable). Otherwise a
-            // window spanning both regions would claim the fixed apertures and
-            // DRAM in between.
-            let mut mem_lo: u64 = u64::MAX;
-            let mut mem_hi: u64 = 0;
-            let mut pref_lo: u64 = u64::MAX;
-            let mut pref_hi: u64 = 0;
-            let mut io_lo: u64 = u64::MAX;
-            let mut io_hi: u64 = 0;
-            let high_pref = self.devices.iter().any(|child| {
-                child.root == root
-                    && (sec..=sub).contains(&child.addr.bus())
-                    && child.bars.iter().any(|bar| {
-                        bar.prefetchable
-                            && bar.bar_type == BarType::Memory64
-                            && self.read32(child.addr, bar.reg + 4) != 0
-                    })
-            });
-
-            for child in &self.devices {
-                if child.root != root || child.addr.bus() < sec || child.addr.bus() > sub {
-                    continue;
-                }
-                for bar in &child.bars {
-                    if bar.bar_type == BarType::None {
-                        continue;
-                    }
-                    if bar.bar_type == BarType::Io {
-                        let base = (self.read32(child.addr, bar.reg) & 0x0000_FFFC) as u64;
-                        if base != 0 {
-                            io_lo = io_lo.min(base);
-                            io_hi = io_hi.max(base + bar.size);
-                        }
-                        continue;
-                    }
-                    // Read back the programmed base.
-                    let base_lo = self.read32(child.addr, bar.reg) & 0xFFFF_FFF0;
-                    let base = if bar.bar_type == BarType::Memory64 {
-                        let hi = self.read32(child.addr, bar.reg + 4);
-                        ((hi as u64) << 32) | (base_lo as u64)
-                    } else {
-                        base_lo as u64
-                    };
-                    if base == 0 {
-                        continue;
-                    }
-                    let end = base + bar.size;
-
-                    if bar.prefetchable && (!high_pref || base >= 1 << 32) {
-                        pref_lo = pref_lo.min(base);
-                        pref_hi = pref_hi.max(end);
-                    } else {
-                        mem_lo = mem_lo.min(base);
-                        mem_hi = mem_hi.max(end);
-                    }
-                }
-            }
+        for &bridge in &bridges {
+            let baddr = self.devices[bridge].addr;
+            let [io, memory, prefetchable] = self.devices[bridge].windows;
 
             // Non-prefetchable memory window (base/limit in 1 MiB granularity).
-            if mem_lo < mem_hi {
-                let base_reg = ((mem_lo >> 16) & 0xFFF0) as u16;
-                let limit_reg = (((mem_hi - 1) >> 16) & 0xFFF0) as u16;
-                self.write32(
-                    baddr,
-                    PCI_MEMORY_BASE,
-                    (base_reg as u32) | ((limit_reg as u32) << 16),
-                );
+            if memory.placed {
+                let base_reg = ((memory.base >> 16) & 0xFFF0) as u32;
+                let limit_reg = (((memory.base + memory.size - 1) >> 16) & 0xFFF0) as u32;
+                self.write32(baddr, PCI_MEMORY_BASE, base_reg | (limit_reg << 16));
             } else {
                 // Disable: base > limit.
                 self.write32(baddr, PCI_MEMORY_BASE, 0x0000_FFFF);
             }
 
             // Prefetchable memory window (64-bit capable).
-            if pref_lo < pref_hi {
-                let base_reg = ((pref_lo >> 16) & 0xFFF0) as u16;
-                let limit_reg = (((pref_hi - 1) >> 16) & 0xFFF0) as u16;
+            if prefetchable.placed {
+                let end = prefetchable.base + prefetchable.size - 1;
+                let base_reg = ((prefetchable.base >> 16) & 0xFFF0) as u32;
+                let limit_reg = ((end >> 16) & 0xFFF0) as u32;
+                self.write32(baddr, PCI_PREF_MEMORY_BASE, base_reg | (limit_reg << 16));
                 self.write32(
                     baddr,
-                    PCI_PREF_MEMORY_BASE,
-                    (base_reg as u32) | ((limit_reg as u32) << 16),
+                    PCI_PREF_BASE_UPPER32,
+                    (prefetchable.base >> 32) as u32,
                 );
-                self.write32(baddr, PCI_PREF_BASE_UPPER32, (pref_lo >> 32) as u32);
-                self.write32(baddr, PCI_PREF_LIMIT_UPPER32, ((pref_hi - 1) >> 32) as u32);
+                self.write32(baddr, PCI_PREF_LIMIT_UPPER32, (end >> 32) as u32);
             } else {
                 self.write32(baddr, PCI_PREF_MEMORY_BASE, 0x0000_FFFF);
                 self.write32(baddr, PCI_PREF_BASE_UPPER32, 0);
                 self.write32(baddr, PCI_PREF_LIMIT_UPPER32, 0);
             }
 
-            if io_lo < io_hi {
-                let base = ((io_lo >> 8) & 0xF0) as u8;
-                let limit = (((io_hi - 1) >> 8) & 0xF0) as u8;
-                self.write32(baddr, PCI_IO_BASE, (base as u32) | ((limit as u32) << 8));
+            if io.placed {
+                let base = ((io.base >> 8) & 0xF0) as u32;
+                let limit = (((io.base + io.size - 1) >> 8) & 0xF0) as u32;
+                self.write32(baddr, PCI_IO_BASE, base | (limit << 8));
             } else {
                 self.write32(baddr, PCI_IO_BASE, 0x00FF);
             }
 
             // Enable forwarding, but defer mastering when DMA ownership is
             // explicitly left to the device driver.
-            let mut new_cmd = self.devices[i].original_command | PCI_CMD_IO | PCI_CMD_MEMORY;
+            let mut new_cmd = self.devices[bridge].original_command | PCI_CMD_IO | PCI_CMD_MEMORY;
             if self.auto_bus_master {
                 new_cmd |= PCI_CMD_BUS_MASTER;
             } else {
@@ -2266,6 +2390,213 @@ mod tests {
         assert!(sata_window.contains(&(pci.read32(sata, PCI_BAR0 + 20) & !0xf)));
     }
 
+    /// The non-prefetchable memory window of `bridge`, inclusive.
+    fn memory_window(pci: &PciEcam, bridge: PciAddress) -> core::ops::RangeInclusive<u64> {
+        let value = pci.read32(bridge, PCI_MEMORY_BASE);
+        u64::from((value & 0xfff0) << 16)..=u64::from(value | 0xf_ffff)
+    }
+
+    /// Every bridge's memory window holds its subtree's memory BARs and no
+    /// other BAR, fixed or movable.
+    fn assert_windows_hold_only_their_subtrees(pci: &PciEcam) {
+        for bridge in pci
+            .devices
+            .iter()
+            .filter(|d| d.header_type == PCI_HEADER_TYPE_BRIDGE)
+        {
+            let window = memory_window(pci, bridge.addr);
+            let subtree = bridge.secondary_bus..=bridge.subordinate_bus;
+            for (address, bar) in pci.assigned_memory_bars() {
+                let start = bar.base;
+                let end = bar.base + bar.size - 1;
+                if subtree.contains(&address.bus()) {
+                    assert!(window.contains(&start) && window.contains(&end));
+                } else {
+                    assert!(
+                        end < *window.start() || start > *window.end(),
+                        "{address:?}'s BAR at {start:#x} is in {:?}'s window {window:x?}",
+                        bridge.addr
+                    );
+                }
+            }
+        }
+    }
+
+    fn bridge_at(address: PciAddress, secondary: u8, subordinate: u8) -> PciDev {
+        PciDev {
+            header_type: PCI_HEADER_TYPE_BRIDGE,
+            secondary_bus: secondary,
+            subordinate_bus: subordinate,
+            ..endpoint(address, &[])
+        }
+    }
+
+    /// The S8040's first IOS: a root port with the AST2600 behind it (a
+    /// 16 MiB framebuffer, aligned up past the pool's front, and a 256 KiB
+    /// register BAR), then the internal bridge with the xHCI. Placed BAR by
+    /// BAR, the xHCI went into the gap below the framebuffer, inside the
+    /// AST's root port window. Now the AST's window is placed whole, and the
+    /// xHCI's window takes the gap.
+    #[test]
+    fn a_later_bus_does_not_fill_an_earlier_bridges_alignment_gap() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0xc880_0000, 0x0700_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let ast = PciAddress::new(0, 1, 0, 0);
+        let xhci = PciAddress::new(0, 2, 0, 4);
+        for device in [
+            bridge_at(PciAddress::new(0, 0, 5, 3), 1, 1),
+            endpoint(
+                ast,
+                &[
+                    (0, BarType::Memory32, 0x100_0000),
+                    (1, BarType::Memory32, 0x4_0000),
+                ],
+            ),
+            bridge_at(PciAddress::new(0, 0, 7, 1), 2, 2),
+            endpoint(xhci, &[(0, BarType::Memory64, 0x10_0000)]),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+
+        pci.allocate_resources().unwrap();
+
+        assert_eq!(pci.read32(ast, PCI_BAR0) & !0xf, 0xc900_0000);
+        assert_eq!(pci.read32(ast, crate::PCI_BAR1) & !0xf, 0xca00_0000);
+        assert_eq!(pci.read32(xhci, PCI_BAR0) & !0xf, 0xc880_0000);
+        assert_eq!(
+            memory_window(&pci, PciAddress::new(0, 0, 5, 3)),
+            0xc900_0000..=0xca0f_ffff
+        );
+        assert_windows_hold_only_their_subtrees(&pci);
+    }
+
+    /// A root-bus BAR aligned to the end of the pool leaves the gap below
+    /// it, where a bridge's window still fits. Every BAR above all the
+    /// others' did not, and enumeration failed.
+    #[test]
+    fn a_bridge_window_fits_below_a_root_bus_bar() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0xc080_0000, 0x0180_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let vga = PciAddress::new(0, 0, 1, 0);
+        let nic = PciAddress::new(0, 1, 0, 0);
+        for device in [
+            endpoint(vga, &[(0, BarType::Memory32, 0x100_0000)]),
+            bridge_at(PciAddress::new(0, 0, 2, 0), 1, 1),
+            endpoint(nic, &[(0, BarType::Memory32, 0x10_0000)]),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+
+        pci.allocate_resources().unwrap();
+
+        assert_eq!(pci.read32(vga, PCI_BAR0) & !0xf, 0xc100_0000);
+        assert_eq!(pci.read32(nic, PCI_BAR0) & !0xf, 0xc080_0000);
+        assert_windows_hold_only_their_subtrees(&pci);
+    }
+
+    /// A chipset's fixed BAR, above the pool or inside it, is neither a
+    /// floor for the BARs behind a bridge nor inside a bridge's window.
+    #[test]
+    fn a_fixed_bar_is_not_a_floor_nor_in_a_window() {
+        for fixed_base in [0xfed0_0000, 0x8010_0000] {
+            let (mut pci, _config_space) = test_pci();
+            pci.configure_windows(0x8000_0000, 0x40_0000, 0, 0, 0x1000, 0xf000)
+                .unwrap();
+            let chipset = PciAddress::new(0, 0, 0x1f, 0);
+            pci.add_fixed_bars(&[PciFixedBar {
+                address: chipset,
+                register: PCI_BAR0,
+                kind: PciFixedBarType::Memory32,
+                base: fixed_base,
+                size: 0x10_0000,
+                prefetchable: false,
+            }])
+            .unwrap();
+            let mut fixed = endpoint(chipset, &[(0, BarType::Memory32, 0x10_0000)]);
+            fixed.bars[0].allocated = true;
+            fixed.bars[0].fixed = true;
+            pci.write32(chipset, PCI_BAR0, fixed_base as u32);
+            let disk = PciAddress::new(0, 1, 0, 0);
+            for device in [
+                fixed,
+                bridge_at(PciAddress::new(0, 0, 2, 0), 1, 1),
+                endpoint(
+                    disk,
+                    &[
+                        (0, BarType::Memory32, 0x10_0000),
+                        (1, BarType::Memory32, 0x10_0000),
+                    ],
+                ),
+            ] {
+                assert!(pci.devices.push(device).is_ok());
+            }
+
+            pci.allocate_resources().unwrap();
+
+            assert_eq!(pci.read32(chipset, PCI_BAR0), fixed_base as u32);
+            assert_windows_hold_only_their_subtrees(&pci);
+        }
+    }
+
+    /// No window is placed around a fixed BAR behind a bridge.
+    #[test]
+    fn a_fixed_bar_behind_a_bridge_is_refused() {
+        let (mut pci, _config_space) = test_pci();
+        let mut fixed = endpoint(PciAddress::new(0, 1, 0, 0), &[(0, BarType::Io, 0x20)]);
+        fixed.bars[0].allocated = true;
+        fixed.bars[0].fixed = true;
+        assert!(
+            pci.devices
+                .push(bridge_at(PciAddress::new(0, 0, 1, 0), 1, 1))
+                .is_ok()
+        );
+        assert!(pci.devices.push(fixed).is_ok());
+        assert_eq!(pci.allocate_resources(), Err(PciEcamError::FixedBarInvalid));
+    }
+
+    /// Behind nested bridges, each window is its subtree, packed: the
+    /// largest alignment first, the window rounded to 1 MiB.
+    #[test]
+    fn nested_windows_are_sized_from_their_subtrees() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0x8000_0000, 0x1000_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let upstream = PciAddress::new(0, 0, 1, 0);
+        let downstream = PciAddress::new(0, 1, 0, 0);
+        let gpu = PciAddress::new(0, 1, 1, 0);
+        let disk = PciAddress::new(0, 2, 0, 0);
+        let host = PciAddress::new(0, 0, 2, 0);
+        for device in [
+            bridge_at(upstream, 1, 2),
+            bridge_at(downstream, 2, 2),
+            endpoint(
+                gpu,
+                &[
+                    (0, BarType::Memory32, 0x200_0000),
+                    (1, BarType::Memory32, 0x1000),
+                ],
+            ),
+            endpoint(disk, &[(0, BarType::Memory32, 0x4000)]),
+            endpoint(host, &[(0, BarType::Memory32, 0x1000)]),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+
+        pci.allocate_resources().unwrap();
+
+        // Upstream: the 32 MiB BAR, the 1 MiB window of the disk's port,
+        // then the 4 KiB BAR, rounded up to 34 MiB.
+        assert_eq!(memory_window(&pci, upstream), 0x8000_0000..=0x821f_ffff);
+        assert_eq!(pci.read32(gpu, PCI_BAR0), 0x8000_0000);
+        assert_eq!(memory_window(&pci, downstream), 0x8200_0000..=0x820f_ffff);
+        assert_eq!(pci.read32(disk, PCI_BAR0), 0x8200_0000);
+        assert_eq!(pci.read32(gpu, crate::PCI_BAR1), 0x8210_0000);
+        assert_eq!(pci.read32(host, PCI_BAR0), 0x8220_0000);
+        assert_windows_hold_only_their_subtrees(&pci);
+    }
+
     pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
         let none = BarInfo {
             bar_type: BarType::None,
@@ -2294,6 +2625,7 @@ mod tests {
             bars,
             secondary_bus: 0,
             subordinate_bus: 0,
+            windows: Default::default(),
         }
     }
 
