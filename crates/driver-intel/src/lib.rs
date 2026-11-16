@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod cpu;
 pub mod namespace;
 
+pub mod baytrail;
 pub mod generic;
 pub mod gm45;
 pub mod gm965;
