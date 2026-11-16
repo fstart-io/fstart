@@ -298,6 +298,29 @@ fn root_prt_has_the_fch_interrupts_on_die_0_and_the_bridges_own() {
     assert_eq!(root1[10..], [(0x7_ffff, 0, 76), (0x8_ffff, 0, 64)]);
 }
 
+/// The RS root complex's event collector (00.3, INTA) on pin 1 of its
+/// IOS's IOAPIC, first in the `_PRT` of every root bridge, as in Genoa's,
+/// Siena's and Turin's vendor DSDTs.
+#[test]
+fn the_rs_event_collector_interrupts_on_pin_1_of_every_root_bridge() {
+    let (dies, cpus) = (dies(false), cpus(&[0, 1], false));
+    let rs = crate::rs::acpi::soc(0x400, false);
+    let aml = build(&inputs(&rs, &cpus, &dies, &Board::default()))
+        .unwrap()
+        .dsdt;
+    let (pci0, pci1) = (device(&aml, b"PCI0"), device(&aml, b"PCI1"));
+    assert_eq!(prt_of(&aml[pci0..], b"PCI0")[0], (0xffff, 0, 25));
+    assert_eq!(prt_of(&aml[pci1..], b"PCI1")[0], (0xffff, 0, 57));
+    // Only its INTA: one device 0 entry.
+    assert_eq!(
+        prt_of(&aml[pci1..], b"PCI1")
+            .iter()
+            .filter(|e| e.0 == 0xffff)
+            .count(),
+        1
+    );
+}
+
 #[test]
 fn bridge_prts_route_through_the_nbio_ioapic_of_their_die() {
     let aml = tables(&Board::default()).dsdt;

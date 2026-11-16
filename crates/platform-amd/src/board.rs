@@ -22,6 +22,8 @@ pub enum SocId {
     Naples,
     Rome,
     Milan,
+    Genoa,
+    Siena,
 }
 
 impl SocId {
@@ -34,12 +36,19 @@ impl SocId {
             Self::Naples => "naples",
             Self::Rome => "rome",
             Self::Milan => "milan",
+            Self::Genoa => "genoa",
+            Self::Siena => "siena",
         }
     }
 
     /// The SoC is in the SP3 socket (one flash half per SoC).
     pub const fn sp3(self) -> bool {
         matches!(self, Self::Naples | Self::Rome | Self::Milan)
+    }
+
+    /// The SoC is made of the RS I/O die.
+    pub const fn rs(self) -> bool {
+        matches!(self, Self::Genoa | Self::Siena)
     }
 }
 

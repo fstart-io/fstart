@@ -4,10 +4,11 @@
 //! composes the driver's IP blocks into its silicon init ([`soc::Init`]),
 //! which the phases of the flow ([`flow`]) call, and says what the flow's
 //! services need of it ([`flow::Soc`]): [`picasso`], [`zeppelin`],
-//! [`naples`], [`rome`] and [`milan`]. The SoCs made of dies share their
-//! part of that ([`noncar`]), and so do the SoCs of the SP3 socket
-//! ([`sp3`]). A board is [`board::Board`]; docs/amd-structure.md says
-//! where AMD code goes.
+//! [`naples`], [`rome`], [`milan`], [`genoa`] and [`siena`]. The SoCs made
+//! of dies share their part of that ([`noncar`]), the SoCs of the SP3
+//! socket theirs ([`sp3`]), and Genoa and Siena their I/O die's ([`rs`]).
+//! A board is [`board::Board`]; docs/amd-structure.md says where AMD code
+//! goes.
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 extern crate alloc;
 /// The ACPI tables, for every SoC.
@@ -26,6 +27,7 @@ pub mod compression {
 
 /// The boot flow, for every SoC.
 pub mod flow;
+pub mod genoa;
 /// The host build plan, for every board.
 #[cfg(feature = "host")]
 pub mod host;
@@ -46,6 +48,8 @@ pub mod noncar;
 pub mod options;
 pub mod picasso;
 pub mod rome;
+pub mod rs;
+pub mod siena;
 /// The SMBIOS tables, for every SoC.
 pub mod smbios;
 /// SMM for every SoC: the SMRAM configuration, the FCH as the SMI owner
