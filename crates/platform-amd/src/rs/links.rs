@@ -195,6 +195,32 @@ mod tests {
         missing(required, lanes).map(|s| s.lane).collect()
     }
 
+    /// The Onyx with an add-in VGA card on a root port scanned before the
+    /// BMC's PSP-trained one: the legacy VGA display is the one behind the
+    /// port of the board's display lane, not the first one found.
+    #[test]
+    fn the_boards_display_port_wins_over_an_earlier_vga_card() {
+        let (card_port, bmc_port) = (PciAddress::new(0, 0, 1, 0), PciAddress::new(0, 0, 7, 0));
+        let (card, bmc) = (PciAddress::new(0, 1, 0, 0), PciAddress::new(0, 3, 0, 0));
+        let (_ram, pci) = ecam(
+            4,
+            &[
+                (card_port, 1, BRIDGE),
+                (card, 0, DISPLAY),
+                (bmc_port, 1, BRIDGE),
+                (PciAddress::new(0, 2, 0, 0), 1, BRIDGE),
+                (bmc, 0, DISPLAY),
+            ],
+        );
+        assert_eq!(pci.legacy_vga_display(None), Some(card));
+        // The BMC's port: the live one MPIO did not train on IOS 0's
+        // wrapper 2, which the PSP-trained lane 134 is on.
+        assert_eq!(psp_trained(&[0, 1, 2, 3], &[(134, 134)], 0, 2), Some(134));
+        assert_eq!(pci.legacy_vga_display(Some(bmc_port)), Some(bmc));
+        assert!(Behind::BridgedDisplay.found(&pci, bmc_port));
+        assert!(!Behind::BridgedDisplay.found(&pci, card_port));
+    }
+
     /// The Onyx: lane 134 (the BMC) is the PSP's, on IOS 0's wrapper 2 with
     /// the BCM5720's lane 135, which MPIO trains.
     #[test]

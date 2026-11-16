@@ -32,12 +32,14 @@ try {
       // Every build that needs no file from the user is assembled both
       // ways. Vendor images remain local: the AMD builds are exercised when
       // their donor is supplied (a dual-generation SP3 donor, a
-      // one-generation one, the S8040's vendor download for Siena).
+      // one-generation one, the S8040's vendor download for Siena, an Onyx
+      // flash backup for Genoa).
       let donor;
       if (build.board === 'gigabyte-mj11-ec1') donor = process.env.FSTART_TEST_DONOR;
       else if (build.board.startsWith('tyan-s8030')) donor = process.env.FSTART_TEST_SP3_DONOR;
       else if (build.board === 'amd-ethanolx') donor = process.env.FSTART_TEST_ETHANOLX_DONOR;
       else if (build.board === 'tyan-s8040') donor = process.env.FSTART_TEST_S8040_DONOR;
+      else if (build.board === 'amd-onyx') donor = process.env.FSTART_TEST_ONYX_DONOR;
       if (build.inputs.length === 0 && build.image_error == null && (!build.donor_required || donor)) {
         if (build.donor_required) assembler.setDonor(fs.readFileSync(donor));
         // A build whose options live in its image starts with one set.
