@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The tables of the die SoCs as their flow fills the inputs
 //! ([`crate::noncar::acpi`]): routing, MADT, IVRS, NUMA, the DSDT through
-//! `iasl` and `acpiexec` when they are installed, and the table set of an
-//! MJ11 byte for byte. SP3's are `crate::sp3::acpi`'s tests.
+//! `iasl` and `acpiexec` when they are installed. SP3's are
+//! `crate::sp3::acpi`'s tests; a board pins its own table set.
 extern crate std;
 
 use core::ops::RangeInclusive;
@@ -731,61 +731,6 @@ fn two_dies_are_two_domains() {
     let slit = &tables.extra[3];
     assert_eq!(&slit[44..48], &[10, 16, 16, 10]);
     assert_eq!(tables.dsdt.windows(4).filter(|w| w == b"_PXM").count(), 2);
-}
-
-/// The table set of an MJ11-EC1 (EPYC 3151, one die) as the stage builds
-/// it, byte for byte: the windows the enumeration finds, the board's
-/// COM1, IPMI KCS and SPCR.
-#[test]
-fn mj11_ec1_tables_are_pinned() {
-    let io = 0x1000..=0xffff;
-    let mmio = [0xe000_0000..=0xe7ff_ffff, 0xf800_0000..=0xfe7f_ffff];
-    let die = [root_bridge(
-        0,
-        pci_root(0..=127, &io, &mmio),
-        0xfeb0_0000,
-        Some(Iommu {
-            base: 0xfe60_0000,
-            capability: 0x1909_0040,
-            range: 0x0000_ff00,
-            misc: 0x0000_1a0b,
-            control: 0,
-            efr: 0x0000_00a2_9ec4_a7a5,
-            efr2: 0,
-            counter_config: 0x0000_0000_0002_0402,
-        }),
-        false,
-    )];
-    // The board's: the KCS interface, SPCR on COM1, the BMC sleep-state
-    // SMIs.
-    let mut spcr = vec![];
-    fstart_acpi::Aml::to_aml_bytes(&fstart_acpi::spcr::build_spcr_16550_io(0x3f8, 4), &mut spcr);
-    let board = Board {
-        ipmi: Some(fstart_acpi::devices::IpmiKcsAcpi {
-            port: 0xca2,
-            spacing: 1,
-            uid: 0,
-            spec_revision: 0x0200,
-        }),
-        tables: vec![spcr],
-        sb_aml: fstart_driver_ipmi::SleepNotify {
-            kcs_port: 0xca2,
-            kcs_spacing: 1,
-            sw_smi_base: 0xc0,
-        }
-        .aml(0xb2),
-        ..Default::default()
-    };
-    let cpus = cpus(&[0, 1, 2, 3, 8, 9, 10, 11], false);
-    let tables = build(&inputs(&ACPI, &cpus, &die, &board)).unwrap();
-    let mut storage = vec![0; 0x2_0000];
-    let len = tables.assemble_into(&mut storage, 0x7601_8000).unwrap();
-    let hash = storage[..len]
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-        });
-    assert_eq!((len, hash), (5936, 0xf1b6_f2f2_e936_8d23));
 }
 
 /// The table with `signature`: the first match whose length and

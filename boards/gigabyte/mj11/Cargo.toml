@@ -47,4 +47,8 @@ fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 zerocopy = { workspace = true }
 tock-registers = { workspace = true }
 
+[dev-dependencies]
+# The pinned ACPI tables (src/acpi.rs).
+fstart-core = { path = "../../../crates/core" }
+
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.
