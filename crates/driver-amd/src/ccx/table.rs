@@ -206,9 +206,21 @@ pub fn apply<M: MsrAccess + ?Sized>(
     ids: &LogicalId,
     flags: PlatformFlags,
 ) {
+    apply_scoped(cpu, table, |scope| thread.in_scope(scope), ids, flags);
+}
+
+/// [`apply`] for a die whose threads are in a scope by `in_scope`.
+#[inline(always)]
+pub fn apply_scoped<M: MsrAccess + ?Sized>(
+    cpu: &M,
+    table: &[Record],
+    in_scope: impl Fn(Scope) -> bool,
+    ids: &LogicalId,
+    flags: PlatformFlags,
+) {
     table
         .iter()
-        .take_while(|r| thread.in_scope(r.scope))
+        .take_while(|r| in_scope(r.scope))
         .filter(|r| r.applies(ids, flags))
         .for_each(|r| cpu.write(r.msr, r.update(cpu.read(r.msr))));
 }

@@ -26,10 +26,10 @@ pub mod event;
 pub mod mem;
 pub mod nps;
 pub mod phy;
+pub mod rs;
 #[cfg(feature = "smbios")]
 pub mod smbios;
 pub mod sysmap;
-
 pub use sysmap::{Hole, MemoryMap};
 
 use zerocopy::little_endian::U32;

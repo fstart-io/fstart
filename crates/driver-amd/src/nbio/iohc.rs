@@ -32,7 +32,10 @@ register_bitfields![u32,
         TOM_4G OFFSET(0) NUMBITS(1) [],
         TOM OFFSET(23) NUMBITS(9) []
     ],
-    pub NbPciCtrl [MMIO_ENABLE OFFSET(23) NUMBITS(1) []],
+    pub NbPciCtrl [
+        USB_PME_DISABLE OFFSET(4) NUMBITS(1) [],
+        MMIO_ENABLE OFFSET(23) NUMBITS(1) []
+    ],
     /// CFG_IOHC_PCI.
     pub CfgIohcPci [
         /// Config accesses to D0F2, the IOMMU.
@@ -618,5 +621,20 @@ mod nbio_tests {
         assert_eq!(smn(&m, 0x40, PSP_BAR.low, 2), 0xF100_0101);
         n.set_ioapic_bar(0xC000_1000);
         assert_eq!(n.ioapic_bar(), Some(0xC000_1000));
+    }
+}
+
+/// SB location (Rome `ffdf22f5`, Siena AmdNbioBaseInit `ffa31ef5`): the
+/// NBIO with the FCH copies `IOHC::SB_LOCATION` to its IOMMU L1 (IOAGR) and
+/// L2; every other NBIO clears it.
+pub fn set_sb_location(nbio: &impl SmnAccess, fch: bool) {
+    use super::iommu::{L1_SSP, L2_SB_LOCATION, l1_sb_location};
+    let sb = nbio.reg(SB_LOCATION);
+    if fch {
+        let value = sb.get();
+        nbio.reg(l1_sb_location(L1_SSP[3])).set(value);
+        nbio.reg(L2_SB_LOCATION).set(value);
+    } else {
+        sb.set(0);
     }
 }

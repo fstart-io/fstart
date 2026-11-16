@@ -165,6 +165,12 @@ register_bitfields![u8,
         POWER_STATE OFFSET(2) NUMBITS(1) [],
         BIT3 OFFSET(3) NUMBITS(1) []
     ],
+    /// PMxD2 FCH::PM::PMIODEBUG.
+    pub PmioDebug [
+        /// Cf9RstDisable: a write to CF9h does not reset, for firmware
+        /// that traps CF9h in SMM.
+        CF9_RST_DISABLE OFFSET(6) NUMBITS(1) []
+    ],
     /// PMxD3.
     pub SdControl [
         LEGACY_SD OFFSET(6) NUMBITS(1) []
@@ -275,7 +281,7 @@ pub const PM_RESET_CONTROL1: At<u8, ResetControl1::Register> = pm::at(0xbe);
 pub const PM_S5_RESET_STATUS: At<u8, S5ResetStatus::Register> = pm::at(0xc0);
 /// PMxC8 FCH::PM::Misc.
 pub const PM_MISC: At<u8> = pm::at(0xc8);
-pub const PM_D2: At<u8> = pm::at(0xd2);
+pub const PM_D2: At<u8, PmioDebug::Register> = pm::at(0xd2);
 /// PMxD3 (FCH::PM::ManualReset in the SP3 reports): the legacy SD decode.
 pub const PM_SD_CONTROL: At<u8, SdControl::Register> = pm::at(0xd3);
 pub const PM_ALT_MMIO_EN: At<u8, AltMmioEn::Register> = pm::at(0xd5);

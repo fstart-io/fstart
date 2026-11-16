@@ -31,11 +31,11 @@ pub mod iohc;
 pub mod iommu;
 pub mod nbif;
 pub mod pcie;
+pub mod rs;
 pub mod rv;
 pub mod ssp;
 pub mod table;
 pub mod zp;
-
 /// One NBIO: a ZP die (Naples) or an IOD quadrant (Rome, Milan).
 #[derive(Clone)]
 pub struct Nbio<P> {
