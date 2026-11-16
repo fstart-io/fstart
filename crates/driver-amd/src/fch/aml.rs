@@ -323,25 +323,7 @@ impl FchAcpi {
     pub fn sb_aml(&self) -> Result<Vec<u8>, AmlError> {
         let mut out = Vec::new();
         for u in &self.uarts {
-            let (mmio, dma) = UART_MMIO[usize::from(u.index)];
-            let body = emit(acpi_dsl! {
-                Name("_HID", "AMDI0020");
-                Name("_UID", #{byte u.index});
-                Name("_DSD", Package(
-                    ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-                    Package(
-                        Package("clock-frequency", #{const dword uart::MMIO_CLOCK_HZ}),
-                        Package("reg-shift", 2u8),
-                        Package("reg-io-width", 1u8),
-                    )
-                ));
-                Name("_CRS", ResourceTemplate {
-                    Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword u.irq});
-                    Memory32Fixed(ReadWrite, #{dword mmio}, 0x1000u32);
-                    Memory32Fixed(ReadWrite, #{dword dma}, 0x1000u32);
-                });
-            })?;
-            out.extend(device_vec(&name("FUR", b'0' + u.index), &body)?);
+            out.extend(uart(u.index, u.irq)?);
         }
         for c in &self.legacy {
             let body = emit(acpi_dsl! {
@@ -368,6 +350,33 @@ impl FchAcpi {
         }
         Ok(out)
     }
+}
+
+/// FCH UART `index` (`AMDI0020`), `FUR0`-`FUR3`: its MMIO and DMA blocks,
+/// interrupting on the edge-high FCH IRQ `irq`, with the 8250 properties
+/// of its MMIO mode.
+pub fn uart(index: u8, irq: u8) -> Result<Vec<u8>, AmlError> {
+    let &(mmio, dma) = UART_MMIO
+        .get(usize::from(index))
+        .ok_or(AmlError::InvalidOperand)?;
+    let body = emit(acpi_dsl! {
+        Name("_HID", "AMDI0020");
+        Name("_UID", #{byte index});
+        Name("_DSD", Package(
+            ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+            Package(
+                Package("clock-frequency", #{const dword uart::MMIO_CLOCK_HZ}),
+                Package("reg-shift", 2u8),
+                Package("reg-io-width", 1u8),
+            )
+        ));
+        Name("_CRS", ResourceTemplate {
+            Interrupt(ResourceConsumer, Edge, ActiveHigh, Exclusive, #{dword irq});
+            Memory32Fixed(ReadWrite, #{dword mmio}, 0x1000u32);
+            Memory32Fixed(ReadWrite, #{dword dma}, 0x1000u32);
+        });
+    })?;
+    device_vec(&name("FUR", b'0' + index), &body)
 }
 
 /// `prefix` plus one character (`FUR0`, `COM1`, `I2CA`).

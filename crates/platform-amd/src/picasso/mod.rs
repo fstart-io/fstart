@@ -80,19 +80,27 @@ impl noncar::DieSoc for Picasso {
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel10;
     const SERVER: bool = false;
-    /// The eMMC controller if it is set up, the FCH GPIO controller and the
-    /// board's I2C controllers with the devices behind them.
+    /// The eMMC controller if it is set up, the FCH GPIO controller, the
+    /// console UART and the board's I2C controllers with the devices behind
+    /// them.
     fn acpi_devices(
         config: &Config,
         state: &State,
     ) -> Result<(Devices, alloc::vec::Vec<u8>), &'static str> {
+        let routes = config.routes().map_err(|_| "FCH interrupt routes")?;
         let devices = state
             .emmc
             .into_iter()
-            .map(|_| acpi::emmc())
+            .map(|_| acpi::emmc(&routes))
             .collect::<Result<_, _>>()
             .map_err(|_| "eMMC ACPI")?;
-        let aml = acpi::devices(config.i2c, state.emmc.is_some()).map_err(|_| "ACPI devices")?;
+        let aml = acpi::devices(
+            config.fch.console_uart,
+            config.i2c,
+            &routes,
+            state.emmc.is_some(),
+        )
+        .map_err(|_| "ACPI devices")?;
         Ok((devices, aml))
     }
 

@@ -13,7 +13,7 @@
 //! expr        = atom (binop atom)*          // Pratt parser
 //! atom        = "(" expr ")" | "!" expr | "~" expr | literal | ident
 //!             | ToUUID(..) | SizeOf(..) | DeRefOf(..) | CondRefOf(..)
-//!             | Index(..) | #{expr}
+//!             | Index(..) | Concatenate(..) | ToString(..) | #{expr}
 //! ```
 
 use proc_macro2::{Delimiter, Spacing, Span, TokenStream, TokenTree};
@@ -115,6 +115,10 @@ pub enum DslExpr {
     CondRefOf(Box<DslExpr>, Box<DslExpr>),
     /// `Index(source, index)`
     Index(Box<DslExpr>, Box<DslExpr>),
+    /// `Concatenate(a, b)`
+    Concatenate(Box<DslExpr>, Box<DslExpr>),
+    /// `ToString(source)`: up to the first NUL.
+    ToString(Box<DslExpr>),
     /// Method invocation used as an expression: `NAME(arg0, ...)`.
     Call(String, Vec<DslExpr>),
     /// Binary operation: `a + b`, `a == b`, etc.
@@ -2173,6 +2177,22 @@ impl Parser {
                         p.expect_punct(',')?;
                         let b = p.parse_expr(0)?;
                         Ok(DslExpr::Index(Box::new(a), Box::new(b)))
+                    }
+                    "Concatenate" => {
+                        self.advance();
+                        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+                        let mut p = Parser::new(args);
+                        let a = p.parse_expr(0)?;
+                        p.expect_punct(',')?;
+                        let b = p.parse_expr(0)?;
+                        Ok(DslExpr::Concatenate(Box::new(a), Box::new(b)))
+                    }
+                    "ToString" => {
+                        self.advance();
+                        let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
+                        let mut p = Parser::new(args);
+                        let inner = p.parse_expr(0)?;
+                        Ok(DslExpr::ToString(Box::new(inner)))
                     }
                     "PPKG" | "C2K" | "GCRT" | "GPSV" | "TLED" | "BEEP" | "FANE" | "BPAG"
                     | "BSTA" | "BINF" | "BINX" => {

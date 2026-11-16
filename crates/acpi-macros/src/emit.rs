@@ -725,6 +725,15 @@ fn encode_expr(expr: &DslExpr) -> Result<Encoded> {
             &[0x88],
             [encode_expr(source)?, encode_expr(index)?, Encoded::byte(0)],
         ),
+        DslExpr::Concatenate(a, b) => op_args(
+            &[0x73],
+            [encode_expr(a)?, encode_expr(b)?, Encoded::byte(0)],
+        ),
+        // Length Ones: up to the first NUL.
+        DslExpr::ToString(inner) => op_args(
+            &[0x9c],
+            [encode_expr(inner)?, Encoded::byte(0xff), Encoded::byte(0)],
+        ),
         DslExpr::Call(name, args) => {
             let mut out = encode_name_string(name)?;
             for arg in args {

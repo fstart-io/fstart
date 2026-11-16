@@ -54,6 +54,14 @@ pub fn wifi_power_reset<E>(
     reset.set_low()
 }
 /// Baseboard sleep table, retained as data only: SMM/resume is not ported yet.
+pub const SLEEP: &[Pad] = &[
+    Pad::output(10, false),
+    Pad::output(27, false),
+    Pad::output(29, true),
+    Pad::output(40, false),
+    Pad::output(76, false),
+];
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -148,11 +156,3 @@ mod tests {
         assert_eq!(overrides(Cbi::new(None, None), false)[0].pin.0, 32);
     }
 }
-
-pub const SLEEP: &[Pad] = &[
-    Pad::output(10, false),
-    Pad::output(27, false),
-    Pad::output(29, true),
-    Pad::output(40, false),
-    Pad::output(76, false),
-];

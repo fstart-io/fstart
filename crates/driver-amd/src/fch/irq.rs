@@ -66,6 +66,8 @@ pub const UART2: u8 = 0x78;
 pub const UART3: u8 = 0x79;
 /// I2C controllers 0-5.
 pub const I2C: [u8; 6] = [I2C0, I2C1, I2C2, I2C3, I2C4, I2C5];
+/// UARTs 0-3.
+pub const UART: [u8; 4] = [UART0, UART1, UART2, UART3];
 
 /// Entries of the table.
 pub const ENTRIES: u8 = 0x80;

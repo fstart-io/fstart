@@ -203,10 +203,54 @@ impl<I: Io> Ec<I> {
         }
         Ok(u32::from_le_bytes(data))
     }
+    /// The host events that raise the EC's SCI (`HOST_EVENT_SET_SCI_MASK`),
+    /// each the [`HostEvent::mask`] of an event. The OS reads which one in
+    /// the EC's ACPI query and runs its `_Qxx`.
+    pub fn set_sci_mask(&mut self, mask: u32, timer: &impl Timer) -> Result<(), Error> {
+        self.command(0x008b, 0, &mask.to_le_bytes(), &mut [], timer)
+            .map(|_| ())
+    }
+
+    /// The host events that wake the system (`HOST_EVENT_SET_WAKE_MASK`).
+    pub fn set_wake_mask(&mut self, mask: u32, timer: &impl Timer) -> Result<(), Error> {
+        self.command(0x008e, 0, &mask.to_le_bytes(), &mut [], timer)
+            .map(|_| ())
+    }
+
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
 }
+/// The EC's host events (`ec_commands.h`, `enum host_event_code`) the
+/// ACPI code of [`acpi`] handles; the number is its `_Qxx` query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HostEvent {
+    LidClosed = 1,
+    LidOpen = 2,
+    PowerButton = 3,
+    AcConnected = 4,
+    AcDisconnected = 5,
+    BatteryLow = 6,
+    BatteryCritical = 7,
+    Battery = 8,
+    KeyPressed = 13,
+    BatteryShutdown = 17,
+    PdMcu = 22,
+    BatteryStatus = 23,
+    Panic = 24,
+    Mkbp = 27,
+    UsbMux = 28,
+    ModeChange = 29,
+}
+
+impl HostEvent {
+    /// The event's bit in a host-event mask.
+    pub const fn mask(self) -> u32 {
+        1 << (self as u8 - 1)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum CbiTag {
