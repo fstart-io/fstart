@@ -43,6 +43,8 @@ pub const MAINSTAGE_STACK_SIZE: u32 = 0x10000;
 /// precedent; the manifest buffer dominates and stays well below this.
 pub const MAINSTAGE_HEAP_SIZE: u32 = 256 * 1024;
 
+mod boot_tests;
+
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: SunxiBoardFacts> HostPlan<B> for Plan<B> {
@@ -222,7 +224,7 @@ fn run(emulator: SunxiEmulator, facts: &BoardFacts) -> Result<RunRecipe, String>
             machine: "orangepi-pc".into(),
             cpu: None,
             accel_kvm: false,
-            memory: None,
+            memory: Some(std::format!("{}M", boot_tests::ORANGEPI_PC_DRAM_MIB)),
             smp: None,
             nographic: true,
             media: vec![RunMedia::SdCard {
@@ -233,6 +235,8 @@ fn run(emulator: SunxiEmulator, facts: &BoardFacts) -> Result<RunRecipe, String>
             devices: vec![],
             args: vec![],
             disk: None,
+            tpm: None,
+            tests: boot_tests::orangepi_pc(facts),
         }),
     }
 }
@@ -362,6 +366,12 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
                 capacity: 0x10_0000,
             });
         }
+        inputs.push(InputFile {
+            name: Assembly::DTB.into(),
+            default: Some(facts.dtb.into()),
+            // CLI validation bound only, like the firmware's.
+            capacity: 0x10_0000,
+        });
     }
     let bootblock_output = UnitOutput::Executable {
         expectations: bootblock.expectations,
@@ -495,9 +505,14 @@ mod tests {
         assert_eq!(payload.kernel_load_addr, Some(0x4200_0000));
         assert_eq!(payload.dtb_addr, Some(0x4300_0000));
         assert!(payload.firmware.is_none());
-        assert_eq!(plan.inputs.len(), 1);
+        assert_eq!(plan.inputs.len(), 2);
         assert_eq!(plan.inputs[0].name, "kernel");
         assert_eq!(plan.inputs[0].capacity, 0x100_0000);
+        assert_eq!(plan.inputs[1].name, Assembly::DTB);
+        assert_eq!(
+            plan.inputs[1].default.as_deref(),
+            Some("sun7i-a20-bananapi.dtb")
+        );
     }
 
     #[test]
@@ -547,7 +562,7 @@ mod tests {
         assert_eq!(firmware.file.as_str(), "bl31-sun50i-a64.bin");
         assert_eq!(payload.kernel_load_addr, Some(0x4a00_0000));
         assert_eq!(payload.dtb_addr, Some(0x4b00_0000));
-        assert_eq!(plan.inputs.len(), 2);
+        assert_eq!(plan.inputs.len(), 3);
         assert_eq!(plan.inputs[1].name, "firmware");
         let r1 = BoardFacts {
             soc: SunxiSoc::H3,

@@ -297,6 +297,8 @@ fn run(emulator: AspeedEmulator, facts: &BoardFacts) -> Result<RunRecipe, String
                 devices: vec![],
                 args: vec!["-no-reboot".into()],
                 disk: None,
+                tpm: None,
+                tests: vec![],
             })
         }
     }

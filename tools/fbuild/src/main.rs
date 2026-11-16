@@ -58,21 +58,39 @@ enum Command {
         #[arg(long = "setting", value_parser = fbuild::payload::parse_setting)]
         settings: Vec<(String, String)>,
     },
-    /// Print the CI firmware job matrix. Reads the boot tests, one
-    /// "board payload" line each (`ci/qemu-boot-tests.sh --list`), on stdin.
+    /// Print the CI firmware job matrix.
     Shards,
+    /// Build boards in release and run their library tests, one after the
+    /// other. A failing board never stops the ones after it.
+    BuildBoards {
+        /// Write each board's stage sizes to DIR/stage-sizes-BOARD.jsonl.
+        #[arg(long, value_name = "DIR")]
+        size_dir: Option<std::path::PathBuf>,
+        #[arg(required = true)]
+        boards: Vec<String>,
+    },
+    /// Boot the boards' QEMU boot tests, which their plans' run recipes
+    /// declare; every board's without BOARDS.
+    BootTest {
+        boards: Vec<String>,
+        /// Run only the tests of this name; repeatable.
+        #[arg(long = "test", value_name = "NAME")]
+        tests: Vec<String>,
+        /// The boot assets (`nix build .#boot-assets`). Without them, the
+        /// tests that need them are skipped.
+        #[arg(long, value_name = "DIR")]
+        assets: Option<std::path::PathBuf>,
+        /// Logs of every boot. Default: target/boot-tests.
+        #[arg(long, value_name = "DIR")]
+        logs: Option<std::path::PathBuf>,
+        /// Print the selected tests, one "BOARD TEST" line each, instead.
+        #[arg(long)]
+        list: bool,
+    },
     /// Merge and compare CI stage-size artifacts.
     Sizes {
         #[command(subcommand)]
         command: fbuild::size_report::Command,
-    },
-    /// Replay a Linux guest's TCG log and verify its PCR readings.
-    VerifyTpmLog {
-        serial: std::path::PathBuf,
-        #[arg(long)]
-        expect: Vec<String>,
-        #[arg(long, value_delimiter = ',')]
-        banks: Option<Vec<String>>,
     },
     Build {
         /// Build one named unit and its producers instead of the complete image.
@@ -115,6 +133,10 @@ enum Command {
         /// name (QEMU sbsa-ref); the same as `--input secure-firmware=PATH`.
         #[arg(long)]
         secure_firmware: Option<String>,
+        /// Attach a fresh software TPM (swtpm): `1.2`, or `2.0` with
+        /// `:BANK,...` for other PCR banks than SHA-1 and SHA-256.
+        #[arg(long, value_name = "FAMILY[:BANKS]", value_parser = fbuild::swtpm::parse)]
+        tpm: Option<fstart_image_build::boot_test::Tpm>,
     },
     Test {
         #[arg(short, long)]
@@ -326,6 +348,111 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+fn build_boards(boards: &[String], size_dir: Option<std::path::PathBuf>) -> Result<(), String> {
+    let size_dir = size_dir
+        .map(|dir| {
+            std::fs::create_dir_all(&dir)
+                .and_then(|()| std::path::absolute(&dir))
+                .map_err(|e| format!("--size-dir {}: {e}", dir.display()))
+        })
+        .transpose()?;
+    let github = std::env::var_os("GITHUB_ACTIONS").is_some();
+    let mut failed = Vec::new();
+    for board in boards {
+        if github {
+            println!("::group::{board}");
+        }
+        let start = std::time::Instant::now();
+        let result = manifest_for(board).and_then(|manifest| {
+            let build = fbuild::board_tool::build(&manifest, true, None, &Default::default())?;
+            if let Some(dir) = &size_dir {
+                let path = dir.join(format!("stage-sizes-{board}.jsonl"));
+                fbuild::sizes::append(&path, &manifest.board, &build.stages)?;
+            }
+            // Linking firmware does not run the board's policy tests.
+            fbuild::board_tool::test_library(&manifest)
+        });
+        if github {
+            println!("::endgroup::");
+        }
+        let seconds = start.elapsed().as_secs();
+        match result {
+            Ok(()) => println!("PASS {board} ({seconds}s)"),
+            Err(e) => {
+                println!("FAIL {board} ({seconds}s): {e}");
+                if github {
+                    println!("::error title={board}::{e}");
+                }
+                failed.push(board.as_str());
+            }
+        }
+    }
+    println!(
+        "\n{} of {} boards passed",
+        boards.len() - failed.len(),
+        boards.len()
+    );
+    match failed.as_slice() {
+        [] => Ok(()),
+        failed => Err(format!("failed: {}", failed.join(" "))),
+    }
+}
+
+fn boot_test(
+    boards: &[String],
+    tests: &[String],
+    assets: Option<std::path::PathBuf>,
+    logs: Option<std::path::PathBuf>,
+    list: bool,
+) -> Result<(), String> {
+    let root = build_board::workspace_root_pub()?;
+    let selected = if boards.is_empty() {
+        board_manifest::discover(&root)?
+            .into_iter()
+            .filter(|board| board.build_profile.is_some())
+            .collect()
+    } else {
+        boards
+            .iter()
+            .map(|board| manifest_for(board))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let runner = fbuild::boot_test::Runner {
+        assets: assets
+            .map(|dir| std::path::absolute(&dir).map_err(|e| format!("--assets: {e}")))
+            .transpose()?,
+        logs: logs.unwrap_or_else(|| root.join("target/boot-tests")),
+        ..Default::default()
+    };
+    // A board whose plan fails counts as a failure; the others still boot.
+    let mut failures = 0;
+    for board in &selected {
+        let declared = match fbuild::boot_test::load(&root, board) {
+            Ok(declared) => declared,
+            Err(e) => {
+                println!("FAIL {} ({e})", board.board);
+                failures += 1;
+                continue;
+            }
+        };
+        let chosen: Vec<_> = declared
+            .iter()
+            .filter(|test| tests.is_empty() || tests.contains(&test.name))
+            .collect();
+        if list {
+            for test in chosen {
+                println!("{} {}", board.board, test.name);
+            }
+        } else {
+            failures += runner.run(&root, board, &chosen)?;
+        }
+    }
+    match failures {
+        0 => Ok(()),
+        n => Err(format!("{n} boot test(s) failed")),
+    }
+}
+
 /// The `fbuild boards --json` view of one discovered board.
 #[derive(serde::Serialize)]
 struct BoardEntry<'a> {
@@ -397,32 +524,16 @@ fn main() {
             signing_key.as_deref(),
             &settings,
         ),
-        Command::Shards => std::io::read_to_string(std::io::stdin())
-            .map_err(|e| e.to_string())
-            .and_then(|boots| fbuild::shards::run(&boots)),
+        Command::Shards => fbuild::shards::run(),
+        Command::BuildBoards { size_dir, boards } => build_boards(&boards, size_dir),
+        Command::BootTest {
+            boards,
+            tests,
+            assets,
+            logs,
+            list,
+        } => boot_test(&boards, &tests, assets, logs, list),
         Command::Sizes { command } => command.run(),
-        Command::VerifyTpmLog {
-            serial,
-            expect,
-            banks,
-        } => std::fs::read(serial)
-            .map_err(|e| e.to_string())
-            .and_then(|bytes| {
-                match fbuild::tpm_log::verify(
-                    &String::from_utf8_lossy(&bytes),
-                    &expect,
-                    banks.as_deref(),
-                ) {
-                    Ok(report) => {
-                        print!("{report}");
-                        Ok(())
-                    }
-                    Err(error) => {
-                        println!("FAIL: {error}");
-                        Err("TPM verification failed".into())
-                    }
-                }
-            }),
         Command::Build {
             board,
             release,
@@ -454,24 +565,26 @@ fn main() {
             disk,
             memory,
             secure_firmware,
+            tpm,
         } => manifest_for(&board).and_then(|manifest| {
             fbuild::board_tool::qemu(
                 &manifest,
                 release,
                 payload,
-                kernel.as_deref(),
-                firmware.as_deref(),
-                fit.as_deref(),
-                disk.as_deref(),
-                memory.as_deref(),
-                secure_firmware.as_deref(),
+                &fbuild::board_tool::QemuArgs {
+                    kernel: kernel.as_deref(),
+                    firmware: firmware.as_deref(),
+                    fit: fit.as_deref(),
+                    disk: disk.as_deref(),
+                    memory: memory.as_deref(),
+                    secure_firmware: secure_firmware.as_deref(),
+                    tpm,
+                },
                 &options,
             )
         }),
         Command::Test { board, options } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::qemu(
-                &manifest, true, None, None, None, None, None, None, None, &options,
-            )
+            fbuild::board_tool::qemu(&manifest, true, None, &Default::default(), &options)
         }),
         Command::TestLibrary { board } => test_libraries(board.as_deref()),
         Command::Assemble {

@@ -17,6 +17,16 @@ core::arch::global_asm!(include_str!("entry_aarch64.S"));
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 core::arch::global_asm!(include_str!("entry_riscv64.S"));
 
+/// Lines the stages log that the boot tests (`host::boot_tests`) check.
+pub mod messages {
+    /// `<soc> mainstage: N MiB DRAM`, once DRAM is sized.
+    pub const MIB_DRAM: &str = "MiB DRAM";
+    /// `sunxi: invalid mainstage memory policy`.
+    pub const INVALID_MEMORY_POLICY: &str = "invalid mainstage memory policy";
+    /// The Linux payload's first step; a halt build never logs it.
+    pub const LINUX_FIRST_STEP: &str = "FFS mount";
+}
+
 /// How the FFS stores what this platform's stages load. The host plan
 /// compresses each image with its constant and the stage loading it passes
 /// `codec` of the same constant, so a stage links only the decoders it uses.

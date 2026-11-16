@@ -245,22 +245,25 @@ fn which_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-#[allow(clippy::too_many_arguments)] // the CLI's flat qemu options
-pub fn qemu(
+/// A built image ready to boot as its plan's run recipe describes.
+pub struct QemuImage {
+    pub recipe: fstart_image_build::run::RunRecipe,
+    pub image: crate::assemble::AssembledImage,
+    /// The recipe's external media, by input name.
+    pub external: std::collections::BTreeMap<String, std::path::PathBuf>,
+}
+
+/// Build and assemble the image `resolved` selects, binding `supplied` to
+/// the plan's inputs and the run recipe's external media: what `fbuild
+/// qemu` and the boot tests launch.
+pub fn qemu_image(
     manifest: &crate::board_manifest::BoardManifest,
+    resolved: &ResolvedImage,
     release: bool,
-    payload: Option<PayloadChoice>,
-    kernel: Option<&str>,
-    firmware: Option<&str>,
-    fit: Option<&str>,
-    disk: Option<&str>,
-    memory: Option<&str>,
-    secure_firmware: Option<&str>,
+    mut supplied: std::collections::BTreeMap<String, std::path::PathBuf>,
     options: &BuildArgs,
-) -> Result<(), String> {
+) -> Result<QemuImage, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = load(manifest, payload, options)?;
-    let manifest = manifest.clone();
     // The plan states how (and whether) this board runs under QEMU; there
     // is no per-architecture fallback launch to guess.
     let recipe = resolved.build.plan.run.clone().ok_or_else(|| {
@@ -271,23 +274,15 @@ pub fn qemu(
     })?;
     // `--secure-firmware` and `--input` bind the run recipe's external
     // media and the plan's inputs from one namespace.
-    let mut supplied = crate::assemble::supplied_inputs(
-        &[
-            payload_aliases(kernel, firmware, fit).as_slice(),
-            &[("secure-firmware", secure_firmware)],
-        ]
-        .concat(),
-        &options.inputs,
-    )?;
     let external: std::collections::BTreeMap<_, _> = recipe
         .external_inputs()
         .filter_map(|name| supplied.remove_entry(name))
         .collect();
-    let assembled = if resolved.build.plan.images.is_empty() {
+    let image = if resolved.build.plan.images.is_empty() {
         if let Some(name) = supplied.keys().next() {
             return Err(format!("input {name} is not declared by the selected plan"));
         }
-        let build = resolved.build(&workspace_root, &manifest, release)?;
+        let build = resolved.build(&workspace_root, manifest, release)?;
         crate::assemble::AssembledImage {
             image: build.primary_binary().run_path.clone(),
             artifacts: Default::default(),
@@ -296,12 +291,72 @@ pub fn qemu(
     } else {
         assemble_loaded(
             &workspace_root,
-            manifest,
-            &resolved,
+            manifest.clone(),
+            resolved,
             release,
             &supplied,
             options,
         )?
     };
-    crate::qemu::run(&recipe, &assembled, &external, disk, memory)
+    Ok(QemuImage {
+        recipe,
+        image,
+        external,
+    })
+}
+
+/// The `fbuild qemu` options beyond the build selection.
+#[derive(Debug, Default)]
+pub struct QemuArgs<'a> {
+    pub kernel: Option<&'a str>,
+    pub firmware: Option<&'a str>,
+    pub fit: Option<&'a str>,
+    pub disk: Option<&'a str>,
+    pub memory: Option<&'a str>,
+    pub secure_firmware: Option<&'a str>,
+    pub tpm: Option<fstart_image_build::boot_test::Tpm>,
+}
+
+pub fn qemu(
+    manifest: &crate::board_manifest::BoardManifest,
+    release: bool,
+    payload: Option<PayloadChoice>,
+    args: &QemuArgs<'_>,
+    options: &BuildArgs,
+) -> Result<(), String> {
+    let resolved = load(manifest, payload, options)?;
+    let supplied = crate::assemble::supplied_inputs(
+        &[
+            payload_aliases(args.kernel, args.firmware, args.fit).as_slice(),
+            &[("secure-firmware", args.secure_firmware)],
+        ]
+        .concat(),
+        &options.inputs,
+    )?;
+    let built = qemu_image(manifest, &resolved, release, supplied, options)?;
+    let tpm = args
+        .tpm
+        .as_ref()
+        .map(crate::swtpm::Swtpm::start)
+        .transpose()
+        .map_err(|e| format!("swtpm: {e}"))?;
+    let tpm_socket = tpm.as_ref().map(crate::swtpm::Swtpm::socket);
+    // The environment carries a developer's per-run overrides: the vCPU
+    // count for MP/SMM flight plans, and extra devices.
+    let smp = std::env::var("FSTART_QEMU_SMP").ok();
+    let launch = crate::qemu::Launch {
+        disk: args.disk,
+        memory: args.memory,
+        smp: smp.as_deref(),
+        tpm: tpm_socket.as_deref(),
+        args: std::env::var("FSTART_QEMU_EXTRA_ARGS")
+            .map(|extra| extra.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default(),
+    };
+    crate::qemu::run(crate::qemu::command(
+        &built.recipe,
+        &built.image,
+        &built.external,
+        &launch,
+    )?)
 }

@@ -11,14 +11,23 @@ pub mod kind {
     pub const EV_S_CRTM_CONTENTS: u32 = 0x07;
     pub const EV_S_CRTM_VERSION: u32 = 0x08;
     pub const EV_PLATFORM_CONFIG_FLAGS: u32 = 0x0A;
+    pub const EV_IPL: u32 = 0x0D;
+    pub const EV_IPL_PARTITION_DATA: u32 = 0x0E;
     pub const EV_NONHOST_CODE: u32 = 0x0F;
     pub const EV_NONHOST_CONFIG: u32 = 0x10;
     pub const EV_NONHOST_INFO: u32 = 0x11;
     pub const EV_POST_CODE2: u32 = 0x13;
+    pub const EV_EFI_VARIABLE_DRIVER_CONFIG: u32 = 0x8000_0001;
+    pub const EV_EFI_VARIABLE_BOOT: u32 = 0x8000_0002;
+    pub const EV_EFI_BOOT_SERVICES_APPLICATION: u32 = 0x8000_0003;
+    pub const EV_EFI_GPT_EVENT: u32 = 0x8000_0006;
     pub const EV_EFI_ACTION: u32 = 0x8000_0007;
     pub const EV_EFI_PLATFORM_FIRMWARE_BLOB: u32 = 0x8000_0008;
+    pub const EV_EFI_HANDOFF_TABLES: u32 = 0x8000_0009;
     pub const EV_EFI_PLATFORM_FIRMWARE_BLOB2: u32 = 0x8000_000A;
     pub const EV_EFI_HANDOFF_TABLES2: u32 = 0x8000_000B;
+    pub const EV_EFI_VARIABLE_BOOT2: u32 = 0x8000_000C;
+    pub const EV_EFI_VARIABLE_AUTHORITY: u32 = 0x8000_00E0;
 }
 
 /// `BlobDescription` strings of `EV_POST_CODE2` (PFP table 13).

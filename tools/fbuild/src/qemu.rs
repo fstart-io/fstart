@@ -40,17 +40,31 @@ fn artifact<'a>(built: &'a AssembledImage, artifact: &RunArtifact) -> Result<&'a
     }
 }
 
-/// Launch QEMU exactly as `recipe` describes: machine, CPU and devices
-/// are the platform's data; this function only renders argv and performs
-/// the media attachment transforms (padding, bank splits, card
-/// placement) the recipe parameterises.
-pub fn run(
+/// What one launch adds to the recipe: the caller's files and topology.
+#[derive(Debug, Default)]
+pub struct Launch<'a> {
+    /// A disk the recipe attaches (`RunRecipe::disk`).
+    pub disk: Option<&'a str>,
+    pub memory: Option<&'a str>,
+    /// `-smp`, instead of the recipe's default.
+    pub smp: Option<&'a str>,
+    /// A software TPM's control socket, attached as the recipe's TPM device.
+    pub tpm: Option<&'a Path>,
+    /// Verbatim extra argv.
+    pub args: Vec<String>,
+}
+
+/// The QEMU command `recipe` describes: machine, CPU and devices are the
+/// platform's data; this function only renders argv and performs the media
+/// attachment transforms (padding, bank splits, card placement) the recipe
+/// parameterises. `fbuild qemu` runs it in the terminal, the boot tests
+/// with their output captured.
+pub fn command(
     recipe: &RunRecipe,
     built: &AssembledImage,
     external: &std::collections::BTreeMap<String, std::path::PathBuf>,
-    disk: Option<&str>,
-    memory: Option<&str>,
-) -> Result<(), String> {
+    launch: &Launch<'_>,
+) -> Result<Command, String> {
     let mut args: Vec<String> = vec!["-machine".into(), recipe.machine.clone()];
     if recipe.accel_kvm {
         let accel = std::env::var("FSTART_QEMU_ACCEL").ok();
@@ -71,14 +85,11 @@ pub fn run(
     } else if let Some(cpu) = &recipe.cpu {
         args.extend(["-cpu".into(), cpu.clone()]);
     }
-    if let Some(memory) = memory.or(recipe.memory.as_deref()) {
+    if let Some(memory) = launch.memory.or(recipe.memory.as_deref()) {
         args.extend(["-m".into(), memory.to_string()]);
     }
-    if let Some(smp) = &recipe.smp {
-        // `FSTART_QEMU_SMP` selects the vCPU count so MP/SMM flight
-        // plans can be exercised with APs.
-        let smp = std::env::var("FSTART_QEMU_SMP").unwrap_or_else(|_| smp.clone());
-        args.extend(["-smp".into(), smp]);
+    if let Some(smp) = launch.smp.or(recipe.smp.as_deref()) {
+        args.extend(["-smp".into(), smp.to_string()]);
     }
     if recipe.nographic {
         args.push("-nographic".into());
@@ -155,7 +166,7 @@ pub fn run(
     }
     args.extend(recipe.args.iter().cloned());
 
-    if let Some(disk_path) = disk {
+    if let Some(disk_path) = launch.disk {
         let fmt = if disk_path.ends_with(".qcow2") {
             "qcow2"
         } else {
@@ -189,24 +200,37 @@ pub fn run(
         }
     }
 
-    // Extra devices for one run, e.g. a swtpm-backed TPM:
-    // FSTART_QEMU_EXTRA_ARGS="-chardev socket,id=chrtpm,path=... -tpmdev ..."
-    if let Ok(extra) = std::env::var("FSTART_QEMU_EXTRA_ARGS") {
-        args.extend(extra.split_whitespace().map(str::to_string));
+    if let Some(socket) = launch.tpm {
+        let device = recipe
+            .tpm
+            .as_deref()
+            .ok_or("this board's run recipe has no TPM device")?;
+        args.extend([
+            "-chardev".into(),
+            format!("socket,id=chrtpm,path={}", socket.display()),
+            "-tpmdev".into(),
+            "emulator,id=tpm0,chardev=chrtpm".into(),
+            "-device".into(),
+            format!("{device},tpmdev=tpm0"),
+        ]);
     }
+    args.extend(launch.args.iter().cloned());
 
     let qemu_bin = find_qemu(&recipe.qemu);
     eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));
+    let mut command = Command::new(qemu_bin);
+    command.args(&args);
+    Ok(command)
+}
 
-    let status = Command::new(qemu_bin)
-        .args(&args)
+/// Run `command` in the terminal.
+pub fn run(mut command: Command) -> Result<(), String> {
+    let status = command
         .status()
         .map_err(|e| format!("failed to launch QEMU: {e}"))?;
-
     if !status.success() {
         return Err("QEMU exited with error".to_string());
     }
-
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-//! Exercise the exact host commands invoked by the workflows and TPM shell gate.
+//! Exercise the exact host commands the workflows invoke.
 use serde_json::json;
 use std::{
     fs,
@@ -104,53 +104,5 @@ fn board_json_preserves_sorted_inventory_and_profile_metadata() {
     assert!(
         json.iter()
             .any(|b| b["build_profile"]["dependency"] == "fstart-platform-qemu")
-    );
-}
-
-#[test]
-fn tpm_verifier_cli_keeps_failure_details_in_stdout_and_returns_failure() {
-    let tmp = tempfile::tempdir().unwrap();
-    let serial = tmp.path().join("serial.log");
-    fs::write(&serial, "TPMTEST_LOG_BEGIN\n!!!!\nTPMTEST_LOG_END\n").unwrap();
-    let out = run(&[
-        "verify-tpm-log",
-        serial.to_str().unwrap(),
-        "--banks",
-        "sha1,sha256",
-        "--expect",
-        "EV_IPL@4",
-    ]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("FAIL: invalid base64 event log"));
-}
-
-#[cfg(unix)]
-#[test]
-fn seabios_serial_port_record_is_a_little_endian_u64() {
-    use std::os::unix::fs::PermissionsExt;
-    let tmp = tempfile::tempdir().unwrap();
-    let bin = tmp.path().join("bin");
-    let src = tmp.path().join("source");
-    let out = tmp.path().join("out");
-    fs::create_dir(&bin).unwrap();
-    fs::create_dir(&src).unwrap();
-    let make = bin.join("make");
-    fs::write(&make, "#!/usr/bin/env bash\nexit 0\n").unwrap();
-    fs::set_permissions(make, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut paths = vec![bin];
-    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ci/payloads/seabios/build.sh");
-    success(
-        Command::new("bash")
-            .arg(script)
-            .arg(src)
-            .arg(&out)
-            .env("PATH", std::env::join_paths(paths).unwrap())
-            .output()
-            .unwrap(),
-    );
-    assert_eq!(
-        fs::read(out.join("sercon-port")).unwrap(),
-        0x3f8u64.to_le_bytes()
     );
 }

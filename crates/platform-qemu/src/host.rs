@@ -23,6 +23,8 @@ use std::{
     vec::Vec,
 };
 
+mod boot_tests;
+
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
     type Options = NoOptions;
@@ -152,6 +154,8 @@ fn virt_recipe(machine: VirtMachine) -> RunRecipe {
         devices: strings(&[PCI_TEST_DEVICE]),
         args: strings(&["-no-reboot"]),
         disk: Some(RunDisk::Nvme),
+        tpm: None,
+        tests: boot_tests::boot_tests(machine),
     };
     match machine {
         VirtMachine::Riscv64 => RunRecipe {
@@ -213,7 +217,8 @@ fn flash_steps(machine: VirtMachine, policy: &QemuPolicy) -> Vec<ImageStep> {
 /// q35 booting the top-mapped x86 flash image step. A protected-mode
 /// build runs on a CPU without long mode, like the Core Duo it exists
 /// for.
-fn q35_recipe(protected_mode: bool) -> RunRecipe {
+fn q35_recipe(machine: VirtMachine) -> RunRecipe {
+    let protected_mode = matches!(machine, VirtMachine::Q35ProtectedMode);
     RunRecipe {
         qemu: "qemu-system-x86_64".into(),
         machine: "q35".into(),
@@ -240,15 +245,15 @@ fn q35_recipe(protected_mode: bool) -> RunRecipe {
             "none",
         ]),
         disk: Some(RunDisk::Ide),
+        tpm: Some("tpm-tis".into()),
+        tests: boot_tests::boot_tests(machine),
     }
 }
 
 /// The launch recipe of a non-virt machine model.
 fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
     match machine {
-        VirtMachine::Q35 | VirtMachine::Q35ProtectedMode => {
-            q35_recipe(matches!(machine, VirtMachine::Q35ProtectedMode))
-        }
+        VirtMachine::Q35 | VirtMachine::Q35ProtectedMode => q35_recipe(machine),
         VirtMachine::Sbsa => RunRecipe {
             qemu: "qemu-system-aarch64".into(),
             machine: "sbsa-ref".into(),
@@ -259,7 +264,7 @@ fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
             nographic: true,
             media: vec![
                 RunMedia::ExternalPflash {
-                    name: "secure-firmware".into(),
+                    name: boot_tests::SECURE_FIRMWARE.into(),
                     unit: 0,
                     size: 256 * 1024 * 1024,
                 },
@@ -273,6 +278,8 @@ fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
             devices: strings(&[PCI_TEST_DEVICE]),
             args: vec![],
             disk: Some(RunDisk::Nvme),
+            tpm: None,
+            tests: boot_tests::boot_tests(machine),
         },
         VirtMachine::SifiveU => RunRecipe {
             qemu: "qemu-system-riscv64".into(),
@@ -288,6 +295,8 @@ fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
             devices: vec![],
             args: vec![],
             disk: Some(RunDisk::Nvme),
+            tpm: None,
+            tests: boot_tests::boot_tests(machine),
         },
         _ => unreachable!("not a machine-model preset"),
     }
