@@ -168,11 +168,38 @@ impl SleepNotify {
         kcs.idle().then(|| kcs.set_acpi_power_state(system, device))
     }
 
-    /// The DSDT's side, raising the SW SMIs on `smi_cmd`: `\_PTS`, `\_WAK`
-    /// and `\_SB._INI`.
+    /// The DSDT's side of AMI's BmcAcpi convention, on the chipset's SMI
+    /// command port `smi_cmd`: raise `sw_smi_base + Sx` before sleep and
+    /// `sw_smi_base` at boot and wake, which [`Self::report`] handles in SMM.
+    /// These own the global `\_PTS`, `\_WAK` and `\_SB._INI`: a board that
+    /// selects this protocol defines none of them.
     #[cfg(feature = "acpi")]
     pub fn aml(&self, smi_cmd: u16) -> alloc::vec::Vec<u8> {
-        fstart_acpi::devices::IpmiKcsAcpi::sleep_notify_aml(smi_cmd, self.sw_smi_base)
+        let port = u64::from(smi_cmd);
+        let base = u64::from(self.sw_smi_base);
+        fstart_acpi::acpi_dsl! {
+            Scope("\\") {
+                OperationRegion("BSMP", SystemIO, #{word port}, 1u8);
+                Field("BSMP", ByteAcc, NoLock, Preserve) {
+                    BSMC, 8,
+                }
+                Method("_PTS", 1, NotSerialized) {
+                    If (Arg0 != 0u8) {
+                        BSMC = Arg0 + #{byte base};
+                    }
+                }
+                Method("_WAK", 1, NotSerialized) {
+                    BSMC = #{byte base};
+                    Return(Package(0u8, 0u8));
+                }
+            }
+            Scope("\\_SB_") {
+                Method("_INI", 0, NotSerialized) {
+                    BSMC = #{byte base};
+                }
+            }
+        }
+        .into()
     }
 }
 
