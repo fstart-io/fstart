@@ -70,6 +70,11 @@ pub struct SocAcpi {
     /// the root complex and the FCH's functions on the FCH's root bus.
     /// `None` if they have no `_PRT` entries.
     pub fch_intx_gsi: Option<[u8; 4]>,
+    /// The pin of its NBIO IOAPIC the INTA of a root bus's device 0
+    /// reaches, on every root bridge: the RS root complex's event collector
+    /// (00.3) interrupts there. `None` where no function of device 0 takes
+    /// INTx from the NBIO.
+    pub root_complex_pin: Option<u8>,
     /// The GPE the internal bridges signal PME on (wake), and those
     /// bridges.
     pub wake: Option<Wake>,
