@@ -30,12 +30,14 @@ try {
       for (const stage of manifest.stages) assert(assembler.binary(stage.run_path).length > 0);
       if (build.donor_required) assert.throws(() => assembler.assemble(key), /requires a local vendor BIOS/);
       // Vendor images remain local: the AMD builds are exercised when their
-      // donor is supplied (a dual-generation SP3 donor, a one-generation one).
+      // donor is supplied (a dual-generation SP3 donor, a one-generation one,
+      // the S8040's vendor download for Siena).
       const representative = ['qemu-q35', 'orangepi-r1'].includes(build.board) && build.payload === 'halt';
       let donor;
       if (build.board === 'gigabyte-mj11-ec1') donor = process.env.FSTART_TEST_DONOR;
       else if (build.board.startsWith('tyan-s8030')) donor = process.env.FSTART_TEST_SP3_DONOR;
       else if (build.board === 'amd-ethanolx') donor = process.env.FSTART_TEST_ETHANOLX_DONOR;
+      else if (build.board === 'tyan-s8040') donor = process.env.FSTART_TEST_S8040_DONOR;
       const amd = donor && ['halt', 'uefi', 'uefi-ui', 'uefi-basic'].includes(build.payload);
       if ((representative || amd) && build.inputs.length === 0) {
         if (build.donor_required && !donor) continue;

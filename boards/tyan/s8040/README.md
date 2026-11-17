@@ -19,6 +19,12 @@ cargo fbuild assemble --board tyan-s8040 --release --payload linux \
 the same for `--blobs`): Siena's PSP and BIOS blobs and its microcode
 patch from fstart-platform-amd's `siena` table, and the board's APCBs.
 
+The donor can be a flash backup or MiTAC's S8040GM2NE BIOS V2.00 update
+(the ZIP or its `BIOS8040020200.rom`), which the board's manifest names as
+its vendor download: the nightly bundle and the web assembler fetch it
+from there (docs/distribution.md). V2.02 lacks firmware the `siena` table
+names and does not work as a donor.
+
 ## Flash image
 
 fstart packs the 16 MiB the boot ROM maps: the EFS at `0x20000`, the
