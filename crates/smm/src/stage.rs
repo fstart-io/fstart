@@ -85,7 +85,6 @@ pub unsafe fn handle<C: Copy>(
         // for the shared owner. Never require a missing CPU to enter SMM.
         enter_cpu(&mut ctx, config);
     }
-
     if !unsafe { enter_rendezvous(&ctx) } {
         #[cfg(all(not(test), feature = "debugcon"))]
         unsafe {
@@ -130,7 +129,11 @@ mod tests {
         let base = core::ptr::addr_of_mut!(fixture) as usize;
         fixture.runtime.smram_base = base as u64;
         fixture.runtime.smram_size = core::mem::size_of::<Fixture>() as u64;
-        fixture.runtime.owner.store(1, Ordering::Release);
+        // CPU 0 owns generation 1.
+        fixture
+            .runtime
+            .rendezvous
+            .store(1 << 32 | 1, Ordering::Release);
         LOCAL_ENTERED.store(false, Ordering::Relaxed);
         std::thread::scope(|scope| {
             let waiter = scope.spawn(move || {
@@ -151,10 +154,18 @@ mod tests {
                 std::thread::yield_now();
             }
             let entered_while_owned = LOCAL_ENTERED.load(Ordering::Acquire);
+            // The waiter acknowledges the owner's generation once parked.
+            while fixture.runtime.parked.load(Ordering::Acquire) != 1 << 32 | 1
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            let parked = fixture.runtime.parked.load(Ordering::Acquire);
             // Always release, even if the test fails, so the worker can finish.
-            fixture.runtime.owner.store(0, Ordering::Release);
+            fixture.runtime.rendezvous.store(1 << 32, Ordering::Release);
             waiter.join().unwrap();
             assert!(entered_while_owned);
+            assert_eq!(parked, 1 << 32 | 1);
         });
     }
 }

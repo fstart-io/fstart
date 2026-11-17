@@ -38,7 +38,11 @@ register_bitfields![u32,
         GEVENT_HIGH OFFSET(0) NUMBITS(24) [],
         PSP OFFSET(25) NUMBITS(1) [],
         EOS OFFSET(28) NUMBITS(1) [],
-        SMI_TIMER_SEL OFFSET(29) NUMBITS(1) [],
+        /// The unit of [`SMI_TIMER`]'s count.
+        SMI_TIMER_SEL OFFSET(29) NUMBITS(1) [
+            Microseconds = 0,
+            Milliseconds = 1
+        ],
         /// SmiEnB: 1 stops SMI generation.
         SMI_DISABLE OFFSET(31) NUMBITS(1) []
     ]
@@ -48,6 +52,11 @@ register_bitfields![u16,
     pub SmiPointer [
         SCI OFFSET(0) NUMBITS(1) [],
         STATUS OFFSET(1) NUMBITS(5) []
+    ],
+    /// SMIx96 SmiTimer: the periodic SMI.
+    pub SmiTimer [
+        COUNT OFFSET(0) NUMBITS(15) [],
+        ENABLE OFFSET(15) NUMBITS(1) []
     ]
 ];
 
@@ -64,6 +73,8 @@ pub const fn status(n: usize) -> At<u32> {
 }
 const STATUS_COUNT: usize = 5;
 pub const POINTER: At<u16, SmiPointer::Register> = smi_bank::at(0x94);
+/// SMIx96, 16 bits.
+pub const SMI_TIMER: At<u16, SmiTimer::Register> = smi_bank::at(0x96);
 pub const TRIGGER0: At<u32, Trigger0::Register> = smi_bank::at(0x98);
 /// SMIxA0 + 4 * n, n < 10: two bits per SMI source.
 pub const fn control(n: usize) -> At<u32> {
@@ -245,6 +256,32 @@ pub fn acknowledge_psp<W: Window>(acpi: &W) {
     let _ = acpi.read32(source::PSP.status().offset);
 }
 
+/// The periodic SMI every `ms` milliseconds (1 to 32767), or none: the
+/// vendors' FchSmmPeriodicalDispatcher (S8040 V2.00 FchSmmDispatcher
+/// `0x22c0`: a period in 1 ms ticks sets SmiTrig0\[SmiTimerSel\], SMIx96
+/// takes the count and its enable, SMIxC3 |= 50h routes both timer
+/// sources to SMI; `0x2430` clears the routes). Its SMIs are
+/// [`source::SHORT_TIMER`] and [`source::LONG_TIMER`].
+pub fn periodic<W: Window>(acpi: &W, ms: Option<u16>) {
+    let timer = acpi.at(SMI_TIMER);
+    match ms.filter(|&ms| ms != 0) {
+        Some(ms) => {
+            acpi.at(TRIGGER0)
+                .modify(Trigger0::SMI_TIMER_SEL::Milliseconds);
+            timer.write(SmiTimer::COUNT.val(ms.min(0x7fff)) + SmiTimer::ENABLE::SET);
+            [source::SHORT_TIMER, source::LONG_TIMER]
+                .into_iter()
+                .for_each(|s| set_route(acpi, s, Route::Smi));
+        }
+        None => {
+            [source::SHORT_TIMER, source::LONG_TIMER]
+                .into_iter()
+                .for_each(|s| set_route(acpi, s, Route::Disabled));
+            timer.modify(SmiTimer::ENABLE::CLEAR);
+        }
+    }
+}
+
 /// Raise a software SMI by writing `value` to the SMI command port.
 pub fn software_smi<I: Window>(io: &I, value: u8) {
     io.write8(APM_CNT.into(), value);
@@ -314,20 +351,15 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
 }
 
 /// The SMI command port and the PSP's SMI ([`route_psp`]) only, for a
-/// handler that serves the PSP while the OS owns ACPI: SLP_TYP, the power
-/// button and the GEVENTs stay with it. Then SMIs on.
+/// handler that serves the PSP and the CPUs' local SMIs (whose trigger
+/// I/O cycle writes the command port) while the OS owns ACPI: SLP_TYP,
+/// the power button and the GEVENTs stay with it. Then SMIs on.
 pub fn enable_psp<W: Window>(acpi: &W) {
     acpi.at(PM_ACPI_SMI_CMD).set(APM_CNT);
     set_route(acpi, source::SMI_CMD, Route::Smi);
     route_psp(acpi);
     clear_all(acpi);
     init(acpi);
-}
-
-/// No SMI for the SMI command port any more (after [`enable_psp`]'s
-/// handler took its software SMIs).
-pub fn disable_command<W: Window>(acpi: &W) {
-    set_route(acpi, source::SMI_CMD, Route::Disabled);
 }
 
 /// The sources of one SMI, read once at its start: the status registers
@@ -437,6 +469,19 @@ mod tests {
     use crate::fch::ACPI_MMIO;
 
     #[test]
+    fn the_periodic_smi_counts_milliseconds_and_routes_both_timers() {
+        let acpi = crate::fch::model::Mem::default();
+        periodic(&acpi, Some(1000));
+        assert_eq!(acpi.get(SMI_TIMER.offset, 2), 0x8000 | 1000);
+        assert_eq!(acpi.get(TRIGGER0.offset, 4), 1 << 29);
+        // SmiStat4[14] and [15]: SMIxC0 bits 28 and 30, as the vendor's C3h |= 50h.
+        assert_eq!(acpi.get(control(8).offset, 4), 0x5000_0000);
+        periodic(&acpi, None);
+        assert_eq!(acpi.get(SMI_TIMER.offset, 2), 1000);
+        assert_eq!(acpi.get(control(8).offset, 4), 0);
+    }
+
+    #[test]
     fn sources_map_to_control_slots() {
         let slot = |source: Source| (source.control().0.offset, source.control().1);
         let control = |n| control(n).offset;
@@ -533,8 +578,6 @@ mod model_tests {
         assert_eq!(acpi.get(0x2ac, 4), 0);
         assert_eq!(acpi.get(0x2a8, 4), 0x4);
         assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1000_0000);
-        disable_command(&acpi);
-        assert_eq!(acpi.get(0x2b0, 4), 0);
     }
 
     #[test]

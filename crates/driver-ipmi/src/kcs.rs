@@ -177,13 +177,23 @@ where
 
     /// Read the response into `buffer`; returns its length. Bytes beyond the
     /// buffer are read and dropped.
+    ///
+    /// Each turn waits until the BMC took the previous READ (IBF clear)
+    /// before it reads the state (IPMI 2.0 figure 9-7): read too early, the
+    /// state is still READ after the last byte, the BMC's closing dummy
+    /// byte is taken for data and a READ in the idle state leaves the
+    /// interface in its error state.
     fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
-        self.wait_input_empty()?;
         let mut length = 0;
         loop {
+            self.wait_input_empty()?;
             let status = self.status.extract();
             match status.read_as_enum(Status::STATE) {
-                Some(Status::STATE::Value::Idle) => return Ok(length),
+                Some(Status::STATE::Value::Idle) => {
+                    // The dummy byte the BMC closes the transfer with.
+                    self.clear_output();
+                    return Ok(length);
+                }
                 Some(Status::STATE::Value::Read) => {}
                 _ => return Err(Error::State(status.get())),
             }
@@ -193,7 +203,6 @@ where
                 *slot = byte;
                 length += 1;
             }
-            self.wait_input_empty()?;
             self.data.set(READ_BYTE);
         }
     }
@@ -238,12 +247,17 @@ mod tests {
         answer: Vec<u8>,
         output: Option<u8>,
         busy: bool,
+        /// A READ the BMC has not taken yet: IBF is set until the next
+        /// status read, which takes it (the next byte, or the end: idle
+        /// and a dummy byte).
+        pending_read: bool,
         /// (command port, value) of every write, in order.
         writes: Vec<(bool, u8)>,
     }
     const IDLE: u8 = 0;
     const READ: u8 = 1;
     const WRITE: u8 = 2;
+    const ERROR: u8 = 3;
 
     struct Data<'a>(&'a RefCell<Bmc>);
     struct Command<'a>(&'a RefCell<Bmc>);
@@ -269,9 +283,10 @@ mod tests {
                     bmc.output = bmc.response.pop_front();
                 }
             } else if value == READ_BYTE {
-                match bmc.response.pop_front() {
-                    Some(byte) => bmc.output = Some(byte),
-                    None => bmc.state = IDLE,
+                if bmc.state == READ {
+                    bmc.pending_read = true;
+                } else {
+                    bmc.state = ERROR;
                 }
             }
         }
@@ -280,7 +295,19 @@ mod tests {
         type T = u8;
         type R = Status::Register;
         fn get(&self) -> u8 {
-            let bmc = self.0.borrow();
+            let mut bmc = self.0.borrow_mut();
+            if bmc.pending_read {
+                bmc.pending_read = false;
+                match bmc.response.pop_front() {
+                    Some(byte) => bmc.output = Some(byte),
+                    None => {
+                        bmc.state = IDLE;
+                        bmc.output = Some(0);
+                    }
+                }
+                // This read still sees the READ being taken.
+                return READ << 6 | 1 << 1;
+            }
             bmc.state << 6 | u8::from(bmc.output.is_some()) | (u8::from(bmc.busy) << 1)
         }
     }
@@ -397,6 +424,45 @@ mod tests {
         let bmc = bmc.into_inner();
         assert_eq!(&bmc.request[..5], &[0x28, 0x44, 0, 0, 0xe0]);
         assert_eq!(&bmc.request[5..], &[0x5a; 13]);
+    }
+
+    #[test]
+    fn the_read_phase_ends_idle_without_taking_the_closing_byte_for_data() {
+        let bmc = RefCell::new(Bmc {
+            answer: vec![0x07 << 2, 0x01, 0, 0x20],
+            ..Bmc::default()
+        });
+        let mut buffer = [0; 8];
+        assert_eq!(
+            kcs(&bmc).request(crate::NETFN_APP, 0x01, &[], &mut buffer),
+            Ok(&[0x20][..])
+        );
+        let bmc = bmc.into_inner();
+        assert_eq!((bmc.state, bmc.output), (IDLE, None));
+    }
+
+    #[test]
+    fn a_platform_event_carries_the_generator_and_the_event() {
+        let bmc = RefCell::new(Bmc {
+            answer: vec![0x05 << 2, 0x02, 0],
+            ..Bmc::default()
+        });
+        let record = crate::SelRecord {
+            record_id: zerocopy::little_endian::U16::ZERO,
+            record_type: 2,
+            timestamp: zerocopy::little_endian::U32::ZERO,
+            generator_id: zerocopy::little_endian::U16::new(0x21),
+            event_message_revision: 4,
+            sensor_type: 0x0c,
+            sensor_number: 0xff,
+            event_dir_type: 0x6f,
+            event_data: [0xa5, 3, 21],
+        };
+        kcs(&bmc).platform_event(&record).unwrap();
+        assert_eq!(
+            bmc.into_inner().request,
+            [0x04 << 2, 0x02, 0x21, 4, 0x0c, 0xff, 0x6f, 0xa5, 3, 21]
+        );
     }
 
     #[test]

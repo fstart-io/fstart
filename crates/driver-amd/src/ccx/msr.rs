@@ -27,9 +27,24 @@ register_bitfields![u64,
         HARDWARE_ID OFFSET(32) NUMBITS(12) [],
         MCA_TYPE OFFSET(48) NUMBITS(16) []
     ],
-    /// MCA_MISC0/MISC1 (C000_2003 / C000_200A + 16·bank).
+    /// MCA_MISC0/MISC1 (C000_2003 / C000_200A + 16·bank): a bank's error
+    /// thresholding block (PPR 55901 MCA::UMC::MCA_MISC0_UMC).
     pub McaMisc [
-        BLK_PTR OFFSET(24) NUMBITS(8) []
+        BLK_PTR OFFSET(24) NUMBITS(8) [],
+        /// Counts up to FFFh; the threshold is FFFh minus the start value.
+        ERR_CNT OFFSET(32) NUMBITS(12) [],
+        OVRFLW OFFSET(48) NUMBITS(1) [],
+        THRESHOLD_INT_TYPE OFFSET(49) NUMBITS(2) [
+            None = 0,
+            Apic = 1,
+            Smi = 2
+        ],
+        CNT_EN OFFSET(51) NUMBITS(1) [],
+        LVT_OFFSET OFFSET(52) NUMBITS(4) [],
+        INT_P OFFSET(60) NUMBITS(1) [],
+        LOCKED OFFSET(61) NUMBITS(1) [],
+        CNT_P OFFSET(62) NUMBITS(1) [],
+        VALID OFFSET(63) NUMBITS(1) []
     ],
     pub McaIntrCfg [
         THRESHOLD_LVT_VALID OFFSET(3) NUMBITS(1) []

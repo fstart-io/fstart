@@ -30,6 +30,34 @@ impl fstart_platform_amd::board::Board for Board {
     const SOCS: &'static [SocId] = &[SocId::Genoa];
     /// 96 cores, SMT.
     const MAX_CPUS: u16 = 192;
+    /// Corrected errors counted in SMM and reported to the BMC's SEL
+    /// ([`sel`]), ten per thresholding SMI.
+    const RAS: fstart_platform_amd::smm::ras::Policy =
+        fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
+}
+
+/// The BMC's one KCS channel, KCS3 (`0xCA2`/`0xCA3`), which the OS's IPMI
+/// driver uses too: the Onyx BMC bridges no other.
+pub const KCS: (u16, u16) = (
+    fstart_driver_ipmi::kcs::DEFAULT_PORT,
+    fstart_driver_ipmi::kcs::DEFAULT_SPACING,
+);
+
+/// SMM's report of a machine check (`fstart_platform_amd::smm::ras`) to
+/// the BMC's SEL as a Platform Event Message, on the OS's KCS channel when
+/// it is idle. CPUs outside
+/// SMM keep running: an OS transaction starting during the report fails
+/// one of them (the OS's driver retries; the report stops reporting).
+#[cfg(feature = "smm")]
+pub fn sel(event: &fstart_platform_amd::smm::ras::Event<'_>, timer: Tsc) -> bool {
+    let (port, spacing) = KCS;
+    // SAFETY: the BMC's KCS ports; the transaction starts only when idle.
+    let mut kcs = unsafe { fstart_driver_ipmi::kcs::Kcs::new(port, spacing, timer) }
+        .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
+    kcs.idle()
+        && kcs
+            .platform_event(&fstart_platform_amd::smm::ras::sel(event))
+            .is_ok()
 }
 
 /// The console: the SoC's UART1, the BMC's SOL (the public Onyx coreboot

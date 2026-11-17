@@ -105,6 +105,27 @@ pub unsafe fn kcs<D: DelayNs>(delay: D) -> Kcs<D> {
     unsafe { Kcs::new(KCS_PORT, KCS_SPACING, delay) }
 }
 
+/// The firmware's own KCS channel, KCS2 (`0xCA8`, status/command at
+/// `0xCAC`): the saved BMC image 2b09b92ee677b5d9 (DTB at 0x39a200)
+/// enables it with its kcsbridged; the OS has KCS3 ([`KCS_PORT`]). The
+/// `0xCA0` wide I/O window ([`WIDE_IO`]) decodes both.
+pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
+
+/// SMM's report of a machine check (`fstart_platform_amd::smm::ras`) to
+/// the BMC's SEL, on the firmware's KCS channel.
+#[cfg(feature = "smm")]
+pub fn sel(
+    event: &fstart_platform_amd::smm::ras::Event<'_>,
+    timer: fstart_driver_amd::ccx::tsc::Tsc,
+) -> bool {
+    let (port, spacing) = FIRMWARE_KCS;
+    // SAFETY: KCS2 is decoded and only the SMM handler uses it.
+    let mut kcs = unsafe { Kcs::new(port, spacing, timer) }
+        .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
+    kcs.add_sel(&fstart_platform_amd::smm::ras::sel(event))
+        .is_ok()
+}
+
 /// The KCS interface as ACPI sees it (`IPI0001` and SPMI).
 pub const IPMI_ACPI: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 

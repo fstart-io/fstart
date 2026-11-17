@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The AST2600 BMC on eSPI (the PSP brings up the link from the EFS): its
-//! Super I/O at `0x2e` with the BMC's COM1, the console.
+//! Super I/O at `0x2e` with the BMC's COM1, the console, and the KCS
+//! channel SMM reports machine checks on.
 
 use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::acpimmio::{LpcGating, PM_LPC_GATING};
@@ -10,6 +11,27 @@ use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_amd::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::ReadWriteable;
+
+/// The firmware's own KCS channel, KCS2 (`0xCA8`, status/command at
+/// `0xCAC`): the BMC's device tree enables it with its kcsbridged, as on
+/// the S8030; the OS has KCS3 at `0xCA2` (the vendor SPMI).
+pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
+
+/// SMM's report of a machine check (`fstart_platform_amd::smm::ras`) to
+/// the BMC's SEL, on the firmware's KCS channel: a Platform Event Message
+/// (the BMC answers Add SEL Entry with C1h, invalid command).
+#[cfg(feature = "smm")]
+pub fn sel(
+    event: &fstart_platform_amd::smm::ras::Event<'_>,
+    timer: fstart_driver_amd::ccx::tsc::Tsc,
+) -> bool {
+    let (port, spacing) = FIRMWARE_KCS;
+    // SAFETY: KCS2 is decoded and only the SMM handler uses it.
+    let mut kcs = unsafe { fstart_driver_ipmi::kcs::Kcs::new(port, spacing, timer) }
+        .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
+    kcs.platform_event(&fstart_platform_amd::smm::ras::sel(event))
+        .is_ok()
+}
 
 /// COM1, the BMC's SOL, and its interrupt over SERIRQ.
 pub const COM1_PORT: u16 = 0x3f8;

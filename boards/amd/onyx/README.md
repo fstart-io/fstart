@@ -2,7 +2,10 @@
 
 AMD's SP5 reference board, one socket, EPYC 9004 (Genoa), twelve DDR5
 channels, AST2600 BMC. The console is the SoC's UART1 (`0xfedca000`), the
-BMC's SOL.
+BMC's SOL. SMM counts corrected errors (ten per thresholding SMI) and sends
+each overflow to the BMC's SEL as a Platform Event Message on KCS3
+(`0xCA2`), the BMC's one KCS channel, which the OS's IPMI driver shares:
+only when it is idle.
 
 ```sh
 cargo fbuild build --board amd-onyx --release

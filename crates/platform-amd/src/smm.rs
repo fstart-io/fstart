@@ -241,6 +241,7 @@ pub use handler::{Ecam, SmmFch, handle, handle_with, with, with_fch};
 
 #[cfg(feature = "smm")]
 pub(crate) mod psp;
+pub mod ras;
 
 #[cfg(feature = "smm")]
 mod handler {

@@ -75,6 +75,10 @@ pub trait Board: 'static {
     /// lists their options (`fbuild options`); nothing else describes
     /// them. A SoC without a settings store lists none.
     const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] = &[];
+    /// Machine checks: observed and counted in SMM, then left to the OS,
+    /// or the OS's alone ([`crate::smm::ras`]). The board's SMM image
+    /// binds the handler with it and its BMC hook.
+    const RAS: crate::smm::ras::Policy = crate::smm::ras::Policy::OS_FIRST;
 }
 
 /// What the flow's services read of the board ([`Board`]).
@@ -84,6 +88,7 @@ pub struct Facts {
     pub max_cpus: u16,
     pub discrete_tpm: bool,
     pub bmc_sx_notify: Option<crate::smm::SleepNotify>,
+    pub ras: crate::smm::ras::Policy,
 }
 
 impl Facts {
@@ -93,6 +98,7 @@ impl Facts {
             max_cpus: B::MAX_CPUS,
             discrete_tpm: B::DISCRETE_TPM,
             bmc_sx_notify: B::BMC_SX_NOTIFY,
+            ras: B::RAS,
         }
     }
 }

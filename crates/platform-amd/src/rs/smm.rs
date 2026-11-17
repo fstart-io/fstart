@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! SMM on the RS SoCs, only for the PSP (AmdPspSmmV2Rs and
-//! AmdPlatformRasRsSmm `RasEnablePspEinj` in the vendors' firmware): the
+//! SMM on the RS SoCs, for the PSP and for machine checks
+//! (AmdPspSmmV2Rs and AmdPlatformRasRsSmm in the vendors' firmware): the
 //! handler registers its SMRAM buffers with the PSP (SmmInfo), opens the
 //! PSP's ACPI error injection (RasEinj ENABLE, which the PSP takes only
-//! from SMM with the SMM flag set) and answers the PSP's P2C requests
-//! (`crate::smm::psp`, as SP3's handler).
+//! from SMM with the SMM flag set), answers the PSP's P2C requests
+//! (`crate::smm::psp`, as SP3's handler) and runs the machine-check
+//! handler SP3 has too ([`crate::smm::ras`]) per the board's policy.
 //!
 //! The OS runs ACPI directly (FADT SMI_CMD 0, SCI_EN set by
 //! `Init::finalize`): SLP_TYP, the power button and the GEVENTs stay with
 //! it. The FCH raises SMIs for the SMI command port, which the boot flow
-//! uses once for [`crate::smm::sw::PSP_SMM_INFO`] and then turns off, and
-//! for the PSP ([`Smi`]).
+//! uses once for [`crate::smm::sw::PSP_SMM_INFO`] and a CPU's local SMI
+//! sources (its MCA, through the SMI trigger I/O cycle, PPR 55901
+//! §2.1.18.1.3) use afterwards, and for the PSP ([`Smi`]).
 //!
 //! The handler reports to normal mode in a [`Report`] in the firmware's
 //! reserved DRAM, which it never reads: the statuses of SmmInfo and
@@ -80,11 +82,12 @@ impl<H: fstart_driver_amd::fch::FchHw> fstart_arch::x86::cpu::amd::smm::SmiContr
 }
 
 #[cfg(feature = "smm")]
-pub use handler::handle;
+pub use handler::{enter_cpu, handle, handle_with};
 
 #[cfg(feature = "smm")]
 mod handler {
     use super::{Config, Report};
+    use crate::smm::ras::{self, Event, Policy};
     use crate::smm::{SmmFch, psp as smm_psp, sw};
     use fstart_driver_amd::ccx::tsc::Tsc;
     use fstart_driver_amd::fch::FchHw;
@@ -95,10 +98,33 @@ mod handler {
     use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
     use fstart_smm::SmmContext;
 
-    /// The RS SMI handler on the rendezvous owner: SW SMI D0 and the
-    /// PSP's SMI, on the FCH's dispatcher.
-    pub fn handle(_ctx: &mut SmmContext<'_>, config: &Config) {
+    /// CPU-local work on every CPU that enters SMM, before the
+    /// rendezvous: the MCA work of `policy`, which the owner reports
+    /// ([`handle_with`]). Bind it as the board's `enter_cpu`.
+    #[inline(always)]
+    pub fn enter_cpu(ctx: &mut SmmContext<'_>, _: &Config, policy: &Policy) {
+        ras::enter(policy, ctx.cpu(), fstart_driver_amd::cpu::Silicon::Gn);
+    }
+
+    /// The RS SMI handler on the rendezvous owner of a board without
+    /// machine-check work: [`handle_with`] OS-first.
+    pub fn handle(ctx: &mut SmmContext<'_>, config: &Config) {
+        handle_with(ctx, config, &Policy::OS_FIRST, ras::no_bmc);
+    }
+
+    /// The RS SMI handler on the rendezvous owner: the RAS journal sent
+    /// to the board's BMC through `bmc`, then SW SMI D0 and the PSP's
+    /// SMI, on the FCH's dispatcher.
+    #[inline(always)]
+    pub fn handle_with(
+        ctx: &mut SmmContext<'_>,
+        config: &Config,
+        policy: &Policy,
+        bmc: impl FnMut(&Event<'_>, Tsc) -> bool,
+    ) {
         crate::smm::with_fch(crate::rs::ECAM_BASE, |fch| {
+            let first = ctx.first_owner();
+            ras::deliver(policy, fch.acpi(), first, || ctx.cpus_held(), bmc);
             smi::dispatch(
                 fch.acpi(),
                 fch.io(),

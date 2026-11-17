@@ -7,11 +7,12 @@
 //!
 //! The handler ([`handle`], feature `smm`; the board binds it as its SMI
 //! handler) adds to the FCH's ACPI mode, sleep and power button the NBIO
-//! USB SMI, Milan's PSP FCH lock (SW SMI D2) and the PSP's SMM side
+//! USB SMI, Milan's PSP FCH lock (SW SMI D2), the PSP's SMM side
 //! (`crate::smm::psp`: SmmInfo on [`crate::smm::sw::PSP_SMM_INFO`], the P2C
-//! answers). Boards can opt into [`ras`]'s MCA
-//! observer (a [`Policy`] value, with [`enter_cpu`]): CPU-local capture before native #MC, with OS-owned banks and
-//! optional bounded SEL delivery. There is no DXE or UEFI dependency.
+//! answers), Rome's EINJ and the machine-check handler every SoC with
+//! PFEH shares ([`crate::smm::ras`], per the board's [`Policy`], with
+//! [`enter_cpu`] and the board's BMC hook). There is no DXE or UEFI
+//! dependency.
 //!
 //! The image is built by the host plan's `smm` unit from the board crate
 //! (`smm_bin!`, feature `bundle-smm`); `build.rs` checks that it fits
@@ -84,19 +85,32 @@ pub fn sources(fch: &crate::sp3::silicon::hw::PrimaryFch, config: &crate::smm::S
     }
 }
 
-#[cfg(feature = "smm")]
-pub use handler::{enter_cpu, handle};
-#[cfg(feature = "smm")]
-pub use ras::Policy;
+/// A board's SMM policy on SP3: its RAS ([`crate::board::Board::RAS`])
+/// and Rome's restricted correctable-memory EINJ in platform-owned
+/// scratch RAM.
+#[derive(Debug, Clone, Copy)]
+pub struct Policy {
+    pub ras: crate::smm::ras::Policy,
+    pub memory_einj: bool,
+}
+
+impl Policy {
+    /// OS-first: no MCA observation, EINJ or SEL reporting.
+    pub const OS_FIRST: Self = Self {
+        ras: crate::smm::ras::Policy::OS_FIRST,
+        memory_einj: false,
+    };
+}
 
 #[cfg(feature = "smm")]
-pub mod ras;
+pub use handler::{enter_cpu, handle};
 
 #[cfg(feature = "smm")]
 mod einj;
 
 #[cfg(feature = "smm")]
 mod handler {
+    use crate::smm::ras::{self, Event};
     use crate::smm::{Ecam, SmmConfig, SmmFch, psp as smm_psp, sw};
     use crate::sp3::silicon::Generation;
     use fstart_driver_amd::fch::smi::{self, Pending, source};
@@ -108,23 +122,31 @@ mod handler {
     use fstart_smm::SmmContext;
     use tock_registers::interfaces::Readable;
 
-    use super::Sp3;
-    use super::ras::Policy;
+    use super::{Policy, Sp3};
     use crate::sp3::silicon::hw::Tsc;
 
     /// CPU-local work on every CPU that enters SMM, before the rendezvous:
-    /// MCA capture when `policy` observes MCEs. Bind it as the board's
-    /// `enter_cpu`.
+    /// the MCA work of `policy`, which the owner reports ([`handle`]). Bind
+    /// it as the board's `enter_cpu`.
+    #[inline(always)]
     pub fn enter_cpu(ctx: &mut SmmContext<'_>, config: &SmmConfig<Sp3>, policy: &Policy) {
-        super::ras::enter(policy, ctx.cpu(), config.soc.generation);
+        ras::enter(&policy.ras, ctx.cpu(), config.soc.generation.silicon());
     }
 
     /// The SP3 SMI handler on the rendezvous owner: the FCH's sources
     /// ([`crate::smm`]), the SMI commands of the PSP's SMM info and EINJ,
-    /// the USB and PSP SMIs, and RAS reporting per `policy`.
-    pub fn handle(_ctx: &mut SmmContext<'_>, config: &SmmConfig<Sp3>, policy: &Policy) {
+    /// the USB and PSP SMIs, and the RAS journal sent to the board's BMC
+    /// through `bmc`.
+    #[inline(always)]
+    pub fn handle(
+        ctx: &mut SmmContext<'_>,
+        config: &SmmConfig<Sp3>,
+        policy: &Policy,
+        bmc: impl FnMut(&Event<'_>, Tsc) -> bool,
+    ) {
         crate::smm::with(config, |fch, smu| {
-            super::ras::flush(policy, fch.timer);
+            let first = ctx.first_owner();
+            ras::deliver(&policy.ras, fch.acpi(), first, || ctx.cpus_held(), bmc);
             let handler = Handler {
                 fch,
                 smu,
@@ -170,7 +192,7 @@ mod handler {
                 }
                 // The local SMI status, not this forgeable command, authorizes
                 // MCA capture and native #MC handoff in `enter_cpu`.
-                super::ras::MCE_SMI_COMMAND | super::ras::DIAG_COMMAND => {}
+                ras::MCE_SMI_COMMAND | ras::DIAG_COMMAND => {}
                 smi::sw::FCH_LOCK if config.soc.generation == Generation::Milan => {
                     fch_lock(config, timer)
                 }

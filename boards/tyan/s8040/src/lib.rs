@@ -28,6 +28,10 @@ impl fstart_platform_amd::board::Board for Board {
     const SOCS: &'static [SocId] = &[SocId::Siena];
     /// 64 cores, SMT.
     const MAX_CPUS: u16 = 128;
+    /// Corrected errors counted in SMM and reported to the BMC's SEL
+    /// ([`bmc::sel`]), ten per thresholding SMI.
+    const RAS: fstart_platform_amd::smm::ras::Policy =
+        fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
 }
 
 /// Soldered devices the boot needs, by their lane and what is behind the

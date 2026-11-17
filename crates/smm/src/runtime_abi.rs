@@ -1,4 +1,4 @@
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::AtomicU64;
 
 /// Bytes reserved in every image for the concrete handler's configuration.
 pub const HANDLER_CONFIG_CAPACITY: usize = 256;
@@ -26,8 +26,13 @@ pub struct SmmRuntime {
     pub handler_config_offset: u32,
     /// Size of the handler configuration actually written by the installer.
     pub handler_config_size: u32,
-    /// Rendezvous owner: 0 when free, otherwise logical CPU index + 1.
-    pub owner: AtomicU32,
+    /// The rendezvous: the generation of the current or the last owner in
+    /// bits 63:32, its logical CPU index + 1 in bits 31:0 (0: free). Each
+    /// owner takes the next generation.
+    pub rendezvous: AtomicU64,
+    /// The CPUs parked for a generation's owner: the generation in bits
+    /// 63:32, how many acknowledged it in bits 31:0.
+    pub parked: AtomicU64,
 }
 
 impl SmmRuntime {
@@ -48,7 +53,8 @@ impl SmmRuntime {
             stack_size,
             handler_config_offset,
             handler_config_size,
-            owner: AtomicU32::new(0),
+            rendezvous: AtomicU64::new(0),
+            parked: AtomicU64::new(0),
         }
     }
 }

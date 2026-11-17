@@ -699,9 +699,9 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
 
     /// The PSP's SMM ([`super::smm`]) in TSEG on every thread, then SW
     /// SMI D0: SmmInfo, which the boot needs, and, if the board publishes
-    /// EINJ, RasEinj ENABLE, which it does not.
-    /// The SMI command port is off again afterwards; only the PSP raises
-    /// SMIs, and the OS gets ACPI directly ([`Init::finalize`]).
+    /// EINJ, RasEinj ENABLE, which it does not. The SMI command port stays
+    /// routed: the CPUs' local SMIs (MCA) arrive through it. The OS gets
+    /// ACPI directly ([`Init::finalize`]).
     fn install_smm(
         ctx: &Ctx<'_, Self>,
         state: &mut State,
@@ -727,7 +727,8 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         smi::software_smi(fch.io(), crate::smm::sw::PSP_SMM_INFO);
         // SAFETY: firmware data only the handler writes. It reports
         // SmmInfo, then, if the board publishes EINJ and the PSP took
-        // SmmInfo, RasEinj ENABLE.
+        // SmmInfo, RasEinj ENABLE. The SMI command port stays routed: the
+        // CPUs' machine-check SMIs come through it.
         let read = || unsafe { report.read_volatile() };
         let (smm_info, einj_status) = crate::smm::status::answers(
             &ctx.clock,
@@ -735,9 +736,6 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
             || read().smm_info,
             || read().einj,
         );
-        // Its answers are in, or late: the SMI command port raises no SMI
-        // any more. What came after a deadline is not read.
-        smi::disable_command(fch.acpi());
         // The PSP's locks and BootDone need the SMM info: without it the
         // DF lock breaks DMA, and the payload must not get an unlocked DF.
         crate::smm::status::smm_info("rs", smm_info)?;

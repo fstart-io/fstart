@@ -15,10 +15,12 @@ pub const SPEC_REVISION_2_0: u16 = 0x0200;
 
 pub const NETFN_CHASSIS: u8 = 0x00;
 pub const NETFN_APP: u8 = 0x06;
+pub const NETFN_SENSOR_EVENT: u8 = 0x04;
 pub const NETFN_STORAGE: u8 = 0x0a;
 const GET_CHASSIS_STATUS: u8 = 0x01;
 const SET_ACPI_POWER_STATE: u8 = 0x06;
 const ADD_SEL_ENTRY: u8 = 0x44;
+const PLATFORM_EVENT: u8 = 0x02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -229,6 +231,29 @@ where
     /// Add a SEL entry; returns the record ID the BMC gave it.
     pub fn add_sel(&mut self, record: &SelRecord) -> Result<u16, Error> {
         self.add_sel_bytes(record.as_bytes())
+    }
+
+    /// Platform Event Message (IPMI 2.0 §29.3) of `record`'s event: the
+    /// BMC's event receiver logs it in its SEL with its own record ID and
+    /// timestamp. From the system interface the request carries the
+    /// generator's ID (its low byte) before the event message. BMCs whose
+    /// SEL takes no Add SEL Entry (Netflix OpenBMC on the S8040: completion
+    /// C1h) take events this way.
+    pub fn platform_event(&mut self, record: &SelRecord) -> Result<(), Error> {
+        let mut buffer = [0; 8];
+        let [data1, data2, data3] = record.event_data;
+        let request = [
+            record.generator_id.get() as u8,
+            record.event_message_revision,
+            record.sensor_type,
+            record.sensor_number,
+            record.event_dir_type,
+            data1,
+            data2,
+            data3,
+        ];
+        self.request(NETFN_SENSOR_EVENT, PLATFORM_EVENT, &request, &mut buffer)
+            .map(drop)
     }
 
     /// Add an OEM non-timestamped entry. Unsupported BMCs return a completion
