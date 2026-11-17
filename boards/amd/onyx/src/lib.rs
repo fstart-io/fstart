@@ -31,33 +31,51 @@ impl fstart_platform_amd::board::Board for Board {
     /// 96 cores, SMT.
     const MAX_CPUS: u16 = 192;
     /// Corrected errors counted in SMM and reported to the BMC's SEL
-    /// ([`sel`]), ten per thresholding SMI.
-    const RAS: fstart_platform_amd::smm::ras::Policy =
-        fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
+    /// ([`sel`]), ten per thresholding SMI, on the OS's channel.
+    const RAS: fstart_platform_amd::smm::ras::Policy = fstart_platform_amd::smm::ras::Policy {
+        shared_bmc: true,
+        ..fstart_platform_amd::smm::ras::Policy::THRESHOLDS
+    };
     const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(sel);
 }
 
 /// The BMC's one KCS channel, KCS3 (`0xCA2`/`0xCA3`), which the OS's IPMI
-/// driver uses too: the Onyx BMC bridges no other.
+/// driver uses too: the Onyx BMC bridges no other (its OpenBMC v2.11.0.16
+/// device tree enables only `kcs@2c`, one kcsbridged on `ipmi-kcs3`;
+/// KCS1, KCS2, KCS4 and the iBT are disabled, and it has no SSIF).
 pub const KCS: (u16, u16) = (
     fstart_driver_ipmi::kcs::DEFAULT_PORT,
     fstart_driver_ipmi::kcs::DEFAULT_SPACING,
 );
 
 /// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
-/// BMC's SEL as a Platform Event Message, on the OS's KCS channel when it
-/// is idle: from SMM, and at boot for the last boot's errors. CPUs outside
-/// SMM keep running: an OS transaction starting during the report fails
-/// one of them (the OS's driver retries; the report stops reporting).
-pub fn sel(event: &fstart_platform_amd::smm::ras::Event<'_>, timer: Tsc) -> bool {
+/// BMC's SEL as a Platform Event Message, on the OS's KCS channel: from
+/// SMM, while every CPU is in SMM (`Policy::shared_bmc`), and at boot for
+/// the last boot's errors. A transaction of the OS's in progress (the
+/// interface not idle) is left alone: the report is busy and tried again
+/// on a later SMI. A transaction of SMM's that fails, in its request, its
+/// response or its closing byte, is aborted (the KCS error exit) and the
+/// interface handed back idle; that failure, or an interface that would
+/// not go idle again (`Error::Stuck`), ends SMM's reports on this channel
+/// for the boot (`Delivery::Failed`): it never starts another transaction
+/// on an interface it could not hand back.
+pub fn sel(
+    event: &fstart_platform_amd::smm::ras::Event<'_>,
+    timer: Tsc,
+) -> fstart_platform_amd::smm::ras::Delivery {
+    use fstart_platform_amd::smm::ras::{self, Delivery};
     let (port, spacing) = KCS;
-    // SAFETY: the BMC's KCS ports; the transaction starts only when idle.
+    // SAFETY: the BMC's KCS ports; the OS cannot run meanwhile and the
+    // transaction starts only when idle.
     let mut kcs = unsafe { fstart_driver_ipmi::kcs::Kcs::new(port, spacing, timer) }
-        .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
-    kcs.idle()
-        && kcs
-            .platform_event(&fstart_platform_amd::smm::ras::sel(event))
-            .is_ok()
+        .with_poll_budget(ras::SEL_POLL_BUDGET);
+    if !kcs.idle() {
+        return Delivery::Busy;
+    }
+    match kcs.platform_event(&ras::sel(event)) {
+        Ok(()) => Delivery::Sent,
+        Err(_) => Delivery::Failed,
+    }
 }
 
 /// The console: the SoC's UART1, the BMC's SOL (the public Onyx coreboot
@@ -160,6 +178,9 @@ pub fn acpi_board() -> AcpiBoard {
     .to_aml_bytes(&mut dbg2);
     AcpiBoard {
         tables: alloc::vec![spcr, dbg2],
+        // KCS3, the OS's channel (`IPI0001` and SPMI, as the S8040's
+        // vendor publishes its own): SMM shares it (`Board::RAS`).
+        ipmi: Some(fstart_driver_ipmi::kcs::DEFAULT_ACPI),
         ..AcpiBoard::default()
     }
 }

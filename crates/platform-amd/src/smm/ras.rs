@@ -18,29 +18,44 @@
 //! AmdPlatformRasRsSmm "MCE to Software SMI error handler" takes the same
 //! sources but cloaks the banks and reports to the OS through GHES).
 //!
-//! The journal goes to the board's BMC ([`deliver`], on the rendezvous
-//! owner only): an [`Event`] at a time through the board's hook, which
-//! owns the transport (a KCS channel the OS does not use, or the OS's when
-//! it is idle) and may use [`sel`] for the record. Delivery is bounded:
-//! [`SEL_PER_BOOT`] events per boot, one pass per SMI of at most
-//! [`SEL_PER_SMI`] events and [`DELIVERY_US`], however many CPUs come to
-//! own its rendezvous (what is left waits for a later SMI), the first failure stops it, a
-//! counter is re-armed at most [`REARMS_PER_CPU`] times per CPU (an error
-//! storm then stays with the OS, whose banks still log it). The owner
-//! waits at most [`ENTER_WAIT_US`] for CPUs still doing their local work,
-//! never for one that has not entered.
+//! An error storm is the vendors' leaky bucket ([`Storm`]): more
+//! thresholding SMIs than the bucket holds and SMM stops interrupting.
+//! Every CPU then counts without an interrupt and the rendezvous owner
+//! ([`own`]) runs the FCH's periodic SMI, on which every CPU polls its
+//! counters (`ccx::ras::poll_thresholds`: an overflow is still recorded
+//! and the counter re-armed); after [`Storm::smis`] polls without a
+//! counted error the counters interrupt again. The OS keeps every bank
+//! throughout: Linux polls them itself (its `check_interval`, halved
+//! while it finds errors, down to 10 ms) and decodes them (EDAC); the
+//! locked blocks are SMM's in both modes, so Linux's own thresholding
+//! interrupt and storm control stay off for them.
+//!
+//! The journal goes to the board's BMC, from the rendezvous owner only
+//! ([`own`]): an [`Event`] at a time through the board's hook, which owns
+//! the transport and may use [`sel`] for the record. The owner waits (at
+//! most [`HOLD_US`]) for every CPU to have done its local work, which
+//! journals what it found. On the OS's channel ([`Policy::shared_bmc`])
+//! it delivers only with every CPU held in SMM (so the OS cannot start a
+//! transaction meanwhile) and the interface idle; a transaction of the
+//! OS's in progress is not touched: the report waits for the next
+//! periodic SMI, which the owner keeps running while one waits. Delivery
+//! is bounded: [`SEL_PER_BOOT`] events per boot, at most [`SEL_PER_SMI`]
+//! events and none started after [`DELIVERY_US`] in one SMI however many
+//! CPUs come to own its rendezvous (what is left waits for a later SMI),
+//! the first failure stops it.
 //!
 //! A thresholding counter is SMM's if SMM armed its block, and every write
 //! to it is one CPU's at a time: the handler keeps every armed block by
 //! its node and MCA_IPID ([`Blocks`]), reserved by the one CPU that arms
 //! it (a shared bank, an SMT core's, a CCX's L3, a socket's UMCs, is one
-//! block every CPU of the share sees), then claimed by whichever CPU of
-//! the share handles its overflow; a block someone else locked is never
-//! written.
+//! block every CPU of the share sees), then claimed for every write: an
+//! overflow's re-arm by whichever CPU of the share handles it, a switch
+//! between interrupts and polling and a poll by the CPU that armed it. A
+//! block someone else locked is never written.
 //!
-//! No heap, flash writes, OS buffers, GHES, address-to-DIMM guesses, bank
-//! clearing or all-CPU barrier. The first records survive in locked SMRAM
-//! until reset; this is deliberately not a persistent error store.
+//! No heap, flash writes, OS buffers, GHES, address-to-DIMM guesses or
+//! bank clearing. The first records survive in locked SMRAM until reset;
+//! this is deliberately not a persistent error store.
 
 /// A board's RAS policy ([`crate::board::Board::RAS`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +71,38 @@ pub struct Policy {
     /// to a bank status into an SMI that arrives after the write, whose
     /// registers Linux 7.3 has already cleared (`ccx::ras`).
     pub observe_mce: bool,
+    /// When the counters stop interrupting.
+    pub storm: Storm,
+    /// The board's BMC channel is the OS's too: report only while every
+    /// CPU is in SMM and the interface idle.
+    pub shared_bmc: bool,
+}
+
+/// The storm limit, the vendors' leaky bucket (AMD PBS "RAS": "SMI
+/// Threshold" 5 per "SMI Scale" 1000 ms, "SMI Period" 1000 ms, the S8040
+/// V2.00 setup defaults; AmdPlatformRasRsSmm `0x95f4` counts thresholding
+/// SMIs and leaks one per scale/threshold, at the threshold `0x5700`
+/// re-arms the counters without an interrupt and registers the periodic
+/// SMI, `0x5830` polls on it and returns to interrupts after a quiet
+/// bucket).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Storm {
+    /// Thresholding SMIs (of every CPU) the bucket holds.
+    pub smis: u16,
+    /// The time one SMI takes to leak out, times [`Storm::smis`], in ms.
+    pub window_ms: u16,
+    /// The polling period in ms (1 to 32767); also when a report the
+    /// OS's channel deferred is tried again.
+    pub poll_ms: u16,
+}
+
+impl Storm {
+    /// The vendors' defaults.
+    pub const VENDOR: Self = Self {
+        smis: 5,
+        window_ms: 1000,
+        poll_ms: 1000,
+    };
 }
 
 impl Policy {
@@ -63,17 +110,76 @@ impl Policy {
     pub const OS_FIRST: Self = Self {
         threshold: 0,
         observe_mce: false,
+        storm: Storm::VENDOR,
+        shared_bmc: false,
     };
-    /// SMM counts corrected errors with the vendors' threshold of 10.
+    /// SMM counts corrected errors with the vendors' threshold of 10 and
+    /// their storm limit, reporting on a channel the OS does not use.
     pub const THRESHOLDS: Self = Self {
         threshold: 10,
         observe_mce: false,
+        storm: Storm::VENDOR,
+        shared_bmc: false,
     };
 
     /// SMM handles machine-check events at all.
     pub const fn smm(&self) -> bool {
         self.threshold != 0 || self.observe_mce
     }
+}
+
+/// The leaky bucket of [`Storm`]: [`Bucket::hit`] for each thresholding
+/// SMI, true when it overflows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Bucket {
+    level: u32,
+    /// Since when the bucket leaks: the time of the last whole SMI it
+    /// leaked, or of the SMI that found it empty.
+    last_us: u64,
+}
+
+impl Bucket {
+    /// Count an SMI at `now_us`, after leaking one per `window_ms / smis`
+    /// since the bucket last leaked: whole SMIs, the rest of the time
+    /// carried over to the next hit, so arrivals closer than that still
+    /// leak. True (and empty again) when it reaches [`Storm::smis`], as the
+    /// vendor's `0x95f4`. The SMI that arrives is never leaked itself.
+    pub fn hit(&mut self, storm: &Storm, now_us: u64) -> bool {
+        let smis = u32::from(storm.smis);
+        if smis == 0 {
+            return false;
+        }
+        let per_us = u64::from(storm.window_ms) * 1000 / u64::from(smis);
+        if self.level != 0 && per_us != 0 {
+            let leaked = now_us.saturating_sub(self.last_us) / per_us;
+            self.level -= leaked.min(u64::from(self.level)) as u32;
+            self.last_us = if self.level == 0 {
+                // Empty: it leaks nothing until the next SMI is in it.
+                now_us
+            } else {
+                self.last_us + leaked * per_us
+            };
+        } else if self.level == 0 {
+            self.last_us = now_us;
+        }
+        self.level += 1;
+        if self.level >= smis {
+            self.level = 0;
+            return true;
+        }
+        false
+    }
+}
+
+/// What the board's BMC hook did with an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The BMC took it.
+    Sent,
+    /// The channel is in use (the OS's transaction): try again later.
+    Busy,
+    /// The BMC did not take it.
+    Failed,
 }
 
 use fstart_driver_amd::ccx::ras::{Kind, Record};
@@ -93,13 +199,13 @@ pub enum Event<'a> {
 }
 
 /// A board without a BMC to report to.
-pub fn no_bmc(_: &Event<'_>, _: Tsc) -> bool {
-    false
+pub fn no_bmc(_: &Event<'_>, _: Tsc) -> Delivery {
+    Delivery::Failed
 }
 
-/// The KCS poll budget of one event (`Kcs::with_poll_budget`): 25000
-/// readiness checks 10 us apart, about 250 ms. The S8040's BMC takes
-/// about 25 ms to answer an event.
+/// The KCS poll budget of one event (`Kcs::with_poll_budget`), the abort
+/// of a failed one included: 25000 readiness checks 10 us apart, about
+/// 250 ms in all. The S8040's BMC takes about 25 ms to answer an event.
 pub const SEL_POLL_BUDGET: u32 = 25_000;
 
 /// The generator of the records: system software ID 10h, the first of
@@ -148,24 +254,28 @@ pub fn sel(event: &Event<'_>) -> SelRecord {
 
 #[cfg(feature = "smm")]
 pub use handler::{
-    DELIVERY_US, DIAG_COMMAND, DIAG_REQUEST, ENTER_WAIT_US, MCE_SMI_COMMAND, REARMS_PER_CPU,
-    RETRY_MS, RETRY_SMIS, SEL_PER_BOOT, SEL_PER_SMI, deliver, enter,
+    DELIVERY_US, DIAG_COMMAND, DIAG_REQUEST, HOLD_US, MCE_SMI_COMMAND, RETRY_MS, RETRY_SMIS,
+    SEL_PER_BOOT, SEL_PER_SMI, enter, own,
 };
 
 #[cfg(feature = "smm")]
 mod handler {
     use core::cell::UnsafeCell;
-    use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+    use core::sync::atomic::{
+        AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    };
 
     use fstart_arch::x86::cpu::amd::msr::SMM_BASE;
     use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
+    use fstart_core::services::Timer;
     use fstart_driver_amd::ccx::ras::{self, Kind, LocalSmiStatus, Record};
     use fstart_driver_amd::ccx::tsc::Tsc;
     use fstart_driver_amd::cpu::Silicon;
+    use fstart_driver_amd::fch::smi::{self as fch_smi, source};
     use fstart_driver_amd::window::{Mmio, Window};
     use tock_registers::interfaces::Readable;
 
-    use super::{Event, Policy};
+    use super::{Bucket, Delivery, Event, Policy};
 
     /// Logical CPUs the handler tracks: two Genoa sockets of 96 cores and
     /// two threads fit. Indices beyond stay OS-first, never armed.
@@ -178,19 +288,20 @@ mod handler {
     /// The time one SMI spends delivering: no event starts after it (one
     /// event takes at most [`super::SEL_POLL_BUDGET`] polls).
     pub const DELIVERY_US: u64 = 50_000;
-    /// The period of the SMI that retries what waits for delivery.
+    /// The period of the SMI that retries what waits for delivery, when
+    /// no storm sets it.
     pub const RETRY_MS: u16 = 100;
     /// Periodic SMIs a waiting report gets, from its record or the last
     /// event that went out ([`Retry`]).
     pub const RETRY_SMIS: u32 = 16;
-    /// The longest the delivering owner waits for CPUs still doing their
-    /// local work (and journaling) in this SMI.
-    pub const ENTER_WAIT_US: u64 = 1000;
     /// Thresholding blocks SMM can own: every thread's core banks, every
     /// L3 slice and socket bank of two 96-core sockets.
     const BLOCKS: usize = 4096;
-    /// Thresholding re-arms per CPU per boot.
-    pub const REARMS_PER_CPU: u8 = 32;
+    /// How long the rendezvous owner waits for every CPU to be in SMM, its
+    /// local work done (EDK2 waits up to its PcdCpuSmmApSyncTimeout). A CPU
+    /// that never comes (wait-for-SIPI) makes it give up each time: the
+    /// storm clock then waits, and so does a report on the OS's channel.
+    pub const HOLD_US: u64 = 2000;
     /// The I/O cycle data of the local SMI trigger; never sufficient to
     /// establish an MCA cause.
     pub const MCE_SMI_COMMAND: u8 = 0x80;
@@ -199,6 +310,11 @@ mod handler {
     /// 2 reads its result (0 idle, 1 queued, 4 running, 2 success, 3 failure).
     /// 3 checks saved-SMBASE offsets (RAX=FF00 match, RCX=FE00 match, RDX=revision).
     /// 4 reads RAX=records journaled, RCX=dropped, RDX=refused CPUs.
+    /// 5 reads the storm state: RAX=polling | periodic SMI on << 1 | this CPU
+    /// polling << 2, RCX=switches to polling | periodic SMIs << 32,
+    /// RDX=reports deferred (channel busy) | owner waits that timed out << 32.
+    /// 6 reads the owner's wait: RAX=CPUs counted at the last timeout,
+    /// RCX=the longest wait that succeeded (us), RDX=CPUs the handler counts.
     /// 7 reads RAX=the banks whose counters this CPU armed, RCX=the blocks
     /// SMM armed on every CPU, RDX=the banks with a counter this CPU left
     /// alone, their scope not known.
@@ -207,20 +323,21 @@ mod handler {
     pub const DIAG_REQUEST: u64 = 0x4653_5241_5300_00d1;
 
     /// Per CPU: 0 not tried, [`TRIGGER`] armed, with [`PFEH`] too, or
-    /// [`REFUSED`].
+    /// [`REFUSED`]; [`POLLING`] while its counters count without an
+    /// interrupt.
     static CPU_STATE: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
     const TRIGGER: u8 = 1;
     const PFEH: u8 = 2;
     const REFUSED: u8 = 4;
-    static REARMS: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
-    /// CPUs doing their local work now.
-    static ENTERING: AtomicU32 = AtomicU32::new(0);
+    const POLLING: u8 = 8;
     /// Per CPU: the banks whose counters it armed ([`ras::arm_thresholds`]).
-    static OWNED: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static BANKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
     /// Per CPU: the banks with a counter it left alone, their scope not
     /// known ([`ras::Scope::of`]).
     static UNSCOPED: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
     static ARMED: Blocks = Blocks::new();
+    /// Per CPU: the sum of its counters at its last poll.
+    static COUNTED: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
     static REFUSED_CPUS: AtomicU32 = AtomicU32::new(0);
     static PROBE: AtomicU8 = AtomicU8::new(0);
     /// The delivery lock.
@@ -228,6 +345,66 @@ mod handler {
     static SEL_FAILED: AtomicBool = AtomicBool::new(false);
     static JOURNAL: Journal = Journal::new();
     static RETRY: Retry = Retry::new();
+
+    /// The storm: the counters count without an interrupt.
+    static STORM: AtomicBool = AtomicBool::new(false);
+    static BUCKET: TryLock<Bucket> = TryLock::new(Bucket {
+        level: 0,
+        last_us: 0,
+    });
+    /// A poll counted an error since the last periodic SMI.
+    static ACTIVITY: AtomicBool = AtomicBool::new(false);
+    /// The rendezvous owner's: the periodic SMI runs, quiet polls left.
+    static PERIODIC: AtomicBool = AtomicBool::new(false);
+    /// Its period while it runs.
+    static PERIOD_MS: AtomicU16 = AtomicU16::new(0);
+    static QUIET_LEFT: AtomicU32 = AtomicU32::new(0);
+    static SWITCHES: AtomicU32 = AtomicU32::new(0);
+    static TICKS: AtomicU32 = AtomicU32::new(0);
+    static DEFERRED: AtomicU32 = AtomicU32::new(0);
+    static HOLD_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+    static HOLD_LAST: AtomicU32 = AtomicU32::new(0);
+    static HOLD_LONGEST_US: AtomicU32 = AtomicU32::new(0);
+    static HOLD_TOTAL: AtomicU32 = AtomicU32::new(0);
+
+    /// A value one CPU at a time works on; a CPU that finds it taken goes
+    /// on without it (it never spins: a sibling may wait in a #MC).
+    struct TryLock<T> {
+        locked: AtomicBool,
+        value: UnsafeCell<T>,
+    }
+
+    // SAFETY: every access to the value is behind `with`'s acquire/release
+    // lock; no reference to it escapes the closure.
+    unsafe impl<T: Send> Sync for TryLock<T> {}
+
+    impl<T> TryLock<T> {
+        const fn new(value: T) -> Self {
+            Self {
+                locked: AtomicBool::new(false),
+                value: UnsafeCell::new(value),
+            }
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                return None;
+            }
+            struct Unlock<'a>(&'a AtomicBool);
+            impl Drop for Unlock<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _unlock = Unlock(&self.locked);
+            // SAFETY: exclusive access until Unlock drops; `f` cannot leak the borrow.
+            Some(f(unsafe { &mut *self.value.get() }))
+        }
+    }
 
     /// The thresholding blocks SMM armed, each by its hardware instance
     /// (`ras::Sharing::key`: its scope, the thread, the CCX or the node,
@@ -352,10 +529,65 @@ mod handler {
         }
     }
 
+    /// The counters SMM armed that this CPU claimed for its writes in this
+    /// SMI, this CPU's or a CPU's it shares the bank with; released when
+    /// dropped. A block SMM did not arm, or another CPU writes now, is not
+    /// this one's to write.
+    struct Claims {
+        sharing: ras::Sharing,
+        claimed: heapless::Vec<usize, { ras::MAX_BANKS as usize }>,
+    }
+
+    impl Claims {
+        fn new() -> Self {
+            Self {
+                sharing: ras::Sharing::current(),
+                claimed: heapless::Vec::new(),
+            }
+        }
+
+        /// Claim the block of the bank with MCA_IPID `ipid`.
+        fn owns(&mut self, ipid: u64) -> bool {
+            let Some(key) = self.sharing.key(ipid) else {
+                return false;
+            };
+            ARMED.claim(key).is_some_and(|index| {
+                self.claimed
+                    .push(index)
+                    .map_err(|_| ARMED.release(index))
+                    .is_ok()
+            })
+        }
+    }
+
+    impl Drop for Claims {
+        fn drop(&mut self) {
+            self.claimed.iter().for_each(|&index| ARMED.release(index));
+        }
+    }
+
+    /// `ras::observe_mca` with the counters SMM armed ([`Claims`]).
+    fn observe_owned(
+        cpu: &NativeMsr,
+        logical_cpu: u32,
+        status: u32,
+        rearm: Option<u16>,
+        sink: impl FnMut(Record),
+    ) -> Option<ras::McaEvents> {
+        let mut claims = Claims::new();
+        ras::observe_mca(
+            cpu,
+            logical_cpu,
+            status,
+            rearm,
+            |_, ipid| claims.owns(ipid),
+            sink,
+        )
+    }
+
     struct Journal {
-        locked: AtomicBool,
         dropped: AtomicU32,
-        state: UnsafeCell<State>,
+        state: TryLock<State>,
     }
 
     struct State {
@@ -365,16 +597,11 @@ mod handler {
         sent: u32,
     }
 
-    // SAFETY: every access to state is behind `with`'s acquire/release lock;
-    // producers never spin and no reference to the contents escapes its closure.
-    unsafe impl Sync for Journal {}
-
     impl Journal {
         const fn new() -> Self {
             Self {
-                locked: AtomicBool::new(false),
                 dropped: AtomicU32::new(0),
-                state: UnsafeCell::new(State {
+                state: TryLock::new(State {
                     records: [Record::EMPTY; RECORDS],
                     count: 0,
                     pending: 0,
@@ -384,22 +611,7 @@ mod handler {
         }
 
         fn with<T>(&self, f: impl FnOnce(&mut State) -> T) -> Option<T> {
-            if self
-                .locked
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                return None;
-            }
-            struct Unlock<'a>(&'a AtomicBool);
-            impl Drop for Unlock<'_> {
-                fn drop(&mut self) {
-                    self.0.store(false, Ordering::Release);
-                }
-            }
-            let _unlock = Unlock(&self.locked);
-            // SAFETY: exclusive access until Unlock drops; `f` cannot leak the borrow.
-            Some(f(unsafe { &mut *self.state.get() }))
+            self.state.with(f)
         }
 
         /// Keep `record`, unless it is a deferred error already kept (it
@@ -426,21 +638,31 @@ mod handler {
             }
         }
 
-        fn next(&self) -> Option<Record> {
+        /// The next record to send, left in place until [`Journal::sent`].
+        fn peek(&self) -> Option<Record> {
             self.with(|state| {
                 if state.pending >= state.count || state.sent >= SEL_PER_BOOT {
                     return None;
                 }
-                let record = *state.records.get(state.pending)?;
-                state.pending += 1;
-                state.sent += 1;
-                Some(record)
+                state.records.get(state.pending).copied()
             })
             .flatten()
         }
 
-        /// Whether a record waits for delivery (a journal another CPU
-        /// holds now counts as one).
+        /// The record [`Journal::peek`] returned is done with.
+        fn sent(&self) {
+            // A producer holds the lock only to store a record.
+            while self
+                .with(|state| {
+                    state.pending += 1;
+                    state.sent += 1;
+                })
+                .is_none()
+            {
+                core::hint::spin_loop();
+            }
+        }
+
         fn waiting(&self) -> bool {
             self.with(|state| state.pending < state.count && state.sent < SEL_PER_BOOT)
                 .unwrap_or(true)
@@ -449,15 +671,13 @@ mod handler {
 
     /// Every entrant runs this, including CPUs that do not own the FCH
     /// dispatch: the local MCA work of `policy`, which journals what it
-    /// finds for the owner to deliver ([`deliver`]). Arming happens on the
+    /// finds for the owner to deliver ([`own`]). Arming happens on the
     /// installer's per-CPU self-SMI, after SMRAM is locked. No CPU waits
-    /// for a sibling and a journal collision never delays native #MC.
+    /// for a sibling here and a journal collision never delays native #MC.
     #[inline(always)]
     pub fn enter(policy: &Policy, logical_cpu: u32, silicon: Silicon) {
         if policy.smm() {
-            ENTERING.fetch_add(1, Ordering::AcqRel);
-            enter_enabled(logical_cpu, silicon, policy.threshold, policy.observe_mce);
-            ENTERING.fetch_sub(1, Ordering::AcqRel);
+            enter_enabled(logical_cpu, silicon, *policy);
         }
     }
 
@@ -465,13 +685,14 @@ mod handler {
     // inlining into the board entry can materialize a GOT access, forbidden
     // in PIC SMM.
     #[inline(never)]
-    fn enter_enabled(logical_cpu: u32, silicon: Silicon, threshold: u16, observe_mce: bool) {
+    fn enter_enabled(logical_cpu: u32, silicon: Silicon, policy: Policy) {
         let index = logical_cpu as usize;
-        let (Some(state), Some(rearms), Some(owned)) =
-            (CPU_STATE.get(index), REARMS.get(index), OWNED.get(index))
+        let (Some(state), Some(banks), Some(counted)) =
+            (CPU_STATE.get(index), BANKS.get(index), COUNTED.get(index))
         else {
             return;
         };
+        let (threshold, observe_mce) = (policy.threshold, policy.observe_mce);
         // SAFETY: SMM, ring 0.
         let cpu = unsafe { NativeMsr::new() };
         let smbase = cpu.reg(SMM_BASE).get() as usize;
@@ -495,7 +716,7 @@ mod handler {
             if armed && threshold != 0 {
                 let sharing = ras::Sharing::current();
                 let mut unscoped = 0;
-                let banks = ras::arm_thresholds(
+                let armed = ras::arm_thresholds(
                     &cpu,
                     threshold,
                     |bank, ipid| match sharing.key(ipid) {
@@ -508,7 +729,7 @@ mod handler {
                     },
                     |reservation, armed| ARMED.publish(reservation, armed),
                 );
-                owned.store(banks, Ordering::Relaxed);
+                banks.store(armed, Ordering::Relaxed);
                 if let Some(slot) = UNSCOPED.get(index) {
                     slot.store(unscoped, Ordering::Relaxed);
                 }
@@ -535,7 +756,10 @@ mod handler {
         let status = save
             .reg::<u32, LocalSmiStatus::Register>(ras::LOCAL_SMI_STATUS)
             .get();
-        diagnostics(&cpu, index, saved);
+        let unscoped = UNSCOPED
+            .get(index)
+            .map_or(0, |unscoped| unscoped.load(Ordering::Relaxed));
+        diagnostics(&cpu, saved, armed, banks.load(Ordering::Relaxed), unscoped);
         let mut sink = |record| {
             JOURNAL.push(record);
             RETRY.renew();
@@ -543,27 +767,72 @@ mod handler {
         if armed & PFEH != 0 {
             ras::observe(&cpu, logical_cpu, status, &mut sink);
         }
-        let rearm = (threshold != 0 && rearms.load(Ordering::Relaxed) < REARMS_PER_CPU)
-            .then_some(threshold);
-        // The counters SMM armed, this CPU's (`owned`) or one of a CPU it
-        // shares the bank with: each claimed for this SMI, then released.
-        let sharing = ras::Sharing::current();
-        let mut claimed = heapless::Vec::<usize, { ras::MAX_BANKS as usize }>::new();
-        let owns = |_, ipid| {
-            let Some(key) = sharing.key(ipid) else {
-                return false;
-            };
-            ARMED.claim(key).is_some_and(|index| {
-                claimed
-                    .push(index)
-                    .map_err(|_| ARMED.release(index))
-                    .is_ok()
-            })
-        };
-        let events = ras::observe_mca(&cpu, logical_cpu, status, rearm, owns, &mut sink);
-        claimed.iter().for_each(|&index| ARMED.release(index));
-        if events.is_some_and(|events| events.thresholds != 0) && rearm.is_some() {
-            rearms.fetch_add(1, Ordering::Relaxed);
+        if threshold == 0 {
+            observe_owned(&cpu, logical_cpu, status, None, &mut sink);
+        } else {
+            let banks = banks.load(Ordering::Relaxed);
+            let storm = STORM.load(Ordering::Acquire);
+            let was_polling = armed & POLLING != 0;
+            if storm != was_polling {
+                // The counters change modes: what they latched is sampled
+                // and journaled first, never reset unseen. Each under its
+                // claim: a sibling may be re-arming its overflow. One that
+                // could not be claimed is switched on a later SMI, this
+                // CPU still in its old mode.
+                let mut claims = Claims::new();
+                let poll = ras::switch_counting(
+                    &cpu,
+                    logical_cpu,
+                    banks,
+                    threshold,
+                    !storm,
+                    |_, ipid| claims.owns(ipid),
+                    &mut sink,
+                );
+                drop(claims);
+                counted.store(poll.counted, Ordering::Relaxed);
+                if storm && poll.overflowed != 0 {
+                    ACTIVITY.store(true, Ordering::Release);
+                }
+                if poll.skipped == 0 {
+                    state.fetch_xor(POLLING, Ordering::Relaxed);
+                }
+            }
+            if storm {
+                if was_polling {
+                    let mut claims = Claims::new();
+                    let poll = ras::poll_thresholds(
+                        &cpu,
+                        logical_cpu,
+                        banks,
+                        threshold,
+                        false,
+                        |_, ipid| claims.owns(ipid),
+                        &mut sink,
+                    );
+                    drop(claims);
+                    // A sum that left a block out (a sibling held it) is not
+                    // the last one's to compare with: no activity from it.
+                    let changed = poll.skipped == 0
+                        && counted.swap(poll.counted, Ordering::Relaxed) != poll.counted;
+                    if poll.overflowed != 0 || changed {
+                        ACTIVITY.store(true, Ordering::Release);
+                    }
+                }
+                // A deferred error's SMI (PFEH). The counters are the
+                // poll's while it lasts: they are not claimed here, so no
+                // CPU's poll finds one taken by an observer.
+                ras::observe_mca(&cpu, logical_cpu, status, None, |_, _| false, &mut sink);
+            } else if observe_owned(&cpu, logical_cpu, status, Some(threshold), &mut sink)
+                .is_some_and(|events| events.thresholds != 0)
+            {
+                // SAFETY: SMM, ring 0; the P-state MSRs.
+                let now = Tsc::native(&cpu).timestamp_us();
+                if BUCKET.with(|bucket| bucket.hit(&policy.storm, now)) == Some(true) {
+                    STORM.store(true, Ordering::Release);
+                    SWITCHES.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         }
         if armed & PFEH != 0 && LocalSmiStatus::WRMSR.is_set(status) {
             use fstart_smm::save_state::Amd64Register::{Rax, Rcx, Rdx};
@@ -585,17 +854,24 @@ mod handler {
                 // OS's next poll logs the bank again and clears it, now
                 // natively: this CPU leaves PFEH for good.
                 ras::disarm(&cpu);
-                state.store(TRIGGER, Ordering::Relaxed);
+                state.fetch_and(!PFEH, Ordering::Relaxed);
                 REFUSED_CPUS.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
-    fn diagnostics<M: MsrAccess>(cpu: &M, cpu_index: usize, saved: fstart_smm::X86SaveState) {
+    fn diagnostics<M: MsrAccess>(
+        cpu: &M,
+        saved: fstart_smm::X86SaveState,
+        state: u8,
+        banks: u64,
+        unscoped: u64,
+    ) {
         use fstart_smm::save_state::Amd64Register::{Rax, Rcx, Rdx};
         if saved.read_amd64(Rax) != Ok(DIAG_REQUEST) || saved.read_amd64(Rdx) != Ok(0xb2) {
             return;
         }
+        let load = |counter: &AtomicU32| u64::from(counter.load(Ordering::Relaxed));
         match saved.read_amd64(Rcx) {
             Ok(0) => {
                 let _ = saved.write_amd64(Rax, cpu.reg(ras::PFEH_CONFIG).get());
@@ -613,17 +889,24 @@ mod handler {
             Ok(4) => {
                 let count = JOURNAL.with(|state| state.count).unwrap_or(usize::MAX);
                 let _ = saved.write_amd64(Rax, count as u64);
-                let _ = saved.write_amd64(Rcx, JOURNAL.dropped.load(Ordering::Relaxed).into());
-                let _ = saved.write_amd64(Rdx, REFUSED_CPUS.load(Ordering::Relaxed).into());
+                let _ = saved.write_amd64(Rcx, load(&JOURNAL.dropped));
+                let _ = saved.write_amd64(Rdx, load(&REFUSED_CPUS));
+            }
+            Ok(5) => {
+                let flags = u64::from(STORM.load(Ordering::Relaxed))
+                    | u64::from(PERIODIC.load(Ordering::Relaxed)) << 1
+                    | u64::from(state & POLLING != 0) << 2;
+                let _ = saved.write_amd64(Rax, flags);
+                let _ = saved.write_amd64(Rcx, load(&SWITCHES) | load(&TICKS) << 32);
+                let _ = saved.write_amd64(Rdx, load(&DEFERRED) | load(&HOLD_TIMEOUTS) << 32);
+            }
+            Ok(6) => {
+                let _ = saved.write_amd64(Rax, load(&HOLD_LAST));
+                let _ = saved.write_amd64(Rcx, load(&HOLD_LONGEST_US));
+                let _ = saved.write_amd64(Rdx, load(&HOLD_TOTAL));
             }
             Ok(7) => {
-                let owned = OWNED
-                    .get(cpu_index)
-                    .map_or(0, |owned| owned.load(Ordering::Relaxed));
-                let unscoped = UNSCOPED
-                    .get(cpu_index)
-                    .map_or(0, |unscoped| unscoped.load(Ordering::Relaxed));
-                let _ = saved.write_amd64(Rax, owned);
+                let _ = saved.write_amd64(Rax, banks);
                 let _ = saved.write_amd64(Rcx, ARMED.len.load(Ordering::Relaxed) as u64);
                 let _ = saved.write_amd64(Rdx, unscoped);
             }
@@ -637,65 +920,75 @@ mod handler {
         }
     }
 
-    /// On the rendezvous owner, with the FCH's ACPI block `acpi`: send
-    /// what the journal holds to the board's BMC through `bmc`, in one pass
-    /// per SMI ([`pass`]: on its `first` owner, `SmmContext::first_owner`)
-    /// of at most [`SEL_PER_SMI`] events and [`DELIVERY_US`], whatever
-    /// comes in meanwhile. First it waits at most [`ENTER_WAIT_US`] for the
-    /// CPUs still journaling. What is left waits for the FCH's periodic SMI
-    /// ([`Retry`]), which runs while a report waits, at most
-    /// [`RETRY_SMIS`] times since the last record or event, and for one
-    /// period after an SMI that not every CPU (`cpus`, the handler's
-    /// `SmmContext::cpus_held`) had reached the rendezvous for: one may
-    /// still journal. The first failed event stops delivery until reset
-    /// (no wait for the BMC); OS handoff never depends on it.
+    /// The rendezvous owner's part, with the FCH's ACPI block `acpi`,
+    /// before the FCH's dispatch: wait (at most [`HOLD_US`]) until every
+    /// CPU has done its local work and is parked for this one (`cpus`, the
+    /// handler's `SmmContext::cpus_held`: the CPUs that acknowledged this
+    /// owner's rendezvous, not ones of a previous SMI still on their way
+    /// out); on the periodic SMI take the storm's clock; on the SMI's
+    /// `first` owner (`SmmContext::first_owner`) deliver the journal
+    /// through `bmc` (on the OS's channel only if every CPU is held); then
+    /// run the periodic SMI while the storm lasts, a CPU's counters are
+    /// not in its mode yet, or a report waits ([`Retry`]).
     #[inline(always)]
-    pub fn deliver<W: Window>(
+    pub fn own<W: Window>(
         policy: &Policy,
         acpi: &W,
         first: bool,
         cpus: impl Fn() -> Option<(u32, u32)>,
-        mut bmc: impl FnMut(&Event<'_>, Tsc) -> bool,
+        bmc: impl FnMut(&Event<'_>, Tsc) -> Delivery,
     ) {
-        use fstart_core::services::Timer;
-        use fstart_driver_amd::fch::smi::{self as fch_smi, source};
         if !policy.smm() {
             return;
         }
         // SAFETY: SMM, ring 0; the P-state MSRs.
         let timer = Tsc::native(&unsafe { NativeMsr::new() });
         let start = timer.timestamp_us();
-        while entering() && timer.timestamp_us().wrapping_sub(start) < ENTER_WAIT_US {
-            core::hint::spin_loop();
-        }
-        // Before the FCH's dispatch clears it.
+        let (held, seen) = loop {
+            let waited = timer.timestamp_us().wrapping_sub(start);
+            match cpus() {
+                Some((inside, total)) if inside >= total => break (true, (inside, total, waited)),
+                Some((inside, total)) if waited >= HOLD_US => {
+                    break (false, (inside, total, waited));
+                }
+                Some(_) => core::hint::spin_loop(),
+                None => break (false, (0, 0, waited)),
+            }
+        };
         let tick = [source::SHORT_TIMER, source::LONG_TIMER]
             .into_iter()
             .any(|s| fch_smi::is_pending(acpi, s));
-        let start = timer.timestamp_us();
-        pass(
-            first,
-            |event| bmc(event, timer),
-            || timer.timestamp_us().wrapping_sub(start) < DELIVERY_US,
-        );
-        let held = cpus().is_some_and(|(inside, total)| inside >= total);
-        if let Some(period) = retry(tick, held) {
-            fch_smi::periodic(acpi, period);
+        if before_delivery(policy, held, seen) {
+            deliver(timer, first, bmc);
+        }
+        if let Some(periodic) = clock(policy, tick, held) {
+            fch_smi::periodic(acpi, periodic);
         }
     }
 
-    #[inline(never)]
-    fn entering() -> bool {
-        ENTERING.load(Ordering::Acquire) != 0
-    }
-
-    /// What the owner does with the periodic SMI after its pass.
+    /// Whether the owner delivers now: on the OS's channel only with
+    /// every CPU held. Counts what waits.
     // The statics stay in this crate (no GOT in the board's SMM image).
     #[inline(never)]
-    fn retry(tick: bool, held: bool) -> Option<Option<u16>> {
-        let waiting = !SEL_FAILED.load(Ordering::Relaxed)
-            && (JOURNAL.waiting() || PROBE.load(Ordering::Acquire) == 1);
-        RETRY.clock(tick, waiting, held)
+    fn before_delivery(
+        policy: &Policy,
+        held: bool,
+        (inside, total, waited): (u32, u32, u64),
+    ) -> bool {
+        HOLD_TOTAL.store(total, Ordering::Relaxed);
+        if held {
+            HOLD_LONGEST_US.fetch_max(waited.min(u32::MAX.into()) as u32, Ordering::Relaxed);
+        } else {
+            HOLD_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+            HOLD_LAST.store(inside, Ordering::Relaxed);
+        }
+        if policy.shared_bmc && !held {
+            if JOURNAL.waiting() {
+                DEFERRED.fetch_add(1, Ordering::Relaxed);
+            }
+            return false;
+        }
+        true
     }
 
     /// The periodic SMI that delivers what waits without another SMI: a
@@ -707,14 +1000,12 @@ mod handler {
     /// it). The owner's decision, after its pass, sees every CPU parked
     /// for it (each did its local work) or else keeps one more period.
     struct Retry {
-        running: AtomicBool,
         left: AtomicU32,
     }
 
     impl Retry {
         const fn new() -> Self {
             Self {
-                running: AtomicBool::new(false),
                 left: AtomicU32::new(0),
             }
         }
@@ -724,33 +1015,106 @@ mod handler {
             self.left.store(RETRY_SMIS, Ordering::Relaxed);
         }
 
-        /// On an owner, after its pass: `tick` if this SMI is the periodic
-        /// one, `waiting` if a report waits, `held` if every CPU was
-        /// parked for the owner. The periodic SMI's new period
-        /// (`Some(None)`: stop it), if it changes.
-        fn clock(&self, tick: bool, waiting: bool, held: bool) -> Option<Option<u16>> {
-            let running = self.running.load(Ordering::Relaxed);
+        /// On an owner, after its pass: whether reports want the periodic
+        /// SMI, `running` or not: `tick` if this SMI is the periodic one,
+        /// `waiting` if a report waits, `held` if every CPU was parked for
+        /// the owner.
+        fn wants(&self, tick: bool, running: bool, waiting: bool, held: bool) -> bool {
             if running && tick {
                 let _ = self
                     .left
                     .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
             }
-            let wanted = (waiting && self.left.load(Ordering::Relaxed) != 0) || (!held && !tick);
-            if wanted == running {
-                return None;
-            }
-            self.running.store(wanted, Ordering::Relaxed);
-            Some(wanted.then_some(RETRY_MS))
+            (waiting && self.left.load(Ordering::Relaxed) != 0) || (!held && !tick)
         }
+    }
+
+    /// Whether an armed CPU's counters are not in the storm's mode yet
+    /// (polling during it, interrupting after it).
+    fn lagging() -> bool {
+        let storm = STORM.load(Ordering::Acquire);
+        CPU_STATE.iter().any(|state| {
+            let state = state.load(Ordering::Relaxed);
+            state & TRIGGER != 0 && (state & POLLING != 0) != storm
+        })
+    }
+
+    /// The periodic SMI's clock, on the rendezvous owner after delivery:
+    /// the storm's polls, the CPUs' switches back after it and the reports
+    /// that wait ([`Retry`]). What to do with it (`Some(None)`: stop it,
+    /// `Some(Some(ms))`: run it every `ms`), if anything.
+    #[inline(never)]
+    fn clock(policy: &Policy, tick: bool, held: bool) -> Option<Option<u16>> {
+        let waiting = !SEL_FAILED.load(Ordering::Relaxed)
+            && (JOURNAL.waiting() || PROBE.load(Ordering::Acquire) == 1);
+        let storm = STORM.load(Ordering::Acquire);
+        let running = PERIODIC.load(Ordering::Relaxed);
+        let reports = RETRY.wants(tick, running, waiting, held);
+        if tick {
+            TICKS.fetch_add(1, Ordering::Relaxed);
+        }
+        // Every CPU polled on this SMI, before this owner: its activity
+        // is in. Without them all, wait for a full tick.
+        if storm && running && tick && held {
+            if ACTIVITY.swap(false, Ordering::AcqRel) {
+                QUIET_LEFT.store(policy.storm.smis.into(), Ordering::Relaxed);
+            } else if QUIET_LEFT.load(Ordering::Relaxed) <= 1 {
+                // The bucket's time without an error: interrupts again,
+                // which every CPU sets on its next SMI.
+                STORM.store(false, Ordering::Release);
+            } else {
+                QUIET_LEFT.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        // After the storm the periodic SMI runs until every CPU's counters
+        // are back on interrupts: a CPU whose switch left a block a sibling
+        // held (`ras::switch_counting`'s `skipped`) is still polling and
+        // switches on the next SMI. That every CPU was held proves only
+        // that its local work ended, not that it switched.
+        // Reports alone retry at their own period.
+        let polls = STORM.load(Ordering::Acquire) || lagging();
+        let wanted = polls || reports;
+        let period = if polls {
+            policy.storm.poll_ms
+        } else {
+            RETRY_MS
+        };
+        if wanted == running && (!wanted || PERIOD_MS.load(Ordering::Relaxed) == period) {
+            return None;
+        }
+        PERIODIC.store(wanted, Ordering::Relaxed);
+        PERIOD_MS.store(period, Ordering::Relaxed);
+        if wanted {
+            QUIET_LEFT.store(policy.storm.smis.into(), Ordering::Relaxed);
+            ACTIVITY.store(false, Ordering::Relaxed);
+        }
+        Some(wanted.then_some(period))
+    }
+
+    /// On the rendezvous owner: send what the journal holds to the board's
+    /// BMC through `bmc`, in one pass per SMI ([`pass`]) of at most
+    /// [`SEL_PER_SMI`] events and [`DELIVERY_US`], whatever comes in
+    /// meanwhile; what is left waits for a later SMI. A busy channel
+    /// leaves the event for a later SMI; the first failed event stops
+    /// delivery until reset (no retry, no wait for the BMC); OS handoff
+    /// never depends on it.
+    #[inline(always)]
+    fn deliver(timer: Tsc, first: bool, mut bmc: impl FnMut(&Event<'_>, Tsc) -> Delivery) {
+        let start = timer.timestamp_us();
+        pass(
+            first,
+            |event| bmc(event, timer),
+            || timer.timestamp_us().wrapping_sub(start) < DELIVERY_US,
+        );
     }
 
     /// One SMI's delivery, on its `first` owner only: a CPU that comes to
     /// own the rendezvous after another owner of its SMI (late, even with
     /// a source that latched meanwhile) delivers nothing, so one SMI has
     /// one pass whatever its owners. Then events, under the delivery lock,
-    /// while fewer than [`SEL_PER_SMI`] went out and `in_time` holds, and
-    /// none failed.
-    fn pass(first: bool, mut bmc: impl FnMut(&Event<'_>) -> bool, in_time: impl Fn() -> bool) {
+    /// while fewer than [`SEL_PER_SMI`] went out, `in_time` holds, the
+    /// channel is free and none failed.
+    fn pass(first: bool, mut bmc: impl FnMut(&Event<'_>) -> Delivery, in_time: impl Fn() -> bool) {
         if !first || !begin() {
             return;
         }
@@ -759,15 +1123,15 @@ mod handler {
             let Some(event) = next() else {
                 break;
             };
-            let ok = match event {
+            let delivery = match event {
                 Some(record) => bmc(&Event::Mca(&record)),
                 None => bmc(&Event::Probe),
             };
-            done(event.is_none(), ok);
-            sent += 1;
-            if !ok {
+            done(event.is_none(), delivery);
+            if delivery != Delivery::Sent {
                 break;
             }
+            sent += 1;
         }
         end();
     }
@@ -795,7 +1159,7 @@ mod handler {
     /// The next event: a record (`Some`), or the requested probe (`None`).
     #[inline(never)]
     fn next() -> Option<Option<Record>> {
-        if let Some(record) = JOURNAL.next() {
+        if let Some(record) = JOURNAL.peek() {
             return Some(Some(record));
         }
         PROBE
@@ -804,16 +1168,24 @@ mod handler {
             .then_some(None)
     }
 
-    /// An event went out (under the lock).
+    /// What became of an event (under the lock).
     #[inline(never)]
-    fn done(probe: bool, ok: bool) {
-        if ok {
-            RETRY.renew();
-        } else {
-            SEL_FAILED.store(true, Ordering::Relaxed);
+    fn done(probe: bool, delivery: Delivery) {
+        match (probe, delivery) {
+            (true, Delivery::Busy) => PROBE.store(1, Ordering::Release),
+            (true, _) => PROBE.store(
+                if delivery == Delivery::Sent { 2 } else { 3 },
+                Ordering::Release,
+            ),
+            (false, Delivery::Busy) => {}
+            (false, _) => JOURNAL.sent(),
         }
-        if probe {
-            PROBE.store(if ok { 2 } else { 3 }, Ordering::Release);
+        match delivery {
+            Delivery::Sent => RETRY.renew(),
+            Delivery::Busy => {
+                DEFERRED.fetch_add(1, Ordering::Relaxed);
+            }
+            Delivery::Failed => SEL_FAILED.store(true, Ordering::Relaxed),
         }
     }
 
@@ -824,7 +1196,7 @@ mod handler {
 
     #[cfg(test)]
     mod tests {
-        use super::super::sel;
+        use super::super::{Storm, sel};
         use super::*;
         use zerocopy::IntoBytes;
 
@@ -847,9 +1219,11 @@ mod handler {
                 })
                 .unwrap();
             for bank in 0..SEL_PER_BOOT {
-                assert_eq!(journal.next().unwrap().bank, bank);
+                assert_eq!(journal.peek().unwrap().bank, bank);
+                assert_eq!(journal.peek().unwrap().bank, bank, "kept until sent");
+                journal.sent();
             }
-            assert!(journal.next().is_none());
+            assert!(journal.peek().is_none());
             assert!(!journal.waiting(), "the per-boot budget is spent");
             assert_eq!(
                 journal.with(|s| s.count),
@@ -858,114 +1232,109 @@ mod handler {
             );
         }
 
-        /// One test for every use of the handler's statics (the journal,
-        /// the delivery lock): SEL_PER_SMI events per SMI and one pass per
-        /// SMI, on its first owner: a late entrant that owns the
-        /// rendezvous after it (even with a fresh source, which it
-        /// dispatches) delivers nothing, in time or not; what is left for
-        /// later SMIs; nothing after a failure.
+        #[test]
+        fn a_deferred_error_read_again_is_kept_once() {
+            let journal = Journal::new();
+            let deferred = Record {
+                kind: Kind::Deferred,
+                bank: 3,
+                status: 1 << 63 | 1 << 44,
+                ..Record::EMPTY
+            };
+            journal.push(deferred);
+            journal.push(Record { cpu: 9, ..deferred });
+            journal.push(Record {
+                kind: Kind::Threshold,
+                ..deferred
+            });
+            journal.push(Record {
+                kind: Kind::Threshold,
+                ..deferred
+            });
+            assert_eq!(journal.with(|s| s.count), Some(3));
+        }
+
+        #[test]
+        fn contended_producer_drops_instead_of_waiting() {
+            let journal = Journal::new();
+            journal.with(|_| journal.push(Record::EMPTY)).unwrap();
+            assert_eq!(journal.dropped.load(Ordering::Relaxed), 1);
+            assert_eq!(journal.with(|s| s.count), Some(0));
+        }
+
+        /// SEL_PER_SMI events per SMI, what is left for later SMIs, and no
+        /// event after the SMI's time is up.
+        /// The tests of the journal and delivery statics, one at a time.
+        static STATICS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
         #[test]
         fn delivery_is_bounded_per_smi_and_carries_the_rest_over() {
+            let _statics = STATICS.lock().unwrap();
             for bank in 0..6 {
                 JOURNAL.push(Record {
-                    bank,
+                    bank: 100 + bank,
                     status: 1 << 63,
                     ..Record::EMPTY
                 });
             }
-            let banks = |first, in_time: &dyn Fn() -> bool, ok: bool| {
+            let banks = |first, in_time: &dyn Fn() -> bool, delivery: Delivery| {
                 let mut banks = std::vec::Vec::new();
                 pass(
                     first,
                     |event| {
-                        if let Event::Mca(record) = event {
+                        if let Event::Mca(record) = event
+                            && record.bank >= 100
+                        {
                             banks.push(record.bank);
                         }
-                        ok
+                        delivery
                     },
                     in_time,
                 );
                 banks
             };
-            // The SMI's first owner; then a late entrant of the same SMI
-            // owning it next: nothing, in time or not.
-            assert_eq!(banks(true, &|| true, true), [0, 1]);
-            assert!(banks(false, &|| true, true).is_empty());
-            assert!(banks(false, &|| false, true).is_empty());
+            let sent = Delivery::Sent;
+            assert_eq!(banks(true, &|| true, sent).len(), 2);
+            // A late entrant of the same SMI owning it after the first
+            // (even with a fresh source), in time or not: nothing.
+            assert!(banks(false, &|| true, sent).is_empty());
+            assert!(banks(false, &|| false, sent).is_empty());
             assert!(JOURNAL.waiting());
-            assert_eq!(banks(true, &|| true, true), [2, 3]);
+            assert_eq!(banks(true, &|| true, sent).len(), 2);
             // The SMI's time is up after the first event.
             let calls = core::cell::Cell::new(0);
             let in_time = || {
                 calls.set(calls.get() + 1);
                 calls.get() < 2
             };
-            assert_eq!(banks(true, &in_time, true), [4]);
+            assert_eq!(banks(true, &in_time, sent).len(), 1);
             // Out of time before the first: nothing, and it stays queued.
-            assert!(banks(true, &|| false, true).is_empty());
+            assert!(banks(true, &|| false, sent).is_empty());
+            // A busy channel: the event stays for later.
+            assert_eq!(banks(true, &|| true, Delivery::Busy).len(), 1);
             assert!(JOURNAL.waiting());
-            // A failed event ends delivery, read under the lock.
-            assert_eq!(banks(true, &|| true, false), [5]);
-            JOURNAL.push(Record {
-                bank: 6,
-                status: 1 << 63,
-                ..Record::EMPTY
-            });
-            assert!(banks(true, &|| true, true).is_empty());
-            assert!(!DELIVERING.load(Ordering::Relaxed));
-            // Another CPU holding the lock: nothing.
-            SEL_FAILED.store(false, Ordering::Relaxed);
-            DELIVERING.store(true, Ordering::Relaxed);
-            assert!(banks(true, &|| true, true).is_empty());
-            DELIVERING.store(false, Ordering::Relaxed);
-            assert_eq!(banks(true, &|| true, true), [6]);
+            assert_eq!(banks(true, &|| true, sent), [105]);
             assert!(!JOURNAL.waiting());
-            // A failure stops the retries: nothing waits for them.
-            SEL_FAILED.store(true, Ordering::Relaxed);
+            // Another CPU holding the lock: nothing.
             JOURNAL.push(Record {
-                bank: 7,
+                bank: 106,
                 status: 1 << 63,
                 ..Record::EMPTY
             });
-            RETRY.renew();
-            assert_eq!(retry(false, true), None, "not running, not wanted");
+            DELIVERING.store(true, Ordering::Relaxed);
+            assert!(banks(true, &|| true, sent).is_empty());
+            DELIVERING.store(false, Ordering::Relaxed);
+            // A failed event ends delivery, read under the lock.
+            assert_eq!(banks(true, &|| true, Delivery::Failed), [106]);
+            JOURNAL.push(Record {
+                bank: 107,
+                status: 1 << 63,
+                ..Record::EMPTY
+            });
+            assert!(banks(true, &|| true, sent).is_empty());
             SEL_FAILED.store(false, Ordering::Relaxed);
-            assert_eq!(retry(false, true), Some(Some(RETRY_MS)));
-            assert_eq!(banks(true, &|| true, true), [7]);
-            assert_eq!(retry(true, true), Some(None), "delivered: stopped");
-        }
-
-        /// A record journaled after its SMI's pass, by a CPU that reached
-        /// SMM late, with no SMI after it: the owner saw a CPU missing at
-        /// its decision and keeps the periodic SMI for one period, in
-        /// which the record is found and delivered, then stops. A report
-        /// the channel never takes gets RETRY_SMIS periods from its record.
-        #[test]
-        fn a_late_record_is_retried_without_another_smi() {
-            let retry = Retry::new();
-            // The SMI's owner: nothing waits, one CPU is not parked yet.
-            assert_eq!(retry.clock(false, false, false), Some(Some(RETRY_MS)));
-            // That CPU journals now, after the pass.
-            retry.renew();
-            // The periodic SMI: the record waits; every CPU is held.
-            assert_eq!(retry.clock(true, true, true), None, "still running");
-            // Delivered on that SMI's pass: nothing waits, stop.
-            assert_eq!(retry.clock(true, false, true), Some(None));
-            // Every CPU held and nothing waiting: no periodic SMI at all.
-            assert_eq!(retry.clock(false, false, true), None);
-            // A periodic SMI's own missing CPU adds no period.
-            assert_eq!(retry.clock(false, false, false), Some(Some(RETRY_MS)));
-            assert_eq!(retry.clock(true, false, false), Some(None));
-            // A report that never goes out: RETRY_SMIS periods, then none.
-            retry.renew();
-            assert_eq!(retry.clock(false, true, true), Some(Some(RETRY_MS)));
-            for _ in 1..RETRY_SMIS {
-                assert_eq!(retry.clock(true, true, true), None);
-            }
-            assert_eq!(retry.clock(true, true, true), Some(None), "spent");
-            assert_eq!(retry.clock(false, true, true), None, "until renewed");
-            retry.renew();
-            assert_eq!(retry.clock(false, true, true), Some(Some(RETRY_MS)));
+            assert_eq!(banks(true, &|| true, sent), [107]);
+            assert!(!DELIVERING.load(Ordering::Relaxed));
         }
 
         /// One writer at a time, and only the block's own sharers: while a
@@ -1045,36 +1414,6 @@ mod handler {
         }
 
         #[test]
-        fn a_deferred_error_read_again_is_kept_once() {
-            let journal = Journal::new();
-            let deferred = Record {
-                kind: Kind::Deferred,
-                bank: 3,
-                status: 1 << 63 | 1 << 44,
-                ..Record::EMPTY
-            };
-            journal.push(deferred);
-            journal.push(Record { cpu: 9, ..deferred });
-            journal.push(Record {
-                kind: Kind::Threshold,
-                ..deferred
-            });
-            journal.push(Record {
-                kind: Kind::Threshold,
-                ..deferred
-            });
-            assert_eq!(journal.with(|s| s.count), Some(3));
-        }
-
-        #[test]
-        fn contended_producer_drops_instead_of_waiting() {
-            let journal = Journal::new();
-            journal.with(|_| journal.push(Record::EMPTY)).unwrap();
-            assert_eq!(journal.dropped.load(Ordering::Relaxed), 1);
-            assert_eq!(journal.with(|s| s.count), Some(0));
-        }
-
-        #[test]
         fn diagnostics_only_return_registers_to_the_requesting_context() {
             use fstart_smm::save_state::Amd64Register::{Rax, Rcx, Rdx};
             use fstart_smm::{X86SaveState, X86SaveStateFormat};
@@ -1099,13 +1438,165 @@ mod handler {
             saved.write_amd64(Rax, DIAG_REQUEST).unwrap();
             saved.write_amd64(Rcx, 0).unwrap();
             saved.write_amd64(Rdx, 0xb3).unwrap();
-            diagnostics(&Cpu, 0, saved);
+            diagnostics(&Cpu, saved, TRIGGER, 0, 0);
             assert_eq!(saved.read_amd64(Rax), Ok(DIAG_REQUEST));
             saved.write_amd64(Rdx, 0xb2).unwrap();
-            diagnostics(&Cpu, 0, saved);
+            diagnostics(&Cpu, saved, TRIGGER, 0, 0);
             assert_eq!(saved.read_amd64(Rax), Ok(1));
             assert_eq!(saved.read_amd64(Rcx), Ok(0));
             assert_eq!(saved.read_amd64(Rdx), Ok(0));
+        }
+
+        /// ACPI-MMIO as bytes, for the periodic SMI's registers.
+        struct Acpi(core::cell::RefCell<[u8; 0x400]>);
+        impl Acpi {
+            fn new() -> Self {
+                Self(core::cell::RefCell::new([0; 0x400]))
+            }
+            fn get(&self, off: u32, width: usize) -> u32 {
+                let bytes = self.0.borrow();
+                (0..width).fold(0, |v, i| v | u32::from(bytes[off as usize + i]) << (8 * i))
+            }
+            fn put(&self, off: u32, width: usize, value: u32) {
+                let mut bytes = self.0.borrow_mut();
+                for i in 0..width {
+                    bytes[off as usize + i] = (value >> (8 * i)) as u8;
+                }
+            }
+        }
+        impl Window for Acpi {
+            fn read32(&self, off: u32) -> u32 {
+                self.get(off, 4)
+            }
+            fn write32(&self, off: u32, value: u32) {
+                self.put(off, 4, value)
+            }
+            fn read16(&self, off: u32) -> u16 {
+                self.get(off, 2) as u16
+            }
+            fn write16(&self, off: u32, value: u16) {
+                self.put(off, 2, value.into())
+            }
+            fn read8(&self, off: u32) -> u8 {
+                self.get(off, 1) as u8
+            }
+            fn write8(&self, off: u32, value: u8) {
+                self.put(off, 1, value.into())
+            }
+        }
+
+        /// The owner's storm clock: polling starts the periodic SMI, a
+        /// poll that counted keeps it, a quiet bucket ends the storm, and
+        /// the periodic SMI stops only once every armed CPU's counters are
+        /// back on interrupts, not when every CPU was merely held.
+        #[test]
+        fn a_storm_polls_until_a_quiet_bucket() {
+            let _statics = STATICS.lock().unwrap();
+            let policy = Policy {
+                storm: Storm {
+                    smis: 2,
+                    window_ms: 1000,
+                    poll_ms: 1000,
+                },
+                ..Policy::THRESHOLDS
+            };
+            let acpi = Acpi::new();
+            let timer = fch_smi::SMI_TIMER.offset;
+            let periodic = |policy: &Policy, acpi: &Acpi, tick, held, reports: bool| {
+                // A report waiting on the OS's channel, as `own` sees it.
+                if reports {
+                    JOURNAL.push(Record::EMPTY);
+                    RETRY.renew();
+                }
+                let policy = Policy {
+                    shared_bmc: true,
+                    ..*policy
+                };
+                if let Some(action) = clock(&policy, tick, held) {
+                    fch_smi::periodic(acpi, action);
+                }
+                if reports {
+                    JOURNAL.with(|state| state.pending = state.count);
+                }
+            };
+            periodic(&policy, &acpi, false, true, false);
+            assert_eq!(acpi.get(timer, 2), 0, "no storm, no periodic SMI");
+            STORM.store(true, Ordering::Release);
+            periodic(&policy, &acpi, false, true, false);
+            assert_eq!(acpi.get(timer, 2), 0x8000 | 1000);
+            ACTIVITY.store(true, Ordering::Release);
+            periodic(&policy, &acpi, true, true, false);
+            assert!(STORM.load(Ordering::Acquire), "a poll counted errors");
+            periodic(&policy, &acpi, true, false, false);
+            assert!(STORM.load(Ordering::Acquire), "not every CPU polled");
+            periodic(&policy, &acpi, true, true, false);
+            assert!(STORM.load(Ordering::Acquire), "one quiet poll of two");
+            // Two armed CPUs, polling.
+            let cpus = [&CPU_STATE[0], &CPU_STATE[1]];
+            cpus.iter()
+                .for_each(|cpu| cpu.store(TRIGGER | POLLING, Ordering::Relaxed));
+            periodic(&policy, &acpi, true, true, false);
+            assert!(!STORM.load(Ordering::Acquire), "a quiet bucket");
+            assert!(PERIODIC.load(Ordering::Relaxed), "the CPUs still poll");
+            // The last recovery tick: every CPU held, but CPU 1's switch
+            // skipped a block a sibling held, so it still polls: the
+            // periodic SMI goes on.
+            cpus[0].store(TRIGGER, Ordering::Relaxed);
+            periodic(&policy, &acpi, true, true, false);
+            assert!(
+                PERIODIC.load(Ordering::Relaxed),
+                "a CPU has not switched back"
+            );
+            assert_eq!(acpi.get(timer, 2) & 0x8000, 0x8000);
+            cpus[1].store(TRIGGER, Ordering::Relaxed);
+            periodic(&policy, &acpi, true, true, false);
+            assert!(!PERIODIC.load(Ordering::Relaxed));
+            assert_eq!(acpi.get(timer, 2) & 0x8000, 0);
+            // A report that waits runs it too, at the retry's period.
+            periodic(&policy, &acpi, false, true, true);
+            assert!(PERIODIC.load(Ordering::Relaxed));
+            assert_eq!(acpi.get(timer, 2), 0x8000 | u32::from(RETRY_MS));
+            // A storm meanwhile polls at its own period.
+            STORM.store(true, Ordering::Release);
+            periodic(&policy, &acpi, false, true, false);
+            assert_eq!(acpi.get(timer, 2), 0x8000 | 1000);
+            STORM.store(false, Ordering::Release);
+            periodic(&policy, &acpi, true, true, false);
+            assert!(!PERIODIC.load(Ordering::Relaxed));
+            assert_eq!(acpi.get(timer, 2) & 0x8000, 0);
+        }
+
+        /// A record journaled after its SMI's pass, by a CPU that reached
+        /// SMM late, with no SMI after it: the owner saw a CPU missing at
+        /// its decision and keeps the periodic SMI for one period, in
+        /// which the record is found and delivered, then lets it stop. A
+        /// report the channel never takes (the OS's busy channel) gets
+        /// RETRY_SMIS periods from its record.
+        #[test]
+        fn a_late_record_is_retried_without_another_smi() {
+            let retry = Retry::new();
+            // The SMI's owner: nothing waits, one CPU is not parked yet.
+            assert!(retry.wants(false, false, false, false));
+            // That CPU journals now, after the pass.
+            retry.renew();
+            // The periodic SMI: the record waits; every CPU is held.
+            assert!(retry.wants(true, true, true, true));
+            // Delivered on that SMI's pass: nothing waits, stop.
+            assert!(!retry.wants(true, true, false, true));
+            // Every CPU held and nothing waiting: no periodic SMI at all.
+            assert!(!retry.wants(false, false, false, true));
+            // A periodic SMI's own missing CPU adds no period.
+            assert!(!retry.wants(true, true, false, false));
+            // A report that never goes out: RETRY_SMIS periods, then none.
+            retry.renew();
+            assert!(retry.wants(false, false, true, true));
+            for _ in 1..RETRY_SMIS {
+                assert!(retry.wants(true, true, true, true));
+            }
+            assert!(!retry.wants(true, true, true, true), "spent");
+            assert!(!retry.wants(false, false, true, true), "until renewed");
+            retry.renew();
+            assert!(retry.wants(false, false, true, true));
         }
 
         #[test]
@@ -1152,5 +1643,56 @@ mod handler {
                 [0x12, 0xff, 0x6f, 0xa3, b'F', b'S']
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bucket_takes_the_vendors_five_smis_per_second() {
+        let storm = Storm::VENDOR;
+        let mut bucket = Bucket::default();
+        // One SMI every 200 ms leaks as fast as it fills.
+        assert!((1..=20).all(|n| !bucket.hit(&storm, n * 200_000)));
+        // Five within 200 ms do not.
+        let mut bucket = Bucket::default();
+        let hits: [bool; 5] = core::array::from_fn(|n| bucket.hit(&storm, 1 + n as u64 * 10_000));
+        assert_eq!(hits, [false, false, false, false, true]);
+        // It starts empty again.
+        assert!(!bucket.hit(&storm, 60_000));
+        // A storm limit of zero never polls.
+        let off = Storm { smis: 0, ..storm };
+        assert!((0..100).all(|n| !Bucket::default().hit(&off, n)));
+    }
+
+    /// Arrivals closer than a leak interval: five per second on average,
+    /// 150 and 250 ms apart in turn. The time below an interval carries
+    /// over, so they leak as fast as they come and never overflow; dropped
+    /// at each hit, the bucket overflowed after seven.
+    #[test]
+    fn the_bucket_carries_the_time_below_a_leak_over() {
+        let storm = Storm::VENDOR;
+        let mut bucket = Bucket::default();
+        let mut now = 1_000_000;
+        for n in 0..1000 {
+            assert!(!bucket.hit(&storm, now), "hit {n}");
+            now += if n % 2 == 0 { 150_000 } else { 250_000 };
+        }
+    }
+
+    /// After a quiet second the bucket is empty: the SMI that comes then is
+    /// in it, not leaked with the quiet time, and five in quick succession
+    /// overflow it at the fifth.
+    #[test]
+    fn the_bucket_leaks_before_it_takes_the_smi() {
+        let storm = Storm::VENDOR;
+        let mut bucket = Bucket::default();
+        assert!(!bucket.hit(&storm, 1_000));
+        assert!(!bucket.hit(&storm, 2_000));
+        let hits: [bool; 5] =
+            core::array::from_fn(|n| bucket.hit(&storm, 5_000_000 + n as u64 * 1_000));
+        assert_eq!(hits, [false, false, false, false, true]);
     }
 }

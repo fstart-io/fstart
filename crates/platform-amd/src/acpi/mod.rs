@@ -298,9 +298,21 @@ pub fn install(
 /// Returns its address and length.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 fn boot_errors(bmc: Option<crate::board::BmcEvent>) -> (u64, u32) {
+    use crate::smm::ras::{Delivery, Event};
     #[repr(align(16))]
     struct Region([u8; 16 << 10]);
     static mut REGION: Region = Region([0; 16 << 10]);
+    let report = |event: Event<'_>| {
+        if let Some(bmc) = bmc {
+            // SAFETY: the BSP; the P-state MSRs.
+            let timer = fstart_driver_amd::ccx::tsc::Tsc::native(&unsafe {
+                fstart_arch::x86::cpu::msr::NativeMsr::new()
+            });
+            if bmc(&event, timer) != Delivery::Sent {
+                fstart_log::warn!("ras: the BMC did not take it");
+            }
+        }
+    };
     let (records, dropped) = fstart_driver_amd::ccx::mca::BOOT.records();
     // Each error of a bank, as the BERT has it (`apei::errors`).
     for error in records.iter().flat_map(apei::errors) {
@@ -312,15 +324,7 @@ fn boot_errors(bmc: Option<crate::board::BmcEvent>) -> (u64, u32) {
             error.address,
             error.ipid
         );
-        if let Some(bmc) = bmc {
-            // SAFETY: the BSP; the P-state MSRs.
-            let timer = fstart_driver_amd::ccx::tsc::Tsc::native(&unsafe {
-                fstart_arch::x86::cpu::msr::NativeMsr::new()
-            });
-            if !bmc(&crate::smm::ras::Event::Mca(&apei::alone(&error)), timer) {
-                fstart_log::warn!("ras: the BMC did not take it");
-            }
-        }
+        report(Event::Mca(&apei::alone(&error)));
     }
     if dropped != 0 {
         fstart_log::warn!("ras: {} more errors dropped", dropped as u32);

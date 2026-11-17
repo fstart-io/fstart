@@ -21,8 +21,8 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 | `nbio` | `iohc`, `ioapic`, `iommu`, `nbif`, `pcie`, `fuse`, `table`, `Nbio` (a root bridge's NBIO) | `rv`, `zp`, `ssp`, `rs` (`Ios`: an IOS's NBIO) |
 | `smu` | mailbox, thread release | `v9`, `v10`, `v11`, `v13` |
 | `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp`; `rs` (MPIO: `ask`, `mailbox`, `session`, `ports`) |
-| `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`), MCA setup and the banks' errors at boot (`mca`), MCA work in SMM: thresholds, PFEH (`ras`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
-| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
+| `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`), MCA setup and the banks' errors at boot (`mca`), MCA work in SMM: thresholds, their polling in a storm, PFEH (`ras`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
+| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher and its periodic SMI (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
 | `psp`, `apob` | C2P mailbox and commands, the P2C mailbox an SMM handler answers (`p2c`), the APOB | `psp::ras` (Rome's RAS-EINJ commands), `psp::einj` (the RS PSP's own EINJ service), `apob::rs` (the RS records that differ from Milan's) |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a
@@ -71,8 +71,8 @@ builder, and the host build plan (`host`, with the image kinds
 `host::single` and `host::dual`).
 
 A board implements `board::Board`: its name, the SoCs it carries, its CPU
-ceiling, its TPM and BMC hooks, its RAS policy and the function that
-reports a RAS event to its BMC. Its stage `main` matches the SoC
+ceiling, its TPM and BMC hooks, its RAS policy (whether its BMC channel
+is the OS's too) and the function that reports a RAS event to its BMC. Its stage `main` matches the SoC
 `flow::start` returns and enters that SoC's flow with its configuration
 of it; the SoCs it does not handle halt, and only the flows it calls are
 linked. platform-amd has no SoC features either.

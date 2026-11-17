@@ -4,9 +4,12 @@ AMD's SP5 reference board, one socket, EPYC 9004 (Genoa), twelve DDR5
 channels, AST2600 BMC. The console is the SoC's UART1 (`0xfedca000`), the
 BMC's SOL. SMM counts corrected errors (ten per thresholding SMI) and sends
 each overflow to the BMC's SEL as a Platform Event Message on KCS3
-(`0xCA2`), the BMC's one KCS channel, which the OS's IPMI driver shares:
-only when it is idle; the boot does the same for the last boot's errors,
-which it also puts in the BERT.
+(`0xCA2`), the BMC's one KCS channel (its OpenBMC enables no other KCS,
+no iBT and no SSIF), which the OS's IPMI driver shares: SMM reports only
+while every CPU is in SMM and the interface is idle, and tries a report
+the OS's transaction kept out again on its periodic SMI a second later.
+The boot does the same for the last boot's errors, which it also puts in
+the BERT.
 
 ```sh
 cargo fbuild build --board amd-onyx --release

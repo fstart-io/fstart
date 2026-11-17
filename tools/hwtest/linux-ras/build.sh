@@ -43,7 +43,7 @@ cfg='$src/scripts/config --file $work/build/.config'
 for x in \$(grep -v '^#' '$here/ras.config'); do \$cfg --enable \"\$x\"; done
 for x in MODULES ATA SCSI BLK_DEV_NVME NVME_CORE USB_STORAGE USB_UAS DRM FB SOUND NET \
 	HYPERVISOR_GUEST KVM_GUEST AMD_PSTATE RANDOMIZE_BASE DEBUG_INFO DEBUG_INFO_BTF ACPI_SLEEP \
-	BLK_DEV IPMI_HANDLER STRICT_DEVMEM IO_STRICT_DEVMEM; do
+	BLK_DEV STRICT_DEVMEM IO_STRICT_DEVMEM; do
 	\$cfg --disable \"\$x\"
 done
 \$cfg --set-val NR_CPUS 512 --set-val LOG_BUF_SHIFT 21 --set-str INITRAMFS_SOURCE '$root $work/console.list' \

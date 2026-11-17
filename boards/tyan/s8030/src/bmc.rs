@@ -113,17 +113,22 @@ pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
 
 /// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
 /// BMC's SEL, on the firmware's KCS channel, from SMM and at boot for the
-/// last boot's errors.
+/// last boot's errors: a Platform Event Message. The bench's BMC (Netflix
+/// OpenBMC v59.99-0-gfe352f13a4) answers it on KCS2 in under 0.2 s and
+/// lists it in its SEL; it takes up to 1.2 s for an Add SEL Entry, whose
+/// records `ipmitool sel list` does not show.
 pub fn sel(
     event: &fstart_platform_amd::smm::ras::Event<'_>,
     timer: fstart_driver_amd::ccx::tsc::Tsc,
-) -> bool {
+) -> fstart_platform_amd::smm::ras::Delivery {
+    use fstart_platform_amd::smm::ras::{self, Delivery};
     let (port, spacing) = FIRMWARE_KCS;
     // SAFETY: KCS2 is decoded and only firmware uses it.
-    let mut kcs = unsafe { Kcs::new(port, spacing, timer) }
-        .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
-    kcs.add_sel(&fstart_platform_amd::smm::ras::sel(event))
-        .is_ok()
+    let mut kcs = unsafe { Kcs::new(port, spacing, timer) }.with_poll_budget(ras::SEL_POLL_BUDGET);
+    match kcs.platform_event(&ras::sel(event)) {
+        Ok(()) => Delivery::Sent,
+        Err(_) => Delivery::Failed,
+    }
 }
 
 /// The KCS interface as ACPI sees it (`IPI0001` and SPMI).
@@ -155,7 +160,7 @@ fn second_command(first: Result<(), IpmiError>) -> Option<u8> {
     match first {
         Ok(()) => Some(0x04),
         Err(IpmiError::Completion(_) | IpmiError::Short) => Some(0x41),
-        Err(IpmiError::Timeout | IpmiError::State(_)) => None,
+        Err(IpmiError::Timeout | IpmiError::State(_) | IpmiError::Stuck) => None,
     }
 }
 

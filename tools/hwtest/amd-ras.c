@@ -10,7 +10,8 @@
  *   amd-ras einj TYPE ADDR [N]   N memory injections of TYPE at ADDR, each consumed
  *   amd-ras einj-pcie TYPE SBDF  one PCIe injection at seg:bus:dev.fn
  *   amd-ras aer SBDF             a function's AER status registers
- *   amd-ras sp3-einj             SP3's correctable injection on its own targets
+ *   amd-ras sp3-einj [N]         N of SP3's correctable injections on each of its
+ *                                own targets
  *   amd-ras plant CPU BANK STATUS [ADDR]
  *                                write MCA_STATUS (HWCR.McStatusWrEn), which a
  *                                warm reset keeps for the next boot's BERT
@@ -36,6 +37,18 @@
  *   amd-ras misc BANK            BANK's thresholding counter on every CPU
  *   amd-ras kcs PORT SPACING     one IPMI Get Device ID on a KCS channel
  *   amd-ras sel PORT SPACING     the SMM probe's SEL record, sent from the OS
+ *   amd-ras smn ADDR             one SMN register (read only)
+ *   amd-ras storm                SMM's storm state: interrupts or polling, the
+ *                                periodic SMI, deferred reports
+ *   amd-ras ce-burst ADDR N      N correctable injections at ADDR back to back
+ *                                (a storm), then until SMM interrupts again
+ *   amd-ras ce-flood ADDR N      one correctable injection at ADDR, then N uncached
+ *                                reads of it (a storm at memory speed)
+ *   amd-ras ipmi-load SECONDS [PAUSE_MS]
+ *                                the OS's IPMI driver busy: Get Device ID through
+ *                                /dev/ipmi0 back to back (or PAUSE_MS apart);
+ *                                every one must answer
+ *   amd-ras ipmi-sel             Get SEL Info through /dev/ipmi0
  *
  * It never mounts or writes a disk. `einj` with an uncorrectable TYPE and
  * `plant` are meant to take the machine down; run them last.
@@ -45,12 +58,15 @@
 #include <fcntl.h>
 #include <glob.h>
 #include <inttypes.h>
+#include <linux/ipmi.h>
+#include <poll.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/io.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <time.h>
@@ -430,7 +446,8 @@ static int smm_check(void)
         for (unsigned bank = 0; bank < banks && bank < 64; ++bank) {
             uint64_t misc = 0;
             rdmsr(fd, 0xc0002003 + 16 * bank, &misc);
-            locked += (misc >> 61 & 1) && (misc >> 49 & 3) == 2;
+            /* IntType SMI, or none while SMM polls a storm. */
+            locked += (misc >> 61 & 1) && (misc >> 49 & 3) != 1 && (misc >> 51 & 1);
         }
         struct diag smm = diag(0);
         int pfeh = (smm.a & 1) && (redir & 0x300) == 0x200;
@@ -470,9 +487,14 @@ static int probe(void)
         return 1;
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
+    /* On a channel the OS shares, a busy interface defers the probe to
+     * SMM's periodic SMI (a second later): poll for up to 10 s. */
     struct diag result = diag(1);
-    for (unsigned i = 0; i < 8 && (result.a == 1 || result.a == 4); ++i)
+    for (unsigned i = 0; i < 100 && (result.a == 1 || result.a == 4); ++i) {
+        if (i >= 8)
+            usleep(100000);
         result = diag(2);
+    }
     clock_gettime(CLOCK_MONOTONIC, &end);
     uint64_t us = (end.tv_sec - start.tv_sec) * 1000000ULL + (end.tv_nsec - start.tv_nsec) / 1000;
     printf("RAS SEL_PROBE result=%" PRIu64 " elapsed_us=%" PRIu64 " (2=success,3=failure)\n", result.a, us);
@@ -676,7 +698,7 @@ static int einj_pcie(unsigned type, const char *where)
 /* The fixed SP3 EINJ page of fstart's Rome firmware: one firmware-owned
  * correctable target per socket (crates/platform-amd/src/sp3/einj.rs). */
 #define SP3_BASE 0x75bf0000ULL
-static int sp3_einj(void)
+static int sp3_einj(unsigned count)
 {
     unsigned char header[16];
     if (table("/sys/firmware/acpi/tables/FACP", header, sizeof(header)) < 16 || memcmp(header + 10, "FSTART", 6)) {
@@ -700,7 +722,7 @@ static int sp3_einj(void)
             FAIL("socket %u target", s);
             return 1;
         }
-        if (einj(8, targets[s], 1))
+        if (einj(8, targets[s], count))
             return 1;
     }
     if (!sockets)
@@ -1142,6 +1164,250 @@ static int selftest(void)
     return failures ? 1 : 0;
 }
 
+/* --- storms and the OS's IPMI ------------------------------------------- */
+
+struct storm { int polling, periodic, cpu_polling; uint64_t switches, ticks, deferred, hold_timeouts; };
+
+/* SMM's storm state (diagnostic selector 5) as CPU 0 sees it. */
+static struct storm storm_state(void)
+{
+    struct storm s = {0};
+    if (smi_port() || pin(0))
+        return s;
+    struct diag d = diag(5);
+    s.polling = d.a & 1;
+    s.periodic = d.a >> 1 & 1;
+    s.cpu_polling = d.a >> 2 & 1;
+    s.switches = d.c & 0xffffffff;
+    s.ticks = d.c >> 32;
+    s.deferred = d.d & 0xffffffff;
+    s.hold_timeouts = d.d >> 32;
+    return s;
+}
+
+static void print_storm(const char *when, struct storm s)
+{
+    printf("RAS STORM %s polling=%d periodic=%d cpu0_polling=%d switches=%" PRIu64 " periodic_smis=%" PRIu64
+           " deferred=%" PRIu64 " hold_timeouts=%" PRIu64 "\n", when, s.polling, s.periodic, s.cpu_polling,
+           s.switches, s.ticks, s.deferred, s.hold_timeouts);
+}
+
+static int storm(void)
+{
+    print_storm("now", storm_state());
+    struct diag hold = diag(6);
+    printf("RAS HOLD cpus=%" PRIu64 " last_timeout_counted=%" PRIu64 " longest_wait_us=%" PRIu64 "\n", hold.d,
+           hold.a, hold.c);
+    return 0;
+}
+
+static double seconds(const struct timespec *a, const struct timespec *b)
+{
+    return (b->tv_sec - a->tv_sec) + (b->tv_nsec - a->tv_nsec) / 1e9;
+}
+
+/* After a storm: SMM must have left interrupts for polling (its leaky
+ * bucket), counted on (journal records), and return to interrupts after
+ * a quiet bucket. */
+static int storm_settles(struct storm before, uint64_t journal_before, long ce_before)
+{
+    struct storm during = storm_state();
+    print_storm("after-burst", during);
+    if (during.switches <= before.switches)
+        FAIL("SMM did not leave interrupts for polling");
+    struct storm s = during;
+    unsigned waited = 0;
+    for (; waited < 60 && (s.polling || s.periodic); ++waited) {
+        sleep(1);
+        s = storm_state();
+    }
+    print_storm("settled", s);
+    printf("RAS BURST settled after %u s; journal %" PRIu64 " -> %" PRIu64 " ce_count %ld -> %ld\n", waited,
+           journal_before, journal(), ce_before, edac("ce_count"));
+    if (s.polling || s.periodic)
+        FAIL("SMM still polls after %u s", waited);
+    if (s.ticks <= during.ticks)
+        FAIL("no periodic SMI ran");
+    return failures ? 1 : 0;
+}
+
+/* N correctable injections at ADDR back to back, each consumed, without
+ * waiting for Linux: a storm if EINJ is fast enough. Linux's poll sees
+ * what is left in the bank (one error per poll, MCA_STATUS[Overflow] for
+ * the rest). */
+static int ce_burst(uint64_t address, unsigned count)
+{
+    debugfs();
+    if (!(available_types() & 0x8)) {
+        FAIL("EINJ type 0x8 not available");
+        return 1;
+    }
+    char p1[32];
+    snprintf(p1, sizeof(p1), "%#" PRIx64, address);
+    struct storm before = storm_state();
+    print_storm("before", before);
+    uint64_t journal_before = journal();
+    long ce_before = edac("ce_count");
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (unsigned i = 0; i < count; ++i) {
+        if (inject(0x8, "2", p1, "0xfffffffffffff000", NULL)) {
+            FAIL("EINJ inject %u", i);
+            return 1;
+        }
+        touch(address);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double took = seconds(&start, &end);
+    printf("RAS BURST %u corrected errors in %.2f s (%.0f/s)\n", count, took, count / took);
+    return storm_settles(before, journal_before, ce_before);
+}
+
+/* One correctable injection at ADDR, then N reads of its cache line
+ * through an uncached mapping: while the injected error stays in DRAM
+ * (a corrected read does not write back), each read is a corrected
+ * error, a storm at memory speed. */
+static int ce_flood(uint64_t address, unsigned count)
+{
+    debugfs();
+    if (!(available_types() & 0x8)) {
+        FAIL("EINJ type 0x8 not available");
+        return 1;
+    }
+    char p1[32];
+    snprintf(p1, sizeof(p1), "%#" PRIx64, address);
+    int fd = open("/dev/mem", O_RDONLY | O_SYNC);
+    if (fd < 0) {
+        perror("RAS /dev/mem");
+        return 1;
+    }
+    volatile uint64_t *line = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, address & ~4095ULL);
+    close(fd);
+    if (line == MAP_FAILED) {
+        perror("RAS mmap");
+        return 1;
+    }
+    line += (address & 4095) / 8;
+    struct storm before = storm_state();
+    print_storm("before", before);
+    uint64_t journal_before = journal();
+    long ce_before = edac("ce_count");
+    if (inject(0x8, "2", p1, "0xfffffffffffff000", NULL)) {
+        FAIL("EINJ inject");
+        return 1;
+    }
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    /* Each read from DRAM: the line flushed first (/dev/mem maps RAM
+     * write-back whatever O_SYNC asks). */
+    uint64_t sum = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        __builtin_ia32_clflush((const void *)line);
+        __builtin_ia32_mfence();
+        sum += *line;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double took = seconds(&start, &end);
+    printf("RAS FLOOD %u uncached reads in %.3f s (%.0f/s) sum=%" PRIx64 "\n", count, took, count / took, sum);
+    return storm_settles(before, journal_before, ce_before);
+}
+
+static int ipmi_open(void)
+{
+    int fd = open("/dev/ipmi0", O_RDWR);
+    if (fd < 0)
+        perror("RAS /dev/ipmi0");
+    return fd;
+}
+
+/* One request to the BMC through the OS's driver; returns the completion
+ * code, -1 on a driver error, -2 on a timeout. */
+static int ipmi_request(int fd, unsigned char netfn, unsigned char cmd, unsigned char *data,
+                        unsigned short length, unsigned char *response, unsigned short *size, long id)
+{
+    struct ipmi_system_interface_addr bmc = {
+        .addr_type = IPMI_SYSTEM_INTERFACE_ADDR_TYPE, .channel = IPMI_BMC_CHANNEL, .lun = 0};
+    struct ipmi_req req = {
+        .addr = (unsigned char *)&bmc, .addr_len = sizeof(bmc), .msgid = id,
+        .msg = {.netfn = netfn, .cmd = cmd, .data_len = length, .data = data}};
+    if (ioctl(fd, IPMICTL_SEND_COMMAND, &req) < 0)
+        return -1;
+    struct pollfd p = {.fd = fd, .events = POLLIN};
+    if (poll(&p, 1, 10000) != 1)
+        return -2;
+    struct ipmi_addr from;
+    struct ipmi_recv recv = {
+        .addr = (unsigned char *)&from, .addr_len = sizeof(from),
+        .msg = {.data = response, .data_len = *size}};
+    if (ioctl(fd, IPMICTL_RECEIVE_MSG_TRUNC, &recv) < 0)
+        return -1;
+    *size = recv.msg.data_len;
+    return *size ? response[0] : -1;
+}
+
+/* Get Device ID through the OS's driver, back to back for SECONDS: its
+ * KCS state machine is in a transaction nearly all the time. Every
+ * request must complete (an SMM report in the middle of one would fail
+ * it). */
+static int ipmi_load(unsigned duration, unsigned pause_ms)
+{
+    int fd = ipmi_open();
+    if (fd < 0)
+        return 1;
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    unsigned long ok = 0, errors = 0, timeouts = 0, codes = 0;
+    double slowest = 0;
+    long id = 0;
+    do {
+        unsigned char response[64];
+        unsigned short size = sizeof(response);
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int code = ipmi_request(fd, 0x06, 0x01, NULL, 0, response, &size, ++id);
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double took = seconds(&t0, &now);
+        if (took > slowest)
+            slowest = took;
+        if (code == 0)
+            ++ok;
+        else if (code == -2)
+            ++timeouts;
+        else if (code < 0)
+            ++errors;
+        else {
+            ++codes;
+            printf("RAS IPMI request %ld completion %#x\n", id, code);
+        }
+        if (pause_ms)
+            usleep(pause_ms * 1000);
+    } while (seconds(&start, &now) < duration);
+    close(fd);
+    printf("RAS IPMI_LOAD pause %u ms, %.1f s: %lu ok, %lu completion errors, %lu driver errors, %lu timeouts,"
+           " slowest %.1f ms\n", pause_ms, seconds(&start, &now), ok, codes, errors, timeouts, slowest * 1e3);
+    if (!ok || codes || errors || timeouts)
+        FAIL("the OS's IPMI requests did not all complete");
+    return failures ? 1 : 0;
+}
+
+/* Get SEL Info through the OS's driver: the entries and the last add. */
+static int ipmi_sel(void)
+{
+    int fd = ipmi_open();
+    if (fd < 0)
+        return 1;
+    unsigned char r[64];
+    unsigned short size = sizeof(r);
+    int code = ipmi_request(fd, 0x0a, 0x40, NULL, 0, r, &size, 1);
+    close(fd);
+    if (code || size < 10) {
+        FAIL("Get SEL Info: %d", code);
+        return 1;
+    }
+    printf("RAS IPMI_SEL entries=%u last_add=%08x\n", r[2] | r[3] << 8, le32(r + 6));
+    return 0;
+}
+
 /* MCA_MISC0 of BANK on every CPU that sees a counter there: SMM's
  * thresholding counter (Locked, IntType SMI) and its count. */
 static int misc(unsigned bank)
@@ -1160,6 +1426,23 @@ static int misc(unsigned bank)
                    (unsigned)(value >> 32 & 0xfff), (unsigned)(value >> 48 & 1), status);
     }
     return 0;
+}
+
+/* One SMN register through the root complex's index/data pair (00:00.0
+ * 60h/64h), read only. Races the kernel's own SMN users: a test bench
+ * only. */
+static int smn(uint32_t address)
+{
+    int fd = open("/sys/bus/pci/devices/0000:00:00.0/config", O_RDWR);
+    if (fd < 0) {
+        perror("RAS 00:00.0 config");
+        return 1;
+    }
+    uint32_t value = 0;
+    int ok = pwrite(fd, &address, 4, 0x60) == 4 && pread(fd, &value, 4, 0x64) == 4;
+    close(fd);
+    printf("RAS SMN %08" PRIx32 " = %08" PRIx32 "%s\n", address, value, ok ? "" : " (failed)");
+    return ok ? 0 : 1;
 }
 
 static uint64_t number(const char *s)
@@ -1190,7 +1473,7 @@ int main(int argc, char **argv)
         if (!result)
             aer_status(seg, bus, dev, fn, "now");
     } else if (!strcmp(command, "sp3-einj"))
-        result = sp3_einj();
+        result = sp3_einj(argc > 2 ? number(argv[2]) : 1);
     else if (!strcmp(command, "plant") && argc >= 5)
         result = plant(number(argv[2]), number(argv[3]), number(argv[4]), argc > 5 ? number(argv[5]) : 0, 0);
     else if (!strcmp(command, "plant-reset") && argc >= 5)
@@ -1213,6 +1496,18 @@ int main(int argc, char **argv)
         result = sel_info(number(argv[2]), number(argv[3]));
     else if (!strcmp(command, "misc") && argc == 3)
         result = misc(number(argv[2]));
+    else if (!strcmp(command, "smn") && argc == 3)
+        result = smn(number(argv[2]));
+    else if (!strcmp(command, "storm"))
+        result = storm();
+    else if (!strcmp(command, "ce-burst") && argc == 4)
+        result = ce_burst(number(argv[2]), number(argv[3]));
+    else if (!strcmp(command, "ce-flood") && argc == 4)
+        result = ce_flood(number(argv[2]), number(argv[3]));
+    else if (!strcmp(command, "ipmi-load") && argc >= 3)
+        result = ipmi_load(number(argv[2]), argc > 3 ? number(argv[3]) : 0);
+    else if (!strcmp(command, "ipmi-sel"))
+        result = ipmi_sel();
     else
         fprintf(stderr, "usage: see the head of tools/hwtest/amd-ras.c\n");
     printf("RAS %s %s\n", command, result ? "FAILED" : "PASSED");

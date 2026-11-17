@@ -37,12 +37,19 @@ pub const DEFAULT_ACPI: fstart_acpi::devices::IpmiKcsAcpi = fstart_acpi::devices
     spec_revision: crate::SPEC_REVISION_2_0,
 };
 
+const GET_STATUS_ABORT: u8 = 0x60;
 const START_WRITE: u8 = 0x61;
 const END_WRITE: u8 = 0x62;
 const READ_BYTE: u8 = 0x68;
 
 /// Transaction-wide budget, polled every 10 us (at most 5 s of delays).
 const TIMEOUT_POLLS: u32 = 500_000;
+/// Error exits [`Kcs::abort`] tries before the interface counts as stuck.
+const ABORT_ATTEMPTS: u32 = 2;
+/// The share of a request's poll budget kept for its abort: one in four
+/// polls. A failed request's error exits have at least that, whatever the
+/// request used, and never more than the budget leaves.
+const ABORT_SHARE: u32 = 4;
 
 /// A KCS interface: its data register and its status/command register.
 pub struct Kcs<D, P = PioRegister<u8>, S = PioRegister<u8, Status::Register>> {
@@ -51,6 +58,9 @@ pub struct Kcs<D, P = PioRegister<u8>, S = PioRegister<u8, Status::Register>> {
     delay: D,
     poll_budget: u32,
     remaining: u32,
+    /// The request took WRITE_START: the interface is this caller's to
+    /// abort.
+    started: bool,
 }
 
 impl<D: DelayNs> Kcs<D> {
@@ -82,13 +92,16 @@ where
             delay,
             poll_budget: TIMEOUT_POLLS,
             remaining: 0,
+            started: false,
         }
     }
 
-    /// Bound the *whole* request, including an endlessly streaming response.
-    /// Every readiness check consumes a poll, even if immediately ready; a
-    /// failed check additionally delays 10 us. Intended for latency-sensitive
-    /// callers such as SMM, not a fresh timeout for every byte.
+    /// Bound the *whole* request, including an endlessly streaming response
+    /// and the abort of a failed one: one deadline for both, of which the
+    /// abort keeps a share ([`ABORT_SHARE`]). Every readiness check
+    /// consumes a poll, even if immediately ready; a failed check
+    /// additionally delays 10 us. Intended for latency-sensitive callers
+    /// such as SMM, not a fresh timeout for every byte.
     pub fn with_poll_budget(mut self, polls: u32) -> Self {
         self.poll_budget = polls;
         self
@@ -133,6 +146,7 @@ where
         self.wait_input_empty()?;
         self.clear_output();
         self.status.set(command);
+        self.started |= command == START_WRITE;
         self.wait_input_empty()?;
         self.clear_output();
         Ok(())
@@ -207,8 +221,66 @@ where
         }
     }
 
+    /// The KCS error exit (IPMI 2.0 §9.15, figure 9-10): GET_STATUS/ABORT,
+    /// a zero byte, the BMC's status code read in the read state, READ,
+    /// the closing dummy byte in the idle state. Returns the status code.
+    fn error_exit(&mut self) -> Result<u8, Error> {
+        self.wait_input_empty()?;
+        self.status.set(GET_STATUS_ABORT);
+        self.wait_input_empty()?;
+        self.clear_output();
+        self.data.set(0);
+        self.wait_input_empty()?;
+        let status = self.status.extract();
+        if !status.matches_all(Status::STATE::Read) {
+            return Err(Error::State(status.get()));
+        }
+        self.wait(|status| status.is_set(Status::OBF))?;
+        let code = self.data.get();
+        self.data.set(READ_BYTE);
+        self.wait_input_empty()?;
+        let status = self.status.extract();
+        if !status.matches_all(Status::STATE::Idle) {
+            return Err(Error::State(status.get()));
+        }
+        self.wait(|status| status.is_set(Status::OBF))?;
+        self.data.get();
+        Ok(code)
+    }
+
+    /// Bring the interface back to idle after a failed transaction of this
+    /// caller's: the KCS error exit, at most [`ABORT_ATTEMPTS`] of them
+    /// within the poll budget together, then the idle state verified
+    /// ([`Self::idle`]). Returns the BMC's status code; [`Error::Stuck`]
+    /// if the interface is not idle after them, and a caller that shares it
+    /// with the OS must stop using it.
+    pub fn abort(&mut self) -> Result<u8, Error> {
+        self.remaining = self.poll_budget;
+        self.error_exits()
+    }
+
+    /// [`Self::abort`] within the polls left.
+    fn error_exits(&mut self) -> Result<u8, Error> {
+        for _ in 0..ABORT_ATTEMPTS {
+            if let Ok(code) = self.error_exit()
+                && self.idle()
+            {
+                return Ok(code);
+            }
+        }
+        Err(Error::Stuck)
+    }
+
     /// One request; returns the response data after the NetFn, command and
     /// completion code bytes. `buffer` holds the whole response.
+    ///
+    /// A transaction that fails once it started (a timeout or a state
+    /// error while writing the request, reading the response or taking its
+    /// closing byte) is aborted ([`Self::abort`]): the interface is idle
+    /// again, or the error is [`Error::Stuck`]. One that could not start
+    /// (the interface busy before WRITE_START was written) is not touched.
+    /// Request and abort share one poll budget ([`Self::with_poll_budget`]):
+    /// the request has all but the abort's share, the abort what is left.
     pub fn request<'a>(
         &mut self,
         netfn: u8,
@@ -216,9 +288,22 @@ where
         request: &[u8],
         buffer: &'a mut [u8],
     ) -> Result<&'a [u8], Error> {
-        self.remaining = self.poll_budget;
-        self.send(netfn, command, request)?;
-        let length = self.receive(buffer)?;
+        let reserve = self.poll_budget.div_ceil(ABORT_SHARE);
+        self.remaining = self.poll_budget - reserve;
+        self.started = false;
+        let length = match self
+            .send(netfn, command, request)
+            .and_then(|()| self.receive(buffer))
+        {
+            Ok(length) => length,
+            // The interface is this caller's once it took WRITE_START.
+            Err(error) if !self.started => return Err(error),
+            Err(error) => {
+                self.remaining += reserve;
+                self.error_exits()?;
+                return Err(error);
+            }
+        };
         // No indexing: this also runs in SMM images, which take no panic
         // formatting code.
         let buffer: &'a [u8] = buffer;
@@ -253,6 +338,16 @@ mod tests {
         pending_read: bool,
         /// (command port, value) of every write, in order.
         writes: Vec<(bool, u8)>,
+        /// Failures: the error state after this many request bytes (the
+        /// write phase), no byte after the first READ (the read phase),
+        /// the error state instead of idle at the end (the closing byte).
+        fail_after: Option<usize>,
+        stall_read: bool,
+        end_in_error: bool,
+        /// GET_STATUS/ABORT is ignored: the interface stays where it is.
+        deaf: bool,
+        /// The error exit's phase: 1 after GET_STATUS/ABORT.
+        aborting: u8,
     }
     const IDLE: u8 = 0;
     const READ: u8 = 1;
@@ -274,7 +369,21 @@ mod tests {
         fn set(&self, value: u8) {
             let mut bmc = self.0.borrow_mut();
             bmc.writes.push((false, value));
+            if bmc.aborting == 1 && bmc.state == WRITE {
+                // The error exit's zero byte: the status code to read.
+                assert_eq!(value, 0);
+                bmc.aborting = 0;
+                bmc.state = READ;
+                bmc.response.clear();
+                bmc.output = Some(0x83);
+                return;
+            }
             if bmc.state == WRITE {
+                if bmc.fail_after == Some(bmc.request.len()) {
+                    bmc.state = ERROR;
+                    bmc.output = Some(0xff);
+                    return;
+                }
                 bmc.request.push(value);
                 if bmc.last {
                     bmc.last = false;
@@ -299,7 +408,12 @@ mod tests {
             if bmc.pending_read {
                 bmc.pending_read = false;
                 match bmc.response.pop_front() {
+                    _ if bmc.stall_read => bmc.stall_read = false,
                     Some(byte) => bmc.output = Some(byte),
+                    None if bmc.end_in_error => {
+                        bmc.end_in_error = false;
+                        bmc.state = ERROR;
+                    }
                     None => {
                         bmc.state = IDLE;
                         bmc.output = Some(0);
@@ -324,6 +438,14 @@ mod tests {
                     bmc.output = Some(0);
                 }
                 END_WRITE => bmc.last = true,
+                GET_STATUS_ABORT if bmc.deaf => {}
+                GET_STATUS_ABORT => {
+                    bmc.aborting = 1;
+                    bmc.state = WRITE;
+                    bmc.last = false;
+                    bmc.pending_read = false;
+                    bmc.output = Some(0);
+                }
                 _ => panic!("unexpected command {value:#x}"),
             }
         }
@@ -410,7 +532,138 @@ mod tests {
                 .request(0, 1, &[], &mut buffer),
             Err(Error::Timeout)
         );
-        assert!(streaming.borrow().writes.len() <= 32);
+        // The transaction's writes within its budget, then the error exit
+        // (GET_STATUS/ABORT, the zero byte, READ), which leaves it idle.
+        let streaming = streaming.into_inner();
+        let abort = streaming
+            .writes
+            .iter()
+            .position(|&w| w == (true, GET_STATUS_ABORT))
+            .unwrap();
+        assert!(abort <= 32);
+        assert_eq!(
+            streaming.writes[abort..],
+            [(true, GET_STATUS_ABORT), (false, 0), (false, READ_BYTE)]
+        );
+        assert_eq!((streaming.state, streaming.output), (IDLE, None));
+    }
+
+    /// A transaction that fails in any phase is aborted, and the interface
+    /// is idle for the OS again; one whose BMC ignores the abort is stuck.
+    #[test]
+    fn a_failed_transaction_leaves_the_interface_idle_or_says_it_is_stuck() {
+        let answer = vec![0x05 << 2, 0x02, 0, 1, 2, 3];
+        let cases = [
+            (
+                "write",
+                Bmc {
+                    fail_after: Some(2),
+                    ..Bmc::default()
+                },
+            ),
+            (
+                "read",
+                Bmc {
+                    stall_read: true,
+                    ..Bmc::default()
+                },
+            ),
+            (
+                "closing byte",
+                Bmc {
+                    end_in_error: true,
+                    ..Bmc::default()
+                },
+            ),
+        ];
+        for (phase, bmc) in cases {
+            let bmc = RefCell::new(Bmc {
+                answer: answer.clone(),
+                ..bmc
+            });
+            let mut buffer = [0; 8];
+            let mut kcs = kcs(&bmc).with_poll_budget(64);
+            let result = kcs.request(0x04, 0x02, &[1, 2, 3], &mut buffer);
+            assert!(
+                matches!(result, Err(Error::Timeout | Error::State(_))),
+                "{phase}: {result:?}"
+            );
+            assert!(kcs.idle(), "{phase}: idle again");
+            let bmc = bmc.into_inner();
+            assert_eq!((bmc.state, bmc.output), (IDLE, None), "{phase}");
+            assert!(bmc.writes.contains(&(true, GET_STATUS_ABORT)), "{phase}");
+        }
+        let deaf = RefCell::new(Bmc {
+            answer,
+            fail_after: Some(1),
+            deaf: true,
+            ..Bmc::default()
+        });
+        let mut buffer = [0; 8];
+        assert_eq!(
+            kcs(&deaf)
+                .with_poll_budget(64)
+                .request(0x04, 0x02, &[1], &mut buffer),
+            Err(Error::Stuck)
+        );
+        // Two error exits tried, no more.
+        let aborts = deaf
+            .into_inner()
+            .writes
+            .iter()
+            .filter(|&&w| w == (true, GET_STATUS_ABORT))
+            .count();
+        assert_eq!(aborts, 2);
+    }
+
+    /// The delays of a request, counted.
+    struct Counted<'a>(&'a core::cell::Cell<u32>);
+    impl DelayNs for Counted<'_> {
+        fn delay_ns(&mut self, _: u32) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// One deadline for a request and its cleanup: a BMC that stalls the
+    /// request and ignores its aborts costs the poll budget once, not a
+    /// budget for the request and another for each abort; the aborts keep
+    /// their share of it. A request whose WRITE_START never went out (the
+    /// interface busy) is not aborted: the interface is not this caller's.
+    #[test]
+    fn a_request_and_its_abort_share_one_deadline() {
+        let delays = core::cell::Cell::new(0);
+        let deaf = RefCell::new(Bmc {
+            answer: vec![0x05 << 2, 0x02, 0],
+            stall_read: true,
+            deaf: true,
+            ..Bmc::default()
+        });
+        let mut buffer = [0; 8];
+        let mut counted =
+            Kcs::with_registers(Data(&deaf), Command(&deaf), Counted(&delays)).with_poll_budget(40);
+        assert_eq!(
+            counted.request(0x04, 0x02, &[1], &mut buffer),
+            Err(Error::Stuck)
+        );
+        assert!(delays.get() <= 40, "{} delays", delays.get());
+        let deaf = deaf.into_inner();
+        let aborts = deaf
+            .writes
+            .iter()
+            .filter(|&&w| w == (true, GET_STATUS_ABORT))
+            .count();
+        assert!(aborts >= 1, "the abort's share was left for it");
+
+        let busy = RefCell::new(Bmc {
+            busy: true,
+            ..Bmc::default()
+        });
+        let mut kcs = kcs(&busy).with_poll_budget(40);
+        assert_eq!(kcs.request(0, 1, &[], &mut buffer), Err(Error::Timeout));
+        assert!(
+            busy.into_inner().writes.is_empty(),
+            "no WRITE_START, no abort"
+        );
     }
 
     #[test]

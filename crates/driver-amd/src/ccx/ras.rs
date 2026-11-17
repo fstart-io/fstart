@@ -314,15 +314,26 @@ fn status_writable<M: MsrAccess, T>(cpu: &M, f: impl FnOnce() -> T) -> T {
 }
 
 /// MCA_MISC0 counting `count` errors from now on, with an SMI at the
-/// overflow, locked for the OS; the other fields as they are.
-fn counting(misc: u64, count: u16) -> u64 {
+/// overflow (`smi`) or no interrupt, locked for the OS; the other fields
+/// as they are.
+fn counting(misc: u64, count: u16, smi: bool) -> u64 {
     let count = u64::from(count.clamp(1, MAX_THRESHOLD));
+    let interrupt = if smi {
+        McaMisc::THRESHOLD_INT_TYPE::Smi
+    } else {
+        McaMisc::THRESHOLD_INT_TYPE::None
+    };
     (McaMisc::ERR_CNT.val(0xfff - count)
         + McaMisc::OVRFLW::CLEAR
-        + McaMisc::THRESHOLD_INT_TYPE::Smi
+        + interrupt
         + McaMisc::CNT_EN::SET
         + McaMisc::LOCKED::SET)
         .modify(misc)
+}
+
+/// The banks of `mask` this thread has.
+fn banks_of<M: MsrAccess>(cpu: &M, mask: u64) -> impl Iterator<Item = u32> {
+    (0..banks(cpu)).filter(move |bank| mask & 1 << bank != 0)
 }
 
 /// A thresholding block SMM may count with: valid, with a counter that
@@ -368,13 +379,140 @@ pub fn arm_thresholds<M: MsrAccess, T>(
             let value = misc.extract();
             let countable = countable(value);
             if countable {
-                misc.set(counting(value.get(), count));
+                misc.set(counting(value.get(), count, true));
                 armed |= 1 << bank;
             }
             publish(reservation, countable);
         }
         armed
     })
+}
+
+/// MCA_MISC0 interrupting with an SMI at the overflow (`smi`) or not at
+/// all; what it counted, its overflow and the other fields as they are.
+fn interrupting(misc: u64, smi: bool) -> u64 {
+    let interrupt = if smi {
+        McaMisc::THRESHOLD_INT_TYPE::Smi
+    } else {
+        McaMisc::THRESHOLD_INT_TYPE::None
+    };
+    interrupt.modify(misc)
+}
+
+/// Switch the thresholding blocks of `banks` (the ones [`arm_thresholds`]
+/// armed) to interrupting with an SMI at the overflow (`smi`) or to
+/// counting without an interrupt, for [`poll_thresholds`], keeping what
+/// they counted and what they latched: an overflow is recorded through
+/// `sink` and its counter re-armed for `count` errors in the new mode,
+/// never reset unseen. Into polling the interrupt goes first, then the
+/// counters are sampled (an overflow latched before, whose SMI may still
+/// come, is in the sample); back to interrupts they are sampled, switched,
+/// and sampled again (an overflow between the two had no interrupt). The
+/// blocks stay locked.
+///
+/// `owns` (the bank and its MCA_IPID) takes each block for this thread's
+/// writes, as [`observe_mca`]'s does: a block another thread of its share
+/// writes now (its overflow's re-arm) is left as it is, in
+/// [`Poll::skipped`], to be switched later.
+pub fn switch_counting<M: MsrAccess>(
+    cpu: &M,
+    logical_cpu: u32,
+    banks: u64,
+    count: u16,
+    smi: bool,
+    mut owns: impl FnMut(u32, u64) -> bool,
+    mut sink: impl FnMut(Record),
+) -> Poll {
+    let mut skipped = 0;
+    for bank in banks_of(cpu, banks) {
+        if !owns(bank, cpu.reg(mca_ipid(bank)).get()) {
+            skipped |= 1 << bank;
+        }
+    }
+    let banks = banks & !skipped;
+    let owned = || |_, _| true;
+    let switch = || {
+        status_writable(cpu, || {
+            for bank in banks_of(cpu, banks) {
+                let misc = cpu.reg(mca_misc0(bank));
+                misc.set(interrupting(misc.get(), smi));
+            }
+        })
+    };
+    let mut poll = if !smi {
+        switch();
+        poll_thresholds(cpu, logical_cpu, banks, count, false, owned(), sink)
+    } else {
+        let first = poll_thresholds(cpu, logical_cpu, banks, count, true, owned(), &mut sink);
+        switch();
+        let second = poll_thresholds(cpu, logical_cpu, banks, count, true, owned(), &mut sink);
+        Poll {
+            overflowed: first.overflowed | second.overflowed,
+            counted: second.counted,
+            skipped: 0,
+        }
+    };
+    poll.skipped = skipped;
+    poll
+}
+
+/// What [`poll_thresholds`] found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Poll {
+    /// Counters that overflowed since the last poll, now counting anew.
+    pub overflowed: u64,
+    /// The sum of the counters after the poll: it moves when errors are
+    /// counted.
+    pub counted: u32,
+    /// Blocks another thread was writing: not polled or switched.
+    pub skipped: u64,
+}
+
+/// Poll the thresholding blocks of `banks`, which count without an
+/// interrupt ([`switch_counting`]): record each that overflowed (its
+/// MCA_STATUS holds the last error it counted, if the OS has not cleared
+/// it yet) and count `count` errors anew in it, with an SMI at the
+/// overflow (`smi`) or without an interrupt. MCA_STATUS is not written.
+/// Each block is taken through `owns` first, as [`switch_counting`]'s.
+pub fn poll_thresholds<M: MsrAccess>(
+    cpu: &M,
+    logical_cpu: u32,
+    banks: u64,
+    count: u16,
+    smi: bool,
+    mut owns: impl FnMut(u32, u64) -> bool,
+    mut sink: impl FnMut(Record),
+) -> Poll {
+    let mut poll = Poll::default();
+    for bank in banks_of(cpu, banks) {
+        if !owns(bank, cpu.reg(mca_ipid(bank)).get()) {
+            poll.skipped |= 1 << bank;
+            continue;
+        }
+        let misc = cpu.reg(mca_misc0(bank));
+        let mut value = misc.extract();
+        if value.is_set(McaMisc::OVRFLW) {
+            poll.overflowed |= 1 << bank;
+            // The OS may have logged and cleared the status already: the
+            // bank's identity still names the overflow.
+            sink(
+                read(cpu, logical_cpu, bank, Kind::Threshold).unwrap_or(Record {
+                    kind: Kind::Threshold,
+                    cpu: logical_cpu,
+                    bank,
+                    misc0: value.get(),
+                    ipid: cpu.read(mcax(bank, 5)),
+                    ..Record::EMPTY
+                }),
+            );
+            value.set(counting(value.get(), count, smi));
+            status_writable(cpu, || misc.set(value.get()));
+        }
+        poll.counted = poll
+            .counted
+            .wrapping_add(value.read(McaMisc::ERR_CNT) as u32);
+    }
+    poll
 }
 
 /// Execute only an OS-requested zero status clear. PFEH may intercept these
@@ -640,7 +778,7 @@ pub fn observe_mca<M: MsrAccess>(
                     sink(record);
                 }
                 if let Some(count) = rearm {
-                    status_writable(cpu, || misc.set(counting(value.get(), count)));
+                    status_writable(cpu, || misc.set(counting(value.get(), count, true)));
                 }
             }
         }
@@ -1139,6 +1277,108 @@ mod tests {
         assert_eq!(t0.key(umc), other_ccx.key(umc), "one node");
         assert_ne!(t0.key(umc), other_node.key(umc));
         assert_eq!(t0.key(0x02 << 48 | 0x01 << 32), None, "MP5");
+    }
+
+    #[test]
+    fn polling_counts_without_an_interrupt_and_records_each_overflow() {
+        // Bank 0 armed and overflowed (IntType SMI, Locked), bank 1 armed
+        // and counting, bank 2 not SMM's.
+        let armed = (1 << 63) | (1 << 62) | (1 << 61) | (1 << 60) | (2 << 49) | (1 << 51);
+        let cpu = MsrSpace::new([
+            (0x179, 3),
+            (0xc0002001, (1 << 63) | (1 << 58)),
+            (0xc0002003, armed | (0xfff << 32) | (1 << 48)),
+            (0xc0002013, armed | (0xff7 << 32)),
+            (
+                0xc0002023,
+                (1 << 63) | (1 << 62) | (0xffa << 32) | (1 << 48),
+            ),
+        ]);
+        // Into polling: bank 0's latched overflow is sampled, not reset
+        // unseen; bank 1 keeps its count.
+        let mut switched = Vec::new();
+        let poll = switch_counting(&cpu, 4, 0b11, 10, false, |_, _| true, |r| switched.push(r));
+        assert_eq!(poll.overflowed, 0b1);
+        assert_eq!((switched.len(), switched[0].bank), (1, 0));
+        for bank in 0..2 {
+            let misc = cpu.read(0xc0002003 + 16 * bank);
+            assert_eq!(misc >> 49 & 3, 0, "no interrupt while polling");
+            assert_eq!(misc >> 48 & 1, 0);
+            assert_eq!(misc >> 61 & 1, 1, "still locked for the OS");
+        }
+        assert_eq!(cpu.read(0xc0002003) >> 32 & 0xfff, 0xff5, "re-armed");
+        assert_eq!(cpu.read(0xc0002013) >> 32 & 0xfff, 0xff7, "kept counting");
+        cpu.write(
+            0xc0002013,
+            cpu.read(0xc0002013) & !(0xfff << 32) | (0xff5 << 32),
+        );
+        // Three errors in bank 1, an overflow in bank 0.
+        cpu.write(0xc0002013, cpu.read(0xc0002013) + (3 << 32));
+        cpu.write(0xc0002003, cpu.read(0xc0002003) | (0xfff << 32) | (1 << 48));
+        let mut records = Vec::new();
+        let poll = poll_thresholds(&cpu, 4, 0b11, 10, false, |_, _| true, |r| records.push(r));
+        assert_eq!(poll.overflowed, 0b1);
+        assert_eq!(poll.counted, 0xff5 + 0xff8);
+        assert_eq!(
+            (
+                records.len(),
+                records[0].kind,
+                records[0].cpu,
+                records[0].bank
+            ),
+            (1, Kind::Threshold, 4, 0)
+        );
+        assert_eq!(cpu.read(0xc0002003) >> 32 & 0x1fff, 0xff5);
+        // An overflow whose error the OS cleared: still a UMC's record.
+        cpu.write(0xc0002015, 0x96 << 32);
+        let before = cpu.read(0xc0002013);
+        cpu.write(0xc0002013, before | (0xfff << 32) | (1 << 48));
+        let mut cleared = Vec::new();
+        poll_thresholds(&cpu, 4, 0b10, 10, false, |_, _| true, |r| cleared.push(r));
+        assert!(cleared[0].memory() && !cleared[0].uncorrected());
+        assert_eq!((cleared[0].kind, cleared[0].bank), (Kind::Threshold, 1));
+        cpu.write(0xc0002013, before);
+        assert_eq!(cpu.read(0xc0002003) >> 49 & 3, 0);
+        // Back to interrupts with an overflow latched while polling: it is
+        // sampled and re-armed with its SMI, the other keeps its count.
+        cpu.write(0xc0002003, cpu.read(0xc0002003) | (0xfff << 32) | (1 << 48));
+        cpu.write(
+            0xc0002013,
+            cpu.read(0xc0002013) & !(0xfff << 32) | (0xff9 << 32),
+        );
+        let mut back = Vec::new();
+        let poll = switch_counting(&cpu, 4, 0b11, 10, true, |_, _| true, |r| back.push(r));
+        assert_eq!((poll.overflowed, back.len(), back[0].bank), (0b1, 1, 0));
+        assert_eq!(cpu.read(0xc0002003) >> 49 & 3, 2);
+        assert_eq!(cpu.read(0xc0002003) >> 32 & 0x1fff, 0xff5);
+        assert_eq!(cpu.read(0xc0002013) >> 49 & 3, 2);
+        assert_eq!(cpu.read(0xc0002013) >> 32 & 0xfff, 0xff9);
+        assert!(!cpu.into_inner().written(0xc0002023));
+    }
+
+    /// A mode switch while a sibling of the share re-arms one block's
+    /// overflow (it holds the block's claim): that block is not written,
+    /// and reported skipped, to be switched later; the other is switched.
+    /// So is a poll.
+    #[test]
+    fn a_mode_switch_leaves_a_block_a_sibling_writes() {
+        let armed = (1 << 63) | (1 << 62) | (1 << 61) | (1 << 60) | (2 << 49) | (1 << 51);
+        let cpu = MsrSpace::new([
+            (0x179, 2),
+            (0xc0002003, armed | (0xff7 << 32)),
+            (0xc0002005, 0x96 << 32),
+            (0xc0002013, armed | (0xff7 << 32)),
+            (0xc0002015, 0x96 << 32 | 1),
+        ]);
+        // The sibling holds bank 0's block (IPID instance 0).
+        let mut free = |_, ipid: u64| ipid & 1 == 1;
+        let poll = switch_counting(&cpu, 4, 0b11, 10, false, &mut free, |_| {});
+        assert_eq!(poll.skipped, 0b1);
+        assert_eq!(cpu.read(0xc0002013) >> 49 & 3, 0, "switched");
+        let poll = poll_thresholds(&cpu, 4, 0b11, 10, false, &mut free, |_| {});
+        assert_eq!(poll.skipped, 0b1);
+        let space = cpu.into_inner();
+        assert!(!space.written(0xc0002003), "the sibling's to write");
     }
 
     #[test]

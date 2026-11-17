@@ -14,7 +14,10 @@ use tock_registers::interfaces::ReadWriteable;
 
 /// The firmware's own KCS channel, KCS2 (`0xCA8`, status/command at
 /// `0xCAC`): the BMC's device tree enables it with its kcsbridged, as on
-/// the S8030; the OS has KCS3 at `0xCA2` (the vendor SPMI).
+/// the S8030; the OS has KCS3 at `0xCA2` (the vendor SPMI). The vendor's
+/// firmware does the same: its IPMI transport hook moves PEI, DXE and SMM
+/// to KCS2 (V2.00 PeiIpmiInitialize `0xffd95ece`, DxeIpmiInitialize
+/// `0x4308`, SmmIpmiInitialize `0x1c94`), its SPMI gives the OS KCS3.
 pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
 
 /// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
@@ -24,13 +27,16 @@ pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
 pub fn sel(
     event: &fstart_platform_amd::smm::ras::Event<'_>,
     timer: fstart_driver_amd::ccx::tsc::Tsc,
-) -> bool {
+) -> fstart_platform_amd::smm::ras::Delivery {
+    use fstart_platform_amd::smm::ras::{self, Delivery};
     let (port, spacing) = FIRMWARE_KCS;
     // SAFETY: KCS2 is decoded and only firmware uses it.
     let mut kcs = unsafe { fstart_driver_ipmi::kcs::Kcs::new(port, spacing, timer) }
-        .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
-    kcs.platform_event(&fstart_platform_amd::smm::ras::sel(event))
-        .is_ok()
+        .with_poll_budget(ras::SEL_POLL_BUDGET);
+    match kcs.platform_event(&ras::sel(event)) {
+        Ok(()) => Delivery::Sent,
+        Err(_) => Delivery::Failed,
+    }
 }
 
 /// COM1, the BMC's SOL, and its interrupt over SERIRQ.

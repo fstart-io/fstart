@@ -87,7 +87,7 @@ pub use handler::{enter_cpu, handle, handle_with};
 #[cfg(feature = "smm")]
 mod handler {
     use super::{Config, Report};
-    use crate::smm::ras::{self, Event, Policy};
+    use crate::smm::ras::{self, Delivery, Event, Policy};
     use crate::smm::{SmmFch, psp as smm_psp, sw};
     use fstart_driver_amd::ccx::tsc::Tsc;
     use fstart_driver_amd::fch::FchHw;
@@ -112,19 +112,20 @@ mod handler {
         handle_with(ctx, config, &Policy::OS_FIRST, ras::no_bmc);
     }
 
-    /// The RS SMI handler on the rendezvous owner: the RAS journal sent
-    /// to the board's BMC through `bmc`, then SW SMI D0 and the PSP's
-    /// SMI, on the FCH's dispatcher.
+    /// The RS SMI handler on the rendezvous owner: the owner's RAS work
+    /// (`ras::own`: the storm's periodic SMI, the journal sent to the
+    /// board's BMC through `bmc`), then SW SMI D0 and the PSP's SMI, on
+    /// the FCH's dispatcher.
     #[inline(always)]
     pub fn handle_with(
         ctx: &mut SmmContext<'_>,
         config: &Config,
         policy: &Policy,
-        bmc: impl FnMut(&Event<'_>, Tsc) -> bool,
+        bmc: impl FnMut(&Event<'_>, Tsc) -> Delivery,
     ) {
         crate::smm::with_fch(crate::rs::ECAM_BASE, |fch| {
             let first = ctx.first_owner();
-            ras::deliver(policy, fch.acpi(), first, || ctx.cpus_held(), bmc);
+            ras::own(policy, fch.acpi(), first, || ctx.cpus_held(), bmc);
             smi::dispatch(
                 fch.acpi(),
                 fch.io(),

@@ -110,7 +110,7 @@ mod einj;
 
 #[cfg(feature = "smm")]
 mod handler {
-    use crate::smm::ras::{self, Event};
+    use crate::smm::ras::{self, Delivery, Event};
     use crate::smm::{Ecam, SmmConfig, SmmFch, psp as smm_psp, sw};
     use crate::sp3::silicon::Generation;
     use fstart_driver_amd::fch::smi::{self, Pending, source};
@@ -133,20 +133,21 @@ mod handler {
         ras::enter(&policy.ras, ctx.cpu(), config.soc.generation.silicon());
     }
 
-    /// The SP3 SMI handler on the rendezvous owner: the FCH's sources
-    /// ([`crate::smm`]), the SMI commands of the PSP's SMM info and EINJ,
-    /// the USB and PSP SMIs, and the RAS journal sent to the board's BMC
-    /// through `bmc`.
+    /// The SP3 SMI handler on the rendezvous owner: the owner's RAS work
+    /// (`ras::own`: the storm's periodic SMI, the journal sent to the
+    /// board's BMC through `bmc`), the FCH's sources ([`crate::smm`]), the
+    /// SMI commands of the PSP's SMM info and EINJ, and the USB and PSP
+    /// SMIs.
     #[inline(always)]
     pub fn handle(
         ctx: &mut SmmContext<'_>,
         config: &SmmConfig<Sp3>,
         policy: &Policy,
-        bmc: impl FnMut(&Event<'_>, Tsc) -> bool,
+        bmc: impl FnMut(&Event<'_>, Tsc) -> Delivery,
     ) {
         crate::smm::with(config, |fch, smu| {
             let first = ctx.first_owner();
-            ras::deliver(&policy.ras, fch.acpi(), first, || ctx.cpus_held(), bmc);
+            ras::own(&policy.ras, fch.acpi(), first, || ctx.cpus_held(), bmc);
             let handler = Handler {
                 fch,
                 smu,

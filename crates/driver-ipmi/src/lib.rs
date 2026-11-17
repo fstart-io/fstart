@@ -31,6 +31,9 @@ pub enum Error {
     Short,
     /// A nonzero completion code.
     Completion(u8),
+    /// A transaction failed and the interface could not be brought back
+    /// to idle ([`kcs::Kcs::abort`]): it is not the OS's to use as it was.
+    Stuck,
 }
 
 /// A standard SEL record (IPMI 2.0 table 32-1); the BMC assigns the ID and

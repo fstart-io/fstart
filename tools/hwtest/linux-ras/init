@@ -13,6 +13,8 @@
 #                 Event Message; sel-info:PORT:SPACING Get SEL Info
 #   ce:ADDR:N[:BANK] N correctable memory injections at ADDR (EDAC must count
 #                 each), then BANK's thresholding counters
+#   sp3-einj:N[:BANK] N of SP3's correctable injections (Rome's EINJ, on the
+#                 firmware's own targets), then BANK's thresholding counters
 #   pcie:TYPE:SEG:BUS:DEV.FN one PCIe injection (0x40 correctable) at a
 #                 function: the injection must succeed and AER report it
 #                 from that function afterwards
@@ -24,6 +26,17 @@
 #                 RTC's CMOS, then at once a warm reset (CF9h). The boot after
 #                 it checks the BERT for that bank and status instead of
 #                 planting again; one plant per mark.
+#   smn:ADDR      one SMN register (read only)
+#   storm         SMM's storm state (interrupts or polling, the periodic SMI)
+#   burst:ADDR:N  N correctable injections at ADDR back to back: SMM must poll
+#                 through the storm and interrupt again after it
+#   flood:ADDR:N  one correctable injection at ADDR, then N uncached reads of
+#                 it (each a corrected error while the error stays in DRAM)
+#   ipmi-load:S[:MS] the OS's IPMI driver busy for S seconds in the background
+#                 (Get Device ID through /dev/ipmi0 back to back, or MS apart); ipmi-wait
+#                 waits for it: every request must have completed
+#   ipmi-sel      Get SEL Info through the OS's driver
+#   sleep:S       wait S seconds
 #   off           power off (the default end); `hold` sleeps instead
 #
 # Every line it prints starts with FSTART-RAS, results with FSTART_RAS_.
@@ -56,6 +69,9 @@ for step in $(echo "$steps" | tr ',' ' '); do
   ce) run amd-ras einj 0x8 "$2" "${3:-1}" && say FSTART_RAS_CE_OK
       [ -n "$4" ] && run amd-ras misc "$4"
       dmesg | grep -E '\[Hardware Error\]|EDAC' | tail -6 | while read -r l; do say "dmesg: $l"; done ;;
+  sp3-einj) run amd-ras sp3-einj "${2:-1}" && say FSTART_RAS_CE_OK
+      [ -n "$3" ] && run amd-ras misc "$3"
+      dmesg | grep -E '\[Hardware Error\]|EDAC' | tail -6 | while read -r l; do say "dmesg: $l"; done ;;
   pcie) run amd-ras einj-pcie "$2" "$3:$4:$5" && say FSTART_RAS_PCIE_OK ;;
   ue) run amd-ras ue-check; case $? in
       0) say "FSTART_RAS_BERT_OK: BERT holds the previous boot's errors; no new injection" ;;
@@ -73,6 +89,19 @@ for step in $(echo "$steps" | tr ',' ' '); do
          *) say 'FSTART_RAS_BERT_MISSING: the planted error is not in the BERT; not planting again' ;;
          esac ;;
   aer) run amd-ras aer "$2:$3:$4" ;;
+  storm) run amd-ras storm ;;
+  smn) run amd-ras smn "$2" ;;
+  burst) run amd-ras ce-burst "$2" "$3" && say FSTART_RAS_STORM_OK
+         dmesg | grep -E '\[Hardware Error\]|EDAC|mce:' | tail -6 | while read -r l; do say "dmesg: $l"; done ;;
+  flood) run amd-ras ce-flood "$2" "$3" && say FSTART_RAS_STORM_OK
+         dmesg | grep -E '\[Hardware Error\]|EDAC|mce:' | tail -6 | while read -r l; do say "dmesg: $l"; done ;;
+  ipmi-load) amd-ras ipmi-load "$2" ${3:+"$3"} > /tmp/ipmi-load 2>&1 &
+             load=$! ;;
+  ipmi-wait) wait "$load"; s=$?
+             while read -r l; do say "$l"; done < /tmp/ipmi-load
+             [ "$s" = 0 ] && say FSTART_RAS_IPMI_OK ;;
+  ipmi-sel) run amd-ras ipmi-sel ;;
+  sleep) sleep "$2" ;;
   hold) end=hold ;;
   off) end=off ;;
   *) say "unknown step $step" ;;
