@@ -503,19 +503,20 @@ impl<V: Variant> Init for Rs<V> {
     }
 
     /// Direct ACPI mode: the OS gets SCI_EN set and no SMI command port.
-    /// Then the PSP locks the DF ([`psp::boot::lock_df`]), which the
-    /// vendors send once PCI is enumerated (`AmdPspDxeV2Rs` `2588`/`2754`):
-    /// no DF write follows. It needs the SMM info, which `install_smm`
-    /// made sure of; a refusal halts.
+    /// Then the PSP's locks: no DF write follows and SMM was locked when
+    /// it was installed ([`psp::boot::lock`]: LockDFReg, then SmmLock, as
+    /// the vendors send them once PCI is enumerated and at SMM's
+    /// ready-to-lock). They need the SMM info, which `install_smm` made
+    /// sure of; a refusal halts.
     fn finalize(ctx: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {
         songshan::acpi_mode(&ctx.hw.fch, &super::acpi::soc(V::PMBASE, false).ports);
         let psp = state.psp.as_mut().ok_or("PSP")?;
-        psp::boot::lock_df(psp, &ctx.clock).map_err(|(what, error)| {
+        psp::boot::lock(psp, &ctx.clock).map_err(|(what, error)| {
             let (why, value) = error.parts();
             fstart_log::error!("rs: PSP {}: {} {:#x}", what, why, value);
-            "PSP LockDFReg"
+            "PSP locks"
         })?;
-        fstart_log::info!("rs: PSP locked the DF");
+        fstart_log::info!("rs: PSP locked the DF and SMM");
         Ok(())
     }
 
@@ -724,23 +725,27 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         };
         crate::tseg::install(V::NAME, mp, &smi, ctx.memory.tseg, TSEG_SIZE)?;
         smi::software_smi(fch.io(), crate::smm::sw::PSP_SMM_INFO);
+        // SAFETY: firmware data only the handler writes. It reports
+        // SmmInfo, then, if the board publishes EINJ and the PSP took
+        // SmmInfo, RasEinj ENABLE.
+        let read = || unsafe { report.read_volatile() };
+        let (smm_info, einj_status) = crate::smm::status::answers(
+            &ctx.clock,
+            ctx.config.einj,
+            || read().smm_info,
+            || read().einj,
+        );
+        // Its answers are in, or late: the SMI command port raises no SMI
+        // any more. What came after a deadline is not read.
         smi::disable_command(fch.acpi());
-        // SAFETY: firmware data the handler wrote during the SMI just taken.
-        let report = unsafe { report.read_volatile() };
         // The PSP's locks and BootDone need the SMM info: without it the
         // DF lock breaks DMA, and the payload must not get an unlocked DF.
-        match report.smm_info {
-            0 => fstart_log::info!("rs: PSP SmmInfo status 0"),
-            status => {
-                fstart_log::error!("rs: PSP SmmInfo status {:#x}", status);
-                return Err("PSP SmmInfo");
-            }
-        }
+        crate::smm::status::smm_info("rs", smm_info)?;
         // EINJ is optional: without it the boot goes on, without the table.
-        if !ctx.config.einj {
+        let Some(einj_status) = einj_status else {
             return Ok(());
-        }
-        match report.einj {
+        };
+        match einj_status {
             0 => {
                 fstart_log::info!("rs: PSP RasEinj ENABLE status 0");
                 state.einj = einj(ctx, psp_bar.into())

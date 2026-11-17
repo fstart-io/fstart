@@ -4,7 +4,9 @@
 //! BootDone right before the payload.
 use super::{
     C2pBuffer, C2pTransport, Command, Mailbox, MmioTransport, PspError, Session, Storage, Variant,
-    command::{BootDone, Default32, DisableDrtm, LockDfReg, ResetTpmEstablishment, SmmInfo},
+    command::{
+        BootDone, Default32, DisableDrtm, LockDfReg, ResetTpmEstablishment, SmmInfo, SmmLock,
+    },
 };
 use fstart_arch::x86::cpu::amd::smm::InstalledTseg;
 use fstart_core::services::Timer;
@@ -117,6 +119,21 @@ pub fn lock_df<T: C2pTransport>(
     sent(psp.send(timer, LockDfReg))
 }
 
+/// The PSP's locks through `psp` once PCI is enumerated and SMM is
+/// locked, as the RS SoCs' PSP DXE driver sends them (`AmdPspDxeV2Rs`,
+/// sp5 `closure-runtime/lifecycle/REPORT.md`): LockDFReg from its
+/// PciEnumerationComplete notification (`2588`/`2754`, [`lock_df`]), then
+/// SmmLock from its DxeSmmReadyToLock notification (`26C8`/`2894`). The
+/// vendor ignores a refusal; the first one ends this, with the command's
+/// name, and the caller halts on it.
+pub fn lock<T: C2pTransport>(
+    psp: &mut Session<T>,
+    timer: &impl Timer,
+) -> Result<(), (&'static str, PspError)> {
+    lock_df(psp, timer)?;
+    sent(psp.send(timer, SmmLock))
+}
+
 /// The PSP's ReadyToBoot through `psp`, as the PSP DXE driver sends
 /// it from Milan on (Milan's, and on the RS SoCs `AmdPspDxeV2Rs`
 /// ReadyToBoot `22BC`/`22E0`, sp5 `closure-runtime/lifecycle/REPORT.md`):
@@ -182,10 +199,17 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_df_lock_ends_the_session() {
+    fn locks_the_df_then_smm() {
+        let model = Model::new(READY, |_, _| 0);
+        assert_eq!(lock(&mut session(&model), &ManualTimer::new()), Ok(()));
+        assert_eq!(commands(&model), [0x1b, 0x6c]);
+    }
+
+    #[test]
+    fn a_refused_df_lock_ends_the_locks() {
         let model = Model::new(READY, |id, _| if id == 0x1b { 5 } else { 0 });
         let mut psp = session(&model);
-        let (what, _) = lock_df(&mut psp, &ManualTimer::new()).unwrap_err();
+        let (what, _) = lock(&mut psp, &ManualTimer::new()).unwrap_err();
         assert_eq!(what, "LockDFReg");
         assert_eq!(commands(&model), [0x1b]);
         // No BootDone after it either.
@@ -205,7 +229,7 @@ mod tests {
         model.0.borrow_mut().hang = true;
         let mut psp = session(&model);
         assert_eq!(
-            lock_df(&mut psp, &ManualTimer::new()),
+            lock(&mut psp, &ManualTimer::new()),
             Err(("LockDFReg", PspError::Timeout(Wait::Done)))
         );
         let (_, buffer) = model.0.borrow().log[0];
@@ -223,7 +247,7 @@ mod tests {
             Err(("DisableDrtmCapability", PspError::Poisoned))
         );
         assert_eq!(
-            lock_df(&mut psp, &ManualTimer::new()).unwrap_err().1,
+            lock(&mut psp, &ManualTimer::new()).unwrap_err().1,
             PspError::Poisoned
         );
         assert_eq!(commands(&model), [0x1b]);

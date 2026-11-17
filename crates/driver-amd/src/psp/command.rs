@@ -118,6 +118,16 @@ header_only!(
     |_g| true
 );
 header_only!(
+    /// SMM is locked: the RS SoCs' PSP DXE driver (AmdPspDxeV2Rs, sp5
+    /// `closure-runtime/lifecycle`, `PspOnSmmReadyToLock` `26C8`/`2894`)
+    /// sends it from its DxeSmmReadyToLock notification, after LockDFReg
+    /// and before ReadyToBoot, header only. Milan's AmdPspDxeV2Ssp does not
+    /// have it.
+    SmmLock = 0x6c,
+    "SmmLock",
+    |g| g == Variant::Gn
+);
+header_only!(
     /// Naples only, from the SMM capsule hook (PSP_APOB §3.3).
     ClearSmmLock = 0x1c,
     "ClearSmmLock",
@@ -379,6 +389,7 @@ mod tests {
     #[test]
     fn header_sizes_match_agesa() {
         assert_eq!(C2pBuffer::new(BootDone).header.size, 8);
+        assert_eq!(C2pBuffer::new(SmmLock).header.size, 8);
         // The native RV/ZP flows' default buffer.
         assert_eq!(C2pBuffer::new(Default32::<BootDone>::new()).header.size, 32);
         assert_eq!(C2pBuffer::new(SxInfo { sleep_type: 3 }).header.size, 9);

@@ -34,9 +34,7 @@ pub struct Config {
 }
 
 /// What the handler leaves for normal mode (and a debugger reading
-/// `/dev/mem`). A status is 0 when the PSP took the command, its C2P
-/// status if it refused it, [`Report::TIMEOUT`] or [`Report::FAILED`]
-/// otherwise, [`Report::NOT_SENT`] before the handler sent it.
+/// `/dev/mem`), each status as [`crate::smm::status`] says.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Report {
@@ -48,26 +46,12 @@ pub struct Report {
 }
 
 impl Report {
-    pub const NOT_SENT: u32 = u32::MAX;
-    pub const TIMEOUT: u32 = 0x1_0000;
-    pub const FAILED: u32 = 0x2_0000;
     pub const NONE: Self = Self {
-        smm_info: Self::NOT_SENT,
-        einj: Self::NOT_SENT,
+        smm_info: crate::smm::status::NOT_SENT,
+        einj: crate::smm::status::NOT_SENT,
         p2c_requests: 0,
         p2c_command: 0,
     };
-
-    /// The report status of `result`.
-    pub const fn status(result: Result<(), fstart_driver_amd::psp::PspError>) -> u32 {
-        use fstart_driver_amd::psp::PspError;
-        match result {
-            Ok(()) => 0,
-            Err(PspError::Status { status, .. }) => status,
-            Err(PspError::Timeout(_)) => Self::TIMEOUT,
-            Err(_) => Self::FAILED,
-        }
-    }
 }
 
 /// The FCH side of the installation: SMIs off while TSEG moves, then only
@@ -121,6 +105,8 @@ mod handler {
                 &config.ports,
                 &Handler { fch, config },
             );
+            // After the SMI's end: the PSP may send its next request.
+            smm_psp::release();
         });
     }
 
@@ -180,13 +166,13 @@ mod handler {
             return;
         };
         // SAFETY: as in `sources`.
-        unsafe { (&raw mut (*report).smm_info).write_volatile(Report::status(registered)) };
+        unsafe { (&raw mut (*report).smm_info).write_volatile(crate::smm::status::of(registered)) };
         if registered.is_err() || !config.einj {
             return;
         }
         // SAFETY: SmmInfo registered the C2P page; the rendezvous owner.
         let enabled = unsafe { smm_psp::send(&mailbox, timer, RasEinj::ENABLE) };
         // SAFETY: as in `sources`.
-        unsafe { (&raw mut (*report).einj).write_volatile(Report::status(enabled)) };
+        unsafe { (&raw mut (*report).einj).write_volatile(crate::smm::status::of(enabled)) };
     }
 }

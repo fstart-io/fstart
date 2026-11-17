@@ -148,24 +148,44 @@ pub(crate) unsafe fn send<C: Command, T: C2pTransport>(
     result
 }
 
-/// The PSP's SMI: answer its P2C request (AmdPspP2CmboxV2Ssp `0x720`),
-/// acknowledging the SMI before the answer tells the PSP it may send the
-/// next one: SmiTrig0\[25\] dropped (its `0x944`) and the source cleared,
-/// then the command register cleared and READY set ([`p2c::answer`]). The
-/// acknowledgement is this function's alone: the dispatcher leaves the
-/// source to it ([`smi::Pending::acknowledged`]), so the status of a
-/// request the PSP sends once READY is set stays for the next SMI.
-/// Returns the PSP's command.
+/// The PSP's SMI: answer its P2C request (AmdPspP2CmboxV2Ssp `0x720`) and
+/// acknowledge the SMI, SmiTrig0\[25\] dropped (its `0x944`) and the
+/// source cleared ([`p2c::answer`]). The acknowledgement is this
+/// function's alone: the dispatcher leaves the source to it
+/// ([`smi::Pending::acknowledged`]), so the status of a request the PSP
+/// sends later stays for the next SMI. The buffer says READY only when
+/// the SMI has ended ([`release`]). Returns the PSP's command.
 #[inline(always)]
 pub(crate) fn answer<W: Window>(acpi: &W, pending: &smi::Pending) -> u32 {
     pending.acknowledged(source::PSP);
     // SAFETY: the P2C static is SMRAM owned by the rendezvous owner; ring 0.
-    unsafe {
+    let command = unsafe {
         p2c::answer(
             P2C.0.get().cast(),
             fstart_arch::x86::writeback_invalidate_caches,
             || smi::acknowledge_psp(acpi),
         )
+    };
+    ANSWERED.store(true, Ordering::Release);
+    command
+}
+
+/// An [`answer`] waits for [`release`].
+static ANSWERED: AtomicBool = AtomicBool::new(false);
+
+/// After the SMI that [`answer`]ed ended (the dispatcher's EOS): command 0
+/// and READY, and the PSP may send its next request. Nothing may write
+/// SmiTrig0 after this before RSM ([`p2c::answer`] says why).
+#[inline(always)]
+pub(crate) fn release() {
+    if ANSWERED.swap(false, Ordering::AcqRel) {
+        // SAFETY: as in `answer`.
+        unsafe {
+            p2c::release(
+                P2C.0.get().cast(),
+                fstart_arch::x86::writeback_invalidate_caches,
+            )
+        };
     }
 }
 

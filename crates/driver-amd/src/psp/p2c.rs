@@ -50,16 +50,21 @@ pub unsafe fn ready(buffer: *mut u32) {
 }
 
 /// Answer the PSP's request: busy, status, checksum when asked, write
-/// back, then `acknowledge` the PSP's SMI, and only then command 0 and
-/// ready. 0x81/0x82 need nothing from x86; SPI NV (0x83–0x86), RPMC
-/// (0x88/0x89) and ARS (0x8a) get "unsupported", anything else "invalid".
-/// Returns the command.
+/// back, then `acknowledge` the PSP's SMI. 0x81/0x82 need nothing from
+/// x86; SPI NV (0x83–0x86), RPMC (0x88/0x89) and ARS (0x8a) get
+/// "unsupported", anything else "invalid". Returns the command. The
+/// buffer stays busy: the caller ends the SMI, then [`release`]s it.
 ///
 /// The order is the protocol's: the PSP sends its next request, and sets
-/// its trigger again, once it sees READY with command 0. An
-/// acknowledgement after that (AGESA's mailbox drops the trigger after
-/// setting READY, AmdPspP2CmboxV2Ssp `0x944`) could clear the next
-/// request's trigger or status, and its SMI would never come.
+/// its trigger (SmiTrig0\[25\]) again, once it sees READY with command 0.
+/// Every host write to SmiTrig0 must come before that: the acknowledgement
+/// that drops the trigger, and the end of the SMI, a read-modify-write of
+/// the same register (`fch::smi::eos`), which would write back a trigger
+/// the PSP set between its read and its write as 0, and the next
+/// request's SMI would never come. AGESA's mailbox sets READY first and
+/// drops the trigger after it (AmdPspP2CmboxV2Ssp `0x944`), then ends the
+/// SMI: it has both races. The PSP reads only the buffer, so when the
+/// trigger dropped, before or after READY, is not its to see.
 ///
 /// `writeback` makes the answer visible to the PSP, which reads DRAM
 /// (`fstart_arch::x86::writeback_invalidate_caches` in SMM).
@@ -93,11 +98,23 @@ pub unsafe fn answer(buffer: *mut u32, writeback: unsafe fn(), acknowledge: impl
         }
         writeback();
         acknowledge();
+        command
+    }
+}
+
+/// Command 0 and READY: the PSP may send its next request. After the SMI
+/// that [`answer`]ed ended; no host write to SmiTrig0 may follow.
+///
+/// # Safety
+/// As [`answer`].
+#[inline(always)]
+pub unsafe fn release(buffer: *mut u32, writeback: unsafe fn()) {
+    // SAFETY: the caller's contract.
+    unsafe {
         buffer.add(COMMAND).write_volatile(0);
         let flags = buffer.add(FLAGS).read_volatile();
         buffer.add(FLAGS).write_volatile(flags | READY);
         writeback();
-        command
     }
 }
 
@@ -106,15 +123,19 @@ mod tests {
     use super::*;
     use crate::fch::model::Mem;
     use crate::fch::smi::{self, Pending, source};
+    use crate::window::Window;
+    use std::cell::Cell;
 
     unsafe fn cached() {}
 
     /// The PSP: it raises its SMI by setting SmiTrig0\[25\], which latches
-    /// the SMI status, and sends its next request as soon as it sees READY
-    /// with command 0.
+    /// the SMI status, and sends its next request (0x82, once) as soon as
+    /// it sees READY with command 0: at the worst moment, right after the
+    /// host read SmiTrig0 and before it writes it back.
     struct Psp {
         acpi: Mem,
         buffer: *mut u32,
+        next: Cell<bool>,
     }
     impl Psp {
         fn request(&self, command: u32) {
@@ -134,7 +155,6 @@ mod tests {
             self.acpi
                 .put(smi::POINTER.offset, 2, (1 << source::PSP.reg) << 1);
         }
-        /// After every write back: the PSP's view of DRAM.
         fn poll(&self) {
             let (command, flags) = unsafe {
                 (
@@ -142,63 +162,100 @@ mod tests {
                     self.buffer.add(FLAGS).read_volatile(),
                 )
             };
-            if command == 0 && flags & READY != 0 && SECOND.with(|s| s.replace(false)) {
+            if command == 0 && flags & READY != 0 && self.next.replace(false) {
                 self.request(0x82);
             }
         }
     }
-    std::thread_local! {
-        static PSP: std::cell::RefCell<Option<Psp>> = const { std::cell::RefCell::new(None) };
-        static SECOND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-    unsafe fn psp_sees_dram() {
-        PSP.with(|psp| psp.borrow().as_ref().unwrap().poll());
+
+    /// The FCH's ACPI registers as the host sees them, the PSP acting
+    /// after each read of SmiTrig0.
+    struct Acpi<'a>(&'a Psp);
+    impl Window for Acpi<'_> {
+        fn read32(&self, off: u32) -> u32 {
+            let value = self.0.acpi.read32(off);
+            if off == smi::TRIGGER0.offset {
+                self.0.poll();
+            }
+            value
+        }
+        fn write32(&self, off: u32, value: u32) {
+            self.0.acpi.write32(off, value)
+        }
     }
 
-    /// Two requests back to back: the second comes the moment the first's
-    /// answer says READY. Its trigger and its SMI status survive the first
-    /// SMI's end, so its own SMI comes and is answered.
+    /// Two requests, the second sent as soon as READY says so, with the
+    /// SMI ended (EOS) before or after READY. Whether the second
+    /// request's trigger and SMI status are left.
+    fn second_request_kept(ready_before_eos: bool) -> bool {
+        let mut buffer = [0u32; 16];
+        let psp = Psp {
+            acpi: Mem::default(),
+            buffer: buffer.as_mut_ptr(),
+            next: Cell::new(true),
+        };
+        let acpi = Acpi(&psp);
+        unsafe { ready(buffer.as_mut_ptr()) };
+        psp.request(0x81);
+        let pending = Pending::take(&acpi);
+        assert!(pending.has(source::PSP));
+        pending.acknowledged(source::PSP);
+        let command =
+            unsafe { answer(buffer.as_mut_ptr(), cached, || smi::acknowledge_psp(&acpi)) };
+        assert_eq!((command, buffer[STATUS]), (0x81, OK));
+        if ready_before_eos {
+            unsafe { release(buffer.as_mut_ptr(), cached) };
+            pending.finish(&acpi);
+        } else {
+            pending.finish(&acpi);
+            unsafe { release(buffer.as_mut_ptr(), cached) };
+            // Not before READY: the PSP sends it now.
+            assert!(psp.next.get());
+            psp.poll();
+        }
+        assert_eq!(buffer[COMMAND], 0x82);
+        let trigger = smi::Trigger0::PSP::SET.value;
+        let status = source::PSP.status().offset;
+        psp.acpi.get(smi::TRIGGER0.offset, 4) & trigger == trigger
+            && psp.acpi.get(status, 4) & source::PSP.mask() != 0
+    }
+
+    /// READY after the SMI ended: no host write to SmiTrig0 follows it, and
+    /// the next request keeps its trigger. READY before, as AGESA sets it,
+    /// and a request that comes while EOS reads and writes SmiTrig0 back
+    /// loses its trigger: its SMI never comes.
     #[test]
     fn a_request_sent_right_after_ready_keeps_its_smi() {
+        assert!(second_request_kept(false));
+        assert!(!second_request_kept(true));
+    }
+
+    /// The second request, kept, is answered by the next SMI; then nothing
+    /// is left pending.
+    #[test]
+    fn back_to_back_requests_are_both_answered() {
         let mut buffer = [0u32; 16];
-        let acpi = Mem::default();
+        let psp = Psp {
+            acpi: Mem::default(),
+            buffer: buffer.as_mut_ptr(),
+            next: Cell::new(true),
+        };
+        let acpi = Acpi(&psp);
         unsafe { ready(buffer.as_mut_ptr()) };
-        PSP.with(|psp| {
-            *psp.borrow_mut() = Some(Psp {
-                acpi: acpi.clone(),
-                buffer: buffer.as_mut_ptr(),
-            })
-        });
-        SECOND.with(|s| s.set(true));
-        let psp = |f: &dyn Fn(&Psp)| PSP.with(|psp| f(psp.borrow().as_ref().unwrap()));
-        psp(&|psp| psp.request(0x81));
-        let trigger = smi::Trigger0::PSP::SET.value;
+        psp.request(0x81);
         for expected in [0x81, 0x82] {
-            // The SMI: the dispatcher reads its sources, the handler answers
-            // and acknowledges, the dispatcher finishes.
             let pending = Pending::take(&acpi);
             assert!(pending.has(source::PSP));
             pending.acknowledged(source::PSP);
-            let command = unsafe {
-                answer(buffer.as_mut_ptr(), psp_sees_dram, || {
-                    smi::acknowledge_psp(&acpi)
-                })
-            };
+            let command =
+                unsafe { answer(buffer.as_mut_ptr(), cached, || smi::acknowledge_psp(&acpi)) };
             pending.finish(&acpi);
+            unsafe { release(buffer.as_mut_ptr(), cached) };
+            psp.poll();
             assert_eq!(command, expected);
-            assert_eq!(buffer[STATUS], OK);
-            if expected == 0x81 {
-                // The second request's notification is still there.
-                assert_eq!(acpi.get(smi::TRIGGER0.offset, 4) & trigger, trigger);
-                assert_ne!(
-                    acpi.get(source::PSP.status().offset, 4) & source::PSP.mask(),
-                    0
-                );
-                assert_eq!(buffer[COMMAND], 0x82);
-            }
         }
-        // Both answered: nothing left pending.
-        assert_eq!(acpi.get(smi::TRIGGER0.offset, 4) & trigger, 0);
+        let trigger = smi::Trigger0::PSP::SET.value;
+        assert_eq!(psp.acpi.get(smi::TRIGGER0.offset, 4) & trigger, 0);
         assert_eq!(buffer[COMMAND], 0);
         assert_eq!(buffer[FLAGS] & READY, READY);
     }
@@ -212,6 +269,9 @@ mod tests {
         buffer[SIZE] = 8;
         assert_eq!(unsafe { answer(buffer.as_mut_ptr(), cached, || {}) }, 0x88);
         assert_eq!(buffer[STATUS], UNSUPPORTED);
+        // Busy until released.
+        assert_eq!((buffer[COMMAND], buffer[FLAGS] & READY), (0x88, 0));
+        unsafe { release(buffer.as_mut_ptr(), cached) };
         assert_eq!((buffer[COMMAND], buffer[FLAGS] & READY), (0, READY));
         buffer[COMMAND] = 0x99;
         unsafe { answer(buffer.as_mut_ptr(), cached, || {}) };
@@ -227,7 +287,7 @@ mod tests {
         buffer[4] = 0x0102_0304;
         unsafe { answer(buffer.as_mut_ptr(), cached, || {}) };
         // 12 + status 0 + 1 + 2 + 3 + 4.
-        assert_eq!(buffer[FLAGS], READY | CHECKSUM | 22);
+        assert_eq!(buffer[FLAGS], CHECKSUM | 22);
         buffer[COMMAND] = 0x81;
         buffer[SIZE] = MAX_SIZE + 1;
         unsafe { answer(buffer.as_mut_ptr(), cached, || {}) };

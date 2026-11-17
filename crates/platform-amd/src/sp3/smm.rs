@@ -35,6 +35,10 @@ pub struct Sp3 {
     pub usb_buses: [u8; 8],
     pub usb_bus_count: u8,
     pub generation: Generation,
+    /// Where the handler reports SmmInfo ([`crate::smm::status`]): a word
+    /// of the firmware's reserved DRAM below 4 GiB, which normal mode reads
+    /// before the PSP's DF lock.
+    pub smm_info: u64,
 }
 
 /// Endpoints and owned cache-line targets, frozen by the normal installer.
@@ -128,6 +132,8 @@ mod handler {
                 policy,
             };
             smi::dispatch(fch.acpi(), fch.io(), &config.fch.ports, &handler);
+            // After the SMI's end: the PSP may send its next request.
+            smm_psp::release();
         });
     }
 
@@ -235,6 +241,11 @@ mod handler {
         let Some(registration) = smm_psp::register(&psp(config), timer, |info| info) else {
             return;
         };
+        // SAFETY: the word the installer reserved for it; only this
+        // handler writes it.
+        unsafe {
+            (config.soc.smm_info as *mut u32).write_volatile(crate::smm::status::of(registration));
+        }
         // Bounded read-only backend diagnostics in the fixed comm page.
         unsafe {
             ((crate::sp3::einj::BASE + 224) as *mut u64)

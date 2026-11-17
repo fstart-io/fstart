@@ -233,13 +233,16 @@ pub fn route_psp<W: Window>(acpi: &W) {
 }
 
 /// Acknowledge the PSP's SMI: SmiTrig0\[25\], which the PSP set to raise
-/// it (SmmInfo's `trigger`), dropped, then its source cleared. Before the
-/// P2C answer sets READY ([`crate::psp::p2c::answer`]): once READY is set
-/// the PSP may set the trigger for its next request, which a later drop
-/// would lose.
+/// it (SmmInfo's `trigger`), dropped, then its source cleared, both read
+/// back so the posted writes are done. Before the SMI ends and the P2C
+/// buffer says READY ([`crate::psp::p2c::release`]): once it does, the PSP
+/// may set the trigger for its next request, which a later drop, or any
+/// read-modify-write of SmiTrig0 such as [`eos`], would lose.
 pub fn acknowledge_psp<W: Window>(acpi: &W) {
     update::<u32, _>(acpi, TRIGGER0.offset, Trigger0::PSP::SET.value, 0);
     clear(acpi, source::PSP);
+    let _ = acpi.read32(TRIGGER0.offset);
+    let _ = acpi.read32(source::PSP.status().offset);
 }
 
 /// Raise a software SMI by writing `value` to the SMI command port.
