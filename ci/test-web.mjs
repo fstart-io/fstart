@@ -29,16 +29,15 @@ try {
       assert.equal(manifest.payload, build.payload);
       for (const stage of manifest.stages) assert(assembler.binary(stage.run_path).length > 0);
       if (build.donor_required) assert.throws(() => assembler.assemble(key), /requires a local vendor BIOS/);
-      // Vendor images remain local: the AMD builds are exercised when their
-      // donor is supplied (a dual-generation SP3 donor, a one-generation one).
-      const representative = ['qemu-q35', 'orangepi-r1'].includes(build.board) && build.payload === 'halt';
+      // Every build that needs no file from the user is assembled both
+      // ways. Vendor images remain local: the AMD builds are exercised when
+      // their donor is supplied (a dual-generation SP3 donor, a
+      // one-generation one).
       let donor;
       if (build.board === 'gigabyte-mj11-ec1') donor = process.env.FSTART_TEST_DONOR;
       else if (build.board.startsWith('tyan-s8030')) donor = process.env.FSTART_TEST_SP3_DONOR;
       else if (build.board === 'amd-ethanolx') donor = process.env.FSTART_TEST_ETHANOLX_DONOR;
-      const amd = donor && ['halt', 'uefi', 'uefi-ui', 'uefi-basic'].includes(build.payload);
-      if ((representative || amd) && build.inputs.length === 0) {
-        if (build.donor_required && !donor) continue;
+      if (build.inputs.length === 0 && build.image_error == null && (!build.donor_required || donor)) {
         if (build.donor_required) assembler.setDonor(fs.readFileSync(donor));
         // A build whose options live in its image starts with one set.
         const settings = [];
@@ -49,7 +48,8 @@ try {
           settings.push('--setting', `${choice.key}=${label}`);
         }
         const outputs = assembler.assemble(key);
-        if (build.board === 'qemu-q35') assert(assembler.assemble(undefined).size > 0);
+        // Without a key, Web Crypto supplies an ephemeral one.
+        if (compared === 0) assert(assembler.assemble(undefined).size > 0);
         const out = path.join(temporary, `${build.board}-${build.payload}`);
         const args = ['compose-bundle', '--bundle', archive, '--out', out, '--signing-key', keyPath];
         if (build.donor_required) args.push('--donor', donor);

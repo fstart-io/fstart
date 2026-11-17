@@ -188,15 +188,23 @@ fn rejects_symlink_assets() {
 fn api_response(args: &[&str], releases: &Value) -> Result<String> {
     let value = if args.contains(&"--slurp") {
         releases.clone()
-    } else if args.last().unwrap().contains("actions/workflows/") {
-        serde_json::json!({"workflow_runs": [{"id":42,"head_sha":"a".repeat(40),"head_branch":"master","event":"push","conclusion":"success"}]})
     } else {
-        serde_json::json!({"artifacts":[{"name":"distribution","expired":false}]})
+        serde_json::json!({"workflow_runs": [{"id":42,"head_sha":"a".repeat(40),"head_branch":"master","event":"push","conclusion":"success"}]})
     };
     Ok(serde_json::to_string(&value)?)
 }
+const REVISION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+fn built(directory: &Path) -> Built<'_> {
+    Built {
+        directory,
+        revision: REVISION,
+        run_id: 42,
+    }
+}
 #[test]
 fn publishes_verified_assets_as_a_draft_before_exposing_them() {
+    let build = tempfile::tempdir().unwrap();
+    fixture(build.path(), &"a".repeat(40));
     let mut calls = Vec::new();
     let mut published = Value::Null;
     publish(
@@ -206,12 +214,6 @@ fn publishes_verified_assets_as_a_draft_before_exposing_them() {
             calls.push(args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
             if args[0] == "api" {
                 return api_response(args, &serde_json::json!([[]]));
-            }
-            if args[..2] == ["run", "download"] {
-                fixture(
-                    Path::new(args[args.iter().position(|s| *s == "--dir").unwrap() + 1]),
-                    &"a".repeat(40),
-                );
             }
             if args[..2] == ["release", "create"] {
                 assert!(args.contains(&"--draft"));
@@ -223,6 +225,7 @@ fn publishes_verified_assets_as_a_draft_before_exposing_them() {
             }
             Ok(String::new())
         },
+        Some(built(build.path())),
     )
     .unwrap();
     let create = calls
@@ -239,9 +242,13 @@ fn publishes_verified_assets_as_a_draft_before_exposing_them() {
     assert_eq!(published["source_run_id"], 42);
     assert_eq!(published["expires_at"], "2026-05-01T12:00:00Z");
     assert_eq!(published["extra_catalog_metadata"], "preserved");
+    // The build's own directory is left as it was.
+    assert!(!build.path().join("release.json").exists());
 }
 #[test]
 fn upload_failure_never_publishes_or_prunes() {
+    let build = tempfile::tempdir().unwrap();
+    fixture(build.path(), &"a".repeat(40));
     let mut calls = Vec::new();
     let mut staging = String::new();
     let mut old = release(1);
@@ -254,15 +261,14 @@ fn upload_failure_never_publishes_or_prunes() {
             if args[0] == "api" {
                 return api_response(args, &serde_json::json!([[old]]));
             }
-            if args[..2] == ["run", "download"] {
-                staging = args[args.iter().position(|s| *s == "--dir").unwrap() + 1].into();
-                fixture(Path::new(&staging), &"a".repeat(40));
-            }
             if args[..2] == ["release", "create"] {
+                let path = Path::new(args.iter().find(|s| s.ends_with("/catalog.json")).unwrap());
+                staging = path.parent().unwrap().to_string_lossy().into_owned();
                 return Err("upload failed".into());
             }
             Ok(String::new())
         },
+        Some(built(build.path())),
     );
     assert!(result.unwrap_err().to_string().contains("upload failed"));
     assert!(
@@ -274,6 +280,8 @@ fn upload_failure_never_publishes_or_prunes() {
 }
 #[test]
 fn existing_revision_is_not_republished_and_all_release_pages_are_pruned() {
+    let build = tempfile::tempdir().unwrap();
+    fixture(build.path(), &"a".repeat(40));
     let mut calls = Vec::new();
     let releases = serde_json::json!([[release(2)], [release(1)]]);
     publish(
@@ -288,9 +296,63 @@ fn existing_revision_is_not_republished_and_all_release_pages_are_pruned() {
             assert_eq!(args[2], "nightly-2026-01-01-abcdef123456");
             Ok(String::new())
         },
+        Some(built(build.path())),
     )
     .unwrap();
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 2);
+}
+#[test]
+fn without_a_build_only_expired_nightlies_are_pruned() {
+    let mut calls = Vec::new();
+    let releases = serde_json::json!([[release(2)], [release(1)]]);
+    publish(
+        "fstart-io/fstart",
+        datetime!(2026-04-01 00:00 UTC),
+        &mut |args| {
+            calls.push(args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            if args[0] == "api" {
+                return api_response(args, &releases);
+            }
+            assert_eq!(args[..2], ["release", "delete"]);
+            Ok(String::new())
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(calls.len(), 2);
+}
+#[test]
+fn pending_is_the_newest_green_push_without_a_nightly() {
+    let none = serde_json::json!([[]]);
+    let mut gh = |args: &[&str]| api_response(args, &none);
+    assert_eq!(pending("o/r", &mut gh).unwrap(), Some("a".repeat(40)));
+    let done = serde_json::json!([[release(1)]]);
+    let mut gh = |args: &[&str]| api_response(args, &done);
+    assert_eq!(pending("o/r", &mut gh).unwrap(), None);
+}
+#[test]
+fn a_build_of_another_revision_or_an_invalid_one_fails_closed() {
+    let build = tempfile::tempdir().unwrap();
+    fixture(build.path(), &"b".repeat(40));
+    let mut gh = |args: &[&str]| api_response(args, &serde_json::json!([[]]));
+    let other = publish(
+        "o/r",
+        datetime!(2026-04-01 00:00 UTC),
+        &mut gh,
+        Some(built(build.path())),
+    );
+    assert!(other.is_err());
+    let invalid = publish(
+        "o/r",
+        datetime!(2026-04-01 00:00 UTC),
+        &mut gh,
+        Some(Built {
+            directory: build.path(),
+            revision: "invalid",
+            run_id: 42,
+        }),
+    );
+    assert!(invalid.is_err());
 }
 #[test]
 fn invalid_revision_or_missing_successful_run_fails_closed() {
@@ -299,18 +361,14 @@ fn invalid_revision_or_missing_successful_run_fails_closed() {
         serde_json::json!([{"id":42,"head_sha":"invalid","head_branch":"master","event":"push","conclusion":"success"}]),
     ] {
         assert!(
-            publish(
-                "fstart-io/fstart",
-                datetime!(2026-04-01 00:00 UTC),
-                &mut |args| {
-                    assert_eq!(args[0], "api");
-                    if args.contains(&"--slurp") {
-                        Ok("[[]]".into())
-                    } else {
-                        Ok(serde_json::json!({"workflow_runs": runs}).to_string())
-                    }
+            pending("fstart-io/fstart", &mut |args| {
+                assert_eq!(args[0], "api");
+                if args.contains(&"--slurp") {
+                    Ok("[[]]".into())
+                } else {
+                    Ok(serde_json::json!({"workflow_runs": runs}).to_string())
                 }
-            )
+            })
             .is_err()
         );
     }
