@@ -55,7 +55,9 @@ jobs:
     needs: [check, qemu-boot-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    # One runner builds every board, variant and payload (about three
+    # hours, most of it the Intel boards' payloads).
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
