@@ -334,7 +334,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         );
         let early = self
             .northbridge
-            .early_init()
+            .ramstage_early_init()
             .and_then(|()| self.southbridge.early_init());
         if let Err(error) = early {
             fstart_log::error!("early init: {:?}", error);
@@ -612,6 +612,7 @@ impl<B: IntelBoard> Ramstage<B, Displayed> {
     /// The board supplies its vendor and existing ACPI companion scope. Assets
     /// are authenticated FFS files named `pciVVVV,DDDD.rom`. An absent GPU or
     /// missing ROM leaves a headless boot; a failed POST is never retried.
+    #[cfg(target_arch = "x86_64")]
     pub fn init_pci_display(mut self, vendor: u16, scope: fstart_acpi::AcpiPath) -> Self {
         if self.resume {
             return self;
@@ -962,7 +963,9 @@ fn init_mp<P: IntelEarlyPlatform>(
 }
 
 /// The common x86 calibrated clock, as required by the bounded VBIOS executor.
+#[cfg(target_arch = "x86_64")]
 struct DisplayClock;
+#[cfg(target_arch = "x86_64")]
 impl fstart_core::services::Timer for DisplayClock {
     fn delay_us(&self, us: u64) {
         for _ in 0..us / u64::from(u32::MAX) {

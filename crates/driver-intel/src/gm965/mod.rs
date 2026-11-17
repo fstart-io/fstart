@@ -644,7 +644,11 @@ impl IntelGm965 {
         for pam in &hb.pam[1..] {
             pam.set(0x33);
         }
+    }
 
+    /// Make both candidates visible only while DRAM/IGD clocks are initialized.
+    fn enable_bootblock_devices(&self) {
+        let hb = self.hostbridge_regs();
         let mut deven = hostbridge::DEVEN_D0F0;
         if self.config.enable_peg {
             deven |= hostbridge::DEVEN_D1F0;
@@ -1036,13 +1040,28 @@ impl IntelGm965 {
         ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
     }
 
-    fn igd_enabled(&self) -> bool {
+    /// Visibility is needed for clock setup even when PEG owns the display.
+    fn igd_visible(&self) -> bool {
         self.config.igd.enable_vga
             && (ecam::EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC)
                 .read32(hostbridge::DEVEN)
                 & hostbridge::DEVEN_D2F0)
                 != 0
             && self.igd().is_present()
+    }
+
+    fn igd_enabled(&self) -> bool {
+        let ggc = self.hostbridge_regs().ggc.get();
+        // Never build a GTT inside TSEG when no graphics memory was reserved.
+        ggc & 2 == 0 && ggc & 0x70 != 0 && self.igd_visible()
+    }
+
+    fn hide_unused_igd(&self) {
+        let hb = self.hostbridge_regs();
+        if hb.ggc.get() & 2 != 0 {
+            hb.deven
+                .set(hb.deven.get() & !(hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1));
+        }
     }
 
     fn igd_matches_platform(&self) -> bool {
@@ -1191,7 +1210,7 @@ impl IntelGm965 {
     }
 
     fn gm965_igd_init(&self) {
-        if !self.igd_enabled() {
+        if !self.igd_visible() {
             return;
         }
 
@@ -1407,6 +1426,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
 
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.setup_bars_and_pam();
+        self.enable_bootblock_devices();
         self.early_mch_dmi_tweaks();
         if self.config.enable_peg {
             self.peg_display = peg::has_display();
@@ -1416,6 +1436,16 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             }
         }
         fstart_log::info!("intel-gm965: early init complete");
+        Ok(())
+    }
+
+    fn ramstage_early_init(&mut self) -> Result<(), ServiceError> {
+        self.setup_bars_and_pam();
+        self.early_mch_dmi_tweaks();
+        // DEVEN/GGC already describe the selection used by the memory map.
+        // In particular, never re-probe PEG or re-enable a no-stolen-memory IGD.
+        self.peg_display = self.hostbridge_regs().deven.get() & hostbridge::DEVEN_D1F0 != 0;
+        self.hide_unused_igd();
         Ok(())
     }
 
@@ -1472,10 +1502,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         self.gm965_pm_init();
         self.gm965_igd_init();
         // Only now hide the unused IGD: raminit and PM setup use its clocks.
-        if self.hostbridge_regs().ggc.get() & 2 != 0 {
-            let deven = &self.hostbridge_regs().deven;
-            deven.set(deven.get() & !(hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1));
-        }
+        self.hide_unused_igd();
         self.write_coreboot_scratchpad_marker();
         Ok(())
     }
@@ -1755,6 +1782,8 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
 
 #[cfg(test)]
 mod acpi_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod thermal_tests;
 
