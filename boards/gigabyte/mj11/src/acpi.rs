@@ -124,6 +124,7 @@ mod tests {
             ivrs_devices: &[],
             sb_aml: &[],
             tables: &[],
+            apei: None,
             board: &board,
         })
         .unwrap();

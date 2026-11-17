@@ -46,6 +46,7 @@ impl fstart_platform_amd::board::Board for Board {
     /// its intercepted status writes cannot be replayed under Linux 7.3
     /// (`fstart_driver_amd::ccx::ras`).
     const RAS: ras::Policy = ras::Policy::THRESHOLDS;
+    const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
 }
 
 /// The policy knobs over Rome's policy; Milan's board values are the same.

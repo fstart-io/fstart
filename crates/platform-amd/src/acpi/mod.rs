@@ -17,6 +17,7 @@
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
 //! | TPM2 / TCPA | discrete TPM and its event log ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
 //! | WSMT | with SMM ([`Inputs::acpi_smi`]) | `fstart_acpi::wsmt` |
+//! | HEST, BERT | the MCA banks, the last boot's errors ([`Inputs::apei`]) | [`apei`] |
 //! | DSDT | root bridges, `_PRT`, FCH, CPUs, `_PIC`, sleep states | [`dsdt`] |
 //!
 //! Tables only some SoCs have are theirs to build ([`Inputs::tables`]):
@@ -43,6 +44,7 @@ use fstart_core::acpi::{AcpiGenericDevice, AcpiSmiConfig};
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::fch::acpimmio::AcpiPorts;
 
+pub mod apei;
 pub mod dsdt;
 pub mod fixed;
 pub mod ivrs;
@@ -200,6 +202,8 @@ pub struct Inputs<'a> {
     pub sb_aml: &'a [u8],
     /// The SoC's own tables.
     pub tables: &'a [Vec<u8>],
+    /// The machine-check sources and the last boot's errors.
+    pub apei: Option<apei::Apei>,
     pub board: &'a Board,
 }
 
@@ -243,6 +247,14 @@ pub fn install(
     // SAFETY: the BSP, reading the architectural P-state MSRs.
     let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
     let pstates = fstart_driver_amd::ccx::power::pstates(&msr);
+    let apei = Some(apei::Apei {
+        mcg_cap: fstart_arch::x86::cpu::msr::MsrAccess::read(
+            &msr,
+            fstart_arch::x86::cpu::msr::MCG_CAP.index(),
+        ),
+        threshold: facts.ras.threshold,
+        boot_errors: boot_errors(facts.bmc_event),
+    });
     let tables = build(&Inputs {
         soc: soc.soc,
         pci: soc.pci,
@@ -271,12 +283,63 @@ pub fn install(
         ivrs_devices: soc.ivrs_devices,
         sb_aml: soc.sb_aml,
         tables: soc.tables,
+        apei,
         board,
     })?;
     let address = storage.as_ptr() as u64;
     let length = tables.assemble_into(storage, address)?;
     fstart_log::info!("acpi: {} bytes at {:#x}", length as u32, address);
     Ok(address)
+}
+
+/// The boot error region, in the firmware's reserved memory: the errors
+/// the banks kept across the last reset, as every thread found them
+/// (`ccx::mca::BOOT`), each also reported to the board's BMC (`bmc`).
+/// Returns its address and length.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+fn boot_errors(bmc: Option<crate::board::BmcEvent>) -> (u64, u32) {
+    #[repr(align(16))]
+    struct Region([u8; 16 << 10]);
+    static mut REGION: Region = Region([0; 16 << 10]);
+    let (records, dropped) = fstart_driver_amd::ccx::mca::BOOT.records();
+    // Each error of a bank, as the BERT has it (`apei::errors`).
+    for error in records.iter().flat_map(apei::errors) {
+        fstart_log::error!(
+            "ras: last boot's error: APIC {:#x} bank {} status {:#x} address {:#x} ipid {:#x}",
+            error.cpu,
+            error.bank,
+            error.status,
+            error.address,
+            error.ipid
+        );
+        if let Some(bmc) = bmc {
+            // SAFETY: the BSP; the P-state MSRs.
+            let timer = fstart_driver_amd::ccx::tsc::Tsc::native(&unsafe {
+                fstart_arch::x86::cpu::msr::NativeMsr::new()
+            });
+            if !bmc(&crate::smm::ras::Event::Mca(&apei::alone(&error)), timer) {
+                fstart_log::warn!("ras: the BMC did not take it");
+            }
+        }
+    }
+    if dropped != 0 {
+        fstart_log::warn!("ras: {} more errors dropped", dropped as u32);
+    }
+    let (eax, ebx, ecx, edx) = fstart_arch::x86::cpuid(1);
+    // SAFETY: BSP only, before the payload; the region is reserved.
+    let storage = unsafe { &mut (*core::ptr::addr_of_mut!(REGION)).0 };
+    let capacity = storage.len().min(apei::PRINTABLE);
+    let (region, omitted) = apei::boot_error_region(&records, [eax, ebx, ecx, edx], capacity);
+    if omitted != 0 {
+        // Linux decodes a region under 1 KiB only: the worst are in it;
+        // every error went to the log above (and the BMC).
+        fstart_log::warn!(
+            "ras: {} least severe errors left out of the BERT",
+            omitted as u32
+        );
+    }
+    storage[..region.len()].copy_from_slice(&region);
+    (storage.as_ptr() as u64, region.len() as u32)
 }
 
 /// The built table set, ready for `fstart_acpi::platform::assemble_into`.
@@ -286,7 +349,7 @@ pub struct Tables {
     /// DSDT body (placed in `\_SB`).
     pub dsdt: Vec<u8>,
     /// MCFG, [SRAT, MSCT, SLIT], [IVRS], [SPMI], the SoC's, [TPM2/TCPA],
-    /// [WSMT], the board's.
+    /// [HEST, BERT], [WSMT], the board's.
     pub extra: Vec<Vec<u8>>,
 }
 
@@ -324,6 +387,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
         .chain(board.ipmi.map(|k| k.spmi()))
         .chain(inputs.tables.iter().cloned())
         .chain(inputs.tpm.map(|tpm| tpm.tables()).unwrap_or_default())
+        .chain(inputs.apei.as_ref().map(apei::tables).unwrap_or_default())
         // The SMM handlers take no buffers from the OS (SP3's EINJ uses a
         // fixed, validated communication page and follows no input
         // pointers). The system-resource lock audit remains open.

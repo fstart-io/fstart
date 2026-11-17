@@ -139,6 +139,7 @@ pub(crate) fn inputs<'a>(
         ivrs_devices: &[],
         sb_aml: &[],
         tables: &[],
+        apei: None,
         board,
     }
 }

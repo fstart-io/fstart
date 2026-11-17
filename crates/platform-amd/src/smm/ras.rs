@@ -81,10 +81,12 @@ use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_ipmi::SelRecord;
 use zerocopy::little_endian::{U16, U32};
 
-/// What the handler reports to the board's BMC.
+/// What the handler, and the boot for the last boot's errors, report to
+/// the board's BMC (`Board::BMC_EVENT`).
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
-    /// A machine check, a deferred error or a thresholding overflow.
+    /// A machine check, a deferred error or a thresholding overflow, or
+    /// an error of the last boot.
     Mca(&'a Record),
     /// The one benign transport check the diagnostic ABI requests.
     Probe,

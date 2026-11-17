@@ -208,6 +208,17 @@ fn banks<M: MsrAccess>(cpu: &M) -> u32 {
 const fn mcax(bank: u32, offset: u32) -> u32 {
     0xc000_2000 + bank * 16 + offset
 }
+
+/// MCA_STATUS of `bank` (MCAX C000_2001 + 16·bank).
+pub const fn mca_status(bank: u32) -> Msr<McaStatus::Register> {
+    Msr::new(mcax(bank, 1))
+}
+
+/// MCA_DESTAT of `bank` (MCAX C000_2008 + 16·bank): its deferred error,
+/// where MCA_CONFIG\[DeferredLoggingSupported\] is set.
+pub const fn mca_destat(bank: u32) -> Msr<McaStatus::Register> {
+    Msr::new(mcax(bank, 8))
+}
 /// The thread's SMI trigger I/O cycle: a write of `command` to `port`
 /// (the FCH's SMI command port) for its local SMI sources. Refused if
 /// someone else owns it.
@@ -418,11 +429,13 @@ pub enum Kind {
     Threshold,
     /// A deferred error (uncorrected, not consumed).
     Deferred,
+    /// Left in the bank at boot, from before the last reset.
+    Boot,
 }
 
 /// Raw evidence, not an assertion that a DIMM failed or that recovery is safe.
 /// `cpu` is the SMM installer's logical index of the thread that read it,
-/// not a socket or an APIC ID.
+/// not a socket; for [`Kind::Boot`] it is the thread's APIC ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Record {
     pub kind: Kind,
@@ -488,13 +501,16 @@ impl Record {
 
 /// Read `bank` of this thread into a [`Record`] of `kind`, if it logged
 /// an error in MCA_STATUS or (deferred) in MCA_DESTAT. Writes nothing.
-pub fn read<M: MsrAccess>(cpu: &M, logical_cpu: u32, bank: u32, kind: Kind) -> Option<Record> {
-    let status = cpu
-        .reg(Msr::<McaStatus::Register>::new(mcax(bank, 1)))
-        .extract();
+pub fn read<M: MsrAccess + ?Sized>(
+    cpu: &M,
+    logical_cpu: u32,
+    bank: u32,
+    kind: Kind,
+) -> Option<Record> {
+    let status = cpu.reg(mca_status(bank)).extract();
     let config = cpu.read(mcax(bank, 4));
     let deferred_status = if McaConfig::DEFERRED_LOGGING_SUPPORTED.is_set(config) {
-        cpu.read(mcax(bank, 8))
+        cpu.reg(mca_destat(bank)).get()
     } else {
         0
     };

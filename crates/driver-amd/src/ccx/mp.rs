@@ -163,6 +163,9 @@ where
             let msr = unsafe { NativeMsr::new() };
             let ok = (self.init)(&self.policy, &msr);
             hide_fixed_dram_routing(&msr);
+            // The extended APIC ID: right in x2APIC mode and past 255.
+            let apic_id = fstart_arch::x86::cpuid(0x8000_001e).0;
+            super::mca::take_boot_errors(&msr, apic_id);
             ok
         });
     }

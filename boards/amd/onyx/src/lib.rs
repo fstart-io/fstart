@@ -34,6 +34,7 @@ impl fstart_platform_amd::board::Board for Board {
     /// ([`sel`]), ten per thresholding SMI.
     const RAS: fstart_platform_amd::smm::ras::Policy =
         fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
+    const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(sel);
 }
 
 /// The BMC's one KCS channel, KCS3 (`0xCA2`/`0xCA3`), which the OS's IPMI
@@ -43,12 +44,11 @@ pub const KCS: (u16, u16) = (
     fstart_driver_ipmi::kcs::DEFAULT_SPACING,
 );
 
-/// SMM's report of a machine check (`fstart_platform_amd::smm::ras`) to
-/// the BMC's SEL as a Platform Event Message, on the OS's KCS channel when
-/// it is idle. CPUs outside
+/// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
+/// BMC's SEL as a Platform Event Message, on the OS's KCS channel when it
+/// is idle: from SMM, and at boot for the last boot's errors. CPUs outside
 /// SMM keep running: an OS transaction starting during the report fails
 /// one of them (the OS's driver retries; the report stops reporting).
-#[cfg(feature = "smm")]
 pub fn sel(event: &fstart_platform_amd::smm::ras::Event<'_>, timer: Tsc) -> bool {
     let (port, spacing) = KCS;
     // SAFETY: the BMC's KCS ports; the transaction starts only when idle.

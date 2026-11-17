@@ -43,6 +43,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 pub mod aml_linker;
+pub mod cper;
 pub mod dbg2;
 pub mod descriptors;
 pub mod device;
@@ -52,6 +53,7 @@ pub mod einj;
 pub mod ext;
 pub mod gpe;
 pub mod gtdt;
+pub mod hest;
 pub mod iort;
 pub mod ivrs;
 pub mod msct;
@@ -76,6 +78,7 @@ pub mod wsmt;
 
 // Re-export commonly used types from acpi_tables.
 pub use acpi_tables::aml;
+pub use acpi_tables::bert;
 pub use acpi_tables::fadt;
 pub use acpi_tables::gas;
 pub use acpi_tables::madt;

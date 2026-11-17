@@ -17,16 +17,16 @@ use tock_registers::interfaces::ReadWriteable;
 /// the S8030; the OS has KCS3 at `0xCA2` (the vendor SPMI).
 pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
 
-/// SMM's report of a machine check (`fstart_platform_amd::smm::ras`) to
-/// the BMC's SEL, on the firmware's KCS channel: a Platform Event Message
+/// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
+/// BMC's SEL, on the firmware's KCS channel, from SMM and at boot for the
+/// last boot's errors: a Platform Event Message
 /// (the BMC answers Add SEL Entry with C1h, invalid command).
-#[cfg(feature = "smm")]
 pub fn sel(
     event: &fstart_platform_amd::smm::ras::Event<'_>,
     timer: fstart_driver_amd::ccx::tsc::Tsc,
 ) -> bool {
     let (port, spacing) = FIRMWARE_KCS;
-    // SAFETY: KCS2 is decoded and only the SMM handler uses it.
+    // SAFETY: KCS2 is decoded and only firmware uses it.
     let mut kcs = unsafe { fstart_driver_ipmi::kcs::Kcs::new(port, spacing, timer) }
         .with_poll_budget(fstart_platform_amd::smm::ras::SEL_POLL_BUDGET);
     kcs.platform_event(&fstart_platform_amd::smm::ras::sel(event))

@@ -79,7 +79,14 @@ pub trait Board: 'static {
     /// or the OS's alone ([`crate::smm::ras`]). The board's SMM image
     /// binds the handler with it and its BMC hook.
     const RAS: crate::smm::ras::Policy = crate::smm::ras::Policy::OS_FIRST;
+    /// The board's BMC for RAS events: sends one, true if the BMC took it.
+    /// The boot reports the last boot's errors with it (beside the BERT);
+    /// the board's SMM image binds its handler with the same function.
+    const BMC_EVENT: Option<BmcEvent> = None;
 }
+
+/// A board's BMC report of a RAS event ([`Board::BMC_EVENT`]).
+pub type BmcEvent = fn(&crate::smm::ras::Event<'_>, fstart_driver_amd::ccx::tsc::Tsc) -> bool;
 
 /// What the flow's services read of the board ([`Board`]).
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +96,7 @@ pub struct Facts {
     pub discrete_tpm: bool,
     pub bmc_sx_notify: Option<crate::smm::SleepNotify>,
     pub ras: crate::smm::ras::Policy,
+    pub bmc_event: Option<BmcEvent>,
 }
 
 impl Facts {
@@ -99,6 +107,7 @@ impl Facts {
             discrete_tpm: B::DISCRETE_TPM,
             bmc_sx_notify: B::BMC_SX_NOTIFY,
             ras: B::RAS,
+            bmc_event: B::BMC_EVENT,
         }
     }
 }

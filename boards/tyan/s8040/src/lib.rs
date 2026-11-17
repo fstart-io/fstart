@@ -32,6 +32,7 @@ impl fstart_platform_amd::board::Board for Board {
     /// ([`bmc::sel`]), ten per thresholding SMI.
     const RAS: fstart_platform_amd::smm::ras::Policy =
         fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
+    const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
 }
 
 /// Soldered devices the boot needs, by their lane and what is behind the

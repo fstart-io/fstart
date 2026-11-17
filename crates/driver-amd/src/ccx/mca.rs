@@ -1,9 +1,13 @@
 //! Machine-check bank setup, every thread (CCX_SP3 §3.11, instruction-
-//! checked: ZP `0x6074`, SSP `0x6bf4`, GN `0x7f40`).
+//! checked: ZP `0x6074`, SSP `0x6bf4`, GN `0x7f40`), and the errors the
+//! banks kept across the last reset ([`take_boot_errors`]).
 //!
 //! This only acknowledges MCAX and sets the error masks the donors set.
-//! Thresholds and deferred-error interrupts stay OS-owned. Optional SMM
-//! observation of #MC is armed separately by [`super::ras`] after SMM install.
+//! Thresholds and deferred-error interrupts stay OS-owned unless the SMM
+//! handler counts them ([`super::ras`], armed after SMM install).
+
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use fstart_arch::x86::cpu::msr::{MCG_CAP, McgCap, Msr, MsrAccess};
 use tock_registers::interfaces::{Readable, Writeable};
@@ -130,6 +134,155 @@ pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
     }
 }
 
+/// The errors the banks of the threads held at boot: what the last boot
+/// left before its reset (MCA_STATUS survives a warm reset, PPR 55901
+/// "Reset: Cold"). Filled by [`take_boot_errors`] on every thread.
+pub struct BootErrors {
+    /// One thread reads and clears a bank at a time: the threads of a
+    /// socket share its non-thread banks.
+    claim: AtomicBool,
+    count: AtomicUsize,
+    /// Errors there was no room for, left in their banks.
+    dropped: AtomicUsize,
+    ready: [AtomicBool; BOOT_ERRORS],
+    records: [UnsafeCell<super::ras::Record>; BOOT_ERRORS],
+}
+
+/// Boot errors kept; the rest are counted and dropped.
+pub const BOOT_ERRORS: usize = 32;
+
+// SAFETY: a slot is written once by the thread that took its index and
+// read only after its `ready` flag is set.
+unsafe impl Sync for BootErrors {}
+
+impl BootErrors {
+    pub const fn new() -> Self {
+        Self {
+            claim: AtomicBool::new(false),
+            count: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+            ready: [const { AtomicBool::new(false) }; BOOT_ERRORS],
+            records: [const { UnsafeCell::new(super::ras::Record::EMPTY) }; BOOT_ERRORS],
+        }
+    }
+
+    /// Keep `record`; false, and counted as dropped, if there is no room.
+    fn push(&self, record: super::ras::Record) -> bool {
+        let taken = self
+            .count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < BOOT_ERRORS).then_some(count + 1)
+            });
+        let Ok(index) = taken else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        // SAFETY: the index is this thread's alone.
+        unsafe { *self.records[index].get() = record };
+        self.ready[index].store(true, Ordering::Release);
+        true
+    }
+
+    /// Run `f` alone among the threads.
+    fn claimed<T>(&self, f: impl FnOnce() -> T) -> T {
+        while self
+            .claim
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        let result = f();
+        self.claim.store(false, Ordering::Release);
+        result
+    }
+
+    /// The errors kept and how many were dropped. A bank the threads of a
+    /// share see is kept once already: the thread that takes it reads it
+    /// again under the claim and clears it ([`take_boot_errors`]). Two
+    /// records alike are two errors, of two threads' or sockets' banks.
+    pub fn records(&self) -> (heapless::Vec<super::ras::Record, BOOT_ERRORS>, usize) {
+        let mut records = heapless::Vec::new();
+        for (slot, ready) in self.records.iter().zip(&self.ready) {
+            if ready.load(Ordering::Acquire) {
+                // SAFETY: published by `ready`; never written again.
+                let _ = records.push(unsafe { *slot.get() });
+            }
+        }
+        (records, self.dropped.load(Ordering::Acquire))
+    }
+}
+
+impl Default for BootErrors {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What the banks of every thread held at boot ([`take_boot_errors`]).
+pub static BOOT: BootErrors = BootErrors::new();
+
+/// On the executing thread (APIC ID `apic_id`): keep every uncorrected or
+/// deferred error its banks hold from before the reset in [`BOOT`], for
+/// the boot error record table, and clear it, so the OS does not log it
+/// again as an error of this boot. Corrected errors stay for the OS, and
+/// so does an error there is no room for.
+pub fn take_boot_errors<M: MsrAccess + ?Sized>(cpu: &M, apic_id: u32) {
+    take_boot_errors_into(&BOOT, cpu, apic_id);
+}
+
+fn take_boot_errors_into<M: MsrAccess + ?Sized>(errors: &BootErrors, cpu: &M, apic_id: u32) {
+    use super::ras::{mca_destat, mca_status};
+    let banks = (cpu.reg(MCG_CAP).read(McgCap::COUNT) as u32).min(super::ras::MAX_BANKS);
+    for bank in 0..banks {
+        if boot_error(cpu, apic_id, bank).is_none() {
+            continue;
+        }
+        // Read again under the claim: a sibling may have taken and
+        // cleared a bank they share.
+        errors.claimed(|| {
+            let Some((record, in_status, in_destat)) = boot_error(cpu, apic_id, bank) else {
+                return;
+            };
+            if !errors.push(record) {
+                return;
+            }
+            if in_status {
+                cpu.reg(mca_status(bank)).set(0);
+            }
+            if in_destat {
+                cpu.reg(mca_destat(bank)).set(0);
+            }
+        });
+    }
+}
+
+/// The boot error `bank` holds, if one of its two logs has one: MCA_STATUS
+/// if it logged an uncorrected or deferred error, MCA_DESTAT if it logged
+/// a deferred one. The two are independent: a corrected error in
+/// MCA_STATUS next to a deferred one in MCA_DESTAT stays the OS's. The
+/// record carries only the logs with a boot error, and says which they
+/// are, for their clears.
+fn boot_error<M: MsrAccess + ?Sized>(
+    cpu: &M,
+    apic_id: u32,
+    bank: u32,
+) -> Option<(super::ras::Record, bool, bool)> {
+    use super::ras::{Kind, McaStatus, read};
+    let mut record = read(cpu, apic_id, bank, Kind::Boot)?;
+    let status = tock_registers::LocalRegisterCopy::<u64, McaStatus::Register>::new(record.status);
+    let in_status = status.is_set(McaStatus::VALID)
+        && (status.is_set(McaStatus::UNCORRECTED) || status.is_set(McaStatus::DEFERRED));
+    let in_destat = McaStatus::VALID.is_set(record.deferred_status);
+    if !in_status {
+        (record.status, record.address, record.syndrome) = (0, 0, 0);
+    }
+    if !in_destat {
+        (record.deferred_status, record.deferred_address) = (0, 0);
+    }
+    (in_status || in_destat).then_some((record, in_status, in_destat))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +351,97 @@ mod tests {
         let cpu = MsrSpace::new([(0x179, 23)]);
         init(&cpu, &Thread::new(Silicon::Ssp, 0x10, true, false));
         assert_eq!(cpu.into_inner().get(0xc001_0419), 0x3c0);
+    }
+
+    /// A shared bank is taken once: the sibling finds it cleared. Two
+    /// threads' (or sockets') banks holding errors alike are two errors,
+    /// both kept.
+    #[test]
+    fn boot_errors_are_kept_once_and_cleared_corrected_ones_left() {
+        let uc = (1 << 63) | (1 << 61) | (1 << 57);
+        let ce = 1 << 63;
+        let shared = || {
+            MsrSpace::new([
+                (0x179, 3),
+                (0xc000_2001, uc),
+                (0xc000_2005, 0x96 << 32),
+                (0xc000_2011, ce),
+            ])
+        };
+        let cpu = shared();
+        take_boot_errors(&cpu, 0x21);
+        // A sibling of the same socket finds the shared bank cleared.
+        take_boot_errors(&cpu, 0x22);
+        let (records, dropped) = BOOT.records();
+        assert_eq!((records.len(), dropped), (1, 0));
+        assert_eq!(
+            (records[0].cpu, records[0].bank, records[0].status),
+            (0x21, 0, uc)
+        );
+        assert!(records[0].fatal() && records[0].memory());
+        assert_eq!(cpu.read(0xc000_2001), 0, "kept and cleared");
+        assert_eq!(cpu.read(0xc000_2011), ce, "corrected: the OS's");
+        // The other socket's bank, with the same IPID and status.
+        let other = shared();
+        take_boot_errors(&other, 0x81);
+        let (records, _) = BOOT.records();
+        assert_eq!(records.len(), 2);
+        assert_eq!((records[1].cpu, records[1].status), (0x81, uc));
+    }
+
+    /// One bank, a corrected error in MCA_STATUS and a deferred one in
+    /// MCA_DESTAT: the deferred error is the boot's, the corrected one the
+    /// OS's, each register on its own.
+    #[test]
+    fn a_banks_two_logs_are_taken_independently() {
+        use crate::ccx::ras::{McaStatus, Record};
+        let ce = (1 << 63) | (1 << 58);
+        let deferred = (1 << 63) | (1 << 44) | (1 << 58);
+        let bank = || {
+            MsrSpace::new([
+                (0x179, 1),
+                (0xc000_2001, ce),
+                (0xc000_2002, 0x1000),
+                (0xc000_2004, 1 << 2),
+                (0xc000_2008, deferred),
+                (0xc000_2009, 0x2000),
+            ])
+        };
+        let errors = BootErrors::new();
+        let cpu = bank();
+        take_boot_errors_into(&errors, &cpu, 1);
+        let (records, dropped) = errors.records();
+        assert_eq!((records.len(), dropped), (1, 0));
+        let record = records[0];
+        assert_eq!((record.status, record.address), (0, 0));
+        assert_eq!(
+            (record.deferred_status, record.deferred_address),
+            (deferred, 0x2000)
+        );
+        assert_eq!(cpu.read(0xc000_2001), ce, "the corrected error stays");
+        assert_eq!(cpu.read(0xc000_2008), 0, "the deferred error is taken");
+
+        // A valid deferred error in MCA_STATUS and nothing in MCA_DESTAT.
+        let cpu = MsrSpace::new([(0x179, 1), (0xc000_2001, deferred), (0xc000_2004, 1 << 2)]);
+        let errors = BootErrors::new();
+        take_boot_errors_into(&errors, &cpu, 1);
+        assert_eq!(errors.records().0[0].status, deferred);
+        assert!(!cpu.into_inner().written(0xc000_2008));
+
+        // No room: the evidence stays in the bank, counted as dropped.
+        let full = BootErrors::new();
+        for bank in 0..BOOT_ERRORS as u32 {
+            assert!(full.push(Record {
+                bank: bank + 1,
+                status: 1 << 63 | 1 << 61,
+                ..Record::EMPTY
+            }));
+        }
+        let cpu = bank();
+        take_boot_errors_into(&full, &cpu, 1);
+        assert_eq!(full.records().1, 1);
+        assert_eq!(cpu.read(0xc000_2008), deferred);
+        assert!(!cpu.into_inner().written(0xc000_2001));
+        assert!(McaStatus::VALID.is_set(deferred));
     }
 }

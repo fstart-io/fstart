@@ -6,7 +6,8 @@ AST2600 BMC on eSPI. Status: boots to the payload on all 128 threads of a
 and SMM for the PSP with its ACPI EINJ (`fstart_platform_amd::rs::smm`).
 SMM counts corrected errors (ten per thresholding SMI) and sends each
 overflow to the BMC's SEL as a Platform Event Message on KCS2 (`0xCA8`,
-the BMC's channel for firmware; the OS has KCS3 at `0xCA2`).
+the BMC's channel for firmware; the OS has KCS3 at `0xCA2`); the boot does
+the same for the last boot's errors, which it also puts in the BERT.
 
 ```sh
 cargo fbuild build --board tyan-s8040 --release
