@@ -23,7 +23,7 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 | `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp`; `rs` (MPIO: `ask`, `mailbox`, `session`, `ports`) |
 | `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`), MCA setup and the banks' errors at boot (`mca`), MCA work in SMM: thresholds, their polling in a storm, PFEH (`ras`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
 | `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher and its periodic SMI (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
-| `psp`, `apob` | C2P mailbox and commands, the P2C mailbox an SMM handler answers (`p2c`), the APOB | `psp::ras` (Rome's RAS-EINJ commands), `psp::einj` (the RS PSP's own EINJ service), `apob::rs` (the RS records that differ from Milan's) |
+| `psp`, `apob` | C2P mailbox and commands, the P2C mailbox an SMM handler answers (`p2c`), the APOB (with the ABL's event log and the errors in it, `apob::event`) | `psp::ras` (Rome's RAS-EINJ commands), `psp::einj` (the RS PSP's own EINJ service), `apob::rs` (the RS records that differ from Milan's) |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a
 sequence depends on the die; everything a SoC decides is an argument or a
@@ -66,7 +66,8 @@ driver's SMI dispatcher, which a SoC with SMM work of its own extends, as
 that register with it, `smm::psp`, and the machine-check handler of the
 SoCs that run one, `smm::ras`), options (`options`), measured boot
 (`tpm`), the ACPI tables (`acpi::install`, from what the SoC gathers; the
-HEST and the BERT of the last boot's machine checks, `acpi::apei`) and the SMBIOS
+HEST and the BERT of the last boot's machine checks and of the ABL's
+errors, `acpi::apei`) and the SMBIOS
 builder, and the host build plan (`host`, with the image kinds
 `host::single` and `host::dual`).
 

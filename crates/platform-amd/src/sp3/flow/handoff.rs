@@ -151,6 +151,12 @@ pub(crate) fn acpi(
             );
         }
     }
+    // The ABL's errors as the SSP and GN vendors read them; Naples's
+    // firmware reads none.
+    let abl = match crate::sp3::silicon::Generation::of(ctx.soc.generation) {
+        crate::sp3::silicon::Generation::Naples => Vec::new(),
+        _ => acpi::apei::abl_errors(&ctx.soc.apob, fstart_driver_amd::apob::event::DimmBits::SSP),
+    };
     const ACPI_SIZE: usize = 0x4_0000;
     let storage = crate::memory::dma_alloc(ACPI_SIZE, 0x1000).or_halt("DMA allocation");
     acpi::install(
@@ -171,6 +177,7 @@ pub(crate) fn acpi(
             ivrs_devices: &[],
             sb_aml: &fch_aml,
             tables: &tables,
+            abl: &abl,
         },
         ctx.smm.as_ref().map(|smm| &smm.fch),
         facts,

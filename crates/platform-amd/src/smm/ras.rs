@@ -182,6 +182,7 @@ pub enum Delivery {
     Failed,
 }
 
+use fstart_driver_amd::apob::event::AblError;
 use fstart_driver_amd::ccx::ras::{Kind, Record};
 use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_ipmi::SelRecord;
@@ -194,6 +195,12 @@ pub enum Event<'a> {
     /// A machine check, a deferred error or a thresholding overflow, or
     /// an error of the last boot.
     Mca(&'a Record),
+    /// An error the ABL found before x86 ran (reported at boot).
+    Abl(&'a AblError),
+    /// Part `.2` (0 to [`ABL_EVENT_PARTS`] - 1) of the event an
+    /// [`Event::Abl`] of a PMIC error or a CCD BIST failure was logged with
+    /// ([`sel`]), of the boot's ABL error number `.1`.
+    AblEvent(&'a AblError, u8, u8),
     /// The one benign transport check the diagnostic ABI requests.
     Probe,
 }
@@ -235,9 +242,66 @@ fn event(sensor_type: u8, event_data: [u8; 3]) -> SelRecord {
 /// bank's is a processor event (07h): uncorrectable (0Bh) or
 /// correctable (0Ch) machine check. Event data 2 and 3 are OEM data:
 /// the logical CPU that read the bank and the bank, not a guessed DIMM.
+/// The ABL's errors: a DIMM taken out is memory device disabled (04h), a
+/// PMIC error a power supply failure (sensor type 08h, 01h), with the
+/// socket and channel (event data 2, a nibble each) and the DIMM; a
+/// failed CCD BIST a processor FRB1/BIST failure (02h) with the low
+/// bytes of its data.
+///
+/// The event a PMIC error or a CCD BIST failure was logged with follows
+/// it ([`abl_event`]), in [`ABL_EVENT_PARTS`] OEM events (sensor type
+/// C0h, OEM event type 70h): three OEM bytes each of the event id (16
+/// bits), its data A and its data B (32 bits each), little endian, then
+/// zeros. The sensor number says whose part it is: the error's number in
+/// the boot's ABL errors (its low six bits) and the part (bits 1:0), so
+/// that the parts of an error whose report stopped midway are still
+/// known as its. A Platform Event Message carries no more: these are
+/// standard events, which every BMC here logs.
 pub fn sel(event: &Event<'_>) -> SelRecord {
     let record = match event {
         Event::Mca(record) => record,
+        Event::Abl(error) => {
+            let place = |socket: u8, channel: u8| socket << 4 | channel & 0xf;
+            return match **error {
+                AblError::Dimm {
+                    socket,
+                    channel,
+                    dimm,
+                    ..
+                } => self::event(0x0c, [0xa4, place(socket, channel), dimm]),
+                AblError::Pmic {
+                    socket,
+                    channel,
+                    dimm,
+                    ..
+                } => self::event(0x08, [0xa1, place(socket, channel), dimm]),
+                AblError::CcdBist { data_a, .. } => {
+                    let [low, high, ..] = data_a.to_le_bytes();
+                    self::event(0x07, [0xa2, low, high])
+                }
+            };
+        }
+        Event::AblEvent(error, number, part) => {
+            let bytes = abl_event(error).map_or([0; 12], |(event, a, b)| {
+                let [e0, e1, ..] = event.to_le_bytes();
+                let [a0, a1, a2, a3] = a.to_le_bytes();
+                let [b0, b1, b2, b3] = b.to_le_bytes();
+                [e0, e1, a0, a1, a2, a3, b0, b1, b2, b3, 0, 0]
+            });
+            // No indexing: this runs in SMM images too.
+            let data = bytes
+                .as_chunks::<3>()
+                .0
+                .get(usize::from(*part))
+                .copied()
+                .unwrap_or([0; 3]);
+            return SelRecord {
+                sensor_type: 0xc0,
+                sensor_number: (number & 0x3f) << 2 | part & 3,
+                event_dir_type: 0x70,
+                ..self::event(0, data)
+            };
+        }
         // Entry added to auxiliary log, OEM data 'FS': a transport
         // check, never a manufactured machine-check record.
         Event::Probe => return self::event(0x12, [0xa3, b'F', b'S']),
@@ -250,6 +314,27 @@ pub fn sel(event: &Event<'_>) -> SelRecord {
         (false, false) => (0x07, 0x0c),
     };
     self::event(sensor, [0xa0 | offset, record.cpu as u8, record.bank as u8])
+}
+
+/// The OEM events that carry an ABL error's event ([`sel`]).
+pub const ABL_EVENT_PARTS: usize = 4;
+
+/// The event an ABL error with data was logged with: its id, data A and
+/// data B; `None` for a DIMM the ABL mapped out (its event is in the
+/// standard record).
+pub fn abl_event(error: &AblError) -> Option<(u32, u32, u32)> {
+    match *error {
+        AblError::Dimm { .. } => None,
+        AblError::CcdBist { data_a, data_b } => {
+            Some((fstart_driver_amd::apob::event::id::CCD_BIST, data_a, data_b))
+        }
+        AblError::Pmic {
+            event,
+            data_a,
+            data_b,
+            ..
+        } => Some((event, data_a, data_b)),
+    }
 }
 
 #[cfg(feature = "smm")]
@@ -1196,7 +1281,7 @@ mod handler {
 
     #[cfg(test)]
     mod tests {
-        use super::super::{Storm, sel};
+        use super::super::{AblError, Storm, sel};
         use super::*;
         use zerocopy::IntoBytes;
 
@@ -1641,6 +1726,61 @@ mod handler {
             assert_eq!(
                 sel(&Event::Probe).as_bytes()[10..],
                 [0x12, 0xff, 0x6f, 0xa3, b'F', b'S']
+            );
+            let mapped_out = AblError::Dimm {
+                event: 0x4001,
+                socket: 1,
+                channel: 11,
+                dimm: 1,
+                data_a: 0x2_0b01,
+                data_b: 0,
+            };
+            assert_eq!(
+                sel(&Event::Abl(&mapped_out)).as_bytes()[10..],
+                [0xc, 0xff, 0x6f, 0xa4, 0x1b, 1]
+            );
+            assert_eq!(super::super::abl_event(&mapped_out), None);
+            // A PMIC error: the standard event, then its event in four
+            // OEM events, three bytes each: 406Eh, data A, data B.
+            let pmic = AblError::Pmic {
+                event: 0x406e,
+                socket: 1,
+                channel: 11,
+                dimm: 0,
+                fatal: true,
+                data_a: 0x0001_0b01,
+                data_b: 0x8000_0020,
+            };
+            assert_eq!(
+                sel(&Event::Abl(&pmic)).as_bytes()[10..],
+                [0x08, 0xff, 0x6f, 0xa1, 0x1b, 0]
+            );
+            // The boot's ABL error 5: its parts say so (sensor number
+            // 5 << 2 | part).
+            let parts: std::vec::Vec<_> = (0..super::super::ABL_EVENT_PARTS as u8)
+                .map(|part| sel(&Event::AblEvent(&pmic, 5, part)).as_bytes()[10..].to_vec())
+                .collect();
+            assert_eq!(
+                parts,
+                [
+                    [0xc0, 0x14, 0x70, 0x6e, 0x40, 0x01],
+                    [0xc0, 0x15, 0x70, 0x0b, 0x01, 0x00],
+                    [0xc0, 0x16, 0x70, 0x20, 0x00, 0x00],
+                    [0xc0, 0x17, 0x70, 0x80, 0x00, 0x00],
+                ]
+            );
+            // A CCD BIST failure's event carries both of its words.
+            let bist = AblError::CcdBist {
+                data_a: 0x0102_0304,
+                data_b: 0x0a0b_0c0d,
+            };
+            assert_eq!(
+                super::super::abl_event(&bist),
+                Some((0x4065, 0x0102_0304, 0x0a0b_0c0d))
+            );
+            assert_eq!(
+                sel(&Event::AblEvent(&bist, 0, 3)).as_bytes()[13..],
+                [0x0a, 0, 0]
             );
         }
     }

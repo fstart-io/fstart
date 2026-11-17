@@ -8,8 +8,8 @@ each overflow to the BMC's SEL as a Platform Event Message on KCS3
 no iBT and no SSIF), which the OS's IPMI driver shares: SMM reports only
 while every CPU is in SMM and the interface is idle, and tries a report
 the OS's transaction kept out again on its periodic SMI a second later.
-The boot does the same for the last boot's errors, which it also puts in
-the BERT.
+The boot does the same for the last boot's errors and the ABL's, which
+it also puts in the BERT.
 
 ```sh
 cargo fbuild build --board amd-onyx --release

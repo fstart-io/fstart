@@ -15,16 +15,29 @@
 //! 6.5 §18.3.1) with a data entry per error, the worst first: an IA32/x64
 //! processor section with the bank's registers as an MSR context, the
 //! layout Linux hands to its machine-check decoding ([`mca_entries`]). Its
-//! size policy: only complete entries, a context of the SMCA registers a
+//! size policy: only complete errors, a context of the SMCA registers a
 //! bank has (MCA_STATUS to MCA_MISC1), and a region shorter than the 1 KiB
-//! Linux prints and decodes a region up to ([`PRINTABLE`]): three errors,
-//! the worst; the rest are counted ([`boot_error_region`]), logged, and
-//! each was reported to the BMC.
+//! Linux prints and decodes a region up to ([`PRINTABLE`]): the worst
+//! errors that fit; the rest are counted ([`boot_error_region`]), logged,
+//! and each was reported to the BMC.
+//!
+//! What the ABL found before x86 ran (its event log in the APOB,
+//! `apob::event::AblError`) is in the BERT too, as the vendors' platform
+//! RAS DXE drivers record it: a DIMM taken out of the memory map as a
+//! platform memory error (map-out event, socket/channel/DIMM as
+//! node/card/module), a failed CCD BIST as a processor generic error,
+//! a DDR5 PMIC error as a platform memory error of its DIMM, its event
+//! in the FRU text. Each is followed by an entry of fstart's own section
+//! ([`ABL_EVENT`]) with the ABL's event as it logged it: its id and its
+//! data words, which no standard field names (the vendor adds a section
+//! of its own for a PMIC error, AMD's GUID FD2EBF1F-..., whose layout is
+//! not public). The two are one error: the region has both or neither.
 
 use alloc::vec::Vec;
 
 use fstart_acpi::cper::{self, Entry, Severity};
 use fstart_acpi::hest::{self, Bank, MachineCheck};
+use fstart_driver_amd::apob::event::AblError;
 use fstart_driver_amd::ccx::ras::Record;
 
 /// The HEST's polling interval for corrected errors, as the vendors'.
@@ -104,33 +117,218 @@ fn severity(record: &Record) -> Severity {
     }
 }
 
-/// The boot error region of `records` (`cpuid`: CPUID leaf 1 of the
-/// CPUs) in at most `capacity` bytes: one status block of a data entry
-/// per error ([`mca_entries`]), the worst first, as many complete ones as
-/// fit; an empty block if there are none. Returns it and how many errors
-/// it left out.
-pub fn boot_error_region(records: &[Record], cpuid: [u32; 4], capacity: usize) -> (Vec<u8>, usize) {
-    let mut entries: Vec<Entry> = records
-        .iter()
-        .flat_map(|record| mca_entries(record, cpuid))
-        .collect();
-    entries.sort_by_key(|entry| rank(entry.severity));
-    within(entries, capacity)
+/// fstart's section of an error the ABL logged (an OEM section: UEFI
+/// N.2.3 lets a producer define its own), next to the standard section
+/// that classifies it, with what that one has no field for. 16 bytes,
+/// little endian:
+///
+/// | Offset | Size | |
+/// |---|---|---|
+/// | 0 | 4 | the ABL's event id (`apob::event::id`) |
+/// | 4 | 4 | its data A, as the ABL logged it |
+/// | 8 | 4 | its data B, as the ABL logged it |
+/// | 12 | 3 | socket, channel, DIMM it names; FFh where it names none |
+/// | 15 | 1 | 0 |
+pub const ABL_EVENT: [u8; 16] = cper::guid(
+    0x7dea_91eb,
+    0xa65e,
+    0x4cb6,
+    [0xb0, 0x03, 0x6f, 0xb4, 0x40, 0x86, 0xc0, 0x0e],
+);
+
+/// The [`ABL_EVENT`] section of `error`.
+fn abl_event(error: &AblError) -> Vec<u8> {
+    let (event, data_a, data_b, place) = match *error {
+        AblError::Dimm {
+            event,
+            socket,
+            channel,
+            dimm,
+            data_a,
+            data_b,
+        } => (event, data_a, data_b, [socket, channel, dimm]),
+        AblError::CcdBist { data_a, data_b } => (
+            fstart_driver_amd::apob::event::id::CCD_BIST,
+            data_a,
+            data_b,
+            [0xff; 3],
+        ),
+        AblError::Pmic {
+            event,
+            socket,
+            channel,
+            dimm,
+            data_a,
+            data_b,
+            ..
+        } => (event, data_a, data_b, [socket, channel, dimm]),
+    };
+    let mut out = Vec::with_capacity(16);
+    for word in [event, data_a, data_b] {
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+    out.extend_from_slice(&place);
+    out.push(0);
+    out
 }
 
-/// The status block of the first of `entries` that fit in `capacity`
-/// bytes, and how many did not.
-pub(crate) fn within(entries: Vec<Entry>, capacity: usize) -> (Vec<u8>, usize) {
-    let mut length = cper::STATUS_HEADER;
-    let fit = entries
+/// The FRU text of an ABL error: `S<socket> C<channel> D<dimm> <what>`.
+fn fru_text(socket: u8, channel: u8, dimm: u8, what: &str) -> [u8; 20] {
+    let mut text = [0u8; 20];
+    let mut out = &mut text[..];
+    let _ = core::fmt::Write::write_fmt(
+        &mut Cursor(&mut out),
+        format_args!("S{socket} C{channel} D{dimm} {what}"),
+    );
+    text
+}
+
+struct Cursor<'a, 'b>(&'a mut &'b mut [u8]);
+
+impl core::fmt::Write for Cursor<'_, '_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let n = s.len().min(self.0.len());
+        let (head, tail) = core::mem::take(self.0).split_at_mut(n);
+        head.copy_from_slice(&s.as_bytes()[..n]);
+        *self.0 = tail;
+        Ok(())
+    }
+}
+
+/// The generic error data entries of an ABL error (`cpuid`: CPUID leaf 1,
+/// `brand`: the processor's brand string): its standard section, then
+/// its [`ABL_EVENT`].
+fn abl_entries(error: &AblError, cpuid: u32, brand: &[u8; 48]) -> Vec<Entry> {
+    use fstart_driver_amd::apob::event::id;
+    let dimm = |socket: u8, channel: u8, dimm: u8, kind| {
+        cper::platform_memory(&cper::MemoryError {
+            status: Some(cper::MEMORY_DATA_ERROR),
+            node: Some(socket.into()),
+            card: Some(channel.into()),
+            module: Some(dimm.into()),
+            kind,
+        })
+    };
+    let standard = match *error {
+        AblError::Dimm {
+            event,
+            socket,
+            channel,
+            dimm: module,
+            ..
+        } => Entry {
+            section: cper::PLATFORM_MEMORY,
+            severity: Severity::Fatal,
+            data: dimm(socket, channel, module, Some(cper::MEMORY_MAP_OUT)),
+            fru_text: Some(fru_text(
+                socket,
+                channel,
+                module,
+                if event == id::PMU_TRAINING {
+                    "train"
+                } else {
+                    "test"
+                },
+            )),
+        },
+        // Its data is not documented: the ABL event section has it, not
+        // the processor section's target address.
+        AblError::CcdBist { .. } => Entry {
+            section: cper::PROCESSOR_GENERIC,
+            severity: Severity::Fatal,
+            data: cper::processor_generic(cpuid, brand),
+            fru_text: None,
+        },
+        AblError::Pmic {
+            event,
+            socket,
+            channel,
+            dimm: module,
+            fatal,
+            ..
+        } => Entry {
+            section: cper::PLATFORM_MEMORY,
+            severity: if fatal {
+                Severity::Fatal
+            } else {
+                Severity::Recoverable
+            },
+            data: dimm(socket, channel, module, None),
+            fru_text: Some(fru_text(
+                socket,
+                channel,
+                module,
+                if event == id::PMIC { "PMIC" } else { "PMIC RT" },
+            )),
+        },
+    };
+    let event = Entry {
+        section: ABL_EVENT,
+        severity: standard.severity,
+        data: abl_event(error),
+        fru_text: standard.fru_text,
+    };
+    alloc::vec![standard, event]
+}
+
+/// The errors in the ABL's event log of `apob` (every instance), its
+/// DIMMs at `bits`.
+pub fn abl_errors(
+    apob: &fstart_driver_amd::apob::Apob<'_>,
+    bits: fstart_driver_amd::apob::event::DimmBits,
+) -> Vec<AblError> {
+    let mut events = 0u32;
+    let errors: Vec<AblError> = fstart_driver_amd::apob::event::all_events(apob)
+        .flatten()
+        .inspect(|_| events += 1)
+        .flat_map(|(_, event)| event.errors(bits))
+        .collect();
+    fstart_log::info!(
+        "ras: the ABL's event log: {} events, {} errors",
+        events,
+        errors.len() as u32
+    );
+    errors
+}
+
+/// The boot error region of `records` and of the ABL's `abl` (`cpuid`:
+/// CPUID leaf 1 of the CPUs, `brand` their brand string) in at most
+/// `capacity` bytes: one status block of the errors' data entries, the
+/// worst error first, as many complete errors as fit (an ABL error's two
+/// entries both or neither); an empty block if there are none. Each error
+/// is measured before it goes in: nothing is cut. Returns the region and
+/// how many errors it left out.
+pub fn boot_error_region(
+    records: &[Record],
+    abl: &[AblError],
+    cpuid: [u32; 4],
+    brand: &[u8; 48],
+    capacity: usize,
+) -> (Vec<u8>, usize) {
+    let mut errors: Vec<Vec<Entry>> = records
         .iter()
-        .take_while(|entry| {
-            length += entry.encoded_len();
+        .flat_map(|record| mca_entries(record, cpuid))
+        .map(|entry| alloc::vec![entry])
+        .chain(abl.iter().map(|error| abl_entries(error, cpuid[0], brand)))
+        .collect();
+    errors.sort_by_key(|entries| entries.iter().map(|e| rank(e.severity)).min());
+    within(errors, capacity)
+}
+
+/// The status block of the first `errors` (each its entries) that fit in
+/// `capacity` bytes, whole, and how many did not.
+pub(crate) fn within(errors: Vec<Vec<Entry>>, capacity: usize) -> (Vec<u8>, usize) {
+    let mut length = cper::STATUS_HEADER;
+    let fit = errors
+        .iter()
+        .take_while(|entries| {
+            length += entries.iter().map(Entry::encoded_len).sum::<usize>();
             length <= capacity
         })
         .count();
-    let omitted = entries.len() - fit;
-    (cper::status_block(&entries[..fit]), omitted)
+    let omitted = errors.len() - fit;
+    let entries: Vec<Entry> = errors.into_iter().take(fit).flatten().collect();
+    (cper::status_block(&entries), omitted)
 }
 
 /// Severities in the order the region lists them: the worst first.
@@ -209,6 +407,7 @@ fn mca_entry(error: &Record, cpuid: [u32; 4]) -> Entry {
             0xc000_2001 + 16 * error.bank,
             &registers,
         ),
+        fru_text: None,
     }
 }
 
@@ -293,7 +492,8 @@ mod tests {
             ipid: 0x96_0045_0f00,
             ..Record::EMPTY
         };
-        let (region, omitted) = boot_error_region(&[record], [0xa00f11, 0, 0, 0], 16 << 10);
+        let (region, omitted) =
+            boot_error_region(&[record], &[], [0xa00f11, 0, 0, 0], &[0; 48], 16 << 10);
         assert_eq!(omitted, 0);
         // One block of one entry: 20 + 72 + 64 + 64 + 16 + 80 bytes.
         assert_eq!(region.len(), 316);
@@ -309,7 +509,7 @@ mod tests {
         );
         // No error: an empty block (block status and data length 0),
         // which Linux reads as none.
-        let (empty, _) = boot_error_region(&[], [0; 4], 16 << 10);
+        let (empty, _) = boot_error_region(&[], &[], [0; 4], &[0; 48], 16 << 10);
         assert_eq!((empty.len(), &empty[..16]), (20, &[0u8; 16][..]));
     }
 
@@ -333,7 +533,7 @@ mod tests {
             error(3, fatal),
             error(4, deferred),
         ];
-        let (region, omitted) = boot_error_region(&records, [0; 4], 16 << 10);
+        let (region, omitted) = boot_error_region(&records, &[], [0; 4], &[0; 48], 16 << 10);
         assert_eq!(omitted, 0);
         let decoded = decode(&region);
         assert_eq!(decoded.severity, Severity::Fatal as u32);
@@ -351,14 +551,131 @@ mod tests {
         let severities: Vec<u32> = decoded.entries.iter().map(|e| e.0).collect();
         assert_eq!(severities, [1, 0, 0, 2]);
         // Three errors: below Linux's 1 KiB print limit.
-        let (three, _) = boot_error_region(&records[..3], [0; 4], 16 << 10);
+        let (three, _) = boot_error_region(&records[..3], &[], [0; 4], &[0; 48], 16 << 10);
         assert!(three.len() < 1024);
         // Room for two complete entries: two, the worst, and two omitted.
-        let (two, omitted) = boot_error_region(&records, [0; 4], 20 + 2 * 296 + 295);
+        let (two, omitted) = boot_error_region(&records, &[], [0; 4], &[0; 48], 20 + 2 * 296 + 295);
         assert_eq!(omitted, 2);
         let decoded = decode(&two);
         assert_eq!(decoded.entries.len(), 2);
         assert_eq!(decoded.entries[0].0, Severity::Fatal as u32);
+    }
+
+    /// The ABL's errors, a standard section and the ABL event section each:
+    /// the DIMM it mapped out, a PMIC error with its raw words, a CCD BIST
+    /// failure whose data is no address.
+    #[test]
+    fn the_abls_errors_keep_their_events() {
+        let abl = [
+            AblError::Dimm {
+                event: 0x4001,
+                socket: 0,
+                channel: 3,
+                dimm: 1,
+                data_a: 0x2_0300,
+                data_b: 0x77,
+            },
+            AblError::Pmic {
+                event: 0x406b,
+                socket: 1,
+                channel: 11,
+                dimm: 0,
+                fatal: false,
+                data_a: 0x10b01,
+                data_b: 0x20,
+            },
+            AblError::CcdBist {
+                data_a: 5,
+                data_b: 0xdead_0001,
+            },
+        ];
+        let (region, omitted) =
+            boot_error_region(&[], &abl, [0xa10f11, 0, 0, 0], &[b'x'; 48], 16 << 10);
+        assert_eq!(omitted, 0);
+        let decoded = decode(&region);
+        let sections: Vec<[u8; 16]> = decoded.entries.iter().map(|e| e.1).collect();
+        // The fatal ones first: the DIMM, the BIST; then the PMIC's.
+        assert_eq!(
+            sections,
+            [
+                cper::PLATFORM_MEMORY,
+                ABL_EVENT,
+                cper::PROCESSOR_GENERIC,
+                ABL_EVENT,
+                cper::PLATFORM_MEMORY,
+                ABL_EVENT
+            ]
+        );
+        let entry = |n: usize| &decoded.entries[n].2;
+        // Map-out event of socket 0, channel 3, DIMM 1.
+        assert_eq!(&entry(0)[32..38], &[0, 0, 3, 0, 1, 0]);
+        assert_eq!(entry(0)[72], 15);
+        // The map-out's event as the ABL logged it, both words.
+        assert_eq!(
+            &entry(1)[..],
+            &[1, 0x40, 0, 0, 0, 3, 2, 0, 0x77, 0, 0, 0, 0, 3, 1, 0]
+        );
+        // The BIST's data is in its event, not a target address.
+        let generic = entry(2);
+        assert_eq!(generic[1] & 2, 0, "no target address valid");
+        assert_eq!(&generic[160..168], &[0; 8]);
+        assert_eq!(&generic[16..20], &0xa10f11u32.to_le_bytes());
+        // The BIST's event with both its words.
+        assert_eq!(
+            &entry(3)[..12],
+            &[0x65, 0x40, 0, 0, 5, 0, 0, 0, 1, 0, 0xad, 0xde]
+        );
+        assert_eq!(&entry(3)[12..], &[0xff, 0xff, 0xff, 0]);
+        // The PMIC's event with both raw words; recoverable.
+        assert_eq!(decoded.entries[4].0, Severity::Recoverable as u32);
+        assert_eq!(
+            &entry(5)[..12],
+            &[0x6b, 0x40, 0, 0, 1, 0x0b, 1, 0, 0x20, 0, 0, 0]
+        );
+        assert_eq!(&entry(5)[12..15], &[1, 11, 0]);
+    }
+
+    /// MCA errors and ABL errors in a region one byte too small for all of
+    /// them: the last (least severe) error is left out whole, the region is
+    /// one complete block, and the count says so.
+    #[test]
+    fn a_full_region_leaves_whole_errors_out() {
+        let mca = |bank, status| Record {
+            kind: Kind::Boot,
+            cpu: 1,
+            bank,
+            status,
+            ..Record::EMPTY
+        };
+        let records = [mca(1, 1 << 63 | 1 << 61 | 1 << 57), mca(2, 1 << 63)];
+        let abl = [
+            AblError::Pmic {
+                event: 0x406e,
+                socket: 0,
+                channel: 1,
+                dimm: 1,
+                fatal: false,
+                data_a: 0x10100,
+                data_b: 0x8,
+            },
+            AblError::CcdBist {
+                data_a: 9,
+                data_b: 0,
+            },
+        ];
+        let (all, omitted) = boot_error_region(&records, &abl, [0; 4], &[0; 48], 16 << 10);
+        assert_eq!(omitted, 0);
+        let (region, omitted) = boot_error_region(&records, &abl, [0; 4], &[0; 48], all.len() - 1);
+        assert_eq!(omitted, 1);
+        let decoded = decode(&region);
+        // The fatal MCA error, the BIST (two entries), the PMIC's (two);
+        // the corrected MCA error left out.
+        assert_eq!(decoded.entries.len(), 5);
+        assert_eq!(region.len(), all.len() - 296);
+        // Just room for the fatal ones: the PMIC's both entries go.
+        let fatal = 20 + 296 + (72 + 192) + (72 + 16);
+        let (region, omitted) = boot_error_region(&records, &abl, [0; 4], &[0; 48], fatal + 100);
+        assert_eq!((omitted, decode(&region).entries.len()), (2, 3));
     }
 
     /// What Linux's SMCA decoding of a processor section makes of it
@@ -381,6 +698,8 @@ mod tests {
     /// deferred error logged in both is one.
     #[test]
     fn deferred_errors_reach_the_os_as_linux_decodes_them() {
+        let region =
+            |records: &[Record]| boot_error_region(records, &[], [0; 4], &[0; 48], PRINTABLE).0;
         let deferred = 1 << 63 | 1 << 58 | 1 << 44 | 0x9b;
         let destat_only = Record {
             kind: Kind::Boot,
@@ -391,8 +710,7 @@ mod tests {
             ipid: 0x96 << 32,
             ..Record::EMPTY
         };
-        let (region, _) = boot_error_region(&[destat_only], [0; 4], PRINTABLE);
-        let decoded = decode(&region);
+        let decoded = decode(&region(&[destat_only]));
         assert_eq!(decoded.entries.len(), 1);
         assert_eq!(decoded.entries[0].0, Severity::Recoverable as u32);
         let section = &decoded.entries[0].2;
@@ -406,9 +724,7 @@ mod tests {
             address: 0x1000,
             ..destat_only
         };
-        let (region, omitted) = boot_error_region(&[two], [0; 4], PRINTABLE);
-        assert_eq!(omitted, 0);
-        let errors: Vec<_> = decode(&region)
+        let errors: Vec<_> = decode(&region(&[two]))
             .entries
             .iter()
             .map(|(severity, _, section)| (*severity, linux_mce(section)))
@@ -429,12 +745,11 @@ mod tests {
             address: 0x2000,
             ..destat_only
         };
-        let (region, _) = boot_error_region(&[twice], [0; 4], PRINTABLE);
-        assert_eq!(decode(&region).entries.len(), 1);
+        assert_eq!(decode(&region(&[twice])).entries.len(), 1);
     }
 
-    /// Four errors: the region Linux prints holds the worst three, under
-    /// 1 KiB, and counts the fourth.
+    /// Four MCA errors: the region Linux prints holds the worst three,
+    /// under 1 KiB, and counts the fourth.
     #[test]
     fn four_errors_leave_the_least_out_of_a_printable_region() {
         let error = |bank, status| Record {
@@ -450,11 +765,10 @@ mod tests {
             error(3, 1 << 63 | 1 << 61 | 1 << 57),
             error(4, 1 << 63 | 1 << 44),
         ];
-        let (region, omitted) = boot_error_region(&records, [0; 4], PRINTABLE);
-        assert!(region.len() <= PRINTABLE && region.len() < 1024);
+        let (region, omitted) = boot_error_region(&records, &[], [0; 4], &[0; 48], PRINTABLE);
+        assert!(region.len() <= PRINTABLE);
         assert_eq!(omitted, 1);
-        let decoded = decode(&region);
-        let banks: Vec<u32> = decoded
+        let banks: Vec<u32> = decode(&region)
             .entries
             .iter()
             .map(|(_, _, section)| linux_mce(section).0)
@@ -506,6 +820,51 @@ mod tests {
         let first = errors(&ce).next().unwrap();
         assert!(!alone(&first).uncorrected());
         assert!(errors(&ce).nth(1).unwrap().uncorrected());
+    }
+
+    /// MCA and ABL errors in the printable region: whole errors, the worst
+    /// first, an ABL error's two entries together; what does not fit is
+    /// counted.
+    #[test]
+    fn mca_and_abl_errors_share_the_printable_region() {
+        let mca = |bank, status| Record {
+            kind: Kind::Boot,
+            cpu: 1,
+            bank,
+            status,
+            ..Record::EMPTY
+        };
+        let records = [mca(1, 1 << 63 | 1 << 61 | 1 << 57), mca(2, 1 << 63)];
+        let abl = [
+            AblError::Pmic {
+                event: 0x406e,
+                socket: 0,
+                channel: 1,
+                dimm: 1,
+                fatal: false,
+                data_a: 0x10100,
+                data_b: 0x8,
+            },
+            AblError::CcdBist {
+                data_a: 9,
+                data_b: 3,
+            },
+        ];
+        let (region, omitted) = boot_error_region(&records, &abl, [0; 4], &[0; 48], PRINTABLE);
+        assert!(region.len() <= PRINTABLE);
+        assert_eq!(omitted, 1);
+        let sections: Vec<[u8; 16]> = decode(&region).entries.iter().map(|e| e.1).collect();
+        assert_eq!(
+            sections,
+            [
+                cper::PROCESSOR_IA,
+                cper::PROCESSOR_GENERIC,
+                ABL_EVENT,
+                cper::PLATFORM_MEMORY,
+                ABL_EVENT
+            ],
+            "the corrected MCA error left out"
+        );
     }
 
     #[test]

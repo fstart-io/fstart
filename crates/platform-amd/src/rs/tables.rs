@@ -102,6 +102,13 @@ pub fn acpi<V: Variant>(
         .inspect_err(|_| fstart_log::error!("ACPI: FCH devices"))
         .ok()?;
     sb_aml.extend_from_slice(&silicon.aml);
+    let abl: alloc::vec::Vec<_> = ctx
+        .memory
+        .apob
+        .map(|apob| {
+            crate::acpi::apei::abl_errors(apob, fstart_driver_amd::apob::event::DimmBits::RS)
+        })
+        .unwrap_or_default();
     // SAFETY: firmware BSS in the reserved early region, written once.
     let storage = unsafe { &mut (*core::ptr::addr_of_mut!(TABLES)).0 };
     crate::acpi::install(
@@ -122,6 +129,7 @@ pub fn acpi<V: Variant>(
             ivrs_devices: &[],
             sb_aml: &sb_aml,
             tables: &silicon.tables,
+            abl: &abl,
         },
         // Direct ACPI mode: no SMI command port.
         None,
