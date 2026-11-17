@@ -6,6 +6,11 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(rust_analyzer)");
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+        // The SMM entry stubs are only for the image builder, which the
+        // browser assembler (wasm32) does not have.
+        return;
+    }
     println!("cargo:rerun-if-changed=asm/entry_stub.S");
     println!("cargo:rerun-if-changed=../smm/src/runtime_abi.rs");
 

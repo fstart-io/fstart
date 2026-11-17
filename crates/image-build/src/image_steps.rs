@@ -6,15 +6,18 @@
 //! format means adding its operation and its arm here, next to the
 //! format's own code — not teaching every tool a new special case.
 use crate::build_plan::{BuildPlan, FfsAssembly, FileBinding, ImageOperation};
+use crate::files::Files;
 use crate::{StageBinary, amd::halved_flash};
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
 };
 
 /// Everything an image step may consume besides the plan itself.
 pub struct ImageContext<'a> {
+    /// Where the steps read their inputs and write their artefacts: the
+    /// disk, or an in-memory tree for a bundle ([`crate::bundle`]).
+    pub files: &'a dyn Files,
     pub workspace_root: &'a Path,
     pub board_dir: &'a Path,
     pub board_name: &'a str,
@@ -26,6 +29,9 @@ pub struct ImageContext<'a> {
     /// Named files for a coreboot payload (`--payload-file NAME=PATH`).
     pub payload_files: &'a [(String, String)],
     pub signing_key: Option<&'a Path>,
+    /// Settings the image's store starts with (`--setting KEY=VALUE`),
+    /// checked against the plan's options ([`crate::options::Options::seed`]).
+    pub settings: &'a [(String, String)],
 }
 
 /// The artefacts of the executed steps, by step name, with the final
@@ -38,29 +44,20 @@ pub struct ImageOutputs {
     pub notes: Vec<String>,
 }
 
-fn read(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
-}
-
 /// A declared file input, read with its size bound enforced, resolved
-/// against the workspace root unless absolute.
-fn read_binding(root: &Path, binding: &FileBinding) -> Result<Vec<u8>, String> {
-    let source = root
-        .join(&binding.path)
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", binding.path))?;
-    let metadata = fs::metadata(&source).map_err(|e| format!("{}: {e}", source.display()))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > binding.capacity {
+/// against the workspace root unless absolute. The path goes to `files`
+/// as is: the host resolves it (symlinks included), an in-memory tree
+/// normalizes its keys itself.
+fn read_binding(files: &dyn Files, root: &Path, binding: &FileBinding) -> Result<Vec<u8>, String> {
+    let source = root.join(&binding.path);
+    let size = files.len(&source)?;
+    if size == 0 || size > binding.capacity {
         return Err(format!(
             "{}: image input is not a nonempty bounded regular file",
             source.display()
         ));
     }
-    let bytes = read(&source)?;
+    let bytes = files.read(&source)?;
     if bytes.is_empty() || bytes.len() as u64 > binding.capacity {
         return Err(format!(
             "{}: image input changed outside its size bound",
@@ -88,10 +85,15 @@ fn stage<'a>(stages: &'a [StageBinary], unit: &str) -> Result<&'a StageBinary, S
 /// image contract and is an error here, not an empty success.
 pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs, String> {
     plan.order()?;
+    // A halved flash packs the generations whose blobs are there.
+    let mut plan = plan.clone();
+    halved_flash::keep_present(&mut plan, &|path| ctx.files.exists(Path::new(path)))?;
+    let plan = &plan;
     if plan.images.is_empty() {
         return Err("plan has no image steps".into());
     }
-    fs::create_dir_all(ctx.output_dir).map_err(|e| e.to_string())?;
+    let mut seed = plan.options.seed(ctx.settings)?;
+    ctx.files.create_dir_all(ctx.output_dir)?;
     let mut outputs = ImageOutputs {
         artifacts: BTreeMap::new(),
         image: ctx.output_dir.to_path_buf(),
@@ -124,6 +126,7 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             ImageOperation::Ffs(image) => {
                 let config = image.config(ctx.board_name)?;
                 crate::assemble::assemble(
+                    ctx.files,
                     ctx.workspace_root,
                     ctx.board_dir,
                     &config,
@@ -141,15 +144,27 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             ImageOperation::AmdEfs(operation) => {
                 amd_efs(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
-            ImageOperation::AmdHalvedFlash(operation) => {
-                amd_halved_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
-            }
+            ImageOperation::AmdHalvedFlash(operation) => amd_halved_flash(
+                ctx,
+                operation,
+                consumed.as_deref(),
+                seed.take(),
+                &mut outputs.notes,
+            )?,
             ImageOperation::X86Flash(operation) => {
                 x86_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
         };
         outputs.image = artifact.clone();
         outputs.artifacts.insert(step.name.clone(), artifact);
+    }
+    if seed.is_some() {
+        return Err("settings: no image step holds the settings store".into());
+    }
+    for (key, value) in ctx.settings {
+        outputs
+            .notes
+            .push(format!("settings store: {key} = {value}"));
     }
     Ok(outputs)
 }
@@ -169,11 +184,14 @@ fn x86_flash(
 ) -> Result<PathBuf, String> {
     let ffs_path = ffs_artifact(ffs, "x86 flash")?;
     let stage = stage(ctx.stages, &operation.stage_unit)?;
-    let (image, composed) =
-        operation.compose(&read(&ffs_path)?, &read(&stage.path)?, &stage.path)?;
+    let (image, composed) = operation.compose(
+        &ctx.files.read(&ffs_path)?,
+        &ctx.files.read(&stage.path)?,
+        &stage.path,
+    )?;
     notes.extend(composed);
     let out = ffs_path.with_extension("rom");
-    write(&out, &image)?;
+    ctx.files.write(&out, &image)?;
     notes.push(format!(
         "x86 flash image: {} ({} MiB, FFS at {:#x})",
         out.display(),
@@ -195,12 +213,12 @@ fn amd_efs(
     let bindings = operation.bindings()?;
     let sources = bindings
         .iter()
-        .map(|binding| read_binding(ctx.workspace_root, binding))
+        .map(|binding| read_binding(ctx.files, ctx.workspace_root, binding))
         .collect::<Result<Vec<_>, _>>()?;
     let reset = stage(ctx.stages, &operation.stage_unit)?;
-    let reset_bytes = read(&reset.run_path)?;
+    let reset_bytes = ctx.files.read(&reset.run_path)?;
     let ffs_bytes = match &operation.ffs {
-        Some(_) => Some(read(&ffs_artifact(ffs, "AMD EFS")?)?),
+        Some(_) => Some(ctx.files.read(&ffs_artifact(ffs, "AMD EFS")?)?),
         None => None,
     };
     let source_refs: Vec<_> = sources.iter().map(Vec::as_slice).collect();
@@ -211,7 +229,7 @@ fn amd_efs(
     } else {
         format!("{}-psp-fragment.bin", ctx.board_name)
     });
-    write(&output, &image.bytes)?;
+    ctx.files.write(&output, &image.bytes)?;
     let receipt = serde_json::json!({
         "flash_offset": image.offset,
         "bytes": image.bytes.len(),
@@ -227,7 +245,7 @@ fn amd_efs(
         "ffs_sha256": ffs_bytes.as_deref().map(sha256),
     });
     let metadata = output.with_extension("json");
-    write(
+    ctx.files.write(
         &metadata,
         &serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )?;
@@ -247,38 +265,48 @@ fn amd_efs(
     Ok(output)
 }
 
-/// Compose the consumed FFS artefact and the reset stage into the
-/// halved vendor ROM (or its packed halves). Writes `<ffs>.rom`, and
-/// `<ffs>.bank.rom` when the readout carries mirrored boot banks.
+/// Compose the consumed FFS artefact and the reset stage with the halves
+/// packed from their files. Writes `<ffs>.rom`.
 fn amd_halved_flash(
     ctx: &ImageContext<'_>,
     image: &halved_flash::AmdHalvedFlashAssembly,
     ffs: Option<&Path>,
+    seed: Option<crate::options::Seed>,
     notes: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
     use halved_flash::{HALF_SIZE, HalfAction, name};
     let plan = &image.compose;
-    // Relative vendor paths are workspace-relative (`--image-config`
-    // replaces the board's vendor ROM).
-    let vendor_path = ctx.workspace_root.join(&image.vendor_image);
-    let vendor = if image.packed.is_empty() {
-        notes.push(format!("AMD vendor ROM {}", vendor_path.display()));
-        read(&vendor_path)?
-    } else {
-        let read = |path: &str| read(Path::new(path));
-        let rom = halved_flash::packed_rom(&image.packed, plan, &read)?;
-        for half in &image.packed {
-            notes.push(format!(
-                "AMD {} PSP firmware packed from its files",
-                name(half.generation)
-            ));
-        }
-        rom
-    };
+    // The options' store is the flash plan's: seeded where the boot reads.
+    if let Some(seed) = &seed
+        && plan
+            .nvram
+            .map(|slot| (slot.flash_offset, slot.size as usize))
+            != Some((seed.offset, seed.bytes.len()))
+    {
+        return Err(format!(
+            "settings: the options' store at {:#x} is not the flash plan's {:x?}",
+            seed.offset, plan.nvram
+        ));
+    }
+    let rom = halved_flash::packed_rom(&image.packed, plan, &|path: &str| {
+        ctx.files.read(Path::new(path))
+    })?;
+    for half in &image.packed {
+        notes.push(format!(
+            "AMD {} PSP firmware packed from its files",
+            name(half.generation)
+        ));
+    }
     let ffs_path = ffs_artifact(ffs, "AMD halved flash")?;
-    let ffs = read(&ffs_path)?;
+    let ffs = ctx.files.read(&ffs_path)?;
     let reset = stage(ctx.stages, &image.stage_unit)?;
-    let flash = halved_flash::compose(&vendor, plan, &read(&reset.run_path)?, &ffs)?;
+    let flash = halved_flash::compose_seeded(
+        &rom,
+        plan,
+        &ctx.files.read(&reset.run_path)?,
+        &ffs,
+        seed.as_ref().map(|seed| seed.bytes.as_slice()),
+    )?;
     if !flash.patched.locator || !flash.patched.flash {
         notes.push(
             "warning: the AMD reset stage unit links no FFS locator or flash anchor; \
@@ -295,8 +323,7 @@ fn amd_halved_flash(
                 layout.prefix_end,
             )),
             HalfAction::Keep(generation) => notes.push(format!(
-                "warning: AMD {half:?} half kept from {} ({}: not supported by the board)",
-                vendor_path.display(),
+                "warning: AMD {half:?} half kept ({}: not supported by the board)",
                 generation.map_or("no EFS", name),
             )),
         }
@@ -307,18 +334,7 @@ fn amd_halved_flash(
         "each half"
     };
     let out = ffs_path.with_extension("rom");
-    write(&out, &flash.image)?;
-    if flash.image.len() != plan.boot_window(&flash.image)?.len() {
-        // Programmers that mirror the bank themselves (a BMC BIOS update)
-        // take the 16 MiB boot bank, not the full readout.
-        let bank = out.with_extension("bank.rom");
-        write(&bank, &flash.image[..HALF_SIZE])?;
-        notes.push(format!(
-            "AMD boot bank mirrored at {:x?}; 16 MiB bank alone: {}",
-            plan.mirrors,
-            bank.display()
-        ));
-    }
+    ctx.files.write(&out, &flash.image)?;
     notes.push(format!(
         "AMD halved flash image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; \
          reset image {:#x} bytes at {:#x} ({reset_copies})",

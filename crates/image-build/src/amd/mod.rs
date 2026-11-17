@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! AMD PSP flash images, in the format of `fstart_amdfw_format`: [`assembly`]
 //! composes a stage's image from a vendor image or packed blobs.
-//! [`SingleLevelImage`] packs Picasso's single-level PSP partition,
-//! [`levels::TwoLevelImage`] the two-level partitions of Zeppelin, Naples,
-//! Rome and Milan.
+//! [`SingleLevelImage`] packs a single-level PSP partition (Picasso's),
+//! [`levels::TwoLevelImage`] a two-level one (Zeppelin's, Naples', Rome's
+//! and Milan's). Which SoC uses which, and with which files, is the SoC's
+//! blob table ([`blobs`]).
 //!
 //! Format parsing and validation live in the generation-independent
 //! `fstart-amdfw-format` crate. Signed AMD blobs are copied unchanged,
@@ -73,8 +74,12 @@ pub struct FlashRegion {
     pub size: u32,
 }
 
+/// A single-level PSP partition: one `$PSP` and one `$BHD` directory
+/// behind the EFS.
 #[derive(Debug, Clone)]
 pub struct SingleLevelImage {
+    /// The EFS field the SoC's PSP takes the BIOS directory from.
+    pub bios_directory: BiosDirectorySlot,
     pub flash_size: u32,
     pub efs_offset: u32,
     /// Exclusive end of the firmware partition, not necessarily the chip end.
@@ -263,9 +268,6 @@ fn validate_blobs(blobs: &[Blob], bios: bool) -> Result<()> {
 }
 
 impl SingleLevelImage {
-    /// The EFS field Picasso's PSP takes the BIOS directory from.
-    pub const BIOS_DIRECTORY: BiosDirectorySlot = BiosDirectorySlot::Family17hModel10;
-
     pub fn pack(&self) -> Result<PackedImage> {
         check_partition(self.flash_size, self.efs_offset, self.partition_end)?;
         if self.spi_read_mode > 7 || self.spi_speed > 3 {
@@ -463,7 +465,7 @@ impl SingleLevelImage {
             pointer.set(0);
         }
         efs.new_psp_directory.set(physical(psp_start) as u32);
-        efs.bios_directory_mut(SingleLevelImage::BIOS_DIRECTORY)
+        efs.bios_directory_mut(self.bios_directory)
             .set(physical(bios_start) as u32);
         efs.spi_read_mode = self.spi_read_mode;
         efs.spi_speed = self.spi_speed;

@@ -108,14 +108,12 @@ pub struct PackageTables {
 }
 
 /// Well-known option names with dedicated fbuild flags. Path-valued:
-/// `image-config` (explicit platform image configuration, e.g. a vendor
-/// ROM), `blobs` (directory of the vendor firmware blobs the platform's
-/// tables name) and `donor` (a vendor flash image fbuild extracts the
-/// blob directory from; fbuild then sets `blobs`). The platforms that
+/// `blobs` (directory of the vendor firmware blobs the platform's tables
+/// name) and `donor` (a vendor flash image fbuild extracts the blob
+/// directory from; fbuild then sets `blobs`). The platforms that
 /// take them declare them in their [`HostPlan::Options`]; these are only
 /// the names the CLI flags write.
 pub mod options {
-    pub const IMAGE_CONFIG: &str = "image-config";
     pub const BLOBS: &str = "blobs";
     pub const DONOR: &str = "donor";
     pub const X86_LINUX_KERNEL_LOAD_ADDR: &str = "x86-linux-kernel-load-addr";
@@ -212,10 +210,8 @@ impl BuildSelection {
             {
                 return Err(format!("invalid selection option {name:?}"));
             }
-            if [options::IMAGE_CONFIG, options::BLOBS, options::DONOR].contains(&name.as_str())
-                && value.is_empty()
-            {
-                return Err("invalid image configuration or blob directory path".into());
+            if [options::BLOBS, options::DONOR].contains(&name.as_str()) && value.is_empty() {
+                return Err("invalid blob directory or donor image path".into());
             }
         }
         let mut names = std::collections::BTreeSet::new();
@@ -234,11 +230,6 @@ impl BuildSelection {
 
     pub fn set_option(&mut self, name: &str, value: impl Into<String>) {
         self.options.insert(name.to_string(), value.into());
-    }
-
-    /// The vendor-image path of `--image-config`, if bound.
-    pub fn image_config(&self) -> Option<&str> {
-        self.option(options::IMAGE_CONFIG)
     }
 
     /// Parse the options as the platform's typed options `T`. A name `T`
@@ -537,7 +528,7 @@ mod tests {
     #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
     #[serde(default, rename_all = "kebab-case")]
     struct Composite {
-        image_config: Option<String>,
+        blobs: Option<String>,
         #[serde(flatten)]
         x86_linux: X86LinuxOptions,
     }
@@ -565,7 +556,7 @@ mod tests {
         );
         assert!(option_names::<NoOptions>().is_empty());
         let parsed: Composite = selection(&[
-            (options::IMAGE_CONFIG, "vendor.rom"),
+            (options::BLOBS, "blobs"),
             (options::X86_LINUX_KERNEL_LOAD_ADDR, "0x200_0000"),
             (options::X86_LINUX_PRINT_MTRRS, "true"),
         ])
@@ -574,7 +565,7 @@ mod tests {
         assert_eq!(
             parsed,
             Composite {
-                image_config: Some("vendor.rom".into()),
+                blobs: Some("blobs".into()),
                 x86_linux: X86LinuxOptions {
                     kernel_load_addr: Some(0x200_0000),
                     bootargs: None,
@@ -586,10 +577,10 @@ mod tests {
             selection(&[]).options::<Composite>().unwrap(),
             Composite::default()
         );
-        let unknown = selection(&[("blobs", "dir")])
+        let unknown = selection(&[("donor", "rom")])
             .options::<Composite>()
             .unwrap_err();
-        assert!(unknown.contains("no option 'blobs'") && unknown.contains("image-config"));
+        assert!(unknown.contains("no option 'donor'") && unknown.contains("blobs"));
         assert!(
             selection(&[("blobs", "dir")])
                 .options::<NoOptions>()

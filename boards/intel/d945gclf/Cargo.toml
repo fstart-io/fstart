@@ -7,10 +7,12 @@ publish = false
 
 [package.metadata.fstart]
 board = "intel-d945gclf"
+name = "D945GCLF"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-intel" }
 
 [package.metadata.fstart.variants.intel-d945gclf-postcar-debug]
+name = "D945GCLF (postcar debug)"
 features = ["x86-postcar-uart-debug"]
 
 [features]

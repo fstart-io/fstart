@@ -59,6 +59,7 @@ pub const EHCI_CONSOLE: fstart_driver_usbdebug::Config = fstart_driver_usbdebug:
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     type Platform = fstart_platform_intel::ironlake::IronlakeIbexPeak;
+    const OPTIONS: &'static [&'static dyn fstart_options::Describe] = &[&crate::mainboard::EC];
     const CONFIG: &'static IronlakeIbexPeakPlatform = &X201_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FlashLayout::IntelIfd(FLASH), 0x800000)

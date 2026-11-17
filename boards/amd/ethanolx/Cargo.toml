@@ -8,6 +8,7 @@ publish = false
 
 [package.metadata.fstart]
 board = "amd-ethanolx"
+name = "Ethanol-X"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-amd" }
 

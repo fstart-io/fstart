@@ -22,16 +22,13 @@ use crate::{Board, bmc, dxio, gpio, policy};
 static DETECT_ROME: [Pad; 2] = gpio::m2_detect_pads(Generation::Rome);
 static DETECT_MILAN: [Pad; 2] = gpio::m2_detect_pads(Generation::Milan);
 
-/// Rome and Milan; the PSP boots the vendor ROM's Rome (lower) or Milan
+/// Rome and Milan; the PSP boots the image's Rome (lower) or Milan
 /// (upper) half and both carry this build.
 impl fstart_platform_amd::board::Board for Board {
     const NAME: &'static str = "Tyan S8030";
     const SOCS: &'static [SocId] = &[SocId::Rome, SocId::Milan];
     /// 1P, 64 cores with SMT (Rome and Milan alike).
     const MAX_CPUS: u16 = 128;
-    /// The vendor 32 MiB dual image (Rome lower half, Milan upper half);
-    /// the user supplies it (see `vendor/README.md`).
-    const VENDOR_IMAGE: &'static str = "boards/tyan/s8030/vendor/8030V404.ROM";
     /// J40 takes an LPC TPM module (Tyan lists TM-TPM2-I-3353, SLB9665).
     /// Unlike the vendor's Setup default it is used when fitted: without a
     /// module the probe finds nothing.
@@ -42,7 +39,15 @@ impl fstart_platform_amd::board::Board for Board {
         kcs_spacing: bmc::KCS_SPACING as u8,
         sw_smi_base: 0xC0,
     });
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
+        &[&POLICY_OPTIONS, &dxio::SETUP];
 }
+
+/// The policy knobs over Rome's policy; Milan's board values are the same.
+static POLICY_OPTIONS: board::PolicyOptions = board::PolicyOptions {
+    config,
+    generation: Generation::Rome,
+};
 
 /// The policy knobs the user may override: "Restore AC Power Loss", as the
 /// vendor Setup offers it.

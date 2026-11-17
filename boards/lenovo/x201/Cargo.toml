@@ -7,6 +7,7 @@ publish = false
 
 [package.metadata.fstart]
 board = "lenovo-x201"
+name = "ThinkPad X201"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-intel" }
 

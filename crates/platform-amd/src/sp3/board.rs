@@ -66,3 +66,20 @@ pub struct Config {
     pub policy: Policy,
     pub options: &'static [fstart_options::Knob<Policy>],
 }
+
+/// The policy knobs of a board's [`Config`] as one of its option sets
+/// ([`crate::board::Board::OPTION_SETS`]), over the policy of `generation`
+/// (the boot resolves them over the running SoC's).
+pub struct PolicyOptions {
+    /// The board's configuration of a generation, as its `main` enters
+    /// the flow with it.
+    pub config: fn(crate::sp3::silicon::Generation) -> Config,
+    pub generation: crate::sp3::silicon::Generation,
+}
+
+impl fstart_options::Describe for PolicyOptions {
+    fn describe(&self, each: &mut dyn FnMut(fstart_options::Entry)) {
+        let config = (self.config)(self.generation);
+        fstart_options::describe(config.options, &config.policy, each);
+    }
+}

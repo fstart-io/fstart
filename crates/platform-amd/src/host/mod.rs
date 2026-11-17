@@ -14,7 +14,7 @@
 //!
 //! What the flash image is made of is the SoC's image kind ([`Image`]):
 //! one 16 MiB image with the PSP firmware of one SoC ([`single`]), or the
-//! SP3 flash with a vendor half per generation ([`dual`]).
+//! SP3 flash with a half per generation ([`dual`]).
 extern crate std;
 
 pub mod dual;
@@ -72,14 +72,17 @@ pub struct Host {
     /// (touchpads, keyboards of a laptop).
     pub i2c_input: bool,
     pub image: Image,
+    /// Where the boot reads the stored option values, if the SoC has a
+    /// settings store; without one the board's values always boot and the
+    /// build lists no options.
+    pub option_store: Option<fstart_image_build::options::OptionStore>,
 }
 
 /// What the flash image is made of.
 pub enum Image {
     /// One 16 MiB image with the PSP firmware of one SoC.
     Single(single::Image),
-    /// The SP3 flash: a 16 MiB half per generation, composed into a vendor
-    /// ROM or packed from blobs.
+    /// The SP3 flash: a 16 MiB half per generation, packed from blobs.
     Dual(dual::Image),
 }
 
@@ -345,11 +348,11 @@ pub fn resolve(
         inputs,
         images,
         run: None,
+        options: Default::default(),
         units: vec![smm_unit(host), stage_unit(host, payload)?],
     };
     plan.order()?;
     plan.validate_compiler_selections(selection)?;
-    plan.validate_image_selection(selection)?;
     Ok(plan)
 }
 
@@ -377,7 +380,29 @@ pub fn resolve_board<B: Board>(
     selection: &BuildSelection,
     options: &HostOptions,
 ) -> Result<BuildPlan, String> {
-    resolve(&host::<B>()?, selection, options)
+    let host = host::<B>()?;
+    let mut plan = resolve(&host, selection, options)?;
+    plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
+    Ok(plan)
+}
+
+/// The options a build of `B` at `log_level` offers, kept in the host's
+/// settings store: the console level it starts at, then the board's sets
+/// ([`Board::OPTION_SETS`]), in the order the boot resolves them.
+pub fn options<B: Board>(
+    host: &Host,
+    log_level: Option<&str>,
+) -> Result<fstart_image_build::options::Options, String> {
+    let Some(store) = host.option_store else {
+        return Ok(Default::default());
+    };
+    let level = fstart_log::start_level(log_level.map(fstart_log::parse_verbosity));
+    fstart_image_build::options::collect(Some(store), |each| {
+        fstart_options::describe(&fstart_log::option::KNOBS, &level, each);
+        for set in B::OPTION_SETS {
+            set.describe(each);
+        }
+    })
 }
 
 /// Every board's plan generator, which fbuild's plan runner calls: the

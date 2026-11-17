@@ -9,6 +9,9 @@ mod layout_linker_tests;
 
 pub struct BuildResult {
     pub stages: Vec<fstart_image_build::StageBinary>,
+    /// Every unit's outputs by kind (`elf`, `flat`, SMM images, ABI
+    /// headers), as `fbuild bundle` publishes them.
+    pub artifacts: std::collections::BTreeMap<String, std::collections::BTreeMap<String, PathBuf>>,
 }
 
 impl BuildResult {

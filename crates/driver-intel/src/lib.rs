@@ -217,7 +217,10 @@ pub trait IntelNorthbridgeDriver:
     /// every stage that runs the driver.
     type Options: Clone + 'static;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>];
-    /// The board's values of the options.
+    /// The board's values of the options, from its configuration alone:
+    /// what the driver starts from, and what a build's option schema lists.
+    fn board_options(config: &Self::Config) -> Self::Options;
+    /// The values the driver runs with.
     fn options(&self) -> Self::Options;
     fn set_options(&mut self, options: Self::Options);
     fn new_from_config(
@@ -329,7 +332,10 @@ pub trait IntelSouthbridgeDriver: Sized {
     /// every stage that runs the driver.
     type Options: Clone + 'static;
     const KNOBS: &'static [fstart_options::Knob<Self::Options>];
-    /// The board's values of the options.
+    /// The board's values of the options, from its configuration alone:
+    /// what the driver starts from, and what a build's option schema lists.
+    fn board_options(config: &Self::Config) -> Self::Options;
+    /// The values the driver runs with.
     fn options(&self) -> Self::Options;
     fn set_options(&mut self, options: Self::Options);
 

@@ -19,9 +19,9 @@ map, GPIO, SATA policy, the FCH UART1 console and the BMC's IPMI KCS.
 ## Build
 
 ```sh
-cargo fbuild assemble --board amd-ethanolx --release
-cargo fbuild assemble --board amd-ethanolx --release --payload uefi
-cargo fbuild assemble --board amd-ethanolx --release --payload uefi-ui
+cargo fbuild assemble --board amd-ethanolx --release --donor /path/to/RXM100CB.bin
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi --donor ...
+cargo fbuild assemble --board amd-ethanolx --release --payload uefi-ui --donor ...
 ```
 
 The board initializes its AST2500 natively at 1024×768, 60 Hz, XRGB8888
@@ -31,24 +31,22 @@ The serial console remains available. No VGA ROM is executed or needed.
 The host driver requires BMC-initialized shared DRAM; it never resets the
 BMC or trains its memory. USB supplies KVM input.
 
-The vendor ROM is the board's own flash (`vendor/README.md`). The BMC
-exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased bytes at
-`[16, 48 MiB)` and a second copy at `[48, 64 MiB)`. Its BIOS update
-(non-combo mode) writes a 16 MiB upload to **both** the lower and the
-upper bank and leaves the middle alone; this was confirmed by complete
-readbacks. The board declares that mirror (`FLASH_MIRRORS`), so with the
-64 MiB readout as vendor ROM the build produces:
+The AMD firmware comes from a donor image, the board's own flash
+(`vendor/README.md`): fbuild extracts the files the platform's Milan table
+names, and fstart packs them into its own 16 MiB bank, `amd-ethanolx.rom`.
+The bank layout: the Milan partition from `0x20000`, the FFS at
+`[0x600000, 0xcc0000)`, the settings store at `[0xcc0000, 0xd00000)`, the
+3 MiB reset image at `0xd00000`. This larger reset-image budget
+accommodates the current graphical CrabEFI. The settings store moved from
+`0xda0000`; a newly assembled image starts with an empty store rather than
+migrating old settings.
 
-- `amd-ethanolx.rom`: the full 64 MiB flash image, bank at 0 and 48 MiB,
-  the readout's middle kept byte for byte, for an external programmer;
-- `amd-ethanolx.bank.rom`: the 16 MiB bank, for the BMC BIOS update.
-
-With only the lower 16 MiB as vendor ROM, `amd-ethanolx.rom` is the bank.
-The bank layout: vendor EFS and directories to `0x893000`, FFS from
-`0x893000`, settings store at `0xcc0000`, 3 MiB reset image at `0xd00000`.
-This larger reset-image budget accommodates the current graphical CrabEFI.
-The settings store moved from `0xda0000`; a newly assembled image starts
-with an empty store rather than migrating old settings.
+The BMC exports a 64 MiB window: the boot bank at `[0, 16 MiB)`, erased
+bytes at `[16, 48 MiB)` and a second copy at `[48, 64 MiB)`. Its BIOS
+update (non-combo mode) writes a 16 MiB upload to **both** the lower and
+the upper bank and leaves the middle alone; this was confirmed by complete
+readbacks. Upload the bank; for an external programmer, place it at 0 and
+48 MiB of the readout.
 
 There is no on-flash vendor fallback after an update: both banks hold the
 new image. Keep verified external readouts for recovery, verify the

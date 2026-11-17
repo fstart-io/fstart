@@ -115,6 +115,7 @@ fn assemble_loaded(
         supplied,
         &options.payload_files,
         options.signing_key.as_deref(),
+        &options.settings,
     )
 }
 

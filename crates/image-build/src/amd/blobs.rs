@@ -605,35 +605,81 @@ pub fn extract_tables(
     platform_table: &serde_json::Value,
     rom: &[u8],
     allow_missing: bool,
-) -> Result<(String, Vec<Extracted>, Vec<String>), String> {
+) -> Result<Donated, String> {
     let name = board_table["board"]
         .as_str()
-        .ok_or("the board has no name")?
-        .to_string();
-    let (mut found, mut missing) = (Vec::new(), Vec::new());
-    for board_blobs in board_tables(&board_table["amd"])? {
-        let soc: SocBlobs = serde_json::from_value(platform_table["amd"][&board_blobs.soc].clone())
-            .map_err(|e| {
-                format!(
-                    "platform [package.metadata.fstart.amd.{}]: {e}",
-                    board_blobs.soc
-                )
-            })?;
-        let Some(donor) = donor_image(rom, &soc) else {
-            if !allow_missing {
-                return Err(format!(
-                    "the vendor image has no {} firmware",
-                    board_blobs.soc
-                ));
-            }
-            missing.push(format!("{} firmware", board_blobs.soc));
+        .ok_or("the board has no name")?;
+    extract_donor(
+        &tables(board_table, platform_table)?,
+        name,
+        rom,
+        allow_missing,
+    )
+}
+
+/// The blob tables of a board's AMD firmware, from its and its platform's
+/// `fstart` manifest tables: one SoC table and the board's per SoC the
+/// board has (each generation of an SP3 board).
+pub fn tables(
+    board_table: &serde_json::Value,
+    platform_table: &serde_json::Value,
+) -> Result<Vec<(SocBlobs, BoardBlobs)>, String> {
+    let mut tables = Vec::new();
+    for board in board_tables(&board_table["amd"])? {
+        let soc: SocBlobs = serde_json::from_value(platform_table["amd"][&board.soc].clone())
+            .map_err(|e| format!("platform [package.metadata.fstart.amd.{}]: {e}", board.soc))?;
+        tables.push((soc, board));
+    }
+    Ok(tables)
+}
+
+/// The blob directory's files of every pair of `tables` ([`tables`]) from
+/// the donor image `rom` of board `board_name`. A donor may carry only
+/// some of a board's SoCs (an SP3 vendor build of one generation): those
+/// it lacks are absent, and the image packs the others. Missing files of a
+/// SoC it has are an error unless `allow_missing`.
+pub fn extract_donor(
+    tables: &[(SocBlobs, BoardBlobs)],
+    board_name: &str,
+    rom: &[u8],
+    allow_missing: bool,
+) -> Result<Donated, String> {
+    let mut donated = Donated {
+        board: board_name.into(),
+        ..Default::default()
+    };
+    for (soc, board) in tables {
+        let Some(donor) = donor_image(rom, soc) else {
+            donated.absent.push(board.soc.clone());
             continue;
         };
-        let (f, m) = extract(&soc, &board_blobs, &name, donor)?;
-        found.extend(f);
-        missing.extend(m);
+        let (found, missing) = extract(soc, board, board_name, donor)?;
+        if !missing.is_empty() && !allow_missing {
+            return Err(format!(
+                "the vendor image's {} firmware does not have: {}",
+                board.soc,
+                missing.join(", ")
+            ));
+        }
+        donated.found.extend(found);
+        donated.missing.extend(missing);
     }
-    Ok((name, found, missing))
+    if donated.found.is_empty() && !allow_missing {
+        return Err("the vendor image has firmware for none of the board's SoCs".into());
+    }
+    Ok(donated)
+}
+
+/// The files a donor image gave for a board ([`extract_tables`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Donated {
+    /// The board's name, as its table states it.
+    pub board: String,
+    pub found: Vec<Extracted>,
+    /// Files of a SoC the donor has firmware of, but not these.
+    pub missing: Vec<String>,
+    /// The SoCs the donor has no firmware of at all.
+    pub absent: Vec<String>,
 }
 
 #[cfg(test)]

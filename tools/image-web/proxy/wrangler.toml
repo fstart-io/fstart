@@ -1,0 +1,8 @@
+name = "fstart-release-proxy"
+main = "worker.mjs"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+[vars]
+REPOSITORY = "fstart-io/fstart"
+ALLOWED_ORIGINS = "https://fstart-io.github.io"

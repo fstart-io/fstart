@@ -6,33 +6,27 @@
 //! repeated-halves layout, not for a socket: the generations a board
 //! supports are configuration ([`FlashPlan::generations`]).
 //!
-//! Every supported vendor half keeps its vendor EFS and its PSP/BIOS
-//! directories and blobs in place (`[0, prefix)` of the half, the vendor's
-//! "Two 16M in 32MB" layout, AMD #55758 rev 1.13 §4.1.7); only its `0x62`
-//! entries change, to a copy of the reset image at the half's own
-//! `0xde0000`.
+//! Each supported generation's PSP firmware is packed from its files
+//! ([`PackedHalf`], `--blobs`, or the blobs `--donor` extracts from a
+//! vendor image): its two-level partition ([`crate::amd::levels`]) in its
+//! own 16 MiB half, in boot ROM order (AMD #55758 rev 1.13 §4.1.7, "Two
+//! 16M in 32MB"), with its `0x62` entries naming a copy of the reset image
+//! at the half's own reset slot. Nothing of a vendor image but the blobs
+//! ends up in the flash.
 //!
 //! ```text
-//! [0, prefix_lo)              lower vendor prefix (EFS, directories, blobs)
-//! [ffs, 0xde0000)             fstart FFS (ffs = max(0x600000, prefix end)),
-//!                             then erased
-//! [0xde0000, 16 MiB)          reset image (lower half's 0x62)
-//! [16M, 16M + prefix_hi)      upper vendor prefix, if the board supports
-//!                             its generation (else the upper half is kept)
-//! [16M + 0xde0000, 32 MiB)    reset image copy (upper half's 0x62)
+//! [0, partition_lo)           lower half's PSP partition (EFS, directories, blobs)
+//! [ffs, nvram)                fstart FFS, then erased
+//! [nvram, reset)              settings store, erased
+//! [reset, 16 MiB)             reset image (lower half's 0x62)
+//! [16M, 16M + partition_hi)   upper half's partition, with a second generation
+//! [16M + reset, 32 MiB)       reset image copy (upper half's 0x62)
 //! ```
 //!
 //! The FFS exists once, in the lower half. The reset image reads it through
 //! ROM2 when ROM2 shows the lower half and through ROM3 otherwise
 //! (`fstart_driver_amd::sp3::fch::rom3`), located by the flash anchor
 //! (`fstart_amdfw_format::anchor`).
-//!
-//! Instead of a vendor ROM, the halves can be packed from the AMD firmware
-//! files ([`PackedHalf`], `--blobs`/`--donor`): each supported
-//! generation's two-level partition ([`crate::amd::levels`]) in its own
-//! half, boot ROM order, with its `0x62` entries naming the reset image
-//! from the start. The composer then treats the packed halves as it treats
-//! a vendor ROM.
 //!
 //! A single multi-generation EFS with a `2PSP` combo directory and the
 //! upper trees rebased to 32 MiB offsets (§4.1.7 "Single 32M in 32MB",
@@ -170,12 +164,12 @@ pub enum ImageError {
     Directory(DirError),
     /// The EFS generation word is none of the three.
     UnknownGeneration(u32),
-    /// No half of the vendor ROM has a generation the board supports.
+    /// No half of the ROM has a generation the board supports.
     NoSupportedHalf,
     /// The `0x62` entries are missing or not a copied reset image.
     ResetEntry(&'static str),
     InvalidSlot(ResetSlot),
-    /// The vendor prefix reaches into the FFS or reset image.
+    /// A half's partition reaches into the FFS or reset image.
     PrefixOverlap {
         prefix_end: usize,
         limit: usize,
@@ -196,7 +190,7 @@ pub enum ImageError {
     },
     /// The flash plan itself is inconsistent.
     Plan(&'static str),
-    /// The vendor ROM does not fit the layout.
+    /// The ROM does not fit the layout.
     Layout(&'static str),
     /// An EFS signature at a boot ROM search offset other than the EFS.
     StrayEfs {
@@ -204,6 +198,8 @@ pub enum ImageError {
     },
     /// The composed image does not resolve as planned.
     Verify(&'static str),
+    /// Settings to seed, but no settings store or one too small for them.
+    Settings(&'static str),
 }
 
 impl From<DirError> for ImageError {
@@ -339,7 +335,7 @@ impl VendorLayout {
     }
 }
 
-/// The 16 MiB halves of a vendor ROM: one for a 16 MiB flash, two for a
+/// The 16 MiB halves of a ROM: one for a 16 MiB flash, two for a
 /// 32 MiB one.
 pub fn halves(image: &[u8]) -> Result<Vec<(FlashHalf, &[u8])>, ImageError> {
     let halves: &[FlashHalf] = match image.len() {
@@ -362,7 +358,7 @@ pub fn half_generation(half: &[u8]) -> Option<Generation> {
         .and_then(|efs| generation_of(efs.generation.get()).ok())
 }
 
-/// How a build is composed into the vendor ROM.
+/// How a build's halves are laid out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashPlan {
     /// Generations the board supports; an upper half of another generation
@@ -378,13 +374,6 @@ pub struct FlashPlan {
     /// Lowest DRAM address the reset image may be copied to: the end of the
     /// platform's early region, which the reset image needs intact.
     pub dram_floor: u64,
-    /// Flash offsets past the boot bank where the board's flash export
-    /// carries a mirror of the 16 MiB boot bank. With a full readout as the
-    /// vendor ROM, the composed bank is written at 0 and at every mirror and
-    /// the rest of the readout is kept. Empty: the vendor ROM is the boot
-    /// window (one 16 MiB half or the 32 MiB dual image).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mirrors: Vec<u32>,
     /// The settings store at the top of the FFS window of the lower half:
     /// flash the firmware writes at runtime (its EFI variable store). The
     /// image has it erased; the FFS ends below it.
@@ -408,17 +397,17 @@ impl NvramSlot {
     }
 }
 
-/// What happens to one half of the vendor ROM.
+/// What happens to one half of the ROM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HalfAction {
-    /// Composed: vendor prefix kept, its `0x62` entries rewritten.
+    /// Composed: the packed partition kept, its `0x62` entries rewritten.
     Compose(VendorLayout),
     /// Kept byte-identical: an upper half without a recognized EFS (`None`)
     /// or of a generation the board does not support.
     Keep(Option<Generation>),
 }
 
-/// The plan applied to a vendor ROM, before any byte is written.
+/// The plan applied to the packed ROM, before any byte is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Survey {
     pub halves: Vec<(FlashHalf, HalfAction)>,
@@ -466,18 +455,6 @@ impl FlashPlan {
                 "settings store not 4 KiB aligned below the reset image",
             ));
         }
-        let mut mirrors = self.mirrors.clone();
-        mirrors.sort_unstable();
-        mirrors.dedup();
-        if mirrors.len() != self.mirrors.len()
-            || mirrors
-                .iter()
-                .any(|&m| !(m as usize).is_multiple_of(HALF_SIZE) || (m as usize) < HALF_SIZE)
-        {
-            return Err(ImageError::Plan(
-                "mirrors are not distinct banks above the boot bank",
-            ));
-        }
         Ok(())
     }
 
@@ -487,42 +464,11 @@ impl FlashPlan {
             .map_or(self.reset.flash_offset, |nvram| nvram.flash_offset)
     }
 
-    /// The part of `vendor_rom` the boot ROMs search: all of it without
-    /// mirrors; with mirrors, the boot bank of a full readout whose
-    /// mirrors all fit (a bare 16 MiB bank is its own boot window).
-    pub fn boot_window<'a>(&self, vendor_rom: &'a [u8]) -> Result<&'a [u8], ImageError> {
-        if self.mirrors.is_empty() || vendor_rom.len() == HALF_SIZE {
-            return Ok(vendor_rom);
-        }
-        let end = self.mirrors.iter().map(|&m| m as usize + HALF_SIZE).max();
-        match end {
-            Some(end) if vendor_rom.len() >= end && vendor_rom.len().is_multiple_of(HALF_SIZE) => {
-                Ok(&vendor_rom[..HALF_SIZE])
-            }
-            _ => Err(ImageError::Layout(
-                "the vendor readout does not hold the board's bank mirrors",
-            )),
-        }
-    }
-
-    /// `vendor_rom` with the composed boot `window` in place: the window
-    /// itself, or a full readout with the bank at 0 and every mirror.
-    fn expand(&self, vendor_rom: &[u8], window: Vec<u8>) -> Vec<u8> {
-        if window.len() == vendor_rom.len() {
-            return window;
-        }
-        let mut out = vendor_rom.to_vec();
-        for at in core::iter::once(0).chain(self.mirrors.iter().map(|&m| m as usize)) {
-            out[at..at + window.len()].copy_from_slice(&window);
-        }
-        out
-    }
-
-    /// Decide every half of `vendor_rom` and the FFS window.
-    pub fn survey(&self, vendor_rom: &[u8]) -> Result<Survey, ImageError> {
+    /// Decide every half of `rom` and the FFS window.
+    pub fn survey(&self, rom: &[u8]) -> Result<Survey, ImageError> {
         self.check()?;
         let reset_at = self.reset.flash_offset as usize;
-        let halves = halves(self.boot_window(vendor_rom)?)?
+        let halves = halves(rom)?
             .into_iter()
             .map(|(half, bytes)| {
                 let action = match half_generation(bytes) {
@@ -619,15 +565,16 @@ fn rewrite_half(bytes: &mut [u8], tables: &[usize], plan: &FlashPlan) -> Result<
 
 /// Build the image from the survey. `reset` is already patched.
 fn build(
-    vendor_rom: &[u8],
+    rom: &[u8],
     plan: &FlashPlan,
     survey: &Survey,
     reset: &[u8],
     ffs: &[u8],
+    settings: Option<&[u8]>,
 ) -> Result<Vec<u8>, ImageError> {
-    let mut out = vendor_rom.to_vec();
+    let mut out = rom.to_vec();
     for (half, layout) in survey.composed() {
-        let vendor = Vendor::read(&vendor_rom[half.range()])?;
+        let vendor = Vendor::read(&rom[half.range()])?;
         let tables: Vec<_> = vendor.bios.iter().map(|dir| dir.offset).collect();
         let bytes = &mut out[half.range()];
         bytes[layout.prefix_end..].fill(0xff);
@@ -637,9 +584,20 @@ fn build(
     }
     let start = survey.ffs.start as usize;
     out[start..start + ffs.len()].copy_from_slice(ffs);
-    // A new image starts with an empty settings store.
-    if let Some(nvram) = plan.nvram {
-        out[nvram.flash_offset as usize..nvram.end() as usize].fill(0xff);
+    // A new image starts with an empty settings store, or the seeded one.
+    match (plan.nvram, settings) {
+        (Some(nvram), settings) => {
+            let store = &mut out[nvram.flash_offset as usize..nvram.end() as usize];
+            store.fill(0xff);
+            if let Some(settings) = settings {
+                store
+                    .get_mut(..settings.len())
+                    .ok_or(ImageError::Settings("larger than the settings store"))?
+                    .copy_from_slice(settings);
+            }
+        }
+        (None, Some(_)) => return Err(ImageError::Settings("the plan has no settings store")),
+        (None, None) => {}
     }
     Ok(out)
 }
@@ -836,23 +794,34 @@ pub fn patch_reset_image(
 /// The flash image of one build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmdHalvedFlash {
-    /// The composed ROM, the vendor ROM's size (16 or 32 MiB, or a full
-    /// readout with mirrored boot banks).
+    /// The composed ROM, 16 MiB per packed half.
     pub image: Vec<u8>,
     pub survey: Survey,
     pub patched: Patched,
 }
 
-/// Compose a build: patch the reset image, then lay out the vendor ROM as
-/// the plan's layout says and verify the result.
+/// Compose a build: patch the reset image, then lay out the packed ROM as
+/// the plan's layout says and verify the result. The settings store
+/// starts empty.
 pub fn compose(
-    vendor_rom: &[u8],
+    rom: &[u8],
     plan: &FlashPlan,
     reset_image: &[u8],
     ffs: &[u8],
 ) -> Result<AmdHalvedFlash, ImageError> {
-    let window = plan.boot_window(vendor_rom)?;
-    let survey = plan.survey(window)?;
+    compose_seeded(rom, plan, reset_image, ffs, None)
+}
+
+/// [`compose`] with the settings store starting as `settings`, a variable
+/// store image no larger than the plan's store (the rest of it erased).
+pub fn compose_seeded(
+    rom: &[u8],
+    plan: &FlashPlan,
+    reset_image: &[u8],
+    ffs: &[u8],
+    settings: Option<&[u8]>,
+) -> Result<AmdHalvedFlash, ImageError> {
+    let survey = plan.survey(rom)?;
     if ffs.len() > survey.ffs_capacity() {
         return Err(ImageError::FfsTooLarge {
             size: ffs.len(),
@@ -861,14 +830,12 @@ pub fn compose(
     }
     check_reset_image(plan, reset_image)?;
     let mut reset = reset_image.to_vec();
-    // The anchor describes the boot window the reset image reads, not the
-    // mirrors of a full readout.
-    let anchor = FlashAnchor::new(window.len() as u32, survey.ffs.start, ffs.len() as u32);
+    let anchor = FlashAnchor::new(rom.len() as u32, survey.ffs.start, ffs.len() as u32);
     let patched = patch_reset_image(&mut reset, ffs, anchor)?;
-    let image = build(window, plan, &survey, &reset, ffs)?;
+    let image = build(rom, plan, &survey, &reset, ffs, settings)?;
     verify(&image, plan, &survey)?;
     Ok(AmdHalvedFlash {
-        image: plan.expand(vendor_rom, image),
+        image,
         survey,
         patched,
     })
@@ -883,6 +850,9 @@ pub struct PackedHalf {
     pub files: crate::amd::assembly::PspFiles,
     /// The APOB's DRAM destination (BIOS entry 0x61).
     pub apob_destination: u64,
+    /// The generation's microcode files, in the FFS's microcode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub microcode: Vec<String>,
 }
 
 impl PackedHalf {
@@ -922,8 +892,7 @@ impl PackedHalf {
     }
 }
 
-/// The ROM of `halves`, lower first: the input the composer takes instead
-/// of a vendor ROM.
+/// The ROM of `halves`, lower first: the input of the composer.
 pub fn packed_rom(
     halves: &[PackedHalf],
     plan: &FlashPlan,
@@ -949,19 +918,60 @@ pub fn packed_rom(
     Ok(rom)
 }
 
+/// `plan` with the halves of its halved-flash step whose firmware the blobs
+/// have (`exists` tells which files do; a half's PSP directory files are
+/// its generation's own): a donor may carry only some of the board's
+/// generations. A dropped half's microcode leaves the FFS step the flash
+/// consumes too. A half with only some of its files fails when it is
+/// packed. Plans without a halved flash are unchanged.
+pub fn keep_present(plan: &mut BuildPlan, exists: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    use crate::build_plan::ImageOperation;
+    let Some(image) = plan
+        .images
+        .iter_mut()
+        .find_map(|step| match &mut step.operation {
+            ImageOperation::AmdHalvedFlash(image) => Some(image),
+            _ => None,
+        })
+    else {
+        return Ok(());
+    };
+    let (kept, dropped): (Vec<_>, Vec<_>) = core::mem::take(&mut image.packed)
+        .into_iter()
+        .partition(|half| half.files.psp.iter().any(|f| exists(&f.path)));
+    if kept.is_empty() {
+        return Err("the blobs have firmware for none of the board's generations".into());
+    }
+    image.packed = kept;
+    let ffs = image.ffs.clone();
+    let dropped: Vec<&str> = dropped
+        .iter()
+        .flat_map(|half| half.microcode.iter().map(String::as_str))
+        .collect();
+    for step in &mut plan.images {
+        if step.name != ffs {
+            continue;
+        }
+        if let ImageOperation::Ffs(assembly) = &mut step.operation
+            && let Some(fstart_core::board::MicrocodeConfig::Amd(microcode)) =
+                &mut assembly.microcode
+        {
+            microcode
+                .files
+                .retain(|file| !dropped.contains(&file.as_str()));
+        }
+    }
+    Ok(())
+}
+
 /// The halved-flash image operation: the artefact of an earlier FFS step
 /// (the payload and the stage unit's trust-finalized copy) plus the stage
-/// unit, composed into the vendor ROM.
+/// unit, composed with the halves packed from their files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmdHalvedFlashAssembly {
     /// The FFS image step whose artefact the flash carries.
     pub ffs: String,
-    /// Vendor ROM: one 16 MiB half, the 32 MiB dual image or a full
-    /// readout with [`FlashPlan::mirrors`], workspace relative or absolute. Its directories and blobs are kept in place.
-    /// Empty with packed halves.
-    pub vendor_image: String,
-    /// The halves packed from files instead, lower first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The halves packed from files, lower first.
     pub packed: Vec<PackedHalf>,
     /// Unit whose flat output is the reset image.
     pub stage_unit: String,
@@ -975,10 +985,8 @@ impl AmdHalvedFlashAssembly {
     pub fn validate(&self, plan: &BuildPlan) -> Result<(), String> {
         self.compose.check()?;
         let slot = self.compose.reset;
-        if self.vendor_image.is_empty() == self.packed.is_empty()
-            || self.vendor_image.contains('\0')
-        {
-            return Err("a halved-flash image takes a vendor ROM or packed halves".into());
+        if self.packed.is_empty() || self.packed.len() > 2 {
+            return Err("a halved-flash image packs one or two halves".into());
         }
         if plan.stages.first() != Some(&self.stage_unit) {
             return Err("halved-flash stage unit must be the first image stage".into());

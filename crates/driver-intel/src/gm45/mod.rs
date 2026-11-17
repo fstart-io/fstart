@@ -446,6 +446,13 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
 
+    fn board_options(config: &Self::Config) -> Self::Options {
+        crate::igd::options::Options::new(
+            !matches!(config.graphics, Gm45GraphicsPolicy::Discrete),
+            32,
+        )
+    }
+
     fn options(&self) -> Self::Options {
         self.options
     }
@@ -473,10 +480,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         }
         Ok(Self {
             config,
-            options: crate::igd::options::Options::new(
-                !matches!(config.graphics, Gm45GraphicsPolicy::Discrete),
-                32,
-            ),
+            options: Self::board_options(config),
             graphics: config.graphics,
             low_dram_end: None,
             bootstrap_windows: None,

@@ -59,15 +59,13 @@ pub trait Board: 'static {
     const DISCRETE_TPM: bool = false;
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
-    /// Workspace-relative vendor ROM an SP3 image is composed into when the
-    /// build names none: the 32 MiB dual image, one 16 MiB half, or a full
-    /// readout with [`Board::FLASH_MIRRORS`].
-    const VENDOR_IMAGE: &'static str = "";
-    /// Flash offsets past the 16 MiB boot bank where the board's flash
-    /// export mirrors it ([`Board::VENDOR_IMAGE`] may then be the full
-    /// readout, and the build is a full flash image with the bank at 0 and
-    /// at every mirror).
-    const FLASH_MIRRORS: &'static [u32] = &[];
+    /// The option sets the board offers, in the order its boot resolves
+    /// them after the console level: on SP3 its policy knobs
+    /// ([`crate::sp3::board::PolicyOptions`]), then its own sets, each the
+    /// `fstart_options::OptionSet` its stage `main` resolves. The build
+    /// lists their options (`fbuild options`); nothing else describes
+    /// them. A SoC without a settings store lists none.
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] = &[];
 }
 
 /// What the flow's services read of the board ([`Board`]).

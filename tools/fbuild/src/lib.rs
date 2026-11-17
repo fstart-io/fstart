@@ -3,6 +3,7 @@ pub mod blobs;
 pub mod board_manifest;
 pub mod board_tool;
 pub mod build_board;
+pub mod bundle;
 mod cargo_features;
 mod compiler_inputs;
 mod host_plan;

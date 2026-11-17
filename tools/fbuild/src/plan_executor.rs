@@ -243,7 +243,7 @@ impl Resolved {
                 })
             })
             .collect::<Result<_, String>>()?;
-        Ok(crate::build_board::BuildResult { stages })
+        Ok(crate::build_board::BuildResult { stages, artifacts })
     }
     /// Bind the caller's named external files to the inputs the plan
     /// declares, applying board-relative defaults. Returns the complete
@@ -292,6 +292,7 @@ impl Resolved {
         supplied: &BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
+        settings: &[(String, String)],
     ) -> Result<
         (
             Vec<fstart_image_build::StageBinary>,
@@ -300,6 +301,8 @@ impl Resolved {
         String,
     > {
         let inputs = self.validate_inputs(&board.dir, supplied)?;
+        // Bad settings fail before the units build.
+        self.plan.options.seed(settings)?;
         let build = self.build(root, board, release)?;
         let directory = self
             .artifact_dir(root, &board.board, release)?
@@ -307,6 +310,7 @@ impl Resolved {
         let outputs = fstart_image_build::image_steps::execute(
             &self.plan,
             &fstart_image_build::image_steps::ImageContext {
+                files: &fstart_image_build::files::HostFiles,
                 workspace_root: root,
                 board_dir: &board.dir,
                 board_name: &board.board,
@@ -315,6 +319,7 @@ impl Resolved {
                 inputs: &inputs,
                 payload_files,
                 signing_key,
+                settings,
             },
         )?;
         for note in &outputs.notes {

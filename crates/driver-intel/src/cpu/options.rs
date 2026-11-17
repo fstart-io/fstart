@@ -9,6 +9,9 @@ pub struct Options {
 }
 
 impl Options {
+    /// Stock voltage: what a board offers before any override.
+    pub const STOCK: Self = Self { undervolt_steps: 0 };
+
     /// Apply before AP startup and before emitting CPU ACPI tables.
     pub fn apply(self) {
         fstart_arch::x86::cpu::intel::speedstep::set_undervolt_steps(self.undervolt_steps);

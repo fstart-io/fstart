@@ -24,6 +24,13 @@ pub struct BoardManifest {
     /// Declared variants: variant id -> cargo features.
     pub variants: Vec<(String, Vec<String>)>,
     pub build_profile: Option<ProfileRef>,
+    /// Human-readable name, e.g. "ThinkPad X60"; the selected variant's when
+    /// it has one.
+    pub name: Option<String>,
+    /// Declared variant names: variant id -> name.
+    pub variant_names: BTreeMap<String, String>,
+    /// The vendor download that works as this board's donor image.
+    pub donor: Option<crate::bundle::DonorSource>,
 }
 
 /// Direct Cargo dependency exposing the `HostPlan` host contract.
@@ -65,6 +72,10 @@ struct BoardMetadata {
     #[serde(default)]
     #[allow(dead_code)]
     amd: Option<toml::Value>,
+    /// See [`BoardManifest::name`].
+    name: Option<String>,
+    /// See [`BoardManifest::donor`].
+    donor: Option<crate::bundle::DonorSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +83,7 @@ struct BoardMetadata {
 struct VariantMetadata {
     #[serde(default)]
     features: Vec<String>,
+    name: Option<String>,
 }
 
 /// Boards live at `boards/<vendor>/<board>/Cargo.toml`.
@@ -154,6 +166,9 @@ pub fn find_in(boards: &[BoardManifest], board_name: &str) -> Result<BoardManife
             let mut resolved = board.clone();
             resolved.board = variant.clone();
             resolved.variant_features = variant_features.clone();
+            if let Some(name) = board.variant_names.get(variant) {
+                resolved.name = Some(name.clone());
+            }
             return Ok(resolved);
         }
     }
@@ -193,6 +208,11 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         .ok_or_else(|| format!("manifest has no parent: {}", manifest.display()))?
         .to_path_buf();
     let rel_dir = rel_dir_under_boards(&dir);
+    if let Some(donor) = &metadata.donor {
+        donor
+            .validate()
+            .map_err(|e| format!("{}: donor: {e}", manifest.display()))?;
+    }
 
     Ok(BoardManifest {
         board: metadata.board,
@@ -201,12 +221,17 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         rel_dir,
         arch: metadata.arch,
         variant_features: Vec::new(),
+        variant_names: (metadata.variants.iter())
+            .filter_map(|(id, v)| Some((id.clone(), v.name.clone()?)))
+            .collect(),
         variants: metadata
             .variants
             .into_iter()
             .map(|(id, v)| (id, v.features))
             .collect(),
         build_profile: metadata.build_profile,
+        name: metadata.name,
+        donor: metadata.donor,
     })
 }
 
@@ -399,5 +424,15 @@ mod tests {
                 assert_eq!(find(&root, variant).unwrap().package, board.package);
             }
         }
+    }
+
+    #[test]
+    fn boards_and_variants_carry_their_own_names() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let name = |id: &str| find(&root, id).unwrap().name;
+        assert_eq!(name("lenovo-t60").as_deref(), Some("ThinkPad T60"));
+        assert_eq!(name("lenovo-r60").as_deref(), Some("ThinkPad R60"));
+        let donor = find(&root, "tyan-s8030").unwrap().donor.unwrap();
+        assert!(donor.url.starts_with("https://"));
     }
 }

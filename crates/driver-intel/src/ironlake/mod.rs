@@ -427,6 +427,10 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
     const KNOBS: &'static [fstart_options::Knob<Self::Options>] =
         &[crate::igd::options::uma(UMA_SIZES)];
 
+    fn board_options(config: &Self::Config) -> Self::Options {
+        config.options()
+    }
+
     fn options(&self) -> Self::Options {
         self.options
     }
@@ -455,7 +459,7 @@ impl crate::IntelNorthbridgeDriver for IntelIronlake {
         }
         Ok(Self {
             config,
-            options: config.options(),
+            options: Self::board_options(config),
             dram_ready: false,
             boot_path: crate::BootPath::Normal,
             low_dram_end: None,

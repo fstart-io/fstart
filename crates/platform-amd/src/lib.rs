@@ -80,9 +80,6 @@ macro_rules! entry {
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct HostOptions {
-    /// The vendor flash image the PSP firmware is taken from or composed
-    /// into (`--image-config`).
-    pub image_config: Option<String>,
     /// The directory the PSP firmware is packed from (`--blobs`, or
     /// extracted by fbuild from `--donor`).
     pub blobs: Option<String>,

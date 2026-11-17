@@ -89,9 +89,6 @@ pub struct BuildArgs {
     /// The selected platform must bind each request unchanged, without fallback.
     #[arg(long = "compiler-input", value_parser = CompilerFileSelection::parse)]
     pub compiler_inputs: Vec<CompilerFileSelection>,
-    /// Explicit image configuration interpreted by the selected platform.
-    #[arg(long)]
-    pub image_config: Option<String>,
     /// Directory of the vendor firmware blobs the platform packs (e.g. AMD
     /// PSP firmware; see `fbuild blobs`).
     #[arg(long, conflicts_with = "donor")]
@@ -141,13 +138,19 @@ pub struct BuildArgs {
     /// signed with an ephemeral key that is discarded after the build.
     #[arg(long)]
     pub signing_key: Option<PathBuf>,
+    /// A firmware option the image's settings store starts with, as
+    /// KEY=VALUE; repeatable. KEY is one of the options the build offers
+    /// (`fbuild options`), VALUE one of its values: a number, `true` or
+    /// `false`, or a choice's label. The board's settings menu changes it
+    /// as any other.
+    #[arg(long = "setting", value_parser = parse_setting)]
+    pub settings: Vec<(String, String)>,
 }
 
 impl Default for BuildArgs {
     fn default() -> Self {
         Self {
             compiler_inputs: Vec::new(),
-            image_config: None,
             blobs: None,
             donor: None,
             smbios_date: current_smbios_date(),
@@ -160,6 +163,7 @@ impl Default for BuildArgs {
             inputs: Vec::new(),
             payload_files: Vec::new(),
             signing_key: None,
+            settings: Vec::new(),
         }
     }
 }
@@ -183,7 +187,6 @@ impl BuildArgs {
         // The dedicated flags feed their well-known option names; they
         // win over a generic `--option` of the same name.
         for (name, value) in [
-            (opt::IMAGE_CONFIG, &self.image_config),
             (opt::BLOBS, &self.blobs),
             (opt::DONOR, &self.donor),
             (opt::X86_LINUX_BOOTARGS, &self.linux_bootargs),
@@ -207,9 +210,6 @@ impl BuildArgs {
                 "--compiler-input".into(),
                 format!("{}={}", input.environment, input.path),
             ]);
-        }
-        if let Some(path) = &self.image_config {
-            args.extend(["--image-config".into(), path.clone()]);
         }
         if let Some(path) = &self.blobs {
             args.extend(["--blobs".into(), path.clone()]);
@@ -241,6 +241,9 @@ impl BuildArgs {
         }
         for (name, path) in &self.payload_files {
             args.extend(["--payload-file".into(), format!("{name}={path}")]);
+        }
+        for (key, value) in &self.settings {
+            args.extend(["--setting".into(), format!("{key}={value}")]);
         }
         if let Some(path) = &self.signing_key {
             args.extend(["--signing-key".into(), path.display().to_string()]);
@@ -316,6 +319,15 @@ fn parse_payload_file(value: &str) -> Result<(String, String), String> {
     }
 }
 
+pub fn parse_setting(value: &str) -> Result<(String, String), String> {
+    match value.split_once('=') {
+        Some((key, value)) if !key.is_empty() && !value.is_empty() => {
+            Ok((key.to_owned(), value.to_owned()))
+        }
+        _ => Err("setting must be KEY=VALUE".into()),
+    }
+}
+
 fn parse_u64(value: &str) -> Result<u64, String> {
     let value = value.replace('_', "");
     if let Some(hex) = value
@@ -346,8 +358,6 @@ mod tests {
             "inputs",
             "--compiler-input",
             "FSTART_BYTES=a path/file=1.bin",
-            "--image-config",
-            "a path/image=2.json",
             "--donor",
             "vendor.rom",
         ])
@@ -355,7 +365,6 @@ mod tests {
         let selected = cli.options.selection(None);
         selected.validate_compiler_files().unwrap();
         assert_eq!(selected.compiler_files[0].path, "a path/file=1.bin");
-        assert_eq!(selected.image_config(), Some("a path/image=2.json"));
         let mut forwarded = vec!["inputs".into()];
         cli.options.append_cli_args(&mut forwarded);
         let forwarded = InputCli::try_parse_from(forwarded)
@@ -366,7 +375,6 @@ mod tests {
             forwarded.compiler_files[0].path,
             selected.compiler_files[0].path
         );
-        assert_eq!(forwarded.image_config(), selected.image_config());
         assert_eq!(
             forwarded.option(fstart_image_build::plan::options::DONOR),
             Some("vendor.rom")

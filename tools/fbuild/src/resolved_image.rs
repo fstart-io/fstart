@@ -29,7 +29,6 @@ impl ResolvedImage {
         }
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
-        plan.validate_image_selection(&selection)?;
         let environment = [
             ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
             ("FSTART_LOG_LEVEL", &selection.log_level),
@@ -47,6 +46,11 @@ impl ResolvedImage {
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
+    }
+    /// The options the build offers, as the board's platform plan lists
+    /// them from the board's option sets.
+    pub fn options(&self) -> &fstart_image_build::options::Options {
+        &self.build.plan.options
     }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         self.build.artifact_dir(root, board, release)
@@ -67,6 +71,7 @@ impl ResolvedImage {
         supplied: &std::collections::BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
+        settings: &[(String, String)],
     ) -> Result<
         (
             Vec<fstart_image_build::StageBinary>,
@@ -74,8 +79,15 @@ impl ResolvedImage {
         ),
         String,
     > {
-        self.build
-            .assemble(root, board, release, supplied, payload_files, signing_key)
+        self.build.assemble(
+            root,
+            board,
+            release,
+            supplied,
+            payload_files,
+            signing_key,
+            settings,
+        )
     }
     pub fn compile_selected(
         &self,

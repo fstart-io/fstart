@@ -69,23 +69,32 @@ pub fn ultrabay_populated() -> bool {
     H8::new(os_ec()).ultrabay_device_present().unwrap_or(false)
 }
 
-pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Options>; 10] = {
+/// The EC options this ThinkPad has, as its coreboot `cmos.layout` lists
+/// them. Their board values are coreboot's defaults.
+pub static EC: fstart_options::OptionSet<fstart_driver_lenovo::options::Options> = {
     use fstart_driver_lenovo::options::*;
-    [
-        TOUCHPAD,
-        TRACKPOINT,
-        BLUETOOTH,
-        WWAN,
-        WLAN,
-        STICKY_FN,
-        POWER_MANAGEMENT_BEEPS,
-        LOW_BATTERY_BEEP,
-        VOLUME,
-        FIRST_BATTERY,
-    ]
+    fstart_options::OptionSet {
+        knobs: &[
+            TOUCHPAD,
+            TRACKPOINT,
+            BLUETOOTH,
+            WWAN,
+            WLAN,
+            STICKY_FN,
+            POWER_MANAGEMENT_BEEPS,
+            LOW_BATTERY_BEEP,
+            VOLUME,
+            FIRST_BATTERY,
+        ],
+        board: Options::DEFAULT,
+    }
 };
-pub static CPU_KNOBS: [fstart_options::Knob<fstart_driver_intel::cpu::options::Options>; 1] =
-    [fstart_driver_intel::cpu::options::UNDERVOLT];
+/// Optional SpeedStep voltage reduction; stock voltage unless explicitly set.
+pub static CPU: fstart_options::OptionSet<fstart_driver_intel::cpu::options::Options> =
+    fstart_options::OptionSet {
+        knobs: &[fstart_driver_intel::cpu::options::UNDERVOLT],
+        board: fstart_driver_intel::cpu::options::Options::STOCK,
+    };
 
 #[derive(Default)]
 pub struct Identity {

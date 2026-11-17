@@ -1,12 +1,6 @@
-Put the board's own BIOS flash here as `RXM100CB.bin` (or pass
-`--image-config /absolute/path`). It is vendor firmware and is not
-distributed with fstart.
-
-Either form works:
-
-- the BMC's complete **64 MiB readout**; the build is then a full 64 MiB
-  flash image plus the 16 MiB boot bank, or
-- only its **lower 16 MiB** boot bank; the build is that bank.
+The board's own BIOS flash is the donor of its AMD firmware: pass the BMC's
+complete 64 MiB readout, or only its lower 16 MiB boot bank, with
+`--donor`. It is vendor firmware and is not distributed with fstart.
 
 The investigated readout and its lower 16 MiB have SHA-256:
 
