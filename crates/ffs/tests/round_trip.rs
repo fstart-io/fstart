@@ -742,7 +742,7 @@ fn test_external_bootblock_digest_valid_after_xip_anchor_patch() {
 fn test_external_file_rejects_ffs_overlap() {
     let (signing_key, vk) = dev_keypair();
 
-    let config = FfsImageConfig {
+    let mut config = FfsImageConfig {
         keys: vec![vk],
         regions: vec![InputRegion::ContainerWithExternal {
             name: "ro".to_string(),
@@ -762,7 +762,7 @@ fn test_external_file_rejects_ffs_overlap() {
             external_files: vec![ExternalInputFile {
                 name: "bootblock".to_string(),
                 file_type: FileType::StageCode,
-                offset: 0x80,
+                offset: 0x1000,
                 segments: vec![InputSegment {
                     name: ".flat".to_string(),
                     kind: SegmentKind::Code,
@@ -777,7 +777,15 @@ fn test_external_file_rejects_ffs_overlap() {
         }],
     };
 
-    let err = match build_image(&config, &make_signer(&signing_key)) {
+    let signer = make_signer(&signing_key);
+    let baseline = build_image(&config, &signer).expect("nonoverlapping layout should fit");
+    let InputRegion::ContainerWithExternal { external_files, .. } = &mut config.regions[0] else {
+        unreachable!();
+    };
+    // The external bootblock appears to contain the fallback anchor, but
+    // extends past the blob. Report the overlap, not a digest range error.
+    external_files[0].offset = baseline.anchor_offset as u32;
+    let err = match build_image(&config, &signer) {
         Ok(_) => panic!("overlap accepted"),
         Err(err) => err,
     };

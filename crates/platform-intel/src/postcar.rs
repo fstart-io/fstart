@@ -36,6 +36,12 @@ fn dram_page_tables() -> bool {
     true
 }
 
+const RAMSTAGE_COMPRESSION: fstart_core::Compression = if cfg!(feature = "postcar-lzma") {
+    fstart_core::Compression::Lzma
+} else {
+    crate::compression::RAMSTAGE
+};
+
 /// Post-CAR loader on a fresh DRAM stack. The bootblock-authenticated descriptor
 /// crosses the transition in reserved RAM. Postcar verifies stored compressed
 /// input and final initialized output before entering ramstage; it needs SHA-256
@@ -127,7 +133,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
             &reserved,
             store,
             resume,
-            const { fstart_stage::boot::codec(crate::compression::RAMSTAGE) },
+            const { fstart_stage::boot::codec(RAMSTAGE_COMPRESSION) },
         )?;
         Ok(verified.entry())
     })();

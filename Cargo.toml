@@ -106,6 +106,7 @@ dtoolkit = { version = "0.1", default-features = false }
 
 # Compression
 lz4_flex = { version = "0.14", default-features = false }
+lzma-rust2 = { version = "0.24", default-features = false }
 
 # Object/ELF parsing and flat-binary extraction (host-side only)
 object = { version = "0.37", default-features = false, features = [

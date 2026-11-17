@@ -359,6 +359,25 @@ fn resolve_for<P: IntelPlatform>(
     } else {
         requested_payload.clone()
     };
+    let mut reservations = reservations::<P>(facts, debug.flash_console)?;
+    let bios_size = reservations.firmware.size;
+    if payload == "uefi" && !facts.protected_mode && bios_size <= 0x8_0000 {
+        return Err(format!(
+            "UEFI payloads do not fit in the {bios_size:#x}-byte BIOS window"
+        ));
+    }
+    // On 1–1.5 MiB BIOS windows, the LZ4-compressed UEFI ramstage can
+    // overlap the reset image. Use denser storage without changing the
+    // payload or the fixed flash layout. Only postcar needs the decoder.
+    let dense = payload == "uefi" && !facts.protected_mode && bios_size <= 0x18_0000;
+    if dense {
+        let postcar = &mut reservations.postcar;
+        postcar.stack = 0x1_0000;
+        // 1088 KiB for the decoder's bounded allocations, rounded up for
+        // heap metadata. Leave another 64 KiB for BSS and alignment.
+        postcar.heap = 0x12_0000;
+        postcar.writable.size = postcar.heap + postcar.stack + 0x1_0000;
+    }
     let stages = [
         (IntelStage::Bootblock, "bundle-bootblock"),
         (IntelStage::Postcar, "bundle-postcar"),
@@ -370,7 +389,11 @@ fn resolve_for<P: IntelPlatform>(
         } else {
             "halt"
         };
-        let mut features = vec![bundle.into()];
+        let mut features = if dense && role == IntelStage::Postcar {
+            vec!["postcar-lzma".into()]
+        } else {
+            vec![bundle.into()]
+        };
         features.extend(debug.features());
         if selected_payload == "uefi" {
             features.push(
@@ -393,6 +416,7 @@ fn resolve_for<P: IntelPlatform>(
             compression: match role {
                 IntelStage::Bootblock => fstart_core::Compression::None,
                 IntelStage::Postcar => crate::compression::POSTCAR,
+                IntelStage::Ramstage if dense => fstart_core::Compression::Lzma,
                 IntelStage::Ramstage => crate::compression::RAMSTAGE,
             },
         }
@@ -400,7 +424,6 @@ fn resolve_for<P: IntelPlatform>(
     if max_cpus == 0 {
         return Err("CPU population must be nonzero".into());
     }
-    let reservations = reservations::<P>(facts, debug.flash_console)?;
     let payload_config = match payload.as_str() {
         "uefi" => Some(fstart_core::x86_uefi_payload(crate::compression::PAYLOAD)),
         "coreboot" => Some(fstart_core::x86_coreboot_payload(
@@ -656,7 +679,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(uefi.stages[0].features, ["bundle-bootblock"]);
-        assert_eq!(uefi.stages[1].features, ["bundle-postcar"]);
+        assert_eq!(uefi.stages[1].features, ["postcar-lzma"]);
+        assert_eq!(uefi.stages[2].compression, fstart_core::Compression::Lzma);
+        assert_ne!(uefi.reservations.postcar.heap, 0);
+        assert_eq!(default.reservations.postcar.heap, 0);
         assert_eq!(uefi.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
         assert_eq!(uefi.smm_features, ["bundle-smm"]);
         let units = compilation_plan(uefi).unwrap().units;
@@ -749,6 +775,32 @@ mod tests {
             resolve(FACTS, selection).unwrap_err(),
             "x86 Linux options require '--payload linux'"
         );
+    }
+
+    #[test]
+    fn uefi_uses_bios_capacity_not_chip_size() {
+        use fstart_core::{FlashLayout, X86LegacyFlashLayout};
+        let select = |size, payload: &str| {
+            let facts =
+                BoardFacts::new(FlashLayout::X86Legacy(X86LegacyFlashLayout { size }), size);
+            resolve(
+                facts,
+                BuildSelection {
+                    payload: Some(payload.into()),
+                    ..Default::default()
+                },
+            )
+        };
+        for payload in ["uefi", "uefi-basic", "uefi-ui"] {
+            let error = select(0x8_0000, payload).unwrap_err();
+            assert!(error.contains("0x80000-byte BIOS window"), "{error}");
+        }
+        let dense = select(0x10_0000, "uefi-ui").unwrap();
+        assert_eq!(dense.stages[2].compression, fstart_core::Compression::Lzma);
+        let roomy = select(0x20_0000, "uefi-ui").unwrap();
+        assert_eq!(roomy.stages[2].compression, crate::compression::RAMSTAGE);
+        assert_eq!(roomy.reservations.postcar.heap, 0);
+        assert!(select(0x8_0000, "halt").is_ok());
     }
 
     #[test]

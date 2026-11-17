@@ -21,12 +21,10 @@
 //! the boot media, such as the static root of trust's own image, are
 //! [`InPlace`]: measuring them records what the media held at that moment.
 //!
-//! The codec is an argument, not a build feature: a stage that only loads
-//! stored data passes [`Stored`] and never links a decoder; one that loads
-//! compressed images passes [`Lz4`]. Platforms keep one [`Compression`]
-//! constant per kind of image that both the host plan, which compresses the
-//! image, and the stage, which passes [`codec`] of it, read. [`load_bootstrap`] composes the chain
-//! for a [`BootstrapDescriptor`].
+//! The codec is an argument: a stage that only loads stored data passes
+//! [`Stored`] and never links a decoder. Platforms select matching
+//! [`Compression`] values for the host plan and the stage's [`codec`].
+//! [`load_bootstrap`] composes the chain for a [`BootstrapDescriptor`].
 //!
 //! Descriptors imported from a handoff are trusted only because their producer
 //! was verified before entry and the handoff RAM remains protected. These APIs
@@ -129,6 +127,41 @@ impl Codec for Lz4 {
     }
 }
 
+/// LZMA-Alone decompression, with a fixed memory limit for the dictionary
+/// and probability tables. The calling stage must provision a heap.
+#[cfg(feature = "lzma")]
+pub struct Lzma;
+
+#[cfg(feature = "lzma")]
+impl Codec for Lzma {
+    fn supports(&self, compression: Compression) -> bool {
+        compression == Compression::Lzma
+    }
+
+    fn decompress(
+        &self,
+        compression: Compression,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<(), LoadError> {
+        use lzma_rust2::{LzmaReader, Read};
+
+        if !self.supports(compression) {
+            return Err(LoadError::Unsupported);
+        }
+        // The LZMA-Alone header must agree with the authenticated output size.
+        if input.get(5..13) != Some(&(output.len() as u64).to_le_bytes()) {
+            return Err(LoadError::Decompression);
+        }
+        let mut reader =
+            LzmaReader::new_mem_limit(input, 1088, None).map_err(|_| LoadError::Decompression)?;
+        reader.set_relaxed_end_condition(false);
+        reader
+            .read_exact(output)
+            .map_err(|_| LoadError::Decompression)
+    }
+}
+
 /// The codec for images stored as `compression`. Evaluate it in a const
 /// (`const { codec(..) }`): the stage then names, and links, only that
 /// decoder.
@@ -137,6 +170,10 @@ pub const fn codec(compression: Compression) -> &'static dyn Codec {
     match compression {
         Compression::None => &Stored,
         Compression::Lz4 => &Lz4,
+        #[cfg(feature = "lzma")]
+        Compression::Lzma => &Lzma,
+        #[cfg(not(feature = "lzma"))]
+        Compression::Lzma => panic!("LZMA decoder not enabled"),
     }
 }
 

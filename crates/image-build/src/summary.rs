@@ -103,11 +103,13 @@ pub(crate) fn render(
                     ..
                 } => {
                     let loaded: u64 = segments.iter().map(|s| u64::from(s.loaded_size)).sum();
-                    let comp = if segments.iter().any(|s| s.compression == Compression::Lz4) {
-                        format!("LZ4 ({loaded} decompressed)")
-                    } else {
-                        "none".into()
-                    };
+                    let comp = segments
+                        .iter()
+                        .find(|s| s.compression != Compression::None)
+                        .map_or_else(
+                            || "none".into(),
+                            |s| format!("{} ({loaded} decompressed)", s.compression.name()),
+                        );
                     (file_type_name(*file_type), comp)
                 }
                 EntryContent::Raw { .. } => ("raw", "none".into()),

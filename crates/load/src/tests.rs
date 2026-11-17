@@ -44,7 +44,7 @@ fn descriptor(stored: &[u8], loaded: &[u8], compression: Compression) -> Bootstr
         loaded_size: loaded.len() as u64,
         load_addr: 0x1000,
         entry_offset: 0,
-        scratch_size: if compression == Compression::Lz4 {
+        scratch_size: if compression != Compression::None {
             (stored.len() + loaded.len()) as u64
         } else {
             0
@@ -135,6 +135,43 @@ fn uncompressed_bytes_are_checked_at_destination() {
         Ok(())
     );
     assert_eq!(&workspace, b"hello");
+}
+
+#[cfg(feature = "lzma")]
+#[test]
+fn lzma_bootstrap_load_checks_size_and_decode_limits() {
+    // LZMA-Alone, known output size, 1 MiB dictionary.
+    const STORED: &[u8; 43] = b"\x5d\x00\x00\x10\x00\xa0\x02\x00\x00\x00\x00\x00\x00\x00\x39\x18\x49\xff\x2b\x5c\xe2\x7f\x71\x0c\xa1\x4f\x86\x95\x7e\xfc\xae\x47\x50\x2b\x02\x1f\x4a\xff\xff\xfd\x90\x10\x00";
+    let mut loaded = [0; 672];
+    loaded.as_chunks_mut::<14>().0.fill(*b"ramstage data ");
+    let descriptor = descriptor(STORED, &loaded, Compression::Lzma);
+    let mut workspace = [0; 672 + STORED.len()];
+    assert_eq!(
+        load_bootstrap_into(
+            &medium(STORED),
+            &descriptor,
+            &mut workspace,
+            &Lzma,
+            &Measurement::NONE
+        ),
+        Ok(())
+    );
+    assert_eq!(workspace[..loaded.len()], loaded);
+
+    let mut too_large = *STORED;
+    too_large[1..5].copy_from_slice(&(2u32 << 20).to_le_bytes());
+    assert_eq!(
+        Lzma.decompress(Compression::Lzma, &too_large, &mut loaded),
+        Err(LoadError::Decompression)
+    );
+    assert_eq!(
+        Lzma.decompress(Compression::Lzma, &STORED[..25], &mut loaded),
+        Err(LoadError::Decompression)
+    );
+    assert_eq!(
+        Lzma.decompress(Compression::Lzma, STORED, &mut loaded[..671]),
+        Err(LoadError::Decompression)
+    );
 }
 
 #[test]

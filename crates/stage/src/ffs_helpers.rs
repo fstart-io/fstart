@@ -31,7 +31,7 @@ fn descriptor(file: &FileView<'_>) -> Option<BootstrapDescriptor> {
         loaded_size,
         load_addr: segment.load_addr(),
         entry_offset: 0,
-        scratch_size: if compression == Compression::Lz4 {
+        scratch_size: if compression != Compression::None {
             loaded_size.checked_add(stored_size)?
         } else {
             0

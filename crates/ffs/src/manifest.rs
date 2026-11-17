@@ -15,7 +15,7 @@
 //! firmware=7, FIT=8, microcode=9, initramfs=10.
 //! Segment (100 bytes): five u32 (name, entry-relative offset, stored length,
 //! memory length, disjoint workspace size), u64 load address; u8 kind
-//! (code=1/ro=2/rw=3/BSS=4), compression (none=0/LZ4-block=1), flags
+//! (code=1/ro=2/rw=3/BSS=4), compression (none=0/LZ4-block=1/LZMA-Alone=2), flags
 //! (execute=1/write=2/read=4), reserved zero; u32 initialized length;
 //! stored SHA256[32], initialized SHA256[32]. Digests are mandatory fixed fields
 //! for stored segments. Pure BSS has zero stored/initialized lengths and hashes.
@@ -331,7 +331,7 @@ impl<'a> ManifestView<'a> {
             if compression == Compression::None && segment.in_place_size() != 0 {
                 return Err(ReaderError::DeserializeError);
             }
-            if compression == Compression::Lz4
+            if compression != Compression::None
                 && segment.in_place_size()
                     < segment
                         .initialized_size()
@@ -872,6 +872,7 @@ fn encode_compression(compression: Compression) -> u8 {
     match compression {
         Compression::None => 0,
         Compression::Lz4 => 1,
+        Compression::Lzma => 2,
     }
 }
 
@@ -892,6 +893,7 @@ fn decode_compression(value: u8) -> Result<Compression, ReaderError> {
     match value {
         0 => Ok(Compression::None),
         1 => Ok(Compression::Lz4),
+        2 => Ok(Compression::Lzma),
         _ => Err(ReaderError::DeserializeError),
     }
 }

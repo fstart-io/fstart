@@ -244,8 +244,8 @@ impl IntelReservations {
         if self.bootblock.image.size <= 4096 {
             return Err("reset page leaves no bootblock code capacity".into());
         }
-        if self.bootblock.heap != 0 || self.postcar.heap != 0 {
-            return Err("CAR and postcar flows have no allocator heap".into());
+        if self.bootblock.heap != 0 {
+            return Err("CAR flow has no allocator heap".into());
         }
         Ok(())
     }

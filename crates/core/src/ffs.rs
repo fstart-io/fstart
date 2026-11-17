@@ -366,7 +366,7 @@ pub struct Segment {
     /// Size of segment data after decompression (original size).
     /// For BSS segments this is the zero-fill size; `stored_size` is 0.
     pub loaded_size: u32,
-    /// Disjoint workspace bytes: initialized output plus stored input for LZ4.
+    /// Disjoint workspace bytes: initialized output plus stored compressed input.
     /// The historical field name is retained in the ergonomic schema only;
     /// overlapping shared/mutable Rust slices are never permitted.
     /// `0` for uncompressed or BSS segments.
@@ -444,6 +444,18 @@ pub enum Compression {
     None,
     /// LZ4 block compression (fast decompression, moderate ratio).
     Lz4,
+    /// LZMA-Alone stream with a bounded decoder dictionary.
+    Lzma,
+}
+
+impl Compression {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Lz4 => "LZ4",
+            Self::Lzma => "LZMA",
+        }
+    }
 }
 
 // ============================================================================

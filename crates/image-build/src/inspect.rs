@@ -271,8 +271,9 @@ pub fn inspect(path: &str) -> Result<(), String> {
 
                             let comp = match seg.compression {
                                 Compression::None => String::new(),
-                                Compression::Lz4 => format!(
-                                    "  compression=LZ4 ratio={:.0}%",
+                                compression => format!(
+                                    "  compression={} ratio={:.0}%",
+                                    compression.name(),
                                     if seg.loaded_size > 0 {
                                         seg.stored_size as f64 / seg.loaded_size as f64 * 100.0
                                     } else {

@@ -67,9 +67,11 @@ another board (the S8030's PCIe bifurcation) is one of the build's options
 (`settings` in the catalog), and its assembly seeds them (`--setting`).
 
 `fbuild bundle --seabios DIR` ships a SeaBIOS build (the output of
-`ci/payloads/seabios/build.sh`) in every `coreboot` bundle: SeaBIOS, its VGA BIOS
+`ci/payloads/seabios/build.sh`) in `coreboot` bundles: SeaBIOS, its VGA BIOS
 and the serial-console setting. Those builds then need no file from the user,
 CI assembles their images, and a user can still supply another payload ELF.
+On 512 KiB BIOS windows the stock package does not fit, so the bundle instead
+requires a smaller user-supplied payload ELF.
 
 ```sh
 # Every board and variant with the payloads it publishes, plus catalog.json:
@@ -84,8 +86,10 @@ those of `uefi-ui` (or `uefi` where its plan has no UI build), `linux`,
 `coreboot` and `elf` that its platform's plan takes. `halt` and `uefi-basic`
 are for development and are not published, nor is a `linux` build whose
 kernel slot is under 1.5 MiB. A board that publishes none of them is skipped.
-A build that compiles but does not fit its flash layout is still published,
-with its `image_error` in the catalog.
+If a build needs no local inputs, image assembly must succeed (including fit
+in flash), or the export fails without writing a catalog. Builds that need a
+user-supplied kernel, donor or other input are checked when the user
+assembles them.
 
 `fbuild compose-bundle` assembles a bundle natively, without Cargo or a linker:
 

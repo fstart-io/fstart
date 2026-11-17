@@ -450,6 +450,10 @@ where
     // Compute total_image_size *after* potentially appending the anchor,
     // so it accurately reflects the final image size.
     let total_image_size = image_len(&image)?;
+    // Reject overlaps before matching inline anchors to files. An external
+    // file at an overlapping offset could otherwise look like an inline file
+    // containing an anchor, but its bytes are not in this blob.
+    validate_external_layout(&config.regions, &manifest, image.len())?;
     let microcode = file_data
         .iter()
         .find(|file| file.name == "cpu_microcode_blob.bin");
@@ -516,8 +520,6 @@ where
     image[manifest_offset as usize..manifest_offset as usize + manifest_size as usize]
         .copy_from_slice(&new_manifest_serialized);
 
-    validate_external_layout(&config.regions, &manifest, image.len())?;
-
     // Return the raw anchor bytes for logging/debugging
     let mut anchor_bytes = vec![0u8; ANCHOR_SIZE];
     anchor.write_to(&mut anchor_bytes);
@@ -544,6 +546,20 @@ fn scan_for_placeholders(image: &[u8]) -> Vec<usize> {
         .enumerate()
         .filter_map(|(index, window)| (window == placeholder).then_some(index * 8))
         .collect()
+}
+
+fn compress_lzma(data: &[u8]) -> Result<Vec<u8>, String> {
+    use lzma_rust2::{LzmaOptions, LzmaWriter, Write};
+
+    let mut options = LzmaOptions::with_preset(6);
+    // Bound the loader's heap independently of how large the stage is.
+    options.dict_size = 1 << 20;
+    let encode = || -> lzma_rust2::Result<_> {
+        let mut writer = LzmaWriter::new_use_header(Vec::new(), &options, Some(data.len() as u64))?;
+        writer.write_all(data)?;
+        writer.finish()
+    };
+    encode().map_err(|error| format!("LZMA compression failed: {error:?}"))
 }
 
 /// Lay out a file's segments in the image, returning a `RegionEntry`.
@@ -591,6 +607,16 @@ fn lay_out_file(
                         )?;
                         (compressed, in_place, Compression::Lz4)
                     }
+                }
+            }
+            Compression::Lzma => {
+                let compressed = compress_lzma(&seg.data)?;
+                if compressed.len() >= seg.data.len() {
+                    (seg.data.clone(), 0, Compression::None)
+                } else {
+                    let workspace = u32::try_from(seg.data.len() + compressed.len())
+                        .map_err(|_| "LZMA workspace exceeds u32")?;
+                    (compressed, workspace, Compression::Lzma)
                 }
             }
         };
@@ -1034,7 +1060,7 @@ where
             load_addr: seg.load_addr,
             entry_offset: 0,
             // Stable compressed buffer + distinct decoder destination; no overlap.
-            scratch_size: if seg.compression == Compression::Lz4 {
+            scratch_size: if seg.compression != Compression::None {
                 u64::from(seg.stored_size) + u64::from(seg.initialized_size)
             } else {
                 0

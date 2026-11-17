@@ -66,7 +66,7 @@ fn root_wire_golden_and_reserved_bytes() {
     assert!(bad.validate(u64::MAX).is_err());
 }
 
-fn fixture() -> (FfsImage, VerificationKey) {
+fn fixture(compression: Compression) -> (FfsImage, VerificationKey) {
     let key = SigningKey::from_bytes(&[0x19; 32]);
     let vk = VerificationKey::ed25519(0, key.verifying_key().to_bytes());
     let mut initial = vec![0; ANCHOR_SIZE + 160];
@@ -94,7 +94,7 @@ fn fixture() -> (FfsImage, VerificationKey) {
                 InputFile {
                     name: "mainstage".into(),
                     file_type: FileType::StageCode,
-                    segments: vec![segment(vec![0x37; 4096], Compression::Lz4, 0x80000000)],
+                    segments: vec![segment(vec![0x37; 4096], compression, 0x80000000)],
                 },
             ],
         }],
@@ -120,8 +120,36 @@ fn fixture() -> (FfsImage, VerificationKey) {
 }
 
 #[test]
+fn dense_stage_records_lzma_in_both_root_and_directory() {
+    use lzma_rust2::{LzmaReader, Read};
+
+    let (built, _) = fixture(Compression::Lzma);
+    let reader = fstart_ffs::FfsReader::new(&built.image);
+    let anchor = reader.read_anchor(built.anchor_offset).unwrap();
+    let start = anchor.manifest_offset.get() as usize;
+    let root = Root::parse(&built.image[start..start + ROOT_SIZE]).unwrap();
+    let descriptor = root.descriptors[0].unwrap();
+    assert_eq!(descriptor.compression, Compression::Lzma);
+    let directory = reader.read_manifest(&anchor).unwrap();
+    let region = fstart_ffs::FfsReader::find_region(&directory, "ro").unwrap();
+    let stage = fstart_ffs::FfsReader::find_entry(region, "mainstage").unwrap();
+    let fstart_core::ffs::EntryContent::File { segments, .. } = &stage.content else {
+        panic!("mainstage is not a file");
+    };
+    assert_eq!(segments[0].compression, Compression::Lzma);
+    let start = descriptor.offset as usize;
+    let stored = &built.image[start..start + descriptor.stored_size as usize];
+    verify_digest(stored, &descriptor.stored_digest).unwrap();
+    let mut decoder = LzmaReader::new_mem_limit(stored, 1088, None).unwrap();
+    decoder.set_relaxed_end_condition(false);
+    let mut loaded = [0; 4096];
+    decoder.read_exact(&mut loaded).unwrap();
+    verify_digest(&loaded, &descriptor.loaded_digest).unwrap();
+}
+
+#[test]
 fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
-    let (built, key) = fixture();
+    let (built, key) = fixture(Compression::Lz4);
     let reader = fstart_ffs::FfsReader::new(&built.image);
     let anchor = reader.read_anchor(built.anchor_offset).unwrap();
     assert_eq!(anchor.manifest_size, 512);
