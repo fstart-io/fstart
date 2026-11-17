@@ -226,6 +226,11 @@ pub trait IntelNorthbridgeDriver:
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    /// Reopen stage-local decode before ramstage PCI enumeration. Chipsets
+    /// with pre-DRAM device selection must preserve it rather than re-probe.
+    fn ramstage_early_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        self.early_init()
+    }
     fn detect_warm_reset(&self) -> bool {
         false
     }

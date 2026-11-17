@@ -921,6 +921,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-lenovo-t61"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-ricoh",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-options",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "tock-registers",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-lenovo-x200"
 version = "0.1.0"
 dependencies = [
@@ -1582,6 +1603,7 @@ dependencies = [
  "fstart-driver-rtc",
  "fstart-driver-uart",
  "fstart-driver-usbdebug",
+ "fstart-driver-vbios",
  "fstart-ffs",
  "fstart-image-build",
  "fstart-log",
@@ -1595,6 +1617,7 @@ dependencies = [
  "fstart-timestamp",
  "heapless 0.8.0",
  "konst",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "ufmt",

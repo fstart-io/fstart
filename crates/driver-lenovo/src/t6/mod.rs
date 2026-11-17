@@ -18,6 +18,7 @@ pub enum Model {
     T60,
     R60,
     Z61t,
+    T61,
 }
 
 // T6 differs from X6 at event5 (3f rather than 3c) and eventc (3c not ff).
@@ -78,12 +79,12 @@ pub fn ec_init(
     pmh7.dock_event_enable(true);
     pmh7.touchpad_enable(options.touchpad);
     pmh7.trackpoint_enable(options.trackpoint);
-    H8::new(Ec::new(config.resources.os)).init_legacy_thinkpad(
-        &EVENT_MASKS,
-        bluetooth,
-        options,
-        resume,
-    )
+    let mut events = EVENT_MASKS;
+    if model == Model::T61 {
+        events[5] = 0x3c;
+        events[12] = 0xff;
+    }
+    H8::new(Ec::new(config.resources.os)).init_legacy_thinkpad(&events, bluetooth, options, resume)
 }
 
 #[cfg(test)]

@@ -97,6 +97,9 @@ pub struct Ramstage<B: IntelBoard, S = Entered> {
     /// The outcome of every option knob resolved so far, for the payload's
     /// settings menu.
     options: fstart_options::Report,
+    /// Optional PCI display initialized by its authenticated option ROM.
+    pci_framebuffer: Option<fstart_core::services::FramebufferInfo>,
+    video_aml: Vec<u8>,
     _state: PhantomData<(B, S)>,
 }
 
@@ -118,6 +121,8 @@ impl<B: IntelBoard, S> Ramstage<B, S> {
             resume: self.resume,
             wake_vector: self.wake_vector,
             options: self.options,
+            pci_framebuffer: self.pci_framebuffer,
+            video_aml: self.video_aml,
             _state: PhantomData,
         }
     }
@@ -276,6 +281,8 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             resume,
             wake_vector: None,
             options: fstart_options::Report::new(),
+            pci_framebuffer: None,
+            video_aml: Vec::new(),
             _state: PhantomData,
         };
         // Postcar authenticated our initialized image before entry. Import only
@@ -327,7 +334,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         );
         let early = self
             .northbridge
-            .early_init()
+            .ramstage_early_init()
             .and_then(|()| self.southbridge.early_init());
         if let Err(error) = early {
             fstart_log::error!("early init: {:?}", error);
@@ -601,6 +608,62 @@ impl<B: IntelBoard> Ramstage<B, Verified> {
 }
 
 impl<B: IntelBoard> Ramstage<B, Displayed> {
+    /// POST an optional discrete display through the shared VBIOS executor.
+    /// The board supplies its vendor and existing ACPI companion scope. Assets
+    /// are authenticated FFS files named `pciVVVV,DDDD.rom`. An absent GPU or
+    /// missing ROM leaves a headless boot; a failed POST is never retried.
+    #[cfg(target_arch = "x86_64")]
+    pub fn init_pci_display(mut self, vendor: u16, scope: fstart_acpi::AcpiPath) -> Self {
+        if self.resume {
+            return self;
+        }
+        self.phase(fstart_timestamp::id::DISPLAY_INIT, |rs| {
+            let pci = rs.pci.as_ref().ok_or(ServiceError::NotInitialized)?;
+            let Some(address) = pci.devices().find(|&address| {
+                pci.device(address)
+                    .is_some_and(|d| d.vendor_id() == vendor && d.read8(0x0b) == 3)
+            }) else {
+                return Ok(());
+            };
+            let device = pci.device(address).ok_or(ServiceError::NotInitialized)?;
+            let name = alloc::format!("pci{:04x},{:04x}.rom", vendor, device.device_id());
+            let Some(rom) = fstart_core::services::ffs_context::read_verified_asset(&name) else {
+                fstart_log::error!(
+                    "display: missing authenticated {} (headless)",
+                    name.as_str()
+                );
+                return Ok(());
+            };
+            let windows: Vec<_> = pci
+                .assigned_memory_bars()
+                .filter(|(a, _)| *a == address)
+                .map(|(_, window)| window)
+                .collect();
+            // SAFETY: verified ROM, BSP ownership, allocated identity-mapped BARs.
+            let display = unsafe {
+                fstart_driver_vbios::initialize(
+                    pci,
+                    address,
+                    rom,
+                    device.device_id(),
+                    &windows,
+                    &DisplayClock,
+                )
+            }
+            .map_err(|error| {
+                fstart_log::error!("display: VBIOS {}", error.name());
+                ServiceError::HardwareError
+            })?;
+            rs.pci_framebuffer = Some(display.framebuffer);
+            let rom = fstart_acpi::video::rom_aml(&display.rom)
+                .map_err(|_| ServiceError::HardwareError)?;
+            rs.video_aml = fstart_acpi::aml_linker::scope_vec(scope.as_str(), &rom)
+                .map_err(|_| ServiceError::HardwareError)?;
+            Ok(())
+        });
+        self
+    }
+
     /// Cold boots build tables; S3 resumes keep the ones the OS owns.
     pub fn boot_path(self) -> Path<B> {
         if self.resume {
@@ -669,6 +732,7 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
             dsdt.extend(root);
             dsdt.extend(southbridge.dsdt_aml(southbridge.config(), &pci_root));
             dsdt.extend(board.dsdt_aml(&()));
+            dsdt.extend_from_slice(&self.video_aml);
             extra.extend(northbridge.extra_tables(northbridge.config()));
             extra.extend(southbridge.extra_tables(southbridge.config()));
             extra.extend(board.extra_tables(&()));
@@ -815,7 +879,9 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             .as_ref()
             .and_then(|pci| pci.roots().first())
             .map(|root| root.info());
-        description.framebuffer = self.northbridge.framebuffer_info();
+        description.framebuffer = self
+            .pci_framebuffer
+            .or_else(|| self.northbridge.framebuffer_info());
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
         let acpi_s5 = {
             use fstart_acpi::platform::X86PlatformProvider;
@@ -894,6 +960,22 @@ fn init_mp<P: IntelEarlyPlatform>(
         }
     }
     Ok(())
+}
+
+/// The common x86 calibrated clock, as required by the bounded VBIOS executor.
+#[cfg(target_arch = "x86_64")]
+struct DisplayClock;
+#[cfg(target_arch = "x86_64")]
+impl fstart_core::services::Timer for DisplayClock {
+    fn delay_us(&self, us: u64) {
+        for _ in 0..us / u64::from(u32::MAX) {
+            fstart_arch::udelay(u32::MAX);
+        }
+        fstart_arch::udelay((us % u64::from(u32::MAX)) as u32);
+    }
+    fn timestamp_us(&self) -> u64 {
+        fstart_arch::x86::timestamp_us()
+    }
 }
 
 pub struct MainstageCtx {

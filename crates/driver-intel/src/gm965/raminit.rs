@@ -1167,18 +1167,31 @@ fn rcomp_init(info: &RaminitInfo, mch: &MchBar) {
             mch.write32(off + 0x30 + i as u32 * 4, *val);
         }
     }
-    let fsb_codes = [0u8, 0x00, 0x00, 0x01];
-    let mem_codes = [0u8, 0x10, 0x50];
-    mch.write8(
-        mchbar::RCOMP_CFG2,
-        fsb_codes[fsb_index(info.timings.fsb_clock)] + mem_codes[mem_index(info.timings.mem_clock)],
-    );
+    mch.write8(mchbar::RCOMP_CFG2, rcomp_population_code(info));
     mch.write32(mchbar::RCOMP_CFG3, mch.read32(mchbar::RCOMP_CFG3));
     if stepping() == 1 {
         mch.setbits8(mchbar::RCOMP_CTRL, 3);
     } else {
         mch.setbits8(mchbar::RCOMP_CTRL, 1);
     }
+}
+
+/// One nibble per channel, selected by rank count and device width, not clocks.
+fn rcomp_population_code(info: &RaminitInfo) -> u8 {
+    const CODES: [u8; 5] = [0, 1, 5, 0, 0];
+    let mut code = 0;
+    for ch in 0..2 {
+        let mut population = 0usize;
+        for slot in (0..2).rev() {
+            let dimm = &info.dimms[ch * 2 + slot];
+            population <<= 4;
+            if dimm.present {
+                population |= 1 + usize::from(dimm.dual_rank) + 2 * usize::from(dimm.x16);
+            }
+        }
+        code |= CODES.get(population).copied().unwrap_or(0) << (4 * ch);
+    }
+    code
 }
 
 fn odt_pre_setup(info: &RaminitInfo, mch: &MchBar) {
@@ -1504,19 +1517,24 @@ fn train_channel(info: &mut RaminitInfo, mch: &MchBar, ch: usize) -> Result<(), 
     Ok(())
 }
 
+/// Training leaves these settings active; cached replay must restore them too.
+fn program_receive_io(info: &RaminitInfo, mch: &MchBar) {
+    mch.clrsetbits32(
+        mchbar::IO_INIT_CFG2,
+        0x1f << 23,
+        IO_INIT_CFG2_TRAINING[mem_index(info.timings.mem_clock)] << 23,
+    );
+    mch.clrbits16(mchbar::DCC, 0x8000);
+}
+
 fn receive_enable_training(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), ServiceError> {
     for ch in 0..2 {
         mch.setbits32(mchbar::train_enable(ch), TRAIN_ENABLE_BIT);
     }
-    mch.clrsetbits32(
-        mchbar::IO_INIT_CFG2,
-        0x0f80_0000,
-        IO_INIT_CFG2_TRAINING[mem_index(info.timings.mem_clock)] << 23,
-    );
+    program_receive_io(info, mch);
     for ch in 0..2 {
         mch.clrbits16(mchbar::rw_ptr_ctrl(ch), 0x0c00);
     }
-    mch.clrbits16(mchbar::DCC, 0x8000);
     for ch in 0..2 {
         if channel_populated(info, ch) {
             train_channel(info, mch, ch)?;
@@ -1535,6 +1553,7 @@ fn receive_enable_training(info: &mut RaminitInfo, mch: &MchBar) -> Result<(), S
 
 /// Replay only calibrated fields, never a broad MCHBAR snapshot or DRAM probe.
 fn replay_receive_enable(info: &RaminitInfo, mch: &MchBar) {
+    program_receive_io(info, mch);
     for ch in 0..2 {
         if channel_populated(info, ch) {
             let timing = RecTiming {
@@ -2008,6 +2027,46 @@ mod tests {
         let coarse_offset = 8 + 4 * 128 + 11;
         bytes[coarse_offset] = 16;
         assert!(!fresh.restore_training(&bytes[..length]));
+    }
+
+    #[test]
+    fn rcomp_tracks_population_not_memory_or_fsb_clock() {
+        let mut info = RaminitInfo::default();
+        assert_eq!(rcomp_population_code(&info), 0);
+        info.dimms[2] = dimm(2048, 2, 8, false);
+        assert_eq!(rcomp_population_code(&info), 0x50);
+        info.dimms[0] = dimm(2048, 2, 8, false);
+        assert_eq!(rcomp_population_code(&info), 0x55);
+        info.dimms[0] = dimm(1024, 1, 8, false);
+        assert_eq!(rcomp_population_code(&info), 0x51);
+        info.dimms[0] = dimm(1024, 1, 8, true);
+        assert_eq!(rcomp_population_code(&info), 0x50);
+        // The sparse population tables do not describe a second-slot DIMM.
+        info.dimms[1] = dimm(1024, 1, 8, false);
+        assert_eq!(rcomp_population_code(&info), 0x50);
+    }
+
+    #[test]
+    fn cached_receive_training_restores_persistent_io_settings() {
+        for clock in [MemClock::Ddr2_533, MemClock::Ddr2_667] {
+            let mut trained = [0xffff_ffffu32; 0x1000];
+            let mut replayed = trained;
+            let trained = MchBar::new(trained.as_mut_ptr() as usize);
+            let replayed = MchBar::new(replayed.as_mut_ptr() as usize);
+            let mut info = RaminitInfo::default();
+            info.timings.mem_clock = clock;
+            receive_enable_training(&mut info, &trained).unwrap();
+            replay_receive_enable(&info, &replayed);
+            assert_eq!(
+                trained.read32(mchbar::IO_INIT_CFG2),
+                replayed.read32(mchbar::IO_INIT_CFG2)
+            );
+            assert_eq!(
+                replayed.read32(mchbar::IO_INIT_CFG2) & (0x1f << 23),
+                IO_INIT_CFG2_TRAINING[mem_index(clock)] << 23
+            );
+            assert_eq!(replayed.read16(mchbar::DCC) & 0x8000, 0);
+        }
     }
 
     #[test]

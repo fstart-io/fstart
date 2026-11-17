@@ -32,11 +32,13 @@ pub const BOARD_NAME: &str = match MODEL {
     Model::T60 => "lenovo-t60",
     Model::R60 => "lenovo-r60",
     Model::Z61t => "lenovo-z61t",
+    Model::T61 => panic!("T61 uses its own GM965 board crate"),
 };
 pub const PRODUCT_NAME: &str = match MODEL {
     Model::T60 => "ThinkPad T60",
     Model::R60 => "ThinkPad R60",
     Model::Z61t => "ThinkPad Z61t",
+    Model::T61 => panic!("T61 uses its own GM965 board crate"),
 };
 pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-t60";
 pub const PLATFORM: Platform = Platform::X86;

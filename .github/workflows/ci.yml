@@ -115,6 +115,9 @@ jobs:
           done
           cargo test -p fstart-driver-intel --lib
           cargo test -p fstart-platform-intel --features host --lib
+          # Shared Intel ramstage code must not depend on x86_64-only drivers.
+          cargo fbuild check lenovo-t60 --release \
+            --stage ramstage --payload halt
           cargo test -p fstart-boot --features crabefi-ui --lib
           cargo test -p fstart-log --no-default-features
           cargo test -p fstart-log --features debug-consoles

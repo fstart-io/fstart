@@ -247,6 +247,17 @@ pub fn setup_console(
     }
 }
 
+/// A T61 has the external Mini Dock but no T60 legacy-I/O module mux.
+pub fn setup_dock_console(config: &H8Config) -> Result<ConsoleRoute, DeviceError> {
+    let gpio = initialize_dlpc()?;
+    if Pmh7::new(config.resources.pmh7_base.raw()).dock_present() {
+        connect(&gpio)?;
+        Ok(ConsoleRoute::Dock)
+    } else {
+        Ok(ConsoleRoute::Undocked)
+    }
+}
+
 pub fn connected() -> bool {
     laptop()
         .and_then(|dlpc| dlpc.dlpc_connected(DLPC_SWITCH))

@@ -8,6 +8,28 @@ use fstart_acpi::PcNamespace;
 use fstart_acpi_macros::acpi_dsl;
 
 pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, native_brightness: bool) -> Vec<u8> {
+    let brightness = if native_brightness {
+        acpi_dsl! { Scope("\\") {
+            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
+            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
+        }}
+        .to_vec()
+    } else {
+        acpi_dsl! { Scope("\\") {
+            Method("BRTU", 0, NotSerialized) {}
+            Method("BRTD", 0, NotSerialized) {}
+        }}
+        .to_vec()
+    };
+    dsdt_aml_with_brightness::<N>(h8, &brightness, super::Model::T60)
+}
+
+/// Shared dock/EC namespace with model-specific hotkey routing.
+pub fn dsdt_aml_with_brightness<N: PcNamespace>(
+    h8: &H8Config,
+    brightness: &[u8],
+    model: super::Model,
+) -> Vec<u8> {
     let mut out = Vec::new();
     let status_command = super::dock::SMI_DOCK_STATUS;
     // Keep PnP index/data transactions firmware-owned. Both AML operations
@@ -53,28 +75,19 @@ pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, native_brightness: bool) -> Vec<u
             }
         }
     }));
-    let brightness = if native_brightness {
-        acpi_dsl! { Scope("\\") {
-            Method("BRTU", 0, NotSerialized) { #{const path 4 N::IGD.child("INCB")}(); }
-            Method("BRTD", 0, NotSerialized) { #{const path 4 N::IGD.child("DECB")}(); }
-        }}
-        .to_vec()
-    } else {
-        acpi_dsl! { Scope("\\") {
-            Method("BRTU", 0, NotSerialized) {}
-            Method("BRTD", 0, NotSerialized) {}
-        }}
-        .to_vec()
-    };
     let pmh7_base = h8.resources.pmh7_base.raw();
     let mut h8 = *h8;
     h8.has_bluetooth = super::bluetooth_present();
     out.extend(crate::h8_acpi::dsdt_aml_with_brightness::<N>(
-        &h8,
-        &brightness,
+        &h8, brightness,
     ));
     // These are EC-hosted PS/2 devices, not nonexistent NSC KBC LDNs.
-    let mut lpc = fstart_acpi::devices::i8042_aml(0x60, 0x64, 1, Some(12));
+    // ICH8 already emits these two nodes; ICH7 boards need them here.
+    let mut lpc = if model == super::Model::T61 {
+        Vec::new()
+    } else {
+        fstart_acpi::devices::i8042_aml(0x60, 0x64, 1, Some(12))
+    };
     lpc.extend(
         fstart_acpi::devices::GenericAcpi {
             name: "DRES",
@@ -94,7 +107,6 @@ pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, native_brightness: bool) -> Vec<u
             Field("PMIO", ByteAcc, NoLock, Preserve) {
                 Offset(0x0C), PIDX, 8, PIDH, 8, DPWR, 1,
             }
-            Method("_Q18", 0, Serialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
             Method("_Q37", 0, Serialized) {
                 PIDH = 0u32;
                 PIDX = 0x61u32;
@@ -106,6 +118,15 @@ pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, native_brightness: bool) -> Vec<u
             }
         }
     }));
+    out.extend(if model == super::Model::T61 {
+        acpi_dsl! { Scope(#{const path 4 ec::<N>()}) {
+            Method("_Q18", 0, NotSerialized) { #{const path 6 ec::<N>().child("HKEY").child("RHK")}(9u32); }
+        }}.to_vec()
+    } else {
+        acpi_dsl! { Scope(#{const path 4 ec::<N>()}) {
+            Method("_Q18", 0, Serialized) { Notify(#{const "\\_SB_.DOCK"}, 3u32); }
+        }}.to_vec()
+    });
     out
 }
 

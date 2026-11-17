@@ -101,6 +101,10 @@ pub static EC_KNOBS: [fstart_options::Knob<fstart_driver_lenovo::options::Option
     ]
 };
 
+/// Optional SpeedStep voltage reduction; stock voltage unless explicitly set.
+pub static CPU_KNOBS: [fstart_options::Knob<fstart_driver_intel::cpu::options::Options>; 1] =
+    [fstart_driver_intel::cpu::options::UNDERVOLT];
+
 /// EC/PMH7, dock power, the identity EEPROM and the SD slot, once the
 /// chipset devices are up. `smbus` is on the EEPROM branch. EC setup is
 /// independent of ACPI table emission. Returns what the tables need on a

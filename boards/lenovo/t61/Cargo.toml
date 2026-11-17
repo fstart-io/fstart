@@ -1,0 +1,33 @@
+[package]
+name = "fstart-board-lenovo-t61"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+publish = false
+
+[package.metadata.fstart]
+board = "lenovo-t61"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-intel" }
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../../../crates/acpi-macros", optional = true }
+fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+fstart-pci = { path = "../../../crates/pci" }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
+fstart-driver-ricoh = { path = "../../../crates/driver-ricoh" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-options = { path = "../../../crates/options" }
+fstart-log = { path = "../../../crates/log" }
+tock-registers = { workspace = true }
+embedded-hal = { workspace = true }
+ufmt = { workspace = true }
+
+[features]
+default = ["acpi"]
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-lenovo/acpi"]
+smm = ["fstart-platform-intel/bundle-smm"]
