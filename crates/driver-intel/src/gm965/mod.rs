@@ -13,6 +13,7 @@
 #![allow(clippy::modulo_one)]
 
 mod fields;
+mod peg;
 pub mod raminit;
 
 use self::fields::*;
@@ -530,6 +531,8 @@ pub struct IntelGm965 {
     detected_size: u64,
     boot_path: crate::BootPath,
     s3_enabled: bool,
+    /// Selected before DRAM allocation; the IGD stays visible for clock setup.
+    peg_display: bool,
     /// PCI mmio32 window derived from the e820 map after memory detection.
     /// Where PCI MMIO starts below 4 GiB, once memory is detected.
     low_dram_end: Option<u64>,
@@ -656,7 +659,7 @@ impl IntelGm965 {
     }
 
     fn igd_ggc(&self) -> u16 {
-        if !self.config.igd.enable_vga {
+        if !self.config.igd.enable_vga || self.peg_display {
             fstart_log::info!("gm965 IGD: disabled, GGC=0x0002");
             return 0x0002;
         }
@@ -709,7 +712,7 @@ impl IntelGm965 {
 
     fn igd_stolen_base(&self) -> u32 {
         let hb = self.hostbridge_regs();
-        if (hb.deven.get() & hostbridge::DEVEN_D2F0) == 0 {
+        if (hb.deven.get() & hostbridge::DEVEN_D2F0) == 0 || hb.ggc.get() & 0x70 == 0 {
             return 0;
         }
         ecam::EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC)
@@ -1022,8 +1025,9 @@ impl IntelGm965 {
             found = true;
         }
 
+        self.mchbar()
+            .write8(mchbar::THERMAL_ENABLE, if found { 0xd0 } else { 0 });
         if found {
-            self.mchbar().write8(mchbar::THERMAL_ENABLE, 0xd0);
             fstart_log::info!("intel-gm965: DIMM thermal sensors enabled");
         }
     }
@@ -1384,6 +1388,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
             detected_size: 0,
             boot_path: crate::BootPath::Normal,
             s3_enabled: false,
+            peg_display: false,
             low_dram_end: None,
             display: super::igd::IgdDisplay::new(),
             igd_bars: None,
@@ -1403,6 +1408,13 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.setup_bars_and_pam();
         self.early_mch_dmi_tweaks();
+        if self.config.enable_peg {
+            self.peg_display = peg::has_display();
+            if !self.peg_display {
+                let deven = &self.hostbridge_regs().deven;
+                deven.set(deven.get() & !hostbridge::DEVEN_D1F0);
+            }
+        }
         fstart_log::info!("intel-gm965: early init complete");
         Ok(())
     }
@@ -1430,7 +1442,7 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
         {
             let hb = self.hostbridge_regs();
             Some(crate::generic::training::identity(
-                b"gm965-raminit-v1",
+                b"gm965-raminit-v2",
                 &self.config.spd_addresses,
                 self.igd_ggc(),
                 LocalRegisterCopy::<u32, CLKCFG_REG::Register>::new(u32::from(
@@ -1459,6 +1471,11 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     fn finish_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         self.gm965_pm_init();
         self.gm965_igd_init();
+        // Only now hide the unused IGD: raminit and PM setup use its clocks.
+        if self.hostbridge_regs().ggc.get() & 2 != 0 {
+            let deven = &self.hostbridge_regs().deven;
+            deven.set(deven.get() & !(hostbridge::DEVEN_D2F0 | hostbridge::DEVEN_D2F1));
+        }
         self.write_coreboot_scratchpad_marker();
         Ok(())
     }
@@ -1466,6 +1483,9 @@ impl crate::IntelNorthbridgeDriver for IntelGm965 {
     fn post_dram_init(&mut self) -> Result<(), ServiceError> {
         // PCI-facing DMA-remap setup stays in ramstage, not DMI/DRAM PM.
         self.init_dma_remap_bars();
+        if self.hostbridge_regs().deven.get() & hostbridge::DEVEN_D1F0 != 0 {
+            peg::init();
+        }
         Ok(())
     }
 
@@ -1735,6 +1755,8 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for IntelGm965 {
 
 #[cfg(test)]
 mod acpi_tests;
+#[cfg(test)]
+mod thermal_tests;
 
 mod acpi_impl {
     extern crate alloc;
@@ -1781,6 +1803,11 @@ mod acpi_impl {
                             MHEN, 1,
                             , 13,
                             MHBR, 22,
+                            Offset(0x54),
+                            , 1,
+                            PEGE, 1,
+                            , 1,
+                            IGDE, 1,
                             Offset(0x60),
                             PXEN, 1,
                             PXSZ, 2,
@@ -1839,6 +1866,17 @@ mod acpi_impl {
 
                     Device("PEGP") {
                         Name("_ADR", 0x00010000u32);
+                        Method("_STA", 0, NotSerialized) {
+                            If (#{const "\\_SB_.PCI0.MCHC.PEGE"}) { Return(0x0fu32); }
+                            Return(0u32);
+                        }
+                        Device("DGPU") {
+                            Name("_ADR", 0u32);
+                            Method("_STA", 0, NotSerialized) {
+                                If (#{const "\\_SB_.PCI0.MCHC.PEGE"}) { Return(0x0fu32); }
+                                Return(0u32);
+                            }
+                        }
                         Name("_PRT", Package(
                             Package(0x0000FFFFu32, 0u32, 0u32, 16u32),
                             Package(0x0000FFFFu32, 1u32, 0u32, 17u32),

@@ -28,6 +28,9 @@ fn main() -> ! {
     let resume = rs.is_resume();
     let mut ec = fstart_driver_lenovo::options::Options::DEFAULT;
     rs.resolve_options(&mainboard::EC_KNOBS, &mut ec, |_| Ok(()));
+    let mut cpu = fstart_driver_intel::cpu::options::Options::default();
+    rs.resolve_options(&mainboard::CPU_KNOBS, &mut cpu, |_| Ok(()));
+    cpu.apply();
     let identity = mainboard::init_devices(&mut pins.bluetooth_card, rs.smbus(), &ec, resume);
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {

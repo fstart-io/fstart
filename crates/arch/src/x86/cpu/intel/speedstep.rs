@@ -76,6 +76,24 @@ pub struct Limits {
 
 pub type PStates = Vec<PState, 8>;
 
+// Set by the BSP before AP initialization; AML and EMTTM consume one policy.
+static UNDERVOLT_STEPS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Select a voltage reduction in 12.5 mV VID steps (0..=12), before starting APs.
+/// Defaults to stock voltage. Excessive undervolting can cause instability.
+pub fn set_undervolt_steps(steps: u8) {
+    UNDERVOLT_STEPS.store(steps.min(12), core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Lower only VIDs above the lowest normal state; SLFM may already be below it.
+pub fn undervolt(states: &mut [PState], lfm_vid: u8, steps: u8) {
+    for state in states {
+        if state.vid > lfm_vid {
+            state.vid = state.vid.saturating_sub(steps).max(lfm_vid);
+        }
+    }
+}
+
 pub fn pstates(params: Limits) -> PStates {
     let power_diff2 = params.max.power.saturating_sub(params.min.power) * 2;
     let vid_diff2 = u32::from(params.max.vid.saturating_sub(params.min.vid)) * 2;
@@ -223,7 +241,13 @@ pub unsafe fn current_pstates() -> PStates {
         },
         ..Limits::default()
     };
-    pstates(limits)
+    let mut states = pstates(limits);
+    undervolt(
+        &mut states,
+        limits.min.vid,
+        UNDERVOLT_STEPS.load(core::sync::atomic::Ordering::Relaxed),
+    );
+    states
 }
 
 /// # Safety
@@ -268,6 +292,59 @@ pub unsafe fn fsb_x3() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn undervolting_is_stock_by_default_and_never_crosses_lfm() {
+        let stock = [
+            PState {
+                ratio: 11,
+                nonint: true,
+                vid: 0x28,
+                is_turbo: true,
+                ..PState::default()
+            },
+            PState {
+                ratio: 10,
+                nonint: true,
+                vid: 0x22,
+                ..PState::default()
+            },
+            PState {
+                ratio: 8,
+                vid: 0x1c,
+                ..PState::default()
+            },
+            PState {
+                ratio: 6,
+                vid: 0x17,
+                ..PState::default()
+            },
+            PState {
+                ratio: 6,
+                vid: 0x10,
+                dynfsb: true,
+                is_slfm: true,
+                ..PState::default()
+            },
+        ];
+        let mut states = stock;
+        undervolt(&mut states, 0x17, 0);
+        assert_eq!(states, stock);
+        undervolt(&mut states, 0x17, 8);
+        assert_eq!(
+            states.map(PState::encoded),
+            [0x4b20, 0x4a1a, 0x0817, 0x0617, 0x8610]
+        );
+        assert_eq!(
+            emttm_entries(&states),
+            [0x0617, 0x0617, 0x0617, 0x0617, 0x0817, 0x0a1a]
+        );
+        undervolt(&mut states, 0x17, u8::MAX);
+        assert_eq!(
+            states.map(|state| state.vid),
+            [0x17, 0x17, 0x17, 0x17, 0x10]
+        );
+    }
+
     #[test]
     fn penryn_tables_exclude_special_modes_from_emttm() {
         let states = pstates(Limits {

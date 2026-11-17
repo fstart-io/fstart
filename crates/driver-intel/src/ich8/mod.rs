@@ -544,6 +544,10 @@ register_structs! {
 
 const HPET_BASE: usize = 0xfed0_0000;
 const ICH8_SPIBAR_OFFSET: usize = 0x3020;
+/// SPIBAR + 0xc1, low 16 bits of Vendor Specific Component Capabilities.
+const SPIBAR_VSCC: usize = 0xc1;
+#[cfg(test)]
+mod spi_tests;
 const SPIBAR_HSFS: usize = 0x04;
 const SPIBAR_FREG0: usize = 0x54;
 const SPIBAR_FDOC: usize = 0xb0;
@@ -852,6 +856,9 @@ pub struct IntelIch8Config {
     pub disable_sata2: bool,
     /// Disable the desktop thermal-throttle function. ICH8-M does not expose it.
     pub disable_thermal: bool,
+    /// SPI VSCC bits 15:0 (erase opcode/block size). None preserves hardware.
+    /// This must match the fitted flash, e.g. 0x2005 for a Winbond W25X32.
+    pub spi_vscc: Option<u16>,
 }
 
 impl IntelIch8Config {
@@ -885,6 +892,7 @@ impl IntelIch8Config {
             disable_lan: false,
             disable_sata2: true,
             disable_thermal: true,
+            spi_vscc: None,
         }
     }
 }
@@ -923,6 +931,12 @@ const fn empty_io_trap() -> IoTrapConfig {
 #[derive(Clone, Copy)]
 struct Rcba {
     base: usize,
+}
+
+impl crate::MmioBar for Rcba {
+    fn base(self) -> usize {
+        self.base
+    }
 }
 
 impl Rcba {
@@ -1406,8 +1420,17 @@ impl IntelIch8 {
         fstart_driver_rtc::init_clock("intel-ich8", battery_dead);
     }
 
+    fn configure_spi_vscc(rcba: Rcba, value: Option<u16>) {
+        if let Some(value) = value {
+            // The shared BAR accessor uses an unaligned x86 MMIO word write,
+            // preserving the upper VSCC bits and neighboring control byte.
+            crate::MmioBar::write16(rcba, (ICH8_SPIBAR_OFFSET + SPIBAR_VSCC) as u32, value);
+        }
+    }
+
     fn ramstage_lpc_init(&self) {
         let rcba = self.rcba();
+        Self::configure_spi_vscc(rcba, self.config.spi_vscc);
         self.enable_ioapic();
         self.lpc_regs().serirq_cntl.set(0xc0);
         self.configure_power_options();

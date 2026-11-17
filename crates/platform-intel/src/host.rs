@@ -10,17 +10,90 @@ use fstart_image_build::{
 
 use std::{format, string::ToString, vec, vec::Vec};
 
+/// Intel platforms accept authenticated file assets as well as Linux policy.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Options {
+    #[serde(rename = "file-assets")]
+    pub file_assets: Option<std::string::String>,
+    #[serde(flatten)]
+    pub linux: X86LinuxOptions,
+}
+
 /// Conventional platform export consumed by the generic fbuild runner.
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
-    type Options = X86LinuxOptions;
+    type Options = Options;
 
     fn resolve(
         selection: BuildSelection,
-        options: X86LinuxOptions,
+        options: Options,
     ) -> Result<ResolvedPlan, std::string::String> {
-        compilation_plan(resolve::<B>(selection, options)?)
+        // Explicit image configuration carries private authenticated data (such
+        // as a discrete GPU ROM), never silently discovered board-local files.
+        let assets = options
+            .file_assets
+            .as_deref()
+            .map(|path| {
+                std::fs::read(path)
+                    .map_err(|error| format!("Intel image config: {error}"))
+                    .and_then(|bytes| image_assets(&bytes))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut plan = compilation_plan(resolve::<B>(selection, options.linux)?)?;
+        let stage_names = plan.stages.clone();
+        let Some(fstart_image_build::build_plan::ImageStep {
+            operation: fstart_image_build::build_plan::ImageOperation::Ffs(image),
+            ..
+        }) = plan.images.first_mut()
+        else {
+            return Err("Intel FFS image missing".into());
+        };
+        for asset in assets {
+            if image
+                .data_assets
+                .iter()
+                .chain(&stage_names)
+                .any(|name| name == asset.name.as_str())
+                || matches!(
+                    asset.name.as_str(),
+                    "cpu_microcode_blob.bin" | "payload" | "linux-manifest"
+                )
+            {
+                return Err(format!("duplicate Intel data asset: {}", asset.name));
+            }
+            image.file_assets.push(asset);
+        }
+        Ok(plan)
     }
+}
+
+/// Parse the explicit Intel image configuration. Paths are workspace-relative,
+/// as for every FFS file asset. Reject unknown keys and duplicate FFS names.
+fn image_assets(bytes: &[u8]) -> Result<Vec<fstart_core::board::FileAsset>, std::string::String> {
+    let mut config: std::collections::BTreeMap<
+        std::string::String,
+        Vec<fstart_core::board::FileAsset>,
+    > = serde_json::from_slice(bytes).map_err(|error| format!("Intel image config: {error}"))?;
+    let assets = config.remove("file_assets").unwrap_or_default();
+    if !config.is_empty() {
+        return Err("unknown Intel image configuration field".into());
+    }
+    if assets.len() > 8 {
+        return Err("too many Intel file assets".into());
+    }
+    for (index, asset) in assets.iter().enumerate() {
+        if asset.name.is_empty()
+            || asset.path.is_empty()
+            || assets[..index]
+                .iter()
+                .any(|previous| previous.name == asset.name)
+        {
+            return Err("empty or duplicate Intel file asset".into());
+        }
+    }
+    Ok(assets)
 }
 
 pub fn compilation_plan(
@@ -410,6 +483,77 @@ mod tests {
     ) -> Result<IntelPlan, std::string::String> {
         let options = selection.options()?;
         resolve_for::<Gm965>(facts, 2, false, selection, options)
+    }
+
+    #[test]
+    fn explicit_image_assets_are_bounded_and_unambiguous() {
+        let mut selection = BuildSelection::default();
+        selection.set_option("file-assets", "private/t61.json");
+        assert_eq!(
+            selection
+                .options::<Options>()
+                .unwrap()
+                .file_assets
+                .as_deref(),
+            Some("private/t61.json")
+        );
+        let assets = image_assets(
+            br#"{"file_assets":[{"name":"pci10de,0429.rom","path":"private/nvs140m.rom"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].name.as_str(), "pci10de,0429.rom");
+        assert!(image_assets(br#"{}"#).unwrap().is_empty());
+        for bad in [
+            br#"{"unknown":[]}"#.as_slice(),
+            br#"{"file_assets":[{"name":"","path":"a"}]}"#,
+            br#"{"file_assets":[{"name":"a","path":""}]}"#,
+            br#"{"file_assets":[{"name":"a","path":"one"},{"name":"a","path":"two"}]}"#,
+        ] {
+            assert!(image_assets(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn file_assets_reach_ffs_without_shadowing_firmware_files() {
+        struct Board;
+        impl IntelBoardFacts for Board {
+            type Platform = Gm965;
+            const CONFIG: &'static crate::gm965::Gm965Ich8Platform =
+                &crate::gm965::Gm965Ich8Config::new().max_cpus(2).build();
+            const FACTS: BoardFacts = FACTS.with_data_assets(&["data.vbt"]);
+        }
+        let path =
+            std::env::temp_dir().join(format!("fstart-intel-assets-{}.json", std::process::id()));
+        for name in [
+            "pci10de,0429.rom",
+            "data.vbt",
+            "ramstage",
+            "cpu_microcode_blob.bin",
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "file_assets": [{"name": name, "path": "private/video.rom"}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let mut selection = BuildSelection::default();
+            selection.set_option("file-assets", path.to_str().unwrap());
+            let options = selection.options::<Options>().unwrap();
+            let plan = Plan::<Board>::resolve(selection, options);
+            if name == "pci10de,0429.rom" {
+                let plan = plan.unwrap();
+                let image = plan.ffs_assembly().unwrap();
+                assert_eq!(image.file_assets.len(), 1);
+                assert_eq!(image.file_assets[0].name.as_str(), name);
+                assert_eq!(image.data_assets, ["data.vbt"]);
+            } else {
+                assert!(plan.is_err(), "{name}");
+            }
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

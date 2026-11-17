@@ -12,7 +12,7 @@ default = []
 ehci-console = ["fstart-log/debug-consoles"]
 # The SPI flash log in every stage.
 flash-console = ["dep:fstart-driver-flash-console", "fstart-log/debug-consoles"]
-host = ["dep:fstart-image-build", "dep:serde_json", "fstart-core/host"]
+host = ["dep:fstart-image-build", "dep:serde_json", "dep:serde", "fstart-core/host"]
 # Per stage binary: the fstart-stage features change code inside shared
 # functions (signature checks, ...), so each stage enables only its own.
 # The union still builds, so one selection type-checks every binary.
@@ -52,6 +52,7 @@ sha2 = { workspace = true }
 zerocopy = { workspace = true }
 fstart-image-build = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+serde = { workspace = true, optional = true }
 fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 fstart-driver-usbdebug = { workspace = true }
@@ -60,6 +61,7 @@ fstart-pci = { workspace = true }
 fstart-resume = { workspace = true, optional = true }
 fstart-store = { workspace = true }
 fstart-driver-intel = { workspace = true }
+fstart-driver-vbios = { path = "../driver-vbios" }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-acpi = { workspace = true, features = ["x86", "pci"] }
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }

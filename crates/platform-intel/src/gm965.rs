@@ -80,6 +80,20 @@ impl Gm965Ich8Config {
         config
     }
 
+    /// Probe PEG for a display controller, falling back to the integrated GPU.
+    #[must_use]
+    pub const fn peg(mut self, enabled: bool) -> Self {
+        self.enable_peg = enabled;
+        self
+    }
+
+    /// SPI hardware-sequencer erase capabilities for the fitted flash.
+    #[must_use]
+    pub const fn spi_vscc(mut self, value: u16) -> Self {
+        self.southbridge.spi_vscc = Some(value);
+        self
+    }
+
     /// Integrated graphics and display policy.
     #[must_use]
     pub const fn igd(mut self, igd: gm965::Gm965IgdConfig) -> Self {
