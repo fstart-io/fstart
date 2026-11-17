@@ -11,7 +11,7 @@ use super::acpimmio::{
 };
 use super::{FchHw, irq, sx};
 use crate::window::Window;
-use tock_registers::interfaces::ReadWriteable;
+use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;
 
 register_bitfields![u8,
@@ -83,10 +83,18 @@ pub fn route_legacy(fch: &impl FchHw) {
 
 /// Hand the OS ACPI directly, without an SMI command port: the legacy
 /// interrupt inputs routed, the 8259s masked, the power button and the FCH's own S5 entry on SLP_TYP enabled,
-/// a completed S5's sleep type cleared, every event cleared and masked, and
-/// SCI_EN set ([`sx::acpi_mode`]). The OS enables the events it handles.
+/// a completed S5's sleep type cleared, every event cleared and masked,
+/// PCIe WAKE# kept from waking the system, and SCI_EN set
+/// ([`sx::acpi_mode`]). The OS enables the events it handles.
+///
+/// PM1_EN's PCIEXP_WAKE_DIS is set at power-on and the OS leaves it as it
+/// finds it (the FADT has no PCI_EXP_WAK): cleared, a PCIe WAKE# took the
+/// S8040 out of the OS's S5 a second after it entered it (PM1_STS
+/// WAK_STS and PCIEXP_WAKE_STS on the next boot, the BMC seeing the
+/// supply's power-good come back without a power-button press). A device
+/// that is to wake the system does it through its GPE.
 pub fn acpi_mode(fch: &impl FchHw, ports: &AcpiPorts) {
-    use super::acpimmio::Pm1Control;
+    use super::acpimmio::{Pm1Control, Pm1Enable};
     route_legacy(fch);
     fstart_arch::x86::legacy_pc::initialize_pic(0x20, 0x28);
     for mask in [0x21u16, 0xa1] {
@@ -104,7 +112,9 @@ pub fn acpi_mode(fch: &impl FchHw, ports: &AcpiPorts) {
         .io()
         .reg::<u16, Pm1Control::Register>(ports.control.into());
     control.modify(Pm1Control::SLP_TYP.val(0) + Pm1Control::SLP_EN::CLEAR);
-    fch.io().write16(u32::from(ports.event) + 2, 0);
+    fch.io()
+        .reg::<u16, Pm1Enable::Register>(u32::from(ports.event) + 2)
+        .write(Pm1Enable::PCIEXP_WAKE_DIS::SET);
     sx::acpi_mode(fch, ports, true);
 }
 
@@ -125,7 +135,7 @@ pub struct Perst {
 /// read back.
 pub fn release_perst(fch: &impl FchHw, outputs: &[Perst]) -> bool {
     use super::gpio::Control;
-    use tock_registers::interfaces::{Readable, Writeable};
+    use tock_registers::interfaces::Readable;
     let acpi = fch.acpi();
     let control = |pin: super::gpio::Pin| acpi.reg::<u32, Control::Register>(pin.control());
     if outputs.iter().any(|output| {
