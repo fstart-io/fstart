@@ -41,13 +41,13 @@ pub mod encode;
 pub mod hotplug;
 pub mod lanes;
 pub mod ports;
+pub mod rs;
 pub mod rv;
 pub mod ssp;
 #[rustfmt::skip]
 pub mod tables;
 pub mod wire;
 pub mod zp;
-
 /// DXIO opcodes (`args[0]`). Names as in Oxide's `milan/dxio_impl.h`,
 /// checked against the donor's use of each (§3.1).
 pub mod op {
@@ -214,7 +214,7 @@ impl DmaBuffer {
         self.phys + offset as u32
     }
 
-    fn write(&self, offset: usize, data: &[u8]) {
+    pub(crate) fn write(&self, offset: usize, data: &[u8]) {
         assert!(offset + data.len() <= self.len);
         data.iter().enumerate().for_each(|(i, &b)| {
             // SAFETY: in bounds; constructor contract.
@@ -223,7 +223,7 @@ impl DmaBuffer {
         compiler_fence(Ordering::SeqCst);
     }
 
-    fn read(&self, offset: usize, out: &mut [u8]) {
+    pub(crate) fn read(&self, offset: usize, out: &mut [u8]) {
         assert!(offset + out.len() <= self.len);
         compiler_fence(Ordering::SeqCst);
         out.iter_mut().enumerate().for_each(|(i, b)| {

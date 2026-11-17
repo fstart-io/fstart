@@ -31,6 +31,7 @@ pub const ACPI: SocAcpi = SocAcpi {
     },
     bridges: &prt::BRIDGES_ZP,
     fch_intx_gsi: Some([16, 17, 18, 19]),
+    root_complex_pin: None,
     // PME of the xHCI bridge 7.1 (the vendor's _PRW(0x0B, 4) and _L0B).
     wake: Some(Wake {
         gpe: 0x0b,

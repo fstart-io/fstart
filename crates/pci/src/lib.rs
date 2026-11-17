@@ -40,6 +40,10 @@ pub const MAX_PCI_ROOT_WINDOWS: usize = 16;
 
 type Ranges = heapless::Vec<PciWindow, MAX_PCI_ROOT_WINDOWS>;
 
+/// The legacy VGA memory, 0xA0000–0xBFFFF: what a bridge with VGA Enable
+/// forwards besides the VGA ports.
+pub const LEGACY_VGA_MEMORY: PciWindow = PciWindow::mmio(0xa_0000, 0x2_0000);
+
 /// What a range of a root bridge's address space is for.
 ///
 /// | role        | forwarded (`_CRS`) | allocator | motherboard resource |
@@ -243,6 +247,12 @@ impl PciRoot {
             allocatable,
             motherboard,
         })
+    }
+
+    /// The root bridge forwards `range` too, to devices at fixed addresses
+    /// (the legacy VGA memory once the platform routed it here).
+    pub fn forward(&mut self, range: PciWindow) -> Result<(), PciEcamError> {
+        join(&mut self.forwarded, range)
     }
 
     /// The root bridge's identity and place in the ECAM.

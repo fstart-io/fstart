@@ -24,6 +24,7 @@
 extern crate alloc;
 
 use heapless::Vec as HVec;
+use tock_registers::interfaces::ReadWriteable;
 
 use crate::{
     ConfigRegionAccess, PCI_BAR0, PCI_CMD_BUS_MASTER, PCI_CMD_IO, PCI_CMD_MEMORY, PCI_COMMAND,
@@ -289,6 +290,16 @@ impl ResourcePool {
             }
         }
         Ok(())
+    }
+
+    /// [`Self::allocate_aligned`] at or above `floor`. What lies below it
+    /// is gone from the pool once this succeeds.
+    fn allocate_aligned_above(&mut self, size: u64, align: u64, floor: u64) -> Option<u64> {
+        let mut above = *self;
+        above.reserve_range(0, floor).ok()?;
+        let base = above.allocate_aligned(size, align)?;
+        *self = above;
+        Some(base)
     }
 
     fn free_bytes(&self) -> u64 {
@@ -1055,6 +1066,44 @@ impl PciEcam {
             .sum()
     }
 
+    /// The end of the highest BAR of root `root` placed on a bus other than
+    /// `bus`, in each pool: (below 4 GiB, above, I/O).
+    ///
+    /// A BAR behind a bridge goes above it. BARs are placed bus by bus and
+    /// a bridge's buses are consecutive, so each bridge's BARs then lie in
+    /// a span of their own: a bus placed later never lands in an alignment
+    /// gap an earlier one left (a 16 MiB framebuffer aligned up, its small
+    /// register BAR below it), inside the window derived for that earlier
+    /// bus's bridge.
+    fn floors(&self, root: usize, bus: u8) -> (u64, u64, u64) {
+        let mut floors = (0, 0, 0);
+        for device in &self.devices {
+            if device.root != root || device.addr.bus() == bus {
+                continue;
+            }
+            for bar in device.bars.iter().filter(|bar| bar.allocated) {
+                let low = self.read32(device.addr, bar.reg);
+                let (floor, base) = match bar.bar_type {
+                    BarType::Io => (&mut floors.2, u64::from(low & 0xffff_fffc)),
+                    BarType::Memory32 => (&mut floors.0, u64::from(low & 0xffff_fff0)),
+                    BarType::Memory64 => {
+                        let base = u64::from(self.read32(device.addr, bar.reg + 4)) << 32
+                            | u64::from(low & 0xffff_fff0);
+                        let pool = if base < 1 << 32 {
+                            &mut floors.0
+                        } else {
+                            &mut floors.1
+                        };
+                        (pool, base)
+                    }
+                    BarType::None => continue,
+                };
+                *floor = (*floor).max(base + bar.size);
+            }
+        }
+        floors
+    }
+
     fn allocate_one_bar(&mut self, dev_idx: usize, bar_idx: usize) -> Result<(), PciEcamError> {
         let addr = self.devices[dev_idx].addr;
         let root = self.devices[dev_idx].root;
@@ -1062,12 +1111,19 @@ impl PciEcam {
         let align = self.bar_allocation_alignment(dev_idx, bar_idx);
         let behind_bridge = self.behind_bridge(dev_idx);
         let pending = self.pending_low_bytes(root);
+        let (low_floor, high_floor, io_floor) = if behind_bridge {
+            self.floors(root, addr.bus())
+        } else {
+            (0, 0, 0)
+        };
         // A type-1 bridge has only a 32-bit non-prefetchable memory window.
         // A 64-bit BAR does not by itself make high placement forwardable.
         let can_use_high = bar.prefetchable || !self.behind_bridge(dev_idx);
         let pools = &mut self.roots[root];
         let base = match bar.bar_type {
-            BarType::Memory32 => pools.mmio32.allocate_aligned(bar.size, align),
+            BarType::Memory32 => pools
+                .mmio32
+                .allocate_aligned_above(bar.size, align, low_floor),
             // The below-4-GiB window comes first: firmware drivers reach a BAR
             // through a mapping that does not cover above 4 GiB, and some
             // devices that declare a 64-bit BAR still do not decode that high.
@@ -1075,21 +1131,27 @@ impl PciEcam {
             // strand a 32-bit BAR that has no other home.
             // A bridge forwards non-prefetchable memory only through its
             // 32-bit window: behind one, such a BAR has no home above 4 GiB.
-            BarType::Memory64 if !bar.prefetchable && behind_bridge => {
-                pools.mmio32.allocate_aligned(bar.size, align)
-            }
+            BarType::Memory64 if !bar.prefetchable && behind_bridge => pools
+                .mmio32
+                .allocate_aligned_above(bar.size, align, low_floor),
             BarType::Memory64 => {
                 let mut low = pools.mmio32;
-                low.allocate_aligned(bar.size, align)
+                low.allocate_aligned_above(bar.size, align, low_floor)
                     .filter(|_| low.free_bytes() >= pending)
                     .inspect(|_| pools.mmio32 = low)
                     .or_else(|| {
                         can_use_high
-                            .then(|| pools.mmio64.allocate_aligned(bar.size, align))
+                            .then(|| {
+                                pools
+                                    .mmio64
+                                    .allocate_aligned_above(bar.size, align, high_floor)
+                            })
                             .flatten()
                     })
             }
-            BarType::Io => pools.io_pool.allocate_aligned(bar.size, align),
+            BarType::Io => pools
+                .io_pool
+                .allocate_aligned_above(bar.size, align, io_floor),
             BarType::None => None,
         };
 
@@ -1554,6 +1616,58 @@ impl PciEcam {
             }
             current = parent.addr;
         }
+    }
+
+    /// The first VGA-compatible display function (class code 03_00_00h)
+    /// in scan order, behind (or at) `below` if given: the function the
+    /// legacy VGA ranges go to ([`Self::forward_legacy_vga`]).
+    pub fn legacy_vga_display(&self, below: Option<PciAddress>) -> Option<PciAddress> {
+        self.devices().find(|&address| {
+            self.read32(address, crate::PCI_CLASS_REVISION) >> 8 == 0x03_0000
+                && below.is_none_or(|bridge| {
+                    self.device_path(address)
+                        .is_some_and(|path| path.contains(&bridge))
+                })
+        })
+    }
+
+    /// Forward the legacy VGA ranges (memory 0xA0000–0xBFFFF, the VGA
+    /// ports) from the root bus to `display`: memory and I/O decode on
+    /// every function of its [`Self::device_path`], VGA Enable on the
+    /// bridges of it (PCI-to-PCI Bridge 1.2, 3.2.5.18). What decodes them
+    /// above the root bus is the platform's to route, to the root bridge
+    /// whose index this returns. `None` for a function enumeration did not
+    /// find.
+    pub fn forward_legacy_vga(&self, display: PciAddress) -> Option<usize> {
+        let root = self.root_of(display)?;
+        for address in self.device_path(display)? {
+            let device = self.device(address)?;
+            // SAFETY: an enumerated function; the type-0 and type-1 headers
+            // share the command register.
+            let header = unsafe { device.regs::<crate::PciType0Config>() };
+            header.command.modify(
+                crate::PCI_COMMAND_BITS::IO_SPACE::SET + crate::PCI_COMMAND_BITS::MEMORY_SPACE::SET,
+            );
+            if device.read8(PCI_HEADER_TYPE) & 0x7f == PCI_HEADER_TYPE_BRIDGE {
+                // SAFETY: an enumerated function with a type-1 header.
+                let bridge = unsafe { device.regs::<crate::PciType1Config>() };
+                bridge.bridge_control.modify(
+                    crate::PCI_BRIDGE_CONTROL_BITS::VGA_ENABLE::SET
+                        + crate::PCI_BRIDGE_CONTROL_BITS::DISCARD_TIMER_STATUS::CLEAR,
+                );
+            }
+        }
+        Some(root)
+    }
+
+    /// Root bridge `root` (by its index in [`Self::roots`]) forwards the
+    /// legacy VGA memory, which its description then reports: the platform
+    /// routes the legacy VGA ranges there.
+    pub fn forward_legacy_vga_memory(&mut self, root: usize) -> Result<(), PciEcamError> {
+        self.described
+            .get_mut(root)
+            .ok_or(PciEcamError::ConfigError)?
+            .forward(crate::LEGACY_VGA_MEMORY)
     }
 
     /// Memory BAR spans actually assigned to discovered devices, including
@@ -2231,6 +2345,97 @@ mod tests {
         assert!(pci.device_path(gpu).is_none());
     }
 
+    /// A root port with a bridge to a VGA-compatible display behind it, an
+    /// accelerator (display, not VGA-compatible) and a second VGA display
+    /// on the root bus.
+    #[test]
+    fn legacy_vga_goes_to_the_display_along_its_path() {
+        let (mut pci, mut ram) = test_pci();
+        ram.fill(0);
+        let port = PciAddress::new(0, 0, 1, 1);
+        let bridge = PciAddress::new(0, 1, 0, 0);
+        let bmc = PciAddress::new(0, 2, 0, 0);
+        let accelerator = PciAddress::new(0, 0, 2, 0);
+        let gpu = PciAddress::new(0, 0, 3, 0);
+        for (address, header, class, secondary) in [
+            (accelerator, 0, 0x0380_0000, 0),
+            (port, 1, 0x0604_0000, 1),
+            (bridge, 1, 0x0604_0000, 2),
+            (bmc, 0, 0x0300_0041, 0),
+            (gpu, 0, 0x0300_00c1, 0),
+        ] {
+            let dev = pci.device(address).unwrap();
+            dev.write8(PCI_HEADER_TYPE, header);
+            dev.write32(crate::PCI_CLASS_REVISION, class);
+            dev.write16(0x3e, 0x0400);
+            assert!(
+                pci.devices
+                    .push(PciDev {
+                        header_type: header,
+                        secondary_bus: secondary,
+                        subordinate_bus: 2,
+                        ..endpoint(address, &[])
+                    })
+                    .is_ok()
+            );
+        }
+        // The first VGA-compatible one in scan order, or the one behind
+        // the port the board names.
+        assert_eq!(pci.legacy_vga_display(None), Some(bmc));
+        assert_eq!(pci.legacy_vga_display(Some(port)), Some(bmc));
+        assert_eq!(pci.legacy_vga_display(Some(gpu)), Some(gpu));
+        assert_eq!(pci.legacy_vga_display(Some(accelerator)), None);
+        assert_eq!(pci.forward_legacy_vga(bmc), Some(0));
+        for address in [port, bridge, bmc] {
+            assert_eq!(pci.read16(address, PCI_COMMAND) & 3, 3);
+        }
+        // VGA Enable on the bridges; their discard timer status (W1C)
+        // written as 0.
+        for address in [port, bridge] {
+            assert_eq!(pci.read16(address, 0x3e), 1 << 3);
+        }
+        for address in [accelerator, gpu] {
+            assert_eq!(pci.read16(address, PCI_COMMAND), 0);
+        }
+        assert_eq!(pci.forward_legacy_vga(PciAddress::new(0, 1, 5, 0)), None);
+    }
+
+    /// The root the platform routes the legacy VGA memory to reports it.
+    #[test]
+    fn the_legacy_vga_root_forwards_the_vga_memory() {
+        let info = |bus_start, bus_end| PciRootInfo {
+            segment: 0,
+            ecam_base: 0xe000_0000,
+            bus_start,
+            bus_end,
+        };
+        let root = |bus_start, bus_end, base| {
+            PciRoot::new(
+                info(bus_start, bus_end),
+                [
+                    Window.mmio(base, 0x1000_0000),
+                    Forwarded.mmio(0xc_0000, 0x4_0000),
+                ],
+            )
+            .unwrap()
+        };
+        let mut pci =
+            PciEcam::new([root(0, 0x3f, 0xc000_0000), root(0x40, 0x7f, 0xd000_0000)]).unwrap();
+        pci.forward_legacy_vga_memory(1).unwrap();
+        assert!(
+            pci.roots()[0]
+                .mmio()
+                .all(|range| *range.start() != 0xa_0000)
+        );
+        // Joined with the option ROM range it touches.
+        assert!(
+            pci.roots()[1]
+                .mmio()
+                .any(|range| range == (0xa_0000..=0xf_ffff))
+        );
+        assert!(pci.forward_legacy_vga_memory(2).is_err());
+    }
+
     #[test]
     fn sibling_bridge_windows_do_not_interleave() {
         let (mut pci, _config_space) = test_pci();
@@ -2264,6 +2469,52 @@ mod tests {
         assert!(xhci_window.end() < sata_window.start());
         assert!(xhci_window.contains(&(pci.read32(xhci, PCI_BAR0) & !0xf)));
         assert!(sata_window.contains(&(pci.read32(sata, PCI_BAR0 + 20) & !0xf)));
+    }
+
+    /// The S8040's first IOS: a root port with the AST2600 behind it (a
+    /// 16 MiB framebuffer, aligned up past the pool's front, and a 256 KiB
+    /// register BAR in the gap below it), then the internal bridge with the
+    /// xHCI. Placed into that gap, the xHCI was inside the AST's root port
+    /// window.
+    #[test]
+    fn a_later_bus_does_not_fill_an_earlier_bridges_alignment_gap() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0xc880_0000, 0x0700_0000, 0, 0, 0x1000, 0xf000)
+            .unwrap();
+        let bridge = |address, secondary, subordinate| PciDev {
+            header_type: PCI_HEADER_TYPE_BRIDGE,
+            secondary_bus: secondary,
+            subordinate_bus: subordinate,
+            ..endpoint(address, &[])
+        };
+        let ast = PciAddress::new(0, 1, 0, 0);
+        let xhci = PciAddress::new(0, 2, 0, 4);
+        for device in [
+            bridge(PciAddress::new(0, 0, 5, 3), 1, 1),
+            endpoint(
+                ast,
+                &[
+                    (0, BarType::Memory32, 0x100_0000),
+                    (1, BarType::Memory32, 0x4_0000),
+                ],
+            ),
+            bridge(PciAddress::new(0, 0, 7, 1), 2, 2),
+            endpoint(xhci, &[(0, BarType::Memory64, 0x10_0000)]),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+
+        pci.allocate_resources().unwrap();
+
+        let window = |device, function| {
+            let value = pci.read32(PciAddress::new(0, 0, device, function), PCI_MEMORY_BASE);
+            (value & 0xfff0) << 16..=(value | 0xf_ffff)
+        };
+        let (ast_window, xhci_window) = (window(5, 3), window(7, 1));
+        assert_eq!(pci.read32(ast, PCI_BAR0) & !0xf, 0xc900_0000);
+        assert_eq!(pci.read32(ast, crate::PCI_BAR1) & !0xf, 0xc880_0000);
+        assert!(ast_window.end() < xhci_window.start());
+        assert!(xhci_window.contains(&(pci.read32(xhci, PCI_BAR0) & !0xf)));
     }
 
     pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {

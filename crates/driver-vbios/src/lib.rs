@@ -644,33 +644,14 @@ pub unsafe fn initialize(
     {
         return Err(Error::Bounds);
     }
+    // BAR allocation does not imply forwarding the fixed VGA apertures:
+    // the display and the bridges to it decode them.
+    pci.forward_legacy_vga(address).ok_or(Error::Bounds)?;
     // SAFETY: a validated, allocated Type-0 VGA function; BSP owns it.
     let config = unsafe { device.regs::<fstart_pci::PciType0Config>() };
-    config.command.modify(
-        fstart_pci::PCI_COMMAND_BITS::IO_SPACE::SET
-            + fstart_pci::PCI_COMMAND_BITS::MEMORY_SPACE::SET
-            + fstart_pci::PCI_COMMAND_BITS::BUS_MASTER::SET,
-    );
-    // BAR allocation does not imply forwarding the fixed VGA apertures.
-    // Enable only the ancestor bridges of the selected display function.
-    for bridge in pci.devices().filter_map(|a| pci.device(a)) {
-        if bridge.read8(0x0e) & 0x7f != 1 {
-            continue;
-        }
-        // SAFETY: the function has a Type-1 header and belongs to this allocator.
-        let regs = unsafe { bridge.regs::<fstart_pci::PciType1Config>() };
-        if regs.secondary_bus.get() != 0
-            && regs.secondary_bus.get() <= address.bus()
-            && address.bus() <= regs.subordinate_bus.get()
-        {
-            regs.command.modify(
-                fstart_pci::PCI_COMMAND_BITS::IO_SPACE::SET
-                    + fstart_pci::PCI_COMMAND_BITS::MEMORY_SPACE::SET,
-            );
-            regs.bridge_control
-                .modify(fstart_pci::PCI_BRIDGE_CONTROL_BITS::VGA_ENABLE::SET);
-        }
-    }
+    config
+        .command
+        .modify(fstart_pci::PCI_COMMAND_BITS::BUS_MASTER::SET);
     fstart_log::info!(
         "VBIOS: IO BAR {} legacy VGA port {}",
         fstart_log::Hex(device.read32(0x20).into()),

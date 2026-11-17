@@ -175,13 +175,12 @@ fn fabric_route_validation_is_atomic_and_programming_is_idempotent() {
     assert!(df.writes.borrow().is_empty());
     df.regs.borrow_mut().clear();
     fabric::ensure_legacy_routes(&die, 0xd0000000).unwrap();
-    // MMIO pair 0: 0xd0000000-0xfebfffff, I/O pair 0: 0-0xffff, VGA: all
-    // to the IOMS (fabric ID 9).
+    // MMIO pair 0: 0xd0000000-0xfebfffff, I/O pair 0: 0-0xffff, all to
+    // the IOMS (fabric ID 9).
     let regs = df.regs.borrow().clone();
     assert_eq!(
         regs.into_iter().collect::<Vec<_>>(),
         vec![
-            ((0, 0x80, None), 0x91),
             ((0, 0xc0, None), 3),
             ((0, 0xc4, None), 0xf009),
             ((0, 0x200, None), 0xd000),
@@ -194,6 +193,9 @@ fn fabric_route_validation_is_atomic_and_programming_is_idempotent() {
     assert_eq!(df.writes.borrow()[3], ((0, 0xc0, None), 3));
     df.writes.borrow_mut().clear();
     fabric::ensure_legacy_routes(&die, 0xd0000000).unwrap();
+    assert!(df.writes.borrow().is_empty());
+    // The legacy VGA ranges, once enumeration found the display.
+    fabric::route_vga(&die);
     assert_eq!(*df.writes.borrow(), vec![((0, 0x80, None), 0x91)]);
 }
 

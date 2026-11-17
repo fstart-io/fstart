@@ -17,13 +17,13 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 
 | Block | Common | Versions |
 |---|---|---|
-| `df` | registers, `Df` (one node), `Fabric` (every node), `topology`, `plan`, `program`, `map`, `dram` | `v2`/`v3` layouts; `rv`, `zp`, `ssp`, `gn` init |
-| `nbio` | `iohc`, `ioapic`, `iommu`, `nbif`, `pcie`, `fuse`, `table`, `Nbio` (a root bridge's NBIO) | `rv`, `zp`, `ssp` |
-| `smu` | mailbox, thread release | `v9`, `v10`, `v11` |
-| `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp` |
-| `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`) | `rv`, `zp`; `tables::{zp, ssp, gn}` |
-| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan` |
-| `psp`, `apob` | mailbox and commands, the APOB | |
+| `df` | registers, `Df` (one node), `Fabric` (every node), `topology`, `plan`, `program`, `map`, `dram` | `v2`/`v3` layouts; `rv`, `zp`, `ssp`, `gn` init; `v4` (RS: its own `Df`, IOS, bus maps, rules) |
+| `nbio` | `iohc`, `ioapic`, `iommu`, `nbif`, `pcie`, `fuse`, `table`, `Nbio` (a root bridge's NBIO) | `rv`, `zp`, `ssp`, `rs` (`Ios`: an IOS's NBIO) |
+| `smu` | mailbox, thread release | `v9`, `v10`, `v11`, `v13` |
+| `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp`; `rs` (MPIO: `ask`, `mailbox`, `session`, `ports`) |
+| `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
+| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
+| `psp`, `apob` | mailbox and commands, the APOB | `apob::rs` (the RS records that differ from Milan's) |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a
 sequence depends on the die; everything a SoC decides is an argument or a
@@ -38,20 +38,26 @@ dependencies only (`acpi`, `smbios`, `smm`, `spi-flash`, `testing`).
 
 ## platform-amd: SoCs
 
-One module per SoC: `picasso`, `zeppelin`, `naples`, `rome`, `milan`.
+One module per SoC: `picasso`, `zeppelin`, `naples`, `rome`, `milan`,
+`genoa`, `siena`.
 A SoC module says which IP versions it runs, in which order
 (`soc::Init`), with which constants (ECAM, layout, APOB, packages), and
 what the flow needs of it beyond the silicon (`flow::Soc`). SoCs that share
 their steps share a module: `iod` holds the steps of Rome and Milan, which
-take their die as a type (`iod::Variant`); `noncar` what the SoCs made of
-dies share; `sp3` what the SoCs of the SP3 socket share (its flash halves,
-its memory reservations, the flow's services for the socket).
+take their die as a type (`iod::Variant`), and `rs` those of Genoa and
+Siena, the SoCs of the RS I/O die (`rs::Variant`: the IOS a part has, its
+DRAM layout, its SMU and PM base); `noncar` what the SoCs made of dies
+share; `sp3` what the SoCs of the SP3 socket share (its flash halves, its
+memory reservations, the flow's services for the socket).
 
 The flow (`flow`) is the same for every SoC, and so are its services, each
 of which takes the SoC's data: the reset layout (`layout`), the memory map
 (`memory`), the boot media (`media`), MP (`mp` with the driver's
 `ccx::mp::Fam17hCpu`), the fabric (`soc::Fabric`: the PCI segment and the
-DF plan's root bridges, the PCI roots), SMM installation (`tseg`) and its
+DF plan's root bridges, the PCI roots), legacy VGA (the display behind
+the port a board's lanes attach its onboard display to, else the first
+VGA-compatible one; the SoC routes the DF's VGA window to its root
+bridge, `Init::route_legacy_vga`), SMM installation (`tseg`) and its
 handler (`smm`: one SMRAM configuration and installer, the handler on the
 driver's SMI dispatcher, which a SoC with SMM work of its own extends, as
 `sp3::smm` does), options (`options`), measured boot (`tpm`), the ACPI
@@ -87,3 +93,8 @@ linked. platform-amd has no SoC features either.
   `AGENTS.md`).
 - Generated vendor tables are checked in as Rust with their provenance;
   their generators are not part of the tree.
+- A SoC's code in platform-amd that is not generic over the SoC holds no
+  string (no log, `expect` or panic message), or is `#[inline]`: the
+  linker keeps a crate's merged strings with the ones another SoC uses, so
+  such a string changes every other board's image. Driver code is not
+  affected the same way, but keep new IP versions in their own module.

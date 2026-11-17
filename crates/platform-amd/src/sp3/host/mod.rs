@@ -23,7 +23,7 @@ fn generations<B: Board>() -> Vec<Generation> {
             SocId::Naples => Some(Generation::Naples),
             SocId::Rome => Some(Generation::Rome),
             SocId::Milan => Some(Generation::Milan),
-            SocId::Picasso | SocId::Zeppelin => None,
+            SocId::Picasso | SocId::Zeppelin | SocId::Genoa | SocId::Siena => None,
         })
         .collect();
     generations.sort();

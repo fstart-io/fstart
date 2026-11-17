@@ -28,6 +28,7 @@ pub mod pm;
 pub mod power;
 pub mod ras;
 pub mod release;
+pub mod rs;
 pub mod rv;
 pub mod security;
 pub mod table;
@@ -36,7 +37,6 @@ pub mod topology;
 pub mod tsc;
 pub mod x2apic;
 pub mod zp;
-
 use self::{
     cache::CacheControl,
     msr::{

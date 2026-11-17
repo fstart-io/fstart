@@ -287,7 +287,6 @@ pub fn data_fabric<V: Version>(ctx: &mut Ctx) -> Result<(), &'static str> {
     let nodes = unsafe { ctx.df.each(&topology.nodes) };
     program::mmio::<V, _>(&nodes, &plan.mmio);
     program::io::<V, _>(&nodes, &plan.io);
-    program::vga::<V, _>(&nodes, topology.primary().fabric_id);
     for rb in &plan.root_bridges {
         fstart_log::info!(
             "df: rb {}.{} buses {:#x}-{:#x} mmio {:#x}+{:#x}",
