@@ -3,14 +3,9 @@
 
 use crate::IntelBoard;
 #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
-use crate::{IntelChipsetConfig, IntelEarlyPlatform};
+use crate::IntelEarlyPlatform;
 use fstart_core::services::{ConsoleDevice, ServiceError};
-#[cfg(any(feature = "ehci-console", feature = "flash-console"))]
-use fstart_driver_intel::IntelNorthbridgeDriver;
 use fstart_log::StaticConsole;
-
-#[cfg(any(feature = "ehci-console", feature = "flash-console"))]
-type Nb<B> = <<B as crate::IntelBoardFacts>::Platform as IntelEarlyPlatform>::Northbridge;
 
 /// Postcar keeps the bootblock's identity page tables, which live in the
 /// flash the SPI flash log programs: a page walk while the chip is busy
@@ -61,10 +56,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     // its own BSS, as the bootblock and ramstage do before their consoles.
     // PCIEXBAR itself stays programmed from the bootblock.
     #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
-    if Nb::<B>::new_from_config(B::CONFIG.northbridge())
-        .and_then(|mut northbridge| northbridge.pre_console_init())
-        .is_err()
-    {
+    if B::Platform::postcar_console_decode(B::CONFIG).is_err() {
         fstart_arch::x86::boot::halt();
     }
     let ramstage_name = crate::RAMSTAGE_NAME;

@@ -27,9 +27,7 @@
 extern crate alloc;
 
 use crate::boot::{import_intel_directory, install_intel_load_policy};
-use crate::{
-    IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelPlatform, IntelPlatformConfig, layout,
-};
+use crate::{IntelBoard, IntelEarlyPlatform, IntelPlatform, IntelPlatformConfig, layout};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -263,9 +261,8 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         }
         let geometry = layout::IntelBootLayout::current(2).unwrap_or_else(halt);
         let (firmware_base, firmware_size) = geometry.firmware().unwrap_or_else(halt);
-        let northbridge = Nb::<B>::new_from_config(B::CONFIG.northbridge()).unwrap_or_else(halt);
-        let mut southbridge =
-            Sb::<B>::new_from_config(B::CONFIG.southbridge()).unwrap_or_else(halt);
+        let (northbridge, mut southbridge) =
+            B::Platform::bind_ramstage(B::CONFIG).unwrap_or_else(halt);
         let store = crate::store::open(geometry).unwrap_or_else(halt);
         crate::store::attach_timestamps(&store);
         fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
@@ -311,8 +308,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             rs.boot_media.mount()
         });
         rs.phase(fstart_timestamp::id::PRE_BUS_SCAN, |rs| {
-            rs.northbridge.pre_console_init()?;
-            rs.southbridge.pre_console_init()
+            B::Platform::pre_console_init(&mut rs.northbridge, &mut rs.southbridge)
         });
         rs
     }
@@ -346,10 +342,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             &mut self.southbridge,
             &mut self.options,
         );
-        let early = self
-            .northbridge
-            .ramstage_early_init()
-            .and_then(|()| self.southbridge.early_init());
+        let early = B::Platform::ramstage_early_init(&mut self.northbridge, &mut self.southbridge);
         if let Err(error) = early {
             fstart_log::error!("early init: {:?}", error);
             self.fail("early init");
@@ -378,8 +371,7 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             self.northbridge.memory_detected(self.ctx.e820_state());
             // coreboot chip_operations.init: before PCI enumeration, e.g.
             // hiding functions the board disables.
-            self.northbridge.chip_init()?;
-            self.southbridge.chip_init()?;
+            B::Platform::init_chipset_functions(&mut self.northbridge, &mut self.southbridge)?;
             // Cache is still off: the RAM-stage entry tore down CAR. The ranges
             // the northbridge just published are enough to restore caching now.
             // The complete solution is selected after PCI allocation.
@@ -544,8 +536,7 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
                     );
                 }
             }
-            rs.northbridge.post_dram_init()?;
-            rs.southbridge.post_dram_init()
+            B::Platform::init_chipset_devices(&mut rs.northbridge, &mut rs.southbridge)
         });
         self.into()
     }

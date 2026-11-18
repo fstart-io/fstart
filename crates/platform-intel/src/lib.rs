@@ -39,6 +39,8 @@ pub mod host;
 #[cfg(feature = "stage")]
 #[doc(hidden)]
 pub use fstart_arch as arch_runtime;
+#[cfg(feature = "stage")]
+use fstart_core::services::ServiceError;
 #[cfg(feature = "bundle-smm")]
 pub use fstart_smm as smm;
 #[cfg(feature = "stage")]
@@ -109,7 +111,9 @@ pub const SMM_IMAGE: Option<&'static [u8]> = None;
 
 /// An Intel hardware binding driven by the shared flow below. Legacy chipset
 /// pairs take a board-selected CPU-package parameter; newer platforms can
-/// supply their CPU family directly. The family flow is not duplicated.
+/// supply their CPU family directly. The shared flow owns the stage transitions,
+/// training cache and PCI allocator; the binding owns the hardware handles and
+/// the order in which it calls the chipset blocks within each phase.
 #[cfg(feature = "stage")]
 pub trait IntelEarlyPlatform:
     Sized
@@ -137,6 +141,116 @@ pub trait IntelEarlyPlatform:
         + fstart_core::services::SmBus
         + fstart_arch::x86::cpu::intel::smm::SmiControl
         + SouthbridgeAcpi<Self::Southbridge>;
+
+    /// Construct the chipset owners while CAR is live, before opening the
+    /// console decodes. The default adapts the existing NB/SB pairing.
+    fn bind_bootblock(
+        config: &'static Self::Config,
+    ) -> Result<(Self::Northbridge, Self::Southbridge), ServiceError> {
+        let north = Self::Northbridge::new_from_config(config.northbridge());
+        let south = Self::Southbridge::new_from_config(config.southbridge());
+        Ok((north?, south?))
+    }
+
+    /// Bind fresh hardware owners in DRAM; no owner is carried out of CAR.
+    fn bind_ramstage(
+        config: &'static Self::Config,
+    ) -> Result<(Self::Northbridge, Self::Southbridge), ServiceError> {
+        let north = Self::Northbridge::new_from_config(config.northbridge())?;
+        let south = Self::Southbridge::new_from_config(config.southbridge())?;
+        Ok((north, south))
+    }
+
+    /// Bind the existing ECAM decode for a postcar debug console. Do not
+    /// acquire CAR storage or repeat memory training in postcar.
+    fn postcar_console_decode(config: &'static Self::Config) -> Result<(), ServiceError> {
+        Self::Northbridge::new_from_config(config.northbridge())?.pre_console_init()
+    }
+
+    /// Open the chipset decodes needed before the bootblock or ramstage console.
+    fn pre_console_init(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        north.pre_console_init()?;
+        south.pre_console_init()
+    }
+
+    /// Finish early chipset setup after the bootblock console and its options.
+    fn bootblock_early_init(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        north.early_init()?;
+        south.early_init()
+    }
+
+    /// Prepare for RAM init once, before the shared flow reads any training cache.
+    fn pre_raminit(
+        _north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        south.pre_raminit_init()
+    }
+
+    /// Train or restore RAM. The shared flow owns the cache and lends its buffers;
+    /// the binding provides the actual hardware inputs to the memory controller.
+    fn train_memory(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+        cached: Option<&[u8]>,
+        capture: &mut [u8],
+    ) -> Result<Option<usize>, ServiceError> {
+        use fstart_core::services::MemoryInit;
+        let smbus = south.smbus_mut().ok_or(ServiceError::NotInitialized)?;
+        north.bring_up(fstart_driver_intel::SpdTraining {
+            smbus,
+            cached,
+            capture,
+        })
+    }
+
+    /// Complete both sides of the chipset link before the bootblock loads
+    /// postcar. The default keeps the legacy NB/SB ordering.
+    fn finish_memory_init(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        south.prepare_early_post_dram_init()?;
+        north.early_post_dram_init()?;
+        south.early_post_dram_init()?;
+        north.finish_early_post_dram_init()
+    }
+
+    /// Finish early chipset setup after the ramstage console and its options.
+    fn ramstage_early_init(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        north.ramstage_early_init()?;
+        south.early_init()
+    }
+
+    /// Set up chipset functions during memory-map initialization, before the
+    /// board's pre-scan work and the common PCI enumeration.
+    fn init_chipset_functions(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        north.chip_init()?;
+        south.chip_init()
+    }
+
+    /// Finish chipset device init after PCI allocation, final page tables and
+    /// subsystem IDs.
+    fn init_chipset_devices(
+        north: &mut Self::Northbridge,
+        south: &mut Self::Southbridge,
+    ) -> Result<(), ServiceError> {
+        north.post_dram_init()?;
+        south.post_dram_init()
+    }
+
     /// CPU family driver for MP bring-up; also supplies the CPU-model facts
     /// the shared SMM installer needs.
     #[cfg(feature = "stage")]

@@ -18,7 +18,7 @@
 //! A phase that fails halts, or on an S3 resume resets cleanly instead of
 //! booting over retained state.
 
-use crate::{IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelPlatform};
+use crate::{IntelBoard, IntelEarlyPlatform, IntelPlatform};
 use core::marker::PhantomData;
 use fstart_core::layout::RegionKind;
 use fstart_core::services::memory_detect::MemoryDetector;
@@ -146,14 +146,13 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             );
         }
         fstart_timestamp::add_at(fstart_timestamp::id::BOOTBLOCK_START, entry);
-        let (Ok(mut northbridge), Ok(mut southbridge), Ok(geometry)) = (
-            Nb::<B>::new_from_config(B::CONFIG.northbridge()),
-            Sb::<B>::new_from_config(B::CONFIG.southbridge()),
+        let (Ok((mut northbridge, mut southbridge)), Ok(geometry)) = (
+            B::Platform::bind_bootblock(B::CONFIG),
             crate::layout::IntelBootLayout::current(0),
         ) else {
             fstart_arch::x86::boot::halt()
         };
-        if northbridge.pre_console_init().is_err() || southbridge.pre_console_init().is_err() {
+        if B::Platform::pre_console_init(&mut northbridge, &mut southbridge).is_err() {
             fstart_arch::x86::boot::halt()
         }
         Self {
@@ -192,10 +191,7 @@ impl<B: IntelBoard> Bootblock<B, Early> {
         // Stolen memory and the SATA mode are programmed in early init.
         crate::options::chipset(&mut self.northbridge, &mut self.southbridge);
         fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);
-        let early = self
-            .northbridge
-            .early_init()
-            .and_then(|()| self.southbridge.early_init());
+        let early = B::Platform::bootblock_early_init(&mut self.northbridge, &mut self.southbridge);
         self.check("early init", early);
         // Consume the southbridge indication exactly once, before board clock
         // programming. Resume work must not perturb retained DRAM frequency.
@@ -232,11 +228,11 @@ impl<B: IntelBoard> Bootblock<B, Early> {
 }
 
 impl<B: IntelBoard> Bootblock<B, Console> {
-    /// Train DRAM, or replay the cached training. The SPDs must be
-    /// reachable on the southbridge's SMBus.
+    /// Prepare RAM init and train DRAM or replay cached training. Check the
+    /// result before opening any DRAM-backed stage storage.
     pub fn train_memory(mut self) -> Bootblock<B, Trained> {
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
-        let prepared = self.southbridge.pre_raminit_init();
+        let prepared = B::Platform::pre_raminit(&mut self.northbridge, &mut self.southbridge);
         self.check("pre-raminit init", prepared);
         fstart_log::info!("{}: initializing DRAM", B::Platform::NAME);
         let trained = self.dram_init();
@@ -267,7 +263,9 @@ impl<B: IntelBoard> Bootblock<B, Console> {
             .map(|(_, record)| record)
             .filter(|record| record.key == key);
         self.training.key = Some(key);
-        let length = self.bring_up(
+        let length = B::Platform::train_memory(
+            &mut self.northbridge,
+            &mut self.southbridge,
             cached.as_ref().map(|record| record.payload()),
             &mut *capture,
         )?;
@@ -283,39 +281,16 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         if self.boot_path == BootPath::S3Resume {
             return Err(ServiceError::NotSupported);
         }
-        self.bring_up(None, &mut []).map(drop)
-    }
-
-    /// The northbridge's [`MemoryInit`](fstart_core::services::MemoryInit)
-    /// from the SPDs on the southbridge's SMBus.
-    fn bring_up(
-        &mut self,
-        cached: Option<&[u8]>,
-        capture: &mut [u8],
-    ) -> Result<Option<usize>, ServiceError> {
-        use fstart_core::services::MemoryInit;
-        let smbus = self
-            .southbridge
-            .smbus_mut()
-            .ok_or(ServiceError::NotInitialized)?;
-        self.northbridge.bring_up(fstart_driver_intel::SpdTraining {
-            smbus,
-            cached,
-            capture,
-        })
+        B::Platform::train_memory(&mut self.northbridge, &mut self.southbridge, None, &mut [])
+            .map(drop)
     }
 }
 
 impl<B: IntelBoard> Bootblock<B, Trained> {
-    /// SB DMI enable -> NB negotiation -> SB polling -> NB PM/IGD.
+    /// Complete the platform's post-training setup before loading postcar.
     pub fn post_dram(mut self) -> Bootblock<B, Dram> {
         fstart_timestamp::add(fstart_timestamp::id::POST_DRAM_INIT);
-        let done = (|| {
-            self.southbridge.prepare_early_post_dram_init()?;
-            self.northbridge.early_post_dram_init()?;
-            self.southbridge.early_post_dram_init()?;
-            self.northbridge.finish_early_post_dram_init()
-        })();
+        let done = B::Platform::finish_memory_init(&mut self.northbridge, &mut self.southbridge);
         self.check("post-DRAM init", done);
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_END);
         fstart_log::info!("{}: DRAM ready", B::Platform::NAME);
