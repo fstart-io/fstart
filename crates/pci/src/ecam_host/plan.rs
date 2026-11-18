@@ -1,31 +1,59 @@
 //! What a root's plan must be before anything is written
-//! ([`PciEcam::validate_plan`]), and what of its pools it takes
-//! ([`PciEcam::commit_pools`]).
+//! ([`PciEcam::validate_plan`]), and the checks the window search shares
+//! with it.
 //!
 //! The plan is where each BAR and window of a root goes, in its devices;
-//! the pools it is checked against are the root's free ranges before
-//! allocation, not what an allocator left of them.
+//! the pools it is checked against are the root's free ranges, which
+//! allocation leaves as they were.
 
 use super::{
-    BarType, PCI_HEADER_TYPE_BRIDGE, PciEcam, Pools, PrefetchWindow, ResourcePool, WINDOW_KINDS,
-    WindowKind,
+    BarType, PCI_HEADER_TYPE_BRIDGE, PciEcam, Pools, PrefetchWindow, WINDOW_KINDS, WindowKind,
 };
+
+/// The first address a 32-bit BAR or window cannot reach. A root's pools
+/// are split here ([`super::Root::of`]); no window crosses it.
+pub(super) const FOUR_GIB: u64 = 1 << 32;
+
+/// The end of the I/O space a bridge's 16-bit I/O window forwards.
+const IO_END: u64 = 0x1_0000;
+
+/// The first address window `kind` of a bridge whose prefetchable window
+/// is `prefetch` cannot reach: 0 for one it does not have.
+pub(super) const fn window_limit(kind: WindowKind, prefetch: PrefetchWindow) -> u64 {
+    match (kind, prefetch) {
+        (WindowKind::Io, _) => IO_END,
+        (WindowKind::Memory, _) | (_, PrefetchWindow::Bits32) => FOUR_GIB,
+        (_, PrefetchWindow::Bits64) => u64::MAX,
+        (_, PrefetchWindow::None) => 0,
+    }
+}
+
+/// Whether `[base, end)` is a window `kind` of such a bridge can be: not
+/// empty, at its granularity, below its limit, and on one side of 4 GiB
+/// (what a 32-bit BAR in it may use depends on the side).
+pub(super) fn window_fits(kind: WindowKind, prefetch: PrefetchWindow, base: u64, end: u64) -> bool {
+    let granule = kind.granularity();
+    base < end
+        && base.is_multiple_of(granule)
+        && end.is_multiple_of(granule)
+        && end <= window_limit(kind, prefetch)
+        && (end <= FOUR_GIB || base >= FOUR_GIB)
+}
 
 /// Where something on a bus is: I/O or memory, `[base, end)`.
 type Span = (bool, u64, u64);
 
 impl PciEcam {
     /// Whether the plan of root `root` decodes as meant, within `pools`,
-    /// the root's free ranges before allocation:
+    /// the root's free ranges:
     ///
     /// * every movable BAR placed, at its own alignment, a 32-bit one below
     ///   4 GiB, ports below 64 KiB;
-    /// * every open window 1 MiB (4 KiB) granular, the memory window below
-    ///   4 GiB, a prefetchable window only where the bridge has one and
-    ///   below 4 GiB if it is 32-bit;
+    /// * every open window one its bridge can have ([`window_fits`]);
     /// * each in a window of its parent that forwards it: I/O through I/O,
     ///   non-prefetchable memory through memory, prefetchable through
-    ///   either; on the root bus in a free range of a pool it may use
+    ///   either, but a 32-bit BAR not through a prefetchable window above
+    ///   4 GiB; on the root bus in a free range of a pool it may use
     ///   (below 4 GiB for a 32-bit BAR, a memory window or a 32-bit
     ///   prefetchable window), window padding included;
     /// * on each bus, BARs and windows apart: no window holds a sibling's
@@ -40,23 +68,24 @@ impl PciEcam {
             for bar in device.bars.iter().filter(|bar| !bar.fixed) {
                 let limit = match bar.bar_type {
                     BarType::None => continue,
-                    BarType::Io => 0x1_0000,
-                    BarType::Memory32 => 1 << 32,
+                    BarType::Io => IO_END,
+                    BarType::Memory32 => FOUR_GIB,
                     BarType::Memory64 => u64::MAX,
                 };
                 let Some(end) = bar.base.checked_add(bar.size) else {
                     return false;
                 };
+                let span = (bar.base, end);
                 let routed = match bar.bar_type {
-                    BarType::Io => self.routed(pools, dev, WindowKind::Io, (bar.base, end)),
+                    BarType::Io => self.routed(pools, dev, WindowKind::Io, span),
                     _ if bar.prefetchable => {
                         let wide = bar.bar_type == BarType::Memory64;
-                        self.routed_prefetchable(pools, dev, wide, (bar.base, end))
+                        self.routed_prefetchable(pools, dev, wide, span)
                     }
                     BarType::Memory64 if device.parent.is_none() => {
-                        self.routed_prefetchable(pools, dev, true, (bar.base, end))
+                        self.routed_prefetchable(pools, dev, true, span)
                     }
-                    _ => self.routed(pools, dev, WindowKind::Memory, (bar.base, end)),
+                    _ => self.routed(pools, dev, WindowKind::Memory, span),
                 };
                 if !bar.allocated
                     || !bar.size.is_power_of_two()
@@ -75,32 +104,18 @@ impl PciEcam {
                 if !window.placed {
                     continue;
                 }
-                let granule = kind.granularity();
                 let Some(end) = window.base.checked_add(window.size) else {
                     return false;
                 };
-                let (limit, routed) = match kind {
+                let span = (window.base, end);
+                let routed = match kind {
                     WindowKind::Prefetchable => {
                         let wide = device.prefetch == PrefetchWindow::Bits64;
-                        let limit = match device.prefetch {
-                            PrefetchWindow::None => 0,
-                            PrefetchWindow::Bits32 => 1 << 32,
-                            PrefetchWindow::Bits64 => u64::MAX,
-                        };
-                        let span = (window.base, end);
-                        (limit, self.routed_prefetchable(pools, dev, wide, span))
+                        self.routed_prefetchable(pools, dev, wide, span)
                     }
-                    WindowKind::Memory => {
-                        (1 << 32, self.routed(pools, dev, kind, (window.base, end)))
-                    }
-                    WindowKind::Io => (0x1_0000, self.routed(pools, dev, kind, (window.base, end))),
+                    _ => self.routed(pools, dev, kind, span),
                 };
-                if window.size == 0
-                    || !window.base.is_multiple_of(granule)
-                    || !window.size.is_multiple_of(granule)
-                    || end > limit
-                    || !routed
-                {
+                if !window_fits(kind, device.prefetch, window.base, end) || !routed {
                     return false;
                 }
             }
@@ -115,7 +130,7 @@ impl PciEcam {
         match self.devices[dev].parent {
             None => match kind {
                 WindowKind::Io => pools.2.is_free(base, end),
-                _ => pools.0.is_free(base, end),
+                _ => end <= FOUR_GIB && pools.0.is_free(base, end),
             },
             Some(parent) => {
                 let window = self.devices[parent].windows[kind as usize];
@@ -124,15 +139,22 @@ impl PciEcam {
         }
     }
 
-    /// Whether prefetchable `span` of `dev` is in its parent's memory or
-    /// prefetchable window, or on the root bus in a free range below 4 GiB
-    /// or, if `wide` (64-bit), above.
+    /// Whether prefetchable `span` of `dev` is in its parent's memory
+    /// window, or its prefetchable window if `wide` (64-bit) or that is
+    /// below 4 GiB; or on the root bus in a free range below 4 GiB or, if
+    /// `wide`, above.
     fn routed_prefetchable(&self, pools: &Pools, dev: usize, wide: bool, span: (u64, u64)) -> bool {
+        let pref = WindowKind::Prefetchable;
         match self.devices[dev].parent {
-            None => pools.0.is_free(span.0, span.1) || wide && pools.1.is_free(span.0, span.1),
-            Some(_) => {
+            None => {
                 self.routed(pools, dev, WindowKind::Memory, span)
-                    || self.routed(pools, dev, WindowKind::Prefetchable, span)
+                    || wide && pools.1.is_free(span.0, span.1)
+            }
+            Some(parent) => {
+                let window = self.devices[parent].windows[pref as usize];
+                self.routed(pools, dev, WindowKind::Memory, span)
+                    || (wide || window.base + window.size <= FOUR_GIB)
+                        && self.routed(pools, dev, pref, span)
             }
         }
     }
@@ -176,34 +198,5 @@ impl PciEcam {
                     .all(|other| spans().all(|a| self.on_its_bus(other).all(|b| !overlap(a, b))));
                 mine && theirs
             })
-    }
-
-    /// Take what is on root `root`'s bus from `pools`, its free ranges
-    /// before allocation, a window whole: what is left is its pools.
-    /// Bookkeeping only (nothing is allocated from them later): a pool
-    /// whose free ranges would not fit [`ResourcePool`] is left empty.
-    pub(super) fn commit_pools(&mut self, root: usize, pools: &Pools) {
-        let mut free = *pools;
-        for dev in (0..self.devices.len())
-            .filter(|&dev| self.devices[dev].root == root && self.devices[dev].parent.is_none())
-        {
-            for (io, base, end) in self.on_its_bus(dev) {
-                let reserve = |pool: &mut ResourcePool| {
-                    let mut left = *pool;
-                    *pool = match left.reserve_range(base, end - base) {
-                        Ok(()) => left,
-                        Err(_) => ResourcePool::empty(),
-                    };
-                };
-                if io {
-                    reserve(&mut free.2);
-                } else {
-                    reserve(&mut free.0);
-                    reserve(&mut free.1);
-                }
-            }
-        }
-        let pools = &mut self.roots[root];
-        (pools.mmio32, pools.mmio64, pools.io_pool) = free;
     }
 }

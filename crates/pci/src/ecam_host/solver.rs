@@ -11,12 +11,14 @@
 //! memory behind a bridge only through its memory window, which is 32-bit.
 //! Prefetchable memory through the prefetchable window or, forwarded as
 //! non-prefetchable, through the memory window; never the reverse, and a
-//! BAR keeps its attributes. A 32-bit BAR stays below 4 GiB, so it is
-//! never put in a prefetchable window that reaches above. On the root bus,
-//! a 32-bit BAR, a memory window and a 32-bit prefetchable window come from
-//! the pool below 4 GiB; a 64-bit BAR, prefetchable or not, and a 64-bit
+//! BAR keeps its attributes. No window crosses 4 GiB, and a 32-bit BAR is
+//! never in a prefetchable window above it. On the root bus, a 32-bit BAR,
+//! a memory window and a 32-bit prefetchable window come from the pool
+//! below 4 GiB; a 64-bit BAR, prefetchable or not, and a 64-bit
 //! prefetchable window from either pool. Windows are 1 MiB (memory) or
-//! 4 KiB (I/O) granular, and what is on one bus does not overlap.
+//! 4 KiB (I/O) granular, and what is on one bus does not overlap. The
+//! checks a layout must pass are [`PciEcam::validate_plan`]'s, and the
+//! search shares them ([`super::plan::window_fits`]).
 //!
 //! **One bus** ([`PciEcam::pack`]). With its bridges' windows chosen, the
 //! BARs on a bus take two sets of free space: A and B (below and above
@@ -28,7 +30,9 @@
 //! smaller size wherever it goes, and a slot in A serves every BAR one in B
 //! does. So this fits a bus's BARs whenever any placement does. It does not
 //! hold for windows, which are not powers of two: they are chosen first.
-//! I/O is one set.
+//! I/O is one set. BARs of one size take slots in address order, so each
+//! size walks the bus once: a pack is linear in what is on the bus for
+//! each BAR size there.
 //!
 //! **One leaf bridge** ([`PciEcam::shortcut`]). Nothing else on the root bus
 //! wants memory and nothing behind the bridge is a bridge with memory
@@ -49,24 +53,62 @@
 //! or last 1 MiB nothing behind it can reach, or that is larger than what
 //! the search put in it (the smaller one is tried too); and, once a
 //! subtree is laid out, other layouts of it (outside, only its windows
-//! count). The search visits at most [`SEARCH_BUDGET`] candidate windows
-//! per root, rejected ones too, and says so ([`PciEcamError::SearchLimit`])
-//! rather than that nothing fits.
+//! count).
+//!
+//! **Budget** ([`Budget`]). The search visits at most a number of candidate
+//! windows per root, rejected ones too, and spends at most a number of
+//! work units: every loop of it, packing and gap walks included, charges
+//! one per BAR, window, gap, device or step it goes over (a sort of `n`,
+//! `n log n`). It then says so ([`PciEcamError::SearchLimit`]) rather than
+//! that nothing fits. No single charge exceeds [`MAX_CHARGE`]; so a root
+//! costs at most `work + MAX_CHARGE` units, plus the subtree allocator's
+//! sizing and [`PciEcam::validate_plan`], each once and quadratic in its
+//! functions.
 
 use core::cmp::Reverse;
 
 use heapless::Vec as HVec;
 
+use super::plan::{FOUR_GIB, window_fits, window_limit};
 use super::{
     BarType, Layout, MAX_PCI_DEVICES, MAX_RESOURCE_RANGES, PCI_HEADER_TYPE_BRIDGE, PciEcam,
     PciEcamError, Pools, PrefetchWindow, ResourcePool, Window, WindowKind,
 };
 
-/// Candidate windows the search visits for one root before it gives up.
-/// A visit packs one bus or one subtree, tens of BARs: this keeps a search
-/// that cannot finish well below a second, and is two orders of magnitude
-/// more than any topology of the tests needs.
-pub(super) const SEARCH_BUDGET: usize = 1 << 14;
+/// What the search may spend on one root.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Budget {
+    /// Candidate windows, rejected ones too.
+    pub(crate) visits: usize,
+    /// Work units ([`Arena::charge`]).
+    pub(crate) work: usize,
+}
+
+impl Budget {
+    /// Firmware's: 16384 candidates and 2^24 work units. A unit is a few
+    /// nanoseconds (about 5 on a desktop core): a search that cannot
+    /// finish ends in well under a second of boot. The largest of the
+    /// tests' generated roots that the search lays out takes 2^21.
+    pub(crate) const FIRMWARE: Self = Self {
+        visits: 1 << 14,
+        work: 1 << 24,
+    };
+
+    #[cfg(test)]
+    pub(crate) const UNLIMITED: Self = Self {
+        visits: usize::MAX,
+        work: usize::MAX,
+    };
+
+    /// Firmware's work budget, `visits` candidates.
+    #[cfg(test)]
+    pub(crate) const fn visits(visits: usize) -> Self {
+        Self {
+            visits,
+            work: Self::FIRMWARE.work,
+        }
+    }
+}
 
 /// What one bus holds at most: six BARs of each function, or two BARs and
 /// two windows of a bridge.
@@ -78,8 +120,13 @@ const _: () = assert!(
     "an Item holds a device in 12 bits"
 );
 
-/// The end of the I/O space a bridge's 16-bit I/O window forwards.
-const IO_END: u64 = 0x1_0000;
+/// The most one charge adds: sorting what one bus holds.
+pub(super) const MAX_CHARGE: usize = sort_cost(MAX_ITEMS + MAX_STEPS);
+
+/// Work units to sort `n` items.
+const fn sort_cost(n: usize) -> usize {
+    n * (usize::BITS - n.leading_zeros()) as usize + 1
+}
 
 /// An address space: I/O, or memory (non-prefetchable and prefetchable).
 /// Neither constrains the other; each is laid out on its own.
@@ -143,8 +190,8 @@ enum Rule {
     AOnly,
     /// The root bus, A below 4 GiB, B above: 64-bit BARs.
     Root,
-    /// Behind a bridge whose prefetchable window B reaches above 4 GiB:
-    /// 64-bit prefetchable BARs.
+    /// Behind a bridge whose prefetchable window B is above 4 GiB: 64-bit
+    /// prefetchable BARs.
     High,
     /// Behind a bridge whose prefetchable window B is below 4 GiB:
     /// prefetchable BARs.
@@ -195,36 +242,65 @@ enum Step {
     Complete { dev: Option<u16>, last: u16 },
 }
 
+/// Where a walk for slots of one size in a set is: range `range` from
+/// `at`, the next of what is on the bus at `next` (by base).
+#[derive(Default)]
+struct Walk {
+    range: usize,
+    at: u64,
+    next: usize,
+    started: bool,
+    /// Work units since it was last charged.
+    steps: usize,
+}
+
 /// A root's scratch: no allocation, nothing of it in `PciEcam`.
 struct Arena {
     /// What is on the bus being packed, by base.
     taken: HVec<Item, MAX_ITEMS>,
     /// What is to be placed on it.
     items: HVec<Item, MAX_ITEMS>,
+    /// What one size placed, to merge into `taken`.
+    fresh: HVec<Item, MAX_ITEMS>,
     /// The windows already chosen on the bus a window is chosen on, by base.
     siblings: HVec<Item, MAX_ITEMS>,
     steps: HVec<Step, MAX_STEPS>,
     need: [Need; MAX_PCI_DEVICES],
     visits: usize,
-    budget: usize,
+    work: usize,
+    budget: Budget,
 }
 
 impl Arena {
-    fn new(budget: usize) -> Self {
+    fn new(budget: Budget) -> Self {
         Self {
             taken: HVec::new(),
             items: HVec::new(),
+            fresh: HVec::new(),
             siblings: HVec::new(),
             steps: HVec::new(),
             need: [Need::default(); MAX_PCI_DEVICES],
             visits: 0,
+            work: 0,
             budget,
         }
     }
 
+    /// One more candidate window, and the unit of work it is.
     fn visit(&mut self) -> Result<(), PciEcamError> {
         self.visits += 1;
-        if self.visits > self.budget {
+        if self.visits > self.budget.visits {
+            return Err(PciEcamError::SearchLimit);
+        }
+        self.charge(1)
+    }
+
+    /// `units` of work, each a constant: a BAR, window, gap, device or
+    /// step gone over.
+    fn charge(&mut self, units: usize) -> Result<(), PciEcamError> {
+        debug_assert!(units <= MAX_CHARGE);
+        self.work = self.work.saturating_add(units);
+        if self.work > self.budget.work {
             return Err(PciEcamError::SearchLimit);
         }
         Ok(())
@@ -241,16 +317,23 @@ fn ranges(pool: &ResourcePool) -> Ranges {
         .collect()
 }
 
+/// `range` either side of 4 GiB: a window never crosses it.
+fn halves((start, end): (u64, u64)) -> impl Iterator<Item = (u64, u64)> {
+    [(start, end.min(FOUR_GIB)), (start.max(FOUR_GIB), end)]
+        .into_iter()
+        .filter(|(start, end)| start < end)
+}
+
 impl PciEcam {
     /// Lay out root `root` in `pools`, its free ranges, when the subtree
     /// allocator found no layout: I/O, then memory, each the one bus, the
-    /// leaf bridge or the search. At most `budget` candidate windows.
+    /// leaf bridge or the search, within `budget`.
     pub(super) fn solve(
         &mut self,
         root: usize,
         pools: &Pools,
         bridges: &[usize],
-        budget: usize,
+        budget: Budget,
     ) -> Result<(), PciEcamError> {
         self.unplace(root);
         // The subtree allocator's window sizes are the search's seeds.
@@ -263,7 +346,7 @@ impl PciEcam {
         let result = self.solve_in(&mut arena, root, pools, bridges);
         #[cfg(test)]
         {
-            self.visits = arena.visits;
+            self.spent = (arena.visits, arena.work);
         }
         result
     }
@@ -275,8 +358,8 @@ impl PciEcam {
         pools: &Pools,
         bridges: &[usize],
     ) -> Result<(), PciEcamError> {
-        self.measure(arena, root, bridges);
-        if self.hopeless(arena, pools, root) {
+        self.measure(arena, root, bridges)?;
+        if self.hopeless(arena, pools, root)? {
             return Err(PciEcamError::ResourceExhausted);
         }
         self.search(arena, pools, root, bridges, Space::Io)?;
@@ -299,6 +382,10 @@ impl PciEcam {
         }
     }
 
+    fn bar_size(&self, item: Item) -> u64 {
+        self.devices[item.dev()].bars[item.index()].size
+    }
+
     /// Open window `kind` of `bridge` at `[base, end)`, or close it.
     fn set_window(&mut self, bridge: usize, kind: WindowKind, span: Option<(u64, u64)>) {
         let window = &mut self.devices[bridge].windows[kind as usize];
@@ -317,12 +404,7 @@ impl PciEcam {
 
     /// The first address window `kind` of `bridge` may not reach.
     fn limit(&self, bridge: usize, kind: WindowKind) -> u64 {
-        match (kind, self.devices[bridge].prefetch) {
-            (WindowKind::Io, _) => IO_END,
-            (WindowKind::Memory, _) | (_, PrefetchWindow::Bits32) => 1 << 32,
-            (_, PrefetchWindow::Bits64) => u64::MAX,
-            (_, PrefetchWindow::None) => 0,
-        }
+        window_limit(kind, self.devices[bridge].prefetch)
     }
 
     fn is_bridge(&self, dev: usize) -> bool {
@@ -330,7 +412,7 @@ impl PciEcam {
     }
 
     /// The devices on the bus behind `bus`, the root bus of `root` for
-    /// `None`.
+    /// `None`: a walk over every device, [`Self::devices`] units.
     fn on_bus(&self, root: usize, bus: Option<usize>) -> impl Iterator<Item = usize> + '_ {
         (0..self.devices.len())
             .filter(move |&dev| self.devices[dev].root == root && self.devices[dev].parent == bus)
@@ -369,7 +451,20 @@ impl PciEcam {
         }
     }
 
-    /// The free gaps of `range` around `taken` (sorted, disjoint), in order.
+    /// Sort `items` by base: [`sort_cost`] units.
+    fn sort_by_base(
+        &self,
+        arena: &mut Arena,
+        which: fn(&mut Arena) -> &mut HVec<Item, MAX_ITEMS>,
+    ) -> Result<(), PciEcamError> {
+        let items = which(arena);
+        let cost = sort_cost(items.len());
+        items.sort_unstable_by_key(|&item| self.span(item).0);
+        arena.charge(cost)
+    }
+
+    /// The free gaps of `range` around `taken` (sorted, disjoint), in order:
+    /// at most `taken.len() + 1` units.
     fn gaps<'a>(
         &'a self,
         taken: &'a [Item],
@@ -398,53 +493,133 @@ impl PciEcam {
         })
     }
 
-    /// The first slot of `size` at its own alignment in `set` around
-    /// `taken`.
-    fn find_slot(&self, taken: &[Item], set: &[(u64, u64)], size: u64) -> Option<u64> {
-        set.iter().find_map(|&range| {
-            self.gaps(taken, range).find_map(|(start, end)| {
-                let base = start.checked_next_multiple_of(size)?;
-                (base.checked_add(size)? <= end).then_some(base)
-            })
-        })
+    /// The next slot of `size` at its own alignment in `set` around `taken`
+    /// (sorted, disjoint), after those `walk` returned before: first fit,
+    /// as slots of one size are taken in address order.
+    fn next_slot(
+        &self,
+        taken: &[Item],
+        set: &[(u64, u64)],
+        size: u64,
+        walk: &mut Walk,
+    ) -> Option<u64> {
+        loop {
+            let &(start, end) = set.get(walk.range)?;
+            if !walk.started {
+                walk.started = true;
+                walk.at = start;
+                walk.next = taken.partition_point(|&item| self.span(item).1 <= start);
+                walk.steps += (usize::BITS - taken.len().leading_zeros()) as usize;
+            }
+            walk.steps += 1;
+            let (item_base, item_end) = taken
+                .get(walk.next)
+                .map_or((u64::MAX, u64::MAX), |&item| self.span(item));
+            let gap_end = item_base.min(end);
+            if let Some(slot) = walk.at.checked_next_multiple_of(size)
+                && slot
+                    .checked_add(size)
+                    .is_some_and(|slot_end| slot_end <= gap_end)
+            {
+                walk.at = slot + size;
+                return Some(slot);
+            }
+            if item_base < end {
+                walk.at = walk.at.max(item_end);
+                walk.next += 1;
+            } else {
+                walk.range += 1;
+                walk.started = false;
+            }
+        }
+    }
+
+    /// Place BAR `item` at `base`, one of `arena.fresh`.
+    fn place(&mut self, arena: &mut Arena, item: Item, base: u64) {
+        let bar = &mut self.devices[item.dev()].bars[item.index()];
+        bar.base = base;
+        bar.allocated = true;
+        // As many as `items`.
+        let _ = arena.fresh.push(item);
+    }
+
+    /// Merge `arena.fresh` into `arena.taken`, both by base, from the end:
+    /// as many units as it moves.
+    fn merge(&self, arena: &mut Arena) -> Result<(), PciEcamError> {
+        self.sort_by_base(arena, |arena| &mut arena.fresh)?;
+        let (old, fresh) = (arena.taken.len(), arena.fresh.len());
+        // As many as `items` and the windows, which `taken` holds.
+        let _ = arena.taken.extend_from_slice(&arena.fresh);
+        let (mut i, mut j, mut at) = (old, fresh, old + fresh);
+        while j > 0 {
+            at -= 1;
+            let older = arena.taken[..i].last().copied();
+            arena.taken[at] = match older {
+                Some(item) if self.span(item).0 > self.span(arena.fresh[j - 1]).0 => {
+                    i -= 1;
+                    item
+                }
+                _ => {
+                    j -= 1;
+                    arena.fresh[j]
+                }
+            };
+        }
+        arena.charge(old + fresh - at + 1)
     }
 
     /// Place the BARs of `arena.items` around `arena.taken` (sorted by
     /// base, and kept so): those `rule` lets take B in `b` if there is an
     /// aligned slot, else in `a`; the others in `a`. The largest first,
     /// then those for A only, then by address and register. Whether all
-    /// fit; exact (the module's documentation says why).
-    fn pack(&mut self, arena: &mut Arena, a: &[(u64, u64)], b: &[(u64, u64)], rule: Rule) -> bool {
+    /// fit; exact (the module's documentation says why). Each size walks
+    /// `a` and `b` once and merges what it placed into `taken`.
+    fn pack(
+        &mut self,
+        arena: &mut Arena,
+        a: &[(u64, u64)],
+        b: &[(u64, u64)],
+        rule: Rule,
+    ) -> Result<bool, PciEcamError> {
+        arena.charge(sort_cost(arena.items.len()))?;
         arena.items.sort_unstable_by_key(|&item| {
             let device = &self.devices[item.dev()];
             let bar = device.bars[item.index()];
-            (
-                Reverse(bar.size),
-                self.flexible(rule, item),
-                device.addr,
-                bar.reg,
-            )
+            let flexible = self.flexible(rule, item);
+            (Reverse(bar.size), flexible, device.addr, bar.reg)
         });
-        for n in 0..arena.items.len() {
-            let item = arena.items[n];
-            let size = self.devices[item.dev()].bars[item.index()].size;
-            let slot = self
-                .flexible(rule, item)
-                .then(|| self.find_slot(&arena.taken, b, size))
-                .flatten()
-                .or_else(|| self.find_slot(&arena.taken, a, size));
-            let Some(base) = slot else {
-                return false;
-            };
-            let bar = &mut self.devices[item.dev()].bars[item.index()];
-            bar.base = base;
-            bar.allocated = true;
-            let at = arena.taken.partition_point(|&t| self.span(t).0 < base);
-            if arena.taken.insert(at, item).is_err() {
-                return false;
+        let mut start = 0;
+        while start < arena.items.len() {
+            let size = self.bar_size(arena.items[start]);
+            let end =
+                start + arena.items[start..].partition_point(|&item| self.bar_size(item) == size);
+            let flexible =
+                start + arena.items[start..end].partition_point(|&item| !self.flexible(rule, item));
+            arena.fresh.clear();
+            let mut next = flexible;
+            let mut walk = Walk::default();
+            while next < end {
+                let slot = self.next_slot(&arena.taken, b, size, &mut walk);
+                arena.charge(core::mem::take(&mut walk.steps))?;
+                let Some(slot) = slot else {
+                    break;
+                };
+                self.place(arena, arena.items[next], slot);
+                next += 1;
             }
+            let mut walk = Walk::default();
+            for n in (start..flexible).chain(next..end) {
+                let slot = self.next_slot(&arena.taken, a, size, &mut walk);
+                arena.charge(core::mem::take(&mut walk.steps))?;
+                let Some(slot) = slot else {
+                    return Ok(false);
+                };
+                self.place(arena, arena.items[n], slot);
+            }
+            self.merge(arena)?;
+            start = end;
         }
-        true
+        Ok(true)
     }
 
     /// The sets the BARs on the bus behind `bus` (the root bus for `None`)
@@ -464,9 +639,10 @@ impl PciEcam {
             return (window(WindowKind::Io), Ranges::new(), Rule::AOnly);
         }
         let b = window(WindowKind::Prefetchable);
+        // No window crosses 4 GiB: one that ends above is above.
         let rule = match b.first() {
             None => Rule::AOnly,
-            Some(&(_, end)) if end > 1 << 32 => Rule::High,
+            Some(&(_, end)) if end > FOUR_GIB => Rule::High,
             Some(_) => Rule::Low,
         };
         (window(WindowKind::Memory), b, rule)
@@ -482,7 +658,8 @@ impl PciEcam {
         root: usize,
         bus: Option<usize>,
         space: Space,
-    ) -> bool {
+    ) -> Result<bool, PciEcamError> {
+        arena.charge(self.devices.len())?;
         arena.items.clear();
         arena.taken.clear();
         for dev in self.on_bus(root, bus) {
@@ -492,13 +669,18 @@ impl PciEcam {
         for &item in &arena.items {
             self.devices[item.dev()].bars[item.index()].allocated = false;
         }
-        arena.taken.sort_unstable_by_key(|&item| self.span(item).0);
+        self.sort_by_base(arena, |arena| &mut arena.taken)?;
         let (a, b, rule) = self.sets(pools, bus, space);
         self.pack(arena, &a, &b, rule)
     }
 
     /// What each bridge of `root` needs at least ([`Need`]), deepest first.
-    fn measure(&self, arena: &mut Arena, root: usize, bridges: &[usize]) {
+    fn measure(
+        &self,
+        arena: &mut Arena,
+        root: usize,
+        bridges: &[usize],
+    ) -> Result<(), PciEcamError> {
         let round = |bytes: u64, kind: WindowKind| {
             bytes
                 .checked_next_multiple_of(kind.granularity())
@@ -508,6 +690,7 @@ impl PciEcam {
             if self.devices[bridge].root != root {
                 continue;
             }
+            arena.charge(self.devices.len())?;
             let mut need = Need::default();
             for dev in self.children(bridge) {
                 for bar in self.devices[dev].bars.iter().filter(|bar| !bar.fixed) {
@@ -539,12 +722,19 @@ impl PciEcam {
                 io: round(need.io, WindowKind::Io),
             };
         }
+        Ok(())
     }
 
     /// Whether root `root` cannot be laid out in `pools` whatever its
     /// windows: more bytes than the pools have, or its BARs do not even
     /// pack straight into them.
-    fn hopeless(&mut self, arena: &mut Arena, pools: &Pools, root: usize) -> bool {
+    fn hopeless(
+        &mut self,
+        arena: &mut Arena,
+        pools: &Pools,
+        root: usize,
+    ) -> Result<bool, PciEcamError> {
+        arena.charge(self.devices.len())?;
         let (mut low, mut memory, mut io) = (0u64, 0u64, 0u64);
         for dev in self.on_bus(root, None) {
             for bar in self.devices[dev].bars.iter().filter(|bar| !bar.fixed) {
@@ -568,7 +758,7 @@ impl PciEcam {
             || memory > pools.0.free_bytes().saturating_add(pools.1.free_bytes())
             || io > pools.2.free_bytes()
         {
-            return true;
+            return Ok(true);
         }
         for (space, a, b, rule) in [
             (Space::Io, ranges(&pools.2), Ranges::new(), Rule::AOnly),
@@ -579,16 +769,17 @@ impl PciEcam {
                 Rule::Tree,
             ),
         ] {
+            arena.charge(self.devices.len())?;
             arena.items.clear();
             arena.taken.clear();
             for dev in (0..self.devices.len()).filter(|&dev| self.devices[dev].root == root) {
                 arena.items.extend(self.bars_in(dev, space));
             }
-            if !self.pack(arena, &a, &b, rule) {
-                return true;
+            if !self.pack(arena, &a, &b, rule)? {
+                return Ok(true);
             }
         }
-        false
+        Ok(false)
     }
 
     /// Lay out the memory behind root `root`'s one bridge with memory
@@ -602,6 +793,7 @@ impl PciEcam {
         root: usize,
         bridges: &[usize],
     ) -> Result<Option<bool>, PciEcamError> {
+        arena.charge(bridges.len() + self.devices.len())?;
         let mut leaf = None;
         for &bridge in bridges {
             if self.devices[bridge].root != root || arena.need[bridge].memory == 0 {
@@ -623,26 +815,33 @@ impl PciEcam {
         }
         let need = arena.need[bridge];
         let granule = WindowKind::Memory.granularity();
-        let inward = |&(base, end): &(u64, u64)| {
+        let inward = |(base, end): (u64, u64)| {
             let base = base.checked_next_multiple_of(granule)?;
             let end = end & !(granule - 1);
             (base < end).then_some((base, end))
         };
-        let low = ranges(&pools.0);
-        let high = ranges(&pools.1);
-        let pref_limit = self.limit(bridge, WindowKind::Prefetchable);
+        let pieces = |pool: &ResourcePool| -> HVec<(u64, u64), { 2 * MAX_RESOURCE_RANGES }> {
+            ranges(pool)
+                .into_iter()
+                .flat_map(halves)
+                .filter_map(inward)
+                .collect()
+        };
+        let (low, high) = (pieces(&pools.0), pieces(&pools.1));
+        let prefetch = self.devices[bridge].prefetch;
+        let fits = move |kind, (base, end)| window_fits(kind, prefetch, base, end);
         let memory = (need.np == 0).then_some(None).into_iter().chain(
             low.iter()
-                .filter_map(inward)
-                .filter(|&(_, end)| end <= 1 << 32)
+                .copied()
+                .filter(|&range| fits(WindowKind::Memory, range))
                 .map(Some),
         );
         for memory in memory {
-            let prefetchable = (need.prefetchable != 0 && pref_limit != 0)
-                .then(|| low.iter().chain(&high).filter_map(inward))
+            let prefetchable = (need.prefetchable != 0)
+                .then(|| low.iter().chain(&high).copied())
                 .into_iter()
                 .flatten()
-                .filter(|&(_, end)| end <= pref_limit)
+                .filter(|&range| fits(WindowKind::Prefetchable, range))
                 .map(Some);
             for prefetchable in [None].into_iter().chain(prefetchable) {
                 if prefetchable.is_some() && prefetchable == memory
@@ -653,8 +852,8 @@ impl PciEcam {
                 arena.visit()?;
                 self.set_window(bridge, WindowKind::Memory, memory);
                 self.set_window(bridge, WindowKind::Prefetchable, prefetchable);
-                if self.pack_bus(arena, pools, root, Some(bridge), Space::Memory) {
-                    self.shrink(arena, root, bridges, Space::Memory);
+                if self.pack_bus(arena, pools, root, Some(bridge), Space::Memory)? {
+                    self.shrink(arena, root, bridges, Space::Memory)?;
                     return Ok(Some(true));
                 }
             }
@@ -678,6 +877,7 @@ impl PciEcam {
         self.plan(arena, root, bridges, space)?;
         let mut i = 0;
         while i < arena.steps.len() {
+            arena.charge(1)?;
             i = match arena.steps[i] {
                 Step::Decide { .. } => {
                     if self.advance(arena, pools, i)? {
@@ -688,12 +888,14 @@ impl PciEcam {
                 }
                 Step::Complete { dev, last } => {
                     let bus = dev.map(usize::from);
-                    if !self.pack_bus(arena, pools, root, bus, space) {
+                    if !self.pack_bus(arena, pools, root, bus, space)? {
                         self.back(arena, i)?
-                    } else if bus.is_some_and(|bridge| !self.tight(arena, bridge, last.into())) {
+                    } else if let Some(bridge) = bus
+                        && !self.tight(arena, bridge, last.into())?
+                    {
                         // Its windows' hulls are tried too: a smaller
                         // window never stands in another's way.
-                        self.reset_after(arena, last.into());
+                        self.reset_after(arena, last.into())?;
                         last.into()
                     } else {
                         i + 1
@@ -701,8 +903,7 @@ impl PciEcam {
                 }
             };
         }
-        self.shrink(arena, root, bridges, space);
-        Ok(())
+        self.shrink(arena, root, bridges, space)
     }
 
     /// The steps of laying out `space` of root `root`: for each bridge with
@@ -717,6 +918,7 @@ impl PciEcam {
         space: Space,
     ) -> Result<(), PciEcamError> {
         let full = |_| PciEcamError::ConfigError;
+        arena.charge(2 * bridges.len() + 1)?;
         arena.steps.clear();
         let mut open: HVec<(usize, u16), MAX_PCI_DEVICES> = HVec::new();
         for &bridge in bridges {
@@ -784,6 +986,7 @@ impl PciEcam {
     /// it, that subtree's bridge's last window (outside it, only its
     /// windows count). Every later choice is undone.
     fn back(&mut self, arena: &mut Arena, from: usize) -> Result<usize, PciEcamError> {
+        arena.charge(from + 1)?;
         let target = (0..from)
             .rev()
             .find_map(|step| match arena.steps[step] {
@@ -792,12 +995,13 @@ impl PciEcam {
                 Step::Complete { dev: None, .. } => None,
             })
             .ok_or(PciEcamError::ResourceExhausted)?;
-        self.reset_after(arena, target);
+        self.reset_after(arena, target)?;
         Ok(target)
     }
 
     /// Undo every window choice after step `target`.
-    fn reset_after(&mut self, arena: &mut Arena, target: usize) {
+    fn reset_after(&mut self, arena: &mut Arena, target: usize) -> Result<(), PciEcamError> {
+        arena.charge(arena.steps.len() - target)?;
         for step in &mut arena.steps[target + 1..] {
             if let Step::Decide {
                 dev, kind, cursor, ..
@@ -808,10 +1012,12 @@ impl PciEcam {
                 window.placed = false;
             }
         }
+        Ok(())
     }
 
     /// The `index`th range window `kind` of `bridge` may go in: a free
-    /// range of the root's pool, or a window of its parent.
+    /// range of the root's pool, or a window of its parent, either side of
+    /// 4 GiB.
     fn region(
         &self,
         pools: &Pools,
@@ -820,30 +1026,43 @@ impl PciEcam {
         index: usize,
     ) -> Option<(u64, u64)> {
         let device = &self.devices[bridge];
-        let pool = |pool: &ResourcePool, index: usize| {
-            (index < pool.count).then(|| (pool.ranges[index].base, pool.ranges[index].end))
+        let pool = |pool: &ResourcePool| ranges(pool).into_iter();
+        let parent = |kinds: &'static [WindowKind]| {
+            let parent = device.parent?;
+            Some(
+                kinds
+                    .iter()
+                    .filter_map(move |&kind| self.open(parent, kind)),
+            )
         };
-        match (device.parent, kind) {
-            (None, WindowKind::Io) => pool(&pools.2, index),
-            (None, WindowKind::Memory) => pool(&pools.0, index),
-            (None, WindowKind::Prefetchable) => match device.prefetch {
-                PrefetchWindow::Bits64 => pool(&pools.0, index)
-                    .or_else(|| pool(&pools.1, index.checked_sub(pools.0.count)?)),
-                _ => pool(&pools.0, index),
-            },
-            (Some(parent), WindowKind::Prefetchable) => {
-                [WindowKind::Prefetchable, WindowKind::Memory]
-                    .into_iter()
-                    .filter_map(|kind| self.open(parent, kind))
-                    .nth(index)
+        let ranges: &mut dyn Iterator<Item = (u64, u64)> = match (device.parent, kind) {
+            (None, WindowKind::Io) => &mut pool(&pools.2),
+            (None, WindowKind::Prefetchable) if device.prefetch == PrefetchWindow::Bits64 => {
+                &mut pool(&pools.0).chain(pool(&pools.1))
             }
-            (Some(parent), kind) => self.open(parent, kind).filter(|_| index == 0),
-        }
+            (None, _) => &mut pool(&pools.0),
+            (Some(_), WindowKind::Prefetchable) => {
+                &mut parent(&[WindowKind::Prefetchable, WindowKind::Memory])
+                    .into_iter()
+                    .flatten()
+            }
+            (Some(_), WindowKind::Memory) => {
+                &mut parent(&[WindowKind::Memory]).into_iter().flatten()
+            }
+            (Some(_), WindowKind::Io) => &mut parent(&[WindowKind::Io]).into_iter().flatten(),
+        };
+        ranges.flat_map(halves).nth(index)
     }
 
     /// Fill `arena.siblings` with the windows chosen on the bus window
     /// `kind` of `bridge` is chosen on, by base.
-    fn siblings(&self, arena: &mut Arena, bridge: usize, kind: WindowKind) {
+    fn siblings(
+        &self,
+        arena: &mut Arena,
+        bridge: usize,
+        kind: WindowKind,
+    ) -> Result<(), PciEcamError> {
+        arena.charge(self.devices.len())?;
         let device = &self.devices[bridge];
         arena.siblings.clear();
         for dev in self.on_bus(device.root, device.parent) {
@@ -852,9 +1071,7 @@ impl PciEcam {
                     .filter(|&item| item != Item::window(bridge, kind)),
             );
         }
-        arena
-            .siblings
-            .sort_unstable_by_key(|&item| self.span(item).0);
+        self.sort_by_base(arena, |arena| &mut arena.siblings)
     }
 
     /// Choose the next candidate of step `i`, a window of a bridge. Whether
@@ -875,8 +1092,10 @@ impl PciEcam {
             return Ok(false);
         };
         let bridge = usize::from(dev);
-        self.siblings(arena, bridge, kind);
+        self.siblings(arena, bridge, kind)?;
         let found = loop {
+            // A range of the region is at most 2 * 2 * 16 to find.
+            arena.charge(4 * MAX_RESOURCE_RANGES)?;
             match cursor {
                 Cursor::Seed(range, down) => {
                     cursor = match down {
@@ -887,9 +1106,9 @@ impl PciEcam {
                         cursor = Cursor::Closed;
                         continue;
                     };
-                    if let Some(span) = self.seed(arena, bridge, kind, range, down) {
+                    if let Some(span) = self.seed(arena, bridge, kind, range, down)? {
                         arena.visit()?;
-                        if self.try_window(arena, bridge, kind, last, Some(span)) {
+                        if self.try_window(arena, bridge, kind, last, Some(span))? {
                             break true;
                         }
                     }
@@ -897,7 +1116,7 @@ impl PciEcam {
                 Cursor::Closed => {
                     cursor = Cursor::Range(0, true);
                     arena.visit()?;
-                    if self.try_window(arena, bridge, kind, last, None) {
+                    if self.try_window(arena, bridge, kind, last, None)? {
                         break true;
                     }
                 }
@@ -928,12 +1147,12 @@ impl PciEcam {
     /// its last.
     fn seed(
         &self,
-        arena: &Arena,
+        arena: &mut Arena,
         bridge: usize,
         kind: WindowKind,
         range: (u64, u64),
         down: bool,
-    ) -> Option<(u64, u64)> {
+    ) -> Result<Option<(u64, u64)>, PciEcamError> {
         let window: Window = self.devices[bridge].windows[kind as usize];
         let size = if down {
             window.size_down
@@ -941,11 +1160,10 @@ impl PciEcam {
             window.size_up
         };
         if size == 0 || window.align == 0 {
-            return None;
+            return Ok(None);
         }
-        let limit = self.limit(bridge, kind);
+        arena.charge(arena.siblings.len() + 1)?;
         let fits = |(start, end): (u64, u64)| {
-            let end = end.min(limit);
             if down {
                 let end = end & !(window.align - 1);
                 let base = end.checked_sub(size)?;
@@ -957,11 +1175,11 @@ impl PciEcam {
             }
         };
         let mut gaps = self.gaps(&arena.siblings, range);
-        if down {
+        Ok(if down {
             gaps.filter_map(fits).last()
         } else {
             gaps.find_map(fits)
-        }
+        })
     }
 
     /// The next base and end of window `kind` of `bridge` in `range`, in
@@ -969,7 +1187,8 @@ impl PciEcam {
     /// Only those a layout could make: base and end where something behind
     /// the bridge can start and end ([`Self::touch`]), and ends from the
     /// smallest that passes [`Self::try_window`], which passes for every
-    /// larger one too. Whether there is one; it is chosen.
+    /// larger one too: `range` does not cross 4 GiB. Whether there is one;
+    /// it is chosen.
     fn next_in_range(
         &mut self,
         arena: &mut Arena,
@@ -980,17 +1199,19 @@ impl PciEcam {
         fresh: bool,
     ) -> Result<bool, PciEcamError> {
         let granule = kind.granularity();
-        let step = self.touch(arena, bridge, kind);
+        let step = self.touch(arena, bridge, kind)?;
         let limit = self.limit(bridge, kind);
-        let gap_end = |pci: &Self, arena: &Arena, at: u64| {
-            pci.gaps(&arena.siblings, range)
+        let gap_end = |pci: &Self, arena: &mut Arena, at: u64| {
+            arena.charge(arena.siblings.len() + 1)?;
+            Ok(pci
+                .gaps(&arena.siblings, range)
                 .find(|&(start, end)| start <= at && at < end)
-                .map_or(0, |(_, end)| end.min(limit))
+                .map_or(0, |(_, end)| end.min(limit)))
         };
         let mut from = range.0;
         if !fresh && let Some((base, end)) = self.open(bridge, kind) {
             if let Some(next) = end.checked_add(step)
-                && next <= gap_end(self, arena, base)
+                && next <= gap_end(self, arena, base)?
             {
                 arena.visit()?;
                 self.set_window(bridge, kind, Some((base, next)));
@@ -999,6 +1220,7 @@ impl PciEcam {
             from = base.saturating_add(granule);
         }
         loop {
+            arena.charge(arena.siblings.len() + 1)?;
             let base = self
                 .gaps(&arena.siblings, range)
                 .filter(|&(_, end)| end > from)
@@ -1011,18 +1233,17 @@ impl PciEcam {
             };
             arena.visit()?;
             from = base.saturating_add(granule);
-            let high = gap_end(self, arena, base) & !(step - 1);
+            let mut high = gap_end(self, arena, base)? & !(step - 1);
             let Some(mut low) = (base + granule).checked_next_multiple_of(step) else {
                 continue;
             };
-            let mut high = high;
-            if low > high || !self.try_window(arena, bridge, kind, last, Some((base, high))) {
+            if low > high || !self.try_window(arena, bridge, kind, last, Some((base, high)))? {
                 continue;
             }
             while low < high {
                 let middle = low + (high - low) / step / 2 * step;
                 arena.visit()?;
-                if self.try_window(arena, bridge, kind, last, Some((base, middle))) {
+                if self.try_window(arena, bridge, kind, last, Some((base, middle)))? {
                     high = middle;
                 } else {
                     low = middle + step;
@@ -1036,7 +1257,13 @@ impl PciEcam {
     /// The granularity at which something behind `bridge` can start or end
     /// in window `kind`: 1 MiB (4 KiB) if a bridge with something behind
     /// it or a BAR no larger is on its bus, else its smallest BAR.
-    fn touch(&self, arena: &Arena, bridge: usize, kind: WindowKind) -> u64 {
+    fn touch(
+        &self,
+        arena: &mut Arena,
+        bridge: usize,
+        kind: WindowKind,
+    ) -> Result<u64, PciEcamError> {
+        arena.charge(self.devices.len())?;
         let granule = kind.granularity();
         let space = Space::of(kind);
         let root = self.devices[bridge].root;
@@ -1048,22 +1275,22 @@ impl PciEcam {
                 Space::Memory => need.memory,
             };
             if self.is_bridge(dev) && behind != 0 {
-                return granule;
+                return Ok(granule);
             }
             for item in self.bars_in(dev, space) {
-                step = step.min(self.devices[dev].bars[item.index()].size.max(granule));
+                step = step.min(self.bar_size(item).max(granule));
             }
         }
-        if step == u64::MAX { granule } else { step }
+        Ok(if step == u64::MAX { granule } else { step })
     }
 
     /// Open window `kind` of `bridge` at `span`, or close it, and whether
-    /// what is behind the bridge could still fit: the window within its
-    /// limit, at least the bytes that must go through it ([`Need`]), and
-    /// the BARs behind the bridge packed straight into its windows as if
-    /// every bridge below forwarded anything anywhere. Before its `last`
-    /// window is chosen, only the non-prefetchable memory, which must go
-    /// through the memory window.
+    /// what is behind the bridge could still fit: a window the bridge can
+    /// have ([`window_fits`]), at least the bytes that must go through it
+    /// ([`Need`]), and the BARs behind the bridge packed straight into its
+    /// windows as if every bridge below forwarded anything anywhere.
+    /// Before its `last` window is chosen, only the non-prefetchable
+    /// memory, which must go through the memory window.
     fn try_window(
         &mut self,
         arena: &mut Arena,
@@ -1071,10 +1298,11 @@ impl PciEcam {
         kind: WindowKind,
         last: bool,
         span: Option<(u64, u64)>,
-    ) -> bool {
+    ) -> Result<bool, PciEcamError> {
         self.set_window(bridge, kind, span);
-        if span.is_some_and(|(_, end)| end > self.limit(bridge, kind)) {
-            return false;
+        let prefetch = self.devices[bridge].prefetch;
+        if span.is_some_and(|(base, end)| !window_fits(kind, prefetch, base, end)) {
+            return Ok(false);
         }
         let size = |kind| self.open(bridge, kind).map_or(0, |(base, end)| end - base);
         let need = arena.need[bridge];
@@ -1088,8 +1316,9 @@ impl PciEcam {
             }
         };
         if !enough {
-            return false;
+            return Ok(false);
         }
+        arena.charge(self.devices.len())?;
         arena.items.clear();
         arena.taken.clear();
         for dev in self.subtree(bridge) {
@@ -1113,9 +1342,10 @@ impl PciEcam {
     /// ([`Cursor::Range`]) are the 1 MiB (4 KiB) hulls of what is in them,
     /// `arena.taken` once its bus is packed. Its windows' steps end at
     /// `last`.
-    fn tight(&self, arena: &Arena, bridge: usize, last: usize) -> bool {
+    fn tight(&self, arena: &mut Arena, bridge: usize, last: usize) -> Result<bool, PciEcamError> {
+        arena.charge(2 * (arena.taken.len() + 1))?;
         let steps = arena.steps[last.saturating_sub(1)..=last].iter();
-        steps.into_iter().all(|step| {
+        Ok(steps.into_iter().all(|step| {
             let Step::Decide {
                 dev,
                 kind,
@@ -1132,11 +1362,11 @@ impl PciEcam {
                 return true;
             };
             self.hull(&arena.taken, (base, end), kind.granularity()) == Some((base, end))
-        })
+        }))
     }
 
     /// The `granule` aligned hull of what of `taken` (sorted) is in
-    /// `[base, end)`.
+    /// `[base, end)`: at most `taken.len()` units.
     fn hull(&self, taken: &[Item], (base, end): (u64, u64), granule: u64) -> Option<(u64, u64)> {
         let first = taken.partition_point(|&item| self.span(item).0 < base);
         let inside = taken[first..]
@@ -1151,18 +1381,26 @@ impl PciEcam {
 
     /// Shrink every window of `space` of root `root` to the hull of what is
     /// in it, deepest first; close those with nothing.
-    fn shrink(&mut self, arena: &mut Arena, root: usize, bridges: &[usize], space: Space) {
+    fn shrink(
+        &mut self,
+        arena: &mut Arena,
+        root: usize,
+        bridges: &[usize],
+        space: Space,
+    ) -> Result<(), PciEcamError> {
         for &bridge in bridges.iter().rev() {
             if self.devices[bridge].root != root {
                 continue;
             }
+            arena.charge(self.devices.len())?;
             arena.taken.clear();
             for dev in self.on_bus(root, Some(bridge)) {
                 let placed = |item: &Item| self.devices[dev].bars[item.index()].allocated;
                 arena.taken.extend(self.bars_in(dev, space).filter(placed));
                 arena.taken.extend(self.windows_in(dev, space));
             }
-            arena.taken.sort_unstable_by_key(|&item| self.span(item).0);
+            self.sort_by_base(arena, |arena| &mut arena.taken)?;
+            arena.charge(2 * (arena.taken.len() + 1))?;
             for &kind in space.kinds() {
                 if let Some(window) = self.open(bridge, kind) {
                     let hull = self.hull(&arena.taken, window, kind.granularity());
@@ -1170,5 +1408,6 @@ impl PciEcam {
                 }
             }
         }
+        Ok(())
     }
 }

@@ -554,6 +554,9 @@ struct Root {
     ecam_size: usize,
     bus_start: u8,
     bus_end: u8,
+    /// Free memory below 4 GiB, above, and free ports: what the allocator
+    /// may use. Allocation leaves them as they were; where it put what is
+    /// in the devices.
     mmio32: ResourcePool,
     mmio64: ResourcePool,
     io_pool: ResourcePool,
@@ -584,19 +587,20 @@ pub struct PciEcam {
     /// Which allocators run.
     #[cfg(test)]
     allocators: Allocators,
-    /// Candidate windows the last search visited.
+    /// Candidate windows and work units the last search spent.
     #[cfg(test)]
-    visits: usize,
+    spent: (usize, usize),
 }
 
-/// Which allocators a test runs: the subtree allocator's layouts, the
-/// window search with a budget, or both (as firmware does).
+/// Which allocators a test runs: the fast paths alone (the subtree and
+/// BAR-by-BAR layouts, each checked by [`PciEcam::validate_plan`]), the
+/// window search alone, or both (as firmware does).
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Allocators {
-    Subtrees,
-    Search(usize),
-    Both(usize),
+    FastPaths,
+    Search(solver::Budget),
+    Both(solver::Budget),
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses from the board metadata.
@@ -1276,8 +1280,11 @@ impl PciEcam {
     // forwards prefetchable memory through its memory window (prefetchable
     // memory may always be forwarded as non-prefetchable).
     //
-    // Nothing is written until every root is placed: an allocation that
-    // fails leaves every BAR, window and command register as it found them.
+    // No BAR, window or command register is written until every root is
+    // placed: an allocation that fails leaves them as it found them.
+    // Discovery before it is not undone: it numbered the bridges' buses
+    // (and wrote BARs to size them, each put back). A failure is fail-stop:
+    // the hierarchy is left routed for a diagnosis, not for a retry.
 
     /// What device `dev_idx` asks of its parent, each with its size and
     /// alignment: its movable BARs and, for a bridge, its open windows.
@@ -1758,8 +1765,8 @@ impl PciEcam {
     /// either, the window search ([`solver`]); the error, if it finds
     /// nothing either, names the request the subtrees had no room for.
     /// Whatever is kept is checked against the root's pools as they were
-    /// ([`Self::validate_plan`]); on failure nothing of the root is placed
-    /// and its pools are as they were.
+    /// ([`Self::validate_plan`]). The pools are left as they were: the plan
+    /// is in the devices. On failure nothing of the root is placed.
     fn allocate_root(&mut self, root: usize, bridges: &[usize]) -> Result<(), PciEcamError> {
         let Root {
             mmio32,
@@ -1784,29 +1791,26 @@ impl PciEcam {
         } else {
             Err(PciEcamError::ResourceExhausted)
         };
-        match result {
-            Ok(()) => self.commit_pools(root, &pools),
-            Err(error) => {
-                self.report_failure(root, &pools, bridges, error);
-                let free = &mut self.roots[root];
-                (free.mmio32, free.mmio64, free.io_pool) = pools;
-                self.unplace(root);
-            }
+        if let Err(error) = result {
+            self.report_failure(root, &pools, bridges, error);
+            self.unplace(root);
         }
+        let free = &mut self.roots[root];
+        (free.mmio32, free.mmio64, free.io_pool) = pools;
         result
     }
 
-    /// Whether the subtree allocator runs, and the window search's budget
-    /// per root if it does.
-    fn allocators(&self) -> (bool, Option<usize>) {
+    /// Whether the fast paths run, and the window search's budget per root
+    /// if it does.
+    fn allocators(&self) -> (bool, Option<solver::Budget>) {
         #[cfg(test)]
         return match self.allocators {
-            Allocators::Subtrees => (true, None),
+            Allocators::FastPaths => (true, None),
             Allocators::Search(budget) => (false, Some(budget)),
             Allocators::Both(budget) => (true, Some(budget)),
         };
         #[cfg(not(test))]
-        (true, Some(solver::SEARCH_BUDGET))
+        (true, Some(solver::Budget::FIRMWARE))
     }
 
     /// Say why root `root` has no layout: the request the subtrees had no
@@ -1823,11 +1827,10 @@ impl PciEcam {
         } = self.roots[root];
         match error {
             PciEcamError::SearchLimit => fstart_log::error!(
-                "pci: root bridge {} (segment={:#x} bus={:#x}): no layout found within {} candidate windows",
+                "pci: root bridge {} (segment={:#x} bus={:#x}): the window search ran out of its budget",
                 root,
                 segment,
-                bus_start,
-                solver::SEARCH_BUDGET
+                bus_start
             ),
             PciEcamError::ResourceExhausted => {
                 self.decide_sides(root, pools, bridges);
@@ -2350,6 +2353,10 @@ impl PciEcam {
     }
 
     /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
+    ///
+    /// On failure no BAR, window or command register has been written, but
+    /// discovery has numbered the bridges' buses and left them so: treat it
+    /// as fail-stop, not as a hierarchy to hand off or enumerate again.
     pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
         self.enumerate_resource_targets(None, true)
     }
@@ -2738,9 +2745,9 @@ impl PciEcam {
             fixed_bars: PciFixedBars::new(),
             auto_bus_master: true,
             #[cfg(test)]
-            allocators: Allocators::Both(solver::SEARCH_BUDGET),
+            allocators: Allocators::Both(solver::Budget::FIRMWARE),
             #[cfg(test)]
-            visits: 0,
+            spent: (0, 0),
         }
     }
 }
@@ -2755,10 +2762,14 @@ impl Root {
         for range in root.allocatable() {
             match range.kind {
                 PciWindowKind::Io => io_pool.push_range(range.base, range.end())?,
-                PciWindowKind::Mmio if range.is_below_4g() => {
-                    mmio32.push_range(range.base, range.end())?;
+                // A range across 4 GiB is two: below, what a 32-bit BAR or
+                // window may use; above, what only a 64-bit one may. The
+                // tables still describe it as one.
+                PciWindowKind::Mmio => {
+                    let (base, end) = (range.base, range.end());
+                    mmio32.push_range(base, end.min(plan::FOUR_GIB))?;
+                    mmio64.push_range(base.max(plan::FOUR_GIB), end)?;
                 }
-                PciWindowKind::Mmio => mmio64.push_range(range.base, range.end())?,
             }
         }
         Ok(Self {

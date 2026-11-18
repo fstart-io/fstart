@@ -8,7 +8,7 @@
 //! still be one the allocator finds; and whatever the allocator produces
 //! must be valid.
 
-use super::solver::SEARCH_BUDGET;
+use super::solver::Budget;
 use super::tests::endpoint;
 use super::*;
 use alloc::{format, string::String, vec, vec::Vec};
@@ -353,6 +353,117 @@ pub(super) fn valid(pci: &PciEcam, pools: &[(u64, u64)]) -> Result<(), String> {
     Ok(())
 }
 
+/// A root's free ranges as its pools hold them, inclusive: below 4 GiB,
+/// above, ports. Allocation leaves them as they were.
+pub(super) fn pools_of(pci: &PciEcam) -> [Vec<(u64, u64)>; 3] {
+    let root = &pci.roots[0];
+    [&root.mmio32, &root.mmio64, &root.io_pool].map(|pool| {
+        pool.ranges[..pool.count]
+            .iter()
+            .map(|range| (range.base, range.end - 1))
+            .collect()
+    })
+}
+
+/// Whether what the allocator wrote, read back, is typed as it must be:
+/// each BAR's attribute bits as it sized; each BAR and window in a range
+/// of its type (on the root bus: a pool of `pools` it may use, a 32-bit
+/// BAR, memory window or 32-bit prefetchable window below 4 GiB; behind a
+/// bridge: the window of its parent that forwards its type, a 32-bit BAR
+/// not in a prefetchable window above 4 GiB); no window across 4 GiB; and
+/// each function's command register decoding what it was given.
+pub(super) fn typed(pci: &PciEcam, pools: &[Vec<(u64, u64)>; 3]) -> Result<(), String> {
+    const FOUR_GIB: u64 = 1 << 32;
+    let [low, high, io] = pools;
+    let pooled = |span: (u64, u64), ranges: &[(u64, u64)]| {
+        ranges.iter().any(|&range| within(span, Some(range)))
+    };
+    let crosses = |span: Span| span.is_some_and(|(base, last)| base < FOUR_GIB && last >= FOUR_GIB);
+    for device in &pci.devices {
+        let at = device.addr;
+        let parent = device
+            .parent
+            .map(|parent| windows(pci, &pci.devices[parent]));
+        let (mut has_io, mut has_memory) = (false, false);
+        for bar in device
+            .bars
+            .iter()
+            .filter(|bar| bar.bar_type != BarType::None && !bar.fixed)
+        {
+            let value = pci.read32(at, bar.reg);
+            let prefetchable = if bar.prefetchable { 0x8 } else { 0 };
+            let (attributes, mask, base) = match bar.bar_type {
+                BarType::Io => (0x1, 0x3, u64::from(value & !0x3)),
+                BarType::Memory32 => (prefetchable, 0xf, u64::from(value & !0xf)),
+                _ => (
+                    0x4 | prefetchable,
+                    0xf,
+                    u64::from(value & !0xf) | u64::from(pci.read32(at, bar.reg + 4)) << 32,
+                ),
+            };
+            if value & mask != attributes {
+                return Err(format!("{at:?} BAR {:#x} reads {value:#x}", bar.reg));
+            }
+            let span = (base, base + bar.size - 1);
+            let wide = bar.bar_type == BarType::Memory64;
+            has_io |= bar.bar_type == BarType::Io;
+            has_memory |= bar.bar_type != BarType::Io;
+            let typed = match (bar.bar_type, parent) {
+                (BarType::Io, None) => pooled(span, io),
+                (_, None) => pooled(span, low) || wide && pooled(span, high),
+                (BarType::Io, Some(w)) => within(span, w[0]),
+                (_, Some(w)) if !bar.prefetchable => within(span, w[1]),
+                (_, Some(w)) => {
+                    within(span, w[1])
+                        || within(span, w[2]) && (wide || w[2].is_some_and(|w| w.1 < FOUR_GIB))
+                }
+            };
+            if !typed {
+                return Err(format!(
+                    "{at:?} BAR {:#x} at {span:x?} is not where its type goes",
+                    bar.reg
+                ));
+            }
+        }
+        let bridge = device.header_type == PCI_HEADER_TYPE_BRIDGE;
+        let own = bridge.then(|| windows(pci, device));
+        if let Some(w) = own {
+            let wide = device.prefetch == PrefetchWindow::Bits64;
+            let held = |window: Span, outer: &[Span]| {
+                window.is_none_or(|window| outer.iter().any(|&outer| within(window, outer)))
+            };
+            let pool = |window: Span, ranges: &[&[(u64, u64)]]| {
+                window.is_none_or(|window| ranges.iter().any(|ranges| pooled(window, ranges)))
+            };
+            let typed = match parent {
+                None => {
+                    let pref: &[&[(u64, u64)]] = if wide { &[low, high] } else { &[low] };
+                    pool(w[0], &[io]) && pool(w[1], &[low]) && pool(w[2], pref)
+                }
+                Some(p) => held(w[0], &[p[0]]) && held(w[1], &[p[1]]) && held(w[2], &[p[1], p[2]]),
+            };
+            if !typed || crosses(w[1]) || crosses(w[2]) {
+                return Err(format!(
+                    "{at:?}'s windows {w:x?} are not where their types go"
+                ));
+            }
+        }
+        let command = pci.read16(at, PCI_COMMAND);
+        let original = device.original_command;
+        let io_window = own.is_some_and(|w| w[0].is_some());
+        let io = has_io || io_window || !bridge && original & PCI_CMD_IO != 0;
+        let memory = bridge || has_memory || original & PCI_CMD_MEMORY != 0;
+        let expected = (u16::from(io) * PCI_CMD_IO)
+            | (u16::from(memory) * PCI_CMD_MEMORY)
+            | PCI_CMD_BUS_MASTER;
+        let decode = PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+        if command & decode != expected {
+            return Err(format!("{at:?} decodes {command:#x}, not {expected:#x}"));
+        }
+    }
+    Ok(())
+}
+
 /// The topology and what master made of it, for a failure.
 pub(super) fn describe(pci: &PciEcam, pools: &[(u64, u64)]) -> String {
     let mut text = format!("pools {pools:x?}\n");
@@ -502,11 +613,13 @@ fn copy(device: &PciDev) -> PciDev {
     PciDev { ..*device }
 }
 
-/// Master, the subtree allocator alone (the allocator of #372, which
-/// firmware still runs first), the window search alone and both, on the
-/// same topologies. What master or the subtree allocator lays out validly
-/// is laid out; what any of them writes is valid; the search says there is
-/// no layout only where neither found one.
+/// Master, the fast paths alone (#372's subtree and BAR-by-BAR layouts,
+/// which firmware still runs first: as they are now, each checked by
+/// [`PciEcam::validate_plan`], not a frozen #372), the window search alone
+/// and both, on the same topologies. What master or the fast paths lay out
+/// validly is laid out; what any of them writes is valid, and what ours
+/// write is typed ([`typed`]); the search says there is no layout only
+/// where neither found one.
 #[test]
 fn every_valid_layout_of_master_is_found_and_every_layout_is_valid() {
     let (mut found, mut master_valid, mut subtrees_valid, mut rescued) = (0, 0, 0, 0);
@@ -546,7 +659,11 @@ fn every_valid_layout_of_master_is_found_and_every_layout_is_valid() {
                 }
             };
             let valid = result.and_then(|()| {
-                valid(&pci, &apertures).map_err(|error| {
+                let checked = valid(&pci, &apertures).and_then(|()| match allocators {
+                    None => Ok(()),
+                    Some(_) => typed(&pci, &pools_of(&pci)),
+                });
+                checked.map_err(|error| {
                     assert!(
                         allocators.is_none(),
                         "seed {seed} {allocators:?}: {error}\n{}",
@@ -558,9 +675,9 @@ fn every_valid_layout_of_master_is_found_and_every_layout_is_valid() {
             (valid, describe(&pci, &pools))
         };
         let (master, master_layout) = run(None);
-        let (subtrees, _) = run(Some(Allocators::Subtrees));
-        let (search, _) = run(Some(Allocators::Search(SEARCH_BUDGET)));
-        let (result, _) = run(Some(Allocators::Both(SEARCH_BUDGET)));
+        let (subtrees, _) = run(Some(Allocators::FastPaths));
+        let (search, _) = run(Some(Allocators::Search(Budget::FIRMWARE)));
+        let (result, _) = run(Some(Allocators::Both(Budget::FIRMWARE)));
         found += usize::from(result.is_ok());
         master_valid += usize::from(master.is_ok());
         subtrees_valid += usize::from(subtrees.is_ok());

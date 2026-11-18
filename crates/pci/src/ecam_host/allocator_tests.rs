@@ -643,8 +643,9 @@ fn exact_32bit_and_io_upper_boundaries_do_not_wrap() {
     pci.allocate_resources().unwrap();
     assert_eq!(pci.read32(addr, PCI_BAR0), 0xffff_f000);
     assert_eq!(pci.read32(addr, PCI_BAR0 + 4), 0xffe1);
-    assert_eq!(pci.roots[0].mmio32.free_bytes(), 0);
-    assert_eq!(pci.roots[0].io_pool.free_bytes(), 0);
+    // Allocation leaves the pools as they were.
+    assert_eq!(pci.roots[0].mmio32.free_bytes(), 0x1000);
+    assert_eq!(pci.roots[0].io_pool.free_bytes(), 0x20);
 }
 
 fn bridge(addr: PciAddress, secondary: u8, subordinate: u8) -> PciDev {
@@ -849,8 +850,8 @@ fn domains_do_not_borrow_resources_or_config_registers() {
     pci.allocate_resources().unwrap();
     assert_eq!(pci.read32(addresses[0], PCI_BAR0), 0x8000_0000);
     assert_eq!(pci.read32(addresses[1], PCI_BAR0), 0xa000_0000);
-    assert_eq!(pci.roots[0].mmio32.free_bytes(), 0);
-    assert_eq!(pci.roots[1].mmio32.free_bytes(), 0x6000);
+    assert_eq!(pci.roots[0].mmio32.free_bytes(), 0x1000);
+    assert_eq!(pci.roots[1].mmio32.free_bytes(), 0x8000);
 }
 
 #[test]
@@ -890,7 +891,7 @@ fn mmio_reservations_and_allocations_do_not_shrink_the_os_parent_aperture() {
         );
     }
     pci.allocate_resources().unwrap();
-    assert_eq!(pci.roots[0].mmio32.free_bytes(), 0);
+    assert_eq!(pci.roots[0].mmio32.free_bytes(), 0xc000);
     let spans: Vec<_> = pci
         .assigned_memory_windows()
         .map(|w| (w.base, w.size))
