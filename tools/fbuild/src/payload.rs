@@ -30,7 +30,7 @@ pub enum LogLevel {
 /// Opt-in debug facilities a platform compiles in (`--debug`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DebugOption {
-    /// The board's EHCI debug port console.
+    /// EHCI debug port console on supported platforms.
     Ehci,
     /// A log every stage appends to a reserved SPI flash region, read back
     /// with a programmer (coreboot `CONSOLE_SPI_FLASH`).

@@ -4,8 +4,8 @@
 //! for them, even one with no console of its own (`NoConsole`).
 //!
 //! * `--debug ehci`: the EHCI debug port console (`fstart-driver-usbdebug`)
-//!   on the port the chipset config reserves
-//!   ([`crate::IntelPlatformConfig::ehci_debug`]).
+//!   on the controller selected by the chipset. The driver reads its debug
+//!   port and the platform reserves the BAR only in an EHCI debug build.
 //! * `--debug flash-console`: the SPI flash log
 //!   (`fstart-driver-flash-console`, coreboot `CONSOLE_SPI_FLASH`) through
 //!   the ICH SPI controller. The image builder reserves

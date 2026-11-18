@@ -12,6 +12,7 @@ pub use fstart_driver_intel::ich9::{
     LpcSerialDecode, PciePowerLimit, PinColor, PinConfig, PinConn, PinConnector, PinDevice,
     PinGeoLoc, PinLoc, SataConfig, SataMode, UsbConfig,
 };
+pub use fstart_driver_intel::southbridge::ehci_debug::EhciController;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
 pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
 
@@ -61,7 +62,8 @@ pub struct Gm45Ich9Config {
     pub laptop: bool,
     pub sata: Option<SataConfig>,
     pub usb: Option<UsbConfig>,
-    pub ehci_debug_bar: Option<fstart_driver_intel::ich9::EhciDebugConfig>,
+    /// See [`IntelIch9Config::ehci_debug_controller`].
+    pub ehci_debug_controller: Option<EhciController>,
     pub hda: Option<HdaConfig>,
     pub io_traps: ConstVec<IoTrapConfig, 4>,
     pub gpio: gpio::GpioConfig,
@@ -101,7 +103,7 @@ impl Gm45Ich9Config {
             laptop: false,
             sata: None,
             usb: None,
-            ehci_debug_bar: None,
+            ehci_debug_controller: None,
             hda: None,
             io_traps: ConstVec::new(empty_io_trap()),
             gpio: gpio::GpioConfig::new(),
@@ -161,17 +163,11 @@ impl Gm45Ich9Config {
         config.laptop = self.laptop;
         config.sata = self.sata;
         config.usb = self.usb;
-        config.ehci_debug_bar = self.ehci_debug_bar;
+        config.ehci_debug_controller = self.ehci_debug_controller;
         config.hda = self.hda;
         config.io_traps = self.io_traps;
         config.gpio = self.gpio;
         config
-    }
-
-    #[must_use]
-    pub const fn ehci_debug_bar(mut self, bar: fstart_driver_intel::ich9::EhciDebugConfig) -> Self {
-        self.ehci_debug_bar = Some(bar);
-        self
     }
 
     #[must_use]
@@ -339,6 +335,14 @@ impl Gm45Ich9Config {
     #[must_use]
     pub const fn usb(mut self, usb: UsbConfig) -> Self {
         self.usb = Some(usb);
+        self
+    }
+
+    /// The EHCI controller wired to the board's debug connector (coreboot
+    /// `USBDEBUG_HCD_INDEX`). Without one, EHCI2 is preferred.
+    #[must_use]
+    pub const fn ehci_debug_controller(mut self, controller: EhciController) -> Self {
+        self.ehci_debug_controller = Some(controller);
         self
     }
 
@@ -531,7 +535,8 @@ impl crate::IntelPlatformConfig for Gm45Ich9Platform {
         self.pci_subsystem_ids
     }
     fn ehci_debug(&self) -> Option<fstart_driver_usbdebug::Config> {
-        self.southbridge.ehci_debug_bar
+        self.southbridge
+            .ehci_debug(self.northbridge.ecam_base as usize)
     }
 }
 

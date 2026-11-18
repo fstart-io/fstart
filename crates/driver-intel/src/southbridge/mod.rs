@@ -1,5 +1,6 @@
 pub mod acpi;
 pub mod ahci;
+pub mod ehci_debug;
 pub mod gpio_ich;
 pub mod hda;
 pub mod ide;

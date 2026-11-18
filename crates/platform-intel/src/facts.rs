@@ -26,8 +26,8 @@ pub trait IntelPlatformConfig {
     fn pci_subsystem_ids(&self) -> &'static [PciSubsystemId] {
         &[]
     }
-    /// The EHCI debug port the chipset config reserves, which `fbuild
-    /// --debug ehci` turns into a console (see [`crate::debug_console`]).
+    /// The chipset's enabled EHCI debug controller, if supported. The Intel
+    /// flow reserves its BAR only when `fbuild --debug ehci` selects it.
     fn ehci_debug(&self) -> Option<fstart_driver_usbdebug::Config> {
         None
     }

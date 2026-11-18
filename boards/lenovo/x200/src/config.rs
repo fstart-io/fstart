@@ -8,9 +8,9 @@ use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_platform_intel::facts::PciSubsystemId;
 use fstart_platform_intel::gm45::{
-    BacklightPwm, CState, Core2Cstates, Gm45Ich9Config, Gm45Ich9Platform, Gm45IgdConfig, GpiRoute,
-    LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode, LpcSerialDecode,
-    PciePowerLimit, SataConfig, SataMode, UsbConfig,
+    BacklightPwm, CState, Core2Cstates, EhciController, Gm45Ich9Config, Gm45Ich9Platform,
+    Gm45IgdConfig, GpiRoute, LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode,
+    LpcParallelDecode, LpcSerialDecode, PciePowerLimit, SataConfig, SataMode, UsbConfig,
 };
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 
@@ -54,17 +54,6 @@ pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x200";
 
 const LED_VBT: &str = "data_led.vbt";
 const CCFL_VBT: &str = "data_ccfl.vbt";
-/// The EHCI debug port, reserved here and used by `fbuild --debug ehci`.
-pub const EHCI_CONSOLE: fstart_driver_usbdebug::Config = fstart_driver_usbdebug::Config {
-    ecam_base: fstart_platform_intel::gm45::GM45_ECAM_BASE as usize,
-    // Coreboot X200 Kconfig: USBDEBUG_HCD_INDEX=2, port 1 of EHCI2.
-    bus: 0,
-    device: 0x1a,
-    function: 7,
-    // coreboot i82801ix `CONFIG_EHCI_BAR`.
-    bar: 0xfef0_0000,
-};
-
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     type Platform = fstart_platform_intel::gm45::Gm45Ich9;
     const OPTIONS: &'static [&'static dyn fstart_options::Describe] = &[&crate::mainboard::EC];
@@ -198,7 +187,8 @@ pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
         ehci: [true; 2],
         uhci: [true; 6],
     })
-    .ehci_debug_bar(EHCI_CONSOLE)
+    // coreboot `USBDEBUG_HCD_INDEX=2`: port 1 of EHCI2 (00:1a.7).
+    .ehci_debug_controller(EhciController::Ehci2)
     .igd(X200_IGD)
     .cstates(X200_CSTATES)
     .hda_verb(0x14f1_5051, 0x17aa_20ff, x200_hda_pins(), X200_BEEP_VERBS)

@@ -5,7 +5,7 @@
 //! legacy GMCH pairings this platform owns its CPU model: model 2065x.
 
 pub use fstart_driver_intel::ibexpeak::{
-    EhciDebugConfig, GpiRoute, GpioPin, HdaConfig, HdaVerbTable, IntelIbexPeakConfig,
+    EhciController, GpiRoute, GpioPin, HdaConfig, HdaVerbTable, IntelIbexPeakConfig,
     LpcGenericIoDecode, PchFunction, SataConfig, SataMode, UsbCurrent, UsbPort,
 };
 pub use fstart_driver_intel::ironlake::{
@@ -19,7 +19,6 @@ pub const IRONLAKE_ECAM_BASE: u64 = fstart_driver_intel::ironlake::DEFAULT_ECAM_
 pub const IBEXPEAK_RCBA: u64 = fstart_driver_intel::ibexpeak::DEFAULT_RCBA;
 pub const IBEXPEAK_PMBASE: u16 = fstart_driver_intel::ibexpeak::DEFAULT_PMBASE;
 pub const IBEXPEAK_GPIOBASE: u16 = fstart_driver_intel::ibexpeak::DEFAULT_GPIOBASE;
-pub const IBEXPEAK_EHCI_DEBUG_BAR: u32 = fstart_driver_intel::ibexpeak::DEFAULT_EHCI_DEBUG_BAR;
 
 /// Board policy for an Ironlake/Ibex Peak machine.
 #[derive(Debug, Clone, Copy)]
@@ -299,9 +298,11 @@ impl IronlakeIbexPeakConfig {
         self
     }
 
+    /// The EHCI controller wired to the board's debug connector (coreboot
+    /// `USBDEBUG_HCD_INDEX`). Without one, EHCI2 is preferred.
     #[must_use]
-    pub const fn ehci_debug_bar(mut self, bar: EhciDebugConfig) -> Self {
-        self.southbridge.ehci_debug_bar = Some(bar);
+    pub const fn ehci_debug_controller(mut self, controller: EhciController) -> Self {
+        self.southbridge.ehci_debug_controller = Some(controller);
         self
     }
 
@@ -392,7 +393,8 @@ impl crate::IntelPlatformConfig for IronlakeIbexPeakPlatform {
         self.pci_subsystem_ids
     }
     fn ehci_debug(&self) -> Option<fstart_driver_usbdebug::Config> {
-        self.southbridge.ehci_debug_bar
+        self.southbridge
+            .ehci_debug(self.northbridge.ecam_base as usize)
     }
 }
 

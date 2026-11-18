@@ -456,8 +456,8 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
             .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
             .map_err(|_| ServiceError::HardwareError)?;
         let mut fixed_bars = self.southbridge.fixed_pci_bars();
-        // Board debug wiring is only a capability. Without --debug ehci,
-        // no console initialized this BAR: let PCI allocate it normally.
+        // Without --debug ehci no console initialized this BAR: let PCI
+        // allocate it normally.
         if cfg!(feature = "ehci-console")
             && let Some(debug) = B::CONFIG.ehci_debug()
         {

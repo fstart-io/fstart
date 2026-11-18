@@ -1,16 +1,10 @@
-//! Lenovo ThinkPad X201 mainboard work the stage `main`s call: the EHCI
-//! debug console, the clock generator, H8/PMH7 policy, the dock
+//! Lenovo ThinkPad X201 mainboard work the stage `main`s call: USB port
+//! power, the clock generator, H8/PMH7 policy, the dock
 //! connection, the identity EEPROM and the X201T digitizer.
 
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
 use fstart_driver_lenovo::x201;
-
-/// The EHCI debug port of EHCI2 (00:1a.0): coreboot's X201
-/// `USBDEBUG_HCD_INDEX=2`.
-pub const fn console() -> fstart_driver_usbdebug::Config {
-    crate::config::EHCI_CONSOLE
-}
 
 /// coreboot `bootblock_mainboard_early_init()`: the EC powers the USB
 /// ports before the debug console needs one.
