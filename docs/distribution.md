@@ -72,17 +72,20 @@ and the serial-console setting. Those builds then need no file from the user,
 CI assembles their images, and a user can still supply another payload ELF.
 
 ```sh
-# Every board, variant and payload its platform takes, plus catalog.json:
+# Every board and variant with the payloads it publishes, plus catalog.json:
 cargo fbuild bundle --out target/distribution --revision "$(git rev-parse HEAD)"
 # One selection:
 cargo fbuild bundle --board gigabyte-mj11-ec1 --payload uefi \
   --out /tmp/mj11 --revision "$(git rev-parse HEAD)"
 ```
 
-The output directory must be empty. A board publishes the payloads its
-platform's plan takes: every payload fbuild knows is resolved, and those the
-plan rejects are not published. A build that compiles but does not fit its
-flash layout is still published, with its `image_error` in the catalog.
+The output directory must be empty. Without `--payload`, a board publishes
+those of `uefi-ui` (or `uefi` where its plan has no UI build), `linux`,
+`coreboot` and `elf` that its platform's plan takes. `halt` and `uefi-basic`
+are for development and are not published, nor is a `linux` build whose
+kernel slot is under 1.5 MiB. A board that publishes none of them is skipped.
+A build that compiles but does not fit its flash layout is still published,
+with its `image_error` in the catalog.
 
 `fbuild compose-bundle` assembles a bundle natively, without Cargo or a linker:
 
@@ -112,19 +115,21 @@ The bundle format is version 3. Older bundles must be re-exported.
 
 ## Nightly releases
 
-On every master push that passes the checks and QEMU boot tests, the
-`distribution` CI job runs `ci/build-distribution.sh`: it builds all bundles,
-`catalog.json` and `host-tools-linux-x86_64.tar.gz` (prebuilt `fbuild` and
-`fstart-amdfw`) and keeps them as a two-day Actions artifact. It builds
-SeaBIOS at the revision the boot tests pin and passes it to
-`fbuild bundle --seabios`.
+Once a day, the **Nightly releases** workflow (`nightly.yml`, also started by
+hand) builds a nightly from the newest master commit whose CI passed:
+`fstart-release pending` (`tools/release`) names it, or nothing when that
+commit has a nightly already, and then nothing is built.
 
-The daily **Nightly releases** workflow runs `fstart-release nightly`
-(`tools/release`). It takes the newest successful master push run and, unless
-that commit already has a nightly:
+The `distribution` job checks that commit out and runs
+`ci/build-distribution.sh`: it builds the bundles, `catalog.json`, the web
+assembler and `host-tools-linux-x86_64.tar.gz` (prebuilt `fbuild` and
+`fstart-amdfw`), with SeaBIOS at the revision the boot tests pin
+(`fbuild bundle --seabios`). The `publish` job then runs
+`fstart-release nightly` on that output; it
 
-1. downloads its artifact as data (nothing downloaded is executed),
-2. checks the catalog against the run's commit and every bundle's size and
+1. treats it as data (the tool is built from the workflow's checkout,
+   nothing it publishes is executed),
+2. checks the catalog against the commit and every bundle's size and
    SHA-256, and rejects unexpected files,
 3. adds `release.json` and `SHA256SUMS` and stamps `created_at`, `expires_at`
    and the source run into the catalog,
@@ -172,8 +177,8 @@ region. It can create an Ed25519 signing key with Web Crypto; the key is saved
 to a file right away and otherwise stays in the tab.
 
 The `distribution` job builds the site into `target/image-web` (and runs the
-native/WASM parity test, `ci/test-web.mjs`); **Publish web assembler** deploys
-it to Pages after a successful master CI run. Bundles stay on Releases and do
+native/WASM parity test, `ci/test-web.mjs`); the nightly's `pages` job deploys
+it to Pages once the release is published. Bundles stay on Releases and do
 not count against Pages' 1 GB limit. Each nightly also carries the site as
 `image-web.zip`, matching its bundles exactly.
 

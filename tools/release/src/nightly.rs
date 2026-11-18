@@ -190,20 +190,10 @@ struct Runs {
 }
 #[derive(Deserialize)]
 struct Run {
-    id: u64,
     head_sha: String,
     head_branch: String,
     event: String,
     conclusion: String,
-}
-#[derive(Deserialize)]
-struct Artifacts {
-    artifacts: Vec<Artifact>,
-}
-#[derive(Deserialize)]
-struct Artifact {
-    name: String,
-    expired: bool,
 }
 #[derive(Serialize)]
 struct Metadata<'a> {
@@ -214,8 +204,7 @@ struct Metadata<'a> {
     source_run_id: u64,
 }
 
-pub(super) fn publish(repo: &str, now: OffsetDateTime, gh: &mut Github<'_>) -> Result<()> {
-    let now = now.replace_nanosecond(0)?;
+fn releases(repo: &str, gh: &mut Github<'_>) -> Result<Vec<Release>> {
     // Follow all release pages: stable releases must not hide old nightlies.
     let pages: Vec<Vec<Release>> = json(
         gh,
@@ -226,7 +215,18 @@ pub(super) fn publish(repo: &str, now: OffsetDateTime, gh: &mut Github<'_>) -> R
             &format!("repos/{repo}/releases?per_page=100"),
         ],
     )?;
-    let mut releases: Vec<_> = pages.into_iter().flatten().collect();
+    Ok(pages.into_iter().flatten().collect())
+}
+
+fn published(releases: &[Release], revision: &str) -> bool {
+    releases
+        .iter()
+        .any(|r| r.owned() && !r.draft && r.target_commitish == revision)
+}
+
+/// The revision the next nightly is built from: the newest master push
+/// whose CI passed, unless a nightly of it exists already.
+pub(super) fn pending(repo: &str, gh: &mut Github<'_>) -> Result<Option<String>> {
     let runs: Runs = json(
         gh,
         &[
@@ -241,31 +241,36 @@ pub(super) fn publish(repo: &str, now: OffsetDateTime, gh: &mut Github<'_>) -> R
         .into_iter()
         .find(|r| r.head_branch == "master" && r.event == "push" && r.conclusion == "success")
         .ok_or("no successful master CI run is available")?;
-    let revision = &run.head_sha;
-    if !hex(revision, 40) {
+    if !hex(&run.head_sha, 40) {
         return Err("invalid CI revision".into());
     }
-    // Never rebuild or execute binaries downloaded from CI.
-    if !releases
-        .iter()
-        .any(|r| r.owned() && !r.draft && r.target_commitish == *revision)
+    Ok((!published(&releases(repo, gh)?, &run.head_sha)).then_some(run.head_sha))
+}
+
+/// What the nightly workflow built: `fbuild bundle`'s output of
+/// `revision` in `directory`, by the workflow run `run_id`.
+pub(super) struct Built<'a> {
+    pub directory: &'a Path,
+    pub revision: &'a str,
+    pub run_id: u64,
+}
+
+/// Publish `built` as a nightly (unless that revision has one), then
+/// delete the expired nightlies.
+pub(super) fn publish(
+    repo: &str,
+    now: OffsetDateTime,
+    gh: &mut Github<'_>,
+    built: Option<Built<'_>>,
+) -> Result<()> {
+    let now = now.replace_nanosecond(0)?;
+    let mut releases = releases(repo, gh)?;
+    if let Some(built) = built
+        && !published(&releases, built.revision)
     {
-        let artifacts: Artifacts = json(
-            gh,
-            &[
-                "api",
-                &format!(
-                    "repos/{repo}/actions/runs/{}/artifacts?per_page=100",
-                    run.id
-                ),
-            ],
-        )?;
-        if !artifacts
-            .artifacts
-            .iter()
-            .any(|a| a.name == "distribution" && !a.expired)
-        {
-            return Err("successful CI has no unexpired distribution artifact".into());
+        let revision = built.revision;
+        if !hex(revision, 40) {
+            return Err("invalid revision".into());
         }
         let date = now.date().to_string();
         let tag = format!("nightly-{date}-{}", &revision[..12]);
@@ -275,26 +280,23 @@ pub(super) fn publish(repo: &str, now: OffsetDateTime, gh: &mut Github<'_>) -> R
             )
             .into());
         }
+        // The build's files are data: they are checked and staged, never run.
         let temp = tempfile::tempdir()?;
         let directory = temp.path();
-        gh(&[
-            "run",
-            "download",
-            &run.id.to_string(),
-            "--repo",
-            repo,
-            "--name",
-            "distribution",
-            "--dir",
-            directory.to_str().ok_or("invalid temporary path")?,
-        ])?;
+        for entry in fs::read_dir(built.directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                return Err("release assets must be regular files".into());
+            }
+            fs::copy(entry.path(), directory.join(entry.file_name()))?;
+        }
         let mut catalog = verify(directory, revision)?;
         let metadata = Metadata {
             format_version: FORMAT_VERSION,
             revision,
             created_at: now.format(&Rfc3339)?,
             expires_at: (now + Duration::days(DAYS)).format(&Rfc3339)?,
-            source_run_id: run.id,
+            source_run_id: built.run_id,
         };
         write_json(&directory.join("release.json"), &metadata)?;
         catalog
@@ -359,7 +361,7 @@ pub(super) fn publish(repo: &str, now: OffsetDateTime, gh: &mut Github<'_>) -> R
             body: Some(notes),
             draft: false,
             prerelease: true,
-            target_commitish: revision.clone(),
+            target_commitish: revision.into(),
             published_at: Some(now),
         });
     }

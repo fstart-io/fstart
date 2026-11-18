@@ -49,50 +49,6 @@ env:
 # rolls a new one out. (Ubuntu 26.04 ships qemu-system-riscv64 in
 # qemu-system-riscv, 24.04 in qemu-system-misc.)
 jobs:
-  # Master only: every board's bundles for the nightly release
-  # (docs/distribution.md), after the checks and boot tests passed.
-  distribution:
-    needs: [check, qemu-boot-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-26.04
-    # One runner builds every board, variant and payload (about three
-    # hours, most of it the Intel boards' payloads).
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-      - uses: ./.github/actions/setup
-        with:
-          packages: acpica-tools
-      - name: Install the WASM target and wasm-bindgen
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo install wasm-bindgen-cli --version 0.2.130 --locked
-      # coreboot payload bundles ship SeaBIOS, the boot tests' revision.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: fstart-io/seabios
-          ref: 44ed85f85fac03107009242c067fdcc01ce55546
-          path: target/seabios-src
-          persist-credentials: false
-      - name: Export every board, variant, payload and unit binary
-        run: bash ci/build-distribution.sh
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: distribution
-          path: target/distribution/
-          compression-level: 0 # Each bundle is already ZIP/DEFLATE compressed.
-          retention-days: 2 # Daily promotion moves these onto Releases.
-          if-no-files-found: error
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: image-web
-          path: target/image-web/
-          include-hidden-files: true
-          retention-days: 2
-          if-no-files-found: error
-
   web:
     runs-on: ubuntu-26.04
     timeout-minutes: 30

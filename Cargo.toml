@@ -105,7 +105,7 @@ aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "5849
 dtoolkit = { version = "0.1", default-features = false }
 
 # Compression
-lz4_flex = { version = "0.11", default-features = false }
+lz4_flex = { version = "0.14", default-features = false }
 
 # Object/ELF parsing and flat-binary extraction (host-side only)
 object = { version = "0.37", default-features = false, features = [
@@ -268,3 +268,8 @@ opt-level = 2
 [profile.release.package.p256]
 opt-level = 2
 
+# lz4_flex hashes differently on 32-bit targets, so the web assembler
+# (wasm32) compressed stages differently from fbuild. Until
+# https://github.com/PSeitz/lz4_flex/pull/250 is released.
+[patch.crates-io]
+lz4_flex = { git = "https://github.com/ArthurHeymans/lz4_flex", rev = "9a95e8549488bb929e29561f13666c1b33545551" }

@@ -8,7 +8,6 @@ use crate::{
     payload::{BuildArgs, PayloadChoice},
     resolved_image::ResolvedImage,
 };
-use clap::ValueEnum;
 use fstart_image_build::{
     build_plan::{BuildPlan, ImageOperation, InputFile},
     bundle::{
@@ -159,9 +158,30 @@ fn donor_tables(root: &Path, board: &BoardManifest) -> Result<Option<PackedDonor
     Ok(Some(PackedDonor { tables }))
 }
 
+/// What a board publishes without `--payload`: of each group, the first
+/// payload its platform's plan takes. UEFI is CrabEFI with its setup UI,
+/// or plain CrabEFI where the plan has no UI build. `halt` and
+/// `uefi-basic` are for development and are not published.
+const PUBLISHED: &[&[PayloadChoice]] = &[
+    &[PayloadChoice::UefiUi, PayloadChoice::Uefi],
+    &[PayloadChoice::Linux],
+    &[PayloadChoice::Coreboot],
+    &[PayloadChoice::Elf],
+];
+
+/// The smallest kernel slot a published Linux build has: a usable kernel
+/// with its initramfs does not fit in less.
+const LINUX_MIN: u64 = 1536 << 10;
+
+fn fits_a_kernel(resolved: &ResolvedImage) -> bool {
+    (resolved.build.plan.inputs.iter())
+        .find(|input| input.name == "kernel")
+        .is_none_or(|kernel| kernel.capacity >= LINUX_MIN)
+}
+
 /// Export bundles of `board_id` (every board and variant without one) for
-/// `payload` (every payload its platform takes without one) into the
-/// empty directory `out`, with `catalog.json`.
+/// `payload` (without one, the payloads a board publishes: [`PUBLISHED`])
+/// into the empty directory `out`, with `catalog.json`.
 pub fn export(
     out: &Path,
     revision: &str,
@@ -200,37 +220,46 @@ pub fn export(
         builds: vec![],
     };
     // Resolve every combination before starting any firmware build: a bad
-    // plan must fail fast, not after an hour of work. A board publishes the
-    // payloads its platform's plan takes.
+    // plan must fail fast, not after an hour of work.
     let mut builds = Vec::new();
     for board in boards {
         let packed_donor = donor_tables(&root, &board)?;
-        let choices: Vec<PayloadChoice> = match payload {
-            Some(payload) => vec![payload],
-            None => PayloadChoice::value_variants().to_vec(),
-        };
-        let mut published = 0;
-        for choice in choices {
+        let resolve = |choice: PayloadChoice| {
             let mut selection = BuildArgs::default().selection(Some(choice));
             // An AMD plan packs the blobs its assembly extracts from the
             // user's donor.
             if packed_donor.is_some() {
                 selection.set_option(fstart_image_build::plan::options::BLOBS, BLOBS_DIR);
             }
-            match ResolvedImage::load(&root, &board, selection) {
-                Ok(resolved) => {
-                    builds.push((board.clone(), choice, resolved, packed_donor.clone()));
-                    published += 1;
-                }
+            ResolvedImage::load(&root, &board, selection)
+        };
+        if let Some(choice) = payload {
+            match resolve(choice) {
+                Ok(resolved) => builds.push((board.clone(), choice, resolved, packed_donor)),
                 // Asked for explicitly: the plan must take it.
-                Err(error) if payload.is_some() && board_id.is_some() => {
+                Err(error) if board_id.is_some() => {
                     return Err(format!("{} {}: {error}", board.board, choice.as_str()));
                 }
                 Err(_) => {}
             }
+            continue;
         }
-        if published == 0 && payload.is_none() {
-            return Err(format!("{} takes none of fbuild's payloads", board.board));
+        let mut published = 0;
+        for group in PUBLISHED {
+            // The first payload of the group the board's plan takes.
+            let Some((choice, resolved)) = (group.iter())
+                .find_map(|&choice| resolve(choice).ok().map(|resolved| (choice, resolved)))
+            else {
+                continue;
+            };
+            if choice == PayloadChoice::Linux && !fits_a_kernel(&resolved) {
+                continue;
+            }
+            builds.push((board.clone(), choice, resolved, packed_donor.clone()));
+            published += 1;
+        }
+        if published == 0 {
+            eprintln!("[fstart] {}: no published payload, skipped", board.board);
         }
     }
     for (board, choice, resolved, packed_donor) in builds {
