@@ -188,6 +188,9 @@ pub struct Silicon<S: Soc> {
     /// Standalone device ACPI tables (for example, a posted VBIOS VFCT).
     pub tables: alloc::vec::Vec<alloc::vec::Vec<u8>>,
     pub framebuffer: Option<fstart_core::services::FramebufferInfo>,
+    /// The legacy VGA display, chosen once after enumeration
+    /// ([`Init::display_port`]): the one a video ROM is posted on.
+    pub legacy_vga: Option<fstart_pci::PciAddress>,
     /// What the SoC's driver left ([`Init::State`]).
     pub state: S::State,
 }

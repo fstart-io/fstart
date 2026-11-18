@@ -35,7 +35,7 @@ use fstart_driver_amd::{
     smu::v10::power,
 };
 use fstart_log::Hex;
-use fstart_pci::PciEcam;
+use fstart_pci::{PciAddress, PciEcam};
 use tock_registers::interfaces::Readable;
 
 /// After the DF, NBIO early init, the BSP, DRAM routing and the FCH: what
@@ -388,6 +388,20 @@ impl Init for Picasso {
             segment: Self::pci_segment(ctx.hw),
             bridges: core::slice::from_ref(&state.bridge),
         }
+    }
+
+    /// The GPU's bridge if the part has one, else the board's onboard
+    /// display's port.
+    fn display_port(ctx: &Ctx<'_, Self>, state: &State, pci: &PciEcam) -> Option<PciAddress> {
+        match state.uma {
+            Some(_) => Some(super::gpu_bridge()),
+            None => crate::noncar::display_port::<Self>(ctx.config, pci),
+        }
+    }
+
+    /// To the die's IOMS: its root complex is the one root bridge.
+    fn route_legacy_vga(ctx: &Ctx<'_, Self>, _: &State, _: &RootBridgePlan) {
+        fabric::route_vga(&ctx.hw.dies[0]);
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {

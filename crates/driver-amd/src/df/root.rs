@@ -109,9 +109,11 @@ fn pci_span(pools: &Pools) -> PlanWindow {
 /// routes to it and what of that is for PCI.
 ///
 /// Its routes are forwarded: its I/O (the primary's legacy ports included)
-/// and its MMIO below and above 4 GiB, the primary's with the legacy VGA
-/// memory, the FCH's fixed decodes and a second low window. PCI devices get
-/// the plan's PCI pools and the primary's second low window.
+/// and its MMIO below and above 4 GiB, the primary's with the FCH's fixed
+/// decodes and a second low window. PCI devices get the plan's PCI pools
+/// and the primary's second low window. The legacy VGA memory goes to the
+/// root bridge of the legacy VGA display, once enumeration found it
+/// ([`fstart_pci::PciEcam::forward_legacy_vga_memory`]).
 /// The non-PCI pools hold the NBIO's own MMIO and are not forwarded, nor is
 /// the ECAM window, which the primary owns.
 pub fn planned(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<Root> {
@@ -136,8 +138,7 @@ pub fn planned(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<Root> {
             mmio(Own, pools.non_pci),
         ]
     };
-    // What only the primary has: the legacy VGA memory routed to it, and
-    // the ECAM window.
+    // What only the primary has: the ECAM window.
     let primary = |size: u64| if rb.primary { size } else { 0 };
     PciRoot::new(
         PciRootInfo {
@@ -147,7 +148,6 @@ pub fn planned(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<Root> {
         },
         (rb.io.map(|route| io(Forwarded, route)).into_iter())
             .chain(rb.io_pool.map(|pool| io(PciRole::Window, pool)))
-            .chain([Forwarded.mmio(0xa_0000, primary(0x2_0000))])
             .chain([mmio(Forwarded, rb.below)])
             .chain(pools(&rb.below_pools))
             // The primary's second window below 4 GiB, after its pools: PCI
@@ -221,7 +221,6 @@ mod tests {
             spans(root.forwarded()),
             [
                 (Io, 0, 0x4000),
-                (Mmio, 0xa_0000, 0xc_0000),
                 (Mmio, 0xa000_0000, 0xaf00_0000),
                 (Mmio, 0x100_2020_0000, 0x140_0000_0000),
             ]
@@ -310,7 +309,6 @@ mod tests {
         assert_eq!(
             root.mmio().collect::<std::vec::Vec<_>>(),
             [
-                0xa_0000..=0xb_ffff,
                 0xd000_0000..=0xf7ff_ffff,
                 0xfc00_0000..=0xfcff_ffff,
                 0xfd28_0000..=0xfebf_ffff

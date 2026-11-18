@@ -267,6 +267,20 @@ impl<F> State<F> {
         }
     }
 
+    /// The bridge of the port the board's DXIO engines attach its onboard
+    /// display to ([`crate::soc::Init::display_port`]).
+    pub fn display_port(&self) -> Option<fstart_pci::PciAddress> {
+        crate::soc::display_port(&self.soc.ports)
+    }
+
+    /// The legacy VGA ranges to `root` on every DF node
+    /// ([`crate::soc::Init::route_legacy_vga`]).
+    pub fn route_legacy_vga<V: Version>(&self, root: &fstart_driver_amd::df::plan::RootBridgePlan) {
+        // SAFETY: the BSP owns every node's DF until the payload.
+        let nodes = unsafe { self.soc.df.each(&self.soc.topology.nodes) };
+        fstart_driver_amd::df::program::vga::<V, _>(&nodes, root.fabric_id);
+    }
+
     /// What the tables and the handoff read.
     #[cfg_attr(not(feature = "payload-uefi"), allow(unused_variables))]
     fn view<'a>(&'a self, flow: &'a Flow) -> parts::Ctx<'a> {

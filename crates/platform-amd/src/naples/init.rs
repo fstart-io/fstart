@@ -13,9 +13,10 @@ use fstart_arch::x86::mp::MpHandle;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::ccx::tsc::Tsc;
 use fstart_driver_amd::ccx::{init::Threads, mp::Fam17hCpu};
+use fstart_driver_amd::df::plan::RootBridgePlan;
 use fstart_driver_amd::df::v2::Df2;
 use fstart_driver_amd::psp;
-use fstart_pci::PciEcam;
+use fstart_pci::{PciAddress, PciEcam};
 
 impl Init for Naples {
     const NAME: &'static str = "naples";
@@ -125,6 +126,14 @@ impl Init for Naples {
 
     fn fabric<'a>(_: &Ctx<'_, Self>, state: &'a State) -> Fabric<'a> {
         state.fabric()
+    }
+
+    fn display_port(_: &Ctx<'_, Self>, state: &State, _: &PciEcam) -> Option<PciAddress> {
+        state.display_port()
+    }
+
+    fn route_legacy_vga(_: &Ctx<'_, Self>, state: &State, root: &RootBridgePlan) {
+        state.route_legacy_vga::<Df2>(root);
     }
 
     fn after_resources(_: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {

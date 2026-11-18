@@ -366,9 +366,11 @@ pub fn host<B: Board>() -> Result<Host, String> {
         socs if !socs.is_empty() && socs.iter().all(|soc| soc.sp3()) => {
             crate::sp3::host::host::<B>()
         }
+        [SocId::Genoa] => crate::rs::host::host::<crate::genoa::Stones>(B::MAX_CPUS),
+        [SocId::Siena] => crate::rs::host::host::<crate::siena::Dense>(B::MAX_CPUS),
         _ => {
             return Err(format!(
-                "{} carries SoCs one image cannot: one of Picasso and Zeppelin, or the SP3 SoCs",
+                "{} carries SoCs one image cannot: one of Picasso, Zeppelin, Genoa and Siena, or the SP3 SoCs",
                 B::NAME
             ));
         }

@@ -25,7 +25,7 @@ pub struct SocSmbios {
 }
 
 #[cfg(all(feature = "bundle", target_os = "none"))]
-pub use stage::{System, build_into};
+pub use stage::{System, build_into, build_with};
 
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod stage {
@@ -104,6 +104,29 @@ mod stage {
         place: impl Fn(u32) -> (u8, u32),
         die_exists: impl Fn(u8, u8) -> bool,
     ) -> Result<usize, &'static str> {
+        build::<false>(storage, system, place, die_exists, || (Vec::new(), false))
+    }
+
+    /// [`build_into`] with the DIMM positions and their ECC from `memory`
+    /// rather than the APOB's SMBIOS seeds.
+    pub fn build_with(
+        storage: &mut [u8],
+        system: &System<'_>,
+        place: impl Fn(u32) -> (u8, u32),
+        memory: impl FnOnce() -> (Vec<apob_smbios::Dimm>, bool),
+    ) -> Result<usize, &'static str> {
+        build::<true>(storage, system, place, |_, _| false, memory)
+    }
+
+    /// The DIMMs from `memory` if `OWN`, else from the APOB.
+    #[inline(always)]
+    fn build<const OWN: bool>(
+        storage: &mut [u8],
+        system: &System<'_>,
+        place: impl Fn(u32) -> (u8, u32),
+        die_exists: impl Fn(u8, u8) -> bool,
+        memory: impl FnOnce() -> (Vec<apob_smbios::Dimm>, bool),
+    ) -> Result<usize, &'static str> {
         let apic_ids = &system.cpus.apic_ids;
         let mut sockets: Vec<u8> = apic_ids.iter().map(|&id| place(id).0).collect();
         sockets.sort_unstable();
@@ -133,14 +156,21 @@ mod stage {
             });
         }
         let soc = system.soc;
-        let dimms = system
-            .apob
-            .map(|apob| dimms(apob, soc.channels_per_die, die_exists))
-            .unwrap_or_default();
-        let ecc = system
-            .apob
-            .and_then(|apob| mem::smbios_info(apob).ok())
-            .is_some_and(|seeds| seeds.ecc());
+        let own = if OWN { Some(memory()) } else { None };
+        let dimms = match own {
+            Some((ref dimms, _)) => dimms.clone(),
+            None => system
+                .apob
+                .map(|apob| dimms(apob, soc.channels_per_die, die_exists))
+                .unwrap_or_default(),
+        };
+        let ecc = match own {
+            Some((_, ecc)) => ecc,
+            None => system
+                .apob
+                .and_then(|apob| mem::smbios_info(apob).ok())
+                .is_some_and(|seeds| seeds.ecc()),
+        };
         let mut tables = smbios::Builder::new(
             system.identity,
             system.rom_size,

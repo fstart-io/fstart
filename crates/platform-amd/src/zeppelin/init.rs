@@ -14,6 +14,7 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 use fstart_core::description::PciRootInfo;
+use fstart_driver_amd::df::plan::RootBridgePlan;
 use fstart_driver_amd::{
     ccx::{self, mp::Fam17hCpu, tsc::Tsc},
     cpu::{Package, Revision},
@@ -21,7 +22,7 @@ use fstart_driver_amd::{
     fch::{post, smi, sx, taishan},
     psp::{self, boot::Psp},
 };
-use fstart_pci::PciEcam;
+use fstart_pci::{PciAddress, PciEcam};
 
 /// After the DF and the FCH reset init.
 pub struct FchUp {
@@ -221,6 +222,15 @@ impl Init for Zeppelin {
             segment: Self::pci_segment(ctx.hw),
             bridges: &up.silicon.bridges,
         }
+    }
+
+    fn display_port(ctx: &Ctx<'_, Self>, _: &Up, pci: &PciEcam) -> Option<PciAddress> {
+        crate::noncar::display_port::<Self>(ctx.config, pci)
+    }
+
+    /// On every die, to the IOMS of `root`'s die.
+    fn route_legacy_vga(ctx: &Ctx<'_, Self>, _: &Up, root: &RootBridgePlan) {
+        fstart_driver_amd::df::zp::route_vga(&ctx.hw.dies, root.fabric_id);
     }
 
     fn after_resources(ctx: &Ctx<'_, Self>, _: &mut Up) -> Result<(), &'static str> {

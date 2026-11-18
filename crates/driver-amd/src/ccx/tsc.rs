@@ -91,4 +91,15 @@ pub mod testing {
     pub fn none() -> Delay<impl FnMut(u32)> {
         Delay(|_| {})
     }
+    /// Adds up the delays, in microseconds.
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct Elapsed(pub u64);
+    impl DelayNs for Elapsed {
+        fn delay_ns(&mut self, ns: u32) {
+            self.0 += u64::from(ns.div_ceil(1000))
+        }
+        fn delay_us(&mut self, us: u32) {
+            self.0 += u64::from(us)
+        }
+    }
 }

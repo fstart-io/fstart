@@ -17,6 +17,12 @@ pub use chip::*;
 use fstart_driver_amd::ccx::rv as cpu;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
+/// The internal GPP bridge to bus A, 0:8.1, with the GPU behind it
+/// (coreboot's `gpp_bridge_a` and `gfx`).
+fn gpu_bridge() -> fstart_pci::PciAddress {
+    fstart_pci::PciAddress::new(0, 0, 8, 1)
+}
+
 /// The console on FCH UART `uart`. Evaluated in a constant, as the board's
 /// console is, an index past the FCH's UARTs fails the build.
 pub const fn console(uart: u8) -> Ns16550Config {
@@ -121,11 +127,13 @@ impl noncar::DieSoc for Picasso {
     ) -> Result<(), &'static str> {
         if let Some((uma, kind)) = silicon.state.uma {
             extern crate alloc;
-            let address = pci
-                .devices()
-                .find(|&a| {
-                    pci.device(a)
-                        .is_some_and(|d| d.read8(0x0b) == 3 && d.read16(0) == 0x1002)
+            // The display the legacy VGA ranges go to, the GPU's
+            // (`display_port`): the one choice, by topology.
+            let address = silicon
+                .legacy_vga
+                .filter(|&display| {
+                    pci.device_path(display)
+                        .is_some_and(|path| path.contains(&gpu_bridge()))
                 })
                 .ok_or("VGA device")?;
             let gpu = pci.device(address).ok_or("VGA device")?;

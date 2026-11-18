@@ -68,6 +68,7 @@ pub mod rtc;
 pub mod sandstone;
 pub mod smbus;
 pub mod smi;
+pub mod songshan;
 pub mod spi;
 pub mod sx;
 pub(crate) mod tables;
@@ -76,7 +77,6 @@ pub mod tasks;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod uart;
-
 /// FCH ACPI MMIO window of die 0 (PM, SMI, GPIO, IOMUX, MISC, AOAC).
 pub const ACPI_MMIO: u32 = 0xfed8_0000;
 /// SPI controller/eSPI aperture of every Family 17h FCH.

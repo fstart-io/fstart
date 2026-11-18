@@ -32,6 +32,21 @@ pub const MAX_DIES: usize = 8;
 /// TSEG, at the top of the DRAM below 4 GiB: 8 MiB.
 pub const TSEG_SIZE: u32 = 8 << 20;
 
+/// The bridge of the port the board's DXIO descriptors attach its onboard
+/// display to, on the root bus of its die in `pci`
+/// ([`crate::soc::Init::display_port`]).
+pub fn display_port<S: DieSoc>(
+    config: &S::Config,
+    pci: &fstart_pci::PciEcam,
+) -> Option<fstart_pci::PciAddress> {
+    let roots: alloc::vec::Vec<(u16, u8)> = pci
+        .roots()
+        .iter()
+        .map(|root| (root.info().segment, *root.buses().start()))
+        .collect();
+    crate::soc::display_port(&smbios::ports(S::descriptors(config), &roots))
+}
+
 /// A SoC made of dies ([`Hw`]): what the flow needs to know of it beyond
 /// its silicon init, and what its tables differ in from the other such
 /// SoCs'. The flow's services ([`crate::flow::Soc`]) are the same for all

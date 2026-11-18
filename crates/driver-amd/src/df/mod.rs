@@ -53,8 +53,8 @@ pub mod ssp;
 pub mod topology;
 pub mod v2;
 pub mod v3;
+pub mod v4;
 pub mod zp;
-
 pub use die::{Die, die_count, dies, root_bridges};
 pub use fabric::{Fabric, or_bits};
 
@@ -207,7 +207,7 @@ impl<R: RegisterLongName> DfReg<R> {
     /// Checked in debug builds only: the SMM RAS handler builds registers
     /// at run time and must not link a panic.
     pub const fn new(function: u8, offset: u16) -> Self {
-        debug_assert!(function < 8 && offset < 2048 && offset & 3 == 0);
+        debug_assert!(function < 8 && offset < 4096 && offset & 3 == 0);
         Self {
             function,
             offset,

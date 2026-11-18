@@ -46,6 +46,56 @@ fn modify<M: MsrAccess + ?Sized, R: RegisterLongName>(
     reg.set(f(reg.get()));
 }
 
+/// An MCA_CTL_MASK setting for the banks of one kind of IP: its SMCA
+/// hardware ID and MCA type (MCA_IPID), and the error bits to mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpMask {
+    pub hardware_id: u64,
+    pub mca_type: u64,
+    pub bits: u64,
+}
+
+/// Milan's masks: CS (coherent slave) v2 bit 1, and the L3's bit 7 only
+/// (erratum 1160 forbids bits 5/6).
+const GN_MASKS: [IpMask; 2] = [
+    IpMask {
+        hardware_id: 0x2e,
+        mca_type: 2,
+        bits: 0x2,
+    },
+    IpMask {
+        hardware_id: 0xb0,
+        mca_type: 7,
+        bits: 0x80,
+    },
+];
+
+/// The NBIO's PCIe sideband errors (MCA_CTL_MASK_NBIO\[1\],
+/// PCIE_Sideband): the PCIe errors its root ports also log as machine
+/// checks. Masked when the OS handles PCIe errors through AER (openSIL
+/// `SetNbioMcaCtlMask`, Ras.c:57, for any `PcieAerReportMechanism` but 0,
+/// whose default is OS-first, NbioData.c:127; Oxide masks it too): the OS
+/// then sees each error once, from AER, and not again as a corrected
+/// machine check.
+pub const NBIO_PCIE_SIDEBAND: IpMask = IpMask {
+    hardware_id: 0x18,
+    mca_type: 0,
+    bits: 1 << 1,
+};
+
+/// Set each of `masks` in the executing thread's banks of its IP.
+pub fn mask_by_ip<M: MsrAccess + ?Sized>(cpu: &M, masks: &[IpMask]) {
+    let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT) as u32;
+    (0..banks).for_each(|b| {
+        let id = cpu.reg(mca_ipid(b)).extract();
+        let ip = (id.read(McaIpid::HARDWARE_ID), id.read(McaIpid::MCA_TYPE));
+        masks
+            .iter()
+            .filter(|m| (m.hardware_id, m.mca_type) == ip)
+            .for_each(|m| modify(cpu, mca_ctl_mask(b), |v| v | m.bits));
+    });
+}
+
 /// Set up the MCA banks of the executing thread.
 pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
     let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT) as u32;
@@ -76,17 +126,7 @@ pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
                 modify(cpu, mca_ctl_mask(0x19), |v| v | 0x3c0);
             }
         }
-        Silicon::Gn => (0..banks).for_each(|b| {
-            let id = cpu.reg(mca_ipid(b)).extract();
-            let set = match (id.read(McaIpid::HARDWARE_ID), id.read(McaIpid::MCA_TYPE)) {
-                // CS (coherent slave) v2.
-                (0x2e, 2) => 0x2,
-                // L3; only bit 7 (erratum 1160 forbids bits 5/6).
-                (0xb0, 7) => 0x80,
-                _ => return,
-            };
-            modify(cpu, mca_ctl_mask(b), |v| v | set);
-        }),
+        Silicon::Gn => mask_by_ip(cpu, &GN_MASKS),
     }
 }
 
@@ -116,6 +156,22 @@ mod tests {
         assert_eq!(cpu.get(mca_ctl_mask(1).index()), 0x80);
         assert_eq!(cpu.get(mca_ctl_mask(2).index()), 0x2);
         assert_eq!(cpu.get(mca_config(2).index()), 1 << 32);
+    }
+
+    #[test]
+    fn nbio_pcie_errors_masked_in_the_nbio_banks_only() {
+        let cpu = MsrSpace::new([
+            (0x179, 3),
+            (mca_ipid(0).index(), 0x0000_0018 << 32),
+            (mca_ipid(1).index(), 0x0002_002e << 32),
+            (mca_ipid(2).index(), 0x0000_0018 << 32),
+            (mca_ctl_mask(2).index(), 0x4),
+        ]);
+        mask_by_ip(&cpu, &[NBIO_PCIE_SIDEBAND]);
+        let cpu = cpu.into_inner();
+        assert_eq!(cpu.get(mca_ctl_mask(0).index()), 0x2);
+        assert!(!cpu.written(mca_ctl_mask(1).index()));
+        assert_eq!(cpu.get(mca_ctl_mask(2).index()), 0x6);
     }
 
     #[test]

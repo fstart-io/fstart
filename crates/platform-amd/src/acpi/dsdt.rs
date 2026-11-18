@@ -104,8 +104,8 @@ fn routing(
         })
     });
     let nbio = gsi_base.into_iter().flat_map(|gsi_base| {
-        prt::root_entries(soc.bridges)
-            .into_iter()
+        (soc.root_complex_pin.map(|pin| (0, 0, pin)).into_iter())
+            .chain(prt::root_entries(soc.bridges))
             .map(move |(d, p, pin)| (d, p, gsi_base + u32::from(pin)))
     });
     let mut root = fch.chain(nbio).peekable();

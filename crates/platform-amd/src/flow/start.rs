@@ -16,6 +16,8 @@ pub enum Cpu<B> {
     Naples(Identified<B, crate::naples::Naples>),
     Rome(Identified<B, crate::rome::Rome>),
     Milan(Identified<B, crate::milan::Milan>),
+    Genoa(Identified<B, crate::genoa::Genoa>),
+    Siena(Identified<B, crate::siena::Siena>),
 }
 
 impl<B> Cpu<B> {
@@ -75,7 +77,7 @@ const fn soc(signature: u32, package: u8) -> Option<SocId> {
 pub fn start<B: Board>() -> Cpu<B> {
     let signature = fstart_arch::x86::cpuid(1).0;
     let package = (fstart_arch::x86::cpuid(0x8000_0001).1 >> 28) as u8;
-    let soc = match soc(signature, package) {
+    let soc = match soc(signature, package).or_else(|| rs::<B>(signature, package)) {
         Some(soc) if B::SOCS.contains(&soc) => soc,
         _ => unsupported(),
     };
@@ -85,5 +87,25 @@ pub fn start<B: Board>() -> Cpu<B> {
         SocId::Naples => Cpu::Naples(Identified(PhantomData)),
         SocId::Rome => Cpu::Rome(Identified(PhantomData)),
         SocId::Milan => Cpu::Milan(Identified(PhantomData)),
+        SocId::Genoa => Cpu::Genoa(Identified(PhantomData)),
+        SocId::Siena => Cpu::Siena(Identified(PhantomData)),
+    }
+}
+
+/// The RS SoC of CPUID `signature` and the package type, for a board that
+/// carries one: Genoa is SP5 (4), Siena SP6 (8).
+fn rs<B: Board>(signature: u32, package: u8) -> Option<SocId> {
+    if !B::SOCS.iter().any(|soc| soc.rs()) {
+        return None;
+    }
+    let cpu = fstart_arch::x86::mp::CpuIdentity {
+        vendor: fstart_arch::x86::mp::CpuVendor::Amd,
+        signature,
+    };
+    let revision = fstart_driver_amd::ccx::rs::Revision::of(cpu)?;
+    match (revision.dense(), package) {
+        (false, 4) => Some(SocId::Genoa),
+        (true, 8) => Some(SocId::Siena),
+        _ => None,
     }
 }
