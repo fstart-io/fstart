@@ -11,7 +11,8 @@ pub use crate::runtime::{SmmEntryParams, SmmRuntime};
 
 /// Debug console port used by [`debug_trace`]: QEMU's `-debugcon`. Real
 /// chipsets decode other registers here (Bay Trail's PM1_EN at ACPI base
-/// 0x400), so the trace is only built with the `debugcon` feature.
+/// 0x400), so the SMM stage only calls it with the `debugcon` feature.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub const DEBUGCON: u16 = 0x0402;
 
 /// Per-entry view handed to the concrete SMM handler.
@@ -144,6 +145,7 @@ pub(crate) unsafe fn leave_rendezvous(ctx: &SmmContext<'_>) {
 /// # Safety
 ///
 /// The caller must run where `DEBUGCON` port I/O is permitted.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn debug_trace(cpu: u32) {
     unsafe {

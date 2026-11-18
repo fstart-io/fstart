@@ -23,18 +23,6 @@ use fstart_smm::runtime::{
     CorebootModuleArgs, HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY, SmmRuntime,
 };
 
-#[cfg(not(rust_analyzer))]
-mod asm {
-    include!(concat!(env!("OUT_DIR"), "/smm_image_asm.rs"));
-}
-#[cfg(rust_analyzer)]
-mod asm {
-    pub const ENTRY_STUB: &[u8] = &[];
-    pub const ENTRY_PARAMS_OFFSET: usize = 0;
-    pub const ENTRY_STUB_32: &[u8] = &[];
-    pub const ENTRY_PARAMS_OFFSET_32: usize = 0;
-}
-
 #[derive(Debug)]
 pub enum BuildError {
     NoEntries,
@@ -109,9 +97,65 @@ impl SmmArch {
     }
 }
 
-pub fn build_image(
+struct EntryStub {
+    bytes: Vec<u8>,
+    params_offset: usize,
+}
+
+/// Both stub variants use the same x86-64 ELF container; the define changes
+/// the entry code, not the object format.
+fn build_entry_stub(out_dir: &Path, protected_mode: bool) -> Result<EntryStub, BuildError> {
+    std::fs::create_dir_all(out_dir)?;
+    let source = out_dir.join("entry_stub.S");
+    let object = out_dir.join("entry_stub.o");
+    let elf = out_dir.join("entry_stub.elf");
+    write_if_changed(&source, include_bytes!("../../asm/entry_stub.S"))?;
+
+    let build = || {
+        let mut assemble = Command::new("cc");
+        if protected_mode {
+            assemble.arg("-DFSTART_PROTECTED_MODE");
+        }
+        run_tool(
+            assemble
+                .args(["-c", "-x", "assembler-with-cpp"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&object),
+        )?;
+        run_tool(
+            Command::new("ld")
+                .args(["-nostdlib", "-Ttext=0", "--oformat=elf64-x86-64", "-o"])
+                .arg(&elf)
+                .arg(&object),
+        )?;
+        find_symbol_offset(&elf, "fstart_smm_stub_params")
+    };
+    let params_offset = build().map_err(|error| {
+        BuildError::Tool(format!(
+            "building the x86 SMM entry stub requires an x86 C compiler and GNU binutils: {error}"
+        ))
+    })?;
+    let data = std::fs::read(&elf)?;
+    let file = object::File::parse(data.as_slice())
+        .map_err(|e| BuildError::Tool(format!("failed to parse ELF {}: {e}", elf.display())))?;
+    let text = file
+        .section_by_name(".text")
+        .ok_or_else(|| BuildError::Tool(format!("no .text in {}", elf.display())))?;
+    let bytes = text
+        .data()
+        .map_err(|e| BuildError::Tool(format!("could not read .text in {}: {e}", elf.display())))?
+        .to_vec();
+    Ok(EntryStub {
+        bytes,
+        params_offset,
+    })
+}
+
+fn build_image(
     options: ImageOptions,
     handler: &SmmHandlerImage,
+    stub: &EntryStub,
 ) -> Result<BuiltImage, BuildError> {
     validate_options(options)?;
     if handler.initialized.is_empty()
@@ -126,12 +170,6 @@ pub fn build_image(
             "coreboot SMM loading requires a long-mode handler".into(),
         ));
     }
-    let (stub, params_offset) = if handler.protected_mode {
-        (asm::ENTRY_STUB_32, asm::ENTRY_PARAMS_OFFSET_32)
-    } else {
-        (asm::ENTRY_STUB, asm::ENTRY_PARAMS_OFFSET)
-    };
-
     let header_size = size_of::<SmmImageHeader>();
     let desc_size = size_of::<EntryDescriptor>();
     let entries_offset = header_size;
@@ -145,7 +183,7 @@ pub fn build_image(
         .ok_or(BuildError::Overflow)?
         .checked_next_multiple_of(16)
         .ok_or(BuildError::Overflow)?;
-    let stub_size = stub.len();
+    let stub_size = stub.bytes.len();
     let fixups_offset = stubs_offset
         .checked_add(stub_size * options.entry_count as usize)
         .ok_or(BuildError::Overflow)?;
@@ -233,11 +271,11 @@ pub fn build_image(
             stub_offset: as_u32(stub_offset)?,
             stub_size: as_u32(stub_size)?,
             entry_offset: 0,
-            params_offset: as_u32(params_offset)?,
+            params_offset: as_u32(stub.params_offset)?,
         }
         .write_to_prefix(&mut image[entries_offset + i * desc_size..])
         .expect("descriptor space reserved");
-        image[stub_offset..stub_offset + stub_size].copy_from_slice(stub);
+        image[stub_offset..stub_offset + stub_size].copy_from_slice(&stub.bytes);
     }
     for (i, fixup) in handler.fixups.iter().enumerate() {
         let at = fixups_offset + 4 * i;
@@ -268,13 +306,14 @@ pub fn build_image(
     })
 }
 
-pub fn write_image(
+fn write_image(
     options: ImageOptions,
     handler: &SmmHandlerImage,
+    stub: &EntryStub,
     image_path: &Path,
     header_path: Option<&Path>,
-) -> Result<BuiltImage, BuildError> {
-    let built = build_image(options, handler)?;
+) -> Result<(), BuildError> {
+    let built = build_image(options, handler, stub)?;
     if let Some(parent) = image_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -288,7 +327,7 @@ pub fn write_image(
             built.coreboot_header.as_deref().unwrap_or("").as_bytes(),
         )?;
     }
-    Ok(built)
+    Ok(())
 }
 
 /// Produce the SMM image (and the coreboot offsets header, if
@@ -320,9 +359,10 @@ pub fn produce<'a>(
         std::fs::copy(path, rlibs.join(name))?;
     }
     let handler = handler_from_rlibs(&rlibs, &out_dir.join("link"), SmmArch::from_target(target))?;
+    let stub = build_entry_stub(&out_dir.join("stub"), handler.protected_mode)?;
     let image = out_dir.join("image.bin");
     let header = options.coreboot_header.then(|| out_dir.join("offsets.h"));
-    write_image(options, &handler, &image, header.as_deref())?;
+    write_image(options, &handler, &stub, &image, header.as_deref())?;
     let mut artifacts = vec![("image".to_string(), image)];
     if let Some(header) = header {
         artifacts.push(("header".to_string(), header));
@@ -1040,8 +1080,17 @@ mod tests {
         }
     }
 
+    fn test_stub() -> EntryStub {
+        EntryStub {
+            bytes: vec![0; size_of::<SmmEntryParams>()],
+            params_offset: 0,
+        }
+    }
+
     #[test]
     fn builds_unversioned_image_with_bss_runtime_and_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = build_entry_stub(dir.path(), false).unwrap();
         let built = build_image(
             ImageOptions {
                 entry_count: 4,
@@ -1050,6 +1099,7 @@ mod tests {
                 coreboot_header: true,
             },
             &test_handler(),
+            &stub,
         )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
@@ -1084,6 +1134,7 @@ mod tests {
                 coreboot_header: false,
             },
             &handler,
+            &test_stub(),
         )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
@@ -1105,7 +1156,8 @@ mod tests {
                     coreboot_module_args: false,
                     coreboot_header: false
                 },
-                &test_handler()
+                &test_handler(),
+                &test_stub(),
             ),
             Err(BuildError::NoEntries)
         ));
@@ -1124,7 +1176,8 @@ mod tests {
                     coreboot_module_args: false,
                     coreboot_header: false
                 },
-                &bad
+                &bad,
+                &test_stub(),
             ),
             Err(BuildError::BadHandler)
         ));
@@ -1319,6 +1372,7 @@ mod tests {
         assert!(handler.protected_mode);
         // movl's imm32 at .text+1 and the pointer in .data.
         assert_eq!(handler.fixups, [1, 0x10]);
+        let stub = build_entry_stub(&dir.join("stub"), handler.protected_mode).unwrap();
         let built = build_image(
             ImageOptions {
                 entry_count: 1,
@@ -1327,13 +1381,15 @@ mod tests {
                 coreboot_header: false,
             },
             &handler,
+            &stub,
         )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
         assert_ne!(header.flags & FLAG_PROTECTED_MODE, 0);
         assert_eq!(header.fixup(&built.image, 1), Ok(0x10));
         let entry = header.entry(&built.image, 0).unwrap();
-        assert_eq!(entry.stub_size as usize, asm::ENTRY_STUB_32.len());
+        assert_eq!(entry.stub_size as usize, stub.bytes.len());
+        assert_eq!(entry.params_offset as usize, stub.params_offset);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1376,6 +1432,7 @@ mod tests {
                 coreboot_header: false,
             },
             &test_handler(),
+            &test_stub(),
         )
         .unwrap();
         let header = SmmImageHeader::parse(&built.image).unwrap();
