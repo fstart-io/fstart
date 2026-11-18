@@ -77,6 +77,31 @@ pub const CONSOLE: Ns16550Config = Ns16550Config {
     baud_rate: BAUD,
 };
 
+/// I/O bytes per root bridge, logical (bus) order, from the vendor's
+/// request table: RXM100CB CrbPei fills FABRIC_RESOURCE_FOR_EACH_RB
+/// `IoSize[socket][IOMS]` (stores at `0xffdbc2aa`–`0xffdbc31a`, PCD 0x42)
+/// with s0 0x2000, 0x2000, 0x1000, 0x3000 and s1 0x2000, 0x1000, 0x1000,
+/// 0x3000, and the vendor's NV copy `ResourceSizeForEachRb` keeps them.
+/// The ABL bus map has IOMS 3 at the bottom of each socket's buses.
+pub const IO_SIZES: [u32; df::MAX_ROOT_BRIDGES] = [
+    0x3000, // rb 0.3, buses 0x00: primary, plus the 0x1000 legacy ports
+    0x1000, // rb 0.2, buses 0x20
+    0x2000, // rb 0.1, buses 0x40
+    0x2000, // rb 0.0, buses 0x60: the AST2500 and slot PCIE1
+    0x3000, // rb 1.3, buses 0x80
+    0x1000, // rb 1.2, buses 0xa0
+    0x1000, // rb 1.1, buses 0xc0
+    0x2000, // rb 1.0, buses 0xe0: the last, to the end of the I/O space
+];
+
+/// The DF resource planner policy: the DF3 equal split with the vendor's
+/// eight root buses (00/20/40/60/80/a0/c0/e0) and I/O requests.
+pub const fn df() -> df::plan::Policy {
+    df::plan::Policy::df3()
+        .with_bus_counts([0x20; df::MAX_ROOT_BRIDGES])
+        .with_io_sizes(IO_SIZES)
+}
+
 /// The silicon policy for `generation`.
 pub fn policy(generation: Generation) -> Policy {
     let mut sata0 = SataPolicy::socket0();
@@ -110,8 +135,7 @@ pub fn policy(generation: Generation) -> Policy {
         data_link_exchange: true,
     });
     Policy {
-        // Vendor UEFI: eight root buses, 00/20/40/60/80/a0/c0/e0.
-        df: df::plan::Policy::df3().with_bus_counts([0x20; 8]),
+        df: df(),
         nbio: Default::default(),
         power: Default::default(),
         ccx: ccx::Policy::default(),
@@ -222,6 +246,90 @@ mod tests {
                 data_link_exchange: true,
             })
         );
+    }
+
+    #[test]
+    fn vendor_io_sizes_fit_the_bmc_and_pcie1() {
+        use df::plan::{Input, Plan, Window, plan, plan_buses};
+        use df::{RootBridge, Version, v3::Df3};
+
+        // 2P Milan as the bench logs it (`df: rb s.i buses`): IOMS 3 at
+        // the bottom of each socket's 0x80 buses.
+        let rbs: Vec<RootBridge> = (0..8u8)
+            .map(|k| {
+                let (socket, index) = (k / 4, k % 4);
+                let bus_base = socket * 0x80 + (3 - index) * 0x20;
+                RootBridge {
+                    socket,
+                    index,
+                    fabric_id: (u16::from(socket) << 5) + 0x18 + u16::from(index),
+                    bus_base,
+                    bus_limit: bus_base + 0x1f,
+                    primary: (socket, index) == (0, 3),
+                }
+            })
+            .collect();
+        let input = Input {
+            tom: 0xb000_0000,
+            tom2: 0x40_5000_0000,
+            ecam_base: 0xe000_0000,
+            ecam_size: 0x1000_0000,
+            phys_addr_bits: 48,
+            root_bridges: &rbs,
+            mmio_pairs: Df3::MMIO_PAIRS,
+        };
+        let policy = policy(Generation::Milan).df;
+        assert_eq!(plan_buses(&rbs, &policy), Ok(None), "ABL map kept");
+        let got = plan(&input, &policy).unwrap();
+
+        // The vendor's windows, primary first, then by bus.
+        let io: Vec<(u8, u64, u64)> = got
+            .io
+            .iter()
+            .map(|r| (r.pair, r.window.base, r.window.end()))
+            .collect();
+        assert_eq!(
+            io,
+            [
+                (0, 0, 0x4000),
+                (1, 0x4000, 0x5000),
+                (2, 0x5000, 0x7000),
+                (3, 0x7000, 0x9000),
+                (4, 0x9000, 0xc000),
+                (5, 0xc000, 0xd000),
+                (6, 0xd000, 0xe000),
+                (7, 0xe000, 0x200_0000),
+            ]
+        );
+        // MMIO below 4 GiB as on the bench, which the I/O sizes leave alone.
+        let below: Vec<(u8, u8, u8, u64, u64)> = got
+            .root_bridges
+            .iter()
+            .map(|r| (r.socket, r.index, r.bus.base, r.below.base, r.below.size))
+            .collect();
+        assert_eq!(
+            below,
+            [
+                (0, 0, 0x60, 0xf000_0000, 0x700_0000),
+                (0, 1, 0x40, 0xd800_0000, 0x800_0000),
+                (0, 2, 0x20, 0xd000_0000, 0x800_0000),
+                (0, 3, 0x00, 0xf700_0000, 0x7c0_0000),
+                (1, 0, 0xe0, 0xc800_0000, 0x800_0000),
+                (1, 1, 0xc0, 0xc000_0000, 0x800_0000),
+                (1, 2, 0xa0, 0xb800_0000, 0x800_0000),
+                (1, 3, 0x80, 0xb000_0000, 0x800_0000),
+            ]
+        );
+
+        // rb 0.0 has two root ports with I/O: 60:05.2 (AST1150 bridge,
+        // AST2500 VGA) and 60:03.1 (PCIE1). The allocator aligns an I/O
+        // BAR behind a bridge to 4 KiB, so each takes a 4 KiB window.
+        let rb00 = |p: &Plan| p.root_bridges[0].io_pool.unwrap();
+        assert_eq!(rb00(&got), Window::new(0x7000, 0x2000));
+        assert!(rb00(&got).size >= 2 * 0x1000);
+        // The equal split left it 4 KiB, all of it taken by the AST2500.
+        let equal = df::plan::Policy::df3().with_bus_counts([0x20; df::MAX_ROOT_BRIDGES]);
+        assert_eq!(rb00(&plan(&input, &equal).unwrap()).size, 0x1000);
     }
 
     #[test]
