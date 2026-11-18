@@ -12,10 +12,7 @@ use fstart_core::ConstVec;
 use fstart_core::indexed::Indexed;
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
 use fstart_core::mmio::{MmioReadWrite, MmioRegister};
-use fstart_core::services::{
-    ConsoleDevice, FirmwareImage, FirmwareImageProvider, ServiceError, SmBus,
-};
-pub use fstart_driver_usbdebug::Config as EhciDebugConfig;
+use fstart_core::services::{FirmwareImage, FirmwareImageProvider, ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::{
     PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciAddress, PciFixedBar, PciFixedBarType,
@@ -24,6 +21,7 @@ use fstart_pci::{
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 
+pub use crate::southbridge::ehci_debug::EhciController;
 pub use crate::southbridge::gpio_ich::{
     GpioConfig, GpioDir, GpioLevel, GpioMode, GpioPin, GpioReset,
 };
@@ -813,8 +811,9 @@ pub struct IntelIch9Config {
     pub sata: Option<SataConfig>,
     /// USB configuration.
     pub usb: Option<UsbConfig>,
-    /// Board EHCI debug wiring; the platform reserves its BAR only when selected.
-    pub ehci_debug_bar: Option<fstart_driver_usbdebug::Config>,
+    /// The EHCI controller wired to the board's debug connector, if not the
+    /// default ([`EhciController::select`]).
+    pub ehci_debug_controller: Option<EhciController>,
     /// PCIe root ports 1..6 enabled.
     pub pcie_ports: [bool; 6],
     /// PCIe root ports implemented as slots.
@@ -862,7 +861,7 @@ impl IntelIch9Config {
             hda: None,
             sata: None,
             usb: None,
-            ehci_debug_bar: None,
+            ehci_debug_controller: None,
             pcie_ports: [true, true, true, true, true, true],
             pcie_slots: [false; 6],
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
@@ -877,6 +876,31 @@ impl IntelIch9Config {
             disable_sata2: true,
             disable_thermal: true,
         }
+    }
+
+    /// Whether the board enabled `controller`.
+    #[must_use]
+    pub fn ehci_enabled(&self, controller: EhciController) -> bool {
+        let index = match controller {
+            EhciController::Ehci1 => 0,
+            EhciController::Ehci2 => 1,
+        };
+        self.usb.is_some_and(|usb| usb.ehci[index])
+    }
+
+    /// The EHCI debug console if the platform selects USB debug.
+    pub fn ehci_debug(&self, ecam_base: usize) -> Option<fstart_driver_usbdebug::Config> {
+        let devfn = match EhciController::select(self.ehci_debug_controller, |controller| {
+            self.ehci_enabled(controller)
+        })? {
+            EhciController::Ehci1 => ich9::EHCI1,
+            EhciController::Ehci2 => ich9::EHCI2,
+        };
+        crate::southbridge::ehci_debug::config(
+            devfn,
+            ecam_base,
+            &[(self.rcba, 0x4000), (self.dmibar, 0x1000)],
+        )
     }
 }
 
@@ -2175,43 +2199,11 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
         {
             return Err(ServiceError::InvalidParam);
         }
-        if let Some(debug) = config.ehci_debug_bar {
-            fstart_driver_usbdebug::EhciDebug::new(debug)?;
-            let bar = debug.fixed_bar();
-            let controller = match (
-                bar.address.bus(),
-                bar.address.device(),
-                bar.address.function(),
-            ) {
-                (0, ich9::EHCI1_DEV, ich9::EHCI1_FUNC) => 0,
-                (0, ich9::EHCI2_DEV, ich9::EHCI2_FUNC) => 1,
-                _ => return Err(ServiceError::InvalidParam),
-            };
-            if bar.address.segment() != 0
-                || bar.register != 0x10
-                || bar.kind != PciFixedBarType::Memory32
-                || bar.prefetchable
-                || bar.size != 0x1000
-                || bar.base == 0
-                || bar.base > 0xffff_f000
-                || bar.base & 0xfff != 0
-                || !config.usb.is_some_and(|usb| usb.ehci[controller])
-                || [
-                    (config.rcba, 0x4000),
-                    (config.dmibar, 0x1000),
-                    (HPET_BASE as u64, 0x400),
-                    (0xfec0_0000, 0x1000), // I/O APIC
-                    (0xfee0_0000, 0x1000), // local APIC
-                    (debug.ecam_base as u64, 256 << 20),
-                    (0xff00_0000, 16 << 20), // firmware flash decode
-                ]
-                .iter()
-                .any(|&(base, size)| {
-                    bar.base < base.saturating_add(size) && base < bar.base + bar.size
-                })
-            {
-                return Err(ServiceError::InvalidParam);
-            }
+        if config
+            .ehci_debug_controller
+            .is_some_and(|controller| !config.ehci_enabled(controller))
+        {
+            return Err(ServiceError::InvalidParam);
         }
         if config.power_on_after_fail > 2
             || config.rcba > u32::MAX as u64
@@ -2610,54 +2602,50 @@ mod tests {
     }
 
     #[test]
-    fn ich9_debug_bar_requires_enabled_ehci_and_nonoverlapping_mmio() {
-        let make_driver = |config| {
-            IntelIch9::new_from_config(alloc::boxed::Box::leak(alloc::boxed::Box::new(config)))
-        };
+    fn ehci_debug_maps_the_selected_controller() {
         let mut config = IntelIch9Config {
-            preserve_hardware_pirq: true,
             usb: Some(UsbConfig {
-                ehci: [false, true],
+                ehci: [true, true],
                 uhci: [false; 6],
-            }),
-            ehci_debug_bar: Some(EhciDebugConfig {
-                ecam_base: 0xe000_0000,
-                bus: 0,
-                device: 0x1a,
-                function: 7,
-                bar: 0xfed0_4000,
             }),
             ..IntelIch9Config::new()
         };
-        let driver = make_driver(config).unwrap();
-        // Merely offering EHCI debug must not pin an uninitialized BAR:
-        // non-EHCI builds need normal resource allocation for this controller.
+        let debug = |config: &IntelIch9Config| {
+            config
+                .ehci_debug(0xe000_0000)
+                .map(|d| d.fixed_bar().address)
+        };
+        assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1a, 7)));
+        config.ehci_debug_controller = Some(EhciController::Ehci1);
+        assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1d, 7)));
+        config.usb = None;
+        assert_eq!(debug(&config), None);
+    }
+
+    #[test]
+    fn ehci_debug_rejects_a_disabled_board_choice_and_reserves_no_bar() {
+        static CONFIG: IntelIch9Config = IntelIch9Config {
+            preserve_hardware_pirq: true,
+            usb: Some(UsbConfig {
+                ehci: [true, false],
+                uhci: [false; 6],
+            }),
+            ..IntelIch9Config::new()
+        };
+        static EHCI2: IntelIch9Config = IntelIch9Config {
+            ehci_debug_controller: Some(EhciController::Ehci2),
+            ..CONFIG
+        };
+        assert!(matches!(
+            IntelIch9::new_from_config(&EHCI2),
+            Err(ServiceError::InvalidParam)
+        ));
+        // The BAR is fixed only by an EHCI debug build (the platform's
+        // ramstage); the driver leaves it to the PCI allocator.
+        let driver = IntelIch9::new_from_config(&CONFIG).unwrap();
         let bars = driver.fixed_pci_bars();
         assert_eq!(bars.len(), 1);
         assert_eq!(bars[0].address, PciAddress::new(0, 0, 0x1f, 3));
-        assert_eq!(bars[0].register, ich9::SMB_BASE);
-        assert_eq!(bars[0].base, u64::from(config.smbus_base));
-        config.usb = None;
-        assert!(matches!(
-            make_driver(config),
-            Err(ServiceError::InvalidParam)
-        ));
-        config.usb = Some(UsbConfig {
-            ehci: [false, true],
-            uhci: [false; 6],
-        });
-        for bar in [HPET_BASE as u32, config.rcba as u32, 0xfed0_4001] {
-            config.ehci_debug_bar.as_mut().unwrap().bar = bar;
-            assert!(matches!(
-                make_driver(config),
-                Err(ServiceError::InvalidParam)
-            ));
-        }
-        config.ehci_debug_bar.as_mut().unwrap().device = 32;
-        assert!(matches!(
-            make_driver(config),
-            Err(ServiceError::InvalidParam)
-        ));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_platform_intel::facts::PciSubsystemId;
 use fstart_platform_intel::igd::{IgdDisplayPolicy, VbtSource};
 use fstart_platform_intel::ironlake::{
-    GpiRoute, IronlakeIbexPeakConfig, IronlakeIbexPeakPlatform, IronlakeIgdConfig,
+    EhciController, GpiRoute, IronlakeIbexPeakConfig, IronlakeIbexPeakPlatform, IronlakeIgdConfig,
     LpcGenericIoDecode, PanelPort, PchFunction, SataConfig, SataMode, UsbCurrent, UsbPort,
 };
 
@@ -47,15 +47,6 @@ pub const BOARD_NAME: &str = "lenovo-x201";
 pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x201";
 
 const VBT: &str = "data.vbt";
-
-pub const EHCI_CONSOLE: fstart_driver_usbdebug::Config = fstart_driver_usbdebug::Config {
-    ecam_base: fstart_platform_intel::ironlake::IRONLAKE_ECAM_BASE as usize,
-    // Coreboot X201 Kconfig: USBDEBUG_HCD_INDEX=2, i.e. EHCI 00:1a.0.
-    bus: 0,
-    device: 0x1a,
-    function: 0,
-    bar: fstart_platform_intel::ironlake::IBEXPEAK_EHCI_DEBUG_BAR,
-};
 
 impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     type Platform = fstart_platform_intel::ironlake::IronlakeIbexPeak;
@@ -181,7 +172,8 @@ pub static X201_PLATFORM: IronlakeIbexPeakPlatform = IronlakeIbexPeakConfig::new
     .power_on_after_fail(0)
     .nmi(true)
     .dram_reset_gate_gpio(DRAM_RESET_GATE_GPIO)
-    .ehci_debug_bar(EHCI_CONSOLE)
+    // coreboot `USBDEBUG_HCD_INDEX=2`: EHCI2 (00:1a.0).
+    .ehci_debug_controller(EhciController::Ehci2)
     .build();
 
 /// Devicetree IGD registers and gma-mainboard.ads ports (DP2 on the dock,

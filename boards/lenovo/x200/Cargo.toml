@@ -18,7 +18,6 @@ fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = tr
 fstart-acpi-macros = { path = "../../../crates/acpi-macros", optional = true }
 fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
-fstart-driver-usbdebug = { path = "../../../crates/driver-usbdebug" }
 fstart-pci = { path = "../../../crates/pci" }
 embedded-hal = { workspace = true }
 fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }

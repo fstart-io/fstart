@@ -18,10 +18,10 @@ pub mod me;
 mod ramstage;
 pub mod regs;
 
+pub use crate::southbridge::ehci_debug::EhciController;
 pub use crate::southbridge::gpio_ich::{GpiRoute, GpioConfig, GpioPin};
 pub use crate::southbridge::hda::{HdaConfig, HdaVerbTable};
 pub use crate::southbridge::lpc::LpcGenericIoDecode;
-pub use fstart_driver_usbdebug::Config as EhciDebugConfig;
 
 use crate::southbridge::gpio_ich::IchGpio;
 use crate::southbridge::pmio_ich::PmIo;
@@ -37,8 +37,6 @@ pub const DEFAULT_PMBASE: u16 = 0x0500;
 pub const DEFAULT_GPIOBASE: u16 = 0x0480;
 pub const DEFAULT_SMBUS_BASE: u16 = 0x0400;
 pub const DEFAULT_HECIBAR: u32 = 0xfed1_7000;
-/// coreboot `CONFIG_EHCI_BAR` for this PCH.
-pub const DEFAULT_EHCI_DEBUG_BAR: u32 = 0xfef0_0000;
 /// coreboot `SMBUS_SLAVE_ADDR`.
 pub const SMBUS_SLAVE_ADDR: u8 = 0x24;
 pub(crate) const HPET_BASE: usize = 0xfed0_0000;
@@ -209,8 +207,9 @@ pub struct IntelIbexPeakConfig {
     /// GPIO that gates the DIMM reset across S3 (coreboot
     /// `DRAM_RESET_GATE_GPIO`), driven low by SMM on S3 entry.
     pub dram_reset_gate_gpio: Option<u8>,
-    /// Board EHCI debug wiring; the platform reserves its BAR only when selected.
-    pub ehci_debug_bar: Option<EhciDebugConfig>,
+    /// The EHCI controller wired to the board's debug connector, if not the
+    /// default ([`EhciController::select`]).
+    pub ehci_debug_controller: Option<EhciController>,
 }
 
 impl IntelIbexPeakConfig {
@@ -239,7 +238,7 @@ impl IntelIbexPeakConfig {
             nmi: false,
             hide_mei_on_error: false,
             dram_reset_gate_gpio: Some(60),
-            ehci_debug_bar: None,
+            ehci_debug_controller: None,
         }
     }
 
@@ -247,6 +246,27 @@ impl IntelIbexPeakConfig {
     #[must_use]
     pub fn enabled(&self, function: PchFunction) -> bool {
         !self.disabled.as_slice().contains(&function)
+    }
+
+    /// The EHCI debug console if the platform selects USB debug.
+    pub fn ehci_debug(&self, ecam_base: usize) -> Option<fstart_driver_usbdebug::Config> {
+        let function = EhciController::select(self.ehci_debug_controller, |controller| {
+            self.enabled(controller.into())
+        })?;
+        crate::southbridge::ehci_debug::config(
+            PchFunction::from(function).devfn(),
+            ecam_base,
+            &[(self.rcba, 0x4000), (self.dmibar, 0x1000)],
+        )
+    }
+}
+
+impl From<EhciController> for PchFunction {
+    fn from(controller: EhciController) -> Self {
+        match controller {
+            EhciController::Ehci1 => Self::Ehci1,
+            EhciController::Ehci2 => Self::Ehci2,
+        }
     }
 }
 
@@ -407,6 +427,9 @@ fn validate(config: &IntelIbexPeakConfig) -> Result<(), ServiceError> {
             .any(|port| port.oc_pin.is_some_and(|pin| pin > 7))
         || config.dram_reset_gate_gpio.is_some_and(|gpio| gpio > 75)
         || config
+            .ehci_debug_controller
+            .is_some_and(|controller| !config.enabled(controller.into()))
+        || config
             .disabled
             .as_slice()
             .iter()
@@ -429,37 +452,6 @@ fn validate(config: &IntelIbexPeakConfig) -> Result<(), ServiceError> {
             .any(|(i, a)| decodes[i + 1..].iter().any(|b| a.overlaps(*b)))
     {
         return Err(ServiceError::InvalidParam);
-    }
-    if let Some(debug) = config.ehci_debug_bar {
-        <fstart_driver_usbdebug::EhciDebug as fstart_core::services::ConsoleDevice>::new(debug)?;
-        let bar = debug.fixed_bar();
-        let function = match (
-            bar.address.bus(),
-            bar.address.device(),
-            bar.address.function(),
-        ) {
-            (0, 0x1d, 0) => PchFunction::Ehci1,
-            (0, 0x1a, 0) => PchFunction::Ehci2,
-            _ => return Err(ServiceError::InvalidParam),
-        };
-        if !config.enabled(function)
-            || bar.base == 0
-            || bar.base & 0xfff != 0
-            || [
-                (config.rcba, 0x4000),
-                (config.dmibar, 0x1000),
-                (HPET_BASE as u64, 0x400),
-                (IOAPIC_BASE as u64, 0x1000),
-                (0xfee0_0000, 0x1000),
-                (u64::from(DEFAULT_HECIBAR), 0x1000),
-                (debug.ecam_base as u64, 256 << 20),
-                (0xff00_0000, 16 << 20),
-            ]
-            .iter()
-            .any(|&(base, size)| bar.base < base + size && base < bar.base + bar.size)
-        {
-            return Err(ServiceError::InvalidParam);
-        }
     }
     Ok(())
 }
@@ -702,17 +694,29 @@ mod tests {
     }
 
     #[test]
-    fn debug_wiring_alone_does_not_reserve_an_uninitialized_ehci_bar() {
-        static CONFIG: IntelIbexPeakConfig = IntelIbexPeakConfig {
-            ehci_debug_bar: Some(EhciDebugConfig {
-                ecam_base: 0xe000_0000,
-                bus: 0,
-                device: 0x1a,
-                function: 0,
-                bar: DEFAULT_EHCI_DEBUG_BAR,
-            }),
-            ..IntelIbexPeakConfig::new()
+    fn ehci_debug_maps_the_selected_controller() {
+        let mut config = IntelIbexPeakConfig::new();
+        let debug = |config: &IntelIbexPeakConfig| {
+            config
+                .ehci_debug(0xe000_0000)
+                .map(|d| d.fixed_bar().address)
         };
+        assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1a, 0)));
+        config.ehci_debug_controller = Some(EhciController::Ehci1);
+        assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1d, 0)));
+        config.disabled = config.disabled.push(PchFunction::Ehci1);
+        assert_eq!(debug(&config), None);
+    }
+
+    #[test]
+    fn ehci_debug_rejects_a_disabled_board_choice_and_reserves_no_bar() {
+        static CONFIG: IntelIbexPeakConfig = IntelIbexPeakConfig::new();
+        let mut config = CONFIG;
+        config.ehci_debug_controller = Some(EhciController::Ehci2);
+        config.disabled = config.disabled.push(PchFunction::Ehci2);
+        assert!(matches!(validate(&config), Err(ServiceError::InvalidParam)));
+        // The BAR is fixed only by an EHCI debug build (the platform's
+        // ramstage); the driver leaves it to the PCI allocator.
         let driver = IntelIbexPeak::new_from_config(&CONFIG).unwrap();
         let bars = driver.fixed_pci_bars();
         assert_eq!(bars.len(), 1);

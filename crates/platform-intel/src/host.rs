@@ -254,7 +254,12 @@ impl Debug {
         for option in options {
             match option.as_str() {
                 "ehci" if ehci_debug => debug.ehci = true,
-                "ehci" => return Err("the board reserves no EHCI debug port".into()),
+                "ehci" => {
+                    return Err(
+                        "no enabled EHCI debug controller, or its BAR overlaps a chipset decode"
+                            .into(),
+                    );
+                }
                 "flash-console" => debug.flash_console = true,
                 other => return Err(format!("Intel platforms have no debug option '{other}'")),
             }
