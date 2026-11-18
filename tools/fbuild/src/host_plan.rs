@@ -59,6 +59,44 @@ fn prepare_lock(root: &Path, manifest: &Path) -> Result<String, String> {
     Ok(locked)
 }
 
+/// The source workspace's `[patch]` tables, for the runner's manifest: the
+/// runner must resolve a patched dependency as the workspace does. A
+/// patch's `path` is made absolute; its other keys are strings.
+fn patches(root: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    let manifest: toml::Table = toml::from_str(&text).map_err(|e| format!("Cargo.toml: {e}"))?;
+    let mut out = String::new();
+    let Some(patch) = manifest.get("patch").and_then(toml::Value::as_table) else {
+        return Ok(out);
+    };
+    let quoted = |s: &str| serde_json::to_string(s).unwrap();
+    for (source, crates) in patch {
+        out.push_str(&format!("[patch.{}]\n", quoted(source)));
+        let crates = crates
+            .as_table()
+            .ok_or("Cargo.toml: [patch] is not a table")?;
+        for (name, spec) in crates {
+            let spec = spec
+                .as_table()
+                .ok_or("Cargo.toml: a patch is not a table")?;
+            let mut keys = Vec::new();
+            for (key, value) in spec {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| format!("Cargo.toml: patch {name}.{key} is not a string"))?;
+                let value = if key == "path" {
+                    root.join(value).display().to_string()
+                } else {
+                    value.into()
+                };
+                keys.push(format!("{key} = {}", quoted(&value)));
+            }
+            out.push_str(&format!("{} = {{ {} }}\n", quoted(name), keys.join(", ")));
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn load(
     root: &Path,
     source: &ProfileSource,
@@ -94,7 +132,7 @@ pub(crate) fn load(
         quoted(&platform_name),
         quoted(&platform_path),
         quoted(&image_build_path)
-    );
+    ) + &patches(root)?;
     let main = "fn main() { use fstart_image_build::plan::HostPlan as _; platform::Plan::<board::Board>::emit(&std::env::args().nth(1).expect(\"missing build selection\")); }\n";
     for (path, contents) in [
         (runner.join("Cargo.toml"), manifest.as_str()),
@@ -192,6 +230,17 @@ pub(crate) fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runner_takes_the_workspace_patches() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let text = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        let patches = patches(&root).unwrap();
+        assert_eq!(text.contains("[patch."), !patches.is_empty());
+        let parsed: toml::Table = toml::from_str(&patches).unwrap();
+        let workspace: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.get("patch"), workspace.get("patch"));
+    }
 
     #[test]
     fn runner_uses_real_sources_without_rewriting_the_workspace_lock() {
