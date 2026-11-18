@@ -11,6 +11,7 @@ on:
       - 'tools/fbuild/**'
       - 'crates/image-build/**'
       - 'crates/platform-qemu/**'
+      - 'crates/smm/**'
       - 'boards/qemu/riscv64/**'
   schedule:
     - cron: '31 5 * * 1'
