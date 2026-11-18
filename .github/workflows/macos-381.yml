@@ -1,0 +1,59 @@
+name: macOS quickstart diagnostic (#381)
+
+on:
+  push:
+    branches: [ci/macos-381]
+
+permissions:
+  contents: read
+
+jobs:
+  quickstart:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install and identify the pinned toolchain
+        run: |
+          uname -sm
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc -vV
+          cargo -V
+          rustup target list --installed
+          cargo -Z unstable-options config get build.target \
+            --show-origin || true
+      - name: Build the native fbuild tool
+        run: cargo build --locked -v -p fbuild
+      - name: Install QEMU
+        run: |
+          brew install qemu
+          qemu-system-riscv64 --version
+      - name: Boot RISC-V firmware without payload assets
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import sys
+
+          command = [
+              "cargo", "fbuild", "qemu",
+              "--board", "qemu-riscv64", "--payload", "halt",
+          ]
+          try:
+              result = subprocess.run(
+                  command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                  timeout=240,
+              )
+              output = result.stdout
+              if result.returncode:
+                  sys.stdout.buffer.write(output)
+                  sys.exit(result.returncode)
+          except subprocess.TimeoutExpired as exc:
+              # The halt payload may leave QEMU running after firmware startup.
+              output = exc.output or b""
+          sys.stdout.buffer.write(output)
+          if b"ramstage: ready for payload" not in output:
+              sys.exit("Firmware boot marker not found")
+          PY
