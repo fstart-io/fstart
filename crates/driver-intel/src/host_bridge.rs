@@ -24,7 +24,17 @@ pub(crate) fn forwarded(
     low_dram_end: Option<u64>,
     above_4g: Option<(u64, u64)>,
 ) -> [PciResource; 7] {
-    let low = low_dram_end.unwrap_or(MMIO32_END);
+    forwarded_below(low_dram_end, above_4g, MMIO32_END)
+}
+
+/// [`forwarded`] for a host bridge whose 32-bit MMIO ends before the I/O
+/// APIC: a bridge that does not forward an address must not describe it.
+pub(crate) fn forwarded_below(
+    low_dram_end: Option<u64>,
+    above_4g: Option<(u64, u64)>,
+    mmio32_end: u64,
+) -> [PciResource; 7] {
+    let low = low_dram_end.unwrap_or(mmio32_end);
     let (high, high_end) = above_4g.unwrap_or((0, 0));
     [
         // All of I/O: the legacy ISA and chipset ports (PIC, PIT, KBC, EC,
@@ -35,7 +45,7 @@ pub(crate) fn forwarded(
         // behind the PAM registers.
         Forwarded.mmio(0xa_0000, 0x2_0000),
         Forwarded.mmio(0xc_0000, 0x4_0000),
-        Window.mmio(low, MMIO32_END.saturating_sub(low)),
+        Window.mmio(low, mmio32_end.saturating_sub(low)),
         // The TPM's TIS registers, decoded by LPC whether a TPM is there
         // or not.
         Kept.mmio(0xfed4_0000, 0x5000),

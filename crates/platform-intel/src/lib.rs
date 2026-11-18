@@ -61,6 +61,7 @@ macro_rules! entry {
     };
 }
 
+pub mod baytrail;
 pub mod gm45;
 pub mod gm965;
 pub mod i945;
