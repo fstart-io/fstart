@@ -312,6 +312,60 @@ progress { width: 220px; max-width: 50%; height: 8px; accent-color: var(--accent
 .vendor-collapsed { margin: -4px 0 0 -8px; }
 .boards.empty-source .search { display: none; }
 
+/* Settings: cards like Your files, a row per option, the control on the right */
+.settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; min-height: 26px; }
+.settings-head h2 { margin-bottom: 0; }
+.settings-head h2:focus { outline: none; }
+.settings-head h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 4px; }
+.settings > .muted { font-size: 14px; margin-bottom: 2px; }
+.settings-card { padding-bottom: 6px; }
+.settings-status { display: inline-flex; align-items: baseline; gap: 2px; }
+.settings-status.idle { visibility: hidden; }
+.settings-card .need-head { min-height: 20px; flex-wrap: nowrap; }
+/* As wide while empty as with a count, so the first change wraps nothing. */
+.settings-card .need-head .status { min-width: 6.5em; justify-content: flex-end; }
+.settings-head .quiet { padding: 2px 6px; font-size: 13px; }
+.settings-list { list-style: none; margin: 0 -16px; padding: 0; border-top: 1px solid var(--line); }
+.setting {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 2px 8px;
+  padding: 10px 10px 10px 16px; border-top: 1px solid var(--line);
+}
+.setting.changed { box-shadow: inset 3px 0 0 var(--accent); }
+.setting-text { display: grid; gap: 2px; min-width: 0; grid-column: 1; grid-row: 1; margin-right: 12px; }
+.setting-label { font-size: 14.5px; font-weight: 600; }
+label.setting-label { cursor: pointer; }
+.setting-text .muted { font-size: 13.5px; }
+/* Reset: a fixed slot after the control, hidden while unchanged. */
+.setting-reset { grid-column: 3; grid-row: 1; }
+.setting:not(.changed) .setting-reset { visibility: hidden; }
+.setting-reset .quiet { padding: 6px 6px; font-size: 13px; }
+.setting-run { margin: 0 -16px; border-top: 1px solid var(--line); }
+.setting-run .settings-list { margin: 0; border-top: 0; }
+.setting-run + .settings-list, .settings-list + .setting-run { border-top: 1px solid var(--line-strong); }
+.setting-note { padding: 10px 16px 2px; font-size: 13.5px; color: var(--muted); }
+.setting-note b { color: var(--ink); font-weight: 600; }
+.setting-control { grid-column: 2; grid-row: 1; justify-self: end; }
+.setting-control select { min-width: 180px; }
+.setting-control .number {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--card); width: 120px;
+  border: 1px solid var(--control); border-radius: 6px; padding: 7px 10px;
+}
+.segs { display: inline-flex; border: 1px solid var(--control); border-radius: 6px; background: var(--card); }
+.segment { position: relative; display: inline-flex; border-left: 1px solid var(--line); cursor: pointer; }
+.segment:first-child { border-left: 0; }
+.segment:first-child > span { border-radius: 5px 0 0 5px; }
+.segment:last-child > span { border-radius: 0 5px 5px 0; }
+.segment input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.segment > span { position: relative; white-space: nowrap; padding: 6px 12px; font-size: 14px; font-weight: 600; color: var(--muted); min-width: 44px; text-align: center; }
+.segment:hover > span { color: var(--ink); }
+.segment:has(input:checked) > span { background: var(--ink); color: var(--paper); }
+.segment:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; z-index: 1; }
+.segment:has(input:disabled) { cursor: default; }
+.segment:has(input:disabled) > span { opacity: .6; }
+/* Forced colors: selection is a frame inside the segment; the focus outline
+   stays outside it, so a focused selected segment shows both. */
+@media (forced-colors: active) { .segment:has(input:checked) > span { outline: 2px solid CanvasText; outline-offset: -4px; } }
+
 /* Assemble and outputs */
 .assemble { display: grid; gap: 10px; padding-top: 4px; }
 .outputs { display: grid; gap: 10px; }
@@ -369,6 +423,18 @@ progress { width: 220px; max-width: 50%; height: 8px; accent-color: var(--accent
   .build-head .board-name { font-size: 24px; }
   .spec > div { grid-template-columns: 72px minmax(0, 1fr); padding: 8px 12px; }
   .need { padding: 12px; }
+  .settings-list, .setting-run { margin: 0 -12px; }
+  .setting { grid-template-columns: minmax(0, 1fr) auto auto; padding: 10px 6px 10px 12px; gap: 6px 4px; }
+  .setting-text { grid-column: 1 / -1; margin-right: 0; }
+  .setting.compact .setting-text { grid-column: 1; margin-right: 8px; }
+  .setting-control { grid-column: 1 / span 2; grid-row: 2; justify-self: start; }
+  .setting.compact .setting-control { grid-column: 2; grid-row: 1; justify-self: end; }
+  .setting-reset { grid-column: 3; grid-row: 2; }
+  /* Narrow: no slot while unchanged; a changed Off/On's Reset goes under it,
+     so the toggle under the thumb stays put. */
+  .setting:not(.changed) .setting-reset { display: none; }
+  .setting.compact .setting-reset { grid-column: 2; grid-row: 2; justify-self: end; }
+  .setting-note { padding: 10px 12px 2px; }
   .primary-output .button { width: 100%; justify-content: center; }
   .files li { flex-wrap: wrap; }
   .files li > div { flex-basis: 100%; }
@@ -379,9 +445,19 @@ progress { width: 220px; max-width: 50%; height: 8px; accent-color: var(--accent
 /* Touch: bigger targets for the things people tap. */
 @media (hover: none), (max-width: 860px) {
   .chip { padding: 9px 14px; }
+  .settings-head .quiet, .setting-reset .quiet { min-height: 44px; padding: 0 8px; }
+  .segment > span { min-height: 44px; min-width: 48px; display: inline-flex; align-items: center; justify-content: center; }
+  .setting-control select, .setting-control .number { min-height: 44px; }
   .copy { padding: 8px; }
   .quiet { padding: 9px 10px; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .card, .chip, button, .button { transition: background-color .12s, border-color .12s, color .12s, box-shadow .12s; }
+}
+@media (max-width: 360px) {
+  .segment > span { padding-left: 8px; padding-right: 8px; }
+  /* Too narrow for Off/On beside a label: stack like the other rows. */
+  .setting.compact .setting-text { grid-column: 1 / -1; margin-right: 0; }
+  .setting.compact .setting-control { grid-column: 1 / span 2; grid-row: 2; justify-self: start; }
+  .setting.compact .setting-reset { grid-column: 3; grid-row: 2; }
 }

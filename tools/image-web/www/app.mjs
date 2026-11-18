@@ -69,7 +69,7 @@ const state = {
   fetched: null, // {bytes, source}: vendor BIOS fetched through the proxy
   own: null, // {bytes, name, size}: vendor BIOS file the user picked
   inputs: {},
-  settings: {}, // option key -> value the image's settings store starts with
+  settings: Object.create(null), // option key -> value the image's settings store starts with
   key: null,
   outputs: null, // {files, signer, donor}: one assembly's results
   busy: false,
@@ -225,16 +225,24 @@ function hash(value, label, labelled = false, wrap = false) {
   return h("span", { class: `hash${wrap ? " wrap" : ""}` }, labelled ? h("span", { class: "hash-label" }, "SHA-256") : null, h("code", { title: value }, value), copy);
 }
 
+// One object URL per file for as long as its outputs are shown: a page
+// rendered again (a settings edit) links the same blob.
+let objectUrls = new WeakMap();
 function saveLink(name, data, label = "Download", secondary = false) {
   const type = name.endsWith(".json") ? "application/json" : name.endsWith(".txt") ? "text/plain" : "application/octet-stream";
-  const url = URL.createObjectURL(new Blob([data], { type }));
-  state.urls.push(url);
+  let url = objectUrls.get(data);
+  if (!url) {
+    url = URL.createObjectURL(new Blob([data], { type }));
+    objectUrls.set(data, url);
+    state.urls.push(url);
+  }
   return h("a", { class: secondary ? "button secondary" : "button", href: url, download: name.split("/").pop(), "aria-label": `${label} ${name.split("/").pop()}` }, icon("download"), label);
 }
 
 function revokeLinks() {
   for (const url of state.urls) URL.revokeObjectURL(url);
   state.urls = [];
+  objectUrls = new WeakMap();
 }
 
 function scrollTo(node) {
@@ -579,7 +587,7 @@ function clearBuild(next) {
     fetched: same && next.donor_source?.sha256 === state.fetched?.source.sha256 ? state.fetched : null,
     own: same && next.donor_required ? state.own : null,
     // The same board offers the same options.
-    settings: same ? state.settings : {},
+    settings: same ? state.settings : Object.create(null),
     inputs: next ? Object.fromEntries(Object.entries(state.inputs)
       .filter(([name, file]) => (next.inputs ?? []).some(i => i.name === name && i.capacity >= file.size)
         && inputLabel(name, state.build?.payload) === inputLabel(name, next.payload))) : {},
@@ -830,51 +838,190 @@ function needs(build) {
 
 // --- Settings ------------------------------------------------------------------
 
-// The values of an option, as `fbuild options` lists its kind.
+// The values of an option, as `fbuild options` lists its kind: [value, label].
 function optionValues(option) {
-  if (option.kind === "bool") return [[1, "On"], [0, "Off"]];
+  if (option.kind === "bool") return [[0, "Off"], [1, "On"]];
   if (option.kind.enum) return option.kind.enum.map(c => [c.value, c.label]);
   return null;
 }
 
-// The options the image's settings store can start with: the build's plan
-// lists them with the board's values. Unset ones boot with the board's.
+// The label of `value` for `option`.
+function valueLabel(option, value) {
+  return optionValues(option)?.find(([v]) => String(v) === String(value))?.[1] ?? String(value);
+}
+
+// Sets `option` to `value` for the image; the board's value clears it, so
+// only real changes go into the settings store.
+function setOption(option, value, focus) {
+  // A number field may spell a value differently ("01"); compare values.
+  if (option.kind.number && value !== "" && Number.isInteger(Number(value))) value = Number(value);
+  const before = state.settings[option.key];
+  if (value === "" || String(value) === String(option.default)) delete state.settings[option.key];
+  else state.settings[option.key] = String(value);
+  // The same override in another spelling leaves an assembled image current.
+  if (state.settings[option.key] !== before) {
+    state.inputGen++;
+    if (state.outputs) state.outputs.outdated = true;
+  }
+  keepingFocus(renderBuild, focus);
+}
+
+// The element that takes focus for `option`: its control, or the checked
+// segment of a segmented one.
+function optionFocus(option) {
+  const id = `setting-${option.key}`;
+  const current = state.settings[option.key] ?? String(option.default);
+  return $(id) ? id : `${id}-${current}`;
+}
+
+// A press on Reset must not blur a number field first: its change event
+// would re-render the section and drop the click.
+function keepPendingEdit(event) {
+  event.preventDefault();
+}
+
+// Back to the board's values. Focus goes to `focus` (an element id, or the
+// first option's control) and is scrolled into view: the button that had it
+// is gone.
+function resetOptions(options, focus) {
+  for (const option of options) delete state.settings[option.key];
+  state.inputGen++;
+  if (state.outputs) state.outputs.outdated = true;
+  renderBuild();
+  const target = $(focus ?? optionFocus(options[0]));
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "nearest", behavior: reduceMotion.matches ? "auto" : "smooth" });
+  announce(focus === "settings-title" ? "All settings back to the board's values" : `${options[0].label}: back to the board's value`);
+}
+
+// A few short choices are a segmented control.
+function segmented(option) {
+  const values = optionValues(option);
+  return values && values.length <= 4 && values.every(([, label]) => label.length <= 10);
+}
+
+// One option's control. A few short choices are a segmented control, like
+// the architecture filter; longer lists a menu; numbers a field. The board's
+// `describedBy` names its help.
+function optionControl(option, labelId, describedBy) {
+  const id = `setting-${option.key}`;
+  const values = optionValues(option);
+  const current = state.settings[option.key] ?? String(option.default);
+  if (segmented(option)) {
+    return h("div", { class: "segs", role: "radiogroup", "aria-labelledby": labelId, "aria-describedby": describedBy },
+      values.map(([value, label]) => {
+        const valueId = `${id}-${value}`;
+        return h("label", { class: "segment" },
+          h("input", {
+            type: "radio", name: id, id: valueId, value: String(value), checked: current === String(value),
+            disabled: state.busy, onchange: () => setOption(option, value, valueId),
+          }),
+          h("span", {}, label));
+      }));
+  }
+  if (values) {
+    return h("select", { id, "aria-labelledby": labelId, "aria-describedby": describedBy, disabled: state.busy, onchange: event => setOption(option, event.target.value, id) },
+      values.map(([value, label]) => h("option", { value: String(value), selected: current === String(value) },
+        label)));
+  }
+  const { min, max, step } = option.kind.number;
+  return h("input", {
+    id, type: "number", class: "number", min, max, step, value: current, "aria-labelledby": labelId,
+    "aria-describedby": describedBy, disabled: state.busy, onchange: event => setOption(option, event.target.value, id),
+  });
+}
+
+// The word a run of option labels ends with, if all share it (the five
+// "… bifurcation" slots): said once above the run instead of on each.
+function sharedSuffix(labels) {
+  const last = labels.map(l => l.split(" ").at(-1));
+  return labels.length > 1 && last.every(w => w === last[0]) && labels.every(l => l.includes(" ")) ? last[0] : null;
+}
+
+// The options the image's settings store starts with, from the build's plan.
+// The firmware's setup menu groups them in forms: a form of several options
+// is a card of its own, the single ones share one. Each starts at the
+// board's value; only changed ones go into the image.
 function settingsBlock() {
   const offered = (state.manifest.plan.options?.options ?? []).filter(o => !o.unavailable);
   if (!offered.length) return null;
+  const changed = offered.filter(o => Object.hasOwn(state.settings, o.key));
   const forms = [...new Set(offered.map(o => o.form))];
-  const field = option => {
-    const id = `setting-${option.key}`;
+  const single = forms.filter(f => offered.filter(o => o.form === f).length === 1);
+  const groups = [
+    ...(single.length > 1 ? [["General", offered.filter(o => single.includes(o.form))]] : []),
+    ...forms.filter(f => single.length < 2 || !single.includes(f)).map(f => [f || "General", offered.filter(o => o.form === f)]),
+  ];
+  const settingRow = (option, { shownLabel, noteId } = {}) => {
+    const labelId = `setting-${option.key}-label`;
+    const helpId = `setting-${option.key}-help`;
+    const isChanged = Object.hasOwn(state.settings, option.key);
+    const board = valueLabel(option, option.default);
     const values = optionValues(option);
-    const current = state.settings[option.key] ?? "";
-    const change = event => {
-      const value = event.target.value;
-      if (value === "") delete state.settings[option.key];
-      else state.settings[option.key] = value;
-      state.outputs = null;
-      state.inputGen++;
-      keepingFocus(renderBuild);
-    };
-    const boardValue = values?.find(([v]) => v === option.default)?.[1] ?? String(option.default);
-    const control = values
-      ? h("select", { id, disabled: state.busy, onchange: change },
-        h("option", { value: "", selected: current === "" }, `Board's value (${boardValue})`),
-        values.map(([value, label]) => h("option", { value: String(value), selected: current === String(value) }, label)))
-      : h("input", {
-        id, type: "number", min: option.kind.number.min, max: option.kind.number.max, step: option.kind.number.step,
-        placeholder: `Board's value (${option.default})`, value: current, disabled: state.busy, onchange: change,
-      });
-    return h("div", { class: "setting" },
-      h("label", { for: id }, option.label),
-      control,
-      option.help ? h("p", { class: "muted" }, option.help) : null);
+    // Off/On and the like stay beside their label on narrow screens too.
+    const compact = values && values.length <= 2;
+    const describedBy = noteId ?? (option.help ? helpId : null);
+    return h("li", { class: `setting${isChanged ? " changed" : ""}${compact ? " compact" : ""}` },
+      h("div", { class: "setting-text" },
+        // A menu or field's label focuses it when clicked; segments are a group.
+        h(segmented(option) ? "span" : "label", { class: "setting-label", id: labelId, for: segmented(option) ? null : `setting-${option.key}` }, shownLabel ?? option.label,
+          shownLabel ? h("span", { class: "sr-only" }, option.label.slice(shownLabel.length)) : null),
+        !noteId && option.help ? h("p", { class: "muted", id: helpId }, option.help) : null),
+      h("div", { class: "setting-control" }, optionControl(option, labelId, describedBy)),
+      // Always there, hidden while unchanged, so a change moves nothing.
+      h("div", { class: "setting-reset", "aria-hidden": isChanged ? null : "true" },
+        h("button", {
+          type: "button", class: "quiet small", id: `setting-${option.key}-reset`, disabled: state.busy || !isChanged,
+          tabindex: isChanged ? null : "-1", title: `Reset ${option.label} to the board's value, ${board}`,
+          "aria-label": `Reset ${option.label} to the board's value, ${board}`, onclick: () => resetOptions([option]),
+          onmousedown: keepPendingEdit,
+        }, "Reset")));
+  };
+  const card = ([title, options], index) => {
+    const changes = options.filter(o => Object.hasOwn(state.settings, o.key));
+    const lists = [];
+    let rows = [];
+    const flush = () => { if (rows.length) lists.push(h("ul", { class: "settings-list" }, rows)); rows = []; };
+    for (let i = 0; i < options.length;) {
+      // A help text that a run of options shares is said once, above them.
+      let j = i + 1;
+      while (j < options.length && options[i].help && options[j].help === options[i].help) j++;
+      if (j - i > 1) {
+        flush();
+        const run = options.slice(i, j);
+        const suffix = sharedSuffix(run.map(o => o.label));
+        const noteId = `setting-note-${run[0].key}`;
+        lists.push(h("div", { class: "setting-run" },
+          h("p", { class: "setting-note", id: noteId },
+            suffix ? h("b", {}, `${suffix[0].toUpperCase()}${suffix.slice(1)}. `) : null, run[0].help),
+          h("ul", { class: "settings-list" }, run.map(option => settingRow(option, {
+            noteId, shownLabel: suffix ? option.label.slice(0, -suffix.length).trim() : null,
+          })))));
+      } else rows.push(settingRow(options[i]));
+      i = j;
+    }
+    flush();
+    return h("div", { class: "need settings-card", role: "group", "aria-labelledby": `settings-form-${index}` },
+      h("div", { class: "need-head" },
+        h("h3", { id: `settings-form-${index}` }, title),
+        // Laid out while empty too, so the first change moves nothing.
+        h("span", { class: "status neutral", "aria-hidden": changes.length ? null : "true" }, changes.length ? `${changes.length} changed` : "\u00a0")),
+      lists);
   };
   return h("section", { class: "needs settings", "aria-labelledby": "settings-title" },
-    h("h2", { id: "settings-title" }, "Settings"),
-    h("p", { class: "muted" }, "The image's settings store starts with these. The firmware's setup menu changes them later."),
-    forms.map(form => h("fieldset", {},
-      h("legend", {}, form || "General"),
-      offered.filter(o => o.form === form).map(field))));
+    h("div", { class: "settings-head" },
+      h("h2", { id: "settings-title", tabindex: "-1" }, "Settings (optional)"),
+      // Laid out while hidden too, so the first change moves nothing.
+      h("span", { class: `settings-status${changed.length ? "" : " idle"}`, "aria-hidden": changed.length ? null : "true" },
+        h("span", { class: "status neutral" }, `${changed.length} changed`),
+        h("button", {
+          type: "button", class: "quiet small", id: "settings-reset-all", disabled: state.busy || !changed.length,
+          tabindex: changed.length ? null : "-1", onclick: () => resetOptions(changed, "settings-title"),
+          onmousedown: keepPendingEdit,
+        }, "Reset all"))),
+    h("p", { class: "muted" },
+      "Each option starts at the board's value. Change one to store a different value in the image; the firmware's setup menu can still change it later."),
+    groups.map(card));
 }
 
 function row({ title, help, status, body }) {
