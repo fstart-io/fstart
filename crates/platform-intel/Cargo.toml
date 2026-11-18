@@ -18,6 +18,7 @@ host = ["dep:fstart-image-build", "dep:serde_json", "dep:serde", "fstart-core/ho
 # The union still builds, so one selection type-checks every binary.
 bundle-bootblock = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap", "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest"]
 bundle-postcar = ["stage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/bootstrap"]
+postcar-lzma = ["bundle-postcar", "fstart-stage/bootstrap-lzma"]
 bundle-ramstage = ["ramstage", "fstart-stage/x86_64", "fstart-stage/handoff", "fstart-stage/ffs", "fstart-stage/sha2-digest", "fstart-stage/acpi"]
 bundle-smm = ["dep:fstart-smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 payload-uefi = ["payload-uefi-basic", "fstart-payload/crabefi"]

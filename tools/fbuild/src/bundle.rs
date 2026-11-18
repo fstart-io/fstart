@@ -59,8 +59,6 @@ pub struct Build {
     /// The build can seed its settings store (`--setting`): its options
     /// are in the bundle's plan.
     pub settings: bool,
-    /// Compiled binaries remain available when native image placement fails.
-    pub image_error: Option<String>,
     pub binaries: Vec<String>,
 }
 
@@ -317,9 +315,13 @@ fn export_one(
     let inputs = include_inputs(&files, root, board, &board_dir, plan)?;
     let donor_required = packed_donor.is_some();
     let donor_source = donor_required.then(|| board.donor.clone()).flatten();
-    // The coreboot payload ships with SeaBIOS; its ELF slot becomes optional.
+    // The stock SeaBIOS package does not fit alongside firmware on 512 KiB
+    // flash. Keep the external ELF slot there for smaller custom payloads.
+    let fits_seabios = inputs
+        .iter()
+        .any(|input| input.name == "kernel" && input.capacity > 512 * 1024);
     let bundled_payload = match seabios {
-        Some(seabios) if choice == "coreboot" => Some(seabios.include(&files)?),
+        Some(seabios) if choice == "coreboot" && fits_seabios => Some(seabios.include(&files)?),
         _ => None,
     };
     let required: Vec<InputFile> = (inputs.iter())
@@ -347,24 +349,18 @@ fn export_one(
         },
         files,
     };
-    // A build that needs nothing from the user carries its image too.
-    let mut image_error = None;
+    // A build that needs nothing from the user must carry its image too.
     if !donor_required && required.is_empty() && !plan.images.is_empty() {
-        match bundle.assemble(&Supplied::default()) {
-            Ok(outputs) => {
-                for (name, bytes) in outputs {
-                    let path = Path::new("/images").join(name);
-                    bundle.files.write(&path, &bytes)?;
-                    binaries.push(path.to_string_lossy().into_owned());
-                }
-            }
-            Err(error) => {
-                eprintln!(
-                    "[fstart] {} {choice}: binaries published, image unavailable: {error}",
-                    board.board
-                );
-                image_error = Some(error);
-            }
+        let outputs = bundle.assemble(&Supplied::default()).map_err(|error| {
+            format!(
+                "{} {choice}: bundle image assembly failed: {error}",
+                board.board
+            )
+        })?;
+        for (name, bytes) in outputs {
+            let path = Path::new("/images").join(name);
+            bundle.files.write(&path, &bytes)?;
+            binaries.push(path.to_string_lossy().into_owned());
         }
     }
     let bytes = bundle.encode()?;
@@ -389,7 +385,6 @@ fn export_one(
             plan.options.store,
             Some(fstart_image_build::options::OptionStore::Varstore { .. })
         ),
-        image_error,
         binaries,
     })
 }

@@ -94,7 +94,7 @@ impl BootstrapDescriptor {
         self.load_addr
             .checked_add(self.loaded_size)
             .ok_or(RootError::OutOfBounds)?;
-        if self.compression == Compression::Lz4
+        if self.compression != Compression::None
             && self.scratch_size
                 < self
                     .stored_size
@@ -119,6 +119,7 @@ impl BootstrapDescriptor {
             compression: match self.compression {
                 Compression::None => 0,
                 Compression::Lz4 => 1,
+                Compression::Lzma => 2,
             },
             reserved_3: [0; 5],
             offset: U64::new(self.offset),
@@ -150,6 +151,7 @@ impl BootstrapDescriptor {
             compression: match wire.compression {
                 0 => Compression::None,
                 1 => Compression::Lz4,
+                2 => Compression::Lzma,
                 _ => return Err(RootError::UnsupportedAlgorithm),
             },
             offset: wire.offset.get(),

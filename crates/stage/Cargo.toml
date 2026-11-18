@@ -21,7 +21,9 @@ x86_64 = ["fstart-arch/x86_64"]
 
 # FFS / crypto features
 bootstrap = ["dep:fstart-crypto", "dep:fstart-ffs", "dep:fstart-load", "fstart-crypto/sha2-digest", "fstart-ffs/sha2-digest"]
-# Owned directory/asset services are mainstage-only; bootstrap stays no-alloc.
+# A dense mainstage image uses the heap-backed decoder in its loader.
+bootstrap-lzma = ["bootstrap", "alloc", "fstart-load/lzma"]
+# Owned directory/asset services are mainstage-only.
 ffs = ["bootstrap", "alloc", "fstart-ffs/directory", "fstart-arch/early-ffs-anchor"]
 ffs-signature = ["bootstrap", "fstart-ffs/ed25519", "fstart-arch/early-ffs-anchor"]
 ed25519 = ["ffs-signature"]
