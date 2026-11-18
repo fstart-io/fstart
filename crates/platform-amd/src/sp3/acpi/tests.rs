@@ -238,6 +238,7 @@ fn inputs<'a>(
         ivrs_devices: &[],
         sb_aml: &s.sb_aml,
         tables: &s.tables,
+        apei: None,
         board: &s.board,
     }
 }

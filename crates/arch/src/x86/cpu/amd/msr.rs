@@ -25,6 +25,9 @@ register_bitfields![u64,
     ],
     pub Hwcr [
         SMM_LOCK OFFSET(0) NUMBITS(1) [],
+        /// Nonzero writes to the MCA status registers (and the locked
+        /// thresholding fields) are allowed.
+        MC_STATUS_WR_EN OFFSET(18) NUMBITS(1) [],
         /// The TSC counts at the P0 frequency (fixed to 1 from Family 10h).
         TSC_FREQ_SEL OFFSET(24) NUMBITS(1) [],
         /// Core performance boost disable.

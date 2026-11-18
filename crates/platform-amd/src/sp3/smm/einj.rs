@@ -5,7 +5,7 @@ use crate::sp3::einj::*;
 use core::cell::UnsafeCell;
 use fstart_core::services::timer::Timer;
 use fstart_driver_amd::psp::{
-    command::{C2pBuffer, Command, SMM_FLAG_OFFSET},
+    command::Command,
     mailbox::{C2pTransport, Mailbox, PspError},
     ras::{Control, CorrectableMemory, MemoryTarget},
 };
@@ -56,21 +56,17 @@ pub(super) fn status(error: PspError) -> u64 {
     }
 }
 
-/// Use only the C2P page registered with SmmInfo, never the SMM stack or
-/// shared ACPI buffer. A timed-out request leaves this page untouched on
-/// subsequent calls: the PSP may still own it. No retry after any failure.
+/// Through the C2P page registered with SmmInfo, never the SMM stack or
+/// shared ACPI buffer, and only while it is the handler's
+/// ([`crate::smm::psp::send`]): after a command whose completion is
+/// uncertain no command of any SMI uses it. No retry after any failure.
 unsafe fn send<C: Command>(
     mailbox: &Mailbox<impl C2pTransport>,
     timer: &impl Timer,
-    page: *mut u8,
     request: C,
 ) -> Result<(), PspError> {
-    let buffer = page.cast::<C2pBuffer<C>>();
-    // SAFETY: registered SMRAM page, caller owns shared dispatch.
-    unsafe {
-        buffer.write(C2pBuffer::new(request));
-        mailbox.send_in_smm(timer, &mut *buffer, page.add(SMM_FLAG_OFFSET as usize))
-    }
+    // SAFETY: the caller owns shared dispatch.
+    unsafe { crate::smm::psp::send(mailbox, timer, request) }
 }
 
 /// Once, after successful SmmInfo and Rome endpoint validation.
@@ -80,7 +76,6 @@ pub unsafe fn init(
     supported: bool,
     mailbox: &Mailbox<impl C2pTransport>,
     timer: &impl Timer,
-    page: *mut u8,
     sockets: u8,
     targets: &[u64; 2],
     validate_target: impl FnOnce() -> bool,
@@ -104,7 +99,7 @@ pub unsafe fn init(
         return;
     }
     // SAFETY: shared dispatch owner, registered page, first use.
-    let result = unsafe { send(mailbox, timer, page, Control::ENABLE) };
+    let result = unsafe { send(mailbox, timer, Control::ENABLE) };
     write(BACKEND_STATUS, result.map_or_else(status, |_| 0));
     // SAFETY: only this dispatcher accesses the state.
     let state = unsafe { &mut *state() };
@@ -120,11 +115,10 @@ unsafe fn end(
     state: &mut State,
     mailbox: &Mailbox<impl C2pTransport>,
     timer: &impl Timer,
-    page: *mut u8,
     smns: &[Smn<impl ConfigRegionAccess>; 2],
 ) -> Result<(), PspError> {
     state.active = false;
-    let result = unsafe { send(mailbox, timer, page, Control::END) };
+    let result = unsafe { send(mailbox, timer, Control::END) };
     write(BACKEND_STATUS + 24, result.map_or_else(status, |_| 0));
     if result.is_ok()
         && let Some((socket, [control, low, high])) = state.saved_nbio.take()
@@ -151,7 +145,6 @@ pub unsafe fn dispatch(
     command: u8,
     mailbox: &Mailbox<impl C2pTransport>,
     timer: &impl Timer,
-    page: *mut u8,
     target: impl Fn(u64) -> Option<MemoryTarget>,
     owned: &[u64; 2],
     smns: &[Smn<impl ConfigRegionAccess>; 2],
@@ -171,7 +164,7 @@ pub unsafe fn dispatch(
                 write(offset, 0);
             }
             // SAFETY: dispatch ownership and registered C2P page.
-            let result = unsafe { send(mailbox, timer, page, Control::BEGIN) };
+            let result = unsafe { send(mailbox, timer, Control::BEGIN) };
             write(BACKEND_STATUS + 8, result.map_or_else(status, |_| 0));
             s.active = result.is_ok();
             result.map(|_| 0)
@@ -192,7 +185,7 @@ pub unsafe fn dispatch(
                 None => {
                     // Linux returns immediately on INVALID and does not
                     // execute END_OPERATION. Close the PSP operation here.
-                    unsafe { end(s, mailbox, timer, page, smns) }.map(|_| 2)
+                    unsafe { end(s, mailbox, timer, smns) }.map(|_| 2)
                 }
                 Some((address, target, smn)) => {
                     // Patch only the trigger's fixed GAS address, never
@@ -210,20 +203,14 @@ pub unsafe fn dispatch(
                         ));
                     }
                     // SAFETY: as above; no arbitrary address/type reaches PSP.
-                    let result = unsafe {
-                        send(
-                            mailbox,
-                            timer,
-                            page,
-                            CorrectableMemory::new(address, target),
-                        )
-                    };
+                    let result =
+                        unsafe { send(mailbox, timer, CorrectableMemory::new(address, target)) };
                     write(BACKEND_STATUS + 16, result.map_or_else(status, |_| 0));
                     result.map(|_| 0)
                 }
             }
         }
-        SW_END if s.active => unsafe { end(s, mailbox, timer, page, smns) }.map(|_| 0),
+        SW_END if s.active => unsafe { end(s, mailbox, timer, smns) }.map(|_| 0),
         _ => Ok(2),
     };
     let acpi_status = match result {
@@ -232,7 +219,7 @@ pub unsafe fn dispatch(
             // A completed PSP rejection can be closed and restored. A
             // timeout cannot: the PSP may still be using the C2P page.
             if matches!(error, PspError::Status { .. }) && s.active {
-                let _ = unsafe { end(s, mailbox, timer, page, smns) };
+                let _ = unsafe { end(s, mailbox, timer, smns) };
             }
             s.failed = true;
             1

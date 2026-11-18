@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The AST2600 BMC on eSPI (the PSP brings up the link from the EFS): its
-//! Super I/O at `0x2e` with the BMC's COM1, the console.
+//! Super I/O at `0x2e` with the BMC's COM1, the console, and the KCS
+//! channel SMM reports machine checks on.
 
 use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::acpimmio::{LpcGating, PM_LPC_GATING};
@@ -10,6 +11,33 @@ use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_amd::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::ReadWriteable;
+
+/// The firmware's own KCS channel, KCS2 (`0xCA8`, status/command at
+/// `0xCAC`): the BMC's device tree enables it with its kcsbridged, as on
+/// the S8030; the OS has KCS3 at `0xCA2` (the vendor SPMI). The vendor's
+/// firmware does the same: its IPMI transport hook moves PEI, DXE and SMM
+/// to KCS2 (V2.00 PeiIpmiInitialize `0xffd95ece`, DxeIpmiInitialize
+/// `0x4308`, SmmIpmiInitialize `0x1c94`), its SPMI gives the OS KCS3.
+pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
+
+/// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
+/// BMC's SEL, on the firmware's KCS channel, from SMM and at boot for the
+/// last boot's errors: a Platform Event Message
+/// (the BMC answers Add SEL Entry with C1h, invalid command).
+pub fn sel(
+    event: &fstart_platform_amd::smm::ras::Event<'_>,
+    timer: fstart_driver_amd::ccx::tsc::Tsc,
+) -> fstart_platform_amd::smm::ras::Delivery {
+    use fstart_platform_amd::smm::ras::{self, Delivery};
+    let (port, spacing) = FIRMWARE_KCS;
+    // SAFETY: KCS2 is decoded and only firmware uses it.
+    let mut kcs = unsafe { fstart_driver_ipmi::kcs::Kcs::new(port, spacing, timer) }
+        .with_poll_budget(ras::SEL_POLL_BUDGET);
+    match kcs.platform_event(&ras::sel(event)) {
+        Ok(()) => Delivery::Sent,
+        Err(_) => Delivery::Failed,
+    }
+}
 
 /// COM1, the BMC's SOL, and its interrupt over SERIRQ.
 pub const COM1_PORT: u16 = 0x3f8;

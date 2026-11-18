@@ -11,7 +11,7 @@ use super::acpimmio::{
     AcpiPorts, PM_ACPI_SMI_CMD, PM_PCI_CONTROL, PM_RESET_CONTROL1, PciControl, Pm1Control,
     ResetControl1, misc, smi_bank,
 };
-use crate::window::{At, Window};
+use crate::window::{At, Window, update};
 use tock_registers::{
     fields::Field,
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -38,7 +38,11 @@ register_bitfields![u32,
         GEVENT_HIGH OFFSET(0) NUMBITS(24) [],
         PSP OFFSET(25) NUMBITS(1) [],
         EOS OFFSET(28) NUMBITS(1) [],
-        SMI_TIMER_SEL OFFSET(29) NUMBITS(1) [],
+        /// The unit of [`SMI_TIMER`]'s count.
+        SMI_TIMER_SEL OFFSET(29) NUMBITS(1) [
+            Microseconds = 0,
+            Milliseconds = 1
+        ],
         /// SmiEnB: 1 stops SMI generation.
         SMI_DISABLE OFFSET(31) NUMBITS(1) []
     ]
@@ -48,6 +52,11 @@ register_bitfields![u16,
     pub SmiPointer [
         SCI OFFSET(0) NUMBITS(1) [],
         STATUS OFFSET(1) NUMBITS(5) []
+    ],
+    /// SMIx96 SmiTimer: the periodic SMI.
+    pub SmiTimer [
+        COUNT OFFSET(0) NUMBITS(15) [],
+        ENABLE OFFSET(15) NUMBITS(1) []
     ]
 ];
 
@@ -64,6 +73,8 @@ pub const fn status(n: usize) -> At<u32> {
 }
 const STATUS_COUNT: usize = 5;
 pub const POINTER: At<u16, SmiPointer::Register> = smi_bank::at(0x94);
+/// SMIx96, 16 bits.
+pub const SMI_TIMER: At<u16, SmiTimer::Register> = smi_bank::at(0x96);
 pub const TRIGGER0: At<u32, Trigger0::Register> = smi_bank::at(0x98);
 /// SMIxA0 + 4 * n, n < 10: two bits per SMI source.
 pub const fn control(n: usize) -> At<u32> {
@@ -90,7 +101,7 @@ impl Source {
         }
     }
 
-    const fn status(self) -> At<u32> {
+    pub(crate) const fn status(self) -> At<u32> {
         status(self.reg as usize)
     }
 
@@ -214,6 +225,63 @@ pub fn io_trap<W: Window>(acpi: &W, n: u8, port: u16, on_write: bool) {
     set_route(acpi, source::io_trap(n), Route::Smi);
 }
 
+/// Route the PSP's SMI as SmmInfo expects it (its `psp_smi_control`), as
+/// AGESA does before sending SmmInfo (PSP_APOB §3.3; the RS donors the
+/// same, sp5 `reports/PSP_SMM_ABI.md` §3): SmiStatus1\[1\] set (an OR
+/// into the write-1-to-clear register, as AGESA writes it), SmiTrig0\[25\]
+/// cleared, the PSP's source to SMI; the control read back.
+pub fn route_psp<W: Window>(acpi: &W) {
+    let (control, shift) = source::PSP.control();
+    update::<u32, _>(acpi, source::PSP.status().offset, 0, source::PSP.mask());
+    update::<u32, _>(acpi, TRIGGER0.offset, Trigger0::PSP::SET.value, 0);
+    update::<u32, _>(
+        acpi,
+        control.offset,
+        3 << shift,
+        (Route::Smi as u32) << shift,
+    );
+    let _ = acpi.read32(control.offset);
+}
+
+/// Acknowledge the PSP's SMI: SmiTrig0\[25\], which the PSP set to raise
+/// it (SmmInfo's `trigger`), dropped, then its source cleared, both read
+/// back so the posted writes are done. Before the SMI ends and the P2C
+/// buffer says READY ([`crate::psp::p2c::release`]): once it does, the PSP
+/// may set the trigger for its next request, which a later drop, or any
+/// read-modify-write of SmiTrig0 such as [`eos`], would lose.
+pub fn acknowledge_psp<W: Window>(acpi: &W) {
+    update::<u32, _>(acpi, TRIGGER0.offset, Trigger0::PSP::SET.value, 0);
+    clear(acpi, source::PSP);
+    let _ = acpi.read32(TRIGGER0.offset);
+    let _ = acpi.read32(source::PSP.status().offset);
+}
+
+/// The periodic SMI every `ms` milliseconds (1 to 32767), or none: the
+/// vendors' FchSmmPeriodicalDispatcher (S8040 V2.00 FchSmmDispatcher
+/// `0x22c0`: a period in 1 ms ticks sets SmiTrig0\[SmiTimerSel\], SMIx96
+/// takes the count and its enable, SMIxC3 |= 50h routes both timer
+/// sources to SMI; `0x2430` clears the routes). Its SMIs are
+/// [`source::SHORT_TIMER`] and [`source::LONG_TIMER`].
+pub fn periodic<W: Window>(acpi: &W, ms: Option<u16>) {
+    let timer = acpi.at(SMI_TIMER);
+    match ms.filter(|&ms| ms != 0) {
+        Some(ms) => {
+            acpi.at(TRIGGER0)
+                .modify(Trigger0::SMI_TIMER_SEL::Milliseconds);
+            timer.write(SmiTimer::COUNT.val(ms.min(0x7fff)) + SmiTimer::ENABLE::SET);
+            [source::SHORT_TIMER, source::LONG_TIMER]
+                .into_iter()
+                .for_each(|s| set_route(acpi, s, Route::Smi));
+        }
+        None => {
+            [source::SHORT_TIMER, source::LONG_TIMER]
+                .into_iter()
+                .for_each(|s| set_route(acpi, s, Route::Disabled));
+            timer.modify(SmiTimer::ENABLE::CLEAR);
+        }
+    }
+}
+
 /// Raise a software SMI by writing `value` to the SMI command port.
 pub fn software_smi<I: Window>(io: &I, value: u8) {
     io.write8(APM_CNT.into(), value);
@@ -282,10 +350,24 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
     init(acpi);
 }
 
+/// The SMI command port and the PSP's SMI ([`route_psp`]) only, for a
+/// handler that serves the PSP and the CPUs' local SMIs (whose trigger
+/// I/O cycle writes the command port) while the OS owns ACPI: SLP_TYP,
+/// the power button and the GEVENTs stay with it. Then SMIs on.
+pub fn enable_psp<W: Window>(acpi: &W) {
+    acpi.at(PM_ACPI_SMI_CMD).set(APM_CNT);
+    set_route(acpi, source::SMI_CMD, Route::Smi);
+    route_psp(acpi);
+    clear_all(acpi);
+    init(acpi);
+}
+
 /// The sources of one SMI, read once at its start: the status registers
 /// the SMI pointer names. An SCI status is cleared at once.
 pub struct Pending {
     status: [u32; STATUS_COUNT],
+    /// The sources a handler acknowledged itself ([`Self::acknowledged`]).
+    acknowledged: [core::cell::Cell<u32>; STATUS_COUNT],
 }
 
 impl Pending {
@@ -303,7 +385,10 @@ impl Pending {
                 *status = acpi.at(super::smi::status(index)).get();
             }
         }
-        Self { status }
+        Self {
+            status,
+            acknowledged: Default::default(),
+        }
     }
 
     /// Whether `source` raised this SMI.
@@ -318,12 +403,24 @@ impl Pending {
         self.status[0] & ((1 << source::GEVENTS) - 1)
     }
 
-    /// Clear the sources read and end the SMI (EOS).
+    /// `source` is the handler's to clear, at the point its protocol
+    /// needs ([`acknowledge_psp`]): [`Self::finish`] leaves it, so a new
+    /// event of it that latched after the handler cleared it stays for
+    /// the next SMI.
+    pub fn acknowledged(&self, source: Source) {
+        if let Some(acknowledged) = self.acknowledged.get(usize::from(source.reg)) {
+            acknowledged.set(acknowledged.get() | source.mask());
+        }
+    }
+
+    /// Clear the sources read, but those a handler acknowledged itself,
+    /// and end the SMI (EOS).
     #[inline(always)]
     pub fn finish<W: Window>(&self, acpi: &W) {
         for (index, status) in self.status.iter().enumerate() {
-            if *status != 0 {
-                acpi.at(super::smi::status(index)).set(*status);
+            let status = *status & !self.acknowledged[index].get();
+            if status != 0 {
+                acpi.at(super::smi::status(index)).set(status);
             }
         }
         eos(acpi);
@@ -372,6 +469,19 @@ mod tests {
     use crate::fch::ACPI_MMIO;
 
     #[test]
+    fn the_periodic_smi_counts_milliseconds_and_routes_both_timers() {
+        let acpi = crate::fch::model::Mem::default();
+        periodic(&acpi, Some(1000));
+        assert_eq!(acpi.get(SMI_TIMER.offset, 2), 0x8000 | 1000);
+        assert_eq!(acpi.get(TRIGGER0.offset, 4), 1 << 29);
+        // SmiStat4[14] and [15]: SMIxC0 bits 28 and 30, as the vendor's C3h |= 50h.
+        assert_eq!(acpi.get(control(8).offset, 4), 0x5000_0000);
+        periodic(&acpi, None);
+        assert_eq!(acpi.get(SMI_TIMER.offset, 2), 1000);
+        assert_eq!(acpi.get(control(8).offset, 4), 0);
+    }
+
+    #[test]
     fn sources_map_to_control_slots() {
         let slot = |source: Source| (source.control().0.offset, source.control().1);
         let control = |n| control(n).offset;
@@ -409,6 +519,28 @@ mod model_tests {
     use super::*;
     use crate::fch::model::Mem;
 
+    /// A source the handler acknowledged itself is not cleared again at
+    /// the end of the SMI: the PSP's next request, latched after the
+    /// handler cleared the first, survives.
+    #[test]
+    fn an_acknowledged_source_is_the_handlers_to_clear() {
+        let acpi = Mem::default();
+        let (psp, slp) = (source::PSP, source::SLP_TYP);
+        // SMI pointer: the status registers of both pending.
+        acpi.put(POINTER.offset, 2, (1 << psp.reg | 1 << slp.reg) << 1);
+        acpi.put(psp.status().offset, 4, psp.mask());
+        acpi.put(slp.status().offset, 4, slp.mask());
+        let pending = Pending::take(&acpi);
+        assert!(pending.has(psp) && pending.has(slp));
+        pending.acknowledged(psp);
+        // The plain memory model keeps what is written: what `finish`
+        // writes to the status register is what it clears.
+        acpi.put(psp.status().offset, 4, 0xdead);
+        pending.finish(&acpi);
+        assert_eq!(acpi.get(psp.status().offset, 4), 0xdead);
+        assert_eq!(acpi.get(slp.status().offset, 4), slp.mask());
+    }
+
     #[test]
     fn control_fields_match_the_donor_writes() {
         let acpi = Mem::default();
@@ -420,6 +552,32 @@ mod model_tests {
         assert_eq!(acpi.get(0x2ac, 4), 0x40);
         set_route(&acpi, source::io_trap(0), Route::Smi);
         assert_eq!(acpi.get(0x2c4, 4), 0x100);
+    }
+
+    #[test]
+    fn the_psp_smi_is_routed_as_agesa_writes_it() {
+        let acpi = Mem::default();
+        acpi.put(0x284, 4, 0x10);
+        acpi.put(TRIGGER0.offset, 4, 0x1200_0000);
+        acpi.put(0x2a8, 4, 0xf3);
+        route_psp(&acpi);
+        // PSP_APOB §3.3: FED80284 |= 2, FED80298 &= ~BIT25, FED802A8[3:2] = 1.
+        assert_eq!(acpi.get(0x284, 4), 0x12);
+        assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1000_0000);
+        assert_eq!(acpi.get(0x2a8, 4), 0xf7);
+    }
+
+    #[test]
+    fn a_psp_only_handler_gets_the_command_port_and_the_psp() {
+        let acpi = Mem::default();
+        acpi.put(TRIGGER0.offset, 4, 0x8000_0000);
+        enable_psp(&acpi);
+        assert_eq!(acpi.get(PM_ACPI_SMI_CMD.offset, 2), u32::from(APM_CNT));
+        // SMI_CMD (SmiStat2[11]) and the PSP (SmiStat1[1]) to SMI only.
+        assert_eq!(acpi.get(0x2b0, 4), 0x0040_0000);
+        assert_eq!(acpi.get(0x2ac, 4), 0);
+        assert_eq!(acpi.get(0x2a8, 4), 0x4);
+        assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1000_0000);
     }
 
     #[test]

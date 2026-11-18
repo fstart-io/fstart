@@ -21,9 +21,9 @@ otherwise; product names (Naples, Rome, ...) do not appear.
 | `nbio` | `iohc`, `ioapic`, `iommu`, `nbif`, `pcie`, `fuse`, `table`, `Nbio` (a root bridge's NBIO) | `rv`, `zp`, `ssp`, `rs` (`Ios`: an IOS's NBIO) |
 | `smu` | mailbox, thread release | `v9`, `v10`, `v11`, `v13` |
 | `dxio` | firmware client, `wire`, `lanes`, `encode`, `ports`, `hotplug` | `rv`, `zp` (`zp::sequence`), `ssp`; `rs` (MPIO: `ask`, `mailbox`, `session`, `ports`) |
-| `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
-| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
-| `psp`, `apob` | mailbox and commands, the APOB | `apob::rs` (the RS records that differ from Milan's) |
+| `ccx` | MSRs, microcode, MP, cache, power, the table engine (`table`) and the vendor sequence (`init`), MCA setup and the banks' errors at boot (`mca`), MCA work in SMM: thresholds, their polling in a storm, PFEH (`ras`) | `rv`, `zp`, `rs`; `tables::{zp, ssp, gn, rs}` |
+| `fch` | one handle for every FCH (`FchHw`, FCH 0 as `Native`), one register set per block, the SMI dispatcher and its periodic SMI (`smi`) and sleep path (`sx`), the SP3 vendor tasks (`tasks`) | `sandstone`, `taishan`, `huashan`, `songshan` |
+| `psp`, `apob` | C2P mailbox and commands, the P2C mailbox an SMM handler answers (`p2c`), the APOB (with the ABL's event log and the errors in it, `apob::event`) | `psp::ras` (Rome's RAS-EINJ commands), `psp::einj` (the RS PSP's own EINJ service), `apob::rs` (the RS records that differ from Milan's) |
 
 `cpu::Silicon` (`Zp`, `Ssp`, `Gn`) is what IP code tells apart when a
 sequence depends on the die; everything a SoC decides is an argument or a
@@ -62,13 +62,18 @@ routes the DF's VGA window to its root bridge, `Init::route_legacy_vga`,
 and a video ROM is posted on it), SMM installation (`tseg`) and its
 handler (`smm`: one SMRAM configuration and installer, the handler on the
 driver's SMI dispatcher, which a SoC with SMM work of its own extends, as
-`sp3::smm` does), options (`options`), measured boot (`tpm`), the ACPI
-tables (`acpi::install`, from what the SoC gathers) and the SMBIOS
+`sp3::smm` and `rs::smm` do, what the PSP needs of SMM for the SoCs
+that register with it, `smm::psp`, and the machine-check handler of the
+SoCs that run one, `smm::ras`), options (`options`), measured boot
+(`tpm`), the ACPI tables (`acpi::install`, from what the SoC gathers; the
+HEST and the BERT of the last boot's machine checks and of the ABL's
+errors, `acpi::apei`) and the SMBIOS
 builder, and the host build plan (`host`, with the image kinds
 `host::single` and `host::dual`).
 
 A board implements `board::Board`: its name, the SoCs it carries, its CPU
-ceiling, its TPM and BMC hooks. Its stage `main` matches the SoC
+ceiling, its TPM and BMC hooks, its RAS policy (whether its BMC channel
+is the OS's too) and the function that reports a RAS event to its BMC. Its stage `main` matches the SoC
 `flow::start` returns and enters that SoC's flow with its configuration
 of it; the SoCs it does not handle halt, and only the flows it calls are
 linked. platform-amd has no SoC features either.

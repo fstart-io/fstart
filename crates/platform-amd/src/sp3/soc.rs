@@ -409,6 +409,11 @@ pub(crate) fn install_smm<F>(
     flow: &Flow,
     (usb_buses, usb_bus_count): ([u8; 8], u8),
 ) -> Result<(), &'static str> {
+    /// Where the handler reports SmmInfo: firmware data, reserved.
+    static mut SMM_INFO: u32 = crate::smm::status::NOT_SENT;
+    let smm_info = &raw mut SMM_INFO;
+    // SAFETY: firmware data; the handler writes it only on the SW SMI below.
+    unsafe { smm_info.write_volatile(crate::smm::status::NOT_SENT) };
     let einj = state.einj.unwrap_or_default();
     parts::clear_einj_scratch(&einj);
     let soc = &state.soc;
@@ -423,12 +428,16 @@ pub(crate) fn install_smm<F>(
             usb_buses,
             usb_bus_count,
             generation,
+            smm_info: smm_info as u64,
         },
     };
-    // The handler's page tables map the low 4 GiB only; a PSP BAR
-    // above would fault in SMM at SmmInfo, after the lock.
+    // The handler's page tables map the low 4 GiB only; a PSP BAR or
+    // report above would fault in SMM at SmmInfo, after the lock.
     if soc.psp_bar == 0 || soc.psp_bar >= crate::memory::FOUR_GIB {
         return Err("PSP BAR for SMM");
+    }
+    if smm_info as u64 >= crate::memory::FOUR_GIB {
+        return Err("SmmInfo report for SMM");
     }
     let smi = crate::smm::Smi {
         fch: &soc.fch,
@@ -436,8 +445,13 @@ pub(crate) fn install_smm<F>(
         sources: super::smm::sources,
     };
     crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
-    super::smm::prepare_psp_smi(&soc.fch);
-    fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), super::smm::sw::PSP_SMM_INFO);
+    fstart_driver_amd::fch::smi::route_psp(soc.fch.acpi());
+    fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), crate::smm::sw::PSP_SMM_INFO);
+    // The PSP's DF lock and BootDone need the SMM info: without it the DF
+    // lock breaks DMA, and the payload must not get an unlocked DF.
+    // SAFETY: firmware data only the handler writes.
+    let status = crate::smm::status::wait(&state.soc.timer, || unsafe { smm_info.read_volatile() });
+    crate::smm::status::smm_info("sp3", status)?;
     state.smm = Some(config);
     state.soc.smm_installed = true;
     Ok(())

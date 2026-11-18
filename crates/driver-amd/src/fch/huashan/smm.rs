@@ -4,34 +4,13 @@
 //! The Sx entry with the V11 USB/sleep messages is in
 //! [`crate::fch::sx`].
 
-use fstart_core::services::Timer;
-
 use crate::fch::FchHw;
 use crate::fch::smi::{self, Route, source};
-use crate::psp::command::{C2pBuffer, LockFchReg};
-use crate::psp::mailbox::{C2pTransport, Mailbox, PspError};
 
 /// Milan late task af78: raise SW SMI D2 at ReadyToBoot; the SMM handler
-/// then calls [`lock_fch_registers`].
+/// then sends LockFCHReg (C2P 0x30) with the SMM flag set.
 pub fn request_fch_lock<H: FchHw>(hw: &H) {
     smi::software_smi(hw.io(), smi::sw::FCH_LOCK);
-}
-
-/// The SW SMI D2 handler body (Milan): send LockFCHReg (C2P 0x30) with the
-/// SMM flag set. The donor's second LockFCHReg (0x3A) has an untraced gate
-/// and is not sent.
-///
-/// # Safety
-/// `flag` is the SMM flag byte registered with SmmInfo; `buffer` is in SMM
-/// memory the PSP may access.
-pub unsafe fn lock_fch_registers<T: C2pTransport>(
-    psp: &Mailbox<T>,
-    timer: &impl Timer,
-    buffer: &mut C2pBuffer<LockFchReg>,
-    flag: *mut u8,
-) -> Result<(), PspError> {
-    // SAFETY: the caller's contract.
-    unsafe { psp.send_in_smm(timer, buffer, flag) }
 }
 
 /// The I/O trap slot Rome's Cf9ResetSmm uses here.

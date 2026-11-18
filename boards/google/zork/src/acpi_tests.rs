@@ -59,6 +59,7 @@ fn vilboz_dsdt_loads() {
         ivrs_devices: &[],
         sb_aml: &soc_aml,
         tables: &[],
+        apei: None,
         board: &board,
     })
     .unwrap();

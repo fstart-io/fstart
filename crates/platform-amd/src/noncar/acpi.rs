@@ -136,6 +136,8 @@ pub fn install<S: super::DieSoc>(
             ivrs_devices: &S::ivrs_devices(&silicon.state),
             sb_aml: &silicon.aml,
             tables: &silicon.tables,
+            // Zeppelin's and Picasso's firmware report none of the ABL's.
+            abl: &[],
         },
         Some(&S::smi(ctx, &silicon.state)),
         ctx.board,

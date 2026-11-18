@@ -118,6 +118,16 @@ header_only!(
     |_g| true
 );
 header_only!(
+    /// SMM is locked: the RS SoCs' PSP DXE driver (AmdPspDxeV2Rs, sp5
+    /// `closure-runtime/lifecycle`, `PspOnSmmReadyToLock` `26C8`/`2894`)
+    /// sends it from its DxeSmmReadyToLock notification, after LockDFReg
+    /// and before ReadyToBoot, header only. Milan's AmdPspDxeV2Ssp does not
+    /// have it.
+    SmmLock = 0x6c,
+    "SmmLock",
+    |g| g == Variant::Gn
+);
+header_only!(
     /// Naples only, from the SMM capsule hook (PSP_APOB §3.3).
     ClearSmmLock = 0x1c,
     "ClearSmmLock",
@@ -187,9 +197,6 @@ pub const FCH_SMI_CONTROL_PSP: u64 = 0xfed8_02a8;
 pub const SMM_FLAG_OFFSET: u64 = 0xc00;
 /// P2C (PSP to CPU) buffer size AGESA allocates in SMRAM.
 pub const P2C_BUFFER_SIZE: u64 = 0x2000;
-/// Milan sets bit 31 of the P2C buffer's second header dword before SmmInfo
-/// (P2CmboxV2Ssp, decompiler-only); Naples and Rome leave it 0.
-pub const P2C_HEADER1_MILAN: u32 = 0x8000_0000;
 
 /// SmmInfo (0x02): where SMRAM is, how the PSP raises its SMI and where the
 /// SMM-side buffers are. Identical on every generation (PSP_APOB §3.4,
@@ -212,6 +219,9 @@ pub struct SmmInfo {
     pub eos: SmmRegister,
     /// PSP SMI control: bits 3:2 must read 1 (SMI).
     pub psp_smi_control: SmmRegister,
+    /// [`SmmInfo::new`] makes them memory/dword descriptors of 0; the RS
+    /// donors (sp5 `reports/PSP_SMM_ABI.md` §2) and the die SoCs' flows
+    /// send them zeroed.
     pub reserved: [SmmRegister; 5],
     /// The SMRAM page used for C2P commands from SMM.
     pub c2p_smm_buffer: u64,
@@ -379,6 +389,7 @@ mod tests {
     #[test]
     fn header_sizes_match_agesa() {
         assert_eq!(C2pBuffer::new(BootDone).header.size, 8);
+        assert_eq!(C2pBuffer::new(SmmLock).header.size, 8);
         // The native RV/ZP flows' default buffer.
         assert_eq!(C2pBuffer::new(Default32::<BootDone>::new()).header.size, 32);
         assert_eq!(C2pBuffer::new(SxInfo { sleep_type: 3 }).header.size, 9);

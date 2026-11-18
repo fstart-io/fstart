@@ -205,6 +205,14 @@ pub enum PspError {
 }
 
 impl PspError {
+    /// Whether the PSP may still own the command's buffer: a wait ended
+    /// without the command's completion (a timeout, an aperture that went
+    /// away, the recovery firmware). A refused or completed command, or one
+    /// never sent, left it.
+    pub const fn uncertain(&self) -> bool {
+        matches!(self, Self::Timeout(_) | Self::Unavailable | Self::Recovery)
+    }
+
     /// A name and a number (the status, the command), for logs without
     /// `Debug`.
     pub const fn parts(&self) -> (&'static str, u32) {
@@ -491,6 +499,11 @@ impl<T: C2pTransport> Session<T> {
         self.mailbox.send(timer, buffer)?;
         self.state = State::Ready;
         Ok(*buffer)
+    }
+
+    /// The generation of its PSP.
+    pub const fn silicon(&self) -> Variant {
+        self.mailbox.silicon()
     }
 
     /// Whether BootDone was sent.

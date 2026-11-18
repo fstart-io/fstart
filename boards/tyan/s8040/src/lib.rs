@@ -28,6 +28,11 @@ impl fstart_platform_amd::board::Board for Board {
     const SOCS: &'static [SocId] = &[SocId::Siena];
     /// 64 cores, SMT.
     const MAX_CPUS: u16 = 128;
+    /// Corrected errors counted in SMM and reported to the BMC's SEL
+    /// ([`bmc::sel`]), ten per thresholding SMI.
+    const RAS: fstart_platform_amd::smm::ras::Policy =
+        fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
+    const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
 }
 
 /// Soldered devices the boot needs, by their lane and what is behind the
@@ -98,6 +103,8 @@ pub fn config() -> Config {
         memory_channels: 1 << 1 | 1 << 3 | 1 << 4 | 1 << 7 | 1 << 9 | 1 << 10,
         // The vendor's type 16: 6 TB over twelve slots.
         max_dimm_mib: 512 * 1024,
+        // The PSP's EINJ, for RAS validation on this development board.
+        einj: true,
     }
 }
 

@@ -33,7 +33,121 @@ pub struct Event {
     pub data_b: u32,
 }
 
+/// An error the ABL found before x86 ran, as the vendors' platform RAS
+/// DXE drivers read it from the AGESA error log (the APOB's events) for
+/// the BERT and the BMC: Rome AmdPlatformRasSspDxe `0x4a50`, Milan
+/// AmdPlatformRasGnDxe, Siena V2.00 AmdPlatformRasRsDxe `0x49cc` (DIMMs),
+/// `0x4bb4` (CCD BIST), `0x4ed4` (PMIC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AblError {
+    /// A DIMM the ABL took out of the memory map: its training
+    /// ([`id::PMU_TRAINING`]) or memory test ([`id::MEMORY_TEST`])
+    /// failed; the event's data as the ABL logged it.
+    Dimm {
+        event: u32,
+        socket: u8,
+        channel: u8,
+        dimm: u8,
+        data_a: u32,
+        data_b: u32,
+    },
+    /// A CCD's BIST failed ([`id::CCD_BIST`]): the event's data A, which
+    /// the vendor reports as is, and its data B, both as the ABL logged
+    /// them.
+    CcdBist { data_a: u32, data_b: u32 },
+    /// A DDR5 PMIC error ([`id::PMIC`], the PMIC status the ABL read
+    /// in training, or [`id::PMIC_RUNTIME`], the PMIC's error log):
+    /// fatal for class 9, the event's data as the ABL logged it.
+    Pmic {
+        event: u32,
+        socket: u8,
+        channel: u8,
+        dimm: u8,
+        fatal: bool,
+        data_a: u32,
+        data_b: u32,
+    },
+}
+
+/// The ABL event ids [`AblError`] reads.
+pub mod id {
+    pub const PMU_TRAINING: u32 = 0x4001;
+    pub const MEMORY_TEST: u32 = 0x4003;
+    pub const CCD_BIST: u32 = 0x4065;
+    pub const PMIC: u32 = 0x406b;
+    pub const PMIC_RUNTIME: u32 = 0x406e;
+}
+
+/// Where an ABL's memory events name their DIMMs: DIMM 0's bit in data A
+/// of a training failure and of a memory test failure (DIMM 1's is the
+/// next); socket and channel are data A's bytes 0 and 1 in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DimmBits {
+    pub training: u8,
+    pub test: u8,
+}
+
+impl DimmBits {
+    /// The SSP and GN dies' ABL (Rome AmdPlatformRasSspDxe `0x4a50`, Milan
+    /// AmdPlatformRasGnDxe: bits 16 and 17 for both events).
+    pub const SSP: Self = Self {
+        training: 16,
+        test: 16,
+    };
+    /// The RS die's (Siena V2.00 AmdPlatformRasRsDxe `0x49cc`: a training
+    /// failure's DIMMs at bits 20 and 21).
+    pub const RS: Self = Self {
+        training: 20,
+        test: 16,
+    };
+}
+
+/// The AGESA event class of a fatal error (the vendor's PMIC records
+/// are fatal for it).
+const CLASS_FATAL: u32 = 9;
+
 impl Event {
+    /// The errors this event reports (a memory event can name both DIMMs
+    /// of its channel), `bits` locating its DIMMs.
+    pub fn errors(self, bits: DimmBits) -> impl Iterator<Item = AblError> {
+        let [socket, channel, ..] = self.data_a.to_le_bytes();
+        let (info, data_a, data_b) = (self.info, self.data_a, self.data_b);
+        let dimms = move |bit: u8| {
+            (0..2u8)
+                .filter(move |dimm| data_a >> (bit + dimm) & 1 != 0)
+                .map(move |dimm| AblError::Dimm {
+                    event: info,
+                    socket,
+                    channel,
+                    dimm,
+                    data_a,
+                    data_b,
+                })
+        };
+        let memory = match self.info {
+            id::PMU_TRAINING => Some(dimms(bits.training)),
+            id::MEMORY_TEST => Some(dimms(bits.test)),
+            _ => None,
+        };
+        let other = match self.info {
+            id::CCD_BIST => Some(AblError::CcdBist {
+                data_a: self.data_a,
+                data_b: self.data_b,
+            }),
+            id::PMIC | id::PMIC_RUNTIME => Some(AblError::Pmic {
+                event: self.info,
+                socket,
+                channel,
+                dimm: (self.data_a >> 16 & 1) as u8,
+                fatal: self.class == CLASS_FATAL,
+                data_a: self.data_a,
+                data_b: self.data_b,
+            }),
+            _ => None,
+        };
+        memory.into_iter().flatten().chain(other)
+    }
+
     /// Names of the ids AGESA acts on (Milan AmdMemTestExPei scans for them
     /// and warm-resets to map out DIMMs, PSP_APOB §3.8).
     pub const fn name(&self) -> Option<&'static str> {
@@ -123,6 +237,63 @@ mod tests {
             all,
             [Ok((0, 0x4003)), Ok((0x100, 0x1234)), Ok((0x100, 0x4068))]
         );
+    }
+
+    #[test]
+    fn the_errors_the_vendors_report() {
+        let event = |class, info, data_a, data_b| Event {
+            class,
+            info,
+            data_a,
+            data_b,
+        };
+        let errors = |e: Event, bits| e.errors(bits).collect::<std::vec::Vec<_>>();
+        let dimm = |event, socket, channel, dimm, data_a, data_b| AblError::Dimm {
+            event,
+            socket,
+            channel,
+            dimm,
+            data_a,
+            data_b,
+        };
+        // A training failure of both DIMMs of socket 1's channel 3: bits
+        // 20 and 21 on RS, 16 and 17 on SSP; the event's words kept.
+        assert_eq!(
+            errors(event(6, 0x4001, 0x30_0301, 9), DimmBits::RS),
+            [
+                dimm(0x4001, 1, 3, 0, 0x30_0301, 9),
+                dimm(0x4001, 1, 3, 1, 0x30_0301, 9)
+            ]
+        );
+        assert_eq!(errors(event(6, 0x4001, 0x30_0301, 0), DimmBits::SSP), []);
+        assert_eq!(
+            errors(event(6, 0x4001, 0x2_0b00, 0), DimmBits::SSP),
+            [dimm(0x4001, 0, 11, 1, 0x2_0b00, 0)]
+        );
+        assert_eq!(
+            errors(event(6, 0x4003, 0x1_0200, 0), DimmBits::RS),
+            [dimm(0x4003, 0, 2, 0, 0x1_0200, 0)]
+        );
+        assert_eq!(
+            errors(event(9, 0x406b, 0x1_0400, 0x55), DimmBits::RS),
+            [AblError::Pmic {
+                event: 0x406b,
+                socket: 0,
+                channel: 4,
+                dimm: 1,
+                fatal: true,
+                data_a: 0x1_0400,
+                data_b: 0x55
+            }]
+        );
+        assert_eq!(
+            errors(event(6, 0x4065, 7, 0x8000_0001), DimmBits::RS),
+            [AblError::CcdBist {
+                data_a: 7,
+                data_b: 0x8000_0001
+            }]
+        );
+        assert_eq!(errors(event(3, 0x1234, 0xffff_ffff, 0), DimmBits::RS), []);
     }
 
     #[test]

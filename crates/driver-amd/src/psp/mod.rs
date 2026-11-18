@@ -2,7 +2,9 @@
 //! The PSP (MP0) interfaces the x86 side uses: the C2P (CPU to PSP)
 //! mailbox ([`mailbox`]) with the per-generation precheck and status rules
 //! over an MMIO or SMN transport, the typed command buffers ([`command`]:
-//! SmmInfo, BootDone, LockDFReg, ...) and the SP3 RAS commands ([`ras`]).
+//! SmmInfo, BootDone, LockDFReg, ...), the P2C (PSP to CPU) mailbox an SMM
+//! handler answers ([`p2c`]), Rome's RAS commands ([`ras`]) and the RS
+//! PSP's own ACPI error injection ([`einj`]).
 //! The flash image format the PSP boots from is `fstart_amdfw_format`.
 //!
 //! None of the commands keeps the PSP from booting (PSP_APOB §3.3): every
@@ -11,7 +13,9 @@
 
 pub mod boot;
 pub mod command;
+pub mod einj;
 pub mod mailbox;
+pub mod p2c;
 pub mod ras;
 
 pub use command::{C2pBuffer, Command};

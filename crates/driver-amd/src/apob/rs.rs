@@ -18,6 +18,10 @@ use super::{Apob, ApobError, group, instance};
 
 pub mod memory;
 
+/// The 9/9 hole of the PSP's ACPI EINJ command buffer (openSIL
+/// `ReservedRasEinj`, `xUSL/Include/ApobCmn.h:429`; [`crate::psp::einj`]).
+pub const HOLE_RAS_EINJ: u32 = 15;
+
 /// CCD slots of the 3/3 record.
 pub const CCDS: usize = 12;
 const CCXS: usize = 2;

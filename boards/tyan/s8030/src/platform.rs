@@ -10,7 +10,7 @@ use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::gpio::Pad;
 use fstart_driver_uart::ns16550::Ns16550Config;
 use fstart_platform_amd::board::SocId;
-use fstart_platform_amd::smm::SleepNotify;
+use fstart_platform_amd::smm::{SleepNotify, ras};
 use fstart_platform_amd::sp3::board::{self, BoardError, Gpio, Policy};
 
 use crate::dxio::{Detected, M2Mode, Options};
@@ -41,6 +41,12 @@ impl fstart_platform_amd::board::Board for Board {
     });
     const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
         &[&POLICY_OPTIONS, &dxio::SETUP];
+    /// Corrected errors counted in SMM and reported to the BMC's SEL
+    /// ([`crate::bmc::sel`]), ten per thresholding SMI. Not PFEH any more:
+    /// its intercepted status writes cannot be replayed under Linux 7.3
+    /// (`fstart_driver_amd::ccx::ras`).
+    const RAS: ras::Policy = ras::Policy::THRESHOLDS;
+    const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
 }
 
 /// The policy knobs over Rome's policy; Milan's board values are the same.
