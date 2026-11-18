@@ -1198,6 +1198,10 @@ impl PciEcam {
     /// through a mapping that does not cover above 4 GiB, and some devices
     /// that declare a 64-bit BAR still do not decode that high. The
     /// above-4-GiB window takes what does not fit.
+    ///
+    /// Port I/O that does not fit is left out ([`Self::drop_io`]) rather
+    /// than failing the root: a root bridge of a multi-socket SoC may route
+    /// one 4 KiB I/O window, room for one bridge.
     fn place_root(&mut self, root: usize) -> Result<(), PciEcamError> {
         let bus = self.roots[root].bus_start;
         loop {
@@ -1237,11 +1241,63 @@ impl PciEcam {
                     ),
                     Request::Window(dev_idx, kind) => (self.devices[dev_idx].addr, kind.register()),
                 };
+                if placement == Placement::Io {
+                    fstart_log::warn!(
+                        "pci: no I/O space for segment={:#x} bus={:#x} device={:#x} function={} register={:#x} size={:#x}: left unassigned",
+                        address.segment(),
+                        address.bus(),
+                        address.device(),
+                        address.function(),
+                        register,
+                        size
+                    );
+                    self.drop_io(request);
+                    continue;
+                }
                 PciEcamError::ResourceExhausted.log_bar("resource allocation", address, register);
                 fstart_log::error!("pci: requested size={:#x} alignment={:#x}", size, align);
                 return Err(PciEcamError::ResourceExhausted);
             };
             self.assign(request, base);
+        }
+    }
+
+    /// Leave the port I/O of `request` unassigned: an I/O BAR, or a
+    /// bridge's I/O window with every I/O BAR and window behind it. Port
+    /// I/O is optional for a PCI Express function (PCIe Base 6.0, 7.5.1.2.1:
+    /// an Endpoint must not depend on the OS allocating the I/O its BARs
+    /// claim); Linux leaves such a BAR unassigned too.
+    fn drop_io(&mut self, request: Request) {
+        match request {
+            Request::Bar(dev_idx, bar_idx) => self.drop_io_bars(dev_idx, Some(bar_idx)),
+            Request::Window(bridge, _) => {
+                let device = &self.devices[bridge];
+                let (root, buses) = (device.root, device.secondary_bus..=device.subordinate_bus);
+                self.devices[bridge].windows[WindowKind::Io as usize].size = 0;
+                for dev_idx in 0..self.devices.len() {
+                    let device = &self.devices[dev_idx];
+                    if device.root == root && buses.contains(&device.addr.bus()) {
+                        self.devices[dev_idx].windows[WindowKind::Io as usize].size = 0;
+                        self.drop_io_bars(dev_idx, None);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The movable I/O BARs of `dev_idx`, or only BAR `only`, leave the
+    /// allocation. Its I/O decode stays off unless a fixed I/O BAR needs it
+    /// or another I/O BAR is placed.
+    fn drop_io_bars(&mut self, dev_idx: usize, only: Option<usize>) {
+        let device = &mut self.devices[dev_idx];
+        for (bar_idx, bar) in device.bars.iter_mut().enumerate() {
+            if bar.bar_type == BarType::Io && !bar.fixed && only.is_none_or(|only| only == bar_idx)
+            {
+                bar.bar_type = BarType::None;
+            }
+        }
+        if !(device.bars.iter()).any(|bar| bar.fixed && bar.bar_type == BarType::Io) {
+            device.original_command &= !PCI_CMD_IO;
         }
     }
 
@@ -2595,6 +2651,128 @@ mod tests {
         assert_eq!(pci.read32(gpu, crate::PCI_BAR1), 0x8210_0000);
         assert_eq!(pci.read32(host, PCI_BAR0), 0x8220_0000);
         assert_windows_hold_only_their_subtrees(&pci);
+    }
+
+    /// The Ethanol-X's root bridge 0.0 (2P Milan) as its DF plan routes
+    /// it: PCI memory 0xF000_0000 + 96 MiB and the ports 0x4000-0x4FFF,
+    /// the 4 KiB the equal I/O split leaves each of eight root bridges.
+    /// PCIE1 (60:03.1) with a dual-port NIC, an I/O BAR on each function,
+    /// comes before the BMC's link: 60:05.2, the AST1150 and the AST2500,
+    /// its framebuffer, registers and ports. Two bridges want an I/O
+    /// window and one fits; enumeration halted the boot.
+    #[test]
+    fn ports_for_one_bridge_leave_the_other_without_and_enumeration_goes_on() {
+        const BUSES: usize = 6;
+        let mut config_space = vec![0u32; BUSES << 18];
+        let root = Root {
+            segment: 0,
+            ecam_base: config_space.as_mut_ptr() as usize - (0x60 << 20),
+            ecam_size: BUSES << 20,
+            bus_start: 0x60,
+            bus_end: 0x60 + BUSES as u8 - 1,
+            mmio32: ResourcePool::new(0xf000_0000, 0x0600_0000).unwrap(),
+            mmio64: ResourcePool::new(0x100_2020_0000, 0xdf_5fe0_0000).unwrap(),
+            io_pool: ResourcePool::new(0x4000, 0x1000).unwrap(),
+            reserved_through: 0,
+            next_bus: 0x61,
+        };
+        let mut pci = PciEcam::with_pools(HVec::from_iter([root]));
+        let pcie1 = PciAddress::new(0, 0x60, 3, 1);
+        let nic = [0, 1].map(|function| PciAddress::new(0, 0x61, 0, function));
+        let bmc = PciAddress::new(0, 0x60, 5, 2);
+        let ast1150 = PciAddress::new(0, 0x62, 0, 0);
+        let ast2500 = PciAddress::new(0, 0x63, 0, 0);
+        let psp = PciAddress::new(0, 0x64, 0, 2);
+        let port = |function| {
+            endpoint(
+                nic[function],
+                &[
+                    (0, BarType::Memory32, 0x10_0000),
+                    (2, BarType::Io, 0x20),
+                    (3, BarType::Memory32, 0x4000),
+                ],
+            )
+        };
+        for device in [
+            bridge_at(pcie1, 0x61, 0x61),
+            port(0),
+            port(1),
+            bridge_at(bmc, 0x62, 0x63),
+            bridge_at(ast1150, 0x63, 0x63),
+            endpoint(
+                ast2500,
+                &[
+                    (0, BarType::Memory32, 0x400_0000),
+                    (1, BarType::Memory32, 0x2_0000),
+                    (2, BarType::Io, 0x80),
+                ],
+            ),
+            bridge_at(PciAddress::new(0, 0x60, 7, 1), 0x64, 0x64),
+            endpoint(
+                psp,
+                &[
+                    (2, BarType::Memory32, 0x8_0000),
+                    (5, BarType::Memory32, 0x2000),
+                ],
+            ),
+        ] {
+            assert!(pci.devices.push(device).is_ok());
+        }
+        pci.write16(ast2500, PCI_COMMAND, PCI_CMD_IO);
+        pci.devices[5].original_command = PCI_CMD_IO;
+
+        pci.allocate_resources().unwrap();
+
+        // The first bridge in scan order has the ports, both functions' BARs
+        // in its one window.
+        assert_eq!(pci.read32(pcie1, PCI_IO_BASE) & 0xffff, 0x4040);
+        for function in nic {
+            let port = pci.read32(function, PCI_BAR0 + 8) & !0x3;
+            assert!((0x4000..0x5000).contains(&port));
+        }
+        // The BMC's path has none: its windows are closed, the AST2500's
+        // I/O BAR is unassigned and its I/O decode off. Its memory is all
+        // there, the framebuffer at the pool's one 64 MiB boundary.
+        for bridge in [bmc, ast1150] {
+            assert_eq!(pci.read32(bridge, PCI_IO_BASE) & 0xffff, 0x00ff);
+        }
+        assert_eq!(pci.read16(ast2500, PCI_COMMAND) & PCI_CMD_IO, 0);
+        assert!(pci.assigned_bars().all(|(address, window)| {
+            address != ast2500 || window.kind != crate::PciWindowKind::Io
+        }));
+        assert_eq!(pci.read32(ast2500, PCI_BAR0), 0xf000_0000);
+        assert_ne!(pci.read32(ast2500, crate::PCI_BAR1), 0);
+        assert_ne!(pci.read32(psp, PCI_BAR0 + 8), 0);
+        assert_windows_hold_only_their_subtrees(&pci);
+    }
+
+    /// An I/O BAR on the root bus that does not fit is left out; the
+    /// function's other I/O BAR and its memory keep theirs.
+    #[test]
+    fn a_root_bus_io_bar_without_ports_is_left_out() {
+        let (mut pci, _config_space) = test_pci();
+        pci.configure_windows(0x8000_0000, 0x10_0000, 0, 0, 0x1000, 0x40)
+            .unwrap();
+        let addr = PciAddress::new(0, 0, 1, 0);
+        let device = endpoint(
+            addr,
+            &[
+                (0, BarType::Io, 0x40),
+                (1, BarType::Io, 0x40),
+                (2, BarType::Memory32, 0x1000),
+            ],
+        );
+        assert!(pci.devices.push(device).is_ok());
+
+        pci.allocate_resources().unwrap();
+
+        assert_eq!(pci.read32(addr, PCI_BAR0), 0x1001);
+        assert_eq!(pci.read32(addr, crate::PCI_BAR1), 0);
+        assert_eq!(pci.read32(addr, PCI_BAR0 + 8), 0x8000_0000);
+        assert_eq!(
+            pci.read16(addr, PCI_COMMAND) & (PCI_CMD_IO | PCI_CMD_MEMORY),
+            PCI_CMD_IO | PCI_CMD_MEMORY
+        );
     }
 
     pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
