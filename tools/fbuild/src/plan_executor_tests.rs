@@ -45,7 +45,7 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
     }];
     // Intentionally consumer-first. Neither names nor output formats imply order.
     plan.units.push(producer);
-    let resolved = Resolved { plan };
+    let resolved = Resolved { plan, blobs: None };
     assert_eq!(
         resolved
             .plan
@@ -105,6 +105,18 @@ fn arbitrary_named_units_share_selections_and_content_bound_artifacts() {
         first.directory, second.directory,
         "producer bytes must invalidate the consuming compiler directory"
     );
+    // Where the blobs are is not what the units compile.
+    let elsewhere = Resolved {
+        blobs: Some(scratch.0.join("deeply/nested/blobs")),
+        ..resolved.clone()
+    };
+    assert_eq!(
+        elsewhere
+            .prepare(&scratch.0, &board, launch, &artifacts, true)
+            .unwrap()
+            .directory,
+        second.directory
+    );
     let mut changed = resolved.clone();
     changed.plan.units[1].features.push("new-input".into());
     assert_ne!(
@@ -148,7 +160,7 @@ fn compiler_files_are_snapshotted_content_bound_and_namespace_isolated() {
     });
     plan.units.push(other);
     plan.order().unwrap();
-    let resolved = Resolved { plan };
+    let resolved = Resolved { plan, blobs: None };
     let unit = &resolved.plan.units[0];
     let first = resolved
         .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
@@ -234,7 +246,7 @@ fn unsupported_required_input_is_rejected_by_input_validation_itself() {
         default: Some("must-not-be-ignored.bin".into()),
         capacity: 4096,
     });
-    let resolved = Resolved { plan };
+    let resolved = Resolved { plan, blobs: None };
     assert!(
         resolved
             .validate_inputs(Path::new("."), &std::collections::BTreeMap::new())

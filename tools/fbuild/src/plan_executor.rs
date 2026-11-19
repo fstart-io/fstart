@@ -18,6 +18,11 @@ mod tests;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Resolved {
     pub plan: BuildPlan,
+    /// The host directory of the blobs the plan packs, which it names
+    /// `fstart_image_build::files::BLOBS_DIR`. Not part of the plan: the
+    /// same blobs anywhere build the same units and image.
+    #[serde(skip)]
+    pub blobs: Option<PathBuf>,
 }
 impl Resolved {
     pub fn new(
@@ -58,7 +63,7 @@ impl Resolved {
             return Err("board manifest arch conflicts with resolved image".into());
         }
         plan.resolve_workspace_inputs(root, &board.dir)?;
-        Ok(Self { plan })
+        Ok(Self { plan, blobs: None })
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
@@ -310,7 +315,9 @@ impl Resolved {
         let outputs = fstart_image_build::image_steps::execute(
             &self.plan,
             &fstart_image_build::image_steps::ImageContext {
-                files: &fstart_image_build::files::HostFiles,
+                files: &fstart_image_build::files::HostFiles {
+                    blobs: self.blobs.clone(),
+                },
                 workspace_root: root,
                 board_dir: &board.dir,
                 board_name: &board.board,

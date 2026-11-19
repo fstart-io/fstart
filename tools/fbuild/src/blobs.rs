@@ -14,8 +14,9 @@ use std::{
 /// The name of the receipt `extract` writes into the blob directory.
 pub const RECEIPT: &str = "fstart-blobs.toml";
 
-/// Extract the board's firmware files from `rom` into `out`. Files the
-/// image doesn't have are an error unless `allow_missing`.
+/// Extract the board's firmware files from `rom` (a flash image, or a
+/// vendor update ZIP holding one) into `out`. Files the image doesn't
+/// have are an error unless `allow_missing`.
 pub fn extract(
     root: &Path,
     board: &BoardManifest,
@@ -29,10 +30,11 @@ pub fn extract(
     Ok(())
 }
 
-/// The blob directory of a build from the donor image `rom` (`--donor`):
-/// its files extracted once per board, image content and blob tables
-/// (the board's and its platform's), under
-/// `target/fstart-blobs/<board>/<image SHA-256>-<tables SHA-256>/`.
+/// The blob directory of a build from the donor `rom` (`--donor`, a flash
+/// image or a vendor update ZIP): its files extracted once per board,
+/// donor content and blob tables (the board's and its platform's), under
+/// `target/fstart-blobs/<board>/<donor SHA-256>-<tables SHA-256>/`. The
+/// plan names it by none of that ([`fstart_image_build::files::BLOBS_DIR`]).
 pub(crate) fn from_donor(
     root: &Path,
     source: &ProfileSource,
@@ -79,6 +81,7 @@ fn extract_from(
     let image = fs::read(rom).map_err(|e| format!("{}: {e}", rom.display()))?;
     let fstart_image_build::donor::Extraction {
         board: name,
+        member,
         found,
         missing,
         absent,
@@ -99,10 +102,17 @@ fn extract_from(
     }
     let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
     let quote = |s: &str| serde_json::to_string(s).unwrap();
+    if let Some(member) = &member {
+        eprintln!("[fstart] {member} of {}", rom.display());
+    }
     let mut receipt = format!(
-        "# Written by `cargo fbuild blobs`.\nsource = {}\nsource-sha256 = {}\nboard = {}\nmissing = [{}]\n",
+        "# Written by `cargo fbuild blobs`.\nsource = {}\nsource-sha256 = {}\n{}board = {}\nmissing = [{}]\n",
         quote(&rom.display().to_string()),
         quote(&sha256(&image)),
+        member.as_deref().map_or_else(String::new, |member| format!(
+            "source-member = {}\n",
+            quote(member)
+        )),
         quote(name),
         missing
             .iter()

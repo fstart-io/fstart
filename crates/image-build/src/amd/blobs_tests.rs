@@ -175,9 +175,8 @@ fn vendor_image() -> Vec<u8> {
     image
 }
 
-#[test]
-fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
-    let image = vendor_image();
+/// The tables of the SoC [`vendor_image`] is for, and of its board.
+fn vendor_tables() -> (SocBlobs, BoardBlobs) {
     let file = |kind, subprogram, instance, file: &str| DirectoryFile {
         kind,
         subprogram,
@@ -215,6 +214,13 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
         apob_destination: None,
         efs_espi: None,
     };
+    (soc, board)
+}
+
+#[test]
+fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
+    let image = vendor_image();
+    let (soc, board) = vendor_tables();
     let (found, missing) = extract(&soc, &board, "board", &image).unwrap();
     assert_eq!(missing, ["psp/os.bin"]);
     let get = |name: &str| found.iter().find(|f| f.file == name).unwrap();
@@ -227,6 +233,75 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
     assert_eq!(patch.origin, "flash offset 0x100040");
     assert_eq!(get("vbios/rv2.bin").origin, "flash offset 0x400080");
     assert_eq!(get("vbios/rv2.bin").bytes.len(), 512);
+}
+
+/// The plan names every file in [`crate::files::BLOBS_DIR`], wherever the
+/// blob directory is: each table's microcode and video BIOS fits the FFS
+/// configuration's fixed-size path there.
+#[test]
+fn every_tables_files_fit_the_ffs_paths_in_the_plans_blob_directory() {
+    let platform = fstart_table("../platform-amd/Cargo.toml");
+    let tables = platform["amd"].as_object().unwrap();
+    assert!(tables.contains_key("siena"));
+    for (name, table) in tables {
+        let soc: SocBlobs = serde_json::from_value(table.clone()).unwrap();
+        let path = |file: &str| format!("{}/{file}", crate::files::BLOBS_DIR);
+        for m in &soc.microcode {
+            let path = path(&m.file);
+            assert!(
+                heapless::String::<128>::try_from(path.as_str()).is_ok(),
+                "{name}: {path}"
+            );
+        }
+        for v in &soc.vbios {
+            let path = path(&v.file);
+            assert!(
+                heapless::String::<256>::try_from(path.as_str()).is_ok(),
+                "{name}: {path}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_vendor_zip_donates_as_its_flash_image() {
+    let (soc, board) = vendor_tables();
+    let board_table = serde_json::json!({
+        "board": "board",
+        "amd": serde_json::to_value(&board).unwrap(),
+    });
+    let platform_table = serde_json::json!({
+        "amd": { "picasso": serde_json::to_value(&soc).unwrap() },
+    });
+    let image = vendor_image();
+    let raw = crate::donor::extract(&board_table, &platform_table, &image, true).unwrap();
+    assert_eq!(raw.member, None);
+    assert_eq!(raw.found.len(), 6);
+    // The vendor's update: its flash tool, a capsule and an image of no
+    // SoC of the board besides the ROM.
+    let other = vec![0xff; image.len()];
+    let zip = crate::donor::tests::zip(&[
+        ("flash.nsh", b"AfuEfix64.efi BIOS.ROM /p /b /n"),
+        ("BIOS.CAP", &image),
+        ("old/BIOS.bin", &other),
+        ("BIOS.ROM", &image),
+    ]);
+    let donated = crate::donor::extract(&board_table, &platform_table, &zip, true).unwrap();
+    assert_eq!(donated.member.as_deref(), Some("BIOS.ROM"));
+    assert_eq!(
+        Donated {
+            member: None,
+            ..donated
+        },
+        raw
+    );
+    // Without it, the ZIP has no image for the board.
+    let zip = crate::donor::tests::zip(&[("old/BIOS.bin", &other)]);
+    let error = crate::donor::extract(&board_table, &platform_table, &zip, true).unwrap_err();
+    assert!(
+        error.contains("no ROM/bin/fd image with firmware"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -324,10 +399,10 @@ fn a_soc_the_donor_lacks_is_absent() {
     let platform = fstart_table("../platform-amd/Cargo.toml");
     // A donor of none of them.
     let none = vec![0xff; fstart_amdfw_format::HALF_SIZE];
-    let error = extract_tables(&board, &platform, &none, false).unwrap_err();
+    let error = crate::donor::extract(&board, &platform, &none, false).unwrap_err();
     assert!(error.contains("none of the board's SoCs"), "{error}");
     // Each SoC the donor lacks is listed, not an error of its own.
-    let donated = extract_tables(&board, &platform, &none, true).unwrap();
+    let donated = crate::donor::extract(&board, &platform, &none, true).unwrap();
     assert_eq!(donated.board, "tyan-s8030");
     assert_eq!(donated.absent, ["milan", "rome"]);
 }

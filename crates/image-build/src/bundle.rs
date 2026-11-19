@@ -27,16 +27,14 @@ mod tests;
 pub const VERSION: u32 = 3;
 /// Where a bundle's assembly finds the blobs it extracts from the donor,
 /// and the blob directory its AMD plan names.
-pub const BLOBS_DIR: &str = "/inputs/blobs";
+pub use crate::files::BLOBS_DIR;
 /// The workspace root of a bundle's files.
 pub const WORKSPACE: &str = "/workspace";
 /// Where a bundle's assembly writes the image.
 pub const OUTPUT: &str = "/output";
 // SBSA's full pflash image is 256 MiB, even though most bytes are erased.
 pub const MAX_FILE: u64 = 256 << 20;
-pub const MAX_DONOR: u64 = 128 << 20;
-/// Copies of the donor image a vendor ZIP may hold (one per flash tool).
-pub const MAX_DONOR_COPIES: usize = 4;
+pub use crate::donor::{MAX_DONOR, MAX_DONOR_COPIES};
 pub const MAX_BUNDLE: u64 = 512 << 20;
 
 pub fn sha256(bytes: &[u8]) -> String {
@@ -198,54 +196,15 @@ impl Bundle {
         Ok(Self { manifest, files })
     }
 
-    /// The donor ROM in `bytes`: a raw ROM, or a ZIP that holds it. A ZIP
-    /// may hold several copies of the same image (vendor updates often
-    /// ship one per flash tool); ZIPs with different images must be
-    /// unpacked by the user.
+    /// The donor's flash image in `bytes`: a raw ROM, or the image of a
+    /// vendor update ZIP with firmware of the bundle's blob tables
+    /// ([`crate::donor::image`]).
     pub fn donor(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
-        if bytes.len() as u64 > MAX_DONOR {
-            return Err("donor too large".into());
-        }
-        // A ZIP starts with a local file header, or is empty (end of directory).
-        if !bytes.starts_with(b"PK\x03\x04") && !bytes.starts_with(b"PK\x05\x06") {
-            return Ok(bytes.to_vec());
-        }
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-        let candidates: Vec<(String, u64)> = (0..zip.len())
-            .filter_map(|index| {
-                let file = zip.by_index(index).ok()?;
-                let name = file.name().to_owned();
-                let ext = Path::new(&name).extension()?.to_str()?.to_ascii_lowercase();
-                ((1 << 20..=MAX_DONOR).contains(&file.size())
-                    && matches!(ext.as_str(), "bin" | "rom" | "fd"))
-                .then_some((name, file.size()))
-            })
-            .collect();
-        // Copies of one image have one size; a ZIP of many large members
-        // must not make us expand them all.
-        if candidates.len() > MAX_DONOR_COPIES {
-            return Err("donor ZIP holds too many ROM/bin/fd images".into());
-        }
-        if candidates.windows(2).any(|pair| pair[0].1 != pair[1].1) {
-            return Err(
-                "donor ZIP holds different ROM/bin/fd images; unpack and select the ROM".into(),
-            );
-        }
-        let mut image: Option<Vec<u8>> = None;
-        for (name, size) in &candidates {
-            let candidate = read_member(&mut zip, name, *size)?;
-            match &image {
-                Some(first) if *first != candidate => {
-                    return Err(
-                        "donor ZIP holds different ROM/bin/fd images; unpack and select the ROM"
-                            .into(),
-                    );
-                }
-                Some(_) => {}
-                None => image = Some(candidate),
-            }
-        }
-        image.ok_or_else(|| "donor ZIP holds no ROM/bin/fd image".into())
+        let tables = self.manifest.packed_donor.as_ref();
+        let usable = |image: &[u8]| {
+            tables.is_none_or(|tables| crate::amd::blobs::has_firmware(&tables.tables, image))
+        };
+        Ok(crate::donor::image(bytes, &usable)?.bytes.into_owned())
     }
 
     /// Run the plan's image steps over the bundle's files and `supplied`,
@@ -406,7 +365,7 @@ impl Manifest {
     }
 }
 
-fn read_member(
+pub(crate) fn read_member(
     zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
     name: &str,
     max: u64,

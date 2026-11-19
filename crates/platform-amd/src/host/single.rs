@@ -14,9 +14,10 @@ use fstart_image_build::{
         blobs,
     },
     build_plan::{FfsAssembly, ImageOperation, ImageStep},
+    files::BLOBS_DIR,
     plan::BuildSelection,
 };
-use std::{boxed::Box, format, string::String, vec::Vec};
+use std::{boxed::Box, format, path::Path, string::String, vec::Vec};
 
 /// How the PSP firmware packed from the files of the SoC's and the board's
 /// blob tables ([`blobs`]) makes the image. With `reset_offset`, a whole
@@ -94,17 +95,17 @@ impl Image {
 
     /// The files of a packed image: the SoC's blob table
     /// (`[package.metadata.fstart.amd.<soc>]` of this crate) and the board's
-    /// (`[package.metadata.fstart.amd]`) in the selected blob directory. None
-    /// without a blob directory.
+    /// (`[package.metadata.fstart.amd]`) in the build's blob directory, as
+    /// the plan names it ([`BLOBS_DIR`]). None without a blob directory.
     fn packed(
         &self,
         host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
     ) -> Result<Option<blobs::Resolved>, String> {
-        let Some(dir) = &options.blobs else {
+        if options.blobs.is_none() {
             return Ok(None);
-        };
+        }
         let tables = &selection.manifests;
         let board: blobs::BoardBlobs = serde_json::from_value(tables.board["amd"].clone())
             .map_err(|e| format!("board [package.metadata.fstart.amd]: {e}"))?;
@@ -125,10 +126,14 @@ impl Image {
         let name = tables.board["board"]
             .as_str()
             .ok_or("the board table has no board name")?;
-        // Absolute, but not read: a bundle's plan names the directory its
-        // assembly fills from the donor (`fstart_image_build::bundle`).
-        let dir = std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
-        blobs::resolve(&soc, &board, name, &dir, host.layout.flash.size as u32).map(Some)
+        blobs::resolve(
+            &soc,
+            &board,
+            name,
+            Path::new(BLOBS_DIR),
+            host.layout.flash.size as u32,
+        )
+        .map(Some)
     }
 }
 

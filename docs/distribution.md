@@ -37,9 +37,10 @@ A bundle is one board/payload build as a ZIP (DEFLATE level 9):
 Vendor ROMs, external kernels and runtime firmware are never included; the
 manifest declares them as inputs instead. An AMD build packs its PSP firmware
 from blobs the user's donor image provides: the manifest carries the blob
-tables (`packed_donor`), and the plan is resolved with the blob directory
-assembly extracts the donor into (`bundle::BLOBS_DIR`), so the build never
-reads a vendor image. Nothing else of the donor ends up in the image.
+tables (`packed_donor`), and its assembly extracts the donor into the blob
+directory every AMD plan names (`files::BLOBS_DIR`; `fbuild assemble` reads
+it from `--blobs`), so the build never reads a vendor image and its plan is the
+one a local build has. Nothing else of the donor ends up in the image.
 
 A board can name an official vendor download that works as its donor:
 
@@ -102,8 +103,11 @@ Add `--input kernel=bzImage` for named inputs, `--signing-key key.pem` for
 an Ed25519 PKCS#8 key (without one, a fresh key is generated and discarded),
 and `--setting KEY=VALUE` to seed the image's settings store, as
 `fbuild assemble --setting` does.
-A donor may be a raw ROM, or a ZIP whose ROM/bin/fd images are all the same
-image (vendor updates often ship one copy per flash tool).
+A donor may be a raw ROM, or a vendor update ZIP: of its ROM/bin/fd members,
+the image with firmware of the board's SoCs is the donor (vendor updates often
+ship one copy per flash tool, besides capsules and tools). A ZIP of different
+such images must be unpacked. `fbuild assemble --donor` and `fbuild blobs`
+take the same donors (`fstart_image_build::donor`).
 
 `Bundle::assemble` (`crates/image-build/src/bundle.rs`) runs the plan's image
 steps (`image_steps::execute`), as `fbuild assemble` does, over an in-memory
@@ -243,6 +247,7 @@ handler. After editing `www/`, copy it into `target/image-web` again.
 `ci/test-web.mjs` opens every bundle in the WASM bindings (under Node) and
 compares WASM and native `compose-bundle` output byte for byte for
 representative builds. Point `FSTART_TEST_DONOR` (MJ11),
-`FSTART_TEST_SP3_DONOR` (Tyan S8030) or `FSTART_TEST_ETHANOLX_DONOR` at a local
-vendor image to include the AMD recipes. Donors are never needed in CI and
+`FSTART_TEST_SP3_DONOR` (Tyan S8030), `FSTART_TEST_ETHANOLX_DONOR`,
+`FSTART_TEST_S8040_DONOR` or `FSTART_TEST_ONYX_DONOR` at a local vendor image
+or download to include the AMD recipes. Donors are never needed in CI and
 must not be uploaded.

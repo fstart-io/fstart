@@ -106,12 +106,19 @@ fn picasso_ui_reserves_the_larger_reset_image_and_entry() {
     assert!(script.contains("PAGES (rw)  : ORIGIN = 0x2020000, LENGTH = 0x2000"));
 }
 
+/// A blob directory in a deeply nested checkout: longer than any
+/// fixed-size field of the plan.
+fn nested_blobs(name: &str) -> String {
+    let nested = "a-deeply-nested-checkout/".repeat(12);
+    format!("/home/someone/{nested}target/fstart-blobs/{name}/0123456789abcdef-01234567")
+}
+
 #[test]
 fn picasso_packs_the_blob_tables_into_a_native_image() {
-    let blobs = std::env::temp_dir();
+    let blobs = nested_blobs("test-board");
     let mut selection = BuildSelection {
         payload: Some("uefi".into()),
-        options: [("blobs".into(), blobs.to_str().unwrap().into())].into(),
+        options: [("blobs".into(), blobs.clone())].into(),
         ..Default::default()
     };
     selection.manifests.board = serde_json::json!({
@@ -141,13 +148,23 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
     assert_eq!(window.offset, 0xb8_0000);
     assert_eq!(reset_offset.unwrap() + image.reset_size, window.offset);
     assert_eq!(window.size, 0x29_f000);
-    assert_eq!(
-        files.bios[0].path,
-        blobs.join("test-board/apcb/0.bin").to_str().unwrap()
-    );
+    assert_eq!(files.bios[0].path, "/inputs/blobs/test-board/apcb/0.bin");
     let ffs = plan.ffs_assembly().unwrap();
     assert_eq!(ffs.file_assets[0].name.as_str(), "pci1002,15dd.rom");
-    assert!(matches!(&ffs.microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1));
+    assert_eq!(ffs.file_assets[0].path.as_str(), "/inputs/blobs/vbios.bin");
+    assert!(
+        matches!(&ffs.microcode, Some(MicrocodeConfig::Amd(m)) if m.files[..] == ["/inputs/blobs/ucode.bin"])
+    );
+    // The plan, and the units compiled from it, name no host directory:
+    // the same blobs anywhere make the same plan.
+    let json = serde_json::to_string(&plan).unwrap();
+    assert!(!json.contains("a-deeply-nested-checkout"), "{json}");
+    let mut elsewhere = selection.clone();
+    elsewhere.set_option("blobs", "/b");
+    assert_eq!(
+        serde_json::to_string(&resolve::<Vilboz>(elsewhere).unwrap()).unwrap(),
+        json
+    );
     // The tables are for another SoC.
     selection.manifests.board["amd"]["soc"] = "zeppelin".into();
     assert!(resolve::<Vilboz>(selection).is_err());
@@ -181,10 +198,9 @@ fn zeppelin_units_are_pinned() {
 
 #[test]
 fn zeppelin_packs_a_two_level_native_image() {
-    let blobs = std::env::temp_dir();
     let mut selection = BuildSelection {
         payload: Some("linux".into()),
-        options: [("blobs".into(), blobs.to_str().unwrap().into())].into(),
+        options: [("blobs".into(), nested_blobs("test-board"))].into(),
         ..Default::default()
     };
     selection.manifests.board = serde_json::json!({

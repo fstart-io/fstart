@@ -2,7 +2,12 @@
 //! uses the disk ([`HostFiles`]); a bundle assembled without a compiler,
 //! in a browser among others, uses an isolated in-memory tree
 //! ([`MemoryFiles`]) and never opens a host path.
+//!
+//! A plan names the vendor blobs it packs under [`BLOBS_DIR`], never by
+//! where they are on a host: the plan, and the units compiled from it,
+//! are the same for every blob directory with the same files.
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::BTreeMap,
     path::{Component, Path, PathBuf},
@@ -19,24 +24,48 @@ pub trait Files {
     }
 }
 
-/// The host's filesystem.
-pub struct HostFiles;
+/// The blob directory as a plan names it: a bundle's assembly writes the
+/// blobs it extracts from the donor there, [`HostFiles`] reads it from
+/// the build's blob directory.
+pub const BLOBS_DIR: &str = "/inputs/blobs";
+
+/// The host's filesystem, with [`BLOBS_DIR`] at `blobs`.
+#[derive(Debug, Default)]
+pub struct HostFiles {
+    /// The build's blob directory (`--blobs`, or the one `--donor`
+    /// fills).
+    pub blobs: Option<PathBuf>,
+}
+
+impl HostFiles {
+    /// Where `path` is on the host.
+    fn host<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
+        match (&self.blobs, path.strip_prefix(BLOBS_DIR)) {
+            (Some(blobs), Ok(file)) => blobs.join(file).into(),
+            _ => path.into(),
+        }
+    }
+}
 
 impl Files for HostFiles {
     fn read(&self, path: &Path) -> Result<Vec<u8>, String> {
-        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+        let path = self.host(path);
+        std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
     }
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
-        std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+        let path = self.host(path);
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
     fn exists(&self, path: &Path) -> bool {
-        path.is_file()
+        self.host(path).is_file()
     }
     fn create_dir_all(&self, path: &Path) -> Result<(), String> {
-        std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
+        let path = self.host(path);
+        std::fs::create_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))
     }
     fn len(&self, path: &Path) -> Result<u64, String> {
-        std::fs::metadata(path)
+        let path = self.host(path);
+        std::fs::metadata(&path)
             .map(|m| m.len())
             .map_err(|e| format!("{}: {e}", path.display()))
     }

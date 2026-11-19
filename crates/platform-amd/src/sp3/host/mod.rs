@@ -226,20 +226,32 @@ mod tests {
         };
         assert_eq!(microcode.files.len(), 2);
         // A Rome-only donor makes a Rome-only image, with Rome's microcode.
-        let mut plan = resolve::<S8030>(&packed_selection("rome", &["rome"])).unwrap();
+        let rome = packed_selection("rome", &["rome"]);
+        let mut plan = resolve::<S8030>(&rome).unwrap();
         assert_eq!(
             generations(&plan),
             [halved_flash::ROME, halved_flash::MILAN]
         );
-        let exists = |path: &str| std::path::Path::new(path).is_file();
-        halved_flash::keep_present(&mut plan, &exists).unwrap();
+        // The image steps find the plan's blob directory at the host's.
+        let in_dir = |selection: &BuildSelection| {
+            let blobs = Some(selection.options["blobs"].as_str().into());
+            move |path: &str| {
+                use fstart_image_build::files::{Files, HostFiles};
+                HostFiles {
+                    blobs: blobs.clone(),
+                }
+                .exists(std::path::Path::new(path))
+            }
+        };
+        halved_flash::keep_present(&mut plan, &in_dir(&rome)).unwrap();
         assert_eq!(generations(&plan), [halved_flash::ROME]);
         let Some(MicrocodeConfig::Amd(microcode)) = &plan.ffs_assembly().unwrap().microcode else {
             panic!("no microcode")
         };
         assert!(microcode.files.iter().all(|file| file.contains("rome")));
-        let mut none = resolve::<S8030>(&packed_selection("none", &[])).unwrap();
-        assert!(halved_flash::keep_present(&mut none, &exists).is_err());
+        let none = packed_selection("none", &[]);
+        let mut plan = resolve::<S8030>(&none).unwrap();
+        assert!(halved_flash::keep_present(&mut plan, &in_dir(&none)).is_err());
         // Every listed generation needs a board table.
         let mut no_milan_table = selection;
         no_milan_table.manifests.board["amd"]

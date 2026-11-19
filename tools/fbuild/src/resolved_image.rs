@@ -16,17 +16,19 @@ impl ResolvedImage {
     ) -> Result<Self, String> {
         selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
+        use fstart_image_build::plan::options::{BLOBS, DONOR};
         let mut selection = selection;
-        if let Some(donor) = selection
-            .options
-            .remove(fstart_image_build::plan::options::DONOR)
-        {
-            let blobs = crate::blobs::from_donor(root, &source, std::path::Path::new(&donor))?;
-            selection.set_option(
-                fstart_image_build::plan::options::BLOBS,
-                blobs.to_string_lossy().into_owned(),
-            );
+        if let Some(donor) = selection.options.remove(DONOR) {
+            let blobs = crate::blobs::from_donor(root, &source, Path::new(&donor))?;
+            selection.set_option(BLOBS, blobs.to_string_lossy().into_owned());
         }
+        // The plan names the blob directory `files::BLOBS_DIR`; the image
+        // steps find it here.
+        let blobs = selection
+            .options
+            .get(BLOBS)
+            .map(|dir| std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}")))
+            .transpose()?;
         let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
         let environment = [
@@ -40,9 +42,9 @@ impl ResolvedImage {
                 }
             }
         }
-        Ok(Self {
-            build: Resolved::new(root, board, &source, plan)?,
-        })
+        let mut build = Resolved::new(root, board, &source, plan)?;
+        build.blobs = blobs;
+        Ok(Self { build })
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())

@@ -85,7 +85,10 @@ macro_rules! entry {
 #[serde(default, rename_all = "kebab-case")]
 pub struct HostOptions {
     /// The directory the PSP firmware is packed from (`--blobs`, or
-    /// extracted by fbuild from `--donor`).
+    /// extracted by fbuild from `--donor`). The plan names it
+    /// `fstart_image_build::files::BLOBS_DIR`, not by where it is: the
+    /// image steps read it there, and what the plan compiles is the same
+    /// for every directory.
     pub blobs: Option<String>,
     #[serde(flatten)]
     pub x86_linux: fstart_image_build::plan::X86LinuxOptions,
