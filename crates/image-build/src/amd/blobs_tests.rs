@@ -305,6 +305,45 @@ fn a_vendor_zip_donates_as_its_flash_image() {
 }
 
 #[test]
+fn an_image_with_a_corrupt_directory_has_no_firmware() {
+    let (soc, board) = vendor_tables();
+    let tables = [(soc, board)];
+    let image = vendor_image();
+    assert!(has_firmware(&tables, &image));
+    for cookie in [b"$BHD", b"$PSP"] {
+        let mut corrupt = image.clone();
+        let at = (0..corrupt.len() - 4)
+            .find(|&at| corrupt[at..at + 4] == *cookie)
+            .unwrap();
+        corrupt[at] = 0;
+        // The EFS still names it.
+        assert!(donor_image(&corrupt, &tables[0].0).is_some());
+        assert!(!has_firmware(&tables, &corrupt));
+    }
+}
+
+#[test]
+fn a_corrupt_copy_does_not_make_a_vendor_zip_ambiguous() {
+    let (soc, board) = vendor_tables();
+    let board_table = serde_json::json!({
+        "board": "board",
+        "amd": serde_json::to_value(&board).unwrap(),
+    });
+    let platform_table = serde_json::json!({
+        "amd": { "picasso": serde_json::to_value(&soc).unwrap() },
+    });
+    let image = vendor_image();
+    let mut corrupt = image.clone();
+    let at = (0..corrupt.len() - 4)
+        .find(|&at| corrupt[at..at + 4] == *b"$BHD")
+        .unwrap();
+    corrupt[at] = 0;
+    let zip = crate::donor::tests::zip(&[("damaged.bin", &corrupt), ("BIOS.ROM", &image)]);
+    let donated = crate::donor::extract(&board_table, &platform_table, &zip, true).unwrap();
+    assert_eq!(donated.member.as_deref(), Some("BIOS.ROM"));
+}
+
+#[test]
 fn entries_share_a_file_only_with_the_same_bytes() {
     let image = vendor_image();
     let file = |kind, subprogram, instance, file: &str| DirectoryFile {

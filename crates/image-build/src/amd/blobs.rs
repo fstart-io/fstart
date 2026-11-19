@@ -647,11 +647,16 @@ pub fn extract_donor(
 }
 
 /// Whether the flash image `rom` has firmware of any SoC of `tables`
-/// ([`donor_image`]).
+/// ([`donor_image`]) whose PSP and BIOS directories [`extract`] can read:
+/// an EFS pointing at a corrupt directory is none.
 pub fn has_firmware(tables: &[(SocBlobs, BoardBlobs)], rom: &[u8]) -> bool {
-    tables
-        .iter()
-        .any(|(soc, _)| donor_image(rom, soc).is_some())
+    tables.iter().any(|(soc, _)| {
+        donor_image(rom, soc).is_some_and(|image| {
+            let flash = Flash::new(image).with_profile(soc.profile());
+            flash.psp_directories().is_ok()
+                && flash.bios_directories_checked(soc.bios_directory).is_ok()
+        })
+    })
 }
 
 /// The files a donor image gave for a board ([`extract_donor`]).
