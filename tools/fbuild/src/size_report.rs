@@ -42,7 +42,14 @@ pub enum Command {
         pr: Option<u64>,
     },
     /// Compare two artifacts, printing Markdown for a pull request.
-    Report { base: PathBuf, head: PathBuf },
+    Report {
+        base: PathBuf,
+        head: PathBuf,
+        /// The pull request's base commit, called out when `base` was built
+        /// from another (its master run recorded no sizes).
+        #[arg(long)]
+        base_commit: Option<String>,
+    },
 }
 
 impl Command {
@@ -63,12 +70,19 @@ impl Command {
                 )
                 .map_err(|e| e.to_string())
             }
-            Self::Report { base, head } => {
+            Self::Report {
+                base,
+                head,
+                base_commit,
+            } => {
                 let read = |path| -> Result<Report, String> {
                     serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())
                 };
-                print!("{}", render(&read(base)?, &read(head)?)?);
+                print!(
+                    "{}",
+                    render(&read(base)?, &read(head)?, base_commit.as_deref())?
+                );
                 Ok(())
             }
         }
@@ -149,7 +163,7 @@ fn delta(new: u64, old: u64) -> String {
     format!("{}{percent}", signed(change))
 }
 
-pub fn render(base: &Report, head: &Report) -> Result<String, String> {
+pub fn render(base: &Report, head: &Report, base_commit: Option<&str>) -> Result<String, String> {
     validate(base)?;
     validate(head)?;
     let mut lines = vec![MARKER.into(), "### Stage sizes".into(), String::new()];
@@ -158,6 +172,13 @@ pub fn render(base: &Report, head: &Report) -> Result<String, String> {
         &head.commit[..12], &base.commit[..12]
     ));
     lines.push(String::new());
+    if let Some(wanted) = base_commit.filter(|wanted| *wanted != base.commit) {
+        let wanted = wanted.get(..12).unwrap_or(wanted);
+        lines.push(format!(
+            "The pull request's base `{wanted}` has no stage sizes, so this compares with the newest master run that has: changes merged in between show up here too."
+        ));
+        lines.push(String::new());
+    }
     if base.source_date_epoch.is_none() || base.source_date_epoch != head.source_date_epoch {
         lines.push("Stage sizes are not comparable: the builds do not record the same `SOURCE_DATE_EPOCH`. A baseline built with the same fixed epoch is needed.".into());
         lines.push(String::new());
@@ -295,7 +316,7 @@ mod tests {
             .rodata = 32;
         base.boards.insert("old".into(), base.boards["q35"].clone());
         head.boards.insert("new".into(), head.boards["q35"].clone());
-        let text = render(&base, &head).unwrap();
+        let text = render(&base, &head, None).unwrap();
         assert!(text.starts_with(MARKER));
         assert!(text.contains("1 stage(s) changed, images +128 bytes in total; 1 new; 1 gone."));
         assert!(
@@ -306,6 +327,18 @@ mod tests {
     }
 
     #[test]
+    fn a_baseline_from_another_commit_is_called_out() {
+        let r = report(Some(0), 1, 1);
+        let note = "has no stage sizes";
+        assert!(!render(&r, &r, Some(&r.commit)).unwrap().contains(note));
+        assert!(
+            render(&r, &r, Some(&"d".repeat(40)))
+                .unwrap()
+                .contains(note)
+        );
+    }
+
+    #[test]
     fn only_matching_recorded_epochs_are_comparable() {
         for (a, b) in [
             (None, None),
@@ -313,14 +346,18 @@ mod tests {
             (Some(0), None),
             (Some(0), Some(1)),
         ] {
-            let text = render(&report(a, 1, 1), &report(b, 2, 2)).unwrap();
+            let text = render(&report(a, 1, 1), &report(b, 2, 2), None).unwrap();
             assert!(text.contains("not comparable"));
             assert!(!text.contains("| Board |"));
             assert!(!text.contains("No stage size changed."));
         }
         for epoch in [0, 1735689600] {
             let r = report(Some(epoch), 1, 1);
-            assert!(render(&r, &r).unwrap().contains("No stage size changed."));
+            assert!(
+                render(&r, &r, None)
+                    .unwrap()
+                    .contains("No stage size changed.")
+            );
         }
     }
 
@@ -331,18 +368,22 @@ mod tests {
             let mut bad = report(Some(0), 1, 1);
             let stages = bad.boards.remove("q35").unwrap();
             bad.boards.insert(name.into(), stages);
-            assert!(render(&good, &bad).is_err());
+            assert!(render(&good, &bad, None).is_err());
         }
         for commit in ["bad".to_string(), "c".repeat(39) + "`", "F".repeat(40)] {
             let mut bad = report(Some(0), 1, 1);
             bad.commit = commit;
-            assert!(render(&good, &bad).is_err());
+            assert!(render(&good, &bad, None).is_err());
         }
         for epoch in [json!(-1), json!(false), json!("0"), json!(0.0)] {
             let mut value = serde_json::to_value(&good).unwrap();
             value["source_date_epoch"] = epoch;
             let bad: Report = serde_json::from_value(value).unwrap();
-            assert!(render(&good, &bad).unwrap().contains("not comparable"));
+            assert!(
+                render(&good, &bad, None)
+                    .unwrap()
+                    .contains("not comparable")
+            );
         }
     }
 
