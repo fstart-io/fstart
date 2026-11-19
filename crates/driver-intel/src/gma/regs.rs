@@ -573,7 +573,9 @@ register_bitfields! [u32,
         /// Power up data B lanes.
         DATA_B0B2_POWER OFFSET(2) NUMBITS(2) [
             PowerUp = 3
-        ]
+        ],
+        /// LVDS presence strap.
+        PORT_DETECTED OFFSET(1) NUMBITS(1) []
     ],
 
     /// Split-PCH HDMI/SDVO port control register.
@@ -594,7 +596,139 @@ register_bitfields! [u32,
         /// Drive VSYNC active high.
         VSYNC_ACTIVE_HIGH OFFSET(4) NUMBITS(1) [],
         /// Drive HSYNC active high.
+        HSYNC_ACTIVE_HIGH OFFSET(3) NUMBITS(1) [],
+        /// Digital port presence strap.
+        PORT_DETECTED OFFSET(2) NUMBITS(1) []
+    ],
+
+    /// Transcoder select of the PCH ports (ADPA, LVDS, HDMI, DP): one bit
+    /// on Ibex Peak, two bits from Cougar Point (`Has_New_FDI_Sink`).
+    pub PCH_TRANSCODER_SELECT [
+        /// Ibex Peak: transcoder A or B.
+        IBX OFFSET(30) NUMBITS(1) [],
+        /// Cougar Point: transcoder A, B or C.
+        CPT OFFSET(29) NUMBITS(2) []
+    ],
+
+    /// Split-PCH DisplayPort control (`PCH_DP_B`..`D`).
+    pub PCH_DP [
+        /// Enable the port.
+        DISPLAY_PORT_ENABLE OFFSET(31) NUMBITS(1) [],
+        /// Ibex Peak training pattern.
+        LINK_TRAIN OFFSET(28) NUMBITS(2) [
+            Pattern1 = 0,
+            Pattern2 = 1,
+            Idle = 2,
+            Normal = 3
+        ],
+        /// Voltage swing level.
+        VSWING_LEVEL_SET OFFSET(25) NUMBITS(3) [],
+        /// Pre-emphasis level.
+        PREEMPH_LEVEL_SET OFFSET(22) NUMBITS(3) [],
+        /// Lane count minus one.
+        PORT_WIDTH OFFSET(19) NUMBITS(3) [],
+        /// Enhanced framing (Ibex Peak; Cougar Point uses `TRANS_DP_CTL`).
+        ENHANCED_FRAMING_ENABLE OFFSET(18) NUMBITS(1) [],
+        /// Cougar Point training pattern.
+        LINK_TRAIN_CPT OFFSET(8) NUMBITS(3) [
+            Pattern1 = 0,
+            Pattern2 = 1,
+            Idle = 2,
+            Normal = 3
+        ],
+        /// Port presence strap.
+        PORT_DETECTED OFFSET(2) NUMBITS(1) []
+    ],
+
+    /// Cougar Point transcoder DisplayPort control (`TRANS_DP_CTL_x`).
+    pub TRANS_DP_CTL [
+        /// Drive the selected DP port.
+        OUTPUT_ENABLE OFFSET(31) NUMBITS(1) [],
+        /// PCH DP port fed by the transcoder.
+        PORT_SELECT OFFSET(29) NUMBITS(2) [
+            DpB = 0,
+            DpC = 1,
+            DpD = 2,
+            None = 3
+        ],
+        /// Enhanced framing.
+        ENHANCED_FRAMING OFFSET(18) NUMBITS(1) [],
+        /// Bits per colour.
+        BPC OFFSET(9) NUMBITS(3) [
+            Bits8 = 0,
+            Bits10 = 1,
+            Bits6 = 2,
+            Bits12 = 3
+        ],
+        /// Drive VSYNC active high.
+        VSYNC_ACTIVE_HIGH OFFSET(4) NUMBITS(1) [],
+        /// Drive HSYNC active high.
         HSYNC_ACTIVE_HIGH OFFSET(3) NUMBITS(1) []
+    ],
+
+    /// Sandy Bridge+ PCH transcoder chicken bits (`TRANSx_CHICKEN2`).
+    pub TRANS_CHICKEN2 [
+        /// Take timings from the transcoder (`Has_Trans_Timing_Ovrrde`).
+        TIMING_OVERRIDE OFFSET(31) NUMBITS(1) []
+    ],
+
+    /// PCH digital port hotplug control (`SHOTPLUG_CTL`, 0xc4030).
+    pub SHOTPLUG_CTL [
+        /// Port D hotplug input enable.
+        PORTD_HPD_ENABLE OFFSET(20) NUMBITS(1) [],
+        /// Port D short pulse duration.
+        PORTD_SHORT_PULSE OFFSET(18) NUMBITS(2) [],
+        /// Port D status (write 1 to clear); bit 17 is a long pulse.
+        PORTD_HPD_STATUS OFFSET(16) NUMBITS(2) [],
+        /// Port C hotplug input enable.
+        PORTC_HPD_ENABLE OFFSET(12) NUMBITS(1) [],
+        /// Port C short pulse duration.
+        PORTC_SHORT_PULSE OFFSET(10) NUMBITS(2) [],
+        /// Port C status (write 1 to clear); bit 9 is a long pulse.
+        PORTC_HPD_STATUS OFFSET(8) NUMBITS(2) [],
+        /// Port B hotplug input enable.
+        PORTB_HPD_ENABLE OFFSET(4) NUMBITS(1) [],
+        /// Port B short pulse duration.
+        PORTB_SHORT_PULSE OFFSET(2) NUMBITS(2) [],
+        /// Port B status (write 1 to clear); bit 1 is a long pulse.
+        PORTB_HPD_STATUS OFFSET(0) NUMBITS(2) []
+    ],
+
+    /// Ivy Bridge FDI B/C lane sharing (`PCH_FDI_CHICKEN_B_C`, 0xc2000).
+    pub PCH_FDI_CHICKEN_B_C [
+        /// FDI B and C share the four lanes, two each.
+        B_AND_C OFFSET(12) NUMBITS(1) []
+    ],
+
+    /// PCH raw clock frequency (`PCH_RAWCLK_FREQ`, 0xc6204).
+    pub PCH_RAWCLK_FREQ [
+        /// Raw clock in MHz.
+        FREQ OFFSET(0) NUMBITS(10) []
+    ],
+
+    /// Hardware cursor control (`CURxCNTR`/`CUR_CTL_x`).
+    pub CUR_CTL [
+        /// Pipe the cursor is shown on.
+        PIPE_SELECT OFFSET(28) NUMBITS(2) [],
+        /// Cursor mode.
+        MODE OFFSET(0) NUMBITS(6) [
+            Off = 0x00,
+            Argb128 = 0x22,
+            Argb256 = 0x23,
+            Argb64 = 0x27
+        ]
+    ],
+
+    /// Hardware cursor position (`CURxPOS`/`CUR_POS_x`), sign and magnitude.
+    pub CUR_POS [
+        /// Y is negative.
+        Y_SIGN OFFSET(31) NUMBITS(1) [],
+        /// Absolute Y.
+        Y OFFSET(16) NUMBITS(15) [],
+        /// X is negative.
+        X_SIGN OFFSET(15) NUMBITS(1) [],
+        /// Absolute X.
+        X OFFSET(0) NUMBITS(15) []
     ],
 
     /// Split-PCH DPLL control register.
@@ -658,11 +792,15 @@ register_bitfields! [u32,
     pub CPU_DP_CTL [
         /// Enable DisplayPort output.
         DISPLAYPORT_ENABLE OFFSET(31) NUMBITS(1) [],
-        /// Select pipe B instead of pipe A.
+        /// Ironlake/Sandy Bridge: select pipe B instead of pipe A.
         PIPE_SELECT OFFSET(30) NUMBITS(1) [
             PipeA = 0,
             PipeB = 1
         ],
+        /// Ivy Bridge pipe select.
+        PIPE_SELECT_IVB OFFSET(29) NUMBITS(2) [],
+        /// Combined voltage swing/pre-emphasis setting.
+        VSWING_EMPH_SET OFFSET(22) NUMBITS(6) [],
         /// Encoded lane count minus one.
         PORT_WIDTH OFFSET(19) NUMBITS(3) [],
         /// Enhanced framing enable.
@@ -684,7 +822,9 @@ register_bitfields! [u32,
         /// Drive VSYNC active high.
         VSYNC_ACTIVE_HIGH OFFSET(4) NUMBITS(1) [],
         /// Drive HSYNC active high.
-        HSYNC_ACTIVE_HIGH OFFSET(3) NUMBITS(1) []
+        HSYNC_ACTIVE_HIGH OFFSET(3) NUMBITS(1) [],
+        /// eDP presence strap.
+        PORT_DETECTED OFFSET(2) NUMBITS(1) []
     ],
 
     /// FDI TX control register.
@@ -790,6 +930,8 @@ register_bitfields! [u32,
     /// Ironlake CPU pipe configuration register.
     pub CPU_PIPECONF [
         ENABLE OFFSET(31) NUMBITS(1) [],
+        /// The pipe is running.
+        ENABLED_STATUS OFFSET(30) NUMBITS(1) [],
         /// Same non-numeric BPC encoding as `PIPECONF`.
         BPC OFFSET(5) NUMBITS(3) [
             Bits8 = 0,
@@ -804,11 +946,14 @@ register_bitfields! [u32,
     /// Ironlake CPU primary plane control register.
     pub CPU_DSPCNTR [
         ENABLE OFFSET(31) NUMBITS(1) [],
+        /// Gamma correction.
+        GAMMA_CORRECTION OFFSET(30) NUMBITS(1) [],
         FORMAT OFFSET(26) NUMBITS(4) [
             Xrgb8888 = 6
         ],
-        /// Ironlake planes are wired to their matching pipe; bits 25:24
-        /// are not the legacy GMCH pipe-select field.
+        /// Ironlake planes are wired to their matching pipe; libgfxinit still
+        /// clears the legacy pipe-select bits 25:24.
+        PIPE_SELECT OFFSET(24) NUMBITS(2) [],
         DISABLE_TRICKLE_FEED OFFSET(14) NUMBITS(1) [],
         TILED_SURFACE OFFSET(10) NUMBITS(1) []
     ],

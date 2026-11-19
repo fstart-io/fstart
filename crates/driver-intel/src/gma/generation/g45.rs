@@ -162,7 +162,13 @@ impl GenerationOps for G45 {
         )
     }
 
-    fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
+    fn disable_output(
+        mmio: &Mmio,
+        cpu: Cpu,
+        pipe: Pipe,
+        port: Port,
+        _state: &mut crate::gma::state::GenerationState,
+    ) -> Result<(), GmaError> {
         if port == Port::Lvds {
             panel_backlight_off(mmio);
             panel_power_off(mmio);
@@ -1050,11 +1056,13 @@ mod tests {
             vbt: None,
         };
         let surface = SurfaceConfig::packed(0x8000_0000, 800, 600, PixelFormat::Xrgb8888);
+        let mut state = crate::gma::state::GenerationState::default();
         let mut ctx = GmaContext {
             resources: &resources,
             config: &config,
             surface,
             pipe: Pipe::A,
+            state: &mut state,
         };
         program_gmch_panel_fitter(&ctx, Pipe::A, Mode::XGA_1024X768_60).unwrap();
         G45::program_pipe(&mut ctx, Pipe::A, Mode::XGA_1024X768_60).unwrap();

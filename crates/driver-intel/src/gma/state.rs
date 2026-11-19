@@ -16,8 +16,7 @@ use crate::gma::pci::GmaResources;
 use crate::gma::scaler::{self, ScalerPlan};
 use crate::gma::types::{Cpu, Generation, Pipe, Port};
 use crate::gma::{
-    GmaInitConfig, GmaInitResult, caps_for, clean_generation_state, disable_generation_output,
-    init_candidate,
+    GmaInitConfig, GmaInitResult, caps_for, disable_generation_output, init_candidate,
 };
 
 const MAX_PORTS: usize = 8;
@@ -48,6 +47,16 @@ impl PipeOutputConfig {
     }
 }
 
+/// Generation state that outlives one output, like libgfxinit's package
+/// state: the panel sequencer's timers and the split-PCH PLL use counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct GenerationState {
+    /// libgfxinit `Panel` state.
+    pub panel: crate::gma::panel::PanelState,
+    /// Ironlake-generation PCH PLL allocation.
+    pub dplls: crate::gma::generation::ironlake::DpllState,
+}
+
 /// Result of one `update_outputs` transition.
 #[derive(Debug, Clone, Copy)]
 pub struct UpdateOutputsResult {
@@ -64,8 +73,10 @@ pub struct GmaDisplayState {
     wait_for_hpd: [Option<Port>; MAX_PORTS],
     wait_for_hpd_deadline_us: [u64; MAX_PORTS],
     wait_for_hpd_len: usize,
-    /// Whether the one-time libgfxinit `Clean_State` teardown has run.
+    /// Whether the one-time libgfxinit `Initialize` has run.
     clean: bool,
+    /// Generation state kept across updates.
+    generation: GenerationState,
 }
 
 impl Default for GmaDisplayState {
@@ -83,6 +94,10 @@ impl GmaDisplayState {
             wait_for_hpd_deadline_us: [0; MAX_PORTS],
             wait_for_hpd_len: 0,
             clean: false,
+            generation: GenerationState {
+                panel: crate::gma::panel::PanelState::new(),
+                dplls: crate::gma::generation::ironlake::DpllState::new(),
+            },
         }
     }
 
@@ -149,28 +164,28 @@ impl GmaDisplayState {
         crate::gma::validate_generation::<G>(config.cpu)?;
         resources.validate()?;
         crate::gma::validate_outputs(config.cpu, config.outputs)?;
-        let mmio = legacy_mmio::<G>(resources);
+        let mmio = crate::gma::mmio_from_validated_resources(resources);
         let old_configs = self.current;
-        // Clean before probing: cleaning after Panel.On would undo the power
-        // state used for EDID. Never clean again when adding another output.
+        // libgfxinit `Initialize`, before probing: cleaning after `Panel.On`
+        // would undo the power used for EDID. Never again for another output.
         if !self.clean {
-            clean_generation_state::<G>(resources, config.cpu);
+            G::initialize(&mmio, config.cpu, config, &mut self.generation);
             self.clean = true;
         }
-        let detect = crate::gma::initialize_port_detect(resources, config.cpu);
-        let wants_lvds = config
+        let detect = G::port_detect(&mmio, config.cpu, true);
+        let is_panel = |port: Port| matches!(port, Port::Lvds | Port::Edp);
+        let wants_panel = config
             .outputs
             .iter()
-            .any(|output| output.enabled && output.port == Port::Lvds);
-        // Split-PCH panel sequencing remains generation-owned.
-        if wants_lvds && let Some(mmio) = &mmio {
-            crate::gma::generation::g45::prepare_panel_probe(mmio, config.vbt);
-        }
+            .any(|output| output.enabled && is_panel(output.port));
+        let mut generation = self.generation;
+        G::prepare_panel_probe(&mmio, config, &mut generation);
         let resolved = self.resolve_requested_configs::<G>(
             resources,
             config,
             detect.as_ref(),
             |port| {
+                G::before_probe(&mmio, port, &mut generation);
                 let outputs = [OutputConfig {
                     port,
                     enabled: true,
@@ -191,30 +206,18 @@ impl GmaDisplayState {
             },
             |port| sibling_has_edid(resources, config, port),
         );
-        if wants_lvds
-            && !resolved.as_ref().is_ok_and(|outputs| {
-                outputs
-                    .iter()
-                    .flatten()
-                    .any(|output| output.port == Port::Lvds)
-            })
-            && let Some(mmio) = &mmio
+        self.generation = generation;
+        if wants_panel
+            && !resolved
+                .as_ref()
+                .is_ok_and(|outputs| outputs.iter().flatten().any(|output| is_panel(output.port)))
         {
-            crate::gma::generation::g45::panel_backlight_off(mmio);
-            crate::gma::generation::g45::panel_power_off(mmio);
+            G::release_unused_panel(&mmio, &mut self.generation);
         }
         let mut new_configs = resolved?;
-        if let Some(mmio) = &mmio {
-            self.apply_hpd_filter(mmio, &mut new_configs, now_us);
-        }
+        self.apply_hpd_filter::<G>(&mmio, &mut new_configs, now_us);
 
-        self.disable_changed_outputs::<G>(
-            resources,
-            config.cpu,
-            &old_configs,
-            &new_configs,
-            mmio.as_ref(),
-        );
+        self.disable_changed_outputs::<G>(resources, config.cpu, &old_configs, &new_configs, &mmio);
 
         if let Some(output) = new_configs.iter().flatten().next()
             && !self
@@ -253,16 +256,14 @@ impl GmaDisplayState {
                         framebuffer: config.framebuffer,
                         vbt: config.vbt,
                     };
-                    if let Some(mmio) = &mmio {
-                        let _ =
-                            crate::gma::port_detect::clear_hotplug_detect(mmio, new_config.port);
-                    }
+                    let _ = G::hotplug_detect(&mmio, new_config.port);
                     match init_candidate::<G>(
                         resources,
                         &candidate_config,
                         new_config.pipe,
                         new_config.mode,
                         new_config.surface,
+                        &mut self.generation,
                     ) {
                         Ok(result) => {
                             self.current[pipe_index] = Some(new_config);
@@ -289,6 +290,7 @@ impl GmaDisplayState {
                                     config.cpu,
                                     pipe,
                                     new_config.port,
+                                    &mut self.generation,
                                 );
                             }
                         }
@@ -311,7 +313,7 @@ impl GmaDisplayState {
         &self,
         resources: &GmaResources,
         config: &GmaInitConfig<'_>,
-        detect: Option<&crate::gma::port_detect::LegacyPortDetectState>,
+        detect: Option<&crate::gma::port_detect::PortDetectState>,
         mut probe: impl FnMut(Port) -> Result<Mode, GmaError>,
         mut has_edid: impl FnMut(Port) -> bool,
     ) -> Result<[Option<PipeOutputConfig>; PIPE_COUNT], GmaError> {
@@ -486,7 +488,7 @@ impl GmaDisplayState {
         Ok(new_configs)
     }
 
-    fn apply_hpd_filter(
+    fn apply_hpd_filter<G: GenerationOps>(
         &mut self,
         mmio: &Mmio,
         new_configs: &mut [Option<PipeOutputConfig>; PIPE_COUNT],
@@ -501,7 +503,7 @@ impl GmaDisplayState {
                     *config = None;
                     continue;
                 }
-                match crate::gma::port_detect::hotplug_detect(mmio, pipe_config.port) {
+                match G::hotplug_detect(mmio, pipe_config.port) {
                     Ok(true) => self.clear_wait_for_hpd(pipe_config.port),
                     Ok(false) | Err(_) => {
                         self.set_wait_for_hpd_at(pipe_config.port, now_us);
@@ -518,22 +520,26 @@ impl GmaDisplayState {
         cpu: Cpu,
         old_configs: &[Option<PipeOutputConfig>; PIPE_COUNT],
         new_configs: &[Option<PipeOutputConfig>; PIPE_COUNT],
-        mmio: Option<&Mmio>,
+        mmio: &Mmio,
     ) {
         for pipe_index in 0..PIPE_COUNT {
             let Some(current) = old_configs[pipe_index] else {
                 continue;
             };
-            let unplug_detected = mmio
-                .and_then(|mmio| crate::gma::port_detect::hotplug_detect(mmio, current.port).ok())
-                .unwrap_or(false);
+            let unplug_detected = G::hotplug_detect(mmio, current.port).unwrap_or(false);
             if unplug_detected
                 || new_configs[pipe_index]
                     .map(|new| full_update(current, new))
                     .unwrap_or(true)
             {
                 if let Ok(pipe) = pipe_from_index(pipe_index) {
-                    disable_generation_output::<G>(resources, cpu, pipe, current.port);
+                    disable_generation_output::<G>(
+                        resources,
+                        cpu,
+                        pipe,
+                        current.port,
+                        &mut self.generation,
+                    );
                 }
                 self.current[pipe_index] = None;
                 if unplug_detected {
@@ -635,14 +641,6 @@ fn full_update(current: PipeOutputConfig, new_config: PipeOutputConfig) -> bool 
         || current.surface != new_config.surface
 }
 
-fn legacy_mmio<G: GenerationOps>(resources: &GmaResources) -> Option<Mmio> {
-    if matches!(G::GENERATION, Generation::I945 | Generation::G45) {
-        Some(crate::gma::mmio_from_validated_resources(resources))
-    } else {
-        None
-    }
-}
-
 /// Map a pipe array index back to a pipe.
 const fn pipe_from_index(index: usize) -> Result<Pipe, GmaError> {
     match index {
@@ -674,7 +672,7 @@ mod tests {
             &self,
             resources: &GmaResources,
             config: &GmaInitConfig<'_>,
-            detect: Option<&crate::gma::port_detect::LegacyPortDetectState>,
+            detect: Option<&crate::gma::port_detect::PortDetectState>,
             probe: impl FnMut(Port) -> Result<Mode, GmaError>,
             has_edid: impl FnMut(Port) -> bool,
         ) -> Result<[Option<PipeOutputConfig>; PIPE_COUNT], GmaError> {

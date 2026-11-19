@@ -79,8 +79,6 @@ const DP_AUX_CTL_TIME_OUT_TIMER_600US: u32 = DP_AUX_CTL::TIME_OUT_TIMER::Timer60
 const DP_AUX_CTL_RECEIVE_ERROR: u32 = DP_AUX_CTL::RECEIVE_ERROR::SET.value;
 const DP_AUX_CTL_MESSAGE_SIZE_MASK: u32 = DP_AUX_CTL::MESSAGE_SIZE.val(0b1_1111).value;
 const DP_AUX_CTL_MESSAGE_SIZE_SHIFT: u32 = 20;
-#[allow(dead_code)]
-const DP_AUX_CTL_PRECHARGE_TIME_MASK: u32 = DP_AUX_CTL::PRECHARGE_TIME.val(0b1111).value;
 const DP_AUX_CTL_2X_BIT_CLOCK_DIV_MASK: u32 = DP_AUX_CTL::BIT_CLOCK_2X_DIVIDER.val(2047).value;
 #[allow(dead_code)]
 const AUX_RAW_RETRY_COUNT: usize = 3;
@@ -88,8 +86,8 @@ const AUX_RAW_RETRY_COUNT: usize = 3;
 const AUX_DEFER_RETRY_COUNT: usize = 32;
 #[allow(dead_code)]
 const AUX_DEFER_DELAY_US: u32 = 500;
-#[allow(dead_code)]
-const AUX_BUSY_TIMEOUT: u32 = 100_000;
+/// libgfxinit `Registers.Default_Timeout_MS`.
+const AUX_BUSY_TIMEOUT_US: u64 = 10_000;
 #[allow(dead_code)]
 const AUX_DEFAULT_2X_CLOCK_DIV: u16 = 0;
 
@@ -107,24 +105,6 @@ impl AuxNativeCommand {
         match self {
             Self::Write => AUX_NATIVE_WRITE,
             Self::Read => AUX_NATIVE_READ,
-        }
-    }
-}
-
-/// I2C-over-AUX command kind used for EDID/DDC probing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuxI2cCommand {
-    /// I2C write.
-    Write,
-    /// I2C read.
-    Read,
-}
-
-impl AuxI2cCommand {
-    const fn nibble(self) -> u8 {
-        match self {
-            Self::Write => AUX_I2C_WRITE,
-            Self::Read => AUX_I2C_READ,
         }
     }
 }
@@ -151,7 +131,43 @@ impl AuxReplyStatus {
     }
 }
 
-/// GMCH AUX register offsets for one DP port.
+/// How a transaction programs the AUX_CTL 2x bit-clock divider
+/// (libgfxinit `DP_AUX_CTL_2x_Clock` and its mask).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuxClock {
+    /// `Has_PCH_Aux_Channels`: the divider field is cleared and rewritten.
+    Replace(u16),
+    /// `Has_GMCH_RawClk`: the divider is OR'd into the field, which is not
+    /// cleared first.
+    Merge(u16),
+}
+
+impl AuxClock {
+    /// libgfxinit's PCH divider, `(clock + 1 MHz) / 2 MHz`.
+    pub const fn pch(clock_hz: u64) -> Self {
+        Self::Replace(((clock_hz + 1_000_000) / 2_000_000) as u16)
+    }
+
+    /// libgfxinit's GMCH divider, `Div_Round_Closest (Raw_Clock, 2 MHz)`.
+    pub const fn gmch(raw_clock_hz: u64) -> Self {
+        Self::Merge(((raw_clock_hz + 1_000_000) / 2_000_000) as u16)
+    }
+
+    const fn mask(self) -> u32 {
+        match self {
+            Self::Replace(_) => DP_AUX_CTL_2X_BIT_CLOCK_DIV_MASK,
+            Self::Merge(_) => 0,
+        }
+    }
+
+    const fn divider(self) -> u16 {
+        match self {
+            Self::Replace(div) | Self::Merge(div) => div,
+        }
+    }
+}
+
+/// AUX channel register offsets for one DP port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuxRegs {
     /// AUX control register.
@@ -160,42 +176,58 @@ pub struct AuxRegs {
     pub data: [usize; AUX_DATA_REG_COUNT],
     /// Optional DDI AUX mutex register.
     pub mutex: Option<usize>,
+    /// 2x bit-clock divider programming.
+    pub clock: AuxClock,
 }
 
 impl AuxRegs {
-    /// Return GMCH AUX registers for fstart's logical G45 DP ports.
-    pub const fn gmch_for_port(port: Port) -> Result<Self, GmaError> {
+    /// Return GMCH AUX registers for fstart's logical G45 DP ports, whose
+    /// divider derives from the GMCH raw (FSB) clock.
+    pub const fn gmch_for_port(port: Port, raw_clock_hz: u64) -> Result<Self, GmaError> {
+        let clock = AuxClock::gmch(raw_clock_hz);
         match port {
-            Port::DpA => Ok(aux_regs(0x64110, 0x64114, Some(0x6412c))),
-            Port::DpB => Ok(aux_regs(0x64210, 0x64214, Some(0x6422c))),
-            Port::DpC => Ok(aux_regs(0x64310, 0x64314, Some(0x6432c))),
+            Port::DpA => Ok(aux_regs(0x64110, 0x64114, Some(0x6412c), clock)),
+            Port::DpB => Ok(aux_regs(0x64210, 0x64214, Some(0x6422c), clock)),
+            Port::DpC => Ok(aux_regs(0x64310, 0x64314, Some(0x6432c), clock)),
             _ => Err(GmaError::UnsupportedPort),
         }
     }
 
-    /// Return split-PCH AUX registers for Ironlake/Sandy Bridge/Ivy Bridge DP ports.
-    pub const fn pch_for_port(port: Port) -> Result<Self, GmaError> {
+    /// Return split-PCH AUX registers for Ironlake/Sandy Bridge/Ivy Bridge.
+    ///
+    /// eDP uses the CPU channel `DP_AUX_CTL_A`, clocked from CDClk; DP1..3
+    /// (`DpA`..`DpC`, PCH ports B..D) use the PCH channels clocked from the
+    /// raw clock (libgfxinit `DP_Aux_Request`).
+    pub const fn pch_for_port(
+        port: Port,
+        cdclk_hz: u64,
+        raw_clock_hz: u64,
+    ) -> Result<Self, GmaError> {
+        let pch = AuxClock::pch(raw_clock_hz);
         match port {
-            Port::DpB => Ok(aux_regs(0xe4110, 0xe4114, None)),
-            Port::DpC => Ok(aux_regs(0xe4210, 0xe4214, None)),
-            Port::DpD => Ok(aux_regs(0xe4310, 0xe4314, None)),
+            Port::Edp => Ok(aux_regs(0x64010, 0x64014, None, AuxClock::pch(cdclk_hz))),
+            Port::DpA => Ok(aux_regs(0xe4110, 0xe4114, None, pch)),
+            Port::DpB => Ok(aux_regs(0xe4210, 0xe4214, None, pch)),
+            Port::DpC => Ok(aux_regs(0xe4310, 0xe4314, None, pch)),
             _ => Err(GmaError::UnsupportedPort),
         }
     }
 
     /// Return DDI AUX registers for Haswell/Broadwell and later DDI platforms.
     pub const fn ddi_for_port(port: Port) -> Result<Self, GmaError> {
+        // DDI generations have no executor yet; their divider is left zero.
+        let clock = AuxClock::Replace(AUX_DEFAULT_2X_CLOCK_DIV);
         match port {
-            Port::Edp | Port::DpA => Ok(aux_regs(0x64010, 0x64014, Some(0x6402c))),
-            Port::DpB => Ok(aux_regs(0x64110, 0x64114, Some(0x6412c))),
-            Port::DpC => Ok(aux_regs(0x64210, 0x64214, Some(0x6422c))),
-            Port::DpD => Ok(aux_regs(0x64310, 0x64314, Some(0x6432c))),
+            Port::Edp | Port::DpA => Ok(aux_regs(0x64010, 0x64014, Some(0x6402c), clock)),
+            Port::DpB => Ok(aux_regs(0x64110, 0x64114, Some(0x6412c), clock)),
+            Port::DpC => Ok(aux_regs(0x64210, 0x64214, Some(0x6422c), clock)),
+            Port::DpD => Ok(aux_regs(0x64310, 0x64314, Some(0x6432c), clock)),
             _ => Err(GmaError::UnsupportedPort),
         }
     }
 }
 
-const fn aux_regs(ctl: usize, first_data: usize, mutex: Option<usize>) -> AuxRegs {
+const fn aux_regs(ctl: usize, first_data: usize, mutex: Option<usize>, clock: AuxClock) -> AuxRegs {
     AuxRegs {
         ctl,
         data: [
@@ -206,6 +238,7 @@ const fn aux_regs(ctl: usize, first_data: usize, mutex: Option<usize>) -> AuxReg
             first_data + 16,
         ],
         mutex,
+        clock,
     }
 }
 
@@ -250,12 +283,10 @@ pub const fn aux_ctl_start_value(message_len: usize, clock_div: u16) -> Result<u
     }
 }
 
-#[allow(dead_code)]
-const AUX_CTL_START_CLEAR_MASK: u32 = DP_AUX_CTL_INTERRUPT_ON_DONE
-    | DP_AUX_CTL_TIME_OUT_TIMER_MASK
-    | DP_AUX_CTL_MESSAGE_SIZE_MASK
-    | DP_AUX_CTL_PRECHARGE_TIME_MASK
-    | DP_AUX_CTL_2X_BIT_CLOCK_DIV_MASK;
+/// Fields libgfxinit clears before starting a transfer; the divider field
+/// is added by [`AuxClock::mask`] for PCH-style channels only.
+const AUX_CTL_START_CLEAR_MASK: u32 =
+    DP_AUX_CTL_INTERRUPT_ON_DONE | DP_AUX_CTL_TIME_OUT_TIMER_MASK | DP_AUX_CTL_MESSAGE_SIZE_MASK;
 
 /// Build a raw native AUX request into `out` and return the message length.
 pub fn build_native_aux_request(
@@ -288,109 +319,6 @@ pub fn build_native_read_request(
 ) -> Result<usize, GmaError> {
     let payload = [0u8; AUX_MAX_PAYLOAD_LEN];
     build_native_aux_request(AuxNativeCommand::Read, address, &payload[..len], out)
-}
-
-/// Build an I2C-over-AUX request into `out` and return the message length.
-pub fn build_i2c_aux_request(
-    command: AuxI2cCommand,
-    address: u8,
-    payload: &[u8],
-    mot: bool,
-    out: &mut [u8; AUX_MAX_MESSAGE_LEN],
-) -> Result<usize, GmaError> {
-    if address > 0x7f || payload.is_empty() || payload.len() > AUX_MAX_PAYLOAD_LEN {
-        return Err(GmaError::InvalidConfig);
-    }
-    out.fill(0);
-    out[0] = (command.nibble() << 4) | if_bool_u8(mot, AUX_I2C_MOT);
-    out[1] = 0;
-    out[2] = address;
-    out[3] = (payload.len() - 1) as u8;
-    if matches!(command, AuxI2cCommand::Write) {
-        out[AUX_HEADER_LEN..AUX_HEADER_LEN + payload.len()].copy_from_slice(payload);
-        Ok(AUX_HEADER_LEN + payload.len())
-    } else {
-        Ok(AUX_HEADER_LEN)
-    }
-}
-
-/// Build an I2C-over-AUX EDID read request for one DDC chunk.
-pub fn build_i2c_edid_read_request(
-    len: usize,
-    mot: bool,
-    out: &mut [u8; AUX_MAX_MESSAGE_LEN],
-) -> Result<usize, GmaError> {
-    if len == 0 || len > AUX_MAX_PAYLOAD_LEN {
-        return Err(GmaError::InvalidConfig);
-    }
-    let payload = [0u8; AUX_MAX_PAYLOAD_LEN];
-    build_i2c_aux_request(
-        AuxI2cCommand::Read,
-        AUX_DDC_EDID_ADDRESS,
-        &payload[..len],
-        mot,
-        out,
-    )
-}
-
-/// Data-only I2C-over-AUX EDID request plan for one chunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AuxEdidReadChunkPlan {
-    /// Optional segment-pointer write request length.
-    pub segment_write_len: Option<usize>,
-    /// Offset write request length.
-    pub offset_write_len: usize,
-    /// EDID data read request length.
-    pub read_len: usize,
-    /// Packed optional segment-pointer write request.
-    pub segment_write: [u8; AUX_MAX_MESSAGE_LEN],
-    /// Packed offset write request.
-    pub offset_write: [u8; AUX_MAX_MESSAGE_LEN],
-    /// Packed EDID data read request.
-    pub read: [u8; AUX_MAX_MESSAGE_LEN],
-}
-
-impl AuxEdidReadChunkPlan {
-    /// Build libgfxinit-style I2C-over-AUX DDC requests for an EDID chunk.
-    pub fn new(segment: u8, offset: u8, len: usize) -> Result<Self, GmaError> {
-        if len == 0 || len > AUX_MAX_PAYLOAD_LEN {
-            return Err(GmaError::InvalidConfig);
-        }
-        let mut segment_write = [0u8; AUX_MAX_MESSAGE_LEN];
-        let segment_write_len = if segment == 0 {
-            None
-        } else {
-            Some(build_i2c_aux_request(
-                AuxI2cCommand::Write,
-                AUX_DDC_SEGMENT_ADDRESS,
-                &[segment],
-                true,
-                &mut segment_write,
-            )?)
-        };
-        let mut offset_write = [0u8; AUX_MAX_MESSAGE_LEN];
-        let offset_write_len = build_i2c_aux_request(
-            AuxI2cCommand::Write,
-            AUX_DDC_EDID_ADDRESS,
-            &[offset],
-            true,
-            &mut offset_write,
-        )?;
-        let mut read = [0u8; AUX_MAX_MESSAGE_LEN];
-        let read_len = build_i2c_edid_read_request(len, false, &mut read)?;
-        Ok(Self {
-            segment_write_len,
-            offset_write_len,
-            read_len,
-            segment_write,
-            offset_write,
-            read,
-        })
-    }
-}
-
-const fn if_bool_u8(condition: bool, value: u8) -> u8 {
-    if condition { value } else { 0 }
 }
 
 /// Pack up to 20 AUX bytes into Intel AUX DATA register values, big-endian.
@@ -460,44 +388,65 @@ fn raw_aux_request_once(
         return Err(GmaError::HardwareError);
     }
     let data = pack_aux_data(request)?;
-    for (register, value) in aux.data.iter().zip(data.iter()) {
+    // `Write_Data_Reg` only touches registers that carry request bytes.
+    for (register, value) in aux
+        .data
+        .iter()
+        .zip(data.iter())
+        .take(request.len().div_ceil(4))
+    {
         register.set(*value);
     }
     aux.ctl.set(
-        (aux.ctl.get() & !AUX_CTL_START_CLEAR_MASK)
-            | aux_ctl_start_value(request.len(), AUX_DEFAULT_2X_CLOCK_DIV)?,
+        (aux.ctl.get() & !(AUX_CTL_START_CLEAR_MASK | regs.clock.mask()))
+            | aux_ctl_start_value(request.len(), regs.clock.divider())?,
     );
-    let mut timeout = AUX_BUSY_TIMEOUT;
-    while timeout != 0 {
-        if !aux.ctl.is_set(DP_AUX_CTL::SEND_BUSY) {
-            break;
-        }
-        timeout -= 1;
-        core::hint::spin_loop();
-    }
-    if timeout == 0 {
-        return Err(GmaError::Timeout);
-    }
+    // libgfxinit ignores the busy wait's timeout and judges the transfer by
+    // the error bits alone.
+    let _ = mmio.wait_mask(regs.ctl, DP_AUX_CTL_SEND_BUSY, 0, AUX_BUSY_TIMEOUT_US);
     let ctl = aux.ctl.get();
     if (ctl & (DP_AUX_CTL_TIME_OUT_ERROR | DP_AUX_CTL_RECEIVE_ERROR)) != 0 {
         return Err(GmaError::HardwareError);
     }
-    let response_len = aux_ctl_response_len(ctl);
-    // libgfxinit bounds `Aux_Response_Length` to 1 .. 17; a zero-length reply
-    // is malformed and longer replies are rejected here.
-    if response_len == 0 || response_len > AUX_MAX_RESPONSE_LEN {
+    // libgfxinit `Aux_Response_Length` is 1 .. 17: an empty reply fails,
+    // a longer one is clamped.
+    let response_len = aux_ctl_response_len(ctl).min(AUX_MAX_RESPONSE_LEN);
+    if response_len == 0 {
         return Err(GmaError::HardwareError);
     }
     let mut response_regs = [0u32; AUX_DATA_REG_COUNT];
-    for (idx, register) in aux.data.iter().enumerate() {
+    for (idx, register) in aux.data.iter().enumerate().take(response_len.div_ceil(4)) {
         response_regs[idx] = register.get();
     }
     unpack_aux_data(response_regs, response_len, response)?;
     Ok(response_len)
 }
 
-/// Perform a native AUX read with ACK/DEFER retry handling.
-#[allow(dead_code)]
+/// libgfxinit `DP_Aux_Ch.Do_Aux_Request`: repeat the raw request while the
+/// sink defers it natively, then require a native ACK. I2C-level replies are
+/// left in `response` for the caller.
+fn aux_transaction(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    request: &[u8],
+    response: &mut [u8; AUX_MAX_MESSAGE_LEN],
+) -> Result<usize, GmaError> {
+    let mut len = 0;
+    for _ in 0..AUX_DEFER_RETRY_COUNT {
+        len = raw_aux_request(mmio, regs, request, response)?;
+        if AuxReplyStatus::decode(response[0]) != AuxReplyStatus::Defer {
+            break;
+        }
+        delay_us(AUX_DEFER_DELAY_US);
+    }
+    match AuxReplyStatus::decode(response[0]) {
+        AuxReplyStatus::Ack => Ok(len),
+        AuxReplyStatus::Defer => Err(GmaError::Timeout),
+        AuxReplyStatus::NakOrUnknown(_) => Err(GmaError::HardwareError),
+    }
+}
+
+/// Perform a native AUX read (libgfxinit `Aux_Read`).
 pub(crate) fn native_aux_read(
     mmio: &Mmio,
     regs: AuxRegs,
@@ -510,28 +459,16 @@ pub(crate) fn native_aux_read(
     let mut request = [0u8; AUX_MAX_MESSAGE_LEN];
     let request_len = build_native_read_request(address, out.len(), &mut request)?;
     let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
-    for _ in 0..AUX_DEFER_RETRY_COUNT {
-        let response_len = raw_aux_request(mmio, regs, &request[..request_len], &mut response)?;
-        if response_len == 0 {
-            return Err(GmaError::HardwareError);
-        }
-        match AuxReplyStatus::decode(response[0]) {
-            AuxReplyStatus::Ack => {
-                if response_len < out.len() + 1 {
-                    return Err(GmaError::HardwareError);
-                }
-                out.copy_from_slice(&response[1..1 + out.len()]);
-                return Ok(());
-            }
-            AuxReplyStatus::Defer => delay_us(AUX_DEFER_DELAY_US),
-            AuxReplyStatus::NakOrUnknown(_) => return Err(GmaError::HardwareError),
-        }
+    let response_len = aux_transaction(mmio, regs, &request[..request_len], &mut response)?;
+    // Callers need the whole block (libgfxinit compares the returned length).
+    if response_len < out.len() + 1 {
+        return Err(GmaError::HardwareError);
     }
-    Err(GmaError::Timeout)
+    out.copy_from_slice(&response[1..1 + out.len()]);
+    Ok(())
 }
 
-/// Perform a native AUX write with ACK/DEFER retry handling.
-#[allow(dead_code)]
+/// Perform a native AUX write (libgfxinit `Aux_Write`).
 pub(crate) fn native_aux_write(
     mmio: &Mmio,
     regs: AuxRegs,
@@ -545,38 +482,213 @@ pub(crate) fn native_aux_write(
     let request_len =
         build_native_aux_request(AuxNativeCommand::Write, address, payload, &mut request)?;
     let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
-    for _ in 0..AUX_DEFER_RETRY_COUNT {
-        let response_len = raw_aux_request(mmio, regs, &request[..request_len], &mut response)?;
-        if response_len == 0 {
+    aux_transaction(mmio, regs, &request[..request_len], &mut response).map(|_| ())
+}
+
+/// GMCH AUX registers for `port`, clocked from the FSB raw clock.
+fn gmch_aux_regs(mmio: &Mmio, port: Port) -> Result<AuxRegs, GmaError> {
+    AuxRegs::gmch_for_port(port, crate::gma::power::gmch_raw_clock_hz(mmio))
+}
+
+const AUX_I2C_WR_STATUS_REQ: u8 = 0x2;
+/// I2C DEFER replies `I2C_Out_Packet`/`I2C_In_Packet` tolerate.
+const I2C_MAX_DEFERS: usize = 7;
+/// Consecutive short replies `Do_I2C_Read` tolerates.
+const I2C_MAX_READ_TRIES: usize = 4;
+
+/// I2C-level reply status in bits 7:6 of the first reply byte.
+const fn i2c_ack(reply: u8) -> bool {
+    reply & 0xc0 == 0x00
+}
+
+const fn i2c_defer(reply: u8) -> bool {
+    reply & 0xc0 == 0x80
+}
+
+/// libgfxinit `Fill_Aux_Request` for I2C-over-AUX. A zero length yields the
+/// three-byte address-only request (`Is_Empty`).
+fn i2c_request(
+    command: u8,
+    address: u8,
+    payload: &[u8],
+    read_len: usize,
+    out: &mut [u8; AUX_MAX_MESSAGE_LEN],
+) -> usize {
+    out.fill(0);
+    out[0] = command << 4;
+    out[2] = address;
+    let len = payload.len().max(read_len);
+    if len == 0 {
+        out[3] = 0xff;
+        return 3;
+    }
+    out[3] = (len - 1) as u8;
+    out[AUX_HEADER_LEN..AUX_HEADER_LEN + payload.len()].copy_from_slice(payload);
+    AUX_HEADER_LEN + payload.len()
+}
+
+/// libgfxinit `I2C_Out_Packet`: write `data`, polling the write status while
+/// the sink defers or accepts only part of it.
+fn i2c_out_packet(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    command: u8,
+    address: u8,
+    data: &[u8],
+) -> Result<(), GmaError> {
+    let mut request = [0u8; AUX_MAX_MESSAGE_LEN];
+    let mut request_len = i2c_request(command, address, data, 0, &mut request);
+    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
+    let mut transferred = 0usize;
+    let mut tries = 0usize;
+    loop {
+        let response_len = aux_transaction(mmio, regs, &request[..request_len], &mut response)?;
+        if i2c_ack(response[0]) {
+            if response_len <= 1 {
+                transferred = data.len();
+            } else {
+                transferred += usize::from(response[1]).min(data.len() - transferred);
+                tries = 0;
+            }
+            if transferred == data.len() {
+                return Ok(());
+            }
+        } else if i2c_defer(response[0]) {
+            if tries >= I2C_MAX_DEFERS {
+                return Err(GmaError::Timeout);
+            }
+            tries += 1;
+        } else {
             return Err(GmaError::HardwareError);
         }
-        match AuxReplyStatus::decode(response[0]) {
-            AuxReplyStatus::Ack => return Ok(()),
-            AuxReplyStatus::Defer => delay_us(AUX_DEFER_DELAY_US),
-            AuxReplyStatus::NakOrUnknown(_) => return Err(GmaError::HardwareError),
+        request_len = i2c_request(
+            (command & AUX_I2C_MOT) | AUX_I2C_WR_STATUS_REQ,
+            address,
+            &[],
+            0,
+            &mut request,
+        );
+        delay_us(AUX_DEFER_DELAY_US);
+    }
+}
+
+/// libgfxinit `I2C_In_Packet`: request `len` bytes, retrying I2C DEFERs.
+fn i2c_in_packet(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    command: u8,
+    address: u8,
+    len: usize,
+    response: &mut [u8; AUX_MAX_MESSAGE_LEN],
+) -> Result<usize, GmaError> {
+    let mut request = [0u8; AUX_MAX_MESSAGE_LEN];
+    let request_len = i2c_request(command, address, &[], len, &mut request);
+    let mut response_len = 0;
+    for _ in 0..I2C_MAX_DEFERS {
+        response_len = aux_transaction(mmio, regs, &request[..request_len], response)?;
+        if !i2c_defer(response[0]) {
+            break;
+        }
+        delay_us(AUX_DEFER_DELAY_US);
+    }
+    if i2c_ack(response[0]) {
+        Ok(response_len)
+    } else {
+        Err(GmaError::HardwareError)
+    }
+}
+
+/// libgfxinit `I2C_Empty_Packet`: an address-only transaction.
+fn i2c_empty_packet(mmio: &Mmio, regs: AuxRegs, command: u8, address: u8) -> Result<(), GmaError> {
+    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
+    i2c_in_packet(mmio, regs, command, address, 0, &mut response).map(|_| ())
+}
+
+/// libgfxinit `Do_I2C_Write`. With `stop == false` the closing address-only
+/// write is left out, so a following transfer continues the transaction
+/// (needed after an E-DDC segment pointer write).
+fn do_i2c_write(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    address: u8,
+    data: &[u8],
+    stop: bool,
+) -> Result<(), GmaError> {
+    i2c_empty_packet(mmio, regs, AUX_I2C_WRITE | AUX_I2C_MOT, address)?;
+    let result = i2c_out_packet(mmio, regs, AUX_I2C_WRITE | AUX_I2C_MOT, address, data);
+    if stop {
+        // The transfer's own status decides; the stop is best effort.
+        let _ = i2c_empty_packet(mmio, regs, AUX_I2C_WRITE, address);
+    }
+    result
+}
+
+/// libgfxinit `Do_I2C_Read`: read `out.len()` bytes in chunks of at most 16.
+fn do_i2c_read(mmio: &Mmio, regs: AuxRegs, address: u8, out: &mut [u8]) -> Result<(), GmaError> {
+    i2c_empty_packet(mmio, regs, AUX_I2C_READ | AUX_I2C_MOT, address)?;
+    let mut transferred = 0usize;
+    let mut chunk = AUX_MAX_PAYLOAD_LEN;
+    let mut tries = 0usize;
+    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
+    while transferred < out.len() && tries < I2C_MAX_READ_TRIES {
+        let response_len = i2c_in_packet(
+            mmio,
+            regs,
+            AUX_I2C_READ | AUX_I2C_MOT,
+            address,
+            chunk.min(out.len() - transferred),
+            &mut response,
+        )?;
+        if response_len >= 2 {
+            chunk = (response_len - 1).min(out.len() - transferred);
+            out[transferred..transferred + chunk].copy_from_slice(&response[1..1 + chunk]);
+            transferred += chunk;
+            tries = 0;
+        } else {
+            tries += 1;
         }
     }
-    Err(GmaError::Timeout)
+    let _ = i2c_empty_packet(mmio, regs, AUX_I2C_READ, address);
+    if tries < I2C_MAX_READ_TRIES {
+        Ok(())
+    } else {
+        Err(GmaError::HardwareError)
+    }
 }
 
-/// Perform a native AUX read on the GMCH AUX channel associated with `port`.
-pub(crate) fn gmch_native_aux_read(
+/// libgfxinit `I2C_Read_Byte`: write the register offset, read one byte.
+pub(crate) fn i2c_read_byte(
     mmio: &Mmio,
-    port: Port,
-    address: u32,
+    regs: AuxRegs,
+    address: u8,
+    offset: u8,
+) -> Result<u8, GmaError> {
+    do_i2c_write(mmio, regs, address, &[offset], true)?;
+    let mut value = [0u8];
+    do_i2c_read(mmio, regs, address, &mut value)?;
+    Ok(value[0])
+}
+
+/// libgfxinit `I2C_Write_Byte`.
+pub(crate) fn i2c_write_byte(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    address: u8,
+    offset: u8,
+    value: u8,
+) -> Result<(), GmaError> {
+    do_i2c_write(mmio, regs, address, &[offset, value], true)
+}
+
+/// libgfxinit `I2C_Read`: write index 0, then read `out.len()` bytes.
+pub(crate) fn i2c_read(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    address: u8,
     out: &mut [u8],
 ) -> Result<(), GmaError> {
-    native_aux_read(mmio, AuxRegs::gmch_for_port(port)?, address, out)
-}
-
-/// Perform a native AUX write on the GMCH AUX channel associated with `port`.
-pub(crate) fn gmch_native_aux_write(
-    mmio: &Mmio,
-    port: Port,
-    address: u32,
-    payload: &[u8],
-) -> Result<(), GmaError> {
-    native_aux_write(mmio, AuxRegs::gmch_for_port(port)?, address, payload)
+    do_i2c_write(mmio, regs, address, &[0], true)?;
+    do_i2c_read(mmio, regs, address, out)
 }
 
 /// Hardware DDC-over-AUX reader for DisplayPort/eDP connectors.
@@ -594,27 +706,31 @@ impl HardwareDpAuxDdc {
     /// `mmio_base` must point at a decoded Intel display MMIO BAR whose AUX
     /// registers for `port` are accessible.
     pub unsafe fn gmch(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
-        unsafe {
-            Ok(Self {
-                mmio: Mmio::new(mmio_base),
-                regs: AuxRegs::gmch_for_port(port)?,
-            })
-        }
+        // SAFETY: forwarded caller contract.
+        let mmio = unsafe { Mmio::new(mmio_base) };
+        Ok(Self {
+            mmio,
+            regs: gmch_aux_regs(&mmio, port)?,
+        })
     }
 
-    /// Create a split-PCH DP AUX DDC reader for `port`.
+    /// Create a split-PCH DP AUX DDC reader for `port` on `cpu`.
     ///
     /// # Safety
     ///
     /// `mmio_base` must point at a decoded Intel display MMIO BAR whose AUX
     /// registers for `port` are accessible.
-    pub unsafe fn pch(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
-        unsafe {
-            Ok(Self {
-                mmio: Mmio::new(mmio_base),
-                regs: AuxRegs::pch_for_port(port)?,
-            })
-        }
+    pub unsafe fn pch(
+        mmio_base: MmioAddr<Mmio32>,
+        cpu: crate::gma::types::Cpu,
+        port: Port,
+    ) -> Result<Self, GmaError> {
+        // SAFETY: forwarded caller contract.
+        let mmio = unsafe { Mmio::new(mmio_base) };
+        Ok(Self {
+            mmio,
+            regs: crate::gma::generation::ironlake::aux_regs(cpu, port)?,
+        })
     }
 
     /// Create a DDI AUX DDC reader for `port`.
@@ -631,10 +747,6 @@ impl HardwareDpAuxDdc {
             })
         }
     }
-
-    fn regs(self) -> AuxRegs {
-        self.regs
-    }
 }
 
 impl DdcBus for HardwareDpAuxDdc {
@@ -647,79 +759,25 @@ impl DdcBus for HardwareDpAuxDdc {
         if address != AUX_DDC_EDID_ADDRESS {
             return Err(GmaError::InvalidConfig);
         }
-        let regs = self.regs();
         let segment = block_index / 2;
-        let block_offset = usize::from(block_index % 2) * EDID_BLOCK_LEN;
-        let mut offset = 0usize;
-        while offset < EDID_BLOCK_LEN {
-            let len = (EDID_BLOCK_LEN - offset).min(AUX_MAX_PAYLOAD_LEN);
-            let plan = AuxEdidReadChunkPlan::new(segment, (block_offset + offset) as u8, len)?;
-            if let Some(segment_write_len) = plan.segment_write_len {
-                i2c_aux_write(&self.mmio, regs, &plan.segment_write[..segment_write_len])?;
-            }
-            i2c_aux_write(
+        let offset = (block_index % 2) * (EDID_BLOCK_LEN as u8);
+        if segment == 0 && offset == 0 {
+            // libgfxinit `Display_Probing.Read_EDID`.
+            return i2c_read(&self.mmio, self.regs, address, block);
+        }
+        // E-DDC: segment pointer and offset without a stop in between.
+        if segment != 0 {
+            do_i2c_write(
                 &self.mmio,
-                regs,
-                &plan.offset_write[..plan.offset_write_len],
+                self.regs,
+                AUX_DDC_SEGMENT_ADDRESS,
+                &[segment],
+                false,
             )?;
-            let mut chunk = [0u8; AUX_MAX_MESSAGE_LEN];
-            i2c_aux_read(
-                &self.mmio,
-                regs,
-                &plan.read[..plan.read_len],
-                &mut chunk[..len],
-            )?;
-            block[offset..offset + len].copy_from_slice(&chunk[..len]);
-            offset += len;
         }
-        Ok(())
+        do_i2c_write(&self.mmio, self.regs, address, &[offset], segment == 0)?;
+        do_i2c_read(&self.mmio, self.regs, address, block)
     }
-}
-
-fn i2c_aux_write(mmio: &Mmio, regs: AuxRegs, request: &[u8]) -> Result<(), GmaError> {
-    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
-    for _ in 0..AUX_DEFER_RETRY_COUNT {
-        let response_len = raw_aux_request(mmio, regs, request, &mut response)?;
-        if response_len == 0 {
-            return Err(GmaError::HardwareError);
-        }
-        match AuxReplyStatus::decode(response[0]) {
-            AuxReplyStatus::Ack => return Ok(()),
-            AuxReplyStatus::Defer => delay_us(AUX_DEFER_DELAY_US),
-            AuxReplyStatus::NakOrUnknown(_) => return Err(GmaError::HardwareError),
-        }
-    }
-    Err(GmaError::Timeout)
-}
-
-fn i2c_aux_read(
-    mmio: &Mmio,
-    regs: AuxRegs,
-    request: &[u8],
-    out: &mut [u8],
-) -> Result<(), GmaError> {
-    if out.is_empty() || out.len() > AUX_MAX_PAYLOAD_LEN {
-        return Err(GmaError::InvalidConfig);
-    }
-    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
-    for _ in 0..AUX_DEFER_RETRY_COUNT {
-        let response_len = raw_aux_request(mmio, regs, request, &mut response)?;
-        if response_len == 0 {
-            return Err(GmaError::HardwareError);
-        }
-        match AuxReplyStatus::decode(response[0]) {
-            AuxReplyStatus::Ack => {
-                if response_len < out.len() + 1 {
-                    return Err(GmaError::HardwareError);
-                }
-                out.copy_from_slice(&response[1..1 + out.len()]);
-                return Ok(());
-            }
-            AuxReplyStatus::Defer => delay_us(AUX_DEFER_DELAY_US),
-            AuxReplyStatus::NakOrUnknown(_) => return Err(GmaError::HardwareError),
-        }
-    }
-    Err(GmaError::Timeout)
 }
 
 /// DisplayPort link bandwidth code from DPCD.
@@ -788,7 +846,12 @@ impl ReceiverCaps {
         Ok(Self {
             dpcd_revision: bytes[0],
             max_link_rate: DpLinkRate::decode(bytes[1]),
-            max_lane_count: bytes[2] & 0x1f,
+            // libgfxinit `Read_Caps`: 0|1 -> 1, 2|3 -> 2, others -> 4.
+            max_lane_count: match bytes[2] & 0x1f {
+                0 | 1 => 1,
+                2 | 3 => 2,
+                _ => 4,
+            },
             tps3_supported: (bytes[2] & 0x40) != 0,
             enhanced_framing: (bytes[2] & 0x80) != 0,
             no_aux_handshake: (bytes[3] & 0x40) != 0,
@@ -907,9 +970,10 @@ impl LinkStatus {
         self.lanes_satisfy(lane_count, 0x01)
     }
 
-    /// Return true when all active lanes have channel EQ, symbol lock, and align done.
+    /// Return true when all active lanes have clock recovery, channel EQ and
+    /// symbol lock, and interlane alignment is done (libgfxinit `All_EQ_Done`).
     pub const fn channel_eq_done(self, lane_count: u8) -> bool {
-        self.lanes_satisfy(lane_count, 0x06) && (self.bytes[2] & 0x01) != 0
+        self.lanes_satisfy(lane_count, 0x07) && (self.bytes[2] & 0x01) != 0
     }
 
     const fn lanes_satisfy(self, lane_count: u8, mask: u8) -> bool {
@@ -978,44 +1042,39 @@ mod tests {
     }
 
     #[test]
-    fn i2c_aux_edid_requests_match_ddc_over_aux_framing() {
+    fn i2c_requests_match_libgfxinit_fill_aux_request() {
         let mut req = [0u8; AUX_MAX_MESSAGE_LEN];
-        let len = build_i2c_aux_request(
-            AuxI2cCommand::Write,
-            AUX_DDC_EDID_ADDRESS,
-            &[0x80],
-            true,
-            &mut req,
-        )
-        .unwrap();
-        assert_eq!(len, 5);
-        assert_eq!(&req[..5], &[0x04, 0x00, 0x50, 0x00, 0x80]);
-
-        let len = build_i2c_edid_read_request(16, false, &mut req).unwrap();
-        assert_eq!(len, 4);
-        assert_eq!(&req[..4], &[0x10, 0x00, 0x50, 0x0f]);
+        // Address-only start of a MOT write: three bytes, length 0xff.
         assert_eq!(
-            build_i2c_edid_read_request(AUX_MAX_PAYLOAD_LEN + 1, false, &mut req),
-            Err(GmaError::InvalidConfig)
+            i2c_request(AUX_I2C_WRITE | AUX_I2C_MOT, 0x50, &[], 0, &mut req),
+            3
         );
+        assert_eq!(&req[..4], &[0x40, 0x00, 0x50, 0xff]);
+        assert_eq!(
+            i2c_request(AUX_I2C_WRITE | AUX_I2C_MOT, 0x50, &[0x80], 0, &mut req),
+            5
+        );
+        assert_eq!(&req[..5], &[0x40, 0x00, 0x50, 0x00, 0x80]);
+        assert_eq!(
+            i2c_request(AUX_I2C_READ | AUX_I2C_MOT, 0x50, &[], 16, &mut req),
+            4
+        );
+        assert_eq!(&req[..4], &[0x50, 0x00, 0x50, 0x0f]);
+        assert!(i2c_ack(0x00) && !i2c_ack(0x40) && i2c_defer(0x80));
     }
 
     #[test]
-    fn aux_edid_chunk_plan_includes_segment_offset_and_read() {
-        let plan = AuxEdidReadChunkPlan::new(2, 0x40, 16).unwrap();
-        assert_eq!(plan.segment_write_len, Some(5));
-        assert_eq!(&plan.segment_write[..5], &[0x04, 0x00, 0x30, 0x00, 0x02]);
-        assert_eq!(plan.offset_write_len, 5);
-        assert_eq!(&plan.offset_write[..5], &[0x04, 0x00, 0x50, 0x00, 0x40]);
-        assert_eq!(plan.read_len, 4);
-        assert_eq!(&plan.read[..4], &[0x10, 0x00, 0x50, 0x0f]);
-
-        let base = AuxEdidReadChunkPlan::new(0, 0, 16).unwrap();
-        assert_eq!(base.segment_write_len, None);
-        assert_eq!(
-            AuxEdidReadChunkPlan::new(0, 0, 0),
-            Err(GmaError::InvalidConfig)
-        );
+    fn aux_clock_dividers_match_libgfxinit() {
+        // Ironlake/SNB: CDClk for the CPU channel, 125 MHz raw clock for PCH.
+        assert_eq!(AuxClock::pch(450_000_000), AuxClock::Replace(225));
+        assert_eq!(AuxClock::pch(400_000_000), AuxClock::Replace(200));
+        assert_eq!(AuxClock::pch(125_000_000), AuxClock::Replace(63));
+        // GMCH: rounded to the closest divider and OR'd in.
+        assert_eq!(AuxClock::gmch(133_333_333), AuxClock::Merge(67));
+        let edp = AuxRegs::pch_for_port(Port::Edp, 400_000_000, 125_000_000).unwrap();
+        assert_eq!((edp.ctl, edp.clock), (0x64010, AuxClock::Replace(200)));
+        let dp2 = AuxRegs::pch_for_port(Port::DpB, 400_000_000, 125_000_000).unwrap();
+        assert_eq!((dp2.ctl, dp2.data[0]), (0xe4210, 0xe4214));
     }
 
     #[test]
@@ -1104,7 +1163,7 @@ mod tests {
     #[test]
     fn gmch_aux_rejects_unsupported_ports() {
         assert_eq!(
-            AuxRegs::gmch_for_port(Port::DpD),
+            AuxRegs::gmch_for_port(Port::DpD, 133_333_333),
             Err(GmaError::UnsupportedPort)
         );
     }
@@ -1124,7 +1183,7 @@ mod tests {
     #[test]
     fn pch_aux_rejects_unsupported_ports() {
         assert_eq!(
-            AuxRegs::pch_for_port(Port::DpA),
+            AuxRegs::pch_for_port(Port::DpD, 400_000_000, 125_000_000),
             Err(GmaError::UnsupportedPort)
         );
     }

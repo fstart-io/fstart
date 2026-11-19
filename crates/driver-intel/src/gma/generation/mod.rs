@@ -1,17 +1,21 @@
 //! Generation-specific Intel GMA display operations.
 
+use crate::gma::GmaInitConfig;
 use crate::gma::error::GmaError;
+use crate::gma::mmio::Mmio;
 use crate::gma::mode::Mode;
+use crate::gma::port_detect::{self, PortDetectState};
+use crate::gma::state::GenerationState;
 use crate::gma::types::{Cpu, Generation, Pipe, Plane, Port};
 
-/// Select a pipe within the existing generation's routing constraints. Modern
-/// DDI generations can allocate free pipes; implemented GMCH/FDI paths retain
-/// their concrete routing. Connector probing and framebuffer sizing do not
-/// need to know these hardware restrictions.
+/// Select a pipe within the existing generation's routing constraints.
+/// libgfxinit's `Scan_Ports` hands out the pipes in order; only pre-i965
+/// LVDS needs pipe B, and G45 ports may be limited to some pipes. Connector
+/// probing and framebuffer sizing do not need to know these restrictions.
 pub(crate) fn output_pipe<G: GenerationOps>(
     cpu: Cpu,
     port: Port,
-    mode: Mode,
+    _mode: Mode,
     available: &[Pipe],
 ) -> Result<Pipe, GmaError> {
     let pipe = match G::GENERATION {
@@ -22,7 +26,6 @@ pub(crate) fn output_pipe<G: GenerationOps>(
             .iter()
             .find(|pipe| crate::gma::port::legacy_gmch_port_can_use_pipe(cpu, port, **pipe))
             .ok_or(GmaError::UnsupportedPort)?,
-        Generation::Ironlake => ironlake::ironlake_pipeline_plan(cpu, port, mode)?.fdi_pipe(),
         _ => *available.first().ok_or(GmaError::UnsupportedPort)?,
     };
     if available.contains(&pipe) {
@@ -94,17 +97,65 @@ pub(crate) trait GenerationOps: sealed::Sealed {
     /// configuration changed; enabling a second output must not tear down the
     /// first. Generation code implements this per pipe and port.
     fn disable_output(
-        _mmio: &crate::gma::mmio::Mmio,
+        _mmio: &Mmio,
         _cpu: Cpu,
         _pipe: Pipe,
         _port: Port,
+        _state: &mut GenerationState,
     ) -> Result<(), GmaError> {
         Err(GmaError::UnsupportedPlatform)
     }
 
     /// Return the display to libgfxinit's `Clean_State`: every pipe, port,
     /// panel and PLL off. Used once before the first modeset, not per output.
-    fn clean(_mmio: &crate::gma::mmio::Mmio, _cpu: Cpu) {}
+    fn clean(_mmio: &Mmio, _cpu: Cpu) {}
+
+    /// libgfxinit `Initialize`, once before the first probe. Generations
+    /// without more to do only clean up.
+    fn initialize(
+        mmio: &Mmio,
+        cpu: Cpu,
+        _config: &GmaInitConfig<'_>,
+        _state: &mut GenerationState,
+    ) {
+        Self::clean(mmio, cpu);
+    }
+
+    /// libgfxinit `Port_Detect.Initialize`: the ports that may carry a
+    /// display. With `initialize`, hotplug detection is (re)armed as well.
+    fn port_detect(mmio: &Mmio, cpu: Cpu, initialize: bool) -> Option<PortDetectState> {
+        Some(if initialize {
+            port_detect::initialize_legacy_gmch(mmio, cpu)
+        } else {
+            port_detect::legacy_gmch_detected(mmio, cpu)
+        })
+    }
+
+    /// libgfxinit `Port_Detect.Hotplug_Detect`: report and clear a pending
+    /// hotplug event of `port`.
+    fn hotplug_detect(mmio: &Mmio, port: Port) -> Result<bool, GmaError> {
+        port_detect::hotplug_detect(mmio, port)
+    }
+
+    /// Power panels before probing them (libgfxinit `Scan_Ports`).
+    fn prepare_panel_probe(mmio: &Mmio, config: &GmaInitConfig<'_>, _state: &mut GenerationState) {
+        if config
+            .outputs
+            .iter()
+            .any(|output| output.enabled && output.port == Port::Lvds)
+        {
+            g45::prepare_panel_probe(mmio, config.vbt);
+        }
+    }
+
+    /// Prepare probing one port (libgfxinit `Probe_Port`).
+    fn before_probe(_mmio: &Mmio, _port: Port, _state: &mut GenerationState) {}
+
+    /// Turn off a probed panel that no pipe drives (libgfxinit `Scan_Ports`).
+    fn release_unused_panel(mmio: &Mmio, _state: &mut GenerationState) {
+        g45::panel_backlight_off(mmio);
+        g45::panel_power_off(mmio);
+    }
 }
 
 pub(crate) mod sealed {

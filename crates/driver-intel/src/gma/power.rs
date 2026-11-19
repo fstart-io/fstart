@@ -120,14 +120,18 @@ pub(crate) fn initialize_legacy_gmch(
     cpu: Cpu,
     gcfgc: Option<u16>,
 ) -> LegacyPowerClocks {
-    let clocks = gmch_clock_regs(mmio);
     let cdclk_hz = cdclk_from_gcfgc(cpu, hpll_vco(mmio, cpu), gcfgc);
-    let raw_clock_hz = raw_clock_from_clkcfg(clocks.clkcfg.read(GMCH_CLKCFG::FSB_FREQ_SEL));
+    let raw_clock_hz = gmch_raw_clock_hz(mmio);
     LegacyPowerClocks {
         cdclk_hz,
         max_cdclk_hz: cdclk_hz,
         raw_clock_hz,
     }
+}
+
+/// GMCH raw clock in Hz, decoded from `CLKCFG` (libgfxinit `Get_Raw_Clock`).
+pub(crate) fn gmch_raw_clock_hz(mmio: &Mmio) -> u64 {
+    raw_clock_from_clkcfg(gmch_clock_regs(mmio).clkcfg.read(GMCH_CLKCFG::FSB_FREQ_SEL))
 }
 
 /// Initialize/read Gen3 (i945/i945GM/Pineview) display clocks.

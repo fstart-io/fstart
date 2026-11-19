@@ -25,6 +25,9 @@ const DESCRIPTOR_LEN: usize = 18;
 const DESCRIPTOR_COUNT: usize = 4;
 const INPUT: usize = 20;
 const INPUT_DIGITAL: u8 = 1 << 7;
+const INPUT_DIGITAL_DEPTH_SHIFT: u8 = 4;
+const INPUT_DIGITAL_DEPTH_MASK: u8 = 7 << INPUT_DIGITAL_DEPTH_SHIFT;
+const REVISION: usize = 19;
 const EXTENSION_COUNT: usize = 126;
 const MAX_PIXEL_CLOCK_SLACK_KHZ: u32 = 5_001;
 
@@ -108,6 +111,17 @@ impl<'a> Edid<'a> {
         !self.is_digital()
     }
 
+    /// Colour depth of an EDID 1.4 digital sink, clamped to 8 bpc
+    /// (libgfxinit `Preferred_Mode`); `None` leaves the port default.
+    pub fn bpc(&self) -> Option<u8> {
+        let depth = (self.raw[INPUT] & INPUT_DIGITAL_DEPTH_MASK) >> INPUT_DIGITAL_DEPTH_SHIFT;
+        if self.raw[REVISION] < 4 || !self.is_digital() || depth == 0 || depth == 7 {
+            None
+        } else {
+            Some((4 + 2 * depth).min(8))
+        }
+    }
+
     /// Number of EDID extension blocks advertised by the base block.
     pub fn extension_count(&self) -> u8 {
         self.raw[EXTENSION_COUNT]
@@ -146,7 +160,10 @@ impl<'a> Edid<'a> {
         if !self.has_preferred_mode() {
             return Err(GmaError::ModeUnavailable);
         }
-        mode_from_dtd(descriptor(self.raw, 0))
+        mode_from_dtd(descriptor(self.raw, 0)).map(|mode| Mode {
+            bpc: self.bpc(),
+            ..mode
+        })
     }
 
     /// Return all valid detailed timing modes from the base block.
@@ -193,7 +210,7 @@ impl<'a> Edid<'a> {
             .as_chunks::<2>()
             .0
         {
-            if let Some(mode) = standard_timing_mode(entry[0], entry[1], self.raw[19]) {
+            if let Some(mode) = standard_timing_mode(entry[0], entry[1], self.raw[REVISION]) {
                 let _ = modes.push(mode);
             }
         }
@@ -204,7 +221,9 @@ impl<'a> Edid<'a> {
     pub fn monitor_range(&self) -> Option<MonitorRange> {
         let mut i = 0;
         while i < DESCRIPTOR_COUNT {
-            if let Some(range) = monitor_range_descriptor(descriptor(self.raw, i), self.raw[19]) {
+            if let Some(range) =
+                monitor_range_descriptor(descriptor(self.raw, i), self.raw[REVISION])
+            {
                 return Some(range);
             }
             i += 1;
@@ -265,6 +284,9 @@ impl<'a> Edid<'a> {
                     push_unique_mode(&mut modes, mode);
                 }
             }
+        }
+        for mode in modes.iter_mut() {
+            mode.bpc = self.bpc();
         }
         modes
     }
@@ -499,6 +521,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 628,
         pixel_clock_khz: 40_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 800,
@@ -511,6 +534,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 625,
         pixel_clock_khz: 36_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 640,
@@ -523,6 +547,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 500,
         pixel_clock_khz: 31_500,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 640,
@@ -535,6 +560,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 520,
         pixel_clock_khz: 31_500,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 640,
@@ -547,6 +573,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 525,
         pixel_clock_khz: 30_240,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 640,
@@ -559,6 +586,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 525,
         pixel_clock_khz: 25_175,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 720,
@@ -571,6 +599,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 449,
         pixel_clock_khz: 35_500,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 720,
@@ -583,6 +612,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 449,
         pixel_clock_khz: 28_320,
         flags: NHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -595,6 +625,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 1066,
         pixel_clock_khz: 135_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1024,
@@ -607,6 +638,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 800,
         pixel_clock_khz: 78_750,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1024,
@@ -619,6 +651,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 806,
         pixel_clock_khz: 75_000,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode::XGA_1024X768_60,
     Mode {
@@ -632,6 +665,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 817,
         pixel_clock_khz: 44_900,
         flags: PHSYNC_PVSYNC.union(ModeFlags::INTERLACE),
+        bpc: None,
     },
     Mode {
         hdisplay: 832,
@@ -644,6 +678,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 667,
         pixel_clock_khz: 57_284,
         flags: NHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 800,
@@ -656,6 +691,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 625,
         pixel_clock_khz: 49_500,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 800,
@@ -668,6 +704,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 666,
         pixel_clock_khz: 50_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1152,
@@ -680,6 +717,7 @@ const ESTABLISHED_MODES: [Mode; 17] = [
         vtotal: 900,
         pixel_clock_khz: 108_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
 ];
 
@@ -698,6 +736,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 445,
         pixel_clock_khz: 31_500,
         flags: NHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 848,
@@ -710,6 +749,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 517,
         pixel_clock_khz: 33_750,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1024,
@@ -722,6 +762,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 808,
         pixel_clock_khz: 94_500,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -734,6 +775,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 750,
         pixel_clock_khz: 74_250,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -746,6 +788,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 790,
         pixel_clock_khz: 68_250,
         flags: PHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -758,6 +801,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 798,
         pixel_clock_khz: 79_500,
         flags: NHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -770,6 +814,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 823,
         pixel_clock_khz: 71_000,
         flags: PHSYNC_NVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -782,6 +827,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 831,
         pixel_clock_khz: 83_500,
         flags: NHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -794,6 +840,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 1000,
         pixel_clock_khz: 108_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1280,
@@ -806,6 +853,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 1066,
         pixel_clock_khz: 108_000,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1360,
@@ -818,6 +866,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 795,
         pixel_clock_khz: 85_500,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
     Mode {
         hdisplay: 1366,
@@ -830,6 +879,7 @@ const ADDITIONAL_DMT_MODES: &[Mode] = &[
         vtotal: 798,
         pixel_clock_khz: 85_500,
         flags: PHSYNC_PVSYNC,
+        bpc: None,
     },
 ];
 

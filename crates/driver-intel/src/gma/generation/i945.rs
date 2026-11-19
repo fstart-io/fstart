@@ -100,7 +100,13 @@ impl GenerationOps for I945 {
         enable_port(&ctx.mmio(), port, pipe, mode)
     }
 
-    fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
+    fn disable_output(
+        mmio: &Mmio,
+        cpu: Cpu,
+        pipe: Pipe,
+        port: Port,
+        _state: &mut crate::gma::state::GenerationState,
+    ) -> Result<(), GmaError> {
         if port == Port::Lvds {
             g45::panel_backlight_off(mmio);
             g45::panel_power_off(mmio);
