@@ -404,7 +404,7 @@ fn include_inputs(
     let workspace = Path::new(WORKSPACE);
     let mut inputs = plan.inputs.clone();
     // From the user's donor, at assembly.
-    let donated = |path: &str| path.starts_with(BLOBS_DIR);
+    let donated = |path: &str| Path::new(path).starts_with(BLOBS_DIR);
     for step in &plan.images {
         let ImageOperation::Ffs(assembly) = &step.operation else {
             continue;

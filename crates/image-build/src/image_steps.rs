@@ -44,20 +44,19 @@ pub struct ImageOutputs {
     pub notes: Vec<String>,
 }
 
-/// A declared file input, read with its size bound enforced, resolved
-/// against the workspace root unless absolute. The path goes to `files`
-/// as is: the host resolves it (symlinks included), an in-memory tree
-/// normalizes its keys itself.
+/// A declared file input, read with its size bound enforced: a blob, or
+/// a path resolved against the workspace root unless absolute
+/// ([`Files::read_named`]).
 fn read_binding(files: &dyn Files, root: &Path, binding: &FileBinding) -> Result<Vec<u8>, String> {
-    let source = root.join(&binding.path);
-    let size = files.len(&source)?;
+    let source = Path::new(&binding.path);
+    let size = files.named_len(root, source)?;
     if size == 0 || size > binding.capacity {
         return Err(format!(
             "{}: image input is not a nonempty bounded regular file",
             source.display()
         ));
     }
-    let bytes = files.read(&source)?;
+    let bytes = files.read_named(root, source)?;
     if bytes.is_empty() || bytes.len() as u64 > binding.capacity {
         return Err(format!(
             "{}: image input changed outside its size bound",
@@ -87,7 +86,9 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
     plan.order()?;
     // A halved flash packs the generations whose blobs are there.
     let mut plan = plan.clone();
-    halved_flash::keep_present(&mut plan, &|path| ctx.files.exists(Path::new(path)))?;
+    halved_flash::keep_present(&mut plan, &|path| {
+        ctx.files.named_exists(ctx.workspace_root, Path::new(path))
+    })?;
     let plan = &plan;
     if plan.images.is_empty() {
         return Err("plan has no image steps".into());
@@ -289,7 +290,7 @@ fn amd_halved_flash(
         ));
     }
     let rom = halved_flash::packed_rom(&image.packed, plan, &|path: &str| {
-        ctx.files.read(Path::new(path))
+        ctx.files.read_named(ctx.workspace_root, Path::new(path))
     })?;
     for half in &image.packed {
         notes.push(format!(

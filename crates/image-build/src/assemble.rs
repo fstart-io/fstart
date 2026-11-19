@@ -146,9 +146,9 @@ pub fn assemble(
         data_file(name.as_str().to_string(), data);
     }
     for asset in &config.file_assets {
-        let path = workspace_root.join(asset.path.as_str());
+        let path = Path::new(asset.path.as_str());
         let data = files
-            .read(Path::new(&path))
+            .read_named(workspace_root, path)
             .map_err(|e| format!("failed to read data asset {}: {e}", path.display()))?;
         data_file(asset.name.as_str().to_string(), data);
     }
@@ -1074,7 +1074,8 @@ fn patch_xip_anchor(
     Ok(())
 }
 
-/// Concatenate `names`, relative paths taken from `base`.
+/// Concatenate `names`: blobs, or relative paths taken from `base`
+/// ([`Files::read_named`]).
 fn concat_files<'a>(
     files: &dyn Files,
     names: impl IntoIterator<Item = &'a str>,
@@ -1082,9 +1083,9 @@ fn concat_files<'a>(
     what: &str,
 ) -> Result<Vec<u8>, String> {
     names.into_iter().try_fold(Vec::new(), |mut blob, file| {
-        let path = base.join(file);
+        let path = Path::new(file);
         let data = files
-            .read(Path::new(&path))
+            .read_named(base, path)
             .map_err(|e| format!("failed to read {what} {}: {e}", path.display()))?;
         blob.extend_from_slice(&data);
         Ok(blob)

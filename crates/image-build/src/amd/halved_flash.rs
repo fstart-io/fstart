@@ -924,7 +924,10 @@ pub fn packed_rom(
 /// generations. A dropped half's microcode leaves the FFS step the flash
 /// consumes too. A half with only some of its files fails when it is
 /// packed. Plans without a halved flash are unchanged.
-pub fn keep_present(plan: &mut BuildPlan, exists: &dyn Fn(&str) -> bool) -> Result<(), String> {
+pub fn keep_present(
+    plan: &mut BuildPlan,
+    exists: &dyn Fn(&str) -> Result<bool, String>,
+) -> Result<(), String> {
     use crate::build_plan::ImageOperation;
     let Some(image) = plan
         .images
@@ -936,9 +939,18 @@ pub fn keep_present(plan: &mut BuildPlan, exists: &dyn Fn(&str) -> bool) -> Resu
     else {
         return Ok(());
     };
-    let (kept, dropped): (Vec<_>, Vec<_>) = core::mem::take(&mut image.packed)
-        .into_iter()
-        .partition(|half| half.files.psp.iter().any(|f| exists(&f.path)));
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for half in core::mem::take(&mut image.packed) {
+        let present = (half.files.psp.iter()).try_fold(false, |present, f| {
+            Ok::<_, String>(present || exists(&f.path)?)
+        })?;
+        if present {
+            kept.push(half);
+        } else {
+            dropped.push(half);
+        }
+    }
     if kept.is_empty() {
         return Err("the blobs have firmware for none of the board's generations".into());
     }
