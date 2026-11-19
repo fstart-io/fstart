@@ -10,7 +10,8 @@
 //! chipset-owned resources are explicit and removed from free space, and
 //! movable BARs are placed largest-alignment-first. Like coreboot's, it
 //! sizes each bridge's windows from its subtree, bottom up, then places
-//! them top down, everything behind a bridge inside its windows.
+//! them top down, everything behind a bridge inside its windows. Where
+//! that finds no layout, a bounded search over the windows does.
 //!
 //! One allocator can own several root bridges (PCI domains):
 //! each has its own bus range and windows, and the devices below it get
@@ -45,6 +46,9 @@ pub enum PciEcamError {
     FixedBarInvalid,
     FixedBarConflict,
     ResourceExhausted,
+    /// The window search ran out of its budget, of candidate windows or of
+    /// work, before it found a layout or proved there is none.
+    SearchLimit,
 }
 
 impl PciEcamError {
@@ -550,6 +554,9 @@ struct Root {
     ecam_size: usize,
     bus_start: u8,
     bus_end: u8,
+    /// Free memory below 4 GiB, above, and free ports: what the allocator
+    /// may use. Allocation leaves them as they were; where it put what is
+    /// in the devices.
     mmio32: ResourcePool,
     mmio64: ResourcePool,
     io_pool: ResourcePool,
@@ -577,6 +584,23 @@ pub struct PciEcam {
     devices: HVec<PciDev, MAX_PCI_DEVICES>,
     fixed_bars: PciFixedBars,
     auto_bus_master: bool,
+    /// Which allocators run.
+    #[cfg(test)]
+    allocators: Allocators,
+    /// Candidate windows and work units the last search spent.
+    #[cfg(test)]
+    spent: (usize, usize),
+}
+
+/// Which allocators a test runs: the fast paths alone (the subtree and
+/// BAR-by-BAR layouts, each checked by [`PciEcam::validate_plan`]), the
+/// window search alone, or both (as firmware does).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Allocators {
+    FastPaths,
+    Search(solver::Budget),
+    Both(solver::Budget),
 }
 
 // SAFETY: MMIO registers are hardware-fixed addresses from the board metadata.
@@ -1236,9 +1260,13 @@ impl PciEcam {
     //
     // Where no such layout fits, the root is placed BAR by BAR as before
     // (each BAR behind a bridge aligned to the window's granularity), and
-    // that is kept if the windows it implies are ones a subtree layout
-    // could have made ([`Self::place_bar_by_bar`]): whatever fitted before
-    // still does.
+    // that is kept if the windows it implies decode as meant
+    // ([`Self::place_bar_by_bar`]): whatever fitted before still does.
+    // Where neither fits, a search chooses the windows and packs each bus
+    // exactly ([`solver`]); it finds what no greedy move does, or proves
+    // there is nothing, or says it gave up. Whichever layout is kept is
+    // checked against the root's pools as they were before
+    // ([`Self::validate_plan`]).
     //
     // Prefetchable memory takes the windows the BAR-by-BAR allocator before
     // it derived from where it put each BAR. A 64-bit prefetchable BAR
@@ -1252,8 +1280,12 @@ impl PciEcam {
     // forwards prefetchable memory through its memory window (prefetchable
     // memory may always be forwarded as non-prefetchable).
     //
-    // Nothing is written until every root is placed: an allocation that
-    // fails leaves every BAR, window and command register as it found them.
+    // No final BAR, window or command value is programmed until every root
+    // is placed: an allocation that fails leaves them as discovery left
+    // them. Discovery is not undone: it numbered the bridges' buses and left
+    // them so; to size BARs and probe prefetchable windows it wrote them
+    // with decode off, and put each back. A failure is fail-stop: the
+    // hierarchy is left routed for a diagnosis, not for a retry.
 
     /// What device `dev_idx` asks of its parent, each with its size and
     /// alignment: its movable BARs and, for a bridge, its open windows.
@@ -1730,8 +1762,12 @@ impl PciEcam {
     /// Place root `root`. Every 64-bit prefetchable BAR that may go above
     /// 4 GiB goes below if all fit; else each one that still fits there
     /// ([`Self::decide_sides`]). If no layout of subtrees fits, BAR
-    /// by BAR as before ([`Self::place_bar_by_bar`]); the error, if that
-    /// does not either, is of the subtrees.
+    /// by BAR as before ([`Self::place_bar_by_bar`]). If that does not
+    /// either, the window search ([`solver`]); the error, if it finds
+    /// nothing either, names the request the subtrees had no room for.
+    /// Whatever is kept is checked against the root's pools as they were
+    /// ([`Self::validate_plan`]). The pools are left as they were: the plan
+    /// is in the devices. On failure nothing of the root is placed.
     fn allocate_root(&mut self, root: usize, bridges: &[usize]) -> Result<(), PciEcamError> {
         let Root {
             mmio32,
@@ -1740,20 +1776,89 @@ impl PciEcam {
             ..
         } = self.roots[root];
         let pools = (mmio32, mmio64, io_pool);
-        if self.decide_sides(root, &pools, bridges) || self.place_bar_by_bar(root, &pools, bridges)
+        let (subtrees, search) = self.allocators();
+        let result = if subtrees
+            && ((self.decide_sides(root, &pools, bridges) && self.validate_plan(root, &pools))
+                || self.place_bar_by_bar(root, &pools, bridges))
         {
-            return Ok(());
+            Ok(())
+        } else if let Some(budget) = search {
+            self.solve(root, &pools, bridges, budget).and_then(|()| {
+                match self.validate_plan(root, &pools) {
+                    true => Ok(()),
+                    false => Err(PciEcamError::ConfigError),
+                }
+            })
+        } else {
+            Err(PciEcamError::ResourceExhausted)
+        };
+        if let Err(error) = result {
+            self.report_failure(root, &pools, bridges, error);
+            self.unplace(root);
         }
-        self.decide_sides(root, &pools, bridges);
-        self.try_root(root, &pools, bridges, true)
+        let free = &mut self.roots[root];
+        (free.mmio32, free.mmio64, free.io_pool) = pools;
+        result
+    }
+
+    /// Whether the fast paths run, and the window search's budget per root
+    /// if it does.
+    fn allocators(&self) -> (bool, Option<solver::Budget>) {
+        #[cfg(test)]
+        return match self.allocators {
+            Allocators::FastPaths => (true, None),
+            Allocators::Search(budget) => (false, Some(budget)),
+            Allocators::Both(budget) => (true, Some(budget)),
+        };
+        #[cfg(not(test))]
+        (true, Some(solver::Budget::FIRMWARE))
+    }
+
+    /// Say why root `root` has no layout: the request the subtrees had no
+    /// room for, or that the search gave up, or found one that is wrong.
+    fn report_failure(
+        &mut self,
+        root: usize,
+        pools: &Pools,
+        bridges: &[usize],
+        error: PciEcamError,
+    ) {
+        let Root {
+            segment, bus_start, ..
+        } = self.roots[root];
+        match error {
+            PciEcamError::SearchLimit => fstart_log::error!(
+                "pci: root bridge {} (segment={:#x} bus={:#x}): the window search ran out of its budget",
+                root,
+                segment,
+                bus_start
+            ),
+            PciEcamError::ResourceExhausted => {
+                self.decide_sides(root, pools, bridges);
+                if self.try_root(root, pools, bridges, true).is_ok() {
+                    fstart_log::error!(
+                        "pci: root bridge {} (segment={:#x} bus={:#x}): no layout forwards every BAR",
+                        root,
+                        segment,
+                        bus_start
+                    );
+                }
+            }
+            _ => fstart_log::error!(
+                "pci: root bridge {} (segment={:#x} bus={:#x}): the window search's layout is invalid",
+                root,
+                segment,
+                bus_start
+            ),
+        }
     }
 
     /// Place root `root` as the allocator did before it laid out subtrees:
     /// BAR by BAR, first fit, bus by bus, what only fits below 4 GiB first,
     /// then the largest alignment, a BAR behind a bridge aligned to its
     /// window's granularity; each bridge's windows the spans of what is
-    /// behind it. Kept only if those are windows a subtree layout could
-    /// have made ([`Self::spans_nest`]): then whatever fitted before still
+    /// behind it. Kept only if that is a layout the hardware decodes as
+    /// meant ([`Self::validate_plan`]): then whatever fitted before still
     /// does. Whether it is kept.
     fn place_bar_by_bar(&mut self, root: usize, pools: &Pools, bridges: &[usize]) -> bool {
         let restore = |pci: &mut Self| {
@@ -1780,7 +1885,7 @@ impl PciEcam {
                 self.span_windows(bridge);
             }
         }
-        let kept = self.spans_nest(root, pools, bridges);
+        let kept = self.validate_plan(root, pools);
         if !kept {
             restore(self);
         }
@@ -1923,96 +2028,6 @@ impl PciEcam {
         })
     }
 
-    /// Whether the windows of root `root`'s bridges are subtree windows: a
-    /// prefetchable window only where the bridge has one, below 4 GiB if
-    /// it is 32-bit; no window over a BAR that is not behind it, nor over
-    /// a sibling's window or its own other memory window; within its
-    /// parent's (prefetchable memory in either of the parent's memory
-    /// windows), or within the root's free ranges on the root bus.
-    fn spans_nest(&self, root: usize, pools: &Pools, bridges: &[usize]) -> bool {
-        let open = |window: &Window| {
-            window
-                .placed
-                .then(|| (window.base, window.base + window.size))
-        };
-        let overlap = |a: Option<(u64, u64)>, b: Option<(u64, u64)>| matches!((a, b), (Some(a), Some(b)) if a.0 < b.1 && b.0 < a.1);
-        let within = |inner: Option<(u64, u64)>, outer: Option<(u64, u64)>| {
-            inner.is_none_or(|inner| {
-                outer.is_some_and(|outer| outer.0 <= inner.0 && inner.1 <= outer.1)
-            })
-        };
-        for &bridge in bridges {
-            let device = &self.devices[bridge];
-            if device.root != root {
-                continue;
-            }
-            let [io, memory, prefetchable] = device.windows.each_ref().map(open);
-            if prefetchable.is_some_and(|(_, end)| match device.prefetch {
-                PrefetchWindow::None => true,
-                PrefetchWindow::Bits32 => end > 1 << 32,
-                PrefetchWindow::Bits64 => false,
-            }) || overlap(memory, prefetchable)
-            {
-                return false;
-            }
-            let buses = device.secondary_bus..=device.subordinate_bus;
-            for other in self.devices.iter().filter(|other| other.root == root) {
-                let behind = buses.contains(&other.addr.bus());
-                for bar in other.bars.iter().filter(|bar| bar.allocated && !behind) {
-                    let span = Some((bar.base, bar.base + bar.size));
-                    let hit = match bar.bar_type {
-                        BarType::Io => overlap(span, io),
-                        BarType::None => false,
-                        _ => overlap(span, memory) || overlap(span, prefetchable),
-                    };
-                    if hit {
-                        return false;
-                    }
-                }
-            }
-            for &sibling in bridges {
-                let other = &self.devices[sibling];
-                if sibling == bridge || other.root != root || other.addr.bus() != device.addr.bus()
-                {
-                    continue;
-                }
-                let [other_io, other_memory, other_prefetchable] =
-                    other.windows.each_ref().map(open);
-                if overlap(io, other_io)
-                    || [memory, prefetchable].into_iter().any(|window| {
-                        overlap(window, other_memory) || overlap(window, other_prefetchable)
-                    })
-                {
-                    return false;
-                }
-            }
-            let nested = match device.parent {
-                Some(parent) => {
-                    let [parent_io, parent_memory, parent_prefetchable] =
-                        self.devices[parent].windows.each_ref().map(open);
-                    within(io, parent_io)
-                        && within(memory, parent_memory)
-                        && (within(prefetchable, parent_memory)
-                            || within(prefetchable, parent_prefetchable))
-                }
-                None => {
-                    let free = |window: Option<(u64, u64)>, pools: &[&ResourcePool]| {
-                        window.is_none_or(|(base, end)| {
-                            pools.iter().any(|pool| pool.is_free(base, end))
-                        })
-                    };
-                    free(io, &[&pools.2])
-                        && free(memory, &[&pools.0])
-                        && free(prefetchable, &[&pools.0, &pools.1])
-                }
-            };
-            if !nested {
-                return false;
-            }
-        }
-        true
-    }
-
     /// Decide which side of 4 GiB each 64-bit prefetchable BAR of root
     /// `root` goes to, and lay it out so. Whether it fits.
     fn decide_sides(&mut self, root: usize, pools: &Pools, bridges: &[usize]) -> bool {
@@ -2100,11 +2115,14 @@ impl PciEcam {
             return Err(PciEcamError::ConfigError);
         }
 
+        // Every root is planned and checked before anything is written.
+        let before = self.roots.clone();
         for root in 0..self.roots.len() {
             if let Err(error) = self.allocate_root(root, &bridges) {
                 for root in 0..root {
                     self.unplace(root);
                 }
+                self.roots = before;
                 return Err(error);
             }
         }
@@ -2336,6 +2354,12 @@ impl PciEcam {
     }
 
     /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
+    ///
+    /// On failure no final BAR, window or command value is programmed:
+    /// discovery's probes of BARs, prefetchable windows and decode are each
+    /// put back. But discovery has numbered the bridges' buses and left them
+    /// so: treat a failure as fail-stop, not as a hierarchy to hand off or
+    /// enumerate again.
     pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
         self.enumerate_resource_targets(None, true)
     }
@@ -2723,6 +2747,10 @@ impl PciEcam {
             devices: HVec::new(),
             fixed_bars: PciFixedBars::new(),
             auto_bus_master: true,
+            #[cfg(test)]
+            allocators: Allocators::Both(solver::Budget::FIRMWARE),
+            #[cfg(test)]
+            spent: (0, 0),
         }
     }
 }
@@ -2737,10 +2765,14 @@ impl Root {
         for range in root.allocatable() {
             match range.kind {
                 PciWindowKind::Io => io_pool.push_range(range.base, range.end())?,
-                PciWindowKind::Mmio if range.is_below_4g() => {
-                    mmio32.push_range(range.base, range.end())?;
+                // A range across 4 GiB is two: below, what a 32-bit BAR or
+                // window may use; above, what only a 64-bit one may. The
+                // tables still describe it as one.
+                PciWindowKind::Mmio => {
+                    let (base, end) = (range.base, range.end());
+                    mmio32.push_range(base, end.min(plan::FOUR_GIB))?;
+                    mmio64.push_range(base.max(plan::FOUR_GIB), end)?;
                 }
-                PciWindowKind::Mmio => mmio64.push_range(range.base, range.end())?,
             }
         }
         Ok(Self {
@@ -2795,6 +2827,11 @@ impl ConfigRegionAccess for PciEcam {
     }
 }
 
+#[path = "ecam_host/plan.rs"]
+mod plan;
+#[path = "ecam_host/solver.rs"]
+mod solver;
+
 #[cfg(test)]
 #[path = "ecam_host/allocator_tests.rs"]
 mod allocator_tests;
@@ -2802,6 +2839,10 @@ mod allocator_tests;
 #[cfg(test)]
 #[path = "ecam_host/master_tests.rs"]
 mod master_tests;
+
+#[cfg(test)]
+#[path = "ecam_host/solver_tests.rs"]
+mod solver_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2815,7 +2856,7 @@ mod tests {
         test_pci_with_buses(3)
     }
 
-    fn test_pci_with_buses(buses: usize) -> (PciEcam, Vec<u32>) {
+    pub(super) fn test_pci_with_buses(buses: usize) -> (PciEcam, Vec<u32>) {
         let mut config_space = vec![0u32; buses << 18];
         let ecam_base = config_space.as_mut_ptr() as usize;
         let root = Root {
@@ -3502,7 +3543,10 @@ mod tests {
     }
 
     /// The non-prefetchable memory window of `bridge`, inclusive.
-    fn memory_window(pci: &PciEcam, bridge: PciAddress) -> core::ops::RangeInclusive<u64> {
+    pub(super) fn memory_window(
+        pci: &PciEcam,
+        bridge: PciAddress,
+    ) -> core::ops::RangeInclusive<u64> {
         let value = pci.read32(bridge, PCI_MEMORY_BASE);
         u64::from((value & 0xfff0) << 16)..=u64::from(value | 0xf_ffff)
     }
@@ -3533,7 +3577,7 @@ mod tests {
         }
     }
 
-    fn bridge_at(address: PciAddress, secondary: u8, subordinate: u8) -> PciDev {
+    pub(super) fn bridge_at(address: PciAddress, secondary: u8, subordinate: u8) -> PciDev {
         PciDev {
             header_type: PCI_HEADER_TYPE_BRIDGE,
             secondary_bus: secondary,
@@ -3714,7 +3758,7 @@ mod tests {
     /// PCIE1 (60:03.1) with a dual-port NIC, an I/O BAR on each function,
     /// comes before the BMC's link: 60:05.2, the AST1150 and the AST2500,
     /// its framebuffer, registers and ports.
-    fn ethanol_x(ports: u64) -> (PciEcam, Vec<u32>) {
+    pub(super) fn ethanol_x(ports: u64) -> (PciEcam, Vec<u32>) {
         const BUSES: usize = 6;
         let mut config_space = vec![0u32; BUSES << 18];
         let root = Root {
@@ -3771,7 +3815,7 @@ mod tests {
     }
 
     /// PCIE1, the BMC's link and the AST2500 of [`ethanol_x`].
-    fn ethanol_x_functions() -> [PciAddress; 3] {
+    pub(super) fn ethanol_x_functions() -> [PciAddress; 3] {
         [
             PciAddress::new(0, 0x60, 3, 1),
             PciAddress::new(0, 0x60, 5, 2),
@@ -3950,7 +3994,10 @@ mod tests {
 
     /// The prefetchable window `bridge` decodes, inclusive, its upper
     /// halves read as they are.
-    fn prefetchable_window(pci: &PciEcam, bridge: PciAddress) -> core::ops::RangeInclusive<u64> {
+    pub(super) fn prefetchable_window(
+        pci: &PciEcam,
+        bridge: PciAddress,
+    ) -> core::ops::RangeInclusive<u64> {
         let value = pci.read32(bridge, PCI_PREF_MEMORY_BASE);
         let base = (u64::from(pci.read32(bridge, PCI_PREF_BASE_UPPER32)) << 32)
             | u64::from((value & 0xfff0) << 16);
@@ -4158,7 +4205,7 @@ mod tests {
         }
     }
 
-    fn io_bar_base(pci: &PciEcam, addr: PciAddress, index: usize) -> u64 {
+    pub(super) fn io_bar_base(pci: &PciEcam, addr: PciAddress, index: usize) -> u64 {
         u64::from(pci.read32(addr, PCI_BAR0 + index as u16 * 4) & 0x0000_fffc)
     }
 

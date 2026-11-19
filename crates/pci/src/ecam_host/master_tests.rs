@@ -8,6 +8,7 @@
 //! still be one the allocator finds; and whatever the allocator produces
 //! must be valid.
 
+use super::solver::Budget;
 use super::tests::endpoint;
 use super::*;
 use alloc::{format, string::String, vec, vec::Vec};
@@ -207,7 +208,7 @@ impl PciEcam {
 }
 
 /// An inclusive span; `None` is a closed window.
-type Span = Option<(u64, u64)>;
+pub(super) type Span = Option<(u64, u64)>;
 
 fn overlap(a: Span, b: Span) -> bool {
     matches!((a, b), (Some(a), Some(b)) if a.0 <= b.1 && b.0 <= a.1)
@@ -219,7 +220,7 @@ fn within(inner: (u64, u64), outer: Span) -> bool {
 
 /// What bridge `bridge` forwards, read back as the hardware would decode
 /// it: I/O, memory, prefetchable memory.
-fn windows(pci: &PciEcam, bridge: &PciDev) -> [Span; 3] {
+pub(super) fn windows(pci: &PciEcam, bridge: &PciDev) -> [Span; 3] {
     let open = |base: u64, limit: u64| (base <= limit).then_some((base, limit));
     let io = pci.read32(bridge.addr, PCI_IO_BASE);
     let io = open(u64::from(io & 0xf0) << 8, (u64::from(io & 0xf000)) | 0xfff);
@@ -248,7 +249,7 @@ fn windows(pci: &PciEcam, bridge: &PciDev) -> [Span; 3] {
 
 /// Every BAR as programmed: its device, whether it is I/O, whether it is
 /// prefetchable, its span.
-fn bars(pci: &PciEcam) -> Vec<(usize, bool, bool, (u64, u64))> {
+pub(super) fn bars(pci: &PciEcam) -> Vec<(usize, bool, bool, (u64, u64))> {
     let mut bars = Vec::new();
     for (dev_idx, device) in pci.devices.iter().enumerate() {
         for bar in device
@@ -271,7 +272,7 @@ fn bars(pci: &PciEcam) -> Vec<(usize, bool, bool, (u64, u64))> {
 
 /// Whether the programmed layout routes every BAR, and nothing else, to
 /// where it is: the error says what does not.
-fn valid(pci: &PciEcam, pools: &[(u64, u64)]) -> Result<(), String> {
+pub(super) fn valid(pci: &PciEcam, pools: &[(u64, u64)]) -> Result<(), String> {
     let bars = bars(pci);
     for (i, &(dev, io, _, span)) in bars.iter().enumerate() {
         if span.0 % (span.1 - span.0 + 1) != 0 {
@@ -352,8 +353,119 @@ fn valid(pci: &PciEcam, pools: &[(u64, u64)]) -> Result<(), String> {
     Ok(())
 }
 
+/// A root's free ranges as its pools hold them, inclusive: below 4 GiB,
+/// above, ports. Allocation leaves them as they were.
+pub(super) fn pools_of(pci: &PciEcam) -> [Vec<(u64, u64)>; 3] {
+    let root = &pci.roots[0];
+    [&root.mmio32, &root.mmio64, &root.io_pool].map(|pool| {
+        pool.ranges[..pool.count]
+            .iter()
+            .map(|range| (range.base, range.end - 1))
+            .collect()
+    })
+}
+
+/// Whether what the allocator wrote, read back, is typed as it must be:
+/// each BAR's attribute bits as it sized; each BAR and window in a range
+/// of its type (on the root bus: a pool of `pools` it may use, a 32-bit
+/// BAR, memory window or 32-bit prefetchable window below 4 GiB; behind a
+/// bridge: the window of its parent that forwards its type, a 32-bit BAR
+/// not in a prefetchable window above 4 GiB); no window across 4 GiB; and
+/// each function's command register decoding what it was given.
+pub(super) fn typed(pci: &PciEcam, pools: &[Vec<(u64, u64)>; 3]) -> Result<(), String> {
+    const FOUR_GIB: u64 = 1 << 32;
+    let [low, high, io] = pools;
+    let pooled = |span: (u64, u64), ranges: &[(u64, u64)]| {
+        ranges.iter().any(|&range| within(span, Some(range)))
+    };
+    let crosses = |span: Span| span.is_some_and(|(base, last)| base < FOUR_GIB && last >= FOUR_GIB);
+    for device in &pci.devices {
+        let at = device.addr;
+        let parent = device
+            .parent
+            .map(|parent| windows(pci, &pci.devices[parent]));
+        let (mut has_io, mut has_memory) = (false, false);
+        for bar in device
+            .bars
+            .iter()
+            .filter(|bar| bar.bar_type != BarType::None && !bar.fixed)
+        {
+            let value = pci.read32(at, bar.reg);
+            let prefetchable = if bar.prefetchable { 0x8 } else { 0 };
+            let (attributes, mask, base) = match bar.bar_type {
+                BarType::Io => (0x1, 0x3, u64::from(value & !0x3)),
+                BarType::Memory32 => (prefetchable, 0xf, u64::from(value & !0xf)),
+                _ => (
+                    0x4 | prefetchable,
+                    0xf,
+                    u64::from(value & !0xf) | u64::from(pci.read32(at, bar.reg + 4)) << 32,
+                ),
+            };
+            if value & mask != attributes {
+                return Err(format!("{at:?} BAR {:#x} reads {value:#x}", bar.reg));
+            }
+            let span = (base, base + bar.size - 1);
+            let wide = bar.bar_type == BarType::Memory64;
+            has_io |= bar.bar_type == BarType::Io;
+            has_memory |= bar.bar_type != BarType::Io;
+            let typed = match (bar.bar_type, parent) {
+                (BarType::Io, None) => pooled(span, io),
+                (_, None) => pooled(span, low) || wide && pooled(span, high),
+                (BarType::Io, Some(w)) => within(span, w[0]),
+                (_, Some(w)) if !bar.prefetchable => within(span, w[1]),
+                (_, Some(w)) => {
+                    within(span, w[1])
+                        || within(span, w[2]) && (wide || w[2].is_some_and(|w| w.1 < FOUR_GIB))
+                }
+            };
+            if !typed {
+                return Err(format!(
+                    "{at:?} BAR {:#x} at {span:x?} is not where its type goes",
+                    bar.reg
+                ));
+            }
+        }
+        let bridge = device.header_type == PCI_HEADER_TYPE_BRIDGE;
+        let own = bridge.then(|| windows(pci, device));
+        if let Some(w) = own {
+            let wide = device.prefetch == PrefetchWindow::Bits64;
+            let held = |window: Span, outer: &[Span]| {
+                window.is_none_or(|window| outer.iter().any(|&outer| within(window, outer)))
+            };
+            let pool = |window: Span, ranges: &[&[(u64, u64)]]| {
+                window.is_none_or(|window| ranges.iter().any(|ranges| pooled(window, ranges)))
+            };
+            let typed = match parent {
+                None => {
+                    let pref: &[&[(u64, u64)]] = if wide { &[low, high] } else { &[low] };
+                    pool(w[0], &[io]) && pool(w[1], &[low]) && pool(w[2], pref)
+                }
+                Some(p) => held(w[0], &[p[0]]) && held(w[1], &[p[1]]) && held(w[2], &[p[1], p[2]]),
+            };
+            if !typed || crosses(w[1]) || crosses(w[2]) {
+                return Err(format!(
+                    "{at:?}'s windows {w:x?} are not where their types go"
+                ));
+            }
+        }
+        let command = pci.read16(at, PCI_COMMAND);
+        let original = device.original_command;
+        let io_window = own.is_some_and(|w| w[0].is_some());
+        let io = has_io || io_window || !bridge && original & PCI_CMD_IO != 0;
+        let memory = bridge || has_memory || original & PCI_CMD_MEMORY != 0;
+        let expected = (u16::from(io) * PCI_CMD_IO)
+            | (u16::from(memory) * PCI_CMD_MEMORY)
+            | PCI_CMD_BUS_MASTER;
+        let decode = PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+        if command & decode != expected {
+            return Err(format!("{at:?} decodes {command:#x}, not {expected:#x}"));
+        }
+    }
+    Ok(())
+}
+
 /// The topology and what master made of it, for a failure.
-fn describe(pci: &PciEcam, pools: [(u64, u64); 3]) -> String {
+pub(super) fn describe(pci: &PciEcam, pools: &[(u64, u64)]) -> String {
     let mut text = format!("pools {pools:x?}\n");
     for (index, device) in pci.devices.iter().enumerate() {
         text += &format!(
@@ -385,10 +497,10 @@ fn describe(pci: &PciEcam, pools: [(u64, u64); 3]) -> String {
 }
 
 /// A deterministic generator.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(super) fn next(&mut self) -> u64 {
         self.0 = self
             .0
             .wrapping_mul(6364136223846793005)
@@ -396,7 +508,7 @@ impl Rng {
         self.0 >> 33
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(super) fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
 }
@@ -501,9 +613,16 @@ fn copy(device: &PciDev) -> PciDev {
     PciDev { ..*device }
 }
 
+/// Master, the fast paths alone (#372's subtree and BAR-by-BAR layouts,
+/// which firmware still runs first: as they are now, each checked by
+/// [`PciEcam::validate_plan`], not a frozen #372), the window search alone
+/// and both, on the same topologies. What master or the fast paths lay out
+/// validly is laid out; what any of them writes is valid, and what ours
+/// write is typed ([`typed`]); the search says there is no layout only
+/// where neither found one.
 #[test]
 fn every_valid_layout_of_master_is_found_and_every_layout_is_valid() {
-    let (mut found, mut master_valid) = (0, 0);
+    let (mut found, mut master_valid, mut subtrees_valid, mut rescued) = (0, 0, 0, 0);
     for seed in 0..4000u64 {
         let mut rng = Rng(seed);
         let devices = topology(&mut rng);
@@ -526,35 +645,65 @@ fn every_valid_layout_of_master_is_found_and_every_layout_is_valid() {
             .map(|&(base, size)| (base, base + size - 1))
             .collect();
 
-        let mut master_space = vec![0u32; BUSES << 18];
-        let mut master = fixture(&mut master_space, pools);
-        let mut space = vec![0u32; BUSES << 18];
-        let mut pci = fixture(&mut space, pools);
-        for device in &devices {
-            assert!(master.devices.push(copy(device)).is_ok());
-            assert!(pci.devices.push(copy(device)).is_ok());
-        }
-        let master_ok = master.master_allocate().is_ok() && valid(&master, &apertures).is_ok();
-        let result = pci.allocate_resources();
-        if let Ok(()) = result {
-            found += 1;
-            if let Err(error) = valid(&pci, &apertures) {
-                panic!("seed {seed}: {error}\n{}", describe(&pci, pools));
+        let run = |allocators: Option<Allocators>| {
+            let mut space = vec![0u32; BUSES << 18];
+            let mut pci = fixture(&mut space, pools);
+            for device in &devices {
+                assert!(pci.devices.push(copy(device)).is_ok());
             }
-        }
-        if master_ok {
-            master_valid += 1;
+            let result = match allocators {
+                None => pci.master_allocate(),
+                Some(allocators) => {
+                    pci.allocators = allocators;
+                    pci.allocate_resources()
+                }
+            };
+            let valid = result.and_then(|()| {
+                let checked = valid(&pci, &apertures).and_then(|()| match allocators {
+                    None => Ok(()),
+                    Some(_) => typed(&pci, &pools_of(&pci)),
+                });
+                checked.map_err(|error| {
+                    assert!(
+                        allocators.is_none(),
+                        "seed {seed} {allocators:?}: {error}\n{}",
+                        describe(&pci, &pools)
+                    );
+                    PciEcamError::ConfigError
+                })
+            });
+            (valid, describe(&pci, &pools))
+        };
+        let (master, master_layout) = run(None);
+        let (subtrees, _) = run(Some(Allocators::FastPaths));
+        let (search, _) = run(Some(Allocators::Search(Budget::FIRMWARE)));
+        let (result, _) = run(Some(Allocators::Both(Budget::FIRMWARE)));
+        found += usize::from(result.is_ok());
+        master_valid += usize::from(master.is_ok());
+        subtrees_valid += usize::from(subtrees.is_ok());
+        rescued += usize::from(result.is_ok() && subtrees.is_err());
+        if master.is_ok() {
             assert_eq!(
                 result,
                 Ok(()),
-                "seed {seed}: master's layout was valid:\n{}",
-                describe(&master, pools)
+                "seed {seed}: master's layout was valid:\n{master_layout}"
             );
         }
+        if subtrees.is_ok() {
+            assert_eq!(result, Ok(()), "seed {seed}");
+        }
+        if search == Err(PciEcamError::ResourceExhausted) {
+            assert!(master.is_err() && subtrees.is_err(), "seed {seed}");
+        }
+        assert!(matches!(
+            search,
+            Ok(()) | Err(PciEcamError::ResourceExhausted | PciEcamError::SearchLimit)
+        ));
     }
-    // The generator exercises both outcomes.
+    // The generator exercises both outcomes, and the search finds layouts
+    // the subtree allocator misses.
     assert!(
-        master_valid > 400 && found > master_valid,
-        "{master_valid} {found}"
+        master_valid > 400 && subtrees_valid > master_valid && rescued > 0,
+        "{master_valid} {subtrees_valid} {found} {rescued}"
     );
 }
