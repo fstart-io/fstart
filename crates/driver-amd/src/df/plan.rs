@@ -993,11 +993,12 @@ mod tests {
 
     #[test]
     fn tyan_io_and_buses() {
-        // S8030 (TyanInitFabricResource): 4 × 64 buses, I/O 0x4000,
-        // 0x4000, 0x4000, 0x3000 in logical order.
+        // S8030 (TyanInitFabricResource): 4 × 64 buses, I/O 16K for IOMS0–2
+        // and 12K for IOMS3, the primary. In logical order (primary first):
+        // 0x3000, 0x4000, 0x4000, 0x4000.
         let mut r = rbs(1, 4, 3);
         let mut io_sizes = [0; MAX_ROOT_BRIDGES];
-        io_sizes[..4].copy_from_slice(&[0x4000, 0x4000, 0x4000, 0x3000]);
+        io_sizes[..4].copy_from_slice(&[0x3000, 0x4000, 0x4000, 0x4000]);
         let mut buses = [0; MAX_ROOT_BRIDGES];
         buses[..4].copy_from_slice(&[0x40; 4]);
         let policy = Policy::df3().with_io_sizes(io_sizes).with_bus_counts(buses);
@@ -1015,20 +1016,21 @@ mod tests {
             rb.bus_base = b.base;
             rb.bus_limit = b.limit;
         }
-        // Primary is now logical 0 and gets its 0x4000 + 0x1000 legacy.
+        // Primary is now logical 0 and gets its 0x3000 + 0x1000 legacy:
+        // its window ends at 0x4000, as the stock BIOS routes it.
         let plan = plan(&input(0x8000_0000, 0x10_8000_0000, &r), &policy).unwrap();
         assert_eq!(
             io(&plan),
             [
-                (0, 0, 0x5000),
-                (1, 0x5000, 0x9000),
-                (2, 0x9000, 0xD000),
-                (3, 0xD000, 0x200_0000)
+                (0, 0, 0x4000),
+                (1, 0x4000, 0x8000),
+                (2, 0x8000, 0xC000),
+                (3, 0xC000, 0x200_0000)
             ]
         );
         assert_eq!(
             plan.root_bridges[2].io_pool,
-            Some(Window::new(0xD000, 0x3000))
+            Some(Window::new(0xC000, 0x4000))
         );
     }
 

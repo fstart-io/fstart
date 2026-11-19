@@ -51,11 +51,18 @@ pub const fn spread_spectrum(generation: Generation) -> bool {
     matches!(generation, Generation::Rome)
 }
 
-/// I/O bytes per root bridge (logical order) and PCI buses per root
-/// bridge, from TyanInitFabricResource (Rome `0xffe81988`) /
-/// OemInitFabricResource (Milan `0xffdcacac`): bytes `40 40 40 40 04 04 04
-/// 03` = 64 buses each, I/O 16K/16K/16K/12K (decompiler-only, SOC_DF §3.4).
-pub const IO_SIZES: [u32; 4] = [0x4000, 0x4000, 0x4000, 0x3000];
+/// I/O bytes and PCI buses per root bridge, from TyanInitFabricResource
+/// (Rome `0xffe81988`) / OemInitFabricResource (Milan `0xffdcacac`): bytes
+/// `40 40 40 40 04 04 04 03` = 64 buses each, I/O 16K/16K/16K/12K
+/// (decompiler-only, SOC_DF §3.4).
+///
+/// The vendor table is indexed by IOMS; the planner takes the sizes in its
+/// logical order, the primary root bridge first. On this board the primary
+/// is IOMS3 (bus 0), so its 12K comes first, then IOMS0–2 (buses 0x40,
+/// 0x80, 0xC0). The primary's window then ends at 0x4000 with the legacy
+/// ports below 0x1000, as the stock BIOS routes it (bus 0's devices in
+/// 0x1000–0x3FFF, the SAS3224 under bus 0x40 at 0x4000).
+pub const IO_SIZES: [u32; 4] = [0x3000, 0x4000, 0x4000, 0x4000];
 pub const BUS_COUNTS: [u16; 4] = [0x40; 4];
 
 const fn pad<T: Copy, const N: usize>(v: [T; N], zero: T) -> [T; MAX_ROOT_BRIDGES] {
