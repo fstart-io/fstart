@@ -11,9 +11,10 @@ the same for the last boot's errors, which it also puts in the BERT.
 
 ```sh
 cargo fbuild build --board tyan-s8040 --release
-# The image, packed from blobs extracted from a flash backup:
+# The image, packed from blobs extracted from MiTAC's BIOS update (or a
+# flash backup):
 cargo fbuild assemble --board tyan-s8040 --release \
-    --donor /path/to/flash-backup.bin
+    --donor /path/to/S8040GM2NE_BIOS-v2.00.zip
 # A ROM Linux (bzImage with its initramfs):
 cargo fbuild assemble --board tyan-s8040 --release --payload linux \
     --donor /path/to/flash-backup.bin --kernel /path/to/bzImage \
@@ -27,8 +28,10 @@ patch from fstart-platform-amd's `siena` table, and the board's APCBs.
 The donor can be a flash backup or MiTAC's S8040GM2NE BIOS V2.00 update
 (the ZIP or its `BIOS8040020200.rom`), which the board's manifest names as
 its vendor download: the nightly bundle and the web assembler fetch it
-from there (docs/distribution.md). V2.02 lacks firmware the `siena` table
-names and does not work as a donor.
+from there (docs/distribution.md). Of the ZIP, `--donor`, `fbuild blobs`
+and the web assembler take the ROM with Siena firmware, not the capsule or
+the signed `.hpm`. V2.02 lacks firmware the `siena` table names and does
+not work as a donor.
 
 The image depends on the blobs, not on where they are: `--donor` (which
 extracts into `target/fstart-blobs/`), `--blobs` with the same files in any

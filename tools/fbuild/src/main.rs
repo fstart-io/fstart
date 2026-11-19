@@ -148,12 +148,12 @@ enum Command {
         image: String,
     },
     /// Extract a board's vendor firmware blobs (AMD PSP firmware, APCBs,
-    /// microcode, video BIOS) from a vendor flash image into a blob
-    /// directory for `--blobs`.
+    /// microcode, video BIOS) from a vendor flash image, or a vendor update
+    /// ZIP holding one, into a blob directory for `--blobs`.
     Blobs {
         #[arg(short, long)]
         board: String,
-        /// The vendor flash image.
+        /// The vendor flash image, or the vendor's update ZIP.
         #[arg(long)]
         from: String,
         /// The blob directory to write.

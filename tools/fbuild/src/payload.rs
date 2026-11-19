@@ -93,8 +93,9 @@ pub struct BuildArgs {
     /// PSP firmware; see `fbuild blobs`).
     #[arg(long, conflicts_with = "donor")]
     pub blobs: Option<String>,
-    /// Vendor flash image to take those blobs from, as `fbuild blobs`
-    /// extracts them (into target/fstart-blobs/<board>/).
+    /// Vendor flash image, or the vendor's update ZIP holding one, to take
+    /// those blobs from, as `fbuild blobs` extracts them (into
+    /// target/fstart-blobs/<board>/).
     #[arg(long)]
     pub donor: Option<String>,
     /// SMBIOS Type 0 release date in MM/DD/YYYY form.

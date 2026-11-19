@@ -593,30 +593,6 @@ fn find_vbios(rom: &[u8], vendor: u16, device: u16) -> Result<Option<(String, &[
     }
 }
 
-/// Every file the board's and its platform's `fstart` manifest tables
-/// name, extracted from the vendor flash image `rom`: one table per
-/// SoC the board has, each from the donor's image of that SoC. This is
-/// the donor extraction behind `fbuild blobs`/`--donor` for AMD
-/// boards; other formats plug their own extraction behind the same
-/// verb. Returns the board name, what was found and what was not;
-/// missing files are an error unless `allow_missing`.
-pub fn extract_tables(
-    board_table: &serde_json::Value,
-    platform_table: &serde_json::Value,
-    rom: &[u8],
-    allow_missing: bool,
-) -> Result<Donated, String> {
-    let name = board_table["board"]
-        .as_str()
-        .ok_or("the board has no name")?;
-    extract_donor(
-        &tables(board_table, platform_table)?,
-        name,
-        rom,
-        allow_missing,
-    )
-}
-
 /// The blob tables of a board's AMD firmware, from its and its platform's
 /// `fstart` manifest tables: one SoC table and the board's per SoC the
 /// board has (each generation of an SP3 board).
@@ -670,11 +646,22 @@ pub fn extract_donor(
     Ok(donated)
 }
 
-/// The files a donor image gave for a board ([`extract_tables`]).
+/// Whether the flash image `rom` has firmware of any SoC of `tables`
+/// ([`donor_image`]).
+pub fn has_firmware(tables: &[(SocBlobs, BoardBlobs)], rom: &[u8]) -> bool {
+    tables
+        .iter()
+        .any(|(soc, _)| donor_image(rom, soc).is_some())
+}
+
+/// The files a donor image gave for a board ([`extract_donor`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Donated {
     /// The board's name, as its table states it.
     pub board: String,
+    /// The member of the vendor ZIP the image is, if the donor is one
+    /// ([`crate::donor::image`]).
+    pub member: Option<String>,
     pub found: Vec<Extracted>,
     /// Files of a SoC the donor has firmware of, but not these.
     pub missing: Vec<String>,
