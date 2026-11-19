@@ -106,7 +106,8 @@ and `--setting KEY=VALUE` to seed the image's settings store, as
 A donor may be a raw ROM, or a vendor update ZIP: of its ROM/bin/fd members,
 the image with firmware of the board's SoCs is the donor (vendor updates often
 ship one copy per flash tool, besides capsules and tools). A ZIP of different
-such images must be unpacked. `fbuild assemble --donor` and `fbuild blobs`
+such images, or one that names a member twice, must be unpacked. `fbuild
+assemble --donor` and `fbuild blobs`
 take the same donors (`fstart_image_build::donor`).
 
 `Bundle::assemble` (`crates/image-build/src/bundle.rs`) runs the plan's image

@@ -494,7 +494,7 @@ pub fn compose(
 ) -> Result<(), String> {
     let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let bundle = Bundle::decode(&read(bundle)?)?;
-    let donor = donor.map(read).transpose()?;
+    let donor = donor.map(crate::blobs::read_donor).transpose()?;
     let key = key.map(read).transpose()?;
     let mut supplied = Supplied {
         donor: donor.as_deref(),
