@@ -48,6 +48,21 @@ impl PowerFailState {
     }
 }
 
+/// Set PMx5B's low nibble, preserving the RTC shadow's high nibble.
+/// Songshan uses the same operation (S8040 V2.00 FchSongshanDxe:
+/// `(old & 0xf0) | (policy & 3) | 4` at `0xfed8035b`).
+pub fn restore_ac_power(hw: &impl FchHw, state: PowerFailState) {
+    hw.acpi().at(PM_RTC_SHADOW).modify(
+        RtcShadow::BIT3::CLEAR
+            + RtcShadow::POWER_STATE::SET
+            + match state {
+                PowerFailState::Off => RtcShadow::POWER_FAILURE::Off,
+                PowerFailState::On => RtcShadow::POWER_FAILURE::On,
+                PowerFailState::Previous => RtcShadow::POWER_FAILURE::Previous,
+            },
+    );
+}
+
 /// Policy of [`hw_acpi`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EnvPolicy {
@@ -126,15 +141,7 @@ pub fn hw_acpi<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) {
         // GPIO 120 pull-up on, pull-down off.
         update::<u32, _>(acpi, GPIO + 4 * 120, 1 << 21, 1 << 20);
     }
-    acpi.at(PM_RTC_SHADOW).modify(
-        RtcShadow::BIT3::CLEAR
-            + RtcShadow::POWER_STATE::SET
-            + match policy.power_fail {
-                PowerFailState::Off => RtcShadow::POWER_FAILURE::Off,
-                PowerFailState::On => RtcShadow::POWER_FAILURE::On,
-                PowerFailState::Previous => RtcShadow::POWER_FAILURE::Previous,
-            },
-    );
+    restore_ac_power(hw, policy.power_fail);
     // PmDecodeEn: HPET on (64-bit width off), ASF clock switch, SMBus/ASF
     // base B00h; Rome/Naples HPET MSI on, Milan off. The contract shows the
     // low byte stored as 40h first, which would turn the legacy, CF9,

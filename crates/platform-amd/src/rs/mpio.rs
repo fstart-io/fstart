@@ -35,7 +35,7 @@ pub fn train<V: Variant>(
     configs: &[session::Config<'_>],
 ) -> Result<Trained, &'static str> {
     use fstart_core::services::Timer;
-    let mpio = ctx.config.mpio;
+    let mpio = &ctx.config.mpio;
     let ios: Vec<u8, 4> = state.roots().iter().map(|rb| rb.index).collect();
     let board: Vec<_, 32> = configs.iter().map(|c| c.port).collect();
     let prepared = session::Prepared::new(0, &ios, configs)
@@ -177,7 +177,7 @@ pub fn train<V: Variant>(
             lanes.push((lane, port, true)).map_err(|_| "MPIO ports")?;
         }
     }
-    let missing = links::missing(mpio.required, &lanes)
+    let missing = links::missing(&mpio.required, &lanes)
         .inspect(|soldered| fstart_log::error!("rs: no link on lane {}", soldered.lane))
         .count();
     if missing != 0 {

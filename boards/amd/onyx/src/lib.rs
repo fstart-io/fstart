@@ -131,7 +131,7 @@ pub fn config() -> Config {
             // CONFIG_MPIO_SKIP_PSP_MSG=1, unlike Siena's vendor firmware.
             psp_vetting: false,
             encoding: Encoding::LowByte,
-            required: &REQUIRED,
+            required: REQUIRED.into_iter().collect(),
             psp_trained: &wiring::PSP_TRAINED,
             perst: &PERST,
         },

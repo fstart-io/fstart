@@ -9,15 +9,8 @@ use super::Ctx;
 /// form for its menu. The store is writable only if the SPI100 command
 /// engine reads the FFS as the ROM window shows it.
 #[cfg(feature = "payload-uefi")]
-pub(crate) fn storage(
-    ctx: &Ctx<'_>,
-) -> Option<
-    fstart_payload::crabefi::settings::FlashStorage<
-        fstart_driver_amd::fch::spi::flash::Flash<crate::sp3::silicon::hw::Tsc>,
-    >,
-> {
-    use fstart_driver_amd::fch::spi::flash::{ERASE_SIZE, Extent, Flash};
-    use fstart_payload::crabefi::settings::FlashStorage;
+pub(crate) fn storage(ctx: &Ctx<'_>) -> Option<crate::options::FlashStorage> {
+    use fstart_driver_amd::fch::spi::flash::Extent;
 
     let nvram = crate::sp3::layout::NVRAM;
     let extent = Extent {
@@ -28,21 +21,5 @@ pub(crate) fn storage(
     // SAFETY: the FCH decodes SPI100 at its fixed base (FCH reset tasks);
     // the payload launcher is the only user of the command engine, and the
     // stage runs from DRAM.
-    let Ok(flash) = (unsafe { Flash::new(ctx.soc.timer, extent, ctx.ffs_offset, probe) }) else {
-        fstart_log::error!("options: SPI100 command engine unusable, settings are volatile");
-        return None;
-    };
-    let writable = flash.writable();
-    Some(FlashStorage::new(flash, nvram.size, ERASE_SIZE, writable))
-}
-
-/// The options' CFR form for the payload's menu.
-#[cfg(feature = "payload-uefi")]
-pub(crate) fn settings(
-    options: &fstart_options::Report,
-) -> fstart_payload::crabefi::settings::FirmwareSettings {
-    fstart_payload::crabefi::settings::FirmwareSettings {
-        cfr: fstart_options::cfr::encode(options),
-        cmos: None,
-    }
+    unsafe { crate::options::storage(ctx.soc.timer, extent, ctx.ffs_offset, probe) }
 }

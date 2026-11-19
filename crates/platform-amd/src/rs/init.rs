@@ -486,7 +486,7 @@ impl<V: Variant> Init for Rs<V> {
         state: &mut State,
         pci: &PciEcam,
     ) -> Result<(), &'static str> {
-        for soldered in ctx.config.mpio.required {
+        for soldered in &ctx.config.mpio.required {
             if !state
                 .port(soldered.lane)
                 .is_some_and(|port| soldered.behind.found(pci, port))
@@ -684,6 +684,23 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         let ffs = V::LAYOUT.ffs.ok_or("boot media")?;
         fstart_arch::x86::boot::enable_boot_media_rom_cache();
         crate::media::mount(e820.entries(), &V::LAYOUT, ffs).map_err(|error| error.step())?;
+        let nvram = V::NVRAM.map(|region| {
+            // SAFETY: the variant reserves this read-only view of boot flash.
+            unsafe { core::slice::from_raw_parts(region.base as *const u8, region.size as usize) }
+        });
+        let mut options = fstart_options::Report::new();
+        if nvram.is_some() {
+            let mut level = fstart_log::max_level();
+            crate::options::resolve(
+                nvram,
+                &fstart_log::option::KNOBS,
+                &mut level,
+                &mut options,
+                |_| Ok(()),
+            );
+            // SAFETY: BSP only, before MP.
+            unsafe { fstart_log::set_max_level(level) };
+        }
         Ok(Mapped {
             top_mem: tom,
             top_mem2: tom2,
@@ -691,10 +708,62 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
             tseg: tseg.base,
             e820,
             ffs: ffs.base..ffs.end(),
-            nvram: None,
-            options: fstart_options::Report::new(),
+            nvram,
+            options,
             flow: (),
         })
+    }
+
+    #[cfg_attr(not(feature = "payload-uefi"), allow(unused_mut))]
+    fn launch(
+        mut handoff: fstart_payload::Handoff<'_>,
+        _ctx: &Ctx<'_, Self>,
+        _state: &State,
+        (): &(),
+        _options: &fstart_options::Report,
+    ) -> ! {
+        #[cfg(feature = "payload-uefi")]
+        if let (Some(nvram), Some(ffs)) = (V::NVRAM, V::LAYOUT.ffs) {
+            use fstart_driver_amd::fch::{SPI_BASE, lpc, spi::flash::Extent};
+            use fstart_driver_amd::window::Window;
+            let base = _ctx
+                .hw
+                .fch
+                .lpc()
+                .at(lpc::SPI_BASE_ADDRESS)
+                .read(lpc::SpiBase::BASE);
+            handoff.settings = Some(crate::options::settings(_options));
+            if base == SPI_BASE >> 8 {
+                let flash_base = V::LAYOUT.flash.base;
+                let extent = Extent {
+                    offset: (nvram.base - flash_base) as u32,
+                    size: nvram.size as u32,
+                };
+                static mut STORAGE: Option<crate::options::FlashStorage> = None;
+                // SAFETY: BSP only. It now hands exclusive ownership of SPI100
+                // to CrabEFI, from DRAM, and writes only the reserved extent.
+                // The command engine must match the ROM view of the FFS.
+                let storage = unsafe {
+                    let probe = core::slice::from_raw_parts(ffs.base as *const u8, 64);
+                    let storage = &mut *core::ptr::addr_of_mut!(STORAGE);
+                    *storage = crate::options::storage(
+                        _ctx.clock,
+                        extent,
+                        (ffs.base - flash_base) as u32,
+                        probe,
+                    );
+                    storage
+                };
+                handoff.variable_storage = storage
+                    .as_mut()
+                    .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+            } else {
+                fstart_log::warn!(
+                    "options: SPI100 not decoded at its fixed base, settings are volatile"
+                );
+            }
+        }
+        fstart_payload::boot(handoff, ())
     }
 
     /// The PSP's SMM ([`super::smm`]) in TSEG on every thread, then SW

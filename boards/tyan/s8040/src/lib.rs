@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod bmc;
 pub mod gpio;
 pub mod mpio;
+pub mod options;
 /// The SMM handler, built into the separate SMM image.
 #[cfg(feature = "smm")]
 mod smm;
@@ -28,6 +29,8 @@ impl fstart_platform_amd::board::Board for Board {
     const SOCS: &'static [SocId] = &[SocId::Siena];
     /// 64 cores, SMT.
     const MAX_CPUS: u16 = 128;
+    const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
+        &[&options::PCIE, &options::POWER];
     /// Corrected errors counted in SMM and reported to the BMC's SEL
     /// ([`bmc::sel`]), ten per thresholding SMI.
     const RAS: fstart_platform_amd::smm::ras::Policy =
@@ -89,7 +92,7 @@ pub fn config() -> Config {
         mpio: Mpio {
             psp_vetting: true,
             encoding: Encoding::Retained,
-            required: &REQUIRED,
+            required: REQUIRED.into_iter().collect(),
             // Every port is MPIO's, the BMC's display link too.
             psp_trained: &[],
             perst: &PERST,
@@ -108,11 +111,24 @@ pub fn config() -> Config {
     }
 }
 
-/// The MPIO ports of the default connector choices. The BMC's display
-/// link is trained cold, as every other port.
-pub fn mpio_ports() -> Result<heapless::Vec<session::Config<'static>, 32>, mpio::Error> {
+/// Apply the same enable policy to endpoint checks and display selection
+/// as to link training. Disabled devices are not boot requirements.
+pub fn configure_pcie(config: &mut Config, options: &mpio::Options) {
+    config.mpio.required = REQUIRED
+        .into_iter()
+        .zip([options.lan[0], options.lan[1], options.vga])
+        .filter_map(|(device, enabled)| enabled.then_some(device))
+        .collect();
+    config.display = options.vga.then_some(mpio::BMC_VGA.0);
+}
+
+/// The MPIO ports of the selected connector choices. The BMC's display
+/// link, if enabled, is trained cold, as every other port.
+pub fn mpio_ports(
+    options: &mpio::Options,
+) -> Result<heapless::Vec<session::Config<'static>, 32>, mpio::Error> {
     let engines = mpio::engines(
-        &mpio::Options::DEFAULT,
+        options,
         &mpio::Detected {
             bmc_link_present: true,
         },
@@ -126,6 +142,16 @@ pub fn mpio_ports() -> Result<heapless::Vec<session::Config<'static>, 32>, mpio:
             speed: engine.speed_overrides,
         })
         .collect())
+}
+
+/// Check the generated requests before accepting a settings override.
+pub fn check_options(options: &mpio::Options) -> Result<(), &'static str> {
+    let ports = mpio_ports(options).map_err(|_| "too many MPIO ports")?;
+    // A supported Siena can have IOS1 fused off. MPIO also checks against
+    // the actual detected roots immediately before sending the requests.
+    session::Prepared::new(0, &[0, 2, 3], &ports)
+        .map(|_| ())
+        .map_err(|_| "invalid S8040 MPIO ports")
 }
 
 /// The table identity.
@@ -160,21 +186,44 @@ mod tests {
                 .any(|s| Some(s.lane) == config.display && s.behind == Behind::BridgedDisplay)
         );
         // Each of them is a port MPIO trains.
-        let ports = super::mpio_ports().unwrap();
-        for soldered in required {
+        let ports = super::mpio_ports(&super::mpio::Options::DEFAULT).unwrap();
+        for soldered in &required {
             assert!(ports.iter().any(|p| p.port.start == soldered.lane));
         }
         let port = PciAddress::new(0, 0, 1, 1);
         let up = [(132, port, true), (133, port, true), (134, port, true)];
-        assert_eq!(missing(required, &up).count(), 0);
+        assert_eq!(missing(&required, &up).count(), 0);
         let display_down = [(132, port, true), (133, port, true), (134, port, false)];
-        let missing: Vec<_> = missing(required, &display_down).map(|s| s.lane).collect();
+        let missing: Vec<_> = missing(&required, &display_down).map(|s| s.lane).collect();
         assert_eq!(missing, [134]);
     }
 
     #[test]
+    fn disabled_links_are_not_required_or_selected_for_display() {
+        for mask in 0..8 {
+            let options = super::mpio::Options {
+                lan: [mask & 1 != 0, mask & 2 != 0],
+                vga: mask & 4 != 0,
+                ..super::mpio::Options::DEFAULT
+            };
+            let mut config = super::config();
+            super::configure_pcie(&mut config, &options);
+            let ports = super::mpio_ports(&options).unwrap();
+            for (i, device) in super::REQUIRED.iter().enumerate() {
+                let enabled = mask & (1 << i) != 0;
+                assert_eq!(ports.iter().any(|p| p.port.start == device.lane), enabled);
+                assert_eq!(config.mpio.required.contains(device), enabled);
+            }
+            assert_eq!(
+                config.display,
+                options.vga.then_some(super::mpio::BMC_VGA.0)
+            );
+        }
+    }
+
+    #[test]
     fn the_cold_ports_keep_the_sata_ancillary_data() {
-        let ports = super::mpio_ports().unwrap();
+        let ports = super::mpio_ports(&super::mpio::Options::DEFAULT).unwrap();
         assert_eq!(ports.len(), 16);
         let bmc = ports.iter().find(|p| p.port.start == 134).unwrap();
         assert!(bmc.port.present && !bmc.port.early_train);

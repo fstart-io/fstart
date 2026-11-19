@@ -74,6 +74,12 @@ impl Image {
                 offset: (window.base - layout.flash.base) as u32,
                 size: window.size as u32,
             }),
+            nvram: match host.option_store {
+                Some(fstart_image_build::options::OptionStore::Varstore { offset, size }) => {
+                    Some(fstart_image_build::amd::FlashRegion { offset, size })
+                }
+                _ => None,
+            },
             stage_unit: super::STAGE_UNIT.into(),
             flash_size,
             bios_directory: self.bios_directory,

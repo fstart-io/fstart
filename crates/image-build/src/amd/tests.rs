@@ -74,6 +74,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
             reset_offset: None,
         },
         ffs: None,
+        nvram: None,
         stage_unit: "stage".into(),
         flash_size: raw.flash_size,
         bios_directory: PICASSO,
@@ -484,6 +485,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
             reset_offset: Some(reset_offset),
         },
         ffs: Some(ffs_window(0xb8_0000, 0x29_f000)),
+        nvram: None,
         stage_unit: "stage".into(),
         flash_size: 0x100_0000,
         bios_directory: PICASSO,
@@ -561,6 +563,58 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
     assert!(overlapping.validate().is_err());
 }
 
+#[test]
+fn native_settings_seed_changes_only_the_reserved_extent() {
+    use crate::options::Seed;
+    use fstart_options::{Source, varstore};
+
+    let mut plan = offset_addressed(0x100_0000, BiosDirectorySlot::Family19h);
+    let Firmware::Packed {
+        files,
+        reset_offset,
+    } = &mut plan.firmware;
+    files.partition_end = 0x80_0000;
+    *reset_offset = Some(0xd0_0000);
+    plan.reset_size = 0x30_0000;
+    let (ffs, stage) = ffs_and_stage(plan.reset_size as usize);
+    plan.ffs = Some(ffs_window(0x80_0000, 0x4c_0000));
+    let store = super::FlashRegion {
+        offset: 0xcc_0000,
+        size: 0x4_0000,
+    };
+    plan.nvram = Some(store);
+    let sources: [&[u8]; 3] = [&[0x11; 0x400], &[0x22; 0x400], &[0x33; 0x400]];
+    let plain = plan.assemble(&sources, &stage, Some(&ffs)).unwrap();
+    let mut seed = Seed {
+        offset: store.offset,
+        bytes: varstore::store(store.size as usize, &[("s8040_pcie3_bifurcation", 3)]).unwrap(),
+    };
+    let seeded = plan
+        .assemble_seeded(&sources, &stage, Some(&ffs), Some(&seed))
+        .unwrap();
+    let start = store.offset as usize;
+    let end = start + store.size as usize;
+    assert!(plain.bytes[start..end].iter().all(|&b| b == 0xff));
+    assert_eq!(seeded.bytes[..start], plain.bytes[..start]);
+    assert_eq!(seeded.bytes[end..], plain.bytes[end..]);
+    assert_eq!(
+        varstore::VarstoreOptions::new(&seeded.bytes[start..end]).read("s8040_pcie3_bifurcation"),
+        Ok(Some(3))
+    );
+
+    seed.offset -= 0x1000;
+    assert!(
+        plan.assemble_seeded(&sources, &stage, Some(&ffs), Some(&seed))
+            .is_err()
+    );
+    plan.nvram.as_mut().unwrap().offset = seed.offset;
+    assert!(plan.validate().is_err());
+    plan.nvram.as_mut().unwrap().offset = end as u32;
+    assert!(plan.validate().is_err());
+    plan.nvram.as_mut().unwrap().offset = 0x7f_0000;
+    assert!(plan.validate().is_err());
+}
+
 /// A Siena-like native image: two levels addressed by flash offset, the
 /// SoC's generation word, a 64 MiB part and the reset image after the
 /// partition, without an FFS.
@@ -601,6 +655,7 @@ fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
             reset_offset: Some(0xa0_0000),
         },
         ffs: None,
+        nvram: None,
         stage_unit: "stage".into(),
         flash_size,
         bios_directory: slot,

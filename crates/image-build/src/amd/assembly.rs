@@ -156,6 +156,9 @@ pub struct FfsWindow {
 pub struct AmdAssembly {
     pub firmware: Firmware,
     pub ffs: Option<FfsWindow>,
+    /// The EFI settings store in a native image, outside the PSP partition and FFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvram: Option<FlashRegion>,
     /// Unit whose flat binary is the reset image.
     pub stage_unit: String,
     pub flash_size: u32,
@@ -368,6 +371,22 @@ impl AmdAssembly {
                         e <= self.flash_size && (e <= partition.start || offset >= partition.end)
                     })
                 };
+                if let Some(store) = &self.nvram {
+                    let store_end = end(store.offset, store.size)?;
+                    if store.offset < partition.end
+                        || store.size == 0
+                        || !store.offset.is_multiple_of(0x1000)
+                        || !store.size.is_multiple_of(0x1000)
+                        || reset_offset.is_none_or(|reset| store_end > reset)
+                        || ffs
+                            .as_ref()
+                            .is_some_and(|ffs| ffs.offset + ffs.size > store.offset)
+                    {
+                        return Err(
+                            "AMD settings store overlaps flash content or is misaligned".into()
+                        );
+                    }
+                }
                 match (reset_offset, ffs) {
                     (Some(reset), ffs) => {
                         let reset_end = end(*reset, self.reset_size)?;
@@ -525,7 +544,24 @@ impl AmdAssembly {
         reset: &[u8],
         ffs: Option<&[u8]>,
     ) -> Result<AmdImage, String> {
+        self.assemble_seeded(sources, reset, ffs, None)
+    }
+
+    /// Compose an image, optionally filling its reserved EFI settings store.
+    pub fn assemble_seeded(
+        &self,
+        sources: &[&[u8]],
+        reset: &[u8],
+        ffs: Option<&[u8]>,
+        seed: Option<&crate::options::Seed>,
+    ) -> Result<AmdImage, String> {
         self.validate()?;
+        if let Some(seed) = seed
+            && self.nvram.map(|s| (s.offset, s.size as usize))
+                != Some((seed.offset, seed.bytes.len()))
+        {
+            return Err("settings: the seed does not match the AMD flash plan's store".into());
+        }
         if reset.len() != self.reset_size as usize {
             return Err(format!(
                 "reset image is {:#x} bytes, the BIOS directory entry {:#x}",
@@ -583,6 +619,9 @@ impl AmdAssembly {
                 image[*reset_offset as usize..][..reset.len()].copy_from_slice(&reset);
                 if let (Some(window), Some(ffs)) = (&self.ffs, ffs) {
                     image[window.offset as usize..][..ffs.len()].copy_from_slice(ffs);
+                }
+                if let Some(seed) = seed {
+                    image[seed.offset as usize..][..seed.bytes.len()].copy_from_slice(&seed.bytes);
                 }
                 let efs = files.efs_offset as usize;
                 (0, image, self.flash_size, efs, Some(*reset_offset))

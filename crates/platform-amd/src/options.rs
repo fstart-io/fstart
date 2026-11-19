@@ -23,3 +23,41 @@ pub fn resolve<C: Clone>(
 ) {
     fstart_log::option::resolve_into(knobs, &source(nvram), config, report, check);
 }
+
+#[cfg(feature = "payload-uefi")]
+pub(crate) type FlashStorage = fstart_payload::crabefi::settings::FlashStorage<
+    fstart_driver_amd::fch::spi::flash::Flash<fstart_driver_amd::ccx::tsc::Tsc>,
+>;
+
+/// Bind a reserved flash extent to CrabEFI. The SPI command engine must
+/// read the same FFS bytes as the stage's ROM window before allowing writes.
+///
+/// # Safety
+/// SPI100 must be decoded at its fixed base. The payload owns it exclusively
+/// and the caller runs from RAM. The extent is reserved for EFI variables.
+#[cfg(feature = "payload-uefi")]
+pub(crate) unsafe fn storage(
+    clock: fstart_driver_amd::ccx::tsc::Tsc,
+    extent: fstart_driver_amd::fch::spi::flash::Extent,
+    probe_offset: u32,
+    probe: &[u8],
+) -> Option<FlashStorage> {
+    use fstart_driver_amd::fch::spi::flash::{ERASE_SIZE, Flash};
+
+    // SAFETY: the caller owns the controller and its extent.
+    let Ok(flash) = (unsafe { Flash::new(clock, extent, probe_offset, probe) }) else {
+        fstart_log::error!("options: SPI100 command engine unusable, settings are volatile");
+        return None;
+    };
+    let writable = flash.writable();
+    Some(FlashStorage::new(flash, extent.size, ERASE_SIZE, writable))
+}
+
+/// The options' CFR form for the payload's menu.
+#[cfg(feature = "payload-uefi")]
+pub(crate) fn settings(options: &Report) -> fstart_payload::crabefi::settings::FirmwareSettings {
+    fstart_payload::crabefi::settings::FirmwareSettings {
+        cfr: fstart_options::cfr::encode(options),
+        cmos: None,
+    }
+}
