@@ -288,14 +288,17 @@ pub fn data_fabric<V: Version>(ctx: &mut Ctx) -> Result<(), &'static str> {
     program::mmio::<V, _>(&nodes, &plan.mmio);
     program::io::<V, _>(&nodes, &plan.io);
     for rb in &plan.root_bridges {
+        let io = rb.io_pool.unwrap_or(Window::new(0, 0));
         fstart_log::info!(
-            "df: rb {}.{} buses {:#x}-{:#x} mmio {:#x}+{:#x}",
+            "df: rb {}.{} buses {:#x}-{:#x} mmio {:#x}+{:#x} io {:#x}+{:#x}",
             rb.socket,
             rb.index,
             rb.bus.base,
             rb.bus.limit,
             rb.below.base,
-            rb.below.size
+            rb.below.size,
+            io.base,
+            io.size
         );
     }
     ctx.non_pci = plan.root_bridges.iter().map(NonPci::of).collect();
