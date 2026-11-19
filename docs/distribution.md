@@ -37,9 +37,10 @@ A bundle is one board/payload build as a ZIP (DEFLATE level 9):
 Vendor ROMs, external kernels and runtime firmware are never included; the
 manifest declares them as inputs instead. An AMD build packs its PSP firmware
 from blobs the user's donor image provides: the manifest carries the blob
-tables (`packed_donor`), and the plan is resolved with the blob directory
-assembly extracts the donor into (`bundle::BLOBS_DIR`), so the build never
-reads a vendor image. Nothing else of the donor ends up in the image.
+tables (`packed_donor`), and its assembly extracts the donor into the blob
+directory every AMD plan names (`files::BLOBS_DIR`; `fbuild assemble` reads
+it from `--blobs`), so the build never reads a vendor image and its plan is the
+one a local build has. Nothing else of the donor ends up in the image.
 
 A board can name an official vendor download that works as its donor:
 

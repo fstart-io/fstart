@@ -18,8 +18,9 @@ use fstart_core::board::{AmdMicrocodeConfig, MicrocodeConfig};
 use fstart_image_build::amd::blobs;
 use fstart_image_build::amd::halved_flash::{AmdHalvedFlashAssembly, FlashPlan, PackedHalf};
 use fstart_image_build::build_plan::{FfsAssembly, ImageOperation, ImageStep};
+use fstart_image_build::files::BLOBS_DIR;
 use fstart_image_build::plan::BuildSelection;
-use std::{boxed::Box, format, vec, vec::Vec};
+use std::{boxed::Box, format, path::Path, vec, vec::Vec};
 
 /// A generation the flash carries: its blob table
 /// (`[package.metadata.fstart.amd.<name>]`) and its BIOS directory.
@@ -53,11 +54,11 @@ impl Image {
         }
         // The PSP firmware is packed from the blob directory: `--blobs`,
         // or the blobs fbuild extracts from a `--donor` image.
-        let Some(dir) = &options.blobs else {
+        if options.blobs.is_none() {
             let ffs = ffs(None, false).ok_or("the SP3 layout has an FFS")?;
             return Ok(vec![ffs.into()]);
-        };
-        let (packed, microcode) = self.packed(selection, dir)?;
+        }
+        let (packed, microcode) = self.packed(selection)?;
         let ffs = ffs(Some(microcode), false).ok_or("the SP3 layout has an FFS")?;
         Ok(vec![
             ffs.into(),
@@ -73,20 +74,16 @@ impl Image {
         ])
     }
 
-    /// The halves packed from the blob directory `dir`: one per generation
-    /// the board lists, from the platform's
-    /// `[package.metadata.fstart.amd.<generation>]` table and the board's;
-    /// and the microcode files of all of them for the FFS. The image step
-    /// packs the halves whose firmware the blobs have
+    /// The halves packed from the blob directory, as the plan names it
+    /// ([`BLOBS_DIR`]): one per generation the board lists, from the
+    /// platform's `[package.metadata.fstart.amd.<generation>]` table and
+    /// the board's; and the microcode files of all of them for the FFS.
+    /// The image step packs the halves whose firmware the blobs have
     /// ([`fstart_image_build::amd::halved_flash::keep_present`]).
     fn packed(
         &self,
         selection: &BuildSelection,
-        dir: &str,
     ) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
-        // Absolute, but not read: a bundle's plan names the directory its
-        // assembly fills from the donor (`fstart_image_build::bundle`).
-        let dir = std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}"))?;
         let tables = &selection.manifests;
         let boards = blobs::board_tables(&tables.board["amd"])?;
         let name = tables.board["board"]
@@ -113,7 +110,7 @@ impl Image {
                 &soc,
                 board,
                 name,
-                &dir,
+                Path::new(BLOBS_DIR),
                 fstart_amdfw_format::HALF_SIZE as u32,
             )?;
             for file in &resolved.microcode {

@@ -30,6 +30,11 @@ its vendor download: the nightly bundle and the web assembler fetch it
 from there (docs/distribution.md). V2.02 lacks firmware the `siena` table
 names and does not work as a donor.
 
+The image depends on the blobs, not on where they are: `--donor` (which
+extracts into `target/fstart-blobs/`), `--blobs` with the same files in any
+directory and the bundle's assembly give the same image for the same
+signing key and `SOURCE_DATE_EPOCH`.
+
 ## Flash image
 
 fstart packs the 16 MiB the boot ROM maps: the EFS at `0x20000`, the

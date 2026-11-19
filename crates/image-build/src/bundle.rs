@@ -27,7 +27,7 @@ mod tests;
 pub const VERSION: u32 = 3;
 /// Where a bundle's assembly finds the blobs it extracts from the donor,
 /// and the blob directory its AMD plan names.
-pub const BLOBS_DIR: &str = "/inputs/blobs";
+pub use crate::files::BLOBS_DIR;
 /// The workspace root of a bundle's files.
 pub const WORKSPACE: &str = "/workspace";
 /// Where a bundle's assembly writes the image.

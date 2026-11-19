@@ -229,6 +229,34 @@ fn extracts_directory_files_microcode_and_vbios_from_a_vendor_image() {
     assert_eq!(get("vbios/rv2.bin").bytes.len(), 512);
 }
 
+/// The plan names every file in [`crate::files::BLOBS_DIR`], wherever the
+/// blob directory is: each table's microcode and video BIOS fits the FFS
+/// configuration's fixed-size path there.
+#[test]
+fn every_tables_files_fit_the_ffs_paths_in_the_plans_blob_directory() {
+    let platform = fstart_table("../platform-amd/Cargo.toml");
+    let tables = platform["amd"].as_object().unwrap();
+    assert!(tables.contains_key("siena"));
+    for (name, table) in tables {
+        let soc: SocBlobs = serde_json::from_value(table.clone()).unwrap();
+        let path = |file: &str| format!("{}/{file}", crate::files::BLOBS_DIR);
+        for m in &soc.microcode {
+            let path = path(&m.file);
+            assert!(
+                heapless::String::<128>::try_from(path.as_str()).is_ok(),
+                "{name}: {path}"
+            );
+        }
+        for v in &soc.vbios {
+            let path = path(&v.file);
+            assert!(
+                heapless::String::<256>::try_from(path.as_str()).is_ok(),
+                "{name}: {path}"
+            );
+        }
+    }
+}
+
 #[test]
 fn entries_share_a_file_only_with_the_same_bytes() {
     let image = vendor_image();
