@@ -40,6 +40,11 @@ signing key and `SOURCE_DATE_EPOCH`.
 
 ## Settings
 
+With onboard VGA enabled, fstart initializes the AST2600's host framebuffer
+without a VGA option ROM. Build with `--payload uefi-ui` for CrabEFI's graphical
+menu over BMC KVM. The serial console remains available if modesetting fails
+or VGA is disabled.
+
 CrabEFI’s firmware settings menu (`F` in the boot menu) offers the four
 slots and two MCIO pairs' bifurcation and link speed, the two i210 links,
 onboard AST2600 VGA, PCIe compliance mode, and restore on AC power loss.
