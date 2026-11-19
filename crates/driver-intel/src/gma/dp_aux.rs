@@ -222,6 +222,18 @@ impl AuxRegs {
         }
     }
 
+    /// Return Ironlake/Sandy Bridge/Ivy Bridge AUX registers for logical
+    /// split-PCH ports (`Edp` on CPU channel A, `DpA`..`DpC` on PCH channels B..D).
+    pub const fn ironlake_for_port(port: Port) -> Result<Self, GmaError> {
+        match port {
+            Port::Edp => Ok(aux_regs(0x64010, 0x64014, None)),
+            Port::DpA => Ok(aux_regs(0xe4110, 0xe4114, None)),
+            Port::DpB => Ok(aux_regs(0xe4210, 0xe4214, None)),
+            Port::DpC => Ok(aux_regs(0xe4310, 0xe4314, None)),
+            _ => Err(GmaError::UnsupportedPort),
+        }
+    }
+
     /// Return Haswell AUX registers (`Has_PCH_Aux_Channels = true`).
     ///
     /// DDI-A (eDP) uses the CPU AUX channel at `0x64010`; DDI-B/C/D use the
@@ -878,6 +890,22 @@ impl HardwareDpAuxDdc {
             Ok(Self {
                 mmio: Mmio::new(mmio_base),
                 regs: AuxRegs::pch_for_port(port)?,
+                timing: AuxCtlTiming::LEGACY,
+            })
+        }
+    }
+
+    /// Create an Ironlake/Sandy Bridge/Ivy Bridge DP AUX DDC reader for `port`.
+    ///
+    /// # Safety
+    ///
+    /// `mmio_base` must point at a decoded Intel display MMIO BAR whose AUX
+    /// registers for `port` are accessible.
+    pub unsafe fn ironlake(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
+        unsafe {
+            Ok(Self {
+                mmio: Mmio::new(mmio_base),
+                regs: AuxRegs::ironlake_for_port(port)?,
                 timing: AuxCtlTiming::LEGACY,
             })
         }

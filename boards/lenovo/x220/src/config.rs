@@ -263,9 +263,8 @@ const X220_CPU: Model206axConfig = {
     cpu
 };
 
-/// Devicetree GPU registers and the qualified subset of `gma-mainboard.ads`:
-/// LVDS, VGA and PCH HDMI. Coreboot also probes DP1..3; dock DisplayPort
-/// remains unqualified here.
+/// Devicetree GPU registers and the ports of coreboot's `gma-mainboard.ads`,
+/// in its probe order: DP1..3, HDMI1..3, VGA, then the LVDS panel.
 const X220_IGD: SandybridgeIgdConfig = {
     let mut igd = SandybridgeIgdConfig::new();
     igd.dp_d_hotplug = 0x06;
@@ -281,11 +280,15 @@ const X220_IGD: SandybridgeIgdConfig = {
     igd.display = Some(IgdDisplayPolicy {
         outputs: &[
             OutputConfig {
-                port: Port::Lvds,
+                port: Port::DpA,
                 enabled: true,
             },
             OutputConfig {
-                port: Port::Vga,
+                port: Port::DpB,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::DpC,
                 enabled: true,
             },
             OutputConfig {
@@ -298,6 +301,14 @@ const X220_IGD: SandybridgeIgdConfig = {
             },
             OutputConfig {
                 port: Port::HdmiC,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Vga,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::Lvds,
                 enabled: true,
             },
         ],

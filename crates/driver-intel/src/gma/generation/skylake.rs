@@ -40,6 +40,7 @@ impl GenerationOps for Skylake {
         _cpu: crate::gma::types::Cpu,
         pipe: Pipe,
         port: Port,
+        _state: &mut crate::gma::state::GenerationState,
     ) -> Result<(), GmaError> {
         scanout::disable(mmio, pipe, port)
     }

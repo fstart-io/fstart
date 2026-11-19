@@ -238,7 +238,12 @@ pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
         Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => PlatformCaps {
             generation: Generation::Ironlake,
             cpu,
-            pipes: PIPES_AB,
+            // `Has_Tertiary_Pipe`.
+            pipes: if matches!(cpu, Cpu::Ivybridge) {
+                PIPES_ABC
+            } else {
+                PIPES_AB
+            },
             ports: PORTS_SPLIT_PCH,
             has_pch_split: true,
             has_fdi: true,
@@ -343,6 +348,8 @@ pub(crate) struct GmaContext<'a> {
     config: &'a GmaInitConfig<'a>,
     surface: SurfaceConfig,
     pipe: Pipe,
+    /// Generation state kept across outputs (panel timers, shared PLLs).
+    state: &'a mut state::GenerationState,
 }
 
 impl GmaContext<'_> {
@@ -402,6 +409,7 @@ pub(crate) fn init_candidate<G: GenerationOps>(
     pipe: Pipe,
     mode: Mode,
     surface: SurfaceConfig,
+    state: &mut state::GenerationState,
 ) -> Result<GmaInitResult, GmaError> {
     // Mode and surface were resolved once for the complete output set. Never
     // re-probe or resize a pipe independently of the mirrored framebuffer.
@@ -412,6 +420,7 @@ pub(crate) fn init_candidate<G: GenerationOps>(
         config,
         surface,
         pipe,
+        state,
     };
 
     GmaController::<G>::new(ctx).init(mode)
@@ -435,7 +444,10 @@ pub(crate) fn prepare_framebuffer(
     }
     gtt::map_surface_to_stolen(resources, cpu, surface)?;
     let mmio = mmio_from_validated_resources(resources);
-    if matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45) {
+    if matches!(
+        caps_for(cpu).generation,
+        Generation::I945 | Generation::G45 | Generation::Ironlake
+    ) {
         gtt::clear_legacy_fences(&mmio, cpu);
         gtt::add_legacy_fence(&mmio, cpu, surface)?;
     }
@@ -456,19 +468,10 @@ pub(crate) fn disable_generation_output<G: GenerationOps>(
     cpu: Cpu,
     pipe: Pipe,
     port: Port,
+    state: &mut state::GenerationState,
 ) -> Result<(), GmaError> {
     let mmio = mmio_from_validated_resources(resources);
-    G::disable_output(&mmio, cpu, pipe, port)
-}
-
-/// Return all pipes, ports and PLLs to libgfxinit's `Clean_State`.
-///
-/// Runs once before the first modeset, so unknown firmware state cannot leak
-/// into the display output. It is deliberately not part of the per-output
-/// enable path.
-pub(crate) fn clean_generation_state<G: GenerationOps>(resources: &GmaResources, cpu: Cpu) {
-    let mmio = mmio_from_validated_resources(resources);
-    G::clean(&mmio, cpu);
+    G::disable_output(&mmio, cpu, pipe, port, state)
 }
 
 /// Return an MMIO view for resources that have already passed validation.
@@ -556,15 +559,17 @@ pub(crate) fn selected_enabled_port(outputs: &[OutputConfig]) -> Result<Port, Gm
         .ok_or(GmaError::UnsupportedPort)
 }
 
-pub(crate) fn initialize_port_detect(
+/// The ports libgfxinit's `Port_Detect` accepts, read without touching the
+/// hotplug setup; `None` where no detection is implemented.
+pub(crate) fn detected_ports(
     resources: &GmaResources,
     cpu: Cpu,
-) -> Option<port_detect::LegacyPortDetectState> {
-    if matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45) {
-        let mmio = mmio_from_validated_resources(resources);
-        Some(port_detect::initialize_legacy_gmch(&mmio, cpu))
-    } else {
-        None
+) -> Option<port_detect::PortDetectState> {
+    let mmio = mmio_from_validated_resources(resources);
+    match caps_for(cpu).generation {
+        Generation::I945 | Generation::G45 => Some(port_detect::legacy_gmch_detected(&mmio, cpu)),
+        Generation::Ironlake => Some(generation::ironlake::port_detect::detect(&mmio, false)),
+        _ => None,
     }
 }
 
@@ -623,7 +628,7 @@ fn edid_mode_where(
 ) -> Result<Mode, GmaError> {
     let port = selected_enabled_port(config.outputs)?;
     let caps = caps_for(config.cpu);
-    if let Some(detect) = initialize_port_detect(resources, config.cpu)
+    if let Some(detect) = detected_ports(resources, config.cpu)
         && !detect.is_valid(port)
     {
         return Err(GmaError::ModeUnavailable);
@@ -687,7 +692,7 @@ fn aux_ddc_bus(
         Generation::G45 => unsafe { dp_aux::HardwareDpAuxDdc::gmch(resources.gtt_mmio_base, port) },
         // SAFETY: split-PCH DP AUX registers are in the decoded display MMIO BAR.
         Generation::Ironlake => unsafe {
-            dp_aux::HardwareDpAuxDdc::pch(resources.gtt_mmio_base, port)
+            dp_aux::HardwareDpAuxDdc::ironlake(resources.gtt_mmio_base, port)
         },
         Generation::Haswell => {
             let mmio = mmio_from_validated_resources(resources);

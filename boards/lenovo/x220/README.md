@@ -34,7 +34,7 @@ reserves a 256 KiB SPI log after the 128 KiB training cache.
 | EC SCI / wake | GPI1 (GPE `0x11`) / GPI13 | `smihandler.c` |
 | WWAN presence | GPIO70, low when fitted | `wwan_gpio_num` |
 | PCIe | RP2 WLAN, RP4 ExpressCard (hot-plug), RP5 RCE822, RP7 xHCI option; coalesced | `devicetree.cb` |
-| Display | LVDS panel; VGA, HDMI | `gma-mainboard.ads` |
+| Display | DP1..3, HDMI1..3, VGA, LVDS panel | `gma-mainboard.ads` |
 | VBT | `data.vbt` | `INTEL_GMA_HAVE_VBT` |
 
 ## Flash safety

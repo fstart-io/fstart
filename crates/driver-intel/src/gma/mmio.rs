@@ -67,6 +67,38 @@ impl Mmio {
     pub(crate) fn update32(&self, offset: usize, clear: u32, set: u32) {
         self.write32(offset, (self.read32(offset) & !clear) | set);
     }
+
+    /// Poll until `register & mask == value` (libgfxinit `Registers.Wait`).
+    ///
+    /// Like libgfxinit, the register is read once more after the deadline,
+    /// so a late match still counts. Returns whether it matched.
+    pub(crate) fn wait_mask(&self, offset: usize, mask: u32, value: u32, timeout_us: u64) -> bool {
+        let deadline = now_us().saturating_add(timeout_us);
+        let mut timed_out = false;
+        loop {
+            if self.read32(offset) & mask == value {
+                return true;
+            }
+            if timed_out {
+                return false;
+            }
+            timed_out = now_us() >= deadline;
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Monotonic microsecond timestamp used for libgfxinit-style deadlines.
+pub(crate) fn now_us() -> u64 {
+    fstart_arch::x86::timestamp_us()
+}
+
+/// Wait until the timestamp `deadline_us` (libgfxinit `Time.Delay_Until`).
+pub(crate) fn delay_until(deadline_us: u64) {
+    let now = now_us();
+    if deadline_us > now {
+        delay_us(u32::try_from(deadline_us - now).unwrap_or(u32::MAX));
+    }
 }
 
 /// Short busy delay used around legacy DPLL enable/disable sequencing.

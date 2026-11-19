@@ -89,8 +89,9 @@ and native modeset; ACPI/SMBIOS; and the finalize locks.
   remain board configuration; `me_state` defaults to leaving the ME as it
   is rather than to "Normal".
 * S1 is not advertised, as on Ibex Peak.
-* The PCH DisplayPort outputs (`gma-mainboard.ads` DP1..3, the dock) are
-  not selected; LVDS, VGA and HDMI are.
+* Display ports follow `gma-mainboard.ads` (DP1..3, HDMI1..3, VGA, LVDS),
+  driven by the shared libgfxinit port in
+  `crates/driver-intel/src/gma/generation/ironlake/`.
 * TPM: probed, described (`PNP0C31`) and restored on S3; no measured boot.
 * xHCI (Panther Point): node, routing registers and `_PRW` only. The
   `_OSC` switch and the PPT A0 S3 workaround do not apply to the X220.
