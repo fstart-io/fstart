@@ -288,10 +288,10 @@ impl Arena {
 
     /// One more candidate window, and the unit of work it is.
     fn visit(&mut self) -> Result<(), PciEcamError> {
-        self.visits += 1;
-        if self.visits > self.budget.visits {
+        if self.visits >= self.budget.visits {
             return Err(PciEcamError::SearchLimit);
         }
+        self.visits += 1;
         self.charge(1)
     }
 
@@ -574,12 +574,16 @@ impl PciEcam {
     /// then those for A only, then by address and register. Whether all
     /// fit; exact (the module's documentation says why). Each size walks
     /// `a` and `b` once and merges what it placed into `taken`.
+    ///
+    /// With `low_first`, those that may take either take `a` first, and
+    /// `b` what `a` has no room for: not exact, a preference to try first.
     fn pack(
         &mut self,
         arena: &mut Arena,
         a: &[(u64, u64)],
         b: &[(u64, u64)],
         rule: Rule,
+        low_first: bool,
     ) -> Result<bool, PciEcamError> {
         arena.charge(sort_cost(arena.items.len()))?;
         arena.items.sort_unstable_by_key(|&item| {
@@ -596,10 +600,15 @@ impl PciEcam {
             let flexible =
                 start + arena.items[start..end].partition_point(|&item| !self.flexible(rule, item));
             arena.fresh.clear();
-            let mut next = flexible;
+            // The set taken first: as far as it goes, those that may take
+            // it; then the other, the rest.
+            let (first, second, mut next) = match low_first {
+                true => (a, b, start),
+                false => (b, a, flexible),
+            };
             let mut walk = Walk::default();
             while next < end {
-                let slot = self.next_slot(&arena.taken, b, size, &mut walk);
+                let slot = self.next_slot(&arena.taken, first, size, &mut walk);
                 arena.charge(core::mem::take(&mut walk.steps))?;
                 let Some(slot) = slot else {
                     break;
@@ -607,9 +616,17 @@ impl PciEcam {
                 self.place(arena, arena.items[next], slot);
                 next += 1;
             }
+            // The rest take the other set: with `b` first, A's own then the
+            // flexible ones `b` had no room for; with `a` first, the flexible
+            // ones it had no room for (one of its own fits nowhere).
+            let rest = match low_first {
+                true if next < flexible => return Ok(false),
+                true => (next..end).chain(end..end),
+                false => (start..flexible).chain(next..end),
+            };
             let mut walk = Walk::default();
-            for n in (start..flexible).chain(next..end) {
-                let slot = self.next_slot(&arena.taken, a, size, &mut walk);
+            for n in rest {
+                let slot = self.next_slot(&arena.taken, second, size, &mut walk);
                 arena.charge(core::mem::take(&mut walk.steps))?;
                 let Some(slot) = slot else {
                     return Ok(false);
@@ -651,6 +668,11 @@ impl PciEcam {
     /// Pack the bus behind `bus` (the root bus of `root` for `None`) in
     /// `space`, around its bridges' windows. Leaves what is on it in
     /// `arena.taken`. Whether its BARs fit.
+    ///
+    /// The root bus's 64-bit BARs go below 4 GiB first, as the subtree
+    /// allocator's do: firmware drivers map that, and some devices that
+    /// declare a 64-bit BAR do not decode above it. Where that leaves a BAR
+    /// without a slot, the exact pack decides.
     fn pack_bus(
         &mut self,
         arena: &mut Arena,
@@ -659,19 +681,28 @@ impl PciEcam {
         bus: Option<usize>,
         space: Space,
     ) -> Result<bool, PciEcamError> {
-        arena.charge(self.devices.len())?;
-        arena.items.clear();
-        arena.taken.clear();
-        for dev in self.on_bus(root, bus) {
-            arena.items.extend(self.bars_in(dev, space));
-            arena.taken.extend(self.windows_in(dev, space));
+        let low_first: &[bool] = match (bus, space) {
+            (None, Space::Memory) => &[true, false],
+            _ => &[false],
+        };
+        for &low_first in low_first {
+            arena.charge(self.devices.len())?;
+            arena.items.clear();
+            arena.taken.clear();
+            for dev in self.on_bus(root, bus) {
+                arena.items.extend(self.bars_in(dev, space));
+                arena.taken.extend(self.windows_in(dev, space));
+            }
+            for &item in &arena.items {
+                self.devices[item.dev()].bars[item.index()].allocated = false;
+            }
+            self.sort_by_base(arena, |arena| &mut arena.taken)?;
+            let (a, b, rule) = self.sets(pools, bus, space);
+            if self.pack(arena, &a, &b, rule, low_first)? {
+                return Ok(true);
+            }
         }
-        for &item in &arena.items {
-            self.devices[item.dev()].bars[item.index()].allocated = false;
-        }
-        self.sort_by_base(arena, |arena| &mut arena.taken)?;
-        let (a, b, rule) = self.sets(pools, bus, space);
-        self.pack(arena, &a, &b, rule)
+        Ok(false)
     }
 
     /// What each bridge of `root` needs at least ([`Need`]), deepest first.
@@ -775,7 +806,7 @@ impl PciEcam {
             for dev in (0..self.devices.len()).filter(|&dev| self.devices[dev].root == root) {
                 arena.items.extend(self.bars_in(dev, space));
             }
-            if !self.pack(arena, &a, &b, rule)? {
+            if !self.pack(arena, &a, &b, rule, false)? {
                 return Ok(true);
             }
         }
@@ -1335,7 +1366,7 @@ impl PciEcam {
                 (memory.into_iter().collect(), Ranges::new(), Rule::AOnly)
             }
         };
-        self.pack(arena, &a, &b, rule)
+        self.pack(arena, &a, &b, rule, false)
     }
 
     /// Whether the windows of `bridge` the search chose range by range

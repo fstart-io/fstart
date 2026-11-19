@@ -368,6 +368,29 @@ fn a_nonprefetchable_64bit_bar_goes_high_only_on_the_root_bus() {
     }
 }
 
+/// The search, like the subtree allocator, puts the root bus's 64-bit BARs
+/// below 4 GiB where they fit (some devices do not decode above), and above
+/// only what does not fit below.
+#[test]
+fn the_search_puts_root_bus_64bit_bars_low_first() {
+    let (low, high) = ([(LOW, LOW + 2 * MIB)], [(HIGH, HIGH + 4 * MIB)]);
+    let functions = [1, 2].map(|slot| PciAddress::new(0, 0, slot, 0));
+    for (count, below) in [(1, 1), (2, 1)] {
+        let devices = functions[..count]
+            .iter()
+            .map(|&address| endpoint(address, &[(0, BarType::Memory64, 2 * MIB)]))
+            .collect();
+        let search = Allocators::Search(Budget::FIRMWARE);
+        let (mut pci, _space, free) = root(&low, &high, 0, devices, search);
+        allocate(&mut pci, &free).unwrap();
+        let low_bars = functions[..count]
+            .iter()
+            .filter(|&&address| base(&pci, address, 0) < HIGH)
+            .count();
+        assert_eq!(low_bars, below);
+    }
+}
+
 /// A firmware reservation of one 1 MiB granule splits the pool below
 /// 4 GiB: no window spans it. A 2 MiB and a 1 MiB BAR behind one bridge
 /// do not fit around it; behind two, they do.
@@ -584,6 +607,7 @@ fn a_search_out_of_budget_says_so() {
     );
     pci.write32(leaf, PCI_BAR0, 0x1234_5670);
     assert_eq!(pci.allocate_resources(), Err(PciEcamError::SearchLimit));
+    assert_eq!(pci.spent.0, 1);
     assert_eq!(pci.read32(leaf, PCI_BAR0), 0x1234_5670);
     assert!(pci.devices.iter().all(|device| !device.programmed));
     assert_eq!(pci.roots[0].mmio32.free_bytes(), 4 * MIB);
@@ -1149,7 +1173,12 @@ fn the_search_finds_ports_exactly_when_they_exist() {
             result
         };
         let exact = run(Allocators::Search(Budget::UNLIMITED));
-        assert_eq!(exact.is_ok(), exists, "seed {seed}: {exact:?}\n{tiny:x?}");
+        let proof = if exists {
+            Ok(())
+        } else {
+            Err(PciEcamError::ResourceExhausted)
+        };
+        assert_eq!(exact, proof, "seed {seed}\n{tiny:x?}");
         match run(Allocators::Both(Budget::FIRMWARE)) {
             Ok(()) => assert!(exists),
             Err(error) => assert!(
@@ -1223,13 +1252,14 @@ fn a_32bit_prefetchable_bar_stays_below_an_aperture_across_4_gib() {
 }
 
 /// The validator holds the same line: a prefetchable window across 4 GiB
-/// is no window, even with a 32-bit BAR in its lower part and a pool that
-/// covers it; the BAR through the memory window below is.
+/// is no window, even with only a 64-bit BAR, which may be anywhere, in its
+/// lower part and a pool that covers it; the BAR through the memory window
+/// below is.
 #[test]
 fn the_validator_refuses_a_window_across_4_gib() {
     let (mut pci, _space) = test_pci_with_buses(3);
     let bridge = PciAddress::new(0, 0, 1, 0);
-    let mut device = endpoint(PciAddress::new(0, 1, 0, 0), &[(0, BarType::Memory32, MIB)]);
+    let mut device = endpoint(PciAddress::new(0, 1, 0, 0), &[(0, BarType::Memory64, MIB)]);
     device.bars[0].prefetchable = true;
     device.bars[0].base = 0xfff0_0000;
     device.bars[0].allocated = true;

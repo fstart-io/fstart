@@ -46,8 +46,8 @@ pub enum PciEcamError {
     FixedBarInvalid,
     FixedBarConflict,
     ResourceExhausted,
-    /// The window search gave up, after a fixed number of candidate
-    /// windows, before it found a layout or proved there is none.
+    /// The window search ran out of its budget, of candidate windows or of
+    /// work, before it found a layout or proved there is none.
     SearchLimit,
 }
 
@@ -1280,11 +1280,12 @@ impl PciEcam {
     // forwards prefetchable memory through its memory window (prefetchable
     // memory may always be forwarded as non-prefetchable).
     //
-    // No BAR, window or command register is written until every root is
-    // placed: an allocation that fails leaves them as it found them.
-    // Discovery before it is not undone: it numbered the bridges' buses
-    // (and wrote BARs to size them, each put back). A failure is fail-stop:
-    // the hierarchy is left routed for a diagnosis, not for a retry.
+    // No final BAR, window or command value is programmed until every root
+    // is placed: an allocation that fails leaves them as discovery left
+    // them. Discovery is not undone: it numbered the bridges' buses and left
+    // them so; to size BARs and probe prefetchable windows it wrote them
+    // with decode off, and put each back. A failure is fail-stop: the
+    // hierarchy is left routed for a diagnosis, not for a retry.
 
     /// What device `dev_idx` asks of its parent, each with its size and
     /// alignment: its movable BARs and, for a bridge, its open windows.
@@ -2354,9 +2355,11 @@ impl PciEcam {
 
     /// Enumerate the PCI hierarchy, allocate BAR resources, and enable decode.
     ///
-    /// On failure no BAR, window or command register has been written, but
-    /// discovery has numbered the bridges' buses and left them so: treat it
-    /// as fail-stop, not as a hierarchy to hand off or enumerate again.
+    /// On failure no final BAR, window or command value is programmed:
+    /// discovery's probes of BARs, prefetchable windows and decode are each
+    /// put back. But discovery has numbered the bridges' buses and left them
+    /// so: treat a failure as fail-stop, not as a hierarchy to hand off or
+    /// enumerate again.
     pub fn enumerate_and_allocate(&mut self) -> Result<(), PciEcamError> {
         self.enumerate_resource_targets(None, true)
     }
