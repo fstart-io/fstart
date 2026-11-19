@@ -142,9 +142,13 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
                     ctx.signing_key,
                 )?
             }
-            ImageOperation::AmdEfs(operation) => {
-                amd_efs(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
-            }
+            ImageOperation::AmdEfs(operation) => amd_efs(
+                ctx,
+                operation,
+                consumed.as_deref(),
+                seed.take().as_ref(),
+                &mut outputs.notes,
+            )?,
             ImageOperation::AmdHalvedFlash(operation) => amd_halved_flash(
                 ctx,
                 operation,
@@ -209,6 +213,7 @@ fn amd_efs(
     ctx: &ImageContext<'_>,
     operation: &crate::amd::assembly::AmdAssembly,
     ffs: Option<&Path>,
+    seed: Option<&crate::options::Seed>,
     notes: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
     let bindings = operation.bindings()?;
@@ -223,7 +228,8 @@ fn amd_efs(
         None => None,
     };
     let source_refs: Vec<_> = sources.iter().map(Vec::as_slice).collect();
-    let image = operation.assemble(&source_refs, &reset_bytes, ffs_bytes.as_deref())?;
+    let image =
+        operation.assemble_seeded(&source_refs, &reset_bytes, ffs_bytes.as_deref(), seed)?;
     let whole = image.is_whole_flash(operation.flash_size);
     let output = ctx.output_dir.join(if whole {
         format!("{}.rom", ctx.board_name)
