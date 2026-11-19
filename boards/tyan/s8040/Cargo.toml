@@ -53,6 +53,7 @@ smm = ["fstart-platform-amd/smm"]
 [dependencies]
 fstart-platform-amd = { path = "../../../crates/platform-amd" }
 fstart-driver-amd = { path = "../../../crates/driver-amd" }
+fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
 fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
 fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
 fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
@@ -61,6 +62,7 @@ fstart-log = { path = "../../../crates/log" }
 fstart-options = { path = "../../../crates/options" }
 heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
+ufmt = "0.2"
 
 [dev-dependencies]
 fstart-pci = { path = "../../../crates/pci" }

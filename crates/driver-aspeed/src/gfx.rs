@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Native AST2500 host VGA modesetting, without executing a VGA ROM.
+//! Native AST2500/AST2600 host VGA modesetting, without executing a VGA ROM.
 //!
 //! Adapted from Linux's MIT-licensed drivers/gpu/drm/ast/{ast_mode.c,
 //! ast_2500.c,ast_tables.h,ast_vbios.c,ast_reg.h,ast_mm.c} at
@@ -8,9 +8,10 @@
 //!
 //! A running BMC must have initialized its shared DRAM. We deliberately
 //! omit Linux's standalone-GPU DRAM training/P2A path: it can reset the
-//! BMC, corrupt its memory, and destroy the KVM connection. Only AST2500
-//! (PCI revision 0x4x) is supported. A fixed 1024x768@60 XRGB8888 mode is
-//! the Linux headless/KVM default; no monitor or EDID is required.
+//! BMC, corrupt its memory, and destroy the KVM connection. Both chips use
+//! the same XGA timings and clock, but different memory-request thresholds
+//! (Linux `ast_2500.c` and `ast_2600.c`). The fixed 1024x768@60 XRGB8888
+//! mode needs neither a monitor nor EDID.
 
 use fstart_core::{
     indexed::Indexed,
@@ -23,7 +24,7 @@ use tock_registers::{RegisterLongName, register_bitfields};
 
 /// ASPEED's PCI vendor ID.
 pub const ASPEED_VENDOR_ID: u16 = 0x1a03;
-/// PCI device ID shared by the AST VGA family; revision selects AST2500.
+/// PCI device ID shared by the AST VGA family.
 pub const AST_VGA_DEVICE_ID: u16 = 0x2000;
 
 const WIDTH: u32 = 1024;
@@ -90,11 +91,42 @@ pub enum Error {
     BmcDramNotReady,
 }
 
-struct Ast2500 {
-    io: usize,
+#[derive(Clone, Copy)]
+enum Chip {
+    Ast2500,
+    Ast2600,
 }
 
-impl Ast2500 {
+impl Chip {
+    fn from_revision(revision: u8) -> Option<Self> {
+        match revision & 0xf0 {
+            0x40 => Some(Self::Ast2500),
+            0x50 => Some(Self::Ast2600),
+            _ => None,
+        }
+    }
+
+    fn thresholds(self) -> (u8, u8) {
+        match self {
+            Self::Ast2500 => (96, 120),
+            Self::Ast2600 => (160, 224),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ast2500 => "AST2500",
+            Self::Ast2600 => "AST2600",
+        }
+    }
+}
+
+struct Ast {
+    io: usize,
+    chip: Chip,
+}
+
+impl Ast {
     fn port<R: RegisterLongName>(&self, offset: usize) -> MmioRegister<u8, R> {
         // SAFETY: initialize checked and exclusively owns the mapped BAR1 aliases.
         unsafe { MmioRegister::new(self.io + offset) }
@@ -159,11 +191,12 @@ impl Ast2500 {
             self.cr::<()>(index).set(value);
         }
         self.cr::<()>(0xfc).set(self.cr::<()>(0xfc).get() & 0xfd);
-        self.cr::<()>(0xc0).set(0x80); // AST2500 VCLK65 parameter 1, 8 bits.
-        self.cr::<()>(0xc1).set(0x64); // AST2500 VCLK65 parameter 2, 8 bits.
+        self.cr::<()>(0xc0).set(0x80); // VCLK65 parameter 1, 8 bits.
+        self.cr::<()>(0xc1).set(0x64); // VCLK65 parameter 2, 8 bits.
         self.cr::<()>(0xbb).set(self.cr::<()>(0xbb).get() & 0x0f); // PLL parameter 3.
-        self.cr::<()>(0xa6).set(96); // CRT low memory-request threshold, 8 bits.
-        self.cr::<()>(0xa7).set(120); // CRT high memory-request threshold, 8 bits.
+        let (low, high) = self.chip.thresholds();
+        self.cr::<()>(0xa6).set(low); // CRT low memory-request threshold, 8 bits.
+        self.cr::<()>(0xa7).set(high); // CRT high memory-request threshold, 8 bits.
         self.port::<()>(0x42).set(0xef); // 65 MHz clock, negative H/V sync.
         self.cr::<MemoryMode::Register>(0xa0)
             .modify(MemoryMode::SEGMENTED::SET + MemoryMode::LINEAR::SET + MemoryMode::CHAIN4::SET);
@@ -242,7 +275,7 @@ fn usable_vram(size: u8, reserved: u8) -> u64 {
     total - (reserved << 20)
 }
 
-/// Initialize one enumerated AST2500, preserving the BMC's DRAM and firmware.
+/// Initialize one enumerated AST2500 or AST2600, preserving the BMC's DRAM and firmware.
 ///
 /// # Safety
 /// BSP only, with exclusive access to this GPU's allocated BARs. They must
@@ -255,11 +288,12 @@ pub unsafe fn initialize(
     let device = pci.device(address).ok_or(Error::Device)?;
     if device.vendor_id() != ASPEED_VENDOR_ID
         || device.device_id() != AST_VGA_DEVICE_ID
-        || device.read8(8) & 0xf0 != 0x40
         || device.read8(0x0b) != 3
+        || device.read8(0x0e) & 0x7f != 0
     {
         return Err(Error::Device);
     }
+    let chip = Chip::from_revision(device.read8(8)).ok_or(Error::Device)?;
     let framebuffer = device.memory_bar(0x10).ok_or(Error::Resources)?;
     let registers = device.memory_bar(0x14).ok_or(Error::Resources)?;
     let covers = |base, size| {
@@ -272,7 +306,8 @@ pub unsafe fn initialize(
     // SAFETY: the device is a validated Type-0 function, exclusively owned.
     let config = unsafe { device.regs::<PciType0Config>() };
     config.command.modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET);
-    let ast = Ast2500 {
+    let ast = Ast {
+        chip,
         io: usize::try_from(registers + IO_OFFSET).map_err(|_| Error::Resources)?,
     };
     if !ast
@@ -287,10 +322,11 @@ pub unsafe fn initialize(
     ast.cr::<Access::Register>(0xa1)
         .write(Access::MMIO::SET + Access::VGA_IO_OFF::SET);
     let started = timer.timestamp_us();
-    while !ast
-        .cr::<DramStatus::Register>(0xd0)
-        .is_set(DramStatus::READY)
-    {
+    loop {
+        let status = ast.cr::<DramStatus::Register>(0xd0).extract();
+        if status.get() != u8::MAX && status.is_set(DramStatus::READY) {
+            break;
+        }
         if timer.timestamp_us().wrapping_sub(started) >= 1_000_000 {
             return Err(Error::BmcDramNotReady);
         }
@@ -306,7 +342,8 @@ pub unsafe fn initialize(
     }
     ast.modeset();
     fstart_log::info!(
-        "AST2500: native 1024x768@60 XRGB8888, framebuffer {:#x}",
+        "{}: native 1024x768@60 XRGB8888, framebuffer {:#x}",
+        chip.name(),
         framebuffer
     );
     Ok(FramebufferInfo {
@@ -327,6 +364,14 @@ pub unsafe fn initialize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thresholds_follow_the_chip_revision() {
+        assert_eq!(Chip::from_revision(0x41).unwrap().thresholds(), (96, 120));
+        assert_eq!(Chip::from_revision(0x52).unwrap().thresholds(), (160, 224));
+        assert!(Chip::from_revision(0x60).is_none());
+        assert!(Chip::from_revision(0xff).is_none());
+    }
+
     #[test]
     fn shared_vram_reservations_are_preserved() {
         assert_eq!(usable_vram(0, 0), 8 << 20);

@@ -490,6 +490,14 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
         &self.phase.pci
     }
 
+    /// The VGA endpoint under the configured display port, without falling
+    /// back to an add-in card as legacy VGA routing can.
+    pub fn configured_display(&self) -> Option<fstart_pci::PciAddress> {
+        let pci = self.pci();
+        let port = S::display_port(&self.machine.ctx(), &self.phase.silicon.state, pci)?;
+        pci.legacy_vga_display(Some(port))
+    }
+
     /// Publish the framebuffer a board's display driver initialized.
     pub fn set_framebuffer(&mut self, framebuffer: fstart_core::services::FramebufferInfo) {
         self.phase.silicon.framebuffer = Some(framebuffer);
