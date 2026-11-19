@@ -5,6 +5,8 @@
 
 #![no_std]
 
+pub mod messages;
+
 #[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]
 extern crate x86 as x86_crate;
 

@@ -10,7 +10,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "${1:-$here/../../../../seabios-fstart}" && pwd)
 out=$(mkdir -p "${2:-$here/../../../target/seabios}" && cd "${2:-$here/../../../target/seabios}" && pwd)
 
-cp "$here/defconfig" "$out/.config"
+cp "$here/../../boot-assets/seabios.defconfig" "$out/.config"
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" olddefconfig >/dev/null
 make -C "$src" KCONFIG_CONFIG="$out/.config" OUT="$out/" -j"$(nproc)" >/dev/null
 # The version `fbuild bundle --seabios` shows with the payload.

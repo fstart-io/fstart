@@ -21,51 +21,16 @@
         "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      mkPkgs = system:
+      mkPkgs =
+        system:
         import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-      ciPayloadTools = pkgs: [
-        pkgs.pkgsCross.riscv64.stdenv.cc
-        pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc
-        pkgs.pkgsCross.armv7l-hf-multiplatform.stdenv.cc
-        pkgs.gnumake
-        pkgs.flex
-        pkgs.bison
-        pkgs.bc
-        pkgs.perl
-        pkgs.elfutils
-        pkgs.dtc
-        pkgs.ubootTools
-        pkgs.git
-        pkgs.curl
-        pkgs.xz
-      ];
     in
     {
-      apps = forAllSystems (
-        system:
-        let
-          pkgs = mkPkgs system;
-          ciPayloads = pkgs.writeShellApplication {
-            name = "fstart-ci-build-payloads";
-            runtimeInputs = ciPayloadTools pkgs;
-            text = ''
-              set -euo pipefail
-              output_dir="''${1:-boot-assets/payloads}"
-              exec bash ci/build-payloads.sh "$output_dir"
-            '';
-          };
-        in
-        {
-          ci-build-payloads = {
-            type = "app";
-            program = "${ciPayloads}/bin/fstart-ci-build-payloads";
-            meta.description = "Build CI payload artifacts via ci/build-payloads.sh";
-          };
-        }
-      );
+      # What the QEMU boot tests boot besides fstart (ci/boot-assets).
+      packages.x86_64-linux = import ./ci/boot-assets { pkgs = mkPkgs "x86_64-linux"; };
 
       devShells = forAllSystems (
         system:
@@ -77,15 +42,12 @@
           default = pkgs.mkShell {
             nativeBuildInputs = [
               rust
-
-              # QEMU, all system emulators used by fbuild and CI smoke tests.
+              # iasl, for the boards' ACPI tables.
+              pkgs.acpica-tools
+              # Every system emulator fbuild runs, and the TPM of the
+              # measured-boot tests.
               pkgs.qemu
-
-              # CI payload build resources. Keep this in sync with
-              # ci/build-payloads.sh and .github/workflows/ci.yml.
-            ] ++ ciPayloadTools pkgs ++ [
-              # Go (u-root/initramfs experiments and future boot assets)
-              pkgs.go
+              pkgs.swtpm
             ];
           };
         }

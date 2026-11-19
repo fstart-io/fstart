@@ -204,7 +204,12 @@ impl FfsAssembly {
     pub const KERNEL: &'static str = "kernel";
     pub const FIRMWARE: &'static str = "firmware";
     pub const FIT: &'static str = "fit";
-    pub const INPUTS: &'static [&'static str] = &[Self::KERNEL, Self::FIRMWARE, Self::FIT];
+    /// The device tree a payload with an overriding FDT
+    /// (`FdtSource::Override`) is handed; by default the file of that
+    /// name in the board directory.
+    pub const DTB: &'static str = "dtb";
+    pub const INPUTS: &'static [&'static str] =
+        &[Self::KERNEL, Self::FIRMWARE, Self::FIT, Self::DTB];
 
     /// Blob paths emitted by platform Rust are workspace-relative. Convert only
     /// for the legacy assembler's board-relative file API, without inferring policy.
@@ -918,6 +923,8 @@ mod tests {
             devices: vec![],
             args: vec![],
             disk: None,
+            tpm: None,
+            tests: vec![],
         };
         plan.run = Some(run.clone());
         assert!(

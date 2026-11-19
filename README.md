@@ -30,6 +30,11 @@ cargo fbuild qemu --board qemu-aarch64 --payload halt
 # Build without running
 cargo fbuild build --board qemu-riscv64 --payload halt
 
+# Boot the tests a board's plan declares, as CI does, with the guests and
+# firmware Nix builds for them
+nix build .#boot-assets
+cargo fbuild boot-test --assets result qemu-q35
+
 # Build a signed firmware image (FFS). Without --signing-key the image is
 # signed with a fresh throwaway key, discarded after the build.
 openssl genpkey -algorithm ed25519 -out signing.pem

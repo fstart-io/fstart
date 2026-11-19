@@ -249,8 +249,9 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
             })
         });
         fstart_log::info!(
-            "{} SMM: permanent SMI returned on all {} CPUs",
+            "{} {} {} CPUs",
             self.name,
+            crate::messages::SMI_RETURNED,
             num_cpus
         );
         Ok(InstalledTseg {

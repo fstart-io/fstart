@@ -60,7 +60,7 @@ fn fixture(
             .filter(|pcr| Some(*pcr) != omit_separator)
             .map(|pcr| (pcr, EV_SEPARATOR, separator.to_le_bytes().to_vec())),
     );
-    events.push((4, 0x0d, b"boot sector".to_vec()));
+    events.push((4, EV_IPL, b"boot sector".to_vec()));
     let mut separator_data = 0;
     for (index, kind, data) in events
         .into_iter()
@@ -131,10 +131,8 @@ impl Fixture {
         .unwrap();
         text
     }
-    fn verify(&self, expects: &[&str], banks: Option<&[&str]>) -> Result<String> {
-        let expects: Vec<_> = expects.iter().map(|s| s.to_string()).collect();
-        let banks: Option<Vec<_>> = banks.map(|b| b.iter().map(|s| s.to_string()).collect());
-        verify(&self.serial(false), &expects, banks.as_deref())
+    fn verify(&self, expects: &[(u32, u32)], banks: Option<&[u16]>) -> Result<String> {
+        verify(&self.serial(false), expects, banks)
     }
 }
 
@@ -152,16 +150,15 @@ fn complete_logs_and_all_banks() {
     ] {
         for separator in [0, u32::MAX] {
             let f = fixture(&banks, agile, separator, None, None, None);
-            let payload = if agile {
-                "EV_POST_CODE2@0"
-            } else {
-                "EV_POST_CODE@0"
-            };
-            let names: Vec<_> = banks.iter().map(|a| bank(*a).unwrap()).collect();
+            let payload = if agile { EV_POST_CODE2 } else { EV_POST_CODE };
             assert!(
                 f.verify(
-                    &["EV_S_CRTM_VERSION@0", "EV_S_CRTM_CONTENTS@0", payload],
-                    Some(&names)
+                    &[
+                        (EV_S_CRTM_VERSION, 0),
+                        (EV_S_CRTM_CONTENTS, 0),
+                        (payload, 0)
+                    ],
+                    Some(&banks)
                 )
                 .unwrap()
                 .ends_with("PASS\n")
@@ -189,7 +186,7 @@ fn every_pcr_reading_is_required() {
         .unwrap()
         .retain(|pcr, _| *pcr == 9);
     assert!(
-        f.verify(&["EV_S_CRTM_VERSION@0", "EV_S_CRTM_CONTENTS@0"], None)
+        f.verify(&[(EV_S_CRTM_VERSION, 0), (EV_S_CRTM_CONTENTS, 0)], None)
             .is_err()
     );
 }
@@ -200,8 +197,11 @@ fn bank_readings_and_expected_banks_must_match() {
     f.readings.remove("sha256");
     assert!(f.verify(&[], None).is_err());
     let f = fixture(&[11], true, 0, None, None, None);
-    assert!(f.verify(&[], Some(&["sha256", "sha384"])).is_err());
-    assert!(f.verify(&[], Some(&["unknown"])).is_err());
+    assert!(
+        f.verify(&[], Some(&[pcr::ALG_SHA256, pcr::ALG_SHA384]))
+            .is_err()
+    );
+    assert!(f.verify(&[], Some(&[0x99])).is_err());
 }
 
 #[test]
@@ -245,12 +245,12 @@ fn error_and_malformed_separators_fail_even_with_matching_replay() {
 fn payload_and_seabios_measurements_are_required() {
     assert!(
         fixture(&[4], false, 0, None, Some(EV_POST_CODE), None)
-            .verify(&["EV_POST_CODE@0"], None)
+            .verify(&[(EV_POST_CODE, 0)], None)
             .is_err()
     );
     assert!(
-        fixture(&[4], false, 0, None, Some(0x0d), None)
-            .verify(&["EV_POST_CODE@0", "EV_IPL@4"], None)
+        fixture(&[4], false, 0, None, Some(EV_IPL), None)
+            .verify(&[(EV_POST_CODE, 0), (EV_IPL, 4)], None)
             .is_err()
     );
 }

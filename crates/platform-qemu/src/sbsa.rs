@@ -84,7 +84,11 @@ mod stage {
     impl QemuSbsaMainstage {
         fn init_pci(&mut self) -> Result<(), ServiceError> {
             let pci = enumerate_pci(&self.config.pci)?;
-            fstart_log::info!("qemu-sbsa: PCI root ready ({} devices)", pci.device_count(),);
+            fstart_log::info!(
+                "qemu-sbsa: {} ({} devices)",
+                crate::messages::PCI_ROOT_READY,
+                pci.device_count(),
+            );
             self.pci = Some(pci);
             Ok(())
         }
@@ -129,7 +133,7 @@ mod stage {
             fstart_log::error!("qemu-sbsa ramstage: bus_scan failed");
             fstart_arch::aarch64::halt()
         }
-        fstart_log::info!("qemu-sbsa ramstage: ready for payload");
+        fstart_log::info!("qemu-sbsa {}", crate::messages::READY);
         // The SBSA reference machine boots no payload yet.
         let _ = mainstage;
         fstart_payload::boot(

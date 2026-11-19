@@ -38,6 +38,14 @@ pub struct RunRecipe {
     /// How a caller-supplied `--disk` attaches, if at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<RunDisk>,
+    /// The `-device` model a software TPM attaches as (`--tpm`), if the
+    /// machine has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm: Option<String>,
+    /// The machine's boot tests (`fbuild boot-test`). Each selects its
+    /// own payload, so every plan of a board carries the same list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<crate::boot_test::BootTest>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

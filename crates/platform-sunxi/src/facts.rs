@@ -34,7 +34,8 @@ pub struct BoardFacts {
     /// Populated DRAM size from `0x4000_0000`; the controller detects it live.
     pub dram_size: u64,
     pub kernel_load_addr: u64,
-    /// DTB file resolved from the board directory, if present.
+    /// The device tree the Linux payload is handed: the plan's `dtb` input,
+    /// by default this file in the board directory.
     pub dtb: &'static str,
     pub dtb_addr: u64,
     /// Kernel command line patched into the FDT chosen node for Linux boot.

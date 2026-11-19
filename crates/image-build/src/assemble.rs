@@ -26,6 +26,7 @@ pub fn assemble(
     kernel_path: Option<&str>,
     firmware_path: Option<&str>,
     fit_path: Option<&str>,
+    dtb_path: Option<&str>,
     payload_files: &[(String, String)],
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
     boot_format: crate::build_plan::BootImageFormat,
@@ -192,11 +193,12 @@ pub fn assemble(
         }
 
         if let FdtSource::Override(ref dtb_name) = payload.fdt {
-            let dtb_path = board_dir.join(dtb_name.as_str());
+            let dtb_path =
+                dtb_path.map_or_else(|| board_dir.join(dtb_name.as_str()), PathBuf::from);
             if files.exists(&dtb_path) {
                 let dtb_data = files
-                    .read(Path::new(&dtb_path))
-                    .map_err(|e| format!("failed to read DTB: {e}"))?;
+                    .read(&dtb_path)
+                    .map_err(|e| format!("failed to read DTB {}: {e}", dtb_path.display()))?;
                 let dtb_load_addr = payload.dtb_addr.unwrap_or(0);
 
                 ro_files.push(InputFile {
