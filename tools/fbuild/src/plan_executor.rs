@@ -1,9 +1,10 @@
 //! Execute concrete platform plans. No platform/family identities are selected here.
 use crate::{board_manifest::BoardManifest, profile_source::ProfileSource, selection::Selection};
 use fstart_image_build::build_plan::{BuildPlan, CompilationUnit, UnitOutput};
+use fstart_image_build::files::{Blob, Files};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Stdio,
@@ -309,15 +310,25 @@ impl Resolved {
         // Bad settings fail before the units build.
         self.plan.options.seed(settings)?;
         let build = self.build(root, board, release)?;
+        let files = fstart_image_build::files::HostFiles {
+            blobs: self.blobs.clone(),
+        };
+        // The units are shared; the image is of these inputs only.
         let directory = self
             .artifact_dir(root, &board.board, release)?
-            .join("image");
+            .join("image")
+            .join(self.assembly_key(
+                &files,
+                &build.stages,
+                &inputs,
+                payload_files,
+                signing_key,
+                settings,
+            )?);
         let outputs = fstart_image_build::image_steps::execute(
             &self.plan,
             &fstart_image_build::image_steps::ImageContext {
-                files: &fstart_image_build::files::HostFiles {
-                    blobs: self.blobs.clone(),
-                },
+                files: &files,
                 workspace_root: root,
                 board_dir: &board.dir,
                 board_name: &board.board,
@@ -333,6 +344,89 @@ impl Resolved {
             eprintln!("[fstart] {note}");
         }
         Ok((build.stages, outputs))
+    }
+
+    /// What an assembly of the plan reads besides it, as the name of its
+    /// output directory: the blobs the plan names, the stage binaries, and
+    /// the caller's inputs, payload files, signing key and settings. Two
+    /// assemblies share their intermediate files only if they make the
+    /// same ones.
+    fn assembly_key(
+        &self,
+        files: &dyn Files,
+        stages: &[fstart_image_build::StageBinary],
+        inputs: &BTreeMap<String, PathBuf>,
+        payload_files: &[(String, String)],
+        signing_key: Option<&Path>,
+        settings: &[(String, String)],
+    ) -> Result<String, String> {
+        // Length-prefixed fields, each list counted: no two inputs hash alike.
+        fn field(hash: &mut Sha256, bytes: &[u8]) {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+        fn count(hash: &mut Sha256, n: usize) {
+            hash.update((n as u64).to_le_bytes());
+        }
+        fn file(hash: &mut Sha256, bytes: Option<&[u8]>) {
+            hash.update([u8::from(bytes.is_some())]);
+            if let Some(bytes) = bytes {
+                field(hash, bytes);
+            }
+        }
+        let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+        let mut hash = Sha256::new();
+        let plan = serde_json::to_value(&self.plan).map_err(|e| e.to_string())?;
+        let mut blobs = BTreeSet::new();
+        named_blobs(&plan, &mut blobs);
+        count(&mut hash, blobs.len());
+        for name in &blobs {
+            field(&mut hash, name.as_bytes());
+            if let Some(blob) = Blob::named(Path::new(name))? {
+                file(&mut hash, files.blob(blob)?.as_deref());
+            }
+        }
+        count(&mut hash, stages.len());
+        for stage in stages {
+            field(&mut hash, stage.name.as_bytes());
+            field(&mut hash, &read(&stage.path)?);
+            field(&mut hash, &read(&stage.run_path)?);
+        }
+        count(&mut hash, inputs.len());
+        for (name, path) in inputs {
+            field(&mut hash, name.as_bytes());
+            field(&mut hash, &read(path)?);
+        }
+        count(&mut hash, payload_files.len());
+        for (name, path) in payload_files {
+            field(&mut hash, name.as_bytes());
+            field(&mut hash, &read(Path::new(path))?);
+        }
+        file(&mut hash, signing_key.map(read).transpose()?.as_deref());
+        count(&mut hash, settings.len());
+        for (key, value) in settings {
+            field(&mut hash, key.as_bytes());
+            field(&mut hash, value.as_bytes());
+        }
+        Ok(format!("{:x}", hash.finalize())[..16].into())
+    }
+}
+
+/// The blobs a plan (`value`) names: its strings in the blob directory.
+fn named_blobs(value: &serde_json::Value, blobs: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::String(path) => {
+            if let Ok(Some(_)) = Blob::named(Path::new(path)) {
+                blobs.insert(path.clone());
+            }
+        }
+        serde_json::Value::Array(values) => {
+            values.iter().for_each(|value| named_blobs(value, blobs));
+        }
+        serde_json::Value::Object(values) => {
+            values.values().for_each(|value| named_blobs(value, blobs));
+        }
+        _ => {}
     }
 }
 

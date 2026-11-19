@@ -143,8 +143,21 @@ impl Files for HostFiles {
     fn read(&self, path: &Path) -> Result<Vec<u8>, String> {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
     }
+    /// Written next to `path`, then renamed over it: a concurrent reader
+    /// sees the old file or the new one, never a part.
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
-        std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+        let name = path
+            .file_name()
+            .ok_or_else(|| format!("{}: not a file", path.display()))?;
+        let mut partial = name.to_owned();
+        partial.push(format!(".{}.partial", std::process::id()));
+        let partial = path.with_file_name(partial);
+        std::fs::write(&partial, bytes)
+            .and_then(|()| std::fs::rename(&partial, path))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&partial);
+                format!("{}: {e}", path.display())
+            })
     }
     fn exists(&self, path: &Path) -> bool {
         path.is_file()

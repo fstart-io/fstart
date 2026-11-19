@@ -118,3 +118,13 @@ fn a_memory_tree_has_its_blobs_in_the_blob_directory() {
     );
 }
 
+#[test]
+fn host_writes_replace_the_file_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("image.rom");
+    let files = HostFiles::default();
+    files.write(&path, b"old").unwrap();
+    files.write(&path, b"new image").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"new image");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
