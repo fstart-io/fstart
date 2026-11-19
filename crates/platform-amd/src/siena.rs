@@ -19,6 +19,9 @@ pub const PSP_PARTITION_END: u32 = 0x80_0000;
 /// Where the PSP copies the reset image from: the end of the 16 MiB the
 /// boot ROM maps.
 pub const RESET_FLASH_OFFSET: u32 = (FLASH.size - IMAGE.size) as u32;
+/// fstart's EFI variable store, outside both the FFS and PSP partition.
+pub const NVRAM: Region = Region::new(FLASH.base + RESET_FLASH_OFFSET as u64 - 0x4_0000, 0x4_0000);
+const _: () = assert!(NVRAM.base >= FLASH.base + PSP_PARTITION_END as u64);
 
 /// The firmware's DRAM where the S8040's vendor firmware has its own: the
 /// PSP's APOB at 0x7590_0000 (the BIOS directory's entry 0x61), the reset
@@ -35,7 +38,7 @@ pub const LAYOUT: Layout = Layout {
     flash: FLASH,
     ffs: Some(Region::new(
         FLASH.base + PSP_PARTITION_END as u64,
-        (RESET_FLASH_OFFSET - PSP_PARTITION_END) as u64,
+        NVRAM.base - (FLASH.base + PSP_PARTITION_END as u64),
     )),
 }
 .check();
@@ -46,6 +49,7 @@ impl crate::rs::Variant for Dense {
     const SIGNATURES: &'static [u32] = &[0x00aa_0f00];
     const LAYOUT: Layout = LAYOUT;
     const APOB: Region = Region::new(0x7590_0000, 0x10_0000);
+    const NVRAM: Option<Region> = Some(NVRAM);
     /// Siena's SMU firmware rejects, rather than silently completing, IDs
     /// from 0x51 on.
     const SMU_ID_LIMIT: u32 = 0x51;

@@ -328,6 +328,11 @@ impl<S: Soc, P> Stage<S, P> {
 }
 
 impl<S: Soc> Stage<S, Console> {
+    /// Board policy to finish configuring after reading settings, before FCH init.
+    pub fn config_mut(&mut self) -> &mut S::Config {
+        &mut self.machine.config
+    }
+
     /// The silicon up to the FCH's buses; the board's devices on them and
     /// its early pads come next.
     pub fn init_fch(self) -> Stage<S, FchUp<S>> {

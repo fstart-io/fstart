@@ -27,7 +27,12 @@ pub fn host<V: Variant>(max_cpus: u16) -> Host {
                 psp: Default::default(),
             },
         }),
-        option_store: None,
+        option_store: V::NVRAM.map(
+            |region| fstart_image_build::options::OptionStore::Varstore {
+                offset: (region.base - layout.flash.base) as u32,
+                size: region.size as u32,
+            },
+        ),
     }
 }
 
@@ -35,9 +40,10 @@ pub fn host<V: Variant>(max_cpus: u16) -> Host {
 mod tests {
     use super::*;
     use crate::host::Image;
+    use fstart_image_build::options::OptionStore;
 
     #[test]
-    fn the_reset_image_ends_the_boot_window_after_the_ffs() {
+    fn the_reset_image_ends_the_boot_window_after_ffs_and_nvram() {
         for host in [
             host::<crate::genoa::Stones>(192),
             host::<crate::siena::Dense>(128),
@@ -51,7 +57,15 @@ mod tests {
                 panic!("a whole image")
             };
             assert_eq!(u64::from(reset) + layout.image.size, layout.flash.size);
-            assert_eq!(ffs.end(), layout.flash.base + u64::from(reset));
+            match host.option_store {
+                Some(OptionStore::Varstore { offset, size }) => {
+                    assert_eq!((offset, size), (0xcc_0000, 0x4_0000));
+                    assert_eq!(ffs.end(), layout.flash.base + u64::from(offset));
+                    assert_eq!(offset + size, reset);
+                }
+                None => assert_eq!(ffs.end(), layout.flash.base + u64::from(reset)),
+                other => panic!("unexpected settings store: {other:?}"),
+            }
         }
     }
 }

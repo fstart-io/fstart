@@ -1216,6 +1216,7 @@ dependencies = [
  "fstart-driver-superio",
  "fstart-driver-uart",
  "fstart-log",
+ "fstart-options",
  "fstart-pci",
  "fstart-platform-amd",
  "heapless 0.8.0",

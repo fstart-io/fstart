@@ -20,9 +20,14 @@ fn main() -> ! {
     };
     let stage = id.enter(s8040::config());
     bmc::early_init(&stage.hw().fch);
-    let stage = stage.console(&CONSOLE, bmc::CONSOLE).init_fch();
-    let ports = s8040::mpio_ports().unwrap_or_else(|_| stage.fail("board MPIO ports"));
+    let mut stage = stage.console(&CONSOLE, bmc::CONSOLE);
+    let pcie = stage.resolve_set(&s8040::options::PCIE, s8040::check_options);
+    let power = stage.resolve_set(&s8040::options::POWER, |_| Ok(()));
+    s8040::configure_pcie(stage.config_mut(), &pcie);
+    fstart_driver_amd::fch::tasks::env::restore_ac_power(&stage.hw().fch, power);
+    let ports = s8040::mpio_ports(&pcie).unwrap_or_else(|_| stage.fail("board MPIO ports"));
     stage
+        .init_fch()
         .train_dxio(&ports)
         .init_chipset(())
         .start_cpus()

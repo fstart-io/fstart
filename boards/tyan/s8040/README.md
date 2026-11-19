@@ -38,11 +38,37 @@ extracts into `target/fstart-blobs/`), `--blobs` with the same files in any
 directory and the bundle's assembly give the same image for the same
 signing key and `SOURCE_DATE_EPOCH`.
 
+## Settings
+
+CrabEFI’s firmware settings menu (`F` in the boot menu) offers the four
+slots and two MCIO pairs' bifurcation and link speed, the two i210 links,
+onboard AST2600 VGA, PCIe compliance mode, and restore on AC power loss.
+Defaults match GM2NE Setup: x16 for every slot, x4+x4+x4+x4 for MCIO0/1,
+x4+x4 for MCIO2/3, automatic link speed, LAN and VGA enabled, compliance
+mode off, and Last State for AC recovery. Hidden SATA lane modes are not
+offered. Compliance mode is for link testing and may prevent the affected
+slots and MCIO devices from enumerating.
+
+Settings take effect on the next boot, including with the Linux payload.
+To start an image with overrides (also available in the web assembler):
+
+```sh
+cargo fbuild assemble --board tyan-s8040 --release --payload uefi \
+    --donor /path/to/S8040GM2NE_BIOS-v2.00.zip \
+    --setting s8040_pcie3_bifurcation=x4+x4+x4+x4 \
+    --setting s8040_mcio23_speed=Gen4
+```
+
+The settings are kept in fstart's own EFI variable store, not vendor
+NVRAM. If the SPI command engine cannot verify the boot flash mapping,
+CrabEFI cannot persist edits; options already seeded into the image are
+still read at boot.
+
 ## Flash image
 
 fstart packs the 16 MiB the boot ROM maps: the EFS at `0x20000`, the
-two-level PSP and BIOS directories, the FFS at `[0x800000, 0xd00000)` and
-the reset image (BIOS directory entry `0x62`) at `[0xd00000, 0x1000000)`,
+two-level PSP and BIOS directories, the FFS at `[0x800000, 0xcc0000)`,
+the EFI variable store at `[0xcc0000, 0xd00000)` and the reset image (BIOS directory entry `0x62`) at `[0xd00000, 0x1000000)`,
 which the PSP copies to `0x75d00000`; it writes the APOB to `0x75900000`.
 The NV areas start erased, and the eSPI configuration of the EFS brings up
 the link to the BMC before x86 runs. The rest of the 64 MiB part is not
@@ -53,6 +79,7 @@ used.
 | File | Content |
 |---|---|
 | `src/mpio.rs` | lane map and connector choices from the vendor tables |
+| `src/options.rs` | firmware settings and stock defaults |
 | `src/gpio.rs` | the OEM CPM GPIO table and the MCIO connector-mode pads |
 | `src/usb.rs` | USB port wiring and PHY policy |
 | `src/bmc.rs` | AST2600 Super I/O, the COM1 console |

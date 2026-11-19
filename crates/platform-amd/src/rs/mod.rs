@@ -62,6 +62,8 @@ pub trait Variant: Send + Sync + 'static {
     const LAYOUT: Layout;
     /// Where the PSP writes the APOB (BIOS directory entry 0x61).
     const APOB: Region;
+    /// The native EFI settings store in the ROM window, outside the FFS.
+    const NVRAM: Option<Region> = None;
     /// The exclusive bound of the SMU firmware's message IDs.
     const SMU_ID_LIMIT: u32;
     /// The ACPI PM base the vendor's FCH init programs.
@@ -81,7 +83,7 @@ impl<V: Variant> ccx::microcode::Family for Rs<V> {
 }
 
 /// How MPIO trains the board's ports.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Mpio {
     /// The firmware has the PSP vet the requests (Siena's vendor firmware
     /// does; openSIL's Onyx configuration skips it).
@@ -90,7 +92,7 @@ pub struct Mpio {
     pub encoding: Encoding,
     /// Soldered devices the boot needs: the link of their port trains,
     /// and enumeration finds them behind it ([`links::Soldered`]).
-    pub required: &'static [links::Soldered],
+    pub required: heapless::Vec<links::Soldered, 32>,
     /// The links the PSP trained before MPIO, from the APCB (first and
     /// last lane): MPIO is not asked for them, and their root port is the
     /// live one MPIO did not train on the wrapper their lanes are on
@@ -102,7 +104,7 @@ pub struct Mpio {
 }
 
 /// A board's configuration of an RS SoC.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Config {
     /// The OEM CPM GPIO table and the board's pads, before MPIO
     /// (AmdCpmGpioInitPeim and the OEM PEI callbacks).

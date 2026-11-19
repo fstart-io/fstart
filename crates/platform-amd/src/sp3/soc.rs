@@ -499,15 +499,12 @@ pub(crate) fn launch<F>(
     let view = state.view(flow);
     #[cfg(feature = "payload-uefi")]
     {
-        type Storage = fstart_payload::crabefi::settings::FlashStorage<
-            fstart_driver_amd::fch::spi::flash::Flash<hw::Tsc>,
-        >;
-        static mut STORAGE: Option<Storage> = None;
+        static mut STORAGE: Option<crate::options::FlashStorage> = None;
         // SAFETY: firmware BSS, written once here on the BSP; the
         // payload keeps the store for as long as it runs.
         let storage = unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) };
         *storage = parts::options::storage(&view);
-        handoff.settings = Some(parts::options::settings(options));
+        handoff.settings = Some(crate::options::settings(options));
         handoff.variable_storage = storage
             .as_mut()
             .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
