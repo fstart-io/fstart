@@ -404,7 +404,7 @@ fn include_inputs(
     let workspace = Path::new(WORKSPACE);
     let mut inputs = plan.inputs.clone();
     // From the user's donor, at assembly.
-    let donated = |path: &str| path.starts_with(BLOBS_DIR);
+    let donated = |path: &str| Path::new(path).starts_with(BLOBS_DIR);
     for step in &plan.images {
         let ImageOperation::Ffs(assembly) = &step.operation else {
             continue;
@@ -494,7 +494,7 @@ pub fn compose(
 ) -> Result<(), String> {
     let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let bundle = Bundle::decode(&read(bundle)?)?;
-    let donor = donor.map(read).transpose()?;
+    let donor = donor.map(crate::blobs::read_donor).transpose()?;
     let key = key.map(read).transpose()?;
     let mut supplied = Supplied {
         donor: donor.as_deref(),

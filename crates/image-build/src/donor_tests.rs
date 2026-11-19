@@ -88,3 +88,72 @@ fn a_zip_of_many_images_is_not_expanded() {
     let error = image(&zip(&members), &ours).unwrap_err();
     assert!(error.contains("too many"), "{error}");
 }
+
+/// A ZIP of `members`, stored: names and headers at known bytes.
+fn stored(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, bytes) in members {
+        archive.start_file(*name, options).unwrap();
+        archive.write_all(bytes).unwrap();
+    }
+    archive.finish().unwrap().into_inner()
+}
+
+/// Where `bytes` (a ZIP header signature, a name) are in `zip`, in order.
+fn headers(zip: &[u8], bytes: &[u8]) -> Vec<usize> {
+    (0..=zip.len() - bytes.len())
+        .filter(|&at| zip[at..].starts_with(bytes))
+        .collect()
+}
+
+#[test]
+fn a_zip_naming_a_member_twice_is_no_donor() {
+    // Two different images of the board under one name: a ZIP reader
+    // would take one and hide the other.
+    let (a, b) = (vec![0x5a; 1 << 20], [vec![0x5a], vec![1; (1 << 20) - 1]]);
+    let mut donor = stored(&[("BIOS.ROM", &a), ("BIOS.RON", &b.concat())]);
+    for at in headers(&donor, b"BIOS.RON") {
+        donor[at + 7] = b'M';
+    }
+    let error = image(&donor, &ours).unwrap_err();
+    assert!(error.contains("names a member twice"), "{error}");
+}
+
+#[test]
+fn an_unreadable_image_member_is_an_error() {
+    let rom = vec![0x5a; 1 << 20];
+    let mut donor = stored(&[("BIOS.ROM", &rom), ("copy.rom", &rom)]);
+    // The second member's local header is not one.
+    let local = headers(&donor, b"PK\x03\x04");
+    donor[local[1] + 3] = 0;
+    let error = image(&donor, &ours).unwrap_err();
+    assert!(error.contains("copy.rom"), "{error}");
+}
+
+#[test]
+fn a_second_image_ends_the_search() {
+    let (a, b) = (vec![0x5a; 1 << 20], [vec![0x5a], vec![1; (1 << 20) - 1]]);
+    let mut donor = stored(&[("a.rom", &a), ("b.rom", &b.concat()), ("c.rom", &a)]);
+    // A member after the second image is never read.
+    let local = headers(&donor, b"PK\x03\x04");
+    donor[local[2] + 3] = 0;
+    let error = image(&donor, &ours).unwrap_err();
+    assert!(
+        error.contains("different") && error.contains("(a.rom, b.rom)"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_zip_expanding_too_far_is_not_expanded() {
+    let rom = vec![0x5a; 1 << 20];
+    let mut donor = stored(&[("a.rom", &rom), ("b.rom", &rom), ("c.rom", &rom)]);
+    // Members claiming 100 MiB each, together more than two images.
+    for at in headers(&donor, b"PK\x01\x02") {
+        donor[at + 24..at + 28].copy_from_slice(&(100u32 << 20).to_le_bytes());
+    }
+    let error = image(&donor, &ours).unwrap_err();
+    assert!(error.contains("too many"), "{error}");
+}

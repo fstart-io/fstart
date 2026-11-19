@@ -240,7 +240,7 @@ mod tests {
                 HostFiles {
                     blobs: blobs.clone(),
                 }
-                .exists(std::path::Path::new(path))
+                .named_exists(std::path::Path::new("/"), std::path::Path::new(path))
             }
         };
         halved_flash::keep_present(&mut plan, &in_dir(&rome)).unwrap();

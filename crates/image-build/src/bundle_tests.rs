@@ -45,11 +45,12 @@ fn rewrite(bytes: &[u8], name: &str, replacement: &[u8]) -> Vec<u8> {
         let mut file = source.by_index(index).unwrap();
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).unwrap();
+        let member = file.name().unwrap().into_owned();
         target
-            .start_file(file.name(), zip::write::SimpleFileOptions::default())
+            .start_file(&member, zip::write::SimpleFileOptions::default())
             .unwrap();
         target
-            .write_all(if file.name() == name {
+            .write_all(if member == name {
                 replacement
             } else {
                 &contents

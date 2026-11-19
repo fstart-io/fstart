@@ -8,6 +8,7 @@ use crate::{board_manifest::BoardManifest, profile_source::ProfileSource};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -25,7 +26,7 @@ pub fn extract(
     allow_missing: bool,
 ) -> Result<(), String> {
     let source = crate::profile_source::load_profile(root, board)?;
-    extract_from(&source, rom, out, allow_missing)?;
+    extract_from(&source, rom, &read_donor(rom)?, out, allow_missing)?;
     eprintln!("[fstart] build with --blobs {}", out.display());
     Ok(())
 }
@@ -40,7 +41,7 @@ pub(crate) fn from_donor(
     source: &ProfileSource,
     rom: &Path,
 ) -> Result<PathBuf, String> {
-    let image = fs::read(rom).map_err(|e| format!("{}: {e}", rom.display()))?;
+    let image = read_donor(rom)?;
     let board = source.package["metadata"]["fstart"]["board"]
         .as_str()
         .ok_or("the board has no name")?;
@@ -65,20 +66,41 @@ pub(crate) fn from_donor(
     // directory a later build would take as complete.
     let partial = dir.with_extension("partial");
     let _ = fs::remove_dir_all(&partial);
-    extract_from(source, rom, &partial, false)?;
+    extract_from(source, rom, &image, &partial, false)?;
     let _ = fs::remove_dir_all(&dir);
     fs::rename(&partial, &dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(dir)
 }
 
+/// The donor file `rom`, read once and no further than a donor may be
+/// ([`fstart_image_build::donor::MAX_DONOR`]).
+pub(crate) fn read_donor(rom: &Path) -> Result<Vec<u8>, String> {
+    use fstart_image_build::donor::MAX_DONOR;
+    let error = |e: std::io::Error| format!("{}: {e}", rom.display());
+    let file = fs::File::open(rom).map_err(error)?;
+    let too_large = || format!("{}: donor larger than {MAX_DONOR} bytes", rom.display());
+    if file.metadata().map_err(error)?.len() > MAX_DONOR {
+        return Err(too_large());
+    }
+    let mut image = Vec::new();
+    file.take(MAX_DONOR + 1)
+        .read_to_end(&mut image)
+        .map_err(error)?;
+    if image.len() as u64 > MAX_DONOR {
+        return Err(too_large());
+    }
+    Ok(image)
+}
+
+/// Extract the board's files from `image`, the donor `rom`, into `out`.
 fn extract_from(
     source: &ProfileSource,
     rom: &Path,
+    image: &[u8],
     out: &Path,
     allow_missing: bool,
 ) -> Result<(), String> {
     let table = &source.package["metadata"]["fstart"];
-    let image = fs::read(rom).map_err(|e| format!("{}: {e}", rom.display()))?;
     let fstart_image_build::donor::Extraction {
         board: name,
         member,
@@ -88,7 +110,7 @@ fn extract_from(
     } = fstart_image_build::donor::extract(
         table,
         &source.platform["metadata"]["fstart"],
-        &image,
+        image,
         allow_missing,
     )
     .map_err(|e| format!("{}: {e}", rom.display()))?;
@@ -108,7 +130,7 @@ fn extract_from(
     let mut receipt = format!(
         "# Written by `cargo fbuild blobs`.\nsource = {}\nsource-sha256 = {}\n{}board = {}\nmissing = [{}]\n",
         quote(&rom.display().to_string()),
-        quote(&sha256(&image)),
+        quote(&sha256(image)),
         member.as_deref().map_or_else(String::new, |member| format!(
             "source-member = {}\n",
             quote(member)

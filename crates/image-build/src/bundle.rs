@@ -165,6 +165,9 @@ impl Bundle {
         if zip.len() > 1024 {
             return Err("too many bundle members".into());
         }
+        if zip.has_duplicate_names() {
+            return Err("unexpected or duplicate bundle members".into());
+        }
         let manifest: Manifest =
             serde_json::from_slice(&read_member(&mut zip, "manifest.json", 4 << 20)?)
                 .map_err(|e| format!("bundle manifest: {e}"))?;
@@ -365,13 +368,25 @@ impl Manifest {
     }
 }
 
-pub(crate) fn read_member(
+/// The ZIP member `name`, at most `max` bytes expanded.
+fn read_member(
     zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
     name: &str,
     max: u64,
 ) -> Result<Vec<u8>, String> {
-    let file = zip.by_name(name).map_err(|e| e.to_string())?;
+    let index = (zip.index_for_name(name)).ok_or_else(|| format!("no ZIP member {name}"))?;
+    read_entry(zip, index, max)
+}
+
+/// The ZIP member at `index`, at most `max` bytes expanded.
+pub(crate) fn read_entry(
+    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    index: usize,
+    max: u64,
+) -> Result<Vec<u8>, String> {
+    let file = zip.by_index(index).map_err(|e| e.to_string())?;
     if file.size() > max {
+        let name = file.name().map_err(|e| e.to_string())?;
         return Err(format!("ZIP member {name} is too large"));
     }
     let mut bytes = Vec::new();
