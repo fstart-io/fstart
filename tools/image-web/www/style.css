@@ -345,6 +345,10 @@ label.setting-label { cursor: pointer; }
 .setting-note { padding: 10px 16px 2px; font-size: 13.5px; color: var(--muted); }
 .setting-note b { color: var(--ink); font-weight: 600; }
 .setting-control { grid-column: 2; grid-row: 1; justify-self: end; }
+.secure-boot-files { display: grid; gap: 12px; margin: 0 -16px; padding: 12px 16px 8px; border-top: 1px solid var(--line); }
+.secure-boot-file { display: grid; gap: 4px; }
+.secure-boot-file .muted { font-size: 13.5px; }
+.secure-boot-file .setting-label .muted { font-weight: 500; }
 .setting-control select { min-width: 180px; }
 .setting-control .number {
   font: inherit; font-size: 14px; color: var(--ink); background: var(--card); width: 120px;
