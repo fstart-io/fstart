@@ -143,6 +143,7 @@ impl ImageAssembler {
     pub fn assemble(&self, signing_key: Option<Vec<u8>>) -> Result<js_sys::Map, JsValue> {
         let supplied = Supplied {
             donor: self.donor.as_deref(),
+            intel_flash: None,
             inputs: self.inputs.clone(),
             signing_key: signing_key.as_deref(),
             settings: Settings {

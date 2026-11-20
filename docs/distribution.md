@@ -112,6 +112,14 @@ such images, or one that names a member twice, must be unpacked. `fbuild
 assemble --donor` and `fbuild blobs`
 take the same donors (`fstart_image_build::donor`).
 
+For a legacy Intel descriptor-mode board, pass `--intel-flash backup.rom` to
+`compose-bundle` to produce an additional `<board>-full.rom`. Use a verified,
+full raw SPI dump from the target machine, not a BIOS region, capsule or ZIP.
+The flash capacity and enabled descriptor, BIOS, ME, GbE and PDR ranges must
+match the build. Only BIOS is replaced; every other byte, including gaps, is
+preserved. The report records the source hash and preserved ranges and hashes.
+A layout match does not authenticate firmware or identify the board.
+
 `Bundle::assemble` (`crates/image-build/src/bundle.rs`) runs the plan's image
 steps (`image_steps::execute`), as `fbuild assemble` does, over an in-memory
 file tree (`files::MemoryFiles`) instead of the host filesystem. It extracts an

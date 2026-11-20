@@ -106,6 +106,8 @@ pub struct Supplied<'a> {
     /// The vendor image an AMD build takes its PSP firmware from (a raw
     /// ROM, or a vendor update ZIP holding one).
     pub donor: Option<&'a [u8]>,
+    /// Optional complete legacy Intel SPI image; only its BIOS region is replaced.
+    pub intel_flash: Option<&'a [u8]>,
     /// Named kernel, firmware or FIT bytes, as the plan's inputs declare.
     pub inputs: BTreeMap<String, Vec<u8>>,
     pub signing_key: Option<&'a [u8]>,
@@ -210,6 +212,21 @@ impl Bundle {
         Ok(crate::donor::image(bytes, &usable)?.bytes.into_owned())
     }
 
+    fn intel_layout(&self) -> Result<fstart_core::IntelIfdFlashLayout, String> {
+        match &self.manifest.plan.ffs_assembly()?.flash {
+            Some(crate::plan::FlashTransport::IntelIfd(ifd)) => ifd.decode(),
+            _ => Err("this build takes no Intel descriptor-mode flash image".into()),
+        }
+    }
+
+    /// Read-only preflight for a raw vendor image. Return the checked region
+    /// ranges so clients can show/extract them without decoding Intel registers.
+    pub fn inspect_intel_flash(&self, bytes: &[u8]) -> Result<crate::plan::IfdTransport, String> {
+        let layout = self.intel_layout()?;
+        crate::intel_flash::validate(&layout, bytes)?;
+        Ok(layout.into())
+    }
+
     /// Run the plan's image steps over the bundle's files and `supplied`,
     /// in memory. Returns the files the steps wrote, by name, and an
     /// `assembly-report.json` of what went in and came out.
@@ -306,6 +323,23 @@ impl Bundle {
                     .map(|relative| (relative.to_string_lossy().into_owned(), bytes))
             })
             .collect();
+        let mut intel_flash = None;
+        if let Some(vendor) = supplied.intel_flash {
+            let layout = self.intel_layout()?;
+            let name = format!("{}-{}m.pflash", manifest.board, layout.size() >> 20);
+            let partial = outputs.get(&name).ok_or("no assembled Intel flash image")?;
+            let (full, regions) = crate::intel_flash::compose(&layout, vendor, partial)?;
+            outputs.insert(format!("{}-full.rom", manifest.board), full);
+            intel_flash = Some(IntelImport {
+                sha256: sha256(vendor),
+                preserved_regions: regions,
+            });
+        }
+        #[derive(Serialize)]
+        struct IntelImport {
+            sha256: String,
+            preserved_regions: Vec<crate::intel_flash::ImportedRegion>,
+        }
         #[derive(Serialize)]
         struct Identity {
             size: usize,
@@ -318,6 +352,8 @@ impl Bundle {
             payload: &'a str,
             revision: &'a str,
             donor_sha256: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            intel_flash: Option<IntelImport>,
             input_sha256: BTreeMap<&'a str, String>,
             settings: &'a [(String, String)],
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,6 +366,7 @@ impl Bundle {
             payload: &manifest.payload,
             revision: &manifest.revision,
             donor_sha256,
+            intel_flash,
             input_sha256: (supplied.inputs.iter())
                 .map(|(name, bytes)| (name.as_str(), sha256(bytes)))
                 .collect(),

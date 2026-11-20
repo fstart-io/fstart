@@ -488,6 +488,7 @@ pub fn compose(
     bundle: &Path,
     out: &Path,
     donor: Option<&Path>,
+    intel_flash: Option<&Path>,
     inputs: &[String],
     key: Option<&Path>,
     settings: &fstart_image_build::options::Settings,
@@ -495,8 +496,10 @@ pub fn compose(
     let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let bundle = Bundle::decode(&read(bundle)?)?;
     let donor = donor.map(crate::blobs::read_donor).transpose()?;
+    let intel_flash = intel_flash.map(crate::blobs::read_donor).transpose()?;
     let key = key.map(read).transpose()?;
     let mut supplied = Supplied {
+        intel_flash: intel_flash.as_deref(),
         donor: donor.as_deref(),
         signing_key: key.as_deref(),
         settings: settings.clone(),
