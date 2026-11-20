@@ -94,7 +94,8 @@ jobs:
             --example mj11-parity-donor -- "$smoke"/amd/*.bundle.zip \
             "$smoke/synthetic.rom"
           FSTART_TEST_DONOR="$smoke/synthetic.rom" \
-            node ci/test-web.mjs "$smoke/amd" "$bindings" "$fbuild"
+            node ci/test-web.mjs "$smoke/amd" "$bindings" "$fbuild" \
+              --require-donor-case
 
   # The cheap gate every firmware job waits for: formatting, and the job
   # matrix. fbuild resolves the boards from boards/<vendor>/<board>/Cargo.toml
