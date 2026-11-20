@@ -41,21 +41,17 @@ pub mod compression {
     pub const PAYLOAD: Compression = Compression::None;
 }
 
-#[cfg(all(
-    feature = "stage",
-    target_arch = "arm",
-    any(feature = "a20", feature = "h3")
-))]
+#[cfg(all(feature = "stage", target_arch = "arm"))]
 pub mod fel;
 #[cfg(feature = "stage")]
 mod stage;
 #[cfg(all(
     feature = "stage",
     feature = "linux",
-    any(feature = "a20", feature = "h3")
+    any(target_arch = "arm", target_arch = "aarch64")
 ))]
 pub use stage::LinuxPayload;
-#[cfg(all(feature = "stage", any(feature = "a20", feature = "h3")))]
+#[cfg(all(feature = "stage", any(target_arch = "arm", target_arch = "aarch64")))]
 pub use stage::{BootMedia, DramStage};
 
 pub mod a20;

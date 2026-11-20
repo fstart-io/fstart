@@ -74,5 +74,3 @@ cleanup:
 
 - `crates/driver-intel`: `ich7/mod.rs`, `ich8/mod.rs`, `ich9/mod.rs` (partially
   extracted into `southbridge/`) and the untyped `MmioBar` raw-offset trait.
-- `crates/driver-sunxi` & `crates/platform-sunxi`: per-SoC duplicated drivers
-  and legacy SoC Cargo features.

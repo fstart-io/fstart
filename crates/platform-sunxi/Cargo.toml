@@ -32,43 +32,35 @@ riscv64 = [
   "fstart-arch?/riscv64", "fstart-arch?/platform-entry",
   "fstart-stage?/riscv64",
 ]
-a20 = []
-d1 = []
-h3 = []
 linux = ["fstart-payload?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
 # Firmware policy belongs to this platform, not per-board forwarding recipes.
 # SRAM SPLs use only the bounded, allocation-free bootstrap loader.
-bundle-a20-bootblock = ["stage", "a20", "armv7", "fstart-stage?/armv7"]
-bundle-a20-main = [
-  "stage", "a20", "armv7",
+# No SoC features: every SoC for a target architecture compiles and the board's
+# stage `main` selects which one links.
+bundle-armv7-bootblock = ["stage", "armv7", "fstart-stage?/armv7"]
+bundle-armv7-main = [
+  "stage", "armv7",
   "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
   "fstart-stage?/fdt",
 ]
-bundle-h3-bootblock = ["stage", "h3", "armv7", "fstart-stage?/armv7"]
-bundle-h3-main = [
-  "stage", "h3", "armv7",
-  "fstart-stage?/armv7", "fstart-stage?/ffs", "fstart-stage?/ed25519",
-  "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
-  "fstart-stage?/fdt",
-]
-bundle-h5-bootblock = [
-  "stage", "h3", "aarch64",
+bundle-aarch64-bootblock = [
+  "stage", "aarch64",
   "fstart-stage?/aarch64",
 ]
-bundle-h5-main = [
-  "stage", "h3", "aarch64",
+bundle-aarch64-main = [
+  "stage", "aarch64",
   "fstart-stage?/aarch64",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",
   "fstart-stage?/fdt",
 ]
-bundle-d1-bootblock = [
-  "stage", "d1", "riscv64",
+bundle-riscv64-bootblock = [
+  "stage", "riscv64",
   "fstart-stage?/riscv64",
 ]
-bundle-d1-main = [
-  "stage", "d1", "riscv64",
+bundle-riscv64-main = [
+  "stage", "riscv64",
   "fstart-stage?/riscv64",
   "fstart-stage?/ffs", "fstart-stage?/ed25519",
   "fstart-stage?/ffs-signature", "fstart-stage?/sha2-digest",

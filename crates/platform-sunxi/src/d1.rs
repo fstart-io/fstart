@@ -94,7 +94,7 @@ const fn in_d1_dram(addr: u64) -> bool {
     addr >= D1_DRAM_BASE && addr < D1_DRAM_END
 }
 
-#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
+#[cfg(all(feature = "stage", target_arch = "riscv64"))]
 mod stage {
     use super::*;
     use fstart_core::services::{MemoryInit, ServiceError};
@@ -170,5 +170,5 @@ mod stage {
     }
 }
 
-#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
+#[cfg(all(feature = "stage", target_arch = "riscv64"))]
 pub use stage::{bootblock, main_stage};

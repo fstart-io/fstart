@@ -146,11 +146,7 @@ const fn in_h3_dram_end(addr: u64, size: u64) -> bool {
     }
 }
 
-#[cfg(all(
-    feature = "stage",
-    feature = "h3",
-    any(target_arch = "arm", target_arch = "aarch64")
-))]
+#[cfg(all(feature = "stage", any(target_arch = "arm", target_arch = "aarch64")))]
 mod stage {
     use super::*;
     use fstart_core::services::{MemoryInit, ServiceError};
@@ -250,11 +246,7 @@ mod stage {
     }
 }
 
-#[cfg(all(
-    feature = "stage",
-    feature = "h3",
-    any(target_arch = "arm", target_arch = "aarch64")
-))]
+#[cfg(all(feature = "stage", any(target_arch = "arm", target_arch = "aarch64")))]
 pub use stage::{H3BootMedia, bootblock, main_stage};
 
 #[cfg(test)]

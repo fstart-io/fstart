@@ -64,7 +64,7 @@ pub(crate) fn load_mainstage(
 
 /// Publish inherited location only after the existing MMC initialization has
 /// established the physical device size. No keys or root policy are imported.
-#[cfg(any(feature = "a20", feature = "h3"))]
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 pub(crate) fn install_mainstage_locator(
     block: &impl BlockDevice,
     media_base: u64,

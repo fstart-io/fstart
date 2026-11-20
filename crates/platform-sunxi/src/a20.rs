@@ -137,7 +137,7 @@ const fn in_a20_dram_end(addr: u64, size: u64) -> bool {
     }
 }
 
-#[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
+#[cfg(all(feature = "stage", target_arch = "arm"))]
 mod stage {
     use super::*;
     use fstart_core::services::{MemoryInit, ServiceError};
@@ -237,7 +237,7 @@ mod stage {
     }
 }
 
-#[cfg(all(feature = "stage", feature = "a20", target_arch = "arm"))]
+#[cfg(all(feature = "stage", target_arch = "arm"))]
 pub use stage::{A20BootMedia, bootblock, main_stage};
 
 #[cfg(test)]
