@@ -67,6 +67,7 @@ pub fn bootblock(
 
     start_console(slot, console);
     fstart_timestamp::add(id::CONSOLE_READY);
+    fstart_log::info!("ast2500 bootblock: entered from SPI");
 
     let initial_reset = reset::initial_reset(|| {
         fstart_log::info!("ast2500: cold boot, first SoC reset");
@@ -74,7 +75,6 @@ pub fn bootblock(
     });
 
     let strap = pac::SCU.HWSTRAP().read();
-    fstart_log::info!("ast2500: bootblock from SPI");
     fstart_log::info!(
         "SCU7C silicon {}",
         Hex(pac::SCU.SILICON_REV().read().0.into())
@@ -163,7 +163,7 @@ pub fn main_stage(
     }
     fstart_timestamp::add(id::RAMSTAGE_START);
     start_console(slot, console);
-    fstart_log::info!("ast2500: main stage");
+    fstart_log::info!("ast2500 mainstage: entered");
     if handoff_addr != HANDOFF_ADDR as usize {
         fail("handoff at an unexpected address");
     }

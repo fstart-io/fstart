@@ -105,7 +105,10 @@ mod stage {
             fstart_arch::aarch64::halt()
         }
         unsafe { fstart_log::init(&mainstage.console) };
-        fstart_log::info!("qemu-sbsa: pl011 console ready");
+        fstart_log::info!(
+            "qemu-sbsa {} (pl011 console ready)",
+            crate::messages::RAMSTAGE_ENTERED
+        );
         // TF-A hands BL33 x0 == 0 (no DTB crosses the secure boundary),
         // so RAM comes from the closed board config, not DTB discovery.
         let dtb_addr = fstart_arch::aarch64::boot_dtb_addr();

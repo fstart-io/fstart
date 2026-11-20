@@ -340,7 +340,11 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         {
             self.console = Some(&fstart_log::ConsoleMux);
         }
-        fstart_log::info!("{} ramstage: {} console ready", B::Platform::NAME, C::NAME);
+        fstart_log::info!(
+            "{} ramstage: entered ({} console ready)",
+            B::Platform::NAME,
+            C::NAME
+        );
         crate::options::chipset_into(
             &mut self.northbridge,
             &mut self.southbridge,

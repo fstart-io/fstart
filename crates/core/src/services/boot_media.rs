@@ -36,7 +36,7 @@
 
 use crate::TempRamBuffer;
 
-use super::{BlockDevice, FirmwareImage, ServiceError};
+use super::{BlockDevice, ServiceError};
 
 /// Simple bump allocator over a caller-provided temporary RAM buffer.
 ///
@@ -246,66 +246,6 @@ pub trait FlashMap: Send + Sync {
 /// directly in the platform crate instead.
 pub struct LinearMap {
     base: *const u8,
-}
-
-/// Memory-map implementation backed by a [`FirmwareImage`] window table.
-///
-/// This supports chipsets that expose the logical firmware image through more
-/// than one CPU-visible window.  A zero-copy contiguous slice is only reported
-/// when the whole image is covered by one window.
-pub struct FirmwareImageMap {
-    image: FirmwareImage,
-}
-
-impl FirmwareImageMap {
-    /// Create a map from a firmware-image descriptor.
-    pub const fn new(image: FirmwareImage) -> Self {
-        Self { image }
-    }
-}
-
-// SAFETY: FirmwareImageMap is a read-only address translation table.  It does
-// not own or mutate the mapped hardware region.
-unsafe impl Send for FirmwareImageMap {}
-unsafe impl Sync for FirmwareImageMap {}
-
-impl FlashMap for FirmwareImageMap {
-    #[inline(always)]
-    fn translate(&self, flash_offset: usize) -> *const u8 {
-        self.image.translate(flash_offset as u64).unwrap_or(0) as *const u8
-    }
-
-    #[inline(always)]
-    fn contiguous_len(&self, flash_offset: usize, max_len: usize) -> usize {
-        let offset = flash_offset as u64;
-        for window in self.image.active_windows() {
-            if window.contains(offset) {
-                let Some(flash_end) = window.flash_end() else {
-                    return 0;
-                };
-                let remaining = (flash_end - offset) as usize;
-                return remaining.min(max_len);
-            }
-        }
-        0
-    }
-
-    #[inline(always)]
-    fn as_contiguous_slice(&self, size: usize) -> Option<&[u8]> {
-        let window = self.image.contiguous_window()?;
-        if window.size as usize != size {
-            return None;
-        }
-        if size == 0 {
-            return Some(&[]);
-        }
-        if window.cpu_base == 0 {
-            return None;
-        }
-        // SAFETY: FirmwareImageProvider implementations guarantee that active
-        // windows are valid readable mappings for their declared extents.
-        Some(unsafe { core::slice::from_raw_parts(window.cpu_base as *const u8, size) })
-    }
 }
 
 impl LinearMap {

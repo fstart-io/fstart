@@ -127,7 +127,7 @@ mod stage {
         fstart_stage::anchor::initial_stage();
         D1Ccu::new_from_config(&config.ccu).init();
         crate::stage::console(slot, console)?;
-        fstart_log::info!("d1: UART0 console ready");
+        fstart_log::info!("d1 bootblock: entered");
         let dram = D1Dramc::new_from_config(&config.dram).bring_up(())?;
 
         let mut mmc0 = D1Mmc::new_from_config(&config.mmc0);
@@ -161,7 +161,7 @@ mod stage {
         if crate::stage::console(slot, console).is_err() {
             fstart_arch::halt();
         }
-        fstart_log::info!("d1 mainstage: console ready");
+        fstart_log::info!("d1 mainstage: entered");
         fstart_log::info!("d1 mainstage: {} MiB DRAM", handoff.dram_size.get() >> 20);
         fstart_log::info!("d1 mainstage: ready for payload");
         fstart_arch::halt()

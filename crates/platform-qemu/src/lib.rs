@@ -33,9 +33,10 @@ pub mod compression {
     pub const PAYLOAD: Compression = Compression::Lz4;
 }
 
-/// Lines every stage of this platform logs, which its boot tests
-/// (`host::boot_tests`) wait for.
+/// Lines the platform logs and its boot tests (`host::boot_tests`) look for.
 pub mod messages {
+    /// `<machine> ramstage: entered`, once the console is available.
+    pub const RAMSTAGE_ENTERED: &str = "ramstage: entered";
     /// `<machine> ramstage: ready for payload`, just before the payload.
     pub const READY: &str = "ramstage: ready for payload";
     /// `<machine>: PCI root ready (N devices)`.
@@ -261,7 +262,10 @@ mod stage {
                 .map_err(|_| ServiceError::HardwareError)?;
             // SAFETY: the mainstage owns the console until payload handoff.
             unsafe { fstart_log::init(&self.console) };
-            fstart_log::info!("qemu-q35 ramstage (monolithic) console ready");
+            fstart_log::info!(
+                "qemu-q35 {} (monolithic)",
+                crate::messages::RAMSTAGE_ENTERED
+            );
             Ok(())
         }
 

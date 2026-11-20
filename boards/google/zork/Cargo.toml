@@ -12,11 +12,9 @@ name = "Vilboz (Chromebook)"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-amd" }
 
-# The board's AMD firmware next to its SoC's (docs/amd-image-format.md,
-# "Firmware blobs"): the APCB instances, one per RAM ID, as the vendor ROM
-# has them (`google-vilboz/apcb/<n>.bin` in the --blobs directory), and
-# fstart's PSP application, without which the PSP of the Chromebook part
-# never starts the x86 cores.
+# Board inputs alongside the SoC's blobs: one vendor APCB per RAM ID at
+# google-vilboz/apcb/<n>.bin relative to --blobs,
+# and fstart's PSP application, which starts the Chromebook's x86 cores.
 [package.metadata.fstart.amd]
 soc = "picasso"
 psp-app = true

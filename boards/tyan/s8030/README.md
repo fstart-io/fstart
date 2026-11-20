@@ -8,7 +8,7 @@ board lists Rome and Milan (`Board::SOCS`), its stage calls the flow
 of each, and the reset image runs the one of the CPU it finds. fstart
 packs each generation's PSP partition into its own 16 MiB half; its `0x62`
 entries name a copy of the one reset image, and the FFS exists once, in
-the lower half (docs/amd-sp3.md, "Flash image").
+the lower half (see [Donor image](#donor-image) for the flash layout).
 
 ```sh
 cargo fbuild build --board tyan-s8030 --release

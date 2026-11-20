@@ -84,7 +84,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     slot.install(console);
     let flash_log = dram_page_tables();
     crate::debug_console::install::<B>(flash_log);
-    fstart_log::info!("{} postcar: {} console ready", platform, C::NAME);
+    fstart_log::info!("{} postcar: entered ({} console ready)", platform, C::NAME);
     // The bootblock's console level, which it resolved from the options.
     if let Ok((base, size)) = geometry.firmware()
         && let Ok(stash) = crate::boot::handoff(base, size)

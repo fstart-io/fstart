@@ -6,8 +6,7 @@
 //! (ICH/PCH) implement a dedicated SMBus transaction engine rather
 //! than a generic I2C master.
 //!
-//! SMBus children (SPD EEPROMs, clock generators) list their 7-bit
-//! slave address via [`crate::device::BusDevice`].
+//! Callers pass the device's 7-bit address to each transaction.
 
 use super::ServiceError;
 

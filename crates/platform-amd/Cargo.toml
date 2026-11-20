@@ -44,11 +44,10 @@ payload-uefi-ui-core = ["payload-uefi", "fstart-payload?/crabefi-ui"]
 payload-uefi-ui = ["payload-uefi-ui-core", "fstart-payload?/crabefi-elan-i2c", "fstart-payload?/crabefi-hid-i2c"]
 payload-uefi-basic = ["fstart-payload?/crabefi-basic", "dep:embedded-hal-bus"]
 
-# Picasso's AMD firmware (docs/amd-image-format.md, "Firmware blobs"):
-# paths relative to the --blobs directory, which has the layout of the
-# amd_blobs repository and which `cargo fbuild blobs` extracts from a
-# vendor ROM. The PSP files follow amd_blobs' Picasso fw.cfg with the
-# secure OS and without MP2 (soft fuse bits 28 and 29).
+# Picasso's AMD firmware: paths relative to the --blobs directory, which
+# `cargo fbuild blobs` can extract from a vendor ROM.
+# The paths follow the amd_blobs repository; its Picasso fw.cfg supplies the
+# PSP files, with the secure OS and without MP2 (soft fuse bits 28 and 29).
 [package.metadata.fstart.amd.picasso]
 bios-directory = "Family17hModel10"
 efs-offset = 0xe20000

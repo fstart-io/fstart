@@ -20,8 +20,6 @@ smm = ["fstart-platform-qemu/smm"]
 fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
 # Shared ICH SMM handler, reused for the emulated ICH9.
 fstart-driver-intel = { path = "../../../crates/driver-intel" }
-# TEMP-PROBE: port I/O for the SMI entry probe.
-fstart-core = { path = "../../../crates/core" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.

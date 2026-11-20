@@ -199,7 +199,7 @@ mod stage {
         fstart_stage::anchor::initial_stage();
         A20Ccu::new_from_config(&config.ccu).init_early()?;
         crate::stage::console(slot, console)?;
-        fstart_log::info!("a20: UART0 console ready");
+        fstart_log::info!("a20 bootblock: entered");
         let dram = A20Dramc::new_from_config(&config.dram).bring_up(())?;
         let (media, media_base) = boot_media(config)?;
         crate::stage::enter_dram_stage(
@@ -223,6 +223,7 @@ mod stage {
         let Ok(console) = crate::stage::console(slot, console) else {
             fstart_arch::halt()
         };
+        fstart_log::info!("a20 mainstage: entered");
         let Ok((media, media_base)) = boot_media(config) else {
             fstart_stage::fail("a20 boot media")
         };

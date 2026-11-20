@@ -4,7 +4,7 @@
 //! recipe, so a test boots the machine as `fbuild qemu` does.
 
 use crate::facts::VirtMachine;
-use crate::messages::{PCI_ROOT_READY, READY};
+use crate::messages::{PCI_ROOT_READY, RAMSTAGE_ENTERED, READY};
 use fstart_arch::messages::{
     MP_COMPLETE, SMI_ENABLE_LOCKED, SMI_RETURNED, SMM_RELOCATED, SMRAM_LOCKED,
 };
@@ -23,7 +23,9 @@ use std::{format, vec, vec::Vec};
 pub(super) const SECURE_FIRMWARE: &str = "secure-firmware";
 
 fn halt() -> BootTest {
-    BootTest::new("halt", "halt").expect(READY)
+    BootTest::new("halt", "halt")
+        .expect(RAMSTAGE_ENTERED)
+        .expect(READY)
 }
 
 fn linux(kernel: Asset) -> BootTest {

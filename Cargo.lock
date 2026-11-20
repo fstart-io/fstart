@@ -1133,7 +1133,6 @@ dependencies = [
 name = "fstart-board-qemu-q35"
 version = "0.1.0"
 dependencies = [
- "fstart-core",
  "fstart-driver-intel",
  "fstart-driver-uart",
  "fstart-platform-qemu",
