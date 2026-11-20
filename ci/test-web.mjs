@@ -47,6 +47,9 @@ try {
         // Assembly (not a Linux boot test): the flat kernel slot stores these bytes verbatim.
         const kernel = Buffer.from('fstart named input parity fixture\n'.repeat(128));
         if (inputCase) {
+          const slot = manifest.inputs.find(i => i.name === 'kernel');
+          assert(slot && slot.capacity >= kernel.length, 'missing kernel slot in bundle');
+          assert.deepEqual(build.inputs.filter(i => i.name === 'kernel'), [slot], 'catalog must advertise the required kernel slot');
           assert.throws(() => assembler.assemble(key), /missing input kernel/);
           assert.throws(() => assembler.setInput('kernel', new Uint8Array()), /empty/);
           const file = path.join(temporary, 'zImage');
@@ -76,6 +79,9 @@ try {
         if (inputCase) {
           const report = JSON.parse(Buffer.from(outputs.get('assembly-report.json')));
           assert.equal(report.input_sha256.kernel, createHash('sha256').update(kernel).digest('hex'));
+          execFileSync('cargo', ['run', '--locked', '--quiet', '--release', '-p', 'fstart-image-build',
+            '--example', 'check-packed-kernel', '--', path.join(out, `${build.board}.ffs`),
+            path.join(temporary, 'zImage')], { stdio: 'inherit' });
           suppliedInput = true;
         }
         compared++;
