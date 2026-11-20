@@ -245,10 +245,13 @@ The dev server serves the site and stands in for GitHub's API (one release,
 `local`) and the proxy, routing asset requests through the real worker
 handler. After editing `www/`, copy it into `target/image-web` again.
 
-`ci/test-web.mjs` opens every bundle in the WASM bindings (under Node) and
-compares WASM and native `compose-bundle` output byte for byte for
-representative builds. Point `FSTART_TEST_DONOR` (MJ11),
-`FSTART_TEST_SP3_DONOR` (Tyan S8030), `FSTART_TEST_ETHANOLX_DONOR`,
-`FSTART_TEST_S8040_DONOR` or `FSTART_TEST_ONYX_DONOR` at a local vendor image
-or download to include the AMD recipes. Donors are never needed in CI and
-must not be uploaded.
+The `web` job in PR CI builds just the `qemu-q35` UEFI bundle, which needs
+no donor or external inputs. It runs the same `ci/test-web.mjs` test as the
+nightly: open each bundle through the WASM bindings (under Node) and compare
+WASM and native `compose-bundle` output byte for byte using the same signing
+key. The nightly still validates the full catalog and compares every build
+that can be assembled without additional inputs. To include the AMD recipes
+locally, point `FSTART_TEST_DONOR` (MJ11), `FSTART_TEST_SP3_DONOR` (Tyan S8030),
+`FSTART_TEST_ETHANOLX_DONOR`, `FSTART_TEST_S8040_DONOR` or `FSTART_TEST_ONYX_DONOR`
+at a local vendor image or download. Donors are never needed in CI and must
+not be uploaded.
