@@ -7,6 +7,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { testIntelFlash } from './test-intel-flash.mjs';
+import { testNamedInput } from './test-named-input.mjs';
 import { bundleFormatVersion } from '../tools/image-web/client.mjs';
 const [directory, bindings, native] = process.argv.slice(2).map(p => path.resolve(p));
 const { ImageAssembler } = createRequire(import.meta.url)(bindings);
@@ -18,6 +19,7 @@ const keyPath = path.join(temporary, 'key.der');
 fs.writeFileSync(keyPath, key);
 let comparedIntel = false;
 let compared = 0;
+let suppliedInput = false;
 assert.throws(() => new ImageAssembler(new Uint8Array([0, 1, 2])));
 try {
   for (const build of catalog.builds) {
@@ -42,7 +44,11 @@ try {
       else if (build.board === 'amd-ethanolx') donor = process.env.FSTART_TEST_ETHANOLX_DONOR;
       else if (build.board === 'tyan-s8040') donor = process.env.FSTART_TEST_S8040_DONOR;
       else if (build.board === 'amd-onyx') donor = process.env.FSTART_TEST_ONYX_DONOR;
-      if (build.inputs.length === 0 && build.image_error == null && (!build.donor_required || donor)) {
+      if (build.board === 'qemu-armv7' && build.payload === 'linux' && build.image_error == null) {
+        testNamedInput({ assembler, build, manifest, key, temporary, native, archive, keyPath });
+        suppliedInput = true;
+        compared++;
+      } else if (build.inputs.length === 0 && build.image_error == null && (!build.donor_required || donor)) {
         if (build.donor_required) assembler.setDonor(fs.readFileSync(donor));
         // A build whose options live in its image starts with one set.
         const settings = [];
@@ -71,6 +77,7 @@ try {
     } finally { assembler.free(); }
   }
   assert(compared > 0, 'no native/WASM parity case was exercised');
+  if (process.env.FSTART_REQUIRE_INPUT_CASE === '1') assert(suppliedInput, 'named input case did not run');
   if (process.env.FSTART_REQUIRE_INTEL_CASE === '1') assert(comparedIntel, 'X201 full-ROM case did not run');
   console.log(`Validated ${catalog.builds.length} bundles; ${compared} native/WASM parity cases passed`);
 } finally { fs.rmSync(temporary, { recursive: true, force: true }); }

@@ -267,8 +267,10 @@ The dev server serves the site and stands in for GitHub's API (one release,
 `local`) and the proxy, routing asset requests through the real worker
 handler. After editing `www/`, copy it into `target/image-web` again.
 
-The `web` job in PR CI builds just the `qemu-q35` UEFI bundle, which needs
-no donor or external inputs. It runs the same `ci/test-web.mjs` test as the
+The `web` job in PR CI assembles a self-contained `qemu-q35` UEFI bundle and
+a `qemu-armv7` Linux bundle with a generated flat kernel input. This checks
+assembly and input provenance, not whether the fixture boots.
+It runs the same `ci/test-web.mjs` test as the
 nightly: open each bundle through the WASM bindings (under Node) and compare
 WASM and native `compose-bundle` output byte for byte using the same signing
 key. The nightly still validates the full catalog and compares every build
