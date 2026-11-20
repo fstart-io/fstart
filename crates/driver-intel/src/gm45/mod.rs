@@ -94,6 +94,14 @@ impl Gm45GraphicsPolicy {
             Self::Hybrid => DEVEN_PEG | DEVEN_IGD | DEVEN_IGD_SECONDARY,
         }
     }
+
+    const fn from_deven(deven: u32) -> Self {
+        match (deven & DEVEN_IGD != 0, deven & DEVEN_PEG != 0) {
+            (true, true) => Self::Hybrid,
+            (false, true) => Self::Discrete,
+            _ => Self::Integrated,
+        }
+    }
 }
 
 /// Typed, immutable chipset configuration. A board may override graphics
@@ -256,13 +264,6 @@ impl IntelGm45 {
         for pam in &hb.pam[1..] {
             pam.set(0x33);
         }
-        // Leave ME/other host functions intact; only change board-selected
-        // graphics and PEG functions, unlike the historical all-bit rewrite.
-        hb.deven.set(
-            (hb.deven.get() & !(DEVEN_PEG | DEVEN_IGD | DEVEN_IGD_SECONDARY))
-                | DEVEN_HOST
-                | self.graphics.deven_bits(),
-        );
         // romstage.c clears DMILCTL2 deemphasis/EQ bits before RAM training.
         // SAFETY: DMIBAR was enabled above; the overlay covers its link register.
         let dmi = unsafe { &*(self.config.dmibar as *const Gm45DmiBarRegs) };
@@ -503,8 +504,22 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
         self.setup_early_decode();
-        // The mainstage repeats early_init after the bootblock trained RAM.
-        // Recover the published decode there; dram_init clears this again.
+        // Leave ME and other host functions intact.
+        let hb = self.hostbridge();
+        hb.deven.set(
+            (hb.deven.get() & !(DEVEN_PEG | DEVEN_IGD | DEVEN_IGD_SECONDARY))
+                | DEVEN_HOST
+                | self.graphics.deven_bits(),
+        );
+        Ok(())
+    }
+    fn ramstage_early_init(&mut self) -> Result<(), ServiceError> {
+        self.enable_ecam();
+        self.setup_early_decode();
+        // Preserve the selection that sized GGC/stolen memory and trained
+        // RAM. Both PCI enumeration and the training-cache commit precede
+        // stage_local_init(), so recover it here without rewriting DEVEN.
+        self.graphics = Gm45GraphicsPolicy::from_deven(self.hostbridge().deven.get());
         self.dram_ready = self.raminit_completed() && self.memory_map().is_ok();
         Ok(())
     }
@@ -578,9 +593,6 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     }
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
-        if self.graphics != Gm45GraphicsPolicy::Integrated {
-            return Err(ServiceError::InvalidParam);
-        }
         self.post_dram_pcie(revision)
     }
     fn finish_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
@@ -820,7 +832,6 @@ mod acpi_impl {
         /// `i82801ix/acpi/ich9.asl`: the host bridge's producer windows, the
         /// chipset-reserved MMIO, and the IGD node.
         fn dsdt_aml(&self, config: &Self::Config) -> Vec<u8> {
-            let gttmmio = self.igd_bars.map_or(0, |bars| bars.gtt_mmio);
             let mut aml: Vec<u8> = acpi_dsl! {
                 Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                     Name("_HID", EisaId("PNP0A08"));
@@ -842,11 +853,18 @@ mod acpi_impl {
             }
             .into();
             // PCI0's `_CRS` is the platform's: from the root bridge it enumerated.
-            let pci0 = crate::igd::gfx0_acpi_node::<Self>(gttmmio);
-            aml.extend(
-                fstart_acpi::aml_linker::scope_vec(const { pci_root::<Self>() }.as_str(), &pci0)
+            // GFX0 brightness methods access the BAR directly. Do not
+            // expose them with a zero base when IGD is disabled/unassigned.
+            if let Some(bars) = self.igd_bars {
+                let pci0 = crate::igd::gfx0_acpi_node::<Self>(bars.gtt_mmio);
+                aml.extend(
+                    fstart_acpi::aml_linker::scope_vec(
+                        const { pci_root::<Self>() }.as_str(),
+                        &pci0,
+                    )
                     .expect("GM45 PCI0 scope emission failed"),
-            );
+                );
+            }
             // Root PPKG is consumed by the ThinkPad thermal zones. Keep the
             // CPU devices in the same root scope as the other Core 2 boards.
             #[cfg(target_os = "none")]
@@ -1086,17 +1104,13 @@ mod tests {
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Discrete);
     }
     #[test]
-    fn gm45_post_dram_rejects_peg_without_board_slot_policy() {
-        use crate::IntelNorthbridgeDriver;
-        static CONFIG: IntelGm45Config = IntelGm45Config::new();
-        let mut driver = IntelGm45::new_from_config(&CONFIG).unwrap();
-        driver.trained_mode = Some((6, 800, 400));
-        for policy in [Gm45GraphicsPolicy::Discrete, Gm45GraphicsPolicy::Hybrid] {
-            driver.set_graphics_policy(policy);
-            assert!(matches!(
-                driver.early_post_dram_init(),
-                Err(ServiceError::InvalidParam)
-            ));
+    fn gm45_graphics_policy_round_trips_through_deven() {
+        for policy in [
+            Gm45GraphicsPolicy::Integrated,
+            Gm45GraphicsPolicy::Discrete,
+            Gm45GraphicsPolicy::Hybrid,
+        ] {
+            assert_eq!(Gm45GraphicsPolicy::from_deven(policy.deven_bits()), policy);
         }
     }
     #[test]

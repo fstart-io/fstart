@@ -48,6 +48,7 @@ pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> Vec<u8> {
     dsdt_aml::<<crate::Board as fstart_platform_intel::IntelBoardFacts>::Platform>(
         &h8,
         fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,
+        !crate::config::IS_X301,
         digitizer,
     )
 }
@@ -62,12 +63,12 @@ pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         bios_version: "CBET4000 fstart 0.1.0",
         bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
         sys_manufacturer: "LENOVO",
-        sys_product: "ThinkPad X200",
-        sys_version: "ThinkPad X200",
+        sys_product: crate::config::PRODUCT_NAME,
+        sys_version: crate::config::PRODUCT_NAME,
         sys_serial: None,
         sys_uuid: None,
         bb_manufacturer: "LENOVO",
-        bb_product: "ThinkPad X200",
+        bb_product: crate::config::PRODUCT_NAME,
         bb_version: "1.0",
         bb_serial: None,
         chassis_type: 0x0a,
@@ -79,9 +80,16 @@ pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
 /// Board DSDT. The platform's IGD provides `INCB`/`DECB`, the Core 2 CPU
 /// AML provides `\CNOT`; `gpio_base` is the ICH GPIOBASE.
 #[must_use]
-pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) -> Vec<u8> {
+pub fn dsdt_aml<N: PcNamespace>(
+    h8: &H8Config,
+    gpio_base: u16,
+    has_dock: bool,
+    digitizer: bool,
+) -> Vec<u8> {
     let mut aml = fstart_driver_lenovo::thinkpad::h8_dsdt_aml::<N>(h8);
-    aml.extend(dock_aml::<N>(gpio_base));
+    if has_dock {
+        aml.extend(dock_aml::<N>(gpio_base));
+    }
     if digitizer {
         aml.extend(
             fstart_acpi::aml_linker::scope_vec(
@@ -135,15 +143,14 @@ fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
                 Return(Local0);
             }
             Device("DOCK") {
-                Name("_HID", "ACPI0003");
-                Name("_UID", 0u32);
+                // _DCK identifies a dock; ACPI0003 identifies an AC adapter.
                 Name("_PCL", Package(#{const "\\_SB_"}));
                 Method("_DCK", 1, NotSerialized) {
                     GP28 = Arg0;
                     #{const path 5 ec::<N>().child("DKSE")}(Arg0);
                     Local1 = #{const path 5 ec::<N>().child("DKR1")};
-                    Local0 = Arg0 ^ Local1;
-                    Return(Local0);
+                    If (Arg0 == Local1) { Return(1u32); }
+                    Return(0u32);
                 }
                 Method("_STA", 0, NotSerialized) {
                     Local0 = #{const path 5 ec::<N>().child("DKR1")};
@@ -190,6 +197,20 @@ mod tests {
     use std::{fs, process::Command};
 
     #[test]
+    fn variant_emits_only_its_thermal_zones_and_dock() {
+        let aml = x200_mainboard_dsdt_aml(true, false);
+        assert!(aml.windows(4).any(|name| name == b"THM0"));
+        assert_eq!(
+            aml.windows(4).any(|name| name == b"THM1"),
+            !crate::config::IS_X301
+        );
+        assert_eq!(
+            aml.windows(4).any(|name| name == b"_DCK"),
+            !crate::config::IS_X301
+        );
+    }
+
+    #[test]
     fn dock_thinklight_and_digitizer_execute() {
         let h8 = H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
@@ -201,7 +222,7 @@ mod tests {
         }
         .into();
         aml.extend(dsdt_aml::<fstart_platform_intel::gm45::Gm45Ich9>(
-            &h8, 0x580, true,
+            &h8, 0x580, true, true,
         ));
         assert_eq!(aml.windows(4).filter(|name| *name == b"DTR_").count(), 1);
         let dir =
@@ -250,10 +271,10 @@ mod tests {
             text.contains("[Integer] = 0000000000000003"),
             "GGID: {text}"
         );
-        // _DCK sets DKR1 and returns Arg0 ^ DKR1, so _STA then reads 1.
-        assert!(
-            text.contains("[Integer] = 0000000000000001"),
-            "_STA: {text}"
+        assert_eq!(
+            text.matches("[Integer] = 0000000000000001").count(),
+            3,
+            "_DCK(1), _STA while docked, and _DCK(0): {text}"
         );
         // Undocked (GGID 3, not 7): the dock button requests an eject.
         assert!(text.contains("Notify on [DOCK]"), "dock queries: {text}");

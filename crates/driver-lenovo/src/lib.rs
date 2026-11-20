@@ -25,6 +25,7 @@ pub mod ec;
 pub mod eeprom;
 
 pub mod h8;
+pub mod hybrid_graphics;
 pub mod options;
 pub mod pmh7;
 pub mod t6;

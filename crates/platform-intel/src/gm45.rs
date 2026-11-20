@@ -42,6 +42,8 @@ pub struct Gm45Ich9Config {
     pub pcie_slots: [bool; 6],
     pub pcie_power_limits: [PciePowerLimit; 6],
     pub pcie_hotplug: [bool; 6],
+    /// Disable the ICH9 LAN function when the board uses a separate NIC.
+    pub disable_lan: bool,
     /// Board-verified RCBA interrupt routing; required by the ICH9 driver.
     pub pirq: Option<PirqRouting>,
     pub preserve_hardware_pirq: bool,
@@ -87,6 +89,7 @@ impl Gm45Ich9Config {
             pcie_slots: [false; 6],
             pcie_power_limits: [PciePowerLimit { value: 0, scale: 0 }; 6],
             pcie_hotplug: [false; 6],
+            disable_lan: false,
             pirq: None,
             preserve_hardware_pirq: false,
             pirq_routing: [0x80; 8],
@@ -151,6 +154,7 @@ impl Gm45Ich9Config {
         config.pcie_slots = self.pcie_slots;
         config.pcie_power_limits = self.pcie_power_limits;
         config.pcie_hotplug = self.pcie_hotplug;
+        config.disable_lan = self.disable_lan;
         config.lpc_decode = self.lpc_decode;
         config.gpe0_en = self.gpe0_en;
         config.gpi_routing = self.gpi_routing;
@@ -251,6 +255,12 @@ impl Gm45Ich9Config {
         self.pcie_slots[index] = true;
         self.pcie_power_limits[index] = power_limit;
         self.pcie_hotplug[index] = hotplug;
+        self
+    }
+
+    #[must_use]
+    pub const fn disable_lan(mut self, disabled: bool) -> Self {
+        self.disable_lan = disabled;
         self
     }
 

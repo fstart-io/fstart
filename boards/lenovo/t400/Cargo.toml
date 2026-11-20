@@ -1,0 +1,60 @@
+[package]
+name = "fstart-board-lenovo-t400"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "lenovo-t400"
+name = "ThinkPad T400"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-intel" }
+
+[package.metadata.fstart.variants.lenovo-t500]
+name = "ThinkPad T500"
+features = ["t500"]
+
+[package.metadata.fstart.variants.lenovo-r400]
+name = "ThinkPad R400"
+features = ["r400"]
+
+[package.metadata.fstart.variants.lenovo-w500]
+name = "ThinkPad W500"
+features = ["w500"]
+
+[package.metadata.fstart.variants.lenovo-r500]
+name = "ThinkPad R500"
+features = ["r500"]
+
+[dependencies]
+fstart-core = { path = "../../../crates/core", features = ["pci"] }
+fstart-platform-intel = { path = "../../../crates/platform-intel" }
+fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
+fstart-acpi-macros = { path = "../../../crates/acpi-macros", optional = true }
+fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
+fstart-driver-intel = { path = "../../../crates/driver-intel" }
+fstart-pci = { path = "../../../crates/pci" }
+embedded-hal = { workspace = true }
+fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
+fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-options = { path = "../../../crates/options" }
+fstart-log = { path = "../../../crates/log" }
+# Required at the crate root wherever fstart_log macros expand
+# (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
+ufmt = { workspace = true }
+
+[features]
+# Host tests and tools see the whole board. fbuild builds every stage with
+# --no-default-features and adds `acpi` to the ramstage only.
+default = ["acpi"]
+# The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-lenovo/acpi"]
+t500 = []
+r400 = []
+w500 = []
+r500 = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
+
+# One binary per stage, named after the stage: src/bin/<stage>.rs.

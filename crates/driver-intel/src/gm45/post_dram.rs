@@ -1,8 +1,8 @@
 //! GM45 romstage work following DDR3 training (coreboot gm45/pm.c,
 //! pcie.c and iommu.c). ICH9 DMI setup follows training/PM and precedes this.
 
-use super::{Gm45GraphicsPolicy, IntelGm45};
-use fstart_core::mmio::MmioReadWrite;
+use super::{DEVEN_PEG, IntelGm45};
+use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{Readable, Writeable};
@@ -107,7 +107,10 @@ register_structs! {
         (0x020 => vc0: MmioReadWrite<u32>),
         (0x024 => _pad3: [u8; 4]),
         (0x028 => vc1: MmioReadWrite<u32>),
-        (0x02c => @END),
+        (0x02c => _pad4: [u8; 0x14]),
+        (0x040 => sdvo_ctl: MmioReadOnly<u16>),
+        (0x042 => _pad5: [u8; 2]),
+        (0x044 => @END),
     }
 }
 
@@ -122,11 +125,62 @@ fn wait_clear(reg: &MmioReadWrite<u16>, mask: u16) -> Result<(), ServiceError> {
 }
 
 impl IntelGm45 {
-    pub(super) fn post_dram_pcie(&self, revision: u8) -> Result<(), ServiceError> {
-        if self.graphics != Gm45GraphicsPolicy::Integrated {
-            // PEG slot and power facts are not present in chipset config.
-            return Err(ServiceError::InvalidParam);
+    fn init_peg(&self, revision: u8, peg_x16: bool) {
+        let peg = EcamDevice::new(0, 1, 0);
+        // Coreboot gm45/pcie.c init_pcie() + setup_aspm() PEG sequence.
+        let hb = self.hostbridge();
+        hb.deven.set(hb.deven.get() | DEVEN_PEG);
+
+        peg.and8_or8(0x224, !31, if peg_x16 { 16 } else { 0 } | 1);
+        peg.and16(0x224, !(1 << 8));
+        // Slot 0, power limit 75 * 10^0 W.
+        peg.write32(0xb4, 75 << 7);
+        // GPEs.
+        peg.or8(0xec, 7);
+        // VC0: TC0 only, VC0 only.
+        peg.and8(0x114, 1);
+        peg.and8(0x104, !7);
+
+        // Prerequisites for PEG ASPM (coreboot gm45/pcie.c setup_aspm()).
+        peg.or32(0x200, 3 << 13);
+        peg.and32(0x0f0, !((1 << 27) | (1 << 26)));
+        peg.or32(0x0f0, 3 << 24);
+        peg.and32(0x0f4, !(1 << 4));
+        peg.or32(0x0fc, 1 | (1 << 1) | (1 << 4));
+        peg.and32(0x0fc, !(7 << 5));
+        peg.or32(0x0b0, 3);
+        peg.or32(0x0f0, 3 << 24);
+
+        // Stepping B0..=B1 (4..=5) vs B2+ (6+).
+        if (4..=5).contains(&revision) {
+            peg.or32(0x0f0, 1 << 31);
+            peg.or32(0x0fc, 1 << 10);
+        } else if revision >= 6 {
+            peg.and32(0x0f0, !(1 << 31));
+            peg.and32(0x0fc, !(1 << 10));
+            peg.or32(0x0fc, 1 << 14);
         }
+        if revision >= 5 {
+            peg.and32(0x0fc, !(1 << 13));
+        }
+
+        peg.and32(0xa08, !(1 << 15));
+        peg.or32(0xa84, 1 << 8);
+        peg.and32(0xb14, !(1 << 17));
+        peg.or32(0xb00, (3 << 8) | (7 << 3));
+        peg.and32(0xa84, !(1 << 8));
+        peg.or32(0xa84, 1 << 8);
+        peg.modify32(0xb04, !(0x1f << 23), 0x0e << 23);
+        peg.or32(0xb04, 1 << 31);
+        peg.modify32(0xb04, !(0x03 << 29), 0x01 << 29);
+    }
+
+    pub(super) fn post_dram_pcie(&self, revision: u8) -> Result<(), ServiceError> {
+        let peg_enabled = self.hostbridge().deven.get() & DEVEN_PEG != 0;
+        // SAFETY: MCHBAR is enabled and checked in new_from_config.
+        let mch = unsafe { &*(self.config.mchbar as *const IommuBars) };
+        let sdvo_enabled = (mch.sdvo_ctl.get() >> 8) & 1 != 0;
+        let peg_x16 = peg_enabled && !sdvo_enabled;
         // SAFETY: the enabled BARs are checked in new_from_config.
         let lpc_id = EcamDevice::new(0, 0x1f, 0).read16(2);
         let aspm = match lpc_id {
@@ -180,6 +234,9 @@ impl IntelGm45 {
         ] {
             lock.set(lock.get());
         }
+        if peg_enabled {
+            self.init_peg(revision, peg_x16);
+        }
         // Coreboot setup_aspm: DMI prerequisites, then write-once LCTL.
         // DMI clock gating and L0s/L1 exit timing (gm45/pcie.c).
         dmi.f00.set(dmi.f00.get() | (3 << 8) | (7 << 3));
@@ -202,6 +259,9 @@ impl IntelGm45 {
         ep.link1
             .set((ep.link1.get() & !0x00ff_ffff) | (1 << 16) | 1);
         ep.link1_addr.set(self.config.dmibar as u32);
+        if peg_enabled {
+            ep.link2.set(ep.link2.get() | 1);
+        }
         Ok(())
     }
 
@@ -243,6 +303,7 @@ mod tests {
         assert_eq!(offset_of!(EgressRegs, link1_addr), 0x58);
         assert_eq!(offset_of!(IommuBars, gfx), 0x18);
         assert_eq!(offset_of!(IommuBars, vc1), 0x28);
+        assert_eq!(offset_of!(IommuBars, sdvo_ctl), 0x40);
     }
 
     #[test]

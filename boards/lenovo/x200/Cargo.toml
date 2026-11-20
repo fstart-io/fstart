@@ -11,6 +11,10 @@ name = "ThinkPad X200"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-intel" }
 
+[package.metadata.fstart.variants.lenovo-x301]
+name = "ThinkPad X301"
+features = ["x301"]
+
 [dependencies]
 fstart-core = { path = "../../../crates/core", features = ["pci"] }
 fstart-platform-intel = { path = "../../../crates/platform-intel" }
@@ -34,6 +38,7 @@ ufmt = { workspace = true }
 default = ["acpi"]
 # The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
 acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-lenovo/acpi"]
+x301 = []
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-intel/bundle-smm"]
 
