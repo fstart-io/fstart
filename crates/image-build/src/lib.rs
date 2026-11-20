@@ -14,6 +14,7 @@ pub mod image;
 pub mod image_steps;
 pub mod inspect;
 mod intel_assembly;
+mod intel_flash;
 pub mod intel_plan;
 pub mod layout;
 pub mod linker;

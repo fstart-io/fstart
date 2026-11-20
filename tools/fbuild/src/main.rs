@@ -55,6 +55,9 @@ enum Command {
         inputs: Vec<String>,
         #[arg(long)]
         signing_key: Option<std::path::PathBuf>,
+        /// Full raw Intel SPI backup. Preserve its non-BIOS bytes in an additional full ROM.
+        #[arg(long, conflicts_with = "donor")]
+        intel_flash: Option<std::path::PathBuf>,
         /// A firmware option the image's settings store starts with, as
         /// KEY=VALUE (`fbuild assemble --setting`).
         #[arg(long = "setting", value_parser = fbuild::payload::parse_setting)]
@@ -421,6 +424,7 @@ fn main() {
             bundle,
             out,
             donor,
+            intel_flash,
             inputs,
             signing_key,
             settings,
@@ -430,6 +434,7 @@ fn main() {
                 &bundle,
                 &out,
                 donor.as_deref(),
+                intel_flash.as_deref(),
                 &inputs,
                 signing_key.as_deref(),
                 &settings,

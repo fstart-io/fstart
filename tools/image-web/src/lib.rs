@@ -10,6 +10,7 @@ pub struct ImageAssembler {
     bundle: Bundle,
     inputs: BTreeMap<String, Vec<u8>>,
     donor: Option<Vec<u8>>,
+    intel_flash: Option<Vec<u8>>,
     settings: BTreeMap<String, String>,
     secure_boot: Option<SecureBoot>,
 }
@@ -22,6 +23,7 @@ impl ImageAssembler {
             bundle: Bundle::decode(compressed_bundle).map_err(error)?,
             inputs: BTreeMap::new(),
             donor: None,
+            intel_flash: None,
             settings: BTreeMap::new(),
             secure_boot: None,
         })
@@ -103,6 +105,7 @@ impl ImageAssembler {
     pub fn clear(&mut self) {
         self.inputs.clear();
         self.donor = None;
+        self.intel_flash = None;
         self.settings.clear();
         self.secure_boot = None;
     }
@@ -111,6 +114,17 @@ impl ImageAssembler {
     pub fn set_donor(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         self.donor = Some(self.bundle.donor(bytes).map_err(error)?);
         Ok(())
+    }
+
+    #[wasm_bindgen(js_name = inspectIntelFlash)]
+    pub fn inspect_intel_flash(&self, bytes: &[u8]) -> Result<String, JsValue> {
+        let regions = self.bundle.inspect_intel_flash(bytes).map_err(error)?;
+        serde_json::to_string(&regions).map_err(error)
+    }
+
+    #[wasm_bindgen(js_name = setIntelFlash)]
+    pub fn set_intel_flash(&mut self, bytes: Vec<u8>) {
+        self.intel_flash = Some(bytes);
     }
 
     #[wasm_bindgen(js_name = setInput)]
@@ -143,6 +157,7 @@ impl ImageAssembler {
     pub fn assemble(&self, signing_key: Option<Vec<u8>>) -> Result<js_sys::Map, JsValue> {
         let supplied = Supplied {
             donor: self.donor.as_deref(),
+            intel_flash: self.intel_flash.as_deref(),
             inputs: self.inputs.clone(),
             signing_key: signing_key.as_deref(),
             settings: Settings {

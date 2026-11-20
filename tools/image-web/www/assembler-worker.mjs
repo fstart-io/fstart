@@ -32,12 +32,16 @@ const operations = {
     const bytes = opened(token).binary(path);
     return { result: bytes, transfer: [bytes.buffer] };
   },
-  async assemble({ token, donor, inputs, settings = {}, secureBoot = null, key }) {
+  async inspectIntelFlash({ token, bytes }) {
+    return { result: opened(token).inspectIntelFlash(bytes) };
+  },
+  async assemble({ token, donor, intelFlash, inputs, settings = {}, secureBoot = null, key }) {
     const bundle = opened(token);
     // Each request names everything the image takes: a setting set back to
     // the board's value or a removed file must not linger from the last.
     bundle.clear();
     if (donor) bundle.setDonor(donor);
+    if (intelFlash) bundle.setIntelFlash(intelFlash);
     for (const [name, bytes] of Object.entries(inputs)) bundle.setInput(name, bytes);
     for (const [option, value] of Object.entries(settings)) bundle.setSetting(option, value);
     if (secureBoot) {

@@ -410,11 +410,12 @@ pub fn resolved_intel(
         if platform == Platform::X86_64 {
             out.push_str(x86_entry_page_tables(true));
         }
+        let cache = crate::intel_plan::rom_cache_window(layout.flash.size, stage.writable)?;
         writeln!(
             out,
             " _rom_mtrr_base = {:#x}; _rom_mtrr_mask = {:#x};",
-            layout.flash.base,
-            !(layout.flash.size - 1) & 0xffff_ffff
+            cache.base,
+            !(cache.size - 1) & 0xffff_ffff
         )
         .unwrap();
         writeln!(
@@ -594,6 +595,17 @@ pub fn generate_linker_script_with_layout(
         } else {
             (rom.base, rom.size)
         };
+        let (x86_rom_mtrr_base, x86_rom_mtrr_size) =
+            if let Some((base, size)) = car_config.filter(|_| config.platform.is_x86()) {
+                let cache = crate::intel_plan::rom_cache_window(
+                    x86_rom_mtrr_size,
+                    crate::plan::Span { base, size },
+                )
+                .expect("invalid x86 CAR/ROM geometry");
+                (cache.base, cache.size)
+            } else {
+                (x86_rom_mtrr_base, x86_rom_mtrr_size)
+            };
         generate_xip_layout(
             &mut out,
             rom.base,

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
+import { testIntelFlash } from './test-intel-flash.mjs';
 import { bundleFormatVersion } from '../tools/image-web/client.mjs';
 const [directory, bindings, native] = process.argv.slice(2).map(p => path.resolve(p));
 const { ImageAssembler } = createRequire(import.meta.url)(bindings);
@@ -15,6 +16,7 @@ const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'fstart-web-test-'));
 const key = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'der' });
 const keyPath = path.join(temporary, 'key.der');
 fs.writeFileSync(keyPath, key);
+let comparedIntel = false;
 let compared = 0;
 assert.throws(() => new ImageAssembler(new Uint8Array([0, 1, 2])));
 try {
@@ -51,6 +53,10 @@ try {
           settings.push('--setting', `${choice.key}=${label}`);
         }
         const outputs = assembler.assemble(key);
+        if (build.board === 'lenovo-x201' && ['uefi', 'uefi-ui'].includes(build.payload)) {
+          testIntelFlash({ assembler, outputs, key, temporary, native, archive, keyPath });
+          comparedIntel = true;
+        }
         // Without a key, Web Crypto supplies an ephemeral one.
         if (compared === 0) assert(assembler.assemble(undefined).size > 0);
         const out = path.join(temporary, `${build.board}-${build.payload}`);
@@ -65,5 +71,6 @@ try {
     } finally { assembler.free(); }
   }
   assert(compared > 0, 'no native/WASM parity case was exercised');
+  if (process.env.FSTART_REQUIRE_INTEL_CASE === '1') assert(comparedIntel, 'X201 full-ROM case did not run');
   console.log(`Validated ${catalog.builds.length} bundles; ${compared} native/WASM parity cases passed`);
 } finally { fs.rmSync(temporary, { recursive: true, force: true }); }

@@ -56,11 +56,12 @@ env:
 jobs:
   web:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          submodules: true # X201 microcode
       - uses: ./.github/actions/setup
       - name: Client and release proxy tests
         run: |
@@ -83,6 +84,17 @@ jobs:
           wasm-bindgen --target nodejs --out-dir "$smoke/node" \
             target/wasm32-unknown-unknown/release/fstart_image_web.wasm
           node ci/test-web.mjs "$smoke/bundles" "$smoke/node/fstart_image_web.js" target/release/fbuild
+
+      - name: Check X201 full-ROM import in native and WASM assemblers
+        run: |
+          smoke=$(mktemp -d)
+          trap 'rm -rf "$smoke"' EXIT
+          target/release/fbuild bundle --board lenovo-x201 --payload uefi \
+            --out "$smoke/bundles" --revision "$(git rev-parse HEAD)"
+          wasm-bindgen --target nodejs --out-dir "$smoke/node" \
+            target/wasm32-unknown-unknown/release/fstart_image_web.wasm
+          FSTART_REQUIRE_INTEL_CASE=1 node ci/test-web.mjs "$smoke/bundles" \
+            "$smoke/node/fstart_image_web.js" target/release/fbuild
 
   # The cheap gate every firmware job waits for: formatting, and the job
   # matrix. fbuild resolves the boards from boards/<vendor>/<board>/Cargo.toml

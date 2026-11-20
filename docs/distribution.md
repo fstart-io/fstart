@@ -112,6 +112,20 @@ such images, or one that names a member twice, must be unpacked. `fbuild
 assemble --donor` and `fbuild blobs`
 take the same donors (`fstart_image_build::donor`).
 
+For an Intel descriptor-mode board, pass `--intel-flash backup.rom` to
+`compose-bundle` to produce an additional `<board>-full.rom`. Use a verified,
+full raw SPI dump from the target machine, not a BIOS region, capsule or ZIP.
+The detected flash capacity and all enabled FLREG ranges must match the build.
+Boards select the encoding instead of guessing from the backup: existing
+`IntelIfdFlashLayout::new` plans use IFD 1; `with_geometry(version, capacity,
+regions)` also supports IFD 1.5 (Wellsburg) and IFD 2. Extended tables can
+include FLREG0–15, including BIOS2, EC, IE, both 10GbE regions, PTT and
+numbered reserved slots. Only the primary BIOS is replaced; all other bytes, including gaps, are
+preserved. The report records the source hash and preserved ranges and hashes.
+A layout match does not authenticate firmware or identify the board. With
+`--intel-flash`, use fresh output filenames: none may already exist, so the
+original backup cannot be overwritten, even through a link.
+
 `Bundle::assemble` (`crates/image-build/src/bundle.rs`) runs the plan's image
 steps (`image_steps::execute`), as `fbuild assemble` does, over an in-memory
 file tree (`files::MemoryFiles`) instead of the host filesystem. It extracts an
@@ -181,10 +195,16 @@ whose kernel slot is under 1.5 MiB as not fitting. For a build whose options
 live in its flash image (`settings` in the catalog) it shows the options the
 bundle's plan lists, with the board's values, and the image's settings store
 starts with those the user changes (the S8030's PCIe bifurcation among them).
-For Intel images where fstart
-fills only the BIOS region and leaves the descriptor, GbE and ME regions empty,
-it also offers the BIOS region alone and tells the user to write only that
-region. It can create an Ed25519 signing key with Web Crypto; the key is saved
+For bundles with an Intel descriptor layout, the page offers the BIOS region
+alone by default. IFD 1, 1.5 and 2 use the same import, validation and region
+download flow. The selected board supplies the expected descriptor version,
+flash capacity and region map; a matching map is not a board identification.
+To assemble a complete ROM, supply a full raw SPI backup as described above. The page
+checks its descriptor before assembly and lets you download each original
+region separately. With a matching layout the primary download is the full
+ROM; the `.pflash` file still has empty non-BIOS regions.
+
+The page can create an Ed25519 signing key with Web Crypto; the key is saved
 to a file right away and otherwise stays in the tab.
 
 The `distribution` job builds the site into `target/image-web` (and runs the

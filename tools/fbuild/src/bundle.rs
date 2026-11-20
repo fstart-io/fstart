@@ -488,6 +488,7 @@ pub fn compose(
     bundle: &Path,
     out: &Path,
     donor: Option<&Path>,
+    intel_flash: Option<&Path>,
     inputs: &[String],
     key: Option<&Path>,
     settings: &fstart_image_build::options::Settings,
@@ -495,8 +496,10 @@ pub fn compose(
     let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let bundle = Bundle::decode(&read(bundle)?)?;
     let donor = donor.map(crate::blobs::read_donor).transpose()?;
+    let intel_flash = intel_flash.map(crate::blobs::read_donor).transpose()?;
     let key = key.map(read).transpose()?;
     let mut supplied = Supplied {
+        intel_flash: intel_flash.as_deref(),
         donor: donor.as_deref(),
         signing_key: key.as_deref(),
         settings: settings.clone(),
@@ -512,13 +515,46 @@ pub fn compose(
         }
     }
     let outputs = bundle.assemble(&supplied)?;
+    write_outputs(out, &outputs, intel_flash.is_some())
+}
+
+fn write_outputs(
+    out: &Path,
+    outputs: &std::collections::BTreeMap<String, Vec<u8>>,
+    no_clobber: bool,
+) -> Result<(), String> {
+    use std::io::{ErrorKind, Write};
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
-    for (name, bytes) in outputs {
-        if Path::new(&name).components().count() != 1 {
+    for name in outputs.keys() {
+        if !matches!(
+            Path::new(name).components().collect::<Vec<_>>().as_slice(),
+            [std::path::Component::Normal(_)]
+        ) {
             return Err("output must be a filename".into());
         }
-        fs::write(out.join(&name), bytes).map_err(|e| e.to_string())?;
-        eprintln!("[fstart] {}", out.join(name).display());
+        if no_clobber {
+            let path = out.join(name);
+            match fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == ErrorKind::NotFound => (),
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+                Ok(_) => {
+                    return Err(format!(
+                        "refusing to overwrite {} with --intel-flash",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    for (name, bytes) in outputs {
+        let path = out.join(name);
+        if no_clobber {
+            fs::File::create_new(&path).and_then(|mut file| file.write_all(bytes))
+        } else {
+            fs::write(&path, bytes)
+        }
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("[fstart] {}", path.display());
     }
     Ok(())
 }
@@ -529,4 +565,24 @@ fn include(files: &MemoryFiles, source: &Path, destination: &Path) -> Result<(),
         &destination,
         &fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?,
     )
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    #[test]
+    fn a_backup_alias_rejects_the_whole_output_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("vendor.rom");
+        fs::write(&backup, b"original").unwrap();
+        fs::hard_link(&backup, dir.path().join("z-full.rom")).unwrap();
+        let files = [
+            ("a-report.json".into(), vec![0]),
+            ("z-full.rom".into(), vec![1]),
+        ]
+        .into();
+        assert!(write_outputs(dir.path(), &files, true).is_err());
+        assert!(!dir.path().join("a-report.json").exists());
+        assert_eq!(fs::read(backup).unwrap(), b"original");
+    }
 }

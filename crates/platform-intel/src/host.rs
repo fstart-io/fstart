@@ -871,6 +871,42 @@ mod tests {
         );
     }
     #[test]
+    fn physical_ifd_capacity_is_independent_of_bootblock_rom_mtrr() {
+        use fstart_image_build::{intel_plan::IntelStage, linker::resolved_intel};
+        for (capacity, cache_base, cache_mask) in [
+            (3 << 20, 0xffc0_0000u32, 0xffc0_0000u32),
+            (32 << 20, 0xff00_0000, 0xff00_0000),
+        ] {
+            let flash = IntelIfdFlashLayout::with_geometry(
+                fstart_core::memory::IfdVersion::V2,
+                capacity,
+                ConstVec::new(DESCRIPTOR).push(DESCRIPTOR).push(Region {
+                    kind: Kind::Bios,
+                    offset: capacity - (2 << 20),
+                    size: 2 << 20,
+                }),
+            );
+            let plan = resolve(
+                BoardFacts::new(fstart_core::FlashLayout::IntelIfd(flash), capacity),
+                BuildSelection::default(),
+            )
+            .unwrap();
+            assert_eq!(plan.reservations.flash.size, u64::from(capacity));
+            assert_eq!(plan.reservations.firmware.size, 2 << 20);
+            let script = resolved_intel(
+                &plan.reservations,
+                IntelStage::Bootblock,
+                false,
+                plan.platform,
+            )
+            .unwrap();
+            assert!(script.contains(&format!(
+                "_rom_mtrr_base = {cache_base:#x}; _rom_mtrr_mask = {cache_mask:#x};"
+            )));
+        }
+    }
+
+    #[test]
     fn legacy_cpu_packages_are_independent_of_the_chipset() {
         type MobileI945 = crate::i945::I945Ich7<SocketM>;
         type MobileGm965 = crate::gm965::Gm965Ich8<SocketM>;

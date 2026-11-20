@@ -82,10 +82,13 @@ pub struct BoardFacts {
 impl BoardFacts {
     pub const fn new(flash: FlashLayout, flash_size: u32) -> Self {
         flash.validate();
-        assert!(
-            flash_size.is_power_of_two(),
-            "flash chip capacity must be a power of two"
-        );
+        // A descriptor can cover two differently sized flash components.
+        if matches!(flash, FlashLayout::X86Legacy(_)) {
+            assert!(
+                flash_size.is_power_of_two(),
+                "legacy flash capacity must be a power of two"
+            );
+        }
         let layout_size = match flash {
             FlashLayout::IntelIfd(ifd) => ifd.size(),
             FlashLayout::X86Legacy(legacy) => legacy.size,

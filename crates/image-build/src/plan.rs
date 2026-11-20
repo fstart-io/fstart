@@ -404,8 +404,16 @@ impl From<IntelIfdFlashLayout> for IfdTransport {
 }
 impl IfdTransport {
     pub fn decode(&self) -> Result<IntelIfdFlashLayout, String> {
-        if self.0.is_empty() || self.0.len() > 8 {
-            return Err("IFD needs 1..8 regions".into());
+        self.decode_with(fstart_core::memory::IfdVersion::V1, 0)
+    }
+
+    fn decode_with(
+        &self,
+        version: fstart_core::memory::IfdVersion,
+        capacity: u32,
+    ) -> Result<IntelIfdFlashLayout, String> {
+        if self.0.is_empty() || self.0.len() > IntelIfdRegion::REGISTERS.len() {
+            return Err("IFD needs 1..16 regions".into());
         }
         let mut regions = ConstVec::new(IntelIfdRegionConfig {
             kind: IntelIfdRegion::Descriptor,
@@ -415,7 +423,11 @@ impl IfdTransport {
         for &(kind, offset, size) in &self.0 {
             regions = regions.push(IntelIfdRegionConfig { kind, offset, size });
         }
-        let layout = IntelIfdFlashLayout { regions };
+        let layout = IntelIfdFlashLayout {
+            regions,
+            version,
+            capacity,
+        };
         layout.check().map_err(str::to_owned)?;
         Ok(layout)
     }
@@ -424,14 +436,29 @@ impl IfdTransport {
 /// Physical flash identity, without inventing descriptor regions on legacy hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlashTransport {
+    // Preserve the legacy bundle representation and its inferred capacity.
     IntelIfd(IfdTransport),
+    IntelDescriptor {
+        version: fstart_core::memory::IfdVersion,
+        capacity: u32,
+        regions: IfdTransport,
+    },
     X86Legacy(fstart_core::X86LegacyFlashLayout),
 }
 
 impl From<fstart_core::FlashLayout> for FlashTransport {
     fn from(layout: fstart_core::FlashLayout) -> Self {
         match layout {
-            fstart_core::FlashLayout::IntelIfd(ifd) => Self::IntelIfd(ifd.into()),
+            fstart_core::FlashLayout::IntelIfd(ifd)
+                if ifd.version == fstart_core::memory::IfdVersion::V1 && ifd.capacity == 0 =>
+            {
+                Self::IntelIfd(ifd.into())
+            }
+            fstart_core::FlashLayout::IntelIfd(ifd) => Self::IntelDescriptor {
+                version: ifd.version,
+                capacity: ifd.size(),
+                regions: ifd.into(),
+            },
             fstart_core::FlashLayout::X86Legacy(legacy) => Self::X86Legacy(legacy),
         }
     }
@@ -441,6 +468,13 @@ impl FlashTransport {
     pub fn decode(&self) -> Result<fstart_core::FlashLayout, String> {
         match self {
             Self::IntelIfd(ifd) => ifd.decode().map(fstart_core::FlashLayout::IntelIfd),
+            Self::IntelDescriptor {
+                version,
+                capacity,
+                regions,
+            } => regions
+                .decode_with(*version, *capacity)
+                .map(fstart_core::FlashLayout::IntelIfd),
             Self::X86Legacy(legacy) if legacy.size.is_power_of_two() => {
                 Ok(fstart_core::FlashLayout::X86Legacy(*legacy))
             }
@@ -491,15 +525,11 @@ impl IntelPlan {
         if flash != self.reservations.flash || firmware != self.reservations.firmware {
             return Err("physical layout differs from resolved flash/firmware windows".into());
         }
-        let bios_offset = match &self.flash {
-            FlashTransport::IntelIfd(layout) => {
-                layout
-                    .decode()?
-                    .bios_region()
-                    .ok_or("missing BIOS region")?
-                    .offset
+        let bios_offset = match self.flash.decode()? {
+            fstart_core::FlashLayout::IntelIfd(layout) => {
+                layout.bios_region().ok_or("missing BIOS region")?.offset
             }
-            FlashTransport::X86Legacy(_) => 0,
+            fstart_core::FlashLayout::X86Legacy(_) => 0,
         };
         let prefix = u64::from(fstart_core::board::mutable_prefix_size(
             &self.mutable_regions,

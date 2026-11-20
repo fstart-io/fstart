@@ -421,16 +421,23 @@ fn ffs_input_regions(
     }
 
     let mut regions = Vec::new();
-    for region in layout.regions.as_slice() {
-        if region.size == 0 {
-            continue;
-        }
-        regions.push(InputRegion::ExternalRaw {
-            name: region.kind.as_str().to_string(),
-            offset: region.offset,
-            size: region.size,
-            fill: 0xff,
-        });
+    // The legacy directory also described physical flash outside BIOS.
+    // Extended layouts can have 16 FLREGs, more than the runtime FFS can
+    // hold. Their physical map lives in the IFD and assembly report; only
+    // BIOS contents belong in the FFS. Keep existing legacy images stable.
+    if layout.version == fstart_core::memory::IfdVersion::V1 {
+        regions.extend(
+            layout
+                .regions
+                .as_slice()
+                .iter()
+                .map(|region| InputRegion::ExternalRaw {
+                    name: region.kind.as_str().to_string(),
+                    offset: region.offset,
+                    size: region.size,
+                    fill: 0xff,
+                }),
+        );
     }
     if has_mutable {
         regions.extend(cached_ro_regions(config, ro_files, bios.size, bios.offset)?);
@@ -512,10 +519,9 @@ fn externalize_xip_bootblock(
     }
 
     let image_base = if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
-        let bios = layout
-            .bios_region()
-            .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
-        layout.base() + u64::from(bios.offset)
+        layout
+            .bios_base()
+            .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?
     } else {
         firmware_image_from_policy(config)?
             .and_then(|image| image.contiguous_window())
@@ -976,14 +982,18 @@ fn create_intel_ifd_flash_image(
             continue;
         }
         let paddr = segment.paddr;
-        if paddr < layout.base() || paddr >= layout.end() {
+        let bios_base = layout.end() - u64::from(bios.size);
+        if paddr < bios_base || paddr >= layout.end() {
             continue;
         }
-        let off = (paddr - layout.base()) as usize;
+        let off = bios.offset as usize + (paddr - bios_base) as usize;
         let size = segment.filesz as usize;
-        if off + size > image.len() {
+        if off
+            .checked_add(size)
+            .is_none_or(|end| end > bios_end as usize)
+        {
             return Err(format!(
-                "bootblock segment paddr={paddr:#x} size={size:#x} outside Intel IFD flash image"
+                "bootblock segment paddr={paddr:#x} size={size:#x} outside Intel BIOS region"
             ));
         }
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
