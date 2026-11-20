@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
+import { testAmdDonor } from './test-amd-donor.mjs';
 import { testIntelFlash } from './test-intel-flash.mjs';
 import { testNamedInput } from './test-named-input.mjs';
 import { bundleFormatVersion } from '../tools/image-web/client.mjs';
@@ -20,6 +21,7 @@ fs.writeFileSync(keyPath, key);
 let comparedIntel = false;
 let compared = 0;
 let suppliedInput = false;
+let comparedDonor = false;
 assert.throws(() => new ImageAssembler(new Uint8Array([0, 1, 2])));
 try {
   for (const build of catalog.builds) {
@@ -48,8 +50,15 @@ try {
         testNamedInput({ assembler, build, manifest, key, temporary, native, archive, keyPath });
         suppliedInput = true;
         compared++;
-      } else if (build.inputs.length === 0 && build.image_error == null && (!build.donor_required || donor)) {
-        if (build.donor_required) assembler.setDonor(fs.readFileSync(donor));
+      } else if (build.inputs.length === 0 && build.image_error == null && build.donor_required && donor) {
+        const rawDonorPath = build.board === 'gigabyte-mj11-ec1' ? process.env.FSTART_TEST_DONOR_RAW : undefined;
+        testAmdDonor({
+          assembler, build, manifest, key, temporary, native, archive, keyPath,
+          donorPath: donor, rawDonorPath,
+        });
+        if (build.board === 'gigabyte-mj11-ec1') comparedDonor = true;
+        compared++;
+      } else if (build.inputs.length === 0 && build.image_error == null && !build.donor_required) {
         // A build whose options live in its image starts with one set.
         const settings = [];
         const choice = (manifest.plan.options?.options ?? []).find(o => !o.unavailable && o.kind.enum);
@@ -66,9 +75,7 @@ try {
         // Without a key, Web Crypto supplies an ephemeral one.
         if (compared === 0) assert(assembler.assemble(undefined).size > 0);
         const out = path.join(temporary, `${build.board}-${build.payload}`);
-        const args = ['compose-bundle', '--bundle', archive, '--out', out, '--signing-key', keyPath];
-        if (build.donor_required) args.push('--donor', donor);
-        args.push(...settings);
+        const args = ['compose-bundle', '--bundle', archive, '--out', out, '--signing-key', keyPath, ...settings];
         execFileSync(native, args, { stdio: 'inherit' });
         assert.deepEqual(fs.readdirSync(out).sort(), [...outputs.keys()].sort());
         for (const [name, bytes] of outputs) assert.deepEqual(Buffer.from(bytes), fs.readFileSync(path.join(out, name)), `${build.board}: ${name}`);
@@ -77,6 +84,7 @@ try {
     } finally { assembler.free(); }
   }
   assert(compared > 0, 'no native/WASM parity case was exercised');
+  if (process.env.FSTART_REQUIRE_DONOR_CASE === '1') assert(comparedDonor, 'MJ11 donor-backed comparison did not run');
   if (process.env.FSTART_REQUIRE_INPUT_CASE === '1') assert(suppliedInput, 'named input case did not run');
   if (process.env.FSTART_REQUIRE_INTEL_CASE === '1') assert(comparedIntel, 'X201 full-ROM case did not run');
   console.log(`Validated ${catalog.builds.length} bundles; ${compared} native/WASM parity cases passed`);
