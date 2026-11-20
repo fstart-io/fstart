@@ -127,7 +127,8 @@ pub(crate) fn validate(layout: &IntelIfdFlashLayout, rom: &[u8]) -> Result<Range
         let actual = if reg == u32::MAX || first > last {
             None
         } else {
-            if layout.version == IfdVersion::V1 && reg & 0xf000_f000 != 0 {
+            if matches!(layout.version, IfdVersion::V1 | IfdVersion::V1_5) && reg & 0xf000_f000 != 0
+            {
                 return Err(format!("unsupported active IFD FLREG{index}"));
             }
             Some((first << 12, (last - first + 1) << 12))
@@ -306,6 +307,13 @@ mod tests {
         assert!(full[0x1000..0x100000].iter().all(|b| *b == 3));
         assert_eq!(&full[0x100000..], &rom[0x100000..]);
         assert_eq!(layout.bios_base(), Some(0x1_0000_0000 - 0xff000));
+        // Wide FLREG addresses must not alias the expected low BIOS range.
+        rom[0x44..0x48].copy_from_slice(&0x10ff_1001u32.to_le_bytes());
+        assert!(
+            validate(&layout, &rom)
+                .unwrap_err()
+                .contains("active IFD FLREG1")
+        );
     }
 
     #[test]
