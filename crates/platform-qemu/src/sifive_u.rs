@@ -102,7 +102,10 @@ mod stage {
         }
         // SAFETY: the stage owns this console through payload handoff.
         unsafe { fstart_log::init(&console) };
-        fstart_log::info!("sifive-u: SiFive UART console ready");
+        fstart_log::info!(
+            "sifive-u {} (SiFive UART console ready)",
+            crate::messages::RAMSTAGE_ENTERED
+        );
         fstart_stage::step("boot media", || {
             crate::boot::from_dtb(
                 fstart_arch::riscv64::boot_dtb_addr(),

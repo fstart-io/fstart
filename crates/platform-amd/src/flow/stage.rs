@@ -121,6 +121,7 @@ impl<S: Soc> Early<S> {
             fail::<S>("console")
         }
         let console = slot.install(console);
+        fstart_log::info!("{} ramstage: entered", S::NAME);
         if let Err(what) = pre_init {
             fail::<S>(what);
         }

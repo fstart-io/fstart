@@ -37,7 +37,12 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
             fstart_arch::halt()
         };
         let console = Self::start_console(slot, console);
-        fstart_log::info!("{}: {} console ready", config.name, C::NAME);
+        fstart_log::info!(
+            "{} {} ({} console ready)",
+            config.name,
+            crate::messages::RAMSTAGE_ENTERED,
+            C::NAME
+        );
         let virt = Self {
             config,
             layout,

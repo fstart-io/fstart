@@ -26,8 +26,7 @@ pub mod timer;
 pub use block::BlockDevice;
 pub use boot::BootLinuxParams;
 pub use boot_media::{
-    BlockDeviceMedia, BootMedia, FirmwareImageMap, FlashMap, LinearMap, MemoryMapped, SubRegion,
-    TempRamArena,
+    BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMapped, SubRegion, TempRamArena,
 };
 pub use console::{Console, ConsoleDevice, NoConsole, UartPort};
 pub use device::{BusDevice, DeviceError};
@@ -76,9 +75,7 @@ impl From<DeviceError> for ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FirmwareImage, FirmwareImageMap, FirmwareWindow, FlashMap, ServiceError, ffs_context,
-    };
+    use super::{FirmwareImage, FirmwareWindow, ServiceError, ffs_context};
 
     #[test]
     fn firmware_image_validation_rejects_bad_window_count() {
@@ -117,14 +114,6 @@ mod tests {
             window_count: 1,
         };
         assert_eq!(overflow.validate(), Err(ServiceError::InvalidParam));
-    }
-
-    #[test]
-    fn firmware_image_map_does_not_expose_null_base_slice() {
-        let map = FirmwareImageMap::new(FirmwareImage::single_window(0, 0x1000));
-
-        assert!(map.as_contiguous_slice(0x1000).is_none());
-        assert_eq!(map.contiguous_len(0, 0x100), 0x100);
     }
 
     #[test]

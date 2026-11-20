@@ -92,7 +92,7 @@ impl Fu740<Clocks> {
             fstart_arch::riscv64::halt();
         }
         self.console = Some(slot.install(console));
-        fstart_log::info!("fu740: SiFive UART console ready");
+        fstart_log::info!("fu740 ramstage: entered (SiFive UART console ready)");
         self.into()
     }
 }

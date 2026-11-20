@@ -188,7 +188,11 @@ impl<B: IntelBoard> Bootblock<B, Early> {
         // Keep EHCI here; postcar installs the flash log once it runs in DRAM.
         crate::debug_console::install::<B>(false);
         fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
-        fstart_log::info!("{} bootblock: {} console ready", B::Platform::NAME, C::NAME);
+        fstart_log::info!(
+            "{} bootblock: entered ({} console ready)",
+            B::Platform::NAME,
+            C::NAME
+        );
         // Stolen memory and the SATA mode are programmed in early init.
         crate::options::chipset(&mut self.northbridge, &mut self.southbridge);
         fstart_timestamp::add(fstart_timestamp::id::EARLY_INIT);

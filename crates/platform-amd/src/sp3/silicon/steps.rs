@@ -29,7 +29,7 @@ use super::Identity;
 use super::hw::{Pci, PrimaryFch, Tsc};
 use fstart_driver_amd::cpu::Silicon;
 
-/// Silicon policy of a board (NATIVE_PORT_PLAN §4 steps 6–12).
+/// Board policy for the SP3 silicon initialization steps.
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
     /// DF resource planner: the generation's split plus bus/IO requests.

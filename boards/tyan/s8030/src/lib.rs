@@ -17,17 +17,17 @@
 //! and the [`fstart_platform_amd::sp3::board::Board`] hooks take its generation.
 //! The same image goes into both 16 MiB halves of the 32 MiB flash.
 //!
-//! Where the pieces go in the SP3 boot flow (NATIVE_PORT_PLAN §4):
+//! Where the board supplies policy to the SP3 flow:
 //!
-//! | Step | Board input |
+//! | Phase | Board input |
 //! |---|---|
-//! | 3 FCH early | [`bmc::open_lpc_decodes`], [`bmc::early_init`], console [`bmc::CONSOLE`], [`policy::fch_env`] |
-//! | 6 DF | [`policy::df`] |
-//! | 7 board early hook | [`gpio::m2_detect_pads`] + read, [`gpio::rome_oem_pads`], then [`gpio::CPM_GPIO`] |
-//! | 8 NBIO / 12 MP | [`policy::nbio`], [`policy::ccx`] |
-//! | 9 SMU | [`policy::power`] |
-//! | 10 DXIO | [`dxio::engines`] with [`dxio::Options`] and [`dxio::Detected`] (M.2 levels, [`bmc::m2_gen3_cap`]), [`policy::dxio`] |
-//! | 14 ACPI | [`bmc::acpi_board`] |
+//! | Early FCH | [`bmc::open_lpc_decodes`], [`bmc::early_init`], console [`bmc::CONSOLE`], [`policy::fch_env`] |
+//! | Data fabric | [`policy::df`] |
+//! | Board early hook | [`gpio::m2_detect_pads`] + read, [`gpio::rome_oem_pads`], then [`gpio::CPM_GPIO`] |
+//! | NBIO and MP | [`policy::nbio`], [`policy::ccx`] |
+//! | SMU | [`policy::power`] |
+//! | DXIO | [`dxio::engines`] with [`dxio::Options`] and [`dxio::Detected`] (M.2 levels, [`bmc::m2_gen3_cap`]), [`policy::dxio`] |
+//! | ACPI | [`bmc::acpi_board`] |
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;

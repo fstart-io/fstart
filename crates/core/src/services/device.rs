@@ -42,9 +42,8 @@ impl ufmt::uDebug for DeviceError {
 /// Trait for devices that live on a parent bus.
 ///
 /// A bus device requires a parent controller that provides a bus-level
-/// service (e.g., `I2cBus`, `SpiBus`).  Codegen resolves the parent at
-/// build time and passes it to `new_on_bus` directly — no runtime device
-/// lookup, no linked-list traversal.
+/// service. The board or platform passes the concrete parent to
+/// `new_on_bus` directly; there is no runtime device lookup.
 ///
 /// # Example
 ///
