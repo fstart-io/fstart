@@ -36,20 +36,12 @@ pub const EC_WAKE_GPI: u8 = 13;
 register_bitfields![u8,
     /// EC RAM 0x1a: the second dock link enable (ACPI `DKR2`).
     pub DOCK_LINK2 [CONNECT OFFSET(0) NUMBITS(1) []],
-    /// EC RAM 0x32: the wake sources the OS armed.
-    pub WAKE_CONTROL [
-        EVENTS OFFSET(2) NUMBITS(1) [],
-        LID OFFSET(4) NUMBITS(1) []
-    ],
     /// EC RAM 0xfe: the third dock link enable (ACPI `DKR3`).
     pub DOCK_LINK3 [CONNECT OFFSET(4) NUMBITS(1) []]
 ];
 
 impl EcRegister for DOCK_LINK2::Register {
     const INDEX: u8 = 0x1a;
-}
-impl EcRegister for WAKE_CONTROL::Register {
-    const INDEX: u8 = 0x32;
 }
 impl EcRegister for DOCK_LINK3::Register {
     const INDEX: u8 = 0xfe;
@@ -162,11 +154,4 @@ pub fn smm_dock_connected(ec: Ec, connect: &mut impl OutputPin) {
     let h8 = H8::new(ec);
     h8.set_led(H8Led::Dock2, H8LedMode::Off);
     h8.set_led(H8Led::Dock1, H8LedMode::On);
-}
-
-/// coreboot `mainboard_smi_sleep()`: whether S3 should arm the EC wake GPE
-/// as an SCI, which the OS asked for through EC RAM 0x32.
-pub fn smm_wake_from_ec(ec: Ec) -> bool {
-    ec.read_register::<WAKE_CONTROL::Register>()
-        .is_some_and(|wake| wake.is_set(WAKE_CONTROL::EVENTS) || wake.is_set(WAKE_CONTROL::LID))
 }

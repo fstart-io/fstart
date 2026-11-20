@@ -65,6 +65,32 @@ pub trait SmmCpu {
     /// SMRR register pair to use when this CPU supports it, or `None` for
     /// models without a pair. Older revisions lacking SMRR still boot.
     fn smrr_pair(&self) -> Option<SmrrPair>;
+    /// Intel Enhanced Debug region the CPU needs at the top of TSEG, with
+    /// the 1 MiB CPU-reserved region below it (coreboot `IED_REGION_SIZE`,
+    /// `SMM_RESERVED_SIZE`); zero for CPUs without IED.
+    fn ied_size(&self) -> u32 {
+        0
+    }
+}
+
+/// coreboot `SMM_RESERVED_SIZE`: kept free below the IED region.
+const SMM_RESERVED_SIZE: u32 = 1 << 20;
+
+/// coreboot `setup_ied_area`: the "INTEL RSVD" header at IEDBASE and 32 KiB
+/// zeroed at IEDBASE + 1 MiB.
+///
+/// # Safety
+/// SMRAM must be open and `base..base + size` inside TSEG.
+unsafe fn setup_ied_area(base: u64, size: u32) {
+    let ied = base as *mut u8;
+    // struct ied_header { char signature[10]; u32 size; u8 reserved[34]; }
+    let mut header = [0u8; 48];
+    header[..10].copy_from_slice(b"INTEL RSVD");
+    header[10..14].copy_from_slice(&size.to_le_bytes());
+    unsafe {
+        core::ptr::copy_nonoverlapping(header.as_ptr(), ied, header.len());
+        core::ptr::write_bytes(ied.add(1 << 20), 0, 32 << 10);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,12 +222,28 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         let supported = model_pair.is_some_and(|pair| pair.supported_on_current_cpu());
         let smrr = configured_smrr(model_pair, supported, smram_base, smram_size)?;
         let handler_config = self.smi.smm_handler_config();
+        // The handler region excludes the IED and CPU-reserved regions at the
+        // top of TSEG; SMRR still covers all of TSEG.
+        let ied_size = self.cpu.ied_size();
+        let handler_size = if ied_size == 0 {
+            smram_size
+        } else {
+            smram_size
+                .checked_sub(ied_size + SMM_RESERVED_SIZE)
+                .filter(|size| *size != 0)
+                .ok_or(IntelSmmError::InstallFailed)?
+        };
+        let ied_base = smram_base + u64::from(smram_size - ied_size);
+        if ied_size != 0 {
+            // SAFETY: SMRAM is open and the region lies inside TSEG.
+            unsafe { setup_ied_area(ied_base, ied_size) };
+        }
         let installed = unsafe {
             fstart_smm::install_pic_image(
                 image,
                 fstart_smm::InstallConfig {
                     smram_base,
-                    smram_size: u64::from(smram_size),
+                    smram_size: u64::from(handler_size),
                     num_cpus,
                     save_state_size: SAVE_STATE_SIZE,
                     handler_config: &handler_config,
@@ -212,6 +254,10 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         .map_err(|_| IntelSmmError::InstallFailed)?;
 
         RELOCATION_BRIDGE.prepare(format, smrr.map(|(_, range)| range))?;
+        RELOCATION_BRIDGE.iedbase.store(
+            if ied_size == 0 { 0 } else { ied_base as u32 },
+            Ordering::Release,
+        );
         let relocation = &RELOCATION_BRIDGE;
         let relocation_cr3 =
             unsafe { fstart_smm::build_relocation_identity_tables(SMM_DEFAULT_SMBASE) };
@@ -365,6 +411,8 @@ struct RelocationState {
     smrr_pair: AtomicU32,
     smrr_base: AtomicU64,
     smrr_mask: AtomicU64,
+    /// IEDBASE for EM64T101 save states; 0 when the CPU has no IED.
+    iedbase: AtomicU32,
     done: AtomicU32,
     revision: AtomicU32,
     result: AtomicU32,
@@ -382,6 +430,7 @@ impl RelocationState {
             smrr_pair: AtomicU32::new(0),
             smrr_base: AtomicU64::new(0),
             smrr_mask: AtomicU64::new(0),
+            iedbase: AtomicU32::new(0),
             done: AtomicU32::new(0),
             revision: AtomicU32::new(0),
             result: AtomicU32::new(0),
@@ -550,6 +599,10 @@ pub unsafe extern "C" fn default_smm_relocation_handler(params: *mut fstart_smm:
     };
     state.revision.store(revision, Ordering::Release);
     if save_state.write_smbase(target).is_err() {
+        return finish(RESULT_SAVE_STATE);
+    }
+    let iedbase = state.iedbase.load(Ordering::Acquire);
+    if iedbase != 0 && save_state.write_iedbase(iedbase).is_err() {
         return finish(RESULT_SAVE_STATE);
     }
     if let Some(pair) = SmrrPair::from_raw(state.smrr_pair.load(Ordering::Acquire)) {

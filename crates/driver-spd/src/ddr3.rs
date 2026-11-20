@@ -604,6 +604,250 @@ pub fn decode_dimm(spd_data: &[u8; 256]) -> Result<Ddr3DimmInfo, Ddr3SpdError> {
     })
 }
 
+/// SPD bytes 117..127 identify the module independently of its timings.
+const UNIQUE_ID: core::ops::Range<usize> = 117..128;
+
+/// Optional DDR3 features and thermal options (coreboot `dimm_flags_ddr3_st`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Ddr3Flags {
+    pub operable_1_50v: bool,
+    pub operable_1_35v: bool,
+    pub operable_1_25v: bool,
+    pub dll_off_mode: bool,
+    pub rzq6_supported: bool,
+    pub rzq7_supported: bool,
+    pub pasr: bool,
+    pub odts: bool,
+    pub asr: bool,
+    pub ext_temp_range: bool,
+    pub ext_temp_refresh: bool,
+    pub therm_sensor: bool,
+    pub is_ecc: bool,
+    pub pins_mirrored: bool,
+}
+
+/// XMP profile selector (coreboot `ddr3_xmp_profile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XmpProfile {
+    One,
+    Two,
+}
+
+/// DDR3 timing attributes in 1/256 ns with fine-timebase corrections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ddr3Attr {
+    pub dimm_type: u8,
+    /// Supported CAS latencies; bit 0 is CL4.
+    pub cas_supported: u16,
+    pub flags: Ddr3Flags,
+    pub width: u8,
+    pub ranks: u8,
+    pub row_bits: u8,
+    pub col_bits: u8,
+    pub size_mb: u32,
+    pub t_ck: u32,
+    pub t_aa: u32,
+    pub t_wr: u32,
+    pub t_rcd: u32,
+    pub t_rrd: u32,
+    pub t_rp: u32,
+    pub t_ras: u32,
+    pub t_rc: u32,
+    pub t_rfc: u32,
+    pub t_wtr: u32,
+    pub t_rtp: u32,
+    pub t_faw: u32,
+    /// Only XMP profiles specify tCWL and command rate; zero otherwise.
+    pub t_cwl: u32,
+    pub t_cmd: u32,
+    pub reference_card: u8,
+    pub voltage: u16,
+    pub dimms_per_channel: u8,
+}
+
+/// Why an SPD cannot describe a usable DDR3 module (coreboot `SPD_STATUS_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ddr3AttrError {
+    NotDdr3,
+    Crc,
+    InvalidField,
+    NoXmp,
+}
+
+/// Manufacturing-data CRC used to detect a changed DIMM.
+#[must_use]
+pub fn unique_crc(spd: &[u8; 256]) -> u16 {
+    crate::crc16(&spd[UNIQUE_ID])
+}
+
+fn spd_crc_matches(spd: &[u8; 256]) -> bool {
+    let covered = if spd[0] & 0x80 != 0 { 117 } else { 126 };
+    crate::crc16(&spd[..covered]) == u16::from_le_bytes([spd[126], spd[127]])
+}
+
+/// Medium timebase in 1/256 ns: dividend / divisor ns.
+fn mtb(dividend: u8, divisor: u8) -> Option<u32> {
+    (divisor != 0).then(|| (u32::from(dividend) << 8) / u32::from(divisor))
+}
+
+fn ftb_correct(value: u32, correction: u8, ftb: u32) -> u32 {
+    let delta = (i32::from(correction as i8) * ftb as i32 - 500) / 1000;
+    value.wrapping_add_signed(delta)
+}
+
+/// Decode JEDEC timings as coreboot `spd_decode_ddr3` does. Unlike
+/// [`decode_dimm`], CRC and field errors may accompany decoded attributes;
+/// the controller decides whether those attributes are safe to use.
+pub fn decode_attr(spd: &[u8; 256]) -> Result<(Ddr3Attr, Option<Ddr3AttrError>), Ddr3AttrError> {
+    if spd[SPD_MEMORY_TYPE as usize] != DDR3 {
+        return Err(Ddr3AttrError::NotDdr3);
+    }
+    let mut status = (!spd_crc_matches(spd)).then_some(Ddr3AttrError::Crc);
+    let mut invalid = |bad: bool| {
+        if bad {
+            status = Some(Ddr3AttrError::InvalidField);
+        }
+    };
+    invalid((spd[4] >> 4) & 7 > 3);
+    let capacity_shift = spd[4] & 0x0f;
+    invalid(capacity_shift > 6);
+    let row_code = (spd[5] >> 3) & 7;
+    let col_code = spd[5] & 7;
+    invalid(row_code > 4 || col_code > 3);
+    let mut flags = Ddr3Flags::default();
+    let mut voltage = 0;
+    if spd[6] & (1 << 2) != 0 {
+        flags.operable_1_25v = true;
+        voltage = 1250;
+    }
+    if spd[6] & (1 << 1) != 0 {
+        flags.operable_1_35v = true;
+        voltage = 1300;
+    }
+    if spd[6] & 1 == 0 {
+        flags.operable_1_50v = true;
+        voltage = 1500;
+    }
+    let rank_code = (spd[7] >> 3) & 7;
+    invalid(rank_code > 3);
+    let width_code = spd[7] & 7;
+    invalid(width_code > 3);
+    let ranks = rank_code + 1;
+    let width = 4u8.wrapping_shl(u32::from(width_code));
+    let extension = (spd[8] >> 3) & 3;
+    invalid(extension > 1);
+    flags.is_ecc = extension != 0;
+    let bus_code = spd[8] & 7;
+    invalid(bus_code > 3);
+    let bus_width = 8u32 << bus_code.min(7);
+    let size_mb = if width == 0 {
+        0
+    } else {
+        ((1u32 << (u32::from(capacity_shift.min(15)) + 5)) * bus_width * u32::from(ranks))
+            / u32::from(width)
+    };
+    let mtb = mtb(spd[10], spd[11]).ok_or(Ddr3AttrError::InvalidField)?;
+    let byte = |index: usize| u32::from(spd[index]);
+    let mut attr = Ddr3Attr {
+        dimm_type: spd[3] & 0x0f,
+        cas_supported: u16::from_le_bytes([spd[14], spd[15]]),
+        flags,
+        width,
+        ranks,
+        row_bits: row_code + 12,
+        col_bits: col_code + 9,
+        size_mb,
+        t_ck: byte(12) * mtb,
+        t_aa: byte(16) * mtb,
+        t_wr: byte(17) * mtb,
+        t_rcd: byte(18) * mtb,
+        t_rrd: byte(19) * mtb,
+        t_rp: byte(20) * mtb,
+        t_ras: (((byte(21) & 0x0f) << 8) + byte(22)) * mtb,
+        t_rc: (((byte(21) & 0xf0) << 4) + byte(23)) * mtb,
+        t_rfc: ((byte(25) << 8) + byte(24)) * mtb,
+        t_wtr: byte(26) * mtb,
+        t_rtp: byte(27) * mtb,
+        t_faw: (((byte(28) & 0x0f) << 8) + byte(29)) * mtb,
+        t_cwl: 0,
+        t_cmd: 0,
+        reference_card: spd[62] & 0x1f,
+        voltage,
+        dimms_per_channel: 3,
+    };
+    if spd[1] >= 0x11 && spd[9] & 0x0f != 0 {
+        let ftb = ((u32::from(spd[9]) & 0xf0) << 4) / (u32::from(spd[9]) & 0x0f);
+        attr.t_ck = ftb_correct(attr.t_ck, spd[34], ftb);
+        attr.t_aa = ftb_correct(attr.t_aa, spd[35], ftb);
+        attr.t_rcd = ftb_correct(attr.t_rcd, spd[36], ftb);
+        attr.t_rp = ftb_correct(attr.t_rp, spd[37], ftb);
+        attr.t_rc = ftb_correct(attr.t_rc, spd[38], ftb);
+    }
+    let features = spd[30];
+    attr.flags.dll_off_mode = features & 0x80 != 0;
+    attr.flags.rzq7_supported = features & 0x02 != 0;
+    attr.flags.rzq6_supported = features & 0x01 != 0;
+    let thermal = spd[31];
+    attr.flags.pasr = thermal & 0x80 != 0;
+    attr.flags.odts = thermal & 0x08 != 0;
+    attr.flags.asr = thermal & 0x04 != 0;
+    attr.flags.ext_temp_range = thermal & 0x02 != 0;
+    attr.flags.ext_temp_refresh = thermal & 0x01 != 0;
+    attr.flags.therm_sensor = spd[32] & 0x80 != 0;
+    attr.flags.pins_mirrored = spd[63] & 0x01 != 0;
+    Ok((attr, status))
+}
+
+/// Decode an enabled XMP profile on top of valid JEDEC attributes.
+pub fn decode_xmp(spd: &[u8; 256], profile: XmpProfile) -> Result<Ddr3Attr, Ddr3AttrError> {
+    let (mut attr, status) = decode_attr(spd)?;
+    if let Some(error) = status {
+        return Err(error);
+    }
+    if spd[176] != 0x0c || spd[177] != 0x4a {
+        return Err(Ddr3AttrError::NoXmp);
+    }
+    let (enable, xmp, mtb, dimms) = match profile {
+        XmpProfile::One => (
+            spd[178] & 1,
+            185,
+            mtb(spd[180], spd[181]),
+            (spd[178] >> 2) & 3,
+        ),
+        XmpProfile::Two => (
+            spd[178] & 2,
+            220,
+            mtb(spd[182], spd[183]),
+            (spd[178] >> 4) & 3,
+        ),
+    };
+    if enable == 0 {
+        return Err(Ddr3AttrError::NoXmp);
+    }
+    let mtb = mtb.ok_or(Ddr3AttrError::NoXmp)?;
+    let x = |index: usize| u32::from(spd[xmp + index]);
+    attr.dimms_per_channel = dimms + 1;
+    let v = spd[xmp];
+    attr.voltage =
+        u16::from(v & 1) * 50 + u16::from((v >> 1) & 0xf) * 100 + u16::from((v >> 5) & 3) * 1000;
+    attr.t_ck = x(1) * mtb;
+    attr.cas_supported = u16::from_le_bytes([spd[xmp + 3], spd[xmp + 4]]) & 0x7fff;
+    attr.t_aa = x(2) * mtb;
+    attr.t_wr = x(8) * mtb;
+    attr.t_rcd = x(7) * mtb;
+    attr.t_rrd = x(17) * mtb;
+    attr.t_rp = x(6) * mtb;
+    attr.t_ras = (((x(9) & 0x0f) << 8) + x(10)) * mtb;
+    attr.t_rc = (((x(9) & 0xf0) << 4) + x(11)) * mtb;
+    attr.t_rfc = ((x(15) << 8) + x(14)) * mtb;
+    attr.t_wtr = x(20) * mtb;
+    attr.t_rtp = x(16) * mtb;
+    attr.t_faw = (((x(18) & 0x0f) << 8) + x(19)) * mtb;
+    attr.t_cwl = x(5) * mtb;
+    attr.t_cmd = x(23) * mtb;
+    Ok(attr)
+}
+
 /// A synthetic DDR3-800 SO-DIMM SPD (2 ranks of x8 1 Gbit chips), for the
 /// tests of controller drivers.
 #[cfg(any(test, feature = "testing"))]
@@ -654,6 +898,71 @@ pub mod testing {
 mod tests {
     use super::testing::synthetic_ddr3_spd;
     use super::*;
+
+    fn with_crc(mut spd: [u8; 256]) -> [u8; 256] {
+        let covered = if spd[0] & 0x80 != 0 { 117 } else { 126 };
+        let crc = crate::crc16(&spd[..covered]);
+        spd[126..128].copy_from_slice(&crc.to_le_bytes());
+        spd
+    }
+
+    #[test]
+    fn timing_attributes_preserve_coreboot_crc_tolerance() {
+        let spd = with_crc(synthetic_ddr3_spd());
+        let (attr, status) = decode_attr(&spd).unwrap();
+        assert_eq!(status, None);
+        assert_eq!((attr.size_mb, attr.ranks, attr.width), (2048, 2, 8));
+        assert_eq!(attr.t_ck, 320);
+        assert_eq!(attr.cas_supported, 0b0011_1000);
+        assert!(attr.flags.operable_1_50v);
+        let mut corrupt = spd;
+        corrupt[126] ^= 1;
+        assert_eq!(decode_attr(&corrupt), Ok((attr, Some(Ddr3AttrError::Crc))));
+    }
+
+    #[test]
+    fn timing_attributes_apply_signed_fine_timebase() {
+        let mut spd = synthetic_ddr3_spd();
+        spd[9] = 0x11; // 1 ps
+        spd[34] = (-10i8) as u8;
+        spd[35] = 10;
+        let (attr, status) = decode_attr(&with_crc(spd)).unwrap();
+        assert_eq!(status, None);
+        // Signed division truncates toward zero, as in coreboot ddr3.c.
+        assert_eq!(attr.t_ck, 320 - 3);
+        assert_eq!(attr.t_aa, 110 * 32 + 2);
+        spd[11] = 0;
+        assert_eq!(decode_attr(&spd), Err(Ddr3AttrError::InvalidField));
+    }
+
+    #[test]
+    fn xmp_requires_valid_base_spd_and_enabled_profile() {
+        let mut spd = with_crc(synthetic_ddr3_spd());
+        assert_eq!(decode_xmp(&spd, XmpProfile::One), Err(Ddr3AttrError::NoXmp));
+        spd[176..182].copy_from_slice(&[0x0c, 0x4a, 0x05, 0, 1, 8]);
+        spd[185] = 0x2a; // 1500 mV: 1 V + 5 * 100 mV
+        spd[186] = 12; // 1.5 ns
+        spd[188] = 0x38;
+        let attr = decode_xmp(&spd, XmpProfile::One).unwrap();
+        assert_eq!(
+            (attr.voltage, attr.dimms_per_channel, attr.t_ck),
+            (1500, 2, 384)
+        );
+        assert_eq!(attr.cas_supported, 0x38);
+        assert_eq!(decode_xmp(&spd, XmpProfile::Two), Err(Ddr3AttrError::NoXmp));
+        spd[126] ^= 1;
+        assert_eq!(decode_xmp(&spd, XmpProfile::One), Err(Ddr3AttrError::Crc));
+    }
+
+    #[test]
+    fn module_identity_crc_ignores_timings_but_detects_replacement() {
+        let mut spd = synthetic_ddr3_spd();
+        let identity = unique_crc(&spd);
+        spd[12] += 1;
+        assert_eq!(unique_crc(&spd), identity);
+        spd[122] ^= 1;
+        assert_ne!(unique_crc(&spd), identity);
+    }
 
     #[test]
     fn rejects_non_ddr3() {

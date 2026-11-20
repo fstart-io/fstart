@@ -238,6 +238,15 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
         let prepared = self.southbridge.pre_raminit_init();
         self.check("pre-raminit init", prepared);
+        // Chipsets that train DMI before DRAM (Sandy Bridge): SB -> NB -> SB
+        // -> NB, like the post-DRAM sequence. A no-op elsewhere.
+        let link = (|| {
+            self.southbridge.prepare_dram_link_init()?;
+            self.northbridge.dram_link_init()?;
+            self.southbridge.finish_dram_link_init()?;
+            self.northbridge.finish_dram_link_init()
+        })();
+        self.check("DRAM link init", link);
         fstart_log::info!("{}: initializing DRAM", B::Platform::NAME);
         let trained = self.dram_init();
         self.check("DRAM init", trained);

@@ -99,6 +99,7 @@ pub fn mode_from_dtd(dtd: &[u8]) -> Result<Mode, GmaError> {
         vtotal: vactive + vblank,
         pixel_clock_khz,
         flags,
+        bpc: None,
     };
     if mode.is_valid() {
         Ok(mode)

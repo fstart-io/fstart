@@ -20,6 +20,8 @@ register_bitfields![u32,
         SSC OFFSET(14) NUMBITS(1) [],
         /// Port multiplier.
         PMS OFFSET(17) NUMBITS(1) [],
+        /// Interface speed support.
+        ISS OFFSET(20) NUMBITS(4) [],
         /// Aggressive link power management.
         SALP OFFSET(26) NUMBITS(1) [],
         /// Staggered spin-up.
@@ -55,7 +57,9 @@ register_structs! {
         (0x008 => _is: [u8; 4]),
         /// PI, ports implemented (R/WO).
         (0x00c => pub pi: MmioReadWrite<u32>),
-        (0x010 => _reserved0: [u8; 0x90]),
+        (0x010 => _reserved0: [u8; 0x14]),
+        (0x024 => pub cap2: MmioReadWrite<u32>),
+        (0x028 => _reserved2: [u8; 0x78]),
         (0x0a0 => pub vsp: MmioReadWrite<u32, VSP::Register>),
         (0x0a4 => _reserved1: [u8; 0x5c]),
         (0x100 => pub ports: [AhciPort; 6]),

@@ -7,8 +7,6 @@ use fstart_driver_usbdebug::Config;
 /// the local APIC, clear of the fixed HPET, I/O APIC and flash decodes.
 const EHCI_DEBUG_BAR: u32 = 0xfef0_0000;
 const EHCI_DEBUG_BAR_SIZE: u64 = 0x1000;
-/// The ECAM window both chipsets decode (256 buses).
-const ECAM_SIZE: u64 = 256 << 20;
 
 /// An EHCI controller. The debug port is a fixed root port of each
 /// controller, so a board selects the one wired to its debug connector
@@ -33,11 +31,16 @@ impl EhciController {
 }
 
 /// The debug console on bus-0 `devfn` at [`EHCI_DEBUG_BAR`], or `None` when
-/// that BAR would overlap ECAM or one of the chipset's relocatable
-/// `decodes` (base, size).
-pub fn config(devfn: u8, ecam_base: usize, decodes: &[(u64, u64)]) -> Option<Config> {
+/// that BAR would overlap the `ecam_buses` of ECAM or one of the chipset's
+/// relocatable `decodes` (base, size).
+pub fn config(
+    devfn: u8,
+    ecam_base: usize,
+    ecam_buses: u16,
+    decodes: &[(u64, u64)],
+) -> Option<Config> {
     let bar = u64::from(EHCI_DEBUG_BAR);
-    let ecam = (ecam_base as u64, ECAM_SIZE);
+    let ecam = (ecam_base as u64, u64::from(ecam_buses) << 20);
     if decodes
         .iter()
         .chain([&ecam])
@@ -83,9 +86,11 @@ mod tests {
 
     #[test]
     fn debug_bar_must_not_overlap_a_chipset_decode() {
-        let debug = config(0xd7, 0xe000_0000, &[(0xfed1_c000, 0x4000)]).unwrap();
+        let debug = config(0xd7, 0xe000_0000, 256, &[(0xfed1_c000, 0x4000)]).unwrap();
         assert_eq!((debug.device, debug.function), (0x1a, 7));
-        assert!(config(0xd7, 0xe000_0000, &[(0xfef0_0000, 0x4000)]).is_none());
-        assert!(config(0xd7, 0xf000_0000, &[]).is_none());
+        assert!(config(0xd7, 0xe000_0000, 256, &[(0xfef0_0000, 0x4000)]).is_none());
+        assert!(config(0xd7, 0xf000_0000, 256, &[]).is_none());
+        // Sandy Bridge's 64 buses at 0xf0000000 end below the BAR.
+        assert!(config(0xd0, 0xf000_0000, 64, &[]).is_some());
     }
 }

@@ -12,6 +12,14 @@ pub enum SataMode {
     Ahci,
 }
 
+/// The Management Engine state the firmware asks for (coreboot `me_state`):
+/// the ME's soft temporary disable, not firmware removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeState {
+    Normal,
+    Disabled,
+}
+
 /// What a board's ICH options can change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
@@ -22,6 +30,8 @@ pub struct Options {
     pub sata_mode: Option<SataMode>,
     /// Let SERR# and IOCHK# raise NMIs.
     pub nmi: bool,
+    /// The ME state to enforce; `None` leaves the ME as it is.
+    pub me_state: Option<MeState>,
 }
 
 impl Options {
@@ -32,6 +42,7 @@ impl Options {
             power_on_after_fail,
             sata_mode,
             nmi: false,
+            me_state: None,
         }
     }
 }
@@ -95,6 +106,34 @@ pub const NMI: Knob<Options> = Knob::new(
     ),
     |o: &Options| o.nmi.into(),
     |o: &mut Options, v| o.nmi = v != 0,
+);
+
+/// The ME state, coreboot's 0 Normal, 1 Disabled, and 2 to leave it as it
+/// is (fstart's default: changing it needs a global reset).
+pub const ME_STATE: Knob<Options> = Knob::new(
+    Meta {
+        key: "me_state",
+        form: "Advanced",
+        label: "Management Engine",
+        help: "Normal, or the ME's soft temporary disable. A change applies with a global reset.",
+        kind: Kind::Enum(&[
+            Choice::new(0, "Normal"),
+            Choice::new(1, "Disabled"),
+            Choice::new(2, "Unchanged"),
+        ]),
+    },
+    |o: &Options| match o.me_state {
+        Some(MeState::Normal) => 0,
+        Some(MeState::Disabled) => 1,
+        None => 2,
+    },
+    |o: &mut Options, v| {
+        o.me_state = match v {
+            0 => Some(MeState::Normal),
+            1 => Some(MeState::Disabled),
+            _ => None,
+        }
+    },
 );
 
 /// Program the legacy NMI sources (ports 0x61, 0x70/0x74), as coreboot's

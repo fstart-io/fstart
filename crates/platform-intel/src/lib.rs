@@ -69,6 +69,7 @@ pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
 pub mod pineview;
+pub mod sandybridge;
 
 /// Shared IGD display bring-up types used by board display policy.
 pub use fstart_driver_intel::igd;

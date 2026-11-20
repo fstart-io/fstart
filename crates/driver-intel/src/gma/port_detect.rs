@@ -1,4 +1,7 @@
-//! Legacy GMCH port-detect and hotplug helpers.
+//! Port-detect state and the legacy GMCH port-detect and hotplug helpers.
+//!
+//! Split-PCH detection lives with its generation
+//! (`generation::ironlake::port_detect`).
 //!
 //! This mirrors the small G45-family libgfxinit `Port_Detect` layer used before
 //! probing EDID: analog is always considered valid, GM965/GM45 LVDS is valid by
@@ -26,18 +29,21 @@ const CRT_HOTPLUG_ACTIVATION_PERIOD_64: u32 = HP_EN::CRT_HOTPLUG_ACTIVATION_PERI
 /// GMCH PORT_HOTPLUG_EN register offset.
 pub(crate) const PORT_HOTPLUG_EN: usize = 0x61110;
 
-/// Result of one legacy GMCH port-detect pass.
+/// Ports one detection pass can accept (all split-PCH ports).
+const MAX_PORTS: usize = 10;
+
+/// Result of one port-detect pass (libgfxinit `Config.Valid_Port`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LegacyPortDetectState {
+pub(crate) struct PortDetectState {
     /// Ports accepted by platform policy and live detect bits.
-    pub valid_ports: [Option<Port>; 8],
+    pub valid_ports: [Option<Port>; MAX_PORTS],
     /// Number of entries in `valid_ports`.
     pub valid_len: usize,
     /// Value programmed to PORT_HOTPLUG_EN.
     pub hotplug_enable: u32,
 }
 
-impl LegacyPortDetectState {
+impl PortDetectState {
     /// Return true if the pass accepted `port` as a possible connector.
     pub const fn is_valid(self, port: Port) -> bool {
         let mut index = 0usize;
@@ -52,7 +58,17 @@ impl LegacyPortDetectState {
         false
     }
 
-    const fn push(mut self, port: Port) -> Self {
+    /// An empty pass that accepts no port.
+    pub(crate) const fn empty() -> Self {
+        Self {
+            valid_ports: [None; MAX_PORTS],
+            valid_len: 0,
+            hotplug_enable: 0,
+        }
+    }
+
+    /// Accept `port`.
+    pub(crate) const fn push(mut self, port: Port) -> Self {
         if self.valid_len < self.valid_ports.len() {
             self.valid_ports[self.valid_len] = Some(port);
             self.valid_len += 1;
@@ -70,15 +86,15 @@ pub(crate) const fn legacy_gmch_detect_state(
     dpb: u32,
     dpc: u32,
     dpd: u32,
-) -> LegacyPortDetectState {
+) -> PortDetectState {
     // Gen3 (i945/i945GM/Pineview) exposes VGA and, on mobile parts only, LVDS;
     // there are no digital ports (libgfxinit `common/i945/port_detect.adb`).
     if matches!(
         cpu,
         Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM
     ) {
-        let mut state = LegacyPortDetectState {
-            valid_ports: [None; 8],
+        let mut state = PortDetectState {
+            valid_ports: [None; MAX_PORTS],
             valid_len: 0,
             hotplug_enable: CRT_HOTPLUG_INT_EN | CRT_HOTPLUG_ACTIVATION_PERIOD_64,
         }
@@ -89,8 +105,8 @@ pub(crate) const fn legacy_gmch_detect_state(
         return state;
     }
 
-    let mut state = LegacyPortDetectState {
-        valid_ports: [None; 8],
+    let mut state = PortDetectState {
+        valid_ports: [None; MAX_PORTS],
         valid_len: 0,
         hotplug_enable: CRT_HOTPLUG_INT_EN | CRT_HOTPLUG_ACTIVATION_PERIOD_64,
     }
@@ -127,17 +143,22 @@ pub(crate) const fn legacy_gmch_detect_state(
 }
 
 /// Run legacy GMCH detection and program PORT_HOTPLUG_EN.
-pub(crate) fn initialize_legacy_gmch(mmio: &Mmio, cpu: Cpu) -> LegacyPortDetectState {
-    let state = legacy_gmch_detect_state(
+pub(crate) fn initialize_legacy_gmch(mmio: &Mmio, cpu: Cpu) -> PortDetectState {
+    let state = legacy_gmch_detected(mmio, cpu);
+    hotplug_regs(mmio).enable.set(state.hotplug_enable);
+    state
+}
+
+/// Legacy GMCH detection without touching the hotplug registers.
+pub(crate) fn legacy_gmch_detected(mmio: &Mmio, cpu: Cpu) -> PortDetectState {
+    legacy_gmch_detect_state(
         cpu,
         mmio.read32(crate::gma::port::GMCH_HDMIB),
         mmio.read32(crate::gma::port::GMCH_HDMIC),
         mmio.read32(crate::gma::port::GMCH_DPB),
         mmio.read32(crate::gma::port::GMCH_DPC),
         mmio.read32(crate::gma::port::GMCH_DPD),
-    );
-    hotplug_regs(mmio).enable.set(state.hotplug_enable);
-    state
+    )
 }
 
 /// Return and clear a pending libgfxinit-style hotplug status event.

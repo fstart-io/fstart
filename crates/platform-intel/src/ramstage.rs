@@ -841,6 +841,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
     /// vector on S3 resume, to the payload otherwise.
     pub fn boot(mut self) -> ! {
         self.phase(fstart_timestamp::id::FINALIZE, |rs| {
+            rs.northbridge.finalize_init()?;
             rs.southbridge.finalize_init()
         });
         // mp_init leaves APs polling firmware mailboxes. Stop that activity before

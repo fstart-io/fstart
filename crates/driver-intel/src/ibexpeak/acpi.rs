@@ -150,122 +150,6 @@ impl IntelIbexPeak {
     }
 }
 
-/// AML `Sleep(ms)` (`SleepOp ByteConst`), which the builders lack.
-struct Sleep(u8);
-impl fstart_acpi::Aml for Sleep {
-    fn to_aml_bytes(&self, sink: &mut dyn fstart_acpi::AmlSink) {
-        sink.vec(&[0x5b, 0x22, 0x0a, self.0]);
-    }
-}
-
-/// coreboot `intel_acpi_pcie_hotplug_generator()`: a removable `SLOT`
-/// under each hot-plug root port and the `_L01` GPE that notifies it.
-fn pcie_hotplug_aml(hotplug: &[bool; 8], pci_root: &AcpiPath) -> Vec<u8> {
-    use fstart_acpi::Aml;
-    use fstart_acpi::aml::{If, Method, Notify, Path, Scope, Store};
-    let mut aml = Vec::new();
-    let ports: Vec<usize> = (0..8).filter(|port| hotplug[*port]).collect();
-    if ports.is_empty() {
-        return aml;
-    }
-    let slot: Vec<u8> = acpi_dsl! {
-        Device("SLOT") {
-            Name("_ADR", 0u32);
-            Method("_RMV", 0, NotSerialized) { Return(1u32); }
-        }
-    }
-    .into();
-    for port in &ports {
-        let scope = alloc::format!("{}.RP0{}", pci_root.as_str(), port + 1);
-        aml.extend(
-            fstart_acpi::aml_linker::scope_vec(&scope, &slot).expect("hot-plug SLOT emission"),
-        );
-    }
-    let roots: Vec<Path> = ports
-        .iter()
-        .map(|port| Path::new(&alloc::format!("{}.RP0{}", pci_root.as_str(), port + 1)))
-        .collect();
-    let hpcs: Vec<Path> = ports
-        .iter()
-        .map(|port| {
-            Path::new(&alloc::format!(
-                "{}.RP0{}.HPCS",
-                pci_root.as_str(),
-                port + 1
-            ))
-        })
-        .collect();
-    let pdc: Vec<Path> = ports
-        .iter()
-        .map(|port| {
-            Path::new(&alloc::format!(
-                "{}.RP0{}.PDC_",
-                pci_root.as_str(),
-                port + 1
-            ))
-        })
-        .collect();
-    let one = fstart_acpi::aml::ONE;
-    let zero = fstart_acpi::aml::ZERO;
-    let sleep = Sleep(100);
-    let clear_hpcs: Vec<Store> = hpcs.iter().map(|path| Store::new(path, &one)).collect();
-    let clear_pdc: Vec<Store> = pdc.iter().map(|path| Store::new(path, &one)).collect();
-    let notify: Vec<Notify> = roots.iter().map(|path| Notify::new(path, &zero)).collect();
-    let inner: Vec<If> = (0..ports.len())
-        .map(|i| If::new(&pdc[i], alloc::vec![&clear_pdc[i] as &dyn Aml, &notify[i]]))
-        .collect();
-    let checks: Vec<If> = (0..ports.len())
-        .map(|i| {
-            If::new(
-                &hpcs[i],
-                alloc::vec![&sleep as &dyn Aml, &clear_hpcs[i], &inner[i]],
-            )
-        })
-        .collect();
-    let method = Method::new(
-        "_L01".into(),
-        0,
-        false,
-        checks.iter().map(|check| check as &dyn Aml).collect(),
-    );
-    Scope::new("\\_GPE".into(), alloc::vec![&method]).to_aml_bytes(&mut aml);
-    aml
-}
-
-/// An EHCI controller behind its rate-matching hub (coreboot
-/// `bd82x6x/acpi/usb.asl`): `HUB7.URMH.PRTn`, the hub itself not visible.
-fn ehci_rmh_node(name: &str, devfn: u8, ports: u8) -> Vec<u8> {
-    let adr = adr(devfn);
-    let mut rmh: Vec<u8> = acpi_dsl! {
-        Name("_ADR", 1u32);
-        Name("_UPC", Package(0xFFu32, 0xFFu32, 0u32, 0u32));
-        // GPLD(0): revision 2, not user visible.
-        Name("_PLD", Package(Buffer(
-            0x02u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
-            0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8)));
-    }
-    .into();
-    for port in 0..ports {
-        let adr = u32::from(port) + 1;
-        let child: Vec<u8> = acpi_dsl! { Name("_ADR", #{dword adr}); }.into();
-        rmh.extend(
-            fstart_acpi::aml_linker::device_vec(&alloc::format!("PRT{port}"), &child)
-                .expect("EHCI port emission"),
-        );
-    }
-    let mut hub: Vec<u8> = acpi_dsl! { Name("_ADR", 0u32); }.into();
-    hub.extend(fstart_acpi::aml_linker::device_vec("URMH", &rmh).expect("URMH emission"));
-    let mut body: Vec<u8> = acpi_dsl! {
-        Name("_ADR", #{dword adr});
-        Name("_PRW", Package(13u32, 4u32));
-        Method("_S3D", 0, NotSerialized) { Return(2u32); }
-        Method("_S4D", 0, NotSerialized) { Return(2u32); }
-    }
-    .into();
-    body.extend(fstart_acpi::aml_linker::device_vec("HUB7", &hub).expect("HUB7 emission"));
-    fstart_acpi::aml_linker::device_vec(name, &body).expect("EHCI emission")
-}
-
 impl SouthbridgeAcpi for IntelIbexPeak {
     fn dsdt_aml(&self, config: &Self::Config, pci_root: &AcpiPath) -> Vec<u8> {
         // S3 only once this image's training and stage caches persisted.
@@ -354,8 +238,16 @@ impl SouthbridgeAcpi for IntelIbexPeak {
                 true,
             ));
         }
-        body.extend(ehci_rmh_node("EHC1", dev::EHCI1, 8));
-        body.extend(ehci_rmh_node("EHC2", dev::EHCI2, 6));
+        body.extend(crate::southbridge::acpi::ehci_rmh_node(
+            "EHC1",
+            dev::EHCI1,
+            8,
+        ));
+        body.extend(crate::southbridge::acpi::ehci_rmh_node(
+            "EHC2",
+            dev::EHCI2,
+            6,
+        ));
         let (sata_adr, smbus_adr) = (adr(dev::SATA1), adr(dev::SMBUS));
         body.extend(Vec::<u8>::from(acpi_dsl! {
             Device("SATA") { Name("_ADR", #{dword sata_adr}); }
@@ -395,7 +287,10 @@ impl SouthbridgeAcpi for IntelIbexPeak {
             fstart_acpi::aml_linker::scope_vec(pci_root.as_str(), &body)
                 .expect("PCH scope emission"),
         );
-        aml.extend(pcie_hotplug_aml(&config.pcie_hotplug, pci_root));
+        aml.extend(crate::southbridge::acpi::pcie_hotplug_aml(
+            &config.pcie_hotplug,
+            pci_root,
+        ));
         aml
     }
 
@@ -426,26 +321,5 @@ mod tests {
             assert_eq!(count(&aml, b"_S4_"), 1);
             assert_eq!(count(&aml, b"_S5_"), 1);
         }
-    }
-
-    #[test]
-    fn hotplug_adds_a_removable_slot_and_the_gpe() {
-        let aml = pcie_hotplug_aml(
-            &[false, false, false, true, false, false, false, false],
-            &ROOT,
-        );
-        assert_eq!(count(&aml, b"SLOT"), 1);
-        assert_eq!(count(&aml, b"_L01"), 1);
-        // The SLOT scope, the notified port, two HPCS and two PDC_ paths.
-        assert_eq!(count(&aml, b"RP04"), 6);
-        assert!(pcie_hotplug_aml(&[false; 8], &ROOT).is_empty());
-    }
-
-    #[test]
-    fn ehci_hides_the_rate_matching_hub() {
-        let aml = ehci_rmh_node("EHC2", dev::EHCI2, 6);
-        assert_eq!(count(&aml, b"URMH"), 1);
-        assert_eq!(count(&aml, b"PRT5"), 1);
-        assert_eq!(count(&aml, b"PRT6"), 0);
     }
 }
