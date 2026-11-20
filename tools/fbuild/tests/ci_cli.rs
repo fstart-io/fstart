@@ -22,6 +22,25 @@ fn success(out: Output) -> String {
 }
 
 #[test]
+fn checks_list_shows_the_guard_and_cargo_commands_without_a_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let text = success(
+        Command::new(env!("CARGO_BIN_EXE_fbuild"))
+            .args(["checks", "--list"])
+            .env("FSTART_WORKSPACE_ROOT", tmp.path())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        text.lines()
+            .any(|line| line == "# Check driver-amd capability features")
+    );
+    assert!(text.lines().any(|line| {
+        line.starts_with("cargo clippy -p fstart-driver-amd --target x86_64-unknown-none")
+    }));
+}
+
+#[test]
 fn size_artifact_cli_records_provenance_and_handles_legacy_baselines() {
     let tmp = tempfile::tempdir().unwrap();
     let lines = tmp.path().join("sizes.jsonl");

@@ -1,7 +1,6 @@
-//! Feature selections and targets CI builds, lints or tests beyond the
-//! workspace's default `cargo test` and `cargo clippy` (`fbuild checks`).
+//! Architecture policy and extra Cargo checks run by CI (`fbuild checks`).
 
-use std::process::Command;
+use std::{path::Path, process::Command};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -189,44 +188,133 @@ pub fn checks() -> Vec<Check> {
     checks
 }
 
-/// `fbuild checks`: run (or `list`) every check; one failing never stops
+const AMD_DRIVER_MANIFEST: &str = "crates/driver-amd/Cargo.toml";
+
+fn workspace_metadata(root: &Path) -> Result<serde_json::Value, String> {
+    let output = Command::new("cargo")
+        .args([
+            "metadata",
+            "--no-deps",
+            "--format-version=1",
+            "--manifest-path",
+            "Cargo.toml",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("could not run cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid cargo metadata: {e}"))
+}
+
+fn check_driver_amd_features(root: &Path) -> Result<(), String> {
+    // `default` is Cargo's selector for a set of features, not a capability.
+    const APPROVED: &[&str] = &["acpi", "default", "smbios", "smm", "spi-flash", "testing"];
+
+    // Cargo reports the effective feature names, including implicit features
+    // for optional dependencies unless hidden with `dep:`. It need not
+    // resolve or build any dependencies to do this.
+    let metadata = workspace_metadata(root)?;
+    let members = metadata["workspace_members"]
+        .as_array()
+        .ok_or("cargo metadata is missing workspace members")?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or("cargo metadata is missing packages")?;
+    let driver = packages
+        .iter()
+        .find(|p| p["name"] == "fstart-driver-amd" && members.contains(&p["id"]))
+        .ok_or_else(|| {
+            format!("{AMD_DRIVER_MANIFEST}: fstart-driver-amd is not a workspace member")
+        })?;
+    let features = driver["features"].as_object().ok_or_else(|| {
+        format!("{AMD_DRIVER_MANIFEST}: cargo metadata is missing driver features")
+    })?;
+    let mut unapproved: Vec<_> = features
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !APPROVED.contains(name))
+        .collect();
+    if unapproved.is_empty() {
+        return Ok(());
+    }
+    unapproved.sort_unstable();
+    Err(format!(
+        "{AMD_DRIVER_MANIFEST}: unapproved Cargo features: {}. \
+         Keep shared capabilities in driver-amd, select SoCs and IP versions in \
+         crates/platform-amd, and put board policy in boards/.",
+        unapproved.join(", ")
+    ))
+}
+
+/// `fbuild checks`: run (or list) every check; one failing never stops
 /// the others.
 pub fn run(list: bool) -> Result<(), String> {
+    enum Step {
+        DriverAmdFeatures,
+        Cargo(Command),
+    }
+
     let root = crate::build_board::workspace_root_pub()?;
     let github = std::env::var_os("GITHUB_ACTIONS").is_some();
-    let mut failed = Vec::new();
+    let cargo_checks = checks()
+        .into_iter()
+        .flat_map(|check| check.commands())
+        .map(Step::Cargo);
+    let mut failed = 0;
     let mut total = 0;
-    for check in checks() {
-        for mut command in check.commands() {
-            total += 1;
-            let shown = show(&command);
-            if list {
-                println!("{shown}");
-                continue;
+    for step in std::iter::once(Step::DriverAmdFeatures).chain(cargo_checks) {
+        total += 1;
+        let shown = match &step {
+            Step::DriverAmdFeatures => "Check driver-amd capability features".to_owned(),
+            Step::Cargo(command) => show(command),
+        };
+        if list {
+            match step {
+                Step::DriverAmdFeatures => println!("# {shown}"),
+                Step::Cargo(_) => println!("{shown}"),
             }
+            continue;
+        }
+        if github {
+            println!("::group::{shown}");
+        } else {
+            println!("+ {shown}");
+        }
+        let result = match step {
+            Step::DriverAmdFeatures => check_driver_amd_features(&root),
+            Step::Cargo(mut command) => command
+                .current_dir(&root)
+                .status()
+                .map_err(|e| e.to_string())
+                .and_then(|status| {
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(status.to_string())
+                    }
+                }),
+        };
+        if github {
+            println!("::endgroup::");
+        }
+        if let Err(error) = result {
+            println!("FAIL {shown}: {error}");
             if github {
-                println!("::group::{shown}");
-            } else {
-                println!("+ {shown}");
+                println!("::error title=fbuild checks::{shown}");
             }
-            let status = command.current_dir(&root).status();
-            if github {
-                println!("::endgroup::");
-            }
-            if !status.as_ref().is_ok_and(|status| status.success()) {
-                println!("FAIL {shown}");
-                if github {
-                    println!("::error title=fbuild checks::{shown}");
-                }
-                failed.push(shown);
-            }
+            failed += 1;
         }
     }
     if list {
         return Ok(());
     }
-    println!("\n{} of {total} checks passed", total - failed.len());
-    match failed.len() {
+    println!("\n{} of {total} checks passed", total - failed);
+    match failed {
         0 => Ok(()),
         n => Err(format!("{n} check(s) failed")),
     }
@@ -274,14 +362,60 @@ mod tests {
         assert_eq!(shown(&Check::test("a").lib()), ["cargo test -p a --lib"]);
     }
 
+    fn workspace_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    #[test]
+    fn workspace_driver_amd_has_only_approved_features() {
+        check_driver_amd_features(&workspace_root()).unwrap();
+    }
+
+    #[test]
+    fn driver_amd_guard_checks_explicit_and_implicit_cargo_features() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "fstart-driver-amd"
+version = "0.1.0"
+
+[features]
+default = ["acpi"]
+acpi = ["dep:hidden", "forwarded/extra", "weak?/extra"]
+zen6 = []
+
+[dependencies]
+hidden = { package = "private-thing", version = "1", optional = true }
+forwarded = { package = "some-lib", version = "1", optional = true }
+weak = { package = "another-lib", version = "1", optional = true }
+required = "1"
+
+[target.'cfg(target_os = "none")'.build-dependencies]
+target-alias = { package = "build-tool", version = "1", optional = true }
+
+[dev-dependencies]
+testing-tool = "1"
+"#,
+        )
+        .unwrap();
+
+        let error = check_driver_amd_features(tmp.path()).unwrap_err();
+        assert!(
+            error.starts_with(
+                "crates/driver-amd/Cargo.toml: unapproved Cargo features: forwarded, target-alias, weak, zen6."
+            ),
+            "{error}"
+        );
+        assert!(error.contains("crates/platform-amd") && error.contains("boards/"));
+    }
+
     #[test]
     fn every_check_names_a_workspace_package() {
-        let output = Command::new("cargo")
-            .args(["metadata", "--no-deps", "--format-version=1"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .unwrap();
-        let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let metadata = workspace_metadata(&workspace_root()).unwrap();
         let members: Vec<_> = metadata["packages"]
             .as_array()
             .unwrap()

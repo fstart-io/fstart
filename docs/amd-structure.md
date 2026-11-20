@@ -35,6 +35,10 @@ driver-amd has no features for SoCs or IP versions: it builds every block,
 and the linker keeps what a board's SoCs reach (release builds use LTO,
 executables link with `--gc-sections`). Its features are for optional
 dependencies only (`acpi`, `smbios`, `smm`, `spi-flash`, `testing`).
+`fbuild checks` enforces this feature list, including features Cargo creates
+implicitly for optional dependencies. Use `dep:` to keep an optional
+dependency behind an approved capability rather than exposing it as a
+separate feature.
 
 ## platform-amd: SoCs
 
