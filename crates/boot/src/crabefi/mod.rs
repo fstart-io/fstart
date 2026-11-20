@@ -270,16 +270,12 @@ fn launch_with_adapters(
             .iter()
             .for_each(|byte| crabefi::DebugOutput::write_byte(output, *byte));
     }
-    // A build-time fstart log level also sets CrabEFI's, which otherwise
-    // logs at debug. CrabEFI's own init is idempotent and keeps the level.
-    if let Some(verbosity) = fstart_log::BUILD_VERBOSITY {
-        crabefi::logger::init();
-        let index = match verbosity {
-            fstart_log::Verbosity::Off => 0,
-            fstart_log::Verbosity::Max(level) => level as usize + 1,
-        };
-        crabefi::logger::set_level(crabefi::logger::LEVEL_CHOICES[index]);
-    }
+    // CrabEFI logs at fstart's level: the `debug_level` option the stage
+    // resolved, within the build's. Its own level setting is then gone.
+    crabefi::logger::set_platform_level(crabefi_level(
+        fstart_log::BUILD_VERBOSITY,
+        fstart_log::max_level(),
+    ));
     let mut variable_storage = launch.variable_storage;
     let mut launch_settings = launch.settings;
     let hooks = launch_settings
@@ -315,6 +311,44 @@ fn launch_with_adapters(
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })
+}
+
+/// CrabEFI's level for fstart's `level` in a build of `verbosity`: never more
+/// than the build prints itself.
+fn crabefi_level(
+    verbosity: Option<fstart_log::Verbosity>,
+    level: fstart_log::Level,
+) -> crabefi::logger::LevelFilter {
+    use crabefi::logger::LevelFilter;
+    use fstart_log::{Level, Verbosity};
+    let level = match verbosity {
+        Some(Verbosity::Off) => return LevelFilter::Off,
+        Some(Verbosity::Max(build)) => level.min(build),
+        None => level,
+    };
+    match level {
+        Level::Error => LevelFilter::Error,
+        Level::Warn => LevelFilter::Warn,
+        Level::Info => LevelFilter::Info,
+        Level::Debug => LevelFilter::Debug,
+        Level::Trace => LevelFilter::Trace,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn crabefi_logs_at_fstarts_level_within_the_build() {
+    use crabefi::logger::LevelFilter;
+    use fstart_log::{Level, Verbosity};
+    assert_eq!(crabefi_level(None, Level::Trace), LevelFilter::Trace);
+    assert_eq!(crabefi_level(None, Level::Warn), LevelFilter::Warn);
+    let info = Some(Verbosity::Max(Level::Info));
+    assert_eq!(crabefi_level(info, Level::Error), LevelFilter::Error);
+    assert_eq!(crabefi_level(info, Level::Trace), LevelFilter::Info);
+    assert_eq!(
+        crabefi_level(Some(Verbosity::Off), Level::Error),
+        LevelFilter::Off
+    );
 }
 
 /// Enable architectural CPU features expected by common UEFI applications.
