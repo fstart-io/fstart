@@ -118,7 +118,9 @@ full raw SPI dump from the target machine, not a BIOS region, capsule or ZIP.
 The flash capacity and enabled descriptor, BIOS, ME, GbE and PDR ranges must
 match the build. Only BIOS is replaced; every other byte, including gaps, is
 preserved. The report records the source hash and preserved ranges and hashes.
-A layout match does not authenticate firmware or identify the board.
+A layout match does not authenticate firmware or identify the board. With
+`--intel-flash`, use fresh output filenames: none may already exist, so the
+original backup cannot be overwritten, even through a link.
 
 `Bundle::assemble` (`crates/image-build/src/bundle.rs`) runs the plan's image
 steps (`image_steps::execute`), as `fbuild assemble` does, over an in-memory

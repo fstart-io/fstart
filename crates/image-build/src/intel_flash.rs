@@ -62,7 +62,11 @@ pub(crate) fn validate(layout: &IntelIfdFlashLayout, rom: &[u8]) -> Result<Range
     let fcba = ((map & 0xff) << 4) as usize;
     let frba = (((map >> 16) & 0xff) << 4) as usize;
     let fmba = ((word(header + 8)? & 0xff) << 4) as usize;
-    if fcba < header + 16 || fcba + 12 > frba || frba + 20 > fmba || fmba >= fd.len() {
+    if fcba < header + 16
+        || fcba + 12 > frba
+        || frba + 4 * (nr as usize + 1) > fmba
+        || fmba >= fd.len()
+    {
         return Err("unsupported or overlapping Intel descriptor sections".into());
     }
     let component = word(fcba)?;
@@ -77,6 +81,14 @@ pub(crate) fn validate(layout: &IntelIfdFlashLayout, rom: &[u8]) -> Result<Range
     }
     for kind in [Kind::Descriptor, Kind::Bios, Kind::Me, Kind::Gbe, Kind::Pdr] {
         let index = kind.flreg_index().unwrap();
+        // NR is the last declared FLREG. Bytes after it may be erased
+        // padding or part of the next section, never another region.
+        if index > nr as usize {
+            if layout.regions.as_slice().iter().any(|r| r.kind == kind) {
+                return Err(format!("IFD lacks expected {} region", kind.as_str()));
+            }
+            continue;
+        }
         let reg = word(frba + index * 4)?;
         let first = reg & 0xfff;
         let last = (reg >> 16) & 0xfff;
@@ -85,7 +97,7 @@ pub(crate) fn validate(layout: &IntelIfdFlashLayout, rom: &[u8]) -> Result<Range
         let actual = if first > last {
             None
         } else {
-            if index as u32 > nr || reg & 0xf000_f000 != 0 {
+            if reg & 0xf000_f000 != 0 {
                 return Err(format!("unsupported active IFD FLREG{index}"));
             }
             Some((first << 12, (last - first + 1) << 12))
@@ -166,7 +178,7 @@ mod tests {
             (0x44, 0x007f_0040),
             (0x48, 0x1fff),
             (0x4c, 0x0002_0001),
-            (0x50, 0x1fff),
+            (0x50, u32::MAX), // erased padding after FLREG3, as on T61
         ] {
             rom[at..at + 4].copy_from_slice(&word.to_le_bytes());
         }
