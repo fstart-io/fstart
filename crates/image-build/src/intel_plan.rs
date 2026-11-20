@@ -110,6 +110,28 @@ pub struct IntelReservations {
     pub store: Span,
 }
 
+/// Early ROM WP MTRR, following coreboot's CACHE_ROM_SIZE in cpu/x86/mtrr.h.
+/// Flash geometry is physical; this is a cache policy ending at 4 GiB.
+/// The cache window can include unmapped ROM or cover only the top of a large ROM.
+pub(crate) fn rom_cache_window(flash_size: u64, car: Span) -> Result<Span, String> {
+    const TOP: u64 = 1 << 32;
+    if !(4096..=TOP).contains(&flash_size) {
+        return Err("invalid ROM size".into());
+    }
+    let gap = TOP
+        .checked_sub(car.end()?)
+        .filter(|gap| *gap >= 4096)
+        .ok_or("no page above CAR for ROM MTRR")?;
+    let size = flash_size
+        .next_power_of_two()
+        .min(1 << gap.ilog2())
+        .min(16 << 20);
+    Ok(Span {
+        base: TOP - size,
+        size,
+    })
+}
+
 impl IntelReservations {
     /// Family policy projects concrete checks; the ELF validator has no roles.
     pub fn elf_expectations(
@@ -209,16 +231,16 @@ impl IntelReservations {
                 }
             }
         }
+        let cache = rom_cache_window(self.flash.size, self.bootblock.writable)?;
         for (name, span) in ram_regions {
-            if span.overlaps(self.flash) {
-                return Err(format!("{name} overlaps flash"));
+            if span.overlaps(self.firmware) || span.overlaps(cache) {
+                return Err(format!(
+                    "{name} overlaps mapped BIOS or its ROM cache window"
+                ));
             }
         }
         for stage in [self.bootblock, self.postcar, self.ramstage] {
             stage.validate()?;
-        }
-        if !self.flash.size.is_power_of_two() || !self.flash.base.is_multiple_of(self.flash.size) {
-            return Err("flash must fit one aligned ROM MTRR".into());
         }
         for span in [
             self.postcar.load_window()?,
@@ -282,5 +304,36 @@ impl IntelReservations {
             regions.push(heap.region(RegionKind::Heap));
         }
         EncodedLayout::encode(index, &regions).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rom_cache_stops_above_car() {
+        // A six-MiB gap leaves room for a single four-MiB MTRR.
+        let car = Span {
+            base: 0xff9f_0000,
+            size: 0x10000,
+        };
+        assert_eq!(
+            rom_cache_window(32 << 20, car).unwrap(),
+            Span {
+                base: 0xffc0_0000,
+                size: 4 << 20
+            }
+        );
+        assert!(
+            rom_cache_window(
+                3 << 20,
+                Span {
+                    base: 0xffff_0000,
+                    size: 0x10000
+                }
+            )
+            .is_err()
+        );
     }
 }
