@@ -179,6 +179,34 @@ pub fn render(base: &Report, head: &Report, base_commit: Option<&str>) -> Result
         ));
         lines.push(String::new());
     }
+    let mut sram_rows = Vec::new();
+    for (board, stages) in &head.boards {
+        for (stage, sizes) in stages {
+            if let Some(sram) = &sizes.sram {
+                let free = sram
+                    .capacity
+                    .checked_sub(sram.used)
+                    .ok_or("invalid SRAM usage")?;
+                sram_rows.push(format!(
+                    "| {board} | {stage} | {} | {} | {} |",
+                    number(sram.used.into()),
+                    number(sram.capacity.into()),
+                    number(free.into())
+                ));
+            }
+        }
+    }
+    if !sram_rows.is_empty() {
+        lines.extend([
+            "**SPL SRAM headroom** (bytes; used includes alignment, BSS and reserved stack)."
+                .into(),
+            String::new(),
+            "| Board | Stage | Used | Capacity | Remaining |".into(),
+            "|---|---|---:|---:|---:|".into(),
+        ]);
+        lines.extend(sram_rows);
+        lines.push(String::new());
+    }
     if base.source_date_epoch.is_none() || base.source_date_epoch != head.source_date_epoch {
         lines.push("Stage sizes are not comparable: the builds do not record the same `SOURCE_DATE_EPOCH`. A baseline built with the same fixed epoch is needed.".into());
         lines.push(String::new());
@@ -196,9 +224,13 @@ pub fn render(base: &Report, head: &Report, base_commit: Option<&str>) -> Result
     };
     let old = flatten(&base.boards);
     let new = flatten(&head.boards);
+    let counters = |s: &StageSizes| (s.flat, s.text, s.rodata, s.data, s.bss);
     let changed: Vec<_> = new
         .keys()
-        .filter(|k| old.get(*k).is_some_and(|o| o != &new[*k]))
+        .filter(|k| {
+            old.get(*k)
+                .is_some_and(|o| counters(o) != counters(&new[*k]))
+        })
         .collect();
     let added: Vec<_> = new.keys().filter(|k| !old.contains_key(*k)).collect();
     let removed: Vec<_> = old.keys().filter(|k| !new.contains_key(*k)).collect();
@@ -283,6 +315,30 @@ mod tests {
     fn report(epoch: Option<u64>, flat: u64, text: u64) -> Report {
         serde_json::from_value(json!({"commit": "c".repeat(40), "source_date_epoch": epoch,
             "boards": {"q35": {"stage": {"flat": flat, "text": text, "rodata": 0, "data": 0, "bss": 0}}}})).unwrap()
+    }
+
+    #[test]
+    fn headroom_is_absolute_even_without_a_comparable_baseline() {
+        let base = report(None, 16, 16);
+        let mut head = report(Some(0), 16, 16);
+        head.boards
+            .get_mut("q35")
+            .unwrap()
+            .get_mut("stage")
+            .unwrap()
+            .sram = Some(crate::sizes::SramUsage {
+            used: 16000,
+            capacity: 32768,
+        });
+        let text = render(&base, &head, None).unwrap();
+        assert!(text.contains("| q35 | stage | 16,000 | 32,768 | 16,768 |"));
+        assert!(text.contains("not comparable"));
+
+        // Same epoch, same section sizes, but only head records SRAM usage.
+        let text = render(&report(Some(0), 16, 16), &head, None).unwrap();
+        assert!(text.contains("No stage size changed."));
+        assert!(text.contains("16,768"));
+        assert!(!text.contains("Δ image"));
     }
 
     #[test]
