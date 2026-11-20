@@ -247,7 +247,9 @@ handler. After editing `www/`, copy it into `target/image-web` again.
 
 The `web` job in PR CI assembles a self-contained `qemu-q35` UEFI bundle and
 a `qemu-armv7` Linux bundle with a generated flat kernel input. This checks
-assembly and input provenance, not whether the fixture boots.
+assembly and input provenance, not whether the fixture boots. It also assembles
+MJ11 UEFI with a synthetic donor built from the board's directory recipe and
+inert placeholder bytes; CI neither downloads nor redistributes vendor firmware.
 It runs the same `ci/test-web.mjs` test as the
 nightly: open each bundle through the WASM bindings (under Node) and compare
 WASM and native `compose-bundle` output byte for byte using the same signing
@@ -255,5 +257,5 @@ key. The nightly still validates the full catalog and compares every build
 that can be assembled without additional inputs. To include the AMD recipes
 locally, point `FSTART_TEST_DONOR` (MJ11), `FSTART_TEST_SP3_DONOR` (Tyan S8030),
 `FSTART_TEST_ETHANOLX_DONOR`, `FSTART_TEST_S8040_DONOR` or `FSTART_TEST_ONYX_DONOR`
-at a local vendor image or download. Donors are never needed in CI and must
+at a local vendor image or download. Real donors are never needed in CI and must
 not be uploaded.
