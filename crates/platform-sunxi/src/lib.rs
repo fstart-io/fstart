@@ -47,7 +47,7 @@ pub mod fel;
 mod stage;
 #[cfg(all(
     feature = "stage",
-    feature = "linux",
+    feature = "payload-linux",
     any(target_arch = "arm", target_arch = "aarch64")
 ))]
 pub use stage::LinuxPayload;

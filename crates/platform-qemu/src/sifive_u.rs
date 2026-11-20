@@ -70,13 +70,13 @@ impl Default for QemuSifiveUConfig {
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 mod stage {
     use super::*;
-    #[cfg(feature = "crabefi")]
+    #[cfg(feature = "payload-uefi")]
     use fstart_core::services::Console;
     use fstart_driver_uart::sifive::{SifiveUart, SifiveUartConfig};
 
     /// DRAM-resident state retained through selected payload launch.
     pub struct QemuSifiveUMainstage {
-        #[cfg(any(feature = "linux", feature = "crabefi"))]
+        #[cfg(any(feature = "payload-linux", feature = "payload-uefi"))]
         config: &'static QemuSifiveUConfig,
         console: SifiveUart,
     }
@@ -109,7 +109,8 @@ mod stage {
         fstart_stage::step("boot media", || {
             crate::boot::from_dtb(
                 fstart_arch::riscv64::boot_dtb_addr(),
-                cfg!(any(feature = "linux", feature = "crabefi")).then_some(config.dtb_addr),
+                cfg!(any(feature = "payload-linux", feature = "payload-uefi"))
+                    .then_some(config.dtb_addr),
                 config.ram_base,
                 config.firmware_base,
                 config.firmware_size,
@@ -117,7 +118,7 @@ mod stage {
         });
         fstart_log::info!("sifive-u {}", crate::messages::READY);
         let mainstage = QemuSifiveUMainstage {
-            #[cfg(any(feature = "linux", feature = "crabefi"))]
+            #[cfg(any(feature = "payload-linux", feature = "payload-uefi"))]
             config,
             console,
         };
@@ -129,7 +130,7 @@ mod stage {
     }
 
     /// Without CrabEFI nothing returns from OpenSBI here.
-    #[cfg(not(feature = "crabefi"))]
+    #[cfg(not(feature = "payload-uefi"))]
     pub fn resume_sbi(
         _: &'static QemuSifiveUConfig,
         _: &'static SifiveUartConfig,
@@ -140,7 +141,7 @@ mod stage {
     }
 
     /// Recreate stage-local state after OpenSBI enters S-mode.
-    #[cfg(feature = "crabefi")]
+    #[cfg(feature = "payload-uefi")]
     pub fn resume_sbi(
         config: &'static QemuSifiveUConfig,
         console_config: &'static SifiveUartConfig,
@@ -176,7 +177,7 @@ mod stage {
             boot: impl FnOnce(fstart_payload::Handoff<'_>) -> !,
         ) -> ! {
             use fstart_payload::{Description, Handoff, Placement};
-            #[cfg(any(feature = "linux", feature = "crabefi"))]
+            #[cfg(any(feature = "payload-linux", feature = "payload-uefi"))]
             {
                 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
                 use fstart_payload::Range;
@@ -205,9 +206,9 @@ mod stage {
                 };
                 boot(Handoff::new(description, placement))
             }
-            #[cfg(not(any(feature = "linux", feature = "crabefi")))]
+            #[cfg(not(any(feature = "payload-linux", feature = "payload-uefi")))]
             let _ = (dtb, hart);
-            #[cfg(not(any(feature = "linux", feature = "crabefi")))]
+            #[cfg(not(any(feature = "payload-linux", feature = "payload-uefi")))]
             boot(Handoff::new(
                 Description::new(&[], Default::default()),
                 Placement::default(),

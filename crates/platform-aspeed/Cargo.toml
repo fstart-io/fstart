@@ -33,7 +33,7 @@ ast2500 = ["dep:aspeed-pac", "aspeed-pac?/ast2500-arm", "dep:aspeed-hal", "aspee
 bundle-ast2500-bootblock = ["stage", "ast2500", "armv5te"]
 bundle-ast2500-main = ["stage", "ast2500", "armv5te"]
 # Bare ELF payloads, entered at e_entry.
-elf = ["fstart-payload?/elf"]
+payload-elf = ["fstart-payload?/elf"]
 
 [dependencies]
 aspeed-hal = { workspace = true, optional = true }

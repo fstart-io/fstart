@@ -32,7 +32,7 @@ riscv64 = [
   "fstart-arch?/riscv64", "fstart-arch?/platform-entry",
   "fstart-stage?/riscv64",
 ]
-linux = ["fstart-payload?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
+payload-linux = ["fstart-payload?/linux", "fstart-stage?/ffs", "fstart-stage?/ffs-signature"]
 # Firmware policy belongs to this platform, not per-board forwarding recipes.
 # SRAM SPLs use only the bounded, allocation-free bootstrap loader.
 # No SoC features: every SoC for a target architecture compiles and the board's

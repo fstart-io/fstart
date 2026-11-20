@@ -17,8 +17,8 @@ stage = [
 ]
 # The FU740 stage, the one firmware unit.
 bundle-fu740 = ["stage"]
-linux = ["fstart-payload?/linux"]
-crabefi = ["fstart-payload?/crabefi"]
+payload-linux = ["fstart-payload?/linux"]
+payload-uefi = ["fstart-payload?/crabefi"]
 
 [dependencies]
 fstart-core = { workspace = true }

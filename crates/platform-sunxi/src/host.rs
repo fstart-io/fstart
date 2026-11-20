@@ -390,7 +390,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                &[policy.bundle_main, "linux"][..1 + usize::from(linux)],
+                &[policy.bundle_main, "payload-linux"][..1 + usize::from(linux)],
                 &policy,
                 main.linker_script,
                 main_output,
@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(bootblock.target, "armv7a-none-eabi");
         assert_eq!(bootblock.features, ["bundle-armv7-bootblock"]);
         let main = plan.unit("main").unwrap();
-        assert_eq!(main.features, ["bundle-armv7-main", "linux"]);
+        assert_eq!(main.features, ["bundle-armv7-main", "payload-linux"]);
         for unit in &plan.units {
             assert_eq!(unit.build_std.as_deref(), Some("core,alloc"));
         }
@@ -548,7 +548,7 @@ mod tests {
         );
         assert_eq!(
             plan.unit("main").unwrap().features,
-            ["bundle-aarch64-main", "linux"]
+            ["bundle-aarch64-main", "payload-linux"]
         );
         let payload = plan.ffs_assembly().unwrap().payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();

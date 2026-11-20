@@ -227,8 +227,8 @@ pub fn resolve(
     }
     let mut features = vec!["bundle-fu740".into()];
     match payload.as_str() {
-        "linux" => features.push("linux".into()),
-        "uefi" => features.push("crabefi".into()),
+        "linux" => features.push("payload-linux".into()),
+        "uefi" => features.push("payload-uefi".into()),
         _ => {}
     }
     let unit = CompilationUnit {
