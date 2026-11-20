@@ -94,6 +94,14 @@ impl Gm45GraphicsPolicy {
             Self::Hybrid => DEVEN_PEG | DEVEN_IGD | DEVEN_IGD_SECONDARY,
         }
     }
+
+    const fn from_deven(deven: u32) -> Self {
+        match (deven & DEVEN_IGD != 0, deven & DEVEN_PEG != 0) {
+            (true, true) => Self::Hybrid,
+            (false, true) => Self::Discrete,
+            _ => Self::Integrated,
+        }
+    }
 }
 
 /// Typed, immutable chipset configuration. A board may override graphics
@@ -510,6 +518,9 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     }
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
+        // Recover the bootblock's runtime graphics selection from DEVEN so
+        // ramstage's training identity and IGD probing agree with it.
+        self.graphics = Gm45GraphicsPolicy::from_deven(self.hostbridge().deven.get());
         // Mainstage is authenticated and reached only after bootblock's RAM
         // probes. Recover decode from hardware, never retrain or test live RAM.
         self.memory_map()?;
@@ -578,9 +589,6 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
     }
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let (revision, _, _) = self.trained_mode.ok_or(ServiceError::NotInitialized)?;
-        if self.graphics != Gm45GraphicsPolicy::Integrated {
-            return Err(ServiceError::InvalidParam);
-        }
         self.post_dram_pcie(revision)
     }
     fn finish_early_post_dram_init(&mut self) -> Result<(), ServiceError> {
@@ -1086,17 +1094,13 @@ mod tests {
         assert_eq!(driver.graphics_policy(), Gm45GraphicsPolicy::Discrete);
     }
     #[test]
-    fn gm45_post_dram_rejects_peg_without_board_slot_policy() {
-        use crate::IntelNorthbridgeDriver;
-        static CONFIG: IntelGm45Config = IntelGm45Config::new();
-        let mut driver = IntelGm45::new_from_config(&CONFIG).unwrap();
-        driver.trained_mode = Some((6, 800, 400));
-        for policy in [Gm45GraphicsPolicy::Discrete, Gm45GraphicsPolicy::Hybrid] {
-            driver.set_graphics_policy(policy);
-            assert!(matches!(
-                driver.early_post_dram_init(),
-                Err(ServiceError::InvalidParam)
-            ));
+    fn gm45_graphics_policy_round_trips_through_deven() {
+        for policy in [
+            Gm45GraphicsPolicy::Integrated,
+            Gm45GraphicsPolicy::Discrete,
+            Gm45GraphicsPolicy::Hybrid,
+        ] {
+            assert_eq!(Gm45GraphicsPolicy::from_deven(policy.deven_bits()), policy);
         }
     }
     #[test]

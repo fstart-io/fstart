@@ -65,21 +65,31 @@ pub fn init(
     options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (bool, bool) {
-    let bluetooth = bdc_presence.is_low().unwrap_or(false);
+    let bluetooth = if crate::config::IS_X301 {
+        // coreboot x200/Kconfig: H8_HAS_BDC_GPIO_DETECTION is X200-only;
+        // without it coreboot assumes the Bluetooth card is installed.
+        true
+    } else {
+        bdc_presence.is_low().unwrap_or(false)
+    };
     let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
     pmh7.backlight_enable(true);
-    pmh7.dock_event_enable(true);
+    pmh7.dock_event_enable(!crate::config::IS_X301);
     pmh7.trackpoint_enable(options.trackpoint);
     pmh7.touchpad_enable(options.touchpad);
 
     let ec = Ec::new(h8_config.resources.os);
     let h8 = H8::new(ec);
     let initialized = h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, true, options, resume);
-    let docked = dock_present(dock_id);
-    // `dock_connect()`: dock USB power in the EC, then the connect GPIO.
-    let dock = !docked
-        || (ec.modify_register(h8::CONFIG2::DOCK_USB_POWER::SET)
-            && dock_connect.set_state(PinState::High).is_ok());
+    let dock = if crate::config::IS_X301 {
+        true
+    } else {
+        let docked = dock_present(dock_id);
+        // `dock_connect()`: dock USB power in the EC, then the connect GPIO.
+        !docked
+            || (ec.modify_register(h8::CONFIG2::DOCK_USB_POWER::SET)
+                && dock_connect.set_state(PinState::High).is_ok())
+    };
     (bluetooth, initialized && dock)
 }
 
@@ -99,6 +109,9 @@ pub fn dock_present(id: &mut [impl InputPin; 3]) -> bool {
 /// report a tablet (coreboot `drivers/lenovo/wacom.c`): a responding
 /// SuperIO and a tablet machine type.
 pub fn digitizer_init(part_number: Option<&str>) -> bool {
+    if crate::config::IS_X301 {
+        return false;
+    }
     fstart_driver_superio::pc87382::configure(PC87382_BASE, PC87382_DEVICES);
     fstart_driver_superio::pc87382::sid(PC87382_BASE) != 0xff
         && part_number.is_some_and(fstart_driver_lenovo::wacom::is_tablet)

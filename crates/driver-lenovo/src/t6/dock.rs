@@ -258,6 +258,28 @@ pub fn setup_dock_console(config: &H8Config) -> Result<ConsoleRoute, DeviceError
     }
 }
 
+/// T400-series dock detection (coreboot `mainboard/lenovo/t400/dock.c`):
+/// reads the 3-bit dock ID from PC87382 GPDI0 bit 4 and GPDI2 bits [1:0].
+/// Dock type 7 means undocked; type 2 (2505 Essential Port Replicator) has
+/// no serial/parallel port or dock LEDs.
+pub const DOCK_TYPE_2505: u8 = 2;
+pub const DOCK_TYPE_NONE: u8 = 7;
+
+pub fn decode_dock_id(gpdi0: u8, gpdi2: u8) -> u8 {
+    ((gpdi0 >> 4) & 1) | ((gpdi2 & 3) << 1)
+}
+
+pub fn setup_t400_dock_console(config: &H8Config) -> Result<ConsoleRoute, DeviceError> {
+    let gpio = initialize_dlpc()?;
+    let id = decode_dock_id(gpio.read_input(0)?, gpio.read_input(2)?);
+    if id == DOCK_TYPE_NONE || id == DOCK_TYPE_2505 {
+        return Ok(ConsoleRoute::Undocked);
+    }
+    connect(&gpio)?;
+    let _ = set_dock_leds(&H8::new(Ec::new(config.resources.os)), CONNECTED_LEDS);
+    Ok(ConsoleRoute::Dock)
+}
+
 pub fn connected() -> bool {
     laptop()
         .and_then(|dlpc| dlpc.dlpc_connected(DLPC_SWITCH))

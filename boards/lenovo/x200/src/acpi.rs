@@ -48,6 +48,7 @@ pub fn x200_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> Vec<u8> {
     dsdt_aml::<<crate::Board as fstart_platform_intel::IntelBoardFacts>::Platform>(
         &h8,
         fstart_driver_intel::ich9::ich9::DEFAULT_GPIOBASE,
+        !crate::config::IS_X301,
         digitizer,
     )
 }
@@ -62,12 +63,12 @@ pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         bios_version: "CBET4000 fstart 0.1.0",
         bios_release_date: fstart_platform_intel::SMBIOS_RELEASE_DATE,
         sys_manufacturer: "LENOVO",
-        sys_product: "ThinkPad X200",
-        sys_version: "ThinkPad X200",
+        sys_product: crate::config::PRODUCT_NAME,
+        sys_version: crate::config::PRODUCT_NAME,
         sys_serial: None,
         sys_uuid: None,
         bb_manufacturer: "LENOVO",
-        bb_product: "ThinkPad X200",
+        bb_product: crate::config::PRODUCT_NAME,
         bb_version: "1.0",
         bb_serial: None,
         chassis_type: 0x0a,
@@ -79,9 +80,16 @@ pub static X200_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
 /// Board DSDT. The platform's IGD provides `INCB`/`DECB`, the Core 2 CPU
 /// AML provides `\CNOT`; `gpio_base` is the ICH GPIOBASE.
 #[must_use]
-pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) -> Vec<u8> {
+pub fn dsdt_aml<N: PcNamespace>(
+    h8: &H8Config,
+    gpio_base: u16,
+    has_dock: bool,
+    digitizer: bool,
+) -> Vec<u8> {
     let mut aml = fstart_driver_lenovo::thinkpad::h8_dsdt_aml::<N>(h8);
-    aml.extend(dock_aml::<N>(gpio_base));
+    if has_dock {
+        aml.extend(dock_aml::<N>(gpio_base));
+    }
     if digitizer {
         aml.extend(
             fstart_acpi::aml_linker::scope_vec(
@@ -201,7 +209,7 @@ mod tests {
         }
         .into();
         aml.extend(dsdt_aml::<fstart_platform_intel::gm45::Gm45Ich9>(
-            &h8, 0x580, true,
+            &h8, 0x580, true, true,
         ));
         assert_eq!(aml.windows(4).filter(|name| *name == b"DTR_").count(), 1);
         let dir =

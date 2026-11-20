@@ -1,4 +1,4 @@
-//! Lenovo X200 board wiring; chipset mechanisms remain in GM45/ICH9.
+//! Lenovo X200/X301 board wiring; chipset mechanisms remain in GM45/ICH9.
 use fstart_core::{
     ConstVec, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion as Kind,
     IntelIfdRegionConfig as Region,
@@ -49,7 +49,17 @@ pub const FLASH: IntelIfdFlashLayout = {
     )
 };
 
-pub const BOARD_NAME: &str = "lenovo-x200";
+pub const IS_X301: bool = cfg!(feature = "x301");
+pub const BOARD_NAME: &str = if IS_X301 {
+    "lenovo-x301"
+} else {
+    "lenovo-x200"
+};
+pub const PRODUCT_NAME: &str = if IS_X301 {
+    "ThinkPad X301"
+} else {
+    "ThinkPad X200"
+};
 pub const BOARD_PACKAGE: &str = "fstart-board-lenovo-x200";
 
 const LED_VBT: &str = "data_led.vbt";
@@ -93,7 +103,8 @@ pub const X200_H8: fstart_driver_lenovo::h8::H8Config = {
         has_wwan: true,
         has_uwb: true,
         has_thinklight: true,
-        second_thermal_zone: true,
+        // coreboot x200/Kconfig: H8_HAS_2ND_THERMAL_ZONE is X200-only.
+        second_thermal_zone: !IS_X301,
         // coreboot x200 `mainboard_fill_gnvs()`.
         critical_temp_celsius: 100,
         passive_temp_celsius: 90,
@@ -108,92 +119,98 @@ pub const X200_H8: fstart_driver_lenovo::h8::H8Config = {
     }
 };
 
-/// The X200 SPD mux is initially on the DIMM sockets; GPIO42 selects the
+/// The X200/X301 SPD mux is initially on the DIMM sockets; GPIO42 selects the
 /// board EEPROM only after memory initialization (coreboot romstage.c).
-pub static X200_PLATFORM: Gm45Ich9Platform = Gm45Ich9Config::new()
-    .laptop()
-    .pci_subsystem_ids(X200_SUBSYSTEM_IDS)
-    // devicetree: 03.1, 03.2 and 03.3 off; HECI 03.0 stays.
-    .disabled_me_functions(0b1110)
-    .max_cpus(2)
-    .spd_addresses([0x50, 0, 0x51, 0])
-    // coreboot i82801ix leaves DxxIP/DxxIR as found and reads DxxIR
-    // when building _PRT; preserve that mapping instead of inventing one.
-    .preserve_hardware_pirq()
-    .pirq_routing([0x0b, 0x0b, 0x0b, 0x0b, 0x80, 0x80, 0x80, 0x80])
-    // WWAN, WLAN, UWB and ExpressCard (variants/x200/overridetree.cb):
-    // all four are slots at 10 W, the ExpressCard port is hot-pluggable.
-    .pcie_port(0, true)
-    .pcie_port(1, true)
-    .pcie_port(2, true)
-    .pcie_port(3, true)
-    .pcie_slot(0, MINI_PCIE_POWER, false)
-    .pcie_slot(1, MINI_PCIE_POWER, false)
-    .pcie_slot(2, MINI_PCIE_POWER, false)
-    .pcie_slot(3, MINI_PCIE_POWER, true)
-    .pcie_attached(3, &EXPRESSCARD)
-    .gpe0_en(0x0100_0000)
-    .gpi_routing([
-        GpiRoute::Disabled,
-        GpiRoute::Sci,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Sci,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-        GpiRoute::Disabled,
-    ])
-    .c_states(true, true, true)
-    .slfm(true)
-    .throttle_duty(2)
-    // cmos.default: power_on_after_fail=Disable.
-    .power_on_after_fail(0)
-    .lpc_fixed_io(LpcFixedIoDecode {
-        com_a: LpcSerialDecode::Com1,
-        com_b: LpcSerialDecode::Com2,
-        lpt: Some(LpcParallelDecode::Lpt378),
-        fdd: Some(LpcFloppyDecode::Fdd3f0),
-    })
-    .lpc_generic_io([
-        LpcGenericIoDecode {
-            base: X200_H8.resources.auxiliary_base.raw(),
-            size: fstart_driver_lenovo::h8::H8Resources::AUXILIARY_SIZE,
-        },
-        LpcGenericIoDecode {
-            base: X200_H8.resources.pmh7_base.raw(),
-            size: fstart_driver_lenovo::h8::H8Resources::PMH7_SIZE as u16,
-        },
-        LpcGenericIoDecode {
-            base: 0x1680,
-            size: 0x20,
-        },
-    ])
-    .sata(SataConfig {
-        mode: SataMode::Ahci,
-        ports: 0x03,
-        hotplug_map: 0,
-        clock_request: false,
-        traffic_monitor: false,
-    })
-    .usb(UsbConfig {
-        ehci: [true; 2],
-        uhci: [true; 6],
-    })
-    // coreboot `USBDEBUG_HCD_INDEX=2`: port 1 of EHCI2 (00:1a.7).
-    .ehci_debug_controller(EhciController::Ehci2)
-    .igd(X200_IGD)
-    .cstates(X200_CSTATES)
-    .hda_verb(0x14f1_5051, 0x17aa_20ff, x200_hda_pins(), X200_BEEP_VERBS)
-    .gpio_pins(x200_gpio_pins())
-    .build();
+pub static X200_PLATFORM: Gm45Ich9Platform = {
+    let base = Gm45Ich9Config::new()
+        .laptop()
+        .pci_subsystem_ids(X200_SUBSYSTEM_IDS)
+        // devicetree: 03.1, 03.2 and 03.3 off; HECI 03.0 stays.
+        .disabled_me_functions(0b1110)
+        .max_cpus(2)
+        .spd_addresses([0x50, 0, 0x51, 0])
+        // coreboot i82801ix leaves DxxIP/DxxIR as found and reads DxxIR
+        // when building _PRT; preserve that mapping instead of inventing one.
+        .preserve_hardware_pirq()
+        .pirq_routing([0x0b, 0x0b, 0x0b, 0x0b, 0x80, 0x80, 0x80, 0x80])
+        // WWAN, WLAN, UWB (ports 0..=2) are Mini PCIe slots at 10 W on both
+        // variants; port 3 (ExpressCard, hot-pluggable) exists only on X200.
+        .pcie_port(0, true)
+        .pcie_port(1, true)
+        .pcie_port(2, true)
+        .pcie_slot(0, MINI_PCIE_POWER, false)
+        .pcie_slot(1, MINI_PCIE_POWER, false)
+        .pcie_slot(2, MINI_PCIE_POWER, false)
+        .gpe0_en(0x0100_0000)
+        .gpi_routing([
+            GpiRoute::Disabled,
+            GpiRoute::Sci,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Sci,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+            GpiRoute::Disabled,
+        ])
+        .c_states(true, true, true)
+        .slfm(true)
+        .throttle_duty(2)
+        // cmos.default: power_on_after_fail=Disable.
+        .power_on_after_fail(0)
+        .lpc_fixed_io(LpcFixedIoDecode {
+            com_a: LpcSerialDecode::Com1,
+            com_b: LpcSerialDecode::Com2,
+            lpt: Some(LpcParallelDecode::Lpt378),
+            fdd: Some(LpcFloppyDecode::Fdd3f0),
+        })
+        .lpc_generic_io([
+            LpcGenericIoDecode {
+                base: X200_H8.resources.auxiliary_base.raw(),
+                size: fstart_driver_lenovo::h8::H8Resources::AUXILIARY_SIZE,
+            },
+            LpcGenericIoDecode {
+                base: X200_H8.resources.pmh7_base.raw(),
+                size: fstart_driver_lenovo::h8::H8Resources::PMH7_SIZE as u16,
+            },
+            LpcGenericIoDecode {
+                base: 0x1680,
+                size: 0x20,
+            },
+        ])
+        .sata(SataConfig {
+            mode: SataMode::Ahci,
+            ports: 0x03,
+            hotplug_map: 0,
+            clock_request: false,
+            traffic_monitor: false,
+        })
+        .usb(UsbConfig {
+            ehci: [true; 2],
+            uhci: [true; 6],
+        })
+        // coreboot `USBDEBUG_HCD_INDEX=2`: port 1 of EHCI2 (00:1a.7).
+        .ehci_debug_controller(EhciController::Ehci2)
+        .igd(X200_IGD)
+        .cstates(X200_CSTATES)
+        .hda_verb(0x14f1_5051, 0x17aa_20ff, x200_hda_pins(), X200_BEEP_VERBS);
+    if IS_X301 {
+        base.gpio_pins(x301_gpio_pins()).build()
+    } else {
+        base.pcie_port(3, true)
+            .pcie_slot(3, MINI_PCIE_POWER, true)
+            .pcie_attached(3, &EXPRESSCARD)
+            .gpio_pins(x200_gpio_pins())
+            .build()
+    }
+};
 
 /// Coreboot x200/blc.c mainboard_vbt_filename(): only a known PWM frequency
 /// of 200 Hz or less identifies a CCFL backlight.
@@ -521,16 +538,83 @@ const fn x200_gpio_pins() -> [gpio::GpioPin; 31] {
     ]
 }
 
+/// Coreboot variants/x301/gpio.c. Unlisted pads select their native functions.
+const fn x301_gpio_pins() -> [gpio::GpioPin; 46] {
+    use gpio::{GpioLevel as Level, input, output};
+    [
+        input(1).inverted(),
+        input(2),
+        input(3),
+        input(4),
+        input(5),
+        input(6),
+        input(7),
+        input(8).inverted(),
+        output(9, Level::High),
+        input(13),
+        input(17),
+        output(18, Level::High),
+        input(19),
+        output(20, Level::High),
+        input(21),
+        input(22),
+        input(23),
+        output(24, Level::High),
+        output(27, Level::Low),
+        output(28, Level::Low),
+        input(29),
+        input(31),
+        output(33, Level::High),
+        output(34, Level::Low),
+        input(36),
+        input(37),
+        input(38),
+        input(39),
+        input(41),
+        output(42, Level::High),
+        input(43),
+        input(44),
+        input(45),
+        input(46),
+        input(47),
+        input(48),
+        output(49, Level::High),
+        input(50),
+        output(51, Level::High),
+        input(52),
+        output(53, Level::High),
+        input(54),
+        output(55, Level::High),
+        input(56),
+        input(57),
+        input(60),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn expresscard_slot_is_the_hotplug_port() {
+    fn expresscard_slot_and_variant_identity_follow_selected_variant() {
         use fstart_platform_intel::IntelPlatformConfig;
-        assert_eq!(X200_PLATFORM.pcie_attached()[3], Some(&EXPRESSCARD));
-        assert!(X200_PLATFORM.southbridge.pcie_slots[3]);
-        assert!(X200_PLATFORM.southbridge.pcie_hotplug[3]);
+        if IS_X301 {
+            assert_eq!(BOARD_NAME, "lenovo-x301");
+            assert_eq!(PRODUCT_NAME, "ThinkPad X301");
+            assert!(!X200_H8.second_thermal_zone);
+            assert!(!X200_PLATFORM.southbridge.pcie_ports[3]);
+            assert!(!X200_PLATFORM.southbridge.pcie_slots[3]);
+            assert!(!X200_PLATFORM.southbridge.pcie_hotplug[3]);
+            assert_eq!(X200_PLATFORM.pcie_attached()[3], None);
+        } else {
+            assert_eq!(BOARD_NAME, "lenovo-x200");
+            assert_eq!(PRODUCT_NAME, "ThinkPad X200");
+            assert!(X200_H8.second_thermal_zone);
+            assert!(X200_PLATFORM.southbridge.pcie_ports[3]);
+            assert_eq!(X200_PLATFORM.pcie_attached()[3], Some(&EXPRESSCARD));
+            assert!(X200_PLATFORM.southbridge.pcie_slots[3]);
+            assert!(X200_PLATFORM.southbridge.pcie_hotplug[3]);
+        }
     }
 
     #[test]

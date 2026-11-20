@@ -51,6 +51,14 @@ impl GpioPort0 {
     pub fn set_level(&self, pin: u8, high: bool) -> Result<(), DeviceError> {
         self.set_levels(&[(pin, high)])
     }
+
+    /// Read physical GPDI input levels for bank 0, 1 or 2 (`base + bank * 4 + 1`).
+    pub fn read_input(&self, bank: u8) -> Result<u8, DeviceError> {
+        if bank > 2 {
+            return Err(DeviceError::ConfigError);
+        }
+        Ok(PioRegister::<u8>::new(self.base + u16::from(bank) * 4 + 1).get())
+    }
 }
 
 tock_registers::register_bitfields![u8,

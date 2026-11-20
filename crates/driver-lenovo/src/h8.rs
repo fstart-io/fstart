@@ -326,11 +326,32 @@ impl H8 {
         options: &crate::options::Options,
         resume: bool,
     ) -> bool {
+        self.init_thinkpad_controls(
+            [config1, 0xa0, 0x01],
+            events,
+            bluetooth,
+            uwb,
+            options,
+            resume,
+        )
+    }
+
+    /// Like [`Self::init_thinkpad`], with explicit `[config1, config2, config3]`
+    /// control bytes (e.g. ThinkPad R500 uses `[0x05, 0xa0, 0x40]`).
+    pub fn init_thinkpad_controls(
+        &self,
+        controls: [u8; 3],
+        events: &[u8; 16],
+        bluetooth: bool,
+        uwb: bool,
+        options: &crate::options::Options,
+        resume: bool,
+    ) -> bool {
         self.clear_out_queue();
         let acknowledged = [
             self.init_config0(H8_CONFIG0_EVENTS_ENABLE),
             self.init_controls(
-                [config1, 0xa0, 0x01],
+                controls,
                 Some(H8Illumination::Thinklight),
                 options.beep_masks([0xfe, 0x96]),
             ),
