@@ -197,7 +197,10 @@ impl LpcFixedIoDecode {
     }
 }
 
-/// Board-level LPC decode policy.
+/// Board-level LPC decode policy shared by ICH8 and ICH9. Both chipset
+/// modules re-export this type and its selectors, not separate chipset
+/// types. Implement a downstream trait for the shared type once; use a
+/// chipset-specific newtype if the implementations need to differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LpcDecodeConfig {
     /// Fixed COM/LPT/FDC decode selector register.
