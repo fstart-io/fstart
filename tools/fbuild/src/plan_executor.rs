@@ -226,10 +226,22 @@ impl Resolved {
         board: &BoardManifest,
         release: bool,
     ) -> Result<crate::build_board::BuildResult, String> {
+        self.build_with_units(root, board, release, |_, _| {})
+    }
+
+    pub fn build_with_units(
+        &self,
+        root: &Path,
+        board: &BoardManifest,
+        release: bool,
+        mut linked: impl FnMut(&CompilationUnit, &Artifacts),
+    ) -> Result<crate::build_board::BuildResult, String> {
         let mut artifacts = BTreeMap::new();
         for unit in self.plan.order()? {
             let selection = self.prepare(root, board, unit, &artifacts, release)?;
-            artifacts.insert(unit.name.clone(), execute(root, unit, &selection, false)?);
+            let output = execute(root, unit, &selection, false)?;
+            linked(unit, &output);
+            artifacts.insert(unit.name.clone(), output);
         }
         let stages = self
             .plan

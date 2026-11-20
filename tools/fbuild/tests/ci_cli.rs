@@ -106,3 +106,59 @@ fn board_json_preserves_sorted_inventory_and_profile_metadata() {
             .any(|b| b["build_profile"]["dependency"] == "fstart-platform-qemu")
     );
 }
+
+#[test]
+fn board_selection_failures_are_reported_without_masking_exit_status() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tmp = tempfile::tempdir().unwrap();
+    let summary = tmp.path().join("summary.md");
+    for command in ["build-boards", "boot-test"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_fbuild"))
+            .args([command, "invalid-board-id"])
+            .env("FSTART_WORKSPACE_ROOT", &root)
+            .env("GITHUB_STEP_SUMMARY", &summary)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let output = String::from_utf8(out.stdout).unwrap();
+        assert!(output.contains("| invalid-board-id |"));
+        assert!(output.contains("Not run: board 'invalid-board-id' not found"));
+        assert!(output.contains("No physical hardware was tested."));
+    }
+    let report = fs::read_to_string(summary).unwrap();
+    assert!(report.contains("### Release builds and host library tests"));
+    assert!(report.contains("### QEMU boot scenarios"));
+}
+
+#[test]
+fn not_run_reports_declared_scenarios_without_creating_boot_logs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let logs = tmp.path().join("logs");
+    let text = success(
+        Command::new(env!("CARGO_BIN_EXE_fbuild"))
+            .args([
+                "boot-test",
+                "qemu-riscv64",
+                "--not-run",
+                "assets unavailable",
+                "--logs",
+            ])
+            .arg(&logs)
+            .env(
+                "FSTART_WORKSPACE_ROOT",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            )
+            .env_remove("GITHUB_STEP_SUMMARY")
+            .output()
+            .unwrap(),
+    );
+    for scenario in ["halt", "linux", "uefi"] {
+        assert!(
+            text.contains(&format!(
+                "| qemu-riscv64 | {scenario} | {scenario} | Not run: assets unavailable |"
+            )),
+            "{text}"
+        );
+    }
+    assert!(!logs.exists());
+}

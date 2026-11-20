@@ -6,6 +6,8 @@ use fbuild::{
 use fstart_image_build::plan::BuildSelection;
 use std::process;
 
+mod verification;
+
 #[derive(Parser)]
 #[command(name = "fbuild", about = "fstart firmware build orchestrator")]
 struct Cli {
@@ -93,6 +95,9 @@ enum Command {
         /// Print the selected tests, one "BOARD TEST" line each, instead.
         #[arg(long)]
         list: bool,
+        /// Report the declared tests as not run for REASON, without building or booting them.
+        #[arg(long, value_name = "REASON", conflicts_with = "list")]
+        not_run: Option<String>,
     },
     /// Merge and compare CI stage-size artifacts.
     Sizes {
@@ -355,111 +360,6 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-fn build_boards(boards: &[String], size_dir: Option<std::path::PathBuf>) -> Result<(), String> {
-    let size_dir = size_dir
-        .map(|dir| {
-            std::fs::create_dir_all(&dir)
-                .and_then(|()| std::path::absolute(&dir))
-                .map_err(|e| format!("--size-dir {}: {e}", dir.display()))
-        })
-        .transpose()?;
-    let github = std::env::var_os("GITHUB_ACTIONS").is_some();
-    let mut failed = Vec::new();
-    for board in boards {
-        if github {
-            println!("::group::{board}");
-        }
-        let start = std::time::Instant::now();
-        let result = manifest_for(board).and_then(|manifest| {
-            let build = fbuild::board_tool::build(&manifest, true, None, &Default::default())?;
-            if let Some(dir) = &size_dir {
-                let path = dir.join(format!("stage-sizes-{board}.jsonl"));
-                fbuild::sizes::append(&path, &manifest.board, &build.stages)?;
-            }
-            // Linking firmware does not run the board's policy tests.
-            fbuild::board_tool::test_library(&manifest)
-        });
-        if github {
-            println!("::endgroup::");
-        }
-        let seconds = start.elapsed().as_secs();
-        match result {
-            Ok(()) => println!("PASS {board} ({seconds}s)"),
-            Err(e) => {
-                println!("FAIL {board} ({seconds}s): {e}");
-                if github {
-                    println!("::error title={board}::{e}");
-                }
-                failed.push(board.as_str());
-            }
-        }
-    }
-    println!(
-        "\n{} of {} boards passed",
-        boards.len() - failed.len(),
-        boards.len()
-    );
-    match failed.as_slice() {
-        [] => Ok(()),
-        failed => Err(format!("failed: {}", failed.join(" "))),
-    }
-}
-
-fn boot_test(
-    boards: &[String],
-    tests: &[String],
-    assets: Option<std::path::PathBuf>,
-    logs: Option<std::path::PathBuf>,
-    list: bool,
-) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
-    let selected = if boards.is_empty() {
-        board_manifest::discover(&root)?
-            .into_iter()
-            .filter(|board| board.build_profile.is_some())
-            .collect()
-    } else {
-        boards
-            .iter()
-            .map(|board| manifest_for(board))
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let runner = fbuild::boot_test::Runner {
-        assets: assets
-            .map(|dir| std::path::absolute(&dir).map_err(|e| format!("--assets: {e}")))
-            .transpose()?,
-        logs: logs.unwrap_or_else(|| root.join("target/boot-tests")),
-        ..Default::default()
-    };
-    // A board whose plan fails counts as a failure; the others still boot.
-    let mut failures = 0;
-    for board in &selected {
-        let declared = match fbuild::boot_test::load(&root, board) {
-            Ok(declared) => declared,
-            Err(e) => {
-                println!("FAIL {} ({e})", board.board);
-                failures += 1;
-                continue;
-            }
-        };
-        let chosen: Vec<_> = declared
-            .iter()
-            .filter(|test| tests.is_empty() || tests.contains(&test.name))
-            .collect();
-        if list {
-            for test in chosen {
-                println!("{} {}", board.board, test.name);
-            }
-        } else {
-            failures += runner.run(&root, board, &chosen)?;
-        }
-    }
-    match failures {
-        0 => Ok(()),
-        n => Err(format!("{n} boot test(s) failed")),
-    }
-}
-
 /// The `fbuild boards --json` view of one discovered board.
 #[derive(serde::Serialize)]
 struct BoardEntry<'a> {
@@ -533,14 +433,15 @@ fn main() {
         ),
         Command::Shards => fbuild::shards::run(),
         Command::Checks { list } => fbuild::checks::run(list),
-        Command::BuildBoards { size_dir, boards } => build_boards(&boards, size_dir),
+        Command::BuildBoards { size_dir, boards } => verification::build_boards(&boards, size_dir),
         Command::BootTest {
             boards,
             tests,
             assets,
             logs,
             list,
-        } => boot_test(&boards, &tests, assets, logs, list),
+            not_run,
+        } => verification::boot_test(&boards, &tests, assets, logs, list, not_run.as_deref()),
         Command::Sizes { command } => command.run(),
         Command::Build {
             board,

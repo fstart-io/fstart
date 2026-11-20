@@ -206,22 +206,45 @@ jobs:
           path: boot-assets
 
       # Boots still run when another board of the shard failed to build.
+      # When the old boot gate would skip, resolve only the scenario names
+      # for the job summary; do not build or boot them.
       - name: Boot tests
-        if: >-
-          ${{ !cancelled() && matrix.packages != '' &&
-              steps.boot-assets.outcome == 'success' }}
+        if: ${{ !cancelled() }}
         env:
           BOARDS: ${{ matrix.boards }}
+          QEMU_PACKAGES: ${{ matrix.packages }}
+          ASSETS_OUTCOME: ${{ steps.boot-assets.outcome }}
         run: |
+          if [[ -z "$QEMU_PACKAGES" ]]; then
+            options=(--not-run 'no QEMU packages configured for this shard')
+          elif [[ "$ASSETS_OUTCOME" != success ]]; then
+            options=(--not-run 'CI boot assets were not downloaded')
+          else
+            options=(--assets boot-assets)
+          fi
           # shellcheck disable=SC2086
-          cargo fbuild boot-test --assets boot-assets $BOARDS
+          cargo fbuild boot-test "${options[@]}" $BOARDS
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
+        id: boot-logs
+        if: ${{ !cancelled() && steps.boot-assets.outcome == 'success' }}
+        continue-on-error: true # Diagnostics, not another test gate.
         with:
           name: boot-test-logs-${{ matrix.shard }}
-          path: target/boot-tests/
+          path: |
+            target/boot-tests/*.log
+            target/boot-tests/*.tpm
           if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Link boot test logs
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.boot-logs.outputs.artifact-url != '' }}
+        env:
+          ARTIFACT_URL: ${{ steps.boot-logs.outputs.artifact-url }}
+        run: |
+          printf '[Boot test logs](%s)\n' "$ARTIFACT_URL" \
+            >> "$GITHUB_STEP_SUMMARY"
 
   # Stage sizes of every board, kept as an artifact of each run. The
   # size-report workflow compares a pull request's with its base's. Builds

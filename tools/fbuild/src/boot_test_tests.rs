@@ -179,3 +179,35 @@ fn assets_come_from_the_asset_directory() {
         Some(dir.path().join("armv7/zImage"))
     );
 }
+
+#[test]
+fn asset_skips_and_failures_do_not_report_stale_boot_logs() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let board = crate::board_manifest::find(&root, "qemu-armv7").unwrap();
+    let tests = recipe(VirtMachine::Armv7).tests;
+    let test = tests.iter().find(|test| !test.bindings.is_empty()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir
+        .path()
+        .join(format!("{}-{}.log", board.board, test.name));
+    for assets in [None, Some(dir.path().join("absent"))] {
+        for ext in ["log", "swtpm-setup.log", "swtpm.log", "tpm"] {
+            fs::write(log.with_extension(ext), "stale").unwrap();
+        }
+        let supplied = assets.is_some();
+        let runner = Runner {
+            assets,
+            logs: dir.path().into(),
+            ..Default::default()
+        };
+        let results = runner.run(&root, &board, &[test]).unwrap();
+        assert!(results[0].logs.is_empty());
+        if supplied {
+            assert!(
+                matches!(&results[0].verdict, Verdict::Fail(why) if why.contains("no boot asset"))
+            );
+        } else {
+            assert!(matches!(&results[0].verdict, Verdict::Skip(why) if why.contains("--assets")));
+        }
+    }
+}
