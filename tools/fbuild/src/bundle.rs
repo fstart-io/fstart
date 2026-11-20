@@ -559,6 +559,14 @@ fn write_outputs(
     Ok(())
 }
 
+fn include(files: &MemoryFiles, source: &Path, destination: &Path) -> Result<(), String> {
+    let destination: PathBuf = normalize(destination);
+    files.write(
+        &destination,
+        &fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?,
+    )
+}
+
 #[cfg(test)]
 mod output_tests {
     use super::*;
@@ -577,12 +585,4 @@ mod output_tests {
         assert!(!dir.path().join("a-report.json").exists());
         assert_eq!(fs::read(backup).unwrap(), b"original");
     }
-}
-
-fn include(files: &MemoryFiles, source: &Path, destination: &Path) -> Result<(), String> {
-    let destination: PathBuf = normalize(destination);
-    files.write(
-        &destination,
-        &fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?,
-    )
 }
