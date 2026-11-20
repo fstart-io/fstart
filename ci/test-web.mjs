@@ -3,11 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { bundleFormatVersion } from '../tools/image-web/client.mjs';
-const [directory, bindings, native] = process.argv.slice(2).map(p => path.resolve(p));
+const [directory, bindings, native] = process.argv.slice(2, 5).map(p => path.resolve(p));
 const { ImageAssembler } = createRequire(import.meta.url)(bindings);
 const catalog = JSON.parse(fs.readFileSync(path.join(directory, 'catalog.json')));
 assert.equal(catalog.format_version, bundleFormatVersion);
@@ -16,6 +16,7 @@ const key = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', fo
 const keyPath = path.join(temporary, 'key.der');
 fs.writeFileSync(keyPath, key);
 let compared = 0;
+let suppliedInput = false;
 assert.throws(() => new ImageAssembler(new Uint8Array([0, 1, 2])));
 try {
   for (const build of catalog.builds) {
@@ -40,7 +41,19 @@ try {
       else if (build.board === 'amd-ethanolx') donor = process.env.FSTART_TEST_ETHANOLX_DONOR;
       else if (build.board === 'tyan-s8040') donor = process.env.FSTART_TEST_S8040_DONOR;
       else if (build.board === 'amd-onyx') donor = process.env.FSTART_TEST_ONYX_DONOR;
-      if (build.inputs.length === 0 && build.image_error == null && (!build.donor_required || donor)) {
+      const inputCase = build.board === 'qemu-armv7' && build.payload === 'linux';
+      if ((inputCase || build.inputs.length === 0) && build.image_error == null && (!build.donor_required || donor)) {
+        const extraArgs = [];
+        // Assembly (not a Linux boot test): the flat kernel slot stores these bytes verbatim.
+        const kernel = Buffer.from('fstart named input parity fixture\n'.repeat(128));
+        if (inputCase) {
+          assert.throws(() => assembler.assemble(key), /missing input kernel/);
+          assert.throws(() => assembler.setInput('kernel', new Uint8Array()), /empty/);
+          const file = path.join(temporary, 'zImage');
+          fs.writeFileSync(file, kernel);
+          assembler.setInput('kernel', kernel);
+          extraArgs.push('--input', `kernel=${file}`);
+        }
         if (build.donor_required) assembler.setDonor(fs.readFileSync(donor));
         // A build whose options live in its image starts with one set.
         const settings = [];
@@ -56,14 +69,20 @@ try {
         const out = path.join(temporary, `${build.board}-${build.payload}`);
         const args = ['compose-bundle', '--bundle', archive, '--out', out, '--signing-key', keyPath];
         if (build.donor_required) args.push('--donor', donor);
-        args.push(...settings);
+        args.push(...settings, ...extraArgs);
         execFileSync(native, args, { stdio: 'inherit' });
         assert.deepEqual(fs.readdirSync(out).sort(), [...outputs.keys()].sort());
         for (const [name, bytes] of outputs) assert.deepEqual(Buffer.from(bytes), fs.readFileSync(path.join(out, name)), `${build.board}: ${name}`);
+        if (inputCase) {
+          const report = JSON.parse(Buffer.from(outputs.get('assembly-report.json')));
+          assert.equal(report.input_sha256.kernel, createHash('sha256').update(kernel).digest('hex'));
+          suppliedInput = true;
+        }
         compared++;
       }
     } finally { assembler.free(); }
   }
+  if (process.argv.includes('--require-input-case')) assert(suppliedInput, 'named input case did not run');
   assert(compared > 0, 'no native/WASM parity case was exercised');
   console.log(`Validated ${catalog.builds.length} bundles; ${compared} native/WASM parity cases passed`);
 } finally { fs.rmSync(temporary, { recursive: true, force: true }); }

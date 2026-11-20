@@ -70,19 +70,24 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.130 --locked
-      # One published bundle with no donor, submodule or boot assets. The
-      # nightly still runs the same parity test across the full catalog.
-      - name: Compare native and WASM assembly of Q35 UEFI
+      # Exercise a self-contained build and one requiring a named kernel.
+      - name: Compare native and WASM bundle assembly
         run: |
           smoke=$(mktemp -d)
           trap 'rm -rf "$smoke"' EXIT
           cargo build --locked --release -p fbuild
           target/release/fbuild bundle --board qemu-q35 --payload uefi \
             --out "$smoke/bundles" --revision "$(git rev-parse HEAD)"
+          target/release/fbuild bundle --board qemu-armv7 --payload linux \
+            --out "$smoke/input" --revision "$(git rev-parse HEAD)"
           cargo build --locked --release --target wasm32-unknown-unknown -p fstart-image-web
           wasm-bindgen --target nodejs --out-dir "$smoke/node" \
             target/wasm32-unknown-unknown/release/fstart_image_web.wasm
-          node ci/test-web.mjs "$smoke/bundles" "$smoke/node/fstart_image_web.js" target/release/fbuild
+          bindings="$smoke/node/fstart_image_web.js"
+          fbuild=target/release/fbuild
+          node ci/test-web.mjs "$smoke/bundles" "$bindings" "$fbuild"
+          node ci/test-web.mjs "$smoke/input" "$bindings" "$fbuild" \
+            --require-input-case
 
   # The cheap gate every firmware job waits for: formatting, and the job
   # matrix. fbuild resolves the boards from boards/<vendor>/<board>/Cargo.toml
