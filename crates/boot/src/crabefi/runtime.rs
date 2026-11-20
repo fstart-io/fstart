@@ -44,6 +44,8 @@ pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
         // Literal old library-mode behavior: no configured deferred buffer and
         // no platform-entry linker symbols. This is not a durable NV policy.
         deferred_buffer: crabefi::DeferredBufferConfig::disabled(),
+        // No payload MM: the runtime image keeps the variable store itself.
+        mm_proxy: crabefi::MmProxyConfig::default(),
     }
 }
 

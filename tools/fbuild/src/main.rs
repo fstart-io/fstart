@@ -57,6 +57,8 @@ enum Command {
         /// KEY=VALUE (`fbuild assemble --setting`).
         #[arg(long = "setting", value_parser = fbuild::payload::parse_setting)]
         settings: Vec<(String, String)>,
+        #[command(flatten)]
+        secure_boot: fbuild::payload::SecureBootArgs,
     },
     /// Print the CI firmware job matrix.
     Shards,
@@ -522,14 +524,17 @@ fn main() {
             inputs,
             signing_key,
             settings,
-        } => fbuild::bundle::compose(
-            &bundle,
-            &out,
-            donor.as_deref(),
-            &inputs,
-            signing_key.as_deref(),
-            &settings,
-        ),
+            secure_boot,
+        } => fbuild::payload::store_settings(&settings, &secure_boot).and_then(|settings| {
+            fbuild::bundle::compose(
+                &bundle,
+                &out,
+                donor.as_deref(),
+                &inputs,
+                signing_key.as_deref(),
+                &settings,
+            )
+        }),
         Command::Shards => fbuild::shards::run(),
         Command::Checks { list } => fbuild::checks::run(list),
         Command::BuildBoards { size_dir, boards } => build_boards(&boards, size_dir),

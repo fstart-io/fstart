@@ -70,6 +70,7 @@ const state = {
   own: null, // {bytes, name, size}: vendor BIOS file the user picked
   inputs: {},
   settings: Object.create(null), // option key -> value the image's settings store starts with
+  secureBoot: { enforce: false, own: false, files: {} }, // Secure Boot the store starts with; files: PK, KEK, db, dbx
   key: null,
   outputs: null, // {files, signer, donor}: one assembly's results
   busy: false,
@@ -586,8 +587,9 @@ function clearBuild(next) {
   const keep = {
     fetched: same && next.donor_source?.sha256 === state.fetched?.source.sha256 ? state.fetched : null,
     own: same && next.donor_required ? state.own : null,
-    // The same board offers the same options.
+    // The same board offers the same options, and the same Secure Boot.
     settings: same ? state.settings : Object.create(null),
+    secureBoot: same ? state.secureBoot : { enforce: false, own: false, files: {} },
     inputs: next ? Object.fromEntries(Object.entries(state.inputs)
       .filter(([name, file]) => (next.inputs ?? []).some(i => i.name === name && i.capacity >= file.size)
         && inputLabel(name, state.build?.payload) === inputLabel(name, next.payload))) : {},
@@ -833,7 +835,7 @@ function needs(build) {
   return [h("section", { class: "needs", "aria-labelledby": "needs-title" },
     h("h2", { id: "needs-title" }, "Your files"),
     build.donor_required || requiredInputs().length ? null : h("p", { class: "muted" }, "Nothing is required. You can add your signing key."),
-    rows), build.settings ? settingsBlock() : null];
+    rows), build.settings ? settingsBlock() : null, secureBootOffered() ? secureBootBlock() : null];
 }
 
 // --- Settings ------------------------------------------------------------------
@@ -1022,6 +1024,106 @@ function settingsBlock() {
     h("p", { class: "muted" },
       "Each option starts at the board's value. Change one to store a different value in the image; the firmware's setup menu can still change it later."),
     groups.map(card));
+}
+
+// --- Secure Boot ---------------------------------------------------------------
+
+// The key databases: [slot, label, noun, help].
+const SECURE_BOOT_FILES = [
+  ["pk", "Platform Key (PK)", "the Platform Key", "One certificate. Its owner can change every other database."],
+  ["kek", "Key Exchange Keys (KEK)", "the KEK file", "May update db and dbx."],
+  ["db", "Allowed signatures (db)", "the db file", "What may boot."],
+  ["dbx", "Forbidden signatures (dbx)", "the dbx file", "Revoked keys and hashes, for example Microsoft's dbx update."],
+];
+
+// CrabEFI keeps Secure Boot in the settings store of builds that offer it.
+function secureBootOffered() {
+  return Boolean(state.manifest?.plan.options?.secure_boot);
+}
+
+// What the assembler gets, or null to leave the store to CrabEFI: its
+// default keys, enrolled on first boot, with Secure Boot off.
+function secureBootRequest() {
+  const sb = state.secureBoot;
+  if (!secureBootOffered() || (!sb.enforce && !sb.own)) return null;
+  const files = slot => sb.own && sb.files[slot] ? [sb.files[slot].bytes.slice()] : [];
+  return { enforce: sb.enforce, pk: files("pk")[0] ?? null, kek: files("kek"), db: files("db"), dbx: files("dbx") };
+}
+
+function setSecureBoot(change, focus, message) {
+  Object.assign(state.secureBoot, change);
+  state.inputGen++;
+  if (state.outputs) state.outputs.outdated = true;
+  keepingFocus(renderBuild, focus);
+  if (message) announce(message);
+}
+
+// A segmented choice in the settings' row layout.
+function choiceRow({ id, label, help, choices, current, changed, onPick }) {
+  const labelId = `${id}-label`;
+  const helpId = `${id}-help`;
+  return h("li", { class: `setting compact${changed ? " changed" : ""}` },
+    h("div", { class: "setting-text" },
+      h("span", { class: "setting-label", id: labelId }, label),
+      h("p", { class: "muted", id: helpId }, help)),
+    h("div", { class: "setting-control" },
+      h("div", { class: "segs", role: "radiogroup", "aria-labelledby": labelId, "aria-describedby": helpId },
+        choices.map(([value, text]) => h("label", { class: "segment" },
+          h("input", {
+            type: "radio", name: id, id: `${id}-${value}`, value, checked: current === value,
+            disabled: state.busy, onchange: () => onPick(value, `${id}-${value}`),
+          }),
+          h("span", {}, text))))),
+    h("div", { class: "setting-reset", "aria-hidden": "true" }));
+}
+
+function secureBootBlock() {
+  const sb = state.secureBoot;
+  const changed = sb.enforce || sb.own;
+  const rows = [
+    choiceRow({
+      id: "secure-boot", label: "Secure Boot", current: sb.enforce ? "on" : "off", changed: sb.enforce,
+      help: "With it on, CrabEFI boots only what the keys below allow.",
+      choices: [["off", "Off"], ["on", "On"]],
+      onPick: (value, focus) => setSecureBoot({ enforce: value === "on" }, focus, `Secure Boot ${value}`),
+    }),
+    choiceRow({
+      id: "secure-boot-keys", label: "Keys", current: sb.own ? "own" : "default", changed: sb.own,
+      help: "CrabEFI's defaults are Microsoft's: Windows and shim-signed Linux boot. Your own keys replace them.",
+      choices: [["default", "Microsoft"], ["own", "Your own"]],
+      onPick: (value, focus) => setSecureBoot({ own: value === "own" }, focus, value === "own" ? "Using your own keys" : "Using Microsoft's keys"),
+    }),
+  ];
+  const files = sb.own ? h("div", { class: "secure-boot-files" }, SECURE_BOOT_FILES.map(([slot, label, noun, help]) =>
+    h("div", { class: "secure-boot-file" },
+      h("p", { class: "setting-label" }, label, slot === "pk" ? null : h("span", { class: "muted" }, " (optional)")),
+      h("p", { class: "muted" }, help),
+      filePicker({
+        id: `secure-boot-${slot}`, label: "Choose a file", slot: noun, accept: ".der,.crt,.cer,.pem,.esl,.auth",
+        current: sb.files[slot],
+        onFile: (file, data) => {
+          sb.files[slot] = { name: file.name, size: file.size, bytes: data };
+          filesChanged(`${file.name} added as ${noun}`);
+        },
+        onClear: fallback => { delete sb.files[slot]; filesChanged(`${label} removed`, fallback); },
+      })))) : null;
+  return h("section", { class: "needs settings", "aria-labelledby": "secure-boot-title" },
+    h("div", { class: "settings-head" },
+      h("h2", { id: "secure-boot-title", tabindex: "-1" }, "Secure Boot (optional)"),
+      h("span", { class: `settings-status${changed ? "" : " idle"}`, "aria-hidden": changed ? null : "true" },
+        h("button", {
+          type: "button", class: "quiet small", id: "secure-boot-reset", disabled: state.busy || !changed,
+          tabindex: changed ? null : "-1", onmousedown: keepPendingEdit,
+          onclick: () => {
+            state.secureBoot = { enforce: false, own: false, files: {} };
+            setSecureBoot({}, "secure-boot-title", "Secure Boot back to CrabEFI's defaults");
+            $("secure-boot-title")?.focus({ preventScroll: true });
+          },
+        }, "Reset"))),
+    h("p", { class: "muted" },
+      "Untouched, CrabEFI enrolls Microsoft's keys on first boot and leaves Secure Boot off. Key files are certificates (DER or PEM, a PEM file may hold several), signature lists (",
+      h("code", {}, ".esl"), ") or signed ones (", h("code", {}, ".auth"), "). The firmware's setup menu can still change all of it later."),
+    h("div", { class: "need settings-card" }, h("ul", { class: "settings-list" }, rows), files));
 }
 
 function row({ title, help, status, body }) {
@@ -1309,6 +1411,7 @@ function missing() {
   const list = [];
   if (state.build.donor_required && !state.own && !state.fetched) list.push("the vendor BIOS");
   for (const input of requiredInputs()) if (!state.inputs[input.name]) list.push(inputLabel(input.name).noun);
+  if (secureBootOffered() && state.secureBoot.own && !state.secureBoot.files.pk) list.push("the Platform Key");
   return list;
 }
 
@@ -1352,7 +1455,7 @@ async function assemble() {
   $("assemble")?.focus();
   const stale = () => generation !== state.gen || inputGeneration !== state.inputGen;
   try {
-    const result = await call("assemble", { token: state.token, donor: donor?.slice(), inputs, settings: { ...state.settings }, key: state.key?.bytes.slice() });
+    const result = await call("assemble", { token: state.token, donor: donor?.slice(), inputs, settings: { ...state.settings }, secureBoot: secureBootRequest(), key: state.key?.bytes.slice() });
     if (stale()) return;
     const files = [];
     for (const [name, data] of result) {

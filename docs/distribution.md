@@ -65,7 +65,9 @@ Boards and variants may also declare a display `name`; the catalog passes it
 on with the board's architecture. What is a setting of a board rather than
 another board (the S8030's PCIe bifurcation) is one of the build's options
 (docs/options.md): a build whose options live in its flash image says so
-(`settings` in the catalog), and its assembly seeds them (`--setting`).
+(`settings` in the catalog), and its assembly seeds them (`--setting`), and
+for a CrabEFI build with Secure Boot (`secure_boot` in the plan's options)
+its Secure Boot state and keys (`--secure-boot`).
 
 `fbuild bundle --seabios DIR` ships a SeaBIOS build (the output of
 `ci/payloads/seabios/build.sh`) in `coreboot` bundles: SeaBIOS, its VGA BIOS
@@ -101,8 +103,8 @@ fbuild compose-bundle --bundle gigabyte-mj11-ec1-uefi.bundle.zip \
 
 Add `--input kernel=bzImage` for named inputs, `--signing-key key.pem` for
 an Ed25519 PKCS#8 key (without one, a fresh key is generated and discarded),
-and `--setting KEY=VALUE` to seed the image's settings store, as
-`fbuild assemble --setting` does.
+and `--setting KEY=VALUE` and `--secure-boot` (with its key files) to seed
+the image's settings store, as `fbuild assemble` does.
 A donor may be a raw ROM, or a vendor update ZIP: of its ROM/bin/fd members,
 the image with firmware of the board's SoCs is the donor (vendor updates often
 ship one copy per flash tool, besides capsules and tools). A ZIP of different

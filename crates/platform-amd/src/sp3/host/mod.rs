@@ -387,6 +387,15 @@ mod tests {
         );
         assert!(ui.ffs_assembly().unwrap().payload.is_some());
         assert!(ui.inputs.is_empty());
+        // CrabEFI's full profile keeps Secure Boot in the settings store.
+        assert!(uefi.options.secure_boot && ui.options.secure_boot);
+        assert!(
+            !resolve::<S8030>(&select("uefi-basic"))
+                .unwrap()
+                .options
+                .secure_boot
+        );
+        assert!(!linux.options.secure_boot);
         assert!(resolve::<S8030>(&select("coreboot")).is_err());
         assert!(
             resolve::<S8030>(&BuildSelection {

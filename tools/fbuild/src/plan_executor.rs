@@ -298,7 +298,7 @@ impl Resolved {
         supplied: &BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
-        settings: &[(String, String)],
+        settings: &fstart_image_build::options::Settings,
     ) -> Result<
         (
             Vec<fstart_image_build::StageBinary>,
@@ -358,7 +358,7 @@ impl Resolved {
         inputs: &BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
-        settings: &[(String, String)],
+        settings: &fstart_image_build::options::Settings,
     ) -> Result<String, String> {
         // Length-prefixed fields, each list counted: no two inputs hash alike.
         fn field(hash: &mut Sha256, bytes: &[u8]) {
@@ -403,10 +403,21 @@ impl Resolved {
             field(&mut hash, &read(Path::new(path))?);
         }
         file(&mut hash, signing_key.map(read).transpose()?.as_deref());
-        count(&mut hash, settings.len());
-        for (key, value) in settings {
+        count(&mut hash, settings.options.len());
+        for (key, value) in &settings.options {
             field(&mut hash, key.as_bytes());
             field(&mut hash, value.as_bytes());
+        }
+        let secure_boot = settings.secure_boot.as_ref();
+        hash.update([secure_boot.map_or(0, |sb| 1 + u8::from(sb.enforce))]);
+        if let Some(keys) = secure_boot.and_then(|sb| sb.keys.as_ref()) {
+            field(&mut hash, &keys.pk);
+            for database in [&keys.kek, &keys.db, &keys.dbx] {
+                count(&mut hash, database.len());
+                for file in database {
+                    field(&mut hash, file);
+                }
+            }
         }
         Ok(format!("{:x}", hash.finalize())[..16].into())
     }

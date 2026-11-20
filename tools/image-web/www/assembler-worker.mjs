@@ -32,7 +32,7 @@ const operations = {
     const bytes = opened(token).binary(path);
     return { result: bytes, transfer: [bytes.buffer] };
   },
-  async assemble({ token, donor, inputs, settings = {}, key }) {
+  async assemble({ token, donor, inputs, settings = {}, secureBoot = null, key }) {
     const bundle = opened(token);
     // Each request names everything the image takes: a setting set back to
     // the board's value or a removed file must not linger from the last.
@@ -40,6 +40,10 @@ const operations = {
     if (donor) bundle.setDonor(donor);
     for (const [name, bytes] of Object.entries(inputs)) bundle.setInput(name, bytes);
     for (const [option, value] of Object.entries(settings)) bundle.setSetting(option, value);
+    if (secureBoot) {
+      const { enforce, pk, kek, db, dbx } = secureBoot;
+      bundle.setSecureBoot(enforce, pk ?? undefined, kek, db, dbx);
+    }
     const outputs = [...bundle.assemble(key ?? undefined)];
     return { result: outputs, transfer: outputs.map(([, bytes]) => bytes.buffer) };
   },

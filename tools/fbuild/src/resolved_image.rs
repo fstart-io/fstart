@@ -73,7 +73,7 @@ impl ResolvedImage {
         supplied: &std::collections::BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
-        settings: &[(String, String)],
+        settings: &fstart_image_build::options::Settings,
     ) -> Result<
         (
             Vec<fstart_image_build::StageBinary>,

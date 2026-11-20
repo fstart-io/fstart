@@ -130,6 +130,12 @@ impl Payload {
         }
     }
 
+    /// Whether the payload keeps Secure Boot in the settings store: CrabEFI's
+    /// full profile (`payload-uefi`), not the basic one.
+    pub const fn secure_boot(self) -> bool {
+        matches!(self, Self::Uefi | Self::UefiUi)
+    }
+
     /// The platform feature the stage unit needs for this payload.
     pub const fn feature(self, i2c_input: bool) -> Option<&'static str> {
         match self {
@@ -385,6 +391,9 @@ pub fn resolve_board<B: Board>(
     let host = host::<B>()?;
     let mut plan = resolve(&host, selection, options)?;
     plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
+    use fstart_image_build::options::OptionStore;
+    plan.options.secure_boot = matches!(plan.options.store, Some(OptionStore::Varstore { .. }))
+        && Payload::select(selection, &options.x86_linux)?.secure_boot();
     Ok(plan)
 }
 

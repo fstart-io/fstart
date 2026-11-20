@@ -482,7 +482,7 @@ pub mod option {
             key: "debug_level",
             form: "Console",
             label: "Console log level",
-            help: "The most verbose firmware messages the console shows.",
+            help: "The most verbose firmware and UEFI messages the console shows.",
             kind: Kind::Enum(CHOICES),
         },
         |l| value(*l),

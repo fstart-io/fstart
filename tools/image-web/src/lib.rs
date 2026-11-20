@@ -1,5 +1,7 @@
 //! WASM bindings over `Bundle` for the web UI (`www/`) and other browser callers.
 use fstart_image_build::bundle::{Bundle, Supplied};
+use fstart_image_build::options::Settings;
+use fstart_image_build::secure_boot::{Keys, SecureBoot};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
@@ -9,6 +11,7 @@ pub struct ImageAssembler {
     inputs: BTreeMap<String, Vec<u8>>,
     donor: Option<Vec<u8>>,
     settings: BTreeMap<String, String>,
+    secure_boot: Option<SecureBoot>,
 }
 
 #[wasm_bindgen]
@@ -20,6 +23,7 @@ impl ImageAssembler {
             inputs: BTreeMap::new(),
             donor: None,
             settings: BTreeMap::new(),
+            secure_boot: None,
         })
     }
 
@@ -44,10 +48,53 @@ impl ImageAssembler {
             return Ok(());
         }
         let options = &self.bundle.manifest.plan.options;
-        options
-            .seed(&[(key.clone(), value.clone())])
-            .map_err(error)?;
+        let setting = Settings {
+            options: vec![(key.clone(), value.clone())],
+            secure_boot: None,
+        };
+        options.seed(&setting).map_err(error)?;
         self.settings.insert(key, value);
+        Ok(())
+    }
+
+    /// Start the image with Secure Boot `enforce`d or not. Without a `pk` it
+    /// holds CrabEFI's default keys; with one, the given databases: each an
+    /// array of files (a DER or PEM certificate, a signature list or a
+    /// signed one). As `fbuild assemble --secure-boot` does.
+    #[wasm_bindgen(js_name = setSecureBoot)]
+    pub fn set_secure_boot(
+        &mut self,
+        enforce: bool,
+        pk: Option<Vec<u8>>,
+        kek: js_sys::Array,
+        db: js_sys::Array,
+        dbx: js_sys::Array,
+    ) -> Result<(), JsValue> {
+        let files = |array: js_sys::Array| -> Vec<Vec<u8>> {
+            (array.iter())
+                .map(|file| js_sys::Uint8Array::new(&file).to_vec())
+                .collect()
+        };
+        let secure_boot = SecureBoot {
+            enforce,
+            keys: pk.map(|pk| Keys {
+                pk,
+                kek: files(kek),
+                db: files(db),
+                dbx: files(dbx),
+            }),
+        };
+        let setting = Settings {
+            options: Vec::new(),
+            secure_boot: Some(secure_boot.clone()),
+        };
+        self.bundle
+            .manifest
+            .plan
+            .options
+            .seed(&setting)
+            .map_err(error)?;
+        self.secure_boot = Some(secure_boot);
         Ok(())
     }
 
@@ -57,6 +104,7 @@ impl ImageAssembler {
         self.inputs.clear();
         self.donor = None;
         self.settings.clear();
+        self.secure_boot = None;
     }
 
     #[wasm_bindgen(js_name = setDonor)]
@@ -97,7 +145,10 @@ impl ImageAssembler {
             donor: self.donor.as_deref(),
             inputs: self.inputs.clone(),
             signing_key: signing_key.as_deref(),
-            settings: self.settings.clone().into_iter().collect(),
+            settings: Settings {
+                options: self.settings.clone().into_iter().collect(),
+                secure_boot: self.secure_boot.clone(),
+            },
         };
         let outputs = self.bundle.assemble(&supplied).map_err(error)?;
         let map = js_sys::Map::new();

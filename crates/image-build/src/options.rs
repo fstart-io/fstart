@@ -4,6 +4,8 @@
 //! board's option sets on the host (`fstart_options::Describe`) and this
 //! module checks and serializes what they say.
 
+use crate::secure_boot::SecureBoot;
+use fstart_options::varstore::Variable;
 use fstart_options::{Availability, Entry, Kind, cmos};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +15,34 @@ pub struct Options {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<OptionStore>,
     pub options: Vec<OptionSchema>,
+    /// The payload keeps Secure Boot in the settings store (CrabEFI with
+    /// Secure Boot over a store in flash), so an image can start with it
+    /// ([`Settings::secure_boot`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secure_boot: bool,
+}
+
+/// What a new image's settings store starts with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// Options as `KEY=VALUE` (`fbuild assemble --setting`), checked
+    /// against the build's ([`Options::settings`]).
+    pub options: Vec<(String, String)>,
+    pub secure_boot: Option<SecureBoot>,
+}
+
+impl Settings {
+    pub fn is_empty(&self) -> bool {
+        self.options.is_empty() && self.secure_boot.is_none()
+    }
+
+    /// What the store starts with, for an image's notes.
+    pub fn notes(&self) -> Vec<String> {
+        let options = (self.options.iter()).map(|(key, value)| format!("{key} = {value}"));
+        (options.chain(self.secure_boot.iter().map(SecureBoot::describe)))
+            .map(|note| format!("settings store: {note}"))
+            .collect()
+    }
 }
 
 impl Options {
@@ -46,19 +76,29 @@ impl Options {
         Ok(values)
     }
 
-    /// The settings store of a new image with `settings` ([`Self::settings`])
-    /// in it, and where it goes: none without settings. Only a store in
-    /// flash can start with them.
-    pub fn seed(&self, settings: &[(String, String)]) -> Result<Option<Seed>, String> {
-        let values = self.settings(settings)?;
-        if values.is_empty() {
+    /// The settings store of a new image with `settings` in it, and where it
+    /// goes: none when they leave it empty. Only a store in flash can start
+    /// with them.
+    pub fn seed(&self, settings: &Settings) -> Result<Option<Seed>, String> {
+        let values = self.settings(&settings.options)?;
+        let secure_boot = match &settings.secure_boot {
+            Some(_) if !self.secure_boot => {
+                return Err("Secure Boot: the build's payload keeps none in the image".into());
+            }
+            Some(secure_boot) => secure_boot.variables()?,
+            None => Vec::new(),
+        };
+        if values.is_empty() && secure_boot.is_empty() {
             return Ok(None);
         }
         let Some(OptionStore::Varstore { offset, size }) = self.store else {
             return Err("settings: the board keeps no options in its flash image".into());
         };
-        let values: Vec<_> = values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-        let bytes = fstart_options::varstore::store(size as usize, &values)
+        let variables: Vec<_> = (values.iter())
+            .map(|(key, value)| Variable::option(key, *value))
+            .chain(secure_boot)
+            .collect();
+        let bytes = fstart_options::varstore::store(size as usize, &variables)
             .ok_or("settings: they do not fit the settings store")?;
         Ok(Some(Seed { offset, bytes }))
     }
@@ -223,6 +263,7 @@ pub fn collect(
     Ok(Options {
         store,
         options: entries.into_iter().map(Into::into).collect(),
+        secure_boot: false,
     })
 }
 
@@ -319,13 +360,16 @@ mod tests {
             assert!(set(bad).is_err(), "{bad:?}");
         }
         // The seeded store is the whole slot and reads back.
-        let pairs = [("volume".to_owned(), "Mute".to_owned())];
+        let pairs = Settings {
+            options: vec![("volume".to_owned(), "Mute".to_owned())],
+            secure_boot: None,
+        };
         let seed = options.seed(&pairs).unwrap().unwrap();
         assert_eq!((seed.offset, seed.bytes.len()), (0x10_0000, 0x4000));
         use fstart_options::Source;
         let stored = fstart_options::varstore::VarstoreOptions::new(&seed.bytes);
         assert_eq!(stored.read("volume"), Ok(Some(0)));
-        assert_eq!(options.seed(&[]), Ok(None));
+        assert_eq!(options.seed(&Settings::default()), Ok(None));
         // A CMOS store cannot be seeded in an image.
         let cmos = Options {
             store: Some(OptionStore::Cmos {
@@ -335,6 +379,47 @@ mod tests {
             ..options.clone()
         };
         assert!(cmos.seed(&pairs).is_err());
+    }
+
+    #[test]
+    fn secure_boot_starts_in_the_store_of_a_build_that_keeps_it() {
+        use crabefi_efi_types::secure_boot::{EFI_GLOBAL_VARIABLE_GUID, SECURE_BOOT_ENABLE_NAME};
+        use crabefi_efi_types::varstore::read_variable_data_from_region;
+        let store = OptionStore::Varstore {
+            offset: 0,
+            size: 0x4000,
+        };
+        let mut options = collect(Some(store), |each| SET.describe(each)).unwrap();
+        let settings = Settings {
+            options: vec![("wlan".to_owned(), "off".to_owned())],
+            secure_boot: Some(SecureBoot {
+                enforce: true,
+                keys: None,
+            }),
+        };
+        assert!(options.seed(&settings).unwrap_err().contains("Secure Boot"));
+        options.secure_boot = true;
+        let seed = options.seed(&settings).unwrap().unwrap();
+        let mut enable = [0u8; 1];
+        let read = read_variable_data_from_region(
+            &seed.bytes,
+            &EFI_GLOBAL_VARIABLE_GUID,
+            SECURE_BOOT_ENABLE_NAME,
+            &mut enable,
+        );
+        assert_eq!((read, enable), (Some(1), [1]));
+        use fstart_options::Source;
+        let stored = fstart_options::varstore::VarstoreOptions::new(&seed.bytes);
+        assert_eq!(stored.read("wlan"), Ok(Some(0)));
+        // Off with the default keys is what CrabEFI does with an empty store.
+        let off = Settings {
+            secure_boot: Some(SecureBoot {
+                enforce: false,
+                keys: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(options.seed(&off), Ok(None));
     }
 
     #[test]

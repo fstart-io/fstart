@@ -44,7 +44,7 @@ pub fn assemble_with_resolved(
     supplied: &BTreeMap<String, PathBuf>,
     payload_files: &[(String, String)],
     signing_key: Option<&Path>,
-    settings: &[(String, String)],
+    settings: &fstart_image_build::options::Settings,
 ) -> Result<AssembledImage, String> {
     let (stages, outputs) = resolved.assemble(
         workspace_root,

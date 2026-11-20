@@ -14,6 +14,9 @@ object = { workspace = true }
 zerocopy = { workspace = true }
 fstart-core = { workspace = true, features = ["host"] }
 fstart-options = { workspace = true, features = ["alloc", "varstore"] }
+crabefi-efi-types = { workspace = true }
+crabefi-pkcs7 = { workspace = true }
+pem-rfc7468 = { version = "0.7", features = ["alloc"] }
 fstart-amdfw-format = { workspace = true, features = ["serde"] }
 fstart-coreboot = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }

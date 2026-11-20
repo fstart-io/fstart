@@ -109,9 +109,9 @@ pub struct Supplied<'a> {
     /// Named kernel, firmware or FIT bytes, as the plan's inputs declare.
     pub inputs: BTreeMap<String, Vec<u8>>,
     pub signing_key: Option<&'a [u8]>,
-    /// Settings the image's store starts with (`KEY=VALUE`, checked
-    /// against the plan's options).
-    pub settings: Vec<(String, String)>,
+    /// What the image's settings store starts with, checked against the
+    /// plan's options.
+    pub settings: crate::options::Settings,
 }
 
 pub struct Bundle {
@@ -320,6 +320,8 @@ impl Bundle {
             donor_sha256: Option<String>,
             input_sha256: BTreeMap<&'a str, String>,
             settings: &'a [(String, String)],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            secure_boot: Option<String>,
             outputs: BTreeMap<&'a str, Identity>,
         }
         let report = Report {
@@ -331,7 +333,8 @@ impl Bundle {
             input_sha256: (supplied.inputs.iter())
                 .map(|(name, bytes)| (name.as_str(), sha256(bytes)))
                 .collect(),
-            settings: &supplied.settings,
+            settings: &supplied.settings.options,
+            secure_boot: (supplied.settings.secure_boot.as_ref()).map(|sb| sb.describe()),
             outputs: (outputs.iter())
                 .map(|(name, bytes)| {
                     let identity = Identity {

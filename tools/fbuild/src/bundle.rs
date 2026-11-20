@@ -490,7 +490,7 @@ pub fn compose(
     donor: Option<&Path>,
     inputs: &[String],
     key: Option<&Path>,
-    settings: &[(String, String)],
+    settings: &fstart_image_build::options::Settings,
 ) -> Result<(), String> {
     let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let bundle = Bundle::decode(&read(bundle)?)?;
@@ -499,7 +499,7 @@ pub fn compose(
     let mut supplied = Supplied {
         donor: donor.as_deref(),
         signing_key: key.as_deref(),
-        settings: settings.to_vec(),
+        settings: settings.clone(),
         ..Default::default()
     };
     for value in inputs {

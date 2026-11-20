@@ -115,7 +115,7 @@ fn assemble_loaded(
         supplied,
         &options.payload_files,
         options.signing_key.as_deref(),
-        &options.settings,
+        &crate::payload::store_settings(&options.settings, &options.secure_boot)?,
     )
 }
 
