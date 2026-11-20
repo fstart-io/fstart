@@ -81,6 +81,18 @@ pub static T400_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
 pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16) -> Vec<u8> {
     let mut aml = fstart_driver_lenovo::thinkpad::h8_dsdt_aml::<N>(h8);
     aml.extend(dock_aml::<N>(gpio_base));
+    let dock_resources = fstart_acpi::devices::GenericAcpi {
+        name: "DRES",
+        hid: "PNP0C02",
+        resources: &fstart_driver_lenovo::t6::dock::FIRMWARE_RESOURCES,
+        gsiv: None,
+        interrupt_flags: Default::default(),
+    }
+    .dsdt_aml();
+    aml.extend(
+        fstart_acpi::aml_linker::scope_vec(N::LPC.as_str(), &dock_resources)
+            .expect("T400 dock resources"),
+    );
     aml
 }
 
@@ -106,15 +118,14 @@ fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
     aml.extend_from_slice(&acpi_dsl! {
         Scope(#{const "\\_SB_"}) {
             Device("DOCK") {
-                Name("_HID", "ACPI0003");
-                Name("_UID", 0u32);
+                // _DCK identifies a dock; ACPI0003 identifies an AC adapter.
                 Name("_PCL", Package(#{const "\\_SB_"}));
                 Method("_DCK", 1, NotSerialized) {
                     GP28 = Arg0;
                     #{const path 5 ec::<N>().child("DKSE")}(Arg0);
                     Local1 = #{const path 5 ec::<N>().child("DKR1")};
-                    Local0 = Arg0 ^ Local1;
-                    Return(Local0);
+                    If (Arg0 == Local1) { Return(1u32); }
+                    Return(0u32);
                 }
                 Method("_STA", 0, NotSerialized) {
                     Local0 = #{const path 5 ec::<N>().child("DKR1")};
@@ -170,7 +181,7 @@ mod tests {
                 concat!(
                     "execute \\_SB.DOCK._DCK 1;execute \\_SB.DOCK._STA;",
                     "execute \\_SB.DOCK._DCK 0;execute \\_SB.PCI0.LPCB.EC._Q50;",
-                    "execute \\UCMS 12;execute \\UCMS 13"
+                    "execute \\UCMS 12;execute \\UCMS 13;execute \\BRTU;execute \\BRTD"
                 ),
                 "dsdt.aml",
             ])
@@ -194,9 +205,10 @@ mod tests {
             result.status.success() && !text.contains("AE_") && !text.contains("ACPI Error"),
             "{text}"
         );
-        assert!(
-            text.contains("[Integer] = 0000000000000001"),
-            "_STA: {text}"
+        assert_eq!(
+            text.matches("[Integer] = 0000000000000001").count(),
+            3,
+            "_DCK(1), _STA while docked, and _DCK(0): {text}"
         );
         assert!(text.contains("Notify on [DOCK]"), "dock queries: {text}");
     }

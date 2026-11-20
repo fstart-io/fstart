@@ -46,7 +46,7 @@ pub const HYBRID_GRAPHICS_MODE: Knob<HybridGraphicsOptions> = Knob::new(
         key: "hybrid_graphics_mode",
         form: "Graphics",
         label: "Graphics device",
-        help: "Select integrated, discrete or switchable graphics when a discrete GPU is fitted.",
+        help: "Select which GPUs to enable at boot. The firmware display uses the integrated GPU.",
         kind: Kind::Enum(&[
             Choice::new(0, "Integrated only"),
             Choice::new(1, "Discrete only"),
@@ -112,12 +112,11 @@ pub fn mux_panel(
     panel_integrated_high: bool,
     backlight_mux: &mut impl OutputPin,
     backlight_integrated_high: bool,
-    mode: HybridGraphicsMode,
+    discrete: bool,
 ) {
     if !detect.is_low().unwrap_or(false) {
         return;
     }
-    let discrete = mode == HybridGraphicsMode::DiscreteOnly;
     let _ = panel_mux.set_state(PinState::from(if discrete {
         !panel_integrated_high
     } else {
@@ -216,24 +215,10 @@ mod tests {
         let mut detect = Pin(Ok(false));
         let mut panel = OutPin::default();
         let mut bl = OutPin::default();
-        mux_panel(
-            &mut detect,
-            &mut panel,
-            false,
-            &mut bl,
-            false,
-            HybridGraphicsMode::DiscreteOnly,
-        );
+        mux_panel(&mut detect, &mut panel, false, &mut bl, false, true);
         assert_eq!((panel.0, bl.0), (Some(true), Some(true)));
 
-        mux_panel(
-            &mut detect,
-            &mut panel,
-            false,
-            &mut bl,
-            false,
-            HybridGraphicsMode::DualGraphics,
-        );
+        mux_panel(&mut detect, &mut panel, false, &mut bl, false, false);
         assert_eq!((panel.0, bl.0), (Some(false), Some(false)));
     }
 

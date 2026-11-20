@@ -109,7 +109,8 @@ register_structs! {
         (0x028 => vc1: MmioReadWrite<u32>),
         (0x02c => _pad4: [u8; 0x14]),
         (0x040 => sdvo_ctl: MmioReadOnly<u16>),
-        (0x042 => @END),
+        (0x042 => _pad5: [u8; 2]),
+        (0x044 => @END),
     }
 }
 

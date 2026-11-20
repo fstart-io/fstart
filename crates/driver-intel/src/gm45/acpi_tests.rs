@@ -61,7 +61,14 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
         }),
         ..IntelIch9Config::new()
     };
-    let nb = IntelGm45::new_from_config(&NB).unwrap();
+    let mut nb = IntelGm45::new_from_config(&NB).unwrap();
+    let unassigned = nb.dsdt_aml(&NB);
+    assert!(!unassigned.windows(4).any(|name| name == b"GFX0"));
+    nb.igd_bars = Some(crate::igd::IgdBars {
+        gtt_mmio: 0xf400_0000,
+        gmadr: 0xd000_0000,
+        gtt_pte: None,
+    });
     let sb = IntelIch9::new_from_config(&SB).unwrap();
     let mut aml = nb.dsdt_aml(&NB);
     // PCI0's `_CRS` and `PDRC`, as the platform adds them from the root

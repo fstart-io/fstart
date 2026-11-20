@@ -203,7 +203,7 @@ fn connect(gpio: &GpioPort0) -> Result<(), DeviceError> {
     let dlpc = laptop()?;
     // Re-enable after a previous timeout deactivated the DLPC LDN.
     dlpc.enable_dlpc(DLPC_SWITCH)?;
-    dlpc.connect_dlpc(DLPC_SWITCH, 1000, delay_us)?;
+    dlpc.connect_dlpc(DLPC_SWITCH, 1000, 1000, delay_us)?;
     // Assert D_PLTRST# with DLPC power and reference GP03 high.
     gpio.set_levels(&[(0, false), (1, true), (3, true)])?;
     delay_us(1000);
@@ -270,12 +270,32 @@ pub fn decode_dock_id(gpdi0: u8, gpdi2: u8) -> u8 {
 }
 
 pub fn setup_t400_dock_console(config: &H8Config) -> Result<ConsoleRoute, DeviceError> {
-    let gpio = initialize_dlpc()?;
+    let dlpc = laptop()?;
+    dlpc.start_14mhz_clock(33, delay_us)?;
+    let gpio = dlpc.enable_gpio(DLPC_GPIO)?;
+    dlpc.configure_gpio_pins(&LAPTOP_PINS)?;
     let id = decode_dock_id(gpio.read_input(0)?, gpio.read_input(2)?);
     if id == DOCK_TYPE_NONE || id == DOCK_TYPE_2505 {
         return Ok(ConsoleRoute::Undocked);
     }
-    connect(&gpio)?;
+
+    // Unlike T60, release reset and power-down before asking the DLPC to
+    // connect (up to 3300 14.318 MHz clocks). Then pulse dock reset.
+    gpio.set_levels(&[(0, true), (1, true)])?;
+    let result = (|| {
+        dlpc.enable_dlpc(DLPC_SWITCH)?;
+        dlpc.connect_dlpc(DLPC_SWITCH, 230, 1, delay_us)?;
+        gpio.set_level(0, false)?;
+        delay_us(1000);
+        gpio.set_level(0, true)?;
+        delay_us(10000);
+        initialize_dock()
+    })();
+    if let Err(error) = result {
+        let _ = dlpc.disable_dlpc(DLPC_SWITCH);
+        let _ = gpio.set_levels(&[(0, false), (1, false)]);
+        return Err(error);
+    }
     let _ = set_dock_leds(&H8::new(Ec::new(config.resources.os)), CONNECTED_LEDS);
     Ok(ConsoleRoute::Dock)
 }
@@ -359,6 +379,14 @@ pub fn smm_dock_command(ec: Ec, command: u8, legacy: bool) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn t400_dock_strap_bits_match_coreboot() {
+        assert_eq!(decode_dock_id(0x10, 0), 1); // 2504 Mini Dock
+        assert_eq!(decode_dock_id(0, 1), DOCK_TYPE_2505);
+        assert_eq!(decode_dock_id(0, 2), 4);
+        assert_eq!(decode_dock_id(0xff, 0xff), DOCK_TYPE_NONE);
+    }
+
     #[test]
     fn dock_indicator_commands_match_the_t60_ec_bytes() {
         use crate::h8::LED_CONTROL;

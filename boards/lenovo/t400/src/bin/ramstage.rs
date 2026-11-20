@@ -19,12 +19,15 @@ fn main() -> ! {
     let rs = rs
         .console(&CONSOLE, mainboard::console())
         .memory_map()
-        .scan_bus(&[]);
+        .scan_bus(&fstart_driver_lenovo::t6::dock::FIRMWARE_RESOURCES);
     let mut rs = rs.init_chipset();
     let resume = rs.is_resume();
     let ec = rs.resolve_set(&mainboard::EC, |_| Ok(()));
-    let hg = (!config::IS_R500).then(|| rs.resolve_set(&mainboard::HYBRID_GRAPHICS, |_| Ok(())));
-    let (identity, acpi) = mainboard::init_devices(&mut pins, rs.smbus(), &ec, hg.as_ref(), resume);
+    if !config::IS_R500 {
+        rs.resolve_set(&mainboard::HYBRID_GRAPHICS, |_| Ok(()));
+    }
+    let graphics = rs.northbridge().graphics_policy();
+    let (identity, acpi) = mainboard::init_devices(&mut pins, rs.smbus(), &ec, graphics, resume);
     let rs = rs.start_cpus().verify_boot_media().init_display();
     let rs = match rs.boot_path() {
         Path::Cold(rs) => rs.emit_tables(&identity.smbios(), &acpi),

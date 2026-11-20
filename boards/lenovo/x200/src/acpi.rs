@@ -143,15 +143,14 @@ fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
                 Return(Local0);
             }
             Device("DOCK") {
-                Name("_HID", "ACPI0003");
-                Name("_UID", 0u32);
+                // _DCK identifies a dock; ACPI0003 identifies an AC adapter.
                 Name("_PCL", Package(#{const "\\_SB_"}));
                 Method("_DCK", 1, NotSerialized) {
                     GP28 = Arg0;
                     #{const path 5 ec::<N>().child("DKSE")}(Arg0);
                     Local1 = #{const path 5 ec::<N>().child("DKR1")};
-                    Local0 = Arg0 ^ Local1;
-                    Return(Local0);
+                    If (Arg0 == Local1) { Return(1u32); }
+                    Return(0u32);
                 }
                 Method("_STA", 0, NotSerialized) {
                     Local0 = #{const path 5 ec::<N>().child("DKR1")};
@@ -196,6 +195,20 @@ mod tests {
     use super::*;
     use fstart_driver_lenovo::{ec::EcPorts, h8::H8Resources};
     use std::{fs, process::Command};
+
+    #[test]
+    fn variant_emits_only_its_thermal_zones_and_dock() {
+        let aml = x200_mainboard_dsdt_aml(true, false);
+        assert!(aml.windows(4).any(|name| name == b"THM0"));
+        assert_eq!(
+            aml.windows(4).any(|name| name == b"THM1"),
+            !crate::config::IS_X301
+        );
+        assert_eq!(
+            aml.windows(4).any(|name| name == b"_DCK"),
+            !crate::config::IS_X301
+        );
+    }
 
     #[test]
     fn dock_thinklight_and_digitizer_execute() {
@@ -258,10 +271,10 @@ mod tests {
             text.contains("[Integer] = 0000000000000003"),
             "GGID: {text}"
         );
-        // _DCK sets DKR1 and returns Arg0 ^ DKR1, so _STA then reads 1.
-        assert!(
-            text.contains("[Integer] = 0000000000000001"),
-            "_STA: {text}"
+        assert_eq!(
+            text.matches("[Integer] = 0000000000000001").count(),
+            3,
+            "_DCK(1), _STA while docked, and _DCK(0): {text}"
         );
         // Undocked (GGID 3, not 7): the dock button requests an eject.
         assert!(text.contains("Notify on [DOCK]"), "dock queries: {text}");

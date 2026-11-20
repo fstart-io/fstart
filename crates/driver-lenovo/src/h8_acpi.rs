@@ -857,8 +857,8 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
 
 /// The `\_TZ` thermal zones (coreboot `thermal.asl`). `X61` selects both
 /// zones via `H8_HAS_2ND_THERMAL_ZONE`.
-fn thermal_zone_aml<N: PcNamespace>(_cfg: &H8Config) -> Vec<u8> {
-    acpi_dsl! {
+fn thermal_zone_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
+    let mut aml: Vec<u8> = acpi_dsl! {
         Scope("\\_TZ_") {
             Method("CTOK", 1, NotSerialized) {
                 Local0 = Arg0 * 10u32;
@@ -915,24 +915,30 @@ fn thermal_zone_aml<N: PcNamespace>(_cfg: &H8Config) -> Vec<u8> {
                     Name("_PR0", Package(FPWR));
                 }
             }
-
-            ThermalZone("THM1") {
-                Name("_TZP", 100u32);
-                Name("_TSP", 100u32);
-                Name("_TC1", 0x02u32);
-                Name("_TC2", 0x05u32);
-                Method("_PSL", 0, Serialized) { Return(#{const "PPKG"}); }
-                Method("_CRT", 0, NotSerialized) { Return(CTOK(99u32)); }
-                Method("_PSV", 0, NotSerialized) { Return(CTOK(94u32)); }
-                Method("_TMP", 0, NotSerialized) {
-                    Local0 = #{const path 5 ec::<N>().child("TMP1")};
-                    If (Local0 == 128u32) { Return(CTOK(40u32)); }
-                    Return(CTOK(Local0));
-                }
-            }
         }
     }
-    .into()
+    .into();
+    if cfg.second_thermal_zone {
+        aml.extend_from_slice(&acpi_dsl! {
+            Scope("\\_TZ_") {
+                ThermalZone("THM1") {
+                    Name("_TZP", 100u32);
+                    Name("_TSP", 100u32);
+                    Name("_TC1", 0x02u32);
+                    Name("_TC2", 0x05u32);
+                    Method("_PSL", 0, Serialized) { Return(#{const "PPKG"}); }
+                    Method("_CRT", 0, NotSerialized) { Return(CTOK(99u32)); }
+                    Method("_PSV", 0, NotSerialized) { Return(CTOK(94u32)); }
+                    Method("_TMP", 0, NotSerialized) {
+                        Local0 = #{const path 5 ec::<N>().child("TMP1")};
+                        If (Local0 == 128u32) { Return(CTOK(40u32)); }
+                        Return(CTOK(Local0));
+                    }
+                }
+            }
+        });
+    }
+    aml
 }
 
 /// `\_SI._SST` system status indicator (coreboot `systemstatus.asl`).

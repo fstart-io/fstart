@@ -67,10 +67,9 @@ pub fn select_smbus(mux: &mut impl OutputPin, branch: SmbusBranch) -> Result<(),
 
 /// Connect the Mini Dock PC87382/PC87384 serial port if a serial-capable dock
 /// is attached (coreboot `t400/bootblock.c` + `t400/dock.c`).
-pub fn setup_dock_console() {
-    if dock::setup_t400_dock_console(&crate::config::T400_H8).is_err() {
-        fstart_log::error!("lenovo-t400: dock initialization failed; serial console may be absent");
-    }
+pub fn setup_dock_console() -> Result<dock::ConsoleRoute, fstart_core::services::device::DeviceError>
+{
+    dock::setup_t400_dock_console(&crate::config::T400_H8)
 }
 
 /// Early bootblock graphics selection (coreboot `t400/romstage.c`):
@@ -81,22 +80,25 @@ pub fn select_early_graphics(
     detect: &mut impl InputPin,
     dgpu_power: &mut impl OutputPin,
     mode: HybridGraphicsMode,
-) -> Gm45GraphicsPolicy {
+) -> Result<Gm45GraphicsPolicy, ServiceError> {
     if crate::config::IS_R500 {
-        // coreboot t400/romstage.c: R500 GPIO21 high = integrated, low = discrete.
-        if detect.is_low().unwrap_or(false) {
-            Gm45GraphicsPolicy::Discrete
-        } else {
-            Gm45GraphicsPolicy::Integrated
-        }
-    } else {
-        let sel = hybrid_graphics::early_select(detect, dgpu_power, false, mode);
-        match (sel.igd, sel.peg) {
-            (true, true) => Gm45GraphicsPolicy::Hybrid,
-            (false, true) => Gm45GraphicsPolicy::Discrete,
-            _ => Gm45GraphicsPolicy::Integrated,
-        }
+        return detect
+            .is_low()
+            .map(|discrete| {
+                if discrete {
+                    Gm45GraphicsPolicy::Discrete
+                } else {
+                    Gm45GraphicsPolicy::Integrated
+                }
+            })
+            .map_err(|_| ServiceError::IoError);
     }
+    let sel = hybrid_graphics::early_select(detect, dgpu_power, false, mode);
+    Ok(match (sel.igd, sel.peg) {
+        (true, true) => Gm45GraphicsPolicy::Hybrid,
+        (false, true) => Gm45GraphicsPolicy::Discrete,
+        _ => Gm45GraphicsPolicy::Integrated,
+    })
 }
 
 /// What the board read from its own hardware for the tables.
@@ -140,18 +142,19 @@ pub fn init_devices(
     pins: &mut Pins,
     smbus: &mut impl SmBus,
     ec_opts: &fstart_driver_lenovo::options::Options,
-    hg_opts: Option<&HybridGraphicsOptions>,
+    graphics: Gm45GraphicsPolicy,
     resume: bool,
 ) -> (Identity, Acpi) {
     let mut identity = Identity::default();
-    if let Some(hg) = hg_opts {
+    if !crate::config::IS_R500 {
+        // Use the live DEVEN policy, not a second evaluation of CMOS.
         hybrid_graphics::mux_panel(
             &mut pins.dgpu_detect,
             &mut pins.panel_mux,
             false,
             &mut pins.backlight_mux,
             false,
-            hg.mode,
+            graphics == Gm45GraphicsPolicy::Discrete,
         );
     }
     let (bluetooth, acknowledged) = ec::init(

@@ -46,7 +46,10 @@ pub fn init(
         // coreboot t400/Kconfig: H8_HAS_BDC_GPIO_DETECTION is !BOARD_LENOVO_R500.
         true
     } else {
-        bdc_presence.is_low().unwrap_or(false)
+        bdc_presence
+            .is_low()
+            .inspect_err(|_| fstart_log::error!("lenovo-t400: Bluetooth presence GPIO read failed"))
+            .unwrap_or(false)
     };
     let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
     pmh7.backlight_enable(true);

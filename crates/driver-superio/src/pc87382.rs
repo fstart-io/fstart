@@ -46,17 +46,18 @@ fn connect_switch(
          impl Readable<T = u8, R = DLPC_CONTROL::Register>
          + Writeable<T = u8, R = DLPC_CONTROL::Register>
      ),
-    timeout_ms: u32,
+    polls: u32,
+    interval_us: u32,
     mut delay_us: impl FnMut(u32),
 ) -> Result<(), DeviceError> {
     // Complete reference request image. Status does not establish a working
     // dock peripheral, clock freshness, or reset/power sequencing.
     control.write(DLPC_CONTROL::REQUEST::Connect);
-    for _ in 0..timeout_ms {
+    for _ in 0..polls {
         if control.is_set(DLPC_CONTROL::CONNECTED) {
             return Ok(());
         }
-        delay_us(1000);
+        delay_us(interval_us);
     }
     if control.is_set(DLPC_CONTROL::CONNECTED) {
         Ok(())
@@ -171,11 +172,12 @@ impl SuperIo<Pc87382Chip> {
     pub fn connect_dlpc(
         &self,
         base: u16,
-        timeout_ms: u32,
+        polls: u32,
+        interval_us: u32,
         delay_us: impl FnMut(u32),
     ) -> Result<(), DeviceError> {
         self.validate_window(base, 2)?;
-        let result = connect_switch(&PioRegister::new(base), timeout_ms, delay_us);
+        let result = connect_switch(&PioRegister::new(base), polls, interval_us, delay_us);
         if result.is_err() {
             self.logical_device(PC87382_DLPC_LDN).set_enabled(false);
         }
@@ -213,6 +215,14 @@ impl SuperIo<Pc87382Chip> {
         self.validate_window(base, 2)?;
         PioRegister::<u8, DLPC_CONTROL::Register>::new(base)
             .write(DLPC_CONTROL::REQUEST::Disconnect);
+        Ok(())
+    }
+
+    /// Disconnect and deactivate the DLPC window before asserting dock reset.
+    pub fn disable_dlpc(&self, base: u16) -> Result<(), DeviceError> {
+        self.validate_window(base, 2)?;
+        self.disconnect_dlpc(base)?;
+        self.logical_device(PC87382_DLPC_LDN).set_enabled(false);
         Ok(())
     }
 
@@ -348,7 +358,7 @@ mod tests {
         let control = InMemoryRegister::<u8, DLPC_CONTROL::Register>::new(0);
         let mut waits = 0;
         assert!(
-            connect_switch(&control, 2, |us| {
+            connect_switch(&control, 2, 1000, |us| {
                 assert_eq!(us, 1000);
                 waits += 1;
                 if waits == 2 {
@@ -358,11 +368,11 @@ mod tests {
             .is_ok()
         );
         assert_eq!(waits, 2);
-        assert!(connect_switch(&control, 0, |_| panic!()).is_err());
+        assert!(connect_switch(&control, 0, 1000, |_| panic!()).is_err());
         assert_eq!(control.get(), 0);
-        let mut waits = 0;
-        assert!(connect_switch(&control, 3, |_| waits += 1).is_err());
-        assert_eq!(waits, 3);
+        let mut elapsed_us = 0;
+        assert!(connect_switch(&control, 230, 1, |us| elapsed_us += us).is_err());
+        assert_eq!(elapsed_us, 230);
         assert_eq!(control.get(), 0);
     }
 
@@ -371,8 +381,13 @@ mod tests {
         let controller = Pc87382::new_at_base(SuperIoConfig::default(), 0x164e).unwrap();
         for base in [0, 0xff, 0x164d, 0x164e, 0xffff] {
             assert!(controller.enable_dlpc(base).is_err());
-            assert!(controller.connect_dlpc(base, 0, |_| panic!()).is_err());
+            assert!(
+                controller
+                    .connect_dlpc(base, 0, 1000, |_| panic!())
+                    .is_err()
+            );
             assert!(controller.disconnect_dlpc(base).is_err());
+            assert!(controller.disable_dlpc(base).is_err());
             assert!(controller.dlpc_connected(base).is_err());
         }
         for base in [0, 0xf0, 0x1640, 0x1681] {

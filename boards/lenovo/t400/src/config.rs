@@ -191,6 +191,8 @@ pub static T400_PLATFORM: Gm45Ich9Platform = {
         })
         // T400/T500/R400/W500: 03.0 on, 03.1..3 off. R500: all ME off.
         .disabled_me_functions(if IS_R500 { 0b1111 } else { 0b1110 })
+        // R500 has a PCIe Ethernet NIC on 1c.5, not the ICH9 LAN at 19.0.
+        .disable_lan(IS_R500)
         // Socket P supports quad-core Penryn CPUs (coreboot socket_p MAX_CPUS=4).
         .max_cpus(4)
         .spd_addresses([0x50, 0, 0x51, 0])
@@ -745,6 +747,7 @@ mod tests {
         assert_eq!(T400_PLATFORM.pcie_attached()[3], Some(&EXPRESSCARD));
         assert!(T400_PLATFORM.southbridge.pirq.is_none());
         assert!(T400_PLATFORM.southbridge.preserve_hardware_pirq);
+        assert_eq!(T400_PLATFORM.southbridge.disable_lan, IS_R500);
 
         match VARIANT {
             Variant::R500 => {

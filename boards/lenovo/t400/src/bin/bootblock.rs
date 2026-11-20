@@ -17,12 +17,11 @@ static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 fstart_platform_intel::entry!(main, reset_vector);
 
 fn main() -> ! {
-    let bb = Bootblock::<Board>::enter();
+    let mut bb = Bootblock::<Board>::enter();
     let mut pins = mainboard::Pins::of(bb.southbridge().gpio());
-    mainboard::setup_dock_console();
-    let mut bb = bb.console(&CONSOLE, mainboard::console());
-    // coreboot t400/romstage.c mb_pre_raminit_setup(): select IGD/PEG policy
-    // before raminit so DEVEN/GGC match the fitted GPU and user preference.
+    let dock = mainboard::setup_dock_console();
+    // `console()` runs GM45 early init, which programs DEVEN. Resolve the
+    // board's IGD/PEG policy first so those bits already agree at raminit.
     let mut hg = mainboard::HYBRID_GRAPHICS.board;
     if !fstart_board_lenovo_t400::config::IS_R500 {
         let source = fstart_platform_intel::options::store();
@@ -32,7 +31,16 @@ fn main() -> ! {
     }
     let graphics =
         mainboard::select_early_graphics(&mut pins.dgpu_detect, &mut pins.dgpu_power, hg.mode);
-    bb.northbridge_mut().set_graphics_policy(graphics);
+    if let Ok(policy) = graphics {
+        bb.northbridge_mut().set_graphics_policy(policy);
+    }
+    let bb = bb.console(&CONSOLE, mainboard::console());
+    if graphics.is_err() {
+        bb.fail("GPU strap GPIO read");
+    }
+    if dock.is_err() {
+        fstart_log::error!("lenovo-t400: dock initialization failed; serial console may be absent");
+    }
     // The GPIO table leaves the SMBus mux on the SPDs for training.
     if mainboard::select_smbus(&mut pins.smbus_mux, SmbusBranch::Spd).is_err() {
         bb.fail("SMBus routing to the SPDs");
