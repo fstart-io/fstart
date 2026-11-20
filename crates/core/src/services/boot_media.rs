@@ -273,6 +273,10 @@ impl LinearMap {
     /// The address must point to a valid, readable, contiguous memory
     /// region that covers the entire flash size.
     #[inline(always)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "hides a value from the optimizer; no memory access"
+    )]
     pub unsafe fn from_raw_addr(base_addr: u64) -> Self {
         // SAFETY: a u64 on the stack is always readable. Volatile read
         // prevents the compiler from constant-folding the value.

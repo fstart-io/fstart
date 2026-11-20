@@ -89,6 +89,10 @@ pub struct TrustRef<'a> {
     block: &'a TrustBlock,
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "build-patched data, not MMIO: volatile so the placeholder is not folded"
+)]
 impl<'a> TrustRef<'a> {
     /// Read a build-patched policy block. No caller-supplied location or header
     /// may substitute for the expected policy's provenance.

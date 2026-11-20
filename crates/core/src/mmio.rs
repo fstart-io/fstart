@@ -57,6 +57,11 @@
 //! }
 //! ```
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "the barrier-aware accessors everything else uses"
+)]
+
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ptr;
