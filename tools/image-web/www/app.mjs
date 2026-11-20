@@ -1223,7 +1223,7 @@ async function inspectIntelFlash(file, size) {
 }
 
 function intelFlashRow(layout) {
-  const size = Math.max(...layout.map(([, offset, length]) => offset + length));
+  const size = layout.capacity;
   return row({
     title: "Full Intel flash image (optional)",
     help: `Use a raw ${bytes(size)} SPI image from this machine, not a capsule or ZIP. The assembler checks the descriptor and replaces only BIOS. Other regions can include machine-specific data such as the MAC address.`,
@@ -1542,15 +1542,12 @@ async function assemble() {
   }
 }
 
-// The Intel flash descriptor layout of the build, if any: [[kind, offset, size], ...].
-function ifdLayout(value) {
-  if (!value || typeof value !== "object") return null;
-  if (Array.isArray(value.IntelIfd)) return value.IntelIfd;
-  for (const child of Object.values(value)) {
-    const found = ifdLayout(child);
-    if (found) return found;
-  }
-  return null;
+// As in the native assembler, take the descriptor from the plan's FFS step.
+function ifdLayout(plan) {
+  const flash = plan?.images.find(step => step.operation.Ffs)?.operation.Ffs.flash;
+  if (flash?.IntelDescriptor) return flash.IntelDescriptor;
+  const regions = flash?.IntelIfd;
+  return regions ? { regions, capacity: Math.max(...regions.map(([, offset, size]) => offset + size)) } : null;
 }
 
 // fstart fills only the BIOS region of an Intel flash image; the descriptor,
@@ -1559,7 +1556,7 @@ function ifdLayout(value) {
 function biosRegion(files) {
   const layout = ifdLayout(state.manifest?.plan);
   if (!layout) return null;
-  const bios = layout.find(([kind]) => kind === "Bios");
+  const bios = layout.regions.find(([kind]) => kind === "Bios");
   const image = files.find(f => f.name.endsWith(".pflash"));
   if (!bios || !image || image.data.length < bios[1] + bios[2]) return null;
   return { name: `${state.build.board}-bios-region.bin`, data: image.data.slice(bios[1], bios[1] + bios[2]) };
