@@ -106,7 +106,7 @@ pub struct Supplied<'a> {
     /// The vendor image an AMD build takes its PSP firmware from (a raw
     /// ROM, or a vendor update ZIP holding one).
     pub donor: Option<&'a [u8]>,
-    /// Optional complete legacy Intel SPI image; only its BIOS region is replaced.
+    /// Optional complete Intel descriptor-mode SPI image; only its BIOS region is replaced.
     pub intel_flash: Option<&'a [u8]>,
     /// Named kernel, firmware or FIT bytes, as the plan's inputs declare.
     pub inputs: BTreeMap<String, Vec<u8>>,
@@ -213,8 +213,16 @@ impl Bundle {
     }
 
     fn intel_layout(&self) -> Result<fstart_core::IntelIfdFlashLayout, String> {
-        match &self.manifest.plan.ffs_assembly()?.flash {
-            Some(crate::plan::FlashTransport::IntelIfd(ifd)) => ifd.decode(),
+        match self
+            .manifest
+            .plan
+            .ffs_assembly()?
+            .flash
+            .as_ref()
+            .map(crate::plan::FlashTransport::decode)
+            .transpose()?
+        {
+            Some(fstart_core::FlashLayout::IntelIfd(ifd)) => Ok(ifd),
             _ => Err("this build takes no Intel descriptor-mode flash image".into()),
         }
     }

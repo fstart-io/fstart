@@ -112,11 +112,15 @@ such images, or one that names a member twice, must be unpacked. `fbuild
 assemble --donor` and `fbuild blobs`
 take the same donors (`fstart_image_build::donor`).
 
-For a legacy Intel descriptor-mode board, pass `--intel-flash backup.rom` to
+For an Intel descriptor-mode board, pass `--intel-flash backup.rom` to
 `compose-bundle` to produce an additional `<board>-full.rom`. Use a verified,
 full raw SPI dump from the target machine, not a BIOS region, capsule or ZIP.
-The flash capacity and enabled descriptor, BIOS, ME, GbE and PDR ranges must
-match the build. Only BIOS is replaced; every other byte, including gaps, is
+The detected flash capacity and all enabled FLREG ranges must match the build.
+Boards select the encoding instead of guessing from the backup: existing
+`IntelIfdFlashLayout::new` plans use IFD 1; `with_geometry(version, capacity,
+regions)` also supports IFD 1.5 (Wellsburg) and IFD 2. Extended tables can
+include FLREG0–15, including BIOS2, EC, IE, both 10GbE regions, PTT and
+numbered reserved slots. Only the primary BIOS is replaced; all other bytes, including gaps, are
 preserved. The report records the source hash and preserved ranges and hashes.
 A layout match does not authenticate firmware or identify the board. With
 `--intel-flash`, use fresh output filenames: none may already exist, so the

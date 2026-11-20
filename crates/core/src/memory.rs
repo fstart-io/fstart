@@ -48,7 +48,7 @@ impl MemoryMap {
         match &self.flash_layout {
             Some(FlashLayout::IntelIfd(layout)) => {
                 let bios = layout.bios_region()?;
-                Some((layout.base() + u64::from(bios.offset), u64::from(bios.size)))
+                Some((layout.bios_base()?, u64::from(bios.size)))
             }
             Some(FlashLayout::X86Legacy(layout)) => Some((layout.base(), u64::from(layout.size()))),
             None => self.contiguous_rom_window(),
@@ -77,7 +77,9 @@ impl MemoryMap {
                     .bios_region()
                     .ok_or(MemoryMapError::MissingBiosRegion)?;
                 Ok(Some((
-                    layout.base() + u64::from(bios.offset),
+                    layout
+                        .bios_base()
+                        .ok_or(MemoryMapError::MissingBiosRegion)?,
                     u64::from(bios.size),
                 )))
             }
@@ -242,6 +244,10 @@ pub enum RegionKind {
 /// Physical flash layout for platforms with non-BIOS firmware regions.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "host", derive(serde::Serialize))]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "board constants must be Copy and available before there is a heap"
+)]
 pub enum FlashLayout {
     /// Intel Firmware Descriptor controlled SPI flash.
     IntelIfd(IntelIfdFlashLayout),
@@ -285,12 +291,26 @@ impl X86LegacyFlashLayout {
     }
 }
 
+/// Descriptor encoding selected by chipset, like ifdtool's platform argument.
+/// FLMAP0 alone does not reliably distinguish all generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "host", derive(serde::Serialize, serde::Deserialize))]
+pub enum IfdVersion {
+    V1,
+    /// Wellsburg: extended density fields, legacy region addresses.
+    V1_5,
+    V2,
+}
+
 /// Intel Firmware Descriptor flash layout.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "host", derive(serde::Serialize))]
 pub struct IntelIfdFlashLayout {
     /// Regions described by the descriptor.
-    pub regions: ConstVec<IntelIfdRegionConfig, 8>,
+    pub regions: ConstVec<IntelIfdRegionConfig, 16>,
+    pub version: IfdVersion,
+    /// Zero in legacy plans where the last region defines the flash size.
+    pub capacity: u32,
 }
 
 impl IntelIfdFlashLayout {
@@ -302,8 +322,20 @@ impl IntelIfdFlashLayout {
     /// - every region lies within the derived total flash size,
     /// - no two regions overlap or repeat a region kind.
     #[must_use]
-    pub const fn new(regions: ConstVec<IntelIfdRegionConfig, 8>) -> Self {
-        let layout = Self { regions };
+    pub const fn new(regions: ConstVec<IntelIfdRegionConfig, 16>) -> Self {
+        Self::with_geometry(IfdVersion::V1, 0, regions)
+    }
+
+    pub const fn with_geometry(
+        version: IfdVersion,
+        capacity: u32,
+        regions: ConstVec<IntelIfdRegionConfig, 16>,
+    ) -> Self {
+        let layout = Self {
+            version,
+            capacity,
+            regions,
+        };
         layout.validate();
         layout
     }
@@ -322,6 +354,9 @@ impl IntelIfdFlashLayout {
     /// Checked form for imported layouts and host plan transport.
     pub const fn check(&self) -> Result<(), &'static str> {
         let size = self.size();
+        if !matches!(self.version, IfdVersion::V1) && self.capacity == 0 {
+            return Err("extended IFD layout needs explicit flash capacity");
+        }
         if size == 0 {
             return Err("Intel IFD flash_layout declares no sized regions");
         }
@@ -363,6 +398,9 @@ impl IntelIfdFlashLayout {
             }
             i += 1;
         }
+        if size > 128 << 20 || !size.is_multiple_of(4096) {
+            return Err("unsupported IFD flash capacity");
+        }
         if bios_count != 1 {
             return Err("Intel IFD flash_layout requires exactly one BIOS region");
         }
@@ -390,14 +428,17 @@ impl IntelIfdFlashLayout {
     #[must_use]
     pub const fn bios_base(&self) -> Option<u64> {
         match self.bios_region() {
-            Some(region) => Some(self.base() + region.offset as u64),
+            Some(region) => Some(self.end() - region.size as u64),
             None => None,
         }
     }
 
-    /// Total flash size derived from the furthest configured region end.
+    /// Physical flash capacity, inferred from the last active region only in legacy plans.
     #[must_use]
     pub const fn size(&self) -> u32 {
+        if self.capacity != 0 {
+            return self.capacity;
+        }
         let mut max = 0u32;
         let mut i = 0;
         while i < self.regions.len() {
@@ -451,22 +492,49 @@ pub enum IntelIfdRegion {
     Gbe,
     /// Platform data region.
     Pdr,
-    /// Reserved or unsupported region number.
+    DevExp,
+    Bios2,
+    Reserved7,
+    Ec,
+    DevExp2,
+    Ie,
+    Gbe10_0,
+    Gbe10_1,
+    Reserved13,
+    Reserved14,
+    Ptt,
+    /// Unnumbered, not a descriptor register.
     Reserved,
 }
 
 impl IntelIfdRegion {
     /// Numeric FLREG index used by Intel descriptors.
-    pub fn flreg_index(self) -> Option<usize> {
+    pub const fn flreg_index(self) -> Option<usize> {
         match self {
-            IntelIfdRegion::Descriptor => Some(0),
-            IntelIfdRegion::Bios => Some(1),
-            IntelIfdRegion::Me => Some(2),
-            IntelIfdRegion::Gbe => Some(3),
-            IntelIfdRegion::Pdr => Some(4),
-            IntelIfdRegion::Reserved => None,
+            Self::Reserved => None,
+            _ => Some(self as usize),
         }
     }
+
+    /// FLREG0..15 in on-flash order (including numbered reserved slots).
+    pub const REGISTERS: [Self; 16] = [
+        Self::Descriptor,
+        Self::Bios,
+        Self::Me,
+        Self::Gbe,
+        Self::Pdr,
+        Self::DevExp,
+        Self::Bios2,
+        Self::Reserved7,
+        Self::Ec,
+        Self::DevExp2,
+        Self::Ie,
+        Self::Gbe10_0,
+        Self::Gbe10_1,
+        Self::Reserved13,
+        Self::Reserved14,
+        Self::Ptt,
+    ];
 
     /// Conventional lower-case region name.
     pub fn as_str(self) -> &'static str {
@@ -476,6 +544,17 @@ impl IntelIfdRegion {
             IntelIfdRegion::Me => "me",
             IntelIfdRegion::Gbe => "gbe",
             IntelIfdRegion::Pdr => "pdr",
+            Self::DevExp => "devexp",
+            Self::Bios2 => "bios2",
+            Self::Reserved7 => "res7",
+            Self::Ec => "ec",
+            Self::DevExp2 => "devexp2",
+            Self::Ie => "ie",
+            Self::Gbe10_0 => "10gbe_0",
+            Self::Gbe10_1 => "10gbe_1",
+            Self::Reserved13 => "res13",
+            Self::Reserved14 => "res14",
+            Self::Ptt => "ptt",
             IntelIfdRegion::Reserved => "reserved",
         }
     }
