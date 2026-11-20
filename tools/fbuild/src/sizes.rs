@@ -21,6 +21,16 @@ pub struct StageSizes {
     pub data: u64,
     pub bss: u64,
     pub flat: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sram: Option<SramUsage>,
+}
+
+/// Highest occupied SRAM offset (including alignment gaps, BSS and stack)
+/// vs. the resolved runtime window, not the size of the file on disk.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SramUsage {
+    pub used: u64,
+    pub capacity: u64,
 }
 
 /// One board's JSON-lines record, shared by the collector and CI reporter.
@@ -37,6 +47,34 @@ pub fn stage_sizes(elf: &[u8], flat: u64) -> Result<StageSizes, String> {
         flat,
         ..StageSizes::default()
     };
+    // An eGON SPL embeds its resolved image and writable SRAM window in
+    // .fstart.layout. Later DRAM stages don't carry the eGON boot header.
+    let sram = if file
+        .section_by_name(".head")
+        .and_then(|s| s.data().ok())
+        .and_then(|data| data.get(4..12))
+        == Some(b"eGON.BT0")
+    {
+        use fstart_core::layout::{Layout, RegionKind};
+        let section = file
+            .section_by_name(".fstart.layout")
+            .ok_or("SPL is missing its layout")?;
+        let layout =
+            Layout::parse(section.data().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let window = layout
+            .region(RegionKind::Image)
+            .ok_or("SPL has no image window")?;
+        let writable = layout
+            .region(RegionKind::Writable)
+            .ok_or("SPL has no writable window")?;
+        if (window.base, window.size) != (writable.base, writable.size) {
+            return Err("SPL has split runtime windows".into());
+        }
+        Some(window)
+    } else {
+        None
+    };
+    let mut high_water = 0;
     for section in file.sections() {
         let SectionFlags::Elf { sh_flags } = section.flags() else {
             continue;
@@ -46,6 +84,17 @@ pub fn stage_sizes(elf: &[u8], flat: u64) -> Result<StageSizes, String> {
         }
         let name = section.name().unwrap_or("");
         let size = section.size();
+        if let Some(window) = sram
+            && size != 0
+        {
+            let end = section
+                .address()
+                .checked_sub(window.base)
+                .and_then(|off| off.checked_add(size))
+                .filter(|end| *end <= window.size)
+                .ok_or_else(|| format!("SPL section {name} outside SRAM"))?;
+            high_water = high_water.max(end);
+        }
         let nobits = matches!(
             section.kind(),
             SectionKind::UninitializedData | SectionKind::UninitializedTls
@@ -62,6 +111,10 @@ pub fn stage_sizes(elf: &[u8], flat: u64) -> Result<StageSizes, String> {
             sizes.data += size;
         }
     }
+    sizes.sram = sram.map(|window| SramUsage {
+        used: high_water,
+        capacity: window.size,
+    });
     Ok(sizes)
 }
 
@@ -129,6 +182,7 @@ mod tests {
                 data: 12,
                 bss: 64,
                 flat: 4096,
+                sram: None,
             }
         );
     }
