@@ -203,7 +203,7 @@ fn connect(gpio: &GpioPort0) -> Result<(), DeviceError> {
     let dlpc = laptop()?;
     // Re-enable after a previous timeout deactivated the DLPC LDN.
     dlpc.enable_dlpc(DLPC_SWITCH)?;
-    dlpc.connect_dlpc(DLPC_SWITCH, 1000, 1000, delay_us)?;
+    dlpc.connect_dlpc(DLPC_SWITCH, 1000, delay_us)?;
     // Assert D_PLTRST# with DLPC power and reference GP03 high.
     gpio.set_levels(&[(0, false), (1, true), (3, true)])?;
     delay_us(1000);
@@ -284,7 +284,7 @@ pub fn setup_t400_dock_console(config: &H8Config) -> Result<ConsoleRoute, Device
     gpio.set_levels(&[(0, true), (1, true)])?;
     let result = (|| {
         dlpc.enable_dlpc(DLPC_SWITCH)?;
-        dlpc.connect_dlpc(DLPC_SWITCH, 230, 1, delay_us)?;
+        dlpc.connect_dlpc_us(DLPC_SWITCH, 230, 1, delay_us)?;
         gpio.set_level(0, false)?;
         delay_us(1000);
         gpio.set_level(0, true)?;

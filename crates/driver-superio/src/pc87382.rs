@@ -172,6 +172,17 @@ impl SuperIo<Pc87382Chip> {
     pub fn connect_dlpc(
         &self,
         base: u16,
+        timeout_ms: u32,
+        delay_us: impl FnMut(u32),
+    ) -> Result<(), DeviceError> {
+        self.connect_dlpc_us(base, timeout_ms, 1000, delay_us)
+    }
+
+    /// Request connection with one sample per `interval_us` and a final
+    /// sample after `polls` intervals; used for sub-millisecond deadlines.
+    pub fn connect_dlpc_us(
+        &self,
+        base: u16,
         polls: u32,
         interval_us: u32,
         delay_us: impl FnMut(u32),
@@ -381,9 +392,10 @@ mod tests {
         let controller = Pc87382::new_at_base(SuperIoConfig::default(), 0x164e).unwrap();
         for base in [0, 0xff, 0x164d, 0x164e, 0xffff] {
             assert!(controller.enable_dlpc(base).is_err());
+            assert!(controller.connect_dlpc(base, 0, |_| panic!()).is_err());
             assert!(
                 controller
-                    .connect_dlpc(base, 0, 1000, |_| panic!())
+                    .connect_dlpc_us(base, 0, 1, |_| panic!())
                     .is_err()
             );
             assert!(controller.disconnect_dlpc(base).is_err());
