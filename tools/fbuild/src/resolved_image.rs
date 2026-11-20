@@ -49,6 +49,10 @@ impl ResolvedImage {
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
+    /// The payload selected by the platform plan.
+    pub fn payload(&self) -> &str {
+        &self.build.plan.payload
+    }
     /// The options the build offers, as the board's platform plan lists
     /// them from the board's option sets.
     pub fn options(&self) -> &fstart_image_build::options::Options {
@@ -112,5 +116,19 @@ impl ResolvedImage {
         release: bool,
     ) -> Result<crate::build_board::BuildResult, String> {
         self.build.build(root, board, release)
+    }
+
+    /// Report each unit whose linked artifacts are ready, even if a later unit fails.
+    pub fn build_with_units(
+        &self,
+        root: &Path,
+        board: &BoardManifest,
+        release: bool,
+        linked: impl FnMut(
+            &fstart_image_build::build_plan::CompilationUnit,
+            &std::collections::BTreeMap<String, PathBuf>,
+        ),
+    ) -> Result<crate::build_board::BuildResult, String> {
+        self.build.build_with_units(root, board, release, linked)
     }
 }

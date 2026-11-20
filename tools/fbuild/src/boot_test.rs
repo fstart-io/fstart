@@ -88,34 +88,57 @@ impl Default for Runner {
     }
 }
 
+/// One selected scenario's verdict and the logs this invocation produced.
+pub struct TestResult {
+    pub verdict: Verdict,
+    pub logs: Vec<PathBuf>,
+}
+
 impl Runner {
-    /// Run `board`'s `tests`. Returns the number that failed.
+    /// Run `board`'s `tests`, returning results in test order.
     pub fn run(
         &self,
         root: &Path,
         board: &BoardManifest,
         tests: &[&BootTest],
-    ) -> Result<usize, String> {
+    ) -> Result<Vec<TestResult>, String> {
         fs::create_dir_all(&self.logs)
             .map_err(|e| format!("create {}: {e}", self.logs.display()))?;
-        let mut failures = 0;
-        for test in tests {
-            let name = &test.name;
-            let board_name = &board.board;
-            github(&format!("::group::{board_name} {name}"));
-            let verdict = self.boot(root, board, test);
-            github("::endgroup::");
-            match verdict {
-                Verdict::Pass => println!("PASS {board_name} {name}"),
-                Verdict::Skip(why) => println!("SKIP {board_name} {name} ({why})"),
-                Verdict::Fail(why) => {
-                    println!("FAIL {board_name} {name} ({why})");
-                    github(&format!("::error title={board_name} {name}::{why}"));
-                    failures += 1;
-                }
+        Ok(tests
+            .iter()
+            .map(|test| self.run_one(root, board, test))
+            .collect())
+    }
+
+    fn run_one(&self, root: &Path, board: &BoardManifest, test: &BootTest) -> TestResult {
+        let name = &test.name;
+        let board_name = &board.board;
+        let log = self.logs.join(format!("{board_name}-{name}.log"));
+        // Do not report stale logs from a prior invocation when a scenario
+        // skips, or fails before QEMU or swtpm starts.
+        let logs: Vec<_> = ["log", "swtpm-setup.log", "swtpm.log", "tpm"]
+            .into_iter()
+            .map(|ext| log.with_extension(ext))
+            .filter(|path| match fs::remove_file(path) {
+                Ok(()) => true,
+                Err(e) => e.kind() == io::ErrorKind::NotFound,
+            })
+            .collect();
+        github(&format!("::group::{board_name} {name}"));
+        let verdict = self.boot(root, board, test, &log);
+        github("::endgroup::");
+        match &verdict {
+            Verdict::Pass => println!("PASS {board_name} {name}"),
+            Verdict::Skip(why) => println!("SKIP {board_name} {name} ({why})"),
+            Verdict::Fail(why) => {
+                println!("FAIL {board_name} {name} ({why})");
+                github(&format!("::error title={board_name} {name}::{why}"));
             }
         }
-        Ok(failures)
+        TestResult {
+            verdict,
+            logs: logs.into_iter().filter(|path| path.is_file()).collect(),
+        }
     }
 
     /// The boot asset `binding` names.
@@ -131,10 +154,7 @@ impl Runner {
         }
     }
 
-    fn boot(&self, root: &Path, board: &BoardManifest, test: &BootTest) -> Verdict {
-        let log = self.logs.join(format!("{}-{}.log", board.board, test.name));
-        let _ = fs::remove_file(&log);
-
+    fn boot(&self, root: &Path, board: &BoardManifest, test: &BootTest, log: &Path) -> Verdict {
         let mut options = BuildArgs::default();
         let mut supplied = BTreeMap::new();
         let mut disk = None;
@@ -197,12 +217,12 @@ impl Runner {
         let outcome = match command {
             Ok(command) => {
                 let deadline = test.timeout.map_or(self.boot_timeout, Duration::from_secs);
-                supervise(command, &log, deadline, Some((&test.expect, self.quiet)))
+                supervise(command, log, deadline, Some((&test.expect, self.quiet)))
             }
             Err(e) => return Verdict::Fail(e),
         };
         if let Some(swtpm) = swtpm {
-            swtpm.keep_logs(&log);
+            swtpm.keep_logs(log);
         }
         if disk.is_some() {
             let _ = fs::remove_file(log.with_extension("disk"));
@@ -211,14 +231,14 @@ impl Runner {
             Ok(outcome) => outcome,
             Err(e) => return Verdict::Fail(format!("run: {e}")),
         };
-        let output = fs::read(&log).unwrap_or_default();
+        let output = fs::read(log).unwrap_or_default();
         match judge(test, &outcome, &String::from_utf8_lossy(&output)) {
             Ok(Some(report)) => {
                 let _ = fs::write(log.with_extension("tpm"), report);
                 Verdict::Pass
             }
             Ok(None) => Verdict::Pass,
-            Err(why) => fail_with_log(&why, &log),
+            Err(why) => fail_with_log(&why, log),
         }
     }
 }
@@ -256,8 +276,9 @@ fn judge(test: &BootTest, outcome: &Outcome, output: &str) -> Result<Option<Stri
         .map_err(|e| format!("TPM log: {e}"))
 }
 
+/// The QEMU runner's judgment; tests not selected are reported by the CLI.
 #[derive(Debug)]
-enum Verdict {
+pub enum Verdict {
     Pass,
     Skip(String),
     Fail(String),

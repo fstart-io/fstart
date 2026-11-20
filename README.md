@@ -41,6 +41,14 @@ openssl genpkey -algorithm ed25519 -out signing.pem
 cargo fbuild assemble --board qemu-riscv64 --payload halt --signing-key signing.pem
 ```
 
+`cargo fbuild build-boards BOARD...` summarizes completed release units and host
+library tests separately. `cargo fbuild boot-test BOARD...` summarizes each
+plan's QEMU scenarios, including skips and their reasons. Use `--list` to see
+scenario names, `--test NAME` to select scenarios, and `--logs DIR` to change the
+log directory from `target/boot-tests/`. CI includes these reports in each
+firmware job summary and links the boot log artifact when available. None of
+these results verify physical hardware.
+
 `fbuild` runs on the host. If Cargo tries to compile it for `wasm32-wasip1`,
 check for `CARGO_BUILD_TARGET` or a Cargo `build.target` override and remove it
 for this checkout. The QEMU quick start does not use a WebAssembly target.
