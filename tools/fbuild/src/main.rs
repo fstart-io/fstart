@@ -60,10 +60,9 @@ enum Command {
     },
     /// Print the CI firmware job matrix.
     Shards,
-    /// Build, lint or test the feature selections and targets CI checks
-    /// beyond the defaults (tools/fbuild/src/checks.rs).
+    /// Run CI's extra Cargo checks and architecture guard (see tools/fbuild/src/checks.rs).
     Checks {
-        /// Print the Cargo commands instead of running them.
+        /// List the guard and Cargo commands without running them.
         #[arg(long)]
         list: bool,
     },
