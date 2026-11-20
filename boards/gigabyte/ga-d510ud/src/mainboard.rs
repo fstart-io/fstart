@@ -1,5 +1,5 @@
 //! IT8720F board policy through semantic driver operations.
-use fstart_core::services::{ServiceError, device::BusDevice};
+use fstart_core::services::ServiceError;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
 pub const fn console() -> Ns16550Config {

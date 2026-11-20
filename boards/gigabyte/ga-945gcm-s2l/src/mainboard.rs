@@ -1,5 +1,5 @@
 //! Attached-device sequencing; register encodings live in reusable drivers.
-use fstart_core::services::{ServiceError, device::BusDevice};
+use fstart_core::services::ServiceError;
 use fstart_driver_superio::{ite_env::IteEnvironmentController, ite8718f::Ite8718f};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 

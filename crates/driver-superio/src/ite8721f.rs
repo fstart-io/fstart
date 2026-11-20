@@ -5,8 +5,8 @@
 use crate::{IoResource, IrqResource, SuperIo, SuperIoChip};
 
 pub use crate::{
-    CirConfig, ComPortConfig, EcConfig, GpioConfig, KbcConfig, LpcBaseProvider, MouseConfig,
-    ParallelConfig, SuperIoConfig,
+    CirConfig, ComPortConfig, EcConfig, GpioConfig, KbcConfig, MouseConfig, ParallelConfig,
+    SuperIoConfig,
 };
 
 /// Zero-sized chip descriptor for the ITE IT8721F.

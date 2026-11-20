@@ -13,7 +13,7 @@ use tock_registers::register_bitfields;
 
 use crate::{IoResource, SuperIo, SuperIoChip};
 
-pub use crate::{ComPortConfig, LpcBaseProvider, SuperIoConfig};
+pub use crate::{ComPortConfig, SuperIoConfig};
 
 pub const SUART1: u8 = 0x2;
 pub const SUART2: u8 = 0x3;

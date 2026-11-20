@@ -14,7 +14,6 @@
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_core::pio::{PioRegister, inb, outb};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use fstart_core::services::device::BusDevice;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use fstart_driver_superio::{
     ComPortConfig, ParallelConfig, SuperIoConfig,

@@ -1,6 +1,5 @@
 //! Foxconn D41S mainboard work called by the stage mains.
 
-use fstart_core::services::device::BusDevice;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_intel::generic::ck505::I2cCk505;
 use fstart_driver_superio::ite8721f::Ite8721f;

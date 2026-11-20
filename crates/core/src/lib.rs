@@ -15,7 +15,6 @@ pub mod builder;
 pub mod checksum;
 pub mod const_vec;
 pub mod description;
-pub mod device;
 pub mod ffs;
 pub mod handoff;
 pub mod indexed;
@@ -51,7 +50,6 @@ pub use builder::{
     default_security_config, elf_payload, x86_coreboot_payload, x86_linux_payload, x86_uefi_payload,
 };
 pub use const_vec::ConstVec;
-pub use device::BusAddress;
 pub use ffs::{
     AnchorBlock, Compression, DigestSet, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
     ImageManifest, KeyBytes, Region, RegionContent, RegionEntry, Segment, SegmentFlags,

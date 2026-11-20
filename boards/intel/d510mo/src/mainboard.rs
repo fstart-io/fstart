@@ -1,5 +1,5 @@
 //! Attached Winbond Super I/O and ICS9EPRS525 clock generator.
-use fstart_core::services::{ServiceError, SmBus, device::BusDevice};
+use fstart_core::services::{ServiceError, SmBus};
 use fstart_driver_superio::w83627thg::W83627thg;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 

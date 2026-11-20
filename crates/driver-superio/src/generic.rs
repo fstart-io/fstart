@@ -28,8 +28,7 @@
 
 #![allow(clippy::redundant_locals)]
 
-use fstart_core::BusAddress;
-use fstart_core::services::device::{BusDevice, DeviceError};
+use fstart_core::services::device::DeviceError;
 
 use crate::{IoResource, IrqResource, LogicalDevice};
 use core::marker::PhantomData;
@@ -308,9 +307,7 @@ pub struct GpioConfig {
 
 /// Generic SuperIO driver parameterized by a [`SuperIoChip`] descriptor.
 ///
-/// Constructed via [`BusDevice::new_on_bus`]: the base port comes from
-/// board-authored typed topology (`BusAddress::Lpc`) and is passed through by
-/// the LPC bus driver when constructing the child.
+/// Constructed via [`SuperIo::new_at_base`] with the board's LPC PnP index port.
 ///
 /// When the `com1` config is present, the driver implements [`Console`]
 /// by accessing the classic NS16550 registers at `com1.io_base`. This
@@ -359,7 +356,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         if C::EXIT_NOOP {
             return;
         }
-        // SAFETY: chip-provided constants; base_port validated in new_on_bus.
+        // SAFETY: chip-provided constants; base_port validated in new_at_base.
         unsafe {
             if let Some(byte) = C::EXIT_RAW {
                 fstart_core::pio::outb(self.idx_port(), byte);
@@ -654,44 +651,13 @@ impl<C: SuperIoChip> SuperIo<C> {
 }
 
 // ---------------------------------------------------------------------------
-// BusDevice impl — constructed by the parent LPC bus
+// Initialization
 // ---------------------------------------------------------------------------
 
-/// The parent bus of a SuperIO: whatever knows the chip's LPC config
-/// index port.
-pub trait LpcBaseProvider {
-    /// Return the LPC config index port for this child.
-    fn lpc_base(&self) -> u16;
-}
-
-impl<C: SuperIoChip> BusDevice for SuperIo<C> {
-    const NAME: &'static str = "superio";
-    const COMPATIBLE: &'static [&'static str] = &[];
-    type Config = SuperIoConfig;
-    type Bus = dyn LpcBaseProvider;
-
-    fn new_on_bus(config: Self::Config, bus: &Self::Bus) -> Result<Self, DeviceError> {
-        Self::new_on_bus_at(config, bus, None)
-    }
-
-    fn new_on_bus_at(
-        config: Self::Config,
-        bus: &Self::Bus,
-        address: Option<BusAddress>,
-    ) -> Result<Self, DeviceError> {
-        let base_port = match address {
-            Some(BusAddress::Lpc(port)) => port,
-            Some(_) => return Err(DeviceError::MissingResource("lpc_address")),
-            None => bus.lpc_base(),
-        };
-        Self::new_at_base(config, base_port)
-    }
-
-    fn init_on_bus(&mut self, _bus: &mut Self::Bus) -> Result<(), DeviceError> {
-        self.init()
-    }
-
-    fn init(&mut self) -> Result<(), DeviceError> {
+impl<C: SuperIoChip> SuperIo<C> {
+    /// Validate configuration, check the chip ID, and program every enabled
+    /// logical device.
+    pub fn init(&mut self) -> Result<(), DeviceError> {
         C::validate_config(&self.config)?;
         self.enter_config();
 

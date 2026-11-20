@@ -1,5 +1,5 @@
 //! Attached Super I/O resources and CPU strap sequencing.
-use fstart_core::services::{ServiceError, device::BusDevice};
+use fstart_core::services::ServiceError;
 use fstart_driver_superio::w83627dhg::W83627dhg;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 
