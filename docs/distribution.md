@@ -195,10 +195,13 @@ whose kernel slot is under 1.5 MiB as not fitting. For a build whose options
 live in its flash image (`settings` in the catalog) it shows the options the
 bundle's plan lists, with the board's values, and the image's settings store
 starts with those the user changes (the S8030's PCIe bifurcation among them).
-For Intel images where fstart
-fills only the BIOS region and leaves the descriptor, GbE and ME regions empty,
-it also offers the BIOS region alone and tells the user to write only that
-region. It can create an Ed25519 signing key with Web Crypto; the key is saved
+For Intel images the page offers the BIOS region alone by default. To assemble
+a complete ROM, supply a full raw SPI backup as described above. The page
+checks its descriptor before assembly and lets you download each original
+region separately. With a matching layout the primary download is the full
+ROM; the `.pflash` file still has empty non-BIOS regions.
+
+The page can create an Ed25519 signing key with Web Crypto; the key is saved
 to a file right away and otherwise stays in the tab.
 
 The `distribution` job builds the site into `target/image-web` (and runs the

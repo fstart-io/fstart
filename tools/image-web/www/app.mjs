@@ -39,6 +39,7 @@ const ALIASES = {
 // Output roles, most flashable first. `primary` marks files that are a
 // complete image for the board.
 const OUTPUTS = [
+  { test: n => n.endsWith("-full.rom"), primary: true, text: "Full Intel flash image: fstart BIOS with every byte outside BIOS preserved from your file." },
   { test: n => n.endsWith(".bank.rom"), text: "Boot bank only (16 MiB), for flash tools that mirror the bank themselves." },
   { test: n => n.endsWith("-bios-region.bin"), text: "BIOS region only, for programmers that write one region from a file." },
   { test: n => /\.rom$/.test(n), primary: true, text: "Complete flash image. Write it to the board's SPI flash." },
@@ -69,6 +70,7 @@ const state = {
   fetched: null, // {bytes, source}: vendor BIOS fetched through the proxy
   own: null, // {bytes, name, size}: vendor BIOS file the user picked
   inputs: {},
+  intelFlash: null,
   settings: Object.create(null), // option key -> value the image's settings store starts with
   secureBoot: { enforce: false, own: false, files: {} }, // Secure Boot the store starts with; files: PK, KEK, db, dbx
   key: null,
@@ -587,6 +589,7 @@ function clearBuild(next) {
   const keep = {
     fetched: same && next.donor_source?.sha256 === state.fetched?.source.sha256 ? state.fetched : null,
     own: same && next.donor_required ? state.own : null,
+    intelFlash: null, // Don't carry machine-specific flash data across build selections.
     // The same board offers the same options, and the same Secure Boot.
     settings: same ? state.settings : Object.create(null),
     secureBoot: same ? state.secureBoot : { enforce: false, own: false, files: {} },
@@ -830,6 +833,8 @@ function imageError(build) {
 function needs(build) {
   const rows = [];
   if (build.donor_required) rows.push(donorRow(build));
+  const layout = ifdLayout(state.manifest.plan);
+  if (layout) rows.push(intelFlashRow(layout));
   for (const input of state.manifest.inputs) rows.push(inputRow(input));
   rows.push(keyRow());
   return [h("section", { class: "needs", "aria-labelledby": "needs-title" },
@@ -1192,6 +1197,48 @@ function filesChanged(message, fallbackFocus) {
   if (message) announce(message);
 }
 
+async function inspectIntelFlash(file, data) {
+  const selected = { name: file.name, size: file.size, bytes: data };
+  state.intelFlash = selected;
+  revokeLinks();
+  filesChanged(`Checking ${file.name}`);
+  try {
+    const regions = JSON.parse(await call("inspectIntelFlash", { token: state.token, bytes: data }));
+    if (state.intelFlash !== selected) return;
+    selected.regions = regions.map(([kind, offset, size]) => ({ kind, offset, bytes: data.subarray(offset, offset + size) }));
+  } catch (error) {
+    if (state.intelFlash !== selected) return;
+    selected.error = error.message;
+  }
+  keepingFocus(renderBuild);
+  announce(selected.error ?? "Intel flash layout matches this build");
+}
+
+function intelFlashRow(layout) {
+  const size = Math.max(...layout.map(([, offset, length]) => offset + length));
+  const error = h("div", {});
+  return row({
+    title: "Full Intel flash image (optional)",
+    help: `Use a raw ${bytes(size)} SPI image from this machine, not a capsule or ZIP. The assembler checks the descriptor and replaces only BIOS. Other regions can include machine-specific data such as the MAC address.`,
+    status: state.intelFlash?.regions ? { ok: true, text: "Layout matched" }
+      : { kind: "neutral", text: state.intelFlash?.error ? "Layout rejected" : state.intelFlash ? "Checking…" : "BIOS only without this file" },
+    body: h("div", {}, filePicker({
+      id: "intel-flash", label: "Choose a raw flash image", slot: "the full Intel flash image", current: state.intelFlash,
+      check: file => {
+        if (file.size === size) return null;
+        fill(error, h("p", { class: "inline-error", role: "alert" }, `Expected exactly ${exact(size)}; ${file.name} is ${exact(file.size)}.`));
+        return "size mismatch";
+      },
+      onFile: inspectIntelFlash,
+      onClear: fallback => { state.intelFlash = null; revokeLinks(); filesChanged("Intel flash image removed", fallback); },
+    }), error, state.intelFlash?.error ? h("p", { class: "inline-error", role: "alert" }, state.intelFlash.error) : null,
+    state.intelFlash?.regions ? h("details", {}, h("summary", {}, "Original flash regions"),
+      h("ul", { class: "files" }, state.intelFlash.regions.map(({ kind, offset, bytes: original }) => h("li", {},
+        h("span", {}, `${kind}: 0x${offset.toString(16)} · ${bytes(original.length)} · ${kind === "Bios" ? "replaced" : "preserved"}`),
+        saveLink(`${state.build.board}-original-${kind.toLowerCase()}.bin`, original, "Save", true))))) : null),
+  });
+}
+
 function donorRow(build) {
   const source = build.donor_source;
   // Your own file is only known to fit once an assembly succeeds.
@@ -1429,9 +1476,11 @@ function updateAssemble() {
   if (!button) return;
   const blocked = missing();
   const fetching = state.vendor.status === "fetching" && !state.own;
-  button.disabled = state.busy || fetching || blocked.length > 0;
+  const unchecked = state.intelFlash && !state.intelFlash.regions;
+  button.disabled = state.busy || fetching || unchecked || blocked.length > 0;
   button.closest("section")?.setAttribute("aria-busy", state.busy ? "true" : "false");
   $("assemble-status").textContent = state.busy ? "Assembling…"
+    : unchecked ? (state.intelFlash.error ? "Replace or remove the rejected flash image." : "Checking the flash descriptor…")
     : fetching ? "Waiting for the vendor download…"
     : blocked.length ? `Add ${list(blocked)} to continue.`
     : `Signs with ${state.key ? `your key ${state.key.name}` : "a throwaway key"}.`;
@@ -1443,6 +1492,7 @@ async function assemble() {
   // Everything the outputs will claim comes from this snapshot.
   const snapshot = {
     signer: state.key?.name ?? null,
+    intelSource: state.intelFlash?.name ?? null,
     donor: state.own ? `your file ${state.own.name}` : state.fetched ? `${state.fetched.source.name} from ${state.fetched.source.vendor}` : null,
     note: !state.own && state.fetched?.source.note ? state.fetched.source.note : null,
   };
@@ -1455,7 +1505,7 @@ async function assemble() {
   $("assemble")?.focus();
   const stale = () => generation !== state.gen || inputGeneration !== state.inputGen;
   try {
-    const result = await call("assemble", { token: state.token, donor: donor?.slice(), inputs, settings: { ...state.settings }, secureBoot: secureBootRequest(), key: state.key?.bytes.slice() });
+    const result = await call("assemble", { token: state.token, donor: donor?.slice(), intelFlash: state.intelFlash?.bytes, inputs, settings: { ...state.settings }, secureBoot: secureBootRequest(), key: state.key?.bytes.slice() });
     if (stale()) return;
     const files = [];
     for (const [name, data] of result) {
@@ -1506,7 +1556,7 @@ function ifdLayout(value) {
 // keep their board's own regions.
 function biosRegion(files) {
   const layout = ifdLayout(state.manifest?.plan);
-  if (!layout || !layout.some(([kind]) => kind !== "Bios" && kind !== "Descriptor")) return null;
+  if (!layout) return null;
   const bios = layout.find(([kind]) => kind === "Bios");
   const image = files.find(f => f.name.endsWith(".pflash"));
   if (!bios || !image || image.data.length < bios[1] + bios[2]) return null;
@@ -1534,7 +1584,7 @@ function markSaved(link) {
 }
 
 function outputs() {
-  const { files, signer, donor, note, ifd } = state.outputs;
+  const { files, signer, donor, intelSource, note, ifd } = state.outputs;
   const describe = file => {
     if (ifd && file.name.endsWith(".pflash")) return "The whole flash layout, but only its BIOS region is filled.";
     const { text } = roleOf(file.name);
@@ -1548,6 +1598,7 @@ function outputs() {
   const provenance = [
     signer ? `Signed with your key ${signer}` : "Signed with a throwaway key, so the hash differs each time you assemble",
     donor ? `vendor firmware from ${donor}` : null,
+    intelSource ? `non-BIOS regions from ${intelSource}` : null,
   ].filter(Boolean).join("; ");
   return h("section", { class: "outputs", "aria-labelledby": "outputs-title" },
     h("h2", { id: "outputs-title" }, "Your image"),
@@ -1560,7 +1611,8 @@ function outputs() {
         hash(primary.sha, `${primary.name} SHA-256`, true, true),
         h("p", { class: "muted" }, `${provenance}.`),
         note ? h("p", { class: "vendor-note" }, icon("alert"), h("span", {}, note)) : null,
-        ifd ? h("p", { class: "vendor-note" }, icon("alert"), h("span", {},
+        intelSource ? h("p", { class: "vendor-note" }, icon("alert"), h("span", {},
+          "Descriptor layout matched. This does not verify board identity or authenticate the vendor firmware. Keep a verified backup from the target machine. See assembly-report.json for preserved region ranges and hashes.")) : ifd ? h("p", { class: "vendor-note" }, icon("alert"), h("span", {},
           "Only the BIOS region of this image is filled; its flash descriptor, GbE (your MAC address) and ME regions are empty. Write just the BIOS region, for example ",
           h("code", {}, `flashrom -p internal --ifd -i bios -w ${primary.name}`),
           ", or the BIOS-region file below.")) : null),

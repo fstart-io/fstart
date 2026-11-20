@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
+import { testIntelFlash } from './test-intel-flash.mjs';
 import { bundleFormatVersion } from '../tools/image-web/client.mjs';
 const [directory, bindings, native] = process.argv.slice(2).map(p => path.resolve(p));
 const { ImageAssembler } = createRequire(import.meta.url)(bindings);
@@ -51,6 +52,9 @@ try {
           settings.push('--setting', `${choice.key}=${label}`);
         }
         const outputs = assembler.assemble(key);
+        if (build.board === 'lenovo-x201' && ['uefi', 'uefi-ui'].includes(build.payload)) {
+          testIntelFlash({ assembler, outputs, key, temporary, native, archive, keyPath });
+        }
         // Without a key, Web Crypto supplies an ephemeral one.
         if (compared === 0) assert(assembler.assemble(undefined).size > 0);
         const out = path.join(temporary, `${build.board}-${build.payload}`);
