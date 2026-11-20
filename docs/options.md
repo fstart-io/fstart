@@ -13,7 +13,7 @@ consumes a field defines its knob; a board only picks the knobs it offers.
 
 | Knobs | Owner | Configuration |
 |---|---|---|
-| `fstart_log::option::KNOBS` (`debug_level`) | log | console level |
+| `fstart_log::option::KNOBS` (`debug_level`) | log | console level, CrabEFI's too |
 | `southbridge::options` (`power_on_after_fail`, `sata_mode`, `nmi`) | ICH7/8/9, Ibex Peak | `IntelSouthbridgeDriver::Options` |
 | `igd::options` (`gfx_uma_size`, `tft_brightness`) | i945, Pineview, GM965, GM45, Ironlake | `IntelNorthbridgeDriver::Options` |
 | `fstart_driver_lenovo::options` (`wlan`, `bluetooth`, `trackpoint`, `volume`, ...) | H8 EC, PMH7 | the ThinkPad's `EC_KNOBS` |
@@ -104,3 +104,32 @@ CMOS without allocating:
 
 With the UEFI payload the ramstage hands CrabEFI the CFR form and the CMOS
 store; the menu writes the options there and they apply at the next boot.
+
+## The UEFI payload's own settings
+
+CrabEFI logs at `debug_level`: the stage hands it the level it resolved,
+within the build's `FSTART_LOG_LEVEL`, as the platform's level
+(`crabefi::logger::set_platform_level`), so CrabEFI's own log level
+variable and its menu entry are gone. One setting covers both.
+
+CrabEFI keeps Secure Boot in the flash variable store: the key databases
+(PK, KEK, db, dbx) and whether Secure Boot is on (`SecureBootEnable`).
+Without them it enrolls its default keys (Microsoft's) on first boot and
+leaves Secure Boot off. A build whose payload keeps them there (`uefi` and
+`uefi-ui` over a flash store; `secure_boot` in the plan's options) can start
+with them (`fstart_image_build::secure_boot`):
+
+```sh
+# On, with CrabEFI's default keys written out:
+cargo fbuild assemble --board tyan-s8030 --payload uefi --secure-boot on
+# With your own keys (off, to turn it on in the setup menu later):
+cargo fbuild assemble --board tyan-s8030 --payload uefi --secure-boot off \
+  --secure-boot-pk PK.crt --secure-boot-kek KEK.crt --secure-boot-db db.pem \
+  --secure-boot-dbx dbxupdate.bin
+```
+
+A key file is a DER or PEM certificate (a PEM file may hold several), an
+EFI signature list (`.esl`) or a signed one (`.auth`, e.g. Microsoft's dbx
+update). The PK is one certificate; PK, KEK and db certificates must be
+ones CrabEFI verifies with (sha256WithRSAEncryption, RSA up to 4096 bits).
+The web assembler offers the same as a Secure Boot section.

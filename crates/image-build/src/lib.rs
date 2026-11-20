@@ -20,6 +20,7 @@ pub mod linker;
 pub mod options;
 pub mod plan;
 pub mod run;
+pub mod secure_boot;
 pub mod smm_image;
 mod summary;
 pub mod x86_flash;

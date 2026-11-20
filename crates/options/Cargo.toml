@@ -5,8 +5,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[dependencies]
-
 [features]
 # The resolution report and its CFR form, for stages with a heap.
 alloc = []
@@ -14,10 +12,8 @@ alloc = []
 # them.
 varstore = ["dep:crabefi-efi-types"]
 
-[dependencies.crabefi-efi-types]
-git = "https://github.com/ArthurHeymans/CrabEFI.git"
-rev = "b26754578ae23bdd7a2397047489530d2fb28140"
-optional = true
+[dependencies]
+crabefi-efi-types = { workspace = true, optional = true }
 
 # The tests use the report.
 [dev-dependencies]

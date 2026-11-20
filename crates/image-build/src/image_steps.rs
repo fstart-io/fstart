@@ -29,9 +29,10 @@ pub struct ImageContext<'a> {
     /// Named files for a coreboot payload (`--payload-file NAME=PATH`).
     pub payload_files: &'a [(String, String)],
     pub signing_key: Option<&'a Path>,
-    /// Settings the image's store starts with (`--setting KEY=VALUE`),
-    /// checked against the plan's options ([`crate::options::Options::seed`]).
-    pub settings: &'a [(String, String)],
+    /// What the image's settings store starts with (`--setting KEY=VALUE`,
+    /// Secure Boot), checked against the plan's options
+    /// ([`crate::options::Options::seed`]).
+    pub settings: &'a crate::options::Settings,
 }
 
 /// The artefacts of the executed steps, by step name, with the final
@@ -167,11 +168,7 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
     if seed.is_some() {
         return Err("settings: no image step holds the settings store".into());
     }
-    for (key, value) in ctx.settings {
-        outputs
-            .notes
-            .push(format!("settings store: {key} = {value}"));
-    }
+    outputs.notes.extend(ctx.settings.notes());
     Ok(outputs)
 }
 

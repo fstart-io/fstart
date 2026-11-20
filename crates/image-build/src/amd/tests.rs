@@ -587,7 +587,11 @@ fn native_settings_seed_changes_only_the_reserved_extent() {
     let plain = plan.assemble(&sources, &stage, Some(&ffs)).unwrap();
     let mut seed = Seed {
         offset: store.offset,
-        bytes: varstore::store(store.size as usize, &[("s8040_pcie3_bifurcation", 3)]).unwrap(),
+        bytes: varstore::store(
+            store.size as usize,
+            &[varstore::Variable::option("s8040_pcie3_bifurcation", 3)],
+        )
+        .unwrap(),
     };
     let seeded = plan
         .assemble_seeded(&sources, &stage, Some(&ffs), Some(&seed))

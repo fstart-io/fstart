@@ -146,6 +146,74 @@ pub struct BuildArgs {
     /// as any other.
     #[arg(long = "setting", value_parser = parse_setting)]
     pub settings: Vec<(String, String)>,
+    #[command(flatten)]
+    pub secure_boot: SecureBootArgs,
+}
+
+/// Secure Boot of an image's settings store, for a CrabEFI build whose
+/// options live in flash.
+#[derive(Debug, Clone, Default, Args)]
+pub struct SecureBootArgs {
+    /// Start the image with Secure Boot `on` or `off`. Without
+    /// `--secure-boot-pk` it holds CrabEFI's default keys (Microsoft's):
+    /// `off` then changes nothing, CrabEFI enrolls them on first boot.
+    #[arg(long = "secure-boot", value_parser = parse_on_off)]
+    pub enforce: Option<bool>,
+    /// The Platform Key: a certificate (DER or PEM), a signature list
+    /// (`.esl`) or a signed one (`.auth`). It replaces the default keys.
+    #[arg(long = "secure-boot-pk", requires = "enforce")]
+    pub pk: Option<PathBuf>,
+    /// A KEK file, as `--secure-boot-pk` takes them; repeatable.
+    #[arg(long = "secure-boot-kek", requires = "pk")]
+    pub kek: Vec<PathBuf>,
+    /// A db file, as `--secure-boot-pk` takes them; repeatable.
+    #[arg(long = "secure-boot-db", requires = "pk")]
+    pub db: Vec<PathBuf>,
+    /// A dbx file, as `--secure-boot-pk` takes them; repeatable.
+    #[arg(long = "secure-boot-dbx", requires = "pk")]
+    pub dbx: Vec<PathBuf>,
+}
+
+impl SecureBootArgs {
+    /// Secure Boot as the arguments start it, with the key files read.
+    pub fn load(&self) -> Result<Option<fstart_image_build::secure_boot::SecureBoot>, String> {
+        use fstart_image_build::secure_boot::{Keys, SecureBoot};
+        let Some(enforce) = self.enforce else {
+            return Ok(None);
+        };
+        let read =
+            |path: &PathBuf| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+        let all = |paths: &[PathBuf]| paths.iter().map(read).collect::<Result<Vec<_>, _>>();
+        let keys = match &self.pk {
+            None => None,
+            Some(pk) => Some(Keys {
+                pk: read(pk)?,
+                kek: all(&self.kek)?,
+                db: all(&self.db)?,
+                dbx: all(&self.dbx)?,
+            }),
+        };
+        Ok(Some(SecureBoot { enforce, keys }))
+    }
+
+    fn append_cli_args(&self, args: &mut Vec<String>) {
+        if let Some(enforce) = self.enforce {
+            args.extend([
+                "--secure-boot".into(),
+                if enforce { "on" } else { "off" }.into(),
+            ]);
+        }
+        let files = (self.pk.iter().map(|path| ("pk", path)))
+            .chain(self.kek.iter().map(|path| ("kek", path)))
+            .chain(self.db.iter().map(|path| ("db", path)))
+            .chain(self.dbx.iter().map(|path| ("dbx", path)));
+        for (database, path) in files {
+            args.extend([
+                format!("--secure-boot-{database}"),
+                path.display().to_string(),
+            ]);
+        }
+    }
 }
 
 impl Default for BuildArgs {
@@ -165,6 +233,7 @@ impl Default for BuildArgs {
             payload_files: Vec::new(),
             signing_key: None,
             settings: Vec::new(),
+            secure_boot: SecureBootArgs::default(),
         }
     }
 }
@@ -246,6 +315,7 @@ impl BuildArgs {
         for (key, value) in &self.settings {
             args.extend(["--setting".into(), format!("{key}={value}")]);
         }
+        self.secure_boot.append_cli_args(args);
         if let Some(path) = &self.signing_key {
             args.extend(["--signing-key".into(), path.display().to_string()]);
         }
@@ -317,6 +387,26 @@ fn parse_payload_file(value: &str) -> Result<(String, String), String> {
             Ok((name.to_owned(), path.to_owned()))
         }
         _ => Err("payload file must be NAME=PATH".into()),
+    }
+}
+
+/// What a new image's settings store starts with: `settings` and Secure
+/// Boot as the arguments give them.
+pub fn store_settings(
+    settings: &[(String, String)],
+    secure_boot: &SecureBootArgs,
+) -> Result<fstart_image_build::options::Settings, String> {
+    Ok(fstart_image_build::options::Settings {
+        options: settings.to_vec(),
+        secure_boot: secure_boot.load()?,
+    })
+}
+
+fn parse_on_off(value: &str) -> Result<bool, String> {
+    match value {
+        "on" | "true" => Ok(true),
+        "off" | "false" => Ok(false),
+        _ => Err("Secure Boot is `on` or `off`".into()),
     }
 }
 
@@ -397,6 +487,56 @@ mod tests {
         );
         assert!(
             InputCli::try_parse_from(["inputs", "--compiler-input", "RUSTFLAGS=file"]).is_err()
+        );
+    }
+
+    #[test]
+    fn secure_boot_arguments_round_trip_and_keys_need_a_state() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            options: BuildArgs,
+        }
+        use clap::Parser;
+        let args = [
+            "build",
+            "--secure-boot",
+            "off",
+            "--secure-boot-pk",
+            "pk.crt",
+            "--secure-boot-db",
+            "a.pem",
+            "--secure-boot-db",
+            "b.esl",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        let secure_boot = &cli.options.secure_boot;
+        assert_eq!(secure_boot.enforce, Some(false));
+        assert_eq!(secure_boot.db.len(), 2);
+        let mut forwarded = vec!["build".to_owned()];
+        secure_boot.append_cli_args(&mut forwarded);
+        assert_eq!(forwarded, args);
+        // Keys without a state, a KEK without a PK, and other states fail.
+        for bad in [
+            &["build", "--secure-boot-pk", "pk.crt"][..],
+            &[
+                "build",
+                "--secure-boot",
+                "on",
+                "--secure-boot-kek",
+                "kek.crt",
+            ],
+            &["build", "--secure-boot", "maybe"],
+        ] {
+            assert!(Cli::try_parse_from(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            Cli::try_parse_from(["build"])
+                .unwrap()
+                .options
+                .secure_boot
+                .load(),
+            Ok(None)
         );
     }
 
