@@ -1529,6 +1529,9 @@ dependencies = [
 [[package]]
 name = "fstart-fdt"
 version = "0.1.0"
+dependencies = [
+ "zerocopy",
+]
 
 [[package]]
 name = "fstart-ffs"
