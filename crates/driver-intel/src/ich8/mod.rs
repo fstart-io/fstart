@@ -309,19 +309,6 @@ register_bitfields! [u32,
         BASE OFFSET(0) NUMBITS(13) [],
         LIMIT OFFSET(16) NUMBITS(13) []
     ],
-    /// I/O trap register low dword.
-    IOTR_LO [
-        TRAP_SMI_ENABLE OFFSET(0) NUMBITS(1) [],
-        IO_ADDRESS_DWORD OFFSET(2) NUMBITS(14) [],
-        ADDRESS_MASK OFFSET(18) NUMBITS(6) []
-    ],
-    /// I/O trap register high dword.
-    IOTR_HI [
-        BYTE_ENABLES OFFSET(0) NUMBITS(4) [],
-        BYTE_ENABLE_MASK OFFSET(4) NUMBITS(4) [],
-        READ_WRITE OFFSET(16) NUMBITS(1) [],
-        READ_WRITE_MASK OFFSET(17) NUMBITS(1) []
-    ],
 ];
 
 register_bitfields! [u16,
@@ -580,67 +567,9 @@ pub struct SataConfig {
     pub traffic_monitor: bool,
 }
 
-/// I/O access types matched by an ICH8 trap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IoTrapAccess {
-    /// Trap read cycles only.
-    Read,
-    /// Trap write cycles only.
-    Write,
-    /// Trap both read and write cycles.
-    Any,
-}
-
-/// Semantic ICH8 I/O trap configuration.
-#[derive(Debug, Clone, Copy)]
-pub struct IoTrapConfig {
-    /// I/O trap register index, 0..3.
-    pub index: u8,
-    /// Base I/O port. Must be dword-aligned and aligned to `size`.
-    pub base: u16,
-    /// Trapped range size in bytes. Must be a power-of-two dword multiple, up to 256.
-    pub size: u16,
-    /// Cycle type to trap.
-    pub access: IoTrapAccess,
-}
-
-impl IoTrapConfig {
-    fn encode(self) -> Option<(u32, u32)> {
-        if self.index > 3 || self.base & 0x3 != 0 || self.size == 0 || self.size > 0x100 {
-            return None;
-        }
-        if self.size & 0x3 != 0 || !self.size.is_power_of_two() || self.base & (self.size - 1) != 0
-        {
-            return None;
-        }
-
-        let address_mask = u32::from((self.size / 4) - 1);
-        let io_address = u32::from(self.base) >> 2;
-        let low = IOTR_LO::TRAP_SMI_ENABLE::SET.value
-            | IOTR_LO::IO_ADDRESS_DWORD.val(io_address).value
-            | IOTR_LO::ADDRESS_MASK.val(address_mask).value;
-        let high = match self.access {
-            IoTrapAccess::Write => IOTR_HI::READ_WRITE::CLEAR.value,
-            IoTrapAccess::Read => IOTR_HI::READ_WRITE::SET.value,
-            IoTrapAccess::Any => {
-                IOTR_HI::READ_WRITE::CLEAR.value | IOTR_HI::READ_WRITE_MASK::SET.value
-            }
-        } | IOTR_HI::BYTE_ENABLE_MASK.val(0xf).value;
-
-        Some((low, high))
-    }
-}
-
+pub use crate::southbridge::PciePowerLimit;
 pub use crate::southbridge::ide::IdeConfig;
-
-/// PCIe slot power-limit fields.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PciePowerLimit {
-    /// Power-limit value encoded in PCIe Slot Capabilities.
-    pub value: u8,
-    /// Power-limit scale encoded in PCIe Slot Capabilities.
-    pub scale: u8,
-}
+pub use crate::southbridge::lpc::{IOTR_HI, IOTR_LO, IoTrapAccess, IoTrapConfig};
 
 pub use crate::southbridge::options::SataMode;
 
@@ -651,149 +580,10 @@ pub struct UsbConfig {
     pub uhci: [bool; 6],
 }
 
-/// Legacy serial-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LpcSerialDecode {
-    /// COM1 at 0x3f8.
-    Com1,
-    /// COM2 at 0x2f8.
-    Com2,
-    /// Serial decode at 0x220.
-    Io220,
-    /// Serial decode at 0x228.
-    Io228,
-    /// Serial decode at 0x238.
-    Io238,
-    /// Serial decode at 0x2e8.
-    Io2e8,
-    /// Serial decode at 0x338.
-    Io338,
-    /// Serial decode at 0x3e8.
-    Io3e8,
-}
-
-impl LpcSerialDecode {
-    const fn bits(self) -> u16 {
-        match self {
-            Self::Com1 => 0,
-            Self::Com2 => 1,
-            Self::Io220 => 2,
-            Self::Io228 => 3,
-            Self::Io238 => 4,
-            Self::Io2e8 => 5,
-            Self::Io338 => 6,
-            Self::Io3e8 => 7,
-        }
-    }
-}
-
-/// Parallel-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LpcParallelDecode {
-    /// LPT at 0x378.
-    Lpt378,
-    /// LPT at 0x278.
-    Lpt278,
-    /// LPT at 0x3bc.
-    Lpt3bc,
-}
-
-impl LpcParallelDecode {
-    const fn bits(self) -> u16 {
-        match self {
-            Self::Lpt378 => 0,
-            Self::Lpt278 => 1,
-            Self::Lpt3bc => 2,
-        }
-    }
-}
-
-/// Floppy-controller decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LpcFloppyDecode {
-    /// FDC at 0x3f0.
-    Fdd3f0,
-    /// FDC at 0x370.
-    Fdd370,
-}
-
-impl LpcFloppyDecode {
-    const fn bits(self) -> u16 {
-        match self {
-            Self::Fdd3f0 => 0,
-            Self::Fdd370 => 1,
-        }
-    }
-}
-
-/// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcFixedIoDecode {
-    /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
-    pub com_a: LpcSerialDecode,
-    /// COMB selector. COMB is enabled through `LPC_EN_ALL`.
-    pub com_b: LpcSerialDecode,
-    /// Optional LPT selector.
-    pub lpt: Option<LpcParallelDecode>,
-    /// Optional FDC selector.
-    pub fdd: Option<LpcFloppyDecode>,
-}
-
-impl Default for LpcFixedIoDecode {
-    fn default() -> Self {
-        Self {
-            com_a: LpcSerialDecode::Com1,
-            com_b: LpcSerialDecode::Com2,
-            lpt: None,
-            fdd: None,
-        }
-    }
-}
-
-impl LpcFixedIoDecode {
-    const fn encode(self) -> u16 {
-        let mut value = self.com_a.bits() | (self.com_b.bits() << 4);
-        if let Some(lpt) = self.lpt {
-            value |= lpt.bits() << 8;
-        }
-        if let Some(fdd) = self.fdd {
-            value |= fdd.bits() << 12;
-        }
-        value
-    }
-}
-
-pub use crate::southbridge::lpc::LpcGenericIoDecode;
-
-/// Board-level LPC decode policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcDecodeConfig {
-    /// Fixed COM/LPT/FDC decode selector register.
-    pub fixed_io: LpcFixedIoDecode,
-    /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
-    pub generic_io: ConstVec<LpcGenericIoDecode, 4>,
-}
-
-impl LpcDecodeConfig {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            fixed_io: LpcFixedIoDecode {
-                com_a: LpcSerialDecode::Com1,
-                com_b: LpcSerialDecode::Com2,
-                lpt: None,
-                fdd: None,
-            },
-            generic_io: ConstVec::new(empty_lpc_generic_io()),
-        }
-    }
-}
-
-impl Default for LpcDecodeConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use crate::southbridge::lpc::{
+    LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode,
+    LpcSerialDecode,
+};
 
 /// ICH8 southbridge configuration.
 #[derive(Debug, Clone, Copy)]
@@ -912,10 +702,6 @@ pub const fn valid_io_trap(trap: IoTrapConfig) -> bool {
         && trap.size & 0x3 == 0
         && trap.size.is_power_of_two()
         && trap.base & (trap.size - 1) == 0
-}
-
-const fn empty_lpc_generic_io() -> LpcGenericIoDecode {
-    LpcGenericIoDecode { base: 0, size: 0 }
 }
 
 const fn empty_io_trap() -> IoTrapConfig {

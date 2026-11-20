@@ -338,7 +338,6 @@ pub mod ich7 {
     pub const GCS: u32 = 0x3410;
 }
 use crate::southbridge::smbus::I801SmBus;
-use fstart_core::ConstVec;
 use fstart_core::services::device::DeviceError;
 use fstart_core::services::{FirmwareImage, FirmwareImageProvider, ServiceError, SmBus};
 
@@ -482,126 +481,6 @@ pub struct UsbConfig {
 // HDA verb table types are defined in the Intel HDA module.
 // See crate::southbridge::hda::{hda_verb, hda_pin_cfg, hda_pin_nc} for helpers.
 
-/// Legacy serial-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LpcSerialDecode {
-    /// COM1 at 0x3f8.
-    Com1,
-    /// COM2 at 0x2f8.
-    Com2,
-    /// Serial decode at 0x220.
-    Io220,
-    /// Serial decode at 0x228.
-    Io228,
-    /// Serial decode at 0x238.
-    Io238,
-    /// Serial decode at 0x2e8.
-    Io2e8,
-    /// Serial decode at 0x338.
-    Io338,
-    /// Serial decode at 0x3e8.
-    Io3e8,
-}
-
-impl LpcSerialDecode {
-    const fn bits(self) -> u16 {
-        match self {
-            Self::Com1 => 0,
-            Self::Com2 => 1,
-            Self::Io220 => 2,
-            Self::Io228 => 3,
-            Self::Io238 => 4,
-            Self::Io2e8 => 5,
-            Self::Io338 => 6,
-            Self::Io3e8 => 7,
-        }
-    }
-}
-
-/// Parallel-port decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LpcParallelDecode {
-    /// LPT at 0x378.
-    Lpt378,
-    /// LPT at 0x278.
-    Lpt278,
-    /// LPT at 0x3bc.
-    Lpt3bc,
-}
-
-impl LpcParallelDecode {
-    const fn bits(self) -> u16 {
-        match self {
-            Self::Lpt378 => 0,
-            Self::Lpt278 => 1,
-            Self::Lpt3bc => 2,
-        }
-    }
-}
-
-/// Floppy-controller decode selector in the LPC I/O decode register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LpcFloppyDecode {
-    /// FDC at 0x3f0.
-    Fdd3f0,
-    /// FDC at 0x370.
-    Fdd370,
-}
-
-impl LpcFloppyDecode {
-    const fn bits(self) -> u16 {
-        match self {
-            Self::Fdd3f0 => 0,
-            Self::Fdd370 => 1,
-        }
-    }
-}
-
-const fn default_com_a() -> LpcSerialDecode {
-    LpcSerialDecode::Com1
-}
-
-const fn default_com_b() -> LpcSerialDecode {
-    LpcSerialDecode::Com2
-}
-
-/// Fixed legacy I/O decode selections for COM/LPT/FDC ranges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcFixedIoDecode {
-    /// COMA selector. COMA is enabled through `LPC_EN_ALL`.
-    pub com_a: LpcSerialDecode,
-    /// COMB selector. COMB is enabled through `LPC_EN_ALL`.
-    pub com_b: LpcSerialDecode,
-    /// Optional LPT selector.
-    pub lpt: Option<LpcParallelDecode>,
-    /// Optional FDC selector.
-    pub fdd: Option<LpcFloppyDecode>,
-}
-
-impl Default for LpcFixedIoDecode {
-    fn default() -> Self {
-        Self {
-            com_a: LpcSerialDecode::Com1,
-            com_b: LpcSerialDecode::Com2,
-            lpt: None,
-            fdd: None,
-        }
-    }
-}
-
-impl LpcFixedIoDecode {
-    const fn encode(self) -> u16 {
-        let mut value = self.com_a.bits() | (self.com_b.bits() << 4);
-        if let Some(lpt) = self.lpt {
-            value |= lpt.bits() << 8;
-        }
-        if let Some(fdd) = self.fdd {
-            value |= fdd.bits() << 12;
-        }
-        value
-    }
-}
-
 pub use crate::southbridge::gpio_ich::GpiRoute;
 use crate::southbridge::gpio_ich::encode_gpi_routes;
 pub use crate::southbridge::pirq::valid_pirq_route;
@@ -624,37 +503,10 @@ mod gpi_tests {
     }
 }
 
-pub use crate::southbridge::lpc::LpcGenericIoDecode;
-
-/// Board-level LPC decode policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LpcDecodeConfig {
-    /// Fixed COM/LPT/FDC decode selector register.
-    pub fixed_io: LpcFixedIoDecode,
-    /// Up to four generic I/O decode windows, programmed to GEN1..GEN4.
-    pub generic_io: ConstVec<LpcGenericIoDecode, 4>,
-}
-
-impl LpcDecodeConfig {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            fixed_io: LpcFixedIoDecode {
-                com_a: LpcSerialDecode::Com1,
-                com_b: LpcSerialDecode::Com2,
-                lpt: None,
-                fdd: None,
-            },
-            generic_io: ConstVec::new(LpcGenericIoDecode { base: 0, size: 0 }),
-        }
-    }
-}
-
-impl Default for LpcDecodeConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use crate::southbridge::lpc::{
+    LpcDecodeConfig, LpcFixedIoDecode, LpcFloppyDecode, LpcGenericIoDecode, LpcParallelDecode,
+    LpcSerialDecode,
+};
 
 // GPIO pad types are defined in the shared fstart-gpio-ich crate.
 pub use crate::southbridge::gpio_ich::{
