@@ -195,8 +195,11 @@ whose kernel slot is under 1.5 MiB as not fitting. For a build whose options
 live in its flash image (`settings` in the catalog) it shows the options the
 bundle's plan lists, with the board's values, and the image's settings store
 starts with those the user changes (the S8030's PCIe bifurcation among them).
-For Intel images the page offers the BIOS region alone by default. To assemble
-a complete ROM, supply a full raw SPI backup as described above. The page
+For bundles with a legacy Intel descriptor layout, the page offers the BIOS
+region alone by default. Full-ROM import is not a generic IFD editor: it
+requires a matching board bundle and supports only the legacy descriptor,
+BIOS, ME, GbE and PDR region model, not newer extended region tables.
+To assemble a complete ROM, supply a full raw SPI backup as described above. The page
 checks its descriptor before assembly and lets you download each original
 region separately. With a matching layout the primary download is the full
 ROM; the `.pflash` file still has empty non-BIOS regions.

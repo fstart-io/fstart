@@ -86,8 +86,6 @@ jobs:
           node ci/test-web.mjs "$smoke/bundles" "$smoke/node/fstart_image_web.js" target/release/fbuild
 
       - name: Check X201 full-ROM import in native and WASM assemblers
-        env:
-          FSTART_REQUIRE_INTEL_CASE: '1'
         run: |
           smoke=$(mktemp -d)
           trap 'rm -rf "$smoke"' EXIT
@@ -95,7 +93,7 @@ jobs:
             --out "$smoke/bundles" --revision "$(git rev-parse HEAD)"
           wasm-bindgen --target nodejs --out-dir "$smoke/node" \
             target/wasm32-unknown-unknown/release/fstart_image_web.wasm
-          node ci/test-web.mjs "$smoke/bundles" \
+          FSTART_REQUIRE_INTEL_CASE=1 node ci/test-web.mjs "$smoke/bundles" \
             "$smoke/node/fstart_image_web.js" target/release/fbuild
 
   # The cheap gate every firmware job waits for: formatting, and the job
