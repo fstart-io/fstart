@@ -21,7 +21,7 @@ export function testIntelFlash({ assembler, outputs, key, temporary, native, arc
   const biosStart = 0x500000;
   assert.deepEqual(regions.find(([name]) => name === 'Bios'), ['Bios', biosStart, 0x300000]);
   const input = path.join(temporary, 'synthetic-intel.rom');
-  const out = path.join(temporary, 'intel-full');
+  const out = fs.mkdtempSync(path.join(temporary, 'intel-full-'));
   fs.writeFileSync(input, vendor);
   execFileSync(native, ['compose-bundle', '--bundle', archive, '--signing-key', keyPath, '--intel-flash', input, '--out', out], { stdio: 'inherit' });
   assembler.setIntelFlash(vendor);

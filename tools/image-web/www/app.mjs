@@ -1144,8 +1144,10 @@ function row({ title, help, status, body }) {
 // It reads the file itself and hands over the bytes only if the user is
 // still on the same build (unless `anyBuild`) and picked nothing newer for
 // this slot meanwhile. `check` can reject a file before it is read.
-function filePicker({ id, label, slot, accept, current, onFile, onClear, check, anyBuild = false }) {
+function filePicker({ id, label, slot, accept, current, onFile, onPick, onClear, check, anyBuild = false }) {
   const take = async file => {
+    // Some slots must become pending before even the file read or size check.
+    if (onPick) return onPick(file);
     const problem = check?.(file);
     if (problem) return problem;
     const generation = state.gen;
@@ -1197,14 +1199,20 @@ function filesChanged(message, fallbackFocus) {
   if (message) announce(message);
 }
 
-async function inspectIntelFlash(file, data) {
-  const selected = { name: file.name, size: file.size, bytes: data };
+async function inspectIntelFlash(file, size) {
+  // Object identity is the selection token, invalidated by replace, clear,
+  // or a build change. Publish it synchronously, before reading the File.
+  const selected = { name: file.name, size: file.size };
   state.intelFlash = selected;
   revokeLinks();
   filesChanged(`Checking ${file.name}`);
   try {
+    if (file.size !== size) throw new Error(`Expected exactly ${exact(size)}; ${file.name} is ${exact(file.size)}.`);
+    const data = await readFile(file);
+    if (state.intelFlash !== selected) return;
     const regions = JSON.parse(await call("inspectIntelFlash", { token: state.token, bytes: data }));
     if (state.intelFlash !== selected) return;
+    selected.bytes = data;
     selected.regions = regions.map(([kind, offset, size]) => ({ kind, offset, bytes: data.subarray(offset, offset + size) }));
   } catch (error) {
     if (state.intelFlash !== selected) return;
@@ -1216,7 +1224,6 @@ async function inspectIntelFlash(file, data) {
 
 function intelFlashRow(layout) {
   const size = Math.max(...layout.map(([, offset, length]) => offset + length));
-  const error = h("div", {});
   return row({
     title: "Full Intel flash image (optional)",
     help: `Use a raw ${bytes(size)} SPI image from this machine, not a capsule or ZIP. The assembler checks the descriptor and replaces only BIOS. Other regions can include machine-specific data such as the MAC address.`,
@@ -1224,14 +1231,9 @@ function intelFlashRow(layout) {
       : { kind: "neutral", text: state.intelFlash?.error ? "Layout rejected" : state.intelFlash ? "Checking…" : "BIOS only without this file" },
     body: h("div", {}, filePicker({
       id: "intel-flash", label: "Choose a raw flash image", slot: "the full Intel flash image", current: state.intelFlash,
-      check: file => {
-        if (file.size === size) return null;
-        fill(error, h("p", { class: "inline-error", role: "alert" }, `Expected exactly ${exact(size)}; ${file.name} is ${exact(file.size)}.`));
-        return "size mismatch";
-      },
-      onFile: inspectIntelFlash,
+      onPick: file => inspectIntelFlash(file, size),
       onClear: fallback => { state.intelFlash = null; revokeLinks(); filesChanged("Intel flash image removed", fallback); },
-    }), error, state.intelFlash?.error ? h("p", { class: "inline-error", role: "alert" }, state.intelFlash.error) : null,
+    }), state.intelFlash?.error ? h("p", { class: "inline-error", role: "alert" }, state.intelFlash.error) : null,
     state.intelFlash?.regions ? h("details", {}, h("summary", {}, "Original flash regions"),
       h("ul", { class: "files" }, state.intelFlash.regions.map(({ kind, offset, bytes: original }) => h("li", {},
         h("span", {}, `${kind}: 0x${offset.toString(16)} · ${bytes(original.length)} · ${kind === "Bios" ? "replaced" : "preserved"}`),
