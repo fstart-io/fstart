@@ -224,9 +224,13 @@ pub fn render(base: &Report, head: &Report, base_commit: Option<&str>) -> Result
     };
     let old = flatten(&base.boards);
     let new = flatten(&head.boards);
+    let counters = |s: &StageSizes| (s.flat, s.text, s.rodata, s.data, s.bss);
     let changed: Vec<_> = new
         .keys()
-        .filter(|k| old.get(*k).is_some_and(|o| o != &new[*k]))
+        .filter(|k| {
+            old.get(*k)
+                .is_some_and(|o| counters(o) != counters(&new[*k]))
+        })
         .collect();
     let added: Vec<_> = new.keys().filter(|k| !old.contains_key(*k)).collect();
     let removed: Vec<_> = old.keys().filter(|k| !new.contains_key(*k)).collect();
@@ -329,6 +333,12 @@ mod tests {
         let text = render(&base, &head, None).unwrap();
         assert!(text.contains("| q35 | stage | 16,000 | 32,768 | 16,768 |"));
         assert!(text.contains("not comparable"));
+
+        // Same epoch, same section sizes, but only head records SRAM usage.
+        let text = render(&report(Some(0), 16, 16), &head, None).unwrap();
+        assert!(text.contains("No stage size changed."));
+        assert!(text.contains("16,768"));
+        assert!(!text.contains("Δ image"));
     }
 
     #[test]
