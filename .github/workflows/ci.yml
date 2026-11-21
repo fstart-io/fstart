@@ -71,19 +71,33 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.130 --locked
-      # One published bundle with no donor, submodule or boot assets. The
-      # nightly still runs the same parity test across the full catalog.
-      - name: Compare native and WASM assembly of Q35 UEFI
+      # Self-contained, user-supplied kernel and synthetic AMD donor paths.
+      - name: Compare native and WASM bundle assembly
         run: |
           smoke=$(mktemp -d)
           trap 'rm -rf "$smoke"' EXIT
           cargo build --locked --release -p fbuild
           target/release/fbuild bundle --board qemu-q35 --payload uefi \
             --out "$smoke/bundles" --revision "$(git rev-parse HEAD)"
+          target/release/fbuild bundle --board qemu-armv7 --payload linux \
+            --out "$smoke/input" --revision "$(git rev-parse HEAD)"
           cargo build --locked --release --target wasm32-unknown-unknown -p fstart-image-web
           wasm-bindgen --target nodejs --out-dir "$smoke/node" \
             target/wasm32-unknown-unknown/release/fstart_image_web.wasm
-          node ci/test-web.mjs "$smoke/bundles" "$smoke/node/fstart_image_web.js" target/release/fbuild
+          bindings="$smoke/node/fstart_image_web.js"
+          fbuild=target/release/fbuild
+          node ci/test-web.mjs "$smoke/bundles" "$bindings" "$fbuild"
+          FSTART_REQUIRE_INPUT_CASE=1 node ci/test-web.mjs "$smoke/input" \
+            "$bindings" "$fbuild"
+          "$fbuild" bundle --board gigabyte-mj11-ec1 --payload uefi \
+            --out "$smoke/amd" --revision "$(git rev-parse HEAD)"
+          cargo run --locked --release -p fstart-image-build \
+            --example mj11-parity-donor -- "$smoke"/amd/*.bundle.zip \
+            "$smoke/synthetic.rom" "$smoke/synthetic-update.zip"
+          FSTART_TEST_DONOR="$smoke/synthetic-update.zip" \
+            FSTART_TEST_DONOR_RAW="$smoke/synthetic.rom" \
+            FSTART_REQUIRE_DONOR_CASE=1 \
+            node ci/test-web.mjs "$smoke/amd" "$bindings" "$fbuild"
 
       - name: Check X201 full-ROM import in native and WASM assemblers
         run: |
