@@ -26,11 +26,11 @@ pub mod timer;
 pub use block::BlockDevice;
 pub use boot::BootLinuxParams;
 pub use boot_media::{
-    BlockDeviceMedia, BootMedia, FlashMap, LinearMap, MemoryMapped, SubRegion, TempRamArena,
+    BlockDeviceMedia, BootMedia, MemoryMapped, SliceMedia, SubRegion, TempRamArena,
 };
 pub use console::{Console, ConsoleDevice, NoConsole, UartPort};
 pub use device::DeviceError;
-pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
+pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow, MAX_FIRMWARE_WINDOWS};
 pub use flash::{FlashRegion, NorFlashAdapter, NorFlashAdapterError};
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use i2c::I2c;
@@ -94,39 +94,69 @@ mod tests {
     fn firmware_image_validation_rejects_bad_window_count() {
         let image = FirmwareImage {
             size: 0x1000,
-            windows: [FirmwareWindow::EMPTY; 4],
-            window_count: 5,
+            windows: [FirmwareWindow::EMPTY; super::MAX_FIRMWARE_WINDOWS],
+            window_count: (super::MAX_FIRMWARE_WINDOWS + 1) as u8,
         };
 
         assert_eq!(image.validate(), Err(ServiceError::InvalidParam));
-        assert_eq!(image.active_windows().len(), 4);
+        assert_eq!(image.active_windows().len(), super::MAX_FIRMWARE_WINDOWS);
     }
 
     #[test]
     fn firmware_image_validation_rejects_overflow_and_out_of_bounds_windows() {
+        let mut windows = [FirmwareWindow::EMPTY; super::MAX_FIRMWARE_WINDOWS];
+        windows[0] = FirmwareWindow::new(0x800, 0x1000, 0x900);
         let out_of_bounds = FirmwareImage {
             size: 0x1000,
-            windows: [
-                FirmwareWindow::new(0x800, 0x1000, 0x900),
-                FirmwareWindow::EMPTY,
-                FirmwareWindow::EMPTY,
-                FirmwareWindow::EMPTY,
-            ],
+            windows,
             window_count: 1,
         };
         assert_eq!(out_of_bounds.validate(), Err(ServiceError::InvalidParam));
 
+        let mut windows = [FirmwareWindow::EMPTY; super::MAX_FIRMWARE_WINDOWS];
+        windows[0] = FirmwareWindow::new(u64::MAX - 1, 0x1000, 4);
         let overflow = FirmwareImage {
             size: u64::MAX,
-            windows: [
-                FirmwareWindow::new(u64::MAX - 1, 0x1000, 4),
-                FirmwareWindow::EMPTY,
-                FirmwareWindow::EMPTY,
-                FirmwareWindow::EMPTY,
-            ],
+            windows,
             window_count: 1,
         };
         assert_eq!(overflow.validate(), Err(ServiceError::InvalidParam));
+    }
+
+    #[test]
+    fn multi_window_memory_mapped_reads_maps_and_checks_overlap() {
+        let win0 = [0x11u8, 0x22, 0x33, 0x44];
+        let win1 = [0xaau8, 0xbb, 0xcc, 0xdd];
+        let mut image = FirmwareImage::EMPTY;
+        image.size = 8;
+        image.windows[0] = FirmwareWindow::new(0, win0.as_ptr() as u64, 4);
+        image.windows[1] = FirmwareWindow::new(4, win1.as_ptr() as u64, 4);
+        image.window_count = 2;
+
+        // SAFETY: both slices stay alive for the test.
+        let media = unsafe { super::MemoryMapped::from_image(image) }.unwrap();
+        assert_eq!(super::BootMedia::size(&media), 8);
+        assert_eq!(
+            super::BootMedia::map(&media, 1, 3),
+            Some(&[0x22, 0x33, 0x44][..])
+        );
+        assert_eq!(super::BootMedia::map(&media, 4, 2), Some(&[0xaa, 0xbb][..]));
+        // Cross-window range cannot be mapped as a single slice, but read_at spans both.
+        assert_eq!(super::BootMedia::map(&media, 2, 4), None);
+        let mut buf = [0u8; 4];
+        assert_eq!(super::BootMedia::read_at(&media, 2, &mut buf), Ok(4));
+        assert_eq!(buf, [0x33, 0x44, 0xaa, 0xbb]);
+
+        assert!(super::BootMedia::overlaps_range(
+            &media,
+            win0.as_ptr() as u64 + 2,
+            4
+        ));
+        assert!(super::BootMedia::overlaps_range(
+            &media,
+            win1.as_ptr() as u64,
+            1
+        ));
     }
 
     #[test]

@@ -400,8 +400,9 @@ fn in_place_bytes_are_measured_only_when_mapped_and_matching() {
         fn size(&self) -> usize {
             self.0.len()
         }
-        fn as_slice(&self) -> Option<&[u8]> {
-            Some(self.0)
+        fn map(&self, offset: usize, len: usize) -> Option<&[u8]> {
+            let end = offset.checked_add(len)?;
+            self.0.get(offset..end)
         }
     }
     let log = Log {

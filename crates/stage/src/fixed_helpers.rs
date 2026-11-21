@@ -6,7 +6,7 @@ mod entry_tests;
 
 use fstart_core::ffs::{FileType, LOCATOR_SIZE};
 use fstart_core::services::boot::BootLinuxParams;
-use fstart_core::services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
+use fstart_core::services::boot_media::{BlockDeviceMedia, MemoryMapped};
 use fstart_core::services::memory_detect::E820Entry;
 use fstart_core::services::{BlockDevice, ServiceError};
 
@@ -309,7 +309,7 @@ impl MemoryMappedFfs {
     }
 
     #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
-    fn media(self) -> MemoryMapped<LinearMap> {
+    fn media(self) -> MemoryMapped {
         // SAFETY: callers construct this descriptor from board-declared ROM/flash
         // windows that remain readable for the whole boot flow.
         unsafe { MemoryMapped::from_raw_addr(self.base, self.size) }

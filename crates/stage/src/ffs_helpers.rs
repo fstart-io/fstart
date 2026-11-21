@@ -54,10 +54,11 @@ pub(crate) fn load_file_segments_from_media(
     let name = file.name().ok()?;
     let measurement = Measurement {
         event: Event {
-            base: media
-                .as_slice()
-                .map_or(0, |mapped| mapped.as_ptr() as u64)
-                .checked_add(descriptor.offset)?,
+            base: usize::try_from(descriptor.offset)
+                .ok()
+                .zip(usize::try_from(descriptor.stored_size).ok())
+                .and_then(|(offset, len)| media.map(offset, len))
+                .map_or(descriptor.offset, |mapped| mapped.as_ptr() as u64),
             description: if measurement.event.description.is_empty() {
                 name
             } else {

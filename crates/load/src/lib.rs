@@ -272,11 +272,13 @@ impl<'a> InPlace<'a> {
         offset: u64,
         len: u64,
     ) -> Result<Self, LoadError> {
-        let mapped = media.as_slice().ok_or(LoadError::Io)?;
         let start = usize::try_from(offset).map_err(|_| LoadError::Bounds)?;
         let len = usize::try_from(len).map_err(|_| LoadError::Bounds)?;
         let end = start.checked_add(len).ok_or(LoadError::Bounds)?;
-        mapped.get(start..end).map(Self).ok_or(LoadError::Bounds)
+        if end > media.size() {
+            return Err(LoadError::Bounds);
+        }
+        media.map(start, len).map(Self).ok_or(LoadError::Io)
     }
 
     /// Bytes the boot media maps, already found.
@@ -369,14 +371,8 @@ pub fn place(
     if !policy.permits(start, size) {
         return Err(LoadError::MemoryPolicy);
     }
-    if let Some(source) = media.as_slice() {
-        let source = MemoryWindow {
-            start: source.as_ptr() as u64,
-            size: source.len() as u64,
-        };
-        if source.overlaps(MemoryWindow { start, size }) {
-            return Err(LoadError::MemoryPolicy);
-        }
+    if media.overlaps_range(start, size) {
+        return Err(LoadError::MemoryPolicy);
     }
     Ok(())
 }
