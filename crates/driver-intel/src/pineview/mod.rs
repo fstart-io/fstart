@@ -17,7 +17,7 @@
 pub mod raminit;
 mod regs;
 
-use core::ptr;
+use fstart_core::mmio::{read32, write32};
 
 use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
 use crate::MmioBar;
@@ -719,16 +719,16 @@ fn pineview_lower_memory_test(test_top: u32) -> Result<(), ServiceError> {
     // is the top of fstart-usable low DRAM, not raw TOM, so the chosen address
     // is below UMA/GTT/TSEG reservations.
     unsafe {
-        let old = ptr::read_volatile(p);
+        let old = read32(p);
         for pattern in PATTERNS {
-            ptr::write_volatile(p, pattern);
-            if ptr::read_volatile(p) != pattern {
-                ptr::write_volatile(p, old);
+            write32(p, pattern);
+            if read32(p) != pattern {
+                write32(p, old);
                 fstart_log::error!("ramtest: failed at {:#x}", test_addr);
                 return Err(ServiceError::HardwareError);
             }
         }
-        ptr::write_volatile(p, old);
+        write32(p, old);
     }
     fstart_log::info!("ramtest: passed at {:#x}", test_addr);
     Ok(())

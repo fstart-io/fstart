@@ -324,7 +324,7 @@ impl FlashRegion for MappedRead {
         }
         for (index, byte) in bytes.iter_mut().enumerate() {
             // SAFETY: the constructor and the bounds check cover each byte.
-            *byte = unsafe { core::ptr::read_volatile((self.base + offset + index) as *const u8) };
+            *byte = unsafe { fstart_core::mmio::read8((self.base + offset + index) as *const u8) };
         }
         Ok(())
     }
@@ -419,7 +419,7 @@ pub(crate) unsafe fn publish_pending(
     // The linked OS-reserved handoff is written only after successful cold
     // memory testing; the owner flushes the whole store before teardown.
     unsafe {
-        core::ptr::write_volatile(base.add(COMMIT_OFFSET).cast::<u32>(), u32::MAX);
+        fstart_core::mmio::write32(base.add(COMMIT_OFFSET).cast::<u32>(), u32::MAX);
         for (offset, byte) in header.as_bytes()[..COMMIT_OFFSET]
             .iter()
             .chain(payload)
@@ -431,9 +431,9 @@ pub(crate) unsafe fn publish_pending(
             } else {
                 offset
             };
-            core::ptr::write_volatile(base.add(offset), *byte);
+            fstart_core::mmio::write8(base.add(offset), *byte);
         }
-        core::ptr::write_volatile(base.add(COMMIT_OFFSET).cast::<u32>(), 0);
+        fstart_core::mmio::write32(base.add(COMMIT_OFFSET).cast::<u32>(), 0);
     }
     Ok(())
 }

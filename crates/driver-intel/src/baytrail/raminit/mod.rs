@@ -20,6 +20,7 @@ pub mod training;
 use crate::baytrail::iosf::Iosf;
 use crate::baytrail::pmc;
 use fstart_core::memory_info::MemoryInfo;
+use fstart_core::mmio::{read32, write32};
 use fstart_core::services::ServiceError;
 use fstart_driver_spd::ddr3::{self, Ddr3DimmInfo, Ddr3ModuleType};
 use fstart_pci::ConfigRegionAccess;
@@ -162,16 +163,16 @@ fn memtest_region(base: usize, size: usize) -> u32 {
     unsafe {
         for addr in (base..base + size).step_by(4096) {
             let p = addr as *mut u32;
-            p.write_volatile(addr as u32);
-            p.add(1).write_volatile(!(addr as u32));
+            write32(p, addr as u32);
+            write32(p.add(1), !(addr as u32));
         }
         for addr in (base..base + size).step_by(4096) {
             let p = addr as *mut u32;
-            let got = p.read_volatile();
+            let got = read32(p);
             if got != addr as u32 && report(addr, addr as u32, got) {
                 return 16;
             }
-            let got = p.add(1).read_volatile();
+            let got = read32(p.add(1));
             if got != !(addr as u32) && report(addr + 4, !(addr as u32), got) {
                 return 16;
             }
@@ -180,8 +181,8 @@ fn memtest_region(base: usize, size: usize) -> u32 {
             let p = addr as *mut u32;
             for bit in 0..32 {
                 let pattern = 1u32 << bit;
-                p.write_volatile(pattern);
-                let got = p.read_volatile();
+                write32(p, pattern);
+                let got = read32(p);
                 if got != pattern && report(addr, pattern, got) {
                     return 16;
                 }

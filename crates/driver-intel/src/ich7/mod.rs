@@ -1707,8 +1707,8 @@ impl IntelIch7 {
             // SAFETY: the BAR was assigned by enumeration and is mapped; USBSTS
             // is a write-1-to-clear status register.
             unsafe {
-                let status = core::ptr::read_volatile(usbsts as *const u32);
-                core::ptr::write_volatile(usbsts as *mut u32, status | (1 << 2));
+                let status = fstart_core::mmio::read32(usbsts as *const u32);
+                fstart_core::mmio::write32(usbsts as *mut u32, status | (1 << 2));
             }
         }
         fstart_log::info!("intel-ich7: EHCI init done");

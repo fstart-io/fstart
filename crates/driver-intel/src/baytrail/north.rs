@@ -404,9 +404,9 @@ impl fstart_arch::x86::cpu::intel::smm::SmramControl for BaytrailNorth {
         // SAFETY: TSEG is reserved firmware memory nothing else uses before
         // the SMM installation, which overwrites it.
         unsafe {
-            probe.write_volatile(0x5a5a_a5a5);
-            let open = probe.read_volatile() == 0x5a5a_a5a5;
-            probe.write_volatile(0);
+            fstart_core::mmio::write32(probe, 0x5a5a_a5a5);
+            let open = fstart_core::mmio::read32(probe) == 0x5a5a_a5a5;
+            fstart_core::mmio::write32(probe, 0);
             open
         }
     }

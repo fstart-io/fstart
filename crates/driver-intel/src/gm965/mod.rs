@@ -19,7 +19,7 @@ pub mod raminit;
 use self::fields::*;
 
 use crate::MmioBar;
-use core::ptr;
+use fstart_core::mmio::{read32, write32};
 
 use crate::gma::types::{Cpu, PciAddress};
 use fstart_core::mmio::MmioReadWrite;
@@ -1595,16 +1595,16 @@ fn gm965_ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError> {
     // IGD stolen memory, GTT, and TSEG reservations. The original word is
     // restored before returning.
     unsafe {
-        let old = ptr::read_volatile(p);
+        let old = read32(p);
         for pattern in FIXED_PATTERNS
             .iter()
             .copied()
             .chain(core::iter::once(addr_pattern))
         {
-            ptr::write_volatile(p, pattern);
-            let got = ptr::read_volatile(p);
+            write32(p, pattern);
+            let got = read32(p);
             if got != pattern {
-                ptr::write_volatile(p, old);
+                write32(p, old);
                 fstart_log::error!(
                     "gm965 ramtest: failed at {:#x}: wrote {:#x}, read {:#x}",
                     addr,
@@ -1614,7 +1614,7 @@ fn gm965_ramtest_probe(addr: usize, top: usize) -> Result<(), ServiceError> {
                 return Err(ServiceError::HardwareError);
             }
         }
-        ptr::write_volatile(p, old);
+        write32(p, old);
     }
     fstart_log::info!("gm965 ramtest: passed at {:#x}", addr);
     Ok(())

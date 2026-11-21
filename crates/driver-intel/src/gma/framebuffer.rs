@@ -223,12 +223,13 @@ impl SurfaceConfig {
         let base = self.base_addr as *mut u32;
         let stride = self.stride as usize;
         for y in 0..self.height as usize {
-            for x in 0..self.width as usize {
-                // SAFETY: caller guarantees that the framebuffer mapping covers
-                // the visible surface, and `validate_fits` checked the stride
-                // arithmetic above.
-                unsafe { base.add(y * stride + x).write_volatile(0xff00_0000) };
-            }
+            // SAFETY: caller guarantees that the framebuffer mapping covers
+            // the visible surface and that nothing else mutates it, and
+            // `validate_fits` checked the stride arithmetic above.
+            let row = unsafe {
+                core::slice::from_raw_parts_mut(base.add(y * stride), self.width as usize)
+            };
+            row.fill(0xff00_0000);
         }
         Ok(())
     }
