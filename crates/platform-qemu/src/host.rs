@@ -11,7 +11,7 @@ use fstart_image_build::{
     },
     layout::EncodedLayout,
     linker::Xip,
-    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, PlanError, ResolvedPlan, Span},
     run::{RunArtifact, RunDisk, RunMedia, RunRecipe},
     x86_flash::X86FlashAssembly,
 };
@@ -29,7 +29,7 @@ pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
     type Options = NoOptions;
 
-    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, PlanError> {
         resolve(B::MACHINE, selection)
     }
 }
@@ -58,9 +58,11 @@ const fn span(base: u64, size: u64) -> Span {
 }
 
 impl VirtMachine {
-    fn policy(self, payload: &str) -> Result<MachinePolicy, String> {
+    fn policy(self, payload: &str) -> Result<MachinePolicy, PlanError> {
         if !matches!(payload, "halt" | "linux" | "uefi") {
-            return Err("QEMU virt supports halt, Linux and (where available) UEFI".into());
+            return Err(PlanError::unsupported_payload(
+                "QEMU virt supports halt, Linux and (where available) UEFI",
+            ));
         }
         Ok(match self {
             Self::Q35 | Self::Q35ProtectedMode | Self::Sbsa | Self::SifiveU => {
@@ -93,7 +95,9 @@ impl VirtMachine {
             },
             Self::Armv7 => {
                 if payload == "uefi" {
-                    return Err("ARMv7 virt does not support UEFI".into());
+                    return Err(PlanError::unsupported_payload(
+                        "ARMv7 virt does not support UEFI",
+                    ));
                 }
                 MachinePolicy {
                     platform: Platform::Armv7,
@@ -302,7 +306,7 @@ fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
     }
 }
 
-pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, String> {
+pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     match machine {
         VirtMachine::Riscv64 | VirtMachine::Armv7 | VirtMachine::Aarch64 => {
@@ -315,7 +319,7 @@ pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildP
     }
 }
 
-fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, String> {
+fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
     use fstart_core::layout::RegionKind as Kind;
     let payload = selection.payload.unwrap_or_else(|| "linux".into());
     let policy = machine.policy(&payload)?;
@@ -827,7 +831,7 @@ fn qemu_q35_linker_script(
     Ok(out)
 }
 
-fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, String> {
+fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
     use fstart_core::layout::RegionKind as Kind;
     use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
     let policy = machine.qemu_policy()?;
@@ -837,22 +841,27 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         .payload
         .unwrap_or_else(|| policy.default_payload.into());
     if !matches!(payload.as_str(), "halt" | "linux" | "uefi" | "coreboot") {
-        return Err(
-            "QEMU machine supports halt, Linux, (where available) UEFI and coreboot".into(),
-        );
+        return Err(PlanError::unsupported_payload(
+            "QEMU machine supports halt, Linux, (where available) UEFI and coreboot",
+        ));
     }
     let coreboot = payload == "coreboot";
     if coreboot && policy.platform != Platform::X86_64 {
-        return Err("coreboot payloads are x86 only".into());
-    }
-    if payload == "linux" && policy.linux.is_none() {
-        return Err(std::format!(
-            "QEMU {} does not support Linux",
-            policy.bundle
+        return Err(PlanError::unsupported_payload(
+            "coreboot payloads are x86 only",
         ));
     }
+    if payload == "linux" && policy.linux.is_none() {
+        return Err(PlanError::unsupported_payload(std::format!(
+            "QEMU {} does not support Linux",
+            policy.bundle
+        )));
+    }
     if payload == "uefi" && !policy.uefi {
-        return Err(std::format!("QEMU {} does not support UEFI", policy.bundle));
+        return Err(PlanError::unsupported_payload(std::format!(
+            "QEMU {} does not support UEFI",
+            policy.bundle
+        )));
     }
     let linux = (payload == "linux")
         .then_some(policy.linux.as_ref())
@@ -1220,7 +1229,9 @@ mod tests {
                     },
                 );
                 if matches!(machine, VirtMachine::Armv7) && payload == "uefi" {
-                    assert!(resolved.unwrap_err().contains("does not support UEFI"));
+                    let err = resolved.unwrap_err();
+                    assert!(err.is_unsupported_payload());
+                    assert!(err.message().contains("does not support UEFI"));
                     continue;
                 }
                 let plan = resolved.unwrap();

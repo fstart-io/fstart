@@ -22,15 +22,8 @@ fn success(out: Output) -> String {
 }
 
 #[test]
-fn checks_list_shows_the_guard_and_cargo_commands_without_a_manifest() {
-    let tmp = tempfile::tempdir().unwrap();
-    let text = success(
-        Command::new(env!("CARGO_BIN_EXE_fbuild"))
-            .args(["checks", "--list"])
-            .env("FSTART_WORKSPACE_ROOT", tmp.path())
-            .output()
-            .unwrap(),
-    );
+fn checks_list_shows_the_guard_and_discovered_platform_commands() {
+    let text = success(run(&["checks", "--list"]));
     assert!(
         text.lines()
             .any(|line| line == "# Check driver-amd capability features")
@@ -38,6 +31,18 @@ fn checks_list_shows_the_guard_and_cargo_commands_without_a_manifest() {
     assert!(text.lines().any(|line| {
         line.starts_with("cargo clippy -p fstart-driver-amd --target x86_64-unknown-none")
     }));
+    assert!(text.lines().any(|line| {
+        line == "cargo clippy -p fstart-platform-qemu --lib --no-default-features --features host"
+    }));
+
+    // Missing manifest must fail rather than printing an incomplete list.
+    let tmp = tempfile::tempdir().unwrap();
+    let failed = Command::new(env!("CARGO_BIN_EXE_fbuild"))
+        .args(["checks", "--list"])
+        .env("FSTART_WORKSPACE_ROOT", tmp.path())
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
 }
 
 #[test]

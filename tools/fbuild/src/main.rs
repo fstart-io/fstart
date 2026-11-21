@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use fbuild::{
     board_manifest, build_board,
-    payload::{BuildArgs, PayloadChoice},
+    payload::{BuildArgs, PayloadChoice, PlanArgs},
 };
 use fstart_image_build::plan::BuildSelection;
 use std::process;
@@ -122,7 +122,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
     },
     /// Boot the board's image under QEMU, as its plan's run recipe
     /// describes.
@@ -154,6 +154,8 @@ enum Command {
         #[arg(long, value_name = "FAMILY[:BANKS]", value_parser = fbuild::swtpm::parse)]
         tpm: Option<fstart_image_build::boot_test::Tpm>,
     },
+    /// [Deprecated] Boot the board's release image under QEMU (use `fbuild qemu --release`
+    /// for interactive boots or `fbuild boot-test` for automated tests).
     Test {
         #[arg(short, long)]
         board: String,
@@ -207,7 +209,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
     },
     /// Print the options a build offers, as JSON: each option's key, form,
     /// label, help, legal values and the board's value, and where the
@@ -218,7 +220,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
     },
     /// Type-check a board using its resolved firmware selection.
     Check {
@@ -229,7 +231,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
         #[arg(long)]
         release: bool,
     },
@@ -239,7 +241,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
         #[arg(long)]
         release: bool,
         /// Select a named compilation unit from the resolved platform plan.
@@ -269,7 +271,7 @@ enum Command {
 
 /// Resolve the board package the requested build selects.
 fn manifest_for(board: &str) -> Result<board_manifest::BoardManifest, String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     if manifest.build_profile.is_none() {
         return Err(format!("board '{board}' has no build-profile"));
@@ -289,18 +291,18 @@ fn absolute_size_report(
 }
 
 fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    println!("{}", resolved.json()?);
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
+    println!("{}", resolved.explain_json()?);
     Ok(())
 }
 
 /// The options a build offers, as JSON (`fbuild options`).
 fn print_options(board: &str, selection: BuildSelection) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     let options = serde_json::to_string_pretty(resolved.options()).map_err(|e| e.to_string())?;
     println!("{options}");
     Ok(())
@@ -313,9 +315,9 @@ fn compile_named(
     name: &str,
     checking: bool,
 ) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     resolved.compile_selected(&root, &manifest, name, release, checking)
 }
 
@@ -328,9 +330,9 @@ fn check(
     if let Some(stage) = stage {
         return compile_named(board, selection, release, &stage, true);
     }
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     resolved.check(&root, &manifest, release)
 }
 
@@ -340,9 +342,9 @@ fn ide(
     release: bool,
     stage: Option<String>,
 ) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     let workspace =
         fbuild::ide::generate_image(&root, &manifest, &resolved, stage.as_deref(), release)?;
     println!("{}", workspace.display());
@@ -353,11 +355,11 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
     if let Some(board) = board {
         return fbuild::board_tool::test_library(&manifest_for(board)?);
     }
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let boards = board_manifest::discover(&root)?;
     for board in &boards {
         fbuild::board_tool::test_library(board)?;
-        for (variant, _) in &board.variants {
+        for variant in board.variants.keys() {
             fbuild::board_tool::test_library(&board_manifest::find_in(&boards, variant)?)?;
         }
     }
@@ -376,7 +378,7 @@ struct BoardEntry<'a> {
 }
 
 fn boards(json: bool) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let boards = board_manifest::discover(&root)?;
     if json {
         let entries: Vec<_> = boards
@@ -387,7 +389,7 @@ fn boards(json: bool) -> Result<(), String> {
                 dir: board.rel_dir.display().to_string(),
                 arch: board.arch.as_deref(),
                 build_profile: board.build_profile.as_ref(),
-                variants: board.variants.iter().map(|(id, _)| id.as_str()).collect(),
+                variants: board.variants.keys().map(String::as_str).collect(),
             })
             .collect();
         println!(
@@ -501,9 +503,15 @@ fn main() {
                 &options,
             )
         }),
-        Command::Test { board, options } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::qemu(&manifest, true, None, &Default::default(), &options)
-        }),
+        Command::Test { board, options } => {
+            eprintln!(
+                "warning: `fbuild test` is deprecated; use `fbuild qemu --release --board {board}` \
+                 (or `fbuild boot-test` for automated QEMU tests)"
+            );
+            manifest_for(&board).and_then(|manifest| {
+                fbuild::board_tool::qemu(&manifest, true, None, &Default::default(), &options)
+            })
+        }
         Command::TestLibrary { board } => test_libraries(board.as_deref()),
         Command::Assemble {
             board,
@@ -531,7 +539,7 @@ fn main() {
             from,
             out,
             allow_missing,
-        } => build_board::workspace_root_pub().and_then(|root| {
+        } => build_board::workspace_root().and_then(|root| {
             let manifest = board_manifest::find(&root, &board)?;
             fbuild::blobs::extract(
                 &root,
@@ -603,5 +611,57 @@ mod tests {
         assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "test-board"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library", "--payload", "uefi"]).is_err());
+    }
+
+    #[test]
+    fn plan_only_commands_reject_assembly_only_flags() {
+        let plan_only: &[&[&str]] = &[
+            &["fbuild", "build", "--board", "b"],
+            &["fbuild", "check", "b"],
+            &["fbuild", "explain", "b"],
+            &["fbuild", "options", "b"],
+            &["fbuild", "ide", "b"],
+        ];
+        let assembly_flags: &[&[&str]] = &[
+            &["--signing-key", "key.pem"],
+            &["--setting", "k=v"],
+            &["--secure-boot", "on"],
+            &["--payload-file", "a=b"],
+            &["--input", "kernel=bzImage"],
+        ];
+        for base in plan_only {
+            assert!(Cli::try_parse_from(*base).is_ok(), "{base:?}");
+            let mut with_plan = base.to_vec();
+            with_plan.extend(["--log-level", "debug", "--option", "foo=bar"]);
+            assert!(Cli::try_parse_from(&with_plan).is_ok(), "{with_plan:?}");
+            for flag in assembly_flags {
+                let mut argv = base.to_vec();
+                argv.extend(*flag);
+                assert!(
+                    Cli::try_parse_from(&argv).is_err(),
+                    "expected rejection for {argv:?}"
+                );
+            }
+        }
+        // Assembly commands accept both plan and assembly flags.
+        for base in [
+            &["fbuild", "assemble", "--board", "b"][..],
+            &["fbuild", "qemu", "--board", "b"],
+            &["fbuild", "flash", "--board", "b"],
+            &["fbuild", "test", "--board", "b"],
+        ] {
+            let mut argv = base.to_vec();
+            argv.extend([
+                "--log-level",
+                "debug",
+                "--signing-key",
+                "key.pem",
+                "--setting",
+                "k=v",
+                "--input",
+                "kernel=bzImage",
+            ]);
+            assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
+        }
     }
 }

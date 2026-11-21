@@ -77,11 +77,7 @@ pub(crate) fn generate(
     )
     .map_err(|e| e.to_string())?;
     let sysroot = rustc(root, &["--print", "sysroot"])?;
-    let version = rustc(root, &["-vV"])?;
-    let host = version
-        .lines()
-        .find_map(|l| l.strip_prefix("host: "))
-        .ok_or("rustc did not report host")?;
+    let host = crate::build_board::host_target(root)?;
     project(
         root,
         selection,
@@ -89,7 +85,7 @@ pub(crate) fn generate(
         &graph,
         &messages,
         sysroot.trim(),
-        host,
+        &host,
     )
 }
 

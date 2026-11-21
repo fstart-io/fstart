@@ -20,8 +20,43 @@ impl BuildResult {
     }
 }
 
-pub fn workspace_root_pub() -> Result<PathBuf, String> {
-    workspace_root()
+pub fn workspace_root() -> Result<PathBuf, String> {
+    if let Ok(root) = std::env::var("FSTART_WORKSPACE_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
+
+    let mut dir = std::env::current_dir().map_err(|e| format!("no cwd: {e}"))?;
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let contents =
+                std::fs::read_to_string(&cargo_toml).map_err(|e| format!("read error: {e}"))?;
+            if contents.contains("[workspace]") {
+                return Ok(dir);
+            }
+        }
+        if !dir.pop() {
+            return Err("could not find workspace root".to_string());
+        }
+    }
+}
+
+/// Query `rustc -vV` from `root` and return its host target triple.
+pub(crate) fn host_target(root: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("rustc")
+        .current_dir(root)
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("query host compiler: {e}"))?;
+    if !output.status.success() {
+        return Err("cannot query selected Rust host toolchain".into());
+    }
+    let version = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+    version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::to_owned)
+        .ok_or_else(|| "rustc did not report its host target".into())
 }
 
 pub(crate) fn write_flat_binary(elf_path: &Path, bin_path: &Path) -> Result<(), String> {
@@ -117,25 +152,4 @@ where
             filesz: phdr.p_filesz(endian).into(),
         })
         .collect())
-}
-
-fn workspace_root() -> Result<PathBuf, String> {
-    if let Ok(root) = std::env::var("FSTART_WORKSPACE_ROOT") {
-        return Ok(PathBuf::from(root));
-    }
-
-    let mut dir = std::env::current_dir().map_err(|e| format!("no cwd: {e}"))?;
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let contents =
-                std::fs::read_to_string(&cargo_toml).map_err(|e| format!("read error: {e}"))?;
-            if contents.contains("[workspace]") {
-                return Ok(dir);
-            }
-        }
-        if !dir.pop() {
-            return Err("could not find workspace root".to_string());
-        }
-    }
 }

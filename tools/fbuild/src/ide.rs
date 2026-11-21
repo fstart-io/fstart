@@ -13,11 +13,10 @@ use std::{
 pub fn generate_image(
     root: &Path,
     board: &BoardManifest,
-    layout: &crate::resolved_image::ResolvedImage,
+    layout: &crate::plan_executor::Resolved,
     name: Option<&str>,
     release: bool,
 ) -> Result<PathBuf, String> {
-    let layout = &layout.build;
     let unit = layout.selected(name)?;
     let selection = layout.selection(root, board, &unit.name, release)?;
     let target = unit.target.as_str();

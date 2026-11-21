@@ -11,8 +11,8 @@
 //! its guest's event log must replay to the PCRs it reads (`tpm_log`).
 
 use crate::board_manifest::BoardManifest;
-use crate::payload::{BuildArgs, PayloadChoice};
-use crate::resolved_image::ResolvedImage;
+use crate::payload::{AssembleArgs, PayloadChoice, PlanArgs};
+use crate::plan_executor::Resolved;
 use clap::ValueEnum;
 use fstart_crypto::pcr;
 use fstart_image_build::boot_test::{Bank, Binding, BootTest};
@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 /// The boot tests of `board`: its default plan's run recipe's.
 pub fn load(root: &Path, board: &BoardManifest) -> Result<Vec<BootTest>, String> {
-    let resolved = ResolvedImage::load(root, board, BuildArgs::default().selection(None))?;
-    match &resolved.build.plan.run {
+    let resolved = Resolved::load(root, board, PlanArgs::default().selection(None))?;
+    match &resolved.plan.run {
         Some(recipe) => {
             validate(recipe).map_err(|e| format!("{}: {e}", board.board))?;
             Ok(recipe.tests.clone())
@@ -155,7 +155,7 @@ impl Runner {
     }
 
     fn boot(&self, root: &Path, board: &BoardManifest, test: &BootTest, log: &Path) -> Verdict {
-        let mut options = BuildArgs::default();
+        let mut assemble = AssembleArgs::default();
         let mut supplied = BTreeMap::new();
         let mut disk = None;
         for binding in &test.bindings {
@@ -168,7 +168,7 @@ impl Runner {
                     supplied.insert(name.clone(), path);
                 }
                 Binding::PayloadFile(name, _) => {
-                    options
+                    assemble
                         .payload_files
                         .push((name.clone(), path.display().to_string()));
                 }
@@ -177,10 +177,9 @@ impl Runner {
         }
 
         let payload = PayloadChoice::from_str(&test.payload, false).ok();
-        let built =
-            ResolvedImage::load(root, board, options.selection(payload)).and_then(|resolved| {
-                crate::board_tool::qemu_image(board, &resolved, true, supplied, &options)
-            });
+        let built = Resolved::load(root, board, PlanArgs::default().selection(payload)).and_then(
+            |resolved| crate::board_tool::qemu_image(board, &resolved, true, supplied, &assemble),
+        );
         let built = match built {
             Ok(built) => built,
             Err(e) => return Verdict::Fail(format!("build: {e}")),
@@ -216,8 +215,10 @@ impl Runner {
         let command = crate::qemu::command(&built.recipe, &built.image, &built.external, &launch);
         let outcome = match command {
             Ok(command) => {
+                let program = command.get_program().to_os_string();
                 let deadline = test.timeout.map_or(self.boot_timeout, Duration::from_secs);
                 supervise(command, log, deadline, Some((&test.expect, self.quiet)))
+                    .map_err(|e| crate::qemu::launch_error(&program, &e))
             }
             Err(e) => return Verdict::Fail(e),
         };

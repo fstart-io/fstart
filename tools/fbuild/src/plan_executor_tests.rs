@@ -254,3 +254,24 @@ fn unsupported_required_input_is_rejected_by_input_validation_itself() {
             .contains("calibration")
     );
 }
+
+#[test]
+fn explain_json_preserves_common_route_envelope() {
+    let plan = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Aarch64,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let resolved = Resolved { plan, blobs: None };
+    let explained: serde_json::Value =
+        serde_json::from_str(&resolved.explain_json().unwrap()).unwrap();
+    assert_eq!(explained["route"], "Common");
+    assert_eq!(explained["build"]["plan"]["payload"], "halt");
+    // Artifact hashing still uses the inner `Resolved::json()` without the route wrapper.
+    let inner: serde_json::Value = serde_json::from_str(&resolved.json().unwrap()).unwrap();
+    assert!(inner.get("route").is_none());
+    assert_eq!(inner["plan"]["payload"], "halt");
+}

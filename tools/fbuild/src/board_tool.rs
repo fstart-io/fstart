@@ -1,5 +1,5 @@
-use crate::payload::{BuildArgs, PayloadChoice};
-use crate::resolved_image::ResolvedImage;
+use crate::payload::{AssembleArgs, BuildArgs, PayloadChoice, PlanArgs};
+use crate::plan_executor::{AssembleRequest, Resolved};
 use fstart_image_build::build_plan::FfsAssembly;
 
 /// The FFS payload inputs' dedicated flags.
@@ -18,10 +18,10 @@ fn payload_aliases<'a>(
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
     payload: Option<PayloadChoice>,
-    options: &BuildArgs,
-) -> Result<ResolvedImage, String> {
-    let root = crate::build_board::workspace_root_pub()?;
-    ResolvedImage::load(&root, manifest, options.selection(payload))
+    options: &PlanArgs,
+) -> Result<Resolved, String> {
+    let root = crate::build_board::workspace_root()?;
+    Resolved::load(&root, manifest, options.selection(payload))
 }
 
 /// Run board policy and protocol tests with the board's default and the
@@ -29,25 +29,14 @@ fn load(
 /// host test must not inherit a stage's linker script, target or generated
 /// artifact bindings.
 pub fn test_library(manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
-    let root = crate::build_board::workspace_root_pub()?;
-    let version = std::process::Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| format!("query host compiler: {e}"))?;
-    if !version.status.success() {
-        return Err("cannot query the Rust host target".into());
-    }
-    let version = String::from_utf8(version.stdout).map_err(|e| e.to_string())?;
-    let host = version
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .ok_or("rustc did not report its host target")?;
+    let root = crate::build_board::workspace_root()?;
+    let host = crate::build_board::host_target(&root)?;
     let mut command = std::process::Command::new("cargo");
     command
         .current_dir(&root)
         .args(["test", "--locked", "--lib", "--manifest-path"])
         .arg(root.join("Cargo.toml"))
-        .args(["--package", &manifest.package, "--target", host])
+        .args(["--package", &manifest.package, "--target", &host])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env("RUSTFLAGS", "");
     if !manifest.variant_features.is_empty() {
@@ -66,11 +55,10 @@ pub fn build(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
-    options: &BuildArgs,
+    options: &PlanArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
-    let root = crate::build_board::workspace_root_pub()?;
-    let resolved =
-        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    let root = crate::build_board::workspace_root()?;
+    let resolved = Resolved::load(&root, manifest, options.selection(payload))?;
     resolved.build(&root, manifest, release)
 }
 
@@ -84,39 +72,27 @@ pub fn assemble(
     fit: Option<&str>,
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = load(manifest, payload, options)?;
-    let supplied =
-        crate::assemble::supplied_inputs(&payload_aliases(kernel, firmware, fit), &options.inputs)?;
-    Ok(assemble_loaded(
-        &workspace_root,
-        manifest.clone(),
-        &resolved,
-        release,
-        &supplied,
-        options,
-    )?
-    .image)
-}
-
-fn assemble_loaded(
-    workspace_root: &std::path::Path,
-    manifest: crate::board_manifest::BoardManifest,
-    resolved: &ResolvedImage,
-    release: bool,
-    supplied: &std::collections::BTreeMap<String, std::path::PathBuf>,
-    options: &BuildArgs,
-) -> Result<crate::assemble::AssembledImage, String> {
-    crate::assemble::assemble_with_resolved(
-        workspace_root,
-        &manifest,
-        resolved,
-        release,
-        supplied,
-        &options.payload_files,
-        options.signing_key.as_deref(),
-        &crate::payload::store_settings(&options.settings, &options.secure_boot)?,
-    )
+    let workspace_root = crate::build_board::workspace_root()?;
+    let resolved = load(manifest, payload, &options.plan)?;
+    let supplied = crate::assemble::supplied_inputs(
+        &payload_aliases(kernel, firmware, fit),
+        &options.assemble.inputs,
+    )?;
+    let settings =
+        crate::payload::store_settings(&options.assemble.settings, &options.assemble.secure_boot)?;
+    Ok(resolved
+        .assemble(
+            &workspace_root,
+            manifest,
+            &AssembleRequest {
+                release,
+                supplied: &supplied,
+                payload_files: &options.assemble.payload_files,
+                signing_key: options.assemble.signing_key.as_deref(),
+                settings: &settings,
+            },
+        )?
+        .image)
 }
 
 #[allow(clippy::too_many_arguments)] // the CLI's flat flash options
@@ -130,8 +106,8 @@ pub fn flash(
     protocol: &str,
     base_address: Option<&str>,
 ) -> Result<(), String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = load(manifest, None, options)?;
+    let workspace_root = crate::build_board::workspace_root()?;
+    let resolved = load(manifest, None, &options.plan)?;
     let manifest = manifest.clone();
     let chip_name = chip.unwrap_or("auto");
     let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
@@ -155,7 +131,7 @@ pub fn flash(
     if !probe_run {
         // Default to the firmware window the board's plan states; an
         // explicit --base-address wins.
-        let plan = &resolved.build.plan;
+        let plan = &resolved.plan;
         let base_address = match base_address {
             Some(base) => base.to_string(),
             None => match plan.ffs_assembly().map(|ffs| ffs.build.firmware_image) {
@@ -171,14 +147,21 @@ pub fn flash(
         };
         let base_address = base_address.as_str();
         eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
-        let supplied = crate::assemble::supplied_inputs(&[], &options.inputs)?;
-        let mut assembled = assemble_loaded(
+        let supplied = crate::assemble::supplied_inputs(&[], &options.assemble.inputs)?;
+        let settings = crate::payload::store_settings(
+            &options.assemble.settings,
+            &options.assemble.secure_boot,
+        )?;
+        let mut assembled = resolved.assemble(
             &workspace_root,
-            manifest.clone(),
-            &resolved,
-            release,
-            &supplied,
-            options,
+            &manifest,
+            &AssembleRequest {
+                release,
+                supplied: &supplied,
+                payload_files: &options.assemble.payload_files,
+                signing_key: options.assemble.signing_key.as_deref(),
+                settings: &settings,
+            },
         )?;
         // The FFS goes to the firmware window; a plan without one flashes
         // its final image there.
@@ -258,15 +241,15 @@ pub struct QemuImage {
 /// qemu` and the boot tests launch.
 pub fn qemu_image(
     manifest: &crate::board_manifest::BoardManifest,
-    resolved: &ResolvedImage,
+    resolved: &Resolved,
     release: bool,
     mut supplied: std::collections::BTreeMap<String, std::path::PathBuf>,
-    options: &BuildArgs,
+    options: &AssembleArgs,
 ) -> Result<QemuImage, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let workspace_root = crate::build_board::workspace_root()?;
     // The plan states how (and whether) this board runs under QEMU; there
     // is no per-architecture fallback launch to guess.
-    let recipe = resolved.build.plan.run.clone().ok_or_else(|| {
+    let recipe = resolved.plan.run.clone().ok_or_else(|| {
         format!(
             "board '{}' has no QEMU run recipe in its plan",
             manifest.board
@@ -278,7 +261,7 @@ pub fn qemu_image(
         .external_inputs()
         .filter_map(|name| supplied.remove_entry(name))
         .collect();
-    let image = if resolved.build.plan.images.is_empty() {
+    let image = if resolved.plan.images.is_empty() {
         if let Some(name) = supplied.keys().next() {
             return Err(format!("input {name} is not declared by the selected plan"));
         }
@@ -289,13 +272,17 @@ pub fn qemu_image(
             stages: build.stages,
         }
     } else {
-        assemble_loaded(
+        let settings = crate::payload::store_settings(&options.settings, &options.secure_boot)?;
+        resolved.assemble(
             &workspace_root,
-            manifest.clone(),
-            resolved,
-            release,
-            &supplied,
-            options,
+            manifest,
+            &AssembleRequest {
+                release,
+                supplied: &supplied,
+                payload_files: &options.payload_files,
+                signing_key: options.signing_key.as_deref(),
+                settings: &settings,
+            },
         )?
     };
     Ok(QemuImage {
@@ -324,16 +311,16 @@ pub fn qemu(
     args: &QemuArgs<'_>,
     options: &BuildArgs,
 ) -> Result<(), String> {
-    let resolved = load(manifest, payload, options)?;
+    let resolved = load(manifest, payload, &options.plan)?;
     let supplied = crate::assemble::supplied_inputs(
         &[
             payload_aliases(args.kernel, args.firmware, args.fit).as_slice(),
             &[("secure-firmware", args.secure_firmware)],
         ]
         .concat(),
-        &options.inputs,
+        &options.assemble.inputs,
     )?;
-    let built = qemu_image(manifest, &resolved, release, supplied, options)?;
+    let built = qemu_image(manifest, &resolved, release, supplied, &options.assemble)?;
     let tpm = args
         .tpm
         .as_ref()

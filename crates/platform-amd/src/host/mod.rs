@@ -32,7 +32,9 @@ use fstart_image_build::build_plan::{
     ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
     InputFile, SmmRelocation, SmmUnit, UnitOutput,
 };
-use fstart_image_build::plan::{BuildSelection, HostPlan, ResolvedPlan, X86LinuxOptions};
+use fstart_image_build::plan::{
+    BuildSelection, HostPlan, PlanError, ResolvedPlan, X86LinuxOptions,
+};
 use fstart_image_build::smm_image::ImageOptions;
 use std::collections::BTreeMap;
 use std::string::{String, ToString};
@@ -101,7 +103,7 @@ pub enum Payload {
 }
 
 impl Payload {
-    pub fn select(selection: &BuildSelection, linux: &X86LinuxOptions) -> Result<Self, String> {
+    pub fn select(selection: &BuildSelection, linux: &X86LinuxOptions) -> Result<Self, PlanError> {
         let payload = match selection.payload.as_deref() {
             None | Some("halt") => Self::Halt,
             Some("linux") => Self::Linux,
@@ -109,9 +111,9 @@ impl Payload {
             Some("uefi-ui") => Self::UefiUi,
             Some("uefi-basic") => Self::UefiBasic,
             Some(other) => {
-                return Err(format!(
+                return Err(PlanError::unsupported_payload(format!(
                     "AMD payloads are halt, linux, uefi, uefi-ui and uefi-basic, not {other}"
-                ));
+                )));
             }
         };
         if linux.any() && payload != Self::Linux {
@@ -316,11 +318,11 @@ pub fn resolve(
     host: &Host,
     selection: &BuildSelection,
     options: &HostOptions,
-) -> Result<BuildPlan, String> {
+) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
-        return Err(format!("{} takes no compiler inputs", host.name));
+        return Err(format!("{} takes no compiler inputs", host.name).into());
     }
     if host.max_cpus == 0 {
         return Err("CPU population must be nonzero".into());
@@ -387,7 +389,7 @@ pub fn host<B: Board>() -> Result<Host, String> {
 pub fn resolve_board<B: Board>(
     selection: &BuildSelection,
     options: &HostOptions,
-) -> Result<BuildPlan, String> {
+) -> Result<BuildPlan, PlanError> {
     let host = host::<B>()?;
     let mut plan = resolve(&host, selection, options)?;
     plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
@@ -423,7 +425,10 @@ pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: Board> HostPlan<B> for Plan<B> {
     type Options = HostOptions;
 
-    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String> {
+    fn resolve(
+        selection: BuildSelection,
+        options: Self::Options,
+    ) -> Result<ResolvedPlan, PlanError> {
         resolve_board::<B>(&selection, &options)
     }
 }

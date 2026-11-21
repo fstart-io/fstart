@@ -4,7 +4,8 @@ use crate::facts::{BoardFacts, IntelBoardFacts, IntelPlatform, IntelPlatformConf
 use fstart_image_build::{
     intel_plan::{IntelReservations, IntelStage, StageReservation},
     plan::{
-        BuildSelection, HostPlan, IntelPlan, IntelStagePlan, ResolvedPlan, Span, X86LinuxOptions,
+        BuildSelection, HostPlan, IntelPlan, IntelStagePlan, PlanError, ResolvedPlan, Span,
+        X86LinuxOptions,
     },
 };
 
@@ -25,10 +26,7 @@ pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
     type Options = Options;
 
-    fn resolve(
-        selection: BuildSelection,
-        options: Options,
-    ) -> Result<ResolvedPlan, std::string::String> {
+    fn resolve(selection: BuildSelection, options: Options) -> Result<ResolvedPlan, PlanError> {
         // Explicit image configuration carries private authenticated data (such
         // as a discrete GPU ROM), never silently discovered board-local files.
         let assets = options
@@ -63,7 +61,7 @@ impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
                     "cpu_microcode_blob.bin" | "payload" | "linux-manifest"
                 )
             {
-                return Err(format!("duplicate Intel data asset: {}", asset.name));
+                return Err(format!("duplicate Intel data asset: {}", asset.name).into());
             }
             image.file_assets.push(asset);
         }
@@ -330,7 +328,7 @@ pub fn reservations<P: IntelPlatform>(
 pub fn resolve<B: IntelBoardFacts>(
     selection: BuildSelection,
     x86_linux: X86LinuxOptions,
-) -> Result<IntelPlan, std::string::String> {
+) -> Result<IntelPlan, PlanError> {
     resolve_for::<B::Platform>(
         B::FACTS,
         B::CONFIG.max_cpus(),
@@ -346,7 +344,7 @@ fn resolve_for<P: IntelPlatform>(
     ehci_debug: bool,
     selection: BuildSelection,
     x86_linux: X86LinuxOptions,
-) -> Result<IntelPlan, std::string::String> {
+) -> Result<IntelPlan, PlanError> {
     let debug = Debug::select(ehci_debug, &selection.debug)?;
     let requested_payload = selection.payload.clone().unwrap_or_else(|| "halt".into());
     if x86_linux.any() && requested_payload != "linux" {
@@ -357,7 +355,9 @@ fn resolve_for<P: IntelPlatform>(
         requested_payload.as_str(),
         "halt" | "linux" | "uefi" | "uefi-ui" | "uefi-basic" | "coreboot"
     ) {
-        return Err("Intel supports halt, direct Linux, UEFI and coreboot payloads".into());
+        return Err(PlanError::unsupported_payload(
+            "Intel supports halt, direct Linux, UEFI and coreboot payloads",
+        ));
     }
     let payload = if requested_payload.starts_with("uefi") {
         "uefi".to_string()
@@ -367,9 +367,9 @@ fn resolve_for<P: IntelPlatform>(
     let mut reservations = reservations::<P>(facts, debug.flash_console)?;
     let bios_size = reservations.firmware.size;
     if payload == "uefi" && !facts.protected_mode && bios_size <= 0x8_0000 {
-        return Err(format!(
+        return Err(PlanError::unsupported_payload(format!(
             "UEFI payloads do not fit in the {bios_size:#x}-byte BIOS window"
-        ));
+        )));
     }
     // On 1–1.5 MiB BIOS windows, the LZ4-compressed UEFI ramstage can
     // overlap the reset image. Use denser storage without changing the
@@ -535,7 +535,7 @@ mod tests {
         selection: BuildSelection,
     ) -> Result<IntelPlan, std::string::String> {
         let options = selection.options()?;
-        resolve_for::<Gm965>(facts, 2, false, selection, options)
+        resolve_for::<Gm965>(facts, 2, false, selection, options).map_err(|e| e.to_string())
     }
 
     #[test]

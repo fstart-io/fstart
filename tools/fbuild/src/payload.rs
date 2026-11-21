@@ -76,7 +76,7 @@ impl PayloadChoice {
     }
 }
 
-/// Build-time firmware policy selected from the fbuild CLI.
+/// Build-time firmware plan and compiler policy selected from the fbuild CLI.
 ///
 /// The SMBIOS date defaults to the current UTC date. Direct x86 Linux fields
 /// are optional: the omitted kernel address falls back to platform policy and
@@ -84,7 +84,7 @@ impl PayloadChoice {
 /// fixed by Intel platform policy rather than exposed as an unchecked physical
 /// memory override.
 #[derive(Debug, Clone, Args)]
-pub struct BuildArgs {
+pub struct PlanArgs {
     /// Explicit compiler file namespace and path; repeat as ENV=PATH.
     /// The selected platform must bind each request unchanged, without fallback.
     #[arg(long = "compiler-input", value_parser = CompilerFileSelection::parse)]
@@ -125,6 +125,11 @@ pub struct BuildArgs {
     /// well-known ones.
     #[arg(long = "option", value_parser = parse_payload_file)]
     pub plan_options: Vec<(String, String)>,
+}
+
+/// Image assembly options accepted only by subcommands that pack an image.
+#[derive(Debug, Clone, Default, Args)]
+pub struct AssembleArgs {
     /// External file for an input the board's plan declares, as
     /// NAME=PATH; repeatable. `--kernel`, `--firmware` and `--fit` are
     /// aliases for the inputs of those names.
@@ -148,6 +153,16 @@ pub struct BuildArgs {
     pub settings: Vec<(String, String)>,
     #[command(flatten)]
     pub secure_boot: SecureBootArgs,
+}
+
+/// Combined plan and image-assembly options for commands that build and pack
+/// an image (`assemble`, `qemu`, `flash`, `test`).
+#[derive(Debug, Clone, Default, Args)]
+pub struct BuildArgs {
+    #[command(flatten)]
+    pub plan: PlanArgs,
+    #[command(flatten)]
+    pub assemble: AssembleArgs,
 }
 
 /// Secure Boot of an image's settings store, for a CrabEFI build whose
@@ -195,28 +210,9 @@ impl SecureBootArgs {
         };
         Ok(Some(SecureBoot { enforce, keys }))
     }
-
-    fn append_cli_args(&self, args: &mut Vec<String>) {
-        if let Some(enforce) = self.enforce {
-            args.extend([
-                "--secure-boot".into(),
-                if enforce { "on" } else { "off" }.into(),
-            ]);
-        }
-        let files = (self.pk.iter().map(|path| ("pk", path)))
-            .chain(self.kek.iter().map(|path| ("kek", path)))
-            .chain(self.db.iter().map(|path| ("db", path)))
-            .chain(self.dbx.iter().map(|path| ("dbx", path)));
-        for (database, path) in files {
-            args.extend([
-                format!("--secure-boot-{database}"),
-                path.display().to_string(),
-            ]);
-        }
-    }
 }
 
-impl Default for BuildArgs {
+impl Default for PlanArgs {
     fn default() -> Self {
         Self {
             compiler_inputs: Vec::new(),
@@ -229,16 +225,11 @@ impl Default for BuildArgs {
             log_level: None,
             debug: Vec::new(),
             plan_options: Vec::new(),
-            inputs: Vec::new(),
-            payload_files: Vec::new(),
-            signing_key: None,
-            settings: Vec::new(),
-            secure_boot: SecureBootArgs::default(),
         }
     }
 }
 
-impl BuildArgs {
+impl PlanArgs {
     pub fn selection(&self, payload: Option<PayloadChoice>) -> BuildSelection {
         use fstart_image_build::plan::options as opt;
         let mut selection = BuildSelection {
@@ -272,53 +263,6 @@ impl BuildArgs {
             selection.set_option(opt::X86_LINUX_PRINT_MTRRS, "true");
         }
         selection
-    }
-
-    pub fn append_cli_args(&self, args: &mut Vec<String>) {
-        for input in &self.compiler_inputs {
-            args.extend([
-                "--compiler-input".into(),
-                format!("{}={}", input.environment, input.path),
-            ]);
-        }
-        if let Some(path) = &self.blobs {
-            args.extend(["--blobs".into(), path.clone()]);
-        }
-        if let Some(path) = &self.donor {
-            args.extend(["--donor".into(), path.clone()]);
-        }
-        args.extend(["--smbios-date".into(), self.smbios_date.clone()]);
-        if let Some(value) = self.linux_kernel_load_addr {
-            args.extend(["--linux-kernel-load-addr".into(), format!("{value:#x}")]);
-        }
-        if let Some(value) = &self.linux_bootargs {
-            args.extend(["--linux-bootargs".into(), value.clone()]);
-        }
-        if self.linux_print_mtrrs {
-            args.push("--linux-print-mtrrs".into());
-        }
-        if let Some(level) = self.log_level {
-            args.extend(["--log-level".into(), level.as_str().into()]);
-        }
-        for option in &self.debug {
-            args.extend(["--debug".into(), option.as_str().into()]);
-        }
-        for (name, value) in &self.plan_options {
-            args.extend(["--option".into(), format!("{name}={value}")]);
-        }
-        for (name, path) in &self.inputs {
-            args.extend(["--input".into(), format!("{name}={path}")]);
-        }
-        for (name, path) in &self.payload_files {
-            args.extend(["--payload-file".into(), format!("{name}={path}")]);
-        }
-        for (key, value) in &self.settings {
-            args.extend(["--setting".into(), format!("{key}={value}")]);
-        }
-        self.secure_boot.append_cli_args(args);
-        if let Some(path) = &self.signing_key {
-            args.extend(["--signing-key".into(), path.display().to_string()]);
-        }
     }
 }
 
@@ -438,11 +382,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compiler_input_cli_round_trips_paths_and_keeps_duplicate_requests_visible() {
+    fn compiler_input_cli_preserves_paths_and_keeps_duplicate_requests_visible() {
         #[derive(clap::Parser)]
         struct InputCli {
             #[command(flatten)]
-            options: BuildArgs,
+            options: PlanArgs,
         }
         use clap::Parser;
         let cli = InputCli::try_parse_from([
@@ -456,18 +400,8 @@ mod tests {
         let selected = cli.options.selection(None);
         selected.validate_compiler_files().unwrap();
         assert_eq!(selected.compiler_files[0].path, "a path/file=1.bin");
-        let mut forwarded = vec!["inputs".into()];
-        cli.options.append_cli_args(&mut forwarded);
-        let forwarded = InputCli::try_parse_from(forwarded)
-            .unwrap()
-            .options
-            .selection(None);
         assert_eq!(
-            forwarded.compiler_files[0].path,
-            selected.compiler_files[0].path
-        );
-        assert_eq!(
-            forwarded.option(fstart_image_build::plan::options::DONOR),
+            selected.option(fstart_image_build::plan::options::DONOR),
             Some("vendor.rom")
         );
         let duplicates = InputCli::try_parse_from([
@@ -491,15 +425,15 @@ mod tests {
     }
 
     #[test]
-    fn secure_boot_arguments_round_trip_and_keys_need_a_state() {
+    fn secure_boot_arguments_parse_and_keys_need_a_state() {
         #[derive(clap::Parser)]
         struct Cli {
             #[command(flatten)]
-            options: BuildArgs,
+            options: AssembleArgs,
         }
         use clap::Parser;
         let args = [
-            "build",
+            "assemble",
             "--secure-boot",
             "off",
             "--secure-boot-pk",
@@ -512,26 +446,27 @@ mod tests {
         let cli = Cli::try_parse_from(args).unwrap();
         let secure_boot = &cli.options.secure_boot;
         assert_eq!(secure_boot.enforce, Some(false));
+        assert_eq!(
+            secure_boot.pk.as_deref(),
+            Some(std::path::Path::new("pk.crt"))
+        );
         assert_eq!(secure_boot.db.len(), 2);
-        let mut forwarded = vec!["build".to_owned()];
-        secure_boot.append_cli_args(&mut forwarded);
-        assert_eq!(forwarded, args);
         // Keys without a state, a KEK without a PK, and other states fail.
         for bad in [
-            &["build", "--secure-boot-pk", "pk.crt"][..],
+            &["assemble", "--secure-boot-pk", "pk.crt"][..],
             &[
-                "build",
+                "assemble",
                 "--secure-boot",
                 "on",
                 "--secure-boot-kek",
                 "kek.crt",
             ],
-            &["build", "--secure-boot", "maybe"],
+            &["assemble", "--secure-boot", "maybe"],
         ] {
             assert!(Cli::try_parse_from(bad).is_err(), "{bad:?}");
         }
         assert_eq!(
-            Cli::try_parse_from(["build"])
+            Cli::try_parse_from(["assemble"])
                 .unwrap()
                 .options
                 .secure_boot

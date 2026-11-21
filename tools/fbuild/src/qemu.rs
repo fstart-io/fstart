@@ -1,29 +1,9 @@
 use crate::assemble::AssembledImage;
 use fstart_image_build::run::{RunArtifact, RunDisk, RunMedia, RunRecipe};
+use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn find_qemu(name: &str) -> String {
-    if let Ok(output) = Command::new("which").arg(name).output()
-        && output.status.success()
-    {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
-            return path;
-        }
-    }
-
-    if let Ok(entries) = std::fs::read_dir("/nix/store") {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join("bin").join(name);
-            if candidate.is_file() {
-                return candidate.display().to_string();
-            }
-        }
-    }
-
-    name.to_string()
-}
 
 fn artifact<'a>(built: &'a AssembledImage, artifact: &RunArtifact) -> Result<&'a Path, String> {
     match artifact {
@@ -216,18 +196,29 @@ pub fn command(
     }
     args.extend(launch.args.iter().cloned());
 
-    let qemu_bin = find_qemu(&recipe.qemu);
-    eprintln!("[fstart] launching: {qemu_bin} {}", args.join(" "));
-    let mut command = Command::new(qemu_bin);
+    eprintln!("[fstart] launching: {} {}", recipe.qemu, args.join(" "));
+    let mut command = Command::new(&recipe.qemu);
     command.args(&args);
     Ok(command)
 }
 
+/// Format a spawn error for a QEMU command, naming the executable and
+/// pointing to PATH / `nix develop` when it is missing.
+pub(crate) fn launch_error(program: &OsStr, err: &std::io::Error) -> String {
+    let name = program.to_string_lossy();
+    if err.kind() == ErrorKind::NotFound {
+        format!(
+            "failed to launch `{name}`: not found in PATH (install QEMU or enter `nix develop`)"
+        )
+    } else {
+        format!("failed to launch `{name}`: {err}")
+    }
+}
+
 /// Run `command` in the terminal.
 pub fn run(mut command: Command) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|e| format!("failed to launch QEMU: {e}"))?;
+    let program = command.get_program().to_os_string();
+    let status = command.status().map_err(|e| launch_error(&program, &e))?;
     if !status.success() {
         return Err("QEMU exited with error".to_string());
     }
@@ -329,4 +320,19 @@ fn create_sd_image(binary: &Path, offset: usize, size: usize) -> Result<PathBuf,
     sd[offset..offset + image.len()].copy_from_slice(&image);
     std::fs::write(&path, sd).map_err(|e| format!("failed to create SD image: {e}"))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_qemu_executable_reports_path_and_devshell_hint() {
+        let mut cmd = Command::new("fstart-nonexistent-qemu-binary");
+        cmd.arg("-version");
+        let err = run(cmd).unwrap_err();
+        assert!(err.contains("fstart-nonexistent-qemu-binary"), "{err}");
+        assert!(err.contains("PATH"), "{err}");
+        assert!(err.contains("nix develop"), "{err}");
+    }
 }

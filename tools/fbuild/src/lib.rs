@@ -14,12 +14,11 @@ mod ide_graph;
 #[cfg(test)]
 mod intel_linker_tests;
 pub mod payload;
-mod plan_executor;
+pub mod plan_executor;
 mod profile_source;
 pub mod qemu;
 #[cfg(test)]
 mod qemu_golden_tests;
-pub mod resolved_image;
 mod selection;
 pub mod shards;
 pub mod size_report;

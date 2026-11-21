@@ -14,7 +14,7 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
         Scratch(std::env::temp_dir().join(format!("fstart ide projection {}", std::process::id())));
     fs::create_dir_all(&scratch.0).unwrap();
     let root = scratch.0.canonicalize().unwrap();
-    let actual_root = crate::build_board::workspace_root_pub().unwrap();
+    let actual_root = crate::build_board::workspace_root().unwrap();
     let board = crate::board_manifest::find(&actual_root, "qemu-riscv64").unwrap();
     let plan = fstart_platform_qemu::host::resolve(
         fstart_platform_qemu::facts::VirtMachine::Riscv64,

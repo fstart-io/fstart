@@ -5,8 +5,8 @@
 //! target/, compiler snapshots or vendor firmware trees.
 use crate::{
     board_manifest::{self, BoardManifest},
-    payload::{BuildArgs, PayloadChoice},
-    resolved_image::ResolvedImage,
+    payload::{PayloadChoice, PlanArgs},
+    plan_executor::Resolved,
 };
 use fstart_image_build::{
     build_plan::{BuildPlan, ImageOperation, InputFile},
@@ -15,6 +15,7 @@ use fstart_image_build::{
         sha256,
     },
     files::{Files, MemoryFiles, normalize},
+    plan::PlanError,
 };
 use serde::Serialize;
 use std::{
@@ -145,8 +146,9 @@ impl SeaBios {
 
 /// The board's AMD blob tables, if its image packs PSP firmware: a bundle
 /// carries them instead of the firmware.
-fn donor_tables(root: &Path, board: &BoardManifest) -> Result<Option<PackedDonor>, String> {
-    let source = crate::profile_source::load_profile(root, board)?;
+fn donor_tables(
+    source: &crate::profile_source::ProfileSource,
+) -> Result<Option<PackedDonor>, String> {
     let table = &source.package["metadata"]["fstart"];
     if table["amd"].is_null() {
         return Ok(None);
@@ -171,8 +173,8 @@ const PUBLISHED: &[&[PayloadChoice]] = &[
 /// with its initramfs does not fit in less.
 const LINUX_MIN: u64 = 1536 << 10;
 
-fn fits_a_kernel(resolved: &ResolvedImage) -> bool {
-    (resolved.build.plan.inputs.iter())
+fn fits_a_kernel(resolved: &Resolved) -> bool {
+    (resolved.plan.inputs.iter())
         .find(|input| input.name == "kernel")
         .is_none_or(|kernel| kernel.capacity >= LINUX_MIN)
 }
@@ -187,7 +189,7 @@ pub fn export(
     payload: Option<PayloadChoice>,
     seabios: Option<&Path>,
 ) -> Result<(), String> {
-    let root = crate::build_board::workspace_root_pub()?;
+    let root = crate::build_board::workspace_root()?;
     let seabios = seabios.map(SeaBios::load).transpose()?;
     let inventory = board_manifest::discover(&root)?;
     let boards = match board_id {
@@ -195,8 +197,7 @@ pub fn export(
         None => {
             let mut all = Vec::new();
             for board in &inventory {
-                let ids =
-                    std::iter::once(&board.board).chain(board.variants.iter().map(|(id, _)| id));
+                let ids = std::iter::once(&board.board).chain(board.variants.keys());
                 for id in ids {
                     all.push(board_manifest::find_in(&inventory, id)?);
                 }
@@ -221,43 +222,28 @@ pub fn export(
     // plan must fail fast, not after an hour of work.
     let mut builds = Vec::new();
     for board in boards {
-        let packed_donor = donor_tables(&root, &board)?;
-        let resolve = |choice: PayloadChoice| {
-            let mut selection = BuildArgs::default().selection(Some(choice));
-            // An AMD plan packs the blobs its assembly extracts from the
-            // user's donor.
-            if packed_donor.is_some() {
-                selection.set_option(fstart_image_build::plan::options::BLOBS, BLOBS_DIR);
-            }
-            ResolvedImage::load(&root, &board, selection)
-        };
-        if let Some(choice) = payload {
-            match resolve(choice) {
-                Ok(resolved) => builds.push((board.clone(), choice, resolved, packed_donor)),
-                // Asked for explicitly: the plan must take it.
-                Err(error) if board_id.is_some() => {
-                    return Err(format!("{} {}: {error}", board.board, choice.as_str()));
+        let source = crate::profile_source::load_profile(&root, &board)?;
+        let packed_donor = donor_tables(&source)?;
+        let selected = select_payloads_for_board(
+            &board.board,
+            board_id.is_some(),
+            payload,
+            |choice| {
+                let mut selection = PlanArgs::default().selection(Some(choice));
+                // An AMD plan packs the blobs its assembly extracts from the
+                // user's donor.
+                if packed_donor.is_some() {
+                    selection.set_option(fstart_image_build::plan::options::BLOBS, BLOBS_DIR);
                 }
-                Err(_) => {}
-            }
-            continue;
-        }
-        let mut published = 0;
-        for group in PUBLISHED {
-            // The first payload of the group the board's plan takes.
-            let Some((choice, resolved)) = (group.iter())
-                .find_map(|&choice| resolve(choice).ok().map(|resolved| (choice, resolved)))
-            else {
-                continue;
-            };
-            if choice == PayloadChoice::Linux && !fits_a_kernel(&resolved) {
-                continue;
-            }
-            builds.push((board.clone(), choice, resolved, packed_donor.clone()));
-            published += 1;
-        }
-        if published == 0 {
+                Resolved::try_load_with_profile(&root, &board, &source, selection)
+            },
+            fits_a_kernel,
+        )?;
+        if selected.is_empty() && payload.is_none() {
             eprintln!("[fstart] {}: no published payload, skipped", board.board);
+        }
+        for (choice, resolved) in selected {
+            builds.push((board.clone(), choice, resolved, packed_donor.clone()));
         }
     }
     for (board, choice, resolved, packed_donor) in builds {
@@ -287,12 +273,12 @@ fn export_one(
     root: &Path,
     board: &BoardManifest,
     choice: &str,
-    resolved: &ResolvedImage,
+    resolved: &Resolved,
     packed_donor: Option<PackedDonor>,
     seabios: Option<&SeaBios>,
 ) -> Result<Build, String> {
     let result = resolved.build(root, board, true)?;
-    let plan = &resolved.build.plan;
+    let plan = &resolved.plan;
     let board_dir = Path::new(WORKSPACE).join("boards").join(&board.rel_dir);
     let files = MemoryFiles::default();
     let mut binaries = Vec::new();
@@ -567,6 +553,51 @@ fn include(files: &MemoryFiles, source: &Path, destination: &Path) -> Result<(),
     )
 }
 
+/// Resolve the published payload choices for one board.
+///
+/// Only [`PlanError::UnsupportedPayload`] allows skipping a board or falling
+/// back within a [`PUBLISHED`] group; any other failure aborts export before
+/// any firmware build starts.
+fn select_payloads_for_board<T>(
+    board: &str,
+    explicit_board: bool,
+    payload: Option<PayloadChoice>,
+    mut resolve: impl FnMut(PayloadChoice) -> Result<T, PlanError>,
+    fits_kernel: impl Fn(&T) -> bool,
+) -> Result<Vec<(PayloadChoice, T)>, String> {
+    if let Some(choice) = payload {
+        return match resolve(choice) {
+            Ok(resolved) => Ok(vec![(choice, resolved)]),
+            Err(PlanError::UnsupportedPayload(_)) if !explicit_board => Ok(Vec::new()),
+            Err(error) => Err(format!("{board} {}: {error}", choice.as_str())),
+        };
+    }
+    let mut selected = Vec::new();
+    for group in PUBLISHED {
+        let mut picked = None;
+        for &choice in *group {
+            match resolve(choice) {
+                Ok(resolved) => {
+                    picked = Some((choice, resolved));
+                    break;
+                }
+                Err(PlanError::UnsupportedPayload(_)) => continue,
+                Err(PlanError::Failed(error)) => {
+                    return Err(format!("{board} {}: {error}", choice.as_str()));
+                }
+            }
+        }
+        let Some((choice, resolved)) = picked else {
+            continue;
+        };
+        if choice == PayloadChoice::Linux && !fits_kernel(&resolved) {
+            continue;
+        }
+        selected.push((choice, resolved));
+    }
+    Ok(selected)
+}
+
 #[cfg(test)]
 mod output_tests {
     use super::*;
@@ -584,5 +615,75 @@ mod output_tests {
         assert!(write_outputs(dir.path(), &files, true).is_err());
         assert!(!dir.path().join("a-report.json").exists());
         assert_eq!(fs::read(backup).unwrap(), b"original");
+    }
+
+    #[test]
+    fn automatic_selection_falls_back_only_on_unsupported_payload() {
+        let selected = select_payloads_for_board(
+            "demo",
+            false,
+            None,
+            |choice| match choice {
+                PayloadChoice::UefiUi => Err(PlanError::unsupported_payload("no UI")),
+                PayloadChoice::Uefi => Ok(true),
+                PayloadChoice::Linux => Ok(false), // filtered by fits_kernel
+                _ => Err(PlanError::unsupported_payload("unsupported")),
+            },
+            |&fits| fits,
+        )
+        .unwrap();
+        assert_eq!(selected, vec![(PayloadChoice::Uefi, true)]);
+
+        let err = select_payloads_for_board(
+            "demo",
+            false,
+            None,
+            |choice| match choice {
+                PayloadChoice::UefiUi => Err(PlanError::failed("plan runner failed to compile")),
+                PayloadChoice::Uefi => Ok(()),
+                _ => Err(PlanError::unsupported_payload("unsupported")),
+            },
+            |_| true,
+        )
+        .unwrap_err();
+        assert!(err.contains("demo uefi-ui"), "{err}");
+        assert!(err.contains("plan runner failed to compile"), "{err}");
+    }
+
+    #[test]
+    fn explicit_payload_skips_inventory_only_on_unsupported_and_always_fails_for_explicit_board() {
+        // Explicit payload across inventory: unsupported is skipped, fatal fails.
+        let skipped = select_payloads_for_board(
+            "demo",
+            false,
+            Some(PayloadChoice::Coreboot),
+            |_| Err(PlanError::unsupported_payload("no coreboot")),
+            |_: &()| true,
+        )
+        .unwrap();
+        assert!(skipped.is_empty());
+
+        let fatal = select_payloads_for_board(
+            "demo",
+            false,
+            Some(PayloadChoice::Coreboot),
+            |_| Err(PlanError::failed("broken Cargo.lock")),
+            |_: &()| true,
+        )
+        .unwrap_err();
+        assert!(fatal.contains("demo coreboot"), "{fatal}");
+        assert!(fatal.contains("broken Cargo.lock"), "{fatal}");
+
+        // Explicit board + payload: unsupported is also an error.
+        let unsupported = select_payloads_for_board(
+            "demo",
+            true,
+            Some(PayloadChoice::Coreboot),
+            |_| Err(PlanError::unsupported_payload("no coreboot")),
+            |_: &()| true,
+        )
+        .unwrap_err();
+        assert!(unsupported.contains("demo coreboot"), "{unsupported}");
+        assert!(unsupported.contains("no coreboot"), "{unsupported}");
     }
 }

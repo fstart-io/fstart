@@ -282,7 +282,69 @@ pub type ResolvedPlan = crate::build_plan::BuildPlan;
 /// [`ResolvedPlan`] change shape incompatibly; the runner and the
 /// adapter are built from the same tree, so this catches stale cached
 /// runners rather than negotiating between releases.
-pub const PLAN_SCHEMA: u32 = 1;
+pub const PLAN_SCHEMA: u32 = 2;
+
+/// Why a platform's host adapter could not produce a plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "message", rename_all = "kebab-case")]
+pub enum PlanError {
+    /// This board or platform intentionally does not support the requested
+    /// payload (for example UEFI on a 512 KiB BIOS window or D1 Linux).
+    UnsupportedPayload(String),
+    /// Any other failure: bad options, invalid board facts, missing files, etc.
+    Failed(String),
+}
+
+impl PlanError {
+    pub fn unsupported_payload(message: impl Into<String>) -> Self {
+        Self::UnsupportedPayload(message.into())
+    }
+
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self::Failed(message.into())
+    }
+
+    #[must_use]
+    pub const fn is_unsupported_payload(&self) -> bool {
+        matches!(self, Self::UnsupportedPayload(_))
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::UnsupportedPayload(msg) | Self::Failed(msg) => msg,
+        }
+    }
+}
+
+impl std::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for PlanError {}
+
+impl From<String> for PlanError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for PlanError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.into())
+    }
+}
+
+/// Tagged transport payload carried inside [`PlanEnvelope`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum PlanOutcome {
+    Plan { plan: Box<ResolvedPlan> },
+    UnsupportedPayload { message: String },
+    Error { message: String },
+}
 
 /// What a host adapter prints on stdout: exactly one envelope, so a
 /// platform rejection is a structured error for fbuild to surface, not
@@ -290,24 +352,24 @@ pub const PLAN_SCHEMA: u32 = 1;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlanEnvelope {
     pub schema: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan: Option<ResolvedPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    #[serde(flatten)]
+    pub outcome: PlanOutcome,
 }
 
 impl PlanEnvelope {
-    pub fn into_plan(self) -> Result<ResolvedPlan, String> {
+    pub fn into_plan(self) -> Result<ResolvedPlan, PlanError> {
         if self.schema != PLAN_SCHEMA {
-            return Err(format!(
+            return Err(PlanError::Failed(format!(
                 "platform plan schema {} does not match fbuild's {PLAN_SCHEMA}; rebuild the plan runner",
                 self.schema
-            ));
+            )));
         }
-        match (self.plan, self.error) {
-            (Some(plan), None) => Ok(plan),
-            (None, Some(error)) => Err(error),
-            _ => Err("platform plan envelope carries neither a plan nor an error".into()),
+        match self.outcome {
+            PlanOutcome::Plan { plan } => Ok(*plan),
+            PlanOutcome::UnsupportedPayload { message } => {
+                Err(PlanError::UnsupportedPayload(message))
+            }
+            PlanOutcome::Error { message } => Err(PlanError::Failed(message)),
         }
     }
 }
@@ -316,25 +378,30 @@ impl PlanEnvelope {
 /// as one [`PlanEnvelope`] JSON document.
 pub fn emit_envelope(
     selection_json: &str,
-    resolve: impl FnOnce(BuildSelection) -> Result<ResolvedPlan, String>,
+    resolve: impl FnOnce(BuildSelection) -> Result<ResolvedPlan, PlanError>,
 ) -> String {
-    let envelope = match serde_json::from_str::<BuildSelection>(selection_json)
-        .map_err(|e| format!("invalid build selection: {e}"))
+    let outcome = match serde_json::from_str::<BuildSelection>(selection_json)
+        .map_err(|e| PlanError::Failed(format!("invalid build selection: {e}")))
         .and_then(resolve)
     {
-        Ok(plan) => PlanEnvelope {
-            schema: PLAN_SCHEMA,
-            plan: Some(plan),
-            error: None,
+        Ok(plan) => PlanOutcome::Plan {
+            plan: Box::new(plan),
         },
-        Err(error) => PlanEnvelope {
-            schema: PLAN_SCHEMA,
-            plan: None,
-            error: Some(error),
-        },
+        Err(PlanError::UnsupportedPayload(message)) => PlanOutcome::UnsupportedPayload { message },
+        Err(PlanError::Failed(message)) => PlanOutcome::Error { message },
+    };
+    let envelope = PlanEnvelope {
+        schema: PLAN_SCHEMA,
+        outcome,
     };
     serde_json::to_string(&envelope).unwrap_or_else(|e| {
-        format!("{{\"schema\":{PLAN_SCHEMA},\"error\":\"serialize platform plan: {e}\"}}")
+        // Built as a `Value` so the message is escaped like any other.
+        serde_json::json!({
+            "schema": PLAN_SCHEMA,
+            "outcome": "error",
+            "message": format!("serialize platform plan: {e}"),
+        })
+        .to_string()
     })
 }
 
@@ -348,7 +415,10 @@ pub trait HostPlan<B> {
     /// The `--option`s this platform takes ([`NoOptions`] for none).
     type Options: PlatformOptions;
 
-    fn resolve(selection: BuildSelection, options: Self::Options) -> Result<ResolvedPlan, String>;
+    fn resolve(
+        selection: BuildSelection,
+        options: Self::Options,
+    ) -> Result<ResolvedPlan, PlanError>;
 
     fn emit(selection_json: &str) {
         std::println!(
@@ -689,5 +759,37 @@ mod tests {
         let mut bad = valid();
         bad.0[1].1 += 1;
         assert!(bad.decode().is_err());
+    }
+
+    #[test]
+    fn plan_envelope_distinguishes_unsupported_payload_from_fatal_errors() {
+        let unsupported_json = emit_envelope("{}", |_| {
+            Err(PlanError::unsupported_payload("no UEFI on this board"))
+        });
+        let err = serde_json::from_str::<PlanEnvelope>(&unsupported_json)
+            .unwrap()
+            .into_plan()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PlanError::UnsupportedPayload("no UEFI on this board".into())
+        );
+
+        let failed_json = emit_envelope("{}", |_| Err(PlanError::failed("broken facts")));
+        let err = serde_json::from_str::<PlanEnvelope>(&failed_json)
+            .unwrap()
+            .into_plan()
+            .unwrap_err();
+        assert_eq!(err, PlanError::Failed("broken facts".into()));
+
+        let stale = PlanEnvelope {
+            schema: PLAN_SCHEMA - 1,
+            outcome: PlanOutcome::Error {
+                message: "old".into(),
+            },
+        };
+        let err = stale.into_plan().unwrap_err();
+        assert!(!err.is_unsupported_payload());
+        assert!(err.message().contains("does not match"));
     }
 }

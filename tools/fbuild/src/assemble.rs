@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Assembled firmware image plus the stage binaries it was built from. The
 /// binaries travel with the build result so `run` can attach a stage
@@ -33,31 +33,4 @@ pub fn supplied_inputs(
         }
     }
     Ok(supplied)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn assemble_with_resolved(
-    workspace_root: &Path,
-    board_manifest: &crate::board_manifest::BoardManifest,
-    resolved: &crate::resolved_image::ResolvedImage,
-    release: bool,
-    supplied: &BTreeMap<String, PathBuf>,
-    payload_files: &[(String, String)],
-    signing_key: Option<&Path>,
-    settings: &fstart_image_build::options::Settings,
-) -> Result<AssembledImage, String> {
-    let (stages, outputs) = resolved.assemble(
-        workspace_root,
-        board_manifest,
-        release,
-        supplied,
-        payload_files,
-        signing_key,
-        settings,
-    )?;
-    Ok(AssembledImage {
-        image: outputs.image,
-        artifacts: outputs.artifacts,
-        stages,
-    })
 }
