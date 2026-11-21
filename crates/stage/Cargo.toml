@@ -80,6 +80,7 @@ fstart-tcg = { workspace = true, optional = true }
 [dev-dependencies]
 # Locator tests construct authenticated directory fixtures on the host.
 fstart-ffs = { workspace = true, features = ["std"] }
+ed25519-dalek = { workspace = true }
 
 [lints]
 workspace = true

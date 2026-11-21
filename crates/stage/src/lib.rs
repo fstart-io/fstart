@@ -46,6 +46,8 @@ pub mod directory;
 mod loaded;
 #[cfg(feature = "bootstrap")]
 pub mod root;
+#[cfg(feature = "bootstrap")]
+pub mod slot;
 
 pub mod fixed_helpers;
 pub mod layout;

@@ -8,6 +8,8 @@
 
 use core::{cell::Cell, fmt};
 
+#[cfg(feature = "crabefi")]
+pub mod capsule;
 mod runtime;
 pub mod settings;
 #[cfg(all(feature = "tcg", feature = "crabefi"))]
@@ -19,7 +21,10 @@ pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
 pub use crabefi::peripheral;
-pub use crabefi::{PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend};
+pub use crabefi::{
+    CapsuleBackend, DeferredBufferConfig, FirmwareInfo, PciEcamRegion, RuntimeImageSource,
+    RuntimePlatformConfig, StorageBackend,
+};
 
 /// fstart-owned UEFI payload configuration.
 ///
@@ -64,6 +69,8 @@ pub struct PlatformConfig<'a> {
     pub acpi_devices: &'a [fstart_core::acpi::AcpiGenericDevice],
     /// The firmware settings entry of CrabEFI's boot menu.
     pub hooks: Option<&'a dyn crabefi::PlatformHooks>,
+    /// Optional Capsule-on-Disk backend (RO/A/B or RO/A flash writer).
+    pub capsule_backend: Option<&'a mut dyn CapsuleBackend>,
 }
 
 /// Common fstart-owned UEFI launch inputs.
@@ -92,6 +99,11 @@ pub struct UefiLaunchConfig<'a> {
     pub variable_storage: Option<&'a mut dyn StorageBackend>,
     /// The options the firmware settings menu shows.
     pub settings: Option<settings::FirmwareSettings>,
+    /// Optional Capsule-on-Disk backend for firmware updates.
+    pub capsule_backend: Option<&'a mut dyn CapsuleBackend>,
+    /// Optional warm-reset-retained deferred variable buffer (enables runtime
+    /// `SetVariable(OsIndications)` without SMM).
+    pub deferred_buffer: Option<DeferredBufferConfig>,
 }
 
 fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
@@ -109,6 +121,10 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
     .heap_pre_initialized(config.heap_pre_initialized);
     let defaults = match config.hooks {
         Some(hooks) => defaults.hooks(hooks),
+        None => defaults,
+    };
+    let defaults = match config.capsule_backend {
+        Some(backend) => defaults.capsule_backend(backend),
         None => defaults,
     };
     #[cfg(all(feature = "tcg", feature = "crabefi"))]
@@ -277,11 +293,16 @@ fn launch_with_adapters(
         fstart_log::max_level(),
     ));
     let mut variable_storage = launch.variable_storage;
+    let mut capsule_backend = launch.capsule_backend;
     let mut launch_settings = launch.settings;
     let hooks = launch_settings
         .as_mut()
         .is_some_and(settings::install)
         .then_some(&settings::SettingsHooks as &dyn crabefi::PlatformHooks);
+    let mut runtime = runtime_platform_config();
+    if let Some(deferred) = launch.deferred_buffer {
+        runtime.deferred_buffer = deferred;
+    }
     init_platform_raw(PlatformConfig {
         memory_map,
         timer,
@@ -291,6 +312,9 @@ fn launch_with_adapters(
             .as_mut()
             .map(|storage| &mut **storage as &mut dyn StorageBackend),
         hooks,
+        capsule_backend: capsule_backend
+            .as_mut()
+            .map(|backend| &mut **backend as &mut dyn CapsuleBackend),
         debug_output: debug_output
             .as_mut()
             .map(|d| d as &mut dyn crabefi::DebugOutput),
@@ -307,7 +331,7 @@ fn launch_with_adapters(
         // This constant follows the effective dependency features, including
         // full/basic unification. The loader checks ABI and exact capabilities.
         runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
-        runtime: runtime_platform_config(),
+        runtime,
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })

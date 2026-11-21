@@ -115,6 +115,8 @@ pub mod tag {
     pub const COREBOOT: Tag = Tag::vendor(0x008);
     /// IGD OpRegion; S3 resume restores the graphics `ASLS` register to it.
     pub const IGD_OPREGION: Tag = Tag::vendor(0x009);
+    /// Authenticated active RW slot and layout metadata from RO selector.
+    pub const SLOT_HANDOFF: Tag = Tag::vendor(0x00a);
 }
 
 /// Location of one entry's data within its store.

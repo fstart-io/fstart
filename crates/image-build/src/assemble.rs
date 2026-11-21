@@ -229,6 +229,7 @@ pub fn assemble(
     let root_config = BootRootConfig {
         image_family: family_digest[..16].try_into().unwrap(),
         security_version: 0,
+        fw_version: 0,
         bootstrap: match bootstrap {
             Some(bindings) => bindings
                 .iter()

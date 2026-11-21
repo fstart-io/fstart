@@ -98,33 +98,34 @@ RO is the sole boot selector and needs durable, power-fail-safe metadata that
 does not live in the EFI variable store (because a broken raminit never reaches
 CrabEFI, and without SMM the varstore may be exposed differently).
 
-### Storage Model: Append-Only 64-Byte Records, CrabEFI-Managed Rollover
+### Storage Model: Append-Only 128-Byte Records, CrabEFI-Managed Rollover
 
 Reserve **two 4 KiB erase-aligned NOR flash sectors** (`SLOT_STATE_0` and
-`SLOT_STATE_1`). Each sector holds 64 fixed **64-byte records**.
+`SLOT_STATE_1`). Each sector holds 32 fixed **128-byte records**.
 
-- **Why 64-byte append-only records instead of 1-byte `1 -> 0` bit burns?**
+- **Why 128-byte append-only records instead of 1-byte `1 -> 0` bit burns?**
   Standard SPI NOR (Winbond/Macronix/GigaDevice) allows re-programming
   individual bytes in a page, but ECC-protected NOR flashes (e.g. Infineon
   Semper with 16-byte ECC lines) forbid programming the same line twice.
-  Appending a fresh 64-byte record into an erased slot works on every NOR part
-  and keeps 100% of every record under CRC32.
-- **Why RO pre-RAM stays tiny (no erase code in RO):**
+  Appending a fresh 128-byte record whose body + CRC32C occupy `0x00..0x70`
+  and whose commit byte (`0x5A`) lives on its own dedicated 16-byte trailing
+  commit line (`0x70..0x80`) works on every NOR part and keeps every metadata
+  byte under CRC32C.
+- **Why RO pre-RAM stays tiny (no erase code in RO, 128-byte stack):**
   When CrabEFI writes a `Trial(N)` record during capsule install, CrabEFI
   (running in full DRAM with the full SPI driver) checks whether the active
-  sector has at least `N + 2` free 64-byte records remaining. If not,
+  sector has at least `N + 2` free 128-byte records remaining. If not,
   **CrabEFI** erases the inactive sector and writes the `Trial(N)` record
-  there. RO pre-RAM is therefore guaranteed to have erased slots waiting and
-  only ever needs `spi_program(next_64b_offset, &record)` to debit tries—never
-  sector erase.
+  there. RO pre-RAM stream-scans one 128-byte record at a time (128 bytes of
+  stack) and only ever programs the next erased slot—never erasing.
 
-### Record Layout (64 Bytes, Little-Endian)
+### Record Layout (128 Bytes, Little-Endian, Format Version 2)
 
 | Offset | Size | Field | Description |
 |---:|---:|---|---|
 | `0x00` | 4 | `magic` | `b"FSSL"` |
-| `0x04` | 1 | `version` | Format version (`1`) |
-| `0x05` | 1 | `phase` | `Stable = 1`, `Installing = 2`, `Trial = 3`, `FloorPending = 4`, `Recovery = 5` |
+| `0x04` | 1 | `version` | Format version (`2`) |
+| `0x05` | 1 | `phase` | `Stable = 1`, `Installing = 2`, `Trial = 3`, `FloorPending = 4`, `Recovery = 5`, `Syncing = 6` |
 | `0x06` | 1 | `active_slot` | `SlotA = 0`, `SlotB = 1`, `Recovery = 0xff` |
 | `0x07` | 1 | `fallback_slot` | `SlotA = 0`, `SlotB = 1`, `Recovery = 0xff` |
 | `0x08` | 1 | `tries_left` | Remaining trial attempts (e.g. starts at `3`) |
@@ -135,20 +136,22 @@ Reserve **two 4 KiB erase-aligned NOR flash sectors** (`SLOT_STATE_0` and
 | `0x18` | 8 | `sec_version` | Active/candidate `security_version` |
 | `0x20` | 4 | `last_attempt_ver` | ESRT `LastAttemptVersion` |
 | `0x24` | 4 | `last_attempt_status` | ESRT `LastAttemptStatus` (standard UEFI values) |
-| `0x28` | 16 | `root_digest_prefix` | First 16 bytes of active/candidate `Root` SHA-256 (binds record to image) |
-| `0x38` | 4 | `crc32c` | CRC32C over bytes `0x00..0x38` |
-| `0x3c` | 3 | `reserved_tail` | `0xff` |
-| `0x3f` | 1 | `commit` | Programmed last (`0x5a`) after bytes `0x00..0x3f` are written and verified |
+| `0x28` | 32 | `root_digest` | Full SHA-256 of active/candidate `Root` (binds active slot to image; fallback admission is signature + floor checked) |
+| `0x48` | 36 | `reserved_body` | Zero |
+| `0x6c` | 4 | `crc32c` | CRC32C over bytes `0x00..0x6c` |
+| `0x70` | 15 | `commit_pad` | `0xff` (dedicated 16-byte commit line) |
+| `0x7f` | 1 | `commit` | Programmed last (`0x5a`) after bytes `0x00..0x70` are written and verified |
 
 ### Read, Write, and Power-Loss Rules
 
-- **Read (in RO):** scan all 64 slots of **both** sectors (never stop at the
+- **Read (in RO):** scan all 32 slots of **both** sectors (never stop at the
   first hole). Accept records with valid `magic`, `version`, `commit == 0x5a`,
   and `crc32c`. Select the record with the highest `seq`. If neither sector has
   a valid record (blank/corrupted flash), fall back to trying `RW_A` -> `RW_B`
   -> RO recovery (or recovery directly on provisioned production boards).
-- **Append:** program bytes `0x00..0x3f` into the next fully erased (`0xff`)
-  64-byte slot, read back, then program `commit = 0x5a` and verify. A power cut
+- **Append:** program bytes `0x00..0x70` into the next fully erased (`0xff`)
+  128-byte slot, read back, then program the dedicated commit line (`0x70..0x80`,
+  with `commit = 0x5a` at `0x7f`) and verify. A power cut
   at any point leaves an invalid record that is ignored on reboot, preserving
   `seq - 1`.
 - **Sector rollover (CrabEFI only):** never erase the sector containing the
@@ -234,15 +237,17 @@ rather than reimplementing FMP/FAT parsing:
      2. fstart's `CapsuleBackend` validates the inner RW FFS **`Root` (Ed25519)**
         against RO's `TrustBlock`, `image_family`, `effective_floor`, and slot
         size *before* erasing anything.
-   - **Install target:** `CapsuleBackend` exposes one logical inactive-slot
-     target resolved from RO's handoff (never a capsule-chosen flash address).
+   - **Install target:** `CapsuleBackend` exposes one logical `"RW_SLOT"`
+     target resolved from RO's handoff (never a capsule-chosen flash address)
+     and returns `platform_owns_trial() == true` so CrabEFI skips its own
+     EFI-variable trial state machine in favor of RO's journal.
      - *RO/A/B*: append `Installing` to `SLOT_STATE` (rolling over sector if
-       fewer than `tries + 2` slots remain), erase & program the inactive slot,
-       read back and verify SHA-256, append `Trial(tries = 3)`, clear
-       `OsIndications` / remove capsule file, and cold-reset.
-     - *RO/A*: do not erase `RW_A` while running from `RW_A`; set a pending
-       recovery/install state and reboot into RO recovery to flash `RW_A`
-       safely.
+       fewer than `tries + 3` slots remain), erase & program the inactive slot,
+       read back and verify, append `Trial(tries = 3)`, clear `OsIndications`,
+       and cold-reset.
+     - *RO/A*: do not erase `RW_A` while running from `RW_A`; updates apply
+       only from RO recovery (`running_slot == Recovery`), which verifies full
+       readback and appends `Trial` directly.
 3. **Hardware SPI lockdown (normal boots and post-failure):**
    - Before CrabEFI dispatches **any** third-party EFI image, option ROM, or
      boot manager (not at `ExitBootServices`), fstart locks SPI flash in
@@ -310,7 +315,7 @@ change:
      `crates/stage/src/root.rs` and carry active slot + `Root` digest in
      handoff.
 2. **Slot-state journal (new `crates/slot-state` or module in `crates/ffs`):**
-   - Implement the 64-byte record format, two-sector scanner, pre-RAM
+   - Implement the 128-byte record format, two-sector scanner, pre-RAM
      append-only writer (no erase), and CrabEFI rollover helper with unit tests
      covering torn writes, wraparound, and power-cut recovery.
 3. **Host image assembly (`crates/image-build`):**

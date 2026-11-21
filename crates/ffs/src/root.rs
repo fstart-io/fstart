@@ -46,7 +46,8 @@ struct RootWire {
     security_version: U64<LE>,
     image_family: [u8; 16],
     key_id: U32<LE>,
-    reserved: [u8; 20],
+    fw_version: U32<LE>,
+    reserved: [u8; 16],
 }
 const _: () = assert!(core::mem::size_of::<BootstrapWire>() == 160);
 const _: () = assert!(core::mem::size_of::<DirectoryWire>() == 64);
@@ -222,6 +223,7 @@ impl DirectoryRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
     pub security_version: u64,
+    pub fw_version: u32,
     pub image_family: [u8; 16],
     pub key_id: u32,
     pub descriptors: [Option<BootstrapDescriptor>; 2],
@@ -239,7 +241,8 @@ impl Root {
             security_version: U64::new(self.security_version),
             image_family: self.image_family,
             key_id: U32::new(self.key_id),
-            reserved: [0; 20],
+            fw_version: U32::new(self.fw_version),
+            reserved: [0; 16],
         };
         b[..64].copy_from_slice(header.as_bytes());
         for (i, d) in self.descriptors.iter().enumerate() {
@@ -259,7 +262,7 @@ impl Root {
         if wire.magic != ROOT_MAGIC
             || wire.header_len.get() != 64
             || wire.root_size.get() != ROOT_SIZE as u32
-            || wire.reserved != [0; 20]
+            || wire.reserved != [0; 16]
         {
             return Err(RootError::InvalidFormat);
         }
@@ -278,6 +281,7 @@ impl Root {
         }
         Ok(Self {
             security_version: wire.security_version.get(),
+            fw_version: wire.fw_version.get(),
             image_family: wire.image_family,
             key_id: wire.key_id.get(),
             descriptors,
