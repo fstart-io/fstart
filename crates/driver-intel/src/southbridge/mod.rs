@@ -3,6 +3,7 @@ pub mod ahci;
 pub mod ehci_debug;
 pub mod gpio_ich;
 pub mod hda;
+pub(crate) mod ich;
 pub mod ide;
 pub mod lpc;
 pub mod options;

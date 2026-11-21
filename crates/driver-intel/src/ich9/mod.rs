@@ -10,16 +10,16 @@ use crate::southbridge::pmio_ich::{self as pmio, PmIo};
 use crate::southbridge::smbus::I801SmBus;
 use fstart_core::ConstVec;
 use fstart_core::indexed::Indexed;
-use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout, IntelIfdRegion};
+use fstart_core::memory::FlashLayout;
 use fstart_core::mmio::{MmioReadWrite, MmioRegister};
 use fstart_core::services::{FirmwareImage, FirmwareImageProvider, ServiceError, SmBus};
 use fstart_pci::ecam;
 use fstart_pci::{
-    PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciAddress, PciFixedBar, PciFixedBarType,
-    PciFixedBars, PciType0Config, PciType1Config, pci_type0_config,
+    PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciFixedBars, PciType0Config,
+    PciType1Config, pci_type0_config,
 };
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
+use tock_registers::{register_bitfields, register_structs};
 
 pub use crate::southbridge::ehci_debug::EhciController;
 pub use crate::southbridge::gpio_ich::{
@@ -187,9 +187,6 @@ pub mod ich9 {
     pub const D28FX_CEMASK: u16 = 0x154;
     pub const D28FX_CIR_300: u16 = 0x300;
     pub const D28FX_CIR_324: u16 = 0x324;
-    pub const D28_SLCAP_SLOTNUM_SHIFT: u32 = 19;
-    pub const D28_SLCAP_SCALE_SHIFT: u32 = 16;
-    pub const D28_SLCAP_POWER_SHIFT: u32 = 7;
 }
 
 register_bitfields! [u32,
@@ -498,15 +495,6 @@ register_structs! {
 
 const HPET_BASE: usize = 0xfed0_0000;
 const ICH9_SPIBAR_OFFSET: usize = 0x3800;
-const SPIBAR_HSFS: usize = 0x04;
-const SPIBAR_FREG0: usize = 0x54;
-const SPIBAR_FDOC: usize = 0xb0;
-const SPIBAR_FDOD: usize = 0xb4;
-const HSFS_FDV: u32 = 1 << 14;
-const SPI_FREG_BASE_MASK: u32 = 0x1fff;
-const SPI_FREG_LIMIT_MASK: u32 = 0x1fff;
-const SPI_FREG_LIMIT_SHIFT: u32 = 16;
-const SPI_FREG_SHIFT: u32 = 12;
 const GPE0_STS_ICH9: u16 = 0x20;
 const GPE0_EN_ICH9: u16 = 0x28;
 const SLP_TYP_S3: u32 = 0x1400;
@@ -737,20 +725,6 @@ impl Rcba {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
         unsafe { &*(self.base as *const RcbaRegs) }
     }
-
-    #[inline]
-    fn read32(&self, offset: usize) -> u32 {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config;
-        // callers pass documented, 32-bit-aligned RCBA/SPIBAR offsets.
-        unsafe { fstart_core::mmio::read32((self.base + offset) as *const u32) }
-    }
-
-    #[inline]
-    fn write32(&self, offset: usize, value: u32) {
-        // SAFETY: RCBA has been programmed and enabled in LPC PCI config;
-        // callers pass documented, 32-bit-aligned RCBA/SPIBAR offsets.
-        unsafe { fstart_core::mmio::write32((self.base + offset) as *mut u32, value) }
-    }
 }
 
 /// Intel ICH9 southbridge driver.
@@ -823,91 +797,8 @@ impl IntelIch9 {
         Rcba::new((self.config.rcba & 0xffff_c000) as usize)
     }
 
-    fn spi_read32(&self, offset: usize) -> u32 {
-        self.rcba().read32(ICH9_SPIBAR_OFFSET + offset)
-    }
-
-    fn spi_write32(&self, offset: usize, value: u32) {
-        self.rcba().write32(ICH9_SPIBAR_OFFSET + offset, value);
-    }
-
-    fn spi_descriptor_word(&self, fdoc: u32) -> u32 {
-        self.spi_write32(SPIBAR_FDOC, fdoc);
-        self.spi_read32(SPIBAR_FDOD)
-    }
-
-    fn spi_flash_component_size(&self) -> u32 {
-        // Match coreboot southbridge/intel/common/spi.c: observe descriptor
-        // component section 0 (FDOC=0x1000) and decode density fields.
-        let flmap0 = self.spi_descriptor_word(4);
-        let flcomp = self.spi_descriptor_word(0x1000);
-        let mut size = 1u32 << (19 + (flcomp & 0x7));
-        if (flmap0 >> 8) & 0x3 != 0 {
-            size = size.saturating_add(1u32 << (19 + ((flcomp >> 3) & 0x7)));
-        }
-        size
-    }
-
-    fn spi_ifd_region(&self, index: usize) -> (u32, u32) {
-        let reg = self.spi_read32(SPIBAR_FREG0 + index * core::mem::size_of::<u32>());
-        let base = (reg & SPI_FREG_BASE_MASK) << SPI_FREG_SHIFT;
-        let limit = ((reg >> SPI_FREG_LIMIT_SHIFT) & SPI_FREG_LIMIT_MASK) << SPI_FREG_SHIFT;
-        if limit < base {
-            return (0, 0);
-        }
-        (base, limit + (1 << SPI_FREG_SHIFT) - base)
-    }
-
-    fn verify_ifd_flash_layout(&self, expected: &IntelIfdFlashLayout) -> Result<(), ServiceError> {
-        let hsfs = self.spi_read32(SPIBAR_HSFS) & 0xffff;
-        if hsfs & HSFS_FDV == 0 {
-            fstart_log::error!("intel-ich9: SPI descriptor valid bit is clear");
-            return Err(ServiceError::HardwareError);
-        }
-
-        let runtime_size = self.spi_flash_component_size();
-        if runtime_size != expected.size() {
-            fstart_log::error!(
-                "intel-ich9: SPI flash size mismatch: configured={:#x} runtime={:#x}",
-                expected.size(),
-                runtime_size
-            );
-            return Err(ServiceError::HardwareError);
-        }
-
-        for region in expected.regions.as_slice() {
-            let Some(index) = region.kind.flreg_index() else {
-                continue;
-            };
-            let (runtime_offset, runtime_size) = self.spi_ifd_region(index);
-            if runtime_offset != region.offset || runtime_size != region.size {
-                fstart_log::error!(
-                    "intel-ich9: SPI {} region mismatch: configured off={:#x} size={:#x} runtime off={:#x} size={:#x}",
-                    region.kind.as_str(),
-                    region.offset,
-                    region.size,
-                    runtime_offset,
-                    runtime_size
-                );
-                return Err(ServiceError::HardwareError);
-            }
-        }
-
-        if let Some(bios) = expected.bios_region() {
-            let expected_host_base = expected.base() + u64::from(bios.offset);
-            let runtime_host_base = 0x1_0000_0000u64 - u64::from(bios.size);
-            if expected_host_base != runtime_host_base {
-                fstart_log::error!(
-                    "intel-ich9: BIOS host window mismatch: configured={:#x} runtime={:#x}",
-                    expected_host_base,
-                    runtime_host_base
-                );
-                return Err(ServiceError::HardwareError);
-            }
-        }
-
-        fstart_log::info!("intel-ich9: SPI descriptor matches board flash_layout");
-        Ok(())
+    fn spibar_base(&self) -> usize {
+        self.rcba().base + ICH9_SPIBAR_OFFSET
     }
 
     fn pm(&self) -> PmIo {
@@ -921,11 +812,10 @@ impl IntelIch9 {
     }
 
     fn enable_spi_prefetching_and_caching(&self) {
-        let lpc = self.lpc();
         // Match coreboot intel/common/early_spi.h: enable SPI prefetch/cache before
         // extended flash reads from the memory-mapped boot medium.
-        let value = lpc.read8(0xdc);
-        lpc.write8(0xdc, (value & !(3 << 2)) | (2 << 2));
+        // SAFETY: northbridge pre-console init established ECAM first.
+        unsafe { crate::southbridge::lpc::flash_config() }.enable_prefetching_and_caching();
     }
 
     fn program_fixed_bars(&self) {
@@ -1626,62 +1516,21 @@ impl IntelIch9 {
     }
 
     fn pcie_slot_config(&self) {
-        let mut slot_number = 1u32;
-        for func in 0usize..6 {
-            let port = ecam::EcamDevice::new(0, ich9::PCIE_DEV, func as u8);
-            if port.read16(0) == 0xffff {
-                continue;
-            }
-            let slot = self.config.pcie_slots[func] || self.config.pcie_hotplug[func];
-            // XCAP is a word at 0x42. Coreboot's config32(0x42) rounds down
-            // to 0x40; copying it would modify the capability header (ICH8).
-            let mut capabilities =
-                LocalRegisterCopy::<u16, PCI_EXPRESS_CAPABILITIES::Register>::new(
-                    port.read16(ich9::D28FX_XCAP),
-                );
-            capabilities.modify(PCI_EXPRESS_CAPABILITIES::SLOT_IMPLEMENTED.val(slot.into()));
-            port.write16(ich9::D28FX_XCAP, capabilities.get());
-            if slot {
-                let limit = self.config.pcie_power_limits[func];
-                let mut slcap = port.read32(ich9::D28FX_SLCAP);
-                slcap &= !(0x1fff << ich9::D28_SLCAP_SLOTNUM_SHIFT);
-                slcap |= slot_number << ich9::D28_SLCAP_SLOTNUM_SHIFT;
-                slcap &= !(0x03 << ich9::D28_SLCAP_SCALE_SHIFT);
-                slcap |= (u32::from(limit.scale) & 0x03) << ich9::D28_SLCAP_SCALE_SHIFT;
-                slcap &= !(0xff << ich9::D28_SLCAP_POWER_SHIFT);
-                slcap |= u32::from(limit.value) << ich9::D28_SLCAP_POWER_SHIFT;
-                port.write32(ich9::D28FX_SLCAP, slcap);
-                slot_number += 1;
-            }
-        }
+        let slots =
+            core::array::from_fn(|i| self.config.pcie_slots[i] || self.config.pcie_hotplug[i]);
+        crate::southbridge::ich::configure_pcie_slots(&slots, &self.config.pcie_power_limits);
     }
 
     fn pcie_aspm_lock(&self) {
-        for func in 0u8..6 {
-            let port = ecam::EcamDevice::new(0, ich9::PCIE_DEV, func);
-            if port.read16(0) != 0xffff {
-                port.write32(ich9::D28FX_LCAP, port.read32(ich9::D28FX_LCAP));
-            }
-        }
+        crate::southbridge::ich::lock_pcie_aspm();
     }
 
     fn pci_bridge_init(&self) {
-        let bridge = ecam::EcamDevice::new(0, ich9::PCI_BRIDGE_DEV, ich9::PCI_BRIDGE_FUNC);
-        if bridge.read16(0) == 0xffff {
-            return;
-        }
-        let bridge_regs = Self::type1_regs(bridge);
-        bridge_regs.interrupt_line.set(0xff);
-        bridge.and8_or8(ich9::D30F0_SMLT, 0x07, 0x04 << 3);
-        bridge_regs.status_raw.set(bridge_regs.status_raw.get());
-        bridge_regs
-            .secondary_status_raw
-            .set(bridge_regs.secondary_status_raw.get());
+        crate::southbridge::ich::init_pci_bridge();
     }
 
     fn isa_dma_init(&self) {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        fstart_arch::x86::legacy_pc::initialize_isa_dma();
+        crate::southbridge::ich::init_isa_dma();
     }
 
     fn i8259_init(&self) {
@@ -1748,14 +1597,7 @@ impl IntelIch9 {
     }
 
     fn clear_pci_command(dev: u8, func: u8) {
-        let pci = ecam::EcamDevice::new(0, dev, func);
-        if pci.read16(0) != 0xffff {
-            Self::type0_regs(pci).command.modify(
-                PCI_COMMAND_BITS::IO_SPACE::CLEAR
-                    + PCI_COMMAND_BITS::MEMORY_SPACE::CLEAR
-                    + PCI_COMMAND_BITS::BUS_MASTER::CLEAR,
-            );
-        }
+        crate::southbridge::ich::clear_pci_command(dev, func);
     }
 
     fn clear_disabled_device_commands(&self) {
@@ -2190,34 +2032,8 @@ impl crate::IntelSouthbridgeDriver for IntelIch9 {
 
 impl FirmwareImageProvider for IntelIch9 {
     fn firmware_image(&self) -> Result<FirmwareImage, ServiceError> {
-        let hsfs = self.spi_read32(SPIBAR_HSFS) & 0xffff;
-        if hsfs & HSFS_FDV == 0 {
-            fstart_log::error!("intel-ich9: SPI descriptor valid bit is clear");
-            return Err(ServiceError::HardwareError);
-        }
-
-        let (_bios_offset, bios_size) = self.spi_ifd_region(
-            IntelIfdRegion::Bios
-                .flreg_index()
-                .ok_or(ServiceError::HardwareError)?,
-        );
-        if bios_size == 0 {
-            fstart_log::error!("intel-ich9: SPI descriptor has no BIOS region");
-            return Err(ServiceError::HardwareError);
-        }
-
-        // ICH9 exposes the BIOS region top-aligned below 4 GiB regardless of
-        // where it sits in the physical SPI descriptor.  The boot firmware
-        // image is the BIOS region, so expose it as logical offset 0.
-        let mut image = FirmwareImage::EMPTY;
-        image.size = u64::from(bios_size);
-        image.windows[0] = fstart_core::services::FirmwareWindow::new(
-            0,
-            0x1_0000_0000u64 - u64::from(bios_size),
-            u64::from(bios_size),
-        );
-        image.window_count = 1;
-        Ok(image)
+        // SAFETY: RCBA (and its SPIBAR window) is mapped during early init.
+        unsafe { crate::southbridge::ich::ifd_firmware_image(self.spibar_base(), "intel-ich9") }
     }
 }
 
@@ -2225,9 +2041,9 @@ impl IntelIch9 {
     /// Compare the flash descriptor the controller reads with the board's
     /// build-time layout, before trusting the boot medium's regions.
     pub fn verify_flash_layout(&self, expected: &FlashLayout) -> Result<(), ServiceError> {
-        match expected {
-            FlashLayout::IntelIfd(layout) => self.verify_ifd_flash_layout(layout),
-            FlashLayout::X86Legacy(_) => Err(ServiceError::NotSupported),
+        // SAFETY: RCBA (and its SPIBAR window) is mapped during early init.
+        unsafe {
+            crate::southbridge::ich::verify_flash_layout(self.spibar_base(), "intel-ich9", expected)
         }
     }
 }
