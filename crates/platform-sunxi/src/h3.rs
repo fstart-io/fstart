@@ -3,9 +3,12 @@
 use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_driver_sunxi::h3_ccu::H3CcuConfig;
 use fstart_driver_sunxi::h3_dramc::H3DramcConfig;
-use fstart_driver_sunxi::h3_spi::{H3_SPI_DEFAULT_FREQ, H3_SPI_DEFAULT_SIZE, H3SpiConfig};
 use fstart_driver_sunxi::mmc::{
     SunxiMmcConfig as H3MmcConfig, SunxiMmcController as H3MmcController,
+};
+use fstart_driver_sunxi::spi::{
+    H3_SPI_DEFAULT_FREQ, SUNXI_SPI_DEFAULT_SIZE as H3_SPI_DEFAULT_SIZE,
+    SunxiSpiConfig as H3SpiConfig,
 };
 
 /// H3 physical DRAM window. The controller detects the actual populated size.
@@ -152,8 +155,8 @@ mod stage {
     use fstart_core::services::{MemoryInit, ServiceError};
     use fstart_driver_sunxi::h3_ccu::{H3_EGON_MMC_OFFSET, H3Ccu};
     use fstart_driver_sunxi::h3_dramc::H3Dramc;
-    use fstart_driver_sunxi::h3_spi::{H3Spi, H3SpiFlash};
     use fstart_driver_sunxi::mmc::H3Mmc;
+    use fstart_driver_sunxi::spi::{H3Spi, H3SpiFlash};
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_log::StaticConsole;

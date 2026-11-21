@@ -3,9 +3,12 @@
 use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_driver_sunxi::a20_ccu::{A20CcuConfig, A20Uart};
 use fstart_driver_sunxi::a20_dramc::A20DramcConfig;
-use fstart_driver_sunxi::a20_spi::{A20_SPI_DEFAULT_FREQ, A20_SPI_DEFAULT_SIZE, A20SpiConfig};
 use fstart_driver_sunxi::mmc::{
     SunxiMmcConfig as A20MmcConfig, SunxiMmcController as A20MmcController,
+};
+use fstart_driver_sunxi::spi::{
+    A20_SPI_DEFAULT_FREQ, SUNXI_SPI_DEFAULT_SIZE as A20_SPI_DEFAULT_SIZE,
+    SunxiSpiConfig as A20SpiConfig,
 };
 
 /// A20 physical DRAM window. The controller detects the actual populated size.
@@ -143,8 +146,8 @@ mod stage {
     use fstart_core::services::{MemoryInit, ServiceError};
     use fstart_driver_sunxi::a20_ccu::{A20_EGON_MMC_OFFSET, A20_SRAM_BASE, A20Ccu};
     use fstart_driver_sunxi::a20_dramc::A20Dramc;
-    use fstart_driver_sunxi::a20_spi::{A20Spi, A20SpiFlash};
     use fstart_driver_sunxi::mmc::A20Mmc;
+    use fstart_driver_sunxi::spi::{A20Spi, A20SpiFlash};
     use fstart_driver_sunxi::spi_nor::SpiNorFlash;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_log::StaticConsole;
