@@ -215,8 +215,10 @@ impl Runner {
         let command = crate::qemu::command(&built.recipe, &built.image, &built.external, &launch);
         let outcome = match command {
             Ok(command) => {
+                let program = command.get_program().to_os_string();
                 let deadline = test.timeout.map_or(self.boot_timeout, Duration::from_secs);
                 supervise(command, log, deadline, Some((&test.expect, self.quiet)))
+                    .map_err(|e| crate::qemu::launch_error(&program, &e))
             }
             Err(e) => return Verdict::Fail(e),
         };
