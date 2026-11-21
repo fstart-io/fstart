@@ -37,14 +37,20 @@ pub enum BootPath {
     S3Resume,
 }
 
-/// Raw MMIO BAR accessor shared by northbridge BAR handles.
+/// Legacy raw-offset MMIO BAR accessor shared by older northbridge/PCH BAR
+/// handles inside `driver-intel`.
 ///
-/// `MchBar`/`DmiBar`/`EpBar`/`Rcba` across the gm965, i945, and pineview
-/// drivers are distinct types over a plain base address; this trait owns
-/// the single copy of the read/write/set/clear suite so drivers only
-/// declare the handle (`new`) and the impl line. All operations are
-/// volatile MMIO with the same ordering as `fstart_core::mmio`.
-pub trait MmioBar: Copy {
+/// New register blocks should use typed `tock-registers` `register_structs!`
+/// with `fstart_core::mmio::MmioReadWrite` instead of adding new `MmioBar`
+/// implementations.
+///
+/// # Safety
+///
+/// Implementing `MmioBar` asserts that any instance on which read/write
+/// methods are called points to a valid, mapped MMIO (or test-buffer) window
+/// of at least `mapped_size()` bytes when bounded. In-crate callers must
+/// only pass valid register offsets within that window.
+pub(crate) unsafe trait MmioBar: Copy {
     /// MMIO base address of the BAR.
     fn base(self) -> usize;
 
@@ -405,7 +411,9 @@ mod mmio_tests {
 
     #[derive(Clone, Copy)]
     struct Window(usize);
-    impl MmioBar for Window {
+    // SAFETY: read/write tests construct Window only over a valid stack array;
+    // bounds-panic tests only call `register_address` without dereferencing.
+    unsafe impl MmioBar for Window {
         fn base(self) -> usize {
             self.0
         }

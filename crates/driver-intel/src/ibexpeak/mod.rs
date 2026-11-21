@@ -374,7 +374,8 @@ impl IntelIbexPeakConfig {
 #[derive(Clone, Copy)]
 pub(crate) struct RcbaWindow(pub(crate) usize);
 
-impl crate::MmioBar for RcbaWindow {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for RcbaWindow {
     fn base(self) -> usize {
         self.0
     }

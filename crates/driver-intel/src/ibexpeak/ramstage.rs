@@ -107,7 +107,8 @@ pub(super) fn with_ehci_unlocked<T>(ehci: EcamDevice, f: impl FnOnce() -> T) -> 
 /// An assigned memory BAR of a PCH function.
 #[derive(Clone, Copy)]
 struct Bar(usize);
-impl MmioBar for Bar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for Bar {
     fn base(self) -> usize {
         self.0
     }

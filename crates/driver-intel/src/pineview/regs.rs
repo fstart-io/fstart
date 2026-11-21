@@ -184,7 +184,8 @@ impl MchBar {
     }
 }
 
-impl crate::MmioBar for MchBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for MchBar {
     fn base(self) -> usize {
         self.base
     }
@@ -201,7 +202,8 @@ impl DmiBar {
     }
 }
 
-impl crate::MmioBar for DmiBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for DmiBar {
     fn base(self) -> usize {
         self.base
     }
@@ -218,7 +220,8 @@ impl Rcba {
     }
 }
 
-impl crate::MmioBar for Rcba {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for Rcba {
     fn base(self) -> usize {
         self.base
     }

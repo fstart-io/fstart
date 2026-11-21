@@ -102,7 +102,8 @@ register_bitfields![u32,
 #[derive(Clone, Copy)]
 pub struct Mei(usize);
 
-impl MmioBar for Mei {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for Mei {
     fn base(self) -> usize {
         self.0
     }
@@ -249,7 +250,8 @@ pub struct UmaChannels {
 /// Uncore DMIBAR virtual-channel registers (Ironlake `registers/dmibar.h`).
 #[derive(Clone, Copy)]
 struct DmiBar(usize);
-impl MmioBar for DmiBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for DmiBar {
     fn base(self) -> usize {
         self.0
     }

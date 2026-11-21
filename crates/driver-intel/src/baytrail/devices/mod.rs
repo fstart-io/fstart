@@ -25,9 +25,10 @@ use tock_registers::interfaces::{ReadWriteable, Readable};
 
 /// A memory BAR as enumeration assigned it.
 #[derive(Debug, Clone, Copy)]
-pub struct Bar(pub usize);
+pub(crate) struct Bar(pub(crate) usize);
 
-impl MmioBar for Bar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for Bar {
     fn base(self) -> usize {
         self.0
     }
@@ -35,13 +36,13 @@ impl MmioBar for Bar {
 
 impl Bar {
     /// BAR0 of `device`, when enumeration assigned it.
-    pub fn of(device: &EcamDevice) -> Option<Self> {
+    pub(crate) fn of(device: &EcamDevice) -> Option<Self> {
         device.memory_bar(0x10).map(|base| Self(base as usize))
     }
 }
 
 /// Wait up to `timeout_us` for `bar[offset] & mask == value`.
-pub fn poll_bar(
+pub(crate) fn poll_bar(
     bar: Bar,
     offset: u32,
     mask: u32,

@@ -420,12 +420,13 @@ pub struct MchBar {
 }
 
 impl MchBar {
-    pub const fn new(base: usize) -> Self {
+    pub(crate) const fn new(base: usize) -> Self {
         Self { base }
     }
 }
 
-impl crate::MmioBar for MchBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for MchBar {
     fn base(self) -> usize {
         self.base
     }
@@ -438,12 +439,13 @@ pub struct EpBar {
 }
 
 impl EpBar {
-    pub const fn new(base: usize) -> Self {
+    pub(crate) const fn new(base: usize) -> Self {
         Self { base }
     }
 }
 
-impl crate::MmioBar for EpBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for EpBar {
     fn base(self) -> usize {
         self.base
     }
@@ -456,12 +458,13 @@ pub struct DmiBar {
 }
 
 impl DmiBar {
-    pub const fn new(base: usize) -> Self {
+    pub(crate) const fn new(base: usize) -> Self {
         Self { base }
     }
 }
 
-impl crate::MmioBar for DmiBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for DmiBar {
     fn base(self) -> usize {
         self.base
     }

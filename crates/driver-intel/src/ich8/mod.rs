@@ -695,7 +695,8 @@ struct Rcba {
     base: usize,
 }
 
-impl crate::MmioBar for Rcba {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for Rcba {
     fn base(self) -> usize {
         self.base
     }

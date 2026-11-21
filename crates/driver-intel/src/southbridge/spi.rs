@@ -73,7 +73,8 @@ impl PciConfigAccess for FirmwareHost {
 
 #[derive(Clone, Copy)]
 struct SpiRegisters(usize);
-impl MmioBar for SpiRegisters {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for SpiRegisters {
     fn base(self) -> usize {
         self.0
     }

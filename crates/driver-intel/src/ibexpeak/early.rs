@@ -436,7 +436,8 @@ fn function_of(dev: u8, func: u8) -> Option<PchFunction> {
 /// The thermal subsystem's temporary MMIO BAR during raminit.
 #[derive(Clone, Copy)]
 struct ThermalBar(usize);
-impl MmioBar for ThermalBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for ThermalBar {
     fn base(self) -> usize {
         self.0
     }
@@ -448,7 +449,8 @@ impl MmioBar for ThermalBar {
 /// The HPET general configuration block.
 #[derive(Clone, Copy)]
 pub(super) struct HpetConfig(pub(super) usize);
-impl MmioBar for HpetConfig {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for HpetConfig {
     fn base(self) -> usize {
         self.0
     }

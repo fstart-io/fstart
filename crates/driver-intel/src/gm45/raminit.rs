@@ -359,7 +359,8 @@ struct Mchbar {
 
 /// Variable channel/rank/lane and RCOMP-table offsets go through the shared
 /// accessors, bounded to the 16 KiB MCHBAR window.
-impl crate::MmioBar for Mchbar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl crate::MmioBar for Mchbar {
     fn base(self) -> usize {
         self.base
     }

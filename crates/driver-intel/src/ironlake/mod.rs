@@ -82,7 +82,8 @@ pci_type0_config! {
 /// The MCHBAR window (32 KiB on Ironlake).
 #[derive(Clone, Copy)]
 pub(crate) struct MchBar(pub(crate) usize);
-impl MmioBar for MchBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for MchBar {
     fn base(self) -> usize {
         self.0
     }
@@ -94,7 +95,8 @@ impl MmioBar for MchBar {
 /// The DMIBAR window.
 #[derive(Clone, Copy)]
 pub(crate) struct DmiBar(pub(crate) usize);
-impl MmioBar for DmiBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for DmiBar {
     fn base(self) -> usize {
         self.0
     }
@@ -106,7 +108,8 @@ impl MmioBar for DmiBar {
 /// The EPBAR window.
 #[derive(Clone, Copy)]
 pub(crate) struct EpBar(pub(crate) usize);
-impl MmioBar for EpBar {
+// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
+unsafe impl MmioBar for EpBar {
     fn base(self) -> usize {
         self.0
     }
