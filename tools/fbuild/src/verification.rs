@@ -101,7 +101,7 @@ pub fn build_boards(boards: &[String], size_dir: Option<PathBuf>) -> Result<(), 
             let manifest = manifest_for(board).inspect_err(|e| link = format!("Not run: {e}"))?;
             let root = build_board::workspace_root_pub()
                 .inspect_err(|e| link = format!("Not run: {e}"))?;
-            let selection = fbuild::payload::BuildArgs::default().selection(None);
+            let selection = fbuild::payload::PlanArgs::default().selection(None);
             let resolved = ResolvedImage::load(&root, &manifest, selection)
                 .inspect_err(|e| link = format!("Not run: resolve plan: {e}"))?;
             payload = resolved.payload().into();

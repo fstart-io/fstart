@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use fbuild::{
     board_manifest, build_board,
-    payload::{BuildArgs, PayloadChoice},
+    payload::{BuildArgs, PayloadChoice, PlanArgs},
 };
 use fstart_image_build::plan::BuildSelection;
 use std::process;
@@ -122,7 +122,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
     },
     /// Boot the board's image under QEMU, as its plan's run recipe
     /// describes.
@@ -154,6 +154,8 @@ enum Command {
         #[arg(long, value_name = "FAMILY[:BANKS]", value_parser = fbuild::swtpm::parse)]
         tpm: Option<fstart_image_build::boot_test::Tpm>,
     },
+    /// [Deprecated] Boot the board's release image under QEMU (use `fbuild qemu --release`
+    /// for interactive boots or `fbuild boot-test` for automated tests).
     Test {
         #[arg(short, long)]
         board: String,
@@ -207,7 +209,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
     },
     /// Print the options a build offers, as JSON: each option's key, form,
     /// label, help, legal values and the board's value, and where the
@@ -218,7 +220,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
     },
     /// Type-check a board using its resolved firmware selection.
     Check {
@@ -229,7 +231,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
         #[arg(long)]
         release: bool,
     },
@@ -239,7 +241,7 @@ enum Command {
         #[arg(long, value_enum)]
         payload: Option<PayloadChoice>,
         #[command(flatten)]
-        options: BuildArgs,
+        options: PlanArgs,
         #[arg(long)]
         release: bool,
         /// Select a named compilation unit from the resolved platform plan.
@@ -501,9 +503,15 @@ fn main() {
                 &options,
             )
         }),
-        Command::Test { board, options } => manifest_for(&board).and_then(|manifest| {
-            fbuild::board_tool::qemu(&manifest, true, None, &Default::default(), &options)
-        }),
+        Command::Test { board, options } => {
+            eprintln!(
+                "warning: `fbuild test` is deprecated; use `fbuild qemu --release --board {board}` \
+                 (or `fbuild boot-test` for automated QEMU tests)"
+            );
+            manifest_for(&board).and_then(|manifest| {
+                fbuild::board_tool::qemu(&manifest, true, None, &Default::default(), &options)
+            })
+        }
         Command::TestLibrary { board } => test_libraries(board.as_deref()),
         Command::Assemble {
             board,
@@ -603,5 +611,57 @@ mod tests {
         assert!(Cli::try_parse_from(["fbuild", "test-library", "--board", "test-board"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library"]).is_ok());
         assert!(Cli::try_parse_from(["fbuild", "test-library", "--payload", "uefi"]).is_err());
+    }
+
+    #[test]
+    fn plan_only_commands_reject_assembly_only_flags() {
+        let plan_only: &[&[&str]] = &[
+            &["fbuild", "build", "--board", "b"],
+            &["fbuild", "check", "b"],
+            &["fbuild", "explain", "b"],
+            &["fbuild", "options", "b"],
+            &["fbuild", "ide", "b"],
+        ];
+        let assembly_flags: &[&[&str]] = &[
+            &["--signing-key", "key.pem"],
+            &["--setting", "k=v"],
+            &["--secure-boot", "on"],
+            &["--payload-file", "a=b"],
+            &["--input", "kernel=bzImage"],
+        ];
+        for base in plan_only {
+            assert!(Cli::try_parse_from(*base).is_ok(), "{base:?}");
+            let mut with_plan = base.to_vec();
+            with_plan.extend(["--log-level", "debug", "--option", "foo=bar"]);
+            assert!(Cli::try_parse_from(&with_plan).is_ok(), "{with_plan:?}");
+            for flag in assembly_flags {
+                let mut argv = base.to_vec();
+                argv.extend(*flag);
+                assert!(
+                    Cli::try_parse_from(&argv).is_err(),
+                    "expected rejection for {argv:?}"
+                );
+            }
+        }
+        // Assembly commands accept both plan and assembly flags.
+        for base in [
+            &["fbuild", "assemble", "--board", "b"][..],
+            &["fbuild", "qemu", "--board", "b"],
+            &["fbuild", "flash", "--board", "b"],
+            &["fbuild", "test", "--board", "b"],
+        ] {
+            let mut argv = base.to_vec();
+            argv.extend([
+                "--log-level",
+                "debug",
+                "--signing-key",
+                "key.pem",
+                "--setting",
+                "k=v",
+                "--input",
+                "kernel=bzImage",
+            ]);
+            assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
+        }
     }
 }

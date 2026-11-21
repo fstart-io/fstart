@@ -5,7 +5,7 @@
 //! target/, compiler snapshots or vendor firmware trees.
 use crate::{
     board_manifest::{self, BoardManifest},
-    payload::{BuildArgs, PayloadChoice},
+    payload::{PayloadChoice, PlanArgs},
     resolved_image::ResolvedImage,
 };
 use fstart_image_build::{
@@ -230,7 +230,7 @@ pub fn export(
             board_id.is_some(),
             payload,
             |choice| {
-                let mut selection = BuildArgs::default().selection(Some(choice));
+                let mut selection = PlanArgs::default().selection(Some(choice));
                 // An AMD plan packs the blobs its assembly extracts from the
                 // user's donor.
                 if packed_donor.is_some() {

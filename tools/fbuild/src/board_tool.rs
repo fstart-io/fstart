@@ -1,4 +1,4 @@
-use crate::payload::{BuildArgs, PayloadChoice};
+use crate::payload::{AssembleArgs, BuildArgs, PayloadChoice, PlanArgs};
 use crate::resolved_image::ResolvedImage;
 use fstart_image_build::build_plan::FfsAssembly;
 
@@ -18,7 +18,7 @@ fn payload_aliases<'a>(
 fn load(
     manifest: &crate::board_manifest::BoardManifest,
     payload: Option<PayloadChoice>,
-    options: &BuildArgs,
+    options: &PlanArgs,
 ) -> Result<ResolvedImage, String> {
     let root = crate::build_board::workspace_root_pub()?;
     ResolvedImage::load(&root, manifest, options.selection(payload))
@@ -66,7 +66,7 @@ pub fn build(
     manifest: &crate::board_manifest::BoardManifest,
     release: bool,
     payload: Option<PayloadChoice>,
-    options: &BuildArgs,
+    options: &PlanArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
     let root = crate::build_board::workspace_root_pub()?;
     let resolved =
@@ -85,16 +85,18 @@ pub fn assemble(
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = load(manifest, payload, options)?;
-    let supplied =
-        crate::assemble::supplied_inputs(&payload_aliases(kernel, firmware, fit), &options.inputs)?;
+    let resolved = load(manifest, payload, &options.plan)?;
+    let supplied = crate::assemble::supplied_inputs(
+        &payload_aliases(kernel, firmware, fit),
+        &options.assemble.inputs,
+    )?;
     Ok(assemble_loaded(
         &workspace_root,
         manifest.clone(),
         &resolved,
         release,
         &supplied,
-        options,
+        &options.assemble,
     )?
     .image)
 }
@@ -105,7 +107,7 @@ fn assemble_loaded(
     resolved: &ResolvedImage,
     release: bool,
     supplied: &std::collections::BTreeMap<String, std::path::PathBuf>,
-    options: &BuildArgs,
+    options: &AssembleArgs,
 ) -> Result<crate::assemble::AssembledImage, String> {
     crate::assemble::assemble_with_resolved(
         workspace_root,
@@ -131,7 +133,7 @@ pub fn flash(
     base_address: Option<&str>,
 ) -> Result<(), String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
-    let resolved = load(manifest, None, options)?;
+    let resolved = load(manifest, None, &options.plan)?;
     let manifest = manifest.clone();
     let chip_name = chip.unwrap_or("auto");
     let probe_rs = find_probe_rs().map_err(|e| format!("probe-rs not found: {e}"))?;
@@ -171,14 +173,14 @@ pub fn flash(
         };
         let base_address = base_address.as_str();
         eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
-        let supplied = crate::assemble::supplied_inputs(&[], &options.inputs)?;
+        let supplied = crate::assemble::supplied_inputs(&[], &options.assemble.inputs)?;
         let mut assembled = assemble_loaded(
             &workspace_root,
             manifest.clone(),
             &resolved,
             release,
             &supplied,
-            options,
+            &options.assemble,
         )?;
         // The FFS goes to the firmware window; a plan without one flashes
         // its final image there.
@@ -261,7 +263,7 @@ pub fn qemu_image(
     resolved: &ResolvedImage,
     release: bool,
     mut supplied: std::collections::BTreeMap<String, std::path::PathBuf>,
-    options: &BuildArgs,
+    options: &AssembleArgs,
 ) -> Result<QemuImage, String> {
     let workspace_root = crate::build_board::workspace_root_pub()?;
     // The plan states how (and whether) this board runs under QEMU; there
@@ -324,16 +326,16 @@ pub fn qemu(
     args: &QemuArgs<'_>,
     options: &BuildArgs,
 ) -> Result<(), String> {
-    let resolved = load(manifest, payload, options)?;
+    let resolved = load(manifest, payload, &options.plan)?;
     let supplied = crate::assemble::supplied_inputs(
         &[
             payload_aliases(args.kernel, args.firmware, args.fit).as_slice(),
             &[("secure-firmware", args.secure_firmware)],
         ]
         .concat(),
-        &options.inputs,
+        &options.assemble.inputs,
     )?;
-    let built = qemu_image(manifest, &resolved, release, supplied, options)?;
+    let built = qemu_image(manifest, &resolved, release, supplied, &options.assemble)?;
     let tpm = args
         .tpm
         .as_ref()

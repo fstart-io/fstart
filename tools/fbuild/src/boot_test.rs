@@ -11,7 +11,7 @@
 //! its guest's event log must replay to the PCRs it reads (`tpm_log`).
 
 use crate::board_manifest::BoardManifest;
-use crate::payload::{BuildArgs, PayloadChoice};
+use crate::payload::{AssembleArgs, PayloadChoice, PlanArgs};
 use crate::resolved_image::ResolvedImage;
 use clap::ValueEnum;
 use fstart_crypto::pcr;
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 /// The boot tests of `board`: its default plan's run recipe's.
 pub fn load(root: &Path, board: &BoardManifest) -> Result<Vec<BootTest>, String> {
-    let resolved = ResolvedImage::load(root, board, BuildArgs::default().selection(None))?;
+    let resolved = ResolvedImage::load(root, board, PlanArgs::default().selection(None))?;
     match &resolved.build.plan.run {
         Some(recipe) => {
             validate(recipe).map_err(|e| format!("{}: {e}", board.board))?;
@@ -155,7 +155,7 @@ impl Runner {
     }
 
     fn boot(&self, root: &Path, board: &BoardManifest, test: &BootTest, log: &Path) -> Verdict {
-        let mut options = BuildArgs::default();
+        let mut assemble = AssembleArgs::default();
         let mut supplied = BTreeMap::new();
         let mut disk = None;
         for binding in &test.bindings {
@@ -168,7 +168,7 @@ impl Runner {
                     supplied.insert(name.clone(), path);
                 }
                 Binding::PayloadFile(name, _) => {
-                    options
+                    assemble
                         .payload_files
                         .push((name.clone(), path.display().to_string()));
                 }
@@ -177,9 +177,9 @@ impl Runner {
         }
 
         let payload = PayloadChoice::from_str(&test.payload, false).ok();
-        let built =
-            ResolvedImage::load(root, board, options.selection(payload)).and_then(|resolved| {
-                crate::board_tool::qemu_image(board, &resolved, true, supplied, &options)
+        let built = ResolvedImage::load(root, board, PlanArgs::default().selection(payload))
+            .and_then(|resolved| {
+                crate::board_tool::qemu_image(board, &resolved, true, supplied, &assemble)
             });
         let built = match built {
             Ok(built) => built,
