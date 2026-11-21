@@ -13,7 +13,7 @@ enum Kind {
 #[derive(Debug, Clone)]
 pub struct Check {
     kind: Kind,
-    packages: Vec<&'static str>,
+    packages: Vec<String>,
     features: Vec<&'static str>,
     no_default_features: bool,
     lib: bool,
@@ -24,10 +24,10 @@ pub struct Check {
 }
 
 impl Check {
-    fn new(kind: Kind, packages: &[&'static str]) -> Self {
+    fn new(kind: Kind, packages: &[&str]) -> Self {
         Self {
             kind,
-            packages: packages.to_vec(),
+            packages: packages.iter().map(|s| (*s).to_owned()).collect(),
             features: Vec::new(),
             no_default_features: false,
             lib: false,
@@ -36,15 +36,15 @@ impl Check {
         }
     }
 
-    fn test(package: &'static str) -> Self {
+    fn test(package: &str) -> Self {
         Self::new(Kind::Test, &[package])
     }
 
-    fn clippy(package: &'static str) -> Self {
+    fn clippy(package: &str) -> Self {
         Self::new(Kind::Clippy, &[package])
     }
 
-    fn build(packages: &[&'static str]) -> Self {
+    fn build(packages: &[&str]) -> Self {
         Self::new(Kind::Build, packages)
     }
 
@@ -112,9 +112,92 @@ impl Check {
     }
 }
 
-/// Every check CI runs.
-pub fn checks() -> Vec<Check> {
-    let mut checks = vec![
+/// Discover workspace members under `crates/platform-*` that expose a `host`
+/// feature and a library target, sorted by package name.
+fn discover_host_platforms(
+    root: &Path,
+    metadata: &serde_json::Value,
+) -> Result<Vec<String>, String> {
+    let members = metadata["workspace_members"]
+        .as_array()
+        .ok_or("cargo metadata is missing workspace members")?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or("cargo metadata is missing packages")?;
+    let crates_root = root
+        .join("crates")
+        .canonicalize()
+        .unwrap_or_else(|_| root.join("crates"));
+
+    let mut platforms = Vec::new();
+    for package in packages {
+        if !members.contains(&package["id"]) {
+            continue;
+        }
+        let Some(manifest_path) = package["manifest_path"].as_str() else {
+            continue;
+        };
+        let manifest_dir = Path::new(manifest_path)
+            .parent()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+        let is_platform_dir = manifest_dir.as_deref().is_some_and(|dir| {
+            dir.strip_prefix(&crates_root).ok().is_some_and(|rel| {
+                let mut comps = rel.components();
+                match (comps.next(), comps.next()) {
+                    (Some(std::path::Component::Normal(name)), None) => {
+                        name.to_string_lossy().starts_with("platform-")
+                    }
+                    _ => false,
+                }
+            })
+        });
+        if !is_platform_dir {
+            continue;
+        }
+        let has_host = package["features"]
+            .as_object()
+            .is_some_and(|features| features.contains_key("host"));
+        let has_lib = package["targets"].as_array().is_some_and(|targets| {
+            targets.iter().any(|target| {
+                target["kind"]
+                    .as_array()
+                    .is_some_and(|kinds| kinds.iter().any(|kind| kind == "lib"))
+            })
+        });
+        if has_host
+            && has_lib
+            && let Some(name) = package["name"].as_str()
+        {
+            platforms.push(name.to_owned());
+        }
+    }
+    platforms.sort();
+    Ok(platforms)
+}
+
+/// Every check CI runs, with host platform Clippy checks discovered from
+/// `metadata`.
+pub fn checks_for_workspace(
+    root: &Path,
+    metadata: &serde_json::Value,
+) -> Result<Vec<Check>, String> {
+    let mut checks = static_checks();
+    // fbuild compiles host plans on demand. Lint all of them here so a
+    // broken plan fails the PR rather than the nightly bundle build.
+    for platform in discover_host_platforms(root, metadata)? {
+        checks.push(
+            Check::clippy(&platform)
+                .no_default_features()
+                .features(&["host"])
+                .lib(),
+        );
+    }
+    checks.extend(post_platform_checks());
+    Ok(checks)
+}
+
+fn static_checks() -> Vec<Check> {
+    vec![
         // fstart linked as a library by a foreign firmware (the AST2700
         // BootMCU, riscv32imc) and the ARMv5TE BMC cores: neither has
         // compare-and-swap, and the library build owns no lang items.
@@ -154,19 +237,11 @@ pub fn checks() -> Vec<Check> {
         // Without the default consoles, and with the debug ones.
         Check::test("fstart-log").no_default_features(),
         Check::test("fstart-log").features(&["debug-consoles"]),
-    ];
-    // fbuild compiles host plans on demand. Lint all of them here so a
-    // broken plan fails the PR rather than the nightly bundle build.
-    for platform in [
-        "fstart-platform-amd",
-        "fstart-platform-aspeed",
-        "fstart-platform-intel",
-        "fstart-platform-qemu",
-        "fstart-platform-sifive",
-        "fstart-platform-sunxi",
-    ] {
-        checks.push(Check::clippy(platform).features(&["host"]).lib());
-    }
+    ]
+}
+
+fn post_platform_checks() -> Vec<Check> {
+    let mut checks = Vec::new();
     // Coreboot and bare ELF payloads call the stage's public measured loader,
     // also without a TPM.
     for payload in [&["coreboot"][..], &["coreboot", "tcg"], &["elf"]] {
@@ -211,14 +286,13 @@ fn workspace_metadata(root: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid cargo metadata: {e}"))
 }
 
-fn check_driver_amd_features(root: &Path) -> Result<(), String> {
+fn check_driver_amd_features_from_metadata(metadata: &serde_json::Value) -> Result<(), String> {
     // `default` is Cargo's selector for a set of features, not a capability.
     const APPROVED: &[&str] = &["acpi", "default", "smbios", "smm", "spi-flash", "testing"];
 
     // Cargo reports the effective feature names, including implicit features
     // for optional dependencies unless hidden with `dep:`. It need not
     // resolve or build any dependencies to do this.
-    let metadata = workspace_metadata(root)?;
     let members = metadata["workspace_members"]
         .as_array()
         .ok_or("cargo metadata is missing workspace members")?;
@@ -251,10 +325,17 @@ fn check_driver_amd_features(root: &Path) -> Result<(), String> {
     ))
 }
 
+#[cfg(test)]
+fn check_driver_amd_features(root: &Path) -> Result<(), String> {
+    check_driver_amd_features_from_metadata(&workspace_metadata(root)?)
+}
+
 /// Every Cargo workspace member must inherit `[workspace.lints]` via
 /// `[lints] workspace = true`.
-fn check_workspace_lints(root: &Path) -> Result<(), String> {
-    let metadata = workspace_metadata(root)?;
+fn check_workspace_lints_from_metadata(
+    root: &Path,
+    metadata: &serde_json::Value,
+) -> Result<(), String> {
     let members = metadata["workspace_members"]
         .as_array()
         .ok_or("cargo metadata is missing workspace members")?;
@@ -304,6 +385,11 @@ fn check_workspace_lints(root: &Path) -> Result<(), String> {
     ))
 }
 
+#[cfg(test)]
+fn check_workspace_lints(root: &Path) -> Result<(), String> {
+    check_workspace_lints_from_metadata(root, &workspace_metadata(root)?)
+}
+
 /// `fbuild checks`: run (or list) every check; one failing never stops
 /// the others.
 pub fn run(list: bool) -> Result<(), String> {
@@ -315,13 +401,55 @@ pub fn run(list: bool) -> Result<(), String> {
 
     let root = crate::build_board::workspace_root_pub()?;
     let github = std::env::var_os("GITHUB_ACTIONS").is_some();
-    let cargo_checks = checks()
+    let metadata = workspace_metadata(&root);
+    if list {
+        let metadata = metadata?;
+        let cargo_checks = checks_for_workspace(&root, &metadata)?
+            .into_iter()
+            .flat_map(|check| check.commands())
+            .map(Step::Cargo);
+        for step in [Step::DriverAmdFeatures, Step::WorkspaceLints]
+            .into_iter()
+            .chain(cargo_checks)
+        {
+            match step {
+                Step::DriverAmdFeatures => println!("# Check driver-amd capability features"),
+                Step::WorkspaceLints => println!("# Check workspace lint inheritance"),
+                Step::Cargo(command) => println!("{}", show(&command)),
+            }
+        }
+        return Ok(());
+    }
+    let mut failed = 0;
+    let mut total = 0;
+    let cargo_checks = match &metadata {
+        Ok(meta) => match checks_for_workspace(&root, meta) {
+            Ok(checks) => checks,
+            Err(error) => {
+                total += 1;
+                failed += 1;
+                println!("FAIL Discover host platform checks: {error}");
+                static_checks()
+                    .into_iter()
+                    .chain(post_platform_checks())
+                    .collect()
+            }
+        },
+        Err(error) => {
+            total += 1;
+            failed += 1;
+            println!("FAIL Discover host platform checks: {error}");
+            static_checks()
+                .into_iter()
+                .chain(post_platform_checks())
+                .collect()
+        }
+    };
+    let cargo_checks = cargo_checks
         .into_iter()
         .flat_map(|check| check.commands())
         .map(Step::Cargo);
     let policy_steps = [Step::DriverAmdFeatures, Step::WorkspaceLints];
-    let mut failed = 0;
-    let mut total = 0;
     for step in policy_steps.into_iter().chain(cargo_checks) {
         total += 1;
         let shown = match &step {
@@ -329,21 +457,20 @@ pub fn run(list: bool) -> Result<(), String> {
             Step::WorkspaceLints => "Check workspace lint inheritance".to_owned(),
             Step::Cargo(command) => show(command),
         };
-        if list {
-            match step {
-                Step::Cargo(_) => println!("{shown}"),
-                _ => println!("# {shown}"),
-            }
-            continue;
-        }
         if github {
             println!("::group::{shown}");
         } else {
             println!("+ {shown}");
         }
         let result = match step {
-            Step::DriverAmdFeatures => check_driver_amd_features(&root),
-            Step::WorkspaceLints => check_workspace_lints(&root),
+            Step::DriverAmdFeatures => metadata
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(check_driver_amd_features_from_metadata),
+            Step::WorkspaceLints => metadata
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|meta| check_workspace_lints_from_metadata(&root, meta)),
             Step::Cargo(mut command) => command
                 .current_dir(&root)
                 .status()
@@ -366,9 +493,6 @@ pub fn run(list: bool) -> Result<(), String> {
             }
             failed += 1;
         }
-    }
-    if list {
-        return Ok(());
     }
     println!("\n{} of {total} checks passed", total - failed);
     match failed {
@@ -526,20 +650,71 @@ unused_must_use = "deny"
 
     #[test]
     fn every_check_names_a_workspace_package() {
-        let metadata = workspace_metadata(&workspace_root()).unwrap();
+        let root = workspace_root();
+        let metadata = workspace_metadata(&root).unwrap();
         let members: Vec<_> = metadata["packages"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|package| package["name"].as_str())
             .collect();
-        for check in checks() {
+        let checks = checks_for_workspace(&root, &metadata).unwrap();
+        for check in &checks {
             for package in &check.packages {
                 assert!(
-                    members.contains(package),
+                    members.contains(&package.as_str()),
                     "{package} is no workspace member"
                 );
             }
         }
+    }
+
+    #[test]
+    fn discovers_sorted_host_platform_members_only() {
+        let root = Path::new("/ws");
+        let metadata = serde_json::json!({
+            "workspace_members": ["p-z", "p-a", "p-nohost", "core"],
+            "packages": [
+                {
+                    "id": "p-z",
+                    "name": "fstart-platform-z",
+                    "manifest_path": "/ws/crates/platform-z/Cargo.toml",
+                    "features": {"host": []},
+                    "targets": [{"kind": ["lib"]}]
+                },
+                {
+                    "id": "p-a",
+                    "name": "fstart-platform-a",
+                    "manifest_path": "/ws/crates/platform-a/Cargo.toml",
+                    "features": {"host": []},
+                    "targets": [{"kind": ["lib"]}]
+                },
+                {
+                    "id": "p-nohost",
+                    "name": "fstart-platform-nohost",
+                    "manifest_path": "/ws/crates/platform-nohost/Cargo.toml",
+                    "features": {},
+                    "targets": [{"kind": ["lib"]}]
+                },
+                {
+                    "id": "p-excluded",
+                    "name": "fstart-platform-excluded",
+                    "manifest_path": "/ws/crates/platform-excluded/Cargo.toml",
+                    "features": {"host": []},
+                    "targets": [{"kind": ["lib"]}]
+                },
+                {
+                    "id": "core",
+                    "name": "fstart-core",
+                    "manifest_path": "/ws/crates/core/Cargo.toml",
+                    "features": {"host": []},
+                    "targets": [{"kind": ["lib"]}]
+                }
+            ]
+        });
+        assert_eq!(
+            discover_host_platforms(root, &metadata).unwrap(),
+            vec!["fstart-platform-a", "fstart-platform-z"]
+        );
     }
 }
