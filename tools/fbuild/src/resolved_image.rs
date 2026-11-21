@@ -24,10 +24,20 @@ impl ResolvedImage {
     ) -> Result<Self, PlanError> {
         selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
+        Self::try_load_with_profile(root, board, &source, selection)
+    }
+
+    pub(crate) fn try_load_with_profile(
+        root: &Path,
+        board: &BoardManifest,
+        source: &crate::profile_source::ProfileSource,
+        selection: BuildSelection,
+    ) -> Result<Self, PlanError> {
+        selection.validate_compiler_files()?;
         use fstart_image_build::plan::options::{BLOBS, DONOR};
         let mut selection = selection;
         if let Some(donor) = selection.options.remove(DONOR) {
-            let blobs = crate::blobs::from_donor(root, &source, Path::new(&donor))?;
+            let blobs = crate::blobs::from_donor(root, source, Path::new(&donor))?;
             selection.set_option(BLOBS, blobs.to_string_lossy().into_owned());
         }
         // The plan names the blob directory `files::BLOBS_DIR`; the image
@@ -37,7 +47,7 @@ impl ResolvedImage {
             .get(BLOBS)
             .map(|dir| std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}")))
             .transpose()?;
-        let mut plan = crate::host_plan::load(root, &source, board, &selection)?;
+        let mut plan = crate::host_plan::load(root, source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
         let environment = [
             ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
@@ -50,7 +60,7 @@ impl ResolvedImage {
                 }
             }
         }
-        let mut build = Resolved::new(root, board, &source, plan)?;
+        let mut build = Resolved::new(root, board, source, plan)?;
         build.blobs = blobs;
         Ok(Self { build })
     }

@@ -146,8 +146,9 @@ impl SeaBios {
 
 /// The board's AMD blob tables, if its image packs PSP firmware: a bundle
 /// carries them instead of the firmware.
-fn donor_tables(root: &Path, board: &BoardManifest) -> Result<Option<PackedDonor>, String> {
-    let source = crate::profile_source::load_profile(root, board)?;
+fn donor_tables(
+    source: &crate::profile_source::ProfileSource,
+) -> Result<Option<PackedDonor>, String> {
     let table = &source.package["metadata"]["fstart"];
     if table["amd"].is_null() {
         return Ok(None);
@@ -222,7 +223,8 @@ pub fn export(
     // plan must fail fast, not after an hour of work.
     let mut builds = Vec::new();
     for board in boards {
-        let packed_donor = donor_tables(&root, &board)?;
+        let source = crate::profile_source::load_profile(&root, &board)?;
+        let packed_donor = donor_tables(&source)?;
         let selected = select_payloads_for_board(
             &board.board,
             board_id.is_some(),
@@ -234,7 +236,7 @@ pub fn export(
                 if packed_donor.is_some() {
                     selection.set_option(fstart_image_build::plan::options::BLOBS, BLOBS_DIR);
                 }
-                ResolvedImage::try_load(&root, &board, selection)
+                ResolvedImage::try_load_with_profile(&root, &board, &source, selection)
             },
             fits_a_kernel,
         )?;
