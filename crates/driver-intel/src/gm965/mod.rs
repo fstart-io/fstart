@@ -10,8 +10,6 @@
 //! - enable the integrated graphics functions used by the board;
 //! - apply the early MCH/DMI tweaks from coreboot's GM965 port.
 
-#![allow(clippy::modulo_one)]
-
 mod fields;
 mod peg;
 pub mod raminit;

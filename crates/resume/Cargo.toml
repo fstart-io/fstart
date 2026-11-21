@@ -16,3 +16,6 @@ zerocopy = { workspace = true }
 
 [dev-dependencies]
 fstart-crypto = { workspace = true, features = ["sha2-digest"] }
+
+[lints]
+workspace = true

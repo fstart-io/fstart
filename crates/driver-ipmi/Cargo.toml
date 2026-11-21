@@ -15,3 +15,6 @@ embedded-hal = { workspace = true }
 fstart-core = { workspace = true }
 tock-registers = { workspace = true }
 zerocopy = { workspace = true }
+
+[lints]
+workspace = true

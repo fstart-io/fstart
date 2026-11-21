@@ -44,3 +44,6 @@ fstart-driver-amd = { path = ".", features = ["smm", "acpi", "smbios", "spi-flas
 fstart-pci = { workspace = true }
 libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
+
+[lints]
+workspace = true

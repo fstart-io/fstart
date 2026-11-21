@@ -23,3 +23,6 @@ tock-registers = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+
+[lints]
+workspace = true

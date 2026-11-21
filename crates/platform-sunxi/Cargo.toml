@@ -78,3 +78,6 @@ fstart-log = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
 ufmt = { workspace = true, optional = true }
+
+[lints]
+workspace = true

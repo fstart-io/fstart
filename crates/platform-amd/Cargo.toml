@@ -1441,3 +1441,6 @@ fstart-smm = { workspace = true }
 fstart-platform-amd = { path = ".", features = ["host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
+
+[lints]
+workspace = true

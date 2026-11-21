@@ -52,3 +52,6 @@ ufmt = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "arm")'.dependencies]
 fstart-arch = { workspace = true }
+
+[lints]
+workspace = true

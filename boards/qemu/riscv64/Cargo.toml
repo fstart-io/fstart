@@ -17,3 +17,6 @@ fstart-driver-uart = { path = "../../../crates/driver-uart" }
 fstart-log = { path = "../../../crates/log" }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.
+
+[lints]
+workspace = true

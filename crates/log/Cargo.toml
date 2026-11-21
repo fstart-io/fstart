@@ -17,3 +17,6 @@ fstart-core = { workspace = true }
 fstart-timestamp = { workspace = true }
 portable-atomic = { workspace = true }
 fstart-options = { workspace = true }
+
+[lints]
+workspace = true

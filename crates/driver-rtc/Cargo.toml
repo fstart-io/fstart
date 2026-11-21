@@ -12,3 +12,6 @@ fstart-log = { workspace = true }
 fstart-options = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }
+
+[lints]
+workspace = true

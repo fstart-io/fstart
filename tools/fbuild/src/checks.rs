@@ -251,11 +251,65 @@ fn check_driver_amd_features(root: &Path) -> Result<(), String> {
     ))
 }
 
+/// Every Cargo workspace member must inherit `[workspace.lints]` via
+/// `[lints] workspace = true`.
+fn check_workspace_lints(root: &Path) -> Result<(), String> {
+    let metadata = workspace_metadata(root)?;
+    let members = metadata["workspace_members"]
+        .as_array()
+        .ok_or("cargo metadata is missing workspace members")?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or("cargo metadata is missing packages")?;
+
+    let mut checked = 0usize;
+    let mut missing = Vec::new();
+    for package in packages {
+        if !members.contains(&package["id"]) {
+            continue;
+        }
+        let manifest_path = package["manifest_path"]
+            .as_str()
+            .ok_or("cargo metadata package is missing manifest_path")?;
+        checked += 1;
+        let cargo_toml = Path::new(manifest_path);
+        let text = std::fs::read_to_string(cargo_toml)
+            .map_err(|e| format!("failed to read {}: {e}", cargo_toml.display()))?;
+        let parsed: toml::Table = toml::from_str(&text)
+            .map_err(|e| format!("failed to parse {}: {e}", cargo_toml.display()))?;
+        let inherits = parsed
+            .get("lints")
+            .and_then(|l| l.get("workspace"))
+            .and_then(|w| w.as_bool())
+            == Some(true);
+        if !inherits {
+            let rel = cargo_toml
+                .strip_prefix(root)
+                .unwrap_or(cargo_toml)
+                .to_string_lossy()
+                .replace('\\', "/");
+            missing.push(rel);
+        }
+    }
+    if checked == 0 {
+        return Err("cargo metadata reported zero workspace members".to_owned());
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    Err(format!(
+        "missing `[lints] workspace = true` in: {}",
+        missing.join(", ")
+    ))
+}
+
 /// `fbuild checks`: run (or list) every check; one failing never stops
 /// the others.
 pub fn run(list: bool) -> Result<(), String> {
     enum Step {
         DriverAmdFeatures,
+        WorkspaceLints,
         Cargo(Command),
     }
 
@@ -265,18 +319,20 @@ pub fn run(list: bool) -> Result<(), String> {
         .into_iter()
         .flat_map(|check| check.commands())
         .map(Step::Cargo);
+    let policy_steps = [Step::DriverAmdFeatures, Step::WorkspaceLints];
     let mut failed = 0;
     let mut total = 0;
-    for step in std::iter::once(Step::DriverAmdFeatures).chain(cargo_checks) {
+    for step in policy_steps.into_iter().chain(cargo_checks) {
         total += 1;
         let shown = match &step {
             Step::DriverAmdFeatures => "Check driver-amd capability features".to_owned(),
+            Step::WorkspaceLints => "Check workspace lint inheritance".to_owned(),
             Step::Cargo(command) => show(command),
         };
         if list {
             match step {
-                Step::DriverAmdFeatures => println!("# {shown}"),
                 Step::Cargo(_) => println!("{shown}"),
+                _ => println!("# {shown}"),
             }
             continue;
         }
@@ -287,6 +343,7 @@ pub fn run(list: bool) -> Result<(), String> {
         }
         let result = match step {
             Step::DriverAmdFeatures => check_driver_amd_features(&root),
+            Step::WorkspaceLints => check_workspace_lints(&root),
             Step::Cargo(mut command) => command
                 .current_dir(&root)
                 .status()
@@ -411,6 +468,60 @@ testing-tool = "1"
             "{error}"
         );
         assert!(error.contains("crates/platform-amd") && error.contains("boards/"));
+    }
+
+    #[test]
+    fn workspace_members_inherit_workspace_lints() {
+        check_workspace_lints(&workspace_root()).unwrap();
+    }
+
+    #[test]
+    fn workspace_lints_guard_uses_cargo_membership_and_rejects_missing_inheritance() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"
+[workspace]
+resolver = "3"
+members = ["crates/ok", "extra/missing", "boards/vendor/local-override"]
+exclude = ["crates/excluded"]
+
+[workspace.lints.rust]
+unused_must_use = "deny"
+"#,
+        )
+        .unwrap();
+        for (dir, manifest) in [
+            (
+                "crates/ok",
+                "[package]\nname = \"ok\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lints]\nworkspace = true\n",
+            ),
+            (
+                "extra/missing",
+                "[package]\nname = \"missing\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            ),
+            (
+                "boards/vendor/local-override",
+                "[package]\nname = \"local-override\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lints.rust]\nunused_must_use = \"warn\"\n",
+            ),
+            (
+                "crates/excluded",
+                "[package]\nname = \"excluded\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            ),
+        ] {
+            let src = tmp.path().join(dir).join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "").unwrap();
+            std::fs::write(tmp.path().join(dir).join("Cargo.toml"), manifest).unwrap();
+        }
+        let err = check_workspace_lints(tmp.path()).unwrap_err();
+        assert!(err.contains("extra/missing/Cargo.toml"), "{err}");
+        assert!(
+            err.contains("boards/vendor/local-override/Cargo.toml"),
+            "{err}"
+        );
+        assert!(!err.contains("crates/ok/Cargo.toml"), "{err}");
+        assert!(!err.contains("crates/excluded/Cargo.toml"), "{err}");
     }
 
     #[test]

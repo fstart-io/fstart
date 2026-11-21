@@ -13,7 +13,6 @@
 //!   CF8/CFC write that enables PCIEXBAR, *all* PCI config goes here.
 
 #![allow(dead_code)]
-#![allow(clippy::modulo_one)] // tock-registers alignment test
 
 use fstart_core::mmio::MmioReadWrite;
 use tock_registers::register_bitfields;

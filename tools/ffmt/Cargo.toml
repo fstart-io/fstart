@@ -8,3 +8,6 @@ publish = false
 [dependencies]
 clap.workspace = true
 proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[lints]
+workspace = true

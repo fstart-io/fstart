@@ -23,3 +23,6 @@ fstart-driver-intel = { path = "../../../crates/driver-intel" }
 fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.
+
+[lints]
+workspace = true

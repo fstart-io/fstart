@@ -34,3 +34,6 @@ fstart-coreboot = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 ufmt = { workspace = true }
+
+[lints]
+workspace = true

@@ -75,3 +75,6 @@ name = "stage"
 path = "src/bin/stage.rs"
 test = false
 bench = false
+
+[lints]
+workspace = true
