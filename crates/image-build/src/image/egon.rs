@@ -5,6 +5,12 @@ const CHECKSUM_STAMP: u32 = 0x5F0A6C39;
 const HEADER_LEN: usize = 96;
 const SPL_SIGNATURE: &[u8; 4] = b"SPL\x02";
 
+/// Whether `head` begins with an Allwinner eGON.BT0 boot header.
+#[must_use]
+pub fn has_magic(head: &[u8]) -> bool {
+    head.get(4..12) == Some(EGON_MAGIC.as_slice())
+}
+
 /// Pad a flat SPL to the eGON 8-KiB granule and fill its length, signature
 /// and checksum. The FFS assembler applies this to the initial stage before
 /// packing; `patch_ffs` later reseals the checksum once the locator is set.

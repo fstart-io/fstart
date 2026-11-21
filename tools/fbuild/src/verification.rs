@@ -99,8 +99,8 @@ pub fn build_boards(boards: &[String], size_dir: Option<PathBuf>) -> Result<(), 
             .to_string();
         let result = (|| {
             let manifest = manifest_for(board).inspect_err(|e| link = format!("Not run: {e}"))?;
-            let root = build_board::workspace_root_pub()
-                .inspect_err(|e| link = format!("Not run: {e}"))?;
+            let root =
+                build_board::workspace_root().inspect_err(|e| link = format!("Not run: {e}"))?;
             let selection = fbuild::payload::PlanArgs::default().selection(None);
             let resolved = Resolved::load(&root, &manifest, selection)
                 .inspect_err(|e| link = format!("Not run: resolve plan: {e}"))?;
@@ -176,7 +176,7 @@ pub fn boot_test(
     list: bool,
     not_run: Option<&str>,
 ) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let mut summary = Summary::new(
         "QEMU boot scenarios",
         &["Board", "Scenario", "Payload", "Result", "Logs"],

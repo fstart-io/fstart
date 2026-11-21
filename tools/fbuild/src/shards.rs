@@ -71,7 +71,7 @@ impl<'a> From<&'a BoardManifest> for Board<'a> {
                 .as_ref()
                 .map_or("", |profile| &profile.dependency),
             builds: std::iter::once(board.board.as_str())
-                .chain(board.variants.iter().map(|(id, _)| id.as_str()))
+                .chain(board.variants.keys().map(String::as_str))
                 .collect(),
         }
     }
@@ -127,7 +127,7 @@ pub fn matrix(boards: &[Board<'_>]) -> Matrix {
 
 /// `fbuild shards`: the matrix of every discovered board.
 pub fn run() -> Result<(), String> {
-    let root = crate::build_board::workspace_root_pub()?;
+    let root = crate::build_board::workspace_root()?;
     let manifests = crate::board_manifest::discover(&root)?;
     let boards: Vec<Board<'_>> = manifests.iter().map(Board::from).collect();
     let matrix = matrix(&boards);

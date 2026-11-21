@@ -399,7 +399,7 @@ pub fn run(list: bool) -> Result<(), String> {
         Cargo(Command),
     }
 
-    let root = crate::build_board::workspace_root_pub()?;
+    let root = crate::build_board::workspace_root()?;
     let github = std::env::var_os("GITHUB_ACTIONS").is_some();
     let metadata = workspace_metadata(&root);
     if list {

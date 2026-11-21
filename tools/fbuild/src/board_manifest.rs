@@ -4,6 +4,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// A board variant declared under `[package.metadata.fstart.variants.<id>]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    pub features: Vec<String>,
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardManifest {
     /// Requested board id: the base board id, or the variant id when a
@@ -21,14 +28,12 @@ pub struct BoardManifest {
     /// Cargo features contributed by the selected variant, merged into unit
     /// feature sets by the plan executor.
     pub variant_features: Vec<String>,
-    /// Declared variants: variant id -> cargo features.
-    pub variants: Vec<(String, Vec<String>)>,
+    /// Declared variants, keyed by variant id in lexical order.
+    pub variants: BTreeMap<String, Variant>,
     pub build_profile: Option<ProfileRef>,
     /// Human-readable name, e.g. "ThinkPad X60"; the selected variant's when
     /// it has one.
     pub name: Option<String>,
-    /// Declared variant names: variant id -> name.
-    pub variant_names: BTreeMap<String, String>,
     /// The vendor download that works as this board's donor image.
     pub donor: Option<crate::bundle::DonorSource>,
 }
@@ -131,7 +136,7 @@ pub fn discover(workspace_root: &Path) -> Result<Vec<BoardManifest>, String> {
 fn validate_identities(boards: &[BoardManifest]) -> Result<(), String> {
     let mut owners = BTreeMap::new();
     for board in boards {
-        for id in std::iter::once(&board.board).chain(board.variants.iter().map(|(id, _)| id)) {
+        for id in std::iter::once(&board.board).chain(board.variants.keys()) {
             if let Some(previous) = owners.insert(id, &board.dir) {
                 return Err(format!(
                     "duplicate board/variant id '{id}' in {} and {}",
@@ -160,13 +165,11 @@ pub fn find_in(boards: &[BoardManifest], board_name: &str) -> Result<BoardManife
     }
 
     for board in boards {
-        if let Some((variant, variant_features)) =
-            board.variants.iter().find(|(name, _)| name == board_name)
-        {
+        if let Some((variant_id, variant)) = board.variants.get_key_value(board_name) {
             let mut resolved = board.clone();
-            resolved.board = variant.clone();
-            resolved.variant_features = variant_features.clone();
-            if let Some(name) = board.variant_names.get(variant) {
+            resolved.board = variant_id.clone();
+            resolved.variant_features = variant.features.clone();
+            if let Some(name) = &variant.name {
                 resolved.name = Some(name.clone());
             }
             return Ok(resolved);
@@ -221,13 +224,18 @@ fn parse(text: &str, manifest: &Path) -> Result<BoardManifest, String> {
         rel_dir,
         arch: metadata.arch,
         variant_features: Vec::new(),
-        variant_names: (metadata.variants.iter())
-            .filter_map(|(id, v)| Some((id.clone(), v.name.clone()?)))
-            .collect(),
         variants: metadata
             .variants
             .into_iter()
-            .map(|(id, v)| (id, v.features))
+            .map(|(id, v)| {
+                (
+                    id,
+                    Variant {
+                        features: v.features,
+                        name: v.name,
+                    },
+                )
+            })
             .collect(),
         build_profile: metadata.build_profile,
         name: metadata.name,
@@ -250,7 +258,8 @@ fn rel_dir_under_boards(dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{discover, find, parse};
+    use super::{Variant, discover, find, parse};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -304,7 +313,13 @@ mod tests {
         assert_eq!(board.arch.as_deref(), Some("riscv64"));
         assert_eq!(
             board.variants,
-            [("test-variant".into(), vec!["variant-test".into()])]
+            BTreeMap::from([(
+                "test-variant".into(),
+                Variant {
+                    features: vec!["variant-test".into()],
+                    name: None,
+                },
+            )])
         );
     }
 
@@ -420,7 +435,7 @@ mod tests {
         assert!(boards.windows(2).all(|pair| pair[0].board < pair[1].board));
         for board in &boards {
             assert_eq!(find(&root, &board.board).unwrap().package, board.package);
-            for (variant, _) in &board.variants {
+            for variant in board.variants.keys() {
                 assert_eq!(find(&root, variant).unwrap().package, board.package);
             }
         }

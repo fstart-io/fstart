@@ -189,7 +189,7 @@ pub fn export(
     payload: Option<PayloadChoice>,
     seabios: Option<&Path>,
 ) -> Result<(), String> {
-    let root = crate::build_board::workspace_root_pub()?;
+    let root = crate::build_board::workspace_root()?;
     let seabios = seabios.map(SeaBios::load).transpose()?;
     let inventory = board_manifest::discover(&root)?;
     let boards = match board_id {
@@ -197,8 +197,7 @@ pub fn export(
         None => {
             let mut all = Vec::new();
             for board in &inventory {
-                let ids =
-                    std::iter::once(&board.board).chain(board.variants.iter().map(|(id, _)| id));
+                let ids = std::iter::once(&board.board).chain(board.variants.keys());
                 for id in ids {
                     all.push(board_manifest::find_in(&inventory, id)?);
                 }

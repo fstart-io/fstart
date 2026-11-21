@@ -635,7 +635,6 @@ dependencies = [
  "fstart-crypto",
  "fstart-image-build",
  "fstart-platform-qemu",
- "heapless 0.8.0",
  "object 0.37.3",
  "serde",
  "serde_json",

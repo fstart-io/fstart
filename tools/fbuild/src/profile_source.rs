@@ -177,12 +177,11 @@ mod tests {
             rel_dir: PathBuf::from(id),
             arch: None,
             variant_features: features.iter().map(|s| (*s).into()).collect(),
-            variants: Vec::new(),
+            variants: BTreeMap::new(),
             build_profile: Some(ProfileRef {
                 dependency: dep.into(),
             }),
             name: None,
-            variant_names: BTreeMap::new(),
             donor: None,
         }
     }

@@ -197,23 +197,6 @@ fn build_isolated_runner(
     Ok(executables.remove(0))
 }
 
-fn host_target(root: &Path) -> Result<String, String> {
-    let rustc = Command::new("rustc")
-        .current_dir(root)
-        .arg("-vV")
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !rustc.status.success() {
-        return Err("cannot query selected Rust host toolchain".into());
-    }
-    let rustc = String::from_utf8(rustc.stdout).map_err(|e| e.to_string())?;
-    rustc
-        .lines()
-        .find_map(|s| s.strip_prefix("host: "))
-        .map(str::to_owned)
-        .ok_or_else(|| "rustc did not report host target".into())
-}
-
 pub(crate) fn load(
     root: &Path,
     source: &ProfileSource,
@@ -266,7 +249,7 @@ pub(crate) fn load(
         );
         let runner_dir = root.join("target/fstart-host/runners").join(&key);
         let target_dir = root.join("target/fstart-host/cargo");
-        let host = host_target(root)?;
+        let host = crate::build_board::host_target(root)?;
         let built = build_isolated_runner(
             root,
             &runner_dir,
@@ -420,7 +403,7 @@ mod tests {
             .unwrap();
         assert!(status.success());
 
-        let host = host_target(root).unwrap();
+        let host = crate::build_board::host_target(root).unwrap();
         let target_dir = root.join("target/fstart-host/cargo");
         let source_lock = fs::read_to_string(root.join("Cargo.lock")).unwrap();
         let main_src = "fn main() { print!(\"{}\", board::MARKER); }\n";

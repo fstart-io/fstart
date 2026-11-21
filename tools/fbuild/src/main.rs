@@ -271,7 +271,7 @@ enum Command {
 
 /// Resolve the board package the requested build selects.
 fn manifest_for(board: &str) -> Result<board_manifest::BoardManifest, String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     if manifest.build_profile.is_none() {
         return Err(format!("board '{board}' has no build-profile"));
@@ -291,7 +291,7 @@ fn absolute_size_report(
 }
 
 fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     println!("{}", resolved.explain_json()?);
@@ -300,7 +300,7 @@ fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
 
 /// The options a build offers, as JSON (`fbuild options`).
 fn print_options(board: &str, selection: BuildSelection) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     let options = serde_json::to_string_pretty(resolved.options()).map_err(|e| e.to_string())?;
@@ -315,7 +315,7 @@ fn compile_named(
     name: &str,
     checking: bool,
 ) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     resolved.compile_selected(&root, &manifest, name, release, checking)
@@ -330,7 +330,7 @@ fn check(
     if let Some(stage) = stage {
         return compile_named(board, selection, release, &stage, true);
     }
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     resolved.check(&root, &manifest, release)
@@ -342,7 +342,7 @@ fn ide(
     release: bool,
     stage: Option<String>,
 ) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let manifest = board_manifest::find(&root, board)?;
     let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     let workspace =
@@ -355,11 +355,11 @@ fn test_libraries(board: Option<&str>) -> Result<(), String> {
     if let Some(board) = board {
         return fbuild::board_tool::test_library(&manifest_for(board)?);
     }
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let boards = board_manifest::discover(&root)?;
     for board in &boards {
         fbuild::board_tool::test_library(board)?;
-        for (variant, _) in &board.variants {
+        for variant in board.variants.keys() {
             fbuild::board_tool::test_library(&board_manifest::find_in(&boards, variant)?)?;
         }
     }
@@ -378,7 +378,7 @@ struct BoardEntry<'a> {
 }
 
 fn boards(json: bool) -> Result<(), String> {
-    let root = build_board::workspace_root_pub()?;
+    let root = build_board::workspace_root()?;
     let boards = board_manifest::discover(&root)?;
     if json {
         let entries: Vec<_> = boards
@@ -389,7 +389,7 @@ fn boards(json: bool) -> Result<(), String> {
                 dir: board.rel_dir.display().to_string(),
                 arch: board.arch.as_deref(),
                 build_profile: board.build_profile.as_ref(),
-                variants: board.variants.iter().map(|(id, _)| id.as_str()).collect(),
+                variants: board.variants.keys().map(String::as_str).collect(),
             })
             .collect();
         println!(
@@ -539,7 +539,7 @@ fn main() {
             from,
             out,
             allow_missing,
-        } => build_board::workspace_root_pub().and_then(|root| {
+        } => build_board::workspace_root().and_then(|root| {
             let manifest = board_manifest::find(&root, &board)?;
             fbuild::blobs::extract(
                 &root,

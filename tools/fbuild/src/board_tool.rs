@@ -20,7 +20,7 @@ fn load(
     payload: Option<PayloadChoice>,
     options: &PlanArgs,
 ) -> Result<Resolved, String> {
-    let root = crate::build_board::workspace_root_pub()?;
+    let root = crate::build_board::workspace_root()?;
     Resolved::load(&root, manifest, options.selection(payload))
 }
 
@@ -29,25 +29,14 @@ fn load(
 /// host test must not inherit a stage's linker script, target or generated
 /// artifact bindings.
 pub fn test_library(manifest: &crate::board_manifest::BoardManifest) -> Result<(), String> {
-    let root = crate::build_board::workspace_root_pub()?;
-    let version = std::process::Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| format!("query host compiler: {e}"))?;
-    if !version.status.success() {
-        return Err("cannot query the Rust host target".into());
-    }
-    let version = String::from_utf8(version.stdout).map_err(|e| e.to_string())?;
-    let host = version
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .ok_or("rustc did not report its host target")?;
+    let root = crate::build_board::workspace_root()?;
+    let host = crate::build_board::host_target(&root)?;
     let mut command = std::process::Command::new("cargo");
     command
         .current_dir(&root)
         .args(["test", "--locked", "--lib", "--manifest-path"])
         .arg(root.join("Cargo.toml"))
-        .args(["--package", &manifest.package, "--target", host])
+        .args(["--package", &manifest.package, "--target", &host])
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env("RUSTFLAGS", "");
     if !manifest.variant_features.is_empty() {
@@ -68,7 +57,7 @@ pub fn build(
     payload: Option<PayloadChoice>,
     options: &PlanArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
-    let root = crate::build_board::workspace_root_pub()?;
+    let root = crate::build_board::workspace_root()?;
     let resolved = Resolved::load(&root, manifest, options.selection(payload))?;
     resolved.build(&root, manifest, release)
 }
@@ -83,7 +72,7 @@ pub fn assemble(
     fit: Option<&str>,
     options: &BuildArgs,
 ) -> Result<std::path::PathBuf, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let workspace_root = crate::build_board::workspace_root()?;
     let resolved = load(manifest, payload, &options.plan)?;
     let supplied = crate::assemble::supplied_inputs(
         &payload_aliases(kernel, firmware, fit),
@@ -117,7 +106,7 @@ pub fn flash(
     protocol: &str,
     base_address: Option<&str>,
 ) -> Result<(), String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let workspace_root = crate::build_board::workspace_root()?;
     let resolved = load(manifest, None, &options.plan)?;
     let manifest = manifest.clone();
     let chip_name = chip.unwrap_or("auto");
@@ -257,7 +246,7 @@ pub fn qemu_image(
     mut supplied: std::collections::BTreeMap<String, std::path::PathBuf>,
     options: &AssembleArgs,
 ) -> Result<QemuImage, String> {
-    let workspace_root = crate::build_board::workspace_root_pub()?;
+    let workspace_root = crate::build_board::workspace_root()?;
     // The plan states how (and whether) this board runs under QEMU; there
     // is no per-architecture fallback launch to guess.
     let recipe = resolved.plan.run.clone().ok_or_else(|| {

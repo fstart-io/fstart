@@ -11,7 +11,8 @@ use object::{Object, ObjectSection, SectionFlags, SectionKind};
 use std::io::Write;
 use std::path::Path;
 
-/// NOLOAD reservations the linker scripts size from the stage layout.
+/// NOLOAD reservations the linker scripts size from the stage layout
+/// (`.amd.page_tables` is emitted by `amd_psp_reset.ld.in`).
 const RESERVATIONS: &[&str] = &[".fstart.heap", ".stack", ".page_tables", ".amd.page_tables"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -52,8 +53,7 @@ pub fn stage_sizes(elf: &[u8], flat: u64) -> Result<StageSizes, String> {
     let sram = if file
         .section_by_name(".head")
         .and_then(|s| s.data().ok())
-        .and_then(|data| data.get(4..12))
-        == Some(b"eGON.BT0")
+        .is_some_and(fstart_image_build::image::egon::has_magic)
     {
         use fstart_core::layout::{Layout, RegionKind};
         let section = file
