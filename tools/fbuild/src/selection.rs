@@ -103,12 +103,15 @@ impl Selection {
             "dev"
         };
         // `"*"` matches every non-member package; build-override covers
-        // build scripts and proc macros, which run on the host.
-        let member_rustflags = directory.join("member-rustflags.toml");
+        // build scripts and proc macros, which run on the host. Every
+        // firmware crate is size-optimized, in dev builds too: opt-level 0
+        // frames overflow the 8 KiB CAR/SRAM boot stacks. Per-package
+        // overrides in Cargo.toml (crypto, lz4_flex) still win.
+        let profile_config = directory.join("profile.toml");
         fs::write(
-            &member_rustflags,
+            &profile_config,
             format!(
-                "[profile.{profile}]\nrustflags = {}\n\
+                "[profile.{profile}]\nopt-level = \"s\"\nrustflags = {}\n\
                  [profile.{profile}.package.\"*\"]\nrustflags = []\n\
                  [profile.{profile}.build-override]\nrustflags = []\n",
                 serde_json::to_string(&member_flags).map_err(|e| e.to_string())?
@@ -146,7 +149,7 @@ impl Selection {
             shared_target_dir(root).display().to_string(),
             "-Zprofile-rustflags".into(),
             "--config".into(),
-            member_rustflags.display().to_string(),
+            profile_config.display().to_string(),
             "--features".into(),
             unit.features.join(","),
         ]);
