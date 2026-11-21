@@ -20,7 +20,6 @@ mod regs;
 use fstart_core::mmio::{read32, write32};
 
 use self::regs::{DmiBar, MchBar, Rcba, hostbridge, mchbar};
-use crate::MmioBar;
 use crate::gma::types::{Cpu, PciAddress, Port};
 use crate::ich7::ich7;
 use fstart_arch::x86::mtrr;
@@ -239,12 +238,14 @@ impl IntelPineview {
 
     /// MCHBAR accessor.
     fn mchbar(&self) -> MchBar {
-        MchBar::new(self.config.mchbar as usize)
+        // SAFETY: MCHBAR is enabled at this 16 KiB base during early init.
+        unsafe { MchBar::new(self.config.mchbar as usize) }
     }
 
     /// DMIBAR accessor.
     fn dmibar(&self) -> DmiBar {
-        DmiBar::new(self.config.dmibar as usize)
+        // SAFETY: DMIBAR is enabled at this 4 KiB base during early init.
+        unsafe { DmiBar::new(self.config.dmibar as usize) }
     }
 
     /// Detect warm reset via MCHBAR PMSTS bit 8.
@@ -428,7 +429,7 @@ impl IntelPineview {
         let mch = self.mchbar();
         let dmi = self.dmibar();
 
-        mch.read32(mchbar::HIT0);
+        let _ = mch.read32(mchbar::HIT0);
         mch.write32(mchbar::HIT0, 0x0002_1800);
 
         dmi.write32(0x2C, 0x8600_0040);
@@ -441,9 +442,9 @@ impl IntelPineview {
         self.early_graphics_setup();
 
         // HIT4 sequence.
-        mch.read32(mchbar::HIT4);
+        let _ = mch.read32(mchbar::HIT4);
         mch.write32(mchbar::HIT4, 0);
-        mch.read32(mchbar::HIT4);
+        let _ = mch.read32(mchbar::HIT4);
         mch.write32(mchbar::HIT4, 1 << 3);
 
         // LPC device (1F:0) revision ID reset sequence.
@@ -454,7 +455,8 @@ impl IntelPineview {
         // Read RCBA from ICH7 LPC config for the remaining shared chipset
         // control register. IRQ and USB routing are owned by the southbridge.
         let rcba_val = lpc.read32(ich7::RCBA_REG);
-        let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
+        // SAFETY: RCBA is enabled in LPC config for a 16 KiB window.
+        let rcba = unsafe { Rcba::new((rcba_val & 0xFFFF_C000) as usize) };
 
         rcba.write32(0x3410, 0x0002_0465);
 
@@ -497,7 +499,8 @@ impl IntelPineview {
         // 4. Route port80 to LPC.
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
         let rcba_val = lpc.read32(ich7::RCBA_REG);
-        let rcba = Rcba::new((rcba_val & 0xFFFF_C000) as usize);
+        // SAFETY: RCBA is enabled in LPC config for a 16 KiB window.
+        let rcba = unsafe { Rcba::new((rcba_val & 0xFFFF_C000) as usize) };
         let gcs = rcba.read32(ich7::GCS);
         rcba.write32(ich7::GCS, gcs & !0x04);
         rcba.write32(0x2010, rcba.read32(0x2010) | (1 << 10));
@@ -662,7 +665,8 @@ impl crate::IntelNorthbridgeDriver for IntelPineview {
 
     fn early_post_dram_init(&mut self) -> Result<(), ServiceError> {
         let lpc = ecam::EcamDevice::new(0, ich7::LPC_DEV, ich7::LPC_FUNC);
-        let rcba = Rcba::new((lpc.read32(ich7::RCBA_REG) & 0xFFFF_C000) as usize);
+        // SAFETY: RCBA is enabled in LPC config for a 16 KiB window.
+        let rcba = unsafe { Rcba::new((lpc.read32(ich7::RCBA_REG) & 0xFFFF_C000) as usize) };
         rcba.write32(0x0014, 0x8000_0001);
         rcba.write32(0x001C, 0x0312_8010);
         fstart_log::info!("pineview: VC0 configured after DRAM init");

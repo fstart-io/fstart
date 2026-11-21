@@ -2,7 +2,6 @@
 //! This does not attest DRAM integrity or initialize a display pipeline/VBT.
 
 use super::*;
-use crate::MmioBar;
 use crate::generic::spd::ChipWidth;
 use crate::gm45::Gm45GraphicsPolicy;
 
@@ -168,10 +167,10 @@ fn thermal(
         }
     }
     // SAFETY: MCHBAR decode is enabled, and the fixed registers lie within 16 KiB.
-    let global = unsafe { &*((mch.base + 0x1000) as *const ThermalGlobalRegs) };
+    let global = unsafe { &*((mch.base() + 0x1000) as *const ThermalGlobalRegs) };
     global.sensor_enable.set(1);
     global.sensor_config.set(6);
-    let regs = unsafe { &*(mch.base as *const PostMapRegs) };
+    let regs = unsafe { &*(mch.base() as *const PostMapRegs) };
     let pm45 = kind == 8;
     regs.thermal0_lo.set(0);
     regs.thermal0_hi.set(if pm45 { 0 } else { 0x92 });
@@ -232,7 +231,7 @@ fn init_igd(
     clock: Option<u16>,
     capid_high: u32,
 ) -> Result<(), ServiceError> {
-    let regs = unsafe { &*(mch.base as *const PostMapRegs) };
+    let regs = unsafe { &*(mch.base() as *const PostMapRegs) };
     if graphics == Gm45GraphicsPolicy::Discrete {
         hb.ggc.set((hb.ggc.get() & 0xff0f) | 2);
         mch.regs().igd_gate.set(mch.regs().igd_gate.get() | 1);

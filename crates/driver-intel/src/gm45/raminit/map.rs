@@ -1,7 +1,6 @@
 //! Cold DDR3 final decode, following coreboot gm45/raminit.c program_memory_map().
 //! This is a fail-closed slice: mapping does not make DRAM usable by the boot flow.
 use super::*;
-use crate::MmioBar;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct FinalMap {

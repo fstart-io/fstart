@@ -8,7 +8,6 @@
 
 #![allow(clippy::needless_range_loop)]
 use super::{FsbClock, PllParam, SysInfo};
-use crate::MmioBar;
 use crate::generic::spd::MemClock;
 use crate::pineview::regs::{MchBar, mchbar, rcomp as rcomp_regs};
 use fstart_core::services::ServiceError;
@@ -1891,8 +1890,9 @@ mod receive_tests {
 
     #[test]
     fn replay_preserves_shared_bits_and_restores_all_receive_lanes() {
-        let mut registers = [0u32; 0x1000 / 4];
-        let mch = MchBar::new(registers.as_mut_ptr() as usize);
+        let mut registers = [0u32; 0x4000 / 4];
+        // SAFETY: `registers` is a 16 KiB aligned stack buffer matching MCHBAR size.
+        let mch = unsafe { MchBar::new(registers.as_mut_ptr() as usize) };
         mch.write32(mchbar::C0STATRDCTRL, 0xa5a5_5a5a);
         for lane in 0..8 {
             mch.write8(mchbar::ly(mchbar::C0RXRCVYDLL_BASE, lane), 0xc0);

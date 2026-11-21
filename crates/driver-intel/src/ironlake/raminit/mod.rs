@@ -21,7 +21,6 @@ mod timing;
 mod training;
 
 use super::{DmiBar, EpBar, MchBar};
-use crate::MmioBar;
 use fstart_arch::x86::cpu::intel::model_2065x::{TEMPERATURE_TARGET, TURBO_POWER_CURRENT_LIMIT};
 use fstart_arch::x86::mtrr::{IA32_MTRR_PHYSBASE0, IA32_MTRR_PHYSMASK0};
 use fstart_core::services::{ServiceError, SmBus};
@@ -462,9 +461,10 @@ impl<'a> Raminit<'a> {
     pub(super) fn new(info: &'a mut RamInfo, config: &RaminitConfig) -> Self {
         Self {
             info,
-            mch: MchBar(config.mchbar),
-            dmi: DmiBar(config.dmibar),
-            ep: EpBar(config.epbar),
+            // SAFETY: MCHBAR/DMIBAR/EPBAR are enabled by early northbridge init.
+            mch: unsafe { MchBar::new(config.mchbar) },
+            dmi: unsafe { DmiBar::new(config.dmibar) },
+            ep: unsafe { EpBar::new(config.epbar) },
             rcba: config.rcba,
             gpiobase: config.gpiobase,
             pmbase: config.pmbase,
@@ -755,8 +755,8 @@ impl<'a> Raminit<'a> {
                 };
                 for k in 0..2u32 {
                     self.mch.write32(0x138 + 8 * k, (channel << 26) | (j << 24));
-                    self.mch.read32(0x138 + 8 * k);
-                    self.mch.read32(0x13c + 8 * k);
+                    let _ = self.mch.read32(0x138 + 8 * k);
+                    let _ = self.mch.read32(0x13c + 8 * k);
                 }
                 let group = (channel << 10) + j * 0x44;
                 self.mch
@@ -883,7 +883,7 @@ impl Raminit<'_> {
 
     /// coreboot `dmi_setup()`.
     fn dmi_setup(&self) {
-        self.dmi.read8(0x254);
+        let _ = self.dmi.read8(0x254);
         self.dmi.write8(0x254, 1 << 0);
         self.dmi.write16(0x1b8, 0x18f2);
         self.mch.clrsetbits16(0x48, !0, 1 << 1);
@@ -1023,7 +1023,7 @@ impl Raminit<'_> {
         self.mch.setbits32(0x2c80, 1 << 24);
         self.mch
             .write32(0x1804, self.mch.read32(0x1c04) & !(1 << 27));
-        self.mch.read8(0x2ca8);
+        let _ = self.mch.read8(0x2ca8);
 
         if x2ca8 == 0 {
             self.mch.clrbits8(0x2ca8, 3);
@@ -1382,9 +1382,9 @@ impl Raminit<'_> {
             << 20;
         crate::ibexpeak::me::setup_uma(
             &crate::ibexpeak::me::UmaChannels {
-                dmibar: self.dmi.0,
+                dmibar: self.dmi.base(),
                 rcba: self.rcba,
-                mchbar: self.mch.0,
+                mchbar: self.mch.base(),
             },
             self.hecibar,
             heci_uma_addr,
@@ -1525,7 +1525,7 @@ impl Raminit<'_> {
         let reg1c = self.ep.read32(0x004);
         nb.read32(0x40);
         self.ep.write32(0x004, reg1c);
-        mch.read8(0xe08);
+        let _ = mch.read8(0xe08);
         nb.read32(0xe4);
         mch.setbits8(0x1210, 1 << 1);
         mch.write32(0x1200, 0x880_0440);

@@ -5,7 +5,6 @@
 //! `sdram_clkmode`, `sdram_timings`, `sdram_checkreset`.
 
 use super::{FsbClock, SysInfo};
-use crate::MmioBar;
 use crate::generic::spd::MemClock;
 use crate::ich7::ich7;
 use crate::pineview::regs::{CLKCFG_REG, MchBar, PMSTS_REG, mchbar};

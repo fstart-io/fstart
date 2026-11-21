@@ -166,64 +166,67 @@ register_structs! {
 /// the early-init subset; this wrapper provides raw offset-based access
 /// for the raminit code.
 #[derive(Clone, Copy)]
-pub struct MchBar {
-    base: usize,
-}
+pub struct MchBar(fstart_core::mmio::MmioWindow);
 
 impl MchBar {
-    pub const fn new(base: usize) -> Self {
-        Self { base }
+    /// # Safety
+    /// `base` must point to the mapped 16 KiB Pineview MCHBAR aperture.
+    pub const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x4000) })
     }
 
     /// Typed overlay for the early-init register subset.
     ///
     /// # Safety
-    /// `self.base` must be a valid MCHBAR MMIO address.
+    /// `self.base()` must be a valid MCHBAR MMIO address.
     pub unsafe fn early_regs(&self) -> &MchBarEarlyRegs {
-        unsafe { &*(self.base as *const MchBarEarlyRegs) }
+        unsafe { &*(self.0.base() as *const MchBarEarlyRegs) }
     }
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for MchBar {
-    fn base(self) -> usize {
-        self.base
+impl core::ops::Deref for MchBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// DMIBAR MMIO accessor.
+/// DMIBAR MMIO accessor (4 KiB).
 #[derive(Clone, Copy)]
-pub struct DmiBar {
-    base: usize,
-}
+pub struct DmiBar(fstart_core::mmio::MmioWindow);
 impl DmiBar {
-    pub const fn new(base: usize) -> Self {
-        Self { base }
+    /// # Safety
+    /// `base` must point to the mapped 4 KiB Pineview DMIBAR aperture.
+    pub const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x1000) })
     }
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for DmiBar {
-    fn base(self) -> usize {
-        self.base
+impl core::ops::Deref for DmiBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// RCBA (Root Complex Base Address) MMIO accessor.
+/// RCBA (Root Complex Base Address) MMIO accessor (16 KiB).
 #[derive(Clone, Copy)]
-pub struct Rcba {
-    base: usize,
-}
+pub struct Rcba(fstart_core::mmio::MmioWindow);
 impl Rcba {
-    pub const fn new(base: usize) -> Self {
-        Self { base }
+    /// # Safety
+    /// `base` must point to the mapped 16 KiB Pineview/ICH7 RCBA aperture.
+    pub const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x4000) })
     }
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for Rcba {
-    fn base(self) -> usize {
-        self.base
+impl core::ops::Deref for Rcba {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
