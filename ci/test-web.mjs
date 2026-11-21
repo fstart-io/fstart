@@ -19,6 +19,8 @@ fs.writeFileSync(keyPath, key);
 let comparedIntel = false;
 let compared = 0;
 let suppliedInput = false;
+let comparedDonor = false;
+const requireDonor = process.argv.includes('--require-donor-case');
 assert.throws(() => new ImageAssembler(new Uint8Array([0, 1, 2])));
 try {
   for (const build of catalog.builds) {
@@ -90,10 +92,18 @@ try {
             path.join(temporary, 'zImage')], { stdio: 'inherit' });
           suppliedInput = true;
         }
+        if (requireDonor && build.board === 'gigabyte-mj11-ec1' && build.donor_required && donor) {
+          // The required CI fixture is a raw ROM, not a vendor update ZIP.
+          assert(outputs.get(`${build.board}.rom`)?.length > 0, 'no assembled MJ11 ROM');
+          const report = JSON.parse(Buffer.from(outputs.get('assembly-report.json')));
+          assert.equal(report.donor_sha256, createHash('sha256').update(fs.readFileSync(donor)).digest('hex'));
+          comparedDonor = true;
+        }
         compared++;
       }
     } finally { assembler.free(); }
   }
+  if (requireDonor) assert(comparedDonor, 'MJ11 donor-backed comparison did not run');
   if (process.argv.includes('--require-input-case')) assert(suppliedInput, 'named input case did not run');
   assert(compared > 0, 'no native/WASM parity case was exercised');
   if (process.env.FSTART_REQUIRE_INTEL_CASE === '1') assert(comparedIntel, 'X201 full-ROM case did not run');

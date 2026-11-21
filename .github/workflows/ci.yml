@@ -71,7 +71,7 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.130 --locked
-      # Exercise a self-contained build and one requiring a named kernel.
+      # Self-contained, user-supplied kernel and synthetic AMD donor paths.
       - name: Compare native and WASM bundle assembly
         run: |
           smoke=$(mktemp -d)
@@ -89,6 +89,14 @@ jobs:
           node ci/test-web.mjs "$smoke/bundles" "$bindings" "$fbuild"
           node ci/test-web.mjs "$smoke/input" "$bindings" "$fbuild" \
             --require-input-case
+          "$fbuild" bundle --board gigabyte-mj11-ec1 --payload uefi \
+            --out "$smoke/amd" --revision "$(git rev-parse HEAD)"
+          cargo run --locked --release -p fstart-image-build \
+            --example mj11-parity-donor -- "$smoke"/amd/*.bundle.zip \
+            "$smoke/synthetic.rom"
+          FSTART_TEST_DONOR="$smoke/synthetic.rom" \
+            node ci/test-web.mjs "$smoke/amd" "$bindings" "$fbuild" \
+              --require-donor-case
 
       - name: Check X201 full-ROM import in native and WASM assemblers
         run: |
