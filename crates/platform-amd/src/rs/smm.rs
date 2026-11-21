@@ -89,6 +89,7 @@ mod handler {
     use super::{Config, Report};
     use crate::smm::ras::{self, Delivery, Event, Policy};
     use crate::smm::{SmmFch, psp as smm_psp, sw};
+    use fstart_core::mmio::{read32, write32};
     use fstart_driver_amd::ccx::tsc::Tsc;
     use fstart_driver_amd::fch::FchHw;
     use fstart_driver_amd::fch::smi::{self, Pending, source};
@@ -163,8 +164,8 @@ mod handler {
                 // firmware DRAM; only this handler writes it.
                 unsafe {
                     let requests = &raw mut (*report).p2c_requests;
-                    requests.write_volatile(requests.read_volatile().wrapping_add(1));
-                    (&raw mut (*report).p2c_command).write_volatile(command);
+                    write32(requests, read32(requests).wrapping_add(1));
+                    write32(&raw mut (*report).p2c_command, command);
                 }
             }
         }
@@ -193,13 +194,18 @@ mod handler {
             return;
         };
         // SAFETY: as in `sources`.
-        unsafe { (&raw mut (*report).smm_info).write_volatile(crate::smm::status::of(registered)) };
+        unsafe {
+            write32(
+                &raw mut (*report).smm_info,
+                crate::smm::status::of(registered),
+            )
+        };
         if registered.is_err() || !config.einj {
             return;
         }
         // SAFETY: SmmInfo registered the C2P page; the rendezvous owner.
         let enabled = unsafe { smm_psp::send(&mailbox, timer, RasEinj::ENABLE) };
         // SAFETY: as in `sources`.
-        unsafe { (&raw mut (*report).einj).write_volatile(crate::smm::status::of(enabled)) };
+        unsafe { write32(&raw mut (*report).einj, crate::smm::status::of(enabled)) };
     }
 }

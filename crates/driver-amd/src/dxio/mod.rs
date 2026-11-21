@@ -30,6 +30,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{Ordering, compiler_fence};
 pub use descriptor::*;
 use encode::EncodePolicy;
+use fstart_core::mmio::{read8, write8};
 use fstart_core::services::Timer;
 use heapless::Vec;
 use lanes::Engine;
@@ -218,7 +219,7 @@ impl DmaBuffer {
         assert!(offset + data.len() <= self.len);
         data.iter().enumerate().for_each(|(i, &b)| {
             // SAFETY: in bounds; constructor contract.
-            unsafe { self.ptr.as_ptr().add(offset + i).write_volatile(b) }
+            unsafe { write8(self.ptr.as_ptr().add(offset + i), b) }
         });
         compiler_fence(Ordering::SeqCst);
     }
@@ -228,7 +229,7 @@ impl DmaBuffer {
         compiler_fence(Ordering::SeqCst);
         out.iter_mut().enumerate().for_each(|(i, b)| {
             // SAFETY: in bounds; constructor contract.
-            *b = unsafe { self.ptr.as_ptr().add(offset + i).read_volatile() }
+            *b = unsafe { read8(self.ptr.as_ptr().add(offset + i)) }
         });
     }
 }
@@ -960,10 +961,10 @@ pub(crate) mod sp3_tests {
                     // SAFETY: test DMA window.
                     held.iter()
                         .enumerate()
-                        .for_each(|(i, &b)| unsafe { base.add(at + i).write_volatile(b) });
+                        .for_each(|(i, &b)| unsafe { write8(base.add(at + i), b) });
                     for &(e, port) in &self.ports {
                         // SAFETY: test DMA window.
-                        unsafe { base.add(at + 0x10 + e * 0x28 + 0x19).write_volatile(port) };
+                        unsafe { write8(base.add(at + 0x10 + e * 0x28 + 0x19), port) };
                     }
                 }
             }

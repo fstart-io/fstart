@@ -14,6 +14,8 @@
 //! the ARS service is implemented: they get the donors' RPMC answer,
 //! "unsupported".
 
+use fstart_core::mmio::{read8, read32, write32};
+
 /// Dword indices of the buffer.
 pub const COMMAND: usize = 0;
 pub const FLAGS: usize = 1;
@@ -44,8 +46,8 @@ pub const UNSUPPORTED: u32 = 4;
 pub unsafe fn ready(buffer: *mut u32) {
     // SAFETY: the caller's contract.
     unsafe {
-        buffer.add(COMMAND).write_volatile(0);
-        buffer.add(FLAGS).write_volatile(READY);
+        write32(buffer.add(COMMAND), 0);
+        write32(buffer.add(FLAGS), READY);
     }
 }
 
@@ -76,25 +78,23 @@ pub unsafe fn ready(buffer: *mut u32) {
 pub unsafe fn answer(buffer: *mut u32, writeback: unsafe fn(), acknowledge: impl FnOnce()) -> u32 {
     // SAFETY: the caller's contract.
     unsafe {
-        let flags = buffer.add(FLAGS).read_volatile() & !READY;
-        buffer.add(FLAGS).write_volatile(flags);
-        let size = buffer.add(SIZE).read_volatile();
-        let command = buffer.add(COMMAND).read_volatile();
+        let flags = read32(buffer.add(FLAGS)) & !READY;
+        write32(buffer.add(FLAGS), flags);
+        let size = read32(buffer.add(SIZE));
+        let command = read32(buffer.add(COMMAND));
         let status = match command {
             _ if size > MAX_SIZE => INVALID,
             0x81 | 0x82 => OK,
             0x83..=0x86 | 0x88..=0x8a => UNSUPPORTED,
             _ => INVALID,
         };
-        buffer.add(STATUS).write_volatile(status);
+        write32(buffer.add(STATUS), status);
         if status == OK && flags & CHECKSUM != 0 {
             let bytes = buffer.add(SIZE).cast::<u8>();
             let sum = (0..size as usize)
-                .map(|i| bytes.add(i).read_volatile())
+                .map(|i| read8(bytes.add(i)))
                 .fold(0u8, u8::wrapping_add);
-            buffer
-                .add(FLAGS)
-                .write_volatile(flags & !0xff | u32::from(sum));
+            write32(buffer.add(FLAGS), flags & !0xff | u32::from(sum));
         }
         writeback();
         acknowledge();
@@ -111,9 +111,9 @@ pub unsafe fn answer(buffer: *mut u32, writeback: unsafe fn(), acknowledge: impl
 pub unsafe fn release(buffer: *mut u32, writeback: unsafe fn()) {
     // SAFETY: the caller's contract.
     unsafe {
-        buffer.add(COMMAND).write_volatile(0);
-        let flags = buffer.add(FLAGS).read_volatile();
-        buffer.add(FLAGS).write_volatile(flags | READY);
+        write32(buffer.add(COMMAND), 0);
+        let flags = read32(buffer.add(FLAGS));
+        write32(buffer.add(FLAGS), flags | READY);
         writeback();
     }
 }
@@ -140,8 +140,8 @@ mod tests {
     impl Psp {
         fn request(&self, command: u32) {
             unsafe {
-                self.buffer.add(COMMAND).write_volatile(command);
-                self.buffer.add(SIZE).write_volatile(8);
+                write32(self.buffer.add(COMMAND), command);
+                write32(self.buffer.add(SIZE), 8);
             }
             let trigger = self.acpi.get(smi::TRIGGER0.offset, 4);
             self.acpi.put(
@@ -158,8 +158,8 @@ mod tests {
         fn poll(&self) {
             let (command, flags) = unsafe {
                 (
-                    self.buffer.add(COMMAND).read_volatile(),
-                    self.buffer.add(FLAGS).read_volatile(),
+                    read32(self.buffer.add(COMMAND)),
+                    read32(self.buffer.add(FLAGS)),
                 )
             };
             if command == 0 && flags & READY != 0 && self.next.replace(false) {

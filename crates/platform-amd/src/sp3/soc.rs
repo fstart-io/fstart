@@ -413,7 +413,7 @@ pub(crate) fn install_smm<F>(
     static mut SMM_INFO: u32 = crate::smm::status::NOT_SENT;
     let smm_info = &raw mut SMM_INFO;
     // SAFETY: firmware data; the handler writes it only on the SW SMI below.
-    unsafe { smm_info.write_volatile(crate::smm::status::NOT_SENT) };
+    unsafe { fstart_core::mmio::write32(smm_info, crate::smm::status::NOT_SENT) };
     let einj = state.einj.unwrap_or_default();
     parts::clear_einj_scratch(&einj);
     let soc = &state.soc;
@@ -450,7 +450,9 @@ pub(crate) fn install_smm<F>(
     // The PSP's DF lock and BootDone need the SMM info: without it the DF
     // lock breaks DMA, and the payload must not get an unlocked DF.
     // SAFETY: firmware data only the handler writes.
-    let status = crate::smm::status::wait(&state.soc.timer, || unsafe { smm_info.read_volatile() });
+    let status = crate::smm::status::wait(&state.soc.timer, || unsafe {
+        fstart_core::mmio::read32(smm_info)
+    });
     crate::smm::status::smm_info("sp3", status)?;
     state.smm = Some(config);
     state.soc.smm_installed = true;

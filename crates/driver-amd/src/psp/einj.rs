@@ -16,9 +16,9 @@
 //! `MP0_C2PMSG_31` reads all-ones until then.
 
 use core::ops::Range;
+use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::timer::Timer;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::registers::{ReadOnly, ReadWrite};
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -70,55 +70,55 @@ register_structs! {
     /// (the ABL's `ReservedRasEinj` hole).
     pub Buffer {
         /// GET_ERROR_TYPE.
-        (0x000 => pub error_types: ReadOnly<u32, ERROR_TYPES::Register>),
+        (0x000 => pub error_types: MmioReadOnly<u32, ERROR_TYPES::Register>),
         (0x004 => _reserved0),
         /// SET_ERROR_TYPE.
-        (0x008 => pub error_type: ReadWrite<u32>),
+        (0x008 => pub error_type: MmioReadWrite<u32>),
         (0x00c => _reserved1),
         /// BEGIN writes 1; CHECK_BUSY_STATUS and GET_COMMAND_STATUS read it.
-        (0x010 => pub command: ReadWrite<u32, COMMAND::Register>),
+        (0x010 => pub command: MmioReadWrite<u32, COMMAND::Register>),
         (0x014 => _reserved2),
         /// GET_TRIGGER_ACTION_TABLE: the trigger table's address.
-        (0x020 => pub trigger_pointer: ReadWrite<u64>),
+        (0x020 => pub trigger_pointer: MmioReadWrite<u64>),
         /// The trigger action writes 1 here.
-        (0x028 => pub trigger_doorbell: ReadWrite<u32>),
+        (0x028 => pub trigger_doorbell: MmioReadWrite<u32>),
         /// END_OPERATION writes 1.
-        (0x02c => pub end: ReadWrite<u32>),
+        (0x02c => pub end: MmioReadWrite<u32>),
         /// SET_ERROR_TYPE_WITH_ADDRESS: the OS's parameter block.
         (0x030 => pub parameters: Parameters),
         /// The vendor-type extension, right after the parameters.
         (0x054 => pub vendor_extension: VendorExtension),
-        (0x080 => pub trigger_table: [ReadWrite<u8>; 0x80]),
+        (0x080 => pub trigger_table: [MmioReadWrite<u8>; 0x80]),
         /// GET_EXECUTE_OPERATION_TIMINGS.
-        (0x100 => pub timings: ReadOnly<u64>),
+        (0x100 => pub timings: MmioReadOnly<u64>),
         (0x108 => @END),
     },
 
     /// ACPI's SET_ERROR_TYPE_WITH_ADDRESS data structure. Its 64-bit fields
     /// are dword pairs: the structure, as placed, is only dword aligned.
     pub Parameters {
-        (0x00 => pub error_type: ReadWrite<u32>),
+        (0x00 => pub error_type: MmioReadWrite<u32>),
         /// From this structure's start; 0 without a vendor extension.
-        (0x04 => pub vendor_extension_offset: ReadWrite<u32>),
-        (0x08 => pub flags: ReadWrite<u32>),
-        (0x0c => pub processor: ReadWrite<u32>),
-        (0x10 => pub memory_address: [ReadWrite<u32>; 2]),
-        (0x18 => pub memory_mask: [ReadWrite<u32>; 2]),
-        (0x20 => pub pcie_sbdf: ReadWrite<u32, SBDF::Register>),
+        (0x04 => pub vendor_extension_offset: MmioReadWrite<u32>),
+        (0x08 => pub flags: MmioReadWrite<u32>),
+        (0x0c => pub processor: MmioReadWrite<u32>),
+        (0x10 => pub memory_address: [MmioReadWrite<u32>; 2]),
+        (0x18 => pub memory_mask: [MmioReadWrite<u32>; 2]),
+        (0x20 => pub pcie_sbdf: MmioReadWrite<u32, SBDF::Register>),
         (0x24 => @END),
     },
 
     /// ACPI's vendor error type extension structure, as the vendor fills it.
     pub VendorExtension {
-        (0x00 => pub length: ReadWrite<u32>),
-        (0x04 => pub sbdf: ReadWrite<u32, SBDF::Register>),
+        (0x00 => pub length: MmioReadWrite<u32>),
+        (0x04 => pub sbdf: MmioReadWrite<u32, SBDF::Register>),
         /// Vendor ID (low half) and device ID, as config dword 0 reads.
-        (0x08 => pub id: ReadWrite<u32>),
+        (0x08 => pub id: MmioReadWrite<u32>),
         /// Revision ID; the rest is reserved.
-        (0x0c => pub revision: ReadWrite<u32>),
+        (0x0c => pub revision: MmioReadWrite<u32>),
         /// OEM qword the PSP owns; firmware leaves it alone.
-        (0x10 => pub psp: [ReadWrite<u32>; 2]),
-        (0x18 => pub oem: [ReadWrite<u32>; 5]),
+        (0x10 => pub psp: [MmioReadWrite<u32>; 2]),
+        (0x18 => pub oem: [MmioReadWrite<u32>; 5]),
         (0x2c => @END),
     }
 }
@@ -233,7 +233,7 @@ pub struct Mailbox<R> {
     register: R,
 }
 
-impl Mailbox<&'static ReadWrite<u32, RAS_MBOX::Register>> {
+impl Mailbox<&'static MmioReadWrite<u32, RAS_MBOX::Register>> {
     /// The RAS mailbox of the PSP whose BAR is mapped at `bar`.
     ///
     /// # Safety
@@ -241,7 +241,7 @@ impl Mailbox<&'static ReadWrite<u32, RAS_MBOX::Register>> {
     /// caller is the only user of the RAS mailbox.
     pub unsafe fn mmio(bar: u64) -> Self {
         // SAFETY: the caller's contract; a dword-aligned MMIO register.
-        Self::new(unsafe { &*((bar + MAILBOX_OFFSET) as *const ReadWrite<u32, _>) })
+        Self::new(unsafe { &*((bar + MAILBOX_OFFSET) as *const MmioReadWrite<u32, _>) })
     }
 }
 

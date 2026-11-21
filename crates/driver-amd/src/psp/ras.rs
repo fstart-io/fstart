@@ -328,7 +328,7 @@ mod tests {
         let model = Model::new(0x8000_0000, move |id, address| {
             assert_eq!(id, 0x22);
             unsafe {
-                assert_eq!(flag_ptr.read_volatile(), 1);
+                assert_eq!(fstart_core::mmio::read8(flag_ptr), 1);
                 let header = (address as *const Header).read();
                 let action = ((address + 8) as *const u32).read();
                 assert_eq!(header.size, if action == 4 { 28 } else { 12 });

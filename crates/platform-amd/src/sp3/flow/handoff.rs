@@ -115,8 +115,9 @@ pub(crate) fn acpi(
     let einj_supported = ctx.smm.is_some() && {
         // SAFETY: the fixed communication page in reserved early RAM.
         unsafe {
-            ((crate::sp3::einj::BASE + crate::sp3::einj::SUPPORTED) as *const u64).read_volatile()
-                == 8
+            fstart_core::mmio::read64(
+                (crate::sp3::einj::BASE + crate::sp3::einj::SUPPORTED) as *const u64,
+            ) == 8
         }
     };
     // EINJ, then the PCCT of the SMU-served CPPC.

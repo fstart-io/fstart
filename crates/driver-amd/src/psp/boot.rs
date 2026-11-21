@@ -236,7 +236,7 @@ mod tests {
         // The late completion: the status into the header, the command
         // register done.
         // SAFETY: the session's leaked storage, which the model was given.
-        unsafe { ((buffer + 4) as *mut u32).write_volatile(0x5a) };
+        unsafe { fstart_core::mmio::write32((buffer + 4) as *mut u32, 0x5a) };
         {
             let mut p = model.0.borrow_mut();
             p.hang = false;
@@ -253,7 +253,7 @@ mod tests {
         assert_eq!(commands(&model), [0x1b]);
         // SAFETY: as above.
         assert_eq!(
-            unsafe { ((buffer + 4) as *const u32).read_volatile() },
+            unsafe { fstart_core::mmio::read32((buffer + 4) as *const u32) },
             0x5a
         );
     }

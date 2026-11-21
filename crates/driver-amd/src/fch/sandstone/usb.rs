@@ -5,11 +5,11 @@ use crate::ccx::rv::{Identity, Silicon};
 use crate::smn::{Smn, apply, rmw, write};
 use crate::smu::v10 as smu;
 use embedded_hal::delay::DelayNs;
+use fstart_core::mmio::MmioReadWrite;
 use heapless::Vec;
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_structs,
-    registers::ReadWrite,
 };
 const CONTROLLER0: u32 = 0x01000001;
 const PHY: u32 = 0x01000002;
@@ -312,7 +312,7 @@ pub trait PhyRegisters {
     fn read(&mut self, index: usize) -> u32;
     fn write(&mut self, index: usize, value: u32);
 }
-register_structs! { PhyLayout { (0 => values: [ReadWrite<u32>; 8]), (0x20 => @END), } }
+register_structs! { PhyLayout { (0 => values: [MmioReadWrite<u32>; 8]), (0x20 => @END), } }
 pub struct NativePhy {
     base: *const PhyLayout,
 }
