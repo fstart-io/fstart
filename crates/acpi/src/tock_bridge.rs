@@ -274,9 +274,8 @@ where
 
 /// Trait for register field types that carry type-level register metadata.
 ///
-/// Implemented for `tock_registers::registers::ReadWrite<T, R>` and
-/// `ReadOnly<T, R>`.  Custom register wrappers (e.g., fstart-core::mmio's
-/// `MmioReadWrite`) can implement this to participate in [`tock_acpi_field!`].
+/// Implemented for `fstart_core::mmio`'s `MmioReadWrite<T, R>`,
+/// `MmioReadOnly<T, R>` and `MmioWriteOnly<T, R>`.
 pub trait AcpiRegField {
     /// The register width type (u8, u16, u32, u64).
     type Width: UIntLike + 'static;
@@ -285,14 +284,21 @@ pub trait AcpiRegField {
 }
 
 impl<T: UIntLike + 'static, R: RegisterDebugInfo<T> + 'static> AcpiRegField
-    for tock_registers::registers::ReadWrite<T, R>
+    for fstart_core::mmio::MmioReadWrite<T, R>
 {
     type Width = T;
     type Reg = R;
 }
 
 impl<T: UIntLike + 'static, R: RegisterDebugInfo<T> + 'static> AcpiRegField
-    for tock_registers::registers::ReadOnly<T, R>
+    for fstart_core::mmio::MmioReadOnly<T, R>
+{
+    type Width = T;
+    type Reg = R;
+}
+
+impl<T: UIntLike + 'static, R: RegisterDebugInfo<T> + 'static> AcpiRegField
+    for fstart_core::mmio::MmioWriteOnly<T, R>
 {
     type Width = T;
     type Reg = R;
@@ -302,7 +308,7 @@ impl<T: UIntLike + 'static, R: RegisterDebugInfo<T> + 'static> AcpiRegField
 ///
 /// The closure is never called -- it exists purely so that the compiler
 /// can infer `T` and `R` from the struct field type
-/// (`ReadWrite<T, R>` or `ReadOnly<T, R>`).
+/// (`MmioReadWrite<T, R>`, `MmioReadOnly<T, R>` or `MmioWriteOnly<T, R>`).
 pub fn field_entry_for<S, F, Fld>(_accessor: F, offset: usize) -> (u64, usize, Vec<FieldEntry>)
 where
     F: Fn(&S) -> &Fld,
@@ -324,8 +330,8 @@ where
 /// register_structs! {
 ///     MchRegs {
 ///         (0x000 => _pad0),
-///         (0x040 => pub epbar: ReadWrite<u32, MCH_EPBAR::Register>),
-///         (0x044 => pub mchbar: ReadWrite<u32, MCH_MCHBAR::Register>),
+///         (0x040 => pub epbar: MmioReadWrite<u32, MCH_EPBAR::Register>),
+///         (0x044 => pub mchbar: MmioReadWrite<u32, MCH_MCHBAR::Register>),
 ///         (0x048 => @END),
 ///     }
 /// }

@@ -37,7 +37,7 @@
 //! ## Register access mode (`access_mode`)
 //!
 //! The `access_mode` config selects between memory-mapped and port I/O access:
-//!   - `Mmio` (default): Memory-mapped I/O via `read_volatile`/`write_volatile`.
+//!   - `Mmio` (default): Memory-mapped I/O via `fstart_core::mmio`.
 //!     Used by all non-x86 platforms and MMIO-mapped x86 UARTs.
 //!   - `Pio`: x86 port I/O via `in`/`out` instructions.  Used by legacy
 //!     PC UARTs (COM1 at 0x3F8, COM2 at 0x2F8, etc.).  Requires the `pio`

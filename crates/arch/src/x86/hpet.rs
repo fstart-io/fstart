@@ -1,9 +1,9 @@
 //! HPET register access and delays. The platform owns address/decode policy.
 
+use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use tock_registers::{
     interfaces::{ReadWriteable, Readable},
     register_bitfields, register_structs,
-    registers::{ReadOnly, ReadWrite},
 };
 
 register_bitfields![u32,
@@ -11,12 +11,12 @@ register_bitfields![u32,
 ];
 register_structs! {
     Registers {
-        (0x00 => capabilities: ReadOnly<u32>),
-        (0x04 => period_fs: ReadOnly<u32>),
+        (0x00 => capabilities: MmioReadOnly<u32>),
+        (0x04 => period_fs: MmioReadOnly<u32>),
         (0x08 => _reserved0),
-        (0x10 => configuration: ReadWrite<u32, Configuration::Register>),
+        (0x10 => configuration: MmioReadWrite<u32, Configuration::Register>),
         (0x14 => _reserved1),
-        (0xf0 => counter: ReadOnly<u32>),
+        (0xf0 => counter: MmioReadOnly<u32>),
         (0xf4 => @END),
     }
 }

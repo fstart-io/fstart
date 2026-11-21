@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(words[4], 0x1234_0000);
         assert!(!apic.all_masked());
         // SAFETY: the modeled window register, written as the IOAPIC would.
-        unsafe { words.as_mut_ptr().add(4).write_volatile(0x0001_0000) };
+        unsafe { fstart_core::mmio::write32(words.as_mut_ptr().add(4), 0x0001_0000) };
         assert!(apic.all_masked());
     }
 }

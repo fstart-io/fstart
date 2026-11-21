@@ -944,7 +944,7 @@ fn sipi_claimed_ap_count() -> u32 {
     // bring-up. APs update this aligned field atomically before either taking a
     // stack slot or resetting as excess hardware.
     unsafe {
-        core::ptr::read_volatile(
+        fstart_core::mmio::read32(
             (SIPI_VECTOR_ADDR as *const u8).add(sipi_blob::AP_COUNTER_OFFSET) as *const u32,
         )
     }
@@ -995,7 +995,7 @@ fn patch_sipi_unlock(page: &mut [u8], unlock: Option<SipiUnlock>) -> Result<(), 
 unsafe fn verify_sipi_page(base: *const u8, expected: &[u8]) -> Result<(), MpError> {
     for (offset, &byte) in expected.iter().enumerate() {
         // SAFETY: caller supplies the complete readable copied-page extent.
-        let actual = unsafe { base.add(offset).read_volatile() };
+        let actual = unsafe { fstart_core::mmio::read8(base.add(offset)) };
         if actual != byte {
             fstart_log::error!(
                 "mp: trampoline readback mismatch offset={:#x} expected={:#x} actual={:#x}",
