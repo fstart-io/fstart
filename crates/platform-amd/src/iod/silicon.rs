@@ -584,10 +584,29 @@ impl Silicon {
         ctx.ports =
             dxio::ports::attached(&ctx.topology, ctx.pci_root.segment, engines, setup.ports());
         hotplug::<V>(ctx, &setup, &dxio_smus, &policy.hotplug)?;
-        // 2P xGMI (`dxio::ports::xgmi_init`) needs F1x330 and the CCD mask of
-        // each socket; not wired until a 2P board exists.
         if ctx.topology.sockets > 1 {
-            fstart_log::warn!("dxio: 2P xGMI init not wired");
+            // SAFETY: node 0's D18F1x330 is a read-only DF register; the donor
+            // reads this fixed node-0 address for both sockets.
+            let f1x330 = unsafe {
+                ctx.df.reg(
+                    0,
+                    fstart_driver_amd::df::Target::Node,
+                    fstart_driver_amd::df::DfReg::<()>::new(1, 0x330),
+                )
+            }
+            .get();
+            for (s, smu) in dxio_smus.iter().enumerate() {
+                let ccd_mask = si.maps.get(s).map_or(0, CoreMap::ccd_mask);
+                let dxio = Dxio::new(smu, v11::msg::DXIO);
+                dxio::ports::xgmi_init(generation, &dxio, f1x330, ccd_mask, true)
+                    .step("DXIO xGMI init")?;
+                fstart_log::info!(
+                    "dxio: socket {} xGMI init (F1x330={:#x}, ccds={:#x})",
+                    s as u32,
+                    f1x330,
+                    u32::from(ccd_mask)
+                );
+            }
         }
         Ok(())
     }

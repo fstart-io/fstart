@@ -76,6 +76,14 @@ impl CoreMap {
             .sum()
     }
 
+    /// Bitmask of present physical CCD IDs on this socket (bits 0..8).
+    pub fn ccd_mask(&self) -> u8 {
+        self.ccds
+            .iter()
+            .filter(|d| d.id < 8)
+            .fold(0u8, |mask, d| mask | (1u8 << d.id))
+    }
+
     /// `(ccd id, ccx id, core)` for every present core.
     pub fn cores(&self) -> impl Iterator<Item = (u8, u8, &Core)> {
         self.ccds
@@ -174,6 +182,7 @@ mod tests {
         );
         assert_eq!(map.ccds[1].ccxs.len(), 1);
         assert_eq!(map.ccds[1].ccxs[0].cores.len(), 8);
+        assert_eq!(map.ccd_mask(), (1 << 0) | (1 << 2) | (1 << 5));
         assert_eq!(map.threads(), 48);
         assert!(core_map(&apob, 0).is_err());
     }
@@ -186,6 +195,7 @@ mod tests {
         let apob = Apob::new(&data, Variant::Ssp).unwrap();
         let map = core_map(&apob, 0).unwrap();
         assert_eq!(map.ccds.len(), 2);
+        assert_eq!(map.ccd_mask(), (1 << 1) | (1 << 3));
         assert_eq!(map.threads(), 12);
         // A Rome-sized entry is too short for the Milan layout.
         let apob = Apob::new(&data, Variant::Gn).unwrap();
