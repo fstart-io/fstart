@@ -660,6 +660,75 @@ impl ufmt::uWrite for ConsoleWriter {
     }
 }
 
+impl embedded_io::ErrorType for ConsoleWriter {
+    type Error = fstart_core::services::ServiceError;
+}
+
+/// Raw byte writer over the global console(s).
+///
+/// Unlike [`ufmt::uWrite`], bytes are written verbatim without `\n` → `\r\n`
+/// translation. Writes are silently discarded if no console is registered.
+/// Under `debug-consoles`, `write` uses best-effort fan-out across consoles
+/// (succeeding if any backend accepts the bytes), while `flush` reports any
+/// backend flush error.
+impl embedded_io::Write for ConsoleWriter {
+    #[cfg(not(feature = "debug-consoles"))]
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        // SAFETY: CONSOLE is written once during init, then only read.
+        let console = unsafe { *CONSOLE.0.get() };
+        if let Some(c) = console {
+            timed(|| c.write_bytes(buf))?;
+        }
+        Ok(buf.len())
+    }
+
+    #[cfg(feature = "debug-consoles")]
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut result = Ok(());
+        let mut taken = false;
+        for c in consoles() {
+            match timed(|| c.write_bytes(buf)) {
+                Ok(()) => taken = true,
+                Err(error) => result = Err(error),
+            }
+        }
+        if taken {
+            Ok(buf.len())
+        } else {
+            result.map(|()| buf.len())
+        }
+    }
+
+    #[cfg(not(feature = "debug-consoles"))]
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        // SAFETY: CONSOLE is written once during init, then only read.
+        let console = unsafe { *CONSOLE.0.get() };
+        if let Some(c) = console {
+            timed(|| c.flush())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "debug-consoles")]
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        let mut result = Ok(());
+        for c in consoles() {
+            if let Err(error) = timed(|| c.flush())
+                && result.is_ok()
+            {
+                result = Err(error);
+            }
+        }
+        result
+    }
+}
+
 /// Write `s` to every console. Out of line: ufmt writes each fragment of a
 /// message separately, and every log call site would otherwise carry its own
 /// copy of the backend loop.

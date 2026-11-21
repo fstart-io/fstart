@@ -31,7 +31,7 @@ pub use boot_media::{
 pub use console::{Console, ConsoleDevice, NoConsole, UartPort};
 pub use device::DeviceError;
 pub use firmware::{FirmwareImage, FirmwareImageProvider, FirmwareWindow};
-pub use flash::FlashRegion;
+pub use flash::{FlashRegion, NorFlashAdapter, NorFlashAdapterError};
 pub use framebuffer::{Framebuffer, FramebufferInfo};
 pub use i2c::I2c;
 pub use measure::{Measure, Measurement, Unmeasured};
@@ -69,6 +69,19 @@ impl From<DeviceError> for ServiceError {
             DeviceError::MissingResource(_) | DeviceError::ConfigError => Self::InvalidParam,
             DeviceError::InitFailed => Self::HardwareError,
             DeviceError::BusError => Self::IoError,
+        }
+    }
+}
+
+impl embedded_io::Error for ServiceError {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        match self {
+            Self::Timeout => embedded_io::ErrorKind::TimedOut,
+            Self::InvalidParam => embedded_io::ErrorKind::InvalidInput,
+            Self::NotSupported => embedded_io::ErrorKind::Unsupported,
+            Self::NoDevice => embedded_io::ErrorKind::NotFound,
+            Self::NotInitialized => embedded_io::ErrorKind::NotConnected,
+            Self::HardwareError | Self::IoError => embedded_io::ErrorKind::Other,
         }
     }
 }

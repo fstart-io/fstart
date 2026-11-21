@@ -13,6 +13,7 @@ alloc = ["fstart-options/alloc"]
 
 [dependencies]
 ufmt = { workspace = true }
+embedded-io = { workspace = true }
 fstart-core = { workspace = true }
 fstart-timestamp = { workspace = true }
 portable-atomic = { workspace = true }
