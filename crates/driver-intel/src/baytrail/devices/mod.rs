@@ -16,33 +16,28 @@ pub mod usb;
 use super::iosf::{Iosf, IosfPort};
 use super::pmc::{self, FUNC_DIS, FUNC_DIS2};
 use super::{TEMP_BASE, dev};
-use crate::MmioBar;
+use fstart_core::mmio::MmioWindow;
 use fstart_core::services::ServiceError;
 use fstart_pci::ConfigRegionAccess;
 use fstart_pci::ecam::EcamDevice;
 use tock_registers::fields::FieldValue;
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
-/// A memory BAR as enumeration assigned it.
-#[derive(Debug, Clone, Copy)]
-pub struct Bar(pub usize);
-
-impl MmioBar for Bar {
-    fn base(self) -> usize {
-        self.0
-    }
-}
-
-impl Bar {
-    /// BAR0 of `device`, when enumeration assigned it.
-    pub fn of(device: &EcamDevice) -> Option<Self> {
-        device.memory_bar(0x10).map(|base| Self(base as usize))
-    }
+/// Read BAR0 of `device` as a bounded [`MmioWindow`] of `size` bytes.
+///
+/// # Safety
+///
+/// `device`'s BAR0 must be assigned, memory-decoded, and at least `size` bytes.
+pub(crate) unsafe fn bar0(device: &EcamDevice, size: u32) -> Option<MmioWindow> {
+    device
+        .memory_bar(0x10)
+        // SAFETY: forwarded from caller.
+        .map(|base| unsafe { MmioWindow::new(base as usize, size) })
 }
 
 /// Wait up to `timeout_us` for `bar[offset] & mask == value`.
-pub fn poll_bar(
-    bar: Bar,
+pub(crate) fn poll_bar(
+    bar: MmioWindow,
     offset: u32,
     mask: u32,
     value: u32,
@@ -367,7 +362,8 @@ fn place_in_d3hot(function: Function, device: &EcamDevice) {
         device.write32(0x10, TEMP_BASE);
         device.write32(0x14, 0);
         device.write16(0x04, 0x2);
-        Bar(TEMP_BASE as usize).setbits32(0x8, 1);
+        // SAFETY: temporary BAR mapped at TEMP_BASE for 4 KiB above.
+        unsafe { MmioWindow::new(TEMP_BASE as usize, 0x1000) }.setbits32(0x8, 1);
         device.write16(0x04, 0);
         device.write32(0x10, 0);
         return;

@@ -75,11 +75,11 @@ impl ProbeMemory for PhysicalMemory {
     fn read(&mut self, address: u32) -> u32 {
         // SAFETY: caller checked word alignment and low usable DRAM bounds;
         // the bootblock runs from ROM and has its stack in CAR.
-        unsafe { core::ptr::read_volatile(address as usize as *const u32) }
+        unsafe { fstart_core::mmio::read32(address as usize as *const u32) }
     }
     fn write(&mut self, address: u32, value: u32) {
         // SAFETY: same bounds and execution constraints as read.
-        unsafe { core::ptr::write_volatile(address as usize as *mut u32, value) }
+        unsafe { fstart_core::mmio::write32(address as usize as *mut u32, value) }
     }
 }
 

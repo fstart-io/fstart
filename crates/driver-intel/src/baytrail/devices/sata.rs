@@ -1,7 +1,7 @@
 //! SATA (00:13.0), AHCI or IDE (coreboot `sata.c`).
 
-use super::{Bar, Function};
-use crate::MmioBar;
+use super::Function;
+use fstart_core::mmio::MmioWindow;
 use fstart_pci::ecam::EcamDevice;
 
 /// SATA policy.
@@ -99,7 +99,11 @@ pub fn init(config: &SataConfig) {
     sata.write16(PCS, (sata.read16(PCS) & !0x003f) | map);
 
     if config.ahci {
-        if let Some(abar) = sata.memory_bar(0x24).map(|base| Bar(base as usize)) {
+        if let Some(abar) = sata
+            .memory_bar(0x24)
+            // SAFETY: SATA ABAR is a 2 KiB MMIO window assigned by PCI enumeration.
+            .map(|base| unsafe { MmioWindow::new(base as usize, 0x800) })
+        {
             sata.or16(0x04, 0x2);
             // PSC, SSC, SALP, SSS, SAM; no SXS, EMS, PMS; Gen 3.
             let cap = (abar.read32(0x00) | 0x0c04_6000) & !0x00f2_0060;

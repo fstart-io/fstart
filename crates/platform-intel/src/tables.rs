@@ -93,8 +93,8 @@ fn install_rsdp_in_ebda(rsdp: &[u8]) {
     // copy. This keeps ACPI discoverable for legacy scanners in addition to
     // the Linux boot_params pointer to the high ACPI table set.
     unsafe {
-        core::ptr::write_volatile(BDA_EBDA_SEG_PTR, (EBDA_BASE >> 4) as u16);
-        core::ptr::write_volatile(BDA_CONVENTIONAL_MEM_KB, (EBDA_BASE / 1024) as u16);
+        fstart_core::mmio::write16(BDA_EBDA_SEG_PTR, (EBDA_BASE >> 4) as u16);
+        fstart_core::mmio::write16(BDA_CONVENTIONAL_MEM_KB, (EBDA_BASE / 1024) as u16);
         core::ptr::write_bytes(EBDA_BASE as *mut u8, 0, EBDA_SIZE);
         core::ptr::copy_nonoverlapping(
             rsdp.as_ptr(),

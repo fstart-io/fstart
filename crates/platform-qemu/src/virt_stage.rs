@@ -103,7 +103,7 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
     /// Describe the machine to the build's payload launcher and boot it.
     pub fn boot(self) -> ! {
         // AArch64 CrabEFI patches its device tree in the workspace.
-        #[cfg(all(feature = "crabefi", target_arch = "aarch64"))]
+        #[cfg(all(feature = "payload-uefi", target_arch = "aarch64"))]
         step("device tree", || {
             fstart_stage::copy_fdt_to_workspace(self.dtb, self.region(RegionKind::DeviceTree).base)
         });
@@ -171,7 +171,7 @@ fn source_dtb(config: &QemuVirtConfig) -> u64 {
 }
 
 /// OpenSBI's return into S-mode, before CrabEFI.
-#[cfg(all(target_arch = "riscv64", feature = "crabefi"))]
+#[cfg(all(target_arch = "riscv64", feature = "payload-uefi"))]
 impl<C: ConsoleDevice + 'static> Virt<C> {
     /// Recreate the stage's state after OpenSBI enters S-mode and launch
     /// CrabEFI. The image stays mapped across the transition.
@@ -208,7 +208,7 @@ impl<C: ConsoleDevice + 'static> Virt<C> {
 }
 
 /// Without CrabEFI nothing returns from OpenSBI here.
-#[cfg(all(target_arch = "riscv64", not(feature = "crabefi")))]
+#[cfg(all(target_arch = "riscv64", not(feature = "payload-uefi")))]
 impl<C: ConsoleDevice + 'static> Virt<C> {
     pub fn resume_sbi(
         _: &'static QemuVirtConfig,

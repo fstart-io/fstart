@@ -311,7 +311,7 @@ impl SunxiH3DramComRegs {
     fn write_mcr0(&self, port: usize, val: u32) {
         let addr = (self as *const Self as usize) + 0x10 + port * 8;
         // SAFETY: within the COM register block, single-threaded boot.
-        unsafe { core::ptr::write_volatile(addr as *mut u32, val) };
+        unsafe { fstart_core::mmio::write32(addr as *mut u32, val) };
     }
 
     /// Write master configuration register 1 for a port.
@@ -320,7 +320,7 @@ impl SunxiH3DramComRegs {
     fn write_mcr1(&self, port: usize, val: u32) {
         let addr = (self as *const Self as usize) + 0x14 + port * 8;
         // SAFETY: within the COM register block, single-threaded boot.
-        unsafe { core::ptr::write_volatile(addr as *mut u32, val) };
+        unsafe { fstart_core::mmio::write32(addr as *mut u32, val) };
     }
 }
 
@@ -443,14 +443,14 @@ impl SunxiH3DramCtlRegs {
     fn dx_read(&self, lane: usize, sub_off: usize) -> u32 {
         let addr = (self as *const Self as usize) + 0x300 + lane * 0x80 + sub_off;
         // SAFETY: within the CTL register block, single-threaded boot.
-        unsafe { core::ptr::read_volatile(addr as *const u32) }
+        unsafe { fstart_core::mmio::read32(addr as *const u32) }
     }
 
     /// Write a DX byte-lane register.
     fn dx_write(&self, lane: usize, sub_off: usize, val: u32) {
         let addr = (self as *const Self as usize) + 0x300 + lane * 0x80 + sub_off;
         // SAFETY: within the CTL register block, single-threaded boot.
-        unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
+        unsafe { fstart_core::mmio::write32(addr as *mut u32, val) }
     }
 
     /// Write an AC bit delay line register (index 0..30).
@@ -459,7 +459,7 @@ impl SunxiH3DramCtlRegs {
     fn write_acbdlr(&self, index: usize, val: u32) {
         let addr = (self as *const Self as usize) + 0x210 + index * 4;
         // SAFETY: within the CTL register block, single-threaded boot.
-        unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
+        unsafe { fstart_core::mmio::write32(addr as *mut u32, val) }
     }
 }
 
@@ -1279,8 +1279,10 @@ impl H3Dramc {
         let zq_count: usize = 6;
 
         // Read SRAMC version info
-        let sramc_24 = unsafe { core::ptr::read_volatile((SUNXI_SRAMC_BASE + 0x24) as *const u32) };
-        let sramc_f0 = unsafe { core::ptr::read_volatile((SUNXI_SRAMC_BASE + 0xf0) as *const u32) };
+        let sramc_24 =
+            unsafe { fstart_core::mmio::read32((SUNXI_SRAMC_BASE + 0x24) as *const u32) };
+        let sramc_f0 =
+            unsafe { fstart_core::mmio::read32((SUNXI_SRAMC_BASE + 0xf0) as *const u32) };
 
         if (sramc_24 & 0xff) == 0 && (sramc_f0 & 0x1) == 0 {
             // Path A: early silicon — run ZCAL, read/patch ZQDR registers
@@ -1588,12 +1590,12 @@ impl H3Dramc {
         // SAFETY: probing DRAM addresses; write patterns to detect aliasing.
         unsafe {
             // Write two distinct patterns
-            core::ptr::write_volatile(base, 0);
-            core::ptr::write_volatile(base.add(offset / 4), 0xaa55aa55);
+            fstart_core::mmio::write32(base, 0);
+            fstart_core::mmio::write32(base.add(offset / 4), 0xaa55aa55);
             // Compiler fence to prevent reordering
             core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             // Check if base was clobbered (aliasing)
-            core::ptr::read_volatile(base) == 0xaa55aa55
+            fstart_core::mmio::read32(base) == 0xaa55aa55
         }
     }
 

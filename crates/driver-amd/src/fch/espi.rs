@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Four-window AMD eSPI controller.
 //! Picasso has none of the newer extended-window/ALERT_ENABLE register bits.
+use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::Timer;
 use heapless::Vec;
-use tock_registers::{
-    interfaces::{Readable, Writeable},
-    registers::ReadWrite,
-};
+use tock_registers::interfaces::{Readable, Writeable};
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum Mode {
@@ -327,17 +325,17 @@ impl Native {
             _exclusive: core::marker::PhantomData,
         }
     }
-    fn register8(&self, offset: u16) -> &ReadWrite<u8> {
+    fn register8(&self, offset: u16) -> &MmioReadWrite<u8> {
         assert!(offset < 0x100);
-        unsafe { &*((self.base + usize::from(offset)) as *const ReadWrite<u8>) }
+        unsafe { &*((self.base + usize::from(offset)) as *const MmioReadWrite<u8>) }
     }
-    fn register16(&self, offset: u16) -> &ReadWrite<u16> {
+    fn register16(&self, offset: u16) -> &MmioReadWrite<u16> {
         assert!(offset < 0xff && offset.is_multiple_of(2));
-        unsafe { &*((self.base + usize::from(offset)) as *const ReadWrite<u16>) }
+        unsafe { &*((self.base + usize::from(offset)) as *const MmioReadWrite<u16>) }
     }
-    fn register32(&self, offset: u16) -> &ReadWrite<u32> {
+    fn register32(&self, offset: u16) -> &MmioReadWrite<u32> {
         assert!(offset < 0xfd && offset.is_multiple_of(4));
-        unsafe { &*((self.base + usize::from(offset)) as *const ReadWrite<u32>) }
+        unsafe { &*((self.base + usize::from(offset)) as *const MmioReadWrite<u32>) }
     }
 }
 impl Registers for Native {

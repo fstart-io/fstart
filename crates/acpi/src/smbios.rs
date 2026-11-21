@@ -669,18 +669,14 @@ impl<'a> SmbiosWriter<'a> {
 
     /// Copy raw bytes at the current position with a single bounds check.
     ///
-    /// Bytes are written volatile: tables live in OS-visible DRAM that the
-    /// CPU never reads back, so the stores must not be optimized away.
+    /// Tables live in OS-visible DRAM the CPU never reads back; stores
+    /// through the borrowed buffer outlive this writer, so they stay.
     fn write_raw(&mut self, bytes: &[u8]) {
         if self.offset + bytes.len() > self.limit {
             self.overflow = true;
             return;
         }
-        let dst = &mut self.buffer[self.offset..self.offset + bytes.len()];
-        for (d, &b) in dst.iter_mut().zip(bytes) {
-            // SAFETY: a valid, exclusively borrowed byte.
-            unsafe { core::ptr::write_volatile(d, b) };
-        }
+        self.buffer[self.offset..self.offset + bytes.len()].copy_from_slice(bytes);
         self.offset += bytes.len();
     }
 

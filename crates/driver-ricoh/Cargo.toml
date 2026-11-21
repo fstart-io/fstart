@@ -10,3 +10,6 @@ publish = false
 fstart-core = { workspace = true }
 fstart-pci = { workspace = true }
 tock-registers = { workspace = true }
+
+[lints]
+workspace = true

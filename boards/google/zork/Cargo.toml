@@ -42,3 +42,6 @@ fstart-acpi = { path = "../../../crates/acpi" }
 fstart-pci = { path = "../../../crates/pci" }
 
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.
+
+[lints]
+workspace = true

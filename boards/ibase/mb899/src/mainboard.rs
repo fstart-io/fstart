@@ -1,5 +1,5 @@
 //! MB899 attached-device sequencing; drivers own all register encodings.
-use fstart_core::services::{ServiceError, device::BusDevice};
+use fstart_core::services::ServiceError;
 use fstart_driver_superio::w83627ehg::{ClockInput, FanOutput, OutputDriver};
 use fstart_driver_superio::{
     w83627ehg::W83627ehg,

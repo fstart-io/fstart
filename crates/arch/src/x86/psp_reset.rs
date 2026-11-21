@@ -79,7 +79,7 @@ mod runtime {
         // SAFETY: `_sp3_ap_route` is an aligned u32 in the reset image
         // (DRAM, writable); only the BSP writes it, APs only read it.
         unsafe {
-            word.write_volatile(route.word());
+            fstart_core::mmio::write32(word, route.word());
             crate::x86::writeback_cache_range(word.cast(), 4);
         }
     }
@@ -87,7 +87,7 @@ mod runtime {
     /// `EAX` at the BSP's release (BIST result, 0 = passed).
     pub fn bsp_bist() -> u32 {
         // SAFETY: written once by the reset entry before any Rust code runs.
-        unsafe { (&raw const _sp3_bsp_bist).read_volatile() }
+        unsafe { fstart_core::mmio::read32(&raw const _sp3_bsp_bist) }
     }
 }
 

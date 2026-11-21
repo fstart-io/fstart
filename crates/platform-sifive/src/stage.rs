@@ -131,7 +131,7 @@ impl Fu740<Ready> {
 }
 
 /// OpenSBI's return into S-mode: launch CrabEFI with the console in `slot`.
-#[cfg(feature = "crabefi")]
+#[cfg(feature = "payload-uefi")]
 pub fn resume_sbi(
     config: &'static Fu740Config,
     slot: &'static StaticConsole<SifiveUart>,
@@ -159,7 +159,7 @@ pub fn resume_sbi(
 }
 
 /// Without CrabEFI nothing returns from OpenSBI here.
-#[cfg(not(feature = "crabefi"))]
+#[cfg(not(feature = "payload-uefi"))]
 pub fn resume_sbi(
     _: &'static Fu740Config,
     _: &'static StaticConsole<SifiveUart>,
@@ -233,12 +233,12 @@ fn install_boot_context(
         size: 64 * 1024,
     };
     let source = {
-        #[cfg(feature = "crabefi")]
+        #[cfg(feature = "payload-uefi")]
         {
             let readable = [writable[0]];
             boot_dtb_window(workspace, &readable)?
         }
-        #[cfg(not(feature = "crabefi"))]
+        #[cfg(not(feature = "payload-uefi"))]
         {
             workspace
         }
@@ -293,7 +293,7 @@ fn install_boot_context(
         )
     }
     .map_err(|_| ServiceError::InvalidParam)?;
-    #[cfg(any(feature = "linux", feature = "crabefi"))]
+    #[cfg(any(feature = "payload-linux", feature = "payload-uefi"))]
     // SAFETY: source is either a bounded boot DTB in trusted readable memory,
     // or the dedicated destination for an authenticated FFS DTB.
     // Registration checks destination RAM and all live reservations.
@@ -309,7 +309,7 @@ fn install_boot_context(
     firmware.verify()
 }
 
-#[cfg(feature = "crabefi")]
+#[cfg(feature = "payload-uefi")]
 fn boot_dtb_window(
     destination: fstart_stage::boot::MemoryWindow,
     readable: &[fstart_stage::boot::MemoryWindow],

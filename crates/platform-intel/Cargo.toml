@@ -80,3 +80,6 @@ ufmt = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 # The shared emulator is implemented only for long mode and used in ramstage.
 fstart-driver-vbios = { path = "../driver-vbios", optional = true }
+
+[lints]
+workspace = true

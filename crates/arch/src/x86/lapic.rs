@@ -17,8 +17,6 @@
 //! thin register interface, not a full interrupt framework.  Higher-level
 //! MP orchestration lives in [`crate::x86::mp`].
 
-use core::ptr;
-
 // ---------------------------------------------------------------------------
 // MSR constants
 // ---------------------------------------------------------------------------
@@ -181,7 +179,7 @@ impl Lapic {
     fn read(&self, offset: u32) -> u32 {
         let addr = (self.base + offset as usize) as *const u32;
         // SAFETY: LAPIC registers are 32-bit aligned MMIO at known offsets.
-        unsafe { ptr::read_volatile(addr) }
+        unsafe { fstart_core::mmio::read32(addr) }
     }
 
     /// Write a 32-bit LAPIC register at `offset`.
@@ -189,7 +187,7 @@ impl Lapic {
     fn write(&self, offset: u32, val: u32) {
         let addr = (self.base + offset as usize) as *mut u32;
         // SAFETY: LAPIC registers are 32-bit aligned MMIO at known offsets.
-        unsafe { ptr::write_volatile(addr, val) }
+        unsafe { fstart_core::mmio::write32(addr, val) }
     }
 
     /// Read-modify-write: `reg = (reg & !clear) | set`.

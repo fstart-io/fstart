@@ -12,3 +12,6 @@ serde = ["dep:serde"]
 zerocopy.workspace = true
 tock-registers.workspace = true
 serde = { workspace = true, optional = true }
+
+[lints]
+workspace = true

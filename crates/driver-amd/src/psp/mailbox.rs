@@ -27,6 +27,7 @@ use fstart_core::services::timer::Timer;
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{RegisterLongName, register_bitfields};
+use zerocopy::IntoBytes;
 
 use super::Variant;
 use super::command::{C2pBuffer, Command};
@@ -363,9 +364,12 @@ impl<T: C2pTransport> Mailbox<T> {
         let address = core::ptr::from_mut(buffer) as u64;
         let size = buffer.header.size;
         let status = self.transact(timer, C::ID, address)?;
-        // SAFETY: `buffer` is a valid, exclusively borrowed value; the PSP
-        // may have written it behind the compiler's back.
-        *buffer = unsafe { core::ptr::read_volatile(buffer) };
+        // The PSP may have written the buffer behind the compiler's back.
+        let bytes = buffer.header.as_mut_bytes().iter_mut();
+        for byte in bytes.chain(buffer.request.as_mut_bytes()) {
+            // SAFETY: a byte of the exclusively borrowed buffer.
+            *byte = unsafe { fstart_core::mmio::read8(byte) };
+        }
         let error = |status: u32| PspError::Status {
             command: C::ID,
             status,
@@ -407,10 +411,10 @@ impl<T: C2pTransport> Mailbox<T> {
         flag: *mut u8,
     ) -> Result<(), PspError> {
         // SAFETY: the caller's contract.
-        unsafe { flag.write_volatile(1) };
+        unsafe { fstart_core::mmio::write8(flag, 1) };
         let result = self.send(timer, buffer);
         // SAFETY: as above.
-        unsafe { flag.write_volatile(0) };
+        unsafe { fstart_core::mmio::write8(flag, 0) };
         result
     }
 }
@@ -744,7 +748,7 @@ mod tests {
         let send = |cmd, header_status: u32| {
             let model = Model::new(cmd, move |_, buffer| {
                 // The PSP writes the header status of the buffer it got.
-                unsafe { (buffer as *mut u32).add(1).write_volatile(header_status) };
+                unsafe { fstart_core::mmio::write32((buffer as *mut u32).add(1), header_status) };
                 0
             });
             let mbox = Mailbox::new(&model, Variant::Rv);

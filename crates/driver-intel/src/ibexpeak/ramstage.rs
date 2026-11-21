@@ -3,7 +3,6 @@
 
 use super::regs::{FDSW, GCS, GEN_PMCON_1, GEN_PMCON_LOCK, PRSTS, SERIRQ_CNTL, TCLOCKDN};
 use super::{IntelIbexPeak, SataConfig, SataMode};
-use crate::MmioBar;
 use crate::southbridge::hda::{HdaConfig, HdaController};
 use crate::southbridge::pmio_ich as pmio;
 use fstart_pci::ecam::EcamDevice;
@@ -102,15 +101,6 @@ pub(super) fn with_ehci_unlocked<T>(ehci: EcamDevice, f: impl FnOnce() -> T) -> 
     let result = f();
     ehci.write8(ACCESS_CNTL, access);
     result
-}
-
-/// An assigned memory BAR of a PCH function.
-#[derive(Clone, Copy)]
-struct Bar(usize);
-impl MmioBar for Bar {
-    fn base(self) -> usize {
-        self.0
-    }
 }
 
 impl IntelIbexPeak {
@@ -326,8 +316,9 @@ impl IntelIbexPeak {
         header.command.modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
         with_ehci_unlocked(ehci, || {
             if let Some(bar) = ehci.memory_bar(0x10) {
-                // HCSPARAMS: port count and companion controllers.
-                let bar = Bar(bar as usize);
+                // HCSPARAMS: port count and companion controllers (1 KiB EHCI BAR).
+                // SAFETY: EHCI BAR0 is assigned and memory-enabled.
+                let bar = unsafe { fstart_core::mmio::MmioWindow::new(bar as usize, 0x400) };
                 bar.write32(4, (bar.read32(4) & 0xfff0_0000) | 2);
             }
         });
@@ -450,7 +441,11 @@ impl IntelIbexPeak {
                 sata.write32(0x94, ((ports ^ 0x3f) << 24) | 0x183 | 0x4000_0000);
                 sata.write32(0x98, 0x0059_0200);
                 match sata.memory_bar(0x24) {
-                    Some(abar) => ahci_init(Bar(abar as usize), config),
+                    // SAFETY: AHCI ABAR is assigned and memory-enabled (2 KiB window).
+                    Some(abar) => ahci_init(
+                        unsafe { fstart_core::mmio::MmioWindow::new(abar as usize, 0x800) },
+                        config,
+                    ),
                     None => fstart_log::error!("ibexpeak: SATA ABAR unassigned"),
                 }
             }
@@ -511,7 +506,8 @@ impl IntelIbexPeak {
         let Some(base) = thermal.memory_bar(0x10) else {
             return;
         };
-        let bar = Bar(base as usize);
+        // SAFETY: thermal BAR0 is assigned and memory-enabled (4 KiB window).
+        let bar = unsafe { fstart_core::mmio::MmioWindow::new(base as usize, 0x1000) };
         bar.write32(4, 0x3a2b);
         bar.write8(0xe, 0x40);
         bar.write16(0x56, 0xffff);
@@ -602,7 +598,7 @@ fn sata_map(config: &SataConfig) -> u16 {
 }
 
 /// AHCI memory-mapped init (coreboot `sata_init()` AHCI branch).
-fn ahci_init(abar: Bar, config: &SataConfig) {
+fn ahci_init(abar: fstart_core::mmio::MmioWindow, config: &SataConfig) {
     const CAP: u32 = 0x00;
     const PI: u32 = 0x0c;
     const CAP2: u32 = 0x24;

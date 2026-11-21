@@ -587,10 +587,10 @@ impl Raminit<'_> {
             gma().read8(0x4c);
             gma().read8(0x4c);
             gma().read8(0x4e);
-            mch.read8(0x1150);
-            mch.read8(0x1151);
-            mch.read8(0x1022);
-            mch.read8(0x16d0);
+            let _ = mch.read8(0x1150);
+            let _ = mch.read8(0x1151);
+            let _ = mch.read8(0x1022);
+            let _ = mch.read8(0x16d0);
             for (offset, value) in IGD_PM_TABLE_1300 {
                 mch.write32(*offset, *value);
             }

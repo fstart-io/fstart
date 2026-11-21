@@ -58,13 +58,13 @@ pub(crate) fn handoff(addr: usize, expected: u64) -> StageHandoff {
 }
 
 /// The boot medium the BROM booted from.
-#[cfg(any(feature = "a20", feature = "h3"))]
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 pub enum BootMedia<M, S> {
     Mmc(M),
     Spi(S),
 }
 
-#[cfg(any(feature = "a20", feature = "h3"))]
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 impl<M: BlockDevice, S: BlockDevice> BlockDevice for BootMedia<M, S> {
     fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize, ServiceError> {
         match self {
@@ -97,18 +97,18 @@ impl<M: BlockDevice, S: BlockDevice> BlockDevice for BootMedia<M, S> {
 
 /// The DRAM stage's devices, handed to the payload launcher: the FFS is
 /// read from the boot medium, not from a mapped window.
-#[cfg(any(feature = "a20", feature = "h3"))]
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 pub struct DramStage<M> {
     console: &'static Ns16550,
-    #[cfg_attr(not(feature = "linux"), allow(dead_code))]
+    #[cfg_attr(not(feature = "payload-linux"), allow(dead_code))]
     media: M,
     /// Image offset on the boot medium (8 KiB eGON MMC, 0 SPI).
-    #[cfg_attr(not(feature = "linux"), allow(dead_code))]
+    #[cfg_attr(not(feature = "payload-linux"), allow(dead_code))]
     media_base: u64,
     dram: Range,
 }
 
-#[cfg(any(feature = "a20", feature = "h3"))]
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 impl<M: BlockDevice> DramStage<M> {
     /// Re-open the boot medium and mount the image the bootblock booted.
     pub(crate) fn new(
@@ -140,7 +140,7 @@ impl<M: BlockDevice> DramStage<M> {
     /// Boot the build's payload: Linux gets `bootargs` in a device tree
     /// prepared at `fdt_addr`.
     pub(crate) fn boot(self, handoff_addr: u64, bootargs: &'static str, fdt_addr: u64) -> ! {
-        #[cfg(feature = "linux")]
+        #[cfg(feature = "payload-linux")]
         if crate::boot::install_mainstage_policy(
             self.dram.base,
             self.dram.size,
@@ -152,7 +152,7 @@ impl<M: BlockDevice> DramStage<M> {
             fstart_log::error!("sunxi: {}", crate::messages::INVALID_MEMORY_POLICY);
             fstart_arch::halt();
         }
-        #[cfg(not(feature = "linux"))]
+        #[cfg(not(feature = "payload-linux"))]
         let _ = (handoff_addr, bootargs, fdt_addr);
         let memory = [fstart_core::services::memory_detect::E820Entry::new(
             self.dram.base,
@@ -163,7 +163,7 @@ impl<M: BlockDevice> DramStage<M> {
         description.console = Some(self.console);
         #[allow(unused_mut)]
         let mut placement = fstart_payload::Placement::default();
-        #[cfg(feature = "linux")]
+        #[cfg(feature = "payload-linux")]
         {
             placement.device_tree = fdt_addr;
             placement.bootargs = bootargs;
@@ -175,17 +175,29 @@ impl<M: BlockDevice> DramStage<M> {
     }
 }
 
-#[cfg(all(feature = "linux", any(feature = "a20", feature = "h3")))]
+#[cfg(all(
+    feature = "payload-linux",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 type Selected = LinuxPayload;
-#[cfg(all(not(feature = "linux"), any(feature = "a20", feature = "h3")))]
+#[cfg(all(
+    not(feature = "payload-linux"),
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 type Selected = fstart_payload::HaltPayload;
 
 /// Linux from the boot medium: verify the FFS, load the kernel (and BL31 on
 /// AArch64) and the device tree, then jump.
-#[cfg(all(feature = "linux", any(feature = "a20", feature = "h3")))]
+#[cfg(all(
+    feature = "payload-linux",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 pub struct LinuxPayload;
 
-#[cfg(all(feature = "linux", any(feature = "a20", feature = "h3")))]
+#[cfg(all(
+    feature = "payload-linux",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 impl<M: BlockDevice> fstart_payload::MainstagePayload<DramStage<M>> for LinuxPayload {
     fn boot(handoff: fstart_payload::Handoff<'_>, stage: DramStage<M>) -> ! {
         use fstart_stage::step;

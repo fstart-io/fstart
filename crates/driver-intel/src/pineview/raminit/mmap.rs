@@ -4,7 +4,6 @@
 //! `sdram_mmap_regs()`.
 
 use super::SysInfo;
-use crate::MmioBar;
 use crate::pineview::regs::{MchBar, hostbridge, mchbar};
 use fstart_pci::ecam;
 

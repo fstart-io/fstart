@@ -20,7 +20,7 @@
 
 use embedded_hal::delay::DelayNs;
 use fstart_acpi::devices::IpmiKcsAcpi;
-use fstart_core::services::device::{BusDevice, DeviceError};
+use fstart_core::services::device::DeviceError;
 use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::lpc::{self, WideIo};
 use fstart_driver_ipmi::Error as IpmiError;

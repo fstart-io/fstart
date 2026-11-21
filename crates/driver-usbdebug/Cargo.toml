@@ -12,3 +12,6 @@ fstart-pci = { workspace = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 tock-registers = { workspace = true }
 zerocopy = { workspace = true }
+
+[lints]
+workspace = true

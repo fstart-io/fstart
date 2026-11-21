@@ -275,6 +275,10 @@ pub struct PostcarBootContext {
 /// CPU-visible firmware window. Low DRAM below [`POSTCAR_STASH_ADDR`] + table
 /// size must be writable (it always is — the stash sits in conventional
 /// memory).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a RAM handoff of structured fields, magic last; not MMIO"
+)]
 pub unsafe fn write_postcar_stash(
     ram_end: u64,
     rom_base: u64,

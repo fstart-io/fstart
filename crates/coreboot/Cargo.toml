@@ -9,3 +9,6 @@ zerocopy = { workspace = true }
 
 [dev-dependencies]
 heapless = { workspace = true }
+
+[lints]
+workspace = true

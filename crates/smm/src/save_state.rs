@@ -170,7 +170,7 @@ impl X86SaveState {
 unsafe fn read_u32(ptr: *const u8) -> u32 {
     let mut bytes = [0u8; 4];
     for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = unsafe { core::ptr::read_volatile(ptr.add(i)) };
+        *byte = unsafe { fstart_core::mmio::read8(ptr.add(i)) };
     }
     u32::from_le_bytes(bytes)
 }
@@ -178,7 +178,7 @@ unsafe fn read_u32(ptr: *const u8) -> u32 {
 #[inline(always)]
 unsafe fn write_u32(ptr: *mut u8, value: u32) {
     for (i, byte) in value.to_le_bytes().iter().enumerate() {
-        unsafe { core::ptr::write_volatile(ptr.add(i), *byte) };
+        unsafe { fstart_core::mmio::write8(ptr.add(i), *byte) };
     }
 }
 
@@ -186,7 +186,7 @@ unsafe fn write_u32(ptr: *mut u8, value: u32) {
 unsafe fn read_u64(ptr: *const u8) -> u64 {
     let mut bytes = [0u8; 8];
     for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = unsafe { core::ptr::read_volatile(ptr.add(i)) };
+        *byte = unsafe { fstart_core::mmio::read8(ptr.add(i)) };
     }
     u64::from_le_bytes(bytes)
 }
@@ -194,7 +194,7 @@ unsafe fn read_u64(ptr: *const u8) -> u64 {
 #[inline(always)]
 unsafe fn write_u64(ptr: *mut u8, value: u64) {
     for (i, byte) in value.to_le_bytes().iter().enumerate() {
-        unsafe { core::ptr::write_volatile(ptr.add(i), *byte) };
+        unsafe { fstart_core::mmio::write8(ptr.add(i), *byte) };
     }
 }
 

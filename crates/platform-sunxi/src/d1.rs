@@ -9,7 +9,9 @@
 use fstart_core::handoff::HANDOFF_MAX_SIZE;
 use fstart_driver_sunxi::d1_ccu::D1CcuConfig;
 use fstart_driver_sunxi::d1_dramc::D1DramcConfig;
-use fstart_driver_sunxi::d1_mmc::{D1MmcConfig, D1MmcController};
+use fstart_driver_sunxi::mmc::{
+    SunxiMmcConfig as D1MmcConfig, SunxiMmcController as D1MmcController,
+};
 
 /// D1 physical DRAM window.
 pub const D1_DRAM_BASE: u64 = 0x4000_0000;
@@ -92,13 +94,13 @@ const fn in_d1_dram(addr: u64) -> bool {
     addr >= D1_DRAM_BASE && addr < D1_DRAM_END
 }
 
-#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
+#[cfg(all(feature = "stage", target_arch = "riscv64"))]
 mod stage {
     use super::*;
     use fstart_core::services::{MemoryInit, ServiceError};
     use fstart_driver_sunxi::d1_ccu::{D1_EGON_MMC_OFFSET, D1_SRAM_BASE, D1Ccu};
     use fstart_driver_sunxi::d1_dramc::D1Dramc;
-    use fstart_driver_sunxi::d1_mmc::D1Mmc;
+    use fstart_driver_sunxi::mmc::D1Mmc;
     use fstart_driver_uart::ns16550::{Ns16550, Ns16550Config};
     use fstart_log::StaticConsole;
 
@@ -168,5 +170,5 @@ mod stage {
     }
 }
 
-#[cfg(all(feature = "stage", feature = "d1", target_arch = "riscv64"))]
+#[cfg(all(feature = "stage", target_arch = "riscv64"))]
 pub use stage::{bootblock, main_stage};

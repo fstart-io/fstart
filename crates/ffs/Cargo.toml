@@ -31,3 +31,6 @@ lz4_flex = { workspace = true, features = ["alloc"] }
 [[test]]
 name = "round_trip"
 required-features = ["std"]
+
+[lints]
+workspace = true

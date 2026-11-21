@@ -11,6 +11,7 @@ use fstart_driver_amd::psp::{
 };
 use fstart_driver_amd::smn::Smn;
 use fstart_pci::ConfigRegionAccess;
+use zerocopy::IntoBytes;
 
 struct State {
     enabled: bool,
@@ -39,7 +40,7 @@ fn state() -> *mut State {
 
 fn write(offset: u64, value: u64) {
     // SAFETY: fixed, reserved communication page; no OS-supplied pointer.
-    unsafe { ((BASE + offset) as *mut u64).write_volatile(value) }
+    unsafe { fstart_core::mmio::write64((BASE + offset) as *mut u64, value) }
 }
 
 pub(super) fn status(error: PspError) -> u64 {
@@ -173,7 +174,10 @@ pub unsafe fn dispatch(
             s.attempts += 1;
             // SAFETY: fixed, bounded 36-byte request. Copy once so later
             // OS changes cannot change the validated injection target.
-            let p = unsafe { ((BASE + PARAMETERS) as *const Parameters).read_volatile() };
+            let mut p = Parameters::default();
+            for (byte, address) in p.as_mut_bytes().iter_mut().zip(BASE + PARAMETERS..) {
+                *byte = unsafe { fstart_core::mmio::read8(address as *const u8) };
+            }
             let request = s
                 .saved_nbio
                 .is_none()

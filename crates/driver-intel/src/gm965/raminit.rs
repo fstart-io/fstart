@@ -8,7 +8,6 @@
 //! `raminit_receive_enable_calibration.c`; register constants and ordering are
 //! checked against coreboot's `gm965.h` and `raminit.c`.
 
-use crate::MmioBar;
 use crate::generic::spd::{ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
 
@@ -824,15 +823,15 @@ fn me_pll_handshake(d3bar: usize) {
     let me_csr = (d3bar + ME_ME_CSR_HA) as *const u32;
     // SAFETY: D3F0_BAR is the HECI MMIO BAR programmed immediately before use.
     unsafe {
-        let mut v = core::ptr::read_volatile(h_csr);
+        let mut v = fstart_core::mmio::read32(h_csr);
         v = (v & !ME_CSR_RDY) | ME_CSR_RST | ME_CSR_IG;
-        core::ptr::write_volatile(h_csr, v);
-        while (core::ptr::read_volatile(me_csr) & ME_CSR_RDY) == 0 {
+        fstart_core::mmio::write32(h_csr, v);
+        while (fstart_core::mmio::read32(me_csr) & ME_CSR_RDY) == 0 {
             core::hint::spin_loop();
         }
-        v = core::ptr::read_volatile(h_csr);
+        v = fstart_core::mmio::read32(h_csr);
         if (v & ME_CSR_RDY) == 0 {
-            core::ptr::write_volatile(h_csr, (v & !ME_CSR_RST) | ME_CSR_RDY | ME_CSR_IG);
+            fstart_core::mmio::write32(h_csr, (v & !ME_CSR_RST) | ME_CSR_RDY | ME_CSR_IG);
         }
     }
 }
@@ -1311,7 +1310,7 @@ fn jedec_command(mch: &MchBar, addr: usize, cmd: u32, val: u32) {
     mch.clrsetbits32(mchbar::DCC, DCC_SET_EREG_MASK, cmd);
     // SAFETY: after pre-JEDEC map programming, `addr | val` is a DRAM command
     // address used by the memory controller to latch the selected command.
-    unsafe { core::ptr::read_volatile((addr | val as usize) as *const u32) };
+    unsafe { fstart_core::mmio::read32((addr | val as usize) as *const u32) };
 }
 
 fn ddr2_mode_registers(t: Timings) -> (u32, u32, u32, u32) {
@@ -1343,13 +1342,13 @@ fn jedec_init_ddr2(info: &RaminitInfo, mch: &MchBar) {
                 core::hint::spin_loop();
             }
             // SAFETY: second CBR is triggered by a DRAM read to the rank address.
-            unsafe { core::ptr::read_volatile(addr as *const u32) };
+            unsafe { fstart_core::mmio::read32(addr as *const u32) };
             jedec_command(mch, addr, DCC_SET_MREG, mrs_normal);
             mch.clrsetbits32(mchbar::DCC, DCC_SET_EREG_MASK, DCC_SET_EREG);
             // SAFETY: EMRS1 OCD calibration and exit are command addresses.
             unsafe {
-                core::ptr::read_volatile((addr | emrs1_ocd as usize) as *const u32);
-                core::ptr::read_volatile((addr | emrs1_odt as usize) as *const u32);
+                fstart_core::mmio::read32((addr | emrs1_ocd as usize) as *const u32);
+                fstart_core::mmio::read32((addr | emrs1_odt as usize) as *const u32);
             }
             mch.clrbits32(mchbar::DCC, 0x8000);
         }
@@ -1431,7 +1430,7 @@ fn test_dqs_level(mch: &MchBar, ch: usize, addr: usize, expect_high: bool) -> bo
             mch.setbits16(mchbar::rw_ptr_ctrl(c), 1 << 9);
         }
         // SAFETY: `addr` targets initialized DRAM rank under calibration.
-        unsafe { core::ptr::read_volatile(addr as *const u32) };
+        unsafe { fstart_core::mmio::read32(addr as *const u32) };
         // SAFETY: port 0x80/0x61 style IO delay is valid on x86 firmware.
         unsafe { fstart_core::pio::io_delay() };
         let high = (mch.read32(mchbar::rec_dqs_level(ch)) & (1 << 30)) != 0;
@@ -2051,8 +2050,9 @@ mod tests {
         for clock in [MemClock::Ddr2_533, MemClock::Ddr2_667] {
             let mut trained = [0xffff_ffffu32; 0x1000];
             let mut replayed = trained;
-            let trained = MchBar::new(trained.as_mut_ptr() as usize);
-            let replayed = MchBar::new(replayed.as_mut_ptr() as usize);
+            // SAFETY: `trained` and `replayed` are 16 KiB u32-aligned stack arrays matching MCHBAR size.
+            let trained = unsafe { MchBar::new(trained.as_mut_ptr() as usize) };
+            let replayed = unsafe { MchBar::new(replayed.as_mut_ptr() as usize) };
             let mut info = RaminitInfo::default();
             info.timings.mem_clock = clock;
             receive_enable_training(&mut info, &trained).unwrap();

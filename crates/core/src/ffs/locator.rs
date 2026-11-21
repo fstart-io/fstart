@@ -122,7 +122,7 @@ impl<'a> LocatorRef<'a> {
         let mut bytes = [0; LOCATOR_SIZE];
         for (index, byte) in bytes.iter_mut().enumerate() {
             // SAFETY: the checked input slice contains each byte.
-            *byte = unsafe { core::ptr::read_volatile(data.as_ptr().add(index)) };
+            *byte = unsafe { crate::mmio::read8(data.as_ptr().add(index)) };
         }
         Some(Self {
             value: LocatorBlock::parse(&bytes)?,

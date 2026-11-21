@@ -17,3 +17,6 @@ fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-feature
 fstart-driver-uart = { path = "../../../crates/driver-uart" }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.
+
+[lints]
+workspace = true

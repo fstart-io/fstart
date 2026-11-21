@@ -2,6 +2,10 @@
 //! memory.
 
 #![no_std]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a DRAM test, not MMIO: a barrier per word would slow it severalfold"
+)]
 
 use core::ptr::{read_volatile, write_volatile};
 

@@ -2,7 +2,6 @@
 //! The temporary sequential 128 MiB/rank map remains active throughout.
 
 use super::*;
-use crate::MmioBar;
 use zerocopy::byteorder::{LE, U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

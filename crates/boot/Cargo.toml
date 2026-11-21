@@ -42,3 +42,6 @@ fstart-arch = { workspace = true, features = ["riscv64"], optional = true }
 
 [dev-dependencies]
 dtoolkit = { workspace = true, features = ["write"] }
+
+[lints]
+workspace = true

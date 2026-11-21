@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Picasso eMMC timing/preset mechanism; board owns mode
 //! and drive strengths. This is not an SDHCI command/block-I/O driver.
+use fstart_core::mmio::MmioReadWrite;
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_structs,
-    registers::ReadWrite,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -163,16 +163,16 @@ pub trait Registers {
 register_structs! {
     Layout {
         (0x00 => _reserved0),
-        (0xa4 => phy_timing: ReadWrite<u32>),
-        (0xa8 => interface: ReadWrite<u32>),
+        (0xa4 => phy_timing: MmioReadWrite<u32>),
+        (0xa8 => interface: MmioReadWrite<u32>),
         (0xac => _reserved1),
-        (0xb0 => mode: ReadWrite<u32>),
+        (0xb0 => mode: MmioReadWrite<u32>),
         (0xb4 => _reserved2),
-        (0xd0 => drive: ReadWrite<u32>),
+        (0xd0 => drive: MmioReadWrite<u32>),
         (0xd4 => _reserved3),
-        (0xf0 => presets: [ReadWrite<u16>; 9]),
+        (0xf0 => presets: [MmioReadWrite<u16>; 9]),
         (0x102 => _reserved4),
-        (0x116 => mode_clear: ReadWrite<u16>),
+        (0x116 => mode_clear: MmioReadWrite<u16>),
         (0x118 => @END),
     }
 }

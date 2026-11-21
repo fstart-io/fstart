@@ -378,9 +378,9 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     let mut features = vec![policy.bundle.into()];
     if payload != "halt" {
         features.push(if payload == "linux" {
-            "linux".into()
+            "payload-linux".into()
         } else {
-            "crabefi".into()
+            "payload-uefi".into()
         });
     }
     let security = crate::qemu_virt_security_config();
@@ -965,11 +965,11 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     };
     let mut features = vec![policy.bundle.into()];
     if payload == "linux" {
-        features.push("linux".into());
+        features.push("payload-linux".into());
     } else if payload == "uefi" {
-        features.push("crabefi".into());
+        features.push("payload-uefi".into());
     } else if coreboot {
-        features.push("coreboot".into());
+        features.push("payload-coreboot".into());
     }
     let security = if policy.default_security {
         fstart_core::default_security_config()
@@ -1426,7 +1426,7 @@ mod tests {
         )
         .unwrap();
         let uefi_stage = uefi.units.iter().find(|u| u.name == "stage").unwrap();
-        assert!(uefi_stage.features.contains(&"crabefi".to_string()));
+        assert!(uefi_stage.features.contains(&"payload-uefi".to_string()));
         let payload = uefi.ffs_assembly().unwrap().payload.as_ref().unwrap();
         assert!(matches!(payload.kind, PayloadKind::UefiPayload));
         assert!(payload.firmware.is_none());

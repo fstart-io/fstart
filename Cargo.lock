@@ -1264,6 +1264,8 @@ name = "fstart-core"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "embedded-io",
+ "embedded-storage",
  "heapless 0.8.0",
  "portable-atomic",
  "serde",
@@ -1491,6 +1493,7 @@ dependencies = [
  "embedded-hal",
  "fstart-core",
  "tock-registers",
+ "zeroize",
 ]
 
 [[package]]
@@ -1529,6 +1532,9 @@ dependencies = [
 [[package]]
 name = "fstart-fdt"
 version = "0.1.0"
+dependencies = [
+ "zerocopy",
+]
 
 [[package]]
 name = "fstart-ffs"
@@ -1599,6 +1605,7 @@ dependencies = [
 name = "fstart-log"
 version = "0.1.0"
 dependencies = [
+ "embedded-io",
  "fstart-core",
  "fstart-options",
  "fstart-timestamp",
@@ -1865,6 +1872,7 @@ dependencies = [
  "fstart-driver-tpm",
  "fstart-log",
  "ufmt",
+ "zeroize",
 ]
 
 [[package]]

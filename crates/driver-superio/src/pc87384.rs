@@ -279,7 +279,6 @@ impl SuperIo<Pc87384Chip> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fstart_core::services::device::BusDevice;
 
     fn input(pin: u8) -> GpioPinConfig {
         GpioPinConfig {

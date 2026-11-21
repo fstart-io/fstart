@@ -4,7 +4,6 @@
 //! to a caller-supplied, linked mutable extent. Construct/use it only from RAM;
 //! erasing the flash while executing XIP controller code is not safe.
 
-use crate::MmioBar;
 use crate::southbridge::lpc::{self, BIOS_CONTROL, ROOT_COMPLEX_BASE};
 use fstart_core::services::{FlashRegion, ServiceError};
 use fstart_pci::ecam::EcamDevice;
@@ -72,35 +71,31 @@ impl PciConfigAccess for FirmwareHost {
 }
 
 #[derive(Clone, Copy)]
-struct SpiRegisters(usize);
-impl MmioBar for SpiRegisters {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(SPI_WINDOW_SIZE)
-    }
-}
+struct SpiRegisters(fstart_core::mmio::MmioWindow);
+
 // rflasher requires this external trait; keep it a forwarding adapter, not
 // another implementation of MMIO transactions or mapped-window validation.
 impl MmioAccess for SpiRegisters {
     fn read8(&self, o: usize) -> u8 {
-        MmioBar::read8(*self, o.try_into().expect("MMIO offset overflow"))
+        self.0.read8(o.try_into().expect("MMIO offset overflow"))
     }
     fn read16(&self, o: usize) -> u16 {
-        MmioBar::read16(*self, o.try_into().expect("MMIO offset overflow"))
+        self.0.read16(o.try_into().expect("MMIO offset overflow"))
     }
     fn read32(&self, o: usize) -> u32 {
-        MmioBar::read32(*self, o.try_into().expect("MMIO offset overflow"))
+        self.0.read32(o.try_into().expect("MMIO offset overflow"))
     }
     fn write8(&self, o: usize, v: u8) {
-        MmioBar::write8(*self, o.try_into().expect("MMIO offset overflow"), v)
+        self.0
+            .write8(o.try_into().expect("MMIO offset overflow"), v)
     }
     fn write16(&self, o: usize, v: u16) {
-        MmioBar::write16(*self, o.try_into().expect("MMIO offset overflow"), v)
+        self.0
+            .write16(o.try_into().expect("MMIO offset overflow"), v)
     }
     fn write32(&self, o: usize, v: u32) {
-        MmioBar::write32(*self, o.try_into().expect("MMIO offset overflow"), v)
+        self.0
+            .write32(o.try_into().expect("MMIO offset overflow"), v)
     }
 }
 const SPI_WINDOW_SIZE: u32 = 0x200;
@@ -117,7 +112,10 @@ impl HostAccess for FirmwareHost {
         {
             return Err(InternalError::Io("invalid ICH SPI window"));
         }
-        Ok(SpiRegisters(address as usize))
+        // SAFETY: `address` is the southbridge SPIBAR window inside mapped RCBA.
+        Ok(SpiRegisters(unsafe {
+            fstart_core::mmio::MmioWindow::new(address as usize, SPI_WINDOW_SIZE)
+        }))
     }
     fn delay_us(&self, us: u32) {
         fstart_arch::x86::udelay(us);

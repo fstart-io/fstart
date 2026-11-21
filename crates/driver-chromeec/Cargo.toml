@@ -15,3 +15,6 @@ fstart-acpi-macros = { path = "../acpi-macros", optional = true }
 
 [dev-dependencies]
 fstart-core = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+# Hardware and shared memory go through fstart_core::mmio: its accessors
+# and Mmio* register types bracket each access with the device barriers
+# that raw volatile and tock-registers' own register types omit.
+disallowed-methods = [
+  { path = "core::ptr::read_volatile", reason = "use fstart_core::mmio" },
+  { path = "core::ptr::write_volatile", reason = "use fstart_core::mmio" },
+  { path = "const_ptr::read_volatile", reason = "use fstart_core::mmio" },
+  { path = "mut_ptr::read_volatile", reason = "use fstart_core::mmio" },
+  { path = "mut_ptr::write_volatile", reason = "use fstart_core::mmio" },
+  { path = "core::ptr::NonNull::read_volatile", reason = "use fstart_core::mmio" },
+  { path = "core::ptr::NonNull::write_volatile", reason = "use fstart_core::mmio" },
+]
+disallowed-types = [
+  { path = "tock_registers::registers::ReadWrite", reason = "use fstart_core::mmio::MmioReadWrite" },
+  { path = "tock_registers::registers::ReadOnly", reason = "use fstart_core::mmio::MmioReadOnly" },
+  { path = "tock_registers::registers::WriteOnly", reason = "use fstart_core::mmio::MmioWriteOnly" },
+]

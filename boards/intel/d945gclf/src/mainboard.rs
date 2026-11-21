@@ -6,7 +6,6 @@
 //! COM1/COM2/KBC setup handled by the generic SuperIO driver.
 
 use fstart_core::services::ServiceError;
-use fstart_core::services::device::BusDevice;
 use fstart_driver_superio::smsc_lpc47m15x::SmscLpc47m15x;
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 

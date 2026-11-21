@@ -1,10 +1,10 @@
 //! USB: the EHCI (00:1d.0) and xHCI (00:14.0) controllers, their PHYs and
 //! port routing (coreboot `ehci.c` and `xhci.c`).
 
-use super::{Bar, Function, poll_bar};
-use crate::MmioBar;
+use super::{Function, bar0, poll_bar};
 use crate::baytrail::iosf::{Iosf, USBPHY, USHPHY};
 use crate::baytrail::{Stepping, lpc, pmc};
+use fstart_core::mmio::MmioWindow;
 use fstart_core::services::ServiceError;
 use fstart_pci::ConfigRegionAccess;
 use fstart_pci::ecam::EcamDevice;
@@ -118,7 +118,8 @@ pub fn ehci_init<P: ConfigRegionAccess>(
     if !ehci.is_present() {
         return Ok(());
     }
-    let bar = Bar::of(&ehci);
+    // SAFETY: EHCI BAR0 is a 1 KiB MMIO window assigned by PCI enumeration.
+    let bar = unsafe { bar0(&ehci, 0x400) };
     // Reset the controller, except on S3 resume.
     if let (false, Some(bar)) = (resume, bar) {
         bar.setbits16(USB2CMD, USB2CMD_HCRESET);
@@ -173,7 +174,7 @@ fn usb3_phy_init<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
 }
 
 /// `CommonXhciHcInit()`.
-fn hc_init(xhci: &EcamDevice, bar: Bar) {
+fn hc_init(xhci: &EcamDevice, bar: MmioWindow) {
     bar.modify32(0x000c, 0x0000_ffff, 0x0200_0000);
     bar.modify32(0x000c, 0xffff_ff00, 0x0000_000a);
     bar.setbits32(0x8094, 0x00a0_4000);
@@ -213,7 +214,7 @@ fn clock_gating(xhci: &EcamDevice) {
 }
 
 /// Route every port to the xHCI and warm-reset the enabled USB 3 ports.
-fn route_all(xhci: &EcamDevice, bar: Bar, resume: bool) -> Result<(), ServiceError> {
+fn route_all(xhci: &EcamDevice, bar: MmioWindow, resume: bool) -> Result<(), ServiceError> {
     fstart_log::info!("baytrail: USB ports routed to xHCI");
     xhci.write32(XHCI_USB3PR, USB3_PORT_MAP);
     xhci.write32(XHCI_USB2PR, USB2_PORT_MAP);
@@ -240,7 +241,8 @@ pub fn xhci_init<P: ConfigRegionAccess>(
     if !xhci.is_present() {
         return Ok(());
     }
-    let Some(bar) = Bar::of(&xhci) else {
+    // SAFETY: xHCI BAR0 is a 64 KiB MMIO window assigned by PCI enumeration.
+    let Some(bar) = (unsafe { bar0(&xhci, 0x10000) }) else {
         fstart_log::warn!("baytrail: xHCI BAR unassigned");
         return Ok(());
     };

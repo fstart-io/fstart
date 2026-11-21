@@ -32,3 +32,6 @@ ufmt = { workspace = true }
 default = ["acpi"]
 acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-lenovo/acpi"]
 smm = ["fstart-platform-intel/bundle-smm"]
+
+[lints]
+workspace = true

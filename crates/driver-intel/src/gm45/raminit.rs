@@ -10,7 +10,6 @@
 // lockstep, as coreboot's raminit does; the shared index keeps them comparable.
 #![allow(clippy::needless_range_loop)]
 
-use crate::MmioBar;
 use crate::generic::spd::ddr3::read_spd;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::{ServiceError, SmBus};
@@ -353,38 +352,33 @@ register_structs! {
 }
 
 #[derive(Clone, Copy)]
-struct Mchbar {
-    base: usize,
-}
+struct Mchbar(fstart_core::mmio::MmioWindow);
 
-/// Variable channel/rank/lane and RCOMP-table offsets go through the shared
-/// accessors, bounded to the 16 KiB MCHBAR window.
-impl crate::MmioBar for Mchbar {
-    fn base(self) -> usize {
-        self.base
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x4000)
+impl core::ops::Deref for Mchbar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 impl Mchbar {
-    fn new(base: u64) -> Self {
-        Self {
-            base: base as usize,
-        }
+    /// # Safety
+    /// `base` must point to the mapped 16 KiB GM45 MCHBAR MMIO aperture.
+    unsafe fn new(base: u64) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base as usize, 0x4000) })
     }
     fn regs(&self) -> &PreJedecRegs {
         // SAFETY: host-bridge early decode enabled MCHBAR; the overlay ends
         // inside its 16 KiB aperture and contains only aligned registers.
-        unsafe { &*(self.base as *const PreJedecRegs) }
+        unsafe { &*(self.0.base() as *const PreJedecRegs) }
     }
     fn post_jedec_channels(&self) -> [&PostJedecChannelRegs; 2] {
         // SAFETY: fixed channel 0/1 register blocks within enabled MCHBAR.
         unsafe {
             [
-                &*((self.base + 0x1228) as *const PostJedecChannelRegs),
-                &*((self.base + 0x1328) as *const PostJedecChannelRegs),
+                &*((self.0.base() + 0x1228) as *const PostJedecChannelRegs),
+                &*((self.0.base() + 0x1328) as *const PostJedecChannelRegs),
             ]
         }
     }
@@ -392,7 +386,7 @@ impl Mchbar {
         assert!(RCOMP_DDR3_SEEDS.iter().any(|(seed, _)| *seed == offset));
         // SAFETY: this is one of the eight fixed seed offsets in the enabled
         // MCHBAR aperture; the overlay names the control and value bytes.
-        unsafe { &*((self.base + offset) as *const RcompSeedRegs) }
+        unsafe { &*((self.0.base() + offset) as *const RcompSeedRegs) }
     }
 }
 
@@ -1678,7 +1672,8 @@ pub(super) fn prepare_ddr3(
     // Check all derived values before beginning irreversible MMIO writes.
     crossing_values(fsb_mhz, timing.clock)?;
     let igd_enabled = graphics != crate::gm45::Gm45GraphicsPolicy::Discrete;
-    let mch = Mchbar::new(base);
+    // SAFETY: MCHBAR is enabled at `base` (16 KiB aperture) by early northbridge init.
+    let mch = unsafe { Mchbar::new(base) };
     let (kind, display_clock) = post_map::preflight(&mch, dimms, timing, graphics, capid_high)?;
     // Reject unsupported geometry before training, not after JEDEC/calibration.
     // ME presence is independent of the requested DEVEN policy.

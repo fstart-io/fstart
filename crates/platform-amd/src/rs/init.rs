@@ -531,11 +531,16 @@ impl<V: Variant> Init for Rs<V> {
         let report = &raw const SMM_REPORT;
         // SAFETY: firmware data, written only by the SMM handler on a PSP
         // SMI; a torn read only garbles this line.
-        let answered = unsafe { report.read_volatile() };
+        let (requests, command) = unsafe {
+            (
+                fstart_core::mmio::read32(&raw const (*report).p2c_requests),
+                fstart_core::mmio::read32(&raw const (*report).p2c_command),
+            )
+        };
         fstart_log::info!(
             "rs: PSP SMIs answered: {} (last P2C command {:#x}), report at {:#x}",
-            answered.p2c_requests,
-            answered.p2c_command,
+            requests,
+            command,
             report as u64
         );
         let psp = state.psp.as_mut().ok_or("PSP")?;
@@ -798,12 +803,11 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         // SmmInfo, then, if the board publishes EINJ and the PSP took
         // SmmInfo, RasEinj ENABLE. The SMI command port stays routed: the
         // CPUs' machine-check SMIs come through it.
-        let read = || unsafe { report.read_volatile() };
         let (smm_info, einj_status) = crate::smm::status::answers(
             &ctx.clock,
             ctx.config.einj,
-            || read().smm_info,
-            || read().einj,
+            || unsafe { fstart_core::mmio::read32(&raw const (*report).smm_info) },
+            || unsafe { fstart_core::mmio::read32(&raw const (*report).einj) },
         );
         // The PSP's locks and BootDone need the SMM info: without it the
         // DF lock breaks DMA, and the payload must not get an unlocked DF.

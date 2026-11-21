@@ -15,7 +15,6 @@ use fstart_driver_amd::apob::sysmap;
 use fstart_driver_amd::apob::{self, Apob};
 use fstart_driver_amd::fch::rom3::{self, FlashMap, Rom3};
 use tock_registers::interfaces::Readable;
-use zerocopy::IntoBytes;
 
 use crate::layout::Region;
 use crate::memory;
@@ -83,9 +82,10 @@ static FLASH_ANCHOR: AnchorSite =
 /// Physical memory the identity map covers, read byte-wise.
 fn read_phys(address: u64, buf: &mut [u8]) {
     buf.iter_mut().zip(address..).for_each(|(b, a)| {
-        // SAFETY: flash windows (ROM2, ROM3) only: read-only device memory,
-        // identity-mapped by the reset image's page tables.
-        *b = unsafe { core::ptr::read_volatile(a as *const u8) }
+        // SAFETY: flash windows (ROM2, ROM3), read-only device memory, or
+        // the reset image's own anchor, all identity-mapped by its page
+        // tables.
+        *b = unsafe { fstart_core::mmio::read8(a as *const u8) }
     });
 }
 
@@ -116,10 +116,10 @@ pub(crate) struct Flash {
 /// shows; ROM3 is probed only for an FFS outside it, and an EFS or FFS that
 /// neither shows halts.
 pub(crate) fn flash(fch: &PrimaryFch, generation: Generation) -> Flash {
-    // SAFETY: the static is always readable; volatile so the linked
-    // placeholder is not folded into the code.
-    let anchor = unsafe { core::ptr::read_volatile(FLASH_ANCHOR.0.get()) };
-    let anchor = FlashAnchor::parse(anchor.as_bytes()).or_halt("flash anchor");
+    // Volatile, so the linked placeholder is not folded into the code.
+    let mut anchor = [0; core::mem::size_of::<FlashAnchor>()];
+    read_phys(FLASH_ANCHOR.0.get() as u64, &mut anchor);
+    let anchor = FlashAnchor::parse(&anchor).or_halt("flash anchor");
     let page = rom3::rom_page(fch);
     let (offset, size) = (anchor.ffs_offset.get(), anchor.ffs_size.get());
     // ROM2 first: ROM3 is read only if the FFS is outside ROM2's page (the

@@ -1,8 +1,7 @@
 //! Storage control cluster: eMMC (00:10.0, 00:17.0), SDIO (00:11.0) and
 //! SD (00:12.0) (coreboot `scc.c`, `emmc.c` and `sd.c`).
 
-use super::{AcpiModeDevice, Bar, Function};
-use crate::MmioBar;
+use super::{AcpiModeDevice, Function, bar0};
 use crate::baytrail::iosf::{CCU, Iosf, SCC, SCORE};
 use fstart_pci::ConfigRegionAccess;
 
@@ -97,7 +96,8 @@ pub fn init<P: ConfigRegionAccess>(
         iosf.modify(SCORE, 0x48c0, 0x3c, 0x3c);
         iosf.modify(SCORE, 0x48c4, 0x3c, 0x3c);
         // Maximum data timeout.
-        if let Some(bar) = Bar::of(&emmc) {
+        // SAFETY: SCC eMMC BAR0 is a 4 KiB MMIO window assigned by PCI enumeration.
+        if let Some(bar) = unsafe { bar0(&emmc, 0x1000) } {
             bar.write8(0x2e, 0x0e);
         }
         if config.acpi_mode {

@@ -64,29 +64,23 @@ struct SocPolicy {
 
 fn policy(soc: SunxiSoc) -> SocPolicy {
     match soc {
-        SunxiSoc::A20 => SocPolicy {
+        SunxiSoc::A20 | SunxiSoc::H3 => SocPolicy {
             platform: Platform::Armv7,
             target: "armv7a-none-eabi",
-            bundle_bootblock: "bundle-a20-bootblock",
-            bundle_main: "bundle-a20-main",
-        },
-        SunxiSoc::H3 => SocPolicy {
-            platform: Platform::Armv7,
-            target: "armv7a-none-eabi",
-            bundle_bootblock: "bundle-h3-bootblock",
-            bundle_main: "bundle-h3-main",
+            bundle_bootblock: "bundle-armv7-bootblock",
+            bundle_main: "bundle-armv7-main",
         },
         SunxiSoc::H5 => SocPolicy {
             platform: Platform::Aarch64,
             target: "aarch64-unknown-none",
-            bundle_bootblock: "bundle-h5-bootblock",
-            bundle_main: "bundle-h5-main",
+            bundle_bootblock: "bundle-aarch64-bootblock",
+            bundle_main: "bundle-aarch64-main",
         },
         SunxiSoc::D1 => SocPolicy {
             platform: Platform::Riscv64,
             target: "riscv64gc-unknown-none-elf",
-            bundle_bootblock: "bundle-d1-bootblock",
-            bundle_main: "bundle-d1-main",
+            bundle_bootblock: "bundle-riscv64-bootblock",
+            bundle_main: "bundle-riscv64-main",
         },
     }
 }
@@ -396,7 +390,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                &[policy.bundle_main, "linux"][..1 + usize::from(linux)],
+                &[policy.bundle_main, "payload-linux"][..1 + usize::from(linux)],
                 &policy,
                 main.linker_script,
                 main_output,
@@ -467,9 +461,9 @@ mod tests {
         );
         let bootblock = plan.unit("bootblock").unwrap();
         assert_eq!(bootblock.target, "armv7a-none-eabi");
-        assert_eq!(bootblock.features, ["bundle-a20-bootblock"]);
+        assert_eq!(bootblock.features, ["bundle-armv7-bootblock"]);
         let main = plan.unit("main").unwrap();
-        assert_eq!(main.features, ["bundle-a20-main", "linux"]);
+        assert_eq!(main.features, ["bundle-armv7-main", "payload-linux"]);
         for unit in &plan.units {
             assert_eq!(unit.build_std.as_deref(), Some("core,alloc"));
         }
@@ -520,7 +514,7 @@ mod tests {
         let plan = resolve(BANANAPI, select("halt")).unwrap();
         assert!(plan.ffs_assembly().unwrap().payload.is_none());
         assert!(plan.inputs.is_empty());
-        assert_eq!(plan.unit("main").unwrap().features, ["bundle-a20-main"]);
+        assert_eq!(plan.unit("main").unwrap().features, ["bundle-armv7-main"]);
         let dock = BoardFacts {
             soc: SunxiSoc::D1,
             sram_base: 0x0002_0000,
@@ -554,7 +548,7 @@ mod tests {
         );
         assert_eq!(
             plan.unit("main").unwrap().features,
-            ["bundle-h5-main", "linux"]
+            ["bundle-aarch64-main", "payload-linux"]
         );
         let payload = plan.ffs_assembly().unwrap().payload.as_ref().unwrap();
         let firmware = payload.firmware.as_ref().unwrap();
@@ -572,7 +566,7 @@ mod tests {
         };
         let plan = resolve(r1, select("halt")).unwrap();
         assert_eq!(plan.run.as_ref().unwrap().machine, "orangepi-pc");
-        assert_eq!(plan.unit("main").unwrap().features, ["bundle-h3-main"]);
+        assert_eq!(plan.unit("main").unwrap().features, ["bundle-armv7-main"]);
         let UnitOutput::Executable { flat_capacity, .. } = &plan.unit("main").unwrap().output
         else {
             panic!("main is not executable")

@@ -12,7 +12,6 @@ mod raminit;
 
 pub use igd::{IronlakeIgdConfig, PanelPort};
 
-use crate::MmioBar;
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::ServiceError;
 use fstart_core::services::memory_detect::{
@@ -81,37 +80,61 @@ pci_type0_config! {
 
 /// The MCHBAR window (32 KiB on Ironlake).
 #[derive(Clone, Copy)]
-pub(crate) struct MchBar(pub(crate) usize);
-impl MmioBar for MchBar {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x8000)
+pub(crate) struct MchBar(fstart_core::mmio::MmioWindow);
+
+impl MchBar {
+    /// # Safety
+    /// `base` must point to the mapped 32 KiB Ironlake MCHBAR aperture.
+    pub(crate) const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x8000) })
     }
 }
 
-/// The DMIBAR window.
-#[derive(Clone, Copy)]
-pub(crate) struct DmiBar(pub(crate) usize);
-impl MmioBar for DmiBar {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x1000)
+impl core::ops::Deref for MchBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// The EPBAR window.
+/// The DMIBAR window (4 KiB).
 #[derive(Clone, Copy)]
-pub(crate) struct EpBar(pub(crate) usize);
-impl MmioBar for EpBar {
-    fn base(self) -> usize {
-        self.0
+pub(crate) struct DmiBar(fstart_core::mmio::MmioWindow);
+
+impl DmiBar {
+    /// # Safety
+    /// `base` must point to the mapped 4 KiB Ironlake DMIBAR aperture.
+    pub(crate) const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x1000) })
     }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x1000)
+}
+
+impl core::ops::Deref for DmiBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The EPBAR window (4 KiB).
+#[derive(Clone, Copy)]
+pub(crate) struct EpBar(fstart_core::mmio::MmioWindow);
+
+impl EpBar {
+    /// # Safety
+    /// `base` must point to the mapped 4 KiB Ironlake EPBAR aperture.
+    pub(crate) const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x1000) })
+    }
+}
+
+impl core::ops::Deref for EpBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -230,11 +253,13 @@ impl IntelIronlake {
     }
 
     pub(crate) fn mch(&self) -> MchBar {
-        MchBar(self.config.mchbar as usize)
+        // SAFETY: MCHBAR is mapped at this validated 32 KiB base by early init.
+        unsafe { MchBar::new(self.config.mchbar as usize) }
     }
 
     fn dmi(&self) -> DmiBar {
-        DmiBar(self.config.dmibar as usize)
+        // SAFETY: DMIBAR is mapped at this validated 4 KiB base by early init.
+        unsafe { DmiBar::new(self.config.dmibar as usize) }
     }
 
     fn qpi_non_core(&self) -> ecam::EcamDevice {

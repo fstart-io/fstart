@@ -496,7 +496,7 @@ mod stage {
                     size,
                 )
             };
-            let uefi = cfg!(feature = "crabefi");
+            let uefi = cfg!(feature = "payload-uefi");
             match fstart_tcg::start(tis, log, fstart_tcg::PlatformClass::Client, uefi) {
                 Ok(_) => fstart_stage::tcg::measure_srtm(fstart_stage::tcg::CRTM_VERSION, "stage"),
                 Err(error) => {
@@ -545,12 +545,12 @@ mod stage {
     }
 
     /// RAM for the coreboot table and the files handed to the payload.
-    #[cfg(feature = "coreboot")]
+    #[cfg(feature = "payload-coreboot")]
     const COREBOOT_WINDOW_SIZE: usize = 0x4_0000;
-    #[cfg(feature = "coreboot")]
+    #[cfg(feature = "payload-coreboot")]
     #[repr(C, align(4096))]
     struct CorebootWindow([u8; COREBOOT_WINDOW_SIZE]);
-    #[cfg(feature = "coreboot")]
+    #[cfg(feature = "payload-coreboot")]
     static mut COREBOOT_WINDOW: CorebootWindow = CorebootWindow([0; COREBOOT_WINDOW_SIZE]);
 
     impl QemuQ35Mainstage {
@@ -594,7 +594,7 @@ mod stage {
             // SAFETY: fstart programs PAM0-6 to DRAM during PCI init and keeps
             // nothing in the legacy shadow; the window is a firmware static
             // that only the launcher touches.
-            #[cfg(feature = "coreboot")]
+            #[cfg(feature = "payload-coreboot")]
             {
                 placement.coreboot_window = Some(unsafe {
                     fstart_payload::coreboot::Window::new(

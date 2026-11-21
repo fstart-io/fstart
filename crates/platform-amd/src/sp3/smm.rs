@@ -267,14 +267,22 @@ mod handler {
         // SAFETY: the word the installer reserved for it; only this
         // handler writes it.
         unsafe {
-            (config.soc.smm_info as *mut u32).write_volatile(crate::smm::status::of(registration));
+            fstart_core::mmio::write32(
+                config.soc.smm_info as *mut u32,
+                crate::smm::status::of(registration),
+            );
         }
         // Bounded read-only backend diagnostics in the fixed comm page.
         unsafe {
-            ((crate::sp3::einj::BASE + 224) as *mut u64)
-                .write_volatile(registration.map_or_else(super::einj::status, |_| 0));
-            ((crate::sp3::einj::BASE + 232) as *mut u64).write_volatile(0);
-            ((crate::sp3::einj::BASE + 240) as *mut u64).write_volatile(u64::from(memory_einj));
+            fstart_core::mmio::write64(
+                (crate::sp3::einj::BASE + 224) as *mut u64,
+                registration.map_or_else(super::einj::status, |_| 0),
+            );
+            fstart_core::mmio::write64((crate::sp3::einj::BASE + 232) as *mut u64, 0);
+            fstart_core::mmio::write64(
+                (crate::sp3::einj::BASE + 240) as *mut u64,
+                u64::from(memory_einj),
+            );
         }
         let supported = registration.is_ok()
             && memory_einj
@@ -326,9 +334,14 @@ mod handler {
                 if n < 32 {
                     // Fixed output-only trace, never used as input.
                     unsafe {
-                        ((crate::sp3::einj::BASE + 256 + n * 8) as *mut u64)
-                            .write_volatile(u64::from(tag) | (u64::from(value) << 32));
-                        ((crate::sp3::einj::BASE + 232) as *mut u64).write_volatile(n + 1);
+                        fstart_core::mmio::write64(
+                            (crate::sp3::einj::BASE + 256 + n * 8) as *mut u64,
+                            u64::from(tag) | (u64::from(value) << 32),
+                        );
+                        fstart_core::mmio::write64(
+                            (crate::sp3::einj::BASE + 232) as *mut u64,
+                            n + 1,
+                        );
                     }
                     count.set(n + 1);
                 }

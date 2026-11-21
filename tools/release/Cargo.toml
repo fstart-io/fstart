@@ -14,3 +14,6 @@ sha2 = { workspace = true, features = ["std"] }
 tempfile = "3"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde-well-known"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

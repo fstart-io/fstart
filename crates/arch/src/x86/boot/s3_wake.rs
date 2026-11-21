@@ -164,8 +164,8 @@ pub fn jump_to_wakeup_vector(vector: u32) -> ! {
         core::ptr::copy_nonoverlapping(start as *const u8, WAKEUP_BASE as *mut u8, size);
         let off = WAKEUP_BASE + (core::ptr::addr_of!(_s3wake_vec_off) as usize - start);
         let seg = WAKEUP_BASE + (core::ptr::addr_of!(_s3wake_vec_seg) as usize - start);
-        (off as *mut u16).write_volatile((vector & 0xF) as u16);
-        (seg as *mut u16).write_volatile((vector >> 4) as u16);
+        fstart_core::mmio::write16(off as *mut u16, (vector & 0xF) as u16);
+        fstart_core::mmio::write16(seg as *mut u16, (vector >> 4) as u16);
         core::arch::asm!("jmp {0}", in(reg) WAKEUP_BASE, options(noreturn));
     }
 }

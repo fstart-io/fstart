@@ -27,7 +27,6 @@ mod rcomplut;
 mod spd;
 mod timing;
 
-use crate::MmioBar;
 use crate::generic::spd::{DimmInfo, MemClock};
 use crate::pineview::regs::{MchBar, mchbar};
 use fstart_core::services::ServiceError;

@@ -44,9 +44,9 @@ smm = ["dep:fstart-smm", "dep:fstart-driver-intel", "fstart-arch/x86_64"]
 bundle-smm = ["smm", "fstart-smm/stage-bin", "fstart-arch/smm-handler"]
 bundle-sbsa = ["stage", "aarch64", "aarch64-el2-relocate-entry", "virt-image"]
 bundle-sifive-u = ["stage", "riscv64", "virt-image"]
-linux = ["fstart-payload?/linux"]
-crabefi = ["fstart-payload?/crabefi"]
-coreboot = ["fstart-payload?/coreboot", "dep:fstart-coreboot"]
+payload-linux = ["fstart-payload?/linux"]
+payload-uefi = ["fstart-payload?/crabefi"]
+payload-coreboot = ["fstart-payload?/coreboot", "dep:fstart-coreboot"]
 smbios = ["fstart-stage?/smbios"]
 
 [dependencies]
@@ -72,3 +72,6 @@ zerocopy = { workspace = true }
 # The Q35 flow is compiled for every x86 target, host plan runners included.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 fstart-arch = { workspace = true, features = ["x86_64"] }
+
+[lints]
+workspace = true

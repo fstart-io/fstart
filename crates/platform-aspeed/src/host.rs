@@ -190,7 +190,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                &["bundle-ast2500-main", "elf"][..1 + usize::from(elf)],
+                &["bundle-ast2500-main", "payload-elf"][..1 + usize::from(elf)],
                 main.linker_script,
                 UnitOutput::Executable {
                     expectations: main.expectations,
@@ -374,7 +374,10 @@ mod tests {
             ..BuildSelection::default()
         };
         let plan = resolve(MJ11, selection).unwrap();
-        assert_eq!(plan.units[1].features, ["bundle-ast2500-main", "elf"]);
+        assert_eq!(
+            plan.units[1].features,
+            ["bundle-ast2500-main", "payload-elf"]
+        );
         assert_eq!(plan.inputs[0].name, "kernel");
         let linux = BuildSelection {
             payload: Some("linux".into()),

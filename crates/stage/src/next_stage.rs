@@ -51,7 +51,7 @@ pub fn pinned_bootstrap_descriptor()
             // SAFETY: the static contains 160 initialized bytes, patched offline;
             // volatile prevents constant folding of the link-time placeholder.
             *byte = unsafe {
-                core::ptr::read_volatile(FSTART_BOOTSTRAP_PIN.0.get().cast::<u8>().add(index))
+                fstart_core::mmio::read8(FSTART_BOOTSTRAP_PIN.0.get().cast::<u8>().add(index))
             };
         }
         fstart_ffs::root::BootstrapDescriptor::parse(&bytes)

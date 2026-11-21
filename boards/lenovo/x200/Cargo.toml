@@ -43,3 +43,6 @@ x301 = []
 smm = ["fstart-platform-intel/bundle-smm"]
 
 # One binary per stage, named after the stage: src/bin/<stage>.rs.
+
+[lints]
+workspace = true

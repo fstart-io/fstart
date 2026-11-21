@@ -27,7 +27,6 @@
 
 use super::fields::*;
 use super::{I945Variant, IntelI945, MchBar, hostbridge, mchbar};
-use crate::MmioBar;
 use crate::generic::spd::ddr2;
 use fstart_core::services::{ServiceError, SmBus};
 use fstart_pci::ecam::EcamDevice;
@@ -2498,7 +2497,8 @@ pub fn sdram_initialize(
     fstart_log::info!("i945: setting up RAM controller");
     let mut sys = SysInfo::new();
     let mut ctx = Ctx {
-        mch: MchBar::new(nb.config.mchbar as usize),
+        // SAFETY: MCHBAR is enabled at this 16 KiB base by early init.
+        mch: unsafe { MchBar::new(nb.config.mchbar as usize) },
         hb: EcamDevice::new(0, hostbridge::HOST_DEV, hostbridge::HOST_FUNC),
         lpc: EcamDevice::new(0, 0x1f, 0),
         igd: EcamDevice::new(0, hostbridge::IGD_DEV, hostbridge::IGD_FUNC),

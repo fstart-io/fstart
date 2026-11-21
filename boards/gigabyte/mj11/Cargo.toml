@@ -66,3 +66,6 @@ tock-registers = { workspace = true }
 fstart-core = { path = "../../../crates/core" }
 
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.
+
+[lints]
+workspace = true

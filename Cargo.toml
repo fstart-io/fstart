@@ -65,6 +65,16 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 [workspace.dependencies]
 # Serialization
 serde = { version = "1", default-features = false, features = ["derive"] }
@@ -78,6 +88,8 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
+embedded-io = { version = "0.6", default-features = false }
+embedded-storage = { version = "0.3", default-features = false }
 heapless = { version = "0.8", default-features = false, features = ["portable-atomic"] }
 linked_list_allocator = { version = "0.10.6", default-features = false }
 konst = { version = "0.4", default-features = false, features = ["iter"] }
@@ -91,6 +103,7 @@ tock-registers = "0.10"
 pci_types = "0.10.1"
 x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
+zeroize = { version = "1", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
 rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "01b8e1554ec4a7df8a9d9008c19dc82aeb219df8", default-features = false }
@@ -163,78 +176,12 @@ fstart-memtest = { path = "crates/memtest" }
 
 [profile.dev]
 panic = "abort"
-# Boot-time code runs against tiny CAR/SRAM stack windows, and opt-level-0
-# codegen inflates stack frames several-fold: at opt 0 the FFS manifest-
-# verification chain alone needed ~9 KiB of stack (ManifestView::parse peaked
-# at a 3.7 KiB frame), overflowing 8 KiB boot stacks. Compile every firmware
-# dependency for size even in dev builds. Note: profile package globs ("*")
-# do NOT match path dependencies, so the fstart crates are listed explicitly.
-# Specific overrides below still win where present; the board crate itself
-# stays unoptimized for fast iteration; debug assertions are unaffected.
-[profile.dev.package.fstart-core]
-opt-level = "s"
-[profile.dev.package.fstart-arch]
-opt-level = "s"
-[profile.dev.package.fstart-log]
-opt-level = "s"
-[profile.dev.package.fstart-pci]
-opt-level = "s"
-[profile.dev.package.fstart-acpi]
-opt-level = "s"
-[profile.dev.package.fstart-acpi-macros]
-opt-level = "s"
-[profile.dev.package.fstart-ffs]
-opt-level = "s"
-[profile.dev.package.fstart-boot]
-opt-level = "s"
-[profile.dev.package.fstart-smm]
-opt-level = "s"
-[profile.dev.package.fstart-image-build]
-opt-level = "s"
-[profile.dev.package.fstart-platform-intel]
-opt-level = "s"
-[profile.dev.package.fstart-platform-amd]
-opt-level = "s"
-[profile.dev.package.fstart-driver-amd]
-opt-level = "s"
-[profile.dev.package.fstart-amdfw-format]
-opt-level = "s"
-[profile.dev.package.fstart-driver-chromeec]
-opt-level = "s"
-[profile.dev.package.fstart-platform-sunxi]
-opt-level = "s"
-[profile.dev.package.fstart-platform-aspeed]
-opt-level = "s"
-[profile.dev.package.fstart-platform-qemu]
-opt-level = "s"
-[profile.dev.package.fstart-driver-intel]
-opt-level = "s"
-[profile.dev.package.fstart-driver-sunxi]
-opt-level = "s"
-[profile.dev.package.fstart-driver-sifive]
-opt-level = "s"
-[profile.dev.package.fstart-platform-sifive]
-opt-level = "s"
-[profile.dev.package.fstart-driver-superio]
-opt-level = "s"
-[profile.dev.package.fstart-driver-uart]
-opt-level = "s"
-[profile.dev.package.fstart-driver-usbdebug]
-opt-level = "s"
+# Firmware dev builds are size-optimized all the same: fbuild sets
+# opt-level "s" for every crate it builds into a stage (selection.rs), as
+# opt-level 0 frames overflow the 8 KiB CAR/SRAM boot stacks. Host tools
+# and tests stay unoptimized.
 [profile.dev.package.lz4_flex]
 opt-level = 2
-# Optimise fstart-stage for size even in dev builds.  SRAM/CAR-constrained
-# bootblocks overflow at opt-level 0; "s" keeps debug info while fitting.
-[profile.dev.package.fstart-stage]
-opt-level = "s"
-[profile.dev.package.fstart-store]
-opt-level = "s"
-[profile.dev.package.fstart-timestamp]
-opt-level = "s"
-[profile.dev.package.fstart-driver-tpm]
-opt-level = "s"
-[profile.dev.package.fstart-tcg]
-opt-level = "s"
 
 # Crypto crates are unusably slow at opt-level 0 (minutes for a single
 # Ed25519 verify on emulated RISC-V).  Always compile them with optimizations.

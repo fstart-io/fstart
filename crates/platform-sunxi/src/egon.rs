@@ -65,13 +65,15 @@ pub enum BootDevice {
 #[inline]
 pub fn boot_media_at(sram_base: usize) -> u8 {
     // SAFETY: the A20 BROM loads the eGON header at the supplied SRAM base.
-    unsafe { core::ptr::read_volatile((sram_base + 0x28) as *const u8) }
+    unsafe { fstart_core::mmio::read8((sram_base + 0x28) as *const u8) }
 }
 
 /// Decode the BROM boot device from an in-SRAM eGON header.
 pub fn boot_device_at(sram_base: usize) -> BootDevice {
-    // SAFETY: the eGON header at SRAM base is readable after BROM load.
-    let magic = unsafe { core::ptr::read_volatile((sram_base + 4) as *const [u8; 8]) };
+    let magic: [u8; 8] = core::array::from_fn(|i| {
+        // SAFETY: the eGON header at SRAM base is readable after BROM load.
+        unsafe { fstart_core::mmio::read8((sram_base + 4 + i) as *const u8) }
+    });
     if magic != EGON_MAGIC {
         return BootDevice::Fel;
     }
@@ -91,7 +93,7 @@ pub fn boot_device_at(sram_base: usize) -> BootDevice {
 #[inline]
 pub fn ffs_total_size_at(sram_base: usize) -> u32 {
     // SAFETY: BROM-loaded eGON header is readable at this fixed offset.
-    unsafe { core::ptr::read_volatile((sram_base + 0x34) as *const u32) }
+    unsafe { fstart_core::mmio::read32((sram_base + 0x34) as *const u32) }
 }
 
 #[cfg(all(feature = "stage", target_arch = "arm"))]
