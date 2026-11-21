@@ -97,5 +97,30 @@ pub fn h8_dsdt_aml<N: fstart_acpi::PcNamespace>(h8: &H8Config) -> alloc::vec::Ve
     aml
 }
 
+/// Apply ThinkPad AT24RF08C EEPROM identity and H8 EC OEM string onto a
+/// board-static SMBIOS identity. Matches coreboot's
+/// `drivers/i2c/at24rf08c/lenovo_serials.c`, where EEPROM fields populate both
+/// system and baseboard entries.
+#[cfg(feature = "acpi")]
+#[must_use]
+pub fn smbios_identity<'a>(
+    base: fstart_acpi::smbios::SmbiosIdentity<'static>,
+    eeprom: Option<&'a crate::eeprom::Identity>,
+    ec_oem: Option<&'a crate::h8::EcOemString>,
+) -> fstart_acpi::smbios::SmbiosIdentity<'a> {
+    let mut identity = base;
+    if let Some(eeprom) = eeprom {
+        identity.sys_product = eeprom.part_number();
+        identity.sys_version = eeprom.version();
+        identity.sys_serial = Some(eeprom.serial_number());
+        identity.sys_uuid = Some(eeprom.uuid);
+        identity.bb_product = eeprom.part_number();
+        identity.bb_version = eeprom.version();
+        identity.bb_serial = Some(eeprom.serial_number());
+    }
+    identity.oem_string = ec_oem.map(|oem| oem.as_str());
+    identity
+}
+
 #[cfg(feature = "acpi")]
 extern crate alloc;

@@ -7,18 +7,11 @@ use alloc::vec::Vec;
 
 impl Identity {
     pub fn smbios(&self) -> fstart_acpi::smbios::SmbiosIdentity<'_> {
-        let mut result = T6_SMBIOS_IDENTITY;
-        if let Some(eeprom) = &self.eeprom {
-            result.sys_product = eeprom.part_number();
-            result.sys_version = eeprom.version();
-            result.sys_serial = Some(eeprom.serial_number());
-            result.sys_uuid = Some(eeprom.uuid);
-            result.bb_product = eeprom.part_number();
-            result.bb_version = eeprom.version();
-            result.bb_serial = Some(eeprom.serial_number());
-        }
-        result.oem_string = self.ec_oem.as_ref().map(|oem| oem.as_str());
-        result
+        fstart_driver_lenovo::thinkpad::smbios_identity(
+            T6_SMBIOS_IDENTITY,
+            self.eeprom.as_ref(),
+            self.ec_oem.as_ref(),
+        )
     }
 }
 
