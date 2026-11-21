@@ -17,10 +17,10 @@ default = []
 smm = ["fstart-platform-qemu/smm"]
 
 [dependencies]
-fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
+fstart-platform-qemu = { workspace = true, default-features = false }
 # Shared ICH SMM handler, reused for the emulated ICH9.
-fstart-driver-intel = { path = "../../../crates/driver-intel" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
+fstart-driver-intel = { workspace = true }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.
 

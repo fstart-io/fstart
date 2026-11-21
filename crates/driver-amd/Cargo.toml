@@ -40,7 +40,7 @@ rflasher-internal = { workspace = true, optional = true }
 [dev-dependencies]
 fstart-core = { workspace = true, features = ["testing"] }
 # The unit tests cover the optional parts too, also in `cargo test --workspace`.
-fstart-driver-amd = { path = ".", features = ["smm", "acpi", "smbios", "spi-flash"] }
+fstart-driver-amd = { workspace = true, features = ["smm", "acpi", "smbios", "spi-flash"] }
 fstart-pci = { workspace = true }
 libc = "0.2"
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }

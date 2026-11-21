@@ -17,7 +17,7 @@ crabefi-efi-types = { workspace = true, optional = true }
 
 # The tests use the report.
 [dev-dependencies]
-fstart-options = { path = ".", features = ["alloc"] }
+fstart-options = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true

@@ -34,17 +34,17 @@ smm = ["fstart-platform-amd/smm"]
 # workspace (fbuild adds them to a generated one) and this crate also
 # builds on its own.
 [dependencies]
-fstart-platform-amd = { path = "../../../crates/platform-amd" }
-fstart-driver-amd = { path = "../../../crates/driver-amd" }
-fstart-driver-ipmi = { path = "../../../crates/driver-ipmi" }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-driver-uart = { path = "../../../crates/driver-uart" }
-fstart-log = { path = "../../../crates/log" }
+fstart-platform-amd = { workspace = true }
+fstart-driver-amd = { workspace = true }
+fstart-driver-ipmi = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-driver-uart = { workspace = true }
+fstart-log = { workspace = true }
 heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
 
 [dev-dependencies]
-fstart-driver-amd = { path = "../../../crates/driver-amd", features = ["testing"] }
+fstart-driver-amd = { workspace = true, features = ["testing"] }
 
 # The only stage, which the PSP copies to DRAM; fbuild builds it with
 # fstart-platform-amd/bundle. Board unit tests (`cargo test`) only

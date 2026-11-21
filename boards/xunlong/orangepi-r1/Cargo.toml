@@ -12,11 +12,11 @@ arch = "armv7"
 build-profile = { dependency = "fstart-platform-sunxi" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core" }
-fstart-driver-sunxi = { path = "../../../crates/driver-sunxi" }
-fstart-platform-sunxi = { path = "../../../crates/platform-sunxi" }
-fstart-driver-uart = { path = "../../../crates/driver-uart" }
-fstart-log = { path = "../../../crates/log" }
+fstart-core = { workspace = true }
+fstart-driver-sunxi = { workspace = true }
+fstart-platform-sunxi = { workspace = true }
+fstart-driver-uart = { workspace = true }
+fstart-log = { workspace = true }
 
 # One binary per stage, named after the stage: src/bin/<stage>.rs.
 

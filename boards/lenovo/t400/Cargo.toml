@@ -28,18 +28,18 @@ name = "ThinkPad R500"
 features = ["r500"]
 
 [dependencies]
-fstart-core = { path = "../../../crates/core", features = ["pci"] }
-fstart-platform-intel = { path = "../../../crates/platform-intel" }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
-fstart-acpi-macros = { path = "../../../crates/acpi-macros", optional = true }
-fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
-fstart-driver-intel = { path = "../../../crates/driver-intel" }
-fstart-pci = { path = "../../../crates/pci" }
+fstart-core = { workspace = true, features = ["pci"] }
+fstart-platform-intel = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { workspace = true, optional = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-driver-intel = { workspace = true }
+fstart-pci = { workspace = true }
 embedded-hal = { workspace = true }
-fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
-fstart-options = { path = "../../../crates/options" }
-fstart-log = { path = "../../../crates/log" }
+fstart-driver-lenovo = { workspace = true }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-options = { workspace = true }
+fstart-log = { workspace = true }
 # Required at the crate root wherever fstart_log macros expand
 # (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
 ufmt = { workspace = true }

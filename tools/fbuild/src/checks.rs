@@ -390,12 +390,80 @@ fn check_workspace_lints(root: &Path) -> Result<(), String> {
     check_workspace_lints_from_metadata(root, &workspace_metadata(root)?)
 }
 
+/// Every `crates/*` workspace member must have an entry in the root
+/// `Cargo.toml`'s `[workspace.dependencies]` table so downstream crates and
+/// boards can reference it with `workspace = true`.
+fn check_workspace_dependencies_from_metadata(
+    root: &Path,
+    metadata: &serde_json::Value,
+) -> Result<(), String> {
+    let root_toml_path = root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&root_toml_path)
+        .map_err(|e| format!("failed to read {}: {e}", root_toml_path.display()))?;
+    let parsed: toml::Table = toml::from_str(&text)
+        .map_err(|e| format!("failed to parse {}: {e}", root_toml_path.display()))?;
+    let ws_deps = parsed
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|d| d.as_table())
+        .ok_or("root Cargo.toml is missing [workspace.dependencies]")?;
+
+    let ws_root = metadata["workspace_root"]
+        .as_str()
+        .ok_or("cargo metadata is missing workspace_root")?;
+    let members = metadata["workspace_members"]
+        .as_array()
+        .ok_or("cargo metadata is missing workspace members")?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or("cargo metadata is missing packages")?;
+
+    let crates_dir = Path::new(ws_root).join("crates");
+    let mut checked = 0usize;
+    let mut missing = Vec::new();
+    for package in packages {
+        if !members.contains(&package["id"]) {
+            continue;
+        }
+        let manifest_path = package["manifest_path"]
+            .as_str()
+            .ok_or("cargo metadata package is missing manifest_path")?;
+        if !Path::new(manifest_path).starts_with(&crates_dir) {
+            continue;
+        }
+        let name = package["name"]
+            .as_str()
+            .ok_or("cargo metadata package is missing name")?;
+        checked += 1;
+        if !ws_deps.contains_key(name) {
+            missing.push(name.to_owned());
+        }
+    }
+    if checked == 0 {
+        return Err("cargo metadata reported zero crates/* workspace members".to_owned());
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    Err(format!(
+        "missing from root [workspace.dependencies]: {}",
+        missing.join(", ")
+    ))
+}
+
+#[cfg(test)]
+fn check_workspace_dependencies(root: &Path) -> Result<(), String> {
+    check_workspace_dependencies_from_metadata(root, &workspace_metadata(root)?)
+}
+
 /// `fbuild checks`: run (or list) every check; one failing never stops
 /// the others.
 pub fn run(list: bool) -> Result<(), String> {
     enum Step {
         DriverAmdFeatures,
         WorkspaceLints,
+        WorkspaceDependencies,
         Cargo(Command),
     }
 
@@ -427,12 +495,17 @@ pub fn run(list: bool) -> Result<(), String> {
         .into_iter()
         .flat_map(|check| check.commands())
         .map(Step::Cargo);
-    let policy_steps = [Step::DriverAmdFeatures, Step::WorkspaceLints];
+    let policy_steps = [
+        Step::DriverAmdFeatures,
+        Step::WorkspaceLints,
+        Step::WorkspaceDependencies,
+    ];
     for step in policy_steps.into_iter().chain(cargo_checks) {
         total += 1;
         let shown = match &step {
             Step::DriverAmdFeatures => "Check driver-amd capability features".to_owned(),
             Step::WorkspaceLints => "Check workspace lint inheritance".to_owned(),
+            Step::WorkspaceDependencies => "Check workspace dependency entries".to_owned(),
             Step::Cargo(command) => show(command),
         };
         if list {
@@ -456,6 +529,10 @@ pub fn run(list: bool) -> Result<(), String> {
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(|meta| check_workspace_lints_from_metadata(&root, meta)),
+            Step::WorkspaceDependencies => metadata
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|meta| check_workspace_dependencies_from_metadata(&root, meta)),
             Step::Cargo(mut command) => command
                 .current_dir(&root)
                 .status()
@@ -585,6 +662,41 @@ testing-tool = "1"
     #[test]
     fn workspace_members_inherit_workspace_lints() {
         check_workspace_lints(&workspace_root()).unwrap();
+    }
+
+    #[test]
+    fn workspace_crates_are_in_workspace_dependencies() {
+        check_workspace_dependencies(&workspace_root()).unwrap();
+    }
+
+    #[test]
+    fn workspace_dependencies_guard_rejects_missing_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.dependencies]
+listed = { path = "crates/listed" }
+"#,
+        )
+        .unwrap();
+        for (dir, name) in [("crates/listed", "listed"), ("crates/unlisted", "unlisted")] {
+            let src = tmp.path().join(dir).join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("lib.rs"), "").unwrap();
+            std::fs::write(
+                tmp.path().join(dir).join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+            )
+            .unwrap();
+        }
+        let err = check_workspace_dependencies(tmp.path()).unwrap_err();
+        assert!(err.contains("unlisted"), "{err}");
+        assert!(!err.contains("listed,"), "{err}");
     }
 
     #[test]

@@ -12,9 +12,9 @@ arch = "riscv64"
 build-profile = { dependency = "fstart-platform-qemu" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core" }
-fstart-platform-qemu = { path = "../../../crates/platform-qemu", default-features = false }
-fstart-driver-uart = { path = "../../../crates/driver-uart" }
+fstart-core = { workspace = true }
+fstart-platform-qemu = { workspace = true, default-features = false }
+fstart-driver-uart = { workspace = true }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.
 
