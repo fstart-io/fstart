@@ -230,8 +230,8 @@ impl H3Ccu {
         // SAFETY: PRCM base address is fixed hardware.
         unsafe {
             let prcm_sec = (PRCM_BASE + PRCM_SEC_SWITCH_OFF) as *mut u32;
-            let val = core::ptr::read_volatile(prcm_sec);
-            core::ptr::write_volatile(
+            let val = fstart_core::mmio::read32(prcm_sec);
+            fstart_core::mmio::write32(
                 prcm_sec,
                 val | PRCM_SEC_SWITCH_APB0_CLK_NONSEC
                     | PRCM_SEC_SWITCH_PLL_CFG_NONSEC

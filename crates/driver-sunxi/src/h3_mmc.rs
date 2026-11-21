@@ -331,13 +331,13 @@ impl H3Mmc {
         let gate_addr = (H3_CCU_BASE as usize + CCU_AHB_GATE0_OFF) as *mut u32;
         // SAFETY: AHB gate register at the fixed H3 CCU mapping.
         unsafe {
-            let gate = core::ptr::read_volatile(gate_addr);
-            core::ptr::write_volatile(gate_addr, gate | (1 << 8));
+            let gate = fstart_core::mmio::read32(gate_addr);
+            fstart_core::mmio::write32(gate_addr, gate | (1 << 8));
         }
         // H3 has a separate bus-reset register for MMC0.
         unsafe {
             let reset = (H3_CCU_BASE as usize + 0x2c0) as *mut u32;
-            core::ptr::write_volatile(reset, core::ptr::read_volatile(reset) | (1 << 8));
+            fstart_core::mmio::write32(reset, fstart_core::mmio::read32(reset) | (1 << 8));
         }
         self.mmc_clk_reg()
             .write(MMC_CLK::ENABLE::SET + MMC_CLK::CLK_SRC::Osc24M);
@@ -494,10 +494,9 @@ impl H3Mmc {
         Err(ServiceError::Timeout)
     }
 
-    /// PIO read: transfer `words` 32-bit words from FIFO into `buf32`.
+    /// PIO read: transfer `words` 32-bit words from FIFO into `buf`.
     /// Matches U-Boot's `mmc_trans_data_by_cpu()` for reads.
     fn pio_read_data(&self, buf: &mut [u8], words: usize) -> Result<(), ServiceError> {
-        let buf32 = buf.as_mut_ptr() as *mut u32;
         let mut i = 0usize;
 
         while i < words {
@@ -534,16 +533,11 @@ impl H3Mmc {
 
             for _ in 0..to_read {
                 // SAFETY: FIFO register at known MMIO address.
-                unsafe {
-                    let word = core::ptr::read_volatile(self.fifo);
-                    core::ptr::write_volatile(buf32.add(i), word);
-                }
+                let word = unsafe { fstart_core::mmio::read32(self.fifo) };
+                buf[i * 4..][..4].copy_from_slice(&word.to_ne_bytes());
                 i += 1;
             }
         }
-
-        // Note: volatile reads already prevent compiler reordering.
-        // The next RINT check via MmioReadWrite includes a barrier.
 
         Ok(())
     }

@@ -335,8 +335,8 @@ impl D1Mmc {
         let bgr_addr = (D1_CCU_BASE as usize + CCU_D1_MMC_BGR_OFF) as *mut u32;
         // SAFETY: MMC BGR register at the fixed D1 CCU mapping.
         unsafe {
-            let bgr = core::ptr::read_volatile(bgr_addr);
-            core::ptr::write_volatile(bgr_addr, bgr | (1 << 0) | (1 << 16));
+            let bgr = fstart_core::mmio::read32(bgr_addr);
+            fstart_core::mmio::write32(bgr_addr, bgr | (1 << 0) | (1 << 16));
         }
         self.mmc_clk_reg()
             .write(D1_MMC_CLK::ENABLE::SET + D1_MMC_CLK::CLK_SRC::Osc24M);
@@ -474,10 +474,9 @@ impl D1Mmc {
         Err(ServiceError::Timeout)
     }
 
-    /// PIO read: transfer `words` 32-bit words from FIFO into `buf32`.
+    /// PIO read: transfer `words` 32-bit words from FIFO into `buf`.
     /// Matches U-Boot's `mmc_trans_data_by_cpu()` for reads.
     fn pio_read_data(&self, buf: &mut [u8], words: usize) -> Result<(), ServiceError> {
-        let buf32 = buf.as_mut_ptr() as *mut u32;
         let mut i = 0usize;
 
         while i < words {
@@ -514,16 +513,11 @@ impl D1Mmc {
 
             for _ in 0..to_read {
                 // SAFETY: FIFO register at known MMIO address.
-                unsafe {
-                    let word = core::ptr::read_volatile(self.fifo);
-                    core::ptr::write_volatile(buf32.add(i), word);
-                }
+                let word = unsafe { fstart_core::mmio::read32(self.fifo) };
+                buf[i * 4..][..4].copy_from_slice(&word.to_ne_bytes());
                 i += 1;
             }
         }
-
-        // Note: volatile reads already prevent compiler reordering.
-        // The next RINT check via MmioReadWrite includes a barrier.
 
         Ok(())
     }

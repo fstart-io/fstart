@@ -1005,17 +1005,17 @@ impl A20Dramc {
             // SAFETY: testing DRAM addresses within the declared memory region.
             // Even if the physical address wraps/aliases, the write is safe.
             unsafe {
-                core::ptr::write_volatile(base.add(cnt), !(cnt as u32));
+                fstart_core::mmio::write32(base.add(cnt), !(cnt as u32));
             }
             cnt >>= 1;
         }
 
         // Phase 2: write 0 at base. This overwrites any aliased writes
         // that landed at physical address `base`.
-        unsafe { core::ptr::write_volatile(base, 0u32) };
+        unsafe { fstart_core::mmio::write32(base, 0u32) };
 
         // Phase 3: verify base reads back as 0 (basic DRAM sanity check).
-        let base_val = unsafe { core::ptr::read_volatile(base) };
+        let base_val = unsafe { fstart_core::mmio::read32(base) };
         if base_val != 0 {
             return 0;
         }
@@ -1024,7 +1024,7 @@ impl A20Dramc {
         // doesn't match ~cnt indicates address aliasing → true size.
         cnt = 1;
         while cnt < max_words {
-            let read = unsafe { core::ptr::read_volatile(base.add(cnt)) };
+            let read = unsafe { fstart_core::mmio::read32(base.add(cnt)) };
             if read != !(cnt as u32) {
                 return (cnt as u64) * core::mem::size_of::<u32>() as u64;
             }
