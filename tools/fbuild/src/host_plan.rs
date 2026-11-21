@@ -10,7 +10,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, Once, OnceLock},
 };
 
 const RUNNER: &str = "fstart-plan-runner";
@@ -111,16 +111,44 @@ fn built_runners() -> &'static Mutex<BTreeMap<(PathBuf, String), PathBuf>> {
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn runner_key(manifest_body: &str, main_src: &str, source_lock: &str) -> String {
+/// The name of a runner's directory, package and binary. Cargo.lock is not
+/// part of it: every build re-prepares the runner's lock from the source
+/// lock, so a lock change rebuilds the runner in place rather than adding
+/// another directory and binary to `target/fstart-host`.
+fn runner_key(manifest_body: &str, main_src: &str) -> String {
     fn field(hash: &mut Sha256, bytes: &[u8]) {
         hash.update((bytes.len() as u64).to_le_bytes());
         hash.update(bytes);
     }
     let mut hash = Sha256::new();
-    for s in [manifest_body, main_src, source_lock] {
+    for s in [manifest_body, main_src] {
         field(&mut hash, s.as_bytes());
     }
     format!("{:x}", hash.finalize())[..16].into()
+}
+
+/// Remove the per-board Cargo target directories of the old runner layout,
+/// `<host_dir>/<board>/plan-runner`, which the shared `cargo` target
+/// directory replaced. Each one holds a full host dependency build.
+fn prune_legacy_runners(host_dir: &Path) {
+    let Ok(entries) = fs::read_dir(host_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if entry.file_name() == "runners" || entry.file_name() == "cargo" {
+            continue;
+        }
+        if dir.join("plan-runner/Cargo.toml").is_file() {
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => eprintln!("[fstart] removed old host runner {}", dir.display()),
+                Err(e) => eprintln!(
+                    "[fstart] could not remove old host runner {}: {e}",
+                    dir.display()
+                ),
+            }
+        }
+    }
 }
 
 fn build_isolated_runner(
@@ -230,8 +258,7 @@ pub(crate) fn load(
         quoted(&image_build_path),
         workspace_patches,
     );
-    let source_lock = fs::read_to_string(root.join("Cargo.lock")).map_err(|e| e.to_string())?;
-    let key = runner_key(&manifest_body, RUNNER_MAIN, &source_lock);
+    let key = runner_key(&manifest_body, RUNNER_MAIN);
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let cache_key = (canonical_root, key.clone());
     let executable = if let Some(cached) = built_runners()
@@ -247,8 +274,11 @@ pub(crate) fn load(
         let manifest = format!(
             "[workspace]\n[package]\nname = \"{runner_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n{manifest_body}"
         );
-        let runner_dir = root.join("target/fstart-host/runners").join(&key);
-        let target_dir = root.join("target/fstart-host/cargo");
+        let host_dir = root.join("target/fstart-host");
+        static PRUNE: Once = Once::new();
+        PRUNE.call_once(|| prune_legacy_runners(&host_dir));
+        let runner_dir = host_dir.join("runners").join(&key);
+        let target_dir = host_dir.join("cargo");
         let host = crate::build_board::host_target(root)?;
         let built = build_isolated_runner(
             root,
@@ -405,7 +435,6 @@ mod tests {
 
         let host = crate::build_board::host_target(root).unwrap();
         let target_dir = root.join("target/fstart-host/cargo");
-        let source_lock = fs::read_to_string(root.join("Cargo.lock")).unwrap();
         let main_src = "fn main() { print!(\"{}\", board::MARKER); }\n";
 
         let build = |pkg: &str| {
@@ -413,7 +442,7 @@ mod tests {
             let manifest_body = format!(
                 "[dependencies]\nboard = {{ package = \"{pkg}\", path = \"{board_path}\" }}\n"
             );
-            let key = runner_key(&manifest_body, main_src, &source_lock);
+            let key = runner_key(&manifest_body, main_src);
             let name = format!("{RUNNER}-{key}");
             let manifest = format!(
                 "[workspace]\n[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n{manifest_body}"
@@ -440,6 +469,28 @@ mod tests {
         let out_b = Command::new(&exe_b).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out_a.stdout), "ALPHA");
         assert_eq!(String::from_utf8_lossy(&out_b.stdout), "BETA");
+    }
+
+    #[test]
+    fn pruning_removes_only_old_per_board_runner_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host_dir = tmp.path();
+        for file in [
+            "qemu-riscv64/plan-runner/Cargo.toml",
+            "qemu-riscv64/debug/big.rlib",
+            "runners/0123456789abcdef/Cargo.toml",
+            "cargo/debug/fstart-plan-runner-0123456789abcdef",
+            "unrelated/Cargo.toml",
+        ] {
+            let path = host_dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        prune_legacy_runners(host_dir);
+        assert!(!host_dir.join("qemu-riscv64").exists());
+        for kept in ["runners", "cargo", "unrelated"] {
+            assert!(host_dir.join(kept).exists(), "{kept}");
+        }
     }
 
     #[test]

@@ -402,39 +402,17 @@ pub fn run(list: bool) -> Result<(), String> {
     let root = crate::build_board::workspace_root()?;
     let github = std::env::var_os("GITHUB_ACTIONS").is_some();
     let metadata = workspace_metadata(&root);
-    if list {
-        let metadata = metadata?;
-        let cargo_checks = checks_for_workspace(&root, &metadata)?
-            .into_iter()
-            .flat_map(|check| check.commands())
-            .map(Step::Cargo);
-        for step in [Step::DriverAmdFeatures, Step::WorkspaceLints]
-            .into_iter()
-            .chain(cargo_checks)
-        {
-            match step {
-                Step::DriverAmdFeatures => println!("# Check driver-amd capability features"),
-                Step::WorkspaceLints => println!("# Check workspace lint inheritance"),
-                Step::Cargo(command) => println!("{}", show(&command)),
-            }
-        }
-        return Ok(());
-    }
+    let discovered = metadata
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|meta| checks_for_workspace(&root, meta));
     let mut failed = 0;
     let mut total = 0;
-    let cargo_checks = match &metadata {
-        Ok(meta) => match checks_for_workspace(&root, meta) {
-            Ok(checks) => checks,
-            Err(error) => {
-                total += 1;
-                failed += 1;
-                println!("FAIL Discover host platform checks: {error}");
-                static_checks()
-                    .into_iter()
-                    .chain(post_platform_checks())
-                    .collect()
-            }
-        },
+    let cargo_checks = match discovered {
+        Ok(checks) => checks,
+        // A listing must be complete.
+        Err(error) if list => return Err(error),
+        // Still run every check that needs no discovery.
         Err(error) => {
             total += 1;
             failed += 1;
@@ -457,6 +435,13 @@ pub fn run(list: bool) -> Result<(), String> {
             Step::WorkspaceLints => "Check workspace lint inheritance".to_owned(),
             Step::Cargo(command) => show(command),
         };
+        if list {
+            match step {
+                Step::Cargo(_) => println!("{shown}"),
+                _ => println!("# {shown}"),
+            }
+            continue;
+        }
         if github {
             println!("::group::{shown}");
         } else {
@@ -493,6 +478,9 @@ pub fn run(list: bool) -> Result<(), String> {
             }
             failed += 1;
         }
+    }
+    if list {
+        return Ok(());
     }
     println!("\n{} of {total} checks passed", total - failed);
     match failed {

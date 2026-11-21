@@ -395,9 +395,13 @@ pub fn emit_envelope(
         outcome,
     };
     serde_json::to_string(&envelope).unwrap_or_else(|e| {
-        format!(
-            "{{\"schema\":{PLAN_SCHEMA},\"outcome\":\"error\",\"message\":\"serialize platform plan: {e}\"}}"
-        )
+        // Built as a `Value` so the message is escaped like any other.
+        serde_json::json!({
+            "schema": PLAN_SCHEMA,
+            "outcome": "error",
+            "message": format!("serialize platform plan: {e}"),
+        })
+        .to_string()
     })
 }
 

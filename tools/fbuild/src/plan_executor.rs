@@ -52,7 +52,6 @@ impl Resolved {
         board: &BoardManifest,
         selection: BuildSelection,
     ) -> Result<Self, PlanError> {
-        selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
         Self::try_load_with_profile(root, board, &source, selection)
     }
