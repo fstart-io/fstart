@@ -1491,6 +1491,7 @@ dependencies = [
  "embedded-hal",
  "fstart-core",
  "tock-registers",
+ "zeroize",
 ]
 
 [[package]]
@@ -1868,6 +1869,7 @@ dependencies = [
  "fstart-driver-tpm",
  "fstart-log",
  "ufmt",
+ "zeroize",
 ]
 
 [[package]]

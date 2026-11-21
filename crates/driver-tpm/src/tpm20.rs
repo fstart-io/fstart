@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The TPM 2.0 commands platform firmware sends (TPM 2.0 Library part 3).
 
-use crate::{BUFFER_SIZE, Command, Error, Reader, Transport, alg, execute, zeroize};
+use crate::{BUFFER_SIZE, Command, Error, Reader, Transport, alg, execute};
+use zeroize::Zeroize;
 
 const ST_NO_SESSIONS: u16 = 0x8001;
 const ST_SESSIONS: u16 = 0x8002;
@@ -270,7 +271,7 @@ pub fn get_random<T: Transport + ?Sized>(tpm: &mut T, out: &mut [u8]) -> Result<
             out[filled..filled + size].copy_from_slice(body.bytes(size)?);
             Ok(size)
         });
-        zeroize(&mut response);
+        response.zeroize();
         filled += result?;
     }
     Ok(())

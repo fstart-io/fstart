@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Big-endian command marshalling, shared by both command sets.
 
-use crate::{BUFFER_SIZE, Error, zeroize};
+use crate::{BUFFER_SIZE, Error};
+use zeroize::Zeroize;
 
 /// A command under construction: tag, size (patched by [`Command::finish`])
 /// and command code or ordinal, then parameters.
@@ -65,7 +66,7 @@ impl Command {
 /// Commands may carry an authorization value: none outlives the command.
 impl Drop for Command {
     fn drop(&mut self) {
-        zeroize(&mut self.buf[..self.len]);
+        self.buf[..self.len].zeroize();
     }
 }
 

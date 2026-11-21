@@ -10,3 +10,4 @@ publish = false
 embedded-hal = { workspace = true }
 fstart-core = { workspace = true }
 tock-registers = { workspace = true }
+zeroize = { workspace = true }

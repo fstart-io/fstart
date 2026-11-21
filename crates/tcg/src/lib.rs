@@ -33,6 +33,7 @@ pub use fstart_driver_tpm::{Error as TpmError, Family, Transport};
 use fstart_driver_tpm::{tpm12, tpm20};
 use log::{Digests, EventLog, MAX_BANKS};
 pub use log::{Format, PlatformClass};
+use zeroize::Zeroize;
 
 /// Measured-boot state, owned by the boot CPU.
 struct State {
@@ -214,7 +215,7 @@ fn hide_tpm20(tpm: &mut dyn Transport) -> bool {
         .and_then(|()| tpm20::hierarchy_change_auth(tpm, PLATFORM, &auth))
         .or_else(|_| tpm20::hierarchy_control(tpm, PLATFORM, PLATFORM, false))
         .is_ok();
-    fstart_driver_tpm::zeroize(&mut auth);
+    auth.zeroize();
     tpm.release();
     if !ok {
         fstart_log::error!("tcg: hiding the TPM failed");
@@ -417,7 +418,7 @@ impl State {
                 let result = tpm20::get_random(self.tpm, &mut auth).and_then(|()| {
                     tpm20::hierarchy_change_auth(self.tpm, tpm20::hierarchy::PLATFORM, &auth)
                 });
-                fstart_driver_tpm::zeroize(&mut auth);
+                auth.zeroize();
                 // Without a random authorization the hierarchy goes off.
                 result.or_else(|_| {
                     tpm20::hierarchy_control(

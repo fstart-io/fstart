@@ -100,16 +100,6 @@ pub mod alg {
     }
 }
 
-/// Overwrite `bytes` with zeros in a way the compiler keeps: buffers that
-/// held an authorization value or TPM randomness are scrubbed with it.
-pub fn zeroize(bytes: &mut [u8]) {
-    for byte in bytes.iter_mut() {
-        // SAFETY: `byte` is a valid, exclusive reference.
-        unsafe { core::ptr::write_volatile(byte, 0) };
-    }
-    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-}
-
 /// Largest command or response this crate builds or accepts.
 pub const BUFFER_SIZE: usize = 1024;
 

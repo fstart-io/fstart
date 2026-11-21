@@ -91,6 +91,7 @@ tock-registers = "0.10"
 pci_types = "0.10.1"
 x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
+zeroize = { version = "1", default-features = false }
 
 # Firmware SPI controllers; use the allocation-free host/controller interface.
 rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "01b8e1554ec4a7df8a9d9008c19dc82aeb219df8", default-features = false }
