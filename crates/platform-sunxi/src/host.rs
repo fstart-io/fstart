@@ -17,7 +17,7 @@ use fstart_image_build::{
         FfsAssembly as Assembly, ImageStep, InputFile, UnitOutput,
     },
     linker::resolved_ram_stage,
-    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, PlanError, ResolvedPlan, Span},
     run::{RunArtifact, RunMedia, RunRecipe},
 };
 use std::{
@@ -50,7 +50,7 @@ pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: SunxiBoardFacts> HostPlan<B> for Plan<B> {
     type Options = NoOptions;
 
-    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, PlanError> {
         resolve(B::FACTS, selection)
     }
 }
@@ -235,16 +235,20 @@ fn run(emulator: SunxiEmulator, facts: &BoardFacts) -> Result<RunRecipe, String>
     }
 }
 
-pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
+pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     // The D1 mainstage is halt-only: no D1 Linux launcher exists. Sunxi has
     // no UEFI/FIT/Shell/ELF flow either.
     if !matches!(payload.as_str(), "halt" | "linux") {
-        return Err("sunxi supports halt and direct Linux, not UEFI/FIT payloads".into());
+        return Err(PlanError::unsupported_payload(
+            "sunxi supports halt and direct Linux, not UEFI/FIT payloads",
+        ));
     }
     if payload == "linux" && matches!(facts.soc, SunxiSoc::D1) {
-        return Err("D1 mainstage is halt-only; no D1 Linux launcher exists".into());
+        return Err(PlanError::unsupported_payload(
+            "D1 mainstage is halt-only; no D1 Linux launcher exists",
+        ));
     }
     let dram_end = DRAM_BASE
         .checked_add(facts.dram_size)
@@ -527,16 +531,12 @@ mod tests {
             halt.unit("bootblock").unwrap().target,
             "riscv64gc-unknown-none-elf"
         );
-        assert!(
-            resolve(dock, select("linux"))
-                .unwrap_err()
-                .contains("halt-only")
-        );
-        assert!(
-            resolve(BANANAPI, select("uefi"))
-                .unwrap_err()
-                .contains("halt and direct Linux")
-        );
+        let d1_linux = resolve(dock, select("linux")).unwrap_err();
+        assert!(d1_linux.is_unsupported_payload());
+        assert!(d1_linux.message().contains("halt-only"));
+        let uefi = resolve(BANANAPI, select("uefi")).unwrap_err();
+        assert!(uefi.is_unsupported_payload());
+        assert!(uefi.message().contains("halt and direct Linux"));
     }
 
     #[test]

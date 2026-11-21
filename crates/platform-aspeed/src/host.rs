@@ -18,7 +18,7 @@ use fstart_image_build::{
     },
     layout::EncodedLayout,
     linker::{Xip, resolved_ram_stage},
-    plan::{BuildSelection, HostPlan, NoOptions, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, NoOptions, PlanError, ResolvedPlan, Span},
     run::{RunArtifact, RunMedia, RunRecipe},
 };
 use std::{
@@ -44,18 +44,22 @@ pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: AspeedBoardFacts> HostPlan<B> for Plan<B> {
     type Options = NoOptions;
 
-    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, String> {
+    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, PlanError> {
         resolve(B::FACTS, selection)
     }
 }
 
-pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, String> {
+pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     let elf = match payload.as_str() {
         "halt" => false,
         "elf" => true,
-        _ => return Err("the AST2500 main stage boots halt or a bare ELF".into()),
+        _ => {
+            return Err(PlanError::unsupported_payload(
+                "the AST2500 main stage boots halt or a bare ELF",
+            ));
+        }
     };
     let AspeedSoc::Ast2500 = facts.soc;
     if facts.flash_size < FIRMWARE_WINDOW_SIZE {

@@ -3,7 +3,7 @@
 //! Every external pin must already exist in that source lock; the build then
 //! runs --locked. No manifest or lock in the source workspace is rewritten.
 use crate::profile_source::ProfileSource;
-use fstart_image_build::plan::{BuildSelection, PlanEnvelope, ResolvedPlan};
+use fstart_image_build::plan::{BuildSelection, PlanEnvelope, PlanError, ResolvedPlan};
 use std::{fs, path::Path, process::Command};
 
 const RUNNER: &str = "fstart-plan-runner";
@@ -102,7 +102,7 @@ pub(crate) fn load(
     source: &ProfileSource,
     board: &crate::board_manifest::BoardManifest,
     selection: &BuildSelection,
-) -> Result<ResolvedPlan, String> {
+) -> Result<ResolvedPlan, PlanError> {
     let runner = root
         .join("target/fstart-host")
         .join(&board.board)
@@ -218,13 +218,15 @@ pub(crate) fn load(
         return Err(format!(
             "platform plan failed: {}",
             String::from_utf8_lossy(&output.stderr)
-        ));
+        )
+        .into());
     }
     let envelope: PlanEnvelope = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("platform plan transport: {e}"))?;
-    envelope
-        .into_plan()
-        .map_err(|e| format!("platform plan failed: {e}"))
+    envelope.into_plan().map_err(|e| match e {
+        PlanError::UnsupportedPayload(msg) => PlanError::UnsupportedPayload(msg),
+        PlanError::Failed(msg) => PlanError::Failed(format!("platform plan failed: {msg}")),
+    })
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ impl Board for Mj11 {
 /// runner parses them.
 fn resolve<B: Board>(selection: BuildSelection) -> Result<BuildPlan, String> {
     let options = selection.options()?;
-    crate::host::resolve_board::<B>(&selection, &options)
+    crate::host::resolve_board::<B>(&selection, &options).map_err(|e| e.to_string())
 }
 
 fn amd(plan: &BuildPlan) -> &AmdAssembly {

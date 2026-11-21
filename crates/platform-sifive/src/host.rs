@@ -13,7 +13,7 @@ use fstart_image_build::build_plan::{
 };
 use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
 use fstart_image_build::layout::EncodedLayout;
-use fstart_image_build::plan::{BuildSelection, Span};
+use fstart_image_build::plan::{BuildSelection, PlanError, Span};
 use std::{
     collections::BTreeMap,
     string::{String, ToString},
@@ -46,7 +46,7 @@ impl<B: Fu740Board> fstart_image_build::plan::HostPlan<B> for Plan<B> {
     fn resolve(
         selection: BuildSelection,
         _: Self::Options,
-    ) -> Result<fstart_image_build::plan::ResolvedPlan, String> {
+    ) -> Result<fstart_image_build::plan::ResolvedPlan, PlanError> {
         resolve(B::CONFIG, B::DEVICE_TREE, selection)
     }
 }
@@ -56,11 +56,13 @@ pub fn resolve(
     config: &Fu740Config,
     device_tree: &'static str,
     selection: BuildSelection,
-) -> Result<BuildPlan, String> {
+) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     let payload = selection.payload.unwrap_or_else(|| "linux".into());
     if !matches!(payload.as_str(), "halt" | "linux" | "uefi") {
-        return Err("FU740 supports halt, Linux and UEFI".into());
+        return Err(PlanError::unsupported_payload(
+            "FU740 supports halt, Linux and UEFI",
+        ));
     }
     let linux = payload == "linux";
     let keep_firmware = payload != "halt";

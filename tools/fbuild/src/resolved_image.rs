@@ -1,6 +1,6 @@
 //! Load and execute a board's Rust platform plan.
 use crate::{board_manifest::BoardManifest, plan_executor::Resolved};
-use fstart_image_build::plan::BuildSelection;
+use fstart_image_build::plan::{BuildSelection, PlanError};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -14,6 +14,14 @@ impl ResolvedImage {
         board: &BoardManifest,
         selection: BuildSelection,
     ) -> Result<Self, String> {
+        Self::try_load(root, board, selection).map_err(|e| e.to_string())
+    }
+
+    pub fn try_load(
+        root: &Path,
+        board: &BoardManifest,
+        selection: BuildSelection,
+    ) -> Result<Self, PlanError> {
         selection.validate_compiler_files()?;
         let source = crate::profile_source::load_profile(root, board)?;
         use fstart_image_build::plan::options::{BLOBS, DONOR};

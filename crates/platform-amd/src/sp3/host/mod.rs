@@ -158,7 +158,7 @@ mod tests {
     /// runner parses them.
     fn resolve<B: Board>(selection: &BuildSelection) -> Result<BuildPlan, std::string::String> {
         let options = selection.options()?;
-        crate::host::resolve_board::<B>(selection, &options)
+        crate::host::resolve_board::<B>(selection, &options).map_err(|e| e.to_string())
     }
 
     fn sp3(plan: &BuildPlan) -> &AmdHalvedFlashAssembly {
