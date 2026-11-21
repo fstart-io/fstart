@@ -8,7 +8,6 @@
 //! `raminit_receive_enable_calibration.c`; register constants and ordering are
 //! checked against coreboot's `gm965.h` and `raminit.c`.
 
-use crate::MmioBar;
 use crate::generic::spd::{ChipWidth, DimmInfo};
 use fstart_core::services::{ServiceError, SmBus};
 
@@ -2051,8 +2050,9 @@ mod tests {
         for clock in [MemClock::Ddr2_533, MemClock::Ddr2_667] {
             let mut trained = [0xffff_ffffu32; 0x1000];
             let mut replayed = trained;
-            let trained = MchBar::new(trained.as_mut_ptr() as usize);
-            let replayed = MchBar::new(replayed.as_mut_ptr() as usize);
+            // SAFETY: `trained` and `replayed` are 16 KiB u32-aligned stack arrays matching MCHBAR size.
+            let trained = unsafe { MchBar::new(trained.as_mut_ptr() as usize) };
+            let replayed = unsafe { MchBar::new(replayed.as_mut_ptr() as usize) };
             let mut info = RaminitInfo::default();
             info.timings.mem_clock = clock;
             receive_enable_training(&mut info, &trained).unwrap();

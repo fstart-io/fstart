@@ -16,7 +16,6 @@ pub mod raminit;
 
 use self::fields::*;
 
-use crate::MmioBar;
 use fstart_core::mmio::{read32, write32};
 
 use crate::gma::types::{Cpu, PciAddress};
@@ -336,19 +335,20 @@ register_structs! {
 
 /// Thin MCHBAR accessor.
 #[derive(Clone, Copy)]
-pub struct MchBar {
-    base: usize,
-}
+pub struct MchBar(fstart_core::mmio::MmioWindow);
 
 impl MchBar {
-    pub(crate) const fn new(base: usize) -> Self {
-        Self { base }
+    /// # Safety
+    /// `base` must point to the mapped 16 KiB GM965 MCHBAR aperture.
+    pub(crate) const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x4000) })
     }
 
     #[inline]
     fn regs(&self) -> &'static Gm965MchBarRegs {
         // SAFETY: the base address is programmed into D0:F0 MCHBAR by early init.
-        unsafe { &*(self.base as *const Gm965MchBarRegs) }
+        unsafe { &*(self.0.base() as *const Gm965MchBarRegs) }
     }
 
     #[inline]
@@ -359,28 +359,29 @@ impl MchBar {
     }
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for MchBar {
-    fn base(self) -> usize {
-        self.base
+impl core::ops::Deref for MchBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// Thin DMIBAR accessor.
+/// Thin DMIBAR accessor (4 KiB).
 #[derive(Clone, Copy)]
-pub struct DmiBar {
-    base: usize,
-}
+pub struct DmiBar(fstart_core::mmio::MmioWindow);
 
 impl DmiBar {
-    pub(crate) const fn new(base: usize) -> Self {
-        Self { base }
+    /// # Safety
+    /// `base` must point to the mapped 4 KiB GM965 DMIBAR aperture.
+    pub(crate) const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x1000) })
     }
 
     #[inline]
     fn regs(&self) -> &'static Gm965DmiBarRegs {
         // SAFETY: the base address is programmed into D0:F0 DMIBAR by early init.
-        unsafe { &*(self.base as *const Gm965DmiBarRegs) }
+        unsafe { &*(self.0.base() as *const Gm965DmiBarRegs) }
     }
 
     #[inline]
@@ -389,29 +390,30 @@ impl DmiBar {
     }
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for DmiBar {
-    fn base(self) -> usize {
-        self.base
+impl core::ops::Deref for DmiBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// Thin EPBAR accessor.
+/// Thin EPBAR accessor (4 KiB).
 #[derive(Clone, Copy)]
-pub struct EpBar {
-    base: usize,
-}
+pub struct EpBar(fstart_core::mmio::MmioWindow);
 
 impl EpBar {
-    pub(crate) const fn new(base: usize) -> Self {
-        Self { base }
+    /// # Safety
+    /// `base` must point to the mapped 4 KiB GM965 EPBAR aperture.
+    pub(crate) const unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x1000) })
     }
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for EpBar {
-    fn base(self) -> usize {
-        self.base
+impl core::ops::Deref for EpBar {
+    type Target = fstart_core::mmio::MmioWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -593,15 +595,18 @@ impl IntelGm965 {
     }
 
     fn mchbar(&self) -> MchBar {
-        MchBar::new(self.config.mchbar as usize)
+        // SAFETY: MCHBAR is enabled at this 16 KiB base by early init.
+        unsafe { MchBar::new(self.config.mchbar as usize) }
     }
 
     fn dmibar(&self) -> DmiBar {
-        DmiBar::new(self.config.dmibar as usize)
+        // SAFETY: DMIBAR is enabled at this 4 KiB base by early init.
+        unsafe { DmiBar::new(self.config.dmibar as usize) }
     }
 
     fn epbar(&self) -> EpBar {
-        EpBar::new(self.config.epbar as usize)
+        // SAFETY: EPBAR is enabled at this 4 KiB base by early init.
+        unsafe { EpBar::new(self.config.epbar as usize) }
     }
 
     fn pciexbar_length_bits(&self) -> u32 {

@@ -73,4 +73,4 @@ When adding new code, do not model it on these older areas—they are tracked fo
 cleanup:
 
 - `crates/driver-intel`: `ich7/mod.rs`, `ich8/mod.rs`, `ich9/mod.rs` (partially
-  extracted into `southbridge/`) and the untyped `MmioBar` raw-offset trait.
+  extracted into `southbridge/`).
