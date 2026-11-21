@@ -2,9 +2,8 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use fstart_core::ffs::{
-    ANCHOR_SIZE, AnchorBlock, Compression, FileType, SegmentFlags, SegmentKind, Signature,
+    Compression, FileType, LOCATOR_SIZE, LocatorBlock, SegmentFlags, SegmentKind, Signature,
     VerificationKey,
-    locator::{LOCATOR_SIZE, LocatorBlock},
     trust::{TRUST_SIZE, TrustBlock, TrustRef},
 };
 use fstart_ffs::{builder::*, root::*};
@@ -17,8 +16,8 @@ fn config(key_count: u8) -> (FfsImageConfig, SigningKey) {
             VerificationKey::ed25519(id, key.verifying_key().to_bytes())
         })
         .collect();
-    let mut initial = vec![0; ANCHOR_SIZE];
-    AnchorBlock::placeholder().write_to(&mut initial);
+    let mut initial = vec![0; LOCATOR_SIZE];
+    LocatorBlock::placeholder().write_to(&mut initial);
     let mut main = vec![0x37; 8192];
     TrustBlock::placeholder().write_to(&mut main[64..64 + TRUST_SIZE]);
     let segment = |data, compression, load_addr| InputSegment {
@@ -79,8 +78,8 @@ fn compression_uses_final_constant_policy_and_deterministic_input_identity() {
                 max_directory_size: 65536,
                 keys: &config.keys,
             },
-            &built.image[locator.manifest_offset.get() as usize
-                ..locator.manifest_offset.get() as usize + ROOT_SIZE],
+            &built.image[locator.root_offset.get() as usize
+                ..locator.root_offset.get() as usize + ROOT_SIZE],
         )
         .unwrap();
         let descriptor = root.descriptors()[0].unwrap();

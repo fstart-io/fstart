@@ -402,20 +402,20 @@ fn two_level_vendor() -> Vec<u8> {
 /// An FFS with its locator and a finalized trust block, and a stage with
 /// the placeholders of both.
 fn ffs_and_stage(reset_size: usize) -> (Vec<u8>, Vec<u8>) {
-    use fstart_core::ffs::{AnchorBlock, trust::TrustBlock};
+    use fstart_core::ffs::{LocatorBlock, trust::TrustBlock};
     let pattern = |len: usize, seed: usize| -> Vec<u8> {
         (0..len).map(|i| ((i * seed) >> 4) as u8).collect()
     };
     let mut ffs = pattern(0x2000, 7);
-    let mut locator = AnchorBlock::placeholder();
-    locator.manifest_offset.set(0x100);
-    locator.manifest_size.set(0x20);
+    let mut locator = LocatorBlock::placeholder();
+    locator.root_offset.set(0x100);
+    locator.root_size.set(0x20);
     locator.write_to(&mut ffs[0x40..]);
     let mut trust = TrustBlock::placeholder();
     trust.set_key_count(1);
     trust.write_to(&mut ffs[0x400..]);
     let mut stage = pattern(reset_size, 13);
-    AnchorBlock::placeholder().write_to(&mut stage[0x1000..]);
+    LocatorBlock::placeholder().write_to(&mut stage[0x1000..]);
     TrustBlock::placeholder().write_to(&mut stage[0x2000..]);
     (ffs, stage)
 }

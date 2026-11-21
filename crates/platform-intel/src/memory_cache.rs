@@ -354,7 +354,7 @@ pub(crate) fn runtime_key<B: crate::IntelBoard>(
         .ok_or(ServiceError::NotSupported)?;
     let (base, size) = geometry.firmware()?;
     let locator = unsafe {
-        fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_stage::fstart_anchor_bytes())
+        fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_stage::locator_bytes())
     }
     .ok_or(ServiceError::InvalidParam)?
     .value()

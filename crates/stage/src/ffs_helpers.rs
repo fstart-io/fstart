@@ -8,7 +8,7 @@ use fstart_core::services::BootMedia;
 use fstart_core::services::TempRamArena;
 use fstart_crypto::digest::hash_sha256;
 use fstart_ffs::root::{BootstrapDescriptor, BootstrapRole};
-use fstart_ffs::{FileView, ManifestView};
+use fstart_ffs::{DirectoryView, FileView};
 
 fn descriptor(file: &FileView<'_>) -> Option<BootstrapDescriptor> {
     let [segment] = file.segments() else {
@@ -163,7 +163,7 @@ pub(crate) fn load_ffs_file_by_name(
     load_file_segments_from_media(media, &file, media.size(), &Measurement::NONE).is_some()
 }
 
-fn stored_file(directory: ManifestView<'_>, file_type: FileType) -> Option<BootstrapDescriptor> {
+fn stored_file(directory: DirectoryView<'_>, file_type: FileType) -> Option<BootstrapDescriptor> {
     let file = directory.find_file_by_type(file_type).ok()?;
     let descriptor = descriptor(&file)?;
     // Parser consumers receive stored bytes only, not an implicitly compressed

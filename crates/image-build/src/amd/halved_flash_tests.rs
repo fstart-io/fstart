@@ -160,7 +160,7 @@ fn ffs(len: usize) -> Vec<u8> {
     let mut l = LocatorBlock::placeholder();
     l.total_image_size.set(len as u32);
     l.anchor_offset.set(0x800);
-    l.manifest_offset.set(0x900);
+    l.root_offset.set(0x900);
     l.write_to(&mut f[0x800..0x800 + LOCATOR_SIZE]);
     f
 }

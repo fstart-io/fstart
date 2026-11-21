@@ -5,26 +5,25 @@
 //! The reader operates on a `&[u8]` slice representing the firmware image
 //! (typically the memory-mapped flash region). It can:
 //!
-//! - Find the anchor block (by scanning for `FFS_MAGIC` or at a known offset)
-//! - Deserialize and verify the RO manifest
-//! - Follow pointers to RW manifests and verify those
-//! - Look up files by name
-//! - Read segment data from the image
+//! - Locate the `LocatorBlock` (at a known offset or by scanning for `LOCATOR_MAGIC`)
+//! - Authenticate the signed 512-byte boot root against constant trust policy
+//! - Parse the revision-2 directory (`DirectoryView`) referenced by the root
+//! - Look up files by name or type and read segment data from the image
 //!
 //! ## Builder (std, fbuild)
 //!
 //! The builder module (behind `std` feature) constructs FFS images:
-//! assemble files + segments, compute digests, build manifests, sign,
-//! and produce the final binary.
+//! assemble files + segments, compute digests, encode the directory and
+//! signed boot root, and produce the final binary.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(feature = "std")]
 extern crate alloc;
 
-pub mod lz4;
 #[cfg(feature = "directory")]
-pub mod manifest;
+pub mod directory;
+pub mod lz4;
 #[cfg(feature = "directory")]
 pub mod reader;
 pub mod root;
@@ -33,6 +32,6 @@ pub mod root;
 pub mod builder;
 
 #[cfg(feature = "directory")]
-pub use manifest::{FileView, ManifestSummary, ManifestView};
+pub use directory::{DirectorySummary, DirectoryView, FileView};
 #[cfg(feature = "directory")]
 pub use reader::{FfsReader, ReaderError};

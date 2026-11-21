@@ -88,8 +88,8 @@ mod tests {
     fn locator() -> LocatorBlock {
         LocatorBlock {
             total_image_size: U32::new(0x10000),
-            manifest_offset: U32::new(0xfe00),
-            manifest_size: U32::new(512),
+            root_offset: U32::new(0xfe00),
+            root_size: U32::new(512),
             ..LocatorBlock::placeholder()
         }
     }

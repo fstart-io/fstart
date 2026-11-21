@@ -5,7 +5,7 @@ use crate::boot::{Codec, LoadError, MemoryPolicy, MemoryWindow, read_exact};
 use crate::heap::{boxed::Box, vec::Vec};
 use fstart_core::services::BootMedia;
 use fstart_ffs::root::DirectoryRef;
-use fstart_ffs::{ManifestView, ReaderError};
+use fstart_ffs::{DirectoryView, ReaderError};
 use portable_atomic::{AtomicPtr, Ordering};
 
 pub const MAX_DIRECTORY_SIZE: u64 = 64 * 1024;
@@ -42,7 +42,7 @@ impl VerifiedDirectory {
         reference
             .verify_bytes(&bytes)
             .map_err(|_| ReaderError::DigestMismatch)?;
-        ManifestView::parse(&bytes)?;
+        DirectoryView::parse(&bytes)?;
         Ok(Self {
             bytes,
             reference,
@@ -50,8 +50,8 @@ impl VerifiedDirectory {
         })
     }
 
-    pub fn view(&self) -> Result<ManifestView<'_>, ReaderError> {
-        ManifestView::parse(&self.bytes)
+    pub fn view(&self) -> Result<DirectoryView<'_>, ReaderError> {
+        DirectoryView::parse(&self.bytes)
     }
 }
 
@@ -165,7 +165,7 @@ fn context() -> Option<&'static VerifiedDirectory> {
 
 pub(crate) fn view(
     media: &(impl BootMedia + ?Sized),
-) -> Result<ManifestView<'static>, ReaderError> {
+) -> Result<DirectoryView<'static>, ReaderError> {
     let directory = context().ok_or(ReaderError::CannotVerifyInPlace)?;
     if directory.image_size != media.size() {
         return Err(ReaderError::OutOfBounds);

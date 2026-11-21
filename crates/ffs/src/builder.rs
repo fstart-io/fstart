@@ -23,9 +23,9 @@ use std::vec::Vec;
 
 use crate::root::{BootstrapDescriptor, BootstrapRole, DirectoryRef, ROOT_SIZE, Root, SIGNED_SIZE};
 use fstart_core::ffs::{
-    ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
-    ImageManifest, Region, RegionContent, RegionEntry, Segment, SegmentFlags, SegmentKind,
-    Signature, TRUST_MAX_KEYS, VerificationKey,
+    Compression, EntryContent, FileType, ImageManifest, LOCATOR_MAGIC, LOCATOR_SIZE,
+    LOCATOR_VERSION, LocatorBlock, Region, RegionContent, RegionEntry, Segment, SegmentFlags,
+    SegmentKind, Signature, TRUST_MAX_KEYS, VerificationKey,
 };
 use fstart_crypto::digest;
 use heapless::String as HString;
@@ -145,7 +145,7 @@ pub struct FfsImageConfig {
     /// Regions to include in the image, in order.
     ///
     /// The first Container region's first file must contain an embedded
-    /// `FSTART_ANCHOR` placeholder (with `FFS_MAGIC` at an 8-byte-aligned
+    /// `FSTART_ANCHOR` placeholder (with `LOCATOR_MAGIC` at an 8-byte-aligned
     /// offset) so the builder can find and patch it.
     pub regions: Vec<InputRegion>,
 }
@@ -187,7 +187,7 @@ pub struct FfsImage {
 /// laid out sequentially. The directory and signed boot root are appended.
 ///
 /// The first file must contain an embedded `FSTART_ANCHOR` placeholder
-/// (with `FFS_MAGIC` at an 8-byte-aligned offset). The builder scans for
+/// (with `LOCATOR_MAGIC` at an 8-byte-aligned offset). The builder scans for
 /// it and patches the anchor in-place with the real layout offsets.
 ///
 /// This convenience entry uses the development family ID and no bootstrap
@@ -419,11 +419,11 @@ where
         regions: manifest_regions,
     };
 
-    let directory_bytes = crate::manifest::encode_manifest(&manifest)?;
+    let directory_bytes = crate::directory::encode_manifest(&manifest)?;
     let directory_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
     image.extend_from_slice(&directory_bytes);
-    let manifest_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
-    let manifest_size = ROOT_SIZE as u32;
+    let root_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
+    let root_size = ROOT_SIZE as u32;
     image.resize(image.len() + ROOT_SIZE, 0);
 
     // ---- Phase 3: Build anchor and patch it into the bootblock binary ----
@@ -442,7 +442,7 @@ where
         let pad = (8 - (image.len() % 8)) % 8;
         image.extend(core::iter::repeat_n(0u8, pad));
         let offset = image.len();
-        image.resize(offset + ANCHOR_SIZE, 0);
+        image.resize(offset + LOCATOR_SIZE, 0);
         anchor_offsets.push(offset);
     }
     let anchor_offset = anchor_offsets[0];
@@ -458,11 +458,11 @@ where
         .iter()
         .find(|file| file.name == "cpu_microcode_blob.bin");
 
-    let anchor = AnchorBlock {
-        magic: FFS_MAGIC,
-        version: FFS_VERSION.into(),
-        manifest_offset: manifest_offset.into(),
-        manifest_size: manifest_size.into(),
+    let anchor = LocatorBlock {
+        magic: LOCATOR_MAGIC,
+        version: LOCATOR_VERSION.into(),
+        root_offset: root_offset.into(),
+        root_size: root_size.into(),
         total_image_size: total_image_size.into(),
         anchor_offset: u32::try_from(anchor_offset)
             .map_err(|_| "anchor offset exceeds u32")?
@@ -473,9 +473,9 @@ where
     };
 
     for &offset in &anchor_offsets {
-        if offset + ANCHOR_SIZE > image.len() {
+        if offset + LOCATOR_SIZE > image.len() {
             return Err(format!(
-                "anchor placeholder at offset {offset} would extend past image end (need {ANCHOR_SIZE} bytes)"
+                "anchor placeholder at offset {offset} would extend past image end (need {LOCATOR_SIZE} bytes)"
             ));
         }
         anchor.write_to(&mut image[offset..]);
@@ -493,7 +493,7 @@ where
         &anchor,
     )?;
 
-    let new_directory = crate::manifest::encode_manifest(&manifest)?;
+    let new_directory = crate::directory::encode_manifest(&manifest)?;
     if new_directory.len() != directory_bytes.len() {
         return Err("directory size changed during anchor patch".into());
     }
@@ -508,20 +508,20 @@ where
         sign,
     )?;
 
-    if new_manifest_serialized.len() != manifest_size as usize {
+    if new_manifest_serialized.len() != root_size as usize {
         return Err(format!(
             "manifest size changed after digest recomputation ({} → {}); \
              this is a builder bug",
-            manifest_size,
+            root_size,
             new_manifest_serialized.len()
         ));
     }
 
-    image[manifest_offset as usize..manifest_offset as usize + manifest_size as usize]
+    image[root_offset as usize..root_offset as usize + root_size as usize]
         .copy_from_slice(&new_manifest_serialized);
 
     // Return the raw anchor bytes for logging/debugging
-    let mut anchor_bytes = vec![0u8; ANCHOR_SIZE];
+    let mut anchor_bytes = vec![0u8; LOCATOR_SIZE];
     anchor.write_to(&mut anchor_bytes);
 
     Ok(FfsImage {
@@ -538,10 +538,10 @@ where
 /// Comparing its canonical wire bytes avoids both duplicated offset decoding
 /// and false matches against embedded magic constants.
 fn scan_for_placeholders(image: &[u8]) -> Vec<usize> {
-    let mut placeholder = [0; ANCHOR_SIZE];
-    AnchorBlock::placeholder().write_to(&mut placeholder);
+    let mut placeholder = [0; LOCATOR_SIZE];
+    LocatorBlock::placeholder().write_to(&mut placeholder);
     image
-        .windows(ANCHOR_SIZE)
+        .windows(LOCATOR_SIZE)
         .step_by(8)
         .enumerate()
         .filter_map(|(index, window)| (window == placeholder).then_some(index * 8))
@@ -750,7 +750,7 @@ fn recompute_file_digests(
     manifest: &mut ImageManifest,
     anchor_offsets: &[usize],
     input_regions: &[InputRegion],
-    anchor: &AnchorBlock,
+    anchor: &LocatorBlock,
 ) -> Result<(), String> {
     recompute_inline_file_digests(image, manifest, anchor_offsets)?;
     recompute_external_file_digests(manifest, input_regions, anchor)?;
@@ -901,7 +901,7 @@ fn recompute_inline_file_digests(
 fn recompute_external_file_digests(
     manifest: &mut ImageManifest,
     input_regions: &[InputRegion],
-    anchor: &AnchorBlock,
+    anchor: &LocatorBlock,
 ) -> Result<(), String> {
     for input_region in input_regions {
         let InputRegion::ContainerWithExternal {
@@ -1129,8 +1129,8 @@ where
     P: FnOnce(&mut [u8], &Root) -> Result<(), String>,
 {
     let anchor =
-        unsafe { core::ptr::read_unaligned(built.anchor_bytes.as_ptr().cast::<AnchorBlock>()) };
-    let root_start = anchor.manifest_offset.get() as usize;
+        unsafe { core::ptr::read_unaligned(built.anchor_bytes.as_ptr().cast::<LocatorBlock>()) };
+    let root_start = anchor.root_offset.get() as usize;
     let mut root = Root::parse(
         built
             .image
@@ -1153,7 +1153,7 @@ where
     root.directory
         .verify_bytes(directory)
         .map_err(|e| format!("directory digest: {e:?}"))?;
-    let mut manifest = crate::manifest::ManifestView::parse(directory)
+    let mut manifest = crate::directory::DirectoryView::parse(directory)
         .and_then(|v| v.to_owned_manifest())
         .map_err(|e| format!("directory: {e:?}"))?;
     let (start, size) = manifest
@@ -1197,7 +1197,7 @@ where
         &root,
     )?;
     recompute_inline_file_digests(&built.image, &mut manifest, &[start])?;
-    let directory = crate::manifest::encode_manifest(&manifest)?;
+    let directory = crate::directory::encode_manifest(&manifest)?;
     if directory.len() != dir_size {
         return Err("directory size changed during finalization".into());
     }

@@ -4,7 +4,7 @@
 #[path = "entry_tests.rs"]
 mod entry_tests;
 
-use fstart_core::ffs::{ANCHOR_SIZE, FileType};
+use fstart_core::ffs::{FileType, LOCATOR_SIZE};
 use fstart_core::services::boot::BootLinuxParams;
 use fstart_core::services::boot_media::{BlockDeviceMedia, LinearMap, MemoryMapped};
 use fstart_core::services::memory_detect::E820Entry;
@@ -12,7 +12,7 @@ use fstart_core::services::{BlockDevice, ServiceError};
 
 #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
 #[repr(align(8))]
-struct AlignedAnchorBytes([u8; ANCHOR_SIZE]);
+struct AlignedAnchorBytes([u8; LOCATOR_SIZE]);
 
 #[cfg_attr(not(feature = "ffs"), allow(dead_code))]
 pub struct BlockDeviceFfs {
@@ -60,13 +60,13 @@ impl BlockDeviceFfs {
     {
         #[cfg(feature = "ffs")]
         {
-            if ffs_size < ANCHOR_SIZE {
+            if ffs_size < LOCATOR_SIZE {
                 fstart_log::error!("invalid block FFS size: {:#x}", ffs_size);
                 return Err(ServiceError::InvalidParam);
             }
             // SAFETY: stable initial/predecessor locator bytes, copied below.
-            let locator = unsafe { fstart_ffs::FfsReader::read_anchor_volatile(anchor_bytes) }
-                .map_err(|_| ServiceError::InvalidParam)?
+            let locator = unsafe { fstart_core::ffs::LocatorRef::read_volatile(anchor_bytes) }
+                .ok_or(ServiceError::InvalidParam)?
                 .media();
             let capacity = block
                 .size()
@@ -81,8 +81,8 @@ impl BlockDeviceFfs {
 
             self.ffs_size = ffs_size;
             let _ = self.media(block)?;
-            let mut anchor = AlignedAnchorBytes([0u8; ANCHOR_SIZE]);
-            anchor.0.copy_from_slice(&anchor_bytes[..ANCHOR_SIZE]);
+            let mut anchor = AlignedAnchorBytes([0u8; LOCATOR_SIZE]);
+            anchor.0.copy_from_slice(&anchor_bytes[..LOCATOR_SIZE]);
             fstart_log::info!(
                 "mounted block FFS: media_offset={:#x}, size={:#x}",
                 self.media_offset,
@@ -148,7 +148,10 @@ impl BlockDeviceFfs {
     }
 
     #[cfg(feature = "ffs")]
-    fn manifest_view<B>(&self, block: &B) -> Result<fstart_ffs::ManifestView<'static>, ServiceError>
+    fn manifest_view<B>(
+        &self,
+        block: &B,
+    ) -> Result<fstart_ffs::DirectoryView<'static>, ServiceError>
     where
         B: BlockDevice,
     {
@@ -314,12 +317,12 @@ impl MemoryMappedFfs {
 
     /// Publish this memory-mapped FFS window to stage-local services.
     pub fn mount(self) -> Result<(), ServiceError> {
-        let anchor = crate::fstart_anchor_bytes();
+        let anchor = crate::locator_bytes();
         if anchor.is_empty() {
             return Err(ServiceError::NotInitialized);
         }
         // SAFETY: initial or publish-once inherited bytes remain immutable.
-        let locator = unsafe { fstart_core::ffs::AnchorRef::read_volatile(anchor) }
+        let locator = unsafe { fstart_core::ffs::LocatorRef::read_volatile(anchor) }
             .ok_or(ServiceError::InvalidParam)?;
         if self.base == 0
             || self.base.checked_add(self.size as u64).is_none()
@@ -338,7 +341,7 @@ impl MemoryMappedFfs {
     pub fn verify(self) -> Result<(), ServiceError> {
         #[cfg(feature = "ffs")]
         {
-            crate::directory::ensure_context(crate::fstart_anchor_bytes(), &self.media())
+            crate::directory::ensure_context(crate::locator_bytes(), &self.media())
                 .map_err(|_| ServiceError::NotInitialized)
         }
         #[cfg(not(feature = "ffs"))]
@@ -377,7 +380,7 @@ impl MemoryMappedFfs {
         #[cfg(feature = "ffs")]
         {
             let media = self.media();
-            if crate::load_ffs_file_by_name(crate::fstart_anchor_bytes(), &media, name) {
+            if crate::load_ffs_file_by_name(crate::locator_bytes(), &media, name) {
                 Ok(())
             } else {
                 Err(ServiceError::NotInitialized)

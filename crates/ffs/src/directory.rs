@@ -106,13 +106,13 @@ const DIGEST_SHA256: u8 = 1 << 0;
 const DIGEST_SHA3_256: u8 = 1 << 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ManifestSummary {
+pub struct DirectorySummary {
     pub regions: usize,
     pub entries: usize,
 }
 
 #[derive(Clone, Copy)]
-pub struct ManifestView<'a> {
+pub struct DirectoryView<'a> {
     regions: &'a [RegionRecord],
     entries: &'a [EntryRecord],
     segments: &'a [SegmentRecord],
@@ -127,7 +127,7 @@ pub struct FileView<'a> {
     strings: &'a [u8],
 }
 
-impl<'a> ManifestView<'a> {
+impl<'a> DirectoryView<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, ReaderError> {
         let (header_ref, _rest) =
             Ref::<_, Header>::from_prefix(bytes).map_err(|_| ReaderError::DeserializeError)?;
@@ -364,8 +364,8 @@ impl<'a> ManifestView<'a> {
         Ok(())
     }
 
-    pub fn summary(&self) -> ManifestSummary {
-        ManifestSummary {
+    pub fn summary(&self) -> DirectorySummary {
+        DirectorySummary {
             regions: self.regions.len(),
             entries: self.entries.len(),
         }
@@ -664,7 +664,7 @@ pub fn encode_manifest(
     out.extend_from_slice(entries.as_bytes());
     out.extend_from_slice(segments.as_bytes());
     out.extend_from_slice(&strings);
-    ManifestView::parse(&out).map_err(|e| alloc::format!("invalid directory: {e:?}"))?;
+    DirectoryView::parse(&out).map_err(|e| alloc::format!("invalid directory: {e:?}"))?;
     Ok(out)
 }
 

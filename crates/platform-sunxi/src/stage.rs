@@ -208,7 +208,7 @@ impl<M: BlockDevice> fstart_payload::MainstagePayload<DramStage<M>> for LinuxPay
             boot.mount(
                 media,
                 fstart_stage::anchor::image_size(),
-                fstart_stage::fstart_anchor_bytes(),
+                fstart_stage::locator_bytes(),
             )
         });
         step("FFS verify", || boot.verify(media));

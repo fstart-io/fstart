@@ -13,9 +13,9 @@
 //! ┌─────────────────────────────────────────────────────────┐
 //! │ Bootblock (XIP from flash)                              │
 //! │  ┌────────────────────────────────────────────────────┐  │
-//! │  │ Anchor Block (embedded in bootblock binary)        │  │
+//! │  │ Locator Block (embedded in bootblock binary)       │  │
 //! │  │  • MAGIC: "FSTART01"                               │  │
-//! │  │  • pointer → signed 512-byte boot root              │  │
+//! │  │  • pointer → signed 512-byte boot root             │  │
 //! │  │  • location only; constant trust is separate       │  │
 //! │  └────────────────────────────────────────────────────┘  │
 //! │  … bootblock code …                                     │
@@ -54,10 +54,7 @@ use heapless::String as HString;
 // ============================================================================
 
 /// Location-only initial-image wire format. Version 6 combined anchors are not decoded.
-pub use locator::{
-    LOCATOR_MAGIC as FFS_MAGIC, LOCATOR_SIZE as ANCHOR_SIZE, LOCATOR_VERSION as FFS_VERSION,
-    LocatorBlock as AnchorBlock, LocatorRef as AnchorRef,
-};
+pub use locator::{LOCATOR_MAGIC, LOCATOR_SIZE, LOCATOR_VERSION, LocatorBlock, LocatorRef};
 
 /// Bounded key capacity of the independent constant trust policy.
 pub const TRUST_MAX_KEYS: usize = 4;
