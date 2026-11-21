@@ -431,9 +431,6 @@ pci_type0_config! {
     }
 }
 
-/// S3 (STR) SLP_TYP value.
-const SLP_TYP_S3: u32 = 0x1400;
-
 // GPIO register offsets now live in the shared fstart-gpio-ich crate.
 
 // ---------------------------------------------------------------------------
@@ -846,21 +843,11 @@ impl IntelIch7 {
     /// cold-boots instead of re-detecting resume.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn detect_s3_resume(&self) -> bool {
-        let pm1_sts = self.pm().read16(pmio::PM1_STS);
-        if pm1_sts & pmio::WAK_STS == 0 {
-            return false;
-        }
-        let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
-        let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
-        if slp_typ == SLP_TYP_S3 {
-            // Clear SLP_TYP so we don't re-detect on warm reset.
-            self.pm()
-                .write32(pmio::PM1_CNT, pm1_cnt & !pmio::SLP_TYP_MASK);
+        let resuming = crate::southbridge::ich::detect_s3_resume(self.pm());
+        if resuming {
             fstart_log::info!("intel-ich7: S3 resume detected");
-            true
-        } else {
-            false
         }
+        resuming
     }
 
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -1633,8 +1620,7 @@ impl IntelIch7 {
     /// x86 POST sequence — ensures DMA channels are masked and the
     /// controller is in a known operating mode.
     fn isa_dma_init(&self) {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        fstart_arch::x86::legacy_pc::initialize_isa_dma();
+        crate::southbridge::ich::init_isa_dma();
     }
 
     /// i8259 PIC initialization.
@@ -1643,15 +1629,7 @@ impl IntelIch7 {
     /// PC/AT configuration.  IRQ 9 is configured as level-triggered
     /// for ACPI SCI.
     fn i8259_init(&self) {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        unsafe {
-            fstart_arch::x86::legacy_pc::setup_i8259();
-
-            // Set IRQ 9 as level-triggered (ACPI SCI).
-            // ELCR1 (port 0x4D0) and ELCR2 (port 0x4D1).
-            let elcr2 = fstart_core::pio::inb(0x4D1);
-            fstart_core::pio::outb(0x4D1, elcr2 | (1 << 1)); // IRQ 9 = bit 1 of ELCR2
-        }
+        crate::southbridge::ich::init_i8259_sci_irq9();
     }
 
     /// Late power options: GPE0 enable, NMI control, pmio::PM1_CNT.
