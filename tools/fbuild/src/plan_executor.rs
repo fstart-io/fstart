@@ -1,7 +1,11 @@
 //! Execute concrete platform plans. No platform/family identities are selected here.
-use crate::{board_manifest::BoardManifest, profile_source::ProfileSource, selection::Selection};
+use crate::{
+    assemble::AssembledImage, board_manifest::BoardManifest, profile_source::ProfileSource,
+    selection::Selection,
+};
 use fstart_image_build::build_plan::{BuildPlan, CompilationUnit, UnitOutput};
 use fstart_image_build::files::{Blob, Files};
+use fstart_image_build::plan::{BuildSelection, PlanError};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,6 +20,15 @@ type Artifacts = BTreeMap<String, PathBuf>;
 #[path = "plan_executor_tests.rs"]
 mod tests;
 
+/// Caller-supplied inputs for assembling a resolved plan into an image.
+pub struct AssembleRequest<'a> {
+    pub release: bool,
+    pub supplied: &'a BTreeMap<String, PathBuf>,
+    pub payload_files: &'a [(String, String)],
+    pub signing_key: Option<&'a Path>,
+    pub settings: &'a fstart_image_build::options::Settings,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Resolved {
     pub plan: BuildPlan,
@@ -26,7 +39,63 @@ pub struct Resolved {
     pub blobs: Option<PathBuf>,
 }
 impl Resolved {
-    pub fn new(
+    pub fn load(
+        root: &Path,
+        board: &BoardManifest,
+        selection: BuildSelection,
+    ) -> Result<Self, String> {
+        Self::try_load(root, board, selection).map_err(|e| e.to_string())
+    }
+
+    pub fn try_load(
+        root: &Path,
+        board: &BoardManifest,
+        selection: BuildSelection,
+    ) -> Result<Self, PlanError> {
+        selection.validate_compiler_files()?;
+        let source = crate::profile_source::load_profile(root, board)?;
+        Self::try_load_with_profile(root, board, &source, selection)
+    }
+
+    pub(crate) fn try_load_with_profile(
+        root: &Path,
+        board: &BoardManifest,
+        source: &ProfileSource,
+        selection: BuildSelection,
+    ) -> Result<Self, PlanError> {
+        selection.validate_compiler_files()?;
+        use fstart_image_build::plan::options::{BLOBS, DONOR};
+        let mut selection = selection;
+        if let Some(donor) = selection.options.remove(DONOR) {
+            let blobs = crate::blobs::from_donor(root, source, Path::new(&donor))?;
+            selection.set_option(BLOBS, blobs.to_string_lossy().into_owned());
+        }
+        // The plan names the blob directory `files::BLOBS_DIR`; the image
+        // steps find it here.
+        let blobs = selection
+            .options
+            .get(BLOBS)
+            .map(|dir| std::path::absolute(dir).map_err(|e| format!("blob directory {dir}: {e}")))
+            .transpose()?;
+        let mut plan = crate::host_plan::load(root, source, board, &selection)?;
+        plan.validate_compiler_selections(&selection)?;
+        let environment = [
+            ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
+            ("FSTART_LOG_LEVEL", &selection.log_level),
+        ];
+        for (key, value) in environment {
+            if let Some(value) = value {
+                for unit in &mut plan.units {
+                    unit.environment_values.insert(key.into(), value.clone());
+                }
+            }
+        }
+        let mut build = Self::new(root, board, source, plan)?;
+        build.blobs = blobs;
+        Ok(build)
+    }
+
+    pub(crate) fn new(
         root: &Path,
         board: &BoardManifest,
         source: &ProfileSource,
@@ -68,6 +137,28 @@ impl Resolved {
     }
     pub fn json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
+    }
+
+    /// JSON output for `fbuild explain`, preserving the stable top-level
+    /// `{"route": "Common", "build": ...}` envelope.
+    pub fn explain_json(&self) -> Result<String, String> {
+        #[derive(serde::Serialize)]
+        #[serde(tag = "route", rename = "Common")]
+        struct Explain<'a> {
+            build: &'a Resolved,
+        }
+        serde_json::to_string_pretty(&Explain { build: self }).map_err(|e| e.to_string())
+    }
+
+    /// The payload selected by the platform plan.
+    pub fn payload(&self) -> &str {
+        &self.plan.payload
+    }
+
+    /// The options the build offers, as the board's platform plan lists
+    /// them from the board's option sets.
+    pub fn options(&self) -> &fstart_image_build::options::Options {
+        &self.plan.options
     }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
         let digest = format!("{:x}", Sha256::digest(self.json()?));
@@ -174,7 +265,7 @@ impl Resolved {
         }
     }
     /// Build exactly the selected unit's producer closure for both IDE and check.
-    pub fn selection(
+    pub(crate) fn selection(
         &self,
         root: &Path,
         board: &BoardManifest,
@@ -301,41 +392,30 @@ impl Resolved {
     /// Build the units and execute the plan's image steps. Image formats
     /// are dispatched inside `fstart-image-build`; no format identity is
     /// matched here.
-    #[allow(clippy::too_many_arguments)]
     pub fn assemble(
         &self,
         root: &Path,
         board: &BoardManifest,
-        release: bool,
-        supplied: &BTreeMap<String, PathBuf>,
-        payload_files: &[(String, String)],
-        signing_key: Option<&Path>,
-        settings: &fstart_image_build::options::Settings,
-    ) -> Result<
-        (
-            Vec<fstart_image_build::StageBinary>,
-            fstart_image_build::image_steps::ImageOutputs,
-        ),
-        String,
-    > {
-        let inputs = self.validate_inputs(&board.dir, supplied)?;
+        request: &AssembleRequest<'_>,
+    ) -> Result<AssembledImage, String> {
+        let inputs = self.validate_inputs(&board.dir, request.supplied)?;
         // Bad settings fail before the units build.
-        self.plan.options.seed(settings)?;
-        let build = self.build(root, board, release)?;
+        self.plan.options.seed(request.settings)?;
+        let build = self.build(root, board, request.release)?;
         let files = fstart_image_build::files::HostFiles {
             blobs: self.blobs.clone(),
         };
         // The units are shared; the image is of these inputs only.
         let directory = self
-            .artifact_dir(root, &board.board, release)?
+            .artifact_dir(root, &board.board, request.release)?
             .join("image")
             .join(self.assembly_key(
                 &files,
                 &build.stages,
                 &inputs,
-                payload_files,
-                signing_key,
-                settings,
+                request.payload_files,
+                request.signing_key,
+                request.settings,
             )?);
         let outputs = fstart_image_build::image_steps::execute(
             &self.plan,
@@ -347,15 +427,19 @@ impl Resolved {
                 stages: &build.stages,
                 output_dir: &directory,
                 inputs: &inputs,
-                payload_files,
-                signing_key,
-                settings,
+                payload_files: request.payload_files,
+                signing_key: request.signing_key,
+                settings: request.settings,
             },
         )?;
         for note in &outputs.notes {
             eprintln!("[fstart] {note}");
         }
-        Ok((build.stages, outputs))
+        Ok(AssembledImage {
+            image: outputs.image,
+            artifacts: outputs.artifacts,
+            stages: build.stages,
+        })
     }
 
     /// What an assembly of the plan reads besides it, as the name of its

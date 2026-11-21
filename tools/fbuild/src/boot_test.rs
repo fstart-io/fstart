@@ -12,7 +12,7 @@
 
 use crate::board_manifest::BoardManifest;
 use crate::payload::{AssembleArgs, PayloadChoice, PlanArgs};
-use crate::resolved_image::ResolvedImage;
+use crate::plan_executor::Resolved;
 use clap::ValueEnum;
 use fstart_crypto::pcr;
 use fstart_image_build::boot_test::{Bank, Binding, BootTest};
@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 /// The boot tests of `board`: its default plan's run recipe's.
 pub fn load(root: &Path, board: &BoardManifest) -> Result<Vec<BootTest>, String> {
-    let resolved = ResolvedImage::load(root, board, PlanArgs::default().selection(None))?;
-    match &resolved.build.plan.run {
+    let resolved = Resolved::load(root, board, PlanArgs::default().selection(None))?;
+    match &resolved.plan.run {
         Some(recipe) => {
             validate(recipe).map_err(|e| format!("{}: {e}", board.board))?;
             Ok(recipe.tests.clone())
@@ -177,10 +177,9 @@ impl Runner {
         }
 
         let payload = PayloadChoice::from_str(&test.payload, false).ok();
-        let built = ResolvedImage::load(root, board, PlanArgs::default().selection(payload))
-            .and_then(|resolved| {
-                crate::board_tool::qemu_image(board, &resolved, true, supplied, &assemble)
-            });
+        let built = Resolved::load(root, board, PlanArgs::default().selection(payload)).and_then(
+            |resolved| crate::board_tool::qemu_image(board, &resolved, true, supplied, &assemble),
+        );
         let built = match built {
             Ok(built) => built,
             Err(e) => return Verdict::Fail(format!("build: {e}")),

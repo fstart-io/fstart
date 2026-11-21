@@ -1,5 +1,5 @@
 use crate::payload::{AssembleArgs, BuildArgs, PayloadChoice, PlanArgs};
-use crate::resolved_image::ResolvedImage;
+use crate::plan_executor::{AssembleRequest, Resolved};
 use fstart_image_build::build_plan::FfsAssembly;
 
 /// The FFS payload inputs' dedicated flags.
@@ -19,9 +19,9 @@ fn load(
     manifest: &crate::board_manifest::BoardManifest,
     payload: Option<PayloadChoice>,
     options: &PlanArgs,
-) -> Result<ResolvedImage, String> {
+) -> Result<Resolved, String> {
     let root = crate::build_board::workspace_root_pub()?;
-    ResolvedImage::load(&root, manifest, options.selection(payload))
+    Resolved::load(&root, manifest, options.selection(payload))
 }
 
 /// Run board policy and protocol tests with the board's default and the
@@ -69,8 +69,7 @@ pub fn build(
     options: &PlanArgs,
 ) -> Result<crate::build_board::BuildResult, String> {
     let root = crate::build_board::workspace_root_pub()?;
-    let resolved =
-        crate::resolved_image::ResolvedImage::load(&root, manifest, options.selection(payload))?;
+    let resolved = Resolved::load(&root, manifest, options.selection(payload))?;
     resolved.build(&root, manifest, release)
 }
 
@@ -90,35 +89,21 @@ pub fn assemble(
         &payload_aliases(kernel, firmware, fit),
         &options.assemble.inputs,
     )?;
-    Ok(assemble_loaded(
-        &workspace_root,
-        manifest.clone(),
-        &resolved,
-        release,
-        &supplied,
-        &options.assemble,
-    )?
-    .image)
-}
-
-fn assemble_loaded(
-    workspace_root: &std::path::Path,
-    manifest: crate::board_manifest::BoardManifest,
-    resolved: &ResolvedImage,
-    release: bool,
-    supplied: &std::collections::BTreeMap<String, std::path::PathBuf>,
-    options: &AssembleArgs,
-) -> Result<crate::assemble::AssembledImage, String> {
-    crate::assemble::assemble_with_resolved(
-        workspace_root,
-        &manifest,
-        resolved,
-        release,
-        supplied,
-        &options.payload_files,
-        options.signing_key.as_deref(),
-        &crate::payload::store_settings(&options.settings, &options.secure_boot)?,
-    )
+    let settings =
+        crate::payload::store_settings(&options.assemble.settings, &options.assemble.secure_boot)?;
+    Ok(resolved
+        .assemble(
+            &workspace_root,
+            manifest,
+            &AssembleRequest {
+                release,
+                supplied: &supplied,
+                payload_files: &options.assemble.payload_files,
+                signing_key: options.assemble.signing_key.as_deref(),
+                settings: &settings,
+            },
+        )?
+        .image)
 }
 
 #[allow(clippy::too_many_arguments)] // the CLI's flat flash options
@@ -157,7 +142,7 @@ pub fn flash(
     if !probe_run {
         // Default to the firmware window the board's plan states; an
         // explicit --base-address wins.
-        let plan = &resolved.build.plan;
+        let plan = &resolved.plan;
         let base_address = match base_address {
             Some(base) => base.to_string(),
             None => match plan.ffs_assembly().map(|ffs| ffs.build.firmware_image) {
@@ -174,13 +159,20 @@ pub fn flash(
         let base_address = base_address.as_str();
         eprintln!("[fstart] step 1/2: assembling FFS and flashing target memory...");
         let supplied = crate::assemble::supplied_inputs(&[], &options.assemble.inputs)?;
-        let mut assembled = assemble_loaded(
+        let settings = crate::payload::store_settings(
+            &options.assemble.settings,
+            &options.assemble.secure_boot,
+        )?;
+        let mut assembled = resolved.assemble(
             &workspace_root,
-            manifest.clone(),
-            &resolved,
-            release,
-            &supplied,
-            &options.assemble,
+            &manifest,
+            &AssembleRequest {
+                release,
+                supplied: &supplied,
+                payload_files: &options.assemble.payload_files,
+                signing_key: options.assemble.signing_key.as_deref(),
+                settings: &settings,
+            },
         )?;
         // The FFS goes to the firmware window; a plan without one flashes
         // its final image there.
@@ -260,7 +252,7 @@ pub struct QemuImage {
 /// qemu` and the boot tests launch.
 pub fn qemu_image(
     manifest: &crate::board_manifest::BoardManifest,
-    resolved: &ResolvedImage,
+    resolved: &Resolved,
     release: bool,
     mut supplied: std::collections::BTreeMap<String, std::path::PathBuf>,
     options: &AssembleArgs,
@@ -268,7 +260,7 @@ pub fn qemu_image(
     let workspace_root = crate::build_board::workspace_root_pub()?;
     // The plan states how (and whether) this board runs under QEMU; there
     // is no per-architecture fallback launch to guess.
-    let recipe = resolved.build.plan.run.clone().ok_or_else(|| {
+    let recipe = resolved.plan.run.clone().ok_or_else(|| {
         format!(
             "board '{}' has no QEMU run recipe in its plan",
             manifest.board
@@ -280,7 +272,7 @@ pub fn qemu_image(
         .external_inputs()
         .filter_map(|name| supplied.remove_entry(name))
         .collect();
-    let image = if resolved.build.plan.images.is_empty() {
+    let image = if resolved.plan.images.is_empty() {
         if let Some(name) = supplied.keys().next() {
             return Err(format!("input {name} is not declared by the selected plan"));
         }
@@ -291,13 +283,17 @@ pub fn qemu_image(
             stages: build.stages,
         }
     } else {
-        assemble_loaded(
+        let settings = crate::payload::store_settings(&options.settings, &options.secure_boot)?;
+        resolved.assemble(
             &workspace_root,
-            manifest.clone(),
-            resolved,
-            release,
-            &supplied,
-            options,
+            manifest,
+            &AssembleRequest {
+                release,
+                supplied: &supplied,
+                payload_files: &options.payload_files,
+                signing_key: options.signing_key.as_deref(),
+                settings: &settings,
+            },
         )?
     };
     Ok(QemuImage {

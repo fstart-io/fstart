@@ -6,7 +6,7 @@
 use crate::{
     board_manifest::{self, BoardManifest},
     payload::{PayloadChoice, PlanArgs},
-    resolved_image::ResolvedImage,
+    plan_executor::Resolved,
 };
 use fstart_image_build::{
     build_plan::{BuildPlan, ImageOperation, InputFile},
@@ -173,8 +173,8 @@ const PUBLISHED: &[&[PayloadChoice]] = &[
 /// with its initramfs does not fit in less.
 const LINUX_MIN: u64 = 1536 << 10;
 
-fn fits_a_kernel(resolved: &ResolvedImage) -> bool {
-    (resolved.build.plan.inputs.iter())
+fn fits_a_kernel(resolved: &Resolved) -> bool {
+    (resolved.plan.inputs.iter())
         .find(|input| input.name == "kernel")
         .is_none_or(|kernel| kernel.capacity >= LINUX_MIN)
 }
@@ -236,7 +236,7 @@ pub fn export(
                 if packed_donor.is_some() {
                     selection.set_option(fstart_image_build::plan::options::BLOBS, BLOBS_DIR);
                 }
-                ResolvedImage::try_load_with_profile(&root, &board, &source, selection)
+                Resolved::try_load_with_profile(&root, &board, &source, selection)
             },
             fits_a_kernel,
         )?;
@@ -274,12 +274,12 @@ fn export_one(
     root: &Path,
     board: &BoardManifest,
     choice: &str,
-    resolved: &ResolvedImage,
+    resolved: &Resolved,
     packed_donor: Option<PackedDonor>,
     seabios: Option<&SeaBios>,
 ) -> Result<Build, String> {
     let result = resolved.build(root, board, true)?;
-    let plan = &resolved.build.plan;
+    let plan = &resolved.plan;
     let board_dir = Path::new(WORKSPACE).join("boards").join(&board.rel_dir);
     let files = MemoryFiles::default();
     let mut binaries = Vec::new();

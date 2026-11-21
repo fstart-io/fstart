@@ -293,8 +293,8 @@ fn absolute_size_report(
 fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
-    println!("{}", resolved.json()?);
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
+    println!("{}", resolved.explain_json()?);
     Ok(())
 }
 
@@ -302,7 +302,7 @@ fn explain(board: &str, selection: BuildSelection) -> Result<(), String> {
 fn print_options(board: &str, selection: BuildSelection) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     let options = serde_json::to_string_pretty(resolved.options()).map_err(|e| e.to_string())?;
     println!("{options}");
     Ok(())
@@ -317,7 +317,7 @@ fn compile_named(
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     resolved.compile_selected(&root, &manifest, name, release, checking)
 }
 
@@ -332,7 +332,7 @@ fn check(
     }
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     resolved.check(&root, &manifest, release)
 }
 
@@ -344,7 +344,7 @@ fn ide(
 ) -> Result<(), String> {
     let root = build_board::workspace_root_pub()?;
     let manifest = board_manifest::find(&root, board)?;
-    let resolved = fbuild::resolved_image::ResolvedImage::load(&root, &manifest, selection)?;
+    let resolved = fbuild::plan_executor::Resolved::load(&root, &manifest, selection)?;
     let workspace =
         fbuild::ide::generate_image(&root, &manifest, &resolved, stage.as_deref(), release)?;
     println!("{}", workspace.display());

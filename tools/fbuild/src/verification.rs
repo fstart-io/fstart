@@ -2,7 +2,7 @@
 
 use crate::manifest_for;
 use fbuild::boot_test::{Runner, Verdict};
-use fbuild::{board_manifest, build_board, resolved_image::ResolvedImage};
+use fbuild::{board_manifest, build_board, plan_executor::Resolved};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -102,7 +102,7 @@ pub fn build_boards(boards: &[String], size_dir: Option<PathBuf>) -> Result<(), 
             let root = build_board::workspace_root_pub()
                 .inspect_err(|e| link = format!("Not run: {e}"))?;
             let selection = fbuild::payload::PlanArgs::default().selection(None);
-            let resolved = ResolvedImage::load(&root, &manifest, selection)
+            let resolved = Resolved::load(&root, &manifest, selection)
                 .inspect_err(|e| link = format!("Not run: resolve plan: {e}"))?;
             payload = resolved.payload().into();
             let build = resolved
