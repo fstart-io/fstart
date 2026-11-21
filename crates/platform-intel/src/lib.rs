@@ -39,6 +39,15 @@ pub mod host;
 #[cfg(feature = "stage")]
 #[doc(hidden)]
 pub use fstart_arch as arch_runtime;
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_core as core_runtime;
+#[cfg(feature = "bundle-smm")]
+#[doc(hidden)]
+pub use fstart_driver_intel as driver_intel_runtime;
+#[cfg(feature = "stage")]
+#[doc(hidden)]
+pub use fstart_log as log_runtime;
 #[cfg(feature = "bundle-smm")]
 pub use fstart_smm as smm;
 #[cfg(feature = "stage")]
@@ -58,6 +67,45 @@ macro_rules! entry {
     ($main:path, reset_vector) => {
         $crate::stage_runtime::stage_bin!(main: $main);
         $crate::arch_runtime::x86_reset_entry!();
+    };
+}
+
+/// Declare a standard Intel postcar stage binary.
+///
+/// Boards with a serial console pass `(Board, ConsoleType, console_config)`;
+/// boards without a fixed serial port pass `(Board)` to use `NoConsole`.
+#[macro_export]
+macro_rules! postcar_bin {
+    ($board:ty $(,)?) => {
+        static CONSOLE: $crate::log_runtime::StaticConsole<
+            $crate::core_runtime::services::NoConsole,
+        > = $crate::log_runtime::StaticConsole::new();
+
+        $crate::entry!(main);
+
+        fn main() -> ! {
+            $crate::postcar::run::<$board, _>(&CONSOLE, ())
+        }
+    };
+    ($board:ty, $console:ty, $config:expr $(,)?) => {
+        static CONSOLE: $crate::log_runtime::StaticConsole<$console> =
+            $crate::log_runtime::StaticConsole::new();
+
+        $crate::entry!(main);
+
+        fn main() -> ! {
+            $crate::postcar::run::<$board, _>(&CONSOLE, $config)
+        }
+    };
+}
+
+/// Declare the default Intel ICH SMM handler binary (APMC/ACPI, TCO, GPE).
+/// Boards with custom EC/dock SMI handling use `fstart_platform_intel::smm::smm_bin!`
+/// directly with their own handler.
+#[macro_export]
+macro_rules! smm_default_bin {
+    () => {
+        $crate::smm::smm_bin!(handler: $crate::driver_intel_runtime::southbridge::smi::handle);
     };
 }
 

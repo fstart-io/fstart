@@ -2,4 +2,4 @@
 //! events reach the OS as SCIs and the dock is controlled through EC/GPIO, not
 //! SMM.
 
-fstart_platform_intel::smm::smm_bin!(handler: fstart_driver_intel::southbridge::smi::handle);
+fstart_platform_intel::smm_default_bin!();
