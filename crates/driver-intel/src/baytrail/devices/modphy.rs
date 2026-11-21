@@ -4,9 +4,9 @@
 //! configuration that follow it.
 
 use super::Rmw;
-use crate::MmioBar;
 use crate::baytrail::IO_BASE;
 use crate::baytrail::iosf::{AUNIT, BUNIT, CPU_BUS, CUNIT, Iosf, PCIEPHY, SATAPHY, USBPHY};
+use fstart_core::mmio::MmioWindow;
 use fstart_pci::ConfigRegionAccess;
 
 /// ModPHY table for A0/A1 steppings.
@@ -578,7 +578,8 @@ const MTPMC1: u32 = 0xb0;
 
 /// SD card pad workaround in the south core community.
 fn sdcard_pad_workaround() {
-    let io = super::Bar(IO_BASE as usize);
+    // SAFETY: Baytrail SCORE GPIO IO_BASE is a mapped 4 KiB MMIO window.
+    let io = unsafe { MmioWindow::new(IO_BASE as usize, 0x1000) };
     io.setbits32(0x698, 1 << 0);
     io.setbits32(0x698, 1 << 2);
     io.clrbits32(0x698, 1 << 1);
@@ -626,7 +627,8 @@ pub fn init<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
     for rmw in table {
         rmw.apply(iosf);
     }
-    let pmc = super::Bar(crate::baytrail::PMC_BASE as usize);
+    // SAFETY: Baytrail PMC_BASE is a mapped 4 KiB MMIO window.
+    let pmc = unsafe { MmioWindow::new(crate::baytrail::PMC_BASE as usize, 0x1000) };
     pmc.setbits32(MTPMC1, 8);
     for _ in 0..10 {
         if pmc.read32(MTPMC1) & 8 == 0 {

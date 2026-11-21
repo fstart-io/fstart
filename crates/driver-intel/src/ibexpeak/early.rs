@@ -7,7 +7,6 @@ use super::regs::{
     OIC, RC, RCBA, cir, pm,
 };
 use super::{IntelIbexPeak, PchFunction};
-use crate::MmioBar;
 use crate::southbridge::pmio_ich as pmio;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -294,7 +293,8 @@ impl IntelIbexPeak {
                 .reg(TEMPERATURE_TARGET)
                 .read(TemperatureTarget::TJ_MAX)
         };
-        let bar = ThermalBar(TEMP_BAR as usize);
+        // SAFETY: temporary thermal BAR mapped at TEMP_BAR for 4 KiB.
+        let bar = unsafe { fstart_core::mmio::MmioWindow::new(TEMP_BAR as usize, 0x1000) };
         bar.write16(0x12, (tj_max as u16) << 6);
         // Northbridge temperature slope and offset.
         bar.write16(0x16, 0x7746);
@@ -377,7 +377,8 @@ impl IntelIbexPeak {
         rcba.hptc
             .modify(HPTC::ENABLE::SET + HPTC::ADDRESS_SELECT.val(0));
         let _ = rcba.hptc.get();
-        let hpet = HpetConfig(super::HPET_BASE);
+        // SAFETY: HPET register block mapped at HPET_BASE for 1 KiB.
+        let hpet = unsafe { fstart_core::mmio::MmioWindow::new(super::HPET_BASE, 0x400) };
         hpet.setbits32(0x10, 1);
     }
 }
@@ -431,32 +432,6 @@ fn function_of(dev: u8, func: u8) -> Option<PchFunction> {
         (0x1f, 6) => PchFunction::Thermal,
         _ => return None,
     })
-}
-
-/// The thermal subsystem's temporary MMIO BAR during raminit.
-#[derive(Clone, Copy)]
-struct ThermalBar(usize);
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl MmioBar for ThermalBar {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x1000)
-    }
-}
-
-/// The HPET general configuration block.
-#[derive(Clone, Copy)]
-pub(super) struct HpetConfig(pub(super) usize);
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl MmioBar for HpetConfig {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x400)
-    }
 }
 
 #[cfg(test)]

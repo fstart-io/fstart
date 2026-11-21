@@ -922,16 +922,18 @@ impl Raminit<'_> {
             self.mch.clrsetbits32(0x2c44, !0, 0x0105_3687);
             gma().read8(MSAC);
             gma().write8(MSAC, 0x2);
-            let rcba = crate::ibexpeak::RcbaWindow(self.rcba);
-            rcba.read8(0x2318);
+            // SAFETY: RCBA is mapped at `self.rcba` for 16 KiB.
+            let rcba = unsafe { fstart_core::mmio::MmioWindow::new(self.rcba, 0x4000) };
+            let _ = rcba.read8(0x2318);
             rcba.write8(0x2318, 0x47);
-            rcba.read8(0x2320);
+            let _ = rcba.read8(0x2320);
             rcba.write8(0x2320, 0xfc);
         }
         self.mch.clrsetbits32(0x30, !0, 0x40);
         nb.write16(GGC, ggc);
-        let rcba = crate::ibexpeak::RcbaWindow(self.rcba);
-        rcba.read32(0x3428);
+        // SAFETY: RCBA is mapped at `self.rcba` for 16 KiB.
+        let rcba = unsafe { fstart_core::mmio::MmioWindow::new(self.rcba, 0x4000) };
+        let _ = rcba.read32(0x3428);
         rcba.write32(0x3428, 0x1d);
     }
 }

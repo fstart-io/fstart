@@ -1,6 +1,6 @@
 //! HD Audio (00:1b.0) with the SoC's HDMI codec (coreboot `hda.c`).
 
-use super::{Bar, Function};
+use super::Function;
 use crate::baytrail::iosf::{Iosf, PUNIT};
 use crate::baytrail::punit;
 use crate::southbridge::hda::{HdaConfig, HdaController, HdaVerbTable};
@@ -40,7 +40,7 @@ pub fn init<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
     hda.and32(0xd0, !(1 << 31));
     hda.and8(0x4d, !(1 << 7));
 
-    let Some(Bar(base)) = Bar::of(&hda) else {
+    let Some(base) = hda.memory_bar(0x10).map(|b| b as usize) else {
         return;
     };
     let controller = HdaController::new(base);

@@ -1,8 +1,7 @@
 //! Low power subsystem: DMA, I2C 1-7, PWM, HS-UART and SPI (00:18.x and
 //! 00:1e.x) (coreboot `lpss.c`).
 
-use super::{AcpiModeDevice, Bar, Function};
-use crate::MmioBar;
+use super::{AcpiModeDevice, Function, bar0};
 use crate::baytrail::iosf::{Iosf, LPSS};
 use fstart_pci::ConfigRegionAccess;
 
@@ -67,7 +66,8 @@ pub fn init<P: ConfigRegionAccess>(
             CTL_SNOOP | CTL_PM_CAP_PRSNT,
         );
         if matches!(function, Function::I2c(_))
-            && let Some(bar) = Bar::of(&device)
+            // SAFETY: LPSS BAR0 is a 4 KiB MMIO window assigned by PCI enumeration.
+            && let Some(bar) = unsafe { bar0(&device, 0x1000) }
         {
             fstart_log::debug!("baytrail: releasing I2C from reset");
             bar.write32(0x804, 0x3);

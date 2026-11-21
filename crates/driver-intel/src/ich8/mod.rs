@@ -695,13 +695,6 @@ struct Rcba {
     base: usize,
 }
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for Rcba {
-    fn base(self) -> usize {
-        self.base
-    }
-}
-
 impl Rcba {
     const fn new(base: usize) -> Self {
         Self { base }
@@ -711,6 +704,12 @@ impl Rcba {
     fn regs(&self) -> &'static RcbaRegs {
         // SAFETY: RCBA has been programmed and enabled in LPC PCI config.
         unsafe { &*(self.base as *const RcbaRegs) }
+    }
+
+    #[inline]
+    fn window(&self) -> fstart_core::mmio::MmioWindow {
+        // SAFETY: RCBA is a 16 KiB mapped chipset MMIO register block.
+        unsafe { fstart_core::mmio::MmioWindow::new(self.base, 0x4000) }
     }
 }
 
@@ -1084,9 +1083,10 @@ impl IntelIch8 {
 
     fn configure_spi_vscc(rcba: Rcba, value: Option<u16>) {
         if let Some(value) = value {
-            // The shared BAR accessor uses an unaligned x86 MMIO word write,
-            // preserving the upper VSCC bits and neighboring control byte.
-            crate::MmioBar::write16(rcba, (ICH8_SPIBAR_OFFSET + SPIBAR_VSCC) as u32, value);
+            // Unaligned x86 MMIO word write preserves the upper VSCC bits
+            // and neighboring control byte.
+            rcba.window()
+                .write16((ICH8_SPIBAR_OFFSET + SPIBAR_VSCC) as u32, value);
         }
     }
 

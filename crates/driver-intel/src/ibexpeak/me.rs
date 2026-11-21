@@ -7,7 +7,6 @@
 
 use super::regs::{FD2, VCTL};
 use super::{IntelIbexPeak, PchFunction};
-use crate::MmioBar;
 use fstart_core::services::ServiceError;
 use fstart_pci::ecam::EcamDevice;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
@@ -98,17 +97,16 @@ register_bitfields![u32,
     ]
 ];
 
-/// The MEI MMIO window (HECI BAR0).
+/// The MEI MMIO window (HECI BAR0, 16 bytes).
 #[derive(Clone, Copy)]
-pub struct Mei(usize);
+pub struct Mei(fstart_core::mmio::MmioWindow);
 
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl MmioBar for Mei {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x10)
+impl Mei {
+    /// # Safety
+    /// `base` must be the mapped 16-byte HECI BAR0 MMIO window.
+    unsafe fn new(base: usize) -> Self {
+        // SAFETY: forwarded from caller.
+        Self(unsafe { fstart_core::mmio::MmioWindow::new(base, 0x10) })
     }
 }
 
@@ -122,10 +120,10 @@ const MKHI_SET_UMA: u8 = 0x08;
 
 impl Mei {
     fn host_csr(self) -> LocalRegisterCopy<u32, CSR::Register> {
-        LocalRegisterCopy::new(self.read32(MEI_H_CSR))
+        LocalRegisterCopy::new(self.0.read32(MEI_H_CSR))
     }
     fn me_csr(self) -> LocalRegisterCopy<u32, CSR::Register> {
-        LocalRegisterCopy::new(self.read32(MEI_ME_CSR_HA))
+        LocalRegisterCopy::new(self.0.read32(MEI_ME_CSR_HA))
     }
 
     fn wait(condition: impl FnMut() -> bool) -> Result<(), ServiceError> {
@@ -140,7 +138,7 @@ impl Mei {
         Self::wait(|| self.me_csr().is_set(CSR::READY))?;
         let mut host = self.host_csr();
         host.modify(CSR::RESET::CLEAR + CSR::INTERRUPT_GENERATE::SET + CSR::READY::SET);
-        self.write32(MEI_H_CSR, host.get());
+        self.0.write32(MEI_H_CSR, host.get());
         Ok(())
     }
 
@@ -161,7 +159,7 @@ impl Mei {
         for chunk in bytes.chunks(4) {
             let mut dword = [0u8; 4];
             dword[..chunk.len()].copy_from_slice(chunk);
-            self.write32(MEI_H_CB_WW, u32::from_le_bytes(dword));
+            self.0.write32(MEI_H_CB_WW, u32::from_le_bytes(dword));
         }
     }
 
@@ -176,11 +174,11 @@ impl Mei {
                 + MEI_HEADER::LENGTH.val(length as u32)
                 + MEI_HEADER::COMPLETE.val(u32::from(length == message.len()));
             self.wait_space((4 + length as u32).div_ceil(4))?;
-            self.write32(MEI_H_CB_WW, header.value);
+            self.0.write32(MEI_H_CB_WW, header.value);
             self.send_dwords(&message[..length]);
             let mut csr = self.host_csr();
             csr.modify(CSR::INTERRUPT_GENERATE::SET);
-            self.write32(MEI_H_CSR, csr.get());
+            self.0.write32(MEI_H_CSR, csr.get());
             message = &message[length..];
         }
         Ok(())
@@ -194,18 +192,18 @@ impl Mei {
             // Request the next packet.
             let mut csr = self.host_csr();
             csr.modify(CSR::INTERRUPT_STATUS::SET);
-            self.write32(MEI_H_CSR, csr.get());
+            self.0.write32(MEI_H_CSR, csr.get());
             Self::wait(|| {
                 let me = self.me_csr();
                 me.read(CSR::WRITE_PTR) != me.read(CSR::READ_PTR)
             })?;
             let header =
-                LocalRegisterCopy::<u32, MEI_HEADER::Register>::new(self.read32(MEI_ME_CB_RW));
+                LocalRegisterCopy::<u32, MEI_HEADER::Register>::new(self.0.read32(MEI_ME_CB_RW));
             let length = header.read(MEI_HEADER::LENGTH) as usize;
             if length == 0 {
                 let mut csr = self.host_csr();
                 csr.modify(CSR::INTERRUPT_STATUS::SET);
-                self.write32(MEI_H_CSR, csr.get());
+                self.0.write32(MEI_H_CSR, csr.get());
                 return Err(ServiceError::IoError);
             }
             let dwords = length.div_ceil(4);
@@ -219,12 +217,12 @@ impl Mei {
                 me.read(CSR::WRITE_PTR).wrapping_sub(me.read(CSR::READ_PTR)) & 0xff >= dwords as u32
             })?;
             for slot in &mut reply[position / 4..position / 4 + dwords] {
-                *slot = self.read32(MEI_ME_CB_RW);
+                *slot = self.0.read32(MEI_ME_CB_RW);
             }
             let ready = self.me_csr().is_set(CSR::READY);
             let mut csr = self.host_csr();
             csr.modify(CSR::INTERRUPT_GENERATE::SET);
-            self.write32(MEI_H_CSR, csr.get());
+            self.0.write32(MEI_H_CSR, csr.get());
             if !ready {
                 return Err(ServiceError::IoError);
             }
@@ -245,19 +243,6 @@ pub struct UmaChannels {
     pub dmibar: usize,
     pub rcba: usize,
     pub mchbar: usize,
-}
-
-/// Uncore DMIBAR virtual-channel registers (Ironlake `registers/dmibar.h`).
-#[derive(Clone, Copy)]
-struct DmiBar(usize);
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl MmioBar for DmiBar {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x1000)
-    }
 }
 
 /// coreboot `intel_me_status()` (status names only; per-phase state codes
@@ -395,7 +380,8 @@ pub fn setup_uma(
         const DMIVCPRCTL: u32 = 0x02c;
         const DMIVCMRCTL: u32 = 0x038;
         const DMIVCMRSTS: u32 = 0x03e;
-        let dmi = DmiBar(channels.dmibar);
+        // SAFETY: DMIBAR is a 4 KiB mapped chipset MMIO register block.
+        let dmi = unsafe { fstart_core::mmio::MmioWindow::new(channels.dmibar, 0x1000) };
         // SAFETY: RCBA is enabled at this base by the southbridge.
         let rcba = unsafe { &*(channels.rcba as *const super::regs::RcbaRegs) };
         dmi.clrbits32(DMIVC0RCTL, 1 << 7);
@@ -422,9 +408,11 @@ pub fn setup_uma(
         }
     }
     // MCHBAR+0x24: the ME memory size.
-    let mchbar = DmiBar(channels.mchbar);
+    // SAFETY: MCHBAR is mapped for at least 4 KiB during raminit.
+    let mchbar = unsafe { fstart_core::mmio::MmioWindow::new(channels.mchbar, 0x1000) };
     mchbar.write32(0x24, 0x10000 + size_mib);
-    send_uma_message(Mei(hecibar), address, size_mib)?;
+    // SAFETY: HECI BAR0 was just programmed and memory-enabled above.
+    send_uma_message(unsafe { Mei::new(hecibar) }, address, size_mib)?;
     me.write32(0x10, 0);
     me.write8(0x04, 0);
     Ok(())
@@ -537,10 +525,11 @@ impl IntelIbexPeak {
             return;
         };
         me.or16(0x04, 0x6);
-        let mei = Mei(bar as usize);
+        // SAFETY: HECI BAR0 is assigned and memory-enabled above.
+        let mei = unsafe { Mei::new(bar as usize) };
         let mut host = mei.host_csr();
         host.modify(CSR::INTERRUPT_GENERATE::SET + CSR::READY::SET + CSR::RESET::CLEAR);
-        mei.write32(MEI_H_CSR, host.get());
+        mei.0.write32(MEI_H_CSR, host.get());
         // The ME stays unlocked; there is no END_OF_POST on this PCH.
     }
 }

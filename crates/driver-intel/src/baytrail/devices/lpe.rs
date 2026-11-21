@@ -1,7 +1,6 @@
 //! LPE audio (00:15.0) (coreboot `lpe.c`).
 
-use super::{AcpiModeDevice, Bar, Function};
-use crate::MmioBar;
+use super::{AcpiModeDevice, Function, bar0};
 use crate::baytrail::iosf::{Iosf, LPE};
 use crate::baytrail::pmc::{self, PLT_CLK_CTL};
 use fstart_pci::ConfigRegionAccess;
@@ -51,7 +50,8 @@ pub fn init<P: ConfigRegionAccess>(
     lpe.write32(FIRMWARE_PCI_BASE, FIRMWARE_BASE as u32);
     lpe.write32(FIRMWARE_PCI_LENGTH, FIRMWARE_SIZE as u32);
     if crate::baytrail::stepping() >= crate::baytrail::Stepping::C0
-        && let Some(bar) = Bar::of(&lpe)
+        // SAFETY: LPE BAR0 is a 2 MiB MMIO window assigned by PCI enumeration.
+        && let Some(bar) = unsafe { bar0(&lpe, 0x20_0000) }
     {
         bar.write32(FIRMWARE_MMIO_BASE_C0, FIRMWARE_BASE as u32);
         bar.write32(FIRMWARE_MMIO_BASE_C0 + 4, FIRMWARE_SIZE as u32);

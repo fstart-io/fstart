@@ -310,8 +310,9 @@ impl IntelIbexPeak {
     }
 
     /// Raw RCBA access for undocumented chipset-initialization values.
-    pub(crate) fn rcba_raw(&self) -> RcbaWindow {
-        RcbaWindow(self.config.rcba as usize)
+    pub(crate) fn rcba_raw(&self) -> fstart_core::mmio::MmioWindow {
+        // SAFETY: RCBA is enabled at this validated 16 KiB base in pre-console init.
+        unsafe { fstart_core::mmio::MmioWindow::new(self.config.rcba as usize, 0x4000) }
     }
 
     pub(crate) fn pm(&self) -> PmIo {
@@ -365,22 +366,6 @@ impl IntelIbexPeakConfig {
         );
         options.nmi = self.nmi;
         options
-    }
-}
-
-/// The RCBA window as raw MMIO for undocumented chipset-initialization
-/// registers coreboot programs as value tables (also the uncore raminit's
-/// `RCBA8/32` pokes).
-#[derive(Clone, Copy)]
-pub(crate) struct RcbaWindow(pub(crate) usize);
-
-// SAFETY: handle is only constructed over a mapped chipset MMIO BAR.
-unsafe impl crate::MmioBar for RcbaWindow {
-    fn base(self) -> usize {
-        self.0
-    }
-    fn mapped_size(self) -> Option<u32> {
-        Some(0x4000)
     }
 }
 

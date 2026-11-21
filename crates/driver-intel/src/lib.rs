@@ -176,12 +176,6 @@ pub(crate) unsafe trait MmioBar: Copy {
     fn clrsetbits32(self, off: u32, clear: u32, set: u32) {
         self.write32(off, (self.read32(off) & !clear) | set);
     }
-
-    /// Read-modify-write with keep-mask: `reg = (reg & mask) | set`.
-    #[inline]
-    fn modify32(self, off: u32, mask: u32, set: u32) {
-        self.write32(off, (self.read32(off) & mask) | set);
-    }
 }
 
 /// What a DIMM chipset's memory bring-up takes

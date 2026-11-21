@@ -3,13 +3,13 @@
 //! (coreboot `romstage/gfx.c` and `gfx.c`). No VBIOS runs; the OS driver
 //! sets the mode from the OpRegion's VBT.
 
-use super::{Bar, poll_bar};
-use crate::MmioBar;
+use super::{bar0 as device_bar0, poll_bar};
 use crate::baytrail::dev;
 use crate::baytrail::iosf::{Iosf, PUNIT};
 use crate::baytrail::punit::{self, SB_BIOS_CONFIG};
 use crate::baytrail::raminit::{MemoryMap, Stolen};
 use crate::igd::{OpRegionSci, VbtSource};
+use fstart_core::mmio::MmioWindow;
 use fstart_core::services::ServiceError;
 use fstart_pci::ConfigRegionAccess;
 use fstart_pci::ecam::EcamDevice;
@@ -124,8 +124,9 @@ pub fn set_stolen_bases(map: &MemoryMap) {
     igd.modify32(GTT_BASE, 0xf_ffff, map.gtt_base_mb << 20);
 }
 
-fn bar0(igd: &EcamDevice) -> Option<Bar> {
-    igd.memory_bar(0x10).map(|base| Bar(base as usize))
+fn bar0(igd: &EcamDevice) -> Option<MmioWindow> {
+    // SAFETY: Valleyview GTTMMADR (BAR0) is a 4 MiB MMIO window.
+    unsafe { device_bar0(igd, 0x40_0000) }
 }
 
 fn punit_power_gate<P: ConfigRegionAccess>(
@@ -254,7 +255,7 @@ const RC_TURBO: &[(u32, u32)] = &[
 /// `gfx_init_script`), then lock the power context base.
 fn pm_init<P: ConfigRegionAccess>(
     igd: &EcamDevice,
-    bar: Bar,
+    bar: MmioWindow,
     iosf: &Iosf<P>,
 ) -> Result<(), ServiceError> {
     // Allow-wake the render and media wells, then force them awake.
@@ -321,7 +322,7 @@ fn pm_init<P: ConfigRegionAccess>(
     Ok(())
 }
 
-fn panel_setup(bar: Bar, pipe: &PanelPipe, offset: u32) {
+fn panel_setup(bar: MmioWindow, pipe: &PanelPipe, offset: u32) {
     let reg = |r| VLV_DISPLAY_BASE + offset + r;
     bar.write32(
         reg(PP_CONTROL),
@@ -349,7 +350,7 @@ fn panel_setup(bar: Bar, pipe: &PanelPipe, offset: u32) {
 
 /// Release force-wake and lock GGC, GSM_BASE and GTT_BASE (coreboot
 /// `gfx_post_vbios_script`).
-fn post_vbios(igd: &EcamDevice, bar: Bar) -> Result<(), ServiceError> {
+fn post_vbios(igd: &EcamDevice, bar: MmioWindow) -> Result<(), ServiceError> {
     bar.write32(0x1300b0, 0x8000_0000);
     poll_bar(bar, 0x1300b4, 0x8000, 0, TIMEOUT_US)?;
     bar.write32(0x1300b8, 0x8000_0000);
