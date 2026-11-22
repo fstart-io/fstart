@@ -490,9 +490,19 @@ fn ivrs_has_both_dies_with_their_buses_and_the_madt_ioapic_ids() {
         2
     );
     assert_eq!(has(special(Variety::Hpet, 0, 0x00a0, 0)), 2);
-    // Start of range 0:01.0 and 40:01.0.
+    // Start of range 0:01.0 and 40:01.0 (no RCEC on SP3).
     for start in [[3, 0x08, 0x00, 0], [3, 0x08, 0x40, 0]] {
         assert_eq!(table.windows(4).filter(|w| *w == start).count(), 2);
+    }
+    // With an RCEC (RS/Genoa/Siena/Turin), ranges start at 0:00.3 and 40:00.3.
+    let rs_soc = SocAcpi {
+        root_complex_pin: Some(1),
+        ..ACPI
+    };
+    let rs_inputs = self::inputs(&rs_soc, &cpus, &dies, &board);
+    let rs_table = ivrs::ivrs(&rs_inputs, &windows).unwrap();
+    for start in [[3, 0x03, 0x00, 0], [3, 0x03, 0x40, 0]] {
+        assert_eq!(rs_table.windows(4).filter(|w| *w == start).count(), 2);
     }
     assert!(
         tables(&board)

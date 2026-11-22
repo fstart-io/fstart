@@ -76,8 +76,10 @@ pub struct SocAcpi {
     pub fch_intx_gsi: Option<[u8; 4]>,
     /// The pin of its NBIO IOAPIC the INTA of a root bus's device 0
     /// reaches, on every root bridge: the RS root complex's event collector
-    /// (00.3) interrupts there. `None` where no function of device 0 takes
-    /// INTx from the NBIO.
+    /// (RCEC, 00.3) interrupts there. `None` where no function of device 0
+    /// takes INTx from the NBIO: Rome, Milan and earlier have no RCEC, and
+    /// their 00.0 and 00.2 use MSI. So it also says the RCEC is there, which
+    /// IVRS must cover for interrupt remapping.
     pub root_complex_pin: Option<u8>,
     /// The GPE the internal bridges signal PME on (wake), and those
     /// bridges.
