@@ -25,6 +25,11 @@ const SPMI_REVISION: u8 = 5;
 const SPMI_LEN: u32 = 65;
 
 impl IpmiKcsAcpi {
+    /// Corresponding SMBIOS Type 38 (IPMI Device Information) descriptor.
+    pub const fn smbios(&self) -> crate::smbios::IpmiDeviceInfo {
+        crate::smbios::IpmiDeviceInfo::kcs(self.port, self.spacing, self.spec_revision)
+    }
+
     /// `Device(SPMI)`, for the scope of the bus that decodes the ports (LPC).
     pub fn dsdt_aml(&self) -> Vec<u8> {
         let data = u64::from(self.port);

@@ -37,8 +37,10 @@ pub static SMBIOS: fstart_acpi::smbios::SmbiosIdentity<'static> =
         bb_serial: None,
         chassis_type: 0x0a,
         chassis_manufacturer: "LENOVO",
+        chassis_serial: None,
         processor_sockets: &["Socket P"],
         oem_string: None,
+        ipmi: None,
     };
 
 impl fstart_acpi::device::AcpiDevice for Acpi {

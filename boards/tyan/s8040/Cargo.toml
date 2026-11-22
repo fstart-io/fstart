@@ -54,7 +54,7 @@ smm = ["fstart-platform-amd/smm"]
 fstart-platform-amd = { workspace = true }
 fstart-driver-amd = { workspace = true }
 fstart-driver-aspeed = { workspace = true }
-fstart-driver-ipmi = { workspace = true }
+fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-driver-superio = { workspace = true, features = ["acpi"] }
 fstart-driver-uart = { workspace = true, features = ["pio"] }

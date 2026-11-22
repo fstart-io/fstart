@@ -41,6 +41,8 @@ pub static GA945GCM_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static
         bb_serial: None,
         chassis_type: 0x03,
         chassis_manufacturer: "Gigabyte Technology Co., Ltd.",
+        chassis_serial: None,
         processor_sockets: &["LGA775"],
         oem_string: None,
+        ipmi: None,
     };

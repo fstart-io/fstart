@@ -40,8 +40,10 @@ pub static D945GCLF_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static
         bb_serial: None,
         chassis_type: 0x03,
         chassis_manufacturer: "Intel",
+        chassis_serial: None,
         processor_sockets: &D945GCLF_SMBIOS_PROCESSOR_SOCKETS,
         oem_string: None,
+        ipmi: None,
     };
 
 /// Board DSDT fragment: sleep/power buttons (coreboot `mainboard.asl`)

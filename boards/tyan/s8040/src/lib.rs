@@ -158,9 +158,20 @@ pub fn check_options(options: &mpio::Options) -> Result<(), &'static str> {
         .map_err(|_| "invalid S8040 MPIO ports")
 }
 
-/// The table identity.
-pub fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
-    fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8040GM2NE")
+/// The static board SMBIOS identity. Type 38 is the KCS3 of
+/// [`bmc::acpi_board`]; the BMC's FRU names the board `S8040GM2NE` too.
+pub const BASE_SMBIOS: fstart_acpi::smbios::SmbiosIdentity<'static> =
+    fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8040GM2NE");
+
+/// The table identity, enriched with BMC FRU serials and system UUID when
+/// available.
+pub fn smbios_identity<'a>(
+    fru: Option<&'a fstart_driver_ipmi::fru::FruIdentity>,
+) -> fstart_acpi::smbios::SmbiosIdentity<'a> {
+    match fru {
+        Some(fru) => fru.apply_to(BASE_SMBIOS),
+        None => BASE_SMBIOS,
+    }
 }
 
 #[cfg(test)]

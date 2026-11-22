@@ -27,12 +27,24 @@ fn main() -> ! {
     s8040::configure_pcie(stage.config_mut(), &pcie);
     fstart_driver_amd::fch::tasks::env::restore_ac_power(&stage.hw().fch, power);
     let ports = s8040::mpio_ports(&pcie).unwrap_or_else(|_| stage.fail("board MPIO ports"));
-    let mut stage = stage
-        .init_fch()
-        .train_dxio(&ports)
-        .init_chipset(())
-        .start_cpus()
-        .scan_bus();
+    let stage = stage.init_fch().train_dxio(&ports).init_chipset(());
+    // Read BMC FRU before `start_cpus()` installs SMM so SMM RAS SEL reports
+    // cannot interleave with boot-time FRU queries on KCS2.
+    let fru = bmc::read_fru(stage.clock());
+    match &fru {
+        Some(fru) => fstart_log::info!(
+            "s8040: BMC FRU board {} product {}, UUID {}",
+            fru.board_serial.as_str(),
+            fru.product_serial.as_str(),
+            if fru.system_uuid.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+        None => fstart_log::warn!("s8040: BMC FRU unavailable; using static SMBIOS identity"),
+    }
+    let mut stage = stage.start_cpus().scan_bus();
     if pcie.vga {
         if let Some(address) = stage.configured_display() {
             // SAFETY: BSP only, after allocation of the onboard display's
@@ -54,6 +66,6 @@ fn main() -> ! {
     }
     stage
         .ready_to_boot()
-        .emit_tables(&s8040::smbios_identity())
+        .emit_tables(&s8040::smbios_identity(fru.as_ref()))
         .boot()
 }

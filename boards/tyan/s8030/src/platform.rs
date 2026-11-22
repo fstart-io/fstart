@@ -106,7 +106,8 @@ pub fn gpio(generation: Generation) -> Gpio {
     }
 }
 
-/// The table identity: board identity only.
+/// The table identity: board identity only. Type 38 is the KCS of
+/// [`bmc::acpi_board`].
 pub fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
     fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8030")
 }
