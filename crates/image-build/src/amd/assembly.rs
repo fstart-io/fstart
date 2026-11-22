@@ -815,17 +815,17 @@ impl PspFiles {
 /// of its placeholders.
 fn patch_stage(reset: &[u8], ffs: &[u8]) -> Result<Vec<u8>, String> {
     use fstart_core::ffs::{
-        ANCHOR_SIZE, AnchorBlock,
+        LOCATOR_SIZE, LocatorBlock,
         trust::{TRUST_SIZE, TrustBlock},
     };
     let mut stage = reset.to_vec();
     let anchor = fstart_ffs::FfsReader::new(ffs)
         .scan_for_anchor()
         .map_err(|e| format!("FFS anchor not found: {e:?}"))?;
-    let mut placeholder = [0; ANCHOR_SIZE];
-    AnchorBlock::placeholder().write_to(&mut placeholder);
+    let mut placeholder = [0; LOCATOR_SIZE];
+    LocatorBlock::placeholder().write_to(&mut placeholder);
     let site = find_unique(&stage, &placeholder, 1).ok_or("no unique anchor site in the stage")?;
-    stage[site..site + ANCHOR_SIZE].copy_from_slice(&ffs[anchor..anchor + ANCHOR_SIZE]);
+    stage[site..site + LOCATOR_SIZE].copy_from_slice(&ffs[anchor..anchor + LOCATOR_SIZE]);
 
     let mut trust_placeholder = [0; TRUST_SIZE];
     TrustBlock::placeholder().write_to(&mut trust_placeholder);

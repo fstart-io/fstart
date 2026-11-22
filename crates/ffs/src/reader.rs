@@ -5,11 +5,10 @@
 //! untrusted media does not establish protected expected verification keys.
 //! Firmware boot boundaries use `root::authenticate_root` with protected policy,
 //! then retain one verified directory buffer rather than borrowing mutable media.
-//! The anchor's historical `manifest_offset`/`manifest_size` now point to the root.
 
 use fstart_core::ffs::{
-    ANCHOR_SIZE, AnchorBlock, AnchorRef, EntryContent, FFS_MAGIC, FFS_VERSION, ImageManifest,
-    Region, RegionContent, RegionEntry, Segment,
+    EntryContent, ImageManifest, LOCATOR_MAGIC, LOCATOR_SIZE, LocatorBlock, LocatorRef, Region,
+    RegionContent, RegionEntry, Segment,
 };
 
 #[cfg(feature = "std")]
@@ -21,7 +20,7 @@ use fstart_crypto::digest;
 pub enum ReaderError {
     /// Image is too small to contain the referenced data.
     OutOfBounds,
-    /// Magic bytes don't match `FFS_MAGIC`.
+    /// Magic bytes don't match `LOCATOR_MAGIC`.
     BadMagic,
     /// Unsupported FFS version.
     UnsupportedVersion,
@@ -60,42 +59,26 @@ impl<'a> FfsReader<'a> {
         Self { image }
     }
 
-    /// Read an `AnchorBlock` from a known offset in the image.
+    /// Read a `LocatorBlock` from a known offset in the image.
     ///
-    /// This is used when the bootblock knows the anchor's link-time address.
-    /// The caller passes
-    /// the offset relative to the start of `image`.
-    ///
-    /// The anchor is `#[repr(C)]` — read via pointer cast, no deserialization.
-    pub fn read_anchor(&self, offset: usize) -> Result<AnchorBlock, ReaderError> {
+    /// This is used when the bootblock knows the locator's link-time address.
+    /// The caller passes the offset relative to the start of `image`.
+    pub fn read_anchor(&self, offset: usize) -> Result<LocatorBlock, ReaderError> {
         let data = self.image.get(offset..).ok_or(ReaderError::OutOfBounds)?;
-        AnchorBlock::parse(data.get(..ANCHOR_SIZE).ok_or(ReaderError::OutOfBounds)?)
+        LocatorBlock::parse(data.get(..LOCATOR_SIZE).ok_or(ReaderError::OutOfBounds)?)
             .ok_or(ReaderError::BadMagic)
     }
 
-    /// Borrow an anchor from raw bytes (e.g., the `FSTART_ANCHOR` static).
+    /// Scan the image for `LOCATOR_MAGIC` at 8-byte-aligned offsets.
     ///
-    /// Scalar fields are read through volatile accessors to see post-build
-    /// patched values; the key array is borrowed in place.
-    ///
-    /// # Safety
-    ///
-    /// The data must be at least `ANCHOR_SIZE` bytes and properly aligned.
-    pub unsafe fn read_anchor_volatile(data: &'a [u8]) -> Result<AnchorRef<'a>, ReaderError> {
-        // SAFETY: caller guarantees alignment, size, and lifetime of `data`.
-        unsafe { AnchorRef::read_volatile(data) }.ok_or(ReaderError::BadMagic)
-    }
-
-    /// Scan the image for `FFS_MAGIC` at 8-byte-aligned offsets.
-    ///
-    /// Returns the offset of the first anchor found. This is for host-side
-    /// tools that don't know the anchor's link-time address.
+    /// Returns the offset of the first locator found. This is for host-side
+    /// tools that don't know the locator's link-time address.
     pub fn scan_for_anchor(&self) -> Result<usize, ReaderError> {
-        let magic = &FFS_MAGIC;
+        let magic = &LOCATOR_MAGIC;
         let mut offset = 0;
-        while offset + ANCHOR_SIZE <= self.image.len() {
+        while offset + LOCATOR_SIZE <= self.image.len() {
             if &self.image[offset..offset + magic.len()] == magic
-                && self.anchor_header_is_plausible(offset)
+                && self.locator_header_is_plausible(offset)
             {
                 return Ok(offset);
             }
@@ -104,15 +87,15 @@ impl<'a> FfsReader<'a> {
         Err(ReaderError::BadMagic)
     }
 
-    /// Borrowed concatenated Intel microcode blob recorded in `anchor`.
+    /// Borrowed concatenated Intel microcode blob recorded in `locator`.
     ///
     /// The builder also records this file in the signed directory, but this
     /// early/AP access path does NOT verify its directory digest. The initial
     /// locator (or retained predecessor copy) duplicates its bounded span so
     /// vendor validation can run without changing pre-Rust/AP sequencing.
-    pub fn intel_microcode(&self, anchor: AnchorRef<'_>) -> Option<&'a [u8]> {
-        let start = anchor.microcode_offset() as usize;
-        let size = anchor.microcode_size() as usize;
+    pub fn intel_microcode(&self, locator: LocatorRef<'_>) -> Option<&'a [u8]> {
+        let start = locator.microcode_offset() as usize;
+        let size = locator.microcode_size() as usize;
         if start == 0 || size == 0 {
             return None;
         }
@@ -120,24 +103,24 @@ impl<'a> FfsReader<'a> {
         self.image.get(start..end)
     }
 
-    fn anchor_header_is_plausible(&self, offset: usize) -> bool {
-        let Some(header) = self.image.get(offset..offset + 40) else {
+    fn locator_header_is_plausible(&self, offset: usize) -> bool {
+        let Some(header) = self.image.get(offset..offset + LOCATOR_SIZE) else {
             return false;
         };
-        let version = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-        let manifest_offset = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-        let manifest_size = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
-        let total_image_size = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
-        if version != FFS_VERSION || manifest_size == 0 {
+        let Some(locator) = LocatorBlock::parse(header) else {
+            return false;
+        };
+        let root_offset = locator.root_offset.get() as usize;
+        let root_size = locator.root_size.get() as usize;
+        let total_image_size = locator.total_image_size.get() as usize;
+        if root_size == 0 {
             return false;
         }
-
-        let Some(manifest_end) = (manifest_offset as usize).checked_add(manifest_size as usize)
-        else {
+        let Some(root_end) = root_offset.checked_add(root_size) else {
             return false;
         };
-        manifest_end <= self.image.len()
-            && (total_image_size == 0 || total_image_size as usize <= self.image.len())
+        root_end <= self.image.len()
+            && (total_image_size == 0 || total_image_size <= self.image.len())
     }
 
     /// Find a constant policy block for HOST inspection of a self-contained
@@ -157,23 +140,23 @@ impl<'a> FfsReader<'a> {
     /// This inspection helper imposes no persistent rollback minimum. Firmware
     /// must supply its own protected RootPolicy and stable-directory lifetime.
     #[cfg(feature = "std")]
-    pub fn read_manifest(&self, anchor: &AnchorBlock) -> Result<ImageManifest, ReaderError> {
+    pub fn read_manifest(&self, locator: &LocatorBlock) -> Result<ImageManifest, ReaderError> {
         self.read_verified_manifest(
-            anchor.manifest_offset.get() as usize,
-            anchor.manifest_size.get() as usize,
+            locator.root_offset.get() as usize,
+            locator.root_size.get() as usize,
             self.read_trust()?,
         )
     }
 
-    /// Read and verify the manifest referenced by a post-build-patched anchor.
+    /// Read and verify the directory referenced by a post-build-patched locator.
     #[cfg(feature = "std")]
     pub fn read_manifest_volatile(
         &self,
-        anchor: AnchorRef<'_>,
+        locator: LocatorRef<'_>,
     ) -> Result<ImageManifest, ReaderError> {
         self.read_verified_manifest(
-            anchor.manifest_offset() as usize,
-            anchor.manifest_size() as usize,
+            locator.root_offset() as usize,
+            locator.root_size() as usize,
             self.read_trust()?,
         )
     }
@@ -292,6 +275,6 @@ impl<'a> FfsReader<'a> {
         reference
             .verify_bytes(directory)
             .map_err(|_| ReaderError::DigestMismatch)?;
-        crate::manifest::ManifestView::parse(directory)?.to_owned_manifest()
+        crate::directory::DirectoryView::parse(directory)?.to_owned_manifest()
     }
 }

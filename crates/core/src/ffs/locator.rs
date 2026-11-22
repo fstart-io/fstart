@@ -15,8 +15,8 @@ pub const LOCATOR_SIZE: usize = 40;
 pub struct LocatorBlock {
     pub magic: [u8; 8],
     pub version: U32<LE>,
-    pub manifest_offset: U32<LE>,
-    pub manifest_size: U32<LE>,
+    pub root_offset: U32<LE>,
+    pub root_size: U32<LE>,
     pub total_image_size: U32<LE>,
     pub anchor_offset: U32<LE>,
     pub microcode_offset: U32<LE>,
@@ -70,8 +70,8 @@ impl LocatorBlock {
         Self {
             magic: LOCATOR_MAGIC,
             version: U32::new(LOCATOR_VERSION),
-            manifest_offset: U32::new(0),
-            manifest_size: U32::new(0),
+            root_offset: U32::new(0),
+            root_size: U32::new(0),
             total_image_size: U32::new(0),
             anchor_offset: U32::new(0),
             microcode_offset: U32::new(0),
@@ -96,8 +96,8 @@ impl LocatorBlock {
         MediaLocator {
             image_offset: self.image_offset.get().into(),
             image_size: self.total_image_size.get().into(),
-            root_offset: self.manifest_offset.get().into(),
-            root_size: self.manifest_size.get().into(),
+            root_offset: self.root_offset.get().into(),
+            root_size: self.root_size.get().into(),
             microcode_offset: self.microcode_offset.get().into(),
             microcode_size: self.microcode_size.get().into(),
         }
@@ -129,11 +129,11 @@ impl<'a> LocatorRef<'a> {
             lifetime: core::marker::PhantomData,
         })
     }
-    pub fn manifest_offset(self) -> u32 {
-        self.value.manifest_offset.get()
+    pub fn root_offset(self) -> u32 {
+        self.value.root_offset.get()
     }
-    pub fn manifest_size(self) -> u32 {
-        self.value.manifest_size.get()
+    pub fn root_size(self) -> u32 {
+        self.value.root_size.get()
     }
     pub fn total_image_size(self) -> u32 {
         self.value.total_image_size.get()

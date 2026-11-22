@@ -44,7 +44,7 @@ pub fn authenticate_boot_root(
         unsafe { fstart_core::ffs::trust::TrustRef::read_volatile(crate::fstart_trust_bytes()) }
             .ok_or(RootError::InvalidFormat)?;
     // SAFETY: fixed-size locator bytes are readable for this snapshot.
-    let anchor = unsafe { fstart_core::ffs::AnchorRef::read_volatile(anchor_data) }
+    let anchor = unsafe { fstart_core::ffs::LocatorRef::read_volatile(anchor_data) }
         .ok_or(RootError::InvalidFormat)?;
     if anchor.image_offset() != 0 || !anchor.media().validate(media.size() as u64) {
         return Err(RootError::InvalidFormat);
@@ -56,5 +56,5 @@ pub fn authenticate_boot_root(
         max_directory_size: 64 * 1024,
         keys: trust.valid_keys(),
     };
-    read_boot_root(media, anchor.manifest_offset() as u64, &policy)
+    read_boot_root(media, anchor.root_offset() as u64, &policy)
 }

@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use fstart_core::ffs::{
-    ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
-    RegionContent, SegmentFlags, SegmentKind, SignatureKind,
+    Compression, EntryContent, FileType, LOCATOR_MAGIC, LOCATOR_SIZE, LOCATOR_VERSION,
+    LocatorBlock, RegionContent, SegmentFlags, SegmentKind, SignatureKind,
 };
 use fstart_ffs::FfsReader;
 
@@ -41,7 +41,7 @@ pub fn inspect(path: &str) -> Result<(), String> {
         println!("  image base:       {image_base:#x} ({image_base})");
     }
     println!("  offset:           {anchor_offset:#x} ({anchor_offset})");
-    println!("  size:             {ANCHOR_SIZE} bytes");
+    println!("  size:             {LOCATOR_SIZE} bytes");
     println!("  version:          {}", anchor.version.get());
     println!(
         "  image size:       {} bytes",
@@ -61,10 +61,10 @@ pub fn inspect(path: &str) -> Result<(), String> {
     }
     println!(
         "  boot root offset: {:#x} ({})",
-        anchor.manifest_offset.get(),
-        anchor.manifest_offset.get()
+        anchor.root_offset.get(),
+        anchor.root_offset.get()
     );
-    println!("  boot root size:   {} bytes", anchor.manifest_size.get());
+    println!("  boot root size:   {} bytes", anchor.root_size.get());
     println!("  image family:     {}", hex_full(&trust.image_family));
     if anchor.anchor_offset.get() >= anchor.total_image_size.get() {
         println!("  note:             XIP anchor outside FFS blob (top-aligned XIP bootblock)");
@@ -90,9 +90,9 @@ pub fn inspect(path: &str) -> Result<(), String> {
         .read_manifest(&anchor)
         .map_err(|e| format!("failed to read/verify manifest: {e:?}"))?;
 
-    if anchor.version.get() != FFS_VERSION {
+    if anchor.version.get() != LOCATOR_VERSION {
         println!(
-            "  warning: version {} (expected {FFS_VERSION})",
+            "  warning: version {} (expected {LOCATOR_VERSION})",
             anchor.version.get()
         );
     }
@@ -331,12 +331,12 @@ pub fn inspect(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn find_anchors(data: &[u8]) -> Vec<(usize, AnchorBlock)> {
+fn find_anchors(data: &[u8]) -> Vec<(usize, LocatorBlock)> {
     let reader = FfsReader::new(data);
     let mut anchors = Vec::new();
     let mut offset = 0usize;
-    while offset + ANCHOR_SIZE <= data.len() {
-        if data[offset..offset + FFS_MAGIC.len()] == FFS_MAGIC
+    while offset + LOCATOR_SIZE <= data.len() {
+        if data[offset..offset + LOCATOR_MAGIC.len()] == LOCATOR_MAGIC
             && let Ok(anchor) = reader.read_anchor(offset)
         {
             anchors.push((offset, anchor));
@@ -346,7 +346,7 @@ fn find_anchors(data: &[u8]) -> Vec<(usize, AnchorBlock)> {
     anchors
 }
 
-fn choose_display_anchor(anchors: &[(usize, AnchorBlock)]) -> Option<(usize, AnchorBlock)> {
+fn choose_display_anchor(anchors: &[(usize, LocatorBlock)]) -> Option<(usize, LocatorBlock)> {
     anchors
         .iter()
         .copied()

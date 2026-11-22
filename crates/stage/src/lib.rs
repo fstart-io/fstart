@@ -72,7 +72,7 @@ pub(crate) use ffs_helpers::{load_ffs_file_by_name, load_file_segments_from_medi
 pub use ffs_helpers::{load_ffs_file_measured, microcode_blob};
 
 pub mod anchor;
-pub use anchor::{fstart_anchor_bytes, fstart_trust_bytes};
+pub use anchor::{fstart_trust_bytes, locator_bytes};
 
 /// Stop the boot: log what failed and halt.
 #[inline(never)]

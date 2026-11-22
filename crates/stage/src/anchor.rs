@@ -74,7 +74,7 @@ pub unsafe fn install_locator(locator: LocatorBlock, capacity: u64) -> Result<()
 /// authenticate any root or file.
 pub fn locator() -> Option<LocatorBlock> {
     // SAFETY: initial or published predecessor storage is readable and stable.
-    unsafe { fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_anchor_bytes()) }
+    unsafe { fstart_core::ffs::locator::LocatorRef::read_volatile(locator_bytes()) }
         .map(|locator| locator.value())
 }
 
@@ -91,7 +91,7 @@ pub fn image_size() -> usize {
 
 /// The published locator's bytes; empty before [`initial_stage`] or
 /// [`install_locator`].
-pub fn fstart_anchor_bytes() -> &'static [u8] {
+pub fn locator_bytes() -> &'static [u8] {
     let locator = LOCATOR.load(Ordering::Acquire);
     if locator.is_null() {
         return &[];

@@ -383,14 +383,11 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
                 firmware_size,
             )
         };
-        let locator =
-            unsafe {
-                fstart_core::ffs::locator::LocatorRef::read_volatile(
-                    fstart_stage::fstart_anchor_bytes(),
-                )
-            }
-            .ok_or(ServiceError::InvalidParam)?
-            .value();
+        let locator = unsafe {
+            fstart_core::ffs::locator::LocatorRef::read_volatile(fstart_stage::locator_bytes())
+        }
+        .ok_or(ServiceError::InvalidParam)?
+        .value();
         if locator.image_offset != 0 || !locator.media().validate(firmware_size as u64) {
             return Err(ServiceError::InvalidParam);
         }

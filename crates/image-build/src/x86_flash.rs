@@ -79,7 +79,7 @@ impl X86FlashAssembly {
                         stage_path.display()
                     )
                 })?;
-        let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
+        let anchor_size = fstart_core::ffs::LOCATOR_SIZE;
         if ffs_anchor + anchor_size > ffs.len() || stage_anchor + anchor_size > flash.len() {
             return Err(format!(
                 "x86 anchor patch out of bounds: FFS offset {ffs_anchor:#x}, flash offset {stage_anchor:#x}"
@@ -112,10 +112,10 @@ fn ffs_anchor_offset(ffs: &[u8]) -> Option<usize> {
     let field = |offset: usize| {
         u32::from_le_bytes(ffs[offset..offset + 4].try_into().expect("4 bytes")) as usize
     };
-    ffs.windows(fstart_core::ffs::FFS_MAGIC.len())
+    ffs.windows(fstart_core::ffs::LOCATOR_MAGIC.len())
         .enumerate()
         .find_map(|(offset, window)| {
-            (window == fstart_core::ffs::FFS_MAGIC
+            (window == fstart_core::ffs::LOCATOR_MAGIC
                 && offset + 28 <= ffs.len()
                 && field(offset + 20) == ffs.len()
                 && field(offset + 24) == offset)

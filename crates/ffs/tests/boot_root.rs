@@ -1,10 +1,10 @@
 #![cfg(feature = "std")]
 use ed25519_dalek::{Signer, SigningKey};
 use fstart_core::ffs::{
-    ANCHOR_SIZE, AnchorBlock, Compression, FileType, SegmentFlags, SegmentKind, Signature,
+    Compression, FileType, LOCATOR_SIZE, LocatorBlock, SegmentFlags, SegmentKind, Signature,
     VerificationKey,
 };
-use fstart_ffs::{ManifestView, builder::*, root::*};
+use fstart_ffs::{DirectoryView, builder::*, root::*};
 
 fn descriptor() -> BootstrapDescriptor {
     BootstrapDescriptor {
@@ -69,9 +69,9 @@ fn root_wire_golden_and_reserved_bytes() {
 fn fixture(compression: Compression) -> (FfsImage, VerificationKey) {
     let key = SigningKey::from_bytes(&[0x19; 32]);
     let vk = VerificationKey::ed25519(0, key.verifying_key().to_bytes());
-    let mut initial = vec![0; ANCHOR_SIZE + 160];
-    AnchorBlock::placeholder().write_to(&mut initial);
-    initial[ANCHOR_SIZE..ANCHOR_SIZE + 8].copy_from_slice(b"FSTPIN01");
+    let mut initial = vec![0; LOCATOR_SIZE + 160];
+    LocatorBlock::placeholder().write_to(&mut initial);
+    initial[LOCATOR_SIZE..LOCATOR_SIZE + 8].copy_from_slice(b"FSTPIN01");
     let segment = |data, compression, load_addr| InputSegment {
         name: ".flat".into(),
         kind: SegmentKind::Code,
@@ -110,7 +110,7 @@ fn fixture(compression: Compression) -> (FfsImage, VerificationKey) {
         &mut built,
         "bootblock",
         |initial, root| {
-            initial[ANCHOR_SIZE..].copy_from_slice(&root.descriptors[0].unwrap().encode());
+            initial[LOCATOR_SIZE..].copy_from_slice(&root.descriptors[0].unwrap().encode());
             Ok(())
         },
         &signer,
@@ -126,7 +126,7 @@ fn dense_stage_records_lzma_in_both_root_and_directory() {
     let (built, _) = fixture(Compression::Lzma);
     let reader = fstart_ffs::FfsReader::new(&built.image);
     let anchor = reader.read_anchor(built.anchor_offset).unwrap();
-    let start = anchor.manifest_offset.get() as usize;
+    let start = anchor.root_offset.get() as usize;
     let root = Root::parse(&built.image[start..start + ROOT_SIZE]).unwrap();
     let descriptor = root.descriptors[0].unwrap();
     assert_eq!(descriptor.compression, Compression::Lzma);
@@ -152,11 +152,11 @@ fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
     let (built, key) = fixture(Compression::Lz4);
     let reader = fstart_ffs::FfsReader::new(&built.image);
     let anchor = reader.read_anchor(built.anchor_offset).unwrap();
-    assert_eq!(anchor.manifest_size, 512);
+    assert_eq!(anchor.root_size, 512);
     let trust = reader.read_trust().unwrap();
     assert_eq!(trust.image_family, [0x44; 16]);
-    let bytes = &built.image
-        [anchor.manifest_offset.get() as usize..anchor.manifest_offset.get() as usize + 512];
+    let bytes =
+        &built.image[anchor.root_offset.get() as usize..anchor.root_offset.get() as usize + 512];
     let keys = [key];
     let mut policy = RootPolicy {
         image_family: trust.image_family,
@@ -192,7 +192,7 @@ fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
     let directory =
         &built.image[reference.offset as usize..(reference.offset + reference.size) as usize];
     reference.verify_bytes(directory).unwrap();
-    let view = ManifestView::parse(directory).unwrap();
+    let view = DirectoryView::parse(directory).unwrap();
     assert!(view.find_file_by_type(FileType::StageCode).is_err());
     let file = view.find_file_by_name("mainstage").unwrap();
     assert_eq!(file.segments()[0].stored_digest(), d.stored_digest);
@@ -203,21 +203,21 @@ fn signed_root_directory_and_compressed_bytes_authenticate_exact_buffers() {
     reader.verify_entry_digests(initial, region).unwrap();
     let mut bad = directory.to_vec();
     bad.push(0);
-    assert!(ManifestView::parse(&bad).is_err());
+    assert!(DirectoryView::parse(&bad).is_err());
     assert!(reference.verify_bytes(&bad).is_err());
     // First entry starts at header28+region24; digest flags at byte23.
     let mut bad = directory.to_vec();
     bad[28 + 24 + 23] = 0;
-    assert!(ManifestView::parse(&bad).is_err());
+    assert!(DirectoryView::parse(&bad).is_err());
 }
 
 #[test]
 fn directory_empty_golden_revision() {
     let golden = *b"FSMZ\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x1c\x00\x00\x00\x00\x00\x00\x00";
-    assert_eq!(ManifestView::parse(&golden).unwrap().summary().regions, 0);
+    assert_eq!(DirectoryView::parse(&golden).unwrap().summary().regions, 0);
     let mut old = golden;
     old[4] = 1;
-    assert!(ManifestView::parse(&old).is_err());
+    assert!(DirectoryView::parse(&old).is_err());
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn lz4_rejects_trailing_input() {
 #[test]
 fn populated_directory_golden_round_trip() {
     let golden = include_bytes!("fixtures/directory-v2.bin");
-    let view = ManifestView::parse(golden).unwrap();
+    let view = DirectoryView::parse(golden).unwrap();
     let file = view.find_file_by_name("file").unwrap();
     assert_eq!(file.file_type().unwrap(), FileType::StageCode);
     assert_eq!(file.segments()[0].initialized_size(), 3);
@@ -241,7 +241,7 @@ fn populated_directory_golden_round_trip() {
     verify_digest(b"abc", &file.segments()[0].stored_digest()).unwrap();
     let owned = view.to_owned_manifest().unwrap();
     assert_eq!(
-        fstart_ffs::manifest::encode_manifest(&owned).unwrap(),
+        fstart_ffs::directory::encode_manifest(&owned).unwrap(),
         golden
     );
 }

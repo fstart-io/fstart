@@ -748,17 +748,17 @@ fn patch_stage_anchor(
     ffs_data: &[u8],
     ffs_anchor_offset: usize,
 ) -> Result<(), String> {
-    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
+    let anchor_size = fstart_core::ffs::LOCATOR_SIZE;
     let anchor_end = ffs_anchor_offset
         .checked_add(anchor_size)
         .ok_or_else(|| "FFS anchor range overflows".to_string())?;
     let anchor = ffs_data
         .get(ffs_anchor_offset..anchor_end)
         .ok_or_else(|| "FFS anchor lies outside the FFS image".to_string())?;
-    let placeholder = fstart_core::ffs::AnchorBlock::placeholder();
+    let placeholder = fstart_core::ffs::LocatorBlock::placeholder();
     let placeholder = unsafe {
         core::slice::from_raw_parts(
-            &placeholder as *const fstart_core::ffs::AnchorBlock as *const u8,
+            &placeholder as *const fstart_core::ffs::LocatorBlock as *const u8,
             anchor_size,
         )
     };
@@ -1060,22 +1060,22 @@ fn patch_xip_anchor(
     ffs_anchor_offset: usize,
     image_base_delta: u32,
 ) -> Result<(), String> {
-    let anchor_size = fstart_core::ffs::ANCHOR_SIZE;
+    let anchor_size = fstart_core::ffs::LOCATOR_SIZE;
     let ffs_end = ffs_anchor_offset
         .checked_add(anchor_size)
         .ok_or("FFS anchor offset overflows")?;
     let ffs_bytes = ffs_data
         .get(ffs_anchor_offset..ffs_end)
         .ok_or_else(|| format!("FFS anchor offset {ffs_anchor_offset:#x} outside FFS image"))?;
-    let mut placeholder = [0u8; fstart_core::ffs::ANCHOR_SIZE];
-    fstart_core::ffs::AnchorBlock::placeholder().write_to(&mut placeholder);
+    let mut placeholder = [0u8; fstart_core::ffs::LOCATOR_SIZE];
+    fstart_core::ffs::LocatorBlock::placeholder().write_to(&mut placeholder);
     let xip_anchor = image
         .windows(anchor_size)
         .position(|window| window == placeholder)
         .ok_or_else(|| {
             "bootblock XIP anchor placeholder not found in full flash image".to_string()
         })?;
-    let mut anchor = fstart_core::ffs::AnchorBlock::parse(ffs_bytes)
+    let mut anchor = fstart_core::ffs::LocatorBlock::parse(ffs_bytes)
         .ok_or_else(|| "invalid FFS anchor in image".to_string())?;
     let offset = u32::try_from(xip_anchor)
         .ok()

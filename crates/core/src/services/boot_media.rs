@@ -36,7 +36,7 @@
 
 use crate::TempRamBuffer;
 
-use super::{BlockDevice, ServiceError};
+use super::{BlockDevice, FirmwareImage, ServiceError};
 
 /// Simple bump allocator over a caller-provided temporary RAM buffer.
 ///
@@ -132,19 +132,8 @@ pub fn read_to_temp<'a>(
 ///
 /// Provides a uniform read interface for the boot medium holding the
 /// firmware filesystem (FFS). Concrete implementations exist for
-/// memory-mapped flash ([`MemoryMapped`]) and block-device-backed
-/// storage ([`BlockDeviceMedia`]).
-///
-/// # Zero-Cost for Memory-Mapped Media
-///
-/// When used with generics (`fn foo<M: BootMedia>(m: &M)`), the compiler
-/// monomorphizes the code for each concrete type. For [`MemoryMapped`]:
-///
-/// - `read_at` inlines to a single `memmove`
-/// - `as_slice` returns a direct reference into flash
-/// - Branch elimination removes all "is this mappable?" checks
-///
-/// There is **no vtable overhead** — the abstraction compiles away entirely.
+/// memory-mapped flash ([`MemoryMapped`]), RAM slices ([`SliceMedia`]),
+/// and block-device-backed storage ([`BlockDeviceMedia`]).
 pub trait BootMedia: Send + Sync {
     /// Read `buf.len()` bytes starting at `offset` into `buf`.
     ///
@@ -159,281 +148,198 @@ pub trait BootMedia: Send + Sync {
     /// Total size of the boot medium in bytes.
     fn size(&self) -> usize;
 
-    /// Attempt to get a direct memory-mapped view of the entire boot medium.
+    /// Attempt to get a direct memory-mapped view of `offset..offset + len`
+    /// (analogous to coreboot `rdev_mmap`).
     ///
-    /// Returns `Some(&[u8])` for memory-mapped media (zero-copy access).
-    /// Returns `None` for non-memory-mapped media (SPI, MMC, etc.).
-    ///
-    /// When `Some`, the returned slice spans the entire boot medium and
-    /// can be indexed directly — no copies needed. This enables the
-    /// existing [`FfsReader`](../../fstart_ffs/reader/struct.FfsReader.html)
-    /// fast path for manifest reading and digest verification.
-    fn as_slice(&self) -> Option<&[u8]> {
+    /// Returns `Some(&[u8])` when the requested range sits contiguously inside
+    /// a memory-mapped window (zero-copy access), or `None` for block media,
+    /// ranges that straddle a window boundary, or mappings rooted at address 0.
+    fn map(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let _ = (offset, len);
         None
     }
-}
 
-// ---------------------------------------------------------------------------
-// FlashMap — SoC-specific flash-to-CPU address translation
-// ---------------------------------------------------------------------------
-
-/// Flash address translation — maps raw flash offsets to CPU-visible pointers.
-///
-/// Different SoCs map flash memory into the CPU address space differently:
-///
-/// - **Linear** ([`LinearMap`]): contiguous at a fixed base, `offset → base + offset`.
-///   Most common for NOR flash on simple SoCs (QEMU virt, many ARM SoCs).
-///
-/// - **Banked**: hardware bank registers select which flash window is visible.
-///   The translation depends on the bank configuration and window size.
-///
-/// - **Non-contiguous**: multiple flash regions at different CPU addresses
-///   (e.g., a boot ROM + a larger flash region with a gap between them).
-///
-/// Implement this trait in the platform crate for SoCs with non-trivial
-/// flash mappings. The [`MemoryMapped<F>`] boot media delegates all
-/// address translation to the `FlashMap` implementation, so the rest of
-/// the firmware stack is agnostic to the mapping details.
-///
-/// # Safety Contract
-///
-/// Implementations must ensure that `translate(offset)` returns a valid,
-/// readable pointer for all `offset < size` where `size` is the flash
-/// region size passed to [`MemoryMapped::new`]. Returning an invalid
-/// pointer is immediate UB when `MemoryMapped::read_at` dereferences it.
-pub trait FlashMap: Send + Sync {
-    /// Translate a raw flash byte offset to a CPU-visible pointer.
+    /// Return true if any memory-mapped backing window of this medium overlaps
+    /// the CPU address range `start..start + size`.
     ///
-    /// The returned pointer must be valid and readable. The caller
-    /// guarantees `flash_offset` is within the boot media bounds.
-    fn translate(&self, flash_offset: usize) -> *const u8;
-
-    /// Return how many bytes can be copied contiguously from `flash_offset`.
-    ///
-    /// Simple linear maps return `max_len`.  Multi-window maps override this
-    /// so [`MemoryMapped::read_at`] never copies across a window boundary with
-    /// one pointer.
-    fn contiguous_len(&self, flash_offset: usize, max_len: usize) -> usize {
-        let _ = flash_offset;
-        max_len
-    }
-
-    /// Return a contiguous slice covering the entire mapped region.
-    ///
-    /// Returns `Some` only if the mapping is contiguous in CPU address
-    /// space (e.g., [`LinearMap`]). Returns `None` for banked or
-    /// non-contiguous mappings where a single slice cannot represent
-    /// the entire flash.
-    ///
-    /// When `Some`, the FFS reader uses the fast zero-copy path.
-    fn as_contiguous_slice(&self, size: usize) -> Option<&[u8]> {
-        let _ = size;
-        None
+    /// Used by the loader's placement preflight so loading into RAM cannot
+    /// overwrite a RAM-resident or memory-mapped boot medium.
+    fn overlaps_range(&self, start: u64, size: u64) -> bool {
+        let _ = (start, size);
+        false
     }
 }
 
 // ---------------------------------------------------------------------------
-// LinearMap — contiguous flash at a fixed CPU base address
+// SliceMedia — boot media over an in-memory byte slice (RAM / tests)
 // ---------------------------------------------------------------------------
 
-/// Linear flash mapping — contiguous at a fixed CPU base address.
-///
-/// This is the common case for memory-mapped NOR flash. Flash offset `n`
-/// maps to CPU address `base + n`. Used by most embedded platforms and
-/// QEMU virt machines.
-///
-/// For SoCs with non-contiguous or banked flash, implement [`FlashMap`]
-/// directly in the platform crate instead.
-pub struct LinearMap {
-    base: *const u8,
+/// Boot media backed by an ordinary Rust byte slice.
+#[derive(Clone, Copy)]
+pub struct SliceMedia<'a>(&'a [u8]);
+
+impl<'a> SliceMedia<'a> {
+    /// Wrap a byte slice as [`BootMedia`].
+    pub const fn new(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
 }
 
-impl LinearMap {
-    /// Create a linear flash mapping from a raw pointer.
+impl BootMedia for SliceMedia<'_> {
+    #[inline]
+    fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, ServiceError> {
+        let end = offset
+            .checked_add(buf.len())
+            .ok_or(ServiceError::InvalidParam)?;
+        let src = self.0.get(offset..end).ok_or(ServiceError::InvalidParam)?;
+        buf.copy_from_slice(src);
+        Ok(buf.len())
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    fn map(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let end = offset.checked_add(len)?;
+        self.0.get(offset..end)
+    }
+
+    #[inline]
+    fn overlaps_range(&self, start: u64, size: u64) -> bool {
+        if size == 0 || self.0.is_empty() {
+            return false;
+        }
+        let media_start = self.0.as_ptr() as u64;
+        let Some(media_end) = media_start.checked_add(self.0.len() as u64) else {
+            return true;
+        };
+        let Some(end) = start.checked_add(size) else {
+            return true;
+        };
+        start < media_end && media_start < end
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MemoryMapped — boot media backed by a FirmwareImage's CPU-visible windows
+// ---------------------------------------------------------------------------
+
+/// Launder a raw address through a volatile stack read so the compiler cannot
+/// constant-fold `0` into a null pointer on AArch64 (where flash starts at 0).
+#[inline(always)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "hides a value from the optimizer; no memory access"
+)]
+fn launder_addr(addr: u64) -> *const u8 {
+    // SAFETY: a u64 on the stack is always readable.
+    let raw: u64 = unsafe { core::ptr::read_volatile(&addr) };
+    raw as *const u8
+}
+
+/// Boot media backed by memory-mapped flash or ROM described by a
+/// [`FirmwareImage`].
+///
+/// Supports both single-window linear mappings (`from_raw_addr`) and
+/// multi-window mappings (`from_image`), such as AMD ROM2 + ROM3.
+pub struct MemoryMapped {
+    image: FirmwareImage,
+}
+
+impl MemoryMapped {
+    /// Create a memory-mapped boot medium from a validated [`FirmwareImage`].
     ///
     /// # Safety
     ///
-    /// `base` must point to a valid, readable, contiguous memory region
-    /// that covers the entire flash size. The region must remain mapped
-    /// for the lifetime of this value.
-    pub const unsafe fn new(base: *const u8) -> Self {
-        Self { base }
+    /// Every active window in `image` must point to a valid, readable CPU
+    /// memory region that remains mapped for the lifetime of this value.
+    pub unsafe fn from_image(image: FirmwareImage) -> Result<Self, ServiceError> {
+        image.validate()?;
+        if usize::try_from(image.size).is_err() {
+            return Err(ServiceError::InvalidParam);
+        }
+        Ok(Self { image })
     }
 
-    /// Create a linear flash mapping from a raw address.
-    ///
-    /// Uses `read_volatile` on the address to prevent the compiler from
-    /// constant-folding it. This is critical on AArch64 where flash
-    /// genuinely starts at address `0x0` — Rust considers null pointers
-    /// as UB in references, and the optimizer could exploit a constant `0`
-    /// to miscompile slice operations.
+    /// Create a memory-mapped boot medium with a single contiguous window
+    /// mapping flash offset 0 to `base_addr`.
     ///
     /// # Safety
     ///
-    /// The address must point to a valid, readable, contiguous memory
-    /// region that covers the entire flash size.
-    #[inline(always)]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "hides a value from the optimizer; no memory access"
-    )]
-    pub unsafe fn from_raw_addr(base_addr: u64) -> Self {
-        // SAFETY: a u64 on the stack is always readable. Volatile read
-        // prevents the compiler from constant-folding the value.
-        let addr: u64 = unsafe { core::ptr::read_volatile(&base_addr) };
-        Self {
-            base: addr as *const u8,
-        }
-    }
-}
-
-// SAFETY: LinearMap provides read-only access to a fixed memory region
-// (flash/ROM). The region is accessible from any execution context and is
-// not mutated through this interface.
-unsafe impl Send for LinearMap {}
-unsafe impl Sync for LinearMap {}
-
-impl FlashMap for LinearMap {
-    #[inline(always)]
-    fn translate(&self, flash_offset: usize) -> *const u8 {
-        // SAFETY: caller guarantees flash_offset is within bounds.
-        unsafe { self.base.add(flash_offset) }
-    }
-
-    #[inline(always)]
-    fn as_contiguous_slice(&self, size: usize) -> Option<&[u8]> {
-        if size == 0 {
-            return Some(&[]);
-        }
-        if self.base.is_null() {
-            return None;
-        }
-        // SAFETY: base..base+size is guaranteed valid by the caller of
-        // LinearMap::new() / from_raw_addr().
-        Some(unsafe { core::slice::from_raw_parts(self.base, size) })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MemoryMapped — zero-cost boot media with pluggable address translation
-// ---------------------------------------------------------------------------
-
-/// Boot media backed by memory-mapped flash or ROM.
-///
-/// The type parameter `F` provides the SoC-specific address translation
-/// via the [`FlashMap`] trait. For the common case of contiguous linear
-/// mapping, use [`LinearMap`]:
-///
-/// ```ignore
-/// let media = unsafe { MemoryMapped::from_raw_addr(0x20000000, 0x2000000) };
-/// ```
-///
-/// All operations are zero-cost through inlining and monomorphization:
-///
-/// - `read_at` compiles to `memmove` (handles potential overlap when the
-///   FFS image resides in RAM alongside load targets)
-/// - `as_slice` returns a direct `&[u8]` reference (contiguous mappings only)
-/// - The `FlashMap::translate` call inlines away for simple mappings
-///
-/// # Use Cases
-///
-/// - XIP flash on embedded platforms (flash memory-mapped into CPU address space)
-/// - QEMU `-bios` loading (firmware loaded directly into RAM or pflash)
-/// - SoCs with banked or non-contiguous flash (custom [`FlashMap`] impl)
-///
-/// # Safety
-///
-/// The `FlashMap` implementation must return valid pointers for all offsets
-/// within the media bounds. This is typically guaranteed by the hardware
-/// memory map and board configuration.
-pub struct MemoryMapped<F: FlashMap> {
-    map: F,
-    size: usize,
-}
-
-impl<F: FlashMap> MemoryMapped<F> {
-    /// Create a new memory-mapped boot medium with a custom flash mapping.
-    ///
-    /// - `map`: The SoC-specific flash address translation.
-    /// - `size`: Total size of the mapped flash region in bytes.
-    pub fn new(map: F, size: usize) -> Self {
-        Self { map, size }
-    }
-}
-
-/// Convenience constructors for the common linear mapping case.
-impl MemoryMapped<LinearMap> {
-    /// Create a memory-mapped boot medium with linear mapping from a raw address.
-    ///
-    /// This is the most common construction path. Flash offset `n` maps
-    /// to CPU address `base_addr + n`.
-    ///
-    /// Uses `read_volatile` internally to prevent null-pointer optimization
-    /// on platforms where flash starts at address 0x0.
-    ///
-    /// # Safety
-    ///
-    /// The address range `base_addr..base_addr+size` must be a valid,
-    /// readable memory region that remains mapped for the lifetime of
-    /// this value.
+    /// The address range `base_addr..base_addr + size` must be a valid,
+    /// readable memory region that remains mapped for the lifetime of this
+    /// value.
     #[inline(always)]
     pub unsafe fn from_raw_addr(base_addr: u64, size: usize) -> Self {
-        let map = unsafe { LinearMap::from_raw_addr(base_addr) };
-        Self { map, size }
+        Self {
+            image: FirmwareImage::single_window(base_addr, size as u64),
+        }
+    }
+
+    /// The underlying [`FirmwareImage`] window description.
+    pub const fn image(&self) -> &FirmwareImage {
+        &self.image
     }
 }
 
-// SAFETY: MemoryMapped provides read-only access to a fixed memory region
-// (flash/ROM). The region is accessible from any execution context and is
-// not mutated through this interface. Safety of the underlying pointer is
-// guaranteed by the FlashMap implementation.
-unsafe impl<F: FlashMap> Send for MemoryMapped<F> {}
-unsafe impl<F: FlashMap> Sync for MemoryMapped<F> {}
-
-impl<F: FlashMap> BootMedia for MemoryMapped<F> {
+impl BootMedia for MemoryMapped {
     #[inline(always)]
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, ServiceError> {
         if offset
             .checked_add(buf.len())
-            .is_none_or(|end| end > self.size)
+            .is_none_or(|end| end as u64 > self.image.size)
         {
             return Err(ServiceError::InvalidParam);
         }
-        // Translate the flash offset to a CPU-visible pointer via the
-        // SoC-specific FlashMap, then copy into the caller's buffer.
-        //
-        // We use `copy` (memmove) rather than `copy_nonoverlapping` (memcpy)
-        // for robustness: when the FFS image is loaded into RAM (not XIP
-        // flash), source and destination regions may overlap — e.g., loading
-        // a large kernel from FFS at 0x80000000 to a nearby load address.
+        // Use `copy` (memmove) rather than `copy_nonoverlapping` because on
+        // non-XIP platforms the image may reside in RAM near load targets.
         let mut copied = 0usize;
         while copied < buf.len() {
-            let flash_offset = offset + copied;
-            let chunk_len = self.map.contiguous_len(flash_offset, buf.len() - copied);
-            if chunk_len == 0 {
-                return Err(ServiceError::InvalidParam);
-            }
-            let src = self.map.translate(flash_offset);
+            let flash_offset = (offset + copied) as u64;
+            let remaining = (buf.len() - copied) as u64;
+            let (cpu_addr, chunk_len) = self
+                .image
+                .contiguous_chunk(flash_offset, remaining)
+                .ok_or(ServiceError::InvalidParam)?;
+            let chunk_len = chunk_len as usize;
+            let src = launder_addr(cpu_addr);
+            // SAFETY: caller of `from_image`/`from_raw_addr` guaranteed every
+            // active window is readable for the lifetime of `self`.
             unsafe {
                 core::ptr::copy(src, buf.as_mut_ptr().add(copied), chunk_len);
             }
             copied += chunk_len;
         }
-        // Ensure the copy is not reordered or optimized away. Needed when
-        // source and destination are both in RAM (non-XIP boards) and
-        // subsequent reads from the same address space must see the update.
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         Ok(buf.len())
     }
 
     #[inline(always)]
     fn size(&self) -> usize {
-        self.size
+        self.image.size as usize
     }
 
     #[inline(always)]
-    fn as_slice(&self) -> Option<&[u8]> {
-        self.map.as_contiguous_slice(self.size)
+    fn map(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        if len == 0 {
+            return (offset as u64 <= self.image.size).then_some(&[]);
+        }
+        let cpu_addr = self.image.translate_range(offset as u64, len as u64)?;
+        if cpu_addr == 0 {
+            return None;
+        }
+        let ptr = launder_addr(cpu_addr);
+        // SAFETY: `translate_range` confirmed `offset..offset + len` sits in
+        // one active window, and `cpu_addr != 0`.
+        Some(unsafe { core::slice::from_raw_parts(ptr, len) })
+    }
+
+    #[inline(always)]
+    fn overlaps_range(&self, start: u64, size: u64) -> bool {
+        self.image.overlaps_cpu_range(start, size)
     }
 }
 
@@ -565,9 +471,15 @@ impl<M: BootMedia> BootMedia for SubRegion<'_, M> {
         self.region_size
     }
 
-    fn as_slice(&self) -> Option<&[u8]> {
-        self.parent
-            .as_slice()
-            .map(|s| &s[self.offset..self.offset + self.region_size])
+    fn map(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let end = offset.checked_add(len)?;
+        if end > self.region_size {
+            return None;
+        }
+        self.parent.map(self.offset + offset, len)
+    }
+
+    fn overlaps_range(&self, start: u64, size: u64) -> bool {
+        self.parent.overlaps_range(start, size)
     }
 }

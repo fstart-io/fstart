@@ -60,7 +60,7 @@ fn ram_import_is_required_before_mount_and_asset_consumers_work_after_it() {
     };
     // Supply a known directory as predecessor-authenticated input, without
     // inventing a signature or exercising root authentication in this test.
-    let encoded = fstart_ffs::manifest::encode_manifest(&manifest).unwrap();
+    let encoded = fstart_ffs::directory::encode_manifest(&manifest).unwrap();
     let reference = DirectoryRef {
         offset: 256,
         size: encoded.len() as u64,
@@ -73,14 +73,14 @@ fn ram_import_is_required_before_mount_and_asset_consumers_work_after_it() {
     let image: &'static [u8] = Box::leak(bytes.into_boxed_slice());
     let locator = LocatorBlock {
         total_image_size: (image.len() as u32).into(),
-        manifest_offset: 1024.into(),
-        manifest_size: 512.into(),
+        root_offset: 1024.into(),
+        root_size: 512.into(),
         microcode_offset: 8.into(),
         microcode_size: 16.into(),
         ..LocatorBlock::placeholder()
     };
     let media = MemoryMappedFfs::new(image.as_ptr() as u64, image.len());
-    assert!(anchor::fstart_anchor_bytes().is_empty());
+    assert!(anchor::locator_bytes().is_empty());
     assert!(matches!(media.mount(), Err(ServiceError::NotInitialized)));
     assert!(
         ffs_context::memory_mapped().is_none(),
@@ -102,7 +102,7 @@ fn ram_import_is_required_before_mount_and_asset_consumers_work_after_it() {
     let context = ffs_context::memory_mapped().expect("mounted inherited context");
     // SAFETY: recorded image and inherited locator are immutable statics.
     let inherited = unsafe { context.anchor_bytes() };
-    let reference = unsafe { fstart_core::ffs::AnchorRef::read_volatile(inherited) }.unwrap();
+    let reference = unsafe { fstart_core::ffs::LocatorRef::read_volatile(inherited) }.unwrap();
     let reader = fstart_ffs::FfsReader::new(unsafe { context.image_bytes() });
     assert_eq!(
         reader.intel_microcode(reference),

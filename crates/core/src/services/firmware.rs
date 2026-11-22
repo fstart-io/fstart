@@ -57,18 +57,29 @@ impl FirmwareWindow {
     }
 }
 
+/// Maximum number of CPU-visible decode windows in one [`FirmwareImage`].
+///
+/// Six covers AMD paged ROM3 (ROM2 plus four 16 MiB pages on a 64 MiB flash)
+/// with one slot to spare.
+pub const MAX_FIRMWARE_WINDOWS: usize = 6;
+
 /// Logical firmware image mapping.
 ///
 /// The fixed array keeps this type usable in `no_std` runtime state without
 /// allocation while still allowing chipsets with several memory-mapped flash
 /// apertures.  Empty slots have `size == 0`; `window_count` records the active
 /// prefix.
+///
+/// Windows may overlap in logical flash space (for example, ROM2 and ROM3 on
+/// AMD both expose the booted 16 MiB page). Translation checks active windows
+/// in order and returns the **first** match, so preferred apertures (such as
+/// ROM2) should appear first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FirmwareImage {
     /// Logical image size in bytes.
     pub size: u64,
     /// Active windows are `windows[..window_count]`.
-    pub windows: [FirmwareWindow; 4],
+    pub windows: [FirmwareWindow; MAX_FIRMWARE_WINDOWS],
     /// Number of active entries in [`Self::windows`].
     pub window_count: u8,
 }
@@ -77,20 +88,17 @@ impl FirmwareImage {
     /// Empty image.
     pub const EMPTY: Self = Self {
         size: 0,
-        windows: [FirmwareWindow::EMPTY; 4],
+        windows: [FirmwareWindow::EMPTY; MAX_FIRMWARE_WINDOWS],
         window_count: 0,
     };
 
     /// A single contiguous image window where flash offset 0 maps to `base`.
     pub const fn single_window(base: u64, size: u64) -> Self {
+        let mut windows = [FirmwareWindow::EMPTY; MAX_FIRMWARE_WINDOWS];
+        windows[0] = FirmwareWindow::new(0, base, size);
         Self {
             size,
-            windows: [
-                FirmwareWindow::new(0, base, size),
-                FirmwareWindow::EMPTY,
-                FirmwareWindow::EMPTY,
-                FirmwareWindow::EMPTY,
-            ],
+            windows,
             window_count: 1,
         }
     }
@@ -136,12 +144,60 @@ impl FirmwareImage {
 
     /// Return the CPU-visible address for a logical firmware-image offset.
     pub fn translate(&self, offset: u64) -> Option<u64> {
+        self.contiguous_chunk(offset, 1).map(|(addr, _)| addr)
+    }
+
+    /// Return the CPU-visible address if `offset..offset + len` lies wholly
+    /// within one active window (first match wins).
+    pub fn translate_range(&self, offset: u64, len: u64) -> Option<u64> {
+        let end = offset.checked_add(len)?;
+        if end > self.size {
+            return None;
+        }
         for window in self.active_windows() {
-            if window.contains(offset) {
+            let Some(win_end) = window.flash_end() else {
+                continue;
+            };
+            if offset >= window.flash_offset && end <= win_end {
                 return window.cpu_base.checked_add(offset - window.flash_offset);
             }
         }
         None
+    }
+
+    /// Return `(cpu_addr, chunk_len)` for the first active window containing
+    /// `offset`, capped to `max_len`.
+    pub fn contiguous_chunk(&self, offset: u64, max_len: u64) -> Option<(u64, u64)> {
+        if max_len == 0 || offset >= self.size {
+            return None;
+        }
+        for window in self.active_windows() {
+            let Some(win_end) = window.flash_end() else {
+                continue;
+            };
+            if offset >= window.flash_offset && offset < win_end {
+                let cpu_addr = window.cpu_base.checked_add(offset - window.flash_offset)?;
+                let available = win_end - offset;
+                return Some((cpu_addr, available.min(max_len)));
+            }
+        }
+        None
+    }
+
+    /// Return true if any active CPU-visible window overlaps `start..start + size`.
+    pub fn overlaps_cpu_range(&self, start: u64, size: u64) -> bool {
+        let Some(end) = start.checked_add(size) else {
+            return true;
+        };
+        if size == 0 {
+            return false;
+        }
+        self.active_windows().iter().any(|window| {
+            window.size != 0
+                && window
+                    .cpu_end()
+                    .is_none_or(|win_end| start < win_end && window.cpu_base < end)
+        })
     }
 }
 

@@ -2,7 +2,7 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use fstart_core::ffs::{
-    ANCHOR_SIZE, AnchorBlock, Compression, EntryContent, FileType, RegionContent, SegmentFlags,
+    Compression, EntryContent, FileType, LOCATOR_SIZE, LocatorBlock, RegionContent, SegmentFlags,
     SegmentKind, Signature, VerificationKey,
 };
 use fstart_ffs::builder::{
@@ -33,10 +33,10 @@ fn make_signer(signing_key: &SigningKey) -> impl Fn(&[u8]) -> Result<Signature, 
 /// can find and patch the anchor. This simulates a bootblock binary that
 /// has the `#[link_section = ".fstart.anchor"]` static.
 fn stage_data_with_anchor(extra: &[u8]) -> Vec<u8> {
-    let placeholder = AnchorBlock::placeholder();
-    let mut data = vec![0u8; ANCHOR_SIZE + extra.len()];
-    placeholder.write_to(&mut data[..ANCHOR_SIZE]);
-    data[ANCHOR_SIZE..].copy_from_slice(extra);
+    let placeholder = LocatorBlock::placeholder();
+    let mut data = vec![0u8; LOCATOR_SIZE + extra.len()];
+    placeholder.write_to(&mut data[..LOCATOR_SIZE]);
+    data[LOCATOR_SIZE..].copy_from_slice(extra);
     data
 }
 
@@ -256,7 +256,7 @@ fn test_multi_segment_file() {
         .expect("read .text");
     assert_eq!(text_back.len(), text_data.len());
     // The anchor region is patched post-build, so compare only the non-anchor suffix
-    assert_eq!(&text_back[ANCHOR_SIZE..], &text_data[ANCHOR_SIZE..]);
+    assert_eq!(&text_back[LOCATOR_SIZE..], &text_data[LOCATOR_SIZE..]);
 
     let rodata_seg = &segments[1];
     assert_eq!(rodata_seg.name.as_str(), ".rodata");
@@ -553,7 +553,7 @@ fn test_tampered_signature_fails_verification() {
     let tamper_offset = {
         let reader = FfsReader::new(&image);
         let anchor = reader.read_anchor(anchor_off).unwrap();
-        anchor.manifest_offset.get() as usize + 10 // somewhere in the manifest
+        anchor.root_offset.get() as usize + 10 // somewhere in the manifest
     };
     image[tamper_offset] ^= 0xFF; // flip bits
 
@@ -725,7 +725,7 @@ fn test_external_bootblock_digest_valid_after_xip_anchor_patch() {
 
     let mut xip_anchor = anchor;
     xip_anchor.anchor_offset.set(bootblock_offset as u32);
-    xip_anchor.write_to(&mut external_bootblock[..ANCHOR_SIZE]);
+    xip_anchor.write_to(&mut external_bootblock[..LOCATOR_SIZE]);
 
     let mut full_image = vec![0xff; 0x2000];
     full_image[..ffs.image.len()].copy_from_slice(&ffs.image);

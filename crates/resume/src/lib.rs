@@ -12,7 +12,7 @@
 pub mod stage_cache;
 
 use fstart_core::services::BootMedia;
-use fstart_core::services::boot_media::{LinearMap, MemoryMapped};
+use fstart_core::services::boot_media::MemoryMapped;
 use fstart_ffs::root::BootstrapDescriptor;
 use fstart_load::{Codec, Measurement, MemoryPolicy, VerifiedExecutable};
 use fstart_store::Store;
@@ -30,7 +30,7 @@ pub enum Error {
 }
 
 /// A store entry's bytes, read through the boot media interface.
-fn entry_media(store: &Store, entry: &fstart_store::Entry) -> MemoryMapped<LinearMap> {
+fn entry_media(store: &Store, entry: &fstart_store::Entry) -> MemoryMapped {
     // SAFETY: the entry lies in the store, which stays mapped and reserved;
     // only shared reads of it exist while this view lives.
     unsafe { MemoryMapped::from_raw_addr(store.address(entry) as u64, entry.len()) }

@@ -51,9 +51,9 @@ pub use builder::{
 };
 pub use const_vec::ConstVec;
 pub use ffs::{
-    AnchorBlock, Compression, DigestSet, EntryContent, FFS_MAGIC, FFS_VERSION, FileType,
-    ImageManifest, KeyBytes, Region, RegionContent, RegionEntry, Segment, SegmentFlags,
-    SegmentKind, Signature, SignatureKind, VerificationKey,
+    Compression, DigestSet, EntryContent, FileType, ImageManifest, KeyBytes, LOCATOR_MAGIC,
+    LOCATOR_SIZE, LOCATOR_VERSION, LocatorBlock, LocatorRef, Region, RegionContent, RegionEntry,
+    Segment, SegmentFlags, SegmentKind, Signature, SignatureKind, VerificationKey,
 };
 pub use memory::{
     CarConfig, FlashLayout, IntelIfdFlashLayout, IntelIfdRegion, IntelIfdRegionConfig, MemoryMap,

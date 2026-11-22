@@ -321,9 +321,8 @@ fn load_main(usable: u64) -> Result<u64, &'static str> {
     // whole boot.
     let media = unsafe { MemoryMapped::from_raw_addr(FLASH_ALIAS, FIRMWARE_WINDOW_SIZE as usize) };
     fstart_timestamp::add(id::VERIFY_BOOT_ROOT);
-    let root =
-        fstart_stage::root::authenticate_boot_root(fstart_stage::fstart_anchor_bytes(), &media)
-            .map_err(|_| "FFS root authentication failed")?;
+    let root = fstart_stage::root::authenticate_boot_root(fstart_stage::locator_bytes(), &media)
+        .map_err(|_| "FFS root authentication failed")?;
     let main = root
         .descriptors()
         .iter()
