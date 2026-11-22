@@ -7,9 +7,13 @@ use fstart_core::services::{FirmwareImage, FirmwareWindow, ServiceError};
 use fstart_pci::ecam;
 use fstart_pci::{PCI_COMMAND_BITS, PCI_EXPRESS_CAPABILITIES, PciType0Config, PciType1Config};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
+use tock_registers::{LocalRegisterCopy, RegisterLongName, register_bitfields, register_structs};
 
 use super::PciePowerLimit;
+use super::hda::{HdaConfig, HdaController};
+use super::lpc::IoTrapConfig;
+use super::pmio_ich as pmio;
+use super::smbus::I801SmBus;
 
 /// ICH PCIe root-port PCI device number (`D28:F0..F5`).
 const PCIE_DEV: u8 = 0x1c;
@@ -323,4 +327,133 @@ pub(crate) fn clear_pci_command(dev: u8, func: u8) {
 pub(crate) fn init_isa_dma() {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fstart_arch::x86::legacy_pc::initialize_isa_dma();
+}
+
+/// Initialize the dual i8259 PICs with IRQ 9 level-triggered for ACPI SCI.
+pub(crate) fn init_i8259_sci_irq9() {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    // SAFETY: standard x86 legacy PIC and ELCR I/O ports.
+    unsafe {
+        fstart_arch::x86::legacy_pc::setup_i8259();
+        let elcr2 = fstart_core::pio::inb(0x4d1);
+        fstart_core::pio::outb(0x4d1, elcr2 | (1 << 1));
+    }
+}
+
+/// Detect and acknowledge an ACPI S3 wake from `PM1_STS`/`PM1_CNT`.
+///
+/// Clears `SLP_TYP` when S3 wake is detected so a subsequent warm reset
+/// cold-boots instead of re-detecting resume.
+pub(crate) fn detect_s3_resume(pm: &pmio::PmIo) -> bool {
+    const SLP_TYP_S3: u32 = 5 << 10;
+
+    // Sleep type survives loss of DRAM power: require an actual wake.
+    if pm.read16(pmio::PM1_STS) & pmio::WAK_STS == 0 {
+        return false;
+    }
+    let pm1_cnt = pm.read32(pmio::PM1_CNT);
+    let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
+    if slp_typ == SLP_TYP_S3 {
+        pm.write32(pmio::PM1_CNT, pm1_cnt & !pmio::SLP_TYP_MASK);
+        true
+    } else {
+        false
+    }
+}
+
+/// Enable the ICH8/ICH9 I801 SMBus controller after clearing its hidden
+/// clock-gating bits at config offset `0x80`.
+pub(crate) fn enable_i801_smbus(dev: u8, func: u8, devfn: u8, smbus_base: u16) -> I801SmBus {
+    let smbus_pci = ecam::EcamDevice::new(0, dev, func);
+    smbus_pci.and16(0x80, !((1 << 8) | (1 << 10) | (1 << 12) | (1 << 14)));
+    I801SmBus::enable_on_i801(devfn, smbus_base)
+}
+
+/// Enable I/O space and bus mastering on each present, enabled UHCI controller.
+pub(crate) fn enable_uhci_controllers(controllers: &[(u8, u8)], enabled: &[bool]) {
+    for (idx, &(dev, func)) in controllers.iter().enumerate() {
+        if !enabled[idx] {
+            continue;
+        }
+        let uhci = ecam::EcamDevice::new(0, dev, func);
+        if uhci.read16(0) != 0xffff {
+            // SAFETY: ECAM is established by northbridge init.
+            unsafe { uhci.regs::<PciType0Config>() }
+                .command
+                .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
+        }
+    }
+}
+
+/// Initialize the ICH8/ICH9 High Definition Audio controller and program codec
+/// verb tables.
+pub(crate) fn init_hda_ich8_ich9(label: &str, hda_dev: u8, hda_func: u8, config: &HdaConfig) {
+    let hda = ecam::EcamDevice::new(0, hda_dev, hda_func);
+    if hda.read16(0) == 0xffff {
+        fstart_log::info!("{}: HDA device not present", label);
+        return;
+    }
+
+    // Coreboot i82801{hx,ix}/azalia.c: ESD/link/VC setup before codec reset.
+    super::hda::setup_ich_link(hda);
+    hda.and8(0x4d, !(1 << 7));
+    hda.write32(0x74, hda.read32(0x74));
+
+    // MMIO base as enumeration assigned it. The HD Audio BAR is 64-bit
+    // capable, so the low dword alone is not necessarily the address.
+    let Some(bar0) = hda.memory_bar(0x10) else {
+        fstart_log::error!("{}: HDA BAR0 is unassigned", label);
+        return;
+    };
+    let bar0 = bar0 as usize;
+    // SAFETY: ECAM is established by northbridge init.
+    unsafe { hda.regs::<PciType0Config>() }
+        .command
+        .modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
+
+    let controller = HdaController::new(bar0);
+    let codec_mask = controller.detect_codecs();
+    if codec_mask != 0 {
+        let programmed = controller.program_verb_tables(config, codec_mask);
+        fstart_log::info!(
+            "{}: HDA codec_mask={:#x}, programmed={} tables",
+            label,
+            codec_mask as u32,
+            programmed as u32,
+        );
+    }
+}
+
+/// Write `PIRQA..D` and `PIRQE..H` routing bytes to the LPC bridge registers.
+pub(crate) fn write_pirq_routes(
+    pirqa_rout: &MmioReadWrite<u32>,
+    pirqe_rout: &MmioReadWrite<u32>,
+    routing: &[u8; 8],
+) {
+    pirqa_rout.set(u32::from_le_bytes([
+        routing[0], routing[1], routing[2], routing[3],
+    ]));
+    pirqe_rout.set(u32::from_le_bytes([
+        routing[4], routing[5], routing[6], routing[7],
+    ]));
+}
+
+/// Pair of low/high RCBA I/O trap registers (`IOTRn`).
+pub(crate) type IoTrapRegPair<'a, Lo, Hi> =
+    (&'a MmioReadWrite<u32, Lo>, &'a MmioReadWrite<u32, Hi>);
+
+/// Program ICH8/ICH9 RCBA I/O trap registers `IOTR0..3`.
+pub(crate) fn program_io_traps<Lo: RegisterLongName, Hi: RegisterLongName>(
+    iotr_regs: [IoTrapRegPair<'_, Lo, Hi>; 4],
+    traps: &[IoTrapConfig],
+) {
+    for trap in traps.iter().copied() {
+        let Some((low, high)) = trap.encode() else {
+            continue;
+        };
+        if let Some((lo_reg, hi_reg)) = iotr_regs.get(usize::from(trap.index)) {
+            lo_reg.set(low);
+            hi_reg.set(high);
+        }
+    }
 }

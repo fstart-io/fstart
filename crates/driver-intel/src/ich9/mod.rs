@@ -497,7 +497,6 @@ const HPET_BASE: usize = 0xfed0_0000;
 const ICH9_SPIBAR_OFFSET: usize = 0x3800;
 const GPE0_STS_ICH9: u16 = 0x20;
 const GPE0_EN_ICH9: u16 = 0x28;
-const SLP_TYP_S3: u32 = 0x1400;
 const LPC_EN_CNF2: u16 = 1 << 13;
 const LPC_EN_CNF1: u16 = 1 << 12;
 const LPC_EN_MC: u16 = 1 << 11;
@@ -896,10 +895,12 @@ impl IntelIch9 {
     }
 
     fn enable_smbus(&mut self) {
-        let smbus_pci = ecam::EcamDevice::new(0, ich9::SMBUS_DEV, ich9::SMBUS_FUNC);
-        smbus_pci.and16(0x80, !((1 << 8) | (1 << 10) | (1 << 12) | (1 << 14)));
-        let smbus = I801SmBus::enable_on_i801(ich9::SMBUS, self.config.smbus_base);
-        self.smbus = Some(smbus);
+        self.smbus = Some(crate::southbridge::ich::enable_i801_smbus(
+            ich9::SMBUS_DEV,
+            ich9::SMBUS_FUNC,
+            ich9::SMBUS,
+            self.config.smbus_base,
+        ));
     }
 
     fn enable_hpet(&self) {
@@ -1394,57 +1395,17 @@ impl IntelIch9 {
             (0x1a, 1),
             (0x1a, 2),
         ];
-        for (idx, (dev, func)) in UHCI.iter().copied().enumerate() {
-            if !usb.uhci[idx] {
-                continue;
-            }
-            let uhci = ecam::EcamDevice::new(0, dev, func);
-            if uhci.read16(0) != 0xffff {
-                Self::type0_regs(uhci)
-                    .command
-                    .modify(PCI_COMMAND_BITS::IO_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
-            }
-        }
+        crate::southbridge::ich::enable_uhci_controllers(&UHCI, &usb.uhci);
         fstart_log::info!("intel-ich9: USB init complete");
     }
 
     fn hda_init(&self, config: &HdaConfig) {
-        let hda = ecam::EcamDevice::new(0, ich9::HDA_DEV, ich9::HDA_FUNC);
-        if hda.read16(0) == 0xffff {
-            fstart_log::info!("intel-ich9: HDA device not present");
-            return;
-        }
-
-        // Coreboot i82801ix/azalia.c: ESD/link/VC setup before codec reset.
-        hda.modify32(0x134, !0x00ff_0000, 2 << 16);
-        hda.modify32(0x140, !0x00ff_0000, 2 << 16);
-        hda.modify32(0x114, !0x0000_00ff, 1);
-        hda.or8(0x44, 7);
-        hda.or32(0x120, (1 << 31) | (1 << 24) | 0x80);
-        hda.and8(0x4d, !(1 << 7));
-        hda.write32(0x74, hda.read32(0x74));
-
-        // MMIO base as enumeration assigned it. The HD Audio BAR is 64-bit
-        // capable, so the low dword alone is not necessarily the address.
-        let Some(bar0) = hda.memory_bar(0x10) else {
-            fstart_log::error!("intel-ich9: HDA BAR0 is unassigned");
-            return;
-        };
-        let bar0 = bar0 as usize;
-        Self::type0_regs(hda)
-            .command
-            .modify(PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET);
-
-        let controller = HdaController::new(bar0);
-        let codec_mask = controller.detect_codecs();
-        if codec_mask != 0 {
-            let programmed = controller.program_verb_tables(config, codec_mask);
-            fstart_log::info!(
-                "intel-ich9: HDA codec_mask={:#x}, programmed={} tables",
-                codec_mask as u32,
-                programmed as u32,
-            );
-        }
+        crate::southbridge::ich::init_hda_ich8_ich9(
+            "intel-ich9",
+            ich9::HDA_DEV,
+            ich9::HDA_FUNC,
+            config,
+        );
     }
 
     fn pcie_prepare_before_disable(&self) {
@@ -1652,38 +1613,16 @@ impl IntelIch9 {
         {
             return false;
         }
-        // Coreboot platform_is_resuming(): SLP_TYP alone survives a power
-        // loss in S3, so require an actual wake.
-        if self.pm().read16(pmio::PM1_STS) & pmio::WAK_STS == 0 {
-            return false;
-        }
-        let pm1_cnt = self.pm().read32(pmio::PM1_CNT);
-        let slp_typ = pm1_cnt & pmio::SLP_TYP_MASK;
-        if slp_typ == SLP_TYP_S3 {
-            self.pm()
-                .write32(pmio::PM1_CNT, pm1_cnt & !pmio::SLP_TYP_MASK);
-            true
-        } else {
-            false
-        }
+        crate::southbridge::ich::detect_s3_resume(&self.pm())
     }
 
     fn write_pirq_routes(&self) {
         let lpc = self.lpc_regs();
-        let pirq_low = u32::from_le_bytes([
-            self.config.pirq_routing[0],
-            self.config.pirq_routing[1],
-            self.config.pirq_routing[2],
-            self.config.pirq_routing[3],
-        ]);
-        let pirq_high = u32::from_le_bytes([
-            self.config.pirq_routing[4],
-            self.config.pirq_routing[5],
-            self.config.pirq_routing[6],
-            self.config.pirq_routing[7],
-        ]);
-        lpc.pirqa_rout.set(pirq_low);
-        lpc.pirqe_rout.set(pirq_high);
+        crate::southbridge::ich::write_pirq_routes(
+            &lpc.pirqa_rout,
+            &lpc.pirqe_rout,
+            &self.config.pirq_routing,
+        );
     }
 
     /// Coreboot `i82801ix_pirq_init()`: every function's INTERRUPT_LINE takes
@@ -1715,30 +1654,16 @@ impl IntelIch9 {
 
     fn configure_io_traps(&self) {
         let rcba = self.rcba();
-        for trap in self.config.io_traps.as_slice().iter().copied() {
-            let Some((low, high)) = trap.encode() else {
-                continue;
-            };
-            match trap.index {
-                0 => {
-                    rcba.regs().iotr0_lo.set(low);
-                    rcba.regs().iotr0_hi.set(high);
-                }
-                1 => {
-                    rcba.regs().iotr1_lo.set(low);
-                    rcba.regs().iotr1_hi.set(high);
-                }
-                2 => {
-                    rcba.regs().iotr2_lo.set(low);
-                    rcba.regs().iotr2_hi.set(high);
-                }
-                3 => {
-                    rcba.regs().iotr3_lo.set(low);
-                    rcba.regs().iotr3_hi.set(high);
-                }
-                _ => {}
-            }
-        }
+        let regs = rcba.regs();
+        crate::southbridge::ich::program_io_traps(
+            [
+                (&regs.iotr0_lo, &regs.iotr0_hi),
+                (&regs.iotr1_lo, &regs.iotr1_hi),
+                (&regs.iotr2_lo, &regs.iotr2_hi),
+                (&regs.iotr3_lo, &regs.iotr3_hi),
+            ],
+            self.config.io_traps.as_slice(),
+        );
     }
 
     fn configure_default_intmap(&self) {
