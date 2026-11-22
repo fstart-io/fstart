@@ -81,6 +81,7 @@ pub const fn soc(pmbase: u16, legacy: bool) -> SocAcpi {
         // The RCEC's INTA: pin 1 of every IOS, as the vendor DSDTs of
         // Genoa (`AR00`-`AR03`, `0xFFFF` entries), Siena and Turin have it.
         root_complex_pin: Some(1),
+        rcec: Some((0, 3)),
         wake: None,
         xhci: None,
         sleep_states: &[(0, 0), (5, S5_SLEEP_TYPE)],

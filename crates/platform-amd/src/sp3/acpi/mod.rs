@@ -72,6 +72,7 @@ const fn soc(generation: Generation) -> SocAcpi {
         // Rome and Milan show no event collector; their 00.0 and 00.2 use
         // MSI (no device 0 entry in the vendor `_PRT`s).
         root_complex_pin: None,
+        rcec: None,
         // PME of the internal bridges 7.1 and 8.1 of every NBIO (donor
         // `GPRW(0x0B, 4)`, notified by `\_GPE._L0B`) on Rome and Milan. The
         // Naples donor ASL notifies other objects (CRB names); not modelled
