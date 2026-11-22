@@ -6,21 +6,12 @@ use crate::mainboard::{Acpi, Identity};
 use alloc::vec::Vec;
 
 impl Identity {
-    /// The SMBIOS identity: like coreboot, the EEPROM fields describe both
-    /// system and board.
     pub fn smbios(&self) -> fstart_acpi::smbios::SmbiosIdentity<'_> {
-        let mut identity = X61_SMBIOS_IDENTITY;
-        if let Some(eeprom) = &self.eeprom {
-            identity.sys_product = eeprom.part_number();
-            identity.sys_version = eeprom.version();
-            identity.sys_serial = Some(eeprom.serial_number());
-            identity.sys_uuid = Some(eeprom.uuid);
-            identity.bb_product = eeprom.part_number();
-            identity.bb_version = eeprom.version();
-            identity.bb_serial = Some(eeprom.serial_number());
-        }
-        identity.oem_string = self.ec_oem_string.as_ref().map(|oem| oem.as_str());
-        identity
+        fstart_driver_lenovo::thinkpad::smbios_identity(
+            X61_SMBIOS_IDENTITY,
+            self.eeprom.as_ref(),
+            self.ec_oem_string.as_ref(),
+        )
     }
 }
 
