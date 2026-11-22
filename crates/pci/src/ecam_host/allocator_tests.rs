@@ -847,6 +847,7 @@ fn domains_do_not_borrow_resources_or_config_registers() {
     assert_eq!(pci.roots[1].mmio32.free_bytes(), 0x8000);
     assert_eq!(pci.read32(addresses[1], PCI_BAR0), 0);
     pci.devices[0].bars[0].size = 0x1000;
+    pci.devices[0].bars[0].align_log2 = BarInfo::align_log2_of(0x1000);
     pci.allocate_resources().unwrap();
     assert_eq!(pci.read32(addresses[0], PCI_BAR0), 0x8000_0000);
     assert_eq!(pci.read32(addresses[1], PCI_BAR0), 0xa000_0000);

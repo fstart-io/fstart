@@ -65,7 +65,11 @@ impl PciEcam {
             if device.root != root {
                 continue;
             }
-            for bar in device.bars.iter().filter(|bar| !bar.fixed) {
+            for bar_idx in 0..self.bar_count(dev) {
+                let bar = self.bar(dev, bar_idx);
+                if bar.fixed {
+                    continue;
+                }
                 let limit = match bar.bar_type {
                     BarType::None => continue,
                     BarType::Io => IO_END,
@@ -88,8 +92,9 @@ impl PciEcam {
                     _ => self.routed(pools, dev, WindowKind::Memory, span),
                 };
                 if !bar.allocated
-                    || !bar.size.is_power_of_two()
-                    || !bar.base.is_multiple_of(bar.size)
+                    || !bar.align().is_power_of_two()
+                    || !bar.size.is_multiple_of(bar.align())
+                    || !bar.base.is_multiple_of(bar.align())
                     || end > limit
                     || !routed
                 {
@@ -162,11 +167,14 @@ impl PciEcam {
     /// What `dev` puts on its bus: its placed movable BARs and open windows.
     fn on_its_bus(&self, dev: usize) -> impl Iterator<Item = Span> + '_ {
         let device = &self.devices[dev];
-        let bars = device
-            .bars
-            .iter()
-            .filter(|bar| bar.bar_type != BarType::None && !bar.fixed && bar.allocated)
-            .map(|bar| (bar.bar_type == BarType::Io, bar.base, bar.base + bar.size));
+        let bars = (0..self.bar_count(dev)).filter_map(move |bar_idx| {
+            let bar = self.bar(dev, bar_idx);
+            (bar.bar_type != BarType::None && !bar.fixed && bar.allocated).then_some((
+                bar.bar_type == BarType::Io,
+                bar.base,
+                bar.base + bar.size,
+            ))
+        });
         let windows = WINDOW_KINDS
             .into_iter()
             .filter(move |_| device.header_type == PCI_HEADER_TYPE_BRIDGE)
