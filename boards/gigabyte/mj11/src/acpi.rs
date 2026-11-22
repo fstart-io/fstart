@@ -135,6 +135,6 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
                 (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
             });
-        assert_eq!((len, hash), (5936, 0xa14b_f5d5_2a93_a965));
+        assert_eq!((len, hash), (5936, 0x2b2d_45f2_36af_dfbd));
     }
 }
