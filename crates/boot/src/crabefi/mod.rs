@@ -12,14 +12,18 @@ mod runtime;
 pub mod settings;
 #[cfg(all(feature = "tcg", feature = "crabefi"))]
 mod tpm;
-use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
+use runtime::{
+    EMPTY_REGION, firmware_reservations, runtime_platform_config, validate_deferred_buffer,
+};
 
 // Type aliases used by board-owned UEFI payload configuration.
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
 pub use crabefi::peripheral;
-pub use crabefi::{PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend};
+pub use crabefi::{
+    DeferredBufferConfig, PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend,
+};
 
 /// fstart-owned UEFI payload configuration.
 ///
@@ -90,6 +94,9 @@ pub struct UefiLaunchConfig<'a> {
     /// Bounded flash region for CrabEFI's variable store. None keeps the
     /// variables volatile.
     pub variable_storage: Option<&'a mut dyn StorageBackend>,
+    /// Platform-owned retained deferred variable journal buffer for
+    /// post-`ExitBootServices` NV writes. Disabled by default.
+    pub deferred_buffer: DeferredBufferConfig,
     /// The options the firmware settings menu shows.
     pub settings: Option<settings::FirmwareSettings>,
 }
@@ -282,6 +289,20 @@ fn launch_with_adapters(
         .as_mut()
         .is_some_and(settings::install)
         .then_some(&settings::SettingsHooks as &dyn crabefi::PlatformHooks);
+    let deferred_buffer = validate_deferred_buffer(
+        memory_map,
+        launch.deferred_buffer,
+        variable_storage.is_some(),
+    )
+    .unwrap_or_else(|why| {
+        fstart_log::warn!(
+            "crabefi: deferred variable buffer {:#x}+{:#x} unused ({}): no variable writes after ExitBootServices",
+            launch.deferred_buffer.base,
+            launch.deferred_buffer.size,
+            why
+        );
+        crabefi::DeferredBufferConfig::disabled()
+    });
     init_platform_raw(PlatformConfig {
         memory_map,
         timer,
@@ -307,7 +328,7 @@ fn launch_with_adapters(
         // This constant follows the effective dependency features, including
         // full/basic unification. The loader checks ABI and exact capabilities.
         runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
-        runtime: runtime_platform_config(),
+        runtime: runtime_platform_config(deferred_buffer),
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })

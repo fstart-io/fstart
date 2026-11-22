@@ -7,7 +7,59 @@ pub(super) const EMPTY_REGION: MemoryRegion = MemoryRegion {
     region_type: MemoryType::Reserved,
 };
 
-pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
+/// Validate a platform-declared deferred variable journal buffer against
+/// `memory_map`.
+///
+/// The buffer must be explicitly provided by the platform (never guessed from
+/// arbitrary RAM), non-zero, page-aligned, and contained within a page-aligned
+/// `MemoryType::Ram` region so CrabEFI's allocator does not skip the
+/// descriptor when carving it out as `RuntimeServicesData`. Without
+/// persistent storage nothing is replayed into, so it stays disabled. `Err`
+/// says why a requested buffer cannot be used.
+pub(super) fn validate_deferred_buffer(
+    memory_map: &[MemoryRegion],
+    requested: crabefi::DeferredBufferConfig,
+    has_persistent_storage: bool,
+) -> Result<crabefi::DeferredBufferConfig, &'static str> {
+    if requested.base == 0 && requested.size == 0 {
+        return Ok(crabefi::DeferredBufferConfig::disabled());
+    }
+    if !has_persistent_storage {
+        return Err("no persistent variable store");
+    }
+    let size = requested.size as u64;
+    if requested.base == 0 || size == 0 {
+        return Err("empty");
+    }
+    if !requested.base.is_multiple_of(0x1000) || !size.is_multiple_of(0x1000) {
+        return Err("not page-aligned");
+    }
+    let req_end = requested
+        .base
+        .checked_add(size)
+        .ok_or("past the address space")?;
+    let covered = memory_map.iter().any(|region| {
+        if region.region_type != MemoryType::Ram
+            || region.size == 0
+            || !region.base.is_multiple_of(0x1000)
+        {
+            return false;
+        }
+        let Some(region_end) = region.base.checked_add(region.size) else {
+            return false;
+        };
+        requested.base >= region.base && req_end <= region_end
+    });
+    if covered {
+        Ok(requested)
+    } else {
+        Err("not inside a page-aligned RAM range")
+    }
+}
+
+pub(super) fn runtime_platform_config(
+    deferred_buffer: crabefi::DeferredBufferConfig,
+) -> RuntimePlatformConfig<'static> {
     #[cfg(target_arch = "x86_64")]
     let (time, reset, reset_port) = (
         crabefi::time_mechanism::X86_CMOS,
@@ -41,9 +93,7 @@ pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
             io_or_mmio_base: reset_port,
         },
         external_ranges: &[],
-        // Literal old library-mode behavior: no configured deferred buffer and
-        // no platform-entry linker symbols. This is not a durable NV policy.
-        deferred_buffer: crabefi::DeferredBufferConfig::disabled(),
+        deferred_buffer,
         // No payload MM: the runtime image keeps the variable store itself.
         mm_proxy: crabefi::MmProxyConfig::default(),
     }
@@ -205,9 +255,52 @@ mod tests {
 
     #[test]
     fn no_unbacked_runtime_mmio_or_implicit_retained_journal() {
-        let config = runtime_platform_config();
+        let config = runtime_platform_config(crabefi::DeferredBufferConfig::disabled());
         assert!(config.external_ranges.is_empty());
         assert_eq!(config.deferred_buffer.base, 0);
         assert_eq!(config.deferred_buffer.size, 0);
+    }
+
+    #[test]
+    fn deferred_buffer_requires_explicit_aligned_ram_and_persistent_storage() {
+        let map = [
+            MemoryRegion {
+                base: 0x10_0000,
+                size: 0x74f0_0000,
+                region_type: MemoryType::Ram,
+            },
+            MemoryRegion {
+                base: 0x7500_0000,
+                size: 0x100_0000,
+                region_type: MemoryType::Reserved,
+            },
+            MemoryRegion {
+                base: 0x8000_0100, // misaligned base -> CrabEFI allocator skips it
+                size: 0x10_0000,
+                region_type: MemoryType::Ram,
+            },
+        ];
+        let at = |base, size| crabefi::DeferredBufferConfig { base, size };
+        let got = |base, size, store| {
+            validate_deferred_buffer(&map, at(base, size), store).map(|c| (c.base, c.size))
+        };
+        // Accepted when persistent storage is present and inside aligned RAM.
+        assert_eq!(
+            got(0x74fe_0000, 0x2_0000, true),
+            Ok((0x74fe_0000, 0x2_0000))
+        );
+        // Not requested: disabled, nothing to report.
+        assert_eq!(got(0, 0, true), Ok((0, 0)));
+        assert_eq!(got(0, 0, false), Ok((0, 0)));
+        // Requested but unusable: why.
+        assert_eq!(
+            got(0x74fe_0000, 0x2_0000, false),
+            Err("no persistent variable store")
+        );
+        assert_eq!(got(0x74fe_0800, 0x2_0000, true), Err("not page-aligned"));
+        // Overlapping the Reserved region, or in a misaligned RAM descriptor.
+        let outside = Err("not inside a page-aligned RAM range");
+        assert_eq!(got(0x7500_0000, 0x2_0000, true), outside);
+        assert_eq!(got(0x8001_0000, 0x2_0000, true), outside);
     }
 }

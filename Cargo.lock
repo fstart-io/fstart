@@ -1293,6 +1293,7 @@ dependencies = [
  "fstart-options",
  "fstart-tcg",
  "heapless 0.8.0",
+ "ufmt",
 ]
 
 [[package]]

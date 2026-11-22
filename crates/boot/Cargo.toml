@@ -17,7 +17,7 @@ crabefi-hid-i2c = ["crabefi-basic", "crabefi/hid-i2c"]
 crabefi-xhci = ["crabefi-basic", "crabefi/xhci"]
 # Continue fstart's measured boot (fstart-tcg) in CrabEFI's full profile.
 tcg = ["dep:fstart-tcg", "dep:fstart-driver-tpm"]
-crabefi-basic = ["dep:crabefi", "crabefi/cfr", "dep:fstart-arch", "dep:fstart-core", "dep:fstart-log", "dep:fstart-options"]
+crabefi-basic = ["dep:crabefi", "crabefi/cfr", "dep:fstart-arch", "dep:fstart-core", "dep:fstart-log", "dep:fstart-options", "dep:ufmt"]
 std = ["fit", "fstart-crypto?/all"]
 sha2-digest = ["fit", "fstart-crypto/sha2-digest"]
 sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
@@ -31,6 +31,8 @@ fstart-tcg = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
+# fstart-log's macros expand to `::ufmt` paths.
+ufmt = { workspace = true, optional = true }
 # Upstream split into a workspace; package `crabefi-core` keeps lib name `crabefi`.
 crabefi = { package = "crabefi-core", git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "c6682553189cfb30e451b90351fae01fe7140433", default-features = false, features = ["bundled-runtime-image", "variable-store"], optional = true }
 
