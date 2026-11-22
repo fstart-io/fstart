@@ -16,7 +16,7 @@ rflasher-internal = { workspace = true }
 bitflags = { workspace = true }
 embedded-hal = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86", "pci"] }
-fstart-acpi-macros = { path = "../acpi-macros" }
+fstart-acpi-macros = { workspace = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-log = { workspace = true }
 fstart-options = { workspace = true }
@@ -34,7 +34,7 @@ zerocopy = { workspace = true }
 
 [dev-dependencies]
 fstart-driver-spd = { workspace = true, features = ["testing"] }
-fstart-driver-lenovo = { path = "../driver-lenovo", features = ["acpi"] }
+fstart-driver-lenovo = { workspace = true, features = ["acpi"] }
 tempfile = "3"
 
 [lints]

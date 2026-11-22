@@ -46,24 +46,24 @@ ec0 = []
 smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
-fstart-platform-amd = { path = "../../../crates/platform-amd" }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-driver-amd = { path = "../../../crates/driver-amd" }
-fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
-fstart-driver-superio = { path = "../../../crates/driver-superio", features = ["acpi"] }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
-fstart-pci = { path = "../../../crates/pci" }
-fstart-log = { path = "../../../crates/log" }
+fstart-platform-amd = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-driver-amd = { workspace = true }
+fstart-driver-aspeed = { workspace = true }
+fstart-driver-superio = { workspace = true, features = ["acpi"] }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-pci = { workspace = true }
+fstart-log = { workspace = true }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
-fstart-driver-ipmi = { path = "../../../crates/driver-ipmi", features = ["acpi"] }
-fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
+fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
+fstart-arch = { workspace = true, features = ["x86_64"] }
 zerocopy = { workspace = true }
 tock-registers = { workspace = true }
 
 [dev-dependencies]
 # The pinned ACPI tables (src/acpi.rs).
-fstart-core = { path = "../../../crates/core" }
+fstart-core = { workspace = true }
 
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.
 

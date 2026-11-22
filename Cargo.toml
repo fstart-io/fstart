@@ -5,59 +5,12 @@ resolver = "3"
 default-members = ["tools/fbuild", "tools/amdfw", "tools/ffmt", "crates/*"]
 members = [
   "boards/*/*",
+  "crates/*",
   "tools/fbuild",
   "tools/amdfw",
   "tools/image-web",
   "tools/release",
   "tools/ffmt",
-  "crates/amdfw-format",
-  "crates/driver-amd",
-  "crates/driver-aspeed",
-  "crates/driver-chromeec",
-  "crates/platform-amd",
-  "crates/core",
-  "crates/coreboot",
-  "crates/platform-intel",
-  "crates/platform-sunxi",
-  "crates/platform-aspeed",
-  "crates/platform-qemu",
-  "crates/ffs",
-  "crates/load",
-  "crates/fdt",
-  "crates/payload",
-  "crates/image-build",
-  "crates/crypto",
-  "crates/arch",
-  "crates/log",
-  "crates/driver-lenovo",
-  "crates/driver-ricoh",
-  "crates/driver-uart",
-  "crates/driver-rtc",
-  "crates/driver-vbios",
-  "crates/driver-i2c",
-  "crates/driver-redriver",
-  "crates/driver-spd",
-  "crates/driver-ipmi",
-  "crates/driver-tpm",
-  "crates/tcg",
-  "crates/driver-flash-console",
-  "crates/driver-usbdebug",
-  "crates/driver-intel",
-  "crates/driver-sunxi",
-  "crates/driver-sifive",
-  "crates/platform-sifive",
-  "crates/driver-superio",
-  "crates/pci",
-  "crates/stage",
-  "crates/acpi",
-  "crates/acpi-macros",
-  "crates/smm",
-  "crates/boot",
-  "crates/resume",
-  "crates/store",
-  "crates/options",
-  "crates/timestamp",
-  "crates/memtest",
 ]
 
 [workspace.package]
@@ -137,42 +90,54 @@ iced-x86 = { version = "1.21", default-features = false, features = ["std", "dec
 clap = { version = "4", features = ["derive", "env"] }
 
 # Internal workspace crates
+fstart-acpi = { path = "crates/acpi" }
+fstart-acpi-macros = { path = "crates/acpi-macros" }
+fstart-amdfw-format = { path = "crates/amdfw-format" }
+fstart-arch = { path = "crates/arch" }
+fstart-boot = { path = "crates/boot" }
 fstart-core = { path = "crates/core" }
 fstart-coreboot = { path = "crates/coreboot" }
-fstart-driver-amd = { path = "crates/driver-amd" }
-fstart-amdfw-format = { path = "crates/amdfw-format" }
-fstart-platform-qemu = { path = "crates/platform-qemu" }
-fstart-pci = { path = "crates/pci" }
-fstart-ffs = { path = "crates/ffs" }
-fstart-load = { path = "crates/load" }
-fstart-fdt = { path = "crates/fdt" }
-fstart-payload = { path = "crates/payload" }
 fstart-crypto = { path = "crates/crypto" }
-fstart-log = { path = "crates/log" }
-fstart-arch = { path = "crates/arch" }
-fstart-driver-intel = { path = "crates/driver-intel" }
-fstart-driver-sunxi = { path = "crates/driver-sunxi" }
-fstart-driver-sifive = { path = "crates/driver-sifive" }
-fstart-driver-superio = { path = "crates/driver-superio" }
-fstart-driver-uart = { path = "crates/driver-uart" }
-fstart-driver-vbios = { path = "crates/driver-vbios" }
-fstart-driver-i2c = { path = "crates/driver-i2c" }
-fstart-driver-spd = { path = "crates/driver-spd" }
-fstart-driver-tpm = { path = "crates/driver-tpm" }
-fstart-tcg = { path = "crates/tcg" }
+fstart-driver-amd = { path = "crates/driver-amd" }
+fstart-driver-aspeed = { path = "crates/driver-aspeed" }
+fstart-driver-chromeec = { path = "crates/driver-chromeec" }
 fstart-driver-flash-console = { path = "crates/driver-flash-console" }
-fstart-driver-usbdebug = { path = "crates/driver-usbdebug" }
-fstart-stage = { path = "crates/stage" }
-fstart-acpi = { path = "crates/acpi" }
-fstart-smm = { path = "crates/smm" }
-fstart-image-build = { path = "crates/image-build" }
-fstart-boot = { path = "crates/boot" }
-fstart-resume = { path = "crates/resume" }
-fstart-store = { path = "crates/store" }
-fstart-options = { path = "crates/options" }
+fstart-driver-i2c = { path = "crates/driver-i2c" }
+fstart-driver-intel = { path = "crates/driver-intel" }
+fstart-driver-ipmi = { path = "crates/driver-ipmi" }
+fstart-driver-lenovo = { path = "crates/driver-lenovo" }
+fstart-driver-redriver = { path = "crates/driver-redriver" }
+fstart-driver-ricoh = { path = "crates/driver-ricoh" }
 fstart-driver-rtc = { path = "crates/driver-rtc" }
-fstart-timestamp = { path = "crates/timestamp" }
+fstart-driver-sifive = { path = "crates/driver-sifive" }
+fstart-driver-spd = { path = "crates/driver-spd" }
+fstart-driver-sunxi = { path = "crates/driver-sunxi" }
+fstart-driver-superio = { path = "crates/driver-superio" }
+fstart-driver-tpm = { path = "crates/driver-tpm" }
+fstart-driver-uart = { path = "crates/driver-uart" }
+fstart-driver-usbdebug = { path = "crates/driver-usbdebug" }
+fstart-driver-vbios = { path = "crates/driver-vbios" }
+fstart-fdt = { path = "crates/fdt" }
+fstart-ffs = { path = "crates/ffs" }
+fstart-image-build = { path = "crates/image-build" }
+fstart-load = { path = "crates/load" }
+fstart-log = { path = "crates/log" }
 fstart-memtest = { path = "crates/memtest" }
+fstart-options = { path = "crates/options" }
+fstart-payload = { path = "crates/payload" }
+fstart-pci = { path = "crates/pci" }
+fstart-platform-amd = { path = "crates/platform-amd" }
+fstart-platform-aspeed = { path = "crates/platform-aspeed" }
+fstart-platform-intel = { path = "crates/platform-intel" }
+fstart-platform-qemu = { path = "crates/platform-qemu" }
+fstart-platform-sifive = { path = "crates/platform-sifive" }
+fstart-platform-sunxi = { path = "crates/platform-sunxi" }
+fstart-resume = { path = "crates/resume" }
+fstart-smm = { path = "crates/smm" }
+fstart-stage = { path = "crates/stage" }
+fstart-store = { path = "crates/store" }
+fstart-tcg = { path = "crates/tcg" }
+fstart-timestamp = { path = "crates/timestamp" }
 
 [profile.dev]
 panic = "abort"

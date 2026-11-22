@@ -20,7 +20,7 @@ fstart-log = { workspace = true }
 ufmt = { workspace = true }
 tock-registers = { workspace = true }
 fstart-acpi = { workspace = true, optional = true }
-fstart-acpi-macros = { path = "../acpi-macros", optional = true }
+fstart-acpi-macros = { workspace = true, optional = true }
 
 [lints]
 workspace = true

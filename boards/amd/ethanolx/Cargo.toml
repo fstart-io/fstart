@@ -30,17 +30,17 @@ default = []
 smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
-fstart-platform-amd = { path = "../../../crates/platform-amd" }
-fstart-driver-amd = { path = "../../../crates/driver-amd" }
-fstart-driver-aspeed = { path = "../../../crates/driver-aspeed" }
-fstart-core = { path = "../../../crates/core" }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"] }
-fstart-driver-ipmi = { path = "../../../crates/driver-ipmi", features = ["acpi"] }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
-fstart-driver-i2c = { path = "../../../crates/driver-i2c" }
-fstart-driver-redriver = { path = "../../../crates/driver-redriver" }
-fstart-log = { path = "../../../crates/log" }
-fstart-options = { path = "../../../crates/options" }
+fstart-platform-amd = { workspace = true }
+fstart-driver-amd = { workspace = true }
+fstart-driver-aspeed = { workspace = true }
+fstart-core = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-driver-i2c = { workspace = true }
+fstart-driver-redriver = { workspace = true }
+fstart-log = { workspace = true }
+fstart-options = { workspace = true }
 embedded-hal = { version = "1", default-features = false }
 ufmt = "0.2"
 pca9535 = { version = "2", default-features = false }

@@ -12,20 +12,20 @@ arch = "x86_64"
 build-profile = { dependency = "fstart-platform-intel" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core", features = ["pci"] }
-fstart-platform-intel = { path = "../../../crates/platform-intel" }
-fstart-acpi = { path = "../../../crates/acpi", features = ["x86"], optional = true }
-fstart-arch = { path = "../../../crates/arch", features = ["x86_64"] }
-fstart-driver-intel = { path = "../../../crates/driver-intel" }
-fstart-pci = { path = "../../../crates/pci" }
+fstart-core = { workspace = true, features = ["pci"] }
+fstart-platform-intel = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-driver-intel = { workspace = true }
+fstart-pci = { workspace = true }
 tock-registers = { workspace = true }
 embedded-hal = { workspace = true }
-fstart-driver-lenovo = { path = "../../../crates/driver-lenovo" }
-fstart-options = { path = "../../../crates/options" }
-fstart-driver-ricoh = { path = "../../../crates/driver-ricoh" }
-fstart-driver-superio = { path = "../../../crates/driver-superio" }
-fstart-driver-uart = { path = "../../../crates/driver-uart", features = ["pio"] }
-fstart-log = { path = "../../../crates/log" }
+fstart-driver-lenovo = { workspace = true }
+fstart-options = { workspace = true }
+fstart-driver-ricoh = { workspace = true }
+fstart-driver-superio = { workspace = true }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-log = { workspace = true }
 # Required at the crate root wherever fstart_log macros expand
 # (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
 ufmt = { workspace = true }

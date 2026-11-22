@@ -1424,9 +1424,9 @@ heapless.workspace = true
 fstart-acpi = { workspace = true, features = ["x86", "pci"] }
 # Devices sharing an I2C controller handed to CrabEFI.
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
-fstart-acpi-macros = { path = "../acpi-macros" }
+fstart-acpi-macros = { workspace = true }
 fstart-smm = { workspace = true, optional = true }
-fstart-driver-ipmi = { path = "../driver-ipmi", features = ["acpi"] }
+fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
 fstart-options = { workspace = true, features = ["alloc", "varstore"] }
 fstart-driver-tpm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
@@ -1438,7 +1438,7 @@ fstart-smm = { workspace = true }
 
 [dev-dependencies]
 # The unit tests cover the host plans and SMM too, also in `cargo test --workspace`.
-fstart-platform-amd = { path = ".", features = ["host", "smm"] }
+fstart-platform-amd = { workspace = true, features = ["host", "smm"] }
 fstart-driver-amd = { workspace = true, features = ["testing"] }
 fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
 

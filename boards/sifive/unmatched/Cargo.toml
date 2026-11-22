@@ -13,11 +13,11 @@ build-profile = { dependency = "fstart-platform-sifive" }
 
 [dependencies]
 embedded-hal = { workspace = true }
-fstart-core = { path = "../../../crates/core" }
-fstart-driver-sifive = { path = "../../../crates/driver-sifive" }
-fstart-driver-uart = { path = "../../../crates/driver-uart" }
-fstart-log = { path = "../../../crates/log" }
-fstart-platform-sifive = { path = "../../../crates/platform-sifive", default-features = false }
+fstart-core = { workspace = true }
+fstart-driver-sifive = { workspace = true }
+fstart-driver-uart = { workspace = true }
+fstart-log = { workspace = true }
+fstart-platform-sifive = { workspace = true, default-features = false }
 
 # One binary per stage, named after the stage: src/bin/stage.rs.
 

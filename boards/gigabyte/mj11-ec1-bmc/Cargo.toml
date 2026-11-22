@@ -13,10 +13,10 @@ arch = "armv5te"
 build-profile = { dependency = "fstart-platform-aspeed" }
 
 [dependencies]
-fstart-core = { path = "../../../crates/core" }
-fstart-platform-aspeed = { path = "../../../crates/platform-aspeed" }
-fstart-driver-uart = { path = "../../../crates/driver-uart" }
-fstart-log = { path = "../../../crates/log" }
+fstart-core = { workspace = true }
+fstart-platform-aspeed = { workspace = true }
+fstart-driver-uart = { workspace = true }
+fstart-log = { workspace = true }
 
 # One binary per stage, named after the stage: src/bin/<stage>.rs.
 
