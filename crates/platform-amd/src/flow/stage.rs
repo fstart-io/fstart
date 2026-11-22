@@ -26,7 +26,7 @@
 //! // board: after PCI enumeration
 //! let stage = stage.ready_to_boot();
 //! // board: right before the tables
-//! stage.emit_tables(&SMBIOS, board_acpi).boot()
+//! stage.emit_tables(&SMBIOS).boot()
 //! ```
 //!
 //! What the silicon needs in each phase is the SoC driver's
@@ -527,19 +527,17 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
 }
 
 impl<S: Soc> Stage<S, Ready<S>> {
-    /// Finish the SoC's ready-to-boot, then install ACPI with the board's
-    /// contribution `acpi` and SMBIOS with its identity `smbios`.
-    pub fn emit_tables(
-        self,
-        smbios: &crate::acpi::SmbiosIdentity<'_>,
-        acpi: crate::acpi::Board,
-    ) -> Stage<S, Published<S>> {
+    /// Finish the SoC's ready-to-boot, then install ACPI (using the
+    /// board's [`Board::acpi_board`] contribution) and SMBIOS with its
+    /// identity `smbios`.
+    pub fn emit_tables(self, smbios: &crate::acpi::SmbiosIdentity<'_>) -> Stage<S, Published<S>> {
         let Stage {
             machine,
             phase: Ready { mut silicon, pci },
         } = self;
         let ctx = machine.ctx();
         S::end_of_post(&ctx, &mut silicon.state);
+        let acpi = (ctx.board.acpi_board)();
         let tables = S::tables(&ctx, &mut silicon, &pci, &machine.flow, smbios, acpi);
         #[cfg(feature = "payload-uefi-basic")]
         let peripherals = S::peripherals(&ctx, &machine.config);

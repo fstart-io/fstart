@@ -59,5 +59,5 @@ fn main() -> ! {
     mj11::bmc::post_done(&stage.hw().fch, stage.clock());
     let stage = stage.ready_to_boot();
     mj11::hand_dimm_smbus_to_bmc(&stage.hw().gpio(), &stage.hw().fch);
-    stage.emit_tables(&mj11::SMBIOS, mj11::acpi()).boot()
+    stage.emit_tables(&mj11::SMBIOS).boot()
 }

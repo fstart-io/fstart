@@ -30,6 +30,6 @@ fn main() -> ! {
         .start_cpus()
         .scan_bus()
         .ready_to_boot()
-        .emit_tables(&onyx::smbios_identity(), onyx::acpi_board())
+        .emit_tables(&onyx::smbios_identity())
         .boot()
 }

@@ -55,6 +55,14 @@ impl<B: SunxiBoardFacts> HostPlan<B> for Plan<B> {
     }
 }
 
+impl<B: SunxiBoardFacts> fstart_image_build::acpi::HostAcpi<B> for Plan<B> {
+    fn acpi_baselines(_base: u64) -> Result<fstart_image_build::acpi::AcpiOutcome, String> {
+        Ok(fstart_image_build::acpi::AcpiOutcome::NotApplicable {
+            reason: "device-tree platform".into(),
+        })
+    }
+}
+
 struct SocPolicy {
     platform: Platform,
     target: &'static str,

@@ -37,6 +37,6 @@ fn main() -> ! {
         .start_cpus()
         .scan_bus()
         .ready_to_boot()
-        .emit_tables(&vilboz::SMBIOS, vilboz::acpi())
+        .emit_tables(&vilboz::SMBIOS)
         .boot()
 }

@@ -6,6 +6,7 @@
 //! the payload. This library holds the board's facts and the mainboard work
 //! that `main` calls.
 #![no_std]
+extern crate alloc;
 #[cfg(test)]
 mod acpi_tests;
 pub mod dalboz;
@@ -96,6 +97,20 @@ impl fstart_platform_amd::board::Board for Board {
         &[fstart_platform_amd::board::SocId::Picasso];
     /// The topology decoder's envelope: 2 CCXs, 4 cores, 2 threads.
     const MAX_CPUS: u16 = 16;
+
+    fn acpi_board() -> fstart_platform_amd::acpi::Board {
+        crate::acpi()
+    }
+
+    fn acpi_soc_sb_aml(
+        soc: fstart_platform_amd::board::SocId,
+    ) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+        let routes = CONFIG
+            .routes()
+            .map_err(|e| alloc::format!("vilboz ({}) FCH routes: {e:?}", soc.name()))?;
+        picasso::acpi::devices(CONFIG.fch.console_uart, CONFIG.i2c, &routes, false)
+            .map_err(|e| alloc::format!("vilboz ({}) FCH AML: {e:?}", soc.name()))
+    }
 }
 
 /// The console on FCH UART 0. A constant: a UART the FCH doesn't have

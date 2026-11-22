@@ -16,6 +16,14 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
         .expect("GA-D510UD Super I/O AML")
     }
 }
+
+impl fstart_platform_intel::acpi::BoardAcpi for crate::Board {
+    type Acpi = Acpi;
+
+    fn acpi_baseline() -> Self::Acpi {
+        Acpi
+    }
+}
 pub static GA_D510UD_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

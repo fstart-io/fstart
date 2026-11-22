@@ -13,6 +13,9 @@ impl Board for Vilboz {
     const NAME: &'static str = "vilboz";
     const SOCS: &'static [SocId] = &[SocId::Picasso];
     const MAX_CPUS: u16 = 16;
+    fn acpi_board() -> crate::acpi::Board {
+        crate::acpi::Board::default()
+    }
 }
 
 struct Mj11;
@@ -20,6 +23,9 @@ impl Board for Mj11 {
     const NAME: &'static str = "mj11";
     const SOCS: &'static [SocId] = &[SocId::Zeppelin];
     const MAX_CPUS: u16 = 32;
+    fn acpi_board() -> crate::acpi::Board {
+        crate::acpi::Board::default()
+    }
 }
 
 /// The plan of `B` with the selection's options parsed as the plan

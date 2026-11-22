@@ -1,3 +1,4 @@
+pub mod acpi_check;
 pub mod assemble;
 pub mod blobs;
 pub mod board_manifest;

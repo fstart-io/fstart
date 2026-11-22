@@ -12,16 +12,10 @@ use crate::flow::{Ctx, Silicon};
 use fstart_acpi::ivrs::IommuRegisters;
 use fstart_driver_amd::apob::{self, smbios::dram_ranges, sysmap};
 use fstart_driver_amd::fch::FchHw;
-use fstart_driver_amd::nbio::ioapic::{IOAPIC_FEATURES_ENABLE, nbio_ioapic_id};
+use fstart_driver_amd::nbio::ioapic::IOAPIC_FEATURES_ENABLE;
 use fstart_pci::PciEcam;
 
-/// The ID the flow gives the FCH's IOAPIC.
-pub const FCH_IOAPIC_ID: u8 = 0;
-
-/// The IOAPIC ID of IOS `ios`: 0xF1 + IOS, as both vendors number them.
-pub const fn ioapic_id(ios: u8) -> u8 {
-    nbio_ioapic_id(fstart_driver_amd::cpu::Silicon::Gn, ios)
-}
+pub use super::acpi::{FCH_IOAPIC_ID, ioapic_id};
 
 /// Build the ACPI tables; returns the RSDP.
 pub fn acpi<V: Variant>(

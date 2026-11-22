@@ -83,6 +83,17 @@ pub trait Board: 'static {
     /// last boot's errors with it (beside the BERT); the board's SMM image
     /// binds its handler with the same function.
     const BMC_EVENT: Option<BmcEvent> = None;
+
+    /// The board's ACPI contributions (`\_SB`, `\_SB.PCI0.LPCB`, extra tables),
+    /// shared by firmware table emission and the host ACPI baseline check.
+    fn acpi_board() -> crate::acpi::Board;
+
+    /// Optional SoC-side `\_SB` AML derived from a board's static silicon
+    /// configuration (for example Picasso's FCH UART/I2C/GPIO inventory) for
+    /// host ACPI baseline checks.
+    fn acpi_soc_sb_aml(_soc: SocId) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+        Ok(alloc::vec::Vec::new())
+    }
 }
 
 /// A board's BMC report of a RAS event ([`Board::BMC_EVENT`]).
@@ -98,6 +109,7 @@ pub struct Facts {
     pub bmc_sx_notify: Option<crate::smm::SleepNotify>,
     pub ras: crate::smm::ras::Policy,
     pub bmc_event: Option<BmcEvent>,
+    pub acpi_board: fn() -> crate::acpi::Board,
 }
 
 impl Facts {
@@ -109,6 +121,7 @@ impl Facts {
             bmc_sx_notify: B::BMC_SX_NOTIFY,
             ras: B::RAS,
             bmc_event: B::BMC_EVENT,
+            acpi_board: B::acpi_board,
         }
     }
 }

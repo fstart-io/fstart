@@ -30,6 +30,16 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+impl fstart_platform_intel::acpi::BoardAcpi for crate::Board {
+    type Acpi = Acpi;
+
+    fn acpi_baseline() -> Self::Acpi {
+        Acpi {
+            bluetooth: crate::config::T400_H8.has_bluetooth,
+        }
+    }
+}
+
 /// Assemble the T400-family DSDT.
 pub fn t400_mainboard_dsdt_aml(bluetooth: bool) -> Vec<u8> {
     let h8 = fstart_driver_lenovo::h8::H8Config {
@@ -109,7 +119,8 @@ fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
     aml.extend_from_slice(&acpi_dsl! {
         Scope(#{const "\\_SB_"}) {
             Device("DOCK") {
-                // _DCK identifies a dock; ACPI0003 identifies an AC adapter.
+                // Standard ACPI docking station ID (ACPI0003 is AC adapter).
+                Name("_HID", EisaId("PNP0C15"));
                 Name("_PCL", Package(#{const "\\_SB_"}));
                 Method("_DCK", 1, NotSerialized) {
                     GP28 = Arg0;

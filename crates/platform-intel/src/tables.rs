@@ -178,8 +178,7 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
 
 /// Prepare ACPI tables in a firmware-store entry.
 ///
-/// Collects per-device DSDT AML and extra tables via `collect_devices`,
-/// assembles the final table set via [`fstart_acpi::platform::assemble_into`]
+/// Assembles the collected DSDT AML and extra tables via [`fstart_acpi::platform::assemble_into`]
 /// into a page-aligned [`fstart_store::tag::ACPI`] entry trimmed to the
 /// assembled size, installs a legacy RSDP copy in the EBDA, and hex-dumps
 /// the tables. Returns the RSDP address only after bounded assembly
@@ -187,13 +186,9 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
 pub fn prepare_acpi(
     store: &mut fstart_store::Store,
     platform: &fstart_acpi::platform::PlatformConfig,
-    collect_devices: impl FnOnce(&mut Vec<u8>, &mut Vec<Vec<u8>>),
+    dsdt: &[u8],
+    extra: &[Vec<u8>],
 ) -> Result<u64, fstart_acpi::AmlError> {
-    let mut dsdt_aml: Vec<u8> = Vec::new();
-    let mut extra_tables: Vec<Vec<u8>> = Vec::new();
-
-    collect_devices(&mut dsdt_aml, &mut extra_tables);
-
     // Room for boards with large ACPI namespaces (dozens of devices, IORT
     // with many ID mappings); the entry is trimmed to the assembled size.
     const BUF_SIZE: usize = 128 * 1024;
@@ -204,13 +199,7 @@ pub fn prepare_acpi(
     // SAFETY: a fresh store entry nothing else references.
     let storage = unsafe { store.bytes_mut(&entry) };
     storage.fill(0);
-    let acpi_len = fstart_acpi::platform::assemble_into(
-        storage,
-        acpi_addr,
-        platform,
-        &dsdt_aml,
-        &extra_tables,
-    )?;
+    let acpi_len = fstart_acpi::platform::assemble_into(storage, acpi_addr, platform, dsdt, extra)?;
     store
         .resize_last(entry, acpi_len)
         .map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;

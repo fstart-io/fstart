@@ -49,6 +49,16 @@ log directory from `target/boot-tests/`. CI includes these reports in each
 firmware job summary and links the boot log artifact when available. None of
 these results verify physical hardware.
 
+`cargo fbuild check-acpi [BOARD...]` validates ACPI tables on the host without
+booting hardware (requires `iasl` and `acpiexec` from ACPICA). With no board
+arguments it walks every discovered board and variant, skipping non-ACPI
+platforms. Each ACPI platform builds deterministic baseline image(s) through
+`HostAcpi` (one per SoC declared in `Board::SOCS` on AMD boards), checks table
+checksums, pointers, and non-overlap, disassembles and recompiles the AML with
+`iasl`, verifies decoded data tables, and loads the namespace and fixed/data
+tables in `acpiexec` to check symbol resolution. Artifacts and logs are written
+under `target/fstart-acpi/<board>/<scenario>/`.
+
 `fbuild` runs on the host. If Cargo tries to compile it for `wasm32-wasip1`,
 check for `CARGO_BUILD_TARGET` or a Cargo `build.target` override and remove it
 for this checkout. The QEMU quick start does not use a WebAssembly target.

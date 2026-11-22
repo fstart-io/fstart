@@ -49,6 +49,14 @@ impl<B: AspeedBoardFacts> HostPlan<B> for Plan<B> {
     }
 }
 
+impl<B: AspeedBoardFacts> fstart_image_build::acpi::HostAcpi<B> for Plan<B> {
+    fn acpi_baselines(_base: u64) -> Result<fstart_image_build::acpi::AcpiOutcome, String> {
+        Ok(fstart_image_build::acpi::AcpiOutcome::NotApplicable {
+            reason: "BMC platform".into(),
+        })
+    }
+}
+
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     let payload = selection.payload.unwrap_or_else(|| "halt".into());

@@ -44,6 +44,18 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+impl fstart_platform_intel::acpi::BoardAcpi for crate::Board {
+    type Acpi = Acpi;
+
+    fn acpi_baseline() -> Self::Acpi {
+        Acpi {
+            bluetooth: crate::config::X201_H8.has_bluetooth,
+            digitizer: false,
+            tpm: Some(Family::Tpm12),
+        }
+    }
+}
+
 /// Assemble the X201 DSDT.
 pub fn x201_mainboard_dsdt_aml(bluetooth: bool, digitizer: bool) -> Vec<u8> {
     let h8 = fstart_driver_lenovo::h8::H8Config {

@@ -13,6 +13,14 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+impl fstart_platform_intel::acpi::BoardAcpi for crate::Board {
+    type Acpi = Acpi;
+
+    fn acpi_baseline() -> Self::Acpi {
+        Acpi
+    }
+}
+
 pub fn d41s_mainboard_dsdt_aml() -> Vec<u8> {
     let config = crate::d41s_superio_config();
     let sio = fstart_driver_superio::superio_dsdt_aml(&config);

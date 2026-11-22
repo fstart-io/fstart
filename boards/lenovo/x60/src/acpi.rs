@@ -22,6 +22,14 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+impl fstart_platform_intel::acpi::BoardAcpi for crate::Board {
+    type Acpi = Acpi;
+
+    fn acpi_baseline() -> Self::Acpi {
+        Acpi
+    }
+}
+
 pub fn x60_mainboard_dsdt_aml() -> Vec<u8> {
     crate::x6::acpi::dsdt_aml::<crate::config::Hardware>(&crate::config::X60_H8)
 }

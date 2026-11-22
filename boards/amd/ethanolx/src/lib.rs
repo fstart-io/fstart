@@ -47,6 +47,10 @@ impl fstart_platform_amd::board::Board for Board {
     const MAX_CPUS: u16 = 256;
     const OPTION_SETS: &'static [&'static dyn fstart_options::Describe] =
         &[&POLICY_OPTIONS, &dxio::SETUP];
+
+    fn acpi_board() -> AcpiBoard {
+        acpi_board()
+    }
 }
 
 /// The policy knobs over Milan's policy, as the boot resolves them.

@@ -25,6 +25,13 @@ use fstart_pci::devfn;
 const LAPIC_BASE: u64 = 0xfee0_0000;
 const SCI_IRQ: u8 = 9;
 
+#[cfg(not(target_os = "none"))]
+impl BaytrailNorth {
+    /// CPU count emitted by [`AcpiDevice::dsdt_aml`] on host builds; shared
+    /// with the host ACPI baseline MADT so processor objects and LAPICs match.
+    pub const HOST_CPUS: usize = 2;
+}
+
 impl AcpiDevice for BaytrailNorth {
     type Config = NorthConfig;
 
@@ -54,11 +61,27 @@ impl AcpiDevice for BaytrailNorth {
             Name("TOLM", #{dword tolm});
         }));
         #[cfg(target_os = "none")]
-        {
-            let facts = crate::cpu::silvermont_aml::CpuFacts::read();
-            let cpus = usize::from(fstart_arch::x86::mp::online_cpus().max(1));
-            aml.extend(crate::cpu::silvermont_aml::cpu_devices_aml(cpus, &facts));
-        }
+        let (cpus, facts) = (
+            usize::from(fstart_arch::x86::mp::online_cpus().max(1)),
+            crate::cpu::silvermont_aml::CpuFacts::read(),
+        );
+        #[cfg(not(target_os = "none"))]
+        let (cpus, facts) = (
+            Self::HOST_CPUS,
+            // Representative Bay Trail E3845 facts for host ACPI validation.
+            crate::cpu::silvermont_aml::CpuFacts {
+                ratio_min: 6,
+                ratio_max: 23,
+                ratio_turbo: 23,
+                vid_min: 0x22,
+                vid_max: 0x3c,
+                vid_turbo: 0x3c,
+                bclk_khz: 83_333,
+                tdp_mw: 10_000,
+                turbo: false,
+            },
+        );
+        aml.extend(crate::cpu::silvermont_aml::cpu_devices_aml(cpus, &facts));
         aml
     }
 
