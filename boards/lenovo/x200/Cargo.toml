@@ -44,5 +44,8 @@ smm = ["fstart-platform-intel/bundle-smm"]
 
 # One binary per stage, named after the stage: src/bin/<stage>.rs.
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

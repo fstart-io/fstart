@@ -180,6 +180,10 @@ fn dock_aml<N: PcNamespace>(gpio_base: u16) -> Vec<u8> {
     aml
 }
 
+#[cfg(all(test, not(feature = "x301")))]
+#[path = "acpi_tests.rs"]
+mod integration_tests;
+
 #[cfg(test)]
 mod tests {
     extern crate std;

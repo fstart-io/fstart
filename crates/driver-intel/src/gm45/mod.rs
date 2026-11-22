@@ -934,9 +934,6 @@ mod acpi_impl {
 }
 
 #[cfg(test)]
-mod acpi_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

@@ -1032,6 +1032,7 @@ dependencies = [
  "fstart-options",
  "fstart-pci",
  "fstart-platform-intel",
+ "tempfile",
  "ufmt",
 ]
 
@@ -1365,7 +1366,6 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-driver-flash-console",
- "fstart-driver-lenovo",
  "fstart-driver-rtc",
  "fstart-driver-spd",
  "fstart-driver-usbdebug",
@@ -1378,7 +1378,6 @@ dependencies = [
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=01b8e1554ec4a7df8a9d9008c19dc82aeb219df8)",
  "sha2 0.10.9",
- "tempfile",
  "tock-registers",
  "ufmt",
  "zerocopy",
