@@ -80,8 +80,9 @@ impl IntelPlan {
             payload: self.payload_config.clone(),
             microcode: Some(MicrocodeConfig::Intel(IntelMicrocodeConfig {
                 files: microcode,
-                early: true,
+                early: !self.intel_fit,
                 mp: true,
+                fit: self.intel_fit,
             })),
             data_assets: self.data_assets.clone(),
             file_assets: vec![],

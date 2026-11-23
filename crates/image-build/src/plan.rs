@@ -445,6 +445,10 @@ pub struct IntelPlan {
     pub flash: FlashTransport,
     pub max_cpus: u16,
     pub microcode: Vec<String>,
+    /// Index the microcode in an Intel FIT instead of updating it from the
+    /// bootblock's pre-CAR loader.
+    #[serde(default)]
+    pub intel_fit: bool,
     /// Board-directory files packaged as verified `FileType::Data` assets.
     /// Their names are also the runtime lookup names.
     #[serde(default)]

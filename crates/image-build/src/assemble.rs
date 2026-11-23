@@ -6,8 +6,8 @@ use fstart_core::ffs::{
 use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout};
 use fstart_core::{BoardConfig, FdtSource, FirmwareImagePolicy, RunsFrom, StageLayout};
 use fstart_ffs::builder::{
-    BootRootConfig, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
-    build_image_with_root, finalize_initial_stage,
+    BootRootConfig, ExternalInputFile, FfsImageConfig, FileAlignment, FinalizedExternalFile,
+    InputFile, InputRegion, InputSegment, build_image_with_root_and_fixups, finalize_initial_stage,
 };
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
@@ -220,6 +220,26 @@ pub fn assemble(
         }
     }
 
+    let fit_enabled =
+        matches!(&config.microcode, Some(fstart_core::board::MicrocodeConfig::Intel(mc)) if mc.fit);
+    let fit_plan = if fit_enabled {
+        if !config.full_flash_image
+            || !matches!(
+                config.platform,
+                fstart_core::Platform::X86 | fstart_core::Platform::X86_64
+            )
+            || config.build.flash_image.is_some()
+        {
+            return Err("Intel FIT requires a single-bank x86 full-flash image".into());
+        }
+        let elf = files
+            .read(&stage_binaries[0].path)
+            .map_err(|e| format!("FIT reset ELF: {e}"))?;
+        crate::intel_fit::validate_pointer_section(&elf)?;
+        Some(crate::intel_fit::Plan::prepare(&mut ro_files)?)
+    } else {
+        None
+    };
     let image_config = FfsImageConfig {
         keys: vec![verification_key],
         regions: ffs_input_regions(config, ro_files)?,
@@ -251,7 +271,32 @@ pub fn assemble(
     };
     eprintln!("[fstart] security version 0; no rollback protection");
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
-    let mut ffs_image = build_image_with_root(&image_config, &root_config, &sign)?;
+    let mut resolved_fit = None;
+    let alignments = if fit_enabled {
+        vec![FileAlignment {
+            file: crate::intel_fit::NAME.into(),
+            alignment: 16,
+        }]
+    } else {
+        vec![]
+    };
+    let mut ffs_image = build_image_with_root_and_fixups(
+        &image_config,
+        &root_config,
+        &alignments,
+        |files| {
+            if let Some(plan) = &fit_plan {
+                let image =
+                    firmware_image_from_policy(config)?.ok_or("FIT requires a firmware mapping")?;
+                let (patches, resolved) = plan.resolve(files, image, &stage_binaries[0].name)?;
+                resolved_fit = Some(resolved);
+                Ok(patches)
+            } else {
+                Ok(vec![])
+            }
+        },
+        &sign,
+    )?;
 
     if boot_format == crate::build_plan::BootImageFormat::AllwinnerEgon {
         let total_size = u32::try_from(ffs_image.image.len()).map_err(|_| "image exceeds u32")?;
@@ -304,6 +349,14 @@ pub fn assemble(
             &sign,
         )?;
     }
+    let finalized_initial = if fit_enabled {
+        if ffs_image.external_files.len() != 1 {
+            return Err("FIT requires exactly one sealed external reset image".into());
+        }
+        Some(&ffs_image.external_files[0])
+    } else {
+        None
+    };
     let image_bytes = ffs_image.image;
 
     let output_dir = output_dir
@@ -333,11 +386,12 @@ pub fn assemble(
         let full_flash = FullFlashInput {
             files,
             config,
-            board_dir,
             bootblock_elf: &stage_binaries[0].path,
             bootblock_bin: &stage_binaries[0].run_path,
             ffs_data: &image_bytes,
             trust_bytes: &ffs_image.trust_bytes,
+            finalized_initial,
+            fit: resolved_fit.as_ref(),
             ffs_anchor_offset: ffs_image.anchor_offset,
             ffs_path: &image_path,
         };
@@ -589,16 +643,18 @@ fn input_file_stored_size(file: &InputFile) -> Result<u32, String> {
     })
 }
 
+#[derive(Clone, Copy)]
 struct FullFlashInput<'a> {
     files: &'a dyn Files,
     config: &'a BoardConfig,
-    board_dir: &'a Path,
     bootblock_elf: &'a Path,
     bootblock_bin: &'a Path,
     ffs_data: &'a [u8],
     trust_bytes: &'a [u8; fstart_core::ffs::trust::TRUST_SIZE],
     ffs_anchor_offset: usize,
     ffs_path: &'a Path,
+    finalized_initial: Option<&'a FinalizedExternalFile>,
+    fit: Option<&'a crate::intel_fit::Resolved>,
 }
 
 /// Compose a non-x86 XIP image from the linked stage and its separate FFS
@@ -785,28 +841,18 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
     let FullFlashInput {
         files,
         config,
-        board_dir,
         bootblock_elf,
         bootblock_bin,
         ffs_data,
         trust_bytes,
         ffs_anchor_offset,
         ffs_path,
+        finalized_initial,
+        fit,
     } = input;
 
     if let Some(FlashLayout::IntelIfd(layout)) = &config.memory.flash_layout {
-        return create_intel_ifd_flash_image(
-            files,
-            config,
-            board_dir,
-            layout,
-            bootblock_elf,
-            bootblock_bin,
-            ffs_data,
-            trust_bytes,
-            ffs_anchor_offset,
-            ffs_path,
-        );
+        return create_intel_ifd_flash_image(input, layout);
     }
 
     if config.build.flash_image.is_some() {
@@ -875,13 +921,7 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
     }
 
-    let mut bootblock_data = files.read(Path::new(bootblock_bin)).map_err(|e| {
-        format!(
-            "failed to read bootblock flat binary {}: {e}",
-            bootblock_bin.display()
-        )
-    })?;
-    patch_initial_trust(&mut bootblock_data, trust_bytes);
+    let bootblock_data = initial_bytes(files, bootblock_bin, trust_bytes, finalized_initial)?;
     if bootblock_data.len() > flash_size {
         return Err(format!(
             "bootblock flat binary is {} bytes, larger than flash size {}",
@@ -905,7 +945,10 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
     }
     image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
 
-    patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, 0)?;
+    if finalized_initial.is_none() {
+        patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, 0)?;
+    }
+    verify_sealed_initial(&image, finalized_initial, fit)?;
 
     let mib = flash_size / (1024 * 1024);
     let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
@@ -927,19 +970,22 @@ fn create_full_flash_image(input: FullFlashInput<'_>) -> Result<(PathBuf, Placem
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn create_intel_ifd_flash_image(
-    files: &dyn Files,
-    config: &BoardConfig,
-    _board_dir: &Path,
+    input: FullFlashInput<'_>,
     layout: &IntelIfdFlashLayout,
-    bootblock_elf: &Path,
-    bootblock_bin: &Path,
-    ffs_data: &[u8],
-    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
-    ffs_anchor_offset: usize,
-    ffs_path: &Path,
 ) -> Result<(PathBuf, Placement), String> {
+    let FullFlashInput {
+        files,
+        config,
+        bootblock_elf,
+        bootblock_bin,
+        ffs_data,
+        trust_bytes,
+        ffs_anchor_offset,
+        ffs_path,
+        finalized_initial,
+        fit,
+    } = input;
     let bios = layout
         .bios_region()
         .ok_or_else(|| "Intel IFD flash_layout requires a BIOS region".to_string())?;
@@ -999,13 +1045,7 @@ fn create_intel_ifd_flash_image(
         first_flash_load = Some(first_flash_load.map_or(off, |first| first.min(off)));
     }
 
-    let mut bootblock_data = files.read(Path::new(bootblock_bin)).map_err(|e| {
-        format!(
-            "failed to read bootblock flat binary {}: {e}",
-            bootblock_bin.display()
-        )
-    })?;
-    patch_initial_trust(&mut bootblock_data, trust_bytes);
+    let bootblock_data = initial_bytes(files, bootblock_bin, trust_bytes, finalized_initial)?;
     if bootblock_data.len() > bios.size as usize {
         return Err(format!(
             "bootblock flat binary is {} bytes, larger than BIOS region size {}",
@@ -1029,7 +1069,14 @@ fn create_intel_ifd_flash_image(
     }
     image[xip_offset..xip_offset + bootblock_data.len()].copy_from_slice(&bootblock_data);
 
-    patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
+    if finalized_initial.is_none() {
+        patch_xip_anchor(&mut image, ffs_data, ffs_anchor_offset, bios.offset)?;
+    }
+    verify_sealed_initial(
+        &image[bios_start..bios_end as usize],
+        finalized_initial,
+        fit,
+    )?;
 
     let mib = layout.size() as usize / (1024 * 1024);
     let out_path = ffs_path.with_file_name(format!("{}-{}m.pflash", config.name, mib));
@@ -1052,6 +1099,47 @@ fn create_intel_ifd_flash_image(
             ffs_offset: bios.offset.into(),
         },
     ))
+}
+
+fn initial_bytes(
+    files: &dyn Files,
+    path: &Path,
+    trust: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
+    sealed: Option<&FinalizedExternalFile>,
+) -> Result<Vec<u8>, String> {
+    if let Some(file) = sealed {
+        return Ok(file.data.clone());
+    }
+    let mut data = files.read(path).map_err(|e| {
+        format!(
+            "failed to read bootblock flat binary {}: {e}",
+            path.display()
+        )
+    })?;
+    patch_initial_trust(&mut data, trust);
+    Ok(data)
+}
+
+fn verify_sealed_initial(
+    bios: &[u8],
+    sealed: Option<&FinalizedExternalFile>,
+    fit: Option<&crate::intel_fit::Resolved>,
+) -> Result<(), String> {
+    if let Some(file) = sealed {
+        let start = file.offset as usize;
+        let end = start
+            .checked_add(file.data.len())
+            .ok_or("sealed reset range overflow")?;
+        if bios.get(start..end) != Some(file.data.as_slice()) {
+            return Err("emitted reset bytes differ from sealed FFS file".into());
+        }
+    } else if fit.is_some() {
+        return Err("FIT image lacks sealed reset bytes".into());
+    }
+    if let Some(fit) = fit {
+        fit.verify(bios)?;
+    }
+    Ok(())
 }
 
 fn patch_xip_anchor(
@@ -1608,8 +1696,10 @@ mod trust_copy_tests {
             image_family: [0x33; 16],
             ..Default::default()
         };
-        let mut built =
-            build_image_with_root(&config, &root, &|b| sign_with_ed25519(&signer, b)).unwrap();
+        let mut built = fstart_ffs::builder::build_image_with_root(&config, &root, &|b| {
+            sign_with_ed25519(&signer, b)
+        })
+        .unwrap();
         let policy = TrustBlock::parse(&built.trust_bytes).unwrap();
         assert_eq!(policy.image_family, root.image_family);
         assert_eq!(policy.valid_keys()[0].key_lo, key.key_lo);
@@ -1627,3 +1717,6 @@ mod trust_copy_tests {
         assert_eq!(&initial[64..64 + TRUST_SIZE], &built.trust_bytes);
     }
 }
+
+#[cfg(test)]
+mod intel_fit_tests;

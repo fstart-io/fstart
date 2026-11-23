@@ -113,8 +113,9 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
         let original = fstart_image_build::linker::resolved_intel(
             &config,
             role,
-            true,
+            false,
             fstart_core::Platform::X86_64,
+            true,
         )
         .unwrap();
         fs::write(&script, &original).unwrap();
@@ -227,6 +228,20 @@ fn intel_packed_linker_retains_descriptors_and_rejects_growth() {
         if role != IntelStage::Bootblock {
             assert_eq!(data_load, symbol("_data_start"));
             assert!((flat_bytes.len() as u64) < stage.image.size);
+        }
+        if role == IntelStage::Bootblock {
+            fstart_image_build::intel_fit::validate_pointer_section(&bytes).unwrap();
+            let slot = (fstart_image_build::intel_fit::POINTER - stored_base) as usize;
+            assert_eq!(&flat_bytes[slot..slot + 8], &[0xff; 8]);
+            let overlap = original.replace("KEEP(*(.x86boot))", "KEEP(*(.x86boot)) . += 4096;");
+            fs::write(&script, overlap).unwrap();
+            let result = link();
+            assert!(!result.status.success());
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("startup overlaps Intel FIT pointer")
+            );
+            fs::write(&script, &original).unwrap();
         }
         // Actual storage grows and shrinks with initialized content, while
         // adding uninitialized BSS consumes only the protected RAM window.
