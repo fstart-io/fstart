@@ -13,6 +13,7 @@ pub mod gm45;
 pub mod gm965;
 pub mod gma;
 pub mod gmch;
+pub mod haswell;
 mod host_bridge;
 pub mod i945;
 pub mod ibexpeak;
