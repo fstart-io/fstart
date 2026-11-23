@@ -56,6 +56,7 @@ pub mod gtdt;
 pub mod hest;
 pub mod iort;
 pub mod ivrs;
+pub mod lpit;
 pub mod msct;
 pub mod numa;
 pub mod osc;

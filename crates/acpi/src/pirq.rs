@@ -31,6 +31,47 @@ pub fn prt_name_aml<G: Into<u32>>(routes: impl Iterator<Item = (u8, u8, G)>) -> 
     bytes
 }
 
+/// APIC GSIs and legacy PIC links from the SAME routing snapshot. Direct
+/// GSIs outside PIRQ A..D have no legacy-PIC entry. The caller emits root
+/// `PICM` and `_PIC`; `link_root` contains its real LNKA..LNKD devices.
+#[must_use]
+pub fn prt_modes_aml(
+    routes: impl Iterator<Item = (u8, u8, u8)>,
+    link_root: &crate::AcpiPath,
+) -> Vec<u8> {
+    let mut apic = PackageBuilder::new();
+    let mut pic = PackageBuilder::new();
+    for (slot, pin, gsi) in routes {
+        assert!(slot < 32 && pin < 4);
+        let address = (u32::from(slot) << 16) | 0xffff;
+        let mut entry = PackageBuilder::new();
+        entry.add_element(&address);
+        entry.add_element(&u32::from(pin));
+        entry.add_element(&0u32);
+        entry.add_element(&u32::from(gsi));
+        apic.add_element(&entry);
+        if (16..20).contains(&gsi) {
+            let link = link_root.child(["LNKA", "LNKB", "LNKC", "LNKD"][usize::from(gsi - 16)]);
+            let mut entry = PackageBuilder::new();
+            entry.add_element(&address);
+            entry.add_element(&u32::from(pin));
+            entry.add_element(&acpi_tables::aml::Path::new(link.as_str()));
+            entry.add_element(&0u32);
+            pic.add_element(&entry);
+        }
+    }
+    let mut bytes = Vec::new();
+    Name::new("PICP".into(), &apic).to_aml_bytes(&mut bytes);
+    Name::new("PICN".into(), &pic).to_aml_bytes(&mut bytes);
+    bytes.extend_from_slice(&crate::acpi_dsl! {
+        Method("_PRT",0,NotSerialized) {
+            If (PICM) { Return(PICP); }
+            Return(PICN);
+        }
+    });
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;

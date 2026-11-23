@@ -273,6 +273,21 @@ impl Lapic {
         self.update(REG_LVT1, lvt0_mask, LVT_DM_NMI);
     }
 
+    /// Mask/unmask an already configured LINT0 ExtINT route. Return its old
+    /// mask, or None when LINT0 has another delivery mode. Used while the
+    /// 8259 initialization sequence temporarily clears its interrupt masks.
+    pub fn set_extint_masked(&self, masked: bool) -> Option<bool> {
+        let old = self.read(REG_LVT0);
+        if old & LVT_DM_MASK != LVT_DM_EXTINT {
+            return None;
+        }
+        self.write(
+            REG_LVT0,
+            (old & !LVT_MASKED) | if masked { LVT_MASKED } else { 0 },
+        );
+        Some(old & LVT_MASKED != 0)
+    }
+
     // ---- EOI ----
 
     /// Signal end-of-interrupt.

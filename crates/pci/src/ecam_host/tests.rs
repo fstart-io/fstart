@@ -1882,6 +1882,37 @@ fn firmware_io_reservations_exclude_dynamic_bars() {
 }
 
 #[test]
+fn exact_bar_query_requires_that_registers_allocation_not_an_aliasing_base() {
+    let (mut pci, _memory) = test_pci();
+    let addr = PciAddress::new(0, 0, 0x14, 2);
+    let mut dev = endpoint(
+        addr,
+        &[
+            (0, BarType::Memory64, 0x1000),
+            (2, BarType::Memory64, 0x2000),
+            (4, BarType::Io, 32),
+        ],
+    );
+    dev.bars[0].allocated = true;
+    dev.bars[4].allocated = true;
+    pci.write32(addr, 0x10, 0x10000004);
+    pci.write32(addr, 0x14, 1);
+    pci.write32(addr, 0x18, 0x10000004); // identical full base, but unallocated
+    pci.write32(addr, 0x1c, 1);
+    assert!(pci.devices.push(dev).is_ok());
+    let window = pci.assigned_memory_bar(addr, 0x10).unwrap();
+    assert_eq!(window.base, 0x110000000);
+    assert_eq!(window.size, 0x1000);
+    for register in [0x14, 0x18, 0x1c, 0x20, 0x24] {
+        assert_eq!(pci.assigned_memory_bar(addr, register), None);
+    }
+    assert_eq!(
+        pci.assigned_memory_bars().collect::<Vec<_>>(),
+        vec![(addr, window)]
+    );
+}
+
+#[test]
 fn fixed_bar_is_preserved_without_consuming_dynamic_space() {
     let (mut pci, _config_space) = test_pci();
     let fixed = PciFixedBar {
@@ -2097,5 +2128,65 @@ fn conflicting_fixed_bars_are_rejected() {
     assert_eq!(
         pci.add_fixed_bars(&[second]),
         Err(PciEcamError::FixedBarConflict)
+    );
+}
+
+#[test]
+fn unmanaged_console_preserves_live_resources_without_losing_siblings() {
+    let (mut pci, mut config) = test_pci();
+    config.fill(u32::MAX);
+    let console = PciAddress::new(0, 0, 3, 0);
+    let sibling = PciAddress::new(0, 0, 3, 1);
+    pci.write32(console, 0, 0xa127_8086);
+    pci.device(console).unwrap().write8(PCI_HEADER_TYPE, 0);
+    pci.write32(console, 8, 0x0700_0201);
+    pci.write16(console, PCI_COMMAND, PCI_CMD_MEMORY);
+    pci.write32(console, PCI_BAR0, 0x8000_0004);
+    pci.write32(console, PCI_BAR0 + 4, 0);
+    pci.write32(sibling, 0, 0x1234_8086);
+    pci.device(sibling).unwrap().write8(PCI_HEADER_TYPE, 0);
+    pci.write32(sibling, 8, 0x0600_0000); // barless host function
+    pci.write16(sibling, PCI_COMMAND, 0);
+    pci.add_fixed_bars(&[PciFixedBar {
+        address: console,
+        register: PCI_BAR0,
+        kind: PciFixedBarType::Memory64,
+        base: 0x8000_0000,
+        size: 0x1000,
+        prefetchable: false,
+    }])
+    .unwrap();
+    pci.exclude_functions(&[console]).unwrap();
+    let start = 3 << 13;
+    let before = config[start..start + 1024].to_vec();
+    pci.enumerate_and_allocate().unwrap();
+    assert_eq!(pci.devices().collect::<Vec<_>>(), vec![sibling]);
+    assert_eq!(&config[start..start + 1024], before.as_slice());
+    assert_eq!(pci.assigned_memory_bar(console, PCI_BAR0), None);
+    assert_eq!(
+        pci.roots[0].mmio32.allocate_aligned(0x1000, 0x1000),
+        Some(0x8000_1000)
+    );
+    assert_eq!(
+        pci.exclude_functions(&[sibling]),
+        Err(PciEcamError::ConfigError)
+    );
+    let (mut hidden, mut hidden_bytes) = test_pci();
+    hidden_bytes.fill(u32::MAX);
+    hidden.write32(sibling, 0, 0x1234_8086);
+    hidden.device(sibling).unwrap().write8(PCI_HEADER_TYPE, 0);
+    hidden.write32(sibling, 8, 0x0600_0000);
+    hidden.write16(sibling, PCI_COMMAND, 0);
+    hidden.exclude_functions(&[console]).unwrap();
+    hidden.enumerate_and_allocate().unwrap();
+    assert_eq!(hidden.devices().collect::<Vec<_>>(), vec![sibling]);
+    // An empty scan also closes exclusion registration: device_count is
+    // not a substitute for the software enumeration lifecycle.
+    let (mut empty, mut bytes) = test_pci();
+    bytes.fill(u32::MAX);
+    empty.enumerate_and_allocate().unwrap();
+    assert_eq!(
+        empty.exclude_functions(&[console]),
+        Err(PciEcamError::ConfigError)
     );
 }

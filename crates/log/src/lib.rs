@@ -847,6 +847,36 @@ impl ufmt::uDisplay for Hex {
     }
 }
 
+/// Format an existing `core::fmt::Debug` value in a `{:?}` log argument.
+/// Prefer native `ufmt` arguments for frequent or size-sensitive messages.
+pub struct DebugValue<'a, T: ?Sized>(pub &'a T);
+
+impl<T: core::fmt::Debug + ?Sized> ufmt::uDebug for DebugValue<'_, T> {
+    fn fmt<W: ufmt::uWrite + ?Sized>(
+        &self,
+        f: &mut ufmt::Formatter<'_, W>,
+    ) -> Result<(), W::Error> {
+        struct Adapter<'a, 'f, W: ufmt::uWrite + ?Sized> {
+            formatter: &'a mut ufmt::Formatter<'f, W>,
+            error: Option<W::Error>,
+        }
+        impl<W: ufmt::uWrite + ?Sized> core::fmt::Write for Adapter<'_, '_, W> {
+            fn write_str(&mut self, text: &str) -> core::fmt::Result {
+                self.formatter.write_str(text).map_err(|error| {
+                    self.error = Some(error);
+                    core::fmt::Error
+                })
+            }
+        }
+        let mut adapter = Adapter {
+            formatter: f,
+            error: None,
+        };
+        let _ = core::fmt::write(&mut adapter, format_args!("{:?}", self.0));
+        adapter.error.map_or(Ok(()), Err)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hex dump
 // ---------------------------------------------------------------------------

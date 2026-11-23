@@ -70,6 +70,18 @@ impl IoApic {
         version.set(version.get());
     }
 
+    /// Program the chipset-specific write-once maximum redirection count.
+    /// Use only on IOAPICs implementing writable IOAPICVER[23:16], before
+    /// routing interrupts. Read-only implementations fail the readback.
+    pub fn set_redirection_entries(&self, entries: u16) -> bool {
+        if !(1..=256).contains(&entries) {
+            return false;
+        }
+        self.reg::<Version::Register>(VERSION)
+            .modify(Version::MAX_REDIRECTION.val(u32::from(entries) - 1));
+        self.redirection_entries() == u32::from(entries)
+    }
+
     pub fn redirection_entries(&self) -> u32 {
         self.reg::<Version::Register>(VERSION)
             .read(Version::MAX_REDIRECTION)

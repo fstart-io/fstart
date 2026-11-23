@@ -14,11 +14,13 @@
 use tock_registers::register_bitfields;
 
 register_bitfields![u8,
-    RtcFrequency [
+    /// RTC register A, index 0x0a, 8 bits.
+    pub RtcFrequency [
         RATE OFFSET(0) NUMBITS(4) [],
         DIVIDER OFFSET(4) NUMBITS(3) []
     ],
-    RtcControl [
+    /// RTC register B, index 0x0b, 8 bits.
+    pub RtcControl [
         MODE_24_HOUR OFFSET(1) NUMBITS(1) [],
         BINARY_MODE OFFSET(2) NUMBITS(1) [],
         SET OFFSET(7) NUMBITS(1) []
