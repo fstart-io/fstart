@@ -63,6 +63,7 @@ pub mod lpc;
 #[cfg(test)]
 pub(crate) mod model;
 pub mod multi;
+pub mod qilian;
 pub mod rom3;
 pub mod rtc;
 pub mod sandstone;

@@ -35,6 +35,7 @@ pub mod table;
 pub mod tables;
 pub mod topology;
 pub mod tsc;
+pub mod wh;
 pub mod x2apic;
 pub mod zp;
 use self::{

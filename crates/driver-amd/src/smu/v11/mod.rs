@@ -23,6 +23,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     response: SmnReg::new(0x03b1_057c),
     arguments: SmnReg::new(0x03b1_09c4),
     wait_before: false,
+    argument_count: crate::smu::ARGUMENT_COUNT,
 };
 
 /// AGESA's V11 service rejects IDs at or above this.
