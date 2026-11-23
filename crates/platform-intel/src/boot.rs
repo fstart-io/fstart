@@ -13,7 +13,6 @@ use fstart_stage::boot::MemoryWindow;
 /// Initial stage windows come from the linked descriptor, not authored
 /// board bounds. Each contains code plus loader scratch and leaves the
 /// next stage disjoint.
-
 pub(crate) fn bootstrap_window(
     descriptor: &BootstrapDescriptor,
     role: BootstrapRole,
@@ -74,7 +73,6 @@ pub(crate) fn handoff(
 /// happened while suspended.
 pub(crate) fn load_stage_with_cache(
     media: &(impl fstart_core::services::BootMedia + ?Sized),
-    stage: fstart_resume::stage_cache::CachedStage,
     descriptor: &BootstrapDescriptor,
     window: MemoryWindow,
     reserved: &[MemoryWindow],
@@ -82,6 +80,11 @@ pub(crate) fn load_stage_with_cache(
     resume: bool,
     codec: &dyn fstart_stage::boot::Codec,
 ) -> Result<fstart_stage::boot::VerifiedExecutable, ServiceError> {
+    use fstart_resume::stage_cache::CachedStage;
+    let stage = match descriptor.role {
+        BootstrapRole::Postcar => CachedStage::Postcar,
+        BootstrapRole::Mainstage => CachedStage::Mainstage,
+    };
     let policy = fstart_stage::boot::MemoryPolicy {
         writable: core::slice::from_ref(&window),
         reserved,
@@ -104,9 +107,10 @@ pub(crate) fn load_stage_with_cache(
     } {
         Ok(verified) => Ok(verified),
         Err(fstart_resume::Error::NotCached) => {
-            fstart_log::error!("stage cache: resetting to a cold boot");
-            fstart_log::flush();
-            fstart_arch::x86::boot::system_reset(true)
+            // The caller owns the reset, including any chipset DRAM-state
+            // indication it must clear before re-entering the bootblock.
+            fstart_log::error!("stage cache: missing retained stage");
+            Err(ServiceError::NotInitialized)
         }
         Err(fstart_resume::Error::Load(error)) => {
             fstart_log::error!("stage cache: {} load failed: {:?}", stage.name(), error);

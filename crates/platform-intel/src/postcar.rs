@@ -1,9 +1,9 @@
 //! Intel postcar: fresh DRAM stack, caching on; authenticate and load the
 //! ramstage. Postcar has no board work; a board's postcar `main` is one call.
 
-use crate::IntelBoard;
 #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
-use crate::{IntelChipsetConfig, IntelEarlyPlatform};
+use crate::IntelChipsetConfig;
+use crate::{IntelBoard, IntelEarlyPlatform};
 use fstart_core::services::{ConsoleDevice, ServiceError};
 #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
 use fstart_driver_intel::IntelNorthbridgeDriver;
@@ -99,8 +99,12 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
         Ok(window) => window,
         Err(_) => fstart_arch::x86::boot::halt(),
     };
+    let stash = crate::boot::handoff(firmware_base, firmware_size).unwrap_or_else(|_| {
+        fstart_log::error!("postcar: invalid handoff, boot path unknown; resetting");
+        B::Platform::reset_failed_postcar_resume()
+    });
+    let resume = stash.boot_flags & fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME != 0;
     let entry = (|| -> Result<u64, ServiceError> {
-        let stash = crate::boot::handoff(firmware_base, firmware_size)?;
         let descriptor = fstart_ffs::root::BootstrapDescriptor::parse(&stash.descriptor)
             .map_err(|_| ServiceError::InvalidParam)?;
         // Trusted preferred address, independent of the signed image's request.
@@ -121,13 +125,10 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
                 firmware_size,
             )
         };
-        let resume =
-            stash.boot_flags & fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME != 0;
         let store = store.as_mut().ok_or(ServiceError::NotInitialized)?;
         fstart_timestamp::add(fstart_timestamp::id::LOAD_RAMSTAGE);
         let verified = crate::boot::load_stage_with_cache(
             &media,
-            fstart_resume::stage_cache::CachedStage::Mainstage,
             &descriptor,
             window,
             &reserved,
@@ -143,6 +144,10 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
             platform,
             ramstage_name
         );
+        if resume {
+            fstart_log::flush();
+            B::Platform::reset_failed_postcar_resume();
+        }
         fstart_arch::x86::boot::halt();
     };
 

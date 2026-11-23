@@ -1,4 +1,4 @@
-//! Intel Haswell system agent registers and native DDR3/DDR3L raminit.
+//! Intel Haswell System Agent northbridge, registers, and native DDR3/DDR3L raminit.
 
 #[cfg(not(target_arch = "x86"))]
 use fstart_core::mmio::BarReg;
@@ -6,11 +6,26 @@ use fstart_core::mmio::MmioWindow;
 #[cfg(not(target_arch = "x86"))]
 use tock_registers::interfaces::{Readable, Writeable};
 
+pub mod acpi;
+pub mod igd;
+mod links;
+pub mod peg;
 pub mod raminit;
 pub mod registers;
+pub mod system_agent;
+
+pub use igd::{HaswellIgdConfig, Panel};
+pub use peg::Peg;
+pub use system_agent::{ECAM, Haswell, HaswellConfig, HaswellPch, PchResources, Slots};
 
 /// Size of the Haswell MCHBAR aperture (32 KiB).
 pub const MCHBAR_SIZE: usize = 0x8000;
+
+/// Size of the Haswell DMIBAR aperture (4 KiB).
+pub const DMIBAR_SIZE: usize = 0x1000;
+
+/// Size of the Haswell EPBAR aperture (4 KiB).
+pub const EPBAR_SIZE: usize = 0x1000;
 
 /// An enabled, identity-mapped Haswell MCHBAR window (32 KiB).
 #[derive(Clone, Copy)]
@@ -155,6 +170,16 @@ impl MchBar {
     }
 
     #[inline]
+    pub fn setbits8(self, off: u32, bits: u8) {
+        self.0.setbits8(off, bits);
+    }
+
+    #[inline]
+    pub fn clrsetbits8(self, off: u32, clear: u8, set: u8) {
+        self.0.clrsetbits8(off, clear, set);
+    }
+
+    #[inline]
     pub fn setbits32(self, off: u32, bits: u32) {
         self.0.setbits32(off, bits);
     }
@@ -198,5 +223,103 @@ impl MchBar {
             return Err(fstart_core::services::ServiceError::HardwareError);
         }
         Ok(self.read32(0x5da0))
+    }
+}
+
+/// An enabled, identity-mapped Haswell DMIBAR window (4 KiB).
+#[derive(Clone, Copy)]
+pub struct DmiBar(MmioWindow);
+
+impl DmiBar {
+    /// Construct a DMIBAR accessor from its 4 KiB-aligned base address.
+    ///
+    /// # Safety
+    /// `base` must be the mapped, enabled 4 KiB DMIBAR for this CPU.
+    pub unsafe fn new(base: usize) -> Self {
+        assert!(base != 0 && base.is_multiple_of(DMIBAR_SIZE));
+        // SAFETY: caller guarantees `[base, base + DMIBAR_SIZE)` is mapped.
+        Self(unsafe { MmioWindow::new(base, DMIBAR_SIZE as u32) })
+    }
+
+    /// Wrap an already-validated 4 KiB [`MmioWindow`].
+    #[must_use]
+    pub const fn from_window(window: MmioWindow) -> Self {
+        assert!(window.size() as usize == DMIBAR_SIZE);
+        Self(window)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn read16(self, off: u32) -> u16 {
+        self.0.read16(off)
+    }
+
+    #[inline]
+    pub fn write32(self, off: u32, val: u32) {
+        self.0.write32(off, val);
+    }
+
+    #[inline]
+    pub fn clrsetbits8(self, off: u32, clear: u8, set: u8) {
+        self.0.clrsetbits8(off, clear, set);
+    }
+
+    #[inline]
+    pub fn setbits16(self, off: u32, bits: u16) {
+        self.0.setbits16(off, bits);
+    }
+
+    #[inline]
+    pub fn setbits32(self, off: u32, bits: u32) {
+        self.0.setbits32(off, bits);
+    }
+
+    #[inline]
+    pub fn clrbits32(self, off: u32, bits: u32) {
+        self.0.clrbits32(off, bits);
+    }
+
+    #[inline]
+    pub fn clrsetbits32(self, off: u32, clear: u32, set: u32) {
+        self.0.clrsetbits32(off, clear, set);
+    }
+}
+
+/// An enabled, identity-mapped Haswell EPBAR window (4 KiB).
+#[derive(Clone, Copy)]
+pub struct EpBar(MmioWindow);
+
+impl EpBar {
+    /// Construct an EPBAR accessor from its 4 KiB-aligned base address.
+    ///
+    /// # Safety
+    /// `base` must be the mapped, enabled 4 KiB EPBAR for this CPU.
+    pub unsafe fn new(base: usize) -> Self {
+        assert!(base != 0 && base.is_multiple_of(EPBAR_SIZE));
+        // SAFETY: caller guarantees `[base, base + EPBAR_SIZE)` is mapped.
+        Self(unsafe { MmioWindow::new(base, EPBAR_SIZE as u32) })
+    }
+
+    /// Wrap an already-validated 4 KiB [`MmioWindow`].
+    #[must_use]
+    pub const fn from_window(window: MmioWindow) -> Self {
+        assert!(window.size() as usize == EPBAR_SIZE);
+        Self(window)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn read16(self, off: u32) -> u16 {
+        self.0.read16(off)
+    }
+
+    #[inline]
+    pub fn write32(self, off: u32, val: u32) {
+        self.0.write32(off, val);
+    }
+
+    #[inline]
+    pub fn clrsetbits32(self, off: u32, clear: u32, set: u32) {
+        self.0.clrsetbits32(off, clear, set);
     }
 }

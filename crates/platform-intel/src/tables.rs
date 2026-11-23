@@ -21,6 +21,45 @@ const EBDA_BASE: usize = 0x0009_f000;
 const EBDA_SIZE: usize = 0x1000;
 const EBDA_RSDP_OFFSET: usize = 0;
 
+/// The BDA pointer, our EBDA, and retained ACPI allocation are known RAM;
+/// arbitrary E820 reservations (including stolen memory and MMIO) are not.
+#[cfg(any(test, feature = "ramstage"))]
+pub(crate) fn wake_readable(
+    entries: &[fstart_core::services::memory_detect::E820Entry],
+    acpi: Option<(u64, u64)>,
+    addr: u64,
+    size: usize,
+) -> bool {
+    use fstart_core::services::memory_detect::E820Kind;
+    let Some(end) = addr.checked_add(size as u64) else {
+        return false;
+    };
+    let inside = |(base, len): (u64, u64)| {
+        addr >= base && base.checked_add(len).is_some_and(|limit| end <= limit)
+    };
+    (addr == BDA_EBDA_SEG_PTR as u64 && size == 2)
+        || inside((EBDA_BASE as u64, EBDA_SIZE as u64))
+        || acpi.is_some_and(inside)
+        || entries
+            .iter()
+            .any(|e| e.kind == E820Kind::Ram as u32 && inside((e.addr, e.size)))
+}
+
+#[cfg(test)]
+#[test]
+fn reserved_is_not_permission_to_read_wake_tables() {
+    use fstart_core::services::memory_detect::{E820Entry, E820Kind};
+    let mut entry = E820Entry::zeroed();
+    entry.addr = 0x100000;
+    entry.size = 0x8000;
+    entry.kind = E820Kind::Reserved as u32;
+    let ok = |addr, size| wake_readable(&[entry], Some((0x102000, 0x1000)), addr, size);
+    assert!(ok(0x40e, 2) && ok(EBDA_BASE as u64, 36) && ok(0x102000, 0x1000));
+    assert!(!ok(0x101000, 1) && !ok(0x102000, 0x1001) && !ok(0xa0000, 1) && !ok(u64::MAX, 2));
+    entry.kind = E820Kind::Ram as u32;
+    assert!(wake_readable(&[entry], None, 0x101000, 1));
+}
+
 fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
     let raw = bytes.get(offset..offset.checked_add(8)?)?;
     Some(u64::from_le_bytes(raw.try_into().ok()?))
@@ -222,6 +261,18 @@ pub fn prepare_acpi(
     Ok(acpi_addr)
 }
 
+/// Extra board-specific SMBIOS Type 41 entry with explicit fields (e.g.
+/// non-PCI I2C input or sensor devices).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtraOnboardDevice<'a> {
+    pub device: fstart_core::smbios::OnboardDevice<'a>,
+    pub enabled: bool,
+    pub instance: u8,
+    pub segment: u16,
+    pub bus: u8,
+    pub devfn: u8,
+}
+
 /// Facts the SMBIOS writer cannot derive from the board descriptor.
 pub struct SmbiosRuntime<'a> {
     /// Flash chip capacity in bytes.
@@ -232,6 +283,8 @@ pub struct SmbiosRuntime<'a> {
     pub pci: Option<&'a fstart_pci::PciEcam>,
     /// What the board attaches to the root ports, port `n` being 00:1c.n.
     pub ports: &'a [Option<&'static fstart_core::smbios::Attached<'static>>],
+    /// Additional non-PCI / board-defined Type 41 onboard device entries.
+    pub extra_onboard: &'a [ExtraOnboardDevice<'a>],
 }
 
 /// Resolve SMBIOS Type 4 counts from runtime CPU and MP state.
@@ -407,6 +460,16 @@ pub fn prepare_smbios(
     // Chipset devices are on the root bus; add-in cards sit behind bridges.
     if let Some(pci) = runtime.pci {
         tables.pci_onboard_devices(pci, |address| address.bus() == pci.bus_start());
+    }
+    for extra in runtime.extra_onboard {
+        tables.onboard_device_raw(
+            &extra.device,
+            extra.enabled,
+            extra.instance,
+            extra.segment,
+            extra.bus,
+            extra.devfn,
+        );
     }
     let smbios_len = tables
         .assemble_into(bytes, smbios_addr)

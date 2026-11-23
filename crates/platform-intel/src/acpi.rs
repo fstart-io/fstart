@@ -212,6 +212,24 @@ mod host_baseline {
         }
     }
 
+    impl<const LP: bool> HostAcpiChipset for crate::haswell::HaswellLynxPoint<LP> {
+        fn assemble_baseline(
+            config: &'static Self::Config,
+            facts: BoardFacts,
+            board: &impl AcpiDevice<Config = ()>,
+            base: u64,
+        ) -> Result<Vec<u8>, String> {
+            use fstart_driver_intel::{haswell::Haswell, lynxpoint::LynxPoint};
+            let north = Haswell::new_from_config(&config.northbridge)
+                .map_err(|e| format!("Haswell config: {e:?}"))?;
+            let mut south = LynxPoint::new_from_config(&config.southbridge)
+                .map_err(|e| format!("Lynx Point config: {e:?}"))?;
+            south.set_host_acpi_baseline();
+            south.set_s3_enabled(facts.memory_cache);
+            assemble_chipset(&north, &south, 1, board, base)
+        }
+    }
+
     /// Assemble one baseline ACPI table image for any Intel board.
     pub fn baseline<B: BoardAcpi>(base: u64) -> Result<Vec<u8>, String>
     where

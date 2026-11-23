@@ -137,8 +137,14 @@ pub trait IntelNorthbridgeDriver:
         Ok(())
     }
     /// Mainstage chipset init after the bus scan and before the southbridge
-    /// devices (coreboot `northbridge_init`), including DMA-remap windows.
+    /// devices (coreboot `pre_mp_init` / early `northbridge_init`).
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Complete northbridge init that must run after MP CPU C-state setup on
+    /// all cores (coreboot `northbridge_init`: topology, PAIR/SA clock gating,
+    /// `BIOS_RESET_CPL`, and post-CPL RAPL power limits).
+    fn post_mp_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
@@ -334,5 +340,10 @@ mod option_tests {
     #[test]
     fn ironlake_and_ibex_peak_have_distinct_option_keys() {
         pair::<crate::ironlake::IntelIronlake, crate::ibexpeak::IntelIbexPeak>();
+    }
+
+    #[test]
+    fn haswell_and_lynx_point_have_distinct_option_keys() {
+        pair::<crate::haswell::Haswell, crate::lynxpoint::LynxPoint>();
     }
 }

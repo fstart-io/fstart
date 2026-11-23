@@ -18,6 +18,13 @@
 /// the board's console is already installed. `flash_log` requires code, data
 /// and page tables in DRAM, with no other flash readers during programming.
 #[cfg(feature = "stage")]
+#[cfg_attr(
+    not(any(feature = "ehci-console", feature = "flash-console")),
+    expect(
+        clippy::extra_unused_type_parameters,
+        reason = "the selected backend uses the board type"
+    )
+)]
 pub(crate) fn install<B: crate::IntelBoardFacts>(flash_log: bool) {
     #[cfg(feature = "ehci-console")]
     ehci::install::<B>();

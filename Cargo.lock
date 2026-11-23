@@ -1730,13 +1730,13 @@ name = "fstart-platform-intel"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-coreboot",
  "fstart-driver-flash-console",
  "fstart-driver-intel",
  "fstart-driver-rtc",
- "fstart-driver-uart",
  "fstart-driver-usbdebug",
  "fstart-driver-vbios",
  "fstart-ffs",

@@ -1167,4 +1167,26 @@ mod tests {
         );
         assert_eq!(res.store.base, crate::facts::StageWindows::LEGACY.store);
     }
+
+    #[test]
+    fn haswell_windows_leave_linux_default_kernel_range_clear() {
+        let res = reservations::<crate::haswell::HaswellUlt>(FACTS, false).unwrap();
+        let linux_start = 0x100_0000u64;
+        let linux_end = 0x800_0000u64;
+        for span in [
+            res.postcar.image,
+            res.postcar.writable,
+            res.ramstage.image,
+            res.ramstage.writable,
+            res.store,
+        ] {
+            let end = span.base + span.size;
+            assert!(
+                end <= linux_start || span.base >= linux_end,
+                "window {:#x}..{:#x} overlaps [16 MiB, 128 MiB)",
+                span.base,
+                end
+            );
+        }
+    }
 }
