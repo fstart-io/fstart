@@ -746,5 +746,58 @@ pub unsafe fn set_boot_rom_wp(enable: bool) -> Result<(), ServiceError> {
     Ok(())
 }
 
+/// Add a WP variable MTRR for the reset-visible BIOS alias during CAR.
+/// The caller has verified the BIOS decode; never round into adjacent space.
+/// Existing mappings, including CAR itself, remain intact.
+///
+/// # Safety
+/// BSP only during CAR, with other CPUs quiesced and exclusive cache-policy
+/// ownership. The verified range contains only firmware ROM, is currently UC
+/// (or already exactly WP), and has no writable or differently cached alias.
+/// This is the additive ROM-cache operation used during Intel enhanced NEM;
+/// do not flush or disable caches while the stack and data still live in CAR.
+pub unsafe fn cache_car_bios_window(base: u64, size: u64) -> Result<(), ServiceError> {
+    const TOP: u64 = 0x1_0000_0000;
+    if !(0x1000..=0x0100_0000).contains(&size) || !size.is_power_of_two() || base != TOP - size {
+        return Err(ServiceError::InvalidParam);
+    }
+    if unsafe { rdmsr(IA32_MTRR_DEF_TYPE) } & (ENABLE | 0xff) != ENABLE {
+        return Err(ServiceError::NotSupported);
+    }
+    let expected = encode_variable(base, size, MTRR_TYPE_WRITE_PROTECT);
+    let mut free = None;
+    let mut installed = false;
+    for index in 0..unsafe { variable_count() } {
+        let pair = unsafe { read_variable(index) };
+        if !is_valid_mask(pair.1) {
+            free = free.or(Some(index));
+            continue;
+        }
+        let start = decode_base(pair.0);
+        let len = decode_size(pair.1);
+        let end = start.checked_add(len).ok_or(ServiceError::InvalidParam)?;
+        if !len.is_power_of_two() || start & (len - 1) != 0 {
+            return Err(ServiceError::InvalidParam);
+        }
+        if start < TOP && base < end {
+            if pair != expected {
+                return Err(ServiceError::NotSupported);
+            }
+            installed = true;
+        }
+    }
+    if installed {
+        return Ok(());
+    }
+    let index = free.ok_or(ServiceError::NotSupported)?;
+    unsafe { set_variable(index, base, size, MTRR_TYPE_WRITE_PROTECT) };
+    if unsafe { read_variable(index) } != expected {
+        // This slot was ours and was unused. Drop the unverified mapping.
+        unsafe { clear_variable(index) };
+        return Err(ServiceError::HardwareError);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

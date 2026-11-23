@@ -549,6 +549,11 @@ pub unsafe extern "C" fn default_smm_relocation_handler(params: *mut fstart_smm:
         return finish(RESULT_SAVE_STATE);
     };
     state.revision.store(revision, Ordering::Release);
+    // The installer owns all TSEG for its handler, not an Intel debug/IED
+    // subregion. Explicitly disable IED on the actual native 30101 layout.
+    if revision == 0x0003_0101 && save_state.disable_intel_ied().is_err() {
+        return finish(RESULT_SAVE_STATE);
+    }
     if save_state.write_smbase(target).is_err() {
         return finish(RESULT_SAVE_STATE);
     }

@@ -107,6 +107,16 @@ core::arch::global_asm!(
     // the L2 enable MSR): Nehalem 0x1A/0x1E/0x1F/0x2E, Westmere
     // 0x25/0x2C/0x2F, Sandy Bridge 0x2A/0x2D, Ivy Bridge 0x3A/0x3E.
     super::imc_nem_model_branch!("%eax", "_car_nem_imc"),
+    // SKL/KBL client models require enhanced NEM, not legacy L2 CAR.
+    // The enhanced entry additionally validates vendor, family and stepping.
+    "cmpl $0x4e, %eax",
+    "je _car_enhanced_nem",
+    "cmpl $0x5e, %eax",
+    "je _car_enhanced_nem",
+    "cmpl $0x8e, %eax",
+    "je _car_enhanced_nem",
+    "cmpl $0x9e, %eax",
+    "je _car_enhanced_nem",
     // Core/Core2 (coreboot's socket_m car/core2): model >= 0x0E
     "cmpl $0x0E, %eax",
     "jge _car_core2",
@@ -662,6 +672,10 @@ core::arch::global_asm!(
     "_fixed_mtrr_list_end:",
     options(att_syntax),
 );
+
+// Direct native-client translation has its own provenance and section;
+// it shares the stackless helpers above without changing legacy paths.
+core::arch::global_asm!(include_str!("car_enhanced_nem.S"), options(att_syntax));
 
 // _car_setup is a global_asm label, not an extern "C" function.
 // It MUST be invoked via jmp (not call) because there is no stack
