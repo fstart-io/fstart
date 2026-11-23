@@ -471,7 +471,7 @@ fn check_acpica_tools() -> Result<(), String> {
     Ok(())
 }
 
-fn validate(dir: &Path, baseline: &AcpiBaseline) -> Result<usize, String> {
+fn validate(dir: &Path, baseline: &AcpiBaseline) -> Result<(), String> {
     fs::write(dir.join("image.bin"), &baseline.bytes).map_err(|e| e.to_string())?;
     let image = AcpiImage {
         bytes: &baseline.bytes,
@@ -531,21 +531,27 @@ fn validate(dir: &Path, baseline: &AcpiBaseline) -> Result<usize, String> {
         )?;
     }
 
-    // 2. Recompile every disassembled AML table so ASL syntax, scopes, and
-    //    resource descriptors are checked by iasl's compiler as well.
-    let mut warnings = 0usize;
+    // 2. Recompile every disassembled AML table with `-we` (warnings as errors)
+    //    so ASL syntax, scopes, and resource descriptors are checked cleanly.
     for file in &namespace {
         let stem = file.strip_suffix(".aml").unwrap_or(file);
         let dsl = format!("{stem}.dsl");
         let prefix = format!("recompiled-{stem}");
+        let log = format!("iasl-recompile-{stem}.log");
         let output = run_tool(
             dir,
             "iasl",
-            &["-p", &prefix, &dsl],
-            &format!("iasl-recompile-{stem}.log"),
+            &["-we", "-p", &prefix, &dsl],
+            &log,
             ToolPhase::IaslCompile,
         )?;
-        warnings += parse_iasl_warnings(&output);
+        let warnings = parse_iasl_warnings(&output);
+        if warnings > 0 {
+            return Err(format!(
+                "iasl reported {warnings} warning(s) for {dsl}; see {}",
+                dir.join(&log).display()
+            ));
+        }
     }
 
     // 3. Disassemble every fixed/data table (FADT, MADT, MCFG, DMAR, IVRS, ...)
@@ -604,7 +610,7 @@ fn validate(dir: &Path, baseline: &AcpiBaseline) -> Result<usize, String> {
         }
     }
 
-    Ok(warnings)
+    Ok(())
 }
 
 fn scenario_dir_name(scenario: &str) -> Result<&str, String> {
@@ -661,7 +667,6 @@ pub fn check(boards: &[String]) -> Result<(), String> {
     let mut passed_boards = 0usize;
     let mut passed_images = 0usize;
     let mut skipped_boards = 0usize;
-    let mut total_warnings = 0usize;
     let mut failed = Vec::new();
 
     for name in &selected {
@@ -677,27 +682,20 @@ pub fn check(boards: &[String]) -> Result<(), String> {
                     let board_dir = prepare_board_dir(&root, &board.board)?;
                     let multi = images.len() > 1;
                     let mut scenario_errors = Vec::new();
-                    let mut board_warnings = 0usize;
                     for baseline in &images {
                         let dir = board_dir.join(&baseline.scenario);
                         fs::create_dir_all(&dir)
                             .map_err(|e| format!("create {}: {e}", dir.display()))?;
                         match validate(&dir, baseline) {
-                            Ok(warnings) => {
-                                board_warnings += warnings;
-                                let suffix = if warnings > 0 {
-                                    format!(" ({warnings} iasl warnings)")
-                                } else {
-                                    String::new()
-                                };
+                            Ok(()) => {
                                 if multi {
                                     println!(
-                                        "PASS {name} ({}): {}{suffix}",
+                                        "PASS {name} ({}): {}",
                                         baseline.scenario,
                                         dir.display()
                                     );
                                 } else {
-                                    println!("PASS {name}: {}{suffix}", dir.display());
+                                    println!("PASS {name}: {}", dir.display());
                                 }
                             }
                             Err(e) => {
@@ -712,15 +710,14 @@ pub fn check(boards: &[String]) -> Result<(), String> {
                     if !scenario_errors.is_empty() {
                         return Err(scenario_errors.join("; "));
                     }
-                    Ok(Some((images.len(), board_warnings)))
+                    Ok(Some(images.len()))
                 }
             }
         })();
         match result {
-            Ok(Some((count, warnings))) => {
+            Ok(Some(count)) => {
                 passed_boards += 1;
                 passed_images += count;
-                total_warnings += warnings;
             }
             Ok(None) => skipped_boards += 1,
             Err(err) => {
@@ -731,7 +728,7 @@ pub fn check(boards: &[String]) -> Result<(), String> {
     }
 
     println!(
-        "ACPI check summary: {passed_images} image(s) passed across {passed_boards} board(s), {skipped_boards} skipped, {} failed ({total_warnings} iasl warnings)",
+        "ACPI check summary: {passed_images} image(s) passed across {passed_boards} board(s), {skipped_boards} skipped, {} failed",
         failed.len()
     );
     if failed.is_empty() {
@@ -1123,5 +1120,33 @@ DefinitionBlock ("", "DSDT", 2, "FSTART", "TEST", 1) {
         };
         let err = validate(bad_dir.path(), &bad).unwrap_err();
         assert!(err.contains("unresolved AML External reference"), "{err}");
+    }
+
+    #[test]
+    fn rejects_iasl_warnings_as_errors() {
+        let scratch = tempfile::tempdir().unwrap();
+        let dsdt_warn = compile_asl(
+            scratch.path(),
+            "dsdt_warn",
+            r#"
+DefinitionBlock ("", "DSDT", 2, "FSTART", "TEST", 1) {
+    Scope (\_SB) {
+        Method (WARN, 0) {
+            Local0 = 1
+        }
+    }
+}
+"#,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = assemble_with_dsdt_and_extra(&dsdt_warn, &[]);
+        let baseline = AcpiBaseline {
+            scenario: "warn-dsdt".into(),
+            physical_base: BASE,
+            rsdp: BASE,
+            bytes,
+        };
+        let err = validate(dir.path(), &baseline).unwrap_err();
+        assert!(err.contains("Local0") || err.contains("warning"), "{err}");
     }
 }

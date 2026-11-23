@@ -201,7 +201,7 @@ fn remaining_operation_and_resource_families_encode() {
             Add(Local3, Local2, 1u8);
             Local4 = DeRefOf(Index(BUF0, 0u8));
             If (CondRefOf(FLD0, Local5)) { Increment(Local5); }
-            Notify(DEV0, 0x80u8);
+            If (CondRefOf(FLD0)) { Notify(DEV0, 0x80u8); }
             Return(SizeOf(BUF0));
         }
     };

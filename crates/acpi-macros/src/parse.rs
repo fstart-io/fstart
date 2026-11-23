@@ -111,8 +111,8 @@ pub enum DslExpr {
     SizeOf(Box<DslExpr>),
     /// `DeRefOf(expr)`
     DeRefOf(Box<DslExpr>),
-    /// `CondRefOf(source, target)`
-    CondRefOf(Box<DslExpr>, Box<DslExpr>),
+    /// `CondRefOf(source)` or `CondRefOf(source, target)`
+    CondRefOf(Box<DslExpr>, Option<Box<DslExpr>>),
     /// `Index(source, index)`
     Index(Box<DslExpr>, Box<DslExpr>),
     /// `Concatenate(a, b)`
@@ -2165,9 +2165,19 @@ impl Parser {
                         let (args, _) = self.expect_group(Delimiter::Parenthesis)?;
                         let mut p = Parser::new(args);
                         let a = p.parse_expr(0)?;
-                        p.expect_punct(',')?;
-                        let b = p.parse_expr(0)?;
-                        Ok(DslExpr::CondRefOf(Box::new(a), Box::new(b)))
+                        let b = if p.at_end() {
+                            None
+                        } else {
+                            p.expect_punct(',')?;
+                            Some(Box::new(p.parse_expr(0)?))
+                        };
+                        if let Some(tt) = p.peek() {
+                            return Err(Error::new(
+                                tt.span(),
+                                "unexpected trailing tokens in CondRefOf",
+                            ));
+                        }
+                        Ok(DslExpr::CondRefOf(Box::new(a), b))
                     }
                     "Index" => {
                         self.advance();

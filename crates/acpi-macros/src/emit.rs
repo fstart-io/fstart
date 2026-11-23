@@ -719,7 +719,11 @@ fn encode_expr(expr: &DslExpr) -> Result<Encoded> {
         DslExpr::SizeOf(inner) => op_args(&[0x87], [encode_expr(inner)?]),
         DslExpr::DeRefOf(inner) => op_args(&[0x83], [encode_expr(inner)?]),
         DslExpr::CondRefOf(source, target) => {
-            op_args(&[0x5b, 0x12], [encode_expr(source)?, encode_expr(target)?])
+            let target = match target {
+                Some(expr) => encode_expr(expr)?,
+                None => Encoded::byte(0),
+            };
+            op_args(&[0x5b, 0x12], [encode_expr(source)?, target])
         }
         DslExpr::Index(source, index) => op_args(
             &[0x88],
