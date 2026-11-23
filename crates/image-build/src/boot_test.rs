@@ -149,6 +149,9 @@ pub struct BootTest {
     pub reject: Vec<String>,
     /// Boot deadline in seconds, when the runner's default is too short.
     pub timeout: Option<u64>,
+    /// Standalone software TPM attached without requiring guest measured-boot assets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm: Option<Tpm>,
     pub measured: Option<MeasuredBoot>,
 }
 
@@ -163,6 +166,7 @@ impl BootTest {
             expect: Vec::new(),
             reject: Vec::new(),
             timeout: None,
+            tpm: None,
             measured: None,
         }
     }
@@ -207,6 +211,12 @@ impl BootTest {
     #[must_use]
     pub fn timeout(mut self, seconds: u64) -> Self {
         self.timeout = Some(seconds);
+        self
+    }
+
+    #[must_use]
+    pub fn tpm(mut self, tpm: Tpm) -> Self {
+        self.tpm = Some(tpm);
         self
     }
 

@@ -51,7 +51,7 @@ fn validate(recipe: &RunRecipe) -> Result<(), String> {
         if test.expect.is_empty() {
             return Err(format!("boot test {name}: expects nothing"));
         }
-        if test.measured.is_some() && recipe.tpm.is_none() {
+        if (test.measured.is_some() || test.tpm.is_some()) && recipe.tpm.is_none() {
             return Err(format!("boot test {name}: the machine has no TPM device"));
         }
     }
@@ -198,8 +198,13 @@ impl Runner {
             }
             None => None,
         };
-        let swtpm = match &test.measured {
-            Some(measured) => match crate::swtpm::Swtpm::start(&measured.tpm) {
+        let tpm_spec = test
+            .measured
+            .as_ref()
+            .map(|measured| &measured.tpm)
+            .or(test.tpm.as_ref());
+        let swtpm = match tpm_spec {
+            Some(tpm) => match crate::swtpm::Swtpm::start(tpm) {
                 Ok(swtpm) => Some(swtpm),
                 Err(e) => return Verdict::Fail(format!("swtpm: {e}")),
             },
@@ -210,6 +215,7 @@ impl Runner {
             disk: disk.as_deref(),
             smp: test.smp.as_deref(),
             tpm: socket.as_deref(),
+            fresh_rw_pflash: true,
             ..Default::default()
         };
         let command = crate::qemu::command(&built.recipe, &built.image, &built.external, &launch);

@@ -7,13 +7,21 @@ use fstart_core::memory::{FlashLayout, IntelIfdFlashLayout};
 use fstart_core::{BoardConfig, FdtSource, FirmwareImagePolicy, RunsFrom, StageLayout};
 use fstart_ffs::builder::{
     BootRootConfig, ExternalInputFile, FfsImageConfig, InputFile, InputRegion, InputSegment,
-    build_image_with_root, finalize_initial_stage,
+    build_image_with_root, build_rw_slot_image_with_root, finalize_initial_stage,
 };
 use object::elf;
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader};
 use std::path::{Path, PathBuf};
 
 use crate::StageBinary;
+
+/// Root versioning and RW-slot layout options for [`assemble`].
+pub struct FfsRootOptions<'a> {
+    pub fw_version: u32,
+    pub security_version: u64,
+    pub rw_slot: bool,
+    pub omit_stages: &'a [String],
+}
 
 #[allow(clippy::too_many_arguments)] // fbuild's flat assemble options
 pub fn assemble(
@@ -31,7 +39,46 @@ pub fn assemble(
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
     boot_format: crate::build_plan::BootImageFormat,
     signing_key: Option<&Path>,
+    root_opts: &FfsRootOptions<'_>,
 ) -> Result<PathBuf, String> {
+    assemble_with_trust(
+        files,
+        workspace_root,
+        board_dir,
+        config,
+        stage_binaries,
+        output_dir,
+        kernel_path,
+        firmware_path,
+        fit_path,
+        dtb_path,
+        payload_files,
+        bootstrap,
+        boot_format,
+        signing_key,
+        root_opts,
+    )
+    .map(|(path, _)| path)
+}
+
+#[allow(clippy::too_many_arguments)] // fbuild's flat assemble options
+pub fn assemble_with_trust(
+    files: &dyn Files,
+    workspace_root: &Path,
+    board_dir: &Path,
+    config: &BoardConfig,
+    stage_binaries: &[StageBinary],
+    output_dir: Option<&Path>,
+    kernel_path: Option<&str>,
+    firmware_path: Option<&str>,
+    fit_path: Option<&str>,
+    dtb_path: Option<&str>,
+    payload_files: &[(String, String)],
+    bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
+    boot_format: crate::build_plan::BootImageFormat,
+    signing_key: Option<&Path>,
+    root_opts: &FfsRootOptions<'_>,
+) -> Result<(PathBuf, [u8; fstart_core::ffs::trust::TRUST_SIZE]), String> {
     let (signing_key, verification_key) = load_signing_key(files, signing_key, config)?;
 
     let mut ro_files = Vec::new();
@@ -61,6 +108,13 @@ pub fn assemble(
         }
         StageLayout::MultiStage(stages) => {
             for (i, stage_bin) in stage_binaries.iter().enumerate() {
+                if root_opts
+                    .omit_stages
+                    .iter()
+                    .any(|omit| omit == &stage_bin.name)
+                {
+                    continue;
+                }
                 if i == 0 {
                     let mut bin_data = files.read(Path::new(&stage_bin.run_path)).map_err(|e| {
                         format!("failed to read {}: {e}", stage_bin.run_path.display())
@@ -89,7 +143,10 @@ pub fn assemble(
                             format!("stage '{}' missing from board config", stage_bin.name)
                         })?;
                     let compression = stage_cfg.compression;
+                    let is_bootstrap =
+                        bootstrap.is_some_and(|b| b.iter().any(|(n, _)| n == &stage_bin.name));
                     if compression != Compression::None
+                        && !(root_opts.rw_slot && is_bootstrap)
                         && !stage_loaded_via_stage_load(stages, &stage_bin.name)
                     {
                         return Err(format!(
@@ -228,8 +285,8 @@ pub fn assemble(
     let family_digest = fstart_crypto::digest::hash_sha256(config.name.as_bytes());
     let root_config = BootRootConfig {
         image_family: family_digest[..16].try_into().unwrap(),
-        security_version: 0,
-        fw_version: 0,
+        security_version: root_opts.security_version,
+        fw_version: root_opts.fw_version,
         bootstrap: match bootstrap {
             Some(bindings) => bindings
                 .iter()
@@ -250,9 +307,15 @@ pub fn assemble(
                 .collect(),
         },
     };
-    eprintln!("[fstart] security version 0; no rollback protection");
+    if root_opts.security_version == 0 {
+        eprintln!("[fstart] security version 0; no rollback protection");
+    }
     let sign = |manifest_bytes: &[u8]| sign_with_ed25519(&signing_key, manifest_bytes);
-    let mut ffs_image = build_image_with_root(&image_config, &root_config, &sign)?;
+    let mut ffs_image = if root_opts.rw_slot {
+        build_rw_slot_image_with_root(&image_config, &root_config, &sign)?
+    } else {
+        build_image_with_root(&image_config, &root_config, &sign)?
+    };
 
     if boot_format == crate::build_plan::BootImageFormat::AllwinnerEgon {
         let total_size = u32::try_from(ffs_image.image.len()).map_err(|_| "image exceeds u32")?;
@@ -371,7 +434,7 @@ pub fn assemble(
         )
     );
 
-    Ok(out_path)
+    Ok((out_path, ffs_image.trust_bytes))
 }
 
 fn ffs_input_regions(

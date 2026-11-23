@@ -211,6 +211,10 @@ pub fn resolve(
             flash_image: None,
             ..Default::default()
         },
+        fw_version: 0,
+        security_version: 0,
+        rw_slot: false,
+        omit_stages: vec![],
     };
     let mut inputs = Vec::new();
     if linux {

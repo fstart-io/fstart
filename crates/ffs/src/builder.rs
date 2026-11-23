@@ -209,6 +209,36 @@ pub fn build_image_with_root<F>(
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
+    build_image_internal(config, root_config, sign, false)
+}
+
+/// Build a self-contained RW slot FFS image whose 512-byte signed [`Root`]
+/// starts at byte offset `0`.
+///
+/// All regions and files begin at offset [`ROOT_SIZE`] (512), followed by the
+/// authenticated directory. This matches the slot-relative layout expected by
+/// RO slot selection (`fstart_stage::slot::select_slot`), CrabEFI preflight
+/// verification (`FstartCapsuleBackend`), and UEFI FMP capsule assembly.
+pub fn build_rw_slot_image_with_root<F>(
+    config: &FfsImageConfig,
+    root_config: &BootRootConfig,
+    sign: &F,
+) -> Result<FfsImage, String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+{
+    build_image_internal(config, root_config, sign, true)
+}
+
+fn build_image_internal<F>(
+    config: &FfsImageConfig,
+    root_config: &BootRootConfig,
+    sign: &F,
+    root_at_start: bool,
+) -> Result<FfsImage, String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+{
     let mut patched = config.clone();
     let (patched_inputs, trust_bytes) = trust::finalize_trust(&mut patched, root_config)?;
     let config = &patched;
@@ -231,7 +261,11 @@ where
             return Err("duplicate bootstrap name or role".into());
         }
     }
-    let mut image: Vec<u8> = Vec::new();
+    let mut image: Vec<u8> = if root_at_start {
+        vec![0u8; ROOT_SIZE]
+    } else {
+        Vec::new()
+    };
     let mut file_data: Vec<FileDataLocation> = Vec::new();
 
     // ---- Phase 1: Lay out all regions ----
@@ -423,9 +457,14 @@ where
     let directory_bytes = crate::directory::encode_manifest(&manifest)?;
     let directory_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
     image.extend_from_slice(&directory_bytes);
-    let root_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
     let root_size = ROOT_SIZE as u32;
-    image.resize(image.len() + ROOT_SIZE, 0);
+    let root_offset = if root_at_start {
+        0u32
+    } else {
+        let off = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
+        image.resize(image.len() + ROOT_SIZE, 0);
+        off
+    };
 
     // ---- Phase 3: Build anchor and patch it into the bootblock binary ----
     if config.keys.len() > TRUST_MAX_KEYS {

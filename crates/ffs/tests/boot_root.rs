@@ -248,3 +248,71 @@ fn populated_directory_golden_round_trip() {
         golden
     );
 }
+
+#[test]
+fn rw_slot_image_places_signed_root_at_offset_zero() {
+    use fstart_ffs::builder::build_rw_slot_image_with_root;
+    use fstart_ffs::root::ROOT_SIZE;
+
+    let signing = SigningKey::from_bytes(&[7; 32]);
+    let key = VerificationKey::ed25519(0, signing.verifying_key().to_bytes());
+    let mut mainstage = vec![0u8; 4096];
+    for (i, b) in mainstage.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(31);
+    }
+    let config = FfsImageConfig {
+        keys: vec![key],
+        regions: vec![InputRegion::Container {
+            name: "ro".into(),
+            files: vec![InputFile {
+                name: "ramstage".into(),
+                file_type: FileType::StageCode,
+                segments: vec![InputSegment {
+                    name: ".flat".into(),
+                    kind: SegmentKind::Code,
+                    data: mainstage.clone(),
+                    mem_size: None,
+                    load_addr: 0x0100_0000,
+                    compression: Compression::Lz4,
+                    flags: SegmentFlags::CODE,
+                }],
+            }],
+        }],
+    };
+    let root_config = BootRootConfig {
+        image_family: [0x55; 16],
+        security_version: 3,
+        fw_version: 42,
+        bootstrap: vec![("ramstage".into(), BootstrapRole::Mainstage)],
+    };
+    let built = build_rw_slot_image_with_root(&config, &root_config, &|bytes| {
+        Ok(Signature::ed25519(0, signing.sign(bytes).to_bytes()))
+    })
+    .unwrap();
+
+    let keys = [key];
+    let policy = RootPolicy {
+        image_family: [0x55; 16],
+        minimum_security_version: 3,
+        image_size: built.image.len() as u64,
+        max_directory_size: 65536,
+        keys: &keys,
+    };
+    let auth = authenticate_root(&policy, &built.image[..ROOT_SIZE]).unwrap();
+    assert_eq!(auth.root().fw_version, 42);
+    assert_eq!(auth.root().security_version, 3);
+    let desc = auth.descriptors()[0].unwrap();
+    assert_eq!(desc.role, BootstrapRole::Mainstage);
+    assert!(desc.offset >= ROOT_SIZE as u64);
+    let stored = &built.image[desc.offset as usize..(desc.offset + desc.stored_size) as usize];
+    verify_digest(stored, &desc.stored_digest).unwrap();
+    let mut loaded = vec![0u8; desc.loaded_size as usize];
+    assert_eq!(
+        fstart_ffs::lz4::decompress_block(stored, &mut loaded).unwrap(),
+        mainstage.len()
+    );
+    assert_eq!(loaded, mainstage);
+    let dir_ref = auth.directory();
+    let dir_bytes = &built.image[dir_ref.offset as usize..(dir_ref.offset + dir_ref.size) as usize];
+    dir_ref.verify_bytes(dir_bytes).unwrap();
+}

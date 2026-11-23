@@ -22,13 +22,43 @@ pub enum DigestError {
 /// Returns a 32-byte digest.
 #[cfg(any(feature = "sha2-digest", test))]
 pub fn hash_sha256(data: &[u8]) -> [u8; 32] {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = Sha256Hasher::new();
     hasher.update(data);
-    let result = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&result);
-    out
+    hasher.finalize()
+}
+
+/// Streaming SHA-256 hasher for stack-bounded verification of large flash payloads.
+#[cfg(any(feature = "sha2-digest", test))]
+pub struct Sha256Hasher(sha2::Sha256);
+
+#[cfg(any(feature = "sha2-digest", test))]
+impl Sha256Hasher {
+    #[must_use]
+    pub fn new() -> Self {
+        use sha2::Digest;
+        Self(sha2::Sha256::new())
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        use sha2::Digest;
+        self.0.update(data);
+    }
+
+    #[must_use]
+    pub fn finalize(self) -> [u8; 32] {
+        use sha2::Digest;
+        let result = self.0.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&result);
+        out
+    }
+}
+
+#[cfg(any(feature = "sha2-digest", test))]
+impl Default for Sha256Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Compute a SHA3-256 digest of `data`.

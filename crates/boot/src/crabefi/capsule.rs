@@ -40,6 +40,56 @@ struct StagedSlot {
     root_digest: [u8; 32],
 }
 
+/// `EFI_GLOBAL_VARIABLE` GUID (`8be4df61-93ca-11d2-aa0d-00e098032b8c`).
+const EFI_GLOBAL_VARIABLE_GUID: [u8; 16] = [
+    0x61, 0xdf, 0xe4, 0x8b, 0xca, 0x93, 0xd2, 0x11, 0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c,
+];
+
+/// `EFI_OS_INDICATIONS_FILE_CAPSULE_DELIVERY_SUPPORTED` (UEFI §8.5.5).
+const EFI_OS_INDICATIONS_FILE_CAPSULE: u64 = 0x0000_0000_0000_0004;
+
+/// Inspect a raw EDK2 variable-store flash image and report whether
+/// `OsIndications` requests Capsule-on-Disk processing on this boot.
+///
+/// Platforms use this after trial confirmation to lock SPI flash immediately
+/// on normal (non-capsule) boots before entering CrabEFI or launching any
+/// third-party EFI code.
+pub fn nvram_requests_file_capsule(nvram: &[u8]) -> bool {
+    let header_len = crabefi_efi_types::varstore::FV_HEADER_LENGTH
+        + crabefi_efi_types::varstore::VS_HEADER_LENGTH;
+    if nvram.len() < header_len {
+        return false;
+    }
+    if crabefi_efi_types::varstore::validate(&nvram[..header_len], nvram.len() as u32).is_none() {
+        return false;
+    }
+    const NAME: [u16; 13] = [
+        b'O' as u16,
+        b's' as u16,
+        b'I' as u16,
+        b'n' as u16,
+        b'd' as u16,
+        b'i' as u16,
+        b'c' as u16,
+        b'a' as u16,
+        b't' as u16,
+        b'i' as u16,
+        b'o' as u16,
+        b'n' as u16,
+        b's' as u16,
+    ];
+    let mut buf = [0u8; 8];
+    match crabefi_efi_types::varstore::read_variable_data_from_region(
+        nvram,
+        &EFI_GLOBAL_VARIABLE_GUID,
+        &NAME,
+        &mut buf,
+    ) {
+        Some(8) => (u64::from_le_bytes(buf) & EFI_OS_INDICATIONS_FILE_CAPSULE) != 0,
+        _ => false,
+    }
+}
+
 /// Configuration for [`FstartCapsuleBackend`], derived from RO's `TrustBlock`
 /// and authenticated slot handoff.
 pub struct CapsuleConfig<'a> {
@@ -50,6 +100,10 @@ pub struct CapsuleConfig<'a> {
     pub running_sec_version: u64,
     pub running_root_digest: [u8; 32],
     pub effective_floor: u64,
+    /// Whether a hardware TPM rollback floor NV index is active. When `false`
+    /// (demo/non-TPM builds), trial confirmation marks the slot `Stable`
+    /// directly instead of entering `Phase::FloorPending`.
+    pub has_tpm_floor: bool,
     pub trial_active: bool,
     pub sync_pending: bool,
     pub image_family: [u8; 16],
@@ -67,6 +121,7 @@ pub struct FstartCapsuleBackend<'a, F, L> {
     running_sec_version: u64,
     running_root_digest: [u8; 32],
     effective_floor: u64,
+    has_tpm_floor: bool,
     trial_active: bool,
     sync_pending: bool,
     image_family: [u8; 16],
@@ -132,6 +187,7 @@ impl<'a, F: FlashRegion, L: FnMut() -> Result<(), StorageError>> FstartCapsuleBa
             running_sec_version: config.running_sec_version,
             running_root_digest: config.running_root_digest,
             effective_floor: config.effective_floor,
+            has_tpm_floor: config.has_tpm_floor,
             trial_active: config.trial_active,
             sync_pending: config.sync_pending,
             image_family: config.image_family,
@@ -233,7 +289,8 @@ impl<'a, F: FlashRegion, L: FnMut() -> Result<(), StorageError>> FstartCapsuleBa
         if !self.trial_active && !self.sync_pending {
             return Ok(false);
         }
-        let needs_floor_bump = self.running_sec_version > self.effective_floor;
+        let needs_floor_bump =
+            self.has_tpm_floor && self.running_sec_version > self.effective_floor;
         let mut sync_done = false;
 
         let running_slot = self.running_slot;
@@ -288,16 +345,26 @@ impl<'a, F: FlashRegion, L: FnMut() -> Result<(), StorageError>> FstartCapsuleBa
                     .read(src_off, &mut src_buf)
                     .map_err(map_service_error)?;
                 self.flash
-                    .erase(dst_off, SECTOR_SIZE as u32)
-                    .map_err(map_service_error)?;
-                self.flash
-                    .program(dst_off, &src_buf)
-                    .map_err(map_service_error)?;
-                self.flash
                     .read(dst_off, &mut dst_buf)
                     .map_err(map_service_error)?;
                 if dst_buf != src_buf {
-                    return Err(StorageError::IoError);
+                    self.flash
+                        .erase(dst_off, SECTOR_SIZE as u32)
+                        .map_err(map_service_error)?;
+                    if src_buf
+                        .iter()
+                        .any(|&b| b != fstart_ffs::slot_state::ERASED_BYTE)
+                    {
+                        self.flash
+                            .program(dst_off, &src_buf)
+                            .map_err(map_service_error)?;
+                    }
+                    self.flash
+                        .read(dst_off, &mut dst_buf)
+                        .map_err(map_service_error)?;
+                    if dst_buf != src_buf {
+                        return Err(StorageError::IoError);
+                    }
                 }
                 off += SECTOR_SIZE as u32;
             }
@@ -418,11 +485,31 @@ impl<F: FlashRegion, L: FnMut() -> Result<(), StorageError>> CapsuleBackend
             max_directory_size: 64 * 1024,
             keys: self.root_keys,
         };
-        let auth = authenticate_root(&policy, &data[..ROOT_SIZE])
-            .map_err(|_| StorageError::InvalidArgument)?;
+        let auth = authenticate_root(&policy, &data[..ROOT_SIZE]).map_err(|err| {
+            let reason = match err {
+                fstart_ffs::root::RootError::InvalidFormat => "InvalidFormat",
+                fstart_ffs::root::RootError::UnsupportedVersion => "UnsupportedVersion",
+                fstart_ffs::root::RootError::OutOfBounds => "OutOfBounds",
+                fstart_ffs::root::RootError::PolicyRejected => "PolicyRejected",
+                fstart_ffs::root::RootError::SignatureInvalid => "SignatureInvalid",
+                fstart_ffs::root::RootError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
+                fstart_ffs::root::RootError::DigestMismatch => "DigestMismatch",
+            };
+            fstart_log::warn!(
+                "fstart capsule: rejected RW Root preflight (floor={}, err={})",
+                self.effective_floor,
+                reason
+            );
+            StorageError::InvalidArgument
+        })?;
         let fw_version = auth.root().fw_version;
         let sec_version = auth.root().security_version;
         if fw_version < self.firmware_info.lowest_supported_version {
+            fstart_log::warn!(
+                "fstart capsule: rejected fw_version={} < LSV={}",
+                fw_version,
+                self.firmware_info.lowest_supported_version
+            );
             return Err(StorageError::InvalidArgument);
         }
         let root_digest = fstart_crypto::digest::hash_sha256(&data[..ROOT_SIZE]);
@@ -452,9 +539,15 @@ impl<F: FlashRegion, L: FnMut() -> Result<(), StorageError>> CapsuleBackend
         self.flash
             .erase(extent.offset, extent.size)
             .map_err(map_service_error)?;
-        self.flash
-            .program(extent.offset, data)
-            .map_err(map_service_error)?;
+        let programmed_len = data
+            .iter()
+            .rposition(|&b| b != fstart_ffs::slot_state::ERASED_BYTE)
+            .map_or(0, |last| last + 1);
+        if programmed_len > 0 {
+            self.flash
+                .program(extent.offset, &data[..programmed_len])
+                .map_err(map_service_error)?;
+        }
 
         let staged = StagedSlot {
             target,
@@ -688,6 +781,7 @@ mod tests {
                 running_sec_version: 1,
                 running_root_digest: dig_v1,
                 effective_floor: 1,
+                has_tpm_floor: true,
                 trial_active: false,
                 sync_pending: false,
                 image_family: *b"MJ11-TEST-FAMILY",
@@ -770,6 +864,7 @@ mod tests {
                 running_sec_version: 2,
                 running_root_digest: dig_v2,
                 effective_floor: 1,
+                has_tpm_floor: true,
                 trial_active: true,
                 sync_pending: false,
                 image_family: *b"MJ11-TEST-FAMILY",
@@ -838,6 +933,7 @@ mod tests {
                 running_sec_version: 1,
                 running_root_digest: dig_v1,
                 effective_floor: 1,
+                has_tpm_floor: true,
                 trial_active: false,
                 sync_pending: false,
                 image_family: *b"MJ11-TEST-FAMILY",
@@ -902,6 +998,7 @@ mod tests {
                 running_sec_version: 0,
                 running_root_digest: [0; 32],
                 effective_floor: 1,
+                has_tpm_floor: true,
                 trial_active: false,
                 sync_pending: false,
                 image_family: *b"MJ11-TEST-FAMILY",

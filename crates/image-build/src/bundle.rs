@@ -322,6 +322,8 @@ impl Bundle {
                 payload_files: &payload_files,
                 signing_key: supplied.signing_key.map(|_| key_path),
                 settings: &supplied.settings,
+                fw_version: None,
+                security_version: None,
             },
         )?;
         let mut outputs: BTreeMap<String, Vec<u8>> = (files.0.into_inner().into_iter())

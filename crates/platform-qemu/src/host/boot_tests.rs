@@ -108,6 +108,34 @@ pub(super) fn boot_tests(machine: VirtMachine) -> Vec<BootTest> {
         ],
         // 32-bit stages on a CPU without long mode (-cpu coreduo).
         VirtMachine::Q35ProtectedMode => vec![halt(), smm("halt-smp2", 2, "")],
+        // Two-stage RO/A/B over dual RO/RW pflash_cfi01 with swtpm + CrabEFI Capsule-on-Disk.
+        VirtMachine::Q35Ab => {
+            let tpm20 = || Tpm {
+                family: Tpm20,
+                banks: vec![Sha1, Sha256],
+            };
+            vec![
+                halt()
+                    .tpm(tpm20())
+                    .expect("qemu-q35-ab ro: entered")
+                    .expect("qemu-q35-ab ro: provisioned TPM rollback floor = 1")
+                    .expect("qemu-q35-ab ro: TPM rollback floor locked")
+                    .expect("qemu-q35-ab ro: selected slot A")
+                    .expect(PCI_ROOT_READY),
+                uefi()
+                    .tpm(tpm20())
+                    .expect("qemu-q35-ab ro: provisioned TPM rollback floor = 1")
+                    .expect("qemu-q35-ab ro: TPM rollback floor locked")
+                    .expect("qemu-q35-ab ro: selected slot A")
+                    .expect(RAMSTAGE_ENTERED)
+                    .expect("qemu-q35-ab ramstage: flash write-locked for normal boot")
+                    .expect("Default keys enrolled and persisted successfully")
+                    .expect("OsIndicationsSupported set: FW_UI=false, FMP=true, FileCapsule=true"),
+                measured("tpm20-crabefi", "uefi", Tpm20, &[Sha1, Sha256])
+                    .expect("qemu-q35-ab ro: provisioned TPM rollback floor = 1")
+                    .expect("qemu-q35-ab ro: TPM rollback floor locked"),
+            ]
+        }
         VirtMachine::Riscv64 => vec![
             halt().expect(PCI_ROOT_READY),
             linux(Asset::Riscv64Linux).input(FfsAssembly::FIRMWARE, Asset::OpenSbi),

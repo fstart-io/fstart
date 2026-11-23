@@ -167,6 +167,10 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             flash_image: Some(FirmwareImagePolicy::memory_mapped(flash.base, flash.size)),
             ..Default::default()
         },
+        fw_version: 0,
+        security_version: 0,
+        rw_slot: false,
+        omit_stages: vec![],
     };
     // The payload ELF; the assembler enforces what actually fits.
     let inputs: Vec<InputFile> = if elf {

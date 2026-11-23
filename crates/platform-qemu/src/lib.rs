@@ -6,7 +6,17 @@
 extern crate alloc;
 extern crate ufmt;
 
-#[cfg(feature = "stage")]
+#[cfg(all(
+    feature = "stage",
+    any(
+        feature = "bundle-q35",
+        feature = "bundle-sbsa",
+        feature = "bundle-sifive-u",
+        feature = "virt-riscv64",
+        feature = "virt-aarch64",
+        feature = "armv7",
+    )
+))]
 mod boot;
 #[cfg(any(
     test,
@@ -70,7 +80,17 @@ macro_rules! entry {
     };
 }
 
+/// Declare a fixed-DRAM x86_64 stage `main` entered via `_start_ram`
+/// (without emitting the x86 reset vector).
+#[macro_export]
+macro_rules! entry_ram {
+    ($main:path) => {
+        $crate::stage_runtime::stage_bin!(main: $main);
+    };
+}
+
 pub mod fw_cfg;
+pub mod pflash;
 pub mod sbsa;
 pub mod sifive_u;
 pub mod virt;
@@ -104,6 +124,7 @@ pub use sbsa::QemuSbsaMainstage;
 pub use sifive_u::QemuSifiveUMainstage;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
+pub mod q35_ab;
 #[cfg(all(
     feature = "smm",
     any(feature = "stage", test),

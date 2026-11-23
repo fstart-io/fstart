@@ -5,15 +5,16 @@ use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
+        ArtifactBinding, BootImageFormat, BootstrapRole, BuildPlan, CargoTarget, CompilationUnit,
         FfsAssembly as Assembly, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit,
         UnitOutput,
     },
+    capsule::AbSlotLayout,
     layout::EncodedLayout,
     linker::Xip,
-    plan::{BuildSelection, HostPlan, NoOptions, PlanError, ResolvedPlan, Span},
+    plan::{BuildSelection, HostPlan, PlanError, ResolvedPlan, Span, option_value},
     run::{RunArtifact, RunDisk, RunMedia, RunRecipe},
-    x86_flash::X86FlashAssembly,
+    x86_flash::{X86AbFlashAssembly, X86FlashAssembly},
 };
 use std::{
     boxed::Box,
@@ -25,12 +26,29 @@ use std::{
 
 mod boot_tests;
 
+/// Optional A/B build parameters accepted by [`VirtMachine::Q35Ab`].
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct QemuOptions {
+    #[serde(rename = "fw-version", deserialize_with = "option_value::integer")]
+    pub fw_version: Option<u64>,
+    #[serde(
+        rename = "security-version",
+        deserialize_with = "option_value::integer"
+    )]
+    pub security_version: Option<u64>,
+    #[serde(rename = "dev-keys", deserialize_with = "option_value::flag")]
+    pub dev_keys: bool,
+    #[serde(rename = "fail-trial", deserialize_with = "option_value::flag")]
+    pub fail_trial: bool,
+}
+
 pub struct Plan<B>(core::marker::PhantomData<B>);
 impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
-    type Options = NoOptions;
+    type Options = QemuOptions;
 
-    fn resolve(selection: BuildSelection, _: NoOptions) -> Result<ResolvedPlan, PlanError> {
-        resolve(B::MACHINE, selection)
+    fn resolve(selection: BuildSelection, options: QemuOptions) -> Result<ResolvedPlan, PlanError> {
+        resolve_with_options(B::MACHINE, selection, options)
     }
 }
 
@@ -65,7 +83,7 @@ impl VirtMachine {
             ));
         }
         Ok(match self {
-            Self::Q35 | Self::Q35ProtectedMode | Self::Sbsa | Self::SifiveU => {
+            Self::Q35 | Self::Q35ProtectedMode | Self::Q35Ab | Self::Sbsa | Self::SifiveU => {
                 return Err("QEMU machine is not a virt preset".into());
             }
             Self::Riscv64 => MachinePolicy {
@@ -307,11 +325,26 @@ fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
 }
 
 pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
+    resolve_with_options(machine, selection, QemuOptions::default())
+}
+
+pub fn resolve_with_options(
+    machine: VirtMachine,
+    selection: BuildSelection,
+    options: QemuOptions,
+) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
+    if !matches!(machine, VirtMachine::Q35Ab) && options != QemuOptions::default() {
+        return Err(
+            "fw-version, security-version, and fail-trial options are only supported on qemu-q35-ab"
+                .into(),
+        );
+    }
     match machine {
         VirtMachine::Riscv64 | VirtMachine::Armv7 | VirtMachine::Aarch64 => {
             resolve_virt(machine, selection)
         }
+        VirtMachine::Q35Ab => resolve_q35_ab(selection, options),
         VirtMachine::Q35
         | VirtMachine::Q35ProtectedMode
         | VirtMachine::Sbsa
@@ -459,6 +492,10 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             flash_image: Some(FirmwareImagePolicy::memory_mapped(flash.base, flash.size)),
             ..Default::default()
         },
+        fw_version: 0,
+        security_version: 0,
+        rw_slot: false,
+        omit_stages: vec![],
     };
     let inputs = [
         ("kernel", policy.kernel_file, kernel),
@@ -698,8 +735,8 @@ impl VirtMachine {
                 pci: false,
                 fdt: true,
             },
-            Self::Riscv64 | Self::Armv7 | Self::Aarch64 => {
-                return Err("virt machine has no QEMU policy row".into());
+            Self::Riscv64 | Self::Armv7 | Self::Aarch64 | Self::Q35Ab => {
+                return Err("virt/ab machine has no monolithic QEMU policy row".into());
             }
         })
     }
@@ -797,7 +834,7 @@ fn qemu_q35_linker_script(
     out.push_str("    .rodata : ALIGN(16) {\n        _rodata_start = .;\n        *(.rodata .rodata.* .lrodata .lrodata.*)\n        _rodata_end = .;\n    } > ROM\n");
     // Statically resolved GOT; i386 links always reserve a `.got.plt` header.
     out.push_str("    .got : ALIGN(8) { *(.got) *(.got.plt) } > ROM\n");
-    out.push_str("    .data : ALIGN(16) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        _data_end = .;\n    } > RAM AT > ROM\n    _data_load = LOADADDR(.data);\n");
+    out.push_str("    .data : ALIGN(16) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        *(.ramcode .ramcode.*)\n        _data_end = .;\n    } > RAM AT > ROM\n    _data_load = LOADADDR(.data);\n");
     out.push_str("    .bss (NOLOAD) : ALIGN(16) {\n        _bss_start = .;\n        *(.bss .bss.* .lbss .lbss.*)\n        *(COMMON)\n        _bss_end = .;\n    } > RAM\n");
     writeln!(
         out,
@@ -1080,6 +1117,10 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
                 .map(|f| FirmwareImagePolicy::memory_mapped(f.base, f.size)),
             ..Default::default()
         },
+        fw_version: 0,
+        security_version: 0,
+        rw_slot: false,
+        omit_stages: vec![],
     };
     let inputs = match (keep_firmware, &policy.linux) {
         // The payload ELF; the assembler enforces what actually fits.
@@ -1191,6 +1232,455 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             .collect(),
         inputs,
         run: Some(run),
+    };
+    plan.order()?;
+    Ok(plan)
+}
+
+/// Launch recipe for QEMU Q35 RO/A/B booting from an 8 MiB writable `pflash_cfi01`
+/// image with an emulated TIS TPM 2.0.
+fn q35_ab_recipe() -> RunRecipe {
+    RunRecipe {
+        qemu: "qemu-system-x86_64".into(),
+        machine: "q35".into(),
+        cpu: None,
+        accel_kvm: true,
+        memory: Some("1G".into()),
+        smp: Some("1".into()),
+        nographic: false,
+        media: vec![RunMedia::RoRwPflash {
+            artifact: RunArtifact::Step(X86_FLASH.into()),
+            rw_size: u64::from(crate::q35_ab::Q35_AB_RW_SIZE),
+            ro_size: crate::q35_ab::Q35_AB_RO_SIZE,
+        }],
+        devices: strings(&["bochs-display"]),
+        args: strings(&[
+            "-global",
+            "ICH9-LPC.disable_s3=1",
+            "-display",
+            "none",
+            "-chardev",
+            "stdio,id=char0,mux=on,signal=off",
+            "-serial",
+            "chardev:char0",
+            "-mon",
+            "chardev=char0,mode=readline",
+            "-vga",
+            "none",
+        ]),
+        disk: Some(RunDisk::Ide),
+        tpm: Some("tpm-tis".into()),
+        tests: boot_tests::boot_tests(VirtMachine::Q35Ab),
+    }
+}
+
+/// Fixed-DRAM x86_64 linker script for the authenticated RW `ramstage` loaded
+/// by `qemu-q35-ab`'s RO stage via `load_bootstrap` and entered at `_start_ram`.
+fn qemu_q35_ramstage_linker_script(
+    image: Span,
+    writable: Span,
+    heap: Span,
+    stack: Span,
+    descriptor: &EncodedLayout,
+) -> Result<String, String> {
+    use std::fmt::Write as _;
+    for range in [image, writable, heap, stack] {
+        range.end()?;
+        if range.base % 16 != 0 || range.size % 16 != 0 {
+            return Err("unaligned q35-ab ramstage reservation".into());
+        }
+    }
+    if !writable.contains(heap.base, heap.size)
+        || !writable.contains(stack.base, stack.size)
+        || heap.end()? != stack.base
+        || stack.end()? != writable.end()?
+    {
+        return Err("q35-ab ramstage heap/stack reservations overlap or are inconsistent".into());
+    }
+    let bss_len = heap.base - writable.base;
+    let mut out = String::new();
+    writeln!(
+        out,
+        "OUTPUT_ARCH(i386:x86-64)\nENTRY(_start_ram)\n_boot_hart_id = 0;\nMEMORY {{\n \
+         IMAGE (rwx) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
+         DATA (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
+         HEAP (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n \
+         STACK (rw) : ORIGIN = {:#x}, LENGTH = {:#x}\n}}",
+        image.base,
+        image.size,
+        writable.base,
+        bss_len,
+        heap.base,
+        heap.size,
+        stack.base,
+        stack.size
+    )
+    .map_err(|e| e.to_string())?;
+    out.push_str(
+        "SECTIONS\n{\n    .text : {\n        _text_start = .;\n        KEEP(*(.text.entry.ram))\n        *(.text .text.* .ltext .ltext.*)\n        _text_end = .;\n    } > IMAGE\n",
+    );
+    out.push_str(&fstart_image_build::linker::layout_section(
+        descriptor, "IMAGE",
+    ));
+    writeln!(
+        out,
+        "    .fstart.anchor : ALIGN(16) {{\n        _fstart_anchor_early = .;\n        *(.fstart.anchor)\n        _fstart_early_microcode_enabled = .;\n        LONG(0)\n        . = ALIGN(8);\n        _FSTART_HEAP_SIZE = .;\n        QUAD({:#x})\n    }} > IMAGE\n",
+        heap.size
+    )
+    .map_err(|e| e.to_string())?;
+    out.push_str("    .rodata : ALIGN(16) {\n        _rodata_start = .;\n        *(.rodata .rodata.* .lrodata .lrodata.*)\n        _rodata_end = .;\n    } > IMAGE\n");
+    out.push_str("    .data.rel.ro : ALIGN(8) { *(.data.rel.ro .data.rel.ro.*) } > IMAGE\n");
+    out.push_str("    .fstart.keep : ALIGN(8) { *(.fstart.keep) } > IMAGE\n");
+    out.push_str("    .got : ALIGN(8) { *(.got) *(.got.plt) } > IMAGE\n");
+    out.push_str("    .data : ALIGN(16) {\n        _data_start = .;\n        *(.data .data.* .ldata .ldata.*)\n        *(.ramcode .ramcode.*)\n        _data_end = .;\n    } > IMAGE\n    _data_load = LOADADDR(.data);\n");
+    out.push_str("    .bss (NOLOAD) : ALIGN(16) {\n        _bss_start = .;\n        *(.bss .bss.* .lbss .lbss.*)\n        *(COMMON)\n        . = ALIGN(8);\n        _bss_end = .;\n    } > DATA\n");
+    writeln!(
+        out,
+        "    .fstart.heap (NOLOAD) : ALIGN(16) {{\n        _FSTART_HEAP = .;\n        . = . + {:#x};\n    }} > HEAP\n",
+        heap.size
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(
+        out,
+        "    .stack (NOLOAD) : ALIGN(16) {{\n        _stack_bottom = .;\n        . = . + {:#x};\n        . = ALIGN(16);\n        _stack_top = .;\n        _writable_end = .;\n    }} > STACK\n",
+        stack.size
+    )
+    .map_err(|e| e.to_string())?;
+    out.push_str("\n    /* x86 CAR/postcar symbols (CAR disabled) */\n    _has_car = 0;\n    _car_base = 0;\n    _car_size = 0;\n    _ecar_stack = _stack_top;\n    _rom_mtrr_base = 0;\n    _rom_mtrr_mask = 0;\n    _binary_end = _data_end;\n");
+    out.push_str(
+        "    ASSERT(_data_end <= ORIGIN(IMAGE) + LENGTH(IMAGE), \"ramstage image exceeds capacity\")\n",
+    );
+    out.push_str(
+        "    ASSERT(_bss_end <= ORIGIN(HEAP), \"ramstage BSS exceeds resolved capacity\")\n}\n",
+    );
+    Ok(out)
+}
+
+fn resolve_q35_ab(selection: BuildSelection, options: QemuOptions) -> Result<BuildPlan, PlanError> {
+    use crate::q35_ab::*;
+    use fstart_core::layout::RegionKind as Kind;
+    use fstart_image_build::elf::{Architecture, Descriptor, Expectations};
+
+    let payload = selection.payload.unwrap_or_else(|| "halt".into());
+    if !matches!(payload.as_str(), "halt" | "uefi") {
+        return Err(PlanError::unsupported_payload(
+            "qemu-q35-ab supports halt and uefi payloads",
+        ));
+    }
+
+    let fw_version = match options.fw_version {
+        Some(v) => u32::try_from(v).map_err(|_| "fw-version exceeds u32")?,
+        None => 1,
+    };
+    let security_version = options.security_version.unwrap_or(1);
+
+    let flash = span(Q35_AB_FLASH_BASE, Q35_AB_FLASH_SIZE);
+    let ro_rom = span(Q35_AB_RO_BASE, Q35_AB_RO_SIZE);
+    let ro_ram = span(Q35_AB_RO_RAM_BASE, Q35_AB_RO_RAM_SIZE);
+    let (ro_stack, ro_heap) = qemu_stack_heap(ro_ram, Q35_AB_RO_STACK_SIZE, Q35_AB_RO_HEAP_SIZE)?;
+
+    let ro_regions = vec![
+        ro_ram.region(Kind::Writable),
+        ro_stack.region(Kind::Stack),
+        ro_heap.region(Kind::Heap),
+        ro_rom.region(Kind::Image),
+        flash.region(Kind::Flash),
+    ];
+    let ro_descriptor = EncodedLayout::encode(0, &ro_regions).map_err(|e| e.to_string())?;
+    let ro_script = qemu_q35_linker_script(
+        Platform::X86_64,
+        ro_rom,
+        ro_ram,
+        ro_heap,
+        ro_stack,
+        0,
+        &ro_descriptor,
+    )?;
+    let ro_expectations = Expectations {
+        architecture: Architecture::X86_64,
+        elf64: true,
+        little_endian: true,
+        stored: vec![ro_rom],
+        runtime: vec![ro_rom, ro_ram],
+        identity_mapping: false,
+        entry: Some(0xffff_fff0),
+        copy: None,
+        descriptor: Some(Descriptor {
+            section: ".fstart.layout".into(),
+            start_symbol: "_fstart_layout_start".into(),
+            end_symbol: "_fstart_layout_end".into(),
+            bytes: ro_descriptor.as_bytes().to_vec(),
+            reservation: ro_rom,
+        }),
+        stored_flags: None,
+        symbols: BTreeMap::from([
+            ("_stack_bottom".into(), ro_stack.base),
+            ("_stack_top".into(), ro_stack.end()?),
+            ("_FSTART_HEAP".into(), ro_heap.base),
+        ]),
+    };
+    ro_expectations.validate().map_err(|e| e.to_string())?;
+
+    let ramstage_image = span(Q35_AB_RAMSTAGE_LOAD_ADDR, Q35_AB_RAMSTAGE_IMAGE_SIZE);
+    let ramstage_writable_base = ramstage_image.end()?;
+    let ramstage_writable = span(
+        ramstage_writable_base,
+        Q35_AB_RAMSTAGE_RAM_END
+            .checked_sub(ramstage_writable_base)
+            .ok_or("ramstage writable range underflow")?,
+    );
+    let (ramstage_stack, ramstage_heap) = qemu_stack_heap(
+        ramstage_writable,
+        Q35_AB_RAMSTAGE_STACK_SIZE,
+        Q35_AB_RAMSTAGE_HEAP_SIZE,
+    )?;
+    let ramstage_regions = vec![
+        ramstage_image.region(Kind::Image),
+        ramstage_writable.region(Kind::Writable),
+        ramstage_stack.region(Kind::Stack),
+        ramstage_heap.region(Kind::Heap),
+        flash.region(Kind::Flash),
+    ];
+    let ramstage_descriptor =
+        EncodedLayout::encode(0, &ramstage_regions).map_err(|e| e.to_string())?;
+    let ramstage_script = qemu_q35_ramstage_linker_script(
+        ramstage_image,
+        ramstage_writable,
+        ramstage_heap,
+        ramstage_stack,
+        &ramstage_descriptor,
+    )?;
+    let ramstage_expectations = Expectations {
+        architecture: Architecture::X86_64,
+        elf64: true,
+        little_endian: true,
+        stored: vec![ramstage_image],
+        runtime: vec![ramstage_image, ramstage_writable],
+        identity_mapping: true,
+        entry: Some(Q35_AB_RAMSTAGE_LOAD_ADDR),
+        copy: None,
+        descriptor: Some(Descriptor {
+            section: ".fstart.layout".into(),
+            start_symbol: "_fstart_layout_start".into(),
+            end_symbol: "_fstart_layout_end".into(),
+            bytes: ramstage_descriptor.as_bytes().to_vec(),
+            reservation: ramstage_image,
+        }),
+        stored_flags: None,
+        symbols: BTreeMap::from([
+            ("_stack_bottom".into(), ramstage_stack.base),
+            ("_stack_top".into(), ramstage_stack.end()?),
+            ("_FSTART_HEAP".into(), ramstage_heap.base),
+        ]),
+    };
+    ramstage_expectations
+        .validate()
+        .map_err(|e| e.to_string())?;
+
+    let rustflags = vec![
+        "-Zub-checks=no".into(),
+        "-Crelocation-model=static".into(),
+        "-Ccode-model=large".into(),
+        "--cfg".into(),
+        "curve25519_dalek_backend=\"serial\"".into(),
+    ];
+
+    const Q35_MP_MAX_CPUS: u16 = 256;
+    let mp_capacity =
+        || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
+
+    let mut ramstage_features = vec!["q35-ab-ramstage".into()];
+    if payload == "uefi" {
+        ramstage_features.push("payload-uefi".into());
+    }
+    if options.fail_trial && !options.dev_keys {
+        return Err("fail-trial requires dev-keys=true".into());
+    }
+    let mut ramstage_board_features = Vec::new();
+    if options.dev_keys {
+        ramstage_board_features.push("dev-keys".into());
+    }
+    if options.fail_trial {
+        ramstage_board_features.push("fail-trial".into());
+    }
+
+    let units = vec![
+        SmmUnit {
+            name: "smm".into(),
+            platform: Platform::X86_64,
+            features: vec!["smm".into(), "bundle-smm".into()],
+            relocation: SmmRelocation::Static,
+            environment_values: mp_capacity(),
+            image: fstart_image_build::smm_image::ImageOptions {
+                entry_count: 8,
+                stack_size: 0x400,
+                coreboot_module_args: false,
+                coreboot_header: false,
+            },
+        }
+        .into(),
+        CompilationUnit {
+            name: "ro".into(),
+            cargo_target: CargoTarget::BoardBinary,
+            target: "x86_64-unknown-none".into(),
+            features: vec!["q35-ab-ro".into()],
+            build_std: Some("core,alloc".into()),
+            rustflags: rustflags.clone(),
+            release_only: false,
+            linker_script: Some(ro_script),
+            environment_values: BTreeMap::new(),
+            bindings: vec![],
+            file_bindings: vec![],
+            board_features: vec![],
+            output: UnitOutput::Executable {
+                expectations: ro_expectations,
+                load_address: ro_rom.base,
+                flat_capacity: ro_rom.size,
+            },
+        },
+        CompilationUnit {
+            name: "ramstage".into(),
+            cargo_target: CargoTarget::BoardBinary,
+            target: "x86_64-unknown-none".into(),
+            features: ramstage_features,
+            build_std: Some("core,alloc".into()),
+            rustflags,
+            release_only: false,
+            linker_script: Some(ramstage_script),
+            environment_values: mp_capacity(),
+            bindings: vec![ArtifactBinding {
+                producer: "smm".into(),
+                artifact: "image".into(),
+                environment: "FSTART_SMM_IMAGE".into(),
+            }],
+            file_bindings: vec![],
+            board_features: ramstage_board_features,
+            output: UnitOutput::Executable {
+                expectations: ramstage_expectations,
+                load_address: ramstage_image.base,
+                flat_capacity: ramstage_image.size,
+            },
+        },
+    ];
+
+    let assembly_payload = (payload == "uefi").then(|| PayloadConfig {
+        kind: PayloadKind::UefiPayload,
+        kernel_file: None,
+        kernel_load_addr: None,
+        x86_zero_page_addr: None,
+        fdt: FdtSource::Platform,
+        dtb_addr: None,
+        src_dtb_addr: None,
+        bootargs: None,
+        print_x86_mtrrs: false,
+        compression: crate::compression::PAYLOAD,
+        firmware: None,
+        fit_file: None,
+        fit_config: None,
+        fit_parse: None,
+    });
+
+    let stages = hvec([
+        StageConfig {
+            name: hstr("ro"),
+            build: StageBuildConfig {
+                load_next_stage: Some(hstr("ramstage")),
+                verify_firmware: true,
+                ..Default::default()
+            },
+            load_addr: ro_rom.base,
+            stack_size: ro_stack.size as u32,
+            heap_size: Some(ro_heap.size as u32),
+            runs_from: RunsFrom::Rom,
+            compression: Compression::None,
+            data_addr: Some(ro_ram.base),
+        },
+        StageConfig {
+            name: hstr("ramstage"),
+            build: StageBuildConfig {
+                payload: true,
+                pci: true,
+                ..Default::default()
+            },
+            load_addr: ramstage_image.base,
+            stack_size: ramstage_stack.size as u32,
+            heap_size: Some(ramstage_heap.size as u32),
+            runs_from: RunsFrom::Ram,
+            compression: Compression::Lz4,
+            data_addr: Some(ramstage_writable.base),
+        },
+    ]);
+
+    let assembly = Assembly {
+        platform: Platform::X86_64,
+        memory: vec![
+            MemoryRegion {
+                name: hstr("flash"),
+                base: flash.base,
+                size: flash.size,
+                kind: RegionKind::Rom,
+            },
+            MemoryRegion {
+                name: hstr("workram"),
+                base: 0x0010_0000,
+                size: 0x3ff0_0000,
+                kind: RegionKind::Ram,
+            },
+        ],
+        flash: None,
+        bootstrap: vec![("ramstage".into(), BootstrapRole::Mainstage)],
+        stages: StageLayout::MultiStage(stages),
+        security: fstart_core::default_security_config(),
+        payload: assembly_payload,
+        microcode: None,
+        data_assets: vec![],
+        file_assets: vec![],
+        full_flash_image: false,
+        boot_image_format: BootImageFormat::None,
+        boot_hart_id: 0,
+        build: BoardBuildPolicy {
+            firmware_image: FirmwareImagePolicy::memory_mapped(
+                Q35_AB_FLASH_BASE + u64::from(Q35_AB_RW_A_OFFSET),
+                u64::from(Q35_AB_RW_A_SIZE),
+            ),
+            flash_image: Some(FirmwareImagePolicy::memory_mapped(flash.base, flash.size)),
+            ..Default::default()
+        },
+        fw_version,
+        security_version,
+        rw_slot: true,
+        omit_stages: vec!["ro".into()],
+    };
+
+    let slot_layout = AbSlotLayout::RoAB {
+        state_sector_0: Q35_AB_STATE_SECTOR_0,
+        state_sector_1: Q35_AB_STATE_SECTOR_1,
+        slot_a_offset: Q35_AB_RW_A_OFFSET,
+        slot_a_size: Q35_AB_RW_A_SIZE,
+        slot_b_offset: Q35_AB_RW_B_OFFSET,
+        slot_b_size: Q35_AB_RW_B_SIZE,
+    };
+    let flash_step = ImageStep::new(
+        X86_FLASH,
+        ImageOperation::X86AbFlash(Box::new(X86AbFlashAssembly {
+            ffs: ImageStep::FFS.into(),
+            ro_stage_unit: "ro".into(),
+            size: Q35_AB_FLASH_SIZE,
+            ro_offset: Q35_AB_RW_SIZE,
+            slot_layout,
+            nvram: Some((Q35_AB_NVRAM_OFFSET, Q35_AB_NVRAM_SIZE)),
+        })),
+    );
+
+    let plan = BuildPlan {
+        options: Default::default(),
+        payload,
+        units,
+        stages: vec!["ro".into(), "ramstage".into()],
+        platform: Platform::X86_64,
+        images: vec![assembly.into(), flash_step],
+        inputs: vec![],
+        run: Some(q35_ab_recipe()),
     };
     plan.order()?;
     Ok(plan)
@@ -1516,5 +2006,49 @@ mod tests {
         assert_eq!(expectations.runtime[1].base, 0x4080_0000);
         assert!(plan.units[0].bindings.is_empty());
         assert!(plan.inputs.is_empty());
+    }
+
+    #[test]
+    fn q35_ab_resolves_two_stage_ro_and_rw_plan() {
+        let plan = resolve_with_options(
+            VirtMachine::Q35Ab,
+            BuildSelection {
+                payload: Some("uefi".into()),
+                ..Default::default()
+            },
+            QemuOptions {
+                fw_version: Some(2),
+                security_version: Some(3),
+                fail_trial: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.stages, vec!["ro", "ramstage"]);
+        let ro = plan.units.iter().find(|u| u.name == "ro").unwrap();
+        let ram = plan.units.iter().find(|u| u.name == "ramstage").unwrap();
+        assert_eq!(ro.features, vec!["q35-ab-ro"]);
+        assert!(ram.features.contains(&"q35-ab-ramstage".to_string()));
+        assert!(ram.features.contains(&"payload-uefi".to_string()));
+        assert_eq!(ram.board_features, vec!["fail-trial"]);
+        let ffs = plan.ffs_assembly().unwrap();
+        assert!(ffs.rw_slot);
+        assert_eq!(ffs.fw_version, 2);
+        assert_eq!(ffs.security_version, 3);
+        assert_eq!(ffs.omit_stages, vec!["ro"]);
+        assert!(matches!(
+            plan.images[1].operation,
+            ImageOperation::X86AbFlash(_)
+        ));
+        assert!(
+            resolve_with_options(
+                VirtMachine::Q35,
+                BuildSelection::default(),
+                QemuOptions {
+                    fw_version: Some(2),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
     }
 }

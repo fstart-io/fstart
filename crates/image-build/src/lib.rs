@@ -20,6 +20,7 @@ pub mod intel_plan;
 pub mod layout;
 pub mod linker;
 pub mod options;
+pub mod pkcs7_sign;
 pub mod plan;
 pub mod run;
 pub mod secure_boot;

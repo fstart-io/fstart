@@ -1,0 +1,32 @@
+[package]
+name = "fstart-board-qemu-q35-ab"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "qemu-q35-ab"
+name = "q35-ab"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-qemu" }
+
+[features]
+default = []
+# Embed the repository's public development RSA-2048 capsule certificate
+# (for QEMU/CI testing only; NEVER enable on production boards).
+dev-keys = []
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-qemu/smm"]
+# Fault-injection feature for automated rollback testing: triggers an immediate
+# cold reset before confirming an active A/B trial. Restricted to dev-keys builds.
+fail-trial = ["dev-keys"]
+
+[dependencies]
+fstart-platform-qemu = { workspace = true, default-features = false }
+# Shared ICH SMM handler, reused for the emulated ICH9.
+fstart-driver-intel = { workspace = true }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+
+[lints]
+workspace = true

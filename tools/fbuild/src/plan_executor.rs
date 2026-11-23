@@ -429,6 +429,8 @@ impl Resolved {
                 payload_files: request.payload_files,
                 signing_key: request.signing_key,
                 settings: request.settings,
+                fw_version: None,
+                security_version: None,
             },
         )?;
         for note in &outputs.notes {

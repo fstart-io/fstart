@@ -22,6 +22,7 @@ fstart-coreboot = { workspace = true }
 fstart-ffs = { workspace = true, features = ["std"] }
 fstart-boot = { workspace = true, features = ["std"] }
 fstart-crypto = { workspace = true, features = ["all"] }
+crypto-bigint = { workspace = true }
 ed25519-dalek = { workspace = true, features = ["std", "rand_core", "pkcs8", "pem"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 

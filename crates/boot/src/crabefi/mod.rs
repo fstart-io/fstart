@@ -123,8 +123,19 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
         Some(hooks) => defaults.hooks(hooks),
         None => defaults,
     };
+    let capsule_on_disk_only =
+        config.capsule_backend.is_some() && config.runtime.deferred_buffer.size == 0;
     let defaults = match config.capsule_backend {
-        Some(backend) => defaults.capsule_backend(backend),
+        Some(backend) => {
+            let fw_info = backend.firmware_info().copied();
+            let defaults = defaults
+                .capsule_backend(backend)
+                .capsule_on_disk_only(capsule_on_disk_only);
+            match fw_info {
+                Some(info) => defaults.firmware_info(info),
+                None => defaults,
+            }
+        }
         None => defaults,
     };
     #[cfg(all(feature = "tcg", feature = "crabefi"))]
