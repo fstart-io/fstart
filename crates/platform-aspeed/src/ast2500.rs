@@ -2,9 +2,8 @@
 //! in place from the reset vector, and the main stage it loads into DRAM.
 
 use crate::layout::{
-    DRAM_BASE as DRAM, FIRMWARE_WINDOW_SIZE, FLASH_ALIAS, FLASH_CALIBRATION,
-    FLASH_CALIBRATION_SIZE, HANDOFF_ADDR, MAIN_STAGE_BASE, MAIN_STAGE_SIZE, TIMESTAMPS,
-    TIMESTAMPS_SIZE,
+    AST2500 as LAYOUT, FIRMWARE_WINDOW_SIZE, FLASH_ALIAS, FLASH_CALIBRATION,
+    FLASH_CALIBRATION_SIZE, TIMESTAMPS_SIZE,
 };
 pub use aspeed_hal::ast2500::mac::{Mac, MacConfig};
 use aspeed_hal::ast2500::reset::{self, InitialReset};
@@ -24,6 +23,12 @@ use fstart_memtest::{Phase, Progress};
 use fstart_payload::{Description, Handoff, Placement, Range};
 use fstart_stage::boot::{Measurement, MemoryPolicy, MemoryWindow, codec, load_bootstrap};
 use fstart_timestamp::{Counter, id};
+
+const DRAM: u64 = LAYOUT.dram_base;
+const MAIN_STAGE_BASE: u64 = LAYOUT.main_stage_base;
+const MAIN_STAGE_SIZE: u64 = LAYOUT.main_stage_size;
+const HANDOFF_ADDR: u64 = LAYOUT.handoff_addr;
+const TIMESTAMPS: u64 = LAYOUT.timestamps();
 
 /// SCU00 protection key.
 const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;

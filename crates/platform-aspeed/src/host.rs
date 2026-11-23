@@ -8,7 +8,7 @@
 //! part.
 extern crate std;
 use crate::facts::{AspeedBoardFacts, AspeedEmulator, AspeedSoc, BoardFacts};
-use crate::layout::*;
+use crate::layout::{FIRMWARE_WINDOW_SIZE, FLASH_BASE, Layout};
 use fstart_core::layout::RegionKind as Kind;
 use fstart_core::*;
 use fstart_image_build::{
@@ -29,11 +29,13 @@ use std::{
     vec::Vec,
 };
 
-/// AST2500 on-chip SRAM below the boot timestamp table.
-pub const AST2500_SRAM: Span = Span {
-    base: SRAM_BASE,
-    size: TIMESTAMPS - SRAM_BASE,
-};
+/// On-chip SRAM below the boot timestamp table.
+const fn stage_sram(layout: &Layout) -> Span {
+    Span {
+        base: layout.sram_base,
+        size: layout.timestamps() - layout.sram_base,
+    }
+}
 /// The bootblock authenticates the FFS root (Ed25519) on this stack.
 pub const STACK_SIZE: u64 = 0x4000;
 pub const HEAP_SIZE: u64 = 0x1000;
@@ -70,6 +72,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         }
     };
     let AspeedSoc::Ast2500 = facts.soc;
+    let soc = &crate::layout::AST2500;
     if facts.flash_size < FIRMWARE_WINDOW_SIZE {
         return Err("the boot flash must cover the 16 MiB firmware window".into());
     }
@@ -81,7 +84,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         base: FLASH_BASE,
         size: FIRMWARE_WINDOW_SIZE,
     };
-    let writable = AST2500_SRAM;
+    let writable = stage_sram(soc);
     let stack = Span {
         base: writable.end()? - STACK_SIZE,
         size: STACK_SIZE,
@@ -133,7 +136,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
                 payload: true,
                 ..StageBuildConfig::default()
             },
-            load_addr: MAIN_STAGE_BASE,
+            load_addr: soc.main_stage_base,
             stack_size: MAIN_STACK_SIZE,
             heap_size: Some(MAIN_HEAP_SIZE),
             runs_from: RunsFrom::Ram,
@@ -141,7 +144,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             data_addr: None,
         },
     ]));
-    let main = main_stage(&stages)?;
+    let main = main_stage(soc, &stages)?;
     let assembly = Assembly {
         platform: Platform::Armv5te,
         memory: vec![
@@ -157,7 +160,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
                 size: writable.size,
                 kind: RegionKind::Ram,
             },
-            main_dram(),
+            main_dram(soc),
         ],
         flash: None,
         bootstrap: vec![("main".into(), BootstrapRole::Mainstage)],
@@ -226,11 +229,11 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
 
 /// DRAM up to the end of the main stage: what every accepted DRAM
 /// configuration provides.
-fn main_dram() -> MemoryRegion {
+fn main_dram(soc: &Layout) -> MemoryRegion {
     MemoryRegion {
         name: hstr("dram"),
-        base: DRAM_BASE,
-        size: MAIN_STAGE_BASE + MAIN_STAGE_SIZE - DRAM_BASE,
+        base: soc.dram_base,
+        size: soc.main_stage_base + soc.main_stage_size - soc.dram_base,
         kind: RegionKind::Ram,
     }
 }
@@ -238,13 +241,14 @@ fn main_dram() -> MemoryRegion {
 /// Link the main stage into its DRAM window, with the handoff page below
 /// it reserved.
 fn main_stage(
+    soc: &Layout,
     stages: &StageLayout,
 ) -> Result<fstart_image_build::linker::ResolvedRamStage, String> {
     let config = BoardConfig {
         name: hstr("ast2500"),
         platform: Platform::Armv5te,
         memory: MemoryMap {
-            regions: hvec([main_dram()]),
+            regions: hvec([main_dram(soc)]),
             flash_layout: None,
             car: None,
         },
@@ -262,11 +266,11 @@ fn main_stage(
         smm: None,
     };
     let window = Span {
-        base: MAIN_STAGE_BASE,
-        size: MAIN_STAGE_SIZE,
+        base: soc.main_stage_base,
+        size: soc.main_stage_size,
     };
     let handoff = Span {
-        base: HANDOFF_ADDR,
+        base: soc.handoff_addr,
         size: fstart_core::handoff::HANDOFF_MAX_SIZE as u64,
     };
     let descriptor = EncodedLayout::encode(
@@ -372,11 +376,14 @@ mod tests {
         else {
             panic!("main is an executable")
         };
+        let soc = crate::layout::AST2500;
         assert_eq!(
             (load_address, flat_capacity),
-            (MAIN_STAGE_BASE, MAIN_STAGE_SIZE)
+            (soc.main_stage_base, soc.main_stage_size)
         );
-        assert!(HANDOFF_ADDR + fstart_core::handoff::HANDOFF_MAX_SIZE as u64 <= MAIN_STAGE_BASE);
+        assert!(
+            soc.handoff_addr + fstart_core::handoff::HANDOFF_MAX_SIZE as u64 <= soc.main_stage_base
+        );
     }
 
     #[test]
