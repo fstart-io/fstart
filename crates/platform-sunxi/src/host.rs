@@ -341,6 +341,10 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         boot_image_format: BootImageFormat::AllwinnerEgon,
         boot_hart_id: 0,
         build: BoardBuildPolicy::default(),
+        fw_version: 0,
+        security_version: 0,
+        rw_slot: false,
+        omit_stages: vec![],
     };
     let mut inputs = Vec::new();
     if linux {

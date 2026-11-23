@@ -633,6 +633,7 @@ dependencies = [
  "clap",
  "fstart-core",
  "fstart-crypto",
+ "fstart-ffs",
  "fstart-image-build",
  "fstart-platform-qemu",
  "object 0.37.3",
@@ -1157,6 +1158,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-qemu-q35-ab"
+version = "0.1.0"
+dependencies = [
+ "fstart-driver-intel",
+ "fstart-driver-uart",
+ "fstart-platform-qemu",
+]
+
+[[package]]
 name = "fstart-board-qemu-q35-i686"
 version = "0.1.0"
 dependencies = [
@@ -1247,6 +1257,7 @@ name = "fstart-boot"
 version = "0.1.0"
 dependencies = [
  "crabefi-core",
+ "crabefi-efi-types",
  "dtoolkit",
  "ed25519-dalek",
  "fstart-arch",
@@ -1258,6 +1269,7 @@ dependencies = [
  "fstart-options",
  "fstart-tcg",
  "heapless 0.8.0",
+ "ufmt",
 ]
 
 [[package]]
@@ -1557,6 +1569,7 @@ version = "0.1.0"
 dependencies = [
  "crabefi-efi-types",
  "crabefi-pkcs7",
+ "crypto-bigint",
  "ed25519-dalek",
  "fstart-amdfw-format",
  "fstart-boot",
@@ -1750,9 +1763,11 @@ dependencies = [
  "fstart-arch",
  "fstart-core",
  "fstart-coreboot",
+ "fstart-crypto",
  "fstart-driver-intel",
  "fstart-driver-tpm",
  "fstart-driver-uart",
+ "fstart-ffs",
  "fstart-image-build",
  "fstart-log",
  "fstart-payload",
@@ -1761,6 +1776,7 @@ dependencies = [
  "fstart-stage",
  "fstart-tcg",
  "heapless 0.8.0",
+ "serde",
  "serde_json",
  "ufmt",
  "zerocopy",

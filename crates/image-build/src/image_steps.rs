@@ -33,6 +33,10 @@ pub struct ImageContext<'a> {
     /// Secure Boot), checked against the plan's options
     /// ([`crate::options::Options::seed`]).
     pub settings: &'a crate::options::Settings,
+    /// Optional override for the signed FFS `Root` firmware version.
+    pub fw_version: Option<u32>,
+    /// Optional override for the signed FFS `Root` rollback security version.
+    pub security_version: Option<u64>,
 }
 
 /// The artefacts of the executed steps, by step name, with the final
@@ -101,6 +105,8 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
         image: ctx.output_dir.to_path_buf(),
         notes: Vec::new(),
     };
+    let mut ffs_trusts: BTreeMap<String, [u8; fstart_core::ffs::trust::TRUST_SIZE]> =
+        BTreeMap::new();
     let input = |name: &str| -> Result<Option<String>, String> {
         ctx.inputs
             .get(name)
@@ -127,7 +133,13 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
         let artifact = match &step.operation {
             ImageOperation::Ffs(image) => {
                 let config = image.config(ctx.board_name)?;
-                crate::assemble::assemble(
+                let root_opts = crate::assemble::FfsRootOptions {
+                    fw_version: ctx.fw_version.unwrap_or(image.fw_version),
+                    security_version: ctx.security_version.unwrap_or(image.security_version),
+                    rw_slot: image.rw_slot,
+                    omit_stages: &image.omit_stages,
+                };
+                let (path, trust_bytes) = crate::assemble::assemble_with_trust(
                     ctx.files,
                     ctx.workspace_root,
                     ctx.board_dir,
@@ -142,7 +154,10 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
                     Some(&image.bootstrap),
                     image.boot_image_format,
                     ctx.signing_key,
-                )?
+                    &root_opts,
+                )?;
+                ffs_trusts.insert(step.name.clone(), trust_bytes);
+                path
             }
             ImageOperation::AmdEfs(operation) => amd_efs(
                 ctx,
@@ -160,6 +175,22 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             )?,
             ImageOperation::X86Flash(operation) => {
                 x86_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
+            }
+            ImageOperation::X86AbFlash(operation) => {
+                let trust_bytes = ffs_trusts.get(&operation.ffs).ok_or_else(|| {
+                    format!(
+                        "x86 A/B flash step '{}' did not receive trust policy from FFS step '{}'",
+                        step.name, operation.ffs
+                    )
+                })?;
+                x86_ab_flash(
+                    ctx,
+                    operation,
+                    consumed.as_deref(),
+                    trust_bytes,
+                    seed.take(),
+                    &mut outputs.notes,
+                )?
             }
         };
         outputs.image = artifact.clone();
@@ -200,6 +231,48 @@ fn x86_flash(
         out.display(),
         image.len() >> 20,
         operation.ffs_offset
+    ));
+    Ok(out)
+}
+
+/// Compose the consumed RW-slot FFS artefact and the linked RO stage into
+/// an x86 RO/A(/B) flash image, written next to the FFS as `<ffs>.rom`.
+fn x86_ab_flash(
+    ctx: &ImageContext<'_>,
+    operation: &crate::x86_flash::X86AbFlashAssembly,
+    ffs: Option<&Path>,
+    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
+    seed: Option<crate::options::Seed>,
+    notes: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    let ffs_path = ffs_artifact(ffs, "x86 A/B flash")?;
+    if let Some(seed) = &seed {
+        let seed_len = u32::try_from(seed.bytes.len())
+            .map_err(|_| "settings: seed length exceeds u32".to_string())?;
+        if operation.nvram != Some((seed.offset, seed_len)) {
+            return Err(format!(
+                "settings: the options' store at {:#x} ({:#x} bytes) does not match x86 A/B NVRAM {:x?}",
+                seed.offset,
+                seed.bytes.len(),
+                operation.nvram
+            ));
+        }
+    }
+    let ro = stage(ctx.stages, &operation.ro_stage_unit)?;
+    let (image, composed) = operation.compose(
+        &ctx.files.read(&ffs_path)?,
+        trust_bytes,
+        &ctx.files.read(&ro.path)?,
+        &ro.path,
+        seed.as_ref().map(|s| s.bytes.as_slice()),
+    )?;
+    notes.extend(composed);
+    let out = ffs_path.with_extension("rom");
+    ctx.files.write(&out, &image)?;
+    notes.push(format!(
+        "x86 A/B flash image: {} ({} MiB)",
+        out.display(),
+        image.len() >> 20,
     ));
     Ok(out)
 }

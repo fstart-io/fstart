@@ -94,6 +94,14 @@ pub enum RunMedia {
         artifact: RunArtifact,
         bank_size: u64,
     },
+    /// Two x86 pflash banks sliced from one top-aligned ROM:
+    /// - unit 0 (`readonly=on`): top `ro_size` bytes (`[rw_size..rw_size+ro_size]`)
+    /// - unit 1 (writable): bottom `rw_size` bytes (`[0..rw_size]`)
+    RoRwPflash {
+        artifact: RunArtifact,
+        rw_size: u64,
+        ro_size: u64,
+    },
     /// A zero-filled SD card of `size` with the artefact at `offset`
     /// (the Allwinner BROM's eGON offset).
     SdCard {
@@ -113,6 +121,7 @@ impl RunMedia {
             Self::Bios { artifact }
             | Self::Pflash { artifact, .. }
             | Self::SplitPflash { artifact, .. }
+            | Self::RoRwPflash { artifact, .. }
             | Self::SdCard { artifact, .. }
             | Self::Mtd { artifact } => Some(artifact),
             Self::ExternalPflash { .. } => None,

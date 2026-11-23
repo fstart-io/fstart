@@ -519,9 +519,58 @@ pub fn advance_rollback_floor<T: Transport + ?Sized>(
     Ok(FloorAdvance::Advanced(readback))
 }
 
+/// Resume factory provisioning when a reset occurred between
+/// `TPM2_NV_DefineSpace` and the first `TPM2_NV_Write` (`TPM_RC_NV_UNINITIALIZED`).
+///
+/// Validates that `nv_index` already exists with the exact expected
+/// [`nv_attr::ROLLBACK_FLOOR`] static attributes, 8-byte size, and has NOT yet
+/// been written (`TPMA_NV_WRITTEN == 0`), then writes `initial_floor` and
+/// verifies readback.
+pub fn resume_uninitialized_rollback_floor<T: Transport + ?Sized>(
+    tpm: &mut T,
+    nv_index: u32,
+    initial_floor: u64,
+) -> Result<u64, Error> {
+    let public = nv_read_public(tpm, nv_index)?;
+    if public.nv_index != nv_index
+        || public.data_size != 8
+        || (public.attributes & !nv_attr::RUNTIME_STATE_MASK) != nv_attr::ROLLBACK_FLOOR
+        || (public.attributes & nv_attr::WRITTEN) != 0
+    {
+        return Err(Error::Response);
+    }
+    nv_write(
+        tpm,
+        hierarchy::PLATFORM,
+        nv_index,
+        0,
+        &initial_floor.to_le_bytes(),
+    )?;
+    let readback = read_rollback_floor(tpm, nv_index)?;
+    if readback != initial_floor {
+        return Err(Error::Response);
+    }
+    Ok(readback)
+}
+
 /// Lock the rollback-floor NV index against writes until the next TPM reset.
 pub fn lock_rollback_floor<T: Transport + ?Sized>(tpm: &mut T, nv_index: u32) -> Result<(), Error> {
     nv_write_lock(tpm, hierarchy::PLATFORM, nv_index)
+}
+
+/// Lock the TPM 2.0 platform hierarchy against non-firmware code (PFP §11) by
+/// setting a 32-byte random authorization (zeroized immediately), or disabling
+/// `phEnable` if `TPM2_GetRandom` / `TPM2_HierarchyChangeAuth` fails.
+///
+/// Required whenever firmware leaves a TPM 2.0 platform hierarchy open without
+/// `fstart_tcg::handoff(Handoff::Locked)` so OS code cannot invoke
+/// `TPM2_NV_UndefineSpace` on platform-created rollback NV indices.
+pub fn lock_platform_hierarchy<T: Transport + ?Sized>(tpm: &mut T) -> Result<(), Error> {
+    let mut auth = [0u8; 32];
+    let result = get_random(tpm, &mut auth)
+        .and_then(|()| hierarchy_change_auth(tpm, hierarchy::PLATFORM, &auth));
+    auth.zeroize();
+    result.or_else(|_| hierarchy_control(tpm, hierarchy::PLATFORM, hierarchy::PLATFORM, false))
 }
 
 #[cfg(test)]
@@ -666,5 +715,49 @@ mod tests {
             Ok(3)
         );
         assert_eq!(tpm.1, 4);
+    }
+
+    #[test]
+    fn resume_uninitialized_rollback_floor_validates_and_writes() {
+        // Defined with exact ROLLBACK_FLOOR (0x40054001), WRITTEN == 0.
+        const PUB_UNWRITTEN: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x40, 0x05, 0x40, 0x01, 0, 0, 0, 8,
+        ];
+        const PUB_WRITTEN: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x60, 0x05, 0x40, 0x01, 0, 0, 0, 8,
+        ];
+        const READ_2: &[u8] = &[0, 0, 0, 10, 0, 8, 2, 0, 0, 0, 0, 0, 0, 0];
+        let mut tpm = Script(
+            &[
+                (ST_NO_SESSIONS, 0, PUB_UNWRITTEN),
+                (ST_SESSIONS, 0, &[]),
+                (ST_NO_SESSIONS, 0, PUB_WRITTEN),
+                (ST_SESSIONS, 0, READ_2),
+            ],
+            0,
+        );
+        assert_eq!(
+            resume_uninitialized_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX, 2),
+            Ok(2)
+        );
+        assert_eq!(tpm.1, 4);
+
+        // Refuses if WRITTEN is already set!
+        let mut written_tpm = Script(&[(ST_NO_SESSIONS, 0, PUB_WRITTEN)], 0);
+        assert_eq!(
+            resume_uninitialized_rollback_floor(&mut written_tpm, ROLLBACK_NV_INDEX, 2),
+            Err(Error::Response)
+        );
+    }
+
+    #[test]
+    fn lock_platform_hierarchy_randomizes_auth() {
+        const RAND_32: &[u8] = &[
+            0, 32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+        ];
+        let mut tpm = Script(&[(ST_NO_SESSIONS, 0, RAND_32), (ST_SESSIONS, 0, &[])], 0);
+        assert_eq!(lock_platform_hierarchy(&mut tpm), Ok(()));
+        assert_eq!(tpm.1, 2);
     }
 }

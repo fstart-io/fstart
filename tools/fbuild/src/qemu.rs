@@ -30,6 +30,10 @@ pub struct Launch<'a> {
     pub smp: Option<&'a str>,
     /// A software TPM's control socket, attached as the recipe's TPM device.
     pub tpm: Option<&'a Path>,
+    /// Always overwrite the writable RW pflash bank from the built ROM (used by
+    /// automated boot tests so runs are isolated; interactive `fbuild qemu` leaves
+    /// it false so NVRAM and capsule updates persist across reboots).
+    pub fresh_rw_pflash: bool,
     /// Verbatim extra argv.
     pub args: Vec<String>,
 }
@@ -120,6 +124,18 @@ pub fn command(
                 args.extend(split_pflash_args(
                     artifact(built, kind)?,
                     *bank_size as usize,
+                )?);
+            }
+            RunMedia::RoRwPflash {
+                artifact: kind,
+                rw_size,
+                ro_size,
+            } => {
+                args.extend(ro_rw_pflash_args(
+                    artifact(built, kind)?,
+                    *rw_size as usize,
+                    *ro_size as usize,
+                    launch.fresh_rw_pflash,
                 )?);
             }
             RunMedia::SdCard {
@@ -263,6 +279,73 @@ fn split_pflash_args(binary: &Path, bank_size: usize) -> Result<Vec<String>, Str
         format!("if=pflash,file={},format=raw,unit=0", bank0_path.display()),
         "-drive".to_string(),
         format!("if=pflash,file={},format=raw,unit=1", bank1_path.display()),
+    ])
+}
+
+/// Split a top-aligned x86 RO/RW firmware ROM (`[RW | RO]`) into two QEMU
+/// `pflash_cfi01` drives:
+/// - `unit=0,readonly=on`: top `ro_size` bytes mapped directly below 4 GiB
+/// - `unit=1`: bottom `rw_size` bytes mapped directly below unit 0
+///
+/// When `fresh_rw` is false, an existing `.rw.pflash` that is at least as new
+/// as the built ROM and has the expected size is preserved so NVRAM and
+/// capsule updates survive across `fbuild qemu` invocations.
+fn ro_rw_pflash_args(
+    binary: &Path,
+    rw_size: usize,
+    ro_size: usize,
+    fresh_rw: bool,
+) -> Result<Vec<String>, String> {
+    let total = rw_size
+        .checked_add(ro_size)
+        .ok_or_else(|| "RO/RW pflash size overflow".to_string())?;
+    let data = std::fs::read(binary).map_err(|e| format!("failed to read firmware image: {e}"))?;
+    if data.len() != total {
+        return Err(format!(
+            "firmware image ({} bytes) does not match RO+RW pflash total ({total} bytes)",
+            data.len()
+        ));
+    }
+
+    let ro_path = binary.with_extension("ro.pflash");
+    let rw_path = binary.with_extension("rw.pflash");
+    std::fs::write(&ro_path, &data[rw_size..])
+        .map_err(|e| format!("failed to write RO pflash image: {e}"))?;
+
+    let refresh_rw = if fresh_rw {
+        true
+    } else {
+        match (std::fs::metadata(&rw_path), std::fs::metadata(binary)) {
+            (Ok(rw_meta), Ok(src_meta)) => {
+                rw_meta.len() != rw_size as u64
+                    || rw_meta
+                        .modified()
+                        .ok()
+                        .zip(src_meta.modified().ok())
+                        .is_none_or(|(rw_m, src_m)| rw_m < src_m)
+            }
+            _ => true,
+        }
+    };
+    if refresh_rw {
+        std::fs::write(&rw_path, &data[..rw_size])
+            .map_err(|e| format!("failed to write RW pflash image: {e}"))?;
+    }
+
+    eprintln!(
+        "[fstart] x86 RO/RW pflash: ro={} ({ro_size} B, readonly) + rw={} ({rw_size} B{})",
+        ro_path.display(),
+        rw_path.display(),
+        if refresh_rw { "" } else { ", preserved" },
+    );
+    Ok(vec![
+        "-drive".to_string(),
+        format!(
+            "if=pflash,file={},format=raw,unit=0,readonly=on",
+            ro_path.display()
+        ),
+        "-drive".to_string(),
+        format!("if=pflash,file={},format=raw,unit=1", rw_path.display()),
     ])
 }
 

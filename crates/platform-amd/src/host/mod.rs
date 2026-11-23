@@ -309,6 +309,10 @@ fn ffs(
             firmware_image: FirmwareImagePolicy::memory_mapped(window.base, window.size),
             ..Default::default()
         },
+        fw_version: 0,
+        security_version: 0,
+        rw_slot: false,
+        omit_stages: vec![],
     }
 }
 

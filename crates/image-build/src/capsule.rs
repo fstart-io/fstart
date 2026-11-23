@@ -8,9 +8,105 @@
 //! `fwupd`/LVFS and CrabEFI's `efi/capsule/apply.rs`.
 
 use fstart_ffs::root::{ROOT_SIZE, Root};
-use fstart_ffs::slot_state::{ERASED_BYTE, SECTOR_SIZE, Slot, SlotLayout, SlotStateRecord};
+use fstart_ffs::slot_state::{
+    ERASED_BYTE, SECTOR_SIZE, Slot, SlotExtent, SlotLayout, SlotStateRecord,
+};
+use serde::{Deserialize, Serialize};
 use zerocopy::byteorder::{LE, U16, U32, U64};
 use zerocopy::{Immutable, IntoBytes, KnownLayout, Unaligned};
+
+/// Serde-serializable mirror of [`SlotLayout`] for [`crate::build_plan::BuildPlan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AbSlotLayout {
+    RoA {
+        state_sector_0: u32,
+        state_sector_1: u32,
+        slot_a_offset: u32,
+        slot_a_size: u32,
+    },
+    RoAB {
+        state_sector_0: u32,
+        state_sector_1: u32,
+        slot_a_offset: u32,
+        slot_a_size: u32,
+        slot_b_offset: u32,
+        slot_b_size: u32,
+    },
+}
+
+impl AbSlotLayout {
+    pub const fn to_slot_layout(self) -> SlotLayout {
+        match self {
+            Self::RoA {
+                state_sector_0,
+                state_sector_1,
+                slot_a_offset,
+                slot_a_size,
+            } => SlotLayout::RoA {
+                state_sector_0,
+                state_sector_1,
+                slot_a: SlotExtent {
+                    offset: slot_a_offset,
+                    size: slot_a_size,
+                },
+            },
+            Self::RoAB {
+                state_sector_0,
+                state_sector_1,
+                slot_a_offset,
+                slot_a_size,
+                slot_b_offset,
+                slot_b_size,
+            } => SlotLayout::RoAB {
+                state_sector_0,
+                state_sector_1,
+                slot_a: SlotExtent {
+                    offset: slot_a_offset,
+                    size: slot_a_size,
+                },
+                slot_b: SlotExtent {
+                    offset: slot_b_offset,
+                    size: slot_b_size,
+                },
+            },
+        }
+    }
+
+    pub const fn from_slot_layout(layout: SlotLayout) -> Self {
+        match layout {
+            SlotLayout::RoA {
+                state_sector_0,
+                state_sector_1,
+                slot_a,
+            } => Self::RoA {
+                state_sector_0,
+                state_sector_1,
+                slot_a_offset: slot_a.offset,
+                slot_a_size: slot_a.size,
+            },
+            SlotLayout::RoAB {
+                state_sector_0,
+                state_sector_1,
+                slot_a,
+                slot_b,
+            } => Self::RoAB {
+                state_sector_0,
+                state_sector_1,
+                slot_a_offset: slot_a.offset,
+                slot_a_size: slot_a.size,
+                slot_b_offset: slot_b.offset,
+                slot_b_size: slot_b.size,
+            },
+        }
+    }
+
+    /// Size of each RW slot in bytes (`Slot::A` extent size; equal to `Slot::B` in valid `RoAB`).
+    pub const fn rw_slot_size(self) -> u32 {
+        match self {
+            Self::RoA { slot_a_size, .. } | Self::RoAB { slot_a_size, .. } => slot_a_size,
+        }
+    }
+}
 
 /// `EFI_FIRMWARE_MANAGEMENT_CAPSULE_ID_GUID` (6DCBD5ED-E82D-4C44-BDA1-7194199AD92A).
 pub const EFI_FMP_CAPSULE_GUID: [u8; 16] = [
@@ -212,6 +308,43 @@ pub fn assemble_fmp_capsule(spec: &CapsuleSpec<'_>, pkcs7_der: &[u8]) -> Result<
     Ok(out)
 }
 
+/// `EFI_GLOBAL_VARIABLE_GUID` (`8BE4DF61-93CA-11D2-AA0D-00E098032B8C`, UEFI mixed-endian).
+pub const EFI_GLOBAL_VARIABLE_GUID: [u8; 16] = [
+    0x61, 0xdf, 0xe4, 0x8b, 0xca, 0x93, 0xd2, 0x11, 0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c,
+];
+
+/// `EFI_OS_INDICATIONS_FILE_CAPSULE_DELIVERY_SUPPORTED` (UEFI 2.10 §8.5.4).
+pub const EFI_OS_INDICATIONS_FILE_CAPSULE_DELIVERY_SUPPORTED: u64 = 0x0000_0000_0000_0004;
+
+/// Build and PKCS#7-sign a complete UEFI 2.10 FMP `.cap` binary using the
+/// pure-Rust RSA-SHA256 signer ([`crate::pkcs7_sign`]).
+pub fn sign_fmp_capsule(
+    spec: &CapsuleSpec<'_>,
+    key: &crate::pkcs7_sign::RsaPrivateKey,
+    cert_der: &[u8],
+) -> Result<Vec<u8>, String> {
+    let (_, signed_buf) = build_fmp_payload_to_sign(spec)?;
+    let pkcs7_der = key.sign_pkcs7_detached_sha256(cert_der, &signed_buf)?;
+    assemble_fmp_capsule(spec, &pkcs7_der)
+}
+
+/// Build an EDK2 authenticated variable store of `size` bytes (4 KiB multiple)
+/// seeded with `OsIndications = EFI_OS_INDICATIONS_FILE_CAPSULE_DELIVERY_SUPPORTED`
+/// so CrabEFI scans `\EFI\UpdateCapsule\` on the next boot.
+pub fn seed_os_indications_varstore(size: usize) -> Result<Vec<u8>, String> {
+    use fstart_options::varstore::{Variable, store};
+    let var = Variable {
+        guid: EFI_GLOBAL_VARIABLE_GUID,
+        name: "OsIndications",
+        attributes: Variable::ATTRIBUTES,
+        data: EFI_OS_INDICATIONS_FILE_CAPSULE_DELIVERY_SUPPORTED
+            .to_le_bytes()
+            .to_vec(),
+    };
+    store(size, &[var])
+        .ok_or_else(|| format!("failed to build {size:#x}-byte NVRAM variable store"))
+}
+
 /// Populate `SLOT_STATE_0`, `SLOT_STATE_1`, `RW_A`, and (in RO/A/B) `RW_B`
 /// inside a full flash image buffer using one self-contained RW FFS image.
 ///
@@ -365,5 +498,38 @@ mod tests {
         assert_eq!(record.fw_version, 42);
         assert_eq!(record.sec_version, 3);
         assert_eq!(&flash[0x2000..0x4000], &flash[0x4000..0x6000]);
+    }
+
+    #[test]
+    fn sign_fmp_capsule_produces_verifiable_pkcs7_capsule() {
+        let (key, cert_der) = crate::pkcs7_sign::dev_capsule_key_and_cert().unwrap();
+        let rw_img = fake_rw_image(7, 2);
+        let spec = CapsuleSpec {
+            fw_class_guid: [0x55; 16],
+            lowest_supported_version: 1,
+            monotonic_count: 3,
+            rmap_manifest: "RW_SLOT\n",
+            slot_size: 0x2000,
+            rw_slot_image: &rw_img,
+        };
+        let cap = sign_fmp_capsule(&spec, &key, &cert_der).unwrap();
+        let (payload, signed_buf) = build_fmp_payload_to_sign(&spec).unwrap();
+        // Auth header begins at 28 + 16 + 48 = 92; dwLength at 100..104; PKCS#7 at 124..
+        let win_cert_len = u32::from_le_bytes(cap[100..104].try_into().unwrap()) as usize;
+        let pkcs7_len = win_cert_len - (4 + 2 + 2 + 16);
+        let pkcs7_der = &cap[124..124 + pkcs7_len];
+        assert_eq!(&cap[124 + pkcs7_len..], payload.as_slice());
+        let signed = crabefi_pkcs7::cms::SignedData::parse(pkcs7_der).unwrap();
+        let cert = crabefi_pkcs7::x509::Certificate::parse(&cert_der).unwrap();
+        let rsa_pub = cert.rsa_public_key().unwrap();
+        let signers: Vec<_> = signed.signers().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(signers.len(), 1);
+        let attrs = signers[0].signed_attributes.unwrap();
+        assert_eq!(
+            attrs.message_digest().unwrap(),
+            fstart_crypto::digest::hash_sha256(&signed_buf).as_slice()
+        );
+        let attrs_digest = attrs.digest();
+        assert!(rsa_pub.verify_pkcs1v15_sha256::<64>(signers[0].signature, &attrs_digest));
     }
 }

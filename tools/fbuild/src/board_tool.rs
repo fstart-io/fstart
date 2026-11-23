@@ -336,6 +336,7 @@ pub fn qemu(
         memory: args.memory,
         smp: smp.as_deref(),
         tpm: tpm_socket.as_deref(),
+        fresh_rw_pflash: false,
         args: std::env::var("FSTART_QEMU_EXTRA_ARGS")
             .map(|extra| extra.split_whitespace().map(str::to_string).collect())
             .unwrap_or_default(),

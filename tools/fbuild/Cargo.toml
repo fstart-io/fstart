@@ -19,6 +19,7 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 
 [dev-dependencies]
 tempfile = "3.27"
+fstart-ffs = { workspace = true }
 fstart-platform-qemu = { workspace = true, features = ["host"] }
 object = { workspace = true, features = ["write_std"] }
 

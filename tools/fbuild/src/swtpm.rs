@@ -23,8 +23,14 @@ impl Swtpm {
     /// a Unix socket in it, whose path must stay short.
     pub fn start(tpm: &Tpm) -> io::Result<Self> {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let state = std::env::temp_dir().join(format!(
-            "fstart-swtpm-{}-{}",
+        let temp = std::env::temp_dir();
+        let base = if temp.as_os_str().len() > 60 {
+            PathBuf::from("/tmp")
+        } else {
+            temp
+        };
+        let state = base.join(format!(
+            "fs-tpm-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));

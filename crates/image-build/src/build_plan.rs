@@ -52,6 +52,10 @@ pub enum ImageOperation {
     /// An x86 flash mapped below 4 GiB: the artefact of the FFS step it
     /// names at its offset and the linked stage's flash segments.
     X86Flash(Box<crate::x86_flash::X86FlashAssembly>),
+    /// An x86 RO/A or RO/A/B flash mapped below 4 GiB: top-aligned RO ELF
+    /// segments, `SLOT_STATE` journal, and `RW_A`(/`RW_B`) populated from
+    /// the consumed RW-slot FFS step.
+    X86AbFlash(Box<crate::x86_flash::X86AbFlashAssembly>),
 }
 
 impl ImageOperation {
@@ -62,6 +66,7 @@ impl ImageOperation {
             Self::AmdEfs(image) => image.ffs.as_ref().map(|window| window.step.as_str()),
             Self::AmdHalvedFlash(image) => Some(&image.ffs),
             Self::X86Flash(image) => Some(&image.ffs),
+            Self::X86AbFlash(image) => Some(&image.ffs),
         }
     }
 
@@ -70,7 +75,9 @@ impl ImageOperation {
     pub fn inputs(&self) -> &'static [&'static str] {
         match self {
             Self::Ffs(_) => FfsAssembly::INPUTS,
-            Self::AmdEfs(_) | Self::AmdHalvedFlash(_) | Self::X86Flash(_) => &[],
+            Self::AmdEfs(_) | Self::AmdHalvedFlash(_) | Self::X86Flash(_) | Self::X86AbFlash(_) => {
+                &[]
+            }
         }
     }
 }
@@ -183,6 +190,28 @@ pub struct FfsAssembly {
     pub boot_image_format: BootImageFormat,
     pub boot_hart_id: u32,
     pub build: fstart_core::BoardBuildPolicy,
+    /// Firmware version embedded in the signed FFS `Root` (ESRT `fw_version`).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub fw_version: u32,
+    /// Rollback security version embedded in the signed FFS `Root`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub security_version: u64,
+    /// Build a self-contained RW slot FFS image with its 512-byte signed `Root`
+    /// at byte offset 0.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rw_slot: bool,
+    /// Stage unit names omitted from the FFS container (e.g. `["ro"]` for an
+    /// RO/A/B board whose RO selector lives in the write-protected bootblock).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omit_stages: Vec<String>,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 /// Existing authenticated-image wire roles, not firmware-family identities.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -664,6 +693,7 @@ impl BuildPlan {
                     ffs_steps.insert(step.name.as_str());
                 }
                 ImageOperation::X86Flash(image) => image.validate(self)?,
+                ImageOperation::X86AbFlash(image) => image.validate(self)?,
                 _ => {}
             }
         }
@@ -873,6 +903,10 @@ mod tests {
                     boot_image_format: BootImageFormat::None,
                     boot_hart_id: 0,
                     build: BoardBuildPolicy::default(),
+                    fw_version: 0,
+                    security_version: 0,
+                    rw_slot: false,
+                    omit_stages: vec![],
                 }
                 .into(),
             ],
@@ -1127,6 +1161,10 @@ mod tests {
             boot_image_format: BootImageFormat::None,
             boot_hart_id: 0,
             build: BoardBuildPolicy::default(),
+            fw_version: 0,
+            security_version: 0,
+            rw_slot: false,
+            omit_stages: vec![],
         };
         let plan = |units| BuildPlan {
             options: Default::default(),
