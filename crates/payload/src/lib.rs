@@ -71,6 +71,19 @@ pub struct Handoff<'a> {
     /// `SetVariable(OsIndications)` without SMM.
     #[cfg(feature = "crabefi-basic")]
     pub deferred_buffer: Option<crate::crabefi::DeferredBufferConfig>,
+    /// Optional fail-closed post-capsule hook invoked by CrabEFI at
+    /// `TS_CRABEFI_VARSTORE_INIT` right after variable import and pending
+    /// capsule processing, before `measure_initial_boot()` and Boot Menu.
+    #[cfg(feature = "crabefi-basic")]
+    pub post_capsule_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+    /// Optional fail-closed hardware flash lockdown invoked by CrabEFI
+    /// unconditionally before any third-party EFI binary or OS runs.
+    #[cfg(feature = "crabefi-basic")]
+    pub pre_boot_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+    /// Optional fallible hook run by non-UEFI launchers right before final
+    /// payload launch (after the kernel/payload has been verified and placed),
+    /// e.g. to confirm an A/B trial and engage final hardware flash/TPM locks.
+    pub pre_launch_hook: Option<&'a mut dyn FnMut() -> Result<(), &'static str>>,
 }
 
 impl<'a> Handoff<'a> {
@@ -89,6 +102,11 @@ impl<'a> Handoff<'a> {
             capsule_backend: None,
             #[cfg(feature = "crabefi-basic")]
             deferred_buffer: None,
+            #[cfg(feature = "crabefi-basic")]
+            post_capsule_lock: None,
+            #[cfg(feature = "crabefi-basic")]
+            pre_boot_lock: None,
+            pre_launch_hook: None,
         }
     }
 }
@@ -97,7 +115,13 @@ impl<'a> Handoff<'a> {
 pub struct HaltPayload;
 
 impl<D> MainstagePayload<D> for HaltPayload {
-    fn boot(_: Handoff<'_>, _: D) -> ! {
+    fn boot(handoff: Handoff<'_>, _: D) -> ! {
+        if let Some(hook) = handoff.pre_launch_hook
+            && let Err(reason) = hook()
+        {
+            fstart_log::error!("halt payload: pre-launch hook failed: {}", reason);
+        }
+        fstart_log::flush();
         loop {
             core::hint::spin_loop();
         }
@@ -150,6 +174,12 @@ impl<D> MainstagePayload<D> for LinuxPayload {
             fstart_log::error!("Linux payload: configured entry was not verified");
             halt_linux();
         };
+        if let Some(hook) = handoff.pre_launch_hook
+            && let Err(reason) = hook()
+        {
+            fstart_log::error!("Linux payload: pre-launch hook failed: {}", reason);
+            halt_linux();
+        }
         launch_linux(&params)
     }
 }
@@ -240,6 +270,8 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
                     .capsule_backend
                     .map(|b| &mut *b as &mut dyn crate::crabefi::CapsuleBackend),
                 deferred_buffer: handoff.deferred_buffer,
+                post_capsule_lock: handoff.post_capsule_lock,
+                pre_boot_lock: handoff.pre_boot_lock,
             },
             &static_entries,
             ram.base,
@@ -381,6 +413,8 @@ impl Riscv64UefiPayload {
                     .capsule_backend
                     .map(|b| &mut *b as &mut dyn crate::crabefi::CapsuleBackend),
                 deferred_buffer: handoff.deferred_buffer,
+                post_capsule_lock: handoff.post_capsule_lock,
+                pre_boot_lock: handoff.pre_boot_lock,
             },
             &static_entries,
             ram.base,
@@ -478,6 +512,11 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
         };
         #[cfg(feature = "tcg")]
         measure_x86_linux_cmdline(config.bootargs);
+        if let Some(hook) = handoff.pre_launch_hook
+            && let Err(reason) = hook()
+        {
+            halt_x86_linux(reason);
+        }
         fstart_stage::timestamps::handoff();
         fstart_arch::x86::boot::boot_linux(&params)
     }
@@ -610,6 +649,13 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
         #[cfg(feature = "tcg")]
         fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Locked);
 
+        if let Some(hook) = handoff.pre_launch_hook
+            && let Err(reason) = hook()
+        {
+            fstart_log::error!("x86 UEFI payload: pre-launch hook failed: {}", reason);
+            fstart_arch::x86::boot::halt();
+        }
+
         let ecam = uefi_ecam(description.pci_root);
         fstart_stage::timestamps::handoff();
         crate::crabefi::launch_x86_uefi(
@@ -645,6 +691,8 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
                     .capsule_backend
                     .map(|b| &mut *b as &mut dyn crate::crabefi::CapsuleBackend),
                 deferred_buffer: handoff.deferred_buffer,
+                post_capsule_lock: handoff.post_capsule_lock,
+                pre_boot_lock: handoff.pre_boot_lock,
             },
             description.memory,
             &platform_entries,

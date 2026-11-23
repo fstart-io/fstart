@@ -2,13 +2,13 @@
 //! form handed to the UEFI payload ([`crate::options`] reads the store at
 //! boot).
 
-#[cfg(feature = "payload-uefi")]
+#[cfg(all(feature = "payload-uefi", not(feature = "ab-rw")))]
 use super::Ctx;
 
 /// The settings store as the payload's variable storage, and the options'
 /// form for its menu. The store is writable only if the SPI100 command
 /// engine reads the FFS as the ROM window shows it.
-#[cfg(feature = "payload-uefi")]
+#[cfg(all(feature = "payload-uefi", not(feature = "ab-rw")))]
 pub(crate) fn storage(ctx: &Ctx<'_>) -> Option<crate::options::FlashStorage> {
     use fstart_driver_amd::fch::spi::flash::Extent;
 

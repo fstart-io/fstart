@@ -12,7 +12,7 @@ use crate::window::{At, Window, update};
 #[cfg(feature = "spi-flash")]
 pub mod flash;
 
-use tock_registers::interfaces::{ReadWriteable, Writeable};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 register_bitfields![u32,
@@ -21,9 +21,30 @@ register_bitfields![u32,
         BIT16 OFFSET(16) NUMBITS(1) [],
         READ_MODE_LOW OFFSET(18) NUMBITS(1) [],
         BIT19 OFFSET(19) NUMBITS(1) [],
+        /// Read-only status bit set when an index-mode command was blocked.
+        ILLEGAL_ACCESS OFFSET(21) NUMBITS(1) [],
+        /// Write-0-once until reset: restricts SPIx04/08 & MAC ROM access.
+        ACCESS_MAC_ROM_EN OFFSET(22) NUMBITS(1) [],
+        /// Write-0-once until reset: restricts host SPI100 restricted commands.
+        HOST_ACCESS_ROM_EN OFFSET(23) NUMBITS(1) [],
         ARB_WAIT_COUNT OFFSET(24) NUMBITS(3) [],
         READ_MODE_HIGH OFFSET(29) NUMBITS(2) [],
         BUSY OFFSET(31) NUMBITS(1) []
+    ],
+    /// SPIx04 FCH::ITF::SPI::SPIRestrictedCmd (4 address-bearing restricted opcodes).
+    pub RestrictedCmd [
+        CMD0 OFFSET(0) NUMBITS(8) [],
+        CMD1 OFFSET(8) NUMBITS(8) [],
+        CMD2 OFFSET(16) NUMBITS(8) [],
+        CMD3 OFFSET(24) NUMBITS(8) []
+    ],
+    /// SPIx08 FCH::ITF::SPI::SPIRestrictedCmd2 (1 address-bearing + 3 unconditional
+    /// without-address restricted opcodes across Family 17h and Family 19h PPRs).
+    pub RestrictedCmd2 [
+        CMD4 OFFSET(0) NUMBITS(8) [],
+        WO_ADDR0 OFFSET(8) NUMBITS(8) [],
+        WO_ADDR1 OFFSET(16) NUMBITS(8) [],
+        WO_ADDR2 OFFSET(24) NUMBITS(8) []
     ],
     /// SPIx0C FCH::ITF::SPI::SPICntrl1.
     pub Cntrl1 [
@@ -46,8 +67,12 @@ register_bitfields![u8,
     /// SPIx1D FCH::ITF::SPI::AltSPICS.
     pub AltSpiCs [
         WRITE_BUFFER_EN OFFSET(2) NUMBITS(1) [],
+        /// Enables SPI read/write protection for all four PCI D14F3x50..5C
+        /// `RomProtect0..3` ranges (Siena PPR §10.3.8.1.1; Family 17h §9.1.7.3).
         PROTECT_EN0 OFFSET(3) NUMBITS(1) [],
+        /// Legacy secondary enable (reserved on Family 19h Siena).
         PROTECT_EN1 OFFSET(4) NUMBITS(1) [],
+        /// Write-1-once lock over bits 3..=5 until reset.
         PROTECT_LOCK OFFSET(5) NUMBITS(1) []
     ],
     /// SPIx20: SPI100 enable.
@@ -75,6 +100,10 @@ register_bitfields![u16,
 ];
 
 pub const CNTRL0: At<u32, Cntrl0::Register> = At::new(SPI_BASE);
+/// SPIx04 FCH::ITF::SPI::SPIRestrictedCmd.
+pub const RESTRICTED_CMD: At<u32, RestrictedCmd::Register> = At::new(SPI_BASE + 0x04);
+/// SPIx08 FCH::ITF::SPI::SPIRestrictedCmd2.
+pub const RESTRICTED_CMD2: At<u32, RestrictedCmd2::Register> = At::new(SPI_BASE + 0x08);
 pub const CNTRL1: At<u32, Cntrl1::Register> = At::new(SPI_BASE + 0x0c);
 pub const ALT_SPI_CS: At<u8, AltSpiCs::Register> = At::new(SPI_BASE + 0x1d);
 pub const SPI100_ENABLE: At<u16, Spi100Enable::Register> = At::new(SPI_BASE + 0x20);
@@ -195,7 +224,7 @@ pub fn reset<H: FchHw>(hw: &H, generation: Silicon, policy: &SpiPolicy) {
     }
 }
 
-/// One LPC ROM protect range (write-once).
+/// One LPC ROM protect range (write-once once locked via [`lock`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProtectRange {
     /// Base, 4 KiB aligned.
@@ -206,24 +235,92 @@ pub struct ProtectRange {
     pub write: bool,
 }
 
+fn encode_protect(range: &ProtectRange) -> u32 {
+    (RomProtect::BASE.val(range.base >> 12)
+        + RomProtect::UNIT_64K::SET
+        + RomProtect::RANGE.val(u32::from(range.size_64k - 1))
+        + RomProtect::READ_PROTECT.val(range.read.into())
+        + RomProtect::WRITE_PROTECT.val(range.write.into()))
+    .value
+}
+
 /// Program ROM protect register `index` (0..4) and enable the ranges.
 /// Not on the donor default path (AmdSpiLockSmm runs at SmmReadyToLock and
 /// was not modelled, FCH_SP3 §10); the integrator decides.
 pub fn protect<H: FchHw>(hw: &H, index: u8, range: &ProtectRange) {
     assert!(index < 4 && (1..=256).contains(&range.size_64k));
-    hw.lpc().at(rom_protect(index)).write(
-        RomProtect::BASE.val(range.base >> 12)
-            + RomProtect::UNIT_64K::SET
-            + RomProtect::RANGE.val(u32::from(range.size_64k - 1))
-            + RomProtect::READ_PROTECT.val(range.read.into())
-            + RomProtect::WRITE_PROTECT.val(range.write.into()),
-    );
+    hw.lpc().at(rom_protect(index)).set(encode_protect(range));
     hw.mmio().at(ALT_SPI_CS).modify(AltSpiCs::PROTECT_EN0::SET);
 }
 
-/// Lock the protection enables (AltSPICS\[SpiProtectLock\]).
+/// Read back `D14F3x50..5C` (`RomProtect[index]`) and `AltSPICS[PROTECT_EN0]`
+/// to confirm hardware accepted the programmed direct-ROM protection range.
+pub fn verify_protect<H: FchHw>(hw: &H, index: u8, range: &ProtectRange) -> bool {
+    assert!(index < 4 && (1..=256).contains(&range.size_64k));
+    hw.lpc().at(rom_protect(index)).get() == encode_protect(range)
+        && hw.mmio().at(ALT_SPI_CS).is_set(AltSpiCs::PROTECT_EN0)
+}
+
+/// Lock the protection enables (`AltSPICS[SpiProtectLock]`).
 pub fn lock<H: FchHw>(hw: &H) {
-    hw.mmio().at(ALT_SPI_CS).modify(AltSpiCs::PROTECT_LOCK::SET);
+    hw.mmio()
+        .at(ALT_SPI_CS)
+        .modify(AltSpiCs::PROTECT_EN0::SET + AltSpiCs::PROTECT_LOCK::SET);
+}
+
+/// Verify that `AltSPICS[PROTECT_EN0]` and `AltSPICS[PROTECT_LOCK]` both read back set.
+pub fn verify_lock<H: FchHw>(hw: &H) -> bool {
+    let cs = hw.mmio().at(ALT_SPI_CS);
+    cs.is_set(AltSpiCs::PROTECT_EN0) && cs.is_set(AltSpiCs::PROTECT_LOCK)
+}
+
+const RESTRICTED_CMD_VALUE: u32 = 0x02 // CMD0: Page Program (3B)
+    | (0x20 << 8) // CMD1: 4 KiB Sector Erase (3B)
+    | (0x12 << 16) // CMD2: Page Program (4B)
+    | (0x21 << 24); // CMD3: 4 KiB Sector Erase (4B)
+
+const RESTRICTED_CMD2_VALUE: u32 = 0xd8 // CMD4: 64 KiB Block Erase
+    | (0x06 << 8) // WO_ADDR0: WREN (unconditional, no address)
+    | (0x50 << 16) // WO_ADDR1: Volatile SR WREN (unconditional, no address)
+    | (0x01 << 24); // WO_ADDR2: WRSR (unconditional, no address)
+
+/// Block host SPI100 command-engine write/erase/status-register opcodes via
+/// `SPIx04`/`SPIx08` (`SPIRestrictedCmd` / `SPIRestrictedCmd2`) and clear the
+/// write-0-once `SPIx00[SpiAccessMacRomEn]` and `SPIx00[SpiHostAccessRomEn]`
+/// bits so the host cannot clear the restriction until reset.
+///
+/// Addressless write-enable and status-register opcodes (`0x06` WREN, `0x50`
+/// VSR WREN, `0x01` WRSR) are placed in `SPIRestrictedCmd2[WO_ADDR0..2]`
+/// (bytes 1..=3) so Family 17h and Family 19h FCH SPI controllers block them
+/// unconditionally regardless of flash address or 3-byte/4-byte addressing.
+///
+/// Reads back all three registers and returns `Err` if hardware did not latch
+/// the restriction.
+pub fn restrict_writes<H: FchHw>(hw: &H) -> Result<(), &'static str> {
+    let spi = hw.mmio();
+    spi.at(RESTRICTED_CMD).set(RESTRICTED_CMD_VALUE);
+    spi.at(RESTRICTED_CMD2).set(RESTRICTED_CMD2_VALUE);
+    spi.at(CNTRL0).modify(
+        Cntrl0::BUSY::CLEAR
+            + Cntrl0::BIT16::CLEAR
+            + Cntrl0::ACCESS_MAC_ROM_EN::CLEAR
+            + Cntrl0::HOST_ACCESS_ROM_EN::CLEAR,
+    );
+    if !verify_writes_restricted(hw) {
+        return Err("SPI100 write restriction readback mismatch");
+    }
+    Ok(())
+}
+
+/// Verify that `SPIx04`, `SPIx08`, and `SPIx00[23:22]` all read back in their
+/// globally write-restricted state.
+pub fn verify_writes_restricted<H: FchHw>(hw: &H) -> bool {
+    let spi = hw.mmio();
+    let cntrl0 = spi.at(CNTRL0);
+    spi.at(RESTRICTED_CMD).get() == RESTRICTED_CMD_VALUE
+        && spi.at(RESTRICTED_CMD2).get() == RESTRICTED_CMD2_VALUE
+        && !cntrl0.is_set(Cntrl0::ACCESS_MAC_ROM_EN)
+        && !cntrl0.is_set(Cntrl0::HOST_ACCESS_ROM_EN)
 }
 
 #[cfg(test)]
@@ -249,5 +346,43 @@ mod tests {
         assert_eq!(spi.get(BASE + 0x2c, 2), 0x4000);
         let ba = hw.pci.0.borrow().config[&(0, 0x14, 3, 0xb8)] >> 16;
         assert_eq!(ba & 0x180, 0x180);
+    }
+
+    #[test]
+    fn protect_and_lock_verify_readback() {
+        let hw = fch();
+        let range = ProtectRange {
+            base: 0xff00_0000,
+            size_64k: 244,
+            read: false,
+            write: true,
+        };
+        assert!(!verify_protect(&hw, 0, &range));
+        assert!(!verify_lock(&hw));
+        protect(&hw, 0, &range);
+        assert!(verify_protect(&hw, 0, &range));
+        assert!(!verify_lock(&hw));
+        lock(&hw);
+        assert!(verify_lock(&hw));
+    }
+
+    #[test]
+    fn restrict_writes_places_wren_in_wo_addr_and_verifies() {
+        const BASE: u32 = SPI_BASE;
+        let hw = fch();
+        let spi = &hw.mmio;
+        spi.put(BASE, 4, 0x67cc_0000);
+        assert!(!verify_writes_restricted(&hw));
+        restrict_writes(&hw).expect("restrict_writes readback");
+        assert_eq!(
+            spi.get(BASE + 0x04, 4),
+            u32::from_le_bytes([0x02, 0x20, 0x12, 0x21])
+        );
+        assert_eq!(
+            spi.get(BASE + 0x08, 4),
+            u32::from_le_bytes([0xd8, 0x06, 0x50, 0x01])
+        );
+        assert_eq!(spi.get(BASE, 4), 0x670c_0000);
+        assert!(verify_writes_restricted(&hw));
     }
 }

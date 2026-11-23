@@ -48,7 +48,17 @@ apcb = { entries = [
   { type = 0x60, subprogram = 1, instance = 1, level = 2, file = "s8030/milan/apcb-60-1.bin" },
 ] }
 
+[package.metadata.fstart.variants.tyan-s8030-ab]
+name = "S8030 (A/B)"
+features = ["ab"]
+
 [features]
+# Enable RO/A/B firmware update layout by default (used by tyan-s8030-ab).
+ab = []
+# Development/CI-only capsule verification certificate (never enable in production).
+dev-keys = []
+# Fault-injection hook for automated A/B rollback testing (requires dev-keys).
+fail-trial = []
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-amd/smm"]
 
@@ -68,12 +78,18 @@ heapless = { version = "0.8", default-features = false }
 tock-registers = "0.10"
 ufmt = "0.2"
 
-# The only stage, which the PSP copies to DRAM; fbuild builds it with
-# fstart-platform-amd/bundle. Board unit tests (`cargo test`) only
-# build the library.
+# The stage binary: monolithic reset image or A/B RW stage loaded by `ro`.
+# Board unit tests (`cargo test`) only build the library.
 [[bin]]
 name = "stage"
 path = "src/bin/stage.rs"
+test = false
+bench = false
+
+# The immutable RO selector stage (PSP BIOS directory entry 0x62) in A/B builds.
+[[bin]]
+name = "ro"
+path = "src/bin/ro.rs"
 test = false
 bench = false
 

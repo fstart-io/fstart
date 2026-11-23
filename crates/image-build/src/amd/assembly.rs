@@ -174,6 +174,11 @@ pub struct AmdAssembly {
     /// How the PSP loads the reset image and reads the flash.
     #[serde(default)]
     pub psp: PspOptions,
+    /// Optional RO/A(/B) slot layout for native whole-flash images. When set,
+    /// `stage_unit` is an RO selector (`ro`), `ffs` names the RW-slot FFS step,
+    /// and `SLOT_STATE` + `RW_A`(/`RW_B`) are populated from that FFS image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ab: Option<crate::capsule::AbSlotLayout>,
 }
 
 /// How the PSP loads the reset image.
@@ -407,6 +412,27 @@ impl AmdAssembly {
                     }
                     (None, None) => {}
                 }
+                if let Some(ab) = self.ab {
+                    let Some(reset) = *reset_offset else {
+                        return Err("AMD EFS A/B requires a native image reset window".into());
+                    };
+                    let Some(ffs_window) = ffs else {
+                        return Err("AMD EFS A/B requires an RW FFS step".into());
+                    };
+                    let ab_limit = self.nvram.map_or(reset, |store| store.offset).min(reset);
+                    ab.validate_within(partition.end, ab_limit)?;
+                    if ffs_window.offset != ab.slot_a_offset()
+                        || ffs_window.size != ab.rw_slot_size()
+                    {
+                        return Err(format!(
+                            "AMD EFS A/B FFS window ({:#x}+{:#x}) does not match Slot A ({:#x}+{:#x})",
+                            ffs_window.offset,
+                            ffs_window.size,
+                            ab.slot_a_offset(),
+                            ab.rw_slot_size()
+                        ));
+                    }
+                }
                 if files.flash_size != self.flash_size
                     || files.efs_offset >= files.partition_end
                     || files.partition_end > files.flash_size
@@ -555,6 +581,19 @@ impl AmdAssembly {
         ffs: Option<&[u8]>,
         seed: Option<&crate::options::Seed>,
     ) -> Result<AmdImage, String> {
+        self.assemble_with_trust(sources, reset, ffs, None, seed)
+    }
+
+    /// Compose an image with an optional explicit finalized [`TrustBlock`]
+    /// (required when `self.ab` is `Some(_)`).
+    pub fn assemble_with_trust(
+        &self,
+        sources: &[&[u8]],
+        reset: &[u8],
+        ffs: Option<&[u8]>,
+        trust_override: Option<&[u8; fstart_core::ffs::trust::TRUST_SIZE]>,
+        seed: Option<&crate::options::Seed>,
+    ) -> Result<AmdImage, String> {
         self.validate()?;
         if let Some(seed) = seed
             && self.nvram.map(|s| (s.offset, s.size as usize))
@@ -572,18 +611,32 @@ impl AmdAssembly {
         if sources.len() != self.bindings()?.len() {
             return Err("AMD image source count mismatch".into());
         }
-        let stage = match (&self.ffs, ffs) {
-            (Some(window), Some(ffs)) if ffs.len() <= window.size as usize => {
+        let stage = match (self.ab, &self.ffs, ffs) {
+            (Some(ab), Some(_), Some(ffs)) => {
+                if ffs.len() > ab.rw_slot_size() as usize {
+                    return Err(format!(
+                        "RW FFS ({:#x} bytes) exceeds A/B slot size ({:#x})",
+                        ffs.len(),
+                        ab.rw_slot_size()
+                    ));
+                }
+                let trust = trust_override
+                    .ok_or("AMD EFS A/B requires finalized TrustBlock from FFS step")?;
+                crate::capsule::AbSlotLayout::verify_rw_root_against_trust(trust, ffs)?;
+                patch_stage_ab(reset, trust)?
+            }
+            (Some(_), _, _) => return Err("AMD EFS A/B requires an RW FFS image".into()),
+            (None, Some(window), Some(ffs)) if ffs.len() <= window.size as usize => {
                 patch_stage(reset, ffs)?
             }
-            (Some(window), Some(ffs)) => {
+            (None, Some(window), Some(ffs)) => {
                 return Err(format!(
                     "FFS ({:#x} bytes) exceeds its flash window ({:#x})",
                     ffs.len(),
                     window.size
                 ));
             }
-            (None, None) => reset.to_vec(),
+            (None, None, None) => reset.to_vec(),
             _ => return Err("the FFS doesn't match the image's".into()),
         };
         // The EFS, the BIOS directory and the reset image's flash offset
@@ -617,7 +670,10 @@ impl AmdAssembly {
                     stage.clone()
                 };
                 image[*reset_offset as usize..][..reset.len()].copy_from_slice(&reset);
-                if let (Some(window), Some(ffs)) = (&self.ffs, ffs) {
+                if let Some(ab) = self.ab {
+                    let rw_ffs = ffs.ok_or("AMD EFS A/B requires an RW FFS image")?;
+                    crate::capsule::populate_rw_slots(&mut image, ab.to_slot_layout(), rw_ffs)?;
+                } else if let (Some(window), Some(ffs)) = (&self.ffs, ffs) {
                     image[window.offset as usize..][..ffs.len()].copy_from_slice(ffs);
                 }
                 if let Some(seed) = seed {
@@ -837,6 +893,26 @@ fn patch_stage(reset: &[u8], ffs: &[u8]) -> Result<Vec<u8>, String> {
     let site =
         find_unique(&stage, &trust_placeholder, 8).ok_or("no unique trust site in the stage")?;
     trust.write_to(&mut stage[site..site + TRUST_SIZE]);
+    Ok(stage)
+}
+
+/// Patch the finalized [`TrustBlock`] into an AMD EFS A/B RO reset stage.
+/// RO reads signed RW slots directly via its compiled [`SlotLayout`] and does
+/// not carry a single-FFS `LocatorBlock`.
+fn patch_stage_ab(
+    reset: &[u8],
+    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
+) -> Result<Vec<u8>, String> {
+    use fstart_core::ffs::trust::{TRUST_SIZE, TrustBlock};
+    TrustBlock::parse(trust_bytes)
+        .filter(|b| b.key_count.get() > 0)
+        .ok_or("invalid or empty TrustBlock from FFS step")?;
+    let mut stage = reset.to_vec();
+    let mut trust_placeholder = [0; TRUST_SIZE];
+    TrustBlock::placeholder().write_to(&mut trust_placeholder);
+    let site =
+        find_unique(&stage, &trust_placeholder, 8).ok_or("no unique trust site in the RO stage")?;
+    stage[site..site + TRUST_SIZE].copy_from_slice(trust_bytes);
     Ok(stage)
 }
 

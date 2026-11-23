@@ -496,6 +496,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         security_version: 0,
         rw_slot: false,
         omit_stages: vec![],
+        image_family: None,
     };
     let inputs = [
         ("kernel", policy.kernel_file, kernel),
@@ -1122,6 +1123,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         security_version: 0,
         rw_slot: false,
         omit_stages: vec![],
+        image_family: None,
     };
     let inputs = match (keep_firmware, &policy.linux) {
         // The payload ELF; the assembler enforces what actually fits.
@@ -1652,6 +1654,7 @@ fn resolve_q35_ab(selection: BuildSelection, options: QemuOptions) -> Result<Bui
         security_version,
         rw_slot: true,
         omit_stages: vec!["ro".into()],
+        image_family: None,
     };
 
     let slot_layout = AbSlotLayout::RoAB {

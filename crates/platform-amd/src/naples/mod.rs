@@ -3,7 +3,7 @@
 //! socket, each with its DF2 node, NBIO, SMU V9 and Taishan FCH
 //! ([`silicon`]), on the flow with the socket's services
 //! ([`crate::sp3::soc`]).
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod init;
 pub mod silicon;
 
@@ -11,7 +11,7 @@ pub mod silicon;
 pub struct Naples;
 
 /// What Naples' silicon steps hand on.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub type State = crate::sp3::soc::State<silicon::Silicon>;
 
 impl fstart_driver_amd::ccx::microcode::Family for Naples {

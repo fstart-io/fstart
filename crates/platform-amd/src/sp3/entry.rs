@@ -36,9 +36,9 @@
 
 // The stage bundle links the stage runtime (allocator, anchor, the
 // arch entry `_start_ram` jumps into) even before the flow calls into it.
-#[cfg(feature = "bundle")]
+#[cfg(any(feature = "stage-runtime", feature = "ab-ro"))]
 use fstart_stage as _;
 
 pub use fstart_arch::x86::psp_reset::{ApRoute, RouteError};
-#[cfg(all(target_os = "none", feature = "bundle"))]
-pub use fstart_arch::x86::psp_reset::{bsp_bist, set_ap_route};
+#[cfg(all(target_os = "none", any(feature = "bundle", feature = "ab-ro")))]
+pub use fstart_arch::x86::psp_reset::{ap_route_addr, bsp_bist, set_ap_route};

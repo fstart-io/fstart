@@ -298,6 +298,89 @@ impl<D: DelayNs + Copy> FlashRegion for Flash<D> {
     }
 }
 
+/// A single [`Flash`] shared across multiple non-overlapping [`SubRegion`]s
+/// via a [`spin::Mutex`] so each [`SubRegion`] is `Send`.
+pub struct SharedFlash<D: DelayNs + Copy> {
+    inner: spin::Mutex<Flash<D>>,
+    extent: Extent,
+}
+
+impl<D: DelayNs + Copy> SharedFlash<D> {
+    pub fn new(flash: Flash<D>) -> Self {
+        let extent = flash.extent();
+        Self {
+            inner: spin::Mutex::new(flash),
+            extent,
+        }
+    }
+
+    pub fn writable(&self) -> bool {
+        self.inner.lock().writable()
+    }
+
+    pub fn extent(&self) -> Extent {
+        self.extent
+    }
+
+    /// Borrow a bounded sub-region inside the parent [`Flash`]'s extent.
+    ///
+    /// Returns `Err(ServiceError::InvalidParam)` if `extent` is not completely
+    /// contained within the parent flash extent.
+    pub fn subregion(&self, extent: Extent) -> Result<SubRegion<'_, D>, ServiceError> {
+        let parent_end = self
+            .extent
+            .offset
+            .checked_add(self.extent.size)
+            .ok_or(ServiceError::InvalidParam)?;
+        let sub_end = extent
+            .offset
+            .checked_add(extent.size)
+            .ok_or(ServiceError::InvalidParam)?;
+        if extent.offset < self.extent.offset || sub_end > parent_end {
+            return Err(ServiceError::InvalidParam);
+        }
+        Ok(SubRegion {
+            flash: self,
+            extent,
+        })
+    }
+}
+
+/// A bounded [`FlashRegion`] view into a [`SharedFlash`].
+pub struct SubRegion<'a, D: DelayNs + Copy> {
+    flash: &'a SharedFlash<D>,
+    extent: Extent,
+}
+
+impl<'a, D: DelayNs + Copy> SubRegion<'a, D> {
+    pub fn extent(&self) -> Extent {
+        self.extent
+    }
+
+    fn parent_offset(&self, offset: u32, len: usize) -> Result<u32, ServiceError> {
+        let abs = self.extent.address(offset, len)?;
+        abs.checked_sub(self.flash.extent.offset)
+            .ok_or(ServiceError::InvalidParam)
+    }
+}
+
+impl<D: DelayNs + Copy> FlashRegion for SubRegion<'_, D> {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
+        let parent_off = self.parent_offset(offset, bytes.len())?;
+        self.flash.inner.lock().read(parent_off, bytes)
+    }
+
+    fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ServiceError> {
+        let parent_off = self.parent_offset(offset, bytes.len())?;
+        self.flash.inner.lock().program(parent_off, bytes)
+    }
+
+    fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
+        let parent_off = self.parent_offset(offset, length as usize)?;
+        self.flash.inner.lock().erase(parent_off, length)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

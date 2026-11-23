@@ -83,6 +83,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         apob_destination: raw.apob_destination,
         shared_memory: raw.shared_memory,
         psp: Default::default(),
+        ab: None,
     };
     let sources = [raw.psp[0].bytes.as_slice(), raw.bios[0].bytes.as_slice()];
     let packed = operation
@@ -496,6 +497,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         psp: PspOptions {
             compress_reset: true,
         },
+        ab: None,
     };
     assert_eq!(
         operation
@@ -668,6 +670,7 @@ fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
         apob_destination: 0x7590_0000,
         shared_memory: None,
         psp: Default::default(),
+        ab: None,
     }
 }
 

@@ -15,6 +15,9 @@ use std::collections::BTreeMap;
 /// The linker template of the shared reset entry.
 pub const TEMPLATE: &str = include_str!("../../linker/amd_psp_reset.ld.in");
 
+/// The linker template of an AMD A/B RW stage entered in 64-bit long mode at `_start_ram`.
+pub const RW_TEMPLATE: &str = include_str!("../../linker/amd_ab_rw.ld.in");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     /// The reset image at its PSP copy destination; ends on a 64-KiB
@@ -163,6 +166,117 @@ impl Layout {
                 ("_sp3_entry16".into(), end - 0x1000),
                 ("_sp3_page_tables".into(), self.pages.base),
             ]),
+        };
+        expectations.validate()?;
+        Ok(expectations)
+    }
+}
+
+/// Link and audit contract of an AMD A/B RW stage loaded by RO into DRAM and
+/// entered in 64-bit long mode at `_start_ram`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RwLayout {
+    /// The RW stage's DRAM load & execution region (below RO's reset image).
+    pub image: Span,
+    /// Firmware RAM below `image`, reserved through OS handoff (shared with RO).
+    pub early: Span,
+    /// Page tables owned by RO (reserved in the RW stage's layout descriptor).
+    pub pages: Span,
+    /// BSS.
+    pub data: Span,
+    pub heap: Span,
+    pub stack: Span,
+}
+
+impl RwLayout {
+    pub fn validate(&self) -> Result<(), String> {
+        let firmware = [self.image, self.pages, self.data, self.heap, self.stack];
+        for r in firmware.iter().chain([&self.early]) {
+            r.end()?;
+        }
+        for (i, a) in firmware.iter().enumerate() {
+            if firmware[i + 1..].iter().any(|b| a.overlaps(*b)) {
+                return Err("AMD A/B RW stage regions overlap".into());
+            }
+        }
+        if self.image.size == 0 || self.image.end()? > 1 << 32 {
+            return Err("AMD A/B RW stage image must be non-empty below 4 GiB".into());
+        }
+        if self.early.end()? > self.image.base {
+            return Err("AMD A/B RW firmware RAM must lie below the stage image".into());
+        }
+        for r in [self.pages, self.data, self.heap, self.stack] {
+            if !self.early.contains(r.base, r.size) {
+                return Err(
+                    "AMD A/B RW page tables, BSS, heap or stack outside firmware RAM".into(),
+                );
+            }
+        }
+        if self.data.end()? > self.heap.base || self.heap.end()? > self.stack.base {
+            return Err("AMD A/B RW data/heap/stack order".into());
+        }
+        Ok(())
+    }
+
+    pub fn descriptor(&self, extra: &[Region]) -> Result<EncodedLayout, String> {
+        self.validate()?;
+        let writable = Span {
+            base: self.data.base,
+            size: self.stack.end()? - self.data.base,
+        };
+        let regions: Vec<Region> = [
+            self.image.region(RegionKind::Image),
+            writable.region(RegionKind::Writable),
+            self.stack.region(RegionKind::Stack),
+            self.heap.region(RegionKind::Heap),
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .chain([self.pages.region(RegionKind::Reserved)])
+        .collect();
+        EncodedLayout::encode(0, &regions).map_err(|e| format!("AMD A/B RW layout: {e:?}"))
+    }
+
+    pub fn linker_script(&self, descriptor: &EncodedLayout) -> Result<String, String> {
+        self.validate()?;
+        crate::linker::fill(
+            RW_TEMPLATE,
+            &[
+                ("IMAGE_BASE", self.image.base),
+                ("IMAGE_SIZE", self.image.size),
+                ("IMAGE_END", self.image.end()?),
+                ("DATA_BASE", self.data.base),
+                ("DATA_SIZE", self.data.size),
+                ("HEAP_BASE", self.heap.base),
+                ("HEAP_SIZE", self.heap.size),
+                ("STACK_BASE", self.stack.base),
+                ("STACK_SIZE", self.stack.size),
+            ],
+            descriptor,
+            "IMAGE",
+        )
+    }
+
+    pub fn expectations(&self, descriptor: &EncodedLayout) -> Result<Expectations, String> {
+        self.validate()?;
+        let expectations = Expectations {
+            architecture: Architecture::X86_64,
+            elf64: true,
+            little_endian: true,
+            stored: vec![self.image],
+            runtime: vec![self.image, self.early],
+            identity_mapping: true,
+            entry: Some(self.image.base),
+            copy: None,
+            descriptor: Some(Descriptor {
+                section: ".fstart.layout".into(),
+                start_symbol: "_fstart_layout_start".into(),
+                end_symbol: "_fstart_layout_end".into(),
+                bytes: descriptor.as_bytes().to_vec(),
+                reservation: self.image,
+            }),
+            stored_flags: None,
+            symbols: BTreeMap::from([("_start_ram".into(), self.image.base)]),
         };
         expectations.validate()?;
         Ok(expectations)

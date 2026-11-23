@@ -19,16 +19,16 @@
 pub mod acpi;
 #[cfg(feature = "host")]
 pub mod host;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod init;
 pub mod links;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod mpio;
 pub mod numa;
 pub mod smm;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod tables;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub use init::Hw;
 
 use core::marker::PhantomData;

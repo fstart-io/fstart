@@ -4,15 +4,19 @@
 //! ([`DieSoc`]), their reset image's layout and their host plan. A SoC
 //! module ([`crate::zeppelin`], [`crate::picasso`]) says what differs.
 pub mod acpi;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub mod boot;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod smbios;
 
-#[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+#[cfg(all(
+    feature = "stage-runtime",
+    target_os = "none",
+    feature = "payload-uefi-basic"
+))]
 pub use crate::flow::Peripherals;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub use crate::flow::{
     Chipset, Console, Cpus, Early, Enumerated, FchUp, Published, Ready, Stage, Trained, fail,
 };
@@ -99,7 +103,11 @@ pub trait DieSoc: crate::soc::DieInit {
         Ok(())
     }
     /// The board's devices for CrabEFI to drive, after the buses are set up.
-    #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+    #[cfg(all(
+        feature = "stage-runtime",
+        target_os = "none",
+        feature = "payload-uefi-basic"
+    ))]
     fn peripherals(_ctx: &Ctx<'_, Self>, _config: &Self::Config) -> Peripherals {
         Peripherals::new()
     }
@@ -112,7 +120,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     /// The APOB where the PSP's directory puts it, the e820 with the
     /// firmware's DRAM and TSEG reserved, WB DRAM and WP flash, then the
     /// FFS of the layout.
-    #[cfg(all(feature = "bundle", target_os = "none"))]
+    #[cfg(all(feature = "stage-runtime", target_os = "none"))]
     fn map(
         hw: &mut Hw<S>,
         _: &mut S::Config,
@@ -229,7 +237,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
 
     /// The board's handler in TSEG with the FCH as the SMI owner, then the
     /// PSP's SMM info.
-    #[cfg(all(feature = "bundle", target_os = "none"))]
+    #[cfg(all(feature = "stage-runtime", target_os = "none"))]
     fn install_smm(
         ctx: &Ctx<'_, S>,
         state: &mut S::State,
@@ -267,7 +275,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
 
     /// A host bridge per die from the root bridges `pci` was built from,
     /// with what the display and the SoC's controllers contributed.
-    #[cfg(all(feature = "bundle", target_os = "none"))]
+    #[cfg(all(feature = "stage-runtime", target_os = "none"))]
     fn tables(
         ctx: &Ctx<'_, S>,
         silicon: &mut Silicon<S>,
@@ -290,7 +298,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
         }
     }
 
-    #[cfg(all(feature = "bundle", target_os = "none"))]
+    #[cfg(all(feature = "stage-runtime", target_os = "none"))]
     fn map_payload_ram(
         e820: &fstart_core::services::memory_detect::E820State,
         pci: &fstart_pci::PciEcam,
@@ -298,7 +306,11 @@ impl<S: DieSoc> crate::flow::Soc for S {
         boot::map_ram(e820, pci)
     }
 
-    #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+    #[cfg(all(
+        feature = "stage-runtime",
+        target_os = "none",
+        feature = "payload-uefi-basic"
+    ))]
     fn peripherals(ctx: &Ctx<'_, S>, config: &S::Config) -> Peripherals {
         <S as DieSoc>::peripherals(ctx, config)
     }

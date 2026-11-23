@@ -139,6 +139,7 @@ fn plan(generations: &[Generation]) -> FlashPlan {
         ffs_offset: FFS_OFFSET,
         dram_floor: DRAM_FLOOR,
         nvram: None,
+        ab: None,
     }
 }
 
@@ -667,4 +668,139 @@ fn the_settings_store_ends_the_ffs_window_and_starts_erased() {
         };
         assert!(matches!(plan.check(), Err(ImageError::Plan(_))), "{bad:?}");
     }
+}
+
+#[test]
+fn ab_requires_trust_and_flash_anchor_and_encodes_slot_a_offset() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use fstart_core::ffs::{Signature, VerificationKey};
+    use fstart_ffs::builder::{BootRootConfig, FfsImageConfig, build_rw_slot_image_with_root};
+    use fstart_ffs::slot_state::SlotLayout;
+
+    let signing = SigningKey::from_bytes(&[0x42; 32]);
+    let pk = signing.verifying_key().to_bytes();
+    let vk = VerificationKey::ed25519(0, pk);
+    let family = *b"tyan-s8030-test!";
+    let rw_ffs = build_rw_slot_image_with_root(
+        &FfsImageConfig {
+            keys: vec![vk],
+            regions: vec![],
+        },
+        &BootRootConfig {
+            image_family: family,
+            security_version: 1,
+            fw_version: 1,
+            bootstrap: vec![],
+        },
+        &|msg| Ok(Signature::ed25519(0, signing.sign(msg).to_bytes())),
+    )
+    .unwrap();
+
+    let mut trust_block = TrustBlock::placeholder();
+    trust_block.image_family = family;
+    trust_block.key_count.set(1);
+    trust_block.keys[0] = vk;
+    let mut trust_bytes = [0u8; TRUST_SIZE];
+    trust_block.write_to(&mut trust_bytes);
+
+    let ab = crate::capsule::AbSlotLayout::RoAB {
+        state_sector_0: 0x60_0000,
+        state_sector_1: 0x60_1000,
+        slot_a_offset: 0x64_0000,
+        slot_a_size: 0x48_0000,
+        slot_b_offset: 0xac_0000,
+        slot_b_size: 0x48_0000,
+    };
+    let ab_plan = FlashPlan {
+        generations: vec![ROME],
+        reset: ResetSlot {
+            flash_offset: 0xf8_0000,
+            size: 0x8_0000,
+            destination: 0x75f8_0000,
+        },
+        ffs_offset: 0x60_0000,
+        dram_floor: 0x7500_0000,
+        nvram: Some(NvramSlot {
+            flash_offset: 0xf4_0000,
+            size: 0x4_0000,
+        }),
+        ab: Some(ab),
+    };
+    let rom = synthetic(ROME);
+
+    let make_reset = |with_trust: bool, with_anchor: bool| {
+        let mut reset = vec![0u8; 0x8_0000];
+        if with_trust {
+            let mut p = [0u8; TRUST_SIZE];
+            TrustBlock::placeholder().write_to(&mut p);
+            reset[0x1000..0x1000 + TRUST_SIZE].copy_from_slice(&p);
+        }
+        if with_anchor {
+            reset[0x3000..0x3000 + ANCHOR_SIZE]
+                .copy_from_slice(FlashAnchor::placeholder().as_bytes());
+        }
+        reset[0x8_0000 - 16..].fill(0x90);
+        reset
+    };
+
+    // Missing TrustBlock -> error.
+    assert!(matches!(
+        compose_with_trust(
+            &rom,
+            &ab_plan,
+            &make_reset(false, true),
+            &rw_ffs.image,
+            Some(&trust_bytes),
+            None
+        ),
+        Err(ImageError::Patch(_))
+    ));
+    // Missing FlashAnchor -> error (never silently fall back to 16 MiB!).
+    assert!(matches!(
+        compose_with_trust(
+            &rom,
+            &ab_plan,
+            &make_reset(true, false),
+            &rw_ffs.image,
+            Some(&trust_bytes),
+            None
+        ),
+        Err(ImageError::Patch(_))
+    ));
+    // Both present -> succeeds and FlashAnchor encodes slot_a_offset (0x64_0000).
+    let out = compose_with_trust(
+        &rom,
+        &ab_plan,
+        &make_reset(true, true),
+        &rw_ffs.image,
+        Some(&trust_bytes),
+        None,
+    )
+    .unwrap();
+    assert!(out.patched.trust && out.patched.flash);
+    let anchor = FlashAnchor::parse(&out.image[0xf8_3000..0xf8_3000 + ANCHOR_SIZE]).unwrap();
+    assert_eq!(anchor.flash_size.get(), HALF as u32);
+    assert_eq!(anchor.ffs_offset.get(), 0x64_0000);
+    assert_eq!(anchor.ffs_size.get(), 0x48_0000);
+
+    // Multi-generation or 32 MiB dual-half A/B images must be rejected so no
+    // unbootable upper-half image is emitted.
+    let dual_plan = FlashPlan {
+        generations: vec![ROME, MILAN],
+        ..ab_plan.clone()
+    };
+    assert!(matches!(dual_plan.check(), Err(ImageError::Ab(_))));
+    let dual_rom = [&rom[..], &synthetic(MILAN)[..]].concat();
+    assert!(matches!(
+        compose_with_trust(
+            &dual_rom,
+            &ab_plan,
+            &make_reset(true, true),
+            &rw_ffs.image,
+            Some(&trust_bytes),
+            None,
+        ),
+        Err(ImageError::Ab(_))
+    ));
+    let _ = SlotLayout::from(ab.to_slot_layout());
 }

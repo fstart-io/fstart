@@ -15,7 +15,7 @@ pub mod board;
 
 pub mod einj;
 pub mod entry;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub(crate) mod flow;
 #[cfg(feature = "host")]
 pub mod host;
@@ -25,7 +25,7 @@ pub mod silicon;
 pub mod smbios;
 pub mod smm;
 
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub mod soc;
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub use soc::{Engines, Socket};

@@ -11,7 +11,7 @@ use fstart_core::services::ffs_context;
 pub struct ElfPayload;
 
 impl<D> MainstagePayload<D> for ElfPayload {
-    fn boot(_: Handoff<'_>, _: D) -> ! {
+    fn boot(handoff: Handoff<'_>, _: D) -> ! {
         let Some(manifest) =
             ffs_context::read_verified_asset(ELF_MANIFEST_ASSET).and_then(ElfManifest::decode)
         else {
@@ -23,6 +23,11 @@ impl<D> MainstagePayload<D> for ElfPayload {
             base,
             manifest.entry
         );
+        if let Some(hook) = handoff.pre_launch_hook
+            && let Err(reason) = hook()
+        {
+            halt(reason);
+        }
         fstart_stage::timestamps::handoff();
         fstart_log::flush();
         enter(manifest.entry)

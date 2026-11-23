@@ -1,0 +1,93 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0
+ *
+ * AMD A/B RW stage loaded by the RO reset stage from the active RW FFS slot
+ * into DRAM and entered in 64-bit long mode at `_start_ram`.
+ * Filled by `fstart_image_build::amd::reset::RwLayout`.
+ *
+ * Text, rodata, the layout descriptor and `.data` run in place in `IMAGE`
+ * (RO decompresses/copies the stage directly to its link address). BSS, heap
+ * and stack live in the early region below `IMAGE` (NOLOAD); page tables and
+ * the SMU AP reset vector remain owned by RO.
+ */
+OUTPUT_ARCH(i386:x86-64)
+ENTRY(_start_ram)
+
+MEMORY {
+    IMAGE (rwx) : ORIGIN = @IMAGE_BASE@, LENGTH = @IMAGE_SIZE@
+    DATA (rw)   : ORIGIN = @DATA_BASE@, LENGTH = @DATA_SIZE@
+    HEAP (rw)   : ORIGIN = @HEAP_BASE@, LENGTH = @HEAP_SIZE@
+    STACK (rw)  : ORIGIN = @STACK_BASE@, LENGTH = @STACK_SIZE@
+}
+
+SECTIONS {
+    .text ORIGIN(IMAGE) : {
+        _text_start = .;
+        KEEP(*(.text.entry.ram))
+        KEEP(*(.text.entry))
+        *(.text .text.* .ltext .ltext.*)
+        _text_end = .;
+    } > IMAGE
+
+@LAYOUT_SECTION@
+    .fstart.anchor : ALIGN(8) {
+        _fstart_anchor_early = .;
+        *(.fstart.anchor)
+        _fstart_early_microcode_enabled = .;
+        LONG(0)
+        . = ALIGN(8);
+        _FSTART_HEAP_SIZE = .;
+        QUAD(@HEAP_SIZE@)
+    } > IMAGE
+
+    .rodata : ALIGN(8) {
+        _rodata_start = .;
+        KEEP(*(.fstart.bootstrap_pin))
+        *(.rodata .rodata.* .lrodata .lrodata.*)
+    } > IMAGE
+    .data.rel.ro : ALIGN(8) { *(.data.rel.ro .data.rel.ro.*) } > IMAGE
+    .fstart.keep : ALIGN(8) { KEEP(*(.fstart.keep)) } > IMAGE
+    .got : ALIGN(8) { *(.got) *(.got.plt) } > IMAGE
+    .eh_frame_hdr : ALIGN(8) { *(.eh_frame_hdr) } > IMAGE
+    .eh_frame : ALIGN(8) { *(.eh_frame) } > IMAGE
+
+    /* Initialized data runs in place: _data_load == _data_start, so _start_ram's copy is a no-op. */
+    .data : ALIGN(8) {
+        _data_start = .;
+        *(.data .data.* .ldata .ldata.*)
+        _data_end = .;
+    } > IMAGE
+    _data_load = LOADADDR(.data);
+
+    .bss (NOLOAD) : ALIGN(8) {
+        _bss_start = .;
+        *(.bss .bss.* .lbss .lbss.*)
+        *(COMMON)
+        . = ALIGN(8);
+        _bss_end = .;
+    } > DATA
+
+    .fstart.heap (NOLOAD) : ALIGN(16) {
+        _FSTART_HEAP = .;
+        . = . + @HEAP_SIZE@;
+    } > HEAP
+
+    .stack (NOLOAD) : ALIGN(16) {
+        _stack_bottom = .;
+        . = . + @STACK_SIZE@;
+        . = ALIGN(16);
+        _stack_top = .;
+        _writable_end = .;
+    } > STACK
+
+    /* No CAR: the PSP trained DRAM before releasing x86. */
+    _has_car = 0;
+    _car_base = 0;
+    _car_size = 0;
+    _ecar_stack = _stack_top;
+    _rom_mtrr_base = 0;
+    _rom_mtrr_mask = 0;
+    _binary_end = @IMAGE_END@;
+
+    ASSERT(_data_end - ORIGIN(IMAGE) <= @IMAGE_SIZE@, "AMD A/B RW stage exceeds IMAGE capacity")
+    ASSERT(_stack_top <= ORIGIN(STACK) + LENGTH(STACK), "insufficient stack space")
+}

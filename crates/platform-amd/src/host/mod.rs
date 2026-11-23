@@ -41,10 +41,17 @@ use std::string::{String, ToString};
 use std::{format, vec};
 
 /// The firmware unit (and FFS file) name of the stage, which the PSP
-/// copies to DRAM as the BIOS reset image.
+/// copies to DRAM as the BIOS reset image (or, in A/B mode, the RW stage
+/// loaded from the active RW FFS slot by `ro`).
 pub const STAGE_UNIT: &str = "stage";
-/// Platform feature that bundles the stage runtime.
+/// The immutable RO selector stage unit in A/B builds.
+pub const RO_UNIT: &str = "ro";
+/// Platform feature that bundles the monolithic stage runtime.
 pub const STAGE_FEATURE: &str = "bundle";
+/// Platform feature for the A/B RO selector stage.
+pub const AB_RO_FEATURE: &str = "ab-ro";
+/// Platform feature for the A/B RW stage.
+pub const AB_RW_FEATURE: &str = "ab-rw";
 /// The SMM image unit; the stage unit is its only consumer.
 pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
@@ -212,6 +219,21 @@ fn smm_unit(host: &Host) -> CompilationUnit {
     .into()
 }
 
+/// Static small-code-model rustflags shared by AMD stage binaries (`stage` and `ro`).
+fn amd_stage_rustflags() -> std::vec::Vec<String> {
+    [
+        "-Zub-checks=no",
+        "-Crelocation-model=static",
+        "-Ccode-model=small",
+        "-Clink-arg=-no-pie",
+        "-Cno-redzone=yes",
+        "--cfg",
+        "curve25519_dalek_backend=\"serial\"",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
 /// The reset image: linked at the layout's image in DRAM below 4 GiB
 /// (small code model, static relocations).
 fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> {
@@ -226,17 +248,7 @@ fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> 
             .collect(),
         build_std: Some("core,alloc".into()),
         release_only: host.release_only,
-        rustflags: [
-            "-Zub-checks=no",
-            "-Crelocation-model=static",
-            "-Ccode-model=small",
-            "-Clink-arg=-no-pie",
-            "-Cno-redzone=yes",
-            "--cfg",
-            "curve25519_dalek_backend=\"serial\"",
-        ]
-        .map(String::from)
-        .to_vec(),
+        rustflags: amd_stage_rustflags(),
         linker_script: Some(layout.linker_script()?),
         environment_values: mp_capacity(host)
             .into_iter()
@@ -253,6 +265,76 @@ fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> 
             expectations: layout.expectations()?,
             load_address: layout.image.base,
             flat_capacity: layout.image.size,
+        },
+    })
+}
+
+/// The immutable A/B RO selector stage: linked at `AB_RO_DRAM_BASE`
+/// (`0x75f8_0000..0x7600_0000`) through `amd_psp_reset.S`.
+fn ro_unit(host: &Host, ro_layout: &Layout) -> Result<CompilationUnit, String> {
+    Ok(CompilationUnit {
+        name: RO_UNIT.into(),
+        cargo_target: CargoTarget::BoardBinary,
+        target: "x86_64-unknown-none".into(),
+        features: vec![AB_RO_FEATURE.into()],
+        build_std: Some("core,alloc".into()),
+        release_only: host.release_only,
+        rustflags: amd_stage_rustflags(),
+        linker_script: Some(ro_layout.linker_script()?),
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
+        file_bindings: vec![],
+        board_features: vec![],
+        output: UnitOutput::Executable {
+            expectations: ro_layout.expectations()?,
+            load_address: ro_layout.image.base,
+            flat_capacity: ro_layout.image.size,
+        },
+    })
+}
+
+/// The updatable A/B RW stage: linked at `AB_RW_IMAGE_BASE`
+/// (`0x75c8_0000..0x75f8_0000`), entered at `_start_ram` from RO.
+fn rw_stage_unit(
+    host: &Host,
+    payload: Payload,
+    options: &HostOptions,
+) -> Result<CompilationUnit, String> {
+    use crate::ab::{AB_RW_IMAGE_BASE, AB_RW_IMAGE_SIZE, host as ab_host};
+    let mut board_features = std::vec::Vec::new();
+    if options.dev_keys {
+        board_features.push("dev-keys".into());
+    }
+    if options.fail_trial {
+        board_features.push("fail-trial".into());
+    }
+    Ok(CompilationUnit {
+        name: STAGE_UNIT.into(),
+        cargo_target: CargoTarget::BoardBinary,
+        target: "x86_64-unknown-none".into(),
+        features: core::iter::once(AB_RW_FEATURE)
+            .chain(payload.feature(host.i2c_input))
+            .map(String::from)
+            .collect(),
+        build_std: Some("core,alloc".into()),
+        release_only: host.release_only,
+        rustflags: amd_stage_rustflags(),
+        linker_script: Some(ab_host::rw_linker_script(&host.layout)?),
+        environment_values: mp_capacity(host)
+            .into_iter()
+            .chain([(TSEG_SIZE_ENV.into(), host.tseg_size.to_string())])
+            .collect(),
+        bindings: vec![ArtifactBinding {
+            producer: SMM_UNIT.into(),
+            artifact: "image".into(),
+            environment: SMM_IMAGE_ENV.into(),
+        }],
+        file_bindings: vec![],
+        board_features,
+        output: UnitOutput::Executable {
+            expectations: ab_host::rw_expectations(&host.layout)?,
+            load_address: AB_RW_IMAGE_BASE,
+            flat_capacity: AB_RW_IMAGE_SIZE,
         },
     })
 }
@@ -313,6 +395,97 @@ fn ffs(
         security_version: 0,
         rw_slot: false,
         omit_stages: vec![],
+        image_family: None,
+    }
+}
+
+/// The signed RW-slot FFS image for AMD RO/A/B: carries the LZ4-compressed RW
+/// `stage` (bound as `BootstrapRole::Mainstage`), microcode, and payload.
+#[allow(clippy::too_many_arguments)]
+fn ab_ffs(
+    layout: &Layout,
+    ro_layout: &Layout,
+    slot_base: u64,
+    slot_size: u32,
+    payload: Payload,
+    config: Option<PayloadConfig>,
+    microcode: Option<MicrocodeConfig>,
+    options: &HostOptions,
+    image_family: &'static str,
+) -> FfsAssembly {
+    use crate::ab::AB_RW_IMAGE_BASE;
+    use fstart_core::{Compression, RunsFrom, StageConfig, hvec};
+    use fstart_image_build::build_plan::BootstrapRole;
+
+    let region = |name: &str, span: Region, kind| MemoryRegion {
+        name: hstr(name),
+        base: span.base,
+        size: span.size,
+        kind,
+    };
+    let stages = hvec([
+        StageConfig {
+            name: hstr(RO_UNIT),
+            build: StageBuildConfig {
+                load_next_stage: Some(hstr(STAGE_UNIT)),
+                verify_firmware: true,
+                ..Default::default()
+            },
+            load_addr: ro_layout.image.base,
+            stack_size: ro_layout.stack.size as u32,
+            heap_size: Some(ro_layout.heap.size as u32),
+            runs_from: RunsFrom::Rom,
+            compression: Compression::None,
+            data_addr: Some(ro_layout.data.base),
+        },
+        StageConfig {
+            name: hstr(STAGE_UNIT),
+            build: StageBuildConfig {
+                firmware_image: Some(FirmwareImageConfig::default()),
+                verify_firmware: true,
+                payload: payload != Payload::Halt,
+                pci: true,
+                acpi: true,
+                ..Default::default()
+            },
+            load_addr: AB_RW_IMAGE_BASE,
+            stack_size: layout.stack.size as u32,
+            heap_size: Some(layout.heap.size as u32),
+            runs_from: RunsFrom::Ram,
+            compression: Compression::Lz4,
+            data_addr: Some(layout.data.base),
+        },
+    ]);
+    FfsAssembly {
+        platform: Platform::X86_64,
+        memory: vec![
+            region("flash", layout.flash, fstart_core::RegionKind::Rom),
+            region("early", layout.early, fstart_core::RegionKind::Ram),
+        ],
+        flash: None,
+        bootstrap: vec![(STAGE_UNIT.into(), BootstrapRole::Mainstage)],
+        stages: StageLayout::MultiStage(stages),
+        security: fstart_core::default_security_config(),
+        payload: config,
+        microcode,
+        data_assets: vec![],
+        file_assets: vec![],
+        full_flash_image: false,
+        boot_image_format: BootImageFormat::None,
+        boot_hart_id: 0,
+        build: BoardBuildPolicy {
+            // `build_rw_slot_image_with_root` only uses the slot size (all
+            // RW-slot FFS offsets are slot-relative and no LocatorRef is
+            // embedded); at runtime `ab::rw::mount_ab_ffs` publishes the actual
+            // booted slot's CPU aperture (`rom_window_base + active_slot.offset`).
+            firmware_image: FirmwareImagePolicy::memory_mapped(slot_base, u64::from(slot_size)),
+            ..Default::default()
+        },
+        fw_version: options.fw_version.unwrap_or(1),
+        security_version: options.security_version.unwrap_or(1),
+        rw_slot: true,
+        omit_stages: vec![RO_UNIT.into()],
+        image_family: Some(image_family.into()),
     }
 }
 
@@ -322,6 +495,15 @@ pub fn resolve(
     host: &Host,
     selection: &BuildSelection,
     options: &HostOptions,
+) -> Result<BuildPlan, PlanError> {
+    resolve_inner(host, selection, options, None)
+}
+
+fn resolve_inner(
+    host: &Host,
+    selection: &BuildSelection,
+    options: &HostOptions,
+    ab_cfg: Option<crate::board::AbUpdateConfig>,
 ) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     selection.validate_compiler_files()?;
@@ -333,6 +515,22 @@ pub fn resolve(
     }
     let payload = Payload::select(selection, &options.x86_linux)?;
     let config = payload.config(&options.x86_linux)?;
+
+    if let Some(ab_cfg) = ab_cfg {
+        return resolve_ab(host, selection, options, payload, config, ab_cfg);
+    }
+
+    if options.dev_keys
+        || options.fail_trial
+        || options.fw_version.is_some()
+        || options.security_version.is_some()
+    {
+        return Err(
+            "dev-keys, fail-trial, fw-version and security-version require A/B mode (--option ab=true)"
+                .into(),
+        );
+    }
+
     let window = host.layout.ffs;
     // The kernel is the one file a caller supplies (`--kernel`); the
     // assembler enforces what actually fits next to the other files.
@@ -369,6 +567,98 @@ pub fn resolve(
     Ok(plan)
 }
 
+fn resolve_ab(
+    host: &Host,
+    selection: &BuildSelection,
+    options: &HostOptions,
+    payload: Payload,
+    config: Option<PayloadConfig>,
+    ab_cfg: crate::board::AbUpdateConfig,
+) -> Result<BuildPlan, PlanError> {
+    use crate::ab::{
+        SIENA_AB_SLOT_A_OFFSET, SIENA_AB_SLOT_SIZE, SIENA_RO_LAYOUT, SP3_AB_SLOT_A_OFFSET,
+        SP3_AB_SLOT_SIZE, SP3_RO_LAYOUT,
+    };
+    use crate::rs::Variant;
+
+    if payload == Payload::UefiBasic {
+        return Err(
+            "AMD A/B mode requires '--payload uefi' or '--payload uefi-ui', not 'uefi-basic'"
+                .into(),
+        );
+    }
+    if options.fail_trial && !options.dev_keys {
+        return Err("fail-trial requires dev-keys=true".into());
+    }
+    let (ro_layout, slot_offset, slot_size) = match &host.image {
+        Image::Dual(_) => (SP3_RO_LAYOUT, SP3_AB_SLOT_A_OFFSET, SP3_AB_SLOT_SIZE),
+        Image::Single(single) if single.soc == crate::siena::Dense::NAME => {
+            (SIENA_RO_LAYOUT, SIENA_AB_SLOT_A_OFFSET, SIENA_AB_SLOT_SIZE)
+        }
+        _ => {
+            return Err(format!(
+                "{}: AMD A/B firmware updates are currently supported on SP3 and Siena",
+                host.name
+            )
+            .into());
+        }
+    };
+    let slot_base = host.layout.flash.base + u64::from(slot_offset);
+    let inputs = if payload == Payload::Linux {
+        vec![InputFile {
+            name: "kernel".into(),
+            default: None,
+            capacity: u64::from(slot_size),
+        }]
+    } else {
+        vec![]
+    };
+    let images = {
+        let make_ffs = |microcode| {
+            ab_ffs(
+                &host.layout,
+                &ro_layout,
+                slot_base,
+                slot_size,
+                payload,
+                config,
+                microcode,
+                options,
+                ab_cfg.image_family,
+            )
+        };
+        match &host.image {
+            Image::Dual(image) => image.ab_images(host, selection, options, make_ffs)?,
+            Image::Single(image) => image.ab_images(host, selection, options, make_ffs)?,
+        }
+    };
+    let plan = BuildPlan {
+        payload: payload.name().into(),
+        platform: Platform::X86_64,
+        stages: vec![RO_UNIT.into(), STAGE_UNIT.into()],
+        inputs,
+        images,
+        run: None,
+        options: Default::default(),
+        update: Some(fstart_image_build::build_plan::FirmwareUpdateContract {
+            firmware_guid: ab_cfg.firmware_guid,
+            slot_size,
+            ab: true,
+            lowest_supported_version: ab_cfg.lowest_supported_version,
+            rmap_region: "RW_SLOT".into(),
+            capsule_trust_provisioned: options.dev_keys || !ab_cfg.capsule_trust_certs.is_empty(),
+        }),
+        units: vec![
+            smm_unit(host),
+            ro_unit(host, &ro_layout)?,
+            rw_stage_unit(host, payload, options)?,
+        ],
+    };
+    plan.order()?;
+    plan.validate_compiler_selections(selection)?;
+    Ok(plan)
+}
+
 /// The host data of board `B`: its SoC's image, or the SP3 flash with a
 /// half per SoC it lists.
 pub fn host<B: Board>() -> Result<Host, String> {
@@ -395,10 +685,24 @@ pub fn resolve_board<B: Board>(
     selection: &BuildSelection,
     options: &HostOptions,
 ) -> Result<BuildPlan, PlanError> {
-    let host = host::<B>()?;
-    let mut plan = resolve(&host, selection, options)?;
-    plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
     use fstart_image_build::options::OptionStore;
+
+    let mut host = host::<B>()?;
+    let ab_enabled = options.ab.unwrap_or(B::AB_DEFAULT);
+    let ab_cfg = if ab_enabled {
+        let Some(cfg) = B::AB_UPDATE else {
+            return Err(format!("{} does not support A/B firmware updates", B::NAME).into());
+        };
+        host.option_store = Some(OptionStore::Varstore {
+            offset: crate::ab::AB_NVRAM_OFFSET,
+            size: crate::ab::AB_NVRAM_SIZE,
+        });
+        Some(cfg)
+    } else {
+        None
+    };
+    let mut plan = resolve_inner(&host, selection, options, ab_cfg)?;
+    plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
     plan.options.secure_boot = matches!(plan.options.store, Some(OptionStore::Varstore { .. }))
         && Payload::select(selection, &options.x86_linux)?.secure_boot();
     Ok(plan)

@@ -78,7 +78,7 @@ pub const fn fch_smi(generation: Generation) -> fstart_driver_amd::fch::smi::Con
 }
 
 /// The SoC's own SMI sources after the FCH's: Rome's CF9 trap.
-#[cfg(feature = "bundle")]
+#[cfg(feature = "stage-runtime")]
 pub fn sources(fch: &crate::sp3::silicon::hw::PrimaryFch, config: &crate::smm::SmmConfig<Sp3>) {
     if config.soc.generation == Generation::Rome {
         fstart_driver_amd::fch::huashan::smm::arm_cf9_trap(fch);

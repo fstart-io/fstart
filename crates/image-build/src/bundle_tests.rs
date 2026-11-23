@@ -275,6 +275,7 @@ fn update_bundle_fixture(with_packed_donor: bool) -> Bundle {
         security_version: 1,
         rw_slot: true,
         omit_stages: vec![],
+        image_family: None,
     };
     Bundle {
         manifest: Manifest {

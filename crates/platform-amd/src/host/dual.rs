@@ -74,6 +74,63 @@ impl Image {
         ])
     }
 
+    /// The composed SP3 RO/A/B flash: an RW-slot FFS step (`SLOT_STATE`,
+    /// `RW_A`, `RW_B`), shared NVRAM (`0xf4_0000..0xf8_0000`), and the
+    /// immutable 512 KiB `ro` selector stage at `0xf8_0000..0x100_0000`.
+    ///
+    /// Packs only the lower 16 MiB generation (e.g. Rome on S8030): upper-half
+    /// dual-generation SP3 A/B is not enabled until upper-half SPI lockdown is
+    /// validated.
+    pub(super) fn ab_images(
+        &self,
+        host: &Host,
+        selection: &BuildSelection,
+        options: &HostOptions,
+        ffs: impl FnOnce(Option<MicrocodeConfig>) -> FfsAssembly,
+    ) -> Result<Vec<ImageStep>, String> {
+        use crate::ab::{
+            AB_NVRAM_OFFSET, AB_NVRAM_SIZE, AB_RO_DRAM_BASE, AB_RO_FLASH_OFFSET, AB_RO_SIZE,
+            SP3_AB_STATE_SECTOR_0, host::sp3_slot_layout,
+        };
+        use fstart_image_build::amd::halved_flash::{NvramSlot, ResetSlot};
+
+        if self.halves.is_empty() {
+            return Err(format!("{} lists no SP3 generation", host.name));
+        }
+        if options.blobs.is_none() {
+            return Ok(vec![ffs(None).into()]);
+        }
+        let (packed, microcode) = self.packed_halves(&self.halves[..1], selection)?;
+        let ffs = ffs(Some(microcode));
+        let compose = FlashPlan {
+            generations: self.plan.generations[..1].to_vec(),
+            reset: ResetSlot {
+                flash_offset: AB_RO_FLASH_OFFSET,
+                size: AB_RO_SIZE,
+                destination: AB_RO_DRAM_BASE,
+            },
+            ffs_offset: SP3_AB_STATE_SECTOR_0,
+            dram_floor: self.plan.dram_floor,
+            nvram: Some(NvramSlot {
+                flash_offset: AB_NVRAM_OFFSET,
+                size: AB_NVRAM_SIZE,
+            }),
+            ab: Some(sp3_slot_layout()),
+        };
+        Ok(vec![
+            ffs.into(),
+            ImageStep::new(
+                "flash",
+                ImageOperation::AmdHalvedFlash(Box::new(AmdHalvedFlashAssembly {
+                    ffs: ImageStep::FFS.into(),
+                    packed,
+                    stage_unit: super::RO_UNIT.into(),
+                    compose,
+                })),
+            ),
+        ])
+    }
+
     /// The halves packed from the blob directory, as the plan names it
     /// ([`BLOBS_DIR`]): one per generation the board lists, from the
     /// platform's `[package.metadata.fstart.amd.<generation>]` table and
@@ -84,6 +141,14 @@ impl Image {
         &self,
         selection: &BuildSelection,
     ) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
+        self.packed_halves(&self.halves, selection)
+    }
+
+    fn packed_halves(
+        &self,
+        selected: &[Half],
+        selection: &BuildSelection,
+    ) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
         let tables = &selection.manifests;
         let boards = blobs::board_tables(&tables.board["amd"])?;
         let name = tables.board["board"]
@@ -91,7 +156,7 @@ impl Image {
             .ok_or("the board table has no board name")?;
         let mut halves = vec![];
         let mut files = heapless::Vec::new();
-        for half in &self.halves {
+        for half in selected {
             let board = boards
                 .iter()
                 .find(|board| board.soc == half.name)

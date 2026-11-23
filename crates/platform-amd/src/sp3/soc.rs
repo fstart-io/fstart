@@ -355,10 +355,16 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     if board.discrete_tpm {
         step(0x16, "TPM");
         crate::tpm::start(parts::reset_image(flash, generation), true)?;
+        #[cfg(feature = "ab-rw")]
+        crate::ab::rw::measure_ab_tpm();
     }
 
     step(0x48, "boot media");
+    #[cfg(not(feature = "ab-rw"))]
     crate::media::mount(e820.entries(), &layout::LAYOUT, ffs).map_err(|error| error.step())?;
+    #[cfg(feature = "ab-rw")]
+    crate::ab::rw::mount_ab_ffs(e820.entries(), &layout::LAYOUT, ffs)
+        .map_err(|error| error.step())?;
 
     Ok(Mapped {
         top_mem: tops.tom,
@@ -488,28 +494,46 @@ pub(crate) fn tables<S: crate::flow::Soc<State = State<F>>, F>(
 
 /// CrabEFI keeps its variables, the option overrides among them, in the
 /// settings store, and shows the options in its menu.
-#[cfg_attr(not(feature = "payload-uefi"), allow(unused_mut, unused_variables))]
+#[cfg_attr(
+    any(not(feature = "payload-uefi"), feature = "ab-rw"),
+    allow(unused_mut, unused_variables)
+)]
 pub(crate) fn launch<F>(
     mut handoff: fstart_payload::Handoff<'_>,
+    _board: &crate::board::Facts,
     state: &State<F>,
     flow: &Flow,
     options: &fstart_options::Report,
 ) -> ! {
     step(0x90, "payload");
     fstart_log::flush();
-    #[cfg(feature = "payload-uefi")]
-    let view = state.view(flow);
-    #[cfg(feature = "payload-uefi")]
+    #[cfg(feature = "ab-rw")]
     {
-        static mut STORAGE: Option<crate::options::FlashStorage> = None;
-        // SAFETY: firmware BSS, written once here on the BSP; the
-        // payload keeps the store for as long as it runs.
-        let storage = unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) };
-        *storage = parts::options::storage(&view);
-        handoff.settings = Some(crate::options::settings(options));
-        handoff.variable_storage = storage
-            .as_mut()
-            .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+        let _ = flow;
+        crate::ab::rw::prepare_and_launch_ab(
+            handoff,
+            &state.soc.fch,
+            state.soc.timer,
+            _board,
+            options,
+        )
     }
-    fstart_payload::boot(handoff, ())
+    #[cfg(not(feature = "ab-rw"))]
+    {
+        #[cfg(feature = "payload-uefi")]
+        let view = state.view(flow);
+        #[cfg(feature = "payload-uefi")]
+        {
+            static mut STORAGE: Option<crate::options::FlashStorage> = None;
+            // SAFETY: firmware BSS, written once here on the BSP; the
+            // payload keeps the store for as long as it runs.
+            let storage = unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) };
+            *storage = parts::options::storage(&view);
+            handoff.settings = Some(crate::options::settings(options));
+            handoff.variable_storage = storage
+                .as_mut()
+                .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+        }
+        fstart_payload::boot(handoff, ())
+    }
 }

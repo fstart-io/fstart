@@ -60,6 +60,10 @@ static mut STATE: Option<State> = None;
 /// access (another CPU, a transport calling back) finds it taken and does
 /// nothing instead of aliasing the state.
 static BUSY: AtomicBool = AtomicBool::new(false);
+/// Set once the TPM 2.0 platform hierarchy has been locked/disabled (via
+/// [`lock`] or `hide_tpm20` on the `Remedy::Hide` path) or TPM 1.2 physical
+/// presence has been locked.
+static PLATFORM_LOCKED: AtomicBool = AtomicBool::new(false);
 
 fn exclusive<R>(f: impl FnOnce(&mut Option<State>) -> R) -> Option<R> {
     if BUSY.swap(true, Ordering::Acquire) {
@@ -211,11 +215,15 @@ fn hide_tpm20(tpm: &mut dyn Transport) -> bool {
         ok &= tpm20::pcr_event(tpm, pcr, &0u32.to_le_bytes()).is_ok();
     }
     let mut auth = [0u8; 32];
-    ok &= tpm20::get_random(tpm, &mut auth)
+    let platform_locked = tpm20::get_random(tpm, &mut auth)
         .and_then(|()| tpm20::hierarchy_change_auth(tpm, PLATFORM, &auth))
         .or_else(|_| tpm20::hierarchy_control(tpm, PLATFORM, PLATFORM, false))
         .is_ok();
     auth.zeroize();
+    if platform_locked {
+        PLATFORM_LOCKED.store(true, Ordering::Release);
+    }
+    ok &= platform_locked;
     tpm.release();
     if !ok {
         fstart_log::error!("tcg: hiding the TPM failed");
@@ -446,6 +454,9 @@ impl State {
             }
         };
         self.locked = result.is_ok();
+        if self.locked {
+            PLATFORM_LOCKED.store(true, Ordering::Release);
+        }
         result
     }
 }
@@ -537,6 +548,13 @@ pub fn separators() {
 /// locked. Succeeds once locked; nothing to lock without measured boot.
 pub fn lock() -> Result<(), TpmError> {
     with(|state| state.lock()).unwrap_or(Ok(()))
+}
+
+/// Whether `fstart-tcg` has already locked or disabled the TPM 2.0 platform
+/// hierarchy (via [`lock`] or the `Remedy::Hide` path) or locked TPM 1.2
+/// physical presence.
+pub fn platform_hierarchy_locked() -> bool {
+    PLATFORM_LOCKED.load(Ordering::Acquire)
 }
 
 /// The event log as handed to the payload and the OS.

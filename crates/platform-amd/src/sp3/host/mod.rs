@@ -85,6 +85,7 @@ pub fn flash_plan<B: Board>() -> FlashPlan {
             flash_offset: layout::NVRAM.offset,
             size: layout::NVRAM.size,
         }),
+        ab: None,
     }
 }
 
@@ -343,6 +344,7 @@ mod tests {
                     flash_offset: 0xcc_0000,
                     size: 0x4_0000
                 }),
+                ab: None,
             }
         );
         let config = plan.config("tyan-s8030").unwrap();
@@ -428,5 +430,167 @@ mod tests {
         assert_eq!(find(RegionKind::Firmware).end(), Some(0xfd_00cc_0000));
         assert_eq!(find(RegionKind::Flash).base, 0xfd_0000_0000);
         assert_eq!(find(RegionKind::Stack).end(), Some(LAYOUT.stack.end()));
+    }
+
+    #[test]
+    fn ab_plan_emits_ro_and_rw_units_halved_flash_and_update_contract() {
+        use crate::ab::{
+            AB_NVRAM_OFFSET, AB_NVRAM_SIZE, AB_RO_DRAM_BASE, AB_RO_FLASH_OFFSET, AB_RO_SIZE,
+            AB_RW_IMAGE_BASE, AB_RW_IMAGE_SIZE, SP3_AB_SLOT_SIZE, host::sp3_slot_layout,
+        };
+        use crate::board::AbUpdateConfig;
+        use fstart_image_build::options::OptionStore;
+
+        const TEST_GUID: [u8; 16] = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x01,
+        ];
+        struct S8030Base;
+        impl Board for S8030Base {
+            const NAME: &'static str = "tyan-s8030";
+            const SOCS: &'static [SocId] = &[SocId::Rome, SocId::Milan];
+            const MAX_CPUS: u16 = 256;
+            const AB_UPDATE: Option<AbUpdateConfig> = Some(AbUpdateConfig {
+                image_family: "tyan-s8030",
+                firmware_guid: TEST_GUID,
+                lowest_supported_version: 1,
+                capsule_trust_certs: &[],
+                require_tpm_floor: false,
+                fail_trial_before_confirm: false,
+            });
+            const AB_DEFAULT: bool = false;
+        }
+        struct S8030Ab;
+        impl Board for S8030Ab {
+            const NAME: &'static str = "tyan-s8030-ab";
+            const SOCS: &'static [SocId] = &[SocId::Rome, SocId::Milan];
+            const MAX_CPUS: u16 = 256;
+            const AB_UPDATE: Option<AbUpdateConfig> = S8030Base::AB_UPDATE;
+            const AB_DEFAULT: bool = true;
+        }
+
+        let mut selection = packed_selection("ab", &["rome", "milan"]);
+        selection.payload = Some("uefi".into());
+        selection.options.insert("dev-keys".into(), "true".into());
+        selection.options.insert("fw-version".into(), "2".into());
+        selection
+            .options
+            .insert("security-version".into(), "2".into());
+
+        let plan = resolve::<S8030Ab>(&selection).unwrap();
+        let mut base_selection = selection.clone();
+        base_selection.options.insert("ab".into(), "true".into());
+        let base_plan = resolve::<S8030Base>(&base_selection).unwrap();
+        assert_eq!(
+            plan.ffs_assembly().unwrap().image_family.as_deref(),
+            Some("tyan-s8030")
+        );
+        assert_eq!(
+            base_plan.ffs_assembly().unwrap().image_family,
+            plan.ffs_assembly().unwrap().image_family
+        );
+        assert_eq!(plan.stages, ["ro", "stage"]);
+        let order: Vec<_> = plan
+            .order()
+            .unwrap()
+            .iter()
+            .map(|u| u.name.as_str())
+            .collect();
+        assert_eq!(order, ["smm", "ro", "stage"]);
+
+        let ro = plan.unit("ro").unwrap();
+        assert_eq!(ro.features, ["ab-ro"]);
+        let UnitOutput::Executable {
+            load_address,
+            flat_capacity,
+            expectations,
+        } = &ro.output
+        else {
+            panic!("ro not executable");
+        };
+        assert_eq!(
+            (*load_address, *flat_capacity),
+            (AB_RO_DRAM_BASE, u64::from(AB_RO_SIZE))
+        );
+        assert_eq!(expectations.entry, Some(0x75ff_fff0));
+
+        let rw = plan.unit("stage").unwrap();
+        assert_eq!(rw.features, ["ab-rw", "payload-uefi"]);
+        assert_eq!(rw.board_features, ["dev-keys"]);
+        let UnitOutput::Executable {
+            load_address,
+            flat_capacity,
+            expectations,
+        } = &rw.output
+        else {
+            panic!("stage not executable");
+        };
+        assert_eq!(
+            (*load_address, *flat_capacity),
+            (AB_RW_IMAGE_BASE, AB_RW_IMAGE_SIZE)
+        );
+        assert_eq!(expectations.entry, Some(AB_RW_IMAGE_BASE));
+
+        let ffs = plan.ffs_assembly().unwrap();
+        assert!(ffs.rw_slot);
+        assert_eq!(ffs.omit_stages, ["ro"]);
+        assert_eq!(ffs.fw_version, 2);
+        assert_eq!(ffs.security_version, 2);
+
+        let image = sp3(&plan);
+        assert_eq!(image.stage_unit, "ro");
+        assert_eq!(generations(&plan), [halved_flash::ROME]);
+        assert_eq!(image.compose.generations, [halved_flash::ROME]);
+        assert_eq!(image.compose.ab, Some(sp3_slot_layout()));
+        assert_eq!(image.compose.reset.flash_offset, AB_RO_FLASH_OFFSET);
+        assert_eq!(image.compose.reset.size, AB_RO_SIZE);
+        assert_eq!(image.compose.reset.destination, AB_RO_DRAM_BASE);
+        assert_eq!(
+            plan.options.store,
+            Some(OptionStore::Varstore {
+                offset: AB_NVRAM_OFFSET,
+                size: AB_NVRAM_SIZE,
+            })
+        );
+        assert!(plan.options.secure_boot);
+
+        let update = plan.update.as_ref().expect("update contract");
+        assert_eq!(update.firmware_guid, TEST_GUID);
+        assert_eq!(update.slot_size, SP3_AB_SLOT_SIZE);
+        assert!(update.ab);
+        assert!(update.capsule_trust_provisioned);
+
+        // Without dev-keys, capsule_trust_provisioned is false.
+        let mut no_dev = packed_selection("ab-nodev", &["rome"]);
+        no_dev.payload = Some("uefi".into());
+        let no_dev_plan = resolve::<S8030Ab>(&no_dev).unwrap();
+        assert!(
+            !no_dev_plan
+                .update
+                .as_ref()
+                .unwrap()
+                .capsule_trust_provisioned
+        );
+
+        // --payload uefi-basic must be rejected in A/B mode.
+        let mut basic = packed_selection("ab-basic", &["rome"]);
+        basic.payload = Some("uefi-basic".into());
+        assert!(resolve::<S8030Ab>(&basic).is_err());
+
+        // fail-trial without dev-keys must be rejected.
+        let mut bad = packed_selection("ab-bad", &["rome"]);
+        bad.options.insert("fail-trial".into(), "true".into());
+        assert!(resolve::<S8030Ab>(&bad).is_err());
+
+        // Board without AB_UPDATE rejects --option ab=true.
+        let mut unsupported = BuildSelection::default();
+        unsupported.options.insert("ab".into(), "true".into());
+        assert!(resolve::<S8030>(&unsupported).is_err());
+
+        // JSON round-trip succeeds.
+        let json = serde_json::to_string(&plan).unwrap();
+        let back: BuildPlan = serde_json::from_str(&json).unwrap();
+        back.order().unwrap();
+        assert_eq!(back.update, plan.update);
     }
 }

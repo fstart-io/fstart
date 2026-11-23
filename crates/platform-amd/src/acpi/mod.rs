@@ -235,7 +235,7 @@ pub struct Soc<'a> {
 /// values of its SMM handler (`smi`), the board's BMC sleep notification
 /// and contributions, and the TPM measured boot started on; lay them out
 /// in `storage`, which is where they stay. Returns the RSDP.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub fn install(
     soc: &Soc,
     smi: Option<&fstart_driver_amd::fch::smi::Config>,
@@ -298,7 +298,7 @@ pub fn install(
 /// The events the boot reports to the board's BMC, of the last boot's
 /// errors and the ABL's: the board's hook may wait for its BMC up to
 /// `smm::ras::SEL_POLL_BUDGET` polls each.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 const BOOT_EVENTS: u32 = 24;
 
 /// The boot error region, in the firmware's reserved memory: the errors
@@ -310,7 +310,7 @@ const BOOT_EVENTS: u32 = 24;
 /// event, `smm::ras::sel`) all or none, the OEM events numbered by their
 /// error so that the ones of an error the BMC stopped taking midway are
 /// still known as its. Returns its address and length.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 fn boot_errors(
     bmc: Option<crate::board::BmcEvent>,
     abl: &[fstart_driver_amd::apob::event::AblError],

@@ -13,7 +13,7 @@ smbios = ["acpi", "dep:fstart-driver-spd"]
 # The FCH SMM handler, for SMM image builds.
 smm = ["dep:fstart-smm"]
 # A reserved boot-flash region through the FCH SPI100 command engine.
-spi-flash = ["dep:rflasher-core", "dep:rflasher-internal"]
+spi-flash = ["dep:rflasher-core", "dep:rflasher-internal", "dep:spin"]
 # Host models of the register spaces, for the tests of dependent crates.
 testing = ["dep:libc", "fstart-core/testing"]
 
@@ -36,6 +36,7 @@ fstart-driver-spd = { workspace = true, optional = true }
 fstart-options.workspace = true
 rflasher-core = { workspace = true, optional = true }
 rflasher-internal = { workspace = true, optional = true }
+spin = { workspace = true, optional = true }
 
 [dev-dependencies]
 fstart-core = { workspace = true, features = ["testing"] }

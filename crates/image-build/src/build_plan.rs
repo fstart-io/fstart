@@ -279,6 +279,12 @@ pub struct FfsAssembly {
     /// RO/A/B board whose RO selector lives in the write-protected bootblock).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omit_stages: Vec<String>,
+    /// Optional explicit firmware family string hashed into `Root.image_family`
+    /// and `TrustBlock.image_family` instead of the board/variant ID. Keeps
+    /// `board --option ab=true` and `board-ab` variant images in one update
+    /// family while preserving distinct output filenames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_family: Option<String>,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -859,26 +865,96 @@ impl BuildPlan {
                 ));
             }
             for step in &self.images {
-                if let ImageOperation::X86AbFlash(image) = &step.operation {
-                    if image.ffs != ffs_step_name {
+                match &step.operation {
+                    ImageOperation::X86AbFlash(image) => {
+                        if image.ffs != ffs_step_name {
+                            return Err(format!(
+                                "X86AbFlash step '{}' consumes '{}' instead of RW FFS step '{ffs_step_name}'",
+                                step.name, image.ffs
+                            ));
+                        }
+                        let expected_ab =
+                            matches!(image.slot_layout, crate::capsule::AbSlotLayout::RoAB { .. });
+                        if update.slot_size != image.slot_layout.rw_slot_size()
+                            || update.ab != expected_ab
+                        {
+                            return Err(format!(
+                                "update contract (slot_size={:#x}, ab={}) does not match X86AbFlash step '{}' (slot_size={:#x}, ab={expected_ab})",
+                                update.slot_size,
+                                update.ab,
+                                step.name,
+                                image.slot_layout.rw_slot_size(),
+                            ));
+                        }
+                    }
+                    ImageOperation::AmdHalvedFlash(image) => {
+                        if let Some(ab) = image.compose.ab {
+                            if image.ffs != ffs_step_name {
+                                return Err(format!(
+                                    "AmdHalvedFlash A/B step '{}' consumes '{}' instead of RW FFS step '{ffs_step_name}'",
+                                    step.name, image.ffs
+                                ));
+                            }
+                            let expected_ab =
+                                matches!(ab, crate::capsule::AbSlotLayout::RoAB { .. });
+                            if update.slot_size != ab.rw_slot_size() || update.ab != expected_ab {
+                                return Err(format!(
+                                    "update contract (slot_size={:#x}, ab={}) does not match AmdHalvedFlash step '{}' (slot_size={:#x}, ab={expected_ab})",
+                                    update.slot_size,
+                                    update.ab,
+                                    step.name,
+                                    ab.rw_slot_size(),
+                                ));
+                            }
+                        }
+                    }
+                    ImageOperation::AmdEfs(image) => {
+                        if let Some(ab) = image.ab {
+                            let consumed =
+                                image.ffs.as_ref().map(|w| w.step.as_str()).ok_or_else(|| {
+                                    format!(
+                                        "AmdEfs A/B step '{}' must name an RW FFS step",
+                                        step.name
+                                    )
+                                })?;
+                            if consumed != ffs_step_name {
+                                return Err(format!(
+                                    "AmdEfs A/B step '{}' consumes '{consumed}' instead of RW FFS step '{ffs_step_name}'",
+                                    step.name
+                                ));
+                            }
+                            let expected_ab =
+                                matches!(ab, crate::capsule::AbSlotLayout::RoAB { .. });
+                            if update.slot_size != ab.rw_slot_size() || update.ab != expected_ab {
+                                return Err(format!(
+                                    "update contract (slot_size={:#x}, ab={}) does not match AmdEfs step '{}' (slot_size={:#x}, ab={expected_ab})",
+                                    update.slot_size,
+                                    update.ab,
+                                    step.name,
+                                    ab.rw_slot_size(),
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            for step in &self.images {
+                match &step.operation {
+                    ImageOperation::AmdHalvedFlash(image) if image.compose.ab.is_some() => {
                         return Err(format!(
-                            "X86AbFlash step '{}' consumes '{}' instead of RW FFS step '{ffs_step_name}'",
-                            step.name, image.ffs
+                            "AmdHalvedFlash A/B step '{}' requires BuildPlan::update",
+                            step.name
                         ));
                     }
-                    let expected_ab =
-                        matches!(image.slot_layout, crate::capsule::AbSlotLayout::RoAB { .. });
-                    if update.slot_size != image.slot_layout.rw_slot_size()
-                        || update.ab != expected_ab
-                    {
+                    ImageOperation::AmdEfs(image) if image.ab.is_some() => {
                         return Err(format!(
-                            "update contract (slot_size={:#x}, ab={}) does not match X86AbFlash step '{}' (slot_size={:#x}, ab={expected_ab})",
-                            update.slot_size,
-                            update.ab,
-                            step.name,
-                            image.slot_layout.rw_slot_size(),
+                            "AmdEfs A/B step '{}' requires BuildPlan::update",
+                            step.name
                         ));
                     }
+                    _ => {}
                 }
             }
         }
@@ -1032,6 +1108,7 @@ mod tests {
                     security_version: 0,
                     rw_slot: false,
                     omit_stages: vec![],
+                    image_family: None,
                 }
                 .into(),
             ],
@@ -1290,6 +1367,7 @@ mod tests {
             security_version: 0,
             rw_slot: false,
             omit_stages: vec![],
+            image_family: None,
         };
         let plan = |units| BuildPlan {
             options: Default::default(),
