@@ -1,6 +1,6 @@
 [package]
 name = "fstart-board-gigabyte-md25-cg0"
-description = "GIGABYTE MD25-CG0: 1P SP7 server board, AMD Venice (early bring-up)"
+description = "GIGABYTE MD25-CG0: 1P SP7 server board, AMD Venice"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -11,6 +11,19 @@ board = "gigabyte-md25-cg0"
 name = "MD25-CG0"
 arch = "x86_64"
 build-profile = { dependency = "fstart-platform-amd" }
+
+# Board APCBs and eSPI strap for MD25-CG0 (AST2700 BMC on eSPI0); Venice's
+# SoC blobs live in fstart-platform-amd's [package.metadata.fstart.amd.venice].
+[package.metadata.fstart.amd]
+soc = "venice"
+efs-espi = [0x0e, 0xff, 0xff, 0xff]
+apcb = { entries = [
+  { type = 0x60, instance = 0, writable = true, file = "md25-cg0/apcb-60-0.bin" },
+  { type = 0x60, instance = 1, writable = true, file = "md25-cg0/apcb-60-1.bin" },
+  { type = 0x68, instance = 0, file = "md25-cg0/apcb-68-0.bin" },
+  { type = 0x68, instance = 8, file = "md25-cg0/apcb-68-8.bin" },
+  { type = 0x68, instance = 9, file = "md25-cg0/apcb-68-9.bin" },
+] }
 
 [features]
 # The SMM handler module, enabled only for the SMM image.

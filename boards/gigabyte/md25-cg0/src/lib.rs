@@ -2,8 +2,8 @@
 //! GIGABYTE MD25-CG0: 1P SP7 server board for AMD Venice (WH I/O die + Qilian
 //! FCH) with an ASPEED AST2700 BMC over eSPI/LPC.
 //!
-//! Early bring-up status: compiled and unit-tested offline; not yet booted on
-//! physical SP7 hardware.
+//! Status: compiled, unit-tested, and donor-ROM flash-validated offline;
+//! not yet booted on physical SP7 hardware.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -91,26 +91,38 @@ pub const CONSOLE: Ns16550Config = Ns16550Config {
 
 /// Board configuration for Venice on the MD25-CG0.
 pub fn config() -> Config {
+    use fstart_platform_amd::sp7::links::{Behind, Soldered};
+    let required = [Soldered {
+        lane: wiring::BMC_VGA_LANE,
+        behind: Behind::BridgedDisplay,
+    }]
+    .into_iter()
+    .collect();
     Config {
         gpio: &[],
+        nbio: Default::default(),
+        ccx: Default::default(),
         mpio: Mpio {
+            required,
             perst: &wiring::PERST,
             psp_trained: &wiring::PSP_TRAINED,
         },
+        usb: wiring::USB,
+        display: Some(wiring::BMC_VGA_LANE),
         legacy_devices: true,
         // All 16 SP7 DDR5 channels.
         memory_channels: 0xffff,
         // Up to 256 GiB RDIMM per slot (matches SP5 Onyx).
         max_dimm_mib: 256 * 1024,
-        einj: false,
+        einj: true,
     }
 }
 
 /// Before the console: enable host-side LPC/eSPI bridge decodes for the AST2700
 /// Super I/O (`0x2E`/`0x4E`), COM1 (`0x3F8`), and IPMI KCS (`0xCA0..0xCAF`).
 ///
-/// Prerequisites not yet programmed by this function: PSP/EFS eSPI peripheral
-/// channel bring-up and AST2700 Super I/O logical-device activation (`SioAst2xxxPei`).
+/// Enables host-side decodes and unlocks/activates AST2700 Super I/O SUART1/SUART2.
+/// PSP/EFS eSPI peripheral channel bring-up is performed prior to x86 entry.
 /// Returns `true` if the wide-I/O range for KCS (`0xCA0..0xCAF`) was allocated.
 pub fn early_init(fch: &impl FchHw) -> bool {
     fch.acpi()
@@ -120,6 +132,13 @@ pub fn early_init(fch: &impl FchHw) -> bool {
     lpc::enable_io_decode(fch, IoPortDecode::SERIAL0::SET);
     let kcs_ok = lpc::set_wideio_range(fch, 0xca0, 16).is_ok();
     KCS_DECODED.store(kcs_ok, Ordering::Release);
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    // SAFETY: 0x2E/0x2F decoded above; BSP owns the AST2700 Super I/O port pair.
+    unsafe {
+        fstart_driver_superio::aspeed_ast2700::early_init_at(
+            fstart_driver_superio::aspeed_ast2700::CONFIG_PORT,
+        );
+    }
     kcs_ok
 }
 

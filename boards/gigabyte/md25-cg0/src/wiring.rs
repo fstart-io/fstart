@@ -92,6 +92,23 @@ pub const PCIE: [LaneDescriptor; 10] = [
     },
 ];
 
+/// Qilian USB cold-boot policy: both xHCI controllers enabled, active-low
+/// over-current, sparse mode enabled, default PHY tuning (no unverified PHY
+/// coefficients copied).
+pub const USB: fstart_driver_amd::fch::qilian::usb::Policy =
+    fstart_driver_amd::fch::qilian::usb::Policy {
+        enabled: [true, true],
+        over_current: [0x1010, 0x1010],
+        device_removable: 0,
+        ras: false,
+        over_current_low: true,
+        sparse: true,
+        debug_pipe_switch: false,
+        force_gen1: 0,
+        usb2: None,
+        usb3: None,
+    };
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +130,13 @@ mod tests {
         let bmc = PCIE.iter().find(|d| d.start_lane == BMC_VGA_LANE).unwrap();
         assert!(bmc.psp_trained);
         assert_eq!(bmc.width(), 1);
+    }
+
+    #[test]
+    fn usb_policy_validates_without_unverified_phy_tuning() {
+        use fstart_driver_amd::fch::qilian::usb::ColdBoot;
+        assert!(ColdBoot::new(&USB).is_ok());
+        assert!(USB.usb2.is_none());
+        assert!(USB.usb3.is_none());
     }
 }
