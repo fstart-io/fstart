@@ -71,8 +71,14 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ));
         }
     };
-    let AspeedSoc::Ast2500 = facts.soc;
-    let soc = &crate::layout::AST2500;
+    match facts.soc {
+        AspeedSoc::Ast2500 => {}
+        AspeedSoc::Ast2400 | AspeedSoc::Ast1250 => {
+            return Err("the AST2400 and AST1250 are not supported yet".into());
+        }
+        AspeedSoc::Ast2600 => return Err("the AST2600 is not supported yet".into()),
+    }
+    let soc = facts.soc.layout();
     if facts.flash_size < FIRMWARE_WINDOW_SIZE {
         return Err("the boot flash must cover the 16 MiB firmware window".into());
     }
@@ -317,6 +323,9 @@ fn run(emulator: AspeedEmulator, facts: &BoardFacts) -> Result<RunRecipe, String
                 tests: vec![],
             })
         }
+        AspeedEmulator::PalmettoBmc | AspeedEmulator::Ast2600Evb => {
+            Err(format!("no run recipe for {emulator:?} yet"))
+        }
     }
 }
 
@@ -403,6 +412,18 @@ mod tests {
             ..BuildSelection::default()
         };
         assert!(resolve(MJ11, linux).is_err());
+    }
+
+    #[test]
+    fn unsupported_socs_fail_the_plan() {
+        for soc in [AspeedSoc::Ast2400, AspeedSoc::Ast1250, AspeedSoc::Ast2600] {
+            let facts = BoardFacts {
+                soc,
+                emulator: None,
+                ..MJ11
+            };
+            assert!(resolve(facts, BuildSelection::default()).is_err());
+        }
     }
 
     #[test]
