@@ -4,6 +4,12 @@
 //! the index/data ports. Do not select another LDN through a separate accessor
 //! while programming a selected device.
 
+use tock_registers::{LocalRegisterCopy, register_bitfields};
+
+register_bitfields![u8,
+    Activation [ ENABLE OFFSET(0) NUMBITS(1) [] ]
+];
+
 /// Standard PnP I/O address pairs (0x60 through 0x69), carrying their bases.
 #[derive(Clone, Copy)]
 pub enum IoResource {
@@ -12,6 +18,19 @@ pub enum IoResource {
     Third(u16),
     Fourth(u16),
     Fifth(u16),
+}
+
+impl IoResource {
+    fn registers(self) -> (u8, [u8; 2]) {
+        let (high, base) = match self {
+            Self::Primary(base) => (0x60, base),
+            Self::Secondary(base) => (0x62, base),
+            Self::Third(base) => (0x64, base),
+            Self::Fourth(base) => (0x66, base),
+            Self::Fifth(base) => (0x68, base),
+        };
+        (high, base.to_be_bytes())
+    }
 }
 
 /// Standard PnP interrupt slots, carrying their IRQ numbers.
@@ -46,16 +65,28 @@ impl<R: FnMut(u8) -> u8, W: FnMut(u8, u8)> LogicalDevice<R, W> {
     }
 
     pub fn set_io_base(&mut self, resource: IoResource) {
-        let (high, address) = match resource {
-            IoResource::Primary(base) => (0x60, base),
-            IoResource::Secondary(base) => (0x62, base),
-            IoResource::Third(base) => (0x64, base),
-            IoResource::Fourth(base) => (0x66, base),
-            IoResource::Fifth(base) => (0x68, base),
-        };
-        let [hi, lo] = address.to_be_bytes();
+        let (high, [hi, lo]) = resource.registers();
         self.write(high, hi);
         self.write(high + 1, lo);
+    }
+
+    /// Read back the requested address pair on the currently selected LDN.
+    pub fn matches_io_base(&mut self, resource: IoResource) -> bool {
+        let (high, [hi, lo]) = resource.registers();
+        (self.read)(high) == hi && (self.read)(high + 1) == lo
+    }
+
+    pub fn matches_irq(&mut self, resource: IrqResource) -> bool {
+        let (register, irq) = match resource {
+            IrqResource::Primary(irq) => (0x70, irq),
+            IrqResource::Secondary(irq) => (0x72, irq),
+        };
+        (self.read)(register) == irq
+    }
+
+    pub fn is_enabled(&mut self) -> bool {
+        LocalRegisterCopy::<u8, Activation::Register>::new((self.read)(0x30))
+            .is_set(Activation::ENABLE)
     }
 
     pub fn set_irq(&mut self, resource: IrqResource) {
