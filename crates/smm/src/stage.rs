@@ -126,14 +126,19 @@ mod tests {
             runtime: SmmRuntime::new(0, 0, 2, 0x400, 48, 0),
             padding: [0; 24],
         };
-        let base = core::ptr::addr_of_mut!(fixture) as usize;
-        fixture.runtime.smram_base = base as u64;
+        // Initialize plain fields before exposing the pointer to another thread
+        // (Stacked Borrows: subsequent accesses only touch atomic fields).
         fixture.runtime.smram_size = core::mem::size_of::<Fixture>() as u64;
         // CPU 0 owns generation 1.
         fixture
             .runtime
             .rendezvous
             .store(1 << 32 | 1, Ordering::Release);
+        let base_ptr = core::ptr::addr_of_mut!(fixture);
+        let base = base_ptr as usize;
+        // SAFETY: exclusive access before spawning the waiter thread.
+        unsafe { (*base_ptr).runtime.smram_base = base as u64 };
+        let fixture = &fixture;
         LOCAL_ENTERED.store(false, Ordering::Relaxed);
         std::thread::scope(|scope| {
             let waiter = scope.spawn(move || {
@@ -172,6 +177,13 @@ mod tests {
 
 #[cfg(target_os = "none")]
 #[panic_handler]
+#[inline(never)]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    unsafe extern "C" {
+        /// Intentionally undefined: any reachable panic in an SMM handler
+        /// fails the `ld --gc-sections` link instead of hanging in SMM.
+        fn fstart_smm_panic_is_possible() -> !;
+    }
+    // SAFETY: Never defined; reachability is a compile-time/link-time error.
+    unsafe { fstart_smm_panic_is_possible() }
 }

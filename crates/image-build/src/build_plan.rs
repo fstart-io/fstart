@@ -392,6 +392,8 @@ impl From<SmmUnit> for CompilationUnit {
                 "-Clinker-plugin-lto=no",
                 "-Cembed-bitcode=no",
                 "-Zfunction-sections=yes",
+                "-Cjump-tables=no",
+                "-Zemit-stack-sizes",
             ]
             .map(String::from)
             .to_vec(),
