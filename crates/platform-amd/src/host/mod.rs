@@ -361,6 +361,7 @@ pub fn resolve(
         images,
         run: None,
         options: Default::default(),
+        update: None,
         units: vec![smm_unit(host), stage_unit(host, payload)?],
     };
     plan.order()?;

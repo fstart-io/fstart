@@ -47,8 +47,10 @@ const OUTPUTS = [
     const [, size, unit] = n.match(/-(\d+)([mk])\.pflash$/);
     return `Complete flash image (${size} ${unit === "m" ? "MiB" : "KiB"}). Write it to the board's flash chip.`;
   } },
+  { test: n => n.endsWith(".cap"), primary: true, text: "PKCS#7-signed UEFI 2.10 FMP update capsule. Stage via fwupd or \\EFI\\UpdateCapsule\\." },
+  { test: n => n.endsWith("-rw-slot.bin"), primary: true, text: "Padded RW slot firmware image (Ed25519-signed FFS Root at byte 0), for direct slot flashing or offline capsule signing." },
   { test: n => /\.(bin|fd|img)$/.test(n), primary: true, text: "Complete flash image." },
-  { test: n => n.endsWith(".ffs"), primary: true, text: (_name, all) => all.some(o => /\.(rom|pflash|bin|fd|img)$/.test(o.name) && !o.name.endsWith(".bank.rom"))
+  { test: n => n.endsWith(".ffs"), primary: true, text: (_name, all) => all.some(o => /\.(rom|pflash|bin|fd|img|cap)$/.test(o.name) && !o.name.endsWith(".bank.rom"))
     ? "fstart firmware filesystem only, for tools that place it in flash themselves."
     : "Firmware image (fstart FFS) that the machine boots from." },
   { test: n => n === "assembly-report.json", text: "Revision and SHA-256 of every input and output. Keep it with the image." },
@@ -56,6 +58,17 @@ const OUTPUTS = [
 ];
 const narrow = matchMedia("(max-width: 860px)");
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+const defaultUpdateState = () => ({
+  mode: "full", // "full" | "update-only"
+  fwVersion: "",
+  securityVersion: "",
+  signCapsule: false,
+  monotonicCount: "0",
+  lowestSupportedVersion: "",
+  capsuleKey: null,
+  capsuleCert: null,
+});
 
 const state = {
   config: null,
@@ -73,6 +86,9 @@ const state = {
   intelFlash: null,
   settings: Object.create(null), // option key -> value the image's settings store starts with
   secureBoot: { enforce: false, own: false, files: {} }, // Secure Boot the store starts with; files: PK, KEK, db, dbx
+  updateRequiresDonor: false,
+  defaultSecurityVersion: null,
+  update: defaultUpdateState(),
   key: null,
   outputs: null, // {files, signer, donor}: one assembly's results
   busy: false,
@@ -483,6 +499,8 @@ function announceCount(shown) {
 
 function boardCard(entry) {
   const donor = entry.builds.some(b => b.donor_required);
+  const updatable = entry.builds.some(b => b.update);
+  const updatableAb = entry.builds.some(b => b.update_ab);
   const byPayload = new Map();
   for (const b of entry.builds) if (!byPayload.has(b.payload) || !unusable(b)) byPayload.set(b.payload, b);
   const payloads = [...byPayload.values()].sort((a, b) => PAYLOAD_ORDER.indexOf(a.payload) - PAYLOAD_ORDER.indexOf(b.payload));
@@ -496,6 +514,7 @@ function boardCard(entry) {
       broken && usable.length ? h("span", { class: "off" }, `+${broken} too large`) : null),
     h("span", { class: "card-tags" },
       entry.arch ? h("span", { class: "tag" }, ARCHES[entry.arch] ?? entry.arch) : null,
+      updatable ? h("span", { class: "tag" }, updatableAb ? "A/B updates" : "Updates") : null,
       donor ? h("span", { class: "tag accent" }, "needs vendor BIOS") : null,
       usable.length ? null : h("span", { class: "tag warn" }, "nothing fits its flash yet")));
 }
@@ -590,14 +609,15 @@ function clearBuild(next) {
     fetched: same && next.donor_source?.sha256 === state.fetched?.source.sha256 ? state.fetched : null,
     own: same && next.donor_required ? state.own : null,
     intelFlash: null, // Don't carry machine-specific flash data across build selections.
-    // The same board offers the same options, and the same Secure Boot.
+    // The same board offers the same options, Secure Boot, and update contract.
     settings: same ? state.settings : Object.create(null),
     secureBoot: same ? state.secureBoot : { enforce: false, own: false, files: {} },
+    update: same ? state.update : defaultUpdateState(),
     inputs: next ? Object.fromEntries(Object.entries(state.inputs)
       .filter(([name, file]) => (next.inputs ?? []).some(i => i.name === name && i.capacity >= file.size)
         && inputLabel(name, state.build?.payload) === inputLabel(name, next.payload))) : {},
   };
-  Object.assign(state, { build: null, manifest: null, bundleSha: null, outputs: null, busy: false, ...keep });
+  Object.assign(state, { build: null, manifest: null, bundleSha: null, updateRequiresDonor: false, defaultSecurityVersion: null, outputs: null, busy: false, ...keep });
   if (!(sameDonor && state.vendor.status === "fetching")) {
     state.vendor = { ...state.vendor, status: "idle", received: 0, error: null, abort: null, expanded: false };
   }
@@ -628,7 +648,7 @@ async function selectBuild(build, { keepFocus = false } = {}) {
     });
     if (generation !== state.gen) return;
     const token = ++nextToken;
-    const { manifest } = await call("open", { bundle: data, token }, [data.buffer]);
+    const { manifest, updateRequiresDonor, defaultSecurityVersion } = await call("open", { bundle: data, token }, [data.buffer]);
     if (generation !== state.gen) {
       closeBundles([token]);
       return;
@@ -637,6 +657,8 @@ async function selectBuild(build, { keepFocus = false } = {}) {
     if (build.board !== manifest.board || build.payload !== manifest.payload) throw new Error("the bundle does not match the catalog entry");
     state.bundleSha = build.sha256;
     state.manifest = manifest;
+    state.updateRequiresDonor = Boolean(updateRequiresDonor);
+    state.defaultSecurityVersion = defaultSecurityVersion ?? null;
     keepingFocus(renderBuild);
     announce(`${manifest.board}, ${manifest.payload}: bundle checked and ready`);
   } catch (error) {
@@ -675,8 +697,10 @@ async function openLocalBundle(file) {
   }
   const token = ++nextToken;
   let manifest;
+  let updateRequiresDonor;
+  let defaultSecurityVersion;
   try {
-    ({ manifest } = await call("open", { bundle: data, token }, [data.buffer]));
+    ({ manifest, updateRequiresDonor, defaultSecurityVersion } = await call("open", { bundle: data, token }, [data.buffer]));
   } catch (error) {
     restoreMeta();
     if (stale()) return;
@@ -696,6 +720,8 @@ async function openLocalBundle(file) {
     inputs: manifest.inputs, donor_required: manifest.packed_donor != null, binaries: Object.keys(manifest.files), local: true,
     // As the catalog says it: the build's options live in its flash image.
     settings: manifest.plan.options?.store?.varstore != null,
+    update: manifest.plan.update != null,
+    update_ab: Boolean(manifest.plan.update?.ab),
   };
   state.release = null;
   state.catalog = null;
@@ -704,6 +730,8 @@ async function openLocalBundle(file) {
   state.build = build;
   state.bundleSha = digest;
   state.manifest = manifest;
+  state.updateRequiresDonor = Boolean(updateRequiresDonor);
+  state.defaultSecurityVersion = defaultSecurityVersion ?? null;
   $("filter").value = "";
   $("filter").placeholder = "Search boards";
   renderReleaseOptions();
@@ -832,15 +860,24 @@ function imageError(build) {
 
 function needs(build) {
   const rows = [];
-  if (build.donor_required) rows.push(donorRow(build));
-  const layout = ifdLayout(state.manifest.plan);
+  const contract = updateContract();
+  const updateOnly = isUpdateOnly();
+  const needDonor = donorRequiredNow(build);
+  if (needDonor) rows.push(donorRow(build));
+  const layout = !updateOnly ? ifdLayout(state.manifest.plan) : null;
   if (layout) rows.push(intelFlashRow(layout));
   for (const input of state.manifest.inputs) rows.push(inputRow(input));
   rows.push(keyRow());
-  return [h("section", { class: "needs", "aria-labelledby": "needs-title" },
-    h("h2", { id: "needs-title" }, "Your files"),
-    build.donor_required || requiredInputs().length ? null : h("p", { class: "muted" }, "Nothing is required. You can add your signing key."),
-    rows), build.settings ? settingsBlock() : null, secureBootOffered() ? secureBootBlock() : null];
+  return [
+    contract ? updateBlock(contract) : null,
+    h("section", { class: "needs", "aria-labelledby": "needs-title" },
+      h("h2", { id: "needs-title" }, "Your files"),
+      needDonor || requiredInputs().length ? null : h("p", { class: "muted" },
+        updateOnly ? "No vendor BIOS or external files are required for this update. Add your board's Ed25519 signing key." : "Nothing is required. You can add your signing key."),
+      rows),
+    !updateOnly && build.settings ? settingsBlock() : null,
+    !updateOnly && secureBootOffered() ? secureBootBlock() : null,
+  ];
 }
 
 // --- Settings ------------------------------------------------------------------
@@ -1131,6 +1168,261 @@ function secureBootBlock() {
     h("div", { class: "need settings-card" }, h("ul", { class: "settings-list" }, rows), files));
 }
 
+// --- Firmware updates & UEFI capsules ------------------------------------------
+
+function formatGuid(g) {
+  if (!Array.isArray(g) || g.length !== 16) return "";
+  const hex = n => n.toString(16).padStart(2, "0").toUpperCase();
+  const le = (start, len) => g.slice(start, start + len).reverse().map(hex).join("");
+  const be = (start, len) => g.slice(start, start + len).map(hex).join("");
+  return `${le(0, 4)}-${le(4, 2)}-${le(6, 2)}-${be(8, 2)}-${be(10, 6)}`;
+}
+
+function updateContract() {
+  return state.manifest?.plan?.update ?? null;
+}
+
+function ffsStepDefaults() {
+  return state.manifest?.plan?.images?.find(step => step.operation?.Ffs)?.operation.Ffs ?? null;
+}
+
+function isUpdateOnly() {
+  return Boolean(updateContract()) && state.update.mode === "update-only";
+}
+
+function requiresEd25519Key() {
+  return isUpdateOnly() || Boolean(updateContract() && state.update.signCapsule);
+}
+
+function donorRequiredNow(build) {
+  return Boolean(build?.donor_required) && (!isUpdateOnly() || state.updateRequiresDonor);
+}
+
+function parseOptionalU32(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return { ok: true, value: null };
+  if (!/^\d+$/.test(s)) return { ok: false, value: null };
+  const n = BigInt(s);
+  if (n > 0xffff_ffffn) return { ok: false, value: null };
+  return { ok: true, value: Number(n) };
+}
+
+function parseOptionalU64(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return { ok: true, value: null };
+  if (!/^\d+$/.test(s)) return { ok: false, value: null };
+  const n = BigInt(s);
+  if (n > 0xffff_ffff_ffff_ffffn) return { ok: false, value: null };
+  return { ok: true, value: s };
+}
+
+function updateValidationError() {
+  const contract = updateContract();
+  if (!contract) return null;
+  const u = state.update;
+  const fwParsed = parseOptionalU32(u.fwVersion);
+  if (!fwParsed.ok) return "Firmware version must be a 32-bit unsigned integer.";
+  if (!parseOptionalU64(u.securityVersion).ok) return "Security version must be a 64-bit unsigned integer.";
+  if (u.signCapsule) {
+    const mono = String(u.monotonicCount ?? "").trim();
+    if (!mono || !parseOptionalU64(mono).ok) return "Capsule monotonic count must be a 64-bit unsigned integer.";
+    const lsvParsed = parseOptionalU32(u.lowestSupportedVersion);
+    if (!lsvParsed.ok) return "Lowest supported version must be a 32-bit unsigned integer.";
+    const effectiveFw = fwParsed.value ?? (ffsStepDefaults()?.fw_version ?? 0);
+    const effectiveLsv = lsvParsed.value ?? contract.lowest_supported_version;
+    if (effectiveFw < contract.lowest_supported_version) {
+      return `Firmware version (${effectiveFw}) is below the board's lowest supported version (${contract.lowest_supported_version}).`;
+    }
+    if (effectiveLsv > effectiveFw) {
+      return `Lowest supported version (${effectiveLsv}) exceeds firmware version (${effectiveFw}).`;
+    }
+  }
+  return null;
+}
+
+function updateRequest() {
+  const contract = updateContract();
+  if (!contract) return null;
+  const u = state.update;
+  const fw = parseOptionalU32(u.fwVersion).value;
+  const sec = parseOptionalU64(u.securityVersion).value;
+  const lsv = parseOptionalU32(u.lowestSupportedVersion).value;
+  const req = {
+    updateOnly: u.mode === "update-only",
+    fwVersion: fw,
+    securityVersion: sec,
+    capsule: u.signCapsule && u.capsuleKey && u.capsuleCert ? {
+      rsaKey: u.capsuleKey.bytes.slice(),
+      cert: u.capsuleCert.bytes.slice(),
+      monotonicCount: String(u.monotonicCount ?? "0").trim() || "0",
+      lowestSupportedVersion: lsv,
+    } : null,
+  };
+  return req;
+}
+
+function updateChanged() {
+  const u = state.update;
+  return u.mode === "update-only" || u.fwVersion.trim() !== "" || u.securityVersion.trim() !== "" || u.signCapsule;
+}
+
+function setUpdate(change, focus, message) {
+  Object.assign(state.update, change);
+  state.inputGen++;
+  if (state.outputs) state.outputs.outdated = true;
+  keepingFocus(renderBuild, focus);
+  if (message) announce(message);
+}
+
+// Updates a numeric text field in place without rebuilding the section on blur,
+// so clicking Assemble or Reset straight from a field never drops the click.
+function editUpdateField(key, raw, rowEl) {
+  state.update[key] = raw;
+  state.inputGen++;
+  const wasOutdated = Boolean(state.outputs?.outdated);
+  if (state.outputs) state.outputs.outdated = true;
+  rowEl?.classList.toggle("changed", raw.trim() !== "");
+  const changed = updateChanged();
+  const reset = $("update-reset");
+  if (reset) {
+    reset.disabled = state.busy || !changed;
+    reset.tabIndex = changed ? 0 : -1;
+    reset.parentElement?.classList.toggle("idle", !changed);
+    if (changed) reset.parentElement?.removeAttribute("aria-hidden");
+    else reset.parentElement?.setAttribute("aria-hidden", "true");
+  }
+  const errEl = $("update-validation-error");
+  if (errEl) {
+    const err = updateValidationError();
+    errEl.textContent = err ?? "";
+    errEl.hidden = !err;
+  }
+  if (state.outputs && !wasOutdated) {
+    const notice = $("outputs-outdated");
+    if (notice) notice.hidden = false;
+  }
+  updateAssemble();
+}
+
+function updateFieldRow({ id, field, label, help, value, placeholder }) {
+  const labelId = `${id}-label`;
+  const helpId = `${id}-help`;
+  const rowEl = h("li", { class: `setting${value.trim() !== "" ? " changed" : ""}` },
+    h("div", { class: "setting-text" },
+      h("label", { class: "setting-label", id: labelId, for: id }, label),
+      h("p", { class: "muted", id: helpId }, help)),
+    h("div", { class: "setting-control" },
+      h("input", {
+        id, type: "text", inputmode: "numeric", class: "number", value, placeholder,
+        "aria-labelledby": labelId, "aria-describedby": helpId, disabled: state.busy,
+        oninput: event => editUpdateField(field, event.target.value, rowEl),
+      })),
+    h("div", { class: "setting-reset", "aria-hidden": "true" }));
+  return rowEl;
+}
+
+function updateBlock(contract) {
+  const u = state.update;
+  const ffs = ffsStepDefaults();
+  const defaultFw = ffs?.fw_version ?? 0;
+  const defaultSec = state.defaultSecurityVersion ?? String(ffs?.security_version ?? 0);
+  const changed = updateChanged();
+  const validationError = updateValidationError();
+  const modeHelp = state.build.donor_required && !state.updateRequiresDonor
+    ? "Full ROM builds the complete flash image (requires vendor BIOS). Update only builds a donor-free RW slot image (and optional signed capsule) for a machine already running fstart."
+    : "Full ROM builds the complete flash image. Update only builds just the RW slot image (and optional signed UEFI FMP capsule) for an already-running board.";
+  const rows = [
+    choiceRow({
+      id: "update-mode", label: "Assembly mode", current: u.mode, changed: u.mode === "update-only",
+      help: modeHelp,
+      choices: [["full", "Full ROM"], ["update-only", "Update only"]],
+      onPick: (value, focus) => setUpdate({ mode: value }, focus, value === "update-only" ? "Update-only mode" : "Full ROM mode"),
+    }),
+    updateFieldRow({
+      id: "update-fw-version", field: "fwVersion", label: "Firmware version",
+      help: `Signed FFS Root ESRT fw_version (u32). Blank keeps the build's default (${defaultFw}).`,
+      value: u.fwVersion, placeholder: String(defaultFw),
+    }),
+    updateFieldRow({
+      id: "update-sec-version", field: "securityVersion", label: "Security version",
+      help: `Signed FFS Root rollback security_version (u64). Blank keeps the build's default (${defaultSec}).`,
+      value: u.securityVersion, placeholder: defaultSec,
+    }),
+    choiceRow({
+      id: "update-capsule", label: "UEFI FMP capsule (.cap)", current: u.signCapsule ? "sign" : "off", changed: u.signCapsule,
+      help: "Sign a UEFI 2.10 FMP capsule locally in this tab using pure-Rust RSA-SHA256 PKCS#7, for fwupd or \\EFI\\UpdateCapsule\\.",
+      choices: [["off", "RW slot only"], ["sign", "Sign .cap"]],
+      onPick: (value, focus) => {
+        const signCapsule = value === "sign";
+        const change = signCapsule ? { signCapsule } : { signCapsule, capsuleKey: null, capsuleCert: null };
+        setUpdate(change, focus, signCapsule ? "UEFI capsule signing enabled" : "UEFI capsule signing disabled");
+      },
+    }),
+  ];
+  const trustNotice = !contract.capsule_trust_provisioned
+    ? h("p", { class: "notice warn compact" }, icon("alert"),
+      h("span", {}, "This bundle's RO firmware has no capsule PKCS#7 trust certificate provisioned by default. A machine running this ROM will reject signed capsules unless RO was built with a matching capsule trust certificate (for QEMU testing, build with ",
+        h("code", {}, "--option dev-keys=true"), ")."))
+    : null;
+  const capsuleControls = u.signCapsule ? h("div", { class: "secure-boot-files" },
+    h("div", { class: "secure-boot-file" },
+      h("p", { class: "setting-label" }, "Capsule RSA private key"),
+      h("p", { class: "muted" }, "PKCS#8 or PKCS#1 RSA signing key (PEM or DER, 1024–4096 bits). Never leaves this tab."),
+      filePicker({
+        id: "capsule-key", label: "Choose RSA key", slot: "the capsule RSA key", accept: ".pem,.der,.key",
+        current: u.capsuleKey,
+        onFile: (file, data) => {
+          u.capsuleKey = { name: file.name, size: file.size, bytes: data };
+          filesChanged(`${file.name} selected as capsule RSA key`);
+        },
+        onClear: fallback => { u.capsuleKey = null; filesChanged("Capsule RSA key removed", fallback); },
+      })),
+    h("div", { class: "secure-boot-file" },
+      h("p", { class: "setting-label" }, "Capsule X.509 certificate"),
+      h("p", { class: "muted" }, "X.509 certificate (PEM or DER) matching the RSA key and trusted by RO firmware."),
+      filePicker({
+        id: "capsule-cert", label: "Choose certificate", slot: "the capsule X.509 certificate", accept: ".der,.crt,.cer,.pem",
+        current: u.capsuleCert,
+        onFile: (file, data) => {
+          u.capsuleCert = { name: file.name, size: file.size, bytes: data };
+          filesChanged(`${file.name} selected as capsule certificate`);
+        },
+        onClear: fallback => { u.capsuleCert = null; filesChanged("Capsule certificate removed", fallback); },
+      })),
+    h("ul", { class: "settings-list" },
+      updateFieldRow({
+        id: "capsule-monotonic", field: "monotonicCount", label: "Monotonic count",
+        help: "EFI_FIRMWARE_IMAGE_AUTHENTICATION.MonotonicCount (u64).",
+        value: u.monotonicCount, placeholder: "0",
+      }),
+      updateFieldRow({
+        id: "capsule-lsv", field: "lowestSupportedVersion", label: "Lowest supported version",
+        help: `FMP MSS1 header lowest_supported_version (u32). Blank keeps ${contract.lowest_supported_version}.`,
+        value: u.lowestSupportedVersion, placeholder: String(contract.lowest_supported_version),
+      }))) : null;
+  return h("section", { class: "needs settings", "aria-labelledby": "update-title" },
+    h("div", { class: "settings-head" },
+      h("h2", { id: "update-title", tabindex: "-1" }, "Firmware update & UEFI capsule"),
+      h("span", { class: `settings-status${changed ? "" : " idle"}`, "aria-hidden": changed ? null : "true" },
+        h("button", {
+          type: "button", class: "quiet small", id: "update-reset", disabled: state.busy || !changed,
+          tabindex: changed ? null : "-1", onmousedown: keepPendingEdit,
+          onclick: () => {
+            state.update = defaultUpdateState();
+            setUpdate({}, "update-title", "Update options reset");
+            $("update-title")?.focus({ preventScroll: true });
+          },
+        }, "Reset"))),
+    h("p", { class: "muted" },
+      `${contract.ab ? "RO/A/B" : "RO/A"} updates · ${bytes(contract.slot_size)} RW slot · ESRT GUID `,
+      h("code", {}, formatGuid(contract.firmware_guid)), "."),
+    trustNotice,
+    h("div", { class: "need settings-card" },
+      h("ul", { class: "settings-list" }, rows),
+      capsuleControls,
+      h("p", { class: "inline-error", id: "update-validation-error", hidden: !validationError }, validationError ?? "")));
+}
+
 function row({ title, help, status, body }) {
   return h("div", { class: "need" },
     h("div", { class: "need-head" },
@@ -1410,23 +1702,28 @@ function inputRow(input) {
 }
 
 function keyRow() {
+  const required = requiresEd25519Key();
   return row({
-    title: "Signing key (optional)",
-    help: h("span", {}, "The image is signed with Ed25519. Without your key, a throwaway key signs it, and later updates can't be signed to match. Use your PKCS#8 key (",
-      h("code", {}, "openssl genpkey -algorithm ed25519 -out key.pem"), "), or create one here."),
-    status: state.key ? { ok: true, text: `Your key ${state.key.name}` } : { kind: "neutral", text: "Throwaway key" },
+    title: required ? "Signing key" : "Signing key (optional)",
+    help: required
+      ? h("span", {}, "Update-only images and signed capsules must be signed with the board's Ed25519 PKCS#8 key matching its RO TrustBlock (",
+        h("code", {}, "openssl genpkey -algorithm ed25519 -out key.pem"), ").")
+      : h("span", {}, "The image is signed with Ed25519. Without your key, a throwaway key signs it, and later updates can't be signed to match. Use your PKCS#8 key (",
+        h("code", {}, "openssl genpkey -algorithm ed25519 -out key.pem"), "), or create one here."),
+    status: state.key ? { ok: true, text: `Your key ${state.key.name}` }
+      : required ? { text: "Needed" } : { kind: "neutral", text: "Throwaway key" },
     body: h("div", { class: "key-body" },
       filePicker({
         id: "key", label: "Choose a key", slot: "the signing key", accept: ".pem,.der,.key", current: state.key,
         anyBuild: true,
         onFile: (file, data) => { state.key = { name: file.name, size: file.size, bytes: data }; filesChanged(`Signing with ${file.name}`); },
-        onClear: fallback => { state.key = null; filesChanged("Signing with a throwaway key", fallback); },
+        onClear: fallback => { state.key = null; filesChanged(required ? "Signing key removed" : "Signing with a throwaway key", fallback); },
       }),
       state.key?.created
         ? h("p", { class: "key-created" }, icon("alert"), h("span", {},
           "This key was created in this tab and exists only in the file you saved. Keep it safe: you need it to sign updates for this board. ",
           saveLink(state.key.name, state.key.bytes, "Save it again", true)))
-        : state.key ? null : h("button", { type: "button", class: "quiet", id: "key-create", onclick: createKey }, "Create a new key")),
+        : state.key || required ? null : h("button", { type: "button", class: "quiet", id: "key-create", onclick: createKey }, "Create a new key")),
   });
 }
 
@@ -1458,17 +1755,26 @@ async function createKey() {
 
 function missing() {
   const list = [];
-  if (state.build.donor_required && !state.own && !state.fetched) list.push("the vendor BIOS");
+  const updateOnly = isUpdateOnly();
+  if (donorRequiredNow(state.build) && !state.own && !state.fetched) list.push("the vendor BIOS");
   for (const input of requiredInputs()) if (!state.inputs[input.name]) list.push(inputLabel(input.name).noun);
-  if (secureBootOffered() && state.secureBoot.own && !state.secureBoot.files.pk) list.push("the Platform Key");
+  if (requiresEd25519Key() && !state.key) list.push("the Ed25519 signing key");
+  if (!updateOnly && secureBootOffered() && state.secureBoot.own && !state.secureBoot.files.pk) list.push("the Platform Key");
+  if (updateContract() && state.update.signCapsule) {
+    if (!state.update.capsuleKey) list.push("the capsule RSA key");
+    if (!state.update.capsuleCert) list.push("the capsule X.509 certificate");
+  }
   return list;
 }
 
 function assembleBlock() {
+  const label = isUpdateOnly()
+    ? (state.outputs ? "Assemble update again" : "Assemble update")
+    : (state.outputs ? "Assemble again" : "Assemble image");
   return h("section", { class: "assemble", "aria-labelledby": "assemble-title" },
     h("h2", { id: "assemble-title", class: "sr-only" }, "Assemble"),
     h("div", { class: "actions" },
-      h("button", { type: "button", id: "assemble", class: state.outputs ? "big" : "primary big", onclick: assemble }, state.outputs ? "Assemble again" : "Assemble image"),
+      h("button", { type: "button", id: "assemble", class: state.outputs ? "big" : "primary big", onclick: assemble }, label),
       h("p", { id: "assemble-status", class: "muted" })),
     h("div", { id: "assemble-error" }));
 }
@@ -1476,14 +1782,17 @@ function assembleBlock() {
 function updateAssemble() {
   const button = $("assemble");
   if (!button) return;
+  const updateOnly = isUpdateOnly();
   const blocked = missing();
-  const fetching = state.vendor.status === "fetching" && !state.own;
-  const unchecked = state.intelFlash && !state.intelFlash.regions;
-  button.disabled = state.busy || fetching || unchecked || blocked.length > 0;
+  const updateErr = updateValidationError();
+  const fetching = donorRequiredNow(state.build) && state.vendor.status === "fetching" && !state.own;
+  const unchecked = !updateOnly && state.intelFlash && !state.intelFlash.regions;
+  button.disabled = state.busy || fetching || unchecked || Boolean(updateErr) || blocked.length > 0;
   button.closest("section")?.setAttribute("aria-busy", state.busy ? "true" : "false");
   $("assemble-status").textContent = state.busy ? "Assembling…"
     : unchecked ? (state.intelFlash.error ? "Replace or remove the rejected flash image." : "Checking the flash descriptor…")
     : fetching ? "Waiting for the vendor download…"
+    : updateErr ? updateErr
     : blocked.length ? `Add ${list(blocked)} to continue.`
     : `Signs with ${state.key ? `your key ${state.key.name}` : "a throwaway key"}.`;
 }
@@ -1491,14 +1800,18 @@ function updateAssemble() {
 async function assemble() {
   const generation = state.gen;
   const inputGeneration = state.inputGen;
+  const updateOnly = isUpdateOnly();
+  const needDonor = donorRequiredNow(state.build);
   // Everything the outputs will claim comes from this snapshot.
   const snapshot = {
     signer: state.key?.name ?? null,
-    intelSource: state.intelFlash?.name ?? null,
-    donor: state.own ? `your file ${state.own.name}` : state.fetched ? `${state.fetched.source.name} from ${state.fetched.source.vendor}` : null,
-    note: !state.own && state.fetched?.source.note ? state.fetched.source.note : null,
+    intelSource: !updateOnly ? (state.intelFlash?.name ?? null) : null,
+    donor: needDonor
+      ? (state.own ? `your file ${state.own.name}` : state.fetched ? `${state.fetched.source.name} from ${state.fetched.source.vendor}` : null)
+      : null,
+    note: needDonor && !state.own && state.fetched?.source.note ? state.fetched.source.note : null,
   };
-  const donor = (state.own ?? state.fetched)?.bytes;
+  const donor = needDonor ? (state.own ?? state.fetched)?.bytes : undefined;
   const inputs = Object.fromEntries(Object.entries(state.inputs).map(([name, file]) => [name, file.bytes.slice()]));
   state.busy = true;
   state.outputs = null;
@@ -1507,20 +1820,29 @@ async function assemble() {
   $("assemble")?.focus();
   const stale = () => generation !== state.gen || inputGeneration !== state.inputGen;
   try {
-    const result = await call("assemble", { token: state.token, donor: donor?.slice(), intelFlash: state.intelFlash?.bytes, inputs, settings: { ...state.settings }, secureBoot: secureBootRequest(), key: state.key?.bytes.slice() });
+    const result = await call("assemble", {
+      token: state.token,
+      donor: donor?.slice(),
+      intelFlash: !updateOnly ? state.intelFlash?.bytes : undefined,
+      inputs,
+      settings: !updateOnly ? { ...state.settings } : {},
+      secureBoot: !updateOnly ? secureBootRequest() : null,
+      update: updateRequest(),
+      key: state.key?.bytes.slice(),
+    });
     if (stale()) return;
     const files = [];
     for (const [name, data] of result) {
       files.push({ name, data, sha: await sha256(data) });
       if (stale()) return;
     }
-    const region = biosRegion(files);
+    const region = !updateOnly ? biosRegion(files) : null;
     if (region) files.push({ ...region, sha: await sha256(region.data) });
     if (stale()) return;
     state.busy = false;
     state.outputs = { files, ifd: Boolean(region), ...snapshot };
     renderBuild();
-    announce(`Assembled the ${state.build.board} image`);
+    announce(`Assembled the ${state.build.board} ${updateOnly ? "update" : "image"}`);
     document.querySelector(".primary-output a.button")?.focus({ preventScroll: true });
     scrollTo(document.querySelector(".outputs"));
   } catch (error) {
@@ -1528,7 +1850,7 @@ async function assemble() {
     state.busy = false;
     renderBuild();
     $("assemble")?.focus({ preventScroll: true });
-    const fallback = state.own && state.fetched
+    const fallback = needDonor && state.own && state.fetched
       ? h("button", { type: "button", class: "quiet", onclick: () => { state.own = null; filesChanged(`Using ${state.fetched.source.name}`); $("assemble")?.focus(); } },
         `Remove ${state.own.name} and use the ${state.fetched.source.vendor} download`)
       : null;
@@ -1564,7 +1886,10 @@ function biosRegion(files) {
 
 // The assembler's errors are precise but terse; say what they mean.
 function explain(message) {
-  if (state.build.donor_required && /vendor|PSP|EFS|donor|directory|microcode|ZIP/i.test(message)) {
+  if (Boolean(updateContract() && state.update.signCapsule) && /RSA|X\.509|certificate|PKCS#1|PKCS#7/i.test(message)) {
+    return "The capsule RSA key or X.509 certificate can't be used. Provide a matching RSA private key and X.509 certificate (PEM or DER).";
+  }
+  if (donorRequiredNow(state.build) && /vendor|PSP|EFS|donor|directory|microcode|ZIP/i.test(message)) {
     const file = state.own ? `Your file ${state.own.name}` : "The vendor BIOS";
     return `${file} doesn't match this board's firmware layout. Check that it is a BIOS image for this board.`;
   }
@@ -1601,8 +1926,8 @@ function outputs() {
   ].filter(Boolean).join("; ");
   return h("section", { class: "outputs", "aria-labelledby": "outputs-title" },
     h("h2", { id: "outputs-title" }, "Your image"),
-    state.outputs.outdated ? h("p", { class: "notice warn compact" }, icon("alert"),
-      h("span", {}, "Assembled before your last file change. Assemble again to include it; this image is still available below.")) : null,
+    h("p", { class: "notice warn compact", id: "outputs-outdated", hidden: !state.outputs.outdated }, icon("alert"),
+      h("span", {}, "Assembled before your last change. Assemble again to include it; this image is still available below.")),
     primary ? h("div", { class: "primary-output" },
       h("div", {},
         h("p", { class: "out-name" }, primary.name),

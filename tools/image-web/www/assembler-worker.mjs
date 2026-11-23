@@ -11,14 +11,18 @@ const operations = {
   async open({ bundle, token }) {
     const assembler = new ImageAssembler(bundle);
     let manifest;
+    let updateRequiresDonor;
+    let defaultSecurityVersion;
     try {
       manifest = JSON.parse(assembler.manifest());
+      updateRequiresDonor = assembler.updateRequiresDonor();
+      defaultSecurityVersion = assembler.defaultSecurityVersion() ?? null;
     } catch (error) {
       assembler.free();
       throw error;
     }
     bundles.set(token, assembler);
-    return { manifest };
+    return { manifest, updateRequiresDonor, defaultSecurityVersion };
   },
   // Frees the named bundles.
   async close({ tokens }) {
@@ -35,21 +39,39 @@ const operations = {
   async inspectIntelFlash({ token, bytes }) {
     return { result: opened(token).inspectIntelFlash(bytes) };
   },
-  async assemble({ token, donor, intelFlash, inputs, settings = {}, secureBoot = null, key }) {
+  async assemble({ token, donor, intelFlash, inputs, settings = {}, secureBoot = null, update = null, key }) {
     const bundle = opened(token);
     // Each request names everything the image takes: a setting set back to
     // the board's value or a removed file must not linger from the last.
     bundle.clear();
-    if (donor) bundle.setDonor(donor);
-    if (intelFlash) bundle.setIntelFlash(intelFlash);
-    for (const [name, bytes] of Object.entries(inputs)) bundle.setInput(name, bytes);
-    for (const [option, value] of Object.entries(settings)) bundle.setSetting(option, value);
-    if (secureBoot) {
-      const { enforce, pk, kek, db, dbx } = secureBoot;
-      bundle.setSecureBoot(enforce, pk ?? undefined, kek, db, dbx);
+    try {
+      if (donor) bundle.setDonor(donor);
+      if (intelFlash) bundle.setIntelFlash(intelFlash);
+      for (const [name, bytes] of Object.entries(inputs)) bundle.setInput(name, bytes);
+      for (const [option, value] of Object.entries(settings)) bundle.setSetting(option, value);
+      if (secureBoot) {
+        const { enforce, pk, kek, db, dbx } = secureBoot;
+        bundle.setSecureBoot(enforce, pk ?? undefined, kek, db, dbx);
+      }
+      if (update) {
+        if (update.updateOnly) bundle.setUpdateOnly(true);
+        if (update.fwVersion != null) bundle.setFirmwareVersion(update.fwVersion);
+        if (update.securityVersion != null) bundle.setSecurityVersion(String(update.securityVersion));
+        if (update.capsule) {
+          const { rsaKey, cert, monotonicCount, lowestSupportedVersion } = update.capsule;
+          bundle.setCapsuleSigning(
+            rsaKey,
+            cert,
+            String(monotonicCount ?? "0"),
+            lowestSupportedVersion ?? undefined,
+          );
+        }
+      }
+      const outputs = [...bundle.assemble(key ?? undefined)];
+      return { result: outputs, transfer: outputs.map(([, bytes]) => bytes.buffer) };
+    } finally {
+      bundle.clear();
     }
-    const outputs = [...bundle.assemble(key ?? undefined)];
-    return { result: outputs, transfer: outputs.map(([, bytes]) => bytes.buffer) };
   },
 };
 

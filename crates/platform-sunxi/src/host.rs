@@ -387,6 +387,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
     };
     let plan = BuildPlan {
         options: Default::default(),
+        update: None,
         payload: payload.clone(),
         units: vec![
             unit(

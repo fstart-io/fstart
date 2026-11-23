@@ -28,6 +28,81 @@ pub struct BuildPlan {
     /// option sets.
     #[serde(default, skip_serializing_if = "crate::options::Options::is_empty")]
     pub options: crate::options::Options,
+    /// Host-side update and UEFI FMP capsule packaging contract, if the board
+    /// supports RO/A or RO/A/B firmware updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<FirmwareUpdateContract>,
+}
+
+/// Host-side firmware update contract for RO/A and RO/A/B boards.
+///
+/// Emitted by the platform resolver into [`BuildPlan`] so [`crate::bundle::Bundle::assemble`],
+/// `fbuild compose-bundle`, and the browser WebUI can package donor-free RW slot
+/// updates (`{board}-rw-slot.bin`) and PKCS#7-signed UEFI FMP capsules (`{board}.cap`)
+/// without hardcoding board geometry.
+/// Maximum RW slot size accepted by [`FirmwareUpdateContract::validate`] (64 MiB).
+/// Bounds in-memory slot padding and capsule allocations against untrusted plans.
+pub const MAX_UPDATE_SLOT_SIZE: u32 = 64 * 1024 * 1024;
+
+/// Logical RMAP region target supported by CrabEFI's slot-independent capsule backend.
+pub const UPDATE_RMAP_REGION: &str = "RW_SLOT";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirmwareUpdateContract {
+    /// Stable board/product ESRT system-firmware class GUID (UEFI mixed-endian).
+    pub firmware_guid: [u8; 16],
+    /// Size of one RW slot in bytes (non-zero multiple of the 4 KiB erase sector,
+    /// bounded by [`MAX_UPDATE_SLOT_SIZE`]).
+    pub slot_size: u32,
+    /// `true` for RO/A/B dual slots, `false` for RO/A single slot.
+    pub ab: bool,
+    /// Default `lowest_supported_version` advertised in FMP `MSS1` headers.
+    pub lowest_supported_version: u32,
+    /// Logical RMAP region name targeted by capsules (must be `"RW_SLOT"`).
+    pub rmap_region: String,
+    /// Whether this build's RO/ramstage firmware actually embeds at least one
+    /// trusted PKCS#7 capsule verification certificate.
+    #[serde(default)]
+    pub capsule_trust_provisioned: bool,
+}
+
+impl FirmwareUpdateContract {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.firmware_guid == [0u8; 16] {
+            return Err("firmware update contract must declare a non-zero ESRT GUID".into());
+        }
+        let slot_size = self.slot_size as usize;
+        if slot_size < fstart_ffs::root::ROOT_SIZE
+            || self.slot_size > MAX_UPDATE_SLOT_SIZE
+            || !slot_size.is_multiple_of(fstart_ffs::slot_state::SECTOR_SIZE)
+        {
+            return Err(format!(
+                "firmware update slot_size {:#x} must be a non-zero multiple of {:#x} and at most {:#x}",
+                self.slot_size,
+                fstart_ffs::slot_state::SECTOR_SIZE,
+                MAX_UPDATE_SLOT_SIZE,
+            ));
+        }
+        if self.rmap_region != UPDATE_RMAP_REGION {
+            return Err(format!(
+                "invalid firmware update rmap_region '{}' (expected '{UPDATE_RMAP_REGION}')",
+                self.rmap_region
+            ));
+        }
+        Ok(())
+    }
+
+    /// Format the UEFI mixed-endian `firmware_guid` as a canonical uppercase UUID string.
+    pub fn guid_string(&self) -> String {
+        let g = &self.firmware_guid;
+        let d1 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
+        let d2 = u16::from_le_bytes([g[4], g[5]]);
+        let d3 = u16::from_le_bytes([g[6], g[7]]);
+        format!(
+            "{d1:08X}-{d2:04X}-{d3:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+            g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]
+        )
+    }
 }
 
 /// One image-format operation in a plan. The format's config type and its
@@ -758,6 +833,55 @@ impl BuildPlan {
                 return Err(format!("unknown or duplicate bootstrap binding {name}"));
             }
         }
+        if let Some(update) = &self.update {
+            update.validate()?;
+            let (ffs_step_name, ffs) = self
+                .ffs_step()
+                .ok_or("plan with update contract must include an FFS step")?;
+            if !ffs.rw_slot {
+                return Err(
+                    "plan with update contract must set rw_slot = true on its FFS step".into(),
+                );
+            }
+            if ffs.full_flash_image {
+                return Err(
+                    "plan with update contract must not set full_flash_image = true on its FFS step"
+                        .into(),
+                );
+            }
+            if let fstart_core::FirmwareImagePolicy::MemoryMapped { size, .. } =
+                ffs.build.firmware_image
+                && size != u64::from(update.slot_size)
+            {
+                return Err(format!(
+                    "update contract slot_size ({:#x}) does not match FFS firmware_image size ({size:#x})",
+                    update.slot_size
+                ));
+            }
+            for step in &self.images {
+                if let ImageOperation::X86AbFlash(image) = &step.operation {
+                    if image.ffs != ffs_step_name {
+                        return Err(format!(
+                            "X86AbFlash step '{}' consumes '{}' instead of RW FFS step '{ffs_step_name}'",
+                            step.name, image.ffs
+                        ));
+                    }
+                    let expected_ab =
+                        matches!(image.slot_layout, crate::capsule::AbSlotLayout::RoAB { .. });
+                    if update.slot_size != image.slot_layout.rw_slot_size()
+                        || update.ab != expected_ab
+                    {
+                        return Err(format!(
+                            "update contract (slot_size={:#x}, ab={}) does not match X86AbFlash step '{}' (slot_size={:#x}, ab={expected_ab})",
+                            update.slot_size,
+                            update.ab,
+                            step.name,
+                            image.slot_layout.rw_slot_size(),
+                        ));
+                    }
+                }
+            }
+        }
         self.validate_input_bindings()?;
         Ok(ordered)
     }
@@ -876,6 +1000,7 @@ mod tests {
         };
         BuildPlan {
             options: Default::default(),
+            update: None,
             payload: "halt".into(),
             platform: Platform::Aarch64,
             units: vec![
@@ -1168,6 +1293,7 @@ mod tests {
         };
         let plan = |units| BuildPlan {
             options: Default::default(),
+            update: None,
             payload: "halt".into(),
             platform: Platform::X86_64,
             units,
@@ -1194,5 +1320,77 @@ mod tests {
                 .unwrap_err()
                 .contains("cycle")
         );
+    }
+
+    #[test]
+    fn firmware_update_contract_validation_and_guid_formatting() {
+        let mut plan = fixture();
+        let valid = FirmwareUpdateContract {
+            firmware_guid: crate::capsule::EFI_FMP_CAPSULE_GUID,
+            slot_size: 0x0010_0000,
+            ab: true,
+            lowest_supported_version: 1,
+            rmap_region: "RW_SLOT".into(),
+            capsule_trust_provisioned: true,
+        };
+        assert_eq!(valid.guid_string(), "6DCBD5ED-E82D-4C44-BDA1-7194199AD92A");
+
+        // Rejects update contract when FFS step is not rw_slot.
+        plan.update = Some(valid.clone());
+        assert!(plan.order().unwrap_err().contains("rw_slot = true"));
+
+        // Rejects full_flash_image = true even if rw_slot = true.
+        {
+            let ImageOperation::Ffs(ffs) = &mut plan.images[0].operation else {
+                unreachable!()
+            };
+            ffs.rw_slot = true;
+            ffs.full_flash_image = true;
+        }
+        assert!(plan.order().unwrap_err().contains("full_flash_image"));
+
+        // Rejects firmware_image.size mismatch against slot_size.
+        {
+            let ImageOperation::Ffs(ffs) = &mut plan.images[0].operation else {
+                unreachable!()
+            };
+            ffs.full_flash_image = false;
+            ffs.build.firmware_image =
+                fstart_core::FirmwareImagePolicy::memory_mapped(0xff80_0000, 0x0020_0000);
+        }
+        assert!(
+            plan.order()
+                .unwrap_err()
+                .contains("does not match FFS firmware_image size")
+        );
+
+        // Accepts once FFS step is bare rw_slot and matches slot_size.
+        {
+            let ImageOperation::Ffs(ffs) = &mut plan.images[0].operation else {
+                unreachable!()
+            };
+            ffs.build.firmware_image = fstart_core::FirmwareImagePolicy::memory_mapped(
+                0xff80_0000,
+                u64::from(valid.slot_size),
+            );
+        }
+        plan.order().unwrap();
+
+        // Rejects nil GUID, unaligned/oversized slot_size, and non-RW_SLOT rmap_region.
+        let mut bad_guid = valid.clone();
+        bad_guid.firmware_guid = [0; 16];
+        assert!(bad_guid.validate().unwrap_err().contains("non-zero"));
+
+        let mut bad_size = valid.clone();
+        bad_size.slot_size = 0x1001;
+        assert!(bad_size.validate().unwrap_err().contains("multiple"));
+
+        let mut huge_size = valid.clone();
+        huge_size.slot_size = MAX_UPDATE_SLOT_SIZE + 0x1000;
+        assert!(huge_size.validate().unwrap_err().contains("at most"));
+
+        let mut bad_region = valid;
+        bad_region.rmap_region = "OTHER_REGION".into();
+        assert!(bad_region.validate().unwrap_err().contains("RW_SLOT"));
     }
 }
