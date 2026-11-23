@@ -996,6 +996,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-lenovo-m900-tiny"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-superio",
+ "fstart-driver-tpm",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-lenovo-t400"
 version = "0.1.0"
 dependencies = [
