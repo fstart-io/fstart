@@ -58,10 +58,44 @@ pub struct Drhd<'a> {
     pub endpoints: &'a [(u8, u8, u8)],
 }
 
+/// Reserved memory requiring identity mapping for these PCI endpoints.
+/// Bounds are inclusive, page aligned (limit ends at the final page's last
+/// byte). This record does not reserve E820 backing or authorize firmware DMA.
+#[derive(Debug, Clone, Copy)]
+pub struct Rmrr<'a> {
+    pub segment: u16,
+    pub base: u64,
+    pub limit: u64,
+    pub endpoints: &'a [(u8, u8, u8)],
+}
+
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RmrrHeader {
+    kind: U16<LE>,
+    length: U16<LE>,
+    reserved: U16<LE>,
+    segment: U16<LE>,
+    base: U64<LE>,
+    limit: U64<LE>,
+}
+
 /// Build a DMAR table. `host_address_width` is the DMA physical address
 /// width minus one, as the specification encodes it.
 #[must_use]
 pub fn dmar(host_address_width: u8, units: &[Drhd<'_>]) -> Vec<u8> {
+    dmar_with_reserved(host_address_width, units, &[])
+}
+
+/// DMAR with actual reserved identity mappings. Interrupt remapping remains
+/// unadvertised; callers must not infer protection from these descriptions.
+#[must_use]
+pub fn dmar_with_reserved(
+    host_address_width: u8,
+    units: &[Drhd<'_>],
+    reserved: &[Rmrr<'_>],
+) -> Vec<u8> {
+    assert!((31..=63).contains(&host_address_width));
     let mut table = Sdt::new(
         *b"DMAR",
         36,
@@ -97,6 +131,43 @@ pub fn dmar(host_address_width: u8, units: &[Drhd<'_>]) -> Vec<u8> {
             .as_bytes(),
         );
         for &(bus, device, function) in unit.endpoints {
+            table.append_slice(
+                EndpointScope {
+                    kind: SCOPE_PCI_ENDPOINT,
+                    length: scope_len as u8,
+                    _reserved: 0.into(),
+                    enumeration_id: 0,
+                    start_bus: bus,
+                    device,
+                    function,
+                }
+                .as_bytes(),
+            );
+        }
+    }
+    for region in reserved {
+        assert!(
+            region.base <= region.limit
+                && region.base & 0xfff == 0
+                && region.limit & 0xfff == 0xfff
+                && !region.endpoints.is_empty(),
+            "invalid reserved DMA range"
+        );
+        let scope_len = core::mem::size_of::<EndpointScope>();
+        let length = core::mem::size_of::<RmrrHeader>() + region.endpoints.len() * scope_len;
+        table.append_slice(
+            RmrrHeader {
+                kind: 1.into(),
+                length: u16::try_from(length).expect("RMRR length").into(),
+                reserved: 0.into(),
+                segment: region.segment.into(),
+                base: region.base.into(),
+                limit: region.limit.into(),
+            }
+            .as_bytes(),
+        );
+        for &(bus, device, function) in region.endpoints {
+            assert!(device < 32 && function < 8);
             table.append_slice(
                 EndpointScope {
                     kind: SCOPE_PCI_ENDPOINT,
@@ -151,5 +222,34 @@ mod tests {
         assert_eq!(&table[64..72], &[1, 8, 0, 0, 0, 0, 0x1b, 0]);
         // Catch-all DRHD with INCLUDE_PCI_ALL.
         assert_eq!(&table[72..77], &[0, 0, 16, 0, 1]);
+        let table = dmar_with_reserved(
+            38,
+            &[Drhd {
+                include_pci_all: true,
+                segment: 0,
+                base: 0xfed91000,
+                endpoints: &[],
+            }],
+            &[Rmrr {
+                segment: 0,
+                base: 0xbe000000,
+                limit: 0xbfffffff,
+                endpoints: &[(0, 2, 0)],
+            }],
+        );
+        // OS-visible identity range is inclusive and bound to ONLY the IGD,
+        // not every PCI device covered by the preceding catch-all DRHD.
+        assert_eq!(&table[64..72], &[1, 0, 32, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            u64::from_le_bytes(table[72..80].try_into().unwrap()),
+            0xbe000000
+        );
+        assert_eq!(
+            u64::from_le_bytes(table[80..88].try_into().unwrap()),
+            0xbfffffff
+        );
+        assert_eq!(&table[88..96], &[1, 8, 0, 0, 0, 0, 2, 0]);
+        assert_eq!(table[37], 0); // no invented interrupt-remapping support
+        assert_eq!(table.iter().fold(0u8, |s, b| s.wrapping_add(*b)), 0);
     }
 }

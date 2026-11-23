@@ -65,6 +65,14 @@ pub const PCI_CMD_MEMORY: u16 = 0x0002;
 pub const PCI_CMD_BUS_MASTER: u16 = 0x0004;
 
 register_bitfields! [u32,
+    /// Memory BAR low dword (32 bits, type-0 offsets 0x10..0x24).
+    /// Reading attributes never performs destructive BAR sizing.
+    pub PCI_MEMORY_BAR [
+        IO_SPACE OFFSET(0) NUMBITS(1) [],
+        TYPE OFFSET(1) NUMBITS(2) [],
+        PREFETCHABLE OFFSET(3) NUMBITS(1) [],
+        ADDRESS OFFSET(4) NUMBITS(28) []
+    ],
     /// Type-1 bus routing dword at18h. Preserve the secondary latency byte.
     pub PCI_BRIDGE_BUSES [
         PRIMARY OFFSET(0) NUMBITS(8) [],

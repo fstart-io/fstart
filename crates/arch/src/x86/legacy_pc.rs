@@ -83,6 +83,22 @@ pub fn setup_i8259() {
     }
 }
 
+/// Configure an ELCR-programmable legacy IRQ. Edge-only ISA inputs cannot
+/// be made level-triggered; reject them instead of setting reserved bits.
+pub fn configure_pic_trigger(irq: u8, level: bool) -> bool {
+    if irq > 15 || matches!(irq, 0 | 1 | 2 | 8 | 13) {
+        return false;
+    }
+    let port = fstart_core::pio::PioRegister::<u8>::new(0x4d0 + u16::from(irq / 8));
+    use tock_registers::{
+        fields::Field,
+        interfaces::{ReadWriteable, Readable},
+    };
+    let field = Field::<u8, ()>::new(1, usize::from(irq % 8));
+    port.modify(field.val(u8::from(level)));
+    port.read(field) == u8::from(level)
+}
+
 /// Reset both 8237 controllers, retaining channel 4 as their cascade.
 pub fn initialize_isa_dma() {
     const DMA1_MASTER_CLEAR: u16 = 0x0d;

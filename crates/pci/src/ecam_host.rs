@@ -92,6 +92,9 @@ pub struct PciFixedBar {
 /// Maximum number of fixed BARs declared by one platform.
 pub const MAX_PCI_FIXED_BARS: usize = 16;
 pub type PciFixedBars = HVec<PciFixedBar, MAX_PCI_FIXED_BARS>;
+/// Unmanaged type-0 functions: never probe BARs or change command.
+/// RO slot-presence/header reads may still be needed to discover siblings.
+pub type PciExcludedFunctions = HVec<PciAddress, 32>;
 
 /// BAR type after sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +420,8 @@ pub struct PciEcam {
     devices: HVec<PciDev, MAX_PCI_DEVICES>,
     fixed_bars: PciFixedBars,
     auto_bus_master: bool,
+    excluded_functions: PciExcludedFunctions,
+    enumeration_started: bool,
     /// Which allocators run.
     #[cfg(test)]
     allocators: Allocators,
@@ -526,6 +531,30 @@ impl PciEcam {
             root.io_pool.reserve_range(base, size)?;
         }
         self.roots = roots;
+        Ok(())
+    }
+
+    /// Install a pre-scan exclusion snapshot. This is not DMA quiescence or
+    /// address reservation: callers MUST reserve all live resources through
+    /// fixed BARs or explicit resource reservations before allocation.
+    pub fn exclude_functions(&mut self, addresses: &[PciAddress]) -> Result<(), PciEcamError> {
+        if self.enumeration_started {
+            return Err(PciEcamError::ConfigError);
+        }
+        let mut next = self.excluded_functions.clone();
+        for address in addresses {
+            if self.root_of(*address).is_none() || next.contains(address) {
+                return Err(PciEcamError::ConfigError);
+            }
+            let device = self.device(*address).ok_or(PciEcamError::ConfigError)?;
+            // Excluding bridges would also need bus-number ownership for
+            // their unenumerated descendants; that is not this contract.
+            if device.is_present() && device.read8(PCI_HEADER_TYPE) & 0x7f != 0 {
+                return Err(PciEcamError::ConfigError);
+            }
+            next.push(*address).map_err(|_| PciEcamError::ConfigError)?;
+        }
+        self.excluded_functions = next;
         Ok(())
     }
 
@@ -959,11 +988,13 @@ impl PciEcam {
                 8
             } else {
                 let addr = PciAddress::new(segment, bus, dev, 0);
-                if self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                let excluded_zero = self.excluded_functions.contains(&addr);
+                if !excluded_zero && self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
                     continue;
                 }
                 let device = self.device(addr).ok_or(PciEcamError::ConfigError)?;
-                if device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0 {
+                if excluded_zero || device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0
+                {
                     8
                 } else {
                     1
@@ -972,6 +1003,9 @@ impl PciEcam {
 
             for func in 0..max_func {
                 let faddr = PciAddress::new(segment, bus, dev, func);
+                if self.excluded_functions.contains(&faddr) {
+                    continue;
+                }
                 if selected.is_some_and(|ports| !ports.contains(&faddr)) {
                     continue;
                 }
@@ -2244,6 +2278,15 @@ impl PciEcam {
         targets: Option<&[PciAddress]>,
         exact: bool,
     ) -> Result<(), PciEcamError> {
+        self.enumeration_started = true;
+        // Validate preserved BAR snapshots before any probe/decode writes.
+        for fixed in self
+            .fixed_bars
+            .iter()
+            .filter(|fixed| self.excluded_functions.contains(&fixed.address))
+        {
+            self.size_bar(fixed.address, usize::from((fixed.register - PCI_BAR0) / 4))?;
+        }
         let mut mode = Scan::Resources { targets, exact };
         for root in 0..self.roots.len() {
             self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false)?;
@@ -2257,13 +2300,14 @@ impl PciEcam {
             return Err(PciEcamError::ConfigError);
         }
         if let Some(fixed) = self.fixed_bars.iter().find(|fixed| {
-            !self.devices.iter().any(|dev| {
-                dev.addr == fixed.address
-                    && dev
-                        .bars
-                        .iter()
-                        .any(|bar| bar.fixed && bar.reg == fixed.register)
-            })
+            !self.excluded_functions.contains(&fixed.address)
+                && !self.devices.iter().any(|dev| {
+                    dev.addr == fixed.address
+                        && dev
+                            .bars
+                            .iter()
+                            .any(|bar| bar.fixed && bar.reg == fixed.register)
+                })
         }) {
             PciEcamError::FixedBarInvalid.log_bar(
                 "fixed BAR discovery",
@@ -2522,6 +2566,24 @@ impl PciEcam {
             .map(|(address, window, _)| (address, window))
     }
 
+    /// The memory BAR at `register` of `address`, as allocation placed it:
+    /// `None` for an I/O BAR, the upper half of a 64-bit BAR or a BAR the
+    /// allocator did not place.
+    pub fn assigned_memory_bar(&self, address: PciAddress, register: u16) -> Option<PciWindow> {
+        let device = self.devices.iter().find(|device| device.addr == address)?;
+        let bar = device
+            .bars
+            .iter()
+            .find(|bar| bar.reg == register && bar.allocated)?;
+        let low = u64::from(self.read32(address, register) & !0xf);
+        let base = match bar.bar_type {
+            BarType::Memory32 => low,
+            BarType::Memory64 => low | u64::from(self.read32(address, register + 4)) << 32,
+            BarType::None | BarType::Io => return None,
+        };
+        Some(PciWindow::mmio(base, bar.size))
+    }
+
     /// The assigned BARs, each with whether it is prefetchable.
     fn assigned(&self) -> impl Iterator<Item = (PciAddress, PciWindow, bool)> + '_ {
         self.devices.iter().flat_map(move |device| {
@@ -2580,6 +2642,8 @@ impl PciEcam {
             devices: HVec::new(),
             fixed_bars: PciFixedBars::new(),
             auto_bus_master: true,
+            excluded_functions: PciExcludedFunctions::new(),
+            enumeration_started: false,
             #[cfg(test)]
             allocators: Allocators::Both(solver::Budget::FIRMWARE),
             #[cfg(test)]
