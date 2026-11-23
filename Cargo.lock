@@ -853,6 +853,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-gigabyte-md25-cg0"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-driver-amd",
+ "fstart-driver-ipmi",
+ "fstart-driver-superio",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-amd",
+ "tock-registers",
+]
+
+[[package]]
 name = "fstart-board-gigabyte-mj11"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,36 @@
+[package]
+name = "fstart-board-gigabyte-md25-cg0"
+description = "GIGABYTE MD25-CG0: 1P SP7 server board, AMD Venice (early bring-up)"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "gigabyte-md25-cg0"
+name = "MD25-CG0"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-amd" }
+
+[features]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-amd/smm"]
+
+[dependencies]
+fstart-platform-amd = { workspace = true }
+fstart-driver-amd = { workspace = true }
+fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
+fstart-driver-superio = { workspace = true, features = ["acpi"] }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-log = { workspace = true }
+tock-registers = { workspace = true }
+
+[[bin]]
+name = "stage"
+path = "src/bin/stage.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true
