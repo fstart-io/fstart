@@ -9,10 +9,9 @@ anti-rollback protection.
 - **RO/A/B and RO/A** from one codebase: RO/A/B gives automatic fallback to the
   previously confirmed slot; RO/A trades the second RW slot for flash space and
   falls back to RO recovery.
-- **Pre-RAM RO -> RW handoff** wherever silicon allows it (primarily x86
-  servers, workstations, and laptops) so raminit/memory init is updatable in
-  the field. Constrained SoCs where pre-RAM selection is infeasible (e.g.
-  Allwinner) explicitly declare a post-RAM boundary instead.
+- **Pre-RAM RO -> RW handoff** on x86 servers, workstations, and laptops so
+  raminit/memory init is updatable in the field. SRAM-constrained SoCs where
+  pre-RAM selection is infeasible are explicitly out of scope.
 - **Identical RW_A and RW_B images**: each RW slot is a self-contained FFS
   image with its `Root` at byte 0 of the slot and all offsets relative to the
   slot base, so one signed update capsule flashes into either slot.
@@ -52,12 +51,21 @@ anti-rollback protection.
   entries. Note that RO/A only avoids bricking on a power-cut mid-flash if RO
   contains a self-contained recovery path (DRAM init + CrabEFI + storage/USB
   drivers) capable of re-flashing `RW_A` without reading any bytes from `RW_A`.
+- **Early SPI and cache speedups before verification (real hardware):** on
+  physical x86 platforms, RO enables fast SPI reads (e.g. Intel SPI
+  prefetch/caching and AMD FCH SPI100) and maps the SPI flash MMIO window with
+  Write-Protected (WP) MTRRs *before* running Ed25519 / SHA-256 verification on
+  `RW_A`/`RW_B`. This keeps cold-boot verification latency in the tens of
+  milliseconds instead of uncached SPI speeds.
 - **Silicon-fixed regions stay outside RW slots**:
   - *Intel*: reset vector, FIT pointer/table, reset-time microcode, and ME/TXE
     regions remain in RO/IFWI. RW may carry newer microcode loaded early by the
     RW pre-RAM stage.
-  - *AMD*: PSP directories and early PSP blobs stay in RO for phase 1; x86
-    fstart stages live in `RW_A`/`RW_B`.
+  - *AMD*: EFS and the vendor PSP/BIOS directory structure stay outside x86 RW
+    slots, with optional alignment to AMD PSP ISH A/B recovery directories
+    (PSP directory entry types `0x48` / `0x4A` for L2A/L2B and BIOS directory
+    `0x49`) when PSP A/B firmware updates are also enabled; x86 fstart stages
+    live in `RW_A`/`RW_B` and load directly into fixed DRAM trained by PSP.
 
 ## RW FFS Image Format and Handoff
 
@@ -306,6 +314,91 @@ change:
   - *RO/A*: once `RW_A` is confirmed `Good`, append `FloorPending`; on the next
     cold boot RO advances the TPM NV index. RO recovery itself is exempt from
     the RW floor (but refuses to install capsules below the floor).
+
+## Bundle, CLI, and WebUI Update Assembly
+
+Update-capable boards declare an explicit `FirmwareUpdateContract` on
+`BuildPlan.update` (`crates/image-build/src/build_plan.rs`), carrying the
+board's ESRT `firmware_guid`, RW `slot_size`, `ab` mode, default
+`lowest_supported_version`, logical `rmap_region` (typically `"RW_SLOT"`),
+and `capsule_trust_provisioned` (whether the built RO image embeds at least one
+capsule PKCS#7 trust certificate). `BuildPlan::order()` validates that the
+contract agrees with the RW FFS step and any `X86AbFlash` step.
+
+`Bundle::assemble()` (`crates/image-build/src/bundle.rs`) supports two modes:
+
+- **`AssemblyMode::Full`**: assembles the complete flash image (including RO
+  and any vendor donor) and, when `plan.update` is present, also emits the
+  `0xff`-padded RW slot image (`{board}-rw-slot.bin`) plus an authenticated
+  UEFI 2.10 FMP capsule (`{board}.cap`) whenever capsule signing credentials
+  are supplied.
+- **`AssemblyMode::UpdateOnly`**: executes only the RW FFS step
+  (`execute_ffs_only`) to emit `{board}-rw-slot.bin` (and `{board}.cap` if a
+  signing key + certificate are supplied). On boards whose RW FFS step does not
+  consume donated vendor blobs (`Manifest::update_requires_donor() == false`),
+  `UpdateOnly` requires **no vendor donor ROM**, making field updates and CI
+  RW-slot iteration completely donor-free.
+
+### Two Independent Trust Checks
+
+An installed board verifies two distinct signatures before a capsule update
+boots:
+
+1. **Outer PKCS#7 capsule signature (RSA-SHA256)**: verified by CrabEFI against
+   the board's embedded capsule trust certificates before touching flash.
+   Unsigned `.cap` files are intentionally never emitted; without `--capsule-key`
+   and `--capsule-cert`, `Bundle::assemble()` emits `{board}-rw-slot.bin` only.
+   Note that default CI bundles for `qemu-q35-ab` leave `dev-keys` disabled
+   (`capsule_trust_provisioned: false`) so public development keys are never
+   baked into release images by accident; for local QEMU capsule testing, build
+   with `--option dev-keys=true`.
+2. **Inner RW `Root` signature (Ed25519)**: verified both during CrabEFI's
+   capsule preflight and on every cold boot by RO against RO's `TrustBlock`.
+   Because a throwaway Ed25519 key can never match an installed board's RO
+   `TrustBlock`, `Bundle::assemble()` **requires** an explicit `--signing-key`
+   whenever `AssemblyMode::UpdateOnly` or `capsule_signing` is used.
+
+### CLI (`fbuild compose-bundle`)
+
+```bash
+cargo fbuild compose-bundle \
+  --bundle /path/to/board-bundle.zip \
+  --update-only \
+  --signing-key /path/to/board-ed25519.key.pem \
+  --fw-version 5 \
+  --security-version 2 \
+  --capsule-key /path/to/capsule.key.pem \
+  --capsule-cert /path/to/capsule.crt.pem \
+  --monotonic-count 1 \
+  --out /path/to/out
+```
+
+`fbuild compose-bundle` records the assembly mode, ESRT GUID, `fw_version`,
+`security_version`, `ed25519_public_key`, `ephemeral_signing_key`,
+`capsule_trust_provisioned`, `monotonic_count`, `lowest_supported_version`,
+and SHA-256 digests of emitted outputs in `assembly-report.json`. Reusing
+`--out` across runs automatically removes stale firmware outputs recorded in a
+previous `assembly-report.json`.
+
+### Browser WebUI (`tools/image-web`)
+
+The browser assembler exposes the same `Bundle::assemble()` path over WASM:
+
+- Catalog entries advertise update capability (`update: true`, `update_ab` in
+  `catalog.json`) with an `"A/B updates"` (or `"Updates"` for RO/A) badge on
+  the board card.
+- Update-capable bundles show a **Firmware update & UEFI capsule** panel with
+  **Full ROM** vs **Update only** mode selection, plus a notice whenever the
+  bundle's RO has no capsule trust certificate provisioned
+  (`capsule_trust_provisioned: false`).
+- When **Update only** is selected, Intel flash-region inputs, firmware
+  settings, and Secure Boot key inputs are hidden; the vendor donor dropzone is
+  also hidden whenever `updateRequiresDonor` is `false`.
+- Optional RSA private key (PEM/DER) and matching X.509 certificate (PEM/DER)
+  inputs validate the key/certificate pair inside the WASM worker and produce
+  both `{board}-rw-slot.bin` and a PKCS#7-signed `{board}.cap` locally in the
+  browser—private keys never leave the user's machine. Both **Update only** and
+  capsule signing require supplying the board's Ed25519 signing key.
 
 ## Implementation Roadmap
 

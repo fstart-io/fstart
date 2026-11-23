@@ -219,6 +219,7 @@ pub fn compilation_plan(
         .collect::<Vec<_>>();
     let resolved = BuildPlan {
         options: Default::default(),
+        update: None,
         payload: plan.payload.clone(),
         units,
         stages: plan.stages.iter().map(|r| r.role.name().into()).collect(),

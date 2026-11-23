@@ -77,15 +77,54 @@ impl RsaPrivateKey {
         }
     }
 
+    /// Parse an RSA private key from PEM (`PRIVATE KEY` or `RSA PRIVATE KEY`) or raw PKCS#8/PKCS#1 DER.
+    pub fn from_pem_or_der(bytes: &[u8]) -> Result<Self, String> {
+        let trimmed = trim_ascii_whitespace(bytes);
+        if trimmed.starts_with(b"-----BEGIN ") {
+            let pem = core::str::from_utf8(trimmed)
+                .map_err(|_| "RSA private key PEM is not valid UTF-8")?;
+            return Self::from_pem(pem);
+        }
+        Self::from_pkcs8_der(bytes)
+            .or_else(|_| Self::from_pkcs1_der(bytes))
+            .map_err(|_| "invalid RSA private key: expected PKCS#8/PKCS#1 PEM or DER".into())
+    }
+
+    /// Check that this private key's RSA key pair cryptographically matches
+    /// the provided X.509 DER certificate under `crabefi_pkcs7`'s verifier.
+    pub fn verify_matches_cert(&self, cert_der: &[u8]) -> Result<(), String> {
+        let cert = Certificate::parse(cert_der)
+            .map_err(|_| "invalid X.509 DER certificate for PKCS#7 signing")?;
+        let rsa_pub = cert
+            .rsa_public_key()
+            .map_err(|_| "X.509 certificate does not contain a valid RSA public key")?;
+        if trim_leading_zeros(rsa_pub.modulus) != self.modulus
+            || trim_leading_zeros(rsa_pub.public_exponent) != self.public_exponent
+        {
+            return Err("RSA signing key does not match the provided X.509 certificate".into());
+        }
+        let probe_digest = fstart_crypto::digest::hash_sha256(b"fstart-capsule-key-check");
+        let probe_sig = self.sign_pkcs1v15_sha256_digest(&probe_digest)?;
+        if !rsa_pub.verify_pkcs1v15_sha256::<128>(&probe_sig, &probe_digest) {
+            return Err(
+                "RSA private key does not cryptographically match the X.509 certificate".into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Parse a PKCS#8 `PrivateKeyInfo` DER blob wrapping a PKCS#1 `RSAPrivateKey`.
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, String> {
         let mut fields = Tlv::parse(der)
             .and_then(|tlv| tlv.contents(tag::SEQUENCE))
             .map_err(|_| "invalid PKCS#8 PrivateKeyInfo DER")?;
-        let _version = fields
+        let version = fields
             .read()
             .and_then(Tlv::unsigned_integer)
             .map_err(|_| "invalid PKCS#8 version")?;
+        if version != [0] {
+            return Err("unsupported PKCS#8 PrivateKeyInfo version (expected 0)".into());
+        }
         let mut alg = fields
             .read_tag(tag::SEQUENCE)
             .and_then(|tlv| tlv.contents(tag::SEQUENCE))
@@ -104,15 +143,18 @@ impl RsaPrivateKey {
         Self::from_pkcs1_der(pkcs1)
     }
 
-    /// Parse a PKCS#1 `RSAPrivateKey` DER blob.
+    /// Parse a PKCS#1 `RSAPrivateKey` DER blob (two-prime, version 0).
     pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, String> {
         let mut fields = Tlv::parse(der)
             .and_then(|tlv| tlv.contents(tag::SEQUENCE))
             .map_err(|_| "invalid PKCS#1 RSAPrivateKey DER")?;
-        let _version = fields
+        let version = fields
             .read()
             .and_then(Tlv::unsigned_integer)
             .map_err(|_| "invalid PKCS#1 version")?;
+        if version != [0] {
+            return Err("unsupported PKCS#1 RSAPrivateKey version (expected two-prime v0)".into());
+        }
         let modulus = trim_leading_zeros(
             fields
                 .read()
@@ -131,6 +173,20 @@ impl RsaPrivateKey {
                 .and_then(Tlv::unsigned_integer)
                 .map_err(|_| "invalid RSA privateExponent")?,
         );
+        // Validate the remaining required two-prime CRT fields (p, q, dP, dQ, qInv)
+        // and ensure there are no trailing fields in the SEQUENCE.
+        for label in ["prime1", "prime2", "exponent1", "exponent2", "coefficient"] {
+            let val = fields
+                .read()
+                .and_then(Tlv::unsigned_integer)
+                .map_err(|_| format!("missing or invalid RSA {label}"))?;
+            if trim_leading_zeros(val).is_empty() {
+                return Err(format!("RSA {label} must be non-zero"));
+            }
+        }
+        if !fields.is_empty() {
+            return Err("unexpected trailing fields in PKCS#1 RSAPrivateKey".into());
+        }
 
         let bits = modulus_bits(&modulus);
         if !(1024..=4096).contains(&bits) {
@@ -421,6 +477,40 @@ pub fn dev_capsule_key_and_cert() -> Result<(RsaPrivateKey, Vec<u8>), String> {
     Ok((key, cert))
 }
 
+/// Decode an X.509 certificate from PEM (`CERTIFICATE`) or raw DER, verifying
+/// that it parses as a valid X.509 certificate carrying an RSA public key.
+pub fn decode_cert_pem_or_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let trimmed = trim_ascii_whitespace(bytes);
+    let der = if trimmed.starts_with(b"-----BEGIN ") {
+        let (label, der) = pem_rfc7468::decode_vec(trimmed)
+            .map_err(|e| format!("invalid X.509 certificate PEM: {e}"))?;
+        if label != "CERTIFICATE" {
+            return Err(format!(
+                "unsupported X.509 certificate PEM label '{label}' (expected CERTIFICATE)"
+            ));
+        }
+        der
+    } else {
+        bytes.to_vec()
+    };
+    let cert = Certificate::parse(&der).map_err(|_| "invalid X.509 DER certificate".to_string())?;
+    cert.rsa_public_key()
+        .map_err(|_| "X.509 certificate does not contain a valid RSA public key".to_string())?;
+    Ok(der)
+}
+
+fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes[start..]
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(start, |i| start + i + 1);
+    &bytes[start..end]
+}
+
 fn trim_leading_zeros(bytes: &[u8]) -> Vec<u8> {
     let first_nz = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
     bytes[first_nz..].to_vec()
@@ -600,12 +690,15 @@ mod tests {
     #[test]
     fn rejects_weak_public_exponent_one() {
         let (key, _) = dev_capsule_key_and_cert().unwrap();
-        // Rebuild a PKCS#1 RSAPrivateKey DER sequence with e = 1.
+        // Rebuild a full 9-field PKCS#1 RSAPrivateKey DER sequence with e = 1.
         let mut body = Vec::new();
         body.extend_from_slice(&der_unsigned_int(&[0])); // version
         body.extend_from_slice(&der_unsigned_int(&key.modulus)); // modulus
         body.extend_from_slice(&der_unsigned_int(&[1])); // e = 1 (insecure!)
         body.extend_from_slice(&der_unsigned_int(&[1])); // d
+        for _ in 0..5 {
+            body.extend_from_slice(&der_unsigned_int(&[3])); // p, q, dP, dQ, qInv
+        }
         let der = der_seq(&body);
         let Err(err) = RsaPrivateKey::from_pkcs1_der(&der) else {
             panic!("expected e=1 key to be rejected");
@@ -631,6 +724,44 @@ mod tests {
     }
 
     #[test]
+    fn rejects_truncated_pkcs1_bad_version_and_corrupt_private_exponent() {
+        let (mut key, cert_der) = dev_capsule_key_and_cert().unwrap();
+
+        // Truncated PKCS#1 (missing CRT fields).
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&der_unsigned_int(&[0]));
+        truncated.extend_from_slice(&der_unsigned_int(&key.modulus));
+        truncated.extend_from_slice(&der_unsigned_int(&key.public_exponent));
+        truncated.extend_from_slice(&der_unsigned_int(&key.private_exponent));
+        assert!(
+            RsaPrivateKey::from_pkcs1_der(&der_seq(&truncated))
+                .err()
+                .unwrap()
+                .contains("prime1")
+        );
+
+        // Non-zero PKCS#1 version.
+        let mut bad_ver = Vec::new();
+        bad_ver.extend_from_slice(&der_unsigned_int(&[1]));
+        bad_ver.extend_from_slice(&der_unsigned_int(&key.modulus));
+        assert!(
+            RsaPrivateKey::from_pkcs1_der(&der_seq(&bad_ver))
+                .err()
+                .unwrap()
+                .contains("version")
+        );
+
+        // Unrelated private exponent d with matching (n, e) must fail verify_matches_cert.
+        let last = key.private_exponent.len() - 1;
+        key.private_exponent[last] ^= 0x04;
+        assert!(
+            key.verify_matches_cert(&cert_der)
+                .unwrap_err()
+                .contains("cryptographically")
+        );
+    }
+
+    #[test]
     fn dev_capsule_cert_matches_qemu_q35_ab_fixture() {
         let (_, cert_der) = dev_capsule_key_and_cert().unwrap();
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -643,6 +774,31 @@ mod tests {
         assert_eq!(
             committed, cert_der,
             "boards/qemu/q35-ab/dev-capsule-cert.der is out of sync with dev_capsule_key_and_cert()"
+        );
+    }
+
+    #[test]
+    fn pem_and_der_key_and_cert_decoders_round_trip() {
+        let (_, cert_der) = dev_capsule_key_and_cert().unwrap();
+        let (_, pkcs1_der) = pem_rfc7468::decode_vec(DEV_CAPSULE_RSA2048_PEM.as_bytes()).unwrap();
+
+        let from_pem = RsaPrivateKey::from_pem_or_der(DEV_CAPSULE_RSA2048_PEM.as_bytes()).unwrap();
+        let from_der = RsaPrivateKey::from_pem_or_der(&pkcs1_der).unwrap();
+        from_pem.verify_matches_cert(&cert_der).unwrap();
+        from_der.verify_matches_cert(&cert_der).unwrap();
+
+        let cert_pem =
+            pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &cert_der)
+                .unwrap();
+        assert_eq!(decode_cert_pem_or_der(&cert_der).unwrap(), cert_der);
+        assert_eq!(
+            decode_cert_pem_or_der(cert_pem.as_bytes()).unwrap(),
+            cert_der
+        );
+        assert!(
+            decode_cert_pem_or_der(DEV_CAPSULE_RSA2048_PEM.as_bytes())
+                .unwrap_err()
+                .contains("CERTIFICATE")
         );
     }
 }

@@ -516,6 +516,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     .collect::<Vec<_>>();
     let plan = BuildPlan {
         options: Default::default(),
+        update: None,
         payload: payload.clone(),
         units: vec![CompilationUnit {
             name: "stage".into(),
@@ -1223,6 +1224,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     });
     let plan = BuildPlan {
         options: Default::default(),
+        update: None,
         payload: payload.clone(),
         units,
         stages: vec!["stage".into()],
@@ -1674,6 +1676,14 @@ fn resolve_q35_ab(selection: BuildSelection, options: QemuOptions) -> Result<Bui
 
     let plan = BuildPlan {
         options: Default::default(),
+        update: Some(fstart_image_build::build_plan::FirmwareUpdateContract {
+            firmware_guid: Q35_AB_FIRMWARE_GUID,
+            slot_size: Q35_AB_RW_A_SIZE,
+            ab: true,
+            lowest_supported_version: 1,
+            rmap_region: "RW_SLOT".into(),
+            capsule_trust_provisioned: options.dev_keys,
+        }),
         payload,
         units,
         stages: vec!["ro".into(), "ramstage".into()],

@@ -397,7 +397,10 @@ fn audit_ro_ramcode(
     let vma_end = vma
         .checked_add(data.len() as u64)
         .ok_or("RO .ramcode VMA overflow")?;
-    let flash_end = flash_base + flash_size;
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    let flash_end = flash_base
+        .checked_add(flash_size)
+        .ok_or("RO flash range overflow")?;
     if vma >= flash_base || vma_end > flash_base {
         return Err(format!(
             "RO .ramcode in {} is linked at {vma:#x}..{vma_end:#x}, which is not in RAM below flash {flash_base:#x}",

@@ -64,6 +64,28 @@ enum Command {
         settings: Vec<(String, String)>,
         #[command(flatten)]
         secure_boot: fbuild::payload::SecureBootArgs,
+        /// Assemble only the RW slot update image (and optional signed `.cap`)
+        /// without composing a full flash ROM or requiring a vendor donor.
+        #[arg(long, conflicts_with = "intel_flash")]
+        update_only: bool,
+        /// Override the signed FFS `Root` firmware version (ESRT `fw_version`).
+        #[arg(long)]
+        fw_version: Option<u32>,
+        /// Override the signed FFS `Root` rollback security version.
+        #[arg(long)]
+        security_version: Option<u64>,
+        /// RSA private key (PKCS#8/PKCS#1, PEM or DER) to sign a UEFI 2.10 FMP `.cap`.
+        #[arg(long, requires = "capsule_cert")]
+        capsule_key: Option<std::path::PathBuf>,
+        /// X.509 certificate (PEM or DER) matching `--capsule-key`.
+        #[arg(long, requires = "capsule_key")]
+        capsule_cert: Option<std::path::PathBuf>,
+        /// `EFI_FIRMWARE_IMAGE_AUTHENTICATION.MonotonicCount` for `--capsule-key` (default 0).
+        #[arg(long, requires = "capsule_key")]
+        monotonic_count: Option<u64>,
+        /// Override `lowest_supported_version` in the FMP `MSS1` capsule header.
+        #[arg(long, requires = "capsule_key")]
+        lowest_supported_version: Option<u32>,
     },
     /// Print the CI firmware job matrix.
     Shards,
@@ -431,16 +453,30 @@ fn main() {
             signing_key,
             settings,
             secure_boot,
+            update_only,
+            fw_version,
+            security_version,
+            capsule_key,
+            capsule_cert,
+            monotonic_count,
+            lowest_supported_version,
         } => fbuild::payload::store_settings(&settings, &secure_boot).and_then(|settings| {
-            fbuild::bundle::compose(
-                &bundle,
-                &out,
-                donor.as_deref(),
-                intel_flash.as_deref(),
-                &inputs,
-                signing_key.as_deref(),
-                &settings,
-            )
+            fbuild::bundle::compose(fbuild::bundle::ComposeOptions {
+                bundle: &bundle,
+                out: &out,
+                donor: donor.as_deref(),
+                intel_flash: intel_flash.as_deref(),
+                inputs: &inputs,
+                key: signing_key.as_deref(),
+                settings: &settings,
+                update_only,
+                fw_version,
+                security_version,
+                capsule_key: capsule_key.as_deref(),
+                capsule_cert: capsule_cert.as_deref(),
+                monotonic_count,
+                lowest_supported_version,
+            })
         }),
         Command::Shards => fbuild::shards::run(),
         Command::Checks { list } => fbuild::checks::run(list),

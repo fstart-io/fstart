@@ -1,9 +1,17 @@
 //! WASM bindings over `Bundle` for the web UI (`www/`) and other browser callers.
-use fstart_image_build::bundle::{Bundle, Supplied};
+use fstart_image_build::bundle::{AssemblyMode, Bundle, CapsuleSigning, Supplied};
 use fstart_image_build::options::Settings;
+use fstart_image_build::pkcs7_sign::{RsaPrivateKey, decode_cert_pem_or_der};
 use fstart_image_build::secure_boot::{Keys, SecureBoot};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
+
+struct StoredCapsuleSigning {
+    rsa_key: Vec<u8>,
+    cert: Vec<u8>,
+    monotonic_count: u64,
+    lowest_supported_version: Option<u32>,
+}
 
 #[wasm_bindgen]
 pub struct ImageAssembler {
@@ -13,6 +21,10 @@ pub struct ImageAssembler {
     intel_flash: Option<Vec<u8>>,
     settings: BTreeMap<String, String>,
     secure_boot: Option<SecureBoot>,
+    update_only: bool,
+    fw_version: Option<u32>,
+    security_version: Option<u64>,
+    capsule_signing: Option<StoredCapsuleSigning>,
 }
 
 #[wasm_bindgen]
@@ -26,6 +38,10 @@ impl ImageAssembler {
             intel_flash: None,
             settings: BTreeMap::new(),
             secure_boot: None,
+            update_only: false,
+            fw_version: None,
+            security_version: None,
+            capsule_signing: None,
         })
     }
 
@@ -38,6 +54,22 @@ impl ImageAssembler {
     /// keys, forms, legal values and the board's values, and the store.
     pub fn options(&self) -> Result<String, JsValue> {
         serde_json::to_string(&self.bundle.manifest.plan.options).map_err(error)
+    }
+
+    /// Whether update-only assembly still requires the vendor donor image.
+    #[wasm_bindgen(js_name = updateRequiresDonor)]
+    pub fn update_requires_donor(&self) -> bool {
+        self.bundle.manifest.update_requires_donor()
+    }
+
+    /// Default FFS `security_version` as an exact decimal string (avoids JS Number precision loss).
+    #[wasm_bindgen(js_name = defaultSecurityVersion)]
+    pub fn default_security_version(&self) -> Option<String> {
+        self.bundle
+            .manifest
+            .plan
+            .ffs_step()
+            .map(|(_, ffs)| ffs.security_version.to_string())
     }
 
     /// Start the image's settings store with `key` = `value` (a number,
@@ -100,14 +132,78 @@ impl ImageAssembler {
         Ok(())
     }
 
-    /// Forget the donor, inputs and settings, so the next assembly takes
-    /// only what is set after this.
+    /// Choose full ROM assembly (`false`) or update-only RW slot assembly (`true`).
+    #[wasm_bindgen(js_name = setUpdateOnly)]
+    pub fn set_update_only(&mut self, update_only: bool) -> Result<(), JsValue> {
+        if update_only && self.bundle.manifest.plan.update.is_none() {
+            return Err(error("this build does not support update-only assembly"));
+        }
+        self.update_only = update_only;
+        Ok(())
+    }
+
+    /// Override the signed FFS `Root` firmware version (`fw_version`).
+    #[wasm_bindgen(js_name = setFirmwareVersion)]
+    pub fn set_firmware_version(&mut self, version: Option<u32>) {
+        self.fw_version = version;
+    }
+
+    /// Override the signed FFS `Root` rollback security version (decimal `u64` string).
+    #[wasm_bindgen(js_name = setSecurityVersion)]
+    pub fn set_security_version(&mut self, version: Option<String>) -> Result<(), JsValue> {
+        self.security_version = match version {
+            Some(text) if !text.trim().is_empty() => Some(
+                text.trim()
+                    .parse::<u64>()
+                    .map_err(|_| error("security_version must be an unsigned 64-bit integer"))?,
+            ),
+            _ => None,
+        };
+        Ok(())
+    }
+
+    /// Configure RSA-SHA256 PKCS#7 signing for a UEFI 2.10 FMP `.cap` output.
+    #[wasm_bindgen(js_name = setCapsuleSigning)]
+    pub fn set_capsule_signing(
+        &mut self,
+        rsa_key: Vec<u8>,
+        cert: Vec<u8>,
+        monotonic_count: String,
+        lowest_supported_version: Option<u32>,
+    ) -> Result<(), JsValue> {
+        if self.bundle.manifest.plan.update.is_none() {
+            return Err(error(
+                "this build does not declare a firmware update contract for capsule signing",
+            ));
+        }
+        let monotonic_count = monotonic_count
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| error("monotonic_count must be an unsigned 64-bit integer"))?;
+        let key = RsaPrivateKey::from_pem_or_der(&rsa_key).map_err(error)?;
+        let cert_der = decode_cert_pem_or_der(&cert).map_err(error)?;
+        key.verify_matches_cert(&cert_der).map_err(error)?;
+        self.capsule_signing = Some(StoredCapsuleSigning {
+            rsa_key,
+            cert: cert_der,
+            monotonic_count,
+            lowest_supported_version,
+        });
+        Ok(())
+    }
+
+    /// Forget the donor, inputs, settings and update options, so the next
+    /// assembly takes only what is set after this.
     pub fn clear(&mut self) {
         self.inputs.clear();
         self.donor = None;
         self.intel_flash = None;
         self.settings.clear();
         self.secure_boot = None;
+        self.update_only = false;
+        self.fw_version = None;
+        self.security_version = None;
+        self.capsule_signing = None;
     }
 
     #[wasm_bindgen(js_name = setDonor)]
@@ -153,8 +249,10 @@ impl ImageAssembler {
     }
 
     /// Returns Map<filename, Uint8Array>. With no key, browser Web Crypto
-    /// supplies randomness for a fresh ephemeral Ed25519 key.
-    pub fn assemble(&self, signing_key: Option<Vec<u8>>) -> Result<js_sys::Map, JsValue> {
+    /// supplies randomness for a fresh ephemeral Ed25519 key (Full ROM mode
+    /// without capsule signing only).
+    pub fn assemble(&mut self, signing_key: Option<Vec<u8>>) -> Result<js_sys::Map, JsValue> {
+        let capsule_signing = self.capsule_signing.take();
         let supplied = Supplied {
             donor: self.donor.as_deref(),
             intel_flash: self.intel_flash.as_deref(),
@@ -164,6 +262,19 @@ impl ImageAssembler {
                 options: self.settings.clone().into_iter().collect(),
                 secure_boot: self.secure_boot.clone(),
             },
+            mode: if self.update_only {
+                AssemblyMode::UpdateOnly
+            } else {
+                AssemblyMode::Full
+            },
+            fw_version: self.fw_version,
+            security_version: self.security_version,
+            capsule_signing: capsule_signing.as_ref().map(|cap| CapsuleSigning {
+                rsa_key: &cap.rsa_key,
+                cert: &cap.cert,
+                monotonic_count: cap.monotonic_count,
+                lowest_supported_version: cap.lowest_supported_version,
+            }),
         };
         let outputs = self.bundle.assemble(&supplied).map_err(error)?;
         let map = js_sys::Map::new();

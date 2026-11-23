@@ -11,8 +11,8 @@ use crate::{
 use fstart_image_build::{
     build_plan::{BuildPlan, ImageOperation, InputFile},
     bundle::{
-        BLOBS_DIR, Bundle, BundledPayload, Manifest, PackedDonor, Supplied, VERSION, WORKSPACE,
-        sha256,
+        AssemblyMode, BLOBS_DIR, Bundle, BundledPayload, CapsuleSigning, Manifest, PackedDonor,
+        Supplied, VERSION, WORKSPACE, sha256,
     },
     files::{Files, MemoryFiles, normalize},
     plan::PlanError,
@@ -60,6 +60,12 @@ pub struct Build {
     /// The build can seed its settings store (`--setting`): its options
     /// are in the bundle's plan.
     pub settings: bool,
+    /// The build declares a firmware update contract (RO/A or RO/A/B).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub update: bool,
+    /// True when the firmware update contract uses two RW slots (RO/A/B).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub update_ab: bool,
     pub binaries: Vec<String>,
 }
 
@@ -371,6 +377,8 @@ fn export_one(
             plan.options.store,
             Some(fstart_image_build::options::OptionStore::Varstore { .. })
         ),
+        update: plan.update.is_some(),
+        update_ab: plan.update.as_ref().is_some_and(|u| u.ab),
         binaries,
     })
 }
@@ -390,7 +398,7 @@ fn include_inputs(
     let workspace = Path::new(WORKSPACE);
     let mut inputs = plan.inputs.clone();
     // From the user's donor, at assembly.
-    let donated = |path: &str| Path::new(path).starts_with(BLOBS_DIR);
+    let donated = fstart_image_build::bundle::is_donated_blob;
     for step in &plan.images {
         let ImageOperation::Ffs(assembly) = &step.operation else {
             continue;
@@ -469,29 +477,63 @@ fn include_inputs(
     Ok(inputs)
 }
 
+/// Options for [`compose`] (`fbuild compose-bundle`).
+pub struct ComposeOptions<'a> {
+    pub bundle: &'a Path,
+    pub out: &'a Path,
+    pub donor: Option<&'a Path>,
+    pub intel_flash: Option<&'a Path>,
+    pub inputs: &'a [String],
+    pub key: Option<&'a Path>,
+    pub settings: &'a fstart_image_build::options::Settings,
+    pub update_only: bool,
+    pub fw_version: Option<u32>,
+    pub security_version: Option<u64>,
+    pub capsule_key: Option<&'a Path>,
+    pub capsule_cert: Option<&'a Path>,
+    pub monotonic_count: Option<u64>,
+    pub lowest_supported_version: Option<u32>,
+}
+
 /// Compiler-free native counterpart of the browser assembler.
-pub fn compose(
-    bundle: &Path,
-    out: &Path,
-    donor: Option<&Path>,
-    intel_flash: Option<&Path>,
-    inputs: &[String],
-    key: Option<&Path>,
-    settings: &fstart_image_build::options::Settings,
-) -> Result<(), String> {
+pub fn compose(opts: ComposeOptions<'_>) -> Result<(), String> {
     let read = |path: &Path| fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let bundle = Bundle::decode(&read(bundle)?)?;
-    let donor = donor.map(crate::blobs::read_donor).transpose()?;
-    let intel_flash = intel_flash.map(crate::blobs::read_donor).transpose()?;
-    let key = key.map(read).transpose()?;
+    let bundle = Bundle::decode(&read(opts.bundle)?)?;
+    let donor = opts.donor.map(crate::blobs::read_donor).transpose()?;
+    let intel_flash = opts.intel_flash.map(crate::blobs::read_donor).transpose()?;
+    let key = opts.key.map(read).transpose()?;
+    let (capsule_key, capsule_cert) = match (opts.capsule_key, opts.capsule_cert) {
+        (Some(k), Some(c)) => (Some(read(k)?), Some(read(c)?)),
+        (None, None) => (None, None),
+        _ => {
+            return Err("both --capsule-key and --capsule-cert must be provided together".into());
+        }
+    };
+    let capsule_signing = match (capsule_key.as_deref(), capsule_cert.as_deref()) {
+        (Some(rsa_key), Some(cert)) => Some(CapsuleSigning {
+            rsa_key,
+            cert,
+            monotonic_count: opts.monotonic_count.unwrap_or(0),
+            lowest_supported_version: opts.lowest_supported_version,
+        }),
+        _ => None,
+    };
     let mut supplied = Supplied {
         intel_flash: intel_flash.as_deref(),
         donor: donor.as_deref(),
         signing_key: key.as_deref(),
-        settings: settings.clone(),
+        settings: opts.settings.clone(),
+        mode: if opts.update_only {
+            AssemblyMode::UpdateOnly
+        } else {
+            AssemblyMode::Full
+        },
+        fw_version: opts.fw_version,
+        security_version: opts.security_version,
+        capsule_signing,
         ..Default::default()
     };
-    for value in inputs {
+    for value in opts.inputs {
         let (name, path) = value.split_once('=').ok_or("input must use NAME=PATH")?;
         if (supplied.inputs)
             .insert(name.to_string(), read(Path::new(path))?)
@@ -501,7 +543,14 @@ pub fn compose(
         }
     }
     let outputs = bundle.assemble(&supplied)?;
-    write_outputs(out, &outputs, intel_flash.is_some())
+    write_outputs(opts.out, &outputs, intel_flash.is_some())
+}
+
+fn is_single_filename(name: &str) -> bool {
+    matches!(
+        Path::new(name).components().collect::<Vec<_>>().as_slice(),
+        [std::path::Component::Normal(_)]
+    )
 }
 
 fn write_outputs(
@@ -512,10 +561,7 @@ fn write_outputs(
     use std::io::{ErrorKind, Write};
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     for name in outputs.keys() {
-        if !matches!(
-            Path::new(name).components().collect::<Vec<_>>().as_slice(),
-            [std::path::Component::Normal(_)]
-        ) {
+        if !is_single_filename(name) {
             return Err("output must be a filename".into());
         }
         if no_clobber {
@@ -528,6 +574,27 @@ fn write_outputs(
                         "refusing to overwrite {} with --intel-flash",
                         path.display()
                     ));
+                }
+            }
+        }
+    }
+    // When reusing an output directory across full / update-only / capsule runs,
+    // remove stale firmware outputs recorded in a previous assembly-report.json
+    // so old `.rom` or `.cap` files are not left beside the new report.
+    if !no_clobber {
+        let prev_report_path = out.join("assembly-report.json");
+        if let Ok(prev_bytes) = fs::read(&prev_report_path)
+            && let Ok(prev_json) = serde_json::from_slice::<serde_json::Value>(&prev_bytes)
+            && let Some(prev_outputs) = prev_json.get("outputs").and_then(|v| v.as_object())
+        {
+            for old_name in prev_outputs.keys() {
+                if !outputs.contains_key(old_name) && is_single_filename(old_name) {
+                    let old_path = out.join(old_name);
+                    match fs::remove_file(&old_path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == ErrorKind::NotFound => {}
+                        Err(e) => return Err(format!("{}: {e}", old_path.display())),
+                    }
                 }
             }
         }
@@ -685,5 +752,39 @@ mod output_tests {
         .unwrap_err();
         assert!(unsupported.contains("demo coreboot"), "{unsupported}");
         assert!(unsupported.contains("no coreboot"), "{unsupported}");
+    }
+
+    #[test]
+    fn reusing_output_dir_removes_stale_previous_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let unrelated = dir.path().join("notes.txt");
+        fs::write(&unrelated, b"keep me").unwrap();
+
+        let first: BTreeMap<String, Vec<u8>> = [
+            ("board.rom".into(), vec![1, 2, 3]),
+            ("board.cap".into(), vec![4, 5, 6]),
+            (
+                "assembly-report.json".into(),
+                br#"{"outputs":{"board.rom":{},"board.cap":{}}}"#.to_vec(),
+            ),
+        ]
+        .into();
+        write_outputs(dir.path(), &first, false).unwrap();
+        assert!(dir.path().join("board.rom").exists());
+        assert!(dir.path().join("board.cap").exists());
+
+        let second: BTreeMap<String, Vec<u8>> = [
+            ("board-rw-slot.bin".into(), vec![7, 8, 9]),
+            (
+                "assembly-report.json".into(),
+                br#"{"outputs":{"board-rw-slot.bin":{}}}"#.to_vec(),
+            ),
+        ]
+        .into();
+        write_outputs(dir.path(), &second, false).unwrap();
+        assert!(!dir.path().join("board.rom").exists());
+        assert!(!dir.path().join("board.cap").exists());
+        assert!(dir.path().join("board-rw-slot.bin").exists());
+        assert_eq!(fs::read(&unrelated).unwrap(), b"keep me");
     }
 }

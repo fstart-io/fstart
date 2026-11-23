@@ -47,6 +47,15 @@ pub struct ImageOutputs {
     /// The last step's artefact: the image `assemble` reports.
     pub image: PathBuf,
     pub notes: Vec<String>,
+    /// Ed25519 public key (32 bytes) embedded in the FFS step's `TrustBlock`.
+    pub signing_public_key: Option<[u8; 32]>,
+}
+
+fn trust_ed25519_public_key(
+    trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
+) -> Option<[u8; 32]> {
+    let block = fstart_core::ffs::trust::TrustBlock::parse(trust_bytes)?;
+    (block.key_count.get() > 0).then(|| block.keys[0].key_lo)
 }
 
 /// A declared file input, read with its size bound enforced: a blob, or
@@ -85,6 +94,80 @@ fn stage<'a>(stages: &'a [StageBinary], unit: &str) -> Result<&'a StageBinary, S
         .ok_or_else(|| format!("stage unit {unit} was not built"))
 }
 
+/// Run the single FFS step of `plan` without executing downstream full-ROM
+/// flash steps (such as vendor donor / AMD EFS or x86 RO flash composition).
+///
+/// Used by [`crate::bundle::AssemblyMode::UpdateOnly`] to build a donor-free
+/// RW slot update image (`{board}-rw-slot.bin`) and optional UEFI FMP capsule.
+pub fn execute_ffs_only(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs, String> {
+    plan.order()?;
+    let (step_name, image) = plan
+        .ffs_step()
+        .ok_or("plan has no FFS image step for update-only assembly")?;
+    if !image.rw_slot {
+        return Err("update-only assembly requires an RW-slot FFS build plan".into());
+    }
+    if image.full_flash_image {
+        return Err("update-only assembly requires a bare RW-slot FFS image".into());
+    }
+    if !ctx.settings.options.is_empty() || ctx.settings.secure_boot.is_some() {
+        return Err(
+            "update-only assembly does not write a settings/NVRAM store; omit --setting and --secure-boot"
+                .into(),
+        );
+    }
+    ctx.files.create_dir_all(ctx.output_dir)?;
+    let (artifact, trust_bytes) = run_ffs_step(image, ctx)?;
+    let mut artifacts = BTreeMap::new();
+    artifacts.insert(step_name.to_string(), artifact.clone());
+    Ok(ImageOutputs {
+        artifacts,
+        image: artifact,
+        notes: Vec::new(),
+        signing_public_key: trust_ed25519_public_key(&trust_bytes),
+    })
+}
+
+fn run_ffs_step(
+    image: &FfsAssembly,
+    ctx: &ImageContext<'_>,
+) -> Result<(PathBuf, [u8; fstart_core::ffs::trust::TRUST_SIZE]), String> {
+    let input = |name: &str| -> Result<Option<String>, String> {
+        ctx.inputs
+            .get(name)
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("input {name} path is not UTF-8"))
+            })
+            .transpose()
+    };
+    let config = image.config(ctx.board_name)?;
+    let root_opts = crate::assemble::FfsRootOptions {
+        fw_version: ctx.fw_version.unwrap_or(image.fw_version),
+        security_version: ctx.security_version.unwrap_or(image.security_version),
+        rw_slot: image.rw_slot,
+        omit_stages: &image.omit_stages,
+    };
+    crate::assemble::assemble_with_trust(
+        ctx.files,
+        ctx.workspace_root,
+        ctx.board_dir,
+        &config,
+        ctx.stages,
+        Some(ctx.output_dir),
+        input(FfsAssembly::KERNEL)?.as_deref(),
+        input(FfsAssembly::FIRMWARE)?.as_deref(),
+        input(FfsAssembly::FIT)?.as_deref(),
+        input(FfsAssembly::DTB)?.as_deref(),
+        ctx.payload_files,
+        Some(&image.bootstrap),
+        image.boot_image_format,
+        ctx.signing_key,
+        &root_opts,
+    )
+}
+
 /// Run every image step of `plan` in order. A plan with no steps has no
 /// image contract and is an error here, not an empty success.
 pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs, String> {
@@ -104,19 +187,10 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
         artifacts: BTreeMap::new(),
         image: ctx.output_dir.to_path_buf(),
         notes: Vec::new(),
+        signing_public_key: None,
     };
     let mut ffs_trusts: BTreeMap<String, [u8; fstart_core::ffs::trust::TRUST_SIZE]> =
         BTreeMap::new();
-    let input = |name: &str| -> Result<Option<String>, String> {
-        ctx.inputs
-            .get(name)
-            .map(|path| {
-                path.to_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("input {name} path is not UTF-8"))
-            })
-            .transpose()
-    };
     for step in &plan.images {
         // order() checked that a consumed step comes earlier.
         let consumed = step
@@ -132,30 +206,8 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             .transpose()?;
         let artifact = match &step.operation {
             ImageOperation::Ffs(image) => {
-                let config = image.config(ctx.board_name)?;
-                let root_opts = crate::assemble::FfsRootOptions {
-                    fw_version: ctx.fw_version.unwrap_or(image.fw_version),
-                    security_version: ctx.security_version.unwrap_or(image.security_version),
-                    rw_slot: image.rw_slot,
-                    omit_stages: &image.omit_stages,
-                };
-                let (path, trust_bytes) = crate::assemble::assemble_with_trust(
-                    ctx.files,
-                    ctx.workspace_root,
-                    ctx.board_dir,
-                    &config,
-                    ctx.stages,
-                    Some(ctx.output_dir),
-                    input(FfsAssembly::KERNEL)?.as_deref(),
-                    input(FfsAssembly::FIRMWARE)?.as_deref(),
-                    input(FfsAssembly::FIT)?.as_deref(),
-                    input(FfsAssembly::DTB)?.as_deref(),
-                    ctx.payload_files,
-                    Some(&image.bootstrap),
-                    image.boot_image_format,
-                    ctx.signing_key,
-                    &root_opts,
-                )?;
+                let (path, trust_bytes) = run_ffs_step(image, ctx)?;
+                outputs.signing_public_key = trust_ed25519_public_key(&trust_bytes);
                 ffs_trusts.insert(step.name.clone(), trust_bytes);
                 path
             }

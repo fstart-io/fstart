@@ -10,8 +10,10 @@
 use crate::{
     StageBinary,
     build_plan::{BuildPlan, InputFile},
+    capsule::{CapsuleSpec, sign_fmp_capsule},
     files::{Files, MemoryFiles, normalize},
-    image_steps::{ImageContext, execute},
+    image_steps::{ImageContext, execute, execute_ffs_only},
+    pkcs7_sign::{RsaPrivateKey, decode_cert_pem_or_der},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -38,10 +40,16 @@ pub use crate::donor::{MAX_DONOR, MAX_DONOR_COPIES};
 pub const MAX_BUNDLE: u64 = 512 << 20;
 
 pub fn sha256(bytes: &[u8]) -> String {
-    fstart_crypto::digest::hash_sha256(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex_encode(&fstart_crypto::digest::hash_sha256(bytes))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether `path` points into the donor-extracted [`BLOBS_DIR`] tree.
+pub fn is_donated_blob(path: &str) -> bool {
+    Path::new(path).starts_with(BLOBS_DIR)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,8 +106,36 @@ pub struct BundledPayload {
     pub files: Vec<(String, PathBuf)>,
 }
 
+/// Which outputs [`Bundle::assemble`] produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AssemblyMode {
+    /// Run every image step (full ROM plus RW update artifacts when the plan
+    /// declares a [`crate::build_plan::FirmwareUpdateContract`]).
+    #[default]
+    Full,
+    /// Run only the RW-slot FFS step and package update artifacts
+    /// (`{board}-rw-slot.bin` and optional signed `{board}.cap`), skipping
+    /// vendor donor extraction unless the FFS step itself consumes donated files.
+    UpdateOnly,
+}
+
+/// RSA private key and matching X.509 certificate (PEM or DER) for signing a
+/// UEFI 2.10 FMP capsule (`.cap`) during [`Bundle::assemble`].
+#[derive(Debug, Clone, Copy)]
+pub struct CapsuleSigning<'a> {
+    /// RSA private key bytes (PKCS#8 or PKCS#1, PEM or DER).
+    pub rsa_key: &'a [u8],
+    /// X.509 certificate bytes matching `rsa_key` (PEM or DER).
+    pub cert: &'a [u8],
+    /// `EFI_FIRMWARE_IMAGE_AUTHENTICATION.MonotonicCount`.
+    pub monotonic_count: u64,
+    /// Optional override for `FirmwareUpdateContract::lowest_supported_version`.
+    pub lowest_supported_version: Option<u32>,
+}
+
 /// What an assembly takes besides the bundle. The donor and the signing
-/// key are separate from `inputs`, so neither can be published in an
+/// keys are separate from `inputs`, so none can be published in an
 /// output bundle by accident.
 #[derive(Debug, Default)]
 pub struct Supplied<'a> {
@@ -114,6 +150,14 @@ pub struct Supplied<'a> {
     /// What the image's settings store starts with, checked against the
     /// plan's options.
     pub settings: crate::options::Settings,
+    /// Whether to assemble a full ROM or a donor-free RW slot update only.
+    pub mode: AssemblyMode,
+    /// Optional override for the signed FFS `Root` firmware version (`fw_version`).
+    pub fw_version: Option<u32>,
+    /// Optional override for the signed FFS `Root` rollback security version.
+    pub security_version: Option<u64>,
+    /// Optional RSA key + X.509 certificate for emitting a PKCS#7-signed `{board}.cap`.
+    pub capsule_signing: Option<CapsuleSigning<'a>>,
 }
 
 pub struct Bundle {
@@ -241,11 +285,61 @@ impl Bundle {
     pub fn assemble(&self, supplied: &Supplied<'_>) -> Result<BTreeMap<String, Vec<u8>>, String> {
         let manifest = &self.manifest;
         manifest.check()?;
+        if supplied.mode == AssemblyMode::UpdateOnly {
+            if manifest.plan.update.is_none() {
+                return Err("this build does not support update-only assembly".into());
+            }
+            if supplied.intel_flash.is_some() {
+                return Err("update-only assembly does not take an Intel flash image".into());
+            }
+            if supplied.signing_key.is_none() {
+                return Err(
+                    "update-only assembly requires an explicit Ed25519 --signing-key matching the board's RO TrustBlock"
+                        .into(),
+                );
+            }
+        }
+        if let Some(contract) = &manifest.plan.update {
+            contract.validate()?;
+            if supplied.capsule_signing.is_some() && supplied.signing_key.is_none() {
+                return Err(
+                    "capsule signing requires an explicit Ed25519 --signing-key matching the board's RO TrustBlock"
+                        .into(),
+                );
+            }
+        } else if supplied.capsule_signing.is_some() {
+            return Err(
+                "this build does not declare a firmware update contract for capsule signing".into(),
+            );
+        }
+        let parsed_capsule_signing = supplied
+            .capsule_signing
+            .map(
+                |cap| -> Result<(RsaPrivateKey, Vec<u8>, u64, Option<u32>), String> {
+                    let key = RsaPrivateKey::from_pem_or_der(cap.rsa_key)?;
+                    let cert_der = decode_cert_pem_or_der(cap.cert)?;
+                    key.verify_matches_cert(&cert_der)?;
+                    Ok((
+                        key,
+                        cert_der,
+                        cap.monotonic_count,
+                        cap.lowest_supported_version,
+                    ))
+                },
+            )
+            .transpose()?;
+
         let files = MemoryFiles(self.files.0.clone());
+        let donor_needed = match supplied.mode {
+            AssemblyMode::Full => manifest.packed_donor.is_some(),
+            AssemblyMode::UpdateOnly => manifest.update_requires_donor(),
+        };
         let mut donor_sha256 = None;
-        match (supplied.donor, &manifest.packed_donor) {
-            (None, Some(_)) => return Err("this build requires a local vendor BIOS image".into()),
-            (Some(donor), Some(tables)) => {
+        match (supplied.donor, &manifest.packed_donor, donor_needed) {
+            (None, Some(_), true) => {
+                return Err("this build requires a local vendor BIOS image".into());
+            }
+            (Some(donor), Some(tables), true) => {
                 let donor = self.donor(donor)?;
                 donor_sha256 = Some(sha256(&donor));
                 let donated = crate::amd::blobs::extract_donor(
@@ -258,8 +352,14 @@ impl Bundle {
                     files.write(&Path::new(BLOBS_DIR).join(file.file), &file.bytes)?;
                 }
             }
-            (Some(_), None) => return Err("this build takes no donor image".into()),
-            (None, None) => {}
+            (Some(_), Some(_), false) => {
+                return Err(
+                    "update-only assembly for this board does not use a vendor donor image".into(),
+                );
+            }
+            (Some(_), None, _) => return Err("this build takes no donor image".into()),
+            (None, _, false) => {}
+            (None, None, true) => unreachable!("donor_needed implies packed_donor.is_some()"),
         }
         let mut bound = BTreeMap::new();
         for (name, bytes) in &supplied.inputs {
@@ -284,6 +384,11 @@ impl Bundle {
             bound.insert(payload.input.clone(), payload.path.clone());
         }
         for input in &manifest.inputs {
+            if supplied.mode == AssemblyMode::UpdateOnly
+                && !crate::build_plan::FfsAssembly::INPUTS.contains(&input.name.as_str())
+            {
+                continue;
+            }
             if !bound.contains_key(&input.name) {
                 match &input.default {
                     // A default the bundle carries.
@@ -309,23 +414,38 @@ impl Bundle {
             })
             .unwrap_or_default();
         let output_dir = Path::new(OUTPUT);
-        execute(
-            &manifest.plan,
-            &ImageContext {
-                files: &files,
-                workspace_root: Path::new(WORKSPACE),
-                board_dir: &manifest.board_dir,
-                board_name: &manifest.board,
-                stages: &manifest.stages,
-                output_dir,
-                inputs: &bound,
-                payload_files: &payload_files,
-                signing_key: supplied.signing_key.map(|_| key_path),
-                settings: &supplied.settings,
-                fw_version: None,
-                security_version: None,
-            },
-        )?;
+        let ctx = ImageContext {
+            files: &files,
+            workspace_root: Path::new(WORKSPACE),
+            board_dir: &manifest.board_dir,
+            board_name: &manifest.board,
+            stages: &manifest.stages,
+            output_dir,
+            inputs: &bound,
+            payload_files: &payload_files,
+            signing_key: supplied.signing_key.map(|_| key_path),
+            settings: &supplied.settings,
+            fw_version: supplied.fw_version,
+            security_version: supplied.security_version,
+        };
+        let image_outputs = match supplied.mode {
+            AssemblyMode::Full => execute(&manifest.plan, &ctx)?,
+            AssemblyMode::UpdateOnly => execute_ffs_only(&manifest.plan, &ctx)?,
+        };
+        let ffs_artifact_bytes = match &manifest.plan.update {
+            Some(_) => {
+                let (ffs_step_name, _) = manifest
+                    .plan
+                    .ffs_step()
+                    .ok_or("update contract requires an FFS image step")?;
+                let ffs_path = image_outputs
+                    .artifacts
+                    .get(ffs_step_name)
+                    .ok_or_else(|| format!("FFS step '{ffs_step_name}' produced no artefact"))?;
+                Some(files.read(ffs_path)?)
+            }
+            None => None,
+        };
         let mut outputs: BTreeMap<String, Vec<u8>> = (files.0.into_inner().into_iter())
             .filter_map(|(path, bytes)| {
                 path.strip_prefix(output_dir)
@@ -345,6 +465,101 @@ impl Bundle {
                 preserved_regions: regions,
             });
         }
+
+        #[derive(Serialize)]
+        struct UpdateReport {
+            firmware_guid: String,
+            slot_size: u32,
+            ab: bool,
+            capsule_trust_provisioned: bool,
+            fw_version: u32,
+            security_version: u64,
+            ephemeral_signing_key: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            ed25519_public_key: Option<String>,
+            capsule_signed: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            monotonic_count: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            lowest_supported_version: Option<u32>,
+        }
+        let mut update_report = None;
+        if let (Some(contract), Some(ffs_bytes)) = (&manifest.plan.update, ffs_artifact_bytes) {
+            let slot_size = contract.slot_size as usize;
+            if ffs_bytes.len() < fstart_ffs::root::ROOT_SIZE {
+                return Err("assembled RW slot FFS image is smaller than 512-byte Root".into());
+            }
+            if ffs_bytes.len() > slot_size {
+                return Err(format!(
+                    "assembled RW slot FFS image ({:#x} bytes) exceeds slot_size ({:#x} bytes)",
+                    ffs_bytes.len(),
+                    slot_size
+                ));
+            }
+            let root = fstart_ffs::root::Root::parse(&ffs_bytes[..fstart_ffs::root::ROOT_SIZE])
+                .map_err(|e| format!("invalid signed RW Root: {e:?}"))?;
+            let mut rw_slot = Vec::with_capacity(slot_size);
+            rw_slot.extend_from_slice(&ffs_bytes);
+            rw_slot.resize(slot_size, fstart_ffs::slot_state::ERASED_BYTE);
+            let rw_slot_name = format!("{}-rw-slot.bin", manifest.board);
+            if outputs.insert(rw_slot_name.clone(), rw_slot).is_some() {
+                return Err(format!("duplicate output filename '{rw_slot_name}'"));
+            }
+
+            let (capsule_signed, monotonic_count, lowest_supported_version) = if let Some((
+                key,
+                cert_der,
+                monotonic_count,
+                lsv_override,
+            )) =
+                parsed_capsule_signing
+            {
+                let lsv = lsv_override.unwrap_or(contract.lowest_supported_version);
+                if root.fw_version < contract.lowest_supported_version {
+                    return Err(format!(
+                        "firmware version {} is below the board's lowest_supported_version ({})",
+                        root.fw_version, contract.lowest_supported_version
+                    ));
+                }
+                if lsv > root.fw_version {
+                    return Err(format!(
+                        "capsule lowest_supported_version ({lsv}) exceeds firmware version ({})",
+                        root.fw_version
+                    ));
+                }
+                let rmap_manifest = format!("{}\n", contract.rmap_region);
+                let spec = CapsuleSpec {
+                    fw_class_guid: contract.firmware_guid,
+                    lowest_supported_version: lsv,
+                    monotonic_count,
+                    rmap_manifest: &rmap_manifest,
+                    slot_size,
+                    rw_slot_image: &ffs_bytes,
+                };
+                let cap = sign_fmp_capsule(&spec, &key, &cert_der)?;
+                let cap_name = format!("{}.cap", manifest.board);
+                if outputs.insert(cap_name.clone(), cap).is_some() {
+                    return Err(format!("duplicate output filename '{cap_name}'"));
+                }
+                (true, Some(monotonic_count), Some(lsv))
+            } else {
+                (false, None, None)
+            };
+            update_report = Some(UpdateReport {
+                firmware_guid: contract.guid_string(),
+                slot_size: contract.slot_size,
+                ab: contract.ab,
+                capsule_trust_provisioned: contract.capsule_trust_provisioned,
+                fw_version: root.fw_version,
+                security_version: root.security_version,
+                ephemeral_signing_key: supplied.signing_key.is_none(),
+                ed25519_public_key: image_outputs.signing_public_key.map(|k| hex_encode(&k)),
+                capsule_signed,
+                monotonic_count,
+                lowest_supported_version,
+            });
+        }
+
         #[derive(Serialize)]
         struct IntelImport {
             sha256: String,
@@ -361,6 +576,7 @@ impl Bundle {
             board: &'a str,
             payload: &'a str,
             revision: &'a str,
+            assembly_mode: AssemblyMode,
             donor_sha256: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             intel_flash: Option<IntelImport>,
@@ -368,6 +584,8 @@ impl Bundle {
             settings: &'a [(String, String)],
             #[serde(skip_serializing_if = "Option::is_none")]
             secure_boot: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            update: Option<UpdateReport>,
             outputs: BTreeMap<&'a str, Identity>,
         }
         let report = Report {
@@ -375,6 +593,7 @@ impl Bundle {
             board: &manifest.board,
             payload: &manifest.payload,
             revision: &manifest.revision,
+            assembly_mode: supplied.mode,
             donor_sha256,
             intel_flash,
             input_sha256: (supplied.inputs.iter())
@@ -382,6 +601,7 @@ impl Bundle {
                 .collect(),
             settings: &supplied.settings.options,
             secure_boot: (supplied.settings.secure_boot.as_ref()).map(|sb| sb.describe()),
+            update: update_report,
             outputs: (outputs.iter())
                 .map(|(name, bytes)| {
                     let identity = Identity {
@@ -399,6 +619,29 @@ impl Bundle {
 }
 
 impl Manifest {
+    /// Whether [`AssemblyMode::UpdateOnly`] still needs the vendor donor image
+    /// (true only if the bundle has `packed_donor` AND the FFS step itself
+    /// reads donated files under [`BLOBS_DIR`]).
+    pub fn update_requires_donor(&self) -> bool {
+        if self.packed_donor.is_none() {
+            return false;
+        }
+        let Some((_, ffs)) = self.plan.ffs_step() else {
+            return false;
+        };
+        let microcode_donated = match &ffs.microcode {
+            Some(fstart_core::board::MicrocodeConfig::Amd(mc)) => {
+                mc.files.iter().any(|f| is_donated_blob(f.as_str()))
+            }
+            _ => false,
+        };
+        let assets_donated = ffs
+            .file_assets
+            .iter()
+            .any(|a| is_donated_blob(a.path.as_str()));
+        microcode_donated || assets_donated
+    }
+
     fn check(&self) -> Result<(), String> {
         if self.format_version != VERSION {
             return Err(format!("unsupported bundle format {}", self.format_version));
