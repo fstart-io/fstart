@@ -377,6 +377,8 @@ pub(crate) const fn sibling_port(port: Port) -> Option<Port> {
         Port::DpA => Some(Port::HdmiA),
         Port::DpB => Some(Port::HdmiB),
         Port::DpC => Some(Port::HdmiC),
+        Port::DpD => Some(Port::HdmiD),
+        Port::HdmiD => Some(Port::DpD),
         _ => None,
     }
 }

@@ -172,7 +172,9 @@ const fn hotplug_status_mask(port: Port) -> Result<u32, GmaError> {
         Port::HdmiA => Ok(HP_STAT::PORT_DETECTED::SET.value),
         Port::HdmiB => Ok(HP_STAT::SDVOC_HOTPLUG_STATUS::SET.value),
         Port::Vga => Ok(HP_STAT::CRT_HOTPLUG_STATUS::SET.value),
-        Port::Lvds | Port::Edp | Port::HdmiC | Port::DpD => Err(GmaError::UnsupportedPort),
+        Port::Lvds | Port::Edp | Port::HdmiC | Port::HdmiD | Port::DpD => {
+            Err(GmaError::UnsupportedPort)
+        }
     }
 }
 

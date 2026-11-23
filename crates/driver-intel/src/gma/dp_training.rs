@@ -6,9 +6,10 @@
 //! to AUX and GMCH DP source-register programming.
 
 use crate::gma::dp_aux::{
-    DPCD_DOWNSPREAD_CTRL, DPCD_LINK_BW_SET, DPCD_LINK_STATUS, DPCD_RECEIVER_CAPS,
+    AuxRegs, DPCD_DOWNSPREAD_CTRL, DPCD_LINK_BW_SET, DPCD_LINK_STATUS, DPCD_RECEIVER_CAPS,
     DPCD_TRAINING_PATTERN_SET, DpLinkRate, LinkStatus, PreEmphasis, ReceiverCaps, TrainSet,
-    TrainingPattern, VoltageSwing, gmch_native_aux_read, gmch_native_aux_write,
+    TrainingPattern, VoltageSwing, gmch_native_aux_read, gmch_native_aux_write, native_aux_read,
+    native_aux_write,
 };
 use crate::gma::error::GmaError;
 use crate::gma::mmio::{Mmio, delay_us};
@@ -365,28 +366,88 @@ fn train_gmch_dp_once(
         &[writes.downspread_ctrl, writes.main_link_channel_coding],
     )?;
 
-    let mut train_set = TrainSet {
-        voltage_swing: VoltageSwing::Level0,
-        pre_emphasis: PreEmphasis::Level0,
-    };
-    train_set = clock_recovery(mmio, port, config, train_set)?;
-    channel_equalization(mmio, port, config, train_set)?;
+    train_patterns(
+        config,
+        |pattern, levels| set_source_and_sink_training(mmio, port, pattern, levels, config),
+        || read_link_status(mmio, port),
+    )?;
     clear_sink_and_source_training(mmio, port, config)
 }
 
-fn clock_recovery(
+/// Train a selected DDI link. The generation owns the source buffer and
+/// pattern registers, including the idle-to-stream transition and rollback.
+pub(crate) fn train_ddi_link(
     mmio: &Mmio,
     port: Port,
     config: DpLinkConfig,
+    mut source: impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+) -> Result<(), GmaError> {
+    if !matches!(config.lane_count, 1 | 2 | 4) {
+        return Err(GmaError::InvalidConfig);
+    }
+    let aux = AuxRegs::gen9_for_port(port)?;
+    let write = |address, bytes: &[u8]| native_aux_write(mmio, aux, address, bytes);
+    let writes = sink_link_config_writes(config);
+    write(
+        DPCD_LINK_BW_SET,
+        &[writes.link_bw_set, writes.lane_count_set],
+    )?;
+    write(
+        DPCD_DOWNSPREAD_CTRL,
+        &[writes.downspread_ctrl, writes.main_link_channel_coding],
+    )?;
+    let result = train_patterns(
+        config,
+        |pattern, levels| {
+            let levels = clamp_train_set(TrainSet {
+                voltage_swing: levels.voltage_swing.min(VoltageSwing::Level2),
+                pre_emphasis: levels.pre_emphasis,
+            });
+            source(pattern, levels)?;
+            let lane = levels.encode(VoltageSwing::Level2, max_pre_emphasis(levels));
+            let mut data = [lane; 5];
+            data[0] = pattern.encode();
+            write(
+                DPCD_TRAINING_PATTERN_SET,
+                &data[..1 + usize::from(config.lane_count)],
+            )
+        },
+        || {
+            let mut data = [0; LINK_STATUS_LEN];
+            native_aux_read(mmio, aux, DPCD_LINK_STATUS, &mut data)?;
+            LinkStatus::parse(&data)
+        },
+    );
+    let clear = write(DPCD_TRAINING_PATTERN_SET, &[0]);
+    result.and(clear)
+}
+
+fn train_patterns(
+    config: DpLinkConfig,
+    mut set: impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+    mut status: impl FnMut() -> Result<LinkStatus, GmaError>,
+) -> Result<(), GmaError> {
+    let train_set = TrainSet {
+        voltage_swing: VoltageSwing::Level0,
+        pre_emphasis: PreEmphasis::Level0,
+    };
+    let train_set = clock_recovery(&mut set, &mut status, config, train_set)?;
+    channel_equalization(&mut set, &mut status, config, train_set)
+}
+
+fn clock_recovery(
+    set: &mut impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+    status: &mut impl FnMut() -> Result<LinkStatus, GmaError>,
+    config: DpLinkConfig,
     mut train_set: TrainSet,
 ) -> Result<TrainSet, GmaError> {
-    set_source_and_sink_training(mmio, port, TrainingPattern::Pattern1, train_set, config)?;
+    set(TrainingPattern::Pattern1, train_set)?;
     let mut same_vs_tries = 0;
     let mut last_vs = train_set.voltage_swing;
     let mut tries = 0;
     while tries < CLOCK_RECOVERY_MAX_TRIES {
         delay_us(clock_recovery_delay_us(config));
-        let status = read_link_status(mmio, port)?;
+        let status = status()?;
         if status.clock_recovery_done(config.lane_count) {
             return Ok(train_set);
         }
@@ -403,18 +464,15 @@ fn clock_recovery(
             break;
         }
         train_set = next;
-        set_source_and_sink_training(mmio, port, TrainingPattern::Pattern1, train_set, config)?;
+        set(TrainingPattern::Pattern1, train_set)?;
         tries += 1;
     }
-    // libgfxinit sends the sink TP_None before touching the source pattern.
-    let _ = clear_sink_and_source_training(mmio, port, config);
-    let _ = dp_failure_off(mmio, port);
     Err(GmaError::HardwareError)
 }
 
 fn channel_equalization(
-    mmio: &Mmio,
-    port: Port,
+    set: &mut impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+    status: &mut impl FnMut() -> Result<LinkStatus, GmaError>,
     config: DpLinkConfig,
     mut train_set: TrainSet,
 ) -> Result<(), GmaError> {
@@ -423,11 +481,11 @@ fn channel_equalization(
     } else {
         TrainingPattern::Pattern2
     };
-    set_source_and_sink_training(mmio, port, pattern, train_set, config)?;
+    set(pattern, train_set)?;
     let mut tries = 0;
     while tries < CHANNEL_EQ_MAX_TRIES {
         delay_us(channel_eq_delay_us(config));
-        let status = read_link_status(mmio, port)?;
+        let status = status()?;
         if status.channel_eq_done(config.lane_count) {
             return Ok(());
         }
@@ -435,11 +493,9 @@ fn channel_equalization(
             break;
         }
         train_set = adjusted_train_set(status, config.lane_count)?;
-        set_source_and_sink_training(mmio, port, pattern, train_set, config)?;
+        set(pattern, train_set)?;
         tries += 1;
     }
-    let _ = clear_sink_and_source_training(mmio, port, config);
-    let _ = dp_failure_off(mmio, port);
     Err(GmaError::HardwareError)
 }
 

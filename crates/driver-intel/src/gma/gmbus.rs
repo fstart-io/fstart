@@ -502,7 +502,7 @@ pub const fn ddc_pin_for_port(port: Port) -> Option<GmbusPin> {
         Port::Lvds => Some(GmbusPin::Panel),
         Port::HdmiA => Some(GmbusPin::DigitalB),
         Port::HdmiB => Some(GmbusPin::DigitalC),
-        Port::HdmiC => Some(GmbusPin::DigitalD),
+        Port::HdmiC | Port::HdmiD => Some(GmbusPin::DigitalD),
         Port::DpA | Port::DpB | Port::DpC | Port::DpD | Port::Edp => None,
     }
 }

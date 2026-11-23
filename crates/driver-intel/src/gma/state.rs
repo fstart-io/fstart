@@ -74,6 +74,13 @@ impl Default for GmaDisplayState {
     }
 }
 
+/// Whether `G` is Gen9, whose display engine (CDCLK, DDI buffers) the
+/// update manages besides the pipes. A constant, so the other generations
+/// link none of it.
+const fn is_gen9<G: GenerationOps>() -> bool {
+    matches!(G::GENERATION, Generation::Skylake)
+}
+
 impl GmaDisplayState {
     /// Create an empty display state.
     pub const fn new() -> Self {
@@ -148,14 +155,62 @@ impl GmaDisplayState {
     ) -> Result<UpdateOutputsResult, GmaError> {
         crate::gma::validate_generation::<G>(config.cpu)?;
         resources.validate()?;
-        crate::gma::validate_outputs(config.cpu, config.outputs)?;
+        use crate::gma::generation::skylake;
+        let gen9 = if is_gen9::<G>() {
+            if resources.gtt_mmio_size < 0x80_0000
+                || resources.gtt_size > resources.gtt_mmio_size - 0x80_0000
+            {
+                return Err(GmaError::MmioUnavailable);
+            }
+            Some(crate::gma::mmio_from_validated_resources(resources))
+        } else {
+            None
+        };
+        let requested_ports = || config.outputs.iter().filter(|o| o.enabled).map(|o| o.port);
+        if let Err(error) = crate::gma::validate_outputs(config.cpu, config.outputs) {
+            if is_gen9::<G>()
+                && let Some(mmio) = &gen9
+                && requested_ports().next().is_none()
+                && self.clean
+            {
+                let old = self.current;
+                self.disable_changed_outputs::<G>(
+                    resources,
+                    config.cpu,
+                    &old,
+                    &[None; PIPE_COUNT],
+                    None,
+                    false,
+                )?;
+                skylake::release_unused_ports(
+                    mmio,
+                    old.iter().flatten().map(|o| o.port),
+                    core::iter::empty(),
+                );
+                return Ok(UpdateOutputsResult {
+                    primary: None,
+                    enabled_outputs: 0,
+                });
+            }
+            return Err(error);
+        }
         let mmio = legacy_mmio::<G>(resources);
         let old_configs = self.current;
         // Clean before probing: cleaning after Panel.On would undo the power
         // state used for EDID. Never clean again when adding another output.
         if !self.clean {
-            clean_generation_state::<G>(resources, config.cpu);
+            if is_gen9::<G>()
+                && let Some(mmio) = &gen9
+            {
+                skylake::prepare(mmio, requested_ports(), config.vbt)?;
+            } else {
+                clean_generation_state::<G>(resources, config.cpu);
+            }
             self.clean = true;
+        } else if is_gen9::<G>()
+            && let Some(mmio) = &gen9
+        {
+            skylake::prepare_ports(mmio, requested_ports(), config.vbt)?;
         }
         let detect = crate::gma::initialize_port_detect(resources, config.cpu);
         let wants_lvds = config
@@ -179,7 +234,23 @@ impl GmaDisplayState {
                     outputs: &outputs,
                     ..*config
                 };
-                let mode = crate::gma::choose_mode(resources, &candidate)?;
+                let mode = if is_gen9::<G>()
+                    && let Some(mmio) = &gen9
+                {
+                    // The first EDID mode Gen9 can drive on this port.
+                    let mode = crate::gma::choose_mode_where(resources, &candidate, |mode| {
+                        skylake::supports_mode(mmio, *mode)
+                            && (!matches!(port, Port::HdmiB | Port::HdmiC | Port::HdmiD)
+                                || mode.pixel_clock_khz
+                                    <= crate::gma::hdmi_max_dotclock_khz(config.cpu))
+                    })?;
+                    if !skylake::supports_mode(mmio, mode) {
+                        return Err(GmaError::ModeUnavailable);
+                    }
+                    mode
+                } else {
+                    crate::gma::choose_mode(resources, &candidate)?
+                };
                 fstart_log::info!(
                     "intel-gma: connector {:?} mode {}x{}@{}kHz",
                     port,
@@ -187,7 +258,13 @@ impl GmaDisplayState {
                     mode.vdisplay,
                     mode.pixel_clock_khz
                 );
-                Ok(crate::gma::clamp_hdmi_dotclock(config.cpu, port, mode))
+                // Gen9 selects a supported complete EDID timing. Never
+                // change just its dot clock, which would change the refresh.
+                Ok(if is_gen9::<G>() {
+                    mode
+                } else {
+                    crate::gma::clamp_hdmi_dotclock(config.cpu, port, mode)
+                })
             },
             |port| sibling_has_edid(resources, config, port),
         );
@@ -203,22 +280,51 @@ impl GmaDisplayState {
             crate::gma::generation::g45::panel_backlight_off(mmio);
             crate::gma::generation::g45::panel_power_off(mmio);
         }
-        let mut new_configs = resolved?;
+        let mut new_configs = match resolved {
+            Ok(configs) => configs,
+            Err(GmaError::UnsupportedPort | GmaError::ModeUnavailable) if is_gen9::<G>() => {
+                [None; PIPE_COUNT]
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(mmio) = &mmio {
             self.apply_hpd_filter(mmio, &mut new_configs, now_us);
         }
 
+        let clock = gen9
+            .as_ref()
+            .filter(|_| is_gen9::<G>())
+            .zip(
+                new_configs
+                    .iter()
+                    .flatten()
+                    .map(|o| o.mode.pixel_clock_khz)
+                    .max(),
+            )
+            .map(|(mmio, peak)| skylake::Cdclk::for_outputs(mmio, peak).map(|clock| (mmio, clock)))
+            .transpose()?;
+        // All live pipes share CDCLK; unchanged pipes only need to come down
+        // if the common clock is about to change.
+        let switch_clock = clock.is_some_and(|(mmio, clock)| !clock.is_current(mmio));
         self.disable_changed_outputs::<G>(
             resources,
             config.cpu,
             &old_configs,
             &new_configs,
             mmio.as_ref(),
-        );
+            switch_clock,
+        )?;
+        if let Some((mmio, clock)) = clock {
+            clock.apply(mmio)?;
+        }
 
+        let mapped = if is_gen9::<G>() {
+            &old_configs
+        } else {
+            &self.current
+        };
         if let Some(output) = new_configs.iter().flatten().next()
-            && !self
-                .current
+            && !mapped
                 .iter()
                 .flatten()
                 .any(|current| current.surface == output.surface)
@@ -284,12 +390,19 @@ impl GmaDisplayState {
                             // Only the failed pipe's output is torn down; other
                             // outputs must survive.
                             if let Ok(pipe) = pipe_from_index(pipe_index) {
-                                disable_generation_output::<G>(
+                                let stopped = disable_generation_output::<G>(
                                     resources,
                                     config.cpu,
                                     pipe,
                                     new_config.port,
                                 );
+                                if is_gen9::<G>()
+                                    && let Err(error) = stopped
+                                {
+                                    // Nothing may reuse this pipe or change CDCLK until teardown succeeds.
+                                    self.current[pipe_index] = Some(new_config);
+                                    return Err(error);
+                                }
                             }
                         }
                     }
@@ -297,6 +410,15 @@ impl GmaDisplayState {
             }
         }
 
+        if is_gen9::<G>()
+            && let Some(mmio) = &gen9
+        {
+            skylake::release_unused_ports(
+                mmio,
+                requested_ports().chain(old_configs.iter().flatten().map(|o| o.port)),
+                self.current.iter().flatten().map(|o| o.port),
+            );
+        }
         if enabled_outputs == 0 {
             Err(last_error)
         } else {
@@ -519,7 +641,8 @@ impl GmaDisplayState {
         old_configs: &[Option<PipeOutputConfig>; PIPE_COUNT],
         new_configs: &[Option<PipeOutputConfig>; PIPE_COUNT],
         mmio: Option<&Mmio>,
-    ) {
+        switch_clock: bool,
+    ) -> Result<(), GmaError> {
         for pipe_index in 0..PIPE_COUNT {
             let Some(current) = old_configs[pipe_index] else {
                 continue;
@@ -527,13 +650,18 @@ impl GmaDisplayState {
             let unplug_detected = mmio
                 .and_then(|mmio| crate::gma::port_detect::hotplug_detect(mmio, current.port).ok())
                 .unwrap_or(false);
-            if unplug_detected
+            if switch_clock
+                || unplug_detected
                 || new_configs[pipe_index]
                     .map(|new| full_update(current, new))
                     .unwrap_or(true)
             {
                 if let Ok(pipe) = pipe_from_index(pipe_index) {
-                    disable_generation_output::<G>(resources, cpu, pipe, current.port);
+                    let stopped =
+                        disable_generation_output::<G>(resources, cpu, pipe, current.port);
+                    if is_gen9::<G>() {
+                        stopped?;
+                    }
                 }
                 self.current[pipe_index] = None;
                 if unplug_detected {
@@ -541,6 +669,7 @@ impl GmaDisplayState {
                 }
             }
         }
+        Ok(())
     }
 
     fn set_wait_for_hpd_at(&mut self, port: Port, now_us: u64) {
@@ -901,7 +1030,6 @@ mod tests {
             Cpu::PineviewM,
             Cpu::Gm965,
             Cpu::Haswell,
-            Cpu::Skylake,
             Cpu::Tigerlake,
         ] {
             let legacy_cpu = matches!(caps_for(cpu).generation, Generation::I945 | Generation::G45);
@@ -945,6 +1073,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn gen9_mirrors_two_connected_dp_and_hdmi_sinks_at_their_own_timings() {
+        let outputs = [Port::DpB, Port::DpC, Port::HdmiD].map(|port| OutputConfig {
+            port,
+            enabled: true,
+        });
+        let mut config = edid_config(Cpu::Kabylake, &outputs);
+        config.framebuffer.scaling = ScalingPolicy::PreserveAspect;
+        let planned = GmaDisplayState::new()
+            .resolve_for_cpu(
+                &resources(),
+                &config,
+                None,
+                |port| match port {
+                    Port::DpB => Err(GmaError::ModeUnavailable),
+                    Port::DpC => Ok(native_mode(1024, 768)),
+                    _ => Ok(native_mode(1920, 1080)),
+                },
+                |_| false,
+            )
+            .unwrap();
+        let a = planned[0].unwrap();
+        let b = planned[1].unwrap();
+        assert_eq!((a.port, b.port), (Port::DpC, Port::HdmiD));
+        assert_eq!(b.mode, native_mode(1920, 1080));
+        assert_eq!(a.surface, b.surface);
+        assert!(planned[2].is_none());
     }
 
     #[test]

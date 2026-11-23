@@ -1,9 +1,8 @@
 //! Skylake/Kabylake Intel GMA generation support.
 //!
 //! The shared DDI module owns the pure DPLL/DDI calculations. This module adds
-//! generation-local sequence expansion and register-executor scaffolding so the
-//! Skylake family has an executable modeset skeleton rather than only detached
-//! helper plans.
+//! generation-local DPLL sequencing and a native desktop DisplayPort path.
+//! HDMI sequence planning is not a complete HDMI modeset.
 
 #![allow(dead_code)]
 
@@ -17,7 +16,7 @@ use crate::gma::ddi::{
 };
 use crate::gma::error::GmaError;
 use crate::gma::generation::{GenerationOps, sealed};
-use crate::gma::gtt;
+mod scanout;
 use crate::gma::mmio::Mmio;
 use crate::gma::types::{Generation, Pipe, Port};
 
@@ -28,6 +27,32 @@ impl sealed::Sealed for Skylake {}
 
 impl GenerationOps for Skylake {
     const GENERATION: Generation = Generation::Skylake;
+
+    fn init_display(
+        ctx: &mut crate::gma::GmaContext<'_>,
+        mode: crate::gma::mode::Mode,
+    ) -> Result<(), GmaError> {
+        scanout::init(ctx, mode)
+    }
+
+    fn disable_output(
+        mmio: &Mmio,
+        _cpu: crate::gma::types::Cpu,
+        pipe: Pipe,
+        port: Port,
+    ) -> Result<(), GmaError> {
+        scanout::disable(mmio, pipe, port)
+    }
+}
+
+pub(crate) use scanout::{Cdclk, prepare_ports, release_unused_ports, supports_mode};
+
+pub(crate) fn prepare(
+    mmio: &Mmio,
+    ports: impl Iterator<Item = Port>,
+    vbt: Option<&[u8]>,
+) -> Result<(), GmaError> {
+    scanout::prepare(mmio, ports, vbt)
 }
 
 fn selected_port(ctx: &crate::gma::GmaContext<'_>) -> Result<Port, GmaError> {
@@ -40,12 +65,6 @@ fn ddi_pipe_for_port(port: Port) -> Pipe {
         Port::DpB | Port::HdmiB => Pipe::B,
         _ => Pipe::C,
     }
-}
-
-fn map_gtt(ctx: &crate::gma::GmaContext<'_>) -> Result<(), GmaError> {
-    gtt::map_surface_to_stolen(ctx.resources, ctx.config.cpu, &ctx.surface)?;
-    gtt::flush_gfx(&ctx.mmio());
-    Ok(())
 }
 
 /// Typed DPLL enable write derived from Skylake DPLL register metadata.
@@ -220,7 +239,7 @@ pub(crate) fn skl_dp_sequence_ops(params: SklDpInitParams) -> Result<SklDdiOps, 
 /// Execute register-affecting operations. Placeholders are intentionally no-ops.
 pub(crate) fn execute_skl_ddi_ops<S: SklDdiMmioSink>(
     sink: &mut S,
-    ops: &SklDdiOps,
+    ops: &[SklDdiOp],
 ) -> Result<(), GmaError> {
     for op in ops {
         match *op {

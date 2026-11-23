@@ -177,7 +177,7 @@ impl DdiPort {
             Port::Edp | Port::DpA | Port::HdmiA => Ok(Self::A),
             Port::DpB | Port::HdmiB => Ok(Self::B),
             Port::DpC | Port::HdmiC => Ok(Self::C),
-            Port::DpD => Ok(Self::D),
+            Port::DpD | Port::HdmiD => Ok(Self::D),
             Port::Lvds | Port::Vga => Err(GmaError::UnsupportedPort),
         }
     }
@@ -1118,7 +1118,7 @@ const fn bool_bit(condition: bool, bit: u32) -> u32 {
 /// DDI clock-routing mechanism used by a generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DdiClockRouting {
-    /// Per-DDI PORT_CLK_SEL register write used by Haswell/Broadwell and Skylake/Kabylake.
+    /// Per-DDI PORT_CLK_SEL register write used by Haswell.
     PortClkSel {
         /// Register write operation.
         op: DdiRegisterOp,
@@ -1860,7 +1860,7 @@ pub fn skl_routed_dp_plan(
             enhanced_framing,
         )?,
         pll: plan,
-        routing: DdiClockRouting::port_clk_sel(ddi, plan.register_value()),
+        routing: DdiClockRouting::dpll_ctrl2(ddi, plan.register_value())?,
     })
 }
 
@@ -2383,11 +2383,11 @@ mod tests {
         assert_eq!(dp.pll, SklDdiPllPlan::Fixed(SklPllSelect::Dpll0));
         assert_eq!(
             dp.routing,
-            DdiClockRouting::PortClkSel {
+            DdiClockRouting::DpllCtrl2 {
                 op: DdiRegisterOp {
-                    register: 0x46100,
-                    mask_unset: u32::MAX,
-                    mask_set: 0,
+                    register: 0x6c05c,
+                    mask_unset: (1 << 15) | (3 << 1),
+                    mask_set: 1,
                 }
             }
         );
@@ -2484,11 +2484,11 @@ mod tests {
         );
         assert_eq!(
             plan.routed.routing,
-            DdiClockRouting::PortClkSel {
+            DdiClockRouting::DpllCtrl2 {
                 op: DdiRegisterOp {
-                    register: 0x46108,
-                    mask_unset: u32::MAX,
-                    mask_set: 2,
+                    register: 0x6c05c,
+                    mask_unset: (1 << 17) | (3 << 7),
+                    mask_set: (2 << 7) | (1 << 6),
                 }
             }
         );

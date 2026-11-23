@@ -18,6 +18,7 @@ const VBT_SIGNATURE: &[u8; 4] = b"$VBT";
 const BDB_SIGNATURE: &[u8; 4] = b"BIOS";
 const BDB_GENERAL_FEATURES: u8 = 1;
 const BDB_GENERAL_DEFINITIONS: u8 = 2;
+const BDB_EDP: u8 = 27;
 const BDB_LVDS_OPTIONS: u8 = 40;
 const BDB_LVDS_LFP_DATA_PTRS: u8 = 41;
 const BDB_LVDS_LFP_DATA: u8 = 42;
@@ -281,6 +282,41 @@ impl<'a> Vbt<'a> {
     /// Find a BDB block by id.
     pub fn block(&self, id: u8) -> Option<BdbBlock<'a>> {
         self.blocks().find(|block| block.id == id)
+    }
+
+    /// Decode the selected panel's BDB 27 power sequence (100 us units),
+    /// color depth and standard/low-swing link setting. The trailing swing
+    /// nibbles were added in BDB version 173 and may be absent.
+    pub(crate) fn edp_policy(&self) -> Option<(crate::gma::panel::PanelPowerDelays, u8, bool)> {
+        let options = self.block(BDB_LVDS_OPTIONS)?;
+        let panel = usize::from(*options.data.first()?);
+        if panel >= 16 {
+            return None;
+        }
+        let block = self.block(BDB_EDP)?.data;
+        let seq = block.get(panel * 10..panel * 10 + 10)?;
+        let delay = |i| u32::from(u16::from_le_bytes([seq[i], seq[i + 1]])) * 100;
+        let depths = u32::from_le_bytes(block.get(160..164)?.try_into().ok()?);
+        let bpc = match (depths >> (panel * 2)) & 3 {
+            0 => 6,
+            1 => 8,
+            2 => 10,
+            _ => return None,
+        };
+        let low_swing = block
+            .get(204 + panel / 2)
+            .is_some_and(|byte| (byte >> (4 * (panel % 2))) & 0xf == 0);
+        Some((
+            crate::gma::panel::PanelPowerDelays {
+                power_up_us: delay(0),
+                power_up_to_backlight_on_us: delay(2),
+                backlight_off_to_power_down_us: delay(4),
+                power_down_us: delay(6),
+                power_cycle_us: delay(8),
+            },
+            bpc,
+            low_swing,
+        ))
     }
 
     /// Parse metadata from the BDB general definitions block.

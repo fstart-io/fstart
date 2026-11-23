@@ -353,13 +353,16 @@ pub const fn caps_for(cpu: Cpu) -> ScalerCaps {
             implemented: false,
             single_global_scaler: false,
         },
-        Cpu::Broxton | Cpu::Skylake | Cpu::Kabylake | Cpu::Tigerlake | Cpu::Alderlake => {
-            ScalerCaps {
-                kind: Some(ScalerKind::PipeScaler),
-                implemented: false,
-                single_global_scaler: false,
-            }
-        }
+        Cpu::Skylake | Cpu::Kabylake => ScalerCaps {
+            kind: Some(ScalerKind::PipeScaler),
+            implemented: true,
+            single_global_scaler: false,
+        },
+        Cpu::Broxton | Cpu::Tigerlake | Cpu::Alderlake => ScalerCaps {
+            kind: Some(ScalerKind::PipeScaler),
+            implemented: false,
+            single_global_scaler: false,
+        },
         Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => ScalerCaps {
             kind: Some(ScalerKind::GmchPanelFitterPreI965),
             implemented: true,
