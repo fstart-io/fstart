@@ -2,27 +2,43 @@
 //! The SoCs of the SP7 socket (WH I/O die + Qilian FCH): currently Venice
 //! ([`crate::venice`]).
 //!
-//! Early bring-up status (compiled and unit-tested offline; not yet booted on
+//! Feature-complete 1P SP7/Venice SoC support (compiled, unit-tested, and
+//! verified offline against a 64 MiB MD25-CG0 donor ROM; not yet booted on
 //! physical SP7 hardware):
-//! - Wired in the boot flow today: APOB V2 (`9/9`) memory map with dynamic
-//!   page-rounded APOB reservation, 1P dual-IOD DFv4.5 bus/MMIO/IO/VGA routing
-//!   broadcast across all live local IODs (`0x18`/`0x19`), WH NBIO IOHC TOM,
-//!   IOAPIC (64 KiB aligned inside `below_pools.non_pci`, 24-bridge INTx
-//!   routes) and PSP BAR (`iohc::map_psp` + C2P check), Qilian FCH takeover /
-//!   GPIO / PERST release, MPIO v2 (`DOORBELL_V2`) idle status probe, BSP
-//!   microcode, SMM in 16 MiB TSEG (reusing `rs::smm` and `psp::Variant::Gn`
-//!   pending WH SMM/PSP ABI verification), PCI ECAM scan, ACPI and SMBIOS.
-//! - Not yet wired into runtime bring-up: AP launch via `ccx::wh::enable_threads`
-//!   / APOB `3/3` (currently BSP-only, `threads() == 1`), SMU v14 (`smu::v14`)
-//!   boot messages, MPIO ASK/DELI lane training, IOMMU enablement + IVRS,
-//!   secondary-IOD FCH bring-up, multi-socket SP7, and Venice ISH A/B flash
-//!   image packing.
+//! - APOB V2 (`9/9` memory map, `9/0x13` NPS, `3/3` dual-IOD `CoreMapV2`,
+//!   `8/8` ECC + 32-byte DMI slots, `1/0x11` DDR5 SPD inventory, `7/6` ABL
+//!   event log) with dynamic page-rounded APOB reservation.
+//! - 1P dual-IOD DFv4.5 bus/MMIO/IO/VGA routing broadcast across all live local
+//!   IODs (`0x18`/`0x19`) and DRAM rule decoding (`F7x200` on CCM `0x25`/`0x24`).
+//! - WH NBIO: early bus + `SB_LOCATION`, IOHC TOM, 512 KiB IOMMU + L1/L2 init
+//!   and IVRS capture, 64 KiB-aligned IOAPIC with 24-bridge INTx routes, AER,
+//!   bridge visibility, and PSP BAR (`iohc::map_psp` + C2P responsiveness check).
+//! - Dual-IOD WH MPIO v2 (`dxio::wh`, `sp7::mpio`): Gen6 ASK/DELI lane
+//!   training, PERST release, and PSP-trained BMC VGA preservation.
+//! - Qilian FCH takeover, secondary-IOD FCH init, SMU USB init, GPIO, and
+//!   AST2700 Super I/O support.
+//! - Zen 6 / Zen 6c (`ccx::wh`): dual-IOD AP release up to 512 logical CPUs,
+//!   microcode loading (`0xb500`/`0xb50b`/`0xb510`/`0xbc00`), SMU v14 probe.
+//! - Dedicated SP7 SMM (`sp7::smm`) in 16 MiB TSEG with SMCA RAS storm control,
+//!   BMC SEL delivery, PSP P2C, and optional `EINJ` (`MP0_C2PMSG_31`).
+//! - Full ACPI (`SRAT`, `SLIT`, `MSCT`, `_PXM`, primary-thread-first `MADT`,
+//!   `IVRS`, `MCFG`, `HEST`, `BERT`, optional `EINJ`, `WSMT`, active WH `_PRT`)
+//!   and SMBIOS Type 16/17/19 from 16-channel DDR5 APOB inventory.
+//! - 64 MiB Venice ISH A/B dual-origin flash assembly (`fstart-image-build`).
+//! - Multi-socket (2P) SP7 remains future work.
 
 pub mod acpi;
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 mod init;
+pub mod links;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod mpio;
+pub mod numa;
+pub mod smm;
+#[cfg(all(feature = "bundle", target_os = "none"))]
+mod tables;
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub use init::Hw;
 
@@ -32,7 +48,10 @@ use crate::layout::{Layout, Region};
 use fstart_driver_amd::{
     ccx,
     df::{RootBridge, plan, v4},
-    fch::{gpio::Pad, qilian::Perst},
+    fch::{
+        gpio::Pad,
+        qilian::{self, Perst},
+    },
     nbio::wh as nbio_wh,
 };
 use heapless::Vec;
@@ -40,6 +59,9 @@ use heapless::Vec;
 /// ECAM: 256 buses at `0xE000_0000` on segment 0.
 pub const ECAM_BASE: u64 = 0xe000_0000;
 pub const ECAM_BUSES: u16 = 256;
+
+/// FCH IOAPIC ID (matches MADT and Qilian FCH defaults).
+pub const FCH_IOAPIC_ID: u8 = 0;
 
 /// TSEG at the top of DRAM below 4 GiB: 16 MiB fits up to 512 threads at
 /// 8 KiB per SMM stack (`4 MiB`) plus the handler image with headroom.
@@ -52,6 +74,8 @@ pub const IOS0_LOCAL_FABRIC_ID: u8 = 0x20;
 pub const IOAPIC_ALIGN: u64 = 0x1_0000;
 /// Size of an NBIO IOAPIC MMIO aperture (4 KiB).
 pub const IOAPIC_SIZE: u64 = 0x1000;
+/// Size and alignment of a WH IOMMU MMIO BAR (`rb % 4 < 2`, 512 KiB).
+pub const IOMMU_BAR_SIZE: u64 = nbio_wh::IOMMU_BAR_SIZE;
 /// Size and alignment of the PSP MMIO BAR within `below_pools.non_pci` (1 MiB).
 pub const PSP_BAR_SIZE: u64 = 0x10_0000;
 
@@ -61,6 +85,7 @@ pub const PSP_BAR_SIZE: u64 = 0x10_0000;
 pub struct Bars {
     pub ioapic: Option<u64>,
     pub iommu: Option<u64>,
+    pub secondary_fch: Option<u32>,
 }
 
 const fn align_up(addr: u64, align: u64) -> Option<u64> {
@@ -68,6 +93,32 @@ const fn align_up(addr: u64, align: u64) -> Option<u64> {
     match addr.checked_add(mask) {
         Some(v) => Some(v & !mask),
         None => None,
+    }
+}
+
+/// Decode a WH 8-bit DFv4.5 `DramAddressCtl.DstFabricID` into
+/// `(socket, cs_on_socket)` for UMC chip-selects (`local_cs < 8` per IOD).
+pub const fn decode_wh_dram_dst(dst: u16) -> Option<(u8, u16)> {
+    if dst > 0xff {
+        return None;
+    }
+    let raw = dst as u8;
+    let socket = (raw >> 7) & 1;
+    let die = (raw >> 6) & 1;
+    let local_cs = raw & 0x3f;
+    if local_cs >= 8 {
+        return None;
+    }
+    Some((socket, (die as u16) * 8 + (local_cs as u16)))
+}
+
+/// Normalize a per-IOD or socket-wide physical CCD ID on `die` (`0` or `1`)
+/// into the socket-wide physical CCD index (`0..8`) used by `WhGetPhysDomainOfCcd`.
+pub const fn socket_phys_ccd(die: u8, phys_ccd: u8) -> u8 {
+    if die == 1 && phys_ccd < 4 {
+        phys_ccd + 4
+    } else {
+        phys_ccd
     }
 }
 
@@ -142,12 +193,23 @@ pub fn resolve_wh_roots(
 }
 
 /// Carve non-PCI MMIO apertures strictly inside `non_pci` (`rb.below_pools.non_pci`):
+/// - IOMMU (on `rb_index % 4 < 2`): 512 KiB aligned (`IOMMU_BAR_SIZE`) below 4 GiB.
 /// - IOAPIC: 64 KiB aligned (`IOAPIC_ALIGN`), 4 KiB window.
 /// - PSP BAR (only on `rb_index == 0`, die 0 RB 0): 1 MiB aligned below 4 GiB.
-/// - IOMMU: deferred (`None`) until IVRS table generation is wired.
 pub fn place_bars(rb_index: u8, non_pci: plan::Window) -> Option<(Bars, Option<u32>)> {
     let end = non_pci.base.checked_add(non_pci.size)?;
     let mut cursor = non_pci.base;
+
+    let mut iommu = None;
+    if rb_index % nbio_wh::ROOT_BRIDGES_PER_IOD < nbio_wh::IOMMU_ROOT_BRIDGES_PER_IOD {
+        let iommu_base = align_up(cursor, IOMMU_BAR_SIZE)?;
+        let iommu_end = iommu_base.checked_add(IOMMU_BAR_SIZE)?;
+        if iommu_end > end || iommu_end > (1u64 << 32) {
+            return None;
+        }
+        iommu = Some(iommu_base);
+        cursor = iommu_end;
+    }
 
     let ioapic_base = align_up(cursor, IOAPIC_ALIGN)?;
     let ioapic_end = ioapic_base.checked_add(IOAPIC_SIZE)?;
@@ -166,10 +228,21 @@ pub fn place_bars(rb_index: u8, non_pci: plan::Window) -> Option<(Bars, Option<u
         psp_bar = Some(psp_base as u32);
     }
 
+    let mut secondary_fch = None;
+    if rb_index == nbio_wh::ROOT_BRIDGES_PER_IOD {
+        let fch_base = align_up(cursor, qilian::SECONDARY_ACPI_MMIO_ALIGN)?;
+        let fch_end = fch_base.checked_add(qilian::SECONDARY_ACPI_MMIO_SIZE)?;
+        if fch_end > end || fch_end > (1u64 << 32) {
+            return None;
+        }
+        secondary_fch = Some(fch_base as u32);
+    }
+
     Some((
         Bars {
             ioapic: Some(ioapic_base),
-            iommu: None,
+            iommu,
+            secondary_fch,
         },
         psp_bar,
     ))
@@ -223,12 +296,14 @@ pub struct Sp7<V>(PhantomData<V>);
 
 impl<V: Variant> ccx::microcode::Family for Sp7<V> {
     const SIGNATURES: &'static [u32] = V::SIGNATURES;
-    const MAX_PATCHES: usize = 2;
+    const MAX_PATCHES: usize = 4;
 }
 
 /// How the board configures MPIO and slot resets on SP7.
 #[derive(Debug, Clone)]
 pub struct Mpio {
+    /// Soldered board devices required to train and enumerate behind their port.
+    pub required: Vec<links::Soldered, 32>,
     /// PCIe slot resets released during link bring-up.
     pub perst: &'static [Perst],
     /// Links already trained by the PSP/ABL (first and last lane).
@@ -240,8 +315,16 @@ pub struct Mpio {
 pub struct Config {
     /// Early board GPIO pad table programmed before MPIO.
     pub gpio: &'static [Pad],
+    /// WH NBIO / IOMMU policy.
+    pub nbio: nbio_wh::Policy,
+    /// Zen 6 per-thread MSR / C-state / prefetcher policy.
+    pub ccx: ccx::wh::Policy,
     /// MPIO / PERST configuration.
     pub mpio: Mpio,
+    /// Qilian xHCI USB cold-boot configuration.
+    pub usb: qilian::usb::Policy,
+    /// First lane of the board's onboard display root port (`None`: first VGA).
+    pub display: Option<u8>,
     /// An LPC/eSPI Super I/O or legacy BMC console is present (FADT
     /// `IAPC_LEGACY_DEVICES`).
     pub legacy_devices: bool,
@@ -330,7 +413,17 @@ mod tests {
             assert!(ioapic + IOAPIC_SIZE <= rb.below_pools.non_pci.end());
             assert!(!overlaps(ioapic, IOAPIC_SIZE, rb.below_pools.prefetch));
             assert!(!overlaps(ioapic, IOAPIC_SIZE, rb.below_pools.non_prefetch));
-            assert!(bars.iommu.is_none());
+            if rb.index % nbio_wh::ROOT_BRIDGES_PER_IOD < nbio_wh::IOMMU_ROOT_BRIDGES_PER_IOD {
+                let iommu = bars.iommu.expect("IOMMU BAR on rb 0..=1");
+                assert_eq!(iommu % IOMMU_BAR_SIZE, 0);
+                assert!(
+                    iommu >= rb.below_pools.non_pci.base
+                        && iommu + IOMMU_BAR_SIZE <= rb.below_pools.non_pci.end()
+                );
+                assert!(ioapic >= iommu + IOMMU_BAR_SIZE);
+            } else {
+                assert!(bars.iommu.is_none());
+            }
             if rb.index == 0 {
                 let pbar = u64::from(psp.unwrap());
                 assert_eq!(pbar % PSP_BAR_SIZE, 0);
@@ -431,5 +524,27 @@ mod tests {
             psp_trained: false,
         };
         assert_eq!(full.width(), 256);
+    }
+    #[test]
+    fn decode_wh_dram_dst_maps_dual_iod_umc_fabric_ids() {
+        assert_eq!(decode_wh_dram_dst(0x00), Some((0, 0)));
+        assert_eq!(decode_wh_dram_dst(0x07), Some((0, 7)));
+        assert_eq!(decode_wh_dram_dst(0x40), Some((0, 8)));
+        assert_eq!(decode_wh_dram_dst(0x47), Some((0, 15)));
+        assert_eq!(decode_wh_dram_dst(0x80), Some((1, 0)));
+        assert_eq!(decode_wh_dram_dst(0xc7), Some((1, 15)));
+        // IOS / CCM fabric IDs (>= 8 local) and >8-bit IDs are rejected.
+        assert_eq!(decode_wh_dram_dst(0x20), None);
+        assert_eq!(decode_wh_dram_dst(0x100), None);
+    }
+
+    #[test]
+    fn socket_phys_ccd_normalizes_die1_local_and_global_ids() {
+        assert_eq!(socket_phys_ccd(0, 0), 0);
+        assert_eq!(socket_phys_ccd(0, 3), 3);
+        assert_eq!(socket_phys_ccd(1, 0), 4);
+        assert_eq!(socket_phys_ccd(1, 3), 7);
+        assert_eq!(socket_phys_ccd(1, 4), 4);
+        assert_eq!(socket_phys_ccd(1, 7), 7);
     }
 }

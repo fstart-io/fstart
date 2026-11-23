@@ -4,24 +4,22 @@
 //! | POST | Step |
 //! |---|---|
 //! | 20 | DFv4.5 bus routes, MMIO and I/O planning (broadcast to all live local IODs) |
-//! | 30 | WH NBIO (IOHC TOM, 64 KiB-aligned IOAPIC, 24-bridge INTx routes, PSP BAR), FCH |
-//! | 38 | WH PERST release & MPIO v2 (`DOORBELL_V2`) idle probe |
-//! | 3a | Chipset (no-op) |
-//! | 50 | BSP microcode (BSP-only MP) |
-//! | 58 | SMM in 16 MiB TSEG (`rs::smm`, `psp::Variant::Gn`) |
-//! | 60 | PCI enumeration |
-//! | 70 | ACPI, SMBIOS |
+//! | 30 | WH NBIO (early bus, IOHC TOM, 512 KiB IOMMU + L1/L2, IOAPIC, PSP BAR), Qilian FCH + secondary FCH |
+//! | 38 | Dual-IOD WH MPIO v2 ASK/DELI PCIe link training & PERST release |
+//! | 3a | Qilian SMU USB init |
+//! | 50 | Zen 6 / Zen 6c dual-IOD MP release, microcode, SMU v14 |
+//! | 58 | SP7 SMM in 16 MiB TSEG (`sp7::smm`), PSP registration, RAS/EINJ |
+//! | 60 | PCI enumeration & soldered/BMC VGA discovery |
+//! | 70 | ACPI (`SRAT`/`SLIT`/`MSCT`/`IVRS`/`HEST`/`BERT`/`EINJ`/`WSMT`), SMBIOS |
 
 extern crate alloc;
 
-use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
-    Bars, Config, ECAM_BASE, ECAM_BUSES, LaneDescriptor, Sp7, TSEG_SIZE, Variant, place_bars,
-    resolve_wh_roots,
+    Bars, Config, ECAM_BASE, ECAM_BUSES, FCH_IOAPIC_ID, LaneDescriptor, Sp7, TSEG_SIZE, Variant,
+    place_bars, resolve_wh_roots, socket_phys_ccd,
 };
-use crate::acpi::{Cpu, Ioapic, RootBridgeAcpi};
 use crate::flow::{Ctx, Mapped, Silicon as Up, Tables};
 use crate::layout::Region;
 use crate::soc::{Entered, Fabric, Init};
@@ -29,15 +27,19 @@ use fstart_arch::x86::cpu::msr::NativeMsr;
 use fstart_arch::x86::ioapic::IoApic;
 use fstart_arch::x86::mp::{CpuIdentity, MpHandle};
 use fstart_core::description::PciRootInfo;
-use fstart_driver_amd::apob::{smbios::dram_ranges, sysmap, v2::ApobV2};
+use fstart_driver_amd::apob::{
+    sysmap,
+    v2::{ApobV2, CoreMapV2},
+};
 use fstart_driver_amd::ccx::{self, mp::Fam17hCpu, tsc::Tsc, wh as cpu};
+use fstart_driver_amd::df::dram::Nps;
 use fstart_driver_amd::df::plan::RootBridgePlan;
 use fstart_driver_amd::df::{RootBridge, plan, v4, wh as df_wh};
-use fstart_driver_amd::dxio::rs::mailbox::{DOORBELL_V2, Encoding, Mailbox, Poll};
 use fstart_driver_amd::fch::{FchHw, Native, qilian};
 use fstart_driver_amd::nbio::{self, ioapic::nbio_ioapic_id, iohc, wh as nbio_wh};
 use fstart_driver_amd::psp::{self, C2pTransport};
 use fstart_driver_amd::smn::Smn;
+use fstart_driver_amd::smu::{self, SmuMessages, v14 as smu_v14};
 use fstart_pci::{ConfigRegionAccess, PciAddress, PciEcam, ecam::GlobalEcam};
 use heapless::Vec;
 use tock_registers::interfaces::Readable;
@@ -60,23 +62,11 @@ pub struct FlowState {
     pub apob: ApobV2<'static>,
 }
 
-/// Per-thread init policy for WH CPUs.
-#[derive(Clone, Copy)]
-pub struct WhThreads {
-    microcode: Option<ccx::microcode::Patch<'static>>,
-}
-
-fn wh_thread_init(policy: &WhThreads, msr: &NativeMsr) -> bool {
-    if let Some(patch) = &policy.microcode {
-        let load = ccx::microcode::Load::default();
-        // SAFETY: ring 0, caching on; patch lives in the verified identity-mapped FFS.
-        if unsafe { patch.apply(msr, patch.address(), CpuIdentity::current().signature, load) }
-            .is_err()
-        {
-            return false;
-        }
-    }
-    true
+/// PSP ACPI EINJ mailbox and command buffer discovered after `RasEinj::ENABLE`.
+#[derive(Debug, Clone, Copy)]
+struct Einj {
+    mailbox: u64,
+    buffer: u64,
 }
 
 /// What the silicon steps hand on.
@@ -85,15 +75,99 @@ pub struct State {
     roots: Vec<RootBridge, 8>,
     plan: plan::Plan,
     bars: [Bars; 8],
+    iommus: [Option<nbio::iommu::Iommu>; 8],
+    lanes: Vec<(u8, PciAddress, bool), 32>,
+    ccds: Vec<(u8, CoreMapV2), 2>,
+    launch: alloc::vec::Vec<cpu::Launch>,
+    apob_nps: Option<Nps>,
+    ecc_capable: bool,
     psp_bar: u32,
     psp: Option<psp::boot::Psp>,
+    einj: Option<Einj>,
 }
 
-/// FCH IOAPIC ID.
-const FCH_IOAPIC_ID: u8 = 0;
+impl State {
+    pub(crate) fn dies(&self) -> &[u8] {
+        &self.dies
+    }
+
+    pub(crate) fn roots(&self) -> &[RootBridge] {
+        &self.roots
+    }
+
+    pub(crate) fn bars(&self, rb_index: u8) -> Bars {
+        self.bars
+            .get(usize::from(rb_index))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn iommu(&self, rb_index: u8) -> Option<nbio::iommu::Iommu> {
+        self.iommus.get(usize::from(rb_index)).copied().flatten()
+    }
+
+    pub(crate) fn apob_nps(&self) -> Option<Nps> {
+        self.apob_nps
+    }
+
+    pub(crate) fn ecc_capable(&self) -> bool {
+        self.ecc_capable
+    }
+
+    /// `(socket, socket_phys_ccd)` for every logical CPU in MP order (BSP first,
+    /// then APs in launch order) for SRAT/SLIT NUMA domain assignment.
+    pub(crate) fn thread_ccds(&self) -> alloc::vec::Vec<(u8, u8)> {
+        let bsp = self.ccds.first().and_then(|(die, map)| {
+            map.ccds
+                .first()
+                .map(|ccd| (0u8, socket_phys_ccd(*die, ccd.id)))
+        });
+        bsp.into_iter()
+            .chain(
+                self.launch
+                    .iter()
+                    .map(|ap| (ap.socket, socket_phys_ccd(ap.die, ap.phys_ccd))),
+            )
+            .collect()
+    }
+
+    /// Root port BDF associated with socket-wide `lane` (if its link is up).
+    pub(crate) fn port(&self, lane: u8) -> Option<PciAddress> {
+        self.lanes
+            .iter()
+            .find(|&&(l, _, up)| l == lane && up)
+            .map(|&(_, port, _)| port)
+    }
+
+    /// Root PCI bus for SMN accesses targeting local IOD `die` (preferring RB 0
+    /// on that die, falling back to the lowest routed root bridge on that die).
+    pub(crate) fn die_bus(&self, die: u8) -> Option<u8> {
+        self.roots
+            .iter()
+            .filter(|rb| rb.index / nbio_wh::ROOT_BRIDGES_PER_IOD == die)
+            .min_by_key(|rb| rb.index)
+            .map(|rb| rb.bus_base)
+    }
+
+    /// SMU v14 mailbox handle routed through local IOD `die`'s primary root bus.
+    fn smu_on(&self, die: u8, clock: Tsc) -> smu::Smu<GlobalEcam, Tsc> {
+        let bus = self.die_bus(die).unwrap_or(0);
+        // SAFETY: BSP owns SMN on IOD `die`'s primary root bus during cold init.
+        smu::Smu::new(
+            unsafe { Smn::on_bus(GlobalEcam, bus) },
+            smu_v14::MAILBOX,
+            clock,
+            smu_v14::ID_LIMIT,
+        )
+    }
+
+    fn smu(&self, clock: Tsc) -> smu::Smu<GlobalEcam, Tsc> {
+        self.smu_on(0, clock)
+    }
+}
 
 /// WH NBIO IOAPIC ID for physical root bridge `rb`: `0xF1 + rb`.
-const fn ioapic_id(rb: u8) -> u8 {
+pub(super) const fn ioapic_id(rb: u8) -> u8 {
     nbio_ioapic_id(fstart_driver_amd::cpu::Silicon::Gn, rb)
 }
 
@@ -116,17 +190,6 @@ fn probe_local_dies() -> Vec<u8, 2> {
 static PSP_STORAGE_CLAIMED: AtomicBool = AtomicBool::new(false);
 static mut PSP_STORAGE: psp::Storage = psp::Storage::new();
 
-static ACPI_TABLES_CLAIMED: AtomicBool = AtomicBool::new(false);
-const ACPI_TABLE_CAPACITY: usize = 0x8_0000;
-#[repr(C, align(4096))]
-struct AcpiBuffer([u8; ACPI_TABLE_CAPACITY]);
-static mut ACPI_TABLES: AcpiBuffer = AcpiBuffer([0; ACPI_TABLE_CAPACITY]);
-
-static SMBIOS_TABLES_CLAIMED: AtomicBool = AtomicBool::new(false);
-#[repr(C, align(4096))]
-struct SmbiosBuffer([u8; fstart_acpi::smbios::BUFFER_SIZE]);
-static mut SMBIOS_TABLES: SmbiosBuffer = SmbiosBuffer([0; fstart_acpi::smbios::BUFFER_SIZE]);
-
 /// Open the PSP mailbox at `bar` at most once per boot (generic over `V` so
 /// error strings stay scoped to SP7 boards).
 fn psp_session<V: Variant>(bar: u32) -> Result<psp::boot::Psp, &'static str> {
@@ -147,7 +210,7 @@ fn psp_session<V: Variant>(bar: u32) -> Result<psp::boot::Psp, &'static str> {
 }
 
 /// SMM report shared between the SMM handler and normal mode.
-static mut SMM_REPORT: crate::rs::smm::Report = crate::rs::smm::Report::NONE;
+static mut SMM_REPORT: super::smm::Report = super::smm::Report::NONE;
 
 impl<V: Variant> Init for Sp7<V> {
     const NAME: &'static str = V::NAME;
@@ -161,7 +224,7 @@ impl<V: Variant> Init for Sp7<V> {
     type FchUp = State;
     type Trained = State;
     type Chipset = State;
-    type Cpu = Fam17hCpu<Self, WhThreads>;
+    type Cpu = Fam17hCpu<Self, cpu::Threads>;
     type State = State;
 
     fn enter(_: &Config, msr: &NativeMsr) -> Entered<Self> {
@@ -264,6 +327,7 @@ impl<V: Variant> Init for Sp7<V> {
             tom2: tops.1,
         };
         let mut bars = [Bars::default(); 8];
+        let mut iommus = [None; 8];
         let mut psp_bar: Option<u32> = None;
         for rb in &plan.root_bridges {
             let idx = usize::from(rb.index);
@@ -277,6 +341,18 @@ impl<V: Variant> Init for Sp7<V> {
             // SAFETY: root bridge bus is routed; BSP owns SMN during cold init.
             let nb = unsafe { nbio_wh::RootBridge::new(GlobalEcam, rb_on_iod, rb.bus.base) }
                 .ok_or("WH NBIO handle")?;
+            // Early NBIO bus number + SB_LOCATION setup (clears SB_LOCATION on
+            // non-primary root bridges so unclaimed config accesses do not hang).
+            nb.early(rb.primary);
+            if let Some(iommu_base) = rb_bars.iommu {
+                if nb.map_iommu(iommu_base as u32) {
+                    nb.iommu_init(config.nbio);
+                    // SAFETY: IOMMU BAR just mapped below 4 GiB, identity-mapped uncached.
+                    iommus[idx] = unsafe { nb.iommu(iommu_base as u32) };
+                } else {
+                    fstart_log::warn!("{}: RB{} IOMMU capability absent", V::NAME, rb.index);
+                }
+            }
             // Program NB TOP_OF_DRAM on every root bridge's IOHC.
             // SAFETY: D0F0x90 of this root bridge's host bridge.
             let slot1 = unsafe {
@@ -301,6 +377,18 @@ impl<V: Variant> Init for Sp7<V> {
             if let Some(pbar) = maybe_psp {
                 iohc::map_psp(&nb, pbar).map_err(|_| "PSP BAR")?;
                 psp_bar = Some(pbar);
+            }
+            // Relocate secondary Qilian FCH ACPI MMIO on IOD1 RB0 (`SMN 0x02D0_13D4`).
+            if let Some(sec_fch) = rb_bars.secondary_fch {
+                let iod = rb.index / nbio_wh::ROOT_BRIDGES_PER_IOD;
+                if qilian::init_secondary_fch(nb.smn(), iod, sec_fch) {
+                    fstart_log::info!(
+                        "{}: secondary Qilian FCH{} ACPI MMIO {:#x}",
+                        V::NAME,
+                        iod,
+                        sec_fch
+                    );
+                }
             }
             fstart_log::info!(
                 "{}: RB{} (iod {} rb {}) bus {:#x}-{:#x} mmio {:#x}+{:#x} non_pci {:#x}+{:#x}",
@@ -342,61 +430,118 @@ impl<V: Variant> Init for Sp7<V> {
             super::acpi::soc(V::PMBASE, false).ports,
         );
 
-        Ok(State {
+        // Parse APOB V2 core topology per live local IOD, NPS, and ECC capability.
+        // SAFETY: APOB V2 in DRAM was already validated and reserved in `map()`.
+        let apob = unsafe { ApobV2::from_address(V::APOB_BASE, V::APOB_MAX_SIZE as usize) }
+            .map_err(|_| "APOB V2")?;
+        let mut ccds: Vec<(u8, CoreMapV2), 2> = Vec::new();
+        for &die in &dies {
+            match apob.core_topology(0, die) {
+                Ok(map) => {
+                    fstart_log::info!(
+                        "{}: IOD{} topology: {} CCDs, {} threads",
+                        V::NAME,
+                        die,
+                        map.ccds.len(),
+                        map.threads()
+                    );
+                    let _ = ccds.push((die, map));
+                }
+                Err(_) if die == 0 => return Err("APOB V2 core topology"),
+                Err(_) => fstart_log::warn!("{}: IOD{} has no APOB V2 3/3 record", V::NAME, die),
+            }
+        }
+        let apob_nps = apob.actual_nps().ok();
+        let ecc_capable = apob.ecc_capable().unwrap_or(false);
+
+        let state = State {
             dies,
             roots,
             plan,
             bars,
+            iommus,
+            lanes: Vec::new(),
+            ccds,
+            launch: alloc::vec::Vec::new(),
+            apob_nps,
+            ecc_capable,
             psp_bar,
             psp: Some(psp),
-        })
+            einj: None,
+        };
+
+        // Probe SMU v14 mailbox on die 0.
+        step::<V>(0x31, "SMU v14");
+        let smu = state.smu(ctx.clock);
+        let mut test = [0xaa55_aa55, 0, 0, 0, 0, 0];
+        if smu.send(smu::TEST, &mut test).is_err() {
+            fstart_log::warn!("{}: SMU v14 test failed", V::NAME);
+        } else {
+            let mut version = [0; 6];
+            if smu.send(0x02, &mut version).is_ok() {
+                fstart_log::info!("{}: SMU v14 firmware {:#x}", V::NAME, version[0]);
+            }
+        }
+
+        Ok(state)
     }
 
     fn train_dxio(
         ctx: &Ctx<'_, Self>,
-        state: State,
+        mut state: State,
         lanes: &[LaneDescriptor],
     ) -> Result<State, &'static str> {
-        step::<V>(0x38, "WH PERST & MPIO v2 idle probe");
-        // Release board PCIe slot PERST# pads via Qilian FCH GPIO.
-        if !qilian::release_perst(&ctx.hw.fch, ctx.config.mpio.perst) {
-            return Err("PERST release");
-        }
-        // Probe WH MPIO mailbox v2 (`DOORBELL_V2 = 0x0C91_0954`) readiness on bus 0
-        // (no ASK/DELI lane-training payload is sent in this bring-up step).
-        // SAFETY: BSP owns SMN on bus 0 during cold init.
-        let smn = unsafe { Smn::on_bus(GlobalEcam, 0) };
-        let poll = Poll {
-            reads: const { NonZeroU32::new(1000).unwrap() },
-            interval_us: const { NonZeroU32::new(100).unwrap() },
-        };
-        // SAFETY: BSP owns MPIO mailbox on bus 0.
-        let mut mpio = unsafe { Mailbox::new_with_doorbell(poll, Encoding::LowByte, DOORBELL_V2) };
-        match mpio.wait_idle(&smn, &ctx.clock, const { NonZeroU32::new(100).unwrap() }) {
-            Ok(()) => fstart_log::info!(
-                "{}: MPIO v2 mailbox idle ({} board lane descriptors; training deferred)",
-                V::NAME,
-                lanes.len()
-            ),
-            Err(_) => fstart_log::warn!(
-                "{}: MPIO v2 mailbox busy/unavailable during early bring-up; continuing with PSP-trained links",
-                V::NAME
-            ),
-        }
+        step::<V>(0x38, "WH MPIO v2");
+        let trained = super::mpio::train(ctx, &state, lanes)?;
+        state.lanes = trained.lanes;
         Ok(state)
     }
 
-    fn init_chipset(_ctx: &Ctx<'_, Self>, state: State, (): ()) -> Result<State, &'static str> {
-        step::<V>(0x3a, "Chipset (no-op)");
+    fn init_chipset(ctx: &Ctx<'_, Self>, state: State, (): ()) -> Result<State, &'static str> {
+        step::<V>(0x3a, "Qilian USB");
+        for &die in &state.dies {
+            let Some(bus) = state.die_bus(die) else {
+                continue;
+            };
+            let smu = state.smu_on(die, ctx.clock);
+            // SAFETY: BSP owns SMN on IOD `die`'s root bus during cold init.
+            let smn = unsafe { Smn::on_bus(GlobalEcam, bus) };
+            match qilian::usb::ColdBoot::new(&ctx.config.usb)
+                .and_then(|mut usb| usb.run(&smn, &smu))
+            {
+                Ok(()) => fstart_log::info!("{}: Qilian IOD{} xHCI initialized", V::NAME, die),
+                Err(_) => fstart_log::warn!(
+                    "{}: Qilian IOD{} xHCI SMU init skipped/rejected",
+                    V::NAME,
+                    die
+                ),
+            }
+        }
         Ok(state)
     }
 
     fn cpu_driver(
-        _ctx: &Ctx<'_, Self>,
-        _state: &mut State,
+        ctx: &Ctx<'_, Self>,
+        state: &mut State,
         microcode: Option<&'static [u8]>,
     ) -> Result<Self::Cpu, &'static str> {
-        step::<V>(0x50, "BSP microcode (BSP-only MP)");
+        step::<V>(0x50, "Zen 6 MP");
+        state.launch.clear();
+        for (die, map) in &state.ccds {
+            let die_aps =
+                cpu::launch_order::<{ cpu::MAX_THREADS_PER_DIE }>(0, *die, map, *die == 0)
+                    .map_err(|_| "WH CPU topology")?;
+            state.launch.extend_from_slice(&die_aps);
+        }
+        fstart_log::info!(
+            "{}: {} ({:#x}), {} threads ({} APs across {} dies)",
+            V::NAME,
+            ctx.hw.revision.name(),
+            ctx.hw.revision.signature,
+            1 + state.launch.len(),
+            state.launch.len(),
+            state.ccds.len()
+        );
         let signature = CpuIdentity::current().signature;
         let patch = microcode.and_then(|bytes| {
             ccx::microcode::Bundle::<Self>::parse(bytes)
@@ -410,22 +555,51 @@ impl<V: Variant> Init for Sp7<V> {
         }
         Ok(Fam17hCpu::multi_socket(
             V::NAME,
-            WhThreads { microcode: patch },
-            wh_thread_init,
+            cpu::Threads {
+                revision: ctx.hw.revision,
+                policy: ctx.config.ccx,
+                microcode: patch,
+            },
+            cpu::thread_init,
         ))
     }
 
-    fn threads(_: &Ctx<'_, Self>, _: &State) -> Result<u16, &'static str> {
-        // Early bring-up defaults safely to BSP-only until APOB V2 3/3 dynamic
-        // CCD/core enumeration and WH ThreadEnable AP launch are validated on hardware.
-        Ok(1)
+    fn threads(_: &Ctx<'_, Self>, state: &State) -> Result<u16, &'static str> {
+        u16::try_from(1 + state.launch.len()).map_err(|_| "WH thread count")
     }
 
-    fn release_aps(_: &Ctx<'_, Self>, _: &State, aps: u16) -> Result<(), u32> {
-        if aps == 0 {
-            return Ok(());
+    /// Release one AP at a time through its owning IOD's SMN `ThreadEnable`
+    /// register pair, waiting up to 50 ms for each AP to check in.
+    fn release_aps(ctx: &Ctx<'_, Self>, state: &State, aps: u16) -> Result<(), u32> {
+        if usize::from(aps) != state.launch.len() {
+            return Err(0);
         }
-        Err(0)
+        for (i, &ap) in state.launch.iter().enumerate() {
+            let index = i as u32 + 1;
+            let Some(bus) = state.die_bus(ap.die) else {
+                fstart_log::error!("{}: no root bus for AP {} on IOD{}", V::NAME, index, ap.die);
+                return Err(index);
+            };
+            // SAFETY: BSP owns SMN on IOD `ap.die`'s root bus during MP bring-up.
+            let smn = unsafe { Smn::on_bus(GlobalEcam, bus) };
+            if !cpu::release(&smn, ctx.hw.revision, ap) {
+                return Err(index);
+            }
+            if !fstart_arch::x86::wait_us(50_000, || {
+                u32::from(fstart_arch::x86::mp::ap_checkins()) >= index
+            }) {
+                fstart_log::error!(
+                    "{}: AP {} on IOD{} CCD {} bit {} did not check in",
+                    V::NAME,
+                    index,
+                    ap.die,
+                    ap.phys_ccd,
+                    ap.bit
+                );
+                return Err(index);
+            }
+        }
+        Ok(())
     }
 
     fn cpu_errors(cpu: &Self::Cpu) -> u32 {
@@ -448,6 +622,10 @@ impl<V: Variant> Init for Sp7<V> {
         }
     }
 
+    fn display_port(ctx: &Ctx<'_, Self>, state: &State, _: &PciEcam) -> Option<PciAddress> {
+        state.port(ctx.config.display?)
+    }
+
     fn route_legacy_vga(_: &Ctx<'_, Self>, state: &State, root: &RootBridgePlan) {
         // Broadcast VGA routing to every live local DF node (`0x18`, `0x19`).
         for &die in &state.dies {
@@ -458,11 +636,51 @@ impl<V: Variant> Init for Sp7<V> {
         }
     }
 
-    fn after_resources(_: &Ctx<'_, Self>, _: &mut State) -> Result<(), &'static str> {
+    /// Program TxRequester IDs on every visible PCIe root port so port MSIs
+    /// reach the WH IOMMUs with their real PCI requester identity.
+    fn after_resources(_: &Ctx<'_, Self>, state: &mut State) -> Result<(), &'static str> {
+        for rb in &state.roots {
+            let rb_on_iod = rb.index % nbio_wh::ROOT_BRIDGES_PER_IOD;
+            // SAFETY: routed root bridge, BSP owns SMN.
+            let Some(nb) =
+                (unsafe { nbio_wh::RootBridge::new(GlobalEcam, rb_on_iod, rb.bus_base) })
+            else {
+                continue;
+            };
+            for slot in 0..usize::from(nbio_wh::PCIE_BRIDGES_PER_RB) {
+                let (dev, func) = nb.bridge_devfn(slot);
+                if dev == 0 && func == 0 {
+                    continue;
+                }
+                if fstart_pci::EcamDevice::new(rb.bus_base, dev, func).is_present() {
+                    let devfn = (dev << 3) | (func & 7);
+                    let core = (slot / 9) as u8;
+                    let port = (slot % 9) as u8;
+                    nb.set_requester(core, port, rb.bus_base, devfn);
+                }
+            }
+        }
         Ok(())
     }
 
-    fn ready_to_boot(_: &Ctx<'_, Self>, _: &mut State, _: &PciEcam) -> Result<(), &'static str> {
+    fn ready_to_boot(
+        ctx: &Ctx<'_, Self>,
+        state: &mut State,
+        pci: &PciEcam,
+    ) -> Result<(), &'static str> {
+        for soldered in &ctx.config.mpio.required {
+            if !state
+                .port(soldered.lane)
+                .is_some_and(|port| soldered.behind.found(pci, port))
+            {
+                fstart_log::error!(
+                    "{}: lane {}: expected soldered device absent behind root port",
+                    V::NAME,
+                    soldered.lane
+                );
+                return Err("WH MPIO endpoints");
+            }
+        }
         Ok(())
     }
 
@@ -554,9 +772,9 @@ impl<V: Variant> crate::flow::Soc for Sp7<V> {
         ctx: &Ctx<'_, Self>,
         state: &mut State,
         mp: &MpHandle,
-        _: &FlowState,
+        flow: &FlowState,
     ) -> Result<(), &'static str> {
-        use crate::rs::smm::{Config as SmmConfig, Smi};
+        use super::smm::{Config as SmmConfig, Smi};
         use fstart_driver_amd::fch::smi;
         step::<V>(0x58, "SMM");
         if state.psp_bar == 0 {
@@ -575,14 +793,28 @@ impl<V: Variant> crate::flow::Soc for Sp7<V> {
         };
         crate::tseg::install(V::NAME, mp, &smi, ctx.memory.tseg, TSEG_SIZE)?;
         smi::software_smi(fch.io(), crate::smm::sw::PSP_SMM_INFO);
-        let (smm_info, _) = crate::smm::status::answers(
+        // SAFETY: reserved DRAM report written only by the SP7 SMM handler.
+        let (smm_info, einj_status) = crate::smm::status::answers(
             &ctx.clock,
-            false,
+            ctx.config.einj,
             || unsafe { fstart_core::mmio::read32(&raw const (*report).smm_info) },
             || unsafe { fstart_core::mmio::read32(&raw const (*report).einj) },
         );
         // Require PSP SmmInfo before DF lock / OS handoff.
         crate::smm::status::smm_info(V::NAME, smm_info)?;
+        // EINJ is optional: if the PSP declines or has no hole, boot continues without EINJ.
+        let Some(einj_status) = einj_status else {
+            return Ok(());
+        };
+        match einj_status {
+            0 => {
+                fstart_log::info!("{}: PSP RasEinj ENABLE status 0", V::NAME);
+                state.einj = einj::<V>(ctx, state.psp_bar.into(), flow)
+                    .inspect_err(|what| fstart_log::error!("{}: no EINJ: {}", V::NAME, what))
+                    .ok();
+            }
+            status => fstart_log::error!("{}: PSP RasEinj ENABLE status {:#x}", V::NAME, status),
+        }
         Ok(())
     }
 
@@ -595,9 +827,17 @@ impl<V: Variant> crate::flow::Soc for Sp7<V> {
         board: crate::acpi::Board,
     ) -> Tables {
         step::<V>(0x70, "ACPI, SMBIOS");
+        if let Some(einj) = silicon.state.einj {
+            silicon.tables.push(fstart_acpi::einj::table(
+                fstart_acpi::OEM_ID,
+                fstart_acpi::OEM_TABLE_ID,
+                fstart_acpi::OEM_REVISION,
+                &psp::einj::entries(einj.mailbox, einj.buffer),
+            ));
+        }
         let soc = super::acpi::soc(V::PMBASE, ctx.config.legacy_devices);
-        let rsdp = build_acpi::<V>(ctx, silicon, pci, &soc, &board);
-        let smbios = build_smbios::<V>(ctx, silicon, pci, flow, identity);
+        let rsdp = super::tables::acpi::<V>(ctx, silicon, pci, flow, &soc, &board);
+        let smbios = super::tables::smbios::<V>(ctx, silicon, pci, flow, identity);
         Tables {
             rsdp,
             smbios,
@@ -616,179 +856,48 @@ impl<V: Variant> crate::flow::Soc for Sp7<V> {
     }
 }
 
-fn build_acpi<V: Variant>(
+/// Query `MP0_C2PMSG_31` for the PSP's EINJ command buffer inside the ABL's
+/// `ReservedRasEinj` hole and lay out the trigger action table and DF vendor
+/// descriptor (matching Venice `AmdPlatformRasWhDxe::ApeiEinjInstall`).
+fn einj<V: Variant>(
     ctx: &Ctx<'_, Sp7<V>>,
-    silicon: &Up<Sp7<V>>,
-    pci: &PciEcam,
-    soc: &crate::acpi::SocAcpi,
-    board: &crate::acpi::Board,
-) -> Option<u64> {
-    if ACPI_TABLES_CLAIMED.swap(true, Ordering::AcqRel) {
-        return None;
-    }
-
-    let state = &silicon.state;
-    // Match enumerated PCI roots to DF root bridges by `bus_base`, never blind `.zip()`.
-    let mut root_bridges: alloc::vec::Vec<RootBridgeAcpi<'_>> = alloc::vec::Vec::new();
-    for root in pci.roots() {
-        let bus_base = root.info().bus_start;
-        let Some(rb) = state.roots.iter().find(|rb| rb.bus_base == bus_base) else {
-            continue;
-        };
-        let bars = state.bars[usize::from(rb.index)];
-        let rb_on_iod = rb.index % nbio_wh::ROOT_BRIDGES_PER_IOD;
-        // Validate IOAPIC ID and redirection pin count before publishing MADT entry.
-        let ioapic = bars.ioapic.and_then(|base| {
-            let expected_id = ioapic_id(rb.index);
-            // SAFETY: IOAPIC MMIO mapped by `init_fch` and identity-mapped uncached.
-            let dev = unsafe { IoApic::new(base as usize) };
-            let pins = dev.redirection_entries();
-            if expected_id != u8::MAX && dev.id() == expected_id && (1..=256).contains(&pins) {
-                Some(Ioapic {
-                    id: expected_id,
-                    base,
-                })
-            } else {
-                fstart_log::warn!(
-                    "{}: skipping invalid IOAPIC on RB{} (id {:#x}, pins {})",
-                    V::NAME,
-                    rb.index,
-                    dev.id(),
-                    pins
-                );
-                None
-            }
-        });
-        root_bridges.push(RootBridgeAcpi {
-            root,
-            fch: rb.primary,
-            domain: None,
-            ioapic,
-            ioapic_features: nbio::ioapic::IOAPIC_FEATURES_ENABLE.address()
-                + (u32::from(rb_on_iod) * nbio_wh::RB_SMN_STRIDE),
-            iommu: None,
-        });
-    }
-
-    // Read active WH IOHC DevFn assignments from the primary root bridge so
-    // `_PRT` reflects programmed bridge addresses instead of assuming RS defaults.
-    let active_bridges = state
-        .roots
-        .iter()
-        .find(|rb| rb.primary)
-        .and_then(|primary| {
-            let rb_on_iod = primary.index % nbio_wh::ROOT_BRIDGES_PER_IOD;
-            // SAFETY: primary root bridge bus is routed and BSP owns SMN.
-            let nb = unsafe { nbio_wh::RootBridge::new(GlobalEcam, rb_on_iod, primary.bus_base) }?;
-            let devfns = core::array::from_fn(|slot| nb.bridge_devfn(slot));
-            let all_zero = devfns.iter().all(|&(d, f)| d == 0 && f == 0);
-            (!all_zero).then(|| super::acpi::bridges_from_devfns(devfns))
-        });
-    static mut ACTIVE_BRIDGES: [crate::acpi::prt::Bridge; super::acpi::BRIDGES.len()] =
-        super::acpi::BRIDGES;
-    let mut effective_soc = *soc;
-    if let Some(bridges) = active_bridges {
-        // SAFETY: guarded by `ACPI_TABLES_CLAIMED`, written at most once before
-        // immutable borrow for the remainder of `build_acpi`.
-        unsafe {
-            let dst = core::ptr::addr_of_mut!(ACTIVE_BRIDGES);
-            (*dst) = bridges;
-            effective_soc.bridges = &*dst;
-        }
-    }
-
-    let cpus: alloc::vec::Vec<Cpu> = silicon
-        .cpus
-        .apic_ids
-        .iter()
-        .map(|&apic_id| Cpu {
-            apic_id,
-            domain: 0,
-            aml: alloc::vec::Vec::new(),
-        })
-        .collect();
-
-    // SAFETY: BSP reading architectural C-state MSRs.
-    let msr = unsafe { NativeMsr::new() };
-    let fch = &ctx.hw.fch;
-    let mut sb_aml = fstart_driver_amd::fch::aml::FchAcpi::read(fch.mmio(), fch.io())
-        .sb_aml()
-        .unwrap_or_default();
-    sb_aml.extend_from_slice(&silicon.aml);
-
-    // SAFETY: guarded by `ACPI_TABLES_CLAIMED`, exclusively borrowed once per boot.
-    let storage = unsafe { &mut (*core::ptr::addr_of_mut!(ACPI_TABLES)).0 };
-    crate::acpi::install(
-        &crate::acpi::Soc {
-            soc: &effective_soc,
-            pci: <Sp7<V> as Init>::pci_segment(ctx.hw),
-            cpus: &cpus,
-            fch_ioapic_id: FCH_IOAPIC_ID,
-            root_bridges: &root_bridges,
-            numa: None,
-            cstates: ccx::power::cstate_info(&msr),
-            threads_per_core: ccx::Thread::current().threads_per_core(),
-            devices: &silicon.devices,
-            ivrs_devices: &[],
-            sb_aml: &sb_aml,
-            tables: &silicon.tables,
-            abl: &[],
-        },
-        None,
-        ctx.board,
-        board,
-        storage,
-    )
-    .inspect_err(|_| fstart_log::error!("{}: ACPI tables do not fit", V::NAME))
-    .ok()
-}
-
-fn build_smbios<V: Variant>(
-    ctx: &Ctx<'_, Sp7<V>>,
-    silicon: &Up<Sp7<V>>,
-    pci: &PciEcam,
+    bar: u64,
     flow: &FlowState,
-    identity: &crate::acpi::SmbiosIdentity<'_>,
-) -> Option<u64> {
-    if SMBIOS_TABLES_CLAIMED.swap(true, Ordering::AcqRel) {
-        return None;
-    }
-
-    let regions = flow
+) -> Result<Einj, &'static str> {
+    use fstart_driver_amd::apob::rs::HOLE_RAS_EINJ;
+    use psp::einj::{Buffer, ERROR_TYPES, MAILBOX_OFFSET, Mailbox};
+    let map = flow
         .apob
         .system_memory_map()
-        .ok()
-        .and_then(|map| {
-            sysmap::memory_map(psp::Variant::Gn, map.top, map.holes().iter().copied()).ok()
-        })
-        .map(|regions| dram_ranges(&regions))
-        .unwrap_or_default();
-    let smt = ccx::Thread::current().threads_per_core() > 1;
-    // SAFETY: guarded by `SMBIOS_TABLES_CLAIMED`, exclusively borrowed once per boot.
-    let storage = unsafe { &mut (*core::ptr::addr_of_mut!(SMBIOS_TABLES)).0 };
-    let address = storage.as_ptr() as u64;
-    crate::smbios::build_with(
-        storage,
-        &crate::smbios::System {
-            soc: &crate::smbios::SocSmbios {
-                // SMBIOS 3.x has no dedicated code for SP7 yet.
-                socket_upgrade: 0x02,
-                max_dimm_mib: ctx.config.max_dimm_mib,
-                channels_per_die: 16,
-            },
-            identity,
-            rom_size: V::ROM_SIZE,
-            apob: None,
-            regions: &regions,
-            cpus: &silicon.cpus,
-            pci,
-            bridges: &super::acpi::BRIDGES,
-            ports: &[],
-        },
-        |apic_id| (0, apic_id >> u32::from(smt)),
-        || (alloc::vec::Vec::new(), false),
-    )
-    .inspect_err(|what| fstart_log::error!("{}: SMBIOS: {}", V::NAME, what))
-    .ok()
-    .map(|_| address)
+        .map_err(|_| "APOB V2 sysmap")?;
+    let hole = sysmap::memory_map(psp::Variant::Gn, map.top, map.holes().iter().copied())
+        .map_err(|_| "memory map")?
+        .into_iter()
+        .find(|r| r.kind == sysmap::RegionKind::Unknown(HOLE_RAS_EINJ))
+        .ok_or("no ReservedRasEinj hole")?;
+    // SAFETY: die 0 RB 0 PSP BAR mapped by `init_fch`; BSP owns the RAS mailbox before OS boot.
+    let mailbox = unsafe { Mailbox::mmio(bar) };
+    let base = mailbox
+        .buffer(&ctx.clock, &(hole.base..hole.end()))
+        .map_err(|_| "PSP EINJ buffer")?;
+    // SAFETY: PSP command buffer inside the reserved ABL hole, identity mapped.
+    let buffer = unsafe { Buffer::at(base) };
+    let trigger = fstart_acpi::einj::trigger(&[psp::einj::trigger(base)]);
+    let types = buffer.prepare(&trigger).map_err(|_| "EINJ trigger table")?;
+    if types.is_set(ERROR_TYPES::VENDOR) {
+        let df = fstart_pci::EcamDevice::new(0, 0x18, 0).read32(0);
+        buffer.describe_vendor_device(0x18, 0, df);
+    }
+    // SAFETY: ring 0, caches enabled; flush buffer for PSP DRAM reads.
+    unsafe { fstart_arch::x86::writeback_invalidate_caches() };
+    fstart_log::info!(
+        "{}: PSP EINJ buffer {:#x}, error types {:#x}",
+        V::NAME,
+        base,
+        types.get()
+    );
+    Ok(Einj {
+        mailbox: bar + MAILBOX_OFFSET,
+        buffer: base,
+    })
 }

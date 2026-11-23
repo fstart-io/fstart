@@ -11,8 +11,9 @@ pub enum Wh {}
 /// verified from SP7 `F01` BIOS directory entry `0x62`).
 const EARLY: u64 = 0x6e00_0000;
 const IMAGE: Region = Region::new(0x7000_0000, 0x30_0000);
-/// Top 16 MiB ROM2 window below 4 GiB (the host image is build-only until
-/// Venice ISH A/B dual-origin flash assembly is implemented).
+/// Top 16 MiB ROM2 window below 4 GiB (Bank 0 of the 64 MiB SPI flash,
+/// `bios_origin = 0`, carrying the FFS and x86 reset image; the ISH A/B
+/// PSP partition lives in Bank 1 at `image_origin = 0x0100_0000`).
 const FLASH: Region = Region::new(0xff00_0000, 0x100_0000);
 /// Reserved lower half of the 16 MiB ROM2 window for FFS media layout.
 pub const PSP_PARTITION_END: u32 = 0x80_0000;
@@ -40,8 +41,9 @@ pub const LAYOUT: Layout = Layout {
 
 impl crate::sp7::Variant for Wh {
     const NAME: &'static str = "venice";
-    /// Family 1Ah WH CPUID signatures observed in Venice firmware (`0x00B5_0F00`, `0x00BC_0F00`).
-    const SIGNATURES: &'static [u32] = &[0x00b5_0f00, 0x00bc_0f00];
+    /// Family 1Ah WH CPUID signatures observed in Venice firmware (`0x00B5_0F00` A0,
+    /// `0x00B5_0F10` B0, `0x00BC_0F00` Zen 6c).
+    const SIGNATURES: &'static [u32] = &[0x00b5_0f00, 0x00b5_0f10, 0x00bc_0f00];
     const LAYOUT: Layout = LAYOUT;
     /// Base physical address where the PSP writes the APOB V2 (BIOS `0x61`).
     const APOB_BASE: u64 = 0x7700_0000;

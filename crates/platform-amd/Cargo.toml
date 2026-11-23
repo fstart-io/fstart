@@ -1444,3 +1444,327 @@ fstart-arch = { workspace = true, features = ["x86_64", "testing"] }
 
 [lints]
 workspace = true
+
+# Venice's (SP7 / WH) AMD firmware: 64 MiB ISH A/B dual-origin layout
+# (Bank 0 bios-origin 0x0 carries FFS + x86 reset image; Bank 1 image-origin
+# 0x01000000 carries EFS -> $PSP L1 -> ISH A/B -> $PL2 -> 0x49 -> $BL2).
+[package.metadata.fstart.amd.venice]
+bios-directory = "Family19h"
+levels = 2
+generation-mask = 3
+ish = true
+image-origin = 0x01000000
+bios-origin = 0x0
+psp-id = 0xbf000000
+efs-offset = 0x01020000
+partition-end = 0x02000000
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x00
+file = "venice/PSP/type_00_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x01
+file = "venice/PSP/type_01_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x02
+file = "venice/PSP/type_02_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x08
+file = "venice/PSP/type_08_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x08
+subprogram = 1
+file = "venice/PSP/type_08_1_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x08
+subprogram = 2
+file = "venice/PSP/type_08_2_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x08
+subprogram = 3
+file = "venice/PSP/type_08_3_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x0b
+value = 0x1
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x15
+file = "venice/PSP/type_15_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x1a
+file = "venice/PSP/type_1a_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x1b
+file = "venice/PSP/type_1b_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x1c
+file = "venice/PSP/type_1c_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x1d
+file = "venice/PSP/type_1d_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x1f
+file = "venice/PSP/type_1f_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x21
+file = "venice/PSP/type_21_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x24
+file = "venice/PSP/type_24_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x24
+subprogram = 1
+file = "venice/PSP/type_24_1_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x24
+subprogram = 2
+file = "venice/PSP/type_24_2_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x24
+subprogram = 3
+file = "venice/PSP/type_24_3_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x28
+file = "venice/PSP/type_28_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x2a
+file = "venice/PSP/type_2a_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x2a
+subprogram = 1
+file = "venice/PSP/type_2a_1_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x2a
+subprogram = 2
+file = "venice/PSP/type_2a_2_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x2a
+subprogram = 3
+file = "venice/PSP/type_2a_3_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x2d
+file = "venice/PSP/type_2d_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x30
+file = "venice/PSP/type_30_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x37
+file = "venice/PSP/type_37_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x38
+erased = 0x8000
+writable = true
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x42
+file = "venice/PSP/type_42_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x45
+file = "venice/PSP/type_45_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x45
+subprogram = 1
+file = "venice/PSP/type_45_1_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x45
+subprogram = 2
+file = "venice/PSP/type_45_2_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x45
+subprogram = 3
+file = "venice/PSP/type_45_3_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x47
+file = "venice/PSP/type_47_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x50
+file = "venice/PSP/type_50_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x55
+file = "venice/PSP/type_55_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x5d
+file = "venice/PSP/type_5d_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x64
+file = "venice/PSP/type_64_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x65
+file = "venice/PSP/type_65_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x67
+file = "venice/PSP/type_67_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x68
+file = "venice/PSP/type_68_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x69
+file = "venice/PSP/type_69_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x6a
+file = "venice/PSP/type_6a_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x6b
+file = "venice/PSP/type_6b_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x6c
+file = "venice/PSP/type_6c_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x76
+file = "venice/PSP/type_76_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x77
+file = "venice/PSP/type_77_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x8c
+file = "venice/PSP/type_8c_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x92
+file = "venice/PSP/type_92_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x9d
+file = "venice/PSP/type_9d_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0x9f
+file = "venice/PSP/type_9f_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xa0
+file = "venice/PSP/type_a0_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xa0
+instance = 1
+file = "venice/PSP/type_a0_0_1.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xa0
+instance = 2
+file = "venice/PSP/type_a0_0_2.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xa0
+instance = 3
+file = "venice/PSP/type_a0_0_3.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xa5
+file = "venice/PSP/type_a5_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xa8
+file = "venice/PSP/type_a8_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xaa
+file = "venice/PSP/type_aa_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xab
+file = "venice/PSP/type_ab_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xac
+file = "venice/PSP/type_ac_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xad
+file = "venice/PSP/type_ad_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xae
+file = "venice/PSP/type_ae_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.psp]]
+type = 0xb5
+file = "venice/PSP/type_b5_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.bios]]
+type = 0x63
+erased = 0x153000
+writable = true
+
+[[package.metadata.fstart.amd.venice.bios]]
+type = 0x69
+file = "venice/BIOS/type_69_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.bios]]
+type = 0x7b
+writable = true
+file = "venice/BIOS/type_7b_0_0.bin"
+
+[[package.metadata.fstart.amd.venice.bios]]
+type = 0x7b
+instance = 1
+writable = true
+file = "venice/BIOS/type_7b_0_1.bin"
+
+[[package.metadata.fstart.amd.venice.bios]]
+type = 0x7b
+instance = 2
+writable = true
+file = "venice/BIOS/type_7b_0_2.bin"
+
+[[package.metadata.fstart.amd.venice.microcode]]
+equivalence-id = 0xb500
+file = "venice/ucode/b500.bin"
+
+[[package.metadata.fstart.amd.venice.microcode]]
+equivalence-id = 0xb50b
+file = "venice/ucode/b50b.bin"
+
+[[package.metadata.fstart.amd.venice.microcode]]
+equivalence-id = 0xb510
+file = "venice/ucode/b510.bin"
+
+[[package.metadata.fstart.amd.venice.microcode]]
+equivalence-id = 0xbc00
+file = "venice/ucode/bc00.bin"

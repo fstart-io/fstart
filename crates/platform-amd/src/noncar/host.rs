@@ -26,6 +26,7 @@ pub fn host<S: HostSoc>(max_cpus: u16) -> Host {
         image: crate::host::Image::Single(single::Image {
             soc: <S as crate::soc::Init>::NAME,
             bios_directory: S::BIOS_DIRECTORY,
+            flash_size: None,
             apob_destination: S::APOB.base,
             source: S::SOURCE,
         }),
