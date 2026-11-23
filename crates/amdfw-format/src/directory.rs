@@ -108,6 +108,12 @@ impl PspEntry {
     pub fn writable(&self) -> bool {
         self.attributes[0] & 4 != 0
     }
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        if writable {
+            self.attributes[0] |= 4;
+        }
+        self
+    }
 }
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -160,12 +166,90 @@ impl BiosEntry {
     pub fn rom_id(&self) -> u8 {
         self.subprogram >> 3 & 3
     }
+    /// Whether the PSP may write to this BIOS directory entry in flash (bit 5
+    /// of the `subprogram`/attribute byte, i.e. TypeAttrib bit 29).
+    pub fn writable(&self) -> bool {
+        self.subprogram & 0x20 != 0
+    }
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        if writable {
+            self.subprogram |= 0x20;
+        }
+        self
+    }
     /// Where the PSP copies the file, `u64::MAX` for nowhere; the APOB
     /// entry has only this.
     pub fn destination(&self) -> u64 {
         self.destination.get()
     }
 }
+
+/// 32-byte Image Slot Header referenced by PSP L1 recovery entries
+/// (`0x48` / `0x4A`) on ISH A/B platforms.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct ImageSlotHeader {
+    /// Fletcher-32 checksum over bytes `[4..32)`.
+    pub checksum: U32,
+    pub priority: U32,
+    pub update_retry_count: U32,
+    pub glitch_retry_count: u8,
+    pub reserved_0d: [u8; 3],
+    /// PSP L2 directory (`$PL2`) offset relative to the EFS bank origin.
+    pub location: U32,
+    pub psp_id: U32,
+    pub max_size: U32,
+    pub reserved_1c: U32,
+}
+const _: () = assert!(size_of::<ImageSlotHeader>() == 32);
+
+impl ImageSlotHeader {
+    /// Construct a new ISH and compute its Fletcher-32 checksum over `[4..32)`.
+    pub fn new(
+        priority: u32,
+        update_retry_count: u32,
+        glitch_retry_count: u8,
+        location: u32,
+        psp_id: u32,
+        max_size: u32,
+    ) -> Self {
+        let mut ish = Self {
+            checksum: 0.into(),
+            priority: priority.into(),
+            update_retry_count: update_retry_count.into(),
+            glitch_retry_count,
+            reserved_0d: [0xff; 3],
+            location: location.into(),
+            psp_id: psp_id.into(),
+            max_size: max_size.into(),
+            reserved_1c: u32::MAX.into(),
+        };
+        let sum = fletcher32(&ish.as_bytes()[4..]);
+        ish.checksum = sum.into();
+        ish
+    }
+
+    /// Read and checksum-verify an ISH at `offset` in `flash`.
+    pub fn read_checked(flash: Flash<'_>, offset: usize) -> Result<&ImageSlotHeader, Error> {
+        let raw = flash
+            .bytes()
+            .get(
+                offset
+                    ..offset
+                        .checked_add(size_of::<Self>())
+                        .ok_or(Error::Truncated(offset))?,
+            )
+            .ok_or(Error::Truncated(offset))?;
+        let (ish, _) = Self::ref_from_prefix(raw).map_err(|_| Error::Truncated(offset))?;
+        if fletcher32(&raw[4..]) != ish.checksum.get() {
+            return Err(Error::Checksum(offset));
+        }
+        Ok(ish)
+    }
+}
+
 const _: () = {
     assert!(size_of::<Header>() == 16);
     assert!(size_of::<PspEntry>() == 16);
@@ -174,6 +258,7 @@ const _: () = {
 pub trait Entry: FromBytes + KnownLayout + Immutable + Unaligned {
     const COOKIES: [[u8; 4]; 2];
     const LEVEL2: u8;
+    const IS_BIOS: bool = false;
     fn kind(&self) -> u8;
     fn size(&self) -> u32;
     fn source(&self) -> u64;
@@ -211,6 +296,7 @@ impl Entry for PspEntry {
 impl Entry for BiosEntry {
     const COOKIES: [[u8; 4]; 2] = [BIOS_COOKIE, BIOS_LEVEL2_COOKIE];
     const LEVEL2: u8 = bios::LEVEL2;
+    const IS_BIOS: bool = true;
     fn kind(&self) -> u8 {
         self.kind
     }
@@ -299,8 +385,17 @@ impl<'a, E: Entry> Directory<'a, E> {
                 .checked_add((source - 0xff00_0000) as usize)
                 .ok_or(Error::Address(source))?
         } else {
-            self.flash
-                .resolve(source, self.header.address_mode(), self.offset)?
+            let mode1_origin = if E::IS_BIOS {
+                self.flash.bios_origin.unwrap_or(self.flash.origin)
+            } else {
+                self.flash.origin
+            };
+            self.flash.resolve_with_mode1_origin(
+                source,
+                self.header.address_mode(),
+                self.offset,
+                mode1_origin,
+            )?
         };
         let end = start
             .checked_add(entry.size() as usize)

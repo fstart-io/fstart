@@ -14,6 +14,7 @@ pub mod assembly;
 pub mod blobs;
 pub mod config;
 pub mod halved_flash;
+pub mod ish;
 pub mod levels;
 pub mod psp_app;
 pub mod reset;
