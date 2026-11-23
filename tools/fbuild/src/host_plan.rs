@@ -225,12 +225,49 @@ fn build_isolated_runner(
     Ok(executables.remove(0))
 }
 
-pub(crate) fn load(
+fn build_runner(root: &Path, manifest_body: &str, main_src: &str) -> Result<PathBuf, String> {
+    let key = runner_key(manifest_body, main_src);
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let cache_key = (canonical_root, key.clone());
+    if let Some(cached) = built_runners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&cache_key)
+        .cloned()
+        .filter(|path| path.is_file())
+    {
+        return Ok(cached);
+    }
+    let runner_name = format!("{RUNNER}-{key}");
+    let manifest = format!(
+        "[workspace]\n[package]\nname = \"{runner_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n{manifest_body}"
+    );
+    let host_dir = root.join("target/fstart-host");
+    static PRUNE: Once = Once::new();
+    PRUNE.call_once(|| prune_legacy_runners(&host_dir));
+    let built = build_isolated_runner(
+        root,
+        &host_dir.join("runners").join(&key),
+        &host_dir.join("cargo"),
+        &runner_name,
+        &manifest,
+        main_src,
+        &crate::build_board::host_target(root)?,
+    )?;
+    built_runners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(cache_key, built.clone());
+    Ok(built)
+}
+
+const ACPI_RUNNER_MAIN: &str = "fn main() { use fstart_image_build::acpi::HostAcpi as _; let base = std::env::args().nth(1).expect(\"missing ACPI base\").parse().expect(\"invalid ACPI base\"); platform::Plan::<board::Board>::emit_acpi(base); }\n";
+
+fn runner_manifest(
     root: &Path,
     source: &ProfileSource,
-    board: &crate::board_manifest::BoardManifest,
-    selection: &BuildSelection,
-) -> Result<ResolvedPlan, PlanError> {
+    board_features: &[String],
+) -> Result<String, String> {
     let package = |p: &serde_json::Value| -> Result<(String, String), String> {
         Ok((
             p["name"].as_str().ok_or("missing package name")?.into(),
@@ -244,57 +281,30 @@ pub(crate) fn load(
     let (board_name, board_path) = package(&source.package)?;
     let (platform_name, platform_path) = package(&source.platform)?;
     let quoted = |s: &str| serde_json::to_string(s).unwrap();
-    // The runner names the `HostPlan` trait, so the plan contract crate
-    // is a direct dependency of the generated manifest too.
+    // The runner names `HostPlan` / `HostAcpi`, so the contract crate is a
+    // direct dependency of the generated manifest too.
     let image_build_path = root.join("crates/image-build").display().to_string();
     let workspace_patches = patches(root)?;
-    let manifest_body = format!(
+    Ok(format!(
         "[dependencies]\nboard = {{ package = {}, path = {}, default-features = false, features = {} }}\nplatform = {{ package = {}, path = {}, default-features = false, features = [\"host\"] }}\nfstart-image-build = {{ path = {} }}\n{}",
         quoted(&board_name),
         quoted(&board_path),
-        serde_json::to_string(&board.variant_features).map_err(|e| e.to_string())?,
+        serde_json::to_string(board_features).map_err(|e| e.to_string())?,
         quoted(&platform_name),
         quoted(&platform_path),
         quoted(&image_build_path),
         workspace_patches,
-    );
-    let key = runner_key(&manifest_body, RUNNER_MAIN);
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let cache_key = (canonical_root, key.clone());
-    let executable = if let Some(cached) = built_runners()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&cache_key)
-        .cloned()
-        .filter(|path| path.is_file())
-    {
-        cached
-    } else {
-        let runner_name = format!("{RUNNER}-{key}");
-        let manifest = format!(
-            "[workspace]\n[package]\nname = \"{runner_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n{manifest_body}"
-        );
-        let host_dir = root.join("target/fstart-host");
-        static PRUNE: Once = Once::new();
-        PRUNE.call_once(|| prune_legacy_runners(&host_dir));
-        let runner_dir = host_dir.join("runners").join(&key);
-        let target_dir = host_dir.join("cargo");
-        let host = crate::build_board::host_target(root)?;
-        let built = build_isolated_runner(
-            root,
-            &runner_dir,
-            &target_dir,
-            &runner_name,
-            &manifest,
-            RUNNER_MAIN,
-            &host,
-        )?;
-        built_runners()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(cache_key, built.clone());
-        built
-    };
+    ))
+}
+
+pub(crate) fn load(
+    root: &Path,
+    source: &ProfileSource,
+    board: &crate::board_manifest::BoardManifest,
+    selection: &BuildSelection,
+) -> Result<ResolvedPlan, PlanError> {
+    let manifest_body = runner_manifest(root, source, &board.variant_features)?;
+    let executable = build_runner(root, &manifest_body, RUNNER_MAIN)?;
 
     // The platform reads its own and the board's firmware tables.
     let mut selection = selection.clone();
@@ -320,6 +330,37 @@ pub(crate) fn load(
         PlanError::UnsupportedPayload(msg) => PlanError::UnsupportedPayload(msg),
         PlanError::Failed(msg) => PlanError::Failed(format!("platform plan failed: {msg}")),
     })
+}
+
+pub(crate) fn acpi_baselines(
+    root: &Path,
+    board: &crate::board_manifest::BoardManifest,
+    base: u64,
+) -> Result<fstart_image_build::acpi::AcpiOutcome, String> {
+    let source = crate::profile_source::load_profile(root, board)?;
+    let mut features = board.variant_features.clone();
+    if source.package["features"].get("acpi").is_some()
+        && !features.iter().any(|feature| feature == "acpi")
+    {
+        features.push("acpi".into());
+    }
+    let manifest_body = runner_manifest(root, &source, &features)?;
+    let runner = build_runner(root, &manifest_body, ACPI_RUNNER_MAIN)?;
+    let output = Command::new(runner)
+        .arg(base.to_string())
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("ACPI runner: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ACPI runner: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let envelope: fstart_image_build::acpi::AcpiEnvelope =
+        serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("ACPI runner transport: {e}"))?;
+    envelope.into_outcome()
 }
 
 #[cfg(test)]

@@ -51,6 +51,14 @@ impl<B: Fu740Board> fstart_image_build::plan::HostPlan<B> for Plan<B> {
     }
 }
 
+impl<B: Fu740Board> fstart_image_build::acpi::HostAcpi<B> for Plan<B> {
+    fn acpi_baselines(_base: u64) -> Result<fstart_image_build::acpi::AcpiOutcome, String> {
+        Ok(fstart_image_build::acpi::AcpiOutcome::NotApplicable {
+            reason: "device-tree platform".into(),
+        })
+    }
+}
+
 /// The plan for `config` and the payload `selection` names.
 pub fn resolve(
     config: &Fu740Config,

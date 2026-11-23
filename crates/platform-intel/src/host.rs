@@ -69,6 +69,26 @@ impl<B: IntelBoardFacts> HostPlan<B> for Plan<B> {
     }
 }
 
+impl<B> fstart_image_build::acpi::HostAcpi<B> for Plan<B>
+where
+    B: crate::acpi::BoardAcpi,
+    B::Platform: crate::acpi::HostAcpiChipset,
+{
+    fn acpi_baselines(
+        base: u64,
+    ) -> Result<fstart_image_build::acpi::AcpiOutcome, std::string::String> {
+        let bytes = crate::acpi::baseline::<B>(base)?;
+        Ok(fstart_image_build::acpi::AcpiOutcome::Images {
+            images: vec![fstart_image_build::acpi::AcpiBaseline {
+                scenario: "baseline".into(),
+                physical_base: base,
+                rsdp: base,
+                bytes,
+            }],
+        })
+    }
+}
+
 /// Parse the explicit Intel image configuration. Paths are workspace-relative,
 /// as for every FFS file asset. Reject unknown keys and duplicate FFS names.
 fn image_assets(bytes: &[u8]) -> Result<Vec<fstart_core::board::FileAsset>, std::string::String> {

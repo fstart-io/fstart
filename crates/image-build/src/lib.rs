@@ -1,3 +1,4 @@
+pub mod acpi;
 pub mod amd;
 pub mod assemble;
 pub mod boot_test;

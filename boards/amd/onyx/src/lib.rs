@@ -37,6 +37,10 @@ impl fstart_platform_amd::board::Board for Board {
         ..fstart_platform_amd::smm::ras::Policy::THRESHOLDS
     };
     const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(sel);
+
+    fn acpi_board() -> AcpiBoard {
+        acpi_board()
+    }
 }
 
 /// The BMC's one KCS channel, KCS3 (`0xCA2`/`0xCA3`), which the OS's IPMI

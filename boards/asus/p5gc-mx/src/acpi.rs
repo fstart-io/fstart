@@ -17,6 +17,14 @@ impl fstart_acpi::device::AcpiDevice for Acpi {
     }
 }
 
+impl fstart_platform_intel::acpi::BoardAcpi for crate::Board {
+    type Acpi = Acpi;
+
+    fn acpi_baseline() -> Self::Acpi {
+        Acpi
+    }
+}
+
 pub static P5GC_MX_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
     fstart_acpi::smbios::SmbiosIdentity {
         bios_vendor: "fstart",

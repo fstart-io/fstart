@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use fstart_board_tyan_s8030::{Board, bmc, dxio, platform};
+use fstart_board_tyan_s8030::{Board, dxio, platform};
 use fstart_driver_aspeed::gfx;
 use fstart_driver_uart::ns16550::Ns16550;
 use fstart_log::StaticConsole;
@@ -72,6 +72,6 @@ fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     }
     stage
         .ready_to_boot()
-        .emit_tables(&platform::smbios_identity(), bmc::acpi_board())
+        .emit_tables(&platform::smbios_identity())
         .boot()
 }

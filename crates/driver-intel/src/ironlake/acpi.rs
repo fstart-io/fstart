@@ -111,7 +111,7 @@ impl AcpiDevice for IntelIronlake {
         );
         #[cfg(not(target_os = "none"))]
         let (count, limits) = (
-            4,
+            Self::HOST_CPUS,
             crate::cpu::model_2065x_aml::RatioLimits {
                 min: 9,
                 max: 18,

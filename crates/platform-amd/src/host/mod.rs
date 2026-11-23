@@ -433,6 +433,13 @@ impl<B: Board> HostPlan<B> for Plan<B> {
     }
 }
 
+impl<B: Board> fstart_image_build::acpi::HostAcpi<B> for Plan<B> {
+    fn acpi_baselines(base: u64) -> Result<fstart_image_build::acpi::AcpiOutcome, String> {
+        let images = crate::acpi::baseline::baselines::<B>(base)?;
+        Ok(fstart_image_build::acpi::AcpiOutcome::Images { images })
+    }
+}
+
 /// `path` as a microcode path of the FFS's microcode table.
 fn bounded<const N: usize>(path: &str) -> Result<heapless::String<N>, String> {
     path.try_into()

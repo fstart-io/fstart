@@ -56,12 +56,12 @@ pub fn h8_dsdt_aml<N: fstart_acpi::PcNamespace>(h8: &H8Config) -> alloc::vec::Ve
         Scope("\\") {
             // GM45 can hide IGD or leave its MMIO BAR unassigned.
             Method("BRTU", 0, NotSerialized) {
-                If (CondRefOf(#{const path 4 N::IGD.child("INCB")}, Local0)) {
+                If (CondRefOf(#{const path 4 N::IGD.child("INCB")})) {
                     #{const path 4 N::IGD.child("INCB")}();
                 }
             }
             Method("BRTD", 0, NotSerialized) {
-                If (CondRefOf(#{const path 4 N::IGD.child("DECB")}, Local0)) {
+                If (CondRefOf(#{const path 4 N::IGD.child("DECB")})) {
                     #{const path 4 N::IGD.child("DECB")}();
                 }
             }
@@ -90,7 +90,7 @@ pub fn h8_dsdt_aml<N: fstart_acpi::PcNamespace>(h8: &H8Config) -> alloc::vec::Ve
         }
         Scope("\\_GPE") {
             Method("_L18", 0, NotSerialized) {
-                Local0 = #{const path 5 ec::<N>().child("WAKE")};
+                If (#{const path 5 ec::<N>().child("WAKE")}) {}
             }
         }
     });

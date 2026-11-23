@@ -722,11 +722,7 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         &mut self,
         board: &impl fstart_acpi::device::AcpiDevice<Config = ()>,
     ) -> Result<(), ServiceError> {
-        use fstart_acpi::device::AcpiDevice;
         use fstart_acpi::platform::X86PlatformProvider;
-        use fstart_driver_intel::namespace::{SouthbridgeAcpi, pci_root};
-        // coreboot's dsdt.asl: the southbridge's devices in the northbridge's root.
-        let pci_root = const { pci_root::<Nb<B>>() };
         let mut x86 = self
             .southbridge
             .x86_platform_config(u32::from(fstart_arch::x86::mp::online_cpus()));
@@ -742,20 +738,11 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         // was given.
         let root = self.pci.as_ref().and_then(|pci| pci.roots().first());
         let root = root.ok_or(ServiceError::NotInitialized)?;
-        let root = fstart_driver_intel::namespace::pci_root_resources::<Nb<B>>(root)
+        let tables = crate::acpi::collect(northbridge, southbridge, root, board, &self.video_aml)
             .map_err(|_| ServiceError::HardwareError)?;
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
-        let rsdp = crate::tables::prepare_acpi(store, &platform, |dsdt, extra| {
-            dsdt.extend(northbridge.dsdt_aml(northbridge.config()));
-            dsdt.extend(root);
-            dsdt.extend(southbridge.dsdt_aml(southbridge.config(), &pci_root));
-            dsdt.extend(board.dsdt_aml(&()));
-            dsdt.extend_from_slice(&self.video_aml);
-            extra.extend(northbridge.extra_tables(northbridge.config()));
-            extra.extend(southbridge.extra_tables(southbridge.config()));
-            extra.extend(board.extra_tables(&()));
-        })
-        .map_err(|_| ServiceError::HardwareError)?;
+        let rsdp = crate::tables::prepare_acpi(store, &platform, &tables.dsdt, &tables.extra)
+            .map_err(|_| ServiceError::HardwareError)?;
         self.ctx.set_acpi_rsdp(Some(rsdp));
         Ok(())
     }

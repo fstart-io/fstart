@@ -9,7 +9,16 @@ use fstart_acpi::fadt::{Flags, PmProfile};
 use fstart_acpi::platform::X86Fadt;
 use fstart_driver_amd::dxio::rs::ports::NATIVE_DEVFNS;
 use fstart_driver_amd::fch::acpimmio::AcpiPorts;
+use fstart_driver_amd::nbio::ioapic::nbio_ioapic_id;
 use fstart_driver_amd::nbio::rs::ROUTES;
+
+/// The ID the flow gives the FCH's IOAPIC.
+pub const FCH_IOAPIC_ID: u8 = 0;
+
+/// The IOAPIC ID of IOS `ios`: 0xF1 + IOS, as both vendors number them.
+pub const fn ioapic_id(ios: u8) -> u8 {
+    nbio_ioapic_id(fstart_driver_amd::cpu::Silicon::Gn, ios)
+}
 
 /// An IOS's bridges: its root-port slots at their native devfns, the
 /// internal ones (devices 7 and 8) with the SoC's own controllers.

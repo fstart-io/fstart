@@ -74,6 +74,6 @@ fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     stage.set_framebuffer(framebuffer);
     stage
         .ready_to_boot()
-        .emit_tables(&ethanolx::smbios_identity(), ethanolx::acpi_board())
+        .emit_tables(&ethanolx::smbios_identity())
         .boot()
 }

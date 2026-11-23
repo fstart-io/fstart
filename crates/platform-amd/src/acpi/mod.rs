@@ -45,6 +45,8 @@ use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::fch::acpimmio::AcpiPorts;
 
 pub mod apei;
+#[cfg(all(feature = "host", not(target_os = "none")))]
+pub mod baseline;
 pub mod dsdt;
 pub mod fixed;
 pub mod ivrs;

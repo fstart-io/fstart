@@ -631,6 +631,7 @@ dependencies = [
  "base64ct",
  "byteorder",
  "clap",
+ "fstart-acpi",
  "fstart-core",
  "fstart-crypto",
  "fstart-image-build",

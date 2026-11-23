@@ -54,6 +54,6 @@ fn main() -> ! {
     }
     stage
         .ready_to_boot()
-        .emit_tables(&s8040::smbios_identity(), bmc::acpi_board())
+        .emit_tables(&s8040::smbios_identity())
         .boot()
 }

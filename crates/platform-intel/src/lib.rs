@@ -13,6 +13,7 @@ pub const SMBIOS_RELEASE_DATE: &str = env!("FSTART_SMBIOS_DATE");
 
 extern crate ufmt;
 
+pub mod acpi;
 pub mod tables;
 
 pub mod debug_console;

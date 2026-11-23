@@ -47,6 +47,10 @@ impl fstart_platform_amd::board::Board for Board {
     /// (`fstart_driver_amd::ccx::ras`).
     const RAS: ras::Policy = ras::Policy::THRESHOLDS;
     const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
+
+    fn acpi_board() -> fstart_platform_amd::acpi::Board {
+        bmc::acpi_board()
+    }
 }
 
 /// The policy knobs over Rome's policy; Milan's board values are the same.

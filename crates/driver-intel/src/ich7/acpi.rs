@@ -174,7 +174,6 @@ impl SouthbridgeAcpi for IntelIch7 {
         let mut lpcb: Vec<u8> = acpi_dsl! {
 
                 Name("_ADR", #{dword adr(ich7::LPC)});
-                Name("_HID", EisaId("PNP0A05"));
 
                 // LPC PCI config OpRegion for PIRQ routing registers.
                 // PRTA-PRTH at offsets 0x60-0x63 and 0x68-0x6B.

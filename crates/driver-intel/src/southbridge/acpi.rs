@@ -119,7 +119,9 @@ pub fn legacy_isa_children(pm1_base: u16, gpio_base: u16) -> Vec<u8> {
 ///
 /// `_CRS` reports the IRQ the LPC `PIRQx_ROUT` registers were programmed with
 /// and `_STA` reports a link whose routing is disabled as inactive, so OSPM
-/// sees the routing the firmware installed (coreboot `irqlinks.asl`).
+/// sees the routing the firmware installed (coreboot `irqlinks.asl`). `_PRS`
+/// is omitted because these links are fixed rather than reprogrammable via
+/// `_SRS` (ACPI §6.2.12 requires `_SRS` whenever `_PRS` is present).
 #[must_use]
 pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
     let irq = |index: usize| u32::from(pirq_routing[index] & 0x0f);
@@ -140,11 +142,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKA") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 1u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_a});
             });
@@ -157,11 +154,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKB") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 2u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_b});
             });
@@ -174,11 +166,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKC") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 3u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_c});
             });
@@ -191,11 +178,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKD") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 4u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_d});
             });
@@ -208,11 +190,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKE") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 5u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_e});
             });
@@ -225,11 +202,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKF") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 6u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_f});
             });
@@ -242,11 +214,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKG") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 7u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_g});
             });
@@ -259,11 +226,6 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
         Device("LNKH") {
             Name("_HID", EisaId("PNP0C0F"));
             Name("_UID", 8u32);
-            Name("_PRS", ResourceTemplate {
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared,
-                    3u32, 4u32, 5u32, 6u32, 7u32,
-                    10u32, 11u32, 12u32, 14u32, 15u32);
-            });
             Name("_CRS", ResourceTemplate {
                 Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq_h});
             });

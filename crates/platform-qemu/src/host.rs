@@ -34,6 +34,14 @@ impl<B: VirtBoardFacts> HostPlan<B> for Plan<B> {
     }
 }
 
+impl<B: VirtBoardFacts> fstart_image_build::acpi::HostAcpi<B> for Plan<B> {
+    fn acpi_baselines(_base: u64) -> Result<fstart_image_build::acpi::AcpiOutcome, String> {
+        Ok(fstart_image_build::acpi::AcpiOutcome::NotApplicable {
+            reason: "QEMU supplies ACPI via fw_cfg or boots with device tree".into(),
+        })
+    }
+}
+
 /// Platform-owned presets, not a board-authored lifecycle or geometry schema.
 /// ARM retains two physical 64-MiB banks. RISC-V has one physical 32-MiB
 /// bank: the initial stage and subsequent files are packed together at actual

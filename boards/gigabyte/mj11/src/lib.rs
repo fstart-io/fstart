@@ -157,6 +157,10 @@ impl fstart_platform_amd::board::Board for Board {
             kcs_spacing: fstart_driver_ipmi::kcs::DEFAULT_SPACING as u8,
             sw_smi_base: 0xc0,
         });
+
+    fn acpi_board() -> fstart_platform_amd::acpi::Board {
+        crate::acpi()
+    }
 }
 
 /// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.

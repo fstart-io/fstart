@@ -36,6 +36,10 @@ impl fstart_platform_amd::board::Board for Board {
     const RAS: fstart_platform_amd::smm::ras::Policy =
         fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
     const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
+
+    fn acpi_board() -> fstart_platform_amd::acpi::Board {
+        bmc::acpi_board()
+    }
 }
 
 /// Soldered devices the boot needs, by their lane and what is behind the

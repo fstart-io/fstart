@@ -20,6 +20,7 @@ use fstart_acpi::platform::{
 };
 use fstart_acpi_macros::acpi_dsl;
 
+#[cfg(target_os = "none")]
 use fstart_pci::ecam::EcamDevice;
 
 const LAPIC_BASE: u64 = 0xfee0_0000;
@@ -100,6 +101,7 @@ impl X86PlatformProvider for IntelIbexPeak {
 
 /// coreboot `map_pirq()`: PCH devices route through their DxxIR register,
 /// everything else (CPU-integrated functions) maps INTx 1:1 to PIRQ A..D.
+#[cfg(target_os = "none")]
 fn dxx_ir(rcba: &super::regs::RcbaRegs, slot: u8) -> Option<u16> {
     use tock_registers::interfaces::Readable;
     Some(match slot {
@@ -120,33 +122,59 @@ impl IntelIbexPeak {
     /// coreboot `intel_acpi_gen_def_acpi_pirq()`: one APIC route per
     /// (slot, pin) of the bus-0 functions that use an interrupt.
     fn root_bus_routes(&self) -> Vec<(u8, u8, u8)> {
-        let rcba = self.rcba();
-        let mut routes: Vec<(u8, u8, u8)> = Vec::new();
-        for slot in 0..32u8 {
-            for func in 0..8u8 {
-                let device = EcamDevice::new(0, slot, func);
-                // Without ECAM (host builds) there is nothing to route.
-                let Some(vendor) = device.try_read16(0) else {
-                    return routes;
-                };
-                if vendor == 0xffff {
-                    continue;
-                }
-                let pin = device.read8(0x3d);
-                if !(1..=4).contains(&pin) || routes.iter().any(|r| r.0 == slot && r.1 == pin - 1) {
-                    continue;
-                }
-                let pirq = match dxx_ir(rcba, slot) {
-                    Some(ir) => ((ir >> (4 * u16::from(pin - 1))) & 7) as u8,
-                    None if (19..=31).contains(&slot) && slot != 24 && slot != 21 && slot != 23 => {
+        #[cfg(not(target_os = "none"))]
+        {
+            // Synthetic bus-0 routes for host tests/ACPI baseline checks (host
+            // builds have no live ECAM/RCBA); firmware reads the programmed
+            // PCI interrupt pins and RCBA D31IR..D25IR below.
+            alloc::vec![
+                (0x19, 0, 16),
+                (0x1a, 0, 16),
+                (0x1b, 0, 22),
+                (0x1c, 0, 16),
+                (0x1c, 1, 17),
+                (0x1c, 2, 18),
+                (0x1c, 3, 19),
+                (0x1d, 0, 23),
+                (0x1f, 0, 16),
+                (0x1f, 1, 19),
+            ]
+        }
+        #[cfg(target_os = "none")]
+        {
+            let rcba = self.rcba();
+            let mut routes: Vec<(u8, u8, u8)> = Vec::new();
+            for slot in 0..32u8 {
+                for func in 0..8u8 {
+                    let device = EcamDevice::new(0, slot, func);
+                    let Some(vendor) = device.try_read16(0) else {
+                        return routes;
+                    };
+                    if vendor == 0xffff {
                         continue;
                     }
-                    None => pin - 1,
-                };
-                routes.push((slot, pin - 1, 16 + pirq));
+                    let pin = device.read8(0x3d);
+                    if !(1..=4).contains(&pin)
+                        || routes.iter().any(|r| r.0 == slot && r.1 == pin - 1)
+                    {
+                        continue;
+                    }
+                    let pirq = match dxx_ir(rcba, slot) {
+                        Some(ir) => ((ir >> (4 * u16::from(pin - 1))) & 7) as u8,
+                        None if (19..=31).contains(&slot)
+                            && slot != 24
+                            && slot != 21
+                            && slot != 23 =>
+                        {
+                            continue;
+                        }
+                        None => pin - 1,
+                    };
+                    routes.push((slot, pin - 1, 16 + pirq));
+                }
             }
+            routes
         }
-        routes
     }
 }
 

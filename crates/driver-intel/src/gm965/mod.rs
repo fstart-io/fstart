@@ -547,6 +547,14 @@ pub struct IntelGm965 {
     memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
+#[cfg(not(target_os = "none"))]
+impl IntelGm965 {
+    /// Populate assigned IGD BARs for host-side ACPI checks.
+    pub fn set_host_igd_bars(&mut self, igd_bars: Option<super::igd::IgdBars>) {
+        self.igd_bars = igd_bars;
+    }
+}
+
 // SAFETY: firmware performs chipset init on the BSP before concurrency exists.
 unsafe impl Send for IntelGm965 {}
 // SAFETY: the struct contains only immutable config and hardware register bases.

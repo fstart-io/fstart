@@ -237,6 +237,18 @@ pub struct IntelIronlake {
     display: crate::igd::IgdDisplay,
 }
 
+#[cfg(not(target_os = "none"))]
+impl IntelIronlake {
+    /// CPU count emitted by [`AcpiDevice::dsdt_aml`] on host builds; shared
+    /// with the host ACPI baseline MADT so processor objects and LAPICs match.
+    pub const HOST_CPUS: usize = 4;
+
+    /// Populate assigned IGD BARs for host-side ACPI checks.
+    pub fn set_host_igd_bars(&mut self, igd_bars: Option<crate::igd::IgdBars>) {
+        self.igd_bars = igd_bars;
+    }
+}
+
 /// The decoded uncore memory map, in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemoryMap {

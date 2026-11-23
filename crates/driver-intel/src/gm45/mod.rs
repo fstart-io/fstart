@@ -202,6 +202,23 @@ pub struct IntelGm45 {
     memory_info: Option<fstart_core::memory_info::MemoryInfo>,
 }
 
+#[cfg(not(target_os = "none"))]
+impl IntelGm45 {
+    /// CPU count emitted by [`AcpiDevice::dsdt_aml`] on host builds; shared
+    /// with the host ACPI baseline MADT so processor objects and LAPICs match.
+    pub const HOST_CPUS: usize = 2;
+
+    /// Populate runtime display and DRAM flags for host-side ACPI checks.
+    pub fn set_host_acpi_baseline(
+        &mut self,
+        igd_bars: Option<crate::igd::IgdBars>,
+        dram_ready: bool,
+    ) {
+        self.igd_bars = igd_bars;
+        self.dram_ready = dram_ready;
+    }
+}
+
 impl IntelGm45 {
     /// Set graphics routing after board detection and before `early_init`.
     /// The board owns discrete GPU detection, panel muxing and power rails.
@@ -415,11 +432,14 @@ impl crate::IntelNorthbridgeDriver for IntelGm45 {
         let config = self.config;
         // Above 4 GiB from TOUUD to the CPU's physical address limit
         // (coreboot A4GB/A4GS).
+        #[cfg(target_os = "none")]
         let touud = self
             .dram_ready
             .then(|| self.memory_map().ok())
             .flatten()
             .map_or(1 << 32, |(_, _, touud)| touud);
+        #[cfg(not(target_os = "none"))]
+        let touud = 1u64 << 32;
         let above_4g = Some((touud.max(1 << 32), 1 << phys_address_bits()));
         // What the chipset decodes itself, on top of what every host
         // bridge forwards.
@@ -870,7 +890,7 @@ mod acpi_impl {
             #[cfg(target_os = "none")]
             let count = usize::from(fstart_arch::x86::mp::online_cpus());
             #[cfg(not(target_os = "none"))]
-            let count = 2;
+            let count = Self::HOST_CPUS;
             let cpus = crate::cpu::core2_aml::cpu_devices_aml(count, &config.cstates);
             aml.extend(
                 fstart_acpi::aml_linker::scope_vec("\\", &cpus).expect("required CPU AML scope"),
@@ -893,11 +913,19 @@ mod acpi_impl {
                 return alloc::vec![mcfg_bytes];
             }
             use fstart_acpi::dmar::{Drhd, dmar};
-            let revision = ecam::EcamDevice::new(0, 0, 0).read8(0x08);
+            #[cfg(target_os = "none")]
+            let (revision, igd_enabled, me_active, width) = (
+                ecam::EcamDevice::new(0, 0, 0).read8(0x08),
+                self.igd_enabled(),
+                self.me_active(),
+                (phys_address_bits() - 1) as u8,
+            );
+            #[cfg(not(target_os = "none"))]
+            let (revision, igd_enabled, me_active, width) =
+                (0x07u8, self.igd_bars.is_some(), false, 35u8);
             // The units post_dram_iommu() enabled; coreboot's acpi_fill_dmar()
             // tests the devicetree device, which its PCI scan disables when
             // HECI does not answer.
-            let me_active = self.me_active();
             let units = [
                 Some(Drhd {
                     include_pci_all: false,
@@ -906,7 +934,7 @@ mod acpi_impl {
                     endpoints: &[(0, 0x1b, 0)],
                 }),
                 // B2 leaves the graphics unit disabled (post_dram_iommu).
-                (revision != 6 && self.igd_enabled()).then_some(Drhd {
+                (revision != 6 && igd_enabled).then_some(Drhd {
                     include_pci_all: false,
                     segment: 0,
                     base: 0xfed9_1000,
@@ -926,7 +954,6 @@ mod acpi_impl {
                 }),
             ];
             let units: Vec<Drhd<'_>> = units.into_iter().flatten().collect();
-            let width = (phys_address_bits() - 1) as u8;
             alloc::vec![mcfg_bytes, dmar(width, &units)]
         }
     }

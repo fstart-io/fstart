@@ -233,6 +233,24 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Check ACPI baselines
+        id: check-acpi
+        if: ${{ !cancelled() }}
+        env:
+          BOARDS: ${{ matrix.boards }}
+        run: |
+          # The board list is space separated.
+          # shellcheck disable=SC2086
+          cargo fbuild check-acpi $BOARDS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.check-acpi.outcome == 'failure' }}
+        with:
+          name: acpi-check-${{ matrix.shard }}
+          path: target/fstart-acpi/
+          if-no-files-found: ignore
+          retention-days: 7
+
       # Missing assets must fail CI, not silently skip boots: download-artifact
       # errors when the producer uploaded nothing. Only shards QEMU can
       # emulate (with packages to install) boot.

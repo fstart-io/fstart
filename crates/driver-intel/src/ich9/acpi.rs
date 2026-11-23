@@ -167,22 +167,27 @@ impl SouthbridgeAcpi for IntelIch9 {
         // not an assumed A-D map (coreboot intel/common/rcba_pirq.c).
         let hardware_routes = if config.preserve_hardware_pirq {
             use crate::southbridge::pirq::{PciPin, PinRoute, Pirq};
-            let r = self.rcba().regs();
             // Devices 1..3 are outside the RCBA router: coreboot's
             // map_pirq uses the hardwired pin-to-PIRQ A..D identity there.
             let slots = [1, 2, 3, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f];
-            let ir = [
-                0x3210,
-                0x3210,
-                0x3210,
-                r.d25ir.get(),
-                r.d26ir.get(),
-                r.d27ir.get(),
-                r.d28ir.get(),
-                r.d29ir.get(),
-                r.d30ir.get(),
-                r.d31ir.get(),
-            ];
+            #[cfg(target_os = "none")]
+            let ir = {
+                let r = self.rcba().regs();
+                [
+                    0x3210,
+                    0x3210,
+                    0x3210,
+                    r.d25ir.get(),
+                    r.d26ir.get(),
+                    r.d27ir.get(),
+                    r.d28ir.get(),
+                    r.d29ir.get(),
+                    r.d30ir.get(),
+                    r.d31ir.get(),
+                ]
+            };
+            #[cfg(not(target_os = "none"))]
+            let ir = [0x3210u16; 10];
             // The tables are built once per cold boot; the routes stay
             // with them like the board's static routing would.
             Some(&*alloc::boxed::Box::leak(alloc::boxed::Box::new(

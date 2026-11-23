@@ -82,6 +82,9 @@ enum Command {
         #[arg(required = true)]
         boards: Vec<String>,
     },
+    /// Generate and validate baseline ACPI tables with ACPICA; every board and
+    /// variant without BOARDS (non-ACPI platforms are skipped).
+    CheckAcpi { boards: Vec<String> },
     /// Boot the boards' QEMU boot tests, which their plans' run recipes
     /// declare; every board's without BOARDS.
     BootTest {
@@ -445,6 +448,7 @@ fn main() {
         Command::Shards => fbuild::shards::run(),
         Command::Checks { list } => fbuild::checks::run(list),
         Command::BuildBoards { size_dir, boards } => verification::build_boards(&boards, size_dir),
+        Command::CheckAcpi { boards } => fbuild::acpi_check::check(&boards),
         Command::BootTest {
             boards,
             tests,

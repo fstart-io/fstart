@@ -107,6 +107,9 @@ mod tests {
         const NAME: &'static str = "s8030";
         const SOCS: &'static [SocId] = &[SocId::Rome, SocId::Milan];
         const MAX_CPUS: u16 = 256;
+        fn acpi_board() -> crate::acpi::Board {
+            crate::acpi::Board::default()
+        }
     }
 
     /// The selection packing the S8030's tables from a blob directory
@@ -204,6 +207,9 @@ mod tests {
             const NAME: &'static str = "nothing";
             const SOCS: &'static [SocId] = &[];
             const MAX_CPUS: u16 = 1;
+            fn acpi_board() -> crate::acpi::Board {
+                crate::acpi::Board::default()
+            }
         }
         assert!(resolve::<Nothing>(&BuildSelection::default()).is_err());
     }
