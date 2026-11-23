@@ -25,6 +25,7 @@ register_bitfields![u64,
     PMG_IO_BASE [ PORT OFFSET(0) NUMBITS(16) [] ],
     PMG_IO_CAPTURE [ CSTATE_OFFSET OFFSET(16) NUMBITS(3) [] ],
     pub(super) MISC_ENABLE [
+        FAST_STRINGS OFFSET(0) NUMBITS(1) [],
         TM1 OFFSET(3) NUMBITS(1) [],
         FERR_MUX OFFSET(10) NUMBITS(1) [],
         TM2 OFFSET(13) NUMBITS(1) [],
@@ -34,7 +35,8 @@ register_bitfields![u64,
         C2E OFFSET(26) NUMBITS(1) [],
         C4E OFFSET(32) NUMBITS(1) [],
         HARD_C4E OFFSET(33) NUMBITS(1) [],
-        EMTTM OFFSET(36) NUMBITS(1) []
+        EMTTM OFFSET(36) NUMBITS(1) [],
+        TURBO_DISABLE OFFSET(38) NUMBITS(1) []
     ]
 ];
 

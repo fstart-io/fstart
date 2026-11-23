@@ -180,6 +180,7 @@ macro_rules! imc_nem_model_branch {
 pub(crate) use imc_nem_model_branch;
 
 pub mod car;
+pub mod car_storage;
 pub mod car_teardown;
 pub mod cpuid;
 mod linux_boot_params;

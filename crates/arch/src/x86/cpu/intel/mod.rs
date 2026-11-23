@@ -14,6 +14,7 @@ pub mod penryn;
 pub mod pineview;
 pub mod ratio;
 pub mod silvermont;
+pub mod skylake;
 pub mod smm;
 pub mod smrr;
 pub mod speedstep;

@@ -170,6 +170,13 @@ impl X86SaveState {
         Ok(())
     }
 
+    /// No IED debug region is allocated by the permanent SMM installer.
+    /// Native EM64T101 IEDBASE is at SMBASE-window top minus 0x114, from
+    /// coreboot's include/cpu/intel/em64t101_save_state.h. Never touch a
+    /// different hardware save-state layout at this offset.
+    pub fn disable_intel_ied(self) -> Result<(), SaveStateError> {
+        self.write_iedbase(0)
+    }
     /// Write the relocated SMBASE after validating the hardware revision.
     /// Exactly one field is modified.
     #[inline(always)]

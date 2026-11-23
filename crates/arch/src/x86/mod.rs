@@ -245,6 +245,8 @@ fn platform_info_tsc_frequency_hz() -> Option<u64> {
     let bclk_khz: u64 = match family_model() {
         (6, 0x1a | 0x1e | 0x1f | 0x2e | 0x25 | 0x2c | 0x2f) => 133_333,
         (6, 0x2a | 0x2d | 0x3a | 0x3e | 0x3c | 0x45 | 0x46) => 100_000,
+        // Skylake/Kaby Lake desktop parts report no crystal in CPUID 0x15.
+        (6, 0x4e | 0x5e | 0x8e | 0x9e) => 100_000,
         _ => return None,
     };
     // SAFETY: every model selected above implements MSR_PLATFORM_INFO.
