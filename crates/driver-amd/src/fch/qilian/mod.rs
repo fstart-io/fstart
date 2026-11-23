@@ -12,7 +12,7 @@ use tock_registers::interfaces::Writeable;
 use tock_registers::register_bitfields;
 
 use super::gpio::Pin;
-pub use super::songshan::{Perst, acpi_mode, release_perst, route_legacy, take_over};
+pub use super::songshan::{Perst, acpi_mode, release_perst, route_legacy, take_over, usb};
 use crate::smn::{SmnAccess, SmnReg};
 
 /// Maximum FCH instances in a 2P dual-IOD system.
@@ -45,6 +45,22 @@ pub fn set_secondary_acpi_mmio(smn: &impl SmnAccess, base: u32) -> bool {
     smn.reg(SECONDARY_ACPI_MMIO)
         .write(AcpiMmioDecode::BASE.val(base >> 16) + AcpiMmioDecode::ENABLE::SET);
     true
+}
+
+/// Size of a secondary Qilian FCH ACPI MMIO allocation (`0x2000`, 64 KiB aligned;
+/// verified from openSIL `MultiFch.c` `FchMultiFchAllocateAcpiMmio`).
+pub const SECONDARY_ACPI_MMIO_SIZE: u64 = 0x2000;
+/// Alignment of a secondary Qilian FCH ACPI MMIO allocation (64 KiB).
+pub const SECONDARY_ACPI_MMIO_ALIGN: u64 = 0x1_0000;
+
+/// Initialize a secondary Qilian FCH instance (`fch_index` in `1..MAX_FCHS`) by
+/// programming its relocated 64 KiB-aligned ACPI MMIO window (`SMN 0x02D0_13D4`).
+/// Returns `false` if `fch_index` is not a valid secondary or `mmio_base` is misaligned.
+pub fn init_secondary_fch(smn: &impl SmnAccess, fch_index: u8, mmio_base: u32) -> bool {
+    if fch_index == 0 || fch_index >= MAX_FCHS {
+        return false;
+    }
+    set_secondary_acpi_mmio(smn, mmio_base)
 }
 
 /// Secondary FCH AB routing FabricID offset for FCH instance `fch_index` (`0..4`).

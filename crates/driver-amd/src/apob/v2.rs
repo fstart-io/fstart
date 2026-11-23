@@ -11,6 +11,10 @@ use heapless::Vec;
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
+use super::ccx::{ABSENT, Core};
+use super::event::{AblError, DimmBits, Event};
+use super::nps::Nps;
+use super::rs::memory::SpdRecord;
 use super::sysmap::{Hole, MAX_HOLES, MemoryMap};
 use super::{ApobError, SIGNATURE};
 
@@ -24,6 +28,18 @@ pub const SECTION_OFFSETS_START: usize = 0x18;
 pub const SECTION_ENTRIES_START: usize = 0x28;
 /// Size of an APOB V2 entry header (`group`, `kind`, `instance`, `size` + 0x30 auth/metadata).
 pub const ENTRY_HEADER_SIZE: usize = 0x40;
+/// Maximum CCDs parsed per die from APOB V2 `3/3`.
+pub const MAX_CCDS_PER_DIE: usize = 16;
+/// Maximum complexes per CCD parsed from APOB V2 `3/3`.
+pub const MAX_CCXS_PER_CCD: usize = 2;
+/// Maximum cores per complex parsed from APOB V2 `3/3`.
+pub const MAX_CORES_PER_CCX: usize = 32;
+/// Maximum DIMM slots parsed from APOB V2 `8/8` (2P × 16 channels × 2 DPC = 64).
+pub const MAX_DMI_SLOTS: usize = 64;
+/// Maximum ABL events parsed from one APOB V2 `7/6` entry.
+pub const MAX_EVENTS_PER_DIE: usize = 64;
+/// Maximum ABL events aggregated across all sections.
+pub const MAX_ALL_EVENTS: usize = 128;
 
 /// Additional APOB V2 groups beyond V1 [`super::group`].
 pub mod group {
@@ -35,8 +51,10 @@ pub mod group {
 /// APOB V2 record types verified on WH silicon.
 pub mod kind {
     pub const ASP_AUTH: u32 = 0x10;
+    pub const DIMM_SPD: u32 = 0x11;
     pub const RAS_CS_BITMAP: u32 = 0x84;
     pub const CCX_TOPOLOGY: u32 = 3;
+    pub const EVENT_LOG: u32 = 6;
     pub const SMBIOS_DMI: u32 = 8;
     pub const SYSMAP: u32 = 9;
     pub const NPS: u32 = 0x13;
@@ -65,6 +83,16 @@ struct EntryHeaderV2 {
     _meta: [u8; ENTRY_HEADER_SIZE - 16],
 }
 const _: () = assert!(size_of::<EntryHeaderV2>() == ENTRY_HEADER_SIZE);
+
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct RawEventV2 {
+    class: U32,
+    info: U32,
+    data_a: U32,
+    data_b: U32,
+}
+const _: () = assert!(size_of::<RawEventV2>() == 16);
 
 /// A validated APOB V2 view backed by a byte slice.
 #[derive(Clone, Copy)]
@@ -110,6 +138,24 @@ impl<'a> EntryV2<'a> {
             group: self.group,
             kind: self.kind,
         })
+    }
+
+    /// Read `count` contiguous records `T` starting at byte `offset`.
+    pub fn slice<T: FromBytes + Immutable + Unaligned>(
+        &self,
+        offset: usize,
+        count: usize,
+    ) -> Result<&'a [T], ApobError> {
+        let slice = self.bytes.get(offset..).ok_or(ApobError::TooShort {
+            group: self.group,
+            kind: self.kind,
+        })?;
+        <[T]>::ref_from_prefix_with_elems(slice, count)
+            .map(|(items, _)| items)
+            .map_err(|_| ApobError::TooShort {
+                group: self.group,
+                kind: self.kind,
+            })
     }
 }
 
@@ -300,30 +346,35 @@ impl<'a> ApobV2<'a> {
     pub fn section_for_instance(&self, instance: u32) -> Option<usize> {
         let socket = instance >> 8;
         let die = instance & 0xff;
-        let k = socket
-            .checked_mul(self.socket_stride)?
+        let stride = self.socket_stride;
+        if stride == 0 {
+            return None;
+        }
+        let idx = socket
+            .checked_mul(stride)?
             .checked_add(die)?
-            .checked_add(1)?;
-        usize::try_from(k)
-            .ok()
-            .filter(|&idx| idx < self.section_count)
+            .checked_add(1)? as usize;
+        (idx < self.section_count).then_some(idx)
     }
 
-    /// Find an exact `(group, kind, instance)` entry.
-    ///
-    /// When the derived section `k == 1`, searches both common section `0`
-    /// and section `1` (matching WH `ApobGetEntryInstance`).
+    /// Find `(group, kind, instance)`. Checks the dedicated per-instance section
+    /// first (`AmdGetApobV2EntryInstance`), then section 0 (system-wide records).
     pub fn find(&self, group: u32, kind: u32, instance: u32) -> Result<EntryV2<'a>, ApobError> {
-        let k = self.section_for_instance(instance);
-        if (k == Some(1) || k.is_none())
-            && let Some(entry) = self.scan_section(0, group, kind, Some(instance))?
+        if let Some(sec) = self.section_for_instance(instance)
+            && let Some(e) = self.scan_section(sec, group, kind, Some(instance))?
         {
-            return Ok(entry);
+            return Ok(e);
         }
-        if let Some(sec) = k
-            && let Some(entry) = self.scan_section(sec, group, kind, Some(instance))?
-        {
-            return Ok(entry);
+        if let Some(e) = self.scan_section(0, group, kind, Some(instance))? {
+            return Ok(e);
+        }
+        for sec in 1..self.section_count {
+            if Some(sec) == self.section_for_instance(instance) {
+                continue;
+            }
+            if let Some(e) = self.scan_section(sec, group, kind, Some(instance))? {
+                return Ok(e);
+            }
         }
         Err(ApobError::NotFound {
             group,
@@ -332,8 +383,8 @@ impl<'a> ApobV2<'a> {
         })
     }
 
-    /// Parse APOB V2 `9/9` system memory map (`+0x50` TOM, `+0x58` hole count > 0,
-    /// `+0x60` array of 24-byte `{ base, size, kind, _pad }`).
+    /// Parse APOB V2 `9/9` system memory map (`+0x50` top-of-memory, `+0x58` hole
+    /// count, `+0x60` 24-byte `{ base: u64, size: u64, kind: u32, pad: u32 }` entries).
     pub fn system_memory_map(&self) -> Result<MemoryMap, ApobError> {
         let entry = self.find(group::FABRIC, kind::SYSMAP, 0)?;
         let top = entry.at::<U64>(0x50)?.get();
@@ -377,10 +428,26 @@ impl<'a> ApobV2<'a> {
         })
     }
 
-    /// Parse APOB V2 `9/0x13` NUMA nodes per socket (`+0x41`).
+    /// Raw APOB V2 `9/0x13` actual-NPS selector byte (`+0x41`):
+    /// `0 = NPS0`, `1 = NPS1`, `2 = NPS2`, `3 = NPS4`.
     pub fn nps(&self) -> Result<u8, ApobError> {
         let entry = self.find(group::FABRIC, kind::NPS, 0)?;
         Ok(*entry.at::<u8>(0x41)?)
+    }
+
+    /// Typed APOB V2 `9/0x13` actual NUMA nodes per socket (`ApobV2GetActualNps`).
+    pub fn actual_nps(&self) -> Result<Nps, ApobError> {
+        match self.nps()? {
+            0 => Ok(Nps::Nps0),
+            1 => Ok(Nps::Nps1),
+            2 => Ok(Nps::Nps2),
+            3 => Ok(Nps::Nps4),
+            v => Err(ApobError::Value {
+                group: group::FABRIC,
+                kind: kind::NPS,
+                value: v.into(),
+            }),
+        }
     }
 
     /// Parse APOB V2 `0x0C/0x22` fabric topology counts (`+0x40..0x44`):
@@ -410,13 +477,105 @@ impl<'a> ApobV2<'a> {
         })
     }
 
-    /// Parse APOB V2 `8/8` SMBIOS DMI physical DIMM table (`+0x40` `u32` table
-    /// offset from entry start, `+0x49` `u8` DIMM count, stride `0x20`).
-    pub fn dmi_slots(&self) -> Result<Vec<DmiSlot, 32>, ApobError> {
+    /// Parse APOB V2 `3/3` dynamic-stride core topology for `(socket, die)`.
+    ///
+    /// Layout verified from `ApobV2GetCcdCountOnDie` / `AmdGetApobV2CcdMapBaseAddressOffset`:
+    /// - `+0x40` (`u32`): byte offset from entry start to first CCD record
+    /// - `+0x4c` (`u32`): complexes per CCD (`1..=2`)
+    /// - `+0x50` (`u32`): cores per complex (`1..=32`)
+    /// - Each CCD record has stride `1 + complexes * (1 + 3 * cores)`:
+    ///   `phys_ccd: u8` (`0xff` = absent), followed by `complexes` records of
+    ///   `phys_complex: u8` (`0xff` = absent) and `cores` records of
+    ///   `[phys_core: u8, thread0_en: u8, thread1_en: u8]`.
+    pub fn core_topology(&self, socket: u8, die: u8) -> Result<CoreMapV2, ApobError> {
+        let instance = super::instance(socket, die);
+        let entry = self.find(group::CCX, kind::CCX_TOPOLOGY, instance)?;
+        let first_off = entry.at::<U32>(0x40)?.get() as usize;
+        let complexes = entry.at::<U32>(0x4c)?.get() as usize;
+        let cores = entry.at::<U32>(0x50)?.get() as usize;
+        let bad = |value: u32| ApobError::Value {
+            group: group::CCX,
+            kind: kind::CCX_TOPOLOGY,
+            value,
+        };
+        if first_off < 0x54
+            || first_off > entry.bytes().len()
+            || complexes == 0
+            || complexes > MAX_CCXS_PER_CCD
+            || cores == 0
+            || cores > MAX_CORES_PER_CCX
+        {
+            return Err(bad(cores as u32));
+        }
+        let ccx_stride = 1 + 3 * cores;
+        let ccd_stride = 1 + complexes * ccx_stride;
+        let tail = &entry.bytes()[first_off..];
+        let max_slots = (tail.len() / ccd_stride).min(MAX_CCDS_PER_DIE);
+
+        let mut ccds = Vec::new();
+        for ccd_idx in 0..max_slots {
+            let ccd_slice = &tail[ccd_idx * ccd_stride..(ccd_idx + 1) * ccd_stride];
+            let phys_ccd = ccd_slice[0];
+            if phys_ccd == ABSENT {
+                continue;
+            }
+            let mut ccxs = Vec::new();
+            for cpx_idx in 0..complexes {
+                let cpx_off = 1 + cpx_idx * ccx_stride;
+                let cpx_slice = &ccd_slice[cpx_off..cpx_off + ccx_stride];
+                let phys_cpx = cpx_slice[0];
+                if phys_cpx == ABSENT {
+                    continue;
+                }
+                let mut core_list = Vec::new();
+                for core_idx in 0..cores {
+                    let off = 1 + core_idx * 3;
+                    let phys_core = cpx_slice[off];
+                    if phys_core == ABSENT {
+                        continue;
+                    }
+                    let _ = core_list.push(Core {
+                        id: phys_core,
+                        threads: [cpx_slice[off + 1] != 0, cpx_slice[off + 2] != 0],
+                    });
+                }
+                if !core_list.is_empty() {
+                    let _ = ccxs.push(CcxV2 {
+                        id: phys_cpx,
+                        cores: core_list,
+                    });
+                }
+            }
+            if !ccxs.is_empty() {
+                let _ = ccds.push(CcdV2 { id: phys_ccd, ccxs });
+            }
+        }
+        Ok(CoreMapV2 {
+            complexes_per_ccd: complexes as u8,
+            cores_per_complex: cores as u8,
+            ccds,
+        })
+    }
+
+    /// Parse APOB V2 `8/8` ECC capability (`ApobV2GetEccCapability`: bit 7 of `+0x48`).
+    pub fn ecc_capable(&self) -> Result<bool, ApobError> {
+        let entry = self.find(group::SMBIOS, kind::SMBIOS_DMI, 0)?;
+        Ok((*entry.at::<u8>(0x48)? >> 7) & 1 != 0)
+    }
+
+    /// Parse APOB V2 `8/8` SMBIOS DMI physical DIMM table.
+    ///
+    /// Verified against `ApobV2GetDmiPhysEntry*` and `PopulatePhysicalDimmInfo`:
+    /// - `+0x40` (`u32`): byte offset from entry start to physical DIMM array
+    /// - `+0x49` (`u8`): `MaxPhysicalDimms` count
+    /// - Each row is `0x20` bytes: `+0x00 socket`, `+0x01 channel`, `+0x02 dimm`,
+    ///   `+0x03 populated`, `+0x06 handle (u16)`, `+0x08 clock_mhz (u16)`,
+    ///   `+0x0a voltage_mv (u16)`.
+    pub fn dmi_slots(&self) -> Result<Vec<DmiSlot, MAX_DMI_SLOTS>, ApobError> {
         let entry = self.find(group::SMBIOS, kind::SMBIOS_DMI, 0)?;
         let table_offset = entry.at::<U32>(0x40)?.get() as usize;
         let count = *entry.at::<u8>(0x49)? as usize;
-        if count > 32 {
+        if count > MAX_DMI_SLOTS {
             return Err(ApobError::Value {
                 group: group::SMBIOS,
                 kind: kind::SMBIOS_DMI,
@@ -439,22 +598,196 @@ impl<'a> ApobV2<'a> {
             let base = table_offset
                 .checked_add(i.checked_mul(0x20).ok_or(too_short)?)
                 .ok_or(too_short)?;
-            let populated = *entry.at::<u8>(base)? != 0;
-            let socket = *entry.at::<u8>(base + 1)?;
-            let channel = *entry.at::<u8>(base + 2)?;
-            let dimm = *entry.at::<u8>(base + 3)?;
-            let size_mib = entry.at::<U32>(base + 4)?.get();
-            let speed_mt = entry.at::<U16>(base + 8)?.get();
+            let socket = *entry.at::<u8>(base)?;
+            let channel = *entry.at::<u8>(base + 1)?;
+            let dimm = *entry.at::<u8>(base + 2)?;
+            let populated = *entry.at::<u8>(base + 3)? != 0;
+            let handle = entry.at::<U16>(base + 6)?.get();
+            let clock_mhz = entry.at::<U16>(base + 8)?.get();
+            let voltage_mv = entry.at::<U16>(base + 10)?.get();
             let _ = out.push(DmiSlot {
-                populated,
                 socket,
                 channel,
                 dimm,
-                size_mib,
-                speed_mt,
+                populated,
+                handle,
+                clock_mhz,
+                voltage_mv,
             });
         }
         Ok(out)
+    }
+
+    /// Look up one DDR5 SPD record from APOB V2 `1/0x11` (`ApobV2GetDimmSpdDataSilWh`).
+    ///
+    /// Instance is `(socket << 8) | die`. `+0x40` holds the byte offset from entry
+    /// start to the SPD array, `+0x48` holds `max_channels_per_die`, each channel
+    /// occupies `2 * size_of::<SpdRecord>()` (`0x818`) bytes, and each DIMM slot
+    /// is one `0x40c`-byte [`SpdRecord`].
+    pub fn spd_record(
+        &self,
+        socket: u8,
+        die: u8,
+        channel_on_die: u8,
+        dimm: u8,
+    ) -> Result<Option<&'a SpdRecord>, ApobError> {
+        if dimm >= 2 {
+            return Err(ApobError::Value {
+                group: group::MEMORY,
+                kind: kind::DIMM_SPD,
+                value: dimm.into(),
+            });
+        }
+        let entry = self.find(group::MEMORY, kind::DIMM_SPD, super::instance(socket, die))?;
+        let base_off = entry.at::<U32>(0x40)?.get() as usize;
+        let max_channels = entry.at::<U32>(0x48)?.get() as usize;
+        if max_channels == 0 || usize::from(channel_on_die) >= max_channels || base_off < 0x4c {
+            return Err(ApobError::Value {
+                group: group::MEMORY,
+                kind: kind::DIMM_SPD,
+                value: channel_on_die.into(),
+            });
+        }
+        let channel_stride = 2 * size_of::<SpdRecord>();
+        let off = base_off
+            .checked_add(usize::from(channel_on_die) * channel_stride)
+            .and_then(|o| o.checked_add(usize::from(dimm) * size_of::<SpdRecord>()))
+            .ok_or(ApobError::TooShort {
+                group: group::MEMORY,
+                kind: kind::DIMM_SPD,
+            })?;
+        let rec = entry.at::<SpdRecord>(off)?;
+        Ok(rec.is_present().then_some(rec))
+    }
+
+    /// Decode all DDR5 DIMMs described by APOB V2 `8/8` + `1/0x11` for SMBIOS Type 17.
+    ///
+    /// Channels `0..8` map to die 0 (`channel_on_die = channel`) and `8..16` map to
+    /// die 1 (`channel_on_die = channel - 8`), matching WH dual-IOD UMC layout.
+    #[cfg(feature = "smbios")]
+    pub fn memory_inventory(&self) -> Result<Vec<super::smbios::Dimm, MAX_DMI_SLOTS>, ApobError> {
+        use fstart_core::memory_info::MemoryDevice;
+        let slots = self.dmi_slots()?;
+        let mut dimms = Vec::new();
+        for slot in slots {
+            let die = slot.channel / 8;
+            let ch_on_die = slot.channel % 8;
+            let device = if slot.populated {
+                let spd = self
+                    .spd_record(slot.socket, die, ch_on_die, slot.dimm)?
+                    .ok_or(ApobError::Value {
+                        group: group::MEMORY,
+                        kind: kind::DIMM_SPD,
+                        value: u32::from(slot.channel),
+                    })?;
+                let mts = slot.configured_mts().ok_or(ApobError::Value {
+                    group: group::SMBIOS,
+                    kind: kind::SMBIOS_DMI,
+                    value: u32::from(slot.clock_mhz),
+                })?;
+                let mut dev =
+                    fstart_driver_spd::ddr5::inventory(&spd.data, mts, slot.channel, slot.dimm)
+                        .map_err(|_| ApobError::Value {
+                            group: group::MEMORY,
+                            kind: kind::DIMM_SPD,
+                            value: u32::from(slot.channel),
+                        })?;
+                dev.voltage_mv = slot.voltage_mv.into();
+                dev
+            } else {
+                MemoryDevice::empty(slot.channel, slot.dimm)
+            };
+            dimms
+                .push(super::smbios::Dimm {
+                    socket: slot.socket,
+                    die,
+                    device,
+                })
+                .map_err(|_| ApobError::Value {
+                    group: group::SMBIOS,
+                    kind: kind::SMBIOS_DMI,
+                    value: dimms.len() as u32,
+                })?;
+        }
+        Ok(dimms)
+    }
+
+    /// Parse APOB V2 `7/6` ABL event log for `(socket, die)` (`+0x40` `u16` count,
+    /// `+0x44` array of 16-byte [`Event`]s).
+    pub fn event_log(
+        &self,
+        socket: u8,
+        die: u8,
+    ) -> Result<Vec<Event, MAX_EVENTS_PER_DIE>, ApobError> {
+        let entry = self.find(
+            group::GENERAL,
+            kind::EVENT_LOG,
+            super::instance(socket, die),
+        )?;
+        let count = usize::from(entry.at::<U16>(0x40)?.get());
+        if count > MAX_EVENTS_PER_DIE {
+            return Err(ApobError::Value {
+                group: group::GENERAL,
+                kind: kind::EVENT_LOG,
+                value: count as u32,
+            });
+        }
+        let raw = entry.slice::<RawEventV2>(0x44, count)?;
+        let mut out = Vec::new();
+        for ev in raw {
+            let _ = out.push(Event {
+                class: ev.class.get(),
+                info: ev.info.get(),
+                data_a: ev.data_a.get(),
+                data_b: ev.data_b.get(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Collect APOB V2 `7/6` ABL events across all per-die sections (`1..section_count`).
+    pub fn all_events(&self) -> Vec<Event, MAX_ALL_EVENTS> {
+        let mut out = Vec::new();
+        for sec in 0..self.section_count {
+            let Ok(Some(entry)) = self.scan_section(sec, group::GENERAL, kind::EVENT_LOG, None)
+            else {
+                continue;
+            };
+            let Ok(count) = entry.at::<U16>(0x40).map(|c| usize::from(c.get())) else {
+                continue;
+            };
+            let Ok(raw) = entry.slice::<RawEventV2>(0x44, count) else {
+                continue;
+            };
+            for ev in raw {
+                if out
+                    .push(Event {
+                        class: ev.class.get(),
+                        info: ev.info.get(),
+                        data_a: ev.data_a.get(),
+                        data_b: ev.data_b.get(),
+                    })
+                    .is_err()
+                {
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    /// Decode boot-time ABL errors (DIMM training/test, CCD BIST, DDR5 PMIC) across
+    /// all `7/6` event logs for ACPI BERT and BMC SEL reporting.
+    pub fn abl_errors(&self, bits: DimmBits) -> Vec<AblError, MAX_EVENTS_PER_DIE> {
+        let mut out = Vec::new();
+        for ev in self.all_events() {
+            for err in ev.errors(bits) {
+                if out.push(err).is_err() {
+                    return out;
+                }
+            }
+        }
+        out
     }
 
     /// Parse APOB V2 `1/0x10` ASP authentication mode byte (`+0xD8`).
@@ -487,15 +820,72 @@ pub struct CoreTopologyHeader {
     pub cores_per_complex: u32,
 }
 
-/// One DIMM slot record from APOB V2 `8/8`.
+/// One complex in an APOB V2 `3/3` core topology map (up to 32 cores/CCX).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CcxV2 {
+    pub id: u8,
+    pub cores: Vec<Core, MAX_CORES_PER_CCX>,
+}
+
+/// One CCD in an APOB V2 `3/3` core topology map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CcdV2 {
+    pub id: u8,
+    pub ccxs: Vec<CcxV2, MAX_CCXS_PER_CCD>,
+}
+
+/// Present CCDs, complexes, and cores on one IOD from APOB V2 `3/3`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CoreMapV2 {
+    pub complexes_per_ccd: u8,
+    pub cores_per_complex: u8,
+    pub ccds: Vec<CcdV2, MAX_CCDS_PER_DIE>,
+}
+
+impl CoreMapV2 {
+    /// Enabled hardware threads on this die.
+    pub fn threads(&self) -> usize {
+        self.cores()
+            .map(|(_, _, c)| c.threads.iter().filter(|&&t| t).count())
+            .sum()
+    }
+
+    /// Bitmask of present physical CCD IDs (`bits 0..16`).
+    pub fn ccd_mask(&self) -> u16 {
+        self.ccds
+            .iter()
+            .filter(|d| d.id < 16)
+            .fold(0u16, |mask, d| mask | (1u16 << d.id))
+    }
+
+    /// `(phys_ccd, phys_ccx, core)` for every present core on this die.
+    pub fn cores(&self) -> impl Iterator<Item = (u8, u8, &Core)> {
+        self.ccds
+            .iter()
+            .flat_map(|d| d.ccxs.iter().map(move |x| (d.id, x)))
+            .flat_map(|(d, x)| x.cores.iter().map(move |c| (d, x.id, c)))
+    }
+}
+
+/// One physical DIMM slot record from APOB V2 `8/8` (`APOB_MEM_DMI_PHYSICAL_DIMM_V2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmiSlot {
-    pub populated: bool,
     pub socket: u8,
     pub channel: u8,
     pub dimm: u8,
-    pub size_mib: u32,
-    pub speed_mt: u16,
+    pub populated: bool,
+    pub handle: u16,
+    /// Configured DRAM clock in MHz (multiply by 2 for MT/s).
+    pub clock_mhz: u16,
+    /// Configured DRAM VDD in mV.
+    pub voltage_mv: u16,
+}
+
+impl DmiSlot {
+    /// Configured data rate in MT/s (`clock_mhz * 2`).
+    pub const fn configured_mts(&self) -> Option<u16> {
+        self.clock_mhz.checked_mul(2)
+    }
 }
 
 #[cfg(test)]
@@ -543,8 +933,37 @@ mod tests {
         buf
     }
 
+    fn make_ccx_body(complexes: usize, cores: usize, ccds: &[(u8, usize)]) -> AllocVec<u8> {
+        let mut body = vec![0u8; 0x14];
+        body[0..4].copy_from_slice(&0x54u32.to_le_bytes());
+        body[0x0c..0x10].copy_from_slice(&(complexes as u32).to_le_bytes());
+        body[0x10..0x14].copy_from_slice(&(cores as u32).to_le_bytes());
+        for &(ccd_id, active_cores) in ccds {
+            body.push(ccd_id);
+            for cpx in 0..complexes {
+                body.push(if cpx == 0 { 0 } else { ABSENT });
+                for c in 0..cores {
+                    if cpx == 0 && c < active_cores {
+                        body.extend_from_slice(&[c as u8, 1, 1]);
+                    } else {
+                        body.extend_from_slice(&[ABSENT, 0, 0]);
+                    }
+                }
+            }
+        }
+        // Trailing absent CCD slot.
+        body.push(ABSENT);
+        for _ in 0..complexes {
+            body.extend_from_slice(&[ABSENT]);
+            for _ in 0..cores {
+                body.extend_from_slice(&[ABSENT, 0, 0]);
+            }
+        }
+        body
+    }
+
     #[test]
-    fn parses_sysmap_nps_fabric_ccx_dmi_asp_and_ras() {
+    fn parses_sysmap_nps_fabric_ccx_dmi_spd_events_asp_and_ras() {
         let mut sysmap_body = vec![0u8; 0x20 + 24];
         sysmap_body[0x10..0x18].copy_from_slice(&(16u64 << 30).to_le_bytes());
         sysmap_body[0x18..0x1c].copy_from_slice(&1u32.to_le_bytes());
@@ -552,27 +971,56 @@ mod tests {
         sysmap_body[0x28..0x30].copy_from_slice(&0x8000_0000u64.to_le_bytes());
         sysmap_body[0x30..0x34].copy_from_slice(&0u32.to_le_bytes());
 
-        let nps_body = vec![0u8, 4u8];
+        // 9/0x13: +0x41 (body +0x01) = 3 (NPS4).
+        let nps_body = vec![0u8, 3u8];
         let fab_body = vec![2u8, 4u8, 0u8, 0u8];
-        let mut ccx_body = vec![0u8; 0x18];
-        ccx_body[0..4].copy_from_slice(&0x54u32.to_le_bytes());
-        ccx_body[0x0c..0x10].copy_from_slice(&1u32.to_le_bytes());
-        ccx_body[0x10..0x14].copy_from_slice(&16u32.to_le_bytes());
+        let ccx0_body = make_ccx_body(1, 16, &[(0, 16), (1, 12)]);
+        let ccx1_body = make_ccx_body(1, 32, &[(4, 32)]);
 
-        // 8/8: +0x40 (body +0x00) = u32 table offset from entry start (0x50),
-        //      +0x49 (body +0x09) = u8 count (1), row at entry +0x50 (body +0x10).
-        let mut dmi_body = vec![0u8; 0x10 + 0x20];
+        // 8/8: +0x40 (body +0x00) = u32 table offset (0x50),
+        //      +0x48 (body +0x08) = ECC bit 7 set (0x80),
+        //      +0x49 (body +0x09) = u8 count (2),
+        //      row0 at entry +0x50 (body +0x10), row1 at entry +0x70 (body +0x30).
+        let mut dmi_body = vec![0u8; 0x10 + 2 * 0x20];
         dmi_body[0..4].copy_from_slice(&0x50u32.to_le_bytes());
-        dmi_body[0x09] = 1;
-        dmi_body[0x10] = 1; // populated
-        dmi_body[0x11] = 0; // socket
-        dmi_body[0x12] = 3; // channel
-        dmi_body[0x13] = 0; // dimm
-        dmi_body[0x14..0x18].copy_from_slice(&(65536u32).to_le_bytes());
-        dmi_body[0x18..0x1a].copy_from_slice(&(6400u16).to_le_bytes());
+        dmi_body[0x08] = 0x80; // ECC capable
+        dmi_body[0x09] = 2;
+        // Row 0: socket 0, channel 3 (die 0, ch 3), dimm 0, populated, 3200 MHz (6400 MT/s), 1100 mV
+        dmi_body[0x10] = 0;
+        dmi_body[0x11] = 3;
+        dmi_body[0x12] = 0;
+        dmi_body[0x13] = 1;
+        dmi_body[0x16..0x18].copy_from_slice(&0x0010u16.to_le_bytes());
+        dmi_body[0x18..0x1a].copy_from_slice(&3200u16.to_le_bytes());
+        dmi_body[0x1a..0x1c].copy_from_slice(&1100u16.to_le_bytes());
+        // Row 1: empty slot on channel 8 (die 1, ch 0), dimm 0
+        dmi_body[0x30] = 0;
+        dmi_body[0x31] = 8;
+        dmi_body[0x32] = 0;
+        dmi_body[0x33] = 0;
+
+        // 1/0x11: instance (0, 0), +0x40 = 0x50, +0x48 = 8 channels/die
+        let mut spd_body = vec![0u8; 0x10 + 8 * 2 * size_of::<SpdRecord>()];
+        spd_body[0..4].copy_from_slice(&0x50u32.to_le_bytes());
+        spd_body[0x08..0x0c].copy_from_slice(&8u32.to_le_bytes());
+        let ch3_off = 0x10 + 3 * (2 * size_of::<SpdRecord>());
+        spd_body[ch3_off + 1] = 1; // present
+        spd_body[ch3_off + 8] = 0; // socket
+        spd_body[ch3_off + 9] = 3; // channel
+        spd_body[ch3_off + 10] = 0; // dimm
+        spd_body[ch3_off + 12 + 2] = 0x12; // DDR5 marker byte in SPD
+
+        // 7/6: instance (0, 1), 1 PMU training failure event on socket 0 ch 9 dimm 0
+        let mut evt_body = vec![0u8; 4 + 16];
+        evt_body[0..2].copy_from_slice(&1u16.to_le_bytes());
+        evt_body[4..8].copy_from_slice(&9u32.to_le_bytes()); // class
+        evt_body[8..12].copy_from_slice(&super::super::event::id::PMU_TRAINING.to_le_bytes());
+        let data_a: u32 = (1u32 << 20) | (9u32 << 8); // socket 0, ch 9, dimm 0 (RS bits)
+        evt_body[12..16].copy_from_slice(&data_a.to_le_bytes());
+        evt_body[16..20].copy_from_slice(&0xdead_beefu32.to_le_bytes());
 
         let mut asp_body = vec![0u8; 0xa0];
-        asp_body[0x98] = 0x03; // entry +0xD8 = body +0x98
+        asp_body[0x98] = 0x03;
 
         let mut ras_body = vec![0u8; 0x20];
         ras_body[0x18..0x20].copy_from_slice(&0x0000_ffffu64.to_le_bytes());
@@ -585,18 +1033,14 @@ mod tests {
             make_entry(group::MEMORY, kind::ASP_AUTH, 0, &asp_body),
             make_entry(group::MEMORY, kind::RAS_CS_BITMAP, 0, &ras_body),
         ];
-        let s1 = [make_entry(
-            group::CCX,
-            kind::CCX_TOPOLOGY,
-            0x0000,
-            &ccx_body,
-        )];
-        let s2 = [make_entry(
-            group::CCX,
-            kind::CCX_TOPOLOGY,
-            0x0001,
-            &ccx_body,
-        )];
+        let s1 = [
+            make_entry(group::CCX, kind::CCX_TOPOLOGY, 0x0000, &ccx0_body),
+            make_entry(group::MEMORY, kind::DIMM_SPD, 0x0000, &spd_body),
+        ];
+        let s2 = [
+            make_entry(group::CCX, kind::CCX_TOPOLOGY, 0x0001, &ccx1_body),
+            make_entry(group::GENERAL, kind::EVENT_LOG, 0x0001, &evt_body),
+        ];
         let blob = build_apob_v2(2, &[&s0, &s1, &s2]);
 
         let apob = ApobV2::parse(&blob).unwrap();
@@ -605,7 +1049,8 @@ mod tests {
         assert_eq!(mm.top, 16u64 << 30);
         assert_eq!(mm.holes().len(), 1);
         assert_eq!(mm.low_top(), 0x8000_0000);
-        assert_eq!(apob.nps().unwrap(), 4);
+        assert_eq!(apob.nps().unwrap(), 3);
+        assert_eq!(apob.actual_nps().unwrap(), Nps::Nps4);
         assert_eq!(
             apob.fabric_topology().unwrap(),
             FabricTopology {
@@ -615,23 +1060,53 @@ mod tests {
                 gpu_nodes: 0,
             }
         );
-        assert_eq!(
-            apob.core_topology_header(0, 1).unwrap().cores_per_complex,
-            16
-        );
+
+        let topo0 = apob.core_topology(0, 0).unwrap();
+        assert_eq!(topo0.cores_per_complex, 16);
+        assert_eq!(topo0.ccd_mask(), (1 << 0) | (1 << 1));
+        assert_eq!(topo0.threads(), (16 + 12) * 2);
+
+        let topo1 = apob.core_topology(0, 1).unwrap();
+        assert_eq!(topo1.cores_per_complex, 32);
+        assert_eq!(topo1.ccd_mask(), 1 << 4);
+        assert_eq!(topo1.threads(), 64);
+
+        assert!(apob.ecc_capable().unwrap());
         let dmi = apob.dmi_slots().unwrap();
-        assert_eq!(dmi.len(), 1);
+        assert_eq!(dmi.len(), 2);
+        assert!(dmi[0].populated);
         assert_eq!(
-            (dmi[0].channel, dmi[0].size_mib, dmi[0].speed_mt),
-            (3, 65536, 6400)
+            (dmi[0].channel, dmi[0].configured_mts(), dmi[0].voltage_mv),
+            (3, Some(6400), 1100)
         );
+        assert!(!dmi[1].populated);
+
+        let spd = apob.spd_record(0, 0, 3, 0).unwrap().unwrap();
+        assert_eq!(spd.channel, 3);
+        assert_eq!(spd.data[2], 0x12);
+        assert!(apob.spd_record(0, 0, 0, 0).unwrap().is_none());
+
+        let events = apob.event_log(0, 1).unwrap();
+        assert_eq!(events.len(), 1);
+        let errs = apob.abl_errors(DimmBits::RS);
+        assert_eq!(
+            errs.as_slice(),
+            &[AblError::Dimm {
+                event: super::super::event::id::PMU_TRAINING,
+                socket: 0,
+                channel: 9,
+                dimm: 0,
+                data_a,
+                data_b: 0xdead_beef,
+            }]
+        );
+
         assert_eq!(apob.asp_auth_mode().unwrap(), 0x03);
         assert_eq!(apob.ras_cs_bitmap(0).unwrap(), 0xffff);
     }
 
     #[test]
     fn compact_single_section_and_overlap_validation() {
-        // 1-section header is 0x18 + 4 = 0x1C bytes (smaller than 16-entry 0x58).
         let compact = build_apob_v2(1, &[&[]]);
         assert_eq!(
             compact.len(),
@@ -639,7 +1114,6 @@ mod tests {
         );
         assert!(ApobV2::parse(&compact).is_ok());
 
-        // Overlapping sections must be rejected.
         let mut overlap = build_apob_v2(1, &[&[], &[]]);
         let sec0 = u32::from_le_bytes(overlap[0x18..0x1c].try_into().unwrap());
         overlap[0x1c..0x20].copy_from_slice(&sec0.to_le_bytes());
@@ -658,7 +1132,6 @@ mod tests {
         let short = &blob[..blob.len() - 4];
         assert!(matches!(ApobV2::parse(short), Err(ApobError::Size { .. })));
 
-        // Zero holes and wrapping hole must be rejected.
         let mut zero_holes = vec![0u8; 0x20];
         zero_holes[0x10..0x18].copy_from_slice(&(4u64 << 30).to_le_bytes());
         let s0 = [make_entry(group::FABRIC, kind::SYSMAP, 0, &zero_holes)];
@@ -681,7 +1154,6 @@ mod tests {
         let b = build_apob_v2(1, &[&s0]);
         assert!(ApobV2::parse(&b).unwrap().system_memory_map().is_err());
 
-        // Null address rejected before dereference.
         assert_eq!(
             unsafe { ApobV2::from_address(0, 4096) }.err(),
             Some(ApobError::Signature)

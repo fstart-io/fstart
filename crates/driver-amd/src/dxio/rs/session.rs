@@ -7,7 +7,10 @@ use super::{
     ask::{self, Ask, Port},
     mailbox::{self, Mailbox, Poll},
 };
-use crate::{dxio::DmaBuffer, smn::SmnAccess};
+use crate::{
+    dxio::DmaBuffer,
+    smn::{SmnAccess, SmnReg},
+};
 use core::num::NonZeroU32;
 use fstart_core::services::Timer;
 use heapless::Vec;
@@ -48,6 +51,7 @@ pub struct Prepared {
     ancillary: Ancillary,
     psp_vetting: bool,
     encoding: mailbox::Encoding,
+    doorbell: SmnReg,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -83,6 +87,7 @@ impl Prepared {
             ancillary: Ancillary::new(instance),
             psp_vetting: true,
             encoding: mailbox::Encoding::Retained,
+            doorbell: mailbox::DOORBELL,
         };
         let mut used = [false; 136];
         for config in ports {
@@ -118,6 +123,26 @@ impl Prepared {
     pub fn with_encoding(mut self, encoding: mailbox::Encoding) -> Self {
         self.encoding = encoding;
         self
+    }
+    pub fn with_doorbell(mut self, doorbell: SmnReg) -> Self {
+        self.doorbell = doorbell;
+        self
+    }
+    /// Construct a pre-validated [`Prepared`] bundle from external ASK entries
+    /// (used by [`crate::dxio::wh`] for WH dual-IOD MPIO v2).
+    pub(crate) fn from_parts(
+        asks: Vec<Ask, MAX_PORTS>,
+        ancillary: Ancillary,
+        encoding: mailbox::Encoding,
+        doorbell: SmnReg,
+    ) -> Self {
+        Self {
+            asks,
+            ancillary,
+            psp_vetting: false,
+            encoding,
+            doorbell,
+        }
     }
 }
 
@@ -170,7 +195,9 @@ impl<A: SmnAccess> Session<A> {
         }
         Ok(Self {
             smn,
-            mailbox: unsafe { Mailbox::new_with_encoding(poll, prepared.encoding) },
+            mailbox: unsafe {
+                Mailbox::new_with_doorbell(poll, prepared.encoding, prepared.doorbell)
+            },
             dma,
             prepared,
             sync,
