@@ -6,6 +6,7 @@ extern crate alloc;
 
 use crate::sp3::silicon::hw::{PrimaryFch, msr, post};
 use crate::sp3::silicon::{self, Generation};
+#[cfg(not(feature = "ab-rw"))]
 use fstart_amdfw_format::anchor::FlashAnchor;
 use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
 use fstart_arch::x86::cpu::amd::msr::SYSCFG;
@@ -13,11 +14,14 @@ use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::apob::sysmap;
 use fstart_driver_amd::apob::{self, Apob};
-use fstart_driver_amd::fch::rom3::{self, FlashMap, Rom3};
+#[cfg(not(feature = "ab-rw"))]
+use fstart_driver_amd::fch::rom3::Rom3;
+use fstart_driver_amd::fch::rom3::{self, FlashMap};
 use tock_registers::interfaces::Readable;
 
 use crate::layout::Region;
 use crate::memory;
+#[cfg(not(feature = "ab-rw"))]
 use crate::sp3::layout;
 
 pub(crate) mod handoff;
@@ -60,26 +64,32 @@ pub(crate) struct Ctx<'a> {
     pub soc: &'a silicon::Ctx,
     /// The FFS in the CPU view (ROM3), from the flash anchor.
     #[cfg(feature = "payload-uefi")]
+    #[cfg_attr(feature = "ab-rw", allow(dead_code))]
     pub ffs: Region,
     /// The FFS's flash offset, for the payload's settings storage.
     #[cfg(feature = "payload-uefi")]
+    #[cfg_attr(feature = "ab-rw", allow(dead_code))]
     pub ffs_offset: u32,
     pub smm: Option<crate::smm::SmmConfig<crate::sp3::smm::Sp3>>,
 }
 
 /// The SP3 flash anchor patch site: FFS flash offset and size and the
 /// part size, filled by the image builder (`halved_flash::patch_reset_image`).
+#[cfg(not(feature = "ab-rw"))]
 #[repr(transparent)]
 struct AnchorSite(core::cell::UnsafeCell<FlashAnchor>);
 
 // SAFETY: only the image builder writes it; the reset image only reads.
+#[cfg(not(feature = "ab-rw"))]
 unsafe impl Sync for AnchorSite {}
 
+#[cfg(not(feature = "ab-rw"))]
 #[used]
 static FLASH_ANCHOR: AnchorSite =
     AnchorSite(core::cell::UnsafeCell::new(FlashAnchor::placeholder()));
 
 /// Physical memory the identity map covers, read byte-wise.
+#[cfg(not(feature = "ab-rw"))]
 fn read_phys(address: u64, buf: &mut [u8]) {
     buf.iter_mut().zip(address..).for_each(|(b, a)| {
         // SAFETY: flash windows (ROM2, ROM3), read-only device memory, or
@@ -115,6 +125,7 @@ pub(crate) struct Flash {
 /// settings store. They are read through ROM2 when they lie in the page it
 /// shows; ROM3 is probed only for an FFS outside it, and an EFS or FFS that
 /// neither shows halts.
+#[cfg(not(feature = "ab-rw"))]
 pub(crate) fn flash(fch: &PrimaryFch, generation: Generation) -> Flash {
     // Volatile, so the linked placeholder is not folded into the code.
     let mut anchor = [0; core::mem::size_of::<FlashAnchor>()];
@@ -172,6 +183,48 @@ pub(crate) fn flash(fch: &PrimaryFch, generation: Generation) -> Flash {
         #[cfg(feature = "payload-uefi")]
         ffs_offset: offset,
         size: anchor.flash_size.get(),
+        nvram,
+    }
+}
+
+/// SP3 A/B RW flash view: the booted half's EFS comes from ROM2 (`page` from
+/// RO's handoff), while the active RW FFS slot and shared NVRAM come from
+/// RO's [`AmdAbHandoff`](crate::ab::handoff::AmdAbHandoff).
+#[cfg(feature = "ab-rw")]
+pub(crate) fn flash(_fch: &PrimaryFch, generation: Generation) -> Flash {
+    let h = crate::ab::handoff();
+    let flash_size = h.flash_size.get();
+    let page = h.rom_page;
+    let rom2 = FlashMap::rom2(page, flash_size);
+    let halves: &[u32] = match generation {
+        Generation::Naples => &[0],
+        Generation::Rome | Generation::Milan => &[0, rom3::PAGE_SIZE],
+    };
+    let efs = halves
+        .iter()
+        .filter(|&&half| half < rom2.size)
+        .find_map(|&half| {
+            let len = (rom2.size - half).min(rom3::PAGE_SIZE);
+            let addr = rom2.address(half, len)?;
+            let view = flash_slice(addr, len);
+            generation.flash(view).efs_checked().is_ok().then_some(view)
+        })
+        .or_halt("EFS");
+    let (ffs, _ffs_offset) = crate::ab::rw::active_slot_region(&h).or_halt("A/B active slot");
+    fstart_log::info!(
+        "sp3: A/B flash {:#x} bytes, ROM2 page {}, active FFS at {:#x}+{:#x}",
+        flash_size,
+        page,
+        ffs.base,
+        ffs.size,
+    );
+    let nvram = crate::ab::rw::ab_nvram_slice(&h);
+    Flash {
+        efs,
+        ffs,
+        #[cfg(feature = "payload-uefi")]
+        ffs_offset: _ffs_offset,
+        size: flash_size,
         nvram,
     }
 }

@@ -83,6 +83,37 @@ pub trait Board: 'static {
     /// last boot's errors with it (beside the BERT); the board's SMM image
     /// binds its handler with the same function.
     const BMC_EVENT: Option<BmcEvent> = None;
+    /// RO/A/B firmware update policy (ESRT/FMP GUID, capsule PKCS#7 trust
+    /// certificates, lowest supported version, and optional test fault
+    /// injection). `None` means the board does not support `--option ab=true`.
+    const AB_UPDATE: Option<AbUpdateConfig> = None;
+    /// Whether this board/variant enables RO/A/B updates by default when
+    /// `--option ab` is not explicitly specified.
+    const AB_DEFAULT: bool = false;
+}
+
+/// Board-level RO/A/B firmware update configuration ([`Board::AB_UPDATE`]).
+#[derive(Debug, Clone, Copy)]
+pub struct AbUpdateConfig {
+    /// Stable physical-board firmware family identifier hashed into signed
+    /// `Root.image_family` and RO `TrustBlock.image_family` so `--option ab=true`
+    /// builds and `-ab` variants share one update family.
+    pub image_family: &'static str,
+    /// UEFI ESRT / FMP firmware class GUID.
+    pub firmware_guid: [u8; 16],
+    /// Minimum firmware version advertised in ESRT (`lowest_supported_version`).
+    pub lowest_supported_version: u32,
+    /// Trusted X.509 DER certificates for UEFI FMP PKCS#7 capsule authentication.
+    pub capsule_trust_certs: &'static [&'static [u8]],
+    /// Fail closed in RO if a discrete FIFO TPM 2.0 is not responding.
+    /// Set `true` for platforms/deployments with a mandatory fitted TPM; leave
+    /// `false` for optional TPM headers (RO still halts if `FloorPending` is
+    /// recorded without a live TPM, preventing silent floor-advance skips).
+    pub require_tpm_floor: bool,
+    /// Fault-injection hook for automated rollback testing: when true and a
+    /// trial boot is active, reset before confirming the trial so RO debits
+    /// attempts and falls back to the previous slot.
+    pub fail_trial_before_confirm: bool,
 }
 
 /// A board's BMC report of a RAS event ([`Board::BMC_EVENT`]).
@@ -98,6 +129,7 @@ pub struct Facts {
     pub bmc_sx_notify: Option<crate::smm::SleepNotify>,
     pub ras: crate::smm::ras::Policy,
     pub bmc_event: Option<BmcEvent>,
+    pub ab_update: Option<AbUpdateConfig>,
 }
 
 impl Facts {
@@ -109,6 +141,7 @@ impl Facts {
             bmc_sx_notify: B::BMC_SX_NOTIFY,
             ras: B::RAS,
             bmc_event: B::BMC_EVENT,
+            ab_update: B::AB_UPDATE,
         }
     }
 }

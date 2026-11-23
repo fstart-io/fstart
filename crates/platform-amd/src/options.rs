@@ -24,7 +24,7 @@ pub fn resolve<C: Clone>(
     fstart_log::option::resolve_into(knobs, &source(nvram), config, report, check);
 }
 
-#[cfg(feature = "payload-uefi")]
+#[cfg(all(feature = "payload-uefi", not(feature = "ab-rw")))]
 pub(crate) type FlashStorage = fstart_payload::crabefi::settings::FlashStorage<
     fstart_driver_amd::fch::spi::flash::Flash<fstart_driver_amd::ccx::tsc::Tsc>,
 >;
@@ -35,7 +35,7 @@ pub(crate) type FlashStorage = fstart_payload::crabefi::settings::FlashStorage<
 /// # Safety
 /// SPI100 must be decoded at its fixed base. The payload owns it exclusively
 /// and the caller runs from RAM. The extent is reserved for EFI variables.
-#[cfg(feature = "payload-uefi")]
+#[cfg(all(feature = "payload-uefi", not(feature = "ab-rw")))]
 pub(crate) unsafe fn storage(
     clock: fstart_driver_amd::ccx::tsc::Tsc,
     extent: fstart_driver_amd::fch::spi::flash::Extent,

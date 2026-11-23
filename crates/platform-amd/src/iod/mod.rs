@@ -5,7 +5,7 @@
 //! thread release ([`silicon`]), on the flow with the socket's services
 //! ([`crate::sp3::soc`]). The two differ in their die's IP versions
 //! ([`Variant`]).
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod init;
 pub mod silicon;
 
@@ -25,7 +25,7 @@ pub trait Variant: Send + Sync + 'static {
 pub struct Iod<V>(PhantomData<V>);
 
 /// What the IOD SoCs' silicon steps hand on.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub type State = crate::sp3::soc::State<silicon::Silicon>;
 
 impl<V: Variant> fstart_driver_amd::ccx::microcode::Family for Iod<V> {

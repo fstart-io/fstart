@@ -100,6 +100,7 @@ impl IntelPlan {
             security_version: 0,
             rw_slot: false,
             omit_stages: vec![],
+            image_family: None,
         })
     }
 }

@@ -148,6 +148,7 @@ fn run_ffs_step(
         security_version: ctx.security_version.unwrap_or(image.security_version),
         rw_slot: image.rw_slot,
         omit_stages: &image.omit_stages,
+        image_family: image.image_family.as_deref(),
     };
     crate::assemble::assemble_with_trust(
         ctx.files,
@@ -211,20 +212,49 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
                 ffs_trusts.insert(step.name.clone(), trust_bytes);
                 path
             }
-            ImageOperation::AmdEfs(operation) => amd_efs(
-                ctx,
-                operation,
-                consumed.as_deref(),
-                seed.take().as_ref(),
-                &mut outputs.notes,
-            )?,
-            ImageOperation::AmdHalvedFlash(operation) => amd_halved_flash(
-                ctx,
-                operation,
-                consumed.as_deref(),
-                seed.take(),
-                &mut outputs.notes,
-            )?,
+            ImageOperation::AmdEfs(operation) => {
+                let trust_bytes = match (&operation.ab, &operation.ffs) {
+                    (Some(_), Some(window)) => {
+                        let bytes = ffs_trusts.get(&window.step).ok_or_else(|| {
+                            format!(
+                                "AMD EFS A/B step '{}' did not receive trust policy from FFS step '{}'",
+                                step.name, window.step
+                            )
+                        })?;
+                        Some(bytes)
+                    }
+                    _ => None,
+                };
+                amd_efs(
+                    ctx,
+                    operation,
+                    consumed.as_deref(),
+                    trust_bytes,
+                    seed.take().as_ref(),
+                    &mut outputs.notes,
+                )?
+            }
+            ImageOperation::AmdHalvedFlash(operation) => {
+                let trust_bytes = if operation.compose.ab.is_some() {
+                    let bytes = ffs_trusts.get(&operation.ffs).ok_or_else(|| {
+                        format!(
+                            "AMD halved-flash A/B step '{}' did not receive trust policy from FFS step '{}'",
+                            step.name, operation.ffs
+                        )
+                    })?;
+                    Some(bytes)
+                } else {
+                    None
+                };
+                amd_halved_flash(
+                    ctx,
+                    operation,
+                    consumed.as_deref(),
+                    trust_bytes,
+                    seed.take(),
+                    &mut outputs.notes,
+                )?
+            }
             ImageOperation::X86Flash(operation) => {
                 x86_flash(ctx, operation, consumed.as_deref(), &mut outputs.notes)?
             }
@@ -336,6 +366,7 @@ fn amd_efs(
     ctx: &ImageContext<'_>,
     operation: &crate::amd::assembly::AmdAssembly,
     ffs: Option<&Path>,
+    trust_bytes: Option<&[u8; fstart_core::ffs::trust::TRUST_SIZE]>,
     seed: Option<&crate::options::Seed>,
     notes: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
@@ -351,8 +382,13 @@ fn amd_efs(
         None => None,
     };
     let source_refs: Vec<_> = sources.iter().map(Vec::as_slice).collect();
-    let image =
-        operation.assemble_seeded(&source_refs, &reset_bytes, ffs_bytes.as_deref(), seed)?;
+    let image = operation.assemble_with_trust(
+        &source_refs,
+        &reset_bytes,
+        ffs_bytes.as_deref(),
+        trust_bytes,
+        seed,
+    )?;
     let whole = image.is_whole_flash(operation.flash_size);
     let output = ctx.output_dir.join(if whole {
         format!("{}.rom", ctx.board_name)
@@ -381,9 +417,14 @@ fn amd_efs(
     )?;
     notes.push(if whole {
         format!(
-            "AMD flash image: {} (reset image at {:#x})",
+            "AMD flash image: {} (reset image at {:#x}{})",
             output.display(),
-            image.facts.reset_offset
+            image.facts.reset_offset,
+            if operation.ab.is_some() {
+                ", RO/A/B"
+            } else {
+                ""
+            }
         )
     } else {
         format!(
@@ -401,6 +442,7 @@ fn amd_halved_flash(
     ctx: &ImageContext<'_>,
     image: &halved_flash::AmdHalvedFlashAssembly,
     ffs: Option<&Path>,
+    trust_bytes: Option<&[u8; fstart_core::ffs::trust::TRUST_SIZE]>,
     seed: Option<crate::options::Seed>,
     notes: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
@@ -430,14 +472,15 @@ fn amd_halved_flash(
     let ffs_path = ffs_artifact(ffs, "AMD halved flash")?;
     let ffs = ctx.files.read(&ffs_path)?;
     let reset = stage(ctx.stages, &image.stage_unit)?;
-    let flash = halved_flash::compose_seeded(
+    let flash = halved_flash::compose_with_trust(
         &rom,
         plan,
         &ctx.files.read(&reset.run_path)?,
         &ffs,
+        trust_bytes,
         seed.as_ref().map(|seed| seed.bytes.as_slice()),
     )?;
-    if !flash.patched.locator || !flash.patched.flash {
+    if plan.ab.is_none() && (!flash.patched.locator || !flash.patched.flash) {
         notes.push(
             "warning: the AMD reset stage unit links no FFS locator or flash anchor; \
              it cannot read its FFS"
@@ -466,12 +509,14 @@ fn amd_halved_flash(
     let out = ffs_path.with_extension("rom");
     ctx.files.write(&out, &flash.image)?;
     notes.push(format!(
-        "AMD halved flash image: {} ({} MiB); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; \
+        "AMD halved flash image: {} ({} MiB{}); FFS {:#x} of {:#x} bytes at {:#x}..{:#x}; \
          reset image {:#x} bytes at {:#x} ({reset_copies})",
         out.display(),
         flash.image.len() >> 20,
+        if plan.ab.is_some() { ", RO/A/B" } else { "" },
         ffs.len(),
-        survey.ffs_capacity(),
+        plan.ab
+            .map_or(survey.ffs_capacity(), |ab| ab.rw_slot_size() as usize),
         survey.ffs.start,
         survey.ffs.end,
         plan.reset.size,

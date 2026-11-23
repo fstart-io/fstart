@@ -100,11 +100,72 @@ impl AbSlotLayout {
         }
     }
 
+    /// Flash offset of `Slot::A` in bytes.
+    pub const fn slot_a_offset(self) -> u32 {
+        match self {
+            Self::RoA { slot_a_offset, .. } | Self::RoAB { slot_a_offset, .. } => slot_a_offset,
+        }
+    }
+
     /// Size of each RW slot in bytes (`Slot::A` extent size; equal to `Slot::B` in valid `RoAB`).
     pub const fn rw_slot_size(self) -> u32 {
         match self {
             Self::RoA { slot_a_size, .. } | Self::RoAB { slot_a_size, .. } => slot_a_size,
         }
+    }
+
+    /// Validate that all `SLOT_STATE` sectors and RW slots satisfy [`SlotLayout::validate`]
+    /// and lie strictly within `[min_offset, max_offset)`.
+    pub fn validate_within(self, min_offset: u32, max_offset: u32) -> Result<(), String> {
+        let layout = self.to_slot_layout();
+        layout
+            .validate(max_offset)
+            .map_err(|e| format!("invalid A/B slot layout: {e:?}"))?;
+        let starts: &[u32] = match self {
+            Self::RoA {
+                state_sector_0,
+                state_sector_1,
+                slot_a_offset,
+                ..
+            } => &[state_sector_0, state_sector_1, slot_a_offset],
+            Self::RoAB {
+                state_sector_0,
+                state_sector_1,
+                slot_a_offset,
+                slot_b_offset,
+                ..
+            } => &[state_sector_0, state_sector_1, slot_a_offset, slot_b_offset],
+        };
+        if starts.iter().any(|&start| start < min_offset) {
+            return Err(format!(
+                "A/B slot layout overlaps reserved prefix below {min_offset:#x}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Authenticate a signed RW FFS slot image's `Root` against a finalized RO `TrustBlock`.
+    pub fn verify_rw_root_against_trust(
+        trust_bytes: &[u8; fstart_core::ffs::trust::TRUST_SIZE],
+        rw_ffs: &[u8],
+    ) -> Result<(), String> {
+        let trust = fstart_core::ffs::trust::TrustBlock::parse(trust_bytes)
+            .filter(|t| t.key_count.get() > 0)
+            .ok_or("invalid or empty TrustBlock from FFS step")?;
+        if rw_ffs.len() < ROOT_SIZE {
+            return Err("RW FFS image smaller than Root".into());
+        }
+        let policy = fstart_ffs::root::RootPolicy {
+            image_family: trust.image_family,
+            minimum_security_version: trust.minimum_security_version.get(),
+            image_size: rw_ffs.len() as u64,
+            // Matches `fstart_stage::directory::MAX_DIRECTORY_SIZE`.
+            max_directory_size: 64 * 1024,
+            keys: trust.valid_keys(),
+        };
+        fstart_ffs::root::authenticate_root(&policy, &rw_ffs[..ROOT_SIZE])
+            .map_err(|e| format!("RW slot Root failed RO TrustBlock auth: {e:?}"))?;
+        Ok(())
     }
 }
 

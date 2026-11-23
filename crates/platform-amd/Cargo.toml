@@ -16,18 +16,49 @@ host = [
 ]
 # The boot media mount of a PSP-booted stage.
 media = ["dep:fstart-stage", "fstart-stage/ffs"]
+# Shared runtime of a full AMD silicon-init + payload stage (everything in
+# `bundle` except the 16-bit PSP reset entry, so an A/B RW stage loaded by
+# RO at `_start_ram` shares the entire silicon/ACPI/SMM/payload stack).
+stage-runtime = [
+  "media",
+  "dep:fstart-stage", "dep:fstart-payload",
+  "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
+  "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
+  "fstart-stage/tcg", "fstart-payload/tcg",
+  "dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-driver-uart/pio",
+]
 # A reset image: one DRAM stage from the PSP's release of the BSP to the
 # payload, entered through the arch crate's asm/amd_psp_reset.S: the stage
 # runtime, the FFS the payload comes from, whose root the signature
 # features authenticate, and the TPM.
 bundle = [
-  "media",
-  "dep:fstart-stage", "dep:fstart-payload",
+  "stage-runtime",
   "fstart-arch/amd-psp-reset",
-  "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
+]
+# AMD RO/A/B selector reset image (BIOS directory entry 0x62): enters through
+# asm/amd_psp_reset.S, enables early SPI100 + WP MTRR, authenticates the
+# active RW slot against FSTART_TRUST, loads the RW stage to DRAM, and jumps
+# to `_start_ram`.
+ab-ro = [
+  "media",
+  "dep:fstart-stage", "dep:fstart-ffs", "dep:fstart-crypto",
+  "fstart-arch/amd-psp-reset",
+  "fstart-stage/x86_64", "fstart-stage/ffs",
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
-  "fstart-stage/tcg", "fstart-payload/tcg",
-  "dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-driver-uart/pio",
+  "fstart-ffs/ed25519", "fstart-ffs/sha2-digest",
+  "fstart-crypto/sha2-digest",
+  "fstart-driver-amd/spi-flash",
+  "dep:fstart-driver-tpm",
+  "fstart-driver-uart/pio",
+]
+# AMD RO/A/B RW stage: entered in 64-bit long mode at `_start_ram` from RO,
+# runs full silicon init, confirms trial boots, locks FCH SPI, and hands
+# `FstartCapsuleBackend` + `FlashStorage` to CrabEFI.
+ab-rw = [
+  "stage-runtime",
+  "dep:fstart-ffs",
+  "fstart-ffs/ed25519", "fstart-ffs/sha2-digest",
+  "fstart-driver-amd/spi-flash",
 ]
 # The SMM handler and `smm_bin!` for a board's SMM unit; the stage embeds
 # the image fbuild built from it (FSTART_SMM_IMAGE).
@@ -1419,6 +1450,8 @@ embedded-hal.workspace = true
 fstart-driver-i2c.workspace = true
 fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
 fstart-stage = { workspace = true, optional = true }
+fstart-ffs = { workspace = true, optional = true }
+fstart-crypto = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
 heapless.workspace = true
 fstart-acpi = { workspace = true, features = ["x86", "pci"] }

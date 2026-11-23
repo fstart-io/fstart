@@ -22,6 +22,20 @@ use fstart_platform_amd::board::SocId;
 use fstart_platform_amd::rs::links::{Behind, Soldered};
 use fstart_platform_amd::rs::{Config, Mpio};
 
+/// ESRT firmware class GUID for Tyan S8040 (`e7a4b840-8040-4f53-91a2-f57a27580400`).
+pub const FIRMWARE_GUID: [u8; 16] = [
+    0x40, 0xb8, 0xa4, 0xe7, 0x40, 0x80, 0x53, 0x4f, 0x91, 0xa2, 0xf5, 0x7a, 0x27, 0x58, 0x04, 0x00,
+];
+
+#[cfg(feature = "dev-keys")]
+const DEV_CAPSULE_TRUST_CERT_DER: &[u8] = include_bytes!("../dev-capsule-cert.der");
+
+#[cfg(feature = "dev-keys")]
+static CAPSULE_TRUST_CERTS: &[&[u8]] = &[DEV_CAPSULE_TRUST_CERT_DER];
+
+#[cfg(not(feature = "dev-keys"))]
+static CAPSULE_TRUST_CERTS: &[&[u8]] = &[];
+
 pub struct Board;
 
 impl fstart_platform_amd::board::Board for Board {
@@ -36,6 +50,16 @@ impl fstart_platform_amd::board::Board for Board {
     const RAS: fstart_platform_amd::smm::ras::Policy =
         fstart_platform_amd::smm::ras::Policy::THRESHOLDS;
     const BMC_EVENT: Option<fstart_platform_amd::board::BmcEvent> = Some(bmc::sel);
+    const AB_UPDATE: Option<fstart_platform_amd::board::AbUpdateConfig> =
+        Some(fstart_platform_amd::board::AbUpdateConfig {
+            image_family: "tyan-s8040",
+            firmware_guid: FIRMWARE_GUID,
+            lowest_supported_version: 1,
+            capsule_trust_certs: CAPSULE_TRUST_CERTS,
+            require_tpm_floor: false,
+            fail_trial_before_confirm: cfg!(all(feature = "fail-trial", feature = "dev-keys")),
+        });
+    const AB_DEFAULT: bool = cfg!(feature = "ab");
 }
 
 /// Soldered devices the boot needs, by their lane and what is behind the

@@ -171,6 +171,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         security_version: 0,
         rw_slot: false,
         omit_stages: vec![],
+        image_family: None,
     };
     // The payload ELF; the assembler enforces what actually fits.
     let inputs: Vec<InputFile> = if elf {

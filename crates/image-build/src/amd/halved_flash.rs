@@ -200,6 +200,8 @@ pub enum ImageError {
     Verify(&'static str),
     /// Settings to seed, but no settings store or one too small for them.
     Settings(&'static str),
+    /// A/B slot layout or RW Root verification failed.
+    Ab(String),
 }
 
 impl From<DirError> for ImageError {
@@ -379,6 +381,11 @@ pub struct FlashPlan {
     /// image has it erased; the FFS ends below it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nvram: Option<NvramSlot>,
+    /// Optional RO/A(/B) slot layout inside the lower half's `[ffs_offset, ffs_limit())`
+    /// window. When set, the reset image is an RO selector (`ro`) and `ffs` is the
+    /// signed RW-slot image populated into `SLOT_STATE` and `RW_A`(/`RW_B`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ab: Option<crate::capsule::AbSlotLayout>,
 }
 
 /// A flash range the firmware writes at runtime, in the lower half.
@@ -455,6 +462,15 @@ impl FlashPlan {
                 "settings store not 4 KiB aligned below the reset image",
             ));
         }
+        if let Some(ab) = self.ab {
+            if self.generations.len() > 1 {
+                return Err(ImageError::Ab(
+                    "AMD A/B halved flash currently supports a single lower-half generation".into(),
+                ));
+            }
+            ab.validate_within(self.ffs_offset, self.ffs_limit())
+                .map_err(ImageError::Ab)?;
+        }
         Ok(())
     }
 
@@ -467,8 +483,14 @@ impl FlashPlan {
     /// Decide every half of `rom` and the FFS window.
     pub fn survey(&self, rom: &[u8]) -> Result<Survey, ImageError> {
         self.check()?;
+        let raw_halves = halves(rom)?;
+        if self.ab.is_some() && raw_halves.len() > 1 {
+            return Err(ImageError::Ab(
+                "AMD A/B halved flash supports only a single 16 MiB lower-half image".into(),
+            ));
+        }
         let reset_at = self.reset.flash_offset as usize;
-        let halves = halves(rom)?
+        let halves = raw_halves
             .into_iter()
             .map(|(half, bytes)| {
                 let action = match half_generation(bytes) {
@@ -508,6 +530,12 @@ impl FlashPlan {
             .collect();
         if composed.len() == 2 && composed[0] == composed[1] {
             return Err(ImageError::Layout("both halves carry the same generation"));
+        }
+        if self.ab.is_some() && lower.prefix_end > self.ffs_offset as usize {
+            return Err(ImageError::PrefixOverlap {
+                prefix_end: lower.prefix_end,
+                limit: self.ffs_offset as usize,
+            });
         }
         let start = (self.ffs_offset as usize).max(lower.prefix_end.next_multiple_of(0x1000));
         let limit = self.ffs_limit() as usize;
@@ -582,8 +610,13 @@ fn build(
         let reset_at = half.offset() + plan.reset.flash_offset as usize;
         out[reset_at..reset_at + reset.len()].copy_from_slice(reset);
     }
-    let start = survey.ffs.start as usize;
-    out[start..start + ffs.len()].copy_from_slice(ffs);
+    if let Some(ab) = plan.ab {
+        crate::capsule::populate_rw_slots(&mut out[..HALF_SIZE], ab.to_slot_layout(), ffs)
+            .map_err(ImageError::Ab)?;
+    } else {
+        let start = survey.ffs.start as usize;
+        out[start..start + ffs.len()].copy_from_slice(ffs);
+    }
     // A new image starts with an empty settings store, or the seeded one.
     match (plan.nvram, settings) {
         (Some(nvram), settings) => {
@@ -756,6 +789,17 @@ pub fn patch_reset_image(
     ffs: &[u8],
     flash: FlashAnchor,
 ) -> Result<Patched, ImageError> {
+    patch_reset_image_with_trust(reset, ffs, flash, None)
+}
+
+/// [`patch_reset_image`] with an explicit finalized [`TrustBlock`] override
+/// (used in RO/A/B mode where the RO stage is omitted from the RW FFS).
+pub fn patch_reset_image_with_trust(
+    reset: &mut [u8],
+    ffs: &[u8],
+    flash: FlashAnchor,
+    trust_override: Option<&[u8; TRUST_SIZE]>,
+) -> Result<Patched, ImageError> {
     let mut trust_placeholder = [0; TRUST_SIZE];
     TrustBlock::placeholder().write_to(&mut trust_placeholder);
     let mut locator_placeholder = [0; LOCATOR_SIZE];
@@ -763,8 +807,16 @@ pub fn patch_reset_image(
 
     let trust = site(reset, &trust_placeholder)?
         .map(|at| {
-            let trust = ffs_trust(ffs, &trust_placeholder)
-                .ok_or(ImageError::Patch("FFS carries no finalized trust policy"))?;
+            let trust = match trust_override {
+                Some(bytes) => {
+                    TrustBlock::parse(bytes)
+                        .filter(|t| t.key_count.get() > 0)
+                        .ok_or(ImageError::Patch("invalid finalized trust override"))?;
+                    *bytes
+                }
+                None => ffs_trust(ffs, &trust_placeholder)
+                    .ok_or(ImageError::Patch("FFS carries no finalized trust policy"))?,
+            };
             reset[at..at + TRUST_SIZE].copy_from_slice(&trust);
             Ok::<_, ImageError>(())
         })
@@ -821,17 +873,63 @@ pub fn compose_seeded(
     ffs: &[u8],
     settings: Option<&[u8]>,
 ) -> Result<AmdHalvedFlash, ImageError> {
+    compose_with_trust(rom, plan, reset_image, ffs, None, settings)
+}
+
+/// [`compose_seeded`] with an explicit finalized [`TrustBlock`] (required when
+/// `plan.ab` is `Some(_)`).
+pub fn compose_with_trust(
+    rom: &[u8],
+    plan: &FlashPlan,
+    reset_image: &[u8],
+    ffs: &[u8],
+    trust_override: Option<&[u8; TRUST_SIZE]>,
+    settings: Option<&[u8]>,
+) -> Result<AmdHalvedFlash, ImageError> {
     let survey = plan.survey(rom)?;
-    if ffs.len() > survey.ffs_capacity() {
+    let capacity = match plan.ab {
+        Some(ab) => ab.rw_slot_size() as usize,
+        None => survey.ffs_capacity(),
+    };
+    if ffs.len() > capacity {
         return Err(ImageError::FfsTooLarge {
             size: ffs.len(),
-            capacity: survey.ffs_capacity(),
+            capacity,
         });
+    }
+    if plan.ab.is_some() {
+        let trust = trust_override.ok_or_else(|| {
+            ImageError::Ab("A/B halved flash requires finalized TrustBlock from FFS step".into())
+        })?;
+        crate::capsule::AbSlotLayout::verify_rw_root_against_trust(trust, ffs)
+            .map_err(ImageError::Ab)?;
     }
     check_reset_image(plan, reset_image)?;
     let mut reset = reset_image.to_vec();
-    let anchor = FlashAnchor::new(rom.len() as u32, survey.ffs.start, ffs.len() as u32);
-    let patched = patch_reset_image(&mut reset, ffs, anchor)?;
+    let anchor = FlashAnchor::new(
+        rom.len() as u32,
+        match plan.ab {
+            Some(ab) => ab.slot_a_offset(),
+            None => survey.ffs.start,
+        },
+        match plan.ab {
+            Some(ab) => ab.rw_slot_size(),
+            None => ffs.len() as u32,
+        },
+    );
+    let patched = patch_reset_image_with_trust(&mut reset, ffs, anchor, trust_override)?;
+    if plan.ab.is_some() {
+        if !patched.trust {
+            return Err(ImageError::Patch(
+                "A/B RO reset image links no FSTART_TRUST placeholder",
+            ));
+        }
+        if !patched.flash {
+            return Err(ImageError::Patch(
+                "A/B RO reset image links no FlashAnchor placeholder",
+            ));
+        }
+    }
     let image = build(rom, plan, &survey, &reset, ffs, settings)?;
     verify(&image, plan, &survey)?;
     Ok(AmdHalvedFlash {
@@ -900,6 +998,9 @@ pub fn packed_rom(
 ) -> Result<Vec<u8>, String> {
     if halves.is_empty() || halves.len() > 2 {
         return Err("a halved AMD flash has one or two halves".into());
+    }
+    if plan.ab.is_some() && halves.len() > 1 {
+        return Err("AMD A/B halved flash supports only a single 16 MiB lower-half image".into());
     }
     let mut rom = Vec::with_capacity(halves.len() * HALF_SIZE);
     for half in halves {
@@ -999,6 +1100,12 @@ impl AmdHalvedFlashAssembly {
         let slot = self.compose.reset;
         if self.packed.is_empty() || self.packed.len() > 2 {
             return Err("a halved-flash image packs one or two halves".into());
+        }
+        if self.compose.ab.is_some() && self.packed.len() > 1 {
+            return Err(
+                "AMD A/B halved-flash assembly supports only a single 16 MiB lower-half image"
+                    .into(),
+            );
         }
         if plan.stages.first() != Some(&self.stage_unit) {
             return Err("halved-flash stage unit must be the first image stage".into());

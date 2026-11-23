@@ -518,3 +518,94 @@ pub unsafe fn load_bootstrap(
     load_bootstrap_into(media, descriptor, workspace, codec, measurement)?;
     Ok(VerifiedExecutable { entry })
 }
+
+/// Validate, place, and load a bootstrap stage using a separate caller-supplied
+/// `scratch` buffer for compressed input rather than placing compressed bytes
+/// contiguously after `descriptor.load_addr + descriptor.loaded_size`.
+///
+/// # Safety
+/// Same mapping, exclusivity, and non-aliasing requirements as [`load_bootstrap`];
+/// `scratch` must also be disjoint from `descriptor.load_addr..load_addr+loaded_size`
+/// and from `media` (both enforced dynamically before creating the output slice).
+pub unsafe fn load_bootstrap_with_scratch(
+    media: &(impl BootMedia + ?Sized),
+    descriptor: &BootstrapDescriptor,
+    policy: &MemoryPolicy<'_>,
+    scratch: &mut [u8],
+    codec: &dyn Codec,
+    measurement: &Measurement<'_>,
+) -> Result<VerifiedExecutable, LoadError> {
+    descriptor
+        .validate(media.size() as u64)
+        .map_err(|_| LoadError::Bounds)?;
+    let entry = descriptor
+        .load_addr
+        .checked_add(descriptor.entry_offset)
+        .ok_or(LoadError::Bounds)?;
+    if descriptor.entry_offset >= descriptor.loaded_size
+        || policy.entry_alignment == 0
+        || !policy.entry_alignment.is_power_of_two()
+        || entry % policy.entry_alignment != 0
+    {
+        return Err(LoadError::MemoryPolicy);
+    }
+    place(media, policy, descriptor.load_addr, descriptor.loaded_size)?;
+    let loaded = usize::try_from(descriptor.loaded_size).map_err(|_| LoadError::Bounds)?;
+    let stored = usize::try_from(descriptor.stored_size).map_err(|_| LoadError::Bounds)?;
+    if !scratch.is_empty() {
+        let out_win = MemoryWindow {
+            start: descriptor.load_addr,
+            size: descriptor.loaded_size,
+        };
+        let scratch_start = scratch.as_ptr() as u64;
+        let scratch_size = scratch.len() as u64;
+        let scratch_win = MemoryWindow {
+            start: scratch_start,
+            size: scratch_size,
+        };
+        if out_win.overlaps(scratch_win) || media.overlaps_range(scratch_start, scratch_size) {
+            return Err(LoadError::MemoryPolicy);
+        }
+    }
+    match descriptor.compression {
+        Compression::None => {
+            if descriptor.stored_size != descriptor.loaded_size
+                || descriptor.stored_digest != descriptor.loaded_digest
+            {
+                return Err(LoadError::Bounds);
+            }
+            // SAFETY: `place` verified `load_addr..load_addr+loaded_size` lies
+            // within `policy.writable`, outside `policy.reserved`, and disjoint
+            // from `media` and `scratch`.
+            let output =
+                unsafe { core::slice::from_raw_parts_mut(descriptor.load_addr as *mut u8, loaded) };
+            drop(
+                read(media, descriptor.offset, output)?
+                    .verify::<Sha256>(&descriptor.stored_digest, LoadError::StoredDigest)?
+                    .measure(measurement),
+            );
+        }
+        compression => {
+            if !codec.supports(compression) {
+                return Err(LoadError::Unsupported);
+            }
+            if scratch.len() < stored {
+                return Err(LoadError::Bounds);
+            }
+            // SAFETY: `place` validated `output`, and the whole-slice overlap
+            // checks above confirmed `output` is strictly disjoint from
+            // `scratch` and `media` before constructing the mutable destination
+            // slice.
+            let output =
+                unsafe { core::slice::from_raw_parts_mut(descriptor.load_addr as *mut u8, loaded) };
+            drop(
+                read(media, descriptor.offset, &mut scratch[..stored])?
+                    .verify::<Sha256>(&descriptor.stored_digest, LoadError::StoredDigest)?
+                    .measure(measurement)
+                    .decompress(codec, compression, output)?
+                    .verify::<Sha256>(&descriptor.loaded_digest, LoadError::LoadedDigest)?,
+            );
+        }
+    }
+    Ok(VerifiedExecutable { entry })
+}

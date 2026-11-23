@@ -426,3 +426,136 @@ fn in_place_bytes_are_measured_only_when_mapped_and_matching() {
     assert!(InPlace::new(&media, 6, 5).is_err());
     assert!(InPlace::new(&medium(b"hello"), 0, 5).is_err());
 }
+
+#[test]
+fn load_bootstrap_with_scratch_supports_exact_fit_output_and_rejects_overlap() {
+    let mut output = [0u8; 5];
+    let mut scratch = [0u8; 6];
+    let load_addr = output.as_mut_ptr() as u64;
+    let mut desc = descriptor(b"\x50hello", b"hello", Compression::Lz4);
+    desc.load_addr = load_addr;
+    let writable = [MemoryWindow {
+        start: load_addr,
+        size: output.len() as u64,
+    }];
+    let policy = MemoryPolicy {
+        writable: &writable,
+        reserved: &[],
+        entry_alignment: 1,
+    };
+    let media = medium(b"\x50hello");
+
+    // Standard `load_bootstrap` rejects because `output` only fits `loaded_size`,
+    // not `loaded_size + stored_size`.
+    assert_eq!(
+        unsafe { load_bootstrap(&media, &desc, &policy, &Lz4, &Measurement::NONE) }.unwrap_err(),
+        LoadError::MemoryPolicy
+    );
+
+    // Too-small scratch is rejected with `Bounds`.
+    assert_eq!(
+        unsafe {
+            load_bootstrap_with_scratch(
+                &media,
+                &desc,
+                &policy,
+                &mut scratch[..5],
+                &Lz4,
+                &Measurement::NONE,
+            )
+        }
+        .unwrap_err(),
+        LoadError::Bounds
+    );
+
+    // Scratch overlapping `output` is rejected with `MemoryPolicy` without UB.
+    let mut overlap = [0u8; 11];
+    let ov_addr = overlap.as_mut_ptr() as u64;
+    let mut ov_desc = desc.clone();
+    ov_desc.load_addr = ov_addr;
+    let ov_writable = [MemoryWindow {
+        start: ov_addr,
+        size: 5,
+    }];
+    let ov_policy = MemoryPolicy {
+        writable: &ov_writable,
+        reserved: &[],
+        entry_alignment: 1,
+    };
+    assert_eq!(
+        unsafe {
+            load_bootstrap_with_scratch(
+                &media,
+                &ov_desc,
+                &ov_policy,
+                &mut overlap[2..8],
+                &Lz4,
+                &Measurement::NONE,
+            )
+        }
+        .unwrap_err(),
+        LoadError::MemoryPolicy
+    );
+
+    // Tail of `scratch` beyond `stored_size` overlapping `output` is also rejected.
+    let mut tail_overlap = [0u8; 16];
+    let tail_out_addr = unsafe { tail_overlap.as_mut_ptr().add(10) } as u64;
+    let mut tail_desc = desc.clone();
+    tail_desc.load_addr = tail_out_addr;
+    let tail_writable = [MemoryWindow {
+        start: tail_out_addr,
+        size: 5,
+    }];
+    let tail_policy = MemoryPolicy {
+        writable: &tail_writable,
+        reserved: &[],
+        entry_alignment: 1,
+    };
+    assert_eq!(
+        unsafe {
+            load_bootstrap_with_scratch(
+                &media,
+                &tail_desc,
+                &tail_policy,
+                &mut tail_overlap[..12],
+                &Lz4,
+                &Measurement::NONE,
+            )
+        }
+        .unwrap_err(),
+        LoadError::MemoryPolicy
+    );
+
+    // Uncompressed load also rejects an overlapping `scratch` slice.
+    let mut uncomp_desc = descriptor(b"hello", b"hello", Compression::None);
+    uncomp_desc.load_addr = ov_addr;
+    assert_eq!(
+        unsafe {
+            load_bootstrap_with_scratch(
+                &medium(b"hello"),
+                &uncomp_desc,
+                &ov_policy,
+                &mut overlap[2..8],
+                &Stored,
+                &Measurement::NONE,
+            )
+        }
+        .unwrap_err(),
+        LoadError::MemoryPolicy
+    );
+
+    // Disjoint scratch succeeds and populates `output` exactly.
+    let exec = unsafe {
+        load_bootstrap_with_scratch(
+            &media,
+            &desc,
+            &policy,
+            &mut scratch,
+            &Lz4,
+            &Measurement::NONE,
+        )
+    }
+    .unwrap();
+    assert_eq!(exec.entry(), load_addr);
+    assert_eq!(&output, b"hello");
+}

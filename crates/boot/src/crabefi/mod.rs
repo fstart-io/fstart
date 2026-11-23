@@ -23,7 +23,7 @@ pub type FramebufferConfig = crabefi::FramebufferConfig;
 pub use crabefi::peripheral;
 pub use crabefi::{
     CapsuleBackend, DeferredBufferConfig, FirmwareInfo, PciEcamRegion, RuntimeImageSource,
-    RuntimePlatformConfig, StorageBackend,
+    RuntimePlatformConfig, StorageBackend, StorageError,
 };
 
 /// fstart-owned UEFI payload configuration.
@@ -71,6 +71,19 @@ pub struct PlatformConfig<'a> {
     pub hooks: Option<&'a dyn crabefi::PlatformHooks>,
     /// Optional Capsule-on-Disk backend (RO/A/B or RO/A flash writer).
     pub capsule_backend: Option<&'a mut dyn CapsuleBackend>,
+    /// Optional fail-closed post-capsule hook invoked unconditionally once
+    /// CrabEFI finishes variable-store import and pending capsule processing
+    /// (`TS_CRABEFI_VARSTORE_INIT`), before `measure_initial_boot()` and
+    /// `boot_manager::run()`. Platforms use this to confirm A/B trials and
+    /// lock A/B slots (`RomProtect0..2` + `PROTECT_LOCK`) while keeping NVRAM
+    /// writable for CrabEFI's own Boot Menu (`BootNext`, Firmware Settings,
+    /// Secure Boot UI).
+    pub post_capsule_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+    /// Mandatory fail-closed pre-boot hardware flash lockdown invoked
+    /// unconditionally before any third-party EFI binary or OS executes
+    /// (`TS_CRABEFI_OS_LOADER_START`, `TS_CRABEFI_EXIT_BOOT_SERVICES_ENTRY`,
+    /// `TS_CRABEFI_EXIT_BOOT_SERVICES`, `quiesce_dma`, `on_exit_boot_services`).
+    pub pre_boot_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
 }
 
 /// Common fstart-owned UEFI launch inputs.
@@ -104,10 +117,193 @@ pub struct UefiLaunchConfig<'a> {
     /// Optional warm-reset-retained deferred variable buffer (enables runtime
     /// `SetVariable(OsIndications)` without SMM).
     pub deferred_buffer: Option<DeferredBufferConfig>,
+    /// Optional fail-closed post-capsule hook invoked at
+    /// `TS_CRABEFI_VARSTORE_INIT` right after variable import and pending
+    /// capsule processing, before `measure_initial_boot()` and Boot Menu.
+    pub post_capsule_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+    /// Mandatory fail-closed hardware flash lockdown invoked before any
+    /// third-party EFI binary, bootloader, or OS executes.
+    pub pre_boot_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
 }
 
-fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
+/// Two-phase fail-closed lockdown recorder wired to CrabEFI timestamps and
+/// [`crabefi::PlatformHooks`]:
+///
+/// 1. `post_capsule_lock` fires once at `TS_CRABEFI_VARSTORE_INIT` (right
+///    after deferred variable replay, `process_pending_capsules`, and
+///    `complete_import`, before `measure_initial_boot` and `boot_manager::run`).
+///    Platforms use it to confirm an A/B trial and lock A/B slots while leaving
+///    NVRAM writable for CrabEFI's trusted Boot Menu / Settings UI.
+/// 2. `pre_boot_lock` fires once after `LoadImage` authentication succeeds and
+///    before any third-party EFI image or OS runs (`TS_CRABEFI_OS_LOADER_START`,
+///    `TS_CRABEFI_EXIT_BOOT_SERVICES_ENTRY`, `TS_CRABEFI_EXIT_BOOT_SERVICES`,
+///    `quiesce_dma`, and `on_exit_boot_services`), ensuring `post_capsule_lock`
+///    ran first if `VARSTORE_INIT` was ever skipped. Leaving `OS_LOADER_LOAD`
+///    unlocked ensures a rejected Secure Boot binary returning to the Boot Menu
+///    does not write-protect CrabEFI's own Settings / Secure Boot UI.
+struct PreBootLockRecorder<'a> {
+    post_capsule_done: core::sync::atomic::AtomicBool,
+    pre_boot_done: core::sync::atomic::AtomicBool,
+    post_capsule_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+    pre_boot_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+}
+
+impl<'a> PreBootLockRecorder<'a> {
+    const fn new(
+        post_capsule_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+        pre_boot_lock: Option<&'a (dyn Fn() -> Result<(), ()> + Sync)>,
+    ) -> Self {
+        Self {
+            post_capsule_done: core::sync::atomic::AtomicBool::new(false),
+            pre_boot_done: core::sync::atomic::AtomicBool::new(false),
+            post_capsule_lock,
+            pre_boot_lock,
+        }
+    }
+
+    fn try_ensure_post_capsule(&self) -> Result<(), ()> {
+        use core::sync::atomic::Ordering;
+        if self.post_capsule_done.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(lock_fn) = self.post_capsule_lock {
+            lock_fn()?;
+        }
+        self.post_capsule_done.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn try_ensure_pre_boot(&self) -> Result<(), ()> {
+        use core::sync::atomic::Ordering;
+        self.try_ensure_post_capsule()?;
+        if self.pre_boot_done.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(lock_fn) = self.pre_boot_lock {
+            lock_fn()?;
+        }
+        self.pre_boot_done.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn ensure_post_capsule_or_halt(&self) {
+        if self.try_ensure_post_capsule().is_err() {
+            halt_on_pre_boot_lock_failure();
+        }
+    }
+
+    fn ensure_pre_boot_or_halt(&self) {
+        if self.try_ensure_pre_boot().is_err() {
+            halt_on_pre_boot_lock_failure();
+        }
+    }
+}
+
+fn halt_on_pre_boot_lock_failure() -> ! {
+    fstart_log::error!("crabefi: mandatory pre-boot flash lockdown failed; halting");
+    fstart_log::flush();
+    #[cfg(test)]
+    panic!("crabefi: mandatory pre-boot flash lockdown failed");
+    #[cfg(all(not(test), target_arch = "x86_64"))]
+    fstart_arch::x86::boot::halt();
+    #[cfg(all(not(test), target_arch = "aarch64"))]
+    fstart_arch::aarch64::halt();
+    #[cfg(all(not(test), target_arch = "riscv64"))]
+    fstart_arch::riscv64::halt();
+    #[cfg(all(
+        not(test),
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        ))
+    ))]
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+impl crabefi::TimestampRecorder for PreBootLockRecorder<'_> {
+    fn record(&self, id: u32) {
+        match id {
+            crabefi::timestamp::TS_CRABEFI_VARSTORE_INIT => {
+                self.ensure_post_capsule_or_halt();
+            }
+            crabefi::timestamp::TS_CRABEFI_OS_LOADER_START
+            | crabefi::timestamp::TS_CRABEFI_EXIT_BOOT_SERVICES_ENTRY
+            | crabefi::timestamp::TS_CRABEFI_EXIT_BOOT_SERVICES => {
+                self.ensure_pre_boot_or_halt();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Composes optional inner [`crabefi::PlatformHooks`] (e.g., CFR settings)
+/// with [`PreBootLockRecorder`] belt-and-suspenders enforcement at
+/// `quiesce_dma()` and `on_exit_boot_services()`.
+struct PreBootLockHooks<'a> {
+    inner: Option<&'a dyn crabefi::PlatformHooks>,
+    recorder: &'a PreBootLockRecorder<'a>,
+}
+
+impl crabefi::PlatformHooks for PreBootLockHooks<'_> {
+    fn on_exit_boot_services(&self) {
+        self.recorder.ensure_pre_boot_or_halt();
+        if let Some(inner) = self.inner {
+            inner.on_exit_boot_services();
+        }
+    }
+
+    fn quiesce_dma(&self) {
+        self.recorder.ensure_pre_boot_or_halt();
+        if let Some(inner) = self.inner {
+            inner.quiesce_dma();
+        }
+    }
+
+    fn firmware_settings_available(&self) -> bool {
+        self.inner
+            .is_some_and(crabefi::PlatformHooks::firmware_settings_available)
+    }
+
+    fn show_firmware_settings(&self) -> bool {
+        self.inner
+            .is_some_and(crabefi::PlatformHooks::show_firmware_settings)
+    }
+
+    #[cfg(feature = "crabefi-ui")]
+    fn show_graphical_firmware_settings(&self) -> crabefi::ui::ScreenNav {
+        match self.inner {
+            Some(inner) => inner.show_graphical_firmware_settings(),
+            None => crabefi::ui::ScreenNav::Back,
+        }
+    }
+}
+
+fn init_platform_raw<'a>(config: PlatformConfig<'a>) -> ! {
     enable_payload_cpu_features();
+    // `crabefi::init_platform` never returns (`-> !`); leaking the two small
+    // wrapper structs binds their borrows to `'a` without fighting invariance
+    // on `PlatformConfig<'a>`'s `&'a mut dyn Trait` fields.
+    let pre_boot_recorder: Option<&'a PreBootLockRecorder<'a>> =
+        (config.post_capsule_lock.is_some() || config.pre_boot_lock.is_some()).then(|| {
+            &*alloc::boxed::Box::leak(alloc::boxed::Box::new(PreBootLockRecorder::new(
+                config.post_capsule_lock,
+                config.pre_boot_lock,
+            )))
+        });
+    let effective_hooks: Option<&'a dyn crabefi::PlatformHooks> = match pre_boot_recorder {
+        Some(recorder) => Some(&*alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            PreBootLockHooks {
+                inner: config.hooks,
+                recorder,
+            },
+        ))),
+        None => config.hooks,
+    };
+    let capsule_on_disk_only =
+        config.capsule_backend.is_some() && config.runtime.deferred_buffer.size == 0;
     // The builder owns conditional fields (including TPM) under CrabEFI's
     // effective Cargo features, not the profile originally requested by a host.
     let defaults = crabefi::PlatformConfigBuilder::new(
@@ -119,12 +315,14 @@ fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
         config.runtime,
     )
     .heap_pre_initialized(config.heap_pre_initialized);
-    let defaults = match config.hooks {
+    let defaults = match effective_hooks {
         Some(hooks) => defaults.hooks(hooks),
         None => defaults,
     };
-    let capsule_on_disk_only =
-        config.capsule_backend.is_some() && config.runtime.deferred_buffer.size == 0;
+    let defaults = match pre_boot_recorder {
+        Some(recorder) => defaults.timestamp_recorder(recorder),
+        None => defaults,
+    };
     let defaults = match config.capsule_backend {
         Some(backend) => {
             let fw_info = backend.firmware_info().copied();
@@ -345,6 +543,8 @@ fn launch_with_adapters(
         runtime,
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
+        post_capsule_lock: launch.post_capsule_lock,
+        pre_boot_lock: launch.pre_boot_lock,
     })
 }
 
@@ -384,6 +584,109 @@ fn crabefi_logs_at_fstarts_level_within_the_build() {
         crabefi_level(Some(Verbosity::Off), Level::Error),
         LevelFilter::Off
     );
+}
+
+#[cfg(test)]
+#[test]
+fn pre_boot_lock_recorder_runs_two_phase_lockdown_in_order() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use crabefi::{PlatformHooks, TimestampRecorder, timestamp};
+
+    let post_calls = AtomicUsize::new(0);
+    let pre_calls = AtomicUsize::new(0);
+    let post_fn = || {
+        post_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    };
+    let pre_fn = || {
+        pre_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    };
+    let recorder = PreBootLockRecorder::new(Some(&post_fn), Some(&pre_fn));
+    let hooks = PreBootLockHooks {
+        inner: None,
+        recorder: &recorder,
+    };
+
+    // Milestones prior to capsule processing must NOT trigger either phase.
+    recorder.record(timestamp::TS_CRABEFI_START);
+    recorder.record(timestamp::TS_CRABEFI_PCI_INIT);
+    recorder.record(timestamp::TS_CRABEFI_STORAGE_INIT_DONE);
+    assert_eq!(post_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(pre_calls.load(Ordering::SeqCst), 0);
+
+    // TS_CRABEFI_VARSTORE_INIT triggers post_capsule_lock only (leaving NVRAM
+    // writable for CrabEFI's own Boot Menu / Settings UI).
+    recorder.record(timestamp::TS_CRABEFI_VARSTORE_INIT);
+    assert_eq!(post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(pre_calls.load(Ordering::SeqCst), 0);
+
+    // OS_LOADER_LOAD precedes LoadImage authentication and must NOT engage
+    // pre_boot_lock (so a rejected Secure Boot image returning to the Boot Menu
+    // leaves NVRAM writable for Settings / Secure Boot UI).
+    recorder.record(timestamp::TS_CRABEFI_OS_LOADER_LOAD);
+    assert_eq!(post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(pre_calls.load(Ordering::SeqCst), 0);
+
+    // OS_LOADER_START fires after authentication succeeds and before StartImage
+    // executes third-party code; subsequent milestones and hooks are idempotent.
+    recorder.record(timestamp::TS_CRABEFI_OS_LOADER_START);
+    assert_eq!(post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(pre_calls.load(Ordering::SeqCst), 1);
+
+    hooks.quiesce_dma();
+    hooks.on_exit_boot_services();
+    assert_eq!(post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(pre_calls.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(test)]
+#[test]
+fn pre_boot_lock_runs_post_capsule_first_if_varstore_init_was_skipped() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use crabefi::PlatformHooks;
+
+    let order = AtomicUsize::new(0);
+    let post_fn = || {
+        assert_eq!(order.fetch_add(1, Ordering::SeqCst), 0);
+        Ok(())
+    };
+    let pre_fn = || {
+        assert_eq!(order.fetch_add(1, Ordering::SeqCst), 1);
+        Ok(())
+    };
+    let recorder = PreBootLockRecorder::new(Some(&post_fn), Some(&pre_fn));
+    let hooks = PreBootLockHooks {
+        inner: None,
+        recorder: &recorder,
+    };
+    hooks.quiesce_dma();
+    assert_eq!(order.load(Ordering::SeqCst), 2);
+}
+
+#[cfg(test)]
+#[test]
+#[should_panic(expected = "mandatory pre-boot flash lockdown failed")]
+fn pre_boot_lock_recorder_halts_fail_closed_on_post_capsule_error() {
+    use crabefi::{TimestampRecorder, timestamp};
+
+    let post_fn = || Err(());
+    let pre_fn = || Ok(());
+    let recorder = PreBootLockRecorder::new(Some(&post_fn), Some(&pre_fn));
+    recorder.record(timestamp::TS_CRABEFI_VARSTORE_INIT);
+}
+
+#[cfg(test)]
+#[test]
+#[should_panic(expected = "mandatory pre-boot flash lockdown failed")]
+fn pre_boot_lock_recorder_halts_fail_closed_on_pre_boot_error() {
+    use crabefi::{TimestampRecorder, timestamp};
+
+    let post_fn = || Ok(());
+    let pre_fn = || Err(());
+    let recorder = PreBootLockRecorder::new(Some(&post_fn), Some(&pre_fn));
+    recorder.record(timestamp::TS_CRABEFI_VARSTORE_INIT);
+    recorder.record(timestamp::TS_CRABEFI_OS_LOADER_START);
 }
 
 /// Enable architectural CPU features expected by common UEFI applications.

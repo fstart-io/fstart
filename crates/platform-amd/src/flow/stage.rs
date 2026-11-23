@@ -69,6 +69,7 @@ pub struct Early<S: Soc> {
 
 impl<S: Soc> Early<S> {
     fn enter(board: crate::board::Facts, config: S::Config) -> Self {
+        #[cfg(not(feature = "ab-rw"))]
         fstart_stage::anchor::initial_stage();
         // SAFETY: BSP only, single-threaded cold boot.
         let msr = unsafe { NativeMsr::new() };
@@ -126,7 +127,10 @@ impl<S: Soc> Early<S> {
             fail::<S>(what);
         }
 
+        #[cfg(feature = "bundle")]
         let bist = fstart_arch::x86::psp_reset::bsp_bist();
+        #[cfg(all(feature = "ab-rw", not(feature = "bundle")))]
+        let bist = crate::ab::handoff().bsp_bist.get();
         if bist != 0 {
             fstart_log::error!("{}: BSP BIST {}", S::NAME, Hex(bist.into()));
             fail::<S>("BIST");

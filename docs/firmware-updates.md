@@ -400,6 +400,170 @@ The browser assembler exposes the same `Bundle::assemble()` path over WASM:
   browser—private keys never leave the user's machine. Both **Update only** and
   capsule signing require supplying the board's Ed25519 signing key.
 
+## AMD Platforms (SP3 Tyan S8030 & SP6 Siena Tyan S8040)
+
+Tyan S8030 (SP3 Rome lower 16 MiB half) and Tyan S8040 (SP6 Siena) implement
+RO/A/B updates via `--option ab=true` (or the published `tyan-s8030-ab` /
+`tyan-s8040-ab` board variants for `fbuild bundle` and the WebUI). Both entry
+points share one physical-board `image_family` (`"tyan-s8030"` /
+`"tyan-s8040"`) so updates produced by either entry point verify identically.
+Hardware verification covers Tyan S8030 (SP3 Rome); Tyan S8040 (SP6 Siena) is
+build- and plan-verified. On SP3, A/B currently packs only the single lower
+16 MiB generation (Rome on S8030); upper-half Milan A/B is rejected at plan
+and assembly time until upper-half SPI lockdown is validated.
+
+### Flash and DRAM Layout (16 MiB Lower Half)
+
+PSP trains DRAM and loads the x86 BIOS reset image before releasing the BSP.
+In A/B mode the PSP BIOS directory (`0x62` reset image) loads only the 512 KiB
+RO selector (`0xf8_0000..0x100_0000`) to `0x75f8_0000..0x7600_0000` (entry
+`0x75ff_fff0`). `SLOT_STATE`, `RW_A`, `RW_B`, and `NVRAM` live in the lower
+16 MiB half (`0x00_0000..0x100_0000`). Both RO and RW verify `rom_page == 0`
+(halting fail-closed if booted from an upper half) and probe SPI100 addressing
+against a lower-half-only region (`RW_A`, `RW_B`, or lower EFS — never RO). RO
+verifies the active RW slot from the lower 16 MiB ROM2 window
+(`0xff00_0000..0x1_0000_0000`, or ROM3 when required), decompresses the
+authenticated RW stage via a disjoint 5 MiB early-RAM scratch window
+(`0x7530_0000..0x7580_0000`) into fixed DRAM at `0x75c8_0000..0x75f8_0000`
+(3 MiB), and passes `AmdAbHandoff` at `0x75af_0000`:
+
+| Region | Tyan S8030 (SP3) | Tyan S8040 (SP6 Siena) | Notes |
+|---|---|---|---|
+| Vendor PSP / EFS / ABL | `0x00_0000..0x60_0000` | `0x00_0000..0x80_0000` | Untouched by RW updates |
+| `SLOT_STATE_0` / `1` | `0x60_0000`, `0x60_1000` | `0x80_0000`, `0x80_1000` | Two 4 KiB append-only journal sectors |
+| `RW_A` | `0x64_0000` (4.5 MiB) | `0x84_0000` (3.5 MiB) | Identical self-contained FFS (`Root` at offset 0) |
+| `RW_B` | `0xac_0000` (4.5 MiB) | `0xbc_0000` (3.5 MiB) | Identical self-contained FFS (`Root` at offset 0) |
+| `NVRAM` (varstore) | `0xf4_0000` (256 KiB) | `0xf4_0000` (256 KiB) | CrabEFI variable store (outside A/B slots) |
+| `RO` | `0xf8_0000` (512 KiB) | `0xf8_0000` (512 KiB) | Reset vector, RO selector, `TrustBlock`, slot table |
+
+### Early SPI100 and WP MTRR Speedup
+
+Uncached SPI MMIO reads across a 3–4 MiB RW slot take seconds at reset defaults.
+Before verifying `RW_A` or `RW_B`, the AMD RO selector:
+
+1. Enables fast FCH SPI100 read mode (`fch::spi::reset` on SP3;
+   `Spi100HostPrefetch::HOST_BURST_EN` on Siena).
+2. Enables Write-Protected (WP) caching on the lower 16 MiB ROM window via a
+   variable MTRR (`set_rom_window_wp`), following the x86 SDM MTRR update
+   sequence (`WBINVD`, `CR0.CD=1`, `CR4.PGE=0`, `CR3` TLB flush,
+   `IA32_MTRR_DEF_TYPE=0`, mutate variable MTRR, restore `IA32_MTRR_DEF_TYPE`,
+   `CR3`/`CR4`, `CR0.CD=0`, requiring `IA32_MTRR_DEF_TYPE.E` to already be set).
+3. Measures verification + stage copy latency with the TSC and logs it over
+   serial.
+4. Tears down the temporary WP MTRR with the same SDM sequence and executes
+   `WBINVD` before jumping to the verified RW stage at `0x75c8_0000` so RW
+   inherits a clean MTRR/cache state.
+
+### Hardware FCH SPI Lockdown, Runtime Variable Status, TPM Floor Policy, and PSP ROM Armor
+
+Both CrabEFI's `FstartCapsuleBackend` (`0x00_0000..0xf4_0000`) and
+`FlashStorage` (`NVRAM` `0xf4_0000..0xf8_0000`) share a single FCH SPI100
+`Flash<Tsc>` instance via `SharedFlash` / `SubRegion`. AMD A/B requires full
+UEFI (`--payload uefi` or `--payload uefi-ui`, rejecting `uefi-basic` at both
+plan and compile time). Because `RomProtect` ranges only restrict direct ROM2
+accesses while SPI100 indexed commands can still issue flash opcodes unless
+restricted, fstart enforces a **readback-verified, two-phase hardware
+lockdown** (halting fail-closed on any verification failure):
+
+1. **Stage 1A (always before CrabEFI):** programs and verifies `RomProtect0`
+   (`0x00_0000..state_base`, PSP/EFS/ABL) and `RomProtect1`
+   (`0xf8_0000..0x100_0000`, RO), and locks `TPM_RH_PLATFORM`. `SLOT_STATE`,
+   `RW_A`, `RW_B`, and `NVRAM` remain open so CrabEFI can process any pending
+   Capsule-on-Disk request (`capsule_on_disk_only: true`; in-memory
+   `UpdateCapsule` scatter-gather delivery is disabled).
+2. **Stage 1B (`post_capsule_lock` at `TS_CRABEFI_VARSTORE_INIT`):** runs
+   unconditionally right after `process_pending_capsules()` and
+   `complete_import()`, before `measure_initial_boot()` and
+   `boot_manager::run()`:
+   - Confirms an active A/B trial or resumes `Phase::Syncing` only after
+     CrabEFI has initialized cleanly.
+   - Programs and verifies `RomProtect0..2` (`PSP`, `RO`, and
+     `SLOT_STATE` + `RW_A` + `RW_B`), latches `AltSPICS[PROTECT_EN0 | PROTECT_LOCK]`,
+     and sets `AMD_AB_WRITE_LOCKED`.
+   - Leaves `NVRAM` (`0xf4_0000..0xf8_0000`) writable solely for CrabEFI's own
+     trusted Boot Menu (`BootNext` consumption, Firmware Settings UI, and
+     Secure Boot UI); CrabEFI executes no third-party Option ROMs or EFI
+     drivers before `TS_CRABEFI_OS_LOADER_START`.
+3. **Stage 2 (`pre_boot_lock` before any third-party EFI binary or OS runs):**
+   runs unconditionally at `TS_CRABEFI_OS_LOADER_START` (after `LoadImage`
+   Secure Boot authentication succeeds and before `StartImage` executes
+   third-party code), `TS_CRABEFI_EXIT_BOOT_SERVICES_ENTRY`,
+   `TS_CRABEFI_EXIT_BOOT_SERVICES`, `quiesce_dma()`, and
+   `on_exit_boot_services()` (and inside `pre_launch_hook` on non-UEFI payloads
+   after kernel verification and placement), ensuring Stage 1B ran first if
+   `TS_CRABEFI_VARSTORE_INIT` was ever skipped:
+   - Verifies `RomProtect0..2` and `AltSPICS[PROTECT_LOCK]`.
+   - Programs `SPIRestrictedCmd` (`SPIx04`: `0x02`, `0x20`, `0x12`, `0x21`) and
+     `SPIRestrictedCmd2` (`SPIx08`: `CMD4=0xD8` plus unconditional addressless
+     `WO_ADDR0..2 = 0x06 [WREN], 0x50 [Volatile SR WREN], 0x01 [WRSR]`).
+   - Clears write-0-once `SPIx00[23:22]` (`SpiHostAccessRomEn=0`,
+     `SpiAccessMacRomEn=0`), which locks `SPIx04`/`SPIx08` and enforces
+     opcode blocking on all SPI100 indexed commands (including `NVRAM`) until
+     reset, verified via readback.
+   - Because `OS_LOADER_LOAD` stays unlocked, an image rejected during
+     `LoadImage` authentication returns to the Boot Menu with `NVRAM` still
+     writable for Settings / Secure Boot UI. Once an authenticated loader
+     starts (`OS_LOADER_START`) and later returns to the Boot Menu, `NVRAM`
+     remains write-protected for the rest of the boot.
+   - **OS runtime `SetVariable(OsIndications)` status (follow-up):** just like
+     `qemu-q35-ab`, AMD A/B currently leaves `deferred_buffer` disabled
+     (`capsule_on_disk_only: true`) because pinned CrabEFI couples
+     `deferred_buffer` to in-memory `UpdateCapsule` delivery and EPYC warm-reset
+     DRAM survival across PSP/ABL CF9 `0x06` has not yet been verified.
+     Consequently, CrabEFI processes Capsule-on-Disk updates whenever
+     `OsIndications` is present in `NVRAM`, while unattended OS runtime
+     `SetVariable(OsIndications)` staging after Stage 2 SPI lockdown awaits a
+     follow-up layer wiring SMM-mediated variable storage (`crabefi-mm` /
+     `payload-mm`) or a decoupled, hardware-verified warm-reset variable channel.
+
+**TPM 2.0 anti-rollback & platform hierarchy lock:** boards set
+`AbUpdateConfig::require_tpm_floor` (`false` on Tyan S8030/S8040 because the
+discrete TPM header is optional). When `require_tpm_floor == true`, RO halts if
+no discrete FIFO TPM 2.0 responds. Even when `require_tpm_floor == false`, both
+RO and RW fail closed if a discrete TPM disappears while `SLOT_STATE` is in
+`Phase::Syncing` or `Phase::FloorPending` (preventing a transient disconnect
+from silently canceling a pending monotonic floor advance). Whenever RO
+interacted with a TPM (`tpm_present != 0`), RW unconditionally ensures
+`TPM_RH_PLATFORM` is locked (respecting `fstart_tcg::platform_hierarchy_locked()`
+when `fstart-tcg` already locked or hid the TPM via `Remedy::Hide`, otherwise
+calling `fstart_tcg::lock()` or direct TIS `TPM2_HierarchyChangeAuth`/
+`HierarchyControl`) before any payload runs so the OS cannot undefine the
+`TPMA_NV_PLATFORMCREATE` rollback floor NV index (`0x0140_0001`).
+
+> **Note on PSP ROM Armor:** On systems where AMD PSP ROM Armor is active, the
+> PSP takes ownership of the SPI controller and blocks direct x86 FCH SPI100
+> writes; capsule installation and `SLOT_STATE` updates must then go through
+> the PSP ROM Armor mailbox rather than direct x86 SPI100 MMIO. On standard
+> non-ROM-Armor SP3/SP6 server boards (including Tyan S8030 and S8040), x86
+> owns the FCH SPI100 controller until locked with `RomProtect0..2` +
+> `PROTECT_LOCK` + `SPIRestrictedCmd` + `SpiHostAccessRomEn=0`.
+
+### Alignment with AMD PSP ISH A/B (`0x48` / `0x4A` / `0x49`)
+
+AMD PSP supports its own A/B recovery layout using Image Slot Header (ISH)
+entries in the L1 PSP directory:
+
+- `0x48` (`PSP_L2A`) / `0x4A` (`PSP_L2B`): two PSP L2 directories (slot A and
+  slot B), selected by PSP according to ISH boot priority and anti-rollback
+  state.
+- `0x49` (`BIOS_L2`): BIOS L2 directory paired with the chosen PSP L2 slot.
+
+fstart's x86 RO/A/B design intentionally keeps the entire vendor PSP/EFS/ABL
+region (`0x00_0000..0x60_0000` on SP3, `0x00_0000..0x80_0000` on Siena) outside
+`RW_A` and `RW_B`:
+
+- **Today (donor PSP + updatable x86 fstart):** the donor PSP/BIOS directory
+  points its `0x62` reset image at fstart RO (`0xf8_0000..0x100_0000`). x86
+  updates only touch `RW_A`/`RW_B` and `SLOT_STATE_{0,1}`—never modifying EFS,
+  PSP directories, or signed vendor PSP/ABL binaries, so donor PSP verification
+  remains intact (note that `UpdateOnly` composition still extracts donated CPU
+  microcode patches for `cpu_microcode.bin` inside the RW FFS).
+- **Future combined PSP + x86 A/B:** when a board enables PSP ISH A/B (`0x48` /
+  `0x4A` / `0x49`), both BIOS L2 directories (`0x49`) can continue pointing
+  their `0x62` reset image at the shared RO selector (or per-PSP-slot RO),
+  while PSP ISH A/B handles signed AMD PSP/ABL/microcode updates independently
+  of x86 fstart `RW_A`/`RW_B` capsules.
+
 ## Implementation Roadmap
 
 1. **FFS & stage primitives (`crates/core`, `crates/ffs`, `crates/stage`):**

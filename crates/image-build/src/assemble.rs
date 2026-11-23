@@ -21,6 +21,7 @@ pub struct FfsRootOptions<'a> {
     pub security_version: u64,
     pub rw_slot: bool,
     pub omit_stages: &'a [String],
+    pub image_family: Option<&'a str>,
 }
 
 #[allow(clippy::too_many_arguments)] // fbuild's flat assemble options
@@ -282,7 +283,8 @@ pub fn assemble_with_trust(
         regions: ffs_input_regions(config, ro_files)?,
     };
 
-    let family_digest = fstart_crypto::digest::hash_sha256(config.name.as_bytes());
+    let family_name = root_opts.image_family.unwrap_or(&config.name);
+    let family_digest = fstart_crypto::digest::hash_sha256(family_name.as_bytes());
     let root_config = BootRootConfig {
         image_family: family_digest[..16].try_into().unwrap(),
         security_version: root_opts.security_version,

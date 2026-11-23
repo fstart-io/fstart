@@ -205,11 +205,11 @@ impl<V: Variant> crate::flow::Soc for Iod<V> {
 
     fn launch(
         handoff: fstart_payload::Handoff<'_>,
-        _: &Ctx<'_, Self>,
+        ctx: &Ctx<'_, Self>,
         state: &State,
         flow: &sp3::Flow,
         options: &fstart_options::Report,
     ) -> ! {
-        sp3::launch(handoff, state, flow, options)
+        sp3::launch(handoff, ctx.board, state, flow, options)
     }
 }

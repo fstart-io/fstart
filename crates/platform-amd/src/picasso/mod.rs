@@ -72,7 +72,7 @@ impl noncar::host::HostSoc for Picasso {
 
 /// `DISABLE_SPI_FLASH_ROM_SHARING`: stop sharing the SPI ROM with the EC.
 /// Boards that need it call it once their early pads are set.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 impl noncar::Stage<Picasso, noncar::FchUp<Picasso>> {
     pub fn disable_rom_sharing(&self) {
         fstart_driver_amd::fch::sandstone::legacy::disable_rom_sharing(&self.hw().fch);
@@ -196,7 +196,11 @@ impl noncar::DieSoc for Picasso {
         Ok(())
     }
 
-    #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+    #[cfg(all(
+        feature = "stage-runtime",
+        target_os = "none",
+        feature = "payload-uefi-basic"
+    ))]
     fn peripherals(ctx: &Ctx<'_, Self>, config: &Config) -> noncar::Peripherals {
         config
             .i2c
@@ -223,7 +227,11 @@ impl noncar::DieSoc for Picasso {
 }
 
 /// Board I2C devices handed to CrabEFI.
-#[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
+#[cfg(all(
+    feature = "stage-runtime",
+    target_os = "none",
+    feature = "payload-uefi-basic"
+))]
 mod uefi {
     extern crate alloc;
     use super::{GpioInterrupt, I2cBus, Picasso};

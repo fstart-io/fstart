@@ -62,26 +62,48 @@ core::arch::global_asm!(
     options(att_syntax)
 );
 
+/// Write an AP release route to an explicit `_sp3_ap_route` word address in
+/// DRAM and flush it back from cache so uncached APs observe the update.
+///
+/// Used by AMD A/B RW stages whose SMU AP release vector lives in the RO
+/// stage's `.amd.entry16` page (handed over via the A/B handoff block).
+///
+/// # Safety
+/// `route_addr` must point to an aligned, writable `u32` `_sp3_ap_route`
+/// slot inside a live AMD PSP reset vector page, and only the BSP may call
+/// this while APs are parked or not yet released.
+#[cfg(target_os = "none")]
+pub unsafe fn set_ap_route_at(route_addr: u64, route: ApRoute) {
+    let word = route_addr as *mut u32;
+    // SAFETY: caller guarantees `route_addr` is an aligned writable u32 in
+    // DRAM mapped for the BSP and read uncached by released APs.
+    unsafe {
+        fstart_core::mmio::write32(word, route.word());
+        crate::x86::writeback_cache_range(word.cast(), 4);
+    }
+}
+
 #[cfg(all(target_os = "none", feature = "amd-psp-reset"))]
 mod runtime {
-    use super::ApRoute;
+    use super::{ApRoute, set_ap_route_at};
 
     unsafe extern "C" {
         static mut _sp3_ap_route: u32;
         static _sp3_bsp_bist: u32;
     }
 
+    /// Physical address of this image's `_sp3_ap_route` word in DRAM.
+    pub fn ap_route_addr() -> u64 {
+        &raw mut _sp3_ap_route as u64
+    }
+
     /// Arm (or disarm with [`ApRoute::PARK`]) the AP path of the reset
     /// vector. Call before the SMU releases APs: they fetch with caches
     /// off, so the word is written back to DRAM here.
     pub fn set_ap_route(route: ApRoute) {
-        let word = &raw mut _sp3_ap_route;
-        // SAFETY: `_sp3_ap_route` is an aligned u32 in the reset image
+        // SAFETY: `_sp3_ap_route` is an aligned u32 in this reset image
         // (DRAM, writable); only the BSP writes it, APs only read it.
-        unsafe {
-            fstart_core::mmio::write32(word, route.word());
-            crate::x86::writeback_cache_range(word.cast(), 4);
-        }
+        unsafe { set_ap_route_at(ap_route_addr(), route) }
     }
 
     /// `EAX` at the BSP's release (BIST result, 0 = passed).
@@ -92,7 +114,7 @@ mod runtime {
 }
 
 #[cfg(all(target_os = "none", feature = "amd-psp-reset"))]
-pub use runtime::{bsp_bist, set_ap_route};
+pub use runtime::{ap_route_addr, bsp_bist, set_ap_route};
 
 #[cfg(test)]
 mod tests {

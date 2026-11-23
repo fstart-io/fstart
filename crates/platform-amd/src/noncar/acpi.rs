@@ -71,7 +71,7 @@ pub fn cpus(apic_ids: &[u32], numa: bool) -> alloc::vec::Vec<Cpu> {
 /// Build the tables for the dies with the root bridges `roots` the
 /// allocator enumerated, their NBIO IOAPICs at `ioapics` (by die) and what
 /// the silicon init left; returns the RSDP.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub fn install<S: super::DieSoc>(
     ctx: &super::Ctx<'_, S>,
     roots: &[PciRoot],

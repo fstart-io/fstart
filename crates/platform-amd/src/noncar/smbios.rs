@@ -31,10 +31,10 @@ pub fn ports(
         .collect()
 }
 
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub use stage::install;
 
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod stage {
     use super::super::{Ctx, DieSoc};
     use alloc::vec::Vec;

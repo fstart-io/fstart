@@ -317,6 +317,14 @@ impl MemoryMappedFfs {
 
     /// Publish this memory-mapped FFS window to stage-local services.
     pub fn mount(self) -> Result<(), ServiceError> {
+        #[cfg(feature = "ffs")]
+        if crate::directory::is_installed()
+            && fstart_core::services::ffs_context::memory_mapped().is_some_and(|ctx| {
+                ctx.image_base == self.base && ctx.image_size == self.size as u64
+            })
+        {
+            return Ok(());
+        }
         let anchor = crate::locator_bytes();
         if anchor.is_empty() {
             return Err(ServiceError::NotInitialized);

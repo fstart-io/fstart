@@ -465,7 +465,51 @@ impl SlotStateRecord {
         })
     }
 
+    /// RO pre-RAM transition: primary slot failed payload load after Root
+    /// authentication; fall back to `fallback_slot` (must be an RW slot) and
+    /// persist its authenticated versions and Root digest as `Stable`.
+    pub fn next_load_fallback(
+        &self,
+        fallback_fw_version: u32,
+        fallback_sec_version: u64,
+        fallback_root_digest: &[u8; 32],
+    ) -> Option<Self> {
+        if !matches!(self.fallback_slot, Slot::A | Slot::B)
+            || self.fallback_slot == self.active_slot
+        {
+            return None;
+        }
+        let seq = self.seq.checked_add(1)?;
+        Some(Self {
+            phase: Phase::Stable,
+            active_slot: self.fallback_slot,
+            fallback_slot: Slot::Recovery,
+            tries_left: 0,
+            flags: flags::CONFIRMED,
+            fw_version: fallback_fw_version,
+            seq,
+            sec_version: fallback_sec_version,
+            last_attempt_ver: if self.phase == Phase::Trial {
+                self.fw_version
+            } else {
+                self.last_attempt_ver
+            },
+            last_attempt_status: if self.phase == Phase::Trial {
+                esrt_status::UNSUCCESSFUL
+            } else {
+                self.last_attempt_status
+            },
+            root_digest: *fallback_root_digest,
+        })
+    }
+
     /// CrabEFI transition: mark install in progress before erasing target slot.
+    ///
+    /// Returns `None` while an unconfirmed trial (`Trial`), peer-slot sync
+    /// (`Syncing`), or pending TPM anti-rollback floor advance (`FloorPending`)
+    /// is still in progress: overwriting those phases before RO durably
+    /// finalizes them would drop rollback protection or clobber a half-synced
+    /// peer slot.
     pub fn next_installing(
         &self,
         target: Slot,
@@ -474,6 +518,12 @@ impl SlotStateRecord {
         sec_version: u64,
         root_digest: &[u8; 32],
     ) -> Option<Self> {
+        if matches!(
+            self.phase,
+            Phase::Trial | Phase::Syncing | Phase::FloorPending
+        ) {
+            return None;
+        }
         let seq = self.seq.checked_add(1)?;
         Some(Self {
             phase: Phase::Installing,
@@ -925,6 +975,178 @@ pub fn erase_sector_verified(
     Ok(())
 }
 
+/// Inputs for [`confirm_trial_and_sync`].
+#[derive(Debug, Clone, Copy)]
+pub struct TrialConfirm {
+    pub layout: SlotLayout,
+    pub running_slot: Slot,
+    pub running_fw_version: u32,
+    pub running_sec_version: u64,
+    pub running_root_digest: [u8; 32],
+    pub effective_floor: u64,
+    pub has_tpm_floor: bool,
+    pub trial_active: bool,
+    pub sync_pending: bool,
+}
+
+/// Append a ramstage/CrabEFI journal transition, rolling over to the spare
+/// sector when fewer than `min_free_slots` erased entries remain.
+///
+/// Only `Slot::Recovery` is permitted to heal a corrupt/conflicting journal.
+pub fn append_ramstage_journal(
+    flash: &mut (impl FlashRegion + ?Sized),
+    layout: SlotLayout,
+    running_slot: Slot,
+    min_free_slots: usize,
+    make_next: impl FnOnce(Option<SlotStateRecord>) -> Option<SlotStateRecord>,
+) -> Result<SlotStateRecord, ServiceError> {
+    let (s0_off, s1_off) = layout.state_sectors();
+    let scan = scan_journal_flash(flash, s0_off, s1_off)?;
+    let current = match scan.status {
+        ScanStatus::Valid { record, .. } => Some(record),
+        ScanStatus::Blank => None,
+        ScanStatus::Corrupt | ScanStatus::Conflict => {
+            if running_slot != Slot::Recovery {
+                return Err(ServiceError::HardwareError);
+            }
+            erase_sector_verified(flash, s0_off)?;
+            erase_sector_verified(flash, s1_off)?;
+            None
+        }
+    };
+    let next = make_next(current).ok_or(ServiceError::InvalidParam)?;
+    let abs_offset = match plan_ramstage_append(&scan, min_free_slots) {
+        AppendPlan::WriteInSector { sector, offset } => {
+            let base = if sector == 0 { s0_off } else { s1_off };
+            base.checked_add(offset as u32)
+                .ok_or(ServiceError::InvalidParam)?
+        }
+        AppendPlan::RolloverToSector { sector, offset } => {
+            let base = if sector == 0 { s0_off } else { s1_off };
+            erase_sector_verified(flash, base)?;
+            base.checked_add(offset as u32)
+                .ok_or(ServiceError::InvalidParam)?
+        }
+    };
+    program_record_verified(flash, abs_offset, &next)?;
+    Ok(next)
+}
+
+/// Shared firmware-level trial confirmation and power-fail-safe sync-before-bump.
+///
+/// Used by both CrabEFI's `FstartCapsuleBackend` (UEFI) and non-UEFI RW stages:
+/// - Reserves `min_free_slots = 2` on `Syncing` and `FloorPending` so RO always
+///   has a free erased entry to finalize `Stable` without erasing.
+/// - Erases destination sector 0 (`Root`) FIRST, copies/verifies body sectors
+///   `SECTOR_SIZE..copy_len` (skipping sectors that already match), and writes
+///   and verifies destination sector 0 (`Root`) LAST so a power cut mid-copy
+///   never leaves a valid `Root` over a half-copied body.
+pub fn confirm_trial_and_sync(
+    flash: &mut (impl FlashRegion + ?Sized),
+    cfg: &mut TrialConfirm,
+) -> Result<bool, ServiceError> {
+    if !cfg.trial_active && !cfg.sync_pending {
+        return Ok(false);
+    }
+    // `Phase::Syncing` is only entered when an in-progress TPM rollback-floor
+    // advance began erasing/copying the peer slot. Never silently cancel it to
+    // `Stable` if the TPM disappears across a power cut — fail closed so
+    // restoring the TPM resumes the copy and floor bump.
+    if cfg.sync_pending && !cfg.has_tpm_floor {
+        return Err(ServiceError::HardwareError);
+    }
+    let needs_floor_bump =
+        cfg.sync_pending || (cfg.has_tpm_floor && cfg.running_sec_version > cfg.effective_floor);
+    let mut sync_done = false;
+
+    let running_slot = cfg.running_slot;
+    let fw_ver = cfg.running_fw_version;
+    let sec_ver = cfg.running_sec_version;
+    let root_digest = cfg.running_root_digest;
+
+    if needs_floor_bump
+        && let Some(inactive_slot) = cfg.running_slot.other_rw()
+        && let (Some(src), Some(dst)) = (
+            cfg.layout.extent(cfg.running_slot),
+            cfg.layout.extent(inactive_slot),
+        )
+    {
+        if src.size != dst.size || src.size < SECTOR_SIZE as u32 {
+            return Err(ServiceError::InvalidParam);
+        }
+        // Persist Phase::Syncing BEFORE erasing the fallback slot so a power cut
+        // mid-copy resumes syncing instead of falling back to a half-erased slot.
+        if !cfg.sync_pending {
+            append_ramstage_journal(flash, cfg.layout, running_slot, 2, |current| {
+                let base = current.unwrap_or_else(|| {
+                    SlotStateRecord::initial(
+                        running_slot,
+                        Slot::Recovery,
+                        fw_ver,
+                        sec_ver,
+                        &root_digest,
+                    )
+                });
+                base.next_syncing()
+            })?;
+            cfg.sync_pending = true;
+        }
+
+        // Erase destination Root sector (offset 0) FIRST.
+        flash.erase(dst.offset, SECTOR_SIZE as u32)?;
+
+        // Copy and verify body sectors (SECTOR_SIZE..copy_len), skipping unchanged sectors.
+        let copy_len = src.size;
+        let mut src_buf = [0u8; SECTOR_SIZE];
+        let mut dst_buf = [0u8; SECTOR_SIZE];
+        let mut off = SECTOR_SIZE as u32;
+        while off < copy_len {
+            let src_off = src
+                .offset
+                .checked_add(off)
+                .ok_or(ServiceError::InvalidParam)?;
+            let dst_off = dst
+                .offset
+                .checked_add(off)
+                .ok_or(ServiceError::InvalidParam)?;
+            flash.read(src_off, &mut src_buf)?;
+            flash.read(dst_off, &mut dst_buf)?;
+            if dst_buf != src_buf {
+                flash.erase(dst_off, SECTOR_SIZE as u32)?;
+                if src_buf.iter().any(|&b| b != ERASED_BYTE) {
+                    flash.program(dst_off, &src_buf)?;
+                }
+                flash.read(dst_off, &mut dst_buf)?;
+                if dst_buf != src_buf {
+                    return Err(ServiceError::HardwareError);
+                }
+            }
+            off += SECTOR_SIZE as u32;
+        }
+
+        // Program and verify destination Root sector (offset 0) LAST.
+        flash.read(src.offset, &mut src_buf)?;
+        if src_buf.iter().any(|&b| b != ERASED_BYTE) {
+            flash.program(dst.offset, &src_buf)?;
+        }
+        flash.read(dst.offset, &mut dst_buf)?;
+        if dst_buf != src_buf {
+            return Err(ServiceError::HardwareError);
+        }
+        sync_done = true;
+    }
+
+    append_ramstage_journal(flash, cfg.layout, running_slot, 2, |current| {
+        let base = current.unwrap_or_else(|| {
+            SlotStateRecord::initial(running_slot, Slot::Recovery, fw_ver, sec_ver, &root_digest)
+        });
+        base.next_confirm(sync_done, needs_floor_bump)
+    })?;
+    cfg.trial_active = false;
+    cfg.sync_pending = false;
+    Ok(true)
+}
+
 /// CRC32C (Castagnoli, reflected polynomial `0x82F6_3B78`).
 pub fn crc32c(bytes: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
@@ -1154,5 +1376,248 @@ mod tests {
         let stable = fp.next_floor_finalized().unwrap();
         assert_eq!(stable.phase, Phase::Stable);
         assert_eq!(stable.fallback_slot, Slot::A);
+    }
+
+    struct MockFlash {
+        data: alloc::vec::Vec<u8>,
+        fail_after_writes: Option<usize>,
+        writes: usize,
+    }
+
+    impl MockFlash {
+        fn new(size: usize) -> Self {
+            Self {
+                data: alloc::vec![ERASED_BYTE; size],
+                fail_after_writes: None,
+                writes: 0,
+            }
+        }
+    }
+
+    impl FlashRegion for MockFlash {
+        fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), ServiceError> {
+            let start = offset as usize;
+            let end = start + buf.len();
+            buf.copy_from_slice(&self.data[start..end]);
+            Ok(())
+        }
+
+        fn program(&mut self, offset: u32, data: &[u8]) -> Result<(), ServiceError> {
+            if let Some(limit) = self.fail_after_writes
+                && self.writes >= limit
+            {
+                return Err(ServiceError::HardwareError);
+            }
+            self.writes += 1;
+            let start = offset as usize;
+            for (d, &s) in self.data[start..start + data.len()].iter_mut().zip(data) {
+                *d &= s;
+            }
+            Ok(())
+        }
+
+        fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
+            let start = offset as usize;
+            let end = start + length as usize;
+            self.data[start..end].fill(ERASED_BYTE);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn confirm_trial_reserves_ro_slot_on_nearly_full_journal() {
+        let layout = SlotLayout::RoAB {
+            state_sector_0: 0,
+            state_sector_1: SECTOR_SIZE as u32,
+            slot_a: SlotExtent {
+                offset: 2 * SECTOR_SIZE as u32,
+                size: 2 * SECTOR_SIZE as u32,
+            },
+            slot_b: SlotExtent {
+                offset: 4 * SECTOR_SIZE as u32,
+                size: 2 * SECTOR_SIZE as u32,
+            },
+        };
+        let mut flash = MockFlash::new(6 * SECTOR_SIZE);
+        // Fill slot B with non-0xFF image bytes so sync copies both sectors.
+        flash.data[4 * SECTOR_SIZE..5 * SECTOR_SIZE].fill(0x5A);
+        flash.data[5 * SECTOR_SIZE..6 * SECTOR_SIZE].fill(0xA5);
+
+        // Pre-fill sector 0 with RECORDS_PER_SECTOR - 1 records so only 1 slot remains!
+        let mut rec = SlotStateRecord::initial(Slot::A, Slot::B, 1, 1, &[0x11; 32]);
+        for i in 0..(RECORDS_PER_SECTOR - 2) {
+            program_record_verified(&mut flash, (i * RECORD_SIZE) as u32, &rec).unwrap();
+            rec.seq += 1;
+        }
+        let trial = rec
+            .next_trial(Slot::B, Slot::A, 3, 2, 2, &[0x22; 32])
+            .unwrap()
+            .next_try_debit()
+            .unwrap();
+        program_record_verified(
+            &mut flash,
+            ((RECORDS_PER_SECTOR - 2) * RECORD_SIZE) as u32,
+            &trial,
+        )
+        .unwrap();
+
+        let mut cfg = TrialConfirm {
+            layout,
+            running_slot: Slot::B,
+            running_fw_version: 2,
+            running_sec_version: 2,
+            running_root_digest: [0x22; 32],
+            effective_floor: 1,
+            has_tpm_floor: true,
+            trial_active: true,
+            sync_pending: false,
+        };
+        assert!(confirm_trial_and_sync(&mut flash, &mut cfg).unwrap());
+        assert!(!cfg.trial_active && !cfg.sync_pending);
+
+        // Sector 1 must now hold FloorPending AND still have free slots for RO to append Stable!
+        let scan = scan_journal_flash(&mut flash, 0, SECTOR_SIZE as u32).unwrap();
+        match scan.status {
+            ScanStatus::Valid {
+                active_sector,
+                record,
+            } => {
+                assert_eq!(active_sector, 1);
+                assert_eq!(record.phase, Phase::FloorPending);
+                assert!(record.is_sync_done());
+                assert!(plan_ro_append(&scan).is_some());
+            }
+            other => panic!("expected Valid FloorPending, got {other:?}"),
+        }
+        assert_eq!(
+            flash.data[2 * SECTOR_SIZE..4 * SECTOR_SIZE],
+            flash.data[4 * SECTOR_SIZE..6 * SECTOR_SIZE]
+        );
+    }
+
+    #[test]
+    fn confirm_trial_erases_root_first_and_resumes_after_power_cut() {
+        let layout = SlotLayout::RoAB {
+            state_sector_0: 0,
+            state_sector_1: SECTOR_SIZE as u32,
+            slot_a: SlotExtent {
+                offset: 2 * SECTOR_SIZE as u32,
+                size: 3 * SECTOR_SIZE as u32,
+            },
+            slot_b: SlotExtent {
+                offset: 5 * SECTOR_SIZE as u32,
+                size: 3 * SECTOR_SIZE as u32,
+            },
+        };
+        let mut flash = MockFlash::new(8 * SECTOR_SIZE);
+        flash.data[2 * SECTOR_SIZE..5 * SECTOR_SIZE].fill(0x11); // Old Slot A
+        flash.data[5 * SECTOR_SIZE..6 * SECTOR_SIZE].fill(0xB0); // New Slot B Root
+        flash.data[6 * SECTOR_SIZE..7 * SECTOR_SIZE].fill(0xB1); // New Slot B body 1
+        flash.data[7 * SECTOR_SIZE..8 * SECTOR_SIZE].fill(0xB2); // New Slot B body 2
+
+        let base = SlotStateRecord::initial(Slot::A, Slot::B, 1, 1, &[0x11; 32]);
+        let trial = base
+            .next_trial(Slot::B, Slot::A, 3, 2, 2, &[0x22; 32])
+            .unwrap()
+            .next_try_debit()
+            .unwrap();
+        program_record_verified(&mut flash, 0, &trial).unwrap();
+
+        // Inject power cut after Syncing record (2 program calls: body + commit) + 1 body sector write.
+        flash.writes = 0;
+        flash.fail_after_writes = Some(3);
+        let mut cfg = TrialConfirm {
+            layout,
+            running_slot: Slot::B,
+            running_fw_version: 2,
+            running_sec_version: 2,
+            running_root_digest: [0x22; 32],
+            effective_floor: 1,
+            has_tpm_floor: true,
+            trial_active: true,
+            sync_pending: false,
+        };
+        assert!(confirm_trial_and_sync(&mut flash, &mut cfg).is_err());
+
+        // Destination Root sector (Slot A offset 0) MUST be erased (0xFF), never stale or half-copied!
+        assert!(
+            flash.data[2 * SECTOR_SIZE..3 * SECTOR_SIZE]
+                .iter()
+                .all(|&b| b == ERASED_BYTE)
+        );
+        // Journal MUST be in Phase::Syncing so next boot resumes sync cleanly.
+        let scan = scan_journal_flash(&mut flash, 0, SECTOR_SIZE as u32).unwrap();
+        assert!(matches!(
+            scan.status,
+            ScanStatus::Valid { record, .. } if record.phase == Phase::Syncing
+        ));
+
+        // Resuming Phase::Syncing with the TPM absent MUST fail closed and
+        // leave the journal in Phase::Syncing (never silently cancel to Stable).
+        flash.fail_after_writes = None;
+        let mut no_tpm_cfg = TrialConfirm {
+            has_tpm_floor: false,
+            trial_active: false,
+            sync_pending: true,
+            ..cfg
+        };
+        assert!(confirm_trial_and_sync(&mut flash, &mut no_tpm_cfg).is_err());
+        let scan_still_syncing = scan_journal_flash(&mut flash, 0, SECTOR_SIZE as u32).unwrap();
+        assert!(matches!(
+            scan_still_syncing.status,
+            ScanStatus::Valid { record, .. } if record.phase == Phase::Syncing
+        ));
+
+        // Resume after power + TPM restoration.
+        let mut resume_cfg = TrialConfirm {
+            trial_active: false,
+            sync_pending: true,
+            ..cfg
+        };
+        assert!(confirm_trial_and_sync(&mut flash, &mut resume_cfg).unwrap());
+        assert_eq!(
+            flash.data[2 * SECTOR_SIZE..5 * SECTOR_SIZE],
+            flash.data[5 * SECTOR_SIZE..8 * SECTOR_SIZE]
+        );
+        let scan2 = scan_journal_flash(&mut flash, 0, SECTOR_SIZE as u32).unwrap();
+        assert!(matches!(
+            scan2.status,
+            ScanStatus::Valid { record, .. } if record.phase == Phase::FloorPending && record.is_sync_done()
+        ));
+    }
+
+    #[test]
+    fn next_installing_rejects_unfinalized_phases() {
+        let stable = SlotStateRecord::initial(Slot::A, Slot::B, 1, 1, &[0x11; 32]);
+        let inst = stable
+            .next_installing(Slot::B, Slot::A, 2, 2, &[0x22; 32])
+            .expect("Stable -> Installing allowed");
+        let trial = inst
+            .next_trial(Slot::B, Slot::A, 3, 2, 2, &[0x22; 32])
+            .unwrap();
+        let syncing = trial.next_syncing().unwrap();
+        let floor_pending = syncing.next_confirm(true, true).unwrap();
+        let finalized = floor_pending.next_floor_finalized().unwrap();
+
+        assert!(
+            trial
+                .next_installing(Slot::A, Slot::B, 3, 3, &[0x33; 32])
+                .is_none()
+        );
+        assert!(
+            syncing
+                .next_installing(Slot::A, Slot::B, 3, 3, &[0x33; 32])
+                .is_none()
+        );
+        assert!(
+            floor_pending
+                .next_installing(Slot::A, Slot::B, 3, 3, &[0x33; 32])
+                .is_none()
+        );
+        assert!(
+            finalized
+                .next_installing(Slot::A, Slot::B, 3, 3, &[0x33; 32])
+                .is_some()
+        );
     }
 }

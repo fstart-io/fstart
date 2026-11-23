@@ -13,7 +13,15 @@ use fstart_arch::x86::{
 fn route_aps(route: ApRoute) {
     #[cfg(all(feature = "bundle", target_os = "none"))]
     fstart_arch::x86::psp_reset::set_ap_route(route);
-    #[cfg(not(all(feature = "bundle", target_os = "none")))]
+    #[cfg(all(feature = "ab-rw", not(feature = "bundle"), target_os = "none"))]
+    {
+        let addr = crate::ab::handoff().ap_route_addr.get();
+        // SAFETY: RO placed its `_sp3_ap_route` DRAM address in `AmdAbHandoff`
+        // inside the reserved early region; only the BSP writes it while APs
+        // are parked or before SMU release.
+        unsafe { fstart_arch::x86::psp_reset::set_ap_route_at(addr, route) };
+    }
+    #[cfg(not(all(any(feature = "bundle", feature = "ab-rw"), target_os = "none")))]
     let _ = route;
 }
 

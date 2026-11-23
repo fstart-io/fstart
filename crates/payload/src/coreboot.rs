@@ -72,6 +72,11 @@ impl<D> MainstagePayload<D> for X86CorebootPayload {
             manifest.entry
         );
         fstart_arch::x86::boot::disable_boot_media_rom_cache_for_handoff();
+        if let Some(hook) = handoff.pre_launch_hook
+            && let Err(reason) = hook()
+        {
+            halt(reason);
+        }
         fstart_stage::timestamps::handoff();
         fstart_log::flush();
         // SAFETY: the verified image is loaded at its linked address and the

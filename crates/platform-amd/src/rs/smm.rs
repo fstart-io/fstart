@@ -58,13 +58,13 @@ impl Report {
 
 /// The FCH side of the installation: SMIs off while TSEG moves, then only
 /// the SMI command port and the PSP's SMI (`fch::smi::enable_psp`).
-#[cfg(feature = "bundle")]
+#[cfg(feature = "stage-runtime")]
 pub struct Smi<'a, H> {
     pub fch: &'a H,
     pub config: Config,
 }
 
-#[cfg(feature = "bundle")]
+#[cfg(feature = "stage-runtime")]
 impl<H: fstart_driver_amd::fch::FchHw> fstart_arch::x86::cpu::amd::smm::SmiControl for Smi<'_, H> {
     type HandlerConfig = Config;
 

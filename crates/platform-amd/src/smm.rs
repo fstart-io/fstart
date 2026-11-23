@@ -205,14 +205,14 @@ pub struct SmmConfig<S = ()> {
 
 /// The FCH side of SMM installation, for every SoC: SMIs off while TSEG
 /// moves, then the FCH's sources and the SoC's own (`sources`).
-#[cfg(feature = "bundle")]
+#[cfg(feature = "stage-runtime")]
 pub struct Smi<'a, H, S> {
     pub fch: &'a H,
     pub config: SmmConfig<S>,
     pub sources: fn(&H, &SmmConfig<S>),
 }
 
-#[cfg(feature = "bundle")]
+#[cfg(feature = "stage-runtime")]
 impl<H: fstart_driver_amd::fch::FchHw, S: Copy> fstart_arch::x86::cpu::amd::smm::SmiControl
     for Smi<'_, H, S>
 {

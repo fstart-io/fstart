@@ -11,6 +11,8 @@
 //! goes.
 #![cfg_attr(not(any(test, feature = "host")), no_std)]
 extern crate alloc;
+/// RO/A/B firmware update support (SP3 and RS/Siena).
+pub mod ab;
 /// The ACPI tables, for every SoC.
 pub mod acpi;
 /// What a board is to the platform.
@@ -61,13 +63,13 @@ pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
 /// Measured boot on a discrete TPM, for every SoC.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub mod tpm;
 /// The SMM handler's installation in TSEG, for every SoC.
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub mod tseg;
 pub mod zeppelin;
-#[cfg(feature = "bundle")]
+#[cfg(any(feature = "stage-runtime", feature = "ab-ro"))]
 #[doc(hidden)]
 pub use fstart_stage as __stage;
 
@@ -78,8 +80,28 @@ macro_rules! entry {
         $crate::__stage::stage_bin!(main: $main);
     };
 }
+#[cfg(feature = "host")]
+fn deserialize_opt_flag<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    fstart_image_build::plan::option_value::flag(deserializer).map(Some)
+}
+
+#[cfg(feature = "host")]
+fn deserialize_opt_u32<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let Some(v) = fstart_image_build::plan::option_value::integer(deserializer)? else {
+        return Ok(None);
+    };
+    u32::try_from(v)
+        .map(Some)
+        .map_err(|_| serde::de::Error::custom("value exceeds u32::MAX"))
+}
+
 /// The `--option`s of every AMD board's host plan: where the PSP
-/// firmware comes from and the direct x86 Linux launcher's settings.
+/// firmware comes from, optional RO/A/B update build controls, and the
+/// direct x86 Linux launcher's settings.
 #[cfg(feature = "host")]
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -90,6 +112,26 @@ pub struct HostOptions {
     /// image steps read it there, and what the plan compiles is the same
     /// for every directory.
     pub blobs: Option<String>,
+    /// Enable RO/A/B firmware update layout and two-stage (`ro` + RW `stage`)
+    /// build. When `None`, defaults to [`board::Board::AB_DEFAULT`].
+    #[serde(deserialize_with = "deserialize_opt_flag")]
+    pub ab: Option<bool>,
+    /// Firmware version embedded in the signed RW slot `Root` (A/B builds only;
+    /// defaults to `1`).
+    #[serde(deserialize_with = "deserialize_opt_u32")]
+    pub fw_version: Option<u32>,
+    /// Anti-rollback security version embedded in the signed RW slot `Root`
+    /// (A/B builds only; defaults to `1`).
+    #[serde(deserialize_with = "fstart_image_build::plan::option_value::integer")]
+    pub security_version: Option<u64>,
+    /// Embed the public development UEFI capsule verification certificate in
+    /// the RW stage (for local/CI testing only; off by default).
+    #[serde(deserialize_with = "fstart_image_build::plan::option_value::flag")]
+    pub dev_keys: bool,
+    /// Fault-injection hook for automated A/B rollback testing: trigger a cold
+    /// reset before confirming a trial boot (requires `dev-keys=true`).
+    #[serde(deserialize_with = "fstart_image_build::plan::option_value::flag")]
+    pub fail_trial: bool,
     #[serde(flatten)]
     pub x86_linux: fstart_image_build::plan::X86LinuxOptions,
 }

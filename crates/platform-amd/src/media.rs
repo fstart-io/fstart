@@ -77,12 +77,14 @@ fn windows(
     Some((writable, reserved))
 }
 
-/// Publish the load policy and mount and authenticate the FFS at `ffs`:
-/// loads may only go to the RAM of `e820` outside the firmware's DRAM
-/// (`layout.early`: the running image, its page tables, BSS, heap, stack
-/// and store) and the media. Payload files are decoded with the codec of
-/// the platform's `compression::PAYLOAD`.
-pub fn mount(e820: &[E820Entry], layout: &Layout, ffs: Region) -> Result<(), MountError> {
+/// Publish the load policy: loads may only go to the RAM of `e820` outside
+/// the firmware's DRAM (`layout.early`) and the boot media (`ffs`). Payload
+/// files are decoded with the codec of the platform's `compression::PAYLOAD`.
+pub(crate) fn install_load_policy(
+    e820: &[E820Entry],
+    layout: &Layout,
+    ffs: Region,
+) -> Result<(), MountError> {
     let window = |region: Region| MemoryWindow {
         start: region.base,
         size: region.size,
@@ -100,7 +102,16 @@ pub fn mount(e820: &[E820Entry], layout: &Layout, ffs: Region) -> Result<(), Mou
     // stage within them) and the media excluded; no device has DMA buffers
     // outside the firmware's early region.
     unsafe { fstart_stage::directory::set_load_policy(&policy, codec) }
-        .map_err(|_| MountError::LoadPolicy)?;
+        .map_err(|_| MountError::LoadPolicy)
+}
+
+/// Publish the load policy and mount and authenticate the FFS at `ffs`:
+/// loads may only go to the RAM of `e820` outside the firmware's DRAM
+/// (`layout.early`: the running image, its page tables, BSS, heap, stack
+/// and store) and the media. Payload files are decoded with the codec of
+/// the platform's `compression::PAYLOAD`.
+pub fn mount(e820: &[E820Entry], layout: &Layout, ffs: Region) -> Result<(), MountError> {
+    install_load_policy(e820, layout, ffs)?;
     let locator = fstart_stage::anchor::media_locator().ok_or(MountError::Locator)?;
     if !locator.validate(ffs.size) {
         return Err(MountError::Locator);

@@ -24,10 +24,10 @@ pub struct SocSmbios {
     pub channels_per_die: u8,
 }
 
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 pub use stage::{System, build_into, build_with};
 
-#[cfg(all(feature = "bundle", target_os = "none"))]
+#[cfg(all(feature = "stage-runtime", target_os = "none"))]
 mod stage {
     extern crate alloc;
 

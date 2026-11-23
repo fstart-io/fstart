@@ -157,6 +157,13 @@ fn read_verified_asset(name: &str) -> Option<&'static [u8]> {
     crate::ffs_helpers::read_asset(&media, name)
 }
 
+/// Whether an authenticated directory context has already been installed
+/// (for example by an A/B RW stage mounting its active slot in DRAM).
+#[must_use]
+pub fn is_installed() -> bool {
+    context().is_some()
+}
+
 fn context() -> Option<&'static VerifiedDirectory> {
     // SAFETY: pointers are published only after initialization, never freed or
     // mutated, and installations require permanently reserved DRAM ownership.

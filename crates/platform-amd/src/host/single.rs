@@ -89,6 +89,7 @@ impl Image {
             // Entry 0x6B is only for a PSP verstage.
             shared_memory: None,
             psp: self.source.psp,
+            ab: None,
         };
         assembly.validate()?;
         let mut steps: Vec<ImageStep> = ffs.map(ImageStep::from).into_iter().collect();
@@ -97,6 +98,64 @@ impl Image {
             ImageOperation::AmdEfs(Box::new(assembly)),
         ));
         Ok(steps)
+    }
+
+    /// The composed single-half RO/A/B flash (Siena): an RW-slot FFS step,
+    /// `SLOT_STATE`/`RW_A`/`RW_B`, shared NVRAM (`0xf4_0000..0xf8_0000`), and
+    /// the immutable 512 KiB `ro` selector stage at `0xf8_0000..0x100_0000`.
+    pub(super) fn ab_images(
+        &self,
+        host: &Host,
+        selection: &BuildSelection,
+        options: &HostOptions,
+        ffs: impl FnOnce(Option<MicrocodeConfig>) -> FfsAssembly,
+    ) -> Result<Vec<ImageStep>, String> {
+        use crate::ab::{
+            AB_NVRAM_OFFSET, AB_NVRAM_SIZE, AB_RO_DRAM_BASE, AB_RO_FLASH_OFFSET, AB_RO_SIZE,
+            SIENA_AB_SLOT_A_OFFSET, SIENA_AB_SLOT_SIZE, host::siena_slot_layout,
+        };
+
+        let layout = &host.layout;
+        let packed = self.packed(host, selection, options)?;
+        let microcode = packed.as_ref().map(microcode).transpose()?.flatten();
+        let mut ffs = ffs(microcode);
+        if let Some(packed) = &packed {
+            ffs.file_assets = packed.files.assets.clone();
+        }
+        let flash_size = layout.flash.size as u32;
+        let Some(packed) = packed else {
+            return Ok(std::vec![ffs.into()]);
+        };
+        let firmware = Firmware::Packed {
+            files: packed.files,
+            reset_offset: Some(AB_RO_FLASH_OFFSET),
+        };
+        let assembly = AmdAssembly {
+            firmware,
+            ffs: Some(FfsWindow {
+                step: ImageStep::FFS.into(),
+                offset: SIENA_AB_SLOT_A_OFFSET,
+                size: SIENA_AB_SLOT_SIZE,
+            }),
+            nvram: Some(fstart_image_build::amd::FlashRegion {
+                offset: AB_NVRAM_OFFSET,
+                size: AB_NVRAM_SIZE,
+            }),
+            stage_unit: super::RO_UNIT.into(),
+            flash_size,
+            bios_directory: self.bios_directory,
+            reset_size: AB_RO_SIZE,
+            reset_destination: AB_RO_DRAM_BASE,
+            apob_destination: self.apob_destination,
+            shared_memory: None,
+            psp: self.source.psp,
+            ab: Some(siena_slot_layout()),
+        };
+        assembly.validate()?;
+        Ok(std::vec![
+            ffs.into(),
+            ImageStep::new("flash", ImageOperation::AmdEfs(Box::new(assembly))),
+        ])
     }
 
     /// The files of a packed image: the SoC's blob table

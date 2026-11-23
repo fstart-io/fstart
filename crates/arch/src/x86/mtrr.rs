@@ -705,45 +705,100 @@ pub unsafe fn setup_fixed_low_memory() {
     }
 }
 
-/// Optional BSP-only ROM acceleration. Never overwrite a RAM range or use an
-/// overlapping UC/WB range with WP. Removing it clears only the slot we own.
+/// Run the SDM BSP-only variable MTRR update sequence (WBINVD, CR0.CD=1,
+/// CR4.PGE=0, CR3 TLB flush, MTRR_DEF_TYPE=0, mutate, restore) while
+/// preserving existing MTRRs (including the early DRAM WB range).
+///
 /// # Safety
-/// BSP-only; caller obeys stage-specific MTRR update requirements and removes
-/// this optimization before AP mirroring or payload handoff.
-pub unsafe fn set_boot_rom_wp(enable: bool) -> Result<(), ServiceError> {
+/// BSP-only RAM-stage operation with interrupts disabled and APs not yet
+/// running; never invoke from CAR.
+unsafe fn with_mtrr_update(update: impl FnOnce()) {
+    unsafe {
+        if !x86::controlregs::cr0().contains(x86::controlregs::Cr0::CR0_CACHE_DISABLE) {
+            crate::x86::writeback_invalidate_caches();
+        }
+        disable_cache();
+        let cr4 = x86::controlregs::cr4();
+        x86::controlregs::cr4_write(cr4 & !x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES);
+        let cr3 = x86::controlregs::cr3();
+        x86::controlregs::cr3_write(cr3);
+        let def_type = rdmsr(IA32_MTRR_DEF_TYPE);
+        wrmsr(IA32_MTRR_DEF_TYPE, 0);
+        update();
+        wrmsr(IA32_MTRR_DEF_TYPE, def_type);
+        x86::controlregs::cr3_write(cr3);
+        x86::controlregs::cr4_write(cr4);
+        enable_cache();
+    }
+}
+
+/// Optional BSP-only ROM acceleration over an arbitrary naturally aligned
+/// power-of-two flash MMIO window (e.g. ROM2 at `0xff00_0000` or AMD ROM3 at
+/// `0xfd_0000_0000`). Never overwrite a RAM range or use an overlapping UC/WB
+/// range with WP. Removing it clears only the slot we own.
+///
+/// # Safety
+/// BSP-only RAM-stage operation (never CAR); caller removes this optimization
+/// before AP mirroring or payload handoff.
+pub unsafe fn set_rom_window_wp(base: u64, size: u64, enable: bool) -> Result<(), ServiceError> {
     if !enable {
         if let Some(index) = ROM_SLOT.swap(0, Ordering::AcqRel).checked_sub(1) {
             unsafe {
-                clear_variable(index as u32);
+                with_mtrr_update(|| clear_variable(index as u32));
             }
         }
         return Ok(());
     }
-    if ROM_SLOT.load(Ordering::Acquire) != 0 {
-        return Ok(());
+    if !size.is_power_of_two() || size < 0x1000 || !base.is_multiple_of(size) {
+        return Err(ServiceError::InvalidParam);
     }
-    if unsafe { rdmsr(IA32_MTRR_DEF_TYPE) } & 0xff != MTRR_TYPE_UNCACHEABLE {
+    let end = base.checked_add(size).ok_or(ServiceError::InvalidParam)?;
+    let limit = 1u64 << crate::x86::physical_address_bits();
+    if end > limit {
+        return Err(ServiceError::InvalidParam);
+    }
+    if let Some(index) = ROM_SLOT.load(Ordering::Acquire).checked_sub(1) {
+        let (cur_base, cur_mask) = unsafe { read_variable(index as u32) };
+        if is_valid_mask(cur_mask)
+            && decode_base(cur_base) == base
+            && decode_size(cur_mask) == size
+            && decode_type(cur_base) == MTRR_TYPE_WRITE_PROTECT
+        {
+            return Ok(());
+        }
+        return Err(ServiceError::InvalidParam);
+    }
+    let def_type = unsafe { rdmsr(IA32_MTRR_DEF_TYPE) };
+    if def_type & ENABLE == 0 || def_type & 0xff != MTRR_TYPE_UNCACHEABLE {
         return Err(ServiceError::NotSupported);
     }
     let mut free = None;
     for index in 0..unsafe { variable_count() } {
-        let (base, mask) = unsafe { read_variable(index) };
-        if !is_valid_mask(mask) {
+        let (var_base, var_mask) = unsafe { read_variable(index) };
+        if !is_valid_mask(var_mask) {
             free = Some(index);
             continue;
         }
-        let start = decode_base(base);
-        let end = start + decode_size(mask);
-        if start < 0x100000000 && end > 0xff000000 {
+        let start = decode_base(var_base);
+        let var_end = start.saturating_add(decode_size(var_mask));
+        if start < end && var_end > base {
             return Err(ServiceError::NotSupported);
         }
     }
     let index = free.ok_or(ServiceError::NotSupported)?;
     unsafe {
-        set_variable(index, 0xff000000, 0x1000000, MTRR_TYPE_WRITE_PROTECT);
+        with_mtrr_update(|| set_variable(index, base, size, MTRR_TYPE_WRITE_PROTECT));
     }
     ROM_SLOT.store(index as usize + 1, Ordering::Release);
     Ok(())
+}
+
+/// Optional BSP-only ROM2 (`0xff00_0000..0x1_0000_0000`) acceleration.
+/// # Safety
+/// BSP-only; caller obeys stage-specific MTRR update requirements and removes
+/// this optimization before AP mirroring or payload handoff.
+pub unsafe fn set_boot_rom_wp(enable: bool) -> Result<(), ServiceError> {
+    unsafe { set_rom_window_wp(0xff00_0000, 0x100_0000, enable) }
 }
 
 #[cfg(test)]
