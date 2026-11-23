@@ -35,6 +35,7 @@ pub mod rs;
 pub mod rv;
 pub mod ssp;
 pub mod table;
+pub mod wh;
 pub mod zp;
 /// One NBIO: a ZP die (Naples) or an IOD quadrant (Rome, Milan).
 #[derive(Clone)]

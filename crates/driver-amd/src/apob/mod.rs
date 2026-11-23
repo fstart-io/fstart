@@ -30,6 +30,7 @@ pub mod rs;
 #[cfg(feature = "smbios")]
 pub mod smbios;
 pub mod sysmap;
+pub mod v2;
 pub use sysmap::{Hole, MemoryMap};
 
 use zerocopy::little_endian::U32;

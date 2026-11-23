@@ -12,6 +12,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     response: SmnReg::new(0x03b1_057c),
     arguments: SmnReg::new(0x03b1_09c4),
     wait_before: false,
+    argument_count: crate::smu::ARGUMENT_COUNT,
 };
 
 /// GetSmuVersion: the firmware revision in argument 0.

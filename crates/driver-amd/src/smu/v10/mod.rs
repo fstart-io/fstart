@@ -20,6 +20,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     response: RESPONSE,
     arguments: ARGUMENTS,
     wait_before: true,
+    argument_count: crate::smu::ARGUMENT_COUNT,
 };
 
 /// Raw completed response; only source-backed late-policy callers may
