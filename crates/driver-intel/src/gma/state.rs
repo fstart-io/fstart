@@ -166,6 +166,8 @@ impl GmaDisplayState {
         if wants_lvds && let Some(mmio) = &mmio {
             crate::gma::generation::g45::prepare_panel_probe(mmio, config.vbt);
         }
+        let gen_mmio = crate::gma::mmio_from_validated_resources(resources);
+        G::prepare_port_probe(&gen_mmio, config.cpu, config.outputs, config.vbt);
         let resolved = self.resolve_requested_configs::<G>(
             resources,
             config,
@@ -203,6 +205,15 @@ impl GmaDisplayState {
             crate::gma::generation::g45::panel_backlight_off(mmio);
             crate::gma::generation::g45::panel_power_off(mmio);
         }
+        let resolved_ports = match &resolved {
+            Ok(outputs) => [
+                outputs[0].map(|output| output.port),
+                outputs[1].map(|output| output.port),
+                outputs[2].map(|output| output.port),
+            ],
+            Err(_) => [None; PIPE_COUNT],
+        };
+        G::cleanup_unused_panel_probe(&gen_mmio, config.cpu, config.outputs, &resolved_ports);
         let mut new_configs = resolved?;
         if let Some(mmio) = &mmio {
             self.apply_hpd_filter(mmio, &mut new_configs, now_us);
@@ -331,7 +342,7 @@ impl GmaDisplayState {
                 last_error = GmaError::ModeUnavailable;
                 continue;
             }
-            let sibling = crate::gma::port::sibling_port(output.port);
+            let sibling = crate::gma::port::sibling_port(config.cpu, output.port);
             if modes
                 .iter()
                 .flatten()
@@ -929,9 +940,14 @@ mod tests {
                 assert_eq!(output.surface, first.surface);
             }
             assert_eq!(planned[1].unwrap().mode, native_mode(1024, 768));
-            // Newer backends remain explicit about unimplemented scaling:
+            // Unimplemented backends remain explicit about scaling:
             // successful common planning is not hardware enablement.
             if !legacy_cpu {
+                let expected = if cpu.is_haswell() {
+                    Ok(())
+                } else {
+                    Err(GmaError::UnsupportedPlatform)
+                };
                 assert_eq!(
                     ScalerPlan::resolve(
                         cpu,
@@ -941,10 +957,83 @@ mod tests {
                         ScalingPolicy::PreserveAspect
                     )
                     .validate_current(),
-                    Err(GmaError::UnsupportedPlatform)
+                    expected
                 );
             }
         }
+    }
+
+    #[test]
+    fn haswell_edp_and_hdmi_a_mirror_without_dp_a_sibling_conflict() {
+        let outputs = [
+            OutputConfig {
+                port: Port::Edp,
+                enabled: true,
+            },
+            OutputConfig {
+                port: Port::HdmiA,
+                enabled: true,
+            },
+        ];
+        let config = edid_config(Cpu::HaswellUlt, &outputs);
+        // DDI-A (Edp/DpA) has the internal panel's EDID; DDI-B (HdmiA/DpB) has only HDMI.
+        let planned = GmaDisplayState::new()
+            .resolve_for_cpu(
+                &resources(),
+                &config,
+                None,
+                |port| {
+                    Ok(match port {
+                        Port::Edp => native_mode(1366, 768),
+                        Port::HdmiA => native_mode(1920, 1080),
+                        _ => return Err(GmaError::ModeUnavailable),
+                    })
+                },
+                |sibling| sibling == Port::DpA,
+            )
+            .unwrap();
+        let edp = planned[PipeOutputConfig::pipe_index(Pipe::A)].unwrap();
+        let hdmi = planned[PipeOutputConfig::pipe_index(Pipe::B)].unwrap();
+        assert_eq!(edp.port, Port::Edp);
+        assert_eq!(hdmi.port, Port::HdmiA);
+        assert_eq!((edp.surface.width, edp.surface.height), (1366, 768));
+        assert_eq!(hdmi.surface, edp.surface);
+        assert_eq!((hdmi.mode.hdisplay, hdmi.mode.vdisplay), (1920, 1080));
+        assert_eq!(
+            ScalerPlan::resolve(
+                Cpu::HaswellUlt,
+                Pipe::B,
+                hdmi.surface,
+                hdmi.mode,
+                ScalingPolicy::PreserveAspect,
+            )
+            .validate_current(),
+            Ok(())
+        );
+
+        // If DDI-B's actual sibling (DpB) also reports an EDID, HdmiA is rejected.
+        let conflicted = GmaDisplayState::new()
+            .resolve_for_cpu(
+                &resources(),
+                &config,
+                None,
+                |port| {
+                    Ok(match port {
+                        Port::Edp => native_mode(1366, 768),
+                        Port::HdmiA => native_mode(1920, 1080),
+                        _ => return Err(GmaError::ModeUnavailable),
+                    })
+                },
+                |sibling| sibling == Port::DpB,
+            )
+            .unwrap();
+        assert_eq!(
+            conflicted[PipeOutputConfig::pipe_index(Pipe::A)]
+                .unwrap()
+                .port,
+            Port::Edp
+        );
+        assert!(conflicted[PipeOutputConfig::pipe_index(Pipe::B)].is_none());
     }
 
     #[test]

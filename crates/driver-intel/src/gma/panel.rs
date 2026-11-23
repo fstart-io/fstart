@@ -487,6 +487,107 @@ pub const fn backlight_pwm_disable_op(model: BacklightRegisterModel) -> Option<P
     }
 }
 
+/// Haswell/Lynx Point `SOUTH_CHICKEN2` register offset.
+pub const SOUTH_CHICKEN2: usize = 0xc2004;
+/// Lynx Point PWM granularity select bit (`SOUTH_CHICKEN2` bit 5): 1 = 16-step, 0 = 128-step.
+pub const LPT_PWM_GRANULARITY: u32 = 1 << 5;
+/// PCH backlight PWM control 1 register (`BLC_PWM_PCH_CTL1`).
+pub const BLC_PWM_PCH_CTL1: usize = 0xc8250;
+/// PCH backlight PWM control 2 register (`BLC_PWM_PCH_CTL2`).
+pub const BLC_PWM_PCH_CTL2: usize = 0xc8254;
+/// CPU backlight PWM control 2 register (`BLC_PWM_CPU_CTL2`).
+pub const BLC_PWM_CPU_CTL2: usize = 0x48250;
+/// CPU backlight PWM control/duty register (`BLC_PWM_CPU_CTL`).
+pub const BLC_PWM_CPU_CTL: usize = 0x48254;
+/// `BLC_PWM_PCH_CTL1` PWM enable bit (bit 31).
+pub const BLM_PCH_PWM_ENABLE: u32 = 1 << 31;
+/// `BLC_PWM_PCH_CTL1` PCH override enable bit (bit 30).
+pub const BLM_PCH_OVERRIDE_ENABLE: u32 = 1 << 30;
+/// `BLC_PWM_PCH_CTL1` active-low polarity bit (bit 29).
+pub const BLM_PCH_POLARITY_LOW: u32 = 1 << 29;
+
+/// Pure Haswell / Lynx Point PCH backlight PWM register plan.
+///
+/// Mirrors coreboot `src/northbridge/intel/haswell/gma.c` (`gma_setup_panel`):
+/// selects 16-step vs 128-step granularity in `SOUTH_CHICKEN2` bit 5, programs
+/// `BLC_PWM_PCH_CTL2` (modulation frequency in bits 31:16, duty cycle in bits
+/// 15:0), and enables PCH override in `BLC_PWM_PCH_CTL1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HaswellBacklightPwmPlan {
+    /// Whether `SOUTH_CHICKEN2` bit 5 (`LPT_PWM_GRANULARITY`) should be set.
+    pub use_16_granularity: bool,
+    /// Computed PWM modulation period (16-bit).
+    pub pwm_period: u16,
+    /// Computed PWM duty cycle (16-bit).
+    pub pwm_duty: u16,
+    /// Operation to update `SOUTH_CHICKEN2` bit 5.
+    pub south_chicken2: PanelRegisterOp,
+    /// Value for `BLC_PWM_PCH_CTL2`.
+    pub pch_ctl2: PanelRegisterOp,
+    /// Value for `BLC_PWM_PCH_CTL1`.
+    pub pch_ctl1: PanelRegisterOp,
+}
+
+impl HaswellBacklightPwmPlan {
+    /// Compute a Haswell backlight PWM plan for `pwm_hz` at `duty_percent` (0..=100).
+    ///
+    /// Reference clock is 24 MHz on Lynx Point-LP (ULT/ULX) and 135 MHz on
+    /// Traditional Lynx Point-H. Returns `None` if `pwm_hz == 0`.
+    #[must_use]
+    pub const fn new(is_lp: bool, pwm_hz: u32, active_low: bool, duty_percent: u8) -> Option<Self> {
+        if pwm_hz == 0 {
+            return None;
+        }
+        let refclock: u32 = if is_lp { 24_000_000 } else { 135_000_000 };
+        let hz_limit = refclock / 128 / 100;
+        let use_16_granularity = pwm_hz > hz_limit;
+        let pwm_increment: u32 = if use_16_granularity { 16 } else { 128 };
+        let raw_period = refclock / pwm_increment / pwm_hz;
+        let clamped_period = if raw_period == 0 {
+            1
+        } else if raw_period > 0xffff {
+            0xffff
+        } else {
+            raw_period
+        };
+        let clamped_duty_pct = if duty_percent > 100 {
+            100
+        } else {
+            duty_percent
+        };
+        let pwm_duty = (clamped_period * clamped_duty_pct as u32) / 100;
+        let south_chicken2 = if use_16_granularity {
+            PanelRegisterOp::Set {
+                register: SOUTH_CHICKEN2,
+                mask: LPT_PWM_GRANULARITY,
+            }
+        } else {
+            PanelRegisterOp::Clear {
+                register: SOUTH_CHICKEN2,
+                mask: LPT_PWM_GRANULARITY,
+            }
+        };
+        let pch_ctl2_val = (clamped_period << 16) | (pwm_duty & 0xffff);
+        let pch_ctl1_val = (if active_low { BLM_PCH_POLARITY_LOW } else { 0 })
+            | BLM_PCH_OVERRIDE_ENABLE
+            | BLM_PCH_PWM_ENABLE;
+        Some(Self {
+            use_16_granularity,
+            pwm_period: clamped_period as u16,
+            pwm_duty: pwm_duty as u16,
+            south_chicken2,
+            pch_ctl2: PanelRegisterOp::Write {
+                register: BLC_PWM_PCH_CTL2,
+                value: pch_ctl2_val,
+            },
+            pch_ctl1: PanelRegisterOp::Write {
+                register: BLC_PWM_PCH_CTL1,
+                value: pch_ctl1_val,
+            },
+        })
+    }
+}
+
 const PP_CONTROL_WRITE_PROTECT_MASK: u32 = PP_CONTROL::UNLOCK_KEY.val(0xffff).value;
 const PP_CONTROL_WRITE_PROTECT_KEY: u32 = PP_CONTROL::UNLOCK_KEY.val(0xabcd).value;
 const PP_CONTROL_VDD_OVERRIDE: u32 = PP_CONTROL::VDD_OVERRIDE::SET.value;

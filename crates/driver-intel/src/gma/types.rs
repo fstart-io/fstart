@@ -42,8 +42,12 @@ pub enum Cpu {
     Sandybridge,
     /// Ivybridge platform.
     Ivybridge,
-    /// Haswell platform.
+    /// Haswell desktop/mobile (Traditional/H) platform.
     Haswell,
+    /// Haswell-ULT (U-series low-power) platform.
+    HaswellUlt,
+    /// Haswell-ULX (Y-series ultra-low-power) platform.
+    HaswellUlx,
     /// Broadwell platform.
     Broadwell,
     /// Broxton platform.
@@ -56,6 +60,42 @@ pub enum Cpu {
     Tigerlake,
     /// Alderlake platform.
     Alderlake,
+}
+
+impl Cpu {
+    /// Classify an Intel IGD PCI device ID for the Haswell family
+    /// (Traditional/Desktop/Mobile, ULT/U-series, and ULX/Y-series), matching
+    /// libgfxinit `Is_Haswell` / `Is_Haswell_U` / `Is_Haswell_Y`.
+    #[must_use]
+    pub const fn from_haswell_pci_id(device_id: u16) -> Option<Self> {
+        if (device_id & 0xffef) == 0x0a0e {
+            Some(Self::HaswellUlx)
+        } else if (device_id & 0xffc3) == 0x0a02 || (device_id & 0xffcf) == 0x0a0b {
+            Some(Self::HaswellUlt)
+        } else if (device_id & 0xffc3) == 0x0402
+            || (device_id & 0xffcf) == 0x040b
+            || (device_id & 0xffc3) == 0x0c02
+            || (device_id & 0xffcf) == 0x0c0b
+            || (device_id & 0xffc3) == 0x0d02
+            || (device_id & 0xffcf) == 0x0d0b
+        {
+            Some(Self::Haswell)
+        } else {
+            None
+        }
+    }
+
+    /// Return `true` for any Haswell SKU (Traditional, ULT, or ULX).
+    #[must_use]
+    pub const fn is_haswell(self) -> bool {
+        matches!(self, Self::Haswell | Self::HaswellUlt | Self::HaswellUlx)
+    }
+
+    /// Return `true` for Haswell low-power SKUs (ULT or ULX, paired with Lynx Point-LP).
+    #[must_use]
+    pub const fn is_haswell_lp(self) -> bool {
+        matches!(self, Self::HaswellUlt | Self::HaswellUlx)
+    }
 }
 
 /// Logical display port requested by board policy.

@@ -56,6 +56,7 @@ pub use config::{OutputConfig, PreferredMode};
 pub use error::GmaError;
 pub use framebuffer::{FramebufferConfig, PixelFormat, SurfaceConfig};
 pub(crate) use generation::GenerationOps;
+pub use generation::haswell::Haswell;
 pub(crate) use generation::{g45::G45, i945::I945, ironlake::Ironlake};
 pub use gmbus::GmbusPin;
 pub use mode::{FallbackMode, Mode, ModeFlags};
@@ -132,13 +133,22 @@ const PORTS_DDI: &[Port] = &[
     Port::DpC,
     Port::DpD,
 ];
+/// Haswell ULT/ULX (Lynx Point-LP) expose DDI A, B, C (no DDI-D).
+const PORTS_HASWELL_LP: &[Port] = &[
+    Port::Edp,
+    Port::HdmiA,
+    Port::HdmiB,
+    Port::DpA,
+    Port::DpB,
+    Port::DpC,
+];
 
 /// Return static platform capabilities for a CPU.
 ///
-/// Haswell and newer report their port set for planning purposes, but their
+/// Broadwell and newer report their port set for planning purposes, but their
 /// modeset executors are not implemented: `init_display` returns
-/// [`GmaError::UnsupportedPlatform`] rather than half-applying a modeset. Only
-/// the I945 and G45 generations and Ironlake currently drive hardware.
+/// [`GmaError::UnsupportedPlatform`] rather than half-applying a modeset. I945,
+/// G45, Ironlake, and Haswell (Traditional/ULT/ULX) currently drive hardware.
 pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
     match cpu {
         Cpu::I945G => PlatformCaps {
@@ -237,6 +247,19 @@ pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
             cpu,
             pipes: PIPES_ABC,
             ports: PORTS_DDI,
+            has_pch_split: true,
+            has_fdi: false,
+            has_gmbus: true,
+            has_lvds: false,
+            has_ddi: true,
+            supports_displayport: true,
+            requires_pineview_gmbus_clock_wa: false,
+        },
+        Cpu::HaswellUlt | Cpu::HaswellUlx => PlatformCaps {
+            generation: Generation::Haswell,
+            cpu,
+            pipes: PIPES_ABC,
+            ports: PORTS_HASWELL_LP,
             has_pch_split: true,
             has_fdi: false,
             has_gmbus: true,
@@ -395,10 +418,12 @@ pub(crate) fn prepare_framebuffer(
     cpu: Cpu,
     surface: &SurfaceConfig,
 ) -> Result<(), GmaError> {
-    if !matches!(
-        caps_for(cpu).generation,
-        Generation::I945 | Generation::G45 | Generation::Ironlake
-    ) {
+    let supported = match caps_for(cpu).generation {
+        Generation::I945 | Generation::G45 | Generation::Ironlake => true,
+        Generation::Haswell => cpu.is_haswell(),
+        _ => false,
+    };
+    if !supported {
         return Err(GmaError::UnsupportedPlatform);
     }
     gtt::map_surface_to_stolen(resources, cpu, surface)?;
@@ -407,7 +432,7 @@ pub(crate) fn prepare_framebuffer(
         gtt::clear_legacy_fences(&mmio, cpu);
         gtt::add_legacy_fence(&mmio, cpu, surface)?;
     }
-    gtt::flush_gfx(&mmio);
+    gtt::flush_gfx_for_cpu(&mmio, cpu);
     // SAFETY: the validated aperture now maps the complete shared surface.
     unsafe { surface.fill_opaque_black() }
 }
@@ -452,10 +477,11 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
 /// Reject a CPU from another generation than the executor `G`, or a
 /// generation without an executor, before touching display registers.
 pub(crate) fn validate_generation<G: GenerationOps>(cpu: Cpu) -> Result<(), GmaError> {
-    let executable = matches!(
-        G::GENERATION,
-        Generation::I945 | Generation::G45 | Generation::Ironlake
-    );
+    let executable = match G::GENERATION {
+        Generation::I945 | Generation::G45 | Generation::Ironlake => true,
+        Generation::Haswell => cpu.is_haswell(),
+        _ => false,
+    };
     (executable && caps_for(cpu).generation == G::GENERATION)
         .then_some(())
         .ok_or(GmaError::UnsupportedPlatform)
@@ -490,7 +516,13 @@ const fn hdmi_max_dotclock_khz(cpu: Cpu) -> u32 {
         | Cpu::G45
         | Cpu::Gm45 => 165_000,
         Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => 225_000,
-        Cpu::Haswell | Cpu::Broadwell | Cpu::Broxton | Cpu::Skylake | Cpu::Kabylake => 300_000,
+        Cpu::Haswell
+        | Cpu::HaswellUlt
+        | Cpu::HaswellUlx
+        | Cpu::Broadwell
+        | Cpu::Broxton
+        | Cpu::Skylake
+        | Cpu::Kabylake => 300_000,
         Cpu::Tigerlake | Cpu::Alderlake => 600_000,
     }
 }
@@ -627,8 +659,22 @@ fn aux_ddc_bus(
         Generation::Ironlake => unsafe {
             dp_aux::HardwareDpAuxDdc::pch(resources.gtt_mmio_base, port)
         },
+        Generation::Haswell => {
+            let mmio = mmio_from_validated_resources(resources);
+            let cdclk_hz = generation::haswell::detect_cdclk_hz(&mmio, cpu);
+            let rawclk_hz = generation::haswell::rawclk_hz(cpu);
+            // SAFETY: Haswell DP AUX registers live in the decoded display MMIO BAR.
+            unsafe {
+                dp_aux::HardwareDpAuxDdc::haswell(
+                    resources.gtt_mmio_base,
+                    port,
+                    cdclk_hz,
+                    rawclk_hz,
+                )
+            }
+        }
         // SAFETY: DDI AUX registers are in the decoded display MMIO BAR.
-        Generation::Haswell | Generation::Broxton | Generation::Skylake | Generation::Tigerlake => unsafe {
+        Generation::Broxton | Generation::Skylake | Generation::Tigerlake => unsafe {
             dp_aux::HardwareDpAuxDdc::ddi(resources.gtt_mmio_base, port)
         },
         Generation::I945 => Err(GmaError::UnsupportedPort),
@@ -682,7 +728,11 @@ mod tests {
         assert!(validate_generation::<Ironlake>(Cpu::Ironlake).is_ok());
         assert!(validate_generation::<G45>(Cpu::Pineview).is_err());
         assert!(validate_generation::<Ironlake>(Cpu::Gm45).is_err());
-        assert!(validate_generation::<generation::haswell::Haswell>(Cpu::Haswell).is_err());
+        assert!(validate_generation::<Haswell>(Cpu::Haswell).is_ok());
+        assert!(validate_generation::<Haswell>(Cpu::HaswellUlt).is_ok());
+        assert!(validate_generation::<Haswell>(Cpu::HaswellUlx).is_ok());
+        assert!(validate_generation::<Haswell>(Cpu::Broadwell).is_err());
+        assert!(validate_generation::<generation::skylake::Skylake>(Cpu::Skylake).is_err());
     }
 
     #[test]

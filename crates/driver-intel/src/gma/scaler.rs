@@ -346,9 +346,16 @@ pub const fn caps_for(cpu: Cpu) -> ScalerCaps {
             implemented: false,
             single_global_scaler: false,
         },
-        Cpu::Haswell | Cpu::Broadwell => ScalerCaps {
-            // Haswell/Broadwell still use a PCH-style panel fitter in the
-            // libgfxinit model. Do not group them with Skylake+ pipe scalers.
+        Cpu::Haswell | Cpu::HaswellUlt | Cpu::HaswellUlx => ScalerCaps {
+            // Haswell uses a PCH-style panel fitter and `generation::haswell`
+            // programs PF_CTL / PF_WIN_POS / PF_WIN_SZ during modeset.
+            kind: Some(ScalerKind::IronlakePanelFitter),
+            implemented: true,
+            single_global_scaler: false,
+        },
+        Cpu::Broadwell => ScalerCaps {
+            // Broadwell still uses a PCH-style panel fitter in the libgfxinit
+            // model. Do not group it with Skylake+ pipe scalers.
             kind: Some(ScalerKind::IronlakePanelFitter),
             implemented: false,
             single_global_scaler: false,
@@ -694,6 +701,14 @@ pub const fn plan_pch_destination_rect(
         rect.x = 0;
         rect.width = target_width;
         if rect.height == target_height {
+            rect.kind = DestinationKind::Stretch;
+        }
+    }
+    let vertical_gap = target_height.saturating_sub(rect.height);
+    if matches!(policy, ScalingPolicy::PreserveAspect) && vertical_gap > 0 && vertical_gap <= 3 {
+        rect.y = 0;
+        rect.height = target_height;
+        if rect.width == target_width {
             rect.kind = DestinationKind::Stretch;
         }
     }
@@ -1210,6 +1225,76 @@ mod tests {
                 true,
             ),
             Err(GmaError::InvalidConfig)
+        );
+    }
+
+    #[test]
+    fn haswell_pfit_validates_and_snaps_near_aspect_mirror_targets() {
+        let surface = SurfaceConfig::packed(0xd000_0000, 1366, 768, PixelFormat::Xrgb8888);
+
+        for (cpu, target_w, target_h, expected_kind) in [
+            (Cpu::Haswell, 1920u16, 1080u16, DestinationKind::Letterbox),
+            (
+                Cpu::HaswellUlt,
+                2560u16,
+                1440u16,
+                DestinationKind::Letterbox,
+            ),
+            (Cpu::HaswellUlx, 3840u16, 2160u16, DestinationKind::Stretch),
+        ] {
+            let mode = Mode {
+                hdisplay: target_w,
+                vdisplay: target_h,
+                ..Mode::XGA_1024X768_60
+            };
+            let plan =
+                ScalerPlan::resolve(cpu, Pipe::B, surface, mode, ScalingPolicy::PreserveAspect);
+            assert!(plan.requires_scaling);
+            assert_eq!(plan.kind, Some(ScalerKind::IronlakePanelFitter));
+            assert_eq!(plan.validate_current(), Ok(()));
+            assert_eq!(
+                plan.constrained_destination_rect(),
+                Ok(DestinationRect {
+                    x: 0,
+                    y: 0,
+                    width: target_w as u32,
+                    height: target_h as u32,
+                    kind: expected_kind,
+                })
+            );
+
+            let encoding = encode_ironlake_pfit(
+                Pipe::B,
+                surface.width,
+                surface.height,
+                target_w,
+                target_h,
+                ScalingPolicy::PreserveAspect,
+                true,
+            )
+            .unwrap();
+            assert_eq!(encoding.control, (1 << 31) | (1 << 29) | (1 << 23));
+            assert_eq!(encoding.win_pos, 0);
+            assert_eq!(
+                encoding.win_size,
+                ((target_w as u32) << 16) | (target_h as u32)
+            );
+        }
+
+        let broadwell = ScalerPlan::resolve(
+            Cpu::Broadwell,
+            Pipe::B,
+            surface,
+            Mode {
+                hdisplay: 1920,
+                vdisplay: 1080,
+                ..Mode::XGA_1024X768_60
+            },
+            ScalingPolicy::PreserveAspect,
+        );
+        assert_eq!(
+            broadwell.validate_current(),
+            Err(GmaError::UnsupportedPlatform)
         );
     }
 }

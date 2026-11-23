@@ -105,6 +105,26 @@ pub(crate) trait GenerationOps: sealed::Sealed {
     /// Return the display to libgfxinit's `Clean_State`: every pipe, port,
     /// panel and PLL off. Used once before the first modeset, not per output.
     fn clean(_mmio: &crate::gma::mmio::Mmio, _cpu: Cpu) {}
+
+    /// Prepare generation-owned connector/panel hardware before probing EDID/AUX
+    /// (for example eDP panel power sequencing and display power wells on Haswell).
+    fn prepare_port_probe(
+        _mmio: &crate::gma::mmio::Mmio,
+        _cpu: Cpu,
+        _outputs: &[crate::gma::config::OutputConfig],
+        _vbt: Option<&[u8]>,
+    ) {
+    }
+
+    /// Clean up any probe-time panel power when the panel connector was not
+    /// selected by mode resolution.
+    fn cleanup_unused_panel_probe(
+        _mmio: &crate::gma::mmio::Mmio,
+        _cpu: Cpu,
+        _outputs: &[crate::gma::config::OutputConfig],
+        _resolved_ports: &[Option<Port>],
+    ) {
+    }
 }
 
 pub(crate) mod sealed {
@@ -115,6 +135,7 @@ pub(crate) mod sealed {
 pub mod broxton;
 pub mod g45;
 pub mod haswell;
+pub use haswell::Haswell;
 pub mod i945;
 pub mod ironlake;
 pub mod skylake;

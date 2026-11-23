@@ -378,7 +378,7 @@ mod tests {
         assert!(matches!(
             ops[8],
             SklDdiOp::Write {
-                register: 0x64200,
+                register: 0x64300,
                 ..
             }
         ));
