@@ -21,6 +21,7 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
 unused_must_use = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [workspace.lints.clippy]
 correctness = { level = "deny", priority = -1 }

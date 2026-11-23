@@ -9,6 +9,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod comm;
 pub mod handler;
 pub mod header;
 pub mod installer;
@@ -18,6 +19,9 @@ pub mod save_state;
 #[cfg(feature = "stage-bin")]
 pub mod stage;
 
+pub use comm::{
+    CommError, MemoryRange, SMM_IDENTITY_MAP_END, SmmBufferPolicy, validate_outside_smram,
+};
 pub use handler::*;
 pub use header::{CorebootOffsets, EntryDescriptor, HeaderError, SmmImageHeader};
 pub use installer::{

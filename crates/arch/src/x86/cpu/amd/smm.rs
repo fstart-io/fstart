@@ -74,7 +74,9 @@ fn valid_tseg(base: u64, size: u32) -> bool {
     size.is_power_of_two()
         && size >= MIN_TSEG
         && base.is_multiple_of(u64::from(size))
-        && base + u64::from(size) <= 1 << 32
+        && base
+            .checked_add(u64::from(size))
+            .is_some_and(|end| end <= 1 << 32)
 }
 
 /// SMM_MASK for a TSEG of `size` with `address_bits` physical address bits:
@@ -93,7 +95,9 @@ fn smm_mask(size: u32, address_bits: u32) -> u64 {
 fn free_range(cpus: &[fstart_smm::CpuSmmLayout]) -> Range<u64> {
     let stacks = cpus.iter().map(|cpu| cpu.stack_top).max().unwrap_or(0);
     let windows = cpus.iter().map(|cpu| cpu.smbase).min().unwrap_or(0);
-    let start = stacks.next_multiple_of(0x1000);
+    let Some(start) = stacks.checked_next_multiple_of(0x1000) else {
+        return 0..0;
+    };
     start..(windows & !0xfff).max(start)
 }
 
@@ -274,6 +278,8 @@ mod tests {
         assert!(!valid_tseg(0x7f80_0000, 6 << 20));
         assert!(!valid_tseg(0x7f80_0000, 64 << 10));
         assert!(!valid_tseg(0x1_0000_0000, 8 << 20));
+        // u64 wraparound near u64::MAX must be rejected.
+        assert!(!valid_tseg(0xffff_ffff_fffe_0000, 128 << 10));
     }
 
     #[test]
@@ -294,5 +300,78 @@ mod tests {
         let cpus = [cpu(0x7fef_0000, 0x7f80_0800), cpu(0x7fee_fc00, 0x7f80_1000)];
         assert_eq!(free_range(&cpus), 0x7f80_1000..0x7fee_f000);
         assert_eq!(free_range(&[cpu(0x1000, 0x1800)]), 0x2000..0x2000);
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn verify_valid_tseg_matches_u128_spec() {
+        let base: u64 = kani::any();
+        let size: u32 = kani::any();
+
+        let expected = size >= MIN_TSEG
+            && size.is_power_of_two()
+            && base % u64::from(size) == 0
+            && u128::from(base) + u128::from(size) <= (1u128 << 32);
+
+        assert_eq!(valid_tseg(base, size), expected);
+    }
+
+    #[kani::proof]
+    fn verify_smm_mask_matches_exact_tseg_address_range() {
+        let base: u64 = kani::any();
+        let size: u32 = kani::any();
+        let address_bits: u32 = kani::any();
+        let addr: u64 = kani::any();
+
+        kani::assume(valid_tseg(base, size));
+        // Architectural AMD64 physical address width supported by SmmMask::MASK (bits 17..=51).
+        kani::assume((32..=52).contains(&address_bits));
+        kani::assume(addr < (1u64 << address_bits));
+
+        let raw = smm_mask(size, address_bits);
+        let reg = LocalRegisterCopy::<u64, SmmMask::Register>::new(raw);
+        assert!(reg.is_set(SmmMask::T_VALID));
+        assert!(!reg.is_set(SmmMask::A_VALID));
+        assert!(reg.matches_all(SmmMask::TM_TYPE_DRAM::WriteBack));
+
+        // AMD APM Vol. 2 hardware TSEG match equation:
+        // ((addr & mask_bits) == (base & mask_bits)) iff addr in [base, base + size).
+        let hw_mask = reg.read(SmmMask::MASK) << 17;
+        let hw_matches = (addr & hw_mask) == (base & hw_mask);
+        let in_range = addr >= base && u128::from(addr) < u128::from(base) + u128::from(size);
+        assert_eq!(hw_matches, in_range);
+    }
+
+    #[kani::proof]
+    fn verify_free_range_is_page_aligned_and_bounded() {
+        let stack0: u64 = kani::any();
+        let stack1: u64 = kani::any();
+        let smbase0: u64 = kani::any();
+        let smbase1: u64 = kani::any();
+
+        let cpus = [
+            fstart_smm::CpuSmmLayout {
+                smbase: smbase0,
+                stack_top: stack0,
+                ..ZERO_CPU_LAYOUT
+            },
+            fstart_smm::CpuSmmLayout {
+                smbase: smbase1,
+                stack_top: stack1,
+                ..ZERO_CPU_LAYOUT
+            },
+        ];
+        let range = free_range(&cpus);
+        assert!(range.start <= range.end);
+        assert_eq!(range.start % 0x1000, 0);
+        assert_eq!(range.end % 0x1000, 0);
+        if range.start < range.end {
+            assert!(range.start >= stack0.max(stack1));
+            assert!(range.end <= smbase0.min(smbase1));
+        }
     }
 }

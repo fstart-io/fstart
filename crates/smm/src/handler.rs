@@ -1,6 +1,4 @@
 #[cfg(any(feature = "stage-bin", test))]
-use core::arch::asm;
-#[cfg(any(feature = "stage-bin", test))]
 use core::mem::{align_of, size_of};
 use core::sync::atomic::Ordering;
 
@@ -87,7 +85,7 @@ impl<'a> SmmContext<'a> {
             return None;
         }
         let held = parked_for(&runtime.parked, generation_of(rendezvous));
-        Some((held + 1, runtime.num_cpus.into()))
+        Some((held.saturating_add(1), runtime.num_cpus.into()))
     }
 
     #[cfg(any(feature = "stage-bin", test))]
@@ -182,7 +180,7 @@ fn parked_for(parked: &core::sync::atomic::AtomicU64, generation: u32) -> u32 {
 
 /// Take the free rendezvous for `token`, in the next generation: `Ok` with
 /// that generation, or `Err` with the owner's rendezvous value.
-#[cfg(any(feature = "stage-bin", test))]
+#[cfg(any(feature = "stage-bin", test, kani))]
 #[inline(always)]
 fn claim(rendezvous: &core::sync::atomic::AtomicU64, token: u32) -> Result<u32, u64> {
     let mut value = rendezvous.load(Ordering::Acquire);
@@ -202,14 +200,15 @@ fn claim(rendezvous: &core::sync::atomic::AtomicU64, token: u32) -> Result<u32, 
 /// This CPU is parked for `generation`'s owner. An acknowledgement of an
 /// older generation (a CPU that saw that owner, which released meanwhile)
 /// leaves a newer generation's count alone.
-#[cfg(any(feature = "stage-bin", test))]
+#[cfg(any(feature = "stage-bin", test, kani))]
 #[inline(always)]
 fn acknowledge(parked: &core::sync::atomic::AtomicU64, generation: u32) {
     let mut value = parked.load(Ordering::Acquire);
     loop {
         let counted = generation_of(value);
         let next = if counted == generation {
-            value + 1
+            let count = (value as u32).saturating_add(1);
+            u64::from(generation) << 32 | u64::from(count)
         } else if (generation.wrapping_sub(counted) as i32) > 0 {
             u64::from(generation) << 32 | 1
         } else {
@@ -249,7 +248,7 @@ pub(crate) unsafe fn enter_rendezvous(ctx: &SmmContext<'_>) -> bool {
             // Released (or, if this CPU was late, already another owner's):
             // this generation is over for it.
             while rendezvous.load(Ordering::Acquire) == owned {
-                unsafe { asm!("pause", options(nomem, nostack, preserves_flags)) };
+                core::hint::spin_loop();
             }
             false
         }
@@ -426,22 +425,25 @@ mod tests {
     }
 
     #[test]
-    #[allow(unused_assignments)]
     fn handler_config_requires_exact_size_inside_smram() {
         let mut fixture = Fixture {
             runtime: SmmRuntime::new(0, 0, 1, 0x400, 0, 0),
             config: Config([0x600, 0x20, 2, 0, 4, 5, 6, 7]),
         };
-        let base = core::ptr::addr_of!(fixture) as u64;
         let offset = core::mem::offset_of!(Fixture, config) as u32;
-        fixture.runtime = SmmRuntime::new(
-            base,
-            size_of::<Fixture>() as u64,
-            1,
-            0x400,
-            offset,
-            size_of::<Config>() as u32,
-        );
+        let ptr = core::ptr::addr_of_mut!(fixture);
+        let base = ptr as u64;
+        // SAFETY: exclusive write through raw pointer before exposing `base`.
+        unsafe {
+            (*ptr).runtime = SmmRuntime::new(
+                base,
+                size_of::<Fixture>() as u64,
+                1,
+                0x400,
+                offset,
+                size_of::<Config>() as u32,
+            );
+        }
         let mut entry = params(0, base);
         let ctx = SmmContext::at(&mut entry);
         assert_eq!(
@@ -455,7 +457,81 @@ mod tests {
         assert_eq!(unsafe { ctx.handler_config::<[u16; 2]>() }, None);
 
         fixture.runtime.smram_size = 8;
+        let base = core::ptr::addr_of!(fixture) as u64;
+        let mut entry = params(0, base);
         let ctx = SmmContext::at(&mut entry);
         assert_eq!(unsafe { ctx.handler_config::<Config>() }, None);
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use core::sync::atomic::AtomicU64;
+
+    /// Proves the sequential state-machine invariants of `claim`: an occupied
+    /// rendezvous cannot be claimed, and a free rendezvous transitions cleanly
+    /// to the next wrapping generation owned by `token1`, causing a subsequent
+    /// claim by `token2` to fail with the active owner value.
+    ///
+    /// Note: Kani models single-threaded execution rather than arbitrary
+    /// multi-CPU interleavings; hardware atomicity relies on the underlying
+    /// `compare_exchange_weak` CAS instruction.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn verify_rendezvous_claim_enforces_mutual_exclusion() {
+        let initial_gen: u32 = kani::any();
+        let initial_owner: u32 = kani::any();
+        let token1: u32 = kani::any();
+        let token2: u32 = kani::any();
+        kani::assume(token1 != 0);
+        kani::assume(token2 != 0);
+
+        let initial = (u64::from(initial_gen) << 32) | u64::from(initial_owner);
+        let rendezvous = AtomicU64::new(initial);
+
+        if initial_owner != 0 {
+            assert_eq!(claim(&rendezvous, token1), Err(initial));
+            assert_eq!(rendezvous.load(Ordering::Acquire), initial);
+        } else {
+            let expected_gen = initial_gen.wrapping_add(1);
+            let expected_val = (u64::from(expected_gen) << 32) | u64::from(token1);
+            assert_eq!(claim(&rendezvous, token1), Ok(expected_gen));
+            assert_eq!(rendezvous.load(Ordering::Acquire), expected_val);
+            assert_eq!(owner_of(expected_val), token1);
+            assert_eq!(generation_of(expected_val), expected_gen);
+            // A second CPU attempting to claim must observe the first owner.
+            assert_eq!(claim(&rendezvous, token2), Err(expected_val));
+        }
+    }
+
+    /// Proves that `acknowledge` handles generation wraparound, ignores stale
+    /// acknowledgements, and saturates the parked count without ever carrying
+    /// into the upper 32-bit generation field.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn verify_rendezvous_acknowledge_preserves_generation_and_monotonicity() {
+        let counted_gen: u32 = kani::any();
+        let initial_count: u32 = kani::any();
+        let ack_gen: u32 = kani::any();
+
+        let initial = (u64::from(counted_gen) << 32) | u64::from(initial_count);
+        let parked = AtomicU64::new(initial);
+
+        acknowledge(&parked, ack_gen);
+        let after = parked.load(Ordering::Acquire);
+
+        if ack_gen == counted_gen {
+            assert_eq!(generation_of(after), counted_gen);
+            assert_eq!(
+                parked_for(&parked, ack_gen),
+                initial_count.saturating_add(1)
+            );
+        } else if (ack_gen.wrapping_sub(counted_gen) as i32) > 0 {
+            assert_eq!(generation_of(after), ack_gen);
+            assert_eq!(parked_for(&parked, ack_gen), 1);
+        } else {
+            assert_eq!(after, initial);
+        }
     }
 }
