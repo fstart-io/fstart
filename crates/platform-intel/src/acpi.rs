@@ -212,6 +212,26 @@ mod host_baseline {
         }
     }
 
+    impl HostAcpiChipset for crate::skylake::SkylakeSunrisePoint {
+        fn assemble_baseline(
+            config: &'static Self::Config,
+            _facts: BoardFacts,
+            board: &impl AcpiDevice<Config = ()>,
+            base: u64,
+        ) -> Result<Vec<u8>, String> {
+            use fstart_driver_intel::{
+                skylake::driver::IntelSkylake, sunrise_point::driver::IntelSunrisePoint,
+            };
+            let mut north = IntelSkylake::new_from_config(config.northbridge)
+                .map_err(|e| format!("Skylake config: {e:?}"))?;
+            north.set_host_acpi_baseline();
+            let mut south = IntelSunrisePoint::new_from_config(config.southbridge)
+                .map_err(|e| format!("Sunrise Point config: {e:?}"))?;
+            south.set_host_acpi_baseline();
+            assemble_chipset(&north, &south, IntelSkylake::HOST_CPUS as u32, board, base)
+        }
+    }
+
     /// Assemble one baseline ACPI table image for any Intel board.
     pub fn baseline<B: BoardAcpi>(base: u64) -> Result<Vec<u8>, String>
     where

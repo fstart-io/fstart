@@ -18,7 +18,7 @@
 /// the board's console is already installed. `flash_log` requires code, data
 /// and page tables in DRAM, with no other flash readers during programming.
 #[cfg(feature = "stage")]
-pub(crate) fn install<B: crate::IntelBoardFacts>(flash_log: bool) {
+pub(crate) fn install<B: crate::IntelBoard>(flash_log: bool) {
     #[cfg(feature = "ehci-console")]
     ehci::install::<B>();
     #[cfg(all(
@@ -67,7 +67,7 @@ mod flash {
 
     static LOG: StaticConsole<FlashConsole<CacheSpi>> = StaticConsole::new();
 
-    pub(super) fn install<B: crate::IntelBoardFacts>() {
+    pub(super) fn install<B: crate::IntelBoard>() {
         let facts = B::FACTS;
         let bios_offset = match facts.flash {
             FlashLayout::IntelIfd(layout) => layout.bios_region().map_or(0, |bios| bios.offset),
@@ -87,7 +87,8 @@ mod flash {
         // SAFETY: the image builder reserves the extent as an erased `console`
         // region nothing else writes; install's `flash_log` is enabled only
         // once execution and page tables have moved to DRAM.
-        let Ok(spi) = (unsafe { CacheSpi::new(extent) }) else {
+        let Ok(spi) = (unsafe { <B::Platform as crate::IntelEarlyPlatform>::cache_flash(extent) })
+        else {
             return;
         };
         if !spi.writable() {
