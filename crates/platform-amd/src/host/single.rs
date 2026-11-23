@@ -37,6 +37,9 @@ pub struct Image {
     pub bios_directory: BiosDirectorySlot,
     /// Where the PSP writes the APOB.
     pub apob_destination: u64,
+    /// Full physical SPI flash size when larger than the 16 MiB ROM2 window
+    /// (e.g. 64 MiB for Venice ISH A/B dual-origin images).
+    pub flash_size: Option<u32>,
     pub source: Source,
 }
 
@@ -59,7 +62,7 @@ impl Image {
         if let (Some(ffs), Some(packed)) = (&mut ffs, &packed) {
             ffs.file_assets = packed.files.assets.clone();
         }
-        let flash_size = layout.flash.size as u32;
+        let flash_size = self.flash_size.unwrap_or(layout.flash.size as u32);
         let Some(packed) = packed else {
             return Ok(ffs.map(ImageStep::from).into_iter().collect());
         };
@@ -137,7 +140,7 @@ impl Image {
             &board,
             name,
             Path::new(BLOBS_DIR),
-            host.layout.flash.size as u32,
+            self.flash_size.unwrap_or(host.layout.flash.size as u32),
         )
         .map(Some)
     }

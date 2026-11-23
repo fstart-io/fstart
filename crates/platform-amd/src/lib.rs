@@ -60,12 +60,15 @@ pub mod smm;
 pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
+/// The SP7 socket: Venice (WH I/O die + Qilian FCH).
+pub mod sp7;
 /// Measured boot on a discrete TPM, for every SoC.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod tpm;
 /// The SMM handler's installation in TSEG, for every SoC.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod tseg;
+pub mod venice;
 pub mod zeppelin;
 #[cfg(feature = "bundle")]
 #[doc(hidden)]

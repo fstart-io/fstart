@@ -24,11 +24,13 @@ pub enum SocId {
     Milan,
     Genoa,
     Siena,
+    Venice,
 }
 
 impl SocId {
     /// The name of the SoC's firmware tables
     /// (`[package.metadata.fstart.amd.<name>]`) and of its log prefix.
+    #[inline]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Picasso => "picasso",
@@ -38,6 +40,7 @@ impl SocId {
             Self::Milan => "milan",
             Self::Genoa => "genoa",
             Self::Siena => "siena",
+            Self::Venice => "venice",
         }
     }
 
@@ -49,6 +52,11 @@ impl SocId {
     /// The SoC is made of the RS I/O die.
     pub const fn rs(self) -> bool {
         matches!(self, Self::Genoa | Self::Siena)
+    }
+
+    /// The SoC is in the SP7 socket (WH I/O die).
+    pub const fn sp7(self) -> bool {
+        matches!(self, Self::Venice)
     }
 }
 

@@ -76,6 +76,7 @@ pub(crate) fn acpi(
                 base: info.base,
                 registers: iommu_registers(&info),
             }),
+            bridges: None,
         })
         .collect();
     let threads_per_core =

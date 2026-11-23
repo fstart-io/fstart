@@ -18,6 +18,7 @@ pub enum Cpu<B> {
     Milan(Identified<B, crate::milan::Milan>),
     Genoa(Identified<B, crate::genoa::Genoa>),
     Siena(Identified<B, crate::siena::Siena>),
+    Venice(Identified<B, crate::venice::Venice>),
 }
 
 impl<B> Cpu<B> {
@@ -77,7 +78,10 @@ const fn soc(signature: u32, package: u8) -> Option<SocId> {
 pub fn start<B: Board>() -> Cpu<B> {
     let signature = fstart_arch::x86::cpuid(1).0;
     let package = (fstart_arch::x86::cpuid(0x8000_0001).1 >> 28) as u8;
-    let soc = match soc(signature, package).or_else(|| rs::<B>(signature, package)) {
+    let soc = match soc(signature, package)
+        .or_else(|| rs::<B>(signature, package))
+        .or_else(|| sp7::<B>(signature))
+    {
         Some(soc) if B::SOCS.contains(&soc) => soc,
         _ => unsupported(),
     };
@@ -89,6 +93,7 @@ pub fn start<B: Board>() -> Cpu<B> {
         SocId::Milan => Cpu::Milan(Identified(PhantomData)),
         SocId::Genoa => Cpu::Genoa(Identified(PhantomData)),
         SocId::Siena => Cpu::Siena(Identified(PhantomData)),
+        SocId::Venice => Cpu::Venice(Identified(PhantomData)),
     }
 }
 
@@ -108,4 +113,13 @@ fn rs<B: Board>(signature: u32, package: u8) -> Option<SocId> {
         (true, 8) => Some(SocId::Siena),
         _ => None,
     }
+}
+
+/// The SP7 SoC of CPUID `signature` (Family 1Ah WH classic/dense), for a board
+/// that carries one. Uses the same admission predicate as SP7 init and MP.
+fn sp7<B: Board>(signature: u32) -> Option<SocId> {
+    if !B::SOCS.iter().any(|soc| soc.sp7()) {
+        return None;
+    }
+    crate::venice::matches_signature(signature).then_some(SocId::Venice)
 }

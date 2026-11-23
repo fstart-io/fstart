@@ -88,6 +88,12 @@ impl<S: Soc> Early<S> {
         &self.entered.hw
     }
 
+    /// Mutable access to the SoC configuration before entering the console phase
+    /// (for board-detected early facts such as BMC KCS decode availability).
+    pub fn config_mut(&mut self) -> &mut S::Config {
+        &mut self.config
+    }
+
     /// Stop the boot: the board's `what` failed. There is no console yet.
     pub fn fail(&self, what: &'static str) -> ! {
         fail::<S>(what)
