@@ -161,6 +161,14 @@ impl I801SmBus {
         s
     }
 
+    /// Ibex Peak / Lynx Point ramstage clock gating and receive address.
+    pub fn pch_ramstage(&self, pci: ecam::EcamDevice) {
+        if pci.is_present() {
+            pci.and16(0x80, !0x5500);
+            self.set_slave_address(0x24);
+        }
+    }
+
     /// Program the address the controller answers as a slave (coreboot
     /// `smbus_set_slave_addr()`).
     pub fn set_slave_address(&self, address: u8) {

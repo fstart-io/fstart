@@ -39,7 +39,11 @@ register_bitfields![u32,
         GLOBAL OFFSET(0) NUMBITS(1) [],
         EOS OFFSET(1) NUMBITS(1) []
     ],
-    TCO_STATUS [BOOT OFFSET(18) NUMBITS(1) []],
+    /// TCOBASE + 0x04, combined TCO1/TCO2 status (32 bits, W1C).
+    TCO_STATUS [
+        BIOSWR OFFSET(8) NUMBITS(1) [],
+        BOOT OFFSET(18) NUMBITS(1) []
+    ],
     /// ICH7/NM10 GPE0 enable layout (later generations differ).
     ICH7_GPE_ENABLE [
         THERMAL OFFSET(0) NUMBITS(1) [],
@@ -274,6 +278,7 @@ pub const TCO2_CNT: u16 = 0x0A;
 pub const TIMEOUT_STS: u32 = TCO_STATUS1::TIMEOUT::SET.value as u32;
 pub const TCO_INT_STS: u32 = 1 << 2;
 pub const SW_TCO_STS: u32 = 1 << 1;
+pub const BIOSWR_STS: u32 = TCO_STATUS::BIOSWR::SET.value;
 /// Alias matching the ICH8 datasheet name for software TCO command SMIs.
 pub const SW_TCO_SMI: u32 = SW_TCO_STS;
 pub const NMI2SMI_STS: u32 = 1 << 0;
@@ -287,8 +292,11 @@ pub const BOOT_STS: u32 = TCO_STATUS::BOOT::SET.value;
 pub const SECOND_TO_STS: u32 = (TCO_STATUS2::SECOND_TIMEOUT::SET.value as u32) << 16;
 pub const DMISCI_STS: u32 = 1 << 9;
 
-/// Total PMBASE I/O region size (128 bytes).
+/// PMBASE I/O region size of the ICH and Ibex Peak parts (128 bytes).
 const PMSIZE: u16 = 0x80;
+/// Lynx Point's PMBASE spans 256 bytes: PCH-LP keeps its four GPE0 status
+/// and enable dwords at 0x80..0x9f.
+pub const LYNXPOINT_PMSIZE: u16 = 0x100;
 
 // =======================================================================
 // PmIo accessor
@@ -298,7 +306,8 @@ const PMSIZE: u16 = 0x80;
 ///
 /// Wraps a PMBASE I/O port address and provides typed read/write methods
 /// for PM1, GPE0, SMI, and ALT_GP registers.  All offsets are
-/// bounds-checked against the 128-byte PMBASE region.
+/// bounds-checked against the PMBASE region (128 bytes unless built
+/// with [`PmIo::with_size`]).
 ///
 /// # Example
 ///
@@ -316,6 +325,7 @@ const PMSIZE: u16 = 0x80;
 #[derive(Debug, Clone, Copy)]
 pub struct PmIo {
     base: u16,
+    size: u16,
 }
 
 impl PmIo {
@@ -324,7 +334,13 @@ impl PmIo {
     /// `base` is the PMBASE I/O port address (e.g., 0x0500 for ICH7).
     #[inline(always)]
     pub const fn new(base: u16) -> Self {
-        Self { base }
+        Self::with_size(base, PMSIZE)
+    }
+
+    /// A PMBASE window of `size` bytes (e.g. [`LYNXPOINT_PMSIZE`]).
+    #[inline(always)]
+    pub const fn with_size(base: u16, size: u16) -> Self {
+        Self { base, size }
     }
 
     /// Return the PMBASE I/O port address.
@@ -336,7 +352,7 @@ impl PmIo {
     /// Read a 32-bit PM register.
     #[inline(always)]
     pub fn read32(&self, offset: u16) -> u32 {
-        debug_assert!(offset + 4 <= PMSIZE);
+        debug_assert!(offset + 4 <= self.size);
         // SAFETY: caller constructed PmIo with a valid PMBASE.
         unsafe { fstart_core::pio::inl(self.base + offset) }
     }
@@ -344,7 +360,7 @@ impl PmIo {
     /// Write a 32-bit PM register.
     #[inline(always)]
     pub fn write32(&self, offset: u16, val: u32) {
-        debug_assert!(offset + 4 <= PMSIZE);
+        debug_assert!(offset + 4 <= self.size);
         // SAFETY: caller constructed PmIo with a valid PMBASE.
         unsafe { fstart_core::pio::outl(self.base + offset, val) }
     }
@@ -352,28 +368,28 @@ impl PmIo {
     /// Read a 16-bit PM register.
     #[inline(always)]
     pub fn read16(&self, offset: u16) -> u16 {
-        debug_assert!(offset + 2 <= PMSIZE);
+        debug_assert!(offset + 2 <= self.size);
         unsafe { fstart_core::pio::inw(self.base + offset) }
     }
 
     /// Write a 16-bit PM register.
     #[inline(always)]
     pub fn write16(&self, offset: u16, val: u16) {
-        debug_assert!(offset + 2 <= PMSIZE);
+        debug_assert!(offset + 2 <= self.size);
         unsafe { fstart_core::pio::outw(self.base + offset, val) }
     }
 
     /// Read an 8-bit PM register.
     #[inline(always)]
     pub fn read8(&self, offset: u16) -> u8 {
-        debug_assert!(offset < PMSIZE);
+        debug_assert!(offset < self.size);
         unsafe { fstart_core::pio::inb(self.base + offset) }
     }
 
     /// Write an 8-bit PM register.
     #[inline(always)]
     pub fn write8(&self, offset: u16, val: u8) {
-        debug_assert!(offset < PMSIZE);
+        debug_assert!(offset < self.size);
         unsafe { fstart_core::pio::outb(self.base + offset, val) }
     }
 
@@ -474,12 +490,19 @@ impl PmIo {
         self.sleep_type() == 5
     }
 
-    /// Enter S5 (soft-off).
+    /// Request S5. In an SMI, return to dispatch so a trapped sleep request
+    /// can be serviced after EOS instead of spinning in the original SMI.
     #[inline(always)]
-    pub fn poweroff(&self) -> ! {
+    pub fn request_poweroff(&self) {
         PmRegs::new(self.base)
             .control()
             .modify(PM_CONTROL::SLEEP_TYPE::S5 + PM_CONTROL::SLEEP_ENABLE::SET);
+    }
+
+    /// Enter S5 (soft-off) outside SMM.
+    #[inline(always)]
+    pub fn poweroff(&self) -> ! {
+        self.request_poweroff();
         loop {
             core::hint::spin_loop();
         }
@@ -579,15 +602,21 @@ impl TcoIo {
     /// loader, so no cross-crate PLT call may survive on the SMI path.
     #[inline(always)]
     pub fn reset_tco_status(&self) -> u32 {
+        let sts = TcoRegs::new(self.base).status().get();
+        self.clear_tco_status(sts);
+        sts
+    }
+
+    /// Acknowledge only the snapshot the handler actually serviced.
+    #[inline(always)]
+    pub fn clear_tco_status(&self, sts: u32) {
         let reg = TcoRegs::new(self.base).status();
-        let sts = reg.extract();
         // W1C: clear observed bits except BOOT first, then BOOT.
         // Keep the combined 32-bit access and SECOND_TIMEOUT ordering.
-        reg.set(sts.get() & !BOOT_STS);
-        if sts.is_set(TCO_STATUS::BOOT) {
+        reg.set(sts & !BOOT_STS);
+        if sts & BOOT_STS != 0 {
             reg.write(TCO_STATUS::BOOT::SET);
         }
-        sts.get()
     }
 
     /// Halt the watchdog and acknowledge both timeout stages in order.

@@ -207,8 +207,8 @@ struct OpRegionHeader {
     version: u8,
     revision: u8,
     _reserved1: [u8; 32],
-    vbios_version: [u8; 4],
-    _reserved2: [u8; 28],
+    vbios_version: [u8; 16],
+    _reserved2: [u8; 16],
     supported_mailboxes: U32<LE>,
     _reserved3: [u8; 164],
 }
@@ -237,6 +237,18 @@ struct OpRegionMailbox3 {
     _reserved2: [u8; 58],
 }
 
+/// Intel IGD OpRegion format revision.
+///
+/// OpRegion 2.0 stores the extended VBT pointer (`RVDA`) as an absolute
+/// physical address; OpRegion 2.1 stores it relative to the OpRegion base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpRegionVersion {
+    /// OpRegion 2.0 (absolute extended VBT physical address).
+    V20,
+    /// OpRegion 2.1 (OpRegion-base-relative extended VBT offset).
+    V21,
+}
+
 /// Fill the OpRegion body that the OS reads after it is published via ASLS.
 ///
 /// This is the layout coreboot's `intel_gma_init_igd_opregion` produces: the
@@ -245,6 +257,12 @@ struct OpRegionMailbox3 {
 /// publishes the buffer and selects the chipset's SCI register, which differs
 /// between the GMCH parts and the Atom platforms.
 pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
+    build_opregion_version(buffer, vbt, OpRegionVersion::V21);
+}
+
+/// Fill an allocated OpRegion buffer from a raw VBT blob using the requested
+/// [`OpRegionVersion`].
+pub fn build_opregion_version(buffer: &mut [u8], vbt: &[u8], version: OpRegionVersion) {
     let size = opregion_size(vbt.len());
     buffer[..size].fill(0);
     {
@@ -252,11 +270,11 @@ pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
             .expect("OpRegion header has its wire size");
         header.signature = *b"IntelGraphicsMem";
         header.size_kib.set((OPREGION_BASE_SIZE / 1024) as u32);
-        header.version = 1;
+        header.version = u8::from(version == OpRegionVersion::V21);
         header.revision = 2;
         if vbt.len() >= VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE {
             // Video BIOS build stamp, which the OS reports in its OpRegion dump.
-            header.vbios_version.copy_from_slice(
+            header.vbios_version[..VBT_BIOS_BUILD_SIZE].copy_from_slice(
                 &vbt[VBT_BIOS_BUILD_OFFSET..VBT_BIOS_BUILD_OFFSET + VBT_BIOS_BUILD_SIZE],
             );
         }
@@ -292,12 +310,17 @@ pub fn build_opregion(buffer: &mut [u8], vbt: &[u8]) {
         return;
     }
 
-    // Larger VBTs live in the extension area just past the base region, which
-    // mailbox 3 points at with a base-relative address.
+    // Larger VBTs live in the extension area just past the base region.
+    // OpRegion 2.0 stores the absolute physical address in RVDA; 2.1 stores
+    // the base-relative offset.
     buffer[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + vbt.len()].copy_from_slice(vbt);
+    let address = match version {
+        OpRegionVersion::V20 => buffer.as_ptr() as u64 + OPREGION_BASE_SIZE as u64,
+        OpRegionVersion::V21 => OPREGION_BASE_SIZE as u64,
+    };
     let mailbox = OpRegionMailbox3::mut_from_bytes(&mut buffer[0x300..0x400])
         .expect("OpRegion mailbox 3 has its wire size");
-    mailbox.vbt_address.set(OPREGION_BASE_SIZE as u64);
+    mailbox.vbt_address.set(address);
     mailbox.vbt_size.set(vbt.len().div_ceil(512) as u32 * 512);
 }
 
@@ -368,7 +391,7 @@ pub fn vbt_len(bytes: &[u8]) -> Option<usize> {
         return None;
     }
     let size = usize::from(header.size.get());
-    (size != 0 && size <= bytes.len()).then_some(size)
+    (size >= core::mem::size_of::<VbtHeaderPrefix>() && size <= bytes.len()).then_some(size)
 }
 
 /// Read a VBT from a raw physical address staged by board firmware.
@@ -442,13 +465,27 @@ pub fn publish_opregion(
     source: &VbtSource,
     memory: OpRegionMemory<'_>,
 ) -> Option<Vbt> {
+    publish_opregion_version(igd, sci, source, memory, OpRegionVersion::V21)
+}
+
+/// Publish an IGD OpRegion with an explicit [`OpRegionVersion`].
+///
+/// Returns `None` if no valid VBT is located or if `memory` fails to allocate
+/// the OpRegion buffer.
+pub fn publish_opregion_version(
+    igd: &fstart_pci::ecam::EcamDevice,
+    sci: OpRegionSci,
+    source: &VbtSource,
+    memory: OpRegionMemory<'_>,
+    version: OpRegionVersion,
+) -> Option<Vbt> {
     let Some(vbt) = locate_vbt(source) else {
         fstart_log::error!("intel-igd: no valid VBT found for the OpRegion");
         return None;
     };
     match memory(opregion_size(vbt.len())) {
         Some(opregion) => {
-            build_opregion(opregion, vbt);
+            build_opregion_version(opregion, vbt, version);
             register_opregion(igd, sci, opregion.as_ptr() as u32);
             fstart_log::info!(
                 "intel-igd: OpRegion at {:#x}, VBT {} bytes",
@@ -456,7 +493,10 @@ pub fn publish_opregion(
                 vbt.len()
             );
         }
-        None => fstart_log::error!("intel-igd: no memory for the OpRegion"),
+        None => {
+            fstart_log::error!("intel-igd: no memory for the OpRegion");
+            return None;
+        }
     }
     Some(vbt)
 }
@@ -667,6 +707,25 @@ pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
     gttmmio: u64,
     backlight: GfxBacklight,
 ) -> alloc::vec::Vec<u8> {
+    gfx0_acpi_node_configurable::<NB>(Some(gttmmio), backlight, None)
+}
+
+/// Configurable IGD ACPI node (`GFX0`).
+///
+/// When `fixed_base` is `None`, the MMIO `OperationRegion` evaluates the full
+/// 64-bit `BAR0` in PCI configuration space at runtime instead of baking in a
+/// static base address. `levels` overrides the default 10%-step brightness
+/// table (`Some(&[])` emits 1%-step entries `0..=100`, matching coreboot).
+#[must_use]
+pub fn gfx0_acpi_node_configurable<NB: crate::IntelNorthbridgeDriver>(
+    fixed_base: Option<u64>,
+    backlight: GfxBacklight,
+    levels: Option<&[u8]>,
+) -> alloc::vec::Vec<u8> {
+    use fstart_acpi::{
+        Aml,
+        aml::{And, Name, OpRegion, OpRegionSpace, PackageBuilder, Path},
+    };
     let mut body: alloc::vec::Vec<u8> = fstart_acpi_macros::acpi_dsl! {
             Name("_ADR", 0x00020000u32);
             OperationRegion("GFXC", PciConfig, 0x00u32, 0x100u32);
@@ -694,9 +753,19 @@ pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
             }
     }
     .into();
+    let bar = Path::new("BAR0");
+    let live = And::new(&0u8, &bar, &0xffff_ffff_ffff_fff0u64);
+    let base: &dyn Aml = match &fixed_base {
+        Some(value) => value,
+        None => &live,
+    };
+    let size = match backlight {
+        GfxBacklight::Gmch => 0x80000u32,
+        GfxBacklight::Pch => 0x100000u32,
+    };
+    OpRegion::new("GFRG".into(), OpRegionSpace::SystemMemory, base, &size).to_aml_bytes(&mut body);
     let registers: alloc::vec::Vec<u8> = match backlight {
         GfxBacklight::Gmch => fstart_acpi_macros::acpi_dsl! {
-            OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x80000u32);
             Field("GFRG", DWordAcc, NoLock, Preserve) {
                 Offset(0x61254),
                 BCLV, 16,
@@ -705,7 +774,6 @@ pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
         }
         .into(),
         GfxBacklight::Pch => fstart_acpi_macros::acpi_dsl! {
-            OperationRegion("GFRG", SystemMemory, #{dword gttmmio}, 0x100000u32);
             Field("GFRG", DWordAcc, NoLock, Preserve) {
                 Offset(0x48254),
                 BCLV, 16,
@@ -716,100 +784,124 @@ pub fn gfx0_acpi_node_with<NB: crate::IntelNorthbridgeDriver>(
         .into(),
     };
     body.extend(registers);
+    let mut brig = PackageBuilder::new();
+    brig.add_element(&100u8);
+    brig.add_element(&100u8);
+    match levels {
+        Some([]) => (0..=100u8).for_each(|v| brig.add_element(&v)),
+        Some(list) => list.iter().for_each(|v| brig.add_element(v)),
+        None => (0..=100u8).step_by(10).for_each(|v| brig.add_element(&v)),
+    }
+    Name::new("BRIG".into(), &brig).to_aml_bytes(&mut body);
+    // Legacy GMCH boards report live duty rather than replaying the last
+    // request; preserve that ABI. Haswell can receive _BCM while resuming.
+    Name::new("BREC".into(), &u8::from(levels.is_some())).to_aml_bytes(&mut body);
     body.extend_from_slice(&fstart_acpi_macros::acpi_dsl! {
-            Name("BRLV", 100u32);
-            Name("BRVA", 0u32);
-            Name("BRIG", Package(100u32, 100u32, 0u32, 10u32, 20u32, 30u32, 40u32, 50u32, 60u32, 70u32, 80u32, 90u32, 100u32));
-            // ASLE uses an 8-bit level, not an ACPI percentage.
-            // Separate the request so every failure reaches PWM fallback.
-            Method("SBCM", 1, Serialized) {
-                If (ASLS == 0u32) { Return(Ones); }
-                If ((MBOX & 4u32) == 0u32) { Return(Ones); }
-                BCLP = (Arg0 * 255u32 / 100u32) | 0x80000000u32;
-                If (ARDY == 0u32) { Return(Ones); }
-                ASLC = 2u32;
-                ASLE = 1u32;
-                Local1 = 32u32;
-                While (Local1 > 0u32) {
-                    Sleep(1u32);
-                    If ((ASLC & 2u32) == 0u32) {
-                        If (((ASLC >> 12u32) & 3u32) == 0u32) { Return(0u32); }
-                        Return(Ones);
-                    }
-                    Local1--;
-                }
+    Name("BRLV", 100u32);
+    Name("BRVA", 0u32);
+    Name("BRCT", 0u32); // OS has claimed brightness hotkeys via _BCL.
+    // ASLE uses an 8-bit level, not an ACPI percentage.
+    // Separate the request so every failure reaches PWM fallback.
+    Method("SBCM", 1, Serialized) {
+        If (ASLS == 0u32) { Return(Ones); }
+        If ((MBOX & 4u32) == 0u32) { Return(Ones); }
+        BCLP = (Arg0 * 255u32 / 100u32) | 0x80000000u32;
+        If (ARDY == 0u32) { Return(Ones); }
+        ASLC = 2u32;
+        ASLE = 1u32;
+        Local1 = 32u32;
+        While (Local1 > 0u32) {
+            Sleep(1u32);
+            If ((ASLC & 2u32) == 0u32) {
+                If (((ASLC >> 12u32) & 3u32) == 0u32) { Return(0u32); }
                 Return(Ones);
             }
-            Method("XBCM", 1, Serialized) {
-                Local0 = Arg0;
-                If (Local0 > 100u32) { Local0 = 100u32; }
-                BRLV = Local0;
-                BRVA = 1u32;
-                If (SBCM(Local0) == Ones) {
-                    // Period and duty share a dword; preserve the period.
-                    // A zero period means PWM is not initialized yet.
-                    Local1 = BCLM;
-                    If (Local1 != 0u32) {
-                        BCLV = (Local0 * Local1 + 50u32) / 100u32;
-                    }
-                }
+            Local1--;
+        }
+        Return(Ones);
+    }
+    Method("XBCM", 1, Serialized) {
+        Local0 = Arg0;
+        If (Local0 > 100u32) { Local0 = 100u32; }
+        BRLV = Local0;
+        BRVA = 1u32;
+        If (SBCM(Local0) == Ones) {
+            // Period and duty share a dword; preserve the period.
+            // A zero period means PWM is not initialized yet.
+            Local1 = BCLM;
+            If (Local1 != 0u32) {
+                BCLV = (Local0 * Local1 + 50u32) / 100u32;
             }
-            Method("XBQC", 0, Serialized) {
-                Local0 = BCLM;
-                If (Local0 != 0u32) {
-                    Local1 = (BCLV * 100u32 + Local0 / 2u32) / Local0;
-                    If (Local1 > 100u32) { Local1 = 100u32; }
-                    Return(Local1);
-                }
-                If (BRVA != 0u32) { Return(BRLV); }
-                Return(100u32);
+        }
+    }
+    Method("XBQC", 0, Serialized) {
+        Local0 = BCLM;
+        If (Local0 != 0u32) {
+            Local1 = (BCLV * 100u32 + Local0 / 2u32) / Local0;
+            If (Local1 > 100u32) { Local1 = 100u32; }
+            If (BREC && ((BRVA != 0u32) && (Local1 != BRLV))) {
+                XBCM(BRLV);
+                Return(BRLV);
             }
-            // Coreboot GMA_STATIC_DISPLAYS: VGA, TV and LFP output IDs, with
-            // the stubbed _DCS/_DGS/_DSS of drivers/intel/gma/acpi.c.
-            Method("_DOD", 0, NotSerialized) {
-                Return(Package(0x80010100u32, 0x80010240u32, 0x80010410u32));
+            BRLV = Local1;
+            BRVA = 1u32;
+            Return(Local1);
+        }
+        If (BRVA != 0u32) { Return(BRLV); }
+        Return(100u32);
+    }
+    // Coreboot GMA_STATIC_DISPLAYS: VGA, TV and LFP output IDs, with
+    // the stubbed _DCS/_DGS/_DSS of drivers/intel/gma/acpi.c.
+    Method("_DOD", 0, NotSerialized) {
+        Return(Package(0x80010100u32, 0x80010240u32, 0x80010410u32));
+    }
+    Device("VGA0") {
+        Name("_ADR", 0x0100u32);
+        Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+        Method("_DGS", 0, NotSerialized) { Return(0u32); }
+        Method("_DSS", 1, NotSerialized) { }
+    }
+    Device("TV0_") {
+        Name("_ADR", 0x0240u32);
+        Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+        Method("_DGS", 0, NotSerialized) { Return(0u32); }
+        Method("_DSS", 1, NotSerialized) { }
+    }
+    Device("LCD0") {
+        Name("_ADR", 0x0410u32);
+        Method("_BCL", 0, NotSerialized) { BRCT = 1u32; Return(BRIG); }
+        Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
+        Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
+        Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
+        Method("_DGS", 0, NotSerialized) { Return(0u32); }
+        Method("_DSS", 1, NotSerialized) { }
+    }
+    Method("_DOS", 1, NotSerialized) { }
+    Method("DECB", 0, NotSerialized) {
+        If (BRCT) { Notify(LCD0, 0x87u32); } Else {
+            Local0 = XBQC();
+            Local1 = SizeOf(BRIG) - 1u32;
+            While ((Local1 > 2u32) && (DeRefOf(Index(BRIG, Local1)) >= Local0)) {
+                Local1--;
             }
-            Device("VGA0") {
-                Name("_ADR", 0x0100u32);
-                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
-                Method("_DGS", 0, NotSerialized) { Return(0u32); }
-                Method("_DSS", 1, NotSerialized) { }
+            XBCM(DeRefOf(Index(BRIG, Local1)));
+        }
+    }
+    Method("INCB", 0, NotSerialized) {
+        If (BRCT) { Notify(LCD0, 0x86u32); } Else {
+            Local0 = XBQC();
+            Local1 = 2u32;
+            While ((Local1 < (SizeOf(BRIG) - 1u32)) && (DeRefOf(Index(BRIG, Local1)) <= Local0)) {
+                Local1++;
             }
-            Device("TV0_") {
-                Name("_ADR", 0x0240u32);
-                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
-                Method("_DGS", 0, NotSerialized) { Return(0u32); }
-                Method("_DSS", 1, NotSerialized) { }
-            }
-            Device("LCD0") {
-                Name("_ADR", 0x0410u32);
-                Method("_BCL", 0, NotSerialized) { Return(BRIG); }
-                Method("_BCM", 1, NotSerialized) { XBCM(Arg0); }
-                Method("_BQC", 0, NotSerialized) { Return(XBQC()); }
-                Method("_DCS", 0, NotSerialized) { Return(0x1Du32); }
-                Method("_DGS", 0, NotSerialized) { Return(0u32); }
-                Method("_DSS", 1, NotSerialized) { }
-            }
-            Method("_DOS", 1, NotSerialized) { }
-            Method("DECB", 0, NotSerialized) {
-                Local0 = XBQC();
-                If (Local0 > 10u32) { Local0 = Local0 - 10u32; }
-                Else { Local0 = 0u32; }
-                XBCM(Local0);
-                Notify(LCD0, 0x87u32);
-            }
-            Method("INCB", 0, NotSerialized) {
-                Local0 = XBQC();
-                If (Local0 < 90u32) { Local0 = Local0 + 10u32; }
-                Else { Local0 = 100u32; }
-                XBCM(Local0);
-                Notify(LCD0, 0x86u32);
-            }
-            Method("_PS0", 0, NotSerialized) { }
-            Method("_PS3", 0, NotSerialized) { }
-            Method("_S0W", 0, NotSerialized) { Return(3u32); }
-            Method("_S3D", 0, NotSerialized) { Return(3u32); }
-            });
+            XBCM(DeRefOf(Index(BRIG, Local1)));
+        }
+    }
+    Method("_PS0", 0, NotSerialized) { }
+    Method("_PS3", 0, NotSerialized) { }
+    Method("_S0W", 0, NotSerialized) { Return(3u32); }
+    Method("_S3D", 0, NotSerialized) { Return(3u32); }
+    });
     fstart_acpi::aml_linker::device_vec(NB::ACPI_IGD_NAME, &body).expect("IGD emission")
 }
 
@@ -828,7 +920,8 @@ mod tests {
         let header = OpRegionHeader::ref_from_bytes(&opregion[..0x100]).unwrap();
         assert_eq!(&header.signature, b"IntelGraphicsMem");
         assert_eq!(header.size_kib.get(), 8);
-        assert_eq!(&header.vbios_version, b"TEST");
+        assert_eq!(&header.vbios_version[..4], b"TEST");
+        assert_eq!(&header.vbios_version[4..], &[0; 12]);
         assert_eq!(header.supported_mailboxes.get(), 0x1d);
 
         // Assert absolute ABI offsets, not only a roundtrip through our own
@@ -849,10 +942,50 @@ mod tests {
         let mailbox = OpRegionMailbox3::ref_from_bytes(&opregion[0x300..0x400]).unwrap();
         assert_eq!(mailbox.vbt_address.get(), OPREGION_BASE_SIZE as u64);
         assert_eq!(mailbox.vbt_size.get(), 6656);
+
+        build_opregion_version(&mut opregion, &vbt, OpRegionVersion::V20);
+        let address = opregion.as_ptr() as u64 + OPREGION_BASE_SIZE as u64;
+        assert_eq!(&opregion[20..24], &[0, 0, 0, 2]);
+        assert_eq!(
+            OpRegionMailbox3::ref_from_bytes(&opregion[0x300..0x400])
+                .unwrap()
+                .vbt_address
+                .get(),
+            address
+        );
         assert_eq!(
             &opregion[OPREGION_VBT_EXT_OFFSET..OPREGION_VBT_EXT_OFFSET + vbt.len()],
             vbt.as_slice()
         );
+    }
+
+    #[test]
+    fn allocation_failure_does_not_claim_a_published_opregion() {
+        static BYTES: [u8; 32] = {
+            let mut b = [0; 32];
+            b[0] = b'$';
+            b[1] = b'V';
+            b[2] = b'B';
+            b[3] = b'T';
+            b[24] = 32;
+            b
+        };
+        let source = VbtSource {
+            staged: Some((BYTES.as_ptr() as u64, 32)),
+            ..VbtSource::NONE
+        };
+        let mut requested = false;
+        let ret = publish_opregion_version(
+            &fstart_pci::ecam::EcamDevice::new(0, 2, 0),
+            OpRegionSci::Swsci,
+            &source,
+            &mut |_| {
+                requested = true;
+                None
+            },
+            OpRegionVersion::V20,
+        );
+        assert!(requested && ret.is_none());
     }
 
     #[test]
@@ -861,6 +994,8 @@ mod tests {
         bytes[..4].copy_from_slice(&VBT_SIGNATURE.to_le_bytes());
         bytes[24..26].copy_from_slice(&32u16.to_le_bytes());
         assert_eq!(vbt_len(&bytes), Some(32));
+        bytes[24..26].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(vbt_len(&bytes), None);
         bytes[24..26].copy_from_slice(&33u16.to_le_bytes());
         assert_eq!(vbt_len(&bytes), None);
     }

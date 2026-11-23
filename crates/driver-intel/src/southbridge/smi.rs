@@ -56,7 +56,69 @@ impl SleepSmi {
 pub struct Gpe0Block {
     pub sts_offset: u16,
     pub en_offset: u16,
-    pub wide: bool,
+    words: u8,
+    alt: AltGpi,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AltGpi {
+    Legacy,
+    Split,
+    Lp,
+}
+
+impl AltGpi {
+    #[inline(always)]
+    fn acknowledge(self, pm: &PmIo, gpio_base: u16) -> u32 {
+        if self == Self::Split {
+            // H: snapshot and acknowledge high before touching low.
+            let high = pm.read16(0x5e);
+            pm.write16(0x5e, high);
+            let low = pm.read16(pmio::ALT_GP_SMI_STS);
+            pm.write16(pmio::ALT_GP_SMI_STS, low);
+            return ((u32::from(high) << 16) | u32::from(low))
+                & self.access(pm, gpio_base, false, None);
+        }
+        let status = self.access(pm, gpio_base, true, None);
+        self.access(pm, gpio_base, true, Some(status));
+        status & self.access(pm, gpio_base, false, None)
+    }
+
+    #[inline(always)]
+    fn access(self, pm: &PmIo, gpio_base: u16, status: bool, write: Option<u32>) -> u32 {
+        if self == Self::Lp {
+            if gpio_base == 0 {
+                return 0;
+            }
+            let gpio = PmIo::new(gpio_base);
+            let offset = if status { 0x50 } else { 0x54 };
+            if let Some(value) = write {
+                gpio.write32(offset, value);
+                return value;
+            }
+            return gpio.read32(offset);
+        }
+        let lo = if status {
+            pmio::ALT_GP_SMI_STS
+        } else {
+            pmio::ALT_GP_SMI_EN
+        };
+        let hi = if status { 0x5e } else { 0x5c };
+        if let Some(value) = write {
+            pm.write16(lo, value as u16);
+            if self == Self::Split {
+                pm.write16(hi, (value >> 16) as u16);
+            }
+            return value;
+        }
+        let high = if self == Self::Split {
+            u32::from(pm.read16(hi)) << 16
+        } else {
+            0
+        };
+        high | u32::from(pm.read16(lo))
+    }
 }
 
 impl Gpe0Block {
@@ -65,21 +127,50 @@ impl Gpe0Block {
         self.en_offset
     }
 
+    /// Read/ack each W1C bank before board dispatch. Never write all-ones:
+    /// a new bit arriving after the read must remain pending for the next SMI.
+    #[inline(always)]
+    fn take_gpe(self, read: impl Fn(u16) -> u32, ack: impl Fn(u16, u32)) -> u128 {
+        let mut events = 0;
+        for i in 0..self.words {
+            let off = 4 * u16::from(i);
+            let status = read(self.sts_offset + off);
+            ack(self.sts_offset + off, status);
+            let report = if self.alt == AltGpi::Legacy {
+                status
+            } else {
+                status & read(self.en_offset + off)
+            };
+            events |= u128::from(report) << (32 * i);
+        }
+        events
+    }
+
+    /// The PMBASE accessor covering this GPE0 geometry.
+    #[inline(always)]
+    const fn pm(self, base: u16) -> PmIo {
+        let end = self.en_offset + 4 * self.words as u16;
+        if end > 0x80 {
+            PmIo::with_size(base, pmio::LYNXPOINT_PMSIZE)
+        } else {
+            PmIo::new(base)
+        }
+    }
+
     /// coreboot S5 entry: `GPE0_EN = 0`.
     #[inline(always)]
     fn disable_all(self, pm: &PmIo) {
         let enable = self.enable_offset();
-        pm.write32(enable, 0);
-        if self.wide {
-            pm.write32(enable + 4, 0);
+        for i in 0..self.words {
+            pm.write32(enable + 4 * u16::from(i), 0);
         }
     }
 
     #[inline(always)]
     fn clear_status(self, pm: &PmIo) {
-        pm.write32(self.sts_offset, u32::MAX);
-        if self.wide {
-            pm.write32(self.sts_offset + 4, u32::MAX);
+        for i in 0..self.words {
+            let offset = self.sts_offset + 4 * u16::from(i);
+            pm.write32(offset, pm.read32(offset));
         }
     }
 }
@@ -87,35 +178,51 @@ impl Gpe0Block {
 /// Chipset event enables saved while relocation admits only LAPIC self-SMIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmiEnableState {
+    pub smi: u32,
     pub pm1: u16,
-    pub gpe0_low: u32,
-    pub gpe0_high: u32,
-    pub alt_gp: u16,
+    pub gpe0: [u32; 4],
+    pub alt_gp: u32,
 }
 
 /// ICH7/NM10: one 32-bit GPE0 status word at PMBASE+0x28.
 pub const ICH7_GPE0: Gpe0Block = Gpe0Block {
     sts_offset: 0x28,
     en_offset: 0x2c,
-    wide: false,
+    words: 1,
+    alt: AltGpi::Legacy,
 };
-/// ICH8 through ICH10: 64-bit GPE0 status at PMBASE+0x20.
+/// ICH8 through ICH10 and 5 Series PCH: 64-bit GPE0 status at PMBASE+0x20.
 pub const ICH8_GPE0: Gpe0Block = Gpe0Block {
     sts_offset: 0x20,
     en_offset: 0x28,
-    wide: true,
+    words: 2,
+    alt: AltGpi::Legacy,
 };
 /// Bay Trail PCU: one 32-bit GPE0 status word at ABASE+0x20, the enables
 /// at +0x28.
 pub const BAYTRAIL_GPE0: Gpe0Block = Gpe0Block {
     sts_offset: 0x20,
     en_offset: 0x28,
-    wide: false,
+    words: 1,
+    alt: AltGpi::Legacy,
+};
+/// Lynx Point-H: two 16-bit alternate GPI SMI words at PMBASE+0x38/+0x5c.
+pub const LYNXPOINT_GPE0: Gpe0Block = Gpe0Block {
+    alt: AltGpi::Split,
+    ..ICH8_GPE0
+};
+/// Lynx Point-LP: 128-bit GPE0 at PMBASE+0x80/+0x90, alternate GPI SMI at GPIOBASE+0x50/+0x54.
+pub const LYNXPOINT_LP_GPE0: Gpe0Block = Gpe0Block {
+    sts_offset: 0x80,
+    en_offset: 0x90,
+    words: 4,
+    alt: AltGpi::Lp,
 };
 
-/// SMI controller view of one ICH PM I/O block.
+/// SMI controller view of one ICH/PCH PM I/O block.
 #[derive(Debug, Clone, Copy)]
 pub struct IchSmi {
+    bios_protection: bool,
     pm: PmIo,
     gpe0: Gpe0Block,
     sleep: SleepSmi,
@@ -125,7 +232,8 @@ impl IchSmi {
     #[must_use]
     pub const fn new(pm_base: u16, gpe0: Gpe0Block) -> Self {
         Self {
-            pm: PmIo::new(pm_base),
+            bios_protection: false,
+            pm: gpe0.pm(pm_base),
             gpe0,
             sleep: SleepSmi::NONE,
         }
@@ -137,6 +245,20 @@ impl IchSmi {
     pub const fn with_sleep_smi(mut self, gpio_base: u16) -> Self {
         self.sleep.enabled = true;
         self.sleep.gpio_base = gpio_base;
+        self
+    }
+
+    /// Set the GPIOBASE I/O port without enabling sleep-transition SMIs.
+    #[must_use]
+    pub const fn with_gpio_base(mut self, gpio_base: u16) -> Self {
+        self.sleep.gpio_base = gpio_base;
+        self
+    }
+
+    /// Enable TCO `BIOSWR` write-protection SMI trapping on Lynx Point.
+    #[must_use]
+    pub const fn with_bios_protection(mut self, enabled: bool) -> Self {
+        self.bios_protection = enabled;
         self
     }
 
@@ -161,7 +283,7 @@ impl IchSmi {
     /// # Safety
     /// LPC config/PM decode must be active and PCI config access serialized.
     pub unsafe fn route_gpi(&self, gpi: u8, acpi: bool) {
-        if gpi >= 16 {
+        if gpi >= 16 || self.gpe0.alt != AltGpi::Legacy {
             return;
         }
         let gpe_enable = self.gpe0.enable_offset();
@@ -179,6 +301,26 @@ impl IchSmi {
         }
     }
 
+    fn permanent_policy(&self, mut previous: SmiEnableState) -> SmiEnableState {
+        let lpt = self.gpe0.alt != AltGpi::Legacy;
+        if lpt {
+            previous.pm1 = 0;
+            previous.gpe0[if self.gpe0.alt == AltGpi::Lp { 3 } else { 0 }] &= !(1 << 13);
+            previous.smi &= !(pmio::TCO_EN | GPI_SMI);
+        } else {
+            previous.smi = 0;
+        }
+        previous.pm1 |= pmio::PWRBTN_EN | pmio::GBL_EN;
+        previous.smi |= pmio::GBL_SMI_EN | pmio::EOS | pmio::APMC_EN;
+        if !lpt || self.bios_protection {
+            previous.smi |= pmio::TCO_EN;
+        }
+        if self.sleep.enabled {
+            previous.smi |= pmio::SLP_SMI_EN;
+        }
+        previous
+    }
+
     /// Whether the OS currently owns the legacy EC/SCI channel.
     pub fn acpi_enabled(&self) -> bool {
         self.pm.read16(pmio::PM1_CNT) & pmio::SCI_EN as u16 != 0
@@ -191,7 +333,7 @@ impl IchSmi {
         self.pm.reset_pm1_status();
         self.pm.tco().reset_tco_status();
         self.gpe0.clear_status(&self.pm);
-        self.pm.write16(pmio::ALT_GP_SMI_STS, u16::MAX);
+        self.gpe0.alt.acknowledge(&self.pm, self.sleep.gpio_base);
     }
 }
 
@@ -218,25 +360,32 @@ impl SmiControl for IchSmi {
     fn quiesce_for_relocation(&self) -> SmiEnableState {
         // Block chipset-originated SMIs before changing individual source
         // enables. PM1_CNT is deliberately untouched so SCI_EN is preserved.
+        let smi = self.pm.read32(pmio::SMI_EN);
         self.pm.write32(pmio::SMI_EN, 0);
         let gpe0_en = self.gpe0.enable_offset();
         let previous = SmiEnableState {
+            smi,
             pm1: self.pm.read16(pmio::PM1_EN),
-            gpe0_low: self.pm.read32(gpe0_en),
-            gpe0_high: if self.gpe0.wide {
-                self.pm.read32(gpe0_en + 4)
-            } else {
-                0
-            },
-            alt_gp: self.pm.read16(pmio::ALT_GP_SMI_EN),
+            gpe0: core::array::from_fn(|i| {
+                if i < usize::from(self.gpe0.words) {
+                    self.pm.read32(gpe0_en + i as u16 * 4)
+                } else {
+                    0
+                }
+            }),
+            alt_gp: self
+                .gpe0
+                .alt
+                .access(&self.pm, self.sleep.gpio_base, false, None),
         };
         self.pm.write16(pmio::PM1_EN, 0);
-        self.pm.write32(gpe0_en, 0);
-        if self.gpe0.wide {
-            self.pm.write32(gpe0_en + 4, 0);
+        self.gpe0.disable_all(&self.pm);
+        self.gpe0
+            .alt
+            .access(&self.pm, self.sleep.gpio_base, false, Some(0));
+        if self.gpe0.alt == AltGpi::Legacy || smi & pmio::APMC_EN == 0 {
+            self.clear_status();
         }
-        self.pm.write16(pmio::ALT_GP_SMI_EN, 0);
-        self.clear_status();
         // LAPIC self-SMIs do not depend on a chipset source bit. Keep only the
         // global gate and EOS set while the shared relocation stub is live.
         self.pm.write32(pmio::SMI_EN, pmio::GBL_SMI_EN | pmio::EOS);
@@ -245,7 +394,7 @@ impl SmiControl for IchSmi {
 
     fn lock_permanent_smi(&self) -> bool {
         use tock_registers::LocalRegisterCopy;
-        // ICH7 through ICH10 share the LPC BDF and SMI_LOCK register.
+        // ICH7 through ICH10 and 5/8 Series PCH share the LPC BDF and SMI_LOCK register.
         // CF8/CFC also works on Q35, which has no global ECAM accessor.
         // SAFETY: the installer calls this on the BSP after AP relocation;
         // neither APs nor the permanent handler access PCI config ports.
@@ -262,29 +411,21 @@ impl SmiControl for IchSmi {
     }
 
     fn enable_permanent_smi(&self, previous: SmiEnableState) {
-        self.clear_status();
-        let gpe0_en = self.gpe0.enable_offset();
-        self.pm
-            .write16(pmio::PM1_EN, previous.pm1 | pmio::PWRBTN_EN | pmio::GBL_EN);
-        self.pm.write32(gpe0_en, previous.gpe0_low);
-        if self.gpe0.wide {
-            self.pm.write32(gpe0_en + 4, previous.gpe0_high);
+        let lpt = self.gpe0.alt != AltGpi::Legacy;
+        if !lpt || previous.smi & pmio::APMC_EN == 0 {
+            self.clear_status();
         }
-        self.pm.write16(pmio::ALT_GP_SMI_EN, previous.alt_gp);
-        // `SLP_SMI_EN` only where SMM has sleep-transition work: gating the
-        // memory reset on the PCHs. Otherwise intercepting the OS's sleep
-        // write would run a handler during the machine's most delicate
-        // transition for nothing; coreboot's ICH7 boards without SMM do not
-        // intercept it either.
-        let sleep = if self.sleep.enabled {
-            pmio::SLP_SMI_EN
-        } else {
-            0
-        };
-        self.pm.write32(
-            pmio::SMI_EN,
-            pmio::TCO_EN | pmio::APMC_EN | sleep | pmio::GBL_SMI_EN | pmio::EOS,
-        );
+        let previous = self.permanent_policy(previous);
+        let gpe0_en = self.gpe0.enable_offset();
+        self.pm.write16(pmio::PM1_EN, previous.pm1);
+        for i in 0..self.gpe0.words {
+            self.pm
+                .write32(gpe0_en + 4 * u16::from(i), previous.gpe0[usize::from(i)]);
+        }
+        self.gpe0
+            .alt
+            .access(&self.pm, self.sleep.gpio_base, false, Some(previous.alt_gp));
+        self.pm.write32(pmio::SMI_EN, previous.smi);
     }
 }
 
@@ -306,53 +447,91 @@ const fn gpi_routing(previous: u32, gpi: u8, acpi: bool) -> u32 {
 }
 
 /// A PM1 event raised this SMI while firmware, not OSPM, owns PM1 events.
+///
+/// `apm` is this SMI's APM command: an ACPI enable or disable changes the
+/// owner before the SMI returns. Firmware takes PM1 status only when it owns
+/// PM1 both now and after the command; otherwise the status stays pending,
+/// for the OS's SCI or for the next SMI once `SCI_EN` is clear.
 #[inline(always)]
-const fn legacy_pm1_smi(smi_status: u32, pm1_control: u16) -> bool {
-    smi_status & pmio::PM1_SMI_STS != 0 && pm1_control & pmio::SCI_EN as u16 == 0
+const fn legacy_pm1_smi(smi_status: u32, pm1_control: u16, apm: Option<u8>) -> bool {
+    let sci_now = pm1_control & pmio::SCI_EN as u16 != 0;
+    let sci_after = match apm {
+        Some(APM_CNT_ACPI_ENABLE) => true,
+        Some(APM_CNT_ACPI_DISABLE) => false,
+        _ => sci_now,
+    };
+    smi_status & pmio::PM1_SMI_STS != 0 && !sci_now && !sci_after
 }
 
-/// The sources of one SMI on any ICH PM I/O layout, read once by
+/// Result of board preparation before committing a trapped transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrepareError {
+    /// Nothing was committed, or normal runtime state was restored; allow retry.
+    Cancelled,
+    /// Runtime state could not be restored safely; reset rather than resume it.
+    RestoreFailed,
+}
+
+/// The sources of one SMI on any ICH/PCH PM I/O layout, read once by
 /// [`PendingSmi::take`]; the board's SMI handler acts on the ones it owns
 /// and ends the SMI with [`PendingSmi::finish`].
 ///
 /// PMBASE and the GPE0 block come from the [`IchSmmConfig`] the installer
 /// wrote (see [`IntelSmm`](fstart_arch::x86::cpu::intel::smm::IntelSmm)), so
-/// it serves ICH7 and ICH8+ boards alike.
+/// it serves ICH7 through Lynx Point boards alike.
 pub struct PendingSmi {
     pm: PmIo,
     gpe0: Gpe0Block,
     sleep_policy: SleepSmi,
     smi_sts: u32,
+    pm1_status: u16,
     /// The ACPI sleep state the OS is entering (`SLP_TYP` decoded: 0, 1,
     /// 3, 4 or 5), when the sleep trap raised this SMI. [`Self::finish`]
     /// enters it after the board's own sleep work.
     pub sleep: Option<u8>,
     /// The APM command, when the APM port raised this SMI. ACPI enable and
-    /// disable are applied already; FINALIZE never shows up here.
+    /// disable are pending during fallible dispatch; FINALIZE is forwarded on LPT.
     pub apm: Option<u8>,
     /// The software TCO command (`TCO_DAT_IN`); answer with
     /// [`PendingSmi::tco_reply`].
     pub tco: Option<u8>,
     /// GPE0 status, when GPE0 raised this SMI.
-    pub gpe: u64,
+    pub gpe: u128,
     /// Enabled alternate GPI events, indexed by GPIO number (not GPE bit).
-    pub gpi: u16,
+    pub gpi: u32,
+}
+
+#[inline(always)]
+const fn tco_sources(sts: u32) -> (bool, bool) {
+    (sts & pmio::BIOSWR_STS != 0, sts & pmio::SW_TCO_SMI != 0)
 }
 
 impl PendingSmi {
-    /// Read this SMI's sources and do the chipset's own APM work.
+    /// Infallible legacy dispatch: apply ACPI mode before handing events to
+    /// handlers which choose their EC channel from the new mode.
     ///
     /// # Safety
     /// Called only by the SMI handler that owns the SMM rendezvous.
     #[inline(always)]
     pub unsafe fn take(config: &IchSmmConfig) -> Self {
+        let pending = unsafe { Self::read_sources(config) };
+        pending.commit_apm();
+        pending
+    }
+
+    /// Read sources without acknowledging a board ownership handoff yet.
+    ///
+    /// # Safety
+    /// Called only by the SMI handler that owns the SMM rendezvous.
+    #[inline(always)]
+    pub(crate) unsafe fn read_sources(config: &IchSmmConfig) -> Self {
         let gpe0 = config.gpe0;
-        let pm = PmIo::new(config.pm_base);
+        let pm = gpe0.pm(config.pm_base);
         // Handle only the sources this SMI reports (coreboot's
         // `southbridge_smi_handler` dispatches on `SMI_STS` bits the same
         // way). With `SCI_EN` set, PM1/GPE0 events raise an SCI for the OS,
         // so their status must survive an unrelated APMC or TCO SMI.
-        let smi_sts = pm.read32(pmio::SMI_STS);
+        let smi_sts = pm.reset_smi_status();
 
         // The APM command port keeps its last written value, so a command
         // may only be consumed when this SMI came from the APM port.
@@ -361,55 +540,134 @@ impl PendingSmi {
         // ACPI mode in the middle of a suspend.
         // SAFETY: the SMM rendezvous owner reads the decoded APM port.
         let apm = (smi_sts & pmio::APM_STS != 0).then(|| unsafe { fstart_core::pio::inb(APM_CNT) });
-        match apm {
-            // 16-bit PM1a access: QEMU TCG mishandles 32-bit PIO to
-            // ACPI-core PM registers (writes vanish), while 16-bit works
-            // on every engine; SCI_EN is a PM1a bit either way.
-            Some(APM_CNT_ACPI_DISABLE) => pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
-            Some(APM_CNT_ACPI_ENABLE) => pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
-            _ => {}
-        }
+        // A power-button press in the same SMI as the OS's ACPI enable is
+        // the OS's: acknowledging it here would leave nobody to service it.
+        let pm1_status = if legacy_pm1_smi(smi_sts, pm.read16(pmio::PM1_CNT), apm) {
+            pm.reset_pm1_status()
+        } else {
+            0
+        };
 
         // coreboot southbridge_smi_sleep(): no further sleep SMIs, then
         // decode SLP_TYP.
-        let sleep = (smi_sts & pmio::SLP_SMI_STS != 0).then(|| {
-            pm.write8(
-                pmio::SMI_EN,
-                pm.read8(pmio::SMI_EN) & !(pmio::SLP_SMI_EN as u8),
-            );
-            acpi_sleep_state(pm.read32(pmio::PM1_CNT))
-        });
+        let sleep = (smi_sts & pmio::SLP_SMI_STS != 0)
+            .then(|| {
+                pm.write8(
+                    pmio::SMI_EN,
+                    pm.read8(pmio::SMI_EN) & !(pmio::SLP_SMI_EN as u8),
+                );
+                let state = acpi_sleep_state(pm.read32(pmio::PM1_CNT));
+                if state.is_none() {
+                    pm.clrbits32(pmio::PM1_CNT, pmio::SLP_TYP_MASK | pmio::SLP_EN);
+                    pm.setbits32(pmio::SMI_EN, pmio::SLP_SMI_EN);
+                }
+                state
+            })
+            .flatten();
 
-        let tco = (smi_sts & pmio::TCO_STS != 0)
-            .then(|| pm.tco())
-            .filter(|tco| tco.read32(pmio::TCO1_STS) & pmio::SW_TCO_SMI != 0)
-            .map(|tco| tco.read_dat_in());
-
-        let mut gpe = 0;
-        if smi_sts & pmio::GPE0_SMI_STS != 0 {
-            gpe = u64::from(pm.read32(gpe0.sts_offset));
-            if gpe0.wide {
-                gpe |= u64::from(pm.read32(gpe0.sts_offset + 4)) << 32;
+        let tco_status = if smi_sts & pmio::TCO_STS != 0 {
+            pm.tco().reset_tco_status()
+        } else {
+            0
+        };
+        let (bioswr, software) = tco_sources(tco_status);
+        if bioswr {
+            use super::lpc::{BIOS_CONTROL, LPC_DEV, LPC_FUNC, LpcFlashConfig};
+            const CNTL: u8 = core::mem::offset_of!(LpcFlashConfig, bios_control) as u8;
+            // SMM does not inherit ramstage's ECAM binding.
+            unsafe {
+                let ctrl = fstart_pci::cf8::read8(0, LPC_DEV, LPC_FUNC, CNTL);
+                if BIOS_CONTROL::WRITE_ENABLE.is_set(ctrl) {
+                    fstart_pci::cf8::write8(
+                        0,
+                        LPC_DEV,
+                        LPC_FUNC,
+                        CNTL,
+                        ctrl & !BIOS_CONTROL::WRITE_ENABLE::SET.value,
+                    );
+                }
             }
         }
+        let tco = software.then(|| pm.tco().read_dat_in());
+
+        let gpe = if smi_sts & pmio::GPE0_SMI_STS != 0 {
+            gpe0.take_gpe(|reg| pm.read32(reg), |reg, v| pm.write32(reg, v))
+        } else {
+            0
+        };
         let mut gpi = 0;
         if smi_sts & GPI_SMI != 0 {
-            let status = pm.read16(pmio::ALT_GP_SMI_STS);
-            pm.write16(pmio::ALT_GP_SMI_STS, status);
-            gpi = status & pm.read16(pmio::ALT_GP_SMI_EN);
+            gpi = gpe0.alt.acknowledge(&pm, config.sleep.gpio_base);
         }
         Self {
             pm,
             gpe0,
             sleep_policy: config.sleep,
             smi_sts,
+            pm1_status,
             sleep,
-            // FINALIZE has no chipset work yet; never hand it to the board.
-            apm: apm.filter(|command| *command != APM_CNT_FINALIZE),
+            apm: apm.filter(|command| gpe0.alt != AltGpi::Legacy || *command != APM_CNT_FINALIZE),
             tco,
             gpe,
             gpi,
         }
+    }
+
+    #[inline(always)]
+    pub fn acpi_enabled(&self) -> bool {
+        self.pm.read16(pmio::PM1_CNT) & pmio::SCI_EN as u16 != 0
+    }
+
+    #[inline(always)]
+    pub fn request_poweroff(&self) {
+        self.pm.request_poweroff();
+    }
+
+    #[inline(always)]
+    pub fn requested_acpi_mode(&self) -> Option<bool> {
+        match self.apm {
+            Some(APM_CNT_ACPI_DISABLE) => Some(false),
+            Some(APM_CNT_ACPI_ENABLE) => Some(true),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    fn commit_apm(&self) {
+        // QEMU TCG needs 16-bit accesses to the ACPI-core PM register.
+        match self.requested_acpi_mode() {
+            Some(true) => self.pm.setbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
+            Some(false) => self.pm.clrbits16(pmio::PM1_CNT, pmio::SCI_EN as u16),
+            None => {}
+        }
+    }
+
+    /// Commit any pending APM command and sleep transition, or roll back the
+    /// sleep trap on [`PrepareError`].
+    #[inline(always)]
+    pub fn complete(mut self, prepared: Result<(), PrepareError>, prepare_sleep: impl FnOnce(u8)) {
+        match prepared {
+            Ok(()) => {
+                self.commit_apm();
+                if let Some(state) = self.sleep {
+                    prepare_sleep(state);
+                }
+            }
+            Err(error) => {
+                if self.sleep.take().is_some() {
+                    // Drop the intercepted request with the trap still disabled,
+                    // then re-arm it for a fresh OS attempt. Do not prepare USB,
+                    // gate DRAM reset or reissue SLP_EN on this path.
+                    self.pm
+                        .clrbits32(pmio::PM1_CNT, pmio::SLP_TYP_MASK | pmio::SLP_EN);
+                    self.pm.setbits32(pmio::SMI_EN, pmio::SLP_SMI_EN);
+                }
+                if error == PrepareError::RestoreFailed {
+                    fstart_arch::x86::boot::full_reset();
+                }
+            }
+        }
+        self.finish();
     }
 
     /// Answer the software TCO command (`TCO_DAT_OUT`).
@@ -422,24 +680,16 @@ impl PendingSmi {
     #[inline(always)]
     pub fn finish(self) {
         let pm = self.pm;
-        if self.smi_sts & pmio::TCO_STS != 0 {
-            pm.tco().reset_tco_status();
+        if self.gpe0.alt != AltGpi::Legacy && self.smi_sts & GPI_SMI != 0 {
+            self.gpe0.alt.acknowledge(&pm, self.sleep_policy.gpio_base);
         }
-        if legacy_pm1_smi(self.smi_sts, pm.read16(pmio::PM1_CNT)) {
-            let status = pm.reset_pm1_status();
-            // coreboot southbridge_smi_pm1(): before OSPM owns PM1 events, a
-            // power-button press enters S5. With SCI_EN set, the status
-            // belongs to the OS.
-            if status & pmio::PWRBTN_STS != 0 {
-                pm.poweroff();
-            }
-        }
-        if self.smi_sts & pmio::GPE0_SMI_STS != 0 {
-            self.gpe0.clear_status(&pm);
-        }
-        pm.write32(pmio::SMI_STS, self.smi_sts);
         if let Some(state) = self.sleep {
             self.enter_sleep(state);
+        }
+        if service_power_button(self.sleep, self.pm1_status)
+            && pm.read16(pmio::PM1_CNT) & pmio::SCI_EN as u16 == 0
+        {
+            pm.request_poweroff();
         }
         pm.setbits32(pmio::SMI_EN, pmio::EOS);
     }
@@ -492,15 +742,23 @@ impl PendingSmi {
     }
 }
 
+/// A power-button S5 cannot replace an already committed deep sleep. A
+/// cancelled sleep clears `sleep` so normal PM1 handling may resume.
+#[inline(always)]
+const fn service_power_button(sleep: Option<u8>, status: u16) -> bool {
+    !matches!(sleep, Some(3..=5)) && status & pmio::PWRBTN_STS != 0
+}
+
 /// coreboot `acpi_sleep_from_pm1()` for Intel PM1_CNT.SLP_TYP.
 #[inline(always)]
-const fn acpi_sleep_state(pm1_cnt: u32) -> u8 {
+const fn acpi_sleep_state(pm1_cnt: u32) -> Option<u8> {
     match (pm1_cnt & pmio::SLP_TYP_MASK) >> pmio::SLP_TYP_SHIFT {
-        1 => 1,
-        5 => 3,
-        6 => 4,
-        7 => 5,
-        _ => 0,
+        0 => Some(0),
+        1 => Some(1),
+        5 => Some(3),
+        6 => Some(4),
+        7 => Some(5),
+        _ => None,
     }
 }
 
@@ -563,8 +821,116 @@ mod tests {
             pmio::PM1_SMI_STS,
             pmio::PM1_SMI_STS | pmio::APM_STS,
         ] {
-            assert_eq!(legacy_pm1_smi(source, 0), source & pmio::PM1_SMI_STS != 0);
-            assert!(!legacy_pm1_smi(source, pmio::SCI_EN as u16));
+            assert_eq!(
+                legacy_pm1_smi(source, 0, None),
+                source & pmio::PM1_SMI_STS != 0
+            );
+            assert!(!legacy_pm1_smi(source, pmio::SCI_EN as u16, None));
+        }
+    }
+
+    #[test]
+    fn power_button_with_acpi_enable_is_left_for_the_os() {
+        let both = pmio::PM1_SMI_STS | pmio::APM_STS;
+        let sci = pmio::SCI_EN as u16;
+        // The OS enables ACPI in this SMI: its SCI services the press.
+        assert!(!legacy_pm1_smi(both, 0, Some(APM_CNT_ACPI_ENABLE)));
+        // Disabling ACPI: retaken by the next SMI once SCI_EN is clear.
+        assert!(!legacy_pm1_smi(both, sci, Some(APM_CNT_ACPI_DISABLE)));
+        // Unrelated commands leave the owner unchanged.
+        assert!(legacy_pm1_smi(both, 0, Some(APM_CNT_FINALIZE)));
+        assert!(legacy_pm1_smi(both, 0, Some(APM_CNT_ACPI_DISABLE)));
+        assert!(!legacy_pm1_smi(both, sci, Some(APM_CNT_ACPI_ENABLE)));
+    }
+
+    #[test]
+    fn committed_sleep_wins_over_pm1_power_button() {
+        for state in [3, 4, 5] {
+            assert!(!service_power_button(Some(state), pmio::PWRBTN_STS));
+        }
+        assert!(service_power_button(None, pmio::PWRBTN_STS));
+    }
+
+    #[test]
+    fn reserved_sleep_is_not_s0() {
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5, 6, 7].map(|v| acpi_sleep_state(v << pmio::SLP_TYP_SHIFT)),
+            [
+                Some(0),
+                Some(1),
+                None,
+                None,
+                None,
+                Some(3),
+                Some(4),
+                Some(5)
+            ]
+        );
+    }
+
+    #[test]
+    fn tco_write_trap_is_not_a_software_command_or_timeout() {
+        assert_eq!(tco_sources(1 << 8), (true, false));
+        assert_eq!(tco_sources(1 << 1), (false, true));
+        assert_eq!(tco_sources(1 << 3), (false, false));
+        assert_eq!(tco_sources(0x10a), (true, true));
+    }
+
+    #[test]
+    fn lp_snapshot_reports_enabled_bits_and_preserves_late_events() {
+        use core::cell::Cell;
+        let late = Cell::new(0);
+        let report = LYNXPOINT_LP_GPE0.take_gpe(
+            |reg| match reg {
+                0x8c => 5,
+                0x9c => 1,
+                _ => 0,
+            },
+            |reg, v| {
+                if reg == 0x8c {
+                    late.set(7 & !v);
+                }
+            },
+        );
+        assert_eq!(report, 1 << 96);
+        assert_eq!(late.get(), 2);
+        assert_eq!(ICH7_GPE0.take_gpe(|_| 5, |_, v| assert_eq!(v, 5)), 5);
+    }
+
+    #[test]
+    fn lp_alt_gpi_with_zero_gpio_base_is_noop() {
+        let pm = LYNXPOINT_LP_GPE0.pm(0x1800);
+        assert_eq!(AltGpi::Lp.access(&pm, 0, true, None), 0);
+        assert_eq!(AltGpi::Lp.access(&pm, 0, false, Some(0x1234)), 0);
+    }
+
+    #[test]
+    fn permanent_lpt_masks_do_not_enable_tco_without_bios_policy() {
+        for (block, std) in [(LYNXPOINT_GPE0, 0), (LYNXPOINT_LP_GPE0, 3)] {
+            let prev = SmiEnableState {
+                pm1: 0xffff,
+                gpe0: [u32::MAX; 4],
+                alt_gp: 1,
+                smi: pmio::TCO_EN | GPI_SMI | 0x10000,
+            };
+            for bwp in [false, true] {
+                let p = IchSmi::new(0x500, block)
+                    .with_sleep_smi(0x1400)
+                    .with_bios_protection(bwp)
+                    .permanent_policy(prev);
+                assert_eq!(p.pm1, pmio::PWRBTN_EN | pmio::GBL_EN);
+                assert_eq!(
+                    p.smi,
+                    0x10000
+                        | pmio::GBL_SMI_EN
+                        | pmio::EOS
+                        | pmio::APMC_EN
+                        | pmio::SLP_SMI_EN
+                        | if bwp { pmio::TCO_EN } else { 0 }
+                );
+                assert_eq!(p.gpe0[std], !(1 << 13));
+                assert_eq!(p.alt_gp, 1);
+            }
         }
     }
 

@@ -186,8 +186,11 @@ impl CacheSpi {
         let host = FirmwareHost {
             spi_offset: match entry.chipset {
                 IchChipset::Ich7 | IchChipset::Ich8 => 0x3020,
-                // The 5 Series PCH keeps ICH9's SPI block and offset.
-                IchChipset::Ich9 | IchChipset::Series5IbexPeak => 0x3800,
+                // The 5 and 8 Series PCHs keep ICH9's SPI block and offset.
+                IchChipset::Ich9
+                | IchChipset::Series5IbexPeak
+                | IchChipset::Series8LynxPoint
+                | IchChipset::Series8LynxPointLp => 0x3800,
                 _ => return Err(ServiceError::NotSupported),
             },
         };
