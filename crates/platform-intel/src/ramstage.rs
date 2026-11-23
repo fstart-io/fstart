@@ -617,6 +617,48 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
 }
 
 impl<B: IntelBoard> Ramstage<B, Chipset> {
+    /// Probe a discrete LPC/MMIO TIS TPM at [`fstart_driver_tpm::tis::BASE`],
+    /// enforce S3 population retention in `TPM_STATE`, and run `Startup(Clear)`
+    /// or `Startup(State)`.
+    ///
+    /// On S3 resume, a changed population or failed `Startup(State)` aborts
+    /// resume via [`Self::fail`]. On cold boot, failures withhold S3 (and, for
+    /// failed startup, omit the TPM device from ACPI) without aborting boot.
+    pub fn init_tis_tpm(&mut self) -> crate::tpm::TisProbe {
+        use fstart_driver_tpm::tis;
+
+        let resume = self.resume;
+        // SAFETY: LPC TIS window, exclusively used by the BSP before handoff.
+        let mut tis = unsafe { tis::Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
+        let id = tis.probe();
+        let irq = id.and_then(|_| tis.irq());
+        let same_tpm = self
+            .store
+            .as_mut()
+            .is_some_and(|store| crate::tpm::same_population(store, resume, id, irq));
+        if !same_tpm {
+            if resume {
+                self.fail("retained TPM identity");
+            }
+            fstart_log::warn!("TPM: could not retain identity; withholding S3");
+            self.northbridge.set_s3_enabled(false);
+            self.southbridge.set_s3_enabled(false);
+        }
+        let mut family = id.map(|i| i.family);
+        if let Some(kind) = family
+            && fstart_driver_tpm::startup(&mut tis, kind, resume).is_err()
+        {
+            if resume {
+                self.fail("TPM resume");
+            }
+            fstart_log::warn!("TPM: cold startup failed; withholding TPM device and S3");
+            family = None;
+            self.northbridge.set_s3_enabled(false);
+            self.southbridge.set_s3_enabled(false);
+        }
+        crate::tpm::TisProbe { family, irq }
+    }
+
     /// Bring up the APs with the CPU driver and, when fbuild embedded an SMM
     /// image ([`crate::SMM_IMAGE`]), relocate SMBASE, install the handler in
     /// TSEG and lock SMRAM.

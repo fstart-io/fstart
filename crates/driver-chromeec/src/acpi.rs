@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What an OS needs to find the EC's devices without probing.
 
 extern crate alloc;
@@ -8,20 +9,33 @@ use fstart_acpi_macros::acpi_dsl;
 /// scope: a Chromebook keyboard (`GOOG000A`) on the standard i8042 ports.
 /// The EC signals IRQ 1 as a level-low virtual wire.
 pub fn keyboard_aml() -> Vec<u8> {
-    acpi_dsl! {
-        Device("PS2K") {
-            Name("_HID", "GOOG000A");
-            Name("_CID", Package(EisaId("PNP0303"), EisaId("PNP030B")));
-            Name("_UID", 0u32);
-            Name("_CRS", ResourceTemplate {
-                IO(0x0060u16, 0x0060u16, 0x01u8, 0x01u8);
-                IO(0x0064u16, 0x0064u16, 0x01u8, 0x01u8);
-                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, 1u32);
-            });
-            Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
-        }
+    keyboard_aml_with_irq(&fstart_acpi::aml::Interrupt::new(
+        true, false, true, true, 1,
+    ))
+}
+
+/// Use the board's IRQ resource: a legacy LPC SERIRQ and an eSPI virtual
+/// wire do not have the same polarity, triggering or sharing.
+pub fn keyboard_aml_with_irq(irq: &dyn fstart_acpi::Aml) -> Vec<u8> {
+    use fstart_acpi::{
+        Aml,
+        aml::{IO, Name, ResourceTemplate},
+        aml_linker::device_vec,
+    };
+    let mut body: Vec<u8> = acpi_dsl! {
+        Name("_HID", "GOOG000A");
+        Name("_CID", Package(EisaId("PNP0303"), EisaId("PNP030B")));
+        Name("_UID", 0u32);
+        Method("_STA", 0, NotSerialized) { Return(0x0Fu32); }
     }
-    .into()
+    .into();
+    let (data, command) = (IO::new(0x60, 0x60, 1, 1), IO::new(0x64, 0x64, 1, 1));
+    Name::new(
+        "_CRS".into(),
+        &ResourceTemplate::new(alloc::vec![&data, &command, irq]),
+    )
+    .to_aml_bytes(&mut body);
+    device_vec("PS2K", &body).expect("EC keyboard")
 }
 
 /// What the EC's ACPI devices say of a board, coreboot's
@@ -33,12 +47,50 @@ pub struct Ec {
     /// The GPE the EC wakes the system on (`EC_ENABLE_WAKE_PIN`): `_PRW`
     /// of the lid and of the command device.
     pub wake_gpe: Option<u8>,
+    /// Matrix Keyboard Protocol child (CKSC), not the LPC i8042 keyboard.
+    pub mkbp: bool,
     /// A USB-PD controller behind the EC (`GOOG0003`).
     pub pd: bool,
     /// Tablet mode reported by the EC's motion sensors (`GOOG0006`).
     pub tablet_mode: bool,
     /// A keyboard backlight the EC drives (`GOOG0002`).
     pub keyboard_backlight: bool,
+}
+
+/// Board ACPI targets for ChromeEC thermal query notifications (`_Q0A`/`_Q0B`/`_Q10`)
+/// and throttle control (`_Q12`/`_Q13`).
+#[derive(Default, Clone, Copy)]
+pub struct ThermalPolicy {
+    /// ACPI object notified with `0x80` on thermal overload/shutdown (`_Q0A`, `_Q0B`, `_Q10`).
+    pub notify_target: Option<&'static str>,
+    /// One-argument ACPI method invoked with `1` (`_Q12`) / `0` (`_Q13`) for thermal throttling.
+    pub throttle_method: Option<&'static str>,
+}
+
+/// Board ACPI objects maintained by the EC across `_REG` and AC-state changes.
+#[derive(Clone, Copy)]
+pub struct PowerNotify {
+    /// Zero-argument platform CPU power notification method (e.g. `"\\PNOT"`).
+    pub method: &'static str,
+    /// Platform AC-state integer updated from `ACEX` (e.g. `"\\PWRS"`).
+    pub ac_state: &'static str,
+    /// Platform lid-state integer updated from `LIDS` in `_REG` (e.g. `"\\LIDS"`).
+    pub lid_state: &'static str,
+}
+
+/// Optional LPC AML behavior, independent of which EC peripherals exist.
+#[derive(Default, Clone, Copy)]
+pub struct LpcPolicy {
+    /// Emit EC thermal sensor/PAT/charger methods and optional thermal event handlers.
+    pub thermal: Option<ThermalPolicy>,
+    /// Platform power-state fields and CPU notification method maintained on `_REG`/`_Q04`/`_Q05`/`_Q17`.
+    pub power_notify: Option<PowerNotify>,
+    /// External ACPI path for `CREC` when the board places `crec()` outside `EC0`
+    /// (e.g. `Some("\\_SB_.CREC")`). When `None`, `CREC` is emitted directly under `EC0`.
+    /// PD/tablet child routing on an external `CREC` path is not implemented.
+    pub external_crec: Option<&'static str>,
+    /// Older ECs don't compensate remaining capacity near full on AC.
+    pub full_battery_workaround: bool,
 }
 
 impl Ec {
@@ -52,8 +104,10 @@ impl Ec {
             | AcDisconnected.mask()
             | BatteryLow.mask()
             | BatteryCritical.mask()
-            | Battery.mask()
-            | Mkbp.mask();
+            | Battery.mask();
+        if self.mkbp {
+            mask |= Mkbp.mask();
+        }
         if self.pd {
             mask |= PdMcu.mask();
         }
@@ -63,23 +117,33 @@ impl Ec {
         mask
     }
 
+    /// Additional SCI bits for a board enabling [`LpcPolicy::thermal`].
+    pub const THERMAL_EVENTS: u32 = crate::HostEvent::THERMAL_EVENTS;
+
     /// The EC for the LPC/eSPI bridge's scope: its host interface and
     /// memory map (`SIO`), and the ACPI EC `EC0` with the lid, the AC
     /// adapter, the battery and the command device `CREC` that the OS's
     /// ChromeEC driver binds to. Everything refers to the EC by relative
     /// names, so it works below any bridge.
     ///
-    /// Unlike coreboot, `CREC` and `KBLT` are below `EC0`, not in `\_SB`:
+    /// Unlike coreboot, the default `CREC` and `KBLT` are below `EC0`, not in `\_SB`:
     /// `CREC` has no interrupt to keep it from the ISA bridge, and nothing
-    /// then needs the bridge's path. No `\PNOT` platform notification, no
-    /// thermal or DPTF events and no second battery.
+    /// then needs the bridge's path. No platform notification, thermal or
+    /// DPTF events, or second battery are emitted by default.
     pub fn lpc_aml(&self) -> Result<Vec<u8>, fstart_acpi::AmlError> {
+        self.lpc_aml_with_policy(LpcPolicy::default())
+    }
+
+    pub fn lpc_aml_with_policy(&self, policy: LpcPolicy) -> Result<Vec<u8>, fstart_acpi::AmlError> {
+        if policy.external_crec.is_some() && (self.pd || self.tablet_mode) {
+            return Err(fstart_acpi::AmlError::InvalidPath);
+        }
         let mut aml = sio();
-        aml.extend(self.ec0()?);
+        aml.extend(self.ec0(policy)?);
         Ok(aml)
     }
 
-    fn ec0(&self) -> Result<Vec<u8>, fstart_acpi::AmlError> {
+    fn ec0(&self, policy: LpcPolicy) -> Result<Vec<u8>, fstart_acpi::AmlError> {
         use fstart_acpi::aml_linker::device_vec;
         let sci_gpe = u64::from(self.sci_gpe);
         let mut body = Vec::new();
@@ -132,35 +196,150 @@ impl Ec {
             Method("RCTM", 0, NotSerialized) { Return(TBMD); }
 
             Method("_Q01", 0, NotSerialized) { Notify(LID0, 0x80u8); }
-            Method("_Q02", 0, NotSerialized) {
-                Notify(CREC, 0x02u8);
-                Notify(LID0, 0x80u8);
-            }
-            Method("_Q04", 0, NotSerialized) { Notify(AC, 0x80u8); }
-            Method("_Q05", 0, NotSerialized) { Notify(AC, 0x80u8); }
-            Method("_Q06", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
-            Method("_Q07", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
-            Method("_Q08", 0, NotSerialized) { Notify(BAT0, 0x81u8); }
-            // Key pressed.
-            Method("_Q0D", 0, NotSerialized) { Notify(CREC, 0x02u8); }
-            // Battery shutdown imminent and battery status.
-            Method("_Q11", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
-            Method("_Q17", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
-            // EC panic and MKBP event, for the ChromeEC driver.
-            Method("_Q18", 0, NotSerialized) { Notify(CREC, 0xB0u8); }
-            Method("_Q1B", 0, NotSerialized) { Notify(CREC, 0x80u8); }
-
-            Device("AC") {
-                Name("_HID", "ACPI0003");
-                Name("_PCL", Package(#{const "\\_SB_"}));
-                Method("_PSR", 0, NotSerialized) { Return(ACEX); }
-                Method("_STA", 0, NotSerialized) { Return(0x0Fu8); }
-            }
         }
         .emit(&mut body)?;
+        let crec_path = fstart_acpi::aml::Path::new(policy.external_crec.unwrap_or("CREC"));
+        {
+            use fstart_acpi::{
+                Aml,
+                aml::{Method, MethodCall, Notify, Path, Store},
+            };
+            let lid_path = Path::new("LID0");
+            let notify_crec_wake = Notify::new(&crec_path, &2u8);
+            let notify_lid = Notify::new(&lid_path, &0x80u8);
+            Method::new(
+                "_Q02".into(),
+                0,
+                false,
+                alloc::vec![&notify_crec_wake, &notify_lid],
+            )
+            .to_aml_bytes(&mut body);
+
+            if let Some(notify) = policy.power_notify {
+                let pntf_call = MethodCall::new(Path::new(notify.method), alloc::vec![]);
+                Method::new("PNTF".into(), 0, false, alloc::vec![&pntf_call])
+                    .to_aml_bytes(&mut body);
+                let ac_state = Path::new(notify.ac_state);
+                let lid_state = Path::new(notify.lid_state);
+                let acex = Path::new("ACEX");
+                let lids = Path::new("LIDS");
+                let ac_dev = Path::new("AC__");
+                let call_pntf = MethodCall::new(Path::new("PNTF"), alloc::vec![]);
+                let store_ac = Store::new(&ac_state, &acex);
+                let store_lid = Store::new(&lid_state, &lids);
+                let notify_ac = Notify::new(&ac_dev, &0x80u8);
+                Method::new(
+                    "REGI".into(),
+                    0,
+                    false,
+                    alloc::vec![&store_ac, &store_lid, &call_pntf],
+                )
+                .to_aml_bytes(&mut body);
+                Method::new(
+                    "ACUP".into(),
+                    0,
+                    false,
+                    alloc::vec![&store_ac, &notify_ac, &call_pntf],
+                )
+                .to_aml_bytes(&mut body);
+                body.extend_from_slice(&acpi_dsl! {
+                    Method("_REG", 2, NotSerialized) { If ((Arg0 == 3u8) && (Arg1 == 1u8)) { REGI(); } }
+                    Method("_Q04", 0, NotSerialized) { ACUP(); }
+                    Method("_Q05", 0, NotSerialized) { ACUP(); }
+                });
+            } else {
+                body.extend_from_slice(&acpi_dsl! {
+                    Method("_Q04", 0, NotSerialized) { Notify(AC, 0x80u8); }
+                    Method("_Q05", 0, NotSerialized) { Notify(AC, 0x80u8); }
+                });
+            }
+            body.extend_from_slice(&acpi_dsl! {
+                Method("_Q06", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
+                Method("_Q07", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
+                Method("_Q08", 0, NotSerialized) { Notify(BAT0, 0x81u8); }
+            });
+            Method::new("_Q0D".into(), 0, false, alloc::vec![&notify_crec_wake])
+                .to_aml_bytes(&mut body);
+            body.extend_from_slice(&acpi_dsl! {
+                Method("_Q11", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
+            });
+            if policy.power_notify.is_some() {
+                body.extend_from_slice(&acpi_dsl! {
+                    Method("_Q17", 0, NotSerialized) { Notify(BAT0, 0x80u8); PNTF(); }
+                });
+            } else {
+                body.extend_from_slice(&acpi_dsl! {
+                    Method("_Q17", 0, NotSerialized) { Notify(BAT0, 0x80u8); }
+                });
+            }
+            let notify_crec_b0 = Notify::new(&crec_path, &0xb0u8);
+            let notify_crec_80 = Notify::new(&crec_path, &0x80u8);
+            Method::new("_Q18".into(), 0, false, alloc::vec![&notify_crec_b0])
+                .to_aml_bytes(&mut body);
+            Method::new("_Q1B".into(), 0, false, alloc::vec![&notify_crec_80])
+                .to_aml_bytes(&mut body);
+        }
+        body.extend_from_slice(&acpi_dsl! { Device("AC") {
+            Name("_HID", "ACPI0003"); Name("_PCL", Package(#{const "\\_SB_"}));
+            Method("_PSR", 0, NotSerialized) { Return(ACEX); }
+            Method("_STA", 0, NotSerialized) { Return(0x0fu8); }
+        }});
+        if let Some(thermal) = policy.thermal {
+            use fstart_acpi::{
+                Aml, RawAml,
+                aml::{Acquire, Else, If, Method, MethodCall, Notify, Path, Return},
+            };
+            body.extend_from_slice(&acpi_dsl! {
+                Name("TNCA", 0xfcu8); Name("TNOP", 0xfdu8); Name("TBAD", 0xfeu8); Name("TNPR", 0xffu8); Name("TOFS", 200u8);
+                Method("TINS", 1, Serialized) {
+                    Local0 = 0x900u32;
+                    If (Arg0 < 10u32) { Local0 = Local0 + Arg0; }
+                    OperationRegion("TMAP", SystemIO, Local0, 1u32);
+                    Field("TMAP", ByteAcc, NoLock, Preserve) { TEMP, 8, }
+                    Return(TEMP);
+                }
+                Field("ERAM", ByteAcc, Lock, Preserve) { Offset(0x05), PATI, 8, PATT, 8, PATC, 8, CHGL, 8, }
+                Method("TSRD", 1, Serialized) { Local0 = TINS(Arg0); If (Local0 >= TNCA) { Return(0u8); } Return((Local0 + TOFS) * 10u8); }
+                Mutex("PATM", 0);
+                Method("PAT0", 2, Serialized) { Return(PATS(Arg0, Arg1, 2u8)); }
+                Method("PAT1", 2, Serialized) { Return(PATS(Arg0, Arg1, 3u8)); }
+                Method("CHGS", 1, Serialized) { CHGL = Arg0; } Method("CHGD", 0, Serialized) { CHGL = 0xffu8; }
+            });
+            let acquire = Acquire::new("PATM".into(), 1000);
+            let zero = Return::new(&0u8);
+            let timeout = If::new(&acquire, alloc::vec![&zero]);
+            let pats = acpi_dsl! { PATI = Arg0; PATT = (Arg1 / 10u8) - TOFS; PATC = Arg2; Release(PATM); Return(1u8); };
+            let patd = acpi_dsl! { PATI = Arg0; PATT = 0u8; PATC = 0u8; PATC = 1u8; Release(PATM); Return(1u8); };
+            let query = acpi_dsl! { Local0 = 16u8; While ((Local0 > 0u8) && (PATI != TNPR)) { Local0--; } Release(PATM); };
+            for (name, n, ops) in [("PATS", 3, &pats[..]), ("PATD", 1, &patd[..])] {
+                Method::new(name.into(), n, true, alloc::vec![&timeout, &RawAml(ops)])
+                    .to_aml_bytes(&mut body);
+            }
+            let skip = If::new(&acquire, alloc::vec![]);
+            let query_aml = RawAml(&query);
+            let acquired = Else::new(alloc::vec![&query_aml]);
+            Method::new("_Q09".into(), 0, true, alloc::vec![&skip, &acquired])
+                .to_aml_bytes(&mut body);
+            if let Some(target) = thermal.notify_target {
+                let path = Path::new(target);
+                let notify = Notify::new(&path, &0x80u8);
+                for name in ["_Q0A", "_Q0B", "_Q10"] {
+                    Method::new(name.into(), 0, false, alloc::vec![&notify])
+                        .to_aml_bytes(&mut body);
+                }
+            }
+            if let Some(throttle) = thermal.throttle_method {
+                for (name, state) in [("_Q12", 1u8), ("_Q13", 0u8)] {
+                    let call = MethodCall::new(Path::new(throttle), alloc::vec![&state]);
+                    Method::new(name.into(), 0, false, alloc::vec![&call]).to_aml_bytes(&mut body);
+                }
+            }
+        }
         body.extend(lid(self.wake_gpe)?);
-        body.extend(battery());
-        body.extend(self.crec()?);
+        body.extend(battery(policy.full_battery_workaround));
+        if policy.external_crec.is_none() {
+            body.extend(self.crec()?);
+        }
         if self.pd {
             body.extend(Vec::<u8>::from(acpi_dsl! {
                 // PD and USB mux events.
@@ -184,21 +363,23 @@ impl Ec {
 
     /// The command device of the OS's ChromeEC driver, with its MKBP
     /// (`GOOG0007`), PD and tablet-mode children.
-    fn crec(&self) -> Result<Vec<u8>, fstart_acpi::AmlError> {
+    pub fn crec(&self) -> Result<Vec<u8>, fstart_acpi::AmlError> {
         use fstart_acpi::aml_linker::device_vec;
         let mut body: Vec<u8> = acpi_dsl! {
             Name("_HID", "GOOG0004");
             Name("_UID", 1u8);
             Name("_DDN", "EC Command Device");
             Method("_STA", 0, NotSerialized) { Return(0x0Fu8); }
-            Device("CKSC") {
+        }
+        .into();
+        if self.mkbp {
+            body.extend_from_slice(&acpi_dsl! {Device("CKSC") {
                 Name("_HID", "GOOG0007");
                 Name("_UID", 1u8);
                 Name("_DDN", "EC MKBP Device");
                 Method("_STA", 0, NotSerialized) { Return(0x0Fu8); }
-            }
+            }});
         }
-        .into();
         if let Some(gpe) = self.wake_gpe {
             body.extend(prw(gpe)?);
         }
@@ -288,7 +469,7 @@ fn lid(wake_gpe: Option<u8>) -> Result<Vec<u8>, fstart_acpi::AmlError> {
 
 /// The one battery of the EC's memory map (battery.asl, without the
 /// second battery and the long-string FIFO): 15% warning, 10% low.
-fn battery() -> Vec<u8> {
+fn battery(full_workaround: bool) -> Vec<u8> {
     acpi_dsl! {
         Device("BAT0") {
             Name("_HID", EisaId("PNP0C0A"));
@@ -383,7 +564,13 @@ fn battery() -> Vec<u8> {
                     Notify(BAT0, 0x80u8);
                 }
                 PBST[1] = BTPR;
-                PBST[2] = BTRA;
+                Local2 = BTRA;
+                If (#{byte u8::from(full_workaround)} && ACEX && !BFDC && !BFCG) {
+                    Local3 = BTDF;
+                    Local4 = Local3 >> 4u8;
+                    If ((Local2 > (Local3 - Local4)) && (Local2 < (Local3 + Local4))) { Local2 = Local3; }
+                }
+                PBST[2] = Local2;
                 PBST[3] = BTVO;
                 Return(PBST);
             }
@@ -419,6 +606,7 @@ mod tests {
 
     const VILBOZ: Ec = Ec {
         sci_gpe: 3,
+        mkbp: true,
         wake_gpe: Some(15),
         pd: true,
         tablet_mode: true,
@@ -427,8 +615,13 @@ mod tests {
 
     /// A DSDT with `\_SB.PCI0.LPCB` holding the EC, in a fresh directory.
     fn dsdt(name: &str) -> std::path::PathBuf {
-        let lpc = fstart_acpi::aml_linker::device_vec("LPCB", &VILBOZ.lpc_aml().unwrap()).unwrap();
-        let pci = fstart_acpi::aml_linker::device_vec("PCI0", &lpc).unwrap();
+        dsdt_with(name, VILBOZ.lpc_aml().unwrap(), &[])
+    }
+
+    fn dsdt_with(name: &str, ec: Vec<u8>, extra: &[u8]) -> std::path::PathBuf {
+        let lpc = fstart_acpi::aml_linker::device_vec("LPCB", &ec).unwrap();
+        let mut pci = fstart_acpi::aml_linker::device_vec("PCI0", &lpc).unwrap();
+        pci.extend_from_slice(extra);
         let dir = std::env::temp_dir().join(std::format!(
             "fstart-chromeec-{name}-{}",
             std::process::id()
@@ -508,6 +701,55 @@ mod tests {
             assert!(dsl.contains(object), "{object} missing:\n{dsl}");
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn full_capacity_workaround_only_for_idle_battery_on_ac() {
+        let fixture = acpi_dsl! { Scope("\\_SB_.PCI0.LPCB.EC0_") {
+            Method("BSET",2,Serialized) { ACEX=1u8; BFDC=Arg0; BFCG=Arg1; BTRA=975u32; BTDF=1000u32; }
+        }};
+        for enabled in [true, false] {
+            let ec = VILBOZ
+                .lpc_aml_with_policy(LpcPolicy {
+                    full_battery_workaround: enabled,
+                    ..Default::default()
+                })
+                .unwrap();
+            let dir = dsdt_with("bst", ec, &fixture);
+            let commands = ["0 0", "0 1", "1 0"].map(|args| std::format!(r"execute \_SB.PCI0.LPCB.EC0.BSET {args};execute \_SB.PCI0.LPCB.EC0.BAT0._BST")).join(";");
+            let Some(log) = run(
+                &dir,
+                "acpiexec",
+                &["-dt", "-fv", "0", "-b", &commands, "dsdt.aml"],
+            ) else {
+                return;
+            };
+            assert!(!log.contains("AE_") && !log.contains("ACPI Error"), "{log}");
+            let values: Vec<_> = log
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("[Integer] = "))
+                .map(|v| u32::from_str_radix(v, 16).unwrap())
+                .collect();
+            assert_eq!(
+                values,
+                [
+                    0,
+                    0,
+                    if enabled { 1000 } else { 975 },
+                    0,
+                    2,
+                    0,
+                    975,
+                    0,
+                    1,
+                    0,
+                    975,
+                    0
+                ],
+                "{log}"
+            );
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

@@ -52,7 +52,12 @@ register_bitfields![u8,
 ];
 
 register_bitfields![u32,
-    /// `TPM_INTF_CAPABILITY_x`.
+    /// `TPM_INT_ENABLE_x`, locality offset `0x008` (32 bits).
+    pub IntEnable [
+        ACTIVE_LOW OFFSET(3) NUMBITS(1) [],
+        EDGE OFFSET(4) NUMBITS(1) []
+    ],
+    /// `TPM_INTF_CAPABILITY_x`, locality offset `0x014` (32 bits).
     pub IntfCapability [
         DATA_TRANSFER_SIZE OFFSET(9) NUMBITS(2) [],
         BURST_COUNT_STATIC OFFSET(8) NUMBITS(1) [],
@@ -62,7 +67,7 @@ register_bitfields![u32,
             PtpFifo = 3
         ]
     ],
-    /// `TPM_INTERFACE_ID_x` (PTP; all ones on TIS 1.3 parts).
+    /// `TPM_INTERFACE_ID_x`, locality offset `0x030` (32 bits; often all ones on TIS 1.3).
     pub InterfaceId [
         INTERFACE_TYPE OFFSET(0) NUMBITS(4) [
             Fifo = 0,
@@ -80,7 +85,7 @@ register_bitfields![u32,
         INTF_SEL_LOCK OFFSET(19) NUMBITS(1) [],
         RID OFFSET(24) NUMBITS(8) []
     ],
-    /// `TPM_DID_VID_x`.
+    /// `TPM_DID_VID_x`, locality offset `0xf00` (32 bits).
     pub DidVid [
         VID OFFSET(0) NUMBITS(16) [],
         DID OFFSET(16) NUMBITS(16) []
@@ -92,7 +97,7 @@ register_structs! {
     pub Locality {
         (0x000 => pub access: MmioReadWrite<u8, Access::Register>),
         (0x001 => _reserved0),
-        (0x008 => pub int_enable: MmioReadWrite<u32>),
+        (0x008 => pub int_enable: MmioReadWrite<u32, IntEnable::Register>),
         (0x00C => pub int_vector: MmioReadWrite<u8>),
         (0x00D => _reserved1),
         (0x010 => pub int_status: MmioReadWrite<u32>),
@@ -133,6 +138,29 @@ pub struct Identity {
     pub vendor: u16,
     pub device: u16,
     pub revision: u8,
+}
+
+/// Active LPC interrupt route, when the TPM has a vector programmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Irq {
+    pub vector: u8,
+    pub low: bool,
+    pub edge: bool,
+}
+
+fn fifo_family(did_vid: u32, interface: u32, capability: u32) -> Option<Family> {
+    if matches!(did_vid, 0 | u32::MAX) {
+        return None;
+    }
+    match InterfaceId::INTERFACE_TYPE.read(interface) {
+        0 => Some(Family::Tpm20),
+        15 => match IntfCapability::INTERFACE_VERSION.read(capability) {
+            0 | 2 => Some(Family::Tpm12),
+            3 => Some(Family::Tpm20),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// A FIFO TPM at a locality.
@@ -187,25 +215,32 @@ impl<D: DelayNs> Tis<D> {
         if access == 0xFF || !regs.access.is_set(Access::VALID) {
             return None;
         }
-        let id = regs.interface_id.extract();
-        let ptp = id.get() != u32::MAX
-            && id.matches_any(&[
-                InterfaceId::INTERFACE_TYPE::Fifo,
-                InterfaceId::INTERFACE_TYPE::Crb,
-            ]);
-        let version = regs
-            .intf_capability
-            .read_as_enum(IntfCapability::INTERFACE_VERSION);
-        let family = if ptp || version == Some(IntfCapability::INTERFACE_VERSION::Value::PtpFifo) {
-            Family::Tpm20
-        } else {
-            Family::Tpm12
-        };
+        let did_vid = regs.did_vid.extract();
+        let family = fifo_family(
+            did_vid.get(),
+            regs.interface_id.get(),
+            regs.intf_capability.get(),
+        )?;
         Some(Identity {
             family,
-            vendor: regs.did_vid.read(DidVid::VID) as u16,
-            device: regs.did_vid.read(DidVid::DID) as u16,
+            vendor: did_vid.read(DidVid::VID) as u16,
+            device: did_vid.read(DidVid::DID) as u16,
             revision: regs.rid.get(),
+        })
+    }
+
+    /// Active LPC interrupt route, or `None` if no valid ISA IRQ (1..=15) is programmed.
+    pub fn irq(&self) -> Option<Irq> {
+        let regs = self.regs(0);
+        let vector = regs.int_vector.get();
+        if !(1..=15).contains(&vector) {
+            return None;
+        }
+        let mode = regs.int_enable.extract();
+        Some(Irq {
+            vector,
+            low: mode.is_set(IntEnable::ACTIVE_LOW),
+            edge: mode.is_set(IntEnable::EDGE),
         })
     }
 
@@ -391,5 +426,28 @@ impl<D: DelayNs> Transport for Tis<D> {
 
     fn release(&mut self) {
         self.release_locality();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_fifo_interfaces_with_real_identity_are_accepted() {
+        for id in [0, u32::MAX] {
+            assert_eq!(fifo_family(id, 0, 0), None);
+        }
+        for (intf, ver, want) in [
+            (15, 0, Some(Family::Tpm12)),
+            (15, 2, Some(Family::Tpm12)),
+            (15, 3, Some(Family::Tpm20)),
+            (15, 1, None),
+            (0, 0, Some(Family::Tpm20)),
+            (1, 3, None),
+            (4, 2, None),
+        ] {
+            assert_eq!(fifo_family(0x123415d1, intf, ver << 28), want);
+        }
     }
 }

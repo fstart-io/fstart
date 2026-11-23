@@ -147,6 +147,8 @@ pub mod postcar;
 pub mod ramstage;
 #[cfg(feature = "stage")]
 mod store;
+#[cfg(any(test, feature = "ramstage"))]
+pub mod tpm;
 
 #[cfg(feature = "stage")]
 pub use fstart_driver_intel::{

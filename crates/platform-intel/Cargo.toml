@@ -38,7 +38,7 @@ stage = [
 ramstage = [
   "stage", "dep:fstart-payload", "fstart-stage/ffs", "fstart-arch/alloc",
   # The option report; earlier stages resolve without allocating.
-  "fstart-log/alloc", "dep:fstart-driver-vbios",
+  "fstart-log/alloc", "dep:fstart-driver-vbios", "dep:fstart-driver-tpm",
 ]
 
 [dev-dependencies]
@@ -47,6 +47,7 @@ fstart-acpi-macros = { workspace = true }
 # needs the driver's ACPI builders and the DSDT table writer on the host.
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-driver-intel = { workspace = true }
+fstart-driver-tpm = { workspace = true }
 
 [dependencies]
 sha2 = { workspace = true }
@@ -58,6 +59,7 @@ fstart-smm = { workspace = true, optional = true }
 fstart-core = { workspace = true }
 fstart-driver-usbdebug = { workspace = true }
 fstart-driver-flash-console = { workspace = true, optional = true }
+fstart-driver-tpm = { workspace = true, optional = true }
 fstart-pci = { workspace = true }
 fstart-resume = { workspace = true, optional = true }
 fstart-store = { workspace = true }

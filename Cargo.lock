@@ -903,6 +903,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-google-peppy"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-chromeec",
+ "fstart-driver-intel",
+ "fstart-driver-tpm",
+ "fstart-log",
+ "fstart-options",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-google-vilboz"
 version = "0.1.0"
 dependencies = [
@@ -1737,6 +1755,7 @@ dependencies = [
  "fstart-driver-flash-console",
  "fstart-driver-intel",
  "fstart-driver-rtc",
+ "fstart-driver-tpm",
  "fstart-driver-usbdebug",
  "fstart-driver-vbios",
  "fstart-ffs",
