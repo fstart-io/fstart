@@ -319,6 +319,7 @@ pub fn resolved_intel(
     role: crate::intel_plan::IntelStage,
     early_microcode: bool,
     platform: Platform,
+    intel_fit: bool,
 ) -> Result<String, String> {
     use crate::intel_plan::IntelStage;
     layout.validate()?;
@@ -424,6 +425,24 @@ pub fn resolved_intel(
             end - 4096
         )
         .unwrap();
+        // The CPU finds the FIT through the pointer 0x40 below 4 GiB; the
+        // assembler fills it in once the FIT's place in the FFS is known.
+        if intel_fit {
+            if end != 0x1_0000_0000 {
+                return Err("an Intel FIT needs the reset bank at the top of 4 GiB".into());
+            }
+            let pointer = crate::intel_fit::POINTER;
+            writeln!(
+                out,
+                " .intel_fit_pointer {pointer:#x} : AT({pointer:#x}) {{ QUAD(0xffffffffffffffff) }} > IMAGE"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                " ASSERT(ADDR(.x86boot) + SIZEOF(.x86boot) <= {pointer:#x}, \"startup overlaps Intel FIT pointer\")"
+            )
+            .unwrap();
+        }
         writeln!(
             out,
             " .reset {0:#x} : AT({0:#x}) {{ KEEP(*(.reset)) }} > IMAGE",

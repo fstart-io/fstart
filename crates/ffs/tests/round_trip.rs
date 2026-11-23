@@ -98,6 +98,127 @@ fn anchored_microcode_remains_16_byte_aligned_after_arbitrary_stage_sizes() {
 }
 
 #[test]
+fn bounded_fixups_reject_resize_mismatch_overflow_and_overlap_before_signing() {
+    use fstart_ffs::builder::{BootRootConfig, FilePatch, build_image_with_root_and_fixups};
+    use std::cell::Cell;
+    let (_, key) = dev_keypair();
+    let config = FfsImageConfig {
+        keys: vec![key],
+        regions: vec![InputRegion::Container {
+            name: "ro".into(),
+            files: vec![InputFile {
+                name: "initial".into(),
+                file_type: FileType::StageCode,
+                segments: vec![InputSegment {
+                    name: ".text".into(),
+                    kind: SegmentKind::Code,
+                    data: stage_data_with_anchor(&[0x55; 32]),
+                    mem_size: None,
+                    load_addr: 0,
+                    compression: Compression::None,
+                    flags: SegmentFlags::CODE,
+                }],
+            }],
+        }],
+    };
+    let patch = |offset, expected: &[u8], bytes: &[u8]| FilePatch {
+        file: "initial".into(),
+        offset,
+        expected: expected.to_vec(),
+        bytes: bytes.to_vec(),
+    };
+    for patches in [
+        vec![patch(0, b"FS", b"X")],
+        vec![patch(0, b"XX", b"YY")],
+        vec![patch(usize::MAX, b"F", b"X")],
+        vec![patch(0, b"FS", b"XY"), patch(1, b"S", b"Z")],
+    ] {
+        let signed = Cell::new(false);
+        let result = build_image_with_root_and_fixups(
+            &config,
+            &BootRootConfig::default(),
+            &[],
+            |_| Ok(patches),
+            &|_| {
+                signed.set(true);
+                Err("must not sign an invalid draft".into())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!signed.get());
+    }
+}
+
+#[test]
+fn anchored_microcode_keeps_load_alignment_after_other_file_padding() {
+    let (signing_key, vk) = dev_keypair();
+    let data = vec![0xa5; 2048]; // Format placement only; not an Intel patch.
+    for prefix_size in [8, 16] {
+        let segment = |name: &str, bytes: Vec<u8>| InputSegment {
+            name: name.into(),
+            kind: SegmentKind::ReadOnlyData,
+            data: bytes,
+            mem_size: None,
+            load_addr: 0,
+            compression: Compression::None,
+            flags: SegmentFlags::RODATA,
+        };
+        let config = FfsImageConfig {
+            keys: vec![vk],
+            regions: vec![InputRegion::Container {
+                name: "ro".into(),
+                files: vec![
+                    InputFile {
+                        name: "bootblock".into(),
+                        file_type: FileType::StageCode,
+                        segments: vec![segment(".text", stage_data_with_anchor(&[]))],
+                    },
+                    InputFile {
+                        name: "prefix".into(),
+                        file_type: FileType::Data,
+                        segments: vec![segment(".data", vec![0; prefix_size])],
+                    },
+                    InputFile {
+                        name: "cpu_microcode_blob.bin".into(),
+                        file_type: FileType::CpuMicrocode,
+                        segments: vec![segment(".microcode", data.clone())],
+                    },
+                ],
+            }],
+        };
+        let built = build_image(&config, &make_signer(&signing_key)).unwrap();
+        let reader = FfsReader::new(&built.image);
+        let anchor = reader
+            .read_anchor(reader.scan_for_anchor().unwrap())
+            .unwrap();
+        let offset = anchor.microcode_offset.get() as usize;
+        assert_eq!(offset % 16, 0);
+        assert_eq!(
+            &built.image[offset..offset + anchor.microcode_size.get() as usize],
+            data
+        );
+        // The padding remains represented in the signed directory, not hidden
+        // by changing the locator to point at bytes outside the actual file.
+        let manifest = reader.read_manifest(&anchor).unwrap();
+        let region = &manifest.regions[0];
+        let RegionContent::Container { children } = &region.content else {
+            panic!("container")
+        };
+        let entry = children
+            .iter()
+            .find(|file| file.name == "cpu_microcode_blob.bin")
+            .unwrap();
+        let EntryContent::File { segments, .. } = &entry.content else {
+            panic!("file")
+        };
+        assert_eq!(
+            region.offset + entry.offset + segments[0].offset,
+            anchor.microcode_offset.get()
+        );
+    }
+}
+
+#[test]
 fn test_ro_only_round_trip() {
     let (signing_key, vk) = dev_keypair();
 

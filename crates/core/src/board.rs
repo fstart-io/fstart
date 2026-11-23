@@ -263,6 +263,11 @@ pub struct IntelMicrocodeConfig {
     /// Use the blob again during MP init for BSP/AP updates.
     #[cfg_attr(feature = "host", serde(default = "default_true"))]
     pub mp: bool,
+    /// Index the records in an Intel FIT, which the CPU loads before the
+    /// reset vector. Needs a full-flash image and the `.intel_fit_pointer`
+    /// section the Intel linker script reserves.
+    #[cfg_attr(feature = "host", serde(default))]
+    pub fit: bool,
 }
 
 const fn default_true() -> bool {
