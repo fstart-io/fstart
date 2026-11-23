@@ -16,6 +16,8 @@ pub mod head;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
+#[cfg(all(feature = "stage", feature = "ast2500", target_arch = "arm"))]
+mod stage;
 
 #[cfg(feature = "stage")]
 #[doc(hidden)]
