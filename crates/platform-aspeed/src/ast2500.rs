@@ -37,7 +37,7 @@ const SCU_UNLOCK_KEY: u32 = 0x1688_A8A8;
 const MEMTEST_STEP: usize = 64 << 20;
 
 /// Stop what fires without us, protect the flash, bring up the console,
-/// take the first reset of a cold boot, switch CE0 to the fastest
+/// stop the coprocessor, take the first reset of a cold boot, switch CE0 to the fastest
 /// calibrated read up to `flash_max_hz`, set up the MAC clocks and pins
 /// for `macs`, train DRAM, test it if `memtest` and it was just trained,
 /// then load the main stage into DRAM and enter it. With `timestamps`, the
@@ -73,6 +73,7 @@ pub fn bootblock(
     start_console(slot, console);
     fstart_timestamp::add(id::CONSOLE_READY);
     fstart_log::info!("ast2500 bootblock: entered from SPI");
+    stop_coprocessor();
 
     let initial_reset = reset::initial_reset(|| {
         fstart_log::info!("ast2500: cold boot, first SoC reset");
@@ -364,6 +365,19 @@ fn load_main(usable: u64) -> Result<u64, &'static str> {
     }
     .map_err(|_| "load or verification failed")?;
     Ok(main.entry())
+}
+
+/// Hold the ColdFire coprocessor in reset. It is off after power-on, but
+/// a reset of the ARM alone (a watchdog in ARM-only mode, or one whose
+/// reset mask leaves the coprocessor out) leaves it running from DRAM,
+/// which DRAM init retrains and the stages overwrite. Loading its
+/// firmware is the payload's job.
+fn stop_coprocessor() {
+    let ctrl = pac::COPROC.CTRL();
+    if ctrl.read().EN() {
+        fstart_log::info!("coprocessor: running, stopped");
+    }
+    ctrl.write(|w| w.set_RESET(true));
 }
 
 /// Route `0x0000_0000..0x8000_0000` (flash and I/O) through the ARM1176
