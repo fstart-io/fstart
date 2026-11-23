@@ -127,6 +127,7 @@ pub mod ironlake;
 pub mod layout;
 pub mod legacy_cpu;
 pub mod pineview;
+pub mod skylake;
 
 /// Shared IGD display bring-up types used by board display policy.
 pub use fstart_driver_intel::igd;
@@ -195,6 +196,11 @@ pub trait IntelEarlyPlatform:
     fn reset_failed_postcar_resume() -> ! {
         fstart_arch::x86::boot::system_reset(true)
     }
+    /// The bootblock caches the BIOS window write-protect itself, once the
+    /// chipset decodes it: the platform's cache-as-RAM entry (Intel enhanced
+    /// NEM) leaves the ROM uncached while it fills CAR. The other entries
+    /// cache the ROM themselves.
+    const CACHE_BIOS_WINDOW: bool = false;
     /// Take platform-owned CAR scratch once for cached input and new training.
     /// A cache-capable platform supplies its own workspace; the common flow
     /// only borrows slices and never selects or allocates a payload size.
@@ -208,6 +214,51 @@ pub trait IntelEarlyPlatform:
         + fstart_core::services::SmBus
         + fstart_arch::x86::cpu::intel::smm::SmiControl
         + SouthbridgeAcpi<Self::Southbridge>;
+    /// Train DRAM, or replay `cached`: the northbridge's
+    /// [`MemoryInit`](fstart_core::services::MemoryInit) from the SPDs on the
+    /// southbridge's SMBus. A platform whose memory controller needs more of
+    /// its southbridge than the SMBus overrides this.
+    fn train_memory(
+        northbridge: &mut Self::Northbridge,
+        southbridge: &mut Self::Southbridge,
+        cached: Option<&[u8]>,
+        capture: &mut [u8],
+    ) -> Result<Option<usize>, fstart_core::services::ServiceError> {
+        use fstart_core::services::{MemoryInit, ServiceError};
+        let smbus = southbridge
+            .smbus_mut()
+            .ok_or(ServiceError::NotInitialized)?;
+        northbridge.bring_up(fstart_driver_intel::SpdTraining {
+            smbus,
+            cached,
+            capture,
+        })
+    }
+    /// The SPI controller the memory cache and the flash console write
+    /// through. A PCH whose SPI controller is its own PCI function
+    /// overrides this.
+    ///
+    /// # Safety
+    /// As [`CacheSpi::new`](fstart_driver_intel::southbridge::spi::CacheSpi::new).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe fn cache_flash(
+        extent: fstart_driver_intel::southbridge::spi::FlashExtent,
+    ) -> Result<fstart_driver_intel::southbridge::spi::CacheSpi, fstart_core::services::ServiceError>
+    {
+        // SAFETY: the caller's contract.
+        unsafe { fstart_driver_intel::southbridge::spi::CacheSpi::new(extent) }
+    }
+    /// Initialize the chipset's devices once PCI allocation placed their
+    /// BARs. A platform whose southbridge devices need the northbridge's
+    /// (HDA's display codec) overrides this.
+    fn init_devices(
+        northbridge: &mut Self::Northbridge,
+        southbridge: &mut Self::Southbridge,
+        _pci: &fstart_pci::PciEcam,
+    ) -> Result<(), fstart_core::services::ServiceError> {
+        northbridge.post_dram_init()?;
+        southbridge.post_dram_init()
+    }
     /// CPU family driver for MP bring-up; also supplies the CPU-model facts
     /// the shared SMM installer needs.
     #[cfg(feature = "stage")]

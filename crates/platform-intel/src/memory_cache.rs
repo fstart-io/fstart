@@ -445,7 +445,7 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
     geometry: crate::layout::IntelBootLayout<'static>,
     store: &fstart_store::Store,
 ) -> Result<(), ServiceError> {
-    use fstart_driver_intel::southbridge::spi::{CacheSpi, FlashExtent};
+    use fstart_driver_intel::southbridge::spi::FlashExtent;
     if !fstart_stage::directory::matches_raw_reservation("mrc-cache", 0, EXTENT_SIZE, 0xff) {
         return Err(ServiceError::InvalidParam);
     }
@@ -473,7 +473,7 @@ pub(crate) fn commit_pending<B: crate::IntelBoard>(
     // Constructing the controller is deliberately confined to ramstage; its
     // dependency's code and constants reside in the RAM-linked image.
     let mut flash = unsafe {
-        CacheSpi::new(FlashExtent {
+        <B::Platform as crate::IntelEarlyPlatform>::cache_flash(FlashExtent {
             offset: bios_offset,
             size: EXTENT_SIZE,
             chip_size: B::FACTS.flash_size,

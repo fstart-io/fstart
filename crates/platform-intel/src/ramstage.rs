@@ -94,6 +94,8 @@ pub struct Ramstage<B: IntelBoard, S = Entered> {
     /// that survived in RAM must not be reinitialized blindly.
     resume: bool,
     wake_vector: Option<u32>,
+    /// How the payload enters S5, from the PM base the ACPI tables describe.
+    acpi_s5: Option<fstart_core::description::AcpiSleepControl>,
     /// The outcome of every option knob resolved so far, for the payload's
     /// settings menu.
     options: fstart_options::Report,
@@ -120,6 +122,7 @@ impl<B: IntelBoard, S> Ramstage<B, S> {
             mainboard: self.mainboard,
             resume: self.resume,
             wake_vector: self.wake_vector,
+            acpi_s5: self.acpi_s5,
             options: self.options,
             pci_framebuffer: self.pci_framebuffer,
             video_aml: self.video_aml,
@@ -304,6 +307,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             mainboard: (String::new(), String::new()),
             resume,
             wake_vector: None,
+            acpi_s5: None,
             options: fstart_options::Report::new(),
             pci_framebuffer: None,
             video_aml: Vec::new(),
@@ -493,6 +497,11 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
                 fstart_log::error!("pci: fixed BAR reservation failed: {:?}", error);
             })
             .map_err(|_| ServiceError::HardwareError)?;
+        pci.exclude_functions(self.southbridge.excluded_pci_functions().as_slice())
+            .inspect_err(|error| {
+                fstart_log::error!("pci: unmanaged-function exclusion failed: {:?}", error)
+            })
+            .map_err(|_| ServiceError::HardwareError)?;
         for resource in resources {
             use fstart_core::acpi::AcpiResource;
             match *resource {
@@ -609,8 +618,8 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
             if B::Platform::IOAPIC_VIRTUAL_WIRE {
                 fstart_arch::x86::lapic::Lapic::from_msr().setup_virtual_wire(false);
             }
-            rs.northbridge.post_dram_init()?;
-            rs.southbridge.post_dram_init()
+            let pci = rs.pci.as_ref().ok_or(ServiceError::NotInitialized)?;
+            B::Platform::init_devices(&mut rs.northbridge, &mut rs.southbridge, pci)
         });
         self.into()
     }
@@ -854,6 +863,12 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         for (uid, apic_id) in x86.apic_ids.iter().enumerate() {
             fstart_log::info!("ACPI: CPU {} LAPIC ID {}", uid, apic_id);
         }
+        // The payload's S5 path uses the PM1 control port these tables
+        // describe; record it now rather than ask the finalized chipset again.
+        self.acpi_s5 = Some(fstart_core::description::AcpiSleepControl::new(
+            x86.pmbase + fstart_driver_intel::southbridge::pmio_ich::PM1_CNT,
+            fstart_driver_intel::southbridge::pmio_ich::S5_SLEEP_TYPE,
+        ));
         let platform = fstart_acpi::platform::PlatformConfig::X86(x86);
         let (northbridge, southbridge) = (&self.northbridge, &self.southbridge);
         // What the OS is told about the root bridge is what the allocator
@@ -1003,17 +1018,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             .pci_framebuffer
             .or_else(|| self.northbridge.framebuffer_info());
         description.acpi = self.acpi_rsdp().map(AcpiTables::at);
-        let acpi_s5 = {
-            use fstart_acpi::platform::X86PlatformProvider;
-            use fstart_driver_intel::southbridge::pmio_ich;
-            [fstart_core::description::AcpiSleepControl::new(
-                self.southbridge.x86_platform_config(0).pmbase + pmio_ich::PM1_CNT,
-                pmio_ich::S5_SLEEP_TYPE,
-            )]
-        };
-        {
-            description.acpi_s5 = &acpi_s5;
-        }
+        description.acpi_s5 = self.acpi_s5.as_slice();
         description.smbios = self.ctx.smbios();
         description.mainboard = (&self.mainboard.0, &self.mainboard.1);
         description.tables = &tables;

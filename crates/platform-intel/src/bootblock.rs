@@ -114,6 +114,18 @@ impl<B: IntelBoard, S> Bootblock<B, S> {
     fn check<T>(&self, what: &str, result: Result<T, ServiceError>) -> T {
         result.unwrap_or_else(|_| self.fail(what))
     }
+
+    /// Cache the BIOS window write-protect for the rest of the bootblock, on
+    /// platforms whose cache-as-RAM entry leaves the ROM uncached.
+    fn cache_bios_window(&self) {
+        let (base, size) = self.check("BIOS cache window", self.geometry.firmware());
+        // SAFETY: the BSP owns CAR and no AP is running. The window is the
+        // linked BIOS region, which the chipset's early init decoded.
+        match unsafe { fstart_arch::x86::mtrr::cache_car_bios_window(base, size as u64) } {
+            Ok(()) => fstart_log::debug!("XIP: BIOS window {:#x} (+{:#x}) cached WP", base, size),
+            Err(_) => fstart_log::warn!("XIP: BIOS WP cache unavailable; continuing without it"),
+        }
+    }
 }
 
 /// [`Bootblock::fail`], once per board rather than once per phase.
@@ -209,6 +221,9 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             .early_init()
             .and_then(|()| self.southbridge.early_init());
         self.check("early init", early);
+        if B::Platform::CACHE_BIOS_WINDOW {
+            self.cache_bios_window();
+        }
         // Consume the southbridge indication exactly once, before board clock
         // programming. Resume work must not perturb retained DRAM frequency.
         self.boot_path = if self.southbridge.detect_s3_resume() {
@@ -303,23 +318,18 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         self.bring_up(None, &mut []).map(drop)
     }
 
-    /// The northbridge's [`MemoryInit`](fstart_core::services::MemoryInit)
-    /// from the SPDs on the southbridge's SMBus.
+    /// The platform's [`IntelEarlyPlatform::train_memory`].
     fn bring_up(
         &mut self,
         cached: Option<&[u8]>,
         capture: &mut [u8],
     ) -> Result<Option<usize>, ServiceError> {
-        use fstart_core::services::MemoryInit;
-        let smbus = self
-            .southbridge
-            .smbus_mut()
-            .ok_or(ServiceError::NotInitialized)?;
-        self.northbridge.bring_up(fstart_driver_intel::SpdTraining {
-            smbus,
+        B::Platform::train_memory(
+            &mut self.northbridge,
+            &mut self.southbridge,
             cached,
             capture,
-        })
+        )
     }
 }
 
