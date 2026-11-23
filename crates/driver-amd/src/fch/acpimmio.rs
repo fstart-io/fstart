@@ -111,6 +111,11 @@ bank!(
 );
 
 register_bitfields![u8,
+    /// MISCx82, 8 bits: strap status byte 2.
+    pub StrapStatus2 [
+        /// Clear in external clock mode (openSIL `IsExternalClockMode`).
+        INTERNAL_CLOCK OFFSET(1) NUMBITS(1) []
+    ],
     /// AOACx40 + 2n FCH::AOAC::DevD3Ctl.
     pub AoacControl [
         TARGET OFFSET(0) NUMBITS(2) [
@@ -234,15 +239,31 @@ register_bitfields![u32,
     pub AbRegBar [
         PORT OFFSET(0) NUMBITS(16) []
     ],
-    /// MISCx08: CGPLLConfig1.
+    /// MISCx08, 32 bits: CGPLLConfig1.
     pub CgPllConfig1 [
+        /// cg1_spread_spectrum_enable: the CG1 PLL spreads the PCIe
+        /// reference clocks.
         CG1_SPREAD_SPECTRUM OFFSET(0) NUMBITS(1) []
     ],
-    /// MISCx10: CGPLLConfig3.
+    /// MISCx10, 32 bits: CGPLLConfig3.
     pub CgPllConfig3 [
         CG1_FRACN_EN_OVERRIDE OFFSET(29) NUMBITS(1) []
     ],
-    /// MISCx40.
+    /// MISCx14, 32 bits: CGPLLConfig4 (openSIL `Fch80.c`).
+    pub CgPllConfig4 [
+        CG1_FCW1_FRAC_OVERRIDE OFFSET(8) NUMBITS(16) []
+    ],
+    /// MISCx18, 32 bits: CGPLLConfig5 (openSIL `Fch80.c`).
+    pub CgPllConfig5 [
+        CG1_FCW_SLEW_FRAC_OVERRIDE OFFSET(16) NUMBITS(16) []
+    ],
+    /// MISCx48, 32 bits. Bit 11 is set with every CG1 update request of
+    /// the FCH 8.0 spread sequence (openSIL `Fch80.c`); not publicly
+    /// named.
+    pub Misc48 [
+        BIT11 OFFSET(11) NUMBITS(1) []
+    ],
+    /// MISCx40, 32 bits: MiscClkCntl1.
     pub MiscClkCntl1 [
         ALINK_GATE OFFSET(1) NUMBITS(1) [],
         CG1_FBDIV_LOADEN OFFSET(25) NUMBITS(1) [],
@@ -293,7 +314,12 @@ pub const PM_LPC_GATING: At<u8, LpcGating::Register> = pm::at(0xec);
 pub const PM_EE: At<u8> = pm::at(0xee);
 pub const MISC_CGPLL_CONFIG1: At<u32, CgPllConfig1::Register> = misc::at(0x08);
 pub const MISC_CGPLL_CONFIG3: At<u32, CgPllConfig3::Register> = misc::at(0x10);
+pub const MISC_CGPLL_CONFIG4: At<u32, CgPllConfig4::Register> = misc::at(0x14);
+pub const MISC_CGPLL_CONFIG5: At<u32, CgPllConfig5::Register> = misc::at(0x18);
 pub const MISC_CLK_CNTL1: At<u32, MiscClkCntl1::Register> = misc::at(0x40);
+pub const MISC_48: At<u32, Misc48::Register> = misc::at(0x48);
+/// MISCx82, 8 bits: byte 2 of the strap status (MISCx80).
+pub const MISC_STRAP_STATUS2: At<u8, StrapStatus2::Register> = misc::at(0x82);
 /// The PM1 block through the ACPI MMIO.
 pub const ACPI_PM1_STATUS: At<u16, Pm1Status::Register> = acpi::at(0x00);
 pub const ACPI_PM1_ENABLE: At<u16, Pm1Enable::Register> = acpi::at(0x02);
@@ -532,6 +558,34 @@ pub fn disable_keyboard_reset(acpi: &impl Window) {
     acpi.at(PM_RESET_CONTROL1)
         .modify(ResetControl1::KB_RESET_EN::CLEAR);
 }
+/// The FCH runs from an external reference clock, which its CG1 PLL must
+/// not spread (openSIL `IsExternalClockMode`; the S8030's Rome and Milan
+/// and the S8040's FCH DXEs read the same strap).
+pub fn external_clock(acpi: &impl Window) -> bool {
+    !acpi
+        .at(MISC_STRAP_STATUS2)
+        .is_set(StrapStatus2::INTERNAL_CLOCK)
+}
+
+/// Spread the PCIe reference clocks with the CG1 PLL or not, as the FCHs
+/// before FCH 8.0 do it: openSIL's generic `ProgramFchEnvSpreadSpectrum`,
+/// and the Rome and Milan FchHuashanDxe env task (`af5f`; Rome V4.04 at
+/// `0x2d1a`). Never spreads in external clock mode; returns whether the
+/// PLL now spreads. (Both vendor images still spread an external clock on
+/// Family 17h model 30h exactly, an early Rome stepping whose signature
+/// `0x00830f00` fstart-platform-amd's Rome accepts; this does not.
+/// Production Rome, as the S8030's 7502P, is model 31h.)
+pub fn cg1_spread_spectrum(acpi: &impl Window, enable: bool) -> bool {
+    let enable = enable && !external_clock(acpi);
+    acpi.at(MISC_CGPLL_CONFIG3)
+        .modify(CgPllConfig3::CG1_FRACN_EN_OVERRIDE::SET);
+    acpi.at(MISC_CGPLL_CONFIG1)
+        .modify(CgPllConfig1::CG1_SPREAD_SPECTRUM.val(enable.into()));
+    acpi.at(MISC_CLK_CNTL1)
+        .modify(MiscClkCntl1::CG1_CFG_UPDATE_REQ::SET);
+    enable
+}
+
 /// The legacy SD controller off: its decode and its AOAC power.
 pub fn legacy_sd_off(acpi: &impl Window) {
     acpi.at(PM_SD_CONTROL).modify(SdControl::LEGACY_SD::CLEAR);

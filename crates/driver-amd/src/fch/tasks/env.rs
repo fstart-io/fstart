@@ -67,12 +67,20 @@ pub fn restore_ac_power(hw: &impl FchHw, state: PowerFailState) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EnvPolicy {
     pub power_fail: PowerFailState,
+    /// Spread the PCIe reference clocks (Rome and Milan; [`hw_acpi_pre`]).
+    /// AMD's default is on, the S8030's Milan image and the MJ11 have it
+    /// off; off by default here, which keeps a clean reference clock.
+    pub spread_spectrum: bool,
 }
 
-/// af5f: ACPI config, SCI map, (ZP) clock generator, Huashan PM bits.
+/// af5f: ACPI config, SCI map, (ZP) clock generator, Huashan PM bits and
+/// the board's reference clock spread (`policy.spread_spectrum`).
 /// The donor also stores a pointer to its FCH data block in CMOS RAM
 /// `0x608..0x60B` for its SMM code; fstart's SMM does not use it.
-pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
+///
+/// Returns whether the reference clock now spreads; `None` on Naples,
+/// whose clock generator table always spreads it.
+pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon, policy: &EnvPolicy) -> Option<bool> {
     let acpi = hw.acpi();
     if generation == Silicon::Zp {
         update::<u8, _>(acpi, PM + 0xCC, 0x04, 0x03);
@@ -88,7 +96,10 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
     update::<u8, _>(acpi, PM + 0xBC, 0, 0x02);
     apply(acpi, sci_map(generation));
     match generation {
-        Silicon::Zp => apply(acpi, super::super::tables::CLOCK_GEN_NAPLES),
+        Silicon::Zp => {
+            apply(acpi, super::super::tables::CLOCK_GEN_NAPLES);
+            None
+        }
         Silicon::Ssp | Silicon::Gn => {
             // PMxC0 byte: write-1-to-clear ThermalTrip.
             acpi.write8(PM_S5_RESET_STATUS.offset, 0x01);
@@ -96,11 +107,7 @@ pub fn hw_acpi_pre<H: FchHw>(hw: &H, generation: Silicon) {
                 acpi.reg::<u16, ()>(PM + 0x3C).set(0x0E80);
             }
             acpi.write8(PM + 0x70, 0x01);
-            update::<u32, _>(acpi, MISC + 0x10, 0, 1 << 29);
-            if generation == Silicon::Gn {
-                update::<u32, _>(acpi, MISC + 0x08, 1, 0);
-            }
-            update::<u32, _>(acpi, MISC + 0x40, 0, 1 << 30);
+            Some(acpimmio::cg1_spread_spectrum(acpi, policy.spread_spectrum))
         }
         #[allow(unreachable_patterns)]
         g => super::not_built(g),
@@ -186,8 +193,14 @@ mod tests {
     fn milan_env() {
         let hw = fch();
         hw.acpi.put(PM, 4, 0x2004_0bf7);
-        hw_acpi_pre(&hw, Silicon::Gn);
+        hw.acpi.put(MISC + 0x08, 4, 1);
+        assert_eq!(
+            hw_acpi_pre(&hw, Silicon::Gn, &EnvPolicy::default()),
+            Some(false)
+        );
         hw_acpi(&hw, Silicon::Gn, &EnvPolicy::default());
+        assert_eq!(hw.acpi.get(MISC + 0x08, 4), 0, "spread off by default");
+        assert_eq!(hw.acpi.get(MISC + 0x10, 4), 1 << 29);
         assert_eq!(hw.acpi.get(PM, 4), 0x0004_0bf7);
         assert_eq!(hw.acpi.get(PM + 0x5b, 1), 0x04);
         assert_eq!(hw.acpi.get(PM + 0x77, 1), 0x09);
@@ -205,9 +218,37 @@ mod tests {
             Silicon::Ssp,
             &EnvPolicy {
                 power_fail: PowerFailState::Previous,
+                ..EnvPolicy::default()
             },
         );
         assert_eq!(hw.acpi.get(PM + 0x5b, 1), 0x07);
+    }
+
+    /// Rome's af5f: the board's spread with the internal clock, none with
+    /// an external one.
+    #[test]
+    fn rome_spread_follows_policy_and_strap() {
+        let on = EnvPolicy {
+            spread_spectrum: true,
+            ..EnvPolicy::default()
+        };
+        let hw = fch();
+        hw.acpi.put(MISC + 0x82, 1, 0x02);
+        hw.acpi.put(MISC + 0x10, 4, 1);
+        assert_eq!(hw_acpi_pre(&hw, Silicon::Ssp, &on), Some(true));
+        let misc: Vec<(u32, u32)> = hw
+            .acpi
+            .writes()
+            .into_iter()
+            .filter(|w| (MISC..MISC + 0x100).contains(&w.0))
+            .map(|w| (w.0 - MISC, w.2))
+            .collect();
+        assert_eq!(misc, [(0x10, 1 << 29 | 1), (0x08, 1), (0x40, 1 << 30)]);
+
+        let external = fch();
+        external.acpi.put(MISC + 0x08, 4, 1);
+        assert_eq!(hw_acpi_pre(&external, Silicon::Ssp, &on), Some(false));
+        assert_eq!(external.acpi.get(MISC + 0x08, 4), 0);
     }
 
     #[test]

@@ -6,7 +6,9 @@ pub mod uart;
 pub mod usb;
 
 use super::acpimmio::{
-    AcpiConfigHigh, AcpiPorts, Decode, PM_ACPI_CONFIG_HIGH, PM_D2, PM_DECODE, PM_PCI_CONTROL,
+    AcpiConfigHigh, AcpiPorts, CgPllConfig1, CgPllConfig3, CgPllConfig4, CgPllConfig5, Decode,
+    MISC_48, MISC_CGPLL_CONFIG1, MISC_CGPLL_CONFIG3, MISC_CGPLL_CONFIG4, MISC_CGPLL_CONFIG5,
+    MISC_CLK_CNTL1, Misc48, MiscClkCntl1, PM_ACPI_CONFIG_HIGH, PM_D2, PM_DECODE, PM_PCI_CONTROL,
     PM_RESET_CONTROL1, PciControl, PmioDebug, ResetControl1,
 };
 use super::{FchHw, irq, sx};
@@ -61,6 +63,60 @@ pub fn take_over(fch: &impl FchHw) {
     acpi.at(PM_DECODE)
         .modify(Decode::IOAPIC::SET + Decode::HPET::SET);
     super::acpimmio::legacy_sd_off(acpi);
+}
+
+/// Spread the PCIe reference clocks by -0.3 % with the CG1 PLL, or stop
+/// spreading them: the FCH 8.0 sequence of openSIL's
+/// `ProgramFchEnvSpreadSpectrumV80` (Genoa) and the S8040's V2.00
+/// FchSongshanDxe `ProgramFchEnvSpreadSpectrum` (`0x3730`). In external
+/// clock mode the PLL never spreads. Nothing is written if MISCx08\[0\]
+/// already has the wanted state.
+///
+/// The S8040's AGESA runs it in its DXE env, after PCIe training; openSIL
+/// runs it at TP1, before MPIO. A PLL update with the links up is what
+/// the vendor's own image does, and what the MJ11's runtime toggles did
+/// without losing a link.
+pub fn spread_spectrum(fch: &impl FchHw, enable: bool) -> Spread {
+    use fstart_core::services::Timer;
+    use tock_registers::interfaces::Readable;
+    let acpi = fch.acpi();
+    let enable = enable && !super::acpimmio::external_clock(acpi);
+    let config1 = acpi.at(MISC_CGPLL_CONFIG1);
+    if config1.is_set(CgPllConfig1::CG1_SPREAD_SPECTRUM) == enable {
+        return Spread {
+            on: enable,
+            changed: false,
+        };
+    }
+    Timer::delay_us(fch.timer(), 5);
+    if enable {
+        acpi.at(MISC_CGPLL_CONFIG4)
+            .modify(CgPllConfig4::CG1_FCW1_FRAC_OVERRIDE.val(0x1333));
+        acpi.at(MISC_CGPLL_CONFIG5)
+            .modify(CgPllConfig5::CG1_FCW_SLEW_FRAC_OVERRIDE.val(0x3a));
+    }
+    acpi.at(MISC_CGPLL_CONFIG3)
+        .modify(CgPllConfig3::CG1_FRACN_EN_OVERRIDE::SET);
+    config1.modify(CgPllConfig1::CG1_SPREAD_SPECTRUM.val(enable.into()));
+    let cntl1 = acpi.at(MISC_CLK_CNTL1);
+    if enable {
+        cntl1.modify(MiscClkCntl1::CG1_FBDIV_LOADEN::SET);
+    }
+    acpi.at(MISC_48).modify(Misc48::BIT11::SET);
+    cntl1.modify(MiscClkCntl1::CG1_CFG_UPDATE_REQ::SET);
+    Timer::delay_us(fch.timer(), 15);
+    Spread {
+        on: enable,
+        changed: true,
+    }
+}
+
+/// What [`spread_spectrum`] left: whether the PLL spreads, and whether
+/// that changed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spread {
+    pub on: bool,
+    pub changed: bool,
 }
 
 /// PCI_INTR 08h/09h as AMD's FCH init leaves them (Picasso AGESA, openSIL,
@@ -155,6 +211,101 @@ pub fn release_perst(fch: &impl FchHw, outputs: &[Perst]) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::fch::model::fch;
+
+    use super::{Spread, spread_spectrum};
+    const MISC: u32 = crate::fch::acpimmio::MISC;
+    /// MISCx82 with the internal clock strap.
+    fn internal_clock(hw: &crate::fch::model::TestFch) {
+        hw.acpi.put(MISC + 0x82, 1, 0x02);
+    }
+    /// The MISC writes, as `(offset, value)`.
+    fn writes(hw: &crate::fch::model::TestFch) -> Vec<(u32, u32)> {
+        hw.acpi
+            .writes()
+            .into_iter()
+            .map(|w| (w.0 - MISC, w.2))
+            .collect()
+    }
+    const CHANGED: fn(bool) -> Spread = |on| Spread { on, changed: true };
+    const KEPT: fn(bool) -> Spread = |on| Spread { on, changed: false };
+
+    /// Turning it on writes the -0.3 % values in the vendor's order,
+    /// keeping the other bits, between a 5 us and a 15 us stall.
+    #[test]
+    fn spread_spectrum_on_is_the_fch80_sequence() {
+        let hw = fch();
+        internal_clock(&hw);
+        hw.acpi.put(MISC + 0x08, 4, 0x8000_0000);
+        hw.acpi.put(MISC + 0x10, 4, 0x0000_0001);
+        hw.acpi.put(MISC + 0x14, 4, 0xaaff_ffaa);
+        hw.acpi.put(MISC + 0x18, 4, 0xffff_5555);
+        hw.acpi.put(MISC + 0x40, 4, 0x0000_0002);
+        hw.acpi.put(MISC + 0x48, 4, 0x0000_0004);
+        assert_eq!(spread_spectrum(&hw, true), CHANGED(true));
+        assert_eq!(
+            writes(&hw),
+            [
+                (0x14, 0xaa13_33aa),
+                (0x18, 0x003a_5555),
+                (0x10, 0x2000_0001),
+                (0x08, 0x8000_0001),
+                (0x40, 0x0200_0002),
+                (0x48, 0x0000_0804),
+                (0x40, 0x4200_0002),
+            ]
+        );
+        assert_eq!(hw.timer.now(), 20);
+    }
+
+    /// Turning it off leaves the fractions and the feedback divider.
+    #[test]
+    fn spread_spectrum_off_leaves_the_fractions() {
+        let hw = fch();
+        internal_clock(&hw);
+        hw.acpi.put(MISC + 0x08, 4, 0x8000_0001);
+        assert_eq!(spread_spectrum(&hw, false), CHANGED(false));
+        assert_eq!(
+            writes(&hw),
+            [
+                (0x10, 0x2000_0000),
+                (0x08, 0x8000_0000),
+                (0x48, 0x0000_0800),
+                (0x40, 0x4000_0000),
+            ]
+        );
+        assert_eq!(hw.timer.now(), 20);
+    }
+
+    /// An external clock is never spread: on is turned off, and off is
+    /// left as it is.
+    #[test]
+    fn spread_spectrum_never_spreads_an_external_clock() {
+        let hw = fch();
+        hw.acpi.put(MISC + 0x08, 4, 1);
+        assert_eq!(spread_spectrum(&hw, true), CHANGED(false));
+        assert_eq!(
+            writes(&hw).iter().map(|w| w.0).collect::<Vec<_>>(),
+            [0x10, 0x08, 0x48, 0x40]
+        );
+        assert_eq!(hw.acpi.get(MISC + 0x08, 4), 0);
+
+        let off = fch();
+        assert_eq!(spread_spectrum(&off, true), KEPT(false));
+        assert!(off.acpi.writes().is_empty());
+        assert_eq!(off.timer.now(), 0);
+    }
+
+    /// Already as wanted: nothing written, no stall.
+    #[test]
+    fn spread_spectrum_changes_only_what_differs() {
+        let hw = fch();
+        internal_clock(&hw);
+        assert_eq!(spread_spectrum(&hw, false), KEPT(false));
+        hw.acpi.put(MISC + 0x08, 4, 1);
+        assert_eq!(spread_spectrum(&hw, true), KEPT(true));
+        assert!(hw.acpi.writes().is_empty());
+        assert_eq!(hw.timer.now(), 0);
+    }
 
     #[test]
     fn take_over_lets_cf9_reset() {

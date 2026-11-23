@@ -365,8 +365,15 @@ impl<V: Variant> Init for Rs<V> {
         Ok(state)
     }
 
-    /// The xHCIs through the SMU.
+    /// The board's reference clock spread, as the vendors' FCH DXE env sets
+    /// it after training; then the xHCIs through the SMU.
     fn init_chipset(ctx: &Ctx<'_, Self>, state: State, (): ()) -> Result<State, &'static str> {
+        let spread = songshan::spread_spectrum(&ctx.hw.fch, ctx.config.spread_spectrum);
+        fstart_log::info!(
+            "rs: PCIe reference clock spread {}{}",
+            if spread.on { "on" } else { "off" },
+            if spread.changed { " (changed)" } else { "" }
+        );
         step::<V>(0x3a, "USB");
         let smu = smu_of::<V>(&state, ctx.clock);
         songshan::usb::ColdBoot::new(&ctx.config.usb)

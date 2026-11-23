@@ -143,7 +143,13 @@ pub fn policy(generation: Generation) -> Policy {
         nbio: Default::default(),
         power: Default::default(),
         ccx: ccx::Policy::default(),
-        fch_env: Default::default(),
+        // No spread, on either generation: what the FCH env always did on
+        // Milan before it took a policy. On Rome it used to keep what the
+        // strap and PSP left. Ethanol-X's own setup default is not traced.
+        fch_env: fstart_driver_amd::fch::tasks::env::EnvPolicy {
+            spread_spectrum: false,
+            ..Default::default()
+        },
         sata: [sata0, sata1],
         dxio,
     }

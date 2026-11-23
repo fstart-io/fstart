@@ -102,6 +102,11 @@ pub fn config() -> Config {
             perst: &PERST,
         },
         usb: usb::POLICY,
+        // "Clock Spread Spectrum" off, the V2.00 Setup default (`Setup
+        // 0xbf` = 0; FchSongshanDxe takes its policy from PCD 0x370,
+        // also 0), as on the S8030's Milan image and the MJ11, whose
+        // I210s log correctable errors on a spread clock.
+        spread_spectrum: false,
         // The AST2600's display, behind its AST1150 bridge on the BMC's
         // MPIO port.
         display: Some(mpio::BMC_VGA.0),

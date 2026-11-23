@@ -81,7 +81,7 @@ pub fn policy(generation: Generation) -> Policy {
         nbio: policy::nbio(),
         power: policy::power(),
         ccx: policy::ccx(),
-        fch_env: policy::fch_env(),
+        fch_env: policy::fch_env(generation),
         sata: [
             fstart_driver_amd::fch::huashan::sata::SataPolicy::socket0(),
             fstart_driver_amd::fch::huashan::sata::SataPolicy::socket1(),
