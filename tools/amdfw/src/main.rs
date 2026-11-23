@@ -28,6 +28,7 @@ enum Platform {
     Milan,
     Siena,
     Genoa,
+    Venice,
 }
 impl Platform {
     fn profile(self) -> fstart_amdfw_format::Profile {
@@ -39,6 +40,7 @@ impl Platform {
             Self::Milan => Slot::Family19h,
             Self::Siena => return Profile::SIENA,
             Self::Genoa => return Profile::GENOA,
+            Self::Venice => return Profile::VENICE,
         };
         Profile::for_slot(slot)
     }
@@ -56,6 +58,9 @@ struct ImageArgs {
     physical_base: Option<u64>,
     #[arg(long, value_parser = hex32)]
     slot_origin: Option<u32>,
+    /// Separate origin for mode-1 BIOS directory entries (e.g. Venice dual-origin ROMs).
+    #[arg(long, value_parser = hex32)]
+    bios_origin: Option<u32>,
     /// Override combo selection for a platform not yet named by this CLI.
     #[arg(long, value_parser = hex32)]
     psp_id: Option<u32>,
@@ -260,8 +265,11 @@ fn inspect(a: ImageArgs, validate: bool) -> amd::Result<()> {
     if let Some(slot) = a.slot_origin {
         flash = flash.with_slot(slot as usize);
     }
+    if let Some(bios_origin) = a.bios_origin {
+        flash = flash.with_bios_origin(bios_origin as usize);
+    }
     let error = |e| format!("invalid/unsupported firmware: {e:?}");
-    let (efs, _) = flash.efs_checked().map_err(error)?;
+    let (efs, efs_ref) = flash.efs_checked().map_err(error)?;
     println!("EFS={efs:#x} origin={origin:#x} physical-base={base:#x}");
     fn table<E: Entry>(label: &str, dir: Directory<'_, E>) -> amd::Result<()> {
         println!(
@@ -290,15 +298,7 @@ fn inspect(a: ImageArgs, validate: bool) -> amd::Result<()> {
         }
         Ok(())
     }
-    for dir in flash.psp_directories().map_err(error)?.iter() {
-        table("PSP", dir)?;
-    }
-    for dir in flash
-        .bios_directories_checked(profile.bios)
-        .map_err(error)?
-        .iter()
-    {
-        table("BIOS", dir)?;
+    fn print_bios_handoff(dir: Directory<'_, fstart_amdfw_format::directory::BiosEntry>) {
         for entry in dir
             .entries
             .iter()
@@ -311,6 +311,50 @@ fn inspect(a: ImageArgs, validate: bool) -> amd::Result<()> {
                 entry.size.get(),
                 entry.flags
             );
+        }
+    }
+    for dir in flash.psp_directories().map_err(error)?.iter() {
+        table("PSP", dir)?;
+    }
+    if profile.ish {
+        let (slots, count) = flash.ish_slots_checked().map_err(error)?;
+        for slot in slots[..count].iter().flatten() {
+            println!(
+                "ISH kind={:#04x} offset={:#x} psp-id={:#010x} pl2={:#x}",
+                slot.kind,
+                slot.ish_offset,
+                slot.header.psp_id.get(),
+                slot.psp_l2_offset
+            );
+            let pl2 = Directory::<fstart_amdfw_format::directory::PspEntry>::read_checked(
+                flash,
+                slot.psp_l2_offset,
+                1,
+            )
+            .map_err(error)?;
+            table("PSP-L2", pl2)?;
+            if let Some(bios_off) = slot.bios_l2_offset {
+                let level = usize::from(
+                    flash.bytes()[bios_off..]
+                        .starts_with(&fstart_amdfw_format::directory::BIOS_LEVEL2_COOKIE),
+                );
+                let bl2 = Directory::<fstart_amdfw_format::directory::BiosEntry>::read_checked(
+                    flash, bios_off, level,
+                )
+                .map_err(error)?;
+                table("BIOS-L2", bl2)?;
+                print_bios_handoff(bl2);
+            }
+        }
+    }
+    if !profile.ish || efs_ref.bios_directory(profile.bios).is_some() {
+        for dir in flash
+            .bios_directories_checked(profile.bios)
+            .map_err(error)?
+            .iter()
+        {
+            table("BIOS", dir)?;
+            print_bios_handoff(dir);
         }
     }
     if validate {
@@ -401,6 +445,30 @@ mod tests {
             fstart_amdfw_format::efs::BiosDirectorySlot::Family19h
         );
         assert_eq!((profile.psp_id, profile.chip_id), (None, None));
+    }
+
+    #[test]
+    fn venice_validate_parses_bios_origin_and_ish_profile() {
+        let Command::Validate(args) = arguments(
+            [
+                "amdfw",
+                "validate",
+                "md25.bin",
+                "--profile",
+                "venice",
+                "--image-origin",
+                "0x01000000",
+                "--bios-origin",
+                "0x0",
+            ]
+            .map(Into::into),
+        )
+        .unwrap() else {
+            panic!("not a validate command")
+        };
+        assert_eq!(args.profile.profile(), fstart_amdfw_format::Profile::VENICE);
+        assert_eq!(args.image_origin, 0x0100_0000);
+        assert_eq!(args.bios_origin, Some(0));
     }
 
     #[test]
