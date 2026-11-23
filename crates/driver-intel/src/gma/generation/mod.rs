@@ -23,6 +23,20 @@ pub(crate) fn output_pipe<G: GenerationOps>(
             .find(|pipe| crate::gma::port::legacy_gmch_port_can_use_pipe(cpu, port, **pipe))
             .ok_or(GmaError::UnsupportedPort)?,
         Generation::Ironlake => ironlake::ironlake_pipeline_plan(cpu, port, mode)?.fdi_pipe(),
+        Generation::Skylake
+            if !matches!(
+                port,
+                Port::Edp
+                    | Port::DpB
+                    | Port::DpC
+                    | Port::DpD
+                    | Port::HdmiB
+                    | Port::HdmiC
+                    | Port::HdmiD
+            ) =>
+        {
+            return Err(GmaError::UnsupportedPort);
+        }
         _ => *available.first().ok_or(GmaError::UnsupportedPort)?,
     };
     if available.contains(&pipe) {

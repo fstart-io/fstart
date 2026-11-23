@@ -18,6 +18,7 @@ const VBT_SIGNATURE: &[u8; 4] = b"$VBT";
 const BDB_SIGNATURE: &[u8; 4] = b"BIOS";
 const BDB_GENERAL_FEATURES: u8 = 1;
 const BDB_GENERAL_DEFINITIONS: u8 = 2;
+const BDB_EDP: u8 = 27;
 const BDB_LVDS_OPTIONS: u8 = 40;
 const BDB_LVDS_LFP_DATA_PTRS: u8 = 41;
 const BDB_LVDS_LFP_DATA: u8 = 42;
@@ -281,6 +282,58 @@ impl<'a> Vbt<'a> {
     /// Find a BDB block by id.
     pub fn block(&self, id: u8) -> Option<BdbBlock<'a>> {
         self.blocks().find(|block| block.id == id)
+    }
+
+    /// Decode the selected panel's BDB 27 power sequence (100 us units),
+    /// color depth and standard/low-swing link setting. The trailing swing
+    /// nibbles were added in BDB version 173 and may be absent.
+    pub(crate) fn edp_policy(&self) -> Option<(crate::gma::panel::PanelPowerDelays, u8, bool)> {
+        #[repr(C)]
+        #[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+        struct EdpPowerSeq {
+            power_up: U16,
+            power_up_to_backlight_on: U16,
+            backlight_off_to_power_down: U16,
+            power_down: U16,
+            power_cycle: U16,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+        struct EdpBlockPrefix {
+            power_seqs: [EdpPowerSeq; 16],
+            color_depth: U32,
+        }
+        const _: () = assert!(core::mem::size_of::<EdpBlockPrefix>() == 164);
+
+        let options = self.block(BDB_LVDS_OPTIONS)?;
+        let panel = usize::from(*options.data.first()?);
+        if panel >= 16 {
+            return None;
+        }
+        let block = self.block(BDB_EDP)?.data;
+        let (prefix, _) = EdpBlockPrefix::ref_from_prefix(block).ok()?;
+        let seq = &prefix.power_seqs[panel];
+        let bpc = match (prefix.color_depth.get() >> (panel * 2)) & 3 {
+            0 => 6,
+            1 => 8,
+            2 => 10,
+            _ => return None,
+        };
+        let low_swing = block
+            .get(204 + panel / 2)
+            .is_some_and(|byte| (byte >> (4 * (panel % 2))) & 0xf == 0);
+        Some((
+            crate::gma::panel::PanelPowerDelays {
+                power_up_us: u32::from(seq.power_up.get()) * 100,
+                power_up_to_backlight_on_us: u32::from(seq.power_up_to_backlight_on.get()) * 100,
+                backlight_off_to_power_down_us: u32::from(seq.backlight_off_to_power_down.get())
+                    * 100,
+                power_down_us: u32::from(seq.power_down.get()) * 100,
+                power_cycle_us: u32::from(seq.power_cycle.get()) * 100,
+            },
+            bpc,
+            low_swing,
+        ))
     }
 
     /// Parse metadata from the BDB general definitions block.

@@ -370,12 +370,22 @@ pub(crate) const fn legacy_gmch_port_can_use_pipe(cpu: Cpu, port: Port, pipe: Pi
 /// The DisplayPort or HDMI port sharing a digital port's pins
 /// (libgfxinit `Sibling_Port`).
 ///
-/// Legacy GMCH maps `HdmiA/B` and `DpA/B/C` onto physical ports B/C/D, while
-/// split-PCH and DDI platforms reserve `Edp`/`DpA` for DDI-A and pair
-/// `HdmiA/B/C` with `DpB/C/D` on digital ports B/C/D.
+/// Legacy GMCH maps `HdmiA/B` and `DpA/B/C` onto physical ports B/C/D,
+/// Haswell/split-PCH pair `HdmiA/B/C` with `DpB/C/D` on digital ports B/C/D,
+/// and Gen9 (Skylake/Kaby Lake) pairs `HdmiB/C/D` with `DpB/C/D`.
 pub(crate) const fn sibling_port(cpu: Cpu, port: Port) -> Option<Port> {
     let caps = crate::gma::caps_for(cpu);
-    if caps.has_ddi || caps.has_pch_split {
+    if matches!(caps.generation, crate::gma::Generation::Skylake) {
+        match port {
+            Port::HdmiB => Some(Port::DpB),
+            Port::HdmiC => Some(Port::DpC),
+            Port::HdmiD => Some(Port::DpD),
+            Port::DpB => Some(Port::HdmiB),
+            Port::DpC => Some(Port::HdmiC),
+            Port::DpD => Some(Port::HdmiD),
+            _ => None,
+        }
+    } else if caps.has_ddi || caps.has_pch_split {
         match port {
             Port::HdmiA => Some(Port::DpB),
             Port::HdmiB => Some(Port::DpC),
