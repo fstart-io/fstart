@@ -312,6 +312,7 @@ fn packed_half(generation: Generation) -> PackedHalf {
         key: Key::new(kind, 0, 0),
         path: format!("{}/{path}", name(generation)),
         level,
+        writable: false,
     };
     PackedHalf {
         generation,
@@ -325,6 +326,10 @@ fn packed_half(generation: Generation) -> PackedHalf {
             micron: false,
             soft_fuse: None,
             two_level: true,
+            ish: false,
+            image_origin: 0,
+            bios_origin: 0,
+            psp_id: None,
             generation_mask: None,
             espi: None,
             psp: vec![file(0, Level::One, "key"), file(1, Level::Both, "boot")],
@@ -336,6 +341,7 @@ fn packed_half(generation: Generation) -> PackedHalf {
                 psp: true,
                 key: Key::new(0x22, 0, 0),
                 level: Level::Two,
+                writable: false,
                 content: Fixed::Erased(0x1000),
             }],
             apob_nv: None,

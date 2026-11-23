@@ -108,6 +108,12 @@ impl PspEntry {
     pub fn writable(&self) -> bool {
         self.attributes[0] & 4 != 0
     }
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        if writable {
+            self.attributes[0] |= 4;
+        }
+        self
+    }
 }
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -159,6 +165,17 @@ impl BiosEntry {
     /// The SPI ROM the PSP reads the file from.
     pub fn rom_id(&self) -> u8 {
         self.subprogram >> 3 & 3
+    }
+    /// Whether the PSP may write to this BIOS directory entry in flash (bit 5
+    /// of the `subprogram`/attribute byte, i.e. TypeAttrib bit 29).
+    pub fn writable(&self) -> bool {
+        self.subprogram & 0x20 != 0
+    }
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        if writable {
+            self.subprogram |= 0x20;
+        }
+        self
     }
     /// Where the PSP copies the file, `u64::MAX` for nowhere; the APOB
     /// entry has only this.

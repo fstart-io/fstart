@@ -37,6 +37,20 @@ pub struct SocBlobs {
     /// bit 1 of the Family 19h slot's set.
     #[serde(default)]
     pub generation_mask: Option<u32>,
+    /// Platform uses PSP L1 recovery entries (`0x48`/`0x4A`) -> 32-byte ISH A/B
+    /// slots -> `$PL2` -> `0x49` -> `$BL2` with dual-origin mode-1 BIOS entries.
+    #[serde(default)]
+    pub ish: bool,
+    /// Flash offset of the 16 MiB bank holding the EFS and ISH A/B slots.
+    #[serde(default)]
+    pub image_origin: u32,
+    /// Flash offset of the 16 MiB bank used as the mode-1 origin for BIOS
+    /// entries on dual-origin ISH images.
+    #[serde(default)]
+    pub bios_origin: Option<u32>,
+    /// Expected PSP ID in ISH headers (and combo directories).
+    #[serde(default)]
+    pub psp_id: Option<u32>,
     /// Flash offset of the EFS, the start of the PSP partition.
     pub efs_offset: u32,
     /// End of the PSP partition.
@@ -77,7 +91,25 @@ impl SocBlobs {
         if let Some(mask) = self.generation_mask {
             profile.generation_mask = mask;
         }
+        if self.ish {
+            profile.ish = true;
+            profile.psp_id = self.psp_id;
+        }
         profile
+    }
+
+    /// A [`Flash`] view of `rom` configured for this SoC's EFS/BIOS origins.
+    pub fn flash<'a>(&self, rom: &'a [u8]) -> Flash<'a> {
+        if self.ish {
+            let mut flash =
+                Flash::region(rom, self.image_origin as usize, 0xff00_0000, self.profile());
+            if let Some(bo) = self.bios_origin {
+                flash = flash.with_bios_origin(bo as usize);
+            }
+            flash
+        } else {
+            Flash::new(rom).with_profile(self.profile())
+        }
     }
 }
 
@@ -103,6 +135,9 @@ pub struct DirectoryFile {
     /// The entry's value (the PSP soft fuse chain).
     #[serde(default)]
     pub value: Option<u64>,
+    /// Mark the directory entry writable and 4 KiB-align its allocation (ISH).
+    #[serde(default)]
+    pub writable: bool,
 }
 impl DirectoryFile {
     pub fn key(&self) -> Key {
@@ -211,6 +246,12 @@ pub fn board_tables(table: &serde_json::Value) -> Result<Vec<BoardBlobs>, String
 /// with exactly the SoC's generation word wins.
 pub fn donor_image<'a>(rom: &'a [u8], soc: &SocBlobs) -> Option<&'a [u8]> {
     let profile = soc.profile();
+    if soc.ish {
+        let flash = soc.flash(rom);
+        flash.efs_checked().ok()?;
+        let (_, count) = flash.ish_slots_checked().ok()?;
+        return (count > 0).then_some(rom);
+    }
     let candidates = rom
         .chunks(fstart_amdfw_format::HALF_SIZE)
         .filter_map(|image| {
@@ -292,11 +333,13 @@ pub fn resolve(
                     key: f.key(),
                     path: path(file)?,
                     level,
+                    writable: f.writable,
                 }),
                 Content::Fixed(content) => fixed.push(FixedEntry {
                     psp,
                     key: f.key(),
                     level,
+                    writable: f.writable,
                     content,
                 }),
             }
@@ -314,6 +357,7 @@ pub fn resolve(
                         key: Key::new(kind, 0, instance),
                         path: file.clone(),
                         level: Level::Both,
+                        writable: false,
                     });
                 }
             }
@@ -363,6 +407,10 @@ pub fn resolve(
             micron: soc.micron,
             soft_fuse: soc.soft_fuse,
             two_level: soc.levels == 2,
+            ish: soc.ish,
+            image_origin: soc.image_origin,
+            bios_origin: soc.bios_origin.unwrap_or(0),
+            psp_id: soc.psp_id,
             generation_mask: soc.generation_mask,
             espi: board.efs_espi,
             psp,
@@ -401,13 +449,7 @@ pub fn extract(
     rom: &[u8],
 ) -> Result<(Vec<Extracted>, Vec<String>), String> {
     let slot = soc.bios_directory;
-    let flash = Flash::new(rom).with_profile(soc.profile());
-    let psp = flash
-        .psp_directories()
-        .map_err(|e| format!("vendor PSP directory: {e:?}"))?;
-    let bios_dirs = flash
-        .bios_directories_checked(slot)
-        .map_err(|e| format!("vendor BIOS directory: {e:?}"))?;
+    let flash = soc.flash(rom);
     let mut found = Vec::new();
     let mut missing = Vec::new();
     // Entries may share a file only if the vendor image has the same
@@ -430,38 +472,94 @@ pub fn extract(
         },
         None => missing.push(file.into()),
     };
-    for f in &soc.psp {
-        let Content::File(file) = f.content()? else {
-            continue;
-        };
-        take(file, level_file(&psp, f, "PSP")?);
-    }
     let board_entries = match &board.apcb {
         BoardApcb::Entries { entries } => entries.as_slice(),
         _ => &[],
     };
-    for f in soc.bios.iter().chain(board_entries) {
-        let Content::File(file) = f.content()? else {
-            continue;
-        };
-        take(file, level_file(&bios_dirs, f, "BIOS")?);
-    }
-    if let BoardApcb::Files { instances } = board.apcb {
-        for instance in 0..instances {
-            let apcb = DirectoryFile {
-                kind: bios::APCB,
-                instance,
-                ..Default::default()
+    if soc.ish {
+        let (slots, count) = flash
+            .ish_slots_checked()
+            .map_err(|e| format!("vendor ISH slots: {e:?}"))?;
+        let ish_slot = slots[..count]
+            .iter()
+            .flatten()
+            .filter(|s| s.bios_l2_offset.is_some())
+            .max_by_key(|s| s.header.priority.get())
+            .ok_or("vendor ISH image has no BIOS directory")?;
+        let (psp_dir, bios_dir) = flash
+            .ish_slot_directories(ish_slot)
+            .map_err(|e| format!("vendor ISH directories: {e:?}"))?;
+        let bios_dir = bios_dir.ok_or("vendor ISH slot has no BIOS directory")?;
+        for f in &soc.psp {
+            let Content::File(file) = f.content()? else {
+                continue;
             };
-            take(
-                &apcb_file(board_name, instance),
-                level_file(&bios_dirs, &apcb, "BIOS")?,
-            );
+            take(file, dir_file(psp_dir, f, "PSP"));
         }
-    }
-    for m in &soc.microcode {
-        let patch = find_microcode(rom, &bios_dirs, m.equivalence_id)?;
-        take(&m.file, patch);
+        for f in soc.bios.iter().chain(board_entries) {
+            let Content::File(file) = f.content()? else {
+                continue;
+            };
+            take(file, dir_file(bios_dir, f, "BIOS"));
+        }
+        if let BoardApcb::Files { instances } = board.apcb {
+            for instance in 0..instances {
+                let apcb = DirectoryFile {
+                    kind: bios::APCB,
+                    instance,
+                    ..Default::default()
+                };
+                take(
+                    &apcb_file(board_name, instance),
+                    dir_file(bios_dir, &apcb, "BIOS"),
+                );
+            }
+        }
+        for m in &soc.microcode {
+            let patch = find_microcode_in_dirs(rom, &[bios_dir], m.equivalence_id)?;
+            take(&m.file, patch);
+        }
+    } else {
+        let psp = flash
+            .psp_directories()
+            .map_err(|e| format!("vendor PSP directory: {e:?}"))?;
+        let bios_dirs = flash
+            .bios_directories_checked(slot)
+            .map_err(|e| format!("vendor BIOS directory: {e:?}"))?;
+        for f in &soc.psp {
+            let Content::File(file) = f.content()? else {
+                continue;
+            };
+            take(file, level_file(&psp, f, "PSP")?);
+        }
+        for f in soc.bios.iter().chain(board_entries) {
+            let Content::File(file) = f.content()? else {
+                continue;
+            };
+            take(file, level_file(&bios_dirs, f, "BIOS")?);
+        }
+        if let BoardApcb::Files { instances } = board.apcb {
+            for instance in 0..instances {
+                let apcb = DirectoryFile {
+                    kind: bios::APCB,
+                    instance,
+                    ..Default::default()
+                };
+                take(
+                    &apcb_file(board_name, instance),
+                    level_file(&bios_dirs, &apcb, "BIOS")?,
+                );
+            }
+        }
+        let dirs: Vec<_> = bios_dirs
+            .level2
+            .into_iter()
+            .chain(std::iter::once(bios_dirs.level1))
+            .collect();
+        for m in &soc.microcode {
+            let patch = find_microcode_in_dirs(rom, &dirs, m.equivalence_id)?;
+            take(&m.file, patch);
+        }
     }
     for v in &soc.vbios {
         take(&v.file, find_vbios(rom, v.vendor, v.device)?);
@@ -470,6 +568,20 @@ pub fn extract(
         return Err(conflict);
     }
     Ok((found, missing))
+}
+
+fn dir_file<'a, E: fstart_amdfw_format::directory::Entry>(
+    dir: fstart_amdfw_format::directory::Directory<'a, E>,
+    f: &DirectoryFile,
+    name: &str,
+) -> Option<(String, &'a [u8])> {
+    let entry = dir.entries.iter().find(|e| {
+        e.kind() == f.kind && e.instance() == f.instance && e.subprogram() == f.subprogram
+    })?;
+    Some((
+        format!("{name} directory {:#x}", dir.offset),
+        dir.data(entry).ok()?,
+    ))
 }
 
 /// The file of entry `f` in the levels its table puts it in: level 2
@@ -498,12 +610,12 @@ fn level_file<'a, E: fstart_amdfw_format::directory::Entry>(
 /// The newest patch for `equivalence_id`: from the BIOS directory if it has
 /// one, else wherever in the image one is (e.g. a file of another firmware
 /// file system).
-fn find_microcode<'a>(
+fn find_microcode_in_dirs<'a>(
     rom: &'a [u8],
-    bios_dirs: &fstart_amdfw_format::directory::Levels<
+    bios_dirs: &[fstart_amdfw_format::directory::Directory<
         'a,
         fstart_amdfw_format::directory::BiosEntry,
-    >,
+    >],
     equivalence_id: u16,
 ) -> Result<Option<(String, &'a [u8])>, String> {
     let size = microcode::patch_size(equivalence_id)
@@ -518,12 +630,19 @@ fn find_microcode<'a>(
             && p[0x1a..0x1c].iter().all(|&b| b == 0)
     };
     let in_directory = bios_dirs
-        .all(bios::MICROCODE)
-        .filter_map(|(dir, e)| {
-            Some((
-                format!("BIOS directory {:#x}", dir.offset),
-                dir.data(e).ok()?,
-            ))
+        .iter()
+        .find(|d| d.entries.iter().any(|e| e.kind == bios::MICROCODE))
+        .into_iter()
+        .flat_map(|dir| {
+            dir.entries
+                .iter()
+                .filter(|e| e.kind == bios::MICROCODE)
+                .filter_map(move |e| {
+                    Some((
+                        format!("BIOS directory {:#x}", dir.offset),
+                        dir.data(e).ok()?,
+                    ))
+                })
         })
         .filter(|(_, p)| plausible(p));
     // Files of other firmware file systems need not be aligned.
@@ -652,9 +771,18 @@ pub fn extract_donor(
 pub fn has_firmware(tables: &[(SocBlobs, BoardBlobs)], rom: &[u8]) -> bool {
     tables.iter().any(|(soc, _)| {
         donor_image(rom, soc).is_some_and(|image| {
-            let flash = Flash::new(image).with_profile(soc.profile());
-            flash.psp_directories().is_ok()
-                && flash.bios_directories_checked(soc.bios_directory).is_ok()
+            let flash = soc.flash(image);
+            if soc.ish {
+                flash.ish_slots_checked().is_ok_and(|(slots, count)| {
+                    count > 0
+                        && slots[..count].iter().flatten().any(|s| {
+                            s.bios_l2_offset.is_some() && flash.ish_slot_directories(s).is_ok()
+                        })
+                })
+            } else {
+                flash.psp_directories().is_ok()
+                    && flash.bios_directories_checked(soc.bios_directory).is_ok()
+            }
         })
     })
 }

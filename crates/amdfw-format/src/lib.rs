@@ -441,6 +441,27 @@ impl<'a> Flash<'a> {
         Ok((out, count))
     }
 
+    /// Open the verified `$PL2` and optional `$BL2`/`$BHD` directories of an
+    /// [`IshSlot`] returned by [`Self::ish_slots_checked`].
+    pub fn ish_slot_directories(
+        &self,
+        slot: &IshSlot,
+    ) -> Result<(Directory<'a, PspEntry>, Option<Directory<'a, BiosEntry>>), Error> {
+        let psp_l2 = Directory::<PspEntry>::read_checked(*self, slot.psp_l2_offset, 1)?;
+        let bios = match slot.bios_l2_offset {
+            Some(off) => {
+                let level = usize::from(
+                    self.bytes
+                        .get(off..)
+                        .is_some_and(|b| b.starts_with(&directory::BIOS_LEVEL2_COOKIE)),
+                );
+                Some(Directory::<BiosEntry>::read_checked(*self, off, level)?)
+            }
+            None => None,
+        };
+        Ok((psp_l2, bios))
+    }
+
     /// Check every reachable PSP and BIOS table/file before preserving only
     /// `kept` bytes. The replacement reset slot is the sole permitted exception.
     /// EFS ancillary blobs (IMC, GEC, xHCI, Promontory) have no length; one is
