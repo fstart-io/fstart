@@ -212,15 +212,19 @@ impl Plan {
                 uc
             }),
             (Ok(plan), Err(_)) | (Err(_), Ok(plan)) => Ok(plan),
-            (Err(_), Err(_)) => Err(ServiceError::NotSupported),
+            (Err(uc), Err(wb)) => {
+                fstart_log::warn!(
+                    "mtrr: need {} variable ranges, have {}",
+                    uc.min(wb),
+                    caps.variable_count
+                );
+                Err(ServiceError::NotSupported)
+            }
         }
     }
 
-    fn candidate(
-        caps: Capabilities,
-        map: &[Range],
-        default: CacheType,
-    ) -> Result<Self, ServiceError> {
+    fn candidate(caps: Capabilities, map: &[Range], default: CacheType) -> Result<Self, usize> {
+        let mut required = 0;
         let mut plan = Self {
             caps,
             default,
@@ -263,28 +267,33 @@ impl Plan {
                     }
                 }
             }
-            plan.add_chunks(base, end, range.kind)?;
+            required += plan.add_chunks(base, end, range.kind);
             if end != range.end {
-                plan.add_chunks(range.end, end, CacheType::Uncacheable)?;
+                required += plan.add_chunks(range.end, end, CacheType::Uncacheable);
             }
         }
-        Ok(plan)
+        if required > caps.variable_count {
+            Err(required)
+        } else {
+            Ok(plan)
+        }
     }
 
-    fn add_chunks(&mut self, base: u64, end: u64, kind: CacheType) -> Result<(), ServiceError> {
+    fn add_chunks(&mut self, base: u64, end: u64, kind: CacheType) -> usize {
+        let mut required = 0;
         for (base, size) in chunks(base, end - base) {
-            if self.ranges.len() == self.caps.variable_count {
-                return Err(ServiceError::NotSupported);
+            required += 1;
+            if self.ranges.len() < self.caps.variable_count {
+                self.ranges
+                    .push(Range {
+                        base,
+                        end: base + size,
+                        kind,
+                    })
+                    .expect("validated variable count");
             }
-            self.ranges
-                .push(Range {
-                    base,
-                    end: base + size,
-                    kind,
-                })
-                .map_err(|_| ServiceError::NotSupported)?;
         }
-        Ok(())
+        required
     }
 
     /// Print the chosen default and every programmed variable range once.
@@ -705,6 +714,28 @@ pub unsafe fn setup_fixed_low_memory() {
     }
 }
 
+/// Execute `update` with caches flushed/disabled, global TLB entries flushed,
+/// and `IA32_MTRR_DEF_TYPE.E` cleared per Intel SDM Vol. 3 §11.11.8.
+unsafe fn with_mtrrs_disabled(update: impl FnOnce()) {
+    unsafe {
+        if !x86::controlregs::cr0().contains(x86::controlregs::Cr0::CR0_CACHE_DISABLE) {
+            crate::x86::writeback_invalidate_caches();
+        }
+        disable_cache();
+        let cr4 = x86::controlregs::cr4();
+        x86::controlregs::cr4_write(cr4 & !x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES);
+        let cr3 = x86::controlregs::cr3();
+        x86::controlregs::cr3_write(cr3);
+        let def = rdmsr(IA32_MTRR_DEF_TYPE);
+        wrmsr(IA32_MTRR_DEF_TYPE, def & !ENABLE);
+        update();
+        wrmsr(IA32_MTRR_DEF_TYPE, def);
+        x86::controlregs::cr3_write(cr3);
+        x86::controlregs::cr4_write(cr4);
+        enable_cache();
+    }
+}
+
 /// Optional BSP-only ROM acceleration. Never overwrite a RAM range or use an
 /// overlapping UC/WB range with WP. Removing it clears only the slot we own.
 /// # Safety
@@ -714,7 +745,7 @@ pub unsafe fn set_boot_rom_wp(enable: bool) -> Result<(), ServiceError> {
     if !enable {
         if let Some(index) = ROM_SLOT.swap(0, Ordering::AcqRel).checked_sub(1) {
             unsafe {
-                clear_variable(index as u32);
+                with_mtrrs_disabled(|| clear_variable(index as u32));
             }
         }
         return Ok(());
@@ -740,7 +771,9 @@ pub unsafe fn set_boot_rom_wp(enable: bool) -> Result<(), ServiceError> {
     }
     let index = free.ok_or(ServiceError::NotSupported)?;
     unsafe {
-        set_variable(index, 0xff000000, 0x1000000, MTRR_TYPE_WRITE_PROTECT);
+        with_mtrrs_disabled(|| {
+            set_variable(index, 0xff000000, 0x1000000, MTRR_TYPE_WRITE_PROTECT);
+        });
     }
     ROM_SLOT.store(index as usize + 1, Ordering::Release);
     Ok(())

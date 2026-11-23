@@ -109,6 +109,8 @@ pub const MT_EXTINT: u32 = 0x700;
 
 /// LVT entry: masked (bit 16).
 const LVT_MASKED: u32 = 1 << 16;
+/// LVT entry: interrupt input pin polarity (bit 13, 0 = active high).
+const LVT_INPUT_POLARITY: u32 = 1 << 13;
 /// LVT delivery mode mask (bits [10:8]).
 const LVT_DM_MASK: u32 = 7 << 8;
 /// LVT delivery mode: NMI.
@@ -153,6 +155,23 @@ pub struct Lapic {
 // during init — no concurrent access to the same LAPIC instance.
 unsafe impl Send for Lapic {}
 unsafe impl Sync for Lapic {}
+
+#[test]
+fn ioapic_virtual_wire_masks_lint0_without_masking_nmi() {
+    let mut registers = [0u32; 1024];
+    let lapic = Lapic::at(registers.as_mut_ptr() as usize);
+    for lint0 in [true, false, false, true] {
+        lapic.setup_virtual_wire(lint0);
+        assert_eq!(
+            lapic.read(REG_LVT0) & (LVT_DM_MASK | LVT_MASKED),
+            LVT_DM_EXTINT | if lint0 { 0 } else { LVT_MASKED }
+        );
+        assert_eq!(
+            lapic.read(REG_LVT1) & (LVT_DM_MASK | LVT_MASKED),
+            LVT_DM_NMI
+        );
+    }
+}
 
 impl Lapic {
     // ---- Construction ----
@@ -250,20 +269,20 @@ impl Lapic {
     /// Sets up:
     /// - Task priority to 0 (accept all)
     /// - Spurious vector to 0x0F with software enable
-    /// - LINT0: ExtINT (BSP) or masked ExtINT (AP)
+    /// - LINT0: unmasked only if the platform routes ExtINT here
     /// - LINT1: NMI
     ///
     /// This matches coreboot's `setup_lapic_interrupts()`.
-    pub fn setup_virtual_wire(&self, is_bsp: bool) {
+    pub fn setup_virtual_wire(&self, lint0_extint: bool) {
         // Accept all priorities.
         self.write(REG_TPR, 0);
 
         // SVR: enable + vector 0x0F.
         self.update(REG_SVR, 0xFF | SVR_ENABLE, SVR_ENABLE | 0x0F);
 
-        // LINT0: ExtINT delivery; masked on APs.
-        let lvt0_mask = LVT_MASKED | INT_LEVEL | LVT_DM_MASK;
-        if is_bsp {
+        // LINT0: ExtINT delivery; masked on APs and IOAPIC-wired BSPs.
+        let lvt0_mask = LVT_MASKED | INT_LEVEL | LVT_INPUT_POLARITY | LVT_DM_MASK;
+        if lint0_extint {
             self.update(REG_LVT0, lvt0_mask, LVT_DM_EXTINT);
         } else {
             self.update(REG_LVT0, lvt0_mask, LVT_MASKED | LVT_DM_EXTINT);
@@ -362,6 +381,34 @@ impl Lapic {
     /// the architectural default SMBASE.
     pub fn send_smi_self(&self) {
         self.send_ipi(self.id(), INT_ASSERT | MT_SMI);
+    }
+
+    /// Wait for ICR delivery without touching any global console locks (safe
+    /// during terminal AP teardown).
+    fn wait_ready_silent(&self) {
+        let mut spins = ICR_READY_SPINS;
+        while self.busy() && spins > 0 {
+            spins -= 1;
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Assert a level-triggered INIT IPI to self (first half of coreboot's
+    /// `stop_this_cpu()`), without acquiring any global locks.
+    pub fn assert_init_self(&self) {
+        self.wait_ready_silent();
+        self.write(REG_ICR_HI, self.id() << 24);
+        self.write(REG_ICR_LO, INT_LEVEL | INT_ASSERT | MT_INIT);
+        self.wait_ready_silent();
+    }
+
+    /// Deassert a level-triggered INIT IPI to self (second half of coreboot's
+    /// `stop_this_cpu()`), without acquiring any global locks.
+    pub fn deassert_init_self(&self) {
+        self.wait_ready_silent();
+        self.write(REG_ICR_HI, self.id() << 24);
+        self.write(REG_ICR_LO, INT_LEVEL | MT_INIT);
+        self.wait_ready_silent();
     }
 
     // ---- Timer (for future use) ----

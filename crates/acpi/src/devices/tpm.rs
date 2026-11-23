@@ -39,32 +39,82 @@ pub struct TpmTisAcpi {
     pub log: Option<LogArea>,
 }
 
+/// Optional interrupt resource for a TIS TPM `_CRS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TpmIrq {
+    pub vector: u32,
+    pub edge: bool,
+    pub active_low: bool,
+}
+
+/// Optional board-specific additions to the `Device(TPM)` DSDT node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TpmTisOptions {
+    /// Override the default `_UID` (`1`).
+    pub uid: Option<u32>,
+    /// Emit `_CID` equal to `_HID` for TPM 1.2 (TPM 2.0 always emits `_CID`).
+    pub emit_cid: bool,
+    /// Emit an explicit `Name("_STA", 0x0F)`.
+    pub emit_sta: bool,
+    /// Optional legacy I/O port range `(base, length)` in `_CRS`.
+    pub io_port: Option<(u16, u8)>,
+    /// Optional interrupt resource in `_CRS`.
+    pub irq: Option<TpmIrq>,
+}
+
 impl TpmTisAcpi {
     /// `Device(TPM)` for `\_SB`: `MSFT0101` (TPM 2.0) or `PNP0C31`.
     pub fn dsdt_aml(&self) -> Vec<u8> {
-        match self.family {
+        self.dsdt_aml_with(TpmTisOptions::default())
+    }
+
+    /// `Device(TPM)` with optional board-specific `_UID`, `_CID`, `_STA`, I/O
+    /// port range, and interrupt descriptors.
+    pub fn dsdt_aml_with(&self, options: TpmTisOptions) -> Vec<u8> {
+        use crate::aml_linker::device_vec;
+        use acpi_tables::Aml;
+        use acpi_tables::aml::{IO, Interrupt, Memory32Fixed, Name, ResourceTemplate};
+
+        let mut body: Vec<u8> = match self.family {
             TpmFamily::Tpm20 => fstart_acpi_macros::acpi_dsl! {
-                Device("TPM") {
-                    Name("_HID", "MSFT0101");
-                    Name("_CID", "MSFT0101");
-                    Name("_UID", 1u8);
-                    Name("_CRS", ResourceTemplate {
-                        Memory32Fixed(ReadWrite, #{const dword TIS_BASE}, #{const dword TIS_SIZE});
-                    });
-                }
+                Name("_HID", "MSFT0101");
+                Name("_CID", "MSFT0101");
+            }
+            .into(),
+            TpmFamily::Tpm12 if options.emit_cid => fstart_acpi_macros::acpi_dsl! {
+                Name("_HID", EisaId("PNP0C31"));
+                Name("_CID", EisaId("PNP0C31"));
             }
             .into(),
             TpmFamily::Tpm12 => fstart_acpi_macros::acpi_dsl! {
-                Device("TPM") {
-                    Name("_HID", EisaId("PNP0C31"));
-                    Name("_UID", 1u8);
-                    Name("_CRS", ResourceTemplate {
-                        Memory32Fixed(ReadWrite, #{const dword TIS_BASE}, #{const dword TIS_SIZE});
-                    });
-                }
+                Name("_HID", EisaId("PNP0C31"));
             }
             .into(),
+        };
+        if let Some(uid) = options.uid {
+            Name::new("_UID".into(), &uid).to_aml_bytes(&mut body);
+        } else {
+            body.extend_from_slice(&fstart_acpi_macros::acpi_dsl! { Name("_UID", 1u8); });
         }
+        if options.emit_sta {
+            body.extend_from_slice(&fstart_acpi_macros::acpi_dsl! { Name("_STA", 0x0Fu8); });
+        }
+        let mem = Memory32Fixed::new(true, TIS_BASE, TIS_SIZE);
+        let io = options
+            .io_port
+            .map(|(port, len)| IO::new(port, port, 1, len));
+        let irq = options
+            .irq
+            .map(|i| Interrupt::new(true, i.edge, i.active_low, true, i.vector));
+        let mut resources: Vec<&dyn Aml> = alloc::vec![&mem];
+        if let Some(ref io) = io {
+            resources.push(io);
+        }
+        if let Some(ref irq) = irq {
+            resources.push(irq);
+        }
+        Name::new("_CRS".into(), &ResourceTemplate::new(resources)).to_aml_bytes(&mut body);
+        device_vec("TPM", &body).expect("TPM device")
     }
 
     /// TPM 2.0: the `TPM2` table, with the log area when there is a log.
@@ -184,5 +234,30 @@ mod tests {
             .tables()
             .is_empty()
         );
+    }
+
+    #[test]
+    fn dsdt_options_emit_uid_cid_sta_io_and_irq() {
+        let tpm = TpmTisAcpi {
+            family: TpmFamily::Tpm12,
+            server: false,
+            log: None,
+        };
+        let aml = tpm.dsdt_aml_with(TpmTisOptions {
+            uid: Some(0x89e3_7d9c),
+            emit_cid: true,
+            emit_sta: true,
+            io_port: Some((0x0c31, 2)),
+            irq: Some(TpmIrq {
+                vector: 5,
+                edge: false,
+                active_low: true,
+            }),
+        });
+        assert!(aml.windows(4).any(|w| w == b"_CID"));
+        assert!(aml.windows(4).any(|w| w == b"_STA"));
+        assert!(aml.windows(4).any(|w| w == 0x89e3_7d9cu32.to_le_bytes()));
+        assert!(aml.windows(2).any(|w| w == 0x0c31u16.to_le_bytes()));
+        assert!(aml.windows(4).any(|w| w == 5u32.to_le_bytes()));
     }
 }

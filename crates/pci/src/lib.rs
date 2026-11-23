@@ -66,6 +66,9 @@ pub enum PciRole {
     /// the tables (legacy I/O, option ROMs, an FCH's fixed decodes), and to
     /// PCI devices where a `Window` says so.
     Forwarded,
+    /// A fixed decode with its own ACPI device: forwarded and carved out of
+    /// overlapping allocator windows without a conflicting `PNP0C02` claim.
+    Fixed,
     /// Forwarded, and kept by the firmware as a motherboard resource (a TPM
     /// on LPC, which may have no node of its own).
     Kept,
@@ -222,14 +225,14 @@ impl PciRoot {
                     join(&mut forwarded, range)?;
                     join(&mut allocatable, range)?;
                 }
-                PciRole::Forwarded => join(&mut forwarded, range)?,
+                PciRole::Forwarded | PciRole::Fixed => join(&mut forwarded, range)?,
                 PciRole::Kept => {
                     join(&mut forwarded, range)?;
                     listed(&mut motherboard, range)?;
                 }
                 PciRole::Own => listed(&mut motherboard, range)?,
             }
-            if matches!(resource.role, PciRole::Kept | PciRole::Own) {
+            if matches!(resource.role, PciRole::Kept | PciRole::Own | PciRole::Fixed) {
                 taken
                     .push(resource)
                     .map_err(|_| PciEcamError::ResourceRangeLimit)?;

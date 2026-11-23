@@ -6,10 +6,13 @@
 mod common_power;
 pub mod core2_cpu;
 pub mod feature_control;
+pub mod haswell;
+mod haswell_vr;
 pub mod microcode;
 pub mod model_2065x;
 pub mod penryn;
 pub mod pineview;
+pub mod ratio;
 pub mod silvermont;
 pub mod smm;
 pub mod smrr;

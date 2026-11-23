@@ -311,6 +311,7 @@ pub fn reservations<P: IntelPlatform>(
     if firmware.size <= cache_prefix + 4096 {
         return Err("mutable flash regions leave no reset image capacity".into());
     }
+    let windows = P::STAGE_WINDOWS;
     let reservations = IntelReservations {
         flash,
         firmware,
@@ -324,14 +325,14 @@ pub fn reservations<P: IntelPlatform>(
             heap: 0,
         },
         postcar: StageReservation {
-            image: span(0x1000000, 0x10000),
-            writable: span(0x1010000, 0x10000),
+            image: span(windows.postcar, 0x10000),
+            writable: span(windows.postcar + 0x10000, 0x10000),
             stack: 0x2000,
             heap: 0,
         },
         ramstage: StageReservation {
-            image: span(0x4000000, 0x400000),
-            writable: span(0x4400000, 0xc00000),
+            image: span(windows.ramstage, 0x400000),
+            writable: span(windows.ramstage + 0x400000, 0xc00000),
             stack: 0x400000,
             heap: 0x200000,
         },
@@ -339,7 +340,7 @@ pub fn reservations<P: IntelPlatform>(
         // Firmware store: S3 stage caches (about 1 MiB for a payload-enabled
         // release ramstage), the training record and ACPI/SMBIOS tables. Only
         // the used part stays reserved.
-        store: span(0x5000000, 0x400000),
+        store: span(windows.store, 0x400000),
     };
     reservations.validate()?;
     Ok(reservations)
@@ -1152,5 +1153,18 @@ mod tests {
             );
         }
         assert_eq!(i945.bootblock.image, i945.firmware);
+    }
+    #[test]
+    fn legacy_platforms_keep_low_stage_windows() {
+        let res = reservations::<I945>(FACTS, false).unwrap();
+        assert_eq!(
+            res.postcar.image.base,
+            crate::facts::StageWindows::LEGACY.postcar
+        );
+        assert_eq!(
+            res.ramstage.image.base,
+            crate::facts::StageWindows::LEGACY.ramstage
+        );
+        assert_eq!(res.store.base, crate::facts::StageWindows::LEGACY.store);
     }
 }

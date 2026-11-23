@@ -61,7 +61,7 @@
 )]
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 
 use crate::x86::lapic::Lapic;
 
@@ -323,6 +323,8 @@ pub enum MpError {
     TrampolinePlacementFailed,
     /// No CPU driver matched one or more CPUs.
     UnsupportedCpu,
+    /// A platform prerequisite (e.g. SMM relocation) failed before CPU init.
+    PlatformSetupFailed,
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +469,7 @@ static STEP_SYNC: [StepSync; MAX_FLIGHT_STEPS] = [const {
 /// borrowed CPU drivers outlive every access through it.
 static MP_CONFIG: AtomicPtr<MpConfig<'static>> = AtomicPtr::new(core::ptr::null_mut());
 static CPU_INIT_ERRORS: AtomicUsize = AtomicUsize::new(0);
+static DEFER_MODEL_INIT: AtomicBool = AtomicBool::new(false);
 
 fn publish_config(config: &MpConfig<'_>) {
     MP_CONFIG.store(
@@ -510,7 +513,9 @@ fn cpu_init() {
             identity.model(),
         );
         driver.update_microcode();
-        driver.init_cpu();
+        if !DEFER_MODEL_INIT.load(Ordering::Relaxed) {
+            driver.init_cpu();
+        }
     } else {
         let vendor = match identity.vendor {
             CpuVendor::Intel => "Intel",
@@ -783,7 +788,17 @@ fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
 /// Initialize all CPUs, run CPU-model initialization, and leave APs in the
 /// scoped-work mailbox loop. Chipset SMM setup is deliberately post-MP code.
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
-    mp_init_inner(config, None)
+    mp_init_inner(config, None, true, None)
+}
+
+/// Run a platform step with every CPU checked in and patched, before model
+/// initialization. Select `bsp_lint0` only on systems not routing ExtINT via GSI0.
+pub fn mp_init_with_setup(
+    config: &MpConfig<'_>,
+    bsp_lint0: bool,
+    mut setup: impl FnMut(&MpHandle) -> Result<(), MpError>,
+) -> Result<MpHandle, MpError> {
+    mp_init_inner(config, None, bsp_lint0, Some(&mut setup))
 }
 
 /// Like [`mp_init`], but APs are released by the platform instead of
@@ -794,12 +809,16 @@ pub fn mp_init_with_launcher(
     config: &MpConfig<'_>,
     launch: &mut dyn FnMut(u16) -> Result<(), u32>,
 ) -> Result<MpHandle, MpError> {
-    mp_init_inner(config, Some(launch))
+    mp_init_inner(config, Some(launch), true, None)
 }
+
+type PlatformSetup<'a> = &'a mut dyn FnMut(&MpHandle) -> Result<(), MpError>;
 
 fn mp_init_inner(
     config: &MpConfig<'_>,
     launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
+    bsp_lint0: bool,
+    setup: Option<PlatformSetup<'_>>,
 ) -> Result<MpHandle, MpError> {
     validate_cpu_capacity(config.max_cpus)?;
     let num_cpus = checked_logical_cpu_count(config.num_cpus, config.max_cpus)?;
@@ -820,7 +839,7 @@ fn mp_init_inner(
     // --- Step 1: BSP LAPIC setup ---
     let lapic = Lapic::from_msr();
     lapic.enable();
-    lapic.setup_virtual_wire(true);
+    lapic.setup_virtual_wire(bsp_lint0);
 
     BSP_APIC_ID.store(lapic.id() as usize, Ordering::Release);
     fstart_log::info!("mp: BSP LAPIC ID = {}", lapic.id());
@@ -842,12 +861,17 @@ fn mp_init_inner(
 
     // APs reach the drivers through the published config; it is
     // withdrawn before returning on every path.
+    DEFER_MODEL_INIT.store(setup.is_some(), Ordering::Relaxed);
     publish_config(config);
     let flown = fly(config, max_aps, &lapic, &msrs, unlock, launch);
     clear_mp_globals();
     let final_count = flown?;
 
-    post_mp_cpu_drivers(config.cpu_drivers);
+    let handle = MpHandle {
+        num_aps: final_count,
+        _not_send: PhantomData,
+    };
+    finish_model_setup(&handle, config, setup)?;
     ONLINE_CPUS.store((final_count + 1) as usize, Ordering::Release);
     fstart_log::info!(
         "{} ({} CPUs)",
@@ -855,10 +879,31 @@ fn mp_init_inner(
         final_count + 1
     );
 
-    Ok(MpHandle {
-        num_aps: final_count,
-        _not_send: PhantomData,
-    })
+    Ok(handle)
+}
+
+fn finish_model_setup(
+    handle: &MpHandle,
+    config: &MpConfig<'_>,
+    setup: Option<PlatformSetup<'_>>,
+) -> Result<(), MpError> {
+    if let Some(setup) = setup {
+        setup(handle)?;
+        handle.scope(|s| {
+            s.scatter(&|_| {
+                // Every CPU already passed the match check in the patch step.
+                let identity = CpuIdentity::current();
+                config
+                    .cpu_drivers
+                    .iter()
+                    .find(|d| d.matches(identity))
+                    .expect("matched CPU driver")
+                    .init_cpu();
+            })
+        });
+    }
+    post_mp_cpu_drivers(config.cpu_drivers);
+    Ok(())
 }
 
 /// Start the APs and walk the CPU-only flight plan on the BSP side.
@@ -1202,10 +1247,19 @@ pub fn park_aps_for_payload() -> bool {
     }
 }
 
-/// HLT loop for parking an AP.
+/// Flush caches and place an AP into hardware Wait-for-SIPI (matching coreboot
+/// `stop_this_cpu()`), falling back to a halted loop if INIT does not take hold.
 fn park_cpu(_data: *const (), cpu: u32) {
-    // Acknowledge the command before stopping. The trampoline never returns,
-    // so the mailbox loop cannot perform its normal completion store.
+    // Disable maskable interrupts and flush dirty cache lines before signalling
+    // completion to the BSP so the AP leaves no dirty state behind.
+    // SAFETY: terminal AP handoff path.
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+        crate::x86::writeback_invalidate_caches();
+    }
+
+    // Acknowledge completion before asserting INIT-to-self: the CPU will enter
+    // Wait-for-SIPI and never return to the mailbox loop.
     if let Some(mb) = cpu
         .checked_sub(1)
         .and_then(|index| MAILBOXES.get(index as usize))
@@ -1213,12 +1267,13 @@ fn park_cpu(_data: *const (), cpu: u32) {
         mb.func.store(MB_IDLE, Ordering::Release);
     }
 
-    // Keep the AP quiescent until the payload's INIT/SIPI sequence. Maskable
-    // firmware interrupts must not wake it back into firmware-owned state.
-    // SAFETY: disabling interrupts and halting is the terminal AP handoff path.
-    unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
+    let lapic = Lapic::from_msr();
+    lapic.assert_init_self();
+    delay_us(10_000);
+    lapic.deassert_init_self();
+
     loop {
-        // SAFETY: HLT is always safe.
+        // SAFETY: HLT is always safe as a fallback if INIT-to-self did not stop execution.
         unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
     }
 }
@@ -1449,6 +1504,57 @@ mod tests {
             mailbox.cpu_index.store(id, Ordering::Release);
         }
         assert_eq!(ids.as_slice(), &[0, 1, 4, 5]);
+    }
+
+    #[test]
+    fn failed_relocation_does_not_run_model_or_post_init() {
+        struct Driver(AtomicU8);
+        impl CpuDriver for Driver {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn id_table(&self) -> &'static [CpuIdMatch] {
+                &[]
+            }
+            fn matches(&self, _: CpuIdentity) -> bool {
+                true
+            }
+            fn init_cpu(&self) {
+                assert_eq!(self.0.swap(2, Ordering::Relaxed), 1);
+            }
+            fn post_mp_init(&self) {
+                assert_eq!(self.0.swap(3, Ordering::Relaxed), 2);
+            }
+        }
+        let driver = Driver(AtomicU8::new(0));
+        let config = MpConfig {
+            cpu_drivers: &[&driver],
+            num_cpus: 1,
+            max_cpus: 1,
+        };
+        let handle = MpHandle {
+            num_aps: 0,
+            _not_send: PhantomData,
+        };
+        assert!(
+            finish_model_setup(
+                &handle,
+                &config,
+                Some(&mut |_| Err(MpError::PlatformSetupFailed))
+            )
+            .is_err()
+        );
+        assert_eq!(driver.0.load(Ordering::Relaxed), 0);
+        finish_model_setup(
+            &handle,
+            &config,
+            Some(&mut |_| {
+                driver.0.store(1, Ordering::Relaxed);
+                Ok(())
+            }),
+        )
+        .unwrap();
+        assert_eq!(driver.0.load(Ordering::Relaxed), 3);
     }
 
     #[test]

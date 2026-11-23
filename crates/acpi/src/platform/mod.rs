@@ -75,6 +75,8 @@ pub struct FadtConfig {
     pub pm_profile: PmProfile,
     /// PM1a Event Block I/O port base (x86 only, 0 = unused).
     pub pm1a_evt_blk: u32,
+    /// Use 16-bit accesses to the two halves of the 32-bit event block.
+    pub pm1_evt_word_access: bool,
     /// PM1a Control Block I/O port base.
     pub pm1a_cnt_blk: u32,
     /// PM Timer Block I/O port base.
@@ -83,6 +85,8 @@ pub struct FadtConfig {
     pub gpe0_blk: u32,
     /// Total GPE0 status-plus-enable block length in bytes.
     pub gpe0_blk_len: u8,
+    /// Use byte accesses for `X_GPE0_BLK` (wrapping `bit_width` for 32-byte blocks).
+    pub gpe0_byte_access: bool,
     /// SCI interrupt number.
     pub sci_int: u16,
     /// IAPC boot arch flags (8042, legacy devices, etc.).
@@ -116,10 +120,12 @@ impl Default for FadtConfig {
             arm_psci: false,
             pm_profile: PmProfile::Unspecified,
             pm1a_evt_blk: 0,
+            pm1_evt_word_access: false,
             pm1a_cnt_blk: 0,
             pm_tmr_blk: 0,
             gpe0_blk: 0,
             gpe0_blk_len: 0,
+            gpe0_byte_access: false,
             sci_int: 0,
             iapc_boot_arch: 0,
             smi_cmd: 0,
@@ -475,13 +481,35 @@ fn build_x86_fadt(dsdt_addr: u64, facs_addr: u64, config: &FadtConfig) -> Vec<u8
     }
 
     // Extended PM block addresses (GAS).
-    b.x_pm1a_evt_blk = gas_io(config.pm1a_evt_blk, 32);
+    b.x_pm1a_evt_blk = if config.pm1_evt_word_access {
+        GAS::new(
+            AddressSpace::SystemIo,
+            32,
+            0,
+            AccessSize::WordAccess,
+            u64::from(config.pm1a_evt_blk),
+        )
+    } else {
+        gas_io(config.pm1a_evt_blk, 32)
+    };
     b.x_pm1a_cnt_blk = gas_io(config.pm1a_cnt_blk, 16);
     b.x_pm_tmr_blk = gas_io(config.pm_tmr_blk, 32);
     if config.pm2_cnt_blk != 0 {
         b.x_pm2_cnt_blk = gas_io(config.pm2_cnt_blk, 8);
     }
-    b.x_gpe0_blk = gas_io(config.gpe0_blk, config.gpe0_blk_len.saturating_mul(8));
+    b.x_gpe0_blk = if config.gpe0_byte_access {
+        // A 32-byte block (Lynx Point-LP) cannot express 256 bits in the GAS
+        // width byte: use zero and retain the authoritative GPE0_BLK_LEN.
+        GAS::new(
+            AddressSpace::SystemIo,
+            config.gpe0_blk_len.wrapping_mul(8),
+            0,
+            AccessSize::ByteAccess,
+            u64::from(config.gpe0_blk),
+        )
+    } else {
+        gas_io(config.gpe0_blk, config.gpe0_blk_len.saturating_mul(8))
+    };
 
     let fadt = b.finalize();
     let mut bytes = Vec::new();
@@ -698,5 +726,25 @@ mod tests {
         // Transition to 3-byte: content_len + 2 = 0x1000
         let pkg = crate::encode_pkg_length(4094);
         assert_eq!(pkg.len(), 3);
+    }
+
+    #[test]
+    fn x86_fadt_word_pm1_and_byte_gpe0_access() {
+        let config = FadtConfig {
+            pm1a_evt_blk: 0x1800,
+            pm1_evt_word_access: true,
+            gpe0_blk: 0x1880,
+            gpe0_blk_len: 32,
+            gpe0_byte_access: true,
+            ..Default::default()
+        };
+        let bytes = build_x86_fadt(0x1000, 0x2000, &config);
+        let pm1 = core::mem::offset_of!(FADTBuilder, x_pm1a_evt_blk);
+        // SystemIo(1), bit_width=32, bit_offset=0, WordAccess(2)
+        assert_eq!(&bytes[pm1..pm1 + 4], &[1, 32, 0, 2]);
+        let gpe0 = core::mem::offset_of!(FADTBuilder, x_gpe0_blk);
+        // SystemIo(1), bit_width=0 (32*8 wraps), bit_offset=0, ByteAccess(1)
+        assert_eq!(&bytes[gpe0..gpe0 + 4], &[1, 0, 0, 1]);
+        assert_eq!(bytes[core::mem::offset_of!(FADTBuilder, gpe0_blk_len)], 32);
     }
 }

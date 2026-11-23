@@ -153,7 +153,7 @@ pub const POSTCAR_STASH_ADDR: u64 = 0x2000;
 pub const POSTCAR_STASH_MAGIC: u32 = 0x5453_4350;
 
 /// Version of the authenticated bootstrap handoff following the MTRR prefix.
-pub const POSTCAR_STASH_VERSION: u32 = 4;
+pub const POSTCAR_STASH_VERSION: u32 = 5;
 
 /// [`PostcarMtrrStash::boot_flags`] bit: the boot is an S3 resume.
 pub const BOOT_FLAG_S3_RESUME: u32 = 1 << 0;
@@ -210,6 +210,8 @@ pub struct PostcarMtrrStash {
     pub locator: [u8; 40],
     /// Boot-path flags from the bootblock (`BOOT_FLAG_*`), e.g. S3 resume.
     pub boot_flags: u32,
+    /// Complement of `boot_flags`; a lost resume bit must not become a cold boot.
+    pub boot_flags_inverse: u32,
     /// The bootblock's console level, as its `debug_level` option resolved
     /// it (coreboot's values), so postcar need not read the options.
     pub log_level: u32,
@@ -223,6 +225,23 @@ const _: () = {
     assert!(core::mem::size_of::<PostcarMtrrStash>() <= 0x1000);
 };
 
+#[test]
+fn a_lost_resume_bit_invalidates_the_handoff() {
+    // SAFETY: PostcarMtrrStash contains only integer and byte-array fields.
+    let mut stash: PostcarMtrrStash = unsafe { core::mem::zeroed() };
+    stash.magic = POSTCAR_STASH_MAGIC;
+    stash.version = POSTCAR_STASH_VERSION;
+    stash.size = core::mem::size_of_val(&stash) as u32;
+    stash.count = 1;
+    stash.image_size = 1;
+    stash.ram_end = 1;
+    stash.boot_flags = BOOT_FLAG_S3_RESUME;
+    stash.boot_flags_inverse = !stash.boot_flags;
+    assert!(stash.valid_header());
+    stash.boot_flags = 0;
+    assert!(!stash.valid_header());
+}
+
 impl PostcarMtrrStash {
     /// Structural checks only. The trusted predecessor and reserved RAM
     /// lifetime, not this magic value, establish the handoff's provenance.
@@ -235,6 +254,8 @@ impl PostcarMtrrStash {
             && self.image_size != 0
             && self.image_base.checked_add(self.image_size).is_some()
             && self.ram_end != 0
+            && self.boot_flags & !BOOT_FLAG_S3_RESUME == 0
+            && self.boot_flags == !self.boot_flags_inverse
     }
 }
 
@@ -346,6 +367,7 @@ pub unsafe fn write_postcar_stash(
         core::ptr::addr_of_mut!((*stash).ram_end).write_volatile(ram_end);
         core::ptr::addr_of_mut!((*stash).locator).write_volatile(boot.locator);
         core::ptr::addr_of_mut!((*stash).boot_flags).write_volatile(boot.boot_flags);
+        core::ptr::addr_of_mut!((*stash).boot_flags_inverse).write_volatile(!boot.boot_flags);
         core::ptr::addr_of_mut!((*stash).log_level).write_volatile(boot.log_level);
         // Magic last: structural validity is checked before consuming the ABI.
         core::ptr::addr_of_mut!((*stash).magic).write_volatile(POSTCAR_STASH_MAGIC);

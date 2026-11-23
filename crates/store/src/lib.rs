@@ -115,6 +115,10 @@ pub mod tag {
     pub const COREBOOT: Tag = Tag::vendor(0x008);
     /// IGD OpRegion; S3 resume restores the graphics `ASLS` register to it.
     pub const IGD_OPREGION: Tag = Tag::vendor(0x009);
+    /// Cold allocation of chipset BARs referenced by retained AML.
+    pub const ACPI_BARS: Tag = Tag::vendor(0x00a);
+    /// Cold TPM identity and IRQ routing for S3 resume consistency checks.
+    pub const TPM_STATE: Tag = Tag::vendor(0x00b);
 }
 
 /// Location of one entry's data within its store.

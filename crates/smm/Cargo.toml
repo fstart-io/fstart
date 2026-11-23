@@ -14,6 +14,7 @@ debugcon = []
 
 [dependencies]
 fstart-core = { workspace = true }
+fstart-pci = { workspace = true }
 zerocopy = { workspace = true }
 
 [lints]

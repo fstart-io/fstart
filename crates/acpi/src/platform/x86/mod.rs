@@ -84,6 +84,11 @@ pub struct X86Fadt {
     pub duty_width: u8,
     /// One-byte PM2 control block (`ARB_DIS`) at this PMBASE offset.
     pub pm2_cnt_offset: Option<u16>,
+    /// Use 16-bit accesses for the two halves of the 32-bit PM1a event block.
+    pub pm1_evt_word_access: bool,
+    /// Use byte accesses for `X_GPE0_BLK` (required for 32-byte blocks such as
+    /// Lynx Point-LP, where 256 bits wraps the GAS `bit_width` byte to zero).
+    pub gpe0_byte_access: bool,
 }
 
 impl Default for X86Fadt {
@@ -99,6 +104,8 @@ impl Default for X86Fadt {
             duty_offset: defaults.duty_offset,
             duty_width: defaults.duty_width,
             pm2_cnt_offset: None,
+            pm1_evt_word_access: false,
+            gpe0_byte_access: false,
         }
     }
 }
@@ -180,10 +187,12 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
         arm_psci: false,
         pm_profile: config.fadt.pm_profile,
         pm1a_evt_blk: pmbase,
+        pm1_evt_word_access: config.fadt.pm1_evt_word_access,
         pm1a_cnt_blk: pmbase + 0x04,
         pm_tmr_blk: pmbase + 0x08,
         gpe0_blk: pmbase + u32::from(config.gpe0_offset),
         gpe0_blk_len: config.gpe0_length,
+        gpe0_byte_access: config.fadt.gpe0_byte_access,
         sci_int: config.sci_irq as u16,
         iapc_boot_arch: config.fadt.iapc_boot_arch,
         smi_cmd,
