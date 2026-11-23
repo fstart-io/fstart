@@ -63,9 +63,9 @@ rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "
 rflasher-internal = { git = "https://github.com/ArthurHeymans/rflasher.git", rev = "01b8e1554ec4a7df8a9d9008c19dc82aeb219df8", default-features = false }
 
 # ASPEED register access, generated from kyanitecomputer/aspeed-data.
-aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "d4e6530b98e0bfa926f9b709f3a4d6612d5f75fe", default-features = false }
+aspeed-pac = { git = "https://github.com/kyanitecomputer/aspeed-data", rev = "7ecc50d0fb5f346adb4a7c086b655dda7938f1a5", default-features = false }
 # Blocking ASPEED driver cores; pins the same aspeed-data revision.
-aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "9cae061f9b44c4c8e557deaca7dd00a6b33a8c56", default-features = false }
+aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "a2310692a6dd8cfeace911991a3a097a35ba92d5", default-features = false }
 
 # CrabEFI's EFI types and X.509 parsing, for host tools; the same revision
 # as crabefi-core in crates/boot.

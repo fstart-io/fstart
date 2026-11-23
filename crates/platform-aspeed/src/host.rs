@@ -1,6 +1,7 @@
 //! ASPEED build plans.
 //!
-//! AST2500: the bootblock executes SPI flash in place from the reset vector,
+//! AST2400, AST1250 and AST2500: the bootblock executes SPI flash in place
+//! from the reset vector,
 //! with its data, stack and heap in the on-chip SRAM. Once DRAM is up it
 //! loads the main stage into DRAM, which boots the payload. The FFS is
 //! packed behind the bootblock inside the 16 MiB the boot-time 3-byte
@@ -67,17 +68,15 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         "elf" => true,
         _ => {
             return Err(PlanError::unsupported_payload(
-                "the AST2500 main stage boots halt or a bare ELF",
+                "the ASPEED main stage boots halt or a bare ELF",
             ));
         }
     };
-    match facts.soc {
-        AspeedSoc::Ast2500 => {}
-        AspeedSoc::Ast2400 | AspeedSoc::Ast1250 => {
-            return Err("the AST2400 and AST1250 are not supported yet".into());
-        }
+    let bundle = match facts.soc {
+        AspeedSoc::Ast2400 | AspeedSoc::Ast1250 => "ast2400",
+        AspeedSoc::Ast2500 => "ast2500",
         AspeedSoc::Ast2600 => return Err("the AST2600 is not supported yet".into()),
-    }
+    };
     let soc = facts.soc.layout();
     if facts.flash_size < FIRMWARE_WINDOW_SIZE {
         return Err("the boot flash must cover the 16 MiB firmware window".into());
@@ -150,7 +149,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             data_addr: None,
         },
     ]));
-    let main = main_stage(soc, &stages)?;
+    let main = main_stage(bundle, soc, &stages)?;
     let assembly = Assembly {
         platform: Platform::Armv5te,
         memory: vec![
@@ -195,13 +194,15 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
     } else {
         vec![]
     };
+    let bootblock_bundle = format!("bundle-{bundle}-bootblock");
+    let main_bundle = format!("bundle-{bundle}-main");
     let plan = BuildPlan {
         options: Default::default(),
         payload,
         units: vec![
             unit(
                 "bootblock",
-                &["bundle-ast2500-bootblock"],
+                &[bootblock_bundle.as_str()],
                 fstart_image_build::linker::resolved_xip(&layout)?,
                 UnitOutput::Executable {
                     expectations: layout.elf_expectations()?,
@@ -211,7 +212,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                &["bundle-ast2500-main", "payload-elf"][..1 + usize::from(elf)],
+                &[main_bundle.as_str(), "payload-elf"][..1 + usize::from(elf)],
                 main.linker_script,
                 UnitOutput::Executable {
                     expectations: main.expectations,
@@ -247,11 +248,12 @@ fn main_dram(soc: &Layout) -> MemoryRegion {
 /// Link the main stage into its DRAM window, with the handoff page below
 /// it reserved.
 fn main_stage(
+    name: &str,
     soc: &Layout,
     stages: &StageLayout,
 ) -> Result<fstart_image_build::linker::ResolvedRamStage, String> {
     let config = BoardConfig {
-        name: hstr("ast2500"),
+        name: hstr(name),
         platform: Platform::Armv5te,
         memory: MemoryMap {
             regions: hvec([main_dram(soc)]),
@@ -293,40 +295,39 @@ fn main_stage(
 
 /// How `emulator` runs the image.
 fn run(emulator: AspeedEmulator, facts: &BoardFacts) -> Result<RunRecipe, String> {
-    match emulator {
-        // The EVB machine executes the composite SPI image in place with
-        // the board's CE0 flash part as its FMC model.
-        AspeedEmulator::Ast2500Evb => {
-            let model = match facts.flash_size {
-                0x400_0000 => "mt25ql512ab",
-                size => {
-                    return Err(format!(
-                        "no QEMU ast2500-evb flash model for a {size:#x}-byte CE0 flash"
-                    ));
-                }
-            };
-            Ok(RunRecipe {
-                qemu: "qemu-system-arm".into(),
-                machine: format!("ast2500-evb,execute-in-place=on,fmc-model={model}"),
-                cpu: None,
-                accel_kvm: false,
-                memory: None,
-                smp: None,
-                nographic: true,
-                media: vec![RunMedia::Mtd {
-                    artifact: RunArtifact::Step(ImageStep::FFS.into()),
-                }],
-                devices: vec![],
-                args: vec!["-no-reboot".into()],
-                disk: None,
-                tpm: None,
-                tests: vec![],
-            })
+    // The machines execute the composite SPI image in place, with a flash
+    // part of the board's CE0 size as their FMC model.
+    let machine = match emulator {
+        AspeedEmulator::PalmettoBmc => "palmetto-bmc",
+        AspeedEmulator::Ast2500Evb => "ast2500-evb",
+        AspeedEmulator::Ast2600Evb => return Err("no run recipe for ast2600-evb yet".into()),
+    };
+    let model = match facts.flash_size {
+        0x200_0000 => "n25q256a",
+        0x400_0000 => "mt25ql512ab",
+        size => {
+            return Err(format!(
+                "no QEMU {machine} flash model for a {size:#x}-byte CE0 flash"
+            ));
         }
-        AspeedEmulator::PalmettoBmc | AspeedEmulator::Ast2600Evb => {
-            Err(format!("no run recipe for {emulator:?} yet"))
-        }
-    }
+    };
+    Ok(RunRecipe {
+        qemu: "qemu-system-arm".into(),
+        machine: format!("{machine},execute-in-place=on,fmc-model={model}"),
+        cpu: None,
+        accel_kvm: false,
+        memory: None,
+        smp: None,
+        nographic: true,
+        media: vec![RunMedia::Mtd {
+            artifact: RunArtifact::Step(ImageStep::FFS.into()),
+        }],
+        devices: vec![],
+        args: vec!["-no-reboot".into()],
+        disk: None,
+        tpm: None,
+        tests: vec![],
+    })
 }
 
 fn unit(
@@ -415,14 +416,40 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_socs_fail_the_plan() {
-        for soc in [AspeedSoc::Ast2400, AspeedSoc::Ast1250, AspeedSoc::Ast2600] {
+    fn the_ast2600_fails_the_plan() {
+        let facts = BoardFacts {
+            soc: AspeedSoc::Ast2600,
+            emulator: None,
+            ..MJ11
+        };
+        assert!(resolve(facts, BuildSelection::default()).is_err());
+    }
+
+    #[test]
+    fn ast2400_generation_stages_use_its_dram_and_sram() {
+        for soc in [AspeedSoc::Ast2400, AspeedSoc::Ast1250] {
             let facts = BoardFacts {
                 soc,
-                emulator: None,
-                ..MJ11
+                flash_size: 32 * 1024 * 1024,
+                emulator: Some(AspeedEmulator::PalmettoBmc),
             };
-            assert!(resolve(facts, BuildSelection::default()).is_err());
+            let plan = resolve(facts, BuildSelection::default()).unwrap();
+            let [bootblock, main] = &plan.units[..] else {
+                panic!("bootblock and main")
+            };
+            assert_eq!(bootblock.features, ["bundle-ast2400-bootblock"]);
+            assert_eq!(main.features, ["bundle-ast2400-main"]);
+            let script = bootblock.linker_script.as_deref().unwrap();
+            assert!(script.contains("RAM (rw) : ORIGIN = 0x1e720000"));
+            let UnitOutput::Executable { load_address, .. } = main.output else {
+                panic!("main is an executable")
+            };
+            assert_eq!(load_address, 0x4200_0000);
+            let run = plan.run.unwrap();
+            assert_eq!(
+                run.machine,
+                "palmetto-bmc,execute-in-place=on,fmc-model=n25q256a"
+            );
         }
     }
 
