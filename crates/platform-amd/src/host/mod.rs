@@ -86,6 +86,10 @@ pub enum Image {
     Single(single::Image),
     /// The SP3 flash: a 16 MiB half per generation, packed from blobs.
     Dual(dual::Image),
+    /// Stage + SMM + FFS artifacts only; rejects `--blobs` flash
+    /// assembly explicitly until the SoC's flash packer (e.g. Venice ISH A/B
+    /// dual-origin) exists.
+    BuildOnly { reason: &'static str },
 }
 
 /// The payload a build selects (`--payload`, default halt).
@@ -347,6 +351,15 @@ pub fn resolve(
         match &host.image {
             Image::Single(image) => image.images(host, selection, options, ffs)?,
             Image::Dual(image) => image.images(host, selection, options, ffs)?,
+            Image::BuildOnly { reason } => {
+                if options.blobs.is_some() {
+                    return Err(format!("{}: {reason}", host.name).into());
+                }
+                ffs(None, true)
+                    .map(fstart_image_build::build_plan::ImageStep::from)
+                    .into_iter()
+                    .collect()
+            }
         }
     };
     let plan = BuildPlan {
@@ -376,9 +389,10 @@ pub fn host<B: Board>() -> Result<Host, String> {
         }
         [SocId::Genoa] => crate::rs::host::host::<crate::genoa::Stones>(B::MAX_CPUS),
         [SocId::Siena] => crate::rs::host::host::<crate::siena::Dense>(B::MAX_CPUS),
+        [SocId::Venice] => crate::sp7::host::host::<crate::venice::Wh>(B::MAX_CPUS),
         _ => {
             return Err(format!(
-                "{} carries SoCs one image cannot: one of Picasso, Zeppelin, Genoa and Siena, or the SP3 SoCs",
+                "{} carries SoCs one image cannot: one of Picasso, Zeppelin, Genoa, Siena and Venice, or the SP3 SoCs",
                 B::NAME
             ));
         }
