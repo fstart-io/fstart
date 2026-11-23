@@ -135,6 +135,10 @@ pub trait SuperIoChip: Send + Sync + 'static {
     const CHIP_ID: u16;
     /// Mask off revision bits embedded in the ID on some Winbond parts.
     const CHIP_ID_MASK: u16 = 0xffff;
+    /// A compatible alternate ID can share the same logical-device layout.
+    fn matches_chip_id(id: u16) -> bool {
+        id & Self::CHIP_ID_MASK == Self::CHIP_ID
+    }
     /// Combined keyboard/mouse LDNs store the mouse IRQ in slot 1 (0x72).
     const MOUSE_IRQ_SECONDARY: bool = false;
 
@@ -400,7 +404,7 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 
     /// Read the 16-bit chip ID from config registers.
-    fn read_chip_id(&self) -> u16 {
+    pub(crate) fn read_chip_id(&self) -> u16 {
         let hi = self.read_reg(SIO_REG_DEVID_HI) as u16;
         let lo = self.read_reg(SIO_REG_DEVID_LO) as u16;
         (hi << 8) | lo
@@ -635,7 +639,92 @@ impl<C: SuperIoChip> SuperIo<C> {
     }
 }
 
+fn unconfigured_ldns(requests: &[(Option<u8>, bool)]) -> impl Iterator<Item = u8> + '_ {
+    requests
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, (ldn, _))| {
+            let ldn = (*ldn)?;
+            (!requests[..index]
+                .iter()
+                .any(|(other, _)| *other == Some(ldn))
+                && !requests
+                    .iter()
+                    .any(|(other, enabled)| *other == Some(ldn) && *enabled))
+            .then_some(ldn)
+        })
+}
+
 impl<C: SuperIoChip> SuperIo<C> {
+    /// Disable functions explicitly omitted by this owner's configuration.
+    /// Unlike `init`, this deliberately does not preserve inherited decodes.
+    /// Shared LDNs stay enabled if ANY of their functions is requested; chip
+    /// functions outside the generic inventory (EC firmware, power, etc.) are
+    /// untouched. Call before publishing an OS inventory that omits them.
+    pub fn disable_unconfigured_functions(&mut self) -> Result<(), DeviceError> {
+        let requests = [
+            (C::COM1_LDN, self.config.com1.is_some()),
+            (C::COM2_LDN, self.config.com2.is_some()),
+            (C::KBC_LDN, self.config.keyboard.is_some()),
+            (C::MOUSE_LDN, self.config.mouse.is_some()),
+            (C::EC_LDN, self.config.env_controller.is_some()),
+            (C::PARALLEL_LDN, self.config.parallel.is_some()),
+            (C::CIR_LDN, self.config.cir.is_some()),
+            (C::GPIO_LDN, self.config.gpio.is_some()),
+        ];
+        if requests
+            .iter()
+            .any(|(ldn, enabled)| *enabled && ldn.is_none())
+        {
+            return Err(DeviceError::MissingResource("unsupported LDN"));
+        }
+        self.enter_config();
+        let result = (|| {
+            if C::CHIP_ID != 0 && !C::matches_chip_id(self.read_chip_id()) {
+                return Err(DeviceError::InitFailed);
+            }
+            for ldn in unconfigured_ldns(&requests) {
+                let mut device = self.logical_device(ldn);
+                if self.read_reg(0x07) != ldn {
+                    return Err(DeviceError::InitFailed);
+                }
+                device.set_enabled(false);
+                if device.is_enabled() {
+                    return Err(DeviceError::InitFailed);
+                }
+            }
+            Ok(())
+        })();
+        self.exit_config();
+        result
+    }
+
+    /// Read back only requested UART activation, base and interrupt resources.
+    /// This does not establish baud, physical signaling or other LDN state.
+    pub fn verify_com_ports(&mut self) -> Result<(), DeviceError> {
+        self.enter_config();
+        let result = (|| {
+            for (ldn, config) in [
+                (C::COM1_LDN, self.config.com1),
+                (C::COM2_LDN, self.config.com2),
+            ] {
+                let Some(config) = config else { continue };
+                let ldn = ldn.ok_or(DeviceError::MissingResource("unsupported LDN"))?;
+                let mut device = self.logical_device(ldn);
+                if self.read_reg(0x07) != ldn
+                    || !device.is_enabled()
+                    || !device.matches_io_base(IoResource::Primary(config.io_base))
+                    || !device.matches_irq(IrqResource::Primary(config.irq))
+                {
+                    return Err(DeviceError::InitFailed);
+                }
+            }
+            Ok(())
+        })();
+        self.exit_config();
+        result
+    }
+
     /// Construct a SuperIO at a fixed LPC PnP config port.
     pub fn new_at_base(config: SuperIoConfig, base_port: u16) -> Result<Self, DeviceError> {
         C::validate_config(&config)?;
@@ -665,7 +754,7 @@ impl<C: SuperIoChip> SuperIo<C> {
         // PnP resource where the chip ID registers are not reliable/available.
         if C::CHIP_ID != 0 {
             let id = self.read_chip_id();
-            if id & C::CHIP_ID_MASK != C::CHIP_ID {
+            if !C::matches_chip_id(id) {
                 self.exit_config();
                 fstart_log::error!("superio: chip ID mismatch: read {:#06x}", id);
                 return Err(DeviceError::InitFailed);
@@ -1138,3 +1227,38 @@ mod acpi_impl {
 
 #[cfg(feature = "acpi")]
 pub use acpi_impl::{UartAcpiPolicy, superio_dsdt_aml, superio_dsdt_aml_with_uart_policy};
+
+#[cfg(test)]
+mod lifecycle_tests {
+    extern crate std;
+    use super::unconfigured_ldns;
+    use std::vec::Vec;
+
+    #[test]
+    fn omitted_functions_do_not_disable_requested_siblings_or_repeat_shared_ldns() {
+        // A keyboard/mouse pair shares LDN5. Either enabled request keeps
+        // the entire LDN alive, regardless of inventory ordering.
+        for requests in [
+            [
+                (Some(5), true),
+                (Some(5), false),
+                (Some(3), false),
+                (Some(3), false),
+                (None, false),
+            ],
+            [
+                (Some(5), false),
+                (Some(5), true),
+                (Some(3), false),
+                (Some(3), false),
+                (None, false),
+            ],
+        ] {
+            assert_eq!(unconfigured_ldns(&requests).collect::<Vec<_>>(), [3]);
+        }
+        assert_eq!(
+            unconfigured_ldns(&[(Some(5), false), (Some(5), false)]).collect::<Vec<_>>(),
+            [5],
+        );
+    }
+}
