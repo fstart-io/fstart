@@ -22,6 +22,7 @@ pub mod ich8;
 pub mod ich9;
 pub mod igd;
 pub mod ironlake;
+pub mod lynxpoint;
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
 pub mod southbridge;
@@ -291,6 +292,12 @@ pub trait IntelSouthbridgeDriver: Sized {
         Ok(())
     }
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    /// Complete southbridge power-management init that must run after MP CPU
+    /// C-state setup and northbridge `BIOS_RESET_CPL` (e.g. Lynx Point-LP
+    /// PM_SYNC enable, dynamic clock gating, and `GEN_PMCON_2.DRAM_INIT`).
+    fn post_mp_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 
     /// Reset the system through the generic x86 CF9 port. Southbridges with
