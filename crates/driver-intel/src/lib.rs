@@ -1,5 +1,5 @@
 #![no_std]
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 #![allow(clippy::modulo_one)]
 
 extern crate alloc;
@@ -13,6 +13,7 @@ pub mod gm45;
 pub mod gm965;
 pub mod gma;
 pub mod gmch;
+pub mod heci;
 mod host_bridge;
 pub mod i945;
 pub mod ibexpeak;
@@ -21,9 +22,13 @@ pub mod ich8;
 pub mod ich9;
 pub mod igd;
 pub mod ironlake;
+pub mod p2sb;
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
+pub mod skylake;
 pub mod southbridge;
+pub mod sunrise_point;
+pub mod txt;
 
 /// Boot condition selected before DRAM initialization.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -219,6 +224,12 @@ pub trait IntelSouthbridgeDriver: Sized {
     /// write-protected subsystem registers unlock them here.
     fn program_subsystem_id(&self, device: fstart_pci::ecam::EcamDevice, id: u32) -> bool {
         device.set_subsystem(id)
+    }
+    /// Unmanaged functions that canonical enumeration must not probe or
+    /// reconfigure (e.g. an inherited SkipInit console). Implementations must
+    /// reserve ALL live apertures via fixed_pci_bars or board reservations.
+    fn excluded_pci_functions(&self) -> fstart_pci::PciExcludedFunctions {
+        fstart_pci::PciExcludedFunctions::new()
     }
     /// Chipset-owned PCI BARs that generic resource allocation must preserve.
     fn fixed_pci_bars(&self) -> fstart_pci::PciFixedBars {

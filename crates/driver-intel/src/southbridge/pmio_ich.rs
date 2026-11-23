@@ -25,7 +25,7 @@ use tock_registers::{
 };
 
 register_bitfields![u32,
-    PM_CONTROL [
+    pub(crate) PM_CONTROL [
         SCI_EN OFFSET(0) NUMBITS(1) [],
         BM_RLD OFFSET(1) NUMBITS(1) [],
         GBL_RLS OFFSET(2) NUMBITS(1) [],
@@ -57,7 +57,10 @@ register_bitfields![u32,
     ]
 ];
 register_bitfields![u16,
-    PM_STATUS [WAKE OFFSET(15) NUMBITS(1) []],
+    pub(crate) PM_STATUS [
+        POWER_BUTTON OFFSET(8) NUMBITS(1) [],
+        WAKE OFFSET(15) NUMBITS(1) []
+    ],
     TCO_CONTROL [
         HALT OFFSET(11) NUMBITS(1) [],
         LOCK OFFSET(12) NUMBITS(1) []
@@ -124,7 +127,7 @@ pub const WAK_STS: u16 = PM_STATUS::WAKE::SET.value;
 pub const PCIEXPWAK_STS: u16 = 1 << 14;
 pub const PRBTNOR_STS: u16 = 1 << 11;
 pub const RTC_STS: u16 = 1 << 10;
-pub const PWRBTN_STS: u16 = 1 << 8;
+pub const PWRBTN_STS: u16 = PM_STATUS::POWER_BUTTON::SET.value;
 pub const GBL_STS: u16 = 1 << 5;
 pub const BM_STS: u16 = 1 << 4;
 pub const TMROF_STS: u16 = 1 << 0;
@@ -496,9 +499,7 @@ impl PmIo {
     /// Get a [`TcoIo`] sub-accessor for the TCO register block.
     #[inline(always)]
     pub const fn tco(&self) -> TcoIo {
-        TcoIo {
-            base: self.base + TCO_BASE_OFFSET,
-        }
+        TcoIo::new(self.base + TCO_BASE_OFFSET)
     }
 }
 
@@ -506,7 +507,7 @@ impl PmIo {
 // TcoIo sub-accessor
 // =======================================================================
 
-/// TCO I/O register accessor (PMBASE + 0x60, 32 bytes).
+/// TCO I/O registers (32 bytes); ICH uses PMBASE+60h, newer PCH uses TCOBASE.
 ///
 /// TCO (Total Cost of Ownership) registers handle the watchdog timer,
 /// boot status, BIOS write protection, and NMI routing.
@@ -516,6 +517,11 @@ pub struct TcoIo {
 }
 
 impl TcoIo {
+    /// Bind the actual decoded TCO block, independently of its BAR location.
+    pub const fn new(base: u16) -> Self {
+        Self { base }
+    }
+
     /// Read an 8-bit TCO register.
     #[inline(always)]
     pub fn read8(&self, offset: u16) -> u8 {
@@ -598,11 +604,19 @@ impl TcoIo {
         regs.status2().write(TCO_STATUS2::SECOND_TIMEOUT::SET);
     }
 
+    pub fn is_halted(&self) -> bool {
+        TcoRegs::new(self.base).control().is_set(TCO_CONTROL::HALT)
+    }
+
     /// Lock TCO registers (set TCO_LOCK in TCO1_CNT).
     pub fn lock(&self) {
         TcoRegs::new(self.base)
             .control()
             .modify(TCO_CONTROL::LOCK::SET);
+    }
+
+    pub fn is_locked(&self) -> bool {
+        TcoRegs::new(self.base).control().is_set(TCO_CONTROL::LOCK)
     }
 }
 

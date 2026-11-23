@@ -47,6 +47,7 @@
 
 #![allow(clippy::derivable_impls, clippy::identity_op)]
 
+use embedded_hal::delay::DelayNs;
 use fstart_core::{
     ConstVec,
     mmio::{MmioReadOnly, MmioReadWrite},
@@ -636,6 +637,50 @@ pub const fn pin_not_connected(nid: u8, seq: u8) -> PinConfig {
 // HdaController — generic HDA MMIO interface
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControllerError {
+    ResetTimeout,
+    Busy,
+    CommandTimeout,
+    InvalidResponse,
+}
+
+// One canonical Immediate Command protocol for all HDA controllers. VALID is
+// RW1C, not an alternative to BUSY completing. Never return a stale response.
+fn immediate_command(
+    command: &impl Writeable<T = u32>,
+    response: &impl Readable<T = u32>,
+    status: &(impl Readable<T = u16, R = ICS::Register> + Writeable<T = u16, R = ICS::Register>),
+    verb: u32,
+    delay: &mut impl DelayNs,
+) -> Result<u32, ControllerError> {
+    let wait = |delay: &mut dyn DelayNs| {
+        for sample in 0..=200 {
+            if !status.is_set(ICS::BUSY) {
+                return true;
+            }
+            if sample != 200 {
+                delay.delay_us(5);
+            }
+        }
+        false
+    };
+    if !wait(delay) {
+        return Err(ControllerError::Busy);
+    }
+    command.set(verb);
+    status.write(ICS::BUSY::SET + ICS::VALID::SET);
+    if !wait(delay) {
+        // Abort BUSY without acknowledging a late VALID response.
+        status.write(ICS::BUSY::CLEAR + ICS::VALID::CLEAR);
+        return Err(ControllerError::CommandTimeout);
+    }
+    if !status.is_set(ICS::VALID) {
+        return Err(ControllerError::InvalidResponse);
+    }
+    Ok(response.get())
+}
+
 /// HDA controller register interface.
 ///
 /// Operates on any HDA-compliant controller through BAR0 MMIO.
@@ -737,6 +782,59 @@ impl HdaController {
         .then(|| regs.response.get())
     }
 
+    /// Send a verb, telling a busy controller from a missing response.
+    pub fn send_verb_with_delay(
+        &self,
+        verb: u32,
+        delay: &mut impl DelayNs,
+    ) -> Result<u32, ControllerError> {
+        let regs = self.regs();
+        immediate_command(
+            &regs.command,
+            &regs.response,
+            &regs.command_status,
+            verb,
+            delay,
+        )
+    }
+
+    /// Bounded reset with an injectable clock, not a fabricated hardware ACK.
+    pub fn reset_with_delay(
+        &self,
+        asserted: bool,
+        delay: &mut impl DelayNs,
+    ) -> Result<(), ControllerError> {
+        self.regs()
+            .control
+            .modify(GCTL::CRST.val(u32::from(!asserted)));
+        for _ in 0..50 {
+            delay.delay_ms(1);
+            if self.regs().control.is_set(GCTL::CRST) != asserted {
+                return Ok(());
+            }
+        }
+        Err(ControllerError::ResetTimeout)
+    }
+
+    /// Native codec discovery. No-codec is distinct from a failed reset.
+    pub fn detect_codecs_checked(&self, delay: &mut impl DelayNs) -> Result<u16, ControllerError> {
+        let result = (|| {
+            self.reset_with_delay(false, delay)?;
+            delay.delay_us(521);
+            let regs = self.regs();
+            regs.capabilities.set(regs.capabilities.get());
+            regs.codec_status.write(STATESTS::CODECS.val(0x7fff));
+            self.reset_with_delay(true, delay)?;
+            self.reset_with_delay(false, delay)?;
+            delay.delay_us(521);
+            Ok(regs.codec_status.read(STATESTS::CODECS))
+        })();
+        if !matches!(result, Ok(mask) if mask != 0) {
+            self.reset_with_delay(true, delay)?;
+        }
+        result
+    }
+
     /// Read a codec's vendor/device ID.
     pub fn read_codec_vendor_id(&self, codec_addr: u8) -> Option<u32> {
         self.send_verb(hda_get_param(codec_addr as u32, 0, 0x00))
@@ -815,9 +913,61 @@ impl HdaController {
     }
 }
 
+impl HdaController {
+    fn program_codec(
+        &self,
+        addr: u8,
+        table: &HdaVerbTable,
+        delay: &mut impl DelayNs,
+    ) -> Result<(), ControllerError> {
+        for verb in hda_subvendor(u32::from(addr), table.subsystem_id) {
+            self.send_verb_with_delay(verb, delay)?;
+        }
+        for pin in table.pins.as_slice() {
+            for verb in hda_pin_cfg(u32::from(addr), u32::from(pin.nid), pin.encode()) {
+                self.send_verb_with_delay(verb, delay)?;
+            }
+        }
+        for &verb in table.extra_verbs.as_slice() {
+            self.send_verb_with_delay(verb, delay)?;
+        }
+        Ok(())
+    }
+    /// Strict native consumer: a failed command never increments success.
+    /// Unknown codecs have no board recipe and remain explicitly unmatched.
+    pub fn program_verb_tables_checked(
+        &self,
+        config: &HdaConfig,
+        mask: u16,
+        delay: &mut impl DelayNs,
+    ) -> Result<u16, ControllerError> {
+        let mut programmed = 0;
+        for addr in 0..MAX_CODECS {
+            if mask & (1 << addr) == 0 {
+                continue;
+            }
+            let id = self.send_verb_with_delay(hda_get_param(u32::from(addr), 0, 0), delay)?;
+            if let Some(table) = config
+                .verbs
+                .as_slice()
+                .iter()
+                .find(|table| table.vendor_id == id)
+            {
+                self.program_codec(addr, table, delay)?;
+                programmed |= 1 << addr;
+            }
+        }
+        Ok(programmed)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "hda_command_tests.rs"]
+mod command_tests;
 
 #[cfg(test)]
 mod tests {

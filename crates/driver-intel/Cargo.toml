@@ -12,6 +12,7 @@ fstart-driver-usbdebug = { workspace = true }
 rflasher-core = { workspace = true }
 fstart-driver-flash-console = { workspace = true }
 fstart-driver-spd = { workspace = true }
+fstart-driver-tpm = { workspace = true }
 rflasher-internal = { workspace = true }
 bitflags = { workspace = true }
 embedded-hal = { workspace = true }
@@ -33,6 +34,7 @@ ufmt = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+fstart-arch = { workspace = true, features = ["testing"] }
 fstart-driver-spd = { workspace = true, features = ["testing"] }
 fstart-driver-lenovo = { workspace = true, features = ["acpi"] }
 tempfile = "3"

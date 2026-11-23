@@ -509,7 +509,7 @@ const fn acpi_sleep_state(pm1_cnt: u32) -> u8 {
 /// # Safety
 /// The caller owns PCI configuration access (the SMM rendezvous).
 #[inline(always)]
-unsafe fn busmaster_disable_on_bus(bus: u8) {
+pub(crate) unsafe fn busmaster_disable_on_bus(bus: u8) {
     for slot in 0..32u8 {
         for func in 0..8u8 {
             let id = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0) };

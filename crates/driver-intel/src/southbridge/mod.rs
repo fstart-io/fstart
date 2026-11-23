@@ -13,6 +13,7 @@ pub mod smbus;
 pub mod smi;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod spi;
+pub mod xhci;
 
 /// PCIe root-port slot power-limit fields shared by ICH8/ICH9.
 #[derive(Debug, Clone, Copy, Default)]

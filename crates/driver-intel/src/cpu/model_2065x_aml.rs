@@ -71,7 +71,7 @@ const PSS_LATENCY: u32 = 10;
 const POWER_MAX_MW: u32 = 25_000;
 
 /// coreboot `calculate_power()`.
-fn calculate_power(tdp: u32, p1_ratio: u32, ratio: u32) -> u32 {
+pub(crate) fn calculate_power(tdp: u32, p1_ratio: u32, ratio: u32) -> u32 {
     let m = (110_000 - (p1_ratio - ratio) * 625) / 11;
     let m = (m * m) / 1000;
     let mut power = (ratio * 100_000 / p1_ratio) / 100;
