@@ -91,6 +91,8 @@ pub const D945GCLF_PIRQ: PirqRouting = {
 };
 
 pub static D945GCLF_PLATFORM: I945Ich7Platform = I945Ich7Config::new()
+    // No `spd_addresses` in coreboot: i945 raminit reads 0x50 + slot.
+    .spd_addresses([0x50, 0x51, 0x52, 0x53])
     .variant(I945Variant::DesktopGc)
     .igd(d945gclf_igd_config())
     // Atom 230: single core with HT -> 2 logical CPUs.

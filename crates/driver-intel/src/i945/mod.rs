@@ -310,6 +310,7 @@ pub struct IntelI945Config {
     /// coreboot refuses sizes below 768 MiB; default matches D945GCLF (768).
     pub pci_mmio_size: u32,
     /// SPD EEPROM addresses in i945 slot order: ch0 (2 slots), ch1 (2 slots).
+    /// The board's wiring; `new()` wires none.
     pub spd_addresses: [u8; 4],
     /// Integrated graphics configuration.
     pub igd: I945IgdConfig,
@@ -334,7 +335,7 @@ impl IntelI945Config {
             variant: I945Variant::DesktopGc,
             gfx_gms: default_gfx_gms(),
             pci_mmio_size: default_pci_mmio_size(),
-            spd_addresses: default_spd_addresses(),
+            spd_addresses: [0; 4],
             igd: I945IgdConfig::new(),
         }
     }
@@ -354,10 +355,6 @@ const fn default_gfx_gms() -> u8 {
 
 const fn default_pci_mmio_size() -> u32 {
     768
-}
-
-const fn default_spd_addresses() -> [u8; 4] {
-    [0x50, 0x51, 0x52, 0x53]
 }
 
 /// The Graphics Mode Select of `mb` MiB of stolen memory; 8 MiB (GMS 3)

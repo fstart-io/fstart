@@ -90,6 +90,7 @@ pub const T61_PIRQ: PirqRouting = {
 };
 
 pub static T61_PLATFORM: Gm965Ich8Platform = Gm965Ich8Config::new()
+    .spd_addresses([0x50, 0, 0x51, 0])
     .max_cpus(2)
     .pirq(T61_PIRQ)
     .peg(true)

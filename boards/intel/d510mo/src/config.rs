@@ -33,6 +33,8 @@ pub const D510MO_PIRQ: PirqRouting = PirqRouting {
 };
 
 pub static D510MO_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
+    // early_init.c `get_mb_spd_addrmap()`.
+    .spd_addresses([0x50, 0x51, 0, 0])
     .max_cpus(4)
     .igd(PineviewIgdConfig {
         use_crt: true,

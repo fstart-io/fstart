@@ -110,6 +110,14 @@ macro_rules! smm_default_bin {
     };
 }
 
+/// Reject a platform that cannot train memory because no DIMM slots were wired.
+const fn require_spd_addresses(addresses: [u8; 4]) {
+    assert!(
+        addresses[0] != 0 || addresses[1] != 0 || addresses[2] != 0 || addresses[3] != 0,
+        "the board must wire its DIMMs: spd_addresses()"
+    );
+}
+
 pub mod baytrail;
 pub mod gm45;
 pub mod gm965;
