@@ -103,6 +103,12 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
     config: InstallConfig<'_, T>,
     cpu_layouts: &'a mut [CpuSmmLayout],
 ) -> Result<InstalledSmmImage<'a>, InstallError> {
+    if config.smram_size == 0 {
+        return Err(InstallError::Layout(LayoutError::BadSize));
+    }
+    if config.smram_base == 0 {
+        return Err(InstallError::Overflow);
+    }
     let smram_len = usize::try_from(config.smram_size).map_err(|_| InstallError::Overflow)?;
     if smram_len > isize::MAX as usize {
         return Err(InstallError::Overflow);
@@ -110,12 +116,19 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
     // Validate address range before constructing the mutable SMRAM slice so
     // an out-of-range base or overflowing size never produces an invalid slice.
     check_low_range(config.smram_base, config.smram_size)?;
+    // Also ensure the exclusive end fits in `usize` so pointer arithmetic in
+    // `from_raw_parts_mut` cannot wrap on 32-bit targets (e.g. end == 4 GiB).
+    let smram_base_ptr = usize::try_from(config.smram_base).map_err(|_| InstallError::Overflow)?;
+    smram_base_ptr
+        .checked_add(smram_len)
+        .ok_or(InstallError::Overflow)?;
     // SAFETY: caller guarantees `smram_base..smram_base + smram_size` is
-    // writable and exclusively owned, `smram_len <= isize::MAX`, and
-    // `MaybeUninit<u8>` requires no prior initialization of SMRAM bytes.
+    // writable and exclusively owned, `smram_base != 0`, `smram_len <= isize::MAX`,
+    // `smram_base + smram_len` does not wrap `usize`, and `MaybeUninit<u8>`
+    // requires no prior initialization of SMRAM bytes.
     let smram = unsafe {
         core::slice::from_raw_parts_mut(
-            config.smram_base as *mut core::mem::MaybeUninit<u8>,
+            smram_base_ptr as *mut core::mem::MaybeUninit<u8>,
             smram_len,
         )
     };

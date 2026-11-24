@@ -1375,7 +1375,7 @@ fn audit_stack_sizes(elf: &Path, file: &object::File<'_>, budget: u32) -> Result
                 )
             {
                 if let Some(slack) = stack_realign_slack(&insn, is_64) {
-                    align_slack = align_slack.max(slack);
+                    align_slack = align_slack.checked_add(slack).ok_or(BuildError::Overflow)?;
                 } else {
                     return Err(BuildError::Tool(format!(
                         "SMM function {}+{:#x} dynamically realigns the stack pointer, breaking static stack-depth proof in {}",

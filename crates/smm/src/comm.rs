@@ -227,8 +227,10 @@ impl<'a> SmmBufferPolicy<'a> {
 
 /// Validate that `[base, base + len)` is non-null, does not wrap, stays within
 /// `max_phys_end` (e.g. [`SMM_IDENTITY_MAP_END`] for the 4 GiB SMM identity
-/// map and to prevent 32-bit `as usize` truncation on i686), and is completely
-/// disjoint from `smram`.
+/// map; for non-empty ranges this also prevents 32-bit `as usize` truncation on
+/// i686, whereas an empty sentinel at `base == SMM_IDENTITY_MAP_END` requires
+/// checking `!range.is_empty()` before converting), and is completely disjoint
+/// from `smram`.
 pub fn validate_outside_smram(
     base: u64,
     len: u64,
