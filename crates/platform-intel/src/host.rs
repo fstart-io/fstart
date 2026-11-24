@@ -516,7 +516,7 @@ fn resolve_for<P: IntelPlatform>(
         security: fstart_core::default_security_config(),
         smm: fstart_core::SmmConfig {
             entry_points: Some(max_cpus),
-            stack_size: 0x400,
+            stack_size: 0x1000,
             ..Default::default()
         },
     };

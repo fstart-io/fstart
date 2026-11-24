@@ -179,8 +179,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// The compilation units, hence the stage binaries, stay as they are.
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
 /// entry cfg, again without the payload cfg, for the AMD reset sections'
-/// rename from `.sp3.*` to `.amd.*` in the linker script, and for the one
-/// AMD host plan.)
+/// rename from `.sp3.*` to `.amd.*` in the linker script, for the one
+/// AMD host plan, and for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -195,9 +195,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "67b1ae6e2cc05579964901b84ffd0ea13f44185f58d789ca17ef6dc109e35991",
-            "ba9c9f59ac19a502f0054fe5dec782d5140b1b366ba0e4d6e8895bb1df9edeed",
-            "7e1f4cbfddea250e2857dcb36eb50f3ec2aacc6a4d790ec068f2a99083384b8a",
+            "3f09c350ab477574f106f5d9fc9daebdabd4de65caca48f7fc080c55c3513a9e",
+            "3f919055e855112b89ded08ed9a7c8af677b2d454c6346fa82215ae12163bf48",
+            "3d6a123bd1b146d398932dc124967d0431d1fe6e330081acd1c300a553d7febf",
         ]
     );
 }
